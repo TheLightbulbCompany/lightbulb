@@ -2,7 +2,7 @@
 
 import asyncio
 import time
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import boto3
 import pytest
@@ -117,6 +117,13 @@ async def test_command_origin_stays_in_storage_and_off_the_desktop_wire(db):
     assert "originRoomId" not in receipt.model_dump(by_alias=True)
     assert "originMessageId" not in receipt.model_dump(by_alias=True)
     assert await service.submit_command(ALICE, None, sid, command(service)) == receipt
+    # The room origin fences delivery too, even though the native command is roomless.
+    checks = repo.room_conditions(OWNER, ALICE.user_id, stored)
+    db[0].delete_item(Key={"pk": f"ROOM#{ROOM}", "sk": f"MEMBER#human#{ALICE.user_id}"})
+    from botocore.exceptions import ClientError
+
+    with pytest.raises(ClientError):
+        await messaging_repo._transact(checks)
 
 
 @pytest.mark.asyncio
@@ -125,6 +132,35 @@ async def test_command_without_origin_stores_no_origin_keys(db):
     receipt = await service.submit_command(ALICE, None, sid, command(service))
     stored = await repo.get_command(OWNER, sid, receipt.request_id)
     assert "originRoomId" not in stored and "originMessageId" not in stored
+
+
+@pytest.mark.asyncio
+async def test_lightbulb_display_title_survives_native_registration(db, monkeypatch):
+    from core.services import local_session_relay
+
+    monkeypatch.setattr(local_session_relay, "publish_resources_changed", AsyncMock())
+    sid = await registered(title="Native title")
+    renamed = await service.set_display_title(ALICE, sid, "Chosen title")
+    assert renamed.display_title == "Chosen title" and renamed.title == "Native title"
+    await service.register_session(
+        OWNER,
+        ALICE.user_id,
+        MAC,
+        service.SessionRegistration(
+            provider="codex",
+            profileFingerprint="f" * 64,
+            nativeConversationId="thread-1",
+            generation="generation-1",
+            providerVersion="1.0",
+            status="idle",
+            capabilities={"sendMode": "queue", "steer": False, "interrupt": False},
+            capabilitiesVerified=True,
+            onlineUntil=int(time.time()) + 60,
+            title="Updated native title",
+        ),
+    )
+    current = await service.get_session(ALICE, sid)
+    assert current.title == "Updated native title" and current.display_title == "Chosen title"
 
 
 @pytest.mark.asyncio

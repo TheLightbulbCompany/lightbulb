@@ -338,9 +338,10 @@ export function MessagingWorkspaceProvider({
   ), [workspaceSessions.sessions]);
   const sessionTargets = useMemo(() => rooms.activeRoom?.shared ? [] : sessionCandidates
     .filter(({ session }) => session.shared !== false && canSendToSession(session)
+      && rooms.activeRoom?.members.some((member) => member.kind === "human" && member.id === session.humanUserId)
       && canControlSession(session, session.humanUserId === userId, userId))
     .map((candidate) => ({ candidate, ...resolveSessionOwner(candidate.session.humanUserId) })),
-  [rooms.activeRoom?.shared, sessionCandidates, userId, resolveSessionOwner]);
+  [rooms.activeRoom?.shared, rooms.activeRoom?.members, sessionCandidates, userId, resolveSessionOwner]);
   const directoryRooms: DirectoryRoom[] = useMemo(() => rooms.rooms.map((room) => ({
     ...room,
     // Straight off the room summary — this used to come from a per-DM
@@ -735,6 +736,10 @@ export function MessagingWorkspaceProvider({
     draftRoomIds,
     sessions: sidebarSessions,
     onSelectSession: (sessionId: string) => void openSession(sessionId),
+    onRenameSession: rooms.resourceSource.client.setLocalSessionDisplayTitle ? async (sessionId, title) => {
+      await rooms.resourceSource.client.setLocalSessionDisplayTitle!(sessionId, title);
+      await workspaceSessions.refresh();
+    } : undefined,
     currentSessionId: sessionFocus?.sessionId ?? null,
     onOpenAllSessions: openAllSessions,
     allSessionsOpen: !!sessionFocus?.all,
@@ -813,6 +818,8 @@ export function MessagingWorkspaceProvider({
     onDownloadAttachment: rooms.downloadAttachment,
     onAttachmentUrl: rooms.attachmentUrl,
     onGetSessionCommand: rooms.resourceSource.client.getLocalSessionCommand,
+    onRetrySessionSend: rooms.resourceSource.client.retrySessionSend,
+    onCancelSessionSend: rooms.resourceSource.client.cancelSessionSend,
   } : null;
 
   // Muted rooms never badge anywhere: not the sidebar, not the browser-tab title.

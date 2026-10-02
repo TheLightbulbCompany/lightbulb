@@ -259,10 +259,10 @@ async def put_session(row: dict, previous: dict | None, enrollment: dict, *, ext
     )
 
 
-def room_conditions(owner: str, human: str, receipt: dict) -> list[dict]:
-    """Room fences for a room-scoped command; a roomless one (roomId "") has none -- its
-    authority is the session's own human, checked in authorize_session."""
-    if not receipt.get("roomId"):
+def room_conditions(owner: str, human: str, receipt: dict, *, include_meta: bool = True) -> list[dict]:
+    """Fence room-originated commands at admission and delivery against both human memberships."""
+    room = receipt.get("roomId") or receipt.get("originRoomId")
+    if not room:
         # An offline teammate's old token is not authority at delivery time.
         # Membership removal deactivates this stream; fence the final dispatch.
         if receipt.get("offlineIdentity") and receipt.get("actorUserId") != human:
@@ -277,18 +277,23 @@ def room_conditions(owner: str, human: str, receipt: dict) -> list[dict]:
                 }
             ]
         return []
-    table, room = store._table().name, receipt["roomId"]
+    table = store._table().name
     actor = ("agent", receipt["actor"]["id"]) if "actor" in receipt else ("human", receipt["actorUserId"])
-    return [
-        {
-            "ConditionCheck": {
-                "TableName": table,
-                "Key": {"pk": store.room_pk(room), "sk": "META"},
-                "ConditionExpression": "ownerId = :owner",
-                "ExpressionAttributeValues": {":owner": owner},
+    meta_check = (
+        [
+            {
+                "ConditionCheck": {
+                    "TableName": table,
+                    "Key": {"pk": store.room_pk(room), "sk": "META"},
+                    "ConditionExpression": "ownerId = :owner",
+                    "ExpressionAttributeValues": {":owner": owner},
+                }
             }
-        }
-    ] + [
+        ]
+        if include_meta
+        else []
+    )
+    return meta_check + [
         {
             "ConditionCheck": {
                 "TableName": table,
@@ -329,11 +334,12 @@ async def admit_command(
     allow_offline: bool = False,
     extra: Sequence[dict] = (),
     source_pairing: tuple[str, str] | None = None,
+    room_meta_fenced_by_extra: bool = False,
 ) -> None:
     owner, human, device = row["ownerId"], row["humanUserId"], row["deviceId"]
     table = store._table().name
     await store._transact(
-        room_conditions(owner, human, receipt)
+        room_conditions(owner, human, receipt, include_meta=not room_meta_fenced_by_extra)
         + [
             pairing_condition(owner, human, device, None, also=source_pairing),
             enrollment_condition(enrollment),

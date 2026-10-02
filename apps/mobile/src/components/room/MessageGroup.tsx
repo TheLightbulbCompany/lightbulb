@@ -1,9 +1,11 @@
 import {
   isVideoAttachmentType,
+  displaySessionMentions,
   linkifyMentions,
   linkifySessionMentions,
   unpromptedLabel,
   useSessionSendReceipt,
+  type SessionReceiptChip,
   type AvatarRing,
   type CanonicalRoomMessage,
   type MessageAttachment,
@@ -12,15 +14,15 @@ import {
   type SessionMentionCandidate,
   type SessionSend,
 } from "@lightbulb/shared";
+import { randomUUID } from "expo-crypto";
 import { Image } from "expo-image";
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Pressable, StyleSheet, Text, View } from "react-native";
 
 import { fonts, spacing, useChatPalette, type ChatPalette } from "../../config/theme";
 import { hapticImpact, hapticSelection } from "../../lib/haptics";
 import { attachmentFile } from "../../lib/attachmentFile";
 import type { LocalMessageRow } from "../../lib/rooms";
-import { ReceiptChipText } from "../session/TranscriptRow";
 import { Bubble, BubbleMeta, Chip, MetaText, AVATAR_GUTTER } from "../conversation/bubbles";
 import { MessageMarkdown } from "../chat/MessageMarkdown";
 import { AttachmentViewerModal } from "./AttachmentViewerModal";
@@ -155,15 +157,52 @@ function ReactionChips({
  * `BubbleMeta` row. A long press on anything in the group reveals the time of
  * a collapsed message and hands the press on to the caller (the actions sheet).
  */
-function SessionSendChip({ send, replyCount, receiptRefreshKey, getSessionCommand, handle }: {
+function SessionSendState({ send, receiptRefreshKey, getSessionCommand, onStatus, onRetry, onCancel, onChanged, replied }: {
   send: SessionSend;
-  replyCount: number;
   receiptRefreshKey?: number;
   getSessionCommand?: (sessionId: string, requestId: string) => Promise<LocalSessionCommandReceipt>;
-  handle?: string;
+  onStatus: (key: string, chip: SessionReceiptChip | null) => void;
+  onRetry?: (sessionId: string, requestId: string, expectedRequestId: string | null) => Promise<unknown>;
+  onCancel?: (sessionId: string, expectedRequestId: string | null) => Promise<unknown>;
+  onChanged?: () => void;
+  replied: boolean;
 }) {
-  const { chip } = useSessionSendReceipt(getSessionCommand, send, receiptRefreshKey ?? replyCount);
-  return chip ? <ReceiptChipText chip={{ ...chip, label: handle ? `@${handle} · ${chip.label}` : chip.label }} /> : null;
+  const palette = useChatPalette();
+  const { chip, receipt } = useSessionSendReceipt(getSessionCommand, send, receiptRefreshKey);
+  const key = `${send.sessionId}:${send.requestId ?? "error"}`;
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const retryId = useRef<string | null>(null);
+  useEffect(() => onStatus(key, chip), [key, chip, onStatus]);
+  const run = async (action: "retry" | "cancel") => {
+    setSaving(true);
+    setError(null);
+    try {
+      if (action === "retry") {
+        retryId.current ??= randomUUID();
+        await onRetry?.(send.sessionId, retryId.current, send.requestId ?? null);
+      } else {
+        await onCancel?.(send.sessionId, send.requestId ?? null);
+      }
+      onChanged?.();
+    } catch {
+      setError(action === "retry" ? "Could not retry this session. Try again." : "Could not cancel this session delivery. Check again.");
+    } finally {
+      setSaving(false);
+    }
+  };
+  if (send.error === "CANCELLED" || !chip || chip.tone === "ok" || (replied && chip.tone !== "error")) return null;
+  return <View style={styles.sessionSendAction}>
+    {chip.tone === "error" && <Text accessibilityRole="alert" style={[styles.metaText, { color: palette.alert }]}>{chip.detail || "This session did not receive the message."}</Text>}
+    {chip.tone === "warn" && <Text style={[styles.metaText, { color: palette.warn }]}>Checking session delivery…</Text>}
+    {chip.tone === "error" && onRetry && <Pressable accessibilityRole="button" accessibilityLabel="Retry session delivery" accessibilityState={{ disabled: saving }} disabled={saving} onPress={() => void run("retry")}>
+      <Text style={[styles.sessionActionText, { color: palette.link }]}>Retry</Text>
+    </Pressable>}
+    {(chip.tone === "error" || receipt?.state === "pending") && onCancel && <Pressable accessibilityRole="button" accessibilityLabel="Cancel session delivery" accessibilityState={{ disabled: saving }} disabled={saving} onPress={() => void run("cancel")}>
+      <Text style={[styles.sessionActionText, { color: palette.alert }]}>Cancel</Text>
+    </Pressable>}
+    {error && <Text accessibilityRole="alert" style={[styles.metaText, { color: palette.alert }]}>{error}</Text>}
+  </View>;
 }
 
 export function MessageGroup({
@@ -180,6 +219,9 @@ export function MessageGroup({
   members = [],
   sessionCandidates = [],
   getSessionCommand,
+  retrySessionSend,
+  cancelSessionSend,
+  onSessionSendChanged,
   showTime = true,
   readLabel = null,
   agentRing = null,
@@ -201,6 +243,9 @@ export function MessageGroup({
   members?: readonly RoomMember[];
   sessionCandidates?: readonly SessionMentionCandidate[];
   getSessionCommand?: (sessionId: string, requestId: string) => Promise<LocalSessionCommandReceipt>;
+  retrySessionSend?: (roomId: string, messageId: string, sessionId: string, request: { requestId: string; expectedRequestId: string | null }) => Promise<unknown>;
+  cancelSessionSend?: (roomId: string, messageId: string, sessionId: string, request: { expectedRequestId: string | null }) => Promise<unknown>;
+  onSessionSendChanged?: () => void;
   /** Default true; pass false when the next bubble continues this sender's run, so the time waits for the run's last bubble (or a long press). */
   showTime?: boolean;
   /** "Sent" | "Delivered" | "Read" | "Read by N" — only ever shown on the viewer's own last message, and never on a deleted one. */
@@ -211,6 +256,10 @@ export function MessageGroup({
   const palette = useChatPalette();
   const [timeShown, setTimeShown] = useState(false);
   const [viewerIndex, setViewerIndex] = useState<number | null>(null);
+  const [sessionStatuses, setSessionStatuses] = useState<Record<string, SessionReceiptChip | null>>({});
+  const onSessionStatus = useCallback((key: string, chip: SessionReceiptChip | null) => {
+    setSessionStatuses(current => current[key]?.tone === chip?.tone && current[key]?.detail === chip?.detail ? current : { ...current, [key]: chip });
+  }, []);
   const mine = message.author.kind === "human" && message.author.id === currentUserId;
   const deleted = Boolean(message.deletedAt);
   // A local (not-yet-canonical) row -- `useSendDrafts` assigns it seq 0 until
@@ -219,6 +268,11 @@ export function MessageGroup({
   // in flight or has failed; `LocalMessageRows` renders the difference below it.
   const pending = message.messageSeq <= 0;
   const visibleSessionSends = mine ? message.sessionSends : message.sessionSends?.filter((send) => !!send.error);
+  const sessionPending = mine && replyCount === 0 && !!visibleSessionSends?.some((send) => {
+    if (send.error) return false;
+    const chip = sessionStatuses[`${send.sessionId}:${send.requestId ?? "error"}`];
+    return chip === undefined || chip?.tone === "pending" || chip?.tone === "warn";
+  });
   const time = formatTime(message.createdAt);
   const showTimeNow = (showTime || timeShown) && Boolean(time);
   const appliedReactions = Object.entries(message.reactions ?? {}).filter(
@@ -230,12 +284,16 @@ export function MessageGroup({
     (mention) => mention.kind === "human" && mention.id === currentUserId,
   );
   const unprompted = unpromptedLabel(message);
+  const markdownText = message.via === "lightbulb_mcp" ? message.text : linkifySessionMentions(
+    linkifyMentions(message.text, message.mentions, members), message.sessionSends,
+    sessionCandidates.map(({ session }) => session),
+  );
+  const mcpTargets = message.via === "lightbulb_mcp"
+    ? [...new Set((message.sessionSends ?? []).map((send) => send.displayLabel).filter((label): label is string => !!label))]
+    : [];
   const bubbleLabel = deleted
     ? "Message deleted"
-    : `${mine ? "You" : message.author.displayName}: ${message.text}`;
-  const markdownText = linkifySessionMentions(
-    linkifyMentions(message.text, message.mentions, members), message.sessionSends,
-  );
+    : `${mine ? "You" : message.author.displayName}: ${message.via === "lightbulb_mcp" ? message.text : displaySessionMentions(message.text, message.sessionSends, sessionCandidates.map(({ session }) => session))}`;
 
   return (
     <>
@@ -269,7 +327,7 @@ export function MessageGroup({
                 mine={mine}
                 palette={palette}
                 mentionsMe={mentionsMe}
-                dimmed={pending}
+                dimmed={pending || sessionPending}
                 accessibilityLabel={bubbleLabel}
               >
                 {deleted ? (
@@ -301,7 +359,7 @@ export function MessageGroup({
               mine={mine}
               palette={palette}
               mentionsMe={mentionsMe}
-              dimmed={pending}
+              dimmed={pending || sessionPending}
               accessibilityLabel={bubbleLabel}
             >
               {deleted ? (
@@ -329,6 +387,7 @@ export function MessageGroup({
           </View>
         )}
         <BubbleMeta align={mine ? "end" : "start"} palette={palette} indent={mine ? 0 : AVATAR_GUTTER}>
+          {!deleted && message.via === "lightbulb_mcp" && mcpTargets.length > 0 && <MetaText palette={palette}>{`To ${mcpTargets.join(", ")}`}</MetaText>}
           {!deleted && onToggleReaction && appliedReactions.length > 0 ? (
             <ReactionChips
               reactions={appliedReactions}
@@ -343,8 +402,12 @@ export function MessageGroup({
             </Text>
           ) : null}
           {!deleted && !!visibleSessionSends?.length ? <View style={styles.sessionSendRow}>
-            {visibleSessionSends.map((send) => <SessionSendChip key={send.sessionId} send={send} replyCount={replyCount} receiptRefreshKey={receiptRefreshKey}
-              getSessionCommand={getSessionCommand} handle={sessionCandidates.find(({ session }) => session.sessionId === send.sessionId)?.handle} />)}
+            {sessionPending && <MetaText palette={palette}>Waiting for session</MetaText>}
+            {visibleSessionSends.map((send) => <SessionSendState key={`${send.sessionId}:${send.requestId}`} send={send} receiptRefreshKey={receiptRefreshKey ?? replyCount} replied={replyCount > 0}
+              getSessionCommand={getSessionCommand} onStatus={onSessionStatus}
+              onRetry={mine && retrySessionSend ? ((sessionId, requestId, expectedRequestId) => retrySessionSend(message.roomId, message.messageId, sessionId, { requestId, expectedRequestId })) : undefined}
+              onCancel={mine && cancelSessionSend ? ((sessionId, expectedRequestId) => cancelSessionSend(message.roomId, message.messageId, sessionId, { expectedRequestId })) : undefined}
+              onChanged={onSessionSendChanged} />)}
           </View> : null}
           {!deleted && replyCount > 0 ? (
             <Chip
@@ -355,7 +418,7 @@ export function MessageGroup({
           ) : null}
           {unprompted ? <MetaText palette={palette}>{unprompted}</MetaText> : null}
           {showTimeNow ? <MetaText palette={palette}>{time}</MetaText> : null}
-          {!deleted && readLabel ? <MetaText palette={palette}>{readLabel}</MetaText> : null}
+          {!deleted && readLabel && !message.sessionSends?.length ? <MetaText palette={palette}>{readLabel}</MetaText> : null}
         </BubbleMeta>
       </Pressable>
       {viewerIndex !== null && message.attachments && message.attachments.length > 0 ? (
@@ -435,5 +498,8 @@ const styles = StyleSheet.create({
   deleted: { fontFamily: fonts.sans, fontSize: 14, lineHeight: 20, fontStyle: "italic" },
   reactionError: { fontFamily: fonts.sans, fontSize: 13, lineHeight: 18 },
   sessionSendRow: { flexDirection: "row", flexWrap: "wrap", gap: spacing.xs },
+  sessionSendAction: { flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: spacing.sm },
+  sessionActionText: { fontFamily: fonts.sansSemiBold, fontSize: 12, lineHeight: 18 },
+  metaText: { fontFamily: fonts.sans, fontSize: 12, lineHeight: 18 },
   image: { width: "100%", aspectRatio: 1, borderRadius: 12, maxWidth: 240, marginTop: spacing.sm },
 });

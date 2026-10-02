@@ -868,6 +868,8 @@ async def create_message(
     expected_room_revision: int | None = None,
     acting_human_id: str | None = None,
     extra_conditions: list[dict] | None = None,
+    via: str | None = None,
+    session_target_labels: dict[str, str] | None = None,
 ) -> tuple[dict, bool]:
     """Strong-read ``META.lastSeq`` then conditionally transact: bump META, put
     the immutable ``MSG``, put the ``IDEMP`` receipt, put one ``WORK#MESSAGE``
@@ -930,6 +932,10 @@ async def create_message(
             "attachments": attachments or [],
             "topOrdinal": ordinal,
         }
+        if via:
+            message["via"] = via
+        if session_target_labels:
+            message["sessionTargetLabels"] = session_target_labels
         if silent:
             # An advisory line: the projector files no Activity and sends no push for it.
             message["silent"] = True
@@ -1304,6 +1310,38 @@ async def set_session_sends(room_id: str, seq: int, session_sends: list[dict]) -
     if current is None:
         raise MessagingRepoError("Session send message disappeared.")
     return current
+
+
+def session_send_update_items(
+    room_id: str, message: dict, expected: list[dict], updated: list[dict], *, room_owner: str, room_revision: int
+) -> list[dict]:
+    """CAS one room-message send marker and invalidate clients in the same transaction."""
+    table = _table().name
+    return [
+        {
+            "Update": {
+                "TableName": table,
+                "Key": {"pk": room_pk(room_id), "sk": msg_sk(message["messageSeq"])},
+                "UpdateExpression": "SET sessionSends = :updated, sessionSendsAt = :now",
+                "ConditionExpression": "sessionSends = :expected AND messageId = :message_id",
+                "ExpressionAttributeValues": {
+                    ":expected": expected,
+                    ":updated": updated,
+                    ":now": utc_now_iso(),
+                    ":message_id": message["messageId"],
+                },
+            }
+        },
+        {
+            "Update": {
+                "TableName": table,
+                "Key": {"pk": room_pk(room_id), "sk": "META"},
+                "UpdateExpression": "ADD sessionSendsRevision :one",
+                "ConditionExpression": "ownerId = :owner AND revision = :revision",
+                "ExpressionAttributeValues": {":one": 1, ":owner": room_owner, ":revision": room_revision},
+            }
+        },
+    ]
 
 
 async def _replay_or_conflict(receipt: dict, req_hash: str) -> dict:

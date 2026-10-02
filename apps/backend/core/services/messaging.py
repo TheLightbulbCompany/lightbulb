@@ -433,6 +433,7 @@ class SessionSend(ContractModel):
     session_id: str
     request_id: str | None = None
     error: str | None = None
+    display_label: str | None = Field(default=None, max_length=200)
 
     @model_serializer(mode="wrap")
     def wire(self, handler):
@@ -442,6 +443,9 @@ class SessionSend(ContractModel):
             result.pop("request_id", None)
         if self.error is None:
             result.pop("error", None)
+        if self.display_label is None:
+            result.pop("displayLabel", None)
+            result.pop("display_label", None)
         return result
 
 
@@ -457,6 +461,7 @@ class CanonicalMessage(ContractModel):
     thread_root_message_id: uuid.UUID | None
     created_at: datetime
     run_id: str | None
+    via: Literal["lightbulb_mcp"] | None = None
     # The agents this message addresses -- a `user_request` dispatch target
     # (an @mention, a name-addressed open, or a DM), not a `room_event` ambient
     # candidate: those are merely eligible for Jev to route, and Jev picks at
@@ -476,6 +481,8 @@ class CanonicalMessage(ContractModel):
     @model_serializer(mode="wrap")
     def wire(self, handler):
         result = handler(self)
+        if self.via is None:
+            result.pop("via", None)
         if not self.session_sends:
             result.pop("sessionSends", None)
             result.pop("session_sends", None)
@@ -1116,6 +1123,7 @@ def canonical_message(item: dict[str, Any], *, original_request: bool = False) -
         thread_root_message_id=item.get("threadRootMessageId"),
         created_at=item["createdAt"],
         run_id=item.get("runId"),
+        via=item.get("via"),
         addressed_agent_ids=[
             t["agentId"]
             for t in item.get("dispatchTargets") or []
@@ -2661,13 +2669,16 @@ async def create_human_message(
     native_provider: str | None = None,
     native_hop: int | None = None,
     native_conditions: list[dict] | None = None,
+    via: Literal["lightbulb_mcp"] | None = None,
 ) -> CanonicalMessage:
     meta, sender = await require_room_member(resolve_owner_id(auth), auth.user_id, room_id)
     owner_id = meta["ownerId"]  # room-scoped writes are keyed on the ROOM owner, never the caller's workspace
     mentions = await _validate_mentions(room_id, request.mentions)
+    members = await messaging_repo.list_members(room_id)
     session_ids = list(dict.fromkeys(request.session_mentions))
+    session_target_labels: dict[str, str] = {}
     if session_ids:
-        from core.services import local_sessions
+        from core.services import local_sessions, notification_copy
 
         if await messaging_repo.has_foreign_members(room_id, owner_id):
             raise ApiProblem("LOCAL_SESSION_FORBIDDEN", "Local session invocation is unavailable.")
@@ -2682,6 +2693,24 @@ async def create_human_message(
                 raise ApiProblem("INVALID_REQUEST", "A session mention needs message text.")
             for session_id in session_ids:
                 row, _ = await local_sessions.authorize_session(auth, None, session_id, owner_only=True)
+                owner_member = next(
+                    (m for m in members if m.get("kind") == "human" and m.get("id") == row["humanUserId"]),
+                    None,
+                )
+                if (
+                    owner_member is None
+                    or await messaging_repo.get_member(room_id, "human", row["humanUserId"]) is None
+                ):
+                    raise ApiProblem("LOCAL_SESSION_FORBIDDEN", "The session owner is not in this room.")
+                session_target_labels[session_id] = " · ".join(
+                    (
+                        "Claude Code" if row["provider"] == "claude" else "Codex",
+                        notification_copy.line(
+                            row.get("displayTitle") or row.get("title") or row.get("cwdName") or "Session", 80
+                        ),
+                        notification_copy.line(owner_member.get("displayName") or "Workspace member", 40),
+                    )
+                )
                 if row.get("unshared") or row.get("kind") == "background":
                     raise ApiProblem("LOCAL_SESSION_NOT_FOUND", "Local session not found.")
                 if row["provider"] == "codex" and not row.get("roomReplyRequestId"):
@@ -2709,7 +2738,6 @@ async def create_human_message(
         str(request.reply_to_message_id) if request.reply_to_message_id else None,
         str(request.thread_root_message_id) if request.thread_root_message_id else None,
     )
-    members = await messaging_repo.list_members(room_id)
     targets = select_dispatch_targets(members, mentions, None, room_kind=meta.get("kind"), text=request.text)
     if native_source_id:
         # A native agent's deliberate post does not wake every ambient listener.
@@ -2739,6 +2767,7 @@ async def create_human_message(
         [str(value) for value in request.attachment_ids],
         str(request.reply_to_message_id) if request.reply_to_message_id else None,
         str(request.thread_root_message_id) if request.thread_root_message_id else None,
+        *([via] if via else []),
     ]
     req_hash = messaging_repo.request_hash(
         *hash_parts, *([session_ids] if session_ids else []), *([native_source_id] if native_source_id else [])
@@ -2772,6 +2801,8 @@ async def create_human_message(
             dispatch_targets=targets,
             source_agent_id=None,
             client_message_id=str(request.client_message_id),
+            via=via,
+            session_target_labels=session_target_labels,
             attachments=attachments,
             thread_root_seq=_root_seq(links, request.thread_root_message_id),
             acting_human_id=auth.user_id if native_source_id else None,
@@ -2838,6 +2869,8 @@ async def create_human_message(
         sends = []
         for session_id in session_ids:
             request_id = f"m-{item['messageId']}-{session_id}"
+            send_label = (item.get("sessionTargetLabels") or {}).get(session_id)
+            send_base = {"sessionId": session_id, **({"displayLabel": send_label} if send_label else {})}
             try:
                 if await messaging_repo.has_foreign_members(room_id, owner_id):
                     raise ApiProblem("LOCAL_SESSION_FORBIDDEN", "Local session invocation is unavailable.")
@@ -2871,15 +2904,15 @@ async def create_human_message(
                         origin_message_id=item["messageId"],
                     )
                     receipt_id = receipt.request_id
-                sends.append({"sessionId": session_id, "requestId": receipt_id})
+                sends.append({**send_base, "requestId": receipt_id})
                 try:
                     await get_local_session_relay().dispatch_session(owner_id, session_id)
                 except Exception:
                     logger.warning("session-mention dispatch deferred for %s", session_id)
             except ApiProblem as exc:
-                sends.append({"sessionId": session_id, "error": exc.error.code})
+                sends.append({**send_base, "error": exc.error.code})
             except ValueError:
-                sends.append({"sessionId": session_id, "error": "INVALID_REQUEST"})
+                sends.append({**send_base, "error": "INVALID_REQUEST"})
         item = await messaging_repo.set_session_sends(room_id, item["messageSeq"], sends)
         # The DynamoDB stream projects sessionSendsAt as a durable invalidation.
     # Neither of these is part of the response. `touch_last_interactive` writes
@@ -2891,6 +2924,184 @@ async def create_human_message(
 
     asyncio.create_task(capture_first_workspace_message(owner_id, item))
     return canonical_message(item)
+
+
+class RetrySessionSendRequest(ContractModel):
+    request_id: uuid.UUID
+    expected_request_id: str | None = Field(max_length=256)
+
+
+class CancelSessionSendRequest(ContractModel):
+    expected_request_id: str | None = Field(max_length=256)
+
+
+async def _room_session_send(auth: AuthContext, room_id: str, message_id: str, session_id: str):
+    meta, _ = await require_room_member(resolve_owner_id(auth), auth.user_id, room_id)
+    item = await messaging_repo.get_message_by_id(room_id, validate_uuid(message_id, label="message ID"))
+    session_id = validate_uuid(session_id, label="local session ID")
+    if item is None or item.get("author", {}).get("kind") != "human" or item["author"]["id"] != auth.user_id:
+        raise ApiProblem("MESSAGE_NOT_FOUND", "Only the sender can manage this session send.")
+    sends = list(item.get("sessionSends") or [])
+    index = next((i for i, send in enumerate(sends) if send.get("sessionId") == session_id), None)
+    if index is None:
+        raise ApiProblem("LOCAL_SESSION_NOT_FOUND", "Session send not found on this message.")
+    return meta, item, sends, index, session_id
+
+
+def _same_room_send_command(command: dict, auth: AuthContext, room_id: str, item: dict, session_id: str) -> bool:
+    return (
+        command.get("actorUserId") == auth.user_id
+        and command.get("sessionId") == session_id
+        and command.get("originRoomId") == room_id
+        and command.get("originMessageId") == item["messageId"]
+    )
+
+
+async def retry_room_session_send(
+    auth: AuthContext, room_id: str, message_id: str, session_id: str, request: RetrySessionSendRequest
+) -> CanonicalMessage:
+    """A fresh command for a proved failure, atomically replacing that target's marker."""
+    from core.repositories import local_sessions_repo
+    from core.services import local_sessions
+    from core.services.local_session_relay import get_local_session_relay
+
+    owner = resolve_owner_id(auth)
+    new_request_id = str(request.request_id)
+    for _ in range(6):
+        meta, item, sends, index, session_id = await _room_session_send(auth, room_id, message_id, session_id)
+        current = sends[index]
+        if current.get("requestId") == new_request_id:
+            return canonical_message(item)  # lost response after the atomic command + marker commit
+        if current.get("requestId") != request.expected_request_id:
+            raise ApiProblem("LOCAL_SESSION_CONFLICT", "This session send changed. Refresh its receipt.")
+        if item.get("deletedAt") or "editedText" in item or current.get("error") == "CANCELLED":
+            raise ApiProblem("LOCAL_SESSION_CONFLICT", "This message can no longer be retried.")
+        old_request_id = current.get("requestId")
+        if old_request_id:
+            old = await local_sessions_repo.get_command(owner, session_id, old_request_id)
+            if (
+                old is None
+                or not _same_room_send_command(old, auth, room_id, item, session_id)
+                or old.get("state") != "rejected"
+                or old.get("cancelledAt")
+            ):
+                raise ApiProblem("LOCAL_SESSION_CONFLICT", "The previous send may still have reached the session.")
+        elif not current.get("error"):
+            raise ApiProblem("LOCAL_SESSION_CONFLICT", "The previous send is still pending.")
+        if await local_sessions_repo.get_command(owner, session_id, new_request_id):
+            raise ApiProblem("IDEMPOTENCY_CONFLICT", "requestId belongs to another command.")
+        if await messaging_repo.has_foreign_members(room_id, meta["ownerId"]):
+            raise ApiProblem("LOCAL_SESSION_FORBIDDEN", "Local session invocation is unavailable.")
+        row, _ = await local_sessions.authorize_session(auth, None, session_id, owner_only=True)
+        if row.get("unshared") or row.get("kind") == "background":
+            raise ApiProblem("LOCAL_SESSION_NOT_FOUND", "Local session not found.")
+        if row["provider"] == "codex" and not row.get("roomReplyRequestId"):
+            raise ApiProblem("LOCAL_SESSION_UNSUPPORTED", "Update Lightbulb on the Mac to use Codex room mentions.")
+        try:
+            command = local_sessions.LocalSessionCommand(
+                request_id=new_request_id,
+                expected_generation=row["generation"],
+                kind="send",
+                text=item["text"],
+                **(
+                    {"expected_turn_id": row.get("activeTurnId")}
+                    if row["status"] == "busy" and row["capabilities"]["sendMode"] == "immediate"
+                    else {}
+                ),
+            )
+        except ValueError as exc:
+            raise ApiProblem("INVALID_REQUEST", "Too long to send to a session (8 KB max).") from exc
+        local_sessions.require_command_scope(auth, row, "send")
+        local_sessions._require_control(row, command)
+        updated = sends.copy()
+        updated[index] = {
+            "sessionId": session_id,
+            "requestId": new_request_id,
+            **({"displayLabel": current["displayLabel"]} if current.get("displayLabel") else {}),
+        }
+        try:
+            await local_sessions.submit_command(
+                auth,
+                None,
+                session_id,
+                command,
+                origin_room_id=room_id,
+                origin_message_id=item["messageId"],
+                source_conditions=messaging_repo.session_send_update_items(
+                    room_id, item, sends, updated, room_owner=meta["ownerId"], room_revision=int(meta["revision"])
+                ),
+                room_meta_fenced_by_extra=True,
+            )
+        except ClientError as exc:
+            if not messaging_repo._is_cancelled(exc):
+                raise
+            continue
+        try:
+            await get_local_session_relay().dispatch_session(owner, session_id)
+        except Exception:
+            logger.warning("session-send retry dispatch deferred for %s", session_id)
+        return canonical_message(await messaging_repo.get_message(room_id, item["messageSeq"]))
+    raise ApiProblem("LOCAL_SESSION_CONFLICT", "This session send changed. Refresh and retry.")
+
+
+async def cancel_room_session_send(
+    auth: AuthContext, room_id: str, message_id: str, session_id: str, request: CancelSessionSendRequest
+) -> CanonicalMessage:
+    """Cancel only a never-dispatched command, or dismiss a failed target marker."""
+    from core.repositories import local_sessions_repo
+
+    owner = resolve_owner_id(auth)
+    for _ in range(6):
+        meta, item, sends, index, session_id = await _room_session_send(auth, room_id, message_id, session_id)
+        current = sends[index]
+        if current.get("error") == "CANCELLED":
+            return canonical_message(item)
+        if current.get("requestId") != request.expected_request_id:
+            raise ApiProblem("LOCAL_SESSION_CONFLICT", "This session send changed. Refresh its receipt.")
+        old_request_id = current.get("requestId")
+        command = await local_sessions_repo.get_command(owner, session_id, old_request_id) if old_request_id else None
+        if old_request_id and (
+            command is None
+            or not _same_room_send_command(command, auth, room_id, item, session_id)
+            or command.get("state") not in {"pending", "rejected"}
+        ):
+            raise ApiProblem("LOCAL_SESSION_CONFLICT", "The send may already have reached the session.")
+        if not old_request_id and not current.get("error"):
+            raise ApiProblem("LOCAL_SESSION_CONFLICT", "This session send has no failure to dismiss.")
+        updated = sends.copy()
+        updated[index] = {**current, "error": "CANCELLED"}
+        extra = messaging_repo.session_send_update_items(
+            room_id, item, sends, updated, room_owner=meta["ownerId"], room_revision=int(meta["revision"])
+        )
+        sender_check = {
+            "ConditionCheck": {
+                "TableName": messaging_repo._table().name,
+                "Key": {"pk": messaging_repo.room_pk(room_id), "sk": messaging_repo.member_sk("human", auth.user_id)},
+                "ConditionExpression": "attribute_exists(sk)",
+            }
+        }
+        try:
+            if command and command["state"] == "pending":
+                await local_sessions_repo.replace_command(
+                    command,
+                    {
+                        **command,
+                        "state": "rejected",
+                        "cancelledAt": int(time.time()),
+                        "updatedAt": int(time.time()),
+                        "revision": str(uuid.uuid4()),
+                    },
+                    checks=[sender_check],
+                    extra=extra,
+                )
+            else:
+                await messaging_repo._transact([sender_check, *extra])
+        except ClientError as exc:
+            if not messaging_repo._is_cancelled(exc):
+                raise
+            continue
+        return canonical_message(await messaging_repo.get_message(room_id, item["messageSeq"]))
+    raise ApiProblem("LOCAL_SESSION_CONFLICT", "This session send changed. Refresh and retry.")
 
 
 def parse_agent_mentions(text: str, members: list[dict]) -> tuple[list[dict], list[str]]:

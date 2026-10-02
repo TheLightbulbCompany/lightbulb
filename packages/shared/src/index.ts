@@ -107,6 +107,7 @@ export {
   applyCompletion,
   linkifyMentions,
   linkifySessionMentions,
+  displaySessionMentions,
   parseMentionHref,
   resolveTypedMentions,
   resolveTypedSessionMentions,

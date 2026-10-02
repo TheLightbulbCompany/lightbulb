@@ -292,6 +292,15 @@ impl Host {
                         .last_assistant_message
                         .clone_from(&mirror.native.last_assistant_message);
                 }
+                // Discovery sees a running Claude process as busy even while its
+                // PermissionRequest hook is holding a prompt. Keep the hook's
+                // stronger status until that exact hold is released.
+                if mirror.native.process == native.process
+                    && matches!(native.status.as_str(), "busy" | "idle" | "waiting-approval")
+                    && mirror.waiting.as_ref().is_some_and(|prompt| prompt.held.is_some())
+                {
+                    native.status = "waiting-approval".into();
+                }
                 // The same process keeps its stored generation, whatever formula minted
                 // it: an upgrade that changes the fingerprint must not re-register it.
                 if mirror.generation != generation && mirror.native.process != native.process {
@@ -426,13 +435,16 @@ impl Host {
                 if matches!(status, "busy" | "waiting-approval") {
                     mirror.deferred_end_reason = None;
                 }
-                mirror.native.status = status.into();
+                let held = mirror.waiting.as_ref().is_some_and(|prompt| prompt.held.is_some());
+                mirror.native.status = if event.event == "Notification" && held {
+                    "waiting-approval".into()
+                } else {
+                    status.into()
+                };
                 // Claude can notify `permission_prompt` after its exact
                 // PermissionRequest hook. A status-only notice cannot revoke
                 // the hook that is still holding the remote approval.
-                if status != "waiting-approval"
-                    || !mirror.waiting.as_ref().is_some_and(|prompt| prompt.held.is_some())
-                {
+                if !held || (event.event != "Notification" && status != "waiting-approval") {
                     mirror.waiting = None;
                 }
                 if event.last_assistant_message.is_some() {
@@ -2476,6 +2488,43 @@ mod tests {
 
         let stored: Mirror = private_read(&dir.path().join(format!("{key}.json"))).unwrap();
         assert_eq!(stored.queue.len(), 9, "the injected rows survive a restart");
+    }
+
+    #[test]
+    fn held_claude_permission_survives_discovery_and_idle_notification() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut mirror = test_mirror(SID, "gen-1");
+        mirror.native.provider = "claude".into();
+        mirror.native.status = "waiting-approval".into();
+        mirror.waiting = Some(WaitingPrompt {
+            id: None,
+            tool: Some("mcp__lightbulb_native_sessions__send".into()),
+            summary: "Lightbulb message".into(),
+            held: Some(approval::Held {
+                id: "appr-0123456789abcdef0123456789abcdef".into(),
+                input_digest: "d".repeat(64),
+                reply: String::new(),
+                exact: true,
+                modes: vec![],
+            }),
+            private_send: None,
+        });
+        let key = native_key(&mirror.native);
+        let mut host = test_host(dir.path(), vec![(&key, mirror)]);
+        let mut rediscovered = host.mirrors[&key].native.clone();
+        rediscovered.status = "busy".into();
+        host.observe(vec![rediscovered]).unwrap();
+        assert_eq!(host.mirrors[&key].native.status, "waiting-approval");
+        let notification = lifecycle::HookEvent {
+            notification_type: Some("idle_prompt".into()),
+            ..hook(lifecycle::Provider::Claude, "Notification", SID)
+        };
+        host.apply_hook(&notification).unwrap();
+        assert_eq!(host.mirrors[&key].native.status, "waiting-approval");
+        assert!(host.mirrors[&key].waiting.as_ref().unwrap().held.is_some());
+        host.apply_hook(&hook(lifecycle::Provider::Claude, "Stop", SID)).unwrap();
+        assert_eq!(host.mirrors[&key].native.status, "idle");
+        assert!(host.mirrors[&key].waiting.is_none());
     }
 
     /// A command line can carry a token, and the mirror is written to disk.

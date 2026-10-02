@@ -19,11 +19,12 @@ import { SessionCommitPr } from "./SessionCommitPr";
 import { SessionOverview } from "./SessionOverview";
 import { SessionPickup } from "./SessionPickup";
 import { SessionShareLinks } from "./SessionShareLinks";
+import { SessionRenameButton } from "./SessionRenameButton";
 import type { PickupClient } from "./useSessionPickup";
 
 export type SessionDetailsTab = "about" | "changes" | "access" | "work";
 
-type Client = SessionControlClient & PickupClient & Parameters<typeof SessionShareLinks>[0]["client"] & Parameters<typeof SessionCommitPr>[0]["client"];
+type Client = SessionControlClient & PickupClient & Parameters<typeof SessionShareLinks>[0]["client"] & Parameters<typeof SessionCommitPr>[0]["client"] & { setLocalSessionDisplayTitle?: (sessionId: string, title: string | null) => Promise<LocalSession> };
 
 /** "Claude Code 2.1.283": the tool by its name, then the version out of whatever its `--version` printed. */
 function toolVersion(session: LocalSession): string {
@@ -215,6 +216,7 @@ export function SessionDetails({ open, onOpenChange, onClosed, tab, onTab, sessi
         <TabsContent value="work" className="session-details-tab"><LocalSessionWork sessionId={session.sessionId} /></TabsContent>
       </Tabs>
       <div className="session-details-actions">
+        {own && client.setLocalSessionDisplayTitle && <SessionRenameButton session={session} onRename={client.setLocalSessionDisplayTitle} />}
         <Button type="button" variant="outline" size="sm" onClick={async () => setCopied(await copyText(sessionPermalink(session.sessionId)) ? "Link copied." : "Could not copy the link.")}><Link aria-hidden="true" />Copy link</Button>
         {!own && onMessageOwner && <Button type="button" variant="outline" size="sm" onClick={onMessageOwner}><MessageSquare aria-hidden="true" />Message {ownerName}</Button>}
         {own && <SessionPickup session={session} ownerName={ownerName} own client={client} variant="quiet" />}

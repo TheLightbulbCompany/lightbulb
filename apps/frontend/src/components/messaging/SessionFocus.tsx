@@ -6,6 +6,7 @@ import { ApiError, sessionTitle, sessionViewKey, type LocalSession, type Session
 import { Button } from "@/components/ui/button";
 import { LocalSessionPanel } from "./LocalSessionPanel";
 import { SessionToolIcon } from "./SessionToolIcon";
+import { SessionRenameButton } from "./SessionRenameButton";
 import type { Person } from "./NativeSessionTranscript";
 import type { SidebarSession } from "./roomSections";
 
@@ -51,6 +52,7 @@ export function SessionFocus({ focus, entries, loading, hintRevision, client, re
     <div className="room-session-main">
       <header className="room-context-header">
         <h3 className="font-semibold room-wrap flex items-center gap-2">{session ? <><SessionToolIcon provider={session.provider} /><span className="min-w-0">{sessionTitle(session)}</span></> : "Shared session"}</h3>
+        {session && owner?.own && client.setLocalSessionDisplayTitle && <SessionRenameButton session={session} onRename={client.setLocalSessionDisplayTitle} icon />}
         <Button className="ml-auto" variant="ghost" size="icon-sm" aria-label="Close session" onClick={onClose}><X aria-hidden="true" /></Button>
       </header>
       {session && owner ? <LocalSessionPanel key={sessionViewKey(session)} session={session} ownerName={owner.ownerName} own={owner.own}

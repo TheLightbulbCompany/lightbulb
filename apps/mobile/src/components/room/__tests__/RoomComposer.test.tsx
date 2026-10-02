@@ -46,7 +46,7 @@ const sessionTargets: RoomComposerSessionOption[] = [{
       activeTurnId: null, capabilities: { sendMode: "queue", steer: false, interrupt: false },
       capabilitiesVerified: true, latestEventSeq: 0, cwdName: "lightbulb", title: "Launch check",
     } satisfies LocalSession,
-    handle: "claude-lightbulb-session-1",
+    handle: "claude-launch-check",
   },
   ownerName: "Aden Kim",
 }];
@@ -154,8 +154,8 @@ describe("RoomComposer", () => {
     await fireEvent.changeText(input(), "@cl");
     await caretAt(3);
     await waitFor(() => expect(screen.getByText(/Claude Code · Launch check/)).toBeTruthy());
-    await fireEvent.press(screen.getByLabelText("Mention Claude Code session Launch check, Aden Kim, ID session-1"));
-    expect(input().props.value).toBe("@claude-lightbulb-session-1 ");
+    await fireEvent.press(screen.getByLabelText("Mention Claude Code session Launch check, owned by Aden Kim"));
+    expect(input().props.value).toBe("@claude-launch-check ");
     await fireEvent.press(screen.getByLabelText("Send"));
     await waitFor(() => expect(onSend).toHaveBeenCalledWith(expect.objectContaining({
       sessionMentions: ["session-1"],
@@ -166,11 +166,11 @@ describe("RoomComposer", () => {
     await setup(jest.fn(async () => {}), undefined, sessionTargets);
     await fireEvent.changeText(input(), "@Launch");
     await caretAt(7);
-    await waitFor(() => expect(screen.getByLabelText("Mention Claude Code session Launch check, Aden Kim, ID session-1")).toBeTruthy());
-    expect(screen.getByText("#ession-1 · Aden Kim")).toBeTruthy();
+    await waitFor(() => expect(screen.getByLabelText("Mention Claude Code session Launch check, owned by Aden Kim")).toBeTruthy());
+    expect(screen.getByText("Aden Kim")).toBeTruthy();
     await fireEvent.changeText(input(), "@code");
     await caretAt(5);
-    await waitFor(() => expect(screen.getByLabelText("Mention Claude Code session Launch check, Aden Kim, ID session-1")).toBeTruthy());
+    await waitFor(() => expect(screen.getByLabelText("Mention Claude Code session Launch check, owned by Aden Kim")).toBeTruthy());
   });
 
   it("opens the emoji typeahead on : and inserts the glyph", async () => {

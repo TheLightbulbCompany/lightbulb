@@ -1,9 +1,9 @@
 "use client";
 
-import type { ReactElement, ReactNode } from "react";
+import { useEffect, useState, type ReactElement, type ReactNode } from "react";
 import { MessageCircle } from "lucide-react";
 import type { Components, UrlTransform } from "react-markdown";
-import { useSessionSendReceipt, type LocalSessionCommandReceipt, type SessionSend } from "@lightbulb/shared";
+import { useSessionSendReceipt, type CanonicalRoomMessage, type LocalSessionCommandReceipt, type SessionSend } from "@lightbulb/shared";
 import { Button } from "@/components/ui/button";
 import { Identity } from "@/components/teams/shared/components/Identity";
 import { MarkdownView } from "@/components/teams/shared/components/MarkdownView";
@@ -56,16 +56,51 @@ interface RoomMessageItemProps {
   onDownloadAttachment?: RoomPanelProps["onDownloadAttachment"];
   onAttachmentUrl?: RoomPanelProps["onAttachmentUrl"];
   onGetSessionCommand?: (sessionId: string, requestId: string) => Promise<LocalSessionCommandReceipt>;
+  onRetrySessionSend?: (roomId: string, messageId: string, sessionId: string, request: { requestId: string; expectedRequestId: string | null }) => Promise<CanonicalRoomMessage>;
+  onCancelSessionSend?: (roomId: string, messageId: string, sessionId: string, request: { expectedRequestId: string | null }) => Promise<CanonicalRoomMessage>;
+  accessibleSessionIds?: readonly string[];
+  onOpenSession?: (sessionId: string) => void;
   toolbarExtras?: ReactNode;
   menuExtras?: ReactNode;
 }
 
-function SessionSendChip({ send, refreshKey, onGetSessionCommand }: { send: SessionSend; refreshKey: number; onGetSessionCommand?: (sessionId: string, requestId: string) => Promise<LocalSessionCommandReceipt> }) {
-  const { chip } = useSessionSendReceipt(onGetSessionCommand, send, refreshKey);
-  return chip ? <ReceiptChip chip={chip} /> : null;
+function SessionSendChip({ send, roomId, messageId, refreshKey, onGetSessionCommand, onRetrySessionSend, onCancelSessionSend, replied }: {
+  send: SessionSend; roomId: string; messageId: string; refreshKey: number;
+  onGetSessionCommand?: (sessionId: string, requestId: string) => Promise<LocalSessionCommandReceipt>;
+  onRetrySessionSend?: RoomMessageItemProps["onRetrySessionSend"];
+  onCancelSessionSend?: RoomMessageItemProps["onCancelSessionSend"];
+  replied: boolean;
+}) {
+  const [current, setCurrent] = useState(send);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  useEffect(() => { setCurrent(send); setError(""); }, [send.sessionId, send.requestId, send.error]);
+  const { chip, receipt } = useSessionSendReceipt(onGetSessionCommand, current, refreshKey);
+  const retryable = current.error && current.error !== "CANCELLED" || receipt?.state === "rejected";
+  const cancellable = retryable || receipt?.state === "pending";
+  const update = async (action: "retry" | "cancel") => {
+    if (busy) return;
+    setBusy(true); setError("");
+    try {
+      const message = action === "retry"
+        ? await onRetrySessionSend!(roomId, messageId, current.sessionId, { requestId: crypto.randomUUID(), expectedRequestId: current.requestId ?? null })
+        : await onCancelSessionSend!(roomId, messageId, current.sessionId, { expectedRequestId: current.requestId ?? null });
+      const updated = message.sessionSends?.find(item => item.sessionId === current.sessionId);
+      if (updated) setCurrent(updated);
+    } catch { setError("This delivery changed. Refresh the conversation and try again."); }
+    finally { setBusy(false); }
+  };
+  if ((!chip || (replied && chip.tone !== "error")) && !error) return null;
+  return <span className="flex flex-wrap items-center gap-2">
+    {chip?.tone === "pending" ? <span data-session-pending role="status" className="sr-only">Waiting for the session to accept this message</span>
+      : chip && <><ReceiptChip chip={chip} />{chip.tone === "error" && chip.detail && <span className="text-xs text-err">{chip.detail}</span>}</>}
+    {retryable && onRetrySessionSend && <Button type="button" variant="ghost" size="sm" disabled={busy} onClick={() => void update("retry")}>Retry</Button>}
+    {cancellable && onCancelSessionSend && <Button type="button" variant="ghost" size="sm" disabled={busy} onClick={() => void update("cancel")}>Cancel</Button>}
+    {error && <span role="alert" className="text-xs text-err">{error}</span>}
+  </span>;
 }
 
-export function RoomMessageItem({ id, message, text, participant, currentUserId, actionable, inThread, collapsed, startEditing, onEditingClosed, replyCount, receiptRefreshKey = replyCount, lastReplyAt, threadParticipants = [], workingNames = [], receipt, highlighted, mentionsViewer, markdown, urlTransform, quickReactions, reactionPending, reactionError, onToggleReaction, onOpenThread, onSelectParticipant, onUpdateMessage, onDownloadAttachment, onAttachmentUrl, onGetSessionCommand, toolbarExtras, menuExtras }: RoomMessageItemProps): ReactElement {
+export function RoomMessageItem({ id, message, text, participant, currentUserId, actionable, inThread, collapsed, startEditing, onEditingClosed, replyCount, receiptRefreshKey = replyCount, lastReplyAt, threadParticipants = [], workingNames = [], receipt, highlighted, mentionsViewer, markdown, urlTransform, quickReactions, reactionPending, reactionError, onToggleReaction, onOpenThread, onSelectParticipant, onUpdateMessage, onDownloadAttachment, onAttachmentUrl, onGetSessionCommand, onRetrySessionSend, onCancelSessionSend, accessibleSessionIds = [], onOpenSession, toolbarExtras, menuExtras }: RoomMessageItemProps): ReactElement {
   const name = participant?.displayName || message.author.displayName || "Unknown author";
   const timestamp = !Number.isNaN(Date.parse(message.createdAt)) ? message.createdAt : undefined;
   const time = timestamp ? new Date(timestamp).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }) : "";
@@ -73,7 +108,8 @@ export function RoomMessageItem({ id, message, text, participant, currentUserId,
   const replyLabel = replyCount > 0 ? `${replyCount} ${replyCount === 1 ? "reply" : "replies"}` : "";
   const threadLabel = [replyLabel, working || (lastReplyAt ? `last reply ${timeAgo(lastReplyAt)}` : "")].filter(Boolean).join(" · ");
   const appliedReactions = Object.entries(message.reactions ?? {}).filter(([, users]) => users.length > 0);
-  const visibleSessionSends = message.author.kind === "human" && message.author.id === currentUserId
+  const isOwnMessage = message.author.kind === "human" && message.author.id === currentUserId;
+  const visibleSessionSends = isOwnMessage
     ? message.sessionSends : message.sessionSends?.filter((send) => !!send.error);
   const actions = ((!message.deletedAt && onToggleReaction) || !inThread || toolbarExtras) ? <>
     {!message.deletedAt && onToggleReaction && <>
@@ -100,6 +136,11 @@ export function RoomMessageItem({ id, message, text, participant, currentUserId,
       <RoomMessageContent message={message} currentUserId={currentUserId} actionable={actionable} onUpdate={onUpdateMessage} startEditing={startEditing} onEditingClosed={onEditingClosed} actions={actions} menuExtras={menuExtras}>
         <MarkdownView skipHtml components={markdown} urlTransform={urlTransform}>{text}</MarkdownView>
       </RoomMessageContent>
+      {message.via === "lightbulb_mcp" && !message.deletedAt && message.sessionSends?.map(send => send.displayLabel && <p key={send.sessionId} className="text-xs text-muted-foreground">
+        To {onOpenSession && accessibleSessionIds.includes(send.sessionId)
+          ? <button type="button" className="text-info underline underline-offset-2" aria-label={`Open session ${send.displayLabel}`} onClick={() => onOpenSession(send.sessionId)}>{send.displayLabel}</button>
+          : <span>{send.displayLabel}</span>}
+      </p>)}
       {!message.deletedAt && <MessageTaskCard text={message.text} prose={message.author.kind === "agent"} />}
       {!message.deletedAt && <RoomDocumentCards text={message.text} />}
       {!message.deletedAt && <RoomAppLinks text={message.text} />}
@@ -114,7 +155,7 @@ export function RoomMessageItem({ id, message, text, participant, currentUserId,
       </div>}
       {receipt && <p role="status" className="text-xs text-muted-foreground">{receipt}</p>}
       {!message.deletedAt && !!visibleSessionSends?.length && <div className="flex flex-wrap gap-1 mt-1" aria-label="Session delivery">
-        {visibleSessionSends.map((send) => <SessionSendChip key={send.sessionId} send={send} refreshKey={receiptRefreshKey} onGetSessionCommand={onGetSessionCommand} />)}
+        {visibleSessionSends.map((send) => <SessionSendChip key={send.sessionId} send={send} roomId={message.roomId} messageId={message.messageId} refreshKey={receiptRefreshKey} onGetSessionCommand={onGetSessionCommand} onRetrySessionSend={isOwnMessage ? onRetrySessionSend : undefined} onCancelSessionSend={isOwnMessage ? onCancelSessionSend : undefined} replied={replyCount > 0} />)}
       </div>}
       {reactionError && <p role="alert" className="text-sm text-err">Could not update reaction. Try again.</p>}
       {!message.deletedAt && !!message.attachments?.length && onDownloadAttachment && <RoomImageAttachments roomId={message.roomId} attachments={message.attachments} download={onDownloadAttachment} attachmentUrl={onAttachmentUrl} />}

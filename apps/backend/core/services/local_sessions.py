@@ -14,7 +14,7 @@ from datetime import datetime, timezone
 from typing import Annotated, Any, Literal, get_args
 
 from botocore.exceptions import ClientError
-from pydantic import Field, model_serializer, model_validator
+from pydantic import Field, field_validator, model_serializer, model_validator
 
 from core.auth import AuthContext, resolve_owner_id
 from core.dynamodb import utc_now_iso
@@ -231,6 +231,8 @@ class LocalSession(ContractModel):
     capabilities_verified: bool
     latest_event_seq: int = Field(default=0, ge=0)
     title: Annotated[str, Field(max_length=120)] | None = None
+    # Lightbulb-only label; the native provider may keep changing its own title.
+    display_title: Annotated[str, Field(max_length=120)] | None = None
     cwd_name: Annotated[str, Field(max_length=128)] | None = None
     last_event_at: str | None = None
     ended_at: str | None = None
@@ -279,6 +281,7 @@ class LocalSession(ContractModel):
                 "native_send_approval",
                 "start_id",
                 "model",
+                "display_title",
                 "permission_mode",
                 "usage",
                 "pickup",
@@ -750,6 +753,7 @@ async def register_session(owner_id: str, user_id: str, device_id: str, registra
                     "pickupSnapshot",
                     "pickupEpoch",
                     "pickedUpFrom",
+                    "displayTitle",
                 )
                 if previous and key in previous
             },
@@ -991,6 +995,7 @@ async def live_sessions_for_room(owner: str, room_id: str, members: list[dict]) 
         out = [
             {
                 **s.model_dump(by_alias=True, include=include),
+                "title": s.display_title or s.title,
                 "humanUserId": s.human_user_id,
                 "displayName": names.get(s.human_user_id) or "Workspace member",
             }
@@ -1036,6 +1041,50 @@ async def get_session(auth: Caller, session_id: str) -> LocalSession:
     ones, but an open view or an old link must still show a session that has ended."""
     row, _ = await authorize_session(auth, None, session_id)
     return _session_public(row, _viewer(auth))
+
+
+class DisplayTitleRequest(ContractModel):
+    display_title: Annotated[str, Field(max_length=120)] | None
+
+    @field_validator("display_title")
+    @classmethod
+    def validate_display_title(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        title = value.strip()
+        if not title or any(ord(char) < 0x20 or ord(char) == 0x7F for char in title):
+            raise ValueError("displayTitle must be a single non-empty line")
+        return title
+
+
+async def set_display_title(auth: AuthContext, session_id: str, title: str | None) -> LocalSession:
+    """The session's own human names its Lightbulb projection, not the native transcript."""
+    from core.services.local_session_relay import publish_resources_changed
+
+    owner = resolve_owner_id(auth)
+    for _ in range(6):
+        row, enrollment = await authorize_session(auth, None, session_id)
+        if auth.user_id != row["humanUserId"]:
+            raise ApiProblem("LOCAL_SESSION_FORBIDDEN", "Only the session's owner can rename it.")
+        if row.get("displayTitle") == title:
+            return _session_public(row, auth.user_id)
+        updated = {**row, "revision": str(uuid.uuid4())}
+        if title is None:
+            updated.pop("displayTitle", None)
+        else:
+            updated["displayTitle"] = title
+        audit = audit_row(owner, session_id, auth, "display_title_changed")
+        try:
+            await repo.put_session(
+                updated, row, enrollment, extra=[{"Put": {"TableName": messaging_repo._table().name, "Item": audit}}]
+            )
+        except ClientError as exc:
+            if not messaging_repo._is_cancelled(exc):
+                raise
+            continue
+        await publish_resources_changed(owner, row["humanUserId"])
+        return _session_public(updated, auth.user_id)
+    raise ApiProblem("LOCAL_SESSION_CONFLICT", "Session changed. Try again.")
 
 
 async def get_private_send_approval(auth: AuthContext, session_id: str) -> PrivateSendApproval:
@@ -1164,6 +1213,7 @@ async def submit_command(
     native_hop: int | None = None,
     source_conditions: list[dict] | None = None,
     source_pairing: tuple[str, str] | None = None,
+    room_meta_fenced_by_extra: bool = False,
 ) -> CommandReceipt:
     owner = caller_owner(auth)
     # A roomless command is stored with roomId "": current desktops require the field as a string.
@@ -1292,6 +1342,7 @@ async def submit_command(
                     {"Put": {"TableName": messaging_repo._table().name, "Item": audit}},
                 ],
                 source_pairing=source_pairing,
+                room_meta_fenced_by_extra=room_meta_fenced_by_extra,
             )
             if offline_send:
                 from core.services.local_session_relay import publish_resources_changed
@@ -1404,6 +1455,7 @@ async def cancel_offline_command(auth: AuthContext, session_id: str, request_id:
 # --- Team control and the audit trail (owner ruling 2026-09-25) -----------------------------
 
 AUDIT_ACTIONS = Literal[
+    "display_title_changed",
     "native_send_requested",
     "native_send_approved",
     "native_send_denied",
@@ -1680,7 +1732,7 @@ async def remove_sender(auth: AuthContext, session_id: str, user_id: str) -> Loc
 def join_request_title(name: str, row: dict) -> str:
     from core.services import notification_copy as copy
 
-    return f"{name} wants to join {copy.line(row.get('title'), 40) or row['sessionId'][:8]}"
+    return f"{name} wants to join {copy.line(row.get('displayTitle') or row.get('title'), 40) or row['sessionId'][:8]}"
 
 
 async def _notify_join_request(row: dict, requester: str) -> None:
@@ -1753,7 +1805,7 @@ async def _notify_join_answer(row: dict, requester: str, state: str, request_id:
         name = await human_display_name(row["humanUserId"])
     except Exception:
         name = "The session's owner"
-    session = copy.line(row.get("title"), 40) or sid[:8]
+    session = copy.line(row.get("displayTitle") or row.get("title"), 40) or sid[:8]
     if state == "join_allowed":
         title, body = f"{name} let you into {session}", "You can send follow-ups and answer its prompts."
     else:

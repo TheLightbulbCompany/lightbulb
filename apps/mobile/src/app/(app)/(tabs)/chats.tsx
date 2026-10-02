@@ -19,6 +19,7 @@ import { Animated, AppState, FlatList, Pressable, StyleSheet, Text, View } from 
 
 import { usePulse } from "../../../components/chat/usePulse";
 import { RoomChatRow, SessionChatRow, type ChatRowAction } from "../../../components/chats/ChatRow";
+import { SessionRenameSheet } from "../../../components/session/SessionRenameSheet";
 import { LogoMark } from "../../../components/LogoMark";
 import { NewMessageSheet } from "../../../components/room/NewMessageSheet";
 import { FocusedStatusBar } from "../../../components/ui/FocusedStatusBar";
@@ -219,6 +220,7 @@ export default function Chats() {
   const rosterById = useMemo(() => new Map(agents.map((agent) => [agent.id, agent])), [agents]);
 
   const [prefsError, setPrefsError] = useState<string | null>(null);
+  const [renaming, setRenaming] = useState<LocalSession | null>(null);
   const onRoomAction = useCallback(
     (room: RoomSummary, action: ChatRowAction) => {
       switch (action) {
@@ -247,9 +249,11 @@ export default function Chats() {
     [messaging, rooms],
   );
   const onSessionAction = useCallback(
-    (session: LocalSession, action: Extract<ChatRowAction, "markRead" | "archive">) => {
+    (session: LocalSession, action: Extract<ChatRowAction, "markRead" | "archive" | "rename">) => {
       if (action === "markRead") {
         setSeen(markSessionsSeenOnDevice([session], session.sessionId));
+      } else if (action === "rename") {
+        setRenaming(session);
       } else {
         archiveSession(scope, session);
         setArchived(readArchivedSessions(scope));
@@ -381,6 +385,7 @@ export default function Chats() {
                 ring={ring}
                 live={live}
                 hasDraft={drafts.has(room.roomId)}
+                sessions={sessions}
                 palette={palette}
                 onAction={(action) => onRoomAction(room, action)}
               />
@@ -396,6 +401,12 @@ export default function Chats() {
           router.push(`/(app)/room/${roomId}`);
         }}
       />
+      <SessionRenameSheet session={renaming} visible={!!renaming} onClose={() => setRenaming(null)}
+        onSave={async (title) => {
+          if (!renaming) return;
+          await rooms.resourceSource.client.setLocalSessionDisplayTitle(renaming.sessionId, title);
+          await refreshSessions();
+        }} />
     </View>
   );
 }

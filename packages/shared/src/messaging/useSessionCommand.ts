@@ -169,11 +169,12 @@ export function useSessionOutbox(client: SessionControlClient, sessionId: string
     return () => clearTimeout(timer);
   }, [nextExpiry, refresh]);
   const unsettled = commands.some(command => command.state === "pending" || command.state === "dispatched" || command.state === "unknown");
+  const needsRefresh = unsettled || commands.some(command => command.state === "rejected");
   useEffect(() => {
-    if (!client.listLocalSessionOutbox || (online && !unsettled)) return;
+    if (!client.listLocalSessionOutbox || (online && !needsRefresh)) return;
     const timer = setInterval(() => { void refresh(); }, 30_000);
     return () => clearInterval(timer);
-  }, [client, online, unsettled, refresh]);
+  }, [client, online, needsRefresh, refresh]);
   return { commands, unsettled, refresh, cancel, canCancel: !!client.cancelLocalSessionCommand };
 }
 

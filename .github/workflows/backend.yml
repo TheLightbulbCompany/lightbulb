@@ -43,7 +43,11 @@ jobs:
     # 2026-09-26: the suite now takes 40-58 min on the self-hosted pool, so 45
     # cancelled three green-bound runs in one night (#3287); a hang still dies
     # well inside the 6-hour default.
-    timeout-minutes: 75
+    # 2026-10-02: a green run took 72 min wall-clock (18 min of runner setup +
+    # lint, 55 min of pytest), so 75 cancelled the next run as soon as one
+    # test file slowed down. 100 still dies 5 h before the default; the real
+    # fix is a faster suite (xdist / splitting), not a looser cap.
+    timeout-minutes: 100
 
     steps:
       - name: Checkout code

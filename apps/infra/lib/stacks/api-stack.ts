@@ -70,6 +70,8 @@ export interface ApiStackProps extends cdk.StackProps {
    * the value is never synthesized or output.
    */
   clerkIssuerSecretName: string;
+  /** Literal issuer URL. When set it wins over the secret (see lightbulb-stage.ts). */
+  clerkIssuerUrl?: string;
   /**
    * Secrets Manager name (NOT ISecret) of the Paperclip service-token signing
    * key. The WebSocket Lambda Authorizer fetches this at cold-start and uses
@@ -617,7 +619,7 @@ export class ApiStack extends cdk.Stack {
           {
             authorizationType: appsync.AppSyncAuthorizationType.OIDC,
             openIdConnectConfig: {
-              oidcProvider: clerkIssuerSecret.secretValue.unsafeUnwrap(),
+              oidcProvider: props.clerkIssuerUrl ?? clerkIssuerSecret.secretValue.unsafeUnwrap(),
               clientId: "^lightbulb-appsync$",
             },
           },

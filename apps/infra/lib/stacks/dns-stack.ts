@@ -8,36 +8,20 @@ export interface DnsStackProps extends cdk.StackProps {
   environment: string;
   /** Product root domain (see lib/domains.ts). Defaults to ROOT_DOMAIN. */
   rootDomain?: string;
+  /** The domain being moved away from. Empty or equal to rootDomain = no move in flight. */
+  legacyRootDomain?: string;
 }
 
 /**
  * DNS + TLS for the product domain.
  *
- * ## One certificate again — the migration finished
- *
- * There were briefly two. `WildcardCert` covered the LEGACY domain and its ARN
- * was a cross-stack CloudFormation **Export** imported by `isol8-{env}-network`
- * (the ALB HTTPS listener) and `isol8-{env}-api`. CloudFormation refuses to
- * change or delete an export while anything imports it:
- *
- *     Cannot update export isol8-dev-dns:ExportsOutputRefWildcardCert...
- *     as it is in use by isol8-dev-api and isol8-dev-network.
- *
- * so it could not be edited in place — editing REPLACES the certificate, which
- * changes the exported ARN, and the whole stage rolls back. (Observed exactly
- * that on 2026-08-27.) The shape used instead: leave the legacy cert untouched,
- * add a second one under a new logical id, repoint consumers in the same
- * deploy, then delete the legacy construct in a later change once its export
- * had no importers.
- *
- * This is that later change. Verified before removal, from live AWS rather than
- * from the code: `cloudformation list-imports` reports NO importers for
- * `ExportsOutputRefWildcardCert…` in either env, `ProductWildcardCert` is
- * imported by api + network, and both `*.isol8.co` certificates are
- * `InUse=False` in ACM.
- *
- * NOTE the isol8.co hosted ZONE deliberately survives this: GooseTown still
- * serves 9 records out of it. Retiring our certificate is not retiring the zone.
+ * The certificate ARN is a cross-stack CloudFormation Export (network + api
+ * import it), and CloudFormation refuses to change an export that is in use.
+ * So a domain move never edits the certificate in place: the old one stays
+ * under its original logical id, pinned with `exportValue`, while the new one
+ * is created beside it and the consumers repoint in the same deploy. Clearing
+ * LEGACY_ROOT_DOMAIN later drops the old certificate once nothing imports it.
+ * (Editing in place rolled the whole stage back on 2026-08-27.)
  */
 export class DnsStack extends cdk.Stack {
   /** The certificate consumers should use — the product domain's. */
@@ -49,11 +33,28 @@ export class DnsStack extends cdk.Stack {
     super(scope, id, props);
 
     const rootDomain = props.rootDomain ?? ROOT_DOMAIN;
+    const legacy = props.legacyRootDomain ?? "";
+    const moving = legacy !== "" && legacy !== rootDomain;
+
+    if (moving) {
+      const legacyZone = route53.HostedZone.fromLookup(this, "LegacyHostedZone", {
+        domainName: legacy,
+      });
+      const legacyCert = new acm.Certificate(this, "ProductWildcardCert", {
+        domainName: `*.${legacy}`,
+        subjectAlternativeNames: [legacy],
+        validation: acm.CertificateValidation.fromDns(legacyZone),
+      });
+      this.exportValue(legacyCert.certificateArn);
+    }
 
     this.hostedZone = route53.HostedZone.fromLookup(this, "ProductHostedZone", {
       domainName: rootDomain,
     });
-    this.certificate = new acm.Certificate(this, "ProductWildcardCert", {
+    // "ProductWildcardCert" is the id the certificate has had since before any
+    // move; it keeps that id until the root actually changes.
+    const certId = legacy === rootDomain ? "ProductWildcardCert" : "RootWildcardCert";
+    this.certificate = new acm.Certificate(this, certId, {
       domainName: `*.${rootDomain}`,
       subjectAlternativeNames: [rootDomain],
       validation: acm.CertificateValidation.fromDns(this.hostedZone),

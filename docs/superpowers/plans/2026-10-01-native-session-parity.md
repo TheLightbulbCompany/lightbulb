@@ -40,6 +40,10 @@ Build a Streamable HTTP MCP endpoint with OAuth account consent, public-client P
 
 **Accept when:** Claude Code, Codex CLI, and Codex desktop can connect with a signed-in Lightbulb account; reads work with the Mac off; write consent, revocation, wrong-workspace and wrong-audience tokens fail closed; messages show the authenticated human and MCP provenance; no remote token can post as a coding session.
 
+**Accepted on prod 2026-10-02 (real client):** Claude Code 2.1.287 connected to `https://api.flickmeon.ai/mcp` via `claude mcp add --transport http`, authenticated through Clerk's consent page with the CIMD client, and from that connection `find_rooms` (36 rooms), `find_sessions` (READY430, `canSend: true`), `send_message` into the owner's Atlas DM (seq 9, `via: lightbulb_mcp`, author = the signed-in human) and `message_receipt` all worked; prod logged the 401 → protected-resource metadata → authenticated `POST /mcp` 200 sequence. Prod Clerk now: both scopes advertised, CIMD published, admission "Any compatible CIMD client", defaults include read, opaque tokens with audience. Still owed: revocation / wrong-workspace / wrong-audience negative checks, and the Codex CLI path.
+
+**Next build item (owner, 2026-10-02): one MCP entry, not two.** A Mac-app user currently sees `lightbulb_native_sessions` (local bridge: list_targets/send/receipt, Mac-attested) and `lightbulb` (hosted account MCP). Fold the account tools (rooms, read, send-as-me, receipt) into the local bridge, calling the backend with the device token, so the installed app leaves exactly one entry named `lightbulb`; keep the hosted HTTP entry only for people without the app. Backend + desktop change, roughly a day; not part of this release.
+
 ### B2. Local bridge onboarding and repair
 
 After “Connect this Mac,” offer explicit “Enable session sharing” consent. Enabling already configures user-scoped Claude Code/Codex MCP, hooks, and the sharing skill; app download or pairing alone does not. Show per-provider “Configured for new sessions / Not installed / Needs attention” based on actual config, with a real Retry setup action that reruns enrollment reassertion. Detect absent CLIs read-only at first launch. Explain that a new native session should be started after setup; an existing session may not hot-load the server. Keep Lightbulb running for discovery and delivery. Do not present manual provider mcp-add as a complete substitute for pairing, hooks, and relay.
@@ -87,6 +91,22 @@ Review the Mac, web, and production-connected iPhone screens as one journey: Cha
 - Install signed Mac 0.4.448 (DMG mounted at `/Volumes/Lightbulb 2`); the auto-mode classifier refuses to replace `/Applications/Lightbulb.app`. Then re-install the build that [PR 3563](https://github.com/TheLightbulbCompany/lightbulb/pull/3563) produces.
 - Clerk: pre-register the two CIMD clients in dev, then repeat scopes + CIMD + default scopes + pre-registration in prod (see B1). The classifier refuses both the scope grant to a client and any prod Clerk change.
 - In flight: [PR 3563](https://github.com/TheLightbulbCompany/lightbulb/pull/3563) (desktop: advisory only when it says something, readable teammate fallback, literal-slash and room-reply notes, quoted spoofed owner labels, per-provider setup status + Retry) and [PR 3564](https://github.com/TheLightbulbCompany/lightbulb/pull/3564) (approval-card destination labels, picker collision details, stale-handle guard, title fallback).
+
+## Acceptance ledger (prod, 2026-10-02, Mac 0.4.448, backend c16a4c6 pre-promotion)
+
+| Row | Evidence |
+| --- | --- |
+| Hosted MCP: real Claude Code OAuth (CIMD) on prod | consent → `POST /mcp` 200; `find_rooms` 36 rooms; `find_sessions` READY430 `canSend`; `send_message` seq 9 `via: lightbulb_mcp`; `message_receipt` reconciles |
+| Room @session → Claude, exactly one threaded reply | request seq 11 (label "Claude Code · READY430 · Prasiddha Parthsarthy") → seq 12 "pong", `threadRootMessageId` = request, 9 s |
+| Room @session → Codex, exactly one threaded reply | request seq 14 → seq 16 "pong" in thread, send state `applied`, 14 s |
+| Native outbound send, approved | `pending_approval` → owner approve → `applied`, message 1ff6a1f9 (seq 17) authored by the session |
+| Native outbound send, denied | `pending_approval` → owner deny → `rejected OWNER_DENIED`; no room write (nothing after seq 18) |
+| Phone sees the updated Mac | prod iPhone build: READY430 "Idle on your Mac" after the 0.4.448 install |
+| Found: a session-addressed message also woke the DM agent | Atlas answered seq 11 and 14 → [PR 3583](https://github.com/TheLightbulbCompany/lightbulb/pull/3583) (session-addressed = not ambient) |
+| Room @session while the Mac app is quit | by design, NOT a queue: a room request carries a 30 s `deliverBy` (`local_sessions.py`, only a session follow-up with `offline_send` gets the 24 h `OFFLINE_SEND_SECONDS`); the Mac relaunch arrived after the window, the row went `rejected`, the room shows "Not delivered" with Retry/Cancel. Correct contract; the offline-queue row must be exercised from the phone/web session composer |
+| Not yet run | offline follow-up queue/cancel from the session composer, teammate Ask-to-join/grant/revoke, Codex Stop/Steer + old-unknown recovery, phone permission cards, app restart, physical iPhone; the B2/B5 rows wait for the next signed Mac build |
+
+**Decision 2026-10-02 (owner "go"): one Lightbulb MCP** — spec `docs/superpowers/specs/2026-10-02-one-lightbulb-mcp.md`; backend branch `feat/one-mcp-backend`, desktop branch `feat/one-mcp-desktop`. Supersedes the "fold account tools into the local bridge" note above.
 
 ## Decisions to confirm during UX review
 

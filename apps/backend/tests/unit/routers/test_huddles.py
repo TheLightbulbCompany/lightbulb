@@ -39,7 +39,7 @@ def client():
         patch.object(mod.settings, "LIVEKIT_URL", "wss://lk.test"),
         patch.object(mod.settings, "LIVEKIT_API_KEY", "k"),
         patch.object(mod.settings, "LIVEKIT_API_SECRET", "s"),
-        patch.object(vc, "listening_agents", AsyncMock(return_value=TEAM)),
+        patch.object(vc, "room_agents", AsyncMock(return_value=TEAM)),
     ):
         yield TestClient(app)
     app.dependency_overrides.clear()
@@ -145,7 +145,7 @@ def test_join_works_in_a_dm_and_group_dm(client, kind):
     meta = {"ownerId": "org_a", "kind": kind}
     with (
         patch.object(vc.messaging, "require_room_member", AsyncMock(return_value=(meta, {}))),
-        patch.object(vc, "listening_agents", AsyncMock(return_value=[{"id": "agent-eng", "name": "Engineering"}])),
+        patch.object(vc, "room_agents", AsyncMock(return_value=[{"id": "agent-eng", "name": "Engineering"}])),
     ):
         resp, _, dispatch = _join(client, room_team=AsyncMock(wraps=vc._room_team))
     assert resp.status_code == 200 and resp.json()["lightbulb"] is True
@@ -157,7 +157,7 @@ def test_people_only_room_joins_without_dispatch_or_wake(client):
     meta = {"ownerId": "org_a", "kind": "group-dm"}
     with (
         patch.object(vc.messaging, "require_room_member", AsyncMock(return_value=(meta, {}))),
-        patch.object(vc, "listening_agents", AsyncMock(return_value=[])),
+        patch.object(vc, "room_agents", AsyncMock(return_value=[])),
     ):
         resp, mint, dispatch = _join(client, room_team=AsyncMock(wraps=vc._room_team))
     assert resp.status_code == 200 and resp.json()["lightbulb"] is False and resp.json()["token"] == "jwt"
@@ -169,7 +169,7 @@ def test_people_only_room_joins_without_dispatch_or_wake(client):
 def test_get_flags_a_people_only_room(client):
     with (
         patch.object(mod.messaging, "require_room_member", AsyncMock(return_value=({"ownerId": "org_a"}, {}))),
-        patch.object(vc, "listening_agents", AsyncMock(return_value=[])),
+        patch.object(vc, "room_agents", AsyncMock(return_value=[])),
         patch.object(lk, "participants", AsyncMock(return_value=["user_a"])),
     ):
         assert client.get(f"/api/v1/huddles/{ROOM}").json() == {
@@ -586,13 +586,14 @@ def _session(client, agent="agent-ceo-1"):
     )
 
 
-def test_team_lists_listening_agents_people_and_the_ceo(client, option_d):
+def test_team_lists_every_agent_any_mode_people_and_the_ceo(client, option_d):
     resp = client.post(f"/api/v1/internal/huddles/{ROOM}/team", json={"ownerId": "org_a", "roomToken": RT}, headers=W)
     assert resp.status_code == 200
     assert resp.json() == {
         "agents": [
             {"id": "agent-ceo-1", "name": "CEO", "listenMode": "active", "defaultName": True},
             {"id": "agent-fin", "name": "Penny", "listenMode": "mentions", "defaultName": False},
+            {"id": "agent-obs", "name": "Quiet", "listenMode": "observe", "defaultName": False},
         ],
         "people": [{"userId": "user_a", "name": "Aden"}],
         "ceoId": "agent-ceo-1",
@@ -604,7 +605,7 @@ def test_session_asks_a_default_named_agent_once(client, option_d):
     assert first["askName"] is True and first["voice"] == "marin" and first["name"] == "CEO"
     assert "don't have a name yet" in first["persona"] and "Be blunt." in first["persona"]
     assert "Runs it." in first["persona"] and "lightbulb:generated" not in first["persona"]
-    assert "Penny" in first["persona"] and "Quiet" not in first["persona"]
+    assert "Penny" in first["persona"] and "Quiet" in first["persona"]
     second = _session(client).json()
     assert second["askName"] is False and "don't have a name yet" not in second["persona"]
 
@@ -622,10 +623,10 @@ def test_session_falls_back_to_the_bare_persona_when_reads_fail(client, option_d
     assert body["name"] == "Penny" and body["voice"] == "stone" and body["askName"] is False
 
 
-def test_session_refuses_an_observe_or_absent_agent(client, option_d):
-    for agent in ("agent-obs", "agent-nope"):
-        resp = _session(client, agent)
-        assert resp.status_code == 409 and resp.json()["detail"]["code"] == "agent_not_in_room"
+def test_session_refuses_an_absent_agent_but_not_an_observe_one(client, option_d):
+    resp = _session(client, "agent-nope")
+    assert resp.status_code == 409 and resp.json()["detail"]["code"] == "agent_not_in_room"
+    assert _session(client, "agent-obs").status_code == 200  # Live ignores listen modes
 
 
 def test_session_and_team_404_on_a_guest_owned_room(client, option_d):

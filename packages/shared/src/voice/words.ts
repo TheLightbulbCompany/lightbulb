@@ -82,11 +82,9 @@ export function queuePosition(attrs: Attrs, id: string): number | null {
   return i < 0 || id === floorHolder(attrs) ? null : i + 1;
 }
 
-type MemberLike = { kind: string; id: string; displayName: string; listenMode: string | null };
-/** Room agents that get a Live tile (`active`, `mentions`) and the `observe` ones; roster order, no humans. */
-export function liveAgents<M extends MemberLike>(members: readonly M[]): { tiles: M[]; observing: M[] } {
-  const agents = members.filter((m) => m.kind === "agent");
-  return { tiles: agents.filter((m) => m.listenMode !== "observe"), observing: agents.filter((m) => m.listenMode === "observe") };
+/** Every room agent gets a Live tile, roster order, no humans: listen modes are chat-only (owner ruling 2026-10-02). */
+export function liveAgents<M extends { kind: string }>(members: readonly M[]): M[] {
+  return members.filter((m) => m.kind === "agent");
 }
 
 /** Stable order: speaking (the floor-holder listening counts) > joining > queued > has_news > working > idle. */

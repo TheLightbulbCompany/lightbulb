@@ -113,8 +113,8 @@ async def join(room_id: str, auth: Annotated[AuthContext, Depends(get_current_us
     if not livekit_huddles.configured():
         raise _problem(503, "huddles_unavailable")
     owner_id = resolve_owner_id(auth)
-    # Member of the owner's own room (guests 404), not archived. Any room kind; with no listening
-    # agent it is a people-only voice room: no worker dispatch, no runtime wake.
+    # Member of the owner's own room (guests 404), not archived. Any room kind; with no agent
+    # member it is a people-only voice room: no worker dispatch, no runtime wake.
     _, team = await voice_calls._room_team(owner_id, auth.user_id, room_id, need_team=False)
     name = await messaging.human_display_name(auth.user_id)
     token = livekit_huddles.mint_token(room_id=room_id, user_id=auth.user_id, name=name)
@@ -149,7 +149,7 @@ async def huddle(room_id: str, auth: Annotated[AuthContext, Depends(get_current_
     if meta.get("ownerId") != owner_id:  # join's gate: a shared-channel guest sees no huddle
         raise _problem(404, "room_not_found")
     # False: a people-only room; the web hides Lightbulb's visualizer and status.
-    lightbulb = bool(await voice_calls.listening_agents(room_id))
+    lightbulb = bool(await voice_calls.room_agents(room_id))
     if not livekit_huddles.configured():
         return {"userIds": [], "available": False, "lightbulb": lightbulb}  # dark: the client hides Go live
     try:

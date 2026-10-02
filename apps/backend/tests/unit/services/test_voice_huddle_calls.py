@@ -421,13 +421,17 @@ async def test_voice_run_history_drops_the_oldest_past_one_mib(run_env):
     assert [m["messageId"] for m in history] == ["m1", "m2"]
 
 
-@pytest.mark.parametrize("agent_id", ["obs-1", "nobody"])
-async def test_voice_run_for_an_agent_not_listening_in_the_room_is_409(run_env, agent_id):
+async def test_voice_run_for_an_agent_not_in_the_room_is_409(run_env):
     with pytest.raises(HTTPException) as exc:
-        await _dispatch(agent_id=agent_id)
+        await _dispatch(agent_id="nobody")
     assert exc.value.status_code == 409 and exc.value.detail["code"] == "agent_not_in_room"
     run_env.assert_not_awaited()
     vc.messaging_repo.put_voice_run.assert_not_awaited()
+
+
+async def test_voice_run_reaches_an_observe_agent(run_env):
+    """Listen modes are chat-only: a name said in Live reaches any agent member (owner ruling 2026-10-02)."""
+    assert (await _dispatch(agent_id="obs-1"))["agentId"] == "obs-1"
 
 
 async def test_two_requests_to_one_agent_are_two_runs_and_nothing_is_stopped(run_env):

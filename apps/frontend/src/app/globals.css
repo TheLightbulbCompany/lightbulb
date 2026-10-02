@@ -1529,7 +1529,7 @@
 .live-row-meta { margin-left: auto; color: var(--fg-soft); text-align: right; }
 .live-hint { color: var(--fg-mute); font-size: 12px; }
 .live-hint-inline { color: var(--fg-mute); font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
-.live-happening, .live-observing { color: var(--fg-soft); font-size: 13px; }
+.live-happening { color: var(--fg-soft); font-size: 13px; }
 .live-agent-rows { display: grid; gap: 4px; }
 .live-agent-row { width: 100%; padding: 4px; border-radius: 6px; background: none; border: 0; color: inherit; text-align: left; cursor: pointer; }
 .live-agent-row:hover:not(:disabled) { background: var(--plane-edge); }

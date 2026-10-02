@@ -1315,12 +1315,16 @@ async def test_start_live_disables_recording_and_unpublishes_only_its_own_track(
 
 
 async def test_session_events_carry_the_agent_id(monkeypatch):
+    from livekit.agents.llm import ChatMessage
+    from livekit.agents.llm.chat_context import AgentHandoff
+
     agent_mod, made = _fake_live_stack(monkeypatch)
     huddle = _Recorder()
     live = await _start(agent_mod, _FakeRoom(), huddle)
     ev = made[0].handlers
-    ev["conversation_item_added"](types_ns(item=types_ns(role="assistant", text_content="shipped it")))
-    ev["conversation_item_added"](types_ns(item=types_ns(role="user", text_content="what shipped")))
+    ev["conversation_item_added"](types_ns(item=AgentHandoff(new_agent_id="forge")))  # no .role: crashed in prod
+    ev["conversation_item_added"](types_ns(item=ChatMessage(role="assistant", content=["shipped it"])))
+    ev["conversation_item_added"](types_ns(item=ChatMessage(role="user", content=["what shipped"])))
     ev["agent_state_changed"](types_ns(new_state="speaking"))
     ev["user_state_changed"](types_ns(new_state="speaking"))
     ev["close"](None)

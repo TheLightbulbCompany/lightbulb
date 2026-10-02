@@ -52,6 +52,7 @@ def _problem(status, code):
 def _join(client, *, has_ceo=False, room_team=None, dispatch_error=None, path_room=ROOM, fresh=True):
     with (
         patch.object(vc, "prewake_owner", MagicMock()) as wake,
+        patch.object(vc, "prewarm_cards", MagicMock()) as warm,
         patch.object(mod.container_repo, "try_claim_pass", AsyncMock(return_value=fresh)),
         patch.object(vc, "_room_team", room_team or AsyncMock(return_value=({"ownerId": "org_a"}, TEAM))),
         patch.object(mod.messaging, "human_display_name", AsyncMock(return_value="Pat")),
@@ -60,7 +61,7 @@ def _join(client, *, has_ceo=False, room_team=None, dispatch_error=None, path_ro
         patch.object(lk, "dispatch_ceo", AsyncMock(side_effect=dispatch_error)) as dispatch,
     ):
         resp = client.post(f"/api/v1/huddles/{path_room}/join")
-        _join.wake = wake
+        _join.wake, _join.warm = wake, warm
         return resp, mint, dispatch
 
 
@@ -69,10 +70,11 @@ def test_the_calls_orb_route_is_gone():
     assert not [r for r in app.routes if getattr(r, "path", "").startswith("/api/v1/calls")]
 
 
-def test_join_wakes_the_workspace(client):
+def test_join_wakes_the_workspace_and_warms_the_cards(client):
     resp, _, _ = _join(client)
     assert resp.status_code == 200
     _join.wake.assert_called_once_with("org_a")
+    _join.warm.assert_called_once_with("org_a", TEAM)  # F4: the first /route fits its 3 s budget
 
 
 def test_join_does_not_dispatch_twice_while_the_worker_is_joining(client):
@@ -251,7 +253,7 @@ def test_internal_routes_need_the_worker_secret(client, path, body):
     with (
         patch.object(vc, "open_voice_window", AsyncMock()) as summon,
         patch.object(vc, "dispatch_voice_run", AsyncMock()) as turn,
-        patch.object(vc, "route_voice", AsyncMock()) as route,
+        patch.object(vc, "route_live_line", AsyncMock()) as route,
         patch.object(vc, "abort_voice_run", AsyncMock()) as abort,
         patch.object(vc, "get_call", AsyncMock()) as get_call,
         patch.object(mod.messaging_repo, "get_room", AsyncMock()) as get_room,
@@ -334,24 +336,25 @@ def test_turn_without_agent_or_run_id_is_refused(client, missing):
     dispatch.assert_not_awaited()
 
 
-def test_route_returns_the_agent(client):
-    with patch.object(vc, "route_voice", AsyncMock(return_value="agent-fin")) as route:
+def test_route_a_wake_word_line_is_the_one_router_with_wake(client):
+    """Routing v2 §6: no route_voice; "Lightbulb, ..." (no people count) is route_live_line(wake=True)."""
+    assert not hasattr(vc, "route_voice")
+    with patch.object(vc, "route_live_line", AsyncMock(return_value={"agentId": "agent-fin"})) as route:
         resp = client.post(INTERNAL[6][0], json=INTERNAL[6][1], headers=W)
     assert resp.json() == {"agentId": "agent-fin"}
     assert route.await_args.kwargs == {
-        "owner_id": "org_a", "room_id": ROOM, "speaker_id": "user_a", "utterance": "hi", "transcript": ""
+        "owner_id": "org_a", "room_id": ROOM, "speaker_id": "user_a", "utterance": "hi", "transcript": "",
+        "humans": 0, "wake": True, "floor": None, "voice_runs": [],
     }  # fmt: skip
 
 
-def test_route_with_a_people_count_routes_like_chat_and_may_be_nobody(client):
-    with (
-        patch.object(vc, "route_live_line", AsyncMock(return_value=None)) as live,
-        patch.object(vc, "route_voice", AsyncMock()) as wake,
-    ):
-        resp = client.post(INTERNAL[6][0], json={**INTERNAL[6][1], "humans": 2}, headers=W)
-    assert resp.json() == {"agentId": None}
-    assert live.await_args.kwargs["humans"] == 2
-    wake.assert_not_awaited()
+def test_route_with_a_people_count_may_be_nobody_or_hold(client):
+    floor = {"agent": "agent-fin", "speaker": "Leo"}
+    with patch.object(vc, "route_live_line", AsyncMock(return_value={"agentId": None, "hold": True})) as live:
+        resp = client.post(INTERNAL[6][0], json={**INTERNAL[6][1], "humans": 2, "floor": floor}, headers=W)
+    assert resp.json() == {"agentId": None, "hold": True}  # the shipped worker ignores "hold"
+    assert live.await_args.kwargs["humans"] == 2 and live.await_args.kwargs["wake"] is False
+    assert live.await_args.kwargs["floor"] == floor
 
 
 def test_abort_passes_the_room(client):

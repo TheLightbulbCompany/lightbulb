@@ -89,6 +89,9 @@ class RouteBody(BaseModel):
     utterance: str = Field(min_length=1, max_length=4_000)
     transcript: str = Field(default="", max_length=12_000)
     humans: int | None = Field(default=None, ge=0, le=128)  # people in the call; None: the Lightbulb wake word
+    # Live's open requests for Jev (routing v2 §5): {agent, speaker} holding the floor, [{agent, request}].
+    floor: dict[str, str] | None = None
+    voiceRuns: list[dict[str, str]] = Field(default_factory=list, max_length=16)
 
 
 class EndBody(BaseModel):
@@ -122,8 +125,10 @@ async def join(room_id: str, auth: Annotated[AuthContext, Depends(get_current_us
     out = {"serverUrl": settings.LIVEKIT_URL, "roomName": livekit_huddles.room_name(room_id), "token": token}
     if not team:
         return {**out, "lightbulb": False}
-    # Going Live is the earliest sign a voice turn is coming: start the workspace's cold start now.
+    # Going Live is the earliest sign a voice turn is coming: start the workspace's cold start now,
+    # and warm Jev's agent cards so the first /route fits its 3 s budget (F4).
     voice_calls.prewake_owner(owner_id)
+    voice_calls.prewarm_cards(owner_id, team)
     try:
         # The worker takes ~20 s to join: a second click (or person) in that window must not dispatch
         # another, which would evict the first. The window is shorter than the web's 45 s give-up, so
@@ -210,10 +215,16 @@ async def route(room_id: str, body: RouteBody):
         "utterance": body.utterance,
         "transcript": body.transcript,
     }
-    if body.humans is None:  # the Lightbulb wake word: always someone
-        return {"agentId": await voice_calls.route_voice(**args)}
-    # a line with no name: routed like a chat message; null is nobody (people talking to each other)
-    return {"agentId": await voice_calls.route_live_line(**args, humans=body.humans)}
+    # One router (routing v2 §6). humans None is the Lightbulb wake word: someone answers. Otherwise a
+    # null agentId is nobody (people talking to each other); "hold" asks the worker to wait for the
+    # speaker's next final (an older worker ignores it and reads null as nobody).
+    return await voice_calls.route_live_line(
+        **args,
+        humans=body.humans or 0,
+        wake=body.humans is None,
+        floor=body.floor,
+        voice_runs=body.voiceRuns,
+    )
 
 
 @router.post("/internal/huddles/{room_id}/runs/{run_id}/abort", dependencies=[_Worker])

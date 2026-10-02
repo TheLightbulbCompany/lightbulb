@@ -126,6 +126,12 @@ it("keeps the server's readable MCP target beside the message after delivery", a
   expect(screen.queryByText("Delivered")).toBeNull();
 });
 
+it("does not invent a session target for a plain MCP room message", async () => {
+  await render(<MessageGroup message={{ ...message, via: "lightbulb_mcp" }}
+    collapsed={false} replyCount={0} currentUserId="user-a" attachmentUrl={attachmentUrl} />);
+  expect(screen.queryByText("To shared session")).toBeNull();
+});
+
 describe("MessageGroup reactions", () => {
   it("keeps the whole-message long-press action alongside selectable message text", async () => {
     const onLongPress = jest.fn();

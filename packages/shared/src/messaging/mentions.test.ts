@@ -156,5 +156,8 @@ describe("session mentions", () => {
     expect(linkifySessionMentions(text, undefined)).toBe("Ask @Claude Code session");
     expect(displaySessionMentions("Ask @claude-launch-check", undefined, [session({ sessionId: id, displayTitle: "Launch check" })]))
       .toBe("Ask @Claude · Launch check");
+    expect(linkifySessionMentions("Ask @claude-launch-check-phase-2", [
+      { sessionId: id, displayLabel: "Claude Code · Launch check · phase 2 · Aden" },
+    ])).toBe(`Ask [@Claude Code · Launch check · phase 2 · Aden](mention:session:${id})`);
   });
 });

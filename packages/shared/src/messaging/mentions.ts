@@ -157,7 +157,9 @@ function rewriteSessionMentions(text: string, sends: readonly SessionSend[] | un
       const legacyId = /([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/i.exec(token)?.[1];
       const matching = (sends ?? []).filter((send) => {
         const session = sessions.find((item) => item.sessionId === send.sessionId);
-        const [tool, title] = send.displayLabel?.split(" · ") ?? [];
+        const parts = send.displayLabel?.split(" · ") ?? [];
+        const tool = parts[0];
+        const title = parts.slice(1, -1).join(" · ");
         const snapshotHandle = tool && title ? sessionMentionHandle({ provider: tool === "Claude Code" ? "claude" : "codex", title, displayTitle: null, cwdName: null }) : null;
         return token.toLowerCase().endsWith(send.sessionId.toLowerCase())
           || (session && (token.toLowerCase() === sessionMentionHandle(session) || token.toLowerCase() === `${sessionMentionHandle(session)}-${send.sessionId.slice(0, 8).toLowerCase()}`))

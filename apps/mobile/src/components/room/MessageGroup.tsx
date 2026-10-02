@@ -387,7 +387,7 @@ export function MessageGroup({
           </View>
         )}
         <BubbleMeta align={mine ? "end" : "start"} palette={palette} indent={mine ? 0 : AVATAR_GUTTER}>
-          {!deleted && message.via === "lightbulb_mcp" && <MetaText palette={palette}>{`To ${mcpTargets.join(", ") || "shared session"}`}</MetaText>}
+          {!deleted && message.via === "lightbulb_mcp" && mcpTargets.length > 0 && <MetaText palette={palette}>{`To ${mcpTargets.join(", ")}`}</MetaText>}
           {!deleted && onToggleReaction && appliedReactions.length > 0 ? (
             <ReactionChips
               reactions={appliedReactions}

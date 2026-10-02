@@ -206,6 +206,7 @@ class Huddle:
         self._last_agent: dict[str, str] = {}  # identity -> the agent they last summoned
         self._queue: list[tuple[str, str, str]] = []  # (agent_id, speaker, request) still to answer
         self._held: dict[str, tuple[str, float]] = {}  # identity -> (line, at): unfinished, /route said hold
+        self._final_mark: dict[str, int] = {}  # identity -> mark of their latest final: a hold older than it is stale
         self._spoke: dict[str, int] = {}  # identity -> the mark of their latest real-speech final
         self._unrouted: dict[str, float] = {}  # identity -> when their line woke nobody (live.route.missed)
         self._lock = asyncio.Lock()  # one summon or close at a time
@@ -363,6 +364,7 @@ class Huddle:
             return
         now = self._clock()
         mark = self._transcript.add_person(identity, name, text, at=now)
+        self._final_mark[identity] = mark
         self._last_speaker = identity
         self._last_heard = now
         if real_speech(text) and not (v and identity == v.speaker):  # a line that routes itself (§4.2)
@@ -532,7 +534,10 @@ class Huddle:
             ms = round((self._clock() - heard_at) * 1000)
             emit_metric("live.latency.jev", ms, "Milliseconds", {"path": "jev", "outcome": outcome})
         if r.get("hold"):  # unfinished ("Friday, we're trying to"): the speaker's next final carries the rest
-            self._held[identity] = (text, heard_at)
+            if self._final_mark.get(identity) == mark:
+                self._held[identity] = (text, heard_at)
+            else:  # that final arrived while /route decided and routed on its own: nothing left to merge
+                emit_metric("live.route.hold_stale", 1, "Count")
             return
         agent_ids = r.get("agentIds") or ([r["agentId"]] if r.get("agentId") else [])
         if not agent_ids:

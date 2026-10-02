@@ -91,10 +91,11 @@ class FakeBackend:
         self.routes.append((speaker, utterance, transcript))
         self.route_humans.append(humans)
         self.route_bodies.append({"floor": floor, "voiceRuns": list(voice_runs), "at": list(at)})
-        if self.route_gate:
-            await self.route_gate.wait()
+        extra, gate = self.route_extra, self.route_gate  # this call's answer, however long it takes
+        if gate:
+            await gate.wait()
         agent = self.route_to if humans is None else self.jev_to
-        return {"agentId": agent, "agentIds": [agent] if agent else [], **self.route_extra}
+        return {"agentId": agent, "agentIds": [agent] if agent else [], **extra}
 
     async def summon(self, speaker):
         self.summons.append(speaker)
@@ -2005,6 +2006,21 @@ async def test_hold_waits_for_the_speakers_next_final_and_routes_the_whole_line(
     await say(h, "u1", "find the launch checklist")
     assert backend.routes[-1][1] == "we're trying to find the launch checklist"
     assert lives[0].agent_id == "forge" and backend.turns[0]["utterance"] == "we're trying to find the launch checklist"
+    await h.end_exchange()
+
+
+async def test_a_hold_that_lands_after_the_speakers_next_final_is_dropped(capsys):
+    h, room, backend, lives, clock, log = make()
+    await h.on_participants({"u1": "Prasiddha"})
+    backend.jev_to, backend.route_extra, backend.route_gate = "forge", {"hold": True}, asyncio.Event()
+    slow = backend.route_gate
+    await h.on_final_transcript("u1", "Prasiddha", "about the invoices")  # /route is still deciding
+    backend.route_extra, backend.route_gate = {}, None
+    await say(h, "u1", "are they paid")  # ...when the rest arrives: it routes on its own
+    assert backend.turns[0]["utterance"] == "are they paid"
+    slow.set()
+    await settle(h)
+    assert h._held == {} and metric_count(capsys, "live.route.hold_stale") == 1  # nothing stale to merge later
     await h.end_exchange()
 
 

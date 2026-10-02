@@ -86,3 +86,9 @@ export const PAPERCLIP_HOSTS = PRODUCT_DOMAINS.flatMap((d) => [
  * `src/middleware.ts` before Clerk runs: there is no Clerk session here.
  */
 export const LAUNCH_HOSTS = ["flickmeon.ai", "www.flickmeon.ai", "dev.flickmeon.ai"];
+
+/**
+ * The brand's first domain. Nothing is served here: every path redirects to the
+ * same path on the product domain, so old links and search results still land.
+ */
+export const RETIRED_HOSTS = ["isol8.co", "www.isol8.co"];

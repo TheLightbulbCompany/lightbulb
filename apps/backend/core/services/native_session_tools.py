@@ -11,6 +11,7 @@ import time
 import uuid
 import json
 import hashlib
+import logging
 from typing import Any, Literal
 
 from botocore.exceptions import ClientError
@@ -18,10 +19,13 @@ from pydantic import Field, model_validator
 
 from core.auth import AuthContext
 from core.dynamodb import run_in_thread
+from core.observability.session_analytics import capture_session_event
 from core.repositories import local_sessions_repo as sessions_repo, messaging_repo
 from core.services import local_sessions, messaging
 from core.services.machine_auth import MachineIdentity
 from core.services.messaging import ApiProblem, ContractModel
+
+logger = logging.getLogger(__name__)
 
 
 class NativeToolRequest(ContractModel):
@@ -211,6 +215,13 @@ async def prepare_codex_send(device: MachineIdentity, request: NativeToolRequest
             if not messaging_repo._is_cancelled(exc):
                 raise
             continue
+        capture_session_event(
+            updated,
+            "native_send_approval_requested",
+            approval_id,
+            request_id=request_id,
+            destination_kind=destination.split(":", 1)[0],
+        )
         await _publish_session(device.owner_id, device.user_id)
         return {"state": "pending_approval", "requestId": request_id, "approvalId": approval_id, "expiresAt": expires}
     raise ApiProblem("LOCAL_SESSION_CONFLICT", "Session changed. Retry the same requestId.")
@@ -420,6 +431,24 @@ async def answer_codex_send(auth: AuthContext, session_id: str, decision: Native
                 if not messaging_repo._is_cancelled(exc):
                     raise
                 continue
+            capture_session_event(
+                updated,
+                "native_send_approval_decided",
+                decision.approval_id,
+                actor_user_id=auth.user_id,
+                request_id=request_id,
+                decision=decision.decision,
+                destination_kind=intent["destination"].split(":", 1)[0],
+            )
+            capture_session_event(
+                updated,
+                "native_send_outcome",
+                f"{request_id}:{result['state']}",
+                request_id=request_id,
+                origin="native",
+                state=result["state"],
+                destination_kind=intent["destination"].split(":", 1)[0],
+            )
             await _publish_session(owner, source["humanUserId"])
             return {"requestId": request_id, **result}
         if (
@@ -489,6 +518,15 @@ async def answer_codex_send(auth: AuthContext, session_id: str, decision: Native
                 if not messaging_repo._is_cancelled(exc):
                     raise
                 continue
+            capture_session_event(
+                updated,
+                "native_send_approval_decided",
+                decision.approval_id,
+                actor_user_id=auth.user_id,
+                request_id=request_id,
+                decision="allow",
+                destination_kind=intent["destination"].split(":", 1)[0],
+            )
             source = updated
         elif pointer["state"] != "dispatching" or decision.decision != "allow":
             raise ApiProblem("LOCAL_SESSION_CONFLICT", "That native send is unavailable.")
@@ -667,6 +705,7 @@ async def _finish(owner: str, source: str, request_id: str, destination: str, re
                         ":rejected": "rejected",
                     },
                 )
+                await _capture_send_result(owner, source, request_id, destination, result)
                 return result
             except ClientError as changed:
                 if changed.response.get("Error", {}).get("Code") != "ConditionalCheckFailedException":
@@ -676,7 +715,25 @@ async def _finish(owner: str, source: str, request_id: str, destination: str, re
                     return latest["result"]
                 raise
         return prior["result"]
+    await _capture_send_result(owner, source, request_id, destination, result)
     return result
+
+
+async def _capture_send_result(owner: str, source: str, request_id: str, destination: str, result: dict) -> None:
+    try:
+        row = await sessions_repo.get_session(owner, source)
+        if row:
+            capture_session_event(
+                row,
+                "native_send_outcome",
+                f"{request_id}:{result['state']}",
+                request_id=request_id,
+                origin="native",
+                state=result["state"],
+                destination_kind=destination.split(":", 1)[0],
+            )
+    except Exception:
+        logger.warning("native send analytics capture failed", exc_info=True)
 
 
 async def _committed_result(owner: str, source: str, destination: str, request_id: str) -> dict | None:

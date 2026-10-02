@@ -53,6 +53,6 @@ describe("session analytics", () => {
   it("reports session_opened once, with whether the session is your own", () => {
     render(panel(session, false, client()));
     const opened = vi.mocked(capture).mock.calls.filter((call) => call[0] === "session_opened");
-    expect(opened).toEqual([["session_opened", { own: false, provider: "claude", workspace_id: "org_1" }]]);
+    expect(opened).toEqual([["session_opened", { own: false, provider: "claude", workspace_id: "org_1", session_id: session.sessionId, origin: "web" }]]);
   });
 });

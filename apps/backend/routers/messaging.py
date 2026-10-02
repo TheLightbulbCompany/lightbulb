@@ -8,6 +8,7 @@ import logging
 import math
 import re
 import time
+import uuid
 from datetime import timedelta
 from urllib.parse import quote
 from typing import Annotated
@@ -16,6 +17,7 @@ import httpx
 from fastapi import APIRouter, Depends, File, HTTPException, Path, Query, Request, Response, UploadFile
 
 from core.observability.metrics import put_metric
+from core.observability.session_analytics import capture_session_event
 from core.dynamodb import run_in_thread
 from core.auth import AuthContext, get_current_user, resolve_owner_id
 from core.config import settings
@@ -169,6 +171,25 @@ async def list_workspace_sessions(
 @router.get("/messaging/sessions/{session_id}", response_model=local_sessions.LocalSession)
 async def get_local_session(session_id: str, auth: AuthContext = Depends(get_current_user)):
     return await local_sessions.get_session(auth, session_id)
+
+
+class SessionOpenRequest(ContractModel):
+    open_id: uuid.UUID
+
+
+@router.post("/messaging/sessions/{session_id}/opened", status_code=204)
+async def record_local_session_open(
+    session_id: str, body: SessionOpenRequest, auth: AuthContext = Depends(get_current_user)
+):
+    row, _ = await local_sessions.authorize_session(auth, None, session_id)
+    capture_session_event(
+        row,
+        "session_opened",
+        str(body.open_id),
+        actor_user_id=auth.user_id,
+        origin="ios",
+        own=auth.user_id == row["humanUserId"],
+    )
 
 
 @router.patch("/messaging/sessions/{session_id}/display-title", response_model=local_sessions.LocalSession)

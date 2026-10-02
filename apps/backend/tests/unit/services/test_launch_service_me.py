@@ -46,7 +46,7 @@ def _patches(row, onboarding=ONBOARDED, entry=None, suggested_name=None):
         patch(
             "core.services.launch_service.readiness_state.resolve_onboarding_state", AsyncMock(return_value=onboarding)
         ),
-        patch("core.services.launch_service.settings.FRONTEND_URL", "https://dev.flickmeon.ai"),
+        patch("core.services.launch_service.settings.FRONTEND_URL", "https://dev.thelightbulb.company"),
         patch("core.services.launch_service.launch_entries_repo.get", AsyncMock(return_value=entry)),
         # Stubbed at the `me()` call boundary for every test in this file —
         # `_suggested_display_name`'s own resolve/degrade logic gets its own
@@ -98,7 +98,7 @@ async def test_me_is_read_only_and_claims_the_row():
         patch(
             "core.services.launch_service.readiness_state.resolve_onboarding_state", AsyncMock(return_value=ONBOARDED)
         ),
-        patch("core.services.launch_service.settings.FRONTEND_URL", "https://dev.flickmeon.ai"),
+        patch("core.services.launch_service.settings.FRONTEND_URL", "https://dev.thelightbulb.company"),
         patch("core.services.launch_service.launch_entries_repo.get", AsyncMock(return_value=None)),
     ):
         body = await launch_service.me(AuthContext(user_id="user_1", org_id="org_1", email="me@x.com"), _sched(+5))
@@ -116,7 +116,7 @@ async def test_me_shape_for_a_joined_owner():
         "effective_position": 280,
         "referrals_subscribed": 2,
         "referral_code": "ABCD2345",
-        "referral_link": "https://dev.flickmeon.ai/?ref=ABCD2345",
+        "referral_link": "https://dev.thelightbulb.company/?ref=ABCD2345",
         "credits_milestone_reached": 0,
         "winner": False,
         "compete_eligible": True,

@@ -26,7 +26,7 @@ without the secret cannot work.
 What makes the exposure acceptable HERE and nowhere else is redirect-URI pinning:
 Intuit only delivers an authorization code to a URI pre-registered on the app, and
 it exposes no app-level API. So client_id + client_secret ALONE cannot obtain any
-owner's tokens — an attacker would need a code delivered to api*.flickmeon.ai,
+owner's tokens — an attacker would need a code delivered to api*.thelightbulb.company,
 which they do not control. The blast radius is brand impersonation on a consent
 screen they cannot collect from, remediated by rotating the secret in the portal.
 

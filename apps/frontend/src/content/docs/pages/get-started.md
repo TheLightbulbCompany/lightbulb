@@ -4,13 +4,13 @@ description: "Sign up, brief your CEO, and hand your team a first real task — 
 order: 1
 ---
 
-**To get started with Lightbulb: sign up at [flickmeon.ai/sign-up](/sign-up), answer the one-screen brief about your business, and wait about a minute for your workspace to provision. You can then chat with your CEO agent and hand it a real task.** The free tier needs no credit card.
+**To get started with Lightbulb: sign up at [thelightbulb.company/sign-up](/sign-up), answer the one-screen brief about your business, and wait about a minute for your workspace to provision. You can then chat with your CEO agent and hand it a real task.** The free tier needs no credit card.
 
 Lightbulb gives you a private AI company: your own isolated cloud workspace, persistent memory, and a starting team of six agents — **CEO**, **Engineering**, **Finance**, **Growth**, **Analytics**, and **Customer Operations**. Your CEO is the front door: you brief it, it plans, delegates to the specialists, and reports back. Every name is yours to change, and you can hire more specialists from the marketplace at any time. This page takes you from sign-up to a first real handoff.
 
 ## 1. Sign up
 
-Create an account at [flickmeon.ai/sign-up](/sign-up). The free tier needs no credit card. Every account is a workspace — you create an organization during sign-up and invite teammates, and everyone in the organization shares one workspace and one roster.
+Create an account at [thelightbulb.company/sign-up](/sign-up). The free tier needs no credit card. Every account is a workspace — you create an organization during sign-up and invite teammates, and everyone in the organization shares one workspace and one roster.
 
 ## 2. Brief your CEO
 

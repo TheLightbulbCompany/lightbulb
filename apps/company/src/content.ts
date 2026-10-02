@@ -24,7 +24,7 @@ export const PRODUCTS = [
     note: "live",
     name: "Lightbulb AI",
     sub: "a team of agents — lit",
-    href: "https://flickmeon.ai",
+    href: "https://thelightbulb.company",
     blurb:
       "An AI company in a box. Sign up and you get a team of agents — a CEO, a recruiter, and whoever they hire next — working for you around the clock. Our first product, and the one that pays for the rest.",
   },

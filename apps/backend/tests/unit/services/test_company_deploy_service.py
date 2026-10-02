@@ -315,7 +315,7 @@ async def test_the_real_resolver_selects_the_native_hermes_adapter(monkeypatch):
     _wire_agentcore_profile(monkeypatch)
     monkeypatch.setattr(svc, "resolve_agent_adapter", real_resolve_agent_adapter)
     h.container = {**AGENTCORE_CONTAINER, "hook_token": "hook_abc"}
-    monkeypatch.setattr(svc.settings, "PUBLIC_API_BASE", "https://api-dev.flickmeon.ai")
+    monkeypatch.setattr(svc.settings, "PUBLIC_API_BASE", "https://api-dev.thelightbulb.company")
 
     await svc.run_company_deploy(owner_id=OWNER, listing={}, tar_bytes=b"")
 
@@ -324,7 +324,7 @@ async def test_the_real_resolver_selects_the_native_hermes_adapter(monkeypatch):
         assert call["adapter_type"] == "hermes_gateway"
         assert call["adapter_config"]["apiKey"] == "hook_abc"
         assert call["adapter_config"]["apiBaseUrl"] == (
-            f"https://api-dev.flickmeon.ai/api/v1/internal/paperclip/hermes/{OWNER}"
+            f"https://api-dev.thelightbulb.company/api/v1/internal/paperclip/hermes/{OWNER}"
         )
 
 

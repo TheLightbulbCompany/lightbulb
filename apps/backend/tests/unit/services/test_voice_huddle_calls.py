@@ -361,7 +361,7 @@ def run_env():
         patch.object(vc.messaging, "human_display_name", AsyncMock(return_value="Bea")),
         patch.object(vc.container_repo, "get_by_owner_id", AsyncMock(return_value={"gateway_token": "gw"})),
         patch.object(vc.runtime_transport, "request", rt),
-        patch.object(vc.settings, "PUBLIC_API_BASE", "https://api-dev.flickmeon.ai/"),
+        patch.object(vc.settings, "PUBLIC_API_BASE", "https://api-dev.thelightbulb.company/"),
     ]
     for p in ps:
         p.start()
@@ -392,7 +392,7 @@ async def test_voice_run_is_an_ordinary_run_on_the_room_key(run_env):
     assert req["session_id"] == identity["sessionId"] and req["instructions"] == vc.TURN_NOTE
     assert req["frames"] == {
         "sink": "backend",
-        "endpoint": "https://api-dev.flickmeon.ai/api/v1/internal/huddles/org_a/rooms/room-1/frames",
+        "endpoint": "https://api-dev.thelightbulb.company/api/v1/internal/huddles/org_a/rooms/room-1/frames",
     }
     assert req["voice"] == {
         "roomId": "room-1", "roomKind": "channel", "speaker": {"id": "user_b", "name": "Bea"},

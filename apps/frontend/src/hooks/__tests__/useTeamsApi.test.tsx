@@ -23,7 +23,7 @@ function wrapper({ children }: { children: ReactNode }) {
 }
 
 // The opts the Teams layer must forward on every BFF call so the browser
-// attaches the `.flickmeon.ai` Paperclip cookie and retries once on a rotated
+// attaches the `.thelightbulb.company` Paperclip cookie and retries once on a rotated
 // session.
 const EXPECTED_OPTS = { credentials: "include", retryOn401: true };
 

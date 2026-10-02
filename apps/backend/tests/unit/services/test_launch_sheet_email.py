@@ -16,7 +16,7 @@ async def _send_join(**over):
         to_email="a@x.com",
         first_name="Ada",
         position=7,
-        referral_link="https://dev.flickmeon.ai/?ref=ABCD2345",
+        referral_link="https://dev.thelightbulb.company/?ref=ABCD2345",
         referral_jump=10,
         comp_slots=200,
         sheet_closes_at=CLOSES,
@@ -37,7 +37,7 @@ async def test_join_email_subject_and_body():
         assert "#7" in body
         assert "The first 200 on the sheet get their first month free." in body
         assert "Every friend who subscribes moves you up 10 spots" in body
-        assert "https://dev.flickmeon.ai/?ref=ABCD2345" in body
+        assert "https://dev.thelightbulb.company/?ref=ABCD2345" in body
         assert "Wednesday, September 30" in body and "12:00 PM ET" in body
 
 
@@ -200,7 +200,7 @@ async def test_join_email_copy_can_be_overridden_with_its_placeholders():
         assert "Spot 7 of 200." in body
         assert "Closes Wednesday, September 30 at 12:00 PM ET." in body
     # The referral CTA and the button are code, not copy — still there.
-    assert "https://dev.flickmeon.ai/?ref=ABCD2345" in kw["html"]
+    assert "https://dev.thelightbulb.company/?ref=ABCD2345" in kw["html"]
 
 
 def test_placeholders_in_finds_names_and_rejects_unbalanced():

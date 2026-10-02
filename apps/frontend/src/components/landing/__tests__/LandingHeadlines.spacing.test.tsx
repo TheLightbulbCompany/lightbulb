@@ -19,7 +19,7 @@ import { render } from "@testing-library/react";
  * `.lb-brk { display: none }` below 900px, and the fragments then collide:
  * "Three steps between youand your next hire."
  *
- * Read off live flickmeon.ai at 375px on 2026-09-17, all four were broken:
+ * Read off live thelightbulb.company at 375px on 2026-09-17, all four were broken:
  *   "Your team and your agents,in one place."
  *   "Three steps between youand your next hire."
  *   "Everything you needto run the company."

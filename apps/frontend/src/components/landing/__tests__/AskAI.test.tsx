@@ -34,7 +34,7 @@ describe("askAiPrompt", () => {
   });
 
   it("names the product and the site so the AI has something to fetch", () => {
-    expect(ASK_AI_PROMPT).toContain("flickmeon.ai");
+    expect(ASK_AI_PROMPT).toContain("thelightbulb.company");
     expect(ASK_AI_PROMPT).toContain("Lightbulb");
   });
 

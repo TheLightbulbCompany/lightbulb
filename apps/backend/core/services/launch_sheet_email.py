@@ -307,7 +307,7 @@ async def send_not_selected_email(
 # --- admin console: preview + test send -------------------------------------
 
 SAMPLE_POSITION = 7
-SAMPLE_REFERRAL_LINK = "https://flickmeon.ai/?ref=SAMPLE12"
+SAMPLE_REFERRAL_LINK = "https://thelightbulb.company/?ref=SAMPLE12"
 
 
 def sample_values(*, comp_slots: int, referral_jump: int, sheet_closes_at: datetime | None) -> dict:

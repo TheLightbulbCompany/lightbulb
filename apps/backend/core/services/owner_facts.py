@@ -101,7 +101,7 @@ def build_owner_facts(
         "company_stripe": company_stripe,
         "owner_kind": "org" if is_org_owner_id(owner_id) else "personal",
         # This environment's app host. One image serves dev and prod, so the bundled skill's
-        # links say flickmeon.ai and agents swap this in when they hand the owner a link.
+        # links say thelightbulb.company and agents swap this in when they hand the owner a link.
         "app_url": (settings.FRONTEND_URL or "").rstrip("/"),
         # TRI-STATE with `email_address` below, and load-bearing.
         #

@@ -1903,6 +1903,13 @@ jobs:
           VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
           VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
           VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+      - name: Alias to dev.flickmeon.ai
+        run: vercel alias ${{ steps.vercel-deploy-dev.outputs.DEPLOY_URL }}
+          dev.flickmeon.ai --token=$VERCEL_TOKEN
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
   prod-lightbulb-prod-auth-Deploy:
     name: Deploy prodlightbulbprodauth56599002
     if: github.event_name == 'workflow_dispatch'
@@ -2616,30 +2623,16 @@ jobs:
           VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
           VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
           VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID_COMPANY }}
-      - name: Register thelightbulb.company project domain
-        run: vercel domains add thelightbulb.company company --force
+      - name: Register about.thelightbulb.company project domain
+        run: vercel domains add about.thelightbulb.company company --force
           --token="$VERCEL_TOKEN"
         env:
           VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
           VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
           VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID_COMPANY }}
-      - name: Alias to thelightbulb.company
+      - name: Alias to about.thelightbulb.company
         run: vercel alias ${{ steps.company-deploy-prod.outputs.DEPLOY_URL }}
-          thelightbulb.company --token=$VERCEL_TOKEN
-        env:
-          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
-          VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
-          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID_COMPANY }}
-      - name: Register www.thelightbulb.company project domain
-        run: vercel domains add www.thelightbulb.company company --force
-          --token="$VERCEL_TOKEN"
-        env:
-          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
-          VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
-          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID_COMPANY }}
-      - name: Alias to www.thelightbulb.company
-        run: vercel alias ${{ steps.company-deploy-prod.outputs.DEPLOY_URL }}
-          www.thelightbulb.company --token=$VERCEL_TOKEN
+          about.thelightbulb.company --token=$VERCEL_TOKEN
         env:
           VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
           VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
@@ -2715,8 +2708,44 @@ jobs:
           VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
           VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
           VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
-      - name: Register flickmeon.ai project domain
-        run: vercel domains add flickmeon.ai frontend --force --token="$VERCEL_TOKEN"
+      - name: Register thelightbulb.company project domain
+        run: vercel domains add thelightbulb.company frontend --force
+          --token="$VERCEL_TOKEN"
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+      - name: Alias to thelightbulb.company
+        run: vercel alias ${{ steps.vercel-deploy-prod.outputs.DEPLOY_URL }}
+          thelightbulb.company --token=$VERCEL_TOKEN
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+      - name: Register www.thelightbulb.company project domain
+        run: vercel domains add www.thelightbulb.company frontend --force
+          --token="$VERCEL_TOKEN"
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+      - name: Alias to www.thelightbulb.company
+        run: vercel alias ${{ steps.vercel-deploy-prod.outputs.DEPLOY_URL }}
+          www.thelightbulb.company --token=$VERCEL_TOKEN
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+      - name: Register admin.thelightbulb.company project domain
+        run: vercel domains add admin.thelightbulb.company frontend --force
+          --token="$VERCEL_TOKEN"
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+      - name: Alias to admin.thelightbulb.company
+        run: vercel alias ${{ steps.vercel-deploy-prod.outputs.DEPLOY_URL }}
+          admin.thelightbulb.company --token=$VERCEL_TOKEN
         env:
           VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
           VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
@@ -2728,23 +2757,9 @@ jobs:
           VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
           VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
           VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
-      - name: Register www.flickmeon.ai project domain
-        run: vercel domains add www.flickmeon.ai frontend --force
-          --token="$VERCEL_TOKEN"
-        env:
-          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
-          VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
-          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
       - name: Alias to www.flickmeon.ai
         run: vercel alias ${{ steps.vercel-deploy-prod.outputs.DEPLOY_URL }}
           www.flickmeon.ai --token=$VERCEL_TOKEN
-        env:
-          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
-          VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
-          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
-      - name: Alias to admin.flickmeon.ai
-        run: vercel alias ${{ steps.vercel-deploy-prod.outputs.DEPLOY_URL }}
-          admin.flickmeon.ai --token=$VERCEL_TOKEN
         env:
           VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
           VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}

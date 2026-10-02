@@ -26,7 +26,7 @@ features:
         message: Anything waiting on my approval?
   slash_commands:
     - command: /lightbulb
-      url: https://api-dev.flickmeon.ai/api/v1/slack/events
+      url: https://api-dev.thelightbulb.company/api/v1/slack/events
       description: Talk to Friday
       usage_hint: "[what you need]"
       should_escape: false
@@ -41,7 +41,7 @@ features:
       description: Start a conversation with Friday
 oauth_config:
   redirect_urls:
-    - https://api-dev.flickmeon.ai/api/v1/slack/oauth/callback
+    - https://api-dev.thelightbulb.company/api/v1/slack/oauth/callback
   scopes:
     bot:
       - app_mentions:read
@@ -69,7 +69,7 @@ oauth_config:
       - users:read
 settings:
   event_subscriptions:
-    request_url: https://api-dev.flickmeon.ai/api/v1/slack/events
+    request_url: https://api-dev.thelightbulb.company/api/v1/slack/events
     bot_events:
       - app_home_opened
       - app_mention
@@ -89,8 +89,8 @@ settings:
       - tokens_revoked
   interactivity:
     is_enabled: true
-    request_url: https://api-dev.flickmeon.ai/api/v1/slack/events
-    message_menu_options_url: https://api-dev.flickmeon.ai/api/v1/slack/events
+    request_url: https://api-dev.thelightbulb.company/api/v1/slack/events
+    message_menu_options_url: https://api-dev.thelightbulb.company/api/v1/slack/events
   org_deploy_enabled: false
   socket_mode_enabled: false
   token_rotation_enabled: false

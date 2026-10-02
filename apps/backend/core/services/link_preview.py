@@ -37,7 +37,7 @@ logger = logging.getLogger(__name__)
 MAX_BYTES = 1_000_000
 TIMEOUT_S = 5.0
 MAX_REDIRECTS = 3
-USER_AGENT = "LightbulbLinkPreview/1.0 (+https://flickmeon.ai)"
+USER_AGENT = "LightbulbLinkPreview/1.0 (+https://thelightbulb.company)"
 
 # Tests swap this for an httpx.MockTransport.
 _TRANSPORT: httpx.AsyncBaseTransport | None = None

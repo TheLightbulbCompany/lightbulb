@@ -15,7 +15,7 @@ import { useApi, type ApiCallOptions } from "@/lib/api";
 /**
  * Teams BFF cookie opt-ins, applied to every `/teams/*` call (decision D2 —
  * least surface). `credentials: "include"` makes the browser attach the
- * HttpOnly Paperclip session cookie (scoped to `.flickmeon.ai`) on the
+ * HttpOnly Paperclip session cookie (scoped to `.thelightbulb.company`) on the
  * cross-subdomain request to the api host; the Clerk bearer header still
  * identifies the user. `retryOn401` re-issues the request once on a 401 —
  * the backend reseeds a fresh cookie on that 401 (body

@@ -2,7 +2,7 @@ import { isDocumentLink } from "@lightbulb/shared";
 import { shellUrlFromPaperclipPath } from "@/lib/shellNav";
 import { parseSessionPermalink } from "./messageLinks";
 
-// Our own product: flickmeon.ai and every subdomain (app, dev., company[-dev].).
+// Our own product: thelightbulb.company and every subdomain (app, dev., company[-dev].).
 const OWN_HOST = /(^|\.)flickmeon\.ai$/i;
 const ISSUE_IDENTIFIER = /^[A-Z][A-Z0-9]*-\d+$/;
 
@@ -28,7 +28,7 @@ export function appLinkTarget(raw: string | null | undefined, origin = typeof wi
   if (!raw) return null;
   let url: URL;
   try {
-    url = new URL(raw, origin || "https://flickmeon.ai");
+    url = new URL(raw, origin || "https://thelightbulb.company");
   } catch {
     return null;
   }
@@ -40,7 +40,7 @@ export function appLinkTarget(raw: string | null | undefined, origin = typeof wi
   const shell = shellUrlFromPaperclipPath(path) ?? (url.pathname === "/chat" ? path : null);
   if (!shell) return relative ? null : { kind: "other", href: url.href };
   if (document) return { kind: "document", href: shell };
-  const shellUrl = new URL(shell, "https://flickmeon.ai");
+  const shellUrl = new URL(shell, "https://thelightbulb.company");
   const p = shellUrl.searchParams;
   const detailId = p.get("detailId");
   const panel = p.get("panel");

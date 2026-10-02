@@ -355,11 +355,11 @@ async def test_write_owner_facts_agentcore_write_failure_is_swallowed(monkeypatc
 
 
 def test_facts_carry_this_environments_app_url(monkeypatch):
-    """The bundled skill's links say flickmeon.ai (one image serves dev and prod); agents swap
+    """The bundled skill's links say thelightbulb.company (one image serves dev and prod); agents swap
     in this host so a dev workspace is never sent to the production app."""
-    monkeypatch.setattr(owner_facts.settings, "FRONTEND_URL", "https://dev.flickmeon.ai/", raising=False)
+    monkeypatch.setattr(owner_facts.settings, "FRONTEND_URL", "https://dev.thelightbulb.company/", raising=False)
     facts = owner_facts.build_owner_facts("org_abc", {"subscription_status": "trial_local"})
-    assert facts["app_url"] == "https://dev.flickmeon.ai"
+    assert facts["app_url"] == "https://dev.thelightbulb.company"
 
 
 def test_base_and_trial_are_labelled_as_what_they_are():

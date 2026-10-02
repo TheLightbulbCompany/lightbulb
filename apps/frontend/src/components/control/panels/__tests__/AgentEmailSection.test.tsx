@@ -22,7 +22,7 @@ function renderSection(agentId = "agent_f") {
 }
 
 const baseAddress = {
-  address: "friday@acme.flickmeon.ai",
+  address: "friday@acme.thelightbulb.company",
   agent_id: "agent_f",
   verified_senders: ["o@x.y"],
   send_to_anyone: false,
@@ -41,7 +41,7 @@ describe("AgentEmailSection", () => {
     mockGet.mockResolvedValue({ addresses: [baseAddress] });
     renderSection();
 
-    expect(await screen.findByText("friday@acme.flickmeon.ai")).toBeInTheDocument();
+    expect(await screen.findByText("friday@acme.thelightbulb.company")).toBeInTheDocument();
     const textarea = screen.getByRole("textbox") as HTMLTextAreaElement;
     expect(textarea.value).toBe("o@x.y");
   });
@@ -50,7 +50,7 @@ describe("AgentEmailSection", () => {
     mockGet.mockResolvedValue({ addresses: [baseAddress] });
     renderSection();
 
-    await screen.findByText("friday@acme.flickmeon.ai");
+    await screen.findByText("friday@acme.thelightbulb.company");
     fireEvent.click(screen.getByRole("button", { name: /save/i }));
 
     await waitFor(() => expect(mockPatch).toHaveBeenCalled());
@@ -81,7 +81,7 @@ describe("AgentEmailSection", () => {
     mockGet.mockResolvedValue({ addresses: [baseAddress] });
     renderSection();
 
-    await screen.findByText("friday@acme.flickmeon.ai");
+    await screen.findByText("friday@acme.thelightbulb.company");
     expect((screen.getByRole("checkbox") as HTMLInputElement).checked).toBe(false);
   });
 
@@ -117,7 +117,7 @@ describe("AgentEmailSection", () => {
       });
     renderSection();
 
-    await screen.findByText("friday@acme.flickmeon.ai");
+    await screen.findByText("friday@acme.thelightbulb.company");
     fireEvent.click(screen.getByRole("button", { name: /^save$/i }));
 
     await waitFor(() => {
@@ -161,7 +161,7 @@ describe("AgentEmailSection", () => {
     );
     renderSection();
 
-    await screen.findByText("friday@acme.flickmeon.ai");
+    await screen.findByText("friday@acme.thelightbulb.company");
     fireEvent.click(screen.getByRole("button", { name: /^save$/i }));
 
     await waitFor(() => expect(screen.getByRole("textbox")).toBeDisabled());
@@ -178,7 +178,7 @@ describe("AgentEmailSection", () => {
     );
     renderSection();
 
-    await screen.findByText("friday@acme.flickmeon.ai");
+    await screen.findByText("friday@acme.thelightbulb.company");
     fireEvent.click(screen.getByRole("button", { name: /^save$/i }));
 
     expect(await screen.findByText(/nope/i)).toBeInTheDocument();

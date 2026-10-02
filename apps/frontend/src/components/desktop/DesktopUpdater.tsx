@@ -12,7 +12,7 @@ import { capture } from "@/lib/analytics";
 // Architecture note: as of feat/webview-updater (#673), the update CHECK
 // runs in the webview rather than via Tauri's plugin-updater. The plugin
 // uses its own reqwest client with no cookie jar, so it can't see the
-// Vercel SSO cookie that gates dev.flickmeon.ai's preview-protection. The
+// Vercel SSO cookie that gates dev.thelightbulb.company's preview-protection. The
 // webview IS Vercel-authenticated (same browser session that loaded the
 // app), so fetching the manifest from it Just Works — no
 // protection-bypass token, no scope mismatch.
@@ -98,7 +98,7 @@ export function DesktopUpdater({
       // Fetch the manifest with the webview's normal `fetch`, which
       // carries the Vercel SSO cookie automatically. Use a relative
       // path so it always resolves to the same host the webview was
-      // loaded from (dev.flickmeon.ai in dev, etc.).
+      // loaded from (dev.thelightbulb.company in dev, etc.).
       const res = await fetch(
         `/api/desktop/update/${encodeURIComponent(identity.target)}/${encodeURIComponent(identity.current_version)}`,
         {

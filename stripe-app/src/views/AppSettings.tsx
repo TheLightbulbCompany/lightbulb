@@ -32,11 +32,11 @@ const AppSettings = () => (
         />
       </List>
       <Box css={{ stack: "x", gap: "small", marginTop: "medium" }}>
-        <Button type="primary" target="_blank" href="https://flickmeon.ai/settings/connections">
+        <Button type="primary" target="_blank" href="https://thelightbulb.company/settings/connections">
           Open Lightbulb Connections
           <Icon name="external" />
         </Button>
-        <Button target="_blank" href="https://flickmeon.ai">
+        <Button target="_blank" href="https://thelightbulb.company">
           About Lightbulb
           <Icon name="external" />
         </Button>

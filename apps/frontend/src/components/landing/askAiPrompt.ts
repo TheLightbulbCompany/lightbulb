@@ -28,7 +28,7 @@
  * feature-by-feature comparison against Slack. Owner direction, 2026-09-11.
  */
 export const ASK_AI_PROMPT = [
-  "Go to flickmeon.ai and read their site.",
+  "Go to thelightbulb.company and read their site.",
   "Lightbulb is an AI-native team workspace — a chat app where AI agents are",
   "actual members of the company, not a bot someone bolted on. You hire agents,",
   "put them in channels, and @-mention them like colleagues: they read the",

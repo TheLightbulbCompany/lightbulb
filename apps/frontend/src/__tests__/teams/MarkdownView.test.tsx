@@ -32,7 +32,7 @@ describe("MarkdownView", () => {
     // strings). Without min-w-0 + overflow-wrap:anywhere they bleed off the
     // right edge into adjacent columns (observed in the Teams task view).
     const { container } = render(
-      <MarkdownView>{"getaddrinfoENOTFOUND https://company.flickmeon.ai/very/long/path"}</MarkdownView>,
+      <MarkdownView>{"getaddrinfoENOTFOUND https://company.thelightbulb.company/very/long/path"}</MarkdownView>,
     );
     const root = container.firstElementChild as HTMLElement;
     expect(root.className).toContain("min-w-0");

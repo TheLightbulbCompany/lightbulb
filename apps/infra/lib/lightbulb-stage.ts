@@ -36,7 +36,7 @@ import { resourcePrefix, tableName } from "./table-names";
 //   2. At least one redirect URI. The dashboard refuses the flow outright:
 //      "You must define a redirect URI to onboard users via OAuth." Ours is
 //      STRIPE_COMPANY_OAUTH_REDIRECT_URL below —
-//      https://api.flickmeon.ai/api/v1/company/stripe/connect/callback (prod).
+//      https://api.thelightbulb.company/api/v1/company/stripe/connect/callback (prod).
 // Docs: "You must specify all redirect URLs in your platform settings"
 // (docs.stripe.com/connect/oauth-standard-accounts). Until both are set, the
 // authorize URL this id builds will be rejected by Stripe.

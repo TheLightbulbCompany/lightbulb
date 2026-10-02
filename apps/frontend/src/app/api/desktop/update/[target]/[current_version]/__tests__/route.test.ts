@@ -87,7 +87,7 @@ describe("GET /api/desktop/update/[target]/[current_version]", () => {
 
   it("returns 200 with manifest when current_version is older", async () => {
     stubGitHub([fullDevRelease]);
-    const res = await GET(reqFor("dev.flickmeon.ai"), {
+    const res = await GET(reqFor("dev.thelightbulb.company"), {
       params: Promise.resolve({
         target: "darwin-aarch64",
         current_version: "0.1.0",
@@ -100,7 +100,7 @@ describe("GET /api/desktop/update/[target]/[current_version]", () => {
       // Bundle URL points back at our download route (which mints a
       // fresh signed URL per request), NOT at GitHub directly — a
       // private repo's URLs either 404 anonymously or expire.
-      url: "https://dev.flickmeon.ai/api/download/desktop?arch=aarch64&kind=bundle",
+      url: "https://dev.thelightbulb.company/api/download/desktop?arch=aarch64&kind=bundle",
       signature: "SIG-XYZ",
       notes: "release notes",
     });
@@ -108,7 +108,7 @@ describe("GET /api/desktop/update/[target]/[current_version]", () => {
 
   it("falls back to the canonical host when the Host header isn't ours", async () => {
     // A spoofed Host header must not be echoed into the manifest URL the
-    // updater will fetch. Unknown host → prod tag prefix → flickmeon.ai.
+    // updater will fetch. Unknown host → prod tag prefix → thelightbulb.company.
     stubGitHub([
       {
         ...fullDevRelease,
@@ -124,14 +124,14 @@ describe("GET /api/desktop/update/[target]/[current_version]", () => {
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body.url).toBe(
-      "https://flickmeon.ai/api/download/desktop?arch=aarch64&kind=bundle",
+      "https://thelightbulb.company/api/download/desktop?arch=aarch64&kind=bundle",
     );
   });
 
   it("fetches the signature from the asset API URL with auth", async () => {
     vi.stubEnv("GITHUB_RELEASES_TOKEN", "ghp_test123");
     const { fetchMock } = stubGitHub([fullDevRelease]);
-    await GET(reqFor("dev.flickmeon.ai"), {
+    await GET(reqFor("dev.thelightbulb.company"), {
       params: Promise.resolve({
         target: "darwin-aarch64",
         current_version: "0.1.0",
@@ -150,7 +150,7 @@ describe("GET /api/desktop/update/[target]/[current_version]", () => {
 
   it("returns 204 when current_version matches the latest", async () => {
     stubGitHub([fullDevRelease]);
-    const res = await GET(reqFor("dev.flickmeon.ai"), {
+    const res = await GET(reqFor("dev.thelightbulb.company"), {
       params: Promise.resolve({
         target: "darwin-aarch64",
         current_version: "0.2.11",
@@ -161,7 +161,7 @@ describe("GET /api/desktop/update/[target]/[current_version]", () => {
 
   it("returns 204 when bundle assets aren't attached yet (mid-build)", async () => {
     stubGitHub([dmgOnlyRelease]);
-    const res = await GET(reqFor("dev.flickmeon.ai"), {
+    const res = await GET(reqFor("dev.thelightbulb.company"), {
       params: Promise.resolve({
         target: "darwin-aarch64",
         current_version: "0.1.0",
@@ -173,7 +173,7 @@ describe("GET /api/desktop/update/[target]/[current_version]", () => {
   it("filters by tag prefix per host (prod skips dev releases)", async () => {
     // Only a dev release exists. Prod host should see "no release" → 204.
     stubGitHub([fullDevRelease]);
-    const res = await GET(reqFor("flickmeon.ai"), {
+    const res = await GET(reqFor("thelightbulb.company"), {
       params: Promise.resolve({
         target: "darwin-aarch64",
         current_version: "0.1.0",
@@ -184,7 +184,7 @@ describe("GET /api/desktop/update/[target]/[current_version]", () => {
 
   it("rejects unknown targets with 400", async () => {
     stubGitHub([fullDevRelease]);
-    const res = await GET(reqFor("dev.flickmeon.ai"), {
+    const res = await GET(reqFor("dev.thelightbulb.company"), {
       params: Promise.resolve({
         target: "windows-x86_64",
         current_version: "0.1.0",
@@ -218,7 +218,7 @@ describe("GET /api/desktop/update/[target]/[current_version]", () => {
       ],
     };
     stubGitHub([older, newer]);
-    const res = await GET(reqFor("dev.flickmeon.ai"), {
+    const res = await GET(reqFor("dev.thelightbulb.company"), {
       params: Promise.resolve({
         target: "darwin-aarch64",
         current_version: "0.2.5",
@@ -263,7 +263,7 @@ describe("GET /api/desktop/update/[target]/[current_version]", () => {
       newerVersionPublishedFirst,
       olderVersionPublishedLater,
     ]);
-    const res = await GET(reqFor("dev.flickmeon.ai"), {
+    const res = await GET(reqFor("dev.thelightbulb.company"), {
       params: Promise.resolve({
         target: "darwin-aarch64",
         current_version: "0.2.5",

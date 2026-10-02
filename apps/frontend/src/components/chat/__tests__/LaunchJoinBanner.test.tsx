@@ -60,7 +60,7 @@ const joined = (over: Partial<LaunchMe> = {}) =>
     position: 7,
     effective_position: 7,
     referral_code: "X",
-    referral_link: "https://flickmeon.ai/?ref=X",
+    referral_link: "https://thelightbulb.company/?ref=X",
     compete_eligible: true,
     ...over,
   });
@@ -78,10 +78,10 @@ describe("LaunchJoinBanner", () => {
   });
 
   it("shows the sheet position and referral link once joined", async () => {
-    get.mockResolvedValue(joined({ effective_position: 41, referral_link: "https://flickmeon.ai/?ref=P9AB3CDE" }));
+    get.mockResolvedValue(joined({ effective_position: 41, referral_link: "https://thelightbulb.company/?ref=P9AB3CDE" }));
     mount();
     expect(await screen.findByText(/You're #41 on the launch sheet/)).toBeInTheDocument();
-    expect(screen.getByText("https://flickmeon.ai/?ref=P9AB3CDE")).toBeInTheDocument();
+    expect(screen.getByText("https://thelightbulb.company/?ref=P9AB3CDE")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /copy/i })).toBeInTheDocument();
   });
 

@@ -11,8 +11,8 @@ describe("extractDocumentLinks", () => {
   it("finds relative and absolute document links, de-duplicated, capped at two", () => {
     const text = [
       "Done: [Plan](/HAB/issues/HAB-12#document-video-plan)",
-      "again https://dev.flickmeon.ai/HAB/issues/HAB-12#document-video-plan",
-      "and <https://flickmeon.ai/HAB/issues/HAB-13#document-research>",
+      "again https://dev.thelightbulb.company/HAB/issues/HAB-12#document-video-plan",
+      "and <https://thelightbulb.company/HAB/issues/HAB-13#document-research>",
       "and /HAB/issues/HAB-14#document-plan",
     ].join("\n");
     expect(extractDocumentLinks(text)).toEqual([
@@ -28,7 +28,7 @@ describe("extractDocumentLinks", () => {
   });
 
   it("keeps document links out of the web link previews", () => {
-    expect(extractPreviewUrls("https://flickmeon.ai/HAB/issues/HAB-12#document-plan https://a.com")).toEqual(["https://a.com"]);
+    expect(extractPreviewUrls("https://thelightbulb.company/HAB/issues/HAB-12#document-plan https://a.com")).toEqual(["https://a.com"]);
   });
 });
 

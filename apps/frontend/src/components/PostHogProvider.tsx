@@ -51,7 +51,7 @@ const SIGNUP_STARTED_IDENTIFIED_PREFIX = "isol8:signup_started_identified:";
  */
 export function resolveEnvironment(apiUrl: string | undefined): "prod" | "dev" {
   try {
-    return new URL(apiUrl ?? "").hostname === "api.flickmeon.ai" ? "prod" : "dev";
+    return new URL(apiUrl ?? "").hostname === "api.thelightbulb.company" ? "prod" : "dev";
   } catch {
     return "dev";
   }

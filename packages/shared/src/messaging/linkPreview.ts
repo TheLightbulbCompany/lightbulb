@@ -25,7 +25,7 @@ export const MAX_LINK_PREVIEWS = 2;
 const URL_RE = /https?:\/\/[^\s<>()[\]"'`]+/gi;
 const TRAILING = /[.,;:!?*_~]+$/;
 
-// Our own product (flickmeon.ai and every subdomain) is never unfurled: its links are
+// Our own product (thelightbulb.company and every subdomain) is never unfurled: its links are
 // task/document links that already render as a chip or card, or our own marketing page.
 const OWN_HOST = /(^|\.)flickmeon\.ai$/i;
 

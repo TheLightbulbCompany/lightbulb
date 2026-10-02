@@ -14,7 +14,7 @@ import {
   Runner,
   StackCapabilities,
 } from "cdk-pipelines-github";
-import { PLATFORM_MAIL_DOMAIN, ROOT_DOMAIN, DEV_ROOT_DOMAIN } from "./domains";
+import { DEV_ROOT_DOMAIN, LAUNCH_DOMAIN, PLATFORM_MAIL_DOMAIN, ROOT_DOMAIN } from "./domains";
 import { LightbulbStage } from "./lightbulb-stage";
 
 const app = new cdk.App();
@@ -51,7 +51,8 @@ const setupPnpmStep = () => ({
 // `vercel deploy --prebuilt` then fails with "File does not exist:
 // node_modules/.pnpm/…" (reproduced 2026-08-29).
 const companyVercelEnv = { ...vercelEnv, VERCEL_PROJECT_ID: "${{ secrets.VERCEL_PROJECT_ID_COMPANY }}" };
-const COMPANY_DOMAIN = "thelightbulb.company";
+// The product took the apex (2026-10); the holding-company page lives on `about.`.
+const COMPANY_DOMAIN = "about.thelightbulb.company";
 const companyVercelSteps = (prod: boolean) => [
   // Vercel needs no git credentials; do not leave the token in the checkout.
   { name: "Checkout", uses: "actions/checkout@v4", with: { "persist-credentials": false } },
@@ -264,6 +265,11 @@ pipeline.addStageWithGitHubOptions(devStage, {
           run: `vercel alias \${{ steps.vercel-deploy-dev.outputs.DEPLOY_URL }} admin.dev.${DEV_ROOT_DOMAIN} --token=$VERCEL_TOKEN`,
           env: vercelEnv,
         },
+        {
+          name: `Alias to dev.${LAUNCH_DOMAIN}`,
+          run: `vercel alias \${{ steps.vercel-deploy-dev.outputs.DEPLOY_URL }} dev.${LAUNCH_DOMAIN} --token=$VERCEL_TOKEN`,
+          env: vercelEnv,
+        },
       ],
     }),
     // The holding-company site. Preview only in dev.
@@ -372,8 +378,26 @@ pipeline.addStageWithGitHubOptions(prodStage, {
           env: vercelEnv,
         },
         {
+          name: `Register admin.${ROOT_DOMAIN} project domain`,
+          run: `vercel domains add admin.${ROOT_DOMAIN} frontend --force --token="$VERCEL_TOKEN"`,
+          env: vercelEnv,
+        },
+        {
           name: `Alias to admin.${ROOT_DOMAIN}`,
           run: `vercel alias \${{ steps.vercel-deploy-prod.outputs.DEPLOY_URL }} admin.${ROOT_DOMAIN} --token=$VERCEL_TOKEN`,
+          env: vercelEnv,
+        },
+        // The retired product domain stays on this project: middleware answers it
+        // (decideLaunchHostRouting). Without a fresh alias it would keep serving
+        // the last build made before the move.
+        {
+          name: `Alias to ${LAUNCH_DOMAIN}`,
+          run: `vercel alias \${{ steps.vercel-deploy-prod.outputs.DEPLOY_URL }} ${LAUNCH_DOMAIN} --token=$VERCEL_TOKEN`,
+          env: vercelEnv,
+        },
+        {
+          name: `Alias to www.${LAUNCH_DOMAIN}`,
+          run: `vercel alias \${{ steps.vercel-deploy-prod.outputs.DEPLOY_URL }} www.${LAUNCH_DOMAIN} --token=$VERCEL_TOKEN`,
           env: vercelEnv,
         },
       ],
@@ -397,16 +421,6 @@ pipeline.addStageWithGitHubOptions(prodStage, {
         {
           name: `Alias to ${COMPANY_DOMAIN}`,
           run: `vercel alias \${{ steps.company-deploy-prod.outputs.DEPLOY_URL }} ${COMPANY_DOMAIN} --token=$VERCEL_TOKEN`,
-          env: companyVercelEnv,
-        },
-        {
-          name: `Register www.${COMPANY_DOMAIN} project domain`,
-          run: `vercel domains add www.${COMPANY_DOMAIN} company --force --token="$VERCEL_TOKEN"`,
-          env: companyVercelEnv,
-        },
-        {
-          name: `Alias to www.${COMPANY_DOMAIN}`,
-          run: `vercel alias \${{ steps.company-deploy-prod.outputs.DEPLOY_URL }} www.${COMPANY_DOMAIN} --token=$VERCEL_TOKEN`,
           env: companyVercelEnv,
         },
       ],

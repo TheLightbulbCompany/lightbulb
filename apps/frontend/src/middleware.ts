@@ -3,7 +3,10 @@ import { NextResponse, type NextRequest } from "next/server";
 
 import {
   DEFAULT_ADMIN_HOSTS,
+  LAUNCH_HOSTS,
   PAPERCLIP_HOSTS as PAPERCLIP_HOST_LIST,
+  ROOT_DOMAIN,
+  SITE_URL,
 } from "@/lib/domain";
 import { shellUrlFromPaperclipPath } from "@/lib/shellNav";
 
@@ -112,6 +115,30 @@ export function decidePaperclipLinkRedirect(
 // is the only way to fully bypass it for these hosts.
 const PAPERCLIP_HOSTS = new Set(PAPERCLIP_HOST_LIST);
 
+export type LaunchHostDecision =
+  | { kind: "redirect"; to: string }
+  | { kind: "rewrite"; to: string }
+  | { kind: "passthrough" };
+
+const LAUNCH_HOST_SET = new Set(LAUNCH_HOSTS);
+
+/**
+ * Pure host/path -> decision for the retired product domain (flickmeon.ai).
+ * null = not a launch host. Runs outside clerkMiddleware for the same reason
+ * the Paperclip hosts do: browsers still hold Clerk cookies from when this
+ * domain was the product, and Clerk would answer them with a handshake redirect.
+ */
+export function decideLaunchHostRouting(
+  host: string | null | undefined,
+  pathname: string,
+  search: string,
+): LaunchHostDecision | null {
+  const h = (host ?? "").toLowerCase();
+  if (!LAUNCH_HOST_SET.has(h)) return null;
+  const origin = h.startsWith("dev.") ? `https://dev.${ROOT_DOMAIN}` : SITE_URL;
+  return { kind: "redirect", to: `${origin}${pathname}${search}` };
+}
+
 const _clerkMiddleware = clerkMiddleware(async (auth, req) => {
   const host = (req.headers.get("host") ?? "").toLowerCase();
   const decision = decideAdminHostRouting(host, req.nextUrl.pathname);
@@ -141,6 +168,14 @@ const _clerkMiddleware = clerkMiddleware(async (auth, req) => {
 
 export default function middleware(req: NextRequest, evt: Parameters<typeof _clerkMiddleware>[1]) {
   const host = (req.headers.get("host") ?? "").toLowerCase();
+  const launch = decideLaunchHostRouting(host, req.nextUrl.pathname, req.nextUrl.search);
+  if (launch?.kind === "redirect") return NextResponse.redirect(launch.to, 308);
+  if (launch?.kind === "rewrite") {
+    const url = req.nextUrl.clone();
+    url.pathname = launch.to;
+    return NextResponse.rewrite(url);
+  }
+  if (launch?.kind === "passthrough") return NextResponse.next();
   if (PAPERCLIP_HOSTS.has(host)) {
     // Bypass clerkMiddleware entirely so Clerk's dev-browser handshake
     // doesn't 307-redirect the request away from the beforeFiles rewrite.

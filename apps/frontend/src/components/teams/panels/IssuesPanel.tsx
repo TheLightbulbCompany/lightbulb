@@ -23,6 +23,7 @@ import { CreateProjectDialog } from "@/components/teams/issues/CreateProjectDial
 import { useIssueMutations } from "@/components/teams/issues/hooks/useIssueMutations";
 import { useLiveRuns } from "@/components/teams/dashboard/hooks/useLiveRuns";
 import { useTeamsApi } from "@/hooks/useTeamsApi";
+import { useIssueExternalObjectSummaries } from "@/components/teams/issues/external-objects/useIssueExternalObjects";
 import type {
   CompanyAgent,
   CompanyMember,
@@ -171,6 +172,9 @@ export function IssuesPanel({
   }, [liveRuns]);
 
   const issues = data?.issues;
+  // One batch request for the whole loaded list (not per row, and not re-keyed
+  // by the search box): the GitHub PR / issue rollup each list row shows.
+  const externalObjectSummaries = useIssueExternalObjectSummaries((issues ?? []).map((i) => i.id));
   const filtered = useMemo(() => {
     const list = issues ?? [];
     const q = search.trim().toLowerCase();
@@ -307,6 +311,7 @@ export function IssuesPanel({
         initialGroupBy={initialGroupBy}
         onGroupByChange={setLiveGroupBy}
         liveIssueIds={liveIssueIds}
+        externalObjectSummaries={externalObjectSummaries}
         currentUserId={user?.id ?? null}
         searchActive={search.trim().length > 0 || agentFilter !== null}
         isLoading={isLoading}

@@ -62,6 +62,8 @@ const FIXTURE_KEYS = [
   "/teams/issues/iss_1/comments",
   "/teams/issues/iss_1/interactions",
   "/teams/issues/iss_1/runs", // IssueRunLedger — must refresh on run status events
+  "/teams/issues/iss_1/external-objects", // the rail's GitHub PR / issue rows
+  "/teams/issues/external-object-summaries?iss_1,iss_other", // the task list's rollups
 
   "/teams/issues/ADM-481", // identifier-keyed variant (details.identifier)
   "/teams/issues/iss_other", // a DIFFERENT issue: must NOT be invalidated
@@ -357,6 +359,32 @@ describe("TeamsEventsProvider", () => {
       expect(keys).not.toContain("/teams/routines/rt_1/runs");
     },
   );
+
+  it("refetches the external-object reads on teams.stream.resumed (an update missed while the stream was down)", () => {
+    liveState.connectionRevision = 1;
+    render(<TeamsEventsProvider><div /></TeamsEventsProvider>);
+    mutateMock.mockClear(); // drop the first-subscribe reconcile
+    act(() => {
+      eventHandler!("teams.stream.resumed", {});
+    });
+    expect(invalidatedKeys()).toEqual(expect.arrayContaining([
+      "/teams/issues/external-object-summaries?iss_1,iss_other",
+      "/teams/issues/iss_1/external-objects",
+    ]));
+  });
+
+  it("refreshes the external-object reads on teams.external_object.updated", () => {
+    liveState.connectionRevision = 1;
+    render(<TeamsEventsProvider><div /></TeamsEventsProvider>);
+    mutateMock.mockClear();
+    act(() => {
+      eventHandler!("teams.external_object.updated", { objectId: "obj_1", liveness: "fresh" });
+    });
+    expect(invalidatedKeys().sort()).toEqual([
+      "/teams/issues/external-object-summaries?iss_1,iss_other",
+      "/teams/issues/iss_1/external-objects",
+    ]);
+  });
 
   it("ignores teams.plugin.* events (no UI bound in v1)", () => {
     liveState.connectionRevision = 1;

@@ -677,6 +677,23 @@ class ResolveIssueRecoveryActionBody(_Strict):
         return self
 
 
+_Uuid = Annotated[str, Field(pattern=_RECOVERY_ACTION_ID)]
+
+
+class RefreshExternalObjectsBody(_Strict):
+    """Body for ``POST /teams/issues/{id}/external-objects/refresh``. Mirrors
+    upstream's ``refreshExternalObjectsSchema`` (``.strict()``, ≤50 uuids)."""
+
+    object_ids: Optional[list[_Uuid]] = Field(default=None, max_length=50)
+
+
+class ExternalObjectSummariesBody(_Strict):
+    """Body for ``POST /teams/issues/external-object-summaries``. Mirrors
+    upstream's ``externalObjectSummariesSchema`` (``.strict()``, ≤1000 uuids)."""
+
+    issue_ids: list[_Uuid] = Field(max_length=1000)
+
+
 class PatchWorkProductBody(_Strict):
     """Body for ``PATCH /teams/issues/{id}/work-products/{wpid}``.
 

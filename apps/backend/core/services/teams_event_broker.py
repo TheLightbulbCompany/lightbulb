@@ -29,6 +29,7 @@ _PAPERCLIP_EVENTS = frozenset(
         "teams.heartbeat.run.status",
         "teams.heartbeat.run.event",
         "teams.heartbeat.run.log",
+        "teams.external_object.updated",
         "teams.stream.resumed",
     }
 )

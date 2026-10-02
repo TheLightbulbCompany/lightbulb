@@ -28,8 +28,10 @@ from .schemas import (
     CreateIssueBody,
     CreateIssueLabelBody,
     CreateWorkProductBody,
+    ExternalObjectSummariesBody,
     PatchIssueBody,
     PatchWorkProductBody,
+    RefreshExternalObjectsBody,
     ResolveIssueRecoveryActionBody,
     UpsertIssueWatchdogBody,
 )
@@ -401,6 +403,57 @@ async def resolve_issue_recovery_action(
     return await _agents._admin().resolve_issue_recovery_action(
         issue_id=issue_id,
         body=body.model_dump(exclude_none=True, by_alias=True),
+        session_cookie=ctx.session_cookie,
+    )
+
+
+# ----------------------------------------------------------------------
+# External objects: the GitHub PRs / issues an issue mentions, with live
+# status. Upstream gates the whole feature on the instance flag
+# ``enableExternalObjects``; while it is off these answer empty, not an error.
+# ----------------------------------------------------------------------
+
+
+@router.get("/issues/{issue_id}/external-objects")
+async def list_issue_external_objects(issue_id: CompanyIssueId, ctx: TeamsContext = Depends(_ctx)):
+    """The external objects mentioned on an issue. Maps to upstream
+    ``GET /api/issues/{id}/external-objects`` (a bare array, wrapped here)."""
+    rows = await _agents._admin().list_issue_external_objects(
+        issue_id=issue_id,
+        session_cookie=ctx.session_cookie,
+    )
+    return envelope_list(rows, "externalObjects")
+
+
+@router.post("/issues/{issue_id}/external-objects/refresh")
+async def refresh_issue_external_objects(
+    issue_id: CompanyIssueId,
+    body: RefreshExternalObjectsBody,
+    ctx: TeamsContext = Depends(_ctx),
+):
+    """Re-resolve an issue's external objects now. Maps to upstream
+    ``POST /api/issues/{id}/external-objects/refresh``. It calls GitHub but
+    wakes no agent, so it is not a spend door and takes no trial gate."""
+    return await _agents._admin().refresh_issue_external_objects(
+        issue_id=issue_id,
+        body=body.model_dump(exclude_none=True, by_alias=True),
+        session_cookie=ctx.session_cookie,
+    )
+
+
+@router.post("/issues/external-object-summaries")
+async def list_external_object_summaries(body: ExternalObjectSummariesBody, ctx: TeamsContext = Depends(_ctx)):
+    """Status rollups for a page of issues, one request per list. Maps to upstream
+    ``POST /api/companies/{companyId}/issues/external-object-summaries``.
+
+    The ids are body-supplied, so there is no per-id fence dependency: the
+    company is ``ctx.company_id`` (never the caller's), and upstream selects the
+    requested ids ``WHERE company_id = :companyId`` and then drops any the
+    caller cannot read, so a foreign id simply has no entry in the answer.
+    """
+    return await _agents._admin().list_external_object_summaries(
+        company_id=ctx.company_id,
+        issue_ids=body.issue_ids,
         session_cookie=ctx.session_cookie,
     )
 

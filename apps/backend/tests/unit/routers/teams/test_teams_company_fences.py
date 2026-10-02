@@ -14,13 +14,14 @@ import pytest
 from fastapi.testclient import TestClient
 
 from main import app
-from routers.teams import agents, approvals, issues, router, runs, work
+from routers.teams import agents, approvals, decisions, issues, router, runs, work
 from routers.teams.deps import TeamsContext
 
 FENCES = {
     issues._company_issue,
     agents._company_agent,
     approvals._company_approval,
+    decisions._company_decision,
     runs._company_run,
     work._company_goal,
     work._company_project,

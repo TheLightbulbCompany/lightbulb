@@ -1821,3 +1821,155 @@ export interface AttentionFeedResponse {
   totalCount?: number;
   countsBySourceKind?: Partial<Record<AttentionSourceKind, number>>;
 }
+
+// --- Decisions (agent-proposed choices a person answers) --------------------
+//
+// Ported from upstream Paperclip's decision types
+// (paperclip/packages/shared/src/types/decision.ts, validators/decision.ts and
+// paperclip/ui/src/api/decisions.ts) (MIT, (c) 2025 Paperclip AI).
+
+export type DecisionEffectStaleness = "strict" | "lenient";
+export type DecisionOptionStyle = "default" | "primary" | "destructive";
+
+/** One free-text answer the decision asks for (0-4 per decision). */
+export interface DecisionInput {
+  id: string;
+  label: string;
+  placeholder?: string | null;
+  required?: boolean;
+  maxLength?: number;
+}
+
+interface DecisionEffectBase {
+  targetIssueId: string;
+  staleness: DecisionEffectStaleness;
+}
+
+export interface CommentOnIssueDecisionEffect extends DecisionEffectBase {
+  type: "comment_on_issue";
+  bodyMarkdown: string;
+}
+
+export interface CreateIssueDecisionEffect extends DecisionEffectBase {
+  type: "create_issue";
+  draft: {
+    title: string;
+    description?: string | null;
+    parentId?: string | null;
+    assigneeAgentId?: string | null;
+    assigneeUserId?: string | null;
+    projectId?: string | null;
+    goalId?: string | null;
+    blockedByIssueIds?: string[];
+  };
+}
+
+export interface UpdateIssueStatusDecisionEffect extends DecisionEffectBase {
+  type: "update_issue_status";
+  status: IssueStatus;
+  comment?: string | null;
+}
+
+export interface AssignIssueDecisionEffect extends DecisionEffectBase {
+  type: "assign_issue";
+  assigneeAgentId?: string | null;
+  assigneeUserId?: string | null;
+  comment?: string | null;
+}
+
+export interface CancelIssueTreeDecisionEffect extends DecisionEffectBase {
+  type: "cancel_issue_tree";
+  staleness: "strict";
+  reasonComment: string;
+}
+
+export interface ResolveBlockerDecisionEffect extends DecisionEffectBase {
+  type: "resolve_blocker";
+  removeBlockedByIssueIds: string[];
+}
+
+export type DecisionEffect =
+  | CommentOnIssueDecisionEffect
+  | CreateIssueDecisionEffect
+  | UpdateIssueStatusDecisionEffect
+  | AssignIssueDecisionEffect
+  | CancelIssueTreeDecisionEffect
+  | ResolveBlockerDecisionEffect;
+
+/** One choice (1-8 per decision). Paperclip runs its effects when picked. */
+export interface DecisionOption {
+  id: string;
+  label: string;
+  description?: string | null;
+  style?: DecisionOptionStyle;
+  effects: DecisionEffect[];
+}
+
+export type DecisionStatus = "open" | "decided" | "expired" | "cancelled";
+export type DecisionExecutionStatus = "running" | "succeeded" | "partial" | "failed";
+export type DecisionEffectExecutionStatus = "claimed" | "executed" | "failed" | "skipped";
+
+export interface DecisionTargetSnapshot {
+  status: string;
+  assigneeAgentId: string | null;
+  assigneeUserId: string | null;
+  updatedAt: string;
+  descendantCount?: number;
+  descendantIds?: string[];
+  /** Legacy snapshots created before descendantCount was named explicitly. */
+  childCount?: number;
+}
+
+export interface Decision {
+  id: string;
+  companyId: string;
+  bundleId: string | null;
+  originAgentId: string;
+  originIssueId: string;
+  originRunId: string;
+  ruleKey: string | null;
+  title: string;
+  body: string;
+  options: DecisionOption[];
+  inputs: DecisionInput[] | null;
+  status: DecisionStatus;
+  executionStatus: DecisionExecutionStatus | null;
+  chosenOptionId: string | null;
+  inputValues: Record<string, string> | null;
+  decidedByUserId: string | null;
+  decidedAt: string | null;
+  expiresAt: string;
+  idempotencyKey: string | null;
+  targetSnapshots: Record<string, DecisionTargetSnapshot>;
+  continuationPolicy: "none" | "wake_origin_agent";
+  metadata: Record<string, unknown>;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/** One effect's result row, present once a decision is decided. */
+export interface DecisionEffectExecution {
+  id: string;
+  decisionId: string;
+  effectIndex: number;
+  effectType: string;
+  targetIssueId: string;
+  status: DecisionEffectExecutionStatus;
+  result: Record<string, unknown> | null;
+  error: string | null;
+  activityLogId: string | null;
+  executedAt: string | null;
+}
+
+/** What `GET /teams/decisions/{id}`, decide and dismiss return. */
+export interface DecisionOutcome extends Decision {
+  executions: DecisionEffectExecution[];
+}
+
+/** A row of `GET /teams/decisions`: each open decision is annotated with which
+ *  target issues drifted since it was proposed. */
+export interface DecisionListItem extends Decision {
+  targetChanged: Record<string, boolean>;
+  /** Included on terminal-state rows. */
+  executions?: DecisionEffectExecution[];
+}

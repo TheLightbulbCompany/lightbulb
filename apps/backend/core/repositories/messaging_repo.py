@@ -940,6 +940,9 @@ async def create_message(
         }
         if via:
             message["via"] = via
+        if acting_human_id:
+            # The accountable human behind a system-authored post (hosted MCP receipts read it).
+            message["actorUserId"] = acting_human_id
         if session_target_labels:
             message["sessionTargetLabels"] = session_target_labels
         if silent:

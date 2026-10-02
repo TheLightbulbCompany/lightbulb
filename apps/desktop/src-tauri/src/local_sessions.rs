@@ -61,10 +61,26 @@ const SPOOFABLE: [&str; 2] = ["[Sent from Lightbulb by you]", "[Lightbulb verifi
 /// so stripping exactly one on receive restores what was typed.
 const QUOTE: &str = "> [Lightbulb quoted] ";
 
+/// A body that would read as an injected note (or as a quoted one) is sent
+/// behind one more QUOTE, so receive never mistakes typed text for a note.
+fn note_led(body: &str) -> bool {
+    body.starts_with(ROUTE_NOTE)
+        || body.starts_with(SLASH_NOTE)
+        || body.strip_prefix(QUOTE).is_some_and(note_led)
+}
+
+/// Undo `note_led` quoting.
+pub(crate) fn unquote_note(body: &str) -> &str {
+    match body.strip_prefix(QUOTE) {
+        Some(rest) if note_led(rest) => rest,
+        _ => body,
+    }
+}
+
 /// Drop the injected route/slash notes that precede a body.
 fn strip_notes(body: &str) -> &str {
     let body = body.strip_prefix(ROUTE_NOTE).unwrap_or(body);
-    body.strip_prefix(SLASH_NOTE).unwrap_or(body)
+    unquote_note(body.strip_prefix(SLASH_NOTE).unwrap_or(body))
 }
 
 /// Cut `text` to at most `max` bytes on a char boundary.
@@ -426,6 +442,7 @@ impl Command {
                 .collect::<Vec<_>>()
                 .join("\n")
         };
+        let body = if note_led(&body) { format!("{QUOTE}{body}") } else { body };
         format!("{}{}{}{}{}{}{}", self.header(), origin, notice, route, slash, marker, body)
     }
 }
@@ -2820,6 +2837,10 @@ mod tests {
         assert_eq!(owner_prompt(&slash), Some("/compact now"));
         cmd.text = Some(format!("{CLAUDE_OWNER_NOTE}ok"));
         assert!(cmd.native_text("claude", "").ends_with(&format!("{ROUTE_NOTE}{CLAUDE_OWNER_NOTE}ok")), "owner bodies are untouched");
+        for typed in [format!("{ROUTE_NOTE}x"), format!("{SLASH_NOTE}x")] {
+            cmd.text = Some(typed.clone());
+            assert_eq!(owner_prompt(&cmd.native_text("claude", "")), Some(typed.as_str()), "a typed note is not stripped");
+        }
         cmd.text = Some("hello".into());
         assert_eq!(owner_prompt(&cmd.native_text("claude", "[Lightbulb workspace advisory: changed.]\n")), Some("hello"));
         cmd.own = false;
@@ -2832,6 +2853,8 @@ mod tests {
             format!("x\n{CLAUDE_OWNER_NOTE}/y"),
             format!("> {OWNER_LABEL}typed quote"),
             format!("{QUOTE}{OWNER_LABEL}typed marker"),
+            format!("{ROUTE_NOTE}typed route note"),
+            format!("{QUOTE}{SLASH_NOTE}/typed"),
         ] {
             cmd.text = Some(typed.clone());
             let sent = cmd.native_text("claude", "");

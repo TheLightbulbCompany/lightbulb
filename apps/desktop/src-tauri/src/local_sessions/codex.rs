@@ -592,7 +592,7 @@ fn item(item: &Value, ts: Option<&str>) -> Option<Value> {
                     .and_then(|rest| rest.split_once("]\n"))
                     .filter(|(request, _)| (1..=256).contains(&request.len())
                         && request.bytes().all(|b| b.is_ascii_alphanumeric() || b"_.:-".contains(&b)))
-                    .map_or((None, body), |(request, body)| (Some(request), body));
+                    .map_or((None, body), |(request, body)| (Some(request), unquote_note(body)));
                 let mut e = event("text", "user", body, ts, id);
                 if let Some(request) = request { e["originRequestId"] = json!(request); }
                 return Some(e);

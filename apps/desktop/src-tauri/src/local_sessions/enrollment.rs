@@ -727,11 +727,17 @@ pub async fn local_sessions_repair(
         return Err("Enable local-session sharing first".into());
     }
     let notes = reassert(&dir);
-    if !notes.is_empty() {
-        *state.status.lock().map_err(|_| "sharing state unavailable")? =
-            format!("Setup retried; {}.", notes.join("; "));
-    }
+    *state.status.lock().map_err(|_| "sharing state unavailable")? = retried(&notes);
     Ok(notes)
+}
+
+/// Every retry replaces the last one's status, so a fixed failure stops showing.
+fn retried(notes: &[String]) -> String {
+    if notes.is_empty() {
+        "Setup retried; Claude Code and Codex are configured for new sessions.".into()
+    } else {
+        format!("Setup retried; {}.", notes.join("; "))
+    }
 }
 
 #[tauri::command]
@@ -1482,6 +1488,12 @@ mod tests {
             .unwrap()
             .file_type()
             .is_symlink());
+    }
+
+    #[test]
+    fn local_sessions_repair_success_replaces_a_prior_failure() {
+        assert_eq!(retried(&["Codex hooks were not installed (x)".into()]), "Setup retried; Codex hooks were not installed (x).");
+        assert_eq!(retried(&[]), "Setup retried; Claude Code and Codex are configured for new sessions.");
     }
 
     #[test]

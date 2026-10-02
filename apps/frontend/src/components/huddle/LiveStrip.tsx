@@ -122,8 +122,8 @@ function AgentGroupLive({ worker, tiles, slots, onTalk, edge }: { worker: Partic
 }
 
 /** The popover's agent rows, what's happening and the hint line: pure over the worker's attributes. */
-function AgentRows({ tiles, observing, attrs, onTalk, hint, edge = NO_EDGE }: {
-  tiles: readonly Tile[]; observing: readonly Tile[]; attrs: Attrs; onTalk: (id: string) => void; hint: string | null; edge?: Edge;
+function AgentRows({ tiles, attrs, onTalk, hint, edge = NO_EDGE }: {
+  tiles: readonly Tile[]; attrs: Attrs; onTalk: (id: string) => void; hint: string | null; edge?: Edge;
 }) {
   const names = new Map(tiles.map((t) => [t.id, t.name]));
   const floor = floorHolder(attrs);
@@ -149,7 +149,6 @@ function AgentRows({ tiles, observing, attrs, onTalk, hint, edge = NO_EDGE }: {
           })}
         </ul>
       )}
-      {observing.length > 0 && <p className="live-observing">Observing: {observing.map((t) => t.name).join(", ")} — can&apos;t be asked here</p>}
       {hint && <p className="live-hint">{hint}</p>}
     </>
   );
@@ -230,9 +229,7 @@ function Strip({ here, members }: { here: boolean; members: readonly RoomMember[
   const people = participants.filter((p) => p.identity !== CEO_IDENTITY);
   const stripRef = useRef<HTMLDivElement>(null);
   const narrow = useNarrow(stripRef);
-  const { tiles: tileMembers, observing: obsMembers } = liveAgents(members);
-  const tiles = tileMembers.map((m) => ({ id: m.id, name: m.displayName }));
-  const observing = obsMembers.map((m) => ({ id: m.id, name: m.displayName }));
+  const tiles = liveAgents(members).map((m) => ({ id: m.id, name: m.displayName }));
   const humans = members.filter((m) => m.kind !== "agent");
   const hint = lightbulb ? liveHint(tiles.map((t) => ({ name: t.name, collides: nameCollides(t.name, humans) }))) : null;
   const showInline = useHintSessions(here && hint ? room : null);
@@ -327,8 +324,8 @@ function Strip({ here, members }: { here: boolean; members: readonly RoomMember[
           </p>
         )}
         {lightbulb && (ceo
-          ? <AgentRowsLive worker={ceo} tiles={tiles} observing={observing} onTalk={tap} hint={hint} edge={edge} />
-          : <AgentRows tiles={tiles} observing={observing} attrs={undefined} onTalk={tap} hint={hint} edge={edge} />)}
+          ? <AgentRowsLive worker={ceo} tiles={tiles} onTalk={tap} hint={hint} edge={edge} />
+          : <AgentRows tiles={tiles} attrs={undefined} onTalk={tap} hint={hint} edge={edge} />)}
         <ul className="live-people" aria-label="People in Live">
           {people.map((p) => <PersonRow key={p.identity} participant={p} />)}
         </ul>

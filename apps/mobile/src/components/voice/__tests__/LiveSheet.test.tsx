@@ -89,15 +89,15 @@ describe("Live", () => {
     (useTrackVolume as jest.Mock).mockClear();
   });
 
-  it("joins with the mic on; tiles for active agents, Pulse observing, people with speaking rings", async () => {
+  it("joins with the mic on; tiles for every agent (observe Pulse too), people with speaking rings", async () => {
     await goLive();
     expect(mockPost).toHaveBeenCalledWith("/huddles/room-1/join", {});
     expect(mockRooms[0].mic).toHaveBeenCalledWith(true);
     expect(screen.getByText("🔴 Live · #launch")).toBeTruthy();
     expect(screen.getAllByLabelText(/^Gauge, agent/).length).toBeGreaterThan(0); // the stage and the row
     expect(screen.getAllByLabelText(/^CEO, agent/)).toHaveLength(1);
-    expect(screen.queryByLabelText(/^Pulse, agent/)).toBeNull();
-    expect(screen.getByText("Observing: Pulse — can't be asked here")).toBeTruthy();
+    expect(screen.getAllByLabelText(/^Pulse, agent/)).toHaveLength(1); // listen modes are chat-only
+    expect(screen.queryByText(/can't be asked here/)).toBeNull();
     expect(screen.getByLabelText("Leo, speaking")).toBeTruthy();
     expect(screen.getByLabelText("Aden")).toBeTruthy();
     expect(screen.getByText("Tap someone or say their name")).toBeTruthy();

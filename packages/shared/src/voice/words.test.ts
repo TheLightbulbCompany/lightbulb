@@ -65,11 +65,10 @@ describe("per-agent Live readers", () => {
     expect(orderAgentSlots(["a", "b", "c", "d"], a)).toEqual(["c", "d", "b", "a"]);
   });
 
-  it("splits tiles from observers and drops humans", () => {
+  it("tiles every agent whatever its listen mode and drops humans", () => {
     const m = (id: string, kind: string, listenMode: string | null) => ({ id, kind, displayName: id, listenMode });
-    const { tiles, observing } = liveAgents([m("a", "agent", "active"), m("h", "user", null), m("o", "agent", "observe"), m("b", "agent", "mentions")]);
-    expect(tiles.map((t) => t.id)).toEqual(["a", "b"]);
-    expect(observing.map((t) => t.id)).toEqual(["o"]);
+    const tiles = liveAgents([m("a", "agent", "active"), m("h", "user", null), m("o", "agent", "observe"), m("b", "agent", "mentions")]);
+    expect(tiles.map((t) => t.id)).toEqual(["a", "o", "b"]);
   });
 
   it.each([

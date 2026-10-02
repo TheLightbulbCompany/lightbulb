@@ -304,23 +304,24 @@ async def _owner_row(owner_id: str):
     return row
 
 
-async def listening_agents(room_id: str) -> list[dict]:
+async def room_agents(room_id: str) -> list[dict]:
+    """Every agent member. Listen modes are a chat-traffic setting; Live ignores them (owner ruling 2026-10-02)."""
     return [
         {"id": m["id"], "name": m.get("displayName") or "Agent"}
         for m in await messaging_repo.list_members(room_id)
-        if m.get("kind") == "agent" and m.get("listenMode") != "observe"
+        if m.get("kind") == "agent"
     ]
 
 
 async def _room_team(owner_id: str, user_id: str, room_id: str, *, need_team: bool = True) -> tuple[dict, list[dict]]:
-    """The room's non-observe agents. Any room kind; a DM with an agent is a one-agent team.
+    """The room's agents, any listen mode. Any room kind; a DM with an agent is a one-agent team.
     need_team=False (Live join) returns an empty team for a people-only room instead of 409."""
     meta, _ = await messaging.require_room_member(owner_id, user_id, room_id)
     if meta.get("ownerId") != owner_id:  # a shared-channel guest: the team is another workspace's agents
         raise _problem(404, code="room_not_found")
     if meta.get("archivedAt"):
         raise _problem(409, code="room_archived")
-    team = await listening_agents(room_id)
+    team = await room_agents(room_id)
     if need_team and not team:
         raise _problem(409, code="no_agents")
     return meta, team
@@ -518,7 +519,7 @@ async def huddle_team(*, owner_id: str, room_id: str) -> dict:
             "defaultName": voice_persona.is_default_name(m["id"], m.get("displayName"), starters),
         }
         for m in members
-        if m.get("kind") == "agent" and m.get("listenMode") != "observe"
+        if m.get("kind") == "agent"
     ]
     people = [{"userId": m["id"], "name": m.get("displayName") or m["id"]} for m in members if m.get("kind") == "human"]
     return {"agents": agents, "people": people, "ceoId": starters.get("ceo")}
@@ -567,7 +568,7 @@ async def agent_session(*, owner_id: str, room_id: str, agent_id: str) -> dict:
     meta = await _owned_room(owner_id, room_id)
     members, starters = await asyncio.gather(messaging_repo.list_members(room_id), _starter_ids(owner_id))
     me = next((m for m in members if m.get("kind") == "agent" and m["id"] == agent_id), None)
-    if not me or me.get("listenMode") == "observe":
+    if not me:
         raise _problem(409, code="agent_not_in_room")
     row, soul, notes_md = await _session_reads(owner_id, agent_id)
     name = (row or {}).get("name") or me.get("displayName") or "Agent"
@@ -579,11 +580,7 @@ async def agent_session(*, owner_id: str, room_id: str, agent_id: str) -> dict:
         voice_notes=hermes_profiles.parse_voice_notes_md(notes_md)[1],
         room_name=meta.get("name"),
         people=[m.get("displayName") or m["id"] for m in members if m.get("kind") == "human"],
-        agents=[
-            m.get("displayName") or "Agent"
-            for m in members
-            if m.get("kind") == "agent" and m["id"] != agent_id and m.get("listenMode") != "observe"
-        ],
+        agents=[m.get("displayName") or "Agent" for m in members if m.get("kind") == "agent" and m["id"] != agent_id],
         ask_name=ask_name,
     )
     return {
@@ -615,9 +612,7 @@ async def dispatch_voice_run(
     worker's, reused on every retry, so a delivered-but-timed-out invoke is replayed, never re-run."""
     owner_id, room_id = call["ownerId"], call["roomId"]
     meta, members = await asyncio.gather(messaging_repo.get_room(room_id), messaging_repo.list_members(room_id))
-    if not meta or not any(
-        m.get("kind") == "agent" and m["id"] == agent_id and m.get("listenMode") != "observe" for m in members
-    ):
+    if not meta or not any(m.get("kind") == "agent" and m["id"] == agent_id for m in members):
         raise _problem(409, code="agent_not_in_room")
     name = await _speaker_name(speaker_id)
     spoken = transcript[-_TRANSCRIPT_CHARS:].strip()

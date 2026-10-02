@@ -78,7 +78,7 @@ function Stage() {
   const mics = useTracks([Track.Source.Microphone]);
   const people = participants.filter((p) => p.identity !== LIVE_AGENT_IDENTITY);
   const attrs = live.workerAttrs;
-  const { tiles, observing } = liveAgents(live.roster);
+  const tiles = liveAgents(live.roster);
   const nameOf = useCallback((id: string) => live.roster.find((m) => m.id === id)?.displayName ?? id, [live.roster]);
   const ids = orderAgentSlots(tiles.map((m) => m.id), attrs);
 
@@ -185,9 +185,6 @@ function Stage() {
             ))}
           </ScrollView>
         </>
-      )}
-      {live.lightbulb && observing.length > 0 && (
-        <Text style={[styles.hint, { color: palette.fgMute }]}>Observing: {observing.map((m) => m.displayName).join(", ")} — can&apos;t be asked here</Text>
       )}
       <Text style={[styles.caption, { color: palette.fgMute }]}>People</Text>
       <ScrollView horizontal contentContainerStyle={styles.people} showsHorizontalScrollIndicator={false}>

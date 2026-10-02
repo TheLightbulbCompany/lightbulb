@@ -138,7 +138,8 @@ async def _start(room, huddle: Huddle, vad, agent_id, persona, voice, speaker, s
     session.on("agent_state_changed", lambda ev: huddle.on_agent_state(agent_id, ev.new_state))
 
     def said(ev) -> None:
-        if ev.item.role == "assistant" and (text := ev.item.text_content):
+        # ChatItem is a union: an AgentHandoff / FunctionCall / AgentConfigUpdate has no role.
+        if ev.item.type == "message" and ev.item.role == "assistant" and (text := ev.item.text_content):
             huddle.on_agent_said(agent_id, text)
 
     session.on("conversation_item_added", said)

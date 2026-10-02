@@ -40,10 +40,10 @@ beforeEach(() => {
   lk.participants = [{ identity: "agent-ceo" }, { identity: "u1", name: "Ana", isLocal: true }];
 });
 
-it("three tiles plus an observe agent show three buttons, each named for its state", () => {
-  render(view([...trio, agent("o", "Ozzy", "observe")]));
+it("an observe agent gets a tile like any other, each named for its state", () => {
+  render(view([agent("g", "Gauge"), agent("o", "Ozzy", "observe"), agent("n", "Nova", "mentions")]));
   const group = screen.getByRole("group", { name: "Agents in Live" });
-  expect(within(group).getAllByRole("button").map((b) => b.getAttribute("aria-label"))).toEqual(["Gauge, agent", "Forge, agent", "Nova, agent"]);
+  expect(within(group).getAllByRole("button").map((b) => b.getAttribute("aria-label"))).toEqual(["Gauge, agent", "Ozzy, agent", "Nova, agent"]);
 });
 
 it("clicking an idle tile asks that agent in; the floor-holder's tile does nothing and its bars speak on its track", () => {
@@ -153,11 +153,12 @@ it("popover says who is speaking and who is next; a row tap asks that agent in",
   expect(lk.huddle.talkStart).toHaveBeenCalledTimes(1);
 });
 
-it("popover names the observing agents and the listened-to speaker", () => {
+it("popover lists an observe agent as an askable row, and the listened-to speaker", () => {
   lk.attrs = { ...status("g", "listening"), "lightbulb.listening_to": "Aden" };
   render(view([...trio, agent("p", "Pulse", "observe")]));
   openPopover();
-  expect(screen.getByText("Observing: Pulse — can't be asked here")).toBeInTheDocument();
+  expect(within(rows()).getByRole("button", { name: /^Pulse, agent/ })).toBeInTheDocument();
+  expect(screen.queryByText(/can't be asked here/)).toBeNull();
   expect(within(rows()).getByText("Gauge — listening to Aden")).toBeInTheDocument();
 });
 

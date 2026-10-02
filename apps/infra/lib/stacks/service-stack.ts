@@ -29,7 +29,7 @@ import {
   tablePrefix,
 } from "../table-names";
 import { Construct } from "constructs";
-import { LEGACY_MAIL_DOMAIN, PLATFORM_MAIL_DOMAIN, ROOT_DOMAIN } from "../domains";
+import { LAUNCH_DOMAIN, LEGACY_MAIL_DOMAIN, PLATFORM_MAIL_DOMAIN, ROOT_DOMAIN } from "../domains";
 
 // hermes-version.json is the per-env promotion tag for the Hermes bridge image (M4-R34),
 // same pattern as openclaw-version.json's dev.tag/prod.tag: build-hermes-image.yml pushes a
@@ -1476,8 +1476,8 @@ export class ServiceStack extends cdk.Stack {
       WEBHOOK_DEDUP_TABLE: tableName(env, "webhook-event-dedup"),
       CORS_ORIGINS:
         env === "prod"
-          ? `https://${rootDomain},https://www.${rootDomain}`
-          : `https://dev.${rootDomain}`,
+          ? `https://${rootDomain},https://www.${rootDomain},https://${LAUNCH_DOMAIN},https://www.${LAUNCH_DOMAIN}`
+          : `https://dev.${rootDomain},https://dev.${LAUNCH_DOMAIN}`,
       // SEC-8 token-origin fence: Clerk session tokens carry no `aud`, so the
       // backend validates the `azp` (authorized party) claim against this
       // allowlist instead. Broader than CORS_ORIGINS because azp reflects the

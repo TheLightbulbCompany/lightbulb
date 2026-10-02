@@ -577,7 +577,7 @@ def test_url_kind_follows_the_source():
 
 @pytest.mark.parametrize("url", [
     "ws://10.0.1.7:8000/api/v1/internal/mac-cdp/ticket",           # the door itself
-    "wss://api.flickmeon.ai/api/v1/internal/mac-cdp/ticket",
+    "wss://api.thelightbulb.company/api/v1/internal/mac-cdp/ticket",
     "ws://127.0.0.1:9223/devtools/browser/0123456789abcdef01234567",
     "ws://127.0.0.1:9222/devtools/browser/0123456789abcdef01234567?x=1",
     "ws://localhost:9222/devtools/browser/0123456789abcdef01234567",

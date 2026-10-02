@@ -163,7 +163,7 @@ here if multiple alarms fire together.
 
 ## P13 — app-unreachable
 
-The product front door (`flickmeon.ai` / `dev.flickmeon.ai`) is failing its
+The product front door (`thelightbulb.company` / `dev.thelightbulb.company`) is failing its
 Route53 health check from multiple AWS regions. **Users cannot load the
 product.**
 
@@ -175,7 +175,7 @@ before touching AWS — and remember prod frontend only ships on a
 
 ## P14 — api-unreachable
 
-The backend API (`api.flickmeon.ai` / `api-dev…`) is failing its Route53 health
+The backend API (`api.thelightbulb.company` / `api-dev…`) is failing its Route53 health
 check on `/health` from multiple AWS regions. **Chat, billing and provisioning
 are all down.**
 

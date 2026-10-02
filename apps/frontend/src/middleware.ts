@@ -123,7 +123,8 @@ export type LaunchHostDecision =
 const LAUNCH_HOST_SET = new Set(LAUNCH_HOSTS);
 
 /**
- * Pure host/path -> decision for the retired product domain (flickmeon.ai).
+ * Pure host/path -> decision for flickmeon.ai, the launch-competition site: the
+ * root serves `/launch`, every other path redirects to the product domain.
  * null = not a launch host. Runs outside clerkMiddleware for the same reason
  * the Paperclip hosts do: browsers still hold Clerk cookies from when this
  * domain was the product, and Clerk would answer them with a handshake redirect.
@@ -136,6 +137,11 @@ export function decideLaunchHostRouting(
   const h = (host ?? "").toLowerCase();
   if (!LAUNCH_HOST_SET.has(h)) return null;
   const origin = h.startsWith("dev.") ? `https://dev.${ROOT_DOMAIN}` : SITE_URL;
+  // The root IS the competition site. A referral link (`/?ref=CODE`) still goes to
+  // the product root, where the code is captured before sign-up.
+  const isReferral = new URLSearchParams(search).has("ref");
+  if (pathname === "/" && !isReferral) return { kind: "rewrite", to: "/launch" };
+  if (pathname === "/launch") return { kind: "passthrough" };
   return { kind: "redirect", to: `${origin}${pathname}${search}` };
 }
 

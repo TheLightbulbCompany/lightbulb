@@ -1,6 +1,6 @@
 # Integrations and channels (connecting external services)
 
-**Connections** (the plug icon on the workspace rail at flickmeon.ai/chat;
+**Connections** (the plug icon on the workspace rail at thelightbulb.company/chat;
 Settings → Connections lands there too, and the Control Panel's Integrations
 tab shows the same rows) is where the owner connects external services.
 **Channels** (chat surfaces): Slack: one click from
@@ -81,7 +81,7 @@ there, the fix is a profile refresh or a new runtime session, not reconnecting.
 rail, above): if it's there, use it. Otherwise read the two flags each
 **integration** entry carries — `requestable` and `byo_required` — and send
 the owner to Connections (the plug icon on the workspace rail at
-flickmeon.ai/chat) with an accurate description of what they'll find there.
+thelightbulb.company/chat) with an accurate description of what they'll find there.
 
 **The catalog is public and OWNERLESS**, so it cannot see per-owner access. Its
 `requestable` is therefore a hint about the *environment*, not a fact about
@@ -131,7 +131,7 @@ the platform can't do.
 - **One-click connections — the owner clicks Connect; you point at the door.**
   For a catalog entry with `requestable: false` AND `byo_required: false`,
   Lightbulb already has the integration, so your answer is: *"Open Connections
-  (the plug icon on the workspace rail at flickmeon.ai/chat) and click Connect
+  (the plug icon on the workspace rail at thelightbulb.company/chat) and click Connect
   next to <service> — sign in there and I'll take it from here."* They are
   almost always already signed in to <service> in their own browser, and the
   OAuth finishes there with nothing to re-type. **Never open a third-party
@@ -149,7 +149,7 @@ the platform can't do.
 - **What you cannot do:** you cannot authorize or disconnect a service
   yourself, and you cannot start BYO-app or `requestable` ones. For those,
   name the service and send the owner to Connections (the plug icon on the
-  workspace rail at flickmeon.ai/chat), describing the row per its catalog
+  workspace rail at thelightbulb.company/chat), describing the row per its catalog
   flags above — never assert it's one click without checking.
 - Some capabilities ship as **click-to-connect skills** that sit disabled in
   the agent profile until the owner connects the backing service — same

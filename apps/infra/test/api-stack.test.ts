@@ -5,7 +5,7 @@ import * as route53 from "aws-cdk-lib/aws-route53";
 import { Match, Template } from "aws-cdk-lib/assertions";
 import { ApiStack, wsHandlerCode } from "../lib/stacks/api-stack";
 import { NetworkStack } from "../lib/stacks/network-stack";
-import { ROOT_DOMAIN } from "../lib/domains";
+import { LAUNCH_DOMAIN, ROOT_DOMAIN } from "../lib/domains";
 import { buildApiStack, synthApiStack } from "./helpers";
 
 // Hoist a single ApiStack synthesis and reuse across tests.
@@ -93,7 +93,12 @@ describe("ApiStack — production browser CORS origins", () => {
     const prod = synthApiStack("prod");
     prod.hasResourceProperties("AWS::ApiGatewayV2::Api", {
       CorsConfiguration: Match.objectLike({
-        AllowOrigins: [`https://${ROOT_DOMAIN}`, `https://www.${ROOT_DOMAIN}`],
+        AllowOrigins: [
+          `https://${ROOT_DOMAIN}`,
+          `https://www.${ROOT_DOMAIN}`,
+          `https://${LAUNCH_DOMAIN}`,
+          `https://www.${LAUNCH_DOMAIN}`,
+        ],
       }),
     });
   });

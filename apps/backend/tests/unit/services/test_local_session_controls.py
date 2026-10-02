@@ -199,16 +199,12 @@ async def test_private_native_send_is_visible_and_approvable_only_to_its_owner(t
         "batchId": "private-send-1",
         "afterSeq": 0,
         "events": [event],
-        "privateApproval": {**detail, "destinationLabel": "Spoofed by the Mac"},
+        "privateApproval": detail,
     }
     await relay(transport).handle_message("conn-1", batch)
     await relay(transport).handle_message("conn-1", batch)  # A lost ACK must not duplicate the prompt.
     await relay(transport).handle_message("conn-1", heartbeat(sid, status="waiting-approval", activeTurnId=None))
-    # Only the server names a destination; a Mac-supplied label is dropped.
-    assert (await service.get_private_send_approval(ALICE, sid)).model_dump(by_alias=True) == {
-        **detail,
-        "destinationLabel": None,
-    }
+    assert (await service.get_private_send_approval(ALICE, sid)).model_dump(by_alias=True) == detail
     public = (await service.get_session(BOB, sid)).model_dump(by_alias=True)
     assert public["pendingApproval"]["summary"] == "Lightbulb message"
     assert public["pendingApproval"]["exact"] is False

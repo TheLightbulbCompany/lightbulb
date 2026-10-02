@@ -47,6 +47,7 @@ const sessionTargets: RoomComposerSessionOption[] = [{
       capabilitiesVerified: true, latestEventSeq: 0, cwdName: "lightbulb", title: "Launch check",
     } satisfies LocalSession,
     handle: "claude-launch-check",
+    collided: false,
   },
   ownerName: "Aden Kim",
 }];
@@ -160,6 +161,17 @@ describe("RoomComposer", () => {
     await waitFor(() => expect(onSend).toHaveBeenCalledWith(expect.objectContaining({
       sessionMentions: ["session-1"],
     })));
+  });
+
+  it("holds a stale session handle until the sender chooses to send it as text", async () => {
+    const onSend = jest.fn(async () => {});
+    await setup(onSend, undefined, sessionTargets);
+    await fireEvent.changeText(input(), "@claude-gone ping");
+    await fireEvent.press(screen.getByLabelText("Send"));
+    expect(onSend).not.toHaveBeenCalled();
+    expect(screen.getByText("@claude-gone no longer matches a shared session. Remove it or send anyway.")).toBeTruthy();
+    await fireEvent.press(screen.getByText("Send anyway"));
+    await waitFor(() => expect(onSend).toHaveBeenCalledWith(expect.not.objectContaining({ sessionMentions: expect.anything() })));
   });
 
   it("finds a shared session by its title", async () => {

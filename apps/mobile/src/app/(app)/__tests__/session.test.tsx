@@ -434,7 +434,7 @@ describe("session screen", () => {
       requestId: "e12fd3e8-32ca-4b65-8eaf-ab979e3c9449",
     });
     await render(<SessionScreen />);
-    expect(await screen.findByText(/Destination: person:user-b/)).toBeTruthy();
+    expect(await screen.findByText(/To: person:user-b/)).toBeTruthy();
     expect(screen.getByText(/First line/).props.children).toBe("First line\nSecond line");
     await fireEvent.press(screen.getByRole("button", { name: "Approve" }));
     await waitFor(() => expect(mockSubmit).toHaveBeenCalledWith("sess-1", expect.objectContaining({

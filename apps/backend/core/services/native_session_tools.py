@@ -140,6 +140,7 @@ async def prepare_codex_send(device: MachineIdentity, request: NativeToolRequest
             raise ApiProblem("LOCAL_SESSION_FORBIDDEN", "The Mac is no longer paired.")
         approval_id = f"appr-{uuid.uuid4().hex}"
         expires = now + INTENT_SECONDS
+        label = await _destination_label(_human(device), destination)
         pointer = {
             "requestId": request_id,
             "approvalId": approval_id,
@@ -175,6 +176,7 @@ async def prepare_codex_send(device: MachineIdentity, request: NativeToolRequest
             "inputDigest": digest,
             "requestId": request_id,
             "destination": destination,
+            **({"destinationLabel": label} if label else {}),
             "text": text,
             "sourceGeneration": source["generation"],
             "sourceConversationId": source["nativeConversationId"],
@@ -576,6 +578,38 @@ async def answer_codex_send(auth: AuthContext, session_id: str, decision: Native
         result = await _settle_codex_result(owner, source_id, request_id, claim, result)
         return {"requestId": request_id, **result}
     raise ApiProblem("LOCAL_SESSION_CONFLICT", "Session changed. Retry this decision.")
+
+
+async def _destination_label(auth: AuthContext, destination: str) -> str | None:
+    """Display-only name for the owner's approval card; never part of the digest."""
+    from core.services import notification_copy
+
+    kind, _, target = destination.partition(":")
+    try:
+        if kind == "room":
+            room = await messaging.get_room(auth, target)
+            if room.kind in ("dm", "group-dm"):
+                names = [m.display_name for m in room.members if not (m.kind == "human" and m.id == auth.user_id)]
+                return ("DM with " + ", ".join(names))[:200] if names else None
+            return f"#{room.name}"[:200] if room.name else None
+        if kind == "person":
+            rooms = (await messaging.list_rooms(auth)).rooms
+            member = next((m for r in rooms if r.kind == "dm" for m in r.members if m.id == target), None)
+            return member.display_name if member else await messaging.human_display_name(target)
+        # The same boundary the send itself crosses: a session the owner may not
+        # control (or an invented id) gets no title, only the raw destination.
+        row, _ = await local_sessions.authorize_session(auth, None, target, owner_only=True)
+        return " · ".join(
+            (
+                "Claude Code" if row["provider"] == "claude" else "Codex",
+                notification_copy.line(
+                    row.get("displayTitle") or row.get("title") or row.get("cwdName") or "Session", 80
+                ),
+                notification_copy.line(await messaging.human_display_name(row["humanUserId"]), 40),
+            )
+        )
+    except Exception:  # a label is a courtesy; the raw destination still shows
+        return None
 
 
 def _human(device: MachineIdentity) -> AuthContext:

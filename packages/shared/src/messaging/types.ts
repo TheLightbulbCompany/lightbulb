@@ -473,6 +473,8 @@ export interface PrivateSendApproval {
   approvalId: string;
   inputDigest: string;
   destination: string;
+  /** Server-resolved name ("#general", "DM with Bea", a session label); display only. */
+  destinationLabel?: string | null;
   text: string;
   requestId: string;
 }

@@ -95,6 +95,7 @@ async def test_codex_send_prepares_private_intent_without_dispatch(monkeypatch):
     put = AsyncMock()
     monkeypatch.setattr(tools.sessions_repo, "put_session", put)
     monkeypatch.setattr(tools, "_publish_session", AsyncMock())
+    monkeypatch.setattr(tools, "_destination_label", AsyncMock(return_value="#general"))
     capture = Mock()
     monkeypatch.setattr(tools, "capture_session_event", capture)
     result = await tools.prepare_codex_send(device, request)
@@ -111,6 +112,7 @@ async def test_codex_send_prepares_private_intent_without_dispatch(monkeypatch):
     assert intent["inputDigest"] == tools._intent_digest(
         {"destination": f"room:{room}", "text": "private body", "requestId": str(request_id)}
     )
+    assert intent["destinationLabel"] == "#general"
     assert audit["action"] == "native_send_requested" and "private body" not in str(audit)
     assert "requestId" not in audit
     assert capture.call_args.args[:2] == (updated, "native_send_approval_requested")
@@ -216,6 +218,7 @@ async def test_codex_session_can_replace_an_unreachable_or_settled_intent(monkey
     put = AsyncMock()
     monkeypatch.setattr(tools.sessions_repo, "put_session", put)
     monkeypatch.setattr(tools, "_publish_session", AsyncMock())
+    monkeypatch.setattr(tools, "_destination_label", AsyncMock(return_value=None))
     assert (await tools.prepare_codex_send(device, request))["state"] == "pending_approval"
     assert put.await_args.args[0]["nativeSendIntent"]["connectionId"] == "new"
 
@@ -875,3 +878,33 @@ async def test_room_commit_is_reconciled_before_rejecting_a_receipt(monkeypatch)
     get.assert_awaited_once_with(
         tools.messaging_repo.room_pk(room_id), tools.messaging_repo.agent_idemp_sk(f"native:{source}:{request_id}")
     )
+
+
+@pytest.mark.asyncio
+async def test_destination_label_names_rooms_people_and_sessions(monkeypatch):
+    auth = tools.AuthContext(user_id="user_a", org_id="org_a")
+
+    def member(kind, id, name):
+        return SimpleNamespace(kind=kind, id=id, display_name=name)
+
+    dm = SimpleNamespace(
+        kind="dm", name=None, members=[member("human", "user_a", "Me"), member("human", "user_b", "Bea")]
+    )
+    channel = SimpleNamespace(kind="channel", name="general", members=[])
+    monkeypatch.setattr(tools.messaging, "get_room", AsyncMock(side_effect=[channel, dm]))
+    monkeypatch.setattr(tools.messaging, "list_rooms", AsyncMock(return_value=SimpleNamespace(rooms=[dm])))
+    monkeypatch.setattr(tools.messaging, "human_display_name", AsyncMock(return_value="Ann"))
+    authorize = AsyncMock(return_value=({"provider": "claude", "title": "Fix login", "humanUserId": "user_c"}, {}))
+    monkeypatch.setattr(tools.local_sessions, "authorize_session", authorize)
+    assert await tools._destination_label(auth, "room:r1") == "#general"
+    assert await tools._destination_label(auth, "room:r2") == "DM with Bea"
+    assert await tools._destination_label(auth, "person:user_b") == "Bea"
+    assert await tools._destination_label(auth, "person:user_z") == "Ann"
+    assert await tools._destination_label(auth, "session:s1") == "Claude Code · Fix login · Ann"
+    assert authorize.await_args.args == (auth, None, "s1") and authorize.await_args.kwargs == {"owner_only": True}
+    monkeypatch.setattr(
+        tools.local_sessions,
+        "authorize_session",
+        AsyncMock(side_effect=ApiProblem("LOCAL_SESSION_NOT_FOUND", "Local session not found.")),
+    )
+    assert await tools._destination_label(auth, "session:forged") is None

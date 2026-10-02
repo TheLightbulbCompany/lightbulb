@@ -125,19 +125,25 @@ describe("session mentions", () => {
     expect(candidates.map(({ handle }) => handle)).toEqual([
       "claude-lightbulb-a", "claude-lightbulb-b", "claude-lightbulb-2",
     ]);
+    expect(candidates.map(({ collided }) => collided)).toEqual([true, true, false]);
     expect(sessionMentionCandidates([candidates[1].session, candidates[0].session]).map(({ handle }) => handle))
       .toEqual(["claude-lightbulb-b", "claude-lightbulb-a"]);
   });
 
   it("resolves the longest plain token once and ignores code", () => {
     const sessions = [session(), session({ sessionId: "s2", cwdName: "lightbulb-2" })];
-    expect(resolveTypedSessionMentions("`@claude-lightbulb` @claude-lightbulb-2", sessions)).toEqual(["s2"]);
-    expect(resolveTypedSessionMentions("@claude-lightbulb @claude-lightbulb", sessions)).toEqual(["s1"]);
-    expect(resolveTypedSessionMentions("email@claude-lightbulb.ai", sessions)).toEqual([]);
+    expect(resolveTypedSessionMentions("`@claude-lightbulb` @claude-lightbulb-2", sessions).ids).toEqual(["s2"]);
+    expect(resolveTypedSessionMentions("@claude-lightbulb @claude-lightbulb", sessions).ids).toEqual(["s1"]);
+    expect(resolveTypedSessionMentions("email@claude-lightbulb.ai", sessions).ids).toEqual([]);
     const withEndedFirst = sessionMentionCandidates([session({ sessionId: "ended", status: "ended" }), session({ sessionId: "live" })]);
-    expect(resolveTypedSessionMentions("@claude-lightbulb-live", withEndedFirst.slice(1))).toEqual(["live"]);
-    expect(resolveTypedSessionMentions("@claude-lightbulb", [session({ sessionId: "replacement" })], { "claude-lightbulb": "gone" })).toEqual([]);
-    expect(resolveTypedSessionMentions("@claude-lightbulb", [session({ sessionId: "s1", displayTitle: "Renamed" })], { "claude-lightbulb": "s1" })).toEqual(["s1"]);
+    expect(resolveTypedSessionMentions("@claude-lightbulb-live", withEndedFirst.slice(1)).ids).toEqual(["live"]);
+    expect(resolveTypedSessionMentions("@claude-lightbulb", [session({ sessionId: "replacement" })], { "claude-lightbulb": "gone" }).ids).toEqual([]);
+    expect(resolveTypedSessionMentions("@claude-lightbulb", [session({ sessionId: "s1", displayTitle: "Renamed" })], { "claude-lightbulb": "s1" }).ids).toEqual(["s1"]);
+    expect(resolveTypedSessionMentions("hi @claude-gone and `@codex-code` @claude-lightbulb", sessions))
+      .toEqual({ ids: ["s1"], unresolved: ["claude-gone"] });
+    expect(resolveTypedSessionMentions("@claude-lightbulb", [session({ sessionId: "replacement" })], { "claude-lightbulb": "gone" }).unresolved)
+      .toEqual(["claude-lightbulb"]);
+    expect(resolveTypedSessionMentions("@codex-old", []).unresolved).toEqual(["codex-old"]);
   });
 
   it("renders tagged prose as a session chip and leaves code alone", () => {

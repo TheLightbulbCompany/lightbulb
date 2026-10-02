@@ -48,7 +48,7 @@ it("renders a tagged session chip and its failed delivery receipt", async () => 
   } satisfies LocalSession;
   await render(<MessageGroup message={{ ...message, author: { kind: "human", id: "user-a", displayName: "You" }, text: "@claude-lightbulb-s1 look", sessionSends: [{ sessionId: "s1", error: "LOCAL_SESSION_OFFLINE" }] }}
     collapsed={false} replyCount={1} currentUserId="user-a" attachmentUrl={attachmentUrl}
-    sessionCandidates={[{ session, handle: "claude-lightbulb-s1" }]} retrySessionSend={retrySessionSend} />);
+    sessionCandidates={[{ session, handle: "claude-lightbulb-s1", collided: false }]} retrySessionSend={retrySessionSend} />);
   expect(screen.getByText("@Claude · Launch check")).toBeTruthy();
   expect(screen.getByText("The session's Mac is offline. Try again when it reconnects.")).toBeTruthy();
   await fireEvent.press(screen.getByLabelText("Retry session delivery"));

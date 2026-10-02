@@ -1058,7 +1058,8 @@ class LocalSessionRelay:
             if approval is not None:
                 updated["pendingApproval"] = approval
                 if detail is not None:
-                    updated["privateSendApproval"] = detail.model_dump(by_alias=True)
+                    # The label is server-resolved at park time; a Mac cannot name its own destination.
+                    updated["privateSendApproval"] = detail.model_dump(by_alias=True, exclude={"destination_label"})
         await repo.put_session(updated, row, enrollment, extra=[self._connection_check(cid, connection), *updates])
         if detail is not None:
             capture_session_event(

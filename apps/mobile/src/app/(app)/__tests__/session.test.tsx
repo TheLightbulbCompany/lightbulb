@@ -262,6 +262,23 @@ describe("session screen", () => {
     expect(screen.getByLabelText("Retry follow-up")).toBeTruthy();
   });
 
+  it("keeps the original ID when reconciling an uncertain replacement", async () => {
+    const now = Math.floor(Date.now() / 1000);
+    mockListOutbox.mockResolvedValue({ commands: [{
+      ...receipt({ requestId: "saved-request", expectedGeneration: "g1", kind: "send", text: "resume when ready" }, "rejected"),
+      createdAt: now - 3600, deliverBy: now - 1,
+    }] });
+    mockSubmit.mockRejectedValueOnce(new TypeError("network"));
+    await render(<SessionScreen />);
+    await waitFor(() => expect(screen.getByLabelText("Retry follow-up")).toBeTruthy());
+    await fireEvent.press(screen.getByLabelText("Retry follow-up"));
+    await waitFor(() => expect(screen.getByLabelText("Retry same request")).toBeTruthy());
+    await fireEvent.press(screen.getByLabelText("Retry same request"));
+    await waitFor(() => expect(mockSubmit).toHaveBeenCalledTimes(2));
+    expect(mockSubmit.mock.calls[1][2]).toBe("saved-request");
+    expect(mockSubmit.mock.calls[1][1].requestId).toBe(mockSubmit.mock.calls[0][1].requestId);
+  });
+
   it("clears an uncertain draft when the outbox proves admission", async () => {
     mockSession = { ...base, status: "offline" };
     const now = Math.floor(Date.now() / 1000);

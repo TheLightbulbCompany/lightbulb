@@ -8,6 +8,7 @@ import { accessLost, type SessionSource } from "./useLocalSessionHistory";
 
 export type SessionCommandAttempt = {
   request: LocalSessionCommand;
+  replacesRequestId?: string;
   state: "sending" | "uncertain" | "rejected" | "received";
   receipt?: LocalSessionCommandReceipt;
   error?: string;
@@ -264,20 +265,20 @@ export function useSessionCommand(
   async function submit(request: LocalSessionCommand, replacesRequestId?: string) {
     if (pending.current || !canSend) return;
     pending.current = true;
-    setAttempt({ request, state: "sending" });
+    setAttempt({ request, replacesRequestId, state: "sending" });
     try {
       const receipt = replacesRequestId
         ? await client.submitLocalSessionCommand(session.sessionId, request, replacesRequestId)
         : await client.submitLocalSessionCommand(session.sessionId, request);
       if (!alive.current) return;
-      setAttempt({ request, state: "received", receipt });
+      setAttempt({ request, replacesRequestId, state: "received", receipt });
       if (request.kind === "send") onSent?.();
     } catch (e) {
       if (!alive.current) return;
       if (accessLost(e)) { onAccessLost(); return; }
       const rejected = e instanceof ApiError && e.status < 500;
       const code = e instanceof ApiError && e.body && typeof e.body === "object" && "code" in e.body ? e.body.code : null;
-      setAttempt({ request, state: rejected ? "rejected" : "uncertain", error: rejected
+      setAttempt({ request, replacesRequestId, state: rejected ? "rejected" : "uncertain", error: rejected
         ? code === "LOCAL_SESSION_QUEUE_FULL" ? "This session already has 20 waiting follow-ups. Try again after one is delivered."
           : e.status === 409 ? "Session changed or is offline. Refresh before sending again."
           : "The session rejected this request. Check its availability and capabilities."
@@ -304,9 +305,9 @@ export function useSessionCommand(
   }
 
   function retry() {
-    if (attempt?.state === "uncertain") void submit(attempt.request);
+    if (attempt?.state === "uncertain") void submit(attempt.request, attempt.replacesRequestId);
     else if (attempt?.request.kind === "send" && (attempt.state === "rejected" || attempt.receipt?.state === "rejected"))
-      void submit({ ...attempt.request, requestId: uuid(), expectedGeneration: session.generation });
+      void submit({ ...attempt.request, requestId: uuid(), expectedGeneration: session.generation }, attempt.replacesRequestId);
   }
 
   function dismiss() { if (attempt?.state === "rejected" || attempt?.receipt?.state === "rejected") setAttempt(null); }

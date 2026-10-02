@@ -184,7 +184,8 @@ export function subagentElapsedMs(s: SessionSubagent, now: number): number | nul
   return Number.isFinite(start) && Number.isFinite(end) && end >= start ? end - start : null;
 }
 
-function clock(ms: number | null, precise: boolean): string {
+/** A clock the way Claude Code prints one: `42s`, `2m 14s` (or `2m`), `5h 19m`. */
+export function sessionClock(ms: number | null, precise: boolean): string {
   if (ms == null) return "";
   const s = Math.round(ms / 1000);
   if (s < 60) return `${s}s`;
@@ -208,7 +209,7 @@ export function subagentStatus(provider: LocalSessionProvider, s: SessionSubagen
   const step = running && s.lastStep ? toolHeader(provider, s.lastStep) : "";
   const said = { running: "Running", completed: "Done", failed: "Failed", ended: "Ended" }[state];
   // An end nobody reported has no honest clock.
-  const took = state === "ended" ? "" : clock(subagentElapsedMs(s, now), running);
+  const took = state === "ended" ? "" : sessionClock(subagentElapsedMs(s, now), running);
   return [said, took, uses, step].filter(Boolean).join(" · ");
 }
 
@@ -515,7 +516,7 @@ export function thinkingLabel(row: ThinkingTranscriptRow, live: boolean): string
 
 /** "Agent "Fix login" finished · 19m": the line a background subagent's end draws in its parent. */
 export function subagentLabel(row: Extract<TranscriptRow, { kind: "subagent" }>): string {
-  const took = clock(row.ms ?? null, false);
+  const took = sessionClock(row.ms ?? null, false);
   return took && took !== "0s" ? `${row.text} · ${took}` : row.text;
 }
 

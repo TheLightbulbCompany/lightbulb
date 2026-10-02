@@ -1010,8 +1010,10 @@ impl Host {
         let mut anchor: Option<ClockAnchor> = None;
         let mut deferred = std::collections::VecDeque::<Command>::new();
         let mut sent_batches = BTreeMap::<String, Instant>::new();
-        let mut last_upload = Instant::now() - Duration::from_millis(500);
-        let mut last_upload_key: Option<String> = None;
+        // When each session was last offered an upload, or last had one acked. Per
+        // session: the relay's limit is two text batches a second for ONE session, and a
+        // shared slot let one busy session hold every other session's history back.
+        let mut last_upload = BTreeMap::<String, Instant>::new();
         let mut heartbeat_frames = std::collections::VecDeque::<Value>::new();
         let mut last_heartbeat = Instant::now();
         let mut last_early = Instant::now() - Duration::from_secs(1);
@@ -1135,24 +1137,21 @@ impl Host {
                     }
                 }
             }
-            if last_upload.elapsed() >= Duration::from_millis(500) {
-                let mut keys: Vec<_> = self.mirrors.keys().cloned().collect();
-                if let Some(index) = keys
-                    .iter()
-                    .position(|key| Some(key) == last_upload_key.as_ref())
-                {
-                    let len = keys.len();
-                    keys.rotate_left((index + 1) % len);
-                }
+            {
+                let keys: Vec<_> = self.mirrors.keys().cloned().collect();
                 for key in &keys {
-                    let mirror = self.mirrors.get_mut(key).ok_or("missing local session")?;
                     if !registered.contains(key)
+                        || last_upload
+                            .get(key)
+                            .is_some_and(|at| at.elapsed() < Duration::from_millis(500))
                         || sent_batches
                             .get(key)
                             .is_some_and(|at| at.elapsed() < Duration::from_secs(2))
                     {
                         continue;
                     }
+                    last_upload.insert(key.clone(), Instant::now());
+                    let mirror = self.mirrors.get_mut(key).ok_or("missing local session")?;
                     let before = serde_json::to_value(&*mirror).map_err(|e| e.to_string())?;
                     let batch = match capture_batch(mirror) {
                         Ok(batch) => batch,
@@ -1175,9 +1174,6 @@ impl Host {
                     if let Some(batch) = batch {
                         send(socket, &wire_batch(batch)).await?;
                         sent_batches.insert(key.clone(), Instant::now());
-                        last_upload = Instant::now();
-                        last_upload_key = Some(key.clone());
-                        break;
                     }
                 }
             }
@@ -1199,6 +1195,7 @@ impl Host {
                         for key in self.reap(&recovering_ended) {
                             registered.remove(&key);
                             sent_batches.remove(&key);
+                            last_upload.remove(&key);
                             quarantined.remove(&key);
                         }
                     }
@@ -1372,6 +1369,9 @@ impl Host {
                                     if mirror.advance() {registered.remove(key);}
                                     mirror.persist(&self.dir.join(format!("{key}.json")))?;
                                     sent_batches.remove(key);
+                                    // Spaced from the ack, not the send: the relay starts its
+                                    // half second when it stores the batch.
+                                    last_upload.insert(key.clone(), Instant::now());
                                 } else {
                                     relay_log(&format!("{} ignored a stale upload ack at {after}", short(key)));
                                 }

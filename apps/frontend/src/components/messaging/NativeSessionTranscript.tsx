@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
-  GLYPH, backgroundWaiting, buildRows, groupRows, lifecycleLabel, sessionSubagents, subagentLabel, subagentState, subagentStatus, subagentStrip, subagentTags,
+  GLYPH, backgroundWaiting, buildRows, groupRows, lifecycleLabel, sessionClock, sessionSubagents, subagentLabel, subagentState, subagentStatus, subagentStrip, subagentTags,
   thinkingLabel, toolHeader, toolRowView,
   type DiffLine, type LocalSessionEvent, type LocalSessionProvider, type SessionReceiptChip, type SessionSubagent, type ThinkingTranscriptRow, type ToolGroupItem,
   type ToolTranscriptRow, type TranscriptRow,
@@ -96,14 +96,14 @@ function ToolGroup({ provider, group, subagentName }: { provider: Provider; grou
 /** Claude Code's spinner words; one per turn, the way its status line picks one. */
 const SPINNER_VERBS = ["Thinking", "Pondering", "Cogitating", "Musing", "Brewing", "Computing", "Noodling", "Percolating"];
 
-/** The live status line: Claude's `✻ Pondering… (12s)`, Codex's `• Working (12s)`. */
+/** The live status line: Claude's `✻ Pondering… (2m 14s)`, Codex's `• Working (12s)`; the clock is the turn's, as in the terminal. */
 function Working({ provider, since, seq }: { provider: Provider; since?: string; seq: number }) {
   const now = useNow(true);
   const started = since ? Date.parse(since) : NaN;
-  const seconds = Number.isFinite(started) ? Math.max(0, Math.round((now - started) / 1000)) : null;
+  const elapsed = Number.isFinite(started) ? sessionClock(Math.max(0, now - started), true) : null;
   const said = provider === "claude" ? `${SPINNER_VERBS[seq % SPINNER_VERBS.length]}…` : "Working";
   return <p className="native-session-line native-session-working" role="status" aria-label="Working" data-reload-blocker>
-    <span className="native-session-glyph native-session-spinner" aria-hidden="true">{GLYPH[provider].working}</span>{said}{seconds !== null && <span className="native-session-muted"> ({seconds}s)</span>}</p>;
+    <span className="native-session-glyph native-session-spinner" aria-hidden="true">{GLYPH[provider].working}</span>{said}{elapsed !== null && <span className="native-session-muted"> ({elapsed})</span>}</p>;
 }
 
 /** Claude Code's `✻ Waiting for N background agents to finish`, once its own turn is over. */
@@ -191,12 +191,11 @@ export function SubagentPanel({ provider, events, status, onPick }: { provider: 
   if (provider !== "claude") return null;
   const strip = subagentStrip(provider, subs, status, now, all ? Infinity : 5);
   if (!strip.rows.length) return null;
-  const clock = (ms: number | null) => (ms == null ? "" : ms < 60_000 ? `${Math.round(ms / 1000)}s` : `${Math.floor(ms / 60_000)}m ${Math.round(ms / 1000) % 60}s`);
   return <div className="native-session-panel" role="region" aria-label="Running subagents">
     <p className="native-session-panel-row"><span className="native-session-panel-dot" aria-hidden="true">●</span><span>main</span></p>
     {strip.rows.map(r => <button key={r.id} type="button" className="native-session-panel-row" onClick={() => onPick(r.id)}>
       <span aria-hidden="true">○</span><span className="native-session-panel-label">{r.label}</span><span className="native-session-panel-activity">{r.activity}</span>
-      <span className="native-session-panel-meta">{clock(r.elapsedMs)}{r.tokens != null ? ` · ↓ ${r.tokens.toLocaleString()} tokens` : ""}</span>
+      <span className="native-session-panel-meta">{sessionClock(r.elapsedMs, true)}{r.tokens != null ? ` · ↓ ${r.tokens.toLocaleString()} tokens` : ""}</span>
     </button>)}
     {strip.more > 0 && <button type="button" className="native-session-panel-row native-session-muted" onClick={() => setAll(true)}>↓ {strip.more} more</button>}
   </div>;
@@ -221,6 +220,17 @@ export function NativeSessionTranscript({ provider, events, busy, ownerName, par
   const time = (ts?: string) => { const d = ts ? new Date(ts) : null; return d && !Number.isNaN(d.getTime()) ? d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : null; };
   const last = events.findLast(e => e.subagent === scope);
   const turnOpen = busy && last?.lifecycle !== "turn_end" && last?.lifecycle !== "turn_aborted";
+  // When the open turn began: its first event after the previous turn's end.
+  const turnStart = useMemo(() => {
+    let ts: string | undefined;
+    for (let i = events.length - 1; i >= 0; i--) {
+      const e = events[i];
+      if (e.subagent !== scope) continue;
+      if (e.lifecycle === "turn_end" || e.lifecycle === "turn_aborted") break;
+      if (e.ts) ts = e.ts;
+    }
+    return ts;
+  }, [events, scope]);
   const lastRow = rows.at(-1);
   const pendingRow = (item: { text: string; chip: SessionReceiptChip | null; onCancel?: () => void; onRetry?: () => void }, key: string) =>
     <div key={key} className={`native-session-row native-session-prompt${item.chip?.tone === "error" ? "" : " native-session-pending"}`} role="article" aria-label={key === "current" ? "Pending follow-up" : "Follow-up delivery"}>
@@ -260,7 +270,7 @@ export function NativeSessionTranscript({ provider, events, busy, ownerName, par
   };
   return <div ref={root} className={`native-session native-session-${provider}`}>
     {groupRows(rows, turnOpen, provider).map(item => (item.kind === "tools" ? <ToolGroup key={item.seq} provider={provider} group={item} subagentName={subagentName} /> : renderRow(item)))}
-    {turnOpen && <Working provider={provider} since={last?.ts} seq={last?.seq ?? 0} />}
+    {turnOpen && <Working provider={provider} since={turnStart} seq={last?.seq ?? 0} />}
     {!turnOpen && !scope && provider === "claude" && <Waiting subs={subs} status={status} />}
     {outbox?.map(item => pendingRow(item, item.requestId))}
     {pending && pendingRow(pending, "current")}

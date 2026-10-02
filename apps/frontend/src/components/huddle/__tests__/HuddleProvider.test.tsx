@@ -3,7 +3,7 @@ import { beforeEach, expect, it, vi } from "vitest";
 
 const lk = vi.hoisted(() => {
   const state = {
-    handlers: {} as Record<string, (...a: unknown[]) => void>, voiceActive: false,
+    handlers: {} as Record<string, (...a: unknown[]) => void>,
     participants: [] as { identity: string; name?: string; isLocal?: boolean }[], attrs: {} as Record<string, string>,
   };
   const room = {
@@ -23,13 +23,12 @@ vi.mock("@livekit/components-react", () => ({
   useParticipantAttributes: () => ({ attributes: lk.state.attrs }),
 }));
 vi.mock("@/lib/api", () => { lk.client = { post: lk.post }; return { useApi: () => lk.client }; });
-vi.mock("@/components/voice/VoiceCallProvider", () => ({ useVoiceCall: () => ({ active: lk.state.voiceActive }) }));
 import { HuddleProvider, useHuddle } from "../HuddleProvider";
 import { LiveStrip, huddleStatus } from "../LiveStrip";
 
 function Probe() {
   const h = useHuddle();
-  return <button onClick={() => void h.join("r1", "general")}>join {h.roomId ?? "none"}</button>;
+  return <button onClick={() => void h.join("r1", "#general")}>join {h.roomId ?? "none"}</button>;
 }
 const mount = (here = "r1") => render(<HuddleProvider><Probe /><LiveStrip roomId={here} /></HuddleProvider>);
 const joinNow = async (here?: string) => {
@@ -41,8 +40,8 @@ const openDetails = () => fireEvent.click(screen.getByRole("button", { name: /De
 
 beforeEach(() => {
   window.matchMedia = (() => ({ matches: false, addEventListener() {}, removeEventListener() {} })) as unknown as typeof window.matchMedia;
-  vi.clearAllMocks(); lk.state.voiceActive = false; lk.state.participants = [{ identity: "agent-ceo", name: "Lightbulb" }]; lk.state.attrs = {};
-  lk.post.mockResolvedValue({ serverUrl: "wss://lk", roomName: "huddle-r1", token: "tok" });
+  vi.clearAllMocks(); lk.state.participants = [{ identity: "agent-ceo", name: "Lightbulb" }]; lk.state.attrs = {};
+  lk.post.mockResolvedValue({ serverUrl: "wss://lk", roomName: "huddle-r1", token: "tok", lightbulb: true });
 });
 
 it("join posts to the API and connects with the returned url and token", async () => {
@@ -92,16 +91,6 @@ it("shows the plain-word message for a huddle.error, opening the details", async
   expect(await screen.findByRole("alert")).toHaveTextContent("Someone in your workspace is already on a free call.");
   fireEvent.click(screen.getByRole("button", { name: "Dismiss" }));
   expect(screen.queryByRole("alert")).toBeNull();
-});
-
-it("a call starting ends the huddle", async () => {
-  const { rerender } = render(<HuddleProvider><Probe /></HuddleProvider>);
-  fireEvent.click(screen.getByText("join none"));
-  await screen.findByText("join r1");
-  lk.state.voiceActive = true;
-  rerender(<HuddleProvider><Probe /></HuddleProvider>);
-  await screen.findByText("join none");
-  expect(lk.room.disconnect).toHaveBeenCalled();
 });
 
 it("ignores a huddle.error from anyone but agent-ceo, and a __proto__ code falls back", async () => {
@@ -167,11 +156,23 @@ it("Lightbulb's bars follow its status, and stay still under reduced motion", as
   expect(screen.getByTestId("bars")).toHaveAttribute("data-state", "idle");
 });
 
-it("join does nothing while a call is active", async () => {
-  lk.state.voiceActive = true;
-  render(<HuddleProvider><Probe /></HuddleProvider>);
-  fireEvent.click(screen.getByText("join none"));
-  expect(lk.post).not.toHaveBeenCalled();
+it("a people-only room shows no Lightbulb: no bars, no joining, no 45 s Retry", async () => {
+  lk.state.participants = [{ identity: "u1", name: "Ana", isLocal: true }];
+  lk.post.mockResolvedValue({ serverUrl: "wss://lk", roomName: "huddle-r1", token: "tok", lightbulb: false });
+  vi.useFakeTimers({ shouldAdvanceTime: true });
+  try {
+    await joinNow();
+    expect(screen.queryByTestId("bars")).toBeNull();
+    expect(screen.queryByText("Lightbulb is joining")).toBeNull();
+    await act(async () => { await vi.advanceTimersByTimeAsync(45_000); });
+    expect(screen.queryByRole("button", { name: "Retry" })).toBeNull();
+    openDetails();
+    expect(await screen.findByRole("list", { name: "People in Live" })).toHaveTextContent("Ana (you)");
+    expect(screen.queryByText("Lightbulb")).toBeNull();
+    expect(screen.queryByText(/click the bars/)).toBeNull();
+  } finally {
+    vi.useRealTimers();
+  }
 });
 
 it("Lightbulb can't be clicked until it joins, then gives up after 45 s with a Retry that joins again", async () => {

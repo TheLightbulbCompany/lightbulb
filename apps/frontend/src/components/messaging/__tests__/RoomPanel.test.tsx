@@ -6,7 +6,6 @@ import { RoomPanel, type RoomPanelProps } from "../RoomPanel";
 import type { RoomRunView } from "@lightbulb/shared";
 import type { RoomMessage, RoomParticipant } from "../types";
 
-vi.mock("@/components/voice/VoiceCallProvider", () => ({ useVoiceCall: () => ({ view: null, active: false, start: vi.fn() }) }));
 vi.mock("@/components/huddle/useRoomHuddle", () => ({ useRoomHuddle: () => ({ userIds: [], available: false }) }));
 
 // RoomPanel reads the narrow breakpoint straight off matchMedia (tests/setup.ts

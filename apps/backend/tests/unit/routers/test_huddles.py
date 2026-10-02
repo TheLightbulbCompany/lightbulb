@@ -38,6 +38,7 @@ def client():
         patch.object(mod.settings, "LIVEKIT_URL", "wss://lk.test"),
         patch.object(mod.settings, "LIVEKIT_API_KEY", "k"),
         patch.object(mod.settings, "LIVEKIT_API_SECRET", "s"),
+        patch.object(vc, "listening_agents", AsyncMock(return_value=TEAM)),
     ):
         yield TestClient(app)
     app.dependency_overrides.clear()
@@ -77,7 +78,12 @@ def test_join_does_not_dispatch_twice_while_the_worker_is_joining(client):
 def test_join_returns_token_and_dispatches_the_ceo(client):
     resp, mint, dispatch = _join(client)
     assert resp.status_code == 200
-    assert resp.json() == {"serverUrl": "wss://lk.test", "roomName": lk.room_name(ROOM), "token": "jwt"}
+    assert resp.json() == {
+        "serverUrl": "wss://lk.test",
+        "roomName": lk.room_name(ROOM),
+        "token": "jwt",
+        "lightbulb": True,
+    }
     assert mint.call_args.kwargs == {"room_id": ROOM, "user_id": "user_a", "name": "Pat"}
     room, meta = dispatch.await_args.args
     assert room == ROOM
@@ -127,6 +133,46 @@ def test_join_livekit_failure_is_502(client, has_ceo, dispatch_error):
     assert metrics == ["huddle.livekit.error"]
 
 
+@pytest.mark.parametrize("kind", ["dm", "group-dm"])
+def test_join_works_in_a_dm_and_group_dm(client, kind):
+    """The real _room_team: any room kind joins; a DM's agent is a one-agent team that gets Lightbulb."""
+    meta = {"ownerId": "org_a", "kind": kind}
+    with (
+        patch.object(vc.messaging, "require_room_member", AsyncMock(return_value=(meta, {}))),
+        patch.object(vc, "listening_agents", AsyncMock(return_value=[{"id": "agent-eng", "name": "Engineering"}])),
+    ):
+        resp, _, dispatch = _join(client, room_team=AsyncMock(wraps=vc._room_team))
+    assert resp.status_code == 200 and resp.json()["lightbulb"] is True
+    dispatch.assert_awaited_once()
+    _join.wake.assert_called_once_with("org_a")
+
+
+def test_people_only_room_joins_without_dispatch_or_wake(client):
+    meta = {"ownerId": "org_a", "kind": "group-dm"}
+    with (
+        patch.object(vc.messaging, "require_room_member", AsyncMock(return_value=(meta, {}))),
+        patch.object(vc, "listening_agents", AsyncMock(return_value=[])),
+    ):
+        resp, mint, dispatch = _join(client, room_team=AsyncMock(wraps=vc._room_team))
+    assert resp.status_code == 200 and resp.json()["lightbulb"] is False and resp.json()["token"] == "jwt"
+    mint.assert_called_once()
+    dispatch.assert_not_awaited()
+    _join.wake.assert_not_called()
+
+
+def test_get_flags_a_people_only_room(client):
+    with (
+        patch.object(mod.messaging, "require_room_member", AsyncMock(return_value=({"ownerId": "org_a"}, {}))),
+        patch.object(vc, "listening_agents", AsyncMock(return_value=[])),
+        patch.object(lk, "participants", AsyncMock(return_value=["user_a"])),
+    ):
+        assert client.get(f"/api/v1/huddles/{ROOM}").json() == {
+            "userIds": ["user_a"],
+            "available": True,
+            "lightbulb": False,
+        }
+
+
 def test_get_guest_is_404(client):
     with (
         patch.object(mod.messaging, "require_room_member", AsyncMock(return_value=({"ownerId": "org_b"}, {}))),
@@ -141,7 +187,11 @@ def test_get_lists_participants(client):
         patch.object(mod.messaging, "require_room_member", AsyncMock(return_value=({"ownerId": "org_a"}, {}))),
         patch.object(lk, "participants", AsyncMock(return_value=["user_a", "user_b"])),
     ):
-        assert client.get(f"/api/v1/huddles/{ROOM}").json() == {"userIds": ["user_a", "user_b"], "available": True}
+        assert client.get(f"/api/v1/huddles/{ROOM}").json() == {
+            "userIds": ["user_a", "user_b"],
+            "available": True,
+            "lightbulb": True,
+        }
 
 
 def test_get_is_empty_when_not_configured(client):
@@ -150,7 +200,7 @@ def test_get_is_empty_when_not_configured(client):
         patch.object(mod.messaging, "require_room_member", AsyncMock(return_value=({"ownerId": "org_a"}, {}))),
         patch.object(lk, "participants", AsyncMock(side_effect=AssertionError("no LiveKit call"))),
     ):
-        assert client.get(f"/api/v1/huddles/{ROOM}").json() == {"userIds": [], "available": False}
+        assert client.get(f"/api/v1/huddles/{ROOM}").json() == {"userIds": [], "available": False, "lightbulb": True}
 
 
 def test_get_livekit_failure_is_502(client):

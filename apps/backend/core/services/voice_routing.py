@@ -24,6 +24,8 @@ async def pick(owner_id: str, call: dict, utterance: str, transcript: str, ceo_i
     if call.get("kind") != "room":
         return call["voiceAgentId"]
     ids = {m["id"] for m in team}
+    if len(ids) == 1:  # a DM with an agent: nobody else to route to, skip Jev
+        return next(iter(ids))
     named = named_agent(utterance, team)
     if named:
         return named

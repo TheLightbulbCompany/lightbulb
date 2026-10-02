@@ -365,18 +365,24 @@ async def _owner_row(owner_id: str):
     return row
 
 
-async def _room_team(owner_id: str, user_id: str, room_id: str) -> tuple[dict, list[dict]]:
+async def listening_agents(room_id: str) -> list[dict]:
+    return [
+        {"id": m["id"], "name": m.get("displayName") or "Agent"}
+        for m in await messaging_repo.list_members(room_id)
+        if m.get("kind") == "agent" and m.get("listenMode") != "observe"
+    ]
+
+
+async def _room_team(owner_id: str, user_id: str, room_id: str, *, need_team: bool = True) -> tuple[dict, list[dict]]:
+    """The room's non-observe agents. Any room kind; a DM with an agent is a one-agent team.
+    need_team=False (Live join) returns an empty team for a people-only room instead of 409."""
     meta, _ = await messaging.require_room_member(owner_id, user_id, room_id)
     if meta.get("ownerId") != owner_id:  # a shared-channel guest: the team is another workspace's agents
         raise _problem(404, code="room_not_found")
     if meta.get("archivedAt"):
         raise _problem(409, code="room_archived")
-    team = [
-        {"id": m["id"], "name": m.get("displayName") or "Agent"}
-        for m in await messaging_repo.list_members(room_id)
-        if m.get("kind") == "agent" and m.get("listenMode") != "observe"
-    ]
-    if not team:
+    team = await listening_agents(room_id)
+    if need_team and not team:
         raise _problem(409, code="no_agents")
     return meta, team
 

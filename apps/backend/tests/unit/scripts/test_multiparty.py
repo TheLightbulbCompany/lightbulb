@@ -121,3 +121,35 @@ def test_overlap_and_judge_parsing():
     assert runner.overlap("anything", "") == 0
     assert runner.parse_judge('sure: {"pass": true, "reason": "fine"}') == {"pass": True, "reason": "fine"}
     assert runner.parse_judge("not json")["pass"] is False
+
+
+def test_score_splits_partial_sets_into_missed_and_extras_into_wrong_agent():
+    exp = {"expected": "SPEAK", "expected_responder": ["Finance", "Growth"]}
+    s = mp.score([exp | {"responders": ["Finance"]}, exp | {"responders": ["Finance", "Growth", "CEO"]}])
+    assert s["missed"] == 0.5 and s["wrong_agent"] == 0.5 and s["recall"] == 0
+
+
+def test_collect_stops_at_the_race_deadline(monkeypatch):
+    clock = {"t": 0.0}
+
+    class FakeTime:
+        monotonic = staticmethod(lambda: clock["t"])
+
+        @staticmethod
+        def sleep(s):
+            clock["t"] += s
+
+    def api(method, path, **kw):
+        clock["t"] += 0.5  # each poll costs time
+        return {"messages": []} if path.endswith("/messages") else {"activeRuns": []}
+
+    monkeypatch.setattr(runner, "time", FakeTime)
+    runner.collect(api, "r", 0, {}, {}, window=5, expect_speak=True, settle={})
+    assert clock["t"] == pytest.approx(5)  # was 8: an uncapped 3 s sleep overshot the deadline
+
+
+def test_annotate_keeps_goal_status():
+    scn = {"steps": [{"say": "q"}, {"say": "a", "expect": {"responder": None, "goal": "answered"}}]}
+    res = runner.annotate({"steps": [{"step": 0}, {"step": 1}]}, scn)
+    assert res["steps"][1] == {"step": 1, "expected": "none", "goal": "answered"}
+    assert res["steps"][0]["goal"] is None

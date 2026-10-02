@@ -310,7 +310,7 @@ def collect(
     )
     start = last_change = time.monotonic()
     replies = []
-    while time.monotonic() - start < timeout:
+    while True:
         detail = api("GET", f"/messaging/rooms/{room_id}")
         for run in detail.get("activeRuns") or []:
             trigger_of[run["runId"]] = run.get("triggerMessageId")
@@ -335,7 +335,10 @@ def collect(
         # silence window: a cold runtime's first reply can take a minute to start.
         if window is None and idle and replies:
             break
-        time.sleep(3)
+        left = timeout - (time.monotonic() - start)
+        if left <= 0:
+            break
+        time.sleep(min(3, left))  # never past the deadline: a race's next post must land on time
     return replies, after_seq
 
 
@@ -353,6 +356,15 @@ def summarize(results: list[dict]) -> str:
                 f"| {'ok' if not bad else 'FAIL ' + ', '.join(bad)} | {'–' if j is None else ('pass' if j['pass'] else 'FAIL') + ': ' + j['reason']} |"
             )
     return "\n".join(out)
+
+
+def annotate(res: dict, scn: dict) -> dict:
+    """Copy each step's expected responder and goal status onto its result row."""
+    for s, step in zip(res["steps"], scn["steps"]):
+        exp = step.get("expect") or {}
+        s["expected"] = ", ".join(expected_set(exp.get("responder"))) or "none"
+        s["goal"] = exp.get("goal")
+    return res
 
 
 def load_scenarios(paths: list[str], only: str) -> list[dict]:
@@ -388,9 +400,7 @@ def main(argv=None):
     for scn in scns:
         print(f"== {scn['id']}", file=sys.stderr)
         res = play(scn, apis, ids, key, args.keep)
-        for s, step in zip(res["steps"], scn["steps"]):
-            s["expected"] = ", ".join(expected_set((step.get("expect") or {}).get("responder"))) or "none"
-        results.append(res)
+        results.append(annotate(res, scn))
     outdir = HERE / "results"
     outdir.mkdir(exist_ok=True)
     stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")

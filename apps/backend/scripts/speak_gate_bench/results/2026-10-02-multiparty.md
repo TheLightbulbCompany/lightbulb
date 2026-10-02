@@ -2,6 +2,13 @@
 
 Full chat routing, Jev `typesafe-ai/jev` with stub role cards. Recall = the expected agent(s) and nobody else; false-speak = any agent on a SILENT row. `n` counts judged cases (offline skips Jev rows).
 
+**Re-scored 2026-10-02 from the same raw run (no new Jev calls).** `score()` used to count any
+non-empty wrong answer as "wrong agent", so a partial set (`[Finance]` when `[Finance, Growth]` was
+expected: R07 chat+voice, R08 voice) showed up as a wrong agent. Now wrong agent = someone unexpected
+answered; missed = only expected agents (or nobody) answered, but not all of them. Recall,
+false-speak and precision are unchanged; total wrong agent 0.03 -> 0.01, missed 0.15 -> 0.16;
+R and cued wrong agent drop to 0.00. The routing itself never sent an unexpected agent on those rows.
+
 ## chat
 
 | slice | n | SPEAK n | recall | wrong agent | missed | SILENT n | false-speak | precision |
@@ -14,10 +21,10 @@ Full chat routing, Jev `typesafe-ai/jev` with stub role cards. Recall = the expe
 | F disagreement | 22 | 14 | 0.86 | 0.00 | 0.14 | 8 | 0.00 | 1.00 |
 | H implicit handoff | 15 | 15 | 0.93 | 0.00 | 0.07 | 0 | – | 1.00 |
 | T structure (threads) | 10 | 7 | 1.00 | 0.00 | 0.00 | 3 | 0.00 | 1.00 |
-| R regressions | 24 | 10 | 0.70 | 0.10 | 0.20 | 14 | 0.14 | 0.70 |
-| cued (agent named) | 32 | 26 | 0.62 | 0.04 | 0.35 | 6 | 0.50 | 0.80 |
+| R regressions | 24 | 10 | 0.70 | 0.00 | 0.30 | 14 | 0.14 | 0.70 |
+| cued (agent named) | 32 | 26 | 0.62 | 0.00 | 0.38 | 6 | 0.50 | 0.80 |
 | implicit (nobody named) | 148 | 93 | 0.89 | 0.01 | 0.10 | 55 | 0.02 | 0.98 |
-| **total** | 180 | 119 | 0.83 | 0.02 | 0.15 | 61 | 0.07 | 0.94 |
+| **total** | 180 | 119 | 0.83 | 0.01 | 0.16 | 61 | 0.07 | 0.94 |
 
 ## voice
 
@@ -31,10 +38,10 @@ Full chat routing, Jev `typesafe-ai/jev` with stub role cards. Recall = the expe
 | F disagreement | 22 | 14 | 0.86 | 0.00 | 0.14 | 8 | 0.00 | 1.00 |
 | H implicit handoff | 13 | 13 | 0.92 | 0.08 | 0.00 | 0 | – | 0.92 |
 | T structure (threads) | 10 | 7 | 1.00 | 0.00 | 0.00 | 3 | 0.00 | 1.00 |
-| R regressions | 21 | 10 | 0.60 | 0.20 | 0.20 | 11 | 0.18 | 0.60 |
-| cued (agent named) | 29 | 25 | 0.56 | 0.08 | 0.36 | 4 | 0.75 | 0.74 |
+| R regressions | 21 | 10 | 0.60 | 0.00 | 0.40 | 11 | 0.18 | 0.60 |
+| cued (agent named) | 29 | 25 | 0.56 | 0.00 | 0.44 | 4 | 0.75 | 0.74 |
 | implicit (nobody named) | 147 | 92 | 0.89 | 0.02 | 0.09 | 55 | 0.02 | 0.96 |
-| **total** | 176 | 117 | 0.82 | 0.03 | 0.15 | 59 | 0.07 | 0.92 |
+| **total** | 176 | 117 | 0.82 | 0.02 | 0.16 | 59 | 0.07 | 0.92 |
 
 ## all
 
@@ -48,10 +55,10 @@ Full chat routing, Jev `typesafe-ai/jev` with stub role cards. Recall = the expe
 | F disagreement | 44 | 28 | 0.86 | 0.00 | 0.14 | 16 | 0.00 | 1.00 |
 | H implicit handoff | 28 | 28 | 0.93 | 0.04 | 0.04 | 0 | – | 0.96 |
 | T structure (threads) | 20 | 14 | 1.00 | 0.00 | 0.00 | 6 | 0.00 | 1.00 |
-| R regressions | 45 | 20 | 0.65 | 0.15 | 0.20 | 25 | 0.16 | 0.65 |
-| cued (agent named) | 61 | 51 | 0.59 | 0.06 | 0.35 | 10 | 0.60 | 0.77 |
+| R regressions | 45 | 20 | 0.65 | 0.00 | 0.35 | 25 | 0.16 | 0.65 |
+| cued (agent named) | 61 | 51 | 0.59 | 0.00 | 0.41 | 10 | 0.60 | 0.77 |
 | implicit (nobody named) | 295 | 185 | 0.89 | 0.02 | 0.09 | 110 | 0.02 | 0.97 |
-| **total** | 356 | 236 | 0.83 | 0.03 | 0.15 | 120 | 0.07 | 0.93 |
+| **total** | 356 | 236 | 0.83 | 0.01 | 0.16 | 120 | 0.07 | 0.93 |
 
 ## Subtypes
 
@@ -163,8 +170,8 @@ Full chat routing, Jev `typesafe-ai/jev` with stub role cards. Recall = the expe
 | R / thanks / voice | 1 | 0 | – | – | – | 1 | 0.00 | – |
 | R / trailing-vocative / chat | 1 | 1 | 1.00 | 0.00 | 0.00 | 0 | – | 1.00 |
 | R / trailing-vocative / voice | 1 | 1 | 1.00 | 0.00 | 0.00 | 0 | – | 1.00 |
-| R / two-agents / chat | 2 | 2 | 0.50 | 0.50 | 0.00 | 0 | – | 0.50 |
-| R / two-agents / voice | 2 | 2 | 0.00 | 1.00 | 0.00 | 0 | – | 0.00 |
+| R / two-agents / chat | 2 | 2 | 0.50 | 0.00 | 0.50 | 0 | – | 0.50 |
+| R / two-agents / voice | 2 | 2 | 0.00 | 0.00 | 1.00 | 0 | – | 0.00 |
 | T / anaphora / chat | 1 | 1 | 1.00 | 0.00 | 0.00 | 0 | – | 1.00 |
 | T / anaphora / voice | 1 | 1 | 1.00 | 0.00 | 0.00 | 0 | – | 1.00 |
 | T / interleaved / chat | 2 | 1 | 1.00 | 0.00 | 0.00 | 1 | 0.00 | 1.00 |

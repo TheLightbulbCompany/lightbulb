@@ -284,13 +284,16 @@ def score(recs: list[dict]) -> dict:
     silent = [r for r in judged if r["expected"] == "SILENT"]
     spoke = [r for r in judged if r["responders"]]
     right = [r for r in speak if sorted(r["responders"]) == r["expected_responder"]]
+    # Wrong agent = someone answered who was not expected; missed = only expected agents (or nobody)
+    # answered but not all of them -- a partial ["Finance"] for ["Finance", "Growth"] is a miss.
+    wrong = [r for r in speak if set(r["responders"]) - set(r["expected_responder"])]
     return {
         "n": len(judged),
         "speak_n": len(speak),
         "silent_n": len(silent),
         "recall": len(right) / len(speak) if speak else None,
-        "wrong_agent": sum(1 for r in speak if r["responders"] and r not in right) / len(speak) if speak else None,
-        "missed": sum(1 for r in speak if not r["responders"]) / len(speak) if speak else None,
+        "wrong_agent": len(wrong) / len(speak) if speak else None,
+        "missed": sum(1 for r in speak if r not in right and r not in wrong) / len(speak) if speak else None,
         "false_speak": sum(1 for r in silent if r["responders"]) / len(silent) if silent else None,
         "precision": sum(1 for r in spoke if r in right) / len(spoke) if spoke else None,
     }

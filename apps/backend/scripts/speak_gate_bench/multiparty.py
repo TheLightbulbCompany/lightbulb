@@ -238,6 +238,11 @@ async def _stub_card(owner_id: str, agent_id: str, display_name: str, recency: s
     return jev._assemble((f"{display_name} (role: {role}).", jev._ROLE_DESCRIPTIONS[role], tools), recency)
 
 
+#: What the voice variant scores: "shipped" = what today's worker delivers (/route's agentId alone; it
+#: ignores "hold"), "next" = step 4's worker (queues every agentIds entry, waits on "hold").
+VOICE_WORKER = "shipped"
+
+
 async def route(case: dict, *, offline: bool = False) -> dict:
     """The production router: chat as create_human_message + openclaw_work run it, voice as
     voice_calls.route_live_line does (its history parsed from a "Name: text" transcript, no times)."""
@@ -257,12 +262,16 @@ async def route(case: dict, *, offline: bool = False) -> dict:
     rec |= {"expected_responder": case["expected_responder"], "how": det["how"], "whoP": None}
     rec["stage"] = {k: stage[k] for k in ("path", "agents", "humans", "hold", "anyone")} if stage else None
     names = {a["id"]: a["displayName"] for a in state["agents"]}
-    if voice and stage and stage["hold"]:
+    next_worker = VOICE_WORKER == "next"
+    if voice and next_worker and stage and stage["hold"]:
         rec["how"], rec["responders"] = "hold", []
         return rec
     if det["how"] != "jev":
-        # Voice: /route's agentIds (every addressed or relayed agent; the worker queues them).
-        rec["responders"] = sorted(names[a] for a in det["addressed"])
+        addressed = det["addressed"]
+        if voice and not next_worker and addressed:
+            # The shipped worker summons /route's agentId alone: the agent named first.
+            addressed = [next((a for a in (stage or {}).get("agents", []) if a in addressed), addressed[0])]
+        rec["responders"] = sorted(names[a] for a in addressed)
         return rec
     if offline:
         rec["how"], rec["responders"] = "skipped_offline", None
@@ -393,12 +402,15 @@ def main(argv=None):
     ap.add_argument("--concurrency", type=int, default=6)
     ap.add_argument("--tag", default="")
     ap.add_argument("--report-only", action="store_true")
+    ap.add_argument("--voice-worker", choices=("shipped", "next"), default="shipped", help="see VOICE_WORKER")
     args = ap.parse_args(argv)
     tag = (args.tag or date.today().isoformat()) + ("-offline" if args.offline else "")
     cases = [c for c in load() if re.search(args.only, c["id"])]
     RAW.mkdir(parents=True, exist_ok=True)
     out = RAW / f"{tag}-multiparty.jsonl"
     if not args.report_only:
+        global VOICE_WORKER
+        VOICE_WORKER = args.voice_worker
         asyncio.run(run(cases, out, args.concurrency, args.offline))
     selected = {c["id"] for c in cases}  # the raw file may hold rows from earlier, wider runs
     recs = [r for r in map(json.loads, out.read_text().splitlines()) if r["id"] in selected]

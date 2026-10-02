@@ -156,7 +156,6 @@ ROOM_LIVE_EVENT_TYPES = frozenset(
         "room.run.frame",
         "room.browser.frame",
         "room.metadata.changed",
-        "room.call.changed",
         "room.huddle.changed",
         "room.read.changed",
         "room.delivery.changed",

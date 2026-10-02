@@ -28,7 +28,6 @@ from core.services import (
     jev,
     livekit_huddles,
     messaging,
-    openai_live,
     runtime_transport,
     voice_persona,
     voice_routing,
@@ -86,7 +85,7 @@ async def _claim_turn(call_id: str, agent_id: str, run_id: str, seq: int) -> str
 
 
 async def release_hold(owner_id: str, hold: int) -> None:
-    """Used only when a call never started (OpenAI refused the create)."""
+    """Used only when a call never started."""
     if hold <= 0:
         return
     await run_in_thread(
@@ -156,35 +155,6 @@ async def _claim(call_id: str, now: int) -> dict | None:
     return resp.get("Attributes")
 
 
-async def _publish_call_changed(call: dict, state: str) -> None:
-    if call.get("kind") != "room" or not call.get("roomId"):
-        return
-    try:
-        await get_live_event_publisher().publish_room(
-            call["roomId"],
-            messaging.make_live_event(
-                "room.call.changed",
-                {"roomId": call["roomId"], "callId": call["callId"], "userId": call["userId"], "state": state},
-                room_id=call["roomId"],
-            ),
-        )
-    except Exception:  # noqa: BLE001 -- the marker is cosmetic; never fail a call over it
-        logger.info("voice call marker publish failed", exc_info=True)
-
-
-async def active_callers(owner_id: str, user_id: str, room_id: str) -> list[dict]:
-    meta, _ = await messaging.require_room_member(owner_id, user_id, room_id)
-    # Calls are owned by the room's workspace, so a vendor shared-channel guest filters on that, not their own.
-    room_owner = meta.get("ownerId", owner_id)
-    rows = await container_repo.get_by_status(OPEN)
-    return [
-        {"callId": r["callId"], "userId": r["userId"]}
-        for r in rows
-        # A huddle summon is a call row too, but its marker is the huddle's own, not a caller's.
-        if r.get("ownerId") == room_owner and r.get("roomId") == room_id and r.get("kind") != "huddle"
-    ]
-
-
 async def close_call(call_id: str, *, now: int | None = None, usage_seconds: int | None = None) -> bool:
     """usage_seconds: the huddle worker's GPT-Live seconds, capped at the call's budget."""
     if usage_seconds is not None:
@@ -198,16 +168,10 @@ async def close_call(call_id: str, *, now: int | None = None, usage_seconds: int
     if seconds is None:
         if usage_seconds is not None:
             seconds = min(usage_seconds, int(call["deadline"]) - int(call["startedAt"]))
-        elif call.get("kind") == "huddle":
+        else:
             # Only the worker knows GPT-Live seconds; none reported (crash, deadline sweep) bills nothing.
             put_metric("voice.huddle.usage_missing")
             seconds = 0
-        else:
-            seconds = await openai_live.close_session(call["sessionId"])
-        if seconds is None:
-            # ponytail: fallback bills wall-clock to the deadline; the dev spike may switch this to 0.
-            put_metric("voice.usage.fallback")
-            seconds = max(0, min(now, int(call["deadline"])) - int(call["startedAt"]))
         # Persist so a re-claim bills the same number instead of recomputing with a later `now`.
         # Best effort: we already hold the authoritative seconds, so a failed write must not lose them.
         try:
@@ -227,9 +191,6 @@ async def close_call(call_id: str, *, now: int | None = None, usage_seconds: int
         except Exception:  # noqa: BLE001
             put_metric("voice.usage.persist_failed")
             logger.warning("voice usage persist failed call=%s", call_id, exc_info=True)
-    await _publish_call_changed(
-        call, "ended"
-    )  # best effort, before billing: a failed bill must not leave the marker up
     await _bill(call, int(seconds))
     return True
 
@@ -387,19 +348,6 @@ async def _room_team(owner_id: str, user_id: str, room_id: str, *, need_team: bo
     return meta, team
 
 
-async def _verify_agent(owner_id: str, company_id: str, agent_id: str) -> None:
-    from routers.messaging import _verify_paperclip_hermes_identity  # the one agent-belongs-to-company check
-
-    await _verify_paperclip_hermes_identity(owner_id, {"companyId": company_id, "agentId": agent_id}, full=True)
-
-
-async def _frame_channel(owner_id: str, user_id: str) -> str:
-    channel = await get_live_event_publisher().user_channel(owner_id, user_id)
-    if channel is None:
-        raise _problem(409, code="live_channel_missing")
-    return channel
-
-
 _HOLD_ATTEMPTS = 3
 
 
@@ -499,13 +447,11 @@ def _prewake(call: dict) -> None:
     _fire(wake())
 
 
-async def _undo_start(owner_id: str, call_id: str, mode: str, hold: int, session_id: str | None = None) -> None:
+async def _undo_start(owner_id: str, call_id: str, mode: str, hold: int) -> None:
     """Every cleanup step is independent: one failing must not skip the rest (or replace the caller's error)."""
     steps = [("hold release", release_hold(owner_id, hold))]
     if mode == "free":
         steps.append(("free-claim release", _release_free(owner_id, call_id)))
-    if session_id:
-        steps.append(("session close", openai_live.close_session(session_id)))
     for what, step in steps:
         try:
             await step
@@ -513,9 +459,14 @@ async def _undo_start(owner_id: str, call_id: str, mode: str, hold: int, session
             logger.warning("voice start cleanup: %s failed", what, exc_info=True)
 
 
+def _live_configured() -> bool:
+    # CDK seeds the secret with a random non-sk- value; that counts as unset (voice stays dark).
+    return settings.OPENAI_API_KEY.startswith("sk-")
+
+
 async def _gate(owner_id: str) -> tuple[str, int]:
     """Plan + free-budget gates shared by every call start. Returns (billing mode, free budget seconds)."""
-    if not openai_live.configured():
+    if not _live_configured():
         raise _problem(503, code="voice_unavailable")
     mode = voice_billing.billing_mode(await billing_repo.get_by_owner_id(owner_id))
     if mode is None:
@@ -535,93 +486,8 @@ async def _room_persona(owner_id: str, team: list[dict]) -> str:
     )
 
 
-async def start_call(
-    *,
-    owner_id: str,
-    user_id: str,
-    agent_id: str | None = None,
-    agent_name: str | None = None,
-    room_id: str | None = None,
-    sdp: str,
-) -> dict:
-    mode, budget = await _gate(owner_id)
-    row = await _owner_row(owner_id)
-    company_id = row.company_id
-    meta: dict = {}
-    if room_id:
-        meta, team = await _room_team(owner_id, user_id, room_id)
-    else:
-        await _verify_agent(owner_id, company_id, agent_id)
-        team = [{"id": agent_id, "name": agent_name}]
-    ceo = (getattr(row, "starter_agent_ids", None) or {}).get("ceo")
-    voice_agent = next((t for t in team if t["id"] == ceo), team[0])
-    if room_id:
-        persona = await _room_persona(owner_id, team)
-    else:
-        persona = voice_persona.build_persona(voice_name=agent_name, team=None)
-    await _frame_channel(owner_id, user_id)  # fail before paying for a session the client can't hear results on
-    call_id = str(uuid.uuid4())
-    if mode == "free":
-        await _claim_free(owner_id, call_id, int(time.time()), int(time.time()) + budget + 180)
-    hold = 0
-    try:
-        if mode == "credits":
-            hold, budget = await _hold(owner_id)
-            if not hold:
-                raise _problem(402, code="voice_limit", reason="credits_low")
-        session_id, answer = await openai_live.create_session(
-            sdp=sdp, instructions=persona, voice=voice_persona.voice_for(voice_agent["id"], ceo)
-        )
-    except (openai_live.LiveUpstreamError, httpx.HTTPError, KeyError, ValueError):
-        await _undo_start(owner_id, call_id, mode, hold)
-        raise _problem(502, code="voice_upstream")
-    except BaseException:
-        await _undo_start(owner_id, call_id, mode, hold)
-        raise
-    now = int(time.time())
-    call = {
-        "callId": call_id,
-        "ownerId": owner_id,
-        "userId": user_id,
-        "agentId": voice_agent["id"],
-        "kind": "room" if room_id else "dm",
-        "roomId": room_id,
-        "roomName": meta.get("name"),
-        "team": team,
-        "voiceAgentId": voice_agent["id"],
-        "ceoId": ceo,
-        "turns": {},
-        "companyId": company_id,
-        "sessionId": session_id,
-        "startedAt": now,
-        "deadline": now + budget,
-        "billing": mode,
-        "holdMicrocents": hold,
-        "status": OPEN,
-    }
-    try:
-        await put_call(call)
-    except BaseException:  # incl. CancelledError
-        # No row means nothing would ever close or bill this session: undo everything, then surface the error.
-        await _undo_start(owner_id, call_id, mode, hold, session_id)
-        raise
-    _prewake(call)
-    await _publish_call_changed(call, "started")
-    return {
-        "callId": call["callId"],
-        "sdp": answer,
-        "deadline": call["deadline"],
-        "kind": call["kind"],
-        "voiceAgentId": voice_agent["id"],
-        # A room call speaks as Lightbulb (in the CEO's voice); a DM call is that agent.
-        "voiceName": voice_persona.ROOM_VOICE_NAME if room_id else voice_agent["name"],
-        "team": team,
-    }
-
-
 async def start_huddle_call(*, owner_id: str, room_id: str, speaker_user_id: str) -> dict:
-    """A huddle summon: start_call's gates, hold and free claim, but the worker owns the GPT-Live
-    session (no OpenAI session here) and frames go to the worker, not a user channel."""
+    """A Live summon: gate, hold and free claim. The worker owns the GPT-Live session and frames go to it."""
     mode, budget = await _gate(owner_id)
     row = await _owner_row(owner_id)
     meta, team = await _room_team(owner_id, speaker_user_id, room_id)
@@ -674,19 +540,6 @@ async def start_huddle_call(*, owner_id: str, room_id: str, speaker_user_id: str
     }
 
 
-async def _own_open_call(call_id: str, owner_id: str, user_id: str) -> dict:
-    call = await get_call(call_id)
-    if (
-        not call
-        or call.get("kind") == "huddle"  # huddle rows are the worker's, via the internal routes only
-        or call["ownerId"] != owner_id
-        or call["userId"] != user_id
-        or call["status"] != OPEN
-    ):
-        raise _problem(404, code="call_not_found")
-    return call
-
-
 async def _stop_turn(call: dict, agent_id: str, run_id: str | None) -> None:
     if not run_id:
         return
@@ -701,13 +554,6 @@ async def _stop_turn(call: dict, agent_id: str, run_id: str | None) -> None:
 async def _stop_all_turns(call: dict) -> None:
     turns = (call.get("turns") or {}).items()
     await asyncio.gather(*(_stop_turn(call, a, (t or {}).get("runId")) for a, t in turns), return_exceptions=True)
-
-
-async def start_turn(*, call_id: str, owner_id: str, user_id: str, seq: int, utterance: str, transcript: str) -> dict:
-    call = await _own_open_call(call_id, owner_id, user_id)
-    channel = await _frame_channel(owner_id, user_id)  # before the claim: a 409 must not kill the old turn
-    frames = {"endpoint": settings.APPSYNC_EVENTS_HTTP_ENDPOINT, "channel": channel}
-    return await _dispatch_turn(call, call, seq, utterance, transcript, frames, user_id)
 
 
 async def start_huddle_turn(
@@ -860,12 +706,6 @@ async def _dispatch_turn(
     return {"turnId": run_id, "agentId": agent_id}
 
 
-async def end_call(*, call_id: str, owner_id: str, user_id: str) -> dict:
-    await _own_open_call(call_id, owner_id, user_id)
-    await close_call(call_id)
-    return {"ended": True}
-
-
 async def wipe_owner_voice(owner_id: str) -> None:
     """Terminal wipe: end this owner's live calls without billing (the ledger is being archived)."""
     calls = [
@@ -873,13 +713,7 @@ async def wipe_owner_voice(owner_id: str) -> None:
     ]
     for call in calls:
         await _stop_all_turns(call)
-        try:
-            if call.get("sessionId"):  # a huddle summon has none
-                await openai_live.close_session(call["sessionId"])
-        except Exception:  # noqa: BLE001 -- best effort
-            logger.warning("voice wipe session close failed call=%s", call.get("callId"), exc_info=True)
         await run_in_thread(_table().delete_item, Key=_key(call["callId"]))
-        await _publish_call_changed(call, "ended")
     await run_in_thread(_table().delete_item, Key=_free_row_key(owner_id))
 
 
@@ -889,12 +723,12 @@ _HUDDLE_ORPHAN_S = 90  # a huddle row this old whose room has no worker lost it:
 
 
 def _sweep_due(call: dict) -> int:
-    return int(call.get("deadline", 0)) + (_HUDDLE_GRACE_S if call.get("kind") == "huddle" else 0)
+    return int(call.get("deadline", 0)) + _HUDDLE_GRACE_S
 
 
 async def _worker_gone(call: dict, now: int) -> bool:
     """A huddle row whose worker crashed holds the free claim or credit hold until its deadline otherwise."""
-    if call.get("kind") != "huddle" or now - int(call.get("startedAt", now)) < _HUDDLE_ORPHAN_S:
+    if now - int(call.get("startedAt", now)) < _HUDDLE_ORPHAN_S:
         return False
     if not livekit_huddles.configured():
         return False

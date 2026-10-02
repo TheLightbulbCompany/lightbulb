@@ -63,6 +63,10 @@ def _join(client, *, has_ceo=False, room_team=None, dispatch_error=None, path_ro
         return resp, mint, dispatch
 
 
+def test_the_calls_orb_route_is_gone(client):
+    assert client.post("/api/v1/calls", json={"roomId": ROOM, "sdp": "v=0"}).status_code == 404
+
+
 def test_join_wakes_the_workspace(client):
     resp, _, _ = _join(client)
     assert resp.status_code == 200

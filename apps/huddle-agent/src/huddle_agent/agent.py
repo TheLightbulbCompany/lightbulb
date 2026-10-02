@@ -124,7 +124,7 @@ async def entrypoint(ctx: JobContext) -> None:
     meta = json.loads(ctx.job.metadata)
     started = time.monotonic()
     usage = {"stt": 0.0}
-    emitted = {"stt": 0.0, "agent": 0.0}
+    emitted = {"stt": 0.0, "agent": 0.0, "gptlive": 0.0}
     backend = Backend(meta["roomId"], meta["ownerId"], meta["roomToken"])
     vad = silero.VAD.load()
     stt_engine = openai.STT(model="gpt-4o-mini-transcribe", use_realtime=True)  # streaming
@@ -138,9 +138,11 @@ async def entrypoint(ctx: JobContext) -> None:
 
     def flush_metrics() -> None:
         # deltas since the last flush, so a crashed job loses at most a minute
-        now = {"stt": usage["stt"], "agent": time.monotonic() - started}
+        now = {"stt": usage["stt"], "agent": time.monotonic() - started, "gptlive": huddle.gptlive_seconds()}
+        now["gptlive"] = max(now["gptlive"], emitted["gptlive"])  # a failed usage read never goes negative
         for k in now:
-            emit_metric(f"huddle.{k}.seconds", now[k] - emitted[k])
+            name = "huddle.gptlive.open_seconds" if k == "gptlive" else f"huddle.{k}.seconds"
+            emit_metric(name, now[k] - emitted[k])
         emitted.update(now)
 
     huddle = Huddle(room=_Room(ctx), backend=backend, live_factory=live_factory)

@@ -105,7 +105,7 @@ it("a failed talk_start says Lightbulb couldn't be reached", async () => {
   await joinNow();
   lk.room.localParticipant.performRpc.mockRejectedValueOnce(new Error("x"));
   fireEvent.click(screen.getByRole("button", { name: "Talk to Lightbulb" }));
-  expect(await screen.findByRole("alert")).toHaveTextContent("Couldn't reach Lightbulb — try again.");
+  expect(await screen.findByRole("alert")).toHaveTextContent("Couldn't reach the agent — try again.");
 });
 
 it("a join refused with workspace_not_ready says so in the header", async () => {

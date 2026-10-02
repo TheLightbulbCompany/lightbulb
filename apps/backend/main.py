@@ -36,7 +36,6 @@ from routers import (
     apple_iap,
     automations,
     billing,
-    calls,
     config,
     connections,
     container,
@@ -842,7 +841,6 @@ app.include_router(desktop_session_pickup.router, prefix="/api/v1", tags=["deskt
 
 # Billing routes
 app.include_router(billing.router, prefix="/api/v1/billing", tags=["billing"])
-app.include_router(calls.router, prefix="/api/v1/calls", tags=["calls"])
 app.include_router(huddles.router, prefix="/api/v1", tags=["huddles"])
 
 # Apple In-App Purchase: the app's link endpoint + Apple's notification

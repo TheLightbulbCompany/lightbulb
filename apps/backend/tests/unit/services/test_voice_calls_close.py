@@ -13,7 +13,9 @@ CALL = {
     "userId": "user_a",
     "agentId": "agent-1",
     "companyId": "co-1",
-    "sessionId": "live_1",
+    "kind": "huddle",
+    "roomId": "room-1",
+    "sessionId": None,
     "startedAt": 1000,
     "deadline": 1600,
     "billing": "credits",
@@ -27,7 +29,7 @@ def _conditional_fail():
     return ClientError({"Error": {"Code": "ConditionalCheckFailedException"}}, "UpdateItem")
 
 
-def _patches(*, claim_ok=True, seconds=90, call=CALL):
+def _patches(*, claim_ok=True, call=CALL):
     table = MagicMock()
     table.get_item.return_value = {"Item": dict(call)}
     if claim_ok:
@@ -44,7 +46,6 @@ def _patches(*, claim_ok=True, seconds=90, call=CALL):
         metronome,
         [
             patch.object(vc, "_table", return_value=table),
-            patch.object(vc.openai_live, "close_session", AsyncMock(return_value=seconds)),
             patch.object(vc, "_metronome", return_value=metronome),
             patch.object(vc, "_fast_gate_table_name", return_value="lightbulb-dev-metronome-fast-gate"),
             patch.object(vc.voice_billing.settings, "OPENROUTER_MARKUP", "1.2"),
@@ -65,8 +66,8 @@ async def _run(patches, coro):
 
 @pytest.mark.asyncio
 async def test_close_call_bills_credits_once_and_deletes_row():
-    table, client, metronome, patches = _patches(seconds=90)
-    assert await _run(patches, vc.close_call("call-1", now=1100)) is True
+    table, client, metronome, patches = _patches()
+    assert await _run(patches, vc.close_call("call-1", now=1100, usage_seconds=90)) is True
     event = metronome.ingest.await_args.args[0][0]
     assert event["event_type"] == "voice_call"
     assert event["transaction_id"] == "call-1"
@@ -89,20 +90,19 @@ async def test_close_call_loser_does_nothing():
 
 
 @pytest.mark.asyncio
-async def test_close_call_attach_failure_bills_fallback():
-    table, client, metronome, patches = _patches(seconds=None)
+async def test_close_call_without_reported_usage_bills_zero():
+    table, client, metronome, patches = _patches()
     with patch.object(vc, "put_metric") as metric:
         assert await _run(patches, vc.close_call("call-1", now=1100)) is True
-    metric.assert_any_call("voice.usage.fallback")
-    event = metronome.ingest.await_args.args[0][0]
-    assert event["properties"]["seconds"] == "100"  # min(now, deadline) − startedAt
+    metric.assert_any_call("voice.huddle.usage_missing")
+    assert metronome.ingest.await_args.args[0][0]["properties"]["seconds"] == "0"
 
 
 @pytest.mark.asyncio
 async def test_close_call_free_counts_seconds_in_one_transaction():
-    table, client, metronome, patches = _patches(seconds=45, call={**CALL, "billing": "free", "holdMicrocents": 0})
+    table, client, metronome, patches = _patches(call={**CALL, "billing": "free", "holdMicrocents": 0})
     with patch.object(vc.voice_billing.trial_cap, "utc_today", return_value="2026-09-30"):
-        await _run(patches, vc.close_call("call-1", now=1100))
+        await _run(patches, vc.close_call("call-1", now=1100, usage_seconds=45))
     metronome.ingest.assert_not_awaited()
     items = client.transact_write_items.call_args.kwargs["TransactItems"]
     counter = items[0]["Update"]
@@ -118,7 +118,7 @@ async def test_close_call_free_counts_seconds_in_one_transaction():
 
 @pytest.mark.asyncio
 async def test_close_call_free_leaves_a_newer_calls_claim_intact():
-    table, client, metronome, patches = _patches(seconds=45, call={**CALL, "billing": "free", "holdMicrocents": 0})
+    table, client, metronome, patches = _patches(call={**CALL, "billing": "free", "holdMicrocents": 0})
     claimed = {"Attributes": {**CALL, "billing": "free", "holdMicrocents": 0, "status": "call_closing"}}
 
     def update(**kw):
@@ -128,13 +128,13 @@ async def test_close_call_free_leaves_a_newer_calls_claim_intact():
 
     table.update_item.side_effect = update
     with patch.object(vc.voice_billing.trial_cap, "utc_today", return_value="2026-09-30"):
-        assert await _run(patches, vc.close_call("call-1", now=1100)) is True
+        assert await _run(patches, vc.close_call("call-1", now=1100, usage_seconds=45)) is True
     assert table.update_item.call_args.kwargs["ExpressionAttributeValues"] == {":c": "call-1"}
 
 
 @pytest.mark.asyncio
 async def test_close_call_fires_stop_turn_in_background():
-    table, client, metronome, patches = _patches(seconds=90)
+    table, client, metronome, patches = _patches()
     gate = asyncio.Event()
 
     async def slow_stop(*a):
@@ -143,7 +143,7 @@ async def test_close_call_fires_stop_turn_in_background():
     patches[-1] = patch.object(vc, "_stop_turn", slow_stop)
     try:
         # would hang forever if close_call awaited the stop
-        assert await asyncio.wait_for(_run(patches, vc.close_call("call-1", now=1100)), 2) is True
+        assert await asyncio.wait_for(_run(patches, vc.close_call("call-1", now=1100, usage_seconds=90)), 2) is True
     finally:
         gate.set()
         await asyncio.gather(*vc._background)
@@ -158,20 +158,20 @@ def _cancel(*codes):
 
 @pytest.mark.asyncio
 async def test_close_call_free_day_rollover_retries_with_reset():
-    table, client, metronome, patches = _patches(seconds=45, call={**CALL, "billing": "free", "holdMicrocents": 0})
+    table, client, metronome, patches = _patches(call={**CALL, "billing": "free", "holdMicrocents": 0})
     client.transact_write_items.side_effect = [_cancel("ConditionalCheckFailed", "None"), None]
     with patch.object(vc.voice_billing.trial_cap, "utc_today", return_value="2026-09-30"):
-        assert await _run(patches, vc.close_call("call-1", now=1100)) is True
+        assert await _run(patches, vc.close_call("call-1", now=1100, usage_seconds=45)) is True
     second = client.transact_write_items.call_args.kwargs["TransactItems"][0]["Update"]
     assert second["UpdateExpression"] == "SET usedSeconds = :s, #d = :day"
 
 
 @pytest.mark.asyncio
 async def test_close_call_credits_gate_skipped_still_deletes_row():
-    table, client, metronome, patches = _patches(seconds=90)
+    table, client, metronome, patches = _patches()
     client.transact_write_items.side_effect = [_cancel("ConditionalCheckFailed", "None"), None]
     with patch.object(vc, "put_metric") as metric:
-        assert await _run(patches, vc.close_call("call-1", now=1100)) is True
+        assert await _run(patches, vc.close_call("call-1", now=1100, usage_seconds=90)) is True
     metric.assert_any_call("voice.bill.gate_skipped")
     retry = client.transact_write_items.call_args.kwargs["TransactItems"]
     assert len(retry) == 1 and "Delete" in retry[0]
@@ -179,21 +179,21 @@ async def test_close_call_credits_gate_skipped_still_deletes_row():
 
 @pytest.mark.asyncio
 async def test_close_call_reraises_when_delete_condition_failed():
-    table, client, metronome, patches = _patches(seconds=90)
+    table, client, metronome, patches = _patches()
     client.transact_write_items.side_effect = _cancel("None", "ConditionalCheckFailed")
     with pytest.raises(ClientError):
-        await _run(patches, vc.close_call("call-1", now=1100))
+        await _run(patches, vc.close_call("call-1", now=1100, usage_seconds=90))
 
 
 @pytest.mark.asyncio
 async def test_close_call_reclaim_bills_stored_usage_seconds():
-    table, client, metronome, patches = _patches(seconds=None, call={**CALL, "usageSeconds": 90})
+    table, client, metronome, patches = _patches(call={**CALL, "usageSeconds": 90})
     table.update_item.return_value = {"Attributes": {**CALL, "usageSeconds": 90, "status": "call_closing"}}
     with patch.object(vc, "put_metric") as metric:
         assert await _run(patches, vc.close_call("call-1", now=5000)) is True
     event = metronome.ingest.await_args.args[0][0]
     assert event["properties"]["seconds"] == "90"
-    assert ("voice.usage.fallback",) not in [c.args for c in metric.call_args_list]
+    assert ("voice.huddle.usage_missing",) not in [c.args for c in metric.call_args_list]
 
 
 ROW_A = {"remaining_microcents": 900_000, "reserved_microcents": 0, "openrouter_reserved_microcents": 100}
@@ -249,12 +249,12 @@ async def test_hold_row_without_reservation_fields_uses_attribute_not_exists():
 
 @pytest.mark.asyncio
 async def test_persist_failure_still_bills_known_seconds():
-    table, client, metronome, patches = _patches(seconds=90)
+    table, client, metronome, patches = _patches()
     table.update_item.side_effect = [
         {"Attributes": {**CALL, "status": "call_closing"}},  # claim
         ClientError({"Error": {"Code": "ProvisionedThroughputExceededException"}}, "UpdateItem"),  # persist
     ]
-    assert await _run(patches, vc.close_call("call-1", now=1100)) is True
+    assert await _run(patches, vc.close_call("call-1", now=1100, usage_seconds=90)) is True
     assert metronome.ingest.await_args.args[0][0]["properties"]["seconds"] == "90"
     client.transact_write_items.assert_called_once()
 
@@ -262,17 +262,14 @@ async def test_persist_failure_still_bills_known_seconds():
 @pytest.mark.asyncio
 async def test_wipe_owner_voice_closes_and_deletes_only_this_owners_calls():
     table = MagicMock()
-    mine = {**CALL, "callId": "a", "sessionId": "s_a"}
-    other = {**CALL, "callId": "b", "ownerId": "org_b", "sessionId": "s_b"}
-    close = AsyncMock()
+    mine = {**CALL, "callId": "a"}
+    other = {**CALL, "callId": "b", "ownerId": "org_b"}
     with (
         patch.object(vc, "_table", return_value=table),
         patch.object(vc.container_repo, "get_by_status", AsyncMock(side_effect=[[mine, other], []])),
-        patch.object(vc.openai_live, "close_session", close),
         patch.object(vc, "_stop_turn", AsyncMock()),
     ):
         await vc.wipe_owner_voice("org_a")
-    close.assert_awaited_once_with("s_a")
     keys = [c.kwargs["Key"]["owner_id"] for c in table.delete_item.call_args_list]
     assert keys == ["__call__#a", "__voice__#org_a"]
 
@@ -348,16 +345,6 @@ async def test_claim_turn_per_agent_against_real_dynamodb(moto_tables):
     assert await vc._claim_turn("c1", "agent-a", "r4", 6) == "r1"
     # the same seq again is a retry of that delegation (its dispatch failed): it replaces its own attempt
     assert await vc._claim_turn("c1", "agent-a", "r5", 6) == "r4"
-
-
-@pytest.mark.asyncio
-async def test_close_publishes_ended():
-    call = {**CALL, "kind": "room", "roomId": "room-1"}
-    table, client, metronome, patches = _patches(call=call)
-    pub = AsyncMock()
-    patches.append(patch.object(vc, "_publish_call_changed", pub))
-    await _run(patches, vc.close_call("call-1", now=1100))
-    pub.assert_awaited_once_with({**call, "status": "call_closing"}, "ended")
 
 
 @pytest.mark.asyncio

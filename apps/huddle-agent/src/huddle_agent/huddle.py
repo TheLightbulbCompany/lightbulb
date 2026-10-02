@@ -60,13 +60,17 @@ class Room(Protocol):
     def shutdown(self) -> None: ...
 
 
-def emit_metric(name: str, value: float, unit: str = "Seconds") -> None:
+def emit_metric(name: str, value: float, unit: str = "Seconds", dims: dict[str, str] | None = None) -> None:
     """One CloudWatch EMF line on stdout (same shape as the backend's put_metric)."""
+    dims = dims or {}
     line = {
         "_aws": {
             "Timestamp": int(time.time() * 1000),
-            "CloudWatchMetrics": [{"Namespace": "LightbulbAI", "Dimensions": [[]], "Metrics": [{"Name": name, "Unit": unit}]}],
+            "CloudWatchMetrics": [
+                {"Namespace": "LightbulbAI", "Dimensions": [list(dims)], "Metrics": [{"Name": name, "Unit": unit}]}
+            ],
         },
+        **dims,
         name: value,
     }
     print(json.dumps(line), file=sys.stdout, flush=True)
@@ -87,6 +91,7 @@ class _Exchange:
     agent_state: str = "listening"  # GPT-Live's AgentState: listening / thinking / speaking / ...
     lines: list[str] = field(default_factory=list)  # other people's lines not yet sent as thinking
     dropping: bool = False  # its live session failed; an end is on the way
+    heard_at: float | None = None  # the request's final transcript, until first audio is measured
 
 
 class Huddle:
@@ -115,6 +120,21 @@ class Huddle:
         self._last_heard = self._started  # the room's last speech (or arrival)
         self._idle_ended = self._left = False
         self._presence_v = 0
+        self._gptlive_closed = 0.0  # usage of this job's closed GPT-Live sessions
+        self._closing: _Exchange | None = None  # still counted while its session closes
+
+    def gptlive_seconds(self) -> float:
+        """GPT-Live session seconds this job has used so far, open session included."""
+        total = self._gptlive_closed
+        for x in (self._x, self._closing):
+            try:
+                total += x.live.usage_seconds() if x else 0.0
+            except Exception:
+                pass
+        return total
+
+    def _latency(self, name: str, heard_at: float) -> None:
+        emit_metric(f"live.latency.{name}", round((self._clock() - heard_at) * 1000), "Milliseconds", {"path": "today"})
 
     def _spawn(self, coro) -> None:
         t = asyncio.create_task(coro)
@@ -190,7 +210,7 @@ class Huddle:
         if x is None:
             if summons_lightbulb(text) and not self._lock.locked():
                 # a task: awaiting here would stall this person's STT loop for the whole summon
-                self._spawn(self.summon(identity, request=text))
+                self._spawn(self.summon(identity, request=text, heard_at=self._last_heard))
             return
         if identity == x.speaker:
             x.last_activity = self._clock()
@@ -212,6 +232,9 @@ class Huddle:
         if x:
             x.agent_state = state
             x.last_activity = self._clock()
+            if state == "speaking" and x.heard_at is not None:
+                self._latency("first_audio", x.heard_at)
+                x.heard_at = None
             self._sync_state()
 
     async def talk_start(self, identity: str) -> None:
@@ -226,7 +249,9 @@ class Huddle:
         elif self._lock.locked():  # released before the summon finished: nudge once it has
             self._released.add(identity)
 
-    async def summon(self, identity: str, request: str | None) -> None:
+    async def summon(self, identity: str, request: str | None, heard_at: float | None = None) -> None:
+        if heard_at is None:
+            heard_at = self._clock()
         async with self._lock:
             self._released.discard(identity)  # only a release during THIS summon counts
             x = self._x
@@ -240,6 +265,7 @@ class Huddle:
                 logger.info("huddle summon refused: %s", e.code)
                 self._room.publish(ERROR_TOPIC, {"code": e.code, "reason": e.reason}, [identity])
                 return
+            self._latency("route", heard_at)
             now = self._clock()
             try:
                 live = await self._live_factory(r["persona"], r["voice"], identity)  # pinned to the speaker
@@ -248,6 +274,7 @@ class Huddle:
                 await self._end_call(r["callId"], 0)
                 self._room.publish(ERROR_TOPIC, {"code": "huddles_upstream", "reason": None}, [identity])
                 return
+            self._latency("session_started", heard_at)
             names = {t["id"]: t["name"] for t in r.get("team") or []}
             x = self._x = _Exchange(
                 call_id=r["callId"],
@@ -258,6 +285,7 @@ class Huddle:
                 started=now,
                 last_activity=now,
                 last_thinking=now,
+                heard_at=heard_at,
             )
             context = "Transcript so far:\n" + self._transcript.text()
             ok = all(
@@ -407,6 +435,8 @@ class Huddle:
             if only is not None and self._x is not only:
                 return
             x, self._x = self._x, None
+            if x is not None:
+                self._closing = x
         if x is None:
             return
         self._sync_state()
@@ -414,10 +444,16 @@ class Huddle:
         try:
             x.live.mute()
             await x.live.aclose()  # GPT-Live bills per session second
-            usage = x.live.usage_seconds()  # after close: the final usage delta lands during it
         except Exception:
             logger.exception("huddle live session close failed")
         finally:
+            try:
+                usage = x.live.usage_seconds()  # after close: the final usage delta lands during it
+            except Exception:
+                logger.exception("huddle live usage read failed")
+            self._gptlive_closed += usage
+            if self._closing is x:
+                self._closing = None
             wall = min(self._clock(), x.deadline) - x.started
             await self._end_call(x.call_id, usage or wall)
 

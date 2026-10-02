@@ -779,3 +779,96 @@ async def test_presence_versions_increase():
     await h.on_participants({"u1": "Prasiddha"})
     await h.on_participants({"u1": "Prasiddha", "u2": "Aden"})
     assert backend.versions[0] < backend.versions[1]
+
+
+def _emf(capsys) -> list[dict]:
+    return [json.loads(line) for line in capsys.readouterr().out.splitlines() if line.startswith("{")]
+
+
+async def test_summon_emits_route_session_and_first_audio_latency(capsys):
+    h, room, backend, lives, clock, log = make()
+    await h.on_participants({"u1": "Pat"})
+    real_summon, real_factory = backend.summon, h._live_factory
+
+    async def summon(speaker):
+        clock.t += 0.4
+        return await real_summon(speaker)
+
+    async def factory(*a):
+        clock.t += 0.6
+        return await real_factory(*a)
+
+    backend.summon, h._live_factory = summon, factory
+    capsys.readouterr()
+    await h.on_final_transcript("u1", "Pat", "Lightbulb, how are sales?")
+    await settle(h)
+    clock.t += 1.1
+    h.on_agent_state("speaking")
+    lines = [l for l in _emf(capsys) if any(k.startswith("live.latency.") for k in l)]
+    got = {k: v for l in lines for k, v in l.items() if k.startswith("live.latency.")}
+    assert got == {"live.latency.route": 400, "live.latency.session_started": 1000, "live.latency.first_audio": 2100}
+    for l in lines:
+        assert l["path"] == "today"
+        assert l["_aws"]["CloudWatchMetrics"][0]["Dimensions"] == [["path"]]
+        assert l["_aws"]["CloudWatchMetrics"][0]["Metrics"][0]["Unit"] == "Milliseconds"
+
+
+async def test_first_audio_emitted_once_per_exchange(capsys):
+    h, room, backend, lives, clock, log = make()
+    await h.on_participants({"u1": "Pat"})
+    await h.talk_start("u1")
+    capsys.readouterr()
+    for state in ("speaking", "listening", "speaking"):
+        h.on_agent_state(state)
+    assert sum("live.latency.first_audio" in l for l in _emf(capsys)) == 1
+
+
+def test_emit_metric_dims_shape(capsys):
+    h_mod.emit_metric("x.y", 3, "Milliseconds", {"path": "jev"})
+    h_mod.emit_metric("x.z", 1)
+    a, b = _emf(capsys)
+    assert a["_aws"]["CloudWatchMetrics"][0]["Dimensions"] == [["path"]] and a["path"] == "jev" and a["x.y"] == 3
+    assert b["_aws"]["CloudWatchMetrics"][0]["Dimensions"] == [[]] and b["x.z"] == 1
+
+
+async def test_gptlive_seconds_counts_open_and_closed_sessions():
+    h, room, backend, lives, clock, log = make()
+    await h.on_participants({"u1": "Pat"})
+    await h.talk_start("u1")
+    lives[0].usage = 5.0
+    assert h.gptlive_seconds() == 5.0
+    await h.end_exchange()
+    await h.talk_start("u1")
+    lives[1].usage = 2.0
+    assert h.gptlive_seconds() == 42.4 + 2.0
+
+
+async def test_gptlive_seconds_keeps_a_closing_session():
+    h, room, backend, lives, clock, log = make()
+    await h.on_participants({"u1": "Pat"})
+    await h.talk_start("u1")
+    lives[0].usage = 5.0
+    seen = []
+    close = lives[0].aclose
+
+    async def aclose():
+        seen.append(h.gptlive_seconds())  # a flush while the session closes
+        await close()
+
+    lives[0].aclose = aclose
+    await h.end_exchange()
+    assert seen == [5.0] and h.gptlive_seconds() == 42.4
+
+
+async def test_gptlive_seconds_counts_a_session_whose_close_failed():
+    h, room, backend, lives, clock, log = make()
+    await h.on_participants({"u1": "Pat"})
+    await h.talk_start("u1")
+    lives[0].usage = 5.0
+
+    async def aclose():
+        raise RuntimeError("boom")
+
+    lives[0].aclose = aclose
+    await h.end_exchange()
+    assert h.gptlive_seconds() == 5.0

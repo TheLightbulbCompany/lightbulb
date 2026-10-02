@@ -3478,7 +3478,10 @@ STEER_LOST = "steer_lost"
 async def redispatch_lost_steers(owner_id: str, row: dict) -> None:
     """A run that errored took follow-ups (steers) it may never have answered: give each its
     own normal turn, so a steered message is never silently swallowed. At worst the agent
-    answers it twice. An aborted run is deliberately excluded: Stop means stop."""
+    answers it twice. A room event steered in before Jev (routing v2 §4.1) goes back through
+    Jev as a room event, never as an answer forced from this agent. An aborted run is
+    deliberately excluded: Stop means stop."""
+    ambient = set(row.get("ambientSteerIds") or ())
     for message_id in sorted(row.get("steeredMessageIds") or ()):
         try:
             created = await messaging_repo.create_follow_up(
@@ -3487,7 +3490,7 @@ async def redispatch_lost_steers(owner_id: str, row: dict) -> None:
                 agent_id=row["agentId"],
                 follow_up_id=str(uuid.uuid5(uuid.NAMESPACE_URL, f"lightbulb-steer-lost:{row['runId']}:{message_id}")),
                 trigger_message_id=message_id,
-                event_kind="user_request",
+                event_kind="room_event" if message_id in ambient else "user_request",
                 reason=STEER_LOST,
                 text="",
             )
@@ -3761,6 +3764,9 @@ async def handle_run_event(owner_id: str, event: RunEventRequest) -> RunEventRes
             put_metric("messaging.run.ended", dimensions={"outcome": event.outcome, "event_kind": event_kind})
             if event.silent and event.outcome == "completed":
                 put_metric("messaging.agent.silent", dimensions={"event_kind": event_kind})
+                if row.get("steeredMessageIds"):
+                    # Routing v2 §4.1: a run that stood down after a human line was steered in.
+                    put_metric("messaging.run.silent_after_steer", dimensions={"event_kind": event_kind})
             for name, start, end in (
                 ("messaging.run.start_latency", "dispatchedAt", "startedAt"),
                 ("messaging.run.duration", "startedAt", "endedAt"),
@@ -3946,7 +3952,7 @@ async def create_agent_message(owner_id: str, request: AgentMessageRequest) -> A
     run_id = str(request.run_id) if request.run_id else None
     # Agent-reply cap: a human message is hop 0, a room turn's reply is its trigger's hop + 1,
     # and a post from outside a room turn (heartbeat, routine, lightbulb-post.sh) is hop 1.
-    hop, trigger = 1, None
+    hop, trigger, run = 1, None, None
     if run_id is not None:
         # A present run id is a claim about the ledger, not a hint: it must be this
         # owner's run for this room and agent. A run that already closed still accepts
@@ -4057,6 +4063,8 @@ async def create_agent_message(owner_id: str, request: AgentMessageRequest) -> A
                 props={"reason": "unresolved_mention", "room_kind": room_kind},
             )
         await _emit_reply_telemetry(owner_id, room_id, agent_id, item, links, room_kind)
+        if trigger and (run or {}).get("eventKind") == "room_event":
+            await _emit_reply_after_human_answer(room_id, meta, trigger, item, room_kind)
         if capped:
             put_metric("messaging.agent_chain.capped", dimensions={"room_kind": room_kind})
             await _post_chain_paused_notice(owner_id, item, agent["name"], (trigger or {}).get("author"))
@@ -4096,6 +4104,25 @@ async def _post_chain_paused_notice(owner_id: str, item: dict, agent_name: str, 
     except Exception:
         # Advisory: the capped message itself is already stored.
         logger.warning("chain-paused notice failed", exc_info=True)
+
+
+async def _emit_reply_after_human_answer(room_id: str, meta: dict, trigger: dict, item: dict, room_kind: str) -> None:
+    """Routing v2 R1's residual: an ambient reply posted although a human spoke in the same
+    conversation after its trigger (the steer missed it, or the run ignored it). Never raises,
+    for the same reason as _emit_reply_telemetry."""
+    try:
+        conversation = {trigger.get("threadRootMessageId"), trigger.get("threadRootMessageId") or trigger["messageId"]}
+        rows = await messaging_repo.list_messages_between(
+            room_id, int(trigger["messageSeq"]) + 1, int(item["messageSeq"]) - 1
+        )
+        if any(
+            (row.get("author") or {}).get("kind") == "human"
+            and (meta.get("kind") == "dm" or row.get("threadRootMessageId") in conversation)
+            for row in rows
+        ):
+            put_metric("messaging.reply.after_human_answer", dimensions={"room_kind": room_kind})
+    except Exception:
+        logger.warning("messaging: after-human-answer check failed for room %s", room_id, exc_info=True)
 
 
 async def _emit_reply_telemetry(

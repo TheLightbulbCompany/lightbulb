@@ -6,11 +6,18 @@
  * card is gone rather than inert.
  */
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { render as rtlRender, screen, waitFor } from "@testing-library/react";
+import { SWRConfig } from "swr";
 import userEvent from "@testing-library/user-event";
 import React from "react";
 
 import { AgentOverviewTab } from "../AgentOverviewTab";
+
+const apiGet = vi.fn();
+const apiPut = vi.fn();
+vi.mock("@/lib/api", () => ({ useApi: () => ({ get: apiGet, put: apiPut }) }));
+const render = (ui: React.ReactElement) =>
+  rtlRender(<SWRConfig value={{ provider: () => new Map(), dedupingInterval: 0 }}>{ui}</SWRConfig>);
 
 const ARN_SONNET = "arn:aws:bedrock:us-east-1:1:application-inference-profile/son";
 const ARN_OPUS = "arn:aws:bedrock:us-east-1:1:application-inference-profile/opu";
@@ -56,6 +63,62 @@ describe("AgentOverviewTab", () => {
     mockCallRpc.mockReset();
     mockCallRpc.mockResolvedValue({ ok: true });
     statusLoaded = true;
+    apiGet.mockReset();
+    apiPut.mockReset();
+    apiGet.mockResolvedValue({ name: "Ada", notes: "be blunt", voice: "Marin" });
+  });
+
+  describe("Voice card", () => {
+    it("loads voice and notes with a counter", async () => {
+      render(<AgentOverviewTab agentId="a1" agent={agent} />);
+      expect(await screen.findByText("Marin")).toBeInTheDocument();
+      expect(screen.getByDisplayValue("be blunt")).toBeInTheDocument();
+      expect(screen.getByText("8 / 1,000")).toBeInTheDocument();
+      expect(screen.getByText(/How Ada talks in Live and chat\. Ada adds to this/)).toBeInTheDocument();
+    });
+
+    it("saves with PUT {notes}, and Cancel restores", async () => {
+      const user = userEvent.setup();
+      apiPut.mockResolvedValue({ name: "Ada", notes: "be blunt!", voice: "Marin" });
+      render(<AgentOverviewTab agentId="a1" agent={agent} />);
+      const box = await screen.findByDisplayValue("be blunt");
+      await user.type(box, "!");
+      await user.click(screen.getAllByRole("button", { name: "Save" })[0]);
+      await waitFor(() => expect(apiPut).toHaveBeenCalledWith("/teams/agents/a1/voice-notes", { notes: "be blunt!" }));
+      await user.type(box, "x");
+      await user.click(screen.getByRole("button", { name: "Cancel" }));
+      expect(screen.getByDisplayValue("be blunt!")).toBeInTheDocument();
+    });
+
+    it("keeps the draft on a 422", async () => {
+      const user = userEvent.setup();
+      apiPut.mockRejectedValue(new Error("too long"));
+      render(<AgentOverviewTab agentId="a1" agent={agent} />);
+      await user.type(await screen.findByDisplayValue("be blunt"), "?");
+      await user.click(screen.getAllByRole("button", { name: "Save" })[0]);
+      expect(await screen.findByText("too long")).toBeInTheDocument();
+      expect(screen.getByDisplayValue("be blunt?")).toBeInTheDocument();
+    });
+
+    it("resets when the agent changes", async () => {
+      const user = userEvent.setup();
+      const { rerender } = render(<AgentOverviewTab agentId="a1" agent={agent} />);
+      await user.type(await screen.findByDisplayValue("be blunt"), "?");
+      apiGet.mockResolvedValue({ name: "Bo", notes: "calm", voice: "Cedar" });
+      rerender(
+        <SWRConfig value={{ provider: () => new Map(), dedupingInterval: 0 }}>
+          <AgentOverviewTab agentId="a2" agent={{ ...agent, id: "a2", name: "Bo" }} />
+        </SWRConfig>,
+      );
+      expect(await screen.findByDisplayValue("calm")).toBeInTheDocument();
+    });
+
+    it("says so when voice settings fail to load, rest of tab intact", async () => {
+      apiGet.mockRejectedValue(new Error("nope"));
+      render(<AgentOverviewTab agentId="a1" agent={agent} />);
+      expect(await screen.findByText("Voice settings unavailable")).toBeInTheDocument();
+      expect(screen.getByText("Backend engineer")).toBeInTheDocument();
+    });
   });
 
   it("dials neither the stubbed identity RPC nor config.get", () => {

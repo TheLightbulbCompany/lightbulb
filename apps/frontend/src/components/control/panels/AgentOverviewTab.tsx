@@ -1,7 +1,9 @@
 "use client";
 
 import { useState, useCallback, useEffect, useMemo } from "react";
+import useSWR from "swr";
 import { Loader2, AlertCircle } from "lucide-react";
+import { useApi } from "@/lib/api";
 import { useRuntimeRpcMutation } from "@/hooks/useRuntimeRpc";
 import { useModelCatalog } from "@/hooks/useConfigPatch";
 import { ModelSelector } from "@/components/chat/ModelSelector";
@@ -21,6 +23,84 @@ function InfoRow({ label, value }: { label: string; value: string }) {
     <div>
       <div className="label-caps">{label}</div>
       <div className="text-sm font-medium truncate text-[var(--midnight)]">{value}</div>
+    </div>
+  );
+}
+
+type VoiceSettings = { name: string; notes: string; voice: string };
+const VOICE_NOTES_MAX = 1000;
+
+// Keyed by agentId at the call site, so switching agents drops the draft.
+function VoiceCard({ agentId, name }: { agentId: string; name: string }) {
+  const api = useApi();
+  const { data, error, mutate } = useSWR<VoiceSettings>(
+    `/teams/agents/${agentId}/voice-notes`,
+    (path: string) => api.get(path) as Promise<VoiceSettings>,
+  );
+  const [draft, setDraft] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
+
+  if (error) {
+    return (
+      <div className="rounded-lg border border-[var(--edge)] p-4 bg-cream">
+        <h3 className="text-sm font-medium text-[var(--midnight)]">Voice</h3>
+        <p className="text-xs text-[var(--midnight-muted)]">Voice settings unavailable</p>
+      </div>
+    );
+  }
+  if (!data) return null;
+
+  const value = draft ?? data.notes;
+  const dirty = value !== data.notes;
+  const save = async () => {
+    setSaving(true);
+    setSaveError(null);
+    try {
+      const next = (await api.put(`/teams/agents/${agentId}/voice-notes`, { notes: value })) as VoiceSettings;
+      await mutate(next, false);
+      setDraft(null);
+    } catch (err) {
+      setSaveError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div className="rounded-lg border border-[var(--edge)] p-4 space-y-3 bg-cream">
+      <h3 className="text-sm font-medium text-[var(--midnight)]">Voice</h3>
+      <InfoRow label="Voice" value={data.voice} />
+      <div>
+        <label htmlFor="voice-notes" className="label-caps">Voice notes</label>
+        <textarea
+          id="voice-notes"
+          maxLength={VOICE_NOTES_MAX}
+          rows={4}
+          value={value}
+          onChange={(e) => setDraft(e.target.value)}
+          className="mt-1 w-full rounded-md border border-[var(--edge)] bg-transparent p-2 text-sm"
+        />
+        <div className="flex justify-between text-xs text-[var(--midnight-muted)]">
+          <span>
+            How {name} talks in Live and chat. {name} adds to this when you ask it to change how it talks.
+          </span>
+          <span aria-live="polite">{value.length.toLocaleString("en-US")} / 1,000</span>
+        </div>
+      </div>
+      {saveError && (
+        <p className="text-xs text-err flex items-center gap-1">
+          <AlertCircle size={12} strokeWidth={1.75} /> {saveError}
+        </p>
+      )}
+      <div className="flex justify-end gap-2">
+        <Button size="sm" variant="ghost" onClick={() => { setDraft(null); setSaveError(null); }} disabled={!dirty || saving}>
+          Cancel
+        </Button>
+        <Button size="sm" onClick={save} disabled={!dirty || saving}>
+          {saving ? <Loader2 size={12} strokeWidth={1.75} className="animate-spin" /> : "Save"}
+        </Button>
+      </div>
     </div>
   );
 }
@@ -200,6 +280,8 @@ export function AgentOverviewTab({ agentId, agent, onAgentUpdated }: { agentId: 
           ))}
         </div>
       </div>
+
+      <VoiceCard key={agentId} agentId={agentId} name={agent?.name || "This agent"} />
 
       <div className="rounded-lg border border-[var(--edge)] p-4 space-y-3 bg-cream">
         <h3 className="text-sm font-medium text-[var(--midnight)]">Model</h3>

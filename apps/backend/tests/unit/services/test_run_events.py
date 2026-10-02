@@ -401,10 +401,11 @@ async def test_provider_failure_names_the_provider_and_no_code(metrics, account,
 
 
 @pytest.mark.asyncio
-async def test_a_silent_completion_posts_nothing_records_usage_and_counts(metrics):
+@pytest.mark.parametrize("steered", [False, True])
+async def test_a_silent_completion_posts_nothing_records_usage_and_counts(metrics, steered):
     create, record = AsyncMock(), AsyncMock()
     patches = _failure_patches(create)
-    row = {**ROW, "eventKind": "room_event"}
+    row = {**ROW, "eventKind": "room_event", **({"steeredMessageIds": {"m2"}} if steered else {})}
     with patch.object(messaging.messaging_repo, "end_run", AsyncMock(return_value=row)):
         with (
             patches[0],
@@ -430,6 +431,8 @@ async def test_a_silent_completion_posts_nothing_records_usage_and_counts(metric
     create.assert_not_awaited()
     record.assert_awaited_once()
     assert ("messaging.agent.silent", {"event_kind": "room_event"}) in metrics
+    # Routing v2 §4.1: the run stood down after a human line was steered into it.
+    assert (("messaging.run.silent_after_steer", {"event_kind": "room_event"}) in metrics) is steered
 
 
 @pytest.mark.asyncio

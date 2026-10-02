@@ -102,3 +102,35 @@ async def test_a_room_turn_reply_stores_its_trigger_as_in_reply_to(room, created
     assert _writes(created)[0]["in_reply_to"] == "t1"
     await messaging.create_agent_message(OWNER, _request("heartbeat note"))  # no run: no trigger
     assert created.await_args_list[-1].kwargs["in_reply_to"] is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "event_kind,between,counted",
+    [
+        ("room_event", [{**HUMAN, "threadRootMessageId": None}], True),  # Bob answered first
+        ("room_event", [{**HUMAN, "threadRootMessageId": "t1"}], True),  # ... in the trigger's thread
+        ("room_event", [{**HUMAN, "threadRootMessageId": "elsewhere"}], False),  # another conversation
+        ("room_event", [HOP1], False),  # only a human answer counts
+        ("user_request", [{**HUMAN, "threadRootMessageId": None}], False),  # addressed: never a stand-down
+    ],
+)
+async def test_an_ambient_reply_after_a_human_answer_is_counted(
+    room,
+    created,  # noqa: F811
+    monkeypatch,
+    event_kind,
+    between,
+    counted,
+):
+    """Routing v2 §10: messaging.reply.after_human_answer is R1's residual rate."""
+    room({**HUMAN, "messageId": "t1", "messageSeq": 0, "threadRootMessageId": None})
+    run = {"roomId": ROOM, "agentId": AGENT, "triggerMessageId": "t1", "eventKind": event_kind}
+    monkeypatch.setattr(messaging.messaging_repo, "get_run", AsyncMock(return_value=run))
+    listed = AsyncMock(return_value=between)
+    monkeypatch.setattr(messaging.messaging_repo, "list_messages_between", listed)
+    await messaging.create_agent_message(OWNER, _request("MRR is $42k", runId=RUN))
+    hit = any(c.args[0] == "messaging.reply.after_human_answer" for c in messaging.put_metric.call_args_list)
+    assert hit is counted
+    if event_kind == "room_event":
+        listed.assert_awaited_once_with(ROOM, 1, 1)  # strictly between trigger (seq 0) and reply (seq 2)

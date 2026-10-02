@@ -362,13 +362,21 @@ One correction to the earlier draft, which said no new LLM call is added on any 
   the addressing stage: relative timestamps in Jev's lines bought nothing (D 0.67 → 0.67); an open-request `state.open`
   block, built from hand labels (its upper bound), fixed one row (D12 partial answer, Finance 0.30 → 0.77) and left D01
   and D03 unmoved (none ≥ 0.93), while a deterministic "answered by" heuristic would mislabel exactly the hedged,
-  refused, partial and disputed answers that matter, so production would need a second Jev label per question. D01 and
-  D03 turned out to be a bench artefact: the stub cards say "Tools: none", so Jev reasons "nobody here can know the
-  calendar", not "this was answered" — with a card listing Calendar, D03 routes to Friday (0.51). Real cards list tools.
-  What is built instead: one `NONE_CRITERION` clause for partially answered questions (the D12 win), realistic tool
-  lines on the bench's stub cards, and re-measurement. Also against a ledger: mpgt (GPT-3.5 goal tracking 27.5% exact /
-  62% correct few-shot); the needed state is in RUN#/MSG rows; steer does the "already answered?" judgement in the
-  generator that has full context. Answered-question and group-ack rows stayed at 0.00 false-speak in every variant.
+  refused, partial and disputed answers that matter, so production would need a second Jev label per question. A
+  4-row probe suggested D01/D03 were a "Tools: none" card artefact; the full 356-case re-run with realistic tool lines
+  ([MP], corrected) disproved that: D03 still gets none at 0.83–0.91 and D01 at ≥0.83, tools or not. So **D03 (a re-ask
+  after a gap) is a genuine Jev miss** that neither the reworded `NONE_CRITERION` nor timestamps nor open-request
+  state fixed; D01 (speaking up for an older open goal while the latest line is a human answering someone else) is a
+  known miss, deferred (see §12.8). What is built instead: one `NONE_CRITERION` clause for partially answered questions
+  (the D12 win), a `reask` signal (§12.8), realistic tool lines on the bench's stub cards, and re-measurement. Also
+  against a ledger: mpgt (GPT-3.5 goal tracking 27.5% exact / 62% correct few-shot); the needed state is in RUN#/MSG
+  rows; steer does the "already answered?" judgement in the generator that has full context. Answered-question and
+  group-ack rows stayed at 0.00 false-speak in every variant.
+- **Also not built: a timed "nobody answered" re-dispatch in chat.** The e2e run D-dev-02 in a real dev room showed the
+  capa failure directly: "where do the brand assets live?" asked with no human reply got none from Jev (all three
+  candidates skipped, under 1 s after the post) and nobody ever answered. That is a Jev decision on a lone human
+  question, not a timing problem (the same happened when Jev decided after the human's answer). The fix belongs in the
+  decision itself — see §12.9 — not in a timer; a timer is revisited only if `messaging.jev.missed` stays high after it.
 - **A backend pre-post Jev check (`still_needed`).** It adds an LLM call on the post path, cannot end the bridge's run
   (the bridge owns `run.ended`), and leaves a reply in the Hermes session that the room never saw. Steer + `[SILENT]` has
   none of these problems.
@@ -503,6 +511,15 @@ Fix forward, no flags. Each step: merge on green CI + Codex review → dev auto-
    survive in the room's Hermes session. Posting them would break the "nothing from Live is posted" ruling.
 7. **Addressed and relayed agents all respond.** Several named agents means the same as several @mentions; first-named-only
    cost recall on the two-agent rows ([AX]: chat 0.92 → 0.90) for no false-speak gain.
-8. **A question re-asked after a gap is a new request.** Decided. Mechanism: none beyond the reworded `NONE_CRITERION`
-   ([AX] (d)) plus a partial-answer clause ([DX]); the D03 miss was the bench's "Tools: none" cards, not routing (§9).
-   Re-measure after the card fix; build more only if it still misses.
+8. **A question re-asked after a gap is a new request.** Decided. Prompt wording alone did not move it ([AX] (d): none
+   at 0.95; [MP] corrected: none at 0.83–0.91 with tools). Mechanism: Jev's decision gains one more structured answer,
+   `reask` — "is this asking again something asked and answered earlier in this conversation, after other talk or a
+   gap?" — and the policy is a rule, not a hope: `reask` high and the earlier ask older than two minutes → "none" is
+   not allowed, the fallback chain picks (an immediate repeat, D16, must stay quiet). D01 (speaking up for an older
+   open goal on an unrelated latest line) stays a known miss until prod `messaging.jev.missed` says it matters.
+9. **A lone human question to the room gets an answer.** Decided, from D-dev-02 and capa (51.4% of real chances
+   missed by a prompt-only "should I speak?"): when the latest message is a human's question that addresses nobody,
+   and no human has answered it, Jev's "none" is not allowed in chat either — the best-placed agent answers, and if it
+   cannot know, it says so and names who can. Jev already judges "is this a question to the room" implicitly; make it
+   an explicit structured answer (`question_to_room`) next to `reask`. Bench rows: the implicit-handoff class (0.93
+   today) and D-dev-02's own text; answered-question and group-ack rows must stay at 0.00 false-speak.

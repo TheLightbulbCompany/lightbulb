@@ -19,7 +19,7 @@ Dry-run is the default: it reads the Lightbulb token and makes Paperclip's secre
 only, and prints what it would do (``would_create`` / ``would_rotate`` / ``would_delete``).
 Prints one line per owner with the outcome -- never the token: ``created``, ``rotated``,
 ``unchanged`` (Paperclip already holds this token; nothing written), ``deleted``, ``absent``,
-``foreign_secret``, ``inactive_secret``, ``no_company``. Idempotent and sequential;
+``foreign_secret``, ``inactive_secret``, ``no_company``, ``unsettled``. Idempotent and sequential;
 continues past a failing owner and exits non-zero if any failed.
 """
 

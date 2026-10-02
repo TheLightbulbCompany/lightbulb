@@ -38,8 +38,9 @@ export const EVENT_KEY_MAP: Record<string, string[]> = {
   "teams.heartbeat.run.log": [],
   // A GitHub PR / issue a task mentions changed state. Empty ON PURPOSE: these
   // values feed ALL_KEYS, which the board keeper revalidates every 20s, and the
-  // external-object reads are not worth a poll. The handler below refreshes
-  // them on the event itself (`mutateExternalObjects`).
+  // external-object reads are not worth a poll. `mutateExternalObjects`
+  // refreshes them instead: on the event itself, and on every recovery path
+  // (provider entry, reconnect, stream.resumed) for an event missed meanwhile.
   "teams.external_object.updated": [],
 };
 
@@ -309,7 +310,8 @@ export function TeamsEventsProvider({ children }: { children: React.ReactNode })
     reconciledRevisionRef.current = connectionRevision;
     for (const key of ALL_KEYS) mutateKeyPrefix(key);
     mutateIssueRunLists();
-  }, [connectionRevision, mutateKeyPrefix, mutateIssueRunLists]);
+    mutateExternalObjects();
+  }, [connectionRevision, mutateKeyPrefix, mutateIssueRunLists, mutateExternalObjects]);
 
   // Wire event listener.
   useEffect(() => {
@@ -325,6 +327,7 @@ export function TeamsEventsProvider({ children }: { children: React.ReactNode })
       if (event === "teams.stream.resumed") {
         for (const key of ALL_KEYS) mutateKeyPrefix(key);
         mutateIssueRunLists();
+        mutateExternalObjects();
         return;
       }
       if (event === "teams.heartbeat.run.queued" || event === "teams.heartbeat.run.status") {

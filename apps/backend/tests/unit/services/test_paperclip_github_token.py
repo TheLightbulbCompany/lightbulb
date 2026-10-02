@@ -133,6 +133,63 @@ async def test_dry_run_only_lists(admin):
     admin.update_secret_description.assert_not_awaited()
 
 
+# --- overlapping connect / disconnect: the sync runs outside the owner lifecycle lease ------
+
+
+def _reads(monkeypatch, *values):
+    """The workspace token as successive reads see it; the last value repeats."""
+    seen = list(values)
+    get = AsyncMock(side_effect=lambda *a: seen.pop(0) if len(seen) > 1 else seen[0])
+    monkeypatch.setattr(mod.integration_secret_store, "get", get)
+    return get
+
+
+CONNECTED = {"access_token": TOKEN}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("existing,outcome", [([], "absent"), ([OURS_OLD_TOKEN], "deleted")])
+async def test_a_connect_sync_whose_token_is_gone_before_its_write_leaves_no_secret(
+    admin, monkeypatch, existing, outcome
+):
+    # A disconnect landed between this sync's first read and its write: the delayed connect
+    # sync must not hand Paperclip a token the workspace no longer holds.
+    _reads(monkeypatch, CONNECTED, None)
+    admin.list_company_secrets.return_value = existing
+    assert await sync_github_token("org_a") == outcome
+    admin.create_company_secret.assert_not_awaited()
+    admin.rotate_secret.assert_not_awaited()
+    assert admin.delete_secret.await_count == len(existing)
+
+
+@pytest.mark.asyncio
+async def test_a_disconnect_sync_whose_token_reappears_before_its_write_keeps_the_secret(admin, monkeypatch):
+    _reads(monkeypatch, None, CONNECTED)
+    admin.list_company_secrets.return_value = [OURS]
+    assert await sync_github_token("org_a") == "unchanged"
+    admin.delete_secret.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_a_disconnect_sync_whose_token_reappears_after_its_delete_puts_the_secret_back(admin, monkeypatch):
+    # Reads: the plan (gone), the pre-write check (still gone), then the post-write check.
+    _reads(monkeypatch, None, None, CONNECTED)
+    admin.list_company_secrets.side_effect = [[OURS], []]
+    assert await sync_github_token("org_a") == "created"
+    admin.delete_secret.assert_awaited_once()
+    assert admin.create_company_secret.await_args.kwargs["value"] == TOKEN
+
+
+@pytest.mark.asyncio
+async def test_a_token_that_never_settles_stops_after_the_pass_bound(admin, monkeypatch):
+    flips = iter([CONNECTED, None] * 20)
+    monkeypatch.setattr(mod.integration_secret_store, "get", AsyncMock(side_effect=lambda *a: next(flips)))
+    assert await sync_github_token("org_a") == "unsettled"
+    assert admin.list_company_secrets.await_count == mod._MAX_PASSES
+    admin.create_company_secret.assert_not_awaited()
+    admin.delete_secret.assert_not_awaited()
+
+
 @pytest.mark.asyncio
 async def test_a_stale_admin_session_is_refreshed_once(admin, monkeypatch):
     invalidate = MagicMock()

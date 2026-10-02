@@ -64,6 +64,10 @@ def _description(token: str) -> str:
     return f"{SECRET_DESCRIPTION} [fp:{fingerprint(token)}]"
 
 
+#: How many times one sync re-plans when the workspace's token moves underneath it.
+_MAX_PASSES = 3
+
+
 async def github_token(owner_id: str) -> str | None:
     """The owner's stored GitHub token, or None when not connected. The paste rail stores
     ``{"token": ...}``, the direct_oauth rail stores ``access_token``."""
@@ -83,9 +87,17 @@ async def _our_secret(admin: PaperclipAdminClient, cookie: str, company_id: str)
     return None, False
 
 
-async def _sync(admin: PaperclipAdminClient, cookie: str, company_id: str, token: str | None, dry_run: bool) -> str:
+async def _sync(
+    admin: PaperclipAdminClient, cookie: str, owner_id: str, company_id: str, token: str | None, dry_run: bool
+) -> str | None:
+    """One pass, planned from ``token``. Returns None -- having written nothing more -- when the
+    workspace's token is found to have moved right before a write: the plan is stale."""
+
     def did(verb: str) -> str:
         return f"would_{verb}" if dry_run else f"{verb}d"
+
+    async def stale() -> bool:
+        return not dry_run and await github_token(owner_id) != token
 
     secret, foreign = await _our_secret(admin, cookie, company_id)
     if foreign:
@@ -93,12 +105,16 @@ async def _sync(admin: PaperclipAdminClient, cookie: str, company_id: str, token
     if not token:
         if secret is None:
             return "absent"
+        if await stale():
+            return None
         if not dry_run:
             await admin.delete_secret(session_cookie=cookie, secret_id=secret["id"])
         return did("delete")
     if secret is None:
         if dry_run:
             return did("create")
+        if await stale():
+            return None
         try:
             await admin.create_company_secret(
                 session_cookie=cookie,
@@ -126,6 +142,8 @@ async def _sync(admin: PaperclipAdminClient, cookie: str, company_id: str, token
     # A new token, or a secret from before the fingerprint existed. Rotate FIRST, then record
     # the fingerprint: a failure between the two leaves a stale fingerprint, which costs one
     # extra rotate next time -- never a skipped one.
+    if await stale():
+        return None
     if not dry_run:
         await admin.rotate_secret(session_cookie=cookie, secret_id=secret["id"], value=token)
         await admin.update_secret_description(
@@ -138,28 +156,46 @@ async def sync_github_token(owner_id: str, *, dry_run: bool = False) -> str:
     """Make Paperclip's ``GITHUB_TOKEN`` secret match the owner's GitHub connection.
 
     Returns a short outcome: ``no_company`` (no active Paperclip company yet), ``created``,
-    ``unchanged`` (ours already holds this token; nothing written), ``rotated``, ``deleted`` (Lightbulb holds no token any more), ``absent`` (no token, no
-    secret), ``foreign_secret`` (someone else's ``GITHUB_TOKEN``; untouched),
-    ``inactive_secret`` (ours, but a member disabled it; untouched) or ``conflict``. With
-    ``dry_run`` the three writes read ``would_create`` / ``would_rotate`` / ``would_delete``
-    and only the Paperclip LIST call is made. Raises on a Paperclip or Secrets Manager failure.
+    ``unchanged`` (ours already holds this token; nothing written), ``rotated``, ``deleted``
+    (Lightbulb holds no token any more), ``absent`` (no token, no secret), ``foreign_secret``
+    (someone else's ``GITHUB_TOKEN``; untouched), ``inactive_secret`` (ours, but a member
+    disabled it; untouched), ``conflict``, or ``unsettled`` (the token kept changing under
+    ``_MAX_PASSES`` passes; the next reconcile's sync repairs it). With ``dry_run`` the three
+    writes read ``would_create`` / ``would_rotate`` / ``would_delete`` and only the Paperclip
+    LIST call is made. Raises on a Paperclip or Secrets Manager failure.
     """
     company_id = await resolve_company_id_for_owner(
         owner_id=owner_id, repo=PaperclipRepo(table_name="paperclip-companies")
     )
     if company_id is None:
         return "no_company"
-    token = await github_token(owner_id)
     async with httpx.AsyncClient(base_url=settings.PAPERCLIP_INTERNAL_URL, timeout=15.0) as http:
         admin = PaperclipAdminClient(http_client=http)
-        try:
-            return await _sync(admin, await get_admin_session_cookie(http), company_id, token, dry_run)
-        except PaperclipApiError as exc:
-            if exc.status_code != 401:
-                raise
-        # A stale cached admin session: sign in again and retry once.
-        invalidate_admin_session()
-        return await _sync(admin, await get_admin_session_cookie(http), company_id, token, dry_run)
+
+        async def one_pass(token: str | None) -> str | None:
+            try:
+                return await _sync(admin, await get_admin_session_cookie(http), owner_id, company_id, token, dry_run)
+            except PaperclipApiError as exc:
+                if exc.status_code != 401:
+                    raise
+            # A stale cached admin session: sign in again and retry once.
+            invalidate_admin_session()
+            return await _sync(admin, await get_admin_session_cookie(http), owner_id, company_id, token, dry_run)
+
+        # Connect and disconnect each run this AFTER releasing the owner lifecycle lease, so two
+        # of them can overlap and a pass can act on a token the other request has since replaced
+        # or removed. Rather than hold the lease across Paperclip calls, each pass revalidates
+        # around its write: the token is re-read right before the write (stale -> plan again)
+        # and once more after it (moved -> go again). Whichever sync finishes last has therefore
+        # seen Lightbulb's state after its own write. What remains: a change landing after that
+        # final read -- which belongs to another connect or disconnect, and that request runs
+        # its own sync after its own write.
+        for _ in range(_MAX_PASSES):
+            token = await github_token(owner_id)
+            outcome = await one_pass(token)
+            if outcome is not None and (dry_run or await github_token(owner_id) == token):
+                return outcome
+    return "unsettled"
 
 
 #: Ceiling on what a best-effort sync may add to the request or reconcile it rides on.

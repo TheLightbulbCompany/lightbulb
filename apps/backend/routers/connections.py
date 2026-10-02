@@ -1178,8 +1178,9 @@ async def oauth_callback(
         # Hand Paperclip the same token (its GITHUB_TOKEN company secret), so the PRs and
         # issues a task mentions resolve authenticated. Best-effort and AFTER the guard: the
         # lease is what a concurrent disconnect or provision waits on (30 s budget), and a slow
-        # Paperclip must not spend it. The sync reads the token afresh, and every reconcile
-        # re-asserts it, so a connect/disconnect that interleaves here converges.
+        # Paperclip must not spend it. An overlapping disconnect is handled inside the sync,
+        # which re-reads the token right before and right after its write (see
+        # ``sync_github_token``); every reconcile re-asserts it too.
         await paperclip_github_token.sync_best_effort(owner_id)
     # Google supports multiple accounts under one provider-level "connected"
     # status: each connect adds a distinct account to the owner's inventory so an

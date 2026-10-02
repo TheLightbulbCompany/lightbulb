@@ -360,11 +360,22 @@ describe("TeamsEventsProvider", () => {
     },
   );
 
-  it("refreshes the external-object reads on teams.external_object.updated, and never polls them", () => {
+  it("refetches the external-object reads on teams.stream.resumed (an update missed while the stream was down)", () => {
     liveState.connectionRevision = 1;
     render(<TeamsEventsProvider><div /></TeamsEventsProvider>);
-    // Not in the reconcile set: the board keeper replays that set every 20s.
-    expect(invalidatedKeys()).not.toContain("/teams/issues/external-object-summaries?iss_1,iss_other");
+    mutateMock.mockClear(); // drop the first-subscribe reconcile
+    act(() => {
+      eventHandler!("teams.stream.resumed", {});
+    });
+    expect(invalidatedKeys()).toEqual(expect.arrayContaining([
+      "/teams/issues/external-object-summaries?iss_1,iss_other",
+      "/teams/issues/iss_1/external-objects",
+    ]));
+  });
+
+  it("refreshes the external-object reads on teams.external_object.updated", () => {
+    liveState.connectionRevision = 1;
+    render(<TeamsEventsProvider><div /></TeamsEventsProvider>);
     mutateMock.mockClear();
     act(() => {
       eventHandler!("teams.external_object.updated", { objectId: "obj_1", liveness: "fresh" });

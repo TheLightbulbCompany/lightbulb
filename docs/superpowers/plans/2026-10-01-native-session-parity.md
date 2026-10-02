@@ -103,7 +103,8 @@ Review the Mac, web, and production-connected iPhone screens as one journey: Cha
 | Native outbound send, denied | `pending_approval` → owner deny → `rejected OWNER_DENIED`; no room write (nothing after seq 18) |
 | Phone sees the updated Mac | prod iPhone build: READY430 "Idle on your Mac" after the 0.4.448 install |
 | Found: a session-addressed message also woke the DM agent | Atlas answered seq 11 and 14 → [PR 3583](https://github.com/TheLightbulbCompany/lightbulb/pull/3583) (session-addressed = not ambient) |
-| Not yet run | offline queue/cancel, teammate Ask-to-join/grant/revoke, Codex Stop/Steer + old-unknown recovery, phone permission cards, app restart, physical iPhone; the B2/B5 rows wait for the next signed Mac build |
+| Room @session while the Mac app is quit | by design, NOT a queue: a room request carries a 30 s `deliverBy` (`local_sessions.py`, only a session follow-up with `offline_send` gets the 24 h `OFFLINE_SEND_SECONDS`); the Mac relaunch arrived after the window, the row went `rejected`, the room shows "Not delivered" with Retry/Cancel. Correct contract; the offline-queue row must be exercised from the phone/web session composer |
+| Not yet run | offline follow-up queue/cancel from the session composer, teammate Ask-to-join/grant/revoke, Codex Stop/Steer + old-unknown recovery, phone permission cards, app restart, physical iPhone; the B2/B5 rows wait for the next signed Mac build |
 
 **Decision 2026-10-02 (owner "go"): one Lightbulb MCP** — spec `docs/superpowers/specs/2026-10-02-one-lightbulb-mcp.md`; backend branch `feat/one-mcp-backend`, desktop branch `feat/one-mcp-desktop`. Supersedes the "fold account tools into the local bridge" note above.
 

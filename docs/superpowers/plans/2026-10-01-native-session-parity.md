@@ -92,6 +92,21 @@ Review the Mac, web, and production-connected iPhone screens as one journey: Cha
 - Clerk: pre-register the two CIMD clients in dev, then repeat scopes + CIMD + default scopes + pre-registration in prod (see B1). The classifier refuses both the scope grant to a client and any prod Clerk change.
 - In flight: [PR 3563](https://github.com/TheLightbulbCompany/lightbulb/pull/3563) (desktop: advisory only when it says something, readable teammate fallback, literal-slash and room-reply notes, quoted spoofed owner labels, per-provider setup status + Retry) and [PR 3564](https://github.com/TheLightbulbCompany/lightbulb/pull/3564) (approval-card destination labels, picker collision details, stale-handle guard, title fallback).
 
+## Acceptance ledger (prod, 2026-10-02, Mac 0.4.448, backend c16a4c6 pre-promotion)
+
+| Row | Evidence |
+| --- | --- |
+| Hosted MCP: real Claude Code OAuth (CIMD) on prod | consent → `POST /mcp` 200; `find_rooms` 36 rooms; `find_sessions` READY430 `canSend`; `send_message` seq 9 `via: lightbulb_mcp`; `message_receipt` reconciles |
+| Room @session → Claude, exactly one threaded reply | request seq 11 (label "Claude Code · READY430 · Prasiddha Parthsarthy") → seq 12 "pong", `threadRootMessageId` = request, 9 s |
+| Room @session → Codex, exactly one threaded reply | request seq 14 → seq 16 "pong" in thread, send state `applied`, 14 s |
+| Native outbound send, approved | `pending_approval` → owner approve → `applied`, message 1ff6a1f9 (seq 17) authored by the session |
+| Native outbound send, denied | `pending_approval` → owner deny → `rejected OWNER_DENIED`; no room write (nothing after seq 18) |
+| Phone sees the updated Mac | prod iPhone build: READY430 "Idle on your Mac" after the 0.4.448 install |
+| Found: a session-addressed message also woke the DM agent | Atlas answered seq 11 and 14 → [PR 3583](https://github.com/TheLightbulbCompany/lightbulb/pull/3583) (session-addressed = not ambient) |
+| Not yet run | offline queue/cancel, teammate Ask-to-join/grant/revoke, Codex Stop/Steer + old-unknown recovery, phone permission cards, app restart, physical iPhone; the B2/B5 rows wait for the next signed Mac build |
+
+**Decision 2026-10-02 (owner "go"): one Lightbulb MCP** — spec `docs/superpowers/specs/2026-10-02-one-lightbulb-mcp.md`; backend branch `feat/one-mcp-backend`, desktop branch `feat/one-mcp-desktop`. Supersedes the "fold account tools into the local bridge" note above.
+
 ## Decisions to confirm during UX review
 
 - Default teammate control remains owner-only with Ask to join or explicit owner toggle; workspace reading is shared by default. Do not infer send authority from visibility.

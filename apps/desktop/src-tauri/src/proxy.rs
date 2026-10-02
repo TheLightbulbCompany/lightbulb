@@ -154,7 +154,7 @@ async fn handle_connection(
     // Three cases to handle:
     //   1. upstream_url already has a `?` → append with `&`
     //   2. upstream_url ends with `/` (path present) → append with `?`
-    //   3. upstream_url is host-only (e.g. "wss://ws-dev.flickmeon.ai") →
+    //   3. upstream_url is host-only (e.g. "wss://ws-dev.thelightbulb.company") →
     //      insert `/?` to provide a path before the query string. AWS
     //      API Gateway WebSocket endpoints reject `wss://host?query`
     //      with HTTP 400 — they require `wss://host/?query`.

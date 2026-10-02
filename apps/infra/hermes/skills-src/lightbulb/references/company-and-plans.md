@@ -78,7 +78,7 @@ and **Ultra, $150/month** (this owner's current plan is in the facts file). Ever
 plan allows unlimited agent identities and unlimited members; agent identity count
 is not a plan entitlement, and membership and invitations do not change the
 subscription price. Runtime capacity remains finite. Upgrade lives in
-flickmeon.ai/settings. There is also a **free trial** (no card, 30 days) on
+thelightbulb.company/settings. There is also a **free trial** (no card, 30 days) on
 Lightbulb-managed DeepSeek within a daily allowance. Inference runs on one of
 three provider paths chosen by the owner:
 **Lightbulb-managed** (DeepSeek within the plan's daily allowance; prepaid
@@ -102,7 +102,7 @@ key** (owner's Anthropic/OpenAI key, billed by that provider).
 ```
 
 If the file is missing or the owner says something that contradicts it,
-trust the owner and suggest they check flickmeon.ai/settings. Plan and provider
+trust the owner and suggest they check thelightbulb.company/settings. Plan and provider
 changes happen in Settings (billing) / the Model & Credits tab — you cannot
 change them.
 

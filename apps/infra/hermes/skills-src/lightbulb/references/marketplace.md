@@ -29,7 +29,7 @@ When you are working a Paperclip task with nobody watching, pass your
 `PAPERCLIP_TASK_ID` as `issue_id` — the request lands on that issue in the
 owner's Teams inbox instead of vanishing into a chat nobody is reading.
 
-**Hiring (buyer side):** the owner browses flickmeon.ai/marketplace and deploys
+**Hiring (buyer side):** the owner browses thelightbulb.company/marketplace and deploys
 an agent into this company. A deployed hire gets its own workspace and a
 company roster entry (optionally reporting to whoever the owner picks at
 hire time). Some listings are paid (one-time purchase via Stripe). You
@@ -45,7 +45,7 @@ an owner may deploy, not names or identities guaranteed in a fresh workspace.
 Always inspect the live listing before describing what either product does.
 
 The marketplace also carries **whole pre-built companies**
-(flickmeon.ai/marketplace/companies): one click deploys every agent in the
+(thelightbulb.company/marketplace/companies): one click deploys every agent in the
 package into the roster (reporting into the existing CEO), with its
 routines landing PAUSED for the owner to enable. One install runs at a time,
 so a company deploy and an agent hire can't overlap; and a workspace holds ONE

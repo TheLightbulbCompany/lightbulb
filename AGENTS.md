@@ -18,6 +18,14 @@ Bundled agent-facing skills live at `apps/infra/hermes/skills-src/` (`lightbulb`
 
 Each workspace gets its own AgentCore runtime; the backend reaches it with `InvokeAgentRuntime` carrying a `{path, method, headers, body}` envelope that the bridge unwraps (`core/services/runtime_transport.py` → `container_rpc.py`), and the bridge reports run lifecycle and usage back over hook-token routes. Those events reach browsers through AppSync, never over a browser socket. **There is no backend-initiated socket and no address to resolve** — AgentCore starts the microVM on the invoke itself, so a read-only probe cannot accidentally start anything and a parked runtime answers the invoke that wakes it.
 
+## Product domain — moved to `thelightbulb.company` on 2026-10-02
+
+The product now runs on **`thelightbulb.company`** in both environments (`api.`/`api-dev.`, `ws.`/`ws-dev.`, `bv.`/`bv-dev.`, `admin.`, `admin.dev.`, `dev.`, Clerk's `clerk.`/`accounts.`/`clkmail.`), the SAME domain that carries mail. **`flickmeon.ai` is the launch-competition site**: Vercel only, its root serves `/launch` and every other path 308s to the product domain; it has no API hosts and no mail. The holding-company page is `about.thelightbulb.company`. Where the section below still says `flickmeon.ai` is the product domain, this paragraph wins.
+
+Because product hosts and company slugs (`{agent}@{slug}.thelightbulb.company`) now share one namespace, **every new product host must be added to `RESERVED_SLUGS`** (`core/services/company_identity.py`) before its DNS record exists.
+
+Kept on purpose: the `flickmeon://` deep-link scheme, the reserved `flickmeon` slug, and `LEGACY_ROOT_DOMAIN`/`LAUNCH_DOMAIN` in `apps/infra/lib/domains.ts`.
+
 ## Rebrand — Isol8 → Lightbulb (SHIPPED; residue documented below)
 
 The `isol8` brand is retired. As of 2026-08-30 the migration is COMPLETE except
@@ -99,7 +107,7 @@ every one of these:**
 - **The internal dispatch header `X-Isol8-Public-Host`** — API Gateway parameter
   mapping (`api-stack.ts`) sets it from `$context.domainName`; `main.py`'s
   `HostDispatcherMiddleware` and `routers/paperclip_proxy.py` read it to route
-  `company[-env].flickmeon.ai` traffic onto the Paperclip-proxy mount. Never
+  `company[-env].thelightbulb.company` traffic onto the Paperclip-proxy mount. Never
   renamed to `Lightbulb` branding — a rename means moving the
   `overwrite:header.*` parameter-mapping key and both readers together, not a
   docs edit. This file itself drifted to a `X-Lightbulb-Public-Host` spelling
@@ -635,7 +643,7 @@ entries at the root:
 
 ## Backend (FastAPI + DynamoDB)
 
-**Entry point:** `main.py` -- FastAPI app. The lifespan handler starts the in-process background tasks — the scheduled worker, the trial-idle, run-ledger, browser-autosave and daily-digest sweepers, and the running-gauges loop, which emits `gateway.running.count` from the containers table (the P12 backend-liveness canary expects a steady stream, so it is not optional); `system_health.BACKGROUND_TASKS` is the list. `scripts/work_lambda.py` drains `openclaw-work.fifo` via an SQS event source. Shutdown is a `/health`-gated bounded ~20s graceful drain with no provision handoff (dispatch holds no per-owner state) and closes no pool — the backend holds no per-owner connection state. Middleware worth knowing: `HostDispatcherMiddleware` rewrites requests arriving on `company[-env].flickmeon.ai` (via the `X-Isol8-Public-Host` header set by API GW parameter mapping) onto the `/__paperclip_proxy__` sentinel mount, plus `ShutdownAware`, `SecurityHeaders`, `ProxyHeaders` (VPC-CIDR-scoped), and observability middleware. A global `PaperclipApiError` handler self-heals Teams-BFF 401s by re-minting the Paperclip session cookie. CORS middleware, custom OpenAPI schema with BearerAuth.
+**Entry point:** `main.py` -- FastAPI app. The lifespan handler starts the in-process background tasks — the scheduled worker, the trial-idle, run-ledger, browser-autosave and daily-digest sweepers, and the running-gauges loop, which emits `gateway.running.count` from the containers table (the P12 backend-liveness canary expects a steady stream, so it is not optional); `system_health.BACKGROUND_TASKS` is the list. `scripts/work_lambda.py` drains `openclaw-work.fifo` via an SQS event source. Shutdown is a `/health`-gated bounded ~20s graceful drain with no provision handoff (dispatch holds no per-owner state) and closes no pool — the backend holds no per-owner connection state. Middleware worth knowing: `HostDispatcherMiddleware` rewrites requests arriving on `company[-env].thelightbulb.company` (via the `X-Isol8-Public-Host` header set by API GW parameter mapping) onto the `/__paperclip_proxy__` sentinel mount, plus `ShutdownAware`, `SecurityHeaders`, `ProxyHeaders` (VPC-CIDR-scoped), and observability middleware. A global `PaperclipApiError` handler self-heals Teams-BFF 401s by re-minting the Paperclip session cookie. CORS middleware, custom OpenAPI schema with BearerAuth.
 
 No SQLAlchemy, no ORM — DynamoDB items are plain dicts accessed via repositories.
 
@@ -911,7 +919,7 @@ that will mislead you otherwise:
   the existing containers table at `__browser__#<owner>` (survives reprovision).
   It does not use the retired OpenClaw live-view WS or
   `routers/browser_view.py`. See `docs/architecture/current-system.md`.
-- **`/admin`** only resolves on allowed admin hosts (`admin.flickmeon.ai`,
+- **`/admin`** only resolves on allowed admin hosts (`admin.thelightbulb.company`,
   `admin.dev.thelightbulb.company`, `admin.localhost:3000`; overridable via
   `NEXT_PUBLIC_ADMIN_HOSTS`) and 404s everywhere else. Allowlist lives in
   `apps/frontend/src/middleware.ts`.
@@ -961,13 +969,13 @@ Clients do **not** derive a chat socket URL. `GET /messaging/live-config` return
 this environment's AppSync HTTP + realtime endpoints, region, and the caller's
 opaque user-channel key; `useLiveEvents` subscribes with a Clerk token minted
 from the `lightbulb-appsync` JWT template. There is no `NEXT_PUBLIC_WS_URL` any
-more: `wss://ws[-env].flickmeon.ai` is reached only by the desktop host
+more: `wss://ws[-env].thelightbulb.company` is reached only by the desktop host
 (`LIGHTBULB_WS_URL`), and `bv[-env]` is now the machine-relay raw-WS door only
 (it keeps its browser-view construct ids — see "WebSocket Architecture").
 
 ### Middleware
 
-`src/middleware.ts` -- Clerk middleware protects `/chat(.*)`, `/onboarding`, `/settings(.*)`. An admin-host gate (`decideAdminHostRouting`) also runs on every request: `/admin` paths on non-admin hosts return 404, and admin hosts straying off `/admin` redirect back to `/admin` (with `/sign-in`/`/sign-up` exempted to avoid a redirect loop). A third gate: `PAPERCLIP_HOSTS` (`company.flickmeon.ai`, `dev.company.flickmeon.ai`) bypass Clerk entirely so the `next.config.ts` beforeFiles rewrite can proxy those hosts.
+`src/middleware.ts` -- Clerk middleware protects `/chat(.*)`, `/onboarding`, `/settings(.*)`. An admin-host gate (`decideAdminHostRouting`) also runs on every request: `/admin` paths on non-admin hosts return 404, and admin hosts straying off `/admin` redirect back to `/admin` (with `/sign-in`/`/sign-up` exempted to avoid a redirect loop). A third gate: `PAPERCLIP_HOSTS` (`company.thelightbulb.company`, `dev.company.thelightbulb.company`) bypass Clerk entirely so the `next.config.ts` beforeFiles rewrite can proxy those hosts.
 
 ---
 
@@ -1117,7 +1125,7 @@ Redis, per-tenant queue, room-commands queue, or room-fanout queue.
 
 ## WebSocket Architecture
 
-**No browser or mobile client opens `wss://ws[-env].flickmeon.ai` any more.** Human
+**No browser or mobile client opens `wss://ws[-env].thelightbulb.company` any more.** Human
 commands are HTTP and human delivery is AppSync (see "Messaging"). "Remove
 WebSockets" never meant every protocol that happens to use one — these remain,
 because events are not a substitute for them:
@@ -1126,7 +1134,7 @@ because events are not a substitute for them:
 2. The `websocket-authorizer` Lambda accepts exactly **one** credential kind — paired-device JWTs (EdDSA, `kind=device`) — and **deliberately refuses Clerk browser sessions**. Paperclip service tokens are refused by both this authorizer and the raw desktop-node WS relay; Paperclip uses the HTTP facade. `ws-connect` narrows further, refusing any device token whose `clientId` isn't `lightbulb-local-sessions`. DynamoDB `lightbulb-{env}-ws-connections` maps connectionId → owner; no `chat`/`native_human` rows exist.
 3. Backend `/ws/*` endpoints require the `x-lightbulb-ws-internal` shared-secret header, so forged callers arriving over the public HTTP API are rejected. Relay replies go out over the Management API (HTTPS POST to `@connections/{id}`) — the only traffic left on this path is the local-session relay.
 4. **Backend → workspace:** `core/services/runtime_transport.py` → `container_rpc.py`, one `InvokeAgentRuntime` per RPC — no backend-initiated socket remains anywhere, and there is no address to cache or invalidate.
-5. **Raw WS door:** `wss://bv[-env].flickmeon.ai` is a CloudFront distribution with a **VpcOrigin** to the ALB's browser-view listener, now forwarding exactly ONE path-capped route: the **machine gateway relay** (`/api/v1/gateway/*`, `routers/gateway_relay.py`). A desktop node host dials it directly with a device token as a `token`/`clientId` query pair and the backend terminates the node protocol in-process, with only a TTL presence row (`ConnectionService`) in DynamoDB. The browser live-view route it shares a name with is gone; the cap lives on the **ALB listener**, not on CloudFront — a CloudFront VPC origin sits behind an AWS-managed security group that only exists after the first deploy, so the ALB ingress admits the whole VPC CIDR and anything in-VPC can reach :8081 directly.
+5. **Raw WS door:** `wss://bv[-env].thelightbulb.company` is a CloudFront distribution with a **VpcOrigin** to the ALB's browser-view listener, now forwarding exactly ONE path-capped route: the **machine gateway relay** (`/api/v1/gateway/*`, `routers/gateway_relay.py`). A desktop node host dials it directly with a device token as a `token`/`clientId` query pair and the backend terminates the node protocol in-process, with only a TTL presence row (`ConnectionService`) in DynamoDB. The browser live-view route it shares a name with is gone; the cap lives on the **ALB listener**, not on CloudFront — a CloudFront VPC origin sits behind an AWS-managed security group that only exists after the first deploy, so the ALB ingress admits the whole VPC CIDR and anything in-VPC can reach :8081 directly.
 6. REST rides the API Gateway HTTP API → VPC Link **V2** → ALB, including the `company[-env]` host dispatch (`X-Isol8-Public-Host` parameter mapping → `HostDispatcherMiddleware`). (The old VPC Link V1 → NLB chain is GONE.)
 
 ⚠️ AppSync has **no application disconnect callback**, and an open subscription is
@@ -1436,7 +1444,7 @@ Everything runtime/WS/table-name-shaped is set by CDK — don't hand-set them.
 The root domain is a per-environment parameter mid-rebrand; `apps/infra/lib/domains.ts` is the truth:
 - Local: `http://localhost:8000/api/v1`
 - Dev: `https://api-dev.thelightbulb.company/api/v1`
-- Production: `https://api.flickmeon.ai/api/v1`
+- Production: `https://api.thelightbulb.company/api/v1`
 
 ---
 
@@ -1473,10 +1481,10 @@ leaf), `skills-src/` + `build-skills.sh`, and its own
 
 ## Desktop App
 
-Tauri 2 app at `apps/desktop/`. Bundle ID: **`company.thelightbulb.desktop`** (shipped 2026-08-30 — a fresh install relative to the old `co.isol8.desktop`; devices re-pair). Product name: **Lightbulb**; crate/binary `lightbulb-desktop`; keychain service and app-support dirs follow the bundle id; default docs folder `~/Lightbulb`; env vars `LIGHTBULB_API_BASE`/`LIGHTBULB_WS_URL`/`LIGHTBULB_CALLBACK_URL`. `LIGHTBULB_WS_URL` is compile-time-only (`option_env!` in `lib.rs`, set per env by `desktop-build.yml`) and now points at the `bv[-env]` **machine gateway relay** (`wss://bv[-env].flickmeon.ai/api/v1/gateway/ws`), not the old `ws[-env]` API Gateway door — it seeds the Mac node client's URL directly; the CLI node's loopback proxy instead reads the relay URL live from `/desktop/pair`'s `relayUrl` field (`gatewayUrl` there stays on `ws[-env]` for the local-session relay).
+Tauri 2 app at `apps/desktop/`. Bundle ID: **`company.thelightbulb.desktop`** (shipped 2026-08-30 — a fresh install relative to the old `co.isol8.desktop`; devices re-pair). Product name: **Lightbulb**; crate/binary `lightbulb-desktop`; keychain service and app-support dirs follow the bundle id; default docs folder `~/Lightbulb`; env vars `LIGHTBULB_API_BASE`/`LIGHTBULB_WS_URL`/`LIGHTBULB_CALLBACK_URL`. `LIGHTBULB_WS_URL` is compile-time-only (`option_env!` in `lib.rs`, set per env by `desktop-build.yml`) and now points at the `bv[-env]` **machine gateway relay** (`wss://bv[-env].thelightbulb.company/api/v1/gateway/ws`), not the old `ws[-env]` API Gateway door — it seeds the Mac node client's URL directly; the CLI node's loopback proxy instead reads the relay URL live from `/desktop/pair`'s `relayUrl` field (`gatewayUrl` there stays on `ws[-env]` for the local-session relay).
 
 - Rust host at `apps/desktop/src-tauri/src/`: `lib.rs`, `main.rs`, `bootstrap.rs`, `device_token.rs`, `file_access.rs`, `keychain.rs`, `node_client.rs`, `node_invoke.rs`, `notify.rs` (native macOS notifications over `UNUserNotificationCenter` via `objc2-user-notifications` — NOT `tauri-plugin-notification`, whose `NSUserNotificationCenter` backend is deprecated and never registered the app; the webview calls the `native_notify` command and gets clicks back as `notification:clicked`; launch registers the app provisionally — no prompt, but always listed in System Settings → Notifications — and `MessageNotifications` raises the real macOS prompt through `notification_permission` once after sign-in, with no in-app ask in front of it (a browser waits for the first click, which is all its own prompt needs); provisional counts as not asked, and `native_notify` answers false unless macOS permission is granted — macOS accepts requests from a switched-off app and silently shows nothing, so without that check the toast fallback never fires), `pair_client.rs`, `pair_state.rs`, `proxy.rs`, `screen.rs`, `subprocess.rs`, `tray.rs`
-- Embedded web view: dev flavor points at `https://dev.flickmeon.ai/chat`; the prod job **patches the URL to `https://flickmeon.ai/chat`** (and the updater endpoint) at build time in `desktop-build.yml`
+- Embedded web view: dev flavor points at `https://dev.flickmeon.ai/chat`; the prod job **patches the URL to `https://thelightbulb.company/chat`** (and the updater endpoint) at build time in `desktop-build.yml`
 - Sidecars (the `lightbulb-browser-service` launcher shim plus per-arch `node` and `openclaw-host`) ship as bundle **resources** in `Contents/Resources/bin/`, never externalBin: a script in `Contents/MacOS` is signed via xattrs, which the updater tarball drops, and that broke every auto-updated install's seal. They are NOT checked in — `scripts/vendor-sidecars.sh` populates `src-tauri/bin/` at build (supports aarch64 + x86_64; CI builds aarch64 only)
 - Protocol handler: `lightbulbai://` deep links (via `tauri-plugin-deep-link`); single-instance lock (`tauri-plugin-single-instance`)
 - Signed DMG for macOS (arm64), built by the standalone `.github/workflows/desktop-build.yml` on a self-hosted macOS runner (label `macos-desktop`) — dev + prod jobs, auto-publishing `desktop-dev-v0.4.*` / `desktop-v0.4.*` GitHub Releases consumed by the Tauri auto-updater
@@ -1531,7 +1539,7 @@ initial history bound proves a renderer memory reduction; the observed
 
 Expo iOS app at `apps/mobile/` (`@lightbulb/mobile`): Expo SDK 57 / React Native 0.86, expo-router file-based routing. Scheme `flickmeon`, `applinks:flickmeon.ai`; the **bundle id is `co.isol8.mobile` and is staying** (decided 2026-09-07 — see the Rebrand section; it is bound to App Store record 6788944100 and a rename strands the app). Expo project: owner `thelightbulbcompany`, slug `isol8-mobile` (unrenameable — see the Rebrand section), projectId unchanged; per-device storage keys are `lightbulb.*`.
 
-- **Reuses the web protocol via `@lightbulb/shared`** — the same `createMessagingClient`/`createRuntimeClient` HTTP clients and the same `AppSyncEventsClient`/`useLiveEvents` live transport (mounted by `src/providers/live-events.tsx`, the mobile twin of the web `LiveEventsProvider`), with platform specifics in `src/lib/adapter.ts` (`PlatformAdapter`). Env via `EXPO_PUBLIC_API_URL` / `EXPO_PUBLIC_CLERK_PUBLISHABLE_KEY`, baked per `eas.json` profile (dev → api-dev.flickmeon.ai, production → api.flickmeon.ai).
+- **Reuses the web protocol via `@lightbulb/shared`** — the same `createMessagingClient`/`createRuntimeClient` HTTP clients and the same `AppSyncEventsClient`/`useLiveEvents` live transport (mounted by `src/providers/live-events.tsx`, the mobile twin of the web `LiveEventsProvider`), with platform specifics in `src/lib/adapter.ts` (`PlatformAdapter`). Env via `EXPO_PUBLIC_API_URL` / `EXPO_PUBLIC_CLERK_PUBLISHABLE_KEY`, baked per `eas.json` profile (dev → api-dev.flickmeon.ai, production → api.thelightbulb.company).
 - Routes: `(auth)/sign-in`; `(app)/(tabs)/{home,dms,activity,more}`, `agent/[agentId]` and `room/*` (room conversations over the messaging client, NOT a gateway socket), `sessions`, `settings`, `teams/*`, and a control tree mirroring the web panels (overview, agents + agent-detail, integrations, llm, marketplace, skills, usage). `ls apps/mobile/src/app` for the current set.
 - Auth: Clerk Expo + `expo-apple-authentication`, token cache in `expo-secure-store`.
 - Push: `PushRegistration.tsx` gets an Expo push token → `POST /devices {token, platform, deviceId}`; unregister `DELETE /devices/{deviceId}`.

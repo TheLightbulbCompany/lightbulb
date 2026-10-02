@@ -16,7 +16,7 @@
 // =============================================================================
 
 /** Product domain — frontend, API, WS, browser-view, Clerk, company hosts. */
-export const ROOT_DOMAIN = "flickmeon.ai";
+export const ROOT_DOMAIN = "thelightbulb.company";
 
 /**
  * Domain the platform sender + agent mail live on — deliberately NOT the
@@ -64,7 +64,7 @@ export const LEGACY_MAIL_DOMAIN = "";
  * exists so the product domain and the auth domain can move independently, and
  * is repointed in its own change once the Clerk domain has actually moved.
  */
-export const CLERK_DOMAIN = "flickmeon.ai";
+export const CLERK_DOMAIN = "thelightbulb.company";
 
 /**
  * DEV product domain — flipped to the new brand ahead of prod so the whole

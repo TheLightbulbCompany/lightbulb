@@ -79,7 +79,7 @@ function buildServiceStack(environment: "dev" | "prod"): Template {
     },
     managementApiUrl: "https://example.execute-api.us-east-1.amazonaws.com",
     webSocketUrl: "wss://example.execute-api.us-east-1.amazonaws.com",
-    gatewayRelayUrl: "wss://bv-dev.flickmeon.ai/api/v1/gateway/ws",
+    gatewayRelayUrl: "wss://bv-dev.thelightbulb.company/api/v1/gateway/ws",
     connectionsTableName: `${tablePrefix(environment)}ws-connections`,
     wsApiId: "test-ws-api-id",
     wsStage: "prod",
@@ -377,7 +377,7 @@ describe("ServiceStack — clean handoff / rolling deploy", () => {
           Environment: Match.arrayWith([
             Match.objectLike({
               Name: "GATEWAY_RELAY_URL",
-              Value: "wss://bv-dev.flickmeon.ai/api/v1/gateway/ws",
+              Value: "wss://bv-dev.thelightbulb.company/api/v1/gateway/ws",
             }),
           ]),
         }),
@@ -1438,7 +1438,7 @@ describe("ServiceStack — provision status events", () => {
     });
     t.hasResourceProperties("AWS::Events::ApiDestination", {
       HttpMethod: "POST",
-      InvocationEndpoint: "https://api-dev.flickmeon.ai/api/v1/internal/provisioning/execution-events",
+      InvocationEndpoint: "https://api-dev.thelightbulb.company/api/v1/internal/provisioning/execution-events",
     });
     t.hasResourceProperties("AWS::Events::Connection", {
       AuthorizationType: "API_KEY",

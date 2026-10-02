@@ -64,7 +64,7 @@ const joined = (over: Partial<LaunchMe> = {}): LaunchMe =>
     effective_position: 17,
     referrals_subscribed: 3,
     referral_code: "P9AB3CDE",
-    referral_link: "https://flickmeon.ai/?ref=P9AB3CDE",
+    referral_link: "https://thelightbulb.company/?ref=P9AB3CDE",
     compete_eligible: true,
     ...over,
   });
@@ -106,7 +106,7 @@ describe("SheetCard", () => {
     expect(screen.getByText(/#47 before referral jumps/)).toBeInTheDocument();
     expect(screen.getByText(/3 subscribed referrals — each one moves you up 10 spots/)).toBeInTheDocument();
     expect(screen.getByText(/5 subscribed referrals earn \$50 · 20 earn \$250 total\./)).toBeInTheDocument();
-    expect(screen.getByLabelText(/your referral link/i)).toHaveValue("https://flickmeon.ai/?ref=P9AB3CDE");
+    expect(screen.getByLabelText(/your referral link/i)).toHaveValue("https://thelightbulb.company/?ref=P9AB3CDE");
   });
 
   it("joined with no jumps yet: no secondary raw position", async () => {

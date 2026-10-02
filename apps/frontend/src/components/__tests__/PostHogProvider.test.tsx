@@ -155,8 +155,8 @@ describe("PostHogProvider", () => {
     expect(recording.sampleRate).toBe(1);
     expect(recording.maskAllInputs).toBe(true);
     expect(recording.blockSelector).toBe("[data-private]");
-    expect(recording.maskCapturedNetworkRequestFn({ name: "https://flickmeon.ai/chat?path=/private", requestBody: "secret" }))
-      .toMatchObject({ name: "https://flickmeon.ai/chat", requestBody: undefined });
+    expect(recording.maskCapturedNetworkRequestFn({ name: "https://thelightbulb.company/chat?path=/private", requestBody: "secret" }))
+      .toMatchObject({ name: "https://thelightbulb.company/chat", requestBody: undefined });
     type Capture = { event?: string; properties: Record<string, unknown>; $set?: Record<string, unknown>; $set_once?: Record<string, unknown> };
     const beforeSend = opts.before_send as (event: Capture) => Capture | null;
     expect(beforeSend({ properties: { $current_url: "/chat?path=/private" } })?.properties.$current_url)
@@ -175,11 +175,11 @@ describe("PostHogProvider", () => {
     expect(person?.$set).toEqual({ $current_url: "/chat" });
     expect(person?.$set_once).toEqual({ $initial_current_url: "/chat", $initial_referrer: "/chat" });
     const replay = beforeSend({ event: "$snapshot", properties: { $snapshot_data: [
-      { type: 4, data: { href: "https://flickmeon.ai/chat?path=%2Fprivate" } },
+      { type: 4, data: { href: "https://thelightbulb.company/chat?path=%2Fprivate" } },
       { type: 5, data: { tag: "$url_changed", payload: { href: "/chat?path=%2Fprivate" } } },
     ] } });
     expect(replay?.properties.$snapshot_data).toEqual([
-      { type: 4, data: { href: "https://flickmeon.ai/chat" } },
+      { type: 4, data: { href: "https://thelightbulb.company/chat" } },
       { type: 5, data: { tag: "$url_changed", payload: { href: "/chat" } } },
     ]);
   });
@@ -384,12 +384,12 @@ describe("PostHogProvider", () => {
   describe("resolveEnvironment", () => {
     it("is prod only for the prod API host", async () => {
       const { resolveEnvironment } = await import("../PostHogProvider");
-      expect(resolveEnvironment("https://api.flickmeon.ai/api/v1")).toBe("prod");
+      expect(resolveEnvironment("https://api.thelightbulb.company/api/v1")).toBe("prod");
     });
 
     it("is dev for the dev host, localhost, and an unset URL", async () => {
       const { resolveEnvironment } = await import("../PostHogProvider");
-      expect(resolveEnvironment("https://api-dev.flickmeon.ai/api/v1")).toBe("dev");
+      expect(resolveEnvironment("https://api-dev.thelightbulb.company/api/v1")).toBe("dev");
       expect(resolveEnvironment("http://localhost:8000/api/v1")).toBe("dev");
       expect(resolveEnvironment(undefined)).toBe("dev");
     });
@@ -397,7 +397,7 @@ describe("PostHogProvider", () => {
 
   it("registers environment=prod as a super property against the prod API host", async () => {
     process.env.NEXT_PUBLIC_POSTHOG_KEY = "phc_test_key_123";
-    process.env.NEXT_PUBLIC_API_URL = "https://api.flickmeon.ai/api/v1";
+    process.env.NEXT_PUBLIC_API_URL = "https://api.thelightbulb.company/api/v1";
 
     const mod = await import("../PostHogProvider");
     render(<mod.PostHogProvider><div>child</div></mod.PostHogProvider>);
@@ -407,7 +407,7 @@ describe("PostHogProvider", () => {
 
   it("registers environment=dev against the dev API host, and re-registers it after reset() on sign-out", async () => {
     process.env.NEXT_PUBLIC_POSTHOG_KEY = "phc_test_key_123";
-    process.env.NEXT_PUBLIC_API_URL = "https://api-dev.flickmeon.ai/api/v1";
+    process.env.NEXT_PUBLIC_API_URL = "https://api-dev.thelightbulb.company/api/v1";
     mockClerkState.isSignedIn = true;
     mockClerkState.userId = "user_123";
 

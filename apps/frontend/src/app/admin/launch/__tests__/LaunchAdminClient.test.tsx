@@ -64,7 +64,7 @@ const sheetRow = (over: Partial<LaunchSheetRow> = {}): LaunchSheetRow => ({
   effective_position: 1,
   display_name: "Ada",
   public: true,
-  referral_link: "https://flickmeon.ai/?ref=A",
+  referral_link: "https://thelightbulb.company/?ref=A",
   created_at: "c",
   joined_at: "j",
   user_id: "u1",
@@ -292,8 +292,8 @@ describe("sheetCsv", () => {
     expect(csv.split("\n")[0]).toBe(
       "email,position,effective_position,display_name,public,referral_link,created_at,joined_at,user_id,referred_by,referrals_signed_up,referrals_subscribed,winner,compete_eligible,coupon_attached_at,winner_email_sent_at",
     );
-    expect(csv).toContain("a@x.com,4,1,Ada,true,https://flickmeon.ai/?ref=A,c,j,u1,,4,3,true,true,t,t");
-    expect(csv).toContain("b@x.com,2,2,Bob,true,https://flickmeon.ai/?ref=A,c,j,u2,,0,0,false,false,,");
+    expect(csv).toContain("a@x.com,4,1,Ada,true,https://thelightbulb.company/?ref=A,c,j,u1,,4,3,true,true,t,t");
+    expect(csv).toContain("b@x.com,2,2,Bob,true,https://thelightbulb.company/?ref=A,c,j,u2,,0,0,false,false,,");
   });
 });
 

@@ -11,13 +11,13 @@
 #
 # Run this after ANY domain move, before calling the migration done.
 #
-#   scripts/verify-oauth-redirects.sh [domain]      # default: flickmeon.ai
+#   scripts/verify-oauth-redirects.sh [domain]      # default: thelightbulb.company
 #
 # Exits non-zero if either provider rejects the callback.
 
 set -uo pipefail
 
-DOMAIN="${1:-flickmeon.ai}"
+DOMAIN="${1:-thelightbulb.company}"
 CALLBACK="https://clerk.${DOMAIN}/v1/oauth_callback"
 
 # From the Clerk dashboard: Configure -> SSO connections -> {Google,Apple}.

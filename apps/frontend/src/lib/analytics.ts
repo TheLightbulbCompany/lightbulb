@@ -277,7 +277,7 @@ function externalReferrer(): { referrer: string | null; domain: string | null } 
 // analytics; keep its query string out of pageviews, replay URLs and SDK defaults.
 export function withoutChatQuery(value: string): string {
   try {
-    const url = new URL(value, "https://flickmeon.ai");
+    const url = new URL(value, "https://thelightbulb.company");
     return url.pathname === "/chat" ? value.split(/[?#]/, 1)[0] : value;
   } catch {
     return value;

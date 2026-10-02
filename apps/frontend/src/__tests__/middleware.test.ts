@@ -6,11 +6,15 @@ import {
   ROOT_DOMAIN,
   SITE_URL,
 } from '@/lib/domain';
-import { decideAdminHostRouting, decidePaperclipLinkRedirect } from '@/middleware';
+import {
+  decideAdminHostRouting,
+  decideLaunchHostRouting,
+  decidePaperclipLinkRedirect,
+} from '@/middleware';
 
 const ADMIN_HOSTS = new Set([
-  'admin.flickmeon.ai',
-  'admin.dev.flickmeon.ai',
+  'admin.thelightbulb.company',
+  'admin.dev.thelightbulb.company',
   'admin.localhost:3000',
 ]);
 
@@ -18,7 +22,7 @@ const ADMIN_HOSTS = new Set([
 // is set in any deployed environment.
 //
 // The previous version of this block asserted the derivation equalled the
-// the old apex exactly. It passed while `admin.dev.flickmeon.ai/admin`
+// the old apex exactly. It passed while `admin.dev.thelightbulb.company/admin`
 // returned 404 in dev, because it was checking that the code agreed with
 // itself, not that it agreed with DNS. `SITE_URL` is one literal shared by both
 // deployments, so the moment dev and prod are on different domains, any list
@@ -28,8 +32,8 @@ const ADMIN_HOSTS = new Set([
 // domain's worth. The retired apex is gone from these lists entirely.
 describe('domain config', () => {
   it('derives the shipped values', () => {
-    expect(SITE_URL).toBe('https://flickmeon.ai');
-    expect(ROOT_DOMAIN).toBe('flickmeon.ai');
+    expect(SITE_URL).toBe('https://thelightbulb.company');
+    expect(ROOT_DOMAIN).toBe('thelightbulb.company');
     expect(DEEP_LINK_SCHEME).toBe('flickmeon');
   });
 
@@ -38,7 +42,7 @@ describe('domain config', () => {
   });
 
   it('admits the company host of EVERY product domain currently served', () => {
-    for (const d of ['flickmeon.ai', 'thelightbulb.company']) {
+    for (const d of ['thelightbulb.company']) {
       expect(PAPERCLIP_HOSTS).toContain(`company.${d}`);
       expect(PAPERCLIP_HOSTS).toContain(`dev.company.${d}`);
     }
@@ -58,19 +62,19 @@ describe('domain config', () => {
 describe('decideAdminHostRouting (admin host gate)', () => {
   it('passes through when an admin host hits an /admin path', () => {
     expect(
-      decideAdminHostRouting('admin.flickmeon.ai', '/admin/users', ADMIN_HOSTS),
+      decideAdminHostRouting('admin.thelightbulb.company', '/admin/users', ADMIN_HOSTS),
     ).toEqual({ kind: 'passthrough' });
   });
 
   it('returns 404 for an /admin path on a non-admin host', () => {
     expect(
-      decideAdminHostRouting('app.flickmeon.ai', '/admin/users', ADMIN_HOSTS),
+      decideAdminHostRouting('app.thelightbulb.company', '/admin/users', ADMIN_HOSTS),
     ).toEqual({ kind: 'not_found' });
   });
 
   it('redirects to /admin when an admin host requests a non-admin path', () => {
     expect(
-      decideAdminHostRouting('admin.flickmeon.ai', '/chat', ADMIN_HOSTS),
+      decideAdminHostRouting('admin.thelightbulb.company', '/chat', ADMIN_HOSTS),
     ).toEqual({ kind: 'redirect', to: '/admin' });
   });
 
@@ -94,20 +98,20 @@ describe('decideAdminHostRouting (admin host gate)', () => {
 
   it('passes through public hosts on public paths', () => {
     expect(
-      decideAdminHostRouting('app.flickmeon.ai', '/chat', ADMIN_HOSTS),
+      decideAdminHostRouting('app.thelightbulb.company', '/chat', ADMIN_HOSTS),
     ).toEqual({ kind: 'passthrough' });
   });
 
   it('matches /admin exactly (not just prefix-with-extra-letters)', () => {
     // /administrator should NOT be treated as an admin path
     expect(
-      decideAdminHostRouting('app.flickmeon.ai', '/administrator', ADMIN_HOSTS),
+      decideAdminHostRouting('app.thelightbulb.company', '/administrator', ADMIN_HOSTS),
     ).toEqual({ kind: 'passthrough' });
   });
 
   it('is case-insensitive on host comparison', () => {
     expect(
-      decideAdminHostRouting('ADMIN.FLICKMEON.AI', '/admin/users', ADMIN_HOSTS),
+      decideAdminHostRouting('ADMIN.THELIGHTBULB.COMPANY', '/admin/users', ADMIN_HOSTS),
     ).toEqual({ kind: 'passthrough' });
   });
 
@@ -122,30 +126,30 @@ describe('decideAdminHostRouting (admin host gate)', () => {
 
   it('passes through /sign-in on admin hosts so AdminLayout can complete auth', () => {
     expect(
-      decideAdminHostRouting('admin.flickmeon.ai', '/sign-in', ADMIN_HOSTS),
+      decideAdminHostRouting('admin.thelightbulb.company', '/sign-in', ADMIN_HOSTS),
     ).toEqual({ kind: 'passthrough' });
   });
 
   it('passes through /sign-up on admin hosts', () => {
     expect(
-      decideAdminHostRouting('admin.flickmeon.ai', '/sign-up', ADMIN_HOSTS),
+      decideAdminHostRouting('admin.thelightbulb.company', '/sign-up', ADMIN_HOSTS),
     ).toEqual({ kind: 'passthrough' });
   });
 
   it('passes through Clerk catchall sub-paths under /sign-in', () => {
     // Clerk renders /sign-in/factor-one, /sign-in/sso-callback, etc.
     expect(
-      decideAdminHostRouting('admin.flickmeon.ai', '/sign-in/factor-one', ADMIN_HOSTS),
+      decideAdminHostRouting('admin.thelightbulb.company', '/sign-in/factor-one', ADMIN_HOSTS),
     ).toEqual({ kind: 'passthrough' });
     expect(
-      decideAdminHostRouting('admin.flickmeon.ai', '/sign-up/verify-email-address', ADMIN_HOSTS),
+      decideAdminHostRouting('admin.thelightbulb.company', '/sign-up/verify-email-address', ADMIN_HOSTS),
     ).toEqual({ kind: 'passthrough' });
   });
 
   it('passes through the choose-organization session task on admin hosts', () => {
     expect(
       decideAdminHostRouting(
-        'admin.flickmeon.ai',
+        'admin.thelightbulb.company',
         '/session-tasks/choose-organization',
         ADMIN_HOSTS,
       ),
@@ -156,7 +160,7 @@ describe('decideAdminHostRouting (admin host gate)', () => {
     // Regression guard — the original gate behavior for non-auth, non-admin
     // paths is preserved.
     expect(
-      decideAdminHostRouting('admin.flickmeon.ai', '/chat', ADMIN_HOSTS),
+      decideAdminHostRouting('admin.thelightbulb.company', '/chat', ADMIN_HOSTS),
     ).toEqual({ kind: 'redirect', to: '/admin' });
   });
 });
@@ -196,5 +200,37 @@ describe('decidePaperclipLinkRedirect (agent Paperclip-link redirect)', () => {
     expect(decidePaperclipLinkRedirect('/agents/cto')).toBeNull();
     expect(decidePaperclipLinkRedirect('/projects/growth')).toBeNull();
     expect(decidePaperclipLinkRedirect('/goals/g-142')).toBeNull();
+  });
+});
+
+describe('decideLaunchHostRouting (retired product domain)', () => {
+  it('ignores the product domain', () => {
+    expect(decideLaunchHostRouting('thelightbulb.company', '/chat', '')).toBeNull();
+    expect(decideLaunchHostRouting('admin.thelightbulb.company', '/admin', '')).toBeNull();
+  });
+
+  it('redirects every path on the old domain, keeping path and query', () => {
+    expect(decideLaunchHostRouting('flickmeon.ai', '/blog/x', '?a=1')).toEqual({
+      kind: 'redirect',
+      to: 'https://thelightbulb.company/blog/x?a=1',
+    });
+    expect(decideLaunchHostRouting('WWW.flickmeon.ai', '/', '')).toEqual({
+      kind: 'redirect',
+      to: 'https://thelightbulb.company/',
+    });
+  });
+
+  it('keeps an old referral link working', () => {
+    expect(decideLaunchHostRouting('flickmeon.ai', '/', '?ref=ABC12345')).toEqual({
+      kind: 'redirect',
+      to: 'https://thelightbulb.company/?ref=ABC12345',
+    });
+  });
+
+  it('sends the old dev host to the new dev host', () => {
+    expect(decideLaunchHostRouting('dev.flickmeon.ai', '/chat', '')).toEqual({
+      kind: 'redirect',
+      to: 'https://dev.thelightbulb.company/chat',
+    });
   });
 });

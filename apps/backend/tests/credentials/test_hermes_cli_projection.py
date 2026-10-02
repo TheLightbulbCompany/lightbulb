@@ -70,7 +70,7 @@ async def test_aws_config_resolves_the_helper_through_the_profile_home(s3, roste
     """On ECS the credential_process names an absolute in-container path. A Hermes profile dir
     differs per agent, so the only stable name is $HOME -- and botocore never expands, hence the
     explicit `sh -c`."""
-    monkeypatch.setattr(hermes_profiles.settings, "PUBLIC_API_BASE", "https://api-dev.flickmeon.ai")
+    monkeypatch.setattr(hermes_profiles.settings, "PUBLIC_API_BASE", "https://api-dev.thelightbulb.company")
 
     await hermes_cli.project("org_1", "aws", "aws_cli", {"region": "us-east-1", "cli_token": "tok_x"})
 

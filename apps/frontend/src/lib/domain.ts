@@ -18,7 +18,7 @@
 
 /** Absolute origin the public site is served from, no trailing slash. */
 export const SITE_URL = (
-  process.env.NEXT_PUBLIC_APP_URL ?? "https://flickmeon.ai"
+  process.env.NEXT_PUBLIC_APP_URL ?? "https://thelightbulb.company"
 ).replace(/\/+$/, "");
 
 /** Bare host of {@link SITE_URL} — the root every sibling host is built from. */
@@ -41,10 +41,8 @@ export const DEEP_LINK_SCHEME = "flickmeon";
 /**
  * Where "contact support" actually lands.
  *
- * The MAIL domain, deliberately NOT derived from {@link ROOT_DOMAIN}:
- * `flickmeon.ai` is the product URL and carries no MX, no SES identity, no mail
- * records of any kind — the two are separate parameters on the infra side too
- * (`apps/infra/lib/domains.ts`: `ROOT_DOMAIN` vs `PLATFORM_MAIL_DOMAIN`).
+ * The product and the mail share one domain now; the address is still its own
+ * constant so it does not silently follow a future product-domain move.
  *
  * One constant because the previous address, `support@isol8.co`, outlived the
  * brand in ten hand-typed places, including the only escape hatch on the
@@ -63,15 +61,12 @@ export const SUPPORT_MAILTO = `mailto:${SUPPORT_EMAIL}`;
  * allow a host that no longer resolves. It is still derived rather than
  * literal, because `SITE_URL` is the one place the domain is written down.
  *
- * The bug this list exists to prevent: `admin.dev.flickmeon.ai/admin` returned
+ * The bug this list exists to prevent: `admin.dev.thelightbulb.company/admin` returned
  * 404 while the allowlist held only the old apex, because `SITE_URL` is one
  * literal shared by both deployments.
  */
-// Dev moved to thelightbulb.company ahead of prod (2026-10). Both are admitted
-// until SITE_URL itself moves at the prod flip, when this collapses back to
-// ROOT_DOMAIN alone.
 export const PRODUCT_DOMAINS = Array.from(
-  new Set([ROOT_DOMAIN, "thelightbulb.company"]),
+  new Set([ROOT_DOMAIN]),
 );
 
 export const DEFAULT_ADMIN_HOSTS = [
@@ -84,3 +79,10 @@ export const PAPERCLIP_HOSTS = PRODUCT_DOMAINS.flatMap((d) => [
   `company.${d}`,
   `dev.company.${d}`,
 ]);
+
+/**
+ * The retired product domain, still attached to this Vercel project. Every
+ * request on these hosts is answered by `decideLaunchHostRouting` in
+ * `src/middleware.ts` before Clerk runs: there is no Clerk session here.
+ */
+export const LAUNCH_HOSTS = ["flickmeon.ai", "www.flickmeon.ai", "dev.flickmeon.ai"];

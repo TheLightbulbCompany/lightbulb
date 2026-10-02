@@ -45,7 +45,7 @@ describe("RoomDocumentCards", () => {
   });
 
   it("opens the document in a dialog over the chat, with no Delete", async () => {
-    renderText("https://dev.flickmeon.ai/HAB/issues/HAB-12#document-research");
+    renderText("https://dev.thelightbulb.company/HAB/issues/HAB-12#document-research");
     fireEvent.click(await screen.findByRole("button", { name: /Open Habits 365/ }));
     const dialog = await screen.findByRole("dialog");
     expect(within(dialog).getByTestId("md")).toHaveTextContent("strongest at streak reminders");

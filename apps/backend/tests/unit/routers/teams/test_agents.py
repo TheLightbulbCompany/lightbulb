@@ -154,7 +154,7 @@ def test_create_agent_on_agentcore_owner_gets_the_native_hermes_adapter(client, 
         AsyncMock(return_value={"runtime_host": "agentcore", "hook_token": "hook_abc"}),
     )
     monkeypatch.setattr(
-        "core.services.paperclip_adapter_config.settings.PUBLIC_API_BASE", "https://api-dev.flickmeon.ai"
+        "core.services.paperclip_adapter_config.settings.PUBLIC_API_BASE", "https://api-dev.thelightbulb.company"
     )
     # M6-R59: an agentcore create now also writes the agent's Hermes profile (and 502s if it
     # can't). Its own behaviour is pinned in test_teams_agents_pairing.py; stub it out here.
@@ -175,7 +175,7 @@ def test_create_agent_on_agentcore_owner_gets_the_native_hermes_adapter(client, 
     assert call.kwargs["adapter_type"] == "hermes_gateway"
     assert call.kwargs["adapter_config"]["apiKey"] == "hook_abc"
     assert call.kwargs["adapter_config"]["apiBaseUrl"] == (
-        "https://api-dev.flickmeon.ai/api/v1/internal/paperclip/hermes/o1"
+        "https://api-dev.thelightbulb.company/api/v1/internal/paperclip/hermes/o1"
     )
     write_profile.assert_awaited_once()
 

@@ -52,7 +52,7 @@ def handler(event, context):
     #
     # This door now admits ONLY the desktop local-session relay. Tauri node
     # hosts and Paperclip operators dial the raw WS relay instead
-    # (routers/gateway_relay.py, wss://bv[-env].flickmeon.ai/api/v1/gateway/ws)
+    # (routers/gateway_relay.py, wss://bv[-env].thelightbulb.company/api/v1/gateway/ws)
     # and never reach $connect any more.
     qs = event.get("queryStringParameters") or {}
     client_id = qs.get("clientId")

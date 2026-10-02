@@ -121,7 +121,7 @@ def _public_host(env: str) -> str:
     """Public host the operator opens in their browser to complete the
     board-claim flow. Per the URL rename in #497, dev is
     ``dev.company.{root}`` and prod is ``company.{root}`` -- where {root} is the
-    product domain, now flickmeon.ai (isol8.co is retired).
+    product domain, now thelightbulb.company (isol8.co is retired).
     """
     if env == "prod":
         return "company.isol8.co"

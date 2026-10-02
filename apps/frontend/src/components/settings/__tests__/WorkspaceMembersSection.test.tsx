@@ -79,7 +79,7 @@ describe("WorkspaceMembersSection", () => {
     teams.read.mockReset();
     get.mockResolvedValue({ exists: false });
     post.mockResolvedValue({
-      join_url: "https://dev.flickmeon.ai/join/org_1/s3cr3t-token",
+      join_url: "https://dev.thelightbulb.company/join/org_1/s3cr3t-token",
       created_at: "2026-09-14T00:00:00+00:00",
     });
     del.mockResolvedValue(undefined);
@@ -138,11 +138,11 @@ describe("WorkspaceMembersSection", () => {
 
     await waitFor(() => expect(post).toHaveBeenCalledWith("/orgs/org_1/join-link", {}));
     const field = await screen.findByLabelText(/your join link/i);
-    expect(field).toHaveValue("https://dev.flickmeon.ai/join/org_1/s3cr3t-token");
+    expect(field).toHaveValue("https://dev.thelightbulb.company/join/org_1/s3cr3t-token");
 
     await user.click(screen.getByRole("button", { name: /copy link/i }));
     await waitFor(() =>
-      expect(writeText).toHaveBeenCalledWith("https://dev.flickmeon.ai/join/org_1/s3cr3t-token"),
+      expect(writeText).toHaveBeenCalledWith("https://dev.thelightbulb.company/join/org_1/s3cr3t-token"),
     );
     expect(await screen.findByRole("button", { name: /copied/i })).toBeInTheDocument();
   });
@@ -161,7 +161,7 @@ describe("WorkspaceMembersSection", () => {
     asAdmin();
     get.mockResolvedValue({
       exists: true,
-      join_url: "https://dev.flickmeon.ai/join/org_1#curr3nt",
+      join_url: "https://dev.thelightbulb.company/join/org_1#curr3nt",
       created_at: "2026-09-01T00:00:00+00:00",
       created_by: "user_admin",
     });
@@ -170,10 +170,10 @@ describe("WorkspaceMembersSection", () => {
     render(<WorkspaceMembersSection />);
 
     const field = await screen.findByLabelText(/your join link/i);
-    expect(field).toHaveValue("https://dev.flickmeon.ai/join/org_1#curr3nt");
+    expect(field).toHaveValue("https://dev.thelightbulb.company/join/org_1#curr3nt");
     await user.click(screen.getByRole("button", { name: /copy link/i }));
     await waitFor(() =>
-      expect(writeText).toHaveBeenCalledWith("https://dev.flickmeon.ai/join/org_1#curr3nt"),
+      expect(writeText).toHaveBeenCalledWith("https://dev.thelightbulb.company/join/org_1#curr3nt"),
     );
     // Nothing was minted: showing the link must not rotate it.
     expect(post).not.toHaveBeenCalled();
@@ -184,7 +184,7 @@ describe("WorkspaceMembersSection", () => {
     asAdmin();
     get.mockResolvedValue({
       exists: true,
-      join_url: "https://dev.flickmeon.ai/join/org_1#curr3nt",
+      join_url: "https://dev.thelightbulb.company/join/org_1#curr3nt",
       created_at: "2026-09-01T00:00:00+00:00",
     });
     const user = userEvent.setup();
@@ -195,7 +195,7 @@ describe("WorkspaceMembersSection", () => {
 
     await waitFor(() => expect(post).toHaveBeenCalledWith("/orgs/org_1/join-link", {}));
     expect(await screen.findByLabelText(/your join link/i)).toHaveValue(
-      "https://dev.flickmeon.ai/join/org_1/s3cr3t-token",
+      "https://dev.thelightbulb.company/join/org_1/s3cr3t-token",
     );
   });
 

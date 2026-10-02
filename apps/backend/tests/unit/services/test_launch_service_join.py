@@ -59,7 +59,7 @@ class _Harness:
             patch("core.services.launch_service.launch_waitlist_repo.update_fields", AsyncMock()),
             patch("core.services.launch_sheet_email.send_join_email", AsyncMock(return_value="msg_1")),
             patch("core.services.launch_service.me", AsyncMock(return_value={"joined": True})),
-            patch("core.services.launch_service.settings.FRONTEND_URL", "https://dev.flickmeon.ai"),
+            patch("core.services.launch_service.settings.FRONTEND_URL", "https://dev.thelightbulb.company"),
         ]
         mocks = [p.__enter__() for p in self._patches]
         (
@@ -141,7 +141,7 @@ async def test_first_join_writes_membership_and_sends_the_email():
     h.update_fields.assert_not_awaited()
     kwargs = h.email.await_args.kwargs
     assert kwargs["to_email"] == "me@x.com" and kwargs["position"] == 42
-    assert kwargs["referral_link"] == "https://dev.flickmeon.ai/?ref=ABCD2345"
+    assert kwargs["referral_link"] == "https://dev.thelightbulb.company/?ref=ABCD2345"
     assert kwargs["comp_slots"] == 200
     assert body == {"joined": True}  # the me() composition is the response
 

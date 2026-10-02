@@ -7,7 +7,7 @@ import { JSDOM } from 'jsdom';
 // IPC detection must fail this test before any session or AWS request is needed.
 test('DCV loads in Tauri without using its IPC or requesting local media', async () => {
   const source = await readFile(new URL('../public/nice-dcv-web-client-sdk/dcvjs-esm/dcv.js', import.meta.url), 'utf8');
-  const dom = new JSDOM('', { url: 'https://flickmeon.ai', runScripts: 'outside-only' });
+  const dom = new JSDOM('', { url: 'https://thelightbulb.company', runScripts: 'outside-only' });
   const { window } = dom;
   window.TextDecoder = TextDecoder;
   window.TextEncoder = TextEncoder;

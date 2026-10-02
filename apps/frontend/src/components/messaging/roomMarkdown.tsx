@@ -17,7 +17,7 @@ export const roomMarkdown: Partial<Components> = {
     if (attachmentIdFromHref(href)) return <span>{children}</span>;
     // Links into our own app — the bundled paperclip skill's native paths
     // (`/ISOA/issues/ISOA-171`, which 404 against this app's routes) and absolute
-    // flickmeon.ai links (company., dev., permalinks) — open in the shell, in
+    // thelightbulb.company links (company., dev., permalinks) — open in the shell, in
     // place, instead of a new browser tab.
     const link = appLinkTarget(href);
     if (link && link.href.startsWith("/chat")) return <AppAnchor link={link}>{children}</AppAnchor>;

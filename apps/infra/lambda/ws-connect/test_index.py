@@ -2,7 +2,7 @@
 
 Only the desktop local-session relay uses this door — Tauri node hosts and
 Paperclip operators moved to the raw WS relay (routers/gateway_relay.py,
-wss://bv[-env].flickmeon.ai/api/v1/gateway/ws) and never reach $connect.
+wss://bv[-env].thelightbulb.company/api/v1/gateway/ws) and never reach $connect.
 """
 
 import os

@@ -15,8 +15,8 @@ describe("extractPreviewUrls", () => {
 
   it("never unfurls our own domain or its subdomains", () => {
     expect(
-      extractPreviewUrls("https://flickmeon.ai https://company.flickmeon.ai/ISOA/issues/ISOA-400 https://notflickmeon.ai https://dev.FLICKMEON.ai/x"),
-    ).toEqual(["https://notflickmeon.ai"]);
+      extractPreviewUrls("https://thelightbulb.company https://company.thelightbulb.company/ISOA/issues/ISOA-400 https://notthelightbulb.company https://dev.THELIGHTBULB.company/x https://flickmeon.ai/launch"),
+    ).toEqual(["https://notthelightbulb.company"]);
   });
 
   it("stops at an autolink's closing bracket", () => {

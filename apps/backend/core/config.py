@@ -82,7 +82,7 @@ class Settings(BaseSettings):
 
     # Public-facing base URL for this API. Used to build absolute URLs in
     # responses (e.g., the Paperclip trigger fire URLs, /hooks/t/...).
-    # Per env: https://api-dev.thelightbulb.company, https://api.flickmeon.ai,
+    # Per env: https://api-dev.thelightbulb.company, https://api.thelightbulb.company,
     # https://api.isol8.co. Defaults to localhost for dev/test. Wired via
     # CDK service-stack environment block per environment.
     PUBLIC_API_BASE: str = "http://localhost:8000"

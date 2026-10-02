@@ -169,7 +169,7 @@ describe("RoutineDetailPanel — editable (A2)", () => {
     // render produces.
     post.mockResolvedValue({
       secretMaterial: {
-        webhookUrl: "https://api.flickmeon.ai/hooks/pub_1",
+        webhookUrl: "https://api.thelightbulb.company/hooks/pub_1",
         webhookSecret: "whsec_new_123",
       },
     });
@@ -252,7 +252,7 @@ describe("RoutineDetailPanel — editable (A2)", () => {
               label: "Stripe invoice.payment_failed",
               signingMode: "hmac_sha256",
               publicId: "pub_1",
-              fireUrl: "https://api.flickmeon.ai/api/v1/hooks/t/org_1/pub_1",
+              fireUrl: "https://api.thelightbulb.company/api/v1/hooks/t/org_1/pub_1",
               enabled: true,
             },
             { id: "t1", kind: "schedule", cronExpression: "0 9 * * *", enabled: true },
@@ -265,7 +265,7 @@ describe("RoutineDetailPanel — editable (A2)", () => {
     });
     render(<RoutineDetailPanel routineId="r1" />);
     expect(
-      screen.getByText("https://api.flickmeon.ai/api/v1/hooks/t/org_1/pub_1"),
+      screen.getByText("https://api.thelightbulb.company/api/v1/hooks/t/org_1/pub_1"),
     ).toBeInTheDocument();
     // Exactly one — the schedule trigger has no fire URL.
     expect(screen.getAllByText("Fire URL")).toHaveLength(1);
@@ -295,7 +295,7 @@ describe("RoutineDetailPanel — editable (A2)", () => {
               label: "Stripe invoice.payment_failed",
               signingMode: "hmac_sha256",
               publicId: "pub_1",
-              fireUrl: "https://api.flickmeon.ai/api/v1/hooks/t/org_1/pub_1",
+              fireUrl: "https://api.thelightbulb.company/api/v1/hooks/t/org_1/pub_1",
               enabled: true,
             },
             {
@@ -304,7 +304,7 @@ describe("RoutineDetailPanel — editable (A2)", () => {
               label: "Stripe charge.dispute.created",
               signingMode: "hmac_sha256",
               publicId: "pub_2",
-              fireUrl: "https://api.flickmeon.ai/api/v1/hooks/t/org_1/pub_2",
+              fireUrl: "https://api.thelightbulb.company/api/v1/hooks/t/org_1/pub_2",
               enabled: true,
             },
           ],
@@ -318,10 +318,10 @@ describe("RoutineDetailPanel — editable (A2)", () => {
     expect(screen.getAllByText("Fire URL")).toHaveLength(2);
     // Both URLs rendered, and each copy button is uniquely addressable.
     expect(
-      screen.getByText("https://api.flickmeon.ai/api/v1/hooks/t/org_1/pub_1"),
+      screen.getByText("https://api.thelightbulb.company/api/v1/hooks/t/org_1/pub_1"),
     ).toBeInTheDocument();
     expect(
-      screen.getByText("https://api.flickmeon.ai/api/v1/hooks/t/org_1/pub_2"),
+      screen.getByText("https://api.thelightbulb.company/api/v1/hooks/t/org_1/pub_2"),
     ).toBeInTheDocument();
     expect(
       screen.getByRole("button", { name: "Copy fire URL for Stripe invoice.payment_failed" }),

@@ -19,11 +19,11 @@ def test_the_canonical_adapter_type_is_the_native_one():
 
 
 def test_the_config_points_at_the_native_backend_facade(monkeypatch):
-    monkeypatch.setattr(settings, "PUBLIC_API_BASE", "https://api-dev.flickmeon.ai")
+    monkeypatch.setattr(settings, "PUBLIC_API_BASE", "https://api-dev.thelightbulb.company")
     monkeypatch.setattr(settings, "PAPERCLIP_INTERNAL_URL", "http://paperclip.internal:3100")
     built = cfg_module.build_hermes_gateway_adapter_config("org_1", hook_token="hook-abc")
     assert built == {
-        "apiBaseUrl": "https://api-dev.flickmeon.ai/api/v1/internal/paperclip/hermes/org_1",
+        "apiBaseUrl": "https://api-dev.thelightbulb.company/api/v1/internal/paperclip/hermes/org_1",
         "apiKey": "hook-abc",
         "sessionKeyStrategy": "issue",
         "timeoutSec": 3600,
@@ -46,10 +46,10 @@ def test_the_config_rejects_an_empty_hook_token(monkeypatch):
 
 
 def test_the_config_strips_a_trailing_slash_on_the_base_url(monkeypatch):
-    monkeypatch.setattr(settings, "PUBLIC_API_BASE", "https://api-dev.flickmeon.ai/")
+    monkeypatch.setattr(settings, "PUBLIC_API_BASE", "https://api-dev.thelightbulb.company/")
     monkeypatch.setattr(settings, "PAPERCLIP_INTERNAL_URL", "")
     built = cfg_module.build_hermes_gateway_adapter_config("org_1", hook_token="hook-abc")
-    assert built["apiBaseUrl"] == "https://api-dev.flickmeon.ai/api/v1/internal/paperclip/hermes/org_1"
+    assert built["apiBaseUrl"] == "https://api-dev.thelightbulb.company/api/v1/internal/paperclip/hermes/org_1"
     assert "paperclipApiUrl" not in built
 
 

@@ -143,7 +143,7 @@ describe("LaunchJoinModal", () => {
         position: 41,
         effective_position: 41,
         referral_code: "P9AB3CDE",
-        referral_link: "https://flickmeon.ai/?ref=P9AB3CDE",
+        referral_link: "https://thelightbulb.company/?ref=P9AB3CDE",
         compete_eligible: true,
       }),
     );
@@ -154,7 +154,7 @@ describe("LaunchJoinModal", () => {
       expect(post).toHaveBeenCalledWith("/launch/join", { display_name: "Northwind Ceramics", public: true }),
     );
     expect(await screen.findByText(/You're #41 on the sheet/)).toBeInTheDocument();
-    expect(screen.getByText("https://flickmeon.ai/?ref=P9AB3CDE")).toBeInTheDocument();
+    expect(screen.getByText("https://thelightbulb.company/?ref=P9AB3CDE")).toBeInTheDocument();
   });
 
   it("surfaces a refusal instead of closing", async () => {

@@ -90,7 +90,7 @@ def test_the_runtime_env_carries_identifiers_only_and_no_secret_value(monkeypatc
     NAME plus non-secret identifiers."""
     env = hermes_provisioning.build_hermes_runtime_env(
         owner_id="org_a",
-        api_base="https://api-dev.flickmeon.ai",
+        api_base="https://api-dev.thelightbulb.company",
         bucket="lightbulb-dev-openclaw-replicas",
         boot_secret_id="lightbulb/dev/hermes/org_a/boot",
     )
@@ -118,7 +118,7 @@ def test_the_runtime_env_carries_identifiers_only_and_no_secret_value(monkeypatc
 def test_managed_gate_url_is_a_runtime_identifier_without_a_bearer():
     env = hermes_provisioning.build_hermes_runtime_env(
         owner_id="org_a",
-        api_base="https://api-dev.flickmeon.ai",
+        api_base="https://api-dev.thelightbulb.company",
         bucket="bucket",
         boot_secret_id="lightbulb/dev/hermes/org_a/boot",
         managed_gate_url="https://openrouter-gate.example/v1",
@@ -165,7 +165,7 @@ def test_the_runtime_env_never_carries_the_nous_guest_launch_gate(monkeypatch):
     must ever appear here -- this is the egress fence for that aux task."""
     env = hermes_provisioning.build_hermes_runtime_env(
         owner_id="org_a",
-        api_base="https://api-dev.flickmeon.ai",
+        api_base="https://api-dev.thelightbulb.company",
         bucket="lightbulb-dev-openclaw-replicas",
         boot_secret_id="lightbulb/dev/hermes/org_a/boot",
     )
@@ -177,7 +177,7 @@ def test_the_runtime_env_never_carries_the_nous_guest_launch_gate(monkeypatch):
 def _env(**extra):
     return hermes_provisioning.build_hermes_runtime_env(
         owner_id="org_a",
-        api_base="https://api-dev.flickmeon.ai",
+        api_base="https://api-dev.thelightbulb.company",
         bucket="lightbulb-dev-openclaw-replicas",
         boot_secret_id="lightbulb/dev/hermes/org_a/boot",
         **extra,

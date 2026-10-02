@@ -25,6 +25,8 @@ every protected operation rechecks the base ``MEMBER#`` row strongly):
     OWNER#<owner>   WORKSPACE                          opaque AppSync channel-path segment
     OWNER#<owner>   RUN#<runId>                         async turn ledger (Task 9)
     OWNER#<owner>   USAGE#<runId>                       first-writer-wins usage-callback receipt (Task 7)
+    OWNER#<owner>   VOICERUN#<runId>                    a Live voice run's room, agent and speaker (2 h TTL; NOT RUN#:
+                                                       chat never steers into a voice run)
     ROOM#<room>     FOLLOWUP#<followUpId>               a finished async delegation owed back to its agent
     ROOM#<room>     WORK#FOLLOWUP#<agent>#<followUpId>  one-shot outbox for that follow-up turn
     ROOM#<room>     DECISION#<messageId>                Jev routing decision, claim-first (NOT WORK#:
@@ -209,6 +211,10 @@ def workspace_sk() -> str:
 
 def run_sk(run_id: str) -> str:
     return f"RUN#{run_id}"
+
+
+def voice_run_sk(run_id: str) -> str:
+    return f"VOICERUN#{run_id}"
 
 
 def run_id_for(agent_id: str, message_id: str) -> str:
@@ -2317,6 +2323,63 @@ async def create_run(
 
 async def get_run(owner_id: str, run_id: str) -> dict | None:
     return await _get(owner_pk(owner_id), run_sk(run_id))
+
+
+VOICE_RUN_TTL_S = 2 * 3600
+
+
+async def put_voice_run(owner_id: str, run_id: str, fields: dict[str, Any]) -> None:
+    """Idempotent: a /turns retry with the same run id rewrites the same row."""
+    item = {
+        "pk": owner_pk(owner_id),
+        "sk": voice_run_sk(run_id),
+        "runId": run_id,
+        **fields,
+        "expiresAt": int(time.time()) + VOICE_RUN_TTL_S,
+    }
+    await run_in_thread(_table().put_item, Item=item)
+
+
+async def get_voice_run(owner_id: str, run_id: str) -> dict | None:
+    row = await _get(owner_pk(owner_id), voice_run_sk(run_id))
+    # DynamoDB TTL deletes lazily: an expired row must not authorize anything.
+    return row if row and int(row.get("expiresAt", 0)) > time.time() else None
+
+
+async def count_voice_edit(owner_id: str, agent_id: str, kind: str, limit: int) -> bool:
+    """One voice edit of ``kind`` for this agent today (UTC); False once ``limit`` are used.
+    Not WORK#/LIVE#: neither the projector nor the Pipe reads this sk."""
+    day = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    try:
+        await run_in_thread(
+            _table().update_item,
+            Key={"pk": owner_pk(owner_id), "sk": f"VOICEEDIT#{agent_id}#{kind}#{day}"},
+            UpdateExpression="ADD edits :one SET expiresAt = :exp",
+            ConditionExpression="attribute_not_exists(edits) OR edits < :limit",
+            ExpressionAttributeValues={":one": 1, ":limit": limit, ":exp": int(time.time()) + 2 * 86400},
+        )
+        return True
+    except ClientError as exc:
+        if exc.response["Error"]["Code"] == "ConditionalCheckFailedException":
+            return False
+        raise
+
+
+async def set_agent_names(room_id: str, agent_id: str, display_name: str, mention_handle: str | None) -> bool:
+    """SET-only label refresh of one agent member row; False when it is no longer a member."""
+    try:
+        await run_in_thread(
+            _table().update_item,
+            Key={"pk": room_pk(room_id), "sk": member_sk("agent", agent_id)},
+            UpdateExpression="SET displayName = :dn, mentionHandle = :mh",
+            ConditionExpression="attribute_exists(sk)",
+            ExpressionAttributeValues={":dn": display_name, ":mh": mention_handle},
+        )
+        return True
+    except ClientError as exc:
+        if exc.response["Error"]["Code"] == "ConditionalCheckFailedException":
+            return False
+        raise
 
 
 async def redispatch_run(owner_id: str, run_id: str) -> dict | None:

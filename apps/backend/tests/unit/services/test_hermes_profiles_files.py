@@ -226,3 +226,43 @@ def test_read_soul_md_returns_none_when_the_profile_has_none_yet(s3_hermes_bucke
 def test_read_soul_md_returns_the_stored_text(s3_hermes_bucket):
     _put(s3_hermes_bucket, "SOUL.md", b"# Ada\n")
     assert hermes_profiles.read_soul_md(OWNER, AGENT) == "# Ada\n"
+
+
+# ---------------------------------------------------------------------------
+# VOICE_NOTES.md
+# ---------------------------------------------------------------------------
+
+
+def test_build_voice_notes_md_leads_with_the_name_line():
+    text = hermes_profiles.build_voice_notes_md("Nova", "Aden asked: be blunt")
+    assert text.startswith("Your name is Nova.")
+    assert hermes_profiles.parse_voice_notes_md(text) == ("Nova", "Aden asked: be blunt")
+
+
+def test_build_voice_notes_md_is_empty_with_nothing_to_say():
+    assert hermes_profiles.build_voice_notes_md(None, "") == ""
+    assert hermes_profiles.parse_voice_notes_md("") == (None, "")
+    assert hermes_profiles.parse_voice_notes_md(hermes_profiles.build_voice_notes_md(None, "talk slow")) == (
+        None,
+        "talk slow",
+    )
+    assert hermes_profiles.parse_voice_notes_md(hermes_profiles.build_voice_notes_md("Nova", "")) == ("Nova", "")
+
+
+@pytest.mark.asyncio
+async def test_write_profile_file_refuses_voice_notes(s3_hermes_bucket):
+    with pytest.raises(PermissionError):
+        await hermes_profiles.write_profile_file(OWNER, AGENT, "VOICE_NOTES.md", "pwned")
+
+
+def test_upload_voice_notes_writes_the_file_then_the_revision(monkeypatch):
+    calls = []
+    monkeypatch.setattr(hermes_profiles, "_s3_put", lambda bucket, key, body: calls.append(key))
+    hermes_profiles.upload_voice_notes(OWNER, AGENT, "Your name is Nova.\n\nbe blunt")
+    assert calls == [f"{PREFIX}VOICE_NOTES.md", f"{PREFIX}.revision"]
+
+
+def test_read_voice_notes_round_trips(s3_hermes_bucket):
+    assert hermes_profiles.read_voice_notes(OWNER, AGENT) is None
+    hermes_profiles.upload_voice_notes(OWNER, AGENT, "Your name is Nova.\n\nbe blunt")
+    assert hermes_profiles.read_voice_notes(OWNER, AGENT) == "Your name is Nova.\n\nbe blunt"

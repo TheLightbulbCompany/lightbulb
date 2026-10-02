@@ -778,6 +778,8 @@ class UsageReportRequest(ContractModel):
     success: bool
     duration_ms: int | None = Field(default=None, ge=0)
     usage: RunUsage
+    # A voice run runs on the room's own key but has no room ledger row, so it reports here.
+    family: Literal["voice"] | None = None
 
 
 class UsageReportResponse(ContractModel):
@@ -1376,6 +1378,37 @@ async def load_agent_roster(owner_id: str) -> list[dict[str, Any]]:
         roster.append({**row, "id": agent_id, "name": str(row.get("name") or agent_id)[:256]})
     roster.sort(key=lambda row: row["id"])
     return roster
+
+
+async def refresh_agent_member_names(
+    owner_id: str, agent_id: str, roster: list[dict[str, Any]] | None = None
+) -> dict[str, str | None]:
+    """A Paperclip rename onto every room member row of this agent (labels and @handle), then
+    ``room.member.updated`` to each room's people. Returns ``{roomId: old displayName}``.
+
+    ponytail: only this agent's handle is re-stamped; another agent whose collision suffix the
+    rename changed keeps its old handle until it is next upserted."""
+    roster = roster if roster is not None else await load_agent_roster(owner_id)
+    row = next((r for r in roster if r["id"] == agent_id), None)
+    if row is None:
+        return {}
+    handle = mention_handles(roster).get(agent_id)
+    publisher = get_live_event_publisher()
+    old: dict[str, str | None] = {}
+    for entry in await messaging_repo.list_rooms_for_member(owner_id, "agent", agent_id):
+        room_id, room_owner = entry["meta"]["roomId"], entry["meta"]["ownerId"]
+        if not await messaging_repo.set_agent_names(room_id, agent_id, row["name"], handle):
+            continue
+        old[room_id] = entry["member"].get("displayName")
+        event = make_live_event("room.member.updated", {"roomId": room_id})
+        for member in await messaging_repo.list_members(room_id):
+            if member.get("kind") != "human":
+                continue
+            try:
+                await publisher.publish_user(messaging_repo.member_home(member, room_owner), member["id"], event)
+            except Exception:  # noqa: BLE001 -- labels already landed; a missed refresh heals on reload
+                logger.warning("room.member.updated publish failed for %s in %s", member["id"], room_id)
+    return old
 
 
 # A human's display name is fetched from Clerk, which is an HTTPS call with its
@@ -3495,7 +3528,7 @@ async def _record_run_usage(
 
 async def handle_usage_report(owner_id: str, body: UsageReportRequest) -> UsageReportResponse:
     """Usage + product analytics for runs the room contract does not cover (cron, heartbeat, Paperclip)."""
-    if parse_lightbulb_session_key(body.session_key) is not None:
+    if parse_lightbulb_session_key(body.session_key) is not None and body.family != "voice":
         put_metric("messaging.usage.callback", dimensions={"outcome": "room"})
         return UsageReportResponse(run_id=body.run_id, status="ignored")
     if not await messaging_repo.claim_usage_receipt(owner_id, body.run_id):

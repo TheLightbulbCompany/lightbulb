@@ -1214,7 +1214,7 @@ async def write_profile_for_agent(
     await _stage_owner_facts(owner_id, [agent_id], inputs)
 
 
-async def refresh_agent_soul(owner_id: str, agent_id: str) -> None:
+async def refresh_agent_soul(owner_id: str, agent_id: str, by: str | None = None) -> None:
     """Rebuild ONE agent's ``SOUL.md`` from the live Paperclip roster row and upload only that
     file — the rename/retitle half of an AgentCore agent's profile.
 
@@ -1248,10 +1248,30 @@ async def refresh_agent_soul(owner_id: str, agent_id: str) -> None:
     if agent_row is None:
         return
     current = await run_in_thread(hermes_profiles.read_soul_md, owner_id, agent_id)
-    if current and not hermes_profiles.is_generated_soul(current):
-        return
-    soul_md = hermes_profiles.build_soul_md(agent_row)
-    await run_in_thread(hermes_profiles.upload_soul_md, owner_id, agent_id, soul_md)
+    if not current or hermes_profiles.is_generated_soul(current):
+        soul_md = hermes_profiles.build_soul_md(agent_row)
+        await run_in_thread(hermes_profiles.upload_soul_md, owner_id, agent_id, soul_md)
+    # Every rename door, owner-edited SOUL.md or not: VOICE_NOTES.md carries the current name,
+    # room member labels follow it, and an open Live window hears about it (C3 ``renamed``).
+    # Best effort: the Paperclip rename already landed, so a blip here must not 5xx a door and
+    # make the person repeat a rename that happened.
+    from core.services import voice_calls
+    from core.services.messaging import refresh_agent_member_names
+
+    name = agent_row.get("name")
+    try:
+        _, notes = hermes_profiles.parse_voice_notes_md(
+            await run_in_thread(hermes_profiles.read_voice_notes, owner_id, agent_id)
+        )
+        await run_in_thread(
+            hermes_profiles.upload_voice_notes, owner_id, agent_id, hermes_profiles.build_voice_notes_md(name, notes)
+        )
+        old_names = await refresh_agent_member_names(owner_id, agent_id, roster)
+        changed = {room: old for room, old in old_names.items() if old != name}
+        if changed:
+            await voice_calls.send_renamed_notices(owner_id, agent_id, name, by, changed)
+    except Exception:  # noqa: BLE001
+        logger.warning("rename follow-ups failed owner=%s agent=%s", owner_id, agent_id, exc_info=True)
 
 
 async def write_profiles(owner_id: str) -> None:

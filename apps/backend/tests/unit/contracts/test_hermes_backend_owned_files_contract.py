@@ -36,3 +36,9 @@ def test_bridge_backend_owned_files_matches_the_backends_own_set():
 
 def test_the_facts_filename_is_the_same_literal_on_both_sides():
     assert hermes_profiles.FACTS_FILENAME in bridge_sync.BACKEND_OWNED_FILES
+
+
+def test_voice_notes_is_backend_owned_on_both_sides_and_never_saved_back():
+    assert hermes_profiles.VOICE_NOTES_FILENAME == "VOICE_NOTES.md"
+    assert "VOICE_NOTES.md" in bridge_sync.BACKEND_OWNED_FILES
+    assert bridge_sync.is_excluded("VOICE_NOTES.md") is True

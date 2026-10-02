@@ -381,7 +381,7 @@ async def execute_sync(
         # answering {"ok": True} to a write that never happened (M6 task 10, row 12).
         _reject_unsupported_agentcore_update(params)
         try:
-            await _mirror_agent_update(owner_id, params, agentcore=True)
+            await _mirror_agent_update(owner_id, params, agentcore=True, by=user_id)
         except AgentLifecycleConflict as exc:
             raise ApiProblem("AGENT_LIFECYCLE_CONFLICT", str(exc)) from exc
         # _mirror_agent_update already applied every profile-side patch (model-block
@@ -778,7 +778,9 @@ async def _apply_agentcore_model_patch(owner_id: str, agent_id: str, *, default_
     await run_in_thread(hermes_profiles.patch_profile_config, owner_id, agent_id, {"model": model})
 
 
-async def _mirror_agent_update(owner_id: str, params: dict[str, Any], *, agentcore: bool = False) -> None:
+async def _mirror_agent_update(
+    owner_id: str, params: dict[str, Any], *, agentcore: bool = False, by: str | None = None
+) -> None:
     inner = params.get("params") or {}
     paperclip = inner.get("paperclip") if isinstance(inner, dict) else None
     name = params.get("name")
@@ -861,7 +863,7 @@ async def _mirror_agent_update(owner_id: str, params: dict[str, Any], *, agentco
             # generated-marker rule. See its docstring.
             from core.services.hermes_provisioning import refresh_agent_soul
 
-            await refresh_agent_soul(owner_id, agent_id)
+            await refresh_agent_soul(owner_id, agent_id, by=by)
         return
     # No metadata mirror: the role/title/capabilities/icon block used to be written into the
     # agent's `openclaw.json` entry so the runtime could read it back. The Paperclip row IS

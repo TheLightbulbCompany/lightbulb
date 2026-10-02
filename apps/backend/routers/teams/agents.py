@@ -20,10 +20,14 @@ import logging
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Path, Request, Response
+from pydantic import BaseModel, ConfigDict, Field
 
 from core.auth import AuthContext, get_current_user, require_org_admin, resolve_owner_id
 from core.repositories import billing_repo, container_repo
+from core.dynamodb import run_in_thread
 from core.repositories.paperclip_repo import PaperclipRepo
+from core.services import hermes_profiles, voice_calls
+from core.services.voice_persona import agent_voice
 from core.services.paperclip_admin_client import (
     PaperclipAdminClient,
     shared_admin_client,
@@ -643,7 +647,7 @@ async def patch_agent(
         from core.services.hermes_provisioning import refresh_agent_soul
 
         try:
-            await refresh_agent_soul(owner_id, agent_id)
+            await refresh_agent_soul(owner_id, agent_id, by=ctx.user_id)
         except Exception:  # noqa: BLE001 — the roster row landed; SOUL is best effort.
             logger.warning(
                 "teams.patch_agent: SOUL refresh failed for owner=%s agent=%s",
@@ -654,6 +658,41 @@ async def patch_agent(
     # Paperclip may echo the full agent record (including adapterConfig)
     # in PATCH responses; redact for the same reason as the GETs.
     return _redact_agent(upstream)
+
+
+class VoiceNotesBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    notes: str = Field(max_length=hermes_profiles.VOICE_NOTES_MAX)
+
+
+async def _voice_notes_reply(agent_id: str, ctx: TeamsContext, body: VoiceNotesBody | None) -> dict:
+    """C9. The name is always the Paperclip row's; a PUT rewrites the file's name line from it."""
+    agent = await _admin().get_agent(agent_id=agent_id, session_cookie=ctx.session_cookie)
+    if not isinstance(agent, dict) or agent.get("companyId") != ctx.company_id:
+        raise HTTPException(status_code=404, detail="Agent not found")
+    owner_id = _resolve_owner_id(ctx)
+    name = agent.get("name")
+    if body is None:
+        _, notes = hermes_profiles.parse_voice_notes_md(
+            await run_in_thread(hermes_profiles.read_voice_notes, owner_id, agent_id)
+        )
+    else:
+        notes = body.notes.strip()
+        text = hermes_profiles.build_voice_notes_md(name, notes)
+        await run_in_thread(hermes_profiles.upload_voice_notes, owner_id, agent_id, text)
+        await voice_calls.send_note_saved(owner_id, agent_id, name, notes, ctx.user_id)
+    row = await _repo().resolve_owner_row(owner_id)
+    return {"name": name, "notes": notes, "voice": agent_voice(agent_id, getattr(row, "starter_agent_ids", None))}
+
+
+@router.get("/agents/{agent_id}/voice-notes")
+async def get_voice_notes(agent_id: SafeId, ctx: TeamsContext = Depends(_ctx)):
+    return await _voice_notes_reply(agent_id, ctx, None)
+
+
+@router.put("/agents/{agent_id}/voice-notes")
+async def put_voice_notes(agent_id: SafeId, body: VoiceNotesBody, ctx: TeamsContext = Depends(_ctx)):
+    return await _voice_notes_reply(agent_id, ctx, body)
 
 
 @router.delete("/agents/{agent_id}")

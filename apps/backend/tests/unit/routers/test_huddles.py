@@ -18,6 +18,7 @@ SECRET = "worker-secret"
 W = {"X-Lightbulb-Huddle-Secret": SECRET}
 TOKEN = "hook-token-org-a"
 ROOM2 = "22222222-2222-4222-8222-222222222222"
+RUN = "33333333-3333-4333-8333-333333333333"
 
 
 def _rt(room, owner):
@@ -63,8 +64,9 @@ def _join(client, *, has_ceo=False, room_team=None, dispatch_error=None, path_ro
         return resp, mint, dispatch
 
 
-def test_the_calls_orb_route_is_gone(client):
-    assert client.post("/api/v1/calls", json={"roomId": ROOM, "sdp": "v=0"}).status_code == 404
+def test_the_calls_orb_route_is_gone():
+    # Not a 404 probe: unknown paths fall through to the hosted-MCP root mount.
+    assert not [r for r in app.routes if getattr(r, "path", "").startswith("/api/v1/calls")]
 
 
 def test_join_wakes_the_workspace(client):
@@ -223,18 +225,34 @@ INTERNAL = [
     (f"/api/v1/internal/huddles/{ROOM}/summon", {"ownerId": "org_a", "speakerUserId": "user_a", "roomToken": RT}),
     (
         "/api/v1/internal/huddles/calls/c1/turns",
-        {"ownerId": "org_a", "speakerUserId": "user_a", "seq": 1, "utterance": "hi", "roomToken": RT},
+        {
+            "ownerId": "org_a",
+            "speakerUserId": "user_a",
+            "agentId": "agent-fin",
+            "runId": RUN,
+            "utterance": "hi",
+            "roomToken": RT,
+        },
     ),
     ("/api/v1/internal/huddles/calls/c1/end", {"ownerId": "org_a", "usageSeconds": 5, "roomToken": RT}),
     (f"/api/v1/internal/huddles/{ROOM}/presence", {"ownerId": "org_a", "userIds": [], "roomToken": RT}),
+    (f"/api/v1/internal/huddles/{ROOM}/team", {"ownerId": "org_a", "roomToken": RT}),
+    (f"/api/v1/internal/huddles/{ROOM}/agents/a1/session", {"ownerId": "org_a", "roomToken": RT}),
+    (
+        f"/api/v1/internal/huddles/{ROOM}/route",
+        {"ownerId": "org_a", "speakerUserId": "user_a", "utterance": "hi", "roomToken": RT},
+    ),
+    (f"/api/v1/internal/huddles/{ROOM}/runs/{RUN}/abort", {"ownerId": "org_a", "roomToken": RT}),
 ]
 
 
 @pytest.mark.parametrize("path,body", INTERNAL)
 def test_internal_routes_need_the_worker_secret(client, path, body):
     with (
-        patch.object(vc, "start_huddle_call", AsyncMock()) as summon,
-        patch.object(vc, "start_huddle_turn", AsyncMock()) as turn,
+        patch.object(vc, "open_voice_window", AsyncMock()) as summon,
+        patch.object(vc, "dispatch_voice_run", AsyncMock()) as turn,
+        patch.object(vc, "route_voice", AsyncMock()) as route,
+        patch.object(vc, "abort_voice_run", AsyncMock()) as abort,
         patch.object(vc, "get_call", AsyncMock()) as get_call,
         patch.object(mod.messaging_repo, "get_room", AsyncMock()) as get_room,
     ):
@@ -243,35 +261,93 @@ def test_internal_routes_need_the_worker_secret(client, path, body):
         with patch.object(mod.settings, "HUDDLE_WORKER_SECRET", ""):
             assert client.post(path, json=body, headers={"X-Lightbulb-Huddle-Secret": ""}).status_code == 401
             assert client.post(path, json=body, headers=W).status_code == 401
-    for m in (summon, turn, get_call, get_room):
+    for m in (summon, turn, route, abort, get_call, get_room):
         m.assert_not_awaited()
 
 
 def test_summon_passes_through_voice_busy(client):
-    with patch.object(vc, "start_huddle_call", AsyncMock(side_effect=vc._problem(409, code="voice_busy"))):
+    with patch.object(vc, "open_voice_window", AsyncMock(side_effect=vc._problem(409, code="voice_busy"))):
         resp = client.post(INTERNAL[0][0], json=INTERNAL[0][1], headers=W)
     assert resp.status_code == 409 and resp.json()["detail"] == {"code": "voice_busy"}
 
 
 def test_summon_returns_the_call(client):
-    with patch.object(vc, "start_huddle_call", AsyncMock(return_value={"callId": "c1"})) as start:
+    with patch.object(vc, "open_voice_window", AsyncMock(return_value={"callId": "c1"})) as start:
         resp = client.post(INTERNAL[0][0], json=INTERNAL[0][1], headers=W)
     assert resp.json() == {"callId": "c1"}
     assert start.await_args.kwargs == {"owner_id": "org_a", "room_id": ROOM, "speaker_user_id": "user_a"}
 
 
-def test_turn_returns_turn_and_agent(client):
+def _turn(client, body, call=None, steered=None):
     with (
-        patch.object(vc, "get_call", AsyncMock(return_value=_huddle_call())),
-        patch.object(vc, "start_huddle_turn", AsyncMock(return_value={"turnId": "t", "agentId": "a"})) as start,
+        patch.object(vc, "get_call", AsyncMock(return_value=call or _huddle_call())),
+        patch.object(vc, "steer_voice_run", AsyncMock(return_value=steered)) as steer,
+        patch.object(
+            vc, "dispatch_voice_run", AsyncMock(return_value={"runId": RUN, "agentId": "agent-fin", "steered": False})
+        ) as dispatch,
     ):
-        resp = client.post(INTERNAL[1][0], json=INTERNAL[1][1], headers=W)
-    assert resp.json() == {"turnId": "t", "agentId": "a"}
-    assert start.await_args.kwargs["owner_id"] == "org_a" and start.await_args.kwargs["call_id"] == "c1"
+        return client.post(INTERNAL[1][0], json=body, headers=W), steer, dispatch
+
+
+def test_turn_dispatches_the_workers_run_for_the_named_agent(client):
+    resp, steer, dispatch = _turn(client, INTERNAL[1][1])
+    assert resp.json() == {"runId": RUN, "agentId": "agent-fin", "steered": False}
+    kw = dispatch.await_args.kwargs
+    assert kw["run_id"] == RUN and kw["agent_id"] == "agent-fin" and kw["speaker_id"] == "user_a"
+    assert kw["call"]["callId"] == "c1"
+    steer.assert_not_awaited()
+
+
+def test_turn_steers_first_and_skips_the_dispatch(client):
+    steered = {"runId": "r-old", "agentId": "agent-fin", "steered": True}
+    resp, steer, dispatch = _turn(client, {**INTERNAL[1][1], "steerRunId": RUN}, steered=steered)
+    assert resp.json() == steered
+    assert steer.await_args.kwargs["run_id"] == RUN
+    dispatch.assert_not_awaited()
+
+
+def test_turn_dispatches_when_the_steer_is_refused(client):
+    resp, _, dispatch = _turn(client, {**INTERNAL[1][1], "steerRunId": RUN}, steered=None)
+    assert resp.json()["steered"] is False
+    dispatch.assert_awaited_once()
 
 
 def _huddle_call(**over):
     return {"callId": "c1", "ownerId": "org_a", "kind": "huddle", "roomId": ROOM, "status": vc.OPEN, **over}
+
+
+@pytest.mark.parametrize(
+    "call", [_huddle_call(status="call_closing"), _huddle_call(kind="dm"), _huddle_call(ownerId="org_b")]
+)
+def test_turn_needs_the_owners_open_window(client, call):
+    with patch.object(mod.livekit_huddles, "room_token", return_value=RT):  # isolate the window check
+        resp, _, dispatch = _turn(client, INTERNAL[1][1], call=call)
+    assert resp.status_code == 404 and resp.json()["detail"] == {"code": "call_not_found"}
+    dispatch.assert_not_awaited()
+
+
+@pytest.mark.parametrize("missing", ["agentId", "runId"])
+def test_turn_without_agent_or_run_id_is_refused(client, missing):
+    body = {k: v for k, v in INTERNAL[1][1].items() if k != missing}
+    resp, _, dispatch = _turn(client, body)
+    assert resp.status_code == 400  # the internal-huddles validation handler: no input echo
+    dispatch.assert_not_awaited()
+
+
+def test_route_returns_the_agent(client):
+    with patch.object(vc, "route_voice", AsyncMock(return_value="agent-fin")) as route:
+        resp = client.post(INTERNAL[6][0], json=INTERNAL[6][1], headers=W)
+    assert resp.json() == {"agentId": "agent-fin"}
+    assert route.await_args.kwargs == {
+        "owner_id": "org_a", "room_id": ROOM, "speaker_id": "user_a", "utterance": "hi", "transcript": ""
+    }  # fmt: skip
+
+
+def test_abort_passes_the_room(client):
+    with patch.object(vc, "abort_voice_run", AsyncMock(return_value=True)) as abort:
+        resp = client.post(INTERNAL[7][0], json=INTERNAL[7][1], headers=W)
+    assert resp.json() == {"aborted": True}
+    abort.assert_awaited_once_with("org_a", ROOM, RUN)
 
 
 def test_end_closes_with_reported_usage(client):
@@ -335,41 +411,64 @@ def test_presence_refuses_another_owners_room(client):
     publisher.publish_room.assert_not_awaited()
 
 
-FRAMES = "/api/v1/internal/calls/c1/frames"
-EVENTS = {"events": [{"type": "chunk", "text": "hi"}]}
+FRAMES = f"/api/v1/internal/huddles/org_a/rooms/{ROOM}/frames"
+EVENTS = {
+    "events": [
+        {
+            "schemaVersion": 1,
+            "eventId": "e1",
+            "type": "voice.run.frame",
+            "payload": {"roomId": ROOM, "runId": RUN, "agentId": "agent-fin", "frame": {"type": "chunk"}},
+        }
+    ]
+}
 HOOK = {"Authorization": f"Bearer {TOKEN}"}
 
 
-def _frames(client, call, headers=HOOK):
+def _frames(client, *, events=EVENTS, headers=HOOK, room=None, send_error=None):
     with (
-        patch.object(vc, "get_call", AsyncMock(return_value=call)),
+        patch.object(mod.messaging_repo, "get_room", AsyncMock(return_value=room or {"ownerId": "org_a"})),
         patch(
             "routers.messaging.container_repo.get_by_owner_id",
             AsyncMock(return_value={"owner_id": "org_a", "hook_token": TOKEN}),
         ) as container,
-        patch.object(lk, "send_frames", AsyncMock()) as send,
+        patch.object(lk, "send_frames", AsyncMock(side_effect=send_error)) as send,
+        patch.object(mod, "put_metric") as metric,
+        patch.object(vc, "get_call", AsyncMock(side_effect=AssertionError("frames never read the window"))),
     ):
-        return client.post(FRAMES, json=EVENTS, headers=headers), send, container
+        return client.post(FRAMES, json=events, headers=headers), send, container, metric
 
 
-def test_frames_forward_for_a_huddle_call(client):
-    resp, send, container = _frames(client, _huddle_call())
+def test_frames_relay_by_room_even_after_the_window_closed(client):
+    resp, send, container, _ = _frames(client)
     assert resp.status_code == 200
     send.assert_awaited_once_with(ROOM, EVENTS["events"])
-    assert container.await_args.args[0] == "org_a"  # the call's owner, not anything the caller named
+    assert container.await_args.args[0] == "org_a"
 
 
-@pytest.mark.parametrize("call", [None, _huddle_call(kind="dm"), _huddle_call(status="call_closing")])
-def test_frames_404_for_missing_non_huddle_or_closed(client, call):
-    resp, send, _ = _frames(client, call)
+def test_frames_need_the_owners_hook_token(client):
+    resp, send, _, _ = _frames(client, headers={"Authorization": "Bearer other-owner-token"})
+    assert resp.status_code == 401
+    send.assert_not_awaited()
+
+
+def test_frames_refuse_another_owners_room(client):
+    resp, send, _, _ = _frames(client, room={"ownerId": "org_b"})
     assert resp.status_code == 404
     send.assert_not_awaited()
 
 
-def test_frames_need_the_owners_hook_token(client):
-    resp, send, _ = _frames(client, _huddle_call(), headers={"Authorization": "Bearer other-owner-token"})
-    assert resp.status_code == 401
+def test_frames_refuse_an_event_for_another_room(client):
+    bad = {"events": [{**EVENTS["events"][0], "payload": {**EVENTS["events"][0]["payload"], "roomId": ROOM2}}]}
+    resp, send, _, _ = _frames(client, events=bad)
+    assert resp.status_code == 400 and resp.json()["detail"] == {"code": "room_mismatch"}
     send.assert_not_awaited()
+
+
+def test_frames_with_no_worker_are_dropped_with_a_metric(client):
+    resp, _, _, metric = _frames(client, send_error=RuntimeError("twirp"))
+    assert resp.status_code == 200
+    metric.assert_called_once_with("huddle.frame.no_worker")
 
 
 def test_join_normalizes_an_uppercase_room_id(client):
@@ -383,14 +482,14 @@ def test_join_normalizes_an_uppercase_room_id(client):
 
 
 def test_summon_refuses_a_token_for_another_room(client):
-    with patch.object(vc, "start_huddle_call", AsyncMock()) as start:
+    with patch.object(vc, "open_voice_window", AsyncMock()) as start:
         resp = client.post(f"/api/v1/internal/huddles/{ROOM2}/summon", json=INTERNAL[0][1], headers=W)
     assert resp.status_code == 401
     start.assert_not_awaited()
 
 
 def test_summon_refuses_a_token_for_another_owner(client):
-    with patch.object(vc, "start_huddle_call", AsyncMock()) as start:
+    with patch.object(vc, "open_voice_window", AsyncMock()) as start:
         resp = client.post(INTERNAL[0][0], json={**INTERNAL[0][1], "ownerId": "org_b"}, headers=W)
     assert resp.status_code == 401
     start.assert_not_awaited()
@@ -410,7 +509,7 @@ def test_presence_refuses_a_token_for_another_room(client):
 def test_turn_refuses_a_token_for_another_rooms_call(client):
     with (
         patch.object(vc, "get_call", AsyncMock(return_value=_huddle_call(roomId=ROOM2))),
-        patch.object(vc, "start_huddle_turn", AsyncMock()) as start,
+        patch.object(vc, "dispatch_voice_run", AsyncMock()) as start,
     ):
         assert client.post(INTERNAL[1][0], json=INTERNAL[1][1], headers=W).status_code == 401
     start.assert_not_awaited()
@@ -418,7 +517,7 @@ def test_turn_refuses_a_token_for_another_rooms_call(client):
 
 def test_internal_validation_error_does_not_echo_the_transcript(client):
     body = {**INTERNAL[1][1], "transcript": "PRIVATE-WORDS " + "x" * 12_000}
-    with patch.object(vc, "start_huddle_turn", AsyncMock()) as start:
+    with patch.object(vc, "dispatch_voice_run", AsyncMock()) as start:
         resp = client.post(INTERNAL[1][0], json=body, headers=W)
     assert resp.status_code == 400
     assert "PRIVATE-WORDS" not in resp.text
@@ -436,3 +535,101 @@ def test_presence_drops_a_stale_snapshot(client):
     assert resp.status_code == 200
     adv.assert_awaited_once_with(ROOM, 7)
     publisher.publish_room.assert_not_awaited()
+
+
+# ---- Option D: /team and /agents/{agentId}/session ------------------------------------------
+
+STARTERS = {"ceo": "agent-ceo-1", "finance": "agent-fin"}
+MEMBERS = [
+    {"kind": "agent", "id": "agent-ceo-1", "displayName": "CEO", "listenMode": "active"},
+    {"kind": "agent", "id": "agent-fin", "displayName": "Penny", "listenMode": "mentions"},
+    {"kind": "agent", "id": "agent-obs", "displayName": "Quiet", "listenMode": "observe"},
+    {"kind": "human", "id": "user_a", "displayName": "Aden"},
+]
+
+
+class _FakeTable:
+    def __init__(self):
+        self.items = {}
+
+    def put_item(self, Item, ConditionExpression=None):
+        key = Item["owner_id"]
+        if ConditionExpression and key in self.items:
+            raise vc.ClientError({"Error": {"Code": "ConditionalCheckFailedException"}}, "PutItem")
+        self.items[key] = Item
+
+
+@pytest.fixture
+def option_d():
+    table = _FakeTable()
+    state = {
+        "room": {"ownerId": "org_a", "name": "general"},
+        "roster": [{"id": "agent-ceo-1", "name": "CEO", "title": "CEO"}],
+    }
+    with (
+        patch.object(vc, "_table", lambda: table),
+        patch.object(vc.messaging_repo, "get_room", AsyncMock(side_effect=lambda _r: state["room"])),
+        patch.object(vc.messaging_repo, "list_members", AsyncMock(return_value=MEMBERS)),
+        patch.object(vc, "_starter_ids", AsyncMock(return_value=STARTERS)),
+        patch.object(vc.messaging, "load_agent_roster", AsyncMock(side_effect=lambda _o: state["roster"])),
+        patch.object(
+            vc.hermes_profiles, "read_soul_md", MagicMock(return_value="<!-- lightbulb:generated -->\nRuns it.")
+        ),
+        patch.object(vc.hermes_profiles, "read_voice_notes", MagicMock(return_value="Your name is CEO.\n\nBe blunt.")),
+    ):
+        yield state
+
+
+def _session(client, agent="agent-ceo-1"):
+    return client.post(
+        f"/api/v1/internal/huddles/{ROOM}/agents/{agent}/session", json={"ownerId": "org_a", "roomToken": RT}, headers=W
+    )
+
+
+def test_team_lists_listening_agents_people_and_the_ceo(client, option_d):
+    resp = client.post(f"/api/v1/internal/huddles/{ROOM}/team", json={"ownerId": "org_a", "roomToken": RT}, headers=W)
+    assert resp.status_code == 200
+    assert resp.json() == {
+        "agents": [
+            {"id": "agent-ceo-1", "name": "CEO", "listenMode": "active", "defaultName": True},
+            {"id": "agent-fin", "name": "Penny", "listenMode": "mentions", "defaultName": False},
+        ],
+        "people": [{"userId": "user_a", "name": "Aden"}],
+        "ceoId": "agent-ceo-1",
+    }
+
+
+def test_session_asks_a_default_named_agent_once(client, option_d):
+    first = _session(client).json()
+    assert first["askName"] is True and first["voice"] == "marin" and first["name"] == "CEO"
+    assert "don't have a name yet" in first["persona"] and "Be blunt." in first["persona"]
+    assert "Runs it." in first["persona"] and "lightbulb:generated" not in first["persona"]
+    assert "Penny" in first["persona"] and "Quiet" not in first["persona"]
+    second = _session(client).json()
+    assert second["askName"] is False and "don't have a name yet" not in second["persona"]
+
+
+def test_session_does_not_ask_once_renamed(client, option_d):
+    option_d["roster"] = [{"id": "agent-ceo-1", "name": "Nova", "title": "CEO"}]
+    body = _session(client).json()
+    assert body["askName"] is False and body["name"] == "Nova"
+    assert body["persona"].startswith("You are Nova, CEO,")
+
+
+def test_session_falls_back_to_the_bare_persona_when_reads_fail(client, option_d):
+    with patch.object(vc.messaging, "load_agent_roster", AsyncMock(side_effect=RuntimeError("down"))):
+        body = _session(client, "agent-fin").json()
+    assert body["name"] == "Penny" and body["voice"] == "stone" and body["askName"] is False
+
+
+def test_session_refuses_an_observe_or_absent_agent(client, option_d):
+    for agent in ("agent-obs", "agent-nope"):
+        resp = _session(client, agent)
+        assert resp.status_code == 409 and resp.json()["detail"]["code"] == "agent_not_in_room"
+
+
+def test_session_and_team_404_on_a_guest_owned_room(client, option_d):
+    option_d["room"] = {"ownerId": "org_other", "name": "shared"}
+    assert _session(client).status_code == 404
+    resp = client.post(f"/api/v1/internal/huddles/{ROOM}/team", json={"ownerId": "org_a", "roomToken": RT}, headers=W)
+    assert resp.status_code == 404 and resp.json()["detail"]["code"] == "room_not_found"

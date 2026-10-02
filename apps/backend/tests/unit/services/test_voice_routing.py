@@ -4,7 +4,6 @@ from core.services import jev
 from core.services import voice_routing as vr
 
 TEAM = [{"id": "ceo", "name": "CEO"}, {"id": "fin", "name": "Finance"}, {"id": "gro", "name": "Growth"}]
-ROOM_CALL = {"kind": "room", "team": TEAM, "voiceAgentId": "ceo", "roomName": "general"}
 
 
 @pytest.mark.parametrize(
@@ -25,44 +24,22 @@ def test_name_mid_sentence_is_not_a_route():
     assert vr.named_agent("our growth is slow this month", TEAM) is None
 
 
-@pytest.mark.asyncio
-async def test_dm_calls_skip_routing():
-    assert (
-        await vr.pick(
-            "org", {"kind": "dm", "voiceAgentId": "eng", "team": [{"id": "eng", "name": "Engineering"}]}, "x", "", None
-        )
-        == "eng"
-    )
+@pytest.mark.parametrize(
+    "text, expected",
+    [
+        ("Lightbulb, what did Growth find?", "gro"),
+        ("is finance or growth on this?", "fin"),  # first mentioned
+        ("lightbulb, anything new", None),
+        ("refinance the loan", None),  # whole words only
+    ],
+)
+def test_mentioned_agent_anywhere(text, expected):
+    assert vr.mentioned_agent(text, TEAM) == expected
 
 
-@pytest.mark.asyncio
-async def test_one_agent_team_skips_jev():
-    """A DM with an agent: Lightbulb's huddle routes every request to that agent."""
-    call = {"kind": "room", "voiceAgentId": "eng", "team": [{"id": "eng", "name": "Engineering"}]}
-    with patch.object(vr.jev, "pick_agent", AsyncMock(side_effect=AssertionError("no Jev"))):
-        assert await vr.pick("org", call, "what shipped today?", "", "ceo") == "eng"
-
-
-@pytest.mark.asyncio
-async def test_name_beats_jev():
-    with patch.object(vr.jev, "pick_agent", AsyncMock(return_value="gro")) as j:
-        assert await vr.pick("org", ROOM_CALL, "Finance, burn?", "", "ceo") == "fin"
-    j.assert_not_awaited()
-
-
-@pytest.mark.asyncio
-async def test_jev_pick_then_ceo_fallback():
-    with patch.object(vr.jev, "pick_agent", AsyncMock(return_value="gro")):
-        assert await vr.pick("org", ROOM_CALL, "draft a launch post", "", "ceo") == "gro"
-    with patch.object(vr.jev, "pick_agent", AsyncMock(return_value=None)):
-        assert await vr.pick("org", ROOM_CALL, "hmm", "", "ceo") == "ceo"
-
-
-@pytest.mark.asyncio
-async def test_fallback_is_voice_agent_when_ceo_not_on_team():
-    call = {**ROOM_CALL, "team": TEAM[1:], "voiceAgentId": "fin"}
-    with patch.object(vr.jev, "pick_agent", AsyncMock(return_value="ceo")):  # off-team pick ignored
-        assert await vr.pick("org", call, "hmm", "", "ceo") == "fin"
+def test_mentioned_agent_prefers_the_longest_name_at_a_position():
+    team = [{"id": "c", "name": "Customer"}, {"id": "co", "name": "Customer Operations"}]
+    assert vr.mentioned_agent("lightbulb, can customer operations check refunds", team) == "co"
 
 
 async def _pick_agent(answer):

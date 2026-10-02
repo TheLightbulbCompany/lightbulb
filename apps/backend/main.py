@@ -579,7 +579,6 @@ async def messaging_validation_error_handler(request, exc: RequestValidationErro
             "/api/v1/website-logins",
             # huddles too: a rejected turn would echo a live transcript.
             "/api/v1/internal/huddles",
-            "/api/v1/internal/calls",
         )
     ):
         problem = ApiProblem("INVALID_REQUEST", "Request validation failed.")

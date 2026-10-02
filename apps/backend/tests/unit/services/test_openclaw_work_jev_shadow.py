@@ -991,12 +991,35 @@ async def test_a_question_to_the_room_may_not_be_none_unless_it_speaks_to_people
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("spoke_since", [False, True])
-async def test_a_forced_none_takes_the_single_fallback_unless_a_person_answered(monkeypatch, spoke_since):
+async def test_a_forced_none_takes_the_single_fallback(monkeypatch):
     forced = {"who": "none", "whoP": {"none": 0.9}, "placement": "main", "forced": "question"}
-    route = AsyncMock(return_value=forced)
     monkeypatch.setattr(work, "_fallback_single", AsyncMock(return_value="a1"))
-    monkeypatch.setattr(work, "_human_spoke_since", AsyncMock(return_value=spoke_since))
-    posted, _, routes = await _dispatch(monkeypatch, "room_event", route=route)
-    assert bool(posted) is not spoke_since
-    assert routes == [{"outcome": "skipped" if spoke_since else "forced"}]
+    posted, _, routes = await _dispatch(monkeypatch, "room_event", route=AsyncMock(return_value=forced))
+    assert len(posted) == 1 and routes == [{"outcome": "forced"}]
+    posted, _, routes = await _dispatch(monkeypatch, "room_event", agent="a2", route=AsyncMock(return_value=forced))
+    assert posted == [] and routes == [{"outcome": "skipped"}]  # exactly one agent runs
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("later_author", "question_p", "forced"),
+    [("u1", 0.9, "question"), ("u2", 0.1, None)],  # the asker adding to it / someone else answering it
+)
+async def test_posts_since_the_question_reach_jev_instead_of_cancelling_it(
+    monkeypatch, store, metrics, later_author, question_p, forced
+):
+    """Codex #3597: a later post is not proof of an answer. Jev sees the posts since the trigger
+    (state.after) and its question judgement decides; nothing cancels the rule in code."""
+    later = {**_msg(6, author=later_author, text="also the Q3 numbers" if later_author == "u1" else "it was $42k")}
+    monkeypatch.setattr(jev.messaging_repo, "list_messages", AsyncMock(return_value=([later], None)))
+    decide = AsyncMock(
+        return_value={
+            "who": {"choice": "none", "probabilities": {"none": 0.9, "a1": 0.05, "a2": 0.05}},
+            "placement": ANSWERS["placement"],
+            "question": {"probability": question_p},
+        }
+    )
+    monkeypatch.setattr(jev, "decide", decide)
+    got = await jev.route({**META, "lastSeq": 6}, "a1", MESSAGE, latest=MESSAGE, members=MEMBERS, history=[])
+    assert decide.await_args.args[0]["after"][0]["text"] == later["text"]
+    assert got.get("forced") == forced

@@ -71,14 +71,6 @@ def _last_speaker(candidates: list[str], message: dict, history: list[dict]) -> 
     return None
 
 
-async def _human_spoke_since(meta: dict, message: dict) -> bool:
-    """A person posted in the room after ``message`` (read only when a forced dispatch asks)."""
-    if int(meta.get("lastSeq") or 0) <= int(message["messageSeq"]):
-        return False
-    rows, _ = await messaging_repo.list_messages(meta["roomId"], int(message["messageSeq"]), 20)
-    return any((row.get("author") or {}).get("kind") == "human" for row in rows)
-
-
 async def _fallback_single(owner_id: str, candidates: list[str], message: dict, history: list[dict]) -> str:
     """Jev down/undecided with >=2 room_event candidates (spec #2942): pick one deterministically
     instead of dispatching all of them -- whoever the person was already talking with, else the
@@ -544,10 +536,6 @@ class OpenClawWorkWorker:
                     # blind replies are what made a lone listener answer "8" and "@aden @leo" (prod
                     # 2026-09-27, Jev down). Silence is the default here.
                     put_metric("messaging.jev.route", dimensions={"outcome": "fallback_to_people"})
-                    return False
-                if forced == "question" and await _human_spoke_since(meta, message):
-                    # A person already answered the room's question (routing v2 §12.9): Jev's "none" stands.
-                    put_metric("messaging.jev.route", dimensions={"outcome": "skipped"})
                     return False
                 if len(candidates) >= 2:
                     # Jev down or undecided with more than one candidate (or a "none" the policy

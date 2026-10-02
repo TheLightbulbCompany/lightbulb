@@ -420,8 +420,10 @@ REASK_INSTRUCTIONS = (
 QUESTION_INSTRUCTIONS = (
     "Is the latest message a finished question or request about the work (a fact, figure, file, "
     "status, task or decision) put to the room as a whole rather than to a particular person, that "
-    "nobody in the conversation has answered yet? No for an unfinished or trailing-off message, "
-    "small talk, an invitation, a personal matter, or something only a particular person can answer."
+    "nobody in the conversation has answered yet? Lines under 'after' were posted since it: a person "
+    "answering it there means it has been answered; the asker adding to it, or unrelated talk, does "
+    "not. No for an unfinished or trailing-off message, small talk, an invitation, a personal "
+    "matter, or something only a particular person can answer."
 )
 #: A re-ask forces an answer only when the earlier ask is at least this old: an immediate repeat
 #: of a question a person just answered stays quiet (bench D16), a re-ask after talk does not (D03).
@@ -513,10 +515,13 @@ async def _decide_for_message(
     *,
     placement: bool = True,
     open_lines: list[str] | None = None,
+    later: list[dict] | None = None,
 ) -> dict:
     """``to_people``: the caller already knows whether the message speaks to people (Live hears names,
     not @handles); None reads it from the message (``speaks_to_people``). ``placement=False`` (Live) skips
     that question. ``open_lines``: the requests teammates are already working on (``state.open``).
+    ``later``: messages posted after the trigger before the decision (``state.after``), so the
+    question rule sees whether someone has answered it since.
     A ``forced`` reason on a "none" means the policy did not allow it: the caller's fallback picks."""
     candidates = [
         target["agentId"]
@@ -538,6 +543,9 @@ async def _decide_for_message(
     # The trigger's stored routing fields (raw row) feed its `to`; ``latest`` is its public shape.
     latest = {**latest, **{k: message[k] for k in ("addressing", "to", "dispatchTargets") if k in message}}
     state = _state(meta, latest, history, members=members, options=candidates, open_lines=open_lines)
+    if later:
+        names = {m["id"]: m.get("displayName") or m["id"] for m in members}
+        state["after"] = [_line(m, names) for m in later[-10:]]
     if to_people:
         people = {m["id"]: m.get("displayName") or m["id"] for m in members if m.get("kind") == "human"}
         state["latest"]["addressedTo"] = [
@@ -674,10 +682,23 @@ async def route(
         elif await messaging_repo.claim_decision(room_id, message_id, attempts=attempts):
             try:
                 runs = await _soft("open runs", messaging_repo.list_open_runs_for_room(meta["ownerId"], room_id)) or []
+                # Posted since the trigger (a queued or retried decision): Jev judges whether it was answered.
+                seq = int(message.get("messageSeq") or 0)
+                later = (
+                    (await _soft("later", messaging_repo.list_messages(room_id, seq, 10)) or ([], None))[0]
+                    if seq and int(meta.get("lastSeq") or 0) > seq
+                    else []
+                )
                 now = _parse_ts(latest.get("createdAt")) or datetime.now(timezone.utc)
                 decision = await asyncio.wait_for(
                     _decide_for_message(
-                        meta, message, latest, members, history, open_lines=_open_lines(runs, members, history, now)
+                        meta,
+                        message,
+                        latest,
+                        members,
+                        history,
+                        open_lines=_open_lines(runs, members, history, now),
+                        later=later,
                     ),
                     _DECIDE_BUDGET_S,
                 )

@@ -2194,6 +2194,14 @@ class PaperclipAdminClient:
             session_cookie=session_cookie,
         )
 
+    async def update_secret_description(self, *, session_cookie: str, secret_id: str, description: str) -> dict:
+        """Maps to ``PATCH /api/secrets/{id}`` with ``description`` alone (metadata only)."""
+        return await self._patch(
+            f"/api/secrets/{secret_id}",
+            json={"description": description},
+            session_cookie=session_cookie,
+        )
+
     async def delete_secret(self, *, session_cookie: str, secret_id: str) -> dict:
         """Maps to ``DELETE /api/secrets/{id}`` — a soft delete that frees the name.
         404 is already-gone (``_delete``)."""

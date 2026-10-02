@@ -16,13 +16,19 @@ Three rules:
 * **The token is never logged**, never put in an exception message, a metric dimension or the
   returned outcome. ``PaperclipApiError.__str__`` appends the response body, so the best-effort
   wrapper logs the exception TYPE and status only.
-* **Only our own secret is touched.** Ours carries ``SECRET_DESCRIPTION``. A ``GITHUB_TOKEN`` with
-  any other description is one a member set by hand: it is left alone (``foreign_secret``).
+* **Only our own secret is touched.** Ours has a description that STARTS WITH
+  ``SECRET_DESCRIPTION``. A ``GITHUB_TOKEN`` with any other description is one a member set by
+  hand: it is left alone (``foreign_secret``).
+
+The description also carries a fingerprint of the token it was last synced with
+(`` [fp:<12 hex>]``), which is how a sync with an unchanged token knows to do nothing -- no new
+secret version, no ``secret.rotated`` row in the company's activity.
 """
 
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import logging
 from typing import Any
 
@@ -40,12 +46,22 @@ logger = logging.getLogger(__name__)
 
 #: The first name Paperclip's resolver probes (``DEFAULT_GITHUB_TOKEN_SECRET_NAMES``).
 SECRET_NAME = "GITHUB_TOKEN"
-#: The ownership marker. Paperclip's secret list returns ``description`` verbatim, so an exact
-#: match is "Lightbulb created this". Changing the text orphans every secret synced under the
-#: old one (they would read as foreign), so treat it as stored data.
+#: The ownership marker, as a PREFIX. Paperclip's secret list returns ``description`` verbatim, so
+#: "starts with this" is "Lightbulb created this". Changing the text orphans every secret synced
+#: under the old one (they would read as foreign), so treat it as stored data.
 SECRET_DESCRIPTION = (
     "Synced from the workspace's GitHub connection by Lightbulb. Do not edit; reconnect GitHub in Settings."
 )
+
+
+def fingerprint(token: str) -> str:
+    """First 12 hex of the token's SHA-256: enough to tell "same token" from "new token", and
+    not reversible for a high-entropy OAuth token. Safe to log; the token is not."""
+    return hashlib.sha256(token.encode()).hexdigest()[:12]
+
+
+def _description(token: str) -> str:
+    return f"{SECRET_DESCRIPTION} [fp:{fingerprint(token)}]"
 
 
 async def github_token(owner_id: str) -> str | None:
@@ -63,7 +79,7 @@ async def _our_secret(admin: PaperclipAdminClient, cookie: str, company_id: str)
     rows = await admin.list_company_secrets(session_cookie=cookie, company_id=company_id)
     for row in rows if isinstance(rows, list) else []:
         if isinstance(row, dict) and row.get("name") == SECRET_NAME:
-            return row, row.get("description") != SECRET_DESCRIPTION
+            return row, not str(row.get("description") or "").startswith(SECRET_DESCRIPTION)
     return None, False
 
 
@@ -89,7 +105,7 @@ async def _sync(admin: PaperclipAdminClient, cookie: str, company_id: str, token
                 company_id=company_id,
                 name=SECRET_NAME,
                 value=token,
-                description=SECRET_DESCRIPTION,
+                description=_description(token),
             )
             return did("create")
         except PaperclipApiError as exc:
@@ -105,11 +121,16 @@ async def _sync(admin: PaperclipAdminClient, cookie: str, company_id: str, token
     if secret.get("status", "active") != "active":
         # A member disabled or archived it; Paperclip refuses to rotate a non-active secret.
         return "inactive_secret"
-    # ponytail: rotates even when the token is unchanged (Paperclip exposes no value or hash to
-    # compare), so every reconcile adds one secret version and one "secret.rotated" activity
-    # row. Keep a fingerprint on our side if that history gets noisy.
+    if secret.get("description") == _description(token):
+        return "unchanged"
+    # A new token, or a secret from before the fingerprint existed. Rotate FIRST, then record
+    # the fingerprint: a failure between the two leaves a stale fingerprint, which costs one
+    # extra rotate next time -- never a skipped one.
     if not dry_run:
         await admin.rotate_secret(session_cookie=cookie, secret_id=secret["id"], value=token)
+        await admin.update_secret_description(
+            session_cookie=cookie, secret_id=secret["id"], description=_description(token)
+        )
     return did("rotate")
 
 
@@ -117,7 +138,7 @@ async def sync_github_token(owner_id: str, *, dry_run: bool = False) -> str:
     """Make Paperclip's ``GITHUB_TOKEN`` secret match the owner's GitHub connection.
 
     Returns a short outcome: ``no_company`` (no active Paperclip company yet), ``created``,
-    ``rotated``, ``deleted`` (Lightbulb holds no token any more), ``absent`` (no token, no
+    ``unchanged`` (ours already holds this token; nothing written), ``rotated``, ``deleted`` (Lightbulb holds no token any more), ``absent`` (no token, no
     secret), ``foreign_secret`` (someone else's ``GITHUB_TOKEN``; untouched),
     ``inactive_secret`` (ours, but a member disabled it; untouched) or ``conflict``. With
     ``dry_run`` the three writes read ``would_create`` / ``would_rotate`` / ``would_delete``

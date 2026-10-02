@@ -256,6 +256,7 @@ function SessionBody({
   const ended = session.status === "ended";
   const history = useLocalSessionHistory(client, session.sessionId, session.latestEventSeq, revision, onAccessLost, { pollMs });
   const [text, setText] = useState("");
+  const [retriedOutboxIds, setRetriedOutboxIds] = useState<string[]>([]);
   const command = useSessionCommand(client, session, { uuid: randomUUID, onAccessLost, onSent: () => setText(""), agentName: name, allowInterrupt: own || !!session.teamControl, allowOffline: true });
   const outbox = useSessionOutbox(client, session.sessionId,
     `${session.status}:${session.status === "offline" ? revision : 0}:${command.attempt?.request.requestId}:${command.receipt?.state}`,
@@ -267,7 +268,7 @@ function SessionBody({
   // The session's own events, for its pending prompt and wait; a subagent's are tagged with it.
   const events = useMemo(() => mainEvents(history.events), [history.events]);
   const savedOutbox = outbox.commands.filter(receipt => receipt.requestId !== command.attempt?.request.requestId);
-  const queuedOutbox = savedOutbox.filter(receipt => receipt.state !== "applied");
+  const queuedOutbox = savedOutbox.filter(receipt => receipt.state !== "applied" && !retriedOutboxIds.includes(receipt.requestId));
   const pendingText = usePendingPrompt(command.attempt, events);
   const pendingShown = !!pendingText && !history.hasNewer;
   const waitingOn = session.status === "waiting-approval" ? pendingApproval(events) ?? "" : null;
@@ -362,7 +363,7 @@ function SessionBody({
                   <Text accessibilityRole="alert" style={[styles.errorText, { color: palette.alert }]}>
                     {receipt.cancelledAt ? "Cancelled." : receipt.deliverBy <= Date.now() / 1000 ? "This follow-up expired before your Mac reconnected." : "The session rejected this follow-up."}
                   </Text>
-                  {!receipt.cancelledAt && <Pressable onPress={() => command.send(receipt.text!)} disabled={command.locked || !command.canSend} accessibilityRole="button" accessibilityLabel="Retry follow-up" accessibilityState={{ disabled: command.locked || !command.canSend }}>
+                  {!receipt.cancelledAt && <Pressable onPress={() => { setRetriedOutboxIds(ids => [...ids, receipt.requestId]); command.send(receipt.text!); }} disabled={command.locked || !command.canSend} accessibilityRole="button" accessibilityLabel="Retry follow-up" accessibilityState={{ disabled: command.locked || !command.canSend }}>
                     <Text style={[styles.link, { color: palette.link }]}>Retry</Text>
                   </Pressable>}
                 </View>}

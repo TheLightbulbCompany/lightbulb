@@ -1382,6 +1382,30 @@ async def test_offline_outbox_is_sender_private_and_survives_reopen(transport):
 
 
 @pytest.mark.asyncio
+async def test_offline_outbox_hides_rejected_send_after_a_newer_delivery(transport):
+    sid = await start(transport)
+    table = messaging_repo._table()
+    table.update_item(
+        Key={"pk": repo.session_pk(OWNER, sid), "sk": "META"},
+        UpdateExpression="SET onlineUntil = :past",
+        ExpressionAttributeValues={":past": int(time.time()) - 1},
+    )
+    await service.submit_command(ALICE, None, sid, command(service, text="resume when ready"))
+    old = await repo.get_command(OWNER, sid, "request-1")
+    await repo.replace_command(old, {**old, "state": "rejected"})
+    newer = {
+        **old,
+        "sk": "COMMAND#retry-2",
+        "requestId": "retry-2",
+        "commandSeq": old["commandSeq"] + 1,
+        "state": "applied",
+    }
+    newer.pop("offlineIdentity")
+    table.put_item(Item=newer)
+    assert (await service.list_offline_outbox(ALICE, sid)).commands == []
+
+
+@pytest.mark.asyncio
 async def test_offline_outbox_keeps_new_pending_ahead_of_expired_unknowns(transport):
     sid = await start(transport)
     table = messaging_repo._table()

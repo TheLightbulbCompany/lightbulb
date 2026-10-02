@@ -234,6 +234,19 @@ describe("session screen", () => {
     expect(mockSubmit).not.toHaveBeenCalled();
   });
 
+  it("removes the old rejected outbox action when retry starts", async () => {
+    const now = Math.floor(Date.now() / 1000);
+    mockListOutbox.mockResolvedValue({ commands: [{
+      ...receipt({ requestId: "saved-request", expectedGeneration: "g1", kind: "send", text: "resume when ready" }, "rejected"),
+      createdAt: now - 3600, deliverBy: now - 1,
+    }] });
+    await render(<SessionScreen />);
+    await waitFor(() => expect(screen.getByLabelText("Retry follow-up")).toBeTruthy());
+    await fireEvent.press(screen.getByLabelText("Retry follow-up"));
+    await waitFor(() => expect(mockSubmit).toHaveBeenCalledTimes(1));
+    expect(screen.queryByLabelText("Retry follow-up")).toBeNull();
+  });
+
   it("clears an uncertain draft when the outbox proves admission", async () => {
     mockSession = { ...base, status: "offline" };
     const now = Math.floor(Date.now() / 1000);

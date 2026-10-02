@@ -175,8 +175,10 @@ class TestWarmEstimate:
 
         stale = {"warm_until": now + 60, "started_at": now}
         table.put_item(Item={**KEY, **stale})
+        before = int(time.time())
         rt._note_invoked(OWNER, stale)
-        assert _row(table)["warm_until"] == rt._warm_until(int(time.time()), now)
+        # _note_invoked reads the clock itself; a second boundary may pass on a slow runner.
+        assert rt._warm_until(before, now) <= _row(table)["warm_until"] <= rt._warm_until(int(time.time()), now)
 
     def test_never_resurrects_a_row_a_stop_cleared(self, table):
         now = int(time.time())

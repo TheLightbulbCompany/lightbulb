@@ -51,6 +51,10 @@ class Transcript:
         """ "Name: text", or "Agent → Person: text" for a voice's answer (the backend parses the arrow)."""
         return "\n".join(f"{x.name}{f' → {x.to}' if x.to else ''}: {x.text}" for x in (self._lines if lines is None else lines))
 
+    def after(self, mark: int) -> list[Line]:
+        """The lines said after `mark` (all of them for -1), oldest first."""
+        return [x for x in self._lines if x.mark > mark]
+
     def times(self, n: int) -> list[int]:
         """When each of the newest `n` lines was said (epoch seconds), oldest first: /route's `at`."""
         return [round(x.at) for x in self._lines[-n:]]

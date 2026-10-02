@@ -90,7 +90,7 @@ function build(environment: "dev" | "prod"): {
     },
     managementApiUrl: "https://example.execute-api.us-east-1.amazonaws.com",
     webSocketUrl: "wss://example.execute-api.us-east-1.amazonaws.com",
-    gatewayRelayUrl: "wss://bv-dev.thelightbulb.company/api/v1/gateway/ws",
+    gatewayRelayUrl: "wss://bv-dev.flickmeon.ai/api/v1/gateway/ws",
     connectionsTableName: `${tablePrefix(environment)}ws-connections`,
     wsApiId: "test-ws-api-id",
     wsStage: "prod",

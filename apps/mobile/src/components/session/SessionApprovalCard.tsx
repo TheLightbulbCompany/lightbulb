@@ -62,8 +62,8 @@ export function SessionApprovalCard({ session, client, allowed, own, ownerName }
         <Text selectable style={[styles.summary, { backgroundColor: palette.raised, color: palette.fg }]}>{pending.summary}</Text>
       ) : null}
       {shown && <View style={[styles.summary, { backgroundColor: palette.raised }]}>
-        <Text selectable style={[styles.privateLine, { color: palette.fg }]}>Destination: {shown.destination}</Text>
-        <Text selectable style={[styles.privateLine, { color: palette.fg }]}>Request ID: {shown.requestId}</Text>
+        <Text selectable style={[styles.privateLine, { color: palette.fg }]}>To: {shown.destinationLabel || shown.destination}</Text>
+        <Text selectable style={[styles.privateLine, { color: palette.fgSoft }]}>{shown.destinationLabel ? `${shown.destination} · ` : ""}Request ID: {shown.requestId}</Text>
         <ScrollView style={styles.privateBody} accessibilityLabel="Message to send">
           <Text selectable style={[styles.privateLine, { color: palette.fg }]}>{shown.text}</Text>
         </ScrollView>

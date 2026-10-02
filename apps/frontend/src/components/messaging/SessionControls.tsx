@@ -60,7 +60,7 @@ export function SessionApprovalCard({ session, client, own, ownerName }: {
   return <section className="mx-3 my-2 rounded-md border border-warn p-3 text-sm" aria-label={nativeSend ? `${session.provider === "claude" ? "Claude" : "Codex"} send approval` : "Permission prompt"}>
     <p className="font-medium">{nativeSend ? `${session.provider === "claude" ? "Claude" : "Codex"} wants to send a Lightbulb message` : `${session.provider === "claude" ? "Claude" : "Codex"} wants to use ${pending.tool}`}</p>
     {pending.summary && <pre className="my-2 whitespace-pre-wrap break-all rounded bg-muted p-2 font-mono text-xs">{pending.summary}</pre>}
-    {shown && <div className="my-2 rounded bg-muted p-2 text-xs"><p>Destination: {shown.destination}</p><p>Request ID: {shown.requestId}</p><pre className="mt-2 max-h-72 overflow-y-auto whitespace-pre-wrap break-words font-mono">{shown.text}</pre></div>}
+    {shown && <div className="my-2 rounded bg-muted p-2 text-xs"><p className="font-medium">To: {shown.destinationLabel || shown.destination}</p><p className="text-muted-foreground">{shown.destinationLabel ? `${shown.destination} · ` : ""}Request ID: {shown.requestId}</p><pre className="mt-2 max-h-72 overflow-y-auto whitespace-pre-wrap break-words font-mono">{shown.text}</pre></div>}
     {!allowed ? <p className="text-muted-foreground">Waiting on {where} approval{privateSend ? "." : " in the terminal."}</p> : <>
       {!canApprove && <p className="text-muted-foreground">{nativeSend && session.status === "offline"
         ? "Your Mac is offline. This message cannot be sent; you can deny or cancel it."

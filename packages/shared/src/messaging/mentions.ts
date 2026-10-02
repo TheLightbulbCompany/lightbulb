@@ -108,6 +108,8 @@ export function resolveTypedMentions(text: string, participants: readonly Mentio
 export interface SessionMentionCandidate {
   session: LocalSession;
   handle: string;
+  /** True when another session shares the base handle, so the picker must tell them apart. */
+  collided: boolean;
 }
 
 export function sessionMentionHandle(session: Pick<LocalSession, "provider" | "cwdName" | "title" | "displayTitle">): string {
@@ -121,33 +123,43 @@ export function sessionMentionCandidates(sessions: readonly LocalSession[]): Ses
   return sessions.map((session) => {
     const base = sessionMentionHandle(session);
     // Rare identical titles need a stable suffix so two targets fit one message.
-    return { session, handle: counts.get(base)! > 1 ? `${base}-${session.sessionId.slice(0, 8)}` : base };
+    const collided = counts.get(base)! > 1;
+    return { session, handle: collided ? `${base}-${session.sessionId.slice(0, 8)}` : base, collided };
   });
 }
 
+/** Session ids the text addresses, plus `@claude-…`/`@codex-…` handles that no longer match one. */
 export function resolveTypedSessionMentions(
   text: string, targets: readonly LocalSession[] | readonly SessionMentionCandidate[], selected: Readonly<Record<string, string>> = {},
-): string[] {
+): { ids: string[]; unresolved: string[] } {
   const candidates = targets[0] && "handle" in targets[0]
     ? targets as readonly SessionMentionCandidate[]
     : sessionMentionCandidates(targets as readonly LocalSession[]);
-  if (!candidates.length) return [];
   const handles = [...candidates].sort((a, b) => b.handle.length - a.handle.length);
   const tokens = [...new Set([...handles.map((c) => c.handle), ...Object.keys(selected)])].sort((a, b) => b.length - a.length);
-  const pattern = new RegExp(`(^|[\\s(])@(${tokens.map(escapeRegExp).join("|")})(?![\\w.-]|\\]\\()`, "gi");
+  const pattern = tokens.length ? new RegExp(`(^|[\\s(])@(${tokens.map(escapeRegExp).join("|")})(?![\\w.-]|\\]\\()`, "gi") : null;
+  const anyHandle = /(^|[\s(])@((?:claude|codex)-[a-z0-9-]+)(?![\w.-]|\]\()/gi;
   const found: string[] = [];
+  const resolved = new Set<string>();
+  const unresolved: string[] = [];
   proseSegments(text).forEach((segment, index) => {
     if (index % 2 !== 0) return;
-    for (const match of segment.matchAll(pattern)) {
+    for (const match of pattern ? segment.matchAll(pattern) : []) {
       const matches = handles.filter((entry) => entry.handle.toLowerCase() === match[2].toLowerCase());
       const selectedId = selected[match[2].toLowerCase()];
       const candidate = selectedId
         ? candidates.find((entry) => entry.session.sessionId === selectedId)
         : matches.length === 1 ? matches[0] : null;
-      if (candidate && !found.includes(candidate.session.sessionId)) found.push(candidate.session.sessionId);
+      if (!candidate) continue;
+      resolved.add(match[2].toLowerCase());
+      if (!found.includes(candidate.session.sessionId)) found.push(candidate.session.sessionId);
+    }
+    for (const match of segment.matchAll(anyHandle)) {
+      const token = match[2].toLowerCase();
+      if (!resolved.has(token) && !unresolved.includes(token)) unresolved.push(token);
     }
   });
-  return found;
+  return { ids: found, unresolved };
 }
 
 function rewriteSessionMentions(text: string, sends: readonly SessionSend[] | undefined, sessions: readonly LocalSession[], markdown: boolean): string {

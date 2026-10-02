@@ -8,7 +8,8 @@ describe("session labels", () => {
   it("splits the tool name from the title, falling back to the raw id for an unknown tool", () => {
     const s = { ...base, provider: "claude", title: " Fix relay ", sessionId: "abcdef123" } as LocalSession;
     expect(sessionTitle(s)).toBe("Fix relay");
-    expect(sessionTitle({ ...s, title: null })).toBe("abcdef12");
+    expect(sessionTitle({ ...s, title: null, cwdName: "lightbulb" })).toBe("lightbulb");
+    expect(sessionTitle({ ...s, title: null, cwdName: null })).toBe("Claude session");
     expect(sessionLabel(s)).toBe("Claude · Fix relay");
     expect(sessionToolName("codex")).toBe("Codex");
     expect(sessionToolName("gemini")).toBe("gemini");

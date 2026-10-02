@@ -11,7 +11,7 @@ const session = {
   latestEventSeq: 0, cwdName: "lightbulb", title: "Launch check",
 } satisfies LocalSession;
 const sessionTargets: NonNullable<RoomComposerProps["sessionTargets"]> = [
-  { candidate: { session, handle: "claude-launch-check" }, ownerName: "Aden" },
+  { candidate: { session, handle: "claude-launch-check", collided: false }, ownerName: "Aden" },
 ];
 
 function Harness({ onSubmit = vi.fn(), members = [] }: Partial<RoomComposerProps>) {
@@ -51,4 +51,16 @@ it("finds a session by its title", () => {
   expect(screen.getByRole("option", { name: /Launch check/ })).toBeTruthy();
   fireEvent.change(field, { target: { value: "@code", selectionStart: 5 } });
   expect(screen.getByRole("option", { name: /Claude Code/ })).toBeTruthy();
+});
+
+it("holds a stale session handle until the sender chooses to send it as text", () => {
+  const onSubmit = vi.fn();
+  render(<Harness onSubmit={onSubmit} />);
+  const field = screen.getByRole<HTMLTextAreaElement>("textbox", { name: "Message" });
+  fireEvent.change(field, { target: { value: "@claude-gone ping", selectionStart: 17 } });
+  fireEvent.keyDown(field, { key: "Enter" });
+  expect(onSubmit).not.toHaveBeenCalled();
+  expect(screen.getByRole("alert")).toHaveTextContent("@claude-gone no longer matches a shared session. Remove it or send anyway.");
+  fireEvent.click(screen.getByRole("button", { name: "Send anyway" }));
+  expect(onSubmit).toHaveBeenCalledWith(expect.not.objectContaining({ sessionMentions: expect.anything() }));
 });

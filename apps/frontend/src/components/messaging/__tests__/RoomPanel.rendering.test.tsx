@@ -87,7 +87,7 @@ it("shows an MCP session target without rewriting message text, linking only a k
   expect(screen.getByText("Claude Code · Launch check · Owner")).toBeInTheDocument();
   expect(screen.queryByRole("button", { name: /Open session Claude Code/ })).not.toBeInTheDocument();
   view.rerender(<RoomPanel {...props} messages={[tagged]} composer={{ ...props.composer, sessionTargets: [
-    { candidate: { session: { sessionId: "s1" } as never, handle: "claude-launch-check" }, ownerName: "Owner" },
+    { candidate: { session: { sessionId: "s1" } as never, handle: "claude-launch-check", collided: false }, ownerName: "Owner" },
   ] }} />);
   expect(screen.getByRole("button", { name: "Open session Claude Code · Launch check · Owner" })).toBeInTheDocument();
 });

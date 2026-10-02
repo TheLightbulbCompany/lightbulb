@@ -134,6 +134,7 @@ function ComposerAttempt({
   const nextAttachmentKey = useRef(0);
   const [attachments, setAttachments] = useState<Array<{ key: number; file: File; preview?: string; attachment?: MessageAttachment; error?: string }>>([]);
   const [attachmentError, setAttachmentError] = useState("");
+  const [staleNotice, setStaleNotice] = useState("");
   const evidenceVersion = useRef(0);
   const [dropping, setDropping] = useState(false);
   const dragDepthRef = useRef(0);
@@ -221,7 +222,8 @@ function ComposerAttempt({
   // inserted (or what the sender typed by hand). There is no separate
   // "picked mentions" side-state to drift from the text.
   const mentions = resolveTypedMentions(text, members);
-  const sessionMentions = resolveTypedSessionMentions(text, sessionTargets.map(({ candidate }) => candidate), selectedSessions);
+  const { ids: sessionMentions, unresolved: staleHandles } = resolveTypedSessionMentions(text, sessionTargets.map(({ candidate }) => candidate), selectedSessions);
+  const staleKey = staleHandles.join(" ");
   const authorized = mentions.every((mention) => members.some((member) => sameMember(member, mention)));
   const bytes = new TextEncoder().encode(text).length;
   const error = bytes > 100_000
@@ -446,10 +448,16 @@ function ComposerAttempt({
     replaceText(next.text, next.caret, next.caret);
   }
 
-  function submit(retry = false, restoreFocus = false) {
+  function submit(retry = false, restoreFocus = false, sendStale = false) {
     if (retry
       ? disabled || !!error || uploading || uploadFailed || !hasContent || !clientMessageId || effectiveState !== "rejected" || !onRetry || retryLocked.current
       : !canSend || locked.current) return;
+    // A handle that stopped matching would otherwise go out as plain text without a word.
+    if (!retry && staleKey && !sendStale) {
+      setStaleNotice(staleKey);
+      return;
+    }
+    setStaleNotice("");
     locked.current = true;
     if (restoreFocus) requestFocusAfterSend();
     if (retry) {
@@ -519,7 +527,7 @@ function ComposerAttempt({
       </> : <>
         <span className="flex size-8 items-center justify-center rounded-md bg-muted text-xs font-semibold" aria-hidden="true">{entry.option.candidate.session.provider === "claude" ? "CC" : "CX"}</span>
         <span className="min-w-0 flex-1 text-left"><span className="block truncate" title={sessionTitle(entry.option.candidate.session)}>{entry.option.candidate.session.provider === "claude" ? "Claude Code" : "Codex"} · {sessionTitle(entry.option.candidate.session)}</span>
-          <span className="block truncate text-muted-foreground text-sm">{entry.option.ownerName}</span></span>
+          <span className="block truncate text-muted-foreground text-sm">{entry.option.ownerName}{entry.option.candidate.collided ? ` · ${entry.option.candidate.session.cwdName ? `${entry.option.candidate.session.cwdName} · ` : ""}${entry.option.candidate.session.sessionId.slice(0, 8)}` : ""}</span></span>
       </>} />}
     {emojiOpen && <TypeaheadList id={`${fieldId}-targets`} label="Insert an emoji" items={emojiOptions} activeIndex={activeIndex}
       optionId={(index) => `${fieldId}-option-${index}`} onHover={setActiveIndex} onPick={(index) => chooseEmoji(emojiOptions[index].emoji)}
@@ -598,6 +606,9 @@ function ComposerAttempt({
         <Button type="button" variant="ghost" size="icon-sm" aria-label={`Remove ${item.file.name}`} disabled={!editable} onClick={() => removeAttachment(item.key)}><X aria-hidden="true" /></Button>
       </div>)}</div>}
     {attachmentError && <p role="alert" className="text-sm text-err">{attachmentError}</p>}
+    {staleKey && staleNotice === staleKey && <p role="alert" className="text-sm text-warn">
+      {staleHandles.map((handle) => `@${handle}`).join(", ")} no longer {staleHandles.length === 1 ? "matches" : "match"} a shared session. Remove it or send anyway.{" "}
+      <Button type="button" variant="link" size="sm" className="h-auto p-0" onClick={() => submit(false, true, true)}>Send anyway</Button></p>}
     <div className="room-composer-actions">
       {onUploadAttachment && <><input ref={attachmentInput} className="sr-only" type="file" accept={MESSAGE_ATTACHMENT_ACCEPT} multiple
         onChange={(event) => { addAttachments([...event.target.files ?? []]); event.target.value = ""; }} />

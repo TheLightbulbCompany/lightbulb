@@ -95,6 +95,7 @@ async def test_codex_send_prepares_private_intent_without_dispatch(monkeypatch):
     put = AsyncMock()
     monkeypatch.setattr(tools.sessions_repo, "put_session", put)
     monkeypatch.setattr(tools, "_publish_session", AsyncMock())
+    monkeypatch.setattr(tools, "_destination_label", AsyncMock(return_value="#general"))
     result = await tools.prepare_codex_send(device, request)
     updated, previous, enrollment = put.await_args.args
     claim, intent, audit = [action["Put"]["Item"] for action in put.await_args.kwargs["extra"]]
@@ -109,6 +110,7 @@ async def test_codex_send_prepares_private_intent_without_dispatch(monkeypatch):
     assert intent["inputDigest"] == tools._intent_digest(
         {"destination": f"room:{room}", "text": "private body", "requestId": str(request_id)}
     )
+    assert intent["destinationLabel"] == "#general"
     assert audit["action"] == "native_send_requested" and "private body" not in str(audit)
     assert "requestId" not in audit
 
@@ -211,6 +213,7 @@ async def test_codex_session_can_replace_an_unreachable_or_settled_intent(monkey
     put = AsyncMock()
     monkeypatch.setattr(tools.sessions_repo, "put_session", put)
     monkeypatch.setattr(tools, "_publish_session", AsyncMock())
+    monkeypatch.setattr(tools, "_destination_label", AsyncMock(return_value=None))
     assert (await tools.prepare_codex_send(device, request))["state"] == "pending_approval"
     assert put.await_args.args[0]["nativeSendIntent"]["connectionId"] == "new"
 
@@ -859,3 +862,31 @@ async def test_room_commit_is_reconciled_before_rejecting_a_receipt(monkeypatch)
     get.assert_awaited_once_with(
         tools.messaging_repo.room_pk(room_id), tools.messaging_repo.agent_idemp_sk(f"native:{source}:{request_id}")
     )
+
+
+@pytest.mark.asyncio
+async def test_destination_label_names_rooms_people_and_sessions(monkeypatch):
+    auth = tools.AuthContext(user_id="user_a", org_id="org_a")
+
+    def member(kind, id, name):
+        return SimpleNamespace(kind=kind, id=id, display_name=name)
+
+    dm = SimpleNamespace(
+        kind="dm", name=None, members=[member("human", "user_a", "Me"), member("human", "user_b", "Bea")]
+    )
+    channel = SimpleNamespace(kind="channel", name="general", members=[])
+    monkeypatch.setattr(tools.messaging, "get_room", AsyncMock(side_effect=[channel, dm]))
+    monkeypatch.setattr(tools.messaging, "list_rooms", AsyncMock(return_value=SimpleNamespace(rooms=[dm])))
+    monkeypatch.setattr(tools.messaging, "human_display_name", AsyncMock(return_value="Ann"))
+    monkeypatch.setattr(
+        tools.sessions_repo,
+        "get_session",
+        AsyncMock(return_value={"provider": "claude", "title": "Fix login", "humanUserId": "user_c"}),
+    )
+    assert await tools._destination_label(auth, "org_a", "room:r1") == "#general"
+    assert await tools._destination_label(auth, "org_a", "room:r2") == "DM with Bea"
+    assert await tools._destination_label(auth, "org_a", "person:user_b") == "Bea"
+    assert await tools._destination_label(auth, "org_a", "person:user_z") == "Ann"
+    assert await tools._destination_label(auth, "org_a", "session:s1") == "Claude Code · Fix login · Ann"
+    monkeypatch.setattr(tools.sessions_repo, "get_session", AsyncMock(side_effect=RuntimeError("down")))
+    assert await tools._destination_label(auth, "org_a", "session:s1") is None

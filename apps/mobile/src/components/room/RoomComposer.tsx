@@ -224,6 +224,7 @@ export function RoomComposer({
   const [formatOpen, setFormatOpen] = useState(false);
   const [sending, setSending] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [staleNotice, setStaleNotice] = useState("");
   // The readable token is presentation; this binding keeps the selected native session as the routing key.
   const [selectedSessions, setSelectedSessions] = useState<Record<string, string>>({});
 
@@ -501,7 +502,8 @@ export function RoomComposer({
 
   const body = text.trim();
   const mentions = resolveTypedMentions(body, members);
-  const sessionMentions = resolveTypedSessionMentions(body, sessionTargets.map(({ candidate }) => candidate), selectedSessions);
+  const { ids: sessionMentions, unresolved: staleHandles } = resolveTypedSessionMentions(body, sessionTargets.map(({ candidate }) => candidate), selectedSessions);
+  const staleKey = staleHandles.join(" ");
   // The web composer's three limits, verbatim — the server enforces all of
   // them, and being told before you send beats a rejection after.
   const limit =
@@ -520,8 +522,14 @@ export function RoomComposer({
   // in flight — and a failed one has to be retried or removed first, rather
   // than silently dropping out of the message.
   const busy = sending || draft.uploading || preparing;
-  const submit = useCallback(async () => {
+  const submit = useCallback(async (sendStale = false) => {
     if (!hasContent || busy || disabled || limit || draft.failed) return;
+    // A handle that stopped matching would otherwise go out as plain text without a word.
+    if (staleKey && !sendStale) {
+      setStaleNotice(staleKey);
+      return;
+    }
+    setStaleNotice("");
     setSending(true);
     onTypingChange?.(false);
     setError(null);
@@ -541,7 +549,7 @@ export function RoomComposer({
     } finally {
       setSending(false);
     }
-  }, [hasContent, busy, disabled, limit, body, mentions, sessionMentions, draft, onSend, onTypingChange]);
+  }, [hasContent, busy, disabled, limit, staleKey, body, mentions, sessionMentions, draft, onSend, onTypingChange]);
 
   return (
     <View
@@ -600,7 +608,9 @@ export function RoomComposer({
                 <Text style={[styles.optionName, { color: palette.fg }]} numberOfLines={1}>
                   {candidate.session.provider === "claude" ? "Claude Code" : "Codex"} · {sessionTitle(candidate.session)}
                 </Text>
-                <Text style={[styles.optionMeta, { color: palette.fgMute }]} numberOfLines={1}>{ownerName}</Text>
+                <Text style={[styles.optionMeta, { color: palette.fgMute }]} numberOfLines={1}>
+                  {ownerName}{candidate.collided ? ` · ${candidate.session.cwdName ? `${candidate.session.cwdName} · ` : ""}${candidate.session.sessionId.slice(0, 8)}` : ""}
+                </Text>
               </View>
             </Pressable>
           ))}
@@ -625,6 +635,16 @@ export function RoomComposer({
           {error ?? draft.uploadError ?? limit}
         </Text>
       )}
+      {staleKey && staleNotice === staleKey ? (
+        <>
+          <Text style={[styles.error, { color: palette.alert }]} accessibilityRole="alert">
+            {staleHandles.map((handle) => `@${handle}`).join(", ")} no longer {staleHandles.length === 1 ? "matches" : "match"} a shared session. Remove it or send anyway.
+          </Text>
+          <Text style={[styles.error, { color: palette.alert, textDecorationLine: "underline" }]} accessibilityRole="button" onPress={() => void submit(true)}>
+            Send anyway
+          </Text>
+        </>
+      ) : null}
       <AttachmentChips
         attachments={draft.attachments}
         onRemove={draft.remove}

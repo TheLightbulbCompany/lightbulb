@@ -180,6 +180,8 @@ class PrivateSendApproval(ContractModel):
     approval_id: OpaqueId
     input_digest: Digest
     destination: Annotated[str, Field(min_length=1, max_length=256)]
+    #: Server-resolved name for display only; the digest covers ``destination``.
+    destination_label: Annotated[str, Field(max_length=300)] | None = None
     text: Annotated[str, Field(min_length=1, max_length=4096)]
     request_id: OpaqueId
 
@@ -1120,7 +1122,10 @@ async def get_private_send_approval(auth: AuthContext, session_id: str) -> Priva
     ):
         raise ApiProblem("LOCAL_SESSION_NOT_FOUND", "Private approval is unavailable.")
     return PrivateSendApproval.model_validate(
-        {key: detail.get(key) for key in ("approvalId", "inputDigest", "destination", "text", "requestId")}
+        {
+            key: detail.get(key)
+            for key in ("approvalId", "inputDigest", "destination", "destinationLabel", "text", "requestId")
+        }
     )
 
 

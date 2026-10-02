@@ -5,8 +5,8 @@ eight options and up to four inputs. Each option carries effects Paperclip runs
 itself when a person picks it (comment, set status, reassign, clear a blocker,
 create a child issue, cancel an issue tree), and the agent is then woken with
 the outcome. Open decisions already reach the attention feed (``attention.py``,
-``sourceKind: "decision"``) but the feed row carries no options; these three
-routes are what make one answerable from the Inbox.
+``sourceKind: "decision"``) but the feed row carries no options; these routes
+are what make one answerable from the Inbox.
 
 SECURITY — board-only + per-user session. Upstream gates decide/dismiss with
 ``assertBoard`` and runs the chosen option's effects AS the deciding user, so
@@ -18,13 +18,13 @@ idempotency key is forwarded.
 
 from __future__ import annotations
 
-from typing import Annotated
+from typing import Annotated, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Path
+from fastapi import APIRouter, Depends, HTTPException, Path, Query
 
 from . import agents as _agents
 from ._guards import require_trial_runway
-from .deps import TeamsContext
+from .deps import TeamsContext, envelope_list
 from .schemas import DecideDecisionBody, DismissDecisionBody
 
 router = APIRouter()
@@ -50,28 +50,34 @@ async def _company_decision(decision_id: DecisionId, ctx: TeamsContext = Depends
 CompanyDecision = Annotated[dict, Depends(_company_decision)]
 
 
-@router.get("/decisions/{decision_id}")
-async def get_decision(decision: CompanyDecision, ctx: TeamsContext = Depends(_ctx)):
-    """One decision plus its ``executions`` (upstream ``GET /api/decisions/{id}``).
+@router.get("/decisions")
+async def list_decisions(
+    ctx: TeamsContext = Depends(_ctx),
+    status: str = Query(default="open", pattern=r"^(open|decided|expired|cancelled)$"),
+    # Paperclip's own cap; it defaults to 50 when omitted.
+    limit: Optional[int] = Query(default=None, ge=1, le=100),
+):
+    """The caller's company's decisions in one status, newest first.
 
-    Upstream's detail read does not say which target issues drifted since the
-    decision was proposed — only its company list does. The card needs that to
-    disable options whose effects require an unchanged target, so an OPEN
-    decision is stamped with its ``targetChanged`` map from the open list here,
-    saving the client a second read. A decision past the list's 50-row page gets
-    no map; upstream still skips a strict effect on a changed target at decide
-    time, so that only costs the warning, never the safety.
+    Upstream ``GET /api/companies/{companyId}/decisions`` returns a bare array;
+    wrapped ``{decisions: [...]}`` like the other Teams list surfaces. Each open
+    row carries ``targetChanged`` (which target issues drifted since it was
+    proposed) — the detail read does not, so every decision card on screen takes
+    it from this ONE shared read instead of a list call per card.
     """
-    if decision.get("status") != "open":
-        return decision
-    open_rows = await _agents._admin().list_decisions(
+    rows = await _agents._admin().list_decisions(
         company_id=ctx.company_id,
-        status="open",
+        status=status,
+        limit=limit,
         session_cookie=ctx.session_cookie,
     )
-    for row in open_rows if isinstance(open_rows, list) else []:
-        if isinstance(row, dict) and row.get("id") == decision.get("id"):
-            return {**decision, "targetChanged": row.get("targetChanged") or {}}
+    return envelope_list(rows, "decisions")
+
+
+@router.get("/decisions/{decision_id}")
+async def get_decision(decision: CompanyDecision):
+    """One decision plus its ``executions`` (upstream ``GET /api/decisions/{id}``),
+    fenced to the caller's company."""
     return decision
 
 

@@ -2366,17 +2366,22 @@ class PaperclipAdminClient:
         session_cookie: str,
         company_id: str,
         status: str,
+        limit: Optional[int] = None,
     ) -> list | dict:
-        """List a company's decisions in one status (newest first, 50 max).
+        """List a company's decisions in one status, newest first (upstream
+        defaults to 50 rows and caps ``limit`` at 100).
 
         Maps to ``GET /api/companies/{companyId}/decisions?status=`` — the
         only upstream read that annotates an open decision with
         ``targetChanged`` (which target issues drifted since it was proposed).
         """
+        params: dict[str, Any] = {"status": status}
+        if limit is not None:
+            params["limit"] = limit
         return await self._get(
             f"/api/companies/{company_id}/decisions",
             session_cookie=session_cookie,
-            params={"status": status},
+            params=params,
         )
 
     async def decide_decision(

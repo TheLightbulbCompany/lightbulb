@@ -143,6 +143,13 @@ async def test_list_decisions(admin_client_with_fake_http):
 
 
 @pytest.mark.asyncio
+async def test_list_decisions_with_limit(admin_client_with_fake_http):
+    client, http = admin_client_with_fake_http
+    await client.list_decisions(company_id="co_x", status="decided", limit=100, session_cookie="c=1")
+    assert http.get.call_args.kwargs.get("params") == {"status": "decided", "limit": 100}
+
+
+@pytest.mark.asyncio
 async def test_decide_decision(admin_client_with_fake_http):
     client, http = admin_client_with_fake_http
     await client.decide_decision(decision_id="dec_1", body={"optionId": "ship"}, session_cookie="c=1")

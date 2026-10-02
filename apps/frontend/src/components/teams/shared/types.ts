@@ -1940,7 +1940,12 @@ export interface DecisionEffectExecution {
 /** What `GET /teams/decisions/{id}`, decide and dismiss return. */
 export interface DecisionOutcome extends Decision {
   executions: DecisionEffectExecution[];
-  /** BFF-stamped on an OPEN decision: which target issues drifted since it
-   *  was proposed. See apps/backend/routers/teams/decisions.py. */
-  targetChanged?: Record<string, boolean>;
+}
+
+/** A row of `GET /teams/decisions`: each open decision is annotated with which
+ *  target issues drifted since it was proposed. */
+export interface DecisionListItem extends Decision {
+  targetChanged: Record<string, boolean>;
+  /** Included on terminal-state rows. */
+  executions?: DecisionEffectExecution[];
 }

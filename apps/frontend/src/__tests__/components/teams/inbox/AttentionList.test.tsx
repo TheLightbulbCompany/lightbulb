@@ -173,47 +173,59 @@ describe("AttentionList", () => {
     ).toBeInTheDocument();
   });
 
-  test("a decision is answerable in place and leaves the list once answered", async () => {
-    const decisionItem = {
-      id: "att_d",
-      sourceKind: "decision",
-      subject: { kind: "decision", id: "dec_1", title: "Ship?", identifier: null, status: "open", href: null },
-      whyNow: "An agent decision is waiting for a board response.",
-      severity: "medium",
-      activityAt: new Date().toISOString(),
-      createdAt: new Date().toISOString(),
-      relatedIssue: { kind: "issue", id: "iss_1", title: "Release", identifier: "ISO-1", status: "todo", href: null },
-      originAgentName: "Friday",
-    };
-    const decision = {
-      id: "dec_1",
-      companyId: "co_1",
-      originAgentId: "ag_1",
-      originIssueId: "iss_1",
-      title: "Ship the release?",
-      body: "",
-      options: [
-        {
-          id: "ship",
-          label: "Ship it",
-          effects: [{ type: "comment_on_issue", targetIssueId: "iss_1", staleness: "lenient", bodyMarkdown: "Go." }],
-        },
-      ],
-      inputs: null,
-      status: "open",
-      executionStatus: null,
-      chosenOptionId: null,
-      targetSnapshots: {},
-      continuationPolicy: "wake_origin_agent",
-      metadata: {},
-      executions: [],
-    };
-    read.mockImplementation((path: string) => ({
-      data: path === "/attention" ? { items: [decisionItem] } : path === "/decisions/dec_1" ? decision : undefined,
+  const decisionItem = {
+    id: "att_d",
+    sourceKind: "decision",
+    subject: { kind: "decision", id: "dec_1", title: "Ship?", identifier: null, status: "open", href: null },
+    whyNow: "An agent decision is waiting for a board response.",
+    severity: "medium",
+    activityAt: new Date().toISOString(),
+    createdAt: new Date().toISOString(),
+    relatedIssue: { kind: "issue", id: "iss_1", title: "Release", identifier: "ISO-1", status: "todo", href: null },
+    originAgentName: "Friday",
+  };
+  const decision = {
+    id: "dec_1",
+    companyId: "co_1",
+    originAgentId: "ag_1",
+    originIssueId: "iss_1",
+    title: "Ship the release?",
+    body: "",
+    options: [
+      {
+        id: "ship",
+        label: "Ship it",
+        effects: [{ type: "comment_on_issue", targetIssueId: "iss_1", staleness: "strict", bodyMarkdown: "Go." }],
+      },
+    ],
+    inputs: null,
+    status: "open",
+    executionStatus: null,
+    chosenOptionId: null,
+    targetSnapshots: {},
+    continuationPolicy: "wake_origin_agent",
+    metadata: {},
+    executions: [],
+  };
+
+  function installDecision(openList: unknown[] = []) {
+    read.mockImplementation((path: string | null) => ({
+      data:
+        path === "/attention"
+          ? { items: [decisionItem] }
+          : path === "/decisions/dec_1"
+            ? decision
+            : path === "/decisions?status=open"
+              ? { decisions: openList }
+              : undefined,
       isLoading: false,
       error: null,
       mutate: vi.fn(),
     }));
+  }
+
+  test("a decision is answerable in place and leaves the list once answered", async () => {
+    installDecision();
     post.mockResolvedValue({ ...decision, status: "decided", executionStatus: "succeeded" });
     render(<AttentionList />);
 
@@ -230,6 +242,32 @@ describe("AttentionList", () => {
       );
     });
     await waitFor(() => expect(mutate).toHaveBeenCalledWith("/teams/attention"));
+    expect(mutate).toHaveBeenCalledWith("/teams/decisions?status=open");
+  });
+
+  test("a decision card takes targetChanged from the one shared open list", () => {
+    installDecision([{ id: "dec_1", targetChanged: { iss_1: true } }]);
+    render(<AttentionList />);
+
+    expect(read).toHaveBeenCalledWith("/decisions?status=open");
+    expect(screen.getByText(/1 target changed since this was proposed/i)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /ship it/i })).toBeDisabled();
+  });
+
+  test("retrying a failed decide reuses the idempotency key", async () => {
+    installDecision();
+    post.mockRejectedValueOnce(new Error("Gateway timeout"));
+    render(<AttentionList />);
+
+    fireEvent.click(screen.getByRole("button", { name: /ship it/i }));
+    // The failure is shown on the card and the option is offered again.
+    await screen.findByText("Gateway timeout");
+    fireEvent.click(screen.getByRole("button", { name: /ship it/i }));
+
+    await waitFor(() => expect(post).toHaveBeenCalledTimes(2));
+    const [first, second] = post.mock.calls.map((call) => (call[1] as { idempotencyKey: string }).idempotencyKey);
+    expect(first).toBeTruthy();
+    expect(second).toBe(first);
   });
 
   test("an unhydrated item links out instead of pretending to be resolvable", () => {

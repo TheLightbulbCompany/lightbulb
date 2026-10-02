@@ -1,5 +1,5 @@
 # apps/backend/tests/unit/routers/teams/test_decisions.py
-"""Teams BFF — decisions (read one, decide, dismiss).
+"""Teams BFF — decisions (list, read one, decide, dismiss).
 
 Mirrors the fixture/mocking style of the sibling teams tests
 (test_feedback.py, test_interactions.py). The company fence here is live in
@@ -61,37 +61,47 @@ def _admin(monkeypatch, decision):
 OPEN = {"id": "dec1", "companyId": "co_abc", "status": "open", "executions": []}
 
 
-def test_get_open_decision_is_stamped_with_target_changed(client, monkeypatch):
+def test_list_decisions_defaults_to_open_and_envelopes(client, monkeypatch):
     admin = _admin(monkeypatch, OPEN)
-    admin.list_decisions = AsyncMock(
-        return_value=[
-            {"id": "other", "targetChanged": {"iss9": True}},
-            {"id": "dec1", "targetChanged": {"iss1": True, "iss2": False}},
-        ]
+    rows = [{"id": "dec1", "targetChanged": {"iss1": True}}, {"id": "dec2", "targetChanged": {}}]
+    admin.list_decisions = AsyncMock(return_value=rows)
+
+    r = client.get("/api/v1/teams/decisions", headers=AUTH)
+    assert r.status_code == 200
+    assert r.json() == {"decisions": rows}
+    # The company comes from the caller's context, never from the request.
+    admin.list_decisions.assert_awaited_once_with(
+        company_id="co_abc", status="open", limit=None, session_cookie="cookie"
     )
 
-    r = client.get("/api/v1/teams/decisions/dec1", headers=AUTH)
+
+def test_list_decisions_passes_status_and_limit_through(client, monkeypatch):
+    admin = _admin(monkeypatch, OPEN)
+
+    r = client.get("/api/v1/teams/decisions?status=decided&limit=100", headers=AUTH)
     assert r.status_code == 200
-    assert r.json() == {**OPEN, "targetChanged": {"iss1": True, "iss2": False}}
-    admin.get_decision.assert_awaited_once_with(decision_id="dec1", session_cookie="cookie")
-    admin.list_decisions.assert_awaited_once_with(company_id="co_abc", status="open", session_cookie="cookie")
+    admin.list_decisions.assert_awaited_once_with(
+        company_id="co_abc", status="decided", limit=100, session_cookie="cookie"
+    )
 
 
-def test_get_open_decision_missing_from_the_open_page_is_returned_bare(client, monkeypatch):
-    _admin(monkeypatch, OPEN)
+@pytest.mark.parametrize("query", ["status=bogus", "limit=101", "limit=0"])
+def test_list_decisions_rejects_bad_filters(client, monkeypatch, query):
+    admin = _admin(monkeypatch, OPEN)
+
+    r = client.get(f"/api/v1/teams/decisions?{query}", headers=AUTH)
+    assert r.status_code == 422
+    admin.list_decisions.assert_not_awaited()
+
+
+def test_get_decision_returns_it_without_a_list_call(client, monkeypatch):
+    admin = _admin(monkeypatch, OPEN)
 
     r = client.get("/api/v1/teams/decisions/dec1", headers=AUTH)
     assert r.status_code == 200
     assert r.json() == OPEN
-
-
-def test_get_decided_decision_skips_the_open_list(client, monkeypatch):
-    decided = {**OPEN, "status": "decided", "executions": [{"id": "ex1", "status": "executed"}]}
-    admin = _admin(monkeypatch, decided)
-
-    r = client.get("/api/v1/teams/decisions/dec1", headers=AUTH)
-    assert r.status_code == 200
-    assert r.json() == decided
+    admin.get_decision.assert_awaited_once_with(decision_id="dec1", session_cookie="cookie")
+    # N cards must not cost N company-wide list reads.
     admin.list_decisions.assert_not_awaited()
 
 

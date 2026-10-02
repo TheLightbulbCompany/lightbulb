@@ -135,6 +135,34 @@ describe("DecisionCard", () => {
     expect(onDecide).toHaveBeenCalledWith("kill", {});
   });
 
+  it("the cancel-tree confirm re-checks a required input cleared after it opened", () => {
+    const onDecide = vi.fn();
+    const destructive = decision({
+      inputs: [{ id: "why", label: "Reason", placeholder: "Why?", required: true }],
+      options: [
+        {
+          id: "kill",
+          label: "Cancel the work",
+          style: "destructive",
+          effects: [{ type: "cancel_issue_tree", targetIssueId: ISSUE, staleness: "strict", reasonComment: "Dropped." }],
+        },
+      ],
+    });
+    render(<DecisionCard decision={destructive} resolveIssue={resolveIssue} onDecide={onDecide} />);
+
+    const reason = screen.getByPlaceholderText("Why?");
+    fireEvent.change(reason, { target: { value: "No longer needed" } });
+    fireEvent.click(screen.getByRole("button", { name: /cancel the work/i }));
+    fireEvent.change(screen.getByLabelText(/type the issue identifier/i), { target: { value: "ISO-7" } });
+    const confirm = screen.getByRole("button", { name: /cancel tree/i });
+    expect(confirm).toBeEnabled();
+
+    fireEvent.change(reason, { target: { value: "" } });
+    expect(confirm).toBeDisabled();
+    fireEvent.click(confirm);
+    expect(onDecide).not.toHaveBeenCalled();
+  });
+
   it("a decided decision shows what each effect did instead of the options", () => {
     const executions: DecisionEffectExecution[] = [
       {

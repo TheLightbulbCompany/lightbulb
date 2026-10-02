@@ -577,7 +577,7 @@ export function DecisionCard({
                       <Button
                         variant="destructive"
                         size="sm"
-                        disabled={busy || confirmText.trim() !== confirmToken}
+                        disabled={busy || requiredUnmet || confirmText.trim() !== confirmToken}
                         onClick={() => onDecide?.(option.id, inputValues)}
                       >
                         {busy && <Loader2 className="h-3.5 w-3.5 animate-spin" />}

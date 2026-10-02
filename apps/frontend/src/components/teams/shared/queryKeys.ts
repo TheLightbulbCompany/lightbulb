@@ -51,7 +51,11 @@ export const teamsQueryKeys = {
     detail: (id: string) => `/goals/${id}`,
   },
   approvals: { detail: (id: string) => `/approvals/${id}` },
-  decisions: { detail: (id: string) => `/decisions/${id}` },
+  decisions: {
+    detail: (id: string) => `/decisions/${id}`,
+    // One key per status, shared by every decision card on screen.
+    list: (status: "open" | "decided" | "expired" | "cancelled") => `/decisions?status=${status}`,
+  },
   // The unified "needs you" feed — board approvals AND issue-thread
   // interactions in one server-ranked list. Deliberately parameterless: the
   // count it carries is company-wide (computed upstream before pagination),

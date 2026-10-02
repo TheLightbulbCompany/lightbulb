@@ -4,18 +4,19 @@
 // (paperclip/ui/src/components/DecisionResolver.tsx) (MIT, (c) 2025 Paperclip AI).
 //
 // Swaps vs upstream:
-//   - TanStack Query -> useTeamsApi (SWR). `targetChanged` arrives on the
-//     decision read itself (the BFF stamps it), not from a second open-list read.
+//   - TanStack Query -> useTeamsApi (SWR). As upstream, `targetChanged` comes
+//     from the open list, read through one SWR key every card shares.
 //   - useQueries over the referenced issues -> one <IssueProbe> per id, because
 //     an SWR read is a hook and the id list is dynamic. Each probe reads the
 //     same `/issues/{id}` key the issue detail page uses, so the cache is shared.
 //   - no cancel-tree preview: resolving every descendant is a read per issue,
 //     and the card already falls back to generic copy.
-//   - no mutation retry: a failed decide shows its error on the card.
+//   - no automatic mutation retry: a failed decide shows its error on the
+//     card, and the person's retry reuses the same idempotency key.
 
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Loader2 } from "lucide-react";
 import { useTeamsApi } from "@/hooks/useTeamsApi";
 import { teamsDetailUrl } from "@/lib/shellNav";
@@ -25,6 +26,7 @@ import { DecisionCard, type DecisionIssueRef } from "@/components/teams/inbox/De
 import type {
   AttentionSubject,
   CompanyAgent,
+  DecisionListItem,
   DecisionOutcome,
   Issue,
 } from "@/components/teams/shared/types";
@@ -65,6 +67,18 @@ export function DecisionResolver({ decisionId, originIssue, agentMap, originAgen
   const { read, post, mutate } = useTeamsApi();
   const key = teamsQueryKeys.decisions.detail(decisionId);
   const { data: decision, isLoading, error, mutate: mutateDecision } = read<DecisionOutcome>(key);
+
+  // Shared across every open decision row → a single fetch carries `targetChanged`.
+  const openListKey = teamsQueryKeys.decisions.list("open");
+  const { data: openList } = read<{ decisions?: DecisionListItem[] }>(
+    decision?.status === "open" ? openListKey : null,
+  );
+  const targetChanged = openList?.decisions?.find((entry) => entry.id === decisionId)?.targetChanged ?? null;
+
+  // One idempotency key per option for as long as this resolver is mounted: if
+  // Paperclip applied a decide but the response was lost, the retry must replay
+  // that outcome rather than hit "already resolved". Cleared only on success.
+  const idempotencyKeys = useRef(new Map<string, string>());
 
   const [busy, setBusy] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
@@ -125,21 +139,31 @@ export function DecisionResolver({ decisionId, originIssue, agentMap, originAgen
 
   // decide / dismiss both return the resolved decision: seed the cache with it,
   // then re-read the feed so the answered row leaves the list.
-  const resolve = async (path: string, body: unknown) => {
+  const resolve = async (path: string, body: unknown): Promise<boolean> => {
     setBusy(true);
     setErrorMessage(null);
     try {
       const data = await post<DecisionOutcome>(`${key}/${path}`, body);
       void mutateDecision(data, { revalidate: false });
+      void mutate(`/teams${openListKey}`);
       void mutate(`/teams${teamsQueryKeys.attention()}`);
       for (const id of Object.keys(decision?.targetSnapshots ?? {})) {
         void mutate(`/teams${teamsQueryKeys.issues.detail(id)}`);
       }
+      return true;
     } catch (e) {
       setErrorMessage(e instanceof Error && e.message ? e.message : "Couldn't save your answer. Try again.");
+      return false;
     } finally {
       setBusy(false);
     }
+  };
+
+  const decide = async (optionId: string, inputValues: Record<string, string>) => {
+    const keys = idempotencyKeys.current;
+    const idempotencyKey = keys.get(optionId) ?? crypto.randomUUID();
+    keys.set(optionId, idempotencyKey);
+    if (await resolve("decide", { optionId, inputValues, idempotencyKey })) keys.delete(optionId);
   };
 
   if (isLoading && !decision) {
@@ -166,15 +190,13 @@ export function DecisionResolver({ decisionId, originIssue, agentMap, originAgen
       <DecisionCard
         decision={decision}
         executions={decision.executions}
-        targetChanged={decision.targetChanged ?? null}
+        targetChanged={targetChanged}
         resolveIssue={resolveIssue}
         originAgentName={agentMap?.get(decision.originAgentId)?.name ?? originAgentName ?? null}
         originIssue={originRef}
         busy={busy}
         errorMessage={errorMessage}
-        onDecide={(optionId, inputValues) =>
-          void resolve("decide", { optionId, inputValues, idempotencyKey: crypto.randomUUID() })
-        }
+        onDecide={(optionId, inputValues) => void decide(optionId, inputValues)}
         onDismiss={(reason) => void resolve("dismiss", reason ? { reason } : {})}
       />
     </>

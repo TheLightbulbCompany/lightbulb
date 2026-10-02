@@ -368,7 +368,7 @@ async def capture_first_workspace_message(owner_id: str, message: dict) -> bool:
         owner_id,
         path=path,
         user_input=user_input,
-        detail=text if path == "grow" else None,
+        detail=None if user_input == text.strip() else text,
         brief_text=text,
         submitted_by=str(author["id"]),
         source_message_id=str(message["messageId"]),

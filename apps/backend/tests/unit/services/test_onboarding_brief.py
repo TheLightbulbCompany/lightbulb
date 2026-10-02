@@ -405,6 +405,33 @@ async def test_a_url_in_the_first_message_lands_as_grow_with_the_url_as_input():
 
 
 @pytest.mark.asyncio
+async def test_a_not_sure_yet_message_keeps_the_owners_words_as_detail():
+    text = "Not sure yet which market to target, but we're building a scheduling tool for dentists"
+    repo = MagicMock()
+    repo.resolve_owner_row = AsyncMock(return_value=SimpleNamespace(status="active", funnel_state="not_started"))
+    repo.put_pending_brief = AsyncMock(return_value=True)
+    message = {
+        "roomId": __import__("core.services.messaging", fromlist=["default_room_id"]).default_room_id(OWNER),
+        "messageSeq": 1,
+        "messageId": "m1",
+        "author": {"kind": "human", "id": "user_1"},
+        "text": text,
+        "dispatchTargets": [{"agentId": FRIDAY_ID, "eventKind": "user_request"}],
+    }
+    with (
+        patch("core.repositories.paperclip_repo.PaperclipRepo", return_value=repo),
+        patch("core.services.onboarding_brief.reconcile_pending_brief", new=AsyncMock()),
+        patch("core.repositories.messaging_repo.list_messages_between", new=AsyncMock(return_value=[])),
+    ):
+        assert await capture_first_workspace_message(OWNER, message) is True
+    kwargs = repo.put_pending_brief.await_args.kwargs
+    assert kwargs["path"] == "new"
+    assert kwargs["user_input"] is None
+    assert kwargs["detail"] == text
+    assert kwargs["brief_text"] == text
+
+
+@pytest.mark.asyncio
 async def test_a_new_path_message_lands_with_no_detail():
     repo = MagicMock()
     repo.resolve_owner_row = AsyncMock(return_value=SimpleNamespace(status="active", funnel_state="not_started"))

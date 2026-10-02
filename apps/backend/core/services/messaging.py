@@ -2760,18 +2760,19 @@ def address_candidates(text: str, members: list[dict], *, live: bool = False) ->
             continue
         for name in _member_names(member):
             hit = re.search(rf"(?<![\w-]){re.escape(name)}(?![\w-])", text, re.I)
-            pos = hit.start() if hit else None
+            pos, said = (hit.start(), hit.group(0)) if hit else (None, None)
             if pos is None and live:
                 words = tuple(_tokens(name))
                 # ponytail: token index as position; fine for ordering, Live only
-                pos = next(
-                    (i * 1000 for i in range(len(tokens)) if _fuzzy(tuple(tokens[i : i + len(words)]), words)), None
-                )
+                i = next((i for i in range(len(tokens)) if _fuzzy(tuple(tokens[i : i + len(words)]), words)), None)
+                if i is not None:
+                    pos, said = i * 1000, " ".join(tokens[i : i + len(words)])
             if pos is None:
                 continue
             display = member.get("displayName") or name
             key = (display.split()[0] if member["kind"] == "human" else display).lower()
-            row = found.setdefault(key, {"name": key, "agents": [], "humans": [], "pos": pos})
+            # ``said``: the words as written or heard ("Fryday"), which the weekday veto reads.
+            row = found.setdefault(key, {"name": key, "agents": [], "humans": [], "pos": pos, "said": said})
             row["pos"] = min(row["pos"], pos)
             kind = "agents" if member["kind"] == "agent" else "humans"
             if member["id"] not in row[kind]:
@@ -2867,7 +2868,7 @@ async def address(latest: dict, members: list[dict], *, history: Any = (), live:
     out["anyone"] = result["anyone"] >= 0.5
     for c in cands:
         label = result["labels"][c["name"]]
-        if c["name"] in WEEKDAYS and re.search(_DAY_USE.format(day=c["name"]), text, re.I):
+        if c["name"] in WEEKDAYS and re.search(_DAY_USE.format(day=re.escape(c["said"])), text, re.I):
             label = "not_a_name"  # domain knowledge, not a model call: our names are weekdays
         if label not in ("addressed", "relayed"):
             continue

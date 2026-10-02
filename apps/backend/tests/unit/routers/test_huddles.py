@@ -339,9 +339,10 @@ def test_turn_without_agent_or_run_id_is_refused(client, missing):
 def test_route_a_wake_word_line_is_the_one_router_with_wake(client):
     """Routing v2 §6: no route_voice; "Lightbulb, ..." (no people count) is route_live_line(wake=True)."""
     assert not hasattr(vc, "route_voice")
-    with patch.object(vc, "route_live_line", AsyncMock(return_value={"agentId": "agent-fin"})) as route:
+    routed = {"agentId": "agent-fin", "agentIds": ["agent-fin", "agent-eng"]}
+    with patch.object(vc, "route_live_line", AsyncMock(return_value=routed)) as route:
         resp = client.post(INTERNAL[6][0], json=INTERNAL[6][1], headers=W)
-    assert resp.json() == {"agentId": "agent-fin"}
+    assert resp.json() == routed  # agentId (the first) still there for the shipped worker
     assert route.await_args.kwargs == {
         "owner_id": "org_a", "room_id": ROOM, "speaker_id": "user_a", "utterance": "hi", "transcript": "",
         "humans": 0, "wake": True, "floor": None, "voice_runs": [],

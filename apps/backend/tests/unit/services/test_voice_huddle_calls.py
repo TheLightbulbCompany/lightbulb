@@ -549,7 +549,7 @@ def _addressed(agents=(), humans=(), hold=False, anyone=False):
 
 async def test_live_unnamed_lines_go_to_jev_with_every_agent_listening(live_env):
     got, decide = await _live("Hey guys, anything new?", who="fri-1")
-    assert got == {"agentId": "fri-1"}
+    assert got == {"agentId": "fri-1", "agentIds": ["fri-1"]}
     message = decide.await_args.args[1]
     assert {t["agentId"] for t in message["dispatchTargets"]} == {"ceo-1", "fri-1", "fin-1"}
     assert decide.await_args.kwargs["placement"] is False  # Live never reads placement
@@ -557,47 +557,50 @@ async def test_live_unnamed_lines_go_to_jev_with_every_agent_listening(live_env)
 
 async def test_live_an_opening_name_is_the_fast_path_and_skips_jev(live_env):
     got, decide = await _live("Hey Finance, what's our burn?", humans=3)
-    assert got == {"agentId": "fin-1"}
+    assert got == {"agentId": "fin-1", "agentIds": ["fin-1"]}
     decide.assert_not_awaited()
     vc.jev.decide.assert_not_awaited()
 
 
 async def test_live_every_addressed_or_relayed_agent_skips_jev_and_the_first_named_speaks(live_env):
     got, decide = await _live("x", address=_addressed(agents=["fin-1", "ceo-1"]))
-    assert got == {"agentId": "fin-1"}
+    assert got == {"agentId": "fin-1", "agentIds": ["fin-1", "ceo-1"]}  # in the order named, for the queue
     decide.assert_not_awaited()
 
 
 async def test_live_an_unfinished_line_is_held(live_env):
     got, decide = await _live("Finance, we're trying to", address=_addressed(agents=["fin-1"], hold=True))
-    assert got == {"agentId": None, "hold": True}
+    assert got == {"agentId": None, "agentIds": [], "hold": True}
     decide.assert_not_awaited()
 
 
 async def test_live_alone_nobody_counts_as_jev_down(live_env):
     # the fallback: whoever spoke last in the call, else the CEO
     got, _ = await _live("Hey guys.", humans=1, who="none", transcript="Finance: burn is flat\nPrasiddha: Hey guys.")
-    assert got == {"agentId": "fin-1"}
-    assert (await _live("Hey guys.", humans=1, who="none"))[0] == {"agentId": "ceo-1"}
-    assert (await _live("Hey guys.", humans=1))[0] == {"agentId": "ceo-1"}  # Jev down
+    assert got == {"agentId": "fin-1", "agentIds": ["fin-1"]}
+    assert (await _live("Hey guys.", humans=1, who="none"))[0] == {"agentId": "ceo-1", "agentIds": ["ceo-1"]}
+    assert (await _live("Hey guys.", humans=1))[0] == {"agentId": "ceo-1", "agentIds": ["ceo-1"]}  # Jev down
 
 
 async def test_live_two_people_jev_may_pick_nobody(live_env):
-    assert (await _live("did you see the game", humans=2, who="none"))[0] == {"agentId": None}
-    assert (await _live("what's our burn", humans=2, who="fin-1"))[0] == {"agentId": "fin-1"}
-    assert (await _live("what's our burn", humans=2))[0] == {"agentId": "ceo-1"}  # Jev down: chat's fallback
+    assert (await _live("did you see the game", humans=2, who="none"))[0] == {"agentId": None, "agentIds": []}
+    assert (await _live("what's our burn", humans=2, who="fin-1"))[0] == {"agentId": "fin-1", "agentIds": ["fin-1"]}
+    assert (await _live("what's our burn", humans=2))[0] == {
+        "agentId": "ceo-1",
+        "agentIds": ["ceo-1"],
+    }  # Jev down: chat's fallback
 
 
 async def test_live_a_none_the_policy_refuses_takes_the_fallback(live_env):
     with patch.object(vc, "put_metric") as metric:
         got, _ = await _live("what's our burn", humans=2, decision={"who": "none", "forced": "question"})
-    assert got == {"agentId": "ceo-1"}
+    assert got == {"agentId": "ceo-1", "agentIds": ["ceo-1"]}
     metric.assert_any_call("messaging.jev.forced", dimensions={"reason": "question"})
 
 
 async def test_live_a_line_to_a_person_is_silent_without_jev(live_env):
     got, decide = await _live("Aden, can you check the deck?", humans=2, address=_addressed(humans=["user_b"]))
-    assert got == {"agentId": None}
+    assert got == {"agentId": None, "agentIds": []}
     assert decide.await_args.kwargs["to_people"] is True
     assert decide.await_args.args[1]["mentions"] == [{"kind": "human", "id": "user_b"}]
 
@@ -605,7 +608,7 @@ async def test_live_a_line_to_a_person_is_silent_without_jev(live_env):
 async def test_live_something_asked_of_anyone_is_not_to_people(live_env):
     """[AX] D05: "what's our MRR, and Aden where did you put the deck?" must not silence Finance."""
     got, decide = await _live("x", humans=2, who="fin-1", address=_addressed(humans=["user_b"], anyone=True))
-    assert got == {"agentId": "fin-1"} and decide.await_args.kwargs["to_people"] is False
+    assert got == {"agentId": "fin-1", "agentIds": ["fin-1"]} and decide.await_args.kwargs["to_people"] is False
 
 
 async def test_live_the_wake_word_always_gets_someone(live_env):
@@ -613,12 +616,12 @@ async def test_live_the_wake_word_always_gets_someone(live_env):
     got, decide = await _live(
         "Lightbulb, Aden needs the deck", humans=3, who="none", wake=True, address=_addressed(humans=["user_b"])
     )
-    assert got == {"agentId": "ceo-1"} and decide.await_args.kwargs["to_people"] is False
+    assert got == {"agentId": "ceo-1", "agentIds": ["ceo-1"]} and decide.await_args.kwargs["to_people"] is False
 
 
 async def test_live_the_wake_word_is_stripped_before_the_fast_path(live_env):
     got, decide = await _live("Lightbulb, Finance, what's our burn?", humans=2, wake=True)
-    assert got == {"agentId": "fin-1"}
+    assert got == {"agentId": "fin-1", "agentIds": ["fin-1"]}
     decide.assert_not_awaited()
 
 
@@ -630,7 +633,7 @@ async def test_live_jev_timeout_falls_back(live_env):
         got = await vc.route_live_line(
             owner_id="org_a", room_id="room-1", speaker_id="user_a", utterance="hm what now", transcript="", humans=2
         )
-    assert got == {"agentId": "ceo-1"}
+    assert got == {"agentId": "ceo-1", "agentIds": ["ceo-1"]}
 
 
 def test_live_transcript_becomes_history_before_the_line():

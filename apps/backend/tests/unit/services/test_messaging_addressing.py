@@ -44,13 +44,14 @@ def test_candidates_are_every_name_anywhere_in_text_order():
 
 
 def test_live_candidates_match_a_misheard_name_the_workers_way():
-    assert messaging.address_candidates("fynance can you check", MEMBERS, live=True)[0]["agents"] == ["fin"]
+    heard = messaging.address_candidates("fynance can you check", MEMBERS, live=True)[0]
+    assert heard["agents"] == ["fin"] and heard["said"] == "fynance"
     assert messaging.address_candidates("fynance can you check", MEMBERS) == []  # chat is exact
 
 
 def test_a_first_name_an_agent_shares_is_one_candidate_of_both_kinds():
     cands = messaging.address_candidates("Max, send the deck", [MAX, MAX_AGENT])
-    assert cands == [{"name": "max", "agents": ["max"], "humans": ["u-max"], "pos": 0}]
+    assert cands == [{"name": "max", "agents": ["max"], "humans": ["u-max"], "pos": 0, "said": "Max"}]
 
 
 async def test_no_name_means_no_call_and_todays_path():
@@ -116,6 +117,9 @@ async def test_weekday_with_a_scheduling_statement_is_vetoed():
         assert out["agents"] == [], text
     out, _ = await _address("Friday, can you check the deploy", answers=_answers(["addressed"]))
     assert out["agents"] == ["fri"]
+    # Live: the veto reads the name as heard, so a mis-heard weekday is vetoed too.
+    out, _ = await _address("fryday, we ship the beta", answers=_answers(["addressed"]), live=True)
+    assert out["agents"] == []
 
 
 @pytest.mark.parametrize("answers", [None, jev.RATE_LIMITED, {"complete": {}}])

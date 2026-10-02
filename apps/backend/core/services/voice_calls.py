@@ -756,6 +756,12 @@ def _open_voice_lines(floor: dict | None, voice_runs: list[dict] | None, members
     return lines[:5]
 
 
+def _routed(*agent_ids: str) -> dict:
+    """/route's answer: ``agentId`` (the first; what the shipped worker reads) and ``agentIds`` (every
+    agent the line addressed or relayed to, in the order named, for a worker that queues them)."""
+    return {"agentId": agent_ids[0] if agent_ids else None, "agentIds": list(agent_ids)}
+
+
 async def route_live_line(
     *,
     owner_id: str,
@@ -775,7 +781,7 @@ async def route_live_line(
     (#3591), so every agent listens. Live's own rules: an unfinished line is held (``hold``) until the
     speaker's next final; alone in the call, or after the wake word ``wake`` ("Lightbulb, ..."),
     Jev's "nobody" counts as Jev down -- the speech can only be for the agents.
-    Returns ``{"agentId": id | None}``, plus ``"hold": True`` for an unfinished line."""
+    Returns ``_routed(...)``, plus ``"hold": True`` for an unfinished line."""
     meta, _ = await _room_team(owner_id, speaker_id, room_id)
     members = [
         {**m, "listenMode": "active"} if m.get("kind") == "agent" else m
@@ -788,15 +794,16 @@ async def route_live_line(
     addressing = await messaging.address({"author": author, "text": utterance}, members, history=history, live=True)
     if addressing["hold"]:
         put_metric("voice.routing.jev", dimensions={"outcome": "hold"})
-        return {"agentId": None, "hold": True}
-    named = [{"kind": "agent", "id": a} for a in addressing["agents"]]
+        return {**_routed(), "hold": True}
+    named_ids = addressing["agents"]
+    named = [{"kind": "agent", "id": a} for a in named_ids]
     targets = messaging.select_dispatch_targets(members, named, None, room_kind=meta.get("kind"))
     if addressed := [t["agentId"] for t in targets if t["eventKind"] == "user_request"]:
-        # The worker drives one voice at a time: the agent named first.
-        return {"agentId": next((a for a in addressing["agents"] if a in addressed), addressed[0])}
+        # In the order named: the worker drives one voice at a time and can queue the rest.
+        return _routed(*[a for a in addressing["agents"] if a in addressed], *sorted(set(addressed) - set(named_ids)))
     candidates = [t["agentId"] for t in targets]
     if not candidates:
-        return {"agentId": None}
+        return _routed()
     people = addressing["humans"]
     # A relayed request ("Leo, Finance has those numbers") is not to people, nor a wake word.
     to_people = bool(people) and not named and not addressing["anyone"] and not wake
@@ -826,17 +833,17 @@ async def route_live_line(
     who, forced = decision.get("who"), decision.get("forced")
     if not forced and (who in candidates or (who == "none" and humans > 1 and not wake)):
         put_metric("voice.routing.jev", dimensions={"outcome": "routed" if who in candidates else "none"})
-        return {"agentId": who if who in candidates else None}
+        return _routed(*([who] if who in candidates else []))
     # Jev down or undecided, a "nobody" a lone speaker or the wake word can't mean, or a "none" the
     # policy refused (a re-ask, a question to the room): openclaw_work's fallback for a human message.
     put_metric("voice.routing.jev", dimensions={"outcome": "forced" if forced else "fallback"})
     if forced:
         put_metric("messaging.jev.forced", dimensions={"reason": forced})
     if to_people:
-        return {"agentId": None}  # spoken to a person: silence is the default
+        return _routed()  # spoken to a person: silence is the default
     if len(candidates) == 1:
-        return {"agentId": candidates[0]}
-    return {"agentId": await openclaw_work._fallback_single(owner_id, candidates, message, history)}
+        return _routed(candidates[0])
+    return _routed(await openclaw_work._fallback_single(owner_id, candidates, message, history))
 
 
 # ---- Option D: rename and voice notes (C3 notices, C8 voice-profile) -------------------------

@@ -14,7 +14,7 @@ from datetime import datetime, timezone
 from typing import Annotated, Any, Literal, get_args
 
 from botocore.exceptions import ClientError
-from pydantic import Field, model_serializer, model_validator
+from pydantic import Field, field_validator, model_serializer, model_validator
 
 from core.auth import AuthContext, resolve_owner_id
 from core.dynamodb import utc_now_iso
@@ -232,6 +232,8 @@ class LocalSession(ContractModel):
     capabilities_verified: bool
     latest_event_seq: int = Field(default=0, ge=0)
     title: Annotated[str, Field(max_length=120)] | None = None
+    # Lightbulb-only label; the native provider may keep changing its own title.
+    display_title: Annotated[str, Field(max_length=120)] | None = None
     cwd_name: Annotated[str, Field(max_length=128)] | None = None
     last_event_at: str | None = None
     ended_at: str | None = None
@@ -280,6 +282,7 @@ class LocalSession(ContractModel):
                 "native_send_approval",
                 "start_id",
                 "model",
+                "display_title",
                 "permission_mode",
                 "usage",
                 "pickup",
@@ -751,6 +754,7 @@ async def register_session(owner_id: str, user_id: str, device_id: str, registra
                     "pickupSnapshot",
                     "pickupEpoch",
                     "pickedUpFrom",
+                    "displayTitle",
                 )
                 if previous and key in previous
             },
@@ -992,6 +996,7 @@ async def live_sessions_for_room(owner: str, room_id: str, members: list[dict]) 
         out = [
             {
                 **s.model_dump(by_alias=True, include=include),
+                "title": s.display_title or s.title,
                 "humanUserId": s.human_user_id,
                 "displayName": names.get(s.human_user_id) or "Workspace member",
             }
@@ -1037,6 +1042,50 @@ async def get_session(auth: Caller, session_id: str) -> LocalSession:
     ones, but an open view or an old link must still show a session that has ended."""
     row, _ = await authorize_session(auth, None, session_id)
     return _session_public(row, _viewer(auth))
+
+
+class DisplayTitleRequest(ContractModel):
+    display_title: Annotated[str, Field(max_length=120)] | None
+
+    @field_validator("display_title")
+    @classmethod
+    def validate_display_title(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        title = value.strip()
+        if not title or any(ord(char) < 0x20 or ord(char) == 0x7F for char in title):
+            raise ValueError("displayTitle must be a single non-empty line")
+        return title
+
+
+async def set_display_title(auth: AuthContext, session_id: str, title: str | None) -> LocalSession:
+    """The session's own human names its Lightbulb projection, not the native transcript."""
+    from core.services.local_session_relay import publish_resources_changed
+
+    owner = resolve_owner_id(auth)
+    for _ in range(6):
+        row, enrollment = await authorize_session(auth, None, session_id)
+        if auth.user_id != row["humanUserId"]:
+            raise ApiProblem("LOCAL_SESSION_FORBIDDEN", "Only the session's owner can rename it.")
+        if row.get("displayTitle") == title:
+            return _session_public(row, auth.user_id)
+        updated = {**row, "revision": str(uuid.uuid4())}
+        if title is None:
+            updated.pop("displayTitle", None)
+        else:
+            updated["displayTitle"] = title
+        audit = audit_row(owner, session_id, auth, "display_title_changed")
+        try:
+            await repo.put_session(
+                updated, row, enrollment, extra=[{"Put": {"TableName": messaging_repo._table().name, "Item": audit}}]
+            )
+        except ClientError as exc:
+            if not messaging_repo._is_cancelled(exc):
+                raise
+            continue
+        await publish_resources_changed(owner, row["humanUserId"])
+        return _session_public(updated, auth.user_id)
+    raise ApiProblem("LOCAL_SESSION_CONFLICT", "Session changed. Try again.")
 
 
 async def get_private_send_approval(auth: AuthContext, session_id: str) -> PrivateSendApproval:
@@ -1165,6 +1214,8 @@ async def submit_command(
     native_hop: int | None = None,
     source_conditions: list[dict] | None = None,
     source_pairing: tuple[str, str] | None = None,
+    room_meta_fenced_by_extra: bool = False,
+    replaces_request_id: str | None = None,
 ) -> CommandReceipt:
     owner = caller_owner(auth)
     # A roomless command is stored with roomId "": current desktops require the field as a string.
@@ -1177,6 +1228,22 @@ async def submit_command(
     if request.kind == "approve" and (isinstance(auth, AgentInvocation) or source_session_id):
         # A permission prompt is a human's decision: an agent (whoever woke it) never answers one.
         raise ApiProblem("LOCAL_SESSION_FORBIDDEN", "Only a person can answer a permission prompt.")
+    if replaces_request_id is not None:
+        from pydantic import TypeAdapter, ValidationError
+
+        try:
+            TypeAdapter(OpaqueId).validate_python(replaces_request_id)
+        except ValidationError as exc:
+            raise ApiProblem("INVALID_REQUEST", "Invalid replaced request ID.") from exc
+        if (
+            isinstance(auth, AgentInvocation)
+            or request.kind != "send"
+            or replaces_request_id == request.request_id
+            or room_id
+            or origin_room_id
+            or source_session_id
+        ):
+            raise ApiProblem("INVALID_REQUEST", "Only a direct human follow-up can replace an offline send.")
     payload = request.model_dump(by_alias=True)
     author = (
         {"actor": {"kind": "session", "id": source_session_id}, "invocationExpiresAt": int(time.time()) + 30}
@@ -1200,6 +1267,7 @@ async def submit_command(
         if source_session_id
         else ({"kind": "agent", "id": auth.agent_id} if isinstance(auth, AgentInvocation) else auth.user_id),
         payload,
+        *([{"replacesRequestId": replaces_request_id}] if replaces_request_id else []),
     )
     for _ in range(6):
         row, enrollment = await authorize_session(auth, room_id, session_id, owner_only=True)
@@ -1208,6 +1276,54 @@ async def submit_command(
             if existing["requestHash"] != req_hash:
                 raise ApiProblem("IDEMPOTENCY_CONFLICT", "requestId was already used for a different request.")
             return _public(CommandReceipt, existing)
+        retry_update: dict | None = None
+        if replaces_request_id:
+            original = await repo.get_command(owner, session_id, replaces_request_id)
+            if (
+                original is None
+                or original.get("actorUserId") != auth.user_id
+                or original.get("kind") != "send"
+                or original.get("roomId") != ""
+                or original.get("originRoomId")
+                or not original.get("offlineIdentity")
+                or original.get("state") != "rejected"
+                or original.get("cancelledAt")
+                or original.get("text") != request.text
+            ):
+                raise ApiProblem("LOCAL_SESSION_CONFLICT", "The saved offline send cannot be retried.")
+            prior_replacement = original.get("replacedByRequestId")
+            if prior_replacement:
+                previous_retry = await repo.get_command(owner, session_id, prior_replacement)
+                if (
+                    previous_retry is None
+                    or previous_retry.get("replacesRequestId") != replaces_request_id
+                    or previous_retry.get("actorUserId") != auth.user_id
+                    or previous_retry.get("state") != "rejected"
+                ):
+                    raise ApiProblem("LOCAL_SESSION_CONFLICT", "A retry is already in progress or was delivered.")
+            values = {
+                ":actor": auth.user_id,
+                ":rejected": "rejected",
+                ":replacement": request.request_id,
+                ":revision": str(uuid.uuid4()),
+            }
+            pointer_condition = "attribute_not_exists(replacedByRequestId)"
+            if prior_replacement:
+                pointer_condition = "replacedByRequestId = :previous"
+                values[":previous"] = prior_replacement
+            retry_update = {
+                "Update": {
+                    "TableName": messaging_repo._table().name,
+                    "Key": {"pk": repo.session_pk(owner, session_id), "sk": f"COMMAND#{replaces_request_id}"},
+                    "UpdateExpression": "SET replacedByRequestId = :replacement, revision = :revision",
+                    "ConditionExpression": (
+                        f"#state = :rejected AND actorUserId = :actor AND attribute_not_exists(cancelledAt) "
+                        f"AND {pointer_condition}"
+                    ),
+                    "ExpressionAttributeNames": {"#state": "state"},
+                    "ExpressionAttributeValues": values,
+                }
+            }
         require_command_scope(auth, row, request.kind)
         now = int(time.time())
         offline_send = (
@@ -1268,6 +1384,7 @@ async def submit_command(
             **({"originMessageId": origin_message_id} if origin_message_id else {}),
             **({"originEventSeq": row.get("eventSeq", 0)} if origin_room_id else {}),
             **({"nativeHop": native_hop} if native_hop is not None else {}),
+            **({"replacesRequestId": replaces_request_id} if replaces_request_id else {}),
             **(
                 {
                     "sourceHumanUserId": auth.user_id,
@@ -1290,9 +1407,11 @@ async def submit_command(
                 allow_offline=offline_send,
                 extra=[
                     *(source_conditions or []),
+                    *([retry_update] if retry_update else []),
                     {"Put": {"TableName": messaging_repo._table().name, "Item": audit}},
                 ],
                 source_pairing=source_pairing,
+                room_meta_fenced_by_extra=room_meta_fenced_by_extra,
             )
             actor = getattr(auth, "user_id", None) or row["humanUserId"]
             origin = "room_mention" if origin_room_id else "native" if source_session_id else "direct"
@@ -1394,16 +1513,62 @@ async def get_command(auth: Caller, room_id: str | None, session_id: str, reques
 async def list_offline_outbox(auth: AuthContext, session_id: str) -> OfflineOutbox:
     session, _ = await authorize_session(auth, None, session_id)
     owner, sid, now = session["ownerId"], session["sessionId"], int(time.time())
-    rows = [
+    commands = await repo.list_commands(owner, sid)
+    by_request_id = {row["requestId"]: row for row in commands}
+    cutoff = now - 2 * OFFLINE_SEND_SECONDS
+    saved = {}
+    for row in commands:
+        if not row.get("offlineIdentity") or row.get("actorUserId") != auth.user_id:
+            continue
+        replacement = by_request_id.get(row.get("replacedByRequestId"))
+        if row["createdAt"] < cutoff and not (
+            replacement
+            and replacement.get("replacesRequestId") == row["requestId"]
+            and replacement.get("actorUserId") == auth.user_id
+            and replacement["createdAt"] >= cutoff
+        ):
+            continue
+        saved[row["requestId"]] = row
+    linked: dict[str, dict] = {}
+    for original in saved.values():
+        if original["state"] != "rejected":
+            continue
+        replacement = by_request_id.get(original.get("replacedByRequestId"))
+        if (
+            replacement
+            and replacement.get("replacesRequestId") == original["requestId"]
+            and replacement.get("actorUserId") == auth.user_id
+        ):
+            if replacement["state"] == "pending" and replacement["deliverBy"] <= now:
+                replacement = await _expire_pending_command(owner, sid, replacement)
+                if replacement is None:
+                    continue
+                by_request_id[replacement["requestId"]] = replacement
+            linked[replacement["requestId"]] = original
+    visible = []
+    for command in commands:
+        row = by_request_id[command["requestId"]]
+        if row["requestId"] not in saved and row["requestId"] not in linked:
+            continue
+        if row["state"] == "rejected" and row.get("replacesRequestId") in saved:
+            continue  # a failed retry restores its saved original, never a second Retry action
+        replacement_id = row.get("replacedByRequestId")
+        if (
+            row["state"] == "rejected"
+            and replacement_id in linked
+            and linked[replacement_id]["requestId"] == row["requestId"]
+            and by_request_id[replacement_id]["state"] in {"pending", "dispatched", "unknown", "applied"}
+        ):
+            continue
+        visible.append(row)
+    rows = [await _expire_pending_command(owner, sid, row) for row in visible]
+    active = [
         row
-        for row in await repo.list_commands(owner, sid)
-        if row.get("offlineIdentity")
-        and row.get("actorUserId") == auth.user_id
-        and row["createdAt"] >= now - 2 * OFFLINE_SEND_SECONDS
+        for row in rows
+        if row["state"] not in {"applied", "rejected"} and (row["deliverBy"] > now or row["requestId"] in linked)
     ]
-    rows = [await _expire_pending_command(owner, sid, row) for row in rows]
-    active = [row for row in rows if row["state"] not in {"applied", "rejected"} and row["deliverBy"] > now]
-    recent = [row for row in rows if row["state"] in {"applied", "rejected"} or row["deliverBy"] <= now]
+    active_ids = {row["requestId"] for row in active}
+    recent = [row for row in rows if row["requestId"] not in active_ids]
     selected = active[-OFFLINE_SEND_PENDING_LIMIT:]
     if len(selected) < OFFLINE_SEND_PENDING_LIMIT:
         selected += recent[-(OFFLINE_SEND_PENDING_LIMIT - len(selected)) :]
@@ -1456,6 +1621,7 @@ async def cancel_offline_command(auth: AuthContext, session_id: str, request_id:
 # --- Team control and the audit trail (owner ruling 2026-09-25) -----------------------------
 
 AUDIT_ACTIONS = Literal[
+    "display_title_changed",
     "native_send_requested",
     "native_send_approved",
     "native_send_denied",
@@ -1735,7 +1901,7 @@ async def remove_sender(auth: AuthContext, session_id: str, user_id: str) -> Loc
 def join_request_title(name: str, row: dict) -> str:
     from core.services import notification_copy as copy
 
-    return f"{name} wants to join {copy.line(row.get('title'), 40) or row['sessionId'][:8]}"
+    return f"{name} wants to join {copy.line(row.get('displayTitle') or row.get('title'), 40) or row['sessionId'][:8]}"
 
 
 async def _notify_join_request(row: dict, requester: str) -> None:
@@ -1808,7 +1974,7 @@ async def _notify_join_answer(row: dict, requester: str, state: str, request_id:
         name = await human_display_name(row["humanUserId"])
     except Exception:
         name = "The session's owner"
-    session = copy.line(row.get("title"), 40) or sid[:8]
+    session = copy.line(row.get("displayTitle") or row.get("title"), 40) or sid[:8]
     if state == "join_allowed":
         title, body = f"{name} let you into {session}", "You can send follow-ups and answer its prompts."
     else:

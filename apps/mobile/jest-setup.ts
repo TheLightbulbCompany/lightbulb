@@ -393,3 +393,16 @@ jest.mock("@expo/ui/swift-ui/modifiers", () => ({
   tag: (tag: string | number) => ({ tag }),
   tint: () => ({}),
 }));
+
+// LiveKit (Live rooms) and its WebRTC fork are native. The (app) layout mounts the Live sheet, so
+// every suite that renders it needs these to load; a suite that drives Live mocks them itself.
+jest.mock("@livekit/react-native", () => ({ registerGlobals: jest.fn(), setupIOSAudioManagement: jest.fn(), useTrackVolume: () => 0 }));
+jest.mock("@livekit/components-react", () => ({
+  RoomContext: require("react").createContext(undefined),
+  useIsSpeaking: () => false,
+  useParticipantAttributes: () => ({ attributes: {} }),
+  useParticipants: () => [],
+  useTracks: () => [],
+}));
+jest.mock("@livekit/react-native-webrtc", () => ({}));
+jest.mock("livekit-client", () => ({ Track: { Source: { Microphone: "microphone" } }, Room: jest.fn(), RoomEvent: {} }));

@@ -405,9 +405,9 @@ async def answer_codex_send(auth: AuthContext, session_id: str, decision: Native
                             "Update": {
                                 "TableName": messaging_repo._table().name,
                                 "Key": {"pk": pk, "sk": _tool_key(request_id)},
-                                "UpdateExpression": "SET #state = :state, result = :result",
-                                "ConditionExpression": "approvalId = :approval AND inputDigest = :digest AND attribute_not_exists(result)",
-                                "ExpressionAttributeNames": {"#state": "state"},
+                                "UpdateExpression": "SET #state = :state, #result = :result",
+                                "ConditionExpression": "approvalId = :approval AND inputDigest = :digest AND attribute_not_exists(#result)",
+                                "ExpressionAttributeNames": {"#state": "state", "#result": "result"},
                                 "ExpressionAttributeValues": {
                                     ":state": result["state"],
                                     ":result": result,
@@ -677,9 +677,9 @@ async def _finish(owner: str, source: str, request_id: str, destination: str, re
         await run_in_thread(
             messaging_repo._table().update_item,
             Key={"pk": pk, "sk": sk},
-            UpdateExpression="SET #state = :state, result = :result",
-            ConditionExpression="destination = :destination AND attribute_not_exists(result)",
-            ExpressionAttributeNames={"#state": "state"},
+            UpdateExpression="SET #state = :state, #result = :result",
+            ConditionExpression="destination = :destination AND attribute_not_exists(#result)",
+            ExpressionAttributeNames={"#state": "state", "#result": "result"},
             ExpressionAttributeValues={":state": result["state"], ":result": result, ":destination": destination},
         )
     except ClientError as exc:
@@ -695,9 +695,9 @@ async def _finish(owner: str, source: str, request_id: str, destination: str, re
                 await run_in_thread(
                     messaging_repo._table().update_item,
                     Key={"pk": pk, "sk": sk},
-                    UpdateExpression="SET #state = :state, result = :result",
+                    UpdateExpression="SET #state = :state, #result = :result",
                     ConditionExpression="destination = :destination AND #state = :rejected",
-                    ExpressionAttributeNames={"#state": "state"},
+                    ExpressionAttributeNames={"#state": "state", "#result": "result"},
                     ExpressionAttributeValues={
                         ":state": result["state"],
                         ":result": result,

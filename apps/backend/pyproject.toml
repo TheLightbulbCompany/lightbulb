@@ -31,7 +31,13 @@ dependencies = [
     "awslambdaric>=4.0.4",
     "metadata-parser>=2.0.0,<3",
     "pillow>=12.3.0",
+    "livekit-api>=1.2.1",
+    "mcp>=2,<3",
 ]
+
+[project.optional-dependencies]
+# scripts/speak_gate_bench only: fetches the AMI split of ishiki-labs/multi-party-dialogue.
+bench = ["huggingface_hub>=0.24,<1"]
 
 [tool.uv]
 dev-dependencies = [

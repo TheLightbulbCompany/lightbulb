@@ -27,6 +27,7 @@ from core.config import settings
 from core.observability.e2e_correlation import E2ECorrelationMiddleware
 from core.repositories import container_repo
 from core.services.messaging import ApiProblem
+from core.services.hosted_mcp import READ_SCOPE, RESOURCE, WRITE_SCOPE, app as hosted_mcp_app, mcp as hosted_mcp
 from core.services.paperclip_admin_client import PaperclipApiError
 from core.services.update_service import run_scheduled_worker
 from routers import (
@@ -45,6 +46,7 @@ from routers import (
     desktop_pair,
     devices,
     gateway_relay,
+    huddles,
     desktop_execution,
     desktop_sessions,
     desktop_session_pickup,
@@ -426,6 +428,9 @@ async def lifespan(app: FastAPI):
         }
     )
 
+    mcp_context = hosted_mcp.session_manager.run()
+    await mcp_context.__aenter__()
+
     # Startup complete — flip the liveness gate so /health returns 200.
     global _started
     _started = True
@@ -489,6 +494,7 @@ async def lifespan(app: FastAPI):
             return_exceptions=True,
         )
     finally:
+        await mcp_context.__aexit__(None, None, None)
         system_health.BACKGROUND_TASKS.clear()
         if broker is not None:
             from core.services.teams_event_broker import set_broker
@@ -564,7 +570,15 @@ async def messaging_api_problem_handler(request, exc: ApiProblem):
 async def messaging_validation_error_handler(request, exc: RequestValidationError):
     # website-logins too: FastAPI's default 422 echoes the rejected input -- a password.
     if request.url.path.startswith(
-        ("/api/v1/messaging", "/api/v1/runtime", "/api/v1/internal/messaging", "/api/v1/website-logins")
+        (
+            "/api/v1/messaging",
+            "/api/v1/runtime",
+            "/api/v1/internal/messaging",
+            "/api/v1/website-logins",
+            # huddles too: a rejected turn would echo a live transcript.
+            "/api/v1/internal/huddles",
+            "/api/v1/internal/calls",
+        )
     ):
         problem = ApiProblem("INVALID_REQUEST", "Request validation failed.")
         return JSONResponse(status_code=problem.status_code, content=problem.body())
@@ -738,14 +752,21 @@ app.add_middleware(
     allow_origins=settings.cors_origins_list,
     allow_credentials=True,
     allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-    allow_headers=["Content-Type", "Authorization", "X-Requested-With", "X-E2E-Run-Id"],
+    allow_headers=[
+        "Content-Type",
+        "Authorization",
+        "X-Requested-With",
+        "X-E2E-Run-Id",
+        "Mcp-Session-Id",
+        "Mcp-Protocol-Version",
+    ],
     # Expose X-Request-ID (set on every response by RequestContextMiddleware) so
     # cross-origin browser JS can read it. Without this, response.headers.get(
     # "X-Request-ID") is null cross-origin (it works same-origin, which masks the
     # gap in local dev). The frontend attaches recent request IDs to support
     # tickets for log correlation. Named explicitly rather than "*" as the
     # mode-agnostic, future-proof choice — unrelated to credentials.
-    expose_headers=["X-Request-ID"],
+    expose_headers=["X-Request-ID", "Mcp-Session-Id", "WWW-Authenticate"],
 )
 
 # E2E correlation middleware — binds X-E2E-Run-Id header to log context so
@@ -819,6 +840,7 @@ app.include_router(desktop_session_pickup.router, prefix="/api/v1", tags=["deskt
 # Billing routes
 app.include_router(billing.router, prefix="/api/v1/billing", tags=["billing"])
 app.include_router(calls.router, prefix="/api/v1/calls", tags=["calls"])
+app.include_router(huddles.router, prefix="/api/v1", tags=["huddles"])
 
 # Apple In-App Purchase: the app's link endpoint + Apple's notification
 # receiver. The router carries its own /billing and /webhooks paths because the
@@ -1058,3 +1080,18 @@ async def health_check():
 )
 async def protected_route(auth=Depends(get_current_user)):
     return {"message": "You are authenticated", "user_id": auth.user_id}
+
+
+@app.get("/.well-known/oauth-protected-resource/mcp", include_in_schema=False)
+async def mcp_protected_resource_metadata():
+    # The SDK gates basic read access; write is a separate consented tool scope.
+    return {
+        "resource": RESOURCE,
+        "authorization_servers": [settings.CLERK_ISSUER],
+        "scopes_supported": ["user:org:read", READ_SCOPE, WRITE_SCOPE],
+        "bearer_methods_supported": ["header"],
+    }
+
+
+# Keep this last: the SDK serves /mcp and its root well-known OAuth metadata.
+app.mount("/", hosted_mcp_app)

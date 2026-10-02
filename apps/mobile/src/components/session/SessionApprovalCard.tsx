@@ -108,7 +108,7 @@ export function SessionApprovalCard({ session, client, allowed, own, ownerName }
             </View>
           )}
           {current?.status === "sending" && <Text accessibilityRole="alert" style={[styles.note, { color: palette.fgSoft }]}>Submitting your decision…</Text>}
-          {current?.status === "sent" && <Text accessibilityRole="alert" style={[styles.note, { color: palette.fgSoft }]}>{nativeSend ? "Decision recorded." : `Sent to ${where} Mac.`}</Text>}
+          {current?.status === "sent" && <Text accessibilityRole="alert" style={[styles.note, { color: palette.fgSoft }]}>{nativeSend ? "Decision recorded. Waiting for the session to apply it." : `Decision queued for ${where} Mac. Waiting for the session to apply it.`}</Text>}
           {current?.error && <Text accessibilityRole="alert" style={[styles.note, { color: palette.alert }]}>{current.error}</Text>}
         </>
       )}

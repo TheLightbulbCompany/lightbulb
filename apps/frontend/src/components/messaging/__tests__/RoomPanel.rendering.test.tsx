@@ -1,10 +1,10 @@
-import { act, fireEvent, render, screen, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { expect, it, vi } from "vitest";
 import type { RoomRunView } from "@lightbulb/shared";
 import { RoomPanel, type RoomPanelProps } from "../RoomPanel";
 import type { RoomMessage, RoomParticipant } from "../types";
 
-vi.mock("../VoiceCallButton", () => ({ VoiceCallButton: () => null }));
+vi.mock("@/components/huddle/useRoomHuddle", () => ({ useRoomHuddle: () => ({ userIds: [], available: false }) }));
 
 const renders = vi.hoisted(() => vi.fn());
 const bodyRenders = vi.hoisted(() => vi.fn());
@@ -54,6 +54,42 @@ it("does not poll another room member's private session command receipt", () => 
   render(<RoomPanel {...props} messages={[tagged]} onGetSessionCommand={getSessionCommand} />);
   expect(getSessionCommand).not.toHaveBeenCalled();
   expect(screen.queryByText("Sending")).not.toBeInTheDocument();
+});
+
+it("retries only a failed room session send with a new fenced request", async () => {
+  const tagged: RoomMessage = { ...message, author: { kind: "human", id: "owner", displayName: "Owner" },
+    sessionSends: [{ sessionId: "s1", error: "LOCAL_SESSION_OFFLINE" }] };
+  const retry = vi.fn(async () => ({ ...tagged, sessionSends: [{ sessionId: "s1", requestId: "new-id" }] }));
+  render(<RoomPanel {...props} messages={[tagged]} onRetrySessionSend={retry} />);
+  expect(screen.getByText("The session's Mac is offline. Try again when it reconnects.")).toBeInTheDocument();
+  fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+  await waitFor(() => expect(retry).toHaveBeenCalledWith("room", "message", "s1", {
+    requestId: expect.any(String), expectedRequestId: null,
+  }));
+});
+
+it("shows another sender's failed session delivery without offering their controls", () => {
+  const tagged: RoomMessage = { ...message, author: { kind: "human", id: "other", displayName: "Other" },
+    sessionSends: [{ sessionId: "s1", error: "LOCAL_SESSION_OFFLINE" }] };
+  render(<RoomPanel {...props} messages={[tagged]} onRetrySessionSend={vi.fn()} onCancelSessionSend={vi.fn()} />);
+  const article = screen.getByRole("article", { name: "Message from Other" });
+  expect(within(article).getByText("The session's Mac is offline. Try again when it reconnects.")).toBeInTheDocument();
+  expect(within(article).queryByRole("button", { name: "Retry" })).not.toBeInTheDocument();
+  expect(within(article).queryByRole("button", { name: "Cancel" })).not.toBeInTheDocument();
+});
+
+it("shows an MCP session target without rewriting message text, linking only a known target", () => {
+  const tagged: RoomMessage = { ...message, via: "lightbulb_mcp", text: "Please review this", sessionSends: [
+    { sessionId: "s1", displayLabel: "Claude Code · Launch check · Owner" },
+  ] };
+  const view = render(<RoomPanel {...props} messages={[tagged]} />);
+  expect(screen.getByText("Please review this")).toBeInTheDocument();
+  expect(screen.getByText("Claude Code · Launch check · Owner")).toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: /Open session Claude Code/ })).not.toBeInTheDocument();
+  view.rerender(<RoomPanel {...props} messages={[tagged]} composer={{ ...props.composer, sessionTargets: [
+    { candidate: { session: { sessionId: "s1" } as never, handle: "claude-launch-check" }, ownerName: "Owner" },
+  ] }} />);
+  expect(screen.getByRole("button", { name: "Open session Claude Code · Launch check · Owner" })).toBeInTheDocument();
 });
 
 it("refreshes canonical content, reactions and thread metadata after history changes", () => {

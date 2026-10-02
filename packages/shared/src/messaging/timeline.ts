@@ -316,7 +316,10 @@ export function roomDisplayName(
   participants: readonly Pick<RoomMember, "displayName">[],
 ): string {
   if (!room) return "Conversation";
-  if (room.name) return room.name;
+  // A channel's `#` is the surface's to draw (the phone's tile and composer,
+  // the web's Live label), so a name saved with one ("#to-do-updates") read as
+  // "##to-do-updates" there.
+  if (room.name) return (room.kind === "channel" && room.name.replace(/^#+\s*/, "")) || room.name;
   const names = participants.map((participant) => participant.displayName);
   if (room.kind === "dm") return names[0] ?? "Direct message";
   if (room.kind === "group-dm") return names.length ? names.join(" and ") : "Group chat";

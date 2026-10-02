@@ -6,7 +6,7 @@ import { RoomPanel, type RoomPanelProps } from "../RoomPanel";
 import type { RoomRunView } from "@lightbulb/shared";
 import type { RoomMessage, RoomParticipant } from "../types";
 
-vi.mock("../VoiceCallButton", () => ({ VoiceCallButton: () => null }));
+vi.mock("@/components/huddle/useRoomHuddle", () => ({ useRoomHuddle: () => ({ userIds: [], available: false }) }));
 
 // RoomPanel reads the narrow breakpoint straight off matchMedia (tests/setup.ts
 // stubs "nothing matches", i.e. the wide layout). Call narrowViewport() in a

@@ -231,6 +231,15 @@ def register_call_run(identity: dict) -> bool:
     return True
 
 
+# A spoken turn has people waiting, so it runs lighter than a chat turn. Both are AIAgent's own
+# per-instance knobs (run_agent.py AIAgent.__init__): reasoning_config is honoured per provider
+# (Codex clamps to the model's wire set, chat completions sends `reasoning`, Anthropic maps it to
+# thinking) and replaces the transport default of "medium"; max_iterations caps API calls, and on
+# exhaustion Hermes asks for one tool-free summary (chat_completion_helpers.handle_max_iterations),
+# so the caller still hears an answer. Longer work goes to a task (backend TURN_NOTE).
+CALL_RUN_LIMITS = {"reasoning_config": {"enabled": True, "effort": "low"}, "max_iterations": 4}
+
+
 def _run_call(identity: dict, request: dict, frames: "CallFramePublisher") -> tuple[str, str | None, str, dict]:
     """One call turn with the environment a DM turn gets: the profile's own secrets (no
     Paperclip overlay), MCP, terminal, logins and the lightbulb plugin's turn context."""
@@ -253,7 +262,7 @@ def _run_call(identity: dict, request: dict, frames: "CallFramePublisher") -> tu
         logins = website_logins.prompt_scope(agent_id, None, None, lambda: run_aborted(run_id))
         with _hermes_home_scope(agent_id), _brokered_mcp_scope(runtime_mcp_env(agent_id)), _secret_scope(agent_id), _terminal_scope(agent_id, session_key), _mcp_session(agent_id), logins, _turn_context_file(agent_id, ctx):
             try:
-                agent = _construct_agent(agent_id, {"sessionKey": session_key}, frames, session_key)
+                agent = _construct_agent(agent_id, {"sessionKey": session_key}, frames, session_key, **CALL_RUN_LIMITS)
                 attach_agent(run_id, agent)
                 if run_aborted(run_id):
                     return "aborted", None, "", dict(ZERO_USAGE)
@@ -289,7 +298,7 @@ def run_call_turn(identity: dict, request: dict, reserved: bool = False) -> None
     try:
         started = time.time()
         spec = request.get("frames") or {}
-        frames = CallFramePublisher(spec.get("endpoint", ""), spec.get("channel", ""), identity["callId"], agent_id, run_id)
+        frames = call_frame_publisher(spec, identity["callId"], agent_id, run_id)
         outcome, error, output, usage = "error", None, "", dict(ZERO_USAGE)
         frames.started()
         try:
@@ -1402,6 +1411,43 @@ class CallFramePublisher(FramePublisher):
         return call_frame_event(self._call_id, self._run_id, self._agent_id, frame)
 
 
+HUDDLE_FRAMES = frozenset({"tool_start", "chunk", "error", "run_ended"})
+
+
+def _backend_publish(endpoint: str):
+    """Huddle calls: same signature as publish_frame, but POSTs plain `{"events": [...]}` to the
+    backend relay with the hook token (read at call time: boot rebinds it). Failures are logged
+    and dropped, as on the AppSync path."""
+    import bridge
+
+    def publish(_endpoint, _channel, *events: dict) -> int:
+        # Only what the huddle worker reads (huddle_agent/frames.py Turns._handle): reasoning
+        # deltas and the rest would each cost a relay round trip for nothing.
+        events = tuple(e for e in events if ((e.get("payload") or {}).get("frame") or {}).get("type") in HUDDLE_FRAMES)
+        if not events:
+            return 200
+        request = urllib.request.Request(
+            endpoint, data=json.dumps({"events": list(events)}, separators=(",", ":")).encode(),
+            headers={"Content-Type": "application/json", "Authorization": f"Bearer {bridge.HOOK_TOKEN}"},
+            method="POST")
+        try:
+            with urllib.request.urlopen(request, timeout=FRAME_TIMEOUT_S) as res:
+                return res.status
+        except Exception as exc:  # noqa: BLE001 — a run never fails because of a frame
+            log.warning("backend frame publish failed: %s", exc)
+            return 0
+
+    return publish
+
+
+def call_frame_publisher(spec: dict, call_id, agent_id, run_id) -> "CallFramePublisher":
+    endpoint = spec.get("endpoint", "")
+    publish = _backend_publish(endpoint) if spec.get("sink") == "backend" else None
+    # The emit guards require a non-empty channel; the backend sink has none, so reuse the endpoint.
+    channel = endpoint if publish else spec.get("channel", "")
+    return CallFramePublisher(endpoint, channel, call_id, agent_id, run_id, publish)
+
+
 # ---- structured room context (spec §5 "Context and threading") ------------------------------
 def room_context(body: dict, agent_id: str, media: list[str] | None = None) -> dict:
     """The structured room payload the agent reasons over — the Hermes home of OpenClaw's
@@ -2271,7 +2317,7 @@ def profile_toolsets() -> tuple[list[str] | None, list[str] | None]:
     return sorted(_get_platform_tools(config, "cli")), disabled
 
 
-def _construct_agent(agent_id: str, body: dict, frames, session_key: str):
+def _construct_agent(agent_id: str, body: dict, frames, session_key: str, **limits):
     """The one place that builds a real Hermes AIAgent. Home-scoping is the CALLER's job now
     (_run_hermes's `_hermes_home_scope`, held across construction AND run_conversation — see
     that function's docstring for why construction-only was wrong). Every other test in this
@@ -2316,6 +2362,7 @@ def _construct_agent(agent_id: str, body: dict, frames, session_key: str):
         enabled_toolsets=enabled_toolsets,
         disabled_toolsets=disabled_toolsets,
         **callbacks,
+        **limits,  # CALL_RUN_LIMITS on a voice turn only; every other turn passes none
     )
     _capture_api_errors(agent)
     return agent

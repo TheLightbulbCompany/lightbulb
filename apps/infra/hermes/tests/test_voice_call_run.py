@@ -71,8 +71,8 @@ def test_call_turn_gets_the_dm_environment(monkeypatch):
         seen["family"] = family
         return {}
 
-    def construct(agent_id, body, frames, session_key):
-        seen["frames"], seen["session"] = frames, session_key
+    def construct(agent_id, body, frames, session_key, **limits):
+        seen["frames"], seen["session"], seen["limits"] = frames, session_key, limits
         return SimpleNamespace(run_conversation=lambda **_kw: {"api_calls": 1, "final_response": "It landed."})
 
     monkeypatch.setattr(turn, "_secret_scope", secret_scope)
@@ -85,6 +85,49 @@ def test_call_turn_gets_the_dm_environment(monkeypatch):
     assert seen["overlay"] is None  # no PAPERCLIP_* variables
     assert seen["family"] == "call"
     assert seen["session"] == SESSION and seen["frames"] is frames
+    assert seen["limits"] == {"reasoning_config": {"enabled": True, "effort": "low"}, "max_iterations": 4}
+
+
+def _fake_hermes(monkeypatch, built):
+    import sys
+    import types
+
+    class AIAgent:
+        def __init__(self, **kw):
+            built.append(kw)
+
+    monkeypatch.setitem(sys.modules, "run_agent", types.SimpleNamespace(AIAgent=AIAgent))
+    monkeypatch.setattr(turn, "pin_profile_defaults", lambda _a: {})
+    monkeypatch.setattr(turn, "profile_model", lambda _c: ("m", "p"))
+    monkeypatch.setattr(turn, "profile_toolsets", lambda: (None, None))
+    monkeypatch.setattr(turn, "_capture_api_errors", lambda _a: None)
+
+
+def test_construct_agent_forwards_call_limits_to_aiagent(monkeypatch):
+    built = []
+    _fake_hermes(monkeypatch, built)
+    turn._construct_agent("agent-1", {}, None, SESSION, **turn.CALL_RUN_LIMITS)
+    turn._construct_agent("agent-1", {}, None, "agent:agent-1:lightbulb:room:r")
+    assert built[0]["reasoning_config"] == {"enabled": True, "effort": "low"} and built[0]["max_iterations"] == 4
+    # A chat turn keeps Hermes's defaults: no reasoning override, unlimited iterations.
+    assert "reasoning_config" not in built[1] and "max_iterations" not in built[1]
+
+
+def test_room_turns_never_pass_call_limits(home, monkeypatch):
+    from tests import factories as f
+
+    seen = []
+
+    class _Agent:
+        session_input_tokens = session_output_tokens = 0
+        session_cache_read_tokens = session_cache_write_tokens = 0
+
+        def run_conversation(self, **_kw):
+            return {"api_calls": 1, "final_response": "ok"}
+
+    monkeypatch.setattr(turn, "_construct_agent", lambda *a, **k: seen.append(k) or _Agent())
+    turn._run_hermes("ceo", f.ingress(), None)
+    assert seen == [{}]
 
 
 def _no_thread(monkeypatch, spawned):
@@ -146,3 +189,14 @@ def test_aborted_while_queued_never_enters_the_context_file(monkeypatch):
     frames = turn.CallFramePublisher("", "", "call-1", "agent-1", "run-1")
     assert turn._run_call(IDENTITY, REQUEST, frames)[0] == "aborted"
     assert entered == []
+
+
+def test_envelope_accepts_the_huddle_backend_sink():
+    # The exact frames shape voice_calls.start_huddle_turn sends: an endpoint, no AppSync channel.
+    frames = {"sink": "backend", "endpoint": "https://api.invalid/api/v1/internal/calls/call-1/frames"}
+    assert server._call_envelope({**BODY, "request": {**REQUEST, "frames": frames}}, require_request=True) is not None
+
+
+def test_envelope_still_needs_a_channel_without_the_backend_sink():
+    frames = {"endpoint": "https://e.invalid"}
+    assert server._call_envelope({**BODY, "request": {**REQUEST, "frames": frames}}, require_request=True) is None

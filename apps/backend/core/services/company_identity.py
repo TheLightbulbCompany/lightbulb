@@ -105,6 +105,15 @@ RESERVED_SLUGS = frozenset(
         "admin-staging",
         "app-dev",
         "app-staging",
+        # The product moved onto this domain (2026-10): these are its hosts.
+        # `company` is deliberately absent: company.{root} is an auth origin
+        # string that never resolves in DNS, and it is the fallback slug.
+        "bv",
+        "bv-dev",
+        "clerk",
+        "accounts",
+        "clkmail",
+        "about",
     }
 )
 

@@ -53,6 +53,7 @@ export interface RoomDirectoryProps {
   sessions?: readonly SidebarSession[];
   /** Present: the Sessions group always shows, with an empty state when nobody is sharing. */
   onSelectSession?: (sessionId: string) => void;
+  onRenameSession?: (sessionId: string, title: string | null) => Promise<unknown>;
   currentSessionId?: string | null;
   /** Opens the All sessions list in the main pane. */
   onOpenAllSessions?: () => void;
@@ -111,6 +112,7 @@ function DirectoryContent({
   draftRoomIds = [],
   sessions = [],
   onSelectSession,
+  onRenameSession,
   currentSessionId = null,
   onOpenAllSessions,
   allSessionsOpen = false,
@@ -399,7 +401,7 @@ function DirectoryContent({
           {live.length === 0
             ? <div className="room-directory-session-empty"><p className="text-xs text-muted-foreground">No one is sharing a session.</p><StartSessionDialog /></div>
             : <ul>{shown.map((entry) => <SessionListRow key={entry.session.sessionId} entry={entry}
-                current={entry.session.sessionId === currentSessionId} onSelect={onSelectSession} />)}</ul>}
+                current={entry.session.sessionId === currentSessionId} onSelect={onSelectSession} onRename={onRenameSession} />)}</ul>}
           {live.length > SIDEBAR_SESSION_CAP && <button type="button" className="room-directory-subgroup" aria-expanded={sessionsExpanded}
             aria-controls={listId} onClick={() => setSessionsExpanded((open) => !open)}>
             {sessionsExpanded ? "Show fewer" : `+${live.length - SIDEBAR_SESSION_CAP} more`}

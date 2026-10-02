@@ -73,7 +73,7 @@ const receipt = (request: LocalSessionCommand, state: LocalSessionCommandReceipt
 });
 const mockListSessions = jest.fn(async (): Promise<{ sessions: LocalSession[] }> => ({ sessions: [mockSession] }));
 const mockListEvents = jest.fn(async () => ({ events: mockEvents, nextAfterSeq: null }));
-const mockSubmit = jest.fn(async (_s: string, request: LocalSessionCommand) => receipt(request));
+const mockSubmit = jest.fn(async (_s: string, request: LocalSessionCommand, _replacesRequestId?: string) => receipt(request));
 const mockGetCommand = jest.fn();
 const mockListOutbox = jest.fn(async () => ({ commands: [] as LocalSessionCommandReceipt[] }));
 const mockGetPrivateApproval = jest.fn();
@@ -188,9 +188,9 @@ describe("session screen", () => {
     await waitFor(() => expect(mockSubmit).toHaveBeenCalledWith("sess-1", {
       requestId: "33333333-3333-4333-8333-333333333333", expectedGeneration: "g1", kind: "send", text: "also run lint",
     }));
-    // The follow-up shows at once as a pending row carrying one status chip.
-    await waitFor(() => expect(screen.getByText("Delivered")).toBeTruthy());
-    expect(screen.getByLabelText("Pending follow-up")).toBeTruthy();
+    // The follow-up stays subdued until the transcript echoes it; admission has no lasting badge.
+    await waitFor(() => expect(screen.getByLabelText("Pending follow-up")).toBeTruthy());
+    expect(screen.queryByText("Delivered")).toBeNull();
     expect(screen.getByText("also run lint")).toBeTruthy();
     expect(input.props.value).toBe("");
   });
@@ -232,6 +232,51 @@ describe("session screen", () => {
     await waitFor(() => expect(screen.getByText("resume when ready")).toBeTruthy());
     expect(screen.getByText("Queued for session")).toBeTruthy();
     expect(mockSubmit).not.toHaveBeenCalled();
+  });
+
+  it("removes the old rejected outbox action when retry starts", async () => {
+    const now = Math.floor(Date.now() / 1000);
+    mockListOutbox.mockResolvedValue({ commands: [{
+      ...receipt({ requestId: "saved-request", expectedGeneration: "g1", kind: "send", text: "resume when ready" }, "rejected"),
+      createdAt: now - 3600, deliverBy: now - 1,
+    }] });
+    await render(<SessionScreen />);
+    await waitFor(() => expect(screen.getByLabelText("Retry follow-up")).toBeTruthy());
+    await fireEvent.press(screen.getByLabelText("Retry follow-up"));
+    await waitFor(() => expect(mockSubmit).toHaveBeenCalledTimes(1));
+    expect(mockSubmit).toHaveBeenCalledWith("sess-1", expect.objectContaining({ text: "resume when ready" }), "saved-request");
+    expect(screen.queryByLabelText("Retry follow-up")).toBeNull();
+  });
+
+  it("restores the saved retry when replacement admission is rejected", async () => {
+    const now = Math.floor(Date.now() / 1000);
+    mockListOutbox.mockResolvedValue({ commands: [{
+      ...receipt({ requestId: "saved-request", expectedGeneration: "g1", kind: "send", text: "resume when ready" }, "rejected"),
+      createdAt: now - 3600, deliverBy: now - 1,
+    }] });
+    mockSubmit.mockRejectedValueOnce(new ApiError(409, null));
+    await render(<SessionScreen />);
+    await waitFor(() => expect(screen.getByLabelText("Retry follow-up")).toBeTruthy());
+    await fireEvent.press(screen.getByLabelText("Retry follow-up"));
+    await waitFor(() => expect(screen.getByText("Session changed or is offline. Refresh before sending again.")).toBeTruthy());
+    expect(screen.getByLabelText("Retry follow-up")).toBeTruthy();
+  });
+
+  it("keeps the original ID when reconciling an uncertain replacement", async () => {
+    const now = Math.floor(Date.now() / 1000);
+    mockListOutbox.mockResolvedValue({ commands: [{
+      ...receipt({ requestId: "saved-request", expectedGeneration: "g1", kind: "send", text: "resume when ready" }, "rejected"),
+      createdAt: now - 3600, deliverBy: now - 1,
+    }] });
+    mockSubmit.mockRejectedValueOnce(new TypeError("network"));
+    await render(<SessionScreen />);
+    await waitFor(() => expect(screen.getByLabelText("Retry follow-up")).toBeTruthy());
+    await fireEvent.press(screen.getByLabelText("Retry follow-up"));
+    await waitFor(() => expect(screen.getByLabelText("Retry same request")).toBeTruthy());
+    await fireEvent.press(screen.getByLabelText("Retry same request"));
+    await waitFor(() => expect(mockSubmit).toHaveBeenCalledTimes(2));
+    expect(mockSubmit.mock.calls[1][2]).toBe("saved-request");
+    expect(mockSubmit.mock.calls[1][1].requestId).toBe(mockSubmit.mock.calls[0][1].requestId);
   });
 
   it("clears an uncertain draft when the outbox proves admission", async () => {
@@ -373,7 +418,7 @@ describe("session screen", () => {
       kind: "approve", approvalId: "appr-0123456789abcdef0123456789abcdef",
       inputDigest: "a".repeat(64), decision: "allow", mode: "acceptEdits",
     }));
-    expect(await screen.findByText("Sent to your Mac.")).toBeTruthy();
+    expect(await screen.findByText("Decision queued for your Mac. Waiting for the session to apply it.")).toBeTruthy();
     expect(screen.getByRole("button", { name: "Approve" })).toBeDisabled();
   });
 

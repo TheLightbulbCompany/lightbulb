@@ -167,7 +167,9 @@ def _call_envelope(body, *, path_run_id: str | None = None, require_request: boo
         if any(not isinstance(request.get(k), str) or not request[k] for k in ("input", "instructions")):
             return None
         frames = request.get("frames")
-        if not isinstance(frames, dict) or not all(isinstance(frames.get(k), str) and frames[k] for k in ("endpoint", "channel")):
+        # A huddle turn's backend sink POSTs to its endpoint and has no AppSync channel.
+        needs = ("endpoint",) if isinstance(frames, dict) and frames.get("sink") == "backend" else ("endpoint", "channel")
+        if not isinstance(frames, dict) or not all(isinstance(frames.get(k), str) and frames[k] for k in needs):
             return None
     return identity, request
 

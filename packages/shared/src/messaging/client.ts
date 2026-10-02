@@ -78,13 +78,18 @@ export interface MessagingClient {
   listWorkspaceSessions(options?: { includeEnded?: boolean }): Promise<WorkspaceSessions>;
   /** One session, ended included -- the list keeps only live ones. 404s LOCAL_SESSION_NOT_FOUND otherwise. */
   getLocalSession(sessionId: string): Promise<LocalSession>;
+  /** Owner-only display name; null restores the provider title. */
+  setLocalSessionDisplayTitle(sessionId: string, displayTitle: string | null): Promise<LocalSession>;
   getPrivateSendApproval(sessionId: string): Promise<PrivateSendApproval>;
   answerNativeSendApproval(sessionId: string, decision: NativeSendDecision): Promise<NativeSendReceipt>;
   getNativeSendReceipt(sessionId: string, requestId: string): Promise<NativeSendReceipt>;
   listLocalSessionEvents(sessionId: string, afterSeq: number, limit?: number): Promise<LocalSessionEventPage>;
-  submitLocalSessionCommand(sessionId: string, request: LocalSessionCommand): Promise<LocalSessionCommandReceipt>;
+  submitLocalSessionCommand(sessionId: string, request: LocalSessionCommand, replacesRequestId?: string): Promise<LocalSessionCommandReceipt>;
   getLocalSessionCommand(sessionId: string, requestId: string): Promise<LocalSessionCommandReceipt>;
   cancelLocalSessionCommand(sessionId: string, requestId: string): Promise<LocalSessionCommandReceipt>;
+  /** Explicit recovery of one failed room mention; requestId is new, expectedRequestId fences the visible send. */
+  retrySessionSend(roomId: string, messageId: string, sessionId: string, request: { requestId: string; expectedRequestId: string | null }): Promise<CanonicalRoomMessage>;
+  cancelSessionSend(roomId: string, messageId: string, sessionId: string, request: { expectedRequestId: string | null }): Promise<CanonicalRoomMessage>;
   listLocalSessionOutbox(sessionId: string): Promise<LocalSessionOfflineOutbox>;
   /** Owner only: pause or resume sharing one session. */
   setLocalSessionSharing(sessionId: string, shared: boolean): Promise<LocalSession>;
@@ -150,15 +155,18 @@ export function createMessagingClient(api: ApiMethods): MessagingClient {
     listWorkspaceSessions: (options) =>
       api.get(`/messaging/sessions${options?.includeEnded ? "?includeEnded=true" : ""}`) as Promise<WorkspaceSessions>,
     getLocalSession: (sessionId) => api.get(sessionPath(sessionId)) as Promise<LocalSession>,
+    setLocalSessionDisplayTitle: (sessionId, displayTitle) => api.patch(`${sessionPath(sessionId)}/display-title`, { displayTitle }) as Promise<LocalSession>,
     getPrivateSendApproval: (sessionId) => api.get(`${sessionPath(sessionId)}/private-send-approval`) as Promise<PrivateSendApproval>,
     answerNativeSendApproval: (sessionId, decision) => api.post(`${sessionPath(sessionId)}/native-send-approval`, decision) as Promise<NativeSendReceipt>,
     getNativeSendReceipt: (sessionId, requestId) => api.get(`${sessionPath(sessionId)}/native-send-receipts/${encodeURIComponent(requestId)}`) as Promise<NativeSendReceipt>,
     listLocalSessionEvents: (sessionId, afterSeq, limit = 50) => api.get(
       `${sessionPath(sessionId)}/events?afterSeq=${encodeURIComponent(String(afterSeq))}&limit=${encodeURIComponent(String(limit))}`,
     ) as Promise<LocalSessionEventPage>,
-    submitLocalSessionCommand: (sessionId, request) => api.post(`${sessionPath(sessionId)}/commands`, request) as Promise<LocalSessionCommandReceipt>,
+    submitLocalSessionCommand: (sessionId, request, replacesRequestId) => api.post(`${sessionPath(sessionId)}/commands${replacesRequestId ? `?replacesRequestId=${encodeURIComponent(replacesRequestId)}` : ""}`, request) as Promise<LocalSessionCommandReceipt>,
     getLocalSessionCommand: (sessionId, requestId) => api.get(`${sessionPath(sessionId)}/commands/${encodeURIComponent(requestId)}`) as Promise<LocalSessionCommandReceipt>,
     cancelLocalSessionCommand: (sessionId, requestId) => api.post(`${sessionPath(sessionId)}/commands/${encodeURIComponent(requestId)}/cancel`, {}) as Promise<LocalSessionCommandReceipt>,
+    retrySessionSend: (roomId, messageId, sessionId, request) => api.post(`${roomPath(roomId)}/messages/${encodeURIComponent(messageId)}/session-sends/${encodeURIComponent(sessionId)}/retry`, request) as Promise<CanonicalRoomMessage>,
+    cancelSessionSend: (roomId, messageId, sessionId, request) => api.post(`${roomPath(roomId)}/messages/${encodeURIComponent(messageId)}/session-sends/${encodeURIComponent(sessionId)}/cancel`, request) as Promise<CanonicalRoomMessage>,
     listLocalSessionOutbox: (sessionId) => api.get(`${sessionPath(sessionId)}/outbox`) as Promise<LocalSessionOfflineOutbox>,
     setLocalSessionSharing: (sessionId, shared) => api.put(`${sessionPath(sessionId)}/sharing`, { shared }) as Promise<LocalSession>,
     setLocalSessionTeamControl: (sessionId, enabled) => api.put(`${sessionPath(sessionId)}/team-control`, { enabled }) as Promise<LocalSession>,

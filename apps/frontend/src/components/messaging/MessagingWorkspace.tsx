@@ -43,7 +43,7 @@ export function MessagingConversation() {
   const { roomProps, sessionFocus, openSession, closeSession, sessionSource, resolveSessionOwner, workspaceSessions, scope, directoryProps } = useMessagingWorkspace();
   if (sessionFocus?.all) {
     return <AllSessionsView key={scope} entries={directoryProps.sessions ?? []} loading={workspaceSessions.loading}
-      onOpenSession={openSession} onClose={closeSession} />;
+      onOpenSession={openSession} onClose={closeSession} onRename={directoryProps.onRenameSession} />;
   }
   if (sessionFocus?.sessionId === null) {
     return <NewSessionView key={scope} sessions={workspaceSessions.sessions} onEvent={sessionSource.onEvent}

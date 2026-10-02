@@ -192,6 +192,15 @@ async def record_local_session_open(
     )
 
 
+@router.patch("/messaging/sessions/{session_id}/display-title", response_model=local_sessions.LocalSession)
+async def set_local_session_display_title(
+    session_id: str,
+    body: local_sessions.DisplayTitleRequest,
+    auth: AuthContext = Depends(get_current_user),
+):
+    return await local_sessions.set_display_title(auth, session_id, body.display_title)
+
+
 class SessionSharingRequest(ContractModel):
     shared: bool
 
@@ -345,11 +354,12 @@ async def get_native_send_receipt(
 async def submit_local_session_command(
     session_id: str,
     body: local_sessions.LocalSessionCommand,
+    replaces_request_id: str | None = Query(None, alias="replacesRequestId", min_length=1, max_length=256),
     auth: AuthContext = Depends(get_current_user),
 ):
     from core.services.local_session_relay import get_local_session_relay
 
-    receipt = await local_sessions.submit_command(auth, None, session_id, body)
+    receipt = await local_sessions.submit_command(auth, None, session_id, body, replaces_request_id=replaces_request_id)
     try:
         await get_local_session_relay().dispatch_session(resolve_owner_id(auth), receipt.session_id)
     except Exception:
@@ -614,6 +624,34 @@ async def create_room_message(
     auth: AuthContext = Depends(get_current_user),
 ):
     return await service.create_human_message(auth, room_id, request)
+
+
+@router.post(
+    "/messaging/rooms/{room_id}/messages/{message_id}/session-sends/{session_id}/retry",
+    response_model=CanonicalMessage,
+)
+async def retry_room_session_send(
+    room_id: str,
+    message_id: str,
+    session_id: str,
+    body: service.RetrySessionSendRequest,
+    auth: AuthContext = Depends(get_current_user),
+):
+    return await service.retry_room_session_send(auth, room_id, message_id, session_id, body)
+
+
+@router.post(
+    "/messaging/rooms/{room_id}/messages/{message_id}/session-sends/{session_id}/cancel",
+    response_model=CanonicalMessage,
+)
+async def cancel_room_session_send(
+    room_id: str,
+    message_id: str,
+    session_id: str,
+    body: service.CancelSessionSendRequest,
+    auth: AuthContext = Depends(get_current_user),
+):
+    return await service.cancel_room_session_send(auth, room_id, message_id, session_id, body)
 
 
 @router.put("/messaging/rooms/{room_id}/messages/{message_id}/reactions", response_model=CanonicalMessage)

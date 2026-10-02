@@ -143,6 +143,13 @@ const rules: RenderRules = {
 
 const horizontalBlockScroll = { flexGrow: 0, maxWidth: "100%" as const };
 
+// The library's `flex: 1` gives a list item's text a zero flex basis, so a
+// bubble sized to its content ignored list text when choosing its width (it
+// came out as wide as its widest heading) while its height was taken at the
+// full width: items wrapped to more lines than they had room for and printed
+// over each other. Basis auto + shrink lets the text count toward the width.
+const listContent = { flex: 0, flexShrink: 1 };
+
 // Plain object, not StyleSheet.create — the library flattens and re-creates
 // it internally, merging over its defaults (mergeStyle).
 const markdownStyles = {
@@ -201,6 +208,8 @@ const markdownStyles = {
   bullet_list: { marginBottom: spacing.md },
   ordered_list: { marginBottom: spacing.md },
   list_item: { marginBottom: spacing.xs },
+  bullet_list_content: listContent,
+  ordered_list_content: listContent,
   bullet_list_icon: {
     fontFamily: fonts.sans,
     fontSize: 14,
@@ -359,6 +368,8 @@ function bubbleStyles(p: ChatPalette, inverse: boolean) {
     bullet_list: { marginBottom: 0 },
     ordered_list: { marginBottom: 0 },
     list_item: { marginBottom: spacing.xs },
+    bullet_list_content: listContent,
+    ordered_list_content: listContent,
     bullet_list_icon: {
       fontFamily: fonts.sans,
       fontSize: 14,

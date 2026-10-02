@@ -7,7 +7,7 @@ import { RoomPanel, type RoomPanelProps } from "../RoomPanel";
 import { RoomTasks } from "../RoomTasks";
 import type { RoomMessage, RoomParticipant } from "../types";
 
-vi.mock("../VoiceCallButton", () => ({ VoiceCallButton: () => null }));
+vi.mock("@/components/huddle/useRoomHuddle", () => ({ useRoomHuddle: () => ({ userIds: [], available: false }) }));
 
 const teams = vi.hoisted(() => ({
   issues: undefined as Issue[] | undefined,

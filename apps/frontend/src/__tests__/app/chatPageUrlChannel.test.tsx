@@ -89,6 +89,9 @@ vi.mock("@/components/marketplace/drawer/MarketplaceDrawerProvider", () => ({
   useMarketplaceDrawer: () => ({ open: vi.fn() }),
 }));
 vi.mock("@/components/marketplace/drawer/MarketplaceDrawer", () => ({ MarketplaceDrawer: () => null }));
+vi.mock("@/components/huddle/HuddleProvider", () => ({
+  HuddleProvider: ({ children }: { children: React.ReactNode }) => children,
+}));
 vi.mock("@/components/marketplace/drawer/MarketplaceToast", () => ({ MarketplaceToast: () => null }));
 
 import ChatPage from "@/app/chat/page";

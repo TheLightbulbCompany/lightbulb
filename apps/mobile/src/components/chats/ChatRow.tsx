@@ -1,6 +1,7 @@
 import {
   roomDisplayName,
   roomPreview,
+  displaySessionMentions,
   sessionLabel,
   sessionPreview,
   sessionRingState,
@@ -25,7 +26,7 @@ import { hapticSelection } from "../../lib/haptics";
 import { relativeTime } from "../../lib/relativeTime";
 import { ListRow } from "../ui/ListRow";
 
-export type ChatRowAction = "markRead" | "markUnread" | "mute" | "star" | "copyLink" | "archive";
+export type ChatRowAction = "markRead" | "markUnread" | "mute" | "star" | "copyLink" | "archive" | "rename";
 
 /**
  * The channel leading tile: the `#` glyph column. Fixed-size tile: the `#`
@@ -134,6 +135,7 @@ export function RoomChatRow({
   ring,
   live,
   hasDraft,
+  sessions = [],
   palette,
   onAction,
 }: {
@@ -145,6 +147,7 @@ export function RoomChatRow({
   /** useRoomActivity's liveLine: "Ann is typing…" / "working…" / "CEO is working…". */
   live: string | null;
   hasDraft: boolean;
+  sessions?: readonly LocalSession[];
   palette: ChatPalette;
   onAction: (action: ChatRowAction) => void;
 }) {
@@ -225,7 +228,7 @@ export function RoomChatRow({
             title={name}
             titleAccessory={titleAccessory}
             time={relativeTime(Date.parse(room.lastMessageAt ?? ""))}
-            preview={live ?? roomPreview(room, viewerId)}
+            preview={live ?? displaySessionMentions(roomPreview(room, viewerId), undefined, sessions)}
             previewTone={live ? "live" : "normal"}
             unread={unread}
             testID={`chat-row-room-${room.roomId}`}
@@ -279,7 +282,7 @@ export function SessionChatRow({
   own: boolean;
   unread: boolean;
   palette: ChatPalette;
-  onAction: (action: Extract<ChatRowAction, "markRead" | "archive">) => void;
+  onAction: (action: Extract<ChatRowAction, "markRead" | "archive" | "rename">) => void;
 }) {
   const self = useRef<SwipeableMethods>(null);
   const busy = session.status === "busy";
@@ -292,7 +295,7 @@ export function SessionChatRow({
     ? `${own ? "" : `${ownerName} · `}working…`
     : `${own ? "" : `${ownerName}: `}${sessionPreview(session)}`;
   const rowLabel = `${voiceOverLabel}, ${sessionStatus[session.status]}${unread ? ", new output" : ""}${own ? "" : `, ${ownerName}`}`;
-  const commit = (swipe: SwipeableMethods, action: Extract<ChatRowAction, "markRead" | "archive">) => {
+  const commit = (swipe: SwipeableMethods, action: Extract<ChatRowAction, "markRead" | "archive" | "rename">) => {
     swipe.close();
     hapticSelection();
     onAction(action);
@@ -325,16 +328,17 @@ export function SessionChatRow({
           : undefined
       }
       renderRightActions={(_progress, _translation, swipe) => (
-        <SwipeAction
-          icon="archivebox.fill"
-          label="Archive"
-          accessibilityLabel="Archive session"
-          // The quiet action: a step off the row's own surface, not a fill.
-          // In dark mode the soft ink it used is pale, and it drew a bright slab.
-          background={palette.selected}
-          foreground={palette.fg}
-          onPress={() => commit(swipe, "archive")}
-        />
+        <View style={{ flexDirection: "row" }}>
+          {own && <SwipeAction icon="pencil" label="Rename" accessibilityLabel="Rename session" background={palette.selected} foreground={palette.fg} onPress={() => commit(swipe, "rename")} />}
+          <SwipeAction
+            icon="archivebox.fill"
+            label="Archive"
+            accessibilityLabel="Archive session"
+            background={palette.selected}
+            foreground={palette.fg}
+            onPress={() => commit(swipe, "archive")}
+          />
+        </View>
       )}
     >
       <Link href={`/(app)/session/${session.sessionId}`} asChild>
@@ -360,14 +364,16 @@ export function SessionChatRow({
             accessibilityLabel={rowLabel}
             accessibilityActions={[
               ...(unread ? [{ name: "markRead", label: "Mark read" }] : []),
+              ...(own ? [{ name: "rename", label: "Rename session" }] : []),
               { name: "archive", label: "Archive session" },
             ]}
             onAccessibilityAction={(event) =>
-              onAction(event.nativeEvent.actionName as Extract<ChatRowAction, "markRead" | "archive">)
+              onAction(event.nativeEvent.actionName as Extract<ChatRowAction, "markRead" | "archive" | "rename">)
             }
           />
         </Link.Trigger>
         <Link.Menu>
+          {own ? <Link.MenuAction icon="pencil" onPress={() => onAction("rename")}>Rename</Link.MenuAction> : null}
           {unread ? (
             <Link.MenuAction icon="envelope.badge" onPress={() => onAction("markRead")}>
               Mark read

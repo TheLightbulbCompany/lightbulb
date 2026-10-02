@@ -17,6 +17,9 @@ export interface AuthSecrets {
   encryptionKey: secretsmanager.ISecret;
   posthogProjectApiKey: secretsmanager.ISecret;
   openaiApiKey: secretsmanager.ISecret;
+  livekitApiKey: secretsmanager.ISecret;
+  livekitApiSecret: secretsmanager.ISecret;
+  huddleWorkerSecret: secretsmanager.ISecret;
 }
 
 export interface AuthStackProps extends cdk.StackProps {
@@ -117,6 +120,10 @@ export class AuthStack extends cdk.Stack {
       posthogProjectApiKey: createSecret("PosthogProjectApiKey", "posthog_project_api_key"),
       // The CDK-generated placeholder is intentionally not a valid key: voice stays off until the owner sets a real sk- key.
       openaiApiKey: createSecret("OpenaiApiKey", "openai_api_key"),
+      // Huddles: placeholders until the LiveKit account exists; huddle routes stay 503 while LIVEKIT_URL is empty.
+      livekitApiKey: createSecret("LivekitApiKey", "livekit_api_key"),
+      livekitApiSecret: createSecret("LivekitApiSecret", "livekit_api_secret"),
+      huddleWorkerSecret: createSecret("HuddleWorkerSecret", "huddle_worker_secret"),
     };
 
     // Paperclip secrets (Task 3 — Paperclip rebuild). These do not flow through

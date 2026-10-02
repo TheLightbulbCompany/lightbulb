@@ -558,3 +558,26 @@ async def route(
     except Exception:  # noqa: BLE001 -- routing must never break dispatch
         logger.warning("Jev routing failed", exc_info=True)
         return None
+
+
+async def pick_agent(owner_id: str, *, room_name: str, team: list[dict], text: str, recent: str) -> str | None:
+    """One agent from `team` for a spoken request, or None when unsure/unavailable. Never raises."""
+    try:
+        cards = await asyncio.gather(*(agent_card(owner_id, m["id"], m["name"]) for m in team))
+        criteria = {m["id"]: card for m, card in zip(team, cards)}
+        state = {
+            "room": {"kind": "channel", "name": room_name},
+            "recent": [{"author": "transcript (call)", "text": _clip(recent, 1500)}] if recent else [],
+            "latest": {"author": "caller (human)", "text": _clip(text, 1000), "inThread": False},
+        }
+        answers = await decide(
+            state, {"who": {"type": "choice", "instructions": WHO_INSTRUCTIONS, "criteria": criteria}}
+        )
+        if not isinstance(answers, dict):
+            return None
+        who = answers.get("who") or {}
+        choice, probs = who.get("choice"), who.get("probabilities") or {}
+        return choice if choice in criteria and float(probs.get(choice, 0)) >= CONFIDENT_P else None
+    except Exception:  # noqa: BLE001 -- routing must never fail a turn
+        logger.warning("jev pick_agent failed", exc_info=True)
+        return None

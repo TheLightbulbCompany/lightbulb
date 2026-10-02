@@ -16,6 +16,7 @@ os.environ.setdefault("AWS_ACCESS_KEY_ID", "testing")
 os.environ.setdefault("AWS_SECRET_ACCESS_KEY", "testing")
 
 import pytest
+from contextlib import asynccontextmanager
 import schemathesis
 
 from main import app
@@ -23,6 +24,11 @@ from main import app
 
 async def _no_background_work(*_args, **_kwargs) -> None:
     """Keep contract requests hermetic while their TestClient enters lifespan."""
+
+
+@asynccontextmanager
+async def _no_mcp_session_manager(*_args, **_kwargs):
+    yield
 
 
 # Built once; reused by the parametrized tests in this directory.
@@ -45,6 +51,11 @@ def _isolate_lifespan_background_workers(monkeypatch):
     monkeypatch.setattr(run_ledger, "run_ledger_sweeper", _no_background_work)
     monkeypatch.setattr(browser_control, "run_autosave_sweeper", _no_background_work)
     monkeypatch.setattr(daily_digest, "run_digest_sweeper", _no_background_work)
+    # The hosted MCP server's StreamableHTTPSessionManager.run() may be entered ONCE per
+    # instance (the SDK raises on the second call), and lifespan starts it. One lifespan
+    # per generated request would fail every case after the first, so these contract
+    # tests run with no MCP session manager at all (nothing here speaks /mcp).
+    monkeypatch.setattr(main.hosted_mcp.session_manager, "run", _no_mcp_session_manager)
 
 
 # Operations that 5xx purely from an unmocked external dependency even when

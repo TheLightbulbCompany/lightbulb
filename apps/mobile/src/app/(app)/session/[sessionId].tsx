@@ -21,6 +21,7 @@ import { AskToJoin, JoinRequests } from "../../../components/session/SessionJoin
 import { SessionApprovalCard } from "../../../components/session/SessionApprovalCard";
 import { SessionOverview } from "../../../components/session/SessionOverview";
 import { SessionPromptRow } from "../../../components/session/SessionPromptRow";
+import { SessionRenameSheet } from "../../../components/session/SessionRenameSheet";
 import { PendingPromptRow, TranscriptRowView, WorkingRow } from "../../../components/session/TranscriptRow";
 import { BottomSheet } from "../../../components/ui/BottomSheet";
 import { fonts, radii, spacing, useChatPalette } from "../../../config/theme";
@@ -136,6 +137,7 @@ export default function SessionScreen() {
   // Hoisted above the early returns below — see the room screen.
   const keyboardOffset = usePushedScreenKeyboardOffset();
   const [detailsOpen, setDetailsOpen] = useState(false);
+  const [renameOpen, setRenameOpen] = useState(false);
 
   const headerOptions = {
     // The back button is the (app) Stack's own: this is a pushed screen.
@@ -224,13 +226,19 @@ export default function SessionScreen() {
         // the sessions safety poll. Stopped when the screen blurs or the app
         // backgrounds.
         pollMs={live && session.status === "busy" ? 5000 : 0}
+        onRename={() => { setDetailsOpen(false); setRenameOpen(true); }}
       />
+      <SessionRenameSheet session={session} visible={renameOpen} onClose={() => setRenameOpen(false)}
+        onSave={async (title) => {
+          await rooms.resourceSource.client.setLocalSessionDisplayTitle(session.sessionId, title);
+          await workspace.refresh();
+        }} />
     </View>
   );
 }
 
 function SessionBody({
-  session, client, revision, onAccessLost, ownerName, own, control, personName, name, isMine, onMessageOwner, keyboardOffset, detailsOpen, onOpenDetails, onCloseDetails, pollMs,
+  session, client, revision, onAccessLost, ownerName, own, control, personName, name, isMine, onMessageOwner, keyboardOffset, detailsOpen, onOpenDetails, onCloseDetails, pollMs, onRename,
 }: {
   session: LocalSession;
   client: SessionSource["client"] & SessionControlClient & Parameters<typeof JoinRequests>[0]["client"];
@@ -249,6 +257,7 @@ function SessionBody({
   onOpenDetails: () => void;
   onCloseDetails: () => void;
   pollMs: number;
+  onRename: () => void;
 }) {
   const palette = useChatPalette();
   const insets = useSafeAreaInsets();
@@ -266,9 +275,10 @@ function SessionBody({
   }, [outbox.commands, command.attempt?.request.requestId, command.syncReceipt]);
   // The session's own events, for its pending prompt and wait; a subagent's are tagged with it.
   const events = useMemo(() => mainEvents(history.events), [history.events]);
-  const savedOutbox = outbox.commands.filter(receipt => receipt.requestId !== command.attempt?.request.requestId);
+  const replacingOldId = command.attempt?.state !== "rejected" && command.receipt?.state !== "rejected"
+    ? command.attempt?.replacesRequestId : undefined;
+  const savedOutbox = outbox.commands.filter(receipt => receipt.requestId !== command.attempt?.request.requestId && receipt.requestId !== replacingOldId);
   const queuedOutbox = savedOutbox.filter(receipt => receipt.state !== "applied");
-  const appliedOutbox = savedOutbox.filter(receipt => receipt.state === "applied");
   const pendingText = usePendingPrompt(command.attempt, events);
   const pendingShown = !!pendingText && !history.hasNewer;
   const waitingOn = session.status === "waiting-approval" ? pendingApproval(events) ?? "" : null;
@@ -359,6 +369,14 @@ function SessionBody({
                 <PendingPromptRow provider={session.provider} text={receipt.text ?? ""} ownerName={ownerName}
                   label="Follow-up delivery"
                   chip={receiptChip({ request: { requestId: receipt.requestId, expectedGeneration: receipt.expectedGeneration, kind: "send", text: receipt.text ?? "" }, state: "received", receipt }, name)} />
+                {receipt.state === "rejected" && !!receipt.text && <View style={styles.actions}>
+                  <Text accessibilityRole="alert" style={[styles.errorText, { color: palette.alert }]}>
+                    {receipt.cancelledAt ? "Cancelled." : receipt.deliverBy <= Date.now() / 1000 ? "This follow-up expired before your Mac reconnected." : "The session rejected this follow-up."}
+                  </Text>
+                  {!receipt.cancelledAt && <Pressable onPress={() => command.send(receipt.text!, false, receipt.requestId)} disabled={command.locked || !command.canSend} accessibilityRole="button" accessibilityLabel="Retry follow-up" accessibilityState={{ disabled: command.locked || !command.canSend }}>
+                    <Text style={[styles.link, { color: palette.link }]}>Retry</Text>
+                  </Pressable>}
+                </View>}
                 {outbox.canCancel && receipt.state === "pending" && <Pressable onPress={() => void outbox.cancel(receipt.requestId)} accessibilityRole="button" accessibilityLabel={`Cancel queued follow-up: ${(receipt.text ?? "").slice(0, 40)}`}>
                   <Text style={[styles.link, { color: palette.alert }]}>Cancel</Text>
                 </Pressable>}
@@ -368,11 +386,6 @@ function SessionBody({
                   <Text style={[styles.link, { color: palette.link }]}>Check queued delivery</Text>
                 </Pressable>
               )}
-              {appliedOutbox.length > 0 && <View accessibilityLabel="Recent delivered follow-ups">
-                {appliedOutbox.map(receipt => <Text key={receipt.requestId} style={[styles.meta, { color: palette.fgSoft }]}>
-                  Delivered to session · {(receipt.text ?? "").replace(/\s+/g, " ").slice(0, 80)}
-                </Text>)}
-              </View>}
             </View>
           }
           ListFooterComponent={
@@ -421,6 +434,9 @@ function SessionBody({
             {session.controlUnavailableReason && (
               <Text style={[styles.sheetMeta, { color: palette.warn }]}>{unavailableReason[session.controlUnavailableReason]}</Text>
             )}
+            {own && <Pressable accessibilityRole="button" accessibilityLabel="Rename session" onPress={onRename}>
+              <Text style={[styles.link, { color: palette.link }]}>Rename session</Text>
+            </Pressable>}
             {waitingOn !== null && !remoteApproval && (
               <View style={styles.waitingBlock} accessibilityLiveRegion="polite">
                 <Text style={[styles.waitingTitle, { color: palette.fg }]}>{own ? "Waiting on you in your terminal" : `Waiting on ${ownerName} in their terminal`}</Text>
@@ -469,6 +485,7 @@ const styles = StyleSheet.create({
   waitingReason: { fontFamily: fonts.mono, fontSize: 12, lineHeight: 16 },
   errorCard: { paddingVertical: spacing.sm, gap: spacing.xs },
   errorText: { fontFamily: fonts.sans, fontSize: 13, lineHeight: 18 },
+  actions: { flexDirection: "row", alignItems: "center", flexWrap: "wrap", gap: spacing.sm },
   link: { fontFamily: fonts.sansSemiBold, fontSize: 13, lineHeight: 18, paddingVertical: spacing.xs },
   bannerLink: { fontFamily: fonts.sansSemiBold, fontSize: 13, lineHeight: 18 },
   timeline: { flex: 1 },

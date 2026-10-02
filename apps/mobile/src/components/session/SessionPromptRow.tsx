@@ -82,6 +82,11 @@ export function SessionPromptRow({ session, text, onChangeText, command, pending
       {command.attempt?.state === "rejected" && !command.attempt.receipt && command.attempt.error && (
         <Text accessibilityRole="alert" style={[styles.error, { color: palette.alert }]}>{command.attempt.error}</Text>
       )}
+      {command.attempt?.receipt?.state === "rejected" && command.attempt.request.kind === "send" && !command.attempt.receipt.cancelledAt && (
+        <Pressable onPress={() => command.retry()} disabled={command.locked || !command.canSend} accessibilityRole="button" accessibilityLabel="Retry follow-up" accessibilityState={{ disabled: command.locked || !command.canSend }}>
+          <Text style={[styles.link, { color: palette.link }]}>Retry</Text>
+        </Pressable>
+      )}
       {!pendingShown && chip && command.attempt?.receipt && (chip.tone === "warn" || chip.tone === "error" || command.attempt?.request.kind === "interrupt") && (
         <View style={styles.actions}><ReceiptChipText chip={chip} /></View>
       )}

@@ -190,5 +190,7 @@ describe("SessionChatRow", () => {
     expect(mockNavigate).toHaveBeenCalledWith("/(app)/session/s1");
     await fireEvent.press(screen.getByLabelText("Archive session", { includeHiddenElements: true }));
     expect(onAction).toHaveBeenCalledWith("archive");
+    await fireEvent.press(screen.getByLabelText("Rename session", { includeHiddenElements: true }));
+    expect(onAction).toHaveBeenCalledWith("rename");
   });
 });

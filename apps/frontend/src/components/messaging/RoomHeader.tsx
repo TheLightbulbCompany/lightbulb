@@ -1,14 +1,16 @@
 "use client";
 
 import { useId, useRef, useState, type ReactNode } from "react";
-import { Archive, ArchiveRestore, Bell, BellOff, Hash, Link, LogOut, MessageCircle, MoreHorizontal, Pencil, Pin, Star, Trash2, Users } from "lucide-react";
-import type { MemberPrefsRequest, RoomSummary } from "@lightbulb/shared";
+import { Archive, ArchiveRestore, Bell, BellOff, Hash, Link, LogOut, MessageCircle, Mic, MoreHorizontal, Pencil, Pin, Star, Trash2, Users } from "lucide-react";
+import { liveMarker, type MemberPrefsRequest, type RoomSummary } from "@lightbulb/shared";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { copyText, roomPermalink } from "./messageLinks";
 import { ParticipantAvatar } from "./ParticipantAvatar";
-import { VoiceCallButton } from "./VoiceCallButton";
+import { useRoomHuddle } from "@/components/huddle/useRoomHuddle";
+import { useHuddle } from "@/components/huddle/HuddleProvider";
+import { LiveStrip } from "@/components/huddle/LiveStrip";
 import { useAsyncAction } from "./useAsyncAction";
 import type { RoomParticipant } from "./types";
 
@@ -18,6 +20,7 @@ interface RoomHeaderProps {
   room?: RoomSummary;
   roomName: string;
   counterparts: readonly RoomParticipant[];
+  participants?: readonly RoomParticipant[]; // everyone, the viewer included; names the on-a-call marker
   participantCount: number;
   canEditRoom: boolean; // owner/admin AND kind !== "dm"
   canLeave: boolean; // kind === "channel" AND role !== "owner"
@@ -39,10 +42,15 @@ interface RoomHeaderProps {
   onDeleteRoom?: () => Promise<void>; // passed only to the channel's owner
 }
 
+function liveNames(userIds: readonly string[], participants: readonly RoomParticipant[]) {
+  return userIds.map((id) => participants.find((p) => p.kind === "human" && p.id === id)?.displayName ?? "Someone");
+}
+
 export function RoomHeader({
   room,
   roomName,
   counterparts,
+  participants = counterparts,
   participantCount,
   canEditRoom,
   canLeave,
@@ -61,6 +69,8 @@ export function RoomHeader({
   onDeleteRoom,
 }: RoomHeaderProps) {
   const id = useId();
+  const huddle = useHuddle();
+  const { userIds: huddlers, available: huddlesOn } = useRoomHuddle(room && !room.guest ? room.roomId : undefined);
   const [editingTopic, setEditingTopic] = useState(false);
   const [topicDraft, setTopicDraft] = useState(room?.topic ?? "");
   const [renaming, setRenaming] = useState(false);
@@ -108,6 +118,7 @@ export function RoomHeader({
         ? <ParticipantAvatar participant={counterparts[0]} size="sm" />
         : <Icon size={20} aria-hidden="true" />}
       <h2 className="font-semibold text-lg truncate" title={roomName}>{roomName}</h2>
+      {huddlers.length > 0 && !(huddle.room && huddle.roomId === room?.roomId) && <span className="room-topic" role="status">{liveMarker(liveNames(huddlers, participants))}</span>}
       {room?.shared && <span className="room-directory-tag" title="Shared between this workspace and Lightbulb">Shared</span>}
       {editingTopic ? <form className="room-topic-form" onSubmit={(event) => {
         event.preventDefault();
@@ -131,8 +142,14 @@ export function RoomHeader({
     </div>
     <div className="room-audience">
       {search}
-      {room?.kind === "dm" && counterparts.length === 1 && counterparts[0].kind === "agent" && (
-        <VoiceCallButton key={counterparts[0].id} agentId={counterparts[0].id} agentName={counterparts[0].displayName ?? "Agent"} />
+      {/* While Live, the strip stands in for Go live: in full here, as "Live in #x — Return" in any other room. */}
+      <LiveStrip roomId={room?.roomId} />
+      {/* Every room kind; a room with no listening agent is a people-only voice room (no Lightbulb). */}
+      {!huddle.room && room && huddlesOn && !room.guest && (
+        <Button type="button" variant="ghost" size="sm" disabled={Boolean(huddle.joining)}
+          onClick={() => void huddle.join(room.roomId, room.kind === "channel" ? `#${roomName}` : roomName)}>
+          <Mic className="h-4 w-4" aria-hidden="true" /> {huddle.joining === room.roomId ? "Joining…" : "Go live"}
+        </Button>
       )}
       {pinnedCount > 0 && <Button type="button" variant="ghost" size="sm"
         aria-label={`${pinnedCount} pinned ${pinnedCount === 1 ? "message" : "messages"}`} onClick={() => onOpenDetails("pins")}>

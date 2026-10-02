@@ -66,4 +66,14 @@ describe("RoomHeaderActions", () => {
     await fireEvent.press(star);
     expect(onToggleStar).not.toHaveBeenCalled();
   });
+
+  it("puts the call button where the star was when the room can go Live", async () => {
+    const onPress = jest.fn();
+    await render(
+      <RoomHeaderActions starred={false} muted={false} onToggleStar={jest.fn()} onToggleMute={jest.fn()} voice={{ label: "Go live", onPress }} />,
+    );
+    expect(screen.queryByLabelText("Star this conversation")).toBeNull();
+    await fireEvent.press(screen.getByLabelText("Go live"));
+    expect(onPress).toHaveBeenCalled();
+  });
 });

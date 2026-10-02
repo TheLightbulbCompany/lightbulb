@@ -224,6 +224,8 @@ export function RoomComposer({
   const [formatOpen, setFormatOpen] = useState(false);
   const [sending, setSending] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // The readable token is presentation; this binding keeps the selected native session as the routing key.
+  const [selectedSessions, setSelectedSessions] = useState<Record<string, string>>({});
 
   // Focus and press live on the UI thread as shared values, not in React state:
   // a `focused` boolean hard-swaps two StyleSheet entries, which is a visual
@@ -499,7 +501,7 @@ export function RoomComposer({
 
   const body = text.trim();
   const mentions = resolveTypedMentions(body, members);
-  const sessionMentions = resolveTypedSessionMentions(body, sessionTargets.map(({ candidate }) => candidate));
+  const sessionMentions = resolveTypedSessionMentions(body, sessionTargets.map(({ candidate }) => candidate), selectedSessions);
   // The web composer's three limits, verbatim — the server enforces all of
   // them, and being told before you send beats a rejection after.
   const limit =
@@ -512,7 +514,7 @@ export function RoomComposer({
         : null;
   // Who this message will actually reach, by the same rule the backend
   // dispatches on — so the answer is not a guess the two could disagree about.
-  const hint = respondHint(roomKind, members, mentions, runningAgentIds ?? []);
+  const hint = sessionMentions.length ? null : respondHint(roomKind, members, mentions, runningAgentIds ?? []);
   const hasContent = !!body || draft.attachments.length > 0;
   // Photos upload as they are picked, so sending waits only on the ones still
   // in flight — and a failed one has to be retried or removed first, rather
@@ -530,6 +532,7 @@ export function RoomComposer({
       attachmentIds: draft.attachmentIds,
     };
     draft.clear();
+    setSelectedSessions({});
     setCaret(null);
     // A sent message ends the formatting session; the next one starts clean.
     setFormatOpen(false);
@@ -581,20 +584,23 @@ export function RoomComposer({
               </View>
             </Pressable>
           ))}
-          {sessionOptions.map(({ candidate, ownerName }) => (
+      {sessionOptions.map(({ candidate, ownerName }) => (
             <Pressable
               key={`session:${candidate.session.sessionId}`}
               style={[styles.option, { backgroundColor: palette.surface, borderColor: palette.edge }]}
-              onPress={() => complete(`@${candidate.handle}`)}
+              onPress={() => {
+                setSelectedSessions(current => ({ ...current, [candidate.handle.toLocaleLowerCase()]: candidate.session.sessionId }));
+                complete(`@${candidate.handle}`);
+              }}
               accessibilityRole="button"
-              accessibilityLabel={`Mention ${candidate.session.provider === "claude" ? "Claude Code" : "Codex"} session ${sessionTitle(candidate.session)}, ${ownerName}, ID ${candidate.session.sessionId}`}
+              accessibilityLabel={`Mention ${candidate.session.provider === "claude" ? "Claude Code" : "Codex"} session ${sessionTitle(candidate.session)}, owned by ${ownerName}`}
             >
               <Avatar name={ownerName} kind="agent" size={22} palette={palette} />
               <View style={styles.optionLabels}>
                 <Text style={[styles.optionName, { color: palette.fg }]} numberOfLines={1}>
                   {candidate.session.provider === "claude" ? "Claude Code" : "Codex"} · {sessionTitle(candidate.session)}
                 </Text>
-                <Text style={[styles.optionMeta, { color: palette.fgMute }]} numberOfLines={1}>#{candidate.session.sessionId.slice(-8)} · {ownerName}</Text>
+                <Text style={[styles.optionMeta, { color: palette.fgMute }]} numberOfLines={1}>{ownerName}</Text>
               </View>
             </Pressable>
           ))}

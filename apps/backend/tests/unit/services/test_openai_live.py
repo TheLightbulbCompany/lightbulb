@@ -38,6 +38,22 @@ async def test_create_session_passes_sdp_byte_exact():
 
 
 @pytest.mark.asyncio
+async def test_create_session_sends_requested_voice():
+    seen = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["body"] = json.loads(request.content)
+        return httpx.Response(201, json={"session": {"id": "live_1"}, "transport": {"type": "webrtc", "sdp": "a"}})
+
+    with (
+        patch.object(openai_live.settings, "OPENAI_API_KEY", "sk-test"),
+        patch.object(openai_live, "_transport", httpx.MockTransport(handler)),
+    ):
+        await openai_live.create_session(sdp="o", instructions="i", voice="cedar")
+    assert seen["body"]["session"]["audio"]["output"]["voice"] == "cedar"
+
+
+@pytest.mark.asyncio
 async def test_create_session_raises_on_non_201():
     transport = httpx.MockTransport(lambda _r: httpx.Response(400, json={"error": "bad sdp"}))
     with (

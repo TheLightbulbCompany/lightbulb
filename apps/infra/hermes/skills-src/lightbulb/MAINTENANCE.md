@@ -189,7 +189,9 @@ MAINTENANCE (Lightbulb engineers): every claim in this skill is anchored to
                               <- apps/backend/core/services/{billing_service,provision_gate,owner_facts}.py
   - Voice calls ............. references/company-and-plans.md ("Voice calls")
                               <- apps/backend/core/billing/voice_billing.py (free 10 min/UTC day, credits mode, MIN_CALL_SECONDS);
-                                 core/services/voice_calls.py (30 min cap, one free call at a time, no transcript)
+                                 core/services/voice_calls.py (30 min cap, one free call at a time, no transcript);
+                                 core/services/{voice_routing,voice_persona}.py (room-call routing; room calls speak as Lightbulb in the CEO voice)
+                                 routers/huddles.py, core/services/livekit_huddles.py, apps/huddle-agent/ (Live in every room kind; Lightbulb only where an agent listens; wake word "Lightbulb" or its bars)
   - Provisioning rail ....... references/money.md
                               <- apps/backend/routers/company_provisioning.py (container routes, refusal codes);
                                  core/services/provisioning_workflow.py (STATES); core/services/owner_facts.py (the `provisioning` facts list)

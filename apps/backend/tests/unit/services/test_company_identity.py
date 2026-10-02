@@ -275,3 +275,10 @@ async def test_availability_treats_the_users_own_or_a_stale_hold_as_free(monkeyp
     assert await company_identity.slug_unavailable_reason("bench-club", user_id="user_2") == "taken"
     _slug_row(monkeypatch, {"slug": "bench-club", "owner_id": "pending:user_1", "held_at": 0})
     assert await company_identity.slug_unavailable_reason("bench-club", user_id="user_2") is None
+
+
+@pytest.mark.parametrize("host", ["bv", "bv-dev", "clerk", "accounts", "clkmail", "about"])
+def test_product_hosts_on_the_mail_domain_are_reserved(host):
+    # The product now lives on the agent-mail domain: a tenant slug equal to a
+    # product host would lose inbound mail when that host's record is created.
+    assert host in company_identity.RESERVED_SLUGS

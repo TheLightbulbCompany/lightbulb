@@ -204,8 +204,8 @@ export function SubagentPanel({ provider, events, status, onPick }: { provider: 
 
 export function NativeSessionTranscript({ provider, events, busy, ownerName, participants, pending, outbox, scope, status }: TranscriptProps & {
   /** A follow-up sent from here that the harness has not echoed back yet: drawn greyed at the end, like Claude Code's queued prompt. */
-  pending?: { text: string; chip: SessionReceiptChip | null } | null;
-  outbox?: { requestId: string; text: string; chip: SessionReceiptChip | null; onCancel?: () => void }[];
+  pending?: { text: string; chip: SessionReceiptChip | null; onCancel?: () => void; onRetry?: () => void } | null;
+  outbox?: { requestId: string; text: string; chip: SessionReceiptChip | null; onCancel?: () => void; onRetry?: () => void }[];
 }) {
   const rows = useMemo(() => buildRows(events, scope), [events, scope]);
   const subs = useMemo(() => sessionSubagents(events), [events]);
@@ -222,11 +222,12 @@ export function NativeSessionTranscript({ provider, events, busy, ownerName, par
   const last = events.findLast(e => e.subagent === scope);
   const turnOpen = busy && last?.lifecycle !== "turn_end" && last?.lifecycle !== "turn_aborted";
   const lastRow = rows.at(-1);
-  const pendingRow = (item: { text: string; chip: SessionReceiptChip | null; onCancel?: () => void }, key: string) =>
-    <div key={key} className="native-session-row native-session-prompt native-session-pending" role="article" aria-label={key === "current" ? "Pending follow-up" : "Follow-up delivery"}>
+  const pendingRow = (item: { text: string; chip: SessionReceiptChip | null; onCancel?: () => void; onRetry?: () => void }, key: string) =>
+    <div key={key} className={`native-session-row native-session-prompt${item.chip?.tone === "error" ? "" : " native-session-pending"}`} role="article" aria-label={key === "current" ? "Pending follow-up" : "Follow-up delivery"}>
       <p className="native-session-line"><span className="native-session-glyph" aria-hidden="true">{g.prompt}</span><span className="native-session-prompt-text">{item.text}</span></p>
-      <p className="native-session-meta"><span>{ownerName}</span>{item.chip && <> · <ReceiptChip chip={item.chip} /></>}
-        {item.onCancel && <> · <button type="button" onClick={item.onCancel} aria-label={`Cancel queued follow-up: ${item.text.slice(0, 40)}`}>Cancel</button></>}
+      <p className="native-session-meta"><span>{ownerName}</span>{item.chip && <> · <ReceiptChip chip={item.chip} />{item.chip.tone === "error" && item.chip.detail && <span> · {item.chip.detail}</span>}</>}
+        {item.onRetry && <> · <button type="button" onClick={item.onRetry} aria-label={`Retry follow-up: ${item.text.slice(0, 40)}`}>Retry</button></>}
+        {item.onCancel && <> · <button type="button" onClick={item.onCancel} aria-label={`Cancel follow-up: ${item.text.slice(0, 40)}`}>Cancel</button></>}
       </p>
     </div>;
   const renderRow = (row: TranscriptRow) => {

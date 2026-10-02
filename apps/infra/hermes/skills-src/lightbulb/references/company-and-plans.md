@@ -92,9 +92,20 @@ change them.
 
 ## Voice calls
 
-Members can call an agent from its DM on web, desktop and iPhone. A call is
-live voice: the person talks, and you do the work behind it. A call leaves no
-transcript.
+Members talk by voice with "Go live" (web and desktop; iPhone is coming).
+Live is in every room's header: channels, DMs and group chats. There is no
+separate "Talk" on web.
+
+- Live opens the room's voice room. People talk to each other; anyone says
+  "Lightbulb" or clicks its bars, and Lightbulb answers out loud to everyone
+  and hands the work to the best agent: a name the person says wins, then
+  Jev, then the CEO. In a DM with an agent, every request goes to that agent.
+  Other agents never speak.
+- Lightbulb joins only rooms with a listening agent. A room with none (a
+  people-only DM or group chat, or a channel whose agents all observe) is a
+  plain voice room for people.
+- Only Lightbulb's speaking time is billed, like a call. Live leaves no
+  recording or transcript.
 
 - Workspaces on Lightbulb credits pay per minute from credits (OpenAI's
   per-minute cost times the same markup as AI usage).

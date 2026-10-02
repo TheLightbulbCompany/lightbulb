@@ -18,12 +18,11 @@ from botocore.exceptions import ClientError
 from pydantic import Field, TypeAdapter, ValidationError
 
 from core.config import settings
-from core.constants import SYSTEM_ACTOR_ID
 from core.dynamodb import utc_now_iso
 from core.observability.product_analytics import capture_product_event
 from core.observability.session_analytics import capture_session_event
 from core.repositories import local_sessions_repo as repo, messaging_repo as store
-from core.services import local_sessions as sessions, session_pickup
+from core.services import local_sessions as sessions, notification_copy, session_pickup
 from core.services.connection_service import ConnectionService
 from core.services.management_api_client import ManagementApiClient
 from core.services.messaging import MESSAGE_TEXT_MAX_BYTES, ApiProblem, ContractModel, make_live_event
@@ -129,6 +128,7 @@ class Receipt(ContractModel):
     outcome: Literal["applied", "rejected", "unknown"]
     provider_message_id: sessions.OpaqueId | None = None
     held: bool = False
+    settled: bool = False
 
 
 _WIRE = TypeAdapter(Register | DeviceHeartbeat | Events | Receipt | Ended)
@@ -399,16 +399,17 @@ async def post_session_replies(row: dict) -> None:
             ).strip()
             room_id = pointer["roomId"]
             tool = {"claude": "Claude Code", "codex": "Codex"}.get(pointer["provider"], "Session")
+            name = notification_copy.line(row.get("displayTitle") or row.get("title") or pointer["where"], 80)
             link = f"{settings.FRONTEND_URL.rstrip('/')}/chat?panel=session&session={sid}"
-            prefix = f"**{tool} · {pointer['where']}** replied:\n\n"
+            legacy_prefix = f"**{tool} · {pointer['where']}** replied:\n\n"
             suffix = f"\n\n[Open session]({link})"
-            budget = MESSAGE_TEXT_MAX_BYTES - len((prefix + suffix).encode("utf-8")) - 80
+            budget = MESSAGE_TEXT_MAX_BYTES - len((legacy_prefix + suffix).encode("utf-8")) - 80
             if len(reply.encode("utf-8")) > budget:
                 reply = (
                     reply.encode("utf-8")[:budget].decode("utf-8", "ignore").rstrip()
                     + "\n\n[Truncated; open the session for the full answer.]"
                 )
-            text = prefix + reply + suffix
+            text = reply + suffix
             for attempt in range(2):
                 room = await store.get_room(room_id)
                 if (
@@ -435,8 +436,9 @@ async def post_session_replies(row: dict) -> None:
                         owner_id=owner,
                         idemp_pk=store.owner_pk(owner),
                         idemp_sk=store.agent_idemp_sk(f"session-reply:{request_id}"),
-                        req_hash=store.request_hash(room_id, request_id, text),
-                        author={"kind": "system", "id": SYSTEM_ACTOR_ID, "displayName": "Lightbulb"},
+                        # Preserve the old idempotency hash for a reply retried across this rollout.
+                        req_hash=store.request_hash(room_id, request_id, legacy_prefix + reply + suffix),
+                        author={"kind": "system", "id": sid, "displayName": f"{tool} · {name}"},
                         text=text,
                         mentions=[],
                         reply_to_message_id=origin["messageId"],
@@ -685,12 +687,63 @@ class LocalSessionRelay:
                         row.pop("teamControl", None)
                         for key in sessions.JOIN_FIELDS:
                             row.pop(key, None)
+                    extra = [self._connection_check(cid, connection)]
+                    pointer = row.get("nativeSendIntent") or {}
+                    if pointer.get("connectionId") != cid and pointer.get("state") == "pending_approval":
+                        intent_key = {"pk": row["pk"], "sk": f"NATIVE_INTENT#{pointer['requestId']}"}
+                        intent = await store._get(**intent_key)
+                        now = int(time.time())
+                        if (
+                            previous.get("endedAt") is None
+                            and not row.get("unshared")
+                            and pointer.get("expiresAt", 0) > now
+                            and pointer.get("sourceGeneration") == row["generation"]
+                            and intent
+                            and intent.get("requestId") == pointer["requestId"]
+                            and intent.get("approvalId") == pointer.get("approvalId")
+                            and intent.get("inputDigest") == pointer.get("inputDigest")
+                            and intent.get("expiresAt") == pointer["expiresAt"]
+                            and intent.get("connectionId") == pointer.get("connectionId")
+                            and intent.get("sourceGeneration") == row["generation"]
+                            and intent.get("sourceConversationId") == row["nativeConversationId"]
+                            and intent.get("sourceTurnId") == pointer.get("sourceTurnId")
+                            and intent.get("deviceId") == device
+                            and intent.get("humanUserId") == human
+                            and intent.get("state") == "pending_approval"
+                            and intent.get("expiresAt", 0) > now
+                        ):
+                            row["nativeSendIntent"] = {**pointer, "connectionId": cid}
+                            extra.append(
+                                {
+                                    "Update": {
+                                        "TableName": store._table().name,
+                                        "Key": intent_key,
+                                        "UpdateExpression": "SET connectionId = :new",
+                                        "ConditionExpression": (
+                                            "connectionId = :old AND approvalId = :approval AND inputDigest = :digest "
+                                            "AND sourceGeneration = :generation AND #state = :pending AND expiresAt > :now"
+                                        ),
+                                        "ExpressionAttributeNames": {"#state": "state"},
+                                        "ExpressionAttributeValues": {
+                                            ":new": cid,
+                                            ":old": pointer["connectionId"],
+                                            ":approval": pointer["approvalId"],
+                                            ":digest": pointer["inputDigest"],
+                                            ":generation": row["generation"],
+                                            ":pending": "pending_approval",
+                                            ":now": now,
+                                        },
+                                    }
+                                }
+                            )
+                        else:
+                            row.pop("nativeSendIntent", None)
                     # pickupAllowed/pickupSnapshot ride along from `previous`: content sharing, not control.
                     if previous is None:
                         picked_up_from = await session_pickup.lineage(owner, sid)
                         if picked_up_from:
                             row["pickedUpFrom"] = picked_up_from
-                    await repo.put_session(row, previous, enrollment, extra=[self._connection_check(cid, connection)])
+                    await repo.put_session(row, previous, enrollment, extra=extra)
                     if previous is None or previous["generation"] != row["generation"]:
                         # The desktop may discover an already-running native process: shared, not started.
                         _capture_lifecycle(row, "local_session_shared")
@@ -757,7 +810,9 @@ class LocalSessionRelay:
     async def _reconcile_for(self, owner: str, sid: str, generation: str) -> dict | None:
         """The one command whose outcome the desktop journal must still settle."""
         unresolved_commands = [
-            c for c in await repo.list_commands(owner, sid) if c["state"] in {"dispatched", "unknown"}
+            c
+            for c in await repo.list_commands(owner, sid)
+            if c["state"] in {"dispatched", "unknown"} and not c.get("settled")
         ]
         # Prefer the current generation's blocking receipt. Retain older
         # unknowns and still reconcile them when none is current.
@@ -771,6 +826,7 @@ class LocalSessionRelay:
             "requestId": unresolved["requestId"],
             "generation": unresolved["expectedGeneration"],
             "state": unresolved["state"],
+            **({"expectedTurnId": unresolved["expectedTurnId"]} if unresolved.get("expectedTurnId") else {}),
         }
 
     async def _device_heartbeat(self, cid: str, connection: dict, enrollment: dict, message: DeviceHeartbeat) -> dict:
@@ -1084,6 +1140,15 @@ class LocalSessionRelay:
         if not command or command["expectedGeneration"] != message.generation or command["state"] == "pending":
             raise _conflict("receipt command", sid=sid)
         outcome = dict(state=message.outcome, held=message.held, providerMessageId=message.provider_message_id)
+        if message.settled:
+            if (
+                message.outcome != "unknown"
+                or not command.get("expectedTurnId")
+                or row["generation"] != message.generation
+                or row.get("activeTurnId") == command["expectedTurnId"]
+            ):
+                raise _conflict("receipt settlement", sid=sid)
+            outcome["settled"] = True
         if message.outcome == "applied" and command.get("originRoomId") and not message.provider_message_id:
             raise _conflict("mention receipt has no provider message id", sid=sid)
         if command["state"] in {"applied", "rejected"}:
@@ -1227,7 +1292,10 @@ class LocalSessionRelay:
                         c
                         for c in commands
                         if c["state"] not in {"applied", "rejected"}
-                        and not (c["state"] == "unknown" and c["expectedGeneration"] != row["generation"])
+                        and not (
+                            c["state"] == "unknown"
+                            and (c["expectedGeneration"] != row["generation"] or c.get("settled"))
+                        )
                     ),
                     None,
                 )

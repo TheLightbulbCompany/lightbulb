@@ -570,6 +570,90 @@ async def test_codex_owner_approval_dispatches_only_the_exact_prepared_send(monk
 
 
 @pytest.mark.asyncio
+async def test_native_send_denial_uses_a_valid_result_expression_and_never_dispatches(monkeypatch):
+    sid, request_id = str(uuid.uuid4()), str(uuid.uuid4())
+    approval_id = "appr-0123456789abcdef0123456789abcdef"
+    destination, body = "room:r", "private body"
+    digest = tools._intent_digest({"destination": destination, "text": body, "requestId": request_id})
+    pointer = {
+        "requestId": request_id,
+        "approvalId": approval_id,
+        "inputDigest": digest,
+        "expiresAt": 9999999999,
+        "state": "pending_approval",
+        "connectionId": "c",
+        "sourceGeneration": "g",
+        "sourceTurnId": "t",
+    }
+    source = {
+        "ownerId": "org",
+        "sessionId": sid,
+        "humanUserId": "user",
+        "deviceId": "mac",
+        "revision": "r",
+        "nativeSendIntent": pointer,
+    }
+    claim = {
+        "approvalId": approval_id,
+        "inputDigest": digest,
+        "sourceTurnId": "t",
+        "originItemId": None,
+        "requestHash": tools.messaging_repo.request_hash(sid, destination, body),
+    }
+    intent = {
+        "requestId": request_id,
+        "approvalId": approval_id,
+        "inputDigest": digest,
+        "destination": destination,
+        "text": body,
+        "expiresAt": 9999999999,
+        "connectionId": "c",
+        "sourceGeneration": "g",
+        "sourceTurnId": "t",
+        "originItemId": None,
+        "deviceId": "mac",
+        "humanUserId": "user",
+    }
+    auth = tools.AuthContext(user_id="user", org_id="org")
+    monkeypatch.setattr(tools.local_sessions, "authorize_session", AsyncMock(return_value=(source, {})))
+    monkeypatch.setattr(tools.messaging_repo, "_get", AsyncMock(side_effect=[claim, intent]))
+    monkeypatch.setattr(tools.messaging_repo, "_table", lambda: SimpleNamespace(name="messaging"))
+    put = AsyncMock()
+    dispatch = AsyncMock()
+    monkeypatch.setattr(tools.sessions_repo, "put_session", put)
+    monkeypatch.setattr(tools, "_dispatch_native", dispatch)
+    monkeypatch.setattr(tools, "_publish_session", AsyncMock())
+
+    result = await tools.answer_codex_send(
+        auth,
+        sid,
+        tools.NativeSendDecision(request_id=request_id, approval_id=approval_id, input_digest=digest, decision="deny"),
+    )
+
+    assert result["state"] == "rejected" and result["error"]["code"] == "OWNER_DENIED"
+    assert "nativeSendIntent" not in put.await_args.args[0]
+    update = put.await_args.kwargs["extra"][0]["Update"]
+    assert update["ExpressionAttributeNames"]["#result"] == "result"
+    assert "#result" in update["UpdateExpression"]
+    assert "attribute_not_exists(#result)" in update["ConditionExpression"]
+    dispatch.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_native_send_finish_aliases_result_in_write_and_idempotency_check(monkeypatch):
+    write = AsyncMock()
+    monkeypatch.setattr(tools.messaging_repo, "_table", lambda: SimpleNamespace(update_item=write))
+    monkeypatch.setattr(tools, "run_in_thread", AsyncMock())
+    result = {"state": "applied", "destination": "room:r", "messageId": "m"}
+
+    assert await tools._finish("org", "source", str(uuid.uuid4()), "room:r", result) == result
+    kwargs = tools.run_in_thread.await_args.kwargs
+    assert kwargs["ExpressionAttributeNames"]["#result"] == "result"
+    assert "#result" in kwargs["UpdateExpression"]
+    assert "attribute_not_exists(#result)" in kwargs["ConditionExpression"]
+
+
+@pytest.mark.asyncio
 async def test_people_targets_require_an_existing_direct_message(monkeypatch):
     channel_person = SimpleNamespace(kind="human", id="user_channel", display_name="Channel", mention_handle="channel")
     dm_person = SimpleNamespace(kind="human", id="user_dm", display_name="DM", mention_handle="dm")

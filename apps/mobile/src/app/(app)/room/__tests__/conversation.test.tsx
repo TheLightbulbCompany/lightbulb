@@ -196,6 +196,17 @@ jest.mock("../../../../components/room/OnboardingBand", () => ({
 // suite, and its heartbeat/snapshot timers have no place in this one.
 jest.mock("../../../../lib/presence", () => ({ usePresence: () => new Set<string>() }));
 
+// Live: the binary has WebRTC; a test sets who is Live, whether Live is on, and whether this phone is in one.
+let mockRoomLive = { userIds: [] as string[], available: false };
+let mockLiveState: { room: object | null; roomId: string | null; roomName: string | null; joining: string | null } = { room: null, roomId: null, roomName: null, joining: null };
+const mockJoinLive = jest.fn();
+const mockOpenLive = jest.fn();
+jest.mock("../../../../lib/webrtc", () => ({ hasNativeVoice: () => true }));
+jest.mock("../../../../providers/live", () => ({
+  useRoomLive: () => mockRoomLive,
+  useLive: () => ({ ...mockLiveState, join: (...a: unknown[]) => mockJoinLive(...a), setOpen: (...a: unknown[]) => mockOpenLive(...a) }),
+}));
+
 import Conversation from "../[roomId]/index";
 import { getCurrentTarget } from "../../../../lib/activeAgent";
 
@@ -221,6 +232,8 @@ describe("conversation screen", () => {
     mockSetTyping.mockClear();
     typingHandlers.clear();
     mockSetMemberPrefs.mockClear();
+    mockJoinLive.mockClear();
+    mockOpenLive.mockClear();
     mockMessages = [...mockBase];
     mockRoomId = "room-1";
     mockIsPreview = false;
@@ -755,4 +768,40 @@ describe("conversation screen", () => {
     await waitFor(() => expect(screen.getByText("Read by 2")).toBeTruthy());
   });
 
+
+  it("offers Go live, not Talk, in an agent DM", async () => {
+    mockRoomId = "dm-friday";
+    mockRoomLive = { userIds: [], available: true };
+    await render(<Conversation />);
+    await fireEvent.press(await screen.findByLabelText("Go live"));
+    expect(mockJoinLive).toHaveBeenCalledWith("dm-friday", "Friday");
+    expect(screen.queryByLabelText("Talk to Friday")).toBeNull();
+    mockRoomLive = { userIds: [], available: false };
+  });
+
+  it("while Live elsewhere, the pill reopens that Live instead of joining", async () => {
+    mockRoomLive = { userIds: [], available: true };
+    mockLiveState = { room: {}, roomId: "room-other", roomName: "#ops", joining: null };
+    await render(<Conversation />);
+    await fireEvent.press(await screen.findByLabelText("Open Live in #ops"));
+    expect(mockOpenLive).toHaveBeenCalledWith(true);
+    expect(mockJoinLive).not.toHaveBeenCalled();
+    mockLiveState = { room: null, roomId: null, roomName: null, joining: null };
+    mockRoomLive = { userIds: [], available: false };
+  });
+
+  it("offers Go live in a channel only when Live is on, and names who is Live", async () => {
+    mockRoomLive = { userIds: [], available: false };
+    const first = await render(<Conversation />);
+    await waitFor(() => expect(screen.getByLabelText("Star this conversation")).toBeTruthy());
+    expect(screen.queryByLabelText("Go live")).toBeNull();
+    await first.unmount();
+
+    mockRoomLive = { userIds: ["user-a"], available: true };
+    await render(<Conversation />);
+    await fireEvent.press(await screen.findByLabelText("Go live"));
+    expect(mockJoinLive).toHaveBeenCalledWith("room-1", "#Launch");
+    expect(screen.getByText("🔴 Live — Alice")).toBeTruthy();
+    mockRoomLive = { userIds: [], available: false };
+  });
 });

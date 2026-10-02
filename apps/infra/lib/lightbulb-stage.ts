@@ -1,6 +1,12 @@
 import * as cdk from "aws-cdk-lib";
 import { Construct } from "constructs";
-import { PLATFORM_MAIL_DOMAIN, ROOT_DOMAIN, DEV_ROOT_DOMAIN } from "./domains";
+import {
+  CLERK_DOMAIN,
+  DEV_ROOT_DOMAIN,
+  LEGACY_ROOT_DOMAIN,
+  PLATFORM_MAIL_DOMAIN,
+  ROOT_DOMAIN,
+} from "./domains";
 import { AgentMailOutboundStack } from "./stacks/agent-mail-outbound-stack";
 import { ApiStack } from "./stacks/api-stack";
 import { AuthStack } from "./stacks/auth-stack";
@@ -38,6 +44,9 @@ const STRIPE_CONNECT_CLIENT_ID_BY_ENV: Record<string, string> = {
   dev: "ca_VAYlHjvDMa4nm0M4C3uEen6Hk7cfpBBO",
   prod: "ca_USVqSxboff54k8ETEYsNtlJK62FiFI7S",
 };
+
+// Huddles are prod-only (owner ruling 2026-10-01); "" keeps an env dark.
+const LIVEKIT_URL_BY_ENV: Record<string, string> = { dev: "", prod: "wss://lightbulb-svx3a1rx.livekit.cloud" };
 
 // The Lightbulb workspace per environment — the org every customer's shared
 // `lightbulb-<slug>` channel is shared with. Dev is the founder's dev org.
@@ -81,6 +90,7 @@ export class LightbulbStage extends cdk.Stage {
       stackName: `lightbulb-${env}-dns`,
       environment: env,
       rootDomain,
+      legacyRootDomain: LEGACY_ROOT_DOMAIN,
     });
 
     // SesInboundStack — SES inbound agent-mail receiving (domain identity,
@@ -170,6 +180,11 @@ export class LightbulbStage extends cdk.Stage {
       albV2: network.albV2,
       albSecurityGroup: network.albSecurityGroup,
       clerkIssuerSecretName: `lightbulb/${env}/clerk_issuer`,
+      // Prod's issuer is a literal so a Clerk domain move reaches AppSync in the
+      // deploy that flips CLERK_DOMAIN: a secret reference is only re-read when
+      // the resource changes for some other reason. Dev is a Clerk dev instance
+      // whose issuer is not on our domain, so it stays on the secret.
+      clerkIssuerUrl: env === "prod" ? `https://clerk.${CLERK_DOMAIN}` : undefined,
       // Pass secret NAME (not ISecret) — same pattern as ServiceStack uses
       // for cross-stack secret refs to avoid KMS auto-grant cycles.
       paperclipServiceTokenKeySecretName:
@@ -202,6 +217,9 @@ export class LightbulbStage extends cdk.Stage {
         encryptionKey: `lightbulb/${env}/encryption_key`,
         posthogProjectApiKey: `lightbulb/${env}/posthog_project_api_key`,
         openaiApiKey: `lightbulb/${env}/openai_api_key`,
+        livekitApiKey: `lightbulb/${env}/livekit_api_key`,
+        livekitApiSecret: `lightbulb/${env}/livekit_api_secret`,
+        huddleWorkerSecret: `lightbulb/${env}/huddle_worker_secret`,
         paperclipServiceTokenKey: auth.paperclipServiceTokenKey.secretName,
         paperclipEventsWebhookSecret: auth.paperclipEventsWebhookSecret.secretName,
         gogKeyringPassword: auth.gogKeyringPassword.secretName,
@@ -252,6 +270,8 @@ export class LightbulbStage extends cdk.Stage {
       // experiment can never create a real provider resource out of the prod
       // catalog. Prod reads and writes the real one.
       stripeProjectsCatalog: env === "prod" ? "prod" : "testing",
+      // Prod only; dev stays dark.
+      livekitUrl: LIVEKIT_URL_BY_ENV[env],
     });
 
     // The service ships AGENT_MAIL_CONFIGURATION_SET, and ses_email.py stamps

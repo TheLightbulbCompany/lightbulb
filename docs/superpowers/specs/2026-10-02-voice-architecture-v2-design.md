@@ -523,3 +523,26 @@ Fix forward, no flags. Each step: merge on green CI + Codex review → dev auto-
    cannot know, it says so and names who can. Jev already judges "is this a question to the room" implicitly; make it
    an explicit structured answer (`question_to_room`) next to `reask`. Bench rows: the implicit-handoff class (0.93
    today) and D-dev-02's own text; answered-question and group-ack rows must stay at 0.00 false-speak.
+
+## 13. When this reaches Google Meet / Zoom (not built; the starting point)
+
+The room design above is measured on rooms. Meetings are the setting where the same research reverses two of its
+exclusions, so these are the first things to build when the Meet work (`2026-10-02-google-meet-via-recall-design.md`)
+starts, not afterthoughts:
+
+- **Meeting state as the router's input.** capa: on real meetings (AMI), a prompt-only delegate stayed silent on 51.4% of
+  its real chances; explicit state (topic, decisions, open questions, stances, floor) brought that to 2.5% with 0.6%
+  false contributions, and the ablation showed the state, not more transcript, did it. Our own AMI bench ([SoS]) has
+  Jev at 0.08 SPEAK recall. The state doubles as notes/action items. [Addlesee]'s goal annotations (G/AG/CG, shared,
+  on-behalf-of) are the schema to start from; the goal ledger excluded in §9 is excluded for rooms, not for meetings.
+- **A stricter floor rule.** The agent is a guest among many people: speak when invited by name, or when a question to
+  the room goes unclaimed for a few seconds (Bohus 2011: ~3.5 s), never by self-selecting into human talk. The Live
+  "lone speaker ⇒ someone answers" rule does not apply.
+- **Identity on screen.** Meet shows one bot tile; the bot's video (Recall output media renders a page) must show which
+  agent is speaking, or the per-agent voices ([D]) lose their identity cue.
+- **A holding cue.** The relay adds delay, and [Skantze] shows people talk over a silent system that is about to
+  answer; the bot tile needs a visible "about to speak" state. Rejected for Live (§9) because Live's first audio is
+  ~2–3 s with a tile state; revisit for meetings where the gap is longer.
+- **Carries over unchanged:** the addressing stage (names anywhere, fuzzy), speaker identity from the platform, the
+  re-check before speaking (more important, since humans answer each other constantly), barge-in rules, one responder.
+- **Measure first:** replay AMI-style transcripts through the router with meeting state on/off before building the UI.

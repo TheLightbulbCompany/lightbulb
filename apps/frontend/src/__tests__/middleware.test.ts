@@ -220,15 +220,6 @@ describe('decideLaunchHostRouting (retired product domain)', () => {
     });
   });
 
-  it('redirects every isol8.co path, the root included', () => {
-    expect(decideLaunchHostRouting('isol8.co', '/', '')).toEqual({ kind: 'redirect', to: 'https://thelightbulb.company/' });
-    expect(decideLaunchHostRouting('WWW.isol8.co', '/blog/x', '?a=1')).toEqual({
-      kind: 'redirect',
-      to: 'https://thelightbulb.company/blog/x?a=1',
-    });
-    expect(decideLaunchHostRouting('goosetown.isol8.co', '/', '')).toBeNull();
-  });
-
   it('serves the competition page at the root', () => {
     expect(decideLaunchHostRouting('flickmeon.ai', '/', '')).toEqual({ kind: 'rewrite', to: '/launch' });
     expect(decideLaunchHostRouting('WWW.flickmeon.ai', '/', '')).toEqual({ kind: 'rewrite', to: '/launch' });

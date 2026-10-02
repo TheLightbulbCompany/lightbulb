@@ -4,7 +4,6 @@ import { NextResponse, type NextRequest } from "next/server";
 import {
   DEFAULT_ADMIN_HOSTS,
   LAUNCH_HOSTS,
-  RETIRED_HOSTS,
   PAPERCLIP_HOSTS as PAPERCLIP_HOST_LIST,
   ROOT_DOMAIN,
   SITE_URL,
@@ -122,12 +121,10 @@ export type LaunchHostDecision =
   | { kind: "passthrough" };
 
 const LAUNCH_HOST_SET = new Set(LAUNCH_HOSTS);
-const RETIRED_HOST_SET = new Set(RETIRED_HOSTS);
 
 /**
  * Pure host/path -> decision for flickmeon.ai, the launch-competition site: the
  * root serves `/launch`, every other path redirects to the product domain.
- * isol8.co (RETIRED_HOSTS) serves nothing: every path redirects, the root too.
  * null = not a launch host. Runs outside clerkMiddleware for the same reason
  * the Paperclip hosts do: browsers still hold Clerk cookies from when this
  * domain was the product, and Clerk would answer them with a handshake redirect.
@@ -138,7 +135,6 @@ export function decideLaunchHostRouting(
   search: string,
 ): LaunchHostDecision | null {
   const h = (host ?? "").toLowerCase();
-  if (RETIRED_HOST_SET.has(h)) return { kind: "redirect", to: `${SITE_URL}${pathname}${search}` };
   if (!LAUNCH_HOST_SET.has(h)) return null;
   const origin = h.startsWith("dev.") ? `https://dev.${ROOT_DOMAIN}` : SITE_URL;
   // The root IS the competition site. A referral link (`/?ref=CODE`) still goes to

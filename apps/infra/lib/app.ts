@@ -400,20 +400,6 @@ pipeline.addStageWithGitHubOptions(prodStage, {
           run: `vercel alias \${{ steps.vercel-deploy-prod.outputs.DEPLOY_URL }} www.${LAUNCH_DOMAIN} --token=$VERCEL_TOKEN`,
           env: vercelEnv,
         },
-        // isol8.co, the first brand domain: middleware 308s every path to the
-        // product (RETIRED_HOSTS). Registered first for the same SSO-wall reason.
-        ...["isol8.co", "www.isol8.co"].flatMap((host) => [
-          {
-            name: `Register ${host} on the project`,
-            run: `vercel domains add ${host} frontend --force --token="$VERCEL_TOKEN"`,
-            env: vercelEnv,
-          },
-          {
-            name: `Alias to ${host}`,
-            run: `vercel alias \${{ steps.vercel-deploy-prod.outputs.DEPLOY_URL }} ${host} --token=$VERCEL_TOKEN`,
-            env: vercelEnv,
-          },
-        ]),
       ],
     }),
     // Gated by the same JsonPatch mechanism as DeployVercelProd (below).

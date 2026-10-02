@@ -12,7 +12,18 @@ import {
   writeDesktopPermissionGrant,
 } from "@/lib/desktopPermissions";
 
-type State = { enrollment: { ownerId: string; humanUserId: string; enabled: boolean; paused: boolean; recoveryPending?: boolean; remoteDisabled?: boolean } | null; pairedWorkspaceId: string | null; status: string };
+type State = { enrollment: { ownerId: string; humanUserId: string; enabled: boolean; paused: boolean; recoveryPending?: boolean; remoteDisabled?: boolean } | null; pairedWorkspaceId: string | null; status: string; providers?: Record<"claude" | "codex", ProviderSetup> };
+type ProviderSetup = { cli: boolean; mcp: "configured" | "missing" | "collision"; hooks: "configured" | "missing" | "disabled" };
+
+/** One line per provider, from what the desktop actually read on disk. */
+export function providerSetupLine(name: string, p: ProviderSetup): string {
+  if (!p.cli) return `${name} — Not installed`;
+  const reasons = [
+    p.mcp === "collision" ? "another lightbulb_native_sessions MCP server is configured" : p.mcp === "missing" ? "MCP server missing" : null,
+    p.hooks === "disabled" ? "Claude hooks are disabled in settings.json" : p.hooks === "missing" ? "hooks missing" : null,
+  ].filter(Boolean);
+  return reasons.length ? `${name} — Needs attention: ${reasons.join("; ")}` : `${name} — Configured for new sessions`;
+}
 type Invoke = <T = unknown>(command: string, args?: Record<string, unknown>) => Promise<T>;
 function bridge(): Invoke | undefined {
   return (window as Window & { __TAURI__?: { core?: { invoke?: Invoke } } }).__TAURI__?.core?.invoke;
@@ -154,6 +165,12 @@ export function LocalSessions() {
       {state && !state.pairedWorkspaceId ? <p>Connect this Mac first using the existing desktop setup.</p> : null}
       {state?.pairedWorkspaceId && !sameWorkspace ? <p>Select the workspace connected to this Mac before enabling sharing (this Mac is connected in {state.pairedWorkspaceId}).</p> : null}
       {state?.enrollment ? <p>Enrolled workspace: {state.enrollment.ownerId}. Local sharing {enabled ? (state.enrollment.paused ? "paused until the enrolled person signs in" : state.status || "connecting") : "stopped"}.</p> : null}
+      {state?.enrollment && state.providers ? <div className="space-y-1">
+        <p>{providerSetupLine("Claude Code", state.providers.claude)}</p>
+        <p>{providerSetupLine("Codex", state.providers.codex)}</p>
+        <p className="text-sm text-muted-foreground">Start a new Claude Code or Codex session after setup; sessions already running won&apos;t pick this up.</p>
+        {enabled ? <Button variant="outline" disabled={busy} onClick={() => void setEnabled(true)}>Retry setup</Button> : null}
+      </div> : null}
       {recoveryPending ? <p>Retained server history may still be shared. Remote-history revocation is unconfirmed. Sign in as the enrolled person in the enrolled workspace and retry disable before enabling again.</p> : null}
       {state?.enrollment?.remoteDisabled ? <p>Remote-history sharing is confirmed disabled.</p> : null}
       {!enabled && state?.status.startsWith("Local sharing stopped;") ? <p role="status">{state.status}</p> : null}

@@ -32,7 +32,7 @@ authority; every other Claude inbox message remains a peer request.
 
 ```
 [Lightbulb teammate contribution from @aden (Aden Kim) {"roomId":…,"requestId":…}]
-[Lightbulb workspace advisory: …]        ← present only when files changed outside this session
+[Lightbulb workspace advisory: …]        ← only when files changed outside this session, sessions may overlap, or coverage is unknown
 Check whether the timeout also happens at concurrency 50
 ```
 

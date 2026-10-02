@@ -3297,7 +3297,7 @@ mod tests {
         mention["roomMention"] = json!(true);
         let mention = parse_command(&mention, "alice").unwrap();
         assert!(mention.room_mention);
-        assert_eq!(mention.native_text("codex", ""), format!("{OWNER_LABEL}[Lightbulb request: r1]\nhello"));
+        assert_eq!(mention.native_text("codex", ""), format!("{OWNER_LABEL}{ROUTE_NOTE}[Lightbulb request: r1]\nhello"));
         let mut bare = frame.clone();
         bare.as_object_mut().unwrap().remove("actor");
         assert!(parse_command(&bare, "bob").unwrap().label.is_none());

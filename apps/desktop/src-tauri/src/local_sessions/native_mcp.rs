@@ -85,13 +85,46 @@ fn change(home: &Path, cli: &Path, provider: &str, verb: &str, executable: &Path
     }
 }
 
-fn configure_codex_policy(home: &Path, executable: &Path) -> io::Result<Vec<String>> {
+fn codex_config(home: &Path) -> PathBuf {
     let codex_home = if std::env::var_os("HOME").as_deref() == Some(home.as_os_str()) {
         std::env::var_os("CODEX_HOME").map(PathBuf::from).unwrap_or_else(|| home.join(".codex"))
     } else {
         home.join(".codex")
     };
-    let path = codex_home.join("config.toml");
+    codex_home.join("config.toml")
+}
+
+/// Read-only, no CLI spawn: "configured", "missing", or "collision" (the name
+/// is taken by a server that is not this executable's `session-mcp`).
+pub(super) fn status(home: &Path, executable: &Path, provider: &str) -> &'static str {
+    let read = |path: PathBuf| std::fs::read_to_string(path).ok();
+    let (command, args) = if provider == "claude" {
+        let Some(doc) = read(home.join(".claude.json")).and_then(|t| serde_json::from_str::<Value>(&t).ok()) else {
+            return "missing";
+        };
+        let entry = &doc["mcpServers"][SERVER_NAME];
+        if entry.is_null() {
+            return "missing";
+        }
+        (entry["command"].as_str().map(str::to_owned), entry["args"] == json!(["session-mcp"]))
+    } else {
+        let Some(doc) = read(codex_config(home)).and_then(|t| t.parse::<toml_edit::DocumentMut>().ok()) else {
+            return "missing";
+        };
+        let Some(server) = doc.get("mcp_servers").and_then(|s| s.get(SERVER_NAME)) else {
+            return "missing";
+        };
+        let args = server.get("args").and_then(toml_edit::Item::as_array);
+        (
+            server.get("command").and_then(toml_edit::Item::as_str).map(str::to_owned),
+            args.is_some_and(|a| a.len() == 1 && a.get(0).and_then(|v| v.as_str()) == Some("session-mcp")),
+        )
+    };
+    if args && command.as_deref() == executable.to_str() { "configured" } else { "collision" }
+}
+
+fn configure_codex_policy(home: &Path, executable: &Path) -> io::Result<Vec<String>> {
+    let path = codex_config(home);
     let mut original = String::new();
     super::secure_file(&path)
         .map_err(io::Error::other)?

@@ -6,7 +6,9 @@ import { resolve, join } from "node:path";
 const skillRoot = resolve(__dirname, "../hermes/skills-src/paperclip");
 const helper = resolve(skillRoot, "scripts/paperclip-api.sh");
 const skillMd = readFileSync(resolve(skillRoot, "SKILL.md"), "utf8");
+const helperSource = readFileSync(helper, "utf8");
 const monitorsMd = readFileSync(resolve(skillRoot, "references/monitors.md"), "utf8");
+const workModesMd = readFileSync(resolve(skillRoot, "references/work-modes.md"), "utf8");
 const heartbeatRefMd = readFileSync(resolve(skillRoot, "references/heartbeat.md"), "utf8");
 const apiReferenceMd = readFileSync(resolve(skillRoot, "references/api-reference.md"), "utf8");
 const companySkillsMd = readFileSync(resolve(skillRoot, "references/company-skills.md"), "utf8");
@@ -418,16 +420,86 @@ describe("liveness primitives are documented", () => {
   it("arms the watchdog with PUT, not POST — a copied POST 404s", () => {
     // Fix round 2: only get/put/delete are registered for
     // /issues/:id/watchdog upstream. Assert the verb, not just the path —
-    // a path-only check passed straight over this bug once already.
+    // a path-only check passed straight over this bug once already. The
+    // `watchdog` helper now owns the verb, so the reference calls the helper
+    // and the verb is pinned on the helper's own send line.
     expect(monitorsMd).toContain(
-      '}\' | /app/skills/paperclip/scripts/paperclip-api.sh raw PUT \\\n' +
-        '      "/api/issues/$PAPERCLIP_TASK_ID/watchdog"',
+      '/app/skills/paperclip/scripts/paperclip-api.sh watchdog "$PAPERCLIP_TASK_ID" \\\n' +
+        '  --instructions "',
     );
+    expect(helperSource).toContain('send PUT "$(api_base)/issues/$issue_id/watchdog" "$payload"');
+    expect(helperSource).toContain('send DELETE "$(api_base)/issues/$issue_id/watchdog"');
     for (const line of monitorsMd.split("\n")) {
       if (line.includes("/watchdog") && line.trimStart().startsWith("curl")) {
         throw new Error(`hand-rolled curl for the watchdog endpoint: ${line}`);
       }
     }
+  });
+
+  it("builds the watchdog body with the named agent and instructions", () => {
+    const result = runHelper([
+      "watchdog", "issue-1", "--agent-id", "agent-1",
+      "--instructions", "Resume the release check if this stalls.", "--dry-run",
+    ]);
+
+    expect(result.status, result.stderr).toBe(0);
+    expect(JSON.parse(result.stdout)).toEqual({
+      agentId: "agent-1",
+      instructions: "Resume the release check if this stalls.",
+    });
+  });
+
+  it("clears the watchdog with no body and no other flags", () => {
+    const cleared = runHelper(["watchdog", "issue-1", "--clear", "--dry-run"]);
+    expect(cleared.status, cleared.stderr).toBe(0);
+    expect(cleared.stdout).toContain("(no request body)");
+
+    const mixed = runHelper(["watchdog", "issue-1", "--clear", "--agent-id", "agent-1", "--dry-run"]);
+    expect(mixed.status).not.toBe(0);
+    expect(mixed.stderr).toContain("--clear takes no other watchdog flags");
+  });
+
+  it("routes work modes to their reference and keeps the plan loop's target rule", () => {
+    expect(skillMd).toContain("| `references/work-modes.md` |");
+    expect(workModesMd).toContain("| `ask` |");
+    expect(workModesMd).toContain("| `planning` |");
+    expect(workModesMd).toContain('`key: "plan"`');
+    // The accepted-plan flip keys on the confirmation's plan-document target,
+    // which only `confirm --plan` sets.
+    expect(workModesMd).toContain('confirm "$PAPERCLIP_TASK_ID" --plan --prompt');
+  });
+
+  it("binds a plan confirmation to the plan document's latest revision", () => {
+    // The stub answers the helper's GET with the plan document and echoes the
+    // POST body back, so this is the exact target Paperclip would receive.
+    const result = runHelperWithIssue(["confirm", "issue-1", "--plan", "--prompt", "Accept this plan?"], {
+      id: "doc-1",
+      issueId: "issue-uuid-1",
+      key: "plan",
+      latestRevisionId: "rev-3",
+      latestRevisionNumber: 3,
+    });
+
+    expect(result.status, result.stderr).toBe(0);
+    const sent = JSON.parse(result.stdout);
+    expect(sent.kind).toBe("request_confirmation");
+    expect(sent.payload.target).toEqual({
+      type: "issue_document",
+      key: "plan",
+      revisionId: "rev-3",
+      issueId: "issue-uuid-1",
+      documentId: "doc-1",
+      revisionNumber: 3,
+    });
+  });
+
+  it("sets no target without --plan, and shows the plan target's shape in a dry run", () => {
+    const plain = runHelper(["confirm", "issue-1", "--prompt", "Ship it?", "--dry-run"]);
+    expect(JSON.parse(plain.stdout).payload.target).toBeUndefined();
+
+    const plan = runHelper(["confirm", "issue-1", "--plan", "--prompt", "Accept this plan?", "--dry-run"]);
+    expect(plan.status, plan.stderr).toBe(0);
+    expect(JSON.parse(plan.stdout).payload.target).toMatchObject({ type: "issue_document", key: "plan" });
   });
 
   it("has no trace of the disabled/nonexistent external-objects endpoints", () => {
@@ -455,11 +527,11 @@ describe("liveness primitives are documented", () => {
     }
   });
 
-  it("flags Cases as disabled on this instance in the routing table", () => {
-    // Fix round 2: enableCases is false in both envs — say so before an
-    // agent burns a run on a 403.
-    expect(skillMd).toContain("references/cases.md");
-    expect(skillMd).toContain("**Disabled on this instance** (`enableCases` is false in both envs)");
+  it("routes Cases to its reference without calling it disabled", () => {
+    // Cases is enabled on this instance (the Teams Cases panels shipped), so
+    // the routing row must not tell agents the calls 403.
+    expect(skillMd).toContain("| `references/cases.md` |");
+    expect(skillMd).not.toContain("Disabled on this instance");
   });
 });
 

@@ -6,7 +6,7 @@ Layered lookup — the first source that returns a non-empty value wins:
      ``marketplace-sellers`` table. We surface ``@{handle}`` as the
      byline. This is the canonical post-rollout path.
   2. Curator special-case — the configured ``admin@isol8.co`` account
-     resolves to ``@isol8`` even before it has a profile row, so
+     resolves to ``@lightbulb`` even before it has a profile row, so
      featured listings always read correctly.
   3. Clerk derivation — first_name + last_name from the Clerk profile,
      falling back to the email's local-part. Used for sellers who
@@ -31,7 +31,7 @@ from core.services import clerk_admin, curator
 
 logger = logging.getLogger(__name__)
 
-CURATOR_HANDLE = "isol8"
+CURATOR_HANDLE = "lightbulb"
 CURATOR_BYLINE = f"@{CURATOR_HANDLE}"
 FALLBACK_NAME = "Community member"
 
@@ -111,7 +111,7 @@ async def _resolve_uncached(seller_id: str) -> str:
     if profile and profile.get("handle"):
         return f"@{profile['handle']}"
 
-    # 2. Curator special-case — always render as @isol8 even pre-onboard.
+    # 2. Curator special-case — always render as @lightbulb even pre-onboard.
     curator_id = await curator.get_curator_user_id()
     if curator_id and seller_id == curator_id:
         return CURATOR_BYLINE

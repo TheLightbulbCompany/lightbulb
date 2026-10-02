@@ -13,8 +13,5 @@ def test_rate_limit_one_per_90s_and_ten_per_hour():
     assert r.ok(3600)  # the first one aged out
 
 
-def test_kill_switch(monkeypatch):
-    monkeypatch.delenv("LIGHTBULB_PROACTIVE", raising=False)
-    assert gate.enabled()
-    monkeypatch.setenv("LIGHTBULB_PROACTIVE", "OFF")
-    assert not gate.enabled()
+def test_no_kill_switch():
+    assert not hasattr(gate, "enabled")  # no flags: LIGHTBULB_PROACTIVE is gone

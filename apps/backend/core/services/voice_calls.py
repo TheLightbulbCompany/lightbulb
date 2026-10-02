@@ -12,6 +12,7 @@ import logging
 import re
 import time
 import uuid
+from datetime import datetime, timezone
 
 import httpx
 from botocore.exceptions import ClientError
@@ -381,14 +382,22 @@ async def _runtime(owner_id: str, path: str, body: dict, *, timeout_s: float = _
     )
 
 
-def prewake_owner(owner_id: str) -> None:
-    """Fire-and-forget wake of the workspace runtime (one health RPC), so the first turn finds it warm."""
+def prewake_owner(owner_id: str, team: list[dict] | None = None) -> None:
+    """Fire-and-forget wake of the workspace runtime (one health RPC), then a profile pull for every
+    agent in the room (the bridge's profile.warm, off its request thread), so the first summon finds
+    both warm. Pulse's first voice answer waited 23 s on its cold profile restore alone."""
 
     async def wake():
         try:
             await container_rpc.call(owner_id, "health")
         except Exception:  # noqa: BLE001 -- best effort; the first turn wakes it otherwise
             logger.info("voice owner prewake failed", exc_info=True)
+            return
+        for member in team or ():
+            try:
+                await container_rpc.call(owner_id, "profile.warm", {"agentId": member["id"]}, timeout_s=10.0)
+            except Exception:  # noqa: BLE001 -- an old image answers "unavailable"; the summon restores
+                logger.info("voice profile prewarm failed agent=%s", member["id"], exc_info=True)
 
     _fire(wake())
 
@@ -711,15 +720,21 @@ async def abort_voice_run(owner_id: str, room_id: str, run_id: str) -> bool:
     return await _run_control(owner_id, run_id, "abort", {}) == 202
 
 
-def _transcript_history(transcript: str, members: list[dict], utterance: str) -> list[dict]:
+def _transcript_history(
+    transcript: str, members: list[dict], utterance: str, at: list[int] | None = None
+) -> list[dict]:
     """The Live transcript ("Name: text", or "Agent → Person: text" for a voice's answer) as chat
     history rows, ending before the line itself. An agent's line carries its id, so chat's fallback
     can find who was already in the conversation. ``to``: the arrow's person, else everyone the line
-    names (the addressing stage's candidates -- Live's stand-in for stored @mentions; no call per row)."""
+    names (the addressing stage's candidates -- Live's stand-in for stored @mentions; no call per row).
+    ``at``: epoch seconds of the transcript's last lines, aligned to its end; each becomes that row's
+    ``createdAt``, so Jev's reask rule can age an earlier ask (no ``at``: rows carry no time, as before)."""
     agents = {(m.get("displayName") or "").lower(): m["id"] for m in members if m.get("kind") == "agent"}
     names = {m["id"]: m.get("displayName") or m["id"] for m in members}
     rows = []
-    for line in transcript.splitlines()[-30:]:
+    lines = transcript.splitlines()[-30:]
+    times = list(at or [])[-len(lines) :] if lines else []
+    for line, when in zip(lines, [None] * (len(lines) - len(times)) + times):
         name, sep, text = line.partition(": ")
         if sep:
             name, arrow, target = name.partition(" → ")
@@ -734,7 +749,10 @@ def _transcript_history(transcript: str, members: list[dict], utterance: str) ->
                     for i in c["agents"] + c["humans"]
                 ]
             )
-            rows.append({"author": author, "text": text, "to": to})
+            row = {"author": author, "text": text, "to": to}
+            if when is not None:
+                row["createdAt"] = datetime.fromtimestamp(when, timezone.utc).isoformat()
+            rows.append(row)
     if rows and rows[-1]["text"] == utterance:
         rows.pop()
     return rows
@@ -773,6 +791,7 @@ async def route_live_line(
     wake: bool = False,
     floor: dict | None = None,
     voice_runs: list[dict] | None = None,
+    at: list[int] | None = None,
 ) -> dict:
     """The one Live router (routing v2 §6), every line the worker's position-1 name did not settle,
     routed exactly as if the speaker had typed it in the room: the shared addressing stage (a name
@@ -791,7 +810,7 @@ async def route_live_line(
     if wake:
         utterance = _WAKE_WORD.sub("", utterance, count=1) or utterance
     author = {"kind": "human", "id": speaker_id, "displayName": await messaging.human_display_name(speaker_id)}
-    history = _transcript_history(transcript, members, utterance)
+    history = _transcript_history(transcript, members, utterance, at)
     addressing = await messaging.address({"author": author, "text": utterance}, members, history=history, live=True)
     if addressing["hold"]:
         put_metric("voice.routing.jev", dimensions={"outcome": "hold"})

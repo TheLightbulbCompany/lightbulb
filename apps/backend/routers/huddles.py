@@ -80,6 +80,7 @@ class TurnBody(BaseModel):
     utterance: str = Field(min_length=1, max_length=4_000)
     transcript: str = Field(default="", max_length=12_000)
     steerRunId: uuid.UUID | None = None
+    steerOnly: bool = False  # steer steerRunId or do nothing: lines said in the room never start a run (v2 §4.3)
 
 
 class RouteBody(BaseModel):
@@ -92,6 +93,8 @@ class RouteBody(BaseModel):
     # Live's open requests for Jev (routing v2 §5): {agent, speaker} holding the floor, [{agent, request}].
     floor: dict[str, str] | None = None
     voiceRuns: list[dict[str, str]] = Field(default_factory=list, max_length=16)
+    # Epoch seconds the transcript's last lines were said, oldest first, aligned to its end (Live reask rule).
+    at: list[int] = Field(default_factory=list, max_length=30)
 
 
 class EndBody(BaseModel):
@@ -105,6 +108,22 @@ class PresenceBody(BaseModel):
     roomToken: _Id
     userIds: list[_Id] = Field(max_length=128)
     version: int = Field(default=0, ge=0)  # monotonic per worker; a stale (reordered) snapshot is dropped
+
+
+class TranscriptLine(BaseModel):
+    mark: int = Field(ge=0)
+    kind: str = Field(max_length=8)  # person | agent
+    name: str = Field(max_length=200)
+    text: str = Field(max_length=4000)
+    at: float = 0.0
+    to: str = Field(default="", max_length=200)
+
+
+class TranscriptBody(BaseModel):
+    ownerId: _Id
+    roomToken: _Id
+    huddleId: _Id
+    lines: list[TranscriptLine] = Field(max_length=500)
 
 
 class FramesBody(BaseModel):
@@ -127,7 +146,7 @@ async def join(room_id: str, auth: Annotated[AuthContext, Depends(get_current_us
         return {**out, "lightbulb": False}
     # Going Live is the earliest sign a voice turn is coming: start the workspace's cold start now,
     # and warm Jev's agent cards so the first /route fits its 3 s budget (F4).
-    voice_calls.prewake_owner(owner_id)
+    voice_calls.prewake_owner(owner_id, team)
     voice_calls.prewarm_cards(owner_id, team)
     try:
         # The worker takes ~20 s to join: a second click (or person) in that window must not dispatch
@@ -201,6 +220,8 @@ async def turn(call_id: str, body: TurnBody):
         steered = await voice_calls.steer_voice_run(run_id=str(body.steerRunId), **args)
         if steered:
             return steered
+    if body.steerOnly:
+        return {"runId": str(body.steerRunId), "agentId": body.agentId, "steered": False}
     return await voice_calls.dispatch_voice_run(run_id=str(body.runId), transcript=body.transcript, **args)
 
 
@@ -224,6 +245,7 @@ async def route(room_id: str, body: RouteBody):
         wake=body.humans is None,
         floor=body.floor,
         voice_runs=body.voiceRuns,
+        at=body.at,
     )
 
 
@@ -240,6 +262,21 @@ async def end(call_id: str, body: EndBody):
     if call.get("kind") != "huddle" or call.get("ownerId") != body.ownerId:
         raise _problem(404, "call_not_found")
     return {"closed": await voice_calls.close_call(call_id, usage_seconds=body.usageSeconds)}
+
+
+@router.post("/internal/huddles/{room_id}/transcript", dependencies=[_Worker])
+async def transcript(room_id: str, body: TranscriptBody):
+    """The worker's rolling transcript, in batches: what people and agents said in a huddle, kept
+    in the backend's CloudWatch log (search `live transcript huddle=<id>`) so a bad call can be
+    read back. Nothing is posted to the room."""
+    room_id = _room_id(room_id)
+    _require_room_token(body.roomToken, room_id, body.ownerId)
+    rendered = "\n".join(
+        f"[{x.mark} @{int(x.at)}] {x.name}{' → ' + x.to if x.to else ''}: {x.text}" for x in body.lines
+    )
+    logger.info("live transcript room=%s huddle=%s owner=%s\n%s", room_id, body.huddleId, body.ownerId, rendered)
+    put_metric("voice.huddle.transcript_lines", len(body.lines))
+    return {"ok": True}
 
 
 @router.post("/internal/huddles/{room_id}/presence", dependencies=[_Worker])

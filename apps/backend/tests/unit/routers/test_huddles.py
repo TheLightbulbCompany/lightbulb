@@ -73,7 +73,7 @@ def test_the_calls_orb_route_is_gone():
 def test_join_wakes_the_workspace_and_warms_the_cards(client):
     resp, _, _ = _join(client)
     assert resp.status_code == 200
-    _join.wake.assert_called_once_with("org_a")
+    _join.wake.assert_called_once_with("org_a", TEAM)  # health, then profile.warm per agent
     _join.warm.assert_called_once_with("org_a", TEAM)  # F4: the first /route fits its 3 s budget
 
 
@@ -152,7 +152,7 @@ def test_join_works_in_a_dm_and_group_dm(client, kind):
         resp, _, dispatch = _join(client, room_team=AsyncMock(wraps=vc._room_team))
     assert resp.status_code == 200 and resp.json()["lightbulb"] is True
     dispatch.assert_awaited_once()
-    _join.wake.assert_called_once_with("org_a")
+    _join.wake.assert_called_once_with("org_a", [{"id": "agent-eng", "name": "Engineering"}])
 
 
 def test_people_only_room_joins_without_dispatch_or_wake(client):
@@ -314,6 +314,13 @@ def test_turn_dispatches_when_the_steer_is_refused(client):
     dispatch.assert_awaited_once()
 
 
+def test_turn_steer_only_never_dispatches(client):
+    # routing v2 §4.3: lines said in the room steer the floor-holder's run, or nothing
+    resp, _, dispatch = _turn(client, {**INTERNAL[1][1], "steerRunId": RUN, "steerOnly": True}, steered=None)
+    assert resp.json() == {"runId": RUN, "agentId": "agent-fin", "steered": False}
+    dispatch.assert_not_awaited()
+
+
 def _huddle_call(**over):
     return {"callId": "c1", "ownerId": "org_a", "kind": "huddle", "roomId": ROOM, "status": vc.OPEN, **over}
 
@@ -345,7 +352,7 @@ def test_route_a_wake_word_line_is_the_one_router_with_wake(client):
     assert resp.json() == routed  # agentId (the first) still there for the shipped worker
     assert route.await_args.kwargs == {
         "owner_id": "org_a", "room_id": ROOM, "speaker_id": "user_a", "utterance": "hi", "transcript": "",
-        "humans": 0, "wake": True, "floor": None, "voice_runs": [],
+        "humans": 0, "wake": True, "floor": None, "voice_runs": [], "at": [],
     }  # fmt: skip
 
 
@@ -649,3 +656,27 @@ def test_session_and_team_404_on_a_guest_owned_room(client, option_d):
     assert _session(client).status_code == 404
     resp = client.post(f"/api/v1/internal/huddles/{ROOM}/team", json={"ownerId": "org_a", "roomToken": RT}, headers=W)
     assert resp.status_code == 404 and resp.json()["detail"]["code"] == "room_not_found"
+
+
+TRANSCRIPT = f"/api/v1/internal/huddles/{ROOM}/transcript"
+
+
+def test_transcript_batches_are_logged_for_debugging(client, caplog):
+    lines = [
+        {"mark": 0, "kind": "person", "name": "Prasiddha", "text": "Hey guys, how's it going?", "at": 1790972595.0},
+        {"mark": 1, "kind": "agent", "name": "Pulse", "text": "Going well.", "at": 1790972630.0, "to": "Prasiddha"},
+    ]
+    with caplog.at_level("INFO", logger="routers.huddles"):
+        resp = client.post(
+            TRANSCRIPT, json={"ownerId": "org_a", "roomToken": RT, "huddleId": "h1", "lines": lines}, headers=W
+        )
+    assert resp.status_code == 200
+    record = next(r for r in caplog.records if "live transcript" in r.getMessage())
+    assert "huddle=h1" in record.getMessage()
+    assert "[0 @1790972595] Prasiddha: Hey guys, how's it going?" in record.getMessage()
+    assert "[1 @1790972630] Pulse → Prasiddha: Going well." in record.getMessage()
+
+
+def test_transcript_refuses_a_bad_room_token(client):
+    body = {"ownerId": "org_a", "roomToken": "nope", "huddleId": "h1", "lines": []}
+    assert client.post(TRANSCRIPT, json=body, headers=W).status_code == 401

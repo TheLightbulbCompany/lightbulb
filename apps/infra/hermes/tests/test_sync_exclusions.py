@@ -65,12 +65,13 @@ def test_agent_written_credentials_never_go_up():
 
 
 def test_browser_screenshots_are_not_pushed():
-    # ONE glob: is_excluded uses fnmatch, whose * matches "/", so this covers every depth.
-    assert sync.is_excluded("cache/screenshots/browser_screenshot_abc.png")
-    # Genuinely nested, not just flat -- the "every depth" claim above, actually exercised.
-    assert sync.is_excluded("cache/screenshots/sub/browser_screenshot_abc.png")
-    # Sibling negative: a similarly-named but different directory must NOT be swept up by the glob.
-    assert sync.is_excluded("cache/other/x.png") is False
+    """Hermes's own browser_vision tool writes browser_screenshot_*.png under cache/screenshots on
+    every browse turn; a screenshot reaches the room as an attachment, never as a profile
+    artifact. Since the fast-restore change the WHOLE cache/ tree is excluded (tool caches are
+    reproducible and were the bulk of a cold restore), so this is one case of that rule."""
+    assert sync.is_excluded("cache/screenshots/browser_screenshot_123.png")
+    assert sync.is_excluded("cache/other/x.png")
+    assert not sync.is_excluded("screenshots/x.png")
 
 
 def test_nested_credential_copies_are_covered_whichever_pr_lands_first():
@@ -182,3 +183,49 @@ def test_hermes_lock_sidecars_never_sync_in_either_direction(home, monkeypatch):
 
     sync.restore_profile("a1")
     assert [key[len(prefix):] for key in fake.downloaded] == ["repo/Cargo.lock"]
+
+
+def test_regenerable_caches_never_sync_and_durable_trees_come_down_after_the_profile(home, monkeypatch):
+    """Pulse's cold restore was 3,582 objects / 22.8 s, of which ~38 were the profile. Hermes's own
+    backup rule (hermes_cli/backup.py) says what under cache/ is regenerable: everything but its
+    kept media subdirs. Those regenerable caches never sync in either direction. Old conversations'
+    work/ trees, the curator's rollback blobs and the kept media caches are durable, so they still
+    come down -- after the profile, in the background -- and a conversation's own work/ tree is
+    pulled by its turn (restore_subtree), once."""
+    monkeypatch.setattr(sync, "S3_BUCKET", "bucket-under-test")
+    monkeypatch.setattr(sync, "_start_deferred_restore", lambda agent_id: None)  # driven by hand below
+    monkeypatch.setattr(sync, "_DEFERRED_RESTORE_DELAY_S", 0)
+    sync._restored.discard("a1")
+    sync._RESTORED_SUBTREES.clear()
+    now = time.time()
+    prefix = f"{sync.S3_PREFIX}/a1/"
+    keys = ("config.yaml", "memories/notes.md", "cache/web/page.json", "cache/terminal-output/1.txt",
+            "cache/tool_discovery_cache.json", "cache/images/pic.png", ".curator_backups/blobs/x",
+            "work/room-1/repo/main.py", "work/room-2/notes.txt")
+    fake = FakeS3({prefix + key: ("x", now) for key in keys})
+    monkeypatch.setattr(sync, "_s3", lambda: fake)
+
+    sync.restore_profile("a1")
+    assert sorted(k[len(prefix):] for k in fake.downloaded) == ["config.yaml", "memories/notes.md"]
+
+    fake.downloaded.clear()
+    profile = sync._profile_dir("a1")
+    assert sync.restore_subtree("a1", profile / "work" / "room-1") == 1  # its turn: that tree, now
+    assert [k[len(prefix):] for k in fake.downloaded] == ["work/room-1/repo/main.py"]
+    assert sync.restore_subtree("a1", profile / "work" / "room-1") == 0  # once per process
+
+    fake.downloaded.clear()
+    (profile / ".curator_backups" / "blobs").mkdir(parents=True)
+    (profile / ".curator_backups" / "blobs" / "x").write_text("written by this turn")  # before the background got there
+    assert sync._restore_deferred("a1") == 2  # the rest, in the background; the turn's own write wins
+    assert sorted(k[len(prefix):] for k in fake.downloaded) == ["cache/images/pic.png", "work/room-2/notes.txt"]
+    assert (profile / ".curator_backups" / "blobs" / "x").read_text() == "written by this turn"
+    assert not (profile / "cache" / "web").exists()  # regenerable: never restored
+
+    (profile / "cache" / "web").mkdir(parents=True)
+    (profile / "cache" / "web" / "new.json").write_text("{}")
+    (profile / "cache" / "images" / "new.png").write_bytes(b"png")
+    (profile / "work" / "room-1" / "repo" / "main.py").write_text("changed")
+    sync.save_profile("a1")
+    uploaded = sorted(k[len(prefix):] for k in fake.uploaded)
+    assert uploaded == [".curator_backups/blobs/x", "cache/images/new.png", "work/room-1/repo/main.py"]

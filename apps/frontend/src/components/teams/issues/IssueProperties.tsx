@@ -6,12 +6,17 @@
 // priority, assignee, and project rows are all interactive pickers — so each
 // value has exactly one place it can be changed (the header stays a clean
 // title-only masthead).
+// The Watchdog row is ported from upstream Paperclip's IssueProperties.tsx
+// (paperclip/ui/src/components/issue-properties/IssueProperties.tsx) (MIT,
+// (c) 2025 Paperclip AI); the Work mode row mirrors the mode menu in upstream's
+// IssueChatThread.tsx composer.
 
 "use client";
 
 import { useState, type ReactNode } from "react";
 import { notifyApiError } from "@/lib/notify";
 import Link from "next/link";
+import { ArrowUpRight, Check, ChevronDown } from "lucide-react";
 import {
   Popover,
   PopoverContent,
@@ -22,6 +27,10 @@ import { StatusIcon } from "@/components/teams/shared/components/StatusIcon";
 import { PriorityIcon } from "@/components/teams/shared/components/PriorityIcon";
 import { timeAgo } from "@/components/teams/shared/lib/timeAgo";
 import { assignableMembers } from "@/components/teams/shared/lib/assignees";
+import {
+  workModeMetaFor,
+  workModeMetaList,
+} from "@/components/teams/shared/lib/workModeMeta";
 import { useTeamsApi } from "@/hooks/useTeamsApi";
 import { cn } from "@/lib/utils";
 import { handleShellLinkClick, teamsDetailUrl } from "@/lib/shellNav";
@@ -32,6 +41,8 @@ import type {
   IssuePriority,
   IssueMonitorPolicy,
   IssueMonitorState,
+  IssueWatchdog,
+  IssueWorkMode,
   CompanyAgent,
   CompanyMember,
   IssueProject,
@@ -91,6 +102,18 @@ export interface IssuePropertiesProps {
   /** Trigger an immediate monitor re-check. Returns the underlying promise so
    * the row can show a transient checking/done state and tolerate errors. */
   onCheckNow?: (issueId: string) => Promise<void>;
+  /** Switch how the task runs (PATCH workMode). Optional — without it the Work
+   * mode row is a read-only label. */
+  onWorkModeChange?: (workMode: IssueWorkMode) => void;
+  /** Arm or update the task watchdog. Rejections surface inside the editor
+   * (upstream 409s when the agent is not invokable). Optional — without it the
+   * Watchdog row stays read-only. */
+  onWatchdogSave?: (watchdog: {
+    agentId: string;
+    instructions: string | null;
+  }) => Promise<void>;
+  /** Remove the task watchdog. */
+  onWatchdogRemove?: () => Promise<void>;
   className?: string;
 }
 
@@ -587,6 +610,329 @@ function StageRow({
   );
 }
 
+const POPOVER_STYLE = {
+  background: "var(--cream)",
+  border: "1px solid var(--edge)",
+  color: "var(--midnight)",
+} as const;
+
+/** Work mode rail row: the mode chip opens upstream's composer mode menu (Auto /
+ * Plan / Ask). Picking one PATCHes ``workMode``. Read-only when the host wires
+ * no handler. */
+function WorkModeRow({
+  workMode,
+  onChange,
+}: {
+  workMode: Issue["workMode"];
+  onChange?: (workMode: IssueWorkMode) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const current = workModeMetaFor(workMode);
+  const CurrentIcon = current.icon;
+
+  if (!onChange) {
+    return (
+      <PropertyRow label="Work mode">
+        <span className="inline-flex items-center gap-1.5">
+          <CurrentIcon className="h-3.5 w-3.5 shrink-0" aria-hidden />
+          {current.label}
+        </span>
+      </PropertyRow>
+    );
+  }
+
+  return (
+    <PropertyRow label="Work mode">
+      <Popover open={open} onOpenChange={setOpen}>
+        <PopoverTrigger asChild>
+          <button
+            type="button"
+            aria-haspopup="menu"
+            aria-expanded={open}
+            className={cn(
+              "inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs font-semibold transition-colors",
+              current.classes.chip,
+            )}
+          >
+            <CurrentIcon className="h-3.5 w-3.5" aria-hidden />
+            <span>{current.label}</span>
+            <ChevronDown className="h-3 w-3 opacity-60" aria-hidden />
+          </button>
+        </PopoverTrigger>
+        <PopoverContent align="start" className="w-44 p-1" style={POPOVER_STYLE}>
+          {workModeMetaList().map((option) => {
+            const Icon = option.icon;
+            const active = option.value === current.value;
+            return (
+              <button
+                key={option.value}
+                type="button"
+                aria-pressed={active}
+                className={cn(
+                  "flex w-full items-center gap-2 rounded px-2 py-1.5 text-xs hover:bg-[var(--cream-deep)]",
+                  active && "bg-[var(--cream-deeper)]",
+                  option.classes.menuItem,
+                )}
+                onClick={() => {
+                  if (!active) onChange(option.value);
+                  setOpen(false);
+                }}
+              >
+                <Icon className="h-3.5 w-3.5 shrink-0" aria-hidden />
+                <span>{option.label}</span>
+                {active ? (
+                  <Check className="h-3.5 w-3.5 shrink-0" aria-hidden />
+                ) : null}
+              </button>
+            );
+          })}
+        </PopoverContent>
+      </Popover>
+    </PropertyRow>
+  );
+}
+
+/** Watchdog rail row: name the agent that reviews this task's subtree when it
+ * goes quiet, with optional instructions. When it fires, Paperclip opens a
+ * "Watchdog review for …" child task for that agent; the row links to it.
+ * Read-only (no editor) when the host wires no save handler. */
+function WatchdogRow({
+  issueId,
+  watchdog,
+  agents,
+  onSave,
+  onRemove,
+}: {
+  issueId: string;
+  watchdog: IssueWatchdog | null;
+  agents: CompanyAgent[];
+  onSave?: (watchdog: {
+    agentId: string;
+    instructions: string | null;
+  }) => Promise<void>;
+  onRemove?: () => Promise<void>;
+}) {
+  const { read } = useTeamsApi();
+  // Same list SubTasksRow reads (SWR dedupes); the watchdog's review task is a
+  // child of this one, so its identifier comes from here.
+  const { data: childrenData } = read<ChildrenResponse>(
+    `/issues/${issueId}/children`,
+  );
+  const children = Array.isArray(childrenData)
+    ? childrenData
+    : (childrenData?.issues ?? []);
+  const watchdogIssue = watchdog?.watchdogIssueId
+    ? children.find((child) => child.id === watchdog.watchdogIssueId)
+    : undefined;
+  const watchdogIssueUrl = watchdogIssue
+    ? teamsDetailUrl("issue", watchdogIssue.id)
+    : null;
+
+  const [open, setOpen] = useState(false);
+  // Editor draft fields. Seeded from the current watchdog when (re)opening.
+  const [agentInput, setAgentInput] = useState("");
+  const [instructionsInput, setInstructionsInput] = useState("");
+  const [pending, setPending] = useState<"save" | "remove" | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  const openEditor = () => {
+    setAgentInput(watchdog?.watchdogAgentId ?? "");
+    setInstructionsInput(watchdog?.instructions ?? "");
+    setError(null);
+    setOpen(true);
+  };
+
+  const run = async (kind: "save" | "remove", action: () => Promise<void>) => {
+    setPending(kind);
+    setError(null);
+    try {
+      await action();
+      setOpen(false);
+    } catch (e) {
+      setError(
+        e instanceof Error && e.message
+          ? e.message
+          : "Couldn't update the watchdog.",
+      );
+    } finally {
+      setPending(null);
+    }
+  };
+
+  const save = () => {
+    if (!agentInput || !onSave) return;
+    void run("save", () =>
+      onSave({
+        agentId: agentInput,
+        instructions: instructionsInput.trim() || null,
+      }),
+    );
+  };
+
+  const remove = () => {
+    if (watchdog && onRemove) void run("remove", onRemove);
+    else setOpen(false);
+  };
+
+  const agentName = (id: string) =>
+    agents.find((a) => a.id === id)?.name ?? id.slice(0, 8);
+  const instructions = watchdog?.instructions?.trim();
+
+  const summary = watchdog ? (
+    <span
+      className="inline-flex min-w-0 max-w-full items-center gap-1.5"
+      title={instructions || undefined}
+    >
+      <span className="shrink-0 max-w-40 truncate">
+        {agentName(watchdog.watchdogAgentId)}
+      </span>
+      {instructions ? (
+        <span className="min-w-0 flex-1 truncate" style={EMPTY_DASH_STYLE}>
+          · {instructions}
+        </span>
+      ) : null}
+      {watchdog.status === "disabled" ? (
+        <span className="shrink-0 text-xs" style={EMPTY_DASH_STYLE}>
+          (disabled)
+        </span>
+      ) : null}
+    </span>
+  ) : (
+    <span data-empty="true" style={EMPTY_DASH_STYLE}>
+      None
+    </span>
+  );
+
+  return (
+    <PropertyRow label="Watchdog">
+      <span className="flex min-w-0 items-center gap-1.5">
+        {onSave ? (
+          <Popover
+            open={open}
+            onOpenChange={(next) => (next ? openEditor() : setOpen(false))}
+          >
+            <PopoverTrigger asChild>
+              <button
+                type="button"
+                className="min-w-0 max-w-full text-left hover:underline"
+              >
+                {summary}
+              </button>
+            </PopoverTrigger>
+            <PopoverContent
+              align="start"
+              className="w-80 space-y-3 p-2"
+              style={POPOVER_STYLE}
+            >
+              <label
+                className="block text-xs font-medium"
+                style={{ color: "var(--midnight)" }}
+              >
+                Watchdog agent
+                <select
+                  value={agentInput}
+                  onChange={(e) => setAgentInput(e.target.value)}
+                  className="mt-1.5 w-full px-2 py-1.5 text-xs font-normal rounded-sm bg-transparent"
+                  style={{ border: "1px solid var(--edge)", color: "var(--midnight)" }}
+                >
+                  <option value="">Select agent</option>
+                  {agents
+                    .filter(
+                      (a) => a.status !== "terminated" || a.id === agentInput,
+                    )
+                    .map((a) => (
+                      <option key={a.id} value={a.id}>
+                        {a.name}
+                      </option>
+                    ))}
+                </select>
+              </label>
+              <label
+                className="block text-xs font-medium"
+                style={{ color: "var(--midnight)" }}
+              >
+                Instructions{" "}
+                <span className="font-normal" style={EMPTY_DASH_STYLE}>
+                  (optional)
+                </span>
+                <textarea
+                  value={instructionsInput}
+                  onChange={(e) => setInstructionsInput(e.target.value)}
+                  placeholder="What should the watchdog watch for and how should it keep work moving?"
+                  rows={4}
+                  className="mt-1.5 w-full px-2 py-1.5 text-xs font-normal rounded-sm bg-transparent"
+                  style={{ border: "1px solid var(--edge)", color: "var(--midnight)" }}
+                />
+              </label>
+              {watchdogIssue && watchdogIssueUrl ? (
+                <div className="text-xs" style={EMPTY_DASH_STYLE}>
+                  Watchdog task:{" "}
+                  <Link
+                    href={watchdogIssueUrl}
+                    prefetch={false}
+                    onClick={(e) => handleShellLinkClick(e, watchdogIssueUrl)}
+                    className="hover:underline"
+                    style={{ color: "var(--midnight)" }}
+                  >
+                    {watchdogIssue.identifier ?? "View task"}
+                  </Link>
+                </div>
+              ) : null}
+              {error ? (
+                <div
+                  role="alert"
+                  className="rounded-sm px-2 py-1 text-xs"
+                  style={{ border: "1px solid var(--err)", color: "var(--err)" }}
+                >
+                  {error}
+                </div>
+              ) : null}
+              <div className="flex items-center justify-between">
+                <button
+                  type="button"
+                  className="text-xs hover:underline disabled:opacity-50"
+                  style={EMPTY_DASH_STYLE}
+                  disabled={pending !== null || (!watchdog && !agentInput)}
+                  onClick={remove}
+                >
+                  {pending === "remove" ? "Removing…" : "Remove"}
+                </button>
+                <EditorialButton
+                  variant="primary"
+                  size="sm"
+                  disabled={!agentInput || pending !== null}
+                  onClick={save}
+                >
+                  {pending === "save"
+                    ? "Saving…"
+                    : watchdog
+                      ? "Update"
+                      : "Set watchdog"}
+                </EditorialButton>
+              </div>
+            </PopoverContent>
+          </Popover>
+        ) : (
+          summary
+        )}
+        {watchdogIssueUrl ? (
+          <Link
+            href={watchdogIssueUrl}
+            prefetch={false}
+            onClick={(e) => handleShellLinkClick(e, watchdogIssueUrl)}
+            className="inline-flex h-5 w-5 shrink-0 items-center justify-center rounded hover:bg-[var(--cream-deep)]"
+            style={EMPTY_DASH_STYLE}
+            title="Open watchdog task"
+            aria-label="Open watchdog task"
+          >
+            <ArrowUpRight className="h-3 w-3" />
+          </Link>
+        ) : null}
+      </span>
+    </PropertyRow>
+  );
+}
+
 export function IssueProperties({
   issue,
   agents = [],
@@ -606,6 +952,9 @@ export function IssueProperties({
   onReviewersChange,
   onApproversChange,
   onCheckNow,
+  onWorkModeChange,
+  onWatchdogSave,
+  onWatchdogRemove,
   className,
 }: IssuePropertiesProps) {
   // Assignees and stage participants are Paperclip principals, so humans are
@@ -682,6 +1031,7 @@ export function IssueProperties({
           onUserChange={onAssigneeUserChange}
         />
       </PropertyRow>
+      <WorkModeRow workMode={issue.workMode} onChange={onWorkModeChange} />
       <PropertyRow label="Project">
         <ProjectPicker
           projects={projectsWithDenorm}
@@ -754,6 +1104,13 @@ export function IssueProperties({
         onMonitorChange={onMonitorChange}
         onMonitorClear={onMonitorClear}
         onCheckNow={onCheckNow}
+      />
+      <WatchdogRow
+        issueId={issue.id}
+        watchdog={issue.watchdog ?? null}
+        agents={agents}
+        onSave={onWatchdogSave}
+        onRemove={onWatchdogRemove}
       />
       <PropertyRow label="Created">
         {issue.createdAt ? (

@@ -37,9 +37,25 @@ export const ISSUE_STATUSES: readonly IssueStatus[] = [
 export type IssuePriority = "critical" | "high" | "medium" | "low";
 
 // How a task executes once an agent picks it up. Mirrors upstream Paperclip's
-// createIssueSchema work-mode enum: ``standard`` runs autonomously, ``ask``
-// pauses for input, ``planning`` plans before acting.
+// createIssueSchema work-mode enum: ``standard`` does the work, ``ask`` answers
+// the question in the thread and writes no code, ``planning`` writes the plan to
+// the task's ``plan`` document and waits for it to be accepted.
 export type IssueWorkMode = "standard" | "ask" | "planning";
+
+/** The active task watchdog on an issue (upstream ``IssueWatchdogSummary``):
+ * a named agent that reviews the issue's subtree when it goes quiet. One per
+ * issue. Not the run-silence watchdog on a run. */
+export interface IssueWatchdog {
+  id: string;
+  issueId: string;
+  watchdogAgentId: string;
+  instructions?: string | null;
+  status: "active" | "disabled";
+  /** The "Watchdog review for X" child issue, once the watchdog has fired. */
+  watchdogIssueId?: string | null;
+  lastTriggeredAt?: string | null;
+  triggerCount?: number;
+}
 
 export interface IssueLabel {
   id: string;
@@ -233,6 +249,8 @@ export interface IssueUpdateInput {
    * ``null`` restores it. ``undefined`` leaves the hidden state unchanged.
    * The BFF whitelists ``hiddenAt`` and forwards it to upstream Paperclip. */
   hiddenAt?: string | null;
+  /** Switch how the task runs. ``undefined`` leaves the mode unchanged. */
+  workMode?: IssueWorkMode;
   /** Execution policy carrying the monitor schedule AND the reviewer/approver
    * stages. The wire PATCH has REPLACE semantics — Paperclip overwrites the
    * whole executionPolicy with what is sent — so monitor and stages would clobber
@@ -373,6 +391,12 @@ export interface Issue {
   /** How the task came to exist. `"routine_execution"` marks a row a routine
    * spawned on one of its firings — the Tasks panel hides those by default. */
   originKind?: string | null;
+  /** How the task runs. ``skill_test`` is upstream-internal: rendered when an
+   * issue carries it, never offered in a picker. */
+  workMode?: IssueWorkMode | "skill_test" | null;
+  /** The active task watchdog, or ``null``/absent when none is armed. Upstream
+   * attaches it to every issue read, and the BFF passes it through. */
+  watchdog?: IssueWatchdog | null;
   /** Set when the task is hidden. Every list/board/search read filters these
    * out upstream, but fetch-by-id does not — so the detail page is the one
    * surface that can see (and restore) a hidden task. */
@@ -1796,6 +1820,306 @@ export interface AttentionFeedResponse {
   /** Computed upstream BEFORE pagination — safe to render as a badge. */
   totalCount?: number;
   countsBySourceKind?: Partial<Record<AttentionSourceKind, number>>;
+}
+
+// --- Decisions (agent-proposed choices a person answers) --------------------
+//
+// Ported from upstream Paperclip's decision types
+// (paperclip/packages/shared/src/types/decision.ts, validators/decision.ts and
+// paperclip/ui/src/api/decisions.ts) (MIT, (c) 2025 Paperclip AI).
+
+export type DecisionEffectStaleness = "strict" | "lenient";
+export type DecisionOptionStyle = "default" | "primary" | "destructive";
+
+/** One free-text answer the decision asks for (0-4 per decision). */
+export interface DecisionInput {
+  id: string;
+  label: string;
+  placeholder?: string | null;
+  required?: boolean;
+  maxLength?: number;
+}
+
+interface DecisionEffectBase {
+  targetIssueId: string;
+  staleness: DecisionEffectStaleness;
+}
+
+export interface CommentOnIssueDecisionEffect extends DecisionEffectBase {
+  type: "comment_on_issue";
+  bodyMarkdown: string;
+}
+
+export interface CreateIssueDecisionEffect extends DecisionEffectBase {
+  type: "create_issue";
+  draft: {
+    title: string;
+    description?: string | null;
+    parentId?: string | null;
+    assigneeAgentId?: string | null;
+    assigneeUserId?: string | null;
+    projectId?: string | null;
+    goalId?: string | null;
+    blockedByIssueIds?: string[];
+  };
+}
+
+export interface UpdateIssueStatusDecisionEffect extends DecisionEffectBase {
+  type: "update_issue_status";
+  status: IssueStatus;
+  comment?: string | null;
+}
+
+export interface AssignIssueDecisionEffect extends DecisionEffectBase {
+  type: "assign_issue";
+  assigneeAgentId?: string | null;
+  assigneeUserId?: string | null;
+  comment?: string | null;
+}
+
+export interface CancelIssueTreeDecisionEffect extends DecisionEffectBase {
+  type: "cancel_issue_tree";
+  staleness: "strict";
+  reasonComment: string;
+}
+
+export interface ResolveBlockerDecisionEffect extends DecisionEffectBase {
+  type: "resolve_blocker";
+  removeBlockedByIssueIds: string[];
+}
+
+export type DecisionEffect =
+  | CommentOnIssueDecisionEffect
+  | CreateIssueDecisionEffect
+  | UpdateIssueStatusDecisionEffect
+  | AssignIssueDecisionEffect
+  | CancelIssueTreeDecisionEffect
+  | ResolveBlockerDecisionEffect;
+
+/** One choice (1-8 per decision). Paperclip runs its effects when picked. */
+export interface DecisionOption {
+  id: string;
+  label: string;
+  description?: string | null;
+  style?: DecisionOptionStyle;
+  effects: DecisionEffect[];
+}
+
+export type DecisionStatus = "open" | "decided" | "expired" | "cancelled";
+export type DecisionExecutionStatus = "running" | "succeeded" | "partial" | "failed";
+export type DecisionEffectExecutionStatus = "claimed" | "executed" | "failed" | "skipped";
+
+export interface DecisionTargetSnapshot {
+  status: string;
+  assigneeAgentId: string | null;
+  assigneeUserId: string | null;
+  updatedAt: string;
+  descendantCount?: number;
+  descendantIds?: string[];
+  /** Legacy snapshots created before descendantCount was named explicitly. */
+  childCount?: number;
+}
+
+export interface Decision {
+  id: string;
+  companyId: string;
+  bundleId: string | null;
+  originAgentId: string;
+  originIssueId: string;
+  originRunId: string;
+  ruleKey: string | null;
+  title: string;
+  body: string;
+  options: DecisionOption[];
+  inputs: DecisionInput[] | null;
+  status: DecisionStatus;
+  executionStatus: DecisionExecutionStatus | null;
+  chosenOptionId: string | null;
+  inputValues: Record<string, string> | null;
+  decidedByUserId: string | null;
+  decidedAt: string | null;
+  expiresAt: string;
+  idempotencyKey: string | null;
+  targetSnapshots: Record<string, DecisionTargetSnapshot>;
+  continuationPolicy: "none" | "wake_origin_agent";
+  metadata: Record<string, unknown>;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/** One effect's result row, present once a decision is decided. */
+export interface DecisionEffectExecution {
+  id: string;
+  decisionId: string;
+  effectIndex: number;
+  effectType: string;
+  targetIssueId: string;
+  status: DecisionEffectExecutionStatus;
+  result: Record<string, unknown> | null;
+  error: string | null;
+  activityLogId: string | null;
+  executedAt: string | null;
+}
+
+/** What `GET /teams/decisions/{id}`, decide and dismiss return. */
+export interface DecisionOutcome extends Decision {
+  executions: DecisionEffectExecution[];
+}
+
+/** A row of `GET /teams/decisions`: each open decision is annotated with which
+ *  target issues drifted since it was proposed. */
+export interface DecisionListItem extends Decision {
+  targetChanged: Record<string, boolean>;
+  /** Included on terminal-state rows. */
+  executions?: DecisionEffectExecution[];
+}
+
+// ---------------------------------------------------------------------------
+// Cases. Ported from upstream Paperclip's api/cases.ts
+// (paperclip/ui/src/api/cases.ts) (MIT, (c) 2025 Paperclip AI). Wire shapes of
+// server/src/routes/cases.ts; dates are ISO strings. Human-writable = status
+// + labels only; everything else is agent-authored.
+// ---------------------------------------------------------------------------
+
+export const CASE_STATUSES = [
+  "draft",
+  "in_progress",
+  "in_review",
+  "approved",
+  "done",
+  "cancelled",
+] as const;
+export type CaseStatus = (typeof CASE_STATUSES)[number];
+
+/** Statuses hidden by the list's default `Active` filter. */
+export const TERMINAL_CASE_STATUSES: readonly CaseStatus[] = ["done", "cancelled"];
+
+export type CaseLinkRole = "origin" | "work" | "reference";
+
+/** A case row as returned by the list endpoint. */
+export interface CaseSummary {
+  id: string;
+  companyId: string;
+  projectId: string | null;
+  caseNumber: number;
+  identifier: string;
+  caseType: string;
+  key: string | null;
+  title: string;
+  summary: string | null;
+  status: CaseStatus;
+  fields: Record<string, unknown>;
+  parentCaseId: string | null;
+  createdByAgentId: string | null;
+  createdByUserId: string | null;
+  completedAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+  /**
+   * Present only when `includeAncestors` is requested. Ancestor rows included for
+   * tree context are `false`; rows that matched the list query are `true`.
+   */
+  matchesListFilters?: boolean;
+}
+
+export interface CaseDocument {
+  id: string;
+  title: string | null;
+  format: string;
+  latestBody: string | null;
+  latestRevisionId: string | null;
+  latestRevisionNumber: number | null;
+  updatedByAgentId: string | null;
+  updatedByUserId: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface CaseDocumentRef {
+  key: string;
+  document: CaseDocument;
+}
+
+export interface CaseIssueLink {
+  id: string;
+  caseId: string;
+  issueId: string;
+  role: CaseLinkRole;
+  createdAt: string;
+  issue: { id: string; identifier: string; title: string; status: string };
+}
+
+export interface CaseAttachmentRef {
+  id: string;
+  asset: {
+    id: string;
+    contentType: string;
+    byteSize: number;
+    originalFilename: string | null;
+  };
+  createdAt: string;
+  updatedAt: string;
+}
+
+/** A lightweight parent reference embedded in the detail payload. */
+export interface CaseParentRef {
+  id: string;
+  identifier: string;
+  title: string;
+  caseType: string;
+  status: CaseStatus;
+}
+
+/** The full detail payload (loadCaseDetail on the server). */
+export interface CaseDetail extends CaseSummary {
+  parent: CaseParentRef | null;
+  labels: IssueLabel[];
+  issueLinks: CaseIssueLink[];
+  documents: CaseDocumentRef[];
+  attachments: CaseAttachmentRef[];
+}
+
+export type CaseEventKind =
+  | "created"
+  | "updated"
+  | "fields_changed"
+  | "status_changed"
+  | "issue_linked"
+  | "issue_unlinked"
+  | "document_revised"
+  | "child_linked"
+  | "attachment_added"
+  | "label_added"
+  | "label_removed";
+
+export interface CaseEvent {
+  id: string;
+  caseId: string;
+  kind: CaseEventKind;
+  actorType: "user" | "agent" | "system";
+  actorUserId: string | null;
+  actorAgentId: string | null;
+  runId: string | null;
+  payload: Record<string, unknown>;
+  createdAt: string;
+  /** Display name of the acting agent, null for user/system. */
+  actorAgentName: string | null;
+  /** Issue linked by this event, or the issue whose run produced it. */
+  issue: { id: string; identifier: string; title: string; status: string } | null;
+}
+
+/** A case linked to an issue, as returned by the issue-page rail endpoint. */
+export interface IssueCaseLink {
+  id: string;
+  role: CaseLinkRole;
+  createdAt: string;
+  case: {
+    id: string;
+    identifier: string;
+    title: string;
+    caseType: string;
+    status: CaseStatus;
+  };
 }
 
 // ---------------------------------------------------------------------------

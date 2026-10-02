@@ -10,7 +10,7 @@ fence end to end opts back in with ``@pytest.mark.real_fences``.
 import pytest
 
 from main import app
-from routers.teams import agents, approvals, issues, work
+from routers.teams import agents, approvals, cases, issues, work
 from routers.teams.agents import SafeId
 from routers.teams.approvals import ApprovalId
 from routers.teams.issues import IssueId
@@ -18,6 +18,10 @@ from routers.teams.issues import IssueId
 
 def _pass_issue(issue_id: IssueId) -> str:
     return issue_id
+
+
+def _pass_case(case_id: IssueId) -> dict:
+    return {"id": case_id, "companyId": "co_abc"}
 
 
 def _pass_approval(approval_id: ApprovalId) -> str:
@@ -55,6 +59,7 @@ def _stub_company_fences(request):
         return
     stubs = {
         issues._company_issue: _pass_issue,
+        cases._company_case: _pass_case,
         approvals._company_approval: _pass_approval,
         agents._company_agent: _pass_agent,
         work._company_goal: _pass_goal,

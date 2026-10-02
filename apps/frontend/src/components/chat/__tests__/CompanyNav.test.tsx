@@ -20,7 +20,8 @@ import { resolvePanelAlias, describePanel } from "../../workspace/panelRegistry"
 // (spec 2026-09-06) took it to NINE: Org chart became a view of the Agents
 // panel and Brain came off the rail — Search stays, overriding the spec
 // (owner ruling 2026-09-08). Goals and Projects (owner ruling 2026-09-24)
-// lifted the alias that hid them behind Tasks, bringing it to ELEVEN.
+// lifted the alias that hid them behind Tasks, bringing it to ELEVEN; Cases
+// (ported from stock Paperclip, replacing the Support placeholder) makes TWELVE.
 const ALL_LABELS = [
   "Home",
   "Search",
@@ -31,6 +32,7 @@ const ALL_LABELS = [
   "Automations",
   "Library",
   "Goals",
+  "Cases",
   "Leads",
   "Accounts",
 ];
@@ -38,7 +40,6 @@ const ALL_LABELS = [
 /** Shells whose capability is not live: registered, reachable by URL, and
  *  deliberately NOT offered in the rail or the palette. */
 const COMING_SOON_LABELS = [
-  "Support",
   "Publish",
   "SEO & AEO",
   "Ads",
@@ -72,7 +73,6 @@ describe("CompanyNav", () => {
     const all = COMPANY_SECTIONS.flatMap((sec) => sec.items.map((i) => i.panel));
 
     const shells = [
-      "teams-support",
       "teams-publish",
       "teams-seo",
       "teams-ads",
@@ -99,7 +99,7 @@ describe("CompanyNav", () => {
     // The rail stops offering them; the panel registry must not stop resolving
     // them, or a saved link or an agent-built URL breaks.
     const all = COMPANY_SECTIONS.flatMap((sec) => sec.items.map((i) => i.panel));
-    for (const panel of ["teams-support", "teams-publish", "teams-seo", "teams-ads", "teams-identity", "teams-compliance", "teams-contracts"]) {
+    for (const panel of ["teams-publish", "teams-seo", "teams-ads", "teams-identity", "teams-compliance", "teams-contracts"]) {
       expect(all).toContain(panel);
     }
   });
@@ -151,16 +151,16 @@ describe("CompanyNav", () => {
     fireEvent.click(screen.getByText("Library"));
     expect(onPanelChange).toHaveBeenCalledWith("teams-artifacts");
   });
-  it("offers exactly eleven items, in the consolidated order", () => {
+  it("offers exactly twelve items, in the consolidated order", () => {
     // The rail cut's whole point (spec §3), so it is asserted as an ordered
     // list, not a count: 22 items became 9, then 11 once Goals/Projects were
-    // lifted off Tasks' alias. Provisioning off, since Domain & Site is a
+    // lifted off Tasks' alias, then 12 with Cases. Provisioning off, since Domain & Site is a
     // capability question rather than an IA one.
     const labels = visibleCompanySections({ provisioningEnabled: false }).flatMap((s) =>
       s.items.map((i) => i.label),
     );
     expect(labels).toEqual(ALL_LABELS);
-    expect(labels).toHaveLength(11);
+    expect(labels).toHaveLength(12);
   });
 
   it("stops offering Brain, whose key is gone entirely", () => {

@@ -24,6 +24,7 @@ import { IssueHeader } from "./IssueHeader";
 import { CommentThread } from "./CommentThread";
 import { IssueDescription } from "./IssueDescription";
 import { IssueProperties } from "./IssueProperties";
+import { IssueCasesPanel } from "@/components/teams/cases/IssueCasesPanel";
 import { SubIssuesSection } from "./SubIssuesSection";
 import { IssueApprovalsSection } from "./IssueApprovalsSection";
 import { IssueRunLedger } from "./IssueRunLedger";
@@ -102,7 +103,7 @@ export function IssueDetailPage({ issueId }: IssueDetailPageProps) {
   const interactionMutations = useInteractionMutations();
   const { votesByTarget, castVote } = useIssueFeedback(issueId);
   const { user } = useUser();
-  const { read, post, del, mutate } = useTeamsApi();
+  const { read, post, put, del, mutate } = useTeamsApi();
   const recovery = read<IssueRecoveryActionsResponse>(`/issues/${issueId}/recovery-actions`);
   const recoveryAction = recovery.data?.active ?? null;
   // Upstream reads the continuation handoff as its own system document (the
@@ -503,7 +504,27 @@ export function IssueDetailPage({ issueId }: IssueDetailPageProps) {
             });
           }}
           onCheckNow={(id) => mutations.monitorCheckNow(id)}
+          onWorkModeChange={(workMode) => {
+            updateIssue({ workMode });
+          }}
+          // The watchdog has its own upstream routes (not the issue PATCH); the
+          // detail read carries it back as issue.watchdog. A rejected write is
+          // left to the row, which shows it inside its editor. The write counts
+          // as done once it resolves: the refresh after it is fired and its
+          // failure swallowed, or a save that landed would read as failed and a
+          // retry would re-send the PUT (re-running upstream's evaluation).
+          onWatchdogSave={async (watchdog) => {
+            await put(`/issues/${issueId}/watchdog`, watchdog);
+            void mutate(`/teams${teamsQueryKeys.issues.detail(issueId)}`).catch(() => {});
+          }}
+          onWatchdogRemove={async () => {
+            await del(`/issues/${issueId}/watchdog`);
+            void mutate(`/teams${teamsQueryKeys.issues.detail(issueId)}`).catch(() => {});
+          }}
         />
+        {/* Stock places the Cases rail at the foot of the properties pane; it
+            renders nothing when no cases are linked (or Cases is off). */}
+        <IssueCasesPanel issueId={issue.id} />
         <SubIssuesSection
           issueId={issueId}
           agents={agents}

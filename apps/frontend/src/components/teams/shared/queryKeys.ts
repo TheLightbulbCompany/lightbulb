@@ -54,6 +54,12 @@ export const teamsQueryKeys = {
     detail: (id: string) => `/goals/${id}`,
   },
   approvals: { detail: (id: string) => `/approvals/${id}` },
+  decisions: {
+    detail: (id: string) => `/decisions/${id}`,
+    // One key per status, shared by every decision card on screen. Always
+    // Paperclip's 100-row cap, so as few decisions as possible fall off the page.
+    list: (status: "open" | "decided" | "expired" | "cancelled") => `/decisions?status=${status}&limit=100`,
+  },
   // The unified "needs you" feed — board approvals AND issue-thread
   // interactions in one server-ranked list. Deliberately parameterless: the
   // count it carries is company-wide (computed upstream before pagination),
@@ -68,5 +74,14 @@ export const teamsQueryKeys = {
   // Project-detail surface. `detail` is the full project row; `issues` is the
   // project-scoped issues list (PR #1006 added the BFF `?project=` filter).
   projectDetail: (id: string) => `/projects/${id}`,
+  // Cases (ported from upstream queryKeys.cases). `list` takes the already
+  // serialized filter query; `children` is the same list read scoped by parent.
+  cases: {
+    list: (query = "") => (query ? `/cases?${query}` : `/cases`),
+    detail: (id: string) => `/cases/${id}`,
+    events: (id: string) => `/cases/${id}/events?limit=100`,
+    children: (id: string) => `/cases?parent=${id}&limit=200`,
+    forIssue: (issueId: string) => `/issues/${issueId}/cases`,
+  },
   issuesByProject: (projectId: string) => `/issues?project=${projectId}`,
 } as const;

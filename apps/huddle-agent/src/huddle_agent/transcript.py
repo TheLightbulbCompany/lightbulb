@@ -1,8 +1,8 @@
 """Rolling huddle transcript (in memory only) and who an utterance addresses by name.
 
-The worker matches names only in wake positions (the start, after an optional hey/ok/okay/so, or
-after ask/tell/get/have). C1 `/route` covers the rest: "Lightbulb, ..." goes to a name anywhere in the
-line, then Jev, then the CEO; any other line is routed as a chat message (`route_live_line`)."""
+The worker matches names only at the start of a line (after an optional hey/ok/okay/so): the 0 ms
+fast path. Everything else goes to C1 `/route` (`route_live_line`), whose addressing stage labels a
+name anywhere ("let's ask Forge later" is a mention, not a summons) and whose Jev picks the rest."""
 
 from __future__ import annotations
 
@@ -24,6 +24,8 @@ class Line:
     name: str
     text: str
     mark: int  # position in the whole huddle; stable across trims
+    at: float = 0.0  # when it was said (epoch seconds)
+    to: str = ""  # an agent line: the person its voice was pinned to
 
 
 class Transcript:
@@ -32,21 +34,30 @@ class Transcript:
         self._lines: list[Line] = []
         self._next = 0
 
-    def _add(self, kind: str, who: str, name: str, text: str) -> int:
+    def _add(self, kind: str, who: str, name: str, text: str, at: float, to: str = "") -> int:
         mark, self._next = self._next, self._next + 1
-        self._lines.append(Line(kind, who, name, text, mark))
+        self._lines.append(Line(kind, who, name, " ".join(text.splitlines()), mark, at, to))  # one line each
         while len(self._lines) > 1 and len(self.text()) > self.max_chars:
             self._lines.pop(0)
         return mark
 
-    def add_person(self, identity: str, name: str, text: str) -> int:
-        return self._add("person", identity, name, text)
+    def add_person(self, identity: str, name: str, text: str, at: float = 0.0) -> int:
+        return self._add("person", identity, name, text, at)
 
-    def add_agent(self, agent_id: str, name: str, text: str) -> int:
-        return self._add("agent", agent_id, name, text)
+    def add_agent(self, agent_id: str, name: str, text: str, at: float = 0.0, to: str = "") -> int:
+        return self._add("agent", agent_id, name, text, at, to)
 
     def text(self, lines: list[Line] | None = None) -> str:
-        return "\n".join(f"{x.name}: {x.text}" for x in (self._lines if lines is None else lines))
+        """ "Name: text", or "Agent → Person: text" for a voice's answer (the backend parses the arrow)."""
+        return "\n".join(f"{x.name}{f' → {x.to}' if x.to else ''}: {x.text}" for x in (self._lines if lines is None else lines))
+
+    def after(self, mark: int) -> list[Line]:
+        """The lines said after `mark` (all of them for -1), oldest first."""
+        return [x for x in self._lines if x.mark > mark]
+
+    def times(self, n: int) -> list[int]:
+        """When each of the newest `n` lines was said (epoch seconds), oldest first: /route's `at`."""
+        return [round(x.at) for x in self._lines[-n:]]
 
     def since_agent(self, agent_id: str) -> str:
         """Everything said after this agent last spoke (all of it if it never has), newest kept."""
@@ -87,8 +98,6 @@ STT_PROMPT_CHARS = 400
 
 _LEADS = {"hey", "ok", "okay", "so"}
 _STRONG_LEADS = {"hey", "ok", "okay"}  # the only leads that make a default or person-colliding name a summons
-_VERBS = {"ask", "tell", "get", "have"}  # grammar of voice_routing.named_agent
-_STRICT_VERBS = {"ask", "tell"}
 _MODALS = {"can", "could", "would", "will"}
 # STT writes the wake word as "Lightbulb", "light bulb" or "light-bulb".
 _LIGHTBULB = [("lightbulb",), ("light", "bulb")]
@@ -100,6 +109,14 @@ class Address:
     matches: dict[str, str] = field(default_factory=dict)  # id -> "exact" | "fuzzy"
     lightbulb: bool = False
     ambiguous: list[str] = field(default_factory=list)  # bare leading names that are also a person's
+
+
+_WAKE_WORD = re.compile(r"^\s*(?:(?:hey|ok|okay|so)[\s,]+)?light[\s-]?bulb\b[\s,.!?]*", re.I)
+
+
+def strip_wake(text: str) -> str:
+    """ "Lightbulb, Forge, check CI" -> "Forge, check CI": what /route sees opens with the real addressee."""
+    return _WAKE_WORD.sub("", text, count=1) or text
 
 
 def soundex(word: str) -> str:
@@ -177,7 +194,7 @@ def address(text: str, agents: list[dict], people: list[dict]) -> Address:
             out.agent_ids.append(row["id"])
             out.matches[row["id"]] = kind
 
-    # Wake position 1: the start, after an optional lead.
+    # The only wake position: the start, after an optional lead.
     i = 0
     lead = tokens[0] if tokens and tokens[0] in _LEADS else None
     if lead:
@@ -192,13 +209,6 @@ def address(text: str, agents: list[dict], people: list[dict]) -> Address:
             out.ambiguous.append(row["id"])
         elif not row.get("defaultName") or asks:
             take(row, kind)
-
-    # Wake position 2: after ask/tell/get/have, anywhere.
-    for k, tok in enumerate(tokens):
-        if tok in _VERBS:
-            for row, kind in _name_list(tokens, k + 1, cands)[0]:
-                if row is None or not row.get("defaultName") or tok in _STRICT_VERBS:
-                    take(row, kind)
     return out
 
 

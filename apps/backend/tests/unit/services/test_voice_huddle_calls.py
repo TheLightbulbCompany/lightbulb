@@ -1,4 +1,5 @@
 import asyncio
+import time
 from contextlib import nullcontext
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -646,4 +647,68 @@ def test_live_transcript_becomes_history_before_the_line():
     assert [(r["author"]["kind"], r["author"]["id"], r["text"], r["to"]) for r in rows] == [
         ("human", "Pat", "hi Aden", ["Aden"]),  # the names a line says stand in for @mentions
         ("agent", "fin-1", "burn is flat", ["Pat"]),  # the worker's arrow: who the voice answered
+    ]
+
+
+async def _reask(at):
+    """Two people; an ambient "none" with reask high. The earlier ask is aged by the worker's ``at``."""
+    answers = {
+        "who": {"choice": "none", "probabilities": {"none": 0.9}},
+        "reask": {"probability": 0.9},
+        "question": {"probability": 0.0},
+    }
+    transcript = "Pat: what's our burn rate this month\nAden: lunch anyone\nPat: so what's our burn rate this month"
+    with (
+        patch.object(vc.jev, "decide", AsyncMock(return_value=answers)),
+        patch.object(vc.jev, "agent_card", AsyncMock(return_value="card")),
+        patch.object(vc, "_room_team", AsyncMock(return_value=({"ownerId": "org_a", "kind": "channel"}, []))),
+    ):
+        return await vc.route_live_line(
+            owner_id="org_a",
+            room_id="room-1",
+            speaker_id="user_a",
+            utterance="so what's our burn rate this month",
+            transcript=transcript,
+            humans=2,
+            at=at,
+        )
+
+
+async def test_live_a_reask_older_than_two_minutes_by_at_is_forced(live_env):
+    """Routing v2 decision 8 in Live: the worker's per-line ``at`` ages the earlier ask."""
+    now = int(time.time())
+    with patch.object(vc, "put_metric") as metric:
+        got = await _reask([now - 300, now - 200, now])
+    assert got["agentIds"]  # "none" refused: the fallback picks someone
+    metric.assert_any_call("messaging.jev.forced", dimensions={"reason": "reask"})
+
+
+async def test_live_without_at_a_reask_none_stands(live_env):
+    """An older worker sends no ``at``: rows carry no time and the two-person "none" stands, as before."""
+    assert await _reask(None) == {"agentId": None, "agentIds": []}
+    rows = vc._transcript_history("Pat: a\nPat: b", LIVE_MEMBERS, "c")
+    assert all("createdAt" not in r for r in rows)
+    rows = vc._transcript_history("Pat: a\nPat: b", LIVE_MEMBERS, "c", at=[9, 100, 160])  # aligned to the end
+    assert [r["createdAt"] for r in rows] == ["1970-01-01T00:01:40+00:00", "1970-01-01T00:02:40+00:00"]
+
+
+@pytest.mark.asyncio
+async def test_prewake_warms_every_room_agents_profile_after_the_health_wake(monkeypatch):
+    """Going Live: one health RPC wakes the runtime, then profile.warm per agent pulls each profile
+    off the bridge's request thread, so the first summon's restore (23 s cold) is already done."""
+    calls = []
+
+    async def fake_call(owner_id, method, params=None, **kwargs):
+        calls.append((owner_id, method, params))
+        return {"ok": True}
+
+    tasks = []
+    monkeypatch.setattr(vc.container_rpc, "call", fake_call)
+    monkeypatch.setattr(vc, "_fire", lambda coro: tasks.append(asyncio.ensure_future(coro)))
+    vc.prewake_owner("org_a", [{"id": "a1", "name": "Pulse"}, {"id": "a2", "name": "Friday"}])
+    await asyncio.gather(*tasks)
+    assert calls == [
+        ("org_a", "health", None),
+        ("org_a", "profile.warm", {"agentId": "a1"}),
+        ("org_a", "profile.warm", {"agentId": "a2"}),
     ]

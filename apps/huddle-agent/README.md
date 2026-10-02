@@ -56,8 +56,6 @@ The worker reads (LiveKit Cloud agent secrets, set per project):
 - `LIGHTBULB_HUDDLE_SECRET` -- the value of the backend's `lightbulb/{env}/huddle_worker_secret`,
   sent as `X-Lightbulb-Huddle-Secret`
 - `OPENAI_API_KEY` -- transcription and GPT-Live
-- `LIGHTBULB_PROACTIVE` -- optional; `off` stops agents announcing finished work unprompted
-  (tapping a tile that has news still plays it)
 
 LiveKit itself injects `LIVEKIT_URL`, `LIVEKIT_API_KEY` and `LIVEKIT_API_SECRET`.
 Nothing a huddle says is stored.

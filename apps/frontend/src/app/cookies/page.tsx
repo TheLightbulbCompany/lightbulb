@@ -10,5 +10,5 @@ export const metadata: Metadata = {
 };
 
 export default function CookiesPage() {
-  return <LegalDocument dataId="4a26e6a0-c9d8-47db-ad53-934f4a4405b1" />;
+  return <LegalDocument dataId="bec2e1d1-20d9-4929-95f2-a14baed522a5" />;
 }

@@ -173,6 +173,8 @@ describe("PaperclipStack — Fargate service shape", () => {
     // (in-VPC, no X-Forwarded-For); a dropped or flipped line here silently
     // reintroduces cross-owner 429s, so pin it rather than trust the string.
     expect(envMap.PAPERCLIP_AUTH_RATE_LIMIT_ENABLED).toBe("false");
+    // Telemetry is on unless this is exactly "1".
+    expect(envMap.PAPERCLIP_TELEMETRY_DISABLED).toBe("1");
     // Without auto-apply, the server refuses to start on a fresh schema.
     expect(envMap.PAPERCLIP_MIGRATION_AUTO_APPLY).toBe("true");
     expect(envMap.HEARTBEAT_SCHEDULER_ENABLED).toBe("true");
@@ -467,6 +469,7 @@ describe("PaperclipStack — prod public URL", () => {
     const envMap = Object.fromEntries(envArr.map((e) => [e.Name, e.Value]));
     expect(envMap.PAPERCLIP_AUTH_DISABLE_SIGN_UP).toBe("false");
     expect(envMap.PAPERCLIP_AUTH_RATE_LIMIT_ENABLED).toBe("false");
+    expect(envMap.PAPERCLIP_TELEMETRY_DISABLED).toBe("1");
   });
 
   test("prod log group uses RETAIN removal policy", () => {

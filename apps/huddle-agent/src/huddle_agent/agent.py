@@ -15,7 +15,20 @@ import logging
 import time
 
 from livekit import rtc
-from livekit.agents import Agent, AgentServer, AgentSession, JobContext, JobRequest, cli, llm, room_io, stt, utils
+from livekit.agents import (
+    Agent,
+    AgentServer,
+    AgentSession,
+    APIConnectionError,
+    APIError,
+    JobContext,
+    JobRequest,
+    cli,
+    llm,
+    room_io,
+    stt,
+    utils,
+)
 from livekit.agents.metrics import LLMModelUsage
 from livekit.plugins import openai, silero
 from livekit.plugins.openai.realtime import GPTLiveDelegation, GPTLiveModel, GPTLiveSession
@@ -84,6 +97,25 @@ class _TrimmedGPTLiveModel(GPTLiveModel):
 
 
 FALLBACK_VOICE = "marin"
+# Routing v2 §6 / R6: end a turn when it sounds finished, not after 350 ms of silence, so a mid-thought pause is
+# not routed as half a line. The plugin accepts it (validated against the OpenAI SDK union); whether OpenAI
+# accepts it on a gpt-4o-mini-transcribe transcription session is unverified, hence SERVER_VAD.
+SEMANTIC_VAD = {"type": "semantic_vad", "eagerness": "auto"}
+SERVER_VAD = {"type": "server_vad", "threshold": 0.5, "prefix_padding_ms": 600, "silence_duration_ms": 700}
+
+
+def retry_without_semantic_vad(engine, error: BaseException, started_with: str, state: dict) -> bool:
+    """A transcription stream that started on semantic_vad failed with an API error (not a connection
+    one): the first such failure switches the engine, and so every stream, to SERVER_VAD; the caller
+    reopens the stream. False: a real failure, raise it."""
+    if started_with != "semantic" or not isinstance(error, APIError) or isinstance(error, APIConnectionError):
+        return False
+    if state["vad"] == "semantic":
+        state["vad"] = "server"
+        logger.warning("huddle STT refused semantic_vad; using server_vad", exc_info=error)
+        emit_metric("live.stt.semantic_vad_rejected", 1, "Count")
+        engine.update_options(turn_detection=SERVER_VAD)
+    return True
 
 
 async def _unpublish(room: rtc.Room, track_name: str) -> None:
@@ -202,7 +234,9 @@ async def entrypoint(ctx: JobContext) -> None:
     emitted = {"stt": 0.0, "agent": 0.0, "gptlive": 0.0}
     backend = Backend(meta["roomId"], meta["ownerId"], meta["roomToken"])
     vad = silero.VAD.load()
-    stt_engine = openai.STT(model="gpt-4o-mini-transcribe", use_realtime=True)  # streaming
+    # streaming; interims still drive barge-in, semantic_vad only decides when a final lands
+    stt_engine = openai.STT(model="gpt-4o-mini-transcribe", use_realtime=True, turn_detection=SEMANTIC_VAD)
+    vad_state = {"vad": "semantic"}
 
     @stt_engine.on("metrics_collected")
     def _stt_metrics(m) -> None:
@@ -245,29 +279,35 @@ async def entrypoint(ctx: JobContext) -> None:
         }
 
     async def transcribe(track: rtc.Track, p: rtc.RemoteParticipant) -> None:
-        stream, audio = stt_engine.stream(), rtc.AudioStream(track)
+        while True:
+            started_with = vad_state["vad"]
+            stream, audio = stt_engine.stream(), rtc.AudioStream(track)
 
-        async def push() -> None:
-            async for ev in audio:
-                stream.push_frame(ev.frame)
-            stream.end_input()
+            async def push() -> None:
+                async for ev in audio:
+                    stream.push_frame(ev.frame)
+                stream.end_input()
 
-        pusher = asyncio.create_task(push())
-        try:
-            async for ev in stream:
-                if not ev.alternatives:
-                    continue
-                try:
-                    if ev.type == stt.SpeechEventType.FINAL_TRANSCRIPT:
-                        await huddle.on_final_transcript(p.identity, p.name or p.identity, ev.alternatives[0].text)
-                    elif ev.type == stt.SpeechEventType.INTERIM_TRANSCRIPT:  # use_realtime: cumulative, ~0.5 s apart
-                        huddle.on_interim_transcript(p.identity, p.name or p.identity, ev.alternatives[0].text)
-                except Exception:  # one bad event never ends this person's transcription
-                    logger.exception("huddle transcript handling failed")
-        finally:
-            await utils.aio.cancel_and_wait(pusher)
-            await audio.aclose()
-            await stream.aclose()
+            pusher = asyncio.create_task(push())
+            try:
+                async for ev in stream:
+                    if not ev.alternatives:
+                        continue
+                    try:
+                        if ev.type == stt.SpeechEventType.FINAL_TRANSCRIPT:
+                            await huddle.on_final_transcript(p.identity, p.name or p.identity, ev.alternatives[0].text)
+                        elif ev.type == stt.SpeechEventType.INTERIM_TRANSCRIPT:  # use_realtime: cumulative, ~0.5 s apart
+                            huddle.on_interim_transcript(p.identity, p.name or p.identity, ev.alternatives[0].text)
+                    except Exception:  # one bad event never ends this person's transcription
+                        logger.exception("huddle transcript handling failed")
+                return
+            except Exception as e:
+                if not retry_without_semantic_vad(stt_engine, e, started_with, vad_state):
+                    raise
+            finally:
+                await utils.aio.cancel_and_wait(pusher)
+                await audio.aclose()
+                await stream.aclose()
 
     stt_tasks: dict[str, asyncio.Task] = {}  # identity -> that person's transcription
 

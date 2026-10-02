@@ -20,7 +20,7 @@ import {
   Send,
   SearchCheck,
   Megaphone,
-  LifeBuoy,
+  Layers,
   Landmark,
   Globe,
   ShieldCheck,
@@ -95,11 +95,9 @@ export const COMPANY_SECTIONS: { label: string | null; items: CompanySectionItem
       // is also a top-level destination on the workspace rail.
       { panel: "teams-artifacts", label: "Library", Icon: Images },
       { panel: "teams-goals", label: "Goals", Icon: Target },
-      // Support sits with Work (spec's "Operations"), not Company: it is a
-      // thing the company DOES, not a thing the company IS.
-      // Unblocked by: an owner-indexed thread store, so the tab can list real
-      // customer conversations instead of an empty frame.
-      { panel: "teams-support", label: "Support", Icon: LifeBuoy, comingSoon: true },
+      // Stock Paperclip's Cases page (same Layers icon as its sidebar). It
+      // replaced the Support placeholder; `teams-support` aliases to it.
+      { panel: "teams-cases", label: "Cases", Icon: Layers },
     ],
   },
   {

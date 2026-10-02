@@ -42,7 +42,7 @@ async def test_profile_handle_wins_over_clerk_fallback():
 
 
 @pytest.mark.asyncio
-async def test_curator_resolves_to_at_isol8_without_profile():
+async def test_curator_resolves_to_at_lightbulb_without_profile():
     with (
         patch("core.services.seller_profile.get_profile", new=AsyncMock(return_value=None)),
         patch.object(
@@ -52,7 +52,7 @@ async def test_curator_resolves_to_at_isol8_without_profile():
         ),
     ):
         name = await seller_display.resolve_display_name(CURATOR_ID)
-    assert name == "@isol8"
+    assert name == "@lightbulb"
 
 
 @pytest.mark.asyncio
@@ -114,7 +114,7 @@ async def test_attach_seller_names_mixes_handle_curator_and_fallback():
     ):
         result = await seller_display.attach_seller_names(items)
 
-    assert result[0]["seller_display_name"] == "@isol8"
+    assert result[0]["seller_display_name"] == "@lightbulb"
     assert result[1]["seller_display_name"] == "@aden"
     assert result[2]["seller_display_name"] == "@aden"
     assert result[3]["seller_display_name"] == "Community member"

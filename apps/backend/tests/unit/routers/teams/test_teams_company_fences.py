@@ -14,13 +14,15 @@ import pytest
 from fastapi.testclient import TestClient
 
 from main import app
-from routers.teams import agents, approvals, issues, router, runs, work
+from routers.teams import agents, approvals, cases, decisions, issues, router, runs, work
 from routers.teams.deps import TeamsContext
 
 FENCES = {
     issues._company_issue,
+    cases._company_case,
     agents._company_agent,
     approvals._company_approval,
+    decisions._company_decision,
     runs._company_run,
     work._company_goal,
     work._company_project,
@@ -89,6 +91,7 @@ def client():
 def _foreign_admin(monkeypatch):
     admin = MagicMock()
     admin.get_issue = AsyncMock(return_value={"id": "iss1", "companyId": "co_other"})
+    admin.get_case = AsyncMock(return_value={"id": "case1", "companyId": "co_other"})
     admin.get_approval = AsyncMock(return_value={"id": "apv1", "companyId": "co_other"})
     admin.get_goal = AsyncMock(return_value={"id": "g1", "companyId": "co_other"})
     admin.get_project = AsyncMock(return_value={"id": "p1", "companyId": "co_other"})
@@ -115,6 +118,13 @@ def _foreign_admin(monkeypatch):
         ("get", "/issues/iss1/feedback-votes"),
         ("post", "/issues/iss1/tree-holds"),
         ("post", "/issues/iss1/tree-holds/h1/release"),
+        ("get", "/issues/iss1/cases"),
+        ("get", "/cases/case1"),
+        ("patch", "/cases/case1"),
+        ("get", "/cases/case1/events"),
+        ("get", "/cases/case1/attachments/att1/content"),
+        ("get", "/cases/case1/documents/draft/revisions"),
+        ("post", "/cases/case1/documents/draft/annotations"),
         ("post", "/approvals/apv1/approve"),
         ("post", "/approvals/apv1/reject"),
         ("get", "/goals/g1"),
@@ -132,6 +142,7 @@ def test_foreign_entity_is_404_and_never_forwarded(client, monkeypatch, method, 
     assert r.status_code == 404, r.text
     called = {name for name, *_ in admin.mock_calls} - {
         "get_issue",
+        "get_case",
         "get_approval",
         "get_goal",
         "get_project",

@@ -35,7 +35,7 @@ export function teamsPanelUrl(panel: string): string {
 }
 
 export function teamsDetailUrl(
-  kind: "issue" | "routine" | "project" | "goal" | "run" | "approval",
+  kind: "issue" | "routine" | "project" | "goal" | "case" | "run" | "approval",
   id: string,
 ): string {
   return `/chat?panel=teams-${kind}-detail&detailId=${encodeURIComponent(id)}`;

@@ -209,6 +209,10 @@ Change, in `_dispatch_message`, for `event_kind == "room_event"` and no follow-u
    `jev.route`. Jev now sees X's open run in `state.open` (section 5), so it is told not to add a second responder. If the
    shared decision picks X anyway, nobody new runs, which is the right outcome: X is handling it.
 
+> **Correction (2026-10-02, PR #3599):** the "no bridge change" claim above is wrong for a steer that lands after the
+> agent's last model call: `_converse` answered it in a second pass and joined the replies, so a stand-down posted
+> `"<answer>\n\n[SILENT]"`. PR #3599 drops the whole reply on a `[SILENT]` last pass; the image must be rolled first.
+
 Why addressed runs are excluded from the stand-down: the person chose that agent, and a hedged human answer must not
 silence it (huma/mpgt test idea "hedged human answer → Finance still answers"). The asker's own "never mind" already
 reaches an addressed run as a steer (shipped).
@@ -484,7 +488,9 @@ Fix forward, no flags. Each step: merge on green CI + Codex review → dev auto-
    `jev.pick_agent`, `vr.named_agent`; card prewarm at join; persona sentence in `vp`. `/route` keeps returning
    `agentId`, so the shipped worker keeps working and reaches the addressing stage through `/route` unchanged. Re-run the
    bench; promote only if no class is worse than [MP].
-3. **Chat steer-before-Jev (backend).** No image change needed (ambient `[SILENT]` already maps to `SILENT`).
+3. **Chat steer-before-Jev (backend).** Corrected: it needs the bridge's `[SILENT]`-after-steer fix (PR #3599, with
+   step 5's prompt sentences). Order: build that image, flip the pins, `roll_hermes_runtimes --all` on prod, THEN merge
+   and promote the backend steer PR; until then a late steer posts the duplicate with a literal `[SILENT]`.
 4. **Worker.** Strip the wake word before `/route`; drop position 2; floor re-check; second speaker → `_queue`; late-line
    steer; queued-run stale exemption; agent-line `→` tags; delete `LIGHTBULB_PROACTIVE`; `semantic_vad` (first confirm on
    dev that OpenAI accepts it on a `gpt-4o-mini-transcribe` transcription session — the plugin accepts the argument, the

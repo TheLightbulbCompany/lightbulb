@@ -65,6 +65,9 @@ export interface DecisionCardProps {
   executions?: DecisionEffectExecution[] | null;
   /** Which target issues drifted since the snapshot (open decisions only). */
   targetChanged?: Record<string, boolean> | null;
+  /** True while `targetChanged` has not been read yet (open decisions only):
+   *  options with a strict effect stay disabled until it is known. */
+  stalenessUnknown?: boolean;
   /** Resolve an issue id to a display ref (identifier / title / link). */
   resolveIssue?: (issueId: string) => DecisionIssueRef | null;
   /** Full sub-tree that a `cancel_issue_tree` option would cancel. */
@@ -260,6 +263,7 @@ export function DecisionCard({
   decision,
   executions,
   targetChanged,
+  stalenessUnknown = false,
   resolveIssue = () => null,
   cancelTreePreview,
   originAgentName,
@@ -473,7 +477,11 @@ export function DecisionCard({
             const blockedStale = option.effects.some(
               (effect) => effect.staleness === "strict" && decisionEffectTargetIssueIds(effect).some((id) => staleTargetIdSet.has(id)),
             );
-            const disabled = busy || requiredUnmet || blockedStale;
+            // Until staleness is known a strict option cannot be offered: it
+            // might be one the card is about to mark stale.
+            const blocked =
+              blockedStale || (stalenessUnknown && option.effects.some((effect) => effect.staleness === "strict"));
+            const disabled = busy || requiredUnmet || blocked;
             const cancelTree = cancelTreeEffect(option);
             const confirming = confirmOptionId === option.id;
             const previewRows = cancelTree && cancelTreePreview ? cancelTreePreview(cancelTree.targetIssueId) : null;
@@ -577,7 +585,7 @@ export function DecisionCard({
                       <Button
                         variant="destructive"
                         size="sm"
-                        disabled={busy || requiredUnmet || confirmText.trim() !== confirmToken}
+                        disabled={busy || requiredUnmet || blocked || confirmText.trim() !== confirmToken}
                         onClick={() => onDecide?.(option.id, inputValues)}
                       >
                         {busy && <Loader2 className="h-3.5 w-3.5 animate-spin" />}

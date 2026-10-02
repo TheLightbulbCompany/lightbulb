@@ -70,10 +70,16 @@ export function DecisionResolver({ decisionId, originIssue, agentMap, originAgen
 
   // Shared across every open decision row → a single fetch carries `targetChanged`.
   const openListKey = teamsQueryKeys.decisions.list("open");
-  const { data: openList } = read<{ decisions?: DecisionListItem[] }>(
+  const { data: openList, error: openListError } = read<{ decisions?: DecisionListItem[] }>(
     decision?.status === "open" ? openListKey : null,
   );
   const targetChanged = openList?.decisions?.find((entry) => entry.id === decisionId)?.targetChanged ?? null;
+  // Until the list read settles we don't know which targets drifted, so the
+  // card keeps strict options disabled. Once it HAS settled, a decision that
+  // is not in it (past the 100-row page, or the read failed) leaves them
+  // enabled: Paperclip itself skips a strict effect on a changed target at
+  // decide time, and the card then shows the skipped result.
+  const stalenessUnknown = decision?.status === "open" && !openList && !openListError;
 
   // One idempotency key per option for as long as this resolver is mounted: if
   // Paperclip applied a decide but the response was lost, the retry must replay
@@ -153,6 +159,12 @@ export function DecisionResolver({ decisionId, originIssue, agentMap, originAgen
       return true;
     } catch (e) {
       setErrorMessage(e instanceof Error && e.message ? e.message : "Couldn't save your answer. Try again.");
+      // The attempt may have committed upstream and only lost its response.
+      // Re-read, so that case reconciles to the resolved card instead of a
+      // stale open one that 409s on retry.
+      void mutateDecision();
+      void mutate(`/teams${openListKey}`);
+      void mutate(`/teams${teamsQueryKeys.attention()}`);
       return false;
     } finally {
       setBusy(false);
@@ -191,6 +203,7 @@ export function DecisionResolver({ decisionId, originIssue, agentMap, originAgen
         decision={decision}
         executions={decision.executions}
         targetChanged={targetChanged}
+        stalenessUnknown={stalenessUnknown}
         resolveIssue={resolveIssue}
         originAgentName={agentMap?.get(decision.originAgentId)?.name ?? originAgentName ?? null}
         originIssue={originRef}

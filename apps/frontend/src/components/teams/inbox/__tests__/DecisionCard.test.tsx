@@ -111,6 +111,63 @@ describe("DecisionCard", () => {
     expect(screen.getByRole("button", { name: /ship it/i })).toBeDisabled();
   });
 
+  it("keeps strict options disabled while staleness is unknown, lenient ones enabled", () => {
+    const mixed = decision({
+      options: [
+        {
+          id: "ship",
+          label: "Ship it",
+          effects: [{ type: "update_issue_status", targetIssueId: ISSUE, staleness: "strict", status: "done" }],
+        },
+        {
+          id: "hold",
+          label: "Hold",
+          effects: [{ type: "comment_on_issue", targetIssueId: ISSUE, staleness: "lenient", bodyMarkdown: "Holding." }],
+        },
+      ],
+    });
+    render(<DecisionCard decision={mixed} stalenessUnknown resolveIssue={resolveIssue} />);
+
+    expect(screen.getByRole("button", { name: /ship it/i })).toBeDisabled();
+    expect(screen.getByRole("button", { name: /hold/i })).toBeEnabled();
+    // Not known to be stale, so it is not labelled as such.
+    expect(screen.queryByText(/blocked · stale/i)).not.toBeInTheDocument();
+  });
+
+  it("the cancel-tree confirm re-checks staleness that arrived after it opened", () => {
+    const onDecide = vi.fn();
+    const destructive = decision({
+      options: [
+        {
+          id: "kill",
+          label: "Cancel the work",
+          style: "destructive",
+          effects: [{ type: "cancel_issue_tree", targetIssueId: ISSUE, staleness: "strict", reasonComment: "Dropped." }],
+        },
+      ],
+    });
+    const { rerender } = render(
+      <DecisionCard decision={destructive} targetChanged={{}} resolveIssue={resolveIssue} onDecide={onDecide} />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: /cancel the work/i }));
+    fireEvent.change(screen.getByLabelText(/type the issue identifier/i), { target: { value: "ISO-7" } });
+    const confirm = screen.getByRole("button", { name: /cancel tree/i });
+    expect(confirm).toBeEnabled();
+
+    rerender(
+      <DecisionCard
+        decision={destructive}
+        targetChanged={{ [ISSUE]: true }}
+        resolveIssue={resolveIssue}
+        onDecide={onDecide}
+      />,
+    );
+    expect(confirm).toBeDisabled();
+    fireEvent.click(confirm);
+    expect(onDecide).not.toHaveBeenCalled();
+  });
+
   it("a cancel-tree option asks for the identifier before it decides", () => {
     const onDecide = vi.fn();
     const destructive = decision({

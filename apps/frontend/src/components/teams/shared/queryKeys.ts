@@ -53,8 +53,9 @@ export const teamsQueryKeys = {
   approvals: { detail: (id: string) => `/approvals/${id}` },
   decisions: {
     detail: (id: string) => `/decisions/${id}`,
-    // One key per status, shared by every decision card on screen.
-    list: (status: "open" | "decided" | "expired" | "cancelled") => `/decisions?status=${status}`,
+    // One key per status, shared by every decision card on screen. Always
+    // Paperclip's 100-row cap, so as few decisions as possible fall off the page.
+    list: (status: "open" | "decided" | "expired" | "cancelled") => `/decisions?status=${status}&limit=100`,
   },
   // The unified "needs you" feed — board approvals AND issue-thread
   // interactions in one server-ranked list. Deliberately parameterless: the

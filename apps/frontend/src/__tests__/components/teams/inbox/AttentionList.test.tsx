@@ -208,19 +208,23 @@ describe("AttentionList", () => {
     executions: [],
   };
 
-  function installDecision(openList: unknown[] = []) {
+  const OPEN_LIST = "/decisions?status=open&limit=100";
+  const mutateDecision = vi.fn();
+
+  /** `openList: null` is the open list still loading. */
+  function installDecision(openList: unknown[] | null = []) {
     read.mockImplementation((path: string | null) => ({
       data:
         path === "/attention"
           ? { items: [decisionItem] }
           : path === "/decisions/dec_1"
             ? decision
-            : path === "/decisions?status=open"
+            : path === OPEN_LIST && openList
               ? { decisions: openList }
               : undefined,
       isLoading: false,
       error: null,
-      mutate: vi.fn(),
+      mutate: path === "/decisions/dec_1" ? mutateDecision : vi.fn(),
     }));
   }
 
@@ -242,16 +246,38 @@ describe("AttentionList", () => {
       );
     });
     await waitFor(() => expect(mutate).toHaveBeenCalledWith("/teams/attention"));
-    expect(mutate).toHaveBeenCalledWith("/teams/decisions?status=open");
+    expect(mutate).toHaveBeenCalledWith(`/teams${OPEN_LIST}`);
   });
 
   test("a decision card takes targetChanged from the one shared open list", () => {
     installDecision([{ id: "dec_1", targetChanged: { iss_1: true } }]);
     render(<AttentionList />);
 
-    expect(read).toHaveBeenCalledWith("/decisions?status=open");
+    expect(read).toHaveBeenCalledWith(OPEN_LIST);
     expect(screen.getByText(/1 target changed since this was proposed/i)).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /ship it/i })).toBeDisabled();
+  });
+
+  test("a strict option stays disabled until the open list has loaded", () => {
+    installDecision(null);
+    render(<AttentionList />);
+
+    expect(screen.getByRole("button", { name: /ship it/i })).toBeDisabled();
+    expect(screen.queryByText(/target changed since this was proposed/i)).not.toBeInTheDocument();
+  });
+
+  test("a failed decide re-reads the decision, the open list and the feed", async () => {
+    installDecision();
+    post.mockRejectedValueOnce(new Error("Gateway timeout"));
+    render(<AttentionList />);
+
+    fireEvent.click(screen.getByRole("button", { name: /ship it/i }));
+
+    // The attempt may have landed upstream: reconcile rather than trust the error.
+    await screen.findByText("Gateway timeout");
+    expect(mutateDecision).toHaveBeenCalledWith();
+    expect(mutate).toHaveBeenCalledWith(`/teams${OPEN_LIST}`);
+    expect(mutate).toHaveBeenCalledWith("/teams/attention");
   });
 
   test("retrying a failed decide reuses the idempotency key", async () => {

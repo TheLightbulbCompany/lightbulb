@@ -73,7 +73,7 @@ const receipt = (request: LocalSessionCommand, state: LocalSessionCommandReceipt
 });
 const mockListSessions = jest.fn(async (): Promise<{ sessions: LocalSession[] }> => ({ sessions: [mockSession] }));
 const mockListEvents = jest.fn(async () => ({ events: mockEvents, nextAfterSeq: null }));
-const mockSubmit = jest.fn(async (_s: string, request: LocalSessionCommand) => receipt(request));
+const mockSubmit = jest.fn(async (_s: string, request: LocalSessionCommand, _replacesRequestId?: string) => receipt(request));
 const mockGetCommand = jest.fn();
 const mockListOutbox = jest.fn(async () => ({ commands: [] as LocalSessionCommandReceipt[] }));
 const mockGetPrivateApproval = jest.fn();

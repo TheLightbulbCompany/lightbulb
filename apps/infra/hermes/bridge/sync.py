@@ -247,6 +247,9 @@ EXCLUDE_GLOBS = (
     # hermes_profiles.write_facts_to_profiles (owner_facts.write_owner_facts's AgentCore
     # branch) on every plan/provider change -- same clobber risk as the four above.
     "lightbulb-facts.json",
+    # Voice notes: hermes_profiles.upload_voice_notes is the only writer; the turn reads it
+    # into the system prompt (turn.with_profile_agents_md). Same clobber risk as the above.
+    "VOICE_NOTES.md",
     # AgentCore Browser task: Hermes's own browser_vision tool writes
     # browser_screenshot_*.png here on every browse turn. Nothing stops save_profile pushing
     # them to S3 otherwise, and a screenshot reaches the room as an attachment (Task 9), not
@@ -656,7 +659,9 @@ def write_profile_config(agent_id: str, config: dict) -> None:
 # backend, and save_profile's EXCLUDE_GLOBS entries above -- plus lightbulb-facts.json, written by
 # hermes_profiles.write_facts_to_profiles, Row #15 / Ruling M6-R30). A patch bumps .revision; this
 # is how the bridge notices without a watcher or a restart.
-BACKEND_OWNED_FILES = ("config.yaml", ".env", "SOUL.md", ".revision", "lightbulb-facts.json")
+BACKEND_OWNED_FILES = (
+    "config.yaml", ".env", "SOUL.md", ".revision", "lightbulb-facts.json", "VOICE_NOTES.md",
+)
 
 _REVISIONS: dict[str, str] = {}
 

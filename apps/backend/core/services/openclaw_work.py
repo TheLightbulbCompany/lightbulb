@@ -191,6 +191,34 @@ def _public_message(row: dict[str, Any]) -> dict[str, Any]:
     return message
 
 
+async def room_history(meta: dict[str, Any], before_seq: int, *, root: str | None = None) -> list[dict[str, Any]]:
+    """The room's last messages before ``before_seq`` (public shape), plus the whole thread
+    ``root`` when it began before that window. Room turns and voice runs share it."""
+    history = await messaging_repo.list_messages_before(meta["roomId"], before_seq, _HISTORY_LIMIT)
+    if root and not any(row.get("messageId") == root for row in history):
+        # The whole thread, even when it began before the window. A root inside the contiguous
+        # window already carries every later reply, so only then is the read skipped.
+        merged = {
+            int(row["messageSeq"]): row for row in await messaging_repo.list_thread(meta["roomId"], root, before_seq)
+        }
+        merged.update((int(row["messageSeq"]), row) for row in history)
+        history = [merged[seq] for seq in sorted(merged)]
+    return [_public_message(row) for row in history]
+
+
+def ingress_participants(members: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [
+        {
+            "kind": member["kind"],
+            "id": member["id"],
+            "displayName": member["displayName"],
+            **({"mentionHandle": member["mentionHandle"]} if member.get("mentionHandle") else {}),
+            **({"listenMode": member["listenMode"]} if member["kind"] == "agent" else {}),
+        }
+        for member in members
+    ]
+
+
 async def build_ingress_body(
     *,
     meta: dict[str, Any],
@@ -205,14 +233,6 @@ async def build_ingress_body(
     # A follow-up re-runs an old trigger: its history runs through the room's latest message, so the
     # turn sees the request itself and the agent's own "I'll report back" reply after it.
     before = int(message["messageSeq"]) if history_through_seq is None else history_through_seq + 1
-    history = await messaging_repo.list_messages_before(meta["roomId"], before, _HISTORY_LIMIT)
-    root = message.get("threadRootMessageId")
-    if root and not any(row.get("messageId") == root for row in history):
-        # The whole thread, even when it began before the window. A root inside the contiguous
-        # window already carries every later reply, so only then is the read skipped.
-        merged = {int(row["messageSeq"]): row for row in await messaging_repo.list_thread(meta["roomId"], root, before)}
-        merged.update((int(row["messageSeq"]), row) for row in history)
-        history = [merged[seq] for seq in sorted(merged)]
     body = {
         "version": 1,
         "eventId": message["messageId"],
@@ -227,17 +247,8 @@ async def build_ingress_body(
         "sender": message["author"],
         "message": _public_message(message),
         "mentions": message.get("mentions") or [],
-        "participants": [
-            {
-                "kind": member["kind"],
-                "id": member["id"],
-                "displayName": member["displayName"],
-                **({"mentionHandle": member["mentionHandle"]} if member.get("mentionHandle") else {}),
-                **({"listenMode": member["listenMode"]} if member["kind"] == "agent" else {}),
-            }
-            for member in members
-        ],
-        "recentHistory": [_public_message(row) for row in history],
+        "participants": ingress_participants(members),
+        "recentHistory": await room_history(meta, before, root=message.get("threadRootMessageId")),
     }
     if sessions:
         # Only once every container runs a plugin that parses it; an older

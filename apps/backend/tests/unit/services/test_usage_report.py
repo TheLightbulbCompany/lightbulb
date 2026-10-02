@@ -143,3 +143,54 @@ async def test_a_hermes_paperclip_run_reaches_analytics_as_a_paperclip_issue_run
     with claim, record, analytics as analytics:
         await messaging.handle_usage_report("org_1", body)
     assert analytics.call_args.kwargs["parsed"] == {"agent_id": "a-2", "source": "paperclip", "issue_id": "i-3"}
+
+
+ROOM_KEY = "agent:11111111-1111-4111-8111-111111111111:lightbulb:channel:22222222-2222-4222-8222-222222222222"
+
+
+@pytest.mark.asyncio
+async def test_room_key_without_family_is_ignored_and_claims_nothing():
+    claim, record, analytics = _patches()
+    with claim as claim, record as record, analytics:
+        assert (
+            await messaging.handle_usage_report("org_1", BODY.model_copy(update={"session_key": ROOM_KEY}))
+        ).status == "ignored"
+    claim.assert_not_awaited()
+    record.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_voice_run_on_the_room_key_applies_once_per_run():
+    voice = BODY.model_copy(update={"session_key": ROOM_KEY, "family": "voice"})
+    claims = iter([True, False])
+    with (
+        patch(
+            "core.services.messaging.messaging_repo.claim_usage_receipt",
+            new_callable=AsyncMock,
+            side_effect=lambda *a, **k: next(claims),
+        ) as claim,
+        patch("core.services.messaging.record_usage", new_callable=AsyncMock) as record,
+        patch("core.services.messaging.run_analytics.schedule_run_completed", MagicMock(return_value=None)),
+    ):
+        assert (await messaging.handle_usage_report("org_1", voice)).status == "applied"
+        assert (await messaging.handle_usage_report("org_1", voice)).status == "replayed"
+    assert claim.await_count == 2
+    record.assert_awaited_once()
+    assert record.call_args.kwargs["room_turn"] is False
+
+
+@pytest.mark.asyncio
+async def test_voice_run_on_a_non_room_key_applies():
+    claim, record, analytics = _patches()
+    with claim, record as record, analytics:
+        assert (
+            await messaging.handle_usage_report("org_1", BODY.model_copy(update={"family": "voice"}))
+        ).status == "applied"
+    record.assert_awaited_once()
+
+
+def test_unknown_family_is_rejected():
+    from pydantic import ValidationError
+
+    with pytest.raises(ValidationError):
+        UsageReportRequest.model_validate({**BODY.model_dump(by_alias=True), "family": "chat"})

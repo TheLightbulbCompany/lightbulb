@@ -1,11 +1,13 @@
 """Huddles ("Live"): LiveKit rooms for every room kind, with Lightbulb (the CEO worker) as a summoned voice. See docs/superpowers/specs/2026-10-01-huddles-design.md.
 
 Three auth models: Clerk for people (`/huddles/*`), the worker secret for the CEO worker
-(`/internal/huddles/*`), and the call owner's hook token for the bridge (`/internal/calls/*/frames`).
+(`/internal/huddles/*`), and the owner's hook token for the bridge's frame relay
+(`/internal/huddles/{ownerId}/rooms/{roomId}/frames`).
 """
 
 import hmac
 import logging
+import uuid
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request
@@ -58,6 +60,11 @@ async def _worker_call(call_id: str, token: str) -> dict:
     return call
 
 
+class RoomBody(BaseModel):
+    ownerId: _Id
+    roomToken: _Id
+
+
 class SummonBody(BaseModel):
     ownerId: _Id
     roomToken: _Id
@@ -68,7 +75,17 @@ class TurnBody(BaseModel):
     ownerId: _Id
     roomToken: _Id
     speakerUserId: _Id
-    seq: int = Field(ge=1)
+    agentId: _Id
+    runId: uuid.UUID  # the worker's, once per delegation and resent on every retry
+    utterance: str = Field(min_length=1, max_length=4_000)
+    transcript: str = Field(default="", max_length=12_000)
+    steerRunId: uuid.UUID | None = None
+
+
+class RouteBody(BaseModel):
+    ownerId: _Id
+    roomToken: _Id
+    speakerUserId: _Id
     utterance: str = Field(min_length=1, max_length=4_000)
     transcript: str = Field(default="", max_length=12_000)
 
@@ -148,24 +165,58 @@ async def huddle(room_id: str, auth: Annotated[AuthContext, Depends(get_current_
 async def summon(room_id: str, body: SummonBody):
     room_id = _room_id(room_id)
     _require_room_token(body.roomToken, room_id, body.ownerId)
-    # start_huddle_call's _room_team 404s unless body.ownerId owns the room and the speaker is a member.
-    return await voice_calls.start_huddle_call(
+    # open_voice_window's _room_team 404s unless body.ownerId owns the room and the speaker is a member.
+    return await voice_calls.open_voice_window(
         owner_id=body.ownerId, room_id=room_id, speaker_user_id=body.speakerUserId
     )
 
 
+@router.post("/internal/huddles/{room_id}/team", dependencies=[_Worker])
+async def team(room_id: str, body: RoomBody):
+    room_id = _room_id(room_id)
+    _require_room_token(body.roomToken, room_id, body.ownerId)
+    return await voice_calls.huddle_team(owner_id=body.ownerId, room_id=room_id)
+
+
+@router.post("/internal/huddles/{room_id}/agents/{agent_id}/session", dependencies=[_Worker])
+async def agent_session(room_id: str, agent_id: str, body: RoomBody):
+    room_id = _room_id(room_id)
+    _require_room_token(body.roomToken, room_id, body.ownerId)
+    return await voice_calls.agent_session(owner_id=body.ownerId, room_id=room_id, agent_id=agent_id)
+
+
 @router.post("/internal/huddles/calls/{call_id}/turns", dependencies=[_Worker])
 async def turn(call_id: str, body: TurnBody):
-    await _worker_call(call_id, body.roomToken)
-    # start_huddle_turn 404s unless the call is an open huddle owned by body.ownerId.
-    return await voice_calls.start_huddle_turn(
-        call_id=call_id,
+    call = await _worker_call(call_id, body.roomToken)
+    if call.get("kind") != "huddle" or call.get("ownerId") != body.ownerId or call.get("status") != voice_calls.OPEN:
+        raise _problem(404, "call_not_found")
+    args = {"call": call, "agent_id": body.agentId, "speaker_id": body.speakerUserId, "utterance": body.utterance}
+    if body.steerRunId:
+        steered = await voice_calls.steer_voice_run(run_id=str(body.steerRunId), **args)
+        if steered:
+            return steered
+    return await voice_calls.dispatch_voice_run(run_id=str(body.runId), transcript=body.transcript, **args)
+
+
+@router.post("/internal/huddles/{room_id}/route", dependencies=[_Worker])
+async def route(room_id: str, body: RouteBody):
+    room_id = _room_id(room_id)
+    _require_room_token(body.roomToken, room_id, body.ownerId)
+    agent_id = await voice_calls.route_voice(
         owner_id=body.ownerId,
-        speaker_user_id=body.speakerUserId,
-        seq=body.seq,
+        room_id=room_id,
+        speaker_id=body.speakerUserId,
         utterance=body.utterance,
         transcript=body.transcript,
     )
+    return {"agentId": agent_id}
+
+
+@router.post("/internal/huddles/{room_id}/runs/{run_id}/abort", dependencies=[_Worker])
+async def abort(room_id: str, run_id: str, body: RoomBody):
+    room_id = _room_id(room_id)
+    _require_room_token(body.roomToken, room_id, body.ownerId)
+    return {"aborted": await voice_calls.abort_voice_run(body.ownerId, room_id, run_id)}
 
 
 @router.post("/internal/huddles/calls/{call_id}/end", dependencies=[_Worker])
@@ -192,13 +243,20 @@ async def presence(room_id: str, body: PresenceBody):
     return {"ok": True}
 
 
-@router.post("/internal/calls/{call_id}/frames")
-async def frames(call_id: str, body: FramesBody, request: Request):
-    call = await voice_calls.get_call(call_id)
-    if not call:
-        raise _problem(404, "call_not_found")
-    await _require_hook_token(call["ownerId"], request)  # the call owner's token, never a caller-named owner
-    if call.get("kind") != "huddle" or call.get("status") != voice_calls.OPEN:
-        raise _problem(404, "call_not_found")
-    await livekit_huddles.send_frames(call["roomId"], body.events)
+@router.post("/internal/huddles/{owner_id}/rooms/{room_id}/frames")
+async def frames(owner_id: str, room_id: str, body: FramesBody, request: Request):
+    """The bridge's voice-run frames (C2), relayed to the room's worker. Not tied to the window:
+    a background run keeps relaying after Live closes (no worker -> dropped, 200)."""
+    await _require_hook_token(owner_id, request)
+    room_id = _room_id(room_id)
+    meta = await messaging_repo.get_room(room_id)
+    if not meta or meta.get("ownerId") != owner_id:
+        raise _problem(404, "room_not_found")
+    if any((ev.get("payload") or {}).get("roomId") != room_id for ev in body.events):
+        raise _problem(400, "room_mismatch")
+    try:
+        await livekit_huddles.send_frames(room_id, body.events)
+    except Exception:  # noqa: BLE001 -- no worker in the room (or LiveKit down): the run still finishes
+        put_metric("huddle.frame.no_worker")
+        logger.info("voice frames not relayed room=%s", room_id, exc_info=True)
     return {"ok": True}

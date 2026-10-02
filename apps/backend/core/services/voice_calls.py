@@ -13,7 +13,7 @@ import time
 import uuid
 
 import httpx
-from botocore.exceptions import BotoCoreError, ClientError
+from botocore.exceptions import ClientError
 from fastapi import HTTPException
 
 from core.billing import metronome_client, voice_billing
@@ -25,9 +25,11 @@ from core.repositories import billing_repo, container_repo, messaging_repo
 from core.repositories.paperclip_repo import PaperclipRepo
 from core.services import (
     container_rpc,
+    hermes_profiles,
     jev,
     livekit_huddles,
     messaging,
+    openclaw_work,
     runtime_transport,
     voice_persona,
     voice_routing,
@@ -65,23 +67,6 @@ async def put_call(call: dict) -> None:
 
 async def get_call(call_id: str) -> dict | None:
     return (await run_in_thread(_table().get_item, Key=_key(call_id), ConsistentRead=True)).get("Item")
-
-
-async def _claim_turn(call_id: str, agent_id: str, run_id: str, seq: int) -> str | None:
-    """Make run_id this agent's turn if seq is at least that agent's holder's. Returns the old run id.
-
-    An equal seq is a retry of the same delegation (its first dispatch failed, e.g. on a cold
-    runtime): it replaces its own earlier attempt, whose run the caller then stops."""
-    resp = await run_in_thread(
-        _table().update_item,
-        Key=_key(call_id),
-        UpdateExpression="SET turns.#a = :t",
-        ConditionExpression="#s = :open AND (attribute_not_exists(turns.#a) OR turns.#a.seq <= :seq)",
-        ExpressionAttributeNames={"#s": "status", "#a": agent_id},
-        ExpressionAttributeValues={":t": {"runId": run_id, "seq": seq}, ":seq": seq, ":open": OPEN},
-        ReturnValues="ALL_OLD",
-    )
-    return (((resp.get("Attributes") or {}).get("turns") or {}).get(agent_id) or {}).get("runId")
 
 
 async def release_hold(owner_id: str, hold: int) -> None:
@@ -163,7 +148,6 @@ async def close_call(call_id: str, *, now: int | None = None, usage_seconds: int
     call = await _claim(call_id, now)
     if call is None:
         return False
-    _fire(_stop_all_turns(call))  # billing doesn't depend on it, and /end must answer inside 30 s
     seconds = call.get("usageSeconds")
     if seconds is None:
         if usage_seconds is not None:
@@ -227,7 +211,6 @@ async def _bill(call: dict, seconds: int) -> None:
                         "properties": {
                             "provider_cost_nanodollars": str(voice_billing.provider_nanodollars(seconds)),
                             "seconds": str(seconds),
-                            "agent_id": call["agentId"],
                         },
                     }
                 ]
@@ -286,11 +269,6 @@ _BRIDGE_RUNS = "/internal/calls/v1/runs"
 _TURN_TIMEOUT_S = 18.0
 _ROUTING_TIMEOUT_S = 3.0  # routing shares the 30 s API Gateway budget with the dispatch
 _TRANSCRIPT_CHARS = 6000
-# What the backend looks up so the agent does not spend model steps on it: plain reads, no inference.
-_ROOM_HISTORY = 20
-_ROOM_MESSAGE_CHARS = 300
-_CONTEXT_CHARS = 4000
-_CONTEXT_TIMEOUT_S = 2.0  # runs alongside routing, inside the same 30 s API Gateway budget
 _background: set[asyncio.Task] = set()
 
 
@@ -301,17 +279,17 @@ def _fire(coro) -> None:
 
 
 # Static on purpose: Hermes splices `instructions` into the top of the system prompt, and the
-# provider caches a byte-identical prefix. Everything per-turn rides in the input (_turn_context).
-# The script paths are the image's (build-skills.sh maps /app/skills/ -> /opt/hermes-skills/); a
-# call run's shell has PAPERCLIP_COMPANY_ID / PAPERCLIP_AGENT_ID from the profile .env.
-TURN_NOTE = """[Note: this is a LIVE SPOKEN request. A person is on a voice call waiting to hear your answer, so speed matters more than completeness. The text is a voice transcript (it may contain mis-hearings, hesitations and later corrections; use the latest intent). The context block before the request says who is speaking, where, and what was said recently; use it instead of looking those things up.
+# provider caches a byte-identical prefix. Everything per-run rides in the input.
+# The script path is the image's (build-skills.sh maps /app/skills/ -> /opt/hermes-skills/); a
+# run's shell has PAPERCLIP_COMPANY_ID / PAPERCLIP_AGENT_ID from the profile .env.
+TURN_NOTE = """[Note: you are speaking in a Live voice call; your reply is spoken by you and nothing is posted to the room. A person is waiting to hear your answer, so speed matters more than completeness. The request is a voice transcript (it may contain mis-hearings, hesitations and later corrections; use the latest intent). The bracket before it is what was said on the call since you last spoke.
 You decide how to handle it; pick whatever fits the request:
 - Answer now: if you can answer from what you already know or with a couple of quick tool steps, do it and reply in two or three short spoken sentences.
 - Ask: if the request is ambiguous, ask one short clarifying question instead of guessing.
-- Hand it off: if it is real work (research, several lookups, writing or building something) that cannot fit in this turn, say so in one sentence and make sure it gets done, for example by creating a Paperclip task for yourself or for the teammate who owns it:
-  printf '%s' "<what to do; end with: post the result with /opt/hermes-skills/lightbulb/scripts/lightbulb-post.sh --room <room id from the context>, or --user <speaker user id> when there is no room>" | /opt/hermes-skills/paperclip/scripts/paperclip-api.sh create "$PAPERCLIP_COMPANY_ID" --title "<short title>" --assignee "<your or the owner's agent id; yours is $PAPERCLIP_AGENT_ID>" --status todo
-  Only promise to post something later if you actually created that task.
-Your reply is read aloud: no markdown, no lists, no code, no links, no ids. Never claim an action succeeded before it did.
+- Hand it off: if it is real work (research, several lookups, writing or building something) that cannot fit in this turn, say so in one sentence and make sure it gets done by creating a Paperclip task for yourself or for the teammate who owns it:
+  printf '%s' "<what to do>" | /opt/hermes-skills/paperclip/scripts/paperclip-api.sh create "$PAPERCLIP_COMPANY_ID" --title "<short title>" --assignee "<your or the owner's agent id; yours is $PAPERCLIP_AGENT_ID>" --status todo
+  Only promise to follow up if you actually created that task.
+Your reply is spoken: no markdown, no lists, no code, no links, no ids. Never claim an action succeeded before it did.
 This turn has a hard limit of a few model steps; when it runs out you must answer with what you have.]"""
 
 
@@ -388,19 +366,8 @@ async def _hold(owner_id: str) -> tuple[int, int]:
     raise _problem(409, code="voice_busy")
 
 
-def _identity(call: dict, run_id: str, agent_id: str) -> dict:
-    # Must equal the bridge's turn.call_session_key: one Hermes session per (call, agent).
-    return {
-        "runId": run_id,
-        "companyId": call["companyId"],
-        "agentId": agent_id,
-        "callId": call["callId"],
-        "sessionId": f"agent:{agent_id}:lightbulb:call:{call['callId']}",
-    }
-
-
-async def _runtime(call: dict, path: str, body: dict, *, timeout_s: float = _TURN_TIMEOUT_S):
-    container = await container_repo.get_by_owner_id(call["ownerId"])
+async def _runtime(owner_id: str, path: str, body: dict, *, timeout_s: float = _TURN_TIMEOUT_S):
+    container = await container_repo.get_by_owner_id(owner_id)
     if not container:
         raise _problem(409, code="workspace_not_ready")
     return await runtime_transport.request(
@@ -421,28 +388,6 @@ def prewake_owner(owner_id: str) -> None:
             await container_rpc.call(owner_id, "health")
         except Exception:  # noqa: BLE001 -- best effort; the first turn wakes it otherwise
             logger.info("voice owner prewake failed", exc_info=True)
-
-    _fire(wake())
-
-
-def _prewake(call: dict) -> None:
-    """Stopping this call's (not-yet-existing) run wakes the microVM; the bridge's 404 is expected."""
-
-    async def wake():
-        try:
-            identity = _identity(call, call["callId"], call["voiceAgentId"])
-            container = await container_repo.get_by_owner_id(call["ownerId"])
-            if container:
-                await runtime_transport.request(
-                    container,
-                    f"{_BRIDGE_RUNS}/{call['callId']}/stop",
-                    method="POST",
-                    json_body={"identity": identity},
-                    headers={"Authorization": f"Bearer {container.get('gateway_token') or ''}"},
-                    timeout_s=runtime_transport.AGENTCORE_INGRESS_TIMEOUT_S,
-                )
-        except Exception:  # noqa: BLE001 -- best effort; the first turn wakes it otherwise
-            logger.info("voice prewake failed", exc_info=True)
 
     _fire(wake())
 
@@ -479,24 +424,41 @@ async def _gate(owner_id: str) -> tuple[str, int]:
     return mode, budget
 
 
-async def _room_persona(owner_id: str, team: list[dict]) -> str:
-    cards = await asyncio.gather(*(jev.agent_card(owner_id, t["id"], t["name"]) for t in team))
-    return voice_persona.build_persona(
-        voice_name=voice_persona.ROOM_VOICE_NAME, team=[{**t, "card": c} for t, c in zip(team, cards)]
-    )
+async def _open_windows(owner_id: str, now: int) -> list[dict]:
+    return [
+        r
+        for r in await container_repo.get_by_status(OPEN)
+        if r.get("ownerId") == owner_id and r.get("kind") == "huddle" and int(r.get("deadline", 0)) > now
+    ]
 
 
-async def start_huddle_call(*, owner_id: str, room_id: str, speaker_user_id: str) -> dict:
-    """A Live summon: gate, hold and free claim. The worker owns the GPT-Live session and frames go to it."""
+async def _open_window(owner_id: str, room_id: str, now: int) -> dict | None:
+    # ponytail: one worker per room (dispatch dedupe); a per-room pointer row if summon can race
+    return next((r for r in await _open_windows(owner_id, now) if r.get("roomId") == room_id), None)
+
+
+async def open_voice_window(*, owner_id: str, room_id: str, speaker_user_id: str) -> dict:
+    """C1 /summon: join the room's open window, or gate once and open one. The window meters
+    GPT-Live only; voice runs are ordinary room runs and the window owns none of them."""
+    # Before the join too: _room_team 404s unless owner_id owns the room and the speaker is a member.
+    meta, _ = await _room_team(owner_id, speaker_user_id, room_id)
+    now = int(time.time())
+    # ponytail: a crashed worker's unreported GPT-Live seconds bill 0 (voice.huddle.usage_missing, as today);
+    # persist running usage on the row if that metric is non-zero in prod
+    existing = await _open_window(owner_id, room_id, now)
+    if existing:
+        prewake_owner(owner_id)
+        return {
+            "callId": existing["callId"],
+            "deadline": int(existing["deadline"]),
+            "budgetSeconds": int(existing["deadline"]) - now,  # a restarted worker never gets the full budget back
+            "joined": True,
+        }
     mode, budget = await _gate(owner_id)
     row = await _owner_row(owner_id)
-    meta, team = await _room_team(owner_id, speaker_user_id, room_id)
-    ceo = (getattr(row, "starter_agent_ids", None) or {}).get("ceo")
-    voice_agent = next((t for t in team if t["id"] == ceo), team[0])
-    persona = await _room_persona(owner_id, team)
     call_id = str(uuid.uuid4())
     if mode == "free":
-        await _claim_free(owner_id, call_id, int(time.time()), int(time.time()) + budget + 180)
+        await _claim_free(owner_id, call_id, now, now + budget + 180)
     hold = 0
     try:
         if mode == "credits":
@@ -508,17 +470,11 @@ async def start_huddle_call(*, owner_id: str, room_id: str, speaker_user_id: str
             "callId": call_id,
             "ownerId": owner_id,
             "userId": speaker_user_id,
-            "agentId": voice_agent["id"],
             "kind": "huddle",
             "roomId": room_id,
             "roomName": meta.get("name"),
-            "team": team,
-            "voiceAgentId": voice_agent["id"],
-            "ceoId": ceo,
-            "turns": {},
             "companyId": row.company_id,
-            "sessionId": None,
-            "frames": {"sink": "huddle", "roomId": room_id},
+            "ceoId": (getattr(row, "starter_agent_ids", None) or {}).get("ceo"),
             "startedAt": now,
             "deadline": now + budget,
             "billing": mode,
@@ -529,181 +485,376 @@ async def start_huddle_call(*, owner_id: str, room_id: str, speaker_user_id: str
     except BaseException:  # incl. CancelledError: no row means nothing would ever release these
         await _undo_start(owner_id, call_id, mode, hold)
         raise
-    _prewake(call)
-    return {
-        "callId": call_id,
-        "persona": persona,
-        "voice": voice_persona.HUDDLE_VOICE,  # Live is one voice, Lightbulb, whoever answers
-        "voiceName": voice_persona.ROOM_VOICE_NAME,
-        "deadline": call["deadline"],
-        "team": team,
-    }
+    prewake_owner(owner_id)
+    return {"callId": call_id, "deadline": call["deadline"], "budgetSeconds": budget, "joined": False}
 
 
-async def _stop_turn(call: dict, agent_id: str, run_id: str | None) -> None:
-    if not run_id:
-        return
-    try:
-        await _runtime(
-            call, f"{_BRIDGE_RUNS}/{run_id}/stop", {"identity": _identity(call, run_id, agent_id)}, timeout_s=10.0
-        )
-    except Exception:  # noqa: BLE001 -- a turn we can't stop finishes and its frames are dropped client-side
-        logger.info("voice turn stop failed", exc_info=True)
+# ---- Option D: the worker's per-agent reads (C1 /team and /agents/{agentId}/session) ---------
+
+VOICE_ASKED_PREFIX = "__voiceasked__#"
+_SESSION_READ_BUDGET_S = 2.0
 
 
-async def _stop_all_turns(call: dict) -> None:
-    turns = (call.get("turns") or {}).items()
-    await asyncio.gather(*(_stop_turn(call, a, (t or {}).get("runId")) for a, t in turns), return_exceptions=True)
-
-
-async def start_huddle_turn(
-    *, call_id: str, owner_id: str, speaker_user_id: str, seq: int, utterance: str, transcript: str
-) -> dict:
-    # Any huddle participant may speak; the worker vouches for the speaker, the route for the owner.
-    call = await get_call(call_id)
-    if not call or call.get("kind") != "huddle" or call["ownerId"] != owner_id or call["status"] != OPEN:
-        raise _problem(404, code="call_not_found")
-    base = settings.PUBLIC_API_BASE.rstrip("/")
-    # "channel" is unused by the backend sink, but the bridge's call-run envelope check requires a
-    # non-empty endpoint AND channel (bridge/server.py _call_envelope) and 400s without it.
-    frames = {"sink": "backend", "endpoint": f"{base}/api/v1/internal/calls/{call_id}/frames", "channel": "backend"}
-    # voice_routing only routes kind "room" (name -> Jev -> CEO); a huddle is a room conversation.
-    return await _dispatch_turn(call, {**call, "kind": "room"}, seq, utterance, transcript, frames, speaker_user_id)
-
-
-def _message_line(row: dict) -> str | None:
-    if row.get("deletedAt"):
-        return None
-    text = " ".join(str(row.get("editedText", row.get("text")) or "").split())
-    if not text:
-        return None
-    author = row.get("author") or {}
-    who = author.get("displayName") or author.get("kind") or "someone"
-    return f"{who}: {text[:_ROOM_MESSAGE_CHARS]}"
-
-
-async def _recent_lines(room_id: str) -> list[str]:
+async def _owned_room(owner_id: str, room_id: str) -> dict:
     meta = await messaging_repo.get_room(room_id)
-    last = int((meta or {}).get("lastSeq") or 0)
-    rows = await messaging_repo.list_messages_before(room_id, last + 1, _ROOM_HISTORY)
-    return [line for line in map(_message_line, rows) if line]
+    if not meta or meta.get("deletedAt") or meta.get("archivedAt") or meta.get("ownerId") != owner_id:
+        raise _problem(404, code="room_not_found")  # a guest-owned (shared) room is another workspace's
+    return meta
 
 
-async def _turn_context(call: dict, speaker_id: str) -> str:
-    """Who is asking, where, and the room's recent messages, ahead of the request. Best effort:
-    any failure (or a slow read) sends the turn without it. Bounded to _CONTEXT_CHARS."""
-    room_id = call.get("roomId")
+async def _starter_ids(owner_id: str) -> dict:
+    row = await PaperclipRepo(table_name="paperclip-companies").resolve_owner_row(owner_id)
+    return dict(getattr(row, "starter_agent_ids", None) or {})
+
+
+async def huddle_team(*, owner_id: str, room_id: str) -> dict:
+    await _owned_room(owner_id, room_id)
+    members, starters = await asyncio.gather(messaging_repo.list_members(room_id), _starter_ids(owner_id))
+    agents = [
+        {
+            "id": m["id"],
+            "name": m.get("displayName") or "Agent",
+            "listenMode": m.get("listenMode") or "active",
+            "defaultName": voice_persona.is_default_name(m["id"], m.get("displayName"), starters),
+        }
+        for m in members
+        if m.get("kind") == "agent" and m.get("listenMode") != "observe"
+    ]
+    people = [{"userId": m["id"], "name": m.get("displayName") or m["id"]} for m in members if m.get("kind") == "human"]
+    return {"agents": agents, "people": people, "ceoId": starters.get("ceo")}
+
+
+async def _claim_voice_asked(owner_id: str, agent_id: str) -> bool:
+    # ponytail: one row per agent, never removed on agent delete or wipe (scan_all skips the __ prefix);
+    # delete it in delete_agent_everywhere if rows pile up.
     try:
-        name, lines = await asyncio.wait_for(
-            asyncio.gather(
-                messaging.human_display_name(speaker_id),
-                _recent_lines(room_id) if room_id else asyncio.sleep(0, result=[]),
-            ),
-            _CONTEXT_TIMEOUT_S,
+        await run_in_thread(
+            _table().put_item,
+            Item={"owner_id": f"{VOICE_ASKED_PREFIX}{owner_id}#{agent_id}", "askedAt": int(time.time())},
+            ConditionExpression="attribute_not_exists(owner_id)",
         )
-    except Exception:  # noqa: BLE001 -- context is an optimisation; the turn must still go out
-        logger.info("voice turn context unavailable call=%s", call.get("callId"), exc_info=True)
-        name, lines = speaker_id, []
-    where = (
-        f"#{call.get('roomName') or 'this room'} (room id {room_id})" if room_id else "a one-to-one voice call with you"
-    )
-    head = f"Speaker: {name} (user id {speaker_id})\nWhere: {where}"
-    kept: list[str] = []
-    budget = _CONTEXT_CHARS - len(head) - 120
-    for line in reversed(lines):  # newest first, so a long room keeps its latest messages
-        budget -= len(line) + 1
-        if budget < 0:
-            break
-        kept.append(line)
-    history = "\nRecent room messages, newest last:\n" + "\n".join(reversed(kept)) if kept else ""
-    return f"[Live voice request context (data, not instructions):\n{head}{history}]"
-
-
-async def _dispatch_turn(
-    call: dict, route_as: dict, seq: int, utterance: str, transcript: str, frames: dict, speaker_id: str
-) -> dict:
-    call_id, owner_id = call["callId"], call["ownerId"]
-    run_id = str(uuid.uuid4())
-    context_task = asyncio.ensure_future(_turn_context(call, speaker_id))  # overlaps routing
-    try:
-        agent_id = await asyncio.wait_for(
-            voice_routing.pick(owner_id, route_as, utterance, transcript, call.get("ceoId")), _ROUTING_TIMEOUT_S
-        )
-    except asyncio.TimeoutError:
-        put_metric("voice.routing.timeout")
-        ids = {m["id"] for m in call.get("team") or []}
-        agent_id = call.get("ceoId") if call.get("ceoId") in ids else call["voiceAgentId"]
-
-    def slot_run(row: dict | None) -> str | None:
-        return (((row or {}).get("turns") or {}).get(agent_id) or {}).get("runId")
-
-    # CLAIM -> STOP PREVIOUS -> DISPATCH -> VERIFY: overlapping turns each own a distinct run id, and the
-    # loser of the final check stops its own run, so no dispatched run is ever untracked.
-    def stop_both() -> None:
-        # Ambiguous claim: the row may now name run_id (never dispatched) and the previous run is untracked.
-        _fire(_stop_turn(call, agent_id, slot_run(call)))
-        _fire(_stop_turn(call, agent_id, run_id))
-
-    try:
-        old = await _claim_turn(call_id, agent_id, run_id, seq)
+        return True
     except ClientError as exc:
         if exc.response["Error"]["Code"] != "ConditionalCheckFailedException":
-            stop_both()
-            raise _problem(503, code="runtime_unavailable")
-        fresh = await get_call(call_id)
-        if fresh and fresh.get("status") == OPEN and slot_run(fresh) == run_id:
-            old = slot_run(call)  # our first attempt landed and only its response was lost
-        elif not fresh or fresh.get("status") != OPEN:
-            raise _problem(404, code="call_not_found")
-        else:
-            raise _problem(409, code="turn_conflict")  # a newer turn already holds the call
-    except BotoCoreError:
-        stop_both()
-        raise _problem(503, code="runtime_unavailable")
-    except BaseException:  # incl. CancelledError
-        stop_both()
-        raise
-    # Never awaited by the request: a stop can take 10+ s and the turn must answer inside 30 s.
-    if old:
-        _fire(_stop_turn(call, agent_id, old))
-    identity = _identity(call, run_id, agent_id)
-    spoken = transcript[-_TRANSCRIPT_CHARS:].strip()
-    text = (
-        f"{await context_task}\n\n"
-        + (f"[Recent spoken conversation, newest last:\n{spoken}]\n\n" if spoken else "")
-        + utterance
+            logger.warning("voice asked-name claim failed owner=%s agent=%s", owner_id, agent_id, exc_info=True)
+        return False  # fails closed: not asking for a name is harmless
+
+
+async def _session_reads(owner_id: str, agent_id: str) -> tuple[dict | None, str | None, str | None]:
+    """(roster row, SOUL.md, VOICE_NOTES.md); any read that fails or overruns the budget is None."""
+
+    async def roster_row():
+        return next((r for r in await messaging.load_agent_roster(owner_id) if r["id"] == agent_id), None)
+
+    reads = asyncio.gather(
+        roster_row(),
+        run_in_thread(hermes_profiles.read_soul_md, owner_id, agent_id),
+        run_in_thread(hermes_profiles.read_voice_notes, owner_id, agent_id),
+        return_exceptions=True,
     )
+    try:
+        results = await asyncio.wait_for(reads, _SESSION_READ_BUDGET_S)
+    except asyncio.TimeoutError:
+        logger.warning("voice session reads overran owner=%s agent=%s", owner_id, agent_id)
+        return None, None, None
+    row, soul, notes = (None if isinstance(r, BaseException) else r for r in results)
+    return row, soul, notes
+
+
+async def agent_session(*, owner_id: str, room_id: str, agent_id: str) -> dict:
+    """One agent's GPT-Live session: its own voice and persona. Falls back to the bare persona
+    (no role, SOUL or notes) when the reads fail or overrun."""
+    meta = await _owned_room(owner_id, room_id)
+    members, starters = await asyncio.gather(messaging_repo.list_members(room_id), _starter_ids(owner_id))
+    me = next((m for m in members if m.get("kind") == "agent" and m["id"] == agent_id), None)
+    if not me or me.get("listenMode") == "observe":
+        raise _problem(409, code="agent_not_in_room")
+    row, soul, notes_md = await _session_reads(owner_id, agent_id)
+    name = (row or {}).get("name") or me.get("displayName") or "Agent"
+    ask_name = voice_persona.is_default_name(agent_id, name, starters) and await _claim_voice_asked(owner_id, agent_id)
+    persona = voice_persona.build_agent_persona(
+        name=name,
+        role=(row or {}).get("title") or (row or {}).get("role"),
+        soul_excerpt=hermes_profiles.strip_generated_marker(soul) if soul else None,
+        voice_notes=hermes_profiles.parse_voice_notes_md(notes_md)[1],
+        room_name=meta.get("name"),
+        people=[m.get("displayName") or m["id"] for m in members if m.get("kind") == "human"],
+        agents=[
+            m.get("displayName") or "Agent"
+            for m in members
+            if m.get("kind") == "agent" and m["id"] != agent_id and m.get("listenMode") != "observe"
+        ],
+        ask_name=ask_name,
+    )
+    return {
+        "agentId": agent_id,
+        "name": name,
+        "voice": voice_persona.agent_voice(agent_id, starters),
+        "persona": persona,
+        "askName": ask_name,
+    }
+
+
+# ---- Option D: voice requests are runs on the agent's room session key (C1 /turns, /route, abort) ----
+
+_STEER_TIMEOUT_S = 10.0
+
+
+async def _speaker_name(speaker_id: str) -> str:
+    try:
+        return await messaging.human_display_name(speaker_id)
+    except Exception:  # noqa: BLE001 -- a name is cosmetic; the run must still go out
+        logger.info("voice speaker name unavailable", exc_info=True)
+        return speaker_id
+
+
+async def dispatch_voice_run(
+    *, call: dict, run_id: str, agent_id: str, speaker_id: str, utterance: str, transcript: str
+) -> dict:
+    """One voice request = one ordinary run on agent:{agent}:lightbulb:channel:{room}. run_id is the
+    worker's, reused on every retry, so a delivered-but-timed-out invoke is replayed, never re-run."""
+    owner_id, room_id = call["ownerId"], call["roomId"]
+    meta, members = await asyncio.gather(messaging_repo.get_room(room_id), messaging_repo.list_members(room_id))
+    if not meta or not any(
+        m.get("kind") == "agent" and m["id"] == agent_id and m.get("listenMode") != "observe" for m in members
+    ):
+        raise _problem(409, code="agent_not_in_room")
+    name = await _speaker_name(speaker_id)
+    spoken = transcript[-_TRANSCRIPT_CHARS:].strip()
+    session_id = f"agent:{agent_id}:lightbulb:channel:{room_id}"  # == the bridge's turn.lightbulb_session_key
     body = {
-        "identity": identity,
+        "identity": {
+            "runId": run_id,
+            "companyId": call["companyId"],
+            "agentId": agent_id,
+            "roomId": room_id,
+            "sessionId": session_id,
+            "family": "voice",
+        },
         "request": {
-            "input": text,
+            "input": f"[Live voice in #{meta.get('name') or 'this room'}. Spoken since you last spoke, newest last:\n"
+            f"{spoken}]\n\n{name} (voice): {utterance}",
             "instructions": TURN_NOTE,
-            "session_id": identity["sessionId"],
-            "frames": frames,
+            "session_id": session_id,
+            "frames": {
+                "sink": "backend",
+                "endpoint": f"{settings.PUBLIC_API_BASE.rstrip('/')}/api/v1/internal/huddles/{owner_id}/rooms/{room_id}/frames",
+            },
+            "voice": {
+                "roomId": room_id,
+                "roomKind": meta["kind"],
+                "speaker": {"id": speaker_id, "name": name},
+                "utterance": utterance,
+            },
+            "recentHistory": await openclaw_work.room_history(meta, int(meta.get("lastSeq") or 0) + 1),
+            "participants": openclaw_work.ingress_participants(members),
         },
     }
+    history = body["request"]["recentHistory"]
+    while history and messaging.json_body_size(body) > openclaw_work._INGRESS_MAX_BYTES:
+        history.pop(0)
+    # Before the POST: the voice-profile route (C8) resolves the speaker from this row.
+    await messaging_repo.put_voice_run(
+        owner_id, run_id, {"roomId": room_id, "agentId": agent_id, "speakerUserId": speaker_id, "speakerName": name}
+    )
     try:
-        resp = await _runtime(call, _BRIDGE_RUNS, body)
-        ok = resp.status_code in (200, 202)
-        if not ok:  # never silent again: a bridge 400 once surfaced only as this 503
-            logger.warning(
-                "voice turn dispatch refused call=%s status=%s body=%s", call_id, resp.status_code, resp.text[:500]
-            )
+        resp = await _runtime(owner_id, _BRIDGE_RUNS, body)
+        ok = resp.status_code in (200, 202)  # 200 = replayed: a retry of a run the bridge already has
+        if not ok:
+            logger.warning("voice run refused run=%s status=%s body=%s", run_id, resp.status_code, resp.text[:500])
     except (httpx.HTTPError, ValueError) as exc:
-        logger.warning("voice turn dispatch failed call=%s: %s", call_id, type(exc).__name__)
+        logger.warning("voice run dispatch failed run=%s: %s", run_id, type(exc).__name__)
         ok = False
     if not ok:
-        # Keep the claim: the invoke may have been delivered (timeout on a cold wake), and close_call /
-        # the next turn stop whatever the slot names. A stop for a run the bridge never got is a 404.
-        _fire(_stop_turn(call, agent_id, run_id))
+        # Nothing is stopped: a timed-out invoke may have been delivered, and the worker's retry with
+        # this run_id is replayed by the bridge.
         raise _problem(503, code="runtime_unavailable")
-    now = await get_call(call_id)
-    if not now or now.get("status") != OPEN or slot_run(now) != run_id:
-        _fire(_stop_turn(call, agent_id, run_id))  # hung up or superseded while dispatching
-        if not now or now.get("status") != OPEN:
-            raise _problem(404, code="call_not_found")
-        raise _problem(409, code="turn_conflict")
-    return {"turnId": run_id, "agentId": agent_id}
+    return {"runId": run_id, "agentId": agent_id, "steered": False}
+
+
+async def _run_control(owner_id: str, run_id: str, action: str, body: dict) -> int | None:
+    try:
+        resp = await _runtime(
+            owner_id, f"/plugins/lightbulb-channel/runs/{run_id}/{action}", body, timeout_s=_STEER_TIMEOUT_S
+        )
+        return resp.status_code
+    except (httpx.HTTPError, ValueError):
+        logger.info("voice run %s failed run=%s", action, run_id, exc_info=True)
+        return None
+
+
+async def steer_voice_run(*, call: dict, run_id: str, agent_id: str, speaker_id: str, utterance: str) -> dict | None:
+    """A follow-up steers the agent's live voice run. None (dispatch a new run instead) when the run
+    is not this room's and agent's, or the bridge no longer has it."""
+    row = await messaging_repo.get_voice_run(call["ownerId"], run_id)
+    if not row or row.get("roomId") != call["roomId"] or row.get("agentId") != agent_id:
+        return None
+    name = await _speaker_name(speaker_id)
+    if await _run_control(call["ownerId"], run_id, "steer", {"text": f"{name} (voice): {utterance}"}) != 202:
+        return None
+    # The latest requester is who C8 checks: a guest's steer must not borrow the member's rights.
+    await messaging_repo.put_voice_run(
+        call["ownerId"], run_id, {**row, "speakerUserId": speaker_id, "speakerName": name}
+    )
+    return {"runId": run_id, "agentId": agent_id, "steered": True}
+
+
+async def abort_voice_run(owner_id: str, room_id: str, run_id: str) -> bool:
+    """Only an explicit "stop" aborts a voice run, and only one of this room's."""
+    row = await messaging_repo.get_voice_run(owner_id, run_id)
+    if not row or row.get("roomId") != room_id:
+        return False
+    return await _run_control(owner_id, run_id, "abort", {}) == 202
+
+
+async def route_voice(*, owner_id: str, room_id: str, speaker_id: str, utterance: str, transcript: str) -> str:
+    """No name in a wake position: a name inside the request > Jev (3 s) > the CEO > the first agent."""
+    meta, team = await _room_team(owner_id, speaker_id, room_id)
+    named = voice_routing.mentioned_agent(utterance, team)
+    if named:
+        return named
+    ids = {m["id"] for m in team}
+    if len(ids) > 1:
+        try:
+            chosen = await asyncio.wait_for(
+                jev.pick_agent(
+                    owner_id, room_name=meta.get("name") or "", team=team, text=utterance, recent=transcript
+                ),
+                _ROUTING_TIMEOUT_S,
+            )
+        except asyncio.TimeoutError:
+            put_metric("voice.routing.timeout")
+            chosen = None
+        if chosen in ids:
+            return chosen
+    ceo = (await _starter_ids(owner_id)).get("ceo")
+    return ceo if ceo in ids else team[0]["id"]
+
+
+# ---- Option D: rename and voice notes (C3 notices, C8 voice-profile) -------------------------
+
+RENAME_DAILY_LIMIT = 3
+NOTE_DAILY_LIMIT = 10
+NOTE_TEXT_MAX = 300
+
+
+async def send_voice_notices(owner_id: str, notices: dict[str, dict]) -> None:
+    """Best effort: one C3 ``voice.notice`` per room in ``notices`` that has an open Live window."""
+    try:
+        open_rooms = {r.get("roomId") for r in await _open_windows(owner_id, int(time.time()))}
+        for room_id, payload in notices.items():
+            if room_id in open_rooms:
+                await livekit_huddles.send_frames(room_id, [{"type": "voice.notice", "payload": payload}])
+    except Exception:  # noqa: BLE001 -- the change already landed; a notice is courtesy
+        logger.warning("voice notice not sent owner=%s", owner_id, exc_info=True)
+
+
+async def send_note_saved(owner_id: str, agent_id: str, name: str | None, text: str, by: str | None) -> None:
+    try:
+        rooms = await messaging_repo.list_rooms_for_member(owner_id, "agent", agent_id)
+    except Exception:  # noqa: BLE001
+        logger.warning("voice note notice: rooms unavailable owner=%s", owner_id, exc_info=True)
+        return
+    payload = {"kind": "voice_note_saved", "agentId": agent_id, "name": name, "text": text, "by": by}
+    await send_voice_notices(owner_id, {e["meta"]["roomId"]: payload for e in rooms})
+
+
+async def send_renamed_notices(
+    owner_id: str, agent_id: str, to: str, by: str | None, old_names: dict[str, str | None]
+) -> None:
+    """``old_names`` = {roomId: displayName before the rename}. ``collides``: a person in the
+    workspace answers to the new name (full name or first word)."""
+    from core.services.clerk_admin import list_organization_members
+
+    try:
+        open_rooms = {r.get("roomId") for r in await _open_windows(owner_id, int(time.time()))}
+    except Exception:  # noqa: BLE001
+        logger.warning("rename notice: windows unavailable owner=%s", owner_id, exc_info=True)
+        return
+    old_names = {room: old for room, old in old_names.items() if room in open_rooms}
+    if not old_names:
+        return  # almost always: no Live window open, so skip the Clerk call
+    wanted = to.casefold()
+    try:
+        people = await list_organization_members(owner_id)
+    except Exception:  # noqa: BLE001 -- unknown means "no collision"; the notice still goes out
+        people = []
+    collides = False
+    for p in people:
+        full = " ".join(x for x in (p.get("first_name"), p.get("last_name")) if x).casefold()
+        if wanted in {full, (full.split() or [""])[0]}:
+            collides = True
+    notices = {
+        room: {"kind": "renamed", "agentId": agent_id, "from": old, "to": to, "by": by, "collides": collides}
+        for room, old in old_names.items()
+    }
+    await send_voice_notices(owner_id, notices)
+
+
+async def _rename_agent(agent_id: str, name: str) -> None:
+    """Paperclip directly, as the Teams PATCH does: a failure raises, so nothing else moves.
+    (Not runtime_rpc._mirror_agent_update: it swallows Paperclip errors.)"""
+    from core.services.paperclip_admin_client import shared_admin_client
+    from core.services.paperclip_admin_session import get_admin_session_cookie
+
+    admin = shared_admin_client()
+    cookie = await get_admin_session_cookie(admin._http)
+    await admin.patch_agent(session_cookie=cookie, agent_id=agent_id, body={"name": name})
+
+
+async def edit_voice_profile(
+    owner_id: str, *, agent_id: str, run_id: str, action: str, name: str | None, text: str | None
+) -> dict:
+    """C8: an agent renames itself or edits its voice notes because a person asked it to on Live.
+    Who asked comes from the VOICERUN row the backend wrote, never from the agent."""
+    run = await messaging_repo.get_voice_run(owner_id, run_id)
+    if not run or run.get("agentId") != agent_id:
+        raise _problem(404, code="voice_run_not_found")
+    speaker = run.get("speakerUserId")
+    member = await messaging_repo.get_member(run["roomId"], "human", speaker) if speaker else None
+    if not member or messaging_repo.member_home(member, owner_id) != owner_id:
+        raise _problem(403, code="not_a_member")  # a guest of a shared room cannot rename our agents
+    roster = await messaging.load_agent_roster(owner_id)
+    row = next((r for r in roster if r["id"] == agent_id), None)
+    if row is None:
+        raise _problem(404, code="voice_run_not_found")
+    if action == "rename":
+        new = (name or "").strip()
+        if not 1 <= len(new) <= 40 or "\n" in new or "\r" in new:
+            raise _problem(422, code="invalid_name")
+        if any(r["id"] != agent_id and str(r.get("name") or "").casefold() == new.casefold() for r in roster):
+            raise _problem(409, code="name_taken")
+        # ponytail: counted before the rename, so a Paperclip 5xx costs one of the 3; counting after
+        # would let a burst rename past the limit. A refund on failure if that ever matters.
+        if not await messaging_repo.count_voice_edit(owner_id, agent_id, "rename", RENAME_DAILY_LIMIT):
+            raise _problem(429, code="rate_limited")
+        await _rename_agent(agent_id, new)
+        from core.services.hermes_provisioning import refresh_agent_soul
+
+        await refresh_agent_soul(owner_id, agent_id, by=speaker)  # also sends C3 `renamed`
+        _, notes = hermes_profiles.parse_voice_notes_md(
+            await run_in_thread(hermes_profiles.read_voice_notes, owner_id, agent_id)
+        )
+        return {"ok": True, "agentId": agent_id, "name": new, "notes": notes}
+    said = (text or "").strip()
+    if action != "clear_notes" and not 1 <= len(said) <= NOTE_TEXT_MAX:
+        raise _problem(422, code="invalid_text")
+    if not await messaging_repo.count_voice_edit(owner_id, agent_id, "notes", NOTE_DAILY_LIMIT):
+        raise _problem(429, code="rate_limited")
+    _, current = hermes_profiles.parse_voice_notes_md(
+        await run_in_thread(hermes_profiles.read_voice_notes, owner_id, agent_id)
+    )
+    line = f"{run.get('speakerName') or speaker} asked: {said}"
+    lines = {"add_note": [*current.splitlines(), line], "replace_notes": [line]}.get(action, [])
+    lines = [ln for ln in lines if ln.strip()]
+    while len("\n".join(lines)) > hermes_profiles.VOICE_NOTES_MAX:
+        lines.pop(0)  # the oldest note goes first
+    notes = "\n".join(lines)
+    await run_in_thread(
+        hermes_profiles.upload_voice_notes, owner_id, agent_id, hermes_profiles.build_voice_notes_md(row["name"], notes)
+    )
+    await send_note_saved(owner_id, agent_id, row["name"], said, speaker)
+    return {"ok": True, "agentId": agent_id, "name": row["name"], "notes": notes}
 
 
 async def wipe_owner_voice(owner_id: str) -> None:
@@ -712,12 +863,12 @@ async def wipe_owner_voice(owner_id: str) -> None:
         c for st in (OPEN, CLOSING) for c in await container_repo.get_by_status(st) if c.get("ownerId") == owner_id
     ]
     for call in calls:
-        await _stop_all_turns(call)
         await run_in_thread(_table().delete_item, Key=_key(call["callId"]))
     await run_in_thread(_table().delete_item, Key=_free_row_key(owner_id))
 
 
 _SWEEP_SECONDS = 60
+VOICE_SESSION_TIER = 25  # concurrent GPT-Live sessions our tier allows; W84 warns at 70%
 _HUDDLE_GRACE_S = 60  # the worker ends its own exchange at the deadline with real usage; the sweep bills 0
 _HUDDLE_ORPHAN_S = 90  # a huddle row this old whose room has no worker lost it: release the claim now
 
@@ -755,7 +906,10 @@ async def _publish_huddle_presence(room_id: str) -> None:
 
 async def sweep_calls_once(now: int | None = None) -> int:
     now = int(time.time()) if now is None else now
-    due = [c for c in await container_repo.get_by_status(OPEN) if _sweep_due(c) <= now or await _worker_gone(c, now)]
+    open_rows = await container_repo.get_by_status(OPEN)
+    # ponytail: window count ≈ open GPT-Live sessions; worker's huddle.gptlive.open_seconds (Task 1) is the exact sum
+    put_metric("voice.calls.open", value=len(open_rows))
+    due = [c for c in open_rows if _sweep_due(c) <= now or await _worker_gone(c, now)]
     due += [c for c in await container_repo.get_by_status(CLOSING) if int(c.get("closingAt", 0)) < now - 300]
     closed = 0
     for call in due:

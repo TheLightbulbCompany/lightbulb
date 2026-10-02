@@ -157,6 +157,7 @@ _AGENTCORE_ROW = {
 def _agentcore_ctx():
     ctx = MagicMock()
     ctx.auth.user_id = "user_member_b"
+    ctx.user_id = "user_member_b"
     ctx.auth.org_id = "org_xyz"
     ctx.company_id = "co_xyz"
     return ctx
@@ -253,7 +254,7 @@ async def test_teams_patch_agent_refreshes_soul_only_on_agentcore_identity_edits
 
     assert refresh.await_count == (1 if expected else 0)
     if expected:
-        refresh.assert_awaited_once_with("org_xyz", "agent-1")
+        refresh.assert_awaited_once_with("org_xyz", "agent-1", by="user_member_b")
 
 
 def test_soul_fields_covers_every_field_build_soul_md_renders():

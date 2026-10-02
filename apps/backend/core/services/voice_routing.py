@@ -4,34 +4,32 @@ from __future__ import annotations
 
 import re
 
-from core.services import jev
-
 _LEAD = r"^(?:(?:hey|ok|okay|so)[\s,]+)?"
 _VERB = r"\b(?:ask|tell|get|have)\s+"
+
+
+def _pattern(name: str) -> str:
+    return re.escape(" ".join(name.lower().split())).replace("\\ ", " ")
 
 
 def named_agent(text: str, team: list[dict]) -> str | None:
     t = " ".join(text.lower().split())
     for m in sorted(team, key=lambda m: -len(m["name"])):  # longest name wins ("Customer Operations" over "Customer")
-        name = re.escape(" ".join(m["name"].lower().split())).replace("\\ ", " ")
+        name = _pattern(m["name"])
         if re.match(_LEAD + name + r"(?!\w)", t) or re.search(_VERB + name + r"(?!\w)", t):
             return m["id"]
     return None
 
 
-async def pick(owner_id: str, call: dict, utterance: str, transcript: str, ceo_id: str | None) -> str:
-    team = call.get("team") or []
-    if call.get("kind") != "room":
-        return call["voiceAgentId"]
-    ids = {m["id"] for m in team}
-    if len(ids) == 1:  # a DM with an agent: nobody else to route to, skip Jev
-        return next(iter(ids))
-    named = named_agent(utterance, team)
-    if named:
-        return named
-    chosen = await jev.pick_agent(
-        owner_id, room_name=call.get("roomName") or "", team=team, text=utterance, recent=transcript
-    )
-    if chosen in ids:
-        return chosen
-    return ceo_id if ceo_id in ids else call["voiceAgentId"]
+def mentioned_agent(text: str, team: list[dict]) -> str | None:
+    """The first agent named anywhere in the request ("Lightbulb, what did Gauge find?" -> Gauge).
+    Only /route uses it: the worker found no name in a wake position, so any name inside wins."""
+    # ponytail: a common-word default name ("growth") inside the request routes to that agent; strict
+    # forms like the worker's default-name rule if that misroutes in practice.
+    t = " ".join(text.lower().split())
+    hits = [
+        (hit.start(), -len(m["name"]), m["id"])
+        for m in team
+        if (hit := re.search(r"(?<!\w)" + _pattern(m["name"]) + r"(?!\w)", t))
+    ]
+    return min(hits)[2] if hits else None

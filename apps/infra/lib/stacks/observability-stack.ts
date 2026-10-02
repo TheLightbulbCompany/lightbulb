@@ -2603,6 +2603,26 @@ def handler(event, context):
         "10+ Paperclip runs failed in 15 min across all error codes - check paperclip.run.failed by error_code for the dominant cause.",
     });
 
+    // W84: open voice windows near the GPT-Live concurrent-session tier
+    // (voice_calls.VOICE_SESSION_TIER = 25). The sweeper emits the gauge once
+    // a minute; Maximum so a second backend task's sample cannot halve it.
+    this.createAlarm({
+      id: "W84",
+      name: "voice-sessions-near-tier",
+      metricName: "voice.calls.open",
+      statistic: "Maximum",
+      threshold: 17.5,
+      evaluationPeriods: 3,
+      datapointsToAlarm: 2,
+      periodMinutes: 1,
+      comparisonOperator:
+        cloudwatch.ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
+      treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
+      severity: "warn",
+      description:
+        "Open voice windows reached 70% of the 25-session GPT-Live tier for 2 of 3 minutes - raise the tier before new Live calls start failing.",
+    });
+
     // P32: Paperclip secret decryption failures, straight from its logs.
     //
     // A backstop that does not depend on the fork plugin forwarding events.

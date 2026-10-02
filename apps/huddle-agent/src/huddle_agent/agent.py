@@ -139,6 +139,7 @@ async def entrypoint(ctx: JobContext) -> None:
     def flush_metrics() -> None:
         # deltas since the last flush, so a crashed job loses at most a minute
         now = {"stt": usage["stt"], "agent": time.monotonic() - started, "gptlive": huddle.gptlive_seconds()}
+        now["gptlive"] = max(now["gptlive"], emitted["gptlive"])  # a failed usage read never goes negative
         for k in now:
             name = "huddle.gptlive.open_seconds" if k == "gptlive" else f"huddle.{k}.seconds"
             emit_metric(name, now[k] - emitted[k])

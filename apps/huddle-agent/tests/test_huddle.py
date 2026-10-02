@@ -841,3 +841,34 @@ async def test_gptlive_seconds_counts_open_and_closed_sessions():
     await h.talk_start("u1")
     lives[1].usage = 2.0
     assert h.gptlive_seconds() == 42.4 + 2.0
+
+
+async def test_gptlive_seconds_keeps_a_closing_session():
+    h, room, backend, lives, clock, log = make()
+    await h.on_participants({"u1": "Pat"})
+    await h.talk_start("u1")
+    lives[0].usage = 5.0
+    seen = []
+    close = lives[0].aclose
+
+    async def aclose():
+        seen.append(h.gptlive_seconds())  # a flush while the session closes
+        await close()
+
+    lives[0].aclose = aclose
+    await h.end_exchange()
+    assert seen == [5.0] and h.gptlive_seconds() == 42.4
+
+
+async def test_gptlive_seconds_counts_a_session_whose_close_failed():
+    h, room, backend, lives, clock, log = make()
+    await h.on_participants({"u1": "Pat"})
+    await h.talk_start("u1")
+    lives[0].usage = 5.0
+
+    async def aclose():
+        raise RuntimeError("boom")
+
+    lives[0].aclose = aclose
+    await h.end_exchange()
+    assert h.gptlive_seconds() == 5.0

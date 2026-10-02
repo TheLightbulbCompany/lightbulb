@@ -121,14 +121,17 @@ class Huddle:
         self._idle_ended = self._left = False
         self._presence_v = 0
         self._gptlive_closed = 0.0  # usage of this job's closed GPT-Live sessions
+        self._closing: _Exchange | None = None  # still counted while its session closes
 
     def gptlive_seconds(self) -> float:
         """GPT-Live session seconds this job has used so far, open session included."""
-        x = self._x
-        try:
-            return self._gptlive_closed + (x.live.usage_seconds() if x else 0.0)
-        except Exception:
-            return self._gptlive_closed
+        total = self._gptlive_closed
+        for x in (self._x, self._closing):
+            try:
+                total += x.live.usage_seconds() if x else 0.0
+            except Exception:
+                pass
+        return total
 
     def _latency(self, name: str, heard_at: float) -> None:
         emit_metric(f"live.latency.{name}", round((self._clock() - heard_at) * 1000), "Milliseconds", {"path": "today"})
@@ -432,6 +435,8 @@ class Huddle:
             if only is not None and self._x is not only:
                 return
             x, self._x = self._x, None
+            if x is not None:
+                self._closing = x
         if x is None:
             return
         self._sync_state()
@@ -439,11 +444,16 @@ class Huddle:
         try:
             x.live.mute()
             await x.live.aclose()  # GPT-Live bills per session second
-            usage = x.live.usage_seconds()  # after close: the final usage delta lands during it
-            self._gptlive_closed += usage
         except Exception:
             logger.exception("huddle live session close failed")
         finally:
+            try:
+                usage = x.live.usage_seconds()  # after close: the final usage delta lands during it
+            except Exception:
+                logger.exception("huddle live usage read failed")
+            self._gptlive_closed += usage
+            if self._closing is x:
+                self._closing = None
             wall = min(self._clock(), x.deadline) - x.started
             await self._end_call(x.call_id, usage or wall)
 

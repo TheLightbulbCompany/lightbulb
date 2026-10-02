@@ -80,7 +80,8 @@ pub(crate) fn digest(input: &Value) -> String {
 /// Full arguments belong only to the held permission prompt. Ordinary tool
 /// transcript rows keep Claude's curated, bounded summary.
 pub(crate) fn display_summary(tool: &str, input: &Value, cwd: Option<&str>, home: Option<&str>) -> String {
-    if tool == "mcp__lightbulb_native_sessions__send" {
+    // The public names reach here only when their arguments did not map.
+    if matches!(tool, "mcp__lightbulb_native_sessions__send" | "mcp__lightbulb__send_message" | "mcp__lightbulb__message_receipt") {
         return "Lightbulb message".into();
     }
     if tool == "mcp__lightbulb_native_sessions__receipt" {
@@ -90,8 +91,8 @@ pub(crate) fn display_summary(tool: &str, input: &Value, cwd: Option<&str>, home
             .map(|id| format!("receipt {id}"))
             .unwrap_or_else(|| "Lightbulb message".into());
     }
-    if let Some(name @ "list_targets") = tool.strip_prefix("mcp__lightbulb_native_sessions__") {
-        if super::native_mcp::allowed(name, input) {
+    if let Some(name @ ("find_rooms" | "find_sessions" | "read_messages")) = tool.strip_prefix("mcp__lightbulb__") {
+        if super::native_mcp::internal(name, input).is_some() {
             return serde_json::to_string(&lifecycle::canonical(input))
                 .map(|args| format!("{name} {args}"))
                 .unwrap_or_default();
@@ -122,13 +123,16 @@ pub(crate) fn exact(tool: &str, input: &Value, cwd: Option<&str>, home: Option<&
                 && input["requestId"].as_str().is_some_and(|id| uuid::Uuid::parse_str(id).is_ok())
                 && shown(&display_summary(tool, input, cwd, home));
         }
-        return name == "list_targets"
-            && super::native_mcp::allowed(name, input)
+        return false;
+    }
+    if let Some(name @ ("find_rooms" | "find_sessions" | "read_messages")) = tool.strip_prefix("mcp__lightbulb__") {
+        return super::native_mcp::internal(name, input).is_some()
             && input.as_object().is_some_and(|args| {
                 args.values().all(|value| {
-                    value.as_str().is_some_and(|text| {
-                        text.bytes().all(|b| (0x20..0x7f).contains(&b)) && redact(text) == text
-                    })
+                    value.is_u64()
+                        || value.as_str().is_some_and(|text| {
+                            text.bytes().all(|b| (0x20..0x7f).contains(&b)) && redact(text) == text
+                        })
                 })
             })
             && shown(&display_summary(tool, input, cwd, home));
@@ -196,7 +200,7 @@ pub(crate) fn read_private_send(held: &Held) -> Option<Value> {
 /// shell prompt offers none: "approve this command" must not widen into "and
 /// everything after it".
 pub(crate) fn modes(tool: &str, suggestions: &Value) -> Vec<String> {
-    if tool == "Bash" || tool.starts_with("mcp__lightbulb_native_sessions__") {
+    if tool == "Bash" || tool.starts_with("mcp__lightbulb_native_sessions__") || tool.starts_with("mcp__lightbulb__") {
         return vec![];
     }
     let mut out: Vec<String> = suggestions
@@ -519,12 +523,18 @@ mod tests {
 
     #[test]
     fn local_sessions_approval_shows_complete_native_mcp_arguments() {
-        let list = "mcp__lightbulb_native_sessions__list_targets";
+        let list = "mcp__lightbulb__find_rooms";
         let send = "mcp__lightbulb_native_sessions__send";
         let receipt = "mcp__lightbulb_native_sessions__receipt";
         assert!(exact(list, &json!({})));
-        assert_eq!(display_summary(list, &json!({}), None, None), "list_targets {}");
+        assert_eq!(display_summary(list, &json!({}), None, None), "find_rooms {}");
+        assert!(exact(list, &json!({"query":"design","limit":5})));
         assert!(!exact(list, &json!({"scope":"all"})));
+        let read = "mcp__lightbulb__read_messages";
+        assert_eq!(display_summary(read, &json!({"room_id":"r1","after_seq":4}), None, None), r#"read_messages {"after_seq":4,"room_id":"r1"}"#);
+        // An unmapped public send never shows its text.
+        assert_eq!(display_summary("mcp__lightbulb__send_message", &json!({"text":"secret","request_id":"x"}), None, None), "Lightbulb message");
+        assert!(!exact("mcp__lightbulb__send_message", &json!({"text":"secret","request_id":"x"})));
 
         let args = json!({"destination":"room:demo","text":"check","requestId":"e12fd3e8-32ca-4b65-8eaf-ab979e3c9449"});
         assert!(exact(send, &args), "a bounded send can use the private approval path");

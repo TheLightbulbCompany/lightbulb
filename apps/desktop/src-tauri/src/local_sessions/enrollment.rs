@@ -416,7 +416,8 @@ pub fn hook(provider: &str) {
     silence(HOOK_DECISION_FD);
     let mut raw = Vec::new();
     let _ = std::io::Read::take(std::io::stdin(), 65536).read_to_end(&mut raw);
-    let json: serde_json::Value = serde_json::from_slice(&raw).unwrap_or(serde_json::Value::Null);
+    let mut json: serde_json::Value = serde_json::from_slice(&raw).unwrap_or(serde_json::Value::Null);
+    super::native_mcp::canonical_hook(&mut json);
     if answer >= 0 && super::approval::holdable(provider, &json) {
         super::approval::hold(&hook_path(), provider, &json, answer);
         return;
@@ -1520,12 +1521,15 @@ mod tests {
         fs::write(h.join(".codex/config.toml"), "").unwrap();
         assert_eq!(state("codex", "hooks"), "missing");
 
-        let server = |cmd: &str| json!({"mcpServers":{"lightbulb_native_sessions":{"command":cmd,"args":["session-mcp"]}}});
+        let server = |cmd: &str| json!({"mcpServers":{"lightbulb":{"command":cmd,"args":["session-mcp"]}}});
         fs::write(h.join(".claude.json"), server(exe.to_str().unwrap()).to_string()).unwrap();
         assert_eq!(state("claude", "mcp"), "configured");
         fs::write(h.join(".claude.json"), server("/other/server").to_string()).unwrap();
         assert_eq!(state("claude", "mcp"), "collision");
-        let toml = |cmd: &str| format!("[mcp_servers.lightbulb_native_sessions]\ncommand = \"{cmd}\"\nargs = [\"session-mcp\"]\n");
+        // The hosted HTTP entry under the same name is a collision until enable replaces it.
+        fs::write(h.join(".claude.json"), json!({"mcpServers":{"lightbulb":{"type":"http","url":"https://api.flickmeon.ai/mcp"}}}).to_string()).unwrap();
+        assert_eq!(state("claude", "mcp"), "collision");
+        let toml = |cmd: &str| format!("[mcp_servers.lightbulb]\ncommand = \"{cmd}\"\nargs = [\"session-mcp\"]\n");
         fs::write(h.join(".codex/config.toml"), toml(exe.to_str().unwrap())).unwrap();
         assert_eq!(state("codex", "mcp"), "configured");
         fs::write(h.join(".codex/config.toml"), toml("/other/server")).unwrap();

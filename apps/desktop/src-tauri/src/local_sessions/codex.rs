@@ -699,8 +699,11 @@ fn item(item: &Value, ts: Option<&str>) -> Option<Value> {
             e
         }
         "McpToolCall" => {
-            let private_send = item["server"] == "lightbulb_native_sessions"
-                && matches!(item["tool"].as_str(), Some("send" | "receipt"));
+            let private_send = matches!(
+                (item["server"].as_str(), item["tool"].as_str()),
+                (Some("lightbulb_native_sessions"), Some("send" | "receipt"))
+                    | (Some("lightbulb"), Some("send_message" | "message_receipt" | "read_messages"))
+            );
             let label = format!(
                 "{}.{}",
                 item["server"].as_str().unwrap_or(""),

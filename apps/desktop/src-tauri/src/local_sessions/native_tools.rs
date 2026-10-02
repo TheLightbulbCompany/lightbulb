@@ -250,6 +250,10 @@ async fn answer(
             90,
         )
         .map_err(|_| "device authentication unavailable")?;
+        let tool = request["tool"].as_str().unwrap_or("");
+        if matches!(tool, "find_rooms" | "find_sessions" | "read_messages") {
+            return read(&client, &token, tool, &request["arguments"], &source.session_id).await;
+        }
         // This route only prepares a private intent. An older backend returns
         // 404 here, which is safe; it must never fall through to immediate send.
         let route = if request["tool"] == "send" {
@@ -302,6 +306,37 @@ async fn answer(
     }
 }
 
+/// Reads run as the enrolled human through the device-token routes; the
+/// session itself is only the caller `find_sessions` marks.
+async fn read(client: &reqwest::Client, token: &str, tool: &str, args: &Value, own: &str) -> Result<Value> {
+    let base = format!("{}/api/v1/local-sessions/device", crate::LIGHTBULB_API_BASE.trim_end_matches('/'));
+    let param = |key: &str| args.get(key).filter(|v| !v.is_null()).map(|v| v.as_str().map_or_else(|| v.to_string(), str::to_owned));
+    let (url, query) = match tool {
+        // `native_mcp::internal` admitted only a path-safe room id.
+        "read_messages" => (
+            format!("{base}/rooms/{}/messages", args["room_id"].as_str().unwrap_or("")),
+            [("after_seq", param("after_seq")), ("limit", param("limit"))],
+        ),
+        "find_rooms" => (format!("{base}/rooms"), [("query", param("query")), ("limit", param("limit"))]),
+        _ => (format!("{base}/sessions"), [("query", param("query")), ("limit", param("limit"))]),
+    };
+    let query: Vec<(&str, String)> = query.into_iter().filter_map(|(k, v)| v.map(|v| (k, v))).collect();
+    let response = client.get(url).bearer_auth(token).query(&query).send().await
+        .map_err(|_| "Lightbulb unavailable")?;
+    let ok = response.status().is_success();
+    let mut data: Value = response.json().await.map_err(|_| "invalid Lightbulb response")?;
+    if ok && tool == "find_sessions" {
+        mark_own(&mut data, own);
+    }
+    Ok(json!({"ok":ok,"data":data}))
+}
+
+fn mark_own(data: &mut Value, own: &str) {
+    for session in data["sessions"].as_array_mut().into_iter().flatten() {
+        session["isThisSession"] = json!(session["sessionId"] == own);
+    }
+}
+
 pub(super) async fn serve(
     scope: PathBuf,
     enrollment: Enrollment,
@@ -340,6 +375,14 @@ pub(super) async fn serve(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn find_sessions_marks_only_the_calling_session() {
+        let mut data = json!({"sessions":[{"sessionId":"a"},{"sessionId":"b"}],"total":2});
+        mark_own(&mut data, "b");
+        assert_eq!(data["sessions"][0]["isThisSession"], false);
+        assert_eq!(data["sessions"][1]["isThisSession"], true);
+    }
 
     #[test]
     fn native_tool_retry_keeps_the_same_registered_turn() {

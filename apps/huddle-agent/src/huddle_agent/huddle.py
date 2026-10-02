@@ -11,7 +11,9 @@ State:
 - `_runs`: every voice run by run id. Closing a voice or the window never stops one.
 - `_news`: finished answers of agents that did not hold the floor. Each agent announces its own (D §8):
   proactively once the room is quiet (gate.py), or at once when its has_news tile is tapped.
-- `_queue`: the rest of a multi-name request, answered in the order named (C4 `lightbulb.queue`).
+- `_queue`: (agent, speaker, line) still to answer once the floor settles: the rest of a multi-name request
+  in the order named, and requests other people made while a voice was open (C4 `lightbulb.queue`).
+- `_held`: a line /route called unfinished (`hold`), merged with that speaker's next final.
 """
 
 from __future__ import annotations
@@ -29,7 +31,17 @@ from typing import Any, Awaitable, Callable, Protocol
 from huddle_agent import gate
 from huddle_agent.backend import BackendError
 from huddle_agent.frames import Run, Runs
-from huddle_agent.transcript import Transcript, address, addressed_by_name, pause, real_speech, stop_request, stop_target, stt_prompt
+from huddle_agent.transcript import (
+    Transcript,
+    address,
+    addressed_by_name,
+    pause,
+    real_speech,
+    stop_request,
+    stop_target,
+    strip_wake,
+    stt_prompt,
+)
 
 logger = logging.getLogger("huddle")
 
@@ -62,6 +74,11 @@ ANNOUNCE_NOW = "Say it now, briefly, as yourself, then stop."
 REPEAT_SECONDS = 10  # live.wake.repeat: the same person names the same agent this soon after a voice_failed
 VOICE_NOTE_CHARS = 1_800  # append_instructions stays under ~500 tokens (D §7)
 PRESENCE_TIMEOUT = 3  # the last (empty) presence must land before LiveKit cancels the job
+# ponytail: inferred; an unfinished line (/route "hold") merges with the same speaker's next final this soon
+HOLD_SECONDS = 15
+MISSED_SECONDS = 10  # live.route.missed: nobody answered, then the same person names an agent or Lightbulb
+UNWANTED_SECONDS = 5  # live.route.unwanted: a Jev-routed voice the asker stops or switches away from this soon
+ROUTE_LINES = 30  # the backend reads the transcript's last 30 lines (voice_calls._transcript_history)
 
 
 def _retryable(e: BackendError) -> bool:
@@ -187,6 +204,9 @@ class Huddle:
         self._last_speaker: str | None = None
         self._last_agent: dict[str, str] = {}  # identity -> the agent they last summoned
         self._queue: list[tuple[str, str, str]] = []  # (agent_id, speaker, request) still to answer
+        self._held: dict[str, tuple[str, float]] = {}  # identity -> (line, at): unfinished, /route said hold
+        self._spoke: dict[str, int] = {}  # identity -> the mark of their latest real-speech final
+        self._unrouted: dict[str, float] = {}  # identity -> when their line woke nobody (live.route.missed)
         self._lock = asyncio.Lock()  # one summon or close at a time
         self.dropped_frames = 0
         self._tasks: set[asyncio.Task] = set()
@@ -340,23 +360,36 @@ class Huddle:
                 emit_metric("live.bargein.empty", 1, "Count")
                 self._live_call(v, "nudge")
             return
-        mark = self._transcript.add_person(identity, name, text)
-        self._last_line[identity] = text
+        now = self._clock()
+        mark = self._transcript.add_person(identity, name, text, at=now)
         self._last_speaker = identity
-        self._last_heard = self._clock()
+        self._last_heard = now
+        if real_speech(text) and not (v and identity == v.speaker):  # a line that routes itself (§4.2)
+            self._spoke[identity] = mark
         if stop_request(text):
             # "stop" / "never mind" to an agent aborts its runs (D §8): the agent it names, from anyone, else
             # the floor-holder when its pinned speaker says it. Nothing is posted as a turn.
             target = stop_target(text, self._team["agents"]) or (v.agent_id if v and identity == v.speaker else None)
             if target:
+                if v and target == v.agent_id:
+                    self._unwanted(v, identity)
                 self._stop(target)
                 return
+        held = self._held.pop(identity, None)
+        if held and now - held[1] <= HOLD_SECONDS:  # the rest of an unfinished line: the whole of it is the request
+            text = f"{held[0]} {text}"
+        self._last_line[identity] = text
         a = address(text, self._team["agents"], self._team["people"])
+        unrouted = self._unrouted.pop(identity, None)
+        if (a.agent_ids or a.lightbulb) and unrouted is not None and now - unrouted <= MISSED_SECONDS:
+            emit_metric("live.route.missed", 1, "Count")  # they had to say it again, by name
         barge = v is not None and v.live is not None and identity != v.speaker
         if barge and cut != v.agent_id and v.agent_state == "speaking" and (a.agent_ids or a.lightbulb or real_speech(text)):
             self._cut(v, identity)  # no interim got there first: cut on the final
             cut = self._cut_by.pop(identity, None)
         if a.agent_ids and not (v and identity == v.speaker and a.agent_ids[0] == v.agent_id):
+            if v:
+                self._unwanted(v, identity)
             dims = self._wake_fired(identity, a.agent_ids[0], a.matches[a.agent_ids[0]])
             # a task: awaiting here would stall this person's STT loop for the whole summon
             self._spawn(self.summon(
@@ -382,6 +415,8 @@ class Huddle:
             for agent_id in a.ambiguous[:1]:
                 emit_metric("live.wake.ambiguous", 1, "Count")
                 self._notice({"kind": "ambiguous_name", "agentId": agent_id}, [identity])
+            if a.ambiguous:
+                self._unrouted[identity] = now
             if a.ambiguous or not real_speech(text) or pause(text) or stop_request(text):
                 return
             # No name in a wake position: the backend routes the line as a chat message (Jev may pick nobody).
@@ -396,11 +431,23 @@ class Huddle:
             if self._end_handoff(v) and identity == back:
                 self._live_call(v, "reply_to", text)  # the session was pinned away from them: it never heard this
             elif identity != back:
-                v.lines.append(f"{name}: {text}")
-                self._flush_lines(v)
+                self._other_line(v, identity, name, text, mark)
         else:
-            v.lines.append(f"{name}: {text}")
-            self._flush_lines(v)
+            self._other_line(v, identity, name, text, mark)
+
+    def _other_line(self, v: _Voice, identity: str, name: str, text: str, mark: int) -> None:
+        """Someone other than the pinned speaker, with a voice open (routing v2 §6): thinking for the
+        floor-holder (and, batched, a steer into its run), and routed like any line, so an agent Jev picks
+        answers them once the floor settles."""
+        v.lines.append(f"{name}: {text}")
+        self._flush_lines(v)
+        if real_speech(text) and not pause(text) and not stop_request(text):
+            self._spawn(self._route_and_summon(identity, text, mark, humans=len(self._people)))
+
+    def _unwanted(self, v: _Voice, identity: str) -> None:
+        """live.route.unwanted: the asker stops a Jev-routed voice, or names another agent, right away."""
+        if v.path == "jev" and identity == v.speaker and self._clock() - (v.opened or self._clock()) <= UNWANTED_SECONDS:
+            emit_metric("live.route.unwanted", 1, "Count")
 
     def on_interim_transcript(self, identity: str, name: str, text: str) -> None:
         """Partial STT text, only to cut the floor-holder off fast (D §9): anyone but its pinned speaker
@@ -461,29 +508,58 @@ class Huddle:
         return self._live_call(v, "append_thinking", f"{said} — already handed to your backend self; don't delegate it again")
 
     async def _route_and_summon(self, identity: str, text: str, mark: int, humans: int | None = None) -> None:
-        """`humans`: people in the call, for a line with no name (None: the Lightbulb wake word)."""
+        """`humans`: people in the call, for a line with no name (None: the Lightbulb wake word, stripped
+        so "Lightbulb, Forge, check CI" reaches /route opening with Forge)."""
         heard_at = self._clock()
-        agent_id, outcome = None, "error"
+        r, outcome = {}, "error"
+        v = self._voice
         try:
-            agent_id = await self._backend.route(
-                identity, text[:MAX_UTTERANCE], self._transcript.text()[-MAX_TRANSCRIPT:], humans
+            r = await self._backend.route(
+                identity,
+                (text if humans is not None else strip_wake(text))[:MAX_UTTERANCE],
+                self._transcript.text()[-MAX_TRANSCRIPT:],
+                humans,
+                floor={"agent": v.agent_id, "speaker": self._name(v.speaker)} if v else None,
+                voice_runs=[{"agent": x.agent_id, "request": x.request[:200]} for x in self._runs.running()][-16:],
+                at=self._transcript.times(ROUTE_LINES),
             )
-            outcome = "agent" if agent_id else "none"
+            outcome = "hold" if r.get("hold") else "agent" if r.get("agentIds") or r.get("agentId") else "none"
         except BackendError as e:
             if humans is None or humans <= 1:  # spoken to the agents: say it failed
                 self._room.publish(ERROR_TOPIC, {"code": e.code, "reason": e.reason}, [identity])
         finally:
             ms = round((self._clock() - heard_at) * 1000)
             emit_metric("live.latency.jev", ms, "Milliseconds", {"path": "jev", "outcome": outcome})
-        # A voice opened while Jev decided (someone named an agent): that floor stands.
-        if agent_id and (humans is None or self._voice is None):
-            await self.summon(identity, agent_id, request=text, mark=mark, path="jev", heard_at=heard_at)
+        if r.get("hold"):  # unfinished ("Friday, we're trying to"): the speaker's next final carries the rest
+            self._held[identity] = (text, heard_at)
+            return
+        agent_ids = r.get("agentIds") or ([r["agentId"]] if r.get("agentId") else [])
+        if not agent_ids:
+            if outcome == "none":
+                self._unrouted[identity] = self._clock()
+            return
+        # Routing v2 §4.2: someone else spoke since. Their line routes itself, seeing this one; Jev decides on that.
+        if any(m > mark for who, m in self._spoke.items() if who != identity):
+            emit_metric("live.route.superseded", 1, "Count")
+            return
+        if humans is not None and self._voice is not None:
+            # A voice is open (it was, or one opened while Jev decided): the picked agents answer this person
+            # when the floor settles, in order (§6, decision 2). The floor-holder itself is a re-point then.
+            self._queue += [(agent_id, identity, text) for agent_id in agent_ids]
+            emit_metric("live.route.queued", len(agent_ids), "Count")
+            self._sync_state()
+            return
+        await self.summon(
+            identity, agent_ids[0], request=text, mark=mark, path="jev", then=agent_ids[1:], heard_at=heard_at
+        )
 
     def on_agent_said(self, agent_id: str, text: str) -> None:
-        """What a voice said, as GPT-Live heard itself say it: every later seed and since_agent hears it."""
-        self._transcript.add_agent(agent_id, self._agent_name(agent_id), text)
-        # D §9: the floor-holder asking a present person by name hands them the floor for HANDOFF_SECONDS
+        """What a voice said, as GPT-Live heard itself say it: every later seed and since_agent hears it,
+        tagged with the person it was talking to ("Forge → Leo: ...", routing v2 §5)."""
         v = self._floor_voice(agent_id)
+        to = self._name(v.speaker) if v else ""
+        self._transcript.add_agent(agent_id, self._agent_name(agent_id), text, at=self._clock(), to=to)
+        # D §9: the floor-holder asking a present person by name hands them the floor for HANDOFF_SECONDS
         target = addressed_by_name(text, self._people) if v else None
         if target is None or target == v.speaker:
             return
@@ -1020,7 +1096,8 @@ class Huddle:
     def _flush_lines(self, v: _Voice) -> None:
         now = self._clock()
         if v.live is not None and v.lines and now - v.last_thinking >= THINKING_EVERY:
-            self._live_call(v, "append_thinking", "\n".join(v.lines))
+            said = "\n".join(v.lines)
+            self._live_call(v, "append_thinking", said)
             v.lines.clear()
             v.last_thinking = now
 

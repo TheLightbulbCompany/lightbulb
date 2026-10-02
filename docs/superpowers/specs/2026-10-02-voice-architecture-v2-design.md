@@ -357,11 +357,18 @@ One correction to the earlier draft, which said no new LLM call is added on any 
 **one bounded structured call, only on messages that name someone**, justified by the measured gain ([AX]: cued recall
 0.62/0.56 → 1.00/1.00, false-speak flat). Every exclusion below still stands.
 
-- **An open-goal ledger or LLM dialogue-state tracker.** *Decision pending the D-class experiment* (timestamps /
-  open-request state; §3.1, §12.8). Against it so far: mpgt: GPT-3.5 goal tracking is 27.5% exact / 62% correct
-  few-shot, 34% correct zero-shot; the needed state is in RUN#/MSG rows; steer does the "already answered?" judgement in
-  the generator that has full context. For it: [AX] run (d) shows prompt wording does not reopen a re-asked question
-  (D03 stays none at 0.95).
+- **An open-goal ledger or LLM dialogue-state tracker.** *Decided: not built.* The D-class experiment ([DX] =
+  `results/2026-10-02-dclass-experiment.md`, branch `test/dclass-experiment`) measured both candidate signals on top of
+  the addressing stage: relative timestamps in Jev's lines bought nothing (D 0.67 → 0.67); an open-request `state.open`
+  block, built from hand labels (its upper bound), fixed one row (D12 partial answer, Finance 0.30 → 0.77) and left D01
+  and D03 unmoved (none ≥ 0.93), while a deterministic "answered by" heuristic would mislabel exactly the hedged,
+  refused, partial and disputed answers that matter, so production would need a second Jev label per question. D01 and
+  D03 turned out to be a bench artefact: the stub cards say "Tools: none", so Jev reasons "nobody here can know the
+  calendar", not "this was answered" — with a card listing Calendar, D03 routes to Friday (0.51). Real cards list tools.
+  What is built instead: one `NONE_CRITERION` clause for partially answered questions (the D12 win), realistic tool
+  lines on the bench's stub cards, and re-measurement. Also against a ledger: mpgt (GPT-3.5 goal tracking 27.5% exact /
+  62% correct few-shot); the needed state is in RUN#/MSG rows; steer does the "already answered?" judgement in the
+  generator that has full context. Answered-question and group-ack rows stayed at 0.00 false-speak in every variant.
 - **A backend pre-post Jev check (`still_needed`).** It adds an LLM call on the post path, cannot end the bridge's run
   (the bridge owns `run.ended`), and leaves a reply in the Hermes session that the room never saw. Steer + `[SILENT]` has
   none of these problems.
@@ -496,5 +503,6 @@ Fix forward, no flags. Each step: merge on green CI + Codex review → dev auto-
    survive in the room's Hermes session. Posting them would break the "nothing from Live is posted" ruling.
 7. **Addressed and relayed agents all respond.** Several named agents means the same as several @mentions; first-named-only
    cost recall on the two-agent rows ([AX]: chat 0.92 → 0.90) for no false-speak gain.
-8. **A question re-asked after a gap is a new request.** Decided; the mechanism is pending the D-class experiment
-   (timestamps / open-request state), because prompt wording alone did not move D03 ([AX] (d)).
+8. **A question re-asked after a gap is a new request.** Decided. Mechanism: none beyond the reworded `NONE_CRITERION`
+   ([AX] (d)) plus a partial-answer clause ([DX]); the D03 miss was the bench's "Tools: none" cards, not routing (§9).
+   Re-measure after the card fix; build more only if it still misses.

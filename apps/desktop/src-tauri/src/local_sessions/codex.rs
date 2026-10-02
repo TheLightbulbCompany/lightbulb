@@ -592,7 +592,7 @@ fn item(item: &Value, ts: Option<&str>) -> Option<Value> {
                     .and_then(|rest| rest.split_once("]\n"))
                     .filter(|(request, _)| (1..=256).contains(&request.len())
                         && request.bytes().all(|b| b.is_ascii_alphanumeric() || b"_.:-".contains(&b)))
-                    .map_or((None, body), |(request, body)| (Some(request), body));
+                    .map_or((None, body), |(request, body)| (Some(request), unquote_note(body)));
                 let mut e = event("text", "user", body, ts, id);
                 if let Some(request) = request { e["originRequestId"] = json!(request); }
                 return Some(e);
@@ -971,6 +971,40 @@ fn remove_trust(config: &str, key: &str) -> String {
     out
 }
 
+/// Codex forces SessionEnd synchronous and normalizes its missing timeout to 1;
+/// every other event normalizes to the written value.
+fn hook_timing(event: &str) -> (u64, bool) {
+    if event == "SessionEnd" { (1, false) } else { (5, true) }
+}
+
+/// Read-only: "configured" when every lifecycle group runs `executable` and is
+/// trusted in `config.toml` (an untrusted group is skipped silently), else "missing".
+pub(super) fn hooks_state(home: &Path, executable: &Path) -> &'static str {
+    let dir = home.join(".codex");
+    let read = |path: &Path| -> Option<String> {
+        let mut text = String::new();
+        secure_file(path).ok()?.take(1024 * 1024).read_to_string(&mut text).ok()?;
+        Some(text)
+    };
+    let path = dir.join("hooks.json");
+    let configured = (|| {
+        let doc: Value = serde_json::from_str(&read(&path)?).ok()?;
+        let config = read(&dir.join("config.toml"))?;
+        let command = super::claude::hook_command(executable, "codex").ok()?;
+        super::claude::HOOK_EVENTS.iter().all(|(event, _)| {
+            let Some(label) = lifecycle::codex_event_label(event) else { return true };
+            let (timeout, is_async) = hook_timing(event);
+            let entry = json!({"hooks":[{"type":"command","command":command,"timeout":timeout,"async":is_async}]});
+            doc["hooks"][*event].as_array().and_then(|entries| entries.iter().position(|e| e == &entry))
+                .is_some_and(|index| {
+                    let hash = lifecycle::codex_trust_hash(label, None, &command, timeout, is_async, None);
+                    upsert_trust(&config, &lifecycle::codex_trust_key(&path, label, index), &hash) == config
+                })
+        }).then_some(())
+    })();
+    if configured.is_some() { "configured" } else { "missing" }
+}
+
 /// Install (or remove) the lifecycle hooks in `~/.codex/hooks.json` together
 /// with the `config.toml` trust entries Codex requires before it will run them
 /// -- an untrusted group is skipped silently, so the two must move as one.
@@ -1011,13 +1045,7 @@ pub(super) fn configure_hooks(home: &Path, executable: &Path, enabled: bool) -> 
         let Some(label) = lifecycle::codex_event_label(event) else {
             continue;
         };
-        // Codex forces SessionEnd synchronous and normalizes its missing
-        // timeout to 1; every other event normalizes to the written value.
-        let (timeout, is_async) = if event == "SessionEnd" {
-            (1, false)
-        } else {
-            (5, true)
-        };
+        let (timeout, is_async) = hook_timing(event);
         let entry =
             json!({"hooks":[{"type":"command","command":command,"timeout":timeout,"async":is_async}]});
         let slot = if enabled {

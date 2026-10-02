@@ -42,9 +42,13 @@ impl State {
             }
         }
     }
+    /// Empty when there is nothing to say: no change, no overlap, coverage known.
     pub(super) fn notice(&self) -> String {
+        if !self.changed && !self.overlap && self.known {
+            return String::new();
+        }
         format!("[Lightbulb workspace advisory: {}{}{} Changes have external/unknown provenance. Re-read relevant files before continuing; this notice does not prove a refresh or prevent conflicts.]\n",
-            if self.changed { "Checkout changes detected since the previous admitted notice. " } else { "No additional change detected in the bounded sample. " },
+            if self.changed { "Checkout changes detected since the previous admitted notice. " } else { "" },
             if self.overlap { "Multiple shared sessions may overlap this checkout. " } else { "" },
             if self.known { "Ignored, sensitive, oversized and unsampled files are not covered." } else { "Workspace coverage is unknown." })
     }

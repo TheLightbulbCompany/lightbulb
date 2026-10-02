@@ -1106,6 +1106,15 @@ pub(super) fn preflight_hooks(path: &Path, executable: &Path) -> Result<()> {
     hook_settings(path, executable, true).map(|_| ())
 }
 
+/// Read-only: whether `configure_hooks(.., true)` would be a no-op.
+pub(super) fn hooks_state(path: &Path, executable: &Path) -> &'static str {
+    match hook_settings(path, executable, true) {
+        Ok((original, settings)) if original == settings => "configured",
+        Err(reason) if reason == "Claude hooks are disabled" => "disabled",
+        _ => "missing",
+    }
+}
+
 pub(super) fn configure_hooks(path: &Path, executable: &Path, enabled: bool) -> Result<()> {
     let (original, settings) = hook_settings(path, executable, enabled)?;
     let backup = path.with_extension("json.lightbulb-backup");

@@ -218,3 +218,10 @@ def test_a_stale_capture_does_not_label_a_later_unrelated_failure(monkeypatch):
 def test_error_detail_is_only_sent_with_the_quota_kind():
     assert "errorDetail" not in turn.run_ended_body(
         "r1", "k", "error", "model_unavailable", turn.ZERO_USAGE, {"provider": "openai"})
+
+
+def test_a_voice_run_is_never_offered_silence():
+    """Voice runs share the room key but carry no eventKind: no [SILENT] line, so no silent outcome."""
+    request = {"voice": {"roomKind": "channel", "speaker": {"id": "u1", "name": "Aden"}}, "participants": []}
+    body = turn._voice_body({"roomId": "room-1"}, request)
+    assert "eventKind" not in body and "[SILENT]" not in turn._observe_prompt("ceo", body)

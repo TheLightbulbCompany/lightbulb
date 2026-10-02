@@ -101,9 +101,9 @@ describe("Live", () => {
     await screen.findByLabelText("Talk to Lightbulb");
     const data = mockRooms[0].handlers.data;
     await act(async () => { data(bytes('{"code":"voice_limit","reason":"credits_low"}'), { identity: "user-a" }, 0, "huddle.error"); });
-    expect(screen.queryByText("Add credits to keep calling.")).toBeNull();
+    expect(screen.queryByText("Add credits to keep talking to agents.")).toBeNull();
     await act(async () => { data(bytes('{"code":"voice_limit","reason":"credits_low"}'), { identity: "agent-ceo" }, 0, "huddle.error"); });
-    expect(screen.getByText("Add credits to keep calling.")).toBeTruthy();
+    expect(screen.getByText("Add credits to keep talking to agents.")).toBeTruthy();
   });
 
   it("mute turns the mic off; leave disconnects and closes", async () => {

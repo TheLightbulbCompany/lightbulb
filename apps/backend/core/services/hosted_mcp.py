@@ -327,10 +327,16 @@ class _CurrentApp:
     async def __call__(self, scope, receive, send) -> None:
         if self.app is None:
             if scope["type"] == "http":
+                # This door is mounted at "/", so it also catches every path no router
+                # owns. Only MCP's own paths are "not running"; anything else is simply
+                # not a route, and must stay a 404 (removed-route tests assert that).
+                path = scope.get("path", "")
+                ours = path == "/mcp" or path.startswith(("/mcp/", "/.well-known/"))
+                status, body = (503, b"hosted MCP is not running") if ours else (404, b"Not Found")
                 await send(
-                    {"type": "http.response.start", "status": 503, "headers": [(b"content-type", b"text/plain")]}
+                    {"type": "http.response.start", "status": status, "headers": [(b"content-type", b"text/plain")]}
                 )
-                await send({"type": "http.response.body", "body": b"hosted MCP is not running"})
+                await send({"type": "http.response.body", "body": body})
             return
         await self.app(scope, receive, send)
 

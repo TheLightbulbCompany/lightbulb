@@ -49,7 +49,7 @@ import { logGroupPath } from "../table-names";
 // =============================================================================
 
 /**
- * Google Workspace site-verification token, per mail domain.
+ * Google site-verification tokens (Workspace, Search Console), per mail domain.
  *
  * A Route53 TXT record is a SET keyed by (name, type) and the apex record
  * below is published with `deleteExisting`, so a token missing from that
@@ -57,11 +57,16 @@ import { logGroupPath } from "../table-names";
  * Workspace. Keyed by domain so each apex carries its OWN token and can never
  * be handed the other domain's.
  */
-const GOOGLE_SITE_VERIFICATION: Record<string, string> = {
-  "thelightbulb.company":
+const GOOGLE_SITE_VERIFICATION: Record<string, string[]> = {
+  "thelightbulb.company": [
+    // Google Workspace.
     "google-site-verification=v-MtfFMuBP2VYDP5sIB3wVXTQU4SjimPoryr5oX6mQg",
-  "isol8.co":
+    // Search Console domain property (admin@thelightbulb.company).
+    "google-site-verification=Clg4oJdtZ_0J7pJRFmfJfkKr0KE8C9CVze8I7AIbaWU",
+  ],
+  "isol8.co": [
     "google-site-verification=4m6AkWYnaePsQsIyDL4eJlPEddQg2RF1_Hxl7EFDHr8",
+  ],
 };
 
 export interface SesInboundStackProps extends cdk.StackProps {
@@ -275,9 +280,7 @@ export class SesInboundStack extends cdk.Stack {
         deleteExisting: true,
         values: [
           "v=spf1 include:_spf.google.com include:amazonses.com ~all",
-          ...(GOOGLE_SITE_VERIFICATION[domain]
-            ? [GOOGLE_SITE_VERIFICATION[domain]]
-            : []),
+          ...(GOOGLE_SITE_VERIFICATION[domain] ?? []),
         ],
       });
 

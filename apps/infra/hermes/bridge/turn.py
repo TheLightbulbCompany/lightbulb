@@ -11,6 +11,7 @@ import logging
 import os
 import re
 import shutil
+import sqlite3
 import sys
 import tempfile
 import threading
@@ -100,31 +101,35 @@ def release_turn() -> None:
     _busy_add(-1)
 
 
-def _idle() -> bool:
+def _only_this_turn() -> bool:
+    """The calling turn is the last one live (its own count not yet dropped) and no delegation is."""
     from bridge import followups  # followups imports this module
     with _busy_lock:
-        return not _busy and not followups.busy()
+        return _busy == 1 and not followups.busy()
 
 
 def _curate_when_idle() -> None:
     """Run Hermes's skill curator once per idle period, after the last turn's save.
 
-    Called at the very end of every turn (after its save and its busy decrement). Nothing in the
-    bridge called the curator before, so agent-created skills were never marked stale or
-    archived. Cadence is Hermes's own: ``should_run_now`` gates on ``curator.interval_hours``
-    (7 days) and seeds ``skills/.curator_state`` on first sight (agent/curator.py:142-163); the
-    gateway polls it with no idle floor (gateway/run.py:4467-4470), which is what this does at
-    each idle moment. Never during a turn: each profile is curated under its profile lock, which
-    every turn takes (restore, ensure_profile) before it touches the profile, after checking that
-    no turn or delegation is live. ``synchronous=True`` keeps the report pass on this thread, where
-    the profile's HERMES_HOME scope is (a new thread would not inherit it). The seed and the run
-    both write the profile, so a changed state is saved -- an unsaved seed would re-seed on every
-    cold start and the curator would never come due.
+    Called at the very end of every turn, after its save but BEFORE its busy decrement, so the
+    microVM stays HealthyBusy and hold_turns refuses while the curator moves skills and saves: a
+    roll or recycle stopping the session mid-pass would let the SIGTERM save delete the old skill
+    paths and never upload the archived ones. Nothing in the bridge called the curator before, so
+    agent-created skills were never marked stale or archived. Cadence is Hermes's own:
+    ``should_run_now`` gates on ``curator.interval_hours`` (7 days) and seeds
+    ``skills/.curator_state`` on first sight (agent/curator.py:142-163); the gateway polls it with
+    no idle floor (gateway/run.py:4467-4470), which is what this does at each idle moment. Never
+    during a turn: each profile is curated under its profile lock, which every turn takes (restore,
+    ensure_profile) before it touches the profile, after checking that no other turn or delegation
+    is live. ``synchronous=True`` keeps the report pass on this thread, where the profile's
+    HERMES_HOME scope is (a new thread would not inherit it). The seed and the run both write the
+    profile, so a changed state is saved -- an unsaved seed would re-seed on every cold start and
+    the curator would never come due.
     ponytail: with ``curator.consolidate`` on (we never set it) the LLM pass would hold this
     profile's lock for minutes; turns for that agent would queue behind it."""
     global _curated_at
     with _busy_lock:
-        if _busy or _turns_admitted == _curated_at:
+        if _busy != 1 or _turns_admitted == _curated_at:
             return
         mark = _turns_admitted
     try:
@@ -133,7 +138,7 @@ def _curate_when_idle() -> None:
         return
     for agent_id in sorted(RESTORED):
         with sync.profile_lock(agent_id):
-            if not _idle():
+            if not _only_this_turn():
                 return  # a turn started; the last turn to finish tries again
             with _hermes_home_scope(agent_id):
                 before = curator.load_state()
@@ -147,12 +152,13 @@ def _curate_when_idle() -> None:
 
 
 def _end_turn() -> None:
-    """A turn's last step: drop its busy count, then curate if that left the microVM idle."""
-    _busy_add(-1)
+    """A turn's last step: curate if it is the last live turn, then drop its busy count."""
     try:
         _curate_when_idle()
     except Exception:  # noqa: BLE001 -- housekeeping must never fail a finished turn
         log.warning("curator pass failed", exc_info=True)
+    finally:
+        _busy_add(-1)
 
 
 # ---- run registry + abort (spec §5 "Run lifecycle"; §5 abort) -------------------------------
@@ -330,10 +336,11 @@ def _run_call(identity: dict, request: dict, frames: "CallFramePublisher") -> tu
                 if run_aborted(run_id):
                     return "aborted", None, "", dict(ZERO_USAGE)
                 try:
-                    result = agent.run_conversation(
+                    result = _run_conversation(
+                        agent, agent_id, session_key,
                         user_message=request["input"],
                         system_message=with_profile_agents_md(agent_id, request["instructions"]),
-                    ) or {}
+                    )
                     _post_turn.agent = agent
                 except Exception:
                     if run_aborted(run_id):
@@ -345,6 +352,8 @@ def _run_call(identity: dict, request: dict, frames: "CallFramePublisher") -> tu
     if run_aborted(run_id):
         return "aborted", None, "", usage
     reply = result.get("final_response") or ""
+    if result.get("interrupted") is True:  # not our abort (checked above): Hermes stopped it itself
+        return "error", INTERRUPTED, "", usage
     if result.get("failed") is True:
         return "error", _failed_kind(agent, result), "", usage
     if not result.get("api_calls"):
@@ -1827,6 +1836,12 @@ def _capture_api_errors(agent) -> None:
     agent._summarize_api_error = capture
 
 
+#: errorKind for a turn Hermes interrupted on its own (its turn-liveness watchdog, a lease it
+#: could not refresh or wait for) -- never posted as a reply: its text is partial or Hermes's
+#: own "Your message was not processed". The backend words it as a stalled agent.
+INTERRUPTED = "agent_stopped_responding"
+
+
 def _failed_kind(agent, result: dict) -> str:
     """Kind for a Hermes ``failed`` result; parks the quota detail for this thread's run.ended."""
     exc, summary = getattr(agent, "_lb_api_error", None) or (None, None)
@@ -2385,24 +2400,45 @@ def profile_toolsets() -> tuple[list[str] | None, list[str] | None]:
 # Hermes's gateway does (gateway/run_turn_runner.py:1087 passes `session_db=` to every agent). The
 # prompt is unchanged: room turns still pass the re-rendered room history, and the flush skips
 # those rows by identity (agent/session_persistence.py:187-210), so a run persists only its own
-# trigger, tool calls and reply. What turns on: session_search over past runs, insights, the
-# durable async-delegation ledger, and an exact memory-review cadence (_hydrate_memory_nudge).
+# trigger, tool calls and reply. What turns on: insights, the durable async-delegation ledger, a
+# memory-review cadence that also covers call and Paperclip turns (_hydrate_memory_nudge), and
+# session_search -- scoped by the lightbulb plugin to the current session's own lineage, because
+# one profile's state.db holds every room, DM, mail thread and call the agent is in.
+#
+# Known limit until Phase 2 passes the recorded transcript AS history: Hermes compacts a long
+# session in place (compression.in_place, default True) on the re-rendered room window, then
+# rewinds its last N rows on the assumption that they are the carried tail
+# (hermes_state_messages.py:605-616). Here they are the previous turns' replies, so a room
+# session's transcript is exact only up to its first compaction. compression.in_place: false
+# avoids that but is Hermes's legacy rotation path (config_defaults.py:623-628, "the
+# session-rotation bug cluster"), so it is not flipped here.
+
+#: Hermes's own default retention (hermes_state_maintenance.maybe_auto_prune_and_vacuum): an
+#: ENDED session whose last message is older than this is deleted, once a day at most.
+STATE_DB_RETENTION_DAYS = 90
 
 #: One shared SessionDB per agent profile for the life of the process, as the gateway holds one
 #: for its life. Never released: a release that reached refcount 0 would tear the connection
 #: down under Hermes's post-turn writers (title, token deltas). Restore never replaces state.db
 #: after the first acquire (_pull_changed_objects skips SQLite files), so no generation retires.
+#: None = recording stopped for this process after a state.db failure (_run_conversation).
 _session_dbs: dict[str, object] = {}
 _session_dbs_guard = threading.Lock()
 
 
 def _session_db(agent_id: str):
-    """The profile's shared SessionDB, or None (outside the Hermes image, or an unopenable file:
-    the turn then runs unrecorded, exactly as every turn did before Phase 1)."""
+    """The profile's shared SessionDB, or None (outside the Hermes image, an unopenable file, or
+    recording stopped: the turn then runs unrecorded, exactly as every turn did before Phase 1).
+
+    The first acquire runs Hermes's own retention pass, which the gateway runs at startup and
+    nothing else calls: it deletes sessions ended and inactive for STATE_DB_RETENTION_DAYS
+    (_end_unless_room ends every non-room session after its turn so it can match), and VACUUMs
+    when enough pages were freed. Throttled to once a day by a marker in state.db itself.
+    ponytail: room sessions are never ended, so a room's transcript (compacted rows included)
+    grows for as long as the room is used; Phase 2 bounds it (rotate or end idle room sessions)."""
     with _session_dbs_guard:
-        db = _session_dbs.get(agent_id)
-        if db is not None:
-            return db
+        if agent_id in _session_dbs:
+            return _session_dbs[agent_id]
         try:
             from hermes_state_registry import acquire
         except ImportError:
@@ -2412,7 +2448,90 @@ def _session_db(agent_id: str):
         except Exception:  # noqa: BLE001 -- a broken state.db must not cost the turn
             log.warning("state.db unavailable for %s; this turn is not recorded", agent_id, exc_info=True)
             return None
+        try:
+            log.info("state.db maintenance %s: %s", agent_id,
+                     db.maybe_auto_prune_and_vacuum(retention_days=STATE_DB_RETENTION_DAYS))
+        except Exception:  # noqa: BLE001 -- documented never-raises; belt for an older Hermes
+            log.warning("state.db maintenance failed for %s", agent_id, exc_info=True)
         return db
+
+
+#: Persistence causes that clear on their own (hermes_state_errors.classify_persistence_error):
+#: lock contention and lease/compression fencing. Any other cause -- a full or read-only disk,
+#: corruption, a replaced file -- would fail every later turn the same way.
+_TRANSIENT_PERSISTENCE = frozenset({"locked", "compression", "compression_closed", "turn_lease"})
+
+
+def _is_state_db_error(exc: BaseException) -> bool:
+    return isinstance(exc, sqlite3.Error) or type(exc).__name__ == "StateDbReplacedError"
+
+
+def _ran_tools(result: dict, history) -> bool:
+    def tools(messages) -> int:
+        return sum(1 for m in messages or () if isinstance(m, dict) and m.get("role") == "tool")
+    return tools(result.get("messages")) > tools(history)
+
+
+def _run_conversation(agent, agent_id: str, session_key: str, **kwargs) -> dict:
+    """``agent.run_conversation`` -- recorded in state.db when it can be, never failed by it.
+
+    With a session_db Hermes fails a turn whose transcript append fails, before that round's
+    tools run (agent/turn_tool_round.py:117-138: ``turn_exit_reason='session_persistence_failed'``),
+    and a state.db error in lease admission escapes run_conversation. Before Phase 1 the same turn
+    simply ran. So on either, the turn runs once more unrecorded -- the shape Hermes's own
+    background-review fork uses (``_session_db=None`` + ``_persist_disabled``, which also keeps
+    _get_session_db_for_recall from reopening the file). Not when a tool already ran: a re-run
+    would repeat its side effects, so that turn reports its failure. A non-transient cause also
+    stops recording for this agent until the next cold start restores state.db and tries again.
+    ponytail: a retried turn may re-stream interim text the first attempt already showed."""
+    try:
+        result = agent.run_conversation(**kwargs) or {}
+    except Exception as exc:
+        if getattr(agent, "_session_db", None) is None or not _is_state_db_error(exc):
+            raise
+        _stop_recording(agent_id, agent, _persistence_cause(exc))
+        return agent.run_conversation(**kwargs) or {}
+    if (result.get("turn_exit_reason") == "session_persistence_failed"
+            and getattr(agent, "_session_db", None) is not None
+            and not _ran_tools(result, kwargs.get("conversation_history"))):
+        _stop_recording(agent_id, agent, getattr(agent, "_last_persistence_error_cause", None))
+        return agent.run_conversation(**kwargs) or {}
+    _end_unless_room(agent, agent_id, session_key)
+    return result
+
+
+def _persistence_cause(exc: BaseException) -> str:
+    try:
+        from hermes_state import classify_persistence_error
+        return classify_persistence_error(exc)
+    except Exception:  # noqa: BLE001
+        return "unknown"
+
+
+def _stop_recording(agent_id: str, agent, cause) -> None:
+    if cause not in _TRANSIENT_PERSISTENCE:
+        with _session_dbs_guard:
+            _session_dbs[agent_id] = None
+    log.warning("state.db write failed for %s (%s); running the turn unrecorded%s", agent_id, cause,
+                "" if cause in _TRANSIENT_PERSISTENCE else " and not recording until the next cold start")
+    agent._session_db, agent._persist_disabled = None, True
+
+
+def _end_unless_room(agent, agent_id: str, session_key: str) -> None:
+    """End a mail thread's, call's, Paperclip run's or event's session after its turn.
+
+    Hermes prunes only ENDED sessions (hermes_state_maintenance.py:190), and only AIAgent.close()
+    ends one (run_agent.py:989-997) -- which a per-turn agent never reaches, so every session
+    stayed open forever. Ended with Hermes's own ``agent_close`` (a resumable reason): a later
+    turn on the same key appends to it as before, and prune ages a session by its LAST message,
+    so a live thread is never deleted. Room sessions stay open (see _session_db's ponytail)."""
+    db = getattr(agent, "_session_db", None)
+    if db is None or session_key.startswith(f"agent:{agent_id}:lightbulb:channel:"):
+        return
+    try:
+        db.end_session(agent.session_id, "agent_close")
+    except Exception:  # noqa: BLE001 -- retention bookkeeping must never fail a finished turn
+        log.warning("could not end session %s", agent.session_id, exc_info=True)
 
 
 def _session_tip(db, session_key: str) -> str:
@@ -2452,21 +2571,23 @@ logging.getLogger("agent.conversation_loop").addFilter(_DropClearedPromptWarning
 
 
 def _hydrate_memory_nudge(agent, db) -> None:
-    """Start the memory-review counter where this session's transcript says it is.
+    """Start the memory-review counter from this session's recorded user turns.
 
     Hermes counts user turns per session and spawns the background memory review every
     `memory.nudge_interval` (10) of them (agent/turn_context.py:627-635). A fresh agent per turn
     restarts at 0 and is only re-hydrated from conversation_history (turn_context.py:619-624):
     from the room window's user rows for a room turn (pseudo-random), and never for a call or
-    Paperclip turn (no history: the review never fired). The persisted transcript is the real
-    count. A room turn whose count is a multiple of the interval leaves 0 here, and Hermes then
-    hydrates from the room window as before -- Phase 2 (the transcript AS history) removes that.
-    ponytail: reads the tip's rows per turn; a counter in session metadata if this shows up."""
+    Paperclip turn (no history: the review never fired). The recorded transcript is a better
+    count, not an exact one: after an in-place compaction a room session's active rows are the
+    compacted room window (see the limit above). A room turn whose count is a multiple of the
+    interval leaves 0 here, and Hermes then hydrates from the room window as before. One indexed
+    COUNT (idx_messages_session_active), never the rows themselves."""
     interval = int(getattr(agent, "_memory_nudge_interval", 0) or 0)
     if interval <= 0:
         return
     try:
-        prior = sum(1 for m in db.get_messages(agent.session_id) if m.get("role") == "user")
+        prior = int(db._read_one("SELECT COUNT(*) FROM messages WHERE session_id = ? AND role = 'user' "
+                                 "AND active = 1", (agent.session_id,))[0])
     except Exception:  # noqa: BLE001
         log.warning("memory nudge hydration failed", exc_info=True)
         return
@@ -2612,23 +2733,25 @@ def _run_turn_in(agent_id: str, body: dict, frames, base: Path) -> tuple[str, st
                     if queued_steers:
                         turn_text = f"{turn_text}\n{queued_steers}"
                     system = with_profile_agents_md(agent_id, system_prompt(body, agent_id, media=current_media))
-                    result = agent.run_conversation(
+                    result = _run_conversation(
+                        agent, agent_id, session_key,
                         user_message=_message_content(
                             turn_text,
                             images.get((body.get("message") or {}).get("messageId"), []),
                         ),
                         system_message=system,
                         conversation_history=_history(body, agent_id, images) or None,
-                    ) or {}
+                    )
                     # A follow-up that arrived too late to steer is answered in this same run,
                     # the way Hermes's own gateway delivers a leftover steer as the next turn.
                     replies = []
                     while not result.get("failed") and (pending := settle_steers(run_id, agent, result.get("pending_steer"))):
                         replies.append(result.get("final_response") or "")
-                        result = agent.run_conversation(
+                        result = _run_conversation(
+                            agent, agent_id, session_key,
                             user_message=pending, system_message=system,
                             conversation_history=result.get("messages") or None,
-                        ) or {}
+                        )
                     if replies:
                         result["final_response"] = "\n\n".join(r for r in (*replies, result.get("final_response")) if r)
                 finally:
@@ -2647,6 +2770,8 @@ def _run_turn_in(agent_id: str, body: dict, frames, base: Path) -> tuple[str, st
              "cacheReadTokens": int(getattr(agent, "session_cache_read_tokens", 0) or 0),
              "cacheWriteTokens": int(getattr(agent, "session_cache_write_tokens", 0) or 0)}
     reply = result.get("final_response") or ""
+    if result.get("interrupted") is True:  # not our abort (checked above): Hermes stopped it itself
+        return "error", INTERRUPTED, "", usage
     if result.get("failed") is True:
         return "error", _failed_kind(agent, result), "", usage
     if not result.get("api_calls"):  # Hermes answers a dead model with apologetic prose; never post it
@@ -2695,10 +2820,11 @@ def _run_native_paperclip(identity: dict, request: dict) -> tuple[str, str | Non
             if paperclip_run_aborted(run_id):
                 return "cancelled", None, "", dict(ZERO_USAGE)
             try:
-                result = agent.run_conversation(
+                result = _run_conversation(
+                    agent, agent_id, session_id,
                     user_message=request["input"],
                     system_message=with_profile_agents_md(agent_id, request["instructions"]),
-                ) or {}
+                )
                 _post_turn.agent = agent
             except Exception:
                 if paperclip_run_aborted(run_id):
@@ -2710,6 +2836,8 @@ def _run_native_paperclip(identity: dict, request: dict) -> tuple[str, str | Non
     if paperclip_run_aborted(run_id):
         return "cancelled", None, "", usage
     reply = result.get("final_response") or ""
+    if result.get("interrupted") is True:  # not our stop (checked above): Hermes stopped it itself
+        return "failed", INTERRUPTED, "", usage
     if result.get("failed") is True:
         return "failed", _failed_kind(agent, result), "", usage
     if not result.get("api_calls"):

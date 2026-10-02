@@ -241,9 +241,74 @@ def _log_memory_full(tool_name: str = "", result=None, **_kw) -> None:
         logger.warning("hermes file memory full, write refused (%s)", usage)
 
 
+# ---- session_search: this conversation's own history only ------------------------------------
+# One agent profile's state.db records every room, DM, group DM, mail thread, call and Paperclip
+# run that agent is in, and Hermes's session_search reads all of it -- plus any other agent's
+# state.db through `profile=` (tools/session_search_tool.py:329-339, 472-505). Anyone who can talk
+# to the agent anywhere could have it recite a DM they are not in, or a room they were removed
+# from (around the deliveryKey rotation that cuts their live access). Hermes has no option for
+# this, so the plugin narrows the tool to the lineage of the session it is called from: the
+# room's own compacted or compression-split history (Hermes already hides the live part, which is
+# in context). Cross-conversation recall needs a product ruling first.
+RECALL_SCOPE = ("In Lightbulb, session_search reaches only this conversation's own earlier "
+                "history. Other rooms, DMs, calls, mail threads and other agents' sessions are "
+                "private to the people in them.")
+
+
+class _LineageDB:
+    """A SessionDB whose FTS and title lookups answer only from one lineage."""
+
+    def __init__(self, db, root: str, lineage) -> None:
+        self._db, self._root, self._lineage = db, root, lineage
+
+    def __getattr__(self, name):
+        return getattr(self._db, name)
+
+    def search_messages(self, *args, **kwargs):
+        return [r for r in self._db.search_messages(*args, **kwargs)
+                if self._lineage(self._db, r["session_id"]) == self._root]
+
+    def resolve_session_by_title(self, title):
+        sid = self._db.resolve_session_by_title(title)
+        return sid if sid and self._lineage(self._db, sid) == self._root else None
+
+
+def _scope_session_search() -> None:
+    """Replace Hermes's session_search function in place. Both of its callers look it up at
+    call time: the inline executor (agent/inline_tool_executors.py `_call_tool`, getattr on the
+    module) and the registry handler (a lambda over the module global)."""
+    try:
+        from tools import session_search_tool as tool
+    except ImportError:  # outside the Hermes image
+        return
+    hermes_search = tool.session_search
+    if getattr(hermes_search, "lightbulb_scoped", False):
+        return
+
+    def session_search(query="", role_filter=None, limit=3, db=None, current_session_id=None,
+                       session_id=None, around_message_id=None, window=5, sort=None, profile=None,
+                       detail="adaptive"):
+        session_id = str(session_id).strip() if session_id else None
+        if (db is None or not current_session_id or (profile and str(profile).strip())
+                or (session_id and "/" in session_id) or not (str(query or "").strip() or session_id)):
+            return tool.tool_error(RECALL_SCOPE, success=False)  # browse lists every conversation
+        root = tool._resolve_lineage(db, current_session_id)
+        if session_id and tool._resolve_lineage(db, session_id) != root:
+            return tool.tool_error(RECALL_SCOPE, success=False)
+        return hermes_search(query=query, role_filter=role_filter, limit=limit,
+                             db=_LineageDB(db, root, tool._resolve_lineage),
+                             current_session_id=current_session_id, session_id=session_id,
+                             around_message_id=around_message_id, window=window, sort=sort,
+                             profile=None, detail=detail)
+
+    session_search.lightbulb_scoped = True
+    tool.session_search = session_search
+
+
 def register(ctx) -> None:
     """Register all Lightbulb tools and redaction patterns with the Hermes context."""
     _register_redaction_default()
+    _scope_session_search()
     ctx.register_hook("pre_tool_call", browser_control.pre_tool_call)
     ctx.register_hook("post_tool_call", browser_control.post_tool_call)
     ctx.register_hook("post_tool_call", _log_memory_full)

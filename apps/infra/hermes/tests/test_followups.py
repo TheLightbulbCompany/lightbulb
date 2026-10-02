@@ -356,13 +356,15 @@ def test_a_hung_review_is_abandoned_at_the_ceiling():
 
 # ---- F: SIGTERM ------------------------------------------------------------------------------
 def test_sigterm_saves_every_restored_profile_and_root_auth_then_exits(monkeypatch):
+    """Every agent's ordinary files and root auth before any SQLite snapshot: one agent's big
+    state.db must not spend the budget the next agent's work files needed."""
     saved, exits = [], []
     turn.RESTORED.update({"ceo", "eng"})
-    monkeypatch.setattr(sync, "save_profile", lambda agent_id: saved.append(agent_id))
+    monkeypatch.setattr(sync, "save_profile", lambda agent_id, sqlite=True: saved.append((agent_id, sqlite)))
     monkeypatch.setattr(sync, "save_root_auth", lambda: saved.append("root"))
     monkeypatch.setattr(server.os, "_exit", exits.append)
     server._save_on_sigterm(15, None)
-    assert sorted(saved) == ["ceo", "eng", "root"]
+    assert saved == [("ceo", False), ("eng", False), "root", ("ceo", True), ("eng", True)]
     assert exits == [143]
 
 

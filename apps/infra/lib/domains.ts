@@ -90,6 +90,13 @@ export const DEV_ROOT_DOMAIN = "thelightbulb.company";
  * both old exports had no importers and both certificates were `InUse=False`
  * when it was cleared the same day.
  *
+ * ponytail: setting this constant is NOT enough for the next move. DnsStack
+ * pins the old certificate under the logical id `ProductWildcardCert`, but
+ * today's certificate is `RootWildcardCert`. Before the next move, change
+ * DnsStack so the pinned (legacy) certificate keeps whatever id the current
+ * one has and the new one gets a fresh id; otherwise the current certificate
+ * is replaced in place and its export blocks the deploy.
+ *
  * NOT a statement about that domain's hosted zone, which stays: flickmeon.ai is
  * the launch-competition site (see LAUNCH_DOMAIN).
  */

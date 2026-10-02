@@ -238,6 +238,17 @@ fn send_auth_token(
     if let Ok(mut current) = state.current_jwt.write() {
         *current = token.clone();
     }
+    // Local sharing can restore before any token exists; the first token of a
+    // launch re-asks /desktop/pair for its relay door (no-op once answered).
+    {
+        let app = app.clone();
+        tauri::async_runtime::spawn(async move {
+            let controller = app.state::<local_sessions::enrollment::Controller>();
+            if let Err(e) = controller.refresh_relay(&app).await {
+                log(&format!("[local-sessions] relay URL refresh failed: {e}"));
+            }
+        });
+    }
 
     let ws_url = option_env!("LIGHTBULB_WS_URL").unwrap_or("wss://bv-dev.thelightbulb.company/api/v1/gateway/ws");
     // Use an explicit "/" path before the query. tokio-tungstenite builds

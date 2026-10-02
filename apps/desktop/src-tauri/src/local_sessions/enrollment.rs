@@ -103,9 +103,96 @@ pub struct Controller {
     human: Mutex<Option<Option<String>>>,
     revision: AtomicU64,
     status: Arc<Mutex<String>>,
+    /// Set once `/desktop/pair` answered this launch; until then every new
+    /// sign-in token re-asks it for the relay door (`refresh_relay`).
+    relay_checked: AtomicBool,
+}
+
+/// The enrollment captured the relay door (`gatewayUrl`) once, at enable time,
+/// and the door moves with the product domain (flickmeon.ai ->
+/// thelightbulb.company stranded every enrolled Mac). Re-ask `/desktop/pair`
+/// -- the same idempotent re-pair the switches path sends, with the switches
+/// last granted -- and fall back to the last pair response on disk, so an
+/// offline launch keeps what it had. The flag says `/desktop/pair` answered.
+async fn current_gateway_url(app: &tauri::AppHandle, ask: bool) -> Option<(String, bool)> {
+    let data = app.path().app_data_dir().ok()?;
+    let pair = crate::pair_state::load(&data)?;
+    let jwt = app
+        .try_state::<crate::AuthState>()
+        .and_then(|s| s.current_jwt.read().ok().map(|j| j.clone()))
+        .unwrap_or_default();
+    // No recorded switches means the switches path re-pairs (and rewrites
+    // pair_state) on the next token; never re-pair with an implied grant here.
+    if ask && !jwt.is_empty() && pair.paired_permissions.is_some() {
+        let mac = crate::keychain::load_or_generate(crate::keychain::KeychainSlot::Mac, crate::KEYCHAIN_SERVICE);
+        let cli = crate::keychain::load_or_generate(crate::keychain::KeychainSlot::Cli, crate::KEYCHAIN_SERVICE);
+        if let (Ok(mac), Ok(cli)) = (mac, cli) {
+            let request = crate::pair_client::PairRequest {
+                tauri_mac_pub_key: mac.public_key_pem,
+                cli_pub_key: cli.public_key_pem,
+                permissions: pair.paired_permissions.clone(),
+            };
+            let asked = tokio::time::timeout(
+                std::time::Duration::from_secs(10),
+                crate::pair_client::pair(crate::LIGHTBULB_API_BASE, &jwt, &request),
+            )
+            .await;
+            match asked {
+                Ok(Ok(resp)) if resp.device_id_mac == pair.device_id_mac && resp.device_id_cli == pair.device_id_cli => {
+                    let fresh = crate::pair_state::PairState::from_pair_response(&resp, &pair.display_name, pair.paired_permissions.clone());
+                    let _ = crate::pair_state::save(&data, &fresh);
+                    return Some((fresh.gateway_url, true));
+                }
+                Ok(Ok(_)) => transport::relay_log("re-pair named other devices; relay URL kept"),
+                _ => transport::relay_log("/desktop/pair unreachable; relay URL kept"),
+            }
+        }
+    }
+    Some((pair.gateway_url, false))
+}
+
+/// Rewrite the persisted enrollment's relay door when it differs. True when it did.
+fn adopt_gateway_url(path: &Path, url: &str) -> Result<bool> {
+    let mut enrollment: Enrollment = private_read(path)?;
+    if enrollment.gateway_url == url {
+        return Ok(false);
+    }
+    enrollment.gateway_url = url.to_owned();
+    private_write(path, &enrollment)?;
+    Ok(true)
 }
 
 impl Controller {
+    /// Caller holds `mutation`. True when the enrollment's relay door changed.
+    async fn refresh_gateway_url(&self, app: &tauri::AppHandle, path: &Path) -> bool {
+        let ask = !self.relay_checked.load(Ordering::SeqCst);
+        let Some((url, answered)) = current_gateway_url(app, ask).await else {
+            return false;
+        };
+        if answered {
+            self.relay_checked.store(true, Ordering::SeqCst);
+        }
+        adopt_gateway_url(path, &url).unwrap_or(false)
+    }
+
+    /// From `send_auth_token`: the first token of a launch re-asks `/desktop/pair`
+    /// for the relay door (restore can run before any token exists), and a moved
+    /// door restarts the relay on it.
+    pub async fn refresh_relay(&self, app: &tauri::AppHandle) -> Result<()> {
+        if self.relay_checked.load(Ordering::SeqCst) {
+            return Ok(());
+        }
+        let changed = {
+            let _guard = self.mutation.lock().await;
+            let path = state_dir(app)?.join("enrollment.json");
+            path.try_exists().unwrap_or(false) && self.refresh_gateway_url(app, &path).await
+        };
+        if changed {
+            self.restore(app).await?;
+        }
+        Ok(())
+    }
+
     fn stop(&self) {
         if let Ok(mut running) = self.running.lock() {
             if let Some(run) = running.take() {
@@ -252,6 +339,7 @@ impl Controller {
         if !path.try_exists().map_err(|_| "sharing state unavailable")? {
             return Ok(());
         }
+        self.refresh_gateway_url(app, &path).await;
         let mut enrollment: Enrollment = private_read(&path)?;
         enrollment.authenticate(
             self.human
@@ -727,8 +815,16 @@ pub async fn local_sessions_repair(
     {
         return Err("Enable local-session sharing first".into());
     }
+    // Retry also re-asks `/desktop/pair` for the relay door and, when it moved,
+    // restarts the relay on the new one.
+    state.relay_checked.store(false, Ordering::SeqCst);
+    let moved = state.refresh_gateway_url(&app, &path).await;
     let notes = reassert(&dir);
     *state.status.lock().map_err(|_| "sharing state unavailable")? = retried(&notes);
+    drop(_guard);
+    if moved {
+        state.restore(&app).await?;
+    }
     Ok(notes)
 }
 
@@ -1489,6 +1585,20 @@ mod tests {
             .unwrap()
             .file_type()
             .is_symlink());
+    }
+
+    #[test]
+    fn local_sessions_stale_relay_url_is_rewritten_to_the_pair_response() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("enrollment.json");
+        let mut stale = candidate();
+        stale.gateway_url = "wss://ws.flickmeon.ai".into();
+        private_write(&path, &stale).unwrap();
+        assert!(adopt_gateway_url(&path, "wss://ws.thelightbulb.company").unwrap());
+        let read: Enrollment = private_read(&path).unwrap();
+        assert_eq!(read.gateway_url, "wss://ws.thelightbulb.company");
+        assert_eq!(read.server_revision, stale.server_revision);
+        assert!(!adopt_gateway_url(&path, "wss://ws.thelightbulb.company").unwrap());
     }
 
     #[test]

@@ -10,7 +10,7 @@ async fn pair_sends_clerk_jwt_and_parses_response() {
         .and(header("authorization", "Bearer test_jwt"))
         .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
             "gatewayUrl": "wss://ws-dev.isol8.co",
-            "relayUrl": "wss://bv-dev.flickmeon.ai/api/v1/gateway/ws",
+            "relayUrl": "wss://bv-dev.thelightbulb.company/api/v1/gateway/ws",
             "gatewayToken": "tok_xyz",
             "ownerId": "org_test",
             "deviceIdMac": "dev_mac_hash",
@@ -28,7 +28,7 @@ async fn pair_sends_clerk_jwt_and_parses_response() {
     };
     let resp: PairResponse = pair(&server.uri(), "test_jwt", &req).await.unwrap();
     assert_eq!(resp.gateway_url, "wss://ws-dev.isol8.co");
-    assert_eq!(resp.relay_url, "wss://bv-dev.flickmeon.ai/api/v1/gateway/ws");
+    assert_eq!(resp.relay_url, "wss://bv-dev.thelightbulb.company/api/v1/gateway/ws");
     assert_eq!(resp.gateway_token, "tok_xyz");
     assert_eq!(resp.owner_id, "org_test");
     assert_eq!(resp.device_id_mac, "dev_mac_hash");

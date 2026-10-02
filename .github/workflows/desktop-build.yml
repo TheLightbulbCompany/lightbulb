@@ -118,8 +118,8 @@ jobs:
     - name: Patch tauri.conf.json for dev
       run: |-
         TAURI_CFG=apps/desktop/src-tauri/tauri.conf.json
-        jq --arg url "https://dev.flickmeon.ai/chat" \
-           --arg updateUrl "https://dev.flickmeon.ai/api/desktop/update/{{target}}/{{current_version}}?x-vercel-protection-bypass=${{ secrets.VERCEL_AUTOMATION_BYPASS_SECRET }}&x-vercel-set-bypass-cookie=true" \
+        jq --arg url "https://dev.thelightbulb.company/chat" \
+           --arg updateUrl "https://dev.thelightbulb.company/api/desktop/update/{{target}}/{{current_version}}?x-vercel-protection-bypass=${{ secrets.VERCEL_AUTOMATION_BYPASS_SECRET }}&x-vercel-set-bypass-cookie=true" \
            --arg version "0.4.${{ github.run_number }}" '
           .version = $version |
           .bundle.targets = ["app"] |
@@ -228,12 +228,12 @@ jobs:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
         TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-        LIGHTBULB_CALLBACK_URL: https://dev.flickmeon.ai/auth/desktop-callback
+        LIGHTBULB_CALLBACK_URL: https://dev.thelightbulb.company/auth/desktop-callback
         # Compile-time targets for the native node-host + pairing client.
         # These default to dev in lib.rs, but set them explicitly so the
         # dev/prod split is visible here and can't silently regress.
-        LIGHTBULB_API_BASE: https://api-dev.flickmeon.ai
-        LIGHTBULB_WS_URL: wss://bv-dev.flickmeon.ai/api/v1/gateway/ws
+        LIGHTBULB_API_BASE: https://api-dev.thelightbulb.company
+        LIGHTBULB_WS_URL: wss://bv-dev.thelightbulb.company/api/v1/gateway/ws
     - name: Build, sign + notarize DMG (headless)
       run: |-
         set -euo pipefail
@@ -321,8 +321,8 @@ jobs:
         # dead first-choice endpoint only slows the update check down. Desktop
         # apps installed before the cutover cannot self-update and need a
         # manual reinstall; that is accepted (the install base is internal).
-        jq --arg url "https://flickmeon.ai/chat" \
-           --arg updateUrl "https://flickmeon.ai/api/desktop/update/{{target}}/{{current_version}}" \
+        jq --arg url "https://thelightbulb.company/chat" \
+           --arg updateUrl "https://thelightbulb.company/api/desktop/update/{{target}}/{{current_version}}" \
            --arg version "0.4.${{ github.run_number }}" '
           .version = $version |
           .bundle.targets = ["app"] |
@@ -431,13 +431,13 @@ jobs:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
         TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-        LIGHTBULB_CALLBACK_URL: https://flickmeon.ai/auth/desktop-callback
+        LIGHTBULB_CALLBACK_URL: https://thelightbulb.company/auth/desktop-callback
         # Point the native node-host + pairing client at PROD. Without these
         # the compile-time defaults in lib.rs fall back to dev, so the prod
         # app's "computer access" half pairs against dev while the chat UI +
         # Friday run on prod — they never connect.
-        LIGHTBULB_API_BASE: https://api.flickmeon.ai
-        LIGHTBULB_WS_URL: wss://bv.flickmeon.ai/api/v1/gateway/ws
+        LIGHTBULB_API_BASE: https://api.thelightbulb.company
+        LIGHTBULB_WS_URL: wss://bv.thelightbulb.company/api/v1/gateway/ws
     - name: Build, sign + notarize DMG (headless)
       run: |-
         set -euo pipefail

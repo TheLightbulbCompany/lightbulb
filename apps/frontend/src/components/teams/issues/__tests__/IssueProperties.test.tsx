@@ -1,7 +1,8 @@
 import { describe, it, expect, vi } from "vitest";
 import { render, screen, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { IssueProperties } from "@/components/teams/issues/IssueProperties";
-import type { Issue } from "@/components/teams/shared/types";
+import type { CompanyAgent, Issue } from "@/components/teams/shared/types";
 
 // IssueProperties' Parent/Sub-tasks rows and the IssueRelations block all read
 // through useTeamsApi().read. A path-routing mock returns the right payload per
@@ -183,5 +184,106 @@ describe("IssueProperties monitor row", () => {
   it("still reads 'Not scheduled' when no monitor was ever set", () => {
     renderProperties();
     expect(within(monitorRow()).getByText("Not scheduled")).toBeInTheDocument();
+  });
+});
+
+describe("IssueProperties watchdog row", () => {
+  const AGENTS = [
+    { id: "agent-1", name: "Atlas" },
+    { id: "agent-2", name: "Friday" },
+  ] as CompanyAgent[];
+
+  function renderWatchdog(
+    overrides: Partial<Issue>,
+    handlers: {
+      onWatchdogSave?: (w: { agentId: string; instructions: string | null }) => Promise<void>;
+      onWatchdogRemove?: () => Promise<void>;
+    },
+  ) {
+    return render(
+      <IssueProperties
+        issue={{ ...BASE_ISSUE, ...overrides }}
+        agents={AGENTS}
+        onStatusChange={noop}
+        onPriorityChange={noop}
+        onAssigneeChange={noop}
+        onProjectChange={noop}
+        onBlockedByChange={noop}
+        {...handlers}
+      />,
+    );
+  }
+
+  it("saves the picked agent and trimmed instructions", async () => {
+    const user = userEvent.setup();
+    const onWatchdogSave = vi.fn(() => Promise.resolve());
+    renderWatchdog({}, { onWatchdogSave });
+
+    await user.click(screen.getByRole("button", { name: "None" }));
+    await user.selectOptions(screen.getByLabelText("Watchdog agent"), "agent-2");
+    await user.type(screen.getByLabelText(/Instructions/), "  Resume the release check. ");
+    await user.click(screen.getByRole("button", { name: "Set watchdog" }));
+
+    expect(onWatchdogSave).toHaveBeenCalledWith({
+      agentId: "agent-2",
+      instructions: "Resume the release check.",
+    });
+  });
+
+  it("shows the armed watchdog and removes it", async () => {
+    const user = userEvent.setup();
+    const onWatchdogRemove = vi.fn(() => Promise.resolve());
+    renderWatchdog(
+      {
+        watchdog: {
+          id: "wd-1",
+          issueId: "iss_42",
+          watchdogAgentId: "agent-1",
+          instructions: "Chase the vendor",
+          status: "active",
+        },
+      },
+      { onWatchdogSave: vi.fn(() => Promise.resolve()), onWatchdogRemove },
+    );
+
+    await user.click(screen.getByRole("button", { name: /Atlas.*Chase the vendor/ }));
+    await user.click(screen.getByRole("button", { name: "Remove" }));
+
+    expect(onWatchdogRemove).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps a rejected save in the editor with upstream's reason", async () => {
+    const user = userEvent.setup();
+    const onWatchdogSave = vi.fn(() => Promise.reject(new Error("Agent is not invokable")));
+    renderWatchdog({}, { onWatchdogSave });
+
+    await user.click(screen.getByRole("button", { name: "None" }));
+    await user.selectOptions(screen.getByLabelText("Watchdog agent"), "agent-1");
+    await user.click(screen.getByRole("button", { name: "Set watchdog" }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("Agent is not invokable");
+  });
+});
+
+describe("IssueProperties work mode row", () => {
+  it("patches the mode picked from the menu", async () => {
+    const user = userEvent.setup();
+    const onWorkModeChange = vi.fn();
+    render(
+      <IssueProperties
+        issue={{ ...BASE_ISSUE, workMode: "standard" }}
+        onStatusChange={noop}
+        onPriorityChange={noop}
+        onAssigneeChange={noop}
+        onProjectChange={noop}
+        onBlockedByChange={noop}
+        onWorkModeChange={onWorkModeChange}
+      />,
+    );
+
+    await user.click(screen.getByRole("button", { name: "Auto mode" }));
+    await user.click(screen.getByRole("button", { name: "Plan mode" }));
+
+    expect(onWorkModeChange).toHaveBeenCalledWith("planning");
   });
 });

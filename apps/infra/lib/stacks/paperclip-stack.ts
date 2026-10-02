@@ -461,6 +461,10 @@ export class PaperclipStack extends cdk.Stack {
         // (409 built_in_agent_undeletable), so not creating them is the
         // only path. Inert on images older than isol8.5 (unread env).
         PAPERCLIP_SKIP_BUILTIN_AGENTS: "1",
+        // The server sends usage telemetry to Paperclip unless this is exactly
+        // "1" (fork packages/shared/src/telemetry/config.ts
+        // resolveTelemetryConfig). A customer fleet must not report upstream.
+        PAPERCLIP_TELEMETRY_DISABLED: "1",
         PAPERCLIP_DEPLOYMENT_EXPOSURE: "public",
         // Receiver URL for the bundled isol8.notifications plugin (worker env
         // passthrough in the fork's buildPluginWorkerEnv; the token half is a

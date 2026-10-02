@@ -690,3 +690,25 @@ async def test_live_without_at_a_reask_none_stands(live_env):
     assert all("createdAt" not in r for r in rows)
     rows = vc._transcript_history("Pat: a\nPat: b", LIVE_MEMBERS, "c", at=[9, 100, 160])  # aligned to the end
     assert [r["createdAt"] for r in rows] == ["1970-01-01T00:01:40+00:00", "1970-01-01T00:02:40+00:00"]
+
+
+@pytest.mark.asyncio
+async def test_prewake_warms_every_room_agents_profile_after_the_health_wake(monkeypatch):
+    """Going Live: one health RPC wakes the runtime, then profile.warm per agent pulls each profile
+    off the bridge's request thread, so the first summon's restore (23 s cold) is already done."""
+    calls = []
+
+    async def fake_call(owner_id, method, params=None, **kwargs):
+        calls.append((owner_id, method, params))
+        return {"ok": True}
+
+    tasks = []
+    monkeypatch.setattr(vc.container_rpc, "call", fake_call)
+    monkeypatch.setattr(vc, "_fire", lambda coro: tasks.append(asyncio.ensure_future(coro)))
+    vc.prewake_owner("org_a", [{"id": "a1", "name": "Pulse"}, {"id": "a2", "name": "Friday"}])
+    await asyncio.gather(*tasks)
+    assert calls == [
+        ("org_a", "health", None),
+        ("org_a", "profile.warm", {"agentId": "a1"}),
+        ("org_a", "profile.warm", {"agentId": "a2"}),
+    ]

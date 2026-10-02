@@ -2109,6 +2109,43 @@ class PaperclipAdminClient:
             session_cookie=session_cookie,
         )
 
+    async def upsert_issue_watchdog(
+        self,
+        *,
+        session_cookie: str,
+        issue_id: str,
+        body: dict,
+    ) -> dict:
+        """Arm (or re-point) the issue's task watchdog. Body whitelisted by the
+        BFF (``UpsertIssueWatchdogBody``).
+
+        Maps to ``PUT /api/issues/{id}/watchdog`` → the watchdog. One per
+        issue; upstream 409s when the named agent is not invokable. This is the
+        task watchdog (a named agent reviewing a quiet subtree), not the
+        run-silence watchdog on a run.
+        """
+        _status, watchdog = await self._put(
+            f"/api/issues/{issue_id}/watchdog",
+            json=body,
+            session_cookie=session_cookie,
+        )
+        return watchdog
+
+    async def delete_issue_watchdog(
+        self,
+        *,
+        session_cookie: str,
+        issue_id: str,
+    ) -> dict:
+        """Remove the issue's task watchdog.
+
+        Maps to ``DELETE /api/issues/{id}/watchdog`` → ``{ok: true}``.
+        """
+        return await self._delete(
+            f"/api/issues/{issue_id}/watchdog",
+            session_cookie=session_cookie,
+        )
+
     async def retry_scheduled_retry_now(
         self,
         *,
@@ -2335,6 +2372,89 @@ class PaperclipAdminClient:
             f"/api/companies/{company_id}/feedback-traces",
             session_cookie=session_cookie,
             params={"issueId": issue_id},
+        )
+
+    # ------------------------------------------------------------------
+    # Decisions (agent-proposed choices a board user answers)
+    #
+    # Decide / dismiss are board-only upstream and run the chosen option's
+    # effects AS the deciding user, so these always carry the caller's own
+    # session cookie — never the admin one.
+    # ------------------------------------------------------------------
+
+    async def get_decision(
+        self,
+        *,
+        session_cookie: str,
+        decision_id: str,
+    ) -> dict:
+        """Fetch one decision plus its per-effect ``executions``.
+
+        Maps to ``GET /api/decisions/{id}``.
+        """
+        return await self._get(
+            f"/api/decisions/{decision_id}",
+            session_cookie=session_cookie,
+        )
+
+    async def list_decisions(
+        self,
+        *,
+        session_cookie: str,
+        company_id: str,
+        status: str,
+        limit: Optional[int] = None,
+    ) -> list | dict:
+        """List a company's decisions in one status, newest first (upstream
+        defaults to 50 rows and caps ``limit`` at 100).
+
+        Maps to ``GET /api/companies/{companyId}/decisions?status=`` — the
+        only upstream read that annotates an open decision with
+        ``targetChanged`` (which target issues drifted since it was proposed).
+        """
+        params: dict[str, Any] = {"status": status}
+        if limit is not None:
+            params["limit"] = limit
+        return await self._get(
+            f"/api/companies/{company_id}/decisions",
+            session_cookie=session_cookie,
+            params=params,
+        )
+
+    async def decide_decision(
+        self,
+        *,
+        session_cookie: str,
+        decision_id: str,
+        body: dict,
+    ) -> dict:
+        """Pick an option on an open decision. Body whitelisted by the BFF
+        (``DecideDecisionBody``).
+
+        Maps to ``POST /api/decisions/{id}/decide`` → the decision plus its
+        ``executions``.
+        """
+        return await self._post(
+            f"/api/decisions/{decision_id}/decide",
+            json=body,
+            session_cookie=session_cookie,
+        )
+
+    async def dismiss_decision(
+        self,
+        *,
+        session_cookie: str,
+        decision_id: str,
+        body: dict,
+    ) -> dict:
+        """Dismiss an open decision without running any effect.
+
+        Maps to ``POST /api/decisions/{id}/dismiss``.
+        """
+        return await self._post(
+            f"/api/decisions/{decision_id}/dismiss",
+            json=body,
+            session_cookie=session_cookie,
         )
 
     # (The feedback-traces consent gate reads ``feedbackDataSharingEnabled``

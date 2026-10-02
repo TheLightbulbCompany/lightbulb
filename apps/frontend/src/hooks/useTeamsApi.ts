@@ -55,7 +55,7 @@ function isTeamsPath(path: unknown): path is string {
  * use this hook for both reads (SWR-cached) and writes (one-shot mutations).
  *
  * Usage:
- *   const { read, post, patch, del } = useTeamsApi();
+ *   const { read, post, put, patch, del } = useTeamsApi();
  *   const { data, isLoading, error, mutate } = read<AgentList>("/agents");
  *   await post("/agents", { name, role });
  *
@@ -170,6 +170,10 @@ export function useTeamsApi() {
     return (await api.patch(`/teams${path}`, body, TEAMS_API_OPTS)) as T;
   }
 
+  async function put<T = unknown>(path: string, body: unknown): Promise<T> {
+    return (await api.put(`/teams${path}`, body, TEAMS_API_OPTS)) as T;
+  }
+
   async function del<T = unknown>(path: string): Promise<T> {
     return (await api.del(`/teams${path}`, TEAMS_API_OPTS)) as T;
   }
@@ -188,7 +192,7 @@ export function useTeamsApi() {
     return api.downloadBlob(`/teams${path}`, TEAMS_API_OPTS);
   }
 
-  return { read: useRead, post, patch, del, upload, download, mutate, isCurrentScopeOrNonTeamsKey };
+  return { read: useRead, post, put, patch, del, upload, download, mutate, isCurrentScopeOrNonTeamsKey };
 }
 
 export type TeamsWorkspaceStatus =

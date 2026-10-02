@@ -254,5 +254,5 @@ it("shows per-provider setup read from disk and retries setup without re-enrolli
   await waitFor(() => expect(invoke).toHaveBeenCalledWith("local_sessions_repair"));
   expect(invoke.mock.calls.some(([command]) => command === "local_sessions_set")).toBe(false);
   expect(providerSetupLine("Codex", {cli:true,mcp:"configured",hooks:"configured"})).toBe("Codex — Serving lightbulb for new sessions");
-  expect(screen.getByText(/re-add the hosted server/)).toHaveTextContent("claude mcp add --transport http lightbulb https://api.flickmeon.ai/mcp");
+  expect(screen.getByText(/re-add the hosted server/)).toHaveTextContent("claude mcp add --transport http lightbulb https://api.thelightbulb.company/mcp");
 });

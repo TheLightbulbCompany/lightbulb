@@ -14,7 +14,7 @@ Owner decision 2026-10-02 ("the Claude Code session should post as itself"). Del
 | Where the client runs | Server entry | Who serves it | Author of a send | Approval |
 | --- | --- | --- | --- | --- |
 | Mac with the Lightbulb app, sharing enabled | `lightbulb` (stdio, installed by enrollment) | the local bridge (`lightbulb-desktop session-mcp`) | the attested session (`kind: system`, session id, "Claude Code · <title>") | owner approval card, as today |
-| Anywhere else | `lightbulb` (HTTP, `https://api.flickmeon.ai/mcp`) | the hosted MCP | a client identity (`kind: system`, id `mcp:<user_id>:<client>`, "Claude Code via <person>") | none; consented write scope |
+| Anywhere else | `lightbulb` (HTTP, `https://api.thelightbulb.company/mcp`) | the hosted MCP | a client identity (`kind: system`, id `mcp:<user_id>:<client>`, "Claude Code via <person>") | none; consented write scope |
 
 Enrollment replaces the `lightbulb_native_sessions` entry with `lightbulb`; if a `lightbulb` HTTP entry already exists in the user-scoped config, enrollment replaces it and says so in the setup status ("Mac bridge is serving `lightbulb`"). Disable restores nothing (the person re-adds the HTTP entry if they want it without the app); the setup copy says that.
 

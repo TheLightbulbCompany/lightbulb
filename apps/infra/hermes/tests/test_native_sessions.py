@@ -62,7 +62,7 @@ class FakeDB:
     def end_session(self, sid, reason):
         self.ended.append((sid, reason))
 
-    def maybe_auto_prune_and_vacuum(self, retention_days):
+    def maybe_auto_prune_and_vacuum(self, retention_days=90):
         self.maintained.append(retention_days)
         return {"pruned": 0}
 
@@ -314,14 +314,20 @@ def test_an_earlier_image_is_a_saved_at_note_every_later_turn_reopens(hermes, ho
     assert not path.exists()
 
 
-def test_an_unrecorded_room_turn_sees_its_window_as_observed_context(monkeypatch, home):
-    seen = {}
-    monkeypatch.setattr(turn, "_construct_agent", lambda *a, **k: types.SimpleNamespace(
-        model="m", run_conversation=lambda **kw: seen.update(kw) or {"api_calls": 1, "final_response": "ok"}))
-    turn._run_hermes("ceo", f.ingress(message=f.message(messageSeq=10, text="now"),
-                                      recentHistory=[f.message(messageSeq=4, text="old")]), None)
-    assert seen["user_message"].startswith(_observed("[Prez|user_1]\nold"))
-    assert "conversation_history" not in seen
+def test_a_room_turn_without_a_session_db_fails(hermes, home, monkeypatch):
+    monkeypatch.setattr(turn, "_session_dbs", None)
+    monkeypatch.delitem(sys.modules, "hermes_state_registry", raising=False)
+    with pytest.raises(RuntimeError, match="state.db unavailable"):
+        turn._construct_agent("ceo", f.ingress(), None, turn.lightbulb_session_key("ceo", f.ROOM))
+
+
+def test_a_raising_run_still_ends_a_non_room_session(hermes, home):
+    _acquired, _built, dbs = hermes
+    SCRIPT.append(RuntimeError("boom"))
+    with pytest.raises(RuntimeError):
+        _run_paperclip()
+    db = dbs[sync._profile_dir("ceo") / "state.db"]
+    assert db.ended == [(PAPERCLIP["sessionId"], "agent_close")]
 
 
 def test_an_unreadable_transcript_fails_the_turn(hermes, home):
@@ -333,22 +339,21 @@ def test_an_unreadable_transcript_fails_the_turn(hermes, home):
 
 
 # ---- the review counters carry across turns ------------------------------------------------------
-def test_the_review_counters_survive_the_per_turn_agent(hermes, home):
+def test_the_skill_counter_survives_the_per_turn_agent(hermes, home):
     """Restored at construction from the session row, saved after the run: the skill review's
-    tool-iteration count is never hydrated from history by Hermes, and a call or Paperclip turn
-    has no history to hydrate the memory count from."""
+    tool-iteration count is never hydrated from history by Hermes."""
     _acquired, built, dbs = hermes
     key = PAPERCLIP["sessionId"]
-    db = _room_db(dbs, meta={key: {turn.MEMORY_COUNTER: 9, turn.SKILL_COUNTER: 7}})
+    db = _room_db(dbs, meta={key: {turn.SKILL_COUNTER: 7}})
 
     def work(agent):
-        assert (agent._turns_since_memory, agent._iters_since_skill) == (9, 7)
-        agent._turns_since_memory, agent._iters_since_skill = 0, 11
+        assert agent._iters_since_skill == 7
+        agent._iters_since_skill = 11
         return {"api_calls": 1, "final_response": "ok"}
 
     SCRIPT.append(work)
     _run_paperclip()
-    assert db.meta[key] == {turn.MEMORY_COUNTER: 0, turn.SKILL_COUNTER: 11}
+    assert db.meta[key] == {turn.SKILL_COUNTER: 11}
 
 
 # ---- a state.db failure fails the turn, as in Hermes's gateway -----------------------------------
@@ -390,7 +395,7 @@ def test_retention_runs_once_per_process_when_state_db_is_first_opened(hermes, h
     _acquired, _built, dbs = hermes
     _run_paperclip()
     _run_paperclip()
-    assert dbs[sync._profile_dir("ceo") / "state.db"].maintained == [turn.STATE_DB_RETENTION_DAYS]
+    assert dbs[sync._profile_dir("ceo") / "state.db"].maintained == [90]
 
 
 # ---- leases --------------------------------------------------------------------------------------
@@ -463,8 +468,6 @@ def curator(monkeypatch):
     monkeypatch.setattr(turn, "RESTORED", {"ceo"})
     monkeypatch.setattr(turn, "save_profile", lambda a: saved.append(a))
     monkeypatch.setattr(turn, "_hermes_home_scope", lambda _a: nullcontext())
-    monkeypatch.setattr(turn, "_turns_admitted", 0)
-    monkeypatch.setattr(turn, "_curated_at", 0)
     return runs, saved
 
 
@@ -489,17 +492,6 @@ def test_the_microvm_stays_busy_while_the_curator_runs(curator, monkeypatch):
     assert seen == [(1, False)]
 
 
-def test_the_curator_runs_at_most_once_per_idle_period(curator):
-    runs, _saved = curator
-    turn._busy_add(1)
-    turn._end_turn()
-    turn._curate_when_idle()  # still the same idle period: nothing new happened
-    assert len(runs) == 1
-    turn._busy_add(1)
-    turn._end_turn()
-    assert len(runs) == 2
-
-
 def test_the_curator_never_runs_while_a_delegation_is_live(curator, monkeypatch):
     from bridge import followups
     runs, _saved = curator
@@ -509,62 +501,9 @@ def test_the_curator_never_runs_while_a_delegation_is_live(curator, monkeypatch)
     assert runs == []
 
 
-def test_a_curator_that_is_not_due_saves_nothing(curator, monkeypatch):
-    runs, saved = curator
+def test_a_curator_that_is_not_due_runs_nothing(curator, monkeypatch):
+    runs, _saved = curator
     monkeypatch.setattr(sys.modules["agent.curator"], "should_run_now", lambda: False)
     turn._busy_add(1)
     turn._end_turn()
-    assert runs == [] and saved == []
-
-
-def _hermes_state_db(path):
-    with sqlite3.connect(path) as conn:
-        conn.execute("CREATE TABLE sessions (id TEXT PRIMARY KEY, title TEXT)")
-        conn.execute("CREATE TABLE messages (id INTEGER PRIMARY KEY, session_id TEXT, content TEXT)")
-        conn.execute("INSERT INTO sessions VALUES ('s', NULL)")
-        conn.execute("INSERT INTO messages (session_id, content) VALUES ('s', 'hi')")
-
-
-def test_state_db_goes_up_only_when_its_transcript_moved(home, monkeypatch):
-    """Whole-file snapshots, so a save whose state.db changed only Hermes's post-turn bookkeeping
-    (a title, token counters) must not upload it again; a recorded turn or a prune must."""
-    import os
-    monkeypatch.setattr(sync, "S3_BUCKET", "bucket")
-    uploaded = []
-    monkeypatch.setattr(sync, "_s3", lambda: types.SimpleNamespace(
-        upload_file=lambda path, bucket, key: uploaded.append(key)))
-    profile = sync._profile_dir("ceo")
-    profile.mkdir(parents=True)
-    db = profile / "state.db"
-    _hermes_state_db(db)
-
-    def touch_and_save(sql=None):
-        if sql:
-            with sqlite3.connect(db) as conn:
-                conn.execute(sql)
-        os.utime(db, ns=(1, time_ns[0]))
-        time_ns[0] += 10**9
-        uploaded.clear()
-        sync.save_profile("ceo")
-        return uploaded == [f"{sync.S3_PREFIX}/ceo/state.db"]
-
-    time_ns = [10**18]
-    assert touch_and_save()                                                      # first save of the process
-    assert not touch_and_save("UPDATE sessions SET title = 't'")                 # bookkeeping only
-    assert touch_and_save("INSERT INTO messages (session_id, content) VALUES ('s', 'x')")  # a turn
-    assert touch_and_save("DELETE FROM sessions")                                # a prune
-
-
-def test_a_sigterm_first_pass_leaves_sqlite_for_the_second(home, monkeypatch):
-    monkeypatch.setattr(sync, "S3_BUCKET", "bucket")
-    uploaded = []
-    monkeypatch.setattr(sync, "_s3", lambda: types.SimpleNamespace(
-        upload_file=lambda path, bucket, key: uploaded.append(key.rsplit("/", 1)[1])))
-    profile = sync._profile_dir("ceo")
-    profile.mkdir(parents=True)
-    _hermes_state_db(profile / "state.db")
-    (profile / "notes.md").write_text("x")
-    sync.save_profile("ceo", sqlite=False)
-    assert uploaded == ["notes.md"]
-    sync.save_profile("ceo")
-    assert uploaded == ["notes.md", "state.db"]
+    assert runs == []

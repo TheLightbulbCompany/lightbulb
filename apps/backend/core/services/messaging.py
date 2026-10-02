@@ -2872,9 +2872,11 @@ async def address(latest: dict, members: list[dict], *, history: Any = (), live:
             label = "not_a_name"  # domain knowledge, not a model call: our names are weekdays
         if label not in ("addressed", "relayed"):
             continue
-        # A name a person shares goes to the person unless the text opens "hey/ok <name>".
-        if c["agents"] and (not c["humans"] or (label == "addressed" and _opens_with(text, c["name"], strong=True))):
-            out["agents"] += [a for a in c["agents"] if a not in out["agents"]]
+        # A name several agents share addresses none of them (Jev picks among the listeners); a unique
+        # @handle still names one. A name a person shares goes to the person unless "hey/ok <name>".
+        agent = c["agents"][0] if len(c["agents"]) == 1 else None
+        if agent and (not c["humans"] or (label == "addressed" and _opens_with(text, c["name"], strong=True))):
+            out["agents"] += [agent] if agent not in out["agents"] else []
         elif label == "addressed":
             out["humans"] += c["humans"]
     put_metric("messaging.addressing.stage", dimensions={"path": out["path"], "surface": "live" if live else "chat"})

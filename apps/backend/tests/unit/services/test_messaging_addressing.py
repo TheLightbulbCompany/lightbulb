@@ -178,3 +178,14 @@ def test_the_old_routers_are_gone():
 
     assert not hasattr(jev, "pick_agent") and not hasattr(messaging, "_addressed_by_name")
     assert importlib.util.find_spec("core.services.voice_routing") is None
+
+
+async def test_a_name_several_agents_share_is_no_hard_address():
+    """Codex #3597: two agents named Max and "hey Max, ..." address neither; Jev picks among the
+    listeners. A unique @handle still names one."""
+    twin = {"kind": "agent", "id": "max-2", "displayName": "Max", "mentionHandle": "max-2"}
+    members = [MAX_AGENT, twin, FINANCE]
+    out, _ = await _address("hey Max, can you check the logs", members, _answers(["addressed"]))
+    assert out["agents"] == [] and out["humans"] == []
+    out, _ = await _address("@max-2 can you check the logs", members, _answers(["addressed"]))
+    assert out["agents"] == ["max-2"]

@@ -15,6 +15,7 @@ import { CEO_IDENTITY, useHuddle } from "./HuddleProvider";
 
 const LIGHTBULB = "Lightbulb";
 const TALK = `Talk to ${LIGHTBULB}`;
+const HAND = `${LIGHTBULB} has something; click to hear it`;
 const FACES = 3;
 const BARS = 5;
 const JOIN_TIMEOUT_MS = 45_000; // the worker joins in ~20 s; past this it isn't coming
@@ -34,17 +35,23 @@ function vizState(status: string | undefined, speaking: boolean, reduced: boolea
   return status === "listening" ? "listening" : "idle";
 }
 
-/** Lightbulb's audio. A click asks Lightbulb in (one talk_start, no hold); saying "Lightbulb, …" does the same. */
+/**
+ * Lightbulb's audio. A click asks Lightbulb in (one talk_start, no hold); saying "Lightbulb, …" does the same.
+ * A raised hand (`lightbulb.hand`, the worker's 15 s offer) means it has news or an answer; the same click hears it.
+ */
 function LightbulbBars({ participant, onTalk }: { participant: Participant; onTalk: () => void }) {
   const speaking = useIsSpeaking(participant);
   const { attributes } = useParticipantAttributes({ participant });
   const track = useTracks([Track.Source.Microphone]).find((t) => t.participant.identity === CEO_IDENTITY);
   const reduced = useReducedMotion();
+  const hand = attributes?.["lightbulb.hand"] === "1";
+  const label = hand ? HAND : TALK;
   return (
-    <button type="button" className="live-viz" aria-label={TALK} title={TALK} onClick={onTalk}
-      data-speaking={speaking ? "true" : undefined}>
+    <button type="button" className="live-viz" aria-label={label} title={label} onClick={onTalk}
+      data-speaking={speaking ? "true" : undefined} data-hand={hand ? "true" : undefined}>
       <BarVisualizer barCount={BARS} state={vizState(attributes?.["lightbulb.status"], speaking, reduced)}
         track={reduced ? undefined : track} options={{ minHeight: 20, maxHeight: 100 }} />
+      {hand && <span className="live-hand" aria-hidden="true">✋</span>}
     </button>
   );
 }

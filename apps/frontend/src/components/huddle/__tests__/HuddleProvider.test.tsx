@@ -85,6 +85,22 @@ it("clicking Lightbulb's bars sends talk_start to agent-ceo, once per click, and
   expect(methods()).toEqual(["talk_start", "talk_start"]);
 });
 
+it("a raised hand shows on Lightbulb's bars, and clicking it sends talk_start", async () => {
+  lk.state.attrs = { "lightbulb.status": "following", "lightbulb.hand": "1" };
+  await joinNow();
+  const hand = screen.getByRole("button", { name: "Lightbulb has something; click to hear it" });
+  expect(hand).toHaveAttribute("data-hand", "true");
+  expect(hand).toHaveTextContent("✋");
+  fireEvent.click(hand);
+  expect(methods()).toEqual(["talk_start"]);
+});
+
+it("no hand, no badge", async () => {
+  lk.state.attrs = { "lightbulb.hand": "" };
+  await joinNow();
+  expect(screen.getByRole("button", { name: "Talk to Lightbulb" })).not.toHaveTextContent("✋");
+});
+
 it("shows the plain-word message for a huddle.error, opening the details", async () => {
   await joinNow();
   act(() => lk.state.handlers.dataReceived(new TextEncoder().encode(JSON.stringify({ code: "voice_busy", reason: "x" })), { identity: "agent-ceo" }, undefined, "huddle.error"));

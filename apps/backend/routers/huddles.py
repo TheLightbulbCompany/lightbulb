@@ -9,13 +9,13 @@ import logging
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from core.auth import AuthContext, get_current_user, resolve_owner_id
 from core.config import settings
 from core.observability.metrics import put_metric
 from core.repositories import container_repo, messaging_repo
-from core.services import livekit_huddles, messaging, voice_calls
+from core.services import livekit_huddles, messaging, speak_gate, voice_calls
 from core.services.live_events import get_live_event_publisher
 from routers.messaging import _require_hook_token
 
@@ -24,6 +24,7 @@ router = APIRouter()
 
 _Id = Annotated[str, Field(min_length=1, max_length=128)]
 DISPATCH_DEDUPE_S = 40
+GATE_TRANSCRIPT_CHARS = 4_000
 
 
 def _problem(status: int, code: str) -> HTTPException:
@@ -84,6 +85,29 @@ class PresenceBody(BaseModel):
     roomToken: _Id
     userIds: list[_Id] = Field(max_length=128)
     version: int = Field(default=0, ge=0)  # monotonic per worker; a stale (reordered) snapshot is dropped
+
+
+class GateLine(BaseModel):
+    author: str = Field(min_length=1, max_length=128)
+    text: str = Field(min_length=1, max_length=1_000)
+
+
+class GateBody(BaseModel):
+    ownerId: _Id
+    roomToken: _Id
+    transcript: list[GateLine] = Field(default_factory=list, max_length=40)
+    people: list[Annotated[str, Field(max_length=128)]] = Field(default_factory=list, max_length=64)
+    lightbulbLastSaid: str | None = Field(default=None, max_length=1_000)
+    spokeSecondsAgo: int | None = Field(default=None, ge=0)
+    pendingNews: list[Annotated[str, Field(max_length=1_000)]] = Field(default_factory=list, max_length=5)
+    pauseMs: int = Field(default=0, ge=0, le=600_000)
+
+    @field_validator("transcript")
+    @classmethod
+    def _bounded(cls, lines: list[GateLine]) -> list[GateLine]:
+        if sum(len(line.text) for line in lines) > GATE_TRANSCRIPT_CHARS:
+            raise ValueError("transcript too long")
+        return lines
 
 
 class FramesBody(BaseModel):
@@ -190,6 +214,31 @@ async def presence(room_id: str, body: PresenceBody):
         messaging.make_live_event("room.huddle.changed", {"roomId": room_id, "userIds": body.userIds}, room_id=room_id),
     )
     return {"ok": True}
+
+
+@router.post("/internal/huddles/{room_id}/gate", dependencies=[_Worker])
+async def gate(room_id: str, body: GateBody):
+    """Live's proactive-speech gate: P(speak) at a pause. Jev runs here, with the gateway key the
+    worker never holds. Any failure answers silent; the worker speaks only at a high P."""
+    room_id = _room_id(room_id)
+    _require_room_token(body.roomToken, room_id, body.ownerId)
+    meta = await messaging_repo.get_room(room_id)
+    if not meta or meta.get("deletedAt") or meta.get("ownerId") != body.ownerId:
+        raise _problem(404, "room_not_found")
+    lightbulb = {
+        k: v
+        for k, v in (
+            ("lastSaid", body.lightbulbLastSaid),
+            ("spokeSecondsAgo", body.spokeSecondsAgo),
+            ("news", body.pendingNews),
+        )
+        if v not in (None, "", [])
+    }
+    state = speak_gate.build_state(
+        body.people, [(line.author, line.text) for line in body.transcript], lightbulb, pause_ms=body.pauseMs
+    )
+    p, kind = await speak_gate.decide(state)
+    return {"pSpeak": p, "kind": kind}
 
 
 @router.post("/internal/calls/{call_id}/frames")

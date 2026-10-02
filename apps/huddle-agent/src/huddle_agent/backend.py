@@ -27,9 +27,10 @@ class Backend:
             timeout=100,  # a turn POST waits on a cold workspace's invoke (backend budget: 90 s)
         )
 
-    async def _post(self, path: str, body: dict) -> dict:
+    async def _post(self, path: str, body: dict, timeout: float | None = None) -> dict:
+        kw = {"timeout": timeout} if timeout else {}
         try:
-            r = await self._http.post(path, json={**body, "ownerId": self._owner_id, "roomToken": self._room_token})
+            r = await self._http.post(path, json={**body, "ownerId": self._owner_id, "roomToken": self._room_token}, **kw)
         except httpx.HTTPError as e:
             raise BackendError(0, "huddles_upstream", type(e).__name__) from e
         if r.is_success:
@@ -67,6 +68,10 @@ class Backend:
                 if e.status not in (0, 502, 503, 504) or attempt == 3:
                     raise
             await asyncio.sleep(2**attempt)
+
+    async def gate(self, body: dict) -> dict:
+        """{pSpeak, kind}: should Lightbulb speak unprompted now? The backend answers silent on any failure."""
+        return await self._post(f"/internal/huddles/{self._room_id}/gate", body, timeout=3)
 
     async def presence(self, user_ids: list[str], version: int = 0) -> None:
         body = {"userIds": user_ids, "version": version}

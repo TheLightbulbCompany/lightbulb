@@ -106,6 +106,9 @@ class FakeLive:
     def reply_to(self, text):
         self._rec("reply_to", text)
 
+    def interrupt(self):
+        self._rec("interrupt")
+
     def usage_seconds(self):
         return self.usage
 
@@ -296,7 +299,12 @@ async def test_state_published_as_participant_attributes():
     h, room, backend, lives, clock, log = make()
     await h.on_participants({"u1": "Prasiddha"})
     await h.tick()
-    assert room.attrs[-1] == {"lightbulb.status": "following", "lightbulb.speaker": "", "lightbulb.working": ""}
+    assert room.attrs[-1] == {
+        "lightbulb.status": "following",
+        "lightbulb.speaker": "",
+        "lightbulb.working": "",
+        "lightbulb.hand": "",
+    }
     await h.talk_start("u1")
     assert room.attrs[-1]["lightbulb.status"] == "listening" and room.attrs[-1]["lightbulb.speaker"] == "Prasiddha"
     h.on_agent_state("thinking")

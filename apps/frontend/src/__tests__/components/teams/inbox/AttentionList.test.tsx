@@ -173,6 +173,65 @@ describe("AttentionList", () => {
     ).toBeInTheDocument();
   });
 
+  test("a decision is answerable in place and leaves the list once answered", async () => {
+    const decisionItem = {
+      id: "att_d",
+      sourceKind: "decision",
+      subject: { kind: "decision", id: "dec_1", title: "Ship?", identifier: null, status: "open", href: null },
+      whyNow: "An agent decision is waiting for a board response.",
+      severity: "medium",
+      activityAt: new Date().toISOString(),
+      createdAt: new Date().toISOString(),
+      relatedIssue: { kind: "issue", id: "iss_1", title: "Release", identifier: "ISO-1", status: "todo", href: null },
+      originAgentName: "Friday",
+    };
+    const decision = {
+      id: "dec_1",
+      companyId: "co_1",
+      originAgentId: "ag_1",
+      originIssueId: "iss_1",
+      title: "Ship the release?",
+      body: "",
+      options: [
+        {
+          id: "ship",
+          label: "Ship it",
+          effects: [{ type: "comment_on_issue", targetIssueId: "iss_1", staleness: "lenient", bodyMarkdown: "Go." }],
+        },
+      ],
+      inputs: null,
+      status: "open",
+      executionStatus: null,
+      chosenOptionId: null,
+      targetSnapshots: {},
+      continuationPolicy: "wake_origin_agent",
+      metadata: {},
+      executions: [],
+    };
+    read.mockImplementation((path: string) => ({
+      data: path === "/attention" ? { items: [decisionItem] } : path === "/decisions/dec_1" ? decision : undefined,
+      isLoading: false,
+      error: null,
+      mutate: vi.fn(),
+    }));
+    post.mockResolvedValue({ ...decision, status: "decided", executionStatus: "succeeded" });
+    render(<AttentionList />);
+
+    // The full card, not the read-only "Open thread" row.
+    expect(screen.getByText("Ship the release?")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /open thread/i })).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: /ship it/i }));
+
+    await waitFor(() => {
+      expect(post).toHaveBeenCalledWith(
+        "/decisions/dec_1/decide",
+        expect.objectContaining({ optionId: "ship", inputValues: {} }),
+      );
+    });
+    await waitFor(() => expect(mutate).toHaveBeenCalledWith("/teams/attention"));
+  });
+
   test("an unhydrated item links out instead of pretending to be resolvable", () => {
     const onOpenIssue = vi.fn();
     installFeed({ items: [{ ...interactionItem, interaction: null }] });

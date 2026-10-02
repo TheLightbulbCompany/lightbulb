@@ -51,6 +51,7 @@ export const teamsQueryKeys = {
     detail: (id: string) => `/goals/${id}`,
   },
   approvals: { detail: (id: string) => `/approvals/${id}` },
+  decisions: { detail: (id: string) => `/decisions/${id}` },
   // The unified "needs you" feed — board approvals AND issue-thread
   // interactions in one server-ranked list. Deliberately parameterless: the
   // count it carries is company-wide (computed upstream before pagination),

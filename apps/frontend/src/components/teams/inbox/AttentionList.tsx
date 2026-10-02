@@ -5,6 +5,7 @@ import { useMemo } from "react";
 import { ExternalLink } from "lucide-react";
 
 import { ApprovalRow } from "@/components/teams/inbox/ApprovalRow";
+import { DecisionResolver } from "@/components/teams/inbox/DecisionResolver";
 import { AttachmentIssueContext } from "@/components/teams/shared/lib/attachments";
 import { IssueThreadInteractionCard } from "@/components/teams/issues/IssueThreadInteractionCard";
 import { useInteractionMutations } from "@/components/teams/issues/hooks/useInteractionMutations";
@@ -144,10 +145,11 @@ export interface AttentionListProps {
  * The unified "needs you" list — every decision waiting on this human, in one
  * server-ranked place.
  *
- * Two entity types with different shapes and different verbs coexist here by
+ * Entity types with different shapes and different verbs coexist here by
  * keeping their EXISTING components rather than being flattened into a shared
  * row: an approval renders as `ApprovalRow` (approve / reject), an interaction
- * as `IssueThreadInteractionCard` (accept / reject / respond / cancel). Both
+ * as `IssueThreadInteractionCard` (accept / reject / respond / cancel), an
+ * agent decision as `DecisionCard` (pick an option / dismiss). The first two
  * are wired to the same mutation hooks the in-thread surfaces use, so
  * resolving from this list behaves identically to resolving in place — there
  * is no second code path to keep in sync.
@@ -295,6 +297,17 @@ export function AttentionList({
             <ul className="rounded-lg border py-1" style={surface}>
               <ApprovalRow approval={item.approval} />
             </ul>
+          ) : item.sourceKind === "decision" ? (
+            // The feed row carries no options, so the resolver reads the full
+            // decision by id and the card (which draws its own border) answers
+            // it in place.
+            <DecisionResolver
+              key={item.subject.id}
+              decisionId={item.subject.id}
+              originIssue={item.relatedIssue}
+              agentMap={agentMap}
+              originAgentName={item.originAgentName}
+            />
           ) : (
             <div className="rounded-lg border p-3" style={surface}>
               <UnhydratedRow item={item} onOpenIssue={onOpenIssue} />

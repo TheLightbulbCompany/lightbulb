@@ -10,7 +10,7 @@ The BFF synthesizes the adapter block server-side via
 
 from __future__ import annotations
 
-from typing import Literal, Optional
+from typing import Annotated, Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 from pydantic.alias_generators import to_camel
@@ -224,6 +224,25 @@ class UpsertFeedbackVoteBody(_Strict):
     vote: str = Field(pattern=r"^(up|down)$")
     reason: Optional[str] = Field(default=None, max_length=1000)
     allow_sharing: Optional[bool] = None
+
+
+class DecideDecisionBody(_Strict):
+    """Body for ``POST /teams/decisions/{id}/decide``.
+
+    Mirrors upstream ``decideSchema`` (paperclip/server/src/routes/decisions.ts):
+    the chosen option, the answers to the decision's inputs, and a client key
+    that makes a retried click replay instead of 409.
+    """
+
+    option_id: str = Field(min_length=1, max_length=120)
+    input_values: Optional[dict[str, Annotated[str, Field(max_length=20000)]]] = None
+    idempotency_key: Optional[str] = Field(default=None, min_length=1, max_length=500)
+
+
+class DismissDecisionBody(_Strict):
+    """Body for ``POST /teams/decisions/{id}/dismiss`` (upstream ``dismissSchema``)."""
+
+    reason: Optional[str] = Field(default=None, max_length=20000)
 
 
 class CreateRoutineBody(_Strict):

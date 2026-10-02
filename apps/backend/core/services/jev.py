@@ -373,7 +373,8 @@ NONE_CRITERION = (
     "Nobody: a good employee would stay quiet here -- chatter between people ('lol', 'thanks', "
     "'brb'), an acknowledgement or thanks (even by name), a personal matter between specific "
     "people, a message addressed by name to a person or to a teammate who is not an option here, "
-    "something a colleague has already answered (even when it is asked again), or a reply that "
+    "something a colleague has just answered when it is repeated straight away (a question asked "
+    "again after a gap or after other talk is a new request: answer it), or a reply that "
     "would only prolong agent-to-agent back-and-forth. Never an open question or request put to "
     "the room"
 )

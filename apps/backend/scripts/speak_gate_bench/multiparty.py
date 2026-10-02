@@ -42,6 +42,8 @@ os.environ.setdefault("CLERK_ISSUER", "https://bench.clerk.accounts.dev")  # Set
 
 from core.services import jev, messaging  # noqa: E402
 
+from . import addressing  # noqa: E402
+
 HERE = Path(__file__).parent
 RAW = HERE / "results" / "raw"
 DATA = HERE / "multiparty.jsonl"
@@ -198,8 +200,9 @@ def _opens_with_person(text: str, humans: list[dict]) -> list[str]:
     return found
 
 
-def deterministic(case: dict, state: dict) -> dict:
-    """Everything before Jev: who is addressed, who is merely a Listening candidate, the cap."""
+def deterministic(case: dict, state: dict, stage: dict | None = None) -> dict:
+    """Everything before Jev: who is addressed, who is merely a Listening candidate, the cap.
+    With an addressing ``stage``, its agents join the structured mentions and it replaces the text rule."""
     latest, members = state["latest"], state["members"]
     author = latest["author"]
     if author["kind"] == "agent":
@@ -207,6 +210,11 @@ def deterministic(case: dict, state: dict) -> dict:
         targets = messaging.select_dispatch_targets(members, mentions, author["id"], room_kind=case["room_kind"])
         if case["agent_hop"] >= messaging.AGENT_REPLY_CAP:
             return {"how": "capped", "addressed": [], "candidates": [], "targets": []}
+    elif stage is not None:
+        if stage["hold"]:
+            return {"how": "hold", "addressed": [], "candidates": [], "targets": []}
+        mentions = latest["mentions"] + [{"kind": "agent", "id": a} for a in stage["agents"]]
+        targets = messaging.select_dispatch_targets(members, mentions, None, room_kind=case["room_kind"])
     else:
         targets = messaging.select_dispatch_targets(
             members, latest["mentions"], None, room_kind=case["room_kind"], text=latest["text"]
@@ -238,14 +246,24 @@ async def _stub_card(owner_id: str, agent_id: str, display_name: str, recency: s
 _SUPPORTS_TO_PEOPLE = "to_people" in inspect.signature(jev._decide_for_message).parameters
 
 
-async def route(case: dict, *, offline: bool = False) -> dict:
+async def route(case: dict, *, offline: bool = False, mode: str | None = None) -> dict:
+    """``mode``: None (today's routing), "on" (addressing stage) or "fallback" (stage, Jev call forced off)."""
     state = build(case)
-    det = deterministic(case, state)
+    stage = None
+    if mode and state["latest"]["author"]["kind"] == "human" and case["room_kind"] != "dm":
+        stage = await addressing.stage(case, state, mode)
+    if mode:
+        addressing.annotate(state, stage)
+    det = deterministic(case, state, stage)
     rec = {k: case[k] for k in ("id", "row", "category", "subtype", "cue", "variant", "goal_status", "expected")}
-    rec |= {"expected_responder": case["expected_responder"], "how": det["how"], "whoP": None}
+    rec |= {"expected_responder": case["expected_responder"], "how": det["how"], "whoP": None, "stage": stage}
     names = {a["id"]: a["displayName"] for a in state["agents"]}
     if det["how"] != "jev":
         rec["responders"] = sorted(names[a] for a in det["addressed"])
+        # The one-responder policy: the agent named first (stage order, then structured mentions).
+        order = (stage["agents"] if stage else []) + [m["id"] for m in state["latest"]["mentions"]]
+        first = next((a for a in order if a in det["addressed"]), det["addressed"][0] if det["addressed"] else None)
+        rec["responders_first"] = [names[first]] if first else []
         return rec
     if offline:
         rec["how"], rec["responders"] = "skipped_offline", None
@@ -254,6 +272,8 @@ async def route(case: dict, *, offline: bool = False) -> dict:
     voice = case["variant"] == "voice"
     people = _opens_with_person(latest["text"], [m for m in state["members"] if m["kind"] == "human"]) if voice else []
     to_people = bool(people) if voice else jev.addressed_to_people(latest, state["members"])
+    if stage is not None:
+        to_people = to_people or bool(stage["humans"])
     if voice and people:
         latest["mentions"] = [{"kind": "human", "id": p} for p in people]
     kwargs = {"to_people": to_people} if voice and _SUPPORTS_TO_PEOPLE else {}
@@ -261,7 +281,7 @@ async def route(case: dict, *, offline: bool = False) -> dict:
         state["meta"], latest, latest, state["members"], state["history"], **kwargs
     )
     who = decision.get("who")
-    if voice and to_people and not _SUPPORTS_TO_PEOPLE and who not in (None, "none"):
+    if (voice or stage is not None) and to_people and not _SUPPORTS_TO_PEOPLE and who not in (None, "none"):
         # main has no to_people seam yet: apply the same 0.7 rule the live branch gets from it.
         if float((decision.get("whoP") or {}).get(who) or 0) < jev.CONFIDENT_P:
             who = "none"
@@ -271,6 +291,7 @@ async def route(case: dict, *, offline: bool = False) -> dict:
     else:
         rec["responders"] = [] if who == "none" else [names[who]]
     rec["whoP"] = {names.get(k, k): round(float(v), 3) for k, v in (decision.get("whoP") or {}).items()}
+    rec["responders_first"] = rec["responders"]
     return rec
 
 
@@ -344,18 +365,20 @@ def report(recs: list[dict]) -> str:
 
 
 # ------------------------------------------------------------------ runner
-async def run(cases: list[dict], out: Path, concurrency: int, offline: bool) -> None:
+async def run(cases: list[dict], out: Path, concurrency: int, offline: bool, mode: str | None = None) -> None:
     if not offline:
         jev.put_metric = lambda *a, **k: None
         jev._key, jev._key_checked_at, jev._KEY_TTL_S = os.environ["AI_GATEWAY_API_KEY"], time.monotonic(), 10**9
     jev.agent_card = _stub_card
+    if mode:
+        addressing.install_annotations()
     done = {json.loads(line)["id"] for line in out.read_text().splitlines()} if out.exists() else set()
     sem = asyncio.Semaphore(concurrency)
 
     async def one(case):
         async with sem:
             for attempt in range(4):
-                rec = await route(case, offline=offline)
+                rec = await route(case, offline=offline, mode=mode)
                 if rec["how"] != "fallback":
                     return rec
                 await asyncio.sleep(2**attempt)  # a failed Jev call: retry before recording prod's fallback
@@ -374,13 +397,14 @@ def main(argv=None):
     ap.add_argument("--concurrency", type=int, default=6)
     ap.add_argument("--tag", default="")
     ap.add_argument("--report-only", action="store_true")
+    ap.add_argument("--addressing", choices=("on", "fallback"), help="run the addressing-stage experiment")
     args = ap.parse_args(argv)
     tag = (args.tag or date.today().isoformat()) + ("-offline" if args.offline else "")
     cases = [c for c in load() if re.search(args.only, c["id"])]
     RAW.mkdir(parents=True, exist_ok=True)
     out = RAW / f"{tag}-multiparty.jsonl"
     if not args.report_only:
-        asyncio.run(run(cases, out, args.concurrency, args.offline))
+        asyncio.run(run(cases, out, args.concurrency, args.offline, args.addressing))
     recs = [json.loads(line) for line in out.read_text().splitlines()]
     md = report(recs)
     (HERE / "results" / f"{tag}-multiparty.md").write_text(md + "\n")

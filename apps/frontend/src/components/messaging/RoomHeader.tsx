@@ -143,7 +143,7 @@ export function RoomHeader({
     <div className="room-audience">
       {search}
       {/* While Live, the strip stands in for Go live: in full here, as "Live in #x — Return" in any other room. */}
-      <LiveStrip roomId={room?.roomId} />
+      <LiveStrip roomId={room?.roomId} members={participants} />
       {/* Every room kind; a room with no listening agent is a people-only voice room (no Lightbulb). */}
       {!huddle.room && room && huddlesOn && !room.guest && (
         <Button type="button" variant="ghost" size="sm" disabled={Boolean(huddle.joining)}

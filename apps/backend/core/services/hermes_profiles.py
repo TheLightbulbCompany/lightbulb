@@ -702,6 +702,26 @@ display:
   # affordance: in a room it leaked "Write denied ... HERMES_WRITE_SAFE_ROOT" to a customer
   # (prod 2026-09-29). The agent still sees the tool error itself and can recover.
   file_mutation_verifier: false
+auxiliary:
+  title_generation:
+    # Hermes titles every new session with an extra model call once it has a state.db
+    # (agent/turn_context.py:155-182). Ours are per room, thread, call, mail thread, Paperclip
+    # run and event: a title nobody reads, on the trial's daily cap, outside reported usage.
+    enabled: false
+agent:
+  turn_liveness:
+    # Hermes's watchdog hard-cancels a turn with no activity for 600 s once it holds a session
+    # turn lease, which every recorded turn after a session's first now does. A quiet long tool
+    # (a clone, a build) is real work here; stops come from the run's own abort and the backend's
+    # heartbeat sweeper, as before state.db. 0 = off (agent/turn_liveness.py).
+    timeout_s: 0
+compression:
+  # A room runs on one Hermes transcript for its whole life, replayed on every model call of every
+  # turn. Hermes compacts at 75% of the window by default (~150k tokens on our 200k pin), past the
+  # openrouter-gate's paid-mode bound (a request body over max_prompt_tokens=400000 bytes is a 413,
+  # roughly 100k tokens). This compacts at a predictable per-call size instead, under that bound
+  # with room for the tool schemas and a turn's own tool output.
+  threshold_tokens: 60000
 """
 
 

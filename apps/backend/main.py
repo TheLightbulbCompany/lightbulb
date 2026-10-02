@@ -428,6 +428,16 @@ async def lifespan(app: FastAPI):
         }
     )
 
+    # Converge Paperclip's instance flags onto the repo's desired state, so a
+    # deploy applies them. A one-shot, so it is NOT in BACKGROUND_TASKS (a
+    # finished task reads "stopped" there). Best-effort: it never blocks or
+    # fails startup. Deployed envs only: local and test have no cluster.
+    flags_task = None
+    if settings.ENVIRONMENT in ("dev", "prod"):
+        from core.services.paperclip_instance_flags import converge_at_startup
+
+        flags_task = asyncio.create_task(converge_at_startup(settings.ENVIRONMENT))
+
     # One MCP app + session manager PER lifespan entry (hosted_mcp.running): the
     # SDK's manager runs once per instance and the test client re-enters this lifespan.
     mcp_context = hosted_mcp.running()
@@ -453,6 +463,8 @@ async def lifespan(app: FastAPI):
     pickup_sweeper_stop.set()
     digest_stop.set()
     gauge_task.cancel()
+    if flags_task is not None:
+        flags_task.cancel()
     try:
         async with asyncio.timeout(20):
             # No provision-dispatch handoff: dispatch holds no per-owner

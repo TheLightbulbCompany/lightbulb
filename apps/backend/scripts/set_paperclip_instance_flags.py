@@ -30,6 +30,7 @@ the backend task's environment). Dry-run by default; ``--apply`` writes.
 
     aws sso login --profile isol8-admin
     cd apps/backend
+    export CLERK_ISSUER=https://clerk.thelightbulb.company  # core.config refuses to load without one
     AWS_PROFILE=isol8-admin uv run python -m scripts.set_paperclip_instance_flags --env dev
     AWS_PROFILE=isol8-admin uv run python -m scripts.set_paperclip_instance_flags --env dev --apply
     AWS_PROFILE=isol8-admin uv run python -m scripts.set_paperclip_instance_flags --env prod
@@ -102,6 +103,8 @@ def main() -> None:
     current = _read(client, db)
     if current is None:
         print("instance_settings row: missing (the write creates it)")
+    else:
+        print(f"Stored experimental: {json.dumps(current, sort_keys=True)}")
     changes = plan_changes(current, DESIRED_FLAGS)
     for key, want in DESIRED_FLAGS.items():
         if key in changes:

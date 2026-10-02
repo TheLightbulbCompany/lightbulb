@@ -1,7 +1,9 @@
 # huddle-agent
 
-The CEO huddle worker: a LiveKit Agents worker (agent name `lightbulb-huddle`)
-that joins `huddle-{env}-{roomId}` as `agent-ceo`. Scaffolded from
+The huddle worker: a LiveKit Agents worker (agent name `lightbulb-huddle`)
+that joins `huddle-{env}-{roomId}` as `agent-ceo`. Each AI agent speaks for itself: naming an agent
+opens that agent's own GPT-Live session, and its requests run as ordinary Hermes runs on the agent's
+room session key. Scaffolded from
 [livekit-examples/agent-starter-python](https://github.com/livekit-examples/agent-starter-python) (MIT, see LICENSE).
 
 ## Run
@@ -18,6 +20,34 @@ The dispatch name is `lightbulb-huddle`: the Dockerfile sets `LIVEKIT_AGENT_NAME
 which takes precedence over the (deprecated in livekit-agents 1.8.3) `agent_name=` kwarg in
 `agent.py`. Keep the two equal; the backend dispatches by that name.
 
+## Wire contract
+
+The worker is one LiveKit participant (`agent-ceo`) whatever agent is speaking.
+
+- **Backend -> worker (C3):** data topic `call.frame`, sent server-side (no sender; anything a
+  participant sends on it is dropped). Packet `{"events": [...]}`, each event a `voice.run.frame`
+  (`payload: {roomId, runId, agentId, frame}`) or a `voice.notice` (`kind: renamed | voice_note_saved`).
+- **Attributes (C4)** on `agent-ceo`:
+  - `lightbulb.speaking_agent`: the floor-holder, from the moment its voice starts opening until it
+    closes; `""` when none.
+  - `lightbulb.agent.<id>.status`: `joining | speaking | listening | working | has_news | idle`.
+  - `lightbulb.agent.<id>.working` (the running tool, <=60 chars) and `lightbulb.agent.<id>.naming`
+    (`"1"` while a first-time-naming question is open).
+  - `lightbulb.queue`: agent ids of a pending multi-name request, floor-holder first; else `""`.
+  - `lightbulb.listening_to`: the pinned speaker's display name.
+  - `""` deletes a key; a departed agent's keys are written `""`.
+- **Worker -> people (C5):** data topic `live.notice`, JSON `{kind: renamed | voice_note_saved |
+  ambiguous_name | voice_failed, agentId, ...}`. `huddle.error` is unchanged.
+- **RPC (C6):** `talk_start` with payload `{"agentId": ...}`, or `""` for the last agent this caller
+  summoned, else the CEO. An unknown agent id is ignored; tapping the floor-holder does nothing.
+  `talk_end` is unchanged.
+- **Audio (C7):** each agent session publishes a microphone track named `agent-<agentId>`. During a
+  switch two can coexist, so clients filter by name.
+
+The metering window (`/summon` .. `/end`) opens with the first voice and ends when no voice is open
+or joining; a switch inside it takes no new `/summon`. Closing a voice, the window or the worker never
+stops a run: a result that arrives while its agent is off the floor is held as `has_news`.
+
 ## Configuration
 
 The worker reads (LiveKit Cloud agent secrets, set per project):
@@ -26,6 +56,8 @@ The worker reads (LiveKit Cloud agent secrets, set per project):
 - `LIGHTBULB_HUDDLE_SECRET` -- the value of the backend's `lightbulb/{env}/huddle_worker_secret`,
   sent as `X-Lightbulb-Huddle-Secret`
 - `OPENAI_API_KEY` -- transcription and GPT-Live
+- `LIGHTBULB_PROACTIVE` -- optional; `off` stops agents announcing finished work unprompted
+  (tapping a tile that has news still plays it)
 
 LiveKit itself injects `LIVEKIT_URL`, `LIVEKIT_API_KEY` and `LIVEKIT_API_SECRET`.
 Nothing a huddle says is stored.

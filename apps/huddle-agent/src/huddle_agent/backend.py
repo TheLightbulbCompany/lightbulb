@@ -47,12 +47,41 @@ class Backend:
         fallback = {400: "invalid_request", 401: "unauthorized"}.get(r.status_code, f"http_{r.status_code}")
         raise BackendError(r.status_code, fallback, None)
 
+    async def team(self) -> dict:
+        return await self._post(f"/internal/huddles/{self._room_id}/team", {})
+
+    async def route(self, speaker: str, utterance: str, transcript: str) -> str:
+        body = {"speakerUserId": speaker, "utterance": utterance, "transcript": transcript}
+        return (await self._post(f"/internal/huddles/{self._room_id}/route", body))["agentId"]
+
     async def summon(self, speaker: str) -> dict:
         return await self._post(f"/internal/huddles/{self._room_id}/summon", {"speakerUserId": speaker})
 
-    async def turn(self, call_id: str, speaker: str, seq: int, utterance: str, transcript: str) -> dict:
-        body = {"speakerUserId": speaker, "seq": seq, "utterance": utterance, "transcript": transcript}
+    async def session(self, agent_id: str) -> dict:
+        return await self._post(f"/internal/huddles/{self._room_id}/agents/{agent_id}/session", {})
+
+    async def turn(
+        self,
+        call_id: str,
+        speaker: str,
+        agent_id: str,
+        run_id: str,
+        utterance: str,
+        transcript: str,
+        steer_run_id: str | None = None,
+    ) -> dict:
+        body = {
+            "speakerUserId": speaker,
+            "agentId": agent_id,
+            "runId": run_id,
+            "utterance": utterance,
+            "transcript": transcript,
+            "steerRunId": steer_run_id,
+        }
         return await self._post(f"/internal/huddles/calls/{call_id}/turns", body)
+
+    async def abort(self, run_id: str) -> dict:
+        return await self._post(f"/internal/huddles/{self._room_id}/runs/{run_id}/abort", {})
 
     async def end(self, call_id: str, usage_seconds: int) -> None:
         # An unsent /end leaves the call's hold or free claim open: retry transport failures (status 0) and

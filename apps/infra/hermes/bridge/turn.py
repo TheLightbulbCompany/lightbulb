@@ -1846,6 +1846,16 @@ def _capture_api_errors(agent) -> None:
 #: could not refresh or wait for) -- never posted as a reply: its text is partial or Hermes's
 #: own "Your message was not processed". The backend words it as a stalled agent.
 INTERRUPTED = "agent_stopped_responding"
+#: A completed ambient (room_event) turn whose reply was a silence marker: nothing is posted.
+SILENT = "silent"
+
+
+def _is_silence(reply: str) -> bool:
+    try:  # gateway/__init__ is already imported here (session_context) and never loads gateway.run
+        from gateway.response_filters import is_intentional_silence_response
+    except ImportError:  # outside the Hermes image
+        return False
+    return is_intentional_silence_response(reply)
 
 
 def _failed_kind(agent, result: dict) -> str:
@@ -1861,6 +1871,8 @@ def run_ended_body(run_id, session_key, outcome, error_kind, usage, error_detail
     validator rejects a missing one with a 422."""
     body = {"runId": run_id, "type": "run.ended", "at": now(),
             "sessionKey": session_key, "outcome": outcome}
+    if outcome == "completed" and error_kind == SILENT:
+        body["silent"] = True
     if outcome == "error" and error_kind:
         body["errorKind"] = error_kind
         if error_kind == QUOTA_EXHAUSTED and error_detail:
@@ -1958,7 +1970,9 @@ def _observe_prompt(agent_id: str, body: dict) -> str:
             "current message; it is not necessarily addressed to you. Lines tagged with your own id "
             "are messages you posted from elsewhere (a routine, a call, another conversation).\n"
             "- Treat only the current new message as a request explicitly directed at you, "
-            "and use observed context only when the current message asks for it.")
+            "and use observed context only when the current message asks for it."
+            + ("\n- If this message doesn't need anything from you, reply exactly [SILENT] and nothing else."
+               if body.get("eventKind") == "room_event" else ""))
 
 
 def _is_own(m: dict, agent_id: str) -> bool:
@@ -2795,6 +2809,8 @@ def _run_turn_in(agent_id: str, body: dict, frames, base: Path) -> tuple[str, st
         return "error", _failed_kind(agent, result), "", usage
     if not result.get("api_calls"):  # Hermes answers a dead model with apologetic prose; never post it
         return "error", "model_unavailable", "", usage
+    if _is_silence(reply):  # only an ambient turn may decline; an addressed one gets the empty-reply notice
+        return ("completed", SILENT, "", usage) if body.get("eventKind") == "room_event" else ("error", "empty_response", "", usage)
     if not reply:
         return "error", "empty_response", "", usage
     return "completed", None, reply, usage
@@ -3142,6 +3158,7 @@ def run_turn(agent_id: str, body: dict, local_session_token: str | None = None, 
         _last_turn[agent_id] = took
         # Fix round (minor 11): log the reply LENGTH, never the reply text -- room content has
         # no business in CloudWatch, and this line used to truncate-and-print it.
-        log.info("turn %s agent=%s outcome=%s %.1fs reply_len=%d", run_id, agent_id, outcome, took, len(reply))
+        log.info("turn %s agent=%s outcome=%s%s %.1fs reply_len=%d", run_id, agent_id, outcome,
+                 " silent" if error_kind == SILENT else "", took, len(reply))
     finally:
         _end_turn()

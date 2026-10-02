@@ -750,6 +750,8 @@ class RunEventRequest(ContractModel):
     # Only meaningful with error_kind="provider_quota_exhausted"; normalized, never a 422.
     error_detail: dict[str, Any] | None = None
     usage: RunUsage | None = None
+    # A completed ambient turn the agent declined ([SILENT]): no reply was posted, by choice.
+    silent: bool = False
 
     @field_validator("error_detail", mode="before")
     @classmethod
@@ -3475,6 +3477,8 @@ async def handle_run_event(owner_id: str, event: RunEventRequest) -> RunEventRes
         if row is not None:
             event_kind = row.get("eventKind") or "unknown"
             put_metric("messaging.run.ended", dimensions={"outcome": event.outcome, "event_kind": event_kind})
+            if event.silent and event.outcome == "completed":
+                put_metric("messaging.agent.silent", dimensions={"event_kind": event_kind})
             for name, start, end in (
                 ("messaging.run.start_latency", "dispatchedAt", "startedAt"),
                 ("messaging.run.duration", "startedAt", "endedAt"),

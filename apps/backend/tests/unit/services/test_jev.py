@@ -357,3 +357,21 @@ async def test_concurrent_first_key_reads_all_get_the_key_from_one_read(monkeypa
     keys = await _asyncio.gather(*(jev._gateway_key() for _ in range(5)))
     assert keys == [KEY] * 5
     assert len(reads) == 1
+
+
+def test_captionless_media_is_visible_to_jev():
+    line = jev._line(
+        {
+            "author": {"id": "u", "kind": "human"},
+            "text": "",
+            "attachments": [
+                {"contentType": "image/png"},
+                {"contentType": "video/mp4"},
+                {"contentType": "application/pdf", "fileName": "deck.pdf"},
+            ],
+        }
+    )
+    assert line["text"] == "[image] [video] [file: deck.pdf]"
+    assert (
+        jev._line({"author": {"id": "u"}, "text": "hi", "attachments": [{"contentType": "image/png"}]})["text"] == "hi"
+    )

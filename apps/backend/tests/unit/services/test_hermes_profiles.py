@@ -95,7 +95,7 @@ def test_approvals_are_off_with_an_unattended_approve_and_a_deny_backstop():
 
 
 def test_the_tool_deny_list_is_ported_to_disabled_toolsets():
-    assert set(cfg()["agent"]["disabled_toolsets"]) == {"cronjob", "tts", "video_gen"}
+    assert set(cfg()["agent"]["disabled_toolsets"]) == {"cronjob", "tts", "video_gen", "clarify"}
     assert cfg()["cron"]["allow_agent_scheduling"] is False
 
 

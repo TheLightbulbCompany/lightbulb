@@ -328,7 +328,15 @@ def _line(message: dict) -> dict:
     author = message.get("author") or {}
     return {
         "author": f"{author.get('displayName') or author.get('id')} ({author.get('kind')})",
-        "text": str(message.get("text") or "")[:1000],
+        "text": str(message.get("text") or "")[:1000]
+        or " ".join(
+            "[image]"
+            if str(a.get("contentType", "")).startswith("image/")
+            else "[video]"
+            if str(a.get("contentType", "")).startswith("video/")
+            else f"[file: {a.get('fileName') or 'attachment'}]"
+            for a in message.get("attachments") or []
+        ),
     }
 
 

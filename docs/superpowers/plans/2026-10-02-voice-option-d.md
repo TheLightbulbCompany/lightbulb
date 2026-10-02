@@ -196,7 +196,7 @@ Implements D "Latency gate (F6)" and Unknowns 1 and 6; D §11.
   - `test_summon_emits_route_session_and_first_audio_latency`: fake clock; final at t, summon returns at t+0.4, speaking at t+2.1 → three EMF lines with `path=today` and values 400 / … / 2100.
   - `test_first_audio_emitted_once_per_exchange`.
   - `test_emit_metric_dims_shape`.
-- [ ] Commit `feat(huddle-agent): latency and GPT-Live seconds metrics`. Merge and let dev deploy. Dispatch `huddle-agent.yml` to prod once, before Task 20 merges, so path (a) collects about 20 prod samples: that is the latency gate's baseline (D owner decision 1) measured on today's worker, not a staging step.
+- [ ] Commit `feat(huddle-agent): latency and GPT-Live seconds metrics`. Merge and let dev deploy. No separate prod dispatch for a baseline (owner: nothing intermediate); the metrics ship with the single promotion and the latency gate is judged on the new worker's own numbers.
 
 ---
 

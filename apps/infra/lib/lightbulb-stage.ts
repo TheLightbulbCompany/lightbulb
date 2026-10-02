@@ -1,6 +1,12 @@
 import * as cdk from "aws-cdk-lib";
 import { Construct } from "constructs";
-import { PLATFORM_MAIL_DOMAIN, ROOT_DOMAIN, DEV_ROOT_DOMAIN } from "./domains";
+import {
+  CLERK_DOMAIN,
+  DEV_ROOT_DOMAIN,
+  LEGACY_ROOT_DOMAIN,
+  PLATFORM_MAIL_DOMAIN,
+  ROOT_DOMAIN,
+} from "./domains";
 import { AgentMailOutboundStack } from "./stacks/agent-mail-outbound-stack";
 import { ApiStack } from "./stacks/api-stack";
 import { AuthStack } from "./stacks/auth-stack";
@@ -84,6 +90,7 @@ export class LightbulbStage extends cdk.Stage {
       stackName: `lightbulb-${env}-dns`,
       environment: env,
       rootDomain,
+      legacyRootDomain: LEGACY_ROOT_DOMAIN,
     });
 
     // SesInboundStack — SES inbound agent-mail receiving (domain identity,
@@ -173,6 +180,11 @@ export class LightbulbStage extends cdk.Stage {
       albV2: network.albV2,
       albSecurityGroup: network.albSecurityGroup,
       clerkIssuerSecretName: `lightbulb/${env}/clerk_issuer`,
+      // Prod's issuer is a literal so a Clerk domain move reaches AppSync in the
+      // deploy that flips CLERK_DOMAIN: a secret reference is only re-read when
+      // the resource changes for some other reason. Dev is a Clerk dev instance
+      // whose issuer is not on our domain, so it stays on the secret.
+      clerkIssuerUrl: env === "prod" ? `https://clerk.${CLERK_DOMAIN}` : undefined,
       // Pass secret NAME (not ISecret) — same pattern as ServiceStack uses
       // for cross-stack secret refs to avoid KMS auto-grant cycles.
       paperclipServiceTokenKeySecretName:

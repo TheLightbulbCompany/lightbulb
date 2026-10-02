@@ -81,14 +81,13 @@ export const DEV_ROOT_DOMAIN = "flickmeon.ai";
 // the two can diverge again for a future migration without re-threading props.)
 
 /**
- * The product domain that was retired. EMPTY = none; the migration is done.
+ * The product domain being moved away from. Pins its certificate Export in
+ * DnsStack while the consumer stacks repoint. Clear it only after
+ * `cloudformation list-imports` shows no importer in either env.
  *
- * This held `isol8.co` to pin `WildcardCert`'s cross-stack Export while the
- * network + api stacks still imported it. They now import
- * `ProductWildcardCert`, the legacy export has no importers in either env, and
- * the legacy certificate is gone from DnsStack — so nothing reads this.
- *
- * It is NOT a statement about the isol8.co hosted zone, which still exists and
- * must: GooseTown serves 9 records out of it.
+ * NOT a statement about that domain's hosted zone, which stays.
  */
-export const LEGACY_ROOT_DOMAIN = "";
+export const LEGACY_ROOT_DOMAIN = "flickmeon.ai";
+
+/** The retired product domain's second life: the launch-competition site (Vercel only). */
+export const LAUNCH_DOMAIN = "flickmeon.ai";

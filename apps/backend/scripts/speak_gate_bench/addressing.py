@@ -254,6 +254,8 @@ def _line_with_target(message: dict) -> dict:
     line = _orig_line(message)
     if message.get("_to"):
         line["author"] += " -> " + ", ".join(message["_to"])
+    if message.get("_sent"):
+        line["sent"] = message["_sent"]
     return line
 
 

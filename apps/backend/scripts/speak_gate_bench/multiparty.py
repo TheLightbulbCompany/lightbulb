@@ -113,6 +113,7 @@ def expand(row: dict) -> list[dict]:
                 "mentions": [] if voice else row.get("mentions", []),
                 "agent_hop": row.get("agent_hop", 1),
                 "room_kind": row.get("room_kind", "channel"),
+                "open": row.get("open", []),
             }
         )
     return cases
@@ -161,7 +162,9 @@ def build(case: dict) -> dict:
     start = datetime(2026, 10, 2, 15, 0, tzinfo=timezone.utc)
     ids: dict[str, str] = {}
     history = []
+    at = start
     for i, line in enumerate(case["transcript"]):
+        at += timedelta(seconds=(20 if i else 0) + line.get("gapSeconds", 0))
         who = by_name.get(line["speaker"]) or {"kind": "human", "id": f"user-{_handle(line['speaker'])}"}
         msg_id = f"m{i:03d}"
         if line.get("id"):
@@ -171,7 +174,7 @@ def build(case: dict) -> dict:
                 "messageId": msg_id,
                 "author": {"kind": who["kind"], "id": who["id"], "displayName": line["speaker"]},
                 "text": line["text"],
-                "createdAt": (start + timedelta(seconds=20 * i)).isoformat(),
+                "createdAt": at.isoformat(),
                 "threadRootMessageId": ids.get(line["thread"]) if line.get("thread") else None,
             }
         )
@@ -246,9 +249,98 @@ async def _stub_card(owner_id: str, agent_id: str, display_name: str, recency: s
 _SUPPORTS_TO_PEOPLE = "to_people" in inspect.signature(jev._decide_for_message).parameters
 
 
-async def route(case: dict, *, offline: bool = False, mode: str | None = None) -> dict:
-    """``mode``: None (today's routing), "on" (addressing stage) or "fallback" (stage, Jev call forced off)."""
+# ------------------------------------------------------------------ D-class signals (bench only)
+#: (f)'s one sentence, appended to WHO_INSTRUCTIONS when the open-request block is on.
+SETTLED = (
+    " A request a person already answered is settled unless it is asked again after a gap or only partly answered."
+)
+#: (h): the "which goals are still open" follow-through, for D01's shape (latest settles someone else's ask).
+PICKUP = (
+    " When the latest message settles nothing new for a teammate but a request under 'open' is still "
+    "open and fits a teammate, that teammate picks it up."
+)
+_VERB = {"answered": "answered by", "taken": "taken on by", "closed": "closed by"}
+
+
+def _ago(seconds: float) -> str:
+    minutes = int(seconds // 60)
+    return "now" if minutes < 1 else f"{minutes} min ago" if minutes < 60 else f"{minutes // 60} h ago"
+
+
+def stamp_times(state: dict) -> None:
+    """(e): what prod could render for free -- each line's age relative to the latest message."""
+    now = datetime.fromisoformat(state["latest"]["createdAt"])
+    for m in state["history"] + [state["latest"]]:
+        m["_sent"] = _ago((now - datetime.fromisoformat(m["createdAt"])).total_seconds())
+
+
+def open_block(case: dict, goals: bool) -> dict | None:
+    """(f): requests in the window and their status after the latest message, from the row's
+    hand labels (an upper bound: prod would have to compute this). ``goals``: one entry per goal
+    (a line asking two things is split) plus a ``stillOpen`` list."""
+    t = case["transcript"]
+    if not case["open"]:
+        return None
+
+    def q(i: int) -> str:
+        return f'{t[i]["speaker"]}: "{t[i]["text"]}"' + (" (the latest message)" if i == len(t) - 1 else "")
+
+    def status(g: dict) -> str:
+        out = (
+            "open" + (f" ({g['note']})" if g.get("note") else "")
+            if g["status"] == "open"
+            else f"{_VERB[g['status']]} {q(g['by'])}"
+        )
+        if g.get("dispute") is not None:
+            out += f"; disputed by {q(g['dispute'])}"
+        if g.get("ack") is not None:
+            out += f"; then {q(g['ack'])}"
+        return out
+
+    if goals:
+        reqs = [
+            {"request": q(g["line"]) + (f' -- the part "{g["goal"]}"' if g.get("goal") else ""), "status": status(g)}
+            for g in case["open"]
+        ]
+        still = [r["request"] for r, g in zip(reqs, case["open"]) if g["status"] == "open"]
+        return {"requests": reqs, "stillOpen": still}
+    reqs = []
+    for line in dict.fromkeys(g["line"] for g in case["open"]):
+        group = [g for g in case["open"] if g["line"] == line]
+        if len({g["status"] for g in group}) > 1:  # some goals settled, some not
+            done = next(g for g in group if g["status"] != "open")
+            st = f"partly {status(done)}"
+        else:
+            st = status(group[0])
+        reqs.append({"request": q(line), "status": st})
+    return {"requests": reqs}
+
+
+_orig_state = jev._state
+_orig_who = jev.WHO_INSTRUCTIONS
+
+
+def install_signals(signals: set[str]) -> None:
+    def _state(meta, latest, history):
+        out = _orig_state(meta, latest, history)
+        if latest.get("_open"):
+            out["open"] = latest["_open"]
+        return out
+
+    jev._state = _state
+    jev.WHO_INSTRUCTIONS = _orig_who + (SETTLED if "open" in signals else "") + (PICKUP if "pickup" in signals else "")
+
+
+async def route(
+    case: dict, *, offline: bool = False, mode: str | None = None, signals: frozenset = frozenset()
+) -> dict:
+    """``mode``: None (today's routing), "on" (addressing stage) or "fallback" (stage, Jev call forced off).
+    ``signals``: "time" (e), "open" (f), "goals" (f, goal-level with stillOpen)."""
     state = build(case)
+    if "time" in signals:
+        stamp_times(state)
+    if "open" in signals:
+        state["latest"]["_open"] = open_block(case, "goals" in signals)
     stage = None
     if mode and state["latest"]["author"]["kind"] == "human" and case["room_kind"] != "dm":
         stage = await addressing.stage(case, state, mode)
@@ -365,20 +457,23 @@ def report(recs: list[dict]) -> str:
 
 
 # ------------------------------------------------------------------ runner
-async def run(cases: list[dict], out: Path, concurrency: int, offline: bool, mode: str | None = None) -> None:
+async def run(
+    cases: list[dict], out: Path, concurrency: int, offline: bool, mode: str | None = None, signals=frozenset()
+) -> None:
     if not offline:
         jev.put_metric = lambda *a, **k: None
         jev._key, jev._key_checked_at, jev._KEY_TTL_S = os.environ["AI_GATEWAY_API_KEY"], time.monotonic(), 10**9
     jev.agent_card = _stub_card
     if mode:
         addressing.install_annotations()
+    install_signals(signals)
     done = {json.loads(line)["id"] for line in out.read_text().splitlines()} if out.exists() else set()
     sem = asyncio.Semaphore(concurrency)
 
     async def one(case):
         async with sem:
             for attempt in range(4):
-                rec = await route(case, offline=offline, mode=mode)
+                rec = await route(case, offline=offline, mode=mode, signals=signals)
                 if rec["how"] != "fallback":
                     return rec
                 await asyncio.sleep(2**attempt)  # a failed Jev call: retry before recording prod's fallback
@@ -398,13 +493,15 @@ def main(argv=None):
     ap.add_argument("--tag", default="")
     ap.add_argument("--report-only", action="store_true")
     ap.add_argument("--addressing", choices=("on", "fallback"), help="run the addressing-stage experiment")
+    ap.add_argument("--signals", default="", help="D-class experiment: comma list of time,open,goals,pickup")
     args = ap.parse_args(argv)
+    signals = frozenset(s for s in args.signals.split(",") if s)
     tag = (args.tag or date.today().isoformat()) + ("-offline" if args.offline else "")
     cases = [c for c in load() if re.search(args.only, c["id"])]
     RAW.mkdir(parents=True, exist_ok=True)
     out = RAW / f"{tag}-multiparty.jsonl"
     if not args.report_only:
-        asyncio.run(run(cases, out, args.concurrency, args.offline, args.addressing))
+        asyncio.run(run(cases, out, args.concurrency, args.offline, args.addressing, signals))
     recs = [json.loads(line) for line in out.read_text().splitlines()]
     md = report(recs)
     (HERE / "results" / f"{tag}-multiparty.md").write_text(md + "\n")

@@ -80,13 +80,20 @@ export const DEV_ROOT_DOMAIN = "thelightbulb.company";
 // (Dev leads the 2026-10 move to thelightbulb.company; prod follows.)
 
 /**
- * The product domain being moved away from. Pins its certificate Export in
- * DnsStack while the consumer stacks repoint. Clear it only after
- * `cloudformation list-imports` shows no importer in either env.
+ * The product domain being moved away from. EMPTY = no move in flight.
  *
- * NOT a statement about that domain's hosted zone, which stays.
+ * Set it to the old domain for the deploys that carry a move: DnsStack then
+ * keeps the old certificate (and its cross-stack Export) beside the new one
+ * while the consumer stacks repoint. Clear it only after
+ * `cloudformation list-imports` shows no importer of the old export in either
+ * env. It held `flickmeon.ai` for the 2026-10-02 move to thelightbulb.company;
+ * both old exports had no importers and both certificates were `InUse=False`
+ * when it was cleared the same day.
+ *
+ * NOT a statement about that domain's hosted zone, which stays: flickmeon.ai is
+ * the launch-competition site (see LAUNCH_DOMAIN).
  */
-export const LEGACY_ROOT_DOMAIN = "flickmeon.ai";
+export const LEGACY_ROOT_DOMAIN = "";
 
 /** The retired product domain's second life: the launch-competition site (Vercel only). */
 export const LAUNCH_DOMAIN = "flickmeon.ai";

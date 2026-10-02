@@ -157,7 +157,7 @@ function ReactionChips({
  * `BubbleMeta` row. A long press on anything in the group reveals the time of
  * a collapsed message and hands the press on to the caller (the actions sheet).
  */
-function SessionSendState({ send, receiptRefreshKey, getSessionCommand, onStatus, onRetry, onCancel, onChanged }: {
+function SessionSendState({ send, receiptRefreshKey, getSessionCommand, onStatus, onRetry, onCancel, onChanged, replied }: {
   send: SessionSend;
   receiptRefreshKey?: number;
   getSessionCommand?: (sessionId: string, requestId: string) => Promise<LocalSessionCommandReceipt>;
@@ -165,6 +165,7 @@ function SessionSendState({ send, receiptRefreshKey, getSessionCommand, onStatus
   onRetry?: (sessionId: string, requestId: string, expectedRequestId: string | null) => Promise<unknown>;
   onCancel?: (sessionId: string, expectedRequestId: string | null) => Promise<unknown>;
   onChanged?: () => void;
+  replied: boolean;
 }) {
   const palette = useChatPalette();
   const { chip } = useSessionSendReceipt(getSessionCommand, send, receiptRefreshKey);
@@ -190,7 +191,7 @@ function SessionSendState({ send, receiptRefreshKey, getSessionCommand, onStatus
       setSaving(false);
     }
   };
-  if (send.error === "CANCELLED" || !chip || chip.tone === "ok") return null;
+  if (send.error === "CANCELLED" || !chip || chip.tone === "ok" || (replied && chip.tone !== "error")) return null;
   return <View style={styles.sessionSendAction}>
     {chip.tone === "error" && <Text accessibilityRole="alert" style={[styles.metaText, { color: palette.alert }]}>{chip.detail || "This session did not receive the message."}</Text>}
     {chip.tone === "warn" && <Text style={[styles.metaText, { color: palette.warn }]}>Checking session delivery…</Text>}
@@ -267,7 +268,7 @@ export function MessageGroup({
   // in flight or has failed; `LocalMessageRows` renders the difference below it.
   const pending = message.messageSeq <= 0;
   const visibleSessionSends = mine ? message.sessionSends : message.sessionSends?.filter((send) => !!send.error);
-  const sessionPending = mine && !!visibleSessionSends?.some((send) => {
+  const sessionPending = mine && replyCount === 0 && !!visibleSessionSends?.some((send) => {
     if (send.error) return false;
     const chip = sessionStatuses[`${send.sessionId}:${send.requestId ?? "error"}`];
     return chip === undefined || chip?.tone === "pending" || chip?.tone === "warn";
@@ -402,7 +403,7 @@ export function MessageGroup({
           ) : null}
           {!deleted && mine && !!visibleSessionSends?.length ? <View style={styles.sessionSendRow}>
             {sessionPending && <MetaText palette={palette}>Waiting for session</MetaText>}
-            {visibleSessionSends.map((send) => <SessionSendState key={`${send.sessionId}:${send.requestId}`} send={send} receiptRefreshKey={receiptRefreshKey ?? replyCount}
+            {visibleSessionSends.map((send) => <SessionSendState key={`${send.sessionId}:${send.requestId}`} send={send} receiptRefreshKey={receiptRefreshKey ?? replyCount} replied={replyCount > 0}
               getSessionCommand={getSessionCommand} onStatus={onSessionStatus}
               onRetry={retrySessionSend && ((sessionId, requestId, expectedRequestId) => retrySessionSend(message.roomId, message.messageId, sessionId, { requestId, expectedRequestId }))}
               onCancel={cancelSessionSend && ((sessionId, expectedRequestId) => cancelSessionSend(message.roomId, message.messageId, sessionId, { expectedRequestId }))}

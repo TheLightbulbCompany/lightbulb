@@ -3,7 +3,8 @@ import { shellUrlFromPaperclipPath } from "@/lib/shellNav";
 import { parseSessionPermalink } from "./messageLinks";
 
 // Our own product: thelightbulb.company and every subdomain (app, dev., company[-dev].).
-const OWN_HOST = /(^|\.)flickmeon\.ai$/i;
+// Both the product domain and the retired one (which redirects to it).
+const OWN_HOST = /(^|\.)(thelightbulb\.company|flickmeon\.ai)$/i;
 const ISSUE_IDENTIFIER = /^[A-Z][A-Z0-9]*-\d+$/;
 
 /** What a link to our own app points at, resolved to the native in-app card for it. */

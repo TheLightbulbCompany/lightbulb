@@ -27,7 +27,8 @@ const TRAILING = /[.,;:!?*_~]+$/;
 
 // Our own product (thelightbulb.company and every subdomain) is never unfurled: its links are
 // task/document links that already render as a chip or card, or our own marketing page.
-const OWN_HOST = /(^|\.)flickmeon\.ai$/i;
+// Both the product domain and the retired one (which redirects to it).
+const OWN_HOST = /(^|\.)(thelightbulb\.company|flickmeon\.ai)$/i;
 
 /** The first http(s) URLs in a message's text, in order, de-duplicated. Paperclip document
  * links and our own domain are skipped: they get a document card or task chip, not a web preview. */

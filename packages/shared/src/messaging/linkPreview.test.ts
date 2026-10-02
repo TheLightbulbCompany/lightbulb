@@ -15,7 +15,7 @@ describe("extractPreviewUrls", () => {
 
   it("never unfurls our own domain or its subdomains", () => {
     expect(
-      extractPreviewUrls("https://thelightbulb.company https://company.thelightbulb.company/ISOA/issues/ISOA-400 https://notthelightbulb.company https://dev.FLICKMEON.ai/x"),
+      extractPreviewUrls("https://thelightbulb.company https://company.thelightbulb.company/ISOA/issues/ISOA-400 https://notthelightbulb.company https://dev.THELIGHTBULB.company/x https://flickmeon.ai/launch"),
     ).toEqual(["https://notthelightbulb.company"]);
   });
 

@@ -1,4 +1,4 @@
-import type { LocalSession, MemberRef, RoomMember, SessionSend } from "./types";
+import type { CanonicalRoomMessage, LocalSession, MemberRef, RoomMember } from "./types";
 import { sessionTitle, sessionToolName } from "./localSessionLabels";
 
 export const MENTION_SCHEME = "mention:";
@@ -162,12 +162,16 @@ export function resolveTypedSessionMentions(
   return { ids: found, unresolved };
 }
 
-function rewriteSessionMentions(text: string, sends: readonly SessionSend[] | undefined, sessions: readonly LocalSession[], markdown: boolean): string {
+/** The session chips a message references, with the label captured when it was sent. */
+export type SessionReferences = Pick<CanonicalRoomMessage, "sessionMentions" | "sessionTargetLabels"> | undefined;
+
+function rewriteSessionMentions(text: string, refs: SessionReferences, sessions: readonly LocalSession[], markdown: boolean): string {
+  const sends = (refs?.sessionMentions ?? []).map((sessionId) => ({ sessionId, displayLabel: refs?.sessionTargetLabels?.[sessionId] }));
   const pattern = new RegExp(`(^|[\\s(])@((?:claude|codex)-[a-z0-9-]+)(?![\\w.-]|\\]\\()`, "gi");
   return proseSegments(text).map((segment, index) => index % 2 === 0
     ? segment.replace(pattern, (match, lead: string, token: string) => {
       const legacyId = /([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/i.exec(token)?.[1];
-      const matching = (sends ?? []).filter((send) => {
+      const matching = sends.filter((send) => {
         const session = sessions.find((item) => item.sessionId === send.sessionId);
         const parts = send.displayLabel?.split(" · ") ?? [];
         const tool = parts[0];
@@ -191,13 +195,13 @@ function rewriteSessionMentions(text: string, sends: readonly SessionSend[] | un
 }
 
 /** Turn a session tag into a readable mention chip, including old UUID tags. */
-export function linkifySessionMentions(text: string, sends: readonly SessionSend[] | undefined, sessions: readonly LocalSession[] = []): string {
-  return rewriteSessionMentions(text, sends, sessions, true);
+export function linkifySessionMentions(text: string, refs: SessionReferences, sessions: readonly LocalSession[] = []): string {
+  return rewriteSessionMentions(text, refs, sessions, true);
 }
 
 /** Readable text for previews and accessibility labels that cannot render Markdown. */
-export function displaySessionMentions(text: string, sends: readonly SessionSend[] | undefined, sessions: readonly LocalSession[] = []): string {
-  return rewriteSessionMentions(text, sends, sessions, false);
+export function displaySessionMentions(text: string, refs: SessionReferences, sessions: readonly LocalSession[] = []): string {
+  return rewriteSessionMentions(text, refs, sessions, false);
 }
 
 export type TriggerKind = "mention" | "emoji";

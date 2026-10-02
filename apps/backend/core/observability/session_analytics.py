@@ -72,25 +72,3 @@ def capture_session_event(
         properties=properties,
         event_uuid=str(uuid.uuid5(_NS, f"{row['ownerId']}:{row['sessionId']}:{event}:{key}")),
     )
-
-
-def capture_session_mention(
-    owner_id: str,
-    user_id: str,
-    session_id: str,
-    message_id: str,
-    outcome: Literal["admitted", "rejected"],
-) -> None:
-    """Record the saved per-target result, including a failed admission."""
-    capture_product_event(
-        distinct_id=user_id,
-        event="local_session_mention_outcome",
-        properties={
-            "workspace_id": owner_id,
-            "session_id": session_id,
-            "request_id": f"m-{message_id}-{session_id}",
-            "origin": "room_mention",
-            "state": outcome,
-        },
-        event_uuid=str(uuid.uuid5(_NS, f"{owner_id}:{session_id}:{message_id}:mention")),
-    )

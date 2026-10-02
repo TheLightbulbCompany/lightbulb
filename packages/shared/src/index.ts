@@ -222,7 +222,7 @@ export { agentRingState, mergeChats, roomActivityAt, roomPreview, sessionActivit
 export type { AvatarRing, ChatEntry, MergeChatsOptions } from "./messaging/chatList";
 export { lastOwnMessageId, readState, readStateLabel, UNPROMPTED_LABEL, unpromptedLabel } from "./messaging/readState";
 export type { ReadState } from "./messaging/readState";
-export { AUTO_CHECK_INTERVAL_MS, COMMAND_MAX_BYTES, pendingPrompt, receiptChip, useSessionCommand, useSessionSendReceipt, usePendingPrompt, useSessionOutbox, type SessionReceiptChip } from "./messaging/useSessionCommand";
+export { AUTO_CHECK_INTERVAL_MS, COMMAND_MAX_BYTES, pendingPrompt, receiptChip, useSessionCommand, usePendingPrompt, useSessionOutbox, type SessionReceiptChip } from "./messaging/useSessionCommand";
 export { APPROVAL_MODE_LABEL, auditLine, COMMIT_AND_PR_INSTRUCTION, canControlSession, pickupSource, pickupStatus, sessionFacts, sessionFooter, usageLine, useNativeSendApproval, useSessionApproval, useSessionAudit, useSessionJoinRequest, useSessionPickupPermission, useSessionSharing, useTeamControl, useUsageSharing, withAuditNotices } from "./messaging/sessionControls";
 export type { ApprovalAnswer, PrivateSendApproval, SessionControlClient } from "./messaging/sessionControls";
 export type { NativeSendDecision, NativeSendReceipt } from "./messaging/types";
@@ -249,7 +249,6 @@ export type {
   WorkspaceSessions,
   CanonicalRoomMessage,
   CreateMessageRequest,
-  SessionSend,
   CreateRoomRequest,
   UpdateMessageRequest,
   MessageAttachment,

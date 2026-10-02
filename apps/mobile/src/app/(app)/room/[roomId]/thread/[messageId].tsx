@@ -274,7 +274,6 @@ export default function ThreadScreen() {
                 message={root}
                 collapsed={false}
                 replyCount={0}
-                receiptRefreshKey={replies.length}
                 currentUserId={userId ?? ""}
                 reactionError={reactionErrorMessageId === root.messageId}
                 onToggleReaction={(emoji, active) => reactToMessage(root.messageId, emoji, active)}
@@ -282,10 +281,6 @@ export default function ThreadScreen() {
                 attachmentUrl={rooms.attachmentUrl}
                 members={members ?? []}
                 sessionCandidates={sessionCandidates}
-                getSessionCommand={rooms.resourceSource.client.getLocalSessionCommand}
-                retrySessionSend={rooms.resourceSource.client.retrySessionSend}
-                cancelSessionSend={rooms.resourceSource.client.cancelSessionSend}
-                onSessionSendChanged={rooms.loadHistory}
               />
               <View style={[styles.hairline, { backgroundColor: palette.edge }]} />
               {replies.length > 0 && (
@@ -325,7 +320,6 @@ export default function ThreadScreen() {
                 message={item.message}
                 collapsed={item.collapsed}
                 replyCount={0}
-                receiptRefreshKey={replies.length}
                 currentUserId={userId ?? ""}
                 showTime={!noTimeIds.has(item.message.messageId)}
                 readLabel={
@@ -352,10 +346,6 @@ export default function ThreadScreen() {
                 attachmentUrl={rooms.attachmentUrl}
                 members={members ?? []}
                 sessionCandidates={sessionCandidates}
-                getSessionCommand={rooms.resourceSource.client.getLocalSessionCommand}
-                retrySessionSend={rooms.resourceSource.client.retrySessionSend}
-                cancelSessionSend={rooms.resourceSource.client.cancelSessionSend}
-                onSessionSendChanged={rooms.loadHistory}
               />
               {placed.after.get(item.message.messageId)?.map((run) => (
                 <RunBlock

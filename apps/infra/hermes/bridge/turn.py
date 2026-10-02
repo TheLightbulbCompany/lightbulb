@@ -2092,7 +2092,10 @@ def _turn_user_message(body: dict) -> str:
         return f"{msg.get('fromAddress') or 'unknown sender'}: {text}"
     if event_kind == "paperclip_run":
         return text
-    return f"{_display_name(body.get('sender') or {})}: {text}"
+    refs = "; ".join(f"{'Codex' if r.get('provider') == 'codex' else 'Claude Code'} · {r.get('title') or 'Session'} "
+                     f"({r.get('status')}) [{r.get('sessionId')}]" for r in body.get("referencedSessions") or [])
+    # A session chip is a reference: read it with lightbulb_local_sessions; it was not messaged.
+    return f"{_display_name(body.get('sender') or {})}: {text}" + (f"\nReferenced sessions: {refs}" if refs else "")
 
 
 def _hermes_home_scope(agent_id: str):

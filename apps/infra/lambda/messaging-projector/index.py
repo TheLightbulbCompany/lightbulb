@@ -822,24 +822,6 @@ def _project_message_update(item: dict[str, Any]) -> None:
     _publish_preview_change(item, meta, revision)
 
 
-def _project_session_sends_update(item: dict[str, Any]) -> None:
-    room_id = _require_uuid(item.get("roomId"), "roomId")
-    message_id = _require_uuid(item.get("messageId"), "messageId")
-    seq = _require_int(item.get("messageSeq"), "messageSeq", minimum=1)
-    meta = _get_item(f"ROOM#{room_id}", "META")
-    if not meta:
-        raise ValueError("room metadata is missing")
-    delivery_key = _require_uuid(meta.get("deliveryKey"), "deliveryKey")
-    workspace_id = _workspace_id_for_meta(f"ROOM#{room_id}", "META", meta)
-    if workspace_id is None:
-        return
-    _publish(f"/ws/{workspace_id}/rooms/{room_id}/{delivery_key}", {
-        "schemaVersion": 1, "eventId": str(uuid5(UUID(message_id), "session-sends")),
-        "type": "room.message.updated", "occurredAt": item["sessionSendsAt"], "roomId": room_id,
-        "payload": {"roomId": room_id, "messageId": message_id, "messageSeq": seq},
-    })
-
-
 def _project_message(item: dict[str, Any]) -> None:
     # A delayed INSERT replay must not republish content subsequently deleted.
     latest = _get_item(item["pk"], item["sk"])
@@ -937,8 +919,6 @@ def process_record(record: dict[str, Any]) -> None:
         # The stream contains NEW_IMAGE only. Later reaction writes replay the
         # same revision's event ID, which clients already deduplicate.
         if sk.startswith("MSG#"):
-            if item.get("sessionSendsAt"):
-                _project_session_sends_update(item)
             if int(item.get("messageRevision", 0)) > 0 and not _thread_touch_only(item):
                 _project_message_update(item)
         return

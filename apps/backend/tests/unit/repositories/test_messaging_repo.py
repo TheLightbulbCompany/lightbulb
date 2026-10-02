@@ -133,19 +133,6 @@ async def _post_write(room_id, text="hi", targets=None, client_id="m-1", author=
 
 
 @pytest.mark.asyncio
-async def test_session_sends_update_advances_room_revision_once(table):
-    room_id, _ = await _room()
-    message = await _post(room_id)
-    first = [{"sessionId": "s1", "requestId": "r1"}]
-    updated = await repo.set_session_sends(room_id, message["messageSeq"], first)
-    assert updated["sessionSends"] == first and updated["sessionSendsAt"]
-    assert (await repo.get_room(room_id))["sessionSendsRevision"] == 1
-    replay = await repo.set_session_sends(room_id, message["messageSeq"], [{"sessionId": "s2", "error": "later"}])
-    assert replay["sessionSends"] == first
-    assert (await repo.get_room(room_id))["sessionSendsRevision"] == 1
-
-
-@pytest.mark.asyncio
 async def test_message_edits_keep_identity_work_and_receipts_and_delete_to_tombstone(table):
     from core.services.messaging import canonical_message
     from core.services.openclaw_work import _public_message

@@ -31,6 +31,7 @@ from .schemas import (
     PatchIssueBody,
     PatchWorkProductBody,
     ResolveIssueRecoveryActionBody,
+    UpsertIssueWatchdogBody,
 )
 
 router = APIRouter()
@@ -309,6 +310,41 @@ async def monitor_check_now(issue_id: CompanyIssueId, ctx: TeamsContext = Depend
     """
     await require_trial_runway(ctx.owner_id)
     return await _agents._admin().monitor_check_now(
+        issue_id=issue_id,
+        session_cookie=ctx.session_cookie,
+    )
+
+
+@router.put("/issues/{issue_id}/watchdog")
+async def upsert_issue_watchdog(
+    issue_id: CompanyIssueId,
+    body: UpsertIssueWatchdogBody,
+    ctx: TeamsContext = Depends(_ctx),
+):
+    """Arm (or re-point) the issue's task watchdog: a named agent that reviews
+    the issue's subtree when it goes quiet. Maps to upstream
+    ``PUT /api/issues/{id}/watchdog``. The issue detail already carries the
+    active watchdog as ``issue.watchdog``, so there is no GET here.
+
+    Upstream evaluates the watchdog as soon as it is armed, so on a subtree
+    that is already quiet this opens the review task and wakes the agent right
+    away: a spend front door like ``monitor/check-now``, gated the same way.
+    The DELETE below is deliberately not gated, so a watchdog can always be
+    removed.
+    """
+    await require_trial_runway(ctx.owner_id)
+    return await _agents._admin().upsert_issue_watchdog(
+        issue_id=issue_id,
+        body=body.model_dump(exclude_unset=True, by_alias=True),
+        session_cookie=ctx.session_cookie,
+    )
+
+
+@router.delete("/issues/{issue_id}/watchdog")
+async def delete_issue_watchdog(issue_id: CompanyIssueId, ctx: TeamsContext = Depends(_ctx)):
+    """Remove the issue's task watchdog. Maps to upstream
+    ``DELETE /api/issues/{id}/watchdog``."""
+    return await _agents._admin().delete_issue_watchdog(
         issue_id=issue_id,
         session_cookie=ctx.session_cookie,
     )

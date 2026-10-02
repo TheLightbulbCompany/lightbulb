@@ -16,6 +16,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { useIssueMutations } from "./hooks/useIssueMutations";
 import { emitStep } from "@/components/getstarted/getStartedEvents";
 import { assignableMembers, parseAssigneeValue } from "@/components/teams/shared/lib/assignees";
+import { workModeMetaList } from "@/components/teams/shared/lib/workModeMeta";
 import type {
   CompanyAgent,
   CompanyMember,
@@ -46,11 +47,7 @@ const STATUS_OPTIONS: { value: IssueStatus; label: string }[] = [
   { value: "cancelled", label: "Cancelled" },
 ];
 
-const WORK_MODE_OPTIONS: { value: IssueWorkMode; label: string }[] = [
-  { value: "standard", label: "Standard" },
-  { value: "ask", label: "Ask" },
-  { value: "planning", label: "Planning" },
-];
+const WORK_MODE_OPTIONS = workModeMetaList();
 
 export interface NewIssueDialogProps {
   open: boolean;
@@ -346,7 +343,7 @@ export function NewIssueDialog({
             })}
           </div>
           <p className="mt-1 text-xs" style={labelStyle}>
-            Standard runs autonomously; Ask pauses for input; Planning plans first.
+            Auto does the work; Plan writes a plan for you to accept first; Ask answers without doing the work.
           </p>
         </div>
         {(agents.length > 0 || people.length > 0) && (

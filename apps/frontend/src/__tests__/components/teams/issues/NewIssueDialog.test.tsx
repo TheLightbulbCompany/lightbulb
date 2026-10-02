@@ -77,8 +77,9 @@ describe("NewIssueDialog", () => {
     await user.type(screen.getByPlaceholderText("Task title"), "Wire the composer");
     // Status preset → Todo (native <select>).
     await user.selectOptions(screen.getByLabelText("Status"), "todo");
-    // Work mode segmented control → Planning (radiogroup of pill buttons).
-    await user.click(screen.getByRole("radio", { name: "Planning" }));
+    // Work mode segmented control → Plan mode (radiogroup of pill buttons,
+    // labelled from the ported upstream work-mode meta).
+    await user.click(screen.getByRole("radio", { name: "Plan mode" }));
     await user.click(screen.getByRole("button", { name: "Create task" }));
 
     expect(mockCreate).toHaveBeenCalledWith(

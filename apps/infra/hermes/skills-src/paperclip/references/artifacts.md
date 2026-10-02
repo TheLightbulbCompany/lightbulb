@@ -50,8 +50,9 @@ revision. Create a `request_confirmation` issue-thread interaction whose
 Then move the source issue to `in_review` with a comment that names the pending
 decision. This is a deliberate waiting path — **wait for acceptance before
 creating implementation subtasks.** The bundled helper builds the common case:
-`/app/skills/paperclip/scripts/paperclip-api.sh confirm <issueId> --prompt "Accept this plan?"`
-(details markdown on stdin). See `SKILL.md` and `references/api-reference.md`
+`/app/skills/paperclip/scripts/paperclip-api.sh confirm <issueId> --plan --prompt "Accept this plan?"`
+(details markdown on stdin; `--plan` reads the latest plan revision and sets
+that `target` for you). See `SKILL.md` and `references/api-reference.md`
 for the full interaction payload and the stale-target/rebuild rules.
 
 **A deliverable asked for in chat is a document too.** When an owner asks in

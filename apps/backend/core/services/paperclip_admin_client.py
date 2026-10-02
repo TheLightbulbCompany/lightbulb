@@ -2109,6 +2109,43 @@ class PaperclipAdminClient:
             session_cookie=session_cookie,
         )
 
+    async def upsert_issue_watchdog(
+        self,
+        *,
+        session_cookie: str,
+        issue_id: str,
+        body: dict,
+    ) -> dict:
+        """Arm (or re-point) the issue's task watchdog. Body whitelisted by the
+        BFF (``UpsertIssueWatchdogBody``).
+
+        Maps to ``PUT /api/issues/{id}/watchdog`` → the watchdog. One per
+        issue; upstream 409s when the named agent is not invokable. This is the
+        task watchdog (a named agent reviewing a quiet subtree), not the
+        run-silence watchdog on a run.
+        """
+        _status, watchdog = await self._put(
+            f"/api/issues/{issue_id}/watchdog",
+            json=body,
+            session_cookie=session_cookie,
+        )
+        return watchdog
+
+    async def delete_issue_watchdog(
+        self,
+        *,
+        session_cookie: str,
+        issue_id: str,
+    ) -> dict:
+        """Remove the issue's task watchdog.
+
+        Maps to ``DELETE /api/issues/{id}/watchdog`` → ``{ok: true}``.
+        """
+        return await self._delete(
+            f"/api/issues/{issue_id}/watchdog",
+            session_cookie=session_cookie,
+        )
+
     async def retry_scheduled_retry_now(
         self,
         *,

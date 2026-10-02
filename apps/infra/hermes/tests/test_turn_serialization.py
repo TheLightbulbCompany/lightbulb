@@ -74,12 +74,10 @@ def test_a_turn_aborted_while_queued_never_runs(home, posted, monkeypatch):
 
     monkeypatch.setattr(turn, "_construct_agent",
                         lambda *args: SimpleNamespace(run_conversation=run_conversation))
-    # materialize_attachments is the first statement of _run_hermes, just OUTSIDE the lock:
-    # seeing the second call proves the queued turn is past run_turn's own pre-lock abort check
-    # and can only be blocked on _turn_lock.
-    real = turn.sync.materialize_attachments
-    monkeypatch.setattr(turn.sync, "materialize_attachments",
-                        lambda body, base: (queued.set() if ran else None, real(body, base))[1])
+    # Seeing the second call into the lock proves the queued turn is past run_turn's own
+    # pre-lock abort check and can only be blocked on _turn_lock.
+    real = turn._waiting_turn_lock
+    monkeypatch.setattr(turn, "_waiting_turn_lock", lambda *a: (queued.set() if ran else None, real(*a))[1])
 
     def start(run_id):
         thread = threading.Thread(target=turn.run_turn, args=(

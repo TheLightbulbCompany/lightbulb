@@ -184,7 +184,7 @@ def test__run_hermes_lists_only_the_current_messages_media_not_history(home, mon
 
     turn._run_hermes("ceo", body, None)
 
-    ctx, _ = f.split_turn_input(seen["user_message"])
+    ctx, _ = f.split_turn_input(seen["persist_user_message"])
     media = ctx["media"]
     assert len(media) == 1
     assert media[0].endswith("current-image.png")
@@ -210,8 +210,9 @@ def test__run_hermes_sends_a_current_image_as_native_user_content(home, monkeypa
     assert base64.b64decode(encoded) == _RED_PNG
 
 
-def test__run_hermes_keeps_current_and_historical_images_on_their_messages(home, monkeypatch):
-    """Unseen room messages ride the user message, each image right after its own line."""
+def test__run_hermes_names_historical_images_and_embeds_only_the_current_one(home, monkeypatch):
+    """Hermes's gateway shape: an earlier image is its observed row's "saved at" note (vision_analyze
+    opens it); only the addressed message's own image rides natively."""
     _install_native_vision_stub(monkeypatch)
     seen = _capture_agent_call(monkeypatch)
 
@@ -237,14 +238,12 @@ def test__run_hermes_keeps_current_and_historical_images_on_their_messages(home,
 
     turn._run_hermes("ceo", body, None)
 
-    assert seen["conversation_history"] is None  # no state.db here: nothing recorded
     content = seen["user_message"]
-    assert [part["type"] for part in content] == ["text", "image_url", "text", "image_url", "text", "image_url"]
-    assert content[0]["text"].endswith(f"{turn.RECENT_HEADER}\nCEO (you): earlier")
-    assert content[2]["text"] == "Prez: past"
-    assert content[4]["text"] == "\nPrez: now"
-    decoded = [base64.b64decode(content[i]["image_url"]["url"].split(",", 1)[1]) for i in (1, 3, 5)]
-    assert decoded == [_BLUE_PNG, _BLUE_PNG, _RED_PNG]
+    assert [part["type"] for part in content] == ["text", "image_url"]
+    folder = sync.turn_media_root() / f"ceo.{f.ROOM}"
+    assert f"[CEO|ceo]\nearlier\n\n[image 'own.png' saved at: {folder / 'own-image.png'}]" in content[0]["text"]
+    assert f"[Prez|user_1]\npast\n\n[image 'past.png' saved at: {folder / 'history-image.png'}]" in content[0]["text"]
+    assert base64.b64decode(content[1]["image_url"]["url"].split(",", 1)[1]) == _RED_PNG
 
 
 def test__run_hermes_does_not_turn_a_pdf_into_image_content(home, monkeypatch):
@@ -280,26 +279,18 @@ def test_native_image_content_uses_the_resized_bytes_and_cleans_up(home, monkeyp
     assert cleaned == [source]
 
 
-def test_image_budget_keeps_current_then_newest_history_without_dropping_text(home, monkeypatch):
+def test_image_budget_caps_the_current_messages_native_images(home, monkeypatch):
     _install_native_vision_stub(monkeypatch)
     seen = _capture_agent_call(monkeypatch)
     monkeypatch.setattr(sync, "_get_backend_bytes", lambda _path: _RED_PNG)
-
-    def message(seq):
-        return f.message(messageId=f"m{seq}", messageSeq=seq, text=f"text {seq}", attachments=[
-            {"id": f"a{seq}-{i}", "fileName": "image.png", "contentType": "image/png", "size": len(_RED_PNG)}
-            for i in range(4)
-        ])
-
-    body = f.ingress(message=message(7), recentHistory=[message(seq) for seq in range(1, 7)])
+    body = f.ingress(message=f.message(text="many", attachments=[
+        {"id": f"a{i}", "fileName": "image.png", "contentType": "image/png", "size": len(_RED_PNG)}
+        for i in range(turn.MAX_NATIVE_IMAGES + 4)
+    ]))
     turn._run_hermes("ceo", body, None)
     content = seen["user_message"]
-    texts = "".join(part["text"] for part in content if part["type"] == "text")
-    for seq in range(1, 7):  # every line kept; only seq 3-6 and the current message carry images
-        assert f"Prez: text {seq}" in texts
-    assert texts.endswith("\nPrez: text 7")
-    assert sum(part["type"] == "image_url" for part in content) == 20
-    assert content[-5]["type"] == "text" and all(part["type"] == "image_url" for part in content[-4:])
+    assert content[0]["type"] == "text" and f.split_turn_input(content)[1] == "Prez: many"
+    assert [part["type"] for part in content[1:]] == ["image_url"] * turn.MAX_NATIVE_IMAGES
 
 
 def test_a_failed_attachment_fetch_is_skipped_not_fatal(home, monkeypatch):

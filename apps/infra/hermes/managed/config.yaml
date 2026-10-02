@@ -49,3 +49,10 @@ agent:
     # (a clone, a build) is real work here; stops come from the run's own abort and the backend's
     # heartbeat sweeper, as before state.db. 0 = off (agent/turn_liveness.py).
     timeout_s: 0
+compression:
+  # A room runs on one Hermes transcript for its whole life, replayed on every model call of every
+  # turn. Hermes compacts at 75% of the window by default (~150k tokens on our 200k pin), past the
+  # openrouter-gate's paid-mode bound (a request body over max_prompt_tokens=400000 bytes is a 413,
+  # roughly 100k tokens). This compacts at a predictable per-call size instead, under that bound
+  # with room for the tool schemas and a turn's own tool output.
+  threshold_tokens: 60000

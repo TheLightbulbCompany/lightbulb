@@ -22,25 +22,35 @@ CALL = {"agentId": "ceo", "runId": "run-call", "callId": "call-1", "sessionId": 
 
 
 class FakeDB:
-    """The SessionDB surface the bridge calls."""
+    """The SessionDB surface the bridge calls. ``transcripts`` holds each session's rows."""
 
     def __init__(self, path, tips=None, meta=None, transcripts=None):
-        self.path, self.tips, self.cleared = path, tips or {}, []
+        self.path, self.tips = path, tips or {}
         self.meta, self.transcripts = meta or {}, transcripts or {}
-        self.ended, self.maintained, self.reads = [], [], []
+        self.ended, self.maintained, self.reads, self.prompts = [], [], [], []
 
     def resolve_resume_session_id(self, sid):
         return self.tips.get(sid, sid)
 
     def update_system_prompt(self, sid, prompt):
-        self.cleared.append((sid, prompt))
+        self.prompts.append((sid, prompt))
 
     def get_messages_as_conversation(self, sid, repair_alternation=False):
-        assert repair_alternation  # live replay, as the gateway loads it
+        assert not repair_alternation  # observed rows are split out before Hermes's repair
         self.reads.append(sid)
         if isinstance(self.transcripts.get(sid), BaseException):
             raise self.transcripts[sid]
-        return self.transcripts.get(sid, [])
+        return [dict(r) for r in self.transcripts.get(sid, [])]
+
+    def has_platform_message_id(self, sid, pid):
+        return any(r.get("message_id") == pid for r in self.transcripts.get(sid, []))
+
+    def message_count(self, sid=None):
+        return len(self.transcripts.get(sid, []))
+
+    def append_message(self, session_id, role, content, platform_message_id=None, observed=False):
+        row = {"role": role, "content": content, **({"message_id": platform_message_id} if platform_message_id else {})}
+        self.transcripts.setdefault(session_id, []).append({**row, **({"observed": True} if observed else {})})
 
     def get_session(self, sid):
         return {"id": sid, "model_config": json.dumps(self.meta[sid])} if sid in self.meta else None
@@ -55,6 +65,18 @@ class FakeDB:
     def maybe_auto_prune_and_vacuum(self, retention_days):
         self.maintained.append(retention_days)
         return {"pruned": 0}
+
+
+class HandleCache:
+    """gateway.session_db_recovery.RecoverableHandleCache, minus the backoff."""
+
+    def __init__(self):
+        self.handles = {}
+
+    def get(self, path, opener):
+        if path not in self.handles:
+            self.handles[path] = opener()
+        return self.handles[path]
 
 
 #: What the fake AIAgent's next run_conversation calls return (or raise), in order; then "ok".
@@ -95,9 +117,17 @@ def hermes(monkeypatch):
         def steer(self, text):
             return True
 
+        def _ensure_db_session(self):
+            pass
+
     monkeypatch.setitem(sys.modules, "hermes_state_registry", types.SimpleNamespace(acquire=acquire))
+    monkeypatch.setitem(sys.modules, "gateway", sys.modules.get("gateway") or types.ModuleType("gateway"))
+    monkeypatch.setitem(sys.modules, "gateway.session_db_recovery", types.SimpleNamespace(RecoverableHandleCache=HandleCache))
+    monkeypatch.setitem(sys.modules, "agent", sys.modules.get("agent") or types.ModuleType("agent"))
+    monkeypatch.setitem(sys.modules, "agent.agent_runtime_helpers",
+                        types.SimpleNamespace(repair_message_sequence=lambda _agent, _messages: 0))
     monkeypatch.setitem(sys.modules, "run_agent", types.SimpleNamespace(AIAgent=AIAgent))
-    monkeypatch.setattr(turn, "_session_dbs", {})
+    monkeypatch.setattr(turn, "_session_dbs", None)
     monkeypatch.setattr(turn, "pin_profile_defaults", lambda _a: {})
     monkeypatch.setattr(turn, "profile_toolsets", lambda: (None, None))
     monkeypatch.setattr(turn, "_capture_api_errors", lambda _a: None)
@@ -164,16 +194,18 @@ def test_a_compressed_session_continues_on_its_tip(hermes, home):
     assert built[0].kw["gateway_session_key"] == key  # routing keeps the stable key
 
 
-def test_the_stored_prompt_is_never_reused(hermes, home):
-    """Hermes rebuilds the prompt from our system_message only when no stored prompt is present."""
+def test_a_room_keeps_hermes_stored_prompt_and_its_own_context_rides_as_ephemeral(hermes, home):
+    """Hermes reuses a continuing session's stored prompt (prefix cache); the room's per-turn
+    context is added at API time, never stored, as the gateway passes channel context."""
     _acquired, built, dbs = hermes
     _run_room()
     db = dbs[sync._profile_dir("ceo") / "state.db"]
-    assert db.cleared == [(built[0].session_id, None)]
+    assert db.prompts == [] and _said(built)["system_message"] is None
+    assert built[0].ephemeral_system_prompt.endswith(turn._observe_prompt("ceo", f.ingress()))
 
 
 def test_turns_run_unrecorded_outside_the_hermes_image(monkeypatch, home):
-    monkeypatch.setattr(turn, "_session_dbs", {})
+    monkeypatch.setattr(turn, "_session_dbs", None)
     monkeypatch.delitem(sys.modules, "hermes_state_registry", raising=False)
     assert turn._session_db("ceo") is None
 
@@ -199,88 +231,105 @@ def _said(built):
     return call
 
 
-def test_the_history_is_the_sessions_transcript_at_its_compression_tip(hermes, home):
-    """Exactly the rows Hermes holds -- the same list, so the flush skips every one by identity
-    and an in-place compaction acts on what the model saw."""
-    _acquired, built, dbs = hermes
-    rows = [{"role": "user", "content": "Prez: hi"}, {"role": "assistant", "content": "hello"}]
-    db = _room_db(dbs, tips={ROOM_KEY: "child"}, transcripts={"child": rows}, meta={"child": {turn.ROOM_SEQ: 9}})
-    _room_turn()
-    assert db.reads == ["child"] and _said(built)["conversation_history"] is rows
+def _observed(*lines):
+    return f"{turn.OBSERVED_HEADER}\n" + "\n".join(lines) + f"\n\n{turn.ADDRESSED_HEADER}\n"
 
 
-def test_a_first_room_turn_sees_the_recent_window_its_own_messages_included(hermes, home):
+ANA = {"kind": "human", "id": "user_2", "displayName": "Ana"}
+
+
+def test_a_room_turn_runs_on_its_transcript_and_observes_what_it_does_not_hold(hermes, home):
+    """The gateway's observed group context: unheld room messages become observed rows, kept out
+    of the replayed history and handed over ahead of the addressed message. Its own room-turn
+    reply is held (it answers a trigger the session recorded); its post from elsewhere is not."""
     _acquired, built, dbs = hermes
-    db = _room_db(dbs)
-    _room_turn(f.message(messageSeq=3, text="plan?"), f.message(messageSeq=4, author=ME, text="on it"),
-               f.message(messageSeq=5, text=""))
+    db = _room_db(dbs, transcripts={ROOM_KEY: [{"role": "user", "content": "Prez: hi", "message_id": "m1"},
+                                               {"role": "assistant", "content": "hello"}]})
+    body = _room_turn(f.message(messageId="m1", messageSeq=1, text="hi"),
+                      f.message(messageId="r1", messageSeq=2, author=ME, text="hello", replyToMessageId="m1"),
+                      f.message(messageId="m2", messageSeq=3, author=ANA, text="hey"),
+                      f.message(messageId="p1", messageSeq=4, author=ME, text="nightly digest"))
     call = _said(built)
-    assert call["conversation_history"] is None  # nothing recorded yet
-    ctx, text = f.split_turn_input(call["user_message"])
-    assert text == f"{turn.RECENT_HEADER}\nPrez: plan?\nCEO (you): on it\n\nPrez: now"
-    assert db.meta[ROOM_KEY][turn.ROOM_SEQ] == 10  # the trigger
+    assert call["conversation_history"] == db.transcripts[ROOM_KEY][:2]  # observed rows stay out
+    assert [r for r in db.transcripts[ROOM_KEY] if r.get("observed")] == [
+        {"role": "user", "content": "[Ana|user_2]\nhey", "message_id": "m2", "observed": True},
+        {"role": "user", "content": "[CEO|ceo]\nnightly digest", "message_id": "p1", "observed": True}]
+    turn_text = call["persist_user_message"]  # the observed block is API-only, as in the gateway
+    assert call["user_message"] == _observed("[Ana|user_2]\nhey", "[CEO|ceo]\nnightly digest") + turn_text
+    assert f.split_turn_input(turn_text)[1] == "Prez: now"
+    assert call["persist_user_platform_id"] == body["message"]["messageId"]  # held from now on
 
 
-def test_a_later_turn_sees_only_what_arrived_since_minus_its_own_and_its_steers(hermes, home):
-    _acquired, built, dbs = hermes
-    db = _room_db(dbs, meta={ROOM_KEY: {turn.ROOM_SEQ: 5, turn.ROOM_STEERED: ["steered"]}})
-    _room_turn(f.message(messageSeq=4, text="old"), f.message(messageSeq=6, author=ME, text="my reply"),
-               f.message(messageId="steered", messageSeq=7, text="also X"),
-               f.message(messageSeq=8, author={"kind": "human", "id": "user_2", "displayName": "Ana"}, text="hey"))
-    _ctx, text = f.split_turn_input(_said(built)["user_message"])
-    assert text == f"{turn.UNSEEN_HEADER}\nAna: hey\n\nPrez: now"
-    assert db.meta[ROOM_KEY] == {turn.ROOM_SEQ: 10, turn.MEMORY_COUNTER: 0, turn.SKILL_COUNTER: 0}
-
-
-def test_nothing_unseen_leaves_the_message_as_it_was(hermes, home):
-    _acquired, built, dbs = hermes
-    _room_db(dbs, meta={ROOM_KEY: {turn.ROOM_SEQ: 9}})
-    _room_turn(f.message(messageSeq=9, text="seen"))
-    assert f.split_turn_input(_said(built)["user_message"])[1] == "Prez: now"
-
-
-def test_a_follow_up_without_a_cursor_sees_its_trigger_and_promise_then_moves_past_them(hermes, home):
+def test_a_rooms_first_turn_observes_the_whole_window(hermes, home):
     _acquired, built, dbs = hermes
     db = _room_db(dbs)
-    trigger = f.message(messageSeq=7, text="review it")
+    _room_turn(f.message(messageSeq=3, text="plan?"), f.message(messageSeq=4, author=ME, text="on it"))
+    assert [r["content"] for r in db.transcripts[ROOM_KEY]] == ["[Prez|user_1]\nplan?", "[CEO|ceo]\non it"]
+    assert _said(built)["conversation_history"] is None
+
+
+def test_a_window_with_nothing_held_says_older_messages_are_missing(hermes, home):
+    """More arrived than the backend's 50-message window: the window does not reach anything
+    the session already holds."""
+    _acquired, _built, dbs = hermes
+    db = _room_db(dbs, transcripts={ROOM_KEY: [{"role": "user", "content": "Prez: hi", "message_id": "m1"}]})
+    _room_turn(f.message(messageId="m60", messageSeq=60, text="late"))
+    assert [r["content"] for r in db.transcripts[ROOM_KEY][1:]] == [turn.OBSERVED_GAP, "[Prez|user_1]\nlate"]
+
+
+def test_nothing_unheld_leaves_the_message_as_it_was(hermes, home):
+    _acquired, built, dbs = hermes
+    _room_db(dbs, transcripts={ROOM_KEY: [{"role": "user", "content": "Prez: seen", "message_id": "m9"}]})
+    _room_turn(f.message(messageId="m9", messageSeq=9, text="seen"))
+    call = _said(built)
+    assert f.split_turn_input(call["user_message"])[1] == "Prez: now" and "persist_user_message" not in call
+
+
+def test_a_follow_up_records_no_second_platform_id_for_its_trigger(hermes, home):
+    _acquired, built, dbs = hermes
+    trigger = f.message(messageId="t1", messageSeq=7, text="review it")
+    _room_db(dbs, transcripts={ROOM_KEY: [{"role": "user", "content": "Prez: review it", "message_id": "t1"}]})
     body = f.ingress(message=trigger, eventId="fu-1",
                      followUp={"id": "fu-1", "reason": "delegation_completed", "text": "[IMPORTANT: done]"},
-                     recentHistory=[trigger, f.message(messageSeq=9, author=ME, text="I'll report back")])
+                     recentHistory=[trigger, f.message(messageSeq=9, author=ME, text="I'll report back",
+                                                       replyToMessageId="t1")])
     turn.parse_ingress(body)
     assert turn._run_hermes("ceo", body, None)[0] == "completed"
-    _ctx, text = f.split_turn_input(_said(built)["user_message"])
-    assert text == f"{turn.RECENT_HEADER}\nPrez: review it\nCEO (you): I'll report back\n\n[IMPORTANT: done]"
-    assert db.meta[ROOM_KEY][turn.ROOM_SEQ] == 9
+    call = _said(built)
+    assert "persist_user_platform_id" not in call
+    assert f.split_turn_input(call["user_message"])[1] == "[IMPORTANT: done]"  # trigger and promise held
 
 
-def test_a_turn_that_never_reached_the_model_keeps_the_cursor(hermes, home):
-    _acquired, _built, dbs = hermes
-    db = _room_db(dbs, meta={ROOM_KEY: {turn.ROOM_SEQ: 5}})
-    SCRIPT.append({"api_calls": 0, "final_response": "busy", "failed": True, "messages": []})
-    body = f.ingress(message=f.message(messageSeq=10), recentHistory=[f.message(messageSeq=6)])
-    turn._run_hermes("ceo", body, None)
-    assert db.meta[ROOM_KEY][turn.ROOM_SEQ] == 5
-
-
-def test_an_unreadable_transcript_runs_the_turn_unrecorded_on_the_recent_window(hermes, home):
-    _acquired, built, dbs = hermes
-    _room_db(dbs, transcripts={ROOM_KEY: sqlite3.DatabaseError("malformed")}, meta={ROOM_KEY: {turn.ROOM_SEQ: 5}})
-    _room_turn(f.message(messageSeq=4, text="old"))
-    call, db_seen, persist_off = built[0].calls[0]
-    assert call["conversation_history"] is None and db_seen is None and persist_off is True
-    assert f.split_turn_input(call["user_message"])[1] == f"{turn.RECENT_HEADER}\nPrez: old\n\nPrez: now"
-
-
-def test_steers_into_a_run_are_remembered_for_the_next_turn(hermes, home):
+def test_an_earlier_image_is_a_saved_at_note_every_later_turn_reopens(hermes, home, monkeypatch):
+    """Hermes's own media note (CachedMedia.context_note). The room's turn folder has the same
+    path on every turn and is re-filled with the window's attachments, so the note stays openable
+    for as long as the message is in the window -- and nothing outlives the turn."""
     _acquired, _built, dbs = hermes
     db = _room_db(dbs)
-    body = f.ingress(message=f.message(messageSeq=10))
-    run_id = body["run"]["runId"]
-    turn.register_run(run_id)
-    SCRIPT.append(lambda agent: (turn.steer_run(run_id, "Prez: also X", "m-steer"),
-                                 {"api_calls": 1, "final_response": "ok"})[1])
-    turn._run_hermes("ceo", body, None)
-    assert db.meta[ROOM_KEY][turn.ROOM_STEERED] == ["m-steer"]
+    monkeypatch.setattr(sync, "_get_backend_bytes", lambda _path: b"png")
+    att = {"id": "img-1", "fileName": "past.png", "contentType": "image/png", "size": 3}
+    _room_turn(f.message(messageId="m5", messageSeq=5, text="look", attachments=[att]))
+    path = sync.turn_media_root() / f"ceo.{f.ROOM}" / "img-1.png"
+    assert db.transcripts[ROOM_KEY][0]["content"] == f"[Prez|user_1]\nlook\n\n[image 'past.png' saved at: {path}]"
+    assert not path.exists()
+
+
+def test_an_unrecorded_room_turn_sees_its_window_as_observed_context(monkeypatch, home):
+    seen = {}
+    monkeypatch.setattr(turn, "_construct_agent", lambda *a, **k: types.SimpleNamespace(
+        model="m", run_conversation=lambda **kw: seen.update(kw) or {"api_calls": 1, "final_response": "ok"}))
+    turn._run_hermes("ceo", f.ingress(message=f.message(messageSeq=10, text="now"),
+                                      recentHistory=[f.message(messageSeq=4, text="old")]), None)
+    assert seen["user_message"].startswith(_observed("[Prez|user_1]\nold"))
+    assert "conversation_history" not in seen
+
+
+def test_an_unreadable_transcript_fails_the_turn(hermes, home):
+    """As Hermes's gateway: a failed canonical read is not an empty conversation."""
+    _acquired, _built, dbs = hermes
+    _room_db(dbs, transcripts={ROOM_KEY: sqlite3.DatabaseError("malformed")})
+    with pytest.raises(sqlite3.DatabaseError):
+        _room_turn()
 
 
 # ---- the review counters carry across turns ------------------------------------------------------
@@ -302,52 +351,18 @@ def test_the_review_counters_survive_the_per_turn_agent(hermes, home):
     assert db.meta[key] == {turn.MEMORY_COUNTER: 0, turn.SKILL_COUNTER: 11}
 
 
-# ---- a state.db failure never costs the turn -----------------------------------------------------
-def _failed(cause):
-    def run(agent):
-        agent._last_persistence_error_cause = cause
-        return {"api_calls": 1, "final_response": "", "failed": True,
-                "turn_exit_reason": "session_persistence_failed", "messages": []}
-    return run
-
-
-def test_a_broken_state_db_reruns_the_turn_unrecorded_and_stops_recording(hermes, home):
+# ---- a state.db failure fails the turn, as in Hermes's gateway -----------------------------------
+def test_a_state_db_failure_is_reported_never_rerun(hermes, home):
+    """Hermes stops the round before its tools run; a rerun could repeat an earlier round's."""
     _acquired, built, _dbs = hermes
-    SCRIPT.append(_failed("disk"))
-    _run_paperclip()  # asserts "completed"
-    (agent,) = built
-    (_kw, first_db, _), (_kw2, second_db, persist_off) = agent.calls
-    assert first_db is not None and second_db is None and persist_off is True
-    _run_paperclip()  # the next turn of this process runs unrecorded, without a failed attempt first
-    assert built[1].kw["session_db"] is None and len(built[1].calls) == 1
-
-
-def test_a_transient_failure_reruns_the_turn_but_keeps_recording(hermes, home):
-    _acquired, built, _dbs = hermes
-    SCRIPT.append(_failed("locked"))
-    _run_paperclip()
-    _run_paperclip()
-    assert built[1].kw["session_db"] is not None
-
-
-def test_a_state_db_error_escaping_the_run_reruns_it_unrecorded(hermes, home):
-    _acquired, built, _dbs = hermes
-    SCRIPT.append(sqlite3.DatabaseError("database disk image is malformed"))
-    _run_paperclip()
-    assert [db is None for _kw, db, _ in built[0].calls] == [False, True]
-
-
-def test_a_failure_after_a_tool_ran_is_not_rerun(hermes, home):
-    """A re-run would repeat the tool's side effects; the turn reports its failure instead."""
-    _acquired, built, _dbs = hermes
-
-    def tool_ran(agent):
-        result = _failed("disk")(agent)
-        result["messages"] = [{"role": "user"}, {"role": "assistant"}, {"role": "tool"}]
-        return result
-    SCRIPT.append(tool_ran)
-    assert turn._run_native_paperclip(PAPERCLIP, {"input": "go", "instructions": "do"})[0] == "failed"
+    SCRIPT.append({"api_calls": 1, "final_response": "", "failed": True,
+                   "turn_exit_reason": "session_persistence_failed", "messages": []})
+    assert _run_paperclip_outcome() == "failed"
     assert len(built[0].calls) == 1
+
+
+def _run_paperclip_outcome():
+    return turn._run_native_paperclip(PAPERCLIP, {"input": "go", "instructions": "do"})[0]
 
 
 def test_an_interrupted_turn_is_an_error_never_a_reply(hermes, home):

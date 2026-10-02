@@ -14,10 +14,12 @@ from core.services import jev
 
 KEY = "vck_super_secret_key_value"
 _RealClient = httpx.AsyncClient
+_REAL_READ_SECRET = jev._read_secret  # conftest stubs it for every other test
 
 
 @pytest.fixture(autouse=True)
 def _reset(monkeypatch):
+    monkeypatch.setattr(jev, "_read_secret", _REAL_READ_SECRET)
     monkeypatch.setattr(jev, "_key", None)
     monkeypatch.setattr(jev, "_key_checked_at", 0.0)
     monkeypatch.setattr(jev, "_cards", {})

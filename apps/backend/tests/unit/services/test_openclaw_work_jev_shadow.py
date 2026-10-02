@@ -75,6 +75,7 @@ def store(monkeypatch):
     monkeypatch.setattr(jev.messaging_repo, "claim_decision", claim)
     monkeypatch.setattr(jev.messaging_repo, "finalize_decision", finalize)
     monkeypatch.setattr(jev.messaging_repo, "get_decision", get)
+    monkeypatch.setattr(jev.messaging_repo, "list_open_runs_for_room", AsyncMock(return_value=[]))
     monkeypatch.setattr(jev, "_gateway_key", AsyncMock(return_value="k"))
     monkeypatch.setattr(jev, "agent_card", AsyncMock(side_effect=lambda o, a, name, rec="": f"{name} card. {rec}"))
     return rows
@@ -114,9 +115,10 @@ async def test_decision_computed_once_and_returned_to_every_candidate(monkeypatc
     assert got[0] == got[1] and got[0]["who"] == "a1"
     state, questions = decide.await_args.args
     assert state["room"] == {"kind": "channel", "name": "general"}
-    assert state["recent"] == [{"author": "Growth (agent)", "text": "x" * 1000}]
+    # Routing v2 §5: who wrote it, what kind, and "self" when one of the options wrote it.
+    assert state["recent"] == [{"author": "Growth", "kind": "agent", "self": True, "text": "x" * 1000}]
     assert "thread" not in state
-    assert state["latest"]["author"] == "Aden (human)"
+    assert state["latest"]["author"] == "Aden" and state["latest"]["kind"] == "human"
     who = questions["who"]
     # The owner's bar (2026-09-24): would a good employee in this room naturally respond?
     assert who["instructions"] == jev.WHO_INSTRUCTIONS
@@ -125,6 +127,7 @@ async def test_decision_computed_once_and_returned_to_every_candidate(monkeypatc
     assert who["criteria"]["none"] == jev.NONE_CRITERION
     assert who["criteria"]["a2"] == "Growth card. Last spoke 3h ago."
     assert set(questions["placement"]["criteria"]) == {"main", "thread"}
+    assert questions["reask"]["type"] == questions["question"]["type"] == "boolean"
     row = store[(ROOM, "m1")]
     assert row["who"] == "a1" and row["placement"] == "thread" and row["whoP"]["a1"] == 0.9
     # Only what dispatch reads is stored (ponytail audit #30).
@@ -901,3 +904,122 @@ async def test_a_follow_up_keeps_the_bridge_placement(monkeypatch):
     follow_up = {"id": "11111111-1111-1111-1111-111111111111", "reason": "delegation_completed", "text": "done"}
     posted, _, _ = await _dispatch(monkeypatch, "room_event", route=AsyncMock(), follow_up=follow_up)
     assert "replyThreadRootId" not in posted[0]
+
+
+# ---- Routing v2 §5 / §12.8 / §12.9: structured input, reask and question policies -------------------
+
+
+def test_line_carries_kind_to_and_self():
+    names = {"a1": "Finance", "u1": "Aden", "u2": "Leo"}
+    ask = {
+        "messageId": "q1",
+        "author": {"kind": "human", "id": "u1", "displayName": "Aden"},
+        "text": "@finance and @leo, numbers?",
+        "addressedAgentIds": ["a1"],
+        "mentions": [{"kind": "agent", "id": "a1"}, {"kind": "human", "id": "u2"}],
+    }
+    assert jev._line(ask, names) == {"author": "Aden", "kind": "human", "to": ["Finance", "Leo"], "text": ask["text"]}
+    reply = {"author": {"kind": "agent", "id": "a1", "displayName": "Finance"}, "text": "42k", "inReplyTo": "q1"}
+    assert jev._line(reply, names, {"q1": ask}, options=("a1",)) == {
+        "author": "Finance", "kind": "agent", "to": ["Aden"], "self": True, "text": "42k"
+    }  # fmt: skip
+    # Stored addressing: the people spoken to, and "everyone" when the room was asked too.
+    stage = {**ask, "addressedAgentIds": [], "mentions": [], "addressing": {"people": ["u2"], "anyone": True}}
+    assert jev._line(stage, names)["to"] == ["Leo", "everyone"]
+
+
+async def _decide(monkeypatch, answers, *, latest=MESSAGE, history=(), **kw):
+    decide = AsyncMock(return_value=answers)
+    monkeypatch.setattr(jev, "decide", decide)
+    monkeypatch.setattr(jev, "agent_card", AsyncMock(return_value="card"))
+    monkeypatch.setattr(jev, "put_metric", lambda *a, **k: None)
+    out = await jev._decide_for_message(META, latest, latest, MEMBERS, list(history), **kw)
+    return out, decide.await_args.args
+
+
+async def test_live_skips_placement_and_open_requests_reach_the_state(monkeypatch):
+    out, (state, questions) = await _decide(
+        monkeypatch, {"who": ANSWERS["who"]}, placement=False, open_lines=["Finance is answering Leo (voice)"]
+    )
+    assert "placement" not in questions and out == {
+        "who": "a1",
+        "whoP": ANSWERS["who"]["probabilities"],
+        "placement": None,
+    }
+    assert state["open"] == ["Finance is answering Leo (voice)"]
+
+
+def test_open_lines_name_the_agent_the_asker_and_the_request():
+    now = datetime(2026, 9, 22, 12, 0, 40, tzinfo=timezone.utc)
+    runs = [
+        {"agentId": "a1", "triggerMessageId": "h1", "threadRootId": None, "dispatchedAt": "2026-09-22T12:00:00+00:00"}
+    ]
+    history = [_msg(1, text="what's our MRR?")]
+    assert jev._open_lines(runs, MEMBERS, history, now) == [
+        "Finance is answering Aden's \"what's our MRR?\" (main, 40 s ago)"
+    ]
+
+
+NONE = {"type": "choice", "choice": "none", "probabilities": {"none": 0.9, "a1": 0.1}}
+
+
+def _flag(p):
+    return {"type": "boolean", "probability": p}
+
+
+@pytest.mark.parametrize(
+    ("asked_at", "forced"),
+    [("2026-09-22T11:57:00+00:00", "reask"), ("2026-09-22T11:59:30+00:00", None)],  # 3 min ago vs 30 s ago
+)
+async def test_a_reask_after_two_minutes_may_not_be_none(monkeypatch, asked_at, forced):
+    earlier = {**_msg(1, text="what did we spend on cloud?"), "createdAt": asked_at}
+    out, _ = await _decide(
+        monkeypatch, {"who": NONE, "placement": ANSWERS["placement"], "reask": _flag(0.9)}, history=[earlier]
+    )
+    assert out.get("forced") == forced and out["who"] == "none"
+
+
+async def test_a_question_to_the_room_may_not_be_none_unless_it_speaks_to_people(monkeypatch):
+    answers = {"who": NONE, "placement": ANSWERS["placement"], "question": _flag(0.9)}
+    out, _ = await _decide(monkeypatch, answers)
+    assert out["forced"] == "question"
+    out, _ = await _decide(monkeypatch, answers, to_people=True)
+    assert "forced" not in out
+    agent_msg = {**MESSAGE, "author": {"kind": "agent", "id": "a2", "displayName": "Growth"}}
+    out, _ = await _decide(monkeypatch, answers, latest=agent_msg)
+    assert "forced" not in out
+
+
+@pytest.mark.asyncio
+async def test_a_forced_none_takes_the_single_fallback(monkeypatch):
+    forced = {"who": "none", "whoP": {"none": 0.9}, "placement": "main", "forced": "question"}
+    monkeypatch.setattr(work, "_fallback_single", AsyncMock(return_value="a1"))
+    posted, _, routes = await _dispatch(monkeypatch, "room_event", route=AsyncMock(return_value=forced))
+    assert len(posted) == 1 and routes == [{"outcome": "forced"}]
+    posted, _, routes = await _dispatch(monkeypatch, "room_event", agent="a2", route=AsyncMock(return_value=forced))
+    assert posted == [] and routes == [{"outcome": "skipped"}]  # exactly one agent runs
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("later_author", "question_p", "forced"),
+    [("u1", 0.9, "question"), ("u2", 0.1, None)],  # the asker adding to it / someone else answering it
+)
+async def test_posts_since_the_question_reach_jev_instead_of_cancelling_it(
+    monkeypatch, store, metrics, later_author, question_p, forced
+):
+    """Codex #3597: a later post is not proof of an answer. Jev sees the posts since the trigger
+    (state.after) and its question judgement decides; nothing cancels the rule in code."""
+    later = {**_msg(6, author=later_author, text="also the Q3 numbers" if later_author == "u1" else "it was $42k")}
+    monkeypatch.setattr(jev.messaging_repo, "list_messages", AsyncMock(return_value=([later], None)))
+    decide = AsyncMock(
+        return_value={
+            "who": {"choice": "none", "probabilities": {"none": 0.9, "a1": 0.05, "a2": 0.05}},
+            "placement": ANSWERS["placement"],
+            "question": {"probability": question_p},
+        }
+    )
+    monkeypatch.setattr(jev, "decide", decide)
+    got = await jev.route({**META, "lastSeq": 6}, "a1", MESSAGE, latest=MESSAGE, members=MEMBERS, history=[])
+    assert decide.await_args.args[0]["after"][0]["text"] == later["text"]
+    assert got.get("forced") == forced

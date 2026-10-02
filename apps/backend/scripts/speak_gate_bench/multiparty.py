@@ -20,7 +20,9 @@ lines may carry ``id`` and ``thread`` (the id of their thread root).
 
 Every row runs twice. ``chat``: as typed, with its structured mentions and listen modes. ``voice``:
 how a Live line reaches chat routing (feat/live-jev-routing, #3591) -- no @ or structured mentions,
-every agent listening whatever its mode, and an opening first name counts as speaking to that person.
+every agent listening whatever its mode. Both variants run the production addressing stage
+(``messaging.address``, routing v2 §3.1) on a human's latest line; voice reads its history as
+``voice_calls.route_live_line`` does (a parsed "Name: text" transcript, no times).
 Raw rows land in ``results/raw/`` (gitignored), the summary in ``results/<tag>-multiparty.md``.
 """
 
@@ -28,7 +30,6 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-import inspect
 import json
 import os
 import re
@@ -40,7 +41,7 @@ from pathlib import Path
 
 os.environ.setdefault("CLERK_ISSUER", "https://bench.clerk.accounts.dev")  # Settings() refuses to load without it
 
-from core.services import jev, messaging  # noqa: E402
+from core.services import jev, messaging, voice_calls  # noqa: E402
 
 HERE = Path(__file__).parent
 RAW = HERE / "results" / "raw"
@@ -184,22 +185,9 @@ def build(case: dict) -> dict:
     }
 
 
-def _opens_with_person(text: str, humans: list[dict]) -> list[str]:
-    """Voice: a line that opens by speaking to a person ("Leo, ...", "hey Maya can you ...").
-    Mirrors feat/live-jev-routing's first-name rule with chat's opening grammar."""
-    found = []
-    for m in humans:
-        names = {m["displayName"], m["displayName"].split()[0]}
-        for name in names:
-            pattern = rf"{messaging._NAME_GREETING}{re.escape(name)}(?![\w-]){messaging._NAME_FOLLOW}"
-            if re.match(pattern, text.lstrip(), re.IGNORECASE):
-                found.append(m["id"])
-                break
-    return found
-
-
-def deterministic(case: dict, state: dict) -> dict:
-    """Everything before Jev: who is addressed, who is merely a Listening candidate, the cap."""
+def deterministic(case: dict, state: dict, stage: dict | None = None) -> dict:
+    """Everything before Jev: who is addressed (the production addressing stage's agents join the
+    structured mentions), who is merely a Listening candidate, the cap."""
     latest, members = state["latest"], state["members"]
     author = latest["author"]
     if author["kind"] == "agent":
@@ -208,8 +196,9 @@ def deterministic(case: dict, state: dict) -> dict:
         if case["agent_hop"] >= messaging.AGENT_REPLY_CAP:
             return {"how": "capped", "addressed": [], "candidates": [], "targets": []}
     else:
+        named = [{"kind": "agent", "id": a} for a in (stage or {}).get("agents", [])]
         targets = messaging.select_dispatch_targets(
-            members, latest["mentions"], None, room_kind=case["room_kind"], text=latest["text"]
+            members, latest["mentions"] + named, None, room_kind=case["room_kind"]
         )
     addressed = [t["agentId"] for t in targets if t["eventKind"] == "user_request"]
     candidates = [t["agentId"] for t in targets if t["eventKind"] == "room_event"]
@@ -249,38 +238,60 @@ async def _stub_card(owner_id: str, agent_id: str, display_name: str, recency: s
     return jev._assemble((f"{display_name} (role: {role}).", jev._ROLE_DESCRIPTIONS[role], tools), recency)
 
 
-_SUPPORTS_TO_PEOPLE = "to_people" in inspect.signature(jev._decide_for_message).parameters
+#: What the voice variant scores: "shipped" = what today's worker delivers (/route's agentId alone; it
+#: ignores "hold"), "next" = step 4's worker (queues every agentIds entry, waits on "hold").
+VOICE_WORKER = "shipped"
 
 
 async def route(case: dict, *, offline: bool = False) -> dict:
+    """The production router: chat as create_human_message + openclaw_work run it, voice as
+    voice_calls.route_live_line does (its history parsed from a "Name: text" transcript, no times)."""
     state = build(case)
-    det = deterministic(case, state)
+    voice = case["variant"] == "voice"
+    latest = state["latest"]
+    stage = None
+    if voice:
+        transcript = "\n".join(f"{h['author']['displayName']}: {h['text']}" for h in state["history"])
+        state["history"] = voice_calls._transcript_history(transcript, state["members"], latest["text"])
+    human = latest["author"]["kind"] == "human"
+    if human and not offline and (voice or case["room_kind"] != "dm"):
+        stage = await messaging.address(latest, state["members"], history=state["history"], live=voice)
+        latest["addressing"] = messaging._stored_addressing(stage)
+    det = deterministic(case, state, stage)
     rec = {k: case[k] for k in ("id", "row", "category", "subtype", "cue", "variant", "goal_status", "expected")}
     rec |= {"expected_responder": case["expected_responder"], "how": det["how"], "whoP": None}
+    rec["stage"] = {k: stage[k] for k in ("path", "agents", "humans", "hold", "anyone")} if stage else None
     names = {a["id"]: a["displayName"] for a in state["agents"]}
+    next_worker = VOICE_WORKER == "next"
+    if voice and next_worker and stage and stage["hold"]:
+        rec["how"], rec["responders"] = "hold", []
+        return rec
     if det["how"] != "jev":
-        rec["responders"] = sorted(names[a] for a in det["addressed"])
+        addressed = det["addressed"]
+        if voice and not next_worker and addressed:
+            # The shipped worker summons /route's agentId alone: the agent named first.
+            addressed = [next((a for a in (stage or {}).get("agents", []) if a in addressed), addressed[0])]
+        rec["responders"] = sorted(names[a] for a in addressed)
         return rec
     if offline:
         rec["how"], rec["responders"] = "skipped_offline", None
         return rec
-    latest = {**state["latest"], "dispatchTargets": det["targets"]}
-    voice = case["variant"] == "voice"
-    people = _opens_with_person(latest["text"], [m for m in state["members"] if m["kind"] == "human"]) if voice else []
-    to_people = bool(people) if voice else jev.addressed_to_people(latest, state["members"])
-    if voice and people:
+    latest = {**latest, "dispatchTargets": det["targets"]}
+    if voice:
+        people = stage["humans"] if stage else []
         latest["mentions"] = [{"kind": "human", "id": p} for p in people]
-    kwargs = {"to_people": to_people} if voice and _SUPPORTS_TO_PEOPLE else {}
+        to_people = bool(people) and not (stage or {}).get("agents") and not (stage or {}).get("anyone")
+    else:
+        to_people = jev.speaks_to_people(latest, state["members"])
     decision = await jev._decide_for_message(
-        state["meta"], latest, latest, state["members"], state["history"], **kwargs
+        state["meta"], latest, latest, state["members"], state["history"], to_people=to_people, placement=not voice
     )
     who = decision.get("who")
-    if voice and to_people and not _SUPPORTS_TO_PEOPLE and who not in (None, "none"):
-        # main has no to_people seam yet: apply the same 0.7 rule the live branch gets from it.
-        if float((decision.get("whoP") or {}).get(who) or 0) < jev.CONFIDENT_P:
-            who = "none"
-    if decision.get("fallback") or decision.get("rateLimited"):
-        rec["how"] = "fallback"
+    if decision.get("fallback") or decision.get("rateLimited") or decision.get("forced"):
+        rec["how"] = f"forced_{decision['forced']}" if decision.get("forced") else "fallback"
+        rec["responders"] = sorted(names[a] for a in fallback(state, det["candidates"], to_people))
+    elif voice and who == "none" and len(case["people"]) <= 1:
+        rec["how"] = "fallback_lone"  # route_live_line: a lone speaker's "none" counts as Jev down
         rec["responders"] = sorted(names[a] for a in fallback(state, det["candidates"], to_people))
     else:
         rec["responders"] = [] if who == "none" else [names[who]]
@@ -363,7 +374,7 @@ def report(recs: list[dict]) -> str:
 # ------------------------------------------------------------------ runner
 async def run(cases: list[dict], out: Path, concurrency: int, offline: bool) -> None:
     if not offline:
-        jev.put_metric = lambda *a, **k: None
+        jev.put_metric = messaging.put_metric = lambda *a, **k: None
         jev._key, jev._key_checked_at, jev._KEY_TTL_S = os.environ["AI_GATEWAY_API_KEY"], time.monotonic(), 10**9
     jev.agent_card = _stub_card
     done = {json.loads(line)["id"] for line in out.read_text().splitlines()} if out.exists() else set()
@@ -391,12 +402,15 @@ def main(argv=None):
     ap.add_argument("--concurrency", type=int, default=6)
     ap.add_argument("--tag", default="")
     ap.add_argument("--report-only", action="store_true")
+    ap.add_argument("--voice-worker", choices=("shipped", "next"), default="shipped", help="see VOICE_WORKER")
     args = ap.parse_args(argv)
     tag = (args.tag or date.today().isoformat()) + ("-offline" if args.offline else "")
     cases = [c for c in load() if re.search(args.only, c["id"])]
     RAW.mkdir(parents=True, exist_ok=True)
     out = RAW / f"{tag}-multiparty.jsonl"
     if not args.report_only:
+        global VOICE_WORKER
+        VOICE_WORKER = args.voice_worker
         asyncio.run(run(cases, out, args.concurrency, args.offline))
     selected = {c["id"] for c in cases}  # the raw file may hold rows from earlier, wider runs
     recs = [r for r in map(json.loads, out.read_text().splitlines()) if r["id"] in selected]

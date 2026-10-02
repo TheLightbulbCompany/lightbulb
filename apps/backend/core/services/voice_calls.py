@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 import time
 import uuid
 
@@ -32,7 +33,6 @@ from core.services import (
     openclaw_work,
     runtime_transport,
     voice_persona,
-    voice_routing,
 )
 from core.services.live_events import get_live_event_publisher
 
@@ -393,6 +393,15 @@ def prewake_owner(owner_id: str) -> None:
     _fire(wake())
 
 
+def prewarm_cards(owner_id: str, team: list[dict]) -> None:
+    """Fire-and-forget: build every agent's Jev card (Paperclip + S3 reads) before the first /route."""
+
+    async def warm():
+        await asyncio.gather(*(jev.agent_card(owner_id, m["id"], m["name"]) for m in team), return_exceptions=True)
+
+    _fire(warm())
+
+
 async def _undo_start(owner_id: str, call_id: str, mode: str, hold: int) -> None:
     """Every cleanup step is independent: one failing must not skip the rest (or replace the caller's error)."""
     steps = [("hold release", release_hold(owner_id, hold))]
@@ -702,93 +711,145 @@ async def abort_voice_run(owner_id: str, room_id: str, run_id: str) -> bool:
     return await _run_control(owner_id, run_id, "abort", {}) == 202
 
 
-async def route_voice(*, owner_id: str, room_id: str, speaker_id: str, utterance: str, transcript: str) -> str:
-    """No name in a wake position: a name inside the request > Jev (3 s) > the CEO > the first agent."""
-    meta, team = await _room_team(owner_id, speaker_id, room_id)
-    named = voice_routing.mentioned_agent(utterance, team)
-    if named:
-        return named
-    ids = {m["id"] for m in team}
-    if len(ids) > 1:
-        try:
-            chosen = await asyncio.wait_for(
-                jev.pick_agent(
-                    owner_id, room_name=meta.get("name") or "", team=team, text=utterance, recent=transcript
-                ),
-                _ROUTING_TIMEOUT_S,
-            )
-        except asyncio.TimeoutError:
-            put_metric("voice.routing.timeout")
-            chosen = None
-        if chosen in ids:
-            return chosen
-    ceo = (await _starter_ids(owner_id)).get("ceo")
-    return ceo if ceo in ids else team[0]["id"]
-
-
 def _transcript_history(transcript: str, members: list[dict], utterance: str) -> list[dict]:
-    """The Live transcript ("Name: text" lines) as chat history rows, ending before the line itself.
-    An agent's line carries its id, so chat's fallback can find who was already in the conversation."""
+    """The Live transcript ("Name: text", or "Agent → Person: text" for a voice's answer) as chat
+    history rows, ending before the line itself. An agent's line carries its id, so chat's fallback
+    can find who was already in the conversation. ``to``: the arrow's person, else everyone the line
+    names (the addressing stage's candidates -- Live's stand-in for stored @mentions; no call per row)."""
     agents = {(m.get("displayName") or "").lower(): m["id"] for m in members if m.get("kind") == "agent"}
+    names = {m["id"]: m.get("displayName") or m["id"] for m in members}
     rows = []
     for line in transcript.splitlines()[-30:]:
         name, sep, text = line.partition(": ")
         if sep:
+            name, arrow, target = name.partition(" → ")
             agent_id = agents.get(name.lower())
             author = {"kind": "agent" if agent_id else "human", "id": agent_id or name, "displayName": name}
-            rows.append({"author": author, "text": text})
+            to = (
+                [target]
+                if arrow
+                else [
+                    names[i]
+                    for c in messaging.address_candidates(text, members, live=True)
+                    for i in c["agents"] + c["humans"]
+                ]
+            )
+            rows.append({"author": author, "text": text, "to": to})
     if rows and rows[-1]["text"] == utterance:
         rows.pop()
     return rows
 
 
+#: The wake word as STT writes it ("Lightbulb", "light bulb", "light-bulb"), with a lead and a comma.
+_WAKE_WORD = re.compile(r"^\s*(?:(?:hey|ok|okay)[\s,]+)?light[\s-]?bulb\b[\s,.!?]*", re.I)
+
+
+def _open_voice_lines(floor: dict | None, voice_runs: list[dict] | None, members: list[dict]) -> list[str]:
+    """Live's ``state.open``, from the worker's memory: the floor and the driven voice runs."""
+    names = {m["id"]: m.get("displayName") or m["id"] for m in members}
+    lines = [
+        f'{names.get(r.get("agent"), r.get("agent"))} is answering "{str(r.get("request") or "")[:120]}" (voice)'
+        for r in voice_runs or []
+    ]
+    if floor and floor.get("agent"):
+        lines.append(f"{names.get(floor['agent'], floor['agent'])} has the floor, talking with {floor.get('speaker')}")
+    return lines[:5]
+
+
+def _routed(*agent_ids: str) -> dict:
+    """/route's answer: ``agentId`` (the first; what the shipped worker reads) and ``agentIds`` (every
+    agent the line addressed or relayed to, in the order named, for a worker that queues them)."""
+    return {"agentId": agent_ids[0] if agent_ids else None, "agentIds": list(agent_ids)}
+
+
 async def route_live_line(
-    *, owner_id: str, room_id: str, speaker_id: str, utterance: str, transcript: str, humans: int
-) -> str | None:
-    """A Live line with no name in a wake position, routed exactly as if the speaker had typed it in
-    the room: chat's select_dispatch_targets (an opening name or a DM addresses that agent, and an
-    addressed line is not ambient), else Jev picks one listener or nobody, else (Jev down) chat's
-    single-responder fallback. Live ignores listen modes (#3591), so every agent listens. The one Live
-    rule: alone in the call, Jev's "nobody" counts as Jev down (speech can only be for the agents)."""
+    *,
+    owner_id: str,
+    room_id: str,
+    speaker_id: str,
+    utterance: str,
+    transcript: str,
+    humans: int,
+    wake: bool = False,
+    floor: dict | None = None,
+    voice_runs: list[dict] | None = None,
+) -> dict:
+    """The one Live router (routing v2 §6), every line the worker's position-1 name did not settle,
+    routed exactly as if the speaker had typed it in the room: the shared addressing stage (a name
+    anywhere: addressed and relayed agents answer), chat's select_dispatch_targets, else Jev picks one
+    listener or nobody, else (Jev down) chat's single-responder fallback. Live ignores listen modes
+    (#3591), so every agent listens. Live's own rules: an unfinished line is marked ``hold`` (wait for
+    the speaker's next final) but still names the agent it routes to, for a worker that does not hold;
+    alone in the call, or after the wake word ``wake`` ("Lightbulb, ..."), Jev's "nobody" counts as Jev
+    down -- the speech can only be for the agents.
+    Returns ``_routed(...)``, plus ``"hold": True`` for an unfinished line."""
     meta, _ = await _room_team(owner_id, speaker_id, room_id)
     members = [
         {**m, "listenMode": "active"} if m.get("kind") == "agent" else m
         for m in await messaging_repo.list_members(room_id)
     ]
-    targets = messaging.select_dispatch_targets(members, [], None, room_kind=meta.get("kind"), text=utterance)
+    if wake:
+        utterance = _WAKE_WORD.sub("", utterance, count=1) or utterance
+    author = {"kind": "human", "id": speaker_id, "displayName": await messaging.human_display_name(speaker_id)}
+    history = _transcript_history(transcript, members, utterance)
+    addressing = await messaging.address({"author": author, "text": utterance}, members, history=history, live=True)
+    if addressing["hold"]:
+        put_metric("voice.routing.jev", dimensions={"outcome": "hold"})
+
+    def done(*agent_ids: str) -> dict:
+        # An unfinished line still answers what it routes to today: the shipped worker reads only
+        # agentId (a null would drop the line); a worker that honours "hold" waits for the next final.
+        return {**_routed(*agent_ids), **({"hold": True} if addressing["hold"] else {})}
+
+    named_ids = addressing["agents"]
+    named = [{"kind": "agent", "id": a} for a in named_ids]
+    targets = messaging.select_dispatch_targets(members, named, None, room_kind=meta.get("kind"))
     if addressed := [t["agentId"] for t in targets if t["eventKind"] == "user_request"]:
-        return addressed[0]
+        # In the order named: the worker drives one voice at a time and can queue the rest.
+        return done(*[a for a in addressing["agents"] if a in addressed], *sorted(set(addressed) - set(named_ids)))
     candidates = [t["agentId"] for t in targets]
     if not candidates:
-        return None
-    people = sorted(messaging._addressed_by_name(utterance, members, kind="human"))
-    author = {"kind": "human", "id": speaker_id, "displayName": await messaging.human_display_name(speaker_id)}
+        return done()
+    people = addressing["humans"]
+    # A relayed request ("Leo, Finance has those numbers") is not to people, nor a wake word.
+    to_people = bool(people) and not named and not addressing["anyone"] and not wake
     message = {
         "author": author,
         "text": utterance,
         "mentions": [{"kind": "human", "id": p} for p in people],
         "dispatchTargets": targets,
     }
-    history = _transcript_history(transcript, members, utterance)
     try:
         decision = await asyncio.wait_for(
-            jev._decide_for_message(meta, message, message, members, history, to_people=bool(people)),
+            jev._decide_for_message(
+                meta,
+                message,
+                message,
+                members,
+                history,
+                to_people=to_people,
+                placement=False,
+                open_lines=_open_voice_lines(floor, voice_runs, members),
+            ),
             _ROUTING_TIMEOUT_S,
         )
     except Exception:  # noqa: BLE001 -- a timeout or a card read: Jev is down for this line
         put_metric("voice.routing.timeout")
         decision = {"fallback": True}
-    who = decision.get("who")
-    if who in candidates or (who == "none" and humans > 1):
+    who, forced = decision.get("who"), decision.get("forced")
+    if not forced and (who in candidates or (who == "none" and humans > 1 and not wake)):
         put_metric("voice.routing.jev", dimensions={"outcome": "routed" if who in candidates else "none"})
-        return who if who in candidates else None
-    # Jev down or undecided (or "nobody" to a lone speaker): openclaw_work's fallback for a human message
-    put_metric("voice.routing.jev", dimensions={"outcome": "fallback"})
-    if people:
-        return None  # spoken to a person: silence is the default
+        return done(*([who] if who in candidates else []))
+    # Jev down or undecided, a "nobody" a lone speaker or the wake word can't mean, or a "none" the
+    # policy refused (a re-ask, a question to the room): openclaw_work's fallback for a human message.
+    put_metric("voice.routing.jev", dimensions={"outcome": "forced" if forced else "fallback"})
+    if forced:
+        put_metric("messaging.jev.forced", dimensions={"reason": forced})
+    if to_people:
+        return done()  # spoken to a person: silence is the default
     if len(candidates) == 1:
-        return candidates[0]
-    return await openclaw_work._fallback_single(owner_id, candidates, message, history)
+        return done(candidates[0])
+    return done(await openclaw_work._fallback_single(owner_id, candidates, message, history))
 
 
 # ---- Option D: rename and voice notes (C3 notices, C8 voice-profile) -------------------------

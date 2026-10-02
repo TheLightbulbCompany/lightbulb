@@ -324,20 +324,51 @@ def _ago(then: datetime | None, now: datetime) -> str:
     return f"Last spoke {minutes // 60}h ago."
 
 
-def _line(message: dict) -> dict:
+def _name(author: dict) -> str:
+    return str(author.get("displayName") or author.get("id"))
+
+
+def _to(message: dict, names: dict[str, str], by_id: dict[str, dict]) -> list[str]:
+    """Who a line was said to (routing v2 §5). A human line: the agents it addressed (@mention or
+    name) and the people it @mentioned or spoke to. An agent line: the author of the message it
+    answers (``inReplyTo``), else of its thread root. A Live row carries its own ``to``."""
+    if message.get("to") is not None:
+        return list(message["to"])
     author = message.get("author") or {}
-    return {
-        "author": f"{author.get('displayName') or author.get('id')} ({author.get('kind')})",
-        "text": str(message.get("text") or "")[:1000]
-        or " ".join(
-            "[image]"
-            if str(a.get("contentType", "")).startswith("image/")
-            else "[video]"
-            if str(a.get("contentType", "")).startswith("video/")
-            else f"[file: {a.get('fileName') or 'attachment'}]"
-            for a in message.get("attachments") or []
-        ),
-    }
+    if author.get("kind") == "agent":
+        for ref in (message.get("inReplyTo"), message.get("threadRootMessageId")):
+            row = by_id.get(ref) if ref else None
+            if row and (row.get("author") or {}).get("id") != author.get("id"):
+                return [_name(row.get("author") or {})]
+        return []
+    ids = message.get("addressedAgentIds") or [
+        t["agentId"] for t in message.get("dispatchTargets") or [] if t.get("eventKind") == "user_request"
+    ]
+    ids = [*ids, *(r["id"] for r in message.get("mentions") or [] if r.get("kind") == "human")]
+    addressing = message.get("addressing") or {}
+    ids += addressing.get("people") or []
+    # The addressing stage heard something asked of the room beyond the named ("..., and Sam ...").
+    return list(dict.fromkeys([*(names.get(i, i) for i in ids), *(["everyone"] if addressing.get("anyone") else [])]))
+
+
+def _line(message: dict, names: dict[str, str] | None = None, by_id: dict | None = None, options=()) -> dict:
+    """``{author, kind, to, self, text}``; ``to``/``self`` only when set. ``self``: one of the
+    teammates being chosen among wrote it."""
+    author = message.get("author") or {}
+    line = {"author": _name(author), "kind": author.get("kind")}
+    if to := _to(message, names or {}, by_id or {}):
+        line["to"] = to
+    if author.get("id") in options:
+        line["self"] = True
+    line["text"] = str(message.get("text") or "")[:1000] or " ".join(
+        "[image]"
+        if str(a.get("contentType", "")).startswith("image/")
+        else "[video]"
+        if str(a.get("contentType", "")).startswith("video/")
+        else f"[file: {a.get('fileName') or 'attachment'}]"
+        for a in message.get("attachments") or []
+    )
+    return line
 
 
 #: The routing bar (owner ruling 2026-09-24): "would a good employee in this room naturally
@@ -366,17 +397,37 @@ WHO_INSTRUCTIONS = (
     "whoever is listening: a good teammate answers it, above all when they are the only teammate "
     "listening in the room. They stay out "
     "of personal back-and-forth, thanks and acknowledgements, and they don't pile on after a "
-    "colleague has already answered. Pick at most ONE: the teammate spoken to, else the teammate "
-    "whose role and tools fit best, or nobody."
+    "colleague has already answered. A teammate already working on a request owns its "
+    "follow-ups; don't add a second responder to it. Pick at most ONE: the teammate spoken to, "
+    "else the teammate whose role and tools fit best, or nobody."
 )
 NONE_CRITERION = (
     "Nobody: a good employee would stay quiet here -- chatter between people ('lol', 'thanks', "
     "'brb'), an acknowledgement or thanks (even by name), a personal matter between specific "
     "people, a message addressed by name to a person or to a teammate who is not an option here, "
-    "something a colleague has already answered (even when it is asked again), or a reply that "
-    "would only prolong agent-to-agent back-and-forth. Never an open question or request put to "
-    "the room"
+    "something a colleague has just answered when it is repeated straight away (a question asked "
+    "again after a gap or after other talk is a new request: answer it), unless a teammate knows "
+    "that answer is wrong, or a reply that would only prolong agent-to-agent back-and-forth. A "
+    "question only partly answered is still open for the rest. Never an open question or request "
+    "put to the room"
 )
+#: Two structured answers beside ``who`` (routing v2 §12.8/§12.9). Policy, not hope: when either is
+#: high on a human's message to nobody, Jev's "none" is not allowed and the fallback chain picks.
+REASK_INSTRUCTIONS = (
+    "Is the latest message asking again something that was already asked, and answered or "
+    "attempted, earlier in this conversation, after other talk or a gap?"
+)
+QUESTION_INSTRUCTIONS = (
+    "Is the latest message a finished question or request about the work (a fact, figure, file, "
+    "status, task or decision) put to the room as a whole rather than to a particular person, that "
+    "nobody in the conversation has answered yet? Lines under 'after' were posted since it: a person "
+    "answering it there means it has been answered; the asker adding to it, or unrelated talk, does "
+    "not. No for an unfinished or trailing-off message, small talk, an invitation, a personal "
+    "matter, or something only a particular person can answer."
+)
+#: A re-ask forces an answer only when the earlier ask is at least this old: an immediate repeat
+#: of a question a person just answered stays quiet (bench D16), a re-ask after talk does not (D03).
+REASK_AFTER_S = 120
 #: Jev's "none" stands. A rule that overruled a "none" not 0.4 clear of the top agent (added
 #: 2026-09-25, when Jev went silent on a question put to the room) fired 7 times in 85 prod
 #: decisions over 2026-09-27/28 and never helped -- every reply it forced was to chatter or to a
@@ -410,6 +461,31 @@ def addressed_to_people(message: dict, members: list[dict]) -> bool:
     )
 
 
+def speaks_to_people(message: dict, members: list[dict]) -> bool:
+    """The to-people silence rule for a chat message: it opens with a person's @handle, or the
+    addressing stage heard it speak to a person -- unless the stage heard something asked of the
+    room beyond them ("what's our MRR, and Sam where's the deck?")."""
+    addressing = message.get("addressing") or {}
+    if addressing.get("anyone"):
+        return False
+    return bool(addressing.get("people")) or addressed_to_people(message, members)
+
+
+def _reask_age(latest: dict, history: list[dict], now: datetime) -> float | None:
+    """Seconds since the earlier human message the latest one most repeats (2+ shared words of 4+
+    letters; the newest wins a tie), or None. ponytail: word overlap, not meaning; a paraphrased
+    re-ask with no shared words is not forced (Jev's own pick still stands)."""
+    words = lambda m: set(re.findall(r"[a-z0-9']{4,}", str(m.get("text") or "").lower()))  # noqa: E731
+    said = words(latest)
+    best = None
+    for row in history:
+        if (row.get("author") or {}).get("kind") == "human" and len(said & words(row)) >= 2:
+            if best is None or len(said & words(row)) >= len(said & words(best)):
+                best = row
+    when = _parse_ts(best.get("createdAt")) if best else None
+    return (now - when).total_seconds() if when else None
+
+
 #: Placement on the same bar (owner ruling 2026-09-24): judgement from the conversation, not rules.
 #: Only a fallback (Jev unavailable) uses the fixed default: reply where the message is.
 PLACEMENT_INSTRUCTIONS = (
@@ -430,10 +506,23 @@ PLACEMENT_CRITERIA = {
 
 
 async def _decide_for_message(
-    meta: dict, message: dict, latest: dict, members: list[dict], history: list[dict], to_people: bool | None = None
+    meta: dict,
+    message: dict,
+    latest: dict,
+    members: list[dict],
+    history: list[dict],
+    to_people: bool | None = None,
+    *,
+    placement: bool = True,
+    open_lines: list[str] | None = None,
+    later: list[dict] | None = None,
 ) -> dict:
     """``to_people``: the caller already knows whether the message speaks to people (Live hears names,
-    not @handles); None reads it from the message (``addressed_to_people``)."""
+    not @handles); None reads it from the message (``speaks_to_people``). ``placement=False`` (Live) skips
+    that question. ``open_lines``: the requests teammates are already working on (``state.open``).
+    ``later``: messages posted after the trigger before the decision (``state.after``), so the
+    question rule sees whether someone has answered it since.
+    A ``forced`` reason on a "none" means the policy did not allow it: the caller's fallback picks."""
     candidates = [
         target["agentId"]
         for target in message.get("dispatchTargets") or []
@@ -449,9 +538,14 @@ async def _decide_for_message(
     cards = await asyncio.gather(*(agent_card(meta["ownerId"], a, names.get(a, a), recency(a)) for a in candidates))
     criteria = dict(zip(candidates, cards))
     criteria["none"] = NONE_CRITERION
-    state = _state(meta, latest, history)
     if to_people is None:
-        to_people = addressed_to_people(message, members)
+        to_people = speaks_to_people(message, members)
+    # The trigger's stored routing fields (raw row) feed its `to`; ``latest`` is its public shape.
+    latest = {**latest, **{k: message[k] for k in ("addressing", "to", "dispatchTargets") if k in message}}
+    state = _state(meta, latest, history, members=members, options=candidates, open_lines=open_lines)
+    if later:
+        names = {m["id"]: m.get("displayName") or m["id"] for m in members}
+        state["after"] = [_line(m, names) for m in later[-10:]]
     if to_people:
         people = {m["id"]: m.get("displayName") or m["id"] for m in members if m.get("kind") == "human"}
         state["latest"]["addressedTo"] = [
@@ -459,16 +553,23 @@ async def _decide_for_message(
         ]
     questions = {
         "who": {"type": "choice", "instructions": WHO_INSTRUCTIONS, "criteria": criteria},
-        "placement": {"type": "choice", "instructions": PLACEMENT_INSTRUCTIONS, "criteria": PLACEMENT_CRITERIA},
+        "reask": {"type": "boolean", "instructions": REASK_INSTRUCTIONS},
+        "question": {"type": "boolean", "instructions": QUESTION_INSTRUCTIONS},
     }
-    # Store only what dispatch reads: who, its probability, and placement.
+    if placement:
+        questions["placement"] = {
+            "type": "choice",
+            "instructions": PLACEMENT_INSTRUCTIONS,
+            "criteria": PLACEMENT_CRITERIA,
+        }
+    # Store only what dispatch reads: who, its probability, placement, and why a "none" was refused.
     answers = await decide(state, questions)
     if answers == RATE_LIMITED:
         return {"rateLimited": True}
-    who, placement = (answers or {}).get("who") or {}, (answers or {}).get("placement") or {}
     if answers is None:
         return {"fallback": True}
-    if who.get("choice") not in (*candidates, "none") or placement.get("choice") not in ("main", "thread"):
+    who, where = answers.get("who") or {}, answers.get("placement") or {}
+    if who.get("choice") not in (*candidates, "none") or (placement and where.get("choice") not in ("main", "thread")):
         return {"fallback": True, "reason": "invalid_choice"}
     probabilities = who.get("probabilities") or {}
     human = (latest.get("author") or {}).get("kind") == "human"
@@ -478,22 +579,69 @@ async def _decide_for_message(
         if final != "none" and float(probabilities.get(final) or 0) < CONFIDENT_P:
             final = "none"
             put_metric("messaging.jev.unconfident_quiet")
-    return {"who": final, "whoP": probabilities, "placement": placement["choice"]}
+    decision = {"who": final, "whoP": probabilities, "placement": where.get("choice") if placement else None}
+    if final == "none" and human and not to_people:
+
+        def high(key: str) -> bool:
+            try:
+                return float((answers.get(key) or {}).get("probability") or 0) >= 0.5
+            except (TypeError, ValueError):
+                return False
+
+        age = _reask_age(latest, history, now) if high("reask") else None
+        if age is not None and age >= REASK_AFTER_S:
+            decision["forced"] = "reask"
+        elif high("question"):
+            decision["forced"] = "question"
+    return decision
 
 
-def _state(meta: dict, latest: dict, history: list[dict]) -> dict:
-    """Room, the trigger's thread (root + replies) ahead of the last 30 messages, and the trigger.
-    Over budget, the oldest general message goes first and the thread only once that is empty."""
+def _open_lines(runs: list[dict], members: list[dict], history: list[dict], now: datetime) -> list[str]:
+    """``state.open`` (<= 5): 'Finance is answering Alice's "what's our MRR?" (main, 40 s ago)'."""
+    names = {m["id"]: m.get("displayName") or m["id"] for m in members}
+    by_id = {m.get("messageId"): m for m in history}
+    lines = []
+    for run in sorted(runs, key=lambda r: str(r.get("dispatchedAt") or ""))[-5:]:
+        trigger = by_id.get(run.get("triggerMessageId"))
+        when = _parse_ts(run.get("dispatchedAt"))
+        ago = f", {int((now - when).total_seconds())} s ago" if when else ""
+        what = (
+            f'{_name(trigger.get("author") or {})}\'s "{str(trigger.get("text") or "")[:120]}"'
+            if trigger
+            else "an earlier request"
+        )
+        where = "thread" if run.get("threadRootId") else "main"
+        lines.append(f"{names.get(run.get('agentId'), run.get('agentId'))} is answering {what} ({where}{ago})")
+    return lines
+
+
+def _state(
+    meta: dict,
+    latest: dict,
+    history: list[dict],
+    *,
+    members: list[dict] = (),
+    options=(),
+    open_lines: list[str] | None = None,
+) -> dict:
+    """Room, the trigger's thread (root + replies) ahead of the last 30 messages, the open requests,
+    and the trigger. Over budget, the oldest general message goes first and the thread only once that
+    is empty."""
+    names = {m["id"]: m.get("displayName") or m["id"] for m in members}
+    by_id = {m.get("messageId"): m for m in history if m.get("messageId")}
+    line = lambda m: _line(m, names, by_id, options)  # noqa: E731
     root = latest.get("threadRootMessageId")
     thread = [m for m in history if root and root in (m.get("messageId"), m.get("threadRootMessageId"))]
     in_thread = {m.get("messageId") for m in thread}
-    recent = [_line(m) for m in history[-_RECENT_LIMIT:] if m.get("messageId") not in in_thread]
-    thread_lines = [_line(m) for m in thread]
+    recent = [line(m) for m in history[-_RECENT_LIMIT:] if m.get("messageId") not in in_thread]
+    thread_lines = [line(m) for m in thread]
     state: dict = {"room": {"kind": meta.get("kind"), "name": meta.get("name")}}
     if thread_lines:
         state["thread"] = thread_lines
     state["recent"] = recent
-    state["latest"] = {**_line(latest), "inThread": bool(root)}
+    if open_lines:
+        state["open"] = open_lines[:5]
+    state["latest"] = {**line(latest), "inThread": bool(root)}
     while len(json.dumps(state, ensure_ascii=False)) > _STATE_MAX_CHARS and (recent or thread_lines):
         (recent or thread_lines).pop(0)
     return state
@@ -533,8 +681,26 @@ async def route(
                 return stored
         elif await messaging_repo.claim_decision(room_id, message_id, attempts=attempts):
             try:
+                runs = await _soft("open runs", messaging_repo.list_open_runs_for_room(meta["ownerId"], room_id)) or []
+                # Posted since the trigger (a queued or retried decision): Jev judges whether it was answered.
+                seq = int(message.get("messageSeq") or 0)
+                later = (
+                    (await _soft("later", messaging_repo.list_messages(room_id, seq, 10)) or ([], None))[0]
+                    if seq and int(meta.get("lastSeq") or 0) > seq
+                    else []
+                )
+                now = _parse_ts(latest.get("createdAt")) or datetime.now(timezone.utc)
                 decision = await asyncio.wait_for(
-                    _decide_for_message(meta, message, latest, members, history), _DECIDE_BUDGET_S
+                    _decide_for_message(
+                        meta,
+                        message,
+                        latest,
+                        members,
+                        history,
+                        open_lines=_open_lines(runs, members, history, now),
+                        later=later,
+                    ),
+                    _DECIDE_BUDGET_S,
                 )
             except Exception:
                 # A stored fallback lets the losers stop waiting now, not at their ceiling.
@@ -568,27 +734,4 @@ async def route(
             await asyncio.sleep(_LOSER_POLL_S)
     except Exception:  # noqa: BLE001 -- routing must never break dispatch
         logger.warning("Jev routing failed", exc_info=True)
-        return None
-
-
-async def pick_agent(owner_id: str, *, room_name: str, team: list[dict], text: str, recent: str) -> str | None:
-    """One agent from `team` for a spoken request, or None when unsure/unavailable. Never raises."""
-    try:
-        cards = await asyncio.gather(*(agent_card(owner_id, m["id"], m["name"]) for m in team))
-        criteria = {m["id"]: card for m, card in zip(team, cards)}
-        state = {
-            "room": {"kind": "channel", "name": room_name},
-            "recent": [{"author": "transcript (call)", "text": _clip(recent, 1500)}] if recent else [],
-            "latest": {"author": "caller (human)", "text": _clip(text, 1000), "inThread": False},
-        }
-        answers = await decide(
-            state, {"who": {"type": "choice", "instructions": WHO_INSTRUCTIONS, "criteria": criteria}}
-        )
-        if not isinstance(answers, dict):
-            return None
-        who = answers.get("who") or {}
-        choice, probs = who.get("choice"), who.get("probabilities") or {}
-        return choice if choice in criteria and float(probs.get(choice, 0)) >= CONFIDENT_P else None
-    except Exception:  # noqa: BLE001 -- routing must never fail a turn
-        logger.warning("jev pick_agent failed", exc_info=True)
         return None

@@ -95,6 +95,17 @@ async def _send(text: str, mentions: list[dict] | None = None) -> messaging.Cano
 @pytest.mark.asyncio
 async def test_a_message_opening_with_an_agents_name_carries_its_id(monkeypatch):
     _wire(monkeypatch, [_human_member(), _agent_member()])
+    # Routing v2 §3.1: "Friday" is a weekday, so no fast path; the addressing stage's Jev call labels it.
+    monkeypatch.setattr(
+        "core.services.jev.decide",
+        AsyncMock(
+            return_value={
+                "complete": {"probability": 0.95},
+                "anyone": {"probability": 0.1},
+                "n0": {"choice": "addressed"},
+            }
+        ),
+    )
     result = await _send("Hey Friday, can you check the deploy?")
     assert result.addressed_agent_ids == [FRIDAY]
 

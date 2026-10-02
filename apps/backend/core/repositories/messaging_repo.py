@@ -876,6 +876,8 @@ async def create_message(
     extra_conditions: list[dict] | None = None,
     via: str | None = None,
     session_target_labels: dict[str, str] | None = None,
+    addressing: dict | None = None,
+    in_reply_to: str | None = None,
 ) -> tuple[dict, bool]:
     """Strong-read ``META.lastSeq`` then conditionally transact: bump META, put
     the immutable ``MSG``, put the ``IDEMP`` receipt, put one ``WORK#MESSAGE``
@@ -951,6 +953,12 @@ async def create_message(
         if agent_hop is not None:
             # The agent-reply cap reads the trigger's hop (messaging.create_agent_message).
             message["agentHop"] = agent_hop
+        if addressing is not None:
+            # Who the text spoke to (messaging.address): Jev's to-people rule reads it at dispatch.
+            message["addressing"] = addressing
+        if in_reply_to:
+            # The human message an agent reply answers: the `to` edge Jev sees on agent lines.
+            message["inReplyTo"] = in_reply_to
         if thread_root_message_id and thread_root_seq:
             # The projector reads the root by this key instead of scanning the room.
             message["threadRootSeq"] = int(thread_root_seq)

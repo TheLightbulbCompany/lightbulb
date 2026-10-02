@@ -266,7 +266,9 @@ function SessionBody({
   }, [outbox.commands, command.attempt?.request.requestId, command.syncReceipt]);
   // The session's own events, for its pending prompt and wait; a subagent's are tagged with it.
   const events = useMemo(() => mainEvents(history.events), [history.events]);
-  const savedOutbox = outbox.commands.filter(receipt => receipt.requestId !== command.attempt?.request.requestId);
+  const replacingOldId = command.attempt?.state !== "rejected" && command.receipt?.state !== "rejected"
+    ? command.attempt?.replacesRequestId : undefined;
+  const savedOutbox = outbox.commands.filter(receipt => receipt.requestId !== command.attempt?.request.requestId && receipt.requestId !== replacingOldId);
   const queuedOutbox = savedOutbox.filter(receipt => receipt.state !== "applied");
   const pendingText = usePendingPrompt(command.attempt, events);
   const pendingShown = !!pendingText && !history.hasNewer;
@@ -362,7 +364,7 @@ function SessionBody({
                   <Text accessibilityRole="alert" style={[styles.errorText, { color: palette.alert }]}>
                     {receipt.cancelledAt ? "Cancelled." : receipt.deliverBy <= Date.now() / 1000 ? "This follow-up expired before your Mac reconnected." : "The session rejected this follow-up."}
                   </Text>
-                  {!receipt.cancelledAt && <Pressable onPress={() => command.send(receipt.text!)} disabled={command.locked || !command.canSend} accessibilityRole="button" accessibilityLabel="Retry follow-up" accessibilityState={{ disabled: command.locked || !command.canSend }}>
+                  {!receipt.cancelledAt && <Pressable onPress={() => command.send(receipt.text!, false, receipt.requestId)} disabled={command.locked || !command.canSend} accessibilityRole="button" accessibilityLabel="Retry follow-up" accessibilityState={{ disabled: command.locked || !command.canSend }}>
                     <Text style={[styles.link, { color: palette.link }]}>Retry</Text>
                   </Pressable>}
                 </View>}

@@ -20,3 +20,19 @@ it("lets a verified queue session accept a follow-up while the Mac is offline", 
   await fireEvent.press(screen.getByLabelText("Send follow-up"));
   expect(send).toHaveBeenCalledWith("Continue");
 });
+
+it("retries a rejected replacement through its preserved request lineage", async () => {
+  const session = { sessionId: "s1", provider: "claude", status: "idle", capabilitiesVerified: true,
+    capabilities: { sendMode: "queue", steer: false, interrupt: false }, controlUnavailableReason: null } as LocalSession;
+  const send = jest.fn();
+  const retry = jest.fn();
+  const command = { send, retry, locked: false, canSend: true, chip: null, checking: false,
+    canSteer: false, canInterrupt: false, canCancel: false, canCheck: false,
+    attempt: { request: { requestId: "new", expectedGeneration: "g1", kind: "send", text: "Continue" },
+      replacesRequestId: "old", state: "received", receipt: { state: "rejected", cancelledAt: null } },
+  } as unknown as ReturnType<typeof useSessionCommand>;
+  await render(<SessionPromptRow session={session} text="" onChangeText={jest.fn()} command={command} />);
+  await fireEvent.press(screen.getByLabelText("Retry follow-up"));
+  expect(retry).toHaveBeenCalledTimes(1);
+  expect(send).not.toHaveBeenCalled();
+});

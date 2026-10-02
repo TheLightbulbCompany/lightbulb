@@ -84,7 +84,7 @@ export interface MessagingClient {
   answerNativeSendApproval(sessionId: string, decision: NativeSendDecision): Promise<NativeSendReceipt>;
   getNativeSendReceipt(sessionId: string, requestId: string): Promise<NativeSendReceipt>;
   listLocalSessionEvents(sessionId: string, afterSeq: number, limit?: number): Promise<LocalSessionEventPage>;
-  submitLocalSessionCommand(sessionId: string, request: LocalSessionCommand): Promise<LocalSessionCommandReceipt>;
+  submitLocalSessionCommand(sessionId: string, request: LocalSessionCommand, replacesRequestId?: string): Promise<LocalSessionCommandReceipt>;
   getLocalSessionCommand(sessionId: string, requestId: string): Promise<LocalSessionCommandReceipt>;
   cancelLocalSessionCommand(sessionId: string, requestId: string): Promise<LocalSessionCommandReceipt>;
   /** Explicit recovery of one failed room mention; requestId is new, expectedRequestId fences the visible send. */
@@ -162,7 +162,7 @@ export function createMessagingClient(api: ApiMethods): MessagingClient {
     listLocalSessionEvents: (sessionId, afterSeq, limit = 50) => api.get(
       `${sessionPath(sessionId)}/events?afterSeq=${encodeURIComponent(String(afterSeq))}&limit=${encodeURIComponent(String(limit))}`,
     ) as Promise<LocalSessionEventPage>,
-    submitLocalSessionCommand: (sessionId, request) => api.post(`${sessionPath(sessionId)}/commands`, request) as Promise<LocalSessionCommandReceipt>,
+    submitLocalSessionCommand: (sessionId, request, replacesRequestId) => api.post(`${sessionPath(sessionId)}/commands${replacesRequestId ? `?replacesRequestId=${encodeURIComponent(replacesRequestId)}` : ""}`, request) as Promise<LocalSessionCommandReceipt>,
     getLocalSessionCommand: (sessionId, requestId) => api.get(`${sessionPath(sessionId)}/commands/${encodeURIComponent(requestId)}`) as Promise<LocalSessionCommandReceipt>,
     cancelLocalSessionCommand: (sessionId, requestId) => api.post(`${sessionPath(sessionId)}/commands/${encodeURIComponent(requestId)}/cancel`, {}) as Promise<LocalSessionCommandReceipt>,
     retrySessionSend: (roomId, messageId, sessionId, request) => api.post(`${roomPath(roomId)}/messages/${encodeURIComponent(messageId)}/session-sends/${encodeURIComponent(sessionId)}/retry`, request) as Promise<CanonicalRoomMessage>,

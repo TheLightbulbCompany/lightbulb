@@ -76,6 +76,20 @@ describe("useSessionOutbox", () => {
     await act(async () => { await vi.advanceTimersByTimeAsync(120_000); });
     expect(list).toHaveBeenCalledTimes(5);
   });
+
+  it("refreshes a rejected online outbox after another device retries it", async () => {
+    vi.useFakeTimers();
+    const old = receipt({ requestId: "old", expectedGeneration: "g1", kind: "send", text: "continue" }, "rejected");
+    const now = Math.floor(Date.now() / 1000);
+    const replacement = { ...receipt({ requestId: "new", expectedGeneration: "g1", kind: "send", text: "continue" }, "pending"),
+      createdAt: now, deliverBy: now + 3600 };
+    const list = vi.fn().mockResolvedValueOnce({ commands: [old] }).mockResolvedValue({ commands: [replacement] });
+    const outboxClient = { listLocalSessionOutbox: list } as unknown as SessionControlClient;
+    const { result } = renderHook(() => useSessionOutbox(outboxClient, session.sessionId, 0, true));
+    await act(async () => {});
+    await act(async () => { await vi.advanceTimersByTimeAsync(30_000); });
+    expect(result.current.commands.map(command => command.requestId)).toEqual(["new"]);
+  });
 });
 
 describe("useSessionSendReceipt", () => {

@@ -10,8 +10,8 @@ import {
 import { Identity } from "@/components/teams/shared/components/Identity";
 import { Popover, PopoverAnchor, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { agentTint } from "@/lib/agentTint";
-import { errorText } from "@/components/voice/voiceErrors";
-import { CEO_IDENTITY, useHuddle, type HuddleError } from "./HuddleProvider";
+import { liveErrorText, liveStatus } from "@lightbulb/shared";
+import { CEO_IDENTITY, useHuddle } from "./HuddleProvider";
 
 const LIGHTBULB = "Lightbulb";
 const TALK = `Talk to ${LIGHTBULB}`;
@@ -25,26 +25,6 @@ const subscribeReduced = (onChange: () => void) => {
   return () => mql.removeEventListener("change", onChange);
 };
 const useReducedMotion = () => useSyncExternalStore(subscribeReduced, () => window.matchMedia(REDUCED).matches, () => false);
-
-/** Lightbulb's status line, from the worker's participant attributes (huddle_agent.huddle `_state`). */
-export function huddleStatus(attrs: Readonly<Record<string, string>> | undefined): string {
-  const speaker = attrs?.["lightbulb.speaker"];
-  const working = attrs?.["lightbulb.working"] ?? "";
-  switch (attrs?.["lightbulb.status"]) {
-    case "listening": return speaker ? `Listening to ${speaker}` : "Listening";
-    case "thinking": return "Thinking…";
-    case "speaking": return "Speaking";
-    case "working": {
-      const [who, what] = working.split(" — ");
-      return what ? `${who} is working: ${what}` : who ? `${who} is working` : "Thinking…";
-    }
-    default: return "Following along";
-  }
-}
-
-export function huddleErrorText(e: HuddleError): string {
-  return errorText(e.code === "voice_limit" ? e.reason : e.code, "Live couldn't start.");
-}
 
 /** The BarVisualizer's state for the worker's status. Reduced motion: no stepping sequence, all bars lit while speaking. */
 function vizState(status: string | undefined, speaking: boolean, reduced: boolean): AgentState | undefined {
@@ -83,7 +63,7 @@ function JoiningBars() {
 function LightbulbStatus({ participant }: { participant: Participant }) {
   const speaking = useIsSpeaking(participant);
   const { attributes } = useParticipantAttributes({ participant });
-  return <>{speaking ? "Speaking" : huddleStatus(attributes)}</>;
+  return <>{speaking ? "Speaking" : liveStatus(attributes)}</>;
 }
 
 function Face({ participant, stack }: { participant: Participant; stack: number }) {
@@ -196,7 +176,7 @@ function Strip({ here }: { here: boolean }) {
         )}
         {error && (
           <p className="live-note" role="alert">
-            {huddleErrorText(error)}
+            {liveErrorText(error)}
             <button type="button" className="live-pill" onClick={dismissError}>Dismiss</button>
           </p>
         )}
@@ -218,7 +198,7 @@ export function LiveStrip({ roomId }: { roomId: string | undefined }) {
   if (!room) {
     return error ? (
       <span className="live-note" role="alert">
-        {huddleErrorText(error)}
+        {liveErrorText(error)}
         <button type="button" className="live-icon" aria-label="Dismiss" onClick={dismissError}><X className="h-4 w-4" aria-hidden="true" /></button>
       </span>
     ) : null;

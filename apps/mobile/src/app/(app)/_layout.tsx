@@ -15,7 +15,13 @@ import { Text, useColorScheme } from "react-native";
 import { chatPalette, fonts } from "../../config/theme";
 import { getCurrentTarget } from "../../lib/activeAgent";
 import { clearRoomsCache } from "../../lib/roomsCache";
+import { setupWebRTC } from "../../lib/webrtc";
 import { LiveEventsProvider } from "../../providers/live-events";
+import { LiveProvider } from "../../providers/live";
+import { LiveSheet } from "../../components/voice/LiveSheet";
+
+// WebRTC globals and the voice-chat audio session, once, before any Live (no-op without the module).
+setupWebRTC();
 
 /**
  * Deep-link anchor. A cold start on `/(app)/room/<id>` (a tapped push) builds
@@ -89,6 +95,8 @@ export default function AppLayout() {
                 redelivered at launch, a renewal). Needs an active workspace. */}
             <PurchaseListener />
             <LiveEventsProvider>
+              {/* One Live at a time, held above every screen. */}
+              <LiveProvider>
               <ProvisionGate>
                 {/* Past every gate: all headers follow the navigation theme, so the
                     status bar follows the system appearance (overrides the root's
@@ -184,7 +192,9 @@ export default function AppLayout() {
                 {/* After the Stack, inside the gates: a tap may only navigate once
                     this Stack exists (see NotificationTapRouter). */}
                 <NotificationTapRouter />
+                <LiveSheet />
               </ProvisionGate>
+              </LiveProvider>
             </LiveEventsProvider>
           </IapProvider>
         </WorkspaceGate>

@@ -3,9 +3,10 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Room, RoomEvent } from "livekit-client";
 import { RoomAudioRenderer, RoomContext } from "@livekit/components-react";
+import { LIVE_AGENT_IDENTITY, liveJoinErrorCode } from "@lightbulb/shared";
 import { useApi } from "@/lib/api";
 
-export const CEO_IDENTITY = "agent-ceo";
+export const CEO_IDENTITY = LIVE_AGENT_IDENTITY;
 
 export interface HuddleError { code: string; reason?: string }
 
@@ -79,15 +80,8 @@ export function HuddleProvider({ children }: { children: ReactNode }) {
       setJoining(null);
     } catch (e) {
       if (mine !== attempt.current) return;
-      const { status, body, name } = e as { status?: number; name?: string; body?: { code?: string; detail?: unknown } | null };
-      const raw = body?.code ?? (typeof body?.detail === "string" ? body.detail : (body?.detail as { code?: string } | undefined)?.code);
-      const code = typeof raw === "string" ? raw.toLowerCase() : undefined; // an ApiProblem says ROOM_NOT_FOUND
       leave();
-      setError({ code: name === "NotAllowedError" ? "mic_denied" : name === "NotFoundError" ? "no_mic"
-        : status === 503 || code === "huddles_unavailable" ? "voice_unavailable"
-        : code === "room_archived" || code === "room_not_found" || code === "huddles_upstream"
-          || code === "workspace_not_ready" ? code
-        : "connection_lost" });
+      setError({ code: liveJoinErrorCode(e) });
     }
   }, [api, leave]);
 

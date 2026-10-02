@@ -24,7 +24,7 @@ vi.mock("@livekit/components-react", () => ({
 }));
 vi.mock("@/lib/api", () => { lk.client = { post: lk.post }; return { useApi: () => lk.client }; });
 import { HuddleProvider, useHuddle } from "../HuddleProvider";
-import { LiveStrip, huddleStatus } from "../LiveStrip";
+import { LiveStrip } from "../LiveStrip";
 
 function Probe() {
   const h = useHuddle();
@@ -132,17 +132,6 @@ it("more than three people collapse into +N", async () => {
   lk.state.participants = [{ identity: "agent-ceo" }, ...["a", "b", "c", "d", "e"].map((n) => ({ identity: n, name: n.toUpperCase() }))];
   await joinNow();
   expect(screen.getByText("+2")).toBeInTheDocument();
-});
-
-it.each([
-  [undefined, "Following along"],
-  [{ "lightbulb.status": "following" }, "Following along"],
-  [{ "lightbulb.status": "listening", "lightbulb.speaker": "Aden" }, "Listening to Aden"],
-  [{ "lightbulb.status": "thinking" }, "Thinking…"],
-  [{ "lightbulb.status": "speaking" }, "Speaking"],
-  [{ "lightbulb.status": "working", "lightbulb.working": "Gauge — checking Stripe" }, "Gauge is working: checking Stripe"],
-])("huddleStatus(%j)", (attrs, text) => {
-  expect(huddleStatus(attrs)).toBe(text);
 });
 
 it("Lightbulb's bars follow its status, and stay still under reduced motion", async () => {

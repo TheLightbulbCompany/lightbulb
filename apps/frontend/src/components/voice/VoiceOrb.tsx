@@ -6,7 +6,7 @@ import { Identity } from "@/components/teams/shared/components/Identity";
 import { agentTint } from "@/lib/agentTint";
 import { AudioVisualizerRadial } from "./AudioVisualizerRadial";
 import { useVoiceCall } from "./VoiceCallProvider";
-import { errorText } from "./voiceErrors";
+import { errorText } from "@lightbulb/shared";
 
 const BARS = 24;
 const SPEAKING = 0.15;

@@ -5,6 +5,7 @@ import {
   canControlSession,
   canSendToSession,
   lastOwnMessageId,
+  liveMarker,
   roomDisplayName,
   placeRuns,
   readState,
@@ -45,6 +46,8 @@ import { RoomHeaderActions } from "../../../../components/room/RoomHeaderActions
 import { RunBlock } from "../../../../components/room/RunBlock";
 import { fonts, radii, spacing, useChatPalette } from "../../../../config/theme";
 import { claimRoomTarget } from "../../../../lib/activeAgent";
+import { hasNativeVoice } from "../../../../lib/webrtc";
+import { useLive, useRoomLive } from "../../../../providers/live";
 import { JumpToLatest } from "../../../../components/conversation/JumpToLatest";
 import { usePushedScreenKeyboardOffset } from "../../../../lib/keyboardOffset";
 import { useReadBack } from "../../../../lib/readBack";
@@ -256,7 +259,20 @@ function Conversation() {
       online={isDm && !!others[0] && presence.has(others[0].id)}
     />
   );
-  const headerStatus = isDm
+  // Live in every room kind (the web's RoomHeader rules); a room with no listening agent is people-only.
+  const live = useLive();
+  const roomLive = useRoomLive(!preview && room && !room.guest ? room.roomId : undefined);
+  const canVoice = hasNativeVoice();
+  const liveNames = roomLive.userIds.map((id) => members?.find((m) => m.kind === "human" && m.id === id)?.displayName ?? "Someone");
+  const headerVoice = !canVoice || !room ? undefined
+    // While Live, the pill reopens the sheet from any room, so Live can always be found and left.
+    : live.room
+      ? { text: "Live", label: live.roomId === room.roomId ? "Open Live" : `Open Live in ${live.roomName ?? "another room"}`, onPress: () => live.setOpen(true) }
+    : roomLive.available && !room.guest
+      ? { text: live.joining === room.roomId ? "Joining…" : "Go live", label: "Go live", disabled: !!live.joining,
+          onPress: () => void live.join(room.roomId, title) }
+    : undefined;
+  const headerStatus = liveNames.length > 0 ? liveMarker(liveNames) : isDm
     ? others[0]?.kind === "agent"
       ? otherAgentWorking
         ? "working…"
@@ -402,6 +418,7 @@ function Conversation() {
         disabled={!room}
         onToggleStar={() => void savePrefs({ starred: !room?.starred }, STAR_FAILED)}
         onToggleMute={() => void savePrefs({ muted: !room?.muted }, MUTE_FAILED)}
+        voice={headerVoice}
       />
     ),
   };

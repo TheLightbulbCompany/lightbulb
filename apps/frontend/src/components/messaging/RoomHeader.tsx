@@ -2,7 +2,7 @@
 
 import { useId, useRef, useState, type ReactNode } from "react";
 import { Archive, ArchiveRestore, Bell, BellOff, Hash, Link, LogOut, MessageCircle, Mic, MoreHorizontal, Pencil, Pin, Star, Trash2, Users } from "lucide-react";
-import type { MemberPrefsRequest, RoomSummary } from "@lightbulb/shared";
+import { liveMarker, type MemberPrefsRequest, type RoomSummary } from "@lightbulb/shared";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
@@ -42,10 +42,8 @@ interface RoomHeaderProps {
   onDeleteRoom?: () => Promise<void>; // passed only to the channel's owner
 }
 
-function liveMarker(userIds: readonly string[], participants: readonly RoomParticipant[]) {
-  const names = userIds.map((id) => participants.find((p) => p.kind === "human" && p.id === id)?.displayName ?? "Someone");
-  const who = names.length <= 2 ? names.join(" and ") : `${names[0]} and ${names.length - 1} others`;
-  return `🔴 Live — ${who}`;
+function liveNames(userIds: readonly string[], participants: readonly RoomParticipant[]) {
+  return userIds.map((id) => participants.find((p) => p.kind === "human" && p.id === id)?.displayName ?? "Someone");
 }
 
 export function RoomHeader({
@@ -120,7 +118,7 @@ export function RoomHeader({
         ? <ParticipantAvatar participant={counterparts[0]} size="sm" />
         : <Icon size={20} aria-hidden="true" />}
       <h2 className="font-semibold text-lg truncate" title={roomName}>{roomName}</h2>
-      {huddlers.length > 0 && !(huddle.room && huddle.roomId === room?.roomId) && <span className="room-topic" role="status">{liveMarker(huddlers, participants)}</span>}
+      {huddlers.length > 0 && !(huddle.room && huddle.roomId === room?.roomId) && <span className="room-topic" role="status">{liveMarker(liveNames(huddlers, participants))}</span>}
       {room?.shared && <span className="room-directory-tag" title="Shared between this workspace and Lightbulb">Shared</span>}
       {editingTopic ? <form className="room-topic-form" onSubmit={(event) => {
         event.preventDefault();

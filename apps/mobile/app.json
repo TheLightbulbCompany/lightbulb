@@ -3,7 +3,7 @@
     "name": "Lightbulb",
     "slug": "isol8-mobile",
     "owner": "thelightbulbcompany",
-    "version": "0.4.7",
+    "version": "0.4.8",
     "orientation": "portrait",
     "icon": "./assets/images/icon.png",
     "scheme": "flickmeon",
@@ -21,7 +21,11 @@
       "infoPlist": {
         "ITSAppUsesNonExemptEncryption": false,
         "NSPhotoLibraryUsageDescription": "Lightbulb lets you attach photos from your library to chat messages for your agents.",
-        "NSCameraUsageDescription": "Lightbulb lets you take photos to attach to chat messages for your agents."
+        "NSCameraUsageDescription": "Lightbulb lets you take photos to attach to chat messages for your agents.",
+        "NSMicrophoneUsageDescription": "Lightbulb uses the microphone when you go Live with your team and agents.",
+        "UIBackgroundModes": [
+          "audio"
+        ]
       },
       "entitlements": {
         "aps-environment": "production"
@@ -48,9 +52,11 @@
         {
           "photosPermission": "Lightbulb lets you attach photos from your library to chat messages for your agents.",
           "cameraPermission": "Lightbulb lets you take photos to attach to chat messages for your agents.",
-          "microphonePermission": false
+          "microphonePermission": "Lightbulb uses the microphone when you go Live with your team and agents."
         }
-      ]
+      ],
+      "@livekit/react-native-expo-plugin",
+      "@config-plugins/react-native-webrtc"
     ],
     "experiments": {
       "typedRoutes": true,

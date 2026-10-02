@@ -260,10 +260,6 @@ def _replay_or_conflict(entry: dict, identity: dict, fingerprint: str) -> str:
     return "conflict"
 
 
-def call_session_key(agent_id: str, call_id: str) -> str:
-    return f"agent:{agent_id}:lightbulb:call:{call_id}"
-
-
 def register_call_run(identity: dict) -> bool:
     """Register a call turn in the run registry (abort/attach use it). False = already registered
     (a retried POST). No durable record: a call leaves nothing behind."""
@@ -287,19 +283,32 @@ def register_call_run(identity: dict) -> bool:
 CALL_RUN_LIMITS = {"reasoning_config": {"enabled": True, "effort": "low"}, "max_iterations": 4}
 
 
-def _run_call(identity: dict, request: dict, frames: "CallFramePublisher") -> tuple[str, str | None, str, dict]:
-    """One call turn with the environment a DM turn gets: the profile's own secrets (no
-    Paperclip overlay), MCP, terminal, logins and the lightbulb plugin's turn context."""
-    agent_id, run_id, session_key = identity["agentId"], identity["runId"], identity["sessionId"]
+def _voice_body(identity: dict, request: dict) -> dict:
+    """The room-turn body a voice run reads (agent identity, observed window, observe prompt)."""
+    voice = request["voice"]
+    return {"room": {"id": identity["roomId"], "kind": voice.get("roomKind")}, "sender": voice.get("speaker") or {},
+            "participants": request.get("participants") or [], "recentHistory": request.get("recentHistory") or []}
+
+
+def _run_call(identity: dict, request: dict, frames: "VoiceFramePublisher") -> tuple[str, str | None, str, dict]:
+    """A voice request: an ordinary run on the agent's ROOM session key, with the environment a
+    DM turn gets (the profile's own secrets, no Paperclip overlay, MCP, terminal, logins, the
+    lightbulb plugin's turn context) and the room turn's own history path, so what is said by
+    voice is in the room session for the next chat or voice run. Nothing is posted to the room."""
+    agent_id, run_id, session_key, room_id = identity["agentId"], identity["runId"], identity["sessionId"], identity["roomId"]
     try:
         import run_agent  # noqa: F401
     except ImportError:
         pass
     ctx = {"apiUrl": API, "ownerId": OWNER, "hookToken": HOOK_TOKEN, "agentId": agent_id, "runId": run_id,
-           "sessionKey": session_key, "roomId": None, "family": "call"}
-    with _waiting_turn_lock(agent_id, session_key, run_id):
+           "sessionKey": session_key, "roomId": None, "voiceRoomId": room_id, "family": "call"}
+    body = _voice_body(identity, request)
+    # The room turns' folder path, never filled or removed here: an observed row's "saved at" note
+    # names it, and the room's next turn fills it (_observed_text).
+    base = sync.turn_media_root() / f"{agent_id}.{room_id}"
+    with _waiting_turn_lock(agent_id, session_key, run_id, on_wait=lambda: frames.emit({"type": "run_queued"})):
         # A run stopped while queued gets no lock: nothing below may run (the context file is
-        # keyed by the call's session key and belongs to the turn holding the lock).
+        # keyed by the session key and belongs to the turn holding the lock).
         if run_aborted(run_id):
             return "aborted", None, "", dict(ZERO_USAGE)
         with sync.profile_lock(agent_id):
@@ -307,18 +316,16 @@ def _run_call(identity: dict, request: dict, frames: "CallFramePublisher") -> tu
             sync.normalize_profile_backends(agent_id)
         browser_lease = browser_control.begin_turn(str(run_id), agent_id, None, "call")
         logins = website_logins.prompt_scope(agent_id, None, None, lambda: run_aborted(run_id))
-        with _hermes_home_scope(agent_id), _brokered_mcp_scope(runtime_mcp_env(agent_id)), _secret_scope(agent_id), _terminal_scope(agent_id, session_key), _mcp_session(agent_id), logins, _turn_context_file(agent_id, ctx):
+        with _hermes_home_scope(agent_id), _brokered_mcp_scope(runtime_mcp_env(agent_id)), _secret_scope(agent_id), _terminal_scope(agent_id, session_key), _desktop_active_turn(session_key, run_id), _mcp_session(agent_id), logins, _turn_context_file(agent_id, ctx):
             try:
-                agent = _construct_agent(agent_id, {"sessionKey": session_key}, frames, session_key, **CALL_RUN_LIMITS)
-                attach_agent(run_id, agent)
+                agent = _construct_agent(agent_id, body, frames, session_key, **CALL_RUN_LIMITS)
+                queued_steers = attach_agent(run_id, agent)
                 if run_aborted(run_id):
                     return "aborted", None, "", dict(ZERO_USAGE)
+                text = f"{request['input']}\n{queued_steers}" if queued_steers else request["input"]
                 try:
-                    result = _run_conversation(
-                        agent, agent_id, session_key,
-                        user_message=request["input"],
-                        system_message=with_profile_agents_md(agent_id, request["instructions"]),
-                    )
+                    result = _converse(agent, agent_id, session_key, run_id, body, base,
+                                       with_profile_agents_md(agent_id, request["instructions"]), text, text)
                     _post_turn.agent = agent
                 except Exception:
                     if run_aborted(run_id):
@@ -348,7 +355,7 @@ def run_call_turn(identity: dict, request: dict, reserved: bool = False) -> None
     try:
         started = time.time()
         spec = request.get("frames") or {}
-        frames = call_frame_publisher(spec, identity["callId"], agent_id, run_id)
+        frames = call_frame_publisher(spec, identity, run_id)
         outcome, error, output, usage = "error", None, "", dict(ZERO_USAGE)
         frames.started()
         try:
@@ -361,7 +368,8 @@ def run_call_turn(identity: dict, request: dict, reserved: bool = False) -> None
             log.error("call turn %s failed\n%s", run_id, traceback.format_exc())
         finish_run(run_id, outcome)
         frames.finished(outcome, output, error)
-        report_usage(session_key, agent_id, run_id, outcome == "completed", int((time.time() - started) * 1000), usage)
+        report_usage(session_key, agent_id, run_id, outcome == "completed", int((time.time() - started) * 1000), usage,
+                     family=identity.get("family"))
         _await_post_turn_writes(_pop_post_turn_agent())
         try:
             save_profile(agent_id)
@@ -576,14 +584,16 @@ def abort_run(run_id: str) -> bool:
 ROOM_SESSION_RE = re.compile(r"^agent:[^:]+:lightbulb:channel:[0-9a-f-]{36}$")
 
 
-def report_usage(session_key, agent_id, run_id, success, duration_ms, usage) -> bool:
-    """Usage for every run the ROOM contract does not cover (mail, Paperclip, cron).
+def report_usage(session_key, agent_id, run_id, success, duration_ms, usage, family=None) -> bool:
+    """Usage for every run the ROOM contract does not cover (mail, Paperclip, cron, voice).
     A room run reports exclusively through run.ended — reporting both would double-count,
-    which is why the split is a hard regex on the session key, on both sides."""
-    if not session_key or not agent_id or not run_id or ROOM_SESSION_RE.match(session_key):
+    which is why the split is a hard regex on the session key, on both sides. A voice run is on
+    a room key but has no run.ended, so it reports here, marked `family: voice`."""
+    voice = family == "voice"
+    if not session_key or not agent_id or not run_id or (ROOM_SESSION_RE.match(session_key) and not voice):
         return False
     body = {"sessionKey": session_key, "agentId": agent_id, "runId": run_id, "success": bool(success),
-            "usage": usage}
+            "usage": usage, **({"family": "voice"} if voice else {})}
     if isinstance(duration_ms, int):
         body["durationMs"] = duration_ms      # the error text is NEVER forwarded: it can carry model output
     _post_backend(f"usage/{OWNER}", body)
@@ -1212,11 +1222,11 @@ def frame_event(room_id: str, agent_id: str, run_id: str, thread_root: str | Non
             "occurredAt": now(), "roomId": room_id, "payload": payload}
 
 
-def call_frame_event(call_id: str, turn_id: str, agent_id: str, frame: dict) -> dict:
-    """A voice-call turn's frame, published to the CALLER's private user channel (no room)."""
-    return {"schemaVersion": 1, "eventId": str(_uuid.uuid4()), "type": "call.turn.frame", "occurredAt": now(),
-            "payload": {"callId": call_id, "turnId": turn_id, "agentId": agent_id,
-                        "frame": {**frame, "runId": turn_id, "agentId": agent_id}}}
+def voice_frame_event(room_id: str, run_id: str, agent_id: str, frame: dict) -> dict:
+    """A voice run's frame, relayed by the backend to the room's Live worker (never to AppSync)."""
+    return {"schemaVersion": 1, "eventId": str(_uuid.uuid4()), "type": "voice.run.frame", "occurredAt": now(),
+            "payload": {"roomId": room_id, "runId": run_id, "agentId": agent_id,
+                        "frame": {**frame, "runId": run_id, "agentId": agent_id}}}
 
 
 MAX_FRAME_BYTES = 200 * 1024  # AppSync refuses ~230 KiB; the resync `chunk` is the only frame
@@ -1452,20 +1462,20 @@ class FramePublisher:
         self.emit({"type": "run_active", "active": False}, closing=True)
 
 
-class CallFramePublisher(FramePublisher):
-    def __init__(self, endpoint, channel, call_id, agent_id, run_id, publish=None):
-        super().__init__(endpoint, channel, None, agent_id, run_id, None, publish)
-        self._call_id = call_id
+class VoiceFramePublisher(FramePublisher):
+    def __init__(self, endpoint, room_id, agent_id, run_id, publish=None):
+        # The emit guards require a non-empty channel; the backend sink has none, so reuse the endpoint.
+        super().__init__(endpoint, endpoint, room_id, agent_id, run_id, None, publish or _backend_publish(endpoint))
 
     def _event(self, frame: dict) -> dict:
-        return call_frame_event(self._call_id, self._run_id, self._agent_id, frame)
+        return voice_frame_event(self._room_id, self._run_id, self._agent_id, frame)
 
 
-HUDDLE_FRAMES = frozenset({"tool_start", "chunk", "error", "run_ended"})
+HUDDLE_FRAMES = frozenset({"tool_start", "chunk", "error", "run_ended", "run_queued"})
 
 
 def _backend_publish(endpoint: str):
-    """Huddle calls: same signature as publish_frame, but POSTs plain `{"events": [...]}` to the
+    """Voice runs: same signature as publish_frame, but POSTs plain `{"events": [...]}` to the
     backend relay with the hook token (read at call time: boot rebinds it). Failures are logged
     and dropped, as on the AppSync path."""
     import bridge
@@ -1490,12 +1500,8 @@ def _backend_publish(endpoint: str):
     return publish
 
 
-def call_frame_publisher(spec: dict, call_id, agent_id, run_id) -> "CallFramePublisher":
-    endpoint = spec.get("endpoint", "")
-    publish = _backend_publish(endpoint) if spec.get("sink") == "backend" else None
-    # The emit guards require a non-empty channel; the backend sink has none, so reuse the endpoint.
-    channel = endpoint if publish else spec.get("channel", "")
-    return CallFramePublisher(endpoint, channel, call_id, agent_id, run_id, publish)
+def call_frame_publisher(spec: dict, identity: dict, run_id) -> "VoiceFramePublisher":
+    return VoiceFramePublisher(spec.get("endpoint", ""), identity["roomId"], identity["agentId"], run_id)
 
 
 # ---- structured room context (spec §5 "Context and threading") ------------------------------
@@ -2364,26 +2370,37 @@ def _turn_lock(agent_id: str, session_key: str) -> threading.Lock:
         return _turn_locks.setdefault((agent_id, session_key), threading.Lock())
 
 
-def _acquire_unless_aborted(lock, run_id: str | None) -> bool:
-    """Block for `lock`, but give up (False) once the run is stopped while it waits."""
+def _acquire_unless_aborted(lock, run_id: str | None, on_wait=None) -> bool:
+    """Block for `lock`, but give up (False) once the run is stopped while it waits. `on_wait`
+    is called each time a 1 s wait expires."""
     while not lock.acquire(timeout=1.0):
+        if on_wait:
+            on_wait()
         if run_id and RUNS.get(run_id, {}).get("aborted"):
             return False
     return True
 
 
 @contextlib.contextmanager
-def _waiting_turn_lock(agent_id: str, session_key: str, run_id: str | None):
+def _waiting_turn_lock(agent_id: str, session_key: str, run_id: str | None, on_wait=None):
     """This conversation's turn lock, then a microVM-wide turn slot -- in that order, so a turn
     queued behind its own conversation never holds a slot. A run stopped while it waits for
     either gets neither: the body runs, sees `aborted` and returns at once (prod 2026-09-25: a
-    stopped queued run lingered 14 min)."""
+    stopped queued run lingered 14 min). `on_wait` is called once, the first time either acquire
+    blocks for more than 1 s (a voice run's `run_queued` frame)."""
+    waited = []
+
+    def once():
+        if on_wait and not waited:
+            waited.append(1)
+            on_wait()
+
     lock = _turn_lock(agent_id, session_key)
-    if not _acquire_unless_aborted(lock, run_id):
+    if not _acquire_unless_aborted(lock, run_id, once):
         yield
         return
     try:
-        if not _acquire_unless_aborted(_turn_slots, run_id):
+        if not _acquire_unless_aborted(_turn_slots, run_id, once):
             yield
             return
         try:
@@ -2653,6 +2670,52 @@ def _turn_folder(base: Path):
         shutil.rmtree(base, ignore_errors=True)
 
 
+def _converse(agent, agent_id: str, session_key: str, run_id: str | None, body: dict, base: Path, system: str,
+              turn_text: str, user_message, message_id: str | None = None) -> dict:
+    """One turn's conversation on `session_key` -- a room turn's and a voice run's alike: a room
+    key runs on its own transcript plus what it observes from `body["recentHistory"]`, and a
+    steer that lands too late is answered in the same run."""
+    # delegate_tool_dispatch._resolve_async_session_key stamps an async delegation with
+    # get_current_session_key(), else agent.session_id -- which compression renames, so the
+    # drain could no longer route the completion. Bind the room's key, as the gateway does.
+    try:
+        from tools.approval_context import reset_current_session_key, set_current_session_key
+        key_token = set_current_session_key(session_key)
+    except ImportError:
+        reset_current_session_key = key_token = None
+    try:
+        run = {"system_message": system}
+        if ROOM_SESSION_RE.match(session_key):
+            # A room runs on its own transcript (see "Hermes's own session store").
+            agent.ephemeral_system_prompt = f"{system}\n\n{_observe_prompt(agent_id, body)}"
+            run = {"system_message": None}
+            _observe_room(agent, agent_id, body, base)
+            history, observed = _room_history(agent)
+            run["conversation_history"] = history or None
+            if message_id:
+                run["persist_user_platform_id"] = message_id
+            if observed:
+                run["persist_user_message"] = turn_text
+                user_message = _with_observed(user_message, observed)
+        result = _run_conversation(agent, agent_id, session_key, user_message=user_message, **run)
+        # A follow-up that arrived too late to steer is answered in this same run,
+        # the way Hermes's own gateway delivers a leftover steer as the next turn.
+        replies = []
+        while not result.get("failed") and (pending := settle_steers(run_id, agent, result.get("pending_steer"))):
+            replies.append(result.get("final_response") or "")
+            result = _run_conversation(
+                agent, agent_id, session_key,
+                user_message=pending, system_message=run["system_message"],
+                conversation_history=result.get("messages") or None,
+            )
+        if replies:
+            result["final_response"] = "\n\n".join(r for r in (*replies, result.get("final_response")) if r)
+        return result
+    finally:
+        if key_token is not None:
+            reset_current_session_key(key_token)
+
+
 def _run_turn_in(agent_id: str, body: dict, frames, base: Path) -> tuple[str, str | None, str, dict]:
     session_key = _resolve_session_key(agent_id, body)
     try:
@@ -2705,50 +2768,14 @@ def _run_turn_in(agent_id: str, body: dict, frames, base: Path) -> tuple[str, st
                 queued_steers = attach_agent(run_id, agent)
                 if run_aborted(run_id):  # stopped while the profile/MCP/agent were set up
                     return "aborted", None, "", ZERO_USAGE
-                # delegate_tool_dispatch._resolve_async_session_key stamps an async delegation with
-                # get_current_session_key(), else agent.session_id -- which compression renames, so the
-                # drain could no longer route the completion. Bind the room's key, as the gateway does.
-                try:
-                    from tools.approval_context import reset_current_session_key, set_current_session_key
-                    key_token = set_current_session_key(session_key)
-                except ImportError:
-                    reset_current_session_key = key_token = None
-                try:
-                    turn_text = _turn_input(body, current_media)
-                    if queued_steers:
-                        turn_text = f"{turn_text}\n{queued_steers}"
-                    system = with_profile_agents_md(agent_id, system_prompt(body, agent_id, media=current_media))
-                    user_message = _message_content(turn_text, [] if body.get("followUp") else _message_image_paths(body, media, base))
-                    message_id = (body.get("message") or {}).get("messageId")
-                    run = {"system_message": system}
-                    if ROOM_SESSION_RE.match(session_key):
-                        # A room runs on its own transcript (see "Hermes's own session store").
-                        agent.ephemeral_system_prompt = f"{system}\n\n{_observe_prompt(agent_id, body)}"
-                        run = {"system_message": None}
-                        _observe_room(agent, agent_id, body, base)
-                        history, observed = _room_history(agent)
-                        run["conversation_history"] = history or None
-                        if not body.get("followUp") and message_id:
-                            run["persist_user_platform_id"] = message_id
-                        if observed:
-                            run["persist_user_message"] = turn_text
-                            user_message = _with_observed(user_message, observed)
-                    result = _run_conversation(agent, agent_id, session_key, user_message=user_message, **run)
-                    # A follow-up that arrived too late to steer is answered in this same run,
-                    # the way Hermes's own gateway delivers a leftover steer as the next turn.
-                    replies = []
-                    while not result.get("failed") and (pending := settle_steers(run_id, agent, result.get("pending_steer"))):
-                        replies.append(result.get("final_response") or "")
-                        result = _run_conversation(
-                            agent, agent_id, session_key,
-                            user_message=pending, system_message=run["system_message"],
-                            conversation_history=result.get("messages") or None,
-                        )
-                    if replies:
-                        result["final_response"] = "\n\n".join(r for r in (*replies, result.get("final_response")) if r)
-                finally:
-                    if key_token is not None:
-                        reset_current_session_key(key_token)
+                turn_text = _turn_input(body, current_media)
+                if queued_steers:
+                    turn_text = f"{turn_text}\n{queued_steers}"
+                system = with_profile_agents_md(agent_id, system_prompt(body, agent_id, media=current_media))
+                user_message = _message_content(turn_text, [] if body.get("followUp") else _message_image_paths(body, media, base))
+                message_id = None if body.get("followUp") else (body.get("message") or {}).get("messageId")
+                result = _converse(agent, agent_id, session_key, run_id, body, base, system, turn_text, user_message,
+                                   message_id)
                 _post_turn.agent = agent
             finally:
                 browser_control.release(browser_lease)

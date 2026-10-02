@@ -5,6 +5,7 @@ import itertools
 import json
 import logging
 import re
+import urllib.error
 import urllib.request
 
 from . import turn_context
@@ -22,6 +23,9 @@ NO_TURN = "Lightbulb tools are unavailable: no active Lightbulb turn for this se
 OWN_THREAD_REFUSAL = ("Your reply to this thread is delivered automatically when the turn ends "
                       "-- write it as your answer. Use send_room_message only for other rooms "
                       "or threads.")
+# A voice run's answer is spoken; nothing it does may land in the Live room's timeline.
+VOICE_ROOM_REFUSAL = ("This is a Live voice request: your answer is spoken, and nothing is "
+                      "posted to this room.")
 
 # Task 11: send_room_message tool
 SEND_SCHEMA = {
@@ -62,6 +66,8 @@ def _send_room_message(args: dict, *, session_id: str = "", **_kw) -> str:
     room = _normalize_room(str(args.get("roomId", "")))
     if not room:
         return "Invalid roomId: expected a room UUID, optionally prefixed 'lightbulb:'."
+    if room == _normalize_room(str(ctx.get("voiceRoomId") or "")):
+        return VOICE_ROOM_REFUSAL
     text = str(args.get("text") or "").strip()
     if not text:
         return "text is required."
@@ -80,6 +86,48 @@ def _send_room_message(args: dict, *, session_id: str = "", **_kw) -> str:
         return json.dumps(_post(url, ctx["hookToken"], body))
     except Exception as exc:  # noqa: BLE001
         return f"Lightbulb room send failed: {type(exc).__name__}"
+
+
+# lightbulb_voice_profile tool: rename / voice notes, only from inside a voice run.
+VOICE_PROFILE_SCHEMA = {
+    "name": "lightbulb_voice_profile",
+    "description": "Only when the person speaking asked you to change your name or how you talk; "
+                   "confirm a rename, replacement or clear before calling.",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "action": {"type": "string", "enum": ["rename", "add_note", "replace_notes", "clear_notes"]},
+            "name": {"type": "string", "description": "New name (rename only)."},
+            "text": {"type": "string", "description": "Note text (add_note / replace_notes)."},
+        },
+        "required": ["action"],
+    },
+}
+VOICE_ONLY = "lightbulb_voice_profile works only inside a Live voice request."
+
+
+def _voice_profile(args: dict, *, session_id: str = "", **_kw) -> str:
+    ctx = turn_context.read(session_id)
+    if not ctx or not ctx.get("voiceRoomId"):
+        return VOICE_ONLY
+    # agentId/runId come from the turn, never the model: the backend resolves the speaker
+    # from the run's VOICERUN row.
+    body = {"agentId": ctx["agentId"], "runId": ctx["runId"], "action": args.get("action"),
+            **{k: args[k] for k in ("name", "text") if args.get(k) is not None}}
+    url = f"{ctx['apiUrl'].rstrip('/')}/api/v1/internal/agents/voice-profile/{ctx['ownerId']}"
+    try:
+        return json.dumps(_post(url, ctx["hookToken"], body))
+    except urllib.error.HTTPError as exc:
+        # C8 codes (name_taken, rate_limited, ...) steer the skill's reply, so surface them.
+        try:
+            err = json.loads(exc.read() or b"{}")
+        except Exception:  # noqa: BLE001
+            err = {}
+        detail = err.get("detail") if isinstance(err, dict) else None
+        code = detail.get("code") if isinstance(detail, dict) else detail
+        return f"Voice profile update failed: {code or (err.get('error') if isinstance(err, dict) else None) or exc.code}"
+    except Exception as exc:  # noqa: BLE001
+        return f"Voice profile update failed: {type(exc).__name__}"
 
 
 # Task 12: hire_suggestion tool
@@ -319,6 +367,8 @@ def register(ctx) -> None:
                       description=HIRE_SCHEMA["description"], emoji="🧑‍💼")
     ctx.register_tool("lightbulb_local_sessions", "lightbulb", SESSIONS_SCHEMA, _local_sessions,
                       description=SESSIONS_SCHEMA["description"], emoji="🖥️")
+    ctx.register_tool("lightbulb_voice_profile", "lightbulb", VOICE_PROFILE_SCHEMA, _voice_profile,
+                      description=VOICE_PROFILE_SCHEMA["description"], emoji="🎙️")
     from . import desktop
 
     ctx.register_tool("lightbulb_desktop", "lightbulb", desktop.SCHEMA, desktop.handle,

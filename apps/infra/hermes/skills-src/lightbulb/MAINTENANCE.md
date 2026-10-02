@@ -190,8 +190,16 @@ MAINTENANCE (Lightbulb engineers): every claim in this skill is anchored to
   - Voice calls ............. references/company-and-plans.md ("Voice calls")
                               <- apps/backend/core/billing/voice_billing.py (free 10 min/UTC day, credits mode, MIN_CALL_SECONDS);
                                  core/services/voice_calls.py (30 min cap, one free call at a time, no transcript);
-                                 core/services/{voice_routing,voice_persona}.py (room-call routing; room calls speak as Lightbulb in the CEO voice)
-                                 routers/huddles.py, core/services/livekit_huddles.py, apps/huddle-agent/ (Live in every room kind; Lightbulb only where an agent listens; wake word "Lightbulb" or its bars)
+                                 core/services/{voice_routing,voice_persona}.py (room-call routing; each agent speaks as itself in its own voice)
+                                 routers/huddles.py, core/services/livekit_huddles.py, apps/huddle-agent/ (Live in every room kind; agents join only where one listens; addressed by name, "Lightbulb" or a tile)
+  - Voice requests .......... references/voice.md + SKILL.md routing row
+                              <- apps/infra/hermes/bridge/server.py + turn.py (voice runs on the room session key,
+                                 lightbulb_session_key; frames relayed to the backend, never posted);
+                                 plugins/lightbulb/__init__.py (VOICE_ROOM_REFUSAL in _send_room_message; the
+                                 `lightbulb_voice_profile` tool: rename|add_note|replace_notes|clear_notes, VOICE_ONLY
+                                 outside a voice run); scripts/lightbulb-post.sh (voice.md forbids it in a voice run;
+                                 /agent-posts has no voice guard); backend POST /internal/agents/voice-profile/{owner}
+                                 (409 name_taken, 429 rate_limited). Pinned by apps/infra/hermes/tests/test_voice_skill.py.
   - Provisioning rail ....... references/money.md
                               <- apps/backend/routers/company_provisioning.py (container routes, refusal codes);
                                  core/services/provisioning_workflow.py (STATES); core/services/owner_facts.py (the `provisioning` facts list)

@@ -56,11 +56,8 @@ Check whether the timeout also happens at concurrency 50
   you; never message it); `read_messages` reads a room. Use `send_message`
   with exactly one of `room_id`, `person_id` (a member id) or `session_id`,
   the text and a new UUID `request_id`; use `message_receipt` to check delivery.
-  `send_message` first returns `pending_approval`: its owner must approve the
-  exact message in Lightbulb before delivery. Report the receipt's actual
-  state; do not call a pending or queued message delivered. Do not poll a
-  pending approval repeatedly; keep the `request_id` and check on a later turn.
-  A message posts as this verified session, never as the owner, and these
+  Messages post as the session. Report the receipt's actual state; do not
+  call a pending or queued message delivered. A message posts as this verified session, never as the owner, and these
   tools cannot answer permission prompts. A native-session reply chain stops
   after two hops.
 - If the tools or destination are unavailable, say so rather than claiming a

@@ -4,7 +4,7 @@ Owner decision 2026-10-02 ("the Claude Code session should post as itself"). Del
 
 ## Rule
 
-- A coding session (Claude Code, Codex) that Lightbulb can **attest** posts **as that session**, through the owner's approval card. Attestation exists only on a Mac running the Lightbulb app (peer process check, device token).
+- A coding session (Claude Code, Codex) that Lightbulb can **attest** posts **as that session**, immediately (owner ruling 2026-10-02). Attestation exists only on a Mac running the Lightbulb app (peer process check, device token).
 - A client Lightbulb **cannot attest** posts under a **client identity derived from its OAuth client**, never as the signed-in person and never as a particular session. The consented `lightbulb:messages:write` scope is its authority; the signed-in person stays the accountable principal on the row.
 - A **person** posts as themselves only from Lightbulb's own surfaces (web, Mac, phone). No MCP tool posts as a human any more.
 - The user sees **one server name, `lightbulb`, and one tool set**, whichever path serves it.
@@ -13,7 +13,7 @@ Owner decision 2026-10-02 ("the Claude Code session should post as itself"). Del
 
 | Where the client runs | Server entry | Who serves it | Author of a send | Approval |
 | --- | --- | --- | --- | --- |
-| Mac with the Lightbulb app, sharing enabled | `lightbulb` (stdio, installed by enrollment) | the local bridge (`lightbulb-desktop session-mcp`) | the attested session (`kind: system`, session id, "Claude Code · <title>") | owner approval card, as today |
+| Mac with the Lightbulb app, sharing enabled | `lightbulb` (stdio, installed by enrollment) | the local bridge (`lightbulb-desktop session-mcp`) | the attested session (`kind: system`, session id, "Claude Code · <title>") | posts immediately as the session (owner ruling 2026-10-02) |
 | Anywhere else | `lightbulb` (HTTP, `https://api.thelightbulb.company/mcp`) | the hosted MCP | a client identity (`kind: system`, id `mcp:<user_id>:<client>`, "Claude Code via <person>") | none; consented write scope |
 
 Enrollment replaces the `lightbulb_native_sessions` entry with `lightbulb`; if a `lightbulb` HTTP entry already exists in the user-scoped config, enrollment replaces it and says so in the setup status ("Mac bridge is serving `lightbulb`"). Disable restores nothing (the person re-adds the HTTP entry if they want it without the app); the setup copy says that.
@@ -31,11 +31,11 @@ Enrollment replaces the `lightbulb_native_sessions` entry with `lightbulb`; if a
 ## Desktop (local bridge)
 
 - `native_mcp::configure` installs the server as `lightbulb` (user scope) for Claude Code and Codex, removing `lightbulb_native_sessions` and any pre-existing `lightbulb` entry it did not create (recorded in the setup status).
-- `session-mcp` exposes the five tools; `find_rooms`/`read_messages`/`find_sessions`/`message_receipt` call the new device routes with the short-lived device token; `send_message` is the existing approval-gated native send, with `person_id`/`session_id` mapped onto the existing destination forms.
+- `session-mcp` exposes the five tools; `find_rooms`/`read_messages`/`find_sessions`/`message_receipt` call the new device routes with the short-lived device token; `send_message` is the native send, which posts immediately as the session (owner ruling 2026-10-02), with `person_id`/`session_id` mapped onto the existing destination forms.
 - Setup status rows read "Serving `lightbulb` for new sessions".
 
 ## Acceptance
 
-- Mac: fresh enable shows one `lightbulb` entry in `claude mcp list` and `codex mcp list`; a new Claude Code session calls `find_rooms` (reads as the human) and `send_message` (parks an approval; approved post is authored by the session); disable leaves no `lightbulb` entry.
+- Mac: fresh enable shows one `lightbulb` entry in `claude mcp list` and `codex mcp list`; a new Claude Code session calls `find_rooms` (reads as the human) and `send_message` (posts immediately, authored by the session); disable leaves no `lightbulb` entry.
 - Non-Mac: Claude Code over OAuth sends and the row shows author "Claude Code via <person>", not the person; receipt resolves; the person's own surfaces still post as the person.
 - No MCP path can author as a human; no device token can reach a write route.

@@ -282,10 +282,7 @@ function SessionBody({
   const pendingText = usePendingPrompt(command.attempt, events);
   const pendingShown = !!pendingText && !history.hasNewer;
   const waitingOn = session.status === "waiting-approval" ? pendingApproval(events) ?? "" : null;
-  const remoteApproval = !!session.pendingApproval && (
-    (session.nativeSendApproval && session.status !== "ended") ||
-    (session.provider === "claude" && waitingOn !== null)
-  );
+  const remoteApproval = !!session.pendingApproval && session.provider === "claude" && waitingOn !== null;
   const last = events.at(-1);
   const turnOpen = busy && !history.hasNewer && last?.lifecycle !== "turn_end" && last?.lifecycle !== "turn_aborted";
   // From every event: a subagent is drawn inline where it was launched and opens onto its own rows.

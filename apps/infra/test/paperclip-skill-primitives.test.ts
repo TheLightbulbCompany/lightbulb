@@ -359,14 +359,35 @@ describe("sections vendored in from the fork", () => {
 // reference file the routing table points at. So this heading lives in
 // references/monitors.md (watchdogs) and references/heartbeat.md
 // (unblockDescriptor) — never in SKILL.md itself.
-//
-// external_objects has no assertions here: fix round 2 found POST
-// /issues/:id/external-objects does not exist upstream (only GET, the
-// summary route, and POST .../refresh are registered), and the whole
-// feature is gated off (`experimental.enableExternalObjects` is `{}` in
-// both envs) — documenting it would have manufactured the exact
-// false-claim failure this change exists to prevent. The tool-agnostic
-// accuracy rule survives in SKILL.md; the fabricated endpoint does not.
+describe("external objects are documented as a read plus a refresh, never a create", () => {
+  const externalObjectsMd = readFileSync(resolve(skillRoot, "references/external-objects.md"), "utf8");
+
+  it("SKILL.md routes to the reference", () => {
+    expect(skillMd).toContain("| `references/external-objects.md` |");
+  });
+
+  it("documents the two routes that exist upstream", () => {
+    expect(externalObjectsMd).toContain('"$PAPERCLIP_API_URL/api/issues/<issueId>/external-objects"');
+    expect(externalObjectsMd).toContain(
+      "/app/skills/paperclip/scripts/paperclip-api.sh raw POST \\\n" +
+        '  "/api/issues/<issueId>/external-objects/refresh"',
+    );
+  });
+
+  it("claims no create route: upstream registers no POST /issues/:id/external-objects", () => {
+    // Fix round 2 found a fabricated `POST .../external-objects` in this skill
+    // once. The only POST the reference may name is the refresh.
+    expect(externalObjectsMd.match(/external-objects\/refresh/g)).toHaveLength(1);
+    expect(externalObjectsMd).not.toMatch(/POST[^\n]*\/external-objects(?!\/refresh)/);
+    expect(externalObjectsMd).toContain("There is no route to add or link an external object by hand");
+  });
+
+  it("keeps the snapshot from standing in for a fresh check", () => {
+    expect(externalObjectsMd).toContain("## It is a snapshot, not a fresh check");
+    expect(externalObjectsMd).toContain("It does not force");
+  });
+});
+
 describe("liveness primitives are documented", () => {
   it("references/monitors.md has ## Surviving a Dropped Run (Task Watchdogs)", () => {
     expect(monitorsMd).toContain("## Surviving a Dropped Run (Task Watchdogs)");
@@ -382,10 +403,10 @@ describe("liveness primitives are documented", () => {
 
   it("forbids asserting external state from memory (tool-agnostic, not tied to external objects)", () => {
     expect(skillMd).toContain("never from memory and never from an earlier run");
-    // Fix round 2: the mechanism this rule pointed at (external objects) is a
-    // disabled/nonexistent endpoint. The rule text itself must no longer
-    // claim Paperclip tracks this state.
-    expect(skillMd).not.toContain("external object");
+    // The external-objects read is a snapshot up to five minutes old: the rule
+    // may point at it, but must not present it as the state to quote.
+    expect(skillMd).toContain("Paperclip does not hold the current state of a GitHub PR/issue");
+    expect(skillMd).toContain("a snapshot of a PR or issue a task");
   });
 
   it("forbids parking an issue in blocked with no named owner and action", () => {

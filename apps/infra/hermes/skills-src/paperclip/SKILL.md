@@ -133,6 +133,7 @@ directory (`/app/skills/paperclip/`).
 | `references/company-skills.md` | Installing a company skill, or assigning/removing skills on an agent (`POST /api/agents/{agentId}/skills/sync` — `mode` is required). **Required reading before you install a skill.** |
 | `references/issue-workspaces.md` | An issue needs browser/manual QA or a preview server — use Paperclip's workspace runtime controls, never an unmanaged background server. |
 | `references/attention-decisions-search.md` | Company search / literal extraction, governed decisions and `ruleKey` policy, decision queues and triage. Access matrix, effect schemas, staleness rules. |
+| `references/external-objects.md` | A task links a GitHub PR or issue: reading what Paperclip tracks for it (a snapshot, not a fresh check) and asking it to re-resolve. There is no route to add one by hand. |
 | `references/cases.md` | Creating, upserting, documenting, attaching to, or linking cases through the agent-facing cases API (experimental; company-scoped work records for durable outputs). **Disabled on this instance** (`enableCases` is false in both envs) — calls 403; check before you burn a run on it. |
 | `references/artifacts.md` | Technical upload instructions for attachments and work products. |
 | `references/workflows.md` | Niche playbooks: new project + workspace (CEO/Manager), setting an agent's `instructions-path`, CEO-safe company import/export, the app-level self-test. |
@@ -212,9 +213,10 @@ died. Mechanics: `references/monitors.md`.
 
 ### State external facts only from a fresh check
 
-Paperclip does not track a GitHub PR/issue, a CI run, or a deploy for you —
-there is no Paperclip endpoint that holds that state. So when you claim its
-status, base it only on a check you ran in this run with whatever tool
+Paperclip does not hold the current state of a GitHub PR/issue, a CI run, or a
+deploy for you — the most it keeps is a snapshot of a PR or issue a task
+links to, up to five minutes old (`references/external-objects.md`). So when
+you claim its status, base it only on a check you ran in this run with whatever tool
 actually has the answer (the `gh` CLI, a GitHub MCP tool, the CI provider's
 own API) — never from memory and never from an earlier run. Cite the check in
 your comment, and if it fails, say the check failed rather than falling back

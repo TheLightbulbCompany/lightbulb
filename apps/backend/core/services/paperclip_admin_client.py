@@ -2154,6 +2154,92 @@ class PaperclipAdminClient:
             session_cookie=session_cookie,
         )
 
+    # ------------------------------------------------------------------
+    # Company secrets. Board + company access upstream (``server/src/routes/
+    # secrets.ts``); the one caller is ``paperclip_github_token``, as the
+    # bootstrap admin. Values go IN only: no route here returns one.
+    # ------------------------------------------------------------------
+
+    async def list_company_secrets(self, *, session_cookie: str, company_id: str) -> list | dict:
+        """Maps to ``GET /api/companies/{companyId}/secrets`` — a bare array of secret
+        METADATA rows (``id``, ``name``, ``description``, ``status``, ...), deleted ones excluded."""
+        return await self._get(
+            f"/api/companies/{company_id}/secrets",
+            session_cookie=session_cookie,
+        )
+
+    async def create_company_secret(
+        self,
+        *,
+        session_cookie: str,
+        company_id: str,
+        name: str,
+        value: str,
+        description: str,
+    ) -> dict:
+        """Maps to ``POST /api/companies/{companyId}/secrets`` (Paperclip-managed, the
+        instance's default provider). 409 when the name or its key already exists."""
+        return await self._post(
+            f"/api/companies/{company_id}/secrets",
+            json={"name": name, "value": value, "description": description},
+            session_cookie=session_cookie,
+        )
+
+    async def rotate_secret(self, *, session_cookie: str, secret_id: str, value: str) -> dict:
+        """Maps to ``POST /api/secrets/{id}/rotate`` — writes a new version; the latest one
+        is what resolvers read. (``PATCH /api/secrets/{id}`` takes no value.)"""
+        return await self._post(
+            f"/api/secrets/{secret_id}/rotate",
+            json={"value": value},
+            session_cookie=session_cookie,
+        )
+
+    async def delete_secret(self, *, session_cookie: str, secret_id: str) -> dict:
+        """Maps to ``DELETE /api/secrets/{id}`` — a soft delete that frees the name.
+        404 is already-gone (``_delete``)."""
+        return await self._delete(
+            f"/api/secrets/{secret_id}",
+            session_cookie=session_cookie,
+        )
+
+    # ------------------------------------------------------------------
+    # External objects (GitHub PRs / issues an issue mentions, with live
+    # status). Gated upstream by the instance flag ``enableExternalObjects``:
+    # while it is off the lists come back empty, not as an error.
+    # ------------------------------------------------------------------
+
+    async def list_issue_external_objects(self, *, session_cookie: str, issue_id: str) -> list | dict:
+        """Maps to ``GET /api/issues/{id}/external-objects`` — a bare array of
+        ``{object, mentions, mentionCount, sourceLabels}`` groups."""
+        return await self._get(
+            f"/api/issues/{issue_id}/external-objects",
+            session_cookie=session_cookie,
+        )
+
+    async def refresh_issue_external_objects(self, *, session_cookie: str, issue_id: str, body: dict) -> dict:
+        """Maps to ``POST /api/issues/{id}/external-objects/refresh`` (``{refreshed}``)."""
+        return await self._post(
+            f"/api/issues/{issue_id}/external-objects/refresh",
+            json=body,
+            session_cookie=session_cookie,
+        )
+
+    async def list_external_object_summaries(
+        self,
+        *,
+        session_cookie: str,
+        company_id: str,
+        issue_ids: list[str],
+    ) -> dict:
+        """Maps to ``POST /api/companies/{companyId}/issues/external-object-summaries``
+        (``{summaries: {issueId: summary}}``). Upstream selects the requested ids
+        ``WHERE company_id = :companyId``, so a foreign issue id yields no entry."""
+        return await self._post(
+            f"/api/companies/{company_id}/issues/external-object-summaries",
+            json={"issueIds": issue_ids},
+            session_cookie=session_cookie,
+        )
+
     async def mark_issue_read(
         self,
         *,

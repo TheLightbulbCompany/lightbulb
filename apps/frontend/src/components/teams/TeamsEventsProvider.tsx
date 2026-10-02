@@ -36,6 +36,11 @@ export const EVENT_KEY_MAP: Record<string, string[]> = {
   // can subscribe themselves later. For now, no global invalidation.
   "teams.heartbeat.run.event": [],
   "teams.heartbeat.run.log": [],
+  // A GitHub PR / issue a task mentions changed state. Empty ON PURPOSE: these
+  // values feed ALL_KEYS, which the board keeper revalidates every 20s, and the
+  // external-object reads are not worth a poll. The handler below refreshes
+  // them on the event itself (`mutateExternalObjects`).
+  "teams.external_object.updated": [],
 };
 
 // The reconcile set for the "refetch everything, we may have missed events"
@@ -247,6 +252,21 @@ export function TeamsEventsProvider({ children }: { children: React.ReactNode })
     );
   }, [mutate]);
 
+  // The external-object reads: each open task's rows
+  // (`/teams/issues/{id}/external-objects`) and the task lists' rollups
+  // (`/teams/issues/external-object-summaries?…`). The event names the object,
+  // not the tasks that mention it, so every cached one refetches — bounded,
+  // like the runs lists above, by what is actually in cache.
+  const mutateExternalObjects = useCallback(() => {
+    mutate(
+      (key) =>
+        typeof key === "string" &&
+        key.startsWith("/teams/issues/") &&
+        (key.endsWith("/external-objects") ||
+          key.startsWith("/teams/issues/external-object-summaries?")),
+    );
+  }, [mutate]);
+
   // Per-key throttle state for the event path — see REVALIDATE_THROTTLE_MS.
   const throttleRef = useRef<ThrottleState>({
     lastAt: new Map(),
@@ -312,6 +332,9 @@ export function TeamsEventsProvider({ children }: { children: React.ReactNode })
         // prefixes, and these are per-issue leaf keys.
         throttledMutate("/teams/issues/*/runs", mutateIssueRunLists);
       }
+      if (event === "teams.external_object.updated") {
+        throttledMutate("/teams/issues/*/external-objects", mutateExternalObjects);
+      }
       if (event === "teams.activity.logged") {
         // Keep the OPEN detail panel live. Without this the unconditional
         // list keys below refresh but the row's own key never does, so an
@@ -337,7 +360,7 @@ export function TeamsEventsProvider({ children }: { children: React.ReactNode })
       active = false;
       unsub();
     };
-  }, [onEvent, mutateKeyPrefix, mutateEntitySubtree, mutateIssueRunLists, throttledMutate]);
+  }, [onEvent, mutateKeyPrefix, mutateEntitySubtree, mutateIssueRunLists, mutateExternalObjects, throttledMutate]);
 
   // ── Board keeper ──────────────────────────────────────────────────────────
   // A raw setInterval backstop that revalidates the board keys every 20s while

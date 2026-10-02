@@ -261,6 +261,7 @@ export type PaperclipEventName =
   | "teams.heartbeat.run.status"
   | "teams.heartbeat.run.event"
   | "teams.heartbeat.run.log"
+  | "teams.external_object.updated"
   | "teams.stream.resumed";
 export type PaperclipEvent = { eventName: PaperclipEventName; payload: unknown };
 
@@ -311,6 +312,7 @@ const PAPERCLIP_EVENT_NAMES: ReadonlySet<string> = new Set<PaperclipEventName>([
   "teams.heartbeat.run.status",
   "teams.heartbeat.run.event",
   "teams.heartbeat.run.log",
+  "teams.external_object.updated",
   "teams.stream.resumed",
 ]);
 

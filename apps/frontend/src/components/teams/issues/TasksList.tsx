@@ -60,6 +60,7 @@ import { StatusIcon } from "@/components/teams/shared/components/StatusIcon";
 import { PriorityIcon } from "@/components/teams/shared/components/PriorityIcon";
 import { Identity } from "@/components/teams/shared/components/Identity";
 import { LiveRunDot } from "@/components/teams/shared/components/LiveRunDot";
+import { ExternalObjectStatusSummary } from "./external-objects/ExternalObjectStatusSummary";
 import { timeAgo } from "@/components/teams/shared/lib/timeAgo";
 import { PanelEmptyState } from "@/components/teams/shell";
 import { IssueFiltersPopover } from "@/components/teams/inbox/IssueFiltersPopover";
@@ -75,6 +76,7 @@ import {
   type IssueFilterState,
 } from "@/components/teams/shared/lib/issueFilters";
 import type {
+  ExternalObjectSummary,
   Goal,
   IssueBlockerAttention,
   Issue,
@@ -127,6 +129,9 @@ export interface TasksListProps {
    */
   onGroupByChange?: (groupBy: TasksGroupBy) => void;
   liveIssueIds?: Set<string>;
+  /** Per-task rollups of mentioned GitHub PRs / issues, fetched once per list
+   * by the host (`useIssueExternalObjectSummaries`). List view only. */
+  externalObjectSummaries?: Map<string, ExternalObjectSummary>;
   /** Signed-in user id; passed to the filters popover for the "Me" assignee. */
   currentUserId?: string | null;
   /**
@@ -647,6 +652,8 @@ interface TaskRowProps {
   expanded: boolean;
   descendantCount: number;
   isLive: boolean;
+  /** Rollup of the GitHub PRs / issues this task mentions (absent = none). */
+  externalObjectSummary?: ExternalObjectSummary | null;
   /** Resolves the assignee agent's display name (null = unassigned/unknown). */
   assigneeName: string | null;
   onToggleExpand: () => void;
@@ -663,6 +670,7 @@ function TaskRow({
   expanded,
   descendantCount,
   isLive,
+  externalObjectSummary,
   assigneeName,
   onToggleExpand,
   onUpdateIssue,
@@ -768,6 +776,12 @@ function TaskRow({
       {/* Trailing metadata — compact, calm: labels (≤2 + overflow), priority,
           assignee chip. Hidden on narrow widths so the row stays squint-legible
           (the timestamp + status circle are the load-bearing signals). */}
+      {externalObjectSummary ? (
+        <span className="hidden shrink-0 sm:inline-flex">
+          <ExternalObjectStatusSummary summary={externalObjectSummary} compact />
+        </span>
+      ) : null}
+
       {labels.length > 0 ? (
         <span className="hidden shrink-0 items-center gap-1 md:flex">
           {labels.slice(0, 2).map((label) => (
@@ -856,6 +870,7 @@ export function TasksList({
   initialGroupBy,
   onGroupByChange,
   liveIssueIds,
+  externalObjectSummaries,
   currentUserId,
   searchActive = false,
   isLoading,
@@ -1017,6 +1032,7 @@ export function TasksList({
               hasChildren ? countDescendants(issue.id, childMap) : 0
             }
             isLive={liveIssueIds?.has(issue.id) ?? false}
+            externalObjectSummary={externalObjectSummaries?.get(issue.id) ?? null}
             assigneeName={agentName(issue.assigneeAgentId)}
             onToggleExpand={() => toggleParent(issue.id)}
             onUpdateIssue={onUpdateIssue}
@@ -1035,6 +1051,7 @@ export function TasksList({
       toggleParent,
       onUpdateIssue,
       liveIssueIds,
+      externalObjectSummaries,
       agentName,
     ],
   );

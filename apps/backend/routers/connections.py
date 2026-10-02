@@ -40,6 +40,7 @@ from core.services.credentials import (
 from core.services.credentials.apply_connection import RuntimeUnsupportedError
 from core.services.credentials import hermes_cli
 from core.services.credentials.mcp_server import reconcile_integrations
+from core.services import paperclip_github_token
 from core.services.google_identity import seed_agent_google_identity
 from core.services.owner_lifecycle import OwnerLifecycleBusyError, owner_lifecycle_guard
 
@@ -861,6 +862,10 @@ async def disconnect(provider: str, account: str | None = None, auth: AuthContex
         # Nothing is written before the guard, so this is a clean no-op --
         # tell the caller to retry rather than surface a raw 500.
         raise HTTPException(status_code=409, detail="busy")
+    if provider == "github":
+        # The workspace token is gone, so Paperclip's copy goes too. After the guard, not
+        # inside it -- see the connect twin in oauth_callback.
+        await paperclip_github_token.sync_best_effort(owner_id)
     return {"status": "disconnected", "provider": provider}
 
 
@@ -1169,6 +1174,13 @@ async def oauth_callback(
         # written before the guard -- land back on the connections page with a
         # retryable error instead of a raw 500.
         return _done("error=busy", origin)
+    if prov == "github":
+        # Hand Paperclip the same token (its GITHUB_TOKEN company secret), so the PRs and
+        # issues a task mentions resolve authenticated. Best-effort and AFTER the guard: the
+        # lease is what a concurrent disconnect or provision waits on (30 s budget), and a slow
+        # Paperclip must not spend it. The sync reads the token afresh, and every reconcile
+        # re-asserts it, so a connect/disconnect that interleaves here converges.
+        await paperclip_github_token.sync_best_effort(owner_id)
     # Google supports multiple accounts under one provider-level "connected"
     # status: each connect adds a distinct account to the owner's inventory so an
     # agent can later be bound to a specific one. The account identity is the

@@ -968,7 +968,9 @@ async def reconcile_runtime(owner_id: str) -> str:
        each bumping ``.revision``, which the bridge re-reads on every turn. THAT is how a
        provider switch lands: no session stop, no idle wait.
     3. ``sync_paperclip_adapter_config`` -- rewrite every Paperclip ``hermes_gateway`` agent's
-       adapterConfig from today's builder (best-effort: logged + metered, never fails this).
+       adapterConfig from today's builder (best-effort: logged + metered, never fails this),
+       then ``paperclip_github_token.sync_best_effort`` -- Paperclip's ``GITHUB_TOKEN`` secret
+       from the workspace's GitHub connection (same posture).
     4. ``roll_runtime_image`` -- UpdateAgentRuntime only when the image or env block differs,
        and an idle-only session stop only for a boot-time change (spec, or step 1's secret).
 
@@ -1016,6 +1018,12 @@ async def _reconcile_runtime_to_billing(owner_id: str) -> str:
         # Paperclip's adapterConfig is a snapshot: converge it here so a builder change (URL,
         # timeoutSec, ...) reaches existing agents. One PATCH per agent; never raises.
         await sync_paperclip_adapter_config(owner_id)
+        # Same self-heal for Paperclip's GITHUB_TOKEN secret: covers a GitHub connection made
+        # before the company existed (the provision executor ends in this reconcile) and a
+        # connect/disconnect whose own sync failed. Never raises.
+        from core.services import paperclip_github_token
+
+        await paperclip_github_token.sync_best_effort(owner_id)
         return await roll_runtime_image(owner_id, restart_session=boot_changed)
     except Exception:  # noqa: BLE001 -- the old runtime keeps serving; the metric pages
         logger.exception("reconcile_runtime failed for owner=%s", owner_id)

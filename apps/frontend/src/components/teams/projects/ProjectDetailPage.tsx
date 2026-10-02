@@ -34,6 +34,7 @@ import { TasksList } from "@/components/teams/issues/TasksList";
 import { NewIssueDialog } from "@/components/teams/issues/NewIssueDialog";
 import { useIssueMutations } from "@/components/teams/issues/hooks/useIssueMutations";
 import { useLiveRuns } from "@/components/teams/dashboard/hooks/useLiveRuns";
+import { useIssueExternalObjectSummaries } from "@/components/teams/issues/external-objects/useIssueExternalObjects";
 import { useProjectDetail } from "./hooks/useProjectDetail";
 import { useProjectMutations } from "./hooks/useProjectMutations";
 import { useTeamsApi } from "@/hooks/useTeamsApi";
@@ -90,6 +91,11 @@ export function ProjectDetailPage({ projectId }: ProjectDetailPageProps) {
 
   const [tab, setTab] = useState<ProjectTab>("overview");
   const [creating, setCreating] = useState(false);
+  // GitHub PR / issue rollups for the task rows: one batch request, and only
+  // while the Tasks tab is the one showing.
+  const externalObjectSummaries = useIssueExternalObjectSummaries(
+    tab === "issues" ? issues.map((i) => i.id) : [],
+  );
 
   if (isLoading && !project) {
     return (
@@ -224,6 +230,7 @@ export function ProjectDetailPage({ projectId }: ProjectDetailPageProps) {
           issues={issues}
           agents={agents}
           liveIssueIds={liveIssueIds}
+          externalObjectSummaries={externalObjectSummaries}
           currentUserId={user?.id ?? null}
           isLoading={issuesLoading}
           onUpdateIssue={handleUpdateIssue}

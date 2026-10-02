@@ -45,6 +45,9 @@ export const teamsQueryKeys = {
     comments: (id: string) => `/issues/${id}/comments`,
     interactions: (id: string) => `/issues/${id}/interactions`,
     feedbackVotes: (id: string) => `/issues/${id}/feedback-votes`,
+    externalObjects: (id: string) => `/issues/${id}/external-objects`,
+    // POSTed (the ids travel in the body); the path is the cache-key prefix.
+    externalObjectSummaries: () => `/issues/external-object-summaries`,
   },
   goals: {
     list: () => `/goals`,

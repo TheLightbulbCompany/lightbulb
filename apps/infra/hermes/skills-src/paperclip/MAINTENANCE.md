@@ -230,3 +230,17 @@ ISOL8-LOCAL EDITS (deliberate; re-apply on re-vendor).
       framing was right, but "identically inside a heartbeat run" is what this
       release changes.) Keep the doc's framing that this is Paperclip's own
       boundary, not a Lightbulb/run-attribution limitation.
+  23. External objects (references/external-objects.md + its routing-table row
+      in SKILL.md + the reworded first sentence of SKILL.md "State external
+      facts only from a fresh check"). GitHub PR / issue URLs written on an
+      issue are tracked by Paperclip when the instance flag
+      `experimental.enableExternalObjects` is on, and Teams shows their state
+      (apps/frontend .../teams/issues/external-objects/). The reference
+      documents exactly two agent routes, both verified in the fork's
+      server/src/routes/issues.ts: `GET /api/issues/:id/external-objects`
+      (issue read access) and `POST /api/issues/:id/external-objects/refresh`
+      (`issue:mutate`; it does NOT force — an object inside its ~5 minute
+      window answers `reason: "backoff"`). There is NO create route: a test
+      (apps/infra/test/paperclip-skill-primitives.test.ts) fails if the
+      reference grows one. The snapshot never replaces the fresh-check rule.
+      Re-apply on re-vendor.

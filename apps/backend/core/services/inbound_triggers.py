@@ -153,6 +153,7 @@ from core.services.agent_routine_provisioning import _build_routine_body
 from core.services.credentials import integration_secret_store, registry
 from core.services.paperclip_admin_client import PaperclipAdminClient
 from core.services.paperclip_admin_session import get_admin_session_cookie
+from core.services.paperclip_github_token import github_token as _github_token
 from core.services.trigger_fire_url import trigger_fire_url
 
 logger = logging.getLogger(__name__)
@@ -492,16 +493,6 @@ def _build_schedule_trigger_body(cron: str, *, label: str | None = None) -> dict
     if label is not None:
         body["label"] = label
     return body
-
-
-async def _github_token(owner_id: str) -> str | None:
-    """The owner's stored GitHub credential, or None when not connected.
-    Same dual shape the gh_cli materializer handles: the paste rail stores
-    {"token": ...}, the direct_oauth rail stores "access_token"."""
-    credential = await integration_secret_store.get(owner_id, "github")
-    if not credential:
-        return None
-    return credential.get("token") or credential.get("access_token")
 
 
 async def list_github_repos(owner_id: str) -> list[dict[str, str]]:

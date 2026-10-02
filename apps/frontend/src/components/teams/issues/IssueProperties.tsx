@@ -44,6 +44,7 @@ import { ParentPicker } from "./pickers/ParentPicker";
 import { StageParticipantPicker } from "./pickers/StageParticipantPicker";
 import { stageParticipantValues } from "./executionPolicy";
 import { IssueRelations } from "./IssueRelations";
+import { IssueExternalObjectRows } from "./external-objects/external-object-rows";
 
 export interface IssuePropertiesProps {
   issue: Issue;
@@ -723,6 +724,9 @@ export function IssueProperties({
           <EmptyDash />
         )}
       </PropertyRow>
+      {/* GitHub PRs / issues this task mentions, with live status. Renders
+          nothing when there are none (or the feature is off upstream). */}
+      <IssueExternalObjectRows issueId={issue.id} />
       {/* Reviewers + Approvers sit beside Monitor: all three are facets of the
           same executionPolicy, so grouping them keeps the gate controls
           together. Each drives one stage type; the host's merge helper keeps

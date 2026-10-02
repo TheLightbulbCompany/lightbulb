@@ -1797,3 +1797,72 @@ export interface AttentionFeedResponse {
   totalCount?: number;
   countsBySourceKind?: Partial<Record<AttentionSourceKind, number>>;
 }
+
+// ---------------------------------------------------------------------------
+// External objects: the GitHub PRs / issues an issue mentions, with live status.
+// Subset of upstream `paperclip/packages/shared/src/types/external-object.ts`
+// (the fields the ported components read).
+// ---------------------------------------------------------------------------
+
+export type ExternalObjectStatusCategory =
+  | "unknown"
+  | "open"
+  | "waiting"
+  | "running"
+  | "succeeded"
+  | "failed"
+  | "blocked"
+  | "closed"
+  | "archived"
+  | "auth_required"
+  | "unreachable";
+
+export type ExternalObjectStatusTone = "neutral" | "info" | "success" | "warning" | "danger" | "muted";
+
+export type ExternalObjectLivenessState = "unknown" | "fresh" | "stale" | "auth_required" | "unreachable";
+
+export interface ExternalObjectSummaryItem {
+  id: string;
+  providerKey: string;
+  objectType: string;
+  displayKey?: string | null;
+  iconKey?: string | null;
+  displayTitle: string | null;
+  statusIconKey?: string | null;
+  statusCategory: ExternalObjectStatusCategory;
+  statusTone: ExternalObjectStatusTone;
+  liveness: ExternalObjectLivenessState;
+  isTerminal: boolean;
+}
+
+export interface ExternalObject extends ExternalObjectSummaryItem {
+  sanitizedCanonicalUrl: string | null;
+  statusLabel: string | null;
+  lastResolvedAt?: string | null;
+  lastChangedAt?: string | null;
+}
+
+export interface ExternalObjectMention {
+  id: string;
+  sourceKind: "title" | "description" | "comment" | "document" | "property" | "plugin";
+  documentKey: string | null;
+  propertyKey: string | null;
+}
+
+export interface ExternalObjectMentionGroup {
+  object: ExternalObject | null;
+  mentions: ExternalObjectMention[];
+  mentionCount: number;
+  sourceLabels: string[];
+}
+
+export interface ExternalObjectSummary {
+  total: number;
+  byStatusCategory: Record<string, number>;
+  byLiveness: Record<string, number>;
+  highestSeverity: ExternalObjectStatusTone;
+  staleCount: number;
+  authRequiredCount: number;
+  unreachableCount: number;
+  objects: ExternalObjectSummaryItem[];
+}

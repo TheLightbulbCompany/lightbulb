@@ -1,6 +1,9 @@
 """The multi-party routing bench (scripts/speak_gate_bench/multiparty.py) and the dev e2e runner's
 pure scoring helpers (scripts/multiparty_e2e/runner.py). No network: Jev is stubbed."""
 
+import json
+from types import SimpleNamespace
+
 import pytest
 
 from scripts.multiparty_e2e import runner
@@ -129,7 +132,8 @@ def test_score_splits_partial_sets_into_missed_and_extras_into_wrong_agent():
     assert s["missed"] == 0.5 and s["wrong_agent"] == 0.5 and s["recall"] == 0
 
 
-def test_collect_stops_at_the_race_deadline(monkeypatch):
+@pytest.mark.parametrize("window", [3, 4, 5])
+def test_collect_stops_at_the_race_deadline(monkeypatch, window):
     clock = {"t": 0.0}
 
     class FakeTime:
@@ -140,12 +144,13 @@ def test_collect_stops_at_the_race_deadline(monkeypatch):
             clock["t"] += s
 
     def api(method, path, **kw):
-        clock["t"] += 0.5  # each poll costs time
+        assert kw["timeout"] <= window - clock["t"] + 1e-9  # no request may outlive the window
+        clock["t"] += 0.5  # each request costs time
         return {"messages": []} if path.endswith("/messages") else {"activeRuns": []}
 
     monkeypatch.setattr(runner, "time", FakeTime)
-    runner.collect(api, "r", 0, {}, {}, window=5, expect_speak=True, settle={}, start=0.0)
-    assert clock["t"] == pytest.approx(5)  # was 8: an uncapped 3 s sleep overshot the deadline
+    runner.collect(api, "r", 0, {}, {}, window=window, expect_speak=True, settle={}, start=0.0)
+    assert clock["t"] == pytest.approx(window)  # an uncapped 3 s sleep, or a poll past it, overshot
 
 
 def test_annotate_keeps_goal_status():
@@ -164,3 +169,74 @@ async def test_stub_cards_list_role_tools():
     card = await mp._stub_card("org", "fin", "Finance")
     assert card.startswith("Finance (role: cfo).") and "Tools: google-sheets, paperclip, stripe." in card
     assert set(mp.STUB_TOOLS) == {role for _, role in mp.PRESETS.values()}
+
+
+def test_dev_only_accepts_the_dev_host_alone():
+    runner.dev_only("https://api-dev.thelightbulb.company/api/v1")
+    for url in (
+        "https://api-dev.thelightbulb.company.evil/api/v1",
+        "https://api-dev.@api.thelightbulb.company/api/v1",
+        "http://api-dev.thelightbulb.company/api/v1",
+        "https://api.thelightbulb.company/api/v1",
+    ):
+        with pytest.raises(SystemExit):
+            runner.dev_only(url)
+
+
+def test_play_keeps_the_cursor_and_judges_after_every_post(monkeypatch):
+    """A race: no judge call may sit between two posts, and the cursor is not jumped past the post."""
+    events, seq = [], {"n": 0}
+
+    def api(method, path, **kw):
+        if method == "POST" and path == "/messaging/rooms":
+            members = [{"kind": "agent", "id": "a1", "displayName": "Finance", "mentionHandle": "finance"}]
+            members += [{"kind": "human", "id": f"u-{k}", "displayName": k.title()} for k in ("maya", "leo")]
+            return {"roomId": "r1", "members": members}
+        if method == "POST":
+            seq["n"] += 1
+            events.append(("post", kw["json"]["text"]))
+            return {"messageId": f"m{seq['n']}", "messageSeq": seq["n"]}
+        return {}
+
+    def collect(api_, room_id, after_seq, *a, **kw):
+        events.append(("collect", after_seq))
+        return [], seq["n"]
+
+    def judge(transcript, step, replies, key):
+        events.append(("judge", transcript[-1]))
+        return {"pass": True, "reason": ""}
+
+    monkeypatch.setattr(runner, "roster", lambda api_: [{"displayName": "Finance", "id": "a1"}])
+    monkeypatch.setattr(runner, "collect", collect)
+    monkeypatch.setattr(runner, "judge", judge)
+    scn = {
+        "id": "race",
+        "cast": ["maya", "leo"],
+        "agents": {"finance": "active"},
+        "steps": [
+            {"as": "maya", "say": "q", "expect": {"responder": None, "judge": "quiet"}},
+            {"as": "leo", "after": 3, "say": "a", "expect": {"responder": None, "judge": "quiet"}},
+        ],
+    }
+    api.s = SimpleNamespace(token=lambda: "jwt")
+    apis = {"maya": api, "leo": api}
+    runner.play(scn, apis, {"maya": "u-maya", "leo": "u-leo"}, "key", keep=True)
+    kinds = [k for k, _ in events]
+    assert kinds == ["post", "collect", "post", "collect", "judge", "judge"]
+    assert [v for k, v in events if k == "collect"] == [0, 1]  # from the last seen seq, not the new post's
+    assert [v for k, v in events if k == "judge"] == ["Maya: q", "Leo: a"]
+
+
+def test_report_only_counts_the_selected_cases(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(mp, "RAW", tmp_path / "raw")
+    monkeypatch.setattr(mp, "HERE", tmp_path)
+    (tmp_path / "results").mkdir()
+    (tmp_path / "raw").mkdir()
+    rec = {"category": "C", "subtype": None, "cue": "cued", "variant": "chat", "how": "jev", "whoP": None}
+    rows = [
+        rec | {"id": i, "expected": "SILENT", "expected_responder": [], "responders": []}
+        for i in ("A03-chat", "C01-chat")
+    ]
+    (tmp_path / "raw" / "t-multiparty.jsonl").write_text("\n".join(json.dumps(r) for r in rows))
+    mp.main(["--report-only", "--tag", "t", "--only", "^C01-chat$"])
+    assert "| **total** | 1 |" in capsys.readouterr().out

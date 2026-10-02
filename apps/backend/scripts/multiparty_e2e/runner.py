@@ -22,12 +22,14 @@ import time
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
+from urllib.parse import urlsplit
 
 import httpx
 import yaml
 
 HERE = Path(__file__).parent
-API = os.environ.get("MP_API_BASE", "https://api-dev.thelightbulb.company/api/v1")
+DEV_HOST = "api-dev.thelightbulb.company"
+API = os.environ.get("MP_API_BASE", f"https://{DEV_HOST}/api/v1")
 #: The dev Clerk instance (publishable key pk_test_...: base64 of "up-moth-55.clerk.accounts.dev$").
 FAPI = os.environ.get("MP_CLERK_FAPI", "https://up-moth-55.clerk.accounts.dev")
 #: "Jev Listening Test": a dev test workspace with a running runtime and the six-agent starter roster.
@@ -124,10 +126,16 @@ class Session:
         return self._jwt
 
 
+def dev_only(url: str) -> None:
+    """Refuse anything but the dev API host itself (no look-alike suffix, no userinfo trick)."""
+    parts = urlsplit(url)
+    if parts.scheme != "https" or parts.hostname != DEV_HOST or parts.username or parts.port:
+        raise SystemExit(f"refusing to run against {url}: dev only")
+
+
 class Api:
     def __init__(self, session: Session):
-        if "api-dev." not in API:
-            raise SystemExit(f"refusing to run against {API}: dev only")
+        dev_only(API)
         self.s = session
         self.http = httpx.Client(base_url=API, headers=UA, timeout=30)
 
@@ -254,7 +262,7 @@ def play(scn: dict, apis: dict[str, Api], ids: dict[str, str], gateway_key: str 
     names = {m["displayName"].lower(): m for m in room["members"] if m["kind"] == "agent"}
     names |= {k: next(m for m in room["members"] if m["id"] == ids[k]) for k in scn["cast"]}
     role_of = {a["id"]: k for k, a in agents.items()}
-    after_seq, posted, said, transcript, steps_out, trigger_of = 0, [], [], [], [], {}
+    after_seq, posted, said, transcript, steps_out, trigger_of, to_judge = 0, [], [], [], [], {}, []
     for i, step in enumerate(scn["steps"]):
         text, mentions = render(step["say"], names)
         body = {
@@ -272,6 +280,8 @@ def play(scn: dict, apis: dict[str, Api], ids: dict[str, str], gateway_key: str 
         nxt = scn["steps"][i + 1] if i + 1 < len(scn["steps"]) else {}
         window = nxt.get("after")  # a race: the next human posts this many seconds later, whatever happens
         expect_speak = bool(expected_set((step.get("expect") or {}).get("responder")))
+        if window is not None:
+            apis[nxt["as"]].s.token()  # mint the racer's JWT now, not inside the timed post
         replies, after_seq = collect(
             apis[owner],
             room_id,
@@ -295,9 +305,13 @@ def play(scn: dict, apis: dict[str, Api], ids: dict[str, str], gateway_key: str 
         out = {"step": i, "as": step["as"], "text": text, "replies": replies}
         if step.get("expect"):
             out["checks"] = hard_checks(step, replies, said)
-            out["judge"] = judge(transcript, step, replies, gateway_key) if gateway_key else None
+            out["judge"] = None
+            to_judge.append((out, step, list(transcript)))
         transcript += [f"{r['name']}: {r['text']}" for r in replies]
         steps_out.append(out)
+    # Judge only after every message is posted: a judge call between steps would delay a race post.
+    for out, step, seen in to_judge if gateway_key else []:
+        out["judge"] = judge(seen, step, out["replies"], gateway_key)
     if not keep:
         try:
             apis[owner]("PATCH", f"/messaging/rooms/{room_id}", json={"archived": True})
@@ -330,13 +344,31 @@ def collect(
     )
     start = time.monotonic() if start is None else start
     last_change = time.monotonic()
-    replies = []
+    replies, cost = [], 0.0
+
+    def left():
+        return timeout - (time.monotonic() - start)
+
     while True:
+        # Never past the deadline: a race's next post must land on time, so no poll starts unless the
+        # last one's duration still fits, and each request is capped to the time left.
+        if left() <= cost:
+            time.sleep(max(0, left()))
+            break
         polled = time.monotonic()
-        detail = api("GET", f"/messaging/rooms/{room_id}")
+        try:
+            detail = api("GET", f"/messaging/rooms/{room_id}", timeout=min(30, left()))
+            page = api(
+                "GET",
+                f"/messaging/rooms/{room_id}/messages",
+                params={"afterSeq": after_seq, "limit": 100},
+                timeout=max(0.1, min(30, left())),
+            )
+        except httpx.TimeoutException:
+            break
+        cost = time.monotonic() - polled
         for run in detail.get("activeRuns") or []:
             trigger_of[run["runId"]] = run.get("triggerMessageId")
-        page = api("GET", f"/messaging/rooms/{room_id}/messages", params={"afterSeq": after_seq, "limit": 100})
         for m in page["messages"]:
             after_seq = max(after_seq, m["messageSeq"])
             last_change = time.monotonic()
@@ -357,13 +389,7 @@ def collect(
         # silence window: a cold runtime's first reply can take a minute to start.
         if window is None and idle and replies:
             break
-        # Never past the deadline: a race's next post must land on time, so the last poll is the one
-        # that still finishes before it.
-        cost, left = time.monotonic() - polled, timeout - (time.monotonic() - start)
-        if left <= cost:
-            time.sleep(max(0, left))
-            break
-        time.sleep(min(3, left - cost))
+        time.sleep(max(0, min(3, left() - cost)))
     return replies, after_seq
 
 
@@ -417,6 +443,7 @@ def main(argv=None):
     run.add_argument("--keep", action="store_true", help="leave the rooms unarchived")
     run.add_argument("--no-judge", action="store_true")
     args = ap.parse_args(argv)
+    dev_only(API)  # before any Clerk session is minted
     clerk = Clerk()
     ids = {key: clerk.ensure_member(key) for key in CAST}
     if args.cmd == "setup":

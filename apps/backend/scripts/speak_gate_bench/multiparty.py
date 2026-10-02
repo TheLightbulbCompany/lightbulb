@@ -398,7 +398,8 @@ def main(argv=None):
     out = RAW / f"{tag}-multiparty.jsonl"
     if not args.report_only:
         asyncio.run(run(cases, out, args.concurrency, args.offline))
-    recs = [json.loads(line) for line in out.read_text().splitlines()]
+    selected = {c["id"] for c in cases}  # the raw file may hold rows from earlier, wider runs
+    recs = [r for r in map(json.loads, out.read_text().splitlines()) if r["id"] in selected]
     md = report(recs)
     (HERE / "results" / f"{tag}-multiparty.md").write_text(md + "\n")
     print(md)

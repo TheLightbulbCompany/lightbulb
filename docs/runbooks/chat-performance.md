@@ -115,7 +115,7 @@ Tauri WKWebView or browser
   → RoomMessageItem → MarkdownView
 ```
 
-The desktop Tauri configuration loads `https://dev.flickmeon.ai/chat` as its
+The desktop Tauri configuration loads `https://dev.thelightbulb.company/chat` as its
 remote frontend. It does not create a separate native chat renderer. The Rust
 local-session transport and node host are separate surfaces; their activity is
 not evidence that an ordinary message click is slow.

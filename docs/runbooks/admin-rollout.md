@@ -1,6 +1,6 @@
 # Admin dashboard rollout
 
-Operational runbook for the admin host: `admin.dev.flickmeon.ai` on dev,
+Operational runbook for the admin host: `admin.dev.thelightbulb.company` on dev,
 `admin.isol8.co` on prod until the flag-day flip moves it to
 `admin.flickmeon.ai`. AWS resource names (`isol8-{env}-*`, `isol8/{env}/*`) and
 the `isol8-frontend-*` Vercel project names are NOT renamed.
@@ -19,7 +19,7 @@ the `isol8-frontend-*` Vercel project names are NOT renamed.
 
 ## Prerequisites — one-time per environment
 
-1. **DNS + Vercel domain alias:** `admin.dev.flickmeon.ai` → `isol8-frontend-dev` Vercel project; `admin.isol8.co` (→ `admin.flickmeon.ai` at the flag-day flip) → `isol8-frontend-prod`. Verify with `dig admin.dev.flickmeon.ai CNAME`.
+1. **DNS + Vercel domain alias:** `admin.dev.thelightbulb.company` → `isol8-frontend-dev` Vercel project; `admin.isol8.co` (→ `admin.flickmeon.ai` at the flag-day flip) → `isol8-frontend-prod`. Verify with `dig admin.dev.thelightbulb.company CNAME`.
 2. **Backend secrets** (one Secrets Manager entry per value, consistent with existing `isol8/{env}/clerk_issuer`, `isol8/{env}/stripe_secret_key`, etc.):
    - `isol8/{env}/platform_admin_user_ids` — comma-separated Clerk user IDs of the Lightbulb team. Wired into the backend task as `PLATFORM_ADMIN_USER_IDS`.
    - `isol8/{env}/posthog_project_api_key` — PostHog personal API key with scopes `person:read`, `events:read`, `session_recording:read`. Wired as `POSTHOG_PROJECT_API_KEY`. Optional; the Activity tab stubs gracefully when absent.
@@ -42,7 +42,7 @@ the `isol8-frontend-*` Vercel project names are NOT renamed.
      --profile isol8-admin
    ```
 
-3. Force a backend rollout (`aws ecs update-service --force-new-deployment ...`). Within ~2 min the new admin can sign into the admin host at `/admin` via Clerk and reach `/admin/users` (`https://admin.dev.flickmeon.ai` on dev, `https://admin.isol8.co` on prod — note there is no `admin-{env}.` record; that form never resolved).
+3. Force a backend rollout (`aws ecs update-service --force-new-deployment ...`). Within ~2 min the new admin can sign into the admin host at `/admin` via Clerk and reach `/admin/users` (`https://admin.dev.thelightbulb.company` on dev, `https://admin.isol8.co` on prod — note there is no `admin-{env}.` record; that form never resolved).
 
 ## Removing an admin (immediate)
 
@@ -97,7 +97,7 @@ Frontend env (`apps/frontend/.env.local`):
 
 ```
 # dev today, and prod after the flag-day flip
-NEXT_PUBLIC_ADMIN_HOSTS=admin.flickmeon.ai,admin.dev.flickmeon.ai,admin.localhost:3000
+NEXT_PUBLIC_ADMIN_HOSTS=admin.flickmeon.ai,admin.dev.thelightbulb.company,admin.localhost:3000
 # prod until the flip
 NEXT_PUBLIC_ADMIN_HOSTS=admin.isol8.co,admin.dev.isol8.co,admin.localhost:3000
 ```

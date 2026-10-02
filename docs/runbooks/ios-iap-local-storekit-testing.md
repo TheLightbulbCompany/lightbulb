@@ -11,7 +11,7 @@ subscription group, $23.99 / $59.99 / $179.99) in `apple_iap.PRODUCT_PLANS`.
 1. Prebuild the native iOS project (gitignored, regenerated on demand):
 
    ```bash
-   cd apps/mobile && EXPO_PUBLIC_API_URL=https://api-dev.flickmeon.ai/api/v1 npx expo prebuild -p ios
+   cd apps/mobile && EXPO_PUBLIC_API_URL=https://api-dev.thelightbulb.company/api/v1 npx expo prebuild -p ios
    ```
 
 2. Open the workspace: `open ios/*.xcworkspace`. In Xcode: **Product → Scheme

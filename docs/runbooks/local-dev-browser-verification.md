@@ -20,7 +20,7 @@ The command assumes a raw-string secret. If Secrets Manager returns a JSON objec
 
 Use `localhost:3000` in the browser. The dev backend accepts `localhost:3000` as a Clerk token authorized party; another local port or `127.0.0.1` can trigger Clerk redirect behavior. `pnpm run dev` runs the DCV asset copy step before starting Next.js.
 
-`LOCAL_DEV_API_PROXY=1` is required for the local route. In development, the frontend rewrites `/api/v1/*` to the fixed `https://api-dev.flickmeon.ai/api/v1/*` destination. The rewrite is absent when the flag is unset and in production.
+`LOCAL_DEV_API_PROXY=1` is required for the local route. In development, the frontend rewrites `/api/v1/*` to the fixed `https://api-dev.thelightbulb.company/api/v1/*` destination. The rewrite is absent when the flag is unset and in production.
 
 ## Sign in for a real dev workspace
 

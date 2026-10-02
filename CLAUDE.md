@@ -259,11 +259,11 @@ the bridge re-pulls on the next turn even in a warm microVM (see "Runtime rollou
 // PATCH -- rewrites every roster profile (the same inputs a fresh provision uses), then
 // StopRuntimeSession so the NEXT invoke cold-restores instead of a warm microVM serving
 // what it cached. It cannot CREATE the Paperclip company or agents (see Provisioning Flow).
-await fetch('https://api-dev.flickmeon.ai/api/v1/debug/provision', {method:'PATCH', headers:{Authorization:'Bearer '+await Clerk.session.getToken()}}).then(r=>r.json())
+await fetch('https://api-dev.thelightbulb.company/api/v1/debug/provision', {method:'PATCH', headers:{Authorization:'Bearer '+await Clerk.session.getToken()}}).then(r=>r.json())
 
 // Full reprovision -- DELETE then POST
-await fetch('https://api-dev.flickmeon.ai/api/v1/debug/provision', {method:'DELETE', headers:{Authorization:'Bearer '+await Clerk.session.getToken()}}).then(r=>r.json())
-await fetch('https://api-dev.flickmeon.ai/api/v1/debug/provision', {method:'POST', headers:{Authorization:'Bearer '+await Clerk.session.getToken()}}).then(r=>r.json())
+await fetch('https://api-dev.thelightbulb.company/api/v1/debug/provision', {method:'DELETE', headers:{Authorization:'Bearer '+await Clerk.session.getToken()}}).then(r=>r.json())
+await fetch('https://api-dev.thelightbulb.company/api/v1/debug/provision', {method:'POST', headers:{Authorization:'Bearer '+await Clerk.session.getToken()}}).then(r=>r.json())
 ```
 
 `DELETE /debug/provision` deliberately does **not** pass `delete_profiles` — it is
@@ -303,7 +303,7 @@ Before a messaging/bridge prod train, run
 [`docs/runbooks/messaging-concurrency-check.md`](docs/runbooks/messaging-concurrency-check.md).
 
 For manual dev testing, create your own Clerk account (or use an existing
-personal email) at https://dev.flickmeon.ai/sign-up. The dev Clerk instance is
+personal email) at https://dev.thelightbulb.company/sign-up. The dev Clerk instance is
 the same one used for prod previews, so test accounts created in dev are
 real accounts -- don't use a production email.
 
@@ -908,7 +908,7 @@ that will mislead you otherwise:
   It does not use the retired OpenClaw live-view WS or
   `routers/browser_view.py`. See `docs/architecture/current-system.md`.
 - **`/admin`** only resolves on allowed admin hosts (`admin.flickmeon.ai`,
-  `admin.dev.flickmeon.ai`, `admin.localhost:3000`; overridable via
+  `admin.dev.thelightbulb.company`, `admin.localhost:3000`; overridable via
   `NEXT_PUBLIC_ADMIN_HOSTS`) and 404s everywhere else. Allowlist lives in
   `apps/frontend/src/middleware.ts`.
 
@@ -1431,7 +1431,7 @@ Everything runtime/WS/table-name-shaped is set by CDK — don't hand-set them.
 **API URL by environment** (there is no staging environment — `app.ts` creates dev + prod only).
 The root domain is a per-environment parameter mid-rebrand; `apps/infra/lib/domains.ts` is the truth:
 - Local: `http://localhost:8000/api/v1`
-- Dev: `https://api-dev.flickmeon.ai/api/v1`
+- Dev: `https://api-dev.thelightbulb.company/api/v1`
 - Production: `https://api.flickmeon.ai/api/v1`
 
 ---

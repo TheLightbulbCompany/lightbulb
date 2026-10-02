@@ -93,6 +93,8 @@ class RouteBody(BaseModel):
     # Live's open requests for Jev (routing v2 §5): {agent, speaker} holding the floor, [{agent, request}].
     floor: dict[str, str] | None = None
     voiceRuns: list[dict[str, str]] = Field(default_factory=list, max_length=16)
+    # Epoch seconds the transcript's last lines were said, oldest first, aligned to its end (Live reask rule).
+    at: list[int] = Field(default_factory=list, max_length=30)
 
 
 class EndBody(BaseModel):
@@ -227,6 +229,7 @@ async def route(room_id: str, body: RouteBody):
         wake=body.humans is None,
         floor=body.floor,
         voice_runs=body.voiceRuns,
+        at=body.at,
     )
 
 

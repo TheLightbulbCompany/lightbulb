@@ -55,10 +55,14 @@ UPSERT_SQL = (
     "experimental = instance_settings.experimental || EXCLUDED.experimental, updated_at = now()"
 )
 
-# Aurora scales to zero, so the first Data API call after a quiet spell can fail
-# while the cluster resumes.
-_ATTEMPTS = 3
-_RETRY_PAUSE_S = 15
+# Two things can make an early call fail. Aurora scales to zero, so the first
+# Data API call after a quiet spell fails while the cluster resumes. And on a
+# fresh environment the backend and Paperclip deploy in parallel, so this can
+# run before Paperclip has migrated the database and created instance_settings.
+# One try a minute for 15 minutes outlasts both; after that the next backend
+# task start tries again.
+_ATTEMPTS = 15
+_RETRY_PAUSE_S = 60
 
 
 def plan_changes(current: dict | None, desired: dict) -> dict[str, tuple[object, object]]:
@@ -118,7 +122,7 @@ async def converge_at_startup(env: str) -> None:
                 logger.exception("Paperclip instance flags not applied after %d attempts", _ATTEMPTS)
                 put_metric("paperclip.instance_flags.failed")
                 return
-            await asyncio.sleep(_RETRY_PAUSE_S * attempt)
+            await asyncio.sleep(_RETRY_PAUSE_S)
             continue
         if changes:
             logger.info("Paperclip instance flags applied: %s", ", ".join(sorted(changes)))

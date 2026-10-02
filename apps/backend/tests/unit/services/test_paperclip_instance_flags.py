@@ -83,5 +83,5 @@ async def test_startup_task_retries_then_counts_a_failure_without_raising(monkey
 
     await mod.converge_at_startup("dev")
 
-    assert attempts.call_count == 3
+    assert attempts.call_count == mod._ATTEMPTS
     assert metrics == ["paperclip.instance_flags.failed"]

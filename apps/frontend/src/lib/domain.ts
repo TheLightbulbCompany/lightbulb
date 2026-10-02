@@ -67,8 +67,11 @@ export const SUPPORT_MAILTO = `mailto:${SUPPORT_EMAIL}`;
  * 404 while the allowlist held only the old apex, because `SITE_URL` is one
  * literal shared by both deployments.
  */
-const PRODUCT_DOMAINS = Array.from(
-  new Set([ROOT_DOMAIN]),
+// Dev moved to thelightbulb.company ahead of prod (2026-10). Both are admitted
+// until SITE_URL itself moves at the prod flip, when this collapses back to
+// ROOT_DOMAIN alone.
+export const PRODUCT_DOMAINS = Array.from(
+  new Set([ROOT_DOMAIN, "thelightbulb.company"]),
 );
 
 export const DEFAULT_ADMIN_HOSTS = [

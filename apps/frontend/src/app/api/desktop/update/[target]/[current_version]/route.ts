@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 
-import { ROOT_DOMAIN } from "@/lib/domain";
+import { PRODUCT_DOMAINS, ROOT_DOMAIN } from "@/lib/domain";
 import {
   githubHeaders,
   isNewer,
@@ -12,11 +12,9 @@ import {
 // Anti host-header-injection allowlist: the manifest hands the client a URL
 // built from the request's own Host, so only OUR hosts may be echoed back.
 // Exact matches only — a suffix match would accept `flickmeon.ai.evil.com`.
-const KNOWN_UPDATE_HOSTS = new Set([
-  ROOT_DOMAIN,
-  `www.${ROOT_DOMAIN}`,
-  `dev.${ROOT_DOMAIN}`,
-]);
+const KNOWN_UPDATE_HOSTS = new Set(
+  PRODUCT_DOMAINS.flatMap((d) => [d, `www.${d}`, `dev.${d}`]),
+);
 
 // Tauri updater manifest endpoint.
 //

@@ -76,9 +76,8 @@ export const CLERK_DOMAIN = "flickmeon.ai";
  * set is an account-wide singleton, so dev mail stays on `dev.isol8.co` until
  * that move. The domain flip and the mail move are independent tracks.
  */
-export const DEV_ROOT_DOMAIN = "flickmeon.ai";
-// (Now identical to ROOT_DOMAIN — dev led, prod followed. The symbol stays so
-// the two can diverge again for a future migration without re-threading props.)
+export const DEV_ROOT_DOMAIN = "thelightbulb.company";
+// (Dev leads the 2026-10 move to thelightbulb.company; prod follows.)
 
 /**
  * The product domain being moved away from. Pins its certificate Export in

@@ -952,7 +952,7 @@ class Huddle:
 
     async def _proactive(self, now: float) -> None:
         """No voice is open: the oldest news is announced by its own agent once the room is quiet (D §8)."""
-        if not self._people or self._speaking or self._lock.locked() or not gate.enabled():
+        if not self._people or self._speaking or self._lock.locked():
             return
         if now - self._last_heard < gate.ANNOUNCE_QUIET or not self._rate.ok(now):
             return

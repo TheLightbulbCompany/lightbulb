@@ -229,7 +229,8 @@ def handle_plugin(path: str, method: str, headers: dict, body) -> tuple[int, dic
         text = (body or {}).get("text") if isinstance(body, dict) else None
         if not isinstance(text, str) or not text.strip() or len(text.encode()) > turn.MAX_TEXT_BYTES:
             return 400, {"error": "invalid_steer", "message": "text is required"}
-        if turn.steer_run(run_id, text.strip()):
+        message_id = body.get("messageId")
+        if turn.steer_run(run_id, text.strip(), message_id if isinstance(message_id, str) else None):
             return 202, {"runId": run_id, "state": "accepted"}
         return 404, {"runId": run_id, "state": "not_found"}
     if path.startswith("/plugins/lightbulb-channel/inbound/") and method == "POST":

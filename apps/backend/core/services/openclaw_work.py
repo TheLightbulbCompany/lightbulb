@@ -36,6 +36,9 @@ from core.services.messaging import (
 logger = logging.getLogger(__name__)
 
 _INGRESS_MAX_BYTES = 1_048_576
+#: recentHistory's size. The bridge runs a room turn on the agent's own Hermes transcript and
+#: shows only the part of this window past the session's messageSeq cursor (the whole window on
+#: its first turn), so this caps how many unseen messages one turn can catch up on.
 _HISTORY_LIMIT = 50
 _RETRY_VISIBILITY_SECONDS = 10
 #: F4 (predeploy review, M6-R37): hoisted to runtime_transport (the shared home

@@ -211,6 +211,7 @@ def test__run_hermes_sends_a_current_image_as_native_user_content(home, monkeypa
 
 
 def test__run_hermes_keeps_current_and_historical_images_on_their_messages(home, monkeypatch):
+    """Unseen room messages ride the user message, each image right after its own line."""
     _install_native_vision_stub(monkeypatch)
     seen = _capture_agent_call(monkeypatch)
 
@@ -219,7 +220,9 @@ def test__run_hermes_keeps_current_and_historical_images_on_their_messages(home,
     ])
     agent_history = f.message(
         messageId="agent-history", messageSeq=5, author={"kind": "agent", "id": "ceo", "displayName": "CEO"},
-        text="earlier",
+        text="earlier", attachments=[
+            {"id": "own-image", "fileName": "own.png", "contentType": "image/png", "size": len(_BLUE_PNG)},
+        ],
     )
     human_history = f.message(messageId="human-history", messageSeq=6, text="past", attachments=[
         {"id": "history-image", "fileName": "past.png", "contentType": "image/png", "size": len(_BLUE_PNG)},
@@ -234,38 +237,14 @@ def test__run_hermes_keeps_current_and_historical_images_on_their_messages(home,
 
     turn._run_hermes("ceo", body, None)
 
-    assert seen["conversation_history"][0] == {"role": "assistant", "content": "earlier"}
-    historical = seen["conversation_history"][1]["content"]
-    assert historical[0] == {"type": "text", "text": "Prez: past"}
-    assert base64.b64decode(historical[1]["image_url"]["url"].split(",", 1)[1]) == _BLUE_PNG
-    current_content = seen["user_message"]
-    assert current_content[0]["type"] == "text"
-    _, text = f.split_turn_input(current_content)
-    assert text == "Prez: now"
-    assert base64.b64decode(current_content[1]["image_url"]["url"].split(",", 1)[1]) == _RED_PNG
-
-
-def test__run_hermes_moves_own_historical_images_to_a_user_provenance_turn(home, monkeypatch):
-    _install_native_vision_stub(monkeypatch)
-    seen = _capture_agent_call(monkeypatch)
-    monkeypatch.setattr(sync, "_get_backend_bytes", lambda _path: _BLUE_PNG)
-    body = f.ingress(message=f.message(text="now"), recentHistory=[f.message(
-        messageId="agent-history", messageSeq=5,
-        author={"kind": "agent", "id": "ceo", "displayName": "CEO"},
-        text="earlier", attachments=[
-            {"id": "history-image", "fileName": "past.png", "contentType": "image/png", "size": len(_BLUE_PNG)},
-        ],
-    )])
-
-    turn._run_hermes("ceo", body, None)
-
-    history = seen["conversation_history"]
-    assert history[0] == {"role": "assistant", "content": "earlier"}
-    assert history[1]["role"] == "user"
-    assert history[1]["content"][0] == {
-        "type": "text", "text": "[Context: image attachment from assistant CEO message]"
-    }
-    assert base64.b64decode(history[1]["content"][1]["image_url"]["url"].split(",", 1)[1]) == _BLUE_PNG
+    assert seen["conversation_history"] is None  # no state.db here: nothing recorded
+    content = seen["user_message"]
+    assert [part["type"] for part in content] == ["text", "image_url", "text", "image_url", "text", "image_url"]
+    assert content[0]["text"].endswith(f"{turn.RECENT_HEADER}\nCEO (you): earlier")
+    assert content[2]["text"] == "Prez: past"
+    assert content[4]["text"] == "\nPrez: now"
+    decoded = [base64.b64decode(content[i]["image_url"]["url"].split(",", 1)[1]) for i in (1, 3, 5)]
+    assert decoded == [_BLUE_PNG, _BLUE_PNG, _RED_PNG]
 
 
 def test__run_hermes_does_not_turn_a_pdf_into_image_content(home, monkeypatch):
@@ -314,23 +293,15 @@ def test_image_budget_keeps_current_then_newest_history_without_dropping_text(ho
 
     body = f.ingress(message=message(7), recentHistory=[message(seq) for seq in range(1, 7)])
     turn._run_hermes("ceo", body, None)
-    history = seen["conversation_history"]
-    assert len(history) == 6
-    assert all(row["role"] == "user" for row in history)
-    assert history[:2] == [{"role": "user", "content": f"Prez: text {seq}"} for seq in (1, 2)]
-    for seq, row in enumerate(history[2:], 3):
-        assert row["content"][0] == {"type": "text", "text": f"Prez: text {seq}"}
-        assert len(row["content"][1:]) == 4
-    assert seen["user_message"][0]["type"] == "text"
-    _, text = f.split_turn_input(seen["user_message"])
-    assert text == "Prez: text 7"
-    assert len(seen["user_message"][1:]) == 4
-    rows = [*history, {"content": seen["user_message"]}]
-    assert sum(part["type"] == "image_url" for row in rows if isinstance(row["content"], list)
-               for part in row["content"]) == 20
+    content = seen["user_message"]
+    texts = "".join(part["text"] for part in content if part["type"] == "text")
+    for seq in range(1, 7):  # every line kept; only seq 3-6 and the current message carry images
+        assert f"Prez: text {seq}" in texts
+    assert texts.endswith("\nPrez: text 7")
+    assert sum(part["type"] == "image_url" for part in content) == 20
+    assert content[-5]["type"] == "text" and all(part["type"] == "image_url" for part in content[-4:])
 
 
-# ---- review fix (IMPORTANT 4): one bad attachment must not fail the whole turn ---------------
 def test_a_failed_attachment_fetch_is_skipped_not_fatal(home, monkeypatch):
     def flaky_get(path):
         if "a1" in path:

@@ -382,9 +382,7 @@ def test_a_follow_up_may_carry_history_at_and_after_its_trigger():
     promise = f.message(messageSeq=9, author={"kind": "agent", "id": "ceo", "displayName": "CEO"},
                         text="review running, I'll report back")
     body["recentHistory"] = [f.message(messageId=TRIGGER, messageSeq=7), promise]
-    turn.parse_ingress(body)
-    history = turn._history(body, "ceo")
-    assert history[-1] == {"role": "assistant", "content": "review running, I'll report back"}
+    assert turn.parse_ingress(body)["recentHistory"][-1]["text"] == "review running, I'll report back"
     bad = _follow_up_body()
     bad["recentHistory"] = [f.message(messageSeq=9), f.message(messageSeq=8)]
     with pytest.raises(turn.IngressError, match="strictly increase"):

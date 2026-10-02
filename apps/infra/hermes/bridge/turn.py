@@ -612,7 +612,7 @@ def report_usage(session_key, agent_id, run_id, success, duration_ms, usage) -> 
     return True
 
 
-def steer_run(run_id: str, text: str) -> bool:
+def steer_run(run_id: str, text: str, message_id: str | None = None) -> bool:
     """A running turn gets the text through Hermes's own steer (queued as a user row after the
     current tool batch; settle_steers catches one that lands after the last). A turn still
     queued behind this agent's lock keeps it for its user message (attach_agent). A finishing
@@ -625,12 +625,16 @@ def steer_run(run_id: str, text: str) -> bool:
             return False
         if entry["agent"] is None:
             entry.setdefault("steers", []).append(text)
-            return True
-        try:
-            return bool(entry["agent"].steer(text))
-        except Exception:  # noqa: BLE001
-            log.warning("steer failed run=%s", run_id, exc_info=True)
-            return False
+            accepted = True
+        else:
+            try:
+                accepted = bool(entry["agent"].steer(text))
+            except Exception:  # noqa: BLE001
+                log.warning("steer failed run=%s", run_id, exc_info=True)
+                accepted = False
+        if accepted and message_id:  # in this run's transcript now: _unseen skips it next turn
+            entry.setdefault("steered_ids", []).append(message_id)
+        return accepted
 
 
 # ---- ingress validation (spec §5 "Ingress"; report 03 §1) -----------------------------------
@@ -1924,7 +1928,7 @@ def _current_message_media(body: dict, media: list[str], base: Path) -> list[str
 
     Bug: `media` used to be the FULL `sync.materialize_attachments` list, history included,
     with no marker for which path belonged to the current message. A historical image is
-    already embedded natively on its own history row (see `_message_image_paths`/`_history`),
+    already embedded natively after its own line (see `_message_image_paths`/`_room_content`),
     so it needs no path here -- but listing it anyway gave the model's `vision_analyze` tool a
     stale historical attachment to pick over the current, natively embedded one, and it did
     (log: `vision_analyze` on an old 1.5 KB probe image while the current message's own image
@@ -1948,32 +1952,66 @@ def _message_content(text: str, image_paths: list[str]) -> str | list[dict]:
     return content
 
 
-def _history(body: dict, agent_id: str, image_paths: dict[str, list[str]] | None = None) -> list[dict]:
-    """The room's recent messages as Hermes conversation history: this agent's own messages are
-    the assistant, everything else is a user turn prefixed with the author's name."""
-    names = {p["id"]: (p.get("displayName") or p.get("name") or p["id"]) for p in body.get("participants", [])}
-    out = []
-    for m in body.get("recentHistory", []):
-        author = m.get("author") or {}
-        text = (m.get("text") or "").strip()
-        images = (image_paths or {}).get(m.get("messageId"), [])
-        if not text and not images:
+#: Session metadata the bridge keeps in the Hermes session row's model_config (Hermes's own
+#: per-session JSON; patch_session_model_config merges a patch into it). Always written to
+#: agent.session_id after a turn, which is the compression tip if that turn rotated the session.
+ROOM_SEQ = "lightbulb_room_seq"            # newest room messageSeq this session has seen
+ROOM_STEERED = "lightbulb_room_steered"    # messageIds steered into its last run (past the cursor)
+MEMORY_COUNTER = "lightbulb_turns_since_memory"
+SKILL_COUNTER = "lightbulb_iters_since_skill"
+
+UNSEEN_HEADER = "Room messages since your last turn, oldest first:"
+RECENT_HEADER = "Recent room messages, oldest first:"
+
+
+def _is_own(m: dict, agent_id: str) -> bool:
+    author = m.get("author") or {}
+    return author.get("kind") == "agent" and author.get("id") == agent_id
+
+
+def _unseen(body: dict, agent_id: str, meta: dict) -> list[dict]:
+    """The room messages this session has not seen: recentHistory past the session's cursor,
+    minus this agent's own (its replies are in the transcript) and anything steered into its last
+    run (also in the transcript). With no cursor -- the session's first recorded turn, or
+    recording off -- it is the whole recentHistory window (the backend's last 50), the agent's own
+    messages included, since no transcript carries them. The trigger is never in it: parse_ingress
+    keeps recentHistory below message.messageSeq, and a follow-up's trigger sits at or below the
+    cursor its own run set. More than 50 unseen messages: the backend sends the newest 50.
+    ponytail: a message this agent posted outside a room turn (a Paperclip run, a call) is skipped
+    as its own once a cursor exists; it is recorded in that other session instead."""
+    history = body.get("recentHistory", [])
+    cursor = meta.get(ROOM_SEQ)
+    if not isinstance(cursor, int):
+        return list(history)
+    steered = set(meta.get(ROOM_STEERED) or ())
+    return [m for m in history
+            if m["messageSeq"] > cursor and m.get("messageId") not in steered and not _is_own(m, agent_id)]
+
+
+def _room_content(body: dict, agent_id: str, unseen: list[dict], seen_before: bool, turn_text: str,
+                  images: dict[str, list[str]], current_images: list[str]) -> str | list[dict]:
+    """The turn's user message: its turn-context line, the unseen room messages as
+    '<name>: <text>' (each message's images right after its line), then the trigger and its own
+    images. Hermes records it as one user row, so the next turn replays it from the transcript."""
+    names = {p["id"]: _display_name(p) for p in body.get("participants", [])}
+    head, _, said = turn_text.partition("\n")  # _turn_input: one context line, then the text
+    parts, lines, shown = [], [head, UNSEEN_HEADER if seen_before else RECENT_HEADER], 0
+    for m in unseen:
+        text, paths = (m.get("text") or "").strip(), images.get(m.get("messageId"), [])
+        if not text and not paths:
             continue
-        if author.get("kind") == "agent" and author.get("id") == agent_id:
-            if text:
-                out.append({"role": "assistant", "content": text})
-            if images:
-                name = names.get(agent_id, agent_id)
-                out.append({
-                    "role": "user",
-                    "content": _message_content(
-                        f"[Context: image attachment from assistant {name} message]", images
-                    ),
-                })
-        else:
-            content = _message_content(f"{names.get(author.get('id'), author.get('id', '?'))}: {text}", images)
-            out.append({"role": "user", "content": content})
-    return out
+        name = names.get((m.get("author") or {}).get("id")) or _display_name(m.get("author") or {})
+        lines.append(f"{name}{' (you)' if _is_own(m, agent_id) else ''}: {text}")
+        shown += 1
+        if paths:
+            parts += [{"type": "text", "text": "\n".join(lines)}, *(_native_image_part(p) for p in paths)]
+            lines = []
+    if not shown:
+        return _message_content(turn_text, current_images)
+    text = "\n".join([*lines, "", said])
+    if not parts:
+        return _message_content(text, current_images)
+    return [*parts, {"type": "text", "text": text}, *(_native_image_part(p) for p in current_images)]
 
 
 def lightbulb_session_key(agent_id: str, room_id: str) -> str:
@@ -2005,7 +2043,7 @@ def _display_name(entity: dict) -> str:
 
 
 def _turn_user_message(body: dict) -> str:
-    """Matches _history's per-message formatting ('<display name>: <text>'). A mail event
+    """Matches _room_content's per-message formatting ('<display name>: <text>'). A mail event
     (Task 20) carries no `sender` block at all — its envelope identifies the author by
     `message.fromAddress` instead. paperclip_run (Task 21, fix round C3) has no sender at
     all -- there is no "who said this" to prefix, so the trigger text is passed through as-is
@@ -2395,23 +2433,21 @@ def profile_toolsets() -> tuple[list[str] | None, list[str] | None]:
     return sorted(_get_platform_tools(config, "cli")), disabled
 
 
-# ---- Hermes's own session store (state.db), Phase 1 -----------------------------------------
+# ---- Hermes's own session store (state.db) ---------------------------------------------------
 # Every turn kind records its transcript in the profile's state.db under its existing key, the way
-# Hermes's gateway does (gateway/run_turn_runner.py:1087 passes `session_db=` to every agent). The
-# prompt is unchanged: room turns still pass the re-rendered room history, and the flush skips
-# those rows by identity (agent/session_persistence.py:187-210), so a run persists only its own
-# trigger, tool calls and reply. What turns on: insights, the durable async-delegation ledger, a
-# memory-review cadence that also covers call and Paperclip turns (_hydrate_memory_nudge), and
-# session_search -- scoped by the lightbulb plugin to the current session's own lineage, because
-# one profile's state.db holds every room, DM, mail thread and call the agent is in.
-#
-# Known limit until Phase 2 passes the recorded transcript AS history: Hermes compacts a long
-# session in place (compression.in_place, default True) on the re-rendered room window, then
-# rewinds its last N rows on the assumption that they are the carried tail
-# (hermes_state_messages.py:605-616). Here they are the previous turns' replies, so a room
-# session's transcript is exact only up to its first compaction. compression.in_place: false
-# avoids that but is Hermes's legacy rotation path (config_defaults.py:623-628, "the
-# session-rotation bug cluster"), so it is not flipped here.
+# Hermes's gateway does (gateway/run_turn_runner.py:1087 passes `session_db=` to every agent).
+# A room turn runs on its room key's own transcript, loaded the way the gateway loads it
+# (_transcript; gateway/session_transcript.load_transcript, run_turn.py:1921): one Hermes-kept
+# conversation per room, tool calls and results included, plus the room messages it has not seen
+# yet in its user message (_unseen/_room_content, cursor in session metadata). History is exactly
+# the session's active rows, so the flush skips all of it by identity
+# (agent/session_persistence.py:187-210) and Hermes's in-place compaction
+# (hermes_state_messages.py:605-616: archive the active rows, rewind the carried tail) acts on
+# the very rows the model saw. Hermes's compression bounds the context; the session itself
+# grows for as long as the room is used. Call and Paperclip turns keep their own prompts and
+# keys (their history is the prompt), and record alongside. session_search is scoped by the
+# lightbulb plugin to the current session's own lineage, because one profile's state.db holds
+# every room, DM, mail thread and call the agent is in.
 
 #: Hermes's own default retention (hermes_state_maintenance.maybe_auto_prune_and_vacuum): an
 #: ENDED session whose last message is older than this is deleted, once a day at most.
@@ -2428,14 +2464,16 @@ _session_dbs_guard = threading.Lock()
 
 def _session_db(agent_id: str):
     """The profile's shared SessionDB, or None (outside the Hermes image, an unopenable file, or
-    recording stopped: the turn then runs unrecorded, exactly as every turn did before Phase 1).
+    recording stopped: the turn then runs unrecorded, on the room's recent-message window).
 
     The first acquire runs Hermes's own retention pass, which the gateway runs at startup and
     nothing else calls: it deletes sessions ended and inactive for STATE_DB_RETENTION_DAYS
     (_end_unless_room ends every non-room session after its turn so it can match), and VACUUMs
     when enough pages were freed. Throttled to once a day by a marker in state.db itself.
-    ponytail: room sessions are never ended, so a room's transcript (compacted rows included)
-    grows for as long as the room is used; Phase 2 bounds it (rotate or end idle room sessions)."""
+    ponytail: room sessions are never ended (one conversation per room), and Hermes keeps the
+    rows an in-place compaction archives (active=0) with no retention of its own, so a busy room's
+    state.db grows without bound; upload stays change-only (sync._transcript_rows). Add a
+    trim of archived rows older than N days if the snapshot size log shows it mattering."""
     with _session_dbs_guard:
         if agent_id in _session_dbs:
             return _session_dbs[agent_id]
@@ -2477,8 +2515,8 @@ def _run_conversation(agent, agent_id: str, session_key: str, **kwargs) -> dict:
 
     With a session_db Hermes fails a turn whose transcript append fails, before that round's
     tools run (agent/turn_tool_round.py:117-138: ``turn_exit_reason='session_persistence_failed'``),
-    and a state.db error in lease admission escapes run_conversation. Before Phase 1 the same turn
-    simply ran. So on either, the turn runs once more unrecorded -- the shape Hermes's own
+    and a state.db error in lease admission escapes run_conversation. Without a state.db the same
+    turn simply ran. So on either, the turn runs once more unrecorded -- the shape Hermes's own
     background-review fork uses (``_session_db=None`` + ``_persist_disabled``, which also keeps
     _get_session_db_for_recall from reopening the file). Not when a tool already ran: a re-run
     would repeat its side effects, so that turn reports its failure. A non-transient cause also
@@ -2496,6 +2534,8 @@ def _run_conversation(agent, agent_id: str, session_key: str, **kwargs) -> dict:
             and not _ran_tools(result, kwargs.get("conversation_history"))):
         _stop_recording(agent_id, agent, getattr(agent, "_last_persistence_error_cause", None))
         return agent.run_conversation(**kwargs) or {}
+    _save_session_meta(agent, {MEMORY_COUNTER: int(getattr(agent, "_turns_since_memory", 0) or 0),
+                               SKILL_COUNTER: int(getattr(agent, "_iters_since_skill", 0) or 0)})
     _end_unless_room(agent, agent_id, session_key)
     return result
 
@@ -2552,7 +2592,7 @@ def _keep_prompt_fresh(agent, db) -> None:
     (agent/conversation_loop.py:651-711) reuses the prompt stored by the session's FIRST turn and
     pins its tools[] order. A room turn's prompt changes every turn (members, media, turn context),
     so a reused one would be stale. Clearing the stored prompt sends Hermes down its fresh-build
-    branch (the one every turn took before Phase 1), which also re-stores this turn's prompt."""
+    branch (the one every turn took without a state.db), which also re-stores this turn's prompt."""
     try:
         db.update_system_prompt(agent.session_id, None)
     except Exception:  # noqa: BLE001
@@ -2570,28 +2610,59 @@ class _DropClearedPromptWarning(logging.Filter):
 logging.getLogger("agent.conversation_loop").addFilter(_DropClearedPromptWarning())
 
 
-def _hydrate_memory_nudge(agent, db) -> None:
-    """Start the memory-review counter from this session's recorded user turns.
+def _transcript(agent, agent_id: str) -> list[dict] | None:
+    """The session's own transcript as Hermes's gateway replays it: the active rows at the
+    compression tip (agent.session_id), alternation repaired (gateway/session_transcript.py:484-505).
+    The gateway refuses the message when the read fails; here the turn runs unrecorded instead,
+    on the room's recent-message window (_unseen with no cursor), as every turn did with no DB."""
+    db = getattr(agent, "_session_db", None)
+    if db is None:
+        return None
+    try:
+        return db.get_messages_as_conversation(agent.session_id, repair_alternation=True)
+    except Exception as exc:  # noqa: BLE001
+        _stop_recording(agent_id, agent, _persistence_cause(exc))
+        return None
 
-    Hermes counts user turns per session and spawns the background memory review every
-    `memory.nudge_interval` (10) of them (agent/turn_context.py:627-635). A fresh agent per turn
-    restarts at 0 and is only re-hydrated from conversation_history (turn_context.py:619-624):
-    from the room window's user rows for a room turn (pseudo-random), and never for a call or
-    Paperclip turn (no history: the review never fired). The recorded transcript is a better
-    count, not an exact one: after an in-place compaction a room session's active rows are the
-    compacted room window (see the limit above). A room turn whose count is a multiple of the
-    interval leaves 0 here, and Hermes then hydrates from the room window as before. One indexed
-    COUNT (idx_messages_session_active), never the rows themselves."""
-    interval = int(getattr(agent, "_memory_nudge_interval", 0) or 0)
-    if interval <= 0:
+
+def _session_meta(agent) -> dict:
+    """The bridge's keys in this session's model_config ({} with no DB or no row yet)."""
+    db = getattr(agent, "_session_db", None)
+    try:
+        raw = ((db.get_session(agent.session_id) or {}).get("model_config") if db is not None else None) or "{}"
+        meta = json.loads(raw) if isinstance(raw, str) else raw
+    except Exception:  # noqa: BLE001
+        log.warning("session metadata read failed for %s", agent.session_id, exc_info=True)
+        return {}
+    return meta if isinstance(meta, dict) else {}
+
+
+def _save_session_meta(agent, patch: dict) -> None:
+    db = getattr(agent, "_session_db", None)
+    if db is None:
         return
     try:
-        prior = int(db._read_one("SELECT COUNT(*) FROM messages WHERE session_id = ? AND role = 'user' "
-                                 "AND active = 1", (agent.session_id,))[0])
-    except Exception:  # noqa: BLE001
-        log.warning("memory nudge hydration failed", exc_info=True)
-        return
-    agent._turns_since_memory = prior % interval
+        db.patch_session_model_config(agent.session_id, patch)
+    except Exception:  # noqa: BLE001 -- bookkeeping must never fail a finished turn
+        log.warning("session metadata write failed for %s", agent.session_id, exc_info=True)
+
+
+def _restore_review_counters(agent) -> None:
+    """Carry Hermes's two review counters across turns, as its gateway does by caching the agent
+    per session (gateway/run_turn_runner.py:1098-1131). We build an agent per turn (its callbacks,
+    scopes and run registry are per run), so the counters ride the session row instead -- saved
+    after every run_conversation (_run_conversation), restored here, both exact:
+    - ``_iters_since_skill`` ticks per tool iteration (turn_iteration_prep.py:119-120) and is
+      never hydrated from history, so without this the skill review fired only inside one turn of
+      10+ tool iterations.
+    - ``_turns_since_memory`` ticks per user turn (turn_context.py:627-635). Hermes re-derives it
+      from conversation_history only when it is 0 (turn_context.py:619-624) -- so after a review
+      fires, from the transcript, like its gateway after a restart; and never for a call or
+      Paperclip turn, which passes no history."""
+    meta = _session_meta(agent)
+    for attr, key in (("_turns_since_memory", MEMORY_COUNTER), ("_iters_since_skill", SKILL_COUNTER)):
+        if isinstance(meta.get(key), int):
+            setattr(agent, attr, meta[key])
 
 
 def _construct_agent(agent_id: str, body: dict, frames, session_key: str, **limits):
@@ -2646,7 +2717,7 @@ def _construct_agent(agent_id: str, body: dict, frames, session_key: str, **limi
     )
     if db is not None:
         _keep_prompt_fresh(agent, db)
-        _hydrate_memory_nudge(agent, db)
+        _restore_review_counters(agent)
     _capture_api_errors(agent)
     return agent
 
@@ -2733,14 +2804,18 @@ def _run_turn_in(agent_id: str, body: dict, frames, base: Path) -> tuple[str, st
                     if queued_steers:
                         turn_text = f"{turn_text}\n{queued_steers}"
                     system = with_profile_agents_md(agent_id, system_prompt(body, agent_id, media=current_media))
+                    # A room runs on its own transcript; a mail thread or event keeps its single-message shape.
+                    room_turn = bool(ROOM_SESSION_RE.match(session_key))
+                    history = _transcript(agent, agent_id) if room_turn else None
+                    meta = _session_meta(agent) if room_turn else {}
                     result = _run_conversation(
                         agent, agent_id, session_key,
-                        user_message=_message_content(
-                            turn_text,
-                            images.get((body.get("message") or {}).get("messageId"), []),
+                        user_message=_room_content(
+                            body, agent_id, _unseen(body, agent_id, meta), isinstance(meta.get(ROOM_SEQ), int),
+                            turn_text, images, images.get((body.get("message") or {}).get("messageId"), []),
                         ),
                         system_message=system,
-                        conversation_history=_history(body, agent_id, images) or None,
+                        conversation_history=history or None,
                     )
                     # A follow-up that arrived too late to steer is answered in this same run,
                     # the way Hermes's own gateway delivers a leftover steer as the next turn.
@@ -2754,6 +2829,8 @@ def _run_turn_in(agent_id: str, body: dict, frames, base: Path) -> tuple[str, st
                         )
                     if replies:
                         result["final_response"] = "\n\n".join(r for r in (*replies, result.get("final_response")) if r)
+                    if room_turn and result.get("api_calls"):
+                        _advance_room_cursor(agent, body, meta, run_id)
                 finally:
                     if key_token is not None:
                         reset_current_session_key(key_token)
@@ -2779,6 +2856,19 @@ def _run_turn_in(agent_id: str, body: dict, frames, base: Path) -> tuple[str, st
     if not reply:
         return "error", "empty_response", "", usage
     return "completed", None, reply, usage
+
+
+def _advance_room_cursor(agent, body: dict, meta: dict, run_id: str | None) -> None:
+    """Record what this run saw: the newest room messageSeq it was given, and the messages steered
+    into it (they are after that seq, and already in its transcript). Only once the model ran,
+    which is when Hermes has persisted the user message carrying them (turn_finalizer persists on
+    every exit past admission); a turn that never reached the model shows them again instead."""
+    seqs = [(body.get("message") or {}).get("messageSeq"), meta.get(ROOM_SEQ),
+            *(m.get("messageSeq") for m in body.get("recentHistory", []))]
+    seen = max((s for s in seqs if isinstance(s, int)), default=None)
+    steered = (RUNS.get(run_id) or {}).get("steered_ids") if run_id else None
+    if seen is not None:
+        _save_session_meta(agent, {ROOM_SEQ: seen, ROOM_STEERED: list(steered) if steered else None})
 
 
 def _run_native_paperclip(identity: dict, request: dict) -> tuple[str, str | None, str, dict]:

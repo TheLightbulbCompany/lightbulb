@@ -1214,6 +1214,7 @@ async def submit_command(
     source_conditions: list[dict] | None = None,
     source_pairing: tuple[str, str] | None = None,
     room_meta_fenced_by_extra: bool = False,
+    replaces_request_id: str | None = None,
 ) -> CommandReceipt:
     owner = caller_owner(auth)
     # A roomless command is stored with roomId "": current desktops require the field as a string.
@@ -1226,6 +1227,23 @@ async def submit_command(
     if request.kind == "approve" and (isinstance(auth, AgentInvocation) or source_session_id):
         # A permission prompt is a human's decision: an agent (whoever woke it) never answers one.
         raise ApiProblem("LOCAL_SESSION_FORBIDDEN", "Only a person can answer a permission prompt.")
+    if replaces_request_id is not None:
+        from pydantic import TypeAdapter, ValidationError
+
+        try:
+            TypeAdapter(OpaqueId).validate_python(replaces_request_id)
+        except ValidationError as exc:
+            raise ApiProblem("INVALID_REQUEST", "Invalid replaced request ID.") from exc
+        if (
+            isinstance(auth, AgentInvocation)
+            or request.kind != "send"
+            or request.expected_turn_id is not None
+            or replaces_request_id == request.request_id
+            or room_id
+            or origin_room_id
+            or source_session_id
+        ):
+            raise ApiProblem("INVALID_REQUEST", "Only a direct human follow-up can replace an offline send.")
     payload = request.model_dump(by_alias=True)
     author = (
         {"actor": {"kind": "session", "id": source_session_id}, "invocationExpiresAt": int(time.time()) + 30}
@@ -1249,6 +1267,7 @@ async def submit_command(
         if source_session_id
         else ({"kind": "agent", "id": auth.agent_id} if isinstance(auth, AgentInvocation) else auth.user_id),
         payload,
+        *([{"replacesRequestId": replaces_request_id}] if replaces_request_id else []),
     )
     for _ in range(6):
         row, enrollment = await authorize_session(auth, room_id, session_id, owner_only=True)
@@ -1257,6 +1276,54 @@ async def submit_command(
             if existing["requestHash"] != req_hash:
                 raise ApiProblem("IDEMPOTENCY_CONFLICT", "requestId was already used for a different request.")
             return _public(CommandReceipt, existing)
+        retry_update: dict | None = None
+        if replaces_request_id:
+            original = await repo.get_command(owner, session_id, replaces_request_id)
+            if (
+                original is None
+                or original.get("actorUserId") != auth.user_id
+                or original.get("kind") != "send"
+                or original.get("roomId") != ""
+                or original.get("originRoomId")
+                or not original.get("offlineIdentity")
+                or original.get("state") != "rejected"
+                or original.get("cancelledAt")
+                or original.get("text") != request.text
+            ):
+                raise ApiProblem("LOCAL_SESSION_CONFLICT", "The saved offline send cannot be retried.")
+            prior_replacement = original.get("replacedByRequestId")
+            if prior_replacement:
+                previous_retry = await repo.get_command(owner, session_id, prior_replacement)
+                if (
+                    previous_retry is None
+                    or previous_retry.get("replacesRequestId") != replaces_request_id
+                    or previous_retry.get("actorUserId") != auth.user_id
+                    or previous_retry.get("state") != "rejected"
+                ):
+                    raise ApiProblem("LOCAL_SESSION_CONFLICT", "A retry is already in progress or was delivered.")
+            values = {
+                ":actor": auth.user_id,
+                ":rejected": "rejected",
+                ":replacement": request.request_id,
+                ":revision": str(uuid.uuid4()),
+            }
+            pointer_condition = "attribute_not_exists(replacedByRequestId)"
+            if prior_replacement:
+                pointer_condition = "replacedByRequestId = :previous"
+                values[":previous"] = prior_replacement
+            retry_update = {
+                "Update": {
+                    "TableName": messaging_repo._table().name,
+                    "Key": {"pk": repo.session_pk(owner, session_id), "sk": f"COMMAND#{replaces_request_id}"},
+                    "UpdateExpression": "SET replacedByRequestId = :replacement, revision = :revision",
+                    "ConditionExpression": (
+                        f"#state = :rejected AND actorUserId = :actor AND attribute_not_exists(cancelledAt) "
+                        f"AND {pointer_condition}"
+                    ),
+                    "ExpressionAttributeNames": {"#state": "state"},
+                    "ExpressionAttributeValues": values,
+                }
+            }
         require_command_scope(auth, row, request.kind)
         now = int(time.time())
         offline_send = (
@@ -1317,6 +1384,7 @@ async def submit_command(
             **({"originMessageId": origin_message_id} if origin_message_id else {}),
             **({"originEventSeq": row.get("eventSeq", 0)} if origin_room_id else {}),
             **({"nativeHop": native_hop} if native_hop is not None else {}),
+            **({"replacesRequestId": replaces_request_id} if replaces_request_id else {}),
             **(
                 {
                     "sourceHumanUserId": auth.user_id,
@@ -1339,6 +1407,7 @@ async def submit_command(
                 allow_offline=offline_send,
                 extra=[
                     *(source_conditions or []),
+                    *([retry_update] if retry_update else []),
                     {"Put": {"TableName": messaging_repo._table().name, "Item": audit}},
                 ],
                 source_pairing=source_pairing,
@@ -1394,14 +1463,37 @@ async def get_command(auth: Caller, room_id: str | None, session_id: str, reques
 async def list_offline_outbox(auth: AuthContext, session_id: str) -> OfflineOutbox:
     session, _ = await authorize_session(auth, None, session_id)
     owner, sid, now = session["ownerId"], session["sessionId"], int(time.time())
+    commands = await repo.list_commands(owner, sid)
+    by_request_id = {row["requestId"]: row for row in commands}
+    visible = []
+    for row in commands:
+        if (
+            not row.get("offlineIdentity")
+            or row.get("actorUserId") != auth.user_id
+            or row["createdAt"] < now - 2 * OFFLINE_SEND_SECONDS
+        ):
+            continue
+        original = by_request_id.get(row.get("replacesRequestId"))
+        if (
+            row["state"] == "rejected"
+            and original
+            and original.get("offlineIdentity")
+            and original.get("actorUserId") == auth.user_id
+            and original["createdAt"] >= now - 2 * OFFLINE_SEND_SECONDS
+        ):
+            continue  # a failed retry restores its saved original, never a second Retry action
+        replacement = by_request_id.get(row.get("replacedByRequestId"))
+        if replacement and replacement["state"] == "pending" and replacement["deliverBy"] <= now:
+            replacement = await _expire_pending_command(owner, sid, replacement)
+        if row["state"] == "rejected" and replacement and replacement["state"] in {
+            "pending", "dispatched", "unknown", "applied"
+        }:
+            continue
+        visible.append(row)
     rows = [
-        row
-        for row in await repo.list_commands(owner, sid)
-        if row.get("offlineIdentity")
-        and row.get("actorUserId") == auth.user_id
-        and row["createdAt"] >= now - 2 * OFFLINE_SEND_SECONDS
+        await _expire_pending_command(owner, sid, row)
+        for row in visible
     ]
-    rows = [await _expire_pending_command(owner, sid, row) for row in rows]
     active = [row for row in rows if row["state"] not in {"applied", "rejected"} and row["deliverBy"] > now]
     recent = [row for row in rows if row["state"] in {"applied", "rejected"} or row["deliverBy"] <= now]
     selected = active[-OFFLINE_SEND_PENDING_LIMIT:]

@@ -1382,6 +1382,47 @@ async def test_offline_outbox_is_sender_private_and_survives_reopen(transport):
 
 
 @pytest.mark.asyncio
+async def test_offline_retry_lineage_hides_only_its_original_and_restores_on_rejection(transport):
+    sid = await start(transport)
+    messaging_repo._table().update_item(
+        Key={"pk": repo.session_pk(OWNER, sid), "sk": "META"},
+        UpdateExpression="SET onlineUntil = :past",
+        ExpressionAttributeValues={":past": int(time.time()) - 1},
+    )
+    await service.submit_command(ALICE, None, sid, command(service, text="continue"))
+    original = await repo.get_command(OWNER, sid, "request-1")
+    await repo.replace_command(original, {**original, "state": "rejected"})
+
+    await service.submit_command(
+        ALICE, None, sid, command(service, requestId="retry-a", text="continue"),
+        replaces_request_id="request-1",
+    )
+    original = await repo.get_command(OWNER, sid, "request-1")
+    retry = await repo.get_command(OWNER, sid, "retry-a")
+    assert original["replacedByRequestId"] == "retry-a"
+    assert retry["replacesRequestId"] == "request-1"
+    assert [item.request_id for item in (await service.list_offline_outbox(ALICE, sid)).commands] == ["retry-a"]
+    with pytest.raises(ApiProblem, match="retry is already"):
+        await service.submit_command(
+            ALICE, None, sid, command(service, requestId="retry-b", text="continue"),
+            replaces_request_id="request-1",
+        )
+
+    await repo.replace_command(retry, {**retry, "state": "rejected"})
+    assert [item.request_id for item in (await service.list_offline_outbox(ALICE, sid)).commands] == ["request-1"]
+    await service.submit_command(ALICE, None, sid, command(service, requestId="unrelated", text="continue"))
+    assert {item.request_id for item in (await service.list_offline_outbox(ALICE, sid)).commands} == {
+        "request-1", "unrelated"
+    }
+    await service.submit_command(
+        ALICE, None, sid, command(service, requestId="retry-c", text="continue"),
+        replaces_request_id="request-1",
+    )
+    assert (await repo.get_command(OWNER, sid, "request-1"))["replacedByRequestId"] == "retry-c"
+    assert "request-1" not in {item.request_id for item in (await service.list_offline_outbox(ALICE, sid)).commands}
+
+
+@pytest.mark.asyncio
 async def test_offline_outbox_keeps_new_pending_ahead_of_expired_unknowns(transport):
     sid = await start(transport)
     table = messaging_repo._table()

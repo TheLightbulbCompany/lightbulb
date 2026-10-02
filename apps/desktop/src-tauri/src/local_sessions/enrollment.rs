@@ -711,6 +711,29 @@ pub async fn local_sessions_set(
     Ok(revision)
 }
 
+/// Re-run hook, MCP and skill setup for an enabled enrollment without touching
+/// the enrollment itself (re-enabling would retire it). Returns the failures.
+#[tauri::command]
+pub async fn local_sessions_repair(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, Controller>,
+) -> Result<Vec<String>> {
+    let _guard = state.mutation.lock().await;
+    let dir = state_dir(&app)?;
+    let path = dir.join("enrollment.json");
+    if !path.try_exists().map_err(|_| "sharing state unavailable")?
+        || !private_read::<Enrollment>(&path)?.enabled
+    {
+        return Err("Enable local-session sharing first".into());
+    }
+    let notes = reassert(&dir);
+    if !notes.is_empty() {
+        *state.status.lock().map_err(|_| "sharing state unavailable")? =
+            format!("Setup retried; {}.", notes.join("; "));
+    }
+    Ok(notes)
+}
+
 #[tauri::command]
 pub async fn local_sessions_revoke(
     app: tauri::AppHandle,

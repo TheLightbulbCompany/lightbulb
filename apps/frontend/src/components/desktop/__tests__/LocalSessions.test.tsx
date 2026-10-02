@@ -242,8 +242,8 @@ it("Settings switches read the Mac's stored consent and write each change throug
   await userEvent.click(paperclip);
   expect(invoke).toHaveBeenCalledWith("desktop_permissions_set", {permissions:{shell:true,browser:true,files:false,screen:false,paperclip:false}});
 });
-it("shows per-provider setup read from disk and retries setup through enable", async () => {
-  invoke.mockImplementation(async command => command === "local_sessions_set" ? 1 : {
+it("shows per-provider setup read from disk and retries setup without re-enrolling", async () => {
+  invoke.mockImplementation(async command => command === "local_sessions_repair" ? [] : {
     enrollment:{ownerId:"org",humanUserId:"alice",enabled:true,paused:false}, pairedWorkspaceId:"org", status:"connected",
     providers:{claude:{cli:true,mcp:"collision",hooks:"disabled"},codex:{cli:false,mcp:"missing",hooks:"missing"}},
   });
@@ -251,5 +251,6 @@ it("shows per-provider setup read from disk and retries setup through enable", a
   expect(await screen.findByText("Claude Code — Needs attention: another lightbulb_native_sessions MCP server is configured; Claude hooks are disabled in settings.json")).toBeInTheDocument();
   expect(screen.getByText("Codex — Not installed")).toBeInTheDocument();
   await userEvent.click(screen.getByRole("button", {name:"Retry setup"}));
-  await waitFor(() => expect(invoke).toHaveBeenCalledWith("local_sessions_set", {enabled:true,token:"jwt",humanUserId:"alice",workspaceId:"org"}));
+  await waitFor(() => expect(invoke).toHaveBeenCalledWith("local_sessions_repair"));
+  expect(invoke.mock.calls.some(([command]) => command === "local_sessions_set")).toBe(false);
 });

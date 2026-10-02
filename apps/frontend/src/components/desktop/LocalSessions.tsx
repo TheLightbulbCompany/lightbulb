@@ -169,7 +169,7 @@ export function LocalSessions() {
         <p>{providerSetupLine("Claude Code", state.providers.claude)}</p>
         <p>{providerSetupLine("Codex", state.providers.codex)}</p>
         <p className="text-sm text-muted-foreground">Start a new Claude Code or Codex session after setup; sessions already running won&apos;t pick this up.</p>
-        {enabled ? <Button variant="outline" disabled={busy} onClick={() => void setEnabled(true)}>Retry setup</Button> : null}
+        {enabled ? <Button variant="outline" disabled={busy} onClick={() => { const invoke=bridge(); const current=operation.current; if(invoke) void invoke("local_sessions_repair").then(()=>refresh(invoke,current)).catch(e=>{if(operation.current===current)setError(message(e));}); }}>Retry setup</Button> : null}
       </div> : null}
       {recoveryPending ? <p>Retained server history may still be shared. Remote-history revocation is unconfirmed. Sign in as the enrolled person in the enrolled workspace and retry disable before enabling again.</p> : null}
       {state?.enrollment?.remoteDisabled ? <p>Remote-history sharing is confirmed disabled.</p> : null}

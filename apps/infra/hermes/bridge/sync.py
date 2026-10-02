@@ -255,12 +255,6 @@ EXCLUDE_GLOBS = (
     # them to S3 otherwise, and a screenshot reaches the room as an attachment (Task 9), not
     # a profile artifact.
     "cache/screenshots/*",
-    # Hermes's own tool caches (web fetches, terminal output spools, exec, delegation results):
-    # reproducible by definition and the bulk of a profile -- 1,300 of Pulse's 3,582 objects,
-    # 57 MB -- so they neither go up at the end of a turn nor come down on a cold start
-    # (_RESTORE_SKIP_PREFIXES). What is already in S3 under cache/ is dead weight, not restored.
-    "cache/*",
-    "cache/**/*",
     # Backend-projected CLI connector credentials (backend credentials/hermes_cli.py). Same
     # class as the five above: the backend is the only writer, so an upload from here could
     # only ever revert a connect/disconnect the owner just made -- and would let a turn push
@@ -294,8 +288,22 @@ def _is_git_lock(rel: str) -> bool:
     return fnmatch.fnmatch(rel, ".git/*.lock") or fnmatch.fnmatch(rel, "*/.git/*.lock")
 
 
+#: Hermes's own rule for its backups (hermes_cli/backup.py, _KEPT_CACHE_SUBDIRS): everything
+#: under cache/ is regenerable -- catalogs, stamps, tool-output spill, the web/terminal/exec/
+#: delegation caches -- EXCEPT media the gateway delivered or received, generated media and the
+#: citations ledger. Those were 1,300 of Pulse's 3,582 cold-restore objects (57 MB), so the
+#: regenerable ones neither go up at the end of a turn nor come down on a cold start; what older
+#: images already pushed stays in S3 as dead weight.
+KEPT_CACHE_SUBDIRS = frozenset({"images", "audio", "videos", "documents", "screenshots", "citations", "generated"})
+
+
+def is_regenerable_cache(rel: str) -> bool:
+    parts = rel.split("/", 2)
+    return len(parts) >= 2 and parts[0] == "cache" and parts[1] not in KEPT_CACHE_SUBDIRS
+
+
 def is_excluded(rel: str) -> bool:
-    return any(fnmatch.fnmatch(rel, pattern) for pattern in EXCLUDE_GLOBS)
+    return is_regenerable_cache(rel) or any(fnmatch.fnmatch(rel, pattern) for pattern in EXCLUDE_GLOBS)
 
 
 def is_reproducible(rel: str) -> bool:
@@ -309,9 +317,14 @@ def is_reproducible(rel: str) -> bool:
     return any(fnmatch.fnmatch(rel, pattern) for pattern in _REPRODUCIBLE_GLOBS)
 
 
-#: ponytail: a backend writer (the Files panel) landing under work/ between turns is only picked
-#: up on the next cold start of that conversation, not by a revision bump.
 WORK_DIR_PREFIX = "work/"
+#: Durable trees a cold start does not wait for: they come down in the background right after the
+#: profile itself (_restore_deferred), and a conversation's own work/ tree is pulled first, by its
+#: turn (restore_subtree). Pulse carried ~1,900 objects across twenty old conversations' work/
+#: trees plus 266 curator rollback blobs; none of them is needed before the first reply. cache/
+#: reaches here only for Hermes's kept media subdirs (the rest is regenerable, never restored).
+_DEFERRED_PREFIXES = (WORK_DIR_PREFIX, ".curator_backups/", "cache/")
+_DEFERRED_RESTORE_DELAY_S = 2.0  # the turn's own restore_subtree (its work/ tree) goes first
 _RESTORED_SUBTREES: set[tuple[str, str]] = set()
 
 #: Restore-side skip: reinstallable home caches an older image already pushed. Deliberately NOT
@@ -322,14 +335,6 @@ _RESTORE_SKIP_PREFIXES = (
     *(f"{PROFILE_HOME}/{name}/" for name in _HOME_UNSYNCED),
     PNPM_STORE_PREFIX,
     f"{PAPERCLIP_RUNS_DIR}/",  # read by key on a poll miss, never needed in the profile dir
-    "cache/",  # excluded on the way up too (EXCLUDE_GLOBS); older images pushed these
-    # The memory curator's rollback blobs: read only by an explicit rollback, which is rare and
-    # recreates them from then on. They stay in S3; a cold start does not wait for them.
-    ".curator_backups/",
-    # Per-conversation working trees (<profile>/work/<conversation>): restored LAZILY by
-    # restore_subtree when that conversation's turn starts. Pulse carried ~1,900 such objects
-    # across 20 old conversations, none of them needed by a voice turn in a 21st.
-    WORK_DIR_PREFIX,
 )
 
 #: Per-file S3 GET/PUT ran at ~10-16 objects/s sequentially (Forge: 92,139 objects in 5,749 s).
@@ -527,6 +532,37 @@ def restore_subtree(agent_id: str, path: Path) -> int:
     return len(wanted)
 
 
+def _start_deferred_restore(agent_id: str) -> None:
+    threading.Thread(target=_restore_deferred, args=(agent_id,), name=f"restore-deferred-{agent_id[:8]}", daemon=True).start()
+
+
+def _restore_deferred(agent_id: str) -> int:
+    """Bring down the trees the cold restore deferred (_DEFERRED_PREFIXES), one subtree at a time
+    so a turn's own restore_subtree interleaves instead of waiting: every conversation's work/
+    tree, the curator's rollback blobs, Hermes's kept media caches. Returns the object count."""
+    time.sleep(_DEFERRED_RESTORE_DELAY_S)
+    dest = _profile_dir(agent_id)
+    prefix = f"{S3_PREFIX}/{agent_id}/"
+    subtrees: list[str] = []
+    try:
+        for top in _DEFERRED_PREFIXES:
+            for page in _s3().get_paginator("list_objects_v2").paginate(Bucket=S3_BUCKET, Prefix=prefix + top):
+                for obj in page.get("Contents", []):
+                    rel = obj["Key"][len(prefix):]
+                    if is_regenerable_cache(rel):
+                        continue
+                    sub = "/".join(rel.split("/")[:2]) if top in (WORK_DIR_PREFIX, "cache/") else top.rstrip("/")
+                    if "/" in rel[len(top):] or top not in (WORK_DIR_PREFIX, "cache/"):
+                        if sub not in subtrees:
+                            subtrees.append(sub)
+        total = sum(restore_subtree(agent_id, dest / sub) for sub in subtrees)
+    except Exception:  # noqa: BLE001 -- the next turn of that conversation restores its tree itself
+        log.warning("deferred restore failed for %s", agent_id, exc_info=True)
+        return 0
+    log.info("restored deferred trees for %s: %d objects in %d subtrees", agent_id, total, len(subtrees))
+    return total
+
+
 def restore_profile(agent_id: str) -> float:
     """Download the agent's profile dir from S3 once per process. Returns seconds taken."""
     with profile_lock(agent_id):
@@ -548,6 +584,7 @@ def _restore_profile(agent_id: str) -> float:
     # downloaded -- and not by a second rglob afterwards: cold-restore latency sits in front of
     # the first reply.
     wanted: list[tuple[str, dict]] = []
+    deferred = 0
     for page in s3.get_paginator("list_objects_v2").paginate(Bucket=S3_BUCKET, Prefix=prefix):
         for obj in page.get("Contents", []):
             rel = obj["Key"][len(prefix):]
@@ -555,6 +592,11 @@ def _restore_profile(agent_id: str) -> float:
                 continue  # directory marker: downloading it onto the directory raises
             if is_lock_sidecar(rel) or rel.startswith(_RESTORE_SKIP_PREFIXES) or _is_git_lock(rel):
                 continue  # process-local lock or reinstallable home cache
+            if is_regenerable_cache(rel):
+                continue  # Hermes rebuilds it; never worth a GET
+            if rel.startswith(_DEFERRED_PREFIXES):
+                deferred += 1
+                continue
             wanted.append((rel, obj))
 
     _fan_out(lambda item: _download_one(agent_id, dest, item), wanted)
@@ -562,8 +604,10 @@ def _restore_profile(agent_id: str) -> float:
     n = len(wanted)
     _restored.add(agent_id)
     took = time.time() - t0
-    log.info("restored profile %s: %d objects in %.1fs", agent_id, n, took)
+    log.info("restored profile %s: %d objects in %.1fs (%d deferred)", agent_id, n, took, deferred)
     _emit_restore_metric(took, n)
+    if deferred:
+        _start_deferred_restore(agent_id)
     # Minor 12 (fix round 1 continuation): the tree walk above just downloaded .revision (if the
     # profile has one) along with everything else -- seed _REVISIONS from that local copy so
     # ensure_profile's very next call doesn't immediately think a hot patch landed and re-pull

@@ -185,18 +185,23 @@ def test_hermes_lock_sidecars_never_sync_in_either_direction(home, monkeypatch):
     assert [key[len(prefix):] for key in fake.downloaded] == ["repo/Cargo.lock"]
 
 
-def test_caches_backups_and_work_trees_stay_in_s3_until_a_turn_needs_them(home, monkeypatch):
-    """Pulse's cold restore was 3,582 objects / 22.8 s, of which ~38 were the profile: the rest
-    were Hermes tool caches, curator rollback blobs and twenty old conversations' work/ trees.
-    A cold start pulls none of those; a conversation's work/ tree comes down when ITS turn starts
-    (restore_subtree), once; caches never go up again either."""
+def test_regenerable_caches_never_sync_and_durable_trees_come_down_after_the_profile(home, monkeypatch):
+    """Pulse's cold restore was 3,582 objects / 22.8 s, of which ~38 were the profile. Hermes's own
+    backup rule (hermes_cli/backup.py) says what under cache/ is regenerable: everything but its
+    kept media subdirs. Those regenerable caches never sync in either direction. Old conversations'
+    work/ trees, the curator's rollback blobs and the kept media caches are durable, so they still
+    come down -- after the profile, in the background -- and a conversation's own work/ tree is
+    pulled by its turn (restore_subtree), once."""
     monkeypatch.setattr(sync, "S3_BUCKET", "bucket-under-test")
+    monkeypatch.setattr(sync, "_start_deferred_restore", lambda agent_id: None)  # driven by hand below
+    monkeypatch.setattr(sync, "_DEFERRED_RESTORE_DELAY_S", 0)
     sync._restored.discard("a1")
     sync._RESTORED_SUBTREES.clear()
     now = time.time()
     prefix = f"{sync.S3_PREFIX}/a1/"
     keys = ("config.yaml", "memories/notes.md", "cache/web/page.json", "cache/terminal-output/1.txt",
-            ".curator_backups/blobs/x", "work/room-1/repo/main.py", "work/room-2/notes.txt")
+            "cache/tool_discovery_cache.json", "cache/images/pic.png", ".curator_backups/blobs/x",
+            "work/room-1/repo/main.py", "work/room-2/notes.txt")
     fake = FakeS3({prefix + key: ("x", now) for key in keys})
     monkeypatch.setattr(sync, "_s3", lambda: fake)
 
@@ -205,17 +210,20 @@ def test_caches_backups_and_work_trees_stay_in_s3_until_a_turn_needs_them(home, 
 
     fake.downloaded.clear()
     profile = sync._profile_dir("a1")
-    assert sync.restore_subtree("a1", profile / "work" / "room-1") == 1
+    assert sync.restore_subtree("a1", profile / "work" / "room-1") == 1  # its turn: that tree, now
     assert [k[len(prefix):] for k in fake.downloaded] == ["work/room-1/repo/main.py"]
-    assert (profile / "work/room-1/repo/main.py").read_text() == "x"
     assert sync.restore_subtree("a1", profile / "work" / "room-1") == 0  # once per process
 
     fake.downloaded.clear()
-    fake.uploaded = getattr(fake, "uploaded", [])
-    (profile / "cache" / "web").mkdir(parents=True, exist_ok=True)
+    assert sync._restore_deferred("a1") == 3  # the rest, in the background
+    assert sorted(k[len(prefix):] for k in fake.downloaded) == [
+        ".curator_backups/blobs/x", "cache/images/pic.png", "work/room-2/notes.txt"]
+    assert not (profile / "cache" / "web").exists()  # regenerable: never restored
+
+    (profile / "cache" / "web").mkdir(parents=True)
     (profile / "cache" / "web" / "new.json").write_text("{}")
+    (profile / "cache" / "images" / "new.png").write_bytes(b"png")
     (profile / "work" / "room-1" / "repo" / "main.py").write_text("changed")
-    assert sync.is_excluded("cache/web/new.json")
     sync.save_profile("a1")
-    uploaded = [k[len(prefix):] for k in getattr(fake, "uploaded", [])]
-    assert "work/room-1/repo/main.py" in uploaded and not any(k.startswith("cache/") for k in uploaded)
+    uploaded = sorted(k[len(prefix):] for k in fake.uploaded)
+    assert uploaded == ["cache/images/new.png", "work/room-1/repo/main.py"]

@@ -261,12 +261,14 @@ export function useSessionCommand(
     return () => clearTimeout(timer);
   }, [client, session.sessionId, requestId, offlineExpiry]);
 
-  async function submit(request: LocalSessionCommand) {
+  async function submit(request: LocalSessionCommand, replacesRequestId?: string) {
     if (pending.current || !canSend) return;
     pending.current = true;
     setAttempt({ request, state: "sending" });
     try {
-      const receipt = await client.submitLocalSessionCommand(session.sessionId, request);
+      const receipt = replacesRequestId
+        ? await client.submitLocalSessionCommand(session.sessionId, request, replacesRequestId)
+        : await client.submitLocalSessionCommand(session.sessionId, request);
       if (!alive.current) return;
       setAttempt({ request, state: "received", receipt });
       if (request.kind === "send") onSent?.();
@@ -283,7 +285,7 @@ export function useSessionCommand(
     } finally { pending.current = false; }
   }
 
-  function send(text: string, now = false) {
+  function send(text: string, now = false, replacesRequestId?: string) {
     const trimmed = text.trim();
     if (locked || !trimmed || !canSend || (now && !canSteer)) return;
     const request: LocalSessionCommand = { requestId: uuid(), expectedGeneration: session.generation, kind: "send", text: trimmed,
@@ -292,7 +294,7 @@ export function useSessionCommand(
       setAttempt({ request, state: "rejected", error: "This follow-up is too long. Shorten it to fit the 8 KiB request limit." });
       return;
     }
-    void submit(request);
+    void submit(request, replacesRequestId);
     return request.requestId;
   }
 

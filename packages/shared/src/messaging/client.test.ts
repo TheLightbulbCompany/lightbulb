@@ -43,6 +43,7 @@ describe("messaging HTTP client", () => {
     const command = { requestId: "request-1", expectedGeneration: "generation-1", kind: "send" as const, text: "continue" };
     await client.listLocalSessionEvents("session/b", 3, 20);
     await client.submitLocalSessionCommand("session/b", command);
+    await client.submitLocalSessionCommand("session/b", command, "old/request");
     await client.getLocalSessionCommand("session/b", "request/c");
     await client.listLocalSessionOutbox("session/b");
     await client.cancelLocalSessionCommand("session/b", "request/c");
@@ -52,6 +53,7 @@ describe("messaging HTTP client", () => {
       ["/messaging/sessions/session%2Fb/outbox"],
     ]);
     expect(methods.post).toHaveBeenCalledWith("/messaging/sessions/session%2Fb/commands", command);
+    expect(methods.post).toHaveBeenCalledWith("/messaging/sessions/session%2Fb/commands?replacesRequestId=old%2Frequest", command);
     expect(methods.post).toHaveBeenCalledWith("/messaging/sessions/session%2Fb/commands/request%2Fc/cancel", {});
   });
 

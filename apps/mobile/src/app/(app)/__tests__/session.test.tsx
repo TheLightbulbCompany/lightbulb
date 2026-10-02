@@ -244,6 +244,7 @@ describe("session screen", () => {
     await waitFor(() => expect(screen.getByLabelText("Retry follow-up")).toBeTruthy());
     await fireEvent.press(screen.getByLabelText("Retry follow-up"));
     await waitFor(() => expect(mockSubmit).toHaveBeenCalledTimes(1));
+    expect(mockSubmit).toHaveBeenCalledWith("sess-1", expect.objectContaining({ text: "resume when ready" }), "saved-request");
     expect(screen.queryByLabelText("Retry follow-up")).toBeNull();
   });
 

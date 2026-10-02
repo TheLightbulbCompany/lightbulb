@@ -371,7 +371,7 @@ function SessionBody({
                   <Text accessibilityRole="alert" style={[styles.errorText, { color: palette.alert }]}>
                     {receipt.cancelledAt ? "Cancelled." : receipt.deliverBy <= Date.now() / 1000 ? "This follow-up expired before your Mac reconnected." : "The session rejected this follow-up."}
                   </Text>
-                  {!receipt.cancelledAt && <Pressable onPress={() => { const newId = command.send(receipt.text!); if (newId) { setRetriedOutboxIds(ids => [...ids, receipt.requestId]); setRetryingOutbox({ oldId: receipt.requestId, newId }); } }} disabled={command.locked || !command.canSend} accessibilityRole="button" accessibilityLabel="Retry follow-up" accessibilityState={{ disabled: command.locked || !command.canSend }}>
+                  {!receipt.cancelledAt && <Pressable onPress={() => { const newId = command.send(receipt.text!, false, receipt.requestId); if (newId) { setRetriedOutboxIds(ids => [...ids, receipt.requestId]); setRetryingOutbox({ oldId: receipt.requestId, newId }); } }} disabled={command.locked || !command.canSend} accessibilityRole="button" accessibilityLabel="Retry follow-up" accessibilityState={{ disabled: command.locked || !command.canSend }}>
                     <Text style={[styles.link, { color: palette.link }]}>Retry</Text>
                   </Pressable>}
                 </View>}

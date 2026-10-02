@@ -2018,6 +2018,19 @@ async def test_every_addressed_agent_is_queued_in_order():
     await h.end_exchange()
 
 
+async def test_late_lines_steer_the_floor_holders_run(capsys):
+    h, room, backend, lives, clock, log = await summoned("Forge", drive=True)
+    backend.steer = True
+    clock.t += THINKING_EVERY
+    await say(h, "u2", "it's already green, I checked")
+    assert backend.late_steers == [{
+        "speaker": "u1", "agentId": "forge", "steerRunId": backend.turns[0]["runId"],
+        "utterance": h_mod.LATE_LINES + "Aden: it's already green, I checked",
+    }]
+    assert len(backend.turns) == 1  # never a new run
+    assert metric_count(capsys, "live.steer.late_line") == 1
+
+
 async def test_missed_and_unwanted_metrics(capsys):
     h, room, backend, lives, clock, log = make()
     await h.on_participants({"u1": "Prasiddha", "u2": "Aden"})

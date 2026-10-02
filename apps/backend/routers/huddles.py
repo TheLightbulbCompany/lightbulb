@@ -80,6 +80,7 @@ class TurnBody(BaseModel):
     utterance: str = Field(min_length=1, max_length=4_000)
     transcript: str = Field(default="", max_length=12_000)
     steerRunId: uuid.UUID | None = None
+    steerOnly: bool = False  # steer steerRunId or do nothing: lines said in the room never start a run (v2 §4.3)
 
 
 class RouteBody(BaseModel):
@@ -201,6 +202,8 @@ async def turn(call_id: str, body: TurnBody):
         steered = await voice_calls.steer_voice_run(run_id=str(body.steerRunId), **args)
         if steered:
             return steered
+    if body.steerOnly:
+        return {"runId": str(body.steerRunId), "agentId": body.agentId, "steered": False}
     return await voice_calls.dispatch_voice_run(run_id=str(body.runId), transcript=body.transcript, **args)
 
 

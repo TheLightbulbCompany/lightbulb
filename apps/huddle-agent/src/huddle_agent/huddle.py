@@ -78,6 +78,7 @@ PRESENCE_TIMEOUT = 3  # the last (empty) presence must land before LiveKit cance
 HOLD_SECONDS = 15
 MISSED_SECONDS = 10  # live.route.missed: nobody answered, then the same person names an agent or Lightbulb
 UNWANTED_SECONDS = 5  # live.route.unwanted: a Jev-routed voice the asker stops or switches away from this soon
+LATE_LINES = "Said in the room since you were asked (may or may not concern you):\n"
 ROUTE_LINES = 30  # the backend reads the transcript's last 30 lines (voice_calls._transcript_history)
 
 
@@ -1100,6 +1101,24 @@ class Huddle:
             self._live_call(v, "append_thinking", said)
             v.lines.clear()
             v.last_thinking = now
+            if run := (self._runs.running(v.agent_id) or [None])[-1]:
+                self._spawn(self._steer_late(run, run.speaker or v.speaker, said))
+
+    async def _steer_late(self, run: Run, speaker: str, said: str) -> None:
+        """Routing v2 §4.3: other people's lines reach the floor-holder's working run as a steer, so Hermes
+        can see the request was settled meanwhile. steerOnly: a run that already ended starts nothing."""
+        if self._window is None:
+            return
+        try:
+            r = await self._backend.turn(
+                self._window.call_id, speaker, run.agent_id, str(uuid.uuid4()), (LATE_LINES + said)[:MAX_UTTERANCE],
+                "", steer_run_id=run.run_id, steer_only=True,
+            )
+        except BackendError as e:
+            logger.info("huddle late-line steer failed: %s", e.code)
+            return
+        if r.get("steered"):
+            emit_metric("live.steer.late_line", 1, "Count")
 
     async def _end_idle_room(self) -> None:
         """Nobody has spoken for ROOM_IDLE_SECONDS: tell everyone why, clear the marker, leave."""

@@ -314,6 +314,13 @@ def test_turn_dispatches_when_the_steer_is_refused(client):
     dispatch.assert_awaited_once()
 
 
+def test_turn_steer_only_never_dispatches(client):
+    # routing v2 §4.3: lines said in the room steer the floor-holder's run, or nothing
+    resp, _, dispatch = _turn(client, {**INTERNAL[1][1], "steerRunId": RUN, "steerOnly": True}, steered=None)
+    assert resp.json() == {"runId": RUN, "agentId": "agent-fin", "steered": False}
+    dispatch.assert_not_awaited()
+
+
 def _huddle_call(**over):
     return {"callId": "c1", "ownerId": "org_a", "kind": "huddle", "roomId": ROOM, "status": vc.OPEN, **over}
 

@@ -90,7 +90,9 @@ class Backend:
         utterance: str,
         transcript: str,
         steer_run_id: str | None = None,
+        steer_only: bool = False,
     ) -> dict:
+        """steer_only: steer `steer_run_id` or do nothing (never dispatch a new run)."""
         body = {
             "speakerUserId": speaker,
             "agentId": agent_id,
@@ -98,6 +100,7 @@ class Backend:
             "utterance": utterance,
             "transcript": transcript,
             "steerRunId": steer_run_id,
+            **({"steerOnly": True} if steer_only else {}),
         }
         return await self._post(f"/internal/huddles/calls/{call_id}/turns", body)
 

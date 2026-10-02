@@ -247,6 +247,20 @@ describe("session screen", () => {
     expect(screen.queryByLabelText("Retry follow-up")).toBeNull();
   });
 
+  it("restores the saved retry when replacement admission is rejected", async () => {
+    const now = Math.floor(Date.now() / 1000);
+    mockListOutbox.mockResolvedValue({ commands: [{
+      ...receipt({ requestId: "saved-request", expectedGeneration: "g1", kind: "send", text: "resume when ready" }, "rejected"),
+      createdAt: now - 3600, deliverBy: now - 1,
+    }] });
+    mockSubmit.mockRejectedValueOnce(new ApiError(409, null));
+    await render(<SessionScreen />);
+    await waitFor(() => expect(screen.getByLabelText("Retry follow-up")).toBeTruthy());
+    await fireEvent.press(screen.getByLabelText("Retry follow-up"));
+    await waitFor(() => expect(screen.getByText("Session changed or is offline. Refresh before sending again.")).toBeTruthy());
+    expect(screen.getByLabelText("Retry follow-up")).toBeTruthy();
+  });
+
   it("clears an uncertain draft when the outbox proves admission", async () => {
     mockSession = { ...base, status: "offline" };
     const now = Math.floor(Date.now() / 1000);

@@ -293,6 +293,7 @@ export function useSessionCommand(
       return;
     }
     void submit(request);
+    return request.requestId;
   }
 
   function interrupt() {

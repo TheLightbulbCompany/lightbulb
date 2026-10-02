@@ -257,6 +257,7 @@ function SessionBody({
   const history = useLocalSessionHistory(client, session.sessionId, session.latestEventSeq, revision, onAccessLost, { pollMs });
   const [text, setText] = useState("");
   const [retriedOutboxIds, setRetriedOutboxIds] = useState<string[]>([]);
+  const [retryingOutbox, setRetryingOutbox] = useState<{ oldId: string; newId: string } | null>(null);
   const command = useSessionCommand(client, session, { uuid: randomUUID, onAccessLost, onSent: () => setText(""), agentName: name, allowInterrupt: own || !!session.teamControl, allowOffline: true });
   const outbox = useSessionOutbox(client, session.sessionId,
     `${session.status}:${session.status === "offline" ? revision : 0}:${command.attempt?.request.requestId}:${command.receipt?.state}`,
@@ -265,6 +266,13 @@ function SessionBody({
     const updated = outbox.commands.find(receipt => receipt.requestId === command.attempt?.request.requestId);
     if (updated) command.syncReceipt(updated);
   }, [outbox.commands, command.attempt?.request.requestId, command.syncReceipt]);
+  useEffect(() => {
+    if (!retryingOutbox || command.attempt?.request.requestId !== retryingOutbox.newId) return;
+    if (command.attempt?.state === "rejected" || command.receipt?.state === "rejected") {
+      setRetriedOutboxIds(ids => ids.filter(id => id !== retryingOutbox.oldId));
+      setRetryingOutbox(null);
+    } else if (command.receipt?.state === "applied") setRetryingOutbox(null);
+  }, [retryingOutbox, command.attempt?.request.requestId, command.attempt?.state, command.receipt?.state]);
   // The session's own events, for its pending prompt and wait; a subagent's are tagged with it.
   const events = useMemo(() => mainEvents(history.events), [history.events]);
   const savedOutbox = outbox.commands.filter(receipt => receipt.requestId !== command.attempt?.request.requestId);
@@ -363,7 +371,7 @@ function SessionBody({
                   <Text accessibilityRole="alert" style={[styles.errorText, { color: palette.alert }]}>
                     {receipt.cancelledAt ? "Cancelled." : receipt.deliverBy <= Date.now() / 1000 ? "This follow-up expired before your Mac reconnected." : "The session rejected this follow-up."}
                   </Text>
-                  {!receipt.cancelledAt && <Pressable onPress={() => { setRetriedOutboxIds(ids => [...ids, receipt.requestId]); command.send(receipt.text!); }} disabled={command.locked || !command.canSend} accessibilityRole="button" accessibilityLabel="Retry follow-up" accessibilityState={{ disabled: command.locked || !command.canSend }}>
+                  {!receipt.cancelledAt && <Pressable onPress={() => { const newId = command.send(receipt.text!); if (newId) { setRetriedOutboxIds(ids => [...ids, receipt.requestId]); setRetryingOutbox({ oldId: receipt.requestId, newId }); } }} disabled={command.locked || !command.canSend} accessibilityRole="button" accessibilityLabel="Retry follow-up" accessibilityState={{ disabled: command.locked || !command.canSend }}>
                     <Text style={[styles.link, { color: palette.link }]}>Retry</Text>
                   </Pressable>}
                 </View>}

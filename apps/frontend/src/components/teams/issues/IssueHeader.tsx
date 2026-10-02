@@ -11,6 +11,8 @@
 
 import { useState, useEffect, useRef } from "react";
 import { cn } from "@/lib/utils";
+import { Badge } from "@/components/ui/badge";
+import { workModeMetaFor } from "@/components/teams/shared/lib/workModeMeta";
 import type { Issue } from "@/components/teams/shared/types";
 
 export interface IssueHeaderProps {
@@ -57,6 +59,13 @@ export function IssueHeader({ issue, onTitleSave }: IssueHeaderProps) {
     setDraft(issue.title);
     setEditing(false);
   };
+
+  // Upstream's legacy header badge: shown only off the default mode.
+  const workModeMeta =
+    issue.workMode && issue.workMode !== "standard"
+      ? workModeMetaFor(issue.workMode)
+      : null;
+  const WorkModeIcon = workModeMeta?.icon;
 
   return (
     <div className="flex items-baseline gap-3">
@@ -109,6 +118,16 @@ export function IssueHeader({ issue, onTitleSave }: IssueHeaderProps) {
         >
           {issue.title}
         </button>
+      )}
+      {workModeMeta && WorkModeIcon && (
+        <Badge
+          variant="outline"
+          className={cn("self-center", workModeMeta.classes.badge)}
+          title={`This task is in ${workModeMeta.label.toLowerCase()}.`}
+        >
+          <WorkModeIcon className="h-3 w-3" aria-hidden />
+          {workModeMeta.label}
+        </Badge>
       )}
     </div>
   );

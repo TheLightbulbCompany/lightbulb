@@ -230,3 +230,23 @@ ISOL8-LOCAL EDITS (deliberate; re-apply on re-vendor).
       framing was right, but "identically inside a heartbeat run" is what this
       release changes.) Keep the doc's framing that this is Paperclip's own
       boundary, not a Lightbulb/run-attribution limitation.
+  19. Task watchdog helper (the `watchdog` helper subcommand +
+      references/monitors.md "Surviving a Dropped Run" + SKILL.md write-table
+      row): upstream documents no agent-facing way to arm a watchdog, and the
+      earlier `raw PUT` snippet was copied as a POST once (404; only
+      get/put/delete are registered). The helper pins the verb and defaults
+      `agentId` to `$PAPERCLIP_AGENT_ID`. Humans arm the same thing from the
+      Watchdog row on the web issue detail (Teams BFF
+      `PUT`/`DELETE /teams/issues/{id}/watchdog`). Re-apply on re-vendor.
+  20. Work modes (references/work-modes.md + SKILL.md routing-table row):
+      upstream injects the Ask / Planning / Accepted-plan directives into the
+      wake prompt (server/src/services/heartbeat.ts) but its skill never
+      explains them. The reference restates those directives and the plan
+      loop. Load-bearing detail: acceptance flips `workMode` back to
+      `standard` only when the `request_confirmation` targets issue document
+      key `plan` (server/src/services/issue-thread-interactions.ts,
+      `acceptedPlanStartsExecution`); the `confirm` helper sets no target, so
+      the reference sends agents to `raw POST`. People pick the mode in the
+      web create dialog, the issue detail's Work mode row and the phone create
+      sheet. Re-apply on re-vendor, and re-read the directive text at the new
+      tag.

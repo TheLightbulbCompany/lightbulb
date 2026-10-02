@@ -27,7 +27,7 @@ import {
 // ---------------------------------------------------------------------------
 // Create-issue / create-sub-issue bottom sheet (contract §4 CreateIssueBody).
 // Title (required) + inline priority chips + (top-level only) status chips +
-// optional description. Chips are inline — no nested Modals — so the keyboard
+// work-mode chips + optional description. Chips are inline — no nested Modals — so the keyboard
 // and the sheet never fight a stacked modal. Submit is ref-latched via the
 // parent's returned promise; the local `busy` state disables the button while
 // the write settles, and a truthy result resets + closes the sheet.
@@ -43,6 +43,15 @@ export interface CreateIssueSheetProps {
 }
 
 const DEFAULT_STATUS: BoardStatus = "todo";
+
+// How the assignee runs the task. Values and order follow the web composer
+// (upstream Paperclip's work-mode meta: Auto / Plan / Ask).
+type WorkMode = NonNullable<CreateIssueInput["workMode"]>;
+const WORK_MODES: { value: WorkMode; label: string }[] = [
+  { value: "standard", label: "Auto" },
+  { value: "planning", label: "Plan" },
+  { value: "ask", label: "Ask" },
+];
 
 function Chip({
   label,
@@ -87,6 +96,7 @@ export function CreateIssueSheet({
   const [description, setDescription] = useState("");
   const [status, setStatus] = useState<BoardStatus>(DEFAULT_STATUS);
   const [priority, setPriority] = useState<Priority | null>(null);
+  const [workMode, setWorkMode] = useState<WorkMode>("standard");
   const [busy, setBusy] = useState(false);
 
   const reset = () => {
@@ -94,6 +104,7 @@ export function CreateIssueSheet({
     setDescription("");
     setStatus(DEFAULT_STATUS);
     setPriority(null);
+    setWorkMode("standard");
     setBusy(false);
   };
 
@@ -115,6 +126,7 @@ export function CreateIssueSheet({
     if (desc) input.description = desc;
     if (priority) input.priority = priority;
     if (mode === "issue") input.status = status;
+    input.workMode = workMode;
     const ok = await onSubmit(input);
     if (ok) {
       // Close on success from BOTH paths. The board path's onSubmit closure
@@ -196,6 +208,23 @@ export function CreateIssueSheet({
               </View>
             </View>
           )}
+
+          {/* Work mode chips: Auto does the work, Plan writes a plan to accept
+              first, Ask answers without doing the work. */}
+          <View style={styles.field}>
+            <Text style={[styles.fieldLabel, { color: p.fgMute }]}>WORK MODE</Text>
+            <View style={styles.chipRow}>
+              {WORK_MODES.map((option) => (
+                <Chip
+                  key={option.value}
+                  label={option.label}
+                  active={workMode === option.value}
+                  onPress={() => setWorkMode(option.value)}
+                  p={p}
+                />
+              ))}
+            </View>
+          </View>
 
           {/* Description (optional). */}
           <View style={styles.field}>

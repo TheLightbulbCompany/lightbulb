@@ -67,17 +67,20 @@ died.
 
 ```bash
 # Arm the watchdog on the issue you just scheduled a monitor for.
-jq -n --arg agentId "$PAPERCLIP_AGENT_ID" '{
-  agentId: $agentId,
-  instructions: "Resume the ISOA-168 release check if this stalls with no live monitor."
-}' | /app/skills/paperclip/scripts/paperclip-api.sh raw PUT \
-      "/api/issues/$PAPERCLIP_TASK_ID/watchdog"
+/app/skills/paperclip/scripts/paperclip-api.sh watchdog "$PAPERCLIP_TASK_ID" \
+  --instructions "Resume the ISOA-168 release check if this stalls with no live monitor."
 ```
 
-- `agentId` is who gets woken when the subtree goes quiet — normally yourself.
-- `instructions` is read by the agent that wakes. Say what to re-check and how
+- The agent that gets woken when the subtree goes quiet defaults to yourself
+  (`$PAPERCLIP_AGENT_ID`); pass `--agent-id <agentId>` to name someone else.
+- `--instructions` is read by the agent that wakes. Say what to re-check and how
   to resume, not "investigate".
 - Arm it once. It is durable and is not consumed by firing, unlike a monitor.
+  There is one per issue: arming again replaces the agent and instructions.
+- When it fires, Paperclip opens a child issue titled "Watchdog review for
+  <issue>" assigned to the watchdog agent and wakes it.
+- Remove it when the work is finished or no longer needs watching:
+  `watchdog <issueId> --clear`.
 
 **Do not** arm a watchdog instead of setting a status. It reports that work
 stopped; it does not make a parked issue legal.

@@ -37,9 +37,25 @@ export const ISSUE_STATUSES: readonly IssueStatus[] = [
 export type IssuePriority = "critical" | "high" | "medium" | "low";
 
 // How a task executes once an agent picks it up. Mirrors upstream Paperclip's
-// createIssueSchema work-mode enum: ``standard`` runs autonomously, ``ask``
-// pauses for input, ``planning`` plans before acting.
+// createIssueSchema work-mode enum: ``standard`` does the work, ``ask`` answers
+// the question in the thread and writes no code, ``planning`` writes the plan to
+// the task's ``plan`` document and waits for it to be accepted.
 export type IssueWorkMode = "standard" | "ask" | "planning";
+
+/** The active task watchdog on an issue (upstream ``IssueWatchdogSummary``):
+ * a named agent that reviews the issue's subtree when it goes quiet. One per
+ * issue. Not the run-silence watchdog on a run. */
+export interface IssueWatchdog {
+  id: string;
+  issueId: string;
+  watchdogAgentId: string;
+  instructions?: string | null;
+  status: "active" | "disabled";
+  /** The "Watchdog review for X" child issue, once the watchdog has fired. */
+  watchdogIssueId?: string | null;
+  lastTriggeredAt?: string | null;
+  triggerCount?: number;
+}
 
 export interface IssueLabel {
   id: string;
@@ -233,6 +249,8 @@ export interface IssueUpdateInput {
    * ``null`` restores it. ``undefined`` leaves the hidden state unchanged.
    * The BFF whitelists ``hiddenAt`` and forwards it to upstream Paperclip. */
   hiddenAt?: string | null;
+  /** Switch how the task runs. ``undefined`` leaves the mode unchanged. */
+  workMode?: IssueWorkMode;
   /** Execution policy carrying the monitor schedule AND the reviewer/approver
    * stages. The wire PATCH has REPLACE semantics — Paperclip overwrites the
    * whole executionPolicy with what is sent — so monitor and stages would clobber
@@ -373,6 +391,12 @@ export interface Issue {
   /** How the task came to exist. `"routine_execution"` marks a row a routine
    * spawned on one of its firings — the Tasks panel hides those by default. */
   originKind?: string | null;
+  /** How the task runs. ``skill_test`` is upstream-internal: rendered when an
+   * issue carries it, never offered in a picker. */
+  workMode?: IssueWorkMode | "skill_test" | null;
+  /** The active task watchdog, or ``null``/absent when none is armed. Upstream
+   * attaches it to every issue read, and the BFF passes it through. */
+  watchdog?: IssueWatchdog | null;
   /** Set when the task is hidden. Every list/board/search read filters these
    * out upstream, but fetch-by-id does not — so the detail page is the one
    * surface that can see (and restore) a hidden task. */

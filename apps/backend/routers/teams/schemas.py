@@ -161,6 +161,20 @@ class PatchIssueBody(_Strict):
     execution_policy: Optional[dict] = None
 
 
+class UpsertIssueWatchdogBody(_Strict):
+    """Body for ``PUT /teams/issues/{id}/watchdog``.
+
+    Mirrors upstream ``upsertIssueWatchdogSchema``
+    (paperclip/packages/shared/src/validators/issue.ts), which is itself
+    ``.strict()``: the agent that reviews the issue's subtree when it goes
+    quiet, plus optional instructions for it. An explicit ``null`` clears the
+    instructions, so the route forwards with ``exclude_unset``.
+    """
+
+    agent_id: str = Field(pattern=r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$")
+    instructions: Optional[str] = Field(default=None, max_length=20000)
+
+
 class CreateIssueLabelBody(_Strict):
     """Body for ``POST /teams/issues/labels``.
 

@@ -72,6 +72,17 @@ Subcommands (markdown / freeform text is read from stdin where noted):
       A monitor is the WAIT, never the AUTHORITY: it does not entitle you to
       act on what it observes. Keep the approval gate you already needed.
 
+  watchdog <issueId> [--agent-id ID] [--instructions TEXT]
+  watchdog <issueId> --clear
+      PUT /api/issues/{id}/watchdog      body: { agentId, instructions? }
+      DELETE /api/issues/{id}/watchdog   (--clear; no body)
+      Arm the issue's task watchdog: durable state that watches the issue's
+      subtree and, when work stops with no live path, opens a "Watchdog
+      review" child issue for the named agent and wakes it. One per issue;
+      arming again replaces it. Arm one whenever you schedule a monitor.
+      agentId defaults to $PAPERCLIP_AGENT_ID. --instructions is what the
+      woken agent reads: say what to re-check and how to resume.
+
   checkout <issueId> [--agent-id ID] [--expect "s1,s2,..."]
       POST /api/issues/{id}/checkout   body: { agentId, expectedStatuses }
       agentId defaults to $PAPERCLIP_AGENT_ID.
@@ -572,6 +583,43 @@ cmd_monitor() {
     '
   )"
   send PATCH "$(api_base)/issues/$issue_id" "$payload"
+}
+
+cmd_watchdog() {
+  # Arm (or remove) the issue's task watchdog. PUT, not POST: only
+  # get/put/delete are registered for /issues/:id/watchdog upstream.
+  local issue_id="${1:-}"
+  shift || true
+  [[ -n "$issue_id" ]] || die 'watchdog: missing <issueId>.'
+  local agent_id="${PAPERCLIP_AGENT_ID:-}" instructions="" clear=0 has_flags=0
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --agent-id) agent_id="${2:-}"; has_flags=1; shift 2 ;;
+      --instructions) instructions="${2:-}"; has_flags=1; shift 2 ;;
+      --clear) clear=1; shift ;;
+      --dry-run) dry_run=1; shift ;;
+      *) die "watchdog: unknown argument: $1" ;;
+    esac
+  done
+
+  if [[ "$clear" == "1" ]]; then
+    [[ "$has_flags" == "0" ]] || die 'watchdog: --clear takes no other watchdog flags.'
+    send DELETE "$(api_base)/issues/$issue_id/watchdog"
+    return
+  fi
+
+  if [[ "$dry_run" != "1" && -z "$agent_id" ]]; then
+    die 'watchdog: missing agent id. Set PAPERCLIP_AGENT_ID or pass --agent-id.'
+  fi
+
+  local payload
+  payload="$(
+    jq -nc --arg agentId "$agent_id" --arg instructions "$instructions" '
+      {agentId: $agentId}
+      + (if $instructions == "" then {} else {instructions: $instructions} end)
+    '
+  )"
+  send PUT "$(api_base)/issues/$issue_id/watchdog" "$payload"
 }
 
 cmd_checkout() {
@@ -1245,6 +1293,7 @@ main() {
     comment)  cmd_comment "$@" ;;
     update)   cmd_update "$@" ;;
     monitor)  cmd_monitor "$@" ;;
+    watchdog) cmd_watchdog "$@" ;;
     checkout) cmd_checkout "$@" ;;
     release)  cmd_release "$@" ;;
     subtask)  cmd_subtask "$@" ;;

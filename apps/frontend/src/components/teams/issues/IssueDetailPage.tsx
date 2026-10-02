@@ -102,7 +102,7 @@ export function IssueDetailPage({ issueId }: IssueDetailPageProps) {
   const interactionMutations = useInteractionMutations();
   const { votesByTarget, castVote } = useIssueFeedback(issueId);
   const { user } = useUser();
-  const { read, post, del, mutate } = useTeamsApi();
+  const { read, post, put, del, mutate } = useTeamsApi();
   const recovery = read<IssueRecoveryActionsResponse>(`/issues/${issueId}/recovery-actions`);
   const recoveryAction = recovery.data?.active ?? null;
   // Upstream reads the continuation handoff as its own system document (the
@@ -503,6 +503,20 @@ export function IssueDetailPage({ issueId }: IssueDetailPageProps) {
             });
           }}
           onCheckNow={(id) => mutations.monitorCheckNow(id)}
+          onWorkModeChange={(workMode) => {
+            updateIssue({ workMode });
+          }}
+          // The watchdog has its own upstream routes (not the issue PATCH); the
+          // detail read carries it back as issue.watchdog. Rejections are left
+          // to the row, which shows them inside its editor.
+          onWatchdogSave={async (watchdog) => {
+            await put(`/issues/${issueId}/watchdog`, watchdog);
+            await mutate(`/teams${teamsQueryKeys.issues.detail(issueId)}`);
+          }}
+          onWatchdogRemove={async () => {
+            await del(`/issues/${issueId}/watchdog`);
+            await mutate(`/teams${teamsQueryKeys.issues.detail(issueId)}`);
+          }}
         />
         <SubIssuesSection
           issueId={issueId}

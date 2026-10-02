@@ -67,6 +67,13 @@ class _Live:
         self.nudge = lambda: session.generate_reply()  # a request the model may decline
         self.reply_to = lambda text: session.generate_reply(user_input=text)  # a typed user turn
 
+    def interrupt(self) -> None:
+        # Cuts the playing (or queued) speech: AgentSession.interrupt -> SpeechHandle.interrupt.
+        try:
+            self._session.interrupt(force=True)
+        except RuntimeError:  # the session is not running (closing)
+            logger.info("huddle interrupt skipped: session not running")
+
     def usage_seconds(self) -> float:
         return sum(u.session_duration for u in self._session.usage.model_usage if isinstance(u, LLMModelUsage))
 
@@ -84,6 +91,9 @@ async def start_live(room: rtc.Room, huddle: Huddle, vad, persona: str, voice: s
     session = AgentSession(llm=GPTLiveModel(voice=voice, delegation="client"), vad=vad)
     session.on("user_state_changed", lambda ev: ev.new_state == "speaking" and huddle.on_speaker_activity())
     session.on("agent_state_changed", lambda ev: huddle.on_agent_state(ev.new_state))
+    # Lightbulb's own words, once a spoken message ends (livekit-agents 1.8.3: agent_activity's realtime
+    # generation emits an assistant ChatMessage with the forwarded transcript, also when interrupted).
+    session.on("conversation_item_added", lambda ev: _on_item(huddle, ev.item))
     # record=False: a huddle leaves nothing behind, whatever the LiveKit Cloud project's recording default.
     # Pinned to the speaker, so it never hears whoever RoomIO would auto-link first.
     opts = room_io.RoomOptions(participant_identity=speaker, close_on_disconnect=False)
@@ -92,6 +102,11 @@ async def start_live(room: rtc.Room, huddle: Huddle, vad, persona: str, voice: s
     # An unrecoverable realtime error closes the session under us: end the exchange then, not on the next call.
     session.on("close", lambda _ev: huddle.on_live_closed(live))
     return live
+
+
+def _on_item(huddle: Huddle, item) -> None:
+    if getattr(item, "role", None) == "assistant" and (text := item.text_content):
+        huddle.on_agent_said(text)
 
 
 class _Room:
@@ -228,6 +243,8 @@ async def entrypoint(ctx: JobContext) -> None:
     ctx.room.on("participant_connected", lambda _p: spawn(huddle.on_participants(humans())))
     ctx.room.on("participant_disconnected", lambda _p: spawn(huddle.on_participants(humans())))
     ctx.room.on("data_received", lambda pkt: huddle.on_data(pkt.participant, pkt.topic, pkt.data))
+    # The SFU's per-participant speaking state: proactive speech needs the whole room quiet.
+    ctx.room.on("active_speakers_changed", lambda speakers: huddle.on_active_speakers({p.identity for p in speakers}))
     await ctx.connect()
     ctx.room.local_participant.register_rpc_method("talk_start", lambda d: rpc_talk(d, True))
     ctx.room.local_participant.register_rpc_method("talk_end", lambda d: rpc_talk(d, False))

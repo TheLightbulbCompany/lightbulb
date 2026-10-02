@@ -1547,7 +1547,8 @@
 .live-face[data-speaking="true"] { box-shadow: 0 0 0 2px var(--plane-raised), 0 0 0 4px var(--live); z-index: 9 !important; }
 .live-more { display: inline-grid; place-items: center; min-width: 24px; height: 24px; padding: 0 4px; border-radius: 999px; font-size: 11px;
   color: var(--fg-soft); background: var(--plane-edge); box-shadow: 0 0 0 2px var(--plane-raised); }
-.live-viz { display: inline-grid; place-items: center; width: 36px; height: 26px; border-radius: 999px; background: transparent; border: 0; cursor: pointer; }
+.live-viz { display: inline-grid; place-items: center; width: 36px; height: 26px; border-radius: 999px; background: transparent; border: 0; cursor: pointer; position: relative; }
+.live-hand { position: absolute; top: -6px; right: -4px; font-size: 12px; line-height: 1; pointer-events: none; }
 .live-viz[data-joining] { cursor: default; }
 .live-viz[data-speaking="true"] { background: color-mix(in srgb, var(--live) 14%, transparent); }
 .live-viz .lk-audio-bar-visualizer { display: flex; align-items: center; justify-content: center; gap: 2px; height: 20px; }

@@ -31,6 +31,7 @@ def take_sentences(text: str) -> tuple[str, str]:
 class Sink(Protocol):
     def thinking(self, text: str, delegation_id: str) -> None: ...
     def commentary(self, text: str, delegation_id: str) -> None: ...
+    def ended(self, turn_id: str, agent_name: str, answer: str) -> None: ...  # a turn's run ended
 
 
 @dataclass
@@ -176,6 +177,9 @@ class Turns:
         elif kind == "run_ended":
             turn.ended = True
             self._speak_ready(turn, True)
+            if turn.turn_id:  # an error's apology is not a result
+                answer = "" if turn.text == "(apology)" else turn.text.strip()
+                self._sink.ended(turn.turn_id, self._name_of(turn), answer)
             if not turn.spoken:
                 self._sink.thinking(
                     f"{self._name_of(turn)} finished that request without a spoken result.", turn.delegation_id

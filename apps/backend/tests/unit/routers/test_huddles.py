@@ -223,6 +223,7 @@ INTERNAL = [
     ),
     ("/api/v1/internal/huddles/calls/c1/end", {"ownerId": "org_a", "usageSeconds": 5, "roomToken": RT}),
     (f"/api/v1/internal/huddles/{ROOM}/presence", {"ownerId": "org_a", "userIds": [], "roomToken": RT}),
+    (f"/api/v1/internal/huddles/{ROOM}/gate", {"ownerId": "org_a", "roomToken": RT}),
 ]
 
 
@@ -432,3 +433,79 @@ def test_presence_drops_a_stale_snapshot(client):
     assert resp.status_code == 200
     adv.assert_awaited_once_with(ROOM, 7)
     publisher.publish_room.assert_not_awaited()
+
+
+# -- the proactive-speech gate --
+
+GATE = f"/api/v1/internal/huddles/{ROOM}/gate"
+GATE_BODY = {
+    "ownerId": "org_a",
+    "roomToken": RT,
+    "transcript": [{"author": "Aden", "text": "ok that settles it"}, {"author": "Leo", "text": "cool"}],
+    "people": ["Aden", "Leo"],
+    "lightbulbLastSaid": None,
+    "spokeSecondsAgo": None,
+    "pendingNews": ["Finance: the Q3 report is done"],
+    "pauseMs": 900,
+}
+
+
+def _gate(client, body=GATE_BODY, answers=None, room=None):
+    decide = AsyncMock(return_value=answers)
+    with (
+        patch.object(mod.messaging_repo, "get_room", AsyncMock(return_value=room or {"ownerId": "org_a"})),
+        patch.object(mod.speak_gate.jev, "decide", decide),
+    ):
+        return client.post(GATE, json=body, headers=W), decide
+
+
+def test_gate_calls_jev_with_the_news_prompt(client):
+    answers = {"turn": {"choice": "speak", "probabilities": {"speak": 0.93}}, "kind": {"choice": "N1"}}
+    resp, decide = _gate(client, answers=answers)
+    assert resp.status_code == 200 and resp.json() == {"pSpeak": 0.93, "kind": "N1"}
+    state, questions = decide.await_args.args
+    assert questions == mod.speak_gate.questions("news")
+    assert questions["turn"]["instructions"] == mod.speak_gate.NEWS_INSTRUCTIONS
+    assert mod.speak_gate.NEWS_INSTRUCTIONS != mod.speak_gate.SPEAK_INSTRUCTIONS  # the news clause replaced
+    assert state == {
+        "room": {"kind": "call", "people": ["Aden", "Leo"], "ai": "Lightbulb"},
+        "recent": [{"author": "Aden", "text": "ok that settles it"}],
+        "latest": {"author": "Leo", "text": "cool", "pauseMs": 900},
+        "lightbulb": {"news": ["Finance: the Q3 report is done"]},
+    }
+
+
+def test_gate_is_silent_when_jev_fails(client):
+    resp, _ = _gate(client, answers=None)
+    assert resp.json() == {"pSpeak": 0.0, "kind": None}
+
+
+def test_gate_is_silent_on_timeout(client, monkeypatch):
+    import asyncio
+
+    async def slow(state, questions):
+        await asyncio.sleep(5)
+
+    monkeypatch.setattr(mod.speak_gate, "TIMEOUT_S", 0.01)
+    with (
+        patch.object(mod.messaging_repo, "get_room", AsyncMock(return_value={"ownerId": "org_a"})),
+        patch.object(mod.speak_gate.jev, "decide", slow),
+    ):
+        resp = client.post(GATE, json=GATE_BODY, headers=W)
+    assert resp.status_code == 200 and resp.json() == {"pSpeak": 0.0, "kind": None}
+
+
+def test_gate_refuses_another_owners_room_and_a_foreign_token(client):
+    resp, decide = _gate(client, room={"ownerId": "org_b"})
+    assert resp.status_code == 404
+    resp, decide2 = _gate(client, body={**GATE_BODY, "roomToken": _rt(ROOM2, "org_a")})
+    assert resp.status_code == 401
+    decide.assert_not_awaited()
+    decide2.assert_not_awaited()
+
+
+def test_gate_bounds_the_transcript(client):
+    body = {**GATE_BODY, "transcript": [{"author": "A", "text": "x" * 1_000}] * 5}
+    resp, decide = _gate(client, body=body)
+    assert resp.status_code == 400
+    decide.assert_not_awaited()

@@ -33,81 +33,20 @@ from pathlib import Path
 
 os.environ.setdefault("CLERK_ISSUER", "https://bench.clerk.accounts.dev")  # Settings() refuses to load without it
 
-from core.services import jev  # noqa: E402
+from core.services import jev, speak_gate  # noqa: E402
 
 HERE = Path(__file__).parent
 RAW = HERE / "results" / "raw"
 THRESHOLDS = (0.5, 0.6, 0.7, 0.8, 0.85, 0.9, 0.95)
 
-# ------------------------------------------------------------------ the §2.5 prompt, verbatim
-SPEAK_INSTRUCTIONS = (
-    "Lightbulb is an AI teammate listening to a live voice call among colleagues. A pause just "
-    "happened after the latest line. Decide whether Lightbulb should START TALKING now or STAY SILENT. "
-    "First decide Lightbulb's role in the current exchange: ACTIVE (Lightbulb spoke in the last few "
-    "lines, was asked something, or the people are reacting to what Lightbulb just said) or BYSTANDER "
-    "(people are talking to each other). Speak when the latest line is a follow-up to Lightbulb's last "
-    "answer, when it is a question put to the whole room that nobody has answered and Lightbulb can "
-    "answer it, or when Lightbulb has news the room is waiting for and the conversation has reached a "
-    "natural break. Stay silent when the line is addressed to a person by name, when Lightbulb is only "
-    "mentioned or talked about, when the speaker is mid-thought, for thanks, backchannels and "
-    "chit-chat, and whenever Lightbulb is a bystander and unsure. Talking over people is worse than "
-    "staying quiet: when in doubt, stay silent."
-)
-CRITERIA = {
-    "speak": "SPEAK: Lightbulb should talk now (a follow-up to Lightbulb, an unanswered question to the "
-    "room it can answer, or awaited news at a natural break)",
-    "silent": "SILENT: people are talking to each other, Lightbulb is only mentioned, the speaker is "
-    "mid-thought, or it is chatter, thanks or a backchannel",
-}
-#: The report's optional diagnostic question. Jev returns no free-text reasoning, so this
-#: classification (plus Jev's confidence) is the per-row "why" we record.
-KIND_CRITERIA = {
-    "I1": "Lightbulb is addressed by name and asked something",
-    "I2a": "A follow-up to what Lightbulb just said, without its name",
-    "I2b": "An open question to the whole room that nobody has answered",
-    "N1": "Lightbulb has awaited news and the conversation is at a natural break",
-    "S1": "People talking to each other; Lightbulb is a bystander",
-    "S2": "Lightbulb is mentioned or talked about, not addressed",
-    "S3": "The speaker is mid-thought; the line is incomplete",
-    "S4": "The line is addressed to a person by name",
-    "S5": "A backchannel, acknowledgement or thanks",
-}
-#: ``--prompt news``: the §2.5 prompt reads "news the room is waiting for", and Jev took that
-#: literally -- it held back unsolicited results at a natural break. This variant makes any
-#: pending result worth sharing once the floor is free; everything else is unchanged.
-NEWS_INSTRUCTIONS = SPEAK_INSTRUCTIONS.replace(
-    "or when Lightbulb has news the room is waiting for and the conversation has reached a natural break.",
-    "or when Lightbulb has news to share (every item in lightbulb.news is a finished result the room "
-    "wants to hear, asked for or not) and the conversation has reached a natural break: a topic just "
-    "wrapped up, an acknowledgement, a lull, or a question the news answers.",
-)
-NEWS_CRITERIA = {**CRITERIA, "speak": CRITERIA["speak"].replace("awaited news", "pending news")}
-PROMPTS = {"report": (SPEAK_INSTRUCTIONS, CRITERIA), "news": (NEWS_INSTRUCTIONS, NEWS_CRITERIA)}
-
-
-def questions(prompt: str) -> dict:
-    instructions, criteria = PROMPTS[prompt]
-    return {
-        "turn": {"type": "choice", "instructions": instructions, "criteria": criteria},
-        "kind": {
-            "type": "choice",
-            "instructions": "Which situation best describes the latest line, from Lightbulb's point of view?",
-            "criteria": KIND_CRITERIA,
-        },
-    }
+# The prompt lives in core.services.speak_gate -- ONE copy, shared with the live gate route.
+PROMPTS = speak_gate.PROMPTS
+questions = speak_gate.questions
 
 
 # ------------------------------------------------------------------ datasets
 def _state(people, lines, lightbulb=None) -> dict:
-    turns = [{"author": s, "text": t} for s, t in lines]
-    state = {
-        "room": {"kind": "call", "people": people, "ai": "Lightbulb"},
-        "recent": turns[:-1][-12:],
-        "latest": {**turns[-1], "pauseMs": 900},
-    }
-    if lightbulb:
-        state["lightbulb"] = lightbulb
-    return state
+    return speak_gate.build_state(people, lines, lightbulb, pause_ms=900)
 
 
 #: The paper's AMI categories into ours (report §2.4). Their I2 splits on whether the target
@@ -277,7 +216,7 @@ def _pct(xs, q):
 def report(sets: dict[str, list[dict]], prompt: str) -> str:
     out = [f"# Speak-gate bench — Jev zero-shot, `{prompt}` prompt", ""]
     out += [
-        f"Model `{jev.MODEL}` via `{jev._URL}` (prod `jev.decide`, 3 s timeout, ZDR), the report's §2.5 prompt (`news`: its news clause widened, see `NEWS_INSTRUCTIONS`). "
+        f"Model `{jev.MODEL}` via `{jev._URL}` (prod `jev.decide`, 3 s timeout, ZDR), the report's §2.5 prompt (`news`: its news clause widened, see `core.services.speak_gate.NEWS_INSTRUCTIONS`). "
         "SPEAK iff P(speak) ≥ threshold; a failed call counts as SILENT (prod behaviour). "
         "No candidate filter is applied: every row is judged.",
         "",

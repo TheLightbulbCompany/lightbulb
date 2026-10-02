@@ -13,6 +13,9 @@ class FakeSink:
     def commentary(self, text, delegation_id):
         self.calls.append(("commentary", text, delegation_id))
 
+    def ended(self, turn_id, agent_name, answer):
+        self.calls.append(("ended", f"{agent_name}: {answer}", turn_id))
+
     def spoken(self, delegation_id=None):
         return [t for k, t, d in self.calls if k == "commentary" and delegation_id in (None, d)]
 
@@ -304,3 +307,24 @@ def test_frame_without_turn_id_is_buffered_never_applied():
     frame(turns, None, {"type": "run_ended", "outcome": "done"})
     assert sink.spoken() == [] and turns.working() is None
     assert [t for t, _ in sink.thoughts()] == ["Finance is on it. Not done yet."]
+
+
+def test_run_ended_reports_the_whole_answer_once():
+    sink = FakeSink()
+    t = Turns(sink, NAMES, "Lightbulb")
+    t.delegated("d1", 1)
+    t.resolved("d1", "t1", "fin")
+    frame(t, "t1", {"type": "chunk", "append": True, "content": "Q3 revenue ", "seq": 1})
+    frame(t, "t1", {"type": "chunk", "append": True, "content": "is up 12%.", "seq": 2})
+    frame(t, "t1", {"type": "run_ended", "seq": 3})
+    assert [c for c in sink.calls if c[0] == "ended"] == [("ended", "Finance: Q3 revenue is up 12%.", "t1")]
+
+
+def test_run_ended_after_an_error_reports_no_answer():
+    sink = FakeSink()
+    t = Turns(sink, NAMES, "Lightbulb")
+    t.delegated("d1", 1)
+    t.resolved("d1", "t1", "fin")
+    frame(t, "t1", {"type": "error", "message": "boom", "seq": 1})
+    frame(t, "t1", {"type": "run_ended", "seq": 2})
+    assert [c for c in sink.calls if c[0] == "ended"] == [("ended", "Finance: ", "t1")]

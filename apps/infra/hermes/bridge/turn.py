@@ -46,10 +46,17 @@ RESTORED: set[str] = set()
 _post_turn = threading.local()
 
 
+#: Turns admitted by this process; the curator runs at most once per value (_curate_when_idle).
+_turns_admitted = 0
+_curated_at = 0
+
+
 def _busy_add(n: int) -> None:
-    global _busy
+    global _busy, _turns_admitted
     with _busy_lock:
         _busy += n
+        if n > 0:
+            _turns_admitted += 1
 
 
 #: Monotonic deadline of the refusal hold (hold_turns): while it is in the future no new turn is
@@ -62,11 +69,12 @@ def reserve_turn() -> bool:
     """Count a turn before its worker thread starts. False only under a refusal hold (a session
     stop is pending: the 7 h recycle, or a roll's idle wait); the caller answers 503, which the
     room work queue retries and Paperclip reads as transient."""
-    global _busy
+    global _busy, _turns_admitted
     with _busy_lock:
         if time.monotonic() < _refuse_until:
             return False
         _busy += 1
+        _turns_admitted += 1
     return True
 
 
@@ -90,6 +98,61 @@ def release_hold() -> None:
 
 def release_turn() -> None:
     _busy_add(-1)
+
+
+def _idle() -> bool:
+    from bridge import followups  # followups imports this module
+    with _busy_lock:
+        return not _busy and not followups.busy()
+
+
+def _curate_when_idle() -> None:
+    """Run Hermes's skill curator once per idle period, after the last turn's save.
+
+    Called at the very end of every turn (after its save and its busy decrement). Nothing in the
+    bridge called the curator before, so agent-created skills were never marked stale or
+    archived. Cadence is Hermes's own: ``should_run_now`` gates on ``curator.interval_hours``
+    (7 days) and seeds ``skills/.curator_state`` on first sight (agent/curator.py:142-163); the
+    gateway polls it with no idle floor (gateway/run.py:4467-4470), which is what this does at
+    each idle moment. Never during a turn: each profile is curated under its profile lock, which
+    every turn takes (restore, ensure_profile) before it touches the profile, after checking that
+    no turn or delegation is live. ``synchronous=True`` keeps the report pass on this thread, where
+    the profile's HERMES_HOME scope is (a new thread would not inherit it). The seed and the run
+    both write the profile, so a changed state is saved -- an unsaved seed would re-seed on every
+    cold start and the curator would never come due.
+    ponytail: with ``curator.consolidate`` on (we never set it) the LLM pass would hold this
+    profile's lock for minutes; turns for that agent would queue behind it."""
+    global _curated_at
+    with _busy_lock:
+        if _busy or _turns_admitted == _curated_at:
+            return
+        mark = _turns_admitted
+    try:
+        from agent import curator
+    except ImportError:
+        return
+    for agent_id in sorted(RESTORED):
+        with sync.profile_lock(agent_id):
+            if not _idle():
+                return  # a turn started; the last turn to finish tries again
+            with _hermes_home_scope(agent_id):
+                before = curator.load_state()
+                if curator.should_run_now():
+                    curator.run_curator_review(synchronous=True)
+                changed = curator.load_state() != before
+        if changed:
+            save_profile(agent_id)
+    with _busy_lock:
+        _curated_at = mark
+
+
+def _end_turn() -> None:
+    """A turn's last step: drop its busy count, then curate if that left the microVM idle."""
+    _busy_add(-1)
+    try:
+        _curate_when_idle()
+    except Exception:  # noqa: BLE001 -- housekeeping must never fail a finished turn
+        log.warning("curator pass failed", exc_info=True)
 
 
 # ---- run registry + abort (spec §5 "Run lifecycle"; §5 abort) -------------------------------
@@ -322,7 +385,7 @@ def run_call_turn(identity: dict, request: dict, reserved: bool = False) -> None
         except Exception:  # noqa: BLE001
             log.warning("save_root_auth failed for call turn", exc_info=True)
     finally:
-        _busy_add(-1)
+        _end_turn()
 
 
 def register_paperclip_run(identity: dict, request: dict) -> str:
@@ -2317,6 +2380,99 @@ def profile_toolsets() -> tuple[list[str] | None, list[str] | None]:
     return sorted(_get_platform_tools(config, "cli")), disabled
 
 
+# ---- Hermes's own session store (state.db), Phase 1 -----------------------------------------
+# Every turn kind records its transcript in the profile's state.db under its existing key, the way
+# Hermes's gateway does (gateway/run_turn_runner.py:1087 passes `session_db=` to every agent). The
+# prompt is unchanged: room turns still pass the re-rendered room history, and the flush skips
+# those rows by identity (agent/session_persistence.py:187-210), so a run persists only its own
+# trigger, tool calls and reply. What turns on: session_search over past runs, insights, the
+# durable async-delegation ledger, and an exact memory-review cadence (_hydrate_memory_nudge).
+
+#: One shared SessionDB per agent profile for the life of the process, as the gateway holds one
+#: for its life. Never released: a release that reached refcount 0 would tear the connection
+#: down under Hermes's post-turn writers (title, token deltas). Restore never replaces state.db
+#: after the first acquire (_pull_changed_objects skips SQLite files), so no generation retires.
+_session_dbs: dict[str, object] = {}
+_session_dbs_guard = threading.Lock()
+
+
+def _session_db(agent_id: str):
+    """The profile's shared SessionDB, or None (outside the Hermes image, or an unopenable file:
+    the turn then runs unrecorded, exactly as every turn did before Phase 1)."""
+    with _session_dbs_guard:
+        db = _session_dbs.get(agent_id)
+        if db is not None:
+            return db
+        try:
+            from hermes_state_registry import acquire
+        except ImportError:
+            return None
+        try:
+            db = _session_dbs[agent_id] = acquire(_profile_dir(agent_id) / "state.db")
+        except Exception:  # noqa: BLE001 -- a broken state.db must not cost the turn
+            log.warning("state.db unavailable for %s; this turn is not recorded", agent_id, exc_info=True)
+            return None
+        return db
+
+
+def _session_tip(db, session_key: str) -> str:
+    """The session id this turn continues: Hermes's compression rotates a session to a child id
+    and reads follow the tip (hermes_state_messages.resolve_resume_session_id). Unchanged for a
+    key with no row yet."""
+    try:
+        return db.resolve_resume_session_id(session_key) or session_key
+    except Exception:  # noqa: BLE001
+        log.warning("compression tip lookup failed; using the key", exc_info=True)
+        return session_key
+
+
+def _keep_prompt_fresh(agent, db) -> None:
+    """Make Hermes build this turn's system prompt from OUR system_message, as it did with no DB.
+
+    With a DB and a non-empty conversation_history, conversation_loop._restore_or_build_system_prompt
+    (agent/conversation_loop.py:651-711) reuses the prompt stored by the session's FIRST turn and
+    pins its tools[] order. A room turn's prompt changes every turn (members, media, turn context),
+    so a reused one would be stale. Clearing the stored prompt sends Hermes down its fresh-build
+    branch (the one every turn took before Phase 1), which also re-stores this turn's prompt."""
+    try:
+        db.update_system_prompt(agent.session_id, None)
+    except Exception:  # noqa: BLE001
+        log.warning("could not clear the stored system prompt; this turn may reuse it", exc_info=True)
+
+
+class _DropClearedPromptWarning(logging.Filter):
+    """The fresh-build branch above logs "Stored system prompt ... is null" at WARNING
+    (conversation_loop.py:742-750) -- after _keep_prompt_fresh that is every room turn, by design."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        return not str(record.msg).startswith("Stored system prompt for session %s is %s")
+
+
+logging.getLogger("agent.conversation_loop").addFilter(_DropClearedPromptWarning())
+
+
+def _hydrate_memory_nudge(agent, db) -> None:
+    """Start the memory-review counter where this session's transcript says it is.
+
+    Hermes counts user turns per session and spawns the background memory review every
+    `memory.nudge_interval` (10) of them (agent/turn_context.py:627-635). A fresh agent per turn
+    restarts at 0 and is only re-hydrated from conversation_history (turn_context.py:619-624):
+    from the room window's user rows for a room turn (pseudo-random), and never for a call or
+    Paperclip turn (no history: the review never fired). The persisted transcript is the real
+    count. A room turn whose count is a multiple of the interval leaves 0 here, and Hermes then
+    hydrates from the room window as before -- Phase 2 (the transcript AS history) removes that.
+    ponytail: reads the tip's rows per turn; a counter in session metadata if this shows up."""
+    interval = int(getattr(agent, "_memory_nudge_interval", 0) or 0)
+    if interval <= 0:
+        return
+    try:
+        prior = sum(1 for m in db.get_messages(agent.session_id) if m.get("role") == "user")
+    except Exception:  # noqa: BLE001
+        log.warning("memory nudge hydration failed", exc_info=True)
+        return
+    agent._turns_since_memory = prior % interval
+
+
 def _construct_agent(agent_id: str, body: dict, frames, session_key: str, **limits):
     """The one place that builds a real Hermes AIAgent. Home-scoping is the CALLER's job now
     (_run_hermes's `_hermes_home_scope`, held across construction AND run_conversation — see
@@ -2328,7 +2484,8 @@ def _construct_agent(agent_id: str, body: dict, frames, session_key: str, **limi
     `session_key` (IMPORTANT 3 fix) is the resolved lightbulb/mail session key, used for both
     `session_id` and `gateway_session_key` — a mail turn used to derive `session_id` from
     `room.get('id')`, which doesn't exist for mail, colliding every mail thread into one
-    Hermes session keyed "None:<agent>"."""
+    Hermes session keyed "None:<agent>". With the profile's state.db the session id is the key's
+    compression tip (the key itself until Hermes first compresses that session)."""
     from run_agent import AIAgent
 
     config = pin_profile_defaults(agent_id)
@@ -2349,11 +2506,13 @@ def _construct_agent(agent_id: str, body: dict, frames, session_key: str, **limi
                      "tool_progress_callback": frames.activity,
                      "stream_delta_callback": frames.delta, "reasoning_callback": frames.thinking}
     enabled_toolsets, disabled_toolsets = profile_toolsets()
+    db = _session_db(agent_id)
     agent = AIAgent(
         model=model,
         provider=provider,
         quiet_mode=True,
-        session_id=session_key,
+        session_id=_session_tip(db, session_key) if db is not None else session_key,
+        session_db=db,
         platform="lightbulb",
         user_id=str((body.get("sender") or {}).get("id", "")),
         chat_id=str(room.get("id", "")),
@@ -2364,6 +2523,9 @@ def _construct_agent(agent_id: str, body: dict, frames, session_key: str, **limi
         **callbacks,
         **limits,  # CALL_RUN_LIMITS on a voice turn only; every other turn passes none
     )
+    if db is not None:
+        _keep_prompt_fresh(agent, db)
+        _hydrate_memory_nudge(agent, db)
     _capture_api_errors(agent)
     return agent
 
@@ -2676,7 +2838,7 @@ def run_paperclip_turn(identity: dict, request: dict, reserved: bool = False) ->
             log.warning("save_root_auth failed for native Paperclip turn", exc_info=True)
     finally:
         hb_stop.set()
-        _busy_add(-1)
+        _end_turn()
 
 
 def _remember_turn(session_key: str, info: dict) -> None:
@@ -2835,4 +2997,4 @@ def run_turn(agent_id: str, body: dict, local_session_token: str | None = None, 
         # no business in CloudWatch, and this line used to truncate-and-print it.
         log.info("turn %s agent=%s outcome=%s %.1fs reply_len=%d", run_id, agent_id, outcome, took, len(reply))
     finally:
-        _busy_add(-1)
+        _end_turn()

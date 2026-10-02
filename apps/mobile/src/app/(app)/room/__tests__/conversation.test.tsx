@@ -198,13 +198,14 @@ jest.mock("../../../../lib/presence", () => ({ usePresence: () => new Set<string
 
 // Live: the binary has WebRTC; a test sets who is Live, whether Live is on, and whether this phone is in one.
 let mockRoomLive = { userIds: [] as string[], available: false };
-let mockLiveState: { room: object | null; roomId: string | null; roomName: string | null; joining: string | null } = { room: null, roomId: null, roomName: null, joining: null };
+let mockLiveState: { room: object | null; roomId: string | null; roomName: string | null; joining: string | null; open: boolean; notice: object | null; localIdentity: string | null } = { room: null, roomId: null, roomName: null, joining: null, open: false, notice: null, localIdentity: "user-a" };
 const mockJoinLive = jest.fn();
+const mockDismissNotice = jest.fn();
 const mockOpenLive = jest.fn();
 jest.mock("../../../../lib/webrtc", () => ({ hasNativeVoice: () => true }));
 jest.mock("../../../../providers/live", () => ({
   useRoomLive: () => mockRoomLive,
-  useLive: () => ({ ...mockLiveState, join: (...a: unknown[]) => mockJoinLive(...a), setOpen: (...a: unknown[]) => mockOpenLive(...a) }),
+  useLive: () => ({ workerAttrs: {}, roster: [], ...mockLiveState, dismissNotice: mockDismissNotice, join: (...a: unknown[]) => mockJoinLive(...a), setOpen: (...a: unknown[]) => mockOpenLive(...a) }),
 }));
 
 import Conversation from "../[roomId]/index";
@@ -781,13 +782,36 @@ describe("conversation screen", () => {
 
   it("while Live elsewhere, the pill reopens that Live instead of joining", async () => {
     mockRoomLive = { userIds: [], available: true };
-    mockLiveState = { room: {}, roomId: "room-other", roomName: "#ops", joining: null };
+    mockLiveState = { ...mockLiveState, room: {}, roomId: "room-other", roomName: "#ops", joining: null };
     await render(<Conversation />);
     await fireEvent.press(await screen.findByLabelText("Open Live in #ops"));
     expect(mockOpenLive).toHaveBeenCalledWith(true);
     expect(mockJoinLive).not.toHaveBeenCalled();
-    mockLiveState = { room: null, roomId: null, roomName: null, joining: null };
+    mockLiveState = { room: null, roomId: null, roomName: null, joining: null, open: false, notice: null, localIdentity: "user-a" };
     mockRoomLive = { userIds: [], available: false };
+  });
+
+  it("labels the Live button with the speaking agent, only in this room", async () => {
+    const roster = [{ id: "gauge", kind: "agent", displayName: "Gauge" }];
+    const workerAttrs = { "lightbulb.speaking_agent": "gauge" };
+    mockLiveState = { ...mockLiveState, room: {}, roomId: "room-1", roomName: "#x", roster, workerAttrs } as typeof mockLiveState;
+    const view = await render(<Conversation />);
+    expect(await screen.findByLabelText("Open Live, Gauge speaking")).toBeTruthy();
+    mockLiveState = { ...mockLiveState, roomId: "room-other", roomName: "#ops" };
+    await view.rerender(<Conversation />);
+    expect(await screen.findByLabelText("Open Live in #ops")).toBeTruthy();
+    mockLiveState = { room: null, roomId: null, roomName: null, joining: null, open: false, notice: null, localIdentity: "user-a" };
+  });
+
+  it("shows a Live rename banner on the room screen only while the sheet is hidden", async () => {
+    const renamed = { kind: "renamed", agentId: "a", from: "CEO", to: "Nova", by: "user-b", collides: false, at: 1 };
+    mockLiveState = { ...mockLiveState, room: {}, roomId: "room-1", roomName: "#x", notice: renamed, open: false };
+    const view = await render(<Conversation />);
+    expect(await screen.findByText("CEO is now Nova")).toBeTruthy();
+    mockLiveState = { ...mockLiveState, open: true };
+    await view.rerender(<Conversation />);
+    expect(screen.queryByText("CEO is now Nova")).toBeNull();
+    mockLiveState = { room: null, roomId: null, roomName: null, joining: null, open: false, notice: null, localIdentity: "user-a" };
   });
 
   it("offers Go live in a channel only when Live is on, and names who is Live", async () => {

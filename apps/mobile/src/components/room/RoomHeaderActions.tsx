@@ -4,6 +4,7 @@ import { StyleSheet, View, type LayoutChangeEvent } from "react-native";
 import { radii, useChatPalette } from "../../config/theme";
 import { hapticSelection } from "../../lib/haptics";
 import { AnimatedPressable, usePressScale } from "../../lib/pressScale";
+import { Avatar } from "./Avatar";
 
 /**
  * The conversation header's icon pair (call or star, then mute) — RoomHeader.tsx's own icon
@@ -31,7 +32,7 @@ export function RoomHeaderActions({
    * takes the star's place: three controls left a channel name no room, and
    * starring is still on the chat list's row menu.
    */
-  voice?: { label: string; active?: boolean; disabled?: boolean; onPress: () => void };
+  voice?: { label: string; active?: boolean; disabled?: boolean; speaking?: { name: string }; onPress: () => void };
   /** The screen bounds its title by this row's width. */
   onLayout?: (event: LayoutChangeEvent) => void;
 }) {
@@ -56,12 +57,16 @@ export function RoomHeaderActions({
           accessibilityState={{ selected: !!voice.active, disabled: !!voice.disabled }}
           style={[styles.button, { opacity: voice.disabled ? 0.5 : 1 }, voiceScale.style]}
         >
-          <SymbolView
-            accessibilityElementsHidden
-            name={voice.active ? "phone.fill" : "phone"}
-            size={18}
-            tintColor={voice.active ? palette.live : palette.fgSoft}
-          />
+          {voice.speaking ? (
+            <Avatar name={voice.speaking.name} kind="agent" size={22} ring="running" palette={palette} />
+          ) : (
+            <SymbolView
+              accessibilityElementsHidden
+              name={voice.active ? "phone.fill" : "phone"}
+              size={18}
+              tintColor={voice.active ? palette.live : palette.fgSoft}
+            />
+          )}
         </AnimatedPressable>
       ) : (
         <AnimatedPressable

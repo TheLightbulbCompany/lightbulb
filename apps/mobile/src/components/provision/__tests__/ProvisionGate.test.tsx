@@ -177,7 +177,7 @@ describe("ProvisionGate provider sign-in routing", () => {
     );
 
     expect(screen.getByText("You've been invited to a workspace")).toBeTruthy();
-    expect(screen.getByText("View invitation on flickmeon.ai")).toBeTruthy();
+    expect(screen.getByText("View invitation on thelightbulb.company")).toBeTruthy();
     expect(screen.queryByText("MOCK_CHATGPT_CONNECT_SCREEN")).toBeNull();
     expect(screen.queryByText("MOCK_BYO_KEY_SCREEN")).toBeNull();
   });
@@ -263,7 +263,7 @@ describe("ProvisionGate provider sign-in routing", () => {
     expect(screen.queryByText("MOCK_CHATGPT_CONNECT_SCREEN")).toBeNull();
     expect(screen.getByText("Sign in with ChatGPT")).toBeTruthy();
     expect(
-      screen.getByText("Ask your workspace admin to finish this on flickmeon.ai."),
+      screen.getByText("Ask your workspace admin to finish this on thelightbulb.company."),
     ).toBeTruthy();
   });
 
@@ -323,10 +323,10 @@ describe("ProvisionGate provider sign-in routing", () => {
     );
 
     expect(screen.getByText("Workspace not set up")).toBeTruthy();
-    const handoff = screen.getByText("Continue on flickmeon.ai");
+    const handoff = screen.getByText("Continue on thelightbulb.company");
     await fireEvent.press(handoff);
 
-    expect(Linking.openURL).toHaveBeenCalledWith("https://flickmeon.ai/onboarding");
+    expect(Linking.openURL).toHaveBeenCalledWith("https://thelightbulb.company/onboarding");
     expect(screen.getByText("Retry")).toBeTruthy();
     expect(screen.queryByText("APP")).toBeNull();
   });
@@ -477,7 +477,7 @@ describe("ProvisionGate container-error interstitial", () => {
     expect(screen.getByText("Setup failed")).toBeTruthy();
     expect(screen.getByText("Retry")).toBeTruthy();
     expect(screen.getByText("Sign out")).toBeTruthy();
-    // No outbound "Manage on flickmeon.ai" CTA — there's nothing to manage for
+    // No outbound "Manage on thelightbulb.company" CTA — there's nothing to manage for
     // a failed provision, unlike the blocked/needsSignup gate states.
     expect(screen.queryByText(/on isol8\.co/)).toBeNull();
   });
@@ -613,7 +613,7 @@ describe("ProvisionGate workspace onboarding routing is personal-owner only", ()
       </ProvisionGate>,
     );
 
-    expect(screen.queryByText("Continue on flickmeon.ai")).toBeNull();
+    expect(screen.queryByText("Continue on thelightbulb.company")).toBeNull();
   });
 
   it("sends a personal owner through web workspace onboarding before billing", async () => {
@@ -636,10 +636,10 @@ describe("ProvisionGate workspace onboarding routing is personal-owner only", ()
     ).toBeTruthy();
     expect(screen.queryByText(/and billing/i)).toBeNull();
 
-    const handoff = screen.getByText("Continue on flickmeon.ai");
+    const handoff = screen.getByText("Continue on thelightbulb.company");
     await fireEvent.press(handoff);
 
-    expect(Linking.openURL).toHaveBeenCalledWith("https://flickmeon.ai/onboarding");
+    expect(Linking.openURL).toHaveBeenCalledWith("https://thelightbulb.company/onboarding");
   });
 
   // While Clerk is still resolving, `organization` is null — indistinguishable
@@ -668,7 +668,7 @@ describe("ProvisionGate workspace onboarding routing is personal-owner only", ()
       </ProvisionGate>,
     );
 
-    expect(screen.queryByText("Continue on flickmeon.ai")).toBeNull();
+    expect(screen.queryByText("Continue on thelightbulb.company")).toBeNull();
   });
 });
 

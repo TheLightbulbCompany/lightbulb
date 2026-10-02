@@ -1,7 +1,7 @@
 import { render, screen } from "@testing-library/react-native";
 
 // App Store 3.1.1/3.1.3(f): a consumable-credits balance may be SHOWN, but
-// nothing here may point at buying more — the "Top up on flickmeon.ai" link
+// nothing here may point at buying more — the "Top up on thelightbulb.company" link
 // that used to sit under the balance is gone.
 
 let mockAccountFixture: Record<string, unknown> | Error;
@@ -50,7 +50,7 @@ describe("LlmPanel workspace credits", () => {
     expect(screen.queryByText(/top up/i)).toBeNull();
     // The provider deep-link is a plain feature link, not a purchase CTA —
     // unaffected by the 3.1.3(f) fix and expected to remain.
-    expect(screen.getByText("Manage provider on flickmeon.ai")).toBeTruthy();
+    expect(screen.getByText("Manage provider on thelightbulb.company")).toBeTruthy();
   });
 
   it("shows the used daily allowance with no Upgrade link", async () => {

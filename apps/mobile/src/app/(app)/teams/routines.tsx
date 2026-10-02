@@ -82,7 +82,7 @@ function RoutineRow({
           onPress={() => void Linking.openURL(teamsPanelUrl("routines"))}
           hitSlop={6}
           accessibilityRole="button"
-          accessibilityLabel="Run on flickmeon.ai (this routine needs inputs)"
+          accessibilityLabel="Run on thelightbulb.company (this routine needs inputs)"
         >
           <Text style={styles.runActionMuted}>Run on web</Text>
         </Pressable>
@@ -190,7 +190,7 @@ export default function RoutinesScreen() {
           <SymbolView accessibilityElementsHidden name="repeat" size={28} tintColor={palette.fgMute} />
           <Text style={styles.stateTitle}>No routines yet</Text>
           <Text style={styles.stateDetail}>
-            Create scheduled automations for your agents on flickmeon.ai.
+            Create scheduled automations for your agents on thelightbulb.company.
           </Text>
         </View>
       }

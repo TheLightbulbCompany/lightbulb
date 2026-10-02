@@ -76,11 +76,10 @@ jobs:
     # PROD apps at the wrong API / Clerk instance. Both are safe-public (the
     # Clerk publishable key is base64 of the instance domain), so no secret.
     env:
-      EXPO_PUBLIC_API_URL: https://api.flickmeon.ai/api/v1
-      # prod Clerk instance on the product domain (clerk.flickmeon.ai) — the same key
-      # the prod web bundle carries. The old key named clerk.isol8.co, whose DNS is
-      # retired: an OTA built with it cannot load Clerk at all.
-      EXPO_PUBLIC_CLERK_PUBLISHABLE_KEY: pk_live_Y2xlcmsuZmxpY2ttZW9uLmFpJA
+      EXPO_PUBLIC_API_URL: https://api.thelightbulb.company/api/v1
+      # prod Clerk instance on the product domain (clerk.thelightbulb.company) — the same key
+      # the prod web bundle carries. A key naming a retired Clerk host cannot load Clerk at all.
+      EXPO_PUBLIC_CLERK_PUBLISHABLE_KEY: pk_live_Y2xlcmsudGhlbGlnaHRidWxiLmNvbXBhbnkk
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -118,17 +117,16 @@ jobs:
           FAIL=0
           grep -aq "$EXPO_PUBLIC_CLERK_PUBLISHABLE_KEY" "$HBC" \
             || { echo '::error::Clerk publishable key NOT inlined in OTA bundle'; FAIL=1; }
-          grep -aq 'https://api.flickmeon.ai' "$HBC" \
+          grep -aq 'https://api.thelightbulb.company' "$HBC" \
             || { echo '::error::prod API URL NOT inlined in OTA bundle'; FAIL=1; }
-          # Matches EITHER dev apex. This guard greps for a string that must be
-          # ABSENT, so it silently stops guarding the moment the dev URL moves and
-          # nothing fails -- which is exactly what happened when dev flipped to
-          # flickmeon.ai. Keep both spellings until isol8.co is fully retired.
-          grep -aqE 'api-dev\.(isol8\.co|flickmeon\.ai)' "$HBC" \
+          # Matches EVERY dev apex there has been. This guard greps for a string that
+          # must be ABSENT, so it silently stops guarding the moment the dev URL moves
+          # and nothing fails. Add the new apex here whenever dev moves.
+          grep -aqE 'api-dev\.(isol8\.co|flickmeon\.ai|thelightbulb\.company)' "$HBC" \
             && { echo '::error::DEV fallback URL present in OTA bundle (env not applied)'; FAIL=1; }
-          # The retired prod Clerk key (clerk.isol8.co, dead DNS) must never ship again.
-          grep -aq 'pk_live_Y2xlcmsuaXNvbDguY28k' "$HBC" \
-            && { echo '::error::retired clerk.isol8.co publishable key present in OTA bundle'; FAIL=1; }
+          # Retired prod Clerk keys (clerk.isol8.co, clerk.flickmeon.ai) must never ship again.
+          grep -aqE 'pk_live_(Y2xlcmsuaXNvbDguY28k|Y2xlcmsuZmxpY2ttZW9uLmFpJA)' "$HBC" \
+            && { echo '::error::retired Clerk publishable key present in OTA bundle'; FAIL=1; }
           exit $FAIL
 
       # --skip-bundler publishes the exact dist we just verified.

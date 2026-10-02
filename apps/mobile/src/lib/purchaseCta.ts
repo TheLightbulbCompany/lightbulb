@@ -4,7 +4,7 @@
  * The app sells plans through In-App Purchase (3.1.1); these gates therefore
  * show the StoreKit paywall to admins when the server offers products, and
  * neutral local copy otherwise. Never the server's web-purchase copy. (The
- * build Apple rejected on 2026-08-12 carried five "Upgrade on flickmeon.ai"
+ * build Apple rejected on 2026-08-12 carried five "Upgrade on thelightbulb.company"
  * CTAs — a call to action for purchase outside the app.)
  *
  * Deleting the hardcoded button labels is NOT enough, and that is why this

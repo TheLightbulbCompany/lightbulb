@@ -9,7 +9,7 @@ settings; no admin/ops, no seller side, no in-app billing.
 ```bash
 pnpm install                 # from repo root
 cd apps/mobile
-pnpm start:dev               # Metro against DEV (api-dev.flickmeon.ai + dev Clerk)
+pnpm start:dev               # Metro against DEV (api-dev.thelightbulb.company + dev Clerk)
 pnpm start:prod              # Metro against PROD (api.isol8.co + prod Clerk) — real accounts, real billing
 pnpm ios                     # open in the iOS simulator (macOS only)
 ```
@@ -27,7 +27,7 @@ over whatever `.env.local` contains. Plain `pnpm start` falls back to
 
 | Variable | Purpose | Default |
 |----------|---------|---------|
-| `EXPO_PUBLIC_API_URL` | Backend REST API including `/api/v1` | `https://api-dev.flickmeon.ai/api/v1` |
+| `EXPO_PUBLIC_API_URL` | Backend REST API including `/api/v1` | `https://api-dev.thelightbulb.company/api/v1` |
 | `EXPO_PUBLIC_CLERK_PUBLISHABLE_KEY` | Clerk publishable key | required — app renders setup instructions without it |
 
 ## CI/CD + release lanes

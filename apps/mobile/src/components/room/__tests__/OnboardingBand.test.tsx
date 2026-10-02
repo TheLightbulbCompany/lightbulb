@@ -33,7 +33,7 @@ const mockGet = jest.fn(async (path: string) => {
   if (answer === undefined) throw new Error(`unexpected GET ${path}`);
   return answer;
 });
-const mockPost = jest.fn(async () => ({ join_url: "https://flickmeon.ai/join/new" }));
+const mockPost = jest.fn(async () => ({ join_url: "https://thelightbulb.company/join/new" }));
 jest.mock("@lightbulb/shared", () => ({
   ...jest.requireActual("@lightbulb/shared"),
   createApiClient: () => ({ get: mockGet, post: mockPost }),
@@ -207,17 +207,17 @@ describe("OnboardingBand", () => {
       const target = await screen.findByLabelText(/^Invite your teammates/);
       await act(async () => { fireEvent.press(target); });
       expect(mockPost).toHaveBeenCalledWith(invitePath(), {});
-      expect(share).toHaveBeenCalledWith({ message: "https://flickmeon.ai/join/new" });
+      expect(share).toHaveBeenCalledWith({ message: "https://thelightbulb.company/join/new" });
       expect(screen.getByText("Link shared")).toBeTruthy();
     });
 
     it("shares an existing link without rotating it", async () => {
-      setReads({ [invitePath()]: { exists: true, join_url: "https://flickmeon.ai/join/old" } });
+      setReads({ [invitePath()]: { exists: true, join_url: "https://thelightbulb.company/join/old" } });
       await renderBand();
       const target = await screen.findByLabelText(/^Invite your teammates/);
       await act(async () => { fireEvent.press(target); });
       expect(mockPost).not.toHaveBeenCalled();
-      expect(share).toHaveBeenCalledWith({ message: "https://flickmeon.ai/join/old" });
+      expect(share).toHaveBeenCalledWith({ message: "https://thelightbulb.company/join/old" });
     });
 
     it("never rotates a legacy link and points at Settings → Members", async () => {

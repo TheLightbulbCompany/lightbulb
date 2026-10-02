@@ -9,7 +9,7 @@ describe("checkout return links", () => {
     "/checkout_redirect/connected",
     "checkout_redirect/connect_failed?error=oauth_provider",
     "flickmeon://checkout_redirect/connected",
-    "https://flickmeon.ai/checkout_redirect/connect_failed",
+    "https://thelightbulb.company/checkout_redirect/connect_failed",
   ])("keeps the current room on a warm OAuth return %s", (path) => {
     expect(redirectSystemPath({ path, initial: false })).toBeNull();
     expect(redirectSystemPath({ path, initial: true })).toBe("/");

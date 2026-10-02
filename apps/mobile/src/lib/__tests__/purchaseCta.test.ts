@@ -115,15 +115,15 @@ describe("purchaseSafeMessage", () => {
   it.each(ALL_PURCHASE_CODES)(
     "maps a %s error to its local neutral copy, not the server message",
     (code) => {
-      const serverMessage = "Upgrade to flickmeon.ai to keep going — pick a plan for $20/mo.";
+      const serverMessage = "Upgrade to thelightbulb.company to keep going — pick a plan for $20/mo.";
       const err = gatedError(code, serverMessage);
       const out = purchaseSafeMessage(err, "fallback");
       expect(out).toBe(purchaseGateCopy(code)?.body);
       expect(out).not.toBe(serverMessage);
-      // The poisoned server copy (Upgrade / pick a plan / $ / flickmeon.ai)
+      // The poisoned server copy (Upgrade / pick a plan / $ / thelightbulb.company)
       // never survives into the sanitized output.
       expect(out).not.toMatch(/upgrade|pick a plan|\$\d/i);
-      expect(out).not.toMatch(/flickmeon\.ai/i);
+      expect(out).not.toMatch(/thelightbulb\.company/i);
     },
   );
 

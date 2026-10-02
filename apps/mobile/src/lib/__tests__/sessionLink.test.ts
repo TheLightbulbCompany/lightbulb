@@ -1,6 +1,6 @@
 import { sessionMobileHref } from "../sessionLink";
 
-const ORIGIN = "https://dev.flickmeon.ai";
+const ORIGIN = "https://dev.thelightbulb.company";
 
 test("session permalinks open the native session screen", () => {
   expect(sessionMobileHref(`${ORIGIN}/chat?panel=session&session=abc-123`, ORIGIN)).toEqual({

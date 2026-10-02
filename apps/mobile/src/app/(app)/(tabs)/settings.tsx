@@ -25,7 +25,7 @@ import { isManagedNoChoiceAccount, MANAGED_NO_CHOICE_LABEL } from "../../../lib/
 import { unregisterDevice } from "../../../lib/pushDevice";
 
 // Billing here never points outside the app. This screen used to carry
-// "Upgrade on flickmeon.ai" and "Manage billing on flickmeon.ai" rows out to
+// "Upgrade on thelightbulb.company" and "Manage billing on thelightbulb.company" rows out to
 // the web checkout; both are gone (see lib/purchaseCta). The one purchase path
 // is the in-app Plans row (3.1.1), shown only when the server offers products
 // and the workspace isn't Stripe-billed. Plan state, credits, and provider still

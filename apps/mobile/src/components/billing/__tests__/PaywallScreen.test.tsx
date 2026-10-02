@@ -326,7 +326,7 @@ describe("PaywallScreen", () => {
     it("a web return uses onWebReturn when given, not onPurchased", async () => {
       const onWebReturn = jest.fn();
       const { onPurchased } = await renderPaywall({ account: ACCOUNT, onWebReturn });
-      await act(async () => urlListener?.({ url: "https://flickmeon.ai/checkout_redirect/success" }));
+      await act(async () => urlListener?.({ url: "https://thelightbulb.company/checkout_redirect/success" }));
       expect(onWebReturn).toHaveBeenCalledTimes(1);
       expect(onPurchased).not.toHaveBeenCalled();
     });
@@ -368,9 +368,9 @@ describe("PaywallScreen", () => {
 
     it("the success return link refetches; a cancel does not", async () => {
       const { onPurchased } = await renderPaywall({ account: ACCOUNT });
-      await act(async () => urlListener?.({ url: "https://flickmeon.ai/checkout_redirect/cancel" }));
+      await act(async () => urlListener?.({ url: "https://thelightbulb.company/checkout_redirect/cancel" }));
       expect(onPurchased).not.toHaveBeenCalled();
-      await act(async () => urlListener?.({ url: "https://flickmeon.ai/checkout_redirect/success" }));
+      await act(async () => urlListener?.({ url: "https://thelightbulb.company/checkout_redirect/success" }));
       expect(onPurchased).toHaveBeenCalledTimes(1);
     });
 

@@ -247,9 +247,9 @@ export default function IntegrationsPanel() {
         <LogoMark size={48} />
         <Text style={styles.dim}>No MCP servers connected.</Text>
         <Text style={styles.dimSmall}>
-          Add Model Context Protocol servers on flickmeon.ai.
+          Add Model Context Protocol servers on thelightbulb.company.
         </Text>
-        <ManageLink label="Manage on flickmeon.ai" />
+        <ManageLink label="Manage on thelightbulb.company" />
       </View>
     );
   } else {
@@ -268,9 +268,9 @@ export default function IntegrationsPanel() {
         <View style={styles.noteCard}>
           <Text style={styles.captionText}>
             Adding or removing servers is read-only here. Manage integrations on
-            flickmeon.ai.
+            thelightbulb.company.
           </Text>
-          <ManageLink label="Manage on flickmeon.ai" />
+          <ManageLink label="Manage on thelightbulb.company" />
         </View>
       </>
     );

@@ -113,7 +113,7 @@ function deriveStatus(
   health: HealthPayload | undefined,
 ): DerivedStatus {
   if (container.code === "needs_signup") {
-    return { tone: "down", label: "Not set up", detail: "Finish setup on flickmeon.ai" };
+    return { tone: "down", label: "Not set up", detail: "Finish setup on thelightbulb.company" };
   }
   if (container.code === "blocked") {
     return { tone: "down", label: container.title, detail: container.message };

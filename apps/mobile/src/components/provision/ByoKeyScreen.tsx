@@ -43,7 +43,7 @@ type Provider = "openai" | "anthropic";
 // Verbatim copy from ProvisionGate's ManageAction admin note — a member who
 // 403s here lands in the same "you can't finish this yourself" state the
 // generic interstitial would have shown, so it should read identically.
-const ADMIN_ONLY_MESSAGE = "Ask your workspace admin to finish this on flickmeon.ai.";
+const ADMIN_ONLY_MESSAGE = "Ask your workspace admin to finish this on thelightbulb.company.";
 
 /**
  * FastAPI's `detail` is a plain string for most raises but a structured

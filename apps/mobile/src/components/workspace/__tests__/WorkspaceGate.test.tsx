@@ -65,7 +65,7 @@ it("with no workspace, offers to create one on the web — and says nothing abou
   // App Store 3.1.1: no pricing, plan, trial or billing words on this screen.
   expect(screen.queryByText(/pric|plan|billing|subscri|trial|pay|\$/i)).toBeNull();
 
-  fireEvent.press(screen.getByText("Continue on flickmeon.ai"));
+  fireEvent.press(screen.getByText("Continue on thelightbulb.company"));
   expect(openURL).toHaveBeenCalledWith(`${WEB_ORIGIN}/onboarding`);
 });
 

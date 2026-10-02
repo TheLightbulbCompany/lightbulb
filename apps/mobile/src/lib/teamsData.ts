@@ -10,7 +10,7 @@
  * Readiness gate (contract §1): the `_ctx` dependency in front of every
  * endpoint returns a NON-DATA status when the workspace isn't ready —
  *   • 202  → workspace provisioning (poll until active)
- *   • 402  → blocked gate (subscribe / finish setup on flickmeon.ai)
+ *   • 402  → blocked gate (subscribe / finish setup on thelightbulb.company)
  *   • 503  → provisioning failed / unavailable
  * These are workspace-STATUS, not data errors: the UI renders a readiness
  * state, never an error card. 202 is a *success* HTTP status, so it arrives

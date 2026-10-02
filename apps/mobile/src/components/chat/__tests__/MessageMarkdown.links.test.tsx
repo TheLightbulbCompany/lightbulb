@@ -79,7 +79,7 @@ describe("MessageMarkdown selection and links", () => {
     // mobile agent-inspector screen, so this one keeps the web fallback.
     await render(<MessageMarkdown text="See [CTO](/ISOA/agents/cto)" />);
     fireEvent.press(screen.getByText("CTO"));
-    expect(openURL).toHaveBeenCalledWith("https://flickmeon.ai/ISOA/agents/cto");
+    expect(openURL).toHaveBeenCalledWith("https://thelightbulb.company/ISOA/agents/cto");
     expect(router.push).not.toHaveBeenCalled();
   });
 });

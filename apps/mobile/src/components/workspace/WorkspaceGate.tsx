@@ -206,7 +206,7 @@ function CreateWorkspace({ onCheckAgain }: { onCheckAgain: () => void }) {
           onPress={() => void Linking.openURL(`${WEB_ORIGIN}/onboarding`)}
           accessibilityRole="link"
         >
-          <Text style={styles.primaryText}>Continue on flickmeon.ai</Text>
+          <Text style={styles.primaryText}>Continue on thelightbulb.company</Text>
         </Pressable>
         <Pressable
           style={({ pressed }) => [styles.secondary, pressed && styles.pressed]}

@@ -31,7 +31,7 @@
         "aps-environment": "production"
       },
       "associatedDomains": [
-        "applinks:flickmeon.ai"
+        "applinks:thelightbulb.company"
       ]
     },
     "plugins": [

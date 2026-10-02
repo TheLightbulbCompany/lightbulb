@@ -99,7 +99,7 @@ export default function SignIn() {
         // User closed the browser — not an error, stay quiet.
       } else {
         setError(
-          "Google sign-in needs another step — finish signing in on flickmeon.ai for now.",
+          "Google sign-in needs another step — finish signing in on thelightbulb.company for now.",
         );
       }
     } catch (e) {
@@ -120,7 +120,7 @@ export default function SignIn() {
         // (auth) layout redirects to /(app)/home once isSignedIn flips.
       } else {
         setError(
-          "This account needs another verification step — sign in on flickmeon.ai for now.",
+          "This account needs another verification step — sign in on thelightbulb.company for now.",
         );
       }
     } catch (e) {
@@ -234,7 +234,7 @@ export default function SignIn() {
           <Text style={styles.buttonText}>Sign in</Text>
         )}
       </Pressable>
-      <Text style={styles.hint}>New here? Create your account at flickmeon.ai</Text>
+      <Text style={styles.hint}>New here? Create your account at thelightbulb.company</Text>
     </KeyboardAvoidingView>
   );
 }

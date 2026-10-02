@@ -1,7 +1,7 @@
 import { render, screen } from "@testing-library/react-native";
 
 // App Store 3.1.1/3.1.3(f): a workspace without an active subscription must
-// see plain, neutral state for Teams — no "Manage on flickmeon.ai" button and
+// see plain, neutral state for Teams — no "Manage on thelightbulb.company" button and
 // no server-shaped subscription pitch.
 
 jest.mock("expo-router", () => ({ router: { push: jest.fn() } }));

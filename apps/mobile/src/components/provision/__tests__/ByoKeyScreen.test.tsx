@@ -21,7 +21,7 @@ jest.mock("react-native-safe-area-context", () => ({
 import { ApiError } from "@lightbulb/shared";
 import { ByoKeyScreen } from "../ByoKeyScreen";
 
-const ADMIN_ONLY_MESSAGE = "Ask your workspace admin to finish this on flickmeon.ai.";
+const ADMIN_ONLY_MESSAGE = "Ask your workspace admin to finish this on thelightbulb.company.";
 
 // NOTE: this @testing-library/react-native version's `fireEvent.press` /
 // `fireEvent.changeText` are ASYNC (they internally `await act(...)` around

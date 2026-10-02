@@ -207,7 +207,7 @@ describe("Settings plan card", () => {
 
   // App Store 3.1.3(f): the exemption holds only while the app carries no
   // call to action for purchase outside it. This screen used to have two —
-  // "Upgrade on flickmeon.ai" and "Manage billing on flickmeon.ai" — plus the plan
+  // "Upgrade on thelightbulb.company" and "Manage billing on thelightbulb.company" — plus the plan
   // price. Plan STATE still renders; nothing that points at a purchase does.
   it.each([
     ["trial_local" as const],
@@ -231,7 +231,7 @@ describe("Settings plan card", () => {
     expect(screen.queryByText(/upgrade/i)).toBeNull();
     expect(screen.queryByText(/manage billing/i)).toBeNull();
     expect(screen.queryByText(/\$50/)).toBeNull();
-    // The legal links are the ONLY flickmeon.ai references that may remain.
+    // The legal links are the ONLY thelightbulb.company references that may remain.
     expect(screen.queryByText(/isol8\.co\/settings/)).toBeNull();
   });
 });

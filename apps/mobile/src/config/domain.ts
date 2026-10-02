@@ -16,7 +16,7 @@
  */
 
 /** Bare root domain — every sibling host (api, api-dev, …) is built from it. */
-export const ROOT_DOMAIN = "flickmeon.ai";
+export const ROOT_DOMAIN = "thelightbulb.company";
 
 /** Absolute origin of the web app, no trailing slash. */
 export const WEB_ORIGIN = `https://${ROOT_DOMAIN}`;

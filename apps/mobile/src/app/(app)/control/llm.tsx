@@ -414,9 +414,9 @@ export default function LlmPanel() {
         <Text style={styles.overline}>PROVIDER</Text>
         <Text style={styles.bodyText}>No provider selected yet</Text>
         <Text style={styles.captionText}>
-          Finish setup on flickmeon.ai to pick a model provider.
+          Finish setup on thelightbulb.company to pick a model provider.
         </Text>
-        <ManageLink label="Set up on flickmeon.ai" />
+        <ManageLink label="Set up on thelightbulb.company" />
       </Card>
     );
   } else {
@@ -448,7 +448,7 @@ export default function LlmPanel() {
         {account.capped_today === true && (
           <Text style={styles.bodyText}>Daily allowance used — resets at 00:00 UTC</Text>
         )}
-        <ManageLink label="Manage provider on flickmeon.ai" />
+        <ManageLink label="Manage provider on thelightbulb.company" />
       </Card>
     );
   }
@@ -522,7 +522,7 @@ export default function LlmPanel() {
           </View>
         ))}
         <Text style={styles.captionText}>
-          Model routing is read-only here. Change the default on flickmeon.ai.
+          Model routing is read-only here. Change the default on thelightbulb.company.
         </Text>
       </Card>
     );

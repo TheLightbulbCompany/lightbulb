@@ -29,12 +29,15 @@ function revisionLabel(revision: DocumentRevision): string {
 
 export function DocumentDiffModal({
   issueId,
+  basePath = `/issues/${issueId}`,
   documentKey,
   latestRevisionNumber,
   open,
   onOpenChange,
 }: {
   issueId: string;
+  /** Owner of the document routes; a case passes `/cases/{id}`. */
+  basePath?: string;
   documentKey: string;
   latestRevisionNumber: number;
   open: boolean;
@@ -42,7 +45,7 @@ export function DocumentDiffModal({
 }) {
   const { read } = useTeamsApi();
   const { data } = read<{ revisions: DocumentRevision[] }>(
-    open ? `/issues/${issueId}/documents/${documentKey}/revisions` : null,
+    open ? `${basePath}/documents/${documentKey}/revisions` : null,
   );
 
   const sortedRevisions = useMemo(

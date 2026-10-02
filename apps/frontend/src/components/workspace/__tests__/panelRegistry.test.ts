@@ -26,6 +26,10 @@ describe("panelRegistry", () => {
     }
     // The org chart is a VIEW of the roster, so its key aliases onto Agents.
     expect(resolvePanelAlias("teams-org-chart")).toBe("teams-agents");
+    // The removed Support placeholder lands on Cases (links + saved layouts).
+    expect(resolvePanelAlias("teams-support")).toBe("teams-cases");
+    expect(describePanel("teams-support", {})?.panelId).toBe("teams-cases");
+    expect(describePanel("teams-case-detail", { detailId: "LB-C7" })?.panelId).toBe("teams-case-detail:LB-C7");
   });
 
   it("builds deterministic chat panel ids", () => {

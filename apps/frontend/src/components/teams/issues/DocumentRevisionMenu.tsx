@@ -23,6 +23,7 @@ function actorOf(revision: DocumentRevision): string {
 
 export function DocumentRevisionMenu({
   issueId,
+  basePath = `/issues/${issueId}`,
   documentKey,
   latestRevisionNumber,
   selectedRevisionId,
@@ -30,6 +31,8 @@ export function DocumentRevisionMenu({
   onOpenDiff,
 }: {
   issueId: string;
+  /** Owner of the document routes; a case passes `/cases/{id}`. */
+  basePath?: string;
   documentKey: string;
   latestRevisionNumber: number;
   selectedRevisionId: string | null;
@@ -38,7 +41,7 @@ export function DocumentRevisionMenu({
 }) {
   const { read } = useTeamsApi();
   const { data } = read<{ revisions: DocumentRevision[] }>(
-    `/issues/${issueId}/documents/${documentKey}/revisions`,
+    `${basePath}/documents/${documentKey}/revisions`,
   );
   const revisions = useMemo(
     () => [...(data?.revisions ?? [])].sort((a, b) => b.revisionNumber - a.revisionNumber),

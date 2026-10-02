@@ -3383,6 +3383,170 @@ class PaperclipAdminClient:
             session_cookie=session_cookie,
         )
 
+    # ------------------------------------------------------------------
+    # Cases (structured work-product records; upstream
+    # ``server/src/routes/cases.ts``). Gated upstream by the instance flag
+    # ``enableCases`` — while it is off every call answers 403 "Cases are
+    # disabled". ``case_id`` may be the uuid or the ``LB-C7`` identifier.
+    # Only the calls the Teams Cases panels make are wrapped here.
+    # ------------------------------------------------------------------
+
+    async def list_cases(
+        self,
+        *,
+        session_cookie: str,
+        company_id: str,
+        params: Optional[dict[str, Any]] = None,
+    ) -> list | dict:
+        """List the company's cases.
+
+        Maps to ``GET /api/companies/{companyId}/cases``. ``params`` is the
+        upstream query (``types`` / ``status`` / ``statuses`` / ``projectIds`` /
+        ``includeNoProject`` / ``labelId`` / ``parent`` / ``q`` /
+        ``includeAncestors`` / ``limit``); list values repeat the key.
+        Upstream returns a bare array.
+        """
+        return await self._get(
+            f"/api/companies/{company_id}/cases",
+            session_cookie=session_cookie,
+            params=params,
+        )
+
+    async def get_case(self, *, session_cookie: str, case_id: str) -> dict:
+        """Fetch one case with its labels, issue links, documents and attachments.
+
+        Maps to ``GET /api/cases/{id}``.
+        """
+        return await self._get(f"/api/cases/{case_id}", session_cookie=session_cookie)
+
+    async def patch_case(self, *, session_cookie: str, case_id: str, body: dict) -> dict:
+        """Update a case (the board UI sends ``status`` and/or ``labelIds``).
+
+        Maps to ``PATCH /api/cases/{id}``. Returns the full detail payload.
+        """
+        return await self._patch(f"/api/cases/{case_id}", json=body, session_cookie=session_cookie)
+
+    async def list_case_events(self, *, session_cookie: str, case_id: str, limit: int = 100) -> list | dict:
+        """List a case's event feed, newest first.
+
+        Maps to ``GET /api/cases/{id}/events``. Upstream returns a bare array.
+        """
+        return await self._get(
+            f"/api/cases/{case_id}/events",
+            session_cookie=session_cookie,
+            params={"limit": limit},
+        )
+
+    async def list_issue_cases(self, *, session_cookie: str, issue_id: str) -> list | dict:
+        """List the cases linked to an issue (link role + case summary).
+
+        Maps to ``GET /api/issues/{issueId}/cases``. Upstream returns a bare array.
+        """
+        return await self._get(f"/api/issues/{issue_id}/cases", session_cookie=session_cookie)
+
+    async def list_case_document_revisions(self, *, session_cookie: str, case_id: str, key: str) -> dict:
+        """List a case document's revision history.
+
+        Maps to ``GET /api/cases/{id}/documents/{key}/revisions``. Unlike the
+        issue route this returns ``{key, document, revisions: [...]}``.
+        """
+        return await self._get(
+            f"/api/cases/{case_id}/documents/{key}/revisions",
+            session_cookie=session_cookie,
+        )
+
+    async def restore_case_document_revision(
+        self, *, session_cookie: str, case_id: str, key: str, revision_id: str
+    ) -> dict:
+        """Restore a historical revision as the new latest revision.
+
+        Maps to ``POST /api/cases/{id}/documents/{key}/revisions/{revisionId}/restore``.
+        """
+        return await self._post(
+            f"/api/cases/{case_id}/documents/{key}/revisions/{revision_id}/restore",
+            json={},
+            session_cookie=session_cookie,
+        )
+
+    async def list_case_document_annotations(
+        self,
+        *,
+        session_cookie: str,
+        case_id: str,
+        key: str,
+        status: Optional[str] = None,
+        include_comments: bool = True,
+    ) -> list | dict:
+        """List annotation threads for a case document.
+
+        Maps to ``GET /api/cases/{id}/documents/{key}/annotations``.
+        """
+        params: dict[str, Any] = {}
+        if status is not None:
+            params["status"] = status
+        if include_comments:
+            params["includeComments"] = "true"
+        return await self._get(
+            f"/api/cases/{case_id}/documents/{key}/annotations",
+            session_cookie=session_cookie,
+            params=params or None,
+        )
+
+    async def create_case_document_annotation(self, *, session_cookie: str, case_id: str, key: str, body: dict) -> dict:
+        """Create an annotation thread on a case document.
+
+        Maps to ``POST /api/cases/{id}/documents/{key}/annotations``.
+        """
+        return await self._post(
+            f"/api/cases/{case_id}/documents/{key}/annotations",
+            json=body,
+            session_cookie=session_cookie,
+        )
+
+    async def add_case_document_annotation_comment(
+        self, *, session_cookie: str, case_id: str, key: str, thread_id: str, body: dict
+    ) -> dict:
+        """Reply on a case document annotation thread.
+
+        Maps to ``POST /api/cases/{id}/documents/{key}/annotations/{threadId}/comments``.
+        """
+        return await self._post(
+            f"/api/cases/{case_id}/documents/{key}/annotations/{thread_id}/comments",
+            json=body,
+            session_cookie=session_cookie,
+        )
+
+    async def update_case_document_annotation_thread(
+        self, *, session_cookie: str, case_id: str, key: str, thread_id: str, body: dict
+    ) -> dict:
+        """Resolve or reopen a case document annotation thread.
+
+        Maps to ``PATCH /api/cases/{id}/documents/{key}/annotations/{threadId}``.
+        """
+        return await self._patch(
+            f"/api/cases/{case_id}/documents/{key}/annotations/{thread_id}",
+            json=body,
+            session_cookie=session_cookie,
+        )
+
+    async def open_asset_stream(self, *, session_cookie: str, asset_id: str) -> httpx.Response:
+        """Open a streaming GET for an asset's bytes (case attachments).
+
+        Maps to ``GET /api/assets/{assetId}/content``. Same contract as
+        ``open_attachment_stream``: the caller pipes ``aiter_bytes()`` and
+        calls ``aclose()``; a >=400 raises ``PaperclipApiError`` after closing.
+        """
+        path = f"/api/assets/{asset_id}/content"
+        req = self._http.build_request("GET", path, headers=self._headers(session_cookie))
+        resp = await self._send(lambda: self._http.send(req, stream=True))
+        if resp.status_code >= 500:
+            _emit_upstream_error("5xx")
+        if resp.status_code >= 400:
+            await resp.aread()
+            await resp.aclose()
+            raise PaperclipApiError(f"GET {path} -> {resp.status_code}", status_code=resp.status_code, body=resp.text)
+        return resp
+
 
 # Module-level shared httpx client. Created lazily on first use, reused for
 # the lifetime of the process. Not closed explicitly — the OS reclaims socket

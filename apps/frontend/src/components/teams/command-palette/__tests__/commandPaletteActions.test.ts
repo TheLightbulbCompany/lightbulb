@@ -47,7 +47,6 @@ describe("NAV_ACTIONS derives from the sidebar IA", () => {
     // The rail stops offering these; ⌘K must not become the back door that
     // walks an owner into an empty frame.
     for (const panel of [
-      "teams-support",
       "teams-publish",
       "teams-seo",
       "teams-ads",
@@ -61,7 +60,7 @@ describe("NAV_ACTIONS derives from the sidebar IA", () => {
     }
     // ...but they are still declared in the IA, so the keys stay real.
     const declared = COMPANY_SECTIONS.flatMap((s) => s.items).map((i) => i.panel);
-    expect(declared).toContain("teams-support");
+    expect(declared).toContain("teams-publish");
   });
 
   test("old labels survive as keyword aliases", () => {

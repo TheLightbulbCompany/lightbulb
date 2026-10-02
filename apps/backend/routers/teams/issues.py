@@ -998,37 +998,11 @@ async def _require_readable_attachment(issue_id: str, attachment_id: str, ctx: T
     raise HTTPException(status_code=404, detail="Attachment not found on this issue")
 
 
-@router.get("/issues/{issue_id}/attachments/{attachment_id}/content")
-async def get_attachment_content(
-    issue_id: CompanyIssueId,
-    attachment_id: IssueId,
-    ctx: TeamsContext = Depends(_ctx),
-):
-    """Stream an attachment's bytes back to the browser.
+def stream_upstream(upstream) -> StreamingResponse:
+    """Pipe an already-open upstream content response to the browser.
 
-    Proxies upstream ``GET /api/attachments/{id}/content`` once the attachment
-    is proven to be on ``issue_id`` or its company-checked parent / a direct
-    child (see ``_require_readable_attachment``).
-
-    Streamed via ``StreamingResponse`` over the upstream
-    ``aiter_bytes()`` so a large file never buffers in backend memory. The
-    upstream ``Content-Type`` / ``Content-Disposition`` / ``Content-Length``
-    are copied through; ``X-Content-Type-Options: nosniff`` is forwarded if
-    present so the browser doesn't MIME-sniff an untrusted upload.
+    Shared by the issue-attachment and case-attachment content routes.
     """
-    await _require_readable_attachment(issue_id, attachment_id, ctx)
-    admin = _agents._admin()
-
-    # Open the upstream stream ONCE. ``open_attachment_stream`` does the GET,
-    # raises ``PaperclipApiError`` on a >=400 status (so the error surfaces as
-    # an HTTP error here, BEFORE the StreamingResponse body begins — a
-    # generator that raises mid-stream can't set a status code), and returns
-    # the live response on success.
-    upstream = await admin.open_attachment_stream(
-        session_cookie=ctx.session_cookie,
-        attachment_id=attachment_id,
-    )
-
     headers: dict[str, str] = {}
     # Copy the upstream's content-serving safety headers through verbatim:
     # ``content-disposition`` (upstream forces ``attachment`` for dangerous
@@ -1059,6 +1033,39 @@ async def get_attachment_content(
             await upstream.aclose()
 
     return StreamingResponse(_body(), media_type=media_type, headers=headers)
+
+
+@router.get("/issues/{issue_id}/attachments/{attachment_id}/content")
+async def get_attachment_content(
+    issue_id: CompanyIssueId,
+    attachment_id: IssueId,
+    ctx: TeamsContext = Depends(_ctx),
+):
+    """Stream an attachment's bytes back to the browser.
+
+    Proxies upstream ``GET /api/attachments/{id}/content`` once the attachment
+    is proven to be on ``issue_id`` or its company-checked parent / a direct
+    child (see ``_require_readable_attachment``).
+
+    Streamed via ``StreamingResponse`` over the upstream
+    ``aiter_bytes()`` so a large file never buffers in backend memory. The
+    upstream ``Content-Type`` / ``Content-Disposition`` / ``Content-Length``
+    are copied through; ``X-Content-Type-Options: nosniff`` is forwarded if
+    present so the browser doesn't MIME-sniff an untrusted upload.
+    """
+    await _require_readable_attachment(issue_id, attachment_id, ctx)
+    admin = _agents._admin()
+
+    # Open the upstream stream ONCE. ``open_attachment_stream`` does the GET,
+    # raises ``PaperclipApiError`` on a >=400 status (so the error surfaces as
+    # an HTTP error here, BEFORE the StreamingResponse body begins — a
+    # generator that raises mid-stream can't set a status code), and returns
+    # the live response on success.
+    upstream = await admin.open_attachment_stream(
+        session_cookie=ctx.session_cookie,
+        attachment_id=attachment_id,
+    )
+    return stream_upstream(upstream)
 
 
 @router.delete("/issues/{issue_id}/attachments/{attachment_id}")

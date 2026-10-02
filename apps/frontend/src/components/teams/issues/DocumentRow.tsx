@@ -30,13 +30,23 @@ export function DocumentRow({
   doc,
   agents,
   issueId,
+  basePath,
+  onRestored,
 }: {
   doc: IssueDocument;
   agents: CompanyAgent[];
   // `issueId` is optional so a pre-existing caller that doesn't thread it keeps
   // rendering the plain body (no review affordances) rather than breaking.
   issueId?: string;
+  // The document's owner route, relative to the Teams BFF. Defaults to the
+  // issue; a case document passes `/cases/{caseId}` (with the case id as
+  // `issueId`) so the same review surface serves both.
+  basePath?: string;
+  // Called after a revision restore, for an owner whose document list is not
+  // the issue documents read (a case re-reads its detail).
+  onRestored?: () => void;
 }) {
+  const root = basePath ?? `/issues/${issueId}`;
   const reviewable = doc as ReviewableDocument;
   const [open, setOpen] = useState(false);
   const [panelOpen, setPanelOpen] = useState(false);
@@ -64,10 +74,10 @@ export function DocumentRow({
   const latestRevisionNumber = reviewable.latestRevisionNumber ?? 0;
   const latestRevisionId = reviewable.latestRevisionId ?? null;
   const annotationsPath = reviewEnabled
-    ? `/issues/${issueId}/documents/${doc.key}/annotations?status=all&includeComments=true`
+    ? `${root}/documents/${doc.key}/annotations?status=all&includeComments=true`
     : null;
   const revisionsPath =
-    reviewEnabled && open ? `/issues/${issueId}/documents/${doc.key}/revisions` : null;
+    reviewEnabled && open ? `${root}/documents/${doc.key}/revisions` : null;
 
   const { data: annData, mutate: mutateAnnotations } = read<{ threads: DocumentAnnotationThread[] }>(
     annotationsPath,
@@ -95,7 +105,7 @@ export function DocumentRow({
     [threads],
   );
 
-  const { data: revData } = read<{ revisions: DocumentRevision[] }>(revisionsPath);
+  const { data: revData, mutate: mutateRevisions } = read<{ revisions: DocumentRevision[] }>(revisionsPath);
   const selectedRevision = useMemo(
     () => (revData?.revisions ?? []).find((r) => r.id === selectedRevisionId) ?? null,
     [revData, selectedRevisionId],
@@ -146,19 +156,23 @@ export function DocumentRow({
     setRestoring(true);
     try {
       await post(
-        `/issues/${issueId}/documents/${doc.key}/revisions/${selectedRevisionId}/restore`,
+        `${root}/documents/${doc.key}/revisions/${selectedRevisionId}/restore`,
         {},
       );
       setSelectedRevisionId(null);
       // Refresh the doc list (new latest body), revisions, and annotations
       // (server remaps open threads onto the restored revision).
-      void mutate(`/teams/issues/${issueId}/documents`);
-      void mutate(`/teams/issues/${issueId}/documents/${doc.key}/revisions`);
+      // Keys derive from `root`, so a case document refreshes its own reads.
+      // `mutateRevisions` is the read the revision menu + diff modal share.
+      void mutate(`/teams${root}/documents`);
+      void mutate(`/teams${root}/documents/${doc.key}/revisions`);
+      void mutateRevisions();
       void mutateAnnotations();
+      onRestored?.();
     } finally {
       setRestoring(false);
     }
-  }, [reviewEnabled, selectedRevisionId, post, issueId, doc.key, mutate, mutateAnnotations]);
+  }, [reviewEnabled, selectedRevisionId, post, root, doc.key, mutate, mutateRevisions, mutateAnnotations, onRestored]);
 
   const newCommentDisabledReason = historicalPreview
     ? "Comments are disabled while previewing a historical revision."
@@ -227,6 +241,7 @@ export function DocumentRow({
             {open ? (
               <DocumentRevisionMenu
                 issueId={issueId!}
+                basePath={root}
                 documentKey={doc.key}
                 latestRevisionNumber={latestRevisionNumber}
                 selectedRevisionId={selectedRevisionId}
@@ -304,6 +319,7 @@ export function DocumentRow({
               <div className="w-full lg:w-80 lg:shrink-0">
                 <DocumentAnnotationPanel
                   issueId={issueId!}
+                  basePath={root}
                   documentKey={doc.key}
                   baseRevisionId={latestRevisionId}
                   baseRevisionNumber={latestRevisionNumber}
@@ -331,6 +347,7 @@ export function DocumentRow({
       {reviewEnabled && diffOpen ? (
         <DocumentDiffModal
           issueId={issueId!}
+          basePath={root}
           documentKey={doc.key}
           latestRevisionNumber={latestRevisionNumber}
           open={diffOpen}

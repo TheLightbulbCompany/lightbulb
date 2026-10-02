@@ -24,6 +24,7 @@ import { IssueHeader } from "./IssueHeader";
 import { CommentThread } from "./CommentThread";
 import { IssueDescription } from "./IssueDescription";
 import { IssueProperties } from "./IssueProperties";
+import { IssueCasesPanel } from "@/components/teams/cases/IssueCasesPanel";
 import { SubIssuesSection } from "./SubIssuesSection";
 import { IssueApprovalsSection } from "./IssueApprovalsSection";
 import { IssueRunLedger } from "./IssueRunLedger";
@@ -521,6 +522,9 @@ export function IssueDetailPage({ issueId }: IssueDetailPageProps) {
             void mutate(`/teams${teamsQueryKeys.issues.detail(issueId)}`).catch(() => {});
           }}
         />
+        {/* Stock places the Cases rail at the foot of the properties pane; it
+            renders nothing when no cases are linked (or Cases is off). */}
+        <IssueCasesPanel issueId={issue.id} />
         <SubIssuesSection
           issueId={issueId}
           agents={agents}

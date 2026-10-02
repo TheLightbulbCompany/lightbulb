@@ -82,7 +82,7 @@ class Settings(BaseSettings):
 
     # Public-facing base URL for this API. Used to build absolute URLs in
     # responses (e.g., the Paperclip trigger fire URLs, /hooks/t/...).
-    # Per env: https://api-dev.flickmeon.ai, https://api.flickmeon.ai,
+    # Per env: https://api-dev.thelightbulb.company, https://api.flickmeon.ai,
     # https://api.isol8.co. Defaults to localhost for dev/test. Wired via
     # CDK service-stack environment block per environment.
     PUBLIC_API_BASE: str = "http://localhost:8000"
@@ -161,13 +161,13 @@ class Settings(BaseSettings):
     # local-session relay knows which API Gateway door to connect to (it needs
     # the Management API, so it stays there). Wired by CDK service-stack from
     # api-stack's WebSocket stage URL.
-    WS_GATEWAY_URL: str = "wss://ws-dev.flickmeon.ai"
+    WS_GATEWAY_URL: str = "wss://ws-dev.thelightbulb.company"
     # Raw WebSocket relay for machine clients (desktop node hosts, Paperclip
     # operators): one backend task pipes both sockets for the connection's
     # life instead of the API Gateway relay above. Same `bv-` CloudFront/ALB
     # door as the browser-view live view, path-capped to /api/v1/gateway/*.
     # Wired by CDK service-stack from api-stack's gateway-relay-url output.
-    GATEWAY_RELAY_URL: str = "wss://bv-dev.flickmeon.ai/api/v1/gateway/ws"
+    GATEWAY_RELAY_URL: str = "wss://bv-dev.thelightbulb.company/api/v1/gateway/ws"
 
     # Shared secret that authenticates the CALLER of the /api/v1/ws/* endpoints.
     # Those endpoints derive identity from request headers (x-user-id etc.) and
@@ -494,13 +494,13 @@ class Settings(BaseSettings):
     # route 503s, so a half-configured environment can never complete a
     # handshake and start receiving events it cannot verify.
     META_WEBHOOK_VERIFY_TOKEN: str = ""
-    # Public URL of the frontend (e.g. https://dev.flickmeon.ai). Used by
+    # Public URL of the frontend (e.g. https://dev.thelightbulb.company). Used by
     # the paperclip-proxy to redirect users back to /chat when they land on
     # company.isol8.co without prerequisites (no container, no Clerk
     # session, no Paperclip company row). Same value as CORS_ORIGINS in
     # most envs but kept separate so the proxy doesn't need to parse a
     # comma-separated list.
-    FRONTEND_URL: str = "https://dev.flickmeon.ai"
+    FRONTEND_URL: str = "https://dev.thelightbulb.company"
 
     # --- Transactional email ---
     # OUTBOUND app-generated mail (the welcome email on signup, support-ticket

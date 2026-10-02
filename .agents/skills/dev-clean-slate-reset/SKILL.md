@@ -53,7 +53,7 @@ and `workspace_wipe` (org-keyed). Per signed-in
 user, from the browser console on a dev page:
 
 ```javascript
-await fetch('https://api-dev.flickmeon.ai/api/v1/debug/user-data', {method:'DELETE', headers:{Authorization:'Bearer '+await Clerk.session.getToken()}}).then(r=>r.json())
+await fetch('https://api-dev.thelightbulb.company/api/v1/debug/user-data', {method:'DELETE', headers:{Authorization:'Bearer '+await Clerk.session.getToken()}}).then(r=>r.json())
 ```
 
 Everything below is the console-driven equivalent, for owners whose Clerk

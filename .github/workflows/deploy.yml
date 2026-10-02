@@ -1875,16 +1875,30 @@ jobs:
           VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
           VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
           VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
-      - name: Alias to dev.flickmeon.ai
-        run: vercel alias ${{ steps.vercel-deploy-dev.outputs.DEPLOY_URL }}
-          dev.flickmeon.ai --token=$VERCEL_TOKEN
+      - name: Register dev.thelightbulb.company project domain
+        run: vercel domains add dev.thelightbulb.company frontend --force
+          --token="$VERCEL_TOKEN"
         env:
           VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
           VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
           VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
-      - name: Alias to admin.dev.flickmeon.ai
+      - name: Register admin.dev.thelightbulb.company project domain
+        run: vercel domains add admin.dev.thelightbulb.company frontend --force
+          --token="$VERCEL_TOKEN"
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+      - name: Alias to dev.thelightbulb.company
         run: vercel alias ${{ steps.vercel-deploy-dev.outputs.DEPLOY_URL }}
-          admin.dev.flickmeon.ai --token=$VERCEL_TOKEN
+          dev.thelightbulb.company --token=$VERCEL_TOKEN
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+      - name: Alias to admin.dev.thelightbulb.company
+        run: vercel alias ${{ steps.vercel-deploy-dev.outputs.DEPLOY_URL }}
+          admin.dev.thelightbulb.company --token=$VERCEL_TOKEN
         env:
           VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
           VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}

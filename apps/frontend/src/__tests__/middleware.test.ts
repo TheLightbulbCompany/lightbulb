@@ -38,10 +38,15 @@ describe('domain config', () => {
   });
 
   it('admits the company host of EVERY product domain currently served', () => {
-    for (const d of ['flickmeon.ai']) {
+    for (const d of ['flickmeon.ai', 'thelightbulb.company']) {
       expect(PAPERCLIP_HOSTS).toContain(`company.${d}`);
       expect(PAPERCLIP_HOSTS).toContain(`dev.company.${d}`);
     }
+  });
+
+  it('admits the admin hosts of the domain dev moved to', () => {
+    expect(DEFAULT_ADMIN_HOSTS).toContain('admin.dev.thelightbulb.company');
+    expect(DEFAULT_ADMIN_HOSTS).toContain('admin.thelightbulb.company');
   });
 
   it('admits no duplicates', () => {

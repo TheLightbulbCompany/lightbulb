@@ -16,3 +16,8 @@ def test_the_lifespan_can_be_entered_twice_in_one_process(app):
 
 def test_the_mcp_door_answers_503_outside_a_lifespan(app):
     assert TestClient(app).post("/mcp", json={}).status_code == 503
+
+
+def test_an_unknown_path_is_still_a_404_outside_a_lifespan(app):
+    # The door is mounted at "/": it must not turn every unrouted path into a 503.
+    assert TestClient(app).get("/api/v1/no-such-route").status_code == 404

@@ -1,0 +1,32 @@
+# D Different goals; one is answered by another human (routing rows D01, D02, D12).
+- id: D-dev-01
+  condition: D
+  cast: [maya, leo]
+  agents: {ceo: active, finance: active, engineering: active}
+  steps:
+    - as: maya
+      say: "what's our MRR and how many paying customers do we have?"
+    - as: leo
+      after: 5
+      say: "MRR is 42k as of yesterday"
+      expect:
+        responder: finance
+        goal: open
+        must_not_restate: [1]
+        judge: "Exactly one agent replies. It answers (or says it can't see) the paying-customer count, and does not repeat Leo's 42k MRR as new information; agreeing with or crediting Leo is fine."
+- id: D-dev-02
+  condition: D
+  cast: [maya, leo]
+  agents: {ceo: active, finance: active, engineering: active}
+  steps:
+    - as: maya
+      say: "where do the brand assets live?"
+    - as: leo
+      after: 3
+      say: "they're in the Brand folder on Drive"
+      expect:
+        responder: null
+        goal: answered
+        must_not_restate: [1]
+        judge: "No agent posts an answer that repeats where the brand assets are."
+      note: "known failing when Jev dispatches before Leo answers: no pre-post re-check"

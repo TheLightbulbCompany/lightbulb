@@ -1,0 +1,23 @@
+# B Shared goal: a request split across two speakers (routing rows B01a/b, B11).
+- id: B-dev-01
+  condition: B
+  cast: [maya, leo]
+  agents: {ceo: active, finance: active, engineering: active}
+  steps:
+    - as: maya
+      say: "So we're trying to work out"
+      expect:
+        responder: null
+        goal: open
+    - as: leo
+      after: 4
+      say: "whether we can afford two more engineers this quarter"
+      expect:
+        responder: finance
+        goal: open
+        judge: "Exactly one reply, from Finance, that treats the two lines as ONE shared question from both people (it may address both), and does not ask each person to confirm separately."
+    - as: maya
+      say: "perfect, thanks"
+      expect:
+        responder: null
+        goal: closed

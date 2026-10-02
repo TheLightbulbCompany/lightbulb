@@ -1,0 +1,34 @@
+# A Helpful companion: one person states another's need (routing rows A01, A17, A08).
+- id: A-dev-01
+  condition: A
+  cast: [maya, leo]
+  agents: {ceo: active, finance: active, engineering: active}
+  steps:
+    - as: maya
+      say: "{leo} needs last month's burn for the board deck tomorrow. Does anyone have it?"
+      expect:
+        responder: finance
+        goal: open
+        judge: "Finance answers or offers to pull last month's burn, and treats it as Leo's need (it may address Leo). It does not ask Maya why she wants it. Saying it lacks the data and asking where to find it is acceptable."
+    - as: leo
+      say: "thanks, that's what I needed"
+      expect:
+        responder: null
+        goal: closed
+- id: A-dev-02
+  condition: A
+  cast: [aden, maya]
+  agents: {ceo: active, finance: active, engineering: active}
+  steps:
+    - as: aden
+      say: "{maya} needs the Acme invoice resent, they say they never got it"
+      expect:
+        responder: finance
+        goal: open
+        judge: "Finance takes up resending the Acme invoice (or says what it needs to do it) for Maya; one agent only."
+    - as: maya
+      say: "actually never mind, I found it in my spam folder"
+      expect:
+        responder: null
+        goal: closed
+        judge: "No agent replies, or at most one brief acknowledgement. Nobody keeps working on the invoice."

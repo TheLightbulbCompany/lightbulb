@@ -1,0 +1,54 @@
+# Memory and context across turns and threads. Compaction survival is a TODO (README).
+- id: M-dev-01
+  condition: memory
+  description: recall an earlier turn
+  cast: [maya, leo]
+  agents: {ceo: active, finance: active, engineering: active}
+  steps:
+    - as: maya
+      say: "@{finance} note for the board deck: burn last month was $82k"
+      expect: {responder: finance}
+    - as: leo
+      say: "lunch at 1?"
+    - as: maya
+      say: "yes"
+    - as: leo
+      say: "@{finance} what burn number did Maya give you?"
+      expect:
+        responder: finance
+        must_reference: ["82"]
+        judge: "Finance recalls $82k and attributes it to Maya."
+- id: M-dev-02
+  condition: memory
+  description: a fact stated while the agent was NOT addressed (observe/mentions), asked later
+  cast: [maya, leo]
+  agents: {ceo: mentions, finance: mentions, engineering: mentions}
+  steps:
+    - as: maya
+      say: "FYI everyone, the Brightline renewal moved to March 1st"
+      expect: {responder: null}
+    - as: leo
+      say: "@{finance} when does Brightline renew?"
+      expect:
+        responder: finance
+        must_reference: ["March"]
+        judge: "Finance answers March 1st, using what Maya said earlier in the room (it may credit Maya)."
+- id: M-dev-03
+  condition: memory
+  description: a goal set in a thread and answered in the main conversation
+  cast: [maya, leo]
+  agents: {ceo: mentions, finance: mentions, engineering: mentions}
+  steps:
+    - as: maya
+      say: "@{finance} I need Acme's renewal date for the forecast"
+      expect: {responder: finance}
+    - as: leo
+      say: "btw Acme renews November 15th, just confirmed with their CFO"
+      expect: {responder: null}
+    - as: maya
+      thread: 0
+      say: "@{finance} did you get the renewal date?"
+      expect:
+        responder: finance
+        must_reference: ["15"]
+        judge: "Finance confirms November 15th using Leo's message in the main conversation, without asking for it again."

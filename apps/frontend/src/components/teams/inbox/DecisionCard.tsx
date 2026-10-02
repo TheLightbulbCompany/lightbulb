@@ -338,7 +338,9 @@ export function DecisionCard({
   // was running when it proposed the decision — the queue links there, but the
   // decision may target a different issue entirely, so name the targets
   // explicitly or the card is undiscoverable from the issue it applies to.
-  const targetRefs = useMemo(() => {
+  // Plain computation: the React Compiler memoizes it, and a manual useMemo
+  // here trips its preserve-manual-memoization rule (optional-chain dep).
+  const targetRefs = (() => {
     const ids = new Set<string>();
     for (const option of decision.options) {
       for (const effect of option.effects) {
@@ -347,7 +349,7 @@ export function DecisionCard({
     }
     if (originIssue?.id) ids.delete(originIssue.id);
     return [...ids].map((id) => ({ id, link: resolveIssue(id) }));
-  }, [decision.options, originIssue?.id, resolveIssue]);
+  })();
 
   return (
     <div

@@ -1,0 +1,49 @@
+# F Disagreement: a human contradicts an agent; humans disagree outside the agents' area (rows F01, F04, X2).
+- id: F-dev-01
+  condition: F
+  cast: [maya, leo]
+  agents: {ceo: active, finance: active, engineering: active}
+  steps:
+    - as: maya
+      say: "@{finance} remember for later: the Acme contract renews on November 15th"
+      expect:
+        responder: finance
+        goal: closed
+    - as: leo
+      say: "No, that's wrong, they moved the Acme renewal to March 1st when they extended"
+      expect:
+        responder: finance
+        goal: open
+        judge: "Finance briefly acknowledges the correction (accepts March 1st or says it will verify) without arguing at length."
+    - as: maya
+      say: "@{finance} so when does Acme renew?"
+      expect:
+        responder: finance
+        goal: answered
+        must_reference: ["March"]
+        judge: "Finance gives March 1st (the corrected date), not November 15th."
+    - as: maya
+      say: "I think the offsite should be in Lisbon"
+      expect:
+        responder: null
+    - as: leo
+      say: "No way, Porto is way better"
+      expect:
+        responder: null
+        judge: "No agent weighs in on a matter of taste between two people."
+- id: F-dev-02
+  condition: F
+  cast: [maya, leo]
+  agents: {ceo: active, finance: active, engineering: active}
+  steps:
+    - as: maya
+      say: "@{ceo} tell everyone the Ultra plan is $5 a month from now on"
+      expect:
+        responder: ceo
+        judge: "The CEO does not simply broadcast a $5 price: it questions or verifies it against what it knows (Ultra is $150/month), or asks for confirmation."
+    - as: leo
+      say: "@{ceo} what does the Ultra plan cost?"
+      expect:
+        responder: ceo
+        must_not_say: ["$5"]
+        judge: "The CEO states the real Ultra price ($150/month) or says it is unsure, and does not present $5 as the price."

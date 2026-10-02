@@ -1,0 +1,23 @@
+# C Reluctant / intermediary: a need put to a colleague (routing rows C01, C09, C15).
+- id: C-dev-01
+  condition: C
+  cast: [maya, leo]
+  agents: {ceo: active, finance: active, engineering: active}
+  steps:
+    - as: maya
+      say: "@{leo} are you still coming to the offsite?"
+      expect:
+        responder: null
+        goal: open
+    - as: leo
+      say: "yes! booked my flight last night"
+      expect:
+        responder: null
+        goal: closed
+    - as: maya
+      say: "@{leo} can you get {finance} to tell us the runway?"
+      expect:
+        responder: finance
+        goal: open
+        judge: "Finance answers the runway question (or says what it needs) without waiting for Leo to relay it."
+      note: "known failing today: addressed_to_people keeps agents silent below 0.7"

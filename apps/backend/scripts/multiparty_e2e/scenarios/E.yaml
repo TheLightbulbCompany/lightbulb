@@ -1,0 +1,19 @@
+# E Missing info: the agent lacks X, a human supplies X, the same agent continues (routing rows E01-E04).
+- id: E-dev-01
+  condition: E
+  cast: [maya, leo]
+  agents: {ceo: active, finance: active, engineering: active}
+  steps:
+    - as: maya
+      say: "@{finance} what did we spend on our biggest vendor last month?"
+      expect:
+        responder: finance
+        goal: open
+        judge: "Finance either answers with a specific vendor and amount it can actually see, or asks which vendor or where to look. It must not invent a vendor or a number."
+    - as: leo
+      say: "it's AWS, the bill was $14,200"
+      expect:
+        responder: finance
+        goal: answered
+        must_reference: ["14"]
+        judge: "Finance (and only Finance) continues using Leo's figure: acknowledges AWS at $14,200 and moves the task forward, without asking again."

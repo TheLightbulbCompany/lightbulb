@@ -1970,8 +1970,13 @@ def _observe_prompt(agent_id: str, body: dict) -> str:
             "current message; it is not necessarily addressed to you. Lines tagged with your own id "
             "are messages you posted from elsewhere (a routine, a call, another conversation).\n"
             "- Treat only the current new message as a request explicitly directed at you, "
-            "and use observed context only when the current message asks for it."
-            + ("\n- If this message doesn't need anything from you, reply exactly [SILENT] and nothing else."
+            "and use observed context only when the current message asks for it.\n"
+            # Routing v2 §3 "Disagreement / 'we' / group ack" and §12.9.
+            "- If someone states a fact you know is wrong, correct it once and cite your source.\n"
+            "- A request phrased as \"we\" belongs to the whole group: give one reply for everyone.\n"
+            "- One person's yes or thanks answers for the whole group; do not wait for the others."
+            + ("\n- If a question to the room is one you can't answer, say so briefly and name who can."
+               "\n- If this message doesn't need anything from you, reply exactly [SILENT] and nothing else."
                if body.get("eventKind") == "room_event" else ""))
 
 
@@ -2723,7 +2728,13 @@ def _converse(agent, agent_id: str, session_key: str, run_id: str | None, body: 
                 conversation_history=result.get("messages") or None,
             )
         if replies:
-            result["final_response"] = "\n\n".join(r for r in (*replies, result.get("final_response")) if r)
+            parts = [*replies, result.get("final_response") or ""]
+            if body.get("eventKind") == "room_event":
+                # An ambient run may stand down after a steer (routing v2 §4.1): a [SILENT] last
+                # pass drops the whole reply (the session keeps the stand-down); an earlier
+                # [SILENT] pass is only a marker, never posted next to a real answer.
+                parts = parts[-1:] if _is_silence(parts[-1]) else [p for p in parts if not _is_silence(p)]
+            result["final_response"] = "\n\n".join(p for p in parts if p)
         return result
     finally:
         if key_token is not None:

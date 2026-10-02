@@ -2014,12 +2014,13 @@ async def test_a_hold_that_lands_after_the_speakers_next_final_is_dropped(capsys
     await h.on_participants({"u1": "Prasiddha"})
     backend.jev_to, backend.route_extra, backend.route_gate = "forge", {"hold": True}, asyncio.Event()
     slow = backend.route_gate
-    await h.on_final_transcript("u1", "Prasiddha", "about the invoices")  # /route is still deciding
+    await h.on_final_transcript("u1", "Prasiddha", "about the invoices")
+    await asyncio.sleep(0)  # /route is asked and is still deciding...
     backend.route_extra, backend.route_gate = {}, None
-    await say(h, "u1", "are they paid")  # ...when the rest arrives: it routes on its own
-    assert backend.turns[0]["utterance"] == "are they paid"
+    await h.on_final_transcript("u1", "Prasiddha", "are they paid")  # ...when the rest arrives: it routes on its own
     slow.set()
     await settle(h)
+    assert backend.turns[0]["utterance"] == "are they paid"
     assert h._held == {} and metric_count(capsys, "live.route.hold_stale") == 1  # nothing stale to merge later
     await h.end_exchange()
 

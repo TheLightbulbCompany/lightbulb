@@ -477,6 +477,8 @@ class CanonicalMessage(ContractModel):
     created_at: datetime
     run_id: str | None
     via: Literal["lightbulb_mcp"] | None = None
+    # An agent reply's trigger message (the `to` edge Jev reads on agent lines); absent otherwise.
+    in_reply_to: str | None = None
     # The agents this message addresses -- a `user_request` dispatch target
     # (an @mention, a name-addressed open, or a DM), not a `room_event` ambient
     # candidate: those are merely eligible for Jev to route, and Jev picks at
@@ -498,6 +500,9 @@ class CanonicalMessage(ContractModel):
         result = handler(self)
         if self.via is None:
             result.pop("via", None)
+        if self.in_reply_to is None:
+            result.pop("inReplyTo", None)
+            result.pop("in_reply_to", None)
         if not self.session_sends:
             result.pop("sessionSends", None)
             result.pop("session_sends", None)
@@ -1143,6 +1148,7 @@ def canonical_message(item: dict[str, Any], *, original_request: bool = False) -
         created_at=item["createdAt"],
         run_id=item.get("runId"),
         via=item.get("via"),
+        in_reply_to=item.get("inReplyTo"),
         addressed_agent_ids=[
             t["agentId"]
             for t in item.get("dispatchTargets") or []
@@ -2646,36 +2652,239 @@ async def _answered_human_message(
     return None
 
 
-#: How a message opens when it speaks to a teammate by name without the @: "Hey Friday, ...",
-#: "Friday, ...", "Friday can you ...". Only the opening counts, so "ship it by Friday" and
-#: "thanks Friday" name nobody here (Jev judges those). The starter roster's names are ordinary
-#: words, so the name must be FOLLOWED like an address: "Growth: 5% WoW", "hi engineering is
-#: down again" and "Hey growth team" are not one.
-#: ponytail: one name, at the start. "Friday and Forge, ..." wakes nobody here and
-#: "Finance, Growth and Engineering ..." wakes Finance alone; match a name list if people
-#: write that way.
+# --------------------------------------------------------------------------- addressing stage
+#
+# Routing v2 §3.1 (docs/superpowers/specs/2026-10-02-voice-architecture-v2-design.md): who a human's
+# message speaks TO, decided once, before targets are picked. Chat (create_human_message) and Live
+# (voice_calls.route_live_line) both call ``address``. A name anywhere is a candidate; one Jev call
+# labels each, with a deterministic fast path and fallback. Measured: bench [AX] cued recall
+# 0.62/0.56 -> 1.00/1.00, false-speak flat.
+
+#: The opening grammar of an address ("Hey Friday, ...", "Friday can you ..."): the fast path's test.
 _NAME_GREETING = r"(?:(?:hey|hi|hello|yo)[\s,]+)?"
 _NAME_FOLLOW = r"(?:\s*,|\s+[-–—]\s|\s+(?:can|could|would|will)\s+(?:you|u)\b|\s+please\b)"
+_STRONG_LEAD = r"\s*(?:hey|ok|okay)[\s,]+@?"
+#: Our agents' names collide with weekdays ("Friday"): never a fast path, never addressed on a fallback.
+WEEKDAYS = frozenset({"monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"})
+#: A weekday used as a day: "by Friday", "next Friday", "Friday at 3", "Friday, we ship the beta".
+_DAY_USE = (
+    r"(?:\b(?:on|by|until|till|before|after|this|next|last|every|from)\s+{day}\b"
+    r"|\b{day}(?:'s)?\s+(?:morning|afternoon|evening|night|at\b|\d)"
+    r"|\b{day}[\s,:-]+(?:we|we'll|we're|let's|i'll|everyone)\s+(?:\w+\s+){{0,2}}?"
+    r"(?:ship|launch|release|deploy|meet|demo|present|freeze|start|kick|wrap|close|review|finish|cut|go\s+live)\b)"
+)
+ADDRESSING_TIMEOUT_S = 2.0
+#: Below this P(complete) a Live line is held for the speaker's next final; chat routes anyway.
+HOLD_BELOW = 0.5
+ADDRESS_INSTRUCTIONS = (
+    "People and AI teammates share this chat. For the one name given, decide how the LATEST message "
+    "uses it. addressed: the message speaks TO them, at the start, middle or end: calls, greets, asks "
+    "or tells them something ('Friday, ...', 'Hey guys, hey Friday', 'What do you think, Finance?'). "
+    "relayed: someone else is asked to get them to act, or they are proposed for the job ('@leo can "
+    "you get Finance to tell us the runway?': Finance relayed, Leo addressed; 'Leo wants to know from "
+    "Pulse ...': Pulse relayed; 'let's have Pulse draft it': Pulse relayed). mentioned: talked about, "
+    "thanked, or told NOT to act, with nothing asked of them ('Friday said it was fine', 'thanks "
+    "Friday', 'Not you Friday, Atlas, can you check?': Friday mentioned, Atlas addressed). "
+    "not_a_name: the word is not this teammate or person here, but a weekday, a date or a common "
+    "word ('Friday, we ship the beta' is the day; 'by Friday'; 'Pulse check'; 'Forge ahead')."
+)
+ADDRESS_LABELS = {
+    "addressed": "Spoken to: called, greeted, asked or told something",
+    "relayed": "Someone else is asked to get them to do it, or they are proposed to do it",
+    "mentioned": "Talked about, thanked, or told not to act; nothing asked of them",
+    "not_a_name": "Not this teammate or person: a weekday, date or common word",
+}
+COMPLETE_INSTRUCTIONS = (
+    "Is the latest message a finished thought? No only when the speaker stopped mid-sentence and is "
+    "still typing or talking ('Friday, we're trying to', 'we were hoping someone could', 'so the "
+    "thing is'). Short messages ('hey', 'thanks Friday', 'Friday, are you there?') are finished."
+)
+ANYONE_INSTRUCTIONS = (
+    "Apart from what it asks of the people or teammates it names, does the latest message also put "
+    "a separate question or request to the room in general, to nobody in particular? ('how's the "
+    "burn looking, and Ana, did you book the room?': yes; 'Ana, can you send me the contract?': no; "
+    "'Ana, can you ask Gauge for the cohort numbers?': no)"
+)
 
 
-def _addressed_by_name(text: str, members: list[dict], kind: str = "agent") -> set[str]:
-    """Members of ``kind`` the message opens by speaking to. A name two of them share addresses neither.
-    A person is also addressed by first name ("Aden, ..."): Live hears names, not @handles."""
-    by_name: dict[str, set[str]] = {}
+def _soundex(word: str) -> str:
+    """The Live worker's soundex (apps/huddle-agent transcript.py), so a mis-heard name matches the same way."""
+    letters = [c for c in word.lower() if c.isalpha()]
+    if not letters:
+        return ""
+    code = lambda c: next((str(d) for d, g in enumerate(("bfpv", "cgjkqsxz", "dt", "l", "mn", "r"), 1) if c in g), "")  # noqa: E731
+    out, prev = letters[0].upper(), code(letters[0])
+    for c in letters[1:]:
+        d = code(c)
+        if d and d != prev:
+            out += d
+        if c not in "hw":
+            prev = d
+    return (out + "000")[:4]
+
+
+def _tokens(text: str) -> list[str]:
+    return re.findall(r"[a-z0-9']+|[^\s\-a-z0-9']", text.lower())
+
+
+def _fuzzy(said: tuple[str, ...], name: tuple[str, ...]) -> bool:
+    """The worker's STT-tolerant match ("Forj" is Forge, "Guys" is not Gauge). ponytail: a port of
+    huddle_agent.transcript._fuzzy (the backend cannot import the worker); keep the two in step."""
+    from difflib import SequenceMatcher
+
+    if sum(len(w) for w in name) < 4:
+        return False
+    s, n = " ".join(said), " ".join(name)
+    ratio = SequenceMatcher(None, s, n).ratio()
+    if ratio >= 0.8:
+        return True
+    return ratio >= 0.6 and abs(len(s) - len(n)) <= 1 and all(_soundex(a) == _soundex(b) for a, b in zip(said, name))
+
+
+def _member_names(member: dict) -> set[str]:
+    display = member.get("displayName") or ""
+    names = {display, member.get("mentionHandle") or ""}
+    if member.get("kind") == "human" and display.split():
+        names.add(display.split()[0])
+    return {n for n in names if n}
+
+
+def address_candidates(text: str, members: list[dict], *, live: bool = False) -> list[dict]:
+    """Every agent and person named anywhere in ``text``: ``[{name, agents, humans, pos}]`` in text
+    order, one per distinct name (a first name an agent shares is one candidate of both kinds).
+    Chat matches whole words and @handles; Live also matches the worker's fuzzy/soundex way."""
+    found: dict[str, dict] = {}
+    tokens = _tokens(text) if live else []
     for member in members:
-        if member.get("kind") == kind:
-            display = member.get("displayName")
-            first = display.split()[0] if kind == "human" and isinstance(display, str) and display.split() else None
-            for name in {display, member.get("mentionHandle"), first}:
-                if isinstance(name, str) and name:
-                    by_name.setdefault(name.lower(), set()).add(member["id"])
-    opening = text.lstrip()
-    found: set[str] = set()
-    for name, ids in by_name.items():
-        pattern = rf"{_NAME_GREETING}@?{re.escape(name)}(?![\w-]){_NAME_FOLLOW}"
-        if len(ids) == 1 and re.match(pattern, opening, re.IGNORECASE):
-            found |= ids
-    return found
+        if member.get("kind") not in ("agent", "human"):
+            continue
+        for name in _member_names(member):
+            hit = re.search(rf"(?<![\w-]){re.escape(name)}(?![\w-])", text, re.I)
+            pos = hit.start() if hit else None
+            if pos is None and live:
+                words = tuple(_tokens(name))
+                # ponytail: token index as position; fine for ordering, Live only
+                pos = next(
+                    (i * 1000 for i in range(len(tokens)) if _fuzzy(tuple(tokens[i : i + len(words)]), words)), None
+                )
+            if pos is None:
+                continue
+            display = member.get("displayName") or name
+            key = (display.split()[0] if member["kind"] == "human" else display).lower()
+            row = found.setdefault(key, {"name": key, "agents": [], "humans": [], "pos": pos})
+            row["pos"] = min(row["pos"], pos)
+            kind = "agents" if member["kind"] == "agent" else "humans"
+            if member["id"] not in row[kind]:
+                row[kind].append(member["id"])
+            break
+    return sorted(found.values(), key=lambda row: row["pos"])
+
+
+def _opens_with(text: str, name: str, *, strong: bool = False) -> bool:
+    lead = _STRONG_LEAD if strong else rf"\s*{_NAME_GREETING}@?"
+    follow = r"(?![\w-])" if strong else rf"(?![\w-]){_NAME_FOLLOW}"
+    return re.match(rf"{lead}{re.escape(name)}{follow}", text, re.I) is not None
+
+
+def _fast_path(text: str, cands: list[dict], live: bool) -> str | None:
+    """One agent named, at the opening, in a finished message of 4+ words: addressed with no call."""
+    if len(cands) != 1 or len(cands[0]["agents"]) != 1 or cands[0]["humans"] or cands[0]["name"] in WEEKDAYS:
+        return None
+    if len(text.split()) < 4 or (not live and not re.search(r"[.?!]\s*$", text)):
+        return None
+    return cands[0]["agents"][0] if _opens_with(text, cands[0]["name"]) else None
+
+
+async def _label(latest: dict, cands: list[dict], members: list[dict], history: list[dict], live: bool) -> dict | None:
+    """The one Jev call: ``{labels: {name: label}, complete: p, anyone: p}``, or None on any failure."""
+    from core.services import jev
+
+    questions = {
+        "complete": {"type": "boolean", "instructions": COMPLETE_INSTRUCTIONS},
+        "anyone": {"type": "boolean", "instructions": ANYONE_INSTRUCTIONS},
+    }
+    for i, c in enumerate(cands):
+        kind = (
+            "both a person and an AI teammate here"
+            if c["agents"] and c["humans"]
+            else "an AI teammate"
+            if c["agents"]
+            else "a person in the room"
+        )
+        questions[f"n{i}"] = {
+            "type": "choice",
+            "instructions": f"{ADDRESS_INSTRUCTIONS} The name: '{c['name']}' ({kind}).",
+            "criteria": ADDRESS_LABELS,
+        }
+    state = {
+        "room": {
+            "kind": "call" if live else "chat",
+            "people": [m.get("displayName") for m in members if m.get("kind") == "human"],
+            "aiTeammates": [m.get("displayName") for m in members if m.get("kind") == "agent"],
+        },
+        "recent": [jev._line(m) for m in history[-6:]],
+        "latest": jev._line(latest),
+    }
+    try:
+        answers = await asyncio.wait_for(jev.decide(state, questions), ADDRESSING_TIMEOUT_S)
+        return {
+            "labels": {c["name"]: answers[f"n{i}"]["choice"] for i, c in enumerate(cands)},
+            "complete": float(answers["complete"]["probability"]),
+            "anyone": float(answers["anyone"]["probability"]),
+        }
+    except Exception:  # noqa: BLE001 -- a timeout, a 429 string, a malformed answer: the fallback decides
+        return None
+
+
+async def address(latest: dict, members: list[dict], *, history: Any = (), live: bool = False) -> dict:
+    """Who a human's ``latest`` message speaks to. ``{agents, humans, hold, anyone, path}``:
+    ``agents`` addressed or relayed (all of them respond, like several @mentions), ``humans``
+    addressed, ``hold`` (Live waits for the speaker's next final), ``anyone`` (something is asked
+    of the room beyond the named, so the to-people silence rule does not apply). ``history`` is the
+    rows before it, or an async loader called only when the Jev call happens."""
+    text = str(latest.get("text") or "")
+    out: dict = {"agents": [], "humans": [], "hold": False, "anyone": False, "path": "none"}
+    cands = address_candidates(text, members, live=live)
+    mentioned = {ref.get("id") for ref in latest.get("mentions") or [] if ref.get("kind") == "agent"}
+    if not cands or all(c["agents"] and set(c["agents"]) <= mentioned and not c["humans"] for c in cands):
+        # Nobody named, or only @mentioned agents (addressed anyway): today's path, no call.
+        return out
+    if (agent := _fast_path(text, cands, live)) is not None:
+        out |= {"agents": [agent], "path": "fast"}
+        put_metric("messaging.addressing.stage", dimensions={"path": "fast", "surface": "live" if live else "chat"})
+        return out
+    result = await _label(latest, cands, members, list(await history() if callable(history) else history), live)
+    if result is None:
+        # A safe fallback, not a substitute ([AX] (c): the common-word false-speaks come back).
+        labels = {
+            c["name"]: "not_a_name" if c["name"] in WEEKDAYS else "addressed" if c["agents"] else "mentioned"
+            for c in cands
+        }
+        result, out["path"] = {"labels": labels, "complete": 1.0, "anyone": 0.0}, "fallback"
+    else:
+        out["path"] = "jev"
+    out["hold"] = result["complete"] < HOLD_BELOW
+    out["anyone"] = result["anyone"] >= 0.5
+    for c in cands:
+        label = result["labels"][c["name"]]
+        if c["name"] in WEEKDAYS and re.search(_DAY_USE.format(day=c["name"]), text, re.I):
+            label = "not_a_name"  # domain knowledge, not a model call: our names are weekdays
+        if label not in ("addressed", "relayed"):
+            continue
+        # A name a person shares goes to the person unless the text opens "hey/ok <name>".
+        if c["agents"] and (not c["humans"] or (label == "addressed" and _opens_with(text, c["name"], strong=True))):
+            out["agents"] += [a for a in c["agents"] if a not in out["agents"]]
+        elif label == "addressed":
+            out["humans"] += c["humans"]
+    put_metric("messaging.addressing.stage", dimensions={"path": out["path"], "surface": "live" if live else "chat"})
+    return out
+
+
+def _stored_addressing(addressing: dict | None) -> dict | None:
+    """What dispatch reads later, on the MSG row: only when the stage named someone."""
+    if not addressing or addressing["path"] == "none":
+        return None
+    return {"people": addressing["humans"], "anyone": addressing["anyone"]}
 
 
 def select_dispatch_targets(
@@ -2684,10 +2893,10 @@ def select_dispatch_targets(
     source_agent_id: str | None,
     *,
     room_kind: str | None = None,
-    text: str = "",
     session_addressed: bool = False,
 ) -> list[dict]:
-    mentioned = {ref["id"] for ref in mentions if ref.get("kind") == "agent"} | _addressed_by_name(text, members)
+    """``mentions`` carries the agents a message speaks to: its @mentions plus ``address``'s agents."""
+    mentioned = {ref["id"] for ref in mentions if ref.get("kind") == "agent"}
     targets: dict[str, EventKind] = {}
     for member in sorted(members, key=lambda row: (row.get("kind", ""), row.get("id", ""))):
         if member.get("kind") != "agent" or member.get("id") == source_agent_id:
@@ -2712,6 +2921,30 @@ def select_dispatch_targets(
         # (prod 2026-09-27: "@friday ..." ran Friday and a Listening Pulse).
         targets = {agent_id: kind for agent_id, kind in targets.items() if kind == "user_request"}
     return [{"agentId": agent_id, "eventKind": event_kind} for agent_id, event_kind in sorted(targets.items())]
+
+
+#: ``messaging.jev.missed`` (routing v2 §10): Jev answered "none" to a person, who then @mentioned an
+#: agent within this window -- the chat miss rate.
+_JEV_MISS_WINDOW_S = 120
+
+
+async def _count_jev_miss(room_id: str, user_id: str, item: dict) -> None:
+    try:
+        rows = await messaging_repo.list_messages_before(room_id, int(item["messageSeq"]), 10)
+        now = datetime.fromisoformat(str(item["createdAt"]).replace("Z", "+00:00"))
+        for row in reversed(rows):
+            author = row.get("author") or {}
+            if author.get("kind") != "human" or author.get("id") != user_id:
+                continue
+            then = datetime.fromisoformat(str(row["createdAt"]).replace("Z", "+00:00"))
+            kinds = {t.get("eventKind") for t in row.get("dispatchTargets") or []}
+            if (now - then).total_seconds() <= _JEV_MISS_WINDOW_S and kinds == {"room_event"}:
+                decision = await messaging_repo.get_decision(room_id, row["messageId"])
+                if decision and decision.get("who") == "none" and not decision.get("forced"):
+                    put_metric("messaging.jev.missed")
+            return
+    except Exception:  # noqa: BLE001 -- a metric never fails a send
+        logger.info("jev miss check failed", exc_info=True)
 
 
 async def _validate_mentions(room_id: str, mentions: list[MemberRef]) -> list[dict]:
@@ -2802,8 +3035,30 @@ async def create_human_message(
         str(request.reply_to_message_id) if request.reply_to_message_id else None,
         str(request.thread_root_message_id) if request.thread_root_message_id else None,
     )
+    author = author_override or (
+        {
+            "kind": "system",
+            "id": native_source_id,
+            "displayName": "Codex session" if native_provider == "codex" else "Claude Code session",
+        }
+        if native_source_id
+        else {"kind": "human", "id": auth.user_id, "displayName": await human_display_name(auth.user_id)}
+    )
+    addressing = None
+    if meta.get("kind") != "dm":
+        # Who the text speaks to (routing v2 §3.1). Chat never holds: an unfinished message routes
+        # anyway, and its continuation reaches the run as a steer.
+        addressing = await address(
+            {"author": author, "text": request.text, "mentions": mentions},
+            members,
+            history=lambda: messaging_repo.list_messages_before(room_id, int(meta.get("lastSeq") or 0) + 1, 6),
+        )
     targets = select_dispatch_targets(
-        members, mentions, None, room_kind=meta.get("kind"), text=request.text, session_addressed=bool(session_ids)
+        members,
+        mentions + [{"kind": "agent", "id": a} for a in (addressing or {}).get("agents", [])],
+        None,
+        room_kind=meta.get("kind"),
+        session_addressed=bool(session_ids),
     )
     if native_source_id:
         # A native agent's deliberate post does not wake every ambient listener.
@@ -2848,16 +3103,7 @@ async def create_human_message(
             idemp_pk=messaging_repo.room_pk(room_id),
             idemp_sk=idemp_sk,
             req_hash=req_hash,
-            author=author_override
-            or (
-                {
-                    "kind": "system",
-                    "id": native_source_id,
-                    "displayName": "Codex session" if native_provider == "codex" else "Claude Code session",
-                }
-                if native_source_id
-                else {"kind": "human", "id": auth.user_id, "displayName": await human_display_name(auth.user_id)}
-            ),
+            author=author,
             text=request.text,
             mentions=mentions,
             reply_to_message_id=str(request.reply_to_message_id) if request.reply_to_message_id else None,
@@ -2874,6 +3120,7 @@ async def create_human_message(
             expected_room_revision=int(meta["revision"]) if native_source_id else None,
             agent_hop=native_hop if native_source_id else None,
             extra_conditions=native_conditions if native_source_id else None,
+            addressing=_stored_addressing(addressing),
         )
     except messaging_repo.RoomArchived as exc:
         raise ApiProblem("ROOM_ARCHIVED", ROOM_ARCHIVED_MESSAGE) from exc
@@ -2927,6 +3174,8 @@ async def create_human_message(
                 owner_id=owner_id,
                 props={"reason": "no_targets", "room_kind": room_kind},
             )
+        if agent_mentions and not native_source_id:
+            await _count_jev_miss(room_id, auth.user_id, item)
     if session_ids and "sessionSends" not in item:
         from core.repositories import local_sessions_repo
         from core.services import local_sessions
@@ -3763,6 +4012,7 @@ async def create_agent_message(owner_id: str, request: AgentMessageRequest) -> A
             attachments=attachments,
             thread_root_seq=_root_seq(links, request.thread_root_message_id),
             agent_hop=hop,
+            in_reply_to=(trigger or {}).get("messageId"),
         )
     except messaging_repo.RoomArchived as exc:
         # Deliberate: a reply to a turn that began before the archive is refused too, so an

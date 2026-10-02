@@ -105,6 +105,18 @@ async def test_a_human_message_opening_with_an_agents_name_is_dispatched_to_it(m
     monkeypatch.setattr(messaging, "canonical_message", lambda item: item)
     monkeypatch.setattr(messaging.container_repo, "touch_last_interactive", AsyncMock())
     monkeypatch.setattr("core.services.onboarding_brief.capture_first_workspace_message", AsyncMock())
+    monkeypatch.setattr(messaging.messaging_repo, "list_messages_before", AsyncMock(return_value=[]))
+    # Routing v2 §3.1: "Friday" is a weekday, so no fast path; the addressing stage's Jev call labels it.
+    monkeypatch.setattr(
+        "core.services.jev.decide",
+        AsyncMock(
+            return_value={
+                "complete": {"probability": 0.95},
+                "anyone": {"probability": 0.1},
+                "n0": {"choice": "addressed"},
+            }
+        ),
+    )
 
     await create_human_message(
         auth,

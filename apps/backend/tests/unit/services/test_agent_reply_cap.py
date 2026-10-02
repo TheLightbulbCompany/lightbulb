@@ -92,3 +92,13 @@ async def test_a_capped_message_with_nobody_to_wake_posts_no_notice(room, create
     await messaging.create_agent_message(OWNER, _request("done", runId=RUN))
     message, notice = _writes(created)
     assert message["agent_hop"] == 2 and notice is None
+
+
+@pytest.mark.asyncio
+async def test_a_room_turn_reply_stores_its_trigger_as_in_reply_to(room, created):  # noqa: F811
+    """Routing v2 §5: the agent line's `to` edge (who it answered) is the run's trigger."""
+    room({**HUMAN, "messageId": "t1"})
+    await messaging.create_agent_message(OWNER, _request("numbers look fine", runId=RUN))
+    assert _writes(created)[0]["in_reply_to"] == "t1"
+    await messaging.create_agent_message(OWNER, _request("heartbeat note"))  # no run: no trigger
+    assert created.await_args_list[-1].kwargs["in_reply_to"] is None

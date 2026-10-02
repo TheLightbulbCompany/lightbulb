@@ -42,6 +42,16 @@ def _reset_shutdown_flag():
 
 
 @pytest.fixture(autouse=True)
+def _no_real_jev_key(monkeypatch):
+    """The addressing stage (messaging.address) calls Jev on any human message that names someone,
+    so a send in any test would read the real gateway key where AWS credentials exist. Default to
+    "no key" (Jev off: the stage's deterministic fallback); test_jev patches its own reads."""
+    from core.services import jev
+
+    monkeypatch.setattr(jev, "_read_secret", lambda name: None)
+
+
+@pytest.fixture(autouse=True)
 def _launch_settings_read_defaults():
     """Default every test to a launch-settings row that reads cleanly as
     "nothing saved yet" (feature off).

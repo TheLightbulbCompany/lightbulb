@@ -40,8 +40,10 @@ well as the business (their public presence tells you who you work for).
 
 # A link or hostname token. It only means "the owner's site" under the framing in
 # first_message_intake (a website prefix, or the whole message being the link).
+# Labels take any letter or digit (Unicode, so bücher.de counts); the last label is letters
+# or a punycode xn-- label (example.xn--p1ai), never digits, so "3.5" is not a site.
 _URL_RE = re.compile(
-    r"(https?://\S+|(?<![@\w.-])(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,24}\b(?:/\S*)?)",
+    r"(https?://\S+|(?<![@\w.-])(?:[^\W_](?:[^\W_-]{0,61}[^\W_])?\.)+(?:xn--[a-z0-9-]{2,59}|[^\W\d_]{2,24})\b(?:/\S*)?)",
     re.IGNORECASE,
 )
 #: The third pre-typed reply (apps/frontend/src/components/messaging/FirstReplyChips.tsx)

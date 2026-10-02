@@ -71,6 +71,14 @@ def _last_speaker(candidates: list[str], message: dict, history: list[dict]) -> 
     return None
 
 
+async def _human_spoke_since(meta: dict, message: dict) -> bool:
+    """A person posted in the room after ``message`` (read only when a forced dispatch asks)."""
+    if int(meta.get("lastSeq") or 0) <= int(message["messageSeq"]):
+        return False
+    rows, _ = await messaging_repo.list_messages(meta["roomId"], int(message["messageSeq"]), 20)
+    return any((row.get("author") or {}).get("kind") == "human" for row in rows)
+
+
 async def _fallback_single(owner_id: str, candidates: list[str], message: dict, history: list[dict]) -> str:
     """Jev down/undecided with >=2 room_event candidates (spec #2942): pick one deterministically
     instead of dispatching all of them -- whoever the person was already talking with, else the
@@ -171,9 +179,9 @@ def _emit_queue_wait(message: dict, kind: str) -> None:
 
 def _public_message(row: dict[str, Any]) -> dict[str, Any]:
     # The runtime ingress contract is separate from (and pinned tighter than) the
-    # client-facing HTTP/live-event message: addressedAgentIds is a read-state hint for
-    # the messaging API's own clients, not a field the bridge's ingress parser has ever
-    # seen -- leave it off rather than widen this wire contract too.
+    # client-facing HTTP/live-event message. addressedAgentIds (and inReplyTo, on agent
+    # replies) ride only when set: they are the `to` edges Jev reads off this same history
+    # (routing v2 §5); the bridge ignores them.
     message = canonical_message(row, original_request=True).model_dump(
         mode="json",
         by_alias=True,
@@ -183,11 +191,11 @@ def _public_message(row: dict[str, Any]) -> dict[str, Any]:
             "message_revision",
             "edited_at",
             "deleted_at",
-            "addressed_agent_ids",
         },
     )
-    if not message["attachments"]:
-        del message["attachments"]
+    for key in ("attachments", "addressedAgentIds"):
+        if not message[key]:
+            del message[key]
     return message
 
 
@@ -514,7 +522,8 @@ class OpenClawWorkWorker:
                 # the shared decision (the queue's own backoff is the wait).
                 put_metric("messaging.jev.route", dimensions={"outcome": "error_retry"})
                 raise WorkRetry("Jev routing errored; retrying to read the shared decision")
-            if decision is None or decision.get("fallback"):
+            forced = (decision or {}).get("forced")
+            if decision is None or decision.get("fallback") or forced:
                 if (message.get("author") or {}).get("kind") != "human":
                     # An agent's message with Jev unable to decide wakes nobody: the fallback
                     # below always picks someone, and the CEO-first pick made two agents answer
@@ -530,23 +539,30 @@ class OpenClawWorkWorker:
                     # also ran the lowest-id other active agent).
                     put_metric("messaging.jev.route", dimensions={"outcome": "fallback_addressed"})
                     return False
-                if jev.addressed_to_people(message, members):
+                if jev.speaks_to_people(message, members):
                     # Spoken to a person: without Jev nothing can judge whether a reply helps, and
                     # blind replies are what made a lone listener answer "8" and "@aden @leo" (prod
                     # 2026-09-27, Jev down). Silence is the default here.
                     put_metric("messaging.jev.route", dimensions={"outcome": "fallback_to_people"})
                     return False
+                if forced == "question" and await _human_spoke_since(meta, message):
+                    # A person already answered the room's question (routing v2 §12.9): Jev's "none" stands.
+                    put_metric("messaging.jev.route", dimensions={"outcome": "skipped"})
+                    return False
                 if len(candidates) >= 2:
-                    # Jev down or undecided with more than one candidate: dispatch exactly one
-                    # deterministic responder instead of every candidate independently (#2942).
+                    # Jev down or undecided with more than one candidate (or a "none" the policy
+                    # refused): dispatch exactly one deterministic responder (#2942).
                     chosen = await _fallback_single(owner_id, candidates, message, body.get("recentHistory") or [])
                     if member["id"] != chosen:
                         put_metric("messaging.jev.route", dimensions={"outcome": "skipped"})
                         return False
-                    put_metric("messaging.jev.route", dimensions={"outcome": "fallback_single"})
+                    put_metric("messaging.jev.route", dimensions={"outcome": "forced" if forced else "fallback_single"})
                 else:
                     # Jev down or undecided, and only one candidate: it runs, the bridge gate decides.
-                    put_metric("messaging.jev.route", dimensions={"outcome": "fallback"})
+                    put_metric("messaging.jev.route", dimensions={"outcome": "forced" if forced else "fallback"})
+                if forced:
+                    # Once per message: only the one agent that runs gets here.
+                    put_metric("messaging.jev.forced", dimensions={"reason": forced})
             elif decision.get("who") == member["id"]:
                 # ``who`` is final: jev already decided whether silence was clear.
                 put_metric("messaging.jev.route", dimensions={"outcome": "routed"})

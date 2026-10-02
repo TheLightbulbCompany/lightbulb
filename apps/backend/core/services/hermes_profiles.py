@@ -163,7 +163,9 @@ APPROVALS_DENY = ("rm -rf /", "mkfs*", "dd if=* of=/dev/*", ":(){:|:&};:")
 #: The ``TOOL_DENY_BASE`` port. canvas/music_generate have no Hermes toolset; cron is a switch
 #: (``cron.allow_agent_scheduling``, below), not a toolset (report 01 §2.7). dashboard has no
 #: equivalent switch this module emits at all — see the ``dashboard`` note below.
-_DISABLED_TOOLSETS = ("cronjob", "tts", "video_gen")
+#: clarify: the bridge wires no clarify callback, so Hermes's ask-the-user tool only answers "not
+#: available" and burns a step; the agent asks in its reply instead.
+_DISABLED_TOOLSETS = ("cronjob", "tts", "video_gen", "clarify")
 
 #: M4-R3: the opt-in is a flat allow-list (``plugins.enabled``), never ``plugins.entries`` —
 #: Hermes's ``hermes_cli/plugins_discovery.py::gate_manifest`` reads only ``plugins.enabled``.

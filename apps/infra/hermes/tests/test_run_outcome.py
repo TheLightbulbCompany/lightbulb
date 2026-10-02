@@ -39,6 +39,39 @@ def test_hermes_prose_from_a_dead_model_is_never_posted(api_calls, final, expect
     assert usage["inputTokens"] == 11
 
 
+@pytest.fixture
+def silence_filter(monkeypatch):
+    import sys
+    import types
+    rf = types.ModuleType("gateway.response_filters")
+    rf.is_intentional_silence_response = lambda r: r.strip() == "[SILENT]"
+    monkeypatch.setitem(sys.modules, "gateway", sys.modules.get("gateway") or types.ModuleType("gateway"))
+    monkeypatch.setitem(sys.modules, "gateway.response_filters", rf)
+
+
+@pytest.mark.parametrize("kind,expect", [
+    ("room_event", ("completed", turn.SILENT, "")),
+    ("user_request", ("error", "empty_response", "")),
+])
+def test_only_an_ambient_turn_may_stay_silent(kind, expect, silence_filter, monkeypatch):
+    monkeypatch.setattr(turn, "_construct_agent", lambda *a, **k: _FakeAgent(2, "[SILENT]"))
+    monkeypatch.setattr(turn.sync, "normalize_profile_backends", lambda _agent: None)
+    outcome, error_kind, reply, usage = turn._run_hermes(
+        "ceo", {"eventKind": kind, "message": {"text": "hi"}, "room": {"id": "x"}, "participants": []}, None)
+    assert (outcome, error_kind, reply) == expect
+    assert usage["inputTokens"] == 11
+
+
+def test_a_silent_completion_is_flagged_to_the_backend():
+    body = turn.run_ended_body("r1", "k", "completed", turn.SILENT, turn.ZERO_USAGE)
+    assert body["silent"] is True and "errorKind" not in body
+
+
+def test_only_room_event_turns_are_offered_silence():
+    assert "[SILENT]" in turn._observe_prompt("a", {"eventKind": "room_event"})
+    assert "[SILENT]" not in turn._observe_prompt("a", {"eventKind": "user_request"})
+
+
 def test_hermes_failed_result_is_not_completed_even_with_prose(monkeypatch):
     monkeypatch.setattr(
         turn, "_construct_agent",

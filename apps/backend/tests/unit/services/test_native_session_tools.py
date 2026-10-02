@@ -571,6 +571,7 @@ async def test_codex_owner_approval_dispatches_only_the_exact_prepared_send(monk
 
 @pytest.mark.asyncio
 async def test_native_send_denial_uses_a_valid_result_expression_and_never_dispatches(monkeypatch):
+    monkeypatch.setattr(tools, "capture_session_event", Mock())
     sid, request_id = str(uuid.uuid4()), str(uuid.uuid4())
     approval_id = "appr-0123456789abcdef0123456789abcdef"
     destination, body = "room:r", "private body"

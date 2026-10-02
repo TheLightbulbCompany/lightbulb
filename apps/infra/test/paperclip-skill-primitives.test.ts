@@ -443,10 +443,42 @@ describe("liveness primitives are documented", () => {
     expect(workModesMd).toContain("| `ask` |");
     expect(workModesMd).toContain("| `planning` |");
     expect(workModesMd).toContain('`key: "plan"`');
-    // The accepted-plan flip keys on the confirmation's plan-document target;
-    // the `confirm` helper sets none, so the reference must not route there.
-    expect(workModesMd).toContain("The `confirm` helper sets no `target`");
-    expect(workModesMd).toContain('raw POST "/api/issues/$PAPERCLIP_TASK_ID/interactions"');
+    // The accepted-plan flip keys on the confirmation's plan-document target,
+    // which only `confirm --plan` sets.
+    expect(workModesMd).toContain('confirm "$PAPERCLIP_TASK_ID" --plan --prompt');
+  });
+
+  it("binds a plan confirmation to the plan document's latest revision", () => {
+    // The stub answers the helper's GET with the plan document and echoes the
+    // POST body back, so this is the exact target Paperclip would receive.
+    const result = runHelperWithIssue(["confirm", "issue-1", "--plan", "--prompt", "Accept this plan?"], {
+      id: "doc-1",
+      issueId: "issue-uuid-1",
+      key: "plan",
+      latestRevisionId: "rev-3",
+      latestRevisionNumber: 3,
+    });
+
+    expect(result.status, result.stderr).toBe(0);
+    const sent = JSON.parse(result.stdout);
+    expect(sent.kind).toBe("request_confirmation");
+    expect(sent.payload.target).toEqual({
+      type: "issue_document",
+      key: "plan",
+      revisionId: "rev-3",
+      issueId: "issue-uuid-1",
+      documentId: "doc-1",
+      revisionNumber: 3,
+    });
+  });
+
+  it("sets no target without --plan, and shows the plan target's shape in a dry run", () => {
+    const plain = runHelper(["confirm", "issue-1", "--prompt", "Ship it?", "--dry-run"]);
+    expect(JSON.parse(plain.stdout).payload.target).toBeUndefined();
+
+    const plan = runHelper(["confirm", "issue-1", "--plan", "--prompt", "Accept this plan?", "--dry-run"]);
+    expect(plan.status, plan.stderr).toBe(0);
+    expect(JSON.parse(plan.stdout).payload.target).toMatchObject({ type: "issue_document", key: "plan" });
   });
 
   it("has no trace of the disabled/nonexistent external-objects endpoints", () => {

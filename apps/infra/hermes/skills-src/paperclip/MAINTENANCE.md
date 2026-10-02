@@ -245,8 +245,20 @@ ISOL8-LOCAL EDITS (deliberate; re-apply on re-vendor).
       loop. Load-bearing detail: acceptance flips `workMode` back to
       `standard` only when the `request_confirmation` targets issue document
       key `plan` (server/src/services/issue-thread-interactions.ts,
-      `acceptedPlanStartsExecution`); the `confirm` helper sets no target, so
-      the reference sends agents to `raw POST`. People pick the mode in the
-      web create dialog, the issue detail's Work mode row and the phone create
-      sheet. Re-apply on re-vendor, and re-read the directive text at the new
-      tag.
+      `acceptedPlanStartsExecution`), so the reference files the card with
+      `confirm --plan` (entry 21). People pick the mode in the web create
+      dialog, the issue detail's Work mode row and the phone create sheet.
+      Re-apply on re-vendor, and re-read the directive text at the new tag.
+  21. `confirm --plan` (the `confirm` helper subcommand +
+      references/{work-modes,comment-style,artifacts}.md): a plain `confirm`
+      card carries no `payload.target`, so accepting it never set
+      `acceptedPlanStartsExecution` and a planning-mode issue stayed in
+      planning after its plan was approved. `--plan` GETs
+      `/api/issues/{id}/documents/plan` and sets `payload.target` to
+      `{type: "issue_document", key: "plan", revisionId: <latestRevisionId>,
+      issueId, documentId, revisionNumber}` — `revisionId` is required by
+      `requestConfirmationIssueDocumentTargetSchema`
+      (packages/shared/src/validators/issue.ts) and upstream 422s one that is
+      not the document's latest, which is why the helper reads it instead of
+      taking it as an argument. Every plan-approval instruction in the
+      references must say `confirm --plan`. Re-apply on re-vendor.

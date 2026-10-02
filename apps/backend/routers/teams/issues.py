@@ -325,7 +325,14 @@ async def upsert_issue_watchdog(
     the issue's subtree when it goes quiet. Maps to upstream
     ``PUT /api/issues/{id}/watchdog``. The issue detail already carries the
     active watchdog as ``issue.watchdog``, so there is no GET here.
+
+    Upstream evaluates the watchdog as soon as it is armed, so on a subtree
+    that is already quiet this opens the review task and wakes the agent right
+    away: a spend front door like ``monitor/check-now``, gated the same way.
+    The DELETE below is deliberately not gated, so a watchdog can always be
+    removed.
     """
+    await require_trial_runway(ctx.owner_id)
     return await _agents._admin().upsert_issue_watchdog(
         issue_id=issue_id,
         body=body.model_dump(exclude_unset=True, by_alias=True),

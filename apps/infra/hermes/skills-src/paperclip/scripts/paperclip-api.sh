@@ -115,13 +115,18 @@ Subcommands (markdown / freeform text is read from stdin where noted):
       With --assignee and no --status, sends an EXPLICIT backlog (see
       "Assigning work" at the bottom) — pass --status todo to start it now.
 
-  confirm <issueId> --prompt P [--title T] [--idempotency-key K]
+  confirm <issueId> --prompt P [--plan] [--title T] [--idempotency-key K]
           [--continuation none|wake_assignee|wake_assignee_on_accept]
           [--accept-label L] [--reject-label L] [--reject-requires-reason]
       POST /api/issues/{id}/interactions   kind: request_confirmation
       Builds payload.version=1 + payload.prompt for you (cannot be omitted).
       Reads optional details markdown from stdin (payload.detailsMarkdown).
       --continuation defaults to wake_assignee.
+      --plan binds the card to the issue's `plan` document: it reads the
+      document's latest revision and sets payload.target to it. Use it for
+      every plan approval — accepting a plan-bound card is what switches a
+      planning-mode issue back to standard and starts execution. Write the
+      plan first; a later plan revision makes the card stale.
 
   accept <issueId> <interactionId> [--option ID]... [--client-key KEY]...
       POST /api/issues/{id}/interactions/{interactionId}/accept
@@ -790,10 +795,11 @@ cmd_confirm() {
   shift || true
   [[ -n "$issue_id" ]] || die 'confirm: missing <issueId>.'
   local prompt="" title="" idempotency_key="" continuation="wake_assignee"
-  local accept_label="" reject_label="" reject_requires_reason=0
+  local accept_label="" reject_label="" reject_requires_reason=0 plan=0
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --prompt) prompt="${2:-}"; shift 2 ;;
+      --plan) plan=1; shift ;;
       --title) title="${2:-}"; shift 2 ;;
       --idempotency-key) idempotency_key="${2:-}"; shift 2 ;;
       --continuation) continuation="${2:-}"; shift 2 ;;
@@ -810,9 +816,36 @@ cmd_confirm() {
   local details
   details="$(read_stdin)"
 
+  # --plan: bind the card to the plan document's CURRENT revision. Upstream
+  # only treats an accepted confirmation as "start executing the plan" (and
+  # flips a planning-mode issue back to standard) when payload.target is
+  # {type: "issue_document", key: "plan", revisionId}, and it 422s a
+  # revisionId that is not the document's latest. So read it here rather than
+  # trusting one the caller remembered.
+  local target='null'
+  if [[ "$plan" == "1" ]]; then
+    if [[ "$dry_run" == "1" ]]; then
+      printf 'confirm: --dry-run skips the plan read, so revisionId below is a placeholder; a live call sends the latest revision.\n' >&2
+      target='{"type":"issue_document","key":"plan","revisionId":"<latest plan revision id>"}'
+    else
+      require_live_env
+      require_command jq
+      target="$(
+        send GET "$(api_base)/issues/$issue_id/documents/plan" | jq -c '
+          if (.latestRevisionId // "") == "" then error("no revision") else . end
+          | {type: "issue_document", key: "plan", revisionId: .latestRevisionId}
+            + (if .issueId then {issueId: .issueId} else {} end)
+            + (if .id then {documentId: .id} else {} end)
+            + (if .latestRevisionNumber then {revisionNumber: .latestRevisionNumber} else {} end)
+        '
+      )" || die 'confirm: --plan needs a plan document with a revision. Write the plan first (PUT /api/issues/{id}/documents/plan).'
+    fi
+  fi
+
   local payload
   payload="$(
     jq -nc \
+      --argjson target "$target" \
       --arg prompt "$prompt" \
       --arg title "$title" \
       --arg idempotencyKey "$idempotency_key" \
@@ -831,6 +864,7 @@ cmd_confirm() {
           + (if $acceptLabel == "" then {} else {acceptLabel: $acceptLabel} end)
           + (if $rejectLabel == "" then {} else {rejectLabel: $rejectLabel} end)
           + (if $rejectRequiresReason then {rejectRequiresReason: true} else {} end)
+          + (if $target == null then {} else {target: $target} end)
         )
       }
       + (if $title == "" then {} else {title: $title} end)

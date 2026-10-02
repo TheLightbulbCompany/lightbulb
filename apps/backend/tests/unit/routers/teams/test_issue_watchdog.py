@@ -5,6 +5,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from fastapi.testclient import TestClient
 
+from core.services import trial_cap
 from main import app
 from routers.teams.deps import TeamsContext
 
@@ -35,6 +36,7 @@ def admin(monkeypatch):
     fake.upsert_issue_watchdog = AsyncMock(return_value={"id": "wd_1", "watchdogAgentId": AGENT})
     fake.delete_issue_watchdog = AsyncMock(return_value={"ok": True})
     monkeypatch.setattr(agents_mod, "_admin", lambda: fake)
+    monkeypatch.setattr(trial_cap, "trial_block_reason", AsyncMock(return_value=None))
     app.dependency_overrides[agents_mod._ctx] = fake_ctx
     try:
         yield fake
@@ -65,6 +67,17 @@ def test_put_rejects_smuggled_fields_and_a_non_uuid_agent(admin):
     assert client.put(URL, headers=H, json={"agentId": AGENT, "adapterType": "x"}).status_code == 422
     assert client.put(URL, headers=H, json={"agentId": "not-a-uuid"}).status_code == 422
     admin.upsert_issue_watchdog.assert_not_awaited()
+
+
+def test_put_over_trial_cap_is_402_but_delete_still_works(admin, monkeypatch):
+    monkeypatch.setattr(trial_cap, "trial_block_reason", AsyncMock(return_value=trial_cap.DAILY_CAP))
+    r = client.put(URL, headers=H, json={"agentId": AGENT})
+    assert r.status_code == 402
+    assert r.json()["detail"]["code"] == "trial_daily_cap"
+    admin.upsert_issue_watchdog.assert_not_awaited()
+    # Removing a watchdog starts nothing, so it is never gated.
+    assert client.delete(URL, headers=H).status_code == 200
+    admin.delete_issue_watchdog.assert_awaited_once()
 
 
 def test_delete_forwards_with_the_member_session(admin):

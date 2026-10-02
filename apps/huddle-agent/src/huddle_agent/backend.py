@@ -50,10 +50,30 @@ class Backend:
     async def team(self) -> dict:
         return await self._post(f"/internal/huddles/{self._room_id}/team", {})
 
-    async def route(self, speaker: str, utterance: str, transcript: str, humans: int | None = None) -> str | None:
-        """None: nobody answers. `humans` (people in the call) lets Jev pick nobody when 2+ are talking."""
-        body = {"speakerUserId": speaker, "utterance": utterance, "transcript": transcript, "humans": humans}
-        return (await self._post(f"/internal/huddles/{self._room_id}/route", body))["agentId"]
+    async def route(
+        self,
+        speaker: str,
+        utterance: str,
+        transcript: str,
+        humans: int | None = None,
+        *,
+        floor: dict | None = None,
+        voice_runs: list[dict] = (),
+        at: list[int] = (),
+    ) -> dict:
+        """{agentId, agentIds, hold?}: agentIds empty is nobody; `hold` is an unfinished line. `humans` (people
+        in the call) lets Jev pick nobody when 2+ are talking; None is the wake word. `floor`/`voiceRuns` are
+        Live's open requests; `at` is when each of the transcript's last lines was said (epoch s, oldest first)."""
+        body = {
+            "speakerUserId": speaker,
+            "utterance": utterance,
+            "transcript": transcript,
+            "humans": humans,
+            "floor": floor,
+            "voiceRuns": list(voice_runs),
+            "at": list(at),
+        }
+        return await self._post(f"/internal/huddles/{self._room_id}/route", body)
 
     async def summon(self, speaker: str) -> dict:
         return await self._post(f"/internal/huddles/{self._room_id}/summon", {"speakerUserId": speaker})
@@ -70,7 +90,9 @@ class Backend:
         utterance: str,
         transcript: str,
         steer_run_id: str | None = None,
+        steer_only: bool = False,
     ) -> dict:
+        """steer_only: steer `steer_run_id` or do nothing (never dispatch a new run)."""
         body = {
             "speakerUserId": speaker,
             "agentId": agent_id,
@@ -78,6 +100,7 @@ class Backend:
             "utterance": utterance,
             "transcript": transcript,
             "steerRunId": steer_run_id,
+            **({"steerOnly": True} if steer_only else {}),
         }
         return await self._post(f"/internal/huddles/calls/{call_id}/turns", body)
 

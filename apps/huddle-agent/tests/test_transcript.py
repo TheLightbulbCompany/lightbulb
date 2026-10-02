@@ -11,6 +11,7 @@ from huddle_agent.transcript import (
     soundex,
     stop_request,
     stop_target,
+    strip_wake,
     stt_prompt,
     trim_items,
 )
@@ -31,7 +32,8 @@ PEOPLE = [{"userId": "u1", "name": "Nova Reyes"}, {"userId": "u2", "name": "Aden
     "text,ids,ambiguous",
     [
         ("Gauge, what's revenue", ["gauge"], []),
-        ("can you ask Gauge to check", ["gauge"], []),
+        ("can you ask Gauge to check", [], []),  # position 2 is gone: /route's addressing stage decides
+        ("let's ask Forge later", [], []),
         ("Forge and Gauge, check the deploy", ["forge", "gauge"], []),
         ("Forge, Gauge and Ada: one sec", ["forge", "gauge", "ada"], []),
         ("So growth is up", [], []),
@@ -40,7 +42,7 @@ PEOPLE = [{"userId": "u1", "name": "Nova Reyes"}, {"userId": "u2", "name": "Aden
         ("hey finance", ["finance"], []),
         ("Finance can you check", ["finance"], []),
         ("get finance to check", [], []),
-        ("tell finance to check", ["finance"], []),
+        ("tell finance to check", [], []),
         ("hey customer operations, any tickets?", ["ops"], []),
         ("Nova, are you free", [], ["nova"]),
         ("hey Nova", ["nova"], []),
@@ -67,7 +69,24 @@ def test_fuzzy_only_for_long_names():
 
 def test_lightbulb_then_agent():
     a = address("Lightbulb, ask Gauge", AGENTS, PEOPLE)
+    assert a.lightbulb and a.agent_ids == []  # a mid-line name is /route's to label
+    a = address("Lightbulb, Gauge, check CI", AGENTS, PEOPLE)
     assert a.lightbulb and a.agent_ids == ["gauge"]
+
+
+def test_strip_wake():
+    assert strip_wake("Lightbulb, Forge, check CI") == "Forge, check CI"
+    assert strip_wake("hey light bulb. what's next?") == "what's next?"
+    assert strip_wake("Lightbulb") == "Lightbulb"  # nothing left: the line stays
+    assert strip_wake("I bought a lightbulb") == "I bought a lightbulb"
+
+
+def test_agent_lines_carry_who_they_answered():
+    t = Transcript()
+    t.add_person("u1", "Leo", "Forge, is CI green?", at=100.4)
+    t.add_agent("forge", "Forge", "Yes,\nall green.", at=103.0, to="Leo")
+    assert t.text() == "Leo: Forge, is CI green?\nForge → Leo: Yes, all green."
+    assert t.times(5) == [100, 103]
 
 
 def test_wake_word_variants():
@@ -77,8 +96,6 @@ def test_wake_word_variants():
         "Hey, Light bulb. Are you there?",
         "ok light-bulb, status",
         "So Lightbulb what's next",
-        "can you ask Lightbulb to check Stripe",
-        "tell light bulb to look",
     ):
         assert address(line, [], []).lightbulb, line
 
@@ -89,6 +106,7 @@ def test_only_lightbulb_wakes():
         "Team, quick one",
         "hey Ada can you look",
         "I bought a lightbulb yesterday",
+        "can you ask Lightbulb to check Stripe",  # only an opening Lightbulb wakes
         "lightbulbs are cheap",
         "the deploy went fine",
     ):

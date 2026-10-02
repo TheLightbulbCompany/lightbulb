@@ -2,17 +2,11 @@
 
 from __future__ import annotations
 
-import os
 from collections import deque
 
 ANNOUNCE_QUIET = 3  # ponytail: inferred (D §8); seconds the whole room is quiet before an agent speaks up
 MIN_GAP = 90  # proactive announcements per room
 PER_HOUR = 10
-
-
-def enabled() -> bool:
-    """The kill switch: LIGHTBULB_PROACTIVE=off leaves only a tap on a has_news tile."""
-    return os.environ.get("LIGHTBULB_PROACTIVE", "").strip().lower() != "off"
 
 
 class RateLimit:

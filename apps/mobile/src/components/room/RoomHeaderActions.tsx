@@ -1,12 +1,12 @@
 import { SymbolView } from "expo-symbols";
-import { StyleSheet, Text, View } from "react-native";
+import { StyleSheet, View, type LayoutChangeEvent } from "react-native";
 
-import { fonts, radii, useChatPalette } from "../../config/theme";
+import { radii, useChatPalette } from "../../config/theme";
 import { hapticSelection } from "../../lib/haptics";
 import { AnimatedPressable, usePressScale } from "../../lib/pressScale";
 
 /**
- * The conversation header's star/mute icon pair — RoomHeader.tsx's own icon
+ * The conversation header's icon pair (call or star, then mute) — RoomHeader.tsx's own icon
  * buttons, same `aria-label` wording as `accessibilityLabel`. Presentational
  * only: a native header has no room below the buttons for an inline error, so
  * the screen that mounts this owns the async call, the pending flag and the
@@ -19,22 +19,29 @@ export function RoomHeaderActions({
   onToggleStar,
   onToggleMute,
   voice,
+  onLayout,
 }: {
   starred: boolean;
   muted: boolean;
   disabled?: boolean;
   onToggleStar: () => void;
   onToggleMute: () => void;
-  /** Go live / Live (any room); passed only when the binary can do voice. */
-  voice?: { text: string; label: string; disabled?: boolean; onPress: () => void };
+  /**
+   * Go live / Live (any room); passed only when the binary can do voice. It
+   * takes the star's place: three controls left a channel name no room, and
+   * starring is still on the chat list's row menu.
+   */
+  voice?: { label: string; active?: boolean; disabled?: boolean; onPress: () => void };
+  /** The screen bounds its title by this row's width. */
+  onLayout?: (event: LayoutChangeEvent) => void;
 }) {
   const palette = useChatPalette();
   const starScale = usePressScale();
   const muteScale = usePressScale();
   const voiceScale = usePressScale();
   return (
-    <View style={styles.row}>
-      {voice && (
+    <View style={styles.row} onLayout={onLayout}>
+      {voice ? (
         <AnimatedPressable
           onPress={() => {
             hapticSelection();
@@ -46,33 +53,38 @@ export function RoomHeaderActions({
           hitSlop={8}
           accessibilityRole="button"
           accessibilityLabel={voice.label}
-          accessibilityState={{ disabled: !!voice.disabled }}
-          style={[styles.pill, { backgroundColor: palette.chip, opacity: voice.disabled ? 0.5 : 1 }, voiceScale.style]}
+          accessibilityState={{ selected: !!voice.active, disabled: !!voice.disabled }}
+          style={[styles.button, { opacity: voice.disabled ? 0.5 : 1 }, voiceScale.style]}
         >
-          <SymbolView accessibilityElementsHidden name="waveform" size={14} tintColor={palette.fg} />
-          <Text style={[styles.pillText, { color: palette.fg }]} maxFontSizeMultiplier={1.2}>{voice.text}</Text>
+          <SymbolView
+            accessibilityElementsHidden
+            name={voice.active ? "phone.fill" : "phone"}
+            size={18}
+            tintColor={voice.active ? palette.live : palette.fgSoft}
+          />
+        </AnimatedPressable>
+      ) : (
+        <AnimatedPressable
+          onPress={() => {
+            hapticSelection();
+            onToggleStar();
+          }}
+          onPressIn={starScale.onPressIn}
+          onPressOut={starScale.onPressOut}
+          disabled={disabled}
+          hitSlop={8}
+          accessibilityRole="button"
+          accessibilityLabel={starred ? "Unstar this conversation" : "Star this conversation"}
+          accessibilityState={{ selected: starred, disabled: !!disabled }}
+          // An ARRAY, never a function: reanimated only attaches an animated
+          // style it can see in the prop itself, and a function style is opaque
+          // to it — the scale would silently never run. The scale is the press
+          // feedback; a background tint on top of it would be two signals.
+          style={[styles.button, starScale.style]}
+        >
+          <SymbolView accessibilityElementsHidden name={starred ? "star.fill" : "star"} size={18} tintColor={palette.fgSoft} />
         </AnimatedPressable>
       )}
-      <AnimatedPressable
-        onPress={() => {
-          hapticSelection();
-          onToggleStar();
-        }}
-        onPressIn={starScale.onPressIn}
-        onPressOut={starScale.onPressOut}
-        disabled={disabled}
-        hitSlop={8}
-        accessibilityRole="button"
-        accessibilityLabel={starred ? "Unstar this conversation" : "Star this conversation"}
-        accessibilityState={{ selected: starred, disabled: !!disabled }}
-        // An ARRAY, never a function: reanimated only attaches an animated
-        // style it can see in the prop itself, and a function style is opaque
-        // to it — the scale would silently never run. The scale is the press
-        // feedback; a background tint on top of it would be two signals.
-        style={[styles.button, starScale.style]}
-      >
-        <SymbolView accessibilityElementsHidden name={starred ? "star.fill" : "star"} size={18} tintColor={palette.fgSoft} />
-      </AnimatedPressable>
       <AnimatedPressable
         onPress={() => {
           hapticSelection();
@@ -95,8 +107,6 @@ export function RoomHeaderActions({
 
 const styles = StyleSheet.create({
   row: { flexDirection: "row", alignItems: "center" },
-  pill: { flexDirection: "row", alignItems: "center", gap: 4, height: 30, paddingHorizontal: 10, borderRadius: 15, marginRight: 4 },
-  pillText: { fontFamily: fonts.sansSemiBold, fontSize: 14 },
   button: {
     width: 36,
     height: 36,

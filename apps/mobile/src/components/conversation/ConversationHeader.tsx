@@ -20,8 +20,10 @@ export function ConversationHeader(props: {
   palette: ChatPalette;
   /** Opens details. */
   onPress?: () => void;
+  /** The native title view takes its content's width, so a long title needs this to truncate instead of running under the header's buttons. */
+  maxWidth?: number;
 }) {
-  const { title, accessibilityTitle, status, statusTone = "mute", avatar, palette, onPress } = props;
+  const { title, accessibilityTitle, status, statusTone = "mute", avatar, palette, onPress, maxWidth } = props;
   const spoken = accessibilityTitle ?? title;
   const label = status ? `${spoken}, ${status}` : spoken;
   const content = (
@@ -47,14 +49,14 @@ export function ConversationHeader(props: {
   // since there is nothing for VoiceOver to invoke (Codex review finding).
   if (!onPress) {
     return (
-      <View style={styles.row} accessibilityLabel={label}>
+      <View style={[styles.row, { maxWidth }]} accessibilityLabel={label}>
         {content}
       </View>
     );
   }
   return (
     <Pressable
-      style={styles.row}
+      style={[styles.row, { maxWidth }]}
       onPress={onPress}
       accessibilityRole="button"
       accessibilityLabel={label}

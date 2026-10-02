@@ -288,8 +288,22 @@ def _is_git_lock(rel: str) -> bool:
     return fnmatch.fnmatch(rel, ".git/*.lock") or fnmatch.fnmatch(rel, "*/.git/*.lock")
 
 
+#: Hermes's own rule for its backups (hermes_cli/backup.py, _KEPT_CACHE_SUBDIRS): everything
+#: under cache/ is regenerable -- catalogs, stamps, tool-output spill, the web/terminal/exec/
+#: delegation caches -- EXCEPT media the gateway delivered or received, generated media and the
+#: citations ledger. Those were 1,300 of Pulse's 3,582 cold-restore objects (57 MB), so the
+#: regenerable ones neither go up at the end of a turn nor come down on a cold start; what older
+#: images already pushed stays in S3 as dead weight.
+KEPT_CACHE_SUBDIRS = frozenset({"images", "audio", "videos", "documents", "screenshots", "citations", "generated"})
+
+
+def is_regenerable_cache(rel: str) -> bool:
+    parts = rel.split("/", 2)
+    return len(parts) >= 2 and parts[0] == "cache" and parts[1] not in KEPT_CACHE_SUBDIRS
+
+
 def is_excluded(rel: str) -> bool:
-    return any(fnmatch.fnmatch(rel, pattern) for pattern in EXCLUDE_GLOBS)
+    return is_regenerable_cache(rel) or any(fnmatch.fnmatch(rel, pattern) for pattern in EXCLUDE_GLOBS)
 
 
 def is_reproducible(rel: str) -> bool:
@@ -302,6 +316,16 @@ def is_reproducible(rel: str) -> bool:
     Skipping those on the way down half-materialises a skill with no error anywhere."""
     return any(fnmatch.fnmatch(rel, pattern) for pattern in _REPRODUCIBLE_GLOBS)
 
+
+WORK_DIR_PREFIX = "work/"
+#: Durable trees a cold start does not wait for: they come down in the background right after the
+#: profile itself (_restore_deferred), and a conversation's own work/ tree is pulled first, by its
+#: turn (restore_subtree). Pulse carried ~1,900 objects across twenty old conversations' work/
+#: trees plus 266 curator rollback blobs; none of them is needed before the first reply. cache/
+#: reaches here only for Hermes's kept media subdirs (the rest is regenerable, never restored).
+_DEFERRED_PREFIXES = (WORK_DIR_PREFIX, ".curator_backups/", "cache/")
+_DEFERRED_RESTORE_DELAY_S = 2.0  # the turn's own restore_subtree (its work/ tree) goes first
+_RESTORED_SUBTREES: set[tuple[str, str]] = set()
 
 #: Restore-side skip: reinstallable home caches an older image already pushed. Deliberately NOT
 #: ``is_excluded``/``is_reproducible`` -- those name backend-owned files and migrated skills a cold
@@ -464,6 +488,83 @@ def clear_turn_leases(db: Path) -> None:
         log.warning("could not clear restored leases in %s", db, exc_info=True)
 
 
+def _download_one(agent_id: str, dest: Path, item: tuple[str, dict]) -> None:
+    rel, obj = item
+    target = dest / rel
+    target.parent.mkdir(parents=True, exist_ok=True)
+    s3 = _s3()
+    s3.download_file(S3_BUCKET, obj["Key"], str(target))
+    modified = _modified_at(obj)
+    if modified is not None:
+        _SYNCED.setdefault(agent_id, {})[rel] = modified
+    _MTIMES.setdefault(agent_id, {})[rel] = _change_stamp(target)
+    if obj.get("ETag"):
+        _ETAGS.setdefault(agent_id, {})[rel] = obj["ETag"]
+    _remember_cli_credential(agent_id, rel, obj, target)
+
+
+def restore_subtree(agent_id: str, path: Path) -> int:
+    """Pull one directory of the profile that the cold restore left in S3 (a conversation's
+    ``work/`` tree, a deferred durable tree), once per process. Returns the object count. The
+    files it brings down join the save baseline exactly like a cold-restored one, so an unchanged
+    file is never re-uploaded and a deleted one is deleted in S3. A file that already exists
+    locally is left alone: this process started empty, so a local copy is a turn's own write,
+    newer than anything in S3, and the end-of-turn save carries it up."""
+    if not S3_BUCKET:
+        return 0
+    dest = _profile_dir(agent_id)
+    rel_dir = path.relative_to(dest).as_posix().rstrip("/") + "/"
+    if (agent_id, rel_dir) in _RESTORED_SUBTREES:
+        return 0
+    with profile_lock(agent_id):
+        if (agent_id, rel_dir) in _RESTORED_SUBTREES:
+            return 0
+        prefix = f"{S3_PREFIX}/{agent_id}/"
+        wanted = []
+        for page in _s3().get_paginator("list_objects_v2").paginate(Bucket=S3_BUCKET, Prefix=prefix + rel_dir):
+            for obj in page.get("Contents", []):
+                rel = obj["Key"][len(prefix):]
+                if rel.endswith("/") or is_lock_sidecar(rel) or _is_git_lock(rel) or (dest / rel).exists():
+                    continue
+                wanted.append((rel, obj))
+        _fan_out(lambda item: _download_one(agent_id, dest, item), wanted)
+        _RESTORED_SUBTREES.add((agent_id, rel_dir))
+    if wanted:
+        log.info("restored %s %s: %d objects", agent_id, rel_dir, len(wanted))
+    return len(wanted)
+
+
+def _start_deferred_restore(agent_id: str) -> None:
+    threading.Thread(target=_restore_deferred, args=(agent_id,), name=f"restore-deferred-{agent_id[:8]}", daemon=True).start()
+
+
+def _restore_deferred(agent_id: str) -> int:
+    """Bring down the trees the cold restore deferred (_DEFERRED_PREFIXES), one subtree at a time
+    so a turn's own restore_subtree interleaves instead of waiting: every conversation's work/
+    tree, the curator's rollback blobs, Hermes's kept media caches. Returns the object count."""
+    time.sleep(_DEFERRED_RESTORE_DELAY_S)
+    dest = _profile_dir(agent_id)
+    prefix = f"{S3_PREFIX}/{agent_id}/"
+    subtrees: list[str] = []
+    try:
+        for top in _DEFERRED_PREFIXES:
+            for page in _s3().get_paginator("list_objects_v2").paginate(Bucket=S3_BUCKET, Prefix=prefix + top):
+                for obj in page.get("Contents", []):
+                    rel = obj["Key"][len(prefix):]
+                    if is_regenerable_cache(rel):
+                        continue
+                    sub = "/".join(rel.split("/")[:2]) if top in (WORK_DIR_PREFIX, "cache/") else top.rstrip("/")
+                    if "/" in rel[len(top):] or top not in (WORK_DIR_PREFIX, "cache/"):
+                        if sub not in subtrees:
+                            subtrees.append(sub)
+        total = sum(restore_subtree(agent_id, dest / sub) for sub in subtrees)
+    except Exception:  # noqa: BLE001 -- the next turn of that conversation restores its tree itself
+        log.warning("deferred restore failed for %s", agent_id, exc_info=True)
+        return 0
+    log.info("restored deferred trees for %s: %d objects in %d subtrees", agent_id, total, len(subtrees))
+    return total
+
+
 def restore_profile(agent_id: str) -> float:
     """Download the agent's profile dir from S3 once per process. Returns seconds taken."""
     with profile_lock(agent_id):
@@ -480,12 +581,12 @@ def _restore_profile(agent_id: str) -> float:
     ensure_profile_home(agent_id)
     prefix = f"{S3_PREFIX}/{agent_id}/"
     s3 = _s3()
-    synced = _SYNCED.setdefault(agent_id, {})
-    # M6-R51: the baseline save_profile diffs against -- without it the first save of the process
-    # would upload the entire tree it just downloaded. Recorded per object as the loop writes it,
-    # not by a second rglob afterwards: cold-restore latency sits in front of the first reply.
-    mtimes = _MTIMES.setdefault(agent_id, {})
+    # M6-R51: _download_one records the save baseline (_MTIMES/_SYNCED) per object as it writes
+    # it -- without that the first save of the process would upload the entire tree it just
+    # downloaded -- and not by a second rglob afterwards: cold-restore latency sits in front of
+    # the first reply.
     wanted: list[tuple[str, dict]] = []
+    deferred = 0
     for page in s3.get_paginator("list_objects_v2").paginate(Bucket=S3_BUCKET, Prefix=prefix):
         for obj in page.get("Contents", []):
             rel = obj["Key"][len(prefix):]
@@ -493,28 +594,22 @@ def _restore_profile(agent_id: str) -> float:
                 continue  # directory marker: downloading it onto the directory raises
             if is_lock_sidecar(rel) or rel.startswith(_RESTORE_SKIP_PREFIXES) or _is_git_lock(rel):
                 continue  # process-local lock or reinstallable home cache
+            if is_regenerable_cache(rel):
+                continue  # Hermes rebuilds it; never worth a GET
+            if rel.startswith(_DEFERRED_PREFIXES):
+                deferred += 1
+                continue
             wanted.append((rel, obj))
 
-    def _download(item: tuple[str, dict]) -> None:
-        rel, obj = item
-        target = dest / rel
-        target.parent.mkdir(parents=True, exist_ok=True)
-        s3.download_file(S3_BUCKET, obj["Key"], str(target))
-        modified = _modified_at(obj)
-        if modified is not None:
-            synced[rel] = modified
-        mtimes[rel] = _change_stamp(target)
-        if obj.get("ETag"):
-            _ETAGS.setdefault(agent_id, {})[rel] = obj["ETag"]
-        _remember_cli_credential(agent_id, rel, obj, target)
-
-    _fan_out(_download, wanted)
+    _fan_out(lambda item: _download_one(agent_id, dest, item), wanted)
     clear_turn_leases(dest / "state.db")
     n = len(wanted)
     _restored.add(agent_id)
     took = time.time() - t0
-    log.info("restored profile %s: %d objects in %.1fs", agent_id, n, took)
+    log.info("restored profile %s: %d objects in %.1fs (%d deferred)", agent_id, n, took, deferred)
     _emit_restore_metric(took, n)
+    if deferred:
+        _start_deferred_restore(agent_id)
     # Minor 12 (fix round 1 continuation): the tree walk above just downloaded .revision (if the
     # profile has one) along with everything else -- seed _REVISIONS from that local copy so
     # ensure_profile's very next call doesn't immediately think a hot patch landed and re-pull

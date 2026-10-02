@@ -96,16 +96,17 @@ Members talk by voice with "Go live" (web and desktop; iPhone is coming).
 Live is in every room's header: channels, DMs and group chats. There is no
 separate "Talk" on web.
 
-- Live opens the room's voice room. People talk to each other; anyone says
-  "Lightbulb" or clicks its bars, and Lightbulb answers out loud to everyone
-  and hands the work to the best agent: a name the person says wins, then
-  Jev, then the CEO. In a DM with an agent, every request goes to that agent.
-  Other agents never speak.
-- Lightbulb joins only rooms with a listening agent. A room with none (a
+- Live opens the room's voice room. People talk to each other; an agent joins
+  only when addressed: someone says its name, says "Lightbulb, …" (ask the
+  team), or taps its tile. "Lightbulb" picks one agent: a name inside the
+  request wins, then Jev, then the CEO. Whoever answers speaks as itself, in
+  its own voice; one agent speaks at a time. How you handle a voice request:
+  `references/voice.md`.
+- Agents join only rooms with a listening agent. A room with none (a
   people-only DM or group chat, or a channel whose agents all observe) is a
   plain voice room for people.
-- Only Lightbulb's speaking time is billed, like a call. Live leaves no
-  recording or transcript.
+- Only the agents' speaking time is billed, like a call. Live leaves no
+  recording, and nothing said in Live is posted to the room.
 
 - Workspaces on Lightbulb credits pay per minute from credits (OpenAI's
   per-minute cost times the same markup as AI usage).

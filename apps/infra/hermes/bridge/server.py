@@ -150,15 +150,22 @@ def _handle_paperclip_run(path: str, method: str, headers: dict, body) -> tuple[
 _CALL_RUN_RE = re.compile(r"^/internal/calls/v1/runs/([A-Za-z0-9_-]+)/stop$")
 
 
+MAX_VOICE_HISTORY = 50
+
+
 def _call_envelope(body, *, path_run_id: str | None = None, require_request: bool = False):
+    """A voice run: an ordinary run on the agent's room session key (the only call envelope)."""
     if not isinstance(body, dict) or not isinstance(body.get("identity"), dict):
         return None
     identity = body["identity"]
-    if any(not isinstance(identity.get(k), str) or not identity[k] for k in ("runId", "companyId", "agentId", "callId", "sessionId")):
+    if any(not isinstance(identity.get(k), str) or not identity[k] for k in ("runId", "companyId", "agentId", "roomId", "sessionId")):
+        return None
+    room_id = identity["roomId"]
+    if identity.get("family") != "voice" or room_id != room_id.lower() or not turn._is_uuid(room_id):
         return None
     if path_run_id is not None and identity["runId"] != path_run_id:
         return None
-    if identity["sessionId"] != turn.call_session_key(identity["agentId"], identity["callId"]):
+    if identity["sessionId"] != turn.lightbulb_session_key(identity["agentId"], room_id):
         return None
     request = body.get("request")
     if require_request:
@@ -166,10 +173,18 @@ def _call_envelope(body, *, path_run_id: str | None = None, require_request: boo
             return None
         if any(not isinstance(request.get(k), str) or not request[k] for k in ("input", "instructions")):
             return None
-        frames = request.get("frames")
-        # A huddle turn's backend sink POSTs to its endpoint and has no AppSync channel.
-        needs = ("endpoint",) if isinstance(frames, dict) and frames.get("sink") == "backend" else ("endpoint", "channel")
-        if not isinstance(frames, dict) or not all(isinstance(frames.get(k), str) and frames[k] for k in needs):
+        voice, frames = request.get("voice"), request.get("frames")
+        if not isinstance(voice, dict) or voice.get("roomId") != room_id:
+            return None
+        # Frames go to the backend relay only (C2); there is no AppSync channel for a voice run.
+        if not isinstance(frames, dict) or frames.get("sink") != "backend" or not isinstance(frames.get("endpoint"), str) or not frames["endpoint"]:
+            return None
+        history, participants = request.get("recentHistory", []), request.get("participants", [])
+        if not isinstance(history, list) or len(history) > MAX_VOICE_HISTORY or not isinstance(participants, list):
+            return None
+        if not all(isinstance(m, dict) and isinstance(m.get("messageId"), str) for m in history):
+            return None
+        if not all(isinstance(p, dict) and isinstance(p.get("id"), str) for p in participants):
             return None
     return identity, request
 

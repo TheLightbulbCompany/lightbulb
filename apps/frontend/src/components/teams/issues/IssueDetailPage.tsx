@@ -507,15 +507,18 @@ export function IssueDetailPage({ issueId }: IssueDetailPageProps) {
             updateIssue({ workMode });
           }}
           // The watchdog has its own upstream routes (not the issue PATCH); the
-          // detail read carries it back as issue.watchdog. Rejections are left
-          // to the row, which shows them inside its editor.
+          // detail read carries it back as issue.watchdog. A rejected write is
+          // left to the row, which shows it inside its editor. The write counts
+          // as done once it resolves: the refresh after it is fired and its
+          // failure swallowed, or a save that landed would read as failed and a
+          // retry would re-send the PUT (re-running upstream's evaluation).
           onWatchdogSave={async (watchdog) => {
             await put(`/issues/${issueId}/watchdog`, watchdog);
-            await mutate(`/teams${teamsQueryKeys.issues.detail(issueId)}`);
+            void mutate(`/teams${teamsQueryKeys.issues.detail(issueId)}`).catch(() => {});
           }}
           onWatchdogRemove={async () => {
             await del(`/issues/${issueId}/watchdog`);
-            await mutate(`/teams${teamsQueryKeys.issues.detail(issueId)}`);
+            void mutate(`/teams${teamsQueryKeys.issues.detail(issueId)}`).catch(() => {});
           }}
         />
         <SubIssuesSection

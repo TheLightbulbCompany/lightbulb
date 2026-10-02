@@ -69,6 +69,16 @@ it("retries only a failed room session send with a new fenced request", async ()
   }));
 });
 
+it("shows another sender's failed session delivery without offering their controls", () => {
+  const tagged: RoomMessage = { ...message, author: { kind: "human", id: "other", displayName: "Other" },
+    sessionSends: [{ sessionId: "s1", error: "LOCAL_SESSION_OFFLINE" }] };
+  render(<RoomPanel {...props} messages={[tagged]} onRetrySessionSend={vi.fn()} onCancelSessionSend={vi.fn()} />);
+  const article = screen.getByRole("article", { name: "Message from Other" });
+  expect(within(article).getByText("The session's Mac is offline. Try again when it reconnects.")).toBeInTheDocument();
+  expect(within(article).queryByRole("button", { name: "Retry" })).not.toBeInTheDocument();
+  expect(within(article).queryByRole("button", { name: "Cancel" })).not.toBeInTheDocument();
+});
+
 it("shows an MCP session target without rewriting message text, linking only a known target", () => {
   const tagged: RoomMessage = { ...message, via: "lightbulb_mcp", text: "Please review this", sessionSends: [
     { sessionId: "s1", displayLabel: "Claude Code · Launch check · Owner" },

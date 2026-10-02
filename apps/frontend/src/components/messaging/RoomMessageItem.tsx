@@ -108,7 +108,8 @@ export function RoomMessageItem({ id, message, text, participant, currentUserId,
   const replyLabel = replyCount > 0 ? `${replyCount} ${replyCount === 1 ? "reply" : "replies"}` : "";
   const threadLabel = [replyLabel, working || (lastReplyAt ? `last reply ${timeAgo(lastReplyAt)}` : "")].filter(Boolean).join(" · ");
   const appliedReactions = Object.entries(message.reactions ?? {}).filter(([, users]) => users.length > 0);
-  const visibleSessionSends = message.author.kind === "human" && message.author.id === currentUserId
+  const isOwnMessage = message.author.kind === "human" && message.author.id === currentUserId;
+  const visibleSessionSends = isOwnMessage
     ? message.sessionSends : message.sessionSends?.filter((send) => !!send.error);
   const actions = ((!message.deletedAt && onToggleReaction) || !inThread || toolbarExtras) ? <>
     {!message.deletedAt && onToggleReaction && <>
@@ -154,7 +155,7 @@ export function RoomMessageItem({ id, message, text, participant, currentUserId,
       </div>}
       {receipt && <p role="status" className="text-xs text-muted-foreground">{receipt}</p>}
       {!message.deletedAt && !!visibleSessionSends?.length && <div className="flex flex-wrap gap-1 mt-1" aria-label="Session delivery">
-        {visibleSessionSends.map((send) => <SessionSendChip key={send.sessionId} send={send} roomId={message.roomId} messageId={message.messageId} refreshKey={receiptRefreshKey} onGetSessionCommand={onGetSessionCommand} onRetrySessionSend={onRetrySessionSend} onCancelSessionSend={onCancelSessionSend} replied={replyCount > 0} />)}
+        {visibleSessionSends.map((send) => <SessionSendChip key={send.sessionId} send={send} roomId={message.roomId} messageId={message.messageId} refreshKey={receiptRefreshKey} onGetSessionCommand={onGetSessionCommand} onRetrySessionSend={isOwnMessage ? onRetrySessionSend : undefined} onCancelSessionSend={isOwnMessage ? onCancelSessionSend : undefined} replied={replyCount > 0} />)}
       </div>}
       {reactionError && <p role="alert" className="text-sm text-err">Could not update reaction. Try again.</p>}
       {!message.deletedAt && !!message.attachments?.length && onDownloadAttachment && <RoomImageAttachments roomId={message.roomId} attachments={message.attachments} download={onDownloadAttachment} attachmentUrl={onAttachmentUrl} />}

@@ -61,6 +61,7 @@ QUEUED_BEHIND = "You're finishing something else in this room first; say so brie
 ANNOUNCE_NOW = "Say it now, briefly, as yourself, then stop."
 REPEAT_SECONDS = 10  # live.wake.repeat: the same person names the same agent this soon after a voice_failed
 VOICE_NOTE_CHARS = 1_800  # append_instructions stays under ~500 tokens (D §7)
+PRESENCE_TIMEOUT = 3  # the last (empty) presence must land before LiveKit cancels the job
 
 
 def _retryable(e: BackendError) -> bool:
@@ -296,10 +297,11 @@ class Huddle:
         self._people = dict(people)
         if people:
             self._seen_human = True
-        # Taken before the first await: these run as concurrent tasks, and the backend drops a stale one.
-        self._presence_v = version = max(self._presence_v + 1, time.time_ns())
         try:
-            await self._backend.presence(sorted(people), version)
+            await self._post_presence(people)  # first: the last human leaving ends the job right after
+        except Exception:
+            logger.exception("huddle presence update failed")  # a timeout never holds up the close below
+        try:
             v = self._voice
             if (v and v.speaker not in people) or not people:  # the pinned speaker left: the voice closes
                 await self.end_exchange()
@@ -311,6 +313,23 @@ class Huddle:
             # An empty room before anyone arrived is the dispatch race, not a huddle ending.
             if not people and self._seen_human:
                 self._room.shutdown()
+
+    async def _post_presence(self, people: dict[str, str]) -> None:
+        # The version is taken before the first await: these run as concurrent tasks, and the backend
+        # drops a stale one.
+        self._presence_v = version = max(self._presence_v + 1, time.time_ns())
+        await asyncio.wait_for(self._backend.presence(sorted(people), version), PRESENCE_TIMEOUT)
+
+    async def clear_presence(self) -> None:
+        """The job is shutting down: clear the room's Live marker before anything else, unless people are
+        still in the call (a worker restart), whose marker stays theirs. A missed one is healed by the
+        clients' refetch and the backend's orphan sweep."""
+        if self._people and not self._idle_ended:
+            return
+        try:
+            await self._post_presence({})
+        except Exception:
+            logger.exception("huddle shutdown presence clear failed")
 
     async def on_final_transcript(self, identity: str, name: str, text: str) -> None:
         text = text.strip()
@@ -363,6 +382,10 @@ class Huddle:
             for agent_id in a.ambiguous[:1]:
                 emit_metric("live.wake.ambiguous", 1, "Count")
                 self._notice({"kind": "ambiguous_name", "agentId": agent_id}, [identity])
+            if a.ambiguous or not real_speech(text) or pause(text) or stop_request(text):
+                return
+            # No name in a wake position: the backend routes the line as a chat message (Jev may pick nobody).
+            self._spawn(self._route_and_summon(identity, text, mark, humans=len(self._people)))
             return
         if identity == v.speaker:
             v.last_activity = self._clock()
@@ -437,14 +460,24 @@ class Huddle:
         self._spawn(self._drive(v, d, text))
         return self._live_call(v, "append_thinking", f"{said} — already handed to your backend self; don't delegate it again")
 
-    async def _route_and_summon(self, identity: str, text: str, mark: int) -> None:
+    async def _route_and_summon(self, identity: str, text: str, mark: int, humans: int | None = None) -> None:
+        """`humans`: people in the call, for a line with no name (None: the Lightbulb wake word)."""
         heard_at = self._clock()
+        agent_id, outcome = None, "error"
         try:
-            agent_id = await self._backend.route(identity, text[:MAX_UTTERANCE], self._transcript.text()[-MAX_TRANSCRIPT:])
+            agent_id = await self._backend.route(
+                identity, text[:MAX_UTTERANCE], self._transcript.text()[-MAX_TRANSCRIPT:], humans
+            )
+            outcome = "agent" if agent_id else "none"
         except BackendError as e:
-            self._room.publish(ERROR_TOPIC, {"code": e.code, "reason": e.reason}, [identity])
-            return
-        await self.summon(identity, agent_id, request=text, mark=mark, path="jev", heard_at=heard_at)
+            if humans is None or humans <= 1:  # spoken to the agents: say it failed
+                self._room.publish(ERROR_TOPIC, {"code": e.code, "reason": e.reason}, [identity])
+        finally:
+            ms = round((self._clock() - heard_at) * 1000)
+            emit_metric("live.latency.jev", ms, "Milliseconds", {"path": "jev", "outcome": outcome})
+        # A voice opened while Jev decided (someone named an agent): that floor stands.
+        if agent_id and (humans is None or self._voice is None):
+            await self.summon(identity, agent_id, request=text, mark=mark, path="jev", heard_at=heard_at)
 
     def on_agent_said(self, agent_id: str, text: str) -> None:
         """What a voice said, as GPT-Live heard itself say it: every later seed and since_agent hears it."""
@@ -996,9 +1029,8 @@ class Huddle:
         logger.info("huddle idle for %ss: leaving", ROOM_IDLE_SECONDS)
         self._room.publish(ERROR_TOPIC, {"code": IDLE_ENDED, "reason": None}, sorted(self._people))
         self._idle_ended = True
-        self._presence_v = version = max(self._presence_v + 1, time.time_ns())
         try:
-            await self._backend.presence([], version)  # every client leaves on that notice
+            await self._post_presence({})  # every client leaves on that notice
         except Exception:
             logger.exception("huddle idle presence clear failed")
 

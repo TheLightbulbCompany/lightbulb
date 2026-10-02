@@ -2658,12 +2658,15 @@ _NAME_GREETING = r"(?:(?:hey|hi|hello|yo)[\s,]+)?"
 _NAME_FOLLOW = r"(?:\s*,|\s+[-–—]\s|\s+(?:can|could|would|will)\s+(?:you|u)\b|\s+please\b)"
 
 
-def _addressed_by_name(text: str, members: list[dict]) -> set[str]:
-    """Agents the message opens by speaking to. A name two agents share addresses neither."""
+def _addressed_by_name(text: str, members: list[dict], kind: str = "agent") -> set[str]:
+    """Members of ``kind`` the message opens by speaking to. A name two of them share addresses neither.
+    A person is also addressed by first name ("Aden, ..."): Live hears names, not @handles."""
     by_name: dict[str, set[str]] = {}
     for member in members:
-        if member.get("kind") == "agent":
-            for name in (member.get("displayName"), member.get("mentionHandle")):
+        if member.get("kind") == kind:
+            display = member.get("displayName")
+            first = display.split()[0] if kind == "human" and isinstance(display, str) and display.split() else None
+            for name in {display, member.get("mentionHandle"), first}:
                 if isinstance(name, str) and name:
                     by_name.setdefault(name.lower(), set()).add(member["id"])
     opening = text.lstrip()

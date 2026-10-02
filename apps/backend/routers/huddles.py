@@ -88,6 +88,7 @@ class RouteBody(BaseModel):
     speakerUserId: _Id
     utterance: str = Field(min_length=1, max_length=4_000)
     transcript: str = Field(default="", max_length=12_000)
+    humans: int | None = Field(default=None, ge=0, le=128)  # people in the call; None: the Lightbulb wake word
 
 
 class EndBody(BaseModel):
@@ -202,14 +203,17 @@ async def turn(call_id: str, body: TurnBody):
 async def route(room_id: str, body: RouteBody):
     room_id = _room_id(room_id)
     _require_room_token(body.roomToken, room_id, body.ownerId)
-    agent_id = await voice_calls.route_voice(
-        owner_id=body.ownerId,
-        room_id=room_id,
-        speaker_id=body.speakerUserId,
-        utterance=body.utterance,
-        transcript=body.transcript,
-    )
-    return {"agentId": agent_id}
+    args = {
+        "owner_id": body.ownerId,
+        "room_id": room_id,
+        "speaker_id": body.speakerUserId,
+        "utterance": body.utterance,
+        "transcript": body.transcript,
+    }
+    if body.humans is None:  # the Lightbulb wake word: always someone
+        return {"agentId": await voice_calls.route_voice(**args)}
+    # a line with no name: routed like a chat message; null is nobody (people talking to each other)
+    return {"agentId": await voice_calls.route_live_line(**args, humans=body.humans)}
 
 
 @router.post("/internal/huddles/{room_id}/runs/{run_id}/abort", dependencies=[_Worker])

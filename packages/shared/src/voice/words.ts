@@ -27,10 +27,10 @@ export const LIVE_AGENT_IDENTITY = "agent-ceo";
 export const liveErrorText = (e: { code: string; reason?: string }) =>
   errorText(e.code === "voice_limit" ? e.reason : e.code, "Live couldn't start.");
 
-/** The channel header's marker for who is Live. */
+/** The channel header's marker for who is Live. Clients draw the live dot beside it (the `--live` colour). */
 export function liveMarker(names: readonly string[]): string {
   const who = names.length <= 2 ? names.join(" and ") : `${names[0]} and ${names.length - 1} others`;
-  return `🔴 Live — ${who}`;
+  return `Live — ${who}`;
 }
 
 /** Maps a failed join (an API error, or the mic refused / missing) to a code `errorText` knows. */

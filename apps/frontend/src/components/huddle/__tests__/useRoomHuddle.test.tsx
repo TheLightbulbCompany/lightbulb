@@ -78,3 +78,11 @@ it("stops asking after a 404 (a shared-channel guest)", async () => {
     vi.useRealTimers();
   }
 });
+
+it("re-reads the seed on window focus so a stale marker heals", async () => {
+  const { result } = renderHook(() => useRoomHuddle("r1"));
+  await waitFor(() => expect(result.current.userIds).toEqual(["user_b"]));
+  h.get.mockResolvedValue({ userIds: [], available: true });
+  act(() => { window.dispatchEvent(new Event("focus")); });
+  await waitFor(() => expect(result.current.userIds).toEqual([]));
+});

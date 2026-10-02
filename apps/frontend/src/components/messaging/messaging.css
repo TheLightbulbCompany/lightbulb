@@ -26,6 +26,9 @@
 .room-audience { display: flex; align-items: center; gap: 8px; margin-left: auto; }
 .room-facepile { display: flex; align-items: center; gap: 4px; height: 32px; padding: 0 6px; }
 .room-facepile > :not(:first-child) { margin-left: -8px; }
+.room-facepile > .room-facepile-more { margin-left: 2px; } /* the faces overlap; the count must not, or "+2" reads "-2" */
+.room-live { display: inline-flex; align-items: center; }
+.room-live-dot { width: 8px; height: 8px; border-radius: 9999px; background: var(--live); flex: none; }
 .room-history { --room-gutter: 24px; position: relative; display: flex; flex-direction: column; min-height: 0; flex: 1; overflow: auto; overscroll-behavior: contain; padding: 16px var(--room-gutter); }
 .room-history > :first-child { margin-top: auto; }
 .room-timeline { position: relative; display: flex; flex-direction: column; min-height: 0; flex: 1; }

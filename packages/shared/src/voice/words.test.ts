@@ -21,9 +21,9 @@ describe("voice words", () => {
   });
 
   it("names who is live", () => {
-    expect(liveMarker(["Aden"])).toBe("🔴 Live — Aden");
-    expect(liveMarker(["Aden", "Leo"])).toBe("🔴 Live — Aden and Leo");
-    expect(liveMarker(["Aden", "Leo", "Sam"])).toBe("🔴 Live — Aden and 2 others");
+    expect(liveMarker(["Aden"])).toBe("Live — Aden");
+    expect(liveMarker(["Aden", "Leo"])).toBe("Live — Aden and Leo");
+    expect(liveMarker(["Aden", "Leo", "Sam"])).toBe("Live — Aden and 2 others");
   });
 
   it("maps join failures", () => {

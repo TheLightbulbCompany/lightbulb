@@ -5,6 +5,7 @@ import json
 from huddle_agent import huddle as h_mod
 from huddle_agent.backend import BackendError
 from huddle_agent.huddle import HANDOFF_SECONDS, IDLE_SECONDS, THINKING_EVERY, Huddle
+from huddle_agent.transcript import address
 
 TEAM = {
     "agents": [
@@ -66,6 +67,8 @@ class FakeBackend:
         self.session_gate: asyncio.Event | None = None
         self.routes: list[tuple] = []
         self.route_to = "forge"
+        self.route_humans: list = []
+        self.jev_to = None  # a line with no name: Jev picks nobody unless a test says otherwise
         self.turns: list[dict] = []
         self.turn_results: list = []  # BackendErrors raised in order, then success
         self.turn_gate: asyncio.Event | None = None
@@ -80,9 +83,10 @@ class FakeBackend:
         self.team_calls += 1
         return copy.deepcopy(self.team_data)
 
-    async def route(self, speaker, utterance, transcript):
+    async def route(self, speaker, utterance, transcript, humans=None):
         self.routes.append((speaker, utterance, transcript))
-        return self.route_to
+        self.route_humans.append(humans)
+        return self.route_to if humans is None else self.jev_to
 
     async def summon(self, speaker):
         self.summons.append(speaker)
@@ -244,7 +248,8 @@ def answer(h, run_id, agent_id, text):
 
 async def test_summon_by_name_opens_that_agents_own_voice():
     h, room, backend, lives, clock, log = await summoned("Gauge")
-    assert backend.summons == ["u1"] and backend.sessions == ["gauge"] and backend.routes == []
+    # Aden's plain line went to Jev (nobody); the line that starts with a name skipped it
+    assert backend.summons == ["u1"] and backend.sessions == ["gauge"] and backend.route_humans == [2]
     live = lives[0]
     assert (live.agent_id, live.voice, live.persona, live.speaker) == ("gauge", "voice-gauge", "You are Gauge.", "u1")
     assert live.seed[0] == ("user", "Aden: we shipped huddles")  # the summoning line is not a user line
@@ -256,6 +261,72 @@ async def test_plain_line_does_not_summon():
     await h.on_participants({"u1": "Prasiddha"})
     await say(h, "u1", "the deploy went fine")
     assert backend.summons == [] and lives == []
+
+
+REPRO = ["Hey guys.", "Hey guys, hey Friday.", "Hey guys. Hey Friday, what's up?"]
+
+
+async def test_a_line_with_no_name_at_the_start_asks_jev():
+    # prod 2026-10-02: alone in a 3-agent channel, "Hey guys, hey Friday" summoned nobody
+    for text in REPRO:
+        h, room, backend, lives, clock, log = make()
+        backend.team_data["agents"][1]["name"] = "Friday"
+        backend.jev_to = "forge"
+        await h.on_participants({"u1": "Prasiddha"})
+        await say(h, "u1", text)
+        assert backend.route_humans == [1] and backend.routes[0][1] == text
+        assert lives[0].agent_id == "forge" and h._voice.path == "jev"
+        await h.end_exchange()
+
+
+async def test_jev_nobody_or_down_opens_no_voice(capsys):
+    h, room, backend, lives, clock, log = make()
+    await h.on_participants({"u1": "Prasiddha", "u2": "Aden"})
+    await say(h, "u1", "did you see the game last night")
+    assert backend.route_humans == [2] and lives == [] and backend.summons == []
+
+    async def down(*_a):
+        raise BackendError(503, "huddles_upstream", None)
+
+    backend.route = down
+    await say(h, "u2", "yeah it was something else")
+    assert lives == [] and not [p for t, p, _ in room.published if t == "huddle.error"]  # two people: silent
+    outcomes = [json.loads(x).get("outcome") for x in capsys.readouterr().out.splitlines() if "live.latency.jev" in x]
+    assert outcomes == ["none", "error"]
+
+
+# The same phrases as the backend's test_opening_name_parity: the worker's fast path must name exactly the
+# agent chat's opening-name rule (messaging._addressed_by_name) names, or nobody, so Jev sees the rest.
+PARITY = [
+    ("Hey guys.", []),
+    ("Hey guys, hey Friday.", []),
+    ("Hey guys. Hey Friday, what's up?", []),
+    ("Hey Friday, what's up?", ["forge"]),
+    ("Friday, can you check revenue?", ["forge"]),
+    ("Gauge, what's revenue?", ["gauge"]),
+]
+
+
+def test_opening_name_parity_with_chat():
+    agents = [dict(a) for a in TEAM["agents"]]
+    agents[1]["name"] = "Friday"
+    for text, expected in PARITY:
+        assert address(text, agents, TEAM["people"]).agent_ids == expected, text
+
+
+async def test_a_name_at_the_start_skips_jev():
+    h, room, backend, lives, clock, log = make()
+    await h.on_participants({"u1": "Prasiddha"})
+    await say(h, "u1", "Gauge, what's revenue?")
+    assert backend.routes == [] and lives[0].agent_id == "gauge"
+    await h.end_exchange()
+
+
+async def test_the_floor_holder_keeps_follow_ups_without_jev():
+    h, room, backend, lives, clock, log = await summoned("Forge")
+    routed = len(backend.routes)
+    await say(h, "u1", "and what about last week")
+    assert len(backend.routes) == routed and h._voice.agent_id == "forge"
 
 
 async def test_lightbulb_without_a_name_routes_with_a_name_does_not():
@@ -1429,6 +1500,29 @@ async def test_an_idle_room_ends_and_says_why():
     assert room.shut
 
 
+async def test_the_last_human_leaving_clears_the_marker_first_even_if_the_post_hangs(monkeypatch):
+    h, room, backend, lives, clock, log = await summoned()
+
+    async def hang(user_ids, version=0):
+        log.append(("presence", tuple(user_ids)))
+        await asyncio.sleep(60)
+
+    monkeypatch.setattr(h_mod, "PRESENCE_TIMEOUT", 0.01)
+    backend.presence = hang
+    await h.on_participants({})
+    assert log[log.index(("presence", ())) + 1 :][-2:] == ["end", "shutdown"]  # timed out, then shut down
+
+
+async def test_shutdown_clears_the_marker_only_when_nobody_is_left():
+    h, room, backend, lives, clock, log = make()
+    await h.on_participants({"u1": "Prasiddha"})
+    await h.clear_presence()  # a worker restart with people in the call: their marker stays
+    assert backend.presences == [["u1"]]
+    h._people = {}  # the job was cancelled before the leave's own presence went out
+    await h.clear_presence()
+    assert backend.presences[-1] == [] and backend.versions[-1] > backend.versions[0]
+
+
 async def test_presence_versions_increase():
     h, room, backend, lives, clock, log = make()
     await h.on_participants({"u1": "Prasiddha"})
@@ -1454,7 +1548,8 @@ async def test_backend_client_option_d_routes(monkeypatch):
     base = {"ownerId": "org_1", "roomToken": "tok"}
     assert seen == [
         ("/api/v1/internal/huddles/r1/team", base),
-        ("/api/v1/internal/huddles/r1/route", {"speakerUserId": "u1", "utterance": "what's revenue", "transcript": "t", **base}),
+        ("/api/v1/internal/huddles/r1/route", {"speakerUserId": "u1", "utterance": "what's revenue", "transcript": "t", "humans": None,
+                                                **base}),
         ("/api/v1/internal/huddles/r1/agents/gauge/session", base),
         ("/api/v1/internal/huddles/calls/c1/turns", {"speakerUserId": "u1", "agentId": "gauge", "runId": "r1",
                                                     "utterance": "hi", "transcript": "since", "steerRunId": None, **base}),

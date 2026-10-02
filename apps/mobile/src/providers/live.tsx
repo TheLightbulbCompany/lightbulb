@@ -5,6 +5,7 @@ import {
 } from "@lightbulb/shared";
 import type { Room } from "livekit-client";
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { AppState } from "react-native";
 
 import { makeAdapter } from "../lib/adapter";
 import { setupWebRTC } from "../lib/webrtc";
@@ -223,7 +224,8 @@ export function useLive(): Live {
 const RETRY_MS = 30_000; // every open room header reads this: back off hard while LiveKit is down
 
 /** Who is Live in a room: seeded from the server, then kept by `room.huddle.changed` (a full snapshot).
- *  Events can drop, so the seed is re-read on every reconnect; an event newer than the seed wins. */
+ *  Events can drop, so the seed is re-read on every reconnect, room open and return to the app; an event newer
+ *  than the seed wins. */
 export function useRoomLive(roomId: string | undefined): { userIds: string[]; available: boolean } {
   const { getToken } = useAuth();
   const getTokenRef = useRef(getToken);
@@ -256,7 +258,8 @@ export function useRoomLive(roomId: string | undefined): { userIds: string[]; av
         .catch((e: { status?: number }) => { if (!stale && e?.status !== 404) retry = setTimeout(seed, RETRY_MS); });
     };
     seed();
-    return () => { stale = true; clearTimeout(retry); off(); };
+    const active = AppState.addEventListener("change", (s) => { if (s === "active") { clearTimeout(retry); seed(); } });
+    return () => { stale = true; clearTimeout(retry); off(); active.remove(); };
   }, [api, onEvent, roomId, connectionRevision]);
 
   return { userIds: state.roomId === roomId ? state.userIds : [], available };

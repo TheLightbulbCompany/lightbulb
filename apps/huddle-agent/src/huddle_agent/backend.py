@@ -50,8 +50,9 @@ class Backend:
     async def team(self) -> dict:
         return await self._post(f"/internal/huddles/{self._room_id}/team", {})
 
-    async def route(self, speaker: str, utterance: str, transcript: str) -> str:
-        body = {"speakerUserId": speaker, "utterance": utterance, "transcript": transcript}
+    async def route(self, speaker: str, utterance: str, transcript: str, humans: int | None = None) -> str | None:
+        """None: nobody answers. `humans` (people in the call) lets Jev pick nobody when 2+ are talking."""
+        body = {"speakerUserId": speaker, "utterance": utterance, "transcript": transcript, "humans": humans}
         return (await self._post(f"/internal/huddles/{self._room_id}/route", body))["agentId"]
 
     async def summon(self, speaker: str) -> dict:

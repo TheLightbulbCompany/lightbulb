@@ -543,3 +543,94 @@ async def test_route_falls_back_to_the_first_agent_without_a_ceo(route_env):
     vc._room_team.return_value = ({"name": "general"}, GAUGE_TEAM[1:])
     with patch.object(vc.jev, "pick_agent", AsyncMock(return_value=None)):
         assert await _route("Lightbulb, anything new") == "gauge-1"
+
+
+# ---- Live lines with no name: routed like a chat message (route_live_line) --------------------------
+
+LIVE_MEMBERS = [
+    {"kind": "agent", "id": "ceo-1", "displayName": "Ada", "listenMode": "mentions"},
+    {"kind": "agent", "id": "fri-1", "displayName": "Friday", "listenMode": "observe"},  # Live ignores modes
+    {"kind": "agent", "id": "fin-1", "displayName": "Finance", "listenMode": "active"},
+    {"kind": "human", "id": "user_a", "displayName": "Prasiddha Parthsarthy"},
+    {"kind": "human", "id": "user_b", "displayName": "Aden"},
+]
+
+
+@pytest.fixture
+def live_env():
+    with (
+        patch.object(vc, "_room_team", AsyncMock(return_value=({"name": "general", "kind": "channel"}, []))),
+        patch.object(vc.messaging_repo, "list_members", AsyncMock(return_value=LIVE_MEMBERS)),
+        patch.object(vc.messaging, "human_display_name", AsyncMock(return_value="Prasiddha")),
+        patch.object(vc.openclaw_work, "_fallback_ceo_id", AsyncMock(return_value="ceo-1")),
+    ):
+        yield
+
+
+async def _live(text, humans=1, who=None, transcript=""):
+    decide = AsyncMock(return_value={"who": who} if who else {"fallback": True})
+    with patch.object(vc.jev, "_decide_for_message", decide):
+        got = await vc.route_live_line(
+            owner_id="org_a",
+            room_id="room-1",
+            speaker_id="user_a",
+            utterance=text,
+            transcript=transcript,
+            humans=humans,
+        )
+    return got, decide
+
+
+async def test_live_repro_lines_go_to_jev_with_every_agent_listening(live_env):
+    for text in ("Hey guys.", "Hey guys, hey Friday.", "Hey guys. Hey Friday, what's up?"):
+        got, decide = await _live(text, who="fri-1")
+        assert got == "fri-1"
+        message = decide.await_args.args[1]
+        assert {t["agentId"] for t in message["dispatchTargets"]} == {"ceo-1", "fri-1", "fin-1"}
+        assert message["author"]["kind"] == "human" and message["text"] == text
+
+
+async def test_live_an_opening_name_is_a_mention_and_skips_jev(live_env):
+    got, decide = await _live("Hey Friday, what's up?", humans=3)
+    assert got == "fri-1"
+    decide.assert_not_awaited()
+
+
+async def test_live_alone_nobody_counts_as_jev_down(live_env):
+    # the fallback: whoever spoke last in the call, else the CEO
+    got, _ = await _live("Hey guys.", humans=1, who="none", transcript="Finance: burn is flat\nPrasiddha: Hey guys.")
+    assert got == "fin-1"
+    assert (await _live("Hey guys.", humans=1, who="none"))[0] == "ceo-1"
+    assert (await _live("Hey guys.", humans=1))[0] == "ceo-1"  # Jev down
+
+
+async def test_live_two_people_jev_may_pick_nobody(live_env):
+    assert (await _live("did you see the game", humans=2, who="none"))[0] is None
+    assert (await _live("what's our burn", humans=2, who="fin-1"))[0] == "fin-1"
+    assert (await _live("what's our burn", humans=2))[0] == "ceo-1"  # Jev down: chat's fallback
+
+
+async def test_live_a_line_to_a_person_is_silent_without_jev(live_env):
+    got, decide = await _live("Aden, can you check the deck?", humans=2)
+    assert got is None
+    assert decide.await_args.kwargs["to_people"] is True
+    assert decide.await_args.args[1]["mentions"] == [{"kind": "human", "id": "user_b"}]
+
+
+async def test_live_jev_timeout_falls_back(live_env):
+    async def slow(*_a, **_k):
+        await asyncio.sleep(1)
+
+    with patch.object(vc, "_ROUTING_TIMEOUT_S", 0.01), patch.object(vc.jev, "_decide_for_message", slow):
+        got = await vc.route_live_line(
+            owner_id="org_a", room_id="room-1", speaker_id="user_a", utterance="hm what now", transcript="", humans=2
+        )
+    assert got == "ceo-1"
+
+
+def test_live_transcript_becomes_history_before_the_line():
+    rows = vc._transcript_history("Pat: hi\nFinance: burn is flat\nPat: and now?", LIVE_MEMBERS, "and now?")
+    assert [(r["author"]["kind"], r["author"]["id"], r["text"]) for r in rows] == [
+        ("human", "Pat", "hi"),
+        ("agent", "fin-1", "burn is flat"),
+    ]

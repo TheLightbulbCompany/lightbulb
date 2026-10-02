@@ -44,9 +44,9 @@ it("is hidden for guests", () => {
 });
 
 it.each([
-  [["h1"], "🔴 Live — Ana"],
-  [["h1", "h2"], "🔴 Live — Ana and Ben"],
-  [["h1", "h2", "h3"], "🔴 Live — Ana and 2 others"],
+  [["h1"], "Live — Ana"],
+  [["h1", "h2"], "Live — Ana and Ben"],
+  [["h1", "h2", "h3"], "Live — Ana and 2 others"],
 ])("marker for %j", (ids, text) => {
   huddle.ids = ids;
   render(<RoomHeader {...base} room={room()} />);
@@ -71,12 +71,12 @@ it("while Live, the strip takes Go live's place, and this room's own marker step
   expect(screen.getByTestId("strip")).toHaveTextContent("room-1");
   expect(screen.getByTestId("strip")).toHaveAttribute("data-members", "4");
   expect(screen.queryByRole("button", { name: "Go live" })).toBeNull();
-  expect(screen.queryByText("🔴 Live — Ana")).toBeNull();
+  expect(screen.queryByText("Live — Ana")).toBeNull();
 });
 
 it("Live in another room hides Go live here but keeps this room's marker", () => {
   huddle.room = {}; huddle.roomId = "room-9"; huddle.ids = ["h1"];
   render(<RoomHeader {...base} room={room()} />);
   expect(screen.queryByRole("button", { name: "Go live" })).toBeNull();
-  expect(screen.getByText("🔴 Live — Ana")).toBeInTheDocument();
+  expect(screen.getByText("Live — Ana")).toBeInTheDocument();
 });

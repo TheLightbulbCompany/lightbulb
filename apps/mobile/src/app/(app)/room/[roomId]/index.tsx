@@ -422,6 +422,7 @@ function Conversation() {
         title={roomName}
         status={headerStatus}
         statusTone={headerStatusTone}
+        statusDot={liveNames.length > 0}
         avatar={headerAvatar}
         palette={palette}
         maxWidth={windowWidth - HEADER_SIDE_CHROME - headerActionsWidth}

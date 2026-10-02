@@ -430,8 +430,10 @@ PLACEMENT_CRITERIA = {
 
 
 async def _decide_for_message(
-    meta: dict, message: dict, latest: dict, members: list[dict], history: list[dict]
+    meta: dict, message: dict, latest: dict, members: list[dict], history: list[dict], to_people: bool | None = None
 ) -> dict:
+    """``to_people``: the caller already knows whether the message speaks to people (Live hears names,
+    not @handles); None reads it from the message (``addressed_to_people``)."""
     candidates = [
         target["agentId"]
         for target in message.get("dispatchTargets") or []
@@ -448,7 +450,8 @@ async def _decide_for_message(
     criteria = dict(zip(candidates, cards))
     criteria["none"] = NONE_CRITERION
     state = _state(meta, latest, history)
-    to_people = addressed_to_people(message, members)
+    if to_people is None:
+        to_people = addressed_to_people(message, members)
     if to_people:
         people = {m["id"]: m.get("displayName") or m["id"] for m in members if m.get("kind") == "human"}
         state["latest"]["addressedTo"] = [

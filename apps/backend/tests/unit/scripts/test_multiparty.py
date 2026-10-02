@@ -144,7 +144,7 @@ def test_collect_stops_at_the_race_deadline(monkeypatch):
         return {"messages": []} if path.endswith("/messages") else {"activeRuns": []}
 
     monkeypatch.setattr(runner, "time", FakeTime)
-    runner.collect(api, "r", 0, {}, {}, window=5, expect_speak=True, settle={})
+    runner.collect(api, "r", 0, {}, {}, window=5, expect_speak=True, settle={}, start=0.0)
     assert clock["t"] == pytest.approx(5)  # was 8: an uncapped 3 s sleep overshot the deadline
 
 
@@ -153,3 +153,14 @@ def test_annotate_keeps_goal_status():
     res = runner.annotate({"steps": [{"step": 0}, {"step": 1}]}, scn)
     assert res["steps"][1] == {"step": 1, "expected": "none", "goal": "answered"}
     assert res["steps"][0]["goal"] is None
+
+
+def test_split_at_hands_pre_post_replies_to_the_previous_step():
+    before, after = runner.split_at([{"seq": 2}, {"seq": 4}], 3)
+    assert before == [{"seq": 2}] and after == [{"seq": 4}]
+
+
+async def test_stub_cards_list_role_tools():
+    card = await mp._stub_card("org", "fin", "Finance")
+    assert card.startswith("Finance (role: cfo).") and "Tools: google-sheets, paperclip, stripe." in card
+    assert set(mp.STUB_TOOLS) == {role for _, role in mp.PRESETS.values()}

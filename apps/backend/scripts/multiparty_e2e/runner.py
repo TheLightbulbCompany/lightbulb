@@ -264,6 +264,7 @@ def play(scn: dict, apis: dict[str, Api], ids: dict[str, str], gateway_key: str 
             "replyToMessageId": None,
             "threadRootMessageId": posted[step["thread"]]["messageId"] if "thread" in step else None,
         }
+        sent = time.monotonic()  # a race's ``after`` counts from here, not from when the POST returns
         msg = apis[step["as"]]("POST", f"/messaging/rooms/{room_id}/messages", json=body)
         posted.append(msg)
         said.append(text)
@@ -274,13 +275,23 @@ def play(scn: dict, apis: dict[str, Api], ids: dict[str, str], gateway_key: str 
         replies, after_seq = collect(
             apis[owner],
             room_id,
-            max(after_seq, msg["messageSeq"]),
+            after_seq,
             role_of,
             trigger_of,
             window=window,
             expect_speak=expect_speak,
             settle=scn.get("settle", {}),
+            start=sent,
         )
+        # Replies that landed after the previous race window's last poll but before this post
+        # belong to the previous step.
+        late, replies = split_at(replies, msg["messageSeq"])
+        if late and steps_out:
+            prev = steps_out[-1]
+            prev["replies"] += late
+            if "checks" in prev:
+                prev["checks"] = hard_checks(scn["steps"][i - 1], prev["replies"], said[:-1])
+            transcript[-1:-1] = [f"{r['name']}: {r['text']}" for r in late]
         out = {"step": i, "as": step["as"], "text": text, "replies": replies}
         if step.get("expect"):
             out["checks"] = hard_checks(step, replies, said)
@@ -296,7 +307,16 @@ def play(scn: dict, apis: dict[str, Api], ids: dict[str, str], gateway_key: str 
 
 
 def collect(
-    api: Api, room_id: str, after_seq: int, role_of: dict, trigger_of: dict, *, window, expect_speak, settle
+    api: Api,
+    room_id: str,
+    after_seq: int,
+    role_of: dict,
+    trigger_of: dict,
+    *,
+    window,
+    expect_speak,
+    settle,
+    start: float | None = None,
 ) -> tuple[list[dict], int]:
     """Agent messages after ``after_seq`` until the room settles (no active run, quiet), a race window
     ends, or the step times out. Records each active run's trigger so a late reply can be attributed."""
@@ -308,9 +328,11 @@ def collect(
         if expect_speak
         else settle.get("silence", 90)
     )
-    start = last_change = time.monotonic()
+    start = time.monotonic() if start is None else start
+    last_change = time.monotonic()
     replies = []
     while True:
+        polled = time.monotonic()
         detail = api("GET", f"/messaging/rooms/{room_id}")
         for run in detail.get("activeRuns") or []:
             trigger_of[run["runId"]] = run.get("triggerMessageId")
@@ -335,11 +357,19 @@ def collect(
         # silence window: a cold runtime's first reply can take a minute to start.
         if window is None and idle and replies:
             break
-        left = timeout - (time.monotonic() - start)
-        if left <= 0:
+        # Never past the deadline: a race's next post must land on time, so the last poll is the one
+        # that still finishes before it.
+        cost, left = time.monotonic() - polled, timeout - (time.monotonic() - start)
+        if left <= cost:
+            time.sleep(max(0, left))
             break
-        time.sleep(min(3, left))  # never past the deadline: a race's next post must land on time
+        time.sleep(min(3, left - cost))
     return replies, after_seq
+
+
+def split_at(replies: list[dict], seq: int) -> tuple[list[dict], list[dict]]:
+    """(replies before message ``seq``, replies after it)."""
+    return [r for r in replies if r["seq"] < seq], [r for r in replies if r["seq"] > seq]
 
 
 # ------------------------------------------------------------------ scoring summary

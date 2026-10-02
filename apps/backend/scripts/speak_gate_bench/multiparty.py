@@ -230,9 +230,23 @@ def fallback(state: dict, candidates: list[str], to_people: bool) -> list[str]:
     return [ceo if ceo in candidates else min(candidates)]
 
 
+#: Paperclip role -> the tool names a connected agent of that role typically carries, in the card's
+#: own shape (``jev._tool_names``: lowercase connector / MCP server names). "Tools: none." made Jev
+#: answer "nobody here can know this" on calendar and data questions no real card would lose.
+STUB_TOOLS = {
+    "ceo": ["gmail", "google-calendar", "google-drive", "paperclip"],
+    "cfo": ["google-sheets", "paperclip", "stripe"],
+    "engineer": ["ci", "github", "terminal"],
+    "cmo": ["gmail", "posthog", "x"],
+    "researcher": ["posthog", "sql"],
+    "general": ["gmail", "zendesk"],
+}
+
+
 async def _stub_card(owner_id: str, agent_id: str, display_name: str, recency: str = "") -> str:
     role = next(r for i, r in PRESETS.values() if i == agent_id)
-    return jev._assemble((f"{display_name} (role: {role}).", jev._ROLE_DESCRIPTIONS[role], "Tools: none."), recency)
+    tools = f"Tools: {', '.join(STUB_TOOLS[role])}."
+    return jev._assemble((f"{display_name} (role: {role}).", jev._ROLE_DESCRIPTIONS[role], tools), recency)
 
 
 _SUPPORTS_TO_PEOPLE = "to_people" in inspect.signature(jev._decide_for_message).parameters

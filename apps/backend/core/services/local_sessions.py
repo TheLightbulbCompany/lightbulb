@@ -1394,31 +1394,12 @@ async def get_command(auth: Caller, room_id: str | None, session_id: str, reques
 async def list_offline_outbox(auth: AuthContext, session_id: str) -> OfflineOutbox:
     session, _ = await authorize_session(auth, None, session_id)
     owner, sid, now = session["ownerId"], session["sessionId"], int(time.time())
-    all_commands = await repo.list_commands(owner, sid)
-    newest_live_send: dict[tuple[str, str], int] = {}
-    for command in all_commands:
-        if (
-            command.get("kind") == "send"
-            and not command.get("originRoomId")
-            and command.get("roomId") == ""
-            and command.get("actorUserId")
-            and command.get("text")
-            and (
-                command["state"] == "applied"
-                or (command["state"] in {"pending", "dispatched", "unknown"} and command["deliverBy"] > now)
-            )
-        ):
-            key = (command["actorUserId"], command["text"])
-            newest_live_send[key] = max(newest_live_send.get(key, 0), command["commandSeq"])
     rows = [
         row
-        for row in all_commands
+        for row in await repo.list_commands(owner, sid)
         if row.get("offlineIdentity")
         and row.get("actorUserId") == auth.user_id
         and row["createdAt"] >= now - 2 * OFFLINE_SEND_SECONDS
-        and not (
-            row["state"] == "rejected" and newest_live_send.get((auth.user_id, row.get("text")), 0) > row["commandSeq"]
-        )
     ]
     rows = [await _expire_pending_command(owner, sid, row) for row in rows]
     active = [row for row in rows if row["state"] not in {"applied", "rejected"} and row["deliverBy"] > now]

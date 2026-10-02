@@ -1459,6 +1459,11 @@ async def test_online_retry_stays_in_outbox_until_its_outcome_is_known(transport
     )
     retry = await repo.get_command(OWNER, sid, "retry-online")
     assert "offlineIdentity" not in retry
+    table.update_item(
+        Key={"pk": repo.session_pk(OWNER, sid), "sk": "COMMAND#request-1"},
+        UpdateExpression="SET createdAt = :old",
+        ExpressionAttributeValues={":old": int(time.time()) - 2 * service.OFFLINE_SEND_SECONDS - 1},
+    )
     assert [item.request_id for item in (await service.list_offline_outbox(ALICE, sid)).commands] == ["retry-online"]
     await repo.replace_command(retry, {**retry, "state": "rejected"})
     assert [item.request_id for item in (await service.list_offline_outbox(ALICE, sid)).commands] == ["request-1"]

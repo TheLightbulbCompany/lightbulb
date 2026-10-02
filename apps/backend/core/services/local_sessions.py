@@ -1465,13 +1465,20 @@ async def list_offline_outbox(auth: AuthContext, session_id: str) -> OfflineOutb
     owner, sid, now = session["ownerId"], session["sessionId"], int(time.time())
     commands = await repo.list_commands(owner, sid)
     by_request_id = {row["requestId"]: row for row in commands}
-    saved = {
-        row["requestId"]: row
-        for row in commands
-        if row.get("offlineIdentity")
-        and row.get("actorUserId") == auth.user_id
-        and row["createdAt"] >= now - 2 * OFFLINE_SEND_SECONDS
-    }
+    cutoff = now - 2 * OFFLINE_SEND_SECONDS
+    saved = {}
+    for row in commands:
+        if not row.get("offlineIdentity") or row.get("actorUserId") != auth.user_id:
+            continue
+        replacement = by_request_id.get(row.get("replacedByRequestId"))
+        if row["createdAt"] < cutoff and not (
+            replacement
+            and replacement.get("replacesRequestId") == row["requestId"]
+            and replacement.get("actorUserId") == auth.user_id
+            and replacement["createdAt"] >= cutoff
+        ):
+            continue
+        saved[row["requestId"]] = row
     linked: dict[str, dict] = {}
     for original in saved.values():
         if original["state"] != "rejected":

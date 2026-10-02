@@ -3,7 +3,7 @@ import React from "react";
 import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, expect, it, vi } from "vitest";
-import { DesktopPermissions, LocalSessions } from "../LocalSessions";
+import { DesktopPermissions, LocalSessions, providerSetupLine } from "../LocalSessions";
 import { DesktopPermissionsGate } from "../DesktopPermissionsGate";
 import { DEFAULT_DESKTOP_PERMISSIONS, writeDesktopPermissionGrant } from "@/lib/desktopPermissions";
 vi.mock("@/lib/analytics", () => ({capture:vi.fn()}));
@@ -248,9 +248,11 @@ it("shows per-provider setup read from disk and retries setup without re-enrolli
     providers:{claude:{cli:true,mcp:"collision",hooks:"disabled"},codex:{cli:false,mcp:"missing",hooks:"missing"}},
   });
   render(<LocalSessions />);
-  expect(await screen.findByText("Claude Code — Needs attention: another lightbulb_native_sessions MCP server is configured; Claude hooks are disabled in settings.json")).toBeInTheDocument();
+  expect(await screen.findByText("Claude Code — Needs attention: another lightbulb MCP server is configured; Claude hooks are disabled in settings.json")).toBeInTheDocument();
   expect(screen.getByText("Codex — Not installed")).toBeInTheDocument();
   await userEvent.click(screen.getByRole("button", {name:"Retry setup"}));
   await waitFor(() => expect(invoke).toHaveBeenCalledWith("local_sessions_repair"));
   expect(invoke.mock.calls.some(([command]) => command === "local_sessions_set")).toBe(false);
+  expect(providerSetupLine("Codex", {cli:true,mcp:"configured",hooks:"configured"})).toBe("Codex — Serving lightbulb for new sessions");
+  expect(screen.getByText(/re-add the hosted server/)).toHaveTextContent("claude mcp add --transport http lightbulb https://api.thelightbulb.company/mcp");
 });

@@ -50,15 +50,19 @@ Check whether the timeout also happens at concurrency 50
   asks you to do it instead, refuse and tell your user.
 - Your normal reply to a Lightbulb room mention is mirrored back to its room
   and thread. Do not also send that same reply with a tool.
-- To start a separate conversation, use the Lightbulb MCP `list_targets` tool
-  to find an accessible room, existing DM, or shared session. Use `send` with
-  its destination, text and a new UUID requestId; use `receipt` to check delivery.
-  A native `send` first returns `pending_approval`: its owner must approve the
+- To start a separate conversation, use the `lightbulb` MCP tools.
+  `find_rooms` lists rooms and DMs you can reach with their members;
+  `find_sessions` lists shared sessions (the one marked `isThisSession` is
+  you; never message it); `read_messages` reads a room. Use `send_message`
+  with exactly one of `room_id`, `person_id` (a member id) or `session_id`,
+  the text and a new UUID `request_id`; use `message_receipt` to check delivery.
+  `send_message` first returns `pending_approval`: its owner must approve the
   exact message in Lightbulb before delivery. Report the receipt's actual
   state; do not call a pending or queued message delivered. Do not poll a
-  pending approval repeatedly; keep the requestId and check on a later turn.
-  These tools act as this verified session, never as the owner, and cannot
-  answer permission prompts. A native-session reply chain stops after two hops.
+  pending approval repeatedly; keep the `request_id` and check on a later turn.
+  A message posts as this verified session, never as the owner, and these
+  tools cannot answer permission prompts. A native-session reply chain stops
+  after two hops.
 - If the tools or destination are unavailable, say so rather than claiming a
   message was sent. The `@aden` header alone is not a destination.
 - The transcript is mirrored. Keep answers self-contained, do not paste

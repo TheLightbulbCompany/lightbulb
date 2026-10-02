@@ -507,7 +507,8 @@ fn display_if_path(text: &str, cwd: Option<&str>, home: Option<&str>) -> String 
 /// question with its options. Shared with `lifecycle::build_datagram`, so a
 /// waiting session reads the same way live as it does in the transcript.
 pub(super) fn summary(name: &str, input: &Value, cwd: Option<&str>, home: Option<&str>) -> String {
-    if matches!(name, "mcp__lightbulb_native_sessions__send" | "mcp__lightbulb_native_sessions__receipt") {
+    if matches!(name, "mcp__lightbulb_native_sessions__send" | "mcp__lightbulb_native_sessions__receipt"
+        | "mcp__lightbulb__send_message" | "mcp__lightbulb__message_receipt") {
         return "Lightbulb message".into();
     }
     let first = |keys: &[&str]| keys.iter().find_map(|k| input[*k].as_str()).unwrap_or("");
@@ -562,7 +563,8 @@ pub(super) fn summary(name: &str, input: &Value, cwd: Option<&str>, home: Option
 }
 
 fn tool_input(name: &str, input: &Value, cwd: Option<&str>, home: Option<&str>) -> Value {
-    if matches!(name, "mcp__lightbulb_native_sessions__send" | "mcp__lightbulb_native_sessions__receipt") {
+    if matches!(name, "mcp__lightbulb_native_sessions__send" | "mcp__lightbulb_native_sessions__receipt"
+        | "mcp__lightbulb__send_message" | "mcp__lightbulb__message_receipt") {
         return json!({});
     }
     let pick = |keys: &[&str]| -> Value {
@@ -652,9 +654,9 @@ fn tool_result(block: &Value, row: &Value, ts: Option<&str>, id: Option<&str>) -
     };
     // Native MCP replies may carry private destinations, request IDs or owner
     // reasons. The result row has no tool name, so the MCP wrapper marks its
-    // send/receipt replies; the destination check covers older wrappers.
+    // send/receipt/read_messages replies; the destination check covers older wrappers.
     let content = if serde_json::from_str::<Value>(&content).is_ok_and(|value|
-        matches!(value["_lightbulbNativeSessionTool"].as_str(), Some("send" | "receipt"))
+        matches!(value["_lightbulbNativeSessionTool"].as_str(), Some("send" | "receipt" | "read_messages"))
             || (value["ok"].is_boolean() && value["data"].get("destination").is_some())) {
         "Lightbulb message result".to_owned()
     } else {

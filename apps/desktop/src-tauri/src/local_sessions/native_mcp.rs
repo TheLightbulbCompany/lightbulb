@@ -12,8 +12,12 @@ use std::process::Command;
 use std::time::Duration;
 
 const MAX_FRAME: u64 = 12 * 1024;
-const MAX_RESPONSE_FRAME: u64 = 64 * 1024;
-const SERVER_NAME: &str = "lightbulb_native_sessions";
+// A `read_messages` page carries message bodies, not just target names.
+const MAX_RESPONSE_FRAME: u64 = 512 * 1024;
+const SERVER_NAME: &str = "lightbulb";
+/// The name earlier releases installed under; enrollment removes it.
+const LEGACY_SERVER_NAME: &str = "lightbulb_native_sessions";
+pub(super) const REPLACED_NOTE: &str = "Mac bridge is serving lightbulb; the hosted entry was replaced";
 
 fn cli_home(command: &mut Command, home: &Path) {
     // The reassertion path also runs with an isolated home during CI. Provider
@@ -27,7 +31,7 @@ fn cli_home(command: &mut Command, home: &Path) {
     }
 }
 
-fn configured(home: &Path, cli: &Path, provider: &str) -> io::Result<Option<String>> {
+fn configured(home: &Path, cli: &Path, provider: &str, name: &str) -> io::Result<Option<String>> {
     let doc = if provider == "claude" {
         let path = home.join(".claude.json");
         match std::fs::read(&path) {
@@ -40,7 +44,7 @@ fn configured(home: &Path, cli: &Path, provider: &str) -> io::Result<Option<Stri
     } else {
         let mut command = Command::new(cli);
         cli_home(&mut command, home);
-        let output = command.args(["mcp", "get", SERVER_NAME, "--json"]).output()?;
+        let output = command.args(["mcp", "get", name, "--json"]).output()?;
         if !output.status.success() {
             return Ok(None);
         }
@@ -48,7 +52,7 @@ fn configured(home: &Path, cli: &Path, provider: &str) -> io::Result<Option<Stri
             .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "Codex MCP config invalid"))?
     };
     let entry = if provider == "claude" {
-        &doc["mcpServers"][SERVER_NAME]
+        &doc["mcpServers"][name]
     } else {
         &doc["transport"]
     };
@@ -67,13 +71,13 @@ fn configured(home: &Path, cli: &Path, provider: &str) -> io::Result<Option<Stri
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "MCP server command invalid"))
 }
 
-fn change(home: &Path, cli: &Path, provider: &str, verb: &str, executable: &Path) -> io::Result<()> {
+fn change(home: &Path, cli: &Path, provider: &str, verb: &str, name: &str, executable: &Path) -> io::Result<()> {
     let mut command = Command::new(cli);
     cli_home(&mut command, home);
     if provider == "claude" {
-        command.args(["mcp", verb, "--scope", "user", SERVER_NAME]);
+        command.args(["mcp", verb, "--scope", "user", name]);
     } else {
-        command.args(["mcp", verb, SERVER_NAME]);
+        command.args(["mcp", verb, name]);
     }
     if verb == "add" {
         command.arg("--").arg(executable).arg("session-mcp");
@@ -150,7 +154,7 @@ fn configure_codex_policy(home: &Path, executable: &Path) -> io::Result<Vec<Stri
         .as_table_mut()
         .ok_or_else(|| io::Error::other("Codex native MCP tool policy unavailable"))?;
     let mut notes = Vec::new();
-    for name in ["send", "receipt"] {
+    for name in ["send_message"] {
         let tool = tools
             .entry(name)
             .or_insert(toml_edit::Item::Table(toml_edit::Table::new()))
@@ -158,8 +162,8 @@ fn configure_codex_policy(home: &Path, executable: &Path) -> io::Result<Vec<Stri
             .ok_or_else(|| io::Error::other("Codex native MCP tool policy unavailable"))?;
         match tool.get("approval_mode").and_then(toml_edit::Item::as_str) {
             None if !tool.contains_key("approval_mode") => {
-                // Only these two Lightbulb tools bypass Codex's own prompt.
-                // `send` always prepares a private owner approval on the backend.
+                // Only this Lightbulb tool bypasses Codex's own prompt: it
+                // always prepares a private owner approval on the backend.
                 tool.insert("approval_mode", toml_edit::value("approve"));
             }
             Some("approve") => {}
@@ -173,37 +177,60 @@ fn configure_codex_policy(home: &Path, executable: &Path) -> io::Result<Vec<Stri
     Ok(notes)
 }
 
+fn codex_policy(home: &Path, executable: &Path, notes: &mut Vec<String>) {
+    match configure_codex_policy(home, executable) {
+        Ok(policy) => notes.extend(policy),
+        Err(_) => notes.push("Codex native send approval policy is unavailable".into()),
+    }
+}
+
 /// Keep the CLI-owned configs, including other servers and credentials, intact.
+/// Enabled, this Mac serves `lightbulb`: an entry it did not write (the hosted
+/// HTTP server) is replaced and the replacement reported. Disabled, it removes
+/// only what it wrote and restores nothing.
 pub(super) fn configure(home: &Path, executable: &Path, enabled: bool) -> Vec<String> {
     let mut notes = Vec::new();
     for provider in ["claude", "codex"] {
         let Some(cli) = super::provider_program(home, provider) else {
             continue;
         };
-        match configured(home, &cli, provider) {
-            Ok(Some(current)) if current == executable.to_string_lossy() => {
-                if !enabled && change(home, &cli, provider, "remove", executable).is_err() {
-                    notes.push(format!("{provider} native tools could not be removed"));
-                } else if enabled && provider == "codex" {
-                    match configure_codex_policy(home, executable) {
-                        Ok(policy) => notes.extend(policy),
-                        Err(_) => notes.push("Codex native send approval policy is unavailable".into()),
-                    }
-                }
+        // Any `session-mcp` under the old name is ours, whatever path it named.
+        if let Ok(Some(_)) = configured(home, &cli, provider, LEGACY_SERVER_NAME) {
+            let _ = change(home, &cli, provider, "remove", LEGACY_SERVER_NAME, executable);
+        }
+        let current = configured(home, &cli, provider, SERVER_NAME);
+        let ours = matches!(&current, Ok(Some(c)) if *c == executable.to_string_lossy());
+        if !enabled {
+            if ours && change(home, &cli, provider, "remove", SERVER_NAME, executable).is_err() {
+                notes.push(format!("{provider} native tools could not be removed"));
             }
-            Ok(Some(_)) => notes.push(format!("{provider} has a different {SERVER_NAME} server")),
-            Ok(None) if enabled => {
-                if change(home, &cli, provider, "add", executable).is_err() {
-                    notes.push(format!("{provider} native tools could not be installed"));
-                } else if provider == "codex" {
-                    match configure_codex_policy(home, executable) {
-                        Ok(policy) => notes.extend(policy),
-                        Err(_) => notes.push("Codex native send approval policy is unavailable".into()),
-                    }
-                }
+            continue;
+        }
+        // (stale: our `session-mcp` at an old app path; foreign: someone else's,
+        // e.g. the hosted HTTP entry -- the only replacement worth reporting.)
+        let (stale, foreign) = match current {
+            _ if ours => (false, false),
+            Ok(None) => (false, false),
+            Ok(Some(_)) => (true, false),
+            Err(e) if e.kind() == io::ErrorKind::AlreadyExists => (false, true),
+            Err(_) => {
+                notes.push(format!("{provider} MCP settings are unavailable"));
+                continue;
             }
-            Ok(None) => {}
-            Err(_) => notes.push(format!("{provider} MCP settings are unavailable")),
+        };
+        if (stale || foreign) && change(home, &cli, provider, "remove", SERVER_NAME, executable).is_err() {
+            notes.push(format!("{provider} has a different {SERVER_NAME} server that could not be replaced"));
+            continue;
+        }
+        if !ours && change(home, &cli, provider, "add", SERVER_NAME, executable).is_err() {
+            notes.push(format!("{provider} native tools could not be installed"));
+            continue;
+        }
+        if foreign {
+            notes.push(format!("{provider}: {REPLACED_NOTE}"));
+        }
+        if provider == "codex" {
+            codex_policy(home, executable, &mut notes);
         }
     }
     notes
@@ -225,26 +252,78 @@ fn read_frame(reader: &mut impl BufRead, limit: u64) -> io::Result<Option<Vec<u8
 }
 
 fn tools() -> Value {
+    let read = json!({"readOnlyHint":true,"destructiveHint":false,"openWorldHint":false});
+    let search = json!({"type":"object","properties":{"query":{"type":"string"},"limit":{"type":"integer","minimum":1,"maximum":100}},
+        "additionalProperties":false});
     json!({"tools": [
-        {"name":"list_targets","description":"List rooms, people and shared sessions reachable from this exact native session. The source is verified automatically.",
-         "inputSchema":{"type":"object","properties":{},"additionalProperties":false},
-         "annotations":{"readOnlyHint":true,"destructiveHint":false,"openWorldHint":false}},
-        {"name":"send","description":"Request owner approval to send one Lightbulb message to an accessible room, person or shared session. Use a stable requestId for retries. Cannot answer permission prompts.",
-         "inputSchema":{"type":"object","properties":{"destination":{"type":"string"},"text":{"type":"string"},"requestId":{"type":"string"}},
-          "required":["destination","text","requestId"],"additionalProperties":false},
+        {"name":"find_rooms","description":"Find Lightbulb rooms and DMs you can read, with their members. Use a member id as person_id.",
+         "inputSchema":search, "annotations":read},
+        {"name":"find_sessions","description":"Find shared Claude Code and Codex sessions. This session is marked isThisSession; never message it.",
+         "inputSchema":search, "annotations":read},
+        {"name":"read_messages","description":"Read a room's messages in order, starting after after_seq.",
+         "inputSchema":{"type":"object","properties":{"room_id":{"type":"string"},"after_seq":{"type":"integer","minimum":0},
+           "limit":{"type":"integer","minimum":1,"maximum":100}},"required":["room_id"],"additionalProperties":false},
+         "annotations":read},
+        {"name":"send_message","description":"Request owner approval to post one message as this session to exactly one of room_id, person_id or session_id. Use a new UUID request_id and reuse it on retry. Cannot answer permission prompts.",
+         "inputSchema":{"type":"object","properties":{"room_id":{"type":"string"},"person_id":{"type":"string"},"session_id":{"type":"string"},
+           "text":{"type":"string"},"request_id":{"type":"string"},"reply_to_message_id":{"type":"string","description":"Not supported from this Mac yet; omit."}},
+          "required":["text","request_id"],"additionalProperties":false},
          "annotations":{"readOnlyHint":false,"destructiveHint":true,"openWorldHint":false}},
-        {"name":"receipt","description":"Check delivery of a send from this native session by requestId.",
-         "inputSchema":{"type":"object","properties":{"requestId":{"type":"string"}},"required":["requestId"],"additionalProperties":false},
-         "annotations":{"readOnlyHint":false,"destructiveHint":false,"openWorldHint":false}}
+        {"name":"message_receipt","description":"Check delivery of a send_message from this session by request_id.",
+         "inputSchema":{"type":"object","properties":{"request_id":{"type":"string"}},"required":["request_id"],"additionalProperties":false},
+         "annotations":read}
     ]})
 }
 
+/// A path- and query-safe id: the Mac puts it in a URL.
+fn id_ok(v: &Value) -> bool {
+    v.as_str().is_some_and(|s| {
+        !s.is_empty() && s.len() <= 128 && s.bytes().all(|b| b.is_ascii_alphanumeric() || b"-_:.".contains(&b))
+    })
+}
+
+/// Maps a public tool call onto the Mac app's internal one. `send`/`receipt`
+/// keep the exact `{destination,text,requestId}` / `{requestId}` shapes the
+/// backend's private approval digest is computed over.
+pub(super) fn internal(name: &str, args: &Value) -> Option<(&'static str, Value)> {
+    let args = args.as_object()?;
+    let only = |keys: &[&str]| args.keys().all(|k| keys.contains(&k.as_str()));
+    let opt_num = |k: &str| args.get(k).is_none_or(|v| v.as_u64().is_some());
+    let opt_str = |k: &str| args.get(k).is_none_or(|v| v.as_str().is_some_and(|s| s.len() <= 256));
+    match name {
+        "find_rooms" | "find_sessions" if only(&["query", "limit"]) && opt_str("query") && opt_num("limit") => {
+            Some((if name == "find_rooms" { "find_rooms" } else { "find_sessions" }, Value::Object(args.clone())))
+        }
+        "read_messages" if only(&["room_id", "after_seq", "limit"]) && args.get("room_id").is_some_and(id_ok)
+            && opt_num("after_seq") && opt_num("limit") => Some(("read_messages", Value::Object(args.clone()))),
+        "send_message" if only(&["room_id", "person_id", "session_id", "text", "request_id", "reply_to_message_id"])
+            && args.get("reply_to_message_id").is_none_or(Value::is_null) =>
+        {
+            let mut ids = [("room", "room_id"), ("person", "person_id"), ("session", "session_id")]
+                .into_iter()
+                .filter_map(|(kind, key)| args.get(key).map(|v| (kind, v)));
+            let (kind, id) = ids.next()?;
+            if ids.next().is_some() || !id_ok(id) {
+                return None;
+            }
+            let call = json!({"destination":format!("{kind}:{}", id.as_str()?),
+                "text":args.get("text")?.as_str()?,"requestId":args.get("request_id")?.as_str()?});
+            allowed("send", &call).then_some(("send", call))
+        }
+        "message_receipt" if only(&["request_id"]) => {
+            let call = json!({"requestId":args.get("request_id")?.as_str()?});
+            allowed("receipt", &call).then_some(("receipt", call))
+        }
+        _ => None,
+    }
+}
+
+/// The internal `send`/`receipt` argument shapes.
 pub(super) fn allowed(name: &str, args: &Value) -> bool {
     let Some(args) = args.as_object() else {
         return false;
     };
     match name {
-        "list_targets" => args.is_empty(),
         "send" => {
             args.len() == 3
                 && ["destination", "text", "requestId"]
@@ -253,6 +332,20 @@ pub(super) fn allowed(name: &str, args: &Value) -> bool {
         }
         "receipt" => args.len() == 1 && args.get("requestId").and_then(Value::as_str).is_some(),
         _ => false,
+    }
+}
+
+/// A Claude hook sees the public call; approval and reporting key on the
+/// internal send/receipt (`mcp__lightbulb_native_sessions__*`, the name the
+/// backend and the approval cards already know). Anything unmappable is left
+/// alone and stays private by name.
+pub(super) fn canonical_hook(json: &mut Value) {
+    let Some(name) = json["tool_name"].as_str().and_then(|t| t.strip_prefix("mcp__lightbulb__")) else {
+        return;
+    };
+    if let Some((tool @ ("send" | "receipt"), args)) = internal(name, &json["tool_input"]) {
+        json["tool_name"] = json!(format!("mcp__{LEGACY_SERVER_NAME}__{tool}"));
+        json["tool_input"] = args;
     }
 }
 
@@ -289,20 +382,19 @@ fn handle(request: &Value) -> Option<Value> {
     let result = match request["method"].as_str().unwrap_or("") {
         "initialize" => {
             json!({"protocolVersion":params["protocolVersion"].as_str().unwrap_or("2025-03-26"),
-            "capabilities":{"tools":{}},"serverInfo":{"name":"lightbulb-sessions","version":"1"}})
+            "capabilities":{"tools":{}},"serverInfo":{"name":"lightbulb","version":"2"}})
         }
         "ping" => json!({}),
         "tools/list" => tools(),
         "tools/call" => {
             let name = params["name"].as_str().unwrap_or("");
             let args = &params["arguments"];
-            if !allowed(name, args) {
-                json!({"content":[{"type":"text","text":"Invalid Lightbulb tool arguments."}],"isError":true})
-            } else {
-                match app_call(name, args, &params["_meta"]) {
+            if let Some((name, args)) = internal(name, args) {
+                match app_call(name, &args, &params["_meta"]) {
                     Ok(mut reply) => {
                         let is_error = reply["ok"] != true;
-                        if matches!(name, "send" | "receipt") {
+                        // Marks results the shared transcript must not show.
+                        if matches!(name, "send" | "receipt" | "read_messages") {
                             reply["_lightbulbNativeSessionTool"] = json!(name);
                         }
                         json!({"content":[{"type":"text","text":reply.to_string()}], "isError":is_error})
@@ -311,6 +403,8 @@ fn handle(request: &Value) -> Option<Value> {
                         json!({"content":[{"type":"text","text":"Lightbulb on this Mac is unavailable or cannot verify this native session."}],"isError":true})
                     }
                 }
+            } else {
+                json!({"content":[{"type":"text","text":"Invalid Lightbulb tool arguments."}],"isError":true})
             }
         }
         _ => {
@@ -364,43 +458,99 @@ mod tests {
         let config = home.path().join(".codex/config.toml");
         let executable = Path::new("/Applications/Lightbulb.app/Contents/MacOS/lightbulb-desktop");
         std::fs::write(&config, format!(
-            "[mcp_servers.lightbulb_native_sessions]\ncommand = \"{}\"\nargs = [\"session-mcp\"]\n\
-             [mcp_servers.lightbulb_native_sessions.tools.receipt]\napproval_mode = \"prompt\"\n\
+            "[mcp_servers.lightbulb]\ncommand = \"{}\"\nargs = [\"session-mcp\"]\n\
+             [mcp_servers.lightbulb.tools.message_receipt]\napproval_mode = \"prompt\"\n\
              [mcp_servers.other]\ncommand = \"/bin/other\"\nargs = [\"serve\"]\n",
             executable.display()
         )).unwrap();
         let notes = configure_codex_policy(home.path(), executable).unwrap();
         let doc: toml_edit::DocumentMut = std::fs::read_to_string(config).unwrap().parse().unwrap();
-        assert_eq!(doc["mcp_servers"]["lightbulb_native_sessions"]["tools"]["send"]["approval_mode"].as_str(), Some("approve"));
-        assert_eq!(doc["mcp_servers"]["lightbulb_native_sessions"]["tools"]["receipt"]["approval_mode"].as_str(), Some("prompt"));
+        assert_eq!(doc["mcp_servers"]["lightbulb"]["tools"]["send_message"]["approval_mode"].as_str(), Some("approve"));
+        assert_eq!(doc["mcp_servers"]["lightbulb"]["tools"]["message_receipt"]["approval_mode"].as_str(), Some("prompt"));
         assert_eq!(doc["mcp_servers"]["other"]["command"].as_str(), Some("/bin/other"));
-        assert_eq!(notes, vec!["Codex receipt keeps its custom approval policy"]);
+        assert!(notes.is_empty());
     }
 
     #[test]
-    fn only_target_listing_is_advertised_as_read_only() {
+    fn exactly_the_five_tools_and_only_send_is_destructive() {
         let listed = tools();
+        let names: Vec<_> = listed["tools"].as_array().unwrap().iter().map(|t| t["name"].as_str().unwrap()).collect();
+        assert_eq!(names, ["find_rooms", "find_sessions", "read_messages", "send_message", "message_receipt"]);
         for tool in listed["tools"].as_array().unwrap() {
-            assert_eq!(tool["annotations"]["readOnlyHint"], tool["name"] == "list_targets");
-            assert_eq!(tool["annotations"]["destructiveHint"], tool["name"] == "send");
+            assert_eq!(tool["annotations"]["readOnlyHint"], tool["name"] != "send_message");
+            assert_eq!(tool["annotations"]["destructiveHint"], tool["name"] == "send_message");
             assert_eq!(tool["annotations"]["openWorldHint"], false);
         }
     }
 
     #[test]
-    fn tool_arguments_never_accept_a_model_supplied_actor() {
-        assert!(allowed(
-            "send",
-            &json!({"destination":"session:s","text":"hello","requestId":"r"})
-        ));
-        assert!(!allowed(
-            "send",
-            &json!({"destination":"session:s","text":"hello","requestId":"r","sourceSessionId":"other"})
-        ));
-        assert!(!allowed(
-            "receipt",
-            &json!({"requestId":"r","actor":"owner"})
-        ));
+    fn public_calls_map_onto_the_internal_send_and_receipt() {
+        let r = "e12fd3e8-32ca-4b65-8eaf-ab979e3c9449";
+        for (key, kind) in [("room_id", "room"), ("person_id", "person"), ("session_id", "session")] {
+            assert_eq!(
+                internal("send_message", &json!({key:"x1","text":"hi","request_id":r})),
+                Some(("send", json!({"destination":format!("{kind}:x1"),"text":"hi","requestId":r})))
+            );
+        }
+        // Exactly one destination, no model-supplied actor, no unsupported reply.
+        assert!(internal("send_message", &json!({"text":"hi","request_id":r})).is_none());
+        assert!(internal("send_message", &json!({"room_id":"a","person_id":"b","text":"hi","request_id":r})).is_none());
+        assert!(internal("send_message", &json!({"room_id":"a","text":"hi","request_id":r,"sourceSessionId":"other"})).is_none());
+        assert!(internal("send_message", &json!({"room_id":"a","text":"hi","request_id":r,"reply_to_message_id":"m"})).is_none());
+        assert!(internal("send_message", &json!({"room_id":"../x","text":"hi","request_id":r})).is_none());
+        assert_eq!(internal("message_receipt", &json!({"request_id":r})), Some(("receipt", json!({"requestId":r}))));
+        assert!(internal("message_receipt", &json!({"request_id":r,"actor":"owner"})).is_none());
+        assert!(internal("read_messages", &json!({"room_id":"room/../x"})).is_none());
+        assert!(internal("read_messages", &json!({"room_id":"r1","after_seq":3,"limit":20})).is_some());
+        assert!(internal("find_rooms", &json!({})).is_some());
+        assert!(internal("find_sessions", &json!({"query":"x","limit":"all"})).is_none());
+        assert!(internal("list_targets", &json!({})).is_none());
+
+        let mut hook = json!({"tool_name":"mcp__lightbulb__send_message","tool_input":{"room_id":"x1","text":"hi","request_id":r}});
+        canonical_hook(&mut hook);
+        assert_eq!(hook["tool_name"], "mcp__lightbulb_native_sessions__send");
+        assert_eq!(hook["tool_input"], json!({"destination":"room:x1","text":"hi","requestId":r}));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn enable_replaces_a_hosted_lightbulb_entry_and_says_so() {
+        use std::os::unix::fs::PermissionsExt;
+        let home = tempfile::tempdir().unwrap();
+        let h = home.path();
+        let bin = h.join(".local/bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        // A fake `claude` CLI that edits ~/.claude.json the way `claude mcp` does.
+        let fake = bin.join("claude");
+        std::fs::write(&fake, r#"#!/usr/bin/env python3
+import json, os, sys
+p = os.path.join(os.environ["HOME"], ".claude.json")
+doc = json.load(open(p)) if os.path.exists(p) else {}
+servers = doc.setdefault("mcpServers", {})
+a = sys.argv[1:]
+if a[:2] == ["mcp", "remove"]: servers.pop(a[-1], None)
+elif a[:2] == ["mcp", "add"]: servers[a[4]] = {"command": a[6], "args": a[7:]}
+json.dump(doc, open(p, "w"))
+"#).unwrap();
+        std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
+        if super::super::provider_program(h, "claude") != std::fs::canonicalize(&fake).ok() {
+            return; // provider discovery does not look in this temp home here
+        }
+        std::fs::write(h.join(".claude.json"), json!({"mcpServers":{
+            "lightbulb":{"type":"http","url":"https://api.flickmeon.ai/mcp"},
+            "lightbulb_native_sessions":{"command":"/old/lightbulb-desktop","args":["session-mcp"]}}}).to_string()).unwrap();
+        let exe = Path::new("/Applications/Lightbulb.app/Contents/MacOS/lightbulb-desktop");
+        assert_eq!(status(h, exe, "claude"), "collision");
+        let notes = configure(h, exe, true);
+        assert!(notes.contains(&format!("claude: {REPLACED_NOTE}")), "{notes:?}");
+        let doc: Value = serde_json::from_str(&std::fs::read_to_string(h.join(".claude.json")).unwrap()).unwrap();
+        assert!(doc["mcpServers"]["lightbulb_native_sessions"].is_null());
+        assert_eq!(status(h, exe, "claude"), "configured");
+        // A second pass finds its own entry and reports nothing.
+        assert!(!configure(h, exe, true).iter().any(|n| n.contains(REPLACED_NOTE)));
+        // Disable removes what it wrote and restores nothing.
+        configure(h, exe, false);
+        assert_eq!(status(h, exe, "claude"), "missing");
     }
 
     #[test]

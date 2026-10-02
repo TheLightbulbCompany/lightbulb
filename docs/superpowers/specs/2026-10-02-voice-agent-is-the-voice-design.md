@@ -175,42 +175,20 @@ and pass no history at all (`turn:270-273`) [GR F1].
   room (`turn:2144-2210`).
 - Paperclip runs keep their own keys (§3a).
 
-**Continuity mechanism: hidden voice entries in the room session (option 2).** The Hermes session
-store is the right long-term model, and §12 recommends adopting it fleet-wide. It is **not** a clean
-drop-in for D today, for these reasons:
-- Switching room history to it changes every chat turn's input, not just voice.
-- Room messages from other people and agents still need a "since your last run" delta.
-- Compression renames the session id.
-- The durable lease and the whole-file `state.db` sync need work first. §12 has the evidence.
-
-So D carries voice exchanges the smallest way that works on the room key:
-- **Where:** `<profile>/rooms/{roomId}/voice.jsonl` in the agent's own profile, keyed by room. Each line
-  is `{afterSeq, role, speaker, text}`:
-  - `afterSeq` is the room's `lastSeq` when the run was dispatched. The backend already reads it for
-    the voice context (`vc:741-742`).
-  - `role` is `user` (the spoken request, prefixed "Aden (voice): …") or `assistant` (the agent's
-    `final_response`). Text only: no tool rows, since trimming tool pairs would orphan results.
-- **Written** by the voice run at the end of its turn, inside the room key's turn lock, so no other run
-  of this agent in this room writes at the same time. Steered follow-ups (I1) are recorded as user
-  lines too.
-- **Read** by every run on the room key, chat and voice alike. `_history` merges the entries into the
-  room messages by sequence: an entry follows the last room message with `messageSeq ≤ afterSeq`.
-  - Only entries newer than the oldest message in the window are kept, so voice ages out with the same
-    50-message window as chat.
-  - The merged entries are also capped at 24 messages / 6,000 chars, Hermes desktop's own live-history
-    seed caps (`HA:apps/desktop/src/lib/voice-live.ts:152-155`, `toLiveHistory`).
-  - The file is pruned to those caps on every write.
+**Continuity mechanism: the room key's Hermes session (amended 2026-10-02).** An earlier revision
+carried voice exchanges in a hidden `rooms/{roomId}/voice.jsonl` file because Hermes sessions were not
+ready. Owner ruling: fix forward, build nothing intermediate. Voice D now ships **after** §12 reaches its
+end state (PR #3561, extended): every turn passes `session_db`, and room turns pass the room key's
+`state.db` transcript as `conversation_history` plus a "room messages since your last run" block keyed
+by a `messageSeq` cursor in session metadata. A voice run on the room key goes through that same path,
+so it persists into the same Hermes session as chat. That session **is** the memory voice and chat
+share; there is no voice-specific file, merge or export rule.
 - **Voice runs get room history too.** The voice dispatch sends the same `recentHistory` + `participants`
   rows `ow` builds (`ow:169-188`, `:223-237`) instead of the flattened text block (`vc:746-773`), so
-  `_run_call` can pass `_history(...)` as `conversation_history` exactly as room turns do.
-- **Persistence:** `save_profile` uploads every changed profile file and propagates deletes
-  (`sync:497-573`). `rooms/` matches no exclude or reproducible glob (`sync:167-172`, `:217-262`), so
-  the file survives a microVM restart, roll or `StopRuntimeSession` with no new storage code [recheck #7].
+  `_run_call` builds its history exactly as room turns do (transcript + "since your last run" block).
 - **Nothing is posted.** The voice run's plugin turn context keeps `roomId: None`
   (`turn:251-252`), so the lightbulb plugin's room tools have no room to post to **(inferred from
   the turn-context contract, `turn:1601-1614`; verify in implementation)**.
-- **Deleted when §12 phase 2 lands.** Once room turns read the Hermes transcript for the room key, a
-  voice run is just another run appending to it, and this file goes away.
 - The shared Live transcript since that agent last spoke stays in the voice run's input. Today that
   transcript is human STT only (`wh:186`). D adds each agent's spoken lines, taken from its session's
   assistant transcripts and tagged with the agent id by us [GR #21]. The exact plugin event is
@@ -368,7 +346,7 @@ Jev cards is **(inferred)**, to trace in implementation.
 - **Background runs are just runs.** A voice run lives on the room key under the bridge's normal run
   registry (`register_call_run`, `turn:220-232`), so it outlives the floor, the window and the worker
   by construction. Its result reaches the worker through the frame sink. If no worker is listening, the
-  hidden voice entry (§3) still records it for the agent's next run in the room.
+  room key's Hermes session (§3) still holds it for the agent's next run in the room.
 - **Follow-ups never supersede** [GR F8]. A new request to an agent whose voice run is still running
   **steers** that run (`steer_run`, `turn:543`, which already accepts call runs, `turn:550-553`). Two
   bridge changes make that hold for voice runs, as it already does for room turns:
@@ -560,13 +538,13 @@ The last two come from building a fresh `AIAgent` per turn with no `session_db`.
     - voice as just another run on it (Hermes's own design, `run_voice.py:225-227`);
     - tool work that carries across turns;
     - the memory nudge hydrated correctly.
-  - It also deletes D's hidden voice file (§3).
   - The skill nudge additionally needs the counter carried across turns. Either cache the agent per
     session key as the gateway does, or persist `_iters_since_skill` in session metadata **(design
     choice, open)**.
   - Paperclip keeps its rendered prompt and its own keys; it gets phase 1's persistence and recall.
-- **Voice D does not wait for either phase.** It ships on the room key with the hidden voice entries
-  (§3). Phase 2 retires them.
+- **Voice D builds on phase 2** (amended 2026-10-02, owner ruling: fix forward). Phase 2 lands first;
+  D's voice runs then use the room-turn history path on the room key (§3), and no hidden voice file is
+  ever built.
 
 ## Latency gate (F6)
 Today a summon already opens a fresh GPT-Live session (`start_live` per summon [V §5]), so D's only new
@@ -594,20 +572,23 @@ add the joining earcon (UI doc open question 5) and re-measure before considerin
 
 ## Out of scope
 Two agents speaking at once; custom voices (sales-gated, actor consent, ≤20 per org, CV:11, :27-28,
-:42 [GR #46]); cascade TTS (Option C) — fallback only if the latency gate fails; the backend WebRTC
-`/calls` orb (`packages/shared/src/voice/session.ts:76`), which keeps the Lightbulb persona until owner
-decision 5 [GR F22].
+:42 [GR #46]); cascade TTS (Option C) — fallback only if the latency gate fails. The backend WebRTC `/calls` orb
+(`packages/shared/src/voice/session.ts:76`) is not kept alongside: Live is in every room, DMs included
+(#3553), nothing mounts the orb since then, so D deletes it (owner decision 5, decided) [GR F22].
 
 ## What changes (code map)
 - **Bridge** (`turn.py`, `server.py`): the call envelope takes `roomId` and checks
   `sessionId == lightbulb_session_key(agentId, roomId)` (`srv:161`); `call_session_key` is deleted.
-  `_run_call` passes `_history(...)` (room rows + hidden voice entries) as `conversation_history`,
-  appends `attach_agent`'s queued steers and runs `settle_steers`, and writes
-  `rooms/{roomId}/voice.jsonl` at turn end. `_history` merges voice entries by `afterSeq`.
+  `_run_call` takes the room-turn history path (the room key's Hermes transcript + the "since your
+  last run" block, §12 end state), appends `attach_agent`'s queued steers and runs `settle_steers`.
+  The orb's `callId` envelope and its AppSync frame sink are deleted.
+- **Orb** (deleted): `routers/calls.py`, `openai_live.py` (its `configured()` check moves into
+  `voice_calls`), the orb-only `voice_calls` functions, `room.call.changed`, the shared
+  `VoiceCallSession`/`takeSentences`, and `apps/frontend/src/components/voice/`.
   `report_usage` keys its skip on run kind, not key shape. `with_profile_agents_md` appends
   `VOICE_NOTES.md` (name line + notes). `sync.py`: `VOICE_NOTES.md` in `BACKEND_OWNED_FILES`.
 - **Backend** `voice_calls.py`: no Live row; voice runs dispatched on the room key with `recentHistory`
-  + `participants` (reusing `openclaw_work`'s builders) and `afterSeq`; `close_call` stops no runs;
+  + `participants` (reusing `openclaw_work`'s builders); `close_call` stops no runs;
   the voice window row takes the free claim / credit hold once; `/turns` with pre-routed `agentId`
   validated against room members and no supersession. Usage route accepts a room key for
   `family: "voice"`. `voice_persona.py`: per-agent persona, voice pool without
@@ -633,11 +614,13 @@ decision 5 [GR F22].
 3. STT names: `prompt` on `gpt-4o-mini-transcribe` (no cost change) first, or `gpt-live-transcribe`
    with `keywords` (+$0.014/min per unmuted person, our own VAD).
 4. Free tier = one room with an agent voice at a time per workspace.
-5. Whether D also replaces the `/calls` orb's Lightbulb persona.
+5. ~~Whether D also replaces the `/calls` orb's Lightbulb persona.~~ Decided 2026-10-02: yes; Live is
+   in every room including DMs, and D deletes the orb (backend `/calls`, `openai_live`, the shared
+   `VoiceCallSession` and the web orb components).
 6. Follow-ups steer the running run (proposed) rather than starting a parallel one.
 7. A bare name shared with a person goes to the person (proposed, matches UI doc §3).
-8. Adopt Hermes sessions fleet-wide: phase 1 (persist every run, curator at idle) now, phase 2 (room
-   turns read the Hermes transcript; retires the hidden voice file) as its own design (§12).
+8. Adopt Hermes sessions fleet-wide: phase 1 (persist every run, curator at idle) and phase 2 (room
+   turns read the Hermes transcript) land before D (§12; PR #3561, extended).
 9. A voice request that arrives while a chat run holds the room waits for it (proposed, §8) rather
    than steering it.
 Plus the UI doc's open questions.

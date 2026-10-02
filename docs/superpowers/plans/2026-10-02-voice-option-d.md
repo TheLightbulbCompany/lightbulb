@@ -9,10 +9,11 @@
   - meters one voice window per room;
   - dispatches voice runs on `agent:{agentId}:lightbulb:channel:{roomId}` with the room's `recentHistory`;
   - relays the bridge's run frames to the LiveKit worker by room;
-  - serves persona, team, routing, rename and voice-notes routes.
+  - serves persona, team, routing, rename and voice-notes routes;
+  - deletes the `/calls` orb (Live is in every room, DMs included, so D replaces it).
 - Bridge (`apps/infra/hermes/bridge`):
-  - accepts a voice envelope on the room key;
-  - merges hidden voice entries (`rooms/{roomId}/voice.jsonl`) into `_history` for every run on that key;
+  - accepts a voice envelope on the room key (the only call envelope left; the `/calls` orb's `callId` envelope is deleted);
+  - runs it through the room turn's own history path, so it persists into the room key's Hermes session (`state.db`) like any chat turn. That session is the memory voice and chat share;
   - fixes queued and late steers;
   - injects `VOICE_NOTES.md`.
 - Worker (`apps/huddle-agent`):
@@ -31,10 +32,12 @@
 - `docs/superpowers/specs/2026-10-02-live-ui-ux-design.md` ("UI").
 - Reviews: `.option-d-grounding-review.md` ("GR") and `.option-d-recheck.md` ("recheck").
 
-Code is cited at origin/main c16a4c6fc.
+Code is cited at origin/main c16a4c6fc; the orb-deletion facts (Task 5) were re-checked at ad01bd813.
+
+**Owner ruling (2026-10-02): fix forward, build nothing intermediate.** No compatibility staging, no merge holds, no split promotions, no keep-alongside legacy. A few minutes of skew while prod rolls is accepted.
 
 **Preconditions (assumed, built elsewhere):**
-- Hermes-native sessions Phase 1 has shipped: `session_db` is passed on every turn in `_construct_agent`.
+- Hermes sessions are in their **end state** (PR #3561, being extended in parallel): every turn passes `session_db` in `_construct_agent`, and room turns pass the room key's Hermes transcript (`state.db`) as `conversation_history` plus a "room messages since your last run" block built from `recentHistory` past a `messageSeq` cursor kept in session metadata. This plan calls that "the room-turn history path". A voice run on the room key goes through it, so what is said by voice is in the room session for the next chat or voice run with no voice-specific storage. That is D's shared memory.
 - PRs #3543 (cut-ins/hand-offs) and #3559 (proactive) are NOT merged. Tasks 24, 25 and 26 rework them. Close both PRs with a pointer to this plan when those tasks merge.
 
 ---
@@ -43,7 +46,7 @@ Code is cited at origin/main c16a4c6fc.
 
 - **Nothing reaches the room timeline from Live.** No message, notice, error or transcript is posted (owner ruling). Notices travel on LiveKit data topics only.
 - **Paperclip keeps its own keys** (`paperclip:company:…`, D §3a). No task changes the Paperclip session path.
-- **No Live-specific session key.** The voice envelope's `sessionId` must equal `turn.lightbulb_session_key(agentId, roomId)`. The legacy `/calls` orb envelope (`…:call:{callId}`) stays byte-identical until owner decision 5. That is the only reason `call_session_key` survives. **This amends D §3**, which says `call_session_key` and the `…:call:{callId}` shape are deleted: they are deleted with the orb, not with this plan. The orb's `voice_persona.voice_for` and `VOICES` also stay byte-identical.
+- **No Live-specific session key.** The voice envelope's `sessionId` must equal `turn.lightbulb_session_key(agentId, roomId)`. `call_session_key` and the `…:call:{callId}` shape are deleted (D §3), together with the `/calls` orb (Task 5).
 - **Runs are never stopped by Live.** Leaving, closing the window, the worker exiting or a floor switch never aborts a run. Only an explicit "stop/never mind" to that agent aborts one (D §4, §8). D's "or anyone's Stop" has no surface in this plan: voice runs are not in the `RUN#` ledger, so no client lists them (see Owner decisions).
 - Each task gets a fresh worktree off clean `origin/main` (never stack on `codex/*` or another agent's branch) and its own PR.
 - Testing:
@@ -54,31 +57,21 @@ Code is cited at origin/main c16a4c6fc.
 - Every commit ends with `Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>`. PR bodies end with `🤖 Generated with [Claude Code](https://claude.com/claude-code)`.
 - Lines marked **(inferred)** in D keep their `ponytail:` comment naming the ceiling.
 
-## Deploy Order (load-bearing)
+## Order
 
-Why two prod promotions: the prod pin reaches runtimes only through a `deploy.yml` dispatch (CDK sets `AGENTCORE_HERMES_IMAGE` from `hermes-version.json`, service-stack.ts:45/:1450), and that dispatch deploys main HEAD. If the cutover tasks were already on main, the same dispatch would ship the voice-run backend while every prod runtime still runs the old bridge, whose `_call_envelope` (server.py:153-175) requires `callId` and a `call_session_key` and answers the voice envelope 400 `invalid_call_run` → 503 on every Live request for the whole sequential roll (~10.5 min per busy owner). Dispatching from an older ref is not an option either: a dispatch deploys dev from that ref first, which would roll dev back. So the cutover tasks are **held unmerged** until prod runtimes are rolled. No compat flag (owner ruling).
+Merge tasks in dependency order; dev deploys on merge. Ship to prod once, when the set is done. No holds, no compatibility shims.
 
-1. **Additive backend** (Tasks 3, 4, 12, 14, 15): `deploy.yml`. Dev deploys on merge. None of these changes anything an old bridge or the current worker reads.
-   - Task 4 must reach an environment before any bridge sends `"family"`. `UsageReportRequest` is `extra="forbid"`, so an old backend answers that bridge with a 422. It may ride promotion A itself: the roll runs only after that dispatch has deployed the backend.
-2. **Bridge image** (Tasks 3, 5–8 → Task 9), dev:
-   - `build-hermes-image.yml` builds `h-<date>-<sha7>`.
-   - A PR flips `hermes-version.json` `dev.tag`.
-   - Run `apps/backend/scripts/roll_hermes_runtimes.py --all` (dev), then `apps/backend/scripts/reapply_hermes_skills_dirs.py` (Task 8's skill reference).
-   - A pin flip alone moves no runtime. Verify `containerUri` with `aws bedrock-agentcore-control get-agent-runtime`.
-3. **Additive worker modules** (Tasks 1, 16–19): `huddle-agent.yml` auto-deploys to dev on merge. Each keeps the current `huddle.py` working (Task 16 keeps `summons_lightbulb`; Task 18's call sites are behaviour-preserving).
-4. **Prod promotion A — bridge only.** **Merge hold on Tasks 10, 11 and 20 (and everything after 20) until this step is verified.**
-   - PR flipping `prod.tag` to the dev-validated tag; merge.
-   - `gh workflow run deploy.yml --ref main` with 0 runs in flight. This carries Tasks 3, 4, 12, 14, 15 and the new pin.
-   - After the prod backend task definition has rolled: `roll_hermes_runtimes.py --all` and `reapply_hermes_skills_dirs.py` on prod.
-   - Verify `containerUri` on **every** prod runtime equals the new tag (the roll exits 0 only when every target is current). Only then lift the hold.
-5. **Cutover triple, dev** (Tasks 10 + 11 + 20): Task 10 deletes the `/summon` fields the current worker reads unconditionally (`r["persona"]`, `r["voice"]`, huddle.py:245); Task 11 replaces `call.turn.frame` and `start_huddle_turn`; Task 20 is the worker that reads both. Merge 10 and 11 back to back, then Task 20 as soon as they are deployed to dev. A short dev gap is accepted. Then Task 13 (it consumes Task 11's VOICERUN helpers) and Tasks 21–28.
-6. **Web** (Tasks 29–33): merge after promotion A and before promotion B, so they reach prod together with the worker that fills the tiles.
-7. **Prod promotion B — voice backend + worker.** `deploy.yml` dispatch (backend Tasks 10, 11, 13 + web), wait for the backend task definition to roll, then dispatch `huddle-agent.yml` at once (`vars.LIVEKIT_PROD_ENABLED`). Prod deploys the worker on `workflow_dispatch` only.
-8. **iPhone** (Tasks 34–38): OTA reaches **prod phones on merge** (`mobile-ota.yml`).
-   - Merge Tasks 35–38 only after promotion B. With the old worker they degrade (idle tiles; the old worker ignores the `talk_start` payload at agent.py:215), but they do not break.
-   - No TestFlight build is needed. Every mobile task is JS-only and adds no native module.
-   - Each mobile PR must show that `npx expo-updates runtimeversion:resolve --platform ios` gives the same output on main and on the branch.
-9. **Cleanup** (Task 39) after everything above is in prod.
+1. **First:** Task 5 (orb deletion; nothing mounts the orb), Task 2 (shared), Task 1 (metrics baseline).
+2. **Backend:** Tasks 3, 4, 12, 14, 15, then 10, 11, then 13 (it uses Task 11's VOICERUN helpers).
+3. **Bridge:** Tasks 6, 7, 8 (plus Task 3's bridge half). Then Task 9 builds the image and rolls **dev**, after Tasks 10 and 11 are merged, so dev's backend and dev's runtimes switch envelopes together.
+4. **Worker:** Tasks 16–19, then Task 20 once Tasks 10–12 are on dev, then Tasks 21–28.
+5. **Web:** Tasks 29–33 after Task 2. Prod frontend ships only with the dispatch below.
+6. **One prod promotion** (Task 39), with 0 deploy runs in flight:
+   - PR flipping `hermes-version.json` `prod.tag` to the dev-validated tag; merge.
+   - `gh workflow run deploy.yml --ref main` (backend, web, and `AGENTCORE_HERMES_IMAGE` from the pin, service-stack.ts:45/:1450).
+   - Once `aws ecs describe-task-definition` shows the new backend image: `gh workflow run huddle-agent.yml --ref main` (prod deploys the worker on `workflow_dispatch` only; needs `vars.LIVEKIT_PROD_ENABLED`), then `roll_hermes_runtimes.py --all` and `reapply_hermes_skills_dirs.py` on prod. Verify `containerUri` with `aws bedrock-agentcore-control get-agent-runtime`.
+   - **Accepted skew** while this runs: an owner whose runtime is not yet rolled gets `503 runtime_unavailable` on Live requests (the old bridge answers the voice envelope `400 invalid_call_run`), and the old worker cannot start Live against the new `/summon` (it reads `persona`/`voice`, huddle.py:245) until the worker dispatch lands. Chat is unaffected.
+7. **iPhone:** Tasks 34–38 merge after the promotion, because an OTA reaches prod phones on merge (`mobile-ota.yml`). No TestFlight build: every mobile task is JS-only and adds no native module. Each mobile PR shows that `npx expo-updates runtimeversion:resolve --platform ios` gives the same output on main and on the branch.
 
 ---
 
@@ -101,7 +94,7 @@ Notes on C1:
 - `/summon` opens or joins the window. `joined` is true only when an open window already existed for the room. The worker calls it only when it holds no window. `budgetSeconds` is `deadline - startedAt` on open and `deadline - now` on a join (a restarted worker never gets the full budget back).
 - `/team` lists only agents whose `listenMode` is not `observe`.
 - `/route` is called only when the worker matched no name in a wake position. It first runs `voice_routing.named_agent` over the whole utterance (D: a name inside the request > Jev > CEO), then Jev with a 3 s timeout, then `ceoId`, then the first agent.
-- `/turns` ignores an extra `seq`. A retry with the same `runId` is answered by the bridge as `200 replayed` (`register_call_run`, server.py:184-186), so a delivered-but-timed-out invoke never runs twice.
+- A `/turns` retry with the same `runId` is answered by the bridge as `200 replayed` (`register_call_run`, server.py:184-186), so a delivered-but-timed-out invoke never runs twice.
 - `agent_not_in_room` is 409 on every route; the worker refreshes `/team` on it.
 
 ### C2 Bridge → backend frame relay (hook token of `ownerId`)
@@ -128,7 +121,7 @@ Notes on C1:
   - While a multi-name request is pending, it holds that request's agent ids in answer order, **with the current floor-holder at the head**. Otherwise it is `""`.
   - Badge = the 1-based index, shown on every entry except the floor-holder. So "Forge and Gauge" → `forge,gauge`, and Gauge shows `2`.
 - `lightbulb.listening_to`: the pinned speaker's display name.
-- `""` deletes a key. The legacy `lightbulb.status`, `lightbulb.speaker` and `lightbulb.working` are written `""` once and never again. Keys of departed agents are written `""`.
+- `""` deletes a key. Keys of departed agents are written `""`. The single-Lightbulb keys `lightbulb.status`, `lightbulb.speaker` and `lightbulb.working` are no longer written at all.
 
 ### C5 Worker → people
 - Data topic `live.notice`, sender `agent-ceo`, JSON body one of:
@@ -172,7 +165,7 @@ Notes on C1:
    - the `/voice-notes` path.
 2. **Nothing posted.** The plugin refusal (Task 7), the TURN_NOTE rewrite (Task 11) and the absence of any `post_message` in the voice path.
 3. **Run ownership.** No code path from window close, worker leave or a switch reaches `/abort` or `_stop_all_turns` for a huddle row.
-4. **Lock discipline.** `voice.jsonl` is written only inside the room key's turn lock (Task 6).
+4. **One session per room key.** A voice run takes the room key's turn lock and the room-turn history path (Task 6); nothing voice-specific is stored in the profile.
 5. **Billing.** A window takes exactly one free claim or credit hold. Summed usage stays ≤ `deadline - startedAt`.
 6. **Trust boundaries.**
    - Notices are accepted only from sender None (worker) or `agent-ceo` (clients).
@@ -203,7 +196,7 @@ Implements D "Latency gate (F6)" and Unknowns 1 and 6; D §11.
   - `test_summon_emits_route_session_and_first_audio_latency`: fake clock; final at t, summon returns at t+0.4, speaking at t+2.1 → three EMF lines with `path=today` and values 400 / … / 2100.
   - `test_first_audio_emitted_once_per_exchange`.
   - `test_emit_metric_dims_shape`.
-- [ ] Commit `feat(huddle-agent): latency and GPT-Live seconds metrics`. Merge and let dev deploy. Dispatch the prod worker so that path (a) collects about 20 samples in prod before Task 20.
+- [ ] Commit `feat(huddle-agent): latency and GPT-Live seconds metrics`. Merge and let dev deploy. Dispatch `huddle-agent.yml` to prod once, before Task 20 merges, so path (a) collects about 20 prod samples: that is the latency gate's baseline (D owner decision 1) measured on today's worker, not a staging step.
 
 ---
 
@@ -248,7 +241,7 @@ Implements UI §0, §1, §3, §4, §6, §7, §9; D §10. This task merges the we
     - `voiceFailedText(name)` → "Nova couldn't join. Try again."
     - `renamedText(from, to)` → "CEO is now Nova"
     - `voiceNoteText(name, text)` → "Nova will remember: be more blunt"
-- `liveStatus` stays (both clients import it today). Task 39 deletes it.
+- `liveStatus` stays while the clients import it; Task 35 (the last client to stop) deletes it.
 
 - [ ] Implement these as pure functions; no React, DOM or RN imports. Read attributes through a Map-safe lookup, as `errorText` does.
 - [ ] Tests:
@@ -300,7 +293,7 @@ Implements D §7 "Voice notes" and the name line; recheck I2; GR F13.
 
 ## Task 4: Usage route accepts a room key for `family == "voice"`
 
-Implements D §3 "Usage on the room key"; GR F21. **It must deploy before Task 9's image reaches the same environment.**
+Implements D §3 "Usage on the room key"; GR F21.
 
 **Files:**
 - Modify: `apps/backend/core/services/messaging.py`
@@ -319,85 +312,74 @@ Implements D §3 "Usage on the room key"; GR F21. **It must deploy before Task 9
   - A room key with `family:"voice"` → `applied`; `record_usage` called once; a replayed runId → `replayed`.
   - A non-room key with voice → `applied`.
   - `family:"chat"` → 422.
-- [ ] Commit `feat(usage): accept voice runs on the room key`. Deploy to dev; include it in the next prod dispatch before the prod pin flip in Task 9.
+- [ ] Commit `feat(usage): accept voice runs on the room key`.
 
 ---
 
-## Task 5: Bridge hidden voice entries merged into `_history`
+## Task 5: Delete the `/calls` orb
 
-Implements D §3 "Continuity mechanism … option 2" (Where/Written/Read/Persistence); recheck #7.
+D replaces the 1:1 orb: Live runs in every room, DMs included (#3553), and a DM is a room. Checked at origin/main ad01bd813: nothing mounts the orb any more. #3553 removed the last `<VoiceCallProvider>` / `<VoiceOrb>` mount ("no Talk on web"); `VoiceCallProvider` and `VoiceOrb` are imported only by each other and `VoiceOrb.test.tsx`; the iPhone never had an orb (no `/calls` call under `apps/mobile`); `room.call.changed` is published only for orb room calls (vc:159-160) and no web or iPhone component renders it. The orb's roomless `{agentId, agentName}` target has no caller either. Nothing real needs it.
 
 **Files:**
-- Modify: `apps/infra/hermes/bridge/turn.py`, `apps/backend/core/services/agent_export.py`
-- Test: `apps/infra/hermes/tests/test_voice_history.py`, the agent_export tarball test
+- Delete: `apps/backend/routers/calls.py`, `apps/backend/tests/unit/routers/test_calls.py`, `apps/backend/core/services/openai_live.py`, `apps/backend/tests/unit/services/test_openai_live.py`, `packages/shared/src/voice/session.ts`, `session.test.ts`, `sentences.ts`, `sentences.test.ts`, `apps/frontend/src/components/voice/` (`VoiceCallProvider.tsx`, `VoiceOrb.tsx`, `AudioVisualizerRadial.tsx`, `useRadialAnimator.ts`, `__tests__/VoiceOrb.test.tsx`), `apps/frontend/src/lib/voiceRtc.ts`, and `docs/superpowers/specs/2026-10-01-voice-v2-design.md` if nothing else references it.
+- Modify: `apps/backend/main.py` (the `calls.router` include, main.py:842), `apps/backend/core/services/voice_calls.py`, `apps/backend/core/services/messaging.py` (:158), `apps/infra/lambda/messaging-projector/index.py` (:92), `packages/shared/src/live/types.ts` (:138, :163, :297, :433), `packages/shared/src/index.ts` (the `takeSentences` and `VoiceCallSession` exports), `apps/frontend/src/app/globals.css` (the `.voice-orb*` rules, :1477-1489 and following).
+- Test: the existing `test_voice_calls_*.py` files (drop orb cases), `packages/shared` live-type tests.
 
 **Interfaces:**
-- Consumes: `_history(body, agent_id, image_paths)` (turn:1873-1898); `recentHistory[].messageSeq`; `_profile_dir`; `save_profile` (sync:497-573).
-- Produces:
-  - `voice_entries_path(agent_id, room_id)` → `<profile>/rooms/{room_id}/voice.jsonl`.
-  - `read_voice_entries(agent_id, room_id) -> list[dict]`.
-  - `append_voice_entries(agent_id, room_id, entries: list[{afterSeq:int, role:"user"|"assistant", speaker:str|None, text:str}])`. It prunes to the newest 24 entries / 6,000 chars on every write and replaces atomically (tmp + replace).
-  - `_history(body, agent_id, image_paths=None, *, room_id=None)`:
-    - `room_id` defaults to `body["room"]["id"]`;
-    - each entry goes after the last row with `messageSeq <= afterSeq`;
-    - entries older than the oldest window row are dropped;
-    - the merged entries are capped at 24 / 6,000 chars, keeping the newest;
-    - entries render as `{"role": role, "content": text}`.
+- `voice_calls` deletes `start_call`, `start_turn`, `end_call`, `active_callers`, `_own_open_call`, `_frame_channel`, `_verify_agent` and `_publish_call_changed` (with its calls in `close_call` and `wipe_owner_voice`), plus the `openai_live.close_session` steps in `close_call` (and its `voice.usage.fallback` wall-clock branch, orb-only), `_undo_start` and `wipe_owner_voice`.
+- `openai_live.configured()` is the one survivor: `_gate` reads it (vc:518) for the Live window. Move it into `voice_calls` as `_live_configured()` (same `sk-` check on `settings.OPENAI_API_KEY`).
+- The event type `room.call.changed` is removed from the backend, the projector and the shared live types.
+- Huddle code is untouched here: `start_huddle_call`, `start_huddle_turn`, `_room_persona`, `voice_persona` and the bridge's `callId` envelope still serve today's Live until Tasks 6, 10 and 11 replace them.
 
-- [ ] Write the helpers with stdlib json only; a bad line is skipped.
-- [ ] Merge the entries in `_history`. With no file, the output is bit-for-bit unchanged.
-- [ ] Leave the room-turn call site (turn:2459) untouched.
-- [ ] Confirm `rooms/` matches no exclude or reproducible glob (sync:167-172, :217-262).
-- [ ] Add `voice.jsonl` to `agent_export._SKIP_FILE_BASENAMES` (agent_export.py:162): it holds speakers' names and spoken text, and a legacy profile that can still publish would otherwise tar it into a marketplace artifact. Test: a profile with `rooms/r1/voice.jsonl` exports without it.
+- [ ] `git grep` each deleted symbol before deleting; anything outside the orb that still uses it stays and is named in the PR.
 - [ ] Tests:
-  - No file → today's fixture output.
-  - Seqs 10, 11, 12 and an entry `afterSeq=11` → order 10, 11, voice-user, voice-assistant, 12.
-  - An entry older than the window → dropped.
-  - 30 entries → the newest 24; 7,000 chars → ≤6,000.
-  - Append keeps the file within the caps.
-  - A corrupt line → the rest still load.
-  - A fake S3 sees `rooms/<id>/voice.jsonl` uploaded by `save_profile` and restored on cold start.
-- [ ] Commit `feat(bridge): hidden voice entries in the room session history`.
+  - `POST /api/v1/calls` → 404.
+  - The window gate still answers 503 `voice_unavailable` when the key is unset (`_live_configured` false).
+  - `close_call` on a huddle row bills the worker's seconds as before; no OpenAI call is made.
+  - The projector no longer lists `room.call.changed`; the shared live-type parser rejects it.
+- [ ] Commit `chore(voice): delete the /calls orb; Live replaces it`.
 
 ---
 
 ## Task 6: Bridge voice runs on the room key
 
-Covers the envelope, history, the I1 fix, `settle_steers`, the `voice.jsonl` write, `run_queued`, voice frames and the usage family. Implements D §3 ("D: a voice request…", "Voice runs get room history too", "Nothing is posted", "Usage on the room key"), D §8 ("Follow-ups never supersede", "Frames are routed by run and agent", "Voice and chat on the same room key") and recheck I1.
+Covers the envelope (replacing the `callId` one), the room-turn history path, the I1 fix, `settle_steers`, `run_queued`, voice frames and the usage family. Implements D §3 ("D: a voice request…", "Voice runs get room history too", "Nothing is posted", "Usage on the room key"), D §8 ("Follow-ups never supersede", "Frames are routed by run and agent", "Voice and chat on the same room key") and recheck I1.
 
 **Files:**
 - Modify: `apps/infra/hermes/bridge/server.py`, `apps/infra/hermes/bridge/turn.py`
 - Test: `apps/infra/hermes/tests/test_voice_call_run.py`, `test_server_runs.py`, `test_call_frames_backend_sink.py`, `test_usage_report.py`
 
 **Interfaces:**
-- Consumes: `POST /internal/calls/v1/runs` (`server._handle_call_run`), `register_call_run`, `attach_agent`'s return value (turn:129-147), `settle_steers` (turn:163), `steer_run` (turn:543), `lightbulb_session_key` (turn:1901), `report_usage` (turn:529), `_backend_publish` and `HUDDLE_FRAMES` (turn:1414-1440), `_waiting_turn_lock` (turn:2250), and Task 5's helpers.
+- Consumes: `POST /internal/calls/v1/runs` (`server._handle_call_run`), `register_call_run`, `attach_agent`'s return value (turn:129-147), `settle_steers` (turn:163), `steer_run` (turn:543), `lightbulb_session_key` (turn:1901), `report_usage` (turn:529), `_backend_publish` and `HUDDLE_FRAMES` (turn:1414-1440), `_waiting_turn_lock` (turn:2250), and the room-turn history path (Preconditions).
 - Produces:
-  - **Voice envelope.** `identity = {runId, companyId, agentId, roomId, sessionId: "agent:{agentId}:lightbulb:channel:{roomId}", family: "voice"}`. `request = {input, instructions, session_id == identity.sessionId, frames: {sink:"backend", endpoint, channel:"backend"}, voice: {roomId, roomKind, afterSeq:int, speaker:{id, name}, utterance}, recentHistory: [...], participants: [...]}`.
-  - `server._call_envelope` accepts it when:
+  - **Voice envelope**, the only call envelope. `identity = {runId, companyId, agentId, roomId, sessionId: "agent:{agentId}:lightbulb:channel:{roomId}", family: "voice"}`. `request = {input, instructions, session_id == identity.sessionId, frames: {sink:"backend", endpoint}, voice: {roomId, roomKind, speaker:{id, name}, utterance}, recentHistory: [...], participants: [...]}`.
+  - `server._call_envelope` accepts it only when:
     - `identity.family == "voice"`;
     - `sessionId == turn.lightbulb_session_key(agentId, roomId)`;
     - `roomId` is a lowercase uuid;
     - `request.voice.roomId == identity.roomId`;
+    - `frames.sink == "backend"` with a non-empty `endpoint`;
     - `len(recentHistory) <= 50`.
-    The legacy `callId` orb envelope is unchanged. The stop route `/internal/calls/v1/runs/{id}/stop` accepts the same identity.
-  - `_run_call` for a voice identity:
+    The stop route `/internal/calls/v1/runs/{id}/stop` accepts the same identity.
+  - Deleted: the `callId` branch of `_call_envelope` and its AppSync `channel` requirement, `turn.call_session_key`, `call_frame_event` (`call.turn.frame`), `CallFramePublisher`, and the AppSync branch of `call_frame_publisher`.
+  - `_run_call`:
     - (a) the agent body is `{"room": {"id": roomId, "kind": roomKind}, "sender": speaker}`;
     - (b) `user_message = input + "\n" + queued_steers` (I1);
-    - (c) `conversation_history = _history(request, agent_id, room_id=roomId) or None`;
+    - (c) history comes from the room-turn history path, exactly as a room turn on that key (transcript + "since your last run" block over `request.recentHistory`); it advances the same `messageSeq` cursor, so the next chat turn does not see those room messages twice;
     - (d) the `settle_steers` loop as turn:2463-2471;
-    - (e) inside the turn lock, before release, `append_voice_entries`: the user entry `"{name} (voice): {utterance}"`, one user entry per steered text and, on `completed`, the assistant `final_response`, all at `afterSeq`. On `aborted` or `error`, the user and steer lines only. The append therefore lands before `run_call_turn`'s `save_profile` and is uploaded in the same turn;
-    - (f) emit frame `{"type": "run_queued"}` from inside `_waiting_turn_lock` when either acquire (the room key's lock or the microVM-wide `_turn_slots`) blocks for more than 1 s;
-    - (g) bind the room turn's per-key scopes as the room path does (turn:2434-2474): `set_current_session_key(session_key)` (so a compression rename under Phase 1's `session_db` keeps async delegations attached) and `_desktop_active_turn(session_key, run_id)`.
+    - (e) emit frame `{"type": "run_queued"}` from inside `_waiting_turn_lock` when either acquire (the room key's lock or the microVM-wide `_turn_slots`) blocks for more than 1 s;
+    - (f) bind the room turn's per-key scopes as the room path does (turn:2434-2474): `set_current_session_key(session_key)` (so a compression rename under `session_db` keeps async delegations attached) and `_desktop_active_turn(session_key, run_id)`.
+    The run persists into the room key's Hermes session through `session_db` like any turn. No voice-specific file is written.
   - Turn context: `roomId: None` (unchanged) plus `voiceRoomId: roomId`. `family` stays `"call"` for the desktop and browser headers.
   - `voice_frame_event(room_id, run_id, agent_id, frame)` = the C2 Event (`type: "voice.run.frame"`).
-  - `VoiceFramePublisher(FramePublisher)`. The signature changes to `call_frame_publisher(spec, identity, run_id)` (today `(spec, call_id, agent_id, run_id)`, turn:1443, called with `identity["callId"]` at turn:301, which a voice identity lacks); it returns `VoiceFramePublisher` when `identity.get("family") == "voice"`, else today's publisher with `identity["callId"]`.
+  - `VoiceFramePublisher(FramePublisher)`, built by `call_frame_publisher(spec, identity, run_id)` (today `(spec, call_id, agent_id, run_id)`, turn:1443, called with `identity["callId"]` at turn:301).
   - `HUDDLE_FRAMES` gains `"run_queued"`.
   - `report_usage(session_key, agent_id, run_id, success, duration_ms, usage, family=None)` skips a room key unless `family == "voice"`, and puts `"family": "voice"` in the body.
   - `CALL_RUN_LIMITS` (4 steps) is unchanged.
 
-- [ ] Branch `_call_envelope` on `identity.get("family") == "voice"`. Keep the callId branch byte-identical.
+- [ ] Replace `_call_envelope`'s checks with the voice ones.
 - [ ] `register_call_run` stores the identity (kind `call`, so `steer_run` keeps accepting it).
-- [ ] Add `VoiceFramePublisher`.
+- [ ] Replace `CallFramePublisher` with `VoiceFramePublisher`.
 - [ ] Implement (a)–(f) in `_run_call`.
 - [ ] `run_call_turn` passes `identity.get("family")` to `report_usage`.
 - [ ] Tests:
@@ -405,15 +387,15 @@ Covers the envelope, history, the I1 fix, `settle_steers`, the `voice.jsonl` wri
     - voice identity + room key → 202;
     - voice identity + call key → 400;
     - roomId mismatch with `request.voice` → 400;
-    - legacy orb → 202.
+    - a `callId` envelope (the old shape) → 400;
+    - an AppSync `channel` sink → 400.
   - Steers:
     - I1: `steer_run(run_id, "Aden (voice): also X")` before `attach_agent` → the fake agent's user_message ends with it.
     - Late steer: the fake returns `pending_steer` → a second `run_conversation`, and `final_response` joins both.
-  - History: `conversation_history` equals Task 5's merge.
-  - `voice.jsonl` writes:
-    - completed run → the user line, steer lines and the assistant line at `afterSeq`;
-    - aborted run → the user line only; error run → the user line only;
-    - the lock is held during the append (assert inside a patched append), and the append happens before `save_profile` (call order).
+  - Shared memory, with a fake `session_db`:
+    - a voice run, then a room turn on the same key → the room turn's `conversation_history` holds the voice request (`"Aden (voice): …"`) and the reply;
+    - a room turn, then a voice run → the voice run sees it;
+    - room messages that arrived before the voice run are not repeated in the next room turn's "since your last run" block.
   - A voice identity with no `callId` reaches `frames.started()`.
   - `set_current_session_key` is bound to the room key during a voice run.
   - Frames:
@@ -481,19 +463,19 @@ Implements D §7 (a skill line forbids unprompted use; confirm renames and destr
 
 ---
 
-## Task 9: Release the bridge image (ops, no code beyond the pin)
+## Task 9: Release the bridge image to dev (ops, no code beyond the pin)
 
 Implements D "What changes" (Bridge) and the CLAUDE.md "Runtime rollout".
 
-- [ ] Preconditions: Tasks 3, 5, 6, 7 and 8 are merged. Task 4 is deployed in the target environment.
+- [ ] Preconditions: Tasks 3, 4, 6, 7, 8, 10 and 11 are merged (so dev's backend already sends the voice envelope this image accepts).
 - [ ] Confirm `build-hermes-image.yml` pushed `h-<YYYY.M.D>-<sha7>` for the merge commit (`gh run watch <id> --interval 60`).
 - [ ] PR: flip `hermes-version.json` `dev.tag` to that tag. Commit `chore(hermes): pin dev to h-…`. Merge and let `deploy.yml` deploy dev.
 - [ ] Run `uv run python apps/backend/scripts/roll_hermes_runtimes.py` against dev, then `reapply_hermes_skills_dirs.py`. Verify a dev runtime's `containerUri` with `aws bedrock-agentcore-control get-agent-runtime`.
 - [ ] Dev acceptance:
   - a chat turn in a room still works;
-  - the `/calls` orb still answers (legacy envelope);
+  - a Live request reaches the agent on the room key, and a chat turn in that room afterwards knows what was said;
   - a voice-family usage report is `applied` (Task 4).
-- [ ] Prod = **promotion A** (Deploy Order step 4), while Tasks 10, 11 and 20 are still unmerged: PR flipping `prod.tag`; dispatch `deploy.yml` with 0 runs in flight; after the backend task definition rolls, run the roll (`--all`) and reapply on prod; verify `containerUri` on every prod runtime. Then lift the merge hold.
+- [ ] Prod ships in the single promotion (Task 39).
 
 ---
 
@@ -502,8 +484,8 @@ Implements D "What changes" (Bridge) and the CLAUDE.md "Runtime rollout".
 Covers open-or-join, gating once, and no run ownership. Implements D §4 (window = only voice state, gates once, `close_call` no longer stops runs, free tier = one room at a time); GR F2, F3.
 
 **Files:**
-- Modify: `apps/backend/core/services/voice_calls.py`, `apps/backend/routers/huddles.py`
-- Test: `apps/backend/tests/unit/services/test_voice_calls_close.py`, `test_voice_huddle_calls.py`, `test_voice_calls_sweeper.py`
+- Modify: `apps/backend/core/services/voice_calls.py`, `apps/backend/core/services/voice_persona.py`, `apps/backend/routers/huddles.py`
+- Test: `apps/backend/tests/unit/services/test_voice_calls_close.py`, `test_voice_huddle_calls.py`, `test_voice_calls_sweeper.py`, `test_voice_persona.py`
 
 **Interfaces:**
 - Consumes: `_gate`, `_claim_free` (vc:105-124), `_hold` (vc:414-440), `put_call`, `close_call` (vc:188-235), `container_repo.get_by_status(OPEN)`, `prewake_owner`.
@@ -513,8 +495,8 @@ Covers open-or-join, gating once, and no run ownership. Implements D §4 (window
     - Otherwise: today's gates once, then a row `{callId, ownerId, userId, kind:"huddle", roomId, roomName, companyId, ceoId, startedAt, deadline, billing, holdMicrocents, status}`.
     - `budgetSeconds = deadline - startedAt` on open; `deadline - now` on a join. Add `# ponytail: a crashed worker's unreported GPT-Live seconds bill 0 (voice.huddle.usage_missing, as today); persist running usage on the row if that metric is non-zero in prod`.
     - It calls `prewake_owner`.
-  - `close_call`: `_fire(_stop_all_turns(call))` only when `call.get("kind") != "huddle"`. Billing is unchanged (capped at `deadline - startedAt`). `wipe_owner_voice` follows the same rule.
-  - `summon()` → `open_voice_window`. Delete `start_huddle_call`, `HUDDLE_VOICE` and the summon response's `persona/voice/voiceName/team`. **Cutover triple with Tasks 11 and 20**: the current worker reads `r["persona"]`/`r["voice"]` unconditionally (huddle.py:245), so this task is held until prod promotion A is verified and merges back to back with Task 11 (Deploy Order steps 4–5).
+  - `close_call` and `wipe_owner_voice` stop no runs: `_fire(_stop_all_turns(call))` is deleted (every row is a huddle window now that the orb is gone). Billing is unchanged (capped at `deadline - startedAt`).
+  - `summon()` → `open_voice_window`. Delete `start_huddle_call`, `HUDDLE_VOICE`, `_room_persona` and the summon response's `persona/voice/voiceName/team`, and with them their last users in `voice_persona`: `ROOM_VOICE_NAME`, `build_persona`, `VOICES` and `voice_for` (the orb went in Task 5). The current worker reads `r["persona"]`/`r["voice"]` (huddle.py:245); dev Live is down from this merge until Task 20 deploys, which is accepted.
 
 - [ ] Write the join lookup as a filter over `get_by_status(OPEN)`, like `active_callers`. Add `# ponytail: one worker per room (dispatch dedupe); a per-room pointer row if summon can race`.
 - [ ] Tests:
@@ -523,7 +505,6 @@ Covers open-or-join, gating once, and no run ownership. Implements D §4 (window
   - Another room while free mode is open → 409 `voice_busy`.
   - Credits: one hold per window.
   - `close_call` on a huddle row → no runtime stop, billed `min(usage, deadline - startedAt)`, row deleted, claim released.
-  - An orb row → still stops its turns.
   - The sweeper closes an orphan window and stops no runs.
 - [ ] Commit `feat(voice): the window meters GPT-Live and owns no runs`.
 
@@ -540,7 +521,7 @@ Implements D §3 ("Voice runs get room history too"), D §4 ("What used to need 
 **Interfaces:**
 - Consumes:
   - `openclaw_work.build_ingress_body` internals (ow:203-212, :227-236, :243-244);
-  - `messaging_repo.get_room` (`lastSeq`);
+  - `messaging_repo.get_room` (room name and kind);
   - `voice_calls._runtime`, `_owner_row`, `_room_team`, `listening_agents`;
   - `runtime_transport.request`;
   - Task 6's envelope;
@@ -556,7 +537,6 @@ Implements D §3 ("Voice runs get room history too"), D §4 ("What used to need 
   - `dispatch_voice_run(*, call, run_id, agent_id, speaker_id, utterance, transcript) -> {runId, agentId, steered: False}`:
     - `run_id` is the worker's (C1 `/turns.runId`), never a fresh `uuid4`: a retry after a delivered-but-timed-out invoke is answered `200 replayed` by the bridge instead of starting a second run;
     - 409 `agent_not_in_room` unless `agent_id` is in `listening_agents(roomId)`;
-    - `afterSeq = meta.lastSeq`;
     - `input = "[Live voice in #<room>. Spoken since you last spoke, newest last:\n<transcript ≤6,000 chars>]\n\n<Name> (voice): <utterance>"`;
     - frames endpoint `f"{PUBLIC_API_BASE}/api/v1/internal/huddles/{owner}/rooms/{room}/frames"`;
     - VOICERUN is written before the POST (an idempotent put on a retry);
@@ -574,15 +554,13 @@ Implements D §3 ("Voice runs get room history too"), D §4 ("What used to need 
     - each `payload.roomId == roomId`, else 400;
     - best-effort `send_frames`; a LiveKit error → metric `huddle.frame.no_worker` and 200.
   - `/turns` requires an open huddle window callId (404 otherwise). With `steerRunId` it tries `steer_voice_run` first, else dispatches.
-  - `start_huddle_turn` is deleted. `_claim_turn`, `_dispatch_turn`, `_turn_context` and `_recent_lines` stay only for the orb's `start_turn`.
-  - The old `POST /internal/calls/{call_id}/frames` stays until Task 39 (old runtimes mid-run).
+  - Deleted: `start_huddle_turn`, `_claim_turn`, `_dispatch_turn`, `_turn_context`, `_recent_lines`, `_message_line`, `_stop_turn`, `_stop_all_turns`, the call-key `_identity`, and `POST /internal/calls/{call_id}/frames` with its `/api/v1/internal/calls` entry in main.py's validation-prefix list (main.py:580). `git grep` each first.
 
 - [ ] Factor out `room_history` and `ingress_participants`. The existing openclaw_work tests pass untouched.
 - [ ] Add the VOICERUN helpers, then `dispatch_voice_run`, `steer_voice_run`, `abort_voice_run`, `route_voice` and the routes.
 - [ ] Tests:
   - `dispatch_voice_run`:
     - the posted `identity.sessionId == "agent:A:lightbulb:channel:R"` and `family == "voice"`;
-    - `request.voice.afterSeq == meta.lastSeq`;
     - `recentHistory` has ≤50 rows, oldest dropped past 1 MiB;
     - the input contains no room id and no `lightbulb-post`;
     - the VOICERUN row holds the speaker;
@@ -603,7 +581,7 @@ Implements D §3 ("Voice runs get room history too"), D §4 ("What used to need 
     - a LiveKit failure → 200 plus the metric;
     - **a closed window still relays**.
   - A `/turns` body without `agentId` → 422.
-- [ ] Commit `feat(voice): voice requests are runs on the room key`. **Cutover triple (10 + 11 + 20):** held until prod promotion A is verified; merge Task 20 right after this deploys to dev.
+- [ ] Commit `feat(voice): voice requests are runs on the room key`.
 
 ---
 
@@ -628,7 +606,7 @@ Implements D §1 (Voices), D §2 (Persona per agent), UI §4 (asked-once flag; G
   - `GPT_LIVE_VOICES`: the 22-name `audio.output.voice` enum copied as a constant, citing D §1 (REF:159-211). The installed plugin's `GPTLiveVoices` literal lists only six, so nothing else checks the names.
   - `VOICE_POOL = ("marin","quartz","ripple","vesper","willow","stone","gleam","meridian","beacon","delta","cinder")`, with no aster, bossa or tempo, and no older realtime voice (cedar and the rest of the nine are untested on gpt-live-1; D §1 says listen first).
   - `STARTER_VOICES = {ceo:"marin", engineering:"beacon", finance:"stone", growth:"vesper", analytics:"quartz", customer_operations:"willow"}` (pending the owner listening, which gates this task; see Owner decisions).
-  - `agent_voice(agent_id, starter_ids) -> str`: the role voice for a starter agent, else a sha256 over the pool minus the starter voices. A new name, so the orb's `voice_for` stays byte-identical.
+  - `agent_voice(agent_id, starter_ids) -> str`: the role voice for a starter agent, else a sha256 over the pool minus the starter voices. It replaces `voice_for`, which Task 10 deletes with its last caller.
   - `is_default_name(agent_id, name, starter_ids) -> bool`.
   - `build_agent_persona(*, name, role, soul_excerpt, voice_notes, room_name, people, agents, ask_name) -> str`:
     - the D §2 rules verbatim;
@@ -637,13 +615,11 @@ Implements D §1 (Voices), D §2 (Persona per agent), UI §4 (asked-once flag; G
   - Routes (C1): `/team` → `{agents:[{id, name, listenMode, defaultName}], people:[{userId, name}], ceoId}`; `/agents/{agentId}/session` → `{agentId, name, voice, persona, askName}`.
   - `askName` is true at most once per agent, via a conditional put on the containers row `__voiceasked__#<owner>#<agent>`, and only while `is_default_name` holds. `# ponytail: one row per agent, never removed on agent delete or wipe (scan_all skips the __ prefix); delete it in delete_agent_everywhere if rows pile up`.
   - The session route reads roster, SOUL and notes with `asyncio.gather` under a 2 s budget, falling back to the bare persona.
-  - `ROOM_VOICE_NAME`, `build_persona`, `VOICES` and `voice_for` stay byte-identical for the orb.
 
 - [ ] Tests:
   - `VOICE_POOL` contains none of aster/bossa/tempo.
   - `set(VOICE_POOL) | set(STARTER_VOICES.values()) <= set(GPT_LIVE_VOICES)`.
   - `agent_voice(ceo, starters) == "marin"`; a non-starter agent never gets a starter voice and is stable across calls.
-  - The orb's `voice_for` output is unchanged for a fixed set of ids.
   - `is_default_name`: "Growth" for the growth starter → true; "Nova" → false; a non-starter named "Growth" → false.
   - The persona contains the name, notes and rules; other agents appear only in the roster line; it is under 16,384 tokens by the chars/4 estimate for maximal inputs.
   - Session route: `askName` true then false; false once renamed; an observe agent → 409 `agent_not_in_room`; a guest-owned room → 404.
@@ -730,7 +706,7 @@ Implements D §11 (Cost and capacity); GR F14; Unknown 6.
 
 **Interfaces:**
 - Produces:
-  - `put_metric("voice.calls.open", value=<OPEN call rows: windows + orb>)` on every `sweep_calls_once`;
+  - `put_metric("voice.calls.open", value=<OPEN voice windows>)` on every `sweep_calls_once`;
   - `VOICE_SESSION_TIER = 25`;
   - an alarm at ≥70% (17.5) for 2 of 3 minutes, routed to the warning SNS topic (not page tier).
 - Add `# ponytail: window count ≈ open GPT-Live sessions; worker's huddle.gptlive.open_seconds (Task 1) is the exact sum`.
@@ -760,7 +736,7 @@ Implements D "Addressing agents by name" (Matching bullets); GR F11, F17; UI §3
   - `soundex(word)`.
   - `stt_prompt(agent_names, people_names) -> str` (e.g. `"A team voice call. Names: Gauge, Forge, Lightbulb, Aden."`), capped at `STT_PROMPT_CHARS = 400`.
   - `FUZZY_RATIO = 0.8`, with a ponytail comment: tune from Task 28's metrics.
-  - `summons_lightbulb` stays: `huddle.py` imports it at module top (huddle.py:19) and calls it at :191/:197, so deleting it here would break the PR's import and the dev worker. Task 20 deletes it with its callers.
+  - `summons_lightbulb` is deleted with its test. Its two call sites (huddle.py:191, :197; import at :19) become `address(text, [], []).lightbulb`; Task 20 rewrites them.
 
 - [ ] Wake positions:
   - start: an optional hey/ok/okay/so lead + name;
@@ -770,7 +746,7 @@ Implements D "Addressing agents by name" (Matching bullets); GR F11, F17; UI §3
 - [ ] `defaultName` agents wake only in the strict forms: `hey/ok {name}`, `{name} can/could/would/will you`, `ask/tell {name}`.
 - [ ] A bare leading name equal to a person's display name or first name wakes nobody and is reported in `ambiguous`.
 - [ ] Fuzzy matching applies only in wake positions and to names of ≥4 letters: soundex equality or a `SequenceMatcher` ratio ≥0.8.
-- [ ] Add a header comment: the worker matches names in wake positions; C1 `/route` covers the rest (a name anywhere in the utterance → Jev → CEO) with `voice_routing.named_agent`, which the orb also keeps.
+- [ ] Add a header comment: the worker matches names in wake positions; C1 `/route` covers the rest (a name anywhere in the utterance → Jev → CEO) with `voice_routing.named_agent`.
 - [ ] Tests (table): every case in the area plan, namely:
   - `"Gauge, what's revenue"` → [gauge]; `"can you ask Gauge to check"` → [gauge];
   - `"Forge and Gauge, …"` → [forge, gauge];
@@ -838,7 +814,7 @@ Covers the track name, `text_input` off, the seed `chat_ctx`, `append_instructio
   - `max_session_duration` stays unset. `AUDIO_TRACK` and the unpublish-every-`roomio_audio` loop (wa:73-79) are deleted.
 
 - [ ] Build `ChatContext.empty()` plus `add_message` per seed item, passed as `Agent(chat_ctx=…)`.
-- [ ] In this PR, `huddle.py` call sites pass `agent_id=<ceoId>` and `seed=[]`, so behaviour is unchanged.
+- [ ] In this PR, `huddle.py` call sites pass `agent_id=<ceoId>` and `seed=[]`; Task 20 rewrites them.
 - [ ] Tests:
   - `room_options`: `text_input` False, `pre_connect_audio` False, `track_name "agent-forge"`, `participant_identity "u1"`, `close_on_disconnect` False, `record` False.
   - `chat_ctx` roles user/assistant/developer.
@@ -887,7 +863,7 @@ Implements D §8 (frames routed by run and agent; never forward a delegation_id 
 
 ---
 
-## Task 20: Worker core rewrite (cutover with Task 11)
+## Task 20: Worker core rewrite
 
 Covers per-agent voices, the metering window, routing, frame delivery, attributes, `talk_start {agentId}` and notices. Implements D §1, §2, §4, §5, §6, §8, §9, §10; UI §0, §1, §3, §4, §6; GR F2, F3, F4, F6, F18.
 
@@ -933,9 +909,9 @@ Covers per-agent voices, the metering window, routing, frame delivery, attribute
   - Otherwise → drop progress; `ended` appends to `_news` (≤5 per agent, 10 min TTL) and sets the status to `has_news`. Emit `live.announce.expired` whenever an item is dropped by the TTL or the cap (limits are not in D; see Owner decisions).
 - [ ] Exchange end after 20 s idle (wh:360-362): close the voice and add `usage_seconds()` after `aclose`. With no voice open or joining, `backend.end(call_id, round(window.used))`.
 - [ ] Budget, each tick: `now ≥ deadline` or `window.used + open usage ≥ budget` → close and end.
-- [ ] Attributes: compute `_state()` per C4 (`speaking_agent` = the joining-or-open voice's agent from the moment summon starts until close; each agent's `status` from its own state), diff against the last set, and write `""` for removed keys and the legacy keys.
+- [ ] Attributes: compute `_state()` per C4 (`speaking_agent` = the joining-or-open voice's agent from the moment summon starts until close; each agent's `status` from its own state), diff against the last set, and write `""` for removed keys.
 - [ ] `talk_start(identity, payload)`: parse JSON `{agentId}`; empty → `_last_agent` or `ceoId`; unknown → ignore; the floor-holder → no-op; otherwise summon with `request=None`. Record `_last_agent` on every summon and switch.
-- [ ] The pinned speaker leaving closes the voice. Delete `VOICE_NAME` (huddle.py:30), `summons_lightbulb` (and its import, huddle.py:19, and tests/test_transcript.py) and `Turns`. agent.py imports `VOICE_NAME` (agent.py:23, used by `req.accept(name=…)` at :117): replace it with a local `WORKER_DISPLAY_NAME = "Lightbulb"` in agent.py (clients render tiles from attributes, not the worker's name). Close never calls `abort`.
+- [ ] The pinned speaker leaving closes the voice. Delete `VOICE_NAME` (huddle.py:30), the interim `address(text, [], []).lightbulb` call sites from Task 16, and `Turns`. agent.py imports `VOICE_NAME` (agent.py:23, used by `req.accept(name=…)` at :117): replace it with a local `WORKER_DISPLAY_NAME = "Lightbulb"` in agent.py (clients render tiles from attributes, not the worker's name). Close never calls `abort`.
 - [ ] README: document C3–C7.
 - [ ] Tests:
   - Summon by name → `session("gauge")`; `live_factory` receives `agent_id="gauge"`, the `voice` from `/session` and a seed without the summoning line.
@@ -948,13 +924,13 @@ Covers per-agent voices, the metering window, routing, frame delivery, attribute
   - `_state()`: while Forge is joining, `speaking_agent == "forge"` and Forge's status is `joining`; while the person talks, status `listening` with `speaking_agent` unchanged.
   - Frames: floor-holder same gen / earlier gen / non-floor → news + `has_news`; an unknown run → news.
   - `close_never_stops_runs`.
-  - Per-agent attribute states; legacy keys cleared; a removed agent's keys set to `""`.
+  - Per-agent attribute states; a removed agent's keys set to `""`; the single-Lightbulb keys are never written.
   - A news item dropped by TTL or cap emits `live.announce.expired`.
   - `naming` set when `askName`.
   - `talk_start` with an id / empty → last agent then CEO / unknown ignored / floor-holder no-op.
   - `voice_failed` after two failed starts; `voice_busy` → `huddle.error`; the speaker leaving closes the voice.
   - The idle-room, grace and presence-version tests kept.
-- [ ] Commit `feat(huddle-agent): the agent is the voice`. Cutover triple (10 + 11 + 20): merge right after Tasks 10 and 11 are on dev; prod ships in promotion B (Deploy Order step 7).
+- [ ] Commit `feat(huddle-agent): the agent is the voice`.
 
 ---
 
@@ -1359,7 +1335,7 @@ Implements UI §5 and D §7, §1.
 
 ## Task 34: iPhone `LiveProvider`: worker attributes, notices, `talkStart(agentId)`, roster
 
-Implements UI §0, §3, §8; D §9, §10. Merge timing follows Deploy Order step 6 (this task alone is safe before the worker cutover).
+Implements UI §0, §3, §8; D §9, §10. Merges after the prod promotion, like every iPhone task (Order step 7).
 
 **Files:**
 - Modify: `apps/mobile/src/providers/live.tsx`
@@ -1408,7 +1384,7 @@ Implements UI §8, §1, §2, §3, §6, §7, §9, §10; D §9, §10.
   - Reduced motion (`AccessibilityInfo.isReduceMotionEnabled`) → no `LevelRing` halo (UI §9).
   - `AccessibilityInfo.announceForAccessibility(floorChange)` once per floor change.
   - A people-only room → no agent group.
-  - Deleted: `LightbulbTile`, `LightbulbStatus` and `"Talk to Lightbulb"`.
+  - Deleted: `LightbulbTile`, `LightbulbStatus` and `"Talk to Lightbulb"`; and, once `git grep -n "liveStatus" apps/frontend apps/mobile` is empty (Task 30 removed the web import), `liveStatus` and its tests in `words.ts` / `words.test.ts`.
 
 - [ ] Tests:
   - Tiles exist for active and mentions agents, Pulse observing.
@@ -1476,31 +1452,14 @@ Implements UI §5 and D §7, §1.
 - Produces:
   - A Voice section: a read-only `"Marin"` row and a `"Voice notes"` row (first line, or `"None"`) that opens a pageSheet `Modal` editor (`maxLength` 1000, `n / 1,000`, help text, Cancel/Save).
   - Save PUTs and refetches; a failure → `Alert "Couldn’t save voice notes"`.
-  - A GET 404 hides the section (OTA-safe before the backend is in prod).
   - It loads independently of the runtime RPC.
 
-- [ ] Tests: load; save + refetch; the counter and `maxLength`; a 404 hides it; a PUT failure alerts.
+- [ ] Tests: load; save + refetch; the counter and `maxLength`; a PUT failure alerts.
 - [ ] Equality check; commit `feat(mobile): voice notes in agent detail`.
 
 ---
 
-## Task 39: Delete the Lightbulb-era leftovers
-
-Implements UI "Starting point" and §0; D §10; D "What changes".
-
-**Files:**
-- Modify: `packages/shared/src/voice/words.ts`, `words.test.ts`, `apps/backend/routers/huddles.py`, `apps/backend/core/services/voice_calls.py`, `apps/backend/tests/unit/routers/test_huddles.py`
-
-**Preconditions:** Tasks 20, 30 and 35 are in prod, and every runtime is rolled past Task 9.
-
-- [ ] `git grep -n "liveStatus\|lightbulb\.status\|lightbulb\.speaker\|lightbulb\.working" apps/frontend apps/mobile packages/shared` shows only `words.ts` / `words.test.ts`. Delete `liveStatus` and its tests.
-- [ ] Delete `POST /internal/calls/{call_id}/frames` and its tests (only the orb's AppSync sink remains; huddle frames go through C2).
-- [ ] Delete any huddle-only helpers left unused (`git grep` each before deleting).
-- [ ] Commit `chore(voice): delete the single-Lightbulb Live leftovers`.
-
----
-
-## Task 40: Acceptance, latency gate and prod promotion (ops)
+## Task 39: Acceptance, latency gate and the prod promotion (ops)
 
 Implements D "Latency gate (F6)", "Unknowns" and "Owner decisions".
 
@@ -1510,7 +1469,7 @@ Implements D "Latency gate (F6)", "Unknowns" and "Owner decisions".
   - a switch mid-answer;
   - "Forge and Gauge" queue badges;
   - background work → `has_news` → announced in its own voice;
-  - a chat message in the same room afterwards knows what was said by voice (`voice.jsonl` merged);
+  - a chat message in the same room afterwards knows what was said by voice (one Hermes session per room key), and a voice request knows the chat before it;
   - nothing appears on the room timeline;
   - a rename by voice → toast and Undo, the name line written, member labels updated;
   - a voice note saved;
@@ -1524,19 +1483,19 @@ Implements D "Latency gate (F6)", "Unknowns" and "Owner decisions".
   - Unknown 4: read `usage.seconds` on a GPT-Live session shorter than 15 s;
   - Unknown 7: an STT prompt probe at the largest room (all names), to confirm or raise `STT_PROMPT_CHARS = 400`.
 - [ ] Latency gate: compare Task 1's metrics for paths (a) today, (b) name, (c) jev and (d) switch, about 20 samples each. Gate (owner decision 1): (b) and (d) p50 within 500 ms of (a), and p90 ≤ 4 s. If it fails, add the joining earcon (UI open question 5) and re-measure before considering Option C.
-- [ ] Prod, in order, each dispatch with 0 deploy runs in flight (Deploy Order steps 4 and 7):
-  1. **Promotion A** (Task 9's prod step): `prod.tag` PR merged while Tasks 10, 11 and 20 are held; `gh workflow run deploy.yml --ref main` (carries Tasks 3, 4, 12, 14, 15); after the backend task definition rolls, `roll_hermes_runtimes.py --all` and `reapply_hermes_skills_dirs.py` on prod; `get-agent-runtime` shows the new `containerUri` on **every** prod runtime.
-  2. Lift the hold: merge Tasks 10 + 11 + 20 (dev cutover), then 13, 21–28 and the web PRs; dev acceptance above.
-  3. **Promotion B**: `gh workflow run deploy.yml --ref main` (backend voice routes + web); once `aws ecs describe-task-definition` shows the new backend image, `gh workflow run huddle-agent.yml --ref main` at once (worker; requires `LIVEKIT_PROD_ENABLED`).
-  4. Merge the held iPhone PRs (OTA).
-  5. Task 39.
+- [ ] Prod, once, when every task but 34–38 is merged and dev acceptance passes (Order step 6), with 0 deploy runs in flight:
+  1. PR flipping `prod.tag` to the dev-validated tag; merge.
+  2. `gh workflow run deploy.yml --ref main` (backend, web, the new pin).
+  3. Once `aws ecs describe-task-definition` shows the new backend image: `gh workflow run huddle-agent.yml --ref main` (worker; requires `LIVEKIT_PROD_ENABLED`), then `roll_hermes_runtimes.py --all` and `reapply_hermes_skills_dirs.py` on prod. `get-agent-runtime` shows the new `containerUri` on every prod runtime (the roll exits 0 only when every target is current).
+  4. The skew in Order step 6 is accepted; nothing is held for it.
+  5. Merge the iPhone PRs (Tasks 34–38; the OTA ships them).
 - [ ] TestFlight: none needed (all JS; fingerprint unchanged). Now Playing and CallKit are out of scope (UI §8 calls Now Playing cheap; it needs a native module and a TestFlight build, so it is an owner call below).
 
 ---
 
 ## Owner decisions
 
-Questions the code answered are folded into the tasks (the projector ignores `VOICERUN#`/`VOICEEDIT#` sks, index.py:934; the containers table has no TTL, so expiring rows live in the messaging table; team changes reach the worker by polling, Task 20; the orb keeps its key until D owner decision 5, Global Constraints). Each item below has the default the plan builds unless the owner says otherwise.
+Questions the code answered are folded into the tasks (the projector ignores `VOICERUN#`/`VOICEEDIT#` sks, index.py:934; the containers table has no TTL, so expiring rows live in the messaging table; team changes reach the worker by polling, Task 20). Each item below has the default the plan builds unless the owner says otherwise.
 
 1. **Bare "stop".** D makes a bare "stop" to an agent abort its run (Task 23). Default: keep D, since it is what the spec says; if the owner wants "stop" to halt speech only, drop `stop` from Task 16's `stop_request` and keep "never mind / cancel that / forget it" as the abort words.
 2. **No Stop button for voice runs.** D says "anyone's Stop", but voice runs are not in the `RUN#` ledger, so no client lists them. Default: accept. Voice runs are capped at 4 steps (`CALL_RUN_LIMITS`), so a background run ends by itself; add a Stop row in the Live popover later if it is missed.
@@ -1545,4 +1504,4 @@ Questions the code answered are folded into the tasks (the projector ignores `VO
 5. **Voices.** The owner listens to the five non-CEO starter voices and the pool before Task 12 merges. Default: the plan's mapping, with cedar and the other older realtime voices excluded until heard.
 6. **Who may rename an agent by voice.** Default: any workspace member (guests refused), 3 per agent per day, with Undo.
 7. **Hand-offs (Task 25)** come from #3543 and are not in D. Default: keep.
-8. **Smaller defaults, taken unless the owner objects:** names go live with metrics and no shadow phase (Task 28); a queued agent's run starts when it takes the floor, so it hears the first answer; news expires after 10 minutes, at most 5 per agent, and announcements are limited to one per 90 s and 10 per hour (`live.announce.expired` counts what is dropped); voice usage is recorded under the owner, not per speaker; `voice.jsonl` survives member removal and room archive (pruned to 24 entries, never exported); the iPhone stage falls back to the first roster tile, with no "Ask the team" control; Now Playing and CallKit are out.
+8. **Smaller defaults, taken unless the owner objects:** names go live with metrics and no shadow phase (Task 28); a queued agent's run starts when it takes the floor, so it hears the first answer; news expires after 10 minutes, at most 5 per agent, and announcements are limited to one per 90 s and 10 per hour (`live.announce.expired` counts what is dropped); voice usage is recorded under the owner, not per speaker; the iPhone stage falls back to the first roster tile, with no "Ask the team" control; Now Playing and CallKit are out.

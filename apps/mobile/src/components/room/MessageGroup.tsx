@@ -168,7 +168,7 @@ function SessionSendState({ send, receiptRefreshKey, getSessionCommand, onStatus
   replied: boolean;
 }) {
   const palette = useChatPalette();
-  const { chip } = useSessionSendReceipt(getSessionCommand, send, receiptRefreshKey);
+  const { chip, receipt } = useSessionSendReceipt(getSessionCommand, send, receiptRefreshKey);
   const key = `${send.sessionId}:${send.requestId ?? "error"}`;
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -198,7 +198,7 @@ function SessionSendState({ send, receiptRefreshKey, getSessionCommand, onStatus
     {chip.tone === "error" && onRetry && <Pressable accessibilityRole="button" accessibilityLabel="Retry session delivery" accessibilityState={{ disabled: saving }} disabled={saving} onPress={() => void run("retry")}>
       <Text style={[styles.sessionActionText, { color: palette.link }]}>Retry</Text>
     </Pressable>}
-    {(chip.tone === "error" || chip.tone === "pending") && onCancel && <Pressable accessibilityRole="button" accessibilityLabel="Cancel session delivery" accessibilityState={{ disabled: saving }} disabled={saving} onPress={() => void run("cancel")}>
+    {(chip.tone === "error" || receipt?.state === "pending") && onCancel && <Pressable accessibilityRole="button" accessibilityLabel="Cancel session delivery" accessibilityState={{ disabled: saving }} disabled={saving} onPress={() => void run("cancel")}>
       <Text style={[styles.sessionActionText, { color: palette.alert }]}>Cancel</Text>
     </Pressable>}
     {error && <Text accessibilityRole="alert" style={[styles.metaText, { color: palette.alert }]}>{error}</Text>}
@@ -401,12 +401,12 @@ export function MessageGroup({
               Could not update reaction. Try again.
             </Text>
           ) : null}
-          {!deleted && mine && !!visibleSessionSends?.length ? <View style={styles.sessionSendRow}>
+          {!deleted && !!visibleSessionSends?.length ? <View style={styles.sessionSendRow}>
             {sessionPending && <MetaText palette={palette}>Waiting for session</MetaText>}
             {visibleSessionSends.map((send) => <SessionSendState key={`${send.sessionId}:${send.requestId}`} send={send} receiptRefreshKey={receiptRefreshKey ?? replyCount} replied={replyCount > 0}
               getSessionCommand={getSessionCommand} onStatus={onSessionStatus}
-              onRetry={retrySessionSend && ((sessionId, requestId, expectedRequestId) => retrySessionSend(message.roomId, message.messageId, sessionId, { requestId, expectedRequestId }))}
-              onCancel={cancelSessionSend && ((sessionId, expectedRequestId) => cancelSessionSend(message.roomId, message.messageId, sessionId, { expectedRequestId }))}
+              onRetry={mine && retrySessionSend ? ((sessionId, requestId, expectedRequestId) => retrySessionSend(message.roomId, message.messageId, sessionId, { requestId, expectedRequestId })) : undefined}
+              onCancel={mine && cancelSessionSend ? ((sessionId, expectedRequestId) => cancelSessionSend(message.roomId, message.messageId, sessionId, { expectedRequestId })) : undefined}
               onChanged={onSessionSendChanged} />)}
           </View> : null}
           {!deleted && replyCount > 0 ? (

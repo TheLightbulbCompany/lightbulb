@@ -66,6 +66,16 @@ it("does not poll another room member's private command receipt", async () => {
   expect(screen.queryByText("Sending")).toBeNull();
 });
 
+it("shows a teammate's failed session send without their recovery controls", async () => {
+  await render(<MessageGroup message={{ ...message, author: { kind: "human", id: "other", displayName: "Other" },
+    sessionSends: [{ sessionId: "s1", error: "LOCAL_SESSION_OFFLINE" }] }}
+    collapsed={false} replyCount={0} currentUserId="user-a" attachmentUrl={attachmentUrl}
+    retrySessionSend={jest.fn()} cancelSessionSend={jest.fn()} />);
+  expect(screen.getByText("The session's Mac is offline. Try again when it reconnects.")).toBeTruthy();
+  expect(screen.queryByLabelText("Retry session delivery")).toBeNull();
+  expect(screen.queryByLabelText("Cancel session delivery")).toBeNull();
+});
+
 it("keeps a room mention quiet and cancellable while the session has not accepted it", async () => {
   const getSessionCommand = jest.fn(async () => ({
     requestId: "r1", expectedGeneration: "g1", kind: "send", text: "hi", expectedTurnId: null,
@@ -83,6 +93,21 @@ it("keeps a room mention quiet and cancellable while the session has not accepte
   await waitFor(() => expect(screen.getByLabelText("Cancel session delivery")).toBeTruthy());
   await fireEvent.press(screen.getByLabelText("Cancel session delivery"));
   await waitFor(() => expect(cancelSessionSend).toHaveBeenCalledWith("room-1", "m1", "s1", { expectedRequestId: "r1" }));
+});
+
+it("does not offer Cancel after session delivery was dispatched", async () => {
+  const getSessionCommand = jest.fn(async () => ({
+    requestId: "r1", expectedGeneration: "g1", kind: "send", text: "hi", expectedTurnId: null,
+    sessionId: "s1", roomId: "room-1", commandSeq: 1, state: "dispatched",
+    createdAt: Date.now() / 1000, deliverBy: Date.now() / 1000 + 30,
+    held: false, providerMessageId: null, actorUserId: "user-a",
+  } as LocalSessionCommandReceipt));
+  await render(<MessageGroup message={{ ...message, author: { kind: "human", id: "user-a", displayName: "You" },
+    sessionSends: [{ sessionId: "s1", requestId: "r1" }] }}
+    collapsed={false} replyCount={0} currentUserId="user-a" attachmentUrl={attachmentUrl}
+    getSessionCommand={getSessionCommand} cancelSessionSend={jest.fn()} />);
+  await waitFor(() => expect(getSessionCommand).toHaveBeenCalled());
+  expect(screen.queryByLabelText("Cancel session delivery")).toBeNull();
 });
 
 it("keeps the server's readable MCP target beside the message after delivery", async () => {

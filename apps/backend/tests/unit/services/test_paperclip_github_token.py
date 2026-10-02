@@ -1,6 +1,7 @@
 """paperclip_github_token: Paperclip's GITHUB_TOKEN company secret follows the workspace's
 GitHub connection, touches only a secret Lightbulb created, and never leaks the token."""
 
+import asyncio
 import logging
 from unittest.mock import AsyncMock, MagicMock
 
@@ -99,6 +100,15 @@ async def test_deletes_our_secret_when_lightbulb_holds_no_token(admin, monkeypat
     admin.list_company_secrets.return_value = []
     assert await sync_github_token("org_a") == "absent"
     admin.delete_secret.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_a_secret_another_sweep_already_deleted_reads_as_deleted(admin, monkeypatch):
+    # Several backend tasks sweep at start-up; the loser of two deletes gets Paperclip's 404.
+    monkeypatch.setattr(mod.integration_secret_store, "get", AsyncMock(return_value=None))
+    admin.list_company_secrets.return_value = [OURS]
+    admin.delete_secret.side_effect = PaperclipApiError("DELETE /api/secrets/sec_1 -> 404", 404, "{}")
+    assert await sync_github_token("org_a") == "deleted"
 
 
 @pytest.mark.asyncio
@@ -216,3 +226,45 @@ async def test_the_token_never_reaches_a_log_line_or_the_outcome(admin, monkeypa
     mod.put_metric.assert_called_once_with("paperclip.github_token_sync.error")
     assert "FAILED" in caplog.text
     assert TOKEN not in caplog.text
+
+
+# --- a failed disconnect cleanup: bounded background retry, then the start-up sweep ----------
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "outcomes,attempts,abandoned",
+    [
+        (["deleted"], 1, False),  # the usual case: nothing is scheduled
+        ([RuntimeError("paperclip 503"), RuntimeError("paperclip 503"), "deleted"], 3, False),
+        ([RuntimeError("paperclip 503")] * 4, 4, True),  # the first try plus every retry
+    ],
+    ids=["clean", "retried-until-clean", "abandoned"],
+)
+async def test_a_failed_disconnect_cleanup_is_retried_in_the_background(monkeypatch, outcomes, attempts, abandoned):
+    sync = AsyncMock(side_effect=outcomes)
+    metric = MagicMock()
+    monkeypatch.setattr(mod, "sync_github_token", sync)
+    monkeypatch.setattr(mod, "put_metric", metric)
+    monkeypatch.setattr(mod, "_CLEANUP_RETRY_PAUSES_S", (0, 0, 0))
+
+    await mod.sync_after_disconnect("org_a")  # returns after the FIRST attempt, never raises
+    assert sync.await_count == 1
+    await asyncio.gather(*mod._cleanup_retries)
+
+    assert sync.await_count == attempts
+    counted = [call.args[0] for call in metric.call_args_list]
+    assert ("paperclip.github_token_sync.cleanup_abandoned" in counted) is abandoned
+    assert not mod._cleanup_retries
+
+
+@pytest.mark.asyncio
+async def test_the_sweep_covers_every_owner_with_a_company_and_survives_a_failure(monkeypatch):
+    repo = MagicMock()
+    repo.list_active_workspace_members = AsyncMock(return_value={"org_b": set(), "org_a": set()})
+    monkeypatch.setattr(mod, "PaperclipRepo", lambda table_name: repo)
+    monkeypatch.setattr(mod, "put_metric", MagicMock())
+    monkeypatch.setattr(mod, "sync_github_token", AsyncMock(side_effect=[RuntimeError("503"), "deleted"]))
+
+    assert [pair async for pair in mod.sweep()] == [("org_a", mod.FAILED), ("org_b", "deleted")]
+    assert mod.FAILED in mod.UNSYNCED and "deleted" not in mod.UNSYNCED

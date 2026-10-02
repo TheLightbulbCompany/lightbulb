@@ -3164,6 +3164,8 @@ class TestGithubTokenSyncToPaperclip:
             return "deleted"
 
         monkeypatch.setattr(paperclip_github_token, "sync_github_token", _sync)
+        # A failed cleanup is retried in the background; none here, so no task outlives the test.
+        monkeypatch.setattr(paperclip_github_token, "_CLEANUP_RETRY_PAUSES_S", ())
 
         response = await async_client.delete("/api/v1/connections/github")
         assert response.status_code == 200

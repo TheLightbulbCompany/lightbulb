@@ -864,8 +864,9 @@ async def disconnect(provider: str, account: str | None = None, auth: AuthContex
         raise HTTPException(status_code=409, detail="busy")
     if provider == "github":
         # The workspace token is gone, so Paperclip's copy goes too. After the guard, not
-        # inside it -- see the connect twin in oauth_callback.
-        await paperclip_github_token.sync_best_effort(owner_id)
+        # inside it -- see the connect twin in oauth_callback. A failed cleanup is retried in
+        # the background, then swept at the next backend start.
+        await paperclip_github_token.sync_after_disconnect(owner_id)
     return {"status": "disconnected", "provider": provider}
 
 

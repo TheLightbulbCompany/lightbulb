@@ -264,8 +264,9 @@ ISOL8-LOCAL EDITS (deliberate; re-apply on re-vendor).
       references must say `confirm --plan`. Re-apply on re-vendor.
   22. Cases routing row (SKILL.md routing table, `references/cases.md` row):
       the row no longer says "Disabled on this instance". `enableCases` is
-      set per environment by the instance-flag script, and the owner-facing
-      surface is the Teams Cases panels (frontend components/teams/cases/,
+      applied by the backend at startup
+      (apps/backend `core/services/paperclip_instance_flags.py`, `DESIRED_FLAGS`),
+      and the owner-facing surface is the Teams Cases panels (frontend components/teams/cases/,
       BFF routers/teams/cases.py). references/cases.md still tells an agent to
       stop and report on a 403, which covers an environment where the flag is
       off. If Cases is ever switched off again, restore the warning here.
@@ -274,7 +275,11 @@ ISOL8-LOCAL EDITS (deliberate; re-apply on re-vendor).
       facts only from a fresh check"). GitHub PR / issue URLs written on an
       issue are tracked by Paperclip when the instance flag
       `experimental.enableExternalObjects` is on, and Teams shows their state
-      (apps/frontend .../teams/issues/external-objects/). The reference
+      (apps/frontend .../teams/issues/external-objects/). The flag is applied
+      by the backend at startup (apps/backend
+      `core/services/paperclip_instance_flags.py`), after it has synced every
+      workspace's GitHub token into Paperclip; a start whose sync did not
+      finish clean leaves the flag as it was. The reference
       documents exactly two agent routes, both verified in the fork's
       server/src/routes/issues.ts: `GET /api/issues/:id/external-objects`
       (issue read access) and `POST /api/issues/:id/external-objects/refresh`

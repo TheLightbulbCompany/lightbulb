@@ -12,6 +12,7 @@ import {
   readStateLabel,
   runView,
   sessionMentionCandidates,
+  SPEAKING_AGENT,
   useWorkspaceSessions,
   type CanonicalRoomMessage,
   type MemberPrefsRequest,
@@ -40,6 +41,7 @@ import { Avatar } from "../../../../components/room/Avatar";
 import { CatchUpSummary } from "../../../../components/room/CatchUpSummary";
 import { MessageActionsSheet } from "../../../../components/room/MessageActionsSheet";
 import { LocalMessageRows, MessageGroup } from "../../../../components/room/MessageGroup";
+import { NoticeBanner } from "../../../../components/voice/NoticeBanner";
 import { OnboardingBand } from "../../../../components/room/OnboardingBand";
 import { RoomBlockedState } from "../../../../components/room/RoomBlockedState";
 import { RoomComposer } from "../../../../components/room/RoomComposer";
@@ -270,10 +272,14 @@ function Conversation() {
   const roomLive = useRoomLive(!preview && room && !room.guest ? room.roomId : undefined);
   const canVoice = hasNativeVoice();
   const liveNames = roomLive.userIds.map((id) => members?.find((m) => m.kind === "human" && m.id === id)?.displayName ?? "Someone");
+  // Only this room's Live names a speaker; the worker's attribute is a roster id.
+  const speakingId = live.roomId === room?.roomId ? live.workerAttrs[SPEAKING_AGENT] : undefined;
+  const speakerName = speakingId ? live.roster.find((m) => m.id === speakingId)?.displayName : undefined;
+  const speaking = speakerName ? { name: speakerName } : undefined;
   const headerVoice = !canVoice || !room ? undefined
     // While Live, the call button reopens the sheet from any room, so Live can always be found and left.
     : live.room
-      ? { active: true, label: live.roomId === room.roomId ? "Open Live" : `Open Live in ${live.roomName ?? "another room"}`, onPress: () => live.setOpen(true) }
+      ? { active: true, speaking, label: live.roomId === room.roomId ? (speaking ? `Open Live, ${speaking.name} speaking` : "Open Live") : `Open Live in ${live.roomName ?? "another room"}`, onPress: () => live.setOpen(true) }
     : roomLive.available && !room.guest
       ? { label: "Go live", disabled: !!live.joining,
           onPress: () => void live.join(room.roomId, title) }
@@ -459,6 +465,8 @@ function Conversation() {
       keyboardVerticalOffset={keyboardOffset}
     >
       {!preview && <Stack.Screen options={headerOptions} />}
+      {/* The sheet shows its own copy; this one is for a hidden sheet (UI §8). */}
+      {!preview && room && live.roomId === room.roomId && !live.open ? <NoticeBanner style={styles.liveNotice} /> : null}
       {prefsError && (
         <Text accessibilityRole="alert" style={[styles.prefsError, { color: palette.alert }]}>
           {prefsError}
@@ -679,6 +687,7 @@ function Conversation() {
 
 const styles = StyleSheet.create({
   container: { flex: 1 },
+  liveNotice: { marginHorizontal: 12, marginTop: 8 },
   // Top/bottom are swapped against the un-inverted version: the content
   // container is inside the flipped scroll view, so `paddingTop` draws at the
   // bottom (against the composer) and `paddingBottom` at the top.

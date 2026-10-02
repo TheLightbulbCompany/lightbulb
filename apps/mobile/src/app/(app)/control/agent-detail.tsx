@@ -1,6 +1,7 @@
+import { useAuth } from "@clerk/clerk-expo";
 import { SymbolView } from "expo-symbols";
 import { router, Stack, useLocalSearchParams } from "expo-router";
-import { useCallback, useMemo, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import {
   ActivityIndicator,
   Alert,
@@ -18,6 +19,7 @@ import {
 } from "react-native";
 import {
   agentDisplayName,
+  createApiClient,
   getAgentModelString,
   useAgents,
   useStatusLoaded,
@@ -35,7 +37,11 @@ import {
   displayModelName,
   type CatalogModel,
 } from "../../../lib/agentCatalog";
+import { makeAdapter } from "../../../lib/adapter";
 import { useLiveEvents } from "../../../providers/live-events";
+
+const VOICE_NOTES_MAX = 1000;
+interface VoiceNotes { name: string; notes: string; voice: string }
 
 // ---------------------------------------------------------------------------
 // config.get snapshot — the model catalog + per-agent config entry (tools /
@@ -334,6 +340,40 @@ export default function AgentDetail() {
     );
   }, [agent, displayName, callRpc, mutateAgents]);
 
+  // ---- Voice notes (C9). Loads on its own, never through the runtime RPC. ----
+  const { getToken } = useAuth();
+  const tokenRef = useRef(getToken);
+  tokenRef.current = getToken;
+  const api = useMemo(() => createApiClient(makeAdapter(() => tokenRef.current())), []);
+  const [voice, setVoice] = useState<VoiceNotes | null>(null);
+  const [voiceFailed, setVoiceFailed] = useState(false);
+  const [notesOpen, setNotesOpen] = useState(false);
+  const [notesDraft, setNotesDraft] = useState("");
+  const [savingNotes, setSavingNotes] = useState(false);
+  const notesPath = agentId ? `/teams/agents/${encodeURIComponent(agentId)}/voice-notes` : null;
+
+  const loadVoice = useCallback(async () => {
+    if (!notesPath) return;
+    setVoice((await api.get(notesPath)) as VoiceNotes);
+  }, [api, notesPath]);
+  useEffect(() => {
+    loadVoice().catch(() => setVoiceFailed(true));
+  }, [loadVoice]);
+
+  const saveNotes = useCallback(async () => {
+    if (!notesPath) return;
+    setSavingNotes(true);
+    try {
+      await api.put(notesPath, { notes: notesDraft });
+      await loadVoice();
+      setNotesOpen(false);
+    } catch (err) {
+      Alert.alert("Couldn’t save voice notes", err instanceof Error ? err.message : String(err));
+    } finally {
+      setSavingNotes(false);
+    }
+  }, [api, notesPath, notesDraft, loadVoice]);
+
   const paperclip = configEntry?.params?.paperclip;
   const tools = configEntry?.tools;
   const workspace = configEntry?.workspace;
@@ -455,6 +495,19 @@ export default function AgentDetail() {
         </>
       ) : null}
 
+      {/* Voice */}
+      <Text style={styles.sectionLabel}>VOICE</Text>
+      <View style={styles.card}>
+        <InfoRow label="Voice" value={voice ? voice.voice.charAt(0).toUpperCase() + voice.voice.slice(1) : "…"} />
+        <View style={styles.divider} />
+        {/* The editor opens only on loaded notes: an empty draft saved over a failed load would wipe them. */}
+        <InfoRow
+          label="Voice notes"
+          value={voice ? voice.notes.split("\n")[0] || "None" : voiceFailed ? "Unavailable" : "…"}
+          onPress={voice ? () => { setNotesDraft(voice.notes); setNotesOpen(true); } : undefined}
+        />
+      </View>
+
       {/* Tools (read-only) */}
       <Text style={styles.sectionLabel}>TOOLS</Text>
       {configLoading ? (
@@ -501,6 +554,38 @@ export default function AgentDetail() {
         </Pressable>
       ) : null}
 
+      <Modal visible={notesOpen} animationType="slide" presentationStyle="pageSheet" onRequestClose={() => setNotesOpen(false)}>
+        <View style={[styles.sheet, { flex: 1 }]}>
+          <Text style={styles.sheetTitle}>Voice notes</Text>
+          <TextInput
+            style={[styles.input, { minHeight: 140, textAlignVertical: "top" }]}
+            value={notesDraft}
+            onChangeText={setNotesDraft}
+            maxLength={VOICE_NOTES_MAX}
+            multiline
+            editable={!savingNotes}
+            accessibilityLabel="Voice notes"
+          />
+          <Text style={styles.footnote} accessibilityLiveRegion="polite">
+            {notesDraft.length} / 1,000
+          </Text>
+          <Text style={styles.footnote}>
+            How {displayName} should talk and what to remember when speaking in Live. Kept in the agent’s profile.
+          </Text>
+          <View style={styles.sheetActions}>
+            <Pressable style={({ pressed }) => [styles.ghostButton, pressed && styles.pressed]} onPress={() => setNotesOpen(false)} disabled={savingNotes}>
+              <Text style={styles.ghostButtonText}>Cancel</Text>
+            </Pressable>
+            <Pressable
+              style={({ pressed }) => [styles.primaryButton, savingNotes && styles.primaryButtonDisabled, pressed && styles.pressed]}
+              onPress={() => void saveNotes()}
+              disabled={savingNotes}
+            >
+              {savingNotes ? <ActivityIndicator size="small" color={palette.onFg} /> : <Text style={styles.primaryButtonText}>Save</Text>}
+            </Pressable>
+          </View>
+        </View>
+      </Modal>
       <ModelPickerModal
         visible={pickerOpen}
         models={selectorModels}

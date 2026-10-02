@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   agentA11yName, agentLine, agentLiveStatus, agentNaming, agentWorking, errorText, floorChange, floorHolder,
-  liveAgents, liveErrorText, liveHappening, liveHint, liveJoinErrorCode, liveMarker, liveQueue, liveStatus,
+  liveAgents, liveErrorText, liveHappening, liveHint, liveJoinErrorCode, liveMarker, liveQueue,
   nameCollides, orderAgentSlots, parseLiveNotice, queuePosition, renamedText, voiceFailedText, voiceNoteText, wakingText,
 } from "./words";
 
@@ -18,17 +18,6 @@ describe("voice words", () => {
     expect(errorText("agents_absent", "x")).toBe("Agents couldn't join this Live.");
     expect(errorText("lightbulb_unreachable", "x")).toBe("Couldn't reach the agent — try again.");
     expect(liveErrorText({ code: "nope" })).toBe("Live couldn't start.");
-  });
-
-  it.each([
-    [undefined, "Following along"],
-    [{ "lightbulb.status": "following" }, "Following along"],
-    [{ "lightbulb.status": "listening", "lightbulb.speaker": "Aden" }, "Listening to Aden"],
-    [{ "lightbulb.status": "thinking" }, "Thinking…"],
-    [{ "lightbulb.status": "speaking" }, "Speaking"],
-    [{ "lightbulb.status": "working", "lightbulb.working": "Gauge — checking Stripe" }, "Gauge is working: checking Stripe"],
-  ])("liveStatus(%j)", (attrs, text) => {
-    expect(liveStatus(attrs)).toBe(text);
   });
 
   it("names who is live", () => {

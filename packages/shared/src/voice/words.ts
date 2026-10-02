@@ -27,22 +27,6 @@ export const LIVE_AGENT_IDENTITY = "agent-ceo";
 export const liveErrorText = (e: { code: string; reason?: string }) =>
   errorText(e.code === "voice_limit" ? e.reason : e.code, "Live couldn't start.");
 
-/** The Lightbulb tile's status, from the worker's participant attributes (huddle_agent.huddle `_state`). */
-export function liveStatus(attrs: Readonly<Record<string, string>> | undefined): string {
-  const speaker = attrs?.["lightbulb.speaker"];
-  const working = attrs?.["lightbulb.working"] ?? "";
-  switch (attrs?.["lightbulb.status"]) {
-    case "listening": return speaker ? `Listening to ${speaker}` : "Listening";
-    case "thinking": return "Thinking…";
-    case "speaking": return "Speaking";
-    case "working": {
-      const [who, what] = working.split(" — ");
-      return what ? `${who} is working: ${what}` : who ? `${who} is working` : "Thinking…";
-    }
-    default: return "Following along";
-  }
-}
-
 /** The channel header's marker for who is Live. */
 export function liveMarker(names: readonly string[]): string {
   const who = names.length <= 2 ? names.join(" and ") : `${names[0]} and ${names.length - 1} others`;

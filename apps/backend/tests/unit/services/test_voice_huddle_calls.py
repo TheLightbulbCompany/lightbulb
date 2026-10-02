@@ -568,10 +568,14 @@ async def test_live_every_addressed_or_relayed_agent_skips_jev_and_the_first_nam
     decide.assert_not_awaited()
 
 
-async def test_live_an_unfinished_line_is_held(live_env):
+async def test_live_an_unfinished_line_is_held_but_still_routed(live_env):
+    """The shipped worker reads only agentId: a held line still names whom it routes to (as today);
+    a worker that honours "hold" waits for the speaker's next final instead."""
     got, decide = await _live("Finance, we're trying to", address=_addressed(agents=["fin-1"], hold=True))
-    assert got == {"agentId": None, "agentIds": [], "hold": True}
+    assert got == {"agentId": "fin-1", "agentIds": ["fin-1"], "hold": True}
     decide.assert_not_awaited()
+    got, _ = await _live("so we were hoping", humans=2, who="fin-1", address=_addressed(hold=True))
+    assert got == {"agentId": "fin-1", "agentIds": ["fin-1"], "hold": True}
 
 
 async def test_live_alone_nobody_counts_as_jev_down(live_env):

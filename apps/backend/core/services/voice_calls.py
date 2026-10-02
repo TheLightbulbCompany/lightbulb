@@ -778,9 +778,10 @@ async def route_live_line(
     routed exactly as if the speaker had typed it in the room: the shared addressing stage (a name
     anywhere: addressed and relayed agents answer), chat's select_dispatch_targets, else Jev picks one
     listener or nobody, else (Jev down) chat's single-responder fallback. Live ignores listen modes
-    (#3591), so every agent listens. Live's own rules: an unfinished line is held (``hold``) until the
-    speaker's next final; alone in the call, or after the wake word ``wake`` ("Lightbulb, ..."),
-    Jev's "nobody" counts as Jev down -- the speech can only be for the agents.
+    (#3591), so every agent listens. Live's own rules: an unfinished line is marked ``hold`` (wait for
+    the speaker's next final) but still names the agent it routes to, for a worker that does not hold;
+    alone in the call, or after the wake word ``wake`` ("Lightbulb, ..."), Jev's "nobody" counts as Jev
+    down -- the speech can only be for the agents.
     Returns ``_routed(...)``, plus ``"hold": True`` for an unfinished line."""
     meta, _ = await _room_team(owner_id, speaker_id, room_id)
     members = [
@@ -794,16 +795,21 @@ async def route_live_line(
     addressing = await messaging.address({"author": author, "text": utterance}, members, history=history, live=True)
     if addressing["hold"]:
         put_metric("voice.routing.jev", dimensions={"outcome": "hold"})
-        return {**_routed(), "hold": True}
+
+    def done(*agent_ids: str) -> dict:
+        # An unfinished line still answers what it routes to today: the shipped worker reads only
+        # agentId (a null would drop the line); a worker that honours "hold" waits for the next final.
+        return {**_routed(*agent_ids), **({"hold": True} if addressing["hold"] else {})}
+
     named_ids = addressing["agents"]
     named = [{"kind": "agent", "id": a} for a in named_ids]
     targets = messaging.select_dispatch_targets(members, named, None, room_kind=meta.get("kind"))
     if addressed := [t["agentId"] for t in targets if t["eventKind"] == "user_request"]:
         # In the order named: the worker drives one voice at a time and can queue the rest.
-        return _routed(*[a for a in addressing["agents"] if a in addressed], *sorted(set(addressed) - set(named_ids)))
+        return done(*[a for a in addressing["agents"] if a in addressed], *sorted(set(addressed) - set(named_ids)))
     candidates = [t["agentId"] for t in targets]
     if not candidates:
-        return _routed()
+        return done()
     people = addressing["humans"]
     # A relayed request ("Leo, Finance has those numbers") is not to people, nor a wake word.
     to_people = bool(people) and not named and not addressing["anyone"] and not wake
@@ -833,17 +839,17 @@ async def route_live_line(
     who, forced = decision.get("who"), decision.get("forced")
     if not forced and (who in candidates or (who == "none" and humans > 1 and not wake)):
         put_metric("voice.routing.jev", dimensions={"outcome": "routed" if who in candidates else "none"})
-        return _routed(*([who] if who in candidates else []))
+        return done(*([who] if who in candidates else []))
     # Jev down or undecided, a "nobody" a lone speaker or the wake word can't mean, or a "none" the
     # policy refused (a re-ask, a question to the room): openclaw_work's fallback for a human message.
     put_metric("voice.routing.jev", dimensions={"outcome": "forced" if forced else "fallback"})
     if forced:
         put_metric("messaging.jev.forced", dimensions={"reason": forced})
     if to_people:
-        return _routed()  # spoken to a person: silence is the default
+        return done()  # spoken to a person: silence is the default
     if len(candidates) == 1:
-        return _routed(candidates[0])
-    return _routed(await openclaw_work._fallback_single(owner_id, candidates, message, history))
+        return done(candidates[0])
+    return done(await openclaw_work._fallback_single(owner_id, candidates, message, history))
 
 
 # ---- Option D: rename and voice notes (C3 notices, C8 voice-profile) -------------------------

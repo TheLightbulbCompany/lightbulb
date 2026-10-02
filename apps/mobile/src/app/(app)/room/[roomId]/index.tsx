@@ -271,11 +271,11 @@ function Conversation() {
   const canVoice = hasNativeVoice();
   const liveNames = roomLive.userIds.map((id) => members?.find((m) => m.kind === "human" && m.id === id)?.displayName ?? "Someone");
   const headerVoice = !canVoice || !room ? undefined
-    // While Live, the pill reopens the sheet from any room, so Live can always be found and left.
+    // While Live, the call button reopens the sheet from any room, so Live can always be found and left.
     : live.room
-      ? { text: "Live", label: live.roomId === room.roomId ? "Open Live" : `Open Live in ${live.roomName ?? "another room"}`, onPress: () => live.setOpen(true) }
+      ? { active: true, label: live.roomId === room.roomId ? "Open Live" : `Open Live in ${live.roomName ?? "another room"}`, onPress: () => live.setOpen(true) }
     : roomLive.available && !room.guest
-      ? { text: live.joining === room.roomId ? "Joining…" : "Go live", label: "Go live", disabled: !!live.joining,
+      ? { label: "Go live", disabled: !!live.joining,
           onPress: () => void live.join(room.roomId, title) }
     : undefined;
   const headerStatus = liveNames.length > 0 ? liveMarker(liveNames) : isDm
@@ -399,8 +399,7 @@ function Conversation() {
   // which is a rules-of-hooks violation and a real order change, not a lint nit.
   const keyboardOffset = usePushedScreenKeyboardOffset();
   // The native title view takes its content's width, so the title is bounded
-  // to what the actions leave: Go live doubled the right side and a channel
-  // name ran underneath it.
+  // to what the actions leave, or a long name runs underneath them.
   const { width: windowWidth } = useWindowDimensions();
   const [headerActionsWidth, setHeaderActionsWidth] = useState(72);
 

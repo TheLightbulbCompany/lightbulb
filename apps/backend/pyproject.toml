@@ -35,6 +35,10 @@ dependencies = [
     "mcp>=2,<3",
 ]
 
+[project.optional-dependencies]
+# scripts/speak_gate_bench only: fetches the AMI split of ishiki-labs/multi-party-dialogue.
+bench = ["huggingface_hub>=0.24,<1"]
+
 [tool.uv]
 dev-dependencies = [
     "pytest==8.0.2",

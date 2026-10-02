@@ -193,6 +193,9 @@ const pipeline = new GitHubWorkflow(app, "isol8-pipeline", {
   // the standalone .github/workflows/desktop-build.yml on a self-hosted macOS
   // runner.
   runner: expressionRunner("${{ vars.DEPLOY_RUNNER }}"),
+  // Dispatch only (owner ruling 2026-10-02): deploys bill GitHub-hosted runner
+  // minutes, so a merge to main deploys nothing. A dispatch deploys dev, then prod.
+  workflowTriggers: { workflowDispatch: {} },
   // Serialize deploys: only one pipeline run may touch the CloudFormation
   // stacks at a time. cancelInProgress:false queues an overlapping deploy
   // rather than killing an in-flight CFN update (two concurrent deploys
@@ -205,7 +208,7 @@ const pipeline = new GitHubWorkflow(app, "isol8-pipeline", {
 });
 
 // ---------------------------------------------------------------------------
-// Dev stage — auto-deploy infra + frontend on merge to main
+// Dev stage — deployed first by every workflow_dispatch run
 // ---------------------------------------------------------------------------
 const devStage = new LightbulbStage(app, "dev", {
   env: awsEnv,

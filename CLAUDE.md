@@ -401,7 +401,7 @@ gh run view <run-id> --repo TheLightbulbCompany/lightbulb --json status,jobs
 ```
 
 **Deployment methods:**
-- **Frontend:** dev auto-deploys from main. **PROD DOES NOT** — `prod-DeployVercelProd`
+- **Frontend:** ships only on a `deploy.yml` dispatch (dev, then prod) — merging to main deploys nothing. `prod-DeployVercelProd`
   carries the same `if: github.event_name == 'workflow_dispatch'` as every other prod job
   (its `if:` sits at the BOTTOM of the ~107-line block, so a `grep -A` from the job header
   misses it). Prod frontend and backend ship together on the dispatch; merging to main
@@ -410,10 +410,11 @@ gh run view <run-id> --repo TheLightbulbCompany/lightbulb --json status,jobs
 - **Backend:** `deploy.yml` (the CDK pipeline) builds the Docker image and deploys the ECS Fargate service — the **platform** backend, which still runs on ECS. Per-workspace agents do not. `backend.yml` is **PR lint + test only** — its header says so; it deploys nothing.
 - **Infrastructure (CDK):** GitHub Actions (`deploy.yml`) → `cdk synth` → `cdk deploy` per environment
 
-**DEV DEPLOYS ON MERGE; PROD IS PROMOTED ON DEMAND.** Every prod job in `deploy.yml`
-carries `if: github.event_name == 'workflow_dispatch'`, so a push to `main` runs 55 of
-69 jobs (dev + assets) and **skips all 14 prod jobs** (counted 2026-09-27; the totals move
-whenever a stack is added or removed, the 14 gated jobs are what the test guards). To ship to prod, a human runs the
+**NOTHING DEPLOYS ON MERGE; `deploy.yml` RUNS ONLY ON `workflow_dispatch`** (owner ruling
+2026-10-02: deploys bill GitHub-hosted runner minutes, ~65 per dev deploy). Merging to `main`
+deploys NOTHING anywhere — not dev, not prod. A dispatch deploys dev, then prod. Coordinate
+ONE dispatch per train across sessions. Every prod job still carries
+`if: github.event_name == 'workflow_dispatch'` (14 gated jobs, which the test guards). To ship, a human runs the
 workflow: Actions → deploy → Run workflow, or `gh workflow run deploy.yml --ref main`.
 A dispatch run deploys dev from that ref first — prod jobs still `needs:` the full dev
 stage, so a promotion cannot skip dev. The `lightbulb-deploy` concurrency group is unchanged,

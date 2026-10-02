@@ -52,10 +52,9 @@ describe("deploy.yml prod promotion gate", () => {
   const jobs = jobBlocks(yaml);
   const named = (prefix: string) => [...jobs.keys()].filter((n) => n.startsWith(prefix));
 
-  it("still deploys on merge to main, and can be dispatched by hand", () => {
+  it("runs only when dispatched by hand, never on merge", () => {
     const triggers = yaml.slice(yaml.indexOf("\non:\n"), yaml.indexOf("\nconcurrency:\n"));
-    expect(triggers).toContain("push:");
-    expect(triggers).toContain("- main");
+    expect(triggers).not.toContain("push:");
     expect(triggers).toContain("workflow_dispatch:");
   });
 

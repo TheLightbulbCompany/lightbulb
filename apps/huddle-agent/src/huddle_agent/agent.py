@@ -300,6 +300,7 @@ async def entrypoint(ctx: JobContext) -> None:
         return "ok"
 
     async def on_shutdown(_reason: str = "") -> None:
+        await huddle.clear_presence()  # first: a stale "Live" marker outlives everything below
         await huddle.end_exchange()
         flush_metrics()
         await backend.aclose()

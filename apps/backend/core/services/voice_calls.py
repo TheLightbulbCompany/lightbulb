@@ -726,6 +726,71 @@ async def route_voice(*, owner_id: str, room_id: str, speaker_id: str, utterance
     return ceo if ceo in ids else team[0]["id"]
 
 
+def _transcript_history(transcript: str, members: list[dict], utterance: str) -> list[dict]:
+    """The Live transcript ("Name: text" lines) as chat history rows, ending before the line itself.
+    An agent's line carries its id, so chat's fallback can find who was already in the conversation."""
+    agents = {(m.get("displayName") or "").lower(): m["id"] for m in members if m.get("kind") == "agent"}
+    rows = []
+    for line in transcript.splitlines()[-30:]:
+        name, sep, text = line.partition(": ")
+        if sep:
+            agent_id = agents.get(name.lower())
+            author = {"kind": "agent" if agent_id else "human", "id": agent_id or name, "displayName": name}
+            rows.append({"author": author, "text": text})
+    if rows and rows[-1]["text"] == utterance:
+        rows.pop()
+    return rows
+
+
+async def route_live_line(
+    *, owner_id: str, room_id: str, speaker_id: str, utterance: str, transcript: str, humans: int
+) -> str | None:
+    """A Live line with no name in a wake position, routed exactly as if the speaker had typed it in
+    the room: chat's select_dispatch_targets (an opening name or a DM addresses that agent, and an
+    addressed line is not ambient), else Jev picks one listener or nobody, else (Jev down) chat's
+    single-responder fallback. Live ignores listen modes (#3591), so every agent listens. The one Live
+    rule: alone in the call, Jev's "nobody" counts as Jev down (speech can only be for the agents)."""
+    meta, _ = await _room_team(owner_id, speaker_id, room_id)
+    members = [
+        {**m, "listenMode": "active"} if m.get("kind") == "agent" else m
+        for m in await messaging_repo.list_members(room_id)
+    ]
+    targets = messaging.select_dispatch_targets(members, [], None, room_kind=meta.get("kind"), text=utterance)
+    if addressed := [t["agentId"] for t in targets if t["eventKind"] == "user_request"]:
+        return addressed[0]
+    candidates = [t["agentId"] for t in targets]
+    if not candidates:
+        return None
+    people = sorted(messaging._addressed_by_name(utterance, members, kind="human"))
+    author = {"kind": "human", "id": speaker_id, "displayName": await messaging.human_display_name(speaker_id)}
+    message = {
+        "author": author,
+        "text": utterance,
+        "mentions": [{"kind": "human", "id": p} for p in people],
+        "dispatchTargets": targets,
+    }
+    history = _transcript_history(transcript, members, utterance)
+    try:
+        decision = await asyncio.wait_for(
+            jev._decide_for_message(meta, message, message, members, history, to_people=bool(people)),
+            _ROUTING_TIMEOUT_S,
+        )
+    except Exception:  # noqa: BLE001 -- a timeout or a card read: Jev is down for this line
+        put_metric("voice.routing.timeout")
+        decision = {"fallback": True}
+    who = decision.get("who")
+    if who in candidates or (who == "none" and humans > 1):
+        put_metric("voice.routing.jev", dimensions={"outcome": "routed" if who in candidates else "none"})
+        return who if who in candidates else None
+    # Jev down or undecided (or "nobody" to a lone speaker): openclaw_work's fallback for a human message
+    put_metric("voice.routing.jev", dimensions={"outcome": "fallback"})
+    if people:
+        return None  # spoken to a person: silence is the default
+    if len(candidates) == 1:
+        return candidates[0]
+    return await openclaw_work._fallback_single(owner_id, candidates, message, history)
+
+
 # ---- Option D: rename and voice notes (C3 notices, C8 voice-profile) -------------------------
 
 RENAME_DAILY_LIMIT = 3

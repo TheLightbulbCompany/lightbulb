@@ -118,7 +118,7 @@ export function RoomHeader({
         ? <ParticipantAvatar participant={counterparts[0]} size="sm" />
         : <Icon size={20} aria-hidden="true" />}
       <h2 className="font-semibold text-lg truncate" title={roomName}>{roomName}</h2>
-      {huddlers.length > 0 && !(huddle.room && huddle.roomId === room?.roomId) && <span className="room-topic" role="status">{liveMarker(liveNames(huddlers, participants))}</span>}
+      {huddlers.length > 0 && !(huddle.room && huddle.roomId === room?.roomId) && <span className="room-topic room-live" role="status"><span aria-hidden="true" className="room-live-dot" />{liveMarker(liveNames(huddlers, participants))}</span>}
       {room?.shared && <span className="room-directory-tag" title="Shared between this workspace and Lightbulb">Shared</span>}
       {editingTopic ? <form className="room-topic-form" onSubmit={(event) => {
         event.preventDefault();
@@ -157,7 +157,7 @@ export function RoomHeader({
       <Button type="button" variant="ghost" className="room-facepile" aria-label={`View members, ${participantCount} in this conversation`}
         onClick={() => onOpenDetails("members")}>
         {faces.map((participant) => <ParticipantAvatar key={`${participant.kind}:${participant.id}`} participant={participant} size="sm" showPresence={false} />)}
-        {overflow > 0 && <span className="text-sm text-muted-foreground">+{overflow}</span>}
+        {overflow > 0 && <span className="room-facepile-more text-sm text-muted-foreground">+{overflow}</span>}
       </Button>
       {views}
       <DropdownMenu>

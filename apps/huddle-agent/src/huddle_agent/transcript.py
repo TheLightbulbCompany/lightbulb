@@ -1,8 +1,8 @@
 """Rolling huddle transcript (in memory only) and who an utterance addresses by name.
 
 The worker matches names only in wake positions (the start, after an optional hey/ok/okay/so, or
-after ask/tell/get/have). C1 `/route` covers the rest with `voice_routing.named_agent` (a name
-anywhere in the utterance), then Jev, then the CEO."""
+after ask/tell/get/have). C1 `/route` covers the rest: "Lightbulb, ..." goes to a name anywhere in the
+line, then Jev, then the CEO; any other line is routed as a chat message (`route_live_line`)."""
 
 from __future__ import annotations
 

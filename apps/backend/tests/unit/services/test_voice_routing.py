@@ -99,3 +99,26 @@ async def test_pick_agent_decide_raises_or_off_criteria():
     ):
         assert await jev.pick_agent("org", room_name="g", team=TEAM, text="t", recent="") is None
     assert (await _pick_agent({"who": {"choice": "zzz", "probabilities": {"zzz": 0.99}}}))[0] is None
+
+
+# The same phrases as apps/huddle-agent's PARITY table: the worker's fast path names exactly who chat's
+# opening-name rule names, so every other line reaches Jev.
+@pytest.mark.parametrize(
+    "text, expected",
+    [
+        ("Hey guys.", set()),
+        ("Hey guys, hey Friday.", set()),
+        ("Hey guys. Hey Friday, what's up?", set()),
+        ("Hey Friday, what's up?", {"fri"}),
+        ("Friday, can you check revenue?", {"fri"}),
+        ("Gauge, what's revenue?", {"gau"}),
+    ],
+)
+def test_opening_name_parity(text, expected):
+    from core.services import messaging
+
+    members = [
+        {"kind": "agent", "id": "fri", "displayName": "Friday"},
+        {"kind": "agent", "id": "gau", "displayName": "Gauge"},
+    ]
+    assert messaging._addressed_by_name(text, members) == expected

@@ -14,7 +14,8 @@ export interface RoomHuddle {
 }
 
 /** User ids in this room's huddle: seeded from the server, then kept by `room.huddle.changed` (a full snapshot).
- *  Events can drop, so the seed is re-read on every reconnect; an event newer than the seed wins over it. */
+ *  Events can drop, so the seed is re-read on every reconnect, room open and window focus; an event newer than
+ *  the seed wins over it. */
 export function useRoomHuddle(roomId: string | undefined): RoomHuddle {
   const api = useApi();
   const { onEvent, connectionRevision } = useLiveEvents();
@@ -44,7 +45,9 @@ export function useRoomHuddle(roomId: string | undefined): RoomHuddle {
         .catch((e: { status?: number }) => { if (!stale && e?.status !== 404) retry = setTimeout(seed, RETRY_MS); });
     };
     seed();
-    return () => { stale = true; clearTimeout(retry); off(); };
+    const onFocus = () => { clearTimeout(retry); seed(); };
+    window.addEventListener("focus", onFocus);
+    return () => { stale = true; clearTimeout(retry); off(); window.removeEventListener("focus", onFocus); };
   }, [api, onEvent, roomId, connectionRevision]);
 
   return { userIds: state.roomId === roomId ? state.userIds : [], available };

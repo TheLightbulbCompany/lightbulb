@@ -15,6 +15,8 @@ export function ConversationHeader(props: {
   status?: string | null;
   /** `live` = `palette.live` (an agent working / a busy session); otherwise `palette.fgMute`. */
   statusTone?: "mute" | "live";
+  /** A small `palette.live` dot before the status: someone is Live in this room. */
+  statusDot?: boolean;
   /** 28pt Avatar (or the channel `#` tile). */
   avatar: ReactNode;
   palette: ChatPalette;
@@ -23,7 +25,7 @@ export function ConversationHeader(props: {
   /** The native title view takes its content's width, so a long title needs this to truncate instead of running under the header's buttons. */
   maxWidth?: number;
 }) {
-  const { title, accessibilityTitle, status, statusTone = "mute", avatar, palette, onPress, maxWidth } = props;
+  const { title, accessibilityTitle, status, statusTone = "mute", statusDot, avatar, palette, onPress, maxWidth } = props;
   const spoken = accessibilityTitle ?? title;
   const label = status ? `${spoken}, ${status}` : spoken;
   const content = (
@@ -34,13 +36,16 @@ export function ConversationHeader(props: {
           {title}
         </Text>
         {status ? (
-          <Text
-            style={[type.navMeta, styles.status, { color: statusTone === "live" ? palette.live : palette.fgMute }]}
-            numberOfLines={1}
-            maxFontSizeMultiplier={1}
-          >
-            {status}
-          </Text>
+          <View style={styles.statusRow}>
+            {statusDot ? <View style={[styles.dot, { backgroundColor: palette.live }]} /> : null}
+            <Text
+              style={[type.navMeta, styles.status, { color: statusTone === "live" ? palette.live : palette.fgMute }]}
+              numberOfLines={1}
+              maxFontSizeMultiplier={1}
+            >
+              {status}
+            </Text>
+          </View>
         ) : null}
       </View>
     </>
@@ -86,5 +91,16 @@ const styles = StyleSheet.create({
   // (the two-line member-count case elsewhere), so this overrides the size.
   status: {
     fontSize: 12,
+    flexShrink: 1,
+  },
+  statusRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 4,
+  },
+  dot: {
+    width: 6,
+    height: 6,
+    borderRadius: 3,
   },
 });

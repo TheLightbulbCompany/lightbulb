@@ -343,6 +343,17 @@ def test_route_returns_the_agent(client):
     }  # fmt: skip
 
 
+def test_route_with_a_people_count_routes_like_chat_and_may_be_nobody(client):
+    with (
+        patch.object(vc, "route_live_line", AsyncMock(return_value=None)) as live,
+        patch.object(vc, "route_voice", AsyncMock()) as wake,
+    ):
+        resp = client.post(INTERNAL[6][0], json={**INTERNAL[6][1], "humans": 2}, headers=W)
+    assert resp.json() == {"agentId": None}
+    assert live.await_args.kwargs["humans"] == 2
+    wake.assert_not_awaited()
+
+
 def test_abort_passes_the_room(client):
     with patch.object(vc, "abort_voice_run", AsyncMock(return_value=True)) as abort:
         resp = client.post(INTERNAL[7][0], json=INTERNAL[7][1], headers=W)

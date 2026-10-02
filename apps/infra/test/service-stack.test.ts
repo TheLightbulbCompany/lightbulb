@@ -6,7 +6,7 @@ import { Match, Template } from "aws-cdk-lib/assertions";
 import * as kms from "aws-cdk-lib/aws-kms";
 import { vi } from "vitest";
 import { ContainerStack } from "../lib/stacks/container-stack";
-import { ROOT_DOMAIN } from "../lib/domains";
+import { LAUNCH_DOMAIN, ROOT_DOMAIN } from "../lib/domains";
 import { DatabaseStack } from "../lib/stacks/database-stack";
 import { NetworkStack } from "../lib/stacks/network-stack";
 import { ServiceStack } from "../lib/stacks/service-stack";
@@ -1125,7 +1125,7 @@ describe("ServiceStack — production HTTP CORS origins", () => {
           Environment: Match.arrayWith([
             Match.objectLike({
               Name: "CORS_ORIGINS",
-              Value: `https://${ROOT_DOMAIN},https://www.${ROOT_DOMAIN}`,
+              Value: `https://${ROOT_DOMAIN},https://www.${ROOT_DOMAIN},https://${LAUNCH_DOMAIN},https://www.${LAUNCH_DOMAIN}`,
             }),
           ]),
         }),

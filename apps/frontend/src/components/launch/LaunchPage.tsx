@@ -1,10 +1,10 @@
 "use client";
 
 import * as React from "react";
-import Link from "next/link";
 import { useAuth } from "@clerk/nextjs";
 import { Footer } from "@/components/landing/Footer";
 import { Navbar } from "@/components/landing/Navbar";
+import { SITE_URL } from "@/lib/domain";
 import { fetchLaunchInfo, type LaunchInfo } from "@/lib/launch";
 import { LaunchHero } from "./LaunchHero";
 import { Leaderboard } from "./Leaderboard";
@@ -69,9 +69,9 @@ export default function LaunchPage() {
           <LaunchHero info={info}>
             {info.phase === "open" && !isSignedIn ? (
               <div className="lc-actions" style={{ justifyContent: "center" }}>
-                <Link href="/sign-up" className="ld-btn">Sign up <span className="ld-btn-arrow" aria-hidden="true">→</span></Link>
+                <a href={`${SITE_URL}/sign-up`} className="ld-btn">Sign up <span className="ld-btn-arrow" aria-hidden="true">→</span></a>
                 <p className="lc-fine" style={{ flexBasis: "100%", textAlign: "center" }}>
-                  Already signed up? <Link href="/sign-in">Sign in</Link>
+                  Already signed up? <a href={`${SITE_URL}/sign-in`}>Sign in</a>
                 </p>
               </div>
             ) : null}

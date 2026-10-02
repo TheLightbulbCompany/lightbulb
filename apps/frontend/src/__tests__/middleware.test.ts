@@ -209,15 +209,25 @@ describe('decideLaunchHostRouting (retired product domain)', () => {
     expect(decideLaunchHostRouting('admin.thelightbulb.company', '/admin', '')).toBeNull();
   });
 
-  it('redirects every path on the old domain, keeping path and query', () => {
+  it('redirects every other path to the product domain, keeping path and query', () => {
     expect(decideLaunchHostRouting('flickmeon.ai', '/blog/x', '?a=1')).toEqual({
       kind: 'redirect',
       to: 'https://thelightbulb.company/blog/x?a=1',
     });
-    expect(decideLaunchHostRouting('WWW.flickmeon.ai', '/', '')).toEqual({
+    expect(decideLaunchHostRouting('flickmeon.ai', '/sign-up', '')).toEqual({
       kind: 'redirect',
-      to: 'https://thelightbulb.company/',
+      to: 'https://thelightbulb.company/sign-up',
     });
+  });
+
+  it('serves the competition page at the root', () => {
+    expect(decideLaunchHostRouting('flickmeon.ai', '/', '')).toEqual({ kind: 'rewrite', to: '/launch' });
+    expect(decideLaunchHostRouting('WWW.flickmeon.ai', '/', '')).toEqual({ kind: 'rewrite', to: '/launch' });
+    expect(decideLaunchHostRouting('dev.flickmeon.ai', '/', '?utm=x')).toEqual({ kind: 'rewrite', to: '/launch' });
+  });
+
+  it('lets /launch itself through', () => {
+    expect(decideLaunchHostRouting('flickmeon.ai', '/launch', '')).toEqual({ kind: 'passthrough' });
   });
 
   it('keeps an old referral link working', () => {

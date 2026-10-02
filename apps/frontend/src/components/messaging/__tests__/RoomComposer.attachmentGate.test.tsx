@@ -18,6 +18,7 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import type { MessageAttachment } from "@lightbulb/shared";
 import { MESSAGE_ATTACHMENT_ACCEPT, MESSAGE_ATTACHMENT_UPLOAD_CONTENT_TYPES } from "@lightbulb/shared";
 import { RoomComposer } from "../RoomComposer";
+import { INCOMPLETE_FIRST_REPLIES } from "../FirstReplyChips";
 
 const attachment: MessageAttachment = { id: "att-1", fileName: "shot.png", contentType: "image/png", size: 1 };
 
@@ -144,4 +145,19 @@ it("never uploads a .zip whose declared type contradicts its name", async () => 
   drop(new File(["x"], "Archive.zip", { type: "image/png" }));
   await screen.findByText(/Unsupported file type/);
   expect(upload).not.toHaveBeenCalled();
+});
+
+// In the starter channel a tapped chip is a prefix, not a message. An attachment
+// alone may be sent, but it must not make the bare prefix sendable: the one-shot
+// onboarding capture reads the text and would be spent on "Here's our website:".
+it("keeps an incomplete chip prefix unsendable even with an attachment", async () => {
+  const props = { onTextChange: vi.fn(), members: [], clientMessageId: "11111111-1111-4111-8111-111111111111",
+    sendState: "idle" as const, onSubmit: vi.fn(), onUploadAttachment: vi.fn(async () => attachment), placeholderDrafts: INCOMPLETE_FIRST_REPLIES };
+  const { rerender } = render(<RoomComposer {...props} text="" />);
+  drop(new File(["x"], "shot.png", { type: "image/png" }));
+  await waitFor(() => expect(screen.getByRole("button", { name: "Send message" })).toBeEnabled());
+  rerender(<RoomComposer {...props} text="Here's our website:" />);
+  expect(screen.getByRole("button", { name: "Send message" })).toBeDisabled();
+  rerender(<RoomComposer {...props} text="Here's our website: acme.com" />);
+  expect(screen.getByRole("button", { name: "Send message" })).toBeEnabled();
 });

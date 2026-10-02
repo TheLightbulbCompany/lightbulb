@@ -69,7 +69,7 @@ def first_message_intake(text: str) -> tuple[str, str | None]:
     else:
         match = _URL_RE.fullmatch(stripped.strip("<>\"' "))
     if match:
-        return "grow", match.group(0).rstrip(".,;:)")
+        return "grow", match.group(0).rstrip(".,;:)>\"']}")
     return "new", stripped
 
 

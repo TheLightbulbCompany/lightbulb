@@ -256,7 +256,10 @@ function ComposerAttempt({
   const uploading = attachments.some((item) => !item.attachment && !item.error);
   const uploadFailed = attachments.some((item) => item.error);
   const trimmed = text.trim();
-  const hasContent = (trimmed.length > 0 && !placeholderDrafts?.includes(trimmed)) || attachments.some((item) => item.attachment);
+  // A draft that is exactly a pre-typed chip prefix is unfinished whatever is attached:
+  // the onboarding capture reads the text alone and is one-shot.
+  const incompleteDraft = !!placeholderDrafts?.includes(trimmed);
+  const hasContent = !incompleteDraft && (trimmed.length > 0 || attachments.some((item) => item.attachment));
   const canSend = !disabled && !error && !uploading && !uploadFailed && hasContent && !!clientMessageId && effectiveState === "idle" && !submitted && !uncertain;
   const editable = !disabled && !pending && !uncertain && effectiveState !== "persisted" && !retryPending;
   const status = uncertain

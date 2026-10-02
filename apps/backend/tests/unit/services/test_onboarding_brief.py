@@ -353,6 +353,8 @@ async def test_staging_writes_the_agents_profile(monkeypatch):
     [
         ("Here's our website: https://acme.com/pricing", ("grow", "https://acme.com/pricing")),
         ("Here's our website: acme.com", ("grow", "acme.com")),
+        ("Here's our website: (https://acme.com).", ("grow", "https://acme.com")),
+        ("Here's our website: <https://acme.com/about>", ("grow", "https://acme.com/about")),
         ("acme.co", ("grow", "acme.co")),
         ("I'm starting a competitor to calendly.com", ("new", "I'm starting a competitor to calendly.com")),
         ("I am starting a bakery, see instagram.com/x", ("new", "I am starting a bakery, see instagram.com/x")),

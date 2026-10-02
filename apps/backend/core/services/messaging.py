@@ -1852,6 +1852,11 @@ async def ensure_default_room(owner_id: str, owner_user_id: str) -> str | None:
         for key in _STARTER_KEYS
     )
     client_room_id = f"workspace-bootstrap-v2:{owner_id}"
+    # Resolve the welcome BEFORE the room exists: an empty room is visible the moment
+    # create_room returns, and a Clerk call that pauses there would let the owner's
+    # first message take seq 1 -- which hides the starter chips for good.
+    org = await clerk_admin.get_organization(owner_id) or {}
+    welcome = default_room_welcome(org.get("name"))
     if existing_room is None:
         await messaging_repo.ensure_user_stream(owner_id, owner_user_id)
         normalized = [{key: member.get(key) for key in ("kind", "id", "role", "listenMode")} for member in members]
@@ -1868,8 +1873,6 @@ async def ensure_default_room(owner_id: str, owner_user_id: str) -> str | None:
         # members[0] is the owner themselves — the creator is not "added".
         _emit_room_created(owner_id, owner_user_id, "channel", members[1:], by="system")
     ceo_id = starter_ids["ceo"]
-    org = await clerk_admin.get_organization(owner_id) or {}
-    welcome = default_room_welcome(org.get("name"))
     await messaging_repo.create_message(
         room_id=room_id,
         owner_id=owner_id,

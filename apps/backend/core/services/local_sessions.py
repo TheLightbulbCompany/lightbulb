@@ -1485,15 +1485,14 @@ async def list_offline_outbox(auth: AuthContext, session_id: str) -> OfflineOutb
         replacement = by_request_id.get(row.get("replacedByRequestId"))
         if replacement and replacement["state"] == "pending" and replacement["deliverBy"] <= now:
             replacement = await _expire_pending_command(owner, sid, replacement)
-        if row["state"] == "rejected" and replacement and replacement["state"] in {
-            "pending", "dispatched", "unknown", "applied"
-        }:
+        if (
+            row["state"] == "rejected"
+            and replacement
+            and replacement["state"] in {"pending", "dispatched", "unknown", "applied"}
+        ):
             continue
         visible.append(row)
-    rows = [
-        await _expire_pending_command(owner, sid, row)
-        for row in visible
-    ]
+    rows = [await _expire_pending_command(owner, sid, row) for row in visible]
     active = [row for row in rows if row["state"] not in {"applied", "rejected"} and row["deliverBy"] > now]
     recent = [row for row in rows if row["state"] in {"applied", "rejected"} or row["deliverBy"] <= now]
     selected = active[-OFFLINE_SEND_PENDING_LIMIT:]

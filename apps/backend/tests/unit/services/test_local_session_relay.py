@@ -1394,7 +1394,10 @@ async def test_offline_retry_lineage_hides_only_its_original_and_restores_on_rej
     await repo.replace_command(original, {**original, "state": "rejected"})
 
     await service.submit_command(
-        ALICE, None, sid, command(service, requestId="retry-a", text="continue"),
+        ALICE,
+        None,
+        sid,
+        command(service, requestId="retry-a", text="continue"),
         replaces_request_id="request-1",
     )
     original = await repo.get_command(OWNER, sid, "request-1")
@@ -1404,7 +1407,10 @@ async def test_offline_retry_lineage_hides_only_its_original_and_restores_on_rej
     assert [item.request_id for item in (await service.list_offline_outbox(ALICE, sid)).commands] == ["retry-a"]
     with pytest.raises(ApiProblem, match="retry is already"):
         await service.submit_command(
-            ALICE, None, sid, command(service, requestId="retry-b", text="continue"),
+            ALICE,
+            None,
+            sid,
+            command(service, requestId="retry-b", text="continue"),
             replaces_request_id="request-1",
         )
 
@@ -1412,10 +1418,14 @@ async def test_offline_retry_lineage_hides_only_its_original_and_restores_on_rej
     assert [item.request_id for item in (await service.list_offline_outbox(ALICE, sid)).commands] == ["request-1"]
     await service.submit_command(ALICE, None, sid, command(service, requestId="unrelated", text="continue"))
     assert {item.request_id for item in (await service.list_offline_outbox(ALICE, sid)).commands} == {
-        "request-1", "unrelated"
+        "request-1",
+        "unrelated",
     }
     await service.submit_command(
-        ALICE, None, sid, command(service, requestId="retry-c", text="continue"),
+        ALICE,
+        None,
+        sid,
+        command(service, requestId="retry-c", text="continue"),
         replaces_request_id="request-1",
     )
     assert (await repo.get_command(OWNER, sid, "request-1"))["replacedByRequestId"] == "retry-c"

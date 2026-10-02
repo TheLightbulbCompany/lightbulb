@@ -338,9 +338,7 @@ async def submit_local_session_command(
 ):
     from core.services.local_session_relay import get_local_session_relay
 
-    receipt = await local_sessions.submit_command(
-        auth, None, session_id, body, replaces_request_id=replaces_request_id
-    )
+    receipt = await local_sessions.submit_command(auth, None, session_id, body, replaces_request_id=replaces_request_id)
     try:
         await get_local_session_relay().dispatch_session(resolve_owner_id(auth), receipt.session_id)
     except Exception:

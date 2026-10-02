@@ -686,12 +686,12 @@ async def _voice_notes_reply(agent_id: str, ctx: TeamsContext, body: VoiceNotesB
 
 
 @router.get("/agents/{agent_id}/voice-notes")
-async def get_voice_notes(agent_id: SafeId, ctx: TeamsContext = Depends(_ctx)):
+async def get_voice_notes(agent_id: CompanyAgentId, ctx: TeamsContext = Depends(_ctx)):
     return await _voice_notes_reply(agent_id, ctx, None)
 
 
 @router.put("/agents/{agent_id}/voice-notes")
-async def put_voice_notes(agent_id: SafeId, body: VoiceNotesBody, ctx: TeamsContext = Depends(_ctx)):
+async def put_voice_notes(agent_id: CompanyAgentId, body: VoiceNotesBody, ctx: TeamsContext = Depends(_ctx)):
     return await _voice_notes_reply(agent_id, ctx, body)
 
 

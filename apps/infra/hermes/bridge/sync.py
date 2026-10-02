@@ -54,9 +54,6 @@ _MTIMES: dict[str, dict[str, int]] = {}
 #: _ETAGS: S3's ETag for each file as of the last restore/pull/save -- the version a delete is
 #: conditioned on, so an object someone else rewrote since is never deleted (_propagate_deletes).
 _ETAGS: dict[str, dict[str, str]] = {}
-#: _STATE_ROWS: Hermes's state.db transcript as of its last upload (_transcript_rows), so a save
-#: whose state.db changed only bookkeeping does not upload the whole file again.
-_STATE_ROWS: dict[str, tuple] = {}
 
 # Fix round (minor 12): two turns for the SAME agent in different rooms run concurrently in
 # one process (the FIFO group is room+agent), and both call save_profile on the one profile
@@ -525,21 +522,9 @@ def _restore_profile(agent_id: str) -> float:
     return took
 
 
-def _transcript_rows(conn) -> tuple | None:
-    """(newest message id, messages, sessions) of a Hermes state.db -- what a recorded turn, an
-    ended session or a prune changes. Not titles, token counters or end stamps alone: those ride
-    the next upload, and a crash before it loses only them. None when the file is not one."""
-    try:
-        return conn.execute("SELECT (SELECT MAX(id) FROM messages), (SELECT COUNT(*) FROM messages), "
-                            "(SELECT COUNT(*) FROM sessions)").fetchone()
-    except sqlite3.Error:
-        return None
-
-
-def save_profile(agent_id: str, sqlite: bool = True) -> float:
+def save_profile(agent_id: str) -> float:
     """Upload what THIS turn changed. SQLite files go through the backup API; excluded
     paths (request dumps, logs, per-turn context, WAL/SHM) never leave the microVM.
-    ``sqlite=False`` leaves the SQLite files for a later save (_save_on_sigterm's first pass).
 
     Ruling M6-R51: only files that are new or whose change stamp moved since the last
     restore/pull/save go up. Uploading the whole tree (what this did before) silently reverted
@@ -568,8 +553,6 @@ def save_profile(agent_id: str, sqlite: bool = True) -> float:
             rel = path.relative_to(src).as_posix()
             if not path.is_file() or is_excluded(rel) or is_reproducible(rel):
                 continue
-            if not sqlite and path.suffix in (".db", ".sqlite"):
-                continue
             stamp = _change_stamp(path)
             if mtimes.get(rel) == stamp:
                 continue  # untouched by this turn: S3's copy is the source of truth
@@ -588,19 +571,14 @@ def save_profile(agent_id: str, sqlite: bool = True) -> float:
                 log.warning("save %s: could not upload %s; retrying next save", agent_id, rel, exc_info=True)
 
         def _upload_one(path: Path, rel: str, stamp: int) -> None:
-            upload, rows = path, None
+            upload = path
             if path.suffix in (".db", ".sqlite") and _is_sqlite(path):
                 snap = path.with_name(path.name + ".s3snap")
                 snap.unlink(missing_ok=True)  # a leftover from an interrupted save poisons backup
                 with contextlib.closing(sqlite3.connect(path)) as conn:
-                    rows = _transcript_rows(conn) if rel == "state.db" else None
-                    if rows is not None and rows == _STATE_ROWS.get(agent_id):
-                        mtimes[rel] = stamp  # Hermes's post-turn bookkeeping only (title, tokens)
-                        return
                     with contextlib.closing(sqlite3.connect(snap)) as out:
                         conn.backup(out)  # a real failure raises: retried next save, never raw bytes
                 upload = snap
-                # Uploaded whole whenever its transcript moved; state.db grows with recorded turns.
                 log.info("save %s: %s snapshot %d bytes", agent_id, rel, snap.stat().st_size)
             # anything else -- including a .db that is not SQLite (DuckDB, Thumbs.db) -- goes up raw
             # I1: the instant is read BEFORE the PUT, never after. Reading it after would put it
@@ -618,8 +596,6 @@ def save_profile(agent_id: str, sqlite: bool = True) -> float:
             mtimes[rel] = stamp
             synced[rel] = now
             _ETAGS.setdefault(agent_id, {})[rel] = etag
-            if rows is not None:
-                _STATE_ROWS[agent_id] = rows
 
         _fan_out(_upload, changed)
         n = len(changed)

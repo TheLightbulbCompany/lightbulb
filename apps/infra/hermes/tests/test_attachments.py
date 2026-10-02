@@ -184,7 +184,7 @@ def test__run_hermes_lists_only_the_current_messages_media_not_history(home, mon
 
     turn._run_hermes("ceo", body, None)
 
-    ctx, _ = f.split_turn_input(seen["persist_user_message"])
+    ctx, _ = f.split_turn_input(seen["user_message"][0]["text"])
     media = ctx["media"]
     assert len(media) == 1
     assert media[0].endswith("current-image.png")
@@ -209,41 +209,6 @@ def test__run_hermes_sends_a_current_image_as_native_user_content(home, monkeypa
     assert header == "data:image/png;base64"
     assert base64.b64decode(encoded) == _RED_PNG
 
-
-def test__run_hermes_names_historical_images_and_embeds_only_the_current_one(home, monkeypatch):
-    """Hermes's gateway shape: an earlier image is its observed row's "saved at" note (vision_analyze
-    opens it); only the addressed message's own image rides natively."""
-    _install_native_vision_stub(monkeypatch)
-    seen = _capture_agent_call(monkeypatch)
-
-    current = f.message(messageId="current", text="now", attachments=[
-        {"id": "current-image", "fileName": "now.png", "contentType": "image/png", "size": len(_RED_PNG)},
-    ])
-    agent_history = f.message(
-        messageId="agent-history", messageSeq=5, author={"kind": "agent", "id": "ceo", "displayName": "CEO"},
-        text="earlier", attachments=[
-            {"id": "own-image", "fileName": "own.png", "contentType": "image/png", "size": len(_BLUE_PNG)},
-        ],
-    )
-    human_history = f.message(messageId="human-history", messageSeq=6, text="past", attachments=[
-        {"id": "history-image", "fileName": "past.png", "contentType": "image/png", "size": len(_BLUE_PNG)},
-    ])
-    body = f.ingress(message=current, recentHistory=[agent_history, human_history])
-
-    monkeypatch.setattr(
-        sync,
-        "_get_backend_bytes",
-        lambda path: _RED_PNG if path.endswith("current-image") else _BLUE_PNG,
-    )
-
-    turn._run_hermes("ceo", body, None)
-
-    content = seen["user_message"]
-    assert [part["type"] for part in content] == ["text", "image_url"]
-    folder = sync.turn_media_root() / f"ceo.{f.ROOM}"
-    assert f"[CEO|ceo]\nearlier\n\n[image 'own.png' saved at: {folder / 'own-image.png'}]" in content[0]["text"]
-    assert f"[Prez|user_1]\npast\n\n[image 'past.png' saved at: {folder / 'history-image.png'}]" in content[0]["text"]
-    assert base64.b64decode(content[1]["image_url"]["url"].split(",", 1)[1]) == _RED_PNG
 
 
 def test__run_hermes_does_not_turn_a_pdf_into_image_content(home, monkeypatch):

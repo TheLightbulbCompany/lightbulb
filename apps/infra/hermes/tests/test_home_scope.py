@@ -130,6 +130,7 @@ def test_turn_ensures_the_profile_before_pinning_defaults(monkeypatch):
         run_conversation=lambda **kw: {"api_calls": 1, "final_response": "ok"},
     )
     monkeypatch.setitem(sys.modules, "run_agent", fake_run_agent)
+    monkeypatch.setattr(turn, "_session_db", lambda _a: object())
 
     turn._run_hermes("ceo", f.ingress(), None)
     assert calls == [("ensure", "ceo"), ("pin", "ceo")]

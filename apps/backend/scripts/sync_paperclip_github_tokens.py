@@ -1,12 +1,13 @@
 """Sync each workspace's GitHub token into Paperclip's ``GITHUB_TOKEN`` company secret.
 
 ``paperclip_github_token.sync_github_token`` already runs on every GitHub connect, disconnect
-and runtime reconcile. This is the re-runnable ops entry point for the workspaces that connected
-GitHub BEFORE that shipped (and for checking the fleet afterwards): it calls the same function
-for every owner with a connected ``github`` integration.
+and runtime reconcile, and the backend sweeps every workspace at startup before it applies
+Paperclip's instance flags (``paperclip_instance_flags.converge_at_startup``). This is the
+manual door onto the same sweep: check the fleet, or repair it without waiting for a deploy.
 
-Run it before switching on Paperclip's ``enableExternalObjects``: an unauthenticated lookup of a
-private repository is stored as a terminal "Not found".
+``--all`` covers every owner with an ACTIVE Paperclip company, not only the GitHub-connected
+ones: an owner whose disconnect cleanup failed holds no Lightbulb token but still has our
+secret in Paperclip, and this is what deletes it.
 
 Runs INSIDE the backend task (ECS exec), like ``roll_hermes_runtimes`` -- it needs
 ``PAPERCLIP_INTERNAL_URL`` and the backend's Secrets Manager grants:
@@ -19,8 +20,9 @@ Dry-run is the default: it reads the Lightbulb token and makes Paperclip's secre
 only, and prints what it would do (``would_create`` / ``would_rotate`` / ``would_delete``).
 Prints one line per owner with the outcome -- never the token: ``created``, ``rotated``,
 ``unchanged`` (Paperclip already holds this token; nothing written), ``deleted``, ``absent``,
-``foreign_secret``, ``inactive_secret``, ``no_company``, ``unsettled``. Idempotent and sequential;
-continues past a failing owner and exits non-zero if any failed.
+``foreign_secret``, ``inactive_secret``, ``no_company``, ``unsettled``, ``conflict``, ``failed``
+(the reason is logged). Idempotent and sequential; continues past a failing owner and exits
+non-zero if any owner ended ``failed``, ``unsettled`` or ``conflict``.
 """
 
 from __future__ import annotations
@@ -30,17 +32,7 @@ import asyncio
 import logging
 import sys
 
-from core.repositories import integrations_repo
-from core.services.paperclip_github_token import sync_github_token
-
-logger = logging.getLogger(__name__)
-
-
-async def _targets(args: argparse.Namespace) -> list[str]:
-    if args.owner_id:
-        return [args.owner_id]
-    rows = await integrations_repo.scan_all()
-    return sorted({r["owner_id"] for r in rows if r.get("provider") == "github" and r.get("status") == "connected"})
+from core.services.paperclip_github_token import UNSYNCED, sweep
 
 
 async def main(argv: list[str] | None = None) -> int:
@@ -51,18 +43,11 @@ async def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--apply", action="store_true", help="write to Paperclip (default: dry run)")
     args = parser.parse_args(argv)
 
-    failed = 0
-    for owner_id in await _targets(args):
-        try:
-            outcome = await sync_github_token(owner_id, dry_run=not args.apply)
-        except Exception as exc:  # noqa: BLE001 -- one owner's failure must not stop the fleet run
-            failed += 1
-            # Type and status only: str() of a PaperclipApiError carries the response body.
-            status = getattr(exc, "status_code", "-")
-            logger.error("sync: owner=%s FAILED: %s status=%s", owner_id, type(exc).__name__, status)
-            continue
+    unsynced = 0
+    async for owner_id, outcome in sweep([args.owner_id] if args.owner_id else None, dry_run=not args.apply):
         print(f"{owner_id} {outcome}")
-    return 1 if failed else 0
+        unsynced += outcome in UNSYNCED
+    return 1 if unsynced else 0
 
 
 if __name__ == "__main__":

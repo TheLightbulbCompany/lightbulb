@@ -6,6 +6,12 @@ rollout. It is the manual door onto the same code: see what is stored, or apply
 without waiting for a deploy. That module's docstring has the table, the reasons
 for direct SQL, and why a partial object is safe.
 
+Unlike the backend, this script does NOT sync the GitHub tokens first, and it
+cannot (that needs the backend task's network). Before an ``--apply`` that turns
+``enableExternalObjects`` on, run ``scripts.sync_paperclip_github_tokens --all
+--apply`` inside the backend task: Paperclip stores an unauthenticated lookup of
+a private repository as a terminal "Not found".
+
 Runs from a laptop with the admin profile, like ``recover_orphan_paperclip_member``
 (the cluster and secret are addressed by name from ``--env``, so nothing needs
 the backend task's environment). Dry-run by default; ``--apply`` writes.
@@ -29,7 +35,14 @@ import argparse
 import json
 import sys
 
-from core.services.paperclip_instance_flags import DESIRED_FLAGS, database, plan_changes, read, write
+from core.services.paperclip_instance_flags import (
+    DESIRED_FLAGS,
+    TOKEN_GATED_FLAG,
+    database,
+    plan_changes,
+    read,
+    write,
+)
 from core.services.paperclip_sql import rds_data_client
 
 
@@ -58,6 +71,8 @@ def main() -> None:
     if not changes:
         print("\nNothing to change.")
         return
+    if TOKEN_GATED_FLAG in changes:
+        print(f"\n{TOKEN_GATED_FLAG}: first run scripts.sync_paperclip_github_tokens --all --apply")
     if not args.apply:
         print("\nDRY RUN: re-run with --apply to write.")
         return

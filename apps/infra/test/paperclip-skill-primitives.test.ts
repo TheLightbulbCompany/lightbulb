@@ -528,7 +528,8 @@ describe("liveness primitives are documented", () => {
   });
 
   it("routes Cases to its reference without calling it disabled", () => {
-    // Cases is enabled on this instance (the Teams Cases panels shipped), so
+    // Cases is enabled on this instance: `enableCases` is applied by the
+    // backend at startup (core/services/paperclip_instance_flags.py). So
     // the routing row must not tell agents the calls 403.
     expect(skillMd).toContain("| `references/cases.md` |");
     expect(skillMd).not.toContain("Disabled on this instance");

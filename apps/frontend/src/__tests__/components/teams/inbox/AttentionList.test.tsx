@@ -296,6 +296,33 @@ describe("AttentionList", () => {
     expect(second).toBe(first);
   });
 
+  test("a cached decision stays answerable when its re-read fails", () => {
+    // After an ambiguous decide failure the card re-reads the decision; if that
+    // GET fails as well, SWR keeps the cached decision AND sets `error`.
+    installDecision();
+    const cached = read.getMockImplementation()!;
+    read.mockImplementation((path: string | null) => ({
+      ...cached(path),
+      error: path === "/decisions/dec_1" ? new Error("Gateway timeout") : null,
+    }));
+    render(<AttentionList />);
+
+    expect(screen.getByRole("button", { name: /ship it/i })).toBeEnabled();
+    expect(screen.queryByText(/no longer available/i)).not.toBeInTheDocument();
+  });
+
+  test("a decision that never loaded reads as unavailable", () => {
+    read.mockImplementation((path: string | null) => ({
+      data: path === "/attention" ? { items: [decisionItem] } : undefined,
+      isLoading: false,
+      error: path === "/decisions/dec_1" ? new Error("Not found") : null,
+      mutate: vi.fn(),
+    }));
+    render(<AttentionList />);
+
+    expect(screen.getByText(/no longer available/i)).toBeInTheDocument();
+  });
+
   test("an unhydrated item links out instead of pretending to be resolvable", () => {
     const onOpenIssue = vi.fn();
     installFeed({ items: [{ ...interactionItem, interaction: null }] });

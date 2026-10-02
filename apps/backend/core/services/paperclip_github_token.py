@@ -7,7 +7,8 @@ a shared 60/hour, and a private repository answers a terminal "Not found".
 
 The workspace already has a GitHub token: the one the owner granted in Settings -> Connections.
 ``sync_github_token`` makes Paperclip match it -- create, rotate, or delete -- and is idempotent,
-so it runs on connect, on disconnect and on every runtime reconcile.
+so it runs on connect, on disconnect, on every runtime reconcile and, for every workspace with a
+Paperclip company, at every backend start (``sweep``).
 
 Three rules:
 
@@ -108,7 +109,12 @@ async def _sync(
         if await stale():
             return None
         if not dry_run:
-            await admin.delete_secret(session_cookie=cookie, secret_id=secret["id"])
+            try:
+                await admin.delete_secret(session_cookie=cookie, secret_id=secret["id"])
+            except PaperclipApiError as exc:
+                if exc.status_code != 404:
+                    raise
+                # A concurrent sync (another backend task's sweep) deleted it first.
         return did("delete")
     if secret is None:
         if dry_run:
@@ -201,13 +207,20 @@ async def sync_github_token(owner_id: str, *, dry_run: bool = False) -> str:
 #: Ceiling on what a best-effort sync may add to the request or reconcile it rides on.
 _BEST_EFFORT_TIMEOUT_S = 10.0
 
+#: What ``sync_best_effort`` returns when the sync raised or timed out.
+FAILED = "failed"
+#: Outcomes after which Paperclip may NOT hold what Lightbulb holds. Every other outcome is
+#: settled: in step, or deliberately left alone (no company, a member's own or disabled secret).
+UNSYNCED = frozenset({FAILED, "unsettled", "conflict"})
 
-async def sync_best_effort(owner_id: str) -> None:
+
+async def sync_best_effort(owner_id: str, *, dry_run: bool = False) -> str:
     """``sync_github_token`` for a caller that must not fail because of it (a connect, a
-    disconnect, a reconcile). Never raises, and gives up after ``_BEST_EFFORT_TIMEOUT_S``; the
-    next reconcile retries."""
+    disconnect, a reconcile, the fleet sweep). Never raises, and gives up after
+    ``_BEST_EFFORT_TIMEOUT_S``. Returns the outcome, or ``FAILED`` (logged and counted)."""
     try:
-        outcome = await asyncio.wait_for(sync_github_token(owner_id), timeout=_BEST_EFFORT_TIMEOUT_S)
+        sync = sync_github_token(owner_id, dry_run=True) if dry_run else sync_github_token(owner_id)
+        outcome = await asyncio.wait_for(sync, timeout=_BEST_EFFORT_TIMEOUT_S)
     except Exception as exc:  # noqa: BLE001 -- the metric is the signal; the caller carries on
         # Type and status only: str() of a PaperclipApiError carries the response body.
         logger.error(
@@ -217,5 +230,56 @@ async def sync_best_effort(owner_id: str) -> None:
             getattr(exc, "status_code", "-"),
         )
         put_metric("paperclip.github_token_sync.error")
-        return
+        return FAILED
     logger.info("paperclip github token sync for owner=%s: %s", owner_id, outcome)
+    return outcome
+
+
+async def sweep(owner_ids: list[str] | None = None, *, dry_run: bool = False):
+    """Sync each owner in turn, yielding ``(owner_id, outcome)``. With no ``owner_ids``: every
+    owner with an ACTIVE Paperclip company -- not only the GitHub-connected ones, so an owner
+    whose disconnect cleanup failed (Lightbulb holds no token, Paperclip still does) gets the
+    stale secret deleted. The backend runs this at every start
+    (``paperclip_instance_flags.converge_at_startup``); the ops script is the manual door.
+
+    Safe when several backend tasks sweep at once (2-4 boot together, doubled during a roll):
+    every sync converges on the same end state from whatever it finds. Two creates: the loser's
+    409 re-lists and finds the fingerprint already current. Two rotates write the same token.
+    Two deletes: the loser's 404 reads as deleted. So concurrent sweeps cost duplicate calls,
+    never a worse state than one.
+
+    ponytail: sequential, one table scan and ~3 calls per owner, at most
+    ``_BEST_EFFORT_TIMEOUT_S`` each. Fine for hundreds of workspaces; past that, sweep under
+    a lease so one task does it.
+    """
+    if owner_ids is None:
+        repo = PaperclipRepo(table_name="paperclip-companies")
+        owner_ids = sorted(await repo.list_active_workspace_members())
+    for owner_id in owner_ids:
+        yield owner_id, await sync_best_effort(owner_id, dry_run=dry_run)
+
+
+#: Pauses before each background retry of a failed disconnect cleanup.
+_CLEANUP_RETRY_PAUSES_S: tuple[float, ...] = (30, 120, 300)
+#: Strong references: the event loop keeps only weak ones to a running task.
+_cleanup_retries: set[asyncio.Task] = set()
+
+
+async def _retry_cleanup(owner_id: str) -> None:
+    for pause in _CLEANUP_RETRY_PAUSES_S:
+        await asyncio.sleep(pause)
+        # Re-reads the workspace token each time, so a reconnect in between is honoured.
+        if await sync_best_effort(owner_id) not in UNSYNCED:
+            return
+    logger.error("paperclip github token cleanup ABANDONED for owner=%s; the next backend start sweeps it", owner_id)
+    put_metric("paperclip.github_token_sync.cleanup_abandoned")
+
+
+async def sync_after_disconnect(owner_id: str) -> None:
+    """The disconnect's sync. A failure here would leave a still-valid token in Paperclip, so
+    it is retried in the background (never delaying or failing the response). Bounded retries,
+    not a durable queue: a task that dies mid-retry leaves it to the start-up sweep."""
+    if await sync_best_effort(owner_id) in UNSYNCED:
+        task = asyncio.create_task(_retry_cleanup(owner_id))
+        _cleanup_retries.add(task)
+        task.add_done_callback(_cleanup_retries.discard)

@@ -145,7 +145,13 @@ def test_a_native_turn_declares_its_child_env_names_without_leaking_any_value(ho
     monkeypatch.setitem(sys.modules, "agent", ModuleType("agent"))
     monkeypatch.setitem(sys.modules, "agent.secret_scope", fake_ss)
     monkeypatch.setattr(turn.sync, "ensure_profile", lambda _a: None)
-    for name in ("PAPERCLIP_API_KEY", "PAPERCLIP_RUN_ID", "PAPERCLIP_TASK_ID", "SOME_MCP_TOKEN"):
+    # Every name the scope can hold must start absent: `_declare_child_env_names` never
+    # overwrites an existing process value (by design), and a GitHub-hosted runner sets
+    # XDG_CONFIG_HOME, one of the CLI-connector names.
+    for name in (
+        "PAPERCLIP_API_KEY", "PAPERCLIP_RUN_ID", "PAPERCLIP_TASK_ID", "SOME_MCP_TOKEN",
+        *sync.cli_credential_env("agent-1"),
+    ):
         monkeypatch.delenv(name, raising=False)
 
     seen = {}

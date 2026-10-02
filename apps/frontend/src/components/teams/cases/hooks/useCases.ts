@@ -78,8 +78,10 @@ export function useCaseChildren(caseUuid: string | undefined) {
 
 export function useIssueCases(issueId: string) {
   const { read } = useTeamsApi();
+  // Polled like the other case reads (cases emit no live events). No retry:
+  // a 403 means Cases is off, and the next poll picks a flag change up.
   return read<{ cases: IssueCaseLink[] }>(teamsQueryKeys.cases.forIssue(issueId), {
-    revalidateOnFocus: true,
+    ...POLL,
     shouldRetryOnError: false,
   });
 }

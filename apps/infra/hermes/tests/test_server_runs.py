@@ -190,6 +190,15 @@ def test_steer_of_a_running_run_delivers_the_text_to_the_attached_agent():
     assert agent.seen == ["use staging"]
 
 
+def test_steer_of_a_queued_voice_run_is_kept_for_its_user_message():
+    identity = {"runId": RUN, "agentId": "ceo", "roomId": f.ROOM, "family": "voice",
+                "sessionId": turn.lightbulb_session_key("ceo", f.ROOM)}
+    turn.register_call_run(identity)
+    code, _ = server.handle_plugin(_steer_path(RUN), "POST", AUTH, {"text": "Aden (voice): also X"})
+    assert code == 202
+    assert turn.attach_agent(RUN, object()) == "Aden (voice): also X"
+
+
 def test_steer_of_an_unknown_run_is_404():
     code, obj = server.handle_plugin(_steer_path(RUN), "POST", AUTH, {"text": "hi"})
     assert code == 404

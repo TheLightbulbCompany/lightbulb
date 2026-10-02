@@ -163,7 +163,9 @@ APPROVALS_DENY = ("rm -rf /", "mkfs*", "dd if=* of=/dev/*", ":(){:|:&};:")
 #: The ``TOOL_DENY_BASE`` port. canvas/music_generate have no Hermes toolset; cron is a switch
 #: (``cron.allow_agent_scheduling``, below), not a toolset (report 01 §2.7). dashboard has no
 #: equivalent switch this module emits at all — see the ``dashboard`` note below.
-_DISABLED_TOOLSETS = ("cronjob", "tts", "video_gen")
+#: clarify: the bridge wires no clarify callback, so Hermes's ask-the-user tool only answers "not
+#: available" and burns a step; the agent asks in its reply instead.
+_DISABLED_TOOLSETS = ("cronjob", "tts", "video_gen", "clarify")
 
 #: M4-R3: the opt-in is a flat allow-list (``plugins.enabled``), never ``plugins.entries`` —
 #: Hermes's ``hermes_cli/plugins_discovery.py::gate_manifest`` reads only ``plugins.enabled``.
@@ -869,7 +871,11 @@ FACTS_FILENAME = "lightbulb-facts.json"
 #: ``BACKEND_OWNED_FILES`` re-pull list. Before this fix the three disagreed: the writer's raise
 #: set omitted the facts file, and the marketplace deploy skip list omitted SOUL.md/.revision/the
 #: facts file entirely, so a tarball carrying either could silently overwrite it.
-BACKEND_OWNED_FILES = frozenset({"config.yaml", ".env", "SOUL.md", ".revision", FACTS_FILENAME})
+#: Voice notes (spec D §7): the agent's name line plus what people asked of its voice. The bridge
+#: appends it to every turn's system prompt (``turn.with_profile_agents_md``).
+VOICE_NOTES_FILENAME = "VOICE_NOTES.md"
+
+BACKEND_OWNED_FILES = frozenset({"config.yaml", ".env", "SOUL.md", ".revision", FACTS_FILENAME, VOICE_NOTES_FILENAME})
 
 
 def delete_profile(owner_id: str, agent_id: str) -> None:
@@ -1226,6 +1232,42 @@ def read_soul_md(owner_id: str, agent_id: str) -> str | None:
     """The profile's stored ``SOUL.md``, or ``None`` when it was never written. Sync -- call via
     ``run_in_thread``. Its one reader is the rename branch's generated-marker check (M6-R48)."""
     return _s3_get(settings.OWNER_STATE_BUCKET, f"{profile_prefix(owner_id, agent_id)}SOUL.md")
+
+
+#: The notes BODY, excluding the name line, on every door (persona, the agent tool, the settings
+#: route). The whole file stays under ~1,100 chars with the name line.
+VOICE_NOTES_MAX = 1000
+_NAME_LINE = re.compile(r"^Your name is (.+)\.$")
+
+
+def build_voice_notes_md(name: str | None, notes: str) -> str:
+    """``VOICE_NOTES.md`` text: the name line, a blank line, the notes. ``""`` when both are empty
+    (an empty file means nothing; the file is never deleted)."""
+    notes = (notes or "").strip()
+    return f"Your name is {name}.\n\n{notes}" if name else notes
+
+
+def parse_voice_notes_md(text: str | None) -> tuple[str | None, str]:
+    """Inverse of ``build_voice_notes_md``: ``(name or None, notes)``."""
+    first, _, rest = (text or "").partition("\n")
+    match = _NAME_LINE.match(first.strip())
+    if match:
+        return match.group(1), rest.strip()
+    return None, (text or "").strip()
+
+
+def upload_voice_notes(owner_id: str, agent_id: str, text: str) -> None:
+    """Rewrite ONLY this agent's ``VOICE_NOTES.md`` (+ ``.revision`` LAST), like
+    ``upload_soul_md``. Sync -- call via ``run_in_thread``."""
+    prefix = profile_prefix(owner_id, agent_id)
+    _s3_put(settings.OWNER_STATE_BUCKET, f"{prefix}{VOICE_NOTES_FILENAME}", text)
+    _s3_put(settings.OWNER_STATE_BUCKET, f"{prefix}.revision", uuid.uuid4().hex)
+
+
+def read_voice_notes(owner_id: str, agent_id: str) -> str | None:
+    """The stored ``VOICE_NOTES.md``, or ``None`` when never written. Sync -- call via
+    ``run_in_thread``."""
+    return _s3_get(settings.OWNER_STATE_BUCKET, f"{profile_prefix(owner_id, agent_id)}{VOICE_NOTES_FILENAME}")
 
 
 # ---- Task 10-B: the owner-facing file routes on an AgentCore row (M6-R48) ----------------------

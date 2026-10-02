@@ -14,7 +14,7 @@ describe("local development API proxy", () => {
     const enabledAfterFiles = !Array.isArray(enabled) ? enabled?.afterFiles : undefined;
     expect(enabledAfterFiles).toContainEqual({
       source: "/api/v1/:path*",
-      destination: "https://api-dev.flickmeon.ai/api/v1/:path*",
+      destination: "https://api-dev.thelightbulb.company/api/v1/:path*",
     });
 
     vi.stubEnv("LOCAL_DEV_API_PROXY", "");
@@ -22,7 +22,7 @@ describe("local development API proxy", () => {
     const disabledAfterFiles = !Array.isArray(disabled) ? disabled?.afterFiles : undefined;
     expect(disabledAfterFiles).not.toContainEqual({
       source: "/api/v1/:path*",
-      destination: "https://api-dev.flickmeon.ai/api/v1/:path*",
+      destination: "https://api-dev.thelightbulb.company/api/v1/:path*",
     });
 
     vi.stubEnv("LOCAL_DEV_API_PROXY", "1");
@@ -31,7 +31,7 @@ describe("local development API proxy", () => {
     const productionAfterFiles = !Array.isArray(production) ? production?.afterFiles : undefined;
     expect(productionAfterFiles).not.toContainEqual({
       source: "/api/v1/:path*",
-      destination: "https://api-dev.flickmeon.ai/api/v1/:path*",
+      destination: "https://api-dev.thelightbulb.company/api/v1/:path*",
     });
   });
 });

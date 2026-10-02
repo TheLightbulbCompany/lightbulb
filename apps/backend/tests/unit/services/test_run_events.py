@@ -401,6 +401,38 @@ async def test_provider_failure_names_the_provider_and_no_code(metrics, account,
 
 
 @pytest.mark.asyncio
+async def test_a_silent_completion_posts_nothing_records_usage_and_counts(metrics):
+    create, record = AsyncMock(), AsyncMock()
+    patches = _failure_patches(create)
+    row = {**ROW, "eventKind": "room_event"}
+    with patch.object(messaging.messaging_repo, "end_run", AsyncMock(return_value=row)):
+        with (
+            patches[0],
+            patches[1],
+            patches[2],
+            patch.object(messaging, "record_usage", record),
+            patches[4],
+            patches[5],
+        ):
+            await messaging.handle_run_event(
+                "o",
+                RunEventRequest.model_validate(
+                    {
+                        "runId": RUN,
+                        "type": "run.ended",
+                        "at": "2026-09-12T03:15:00Z",
+                        "outcome": "completed",
+                        "silent": True,
+                        "usage": USAGE.model_dump(by_alias=True),
+                    }
+                ),
+            )
+    create.assert_not_awaited()
+    record.assert_awaited_once()
+    assert ("messaging.agent.silent", {"event_kind": "room_event"}) in metrics
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     "outcome,usage", [("completed", USAGE), ("aborted", USAGE), ("ignored", None), ("gate_error", None)]
 )

@@ -1,36 +1,45 @@
-# The delegation handling (_CEO.on_enter / _on_delegation_created / _on_done) is adapted from
+# The delegation handling (_Voice.on_enter / _on_delegation_created / _on_done) is adapted from
 # livekit/agents examples/voice_agents/gpt-live/client_delegation.py,
 # Copyright LiveKit, Inc., licensed under the Apache License, Version 2.0
 # (http://www.apache.org/licenses/LICENSE-2.0). Changes: the answer comes from our backend
 # (Huddle.on_delegation) instead of a local LLM desk.
-"""LiveKit glue for the CEO huddle worker. All behaviour lives in huddle.Huddle."""
+"""LiveKit glue for the huddle worker. All behaviour lives in huddle.Huddle."""
 
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import itertools
 import json
 import logging
 import time
 
 from livekit import rtc
-from livekit.agents import Agent, AgentServer, AgentSession, JobContext, JobRequest, cli, room_io, stt, utils
+from livekit.agents import Agent, AgentServer, AgentSession, JobContext, JobRequest, cli, llm, room_io, stt, utils
 from livekit.agents.metrics import LLMModelUsage
 from livekit.plugins import openai, silero
 from livekit.plugins.openai.realtime import GPTLiveDelegation, GPTLiveModel, GPTLiveSession
+from livekit.plugins.openai.realtime.gpt_live_model import _render_item
 
 from huddle_agent.backend import Backend
-from huddle_agent.huddle import VOICE_NAME, Huddle, emit_metric
+from huddle_agent.huddle import Huddle, emit_metric
+from huddle_agent.transcript import trim_items
 
 logger = logging.getLogger("huddle")
-AGENT_IDENTITY = "agent-ceo"
+AGENT_IDENTITY = "agent-ceo"  # C4: every agent voice publishes as this one participant
+WORKER_DISPLAY_NAME = "Lightbulb"  # clients render tiles from attributes, not this name
 server = AgentServer()
 
 
-class _CEO(Agent):
-    def __init__(self, persona: str, huddle: Huddle) -> None:
-        super().__init__(instructions=persona)  # no tools: client delegation raises on any
-        self._huddle = huddle
+class _Voice(Agent):
+    """One agent's voice. The seed is the huddle so far, as this agent saw it (Transcript.seed)."""
+
+    def __init__(self, agent_id: str, persona: str, huddle: Huddle, seed: list[tuple[str, str]]) -> None:
+        ctx = llm.ChatContext.empty()
+        for role, text in seed:
+            ctx.add_message(role=role, content=text)
+        super().__init__(instructions=persona, chat_ctx=ctx)  # no tools: client delegation raises on any
+        self._agent_id, self._huddle = agent_id, huddle
         self._tasks: set[asyncio.Task[None]] = set()
 
     async def on_enter(self) -> None:
@@ -43,7 +52,8 @@ class _CEO(Agent):
 
     def _on_delegation_created(self, d: GPTLiveDelegation) -> None:
         # emitted from the plugin's read loop, so the work has to run in a task of its own
-        task = asyncio.create_task(self._huddle.on_delegation(d.id, d.pending_transcript), name=f"turn:{d.id}")
+        coro = self._huddle.on_delegation(self._agent_id, d.id, d.pending_transcript)
+        task = asyncio.create_task(coro, name=f"turn:{d.id}")
         self._tasks.add(task)
         task.add_done_callback(self._on_done)
 
@@ -53,45 +63,109 @@ class _CEO(Agent):
             logger.error("delegation failed", extra={"error_type": type(error).__name__})
 
 
-AUDIO_TRACK = "roomio_audio"  # RoomIO's default agent audio track name (voice/room_io/_output.py)
+class _TrimmedSession(GPTLiveSession):
+    """GPT-Live reseeds every (re)connect from its whole `_history` and only caps the item count, so
+    a long huddle would outgrow the seed's token limit. Seed the newest items within ours instead."""
+
+    # ponytail: private API, re-check on livekit-agents upgrades
+    def _session_start_event(self):
+        full = self._history
+        rendered = [(item, r[1]) for item in full.items if (r := _render_item(item)) is not None]
+        self._history = llm.ChatContext([item for item, _ in trim_items(rendered)])
+        try:
+            return super()._session_start_event()
+        finally:
+            self._history = full
+
+
+class _TrimmedGPTLiveModel(GPTLiveModel):
+    def session(self) -> GPTLiveSession:
+        return _TrimmedSession(self)
+
+
+FALLBACK_VOICE = "marin"
+
+
+async def _unpublish(room: rtc.Room, track_name: str) -> None:
+    # RoomIO never unpublishes its audio track; only this agent's, another agent may be talking.
+    lp = room.local_participant
+    for pub in list(lp.track_publications.values()):
+        if pub.name == track_name:
+            await lp.unpublish_track(pub.sid)
 
 
 class _Live:
-    """One summon's GPT-Live session, as huddle.Live: a straight binding onto LiveKit's API."""
+    """One agent's GPT-Live session, as huddle.Live: a straight binding onto LiveKit's API."""
 
-    def __init__(self, session: AgentSession, duplex: GPTLiveSession, room: rtc.Room) -> None:
+    def __init__(self, agent_id: str, session: AgentSession, duplex: GPTLiveSession, room: rtc.Room) -> None:
+        self.agent_id, self.track_name = agent_id, f"agent-{agent_id}"
         self._session, self._room = session, room
         self.set_participant = session.room_io.set_participant
         self.append_thinking, self.append_commentary = duplex.append_thinking, duplex.append_commentary
+        self.append_instructions = duplex.append_instructions
         self.mute = duplex.mute_input
         self.nudge = lambda: session.generate_reply()  # a request the model may decline
         self.reply_to = lambda text: session.generate_reply(user_input=text)  # a typed user turn
+
+    def interrupt(self):
+        return self._session.interrupt(force=True)
 
     def usage_seconds(self) -> float:
         return sum(u.session_duration for u in self._session.usage.model_usage if isinstance(u, LLMModelUsage))
 
     async def aclose(self) -> None:
         await self._session.aclose()
-        # RoomIO never unpublishes its audio track; without this every summon leaves a dead one behind.
-        lp = self._room.local_participant
-        for pub in list(lp.track_publications.values()):
-            if pub.name == AUDIO_TRACK:
-                await lp.unpublish_track(pub.sid)
+        await _unpublish(self._room, self.track_name)
 
 
-async def start_live(room: rtc.Room, huddle: Huddle, vad, persona: str, voice: str, speaker: str) -> _Live:
-    agent = _CEO(persona, huddle)
-    session = AgentSession(llm=GPTLiveModel(voice=voice, delegation="client"), vad=vad)
-    session.on("user_state_changed", lambda ev: ev.new_state == "speaking" and huddle.on_speaker_activity())
-    session.on("agent_state_changed", lambda ev: huddle.on_agent_state(ev.new_state))
-    # record=False: a huddle leaves nothing behind, whatever the LiveKit Cloud project's recording default.
-    # Pinned to the speaker, so it never hears whoever RoomIO would auto-link first.
-    opts = room_io.RoomOptions(participant_identity=speaker, close_on_disconnect=False)
-    await session.start(agent=agent, room=room, room_options=opts, record=False)
-    live = _Live(session, agent.duplex_session, room)  # type: ignore[arg-type]
+def room_options(agent_id: str, speaker: str) -> room_io.RoomOptions:
+    # Pinned to the speaker, so it never hears whoever RoomIO would auto-link first. No text input
+    # (people type into the room, not to the voice) and no pre-connect buffer (the worker is not a
+    # client that holds audio for it).
+    return room_io.RoomOptions(
+        participant_identity=speaker,
+        close_on_disconnect=False,
+        text_input=False,
+        audio_input=room_io.AudioInputOptions(pre_connect_audio=False),
+        audio_output=room_io.AudioOutputOptions(track_name=f"agent-{agent_id}"),
+    )
+
+
+async def _start(room, huddle: Huddle, vad, agent_id, persona, voice, speaker, seed) -> _Live:
+    agent = _Voice(agent_id, persona, huddle, seed)
+    session = AgentSession(llm=_TrimmedGPTLiveModel(voice=voice, delegation="client"), vad=vad)
+    session.on("user_state_changed", lambda ev: ev.new_state == "speaking" and huddle.on_speaker_activity(agent_id))
+    session.on("agent_state_changed", lambda ev: huddle.on_agent_state(agent_id, ev.new_state))
+
+    def said(ev) -> None:
+        if ev.item.role == "assistant" and (text := ev.item.text_content):
+            huddle.on_agent_said(agent_id, text)
+
+    session.on("conversation_item_added", said)
+    try:
+        # record=False: a huddle leaves nothing behind, whatever the LiveKit Cloud project's recording default.
+        await session.start(agent=agent, room=room, room_options=room_options(agent_id, speaker), record=False)
+    except BaseException:
+        with contextlib.suppress(Exception):
+            await session.aclose()
+            await _unpublish(room, f"agent-{agent_id}")
+        raise
+    live = _Live(agent_id, session, agent.duplex_session, room)  # type: ignore[arg-type]
     # An unrecoverable realtime error closes the session under us: end the exchange then, not on the next call.
     session.on("close", lambda _ev: huddle.on_live_closed(live))
     return live
+
+
+async def start_live(room, huddle: Huddle, vad, *, agent_id, persona, voice, speaker, seed) -> _Live:
+    try:
+        return await _start(room, huddle, vad, agent_id, persona, voice, speaker, seed)
+    except Exception:
+        if voice == FALLBACK_VOICE:
+            raise
+        # a voice GPT-Live no longer accepts must not cost the agent its voice altogether
+        logger.warning("huddle voice %s refused; retrying with %s", voice, FALLBACK_VOICE, exc_info=True)
+        emit_metric("live.voice.fallback", 1, "Count")
+        return await _start(room, huddle, vad, agent_id, persona, FALLBACK_VOICE, speaker, seed)
 
 
 class _Room:
@@ -114,7 +188,7 @@ class _Room:
 
 
 async def _on_request(req: JobRequest) -> None:
-    await req.accept(identity=AGENT_IDENTITY, name=VOICE_NAME)  # the identity is internal; people see "Lightbulb"
+    await req.accept(identity=AGENT_IDENTITY, name=WORKER_DISPLAY_NAME)
 
 
 # agent_name is deprecated in 1.8.3 (worker.py rtc_session) and LIVEKIT_AGENT_NAME wins over it; the
@@ -124,7 +198,7 @@ async def entrypoint(ctx: JobContext) -> None:
     meta = json.loads(ctx.job.metadata)
     started = time.monotonic()
     usage = {"stt": 0.0}
-    emitted = {"stt": 0.0, "agent": 0.0}
+    emitted = {"stt": 0.0, "agent": 0.0, "gptlive": 0.0}
     backend = Backend(meta["roomId"], meta["ownerId"], meta["roomToken"])
     vad = silero.VAD.load()
     stt_engine = openai.STT(model="gpt-4o-mini-transcribe", use_realtime=True)  # streaming
@@ -133,17 +207,22 @@ async def entrypoint(ctx: JobContext) -> None:
     def _stt_metrics(m) -> None:
         usage["stt"] += m.audio_duration
 
-    async def live_factory(persona: str, voice: str, speaker: str) -> _Live:
-        return await start_live(ctx.room, huddle, vad, persona, voice, speaker)
+    async def live_factory(**kw) -> _Live:
+        return await start_live(ctx.room, huddle, vad, **kw)
 
     def flush_metrics() -> None:
         # deltas since the last flush, so a crashed job loses at most a minute
-        now = {"stt": usage["stt"], "agent": time.monotonic() - started}
+        now = {"stt": usage["stt"], "agent": time.monotonic() - started, "gptlive": huddle.gptlive_seconds()}
+        # a voice mid-close or a failed usage read never sends a negative delta
+        now["gptlive"] = max(now["gptlive"], emitted["gptlive"])
         for k in now:
-            emit_metric(f"huddle.{k}.seconds", now[k] - emitted[k])
+            emit_metric("huddle.gptlive.open_seconds" if k == "gptlive" else f"huddle.{k}.seconds", now[k] - emitted[k])
         emitted.update(now)
 
-    huddle = Huddle(room=_Room(ctx), backend=backend, live_factory=live_factory)
+    huddle = Huddle(
+        room=_Room(ctx), backend=backend, live_factory=live_factory,
+        on_vocabulary=lambda prompt: stt_engine.update_options(prompt=prompt),  # open streams take it in place
+    )
     tasks: set[asyncio.Task] = set()
 
     def _done(t: asyncio.Task) -> None:
@@ -175,11 +254,15 @@ async def entrypoint(ctx: JobContext) -> None:
         pusher = asyncio.create_task(push())
         try:
             async for ev in stream:
-                if ev.type == stt.SpeechEventType.FINAL_TRANSCRIPT and ev.alternatives:
-                    try:
+                if not ev.alternatives:
+                    continue
+                try:
+                    if ev.type == stt.SpeechEventType.FINAL_TRANSCRIPT:
                         await huddle.on_final_transcript(p.identity, p.name or p.identity, ev.alternatives[0].text)
-                    except Exception:  # one bad event never ends this person's transcription
-                        logger.exception("huddle transcript handling failed")
+                    elif ev.type == stt.SpeechEventType.INTERIM_TRANSCRIPT:  # use_realtime: cumulative, ~0.5 s apart
+                        huddle.on_interim_transcript(p.identity, p.name or p.identity, ev.alternatives[0].text)
+                except Exception:  # one bad event never ends this person's transcription
+                    logger.exception("huddle transcript handling failed")
         finally:
             await utils.aio.cancel_and_wait(pusher)
             await audio.aclose()
@@ -212,7 +295,7 @@ async def entrypoint(ctx: JobContext) -> None:
     def rpc_talk(data: rtc.RpcInvocationData, start: bool) -> str:
         # caller_identity is set by the LiveKit server; it is the only speaker identity we trust.
         # Answer at once: a summon outlasts the RPC's 10 s response timeout.
-        spawn((huddle.talk_start if start else huddle.talk_end)(data.caller_identity))
+        spawn(huddle.talk_start(data.caller_identity, data.payload) if start else huddle.talk_end(data.caller_identity))
         return "ok"
 
     async def on_shutdown(_reason: str = "") -> None:
@@ -228,6 +311,8 @@ async def entrypoint(ctx: JobContext) -> None:
     ctx.room.on("participant_connected", lambda _p: spawn(huddle.on_participants(humans())))
     ctx.room.on("participant_disconnected", lambda _p: spawn(huddle.on_participants(humans())))
     ctx.room.on("data_received", lambda pkt: huddle.on_data(pkt.participant, pkt.topic, pkt.data))
+    # the SFU's speaking set: an agent announces its news only into a quiet room (gate.py)
+    ctx.room.on("active_speakers_changed", lambda speakers: huddle.on_active_speakers({p.identity for p in speakers}))
     await ctx.connect()
     ctx.room.local_participant.register_rpc_method("talk_start", lambda d: rpc_talk(d, True))
     ctx.room.local_participant.register_rpc_method("talk_end", lambda d: rpc_talk(d, False))

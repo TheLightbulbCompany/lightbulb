@@ -201,6 +201,7 @@ async def test_human_message_with_a_dispatch_target_reports_created_and_dispatch
         "workspace_id": OWNER,
         "room_kind": "channel",
         "mentions_agents": 1,
+        "mentions_sessions": False,
         "is_thread_reply": False,
         "has_attachment": False,
         "first_in_room": True,

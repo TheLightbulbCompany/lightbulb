@@ -121,7 +121,7 @@ infer that a missing value means `false`.
 2. Let the automatic `main` deployment put the frontend and backend on dev
    while dev Clerk still allows optional organization membership.
 3. Verify the deployed commit is live and
-   `https://dev.flickmeon.ai/session-tasks/choose-organization` resolves to the
+   `https://dev.thelightbulb.company/session-tasks/choose-organization` resolves to the
    Clerk native task route rather than redirecting to `/chat`, `/onboarding`, or
    `/admin`. Run the workspace E2E once with membership still optional.
 4. In the **dev Clerk Dashboard only**, set the five desired values above.

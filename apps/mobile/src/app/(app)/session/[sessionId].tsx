@@ -26,6 +26,7 @@ import { PendingPromptRow, TranscriptRowView, WorkingRow } from "../../../compon
 import { BottomSheet } from "../../../components/ui/BottomSheet";
 import { fonts, radii, spacing, useChatPalette } from "../../../config/theme";
 import { markSessionsSeenOnDevice, memberName } from "../../../lib/localSessions";
+import { useDesktopSessionApi } from "../../../lib/desktopSessions";
 import { JumpToLatest } from "../../../components/conversation/JumpToLatest";
 import { usePushedScreenKeyboardOffset } from "../../../lib/keyboardOffset";
 import { useReadBack } from "../../../lib/readBack";
@@ -53,6 +54,9 @@ function sessionWhere(session: LocalSession, own: boolean, ownerName: string): s
 export default function SessionScreen() {
   const { sessionId } = useLocalSearchParams<{ sessionId: string }>();
   const { userId } = useAuth();
+  const analyticsApi = useDesktopSessionApi();
+  const openId = useRef(randomUUID());
+  const reportedOpen = useRef<string | null>(null);
   const focused = useIsFocused();
   // Only a backgrounded app stops tailing — "inactive" (app switcher, a system
   // sheet) keeps it live. Both the initial state and the listener use this same rule.
@@ -84,6 +88,11 @@ export default function SessionScreen() {
   }, [listed, coldLoading, sessionId, rooms.resourceSource.client]);
   const resolvedFallback = fallback?.sessionId === sessionId ? fallback : null;
   const session = listed ?? resolvedFallback?.session ?? undefined;
+  useEffect(() => {
+    if (!session || reportedOpen.current === session.sessionId) return;
+    reportedOpen.current = session.sessionId;
+    void analyticsApi.post(`/messaging/sessions/${encodeURIComponent(session.sessionId)}/opened`, { openId: openId.current }).catch(() => {});
+  }, [session?.sessionId, analyticsApi]);
   // Seen while open: the Shared sessions list's unread dot clears for what you watched.
   useEffect(() => { if (session) markSessionsSeenOnDevice([session], session.sessionId); }, [session]);
   const members = useMemo(() => rooms.rooms.flatMap((room) => room.members ?? []), [rooms.rooms]);

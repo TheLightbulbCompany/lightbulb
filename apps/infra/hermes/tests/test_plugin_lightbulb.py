@@ -1,5 +1,6 @@
 """Task 11: Tests for the lightbulb plugin and send_room_message tool."""
 import json
+import pytest
 import sys
 import pathlib
 
@@ -130,3 +131,61 @@ def test_a_refused_file_memory_write_is_logged(caplog):
         lightbulb._log_memory_full(tool_name="terminal", result=full)
     assert [r.getMessage() for r in caplog.records] == [
         "hermes file memory full, write refused (2,190/2,200)"]
+
+
+# ---- session_search: this conversation's own history only ------------------------------------
+class _RecallDB:
+    """root <- child (a compression split of one room); 'dm' is another conversation."""
+    parents = {"child": "root", "root": None, "dm": None}
+
+    def search_messages(self, **_kw):
+        return [{"session_id": "dm", "id": 1}, {"session_id": "root", "id": 2}, {"session_id": "child", "id": 3}]
+
+    def resolve_session_by_title(self, title):
+        return {"Alice raise": "dm", "Room plan": "root"}.get(title)
+
+
+def _recall(monkeypatch):
+    import types
+    calls = []
+
+    def lineage(db, sid):
+        while db.parents.get(sid):
+            sid = db.parents[sid]
+        return sid
+
+    tool = types.SimpleNamespace(
+        session_search=lambda **kw: calls.append(kw) or "hermes",
+        _resolve_lineage=lineage,
+        tool_error=lambda msg, success: json.dumps({"success": success, "error": msg}),
+    )
+    monkeypatch.setitem(sys.modules, "tools", types.SimpleNamespace(session_search_tool=tool))
+    monkeypatch.setitem(sys.modules, "tools.session_search_tool", tool)
+    lightbulb._scope_session_search()
+    lightbulb._scope_session_search()  # idempotent: a second plugin load does not double-wrap
+    return tool, calls
+
+
+def test_session_search_reaches_only_the_current_conversations_lineage(monkeypatch):
+    tool, calls = _recall(monkeypatch)
+    db = _RecallDB()
+    assert tool.session_search(query="raise", db=db, current_session_id="child") == "hermes"
+    (kw,) = calls
+    assert kw["profile"] is None
+    assert [r["session_id"] for r in kw["db"].search_messages()] == ["root", "child"]  # never the DM
+    assert kw["db"].resolve_session_by_title("Alice raise") is None
+    assert kw["db"].resolve_session_by_title("Room plan") == "root"
+    assert tool.session_search(session_id="root", db=db, current_session_id="child") == "hermes"
+
+
+@pytest.mark.parametrize("kw", [
+    {"session_id": "dm"},                      # another conversation, by id
+    {"query": "x", "profile": "engineering"},  # another agent's state.db
+    {"session_id": "engineering/dm"},          # the same, as an @session link
+    {},                                        # browse: lists every conversation
+    {"query": "x", "current_session_id": None},
+])
+def test_session_search_refuses_anything_outside_it(monkeypatch, kw):
+    tool, calls = _recall(monkeypatch)
+    out = tool.session_search(**{"db": _RecallDB(), "current_session_id": "child", **kw})
+    assert json.loads(out) == {"success": False, "error": lightbulb.RECALL_SCOPE} and calls == []

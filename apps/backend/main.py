@@ -27,7 +27,8 @@ from core.config import settings
 from core.observability.e2e_correlation import E2ECorrelationMiddleware
 from core.repositories import container_repo
 from core.services.messaging import ApiProblem
-from core.services.hosted_mcp import READ_SCOPE, RESOURCE, WRITE_SCOPE, app as hosted_mcp_app, mcp as hosted_mcp
+from core.services import hosted_mcp
+from core.services.hosted_mcp import READ_SCOPE, RESOURCE, WRITE_SCOPE
 from core.services.paperclip_admin_client import PaperclipApiError
 from core.services.update_service import run_scheduled_worker
 from routers import (
@@ -35,7 +36,6 @@ from routers import (
     apple_iap,
     automations,
     billing,
-    calls,
     config,
     connections,
     container,
@@ -428,7 +428,9 @@ async def lifespan(app: FastAPI):
         }
     )
 
-    mcp_context = hosted_mcp.session_manager.run()
+    # One MCP app + session manager PER lifespan entry (hosted_mcp.running): the
+    # SDK's manager runs once per instance and the test client re-enters this lifespan.
+    mcp_context = hosted_mcp.running()
     await mcp_context.__aenter__()
 
     # Startup complete — flip the liveness gate so /health returns 200.
@@ -577,7 +579,6 @@ async def messaging_validation_error_handler(request, exc: RequestValidationErro
             "/api/v1/website-logins",
             # huddles too: a rejected turn would echo a live transcript.
             "/api/v1/internal/huddles",
-            "/api/v1/internal/calls",
         )
     ):
         problem = ApiProblem("INVALID_REQUEST", "Request validation failed.")
@@ -839,7 +840,6 @@ app.include_router(desktop_session_pickup.router, prefix="/api/v1", tags=["deskt
 
 # Billing routes
 app.include_router(billing.router, prefix="/api/v1/billing", tags=["billing"])
-app.include_router(calls.router, prefix="/api/v1/calls", tags=["calls"])
 app.include_router(huddles.router, prefix="/api/v1", tags=["huddles"])
 
 # Apple In-App Purchase: the app's link endpoint + Apple's notification
@@ -1094,4 +1094,4 @@ async def mcp_protected_resource_metadata():
 
 
 # Keep this last: the SDK serves /mcp and its root well-known OAuth metadata.
-app.mount("/", hosted_mcp_app)
+app.mount("/", hosted_mcp.mount)

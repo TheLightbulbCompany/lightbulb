@@ -247,6 +247,9 @@ EXCLUDE_GLOBS = (
     # hermes_profiles.write_facts_to_profiles (owner_facts.write_owner_facts's AgentCore
     # branch) on every plan/provider change -- same clobber risk as the four above.
     "lightbulb-facts.json",
+    # Voice notes: hermes_profiles.upload_voice_notes is the only writer; the turn reads it
+    # into the system prompt (turn.with_profile_agents_md). Same clobber risk as the above.
+    "VOICE_NOTES.md",
     # AgentCore Browser task: Hermes's own browser_vision tool writes
     # browser_screenshot_*.png here on every browse turn. Nothing stops save_profile pushing
     # them to S3 otherwise, and a screenshot reaches the room as an attachment (Task 9), not
@@ -434,6 +437,33 @@ def _emit_restore_metric(seconds: float, objects: int) -> None:
     )
 
 
+#: Hermes's durable lease tables in state.db (hermes_state_common.py:506-520).
+_LEASE_TABLES = ("session_turn_leases", "compression_locks")
+
+
+def clear_turn_leases(db: Path) -> None:
+    """Drop every turn lease and compression lock a restored state.db carries.
+
+    save_profile snapshots state.db while another conversation of the agent may be mid-turn, so
+    the S3 copy can hold that turn's lease (holder ``pid=<n>:turn=...``, TTL 300 s,
+    agent/turn_facade_lease.py:20-21). Hermes reclaims a lease only once it expires or its pid is
+    provably dead -- and never when the pid is its OWN (hermes_state.py:121-145) -- and a fresh
+    microVM's bridge often has the very pid the old one had. A resurrected lease would make the
+    next turn on that key wait up to 300 s, then drop our room history for a DB reload
+    (turn_facade_lease.py:284-296). A cold restore runs once per process, before anything here
+    opens the file, so every lease in it belongs to a dead process. Hermes has no startup sweep
+    of its own for these (it relies on pid liveness, which a microVM restart defeats)."""
+    if not db.is_file() or not _is_sqlite(db):
+        return
+    try:
+        with contextlib.closing(sqlite3.connect(db)) as conn, conn:
+            for table in _LEASE_TABLES:
+                with contextlib.suppress(sqlite3.OperationalError):  # a state.db older than the table
+                    conn.execute(f"DELETE FROM {table}")
+    except sqlite3.Error:
+        log.warning("could not clear restored leases in %s", db, exc_info=True)
+
+
 def restore_profile(agent_id: str) -> float:
     """Download the agent's profile dir from S3 once per process. Returns seconds taken."""
     with profile_lock(agent_id):
@@ -479,6 +509,7 @@ def _restore_profile(agent_id: str) -> float:
         _remember_cli_credential(agent_id, rel, obj, target)
 
     _fan_out(_download, wanted)
+    clear_turn_leases(dest / "state.db")
     n = len(wanted)
     _restored.add(agent_id)
     took = time.time() - t0
@@ -547,9 +578,11 @@ def save_profile(agent_id: str) -> float:
             if path.suffix in (".db", ".sqlite") and _is_sqlite(path):
                 snap = path.with_name(path.name + ".s3snap")
                 snap.unlink(missing_ok=True)  # a leftover from an interrupted save poisons backup
-                with sqlite3.connect(path) as conn, sqlite3.connect(snap) as out:
-                    conn.backup(out)  # a real failure raises: retried next save, never raw bytes
+                with contextlib.closing(sqlite3.connect(path)) as conn:
+                    with contextlib.closing(sqlite3.connect(snap)) as out:
+                        conn.backup(out)  # a real failure raises: retried next save, never raw bytes
                 upload = snap
+                log.info("save %s: %s snapshot %d bytes", agent_id, rel, snap.stat().st_size)
             # anything else -- including a .db that is not SQLite (DuckDB, Thumbs.db) -- goes up raw
             # I1: the instant is read BEFORE the PUT, never after. Reading it after would put it
             # past the object's real LastModified by the PUT's own latency plus any clock skew,
@@ -626,7 +659,9 @@ def write_profile_config(agent_id: str, config: dict) -> None:
 # backend, and save_profile's EXCLUDE_GLOBS entries above -- plus lightbulb-facts.json, written by
 # hermes_profiles.write_facts_to_profiles, Row #15 / Ruling M6-R30). A patch bumps .revision; this
 # is how the bridge notices without a watcher or a restart.
-BACKEND_OWNED_FILES = ("config.yaml", ".env", "SOUL.md", ".revision", "lightbulb-facts.json")
+BACKEND_OWNED_FILES = (
+    "config.yaml", ".env", "SOUL.md", ".revision", "lightbulb-facts.json", "VOICE_NOTES.md",
+)
 
 _REVISIONS: dict[str, str] = {}
 

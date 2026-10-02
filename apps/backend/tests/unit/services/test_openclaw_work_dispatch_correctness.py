@@ -179,3 +179,24 @@ def test_queue_visibility_and_run_deadline_outlast_one_dispatch():
     # deadline leaves a crashed Lambda time to redeliver before the sweep.
     assert 240 > 11 + 10 + _AGENTCORE_INGRESS_TIMEOUT_S
     assert work.messaging_repo.RUN_DISPATCH_TIMEOUT_S > 240
+
+
+@pytest.mark.asyncio
+async def test_chat_never_steers_into_a_voice_run(monkeypatch):
+    """Voice runs are VOICERUN# rows, outside the RUN# ledger the chat steer reads."""
+    from unittest.mock import MagicMock
+
+    rows = []
+    table = MagicMock()
+    table.put_item.side_effect = lambda Item: rows.append(Item)
+    monkeypatch.setattr(work.messaging_repo, "_table", lambda: table)
+    await work.messaging_repo.put_voice_run(
+        "owner_test", "run-v", {"roomId": ROOM, "agentId": AGENT, "speakerUserId": "u", "speakerName": "Bea"}
+    )
+    assert rows[0]["sk"] == "VOICERUN#run-v" and rows[0]["expiresAt"] > 0
+
+    async def query(pk, *, begins_with=None, **_):
+        return [r for r in rows if r["pk"] == pk and r["sk"].startswith(begins_with)]
+
+    monkeypatch.setattr(work.messaging_repo, "_query", query)
+    assert await work.messaging_repo.list_open_runs_for_room("owner_test", ROOM) == []

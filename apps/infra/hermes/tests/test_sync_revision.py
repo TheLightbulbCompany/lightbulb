@@ -58,6 +58,7 @@ def test_download_profile_pulls_exactly_the_backend_owned_files(home, monkeypatc
         f"{sync.S3_PREFIX}/a1/SOUL.md",
         f"{sync.S3_PREFIX}/a1/.revision",
         f"{sync.S3_PREFIX}/a1/lightbulb-facts.json",
+        f"{sync.S3_PREFIX}/a1/VOICE_NOTES.md",
     ]
 
 
@@ -187,4 +188,5 @@ def test_download_profile_survives_one_missing_object(home, monkeypatch):
         f"{sync.S3_PREFIX}/a1/.env",
         f"{sync.S3_PREFIX}/a1/.revision",
         f"{sync.S3_PREFIX}/a1/lightbulb-facts.json",
+        f"{sync.S3_PREFIX}/a1/VOICE_NOTES.md",
     ]

@@ -45,6 +45,10 @@ def _no_stored_soul_md_by_default(monkeypatch):
     "the profile has none yet", which is the regenerate branch they were all written against; the
     marker tests below override it."""
     monkeypatch.setattr(rpc.hermes_profiles, "read_soul_md", MagicMock(return_value=None))
+    # Task 13: every rename also rewrites VOICE_NOTES.md's name line and the room member labels.
+    monkeypatch.setattr(rpc.hermes_profiles, "read_voice_notes", MagicMock(return_value=None))
+    monkeypatch.setattr(rpc.hermes_profiles, "upload_voice_notes", MagicMock())
+    monkeypatch.setattr("core.services.messaging.refresh_agent_member_names", AsyncMock(return_value={}))
     monkeypatch.setattr(rpc.hermes_profiles.settings, "OPENROUTER_MANAGED_MODEL_ID", "candidate/model")
     monkeypatch.setattr(rpc.hermes_profiles.settings, "OPENROUTER_GATE_URL", "https://gate.example/v1")
 

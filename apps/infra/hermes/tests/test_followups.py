@@ -356,13 +356,14 @@ def test_a_hung_review_is_abandoned_at_the_ceiling():
 
 # ---- F: SIGTERM ------------------------------------------------------------------------------
 def test_sigterm_saves_every_restored_profile_and_root_auth_then_exits(monkeypatch):
+    """Every restored profile, then root auth, then a bounded exit."""
     saved, exits = [], []
     turn.RESTORED.update({"ceo", "eng"})
-    monkeypatch.setattr(sync, "save_profile", lambda agent_id: saved.append(agent_id))
+    monkeypatch.setattr(sync, "save_profile", saved.append)
     monkeypatch.setattr(sync, "save_root_auth", lambda: saved.append("root"))
     monkeypatch.setattr(server.os, "_exit", exits.append)
     server._save_on_sigterm(15, None)
-    assert sorted(saved) == ["ceo", "eng", "root"]
+    assert saved == ["ceo", "eng", "root"]
     assert exits == [143]
 
 
@@ -380,9 +381,7 @@ def test_a_follow_up_may_carry_history_at_and_after_its_trigger():
     promise = f.message(messageSeq=9, author={"kind": "agent", "id": "ceo", "displayName": "CEO"},
                         text="review running, I'll report back")
     body["recentHistory"] = [f.message(messageId=TRIGGER, messageSeq=7), promise]
-    turn.parse_ingress(body)
-    history = turn._history(body, "ceo")
-    assert history[-1] == {"role": "assistant", "content": "review running, I'll report back"}
+    assert turn.parse_ingress(body)["recentHistory"][-1]["text"] == "review running, I'll report back"
     bad = _follow_up_body()
     bad["recentHistory"] = [f.message(messageSeq=9), f.message(messageSeq=8)]
     with pytest.raises(turn.IngressError, match="strictly increase"):

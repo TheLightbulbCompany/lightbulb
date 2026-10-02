@@ -5,7 +5,7 @@ import type { RoomParticipant } from "../types";
 
 const huddle = vi.hoisted(() => ({ join: vi.fn(), roomId: null as string | null, joining: null as string | null, room: null as object | null, ids: [] as string[], available: true }));
 vi.mock("@/components/huddle/HuddleProvider", () => ({ useHuddle: () => ({ join: huddle.join, roomId: huddle.roomId, joining: huddle.joining, room: huddle.room }) }));
-vi.mock("@/components/huddle/LiveStrip", () => ({ LiveStrip: ({ roomId }: { roomId?: string }) => <span data-testid="strip">{roomId}</span> }));
+vi.mock("@/components/huddle/LiveStrip", () => ({ LiveStrip: ({ roomId, members }: { roomId?: string; members?: unknown[] }) => <span data-testid="strip" data-members={members?.length}>{roomId}</span> }));
 vi.mock("@/components/huddle/useRoomHuddle", () => ({ useRoomHuddle: () => ({ userIds: huddle.ids, available: huddle.available }) }));
 import { RoomHeader } from "../RoomHeader";
 
@@ -69,6 +69,7 @@ it("while Live, the strip takes Go live's place, and this room's own marker step
   huddle.room = {}; huddle.roomId = "room-1"; huddle.ids = ["h1"];
   render(<RoomHeader {...base} room={room()} />);
   expect(screen.getByTestId("strip")).toHaveTextContent("room-1");
+  expect(screen.getByTestId("strip")).toHaveAttribute("data-members", "4");
   expect(screen.queryByRole("button", { name: "Go live" })).toBeNull();
   expect(screen.queryByText("🔴 Live — Ana")).toBeNull();
 });

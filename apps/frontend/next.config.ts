@@ -2,7 +2,7 @@ import type { NextConfig } from "next";
 import withBundleAnalyzer from "@next/bundle-analyzer";
 import path from "path";
 
-import { ROOT_DOMAIN } from "./src/lib/domain";
+import { PRODUCT_DOMAINS, ROOT_DOMAIN } from "./src/lib/domain";
 import { AWS_REGION } from "./src/lib/aws";
 
 // AgentCore Browser's DCV live view: the presigned URL the backend mints is
@@ -208,17 +208,21 @@ const nextConfig: NextConfig = {
         ? [
             {
               source: "/api/v1/:path*",
-              destination: `https://api-dev.${ROOT_DOMAIN}/api/v1/:path*`,
+              destination: "https://api-dev.thelightbulb.company/api/v1/:path*",
             },
           ]
         : [];
 
     return {
-      beforeFiles: (
-        [
-          [`dev.company.${ROOT_DOMAIN}`, `https://api-dev.${ROOT_DOMAIN}`],
-          [`company.${ROOT_DOMAIN}`, `https://api.${ROOT_DOMAIN}`],
-        ] as const
+      // One pair per product domain, so the hosts middleware bypasses Clerk for
+      // (PAPERCLIP_HOSTS, derived from the same list) are exactly the hosts
+      // rewritten here.
+      beforeFiles: PRODUCT_DOMAINS.flatMap(
+        (d) =>
+          [
+            [`dev.company.${d}`, `https://api-dev.${d}`],
+            [`company.${d}`, `https://api.${d}`],
+          ] as const,
       ).map(([host, api]) => ({
         source: "/:path*",
         has: [{ type: "host" as const, value: host }],

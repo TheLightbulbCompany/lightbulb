@@ -3,7 +3,9 @@ import json
 import bridge
 from bridge import turn
 
-EP = "https://api.invalid/api/v1/internal/calls/call-1/frames"
+ROOM = "11111111-1111-4111-8111-111111111111"
+EP = f"https://api.invalid/api/v1/internal/huddles/org_test/rooms/{ROOM}/frames"
+IDENTITY = {"agentId": "agent-1", "roomId": ROOM}
 
 
 class _Res:
@@ -17,7 +19,7 @@ class _Res:
 
 
 def _frames(spec, **kw):
-    return turn.call_frame_publisher(spec, "call-1", "agent-1", "run-1", **kw)
+    return turn.call_frame_publisher(spec, IDENTITY, "run-1", **kw)
 
 
 def test_backend_sink_posts_batches_with_bearer(monkeypatch):
@@ -36,8 +38,9 @@ def test_backend_sink_posts_batches_with_bearer(monkeypatch):
         events = json.loads(req.data)["events"]
         assert 1 <= len(events) <= turn.FRAME_BATCH
         for e in events:
-            assert e["type"] == "call.turn.frame"
-            assert (e["payload"]["callId"], e["payload"]["turnId"], e["payload"]["agentId"]) == ("call-1", "run-1", "agent-1")
+            assert e["type"] == "voice.run.frame"
+            assert (e["payload"]["roomId"], e["payload"]["runId"], e["payload"]["agentId"]) == (ROOM, "run-1", "agent-1")
+            assert (e["payload"]["frame"]["runId"], e["payload"]["frame"]["agentId"]) == ("run-1", "agent-1")
 
 
 def test_backend_sink_failure_never_raises(monkeypatch):
@@ -47,14 +50,6 @@ def test_backend_sink_failure_never_raises(monkeypatch):
     pub = _frames({"sink": "backend", "endpoint": EP})
     pub.tool_start("tc-1", "browser", {})
     pub.finished("completed", "hi", None)
-
-
-def test_no_sink_keeps_the_appsync_publish(monkeypatch):
-    calls = []
-    monkeypatch.setattr(turn, "publish_frame", lambda e, c, *ev: calls.append((e, c)) or 200)
-    pub = _frames({"endpoint": "https://e.invalid", "channel": "/ws/w/users/k"})
-    pub.tool_start("tc-1", "browser", {})
-    assert calls and calls[-1] == ("https://e.invalid", "/ws/w/users/k")
 
 
 def test_backend_sink_relays_only_frames_the_worker_reads(monkeypatch):
@@ -68,3 +63,11 @@ def test_backend_sink_relays_only_frames_the_worker_reads(monkeypatch):
     pub.finished("completed", "hi", None)
     types = [e["payload"]["frame"]["type"] for req in posts for e in json.loads(req.data)["events"]]
     assert types == ["chunk", "run_ended"]
+
+
+def test_backend_sink_relays_run_queued(monkeypatch):
+    posts = []
+    monkeypatch.setattr(turn.urllib.request, "urlopen", lambda req, timeout: posts.append(req) or _Res())
+    _frames({"sink": "backend", "endpoint": EP}).emit({"type": "run_queued"})
+    (req,) = posts
+    assert [e["payload"]["frame"]["type"] for e in json.loads(req.data)["events"]] == ["run_queued"]

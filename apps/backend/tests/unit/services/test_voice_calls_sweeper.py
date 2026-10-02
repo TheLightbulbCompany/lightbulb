@@ -51,3 +51,14 @@ async def test_sweep_releases_a_huddle_whose_worker_vanished():
     assert [c.args[0] for c in close.await_args_list] == ["orphan"]
     room, event = publisher.publish_room.await_args.args  # the stuck marker is corrected from LiveKit
     assert room == "11111111-1111-4111-8111-111111111111" and event["payload"]["userIds"] == ["user_a"]
+
+
+@pytest.mark.asyncio
+async def test_sweep_reports_open_windows():
+    rows = {"call_open": [{"callId": c, "deadline": 10_000} for c in ("a", "b", "c")], "call_closing": []}
+    with (
+        patch.object(vc.container_repo, "get_by_status", AsyncMock(side_effect=lambda s: rows[s])),
+        patch.object(vc, "put_metric") as metric,
+    ):
+        assert await vc.sweep_calls_once(now=1000) == 0
+    metric.assert_called_once_with("voice.calls.open", value=3)

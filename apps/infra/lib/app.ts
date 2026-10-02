@@ -243,6 +243,18 @@ pipeline.addStageWithGitHubOptions(devStage, {
           env: vercelEnv,
         },
         {
+          // REGISTER before aliasing — same SSO-wall trap as the prod apex below:
+          // a host Vercel does not know as a project domain sits behind its login.
+          name: `Register dev.${DEV_ROOT_DOMAIN} project domain`,
+          run: `vercel domains add dev.${DEV_ROOT_DOMAIN} frontend --force --token="$VERCEL_TOKEN"`,
+          env: vercelEnv,
+        },
+        {
+          name: `Register admin.dev.${DEV_ROOT_DOMAIN} project domain`,
+          run: `vercel domains add admin.dev.${DEV_ROOT_DOMAIN} frontend --force --token="$VERCEL_TOKEN"`,
+          env: vercelEnv,
+        },
+        {
           name: `Alias to dev.${DEV_ROOT_DOMAIN}`,
           run: `vercel alias \${{ steps.vercel-deploy-dev.outputs.DEPLOY_URL }} dev.${DEV_ROOT_DOMAIN} --token=$VERCEL_TOKEN`,
           env: vercelEnv,
@@ -254,8 +266,7 @@ pipeline.addStageWithGitHubOptions(devStage, {
         },
       ],
     }),
-    // The holding-company site. Preview only in dev: `dev.thelightbulb.company`
-    // is the dev agent-mail suffix (SES), so no dev alias is registered on it.
+    // The holding-company site. Preview only in dev.
     new GitHubActionStep("DeployCompanyDev", {
       jobSteps: [
         ...companyVercelSteps(false),

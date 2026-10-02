@@ -192,6 +192,8 @@ const EMITTED_DIMENSION_SETS: Record<string, string[][]> = {
   // task id is a log field (running_count), not a metric dimension, since it
   // is a new identity per task per deploy (the _DENIED_DIMENSIONS class).
   "gateway.running.count": [[]],
+  // core/services/voice_calls.py sweep_calls_once; W84 binds the rollup.
+  "voice.calls.open": [[]],
   "marketplace.path_traversal_attempt": [[]],
   // routers/paperclip_events.py receive_paperclip_event, before the push
   // decision. P30/P31/W82 bind one error_code each; W83 binds the rollup.
@@ -538,6 +540,21 @@ describe("ObservabilityStack", () => {
       ComparisonOperator: "GreaterThanOrEqualToThreshold",
       TreatMissingData: "notBreaching",
       AlarmActions: [{ Ref: Match.stringLikeRegexp("^AlertsPage") }],
+    });
+  });
+
+  test("warns at 70% of the GPT-Live concurrent-session tier", () => {
+    template.hasResourceProperties("AWS::CloudWatch::Alarm", {
+      AlarmName: "lightbulb-dev-W84-voice-sessions-near-tier",
+      Namespace: "LightbulbAI",
+      MetricName: "voice.calls.open",
+      Statistic: "Maximum",
+      Period: 60,
+      Threshold: 17.5,
+      EvaluationPeriods: 3,
+      DatapointsToAlarm: 2,
+      ComparisonOperator: "GreaterThanOrEqualToThreshold",
+      AlarmActions: [{ Ref: Match.stringLikeRegexp("^AlertsWarn") }],
     });
   });
 

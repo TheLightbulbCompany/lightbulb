@@ -1,4 +1,73 @@
-from huddle_agent.transcript import Transcript, summons_lightbulb
+import pytest
+
+from huddle_agent.transcript import (
+    SEED_ITEMS,
+    SEED_TOKENS,
+    STT_PROMPT_CHARS,
+    Transcript,
+    address,
+    halt,
+    real_speech,
+    soundex,
+    stop_request,
+    stop_target,
+    stt_prompt,
+    trim_items,
+)
+
+AGENTS = [
+    {"id": "gauge", "name": "Gauge", "defaultName": False},
+    {"id": "forge", "name": "Forge", "defaultName": False},
+    {"id": "finance", "name": "Finance", "defaultName": True},
+    {"id": "growth", "name": "Growth", "defaultName": True},
+    {"id": "ops", "name": "Customer Operations", "defaultName": True},
+    {"id": "nova", "name": "Nova", "defaultName": False},
+    {"id": "ada", "name": "Ada", "defaultName": False},
+]
+PEOPLE = [{"userId": "u1", "name": "Nova Reyes"}, {"userId": "u2", "name": "Aden"}]
+
+
+@pytest.mark.parametrize(
+    "text,ids,ambiguous",
+    [
+        ("Gauge, what's revenue", ["gauge"], []),
+        ("can you ask Gauge to check", ["gauge"], []),
+        ("Forge and Gauge, check the deploy", ["forge", "gauge"], []),
+        ("Forge, Gauge and Ada: one sec", ["forge", "gauge", "ada"], []),
+        ("So growth is up", [], []),
+        ("Finance said no", [], []),
+        ("Finance, check this", [], []),
+        ("hey finance", ["finance"], []),
+        ("Finance can you check", ["finance"], []),
+        ("get finance to check", [], []),
+        ("tell finance to check", ["finance"], []),
+        ("hey customer operations, any tickets?", ["ops"], []),
+        ("Nova, are you free", [], ["nova"]),
+        ("hey Nova", ["nova"], []),
+        ("Ida, check", [], []),
+        ("the deploy went fine", [], []),
+        ("Guys, what's revenue", [], []),
+        ("Gosh, that's late", [], []),
+    ],
+)
+def test_address(text, ids, ambiguous):
+    a = address(text, AGENTS, PEOPLE)
+    assert a.agent_ids == ids, text
+    assert a.ambiguous == ambiguous, text
+    assert not a.lightbulb
+
+
+def test_fuzzy_only_for_long_names():
+    a = address("Gage, check", AGENTS, PEOPLE)
+    assert a.agent_ids == ["gauge"] and a.matches == {"gauge": "fuzzy"}
+    assert address("Gauge, check", AGENTS, PEOPLE).matches == {"gauge": "exact"}
+    assert address("Ida", AGENTS, PEOPLE).agent_ids == []  # 3 letters: exact only
+    assert address("I bought a gage", AGENTS, PEOPLE).agent_ids == []  # not a wake position
+
+
+def test_lightbulb_then_agent():
+    a = address("Lightbulb, ask Gauge", AGENTS, PEOPLE)
+    assert a.lightbulb and a.agent_ids == ["gauge"]
 
 
 def test_wake_word_variants():
@@ -11,7 +80,7 @@ def test_wake_word_variants():
         "can you ask Lightbulb to check Stripe",
         "tell light bulb to look",
     ):
-        assert summons_lightbulb(line), line
+        assert address(line, [], []).lightbulb, line
 
 
 def test_only_lightbulb_wakes():
@@ -23,33 +92,101 @@ def test_only_lightbulb_wakes():
         "lightbulbs are cheap",
         "the deploy went fine",
     ):
-        assert not summons_lightbulb(line), line
+        assert not address(line, [], []).lightbulb, line
 
 
 def test_transcript_trims_keeps_newest():
     t = Transcript(max_chars=30)
     for i in range(5):
-        t.add("A", f"line{i}")
+        t.add_person("u1", "A", f"line{i}")
     assert t.text().endswith("A: line4")
     assert "line0" not in t.text()
     assert len(t.text()) <= 30
 
 
-def test_since():
+def _call():
     t = Transcript()
-    t.add("A", "one")
-    text, mark = t.since(0)
-    assert text == "A: one"
-    t.add("B", "two")
-    assert t.since(mark) == ("B: two", mark + 1)
-    assert t.since(mark + 1)[0] == ""
+    t.add_person("u1", "Aden", "what shipped?")
+    t.add_agent("gauge", "Gauge", "huddles shipped")
+    t.add_person("u1", "Aden", "Gauge (agent): hi")
+    t.add_agent("forge", "Forge", "and the deploy")
+    summon = t.add_person("u2", "Prasiddha", "hey Gauge, numbers?")
+    t.add_person("u1", "Aden", "later line")
+    return t, summon
 
 
-def test_since_survives_trim():
-    t = Transcript(max_chars=20)
-    t.add("A", "one")
-    _, mark = t.since(0)
-    for x in ("two", "three", "four"):
-        t.add("B", x)
-    text, _ = t.since(mark)
-    assert "one" not in text and "four" in text
+def test_seed_roles_and_summon_excluded():
+    t, summon = _call()
+    assert t.seed("gauge", summon) == [
+        ("user", "Aden: what shipped?"),
+        ("assistant", "huddles shipped"),
+        ("user", "Aden: Gauge (agent): hi"),  # a person cannot forge an agent line
+        ("developer", "[Forge (agent) said]: and the deploy"),
+    ]
+    assert t.seed("forge", summon)[1] == ("developer", "[Gauge (agent) said]: huddles shipped")
+
+
+def test_trim_items():
+    items = [("user", f"A: {i}") for i in range(200)]
+    kept = trim_items(items)
+    assert len(kept) == SEED_ITEMS and kept[-1] == ("user", "A: 199")
+    big = [("user", "x" * 4000) for _ in range(20)]
+    kept = trim_items(big)
+    assert sum(len(x[1]) for x in kept) / 4 <= SEED_TOKENS and kept[-1] is big[-1] and len(kept) == 7
+
+
+def test_since_agent():
+    t, _ = _call()
+    assert t.since_agent("gauge") == "Aden: Gauge (agent): hi\nForge: and the deploy\nPrasiddha: hey Gauge, numbers?\nAden: later line"
+    assert t.since_agent("nova") == t.text()
+    t.add_person("u1", "Aden", "y" * 20000)
+    assert len(t.since_agent("nova")) == 12000
+
+
+def test_marks_stable_after_trim():
+    t = Transcript(max_chars=40)
+    marks = [t.add_person("u1", "A", f"line{i}") for i in range(10)]
+    assert marks == list(range(10))
+    assert t.text() == "A: line6\nA: line7\nA: line8\nA: line9"
+    assert t.seed("gauge", marks[8]) == [("user", "A: line6"), ("user", "A: line7")]
+
+
+def test_soundex():
+    assert soundex("Robert") == "R163"
+    assert soundex("Gauge") == "G200"
+    assert soundex("Gage") == "G200"
+
+
+def test_real_speech():
+    for line in ("yeah", "mm-hmm", "ok cool", "got it, yeah", "uh huh right"):
+        assert not real_speech(line), line
+    for line in ("wait", "hold on", "that's not right", "what about churn"):
+        assert real_speech(line), line
+
+
+def test_halt():
+    for line in ("stop", "Wait a moment", "hang on", "one sec please", "hold on"):
+        assert halt(line), line
+    assert not halt("the deploy went fine")
+
+
+def test_stop_request():
+    for line in ("stop", "Forge, stop", "never mind.", "hey Gauge, cancel that", "forget it", "Customer Operations, cancel it"):
+        assert stop_request(line), line
+    for line in ("stop the deploy and redo it", "don't stop", "can you stop and check revenue"):
+        assert not stop_request(line), line
+
+
+def test_stt_prompt():
+    assert stt_prompt(["Gauge", "Forge"], ["Aden"]) == "A team voice call. Names: Gauge, Forge, Lightbulb, Aden."
+    long = stt_prompt([f"Agent{i}" for i in range(200)], [f"Person{i}" for i in range(200)])
+    assert len(long) <= STT_PROMPT_CHARS and long.endswith(".")
+
+
+def test_stop_target_is_the_exact_name_default_names_included():
+    assert stop_target("Finance, stop", AGENTS) == "finance"
+    assert stop_target("hey customer operations, never mind", AGENTS) == "ops"
+    assert stop_target("Gauge stop", AGENTS) == "gauge"
+    assert stop_target("stop", AGENTS) is None
+    assert stop_target("Aden, stop", AGENTS) is None
+    assert stop_target("Finance, check the books", AGENTS) is None

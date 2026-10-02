@@ -76,4 +76,13 @@ describe("RoomHeaderActions", () => {
     await fireEvent.press(screen.getByLabelText("Go live"));
     expect(onPress).toHaveBeenCalled();
   });
+
+  it("shows the speaking agent's avatar and says who is speaking", async () => {
+    await render(
+      <RoomHeaderActions starred={false} muted={false} onToggleStar={jest.fn()} onToggleMute={jest.fn()}
+        voice={{ active: true, speaking: { name: "Gauge" }, label: "Open Live, Gauge speaking", onPress: jest.fn() }} />,
+    );
+    expect(screen.getByLabelText("Open Live, Gauge speaking")).toBeTruthy();
+    expect(screen.getByText("G")).toBeTruthy();
+  });
 });

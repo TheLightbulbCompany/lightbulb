@@ -21,3 +21,4 @@ def test_projector_registry_matches_backend():
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     assert module.LIVE_EVENT_TYPES == LIVE_EVENT_TYPES
+    assert "room.call.changed" not in LIVE_EVENT_TYPES  # the /calls orb's marker; Live replaced it

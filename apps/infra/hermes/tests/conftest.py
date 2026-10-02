@@ -62,3 +62,13 @@ def _clear_run_registry():
     turn.RUNS.clear()
     with turn._busy_lock:
         turn._busy = 0
+
+
+@pytest.fixture(autouse=True)
+def _room_without_session_db(request, monkeypatch):
+    """Fake agents carry no session DB; a room turn would otherwise try to record into one.
+    test_native_sessions' ``hermes`` fixture runs the real recording path."""
+    if "hermes" not in request.fixturenames:
+        from bridge import turn
+        monkeypatch.setattr(turn, "_observe_room", lambda *a: None)
+        monkeypatch.setattr(turn, "_room_history", lambda _agent: ([], None))

@@ -19,6 +19,7 @@ from pydantic import Field, field_validator, model_serializer, model_validator
 from core.auth import AuthContext, resolve_owner_id
 from core.dynamodb import utc_now_iso
 from core.observability.product_analytics import capture_product_event
+from core.observability.session_analytics import capture_session_event
 from core.repositories import container_repo, local_sessions_repo as repo, messaging_repo
 from core.services.messaging import ApiProblem, ContractModel, require_room_member, validate_uuid
 from core.services.local_session_grants import AgentInvocation
@@ -1417,6 +1418,32 @@ async def submit_command(
                 source_pairing=source_pairing,
                 room_meta_fenced_by_extra=room_meta_fenced_by_extra,
             )
+            actor = getattr(auth, "user_id", None) or row["humanUserId"]
+            origin = "room_mention" if origin_room_id else "native" if source_session_id else "direct"
+            capture_session_event(
+                row,
+                "local_session_command_admitted",
+                request.request_id,
+                actor_user_id=actor,
+                request_id=request.request_id,
+                command_kind=request.kind,
+                origin=origin,
+                offline_queued=offline_send,
+            )
+            private_send = row.get("privateSendApproval") or {}
+            if (
+                request.kind == "approve"
+                and (row.get("pendingApproval") or {}).get("tool") == "mcp__lightbulb_native_sessions__send"
+            ):
+                capture_session_event(
+                    row,
+                    "native_send_approval_decided",
+                    request.request_id,
+                    actor_user_id=actor,
+                    request_id=private_send.get("requestId"),
+                    decision=request.decision,
+                    destination_kind=(private_send.get("destination") or "").split(":", 1)[0],
+                )
             if offline_send:
                 from core.services.local_session_relay import publish_resources_changed
 
@@ -1434,11 +1461,35 @@ async def _expire_pending_command(owner: str, sid: str, row: dict) -> dict:
     expired = {**row, "state": "rejected", "updatedAt": int(time.time()), "revision": str(uuid.uuid4())}
     try:
         await repo.replace_command(row, expired)
+        if row.get("offlineIdentity"):
+            await _capture_offline_terminal(owner, sid, expired, "expired")
         return expired
     except ClientError as exc:
         if not messaging_repo._is_cancelled(exc):
             raise
         return await repo.get_command(owner, sid, row["requestId"])
+
+
+async def _capture_offline_terminal(
+    owner: str, sid: str, command: dict, reason: Literal["cancelled", "expired", "rejected"]
+) -> None:
+    try:
+        session = await repo.get_session(owner, sid)
+        if session:
+            capture_session_event(
+                session,
+                "local_session_command_settled",
+                f"{command['requestId']}:rejected:{reason}",
+                actor_user_id=command.get("actorUserId"),
+                request_id=command["requestId"],
+                command_kind="send",
+                origin="direct",
+                state="rejected",
+                offline_queued=True,
+                outcome_reason=reason,
+            )
+    except Exception:
+        logger.warning("offline command analytics capture failed", exc_info=True)
 
 
 async def get_command(auth: Caller, room_id: str | None, session_id: str, request_id: str) -> CommandReceipt:
@@ -1562,6 +1613,7 @@ async def cancel_offline_command(auth: AuthContext, session_id: str, request_id:
             await repo.replace_command(
                 row, updated, extra=[{"Put": {"TableName": messaging_repo._table().name, "Item": audit}}]
             )
+            await _capture_offline_terminal(owner, session_id, updated, "cancelled")
             if session:
                 await publish_resources_changed(owner, session["humanUserId"])
             return _public(CommandReceipt, updated)
@@ -1721,6 +1773,9 @@ async def set_team_control(auth: AuthContext, session_id: str, enabled: bool) ->
                 raise
             continue
         await publish_resources_changed(owner, row["humanUserId"])
+        capture_session_event(
+            updated, "local_session_team_control_changed", updated["revision"], state="on" if enabled else "off"
+        )
         return _session_public(updated, auth.user_id)
     raise ApiProblem("LOCAL_SESSION_CONFLICT", "Session changed. Try again.")
 

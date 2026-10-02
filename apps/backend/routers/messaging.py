@@ -8,14 +8,17 @@ import logging
 import math
 import re
 import time
+import uuid
 from datetime import timedelta
 from urllib.parse import quote
-from typing import Annotated
+from typing import Annotated, Literal
 
 import httpx
 from fastapi import APIRouter, Depends, File, HTTPException, Path, Query, Request, Response, UploadFile
+from pydantic import Field
 
 from core.observability.metrics import put_metric
+from core.observability.session_analytics import capture_session_event
 from core.dynamodb import run_in_thread
 from core.auth import AuthContext, get_current_user, resolve_owner_id
 from core.config import settings
@@ -25,7 +28,7 @@ from core.services import activity, chat_gate
 from core.services import messaging as service
 from core.services import hook_grants, link_preview, local_sessions, native_session_tools, session_pickup
 from core.services import local_session_grants
-from core.services import container_rpc, runtime_transport
+from core.services import container_rpc, runtime_transport, voice_calls
 from core.services.live_events import get_live_event_publisher, publish_room_activity
 from core.services.paperclip_admin_client import PaperclipApiError, shared_admin_client
 from core.services.paperclip_admin_session import get_admin_session_cookie
@@ -169,6 +172,25 @@ async def list_workspace_sessions(
 @router.get("/messaging/sessions/{session_id}", response_model=local_sessions.LocalSession)
 async def get_local_session(session_id: str, auth: AuthContext = Depends(get_current_user)):
     return await local_sessions.get_session(auth, session_id)
+
+
+class SessionOpenRequest(ContractModel):
+    open_id: uuid.UUID
+
+
+@router.post("/messaging/sessions/{session_id}/opened", status_code=204)
+async def record_local_session_open(
+    session_id: str, body: SessionOpenRequest, auth: AuthContext = Depends(get_current_user)
+):
+    row, _ = await local_sessions.authorize_session(auth, None, session_id)
+    capture_session_event(
+        row,
+        "session_opened",
+        str(body.open_id),
+        actor_user_id=auth.user_id,
+        origin="ios",
+        own=auth.user_id == row["humanUserId"],
+    )
 
 
 @router.patch("/messaging/sessions/{session_id}/display-title", response_model=local_sessions.LocalSession)
@@ -977,6 +999,23 @@ async def recycle_runtime_session(owner_id: str, request: Request):
 async def post_usage_report(owner_id: str, body: UsageReportRequest, request: Request):
     await _require_hook_token(owner_id, request)
     return await service.handle_usage_report(owner_id, body)
+
+
+class VoiceProfileRequest(ContractModel):
+    agent_id: str = Field(max_length=64)
+    run_id: str = Field(max_length=64)
+    action: Literal["rename", "add_note", "replace_notes", "clear_notes"]
+    name: str | None = Field(default=None, max_length=40)
+    text: str | None = Field(default=None, max_length=voice_calls.NOTE_TEXT_MAX)
+
+
+@router.post("/internal/agents/voice-profile/{owner_id}")
+async def post_voice_profile(owner_id: str, body: VoiceProfileRequest, request: Request):
+    """C8: the agent's ``lightbulb_voice_profile`` tool -- rename or voice notes, asked by voice."""
+    await _require_hook_token(owner_id, request)
+    return await voice_calls.edit_voice_profile(
+        owner_id, agent_id=body.agent_id, run_id=body.run_id, action=body.action, name=body.name, text=body.text
+    )
 
 
 @router.get("/internal/messaging/attachments/{owner_id}/{room_id}/{attachment_id}")

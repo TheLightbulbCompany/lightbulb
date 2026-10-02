@@ -388,7 +388,7 @@ _S3_PROFILE_SKIP_TOP_DIRS = frozenset({"sessions", "logs", "mcp-tokens", "memori
 
 def _is_excluded_profile_key(rel: str) -> bool:
     """True for a Hermes-profile-relative key an export must never carry:
-    session transcripts, logs, MCP OAuth tokens, the bridge's own
+    session transcripts (``sessions/`` and the ``state.db`` session store), logs, MCP OAuth tokens, the bridge's own
     ``.revision`` marker, ``request_dump_*`` crash artifacts (Hermes writes
     ``sessions/request_dump_*.json`` on every API error), and any dotfile --
     ``.env`` (the profile's per-profile secret values) chief among them.
@@ -401,6 +401,9 @@ def _is_excluded_profile_key(rel: str) -> bool:
     if any(p.startswith(".") for p in parts):
         return True
     if parts[-1].startswith("request_dump_"):
+        return True
+    # Hermes's session store (every room/mail/call/Paperclip transcript) and its WAL/SHM.
+    if len(parts) == 1 and parts[0].startswith("state.db"):
         return True
     return False
 

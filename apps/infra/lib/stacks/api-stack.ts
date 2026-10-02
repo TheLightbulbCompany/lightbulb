@@ -1609,7 +1609,7 @@ def handler(event, context):
     } else {
       // No cert/zone (unit-test synth, unknown envs): a fixed dev-shaped
       // fallback so service-stack's ECS env map never sees `undefined`.
-      this.gatewayRelayUrl = "wss://bv-dev.flickmeon.ai/api/v1/gateway/ws";
+      this.gatewayRelayUrl = "wss://bv-dev.thelightbulb.company/api/v1/gateway/ws";
     }
   }
 }

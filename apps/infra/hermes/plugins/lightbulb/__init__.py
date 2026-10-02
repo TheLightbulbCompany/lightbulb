@@ -5,6 +5,7 @@ import itertools
 import json
 import logging
 import re
+import urllib.error
 import urllib.request
 
 from . import turn_context
@@ -22,6 +23,9 @@ NO_TURN = "Lightbulb tools are unavailable: no active Lightbulb turn for this se
 OWN_THREAD_REFUSAL = ("Your reply to this thread is delivered automatically when the turn ends "
                       "-- write it as your answer. Use send_room_message only for other rooms "
                       "or threads.")
+# A voice run's answer is spoken; nothing it does may land in the Live room's timeline.
+VOICE_ROOM_REFUSAL = ("This is a Live voice request: your answer is spoken, and nothing is "
+                      "posted to this room.")
 
 # Task 11: send_room_message tool
 SEND_SCHEMA = {
@@ -62,6 +66,8 @@ def _send_room_message(args: dict, *, session_id: str = "", **_kw) -> str:
     room = _normalize_room(str(args.get("roomId", "")))
     if not room:
         return "Invalid roomId: expected a room UUID, optionally prefixed 'lightbulb:'."
+    if room == _normalize_room(str(ctx.get("voiceRoomId") or "")):
+        return VOICE_ROOM_REFUSAL
     text = str(args.get("text") or "").strip()
     if not text:
         return "text is required."
@@ -80,6 +86,48 @@ def _send_room_message(args: dict, *, session_id: str = "", **_kw) -> str:
         return json.dumps(_post(url, ctx["hookToken"], body))
     except Exception as exc:  # noqa: BLE001
         return f"Lightbulb room send failed: {type(exc).__name__}"
+
+
+# lightbulb_voice_profile tool: rename / voice notes, only from inside a voice run.
+VOICE_PROFILE_SCHEMA = {
+    "name": "lightbulb_voice_profile",
+    "description": "Only when the person speaking asked you to change your name or how you talk; "
+                   "confirm a rename, replacement or clear before calling.",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "action": {"type": "string", "enum": ["rename", "add_note", "replace_notes", "clear_notes"]},
+            "name": {"type": "string", "description": "New name (rename only)."},
+            "text": {"type": "string", "description": "Note text (add_note / replace_notes)."},
+        },
+        "required": ["action"],
+    },
+}
+VOICE_ONLY = "lightbulb_voice_profile works only inside a Live voice request."
+
+
+def _voice_profile(args: dict, *, session_id: str = "", **_kw) -> str:
+    ctx = turn_context.read(session_id)
+    if not ctx or not ctx.get("voiceRoomId"):
+        return VOICE_ONLY
+    # agentId/runId come from the turn, never the model: the backend resolves the speaker
+    # from the run's VOICERUN row.
+    body = {"agentId": ctx["agentId"], "runId": ctx["runId"], "action": args.get("action"),
+            **{k: args[k] for k in ("name", "text") if args.get(k) is not None}}
+    url = f"{ctx['apiUrl'].rstrip('/')}/api/v1/internal/agents/voice-profile/{ctx['ownerId']}"
+    try:
+        return json.dumps(_post(url, ctx["hookToken"], body))
+    except urllib.error.HTTPError as exc:
+        # C8 codes (name_taken, rate_limited, ...) steer the skill's reply, so surface them.
+        try:
+            err = json.loads(exc.read() or b"{}")
+        except Exception:  # noqa: BLE001
+            err = {}
+        detail = err.get("detail") if isinstance(err, dict) else None
+        code = detail.get("code") if isinstance(detail, dict) else detail
+        return f"Voice profile update failed: {code or (err.get('error') if isinstance(err, dict) else None) or exc.code}"
+    except Exception as exc:  # noqa: BLE001
+        return f"Voice profile update failed: {type(exc).__name__}"
 
 
 # Task 12: hire_suggestion tool
@@ -241,9 +289,74 @@ def _log_memory_full(tool_name: str = "", result=None, **_kw) -> None:
         logger.warning("hermes file memory full, write refused (%s)", usage)
 
 
+# ---- session_search: this conversation's own history only ------------------------------------
+# One agent profile's state.db records every room, DM, group DM, mail thread, call and Paperclip
+# run that agent is in, and Hermes's session_search reads all of it -- plus any other agent's
+# state.db through `profile=` (tools/session_search_tool.py:329-339, 472-505). Anyone who can talk
+# to the agent anywhere could have it recite a DM they are not in, or a room they were removed
+# from (around the deliveryKey rotation that cuts their live access). Hermes has no option for
+# this, so the plugin narrows the tool to the lineage of the session it is called from: the
+# room's own compacted or compression-split history (Hermes already hides the live part, which is
+# in context). Cross-conversation recall needs a product ruling first.
+RECALL_SCOPE = ("In Lightbulb, session_search reaches only this conversation's own earlier "
+                "history. Other rooms, DMs, calls, mail threads and other agents' sessions are "
+                "private to the people in them.")
+
+
+class _LineageDB:
+    """A SessionDB whose FTS and title lookups answer only from one lineage."""
+
+    def __init__(self, db, root: str, lineage) -> None:
+        self._db, self._root, self._lineage = db, root, lineage
+
+    def __getattr__(self, name):
+        return getattr(self._db, name)
+
+    def search_messages(self, *args, **kwargs):
+        return [r for r in self._db.search_messages(*args, **kwargs)
+                if self._lineage(self._db, r["session_id"]) == self._root]
+
+    def resolve_session_by_title(self, title):
+        sid = self._db.resolve_session_by_title(title)
+        return sid if sid and self._lineage(self._db, sid) == self._root else None
+
+
+def _scope_session_search() -> None:
+    """Replace Hermes's session_search function in place. Both of its callers look it up at
+    call time: the inline executor (agent/inline_tool_executors.py `_call_tool`, getattr on the
+    module) and the registry handler (a lambda over the module global)."""
+    try:
+        from tools import session_search_tool as tool
+    except ImportError:  # outside the Hermes image
+        return
+    hermes_search = tool.session_search
+    if getattr(hermes_search, "lightbulb_scoped", False):
+        return
+
+    def session_search(query="", role_filter=None, limit=3, db=None, current_session_id=None,
+                       session_id=None, around_message_id=None, window=5, sort=None, profile=None,
+                       detail="adaptive"):
+        session_id = str(session_id).strip() if session_id else None
+        if (db is None or not current_session_id or (profile and str(profile).strip())
+                or (session_id and "/" in session_id) or not (str(query or "").strip() or session_id)):
+            return tool.tool_error(RECALL_SCOPE, success=False)  # browse lists every conversation
+        root = tool._resolve_lineage(db, current_session_id)
+        if session_id and tool._resolve_lineage(db, session_id) != root:
+            return tool.tool_error(RECALL_SCOPE, success=False)
+        return hermes_search(query=query, role_filter=role_filter, limit=limit,
+                             db=_LineageDB(db, root, tool._resolve_lineage),
+                             current_session_id=current_session_id, session_id=session_id,
+                             around_message_id=around_message_id, window=window, sort=sort,
+                             profile=None, detail=detail)
+
+    session_search.lightbulb_scoped = True
+    tool.session_search = session_search
+
+
 def register(ctx) -> None:
     """Register all Lightbulb tools and redaction patterns with the Hermes context."""
     _register_redaction_default()
+    _scope_session_search()
     ctx.register_hook("pre_tool_call", browser_control.pre_tool_call)
     ctx.register_hook("post_tool_call", browser_control.post_tool_call)
     ctx.register_hook("post_tool_call", _log_memory_full)
@@ -254,6 +367,8 @@ def register(ctx) -> None:
                       description=HIRE_SCHEMA["description"], emoji="🧑‍💼")
     ctx.register_tool("lightbulb_local_sessions", "lightbulb", SESSIONS_SCHEMA, _local_sessions,
                       description=SESSIONS_SCHEMA["description"], emoji="🖥️")
+    ctx.register_tool("lightbulb_voice_profile", "lightbulb", VOICE_PROFILE_SCHEMA, _voice_profile,
+                      description=VOICE_PROFILE_SCHEMA["description"], emoji="🎙️")
     from . import desktop
 
     ctx.register_tool("lightbulb_desktop", "lightbulb", desktop.SCHEMA, desktop.handle,

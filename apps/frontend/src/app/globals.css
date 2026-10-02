@@ -1473,67 +1473,14 @@
   contain-intrinsic-size: auto 200px;
 }
 
-/* Voice orb: floats bottom-right over /chat. Audio is drawn by the radial visualizer (writes its bars per animation
-   frame; React never re-renders for it). --voice-orb-tone is the orb's own colour: NOT --ring, which the shadcn layer
-   defines globally as --link, so a var(--ring, fallback) here always resolved to blue. */
-/* Lifted above the composer row so it never covers Send (mobile and desktop). */
-.voice-orb { position: fixed; right: 16px; bottom: calc(96px + env(safe-area-inset-bottom, 0px)); z-index: var(--z-toast); display: flex; flex-direction: column;
-  align-items: flex-end; gap: 8px; max-width: min(360px, calc(100vw - 32px)); color: var(--fg); --voice-orb-r: 40px; --voice-orb-tone: var(--fg-soft); }
-.voice-orb-dock { display: flex; align-items: center; gap: 12px; }
-.voice-orb-status { padding: 4px 10px; border-radius: 999px; background: var(--plane-raised); border: 1px solid var(--plane-edge);
-  color: var(--fg-soft); font-size: 13px; }
-.voice-orb-toggle { position: relative; display: grid; place-items: center; width: 64px; height: 64px; margin: 12px;
-  border-radius: 50%; background: none; border: 0; cursor: pointer; }
-.voice-orb-toggle:focus-visible { outline: 2px solid var(--fg-soft); outline-offset: 14px; }
-.voice-orb-core { position: relative; display: grid; place-items: center; width: 64px; height: 64px; border-radius: 50%;
-  background: var(--plane-raised); border: 2px solid var(--voice-orb-tone); box-shadow: var(--shadow-pop); transition: border-color 200ms ease; }
-.voice-orb-core[data-viz="radial"] { border-color: transparent; }
-.voice-orb-core > :not(.voice-viz-radial) { position: relative; } /* the avatar sits above the bars */
-.voice-orb[data-mood="speaking"] { --voice-orb-tone: var(--live); }
-.voice-orb[data-mood="working"] { --voice-orb-tone: var(--fg); }
-.voice-orb[data-mood="failed"] { --voice-orb-tone: var(--alert); }
-/* Radial visualizer, after LiveKit Agents UI: dots at 10% of the tone, lit dots at full tone, thinking spins. */
-.voice-viz-radial { position: absolute; inset: 0; color: var(--voice-orb-tone); pointer-events: none; }
-.voice-viz-radial-slot { position: absolute; top: 50%; left: 50%; width: 0; height: 0; transform-origin: center; }
-.voice-viz-radial-bar { position: absolute; top: 0; left: 0; transform: translateX(-50%); border-radius: 999px;
-  background: color-mix(in srgb, currentColor 10%, transparent); transition: background-color 300ms linear; }
-.voice-viz-radial-bar[data-highlighted="true"], .voice-viz-radial[data-state="thinking"] .voice-viz-radial-bar { background: currentColor; }
-.voice-viz-radial[data-state="speaking"] .voice-viz-radial-bar { transition-duration: 150ms; }
-.voice-viz-radial[data-state="thinking"] { animation: voice-viz-spin 5s linear infinite; }
-@keyframes voice-viz-spin { to { transform: rotate(360deg); } }
-.voice-orb[data-mood="thinking"] .voice-orb-core[data-viz="ring"], .voice-orb[data-mood="working"] .voice-orb-core[data-viz="ring"] { animation: voice-orb-pulse 1.6s ease-in-out infinite; }
-@keyframes voice-orb-pulse { 50% { box-shadow: var(--shadow-pop), 0 0 0 8px color-mix(in srgb, var(--fg-soft) 20%, transparent); } }
-.voice-orb-ring-avatar { position: absolute; top: 50%; left: 50%; margin: -10px 0 0 -10px; width: 20px; height: 20px;
-  border-radius: 50%; opacity: 0.55; transition: opacity 200ms ease; }
-.voice-orb-ring-avatar[data-working="true"] { opacity: 1; box-shadow: 0 0 0 2px var(--plane-raised), 0 0 0 4px var(--live); }
-.voice-orb-panel { display: flex; flex-direction: column; gap: 8px; width: 100%; padding: 12px 14px; border-radius: 12px;
-  background: var(--plane-raised); border: 1px solid var(--plane-edge); box-shadow: var(--shadow-pop); font-size: 13px; }
-.voice-orb-caption { margin: 0; color: var(--fg); }
-.voice-orb-caption-who { margin-right: 6px; color: var(--fg-mute); font-weight: 600; }
-.voice-orb-chips { display: flex; flex-wrap: wrap; gap: 6px; }
-.voice-orb-chip { padding: 2px 8px; border-radius: 999px; border: 1px solid var(--live); color: var(--fg-soft); }
-.voice-orb-controls { display: flex; align-items: center; justify-content: flex-end; gap: 8px; }
-.voice-orb-left { margin-right: auto; color: var(--fg-soft); }
-.voice-orb-error { margin-right: auto; color: var(--fg); }
-.voice-orb-button { display: inline-grid; place-items: center; min-width: 32px; height: 32px; padding: 0 10px; border-radius: 999px;
-  border: 1px solid var(--plane-edge); background: var(--plane-raised); color: var(--fg); cursor: pointer; }
-.voice-orb-button[aria-pressed="true"] { color: var(--alert); border-color: var(--alert); }
-.voice-orb-button[data-tone="alert"] { color: var(--alert); }
-/* Reduced motion: a static ring; the status line still says what is happening. */
-.voice-orb[data-motion="reduced"] .voice-orb-core { animation: none; transition: none;
-  box-shadow: var(--shadow-pop), 0 0 0 4px color-mix(in srgb, var(--voice-orb-tone) 25%, transparent); }
-@media (prefers-reduced-motion: reduce) {
-  .voice-orb-core, .voice-orb-ring-avatar, .voice-viz-radial, .voice-viz-radial-bar { animation: none; transition: none; }
-}
-
 /* Live in the channel header (huddle/LiveStrip.tsx). LiveKit's own controls ship unstyled here (no components-styles),
    so .lk-* is styled only inside .live-strip. */
 .live-strip { display: inline-flex; align-items: center; gap: 2px; height: 32px; padding: 0 2px 0 4px; border-radius: 999px;
   border: 1px solid color-mix(in srgb, var(--live) 35%, var(--plane-edge)); background: var(--plane-raised); color: var(--fg); font-size: 13px; }
 .live-summary { display: inline-flex; align-items: center; gap: 6px; height: 26px; padding: 0 8px 0 6px; border-radius: 999px;
   color: var(--fg); background: transparent; border: 0; cursor: pointer; white-space: nowrap; }
-.live-summary:hover, .live-icon:hover, .live-viz:not([data-joining]):hover { background: var(--plane-edge); }
-.live-summary:focus-visible, .live-icon:focus-visible, .live-viz:focus-visible, .live-pill:focus-visible { outline: 2px solid var(--link); outline-offset: 1px; }
+.live-summary:hover, .live-icon:hover, .live-agent:not(:disabled):hover { background: var(--plane-edge); }
+.live-summary:focus-visible, .live-icon:focus-visible, .live-agent:focus-visible, .live-pill:focus-visible { outline: 2px solid var(--link); outline-offset: 1px; }
 .live-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--alert); box-shadow: 0 0 0 3px color-mix(in srgb, var(--alert) 18%, transparent);
   animation: live-dot-pulse 2s ease-in-out infinite; }
 @keyframes live-dot-pulse { 50% { box-shadow: 0 0 0 5px color-mix(in srgb, var(--alert) 0%, transparent); } }
@@ -1547,13 +1494,25 @@
 .live-face[data-speaking="true"] { box-shadow: 0 0 0 2px var(--plane-raised), 0 0 0 4px var(--live); z-index: 9 !important; }
 .live-more { display: inline-grid; place-items: center; min-width: 24px; height: 24px; padding: 0 4px; border-radius: 999px; font-size: 11px;
   color: var(--fg-soft); background: var(--plane-edge); box-shadow: 0 0 0 2px var(--plane-raised); }
-.live-viz { display: inline-grid; place-items: center; width: 36px; height: 26px; border-radius: 999px; background: transparent; border: 0; cursor: pointer; }
-.live-viz[data-joining] { cursor: default; }
-.live-viz[data-speaking="true"] { background: color-mix(in srgb, var(--live) 14%, transparent); }
-.live-viz .lk-audio-bar-visualizer { display: flex; align-items: center; justify-content: center; gap: 2px; height: 20px; }
-.live-viz .lk-audio-bar { width: 3px; border-radius: 999px; background: var(--fg-mute); transition: height 100ms ease, background-color 200ms ease; }
-.live-viz .lk-audio-bar[data-lk-highlighted="true"] { background: var(--live); }
-.live-viz[data-joining] .lk-audio-bar[data-lk-highlighted="true"] { background: var(--fg-soft); }
+.live-agents { display: inline-flex; align-items: center; gap: 2px; }
+.live-agent { position: relative; display: inline-flex; align-items: center; gap: 3px; height: 26px; padding: 0 6px 0 2px; border-radius: 999px; background: transparent; border: 0; cursor: pointer; }
+.live-agent:disabled { cursor: default; opacity: 0.6; }
+.live-agent[aria-disabled="true"], .live-agent-row[aria-disabled="true"] { cursor: default; opacity: 0.6; }
+.live-agent[data-ambiguous="true"] { outline: 1px dashed var(--link); outline-offset: 1px; }
+.live-agent[data-failed="true"], .live-agent-row[data-failed="true"] { color: var(--alert); }
+.live-chip { padding: 2px 8px; border-radius: 999px; background: var(--plane-edge); color: var(--fg); font-size: 12px; white-space: nowrap; }
+@starting-style { .live-chip, .live-agent { opacity: 0; } }
+.live-agent[data-speaking="true"] { background: color-mix(in srgb, var(--live) 14%, transparent); }
+.live-agent .lk-audio-bar-visualizer { display: flex; align-items: center; justify-content: center; gap: 2px; width: 12px; height: 16px; }
+.live-agent .lk-audio-bar { width: 3px; border-radius: 999px; background: var(--fg-mute); transition: height 100ms ease, background-color 200ms ease; }
+.live-agent .lk-audio-bar[data-lk-highlighted="true"] { background: var(--live); }
+.live-agent[data-status="joining"] .lk-audio-bar[data-lk-highlighted="true"] { background: var(--fg-soft); }
+.live-queue-badge { position: absolute; top: -3px; right: -2px; display: grid; place-items: center; min-width: 14px; height: 14px; padding: 0 3px; border-radius: 999px;
+  background: var(--plane-edge); color: var(--fg); font-size: 10px; font-weight: 600; }
+.live-pip { position: absolute; bottom: -3px; left: 14px; display: grid; place-items: center; min-width: 14px; height: 14px; border-radius: 999px;
+  background: var(--plane-raised); color: var(--fg-soft); font-size: 11px; line-height: 1; box-shadow: 0 0 0 1px var(--plane-edge); }
+.live-divider { width: 1px; height: 16px; margin: 0 4px; background: var(--plane-edge); }
+.live-count { font-size: 12px; color: var(--fg-soft); }
 .live-icon { display: inline-grid; place-items: center; width: 28px; height: 26px; border-radius: 999px; color: var(--fg-soft);
   background: transparent; border: 0; cursor: pointer; }
 .live-icon[data-lk-enabled="false"], .live-icon[data-tone="alert"] { color: var(--alert); }
@@ -1569,7 +1528,12 @@
 .live-row-name { font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .live-row-meta { margin-left: auto; color: var(--fg-soft); text-align: right; }
 .live-hint { color: var(--fg-mute); font-size: 12px; }
+.live-hint-inline { color: var(--fg-mute); font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+.live-happening, .live-observing { color: var(--fg-soft); font-size: 13px; }
+.live-agent-rows { display: grid; gap: 4px; }
+.live-agent-row { width: 100%; padding: 4px; border-radius: 6px; background: none; border: 0; color: inherit; text-align: left; cursor: pointer; }
+.live-agent-row:hover:not(:disabled) { background: var(--plane-edge); }
 @media (prefers-reduced-motion: reduce) {
   .live-dot { animation: none; }
-  .live-face, .live-viz .lk-audio-bar { transition: none; }
+  .live-face, .live-agent .lk-audio-bar { transition: none; }
 }

@@ -589,7 +589,9 @@ async def test_command_idempotency_ordering_and_receipt_provenance(db):
     attempts = []
     cancellations = []
 
-    async def competing_admit(row, enrollment, receipt, *, allow_offline=False, extra=(), source_pairing=None):
+    async def competing_admit(
+        row, enrollment, receipt, *, allow_offline=False, extra=(), source_pairing=None, **kwargs
+    ):
         attempts.append((row["commandSeq"], row["revision"], receipt["requestId"]))
         # Force stale application snapshots, but serialize only Moto's transaction
         # execution: Moto does not support concurrent writes from worker threads.
@@ -605,6 +607,7 @@ async def test_command_idempotency_ordering_and_receipt_provenance(db):
                     allow_offline=allow_offline,
                     extra=extra,
                     source_pairing=source_pairing,
+                    **kwargs,
                 )
             except ClientError as exc:
                 cancellations.append((receipt["requestId"], exc.response))

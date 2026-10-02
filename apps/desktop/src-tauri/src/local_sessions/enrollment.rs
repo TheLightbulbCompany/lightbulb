@@ -489,8 +489,26 @@ pub async fn local_sessions_status(
     );
     Ok(
         json!({"enrollment":enrollment.map(|e|json!({"ownerId":e.owner_id,"humanUserId":e.human_user_id,"enabled":e.enabled,"paused":e.paused,"remoteDisabled":e.remote_disabled,"recoveryPending":!e.enabled && !e.remote_disabled})),
-        "pairedWorkspaceId":paired.map(|p|p.owner_id),"status":state.status.lock().map_err(|_|"sharing state unavailable")?.clone()}),
+        "pairedWorkspaceId":paired.map(|p|p.owner_id),"status":state.status.lock().map_err(|_|"sharing state unavailable")?.clone(),
+        "providers":provider_status(&home()?, &std::env::current_exe().map_err(|_| "desktop executable unavailable")?)}),
     )
+}
+
+/// What each provider would actually load in a new session, read from disk only.
+fn provider_status(home: &Path, executable: &Path) -> Value {
+    let hooks = |provider: &str| {
+        if provider == "claude" {
+            claude::hooks_state(&home.join(".claude/settings.json"), executable)
+        } else {
+            codex::hooks_state(home, executable)
+        }
+    };
+    let row = |provider: &str| json!({
+        "cli": super::provider_program(home, provider).is_some(),
+        "mcp": super::native_mcp::status(home, executable, provider),
+        "hooks": hooks(provider),
+    });
+    json!({"claude": row("claude"), "codex": row("codex")})
 }
 
 #[tauri::command]
@@ -523,6 +541,7 @@ pub async fn local_sessions_set(
     if !enabled {
         // Hook cleanup is advisory after durable local stop. Even an unreadable
         // hook record must not hide the revision needed for remote cancellation.
+        let mut codex_notes: Vec<String> = Vec::new();
         let cleaned = stop_enrollment(&path, &mut previous, || -> Result<()> {
             let settings = home()?.join(".claude/settings.json");
             let record = dir.join("hook-executable.json");
@@ -540,28 +559,37 @@ pub async fn local_sessions_set(
             // Codex removal is best effort: its hooks are inert once this
             // executable stops answering, and an absent or hand-edited Codex
             // config must not be reported as a Claude settings failure.
-            let _ = codex::configure_hooks(&home()?, &installed, false);
-            let _ = super::native_mcp::configure(&home()?, &installed, false);
+            if let Err(reason) = codex::configure_hooks(&home()?, &installed, false) {
+                codex_notes.push(format!("Codex hooks were not removed ({reason})."));
+            }
+            codex_notes.extend(
+                super::native_mcp::configure(&home()?, &installed, false)
+                    .into_iter()
+                    .map(|note| format!("{note}.")),
+            );
             Ok(())
         })?;
         // Skill removal is tracked separately from hook cleanup so a failure in
         // one is never misattributed to the other in the status message.
         let skill_removed = home().and_then(|h| remove_skill(&dir, &h)).is_ok();
-        let message = match (!cleaned, !skill_removed) {
-            (true, true) => Some(format!(
-                "{} {}",
-                "Local sharing stopped; Claude wake-hook removal failed. Retry disable after repairing Claude settings.",
-                "Local sharing stopped; the lightbulb-session-sharing skill could not be removed from ~/.claude/skills or ~/.codex/skills. Delete it by hand."
-            )),
-            (true, false) => Some("Local sharing stopped; Claude wake-hook removal failed. Retry disable after repairing Claude settings.".into()),
-            (false, true) => Some("Local sharing stopped; the lightbulb-session-sharing skill could not be removed from ~/.claude/skills or ~/.codex/skills. Delete it by hand.".into()),
-            (false, false) => None,
-        };
-        if let Some(message) = message {
+        let mut parts = Vec::new();
+        if !cleaned {
+            parts.push("Local sharing stopped; Claude wake-hook removal failed. Retry disable after repairing Claude settings.".to_owned());
+        }
+        if !skill_removed {
+            parts.push("Local sharing stopped; the lightbulb-session-sharing skill could not be removed from ~/.claude/skills or ~/.codex/skills. Delete it by hand.".to_owned());
+        }
+        if !codex_notes.is_empty() {
+            if parts.is_empty() {
+                parts.push("Local sharing stopped; Codex cleanup was incomplete.".to_owned());
+            }
+            parts.extend(codex_notes);
+        }
+        if !parts.is_empty() {
             *state
                 .status
                 .lock()
-                .map_err(|_| "sharing state unavailable")? = message;
+                .map_err(|_| "sharing state unavailable")? = parts.join(" ");
         }
         return Ok(revision);
     }
@@ -681,6 +709,35 @@ pub async fn local_sessions_set(
         );
     }
     Ok(revision)
+}
+
+/// Re-run hook, MCP and skill setup for an enabled enrollment without touching
+/// the enrollment itself (re-enabling would retire it). Returns the failures.
+#[tauri::command]
+pub async fn local_sessions_repair(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, Controller>,
+) -> Result<Vec<String>> {
+    let _guard = state.mutation.lock().await;
+    let dir = state_dir(&app)?;
+    let path = dir.join("enrollment.json");
+    if !path.try_exists().map_err(|_| "sharing state unavailable")?
+        || !private_read::<Enrollment>(&path)?.enabled
+    {
+        return Err("Enable local-session sharing first".into());
+    }
+    let notes = reassert(&dir);
+    *state.status.lock().map_err(|_| "sharing state unavailable")? = retried(&notes);
+    Ok(notes)
+}
+
+/// Every retry replaces the last one's status, so a fixed failure stops showing.
+fn retried(notes: &[String]) -> String {
+    if notes.is_empty() {
+        "Setup retried; Claude Code and Codex are configured for new sessions.".into()
+    } else {
+        format!("Setup retried; {}.", notes.join("; "))
+    }
 }
 
 #[tauri::command]
@@ -1431,5 +1488,47 @@ mod tests {
             .unwrap()
             .file_type()
             .is_symlink());
+    }
+
+    #[test]
+    fn local_sessions_repair_success_replaces_a_prior_failure() {
+        assert_eq!(retried(&["Codex hooks were not installed (x)".into()]), "Setup retried; Codex hooks were not installed (x).");
+        assert_eq!(retried(&[]), "Setup retried; Claude Code and Codex are configured for new sessions.");
+    }
+
+    #[test]
+    fn local_sessions_provider_status_reads_what_a_new_session_would_load() {
+        let home = tempfile::tempdir().unwrap();
+        let h = home.path();
+        let exe = Path::new("/Applications/Lightbulb.app/Contents/MacOS/lightbulb-desktop");
+        let state = |p: &str, k: &str| provider_status(h, exe)[p][k].clone();
+        for p in ["claude", "codex"] {
+            assert_eq!((state(p, "mcp"), state(p, "hooks")), (json!("missing"), json!("missing")));
+        }
+        fs::create_dir_all(h.join(".claude")).unwrap();
+        fs::create_dir_all(h.join(".codex")).unwrap();
+        let settings = h.join(".claude/settings.json");
+        claude::configure_hooks(&settings, exe, true).unwrap();
+        codex::configure_hooks(h, exe, true).unwrap();
+        assert_eq!(state("claude", "hooks"), "configured");
+        assert_eq!(state("codex", "hooks"), "configured");
+        let mut doc: Value = serde_json::from_slice(&fs::read(&settings).unwrap()).unwrap();
+        doc["disableAllHooks"] = json!(true);
+        fs::write(&settings, doc.to_string()).unwrap();
+        assert_eq!(state("claude", "hooks"), "disabled");
+        // An untrusted Codex group is skipped silently, so it is not configured.
+        fs::write(h.join(".codex/config.toml"), "").unwrap();
+        assert_eq!(state("codex", "hooks"), "missing");
+
+        let server = |cmd: &str| json!({"mcpServers":{"lightbulb_native_sessions":{"command":cmd,"args":["session-mcp"]}}});
+        fs::write(h.join(".claude.json"), server(exe.to_str().unwrap()).to_string()).unwrap();
+        assert_eq!(state("claude", "mcp"), "configured");
+        fs::write(h.join(".claude.json"), server("/other/server").to_string()).unwrap();
+        assert_eq!(state("claude", "mcp"), "collision");
+        let toml = |cmd: &str| format!("[mcp_servers.lightbulb_native_sessions]\ncommand = \"{cmd}\"\nargs = [\"session-mcp\"]\n");
+        fs::write(h.join(".codex/config.toml"), toml(exe.to_str().unwrap())).unwrap();
+        assert_eq!(state("codex", "mcp"), "configured");
+        fs::write(h.join(".codex/config.toml"), toml("/other/server")).unwrap();
+        assert_eq!(state("codex", "mcp"), "collision");
     }
 }

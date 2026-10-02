@@ -5,7 +5,7 @@ import { useEffect, useState } from "react";
 
 import { DEEP_LINK_SCHEME } from "@/lib/domain";
 
-const API_URL = process.env.NEXT_PUBLIC_API_URL || "https://api-dev.flickmeon.ai/api/v1";
+const API_URL = process.env.NEXT_PUBLIC_API_URL || "https://api-dev.thelightbulb.company/api/v1";
 
 export default function DesktopCallback() {
   const { isLoaded, isSignedIn, getToken } = useAuth();

@@ -2682,6 +2682,7 @@ def select_dispatch_targets(
     *,
     room_kind: str | None = None,
     text: str = "",
+    session_addressed: bool = False,
 ) -> list[dict]:
     mentioned = {ref["id"] for ref in mentions if ref.get("kind") == "agent"} | _addressed_by_name(text, members)
     targets: dict[str, EventKind] = {}
@@ -2696,9 +2697,12 @@ def select_dispatch_targets(
         # A DM is addressed by construction: without this, an unmentioned DM is
         # an ambient room_event, which OpenClaw runs message-tool-only and the
         # agent's plain reply is muted (observed on dev 2026-09-10).
-        if agent_id in mentioned or room_kind == "dm":
+        # A message to a native session addresses that session, so only an agent the
+        # message names runs beside it (prod 2026-10-02: "@claude-ready430 ..." in the
+        # Atlas DM ran the session and Atlas).
+        if agent_id in mentioned or (room_kind == "dm" and not session_addressed):
             targets[agent_id] = "user_request"
-        elif member.get("listenMode") == "active":
+        elif member.get("listenMode") == "active" and not session_addressed:
             targets.setdefault(agent_id, "room_event")
     if "user_request" in targets.values():
         # A message that speaks to a teammate is not ambient: nobody else chimes in beside them
@@ -2793,11 +2797,11 @@ async def create_human_message(
         str(request.reply_to_message_id) if request.reply_to_message_id else None,
         str(request.thread_root_message_id) if request.thread_root_message_id else None,
     )
-    targets = select_dispatch_targets(members, mentions, None, room_kind=meta.get("kind"), text=request.text)
+    targets = select_dispatch_targets(
+        members, mentions, None, room_kind=meta.get("kind"), text=request.text, session_addressed=bool(session_ids)
+    )
     if native_source_id:
         # A native agent's deliberate post does not wake every ambient listener.
-        targets = [target for target in targets if target["eventKind"] == "user_request"]
-    if session_ids:
         targets = [target for target in targets if target["eventKind"] == "user_request"]
     room_kind = _room_kind(meta)
     # EFS is NFS. These reads open and read whole attachment files, so running

@@ -1,7 +1,7 @@
-"""Turn frame handling for the CEO huddle worker.
+"""Voice run frames for the huddle worker, routed by run id and agent (C2/C3).
 
-A port of packages/shared/src/voice/session.ts (delegate/onLive/applyFrame/handle/speakReady)
-and sentences.ts. Keep the two in step: same speech strings, same REORDER_WINDOW.
+Ordering and sentence splitting are ports of packages/shared/src/voice/session.ts and sentences.ts.
+Keep the two in step: same REORDER_WINDOW.
 """
 
 from __future__ import annotations
@@ -15,7 +15,7 @@ APPEND_CHARS = 1400  # OpenAI caps each append at 500 tokens
 # ponytail: the bridge publishes deltas in batches of 5 (FRAME_BATCH, hermes bridge turn.py) and AppSync can swap whole
 # publishes, so deltas are held 10 back (2 batches). Reordering beyond that applies as it arrives; raise this with FRAME_BATCH.
 REORDER_WINDOW = 10
-STALE_TURN_SECONDS = 120  # a resolved turn silent this long lost its run_ended (bridge crash): not running
+STALE_TURN_SECONDS = 120  # a run silent this long lost its run_ended (bridge crash): not running
 
 _SENTENCES = re.compile(r".*[.!?](?=\s)", re.DOTALL)
 
@@ -28,165 +28,177 @@ def take_sentences(text: str) -> tuple[str, str]:
     return m.group(0).strip(), text[m.end():]
 
 
-class Sink(Protocol):
-    def thinking(self, text: str, delegation_id: str) -> None: ...
-    def commentary(self, text: str, delegation_id: str) -> None: ...
+def _order(state, frame: dict, handle: Callable[[dict], None]) -> None:
+    """Bridge frames carry a per-run `seq`; publish order is not kept, so deltas are re-sorted here.
+    `state` (a Run) holds pending, reset_seq and auto."""
+    seq = frame.get("seq")
+    if not isinstance(seq, (int, float)) or isinstance(seq, bool):
+        state.auto += 1
+        seq = state.auto
+    kind = frame.get("type")
+    if kind == "chunk" and frame.get("append"):
+        if seq <= state.reset_seq:
+            return  # narration from before a tool_start
+        state.pending.append((seq, frame))
+        state.pending.sort(key=lambda p: p[0])
+        while len(state.pending) > REORDER_WINDOW:
+            handle(state.pending.pop(0)[1])
+        return
+    # Any other frame: everything ordered before it is applied first.
+    while state.pending and (kind != "tool_start" or state.pending[0][0] < seq):
+        handle(state.pending.pop(0)[1])
+    if kind in ("tool_start", "chunk"):
+        state.reset_seq = max(state.reset_seq, seq)
+    handle(frame)
+
+
+# Every run delivers; nothing supersedes.
+
+WORKING_CHARS = 60  # lightbulb.agent.<id>.working (C4)
+
+
+class RunSink(Protocol):
+    """Where a run's output goes. The sink decides floor vs has_news from run.agent_id/delegation_id/gen."""
+
+    def progress(self, run: "Run", text: str) -> None: ...  # text = the tool label
+    def say(self, run: "Run", text: str, final: bool) -> None: ...
+    def ended(self, run: "Run", answer: str) -> None: ...
+    def failed(self, run: "Run") -> None: ...
 
 
 @dataclass
-class _Turn:
-    order: int
-    delegation_id: str
-    turn_id: str | None = None
-    agent_id: str | None = None
-    buffered: list[tuple[str, dict]] = field(default_factory=list)
-    pending: list[tuple[int, dict]] = field(default_factory=list)
+class Run:
+    run_id: str
+    agent_id: str
+    speaker: str | None = None
+    request: str = ""
+    delegation_id: str | None = None
+    gen: int | None = None
+    bound: bool = False  # started() was called; an unbound run comes from frames alone (a restarted worker)
+    queued: bool = False
     ended: bool = False
+    aborted: bool = False
+    failed: bool = False
+    buffered: list[dict] = field(default_factory=list)  # frames held until started() (or run_ended)
+    pending: list[tuple[int, dict]] = field(default_factory=list)
     reset_seq: float = -1
     auto: int = 0
     text: str = ""
     spoken: str = ""
     label: str | None = None
-    seen: float = 0.0  # last resolve or frame
+    seen: float = 0.0
 
 
-class Turns:
-    def __init__(self, sink: Sink, names: dict[str, str], voice_name: str, clock: Callable[[], float] = time.time):
+class Runs:
+    def __init__(self, sink: RunSink, clock: Callable[[], float] = time.time):
         self._sink, self._clock = sink, clock
-        self._names = names
-        self._voice_name = voice_name
-        self._turns: dict[str, _Turn] = {}  # by delegation id
-        self._latest_by_agent: dict[str, str] = {}  # agentId -> delegation id
+        self._runs: dict[str, Run] = {}
 
-    def delegated(self, delegation_id: str, order: int) -> None:
-        """Record a delegation before its POST, so frames that beat the response are buffered."""
-        self._turns[delegation_id] = _Turn(order=order, delegation_id=delegation_id)
+    def started(self, run_id: str, agent_id: str, *, speaker: str | None, request: str,
+                delegation_id: str | None, gen: int | None) -> Run:
+        """Call before the /turns POST (the worker mints runId), so no frame can beat it."""
+        run = self._runs.get(run_id) or Run(run_id=run_id, agent_id=agent_id)
+        run.agent_id, run.speaker, run.request = agent_id, speaker, request
+        run.delegation_id, run.gen, run.bound, run.seen = delegation_id, gen, True, self._clock()
+        self._runs[run_id] = run
+        self._replay(run)
+        return run
 
-    def resolved(self, delegation_id: str, turn_id: str, agent_id: str) -> bool:
-        """The POST returned. False = this turn was superseded (or is unknown) and will never speak."""
-        turn = self._turns.get(delegation_id)
-        if turn is None:
-            return False
-        turn.turn_id, turn.agent_id = turn_id, agent_id
-        turn.seen = self._clock()
-        # Supersession follows delegation order, not the order POSTs resolve.
-        prev = self._latest_by_agent.get(agent_id)
-        prev_turn = self._turns.get(prev) if prev else None
-        if prev_turn and prev != delegation_id and prev_turn.order > turn.order:
-            del self._turns[delegation_id]
-            return False
-        if prev and prev != delegation_id:
-            self._turns.pop(prev, None)  # the same agent's older turn: its frames are now ignored
-        self._latest_by_agent[agent_id] = delegation_id
-        # Name the teammate now, so the voice can attribute a result that arrives with no tool frame.
-        self._sink.thinking(f"{self._name_of(turn)} is on it. Not done yet.", delegation_id)
-        buffered, turn.buffered = turn.buffered, []
-        for tid, frame in buffered:
-            if tid == turn_id:
-                self._apply(turn, frame)
-        return True
+    def bind(self, run_id: str, delegation_id: str | None, gen: int | None) -> None:
+        """Point a run at another session's delegation (a steer from a newer session); None = no delegation."""
+        if run := self._runs.get(run_id):
+            run.delegation_id, run.gen = delegation_id, gen
 
-    def failed(self, delegation_id: str, speak: bool = True) -> None:
-        """The POST failed. speak=False (a 409 turn_conflict: a newer delegation won) drops the turn silently."""
-        if speak:
-            self._sink.commentary("Sorry, I couldn't reach the team for that.", delegation_id)
-        self._turns.pop(delegation_id, None)
+    def abort(self, run_id: str) -> None:
+        """An aborted run is silent from here on; the entry stays so late frames don't recreate it."""
+        run = self._runs.get(run_id)
+        if run:
+            run.aborted = run.ended = True
+            run.buffered.clear()
+            run.pending.clear()
 
     def on_event(self, event: dict) -> None:
-        if event.get("type") != "call.turn.frame":
+        if event.get("type") != "voice.run.frame":
             return
         payload = event.get("payload") or {}
-        turn_id, frame = payload.get("turnId"), payload.get("frame")
-        if not isinstance(frame, dict):
+        run_id, frame = payload.get("runId"), payload.get("frame")
+        if not isinstance(run_id, str) or not isinstance(frame, dict):
             return
-        for turn in self._turns.values():
-            # No turnId never matches: an unresolved turn's turn_id is None too (TS: undefined !== null).
-            if turn_id is not None and turn.turn_id == turn_id:
-                turn.seen = self._clock()
-                return self._apply(turn, frame)
-        # Not resolved yet: hold it on every unresolved turn; each replays only frames with its own turnId.
-        for turn in self._turns.values():
-            if turn.turn_id is None:
-                turn.buffered.append((turn_id, frame))
+        run = self._runs.get(run_id)
+        if run is None:
+            agent_id = payload.get("agentId")
+            if not isinstance(agent_id, str):
+                return  # unroutable
+            run = self._runs[run_id] = Run(run_id=run_id, agent_id=agent_id)
+        if run.aborted or run.failed:
+            return
+        run.seen = self._clock()
+        if not run.bound:
+            # ponytail: an unbound run (worker restarted, or frames beat started()) holds every frame until
+            # started() or its run_ended; a long run's frames sit in memory meanwhile.
+            run.buffered.append(frame)
+            if frame.get("type") == "run_ended":
+                self._replay(run)
+            return
+        self._apply(run, frame)
 
-    def running(self) -> bool:
-        """A resolved turn that has not ended, labelled or not: its answer is still coming.
-        One with no frame for STALE_TURN_SECONDS lost its run_ended and stops holding the exchange open."""
+    def running(self, agent_id: str | None = None) -> list[Run]:
+        """Runs whose answer is still coming. One with no frame for STALE_TURN_SECONDS lost its run_ended."""
         now = self._clock()
-        return any(
-            t.turn_id is not None and not t.ended and now - t.seen < STALE_TURN_SECONDS for t in self._turns.values()
-        )
+        return [
+            r for r in self._runs.values()
+            if not r.ended and now - r.seen < STALE_TURN_SECONDS and agent_id in (None, r.agent_id)
+        ]
 
-    def working(self) -> str | None:
-        """"Gauge — checking Stripe" for the newest labelled running turn, else None."""
-        busy = [t for t in self._turns.values() if t.label and not t.ended and t.agent_id]
-        if not busy:
-            return None
-        t = max(busy, key=lambda t: t.order)
-        return f"{self._name_of(t)} — {t.label}"
+    def working(self, agent_id: str) -> str:
+        """The newest running labelled run's tool label for this agent, ≤60 chars; "" when none."""
+        labelled = [r for r in self.running(agent_id) if r.label]
+        return labelled[-1].label[:WORKING_CHARS] if labelled else ""
 
-    def _name_of(self, turn: _Turn) -> str:
-        return (turn.agent_id and self._names.get(turn.agent_id)) or self._voice_name or "the team"
+    def _replay(self, run: Run) -> None:
+        buffered, run.buffered = run.buffered, []
+        for frame in buffered:
+            self._apply(run, frame)
 
-    def _apply(self, turn: _Turn, frame: dict) -> None:
-        """Bridge frames carry a per-run `seq`; publish order is not kept, so deltas are re-sorted here."""
-        seq = frame.get("seq")
-        if not isinstance(seq, (int, float)) or isinstance(seq, bool):
-            turn.auto += 1
-            seq = turn.auto
-        kind = frame.get("type")
-        if kind == "chunk" and frame.get("append"):
-            if seq <= turn.reset_seq:
-                return  # narration from before a tool_start
-            turn.pending.append((seq, frame))
-            turn.pending.sort(key=lambda p: p[0])
-            while len(turn.pending) > REORDER_WINDOW:
-                self._handle(turn, turn.pending.pop(0)[1])
+    def _apply(self, run: Run, frame: dict) -> None:
+        if frame.get("type") == "run_queued":
+            run.queued = True
             return
-        # Any other frame: everything ordered before it is applied first.
-        while turn.pending and (kind != "tool_start" or turn.pending[0][0] < seq):
-            self._handle(turn, turn.pending.pop(0)[1])
-        if kind in ("tool_start", "chunk"):
-            turn.reset_seq = max(turn.reset_seq, seq)
-        self._handle(turn, frame)
+        run.queued = False
+        _order(run, frame, lambda f: self._handle(run, f))
 
-    def _handle(self, turn: _Turn, frame: dict) -> None:
+    def _handle(self, run: Run, frame: dict) -> None:
+        if run.aborted or run.failed:
+            return
         kind = frame.get("type")
         if kind == "tool_start" and isinstance(frame.get("tool"), str):
-            turn.text = ""  # narration so far was already spoken; the next text box is a new answer
-            turn.spoken = ""
-            if frame["tool"] == turn.label:
-                return
-            turn.label = frame["tool"]
-            self._sink.thinking(f"{self._name_of(turn)} is working: {turn.label}. Not done yet.", turn.delegation_id)
+            run.text = run.spoken = ""  # narration so far was already said; the next text box is a new answer
+            if frame["tool"] != run.label:
+                run.label = frame["tool"]
+                self._sink.progress(run, run.label)
         elif kind == "chunk" and isinstance(frame.get("content"), str):
             content = frame["content"]
             if frame.get("append"):
-                turn.text += content
-            elif content.startswith(turn.spoken):
-                turn.text = content
-            else:  # deltas were lost: speak the whole answer only if nothing was spoken since the reset
-                nothing_spoken = not turn.spoken
-                turn.text = content
-                turn.spoken = "" if nothing_spoken else content
-            self._speak_ready(turn, turn.ended)  # a closing chunk that lands after run_ended is final
-        elif kind == "error" and isinstance(frame.get("message"), str):
-            turn.text = turn.spoken = "(apology)"  # counts as spoken so run_ended stays quiet
-            self._sink.commentary(f"Sorry, I couldn't reach {self._name_of(turn)} for that.", turn.delegation_id)
+                run.text += content
+            elif content.startswith(run.spoken):
+                run.text = content
+            else:  # deltas were lost: say the whole answer only if nothing was said since the reset
+                run.spoken = "" if not run.spoken else content
+                run.text = content
+            self._say_ready(run, run.ended)  # a closing chunk that lands after run_ended is final
+        elif kind == "error":
+            run.failed = run.ended = True
+            self._sink.failed(run)
         elif kind == "run_ended":
-            turn.ended = True
-            self._speak_ready(turn, True)
-            if not turn.spoken:
-                self._sink.thinking(
-                    f"{self._name_of(turn)} finished that request without a spoken result.", turn.delegation_id
-                )
+            run.ended = True
+            self._say_ready(run, True)
+            self._sink.ended(run, run.text.strip())
 
-    def _speak_ready(self, turn: _Turn, final: bool) -> None:
-        pending = turn.text[len(turn.spoken):]
+    def _say_ready(self, run: Run, final: bool) -> None:
+        pending = run.text[len(run.spoken):]
         ready, rest = (pending.strip(), "") if final else take_sentences(pending)
         if not ready:
             return
-        turn.spoken = turn.text[: len(turn.text) - len(rest)]
+        run.spoken = run.text[: len(run.text) - len(rest)]
         for i in range(0, len(ready), APPEND_CHARS):
-            self._sink.commentary(ready[i : i + APPEND_CHARS], turn.delegation_id)
-
+            self._sink.say(run, ready[i : i + APPEND_CHARS], final)

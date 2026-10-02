@@ -3478,7 +3478,10 @@ STEER_LOST = "steer_lost"
 async def redispatch_lost_steers(owner_id: str, row: dict) -> None:
     """A run that errored took follow-ups (steers) it may never have answered: give each its
     own normal turn, so a steered message is never silently swallowed. At worst the agent
-    answers it twice. An aborted run is deliberately excluded: Stop means stop."""
+    answers it twice. A room event steered in before Jev (routing v2 §4.1) goes back through
+    Jev as a room event, never as an answer forced from this agent. An aborted run is
+    deliberately excluded: Stop means stop."""
+    ambient = set(row.get("ambientSteerIds") or ())
     for message_id in sorted(row.get("steeredMessageIds") or ()):
         try:
             created = await messaging_repo.create_follow_up(
@@ -3487,7 +3490,7 @@ async def redispatch_lost_steers(owner_id: str, row: dict) -> None:
                 agent_id=row["agentId"],
                 follow_up_id=str(uuid.uuid5(uuid.NAMESPACE_URL, f"lightbulb-steer-lost:{row['runId']}:{message_id}")),
                 trigger_message_id=message_id,
-                event_kind="user_request",
+                event_kind="room_event" if message_id in ambient else "user_request",
                 reason=STEER_LOST,
                 text="",
             )

@@ -686,6 +686,25 @@ async def test_a_run_that_errors_re_dispatches_the_follow_ups_steered_into_it(me
 
 
 @pytest.mark.asyncio
+async def test_a_lost_room_event_steer_is_re_dispatched_as_a_room_event(metrics):
+    """Routing v2 §4.1: a room event steered in before Jev goes back through Jev, not to this
+    agent as a forced answer; the addressed steer beside it keeps its kind."""
+    steered = {**ROW, "steeredMessageIds": {"m2", "m3"}, "ambientSteerIds": {"m3"}}
+    create = AsyncMock(return_value=True)
+    with (
+        patch.object(messaging.messaging_repo, "end_run", AsyncMock(return_value=steered)),
+        patch.object(messaging.messaging_repo, "get_message_by_id", AsyncMock(return_value=None)),
+        patch.object(messaging.messaging_repo, "create_follow_up", create),
+        patch.object(messaging, "post_run_failure_message", AsyncMock()),
+    ):
+        await messaging.handle_run_event(
+            "o", _event(type="run.ended", outcome="error", error_kind="timeout", usage=USAGE)
+        )
+    kinds = {c.kwargs["trigger_message_id"]: c.kwargs["event_kind"] for c in create.await_args_list}
+    assert kinds == {"m2": "user_request", "m3": "room_event"}
+
+
+@pytest.mark.asyncio
 async def test_started_run_announces_working_and_a_replay_does_not(metrics, monkeypatch):
     announce = AsyncMock()
     monkeypatch.setattr(messaging, "announce_run", announce)

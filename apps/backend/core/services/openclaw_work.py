@@ -492,7 +492,7 @@ class OpenClawWorkWorker:
             # This agent's own live run in this conversation hears the line BEFORE Jev decides
             # (routing v2 §4.1): Jev may pick someone else or nobody, and a run that never saw
             # "Bob: $42k" posts its duplicate anyway. Jev's state.open then shows the run.
-            if steer and await self._steer_live_run(meta, member, message, container, token):
+            if steer and await self._steer_live_run(meta, member, message, container, token, event_kind):
                 return True
             steer = False  # tried: no live run took it, so the turn below is the message's own
             # Jev picks at most one Listening responder per message (spec §3a/§5a). A follow-up is
@@ -581,7 +581,11 @@ class OpenClawWorkWorker:
         # the side effect so queued work cannot outlive membership revocation.
         if await messaging_repo.get_member(meta["roomId"], "agent", member["id"]) is None:
             return False
-        if follow_up is None and steer and await self._steer_live_run(meta, member, message, container, token):
+        if (
+            follow_up is None
+            and steer
+            and await self._steer_live_run(meta, member, message, container, token, event_kind)
+        ):
             return True
         if follow_up is not None:
             body["eventId"] = follow_up["id"]
@@ -696,6 +700,7 @@ class OpenClawWorkWorker:
         message: dict[str, Any],
         container: dict[str, Any],
         token: str,
+        event_kind: str,
     ) -> bool:
         """One run per agent per conversation: a human follow-up to an agent whose run in the
         same thread (or DM) is still live is steered into that run instead of queueing a second
@@ -732,12 +737,14 @@ class OpenClawWorkWorker:
         run = max(live, key=lambda row: row.get("dispatchedAt") or "")
         if await messaging_repo.get_member(meta["roomId"], "agent", member["id"]) is None:
             return False  # adjacent to the side effect: queued work must not outlive membership
-        kind = "ambient" if run.get("eventKind") == "room_event" else "addressed"
+        ambient = event_kind == "room_event"
+        kind = "ambient" if ambient and run.get("eventKind") == "room_event" else "addressed"
         text = f"{author.get('displayName') or 'A teammate'}: {message.get('text') or ''}"
         if kind == "ambient":
-            # An ambient run may stand down (routing v2 §4.1; the bridge maps a [SILENT] pass,
-            # also after a steer). An addressed run keeps the bare line: the person chose that
-            # agent, and a hedged human answer must not silence it.
+            # An ambient line into an ambient run may stand it down (routing v2 §4.1; the bridge
+            # maps a [SILENT] pass, also after a steer). Anything addressed -- the run, or the
+            # line (an @mention into an ambient run) -- keeps the bare line: the person chose
+            # that agent, and a hedged human answer must not silence it.
             text += AMBIENT_STEER_SUFFIX
         try:
             response = await runtime_transport.request(
@@ -756,8 +763,11 @@ class OpenClawWorkWorker:
             return False
         try:
             # Recorded so a run that fails before answering re-dispatches it
-            # (messaging.redispatch_lost_steers). A run that ended meanwhile never saw it.
-            if not await messaging_repo.add_steered_message(meta["ownerId"], run["runId"], message["messageId"]):
+            # (messaging.redispatch_lost_steers) -- a room event back through Jev, never as an
+            # answer forced from this agent. A run that ended meanwhile never saw it.
+            if not await messaging_repo.add_steered_message(
+                meta["ownerId"], run["runId"], message["messageId"], ambient=ambient
+            ):
                 put_metric("messaging.run.steered", dimensions={"outcome": "ended_fallback", "kind": kind})
                 return False
         except Exception:

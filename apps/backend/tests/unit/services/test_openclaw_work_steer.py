@@ -196,6 +196,36 @@ async def test_an_addressed_run_gets_the_bare_line_never_the_stand_down(monkeypa
 
 
 @pytest.mark.asyncio
+async def test_an_addressed_line_into_an_ambient_run_keeps_the_bare_line(monkeypatch):
+    worker, _, _, steers, _ = _fixture(monkeypatch, runs=[AMBIENT])
+    assert await worker._dispatch_message(META, MEMBER, _message(text="@Friday what's our MRR"), "user_request") is True
+    assert steers[0][1]["text"] == "Ada: @Friday what's our MRR"  # a stand-down would lose an @mention
+    work.put_metric.assert_any_call("messaging.run.steered", dimensions={"outcome": "steered", "kind": "addressed"})
+    work.messaging_repo.add_steered_message.assert_awaited_once_with("org_1", LIVE_RUN, FOLLOW, ambient=False)
+
+
+@pytest.mark.asyncio
+async def test_a_room_event_steer_is_recorded_as_ambient_for_its_recovery(monkeypatch):
+    worker, _, _, _, _ = _fixture(monkeypatch, runs=[AMBIENT])
+    _jev(monkeypatch)
+    await worker._dispatch_message(META, MEMBER, _message(text="$42k"), "room_event")
+    work.messaging_repo.add_steered_message.assert_awaited_once_with("org_1", LIVE_RUN, FOLLOW, ambient=True)
+
+
+@pytest.mark.asyncio
+async def test_a_lost_room_event_steer_goes_back_through_jev(monkeypatch):
+    worker, created, ingress, steers, _ = _fixture(monkeypatch, runs=[AMBIENT])
+    route = _jev(monkeypatch)
+    row = {"triggerMessageId": FOLLOW, "eventKind": "room_event", "reason": work.STEER_LOST, "text": ""}
+    monkeypatch.setattr(work.messaging_repo, "get_follow_up", AsyncMock(return_value=row))
+    monkeypatch.setattr(work.messaging_repo, "get_room", AsyncMock(return_value=META))
+    monkeypatch.setattr(work.messaging_repo, "get_message_by_id", AsyncMock(return_value=_message()))
+    await worker._room_follow_up({"roomId": ROOM, "agentId": AGENT, "followUpId": "f1"})
+    route.assert_awaited_once()  # Jev decides again; "none" here means no forced answer
+    assert steers == [] and created == [] and ingress == []
+
+
+@pytest.mark.asyncio
 async def test_no_live_run_in_this_conversation_goes_to_jev_and_is_not_steered_again(monkeypatch):
     other_thread = "99999999-9999-4999-8999-999999999999"
     worker, created, ingress, steers, _ = _fixture(monkeypatch, runs=[AMBIENT])

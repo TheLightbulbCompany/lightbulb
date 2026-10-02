@@ -389,8 +389,6 @@ export interface LocalSession {
   pendingJoinIds?: Record<string, string>;
   /** A permission prompt the owner's Mac holds open for a remote answer. */
   pendingApproval?: LocalSessionPendingApproval;
-  /** This send is a durable owner approval intent, separate from a Claude permission prompt. */
-  nativeSendApproval?: boolean;
   /** As the harness wrote it. Read-only: neither CLI takes a change from outside its terminal. */
   model?: string;
   permissionMode?: string;
@@ -466,27 +464,8 @@ export interface PrivateSendApproval {
   approvalId: string;
   inputDigest: string;
   destination: string;
-  /** Server-resolved name ("#general", "DM with Bea", a session label); display only. */
-  destinationLabel?: string | null;
   text: string;
   requestId: string;
-}
-
-export interface NativeSendDecision {
-  approvalId: string;
-  inputDigest: string;
-  requestId: string;
-  decision: "allow" | "deny" | "cancel";
-  reason?: string;
-}
-
-export interface NativeSendReceipt {
-  requestId: string;
-  state: "pending_approval" | "dispatching" | "pending" | "dispatched" | "applied" | "rejected" | "cancelled" | "expired" | "offline" | "unknown";
-  destination?: string;
-  messageId?: string;
-  targetRequestId?: string;
-  error?: { code: string; message: string };
 }
 
 export interface LocalSessionAuditEntry {

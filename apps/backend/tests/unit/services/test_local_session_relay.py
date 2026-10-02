@@ -4,7 +4,6 @@ import asyncio
 import importlib
 import json
 import time
-import uuid
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
@@ -17,7 +16,6 @@ from httpx import ASGITransport, AsyncClient
 
 from core.repositories import local_sessions_repo as repo, messaging_repo
 from core.services import local_sessions as service
-from core.services import native_session_tools as native_tools
 from core.services.connection_service import ConnectionService
 from core.services.management_api_client import ManagementApiClient
 from core.services.messaging import ApiProblem
@@ -1058,92 +1056,6 @@ async def test_registration_server_bounds_compatibility_liveness_and_reconnect(t
     )
     with pytest.raises(ApiProblem):
         await relay(transport).handle_message("conn-2", heartbeat(sid, generation="generation-2", status="idle"))
-
-
-@pytest.mark.asyncio
-async def test_same_generation_reconnect_restores_pending_native_send(transport):
-    await service.set_enrollment(ALICE, service.EnrollmentRequest(deviceId=MAC, cliDeviceId=CLI, enabled=True))
-    connect(transport)
-    frame = registration(provider="claude", nativeConversationId="claude-1", activeTurnId=None, status="idle")
-    sid = (await relay(transport).handle_message("conn-1", frame))["sessionId"]
-    request_id, approval_id = str(uuid.uuid4()), "appr-" + uuid.uuid4().hex
-    destination, text = f"room:{ROOM}", "private text"
-    digest = native_tools._intent_digest({"destination": destination, "text": text, "requestId": request_id})
-    expires = int(time.time()) + 3300
-    pointer = {
-        "requestId": request_id,
-        "approvalId": approval_id,
-        "inputDigest": digest,
-        "expiresAt": expires,
-        "state": "pending_approval",
-        "connectionId": "conn-1",
-        "sourceGeneration": "generation-1",
-        "sourceTurnId": None,
-    }
-    table = messaging_repo._table()
-    pk = repo.session_pk(OWNER, sid)
-    table.update_item(
-        Key={"pk": pk, "sk": "META"},
-        UpdateExpression="SET nativeSendIntent = :intent",
-        ExpressionAttributeValues={":intent": pointer},
-    )
-    table.put_item(
-        Item={
-            "pk": pk,
-            "sk": f"NATIVE_INTENT#{request_id}",
-            "requestId": request_id,
-            "approvalId": approval_id,
-            "inputDigest": digest,
-            "destination": destination,
-            "text": text,
-            "sourceGeneration": "generation-1",
-            "sourceConversationId": "claude-1",
-            "deviceId": MAC,
-            "humanUserId": ALICE.user_id,
-            "sourceTurnId": None,
-            "connectionId": "conn-1",
-            "state": "pending_approval",
-            "expiresAt": expires,
-        }
-    )
-    table.put_item(
-        Item={
-            "pk": pk,
-            "sk": f"NATIVE_TOOL#{request_id}",
-            "approvalId": approval_id,
-            "inputDigest": digest,
-            "destination": destination,
-            "approvalExpiresAt": expires,
-            "requestHash": messaging_repo.request_hash(sid, destination, text),
-        }
-    )
-
-    connect(transport, "conn-2", "2000")
-    await relay(transport).handle_message("conn-2", frame)
-
-    row = await repo.get_session(OWNER, sid)
-    assert row["nativeSendIntent"] == {**pointer, "connectionId": "conn-2"}
-    assert table.get_item(Key={"pk": pk, "sk": f"NATIVE_INTENT#{request_id}"})["Item"]["connectionId"] == "conn-2"
-    public = service._session_public(row, ALICE.user_id)
-    assert public.pending_approval.approval_id == approval_id
-    assert (await service.get_private_send_approval(ALICE, sid)).text == text
-    assert (await native_tools.get_codex_send_receipt(ALICE, sid, request_id))["state"] == "pending_approval"
-    with pytest.raises(ApiProblem):
-        await native_tools.answer_codex_send(
-            ALICE,
-            sid,
-            native_tools.NativeSendDecision(
-                request_id=request_id, approval_id=approval_id, input_digest="f" * 64, decision="deny"
-            ),
-        )
-    denied = await native_tools.answer_codex_send(
-        ALICE,
-        sid,
-        native_tools.NativeSendDecision(
-            request_id=request_id, approval_id=approval_id, input_digest=digest, decision="deny"
-        ),
-    )
-    assert denied["state"] == "rejected" and denied["error"]["code"] == "OWNER_DENIED"
 
 
 @pytest.mark.asyncio

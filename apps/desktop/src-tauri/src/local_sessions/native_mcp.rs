@@ -127,7 +127,7 @@ pub(super) fn status(home: &Path, executable: &Path, provider: &str) -> &'static
     if args && command.as_deref() == executable.to_str() { "configured" } else { "collision" }
 }
 
-fn configure_codex_policy(home: &Path, executable: &Path) -> io::Result<Vec<String>> {
+fn configure_codex_policy(home: &Path, executable: &Path) -> io::Result<()> {
     let path = codex_config(home);
     let mut original = String::new();
     super::secure_file(&path)
@@ -148,39 +148,30 @@ fn configure_codex_policy(home: &Path, executable: &Path) -> io::Result<Vec<Stri
     {
         return Err(io::Error::other("Codex native MCP config changed"));
     }
-    let tools = server
-        .entry("tools")
-        .or_insert(toml_edit::Item::Table(toml_edit::Table::new()))
-        .as_table_mut()
-        .ok_or_else(|| io::Error::other("Codex native MCP tool policy unavailable"))?;
-    let mut notes = Vec::new();
-    for name in ["send_message"] {
-        let tool = tools
-            .entry(name)
-            .or_insert(toml_edit::Item::Table(toml_edit::Table::new()))
-            .as_table_mut()
-            .ok_or_else(|| io::Error::other("Codex native MCP tool policy unavailable"))?;
-        match tool.get("approval_mode").and_then(toml_edit::Item::as_str) {
-            None if !tool.contains_key("approval_mode") => {
-                // Only this Lightbulb tool bypasses Codex's own prompt: it
-                // always prepares a private owner approval on the backend.
-                tool.insert("approval_mode", toml_edit::value("approve"));
+    // Codex's own prompt gates `send_message` (owner ruling 2026-10-02). Undo
+    // the bare `approval_mode = "approve"` earlier builds wrote; anything else
+    // there is the user's and stays.
+    if let Some(tools) = server.get_mut("tools").and_then(toml_edit::Item::as_table_mut) {
+        let ours = tools.get("send_message").and_then(toml_edit::Item::as_table).is_some_and(|t| {
+            t.len() == 1 && t.get("approval_mode").and_then(toml_edit::Item::as_str) == Some("approve")
+        });
+        if ours {
+            tools.remove("send_message");
+            if tools.is_empty() {
+                server.remove("tools");
             }
-            Some("approve") => {}
-            _ => notes.push(format!("Codex {name} keeps its custom approval policy")),
         }
     }
     let updated = doc.to_string();
     if updated != original {
         super::codex::replace(&path, updated.as_bytes()).map_err(io::Error::other)?;
     }
-    Ok(notes)
+    Ok(())
 }
 
 fn codex_policy(home: &Path, executable: &Path, notes: &mut Vec<String>) {
-    match configure_codex_policy(home, executable) {
-        Ok(policy) => notes.extend(policy),
-        Err(_) => notes.push("Codex native send approval policy is unavailable".into()),
+    if configure_codex_policy(home, executable).is_err() {
+        notes.push("Codex native MCP settings are unavailable".into());
     }
 }
 
@@ -264,7 +255,7 @@ fn tools() -> Value {
          "inputSchema":{"type":"object","properties":{"room_id":{"type":"string"},"after_seq":{"type":"integer","minimum":0},
            "limit":{"type":"integer","minimum":1,"maximum":100}},"required":["room_id"],"additionalProperties":false},
          "annotations":read},
-        {"name":"send_message","description":"Request owner approval to post one message as this session to exactly one of room_id, person_id or session_id. Use a new UUID request_id and reuse it on retry. Cannot answer permission prompts.",
+        {"name":"send_message","description":"Post one message as this session to exactly one of room_id, person_id or session_id. Use a new UUID request_id and reuse it on retry. Cannot answer permission prompts.",
          "inputSchema":{"type":"object","properties":{"room_id":{"type":"string"},"person_id":{"type":"string"},"session_id":{"type":"string"},
            "text":{"type":"string"},"request_id":{"type":"string"},"reply_to_message_id":{"type":"string","description":"Not supported from this Mac yet; omit."}},
           "required":["text","request_id"],"additionalProperties":false},
@@ -452,23 +443,32 @@ mod tests {
     use super::*;
 
     #[test]
-    fn codex_policy_preserves_unrelated_and_custom_tool_settings() {
+    fn codex_policy_removes_only_our_send_approval() {
         let home = tempfile::tempdir().unwrap();
         std::fs::create_dir(home.path().join(".codex")).unwrap();
         let config = home.path().join(".codex/config.toml");
         let executable = Path::new("/Applications/Lightbulb.app/Contents/MacOS/lightbulb-desktop");
         std::fs::write(&config, format!(
             "[mcp_servers.lightbulb]\ncommand = \"{}\"\nargs = [\"session-mcp\"]\n\
+             [mcp_servers.lightbulb.tools.send_message]\napproval_mode = \"approve\"\n\
              [mcp_servers.lightbulb.tools.message_receipt]\napproval_mode = \"prompt\"\n\
              [mcp_servers.other]\ncommand = \"/bin/other\"\nargs = [\"serve\"]\n",
             executable.display()
         )).unwrap();
-        let notes = configure_codex_policy(home.path(), executable).unwrap();
-        let doc: toml_edit::DocumentMut = std::fs::read_to_string(config).unwrap().parse().unwrap();
-        assert_eq!(doc["mcp_servers"]["lightbulb"]["tools"]["send_message"]["approval_mode"].as_str(), Some("approve"));
+        configure_codex_policy(home.path(), executable).unwrap();
+        let doc: toml_edit::DocumentMut = std::fs::read_to_string(&config).unwrap().parse().unwrap();
+        assert!(doc["mcp_servers"]["lightbulb"]["tools"].get("send_message").is_none());
         assert_eq!(doc["mcp_servers"]["lightbulb"]["tools"]["message_receipt"]["approval_mode"].as_str(), Some("prompt"));
         assert_eq!(doc["mcp_servers"]["other"]["command"].as_str(), Some("/bin/other"));
-        assert!(notes.is_empty());
+        // A user's own policy on send_message stays.
+        std::fs::write(&config, format!(
+            "[mcp_servers.lightbulb]\ncommand = \"{}\"\nargs = [\"session-mcp\"]\n\
+             [mcp_servers.lightbulb.tools.send_message]\napproval_mode = \"prompt\"\n",
+            executable.display()
+        )).unwrap();
+        configure_codex_policy(home.path(), executable).unwrap();
+        let doc: toml_edit::DocumentMut = std::fs::read_to_string(&config).unwrap().parse().unwrap();
+        assert_eq!(doc["mcp_servers"]["lightbulb"]["tools"]["send_message"]["approval_mode"].as_str(), Some("prompt"));
     }
 
     #[test]

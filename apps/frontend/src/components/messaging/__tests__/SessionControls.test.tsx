@@ -53,15 +53,15 @@ it("draws nothing when the session is not waiting", () => {
 
 it("shows a private send only to its owner before enabling approval", async () => {
   const detail = { approvalId: pendingApproval.approvalId, inputDigest: pendingApproval.inputDigest,
-    destination: "person:bob", destinationLabel: "Bob", text: "First line\nSecond line", requestId: "e12fd3e8-32ca-4b65-8eaf-ab979e3c9449" };
+    destination: "person:bob", text: "First line\nSecond line", requestId: "e12fd3e8-32ca-4b65-8eaf-ab979e3c9449" };
   const c = { ...client(), getPrivateSendApproval: vi.fn(async () => detail) };
   const privateSession = session({ pendingApproval: { ...pendingApproval,
     tool: "mcp__lightbulb_native_sessions__send", summary: "Lightbulb message", exact: false, modes: [] } });
   const { rerender } = render(<SessionApprovalCard session={privateSession} client={c} own ownerName="You" />);
   const message = (_: string, element: Element | null) => element?.tagName === "PRE" && element.textContent === detail.text;
   expect(await screen.findByText(message)).toBeInTheDocument();
-  expect(screen.getByText("To: Bob")).toBeInTheDocument();
-  expect(screen.getByText(`person:bob · Request ID: ${detail.requestId}`)).toBeInTheDocument();
+  expect(screen.getByText("To: person:bob")).toBeInTheDocument();
+  expect(screen.getByText(`Request ID: ${detail.requestId}`)).toBeInTheDocument();
   expect(screen.getByRole("button", { name: "Approve" })).toBeInTheDocument();
   rerender(<SessionApprovalCard session={session({ ...privateSession, teamControl: true })} client={c} own={false} ownerName="Alice" />);
   expect(screen.queryByText(message)).not.toBeInTheDocument();
@@ -78,23 +78,4 @@ it("lets the owner retry a failed private detail load", async () => {
   expect(await screen.findByText("send this")).toBeInTheDocument();
   expect(c.getPrivateSendApproval).toHaveBeenCalledTimes(2);
   expect(screen.getByRole("button", { name: "Approve" })).toBeInTheDocument();
-});
-
-it("lets only the owner approve a pending Codex send after its turn becomes idle", async () => {
-  const detail = { approvalId: pendingApproval.approvalId, inputDigest: pendingApproval.inputDigest,
-    destination: "room:one", text: "private Codex message", requestId: "e12fd3e8-32ca-4b65-8eaf-ab979e3c9449" };
-  const c = { ...client(), getPrivateSendApproval: vi.fn(async () => detail),
-    answerNativeSendApproval: vi.fn(async () => ({ requestId: detail.requestId, state: "applied" as const })) };
-  const codex = session({ provider: "codex", status: "idle", nativeSendApproval: true, pendingApproval: {
-    ...pendingApproval, tool: "mcp__lightbulb_native_sessions__send", summary: "Lightbulb message", exact: false, modes: [],
-  } });
-  const { rerender } = render(<SessionApprovalCard session={codex} client={c} own ownerName="You" />);
-  expect(await screen.findByText("private Codex message")).toBeInTheDocument();
-  await userEvent.click(screen.getByRole("button", { name: "Approve" }));
-  expect(c.answerNativeSendApproval).toHaveBeenCalledWith("s1", {
-    approvalId: detail.approvalId, inputDigest: detail.inputDigest, requestId: detail.requestId, decision: "allow",
-  });
-  rerender(<SessionApprovalCard session={{ ...codex, teamControl: true }} client={c} own={false} ownerName="Alice" />);
-  expect(screen.queryByText("private Codex message")).not.toBeInTheDocument();
-  expect(screen.queryByRole("button", { name: "Approve" })).not.toBeInTheDocument();
 });

@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, within } from "@testing-library/react";
 import { expect, it, vi } from "vitest";
 import type { RoomRunView } from "@lightbulb/shared";
 import { RoomPanel, type RoomPanelProps } from "../RoomPanel";

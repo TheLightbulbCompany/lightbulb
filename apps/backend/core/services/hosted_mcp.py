@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from contextlib import asynccontextmanager
 import time
 import uuid
 
@@ -301,9 +302,48 @@ async def message_receipt(room_id: str, request_id: uuid.UUID) -> dict:
 # API Gateway rewrites Host to the private ALB DNS name. The public OAuth URL is
 # enforced by the audience check above; the API's existing CORS allowlist governs
 # browser Origin access. The SDK still bounds POST bodies and validates JSON type.
-app = mcp.streamable_http_app(
-    streamable_http_path="/mcp",
-    stateless_http=True,
-    json_response=True,
-    transport_security=TransportSecuritySettings(enable_dns_rebinding_protection=False),
-)
+def _build_app():
+    return mcp.streamable_http_app(
+        streamable_http_path="/mcp",
+        stateless_http=True,
+        json_response=True,
+        transport_security=TransportSecuritySettings(enable_dns_rebinding_protection=False),
+    )
+
+
+class _CurrentApp:
+    """ASGI door onto the MCP app built by the CURRENT lifespan entry.
+
+    The SDK binds a StreamableHTTPSessionManager into each app it builds, and that
+    manager's run() may be entered once per instance. FastAPI's TestClient enters the
+    lifespan once per test, so a single module-level app failed every entry after the
+    first (231 unit tests + every chaos case, 2026-10-02). Each lifespan entry now
+    builds its own app; outside a lifespan the door answers 503.
+    """
+
+    def __init__(self) -> None:
+        self.app = None
+
+    async def __call__(self, scope, receive, send) -> None:
+        if self.app is None:
+            if scope["type"] == "http":
+                await send(
+                    {"type": "http.response.start", "status": 503, "headers": [(b"content-type", b"text/plain")]}
+                )
+                await send({"type": "http.response.body", "body": b"hosted MCP is not running"})
+            return
+        await self.app(scope, receive, send)
+
+
+mount = _CurrentApp()
+
+
+@asynccontextmanager
+async def running():
+    """Build the MCP app and run its session manager for one lifespan entry."""
+    mount.app = _build_app()
+    try:
+        async with mcp.session_manager.run():
+            yield
+    finally:
+        mount.app = None

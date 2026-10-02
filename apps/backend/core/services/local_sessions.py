@@ -1465,36 +1465,53 @@ async def list_offline_outbox(auth: AuthContext, session_id: str) -> OfflineOutb
     owner, sid, now = session["ownerId"], session["sessionId"], int(time.time())
     commands = await repo.list_commands(owner, sid)
     by_request_id = {row["requestId"]: row for row in commands}
-    visible = []
-    for row in commands:
-        if (
-            not row.get("offlineIdentity")
-            or row.get("actorUserId") != auth.user_id
-            or row["createdAt"] < now - 2 * OFFLINE_SEND_SECONDS
-        ):
+    saved = {
+        row["requestId"]: row
+        for row in commands
+        if row.get("offlineIdentity")
+        and row.get("actorUserId") == auth.user_id
+        and row["createdAt"] >= now - 2 * OFFLINE_SEND_SECONDS
+    }
+    linked: dict[str, dict] = {}
+    for original in saved.values():
+        if original["state"] != "rejected":
             continue
-        original = by_request_id.get(row.get("replacesRequestId"))
+        replacement = by_request_id.get(original.get("replacedByRequestId"))
         if (
-            row["state"] == "rejected"
-            and original
-            and original.get("offlineIdentity")
-            and original.get("actorUserId") == auth.user_id
-            and original["createdAt"] >= now - 2 * OFFLINE_SEND_SECONDS
+            replacement
+            and replacement.get("replacesRequestId") == original["requestId"]
+            and replacement.get("actorUserId") == auth.user_id
         ):
+            if replacement["state"] == "pending" and replacement["deliverBy"] <= now:
+                replacement = await _expire_pending_command(owner, sid, replacement)
+                if replacement is None:
+                    continue
+                by_request_id[replacement["requestId"]] = replacement
+            linked[replacement["requestId"]] = original
+    visible = []
+    for command in commands:
+        row = by_request_id[command["requestId"]]
+        if row["requestId"] not in saved and row["requestId"] not in linked:
+            continue
+        if row["state"] == "rejected" and row.get("replacesRequestId") in saved:
             continue  # a failed retry restores its saved original, never a second Retry action
-        replacement = by_request_id.get(row.get("replacedByRequestId"))
-        if replacement and replacement["state"] == "pending" and replacement["deliverBy"] <= now:
-            replacement = await _expire_pending_command(owner, sid, replacement)
+        replacement_id = row.get("replacedByRequestId")
         if (
             row["state"] == "rejected"
-            and replacement
-            and replacement["state"] in {"pending", "dispatched", "unknown", "applied"}
+            and replacement_id in linked
+            and linked[replacement_id]["requestId"] == row["requestId"]
+            and by_request_id[replacement_id]["state"] in {"pending", "dispatched", "unknown", "applied"}
         ):
             continue
         visible.append(row)
     rows = [await _expire_pending_command(owner, sid, row) for row in visible]
-    active = [row for row in rows if row["state"] not in {"applied", "rejected"} and row["deliverBy"] > now]
-    recent = [row for row in rows if row["state"] in {"applied", "rejected"} or row["deliverBy"] <= now]
+    active = [
+        row
+        for row in rows
+        if row["state"] not in {"applied", "rejected"} and (row["deliverBy"] > now or row["requestId"] in linked)
+    ]
+    active_ids = {row["requestId"] for row in active}
+    recent = [row for row in rows if row["requestId"] not in active_ids]
     selected = active[-OFFLINE_SEND_PENDING_LIMIT:]
     if len(selected) < OFFLINE_SEND_PENDING_LIMIT:
         selected += recent[-(OFFLINE_SEND_PENDING_LIMIT - len(selected)) :]

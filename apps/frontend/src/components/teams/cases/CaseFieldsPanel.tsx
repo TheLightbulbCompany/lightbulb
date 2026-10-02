@@ -13,7 +13,7 @@
 
 import type { ReactNode } from "react";
 import Link from "next/link";
-import { Check } from "lucide-react";
+import { Check, X } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { StatusIcon } from "@/components/teams/shared/components/StatusIcon";
 import { handleShellLinkClick } from "@/lib/shellNav";
@@ -191,10 +191,12 @@ export function CaseFieldValue({
   }
 
   if (typeof value === "boolean") {
+    // Upstream renders `false` as the same dash as a missing value; an
+    // explicit false is an answer, so it gets its own mark.
     return value ? (
       <Check className="h-4 w-4 text-[var(--live)]" aria-label="true" />
     ) : (
-      <EmptyValue />
+      <X className="h-4 w-4 text-[var(--fg-mute)]" aria-label="false" />
     );
   }
 

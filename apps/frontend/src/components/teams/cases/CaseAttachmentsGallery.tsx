@@ -7,12 +7,15 @@
 // cookie auth) and opens a shared lightbox. Here the bytes only come through
 // the Teams BFF with a Clerk bearer, case-scoped, so each thumbnail is fetched
 // as a Blob; Teams has no lightbox, so an image opens in a new tab instead.
+// Any other file downloads through the same route (upstream's tile is inert).
 
 "use client";
 
 import { useEffect, useRef, useState } from "react";
 import { FileText } from "lucide-react";
+import { saveBlob } from "@/components/teams/issues/issue-output/attachmentBlob";
 import { useTeamsApi } from "@/hooks/useTeamsApi";
+import { notifyApiError } from "@/lib/notify";
 import type { CaseAttachmentRef } from "@/components/teams/shared/types";
 import { cn } from "@/lib/utils";
 
@@ -68,6 +71,42 @@ function AttachmentImage({ path, alt }: { path: string; alt: string }) {
   );
 }
 
+/** A non-image file: click fetches the bytes (authenticated) and saves them
+ *  under the original filename, like issue attachments. */
+function AttachmentFile({ path, filename }: { path: string; filename: string }) {
+  const { download } = useTeamsApi();
+  const [busy, setBusy] = useState(false);
+
+  const save = async () => {
+    setBusy(true);
+    try {
+      const url = URL.createObjectURL(await download(path));
+      try {
+        saveBlob(url, filename);
+      } finally {
+        URL.revokeObjectURL(url);
+      }
+    } catch (e) {
+      notifyApiError(e, "Couldn't download the attachment.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <button
+      type="button"
+      onClick={() => void save()}
+      disabled={busy}
+      aria-label={`Download ${filename}`}
+      className="flex h-full w-full cursor-pointer flex-col items-center justify-center gap-1 p-2 text-[var(--fg-mute)] hover:text-[var(--fg)] disabled:opacity-50"
+    >
+      <FileText className="h-6 w-6" aria-hidden />
+      <span className="w-full truncate text-center text-2xs">{filename}</span>
+    </button>
+  );
+}
+
 /**
  * Attachments gallery: image-friendly grid. Image cases hold variations as
  * attachments, so images render as thumbnails; non-image assets fall back to a
@@ -89,25 +128,19 @@ export function CaseAttachmentsGallery({
       {attachments.map((attachment) => {
         const isImage = isImageAttachment(attachment);
         const filename = attachment.asset.originalFilename ?? "attachment";
+        const path = `/cases/${caseId}/attachments/${attachment.id}/content`;
         return (
           <div
             key={attachment.id}
             title={filename}
             className={cn(
-              "group relative flex aspect-square flex-col overflow-hidden rounded-lg border border-[var(--edge)] bg-[var(--plane-sidebar)] text-left",
-              isImage && "hover:border-[var(--fg-mute)]",
+              "group relative flex aspect-square flex-col overflow-hidden rounded-lg border border-[var(--edge)] bg-[var(--plane-sidebar)] text-left hover:border-[var(--fg-mute)]",
             )}
           >
             {isImage ? (
-              <AttachmentImage
-                path={`/cases/${caseId}/attachments/${attachment.id}/content`}
-                alt={filename}
-              />
+              <AttachmentImage path={path} alt={filename} />
             ) : (
-              <div className="flex h-full w-full flex-col items-center justify-center gap-1 p-2 text-[var(--fg-mute)]">
-                <FileText className="h-6 w-6" aria-hidden />
-                <span className="w-full truncate text-center text-2xs">{filename}</span>
-              </div>
+              <AttachmentFile path={path} filename={filename} />
             )}
             <span className="pointer-events-none absolute inset-x-0 bottom-0 truncate bg-[var(--plane-pane)]/80 px-1.5 py-1 text-2xs text-[var(--fg-soft)]">
               {humanBytes(attachment.asset.byteSize)}

@@ -21,7 +21,7 @@ import {
 // not follow the bytes into it.
 const INLINE_SAFE_TYPE = /^(image\/(png|jpe?g|gif|webp|avif)|video\/[a-z0-9.+-]+|application\/pdf)$/;
 
-function saveBlob(url: string, name: string) {
+export function saveBlob(url: string, name: string) {
   const a = document.createElement("a");
   a.href = url;
   a.download = name;

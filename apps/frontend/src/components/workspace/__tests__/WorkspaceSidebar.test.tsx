@@ -91,7 +91,7 @@ describe("WorkspaceSidebar", () => {
     expect(details).not.toHaveAttribute("open");
     fireEvent.click(screen.getByText("More"));
     expect(details).toHaveAttribute("open");
-    expect(within(details).getAllByRole("button").map((button) => button.textContent)).toEqual(["Agents", "Money", "Projects", "Automations", "Goals", "Leads", "Accounts"]);
+    expect(within(details).getAllByRole("button").map((button) => button.textContent)).toEqual(["Agents", "Money", "Projects", "Automations", "Goals", "Cases", "Leads", "Accounts"]);
     fireEvent.click(within(details).getByRole("button", { name: "Agents" }));
     expect(openPanel).toHaveBeenCalledWith("teams-agents", {}, { pushUrl: true });
     expect(screen.queryByText("Domain & Site")).not.toBeInTheDocument();

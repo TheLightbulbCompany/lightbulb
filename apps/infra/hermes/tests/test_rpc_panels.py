@@ -296,3 +296,19 @@ def test_auth_status_reads_ONE_profile_because_the_provider_is_owner_level(home,
 def test_auth_status_reports_no_provider_with_no_profile(home, monkeypatch):
     monkeypatch.setenv("AWS_BEARER_TOKEN_BEDROCK", "bearer-token")
     assert call("models.authStatus")[1]["payload"]["providers"] == []
+
+
+# ---- profile.warm ------------------------------------------------------------------------------
+def test_profile_warm_restores_the_agent_off_the_request_thread(home, monkeypatch):
+    """Going Live fires this for every agent in the room, so the first summon does not wait on a
+    cold S3 restore (23 s for a real profile). The answer comes back before the pull finishes."""
+    import threading
+
+    (home / "profiles" / "ceo").mkdir(parents=True)
+    done, seen = threading.Event(), []
+    monkeypatch.setattr(sync, "restore_profile", lambda agent_id: seen.append(agent_id) or 0.0)
+    monkeypatch.setattr(sync, "ensure_profile", lambda agent_id: done.set())
+    status, body = call("profile.warm", {"agentId": "ceo"})
+    assert status == 200 and body == {"ok": True, "payload": {"warming": True}}
+    assert done.wait(2) and seen == ["ceo"]
+    assert call("profile.warm", {"agentId": "stranger"})[1]["ok"] is False

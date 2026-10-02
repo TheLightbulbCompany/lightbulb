@@ -2347,6 +2347,7 @@ def _terminal_scope(agent_id: str, session_key: str):
         # `HOME` itself must NEVER go on the passthrough list: it is global
         # (agent.secret_scope._GLOBAL_ENV_EXACT), and apply_subprocess_home_env owns it on every spawn.
         cwd = conversation_dir(agent_id, session_key)
+        sync.restore_subtree(agent_id, cwd)  # the cold restore leaves work/ in S3 until a turn needs it
         cwd.mkdir(parents=True, exist_ok=True)
         token = install_profile_terminal_scope(
             profile,

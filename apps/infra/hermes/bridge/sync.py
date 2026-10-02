@@ -255,6 +255,12 @@ EXCLUDE_GLOBS = (
     # them to S3 otherwise, and a screenshot reaches the room as an attachment (Task 9), not
     # a profile artifact.
     "cache/screenshots/*",
+    # Hermes's own tool caches (web fetches, terminal output spools, exec, delegation results):
+    # reproducible by definition and the bulk of a profile -- 1,300 of Pulse's 3,582 objects,
+    # 57 MB -- so they neither go up at the end of a turn nor come down on a cold start
+    # (_RESTORE_SKIP_PREFIXES). What is already in S3 under cache/ is dead weight, not restored.
+    "cache/*",
+    "cache/**/*",
     # Backend-projected CLI connector credentials (backend credentials/hermes_cli.py). Same
     # class as the five above: the backend is the only writer, so an upload from here could
     # only ever revert a connect/disconnect the owner just made -- and would let a turn push
@@ -303,6 +309,11 @@ def is_reproducible(rel: str) -> bool:
     return any(fnmatch.fnmatch(rel, pattern) for pattern in _REPRODUCIBLE_GLOBS)
 
 
+#: ponytail: a backend writer (the Files panel) landing under work/ between turns is only picked
+#: up on the next cold start of that conversation, not by a revision bump.
+WORK_DIR_PREFIX = "work/"
+_RESTORED_SUBTREES: set[tuple[str, str]] = set()
+
 #: Restore-side skip: reinstallable home caches an older image already pushed. Deliberately NOT
 #: ``is_excluded``/``is_reproducible`` -- those name backend-owned files and migrated skills a cold
 #: start MUST pull -- and not all of ``home/.local``: the backend projects CLI credentials under
@@ -311,6 +322,14 @@ _RESTORE_SKIP_PREFIXES = (
     *(f"{PROFILE_HOME}/{name}/" for name in _HOME_UNSYNCED),
     PNPM_STORE_PREFIX,
     f"{PAPERCLIP_RUNS_DIR}/",  # read by key on a poll miss, never needed in the profile dir
+    "cache/",  # excluded on the way up too (EXCLUDE_GLOBS); older images pushed these
+    # The memory curator's rollback blobs: read only by an explicit rollback, which is rare and
+    # recreates them from then on. They stay in S3; a cold start does not wait for them.
+    ".curator_backups/",
+    # Per-conversation working trees (<profile>/work/<conversation>): restored LAZILY by
+    # restore_subtree when that conversation's turn starts. Pulse carried ~1,900 such objects
+    # across 20 old conversations, none of them needed by a voice turn in a 21st.
+    WORK_DIR_PREFIX,
 )
 
 #: Per-file S3 GET/PUT ran at ~10-16 objects/s sequentially (Forge: 92,139 objects in 5,749 s).
@@ -464,6 +483,50 @@ def clear_turn_leases(db: Path) -> None:
         log.warning("could not clear restored leases in %s", db, exc_info=True)
 
 
+def _download_one(agent_id: str, dest: Path, item: tuple[str, dict]) -> None:
+    rel, obj = item
+    target = dest / rel
+    target.parent.mkdir(parents=True, exist_ok=True)
+    s3 = _s3()
+    s3.download_file(S3_BUCKET, obj["Key"], str(target))
+    modified = _modified_at(obj)
+    if modified is not None:
+        _SYNCED.setdefault(agent_id, {})[rel] = modified
+    _MTIMES.setdefault(agent_id, {})[rel] = _change_stamp(target)
+    if obj.get("ETag"):
+        _ETAGS.setdefault(agent_id, {})[rel] = obj["ETag"]
+    _remember_cli_credential(agent_id, rel, obj, target)
+
+
+def restore_subtree(agent_id: str, path: Path) -> int:
+    """Pull one directory of the profile that the cold restore left in S3 (today: a conversation's
+    ``work/`` tree), once per process. Returns the object count. The files it brings down join
+    the save baseline exactly like a cold-restored one, so an unchanged file is never re-uploaded
+    and a deleted one is deleted in S3."""
+    if not S3_BUCKET:
+        return 0
+    dest = _profile_dir(agent_id)
+    rel_dir = path.relative_to(dest).as_posix().rstrip("/") + "/"
+    if (agent_id, rel_dir) in _RESTORED_SUBTREES:
+        return 0
+    with profile_lock(agent_id):
+        if (agent_id, rel_dir) in _RESTORED_SUBTREES:
+            return 0
+        prefix = f"{S3_PREFIX}/{agent_id}/"
+        wanted = []
+        for page in _s3().get_paginator("list_objects_v2").paginate(Bucket=S3_BUCKET, Prefix=prefix + rel_dir):
+            for obj in page.get("Contents", []):
+                rel = obj["Key"][len(prefix):]
+                if rel.endswith("/") or is_lock_sidecar(rel) or _is_git_lock(rel):
+                    continue
+                wanted.append((rel, obj))
+        _fan_out(lambda item: _download_one(agent_id, dest, item), wanted)
+        _RESTORED_SUBTREES.add((agent_id, rel_dir))
+    if wanted:
+        log.info("restored %s %s: %d objects", agent_id, rel_dir, len(wanted))
+    return len(wanted)
+
+
 def restore_profile(agent_id: str) -> float:
     """Download the agent's profile dir from S3 once per process. Returns seconds taken."""
     with profile_lock(agent_id):
@@ -480,11 +543,10 @@ def _restore_profile(agent_id: str) -> float:
     ensure_profile_home(agent_id)
     prefix = f"{S3_PREFIX}/{agent_id}/"
     s3 = _s3()
-    synced = _SYNCED.setdefault(agent_id, {})
-    # M6-R51: the baseline save_profile diffs against -- without it the first save of the process
-    # would upload the entire tree it just downloaded. Recorded per object as the loop writes it,
-    # not by a second rglob afterwards: cold-restore latency sits in front of the first reply.
-    mtimes = _MTIMES.setdefault(agent_id, {})
+    # M6-R51: _download_one records the save baseline (_MTIMES/_SYNCED) per object as it writes
+    # it -- without that the first save of the process would upload the entire tree it just
+    # downloaded -- and not by a second rglob afterwards: cold-restore latency sits in front of
+    # the first reply.
     wanted: list[tuple[str, dict]] = []
     for page in s3.get_paginator("list_objects_v2").paginate(Bucket=S3_BUCKET, Prefix=prefix):
         for obj in page.get("Contents", []):
@@ -495,20 +557,7 @@ def _restore_profile(agent_id: str) -> float:
                 continue  # process-local lock or reinstallable home cache
             wanted.append((rel, obj))
 
-    def _download(item: tuple[str, dict]) -> None:
-        rel, obj = item
-        target = dest / rel
-        target.parent.mkdir(parents=True, exist_ok=True)
-        s3.download_file(S3_BUCKET, obj["Key"], str(target))
-        modified = _modified_at(obj)
-        if modified is not None:
-            synced[rel] = modified
-        mtimes[rel] = _change_stamp(target)
-        if obj.get("ETag"):
-            _ETAGS.setdefault(agent_id, {})[rel] = obj["ETag"]
-        _remember_cli_credential(agent_id, rel, obj, target)
-
-    _fan_out(_download, wanted)
+    _fan_out(lambda item: _download_one(agent_id, dest, item), wanted)
     clear_turn_leases(dest / "state.db")
     n = len(wanted)
     _restored.add(agent_id)

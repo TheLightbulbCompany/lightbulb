@@ -182,3 +182,39 @@ def test_hermes_lock_sidecars_never_sync_in_either_direction(home, monkeypatch):
 
     sync.restore_profile("a1")
     assert [key[len(prefix):] for key in fake.downloaded] == ["repo/Cargo.lock"]
+
+
+def test_caches_backups_and_work_trees_stay_in_s3_until_a_turn_needs_them(home, monkeypatch):
+    """Pulse's cold restore was 3,582 objects / 22.8 s, of which ~38 were the profile: the rest
+    were Hermes tool caches, curator rollback blobs and twenty old conversations' work/ trees.
+    A cold start pulls none of those; a conversation's work/ tree comes down when ITS turn starts
+    (restore_subtree), once; caches never go up again either."""
+    monkeypatch.setattr(sync, "S3_BUCKET", "bucket-under-test")
+    sync._restored.discard("a1")
+    sync._RESTORED_SUBTREES.clear()
+    now = time.time()
+    prefix = f"{sync.S3_PREFIX}/a1/"
+    keys = ("config.yaml", "memories/notes.md", "cache/web/page.json", "cache/terminal-output/1.txt",
+            ".curator_backups/blobs/x", "work/room-1/repo/main.py", "work/room-2/notes.txt")
+    fake = FakeS3({prefix + key: ("x", now) for key in keys})
+    monkeypatch.setattr(sync, "_s3", lambda: fake)
+
+    sync.restore_profile("a1")
+    assert sorted(k[len(prefix):] for k in fake.downloaded) == ["config.yaml", "memories/notes.md"]
+
+    fake.downloaded.clear()
+    profile = sync._profile_dir("a1")
+    assert sync.restore_subtree("a1", profile / "work" / "room-1") == 1
+    assert [k[len(prefix):] for k in fake.downloaded] == ["work/room-1/repo/main.py"]
+    assert (profile / "work/room-1/repo/main.py").read_text() == "x"
+    assert sync.restore_subtree("a1", profile / "work" / "room-1") == 0  # once per process
+
+    fake.downloaded.clear()
+    fake.uploaded = getattr(fake, "uploaded", [])
+    (profile / "cache" / "web").mkdir(parents=True, exist_ok=True)
+    (profile / "cache" / "web" / "new.json").write_text("{}")
+    (profile / "work" / "room-1" / "repo" / "main.py").write_text("changed")
+    assert sync.is_excluded("cache/web/new.json")
+    sync.save_profile("a1")
+    uploaded = [k[len(prefix):] for k in getattr(fake, "uploaded", [])]
+    assert "work/room-1/repo/main.py" in uploaded and not any(k.startswith("cache/") for k in uploaded)

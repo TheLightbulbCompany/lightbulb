@@ -157,3 +157,68 @@ async def test_a_lost_steer_follow_up_is_dispatched_as_a_normal_turn_never_steer
     await worker._room_follow_up({"roomId": ROOM, "agentId": AGENT, "followUpId": "f1"})
     assert steers == [] and len(created) == 1 and len(ingress) == 1
     assert created[0][1]["trigger_message_id"] == FOLLOW
+
+
+# Routing v2 §4.1: on a room_event target the agent's own live run hears the line before Jev.
+AMBIENT = {**LIVE, "eventKind": "room_event"}
+ADDRESSED = {**LIVE, "eventKind": "user_request"}
+
+
+def _jev(monkeypatch, decision=None):
+    from core.services import jev
+
+    route = AsyncMock(return_value=decision or {"who": "none"})
+    monkeypatch.setattr(jev, "route", route)
+    return route
+
+
+@pytest.mark.asyncio
+async def test_a_room_event_line_steers_the_agents_ambient_run_before_jev_is_asked(monkeypatch):
+    worker, created, ingress, steers, _ = _fixture(monkeypatch, runs=[AMBIENT])
+    route = _jev(monkeypatch)
+    assert await worker._dispatch_message(META, MEMBER, _message(text="$42k"), "room_event") is True
+    route.assert_not_called()
+    assert created == [] and ingress == []
+    text = steers[0][1]["text"]
+    assert text.startswith("Ada: $42k — said since you were asked.")
+    assert "reply exactly [SILENT]" in text and text.endswith("If it is unrelated, carry on.")
+    work.put_metric.assert_any_call("messaging.run.steered", dimensions={"outcome": "steered", "kind": "ambient"})
+
+
+@pytest.mark.asyncio
+async def test_an_addressed_run_gets_the_bare_line_never_the_stand_down(monkeypatch):
+    worker, _, _, steers, _ = _fixture(monkeypatch, runs=[ADDRESSED])
+    route = _jev(monkeypatch)
+    assert await worker._dispatch_message(META, MEMBER, _message(text="$42k"), "room_event") is True
+    route.assert_not_called()
+    assert steers[0][1]["text"] == "Ada: $42k"
+    work.put_metric.assert_any_call("messaging.run.steered", dimensions={"outcome": "steered", "kind": "addressed"})
+
+
+@pytest.mark.asyncio
+async def test_no_live_run_in_this_conversation_goes_to_jev_and_is_not_steered_again(monkeypatch):
+    other_thread = "99999999-9999-4999-8999-999999999999"
+    worker, created, ingress, steers, _ = _fixture(monkeypatch, runs=[AMBIENT])
+    route = _jev(monkeypatch, {"who": AGENT, "placement": "main"})
+    meta = {**META, "kind": "channel"}
+    await worker._dispatch_message(meta, MEMBER, _message(threadRootMessageId=other_thread), "room_event")
+    route.assert_awaited_once()
+    assert steers == [] and len(created) == 1 and len(ingress) == 1
+
+
+@pytest.mark.asyncio
+async def test_a_dm_room_event_steers_any_live_run_of_this_agent(monkeypatch):
+    worker, created, _, steers, _ = _fixture(monkeypatch, runs=[AMBIENT])
+    route = _jev(monkeypatch)
+    await worker._dispatch_message({**META, "kind": "dm"}, MEMBER, _message(threadRootMessageId=None), "room_event")
+    route.assert_not_called()
+    assert len(steers) == 1 and created == []
+
+
+@pytest.mark.asyncio
+async def test_a_removed_member_is_never_steered(monkeypatch):
+    worker, created, _, steers, _ = _fixture(monkeypatch, runs=[AMBIENT])
+    monkeypatch.setattr(work.messaging_repo, "get_member", AsyncMock(return_value=None))
+    _jev(monkeypatch)
+    assert await worker._dispatch_message(META, MEMBER, _message(), "room_event") is False
+    assert steers == [] and created == []

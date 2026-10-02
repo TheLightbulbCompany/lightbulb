@@ -136,7 +136,7 @@ async def prepare_codex_send(device: MachineIdentity, request: NativeToolRequest
             raise ApiProblem("LOCAL_SESSION_FORBIDDEN", "The Mac is no longer paired.")
         approval_id = f"appr-{uuid.uuid4().hex}"
         expires = now + INTENT_SECONDS
-        label = await _destination_label(_human(device), device.owner_id, destination)
+        label = await _destination_label(_human(device), destination)
         pointer = {
             "requestId": request_id,
             "approvalId": approval_id,
@@ -542,7 +542,7 @@ async def answer_codex_send(auth: AuthContext, session_id: str, decision: Native
     raise ApiProblem("LOCAL_SESSION_CONFLICT", "Session changed. Retry this decision.")
 
 
-async def _destination_label(auth: AuthContext, owner: str, destination: str) -> str | None:
+async def _destination_label(auth: AuthContext, destination: str) -> str | None:
     """Display-only name for the owner's approval card; never part of the digest."""
     from core.services import notification_copy
 
@@ -558,9 +558,9 @@ async def _destination_label(auth: AuthContext, owner: str, destination: str) ->
             rooms = (await messaging.list_rooms(auth)).rooms
             member = next((m for r in rooms if r.kind == "dm" for m in r.members if m.id == target), None)
             return member.display_name if member else await messaging.human_display_name(target)
-        row = await sessions_repo.get_session(owner, target)
-        if not row:
-            return None
+        # The same boundary the send itself crosses: a session the owner may not
+        # control (or an invented id) gets no title, only the raw destination.
+        row, _ = await local_sessions.authorize_session(auth, None, target, owner_only=True)
         return " · ".join(
             (
                 "Claude Code" if row["provider"] == "claude" else "Codex",

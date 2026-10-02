@@ -878,15 +878,17 @@ async def test_destination_label_names_rooms_people_and_sessions(monkeypatch):
     monkeypatch.setattr(tools.messaging, "get_room", AsyncMock(side_effect=[channel, dm]))
     monkeypatch.setattr(tools.messaging, "list_rooms", AsyncMock(return_value=SimpleNamespace(rooms=[dm])))
     monkeypatch.setattr(tools.messaging, "human_display_name", AsyncMock(return_value="Ann"))
+    authorize = AsyncMock(return_value=({"provider": "claude", "title": "Fix login", "humanUserId": "user_c"}, {}))
+    monkeypatch.setattr(tools.local_sessions, "authorize_session", authorize)
+    assert await tools._destination_label(auth, "room:r1") == "#general"
+    assert await tools._destination_label(auth, "room:r2") == "DM with Bea"
+    assert await tools._destination_label(auth, "person:user_b") == "Bea"
+    assert await tools._destination_label(auth, "person:user_z") == "Ann"
+    assert await tools._destination_label(auth, "session:s1") == "Claude Code · Fix login · Ann"
+    assert authorize.await_args.args == (auth, None, "s1") and authorize.await_args.kwargs == {"owner_only": True}
     monkeypatch.setattr(
-        tools.sessions_repo,
-        "get_session",
-        AsyncMock(return_value={"provider": "claude", "title": "Fix login", "humanUserId": "user_c"}),
+        tools.local_sessions,
+        "authorize_session",
+        AsyncMock(side_effect=ApiProblem("LOCAL_SESSION_NOT_FOUND", "Local session not found.")),
     )
-    assert await tools._destination_label(auth, "org_a", "room:r1") == "#general"
-    assert await tools._destination_label(auth, "org_a", "room:r2") == "DM with Bea"
-    assert await tools._destination_label(auth, "org_a", "person:user_b") == "Bea"
-    assert await tools._destination_label(auth, "org_a", "person:user_z") == "Ann"
-    assert await tools._destination_label(auth, "org_a", "session:s1") == "Claude Code · Fix login · Ann"
-    monkeypatch.setattr(tools.sessions_repo, "get_session", AsyncMock(side_effect=RuntimeError("down")))
-    assert await tools._destination_label(auth, "org_a", "session:s1") is None
+    assert await tools._destination_label(auth, "session:forged") is None

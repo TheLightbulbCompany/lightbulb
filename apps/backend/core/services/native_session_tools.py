@@ -416,9 +416,8 @@ async def execute(device: MachineIdentity, request: NativeToolRequest) -> dict:
             return {"state": "unknown", "retry": "Use the same requestId, destination and text."}
         result = row.get("result") or {"state": row.get("state", "pending")}
         if result["state"] == "pending" or (result["state"] == "rejected" and result.get("error")):
-            committed = await _committed_legacy(
-                device.owner_id, source_id, result.get("resolvedDestination") or row["destination"], request_id, auth
-            )
+            resolved = result.get("resolvedDestination") or row.get("resolvedDestination") or row["destination"]
+            committed = await _committed_legacy(device.owner_id, source_id, resolved, request_id, auth)
             if committed:
                 result = await _finish(device.owner_id, source_id, request_id, row["destination"], committed)
         if result.get("targetRequestId"):
@@ -433,6 +432,7 @@ async def execute(device: MachineIdentity, request: NativeToolRequest) -> dict:
     row = await _claim(
         device.owner_id, source_id, request_id, destination, text, request.source_turn_id, request.origin_item_id
     )
+    destination = row.get("resolvedDestination") or destination
     if prior := row.get("result"):
         if prior.get("state") == "rejected" and prior.get("error"):
             committed = await _committed_legacy(
@@ -440,11 +440,19 @@ async def execute(device: MachineIdentity, request: NativeToolRequest) -> dict:
             )
             if committed:
                 return await _finish(device.owner_id, source_id, request_id, row["destination"], committed)
-            error = prior["error"]
-            raise ApiProblem(error["code"], error["message"])
-        return prior
+        return prior  # a replay reports its stored receipt, refusals included
     try:
-        destination = await _resolve_destination(auth, destination)
+        if destination.startswith("person:"):
+            # Pin the DM before posting: a retry must not re-resolve to a different room.
+            resolved = await _resolve_destination(auth, destination)
+            pinned = await run_in_thread(
+                messaging_repo._table().update_item,
+                Key={"pk": row["pk"], "sk": row["sk"]},
+                UpdateExpression="SET resolvedDestination = if_not_exists(resolvedDestination, :destination)",
+                ExpressionAttributeValues={":destination": resolved},
+                ReturnValues="ALL_NEW",
+            )
+            destination = pinned["Attributes"]["resolvedDestination"]
         result = await _dispatch_native(auth, source, destination, text, request_id)
     except ApiProblem as exc:
         if not exc.error.retryable:

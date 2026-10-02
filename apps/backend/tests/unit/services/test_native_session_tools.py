@@ -346,3 +346,58 @@ async def test_room_commit_is_reconciled_before_rejecting_a_receipt(monkeypatch)
     get.assert_awaited_once_with(
         tools.messaging_repo.room_pk(room_id), tools.messaging_repo.agent_idemp_sk(f"native:{source}:{request_id}")
     )
+
+
+@pytest.mark.asyncio
+async def test_replayed_legacy_denial_returns_its_stored_receipt(monkeypatch):
+    sid, request_id = uuid.uuid4(), uuid.uuid4()
+    denied = {
+        "state": "rejected",
+        "destination": "room:r",
+        "error": {"code": "OWNER_DENIED", "message": "The owner denied this send."},
+    }
+    monkeypatch.setattr(tools, "_source", AsyncMock(return_value={"ownerId": "org_a", "sessionId": str(sid)}))
+    monkeypatch.setattr(tools, "_claim", AsyncMock(return_value={"destination": "room:r", "result": denied}))
+    monkeypatch.setattr(tools, "_committed_legacy", AsyncMock(return_value=None))
+    dispatch = AsyncMock()
+    monkeypatch.setattr(tools, "_dispatch_native", dispatch)
+
+    assert await tools.execute(DEVICE, _send_request(sid, "room:r", "hello", request_id)) == denied
+    dispatch.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_person_send_retry_reuses_its_pinned_room(monkeypatch):
+    sid, request_id, pinned_room = uuid.uuid4(), uuid.uuid4(), f"room:{uuid.uuid4()}"
+    claim = {"pk": "pk", "sk": "sk", "destination": "person:user_b", "resolvedDestination": pinned_room}
+    monkeypatch.setattr(tools, "_source", AsyncMock(return_value={"ownerId": "org_a", "sessionId": str(sid)}))
+    monkeypatch.setattr(tools, "_claim", AsyncMock(return_value=claim))
+    resolve = AsyncMock(return_value=f"room:{uuid.uuid4()}")  # what resolution would say now
+    monkeypatch.setattr(tools, "_resolve_destination", resolve)
+    applied = {"state": "applied", "destination": pinned_room, "messageId": "m"}
+    dispatch = AsyncMock(return_value=applied)
+    monkeypatch.setattr(tools, "_dispatch_native", dispatch)
+    monkeypatch.setattr(tools, "_finish", AsyncMock(side_effect=lambda *args: args[-1]))
+
+    assert await tools.execute(DEVICE, _send_request(sid, "person:user_b", "hello", request_id)) == applied
+    assert dispatch.await_args.args[2] == pinned_room
+    resolve.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_first_person_send_pins_the_resolved_room_before_posting(monkeypatch):
+    sid, request_id, room = uuid.uuid4(), uuid.uuid4(), f"room:{uuid.uuid4()}"
+    claim = {"pk": "pk", "sk": "sk", "destination": "person:user_b"}
+    monkeypatch.setattr(tools, "_source", AsyncMock(return_value={"ownerId": "org_a", "sessionId": str(sid)}))
+    monkeypatch.setattr(tools, "_claim", AsyncMock(return_value=claim))
+    monkeypatch.setattr(tools, "_resolve_destination", AsyncMock(return_value=room))
+    monkeypatch.setattr(tools.messaging_repo, "_table", lambda: SimpleNamespace(update_item=None))
+    pin = AsyncMock(return_value={"Attributes": {"resolvedDestination": room}})
+    monkeypatch.setattr(tools, "run_in_thread", pin)
+    dispatch = AsyncMock(return_value={"state": "applied", "destination": room, "messageId": "m"})
+    monkeypatch.setattr(tools, "_dispatch_native", dispatch)
+    monkeypatch.setattr(tools, "_finish", AsyncMock(side_effect=lambda *args: args[-1]))
+
+    await tools.execute(DEVICE, _send_request(sid, "person:user_b", "hello", request_id))
+    assert "if_not_exists(resolvedDestination" in pin.await_args.kwargs["UpdateExpression"]
+    assert dispatch.await_args.args[2] == room

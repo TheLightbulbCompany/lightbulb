@@ -43,7 +43,7 @@ well as the business (their public presence tells you who you work for).
 # Labels take any letter or digit (Unicode, so bücher.de counts); the last label is letters
 # or a punycode xn-- label (example.xn--p1ai), never digits, so "3.5" is not a site.
 _URL_RE = re.compile(
-    r"(https?://\S+|(?<![@\w.-])(?:[^\W_](?:[^\W_-]{0,61}[^\W_])?\.)+(?:xn--[a-z0-9-]{2,59}|[^\W\d_]{2,24})\b(?:/\S*)?)",
+    r"(https?://\S+|(?<![@\w.-])(?:[^\W_](?:(?:[^\W_]|-){0,61}[^\W_])?\.)+(?:xn--[a-z0-9-]{2,59}|[^\W\d_]{2,24})\b(?:/\S*)?)",
     re.IGNORECASE,
 )
 #: The third pre-typed reply (apps/frontend/src/components/messaging/FirstReplyChips.tsx)
@@ -71,8 +71,23 @@ def first_message_intake(text: str) -> tuple[str, str | None]:
     else:
         match = _URL_RE.fullmatch(stripped.strip("<>\"' "))
     if match:
-        return "grow", match.group(0).rstrip(".,;:)>\"']}")
+        return "grow", _trim_link(match.group(0))
     return "new", stripped
+
+
+_CLOSERS = {")": "(", "]": "[", "}": "{", ">": "<"}
+
+
+def _trim_link(token: str) -> str:
+    """Drop prose punctuation from the end of a link, keeping delimiters the link itself opened:
+    ".../widget_(blue)" stays whole, "(https://acme.com)." and "<https://acme.com>" lose the wrapper."""
+    token = token.rstrip(".,;:")
+    while token and (token[-1] in _CLOSERS or token[-1] in "\"'"):
+        last = token[-1]
+        if last in _CLOSERS and token.count(_CLOSERS[last]) >= token.count(last):
+            break
+        token = token[:-1].rstrip(".,;:")
+    return token
 
 
 _IDEA_LINE = "- **Their words, verbatim:** {user_input}\n"

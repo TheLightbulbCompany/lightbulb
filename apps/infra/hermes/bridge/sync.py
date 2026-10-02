@@ -504,10 +504,12 @@ def _download_one(agent_id: str, dest: Path, item: tuple[str, dict]) -> None:
 
 
 def restore_subtree(agent_id: str, path: Path) -> int:
-    """Pull one directory of the profile that the cold restore left in S3 (today: a conversation's
-    ``work/`` tree), once per process. Returns the object count. The files it brings down join
-    the save baseline exactly like a cold-restored one, so an unchanged file is never re-uploaded
-    and a deleted one is deleted in S3."""
+    """Pull one directory of the profile that the cold restore left in S3 (a conversation's
+    ``work/`` tree, a deferred durable tree), once per process. Returns the object count. The
+    files it brings down join the save baseline exactly like a cold-restored one, so an unchanged
+    file is never re-uploaded and a deleted one is deleted in S3. A file that already exists
+    locally is left alone: this process started empty, so a local copy is a turn's own write,
+    newer than anything in S3, and the end-of-turn save carries it up."""
     if not S3_BUCKET:
         return 0
     dest = _profile_dir(agent_id)
@@ -522,7 +524,7 @@ def restore_subtree(agent_id: str, path: Path) -> int:
         for page in _s3().get_paginator("list_objects_v2").paginate(Bucket=S3_BUCKET, Prefix=prefix + rel_dir):
             for obj in page.get("Contents", []):
                 rel = obj["Key"][len(prefix):]
-                if rel.endswith("/") or is_lock_sidecar(rel) or _is_git_lock(rel):
+                if rel.endswith("/") or is_lock_sidecar(rel) or _is_git_lock(rel) or (dest / rel).exists():
                     continue
                 wanted.append((rel, obj))
         _fan_out(lambda item: _download_one(agent_id, dest, item), wanted)

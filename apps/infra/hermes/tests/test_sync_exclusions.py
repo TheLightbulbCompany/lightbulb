@@ -215,9 +215,11 @@ def test_regenerable_caches_never_sync_and_durable_trees_come_down_after_the_pro
     assert sync.restore_subtree("a1", profile / "work" / "room-1") == 0  # once per process
 
     fake.downloaded.clear()
-    assert sync._restore_deferred("a1") == 3  # the rest, in the background
-    assert sorted(k[len(prefix):] for k in fake.downloaded) == [
-        ".curator_backups/blobs/x", "cache/images/pic.png", "work/room-2/notes.txt"]
+    (profile / ".curator_backups" / "blobs").mkdir(parents=True)
+    (profile / ".curator_backups" / "blobs" / "x").write_text("written by this turn")  # before the background got there
+    assert sync._restore_deferred("a1") == 2  # the rest, in the background; the turn's own write wins
+    assert sorted(k[len(prefix):] for k in fake.downloaded) == ["cache/images/pic.png", "work/room-2/notes.txt"]
+    assert (profile / ".curator_backups" / "blobs" / "x").read_text() == "written by this turn"
     assert not (profile / "cache" / "web").exists()  # regenerable: never restored
 
     (profile / "cache" / "web").mkdir(parents=True)
@@ -226,4 +228,4 @@ def test_regenerable_caches_never_sync_and_durable_trees_come_down_after_the_pro
     (profile / "work" / "room-1" / "repo" / "main.py").write_text("changed")
     sync.save_profile("a1")
     uploaded = sorted(k[len(prefix):] for k in fake.uploaded)
-    assert uploaded == ["cache/images/new.png", "work/room-1/repo/main.py"]
+    assert uploaded == [".curator_backups/blobs/x", "cache/images/new.png", "work/room-1/repo/main.py"]

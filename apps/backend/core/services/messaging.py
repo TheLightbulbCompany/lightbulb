@@ -33,7 +33,7 @@ from core.observability.session_analytics import capture_session_mention
 from core.dynamodb import run_in_thread
 from core.repositories import billing_repo, container_repo, messaging_repo
 from core.services.push_service import send_push_to_user
-from core.services import hermes_profiles, livekit_huddles, run_analytics
+from core.services import clerk_admin, hermes_profiles, livekit_huddles, run_analytics
 from core.services.session_keys import parse_lightbulb_session_key, parse_session_key
 from core.services.paperclip_provisioning import STARTER_ROLE_KEYS as _STARTER_KEYS
 from core.services.usage_service import record_usage
@@ -102,20 +102,35 @@ SECTION_NAME_MAX_CHARS = 40
 EVENT_ID_MAX_BYTES = 256
 DEFAULT_ROOM_NAME = "general"
 # Seeded ONCE per workspace as a CEO-authored message (``ensure_default_room``
-# returns early on any room that already has messages), so this is the very
-# first thing a new user reads. It does NOT re-list the roster — the member
-# list already shows it — and instead spends its length on the blank-page
-# problem: state the role, name the two first-run doors (connect tools, paste
-# existing context — first-run spec 2026-09-17 §4.1), and hand over a
-# copy-pasteable prompt for anyone who would rather watch before typing.
-# Owner-approved copy (D1, 2026-09-22); keep it easy to swap.
-# Refers to the CEO by ROLE, never a name: agent names are user-editable.
-DEFAULT_ROOM_WELCOME = (
-    "I’m the CEO here — tell me what you want to happen and I’ll put the right people on it.\n\n"
-    "Start by connecting your tools in the setup cards, or paste what you’ve already told "
-    "another assistant about your business.\n\n"
-    "Or try: “Research our top three competitors and tell me where we’re weakest.”"
+# returns early on any room that already has messages): the first thing a new
+# user reads. Refers to the CEO by ROLE, never a name: agent names are user-editable.
+#: The three pre-typed replies. The frontend's FirstReplyChips.tsx carries the same strings;
+#: the third's prefix is what onboarding_brief.first_message_intake recognises as "you pick".
+FIRST_REPLIES: tuple[str, str, str] = (
+    "Here's our website: ",
+    "I'm starting ",
+    "Not sure yet. Pick something useful and show me how you work.",
 )
+
+_FIRST_MESSAGE = (
+    "Welcome to {workspace}. I'm your CEO. Growth, Engineering, Finance, Analytics and "
+    "Customer Ops are in this room with me.\n\n"
+    "One thing gets us started: what's the business? A website or a sentence is plenty.\n\n"
+    "→ Here's our website: …\n"
+    "→ I'm starting …\n"
+    "→ Not sure yet. Pick something useful and show me how you work.\n\n"
+    "I'll turn your answer into a plan and hand the first pieces to the team. "
+    "You'll watch them work here."
+)
+
+
+def default_room_welcome(workspace_name: str | None) -> str:
+    """The CEO's first message. Only the workspace name is interpolated; a leading @ or #
+    is stripped so the name cannot render as a mention or a channel link."""
+    name = " ".join((workspace_name or "").lstrip("@#").split()) or "your workspace"
+    return _FIRST_MESSAGE.format(workspace=name)
+
+
 ROOM_ARCHIVED_MESSAGE = "This channel is archived. Unarchive it to post."
 API_ERROR_STATUS = {
     "LOCAL_SESSION_FORBIDDEN": 403,
@@ -1837,6 +1852,11 @@ async def ensure_default_room(owner_id: str, owner_user_id: str) -> str | None:
         for key in _STARTER_KEYS
     )
     client_room_id = f"workspace-bootstrap-v2:{owner_id}"
+    # Resolve the welcome BEFORE the room exists: an empty room is visible the moment
+    # create_room returns, and a Clerk call that pauses there would let the owner's
+    # first message take seq 1 -- which hides the starter chips for good.
+    org = await clerk_admin.get_organization(owner_id) or {}
+    welcome = default_room_welcome(org.get("name"))
     if existing_room is None:
         await messaging_repo.ensure_user_stream(owner_id, owner_user_id)
         normalized = [{key: member.get(key) for key in ("kind", "id", "role", "listenMode")} for member in members]
@@ -1858,9 +1878,9 @@ async def ensure_default_room(owner_id: str, owner_user_id: str) -> str | None:
         owner_id=owner_id,
         idemp_pk=messaging_repo.room_pk(room_id),
         idemp_sk=messaging_repo.human_idemp_sk("__system__", f"{client_room_id}:welcome"),
-        req_hash=messaging_repo.request_hash(DEFAULT_ROOM_WELCOME, ceo_id),
+        req_hash=messaging_repo.request_hash(welcome, ceo_id),
         author={"kind": "agent", "id": ceo_id, "displayName": agents[ceo_id]["name"]},
-        text=DEFAULT_ROOM_WELCOME,
+        text=welcome,
         mentions=[],
         reply_to_message_id=None,
         thread_root_message_id=None,

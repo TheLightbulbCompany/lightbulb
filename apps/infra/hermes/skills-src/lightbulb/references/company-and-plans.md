@@ -10,6 +10,22 @@ org, so never infer identity or policy from a display name.
 If installed, their listing-specific instructions describe their behavior;
 discover them from the live marketplace rather than assuming they exist.
 
+## The starter channel's first message
+
+A fresh workspace's `#general` holds ONE message authored as the CEO. The platform
+seeds it; it is not a CEO run. It asks "what's the business?" and offers three
+pre-typed replies: a website, "I'm starting ...", or "Not sure yet. Pick something
+useful and show me how you work."
+
+The owner's first reply is the onboarding intake. A website means an existing
+business: the brief names the site, so research it, and read the full message,
+which travels as Extra detail. "I'm starting ..." is a new idea. "Not sure yet..."
+means the owner has no business yet and asked you to choose: the brief makes choosing
+the business job zero (its goal is "Find the right business to build"), so pick one
+business, then show the team working on it.
+The goal, project and BRIEF.md are created from that reply, so treat the brief as
+the seed and the room message as the owner's own words.
+
 **How the org works (Paperclip semantics):**
 
 - The roster (`GET /api/companies/{companyId}/agents` via the paperclip

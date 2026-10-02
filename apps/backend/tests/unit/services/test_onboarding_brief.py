@@ -14,6 +14,7 @@ import pytest
 from core.services.onboarding_brief import (
     capture_first_workspace_message,
     derive_goal_title,
+    first_message_intake,
     project_name_for,
     render_brief_md,
     seed_goal_and_project,
@@ -345,3 +346,123 @@ async def test_staging_writes_the_agents_profile(monkeypatch):
     await stage_first_run_files(owner_id="org_abc", friday_agent_id="friday-uuid", brief_md="brief")
 
     write_profile_file.assert_awaited_once_with("org_abc", "friday-uuid", "BRIEF.md", "brief")
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("Here's our website: https://acme.com/pricing", ("grow", "https://acme.com/pricing")),
+        ("Here's our website: acme.com", ("grow", "acme.com")),
+        ("Here's our website: (https://acme.com).", ("grow", "https://acme.com")),
+        ("Here's our website: <https://acme.com/about>", ("grow", "https://acme.com/about")),
+        ("Here's our website: example.xn--p1ai", ("grow", "example.xn--p1ai")),
+        ("Here's our website: bücher.de", ("grow", "bücher.de")),
+        ("bücher.de/katalog", ("grow", "bücher.de/katalog")),
+        ("Here's our website: my-site.com", ("grow", "my-site.com")),
+        ("foo-bar.co.uk", ("grow", "foo-bar.co.uk")),
+        ("Here's our website: münchen-shop.de", ("grow", "münchen-shop.de")),
+        (
+            "Here's our website: https://example.com/products/widget_(blue)",
+            ("grow", "https://example.com/products/widget_(blue)"),
+        ),
+        ("Here's our website: (https://example.com/a_(b)).", ("grow", "https://example.com/a_(b)")),
+        ("acme.co", ("grow", "acme.co")),
+        ("I'm starting a competitor to calendly.com", ("new", "I'm starting a competitor to calendly.com")),
+        ("I am starting a bakery, see instagram.com/x", ("new", "I am starting a bakery, see instagram.com/x")),
+        ("Reach me at jane@gmail.com", ("new", "Reach me at jane@gmail.com")),
+        ("I'm starting a dog-walking service in Austin", ("new", "I'm starting a dog-walking service in Austin")),
+        ("Not sure yet. Pick something useful and show me how you work.", ("new", None)),
+        ("not sure yet, you choose", ("new", None)),
+        ("We ship 3.5 tonnes a week", ("new", "We ship 3.5 tonnes a week")),
+        ("Here's our website: acme.xyz", ("grow", "acme.xyz")),
+        ("Here's our website: acme.com.au", ("grow", "acme.com.au")),
+        ("Here's our website: shop.acme.tech/about", ("grow", "shop.acme.tech/about")),
+        ("We build on node.js", ("new", "We build on node.js")),
+        ("Here's our website: acme.sh", ("grow", "acme.sh")),
+        ("Our website is https://acme.com/pricing — we sell candles", ("grow", "https://acme.com/pricing")),
+        ("https://acme.com", ("grow", "https://acme.com")),
+        ("<https://acme.com>", ("grow", "https://acme.com")),
+        ("We sell on amazon.com and etsy", ("new", "We sell on amazon.com and etsy")),
+        ("Here's our website: coming soon", ("new", "Here's our website: coming soon")),
+        ("3.5 tonnes a week", ("new", "3.5 tonnes a week")),
+    ],
+)
+def test_first_message_intake_picks_the_path_and_the_goal_input(text, expected):
+    assert first_message_intake(text) == expected
+
+
+@pytest.mark.asyncio
+async def test_a_url_in_the_first_message_lands_as_grow_with_the_url_as_input():
+    repo = MagicMock()
+    repo.resolve_owner_row = AsyncMock(return_value=SimpleNamespace(status="active", funnel_state="not_started"))
+    repo.put_pending_brief = AsyncMock(return_value=True)
+    message = {
+        "roomId": __import__("core.services.messaging", fromlist=["default_room_id"]).default_room_id(OWNER),
+        "messageSeq": 1,
+        "messageId": "m1",
+        "author": {"kind": "human", "id": "user_1"},
+        "text": "Here's our website: https://acme.com",
+        "dispatchTargets": [{"agentId": FRIDAY_ID, "eventKind": "user_request"}],
+    }
+    with (
+        patch("core.repositories.paperclip_repo.PaperclipRepo", return_value=repo),
+        patch("core.services.onboarding_brief.reconcile_pending_brief", new=AsyncMock()),
+        patch("core.repositories.messaging_repo.list_messages_between", new=AsyncMock(return_value=[])),
+    ):
+        assert await capture_first_workspace_message(OWNER, message) is True
+    kwargs = repo.put_pending_brief.await_args.kwargs
+    assert kwargs["path"] == "grow"
+    assert kwargs["user_input"] == "https://acme.com"
+    assert kwargs["detail"] == "Here's our website: https://acme.com"
+    assert kwargs["brief_text"] == "Here's our website: https://acme.com"
+
+
+@pytest.mark.asyncio
+async def test_a_not_sure_yet_message_keeps_the_owners_words_as_detail():
+    text = "Not sure yet which market to target, but we're building a scheduling tool for dentists"
+    repo = MagicMock()
+    repo.resolve_owner_row = AsyncMock(return_value=SimpleNamespace(status="active", funnel_state="not_started"))
+    repo.put_pending_brief = AsyncMock(return_value=True)
+    message = {
+        "roomId": __import__("core.services.messaging", fromlist=["default_room_id"]).default_room_id(OWNER),
+        "messageSeq": 1,
+        "messageId": "m1",
+        "author": {"kind": "human", "id": "user_1"},
+        "text": text,
+        "dispatchTargets": [{"agentId": FRIDAY_ID, "eventKind": "user_request"}],
+    }
+    with (
+        patch("core.repositories.paperclip_repo.PaperclipRepo", return_value=repo),
+        patch("core.services.onboarding_brief.reconcile_pending_brief", new=AsyncMock()),
+        patch("core.repositories.messaging_repo.list_messages_between", new=AsyncMock(return_value=[])),
+    ):
+        assert await capture_first_workspace_message(OWNER, message) is True
+    kwargs = repo.put_pending_brief.await_args.kwargs
+    assert kwargs["path"] == "new"
+    assert kwargs["user_input"] is None
+    assert kwargs["detail"] == text
+    assert kwargs["brief_text"] == text
+
+
+@pytest.mark.asyncio
+async def test_a_new_path_message_lands_with_no_detail():
+    repo = MagicMock()
+    repo.resolve_owner_row = AsyncMock(return_value=SimpleNamespace(status="active", funnel_state="not_started"))
+    repo.put_pending_brief = AsyncMock(return_value=True)
+    message = {
+        "roomId": __import__("core.services.messaging", fromlist=["default_room_id"]).default_room_id(OWNER),
+        "messageSeq": 1,
+        "messageId": "m1",
+        "author": {"kind": "human", "id": "user_1"},
+        "text": "I'm starting a bakery",
+        "dispatchTargets": [{"agentId": FRIDAY_ID, "eventKind": "user_request"}],
+    }
+    with (
+        patch("core.repositories.paperclip_repo.PaperclipRepo", return_value=repo),
+        patch("core.services.onboarding_brief.reconcile_pending_brief", new=AsyncMock()),
+        patch("core.repositories.messaging_repo.list_messages_between", new=AsyncMock(return_value=[])),
+    ):
+        assert await capture_first_workspace_message(OWNER, message) is True
+    kwargs = repo.put_pending_brief.await_args.kwargs
+    assert kwargs["path"] == "new"
+    assert kwargs["detail"] is None

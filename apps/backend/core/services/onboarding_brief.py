@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 from datetime import datetime, timezone
 from enum import Enum
 
@@ -36,6 +37,58 @@ Treat their words as the seed, not the ceiling — on the `grow` path the
 input is usually their website; fetch it first. Research the person as
 well as the business (their public presence tells you who you work for).
 """
+
+# A link or hostname token. It only means "the owner's site" under the framing in
+# first_message_intake (a website prefix, or the whole message being the link).
+# Labels take any letter or digit (Unicode, so bücher.de counts); the last label is letters
+# or a punycode xn-- label (example.xn--p1ai), never digits, so "3.5" is not a site.
+_URL_RE = re.compile(
+    r"(https?://\S+|(?<![@\w.-])(?:[^\W_](?:(?:[^\W_]|-){0,61}[^\W_])?\.)+(?:xn--[a-z0-9-]{2,59}|[^\W\d_]{2,24})\b(?:/\S*)?)",
+    re.IGNORECASE,
+)
+#: The third pre-typed reply (apps/frontend/src/components/messaging/FirstReplyChips.tsx)
+#: starts with these words. Matching the prefix, not the whole sentence, survives copy tweaks.
+_YOU_PICK_PREFIX = "not sure yet"
+_WEBSITE_PREFIX_RE = re.compile(
+    r"(here's our website|here is our website|our website is|our site is|website:)", re.IGNORECASE
+)
+
+
+def first_message_intake(text: str) -> tuple[str, str | None]:
+    """(path, user_input) for the brief from the owner's first message.
+
+    A website-framed message or a bare link -> ("grow", the link); "Not sure yet..." -> ("new", None), which the
+    brief template renders as the owner asking the CEO to pick; anything else -> ("new", text).
+    """
+    stripped = text.strip()
+    if stripped.lower().startswith(_YOU_PICK_PREFIX):
+        return "new", None
+    if re.match(r"(i'm|i am|im) starting", stripped, re.IGNORECASE):
+        return "new", stripped
+    prefix = _WEBSITE_PREFIX_RE.match(stripped)
+    if prefix:
+        match = _URL_RE.search(stripped[prefix.end() :])
+    else:
+        match = _URL_RE.fullmatch(stripped.strip("<>\"' "))
+    if match:
+        return "grow", _trim_link(match.group(0))
+    return "new", stripped
+
+
+_CLOSERS = {")": "(", "]": "[", "}": "{", ">": "<"}
+
+
+def _trim_link(token: str) -> str:
+    """Drop prose punctuation from the end of a link, keeping delimiters the link itself opened:
+    ".../widget_(blue)" stays whole, "(https://acme.com)." and "<https://acme.com>" lose the wrapper."""
+    token = token.rstrip(".,;:")
+    while token and (token[-1] in _CLOSERS or token[-1] in "\"'"):
+        last = token[-1]
+        if last in _CLOSERS and token.count(_CLOSERS[last]) >= token.count(last):
+            break
+        token = token[:-1].rstrip(".,;:")
+    return token
+
 
 _IDEA_LINE = "- **Their words, verbatim:** {user_input}\n"
 
@@ -327,11 +380,12 @@ async def capture_first_workspace_message(owner_id: str, message: dict) -> bool:
     if getattr(owner_row, "status", None) != "active" or getattr(owner_row, "funnel_state", None) != "not_started":
         return False
 
+    path, user_input = first_message_intake(text)
     landed = await repo.put_pending_brief(
         owner_id,
-        path="new",
-        user_input=text,
-        detail=None,
+        path=path,
+        user_input=user_input,
+        detail=None if user_input == text.strip() else text,
         brief_text=text,
         submitted_by=str(author["id"]),
         source_message_id=str(message["messageId"]),

@@ -3,6 +3,7 @@ import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-libra
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { ApiError, MESSAGE_ATTACHMENT_ACCEPT } from "@lightbulb/shared";
 import { requestFocusComposer, consumeFocusComposerRequest, _resetFocusComposerRequestForTests } from "@/lib/focusComposerRequest";
+import { INCOMPLETE_FIRST_REPLIES } from "../FirstReplyChips";
 import { RoomComposer, type RoomComposerProps } from "../RoomComposer";
 
 const baseProps: RoomComposerProps = {
@@ -165,4 +166,27 @@ it("replaces an API 400 upload failure with an actionable reason", async () => {
   expect(await screen.findByText("The server rejected this file. Check that its contents match its type and the file is within the size limit.")).toBeInTheDocument();
   expect(screen.queryByText("Upload rejected")).not.toBeInTheDocument();
   expect(screen.getByRole("button", { name: "Retry brief.pdf" })).toBeEnabled();
+});
+
+it("focuses the field with the cursor at the end when focusToken changes", () => {
+  const { rerender } = render(<RoomComposer {...baseProps} text="Here's our website: " focusToken={0} />);
+  const field = screen.getByRole("textbox") as HTMLTextAreaElement;
+  expect(document.activeElement).not.toBe(field);
+  rerender(<RoomComposer {...baseProps} text="Here's our website: " focusToken={1} />);
+  expect(document.activeElement).toBe(field);
+  expect(field.selectionStart).toBe("Here's our website: ".length);
+});
+
+it("does not let an incomplete chip prefix be sent, but sends once it is completed", () => {
+  const { rerender } = render(<RoomComposer {...baseProps} placeholderDrafts={INCOMPLETE_FIRST_REPLIES} text="Here's our website:" />);
+  expect(screen.getByRole("button", { name: "Send message" })).toBeDisabled();
+  rerender(<RoomComposer {...baseProps} placeholderDrafts={INCOMPLETE_FIRST_REPLIES} text="I'm starting" />);
+  expect(screen.getByRole("button", { name: "Send message" })).toBeDisabled();
+  rerender(<RoomComposer {...baseProps} placeholderDrafts={INCOMPLETE_FIRST_REPLIES} text="Here's our website: acme.com" />);
+  expect(screen.getByRole("button", { name: "Send message" })).toBeEnabled();
+});
+
+it("sends \"I'm starting\" when no placeholder drafts are set", () => {
+  render(<RoomComposer {...baseProps} text="I'm starting" />);
+  expect(screen.getByRole("button", { name: "Send message" })).toBeEnabled();
 });

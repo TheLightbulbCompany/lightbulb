@@ -29,6 +29,7 @@ import { RoomHeader } from "./RoomHeader";
 import { readRecentEmoji } from "./EmojiPicker";
 import { ParticipantAvatar } from "./ParticipantAvatar";
 import { ParticipantProfile } from "./ParticipantProfile";
+import { FirstReplyChips, INCOMPLETE_FIRST_REPLIES } from "./FirstReplyChips";
 import { RoomIntro } from "./RoomIntro";
 import { OnboardingBand } from "./OnboardingBand";
 import { RoomLimitBar } from "./RoomLimitBar";
@@ -39,6 +40,7 @@ import { RoomTasks } from "./RoomTasks";
 import { taskIdentifiers, useReferencedTasks } from "./MessageTaskCard";
 import { RoomTimeline, StickToBottom } from "./RoomTimeline";
 import { buildTimeline, collapseRuns, linkifyMentions, linkifySessionMentions, placeRuns, parseMentionHref, roomDisplayName, type RoomRunView, type RoomSummary } from "@lightbulb/shared";
+import { TypingReveal } from "./TypingReveal";
 import { useAsyncAction } from "./useAsyncAction";
 import type {
   PendingRoomMessage,
@@ -338,6 +340,7 @@ function RoomContent({
     const recent = readRecentEmoji();
     return recent.length ? recent.slice(0, 4) : DEFAULT_QUICK_REACTIONS;
   });
+  const [focusToken, setFocusToken] = useState(0);
   const [memberPickerOpen, setMemberPickerOpen] = useState(false);
   const [addingMembers, setAddingMembers] = useState(false);
   const [selectedMembers, setSelectedMembers] = useState<string[]>([]);
@@ -374,6 +377,12 @@ function RoomContent({
   const sideHost = useBrowserThreadHost();
   const visibleRoom = room?.roomId === roomId ? room : undefined;
   const actionable = httpReady && !!visibleRoom;
+  // The welcome (seq 1) must be loaded: useRooms keeps only the newest 100, so a long agent-only run hides it.
+  const showFirstReplies = Boolean(room?.isDefault) && !room?.archivedAt
+    && messages[0]?.messageSeq === 1
+    && !messages.some((m) => m.author.kind === "human")
+    && pendingMessages.length === 0
+    && actionable && !composer.disabled;
   const mainMessages = useMemo(() => messages.filter((message) => message.threadRootMessageId === null), [messages]);
   // One pass, as in the mobile timeline, instead of a full history scan per row.
   const repliesByRoot = useMemo(() => {
@@ -559,12 +568,13 @@ function RoomContent({
     }
   }, [onSetReaction, actionable, reactionPending, currentUserId]);
 
+  const revealStarter = Boolean(room?.isDefault) && !messages.some((m) => m.author.kind === "human");
   const renderMessage = useCallback((message: RoomMessage, inThread = false, collapsed = false) => {
     const participant = participants.find((member) => member.kind === message.author.kind && member.id === message.author.id);
     const mentionsMe = message.mentions.some((mention) => mention.kind === "human" && mention.id === currentUserId);
     const replies = inThread ? undefined : repliesByRoot.get(message.messageId);
-    return <RoomMessageItem key={message.messageId} id={`${id}-${inThread ? "thread" : "main"}-${message.messageId}`}
-      message={message} text={linkifySessionMentions(linkifyMentions(message.text, message.mentions, participants), message.sessionSends, composer.sessionTargets?.map(({ candidate }) => candidate.session))} participant={participant} currentUserId={currentUserId} actionable={actionable} inThread={inThread} collapsed={collapsed}
+    const body = (text: string) => <RoomMessageItem key={message.messageId} id={`${id}-${inThread ? "thread" : "main"}-${message.messageId}`}
+      message={message} text={linkifySessionMentions(linkifyMentions(text, message.mentions, participants), message.sessionSends, composer.sessionTargets?.map(({ candidate }) => candidate.session))} participant={participant} currentUserId={currentUserId} actionable={actionable} inThread={inThread} collapsed={collapsed}
       startEditing={!inThread && editTarget === message.messageId}
       onEditingClosed={() => setEditTarget((current) => current === message.messageId ? null : current)}
       replyCount={replies?.count ?? 0} receiptRefreshKey={inThread ? threadReplyCount : replies?.count ?? 0} lastReplyAt={replies?.latest.createdAt}
@@ -607,7 +617,12 @@ function RoomContent({
           }}><Link aria-hidden="true" /></Button>
         {copyError === message.messageId && <p role="alert" className="text-sm text-err">Could not copy the link.</p>}
       </> : undefined} />;
-  }, [participants, currentUserId, repliesByRoot, threadReplyCount, threadActivity, receipts, id, actionable, editTarget, searchTarget,
+    // The seeded CEO welcome streams in until a human has written (client-side, cosmetic).
+    if (revealStarter && !inThread && message.messageSeq === 1 && message.author.kind === "agent") {
+      return <TypingReveal key={message.messageId} text={message.text} playKey={message.roomId}>{body}</TypingReveal>;
+    }
+    return body(message.text);
+  }, [revealStarter, participants, currentUserId, repliesByRoot, threadReplyCount, threadActivity, receipts, id, actionable, editTarget, searchTarget,
     quickReactions, reactionPending, reactionError, onSetReaction, toggleReaction, openDetail,
     onSelectParticipant, onUpdateMessage, onDownloadAttachment, onAttachmentUrl, onGetSessionCommand, onRetrySessionSend, onCancelSessionSend, onSetPin, onMarkUnreadFrom,
     messageActionPending, runMessageAction, pinnedMessageIds, copied, copyError, roomId]);
@@ -743,13 +758,14 @@ function RoomContent({
       {copied && <p role="status" aria-label="Link copied" className="sr-only">Link copied</p>}
       {messageActionError && <p role="alert" className="room-typing text-sm text-err">{messageActionError}</p>}
       {!visibleRoom?.archivedAt && <RoomLimitBar account={billing} />}
+      {showFirstReplies && <FirstReplyChips onPick={(text) => { if (composer.text.trim() === "") composer.onTextChange(text); setFocusToken((t) => t + 1); }} />}
       {visibleRoom?.archivedAt ? <div className="room-composer room-archived" role="status">
         <p className="text-sm text-muted-foreground">
           {canUnarchive ? `This ${roomNoun} is archived. Unarchive it to post.` : `This ${roomNoun} is archived.`}
         </p>
         {canUnarchive && <Button type="button" size="sm" variant="outline" disabled={!actionable || messageActionPending}
           onClick={() => void runMessageAction(() => onSetArchived!(false), `The ${roomNoun} could not be unarchived.`)}>Unarchive {roomNoun}</Button>}
-      </div> : <RoomComposer {...composer}
+      </div> : <RoomComposer {...composer} focusToken={focusToken} placeholderDrafts={showFirstReplies ? INCOMPLETE_FIRST_REPLIES : undefined}
         onSubmit={markSent(composer.onSubmit)}
         onRetry={composer.onRetry ? markSent(composer.onRetry) : undefined}
         onEditLast={onUpdateMessage ? () => {

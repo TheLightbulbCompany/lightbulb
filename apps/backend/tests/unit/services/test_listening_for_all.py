@@ -191,13 +191,56 @@ def _welcome_text(monkeypatch) -> str:
 
 
 @pytest.mark.asyncio
-async def test_a_trial_workspace_gets_the_plain_welcome(monkeypatch):
+async def test_a_trial_workspace_gets_the_first_message_with_its_name(monkeypatch):
     _seed_fixture(monkeypatch)
     _billing(monkeypatch, TRIAL)
+    monkeypatch.setattr(
+        messaging.clerk_admin, "get_organization", AsyncMock(return_value={"name": "Anna's Frozen Treats"})
+    )
 
     await messaging.ensure_default_room(OWNER, USER)
 
-    assert _welcome_text(monkeypatch) == messaging.DEFAULT_ROOM_WELCOME
+    text = _welcome_text(monkeypatch)
+    assert text == messaging.default_room_welcome("Anna's Frozen Treats")
+    assert text.startswith("Welcome to Anna's Frozen Treats. I'm your CEO.")
+    for reply in messaging.FIRST_REPLIES:
+        assert reply.rstrip(" ") in text
+
+
+@pytest.mark.asyncio
+async def test_the_first_message_falls_back_when_clerk_has_no_name(monkeypatch):
+    _seed_fixture(monkeypatch)
+    _billing(monkeypatch, TRIAL)
+    monkeypatch.setattr(messaging.clerk_admin, "get_organization", AsyncMock(return_value=None))
+
+    await messaging.ensure_default_room(OWNER, USER)
+
+    assert _welcome_text(monkeypatch).startswith("Welcome to your workspace. I'm your CEO.")
+
+
+@pytest.mark.asyncio
+async def test_the_welcome_is_resolved_before_the_room_exists(monkeypatch):
+    """A room is visible the moment create_room returns; a slow Clerk call after that would let the
+    owner's first message take seq 1 and hide the starter chips for good."""
+    _, create_room = _seed_fixture(monkeypatch)
+    _billing(monkeypatch, TRIAL)
+    order: list[str] = []
+
+    async def get_organization(_owner_id):
+        order.append("clerk")
+        return {"name": "Anna's Frozen Treats"}
+
+    create_room.side_effect = lambda **_kwargs: order.append("room") or {"kind": "channel"}
+    monkeypatch.setattr(messaging.clerk_admin, "get_organization", get_organization)
+
+    await messaging.ensure_default_room(OWNER, USER)
+
+    assert order == ["clerk", "room"]
+
+
+def test_the_first_message_never_starts_a_mention_or_channel_with_the_name():
+    assert messaging.default_room_welcome("@growth  team").startswith("Welcome to growth team.")
+    assert messaging.default_room_welcome("#general").startswith("Welcome to general.")
 
 
 @pytest.mark.asyncio

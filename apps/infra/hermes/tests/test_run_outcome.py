@@ -72,6 +72,13 @@ def test_only_room_event_turns_are_offered_silence():
     assert "[SILENT]" not in turn._observe_prompt("a", {"eventKind": "user_request"})
 
 
+def test_group_manners_reach_every_turn_and_the_room_question_rule_only_ambient_ones():
+    ambient, addressed = (turn._observe_prompt("a", {"eventKind": k}) for k in ("room_event", "user_request"))
+    for line in ("correct it once and cite your source", "phrased as \"we\"", "yes or thanks answers"):
+        assert line in ambient and line in addressed
+    assert "name who can" in ambient and "name who can" not in addressed
+
+
 def test_hermes_failed_result_is_not_completed_even_with_prose(monkeypatch):
     monkeypatch.setattr(
         turn, "_construct_agent",

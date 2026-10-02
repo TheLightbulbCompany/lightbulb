@@ -1237,7 +1237,6 @@ async def submit_command(
         if (
             isinstance(auth, AgentInvocation)
             or request.kind != "send"
-            or request.expected_turn_id is not None
             or replaces_request_id == request.request_id
             or room_id
             or origin_room_id

@@ -1486,6 +1486,30 @@ async def test_online_retry_stays_in_outbox_until_its_outcome_is_known(transport
 
 
 @pytest.mark.asyncio
+async def test_offline_replacement_accepts_a_fenced_immediate_turn(transport):
+    sid = await start(transport)
+    messaging_repo._table().update_item(
+        Key={"pk": repo.session_pk(OWNER, sid), "sk": "META"},
+        UpdateExpression="SET onlineUntil = :past",
+        ExpressionAttributeValues={":past": int(time.time()) - 1},
+    )
+    await service.submit_command(ALICE, None, sid, command(service, text="continue"))
+    original = await repo.get_command(OWNER, sid, "request-1")
+    await repo.replace_command(original, {**original, "state": "rejected"})
+    await relay(transport).handle_message(
+        "conn-1", heartbeat(sid, capabilities={"sendMode": "immediate", "steer": True, "interrupt": False})
+    )
+    retry = await service.submit_command(
+        ALICE,
+        None,
+        sid,
+        command(service, requestId="retry-busy", text="continue", expectedTurnId="turn-1"),
+        replaces_request_id="request-1",
+    )
+    assert retry.state == "pending"
+
+
+@pytest.mark.asyncio
 async def test_offline_outbox_keeps_new_pending_ahead_of_expired_unknowns(transport):
     sid = await start(transport)
     table = messaging_repo._table()

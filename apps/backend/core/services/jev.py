@@ -398,10 +398,8 @@ WHO_INSTRUCTIONS = (
     "listening in the room. They stay out "
     "of personal back-and-forth, thanks and acknowledgements, and they don't pile on after a "
     "colleague has already answered. A teammate already working on a request owns its "
-    "follow-ups; don't add a second responder to it. A request made on someone's behalf ('Alice "
-    "needs the deploy logs', 'Leo, Finance has those numbers') is answered like any other: by the "
-    "teammate named, else the one whose role fits, speaking to the person who needs it. Pick at "
-    "most ONE: the teammate spoken to, else the teammate whose role and tools fit best, or nobody."
+    "follow-ups; don't add a second responder to it. Pick at most ONE: the teammate spoken to, "
+    "else the teammate whose role and tools fit best, or nobody."
 )
 NONE_CRITERION = (
     "Nobody: a good employee would stay quiet here -- chatter between people ('lol', 'thanks', "

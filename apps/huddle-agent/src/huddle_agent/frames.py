@@ -16,6 +16,7 @@ APPEND_CHARS = 1400  # OpenAI caps each append at 500 tokens
 # publishes, so deltas are held 10 back (2 batches). Reordering beyond that applies as it arrives; raise this with FRAME_BATCH.
 REORDER_WINDOW = 10
 STALE_TURN_SECONDS = 120  # a run silent this long lost its run_ended (bridge crash): not running
+QUEUED_TURN_SECONDS = 1_800  # a run_queued run waits on the room lock behind a chat run (the chat run budget)
 
 _SENTENCES = re.compile(r".*[.!?](?=\s)", re.DOTALL)
 
@@ -143,11 +144,14 @@ class Runs:
         self._apply(run, frame)
 
     def running(self, agent_id: str | None = None) -> list[Run]:
-        """Runs whose answer is still coming. One with no frame for STALE_TURN_SECONDS lost its run_ended."""
+        """Runs whose answer is still coming. One with no frame for STALE_TURN_SECONDS lost its run_ended;
+        a queued one (run_queued, behind a chat run) waits up to QUEUED_TURN_SECONDS."""
         now = self._clock()
         return [
             r for r in self._runs.values()
-            if not r.ended and now - r.seen < STALE_TURN_SECONDS and agent_id in (None, r.agent_id)
+            if not r.ended
+            and now - r.seen < (QUEUED_TURN_SECONDS if r.queued else STALE_TURN_SECONDS)
+            and agent_id in (None, r.agent_id)
         ]
 
     def working(self, agent_id: str) -> str:

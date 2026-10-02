@@ -36,6 +36,14 @@ async def test_dm_calls_skip_routing():
 
 
 @pytest.mark.asyncio
+async def test_one_agent_team_skips_jev():
+    """A DM with an agent: Lightbulb's huddle routes every request to that agent."""
+    call = {"kind": "room", "voiceAgentId": "eng", "team": [{"id": "eng", "name": "Engineering"}]}
+    with patch.object(vr.jev, "pick_agent", AsyncMock(side_effect=AssertionError("no Jev"))):
+        assert await vr.pick("org", call, "what shipped today?", "", "ceo") == "eng"
+
+
+@pytest.mark.asyncio
 async def test_name_beats_jev():
     with patch.object(vr.jev, "pick_agent", AsyncMock(return_value="gro")) as j:
         assert await vr.pick("org", ROOM_CALL, "Finance, burn?", "", "ceo") == "fin"

@@ -3,9 +3,7 @@ import { beforeEach, expect, it, vi } from "vitest";
 import type { RoomSummary } from "@lightbulb/shared";
 import type { RoomParticipant } from "../types";
 
-const voice = vi.hoisted(() => ({ active: false }));
 const huddle = vi.hoisted(() => ({ join: vi.fn(), roomId: null as string | null, joining: null as string | null, room: null as object | null, ids: [] as string[], available: true }));
-vi.mock("@/components/voice/VoiceCallProvider", () => ({ useVoiceCall: () => ({ view: null, start: vi.fn(), ...voice }) }));
 vi.mock("@/components/huddle/HuddleProvider", () => ({ useHuddle: () => ({ join: huddle.join, roomId: huddle.roomId, joining: huddle.joining, room: huddle.room }) }));
 vi.mock("@/components/huddle/LiveStrip", () => ({ LiveStrip: ({ roomId }: { roomId?: string }) => <span data-testid="strip">{roomId}</span> }));
 vi.mock("@/components/huddle/useRoomHuddle", () => ({ useRoomHuddle: () => ({ userIds: huddle.ids, available: huddle.available }) }));
@@ -21,21 +19,28 @@ const who = (kind: "human" | "agent", id: string, displayName: string, listenMod
 const people = [who("human", "h1", "Ana"), who("human", "h2", "Ben"), who("human", "h3", "Cy"), who("agent", "a1", "CEO", "active")];
 const base = { roomName: "general", participantCount: 4, canEditRoom: false, canLeave: false, actionable: true, pinnedCount: 0, search: <span />, onOpenDetails: vi.fn(), counterparts: people };
 
-beforeEach(() => { voice.active = false; huddle.join.mockClear(); huddle.roomId = null; huddle.joining = null; huddle.room = null; huddle.ids = []; huddle.available = true; });
+beforeEach(() => { huddle.join.mockClear(); huddle.roomId = null; huddle.joining = null; huddle.room = null; huddle.ids = []; huddle.available = true; });
 
 it("Go live joins this room", () => {
   render(<RoomHeader {...base} room={room()} />);
   fireEvent.click(screen.getByRole("button", { name: "Go live" }));
-  expect(huddle.join).toHaveBeenCalledWith("room-1", "general");
+  expect(huddle.join).toHaveBeenCalledWith("room-1", "#general");
 });
 
-it("is hidden for guests and disabled during a call", () => {
-  const { unmount } = render(<RoomHeader {...base} room={room({ guest: true } as Partial<RoomSummary>)} />);
+it.each(["dm", "group-dm"] as const)("Go live is in a %s header too, named without a #", (kind) => {
+  render(<RoomHeader {...base} roomName="Ana" room={room({ kind })} counterparts={[who("human", "h1", "Ana")]} />);
+  fireEvent.click(screen.getByRole("button", { name: "Go live" }));
+  expect(huddle.join).toHaveBeenCalledWith("room-1", "Ana");
+});
+
+it("a channel with only observe agents still offers Go live (people-only)", () => {
+  render(<RoomHeader {...base} room={room()} counterparts={[who("human", "h1", "Ana"), who("agent", "a1", "CEO", "observe")]} />);
+  expect(screen.getByRole("button", { name: "Go live" })).toBeInTheDocument();
+});
+
+it("is hidden for guests", () => {
+  render(<RoomHeader {...base} room={room({ guest: true } as Partial<RoomSummary>)} />);
   expect(screen.queryByRole("button", { name: "Go live" })).toBeNull();
-  unmount();
-  voice.active = true;
-  render(<RoomHeader {...base} room={room()} />);
-  expect(screen.getByRole("button", { name: "Go live" })).toBeDisabled();
 });
 
 it.each([

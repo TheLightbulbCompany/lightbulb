@@ -123,21 +123,21 @@ function Leave({ onLeave }: { onLeave: () => void }) {
 }
 
 function Strip({ here }: { here: boolean }) {
-  const { roomId, roomName, join, leave, talkStart, error, dismissError } = useHuddle();
+  const { roomId, roomName, lightbulb, join, leave, talkStart, error, dismissError } = useHuddle();
   const participants = useParticipants();
   const ceo = participants.find((p) => p.identity === CEO_IDENTITY);
   const people = participants.filter((p) => p.identity !== CEO_IDENTITY);
   const [open, setOpen] = useState(false);
   const [gaveUp, setGaveUp] = useState(false);
   useEffect(() => {
-    if (ceo) return;
+    if (ceo || !lightbulb) return; // a people-only room: Lightbulb isn't coming, so nothing to give up on
     const t = setTimeout(() => { setGaveUp(true); setOpen(true); }, JOIN_TIMEOUT_MS);
     return () => clearTimeout(t);
-  }, [ceo]);
+  }, [ceo, lightbulb]);
   // A new error opens the details so it is seen (adjusting state during render, not in an effect).
   const [shownError, setShownError] = useState(error);
   if (shownError !== error) { setShownError(error); if (error) setOpen(true); }
-  const channel = `#${roomName ?? "channel"}`;
+  const channel = roomName || "this room";
   const startAudio = <StartAudio label="Turn on sound" className="live-pill" />;
 
   if (!here) {
@@ -173,7 +173,7 @@ function Strip({ here }: { here: boolean }) {
               {error && <span className="live-alert-dot" aria-hidden="true" />}
             </button>
           </PopoverTrigger>
-          {ceo ? <LightbulbBars participant={ceo} onTalk={talkStart} /> : <JoiningBars />}
+          {ceo ? <LightbulbBars participant={ceo} onTalk={talkStart} /> : lightbulb && <JoiningBars />}
           <Mic />
           <Leave onLeave={leave} />
           {ceo && <span className="sr-only" aria-live="polite"><LightbulbStatus participant={ceo} /></span>}
@@ -181,14 +181,14 @@ function Strip({ here }: { here: boolean }) {
       </PopoverAnchor>
       <PopoverContent align="end" className="live-popover">
         <p className="live-popover-title">Live in {channel}</p>
-        <div className="live-row">
+        {(ceo || lightbulb) && <div className="live-row">
           <span className="live-face"><Identity name={LIGHTBULB} avatarOnly size="sm" tint={agentTint(CEO_IDENTITY)} /></span>
           <span className="live-row-name">{LIGHTBULB}</span>
           <span className="live-row-meta">
             {ceo ? <LightbulbStatus participant={ceo} /> : gaveUp ? "Didn't join" : "Joining…"}
           </span>
-        </div>
-        {!ceo && gaveUp && (
+        </div>}
+        {!ceo && lightbulb && gaveUp && (
           <p className="live-note" role="alert">
             {LIGHTBULB} didn&apos;t join.
             <button type="button" className="live-pill" onClick={() => { if (roomId) void join(roomId, roomName ?? ""); }}>Retry</button>
@@ -203,14 +203,14 @@ function Strip({ here }: { here: boolean }) {
         <ul className="live-people" aria-label="People in Live">
           {people.map((p) => <PersonRow key={p.identity} participant={p} />)}
         </ul>
-        <p className="live-hint">Say &ldquo;{LIGHTBULB}, …&rdquo; or click the bars to talk to {LIGHTBULB}.</p>
+        {(ceo || lightbulb) && <p className="live-hint">Say &ldquo;{LIGHTBULB}, …&rdquo; or click the bars to talk to {LIGHTBULB}.</p>}
       </PopoverContent>
     </Popover>
   );
 }
 
 /**
- * Live in the channel header: the full strip in the Live room's own header, a compact "Live in #x — Return" in any
+ * Live in the room header: the full strip in the Live room's own header, a compact "Live in #x — Return" in any
  * other, so it can always be found and left. A join that failed before a room existed shows its error instead.
  */
 export function LiveStrip({ roomId }: { roomId: string | undefined }) {

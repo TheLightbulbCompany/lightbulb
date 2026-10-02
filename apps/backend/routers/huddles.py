@@ -1,4 +1,4 @@
-"""Huddles: LiveKit rooms per channel, with the CEO as a summoned voice. See docs/superpowers/specs/2026-10-01-huddles-design.md.
+"""Huddles ("Live"): LiveKit rooms for every room kind, with Lightbulb (the CEO worker) as a summoned voice. See docs/superpowers/specs/2026-10-01-huddles-design.md.
 
 Three auth models: Clerk for people (`/huddles/*`), the worker secret for the CEO worker
 (`/internal/huddles/*`), and the call owner's hook token for the bridge (`/internal/calls/*/frames`).
@@ -96,10 +96,14 @@ async def join(room_id: str, auth: Annotated[AuthContext, Depends(get_current_us
     if not livekit_huddles.configured():
         raise _problem(503, "huddles_unavailable")
     owner_id = resolve_owner_id(auth)
-    # Member of the owner's own room (guests 404), not archived, at least one non-observe agent.
-    await voice_calls._room_team(owner_id, auth.user_id, room_id)
+    # Member of the owner's own room (guests 404), not archived. Any room kind; with no listening
+    # agent it is a people-only voice room: no worker dispatch, no runtime wake.
+    _, team = await voice_calls._room_team(owner_id, auth.user_id, room_id, need_team=False)
     name = await messaging.human_display_name(auth.user_id)
     token = livekit_huddles.mint_token(room_id=room_id, user_id=auth.user_id, name=name)
+    out = {"serverUrl": settings.LIVEKIT_URL, "roomName": livekit_huddles.room_name(room_id), "token": token}
+    if not team:
+        return {**out, "lightbulb": False}
     # Going Live is the earliest sign a voice turn is coming: start the workspace's cold start now.
     voice_calls.prewake_owner(owner_id)
     try:
@@ -117,7 +121,7 @@ async def join(room_id: str, auth: Annotated[AuthContext, Depends(get_current_us
         put_metric("huddle.livekit.error")
         logger.warning("huddle join: LiveKit call failed room=%s", room_id, exc_info=True)
         raise _problem(502, "huddles_upstream")
-    return {"serverUrl": settings.LIVEKIT_URL, "roomName": livekit_huddles.room_name(room_id), "token": token}
+    return {**out, "lightbulb": True}
 
 
 @router.get("/huddles/{room_id}")
@@ -127,15 +131,17 @@ async def huddle(room_id: str, auth: Annotated[AuthContext, Depends(get_current_
     meta, _ = await messaging.require_room_member(owner_id, auth.user_id, room_id)
     if meta.get("ownerId") != owner_id:  # join's gate: a shared-channel guest sees no huddle
         raise _problem(404, "room_not_found")
+    # False: a people-only room; the web hides Lightbulb's visualizer and status.
+    lightbulb = bool(await voice_calls.listening_agents(room_id))
     if not livekit_huddles.configured():
-        return {"userIds": [], "available": False}  # dark: the client hides the Huddle button
+        return {"userIds": [], "available": False, "lightbulb": lightbulb}  # dark: the client hides Go live
     try:
         user_ids = await livekit_huddles.participants(room_id)
     except Exception:  # noqa: BLE001 -- every open channel header polls this; never a raw 500
         put_metric("huddle.livekit.error")
         logger.warning("huddle read: LiveKit call failed room=%s", room_id, exc_info=True)
         raise _problem(502, "huddles_upstream")
-    return {"userIds": user_ids, "available": True}
+    return {"userIds": user_ids, "available": True, "lightbulb": lightbulb}
 
 
 @router.post("/internal/huddles/{room_id}/summon", dependencies=[_Worker])

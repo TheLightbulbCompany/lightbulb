@@ -11,7 +11,6 @@ import { ParticipantAvatar } from "./ParticipantAvatar";
 import { useRoomHuddle } from "@/components/huddle/useRoomHuddle";
 import { useHuddle } from "@/components/huddle/HuddleProvider";
 import { LiveStrip } from "@/components/huddle/LiveStrip";
-import { useVoiceCall } from "@/components/voice/VoiceCallProvider";
 import { useAsyncAction } from "./useAsyncAction";
 import type { RoomParticipant } from "./types";
 
@@ -72,9 +71,8 @@ export function RoomHeader({
   onDeleteRoom,
 }: RoomHeaderProps) {
   const id = useId();
-  const voice = useVoiceCall();
   const huddle = useHuddle();
-  const { userIds: huddlers, available: huddlesOn } = useRoomHuddle(room?.kind === "channel" && !room.guest ? room.roomId : undefined);
+  const { userIds: huddlers, available: huddlesOn } = useRoomHuddle(room && !room.guest ? room.roomId : undefined);
   const [editingTopic, setEditingTopic] = useState(false);
   const [topicDraft, setTopicDraft] = useState(room?.topic ?? "");
   const [renaming, setRenaming] = useState(false);
@@ -146,17 +144,12 @@ export function RoomHeader({
     </div>
     <div className="room-audience">
       {search}
-      {room?.kind === "dm" && counterparts.length === 1 && counterparts[0].kind === "agent" && (
-        <Button type="button" variant="ghost" size="sm" aria-label={`Talk to ${counterparts[0].displayName ?? "Agent"}`}
-          disabled={voice.active} onClick={() => voice.start({ agentId: counterparts[0].id, agentName: counterparts[0].displayName ?? "Agent" })}>
-          <Mic className="h-4 w-4" aria-hidden="true" /> Talk
-        </Button>
-      )}
       {/* While Live, the strip stands in for Go live: in full here, as "Live in #x — Return" in any other room. */}
       <LiveStrip roomId={room?.roomId} />
-      {!huddle.room && room?.kind === "channel" && huddlesOn && !room.guest && counterparts.some((p) => p.kind === "agent" && p.listenMode !== "observe") && (
-        <Button type="button" variant="ghost" size="sm" disabled={voice.active || Boolean(huddle.joining)}
-          onClick={() => void huddle.join(room.roomId, roomName)}>
+      {/* Every room kind; a room with no listening agent is a people-only voice room (no Lightbulb). */}
+      {!huddle.room && room && huddlesOn && !room.guest && (
+        <Button type="button" variant="ghost" size="sm" disabled={Boolean(huddle.joining)}
+          onClick={() => void huddle.join(room.roomId, room.kind === "channel" ? `#${roomName}` : roomName)}>
           <Mic className="h-4 w-4" aria-hidden="true" /> {huddle.joining === room.roomId ? "Joining…" : "Go live"}
         </Button>
       )}

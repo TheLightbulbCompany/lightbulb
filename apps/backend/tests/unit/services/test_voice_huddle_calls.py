@@ -114,6 +114,18 @@ async def test_huddle_start_guest_is_404():
     assert exc.value.status_code == 404 and exc.value.detail["code"] == "room_not_found"
 
 
+async def test_room_team_people_only_room():
+    """Live join (need_team=False) gets an empty team for a people-only room; summon still 409s."""
+    with (
+        patch.object(vc.messaging, "require_room_member", AsyncMock(return_value=({"ownerId": "org_a"}, {}))),
+        patch.object(vc.messaging_repo, "list_members", AsyncMock(return_value=[{"kind": "human", "id": "u"}])),
+    ):
+        assert (await vc._room_team("org_a", "u", "room-1", need_team=False))[1] == []
+        with pytest.raises(HTTPException) as exc:
+            await vc._room_team("org_a", "u", "room-1")
+    assert exc.value.status_code == 409 and exc.value.detail["code"] == "no_agents"
+
+
 HUDDLE_CALL = {
     "callId": "call-h",
     "ownerId": "org_a",

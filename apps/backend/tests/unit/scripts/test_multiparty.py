@@ -42,14 +42,16 @@ def test_expand_makes_a_voice_variant_without_handles_or_structured_mentions():
 
 
 def test_deterministic_layer_mirrors_dispatch():
+    """The addressing stage's agents (routing v2) join the structured mentions; no stage, no name rule."""
     named = mp.expand(_row(transcript=[{"speaker": "Maya", "text": "Finance, what's runway?"}], mentions=[]))[0]
-    assert mp.deterministic(named, mp.build(named))["how"] == "addressed"
+    assert mp.deterministic(named, mp.build(named), {"agents": ["fin"]})["how"] == "addressed"
+    assert mp.deterministic(named, mp.build(named))["how"] == "jev"
     ambient = mp.expand(_row(transcript=[{"speaker": "Maya", "text": "what's runway?"}], mentions=[]))
     chat, voice = (mp.deterministic(c, mp.build(c)) for c in ambient)
     assert chat["candidates"] == ["ceo", "fin"]  # observe never runs in chat
     assert voice["candidates"] == ["ceo", "eng", "fin"]  # Live ignores listen modes
     observe = mp.expand(_row(transcript=[{"speaker": "Maya", "text": "Engineering, is CI red?"}], mentions=[]))
-    chat, voice = (mp.deterministic(c, mp.build(c)) for c in observe)
+    chat, voice = (mp.deterministic(c, mp.build(c), {"agents": ["eng"]}) for c in observe)
     assert chat["addressed"] == [] and "eng" not in chat["candidates"]  # named, but observe never runs
     assert voice["addressed"] == ["eng"]  # any agent in the room can be asked by voice
 
@@ -65,10 +67,7 @@ def test_agent_chain_at_the_cap_wakes_nobody():
     assert mp.deterministic(at, mp.build(at))["how"] == "capped"
 
 
-def test_voice_person_opening_and_fallback():
-    humans = [{"kind": "human", "id": "user-leo", "displayName": "Leo"}]
-    assert mp._opens_with_person("hey Leo, can you check?", humans) == ["user-leo"]
-    assert mp._opens_with_person("Leonard said hi", humans) == []
+def test_fallback_follows_the_conversation():
     case = mp.expand(
         _row(
             transcript=[{"speaker": "Finance", "text": "Q3 is $1m"}, {"speaker": "Maya", "text": "and Q4?"}],

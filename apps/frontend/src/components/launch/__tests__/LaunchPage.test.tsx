@@ -29,8 +29,8 @@ describe("LaunchPage phases", () => {
   it("open: sign-up CTA + sign-in link inside .ld-page, no board, no signed-in card", async () => {
     info.mockResolvedValue({ ...base, phase: "open" });
     const { container } = render(<LaunchPage />);
-    expect(await screen.findByRole("link", { name: /^sign up/i })).toHaveAttribute("href", "/sign-up");
-    expect(screen.getByRole("link", { name: /sign in/i })).toHaveAttribute("href", "/sign-in");
+    expect(await screen.findByRole("link", { name: /^sign up/i })).toHaveAttribute("href", "https://thelightbulb.company/sign-up");
+    expect(screen.getByRole("link", { name: /sign in/i })).toHaveAttribute("href", "https://thelightbulb.company/sign-in");
     expect(container.querySelector("main.ld-page")).not.toBeNull();
     expect(screen.queryByTestId("me")).not.toBeInTheDocument();
     expect(container.querySelector("#board")).toBeNull();

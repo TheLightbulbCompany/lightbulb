@@ -11,7 +11,6 @@ from test_huddle import answer, make, say, settle
 def emitted(monkeypatch):
     out = []
     monkeypatch.setattr(h_mod, "emit_metric", lambda name, value, unit="Seconds", dims=None: out.append(name))
-    monkeypatch.delenv("LIGHTBULB_PROACTIVE", raising=False)
     return out
 
 
@@ -91,11 +90,8 @@ async def test_rate_limited_between_announcements(emitted):
     assert backend.sessions == ["forge", "gauge"]
 
 
-async def test_a_tap_announces_past_the_rate_limit_and_the_kill_switch(emitted, monkeypatch):
-    monkeypatch.setenv("LIGHTBULB_PROACTIVE", "off")
+async def test_a_tap_announces_past_the_rate_limit(emitted):
     h, room, backend, lives, clock, log = await with_news("forge")
-    await quiet_tick(h, clock, 10)
-    assert lives == []  # the kill switch: nothing proactive
     h._rate.record(clock.t)
     await h.talk_start("u1", '{"agentId": "forge"}')
     assert lives[0].speaker == "u1" and lives[0].calls == [("instructions", ANNOUNCE_NOW), ("nudge",)]

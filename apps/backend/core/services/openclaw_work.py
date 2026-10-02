@@ -40,6 +40,11 @@ _INGRESS_MAX_BYTES = 1_048_576
 #: records the part of this window that transcript does not hold yet (all of it on a room's first
 #: turn), so this caps how many messages one turn can catch up on.
 _HISTORY_LIMIT = 50
+# Routing v2 §4.1: what a steer into an AMBIENT run adds after "{name}: {text}".
+AMBIENT_STEER_SUFFIX = (
+    " — said since you were asked. If this already answers or settles what you were going to say,"
+    " reply exactly [SILENT]. If it adds to it, answer only what is still open. If it is unrelated, carry on."
+)
 _RETRY_VISIBILITY_SECONDS = 10
 #: F4 (predeploy review, M6-R37): hoisted to runtime_transport (the shared home
 #: container_rpc.call also reads) so a fleet-wide budget change has one source. Kept as a
@@ -484,6 +489,12 @@ class OpenClawWorkWorker:
             # below; a follow-up keeps the bridge's placement.
             body["replyThreadRootId"] = message.get("threadRootMessageId")
         if event_kind == "room_event" and follow_up is None:
+            # This agent's own live run in this conversation hears the line BEFORE Jev decides
+            # (routing v2 §4.1): Jev may pick someone else or nobody, and a run that never saw
+            # "Bob: $42k" posts its duplicate anyway. Jev's state.open then shows the run.
+            if steer and await self._steer_live_run(meta, member, message, container, token, event_kind):
+                return True
+            steer = False  # tried: no live run took it, so the turn below is the message's own
             # Jev picks at most one Listening responder per message (spec §3a/§5a). A follow-up is
             # deterministic (the agent asked for that result): never routed.
             from core.services import jev
@@ -570,7 +581,11 @@ class OpenClawWorkWorker:
         # the side effect so queued work cannot outlive membership revocation.
         if await messaging_repo.get_member(meta["roomId"], "agent", member["id"]) is None:
             return False
-        if follow_up is None and steer and await self._steer_live_run(meta, member, message, container, token):
+        if (
+            follow_up is None
+            and steer
+            and await self._steer_live_run(meta, member, message, container, token, event_kind)
+        ):
             return True
         if follow_up is not None:
             body["eventId"] = follow_up["id"]
@@ -685,6 +700,7 @@ class OpenClawWorkWorker:
         message: dict[str, Any],
         container: dict[str, Any],
         token: str,
+        event_kind: str,
     ) -> bool:
         """One run per agent per conversation: a human follow-up to an agent whose run in the
         same thread (or DM) is still live is steered into that run instead of queueing a second
@@ -719,7 +735,17 @@ class OpenClawWorkWorker:
         if not live:
             return False
         run = max(live, key=lambda row: row.get("dispatchedAt") or "")
+        if await messaging_repo.get_member(meta["roomId"], "agent", member["id"]) is None:
+            return False  # adjacent to the side effect: queued work must not outlive membership
+        ambient = event_kind == "room_event"
+        kind = "ambient" if ambient and run.get("eventKind") == "room_event" else "addressed"
         text = f"{author.get('displayName') or 'A teammate'}: {message.get('text') or ''}"
+        if kind == "ambient":
+            # An ambient line into an ambient run may stand it down (routing v2 §4.1; the bridge
+            # maps a [SILENT] pass, also after a steer). Anything addressed -- the run, or the
+            # line (an @mention into an ambient run) -- keeps the bare line: the person chose
+            # that agent, and a hedged human answer must not silence it.
+            text += AMBIENT_STEER_SUFFIX
         try:
             response = await runtime_transport.request(
                 container,
@@ -732,14 +758,17 @@ class OpenClawWorkWorker:
             steered = response.status_code == 202
         except (httpx.TimeoutException, httpx.TransportError):
             steered = False
-        put_metric("messaging.run.steered", dimensions={"outcome": "steered" if steered else "fallback"})
+        put_metric("messaging.run.steered", dimensions={"outcome": "steered" if steered else "fallback", "kind": kind})
         if not steered:
             return False
         try:
             # Recorded so a run that fails before answering re-dispatches it
-            # (messaging.redispatch_lost_steers). A run that ended meanwhile never saw it.
-            if not await messaging_repo.add_steered_message(meta["ownerId"], run["runId"], message["messageId"]):
-                put_metric("messaging.run.steered", dimensions={"outcome": "ended_fallback"})
+            # (messaging.redispatch_lost_steers) -- a room event back through Jev, never as an
+            # answer forced from this agent. A run that ended meanwhile never saw it.
+            if not await messaging_repo.add_steered_message(
+                meta["ownerId"], run["runId"], message["messageId"], ambient=ambient
+            ):
+                put_metric("messaging.run.steered", dimensions={"outcome": "ended_fallback", "kind": kind})
                 return False
         except Exception:
             logger.warning("steer record failed; the steer stands", exc_info=True)

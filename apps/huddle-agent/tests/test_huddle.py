@@ -69,11 +69,15 @@ class FakeBackend:
         self.route_to = "forge"
         self.route_humans: list = []
         self.jev_to = None  # a line with no name: Jev picks nobody unless a test says otherwise
+        self.route_extra: dict = {}  # e.g. {"hold": True}, {"agentIds": [...]}
+        self.route_bodies: list[dict] = []
+        self.route_gate: asyncio.Event | None = None
         self.turns: list[dict] = []
         self.turn_results: list = []  # BackendErrors raised in order, then success
         self.turn_gate: asyncio.Event | None = None
         self.aborts: list[str] = []
         self.steer = False  # the bridge accepts a steer into the running run
+        self.late_steers: list[dict] = []
         self.ends: list[tuple[str, int]] = []
         self.presences: list[list[str]] = []
         self.versions: list[int] = []
@@ -83,10 +87,15 @@ class FakeBackend:
         self.team_calls += 1
         return copy.deepcopy(self.team_data)
 
-    async def route(self, speaker, utterance, transcript, humans=None):
+    async def route(self, speaker, utterance, transcript, humans=None, *, floor=None, voice_runs=(), at=()):
         self.routes.append((speaker, utterance, transcript))
         self.route_humans.append(humans)
-        return self.route_to if humans is None else self.jev_to
+        self.route_bodies.append({"floor": floor, "voiceRuns": list(voice_runs), "at": list(at)})
+        extra, gate = self.route_extra, self.route_gate  # this call's answer, however long it takes
+        if gate:
+            await gate.wait()
+        agent = self.route_to if humans is None else self.jev_to
+        return {"agentId": agent, "agentIds": [agent] if agent else [], **extra}
 
     async def summon(self, speaker):
         self.summons.append(speaker)
@@ -103,7 +112,10 @@ class FakeBackend:
         return {"agentId": agent_id, "name": name, "voice": f"voice-{agent_id}", "persona": f"You are {name}.",
                 "askName": False, **self.session_extra.get(agent_id, {})}
 
-    async def turn(self, call_id, speaker, agent_id, run_id, utterance, transcript, steer_run_id=None):
+    async def turn(self, call_id, speaker, agent_id, run_id, utterance, transcript, steer_run_id=None, steer_only=False):
+        if steer_only:  # a late-line steer (routing v2 §4.3): kept apart from the real turns
+            self.late_steers.append({"speaker": speaker, "agentId": agent_id, "utterance": utterance, "steerRunId": steer_run_id})
+            return {"runId": steer_run_id, "agentId": agent_id, "steered": self.steer}
         self.turns.append({"callId": call_id, "speaker": speaker, "agentId": agent_id, "runId": run_id,
                            "utterance": utterance, "transcript": transcript, "steerRunId": steer_run_id})
         if self.turn_gate:
@@ -285,7 +297,7 @@ async def test_jev_nobody_or_down_opens_no_voice(capsys):
     await say(h, "u1", "did you see the game last night")
     assert backend.route_humans == [2] and lives == [] and backend.summons == []
 
-    async def down(*_a):
+    async def down(*_a, **_kw):
         raise BackendError(503, "huddles_upstream", None)
 
     backend.route = down
@@ -333,11 +345,14 @@ async def test_lightbulb_without_a_name_routes_with_a_name_does_not():
     h, room, backend, lives, clock, log = make()
     await h.on_participants({"u1": "Prasiddha"})
     await say(h, "u1", "Lightbulb, what's the deploy status")
-    assert backend.routes == [("u1", "Lightbulb, what's the deploy status", "Prasiddha: Lightbulb, what's the deploy status")]
+    assert backend.routes == [("u1", "what's the deploy status", "Prasiddha: Lightbulb, what's the deploy status")]
     assert lives[0].agent_id == "forge"
     await h.end_exchange()
-    await say(h, "u1", "hey Lightbulb, ask Gauge about revenue")
-    assert len(backend.routes) == 1 and lives[1].agent_id == "gauge"
+    await say(h, "u1", "hey Lightbulb, Gauge, revenue please")
+    assert len(backend.routes) == 1 and lives[1].agent_id == "gauge"  # an opening name after the wake word: 0 ms
+    await h.end_exchange()
+    await say(h, "u1", "Lightbulb, ask Gauge about revenue")  # a mid-line name: /route, wake word stripped
+    assert backend.routes[-1][1] == "ask Gauge about revenue" and backend.route_humans[-1] is None
 
 
 async def test_a_bare_default_name_does_not_wake():
@@ -581,7 +596,7 @@ async def test_delegation_without_pending_transcript_uses_the_speakers_own_line(
 async def test_one_agents_line_is_heard_by_the_next():
     h, room, backend, lives, clock, log = await summoned("Forge")
     h.on_agent_said("forge", "Deploy is green.")
-    assert "Forge: Deploy is green." in h._transcript.since_agent("gauge")
+    assert "Forge → Prasiddha: Deploy is green." in h._transcript.since_agent("gauge")  # who it answered
     await say(h, "u1", "Gauge, check revenue")
     assert lives[1].seed[-2] == ("developer", "[Forge (agent) said]: Deploy is green.")
 
@@ -1541,7 +1556,7 @@ async def test_backend_client_option_d_routes(monkeypatch):
 
     b = _backend(monkeypatch, handler)
     await b.team()
-    assert await b.route("u1", "what's revenue", "t") == "gauge"
+    assert (await b.route("u1", "what's revenue", "t"))["agentId"] == "gauge"
     await b.session("gauge")
     await b.turn("c1", "u1", "gauge", "r1", "hi", "since")
     await b.abort("r1")
@@ -1549,7 +1564,7 @@ async def test_backend_client_option_d_routes(monkeypatch):
     assert seen == [
         ("/api/v1/internal/huddles/r1/team", base),
         ("/api/v1/internal/huddles/r1/route", {"speakerUserId": "u1", "utterance": "what's revenue", "transcript": "t", "humans": None,
-                                                **base}),
+                                                "floor": None, "voiceRuns": [], "at": [], **base}),
         ("/api/v1/internal/huddles/r1/agents/gauge/session", base),
         ("/api/v1/internal/huddles/calls/c1/turns", {"speakerUserId": "u1", "agentId": "gauge", "runId": "r1",
                                                     "utterance": "hi", "transcript": "since", "steerRunId": None, **base}),
@@ -1926,3 +1941,132 @@ def test_emit_metric_dims_shape(capsys):
     a, b = [json.loads(x) for x in capsys.readouterr().out.splitlines()]
     assert a["_aws"]["CloudWatchMetrics"][0]["Dimensions"] == [["path"]] and a["path"] == "jev" and a["x.y"] == 3
     assert b["_aws"]["CloudWatchMetrics"][0]["Dimensions"] == [[]] and b["x.z"] == 1
+
+
+# -- routing v2 (worker, §4.2-4.3, §6) --
+
+
+async def test_a_mid_line_name_no_longer_summons():
+    h, room, backend, lives, clock, log = make()
+    await h.on_participants({"u1": "Prasiddha", "u2": "Aden"})
+    await say(h, "u1", "let's ask Forge later")
+    assert backend.routes[0][1] == "let's ask Forge later" and lives == []  # /route's addressing stage decides
+
+
+async def test_a_superseded_route_is_dropped_but_the_same_speaker_continues(capsys):
+    h, room, backend, lives, clock, log = make()
+    await h.on_participants({"u1": "Prasiddha", "u2": "Aden"})
+    backend.jev_to, backend.route_gate = "forge", asyncio.Event()
+    await h.on_final_transcript("u1", "Prasiddha", "what's our MRR this month")
+    await h.on_final_transcript("u2", "Aden", "it's about 42k I think")  # someone answered meanwhile
+    backend.route_gate.set()
+    await settle(h)
+    assert [l.speaker for l in lives] == ["u2"]  # the newer line routed itself
+    assert metric_count(capsys, "live.route.superseded") == 1
+    await h.end_exchange()
+    backend.route_gate = asyncio.Event()
+    await h.on_final_transcript("u1", "Prasiddha", "what's our MRR this month")
+    await h.on_final_transcript("u1", "Prasiddha", "and last month too")  # a split utterance: not superseded
+    backend.route_gate.set()
+    await settle(h)
+    assert lives[1].speaker == "u1" and metric_count(capsys, "live.route.superseded") == 0
+
+
+async def test_a_second_speaker_is_routed_into_the_queue(capsys):
+    h, room, backend, lives, clock, log = await summoned("Forge")
+    backend.jev_to = "gauge"
+    clock.t += THINKING_EVERY
+    await say(h, "u2", "can someone check the invoices")
+    assert h._queue == [("gauge", "u2", "can someone check the invoices")]
+    assert backend.route_bodies[-1]["floor"] == {"agent": "forge", "speaker": "Prasiddha"}
+    assert ("thinking", "Aden: can someone check the invoices", None) in lives[0].calls  # still heard
+    assert metric_count(capsys, "live.route.queued") == 1
+    clock.t += 2  # the floor settles: Gauge answers Aden
+    await h.tick()
+    await settle(h)
+    assert (lives[1].agent_id, lives[1].speaker) == ("gauge", "u2")
+    assert backend.turns[-1]["utterance"] == "can someone check the invoices"
+
+
+async def test_a_second_speaker_nobody_picks_is_thinking_only():
+    h, room, backend, lives, clock, log = await summoned("Forge")
+    clock.t += THINKING_EVERY
+    await say(h, "u2", "did you see the game last night")
+    assert h._queue == [] and len(lives) == 1
+    assert lives[0].calls[-1] == ("thinking", "Aden: did you see the game last night", None)
+
+
+async def test_hold_waits_for_the_speakers_next_final_and_routes_the_whole_line():
+    h, room, backend, lives, clock, log = make()
+    await h.on_participants({"u1": "Prasiddha"})
+    backend.jev_to, backend.route_extra = "forge", {"hold": True}
+    await say(h, "u1", "we're trying to")
+    assert lives == [] and backend.summons == []
+    backend.route_extra = {}
+    await say(h, "u1", "find the launch checklist")
+    assert backend.routes[-1][1] == "we're trying to find the launch checklist"
+    assert lives[0].agent_id == "forge" and backend.turns[0]["utterance"] == "we're trying to find the launch checklist"
+    await h.end_exchange()
+
+
+async def test_a_hold_that_lands_after_the_speakers_next_final_is_dropped(capsys):
+    h, room, backend, lives, clock, log = make()
+    await h.on_participants({"u1": "Prasiddha"})
+    backend.jev_to, backend.route_extra, backend.route_gate = "forge", {"hold": True}, asyncio.Event()
+    slow = backend.route_gate
+    await h.on_final_transcript("u1", "Prasiddha", "about the invoices")
+    await asyncio.sleep(0)  # /route is asked and is still deciding...
+    backend.route_extra, backend.route_gate = {}, None
+    await h.on_final_transcript("u1", "Prasiddha", "are they paid")  # ...when the rest arrives: it routes on its own
+    slow.set()
+    await settle(h)
+    assert backend.turns[0]["utterance"] == "are they paid"
+    assert h._held == {} and metric_count(capsys, "live.route.hold_stale") == 1  # nothing stale to merge later
+    await h.end_exchange()
+
+
+async def test_every_addressed_agent_is_queued_in_order():
+    h, room, backend, lives, clock, log = make()
+    await h.on_participants({"u1": "Prasiddha"})
+    backend.route_extra = {"agentIds": ["forge", "gauge"]}
+    await say(h, "u1", "Lightbulb, have Forge and Gauge check CI")
+    assert lives[0].agent_id == "forge"
+    assert h._queue == [("gauge", "u1", "Lightbulb, have Forge and Gauge check CI")]
+    await h.end_exchange()
+
+
+async def test_late_lines_steer_the_floor_holders_run(capsys):
+    h, room, backend, lives, clock, log = await summoned("Forge", drive=True)
+    backend.steer = True
+    clock.t += THINKING_EVERY
+    await say(h, "u2", "it's already green, I checked")
+    assert backend.late_steers == [{
+        "speaker": "u1", "agentId": "forge", "steerRunId": backend.turns[0]["runId"],
+        "utterance": h_mod.LATE_LINES + "Aden: it's already green, I checked",
+    }]
+    assert len(backend.turns) == 1  # never a new run
+    assert metric_count(capsys, "live.steer.late_line") == 1
+
+
+async def test_missed_and_unwanted_metrics(capsys):
+    h, room, backend, lives, clock, log = make()
+    await h.on_participants({"u1": "Prasiddha", "u2": "Aden"})
+    await say(h, "u1", "can you check the invoices")  # nobody
+    clock.t += 5
+    await say(h, "u1", "Gauge, check the invoices")
+    assert metric_count(capsys, "live.route.missed") == 1
+    await h.end_exchange()
+    await h.on_participants({"u1": "Prasiddha"})
+    backend.jev_to = "forge"
+    await say(h, "u1", "what's the deploy status")
+    await say(h, "u1", "stop")  # the Jev pick was wrong
+    assert metric_count(capsys, "live.route.unwanted") == 1
+
+
+async def test_route_sends_line_times_for_the_backend_reask_rule():
+    h, room, backend, lives, clock, log = make()
+    await h.on_participants({"u1": "Prasiddha", "u2": "Aden"})
+    await say(h, "u1", "what's our MRR")
+    clock.t += 7
+    await say(h, "u2", "no idea honestly")
+    assert backend.route_bodies[-1]["at"] == [1000, 1007]

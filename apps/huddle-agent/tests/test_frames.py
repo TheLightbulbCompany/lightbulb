@@ -140,6 +140,17 @@ def test_runs_stale_run_stops_running():
     assert runs.running() == []
 
 
+def test_runs_queued_run_is_not_stale_at_121s():
+    now = [0.0]
+    runs = Runs(RunSink(), clock=lambda: now[0])
+    runs.started("r1", "fin", speaker="u", request="a", delegation_id="d1", gen=1)
+    rframe(runs, "r1", {"type": "run_queued"})  # behind a chat run on the room lock (F7)
+    now[0] = 121.0
+    assert [r.run_id for r in runs.running()] == ["r1"]
+    now[0] = 1_800.0
+    assert runs.running() == []
+
+
 def test_runs_final_flush_and_closing_answer():
     sink, runs = one_run()
     rframe(runs, "r1", {"type": "chunk", "content": "Let me check. ", "append": True})

@@ -50,6 +50,9 @@ export const RETIRED_PANEL_ALIASES: Readonly<Record<string, string>> = {
   // would open two tabs both titled "Agents". describePanel synthesizes
   // `view` from the RAW key below.
   "teams-org-chart": "teams-agents",
+  // The Support placeholder was removed (owner ruling) when Cases landed; old
+  // links and saved layouts open Cases instead of an unknown panel.
+  "teams-support": "teams-cases",
 };
 
 // The sections of the Money page — the set an absorbed key or a `?section=`
@@ -124,6 +127,9 @@ const TEAMS_LIST_KEYS: Readonly<Record<string, string>> = {
   // already targeted these keys (WorkspaceShell.DETAIL_KEY_BY_LIST_KEY).
   goals: "Goals",
   projects: "Projects",
+  // Ported from stock Paperclip's Cases page. Replaces the Support placeholder
+  // (`teams-support` aliases here).
+  cases: "Cases",
   routines: "Automations",
   artifacts: "Library",
   accounts: "Accounts",
@@ -141,7 +147,6 @@ const TEAMS_LIST_KEYS: Readonly<Record<string, string>> = {
   publish: "Publish",
   seo: "SEO & AEO",
   ads: "Ads",
-  support: "Support",
   identity: "Identity",
   "domain-site": "Domain & Site",
   compliance: "Compliance",
@@ -154,6 +159,7 @@ const TEAMS_DETAIL_KEYS: Readonly<Record<string, string>> = {
   "routine-detail": "Automation",
   "project-detail": "Project",
   "goal-detail": "Goal",
+  "case-detail": "Case",
   "run-detail": "Run",
   "approval-detail": "Approval",
 };
@@ -369,7 +375,7 @@ export function durableParamsFor(panelId: string): string[] {
   if (panelId === "teams-inbox") return ["panel", "section"];
   if (panelId === "teams-money") return ["panel", "day", "section"];
   if (panelId === "activity") return ["panel", "filter", "focus"];
-  if (/^teams-(issue|routine|project|goal|run)-detail:/.test(panelId)) return ["panel", "detailId"];
+  if (/^teams-(issue|routine|project|goal|case|run)-detail:/.test(panelId)) return ["panel", "detailId"];
   return ["panel"];
 }
 

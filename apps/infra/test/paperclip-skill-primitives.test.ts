@@ -434,11 +434,11 @@ describe("liveness primitives are documented", () => {
     }
   });
 
-  it("flags Cases as disabled on this instance in the routing table", () => {
-    // Fix round 2: enableCases is false in both envs — say so before an
-    // agent burns a run on a 403.
-    expect(skillMd).toContain("references/cases.md");
-    expect(skillMd).toContain("**Disabled on this instance** (`enableCases` is false in both envs)");
+  it("routes Cases to its reference without calling it disabled", () => {
+    // Cases is enabled on this instance (the Teams Cases panels shipped), so
+    // the routing row must not tell agents the calls 403.
+    expect(skillMd).toContain("| `references/cases.md` |");
+    expect(skillMd).not.toContain("Disabled on this instance");
   });
 });
 

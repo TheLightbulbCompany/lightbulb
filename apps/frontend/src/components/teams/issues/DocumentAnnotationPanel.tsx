@@ -29,6 +29,7 @@ function commentAuthor(comment: DocumentAnnotationComment, agents: CompanyAgent[
 
 export function DocumentAnnotationPanel({
   issueId,
+  basePath = `/issues/${issueId}`,
   documentKey,
   baseRevisionId,
   baseRevisionNumber,
@@ -44,6 +45,8 @@ export function DocumentAnnotationPanel({
   newCommentDisabledReason,
 }: {
   issueId: string;
+  /** Owner of the document routes; a case passes `/cases/{id}`. */
+  basePath?: string;
   documentKey: string;
   baseRevisionId: string | null;
   baseRevisionNumber: number;
@@ -59,7 +62,7 @@ export function DocumentAnnotationPanel({
   newCommentDisabledReason?: string | null;
 }) {
   const { post, patch } = useTeamsApi();
-  const base = `/issues/${issueId}/documents/${documentKey}/annotations`;
+  const base = `${basePath}/documents/${documentKey}/annotations`;
   const [composer, setComposer] = useState("");
   const [replyDrafts, setReplyDrafts] = useState<Record<string, string>>({});
   const [busy, setBusy] = useState(false);

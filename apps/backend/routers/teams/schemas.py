@@ -828,3 +828,15 @@ class UpdateDocumentAnnotationThreadBody(_Strict):
     """
 
     status: str = Field(pattern=_ANNOTATION_THREAD_STATUS)
+
+
+class PatchCaseBody(_Strict):
+    """Body for ``PATCH /teams/cases/{id}``.
+
+    Upstream ``patchCaseSchema`` accepts more (title, summary, fields, parent,
+    project), but those are agent-authored: the board UI's only writes are the
+    status and the full desired label-id set (replace semantics).
+    """
+
+    status: Optional[str] = Field(default=None, pattern=r"^(draft|in_progress|in_review|approved|done|cancelled)$")
+    label_ids: Optional[list[str]] = Field(default=None, max_length=100)

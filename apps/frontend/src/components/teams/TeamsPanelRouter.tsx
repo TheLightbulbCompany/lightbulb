@@ -35,6 +35,7 @@ const PANEL_LOADERS: Record<string, () => Promise<React.ComponentType>> = {
   routines: () => import("./panels/RoutinesPanel").then((m) => m.RoutinesPanel),
   goals: () => import("./panels/GoalsPanel").then((m) => m.GoalsPanel),
   projects: () => import("./panels/ProjectsListPanel").then((m) => m.ProjectsListPanel),
+  cases: () => import("./panels/CasesPanel").then((m) => m.CasesPanel),
   artifacts: () => import("./panels/ArtifactsPanel").then((m) => m.ArtifactsPanel),
   accounts: () => import("./panels/AccountsPanel").then((m) => m.AccountsPanel),
   search: () => import("./panels/SearchPanel").then((m) => m.SearchPanel),
@@ -43,7 +44,6 @@ const PANEL_LOADERS: Record<string, () => Promise<React.ComponentType>> = {
   publish: () => import("./panels/PublishPanel").then((m) => m.PublishPanel),
   seo: () => import("./panels/SeoPanel").then((m) => m.SeoPanel),
   ads: () => import("./panels/AdsPanel").then((m) => m.AdsPanel),
-  support: () => import("./panels/SupportPanel").then((m) => m.SupportPanel),
   identity: () => import("./panels/IdentityPanel").then((m) => m.IdentityPanel),
   "domain-site": () => import("./panels/DomainSitePanel").then((m) => m.DomainSitePanel),
   compliance: () => import("./panels/CompliancePanel").then((m) => m.CompliancePanel),
@@ -66,6 +66,7 @@ const DETAIL_LOADERS = {
   routine: () => import("./panels/RoutineDetailPanel").then((m) => m.RoutineDetailPanel),
   project: () => import("./panels/ProjectDetailPanel").then((m) => m.ProjectDetailPanel),
   goal: () => import("./panels/GoalDetailPanel").then((m) => m.GoalDetailPanel),
+  case: () => import("./panels/CaseDetailPanel").then((m) => m.CaseDetailPanel),
   run: () => import("./panels/RunDetailPanel").then((m) => m.RunDetailPanel),
   approval: () => import("./approvals/ApprovalDetail").then((m) => m.ApprovalDetail),
 };
@@ -73,6 +74,7 @@ const IssueDetailPanel = dynamic(DETAIL_LOADERS.issue, { loading: PanelSkeleton 
 const RoutineDetailPanel = dynamic(DETAIL_LOADERS.routine, { loading: PanelSkeleton });
 const ProjectDetailPanel = dynamic(DETAIL_LOADERS.project, { loading: PanelSkeleton });
 const GoalDetailPanel = dynamic(DETAIL_LOADERS.goal, { loading: PanelSkeleton });
+const CaseDetailPanel = dynamic(DETAIL_LOADERS.case, { loading: PanelSkeleton });
 const RunDetailPanel = dynamic(DETAIL_LOADERS.run, { loading: PanelSkeleton });
 const ApprovalDetail = dynamic(DETAIL_LOADERS.approval, { loading: PanelSkeleton });
 
@@ -168,6 +170,8 @@ export function TeamsPanelRouter({
       return <ProjectDetailPanel projectId={detailId} />;
     if (panel === "goal-detail")
       return <GoalDetailPanel goalId={detailId} />;
+    if (panel === "case-detail")
+      return <CaseDetailPanel caseId={detailId} />;
     if (panel === "run-detail")
       return <RunDetailPanel runId={detailId} />;
     if (panel === "approval-detail")

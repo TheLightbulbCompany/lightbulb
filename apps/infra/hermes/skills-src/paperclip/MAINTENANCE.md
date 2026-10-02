@@ -230,3 +230,11 @@ ISOL8-LOCAL EDITS (deliberate; re-apply on re-vendor).
       framing was right, but "identically inside a heartbeat run" is what this
       release changes.) Keep the doc's framing that this is Paperclip's own
       boundary, not a Lightbulb/run-attribution limitation.
+  22. Cases routing row (SKILL.md routing table, `references/cases.md` row):
+      the row no longer says "Disabled on this instance". `enableCases` is
+      set per environment by the instance-flag script, and the owner-facing
+      surface is the Teams Cases panels (frontend components/teams/cases/,
+      BFF routers/teams/cases.py). references/cases.md still tells an agent to
+      stop and report on a 403, which covers an environment where the flag is
+      off. If Cases is ever switched off again, restore the warning here.
+      Re-apply on re-vendor.

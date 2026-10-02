@@ -65,5 +65,14 @@ export const teamsQueryKeys = {
   // Project-detail surface. `detail` is the full project row; `issues` is the
   // project-scoped issues list (PR #1006 added the BFF `?project=` filter).
   projectDetail: (id: string) => `/projects/${id}`,
+  // Cases (ported from upstream queryKeys.cases). `list` takes the already
+  // serialized filter query; `children` is the same list read scoped by parent.
+  cases: {
+    list: (query = "") => (query ? `/cases?${query}` : `/cases`),
+    detail: (id: string) => `/cases/${id}`,
+    events: (id: string) => `/cases/${id}/events?limit=100`,
+    children: (id: string) => `/cases?parent=${id}&limit=200`,
+    forIssue: (issueId: string) => `/issues/${issueId}/cases`,
+  },
   issuesByProject: (projectId: string) => `/issues?project=${projectId}`,
 } as const;

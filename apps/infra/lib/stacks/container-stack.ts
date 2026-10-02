@@ -436,7 +436,9 @@ export class ContainerStack extends cdk.Stack {
     // no file, but we have NOT observed our own idle rate yet — treat this
     // alarm, not that claim, as the source of truth, and gate the prod
     // promotion on a measured idle window. No lifecycle expiration — Litestream retention owns pruning
-    // (deleting LTX files under it would break restores).
+    // (deleting LTX files under it would break restores). The one rule reclaims the parts of a
+    // multipart upload a stopped session never completed (a SIGTERM save of a large state.db is
+    // cut off at os._exit), which are billed storage and never otherwise removed.
     new s3.Bucket(this, "OpenclawReplicasBucket", {
       bucketName: litestreamBucketName,
       encryption: s3.BucketEncryption.S3_MANAGED,
@@ -444,6 +446,7 @@ export class ContainerStack extends cdk.Stack {
       removalPolicy: config.removalPolicy,
       autoDeleteObjects: props.environment !== "prod",
       metrics: [{ id: "EntireBucket" }],
+      lifecycleRules: [{ abortIncompleteMultipartUploadAfter: cdk.Duration.days(1) }],
     });
 
     // The account-scoped image repositories are IMPORTED, never created by CDK — the

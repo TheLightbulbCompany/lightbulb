@@ -698,17 +698,25 @@ SIGTERM_SAVE_S = 10.0
 def _save_on_sigterm(signum, _frame) -> None:
     """AgentCore stops a session with SIGTERM. Push every profile this process restored (and the
     root auth.json) before dying, bounded, so a stop between turns -- or mid-turn -- keeps what
-    the agent wrote. Inert on a warm-pool microVM: nothing restored, nothing to save."""
-    def _save() -> None:
+    the agent wrote. Inert on a warm-pool microVM: nothing restored, nothing to save.
+
+    Every agent's ordinary files go first and the SQLite snapshots (Hermes's state.db: whole-file,
+    and growing) last, so one agent's large transcript cannot spend the budget that the next
+    agent's skills, memories and work files needed."""
+    def _save_all(sqlite: bool) -> None:
         for agent_id in sorted(turn.RESTORED):
             try:
-                sync.save_profile(agent_id)
+                sync.save_profile(agent_id, sqlite=sqlite)
             except Exception:  # noqa: BLE001 -- one bad profile must not cost the others
                 log.warning("sigterm: save_profile %s failed", agent_id, exc_info=True)
+
+    def _save() -> None:
+        _save_all(sqlite=False)
         try:
             sync.save_root_auth()
         except Exception:  # noqa: BLE001
             log.warning("sigterm: save_root_auth failed", exc_info=True)
+        _save_all(sqlite=True)
 
     log.info("sigterm: saving %d profile(s)", len(turn.RESTORED))
     worker = threading.Thread(target=_save, name="sigterm-save", daemon=True)

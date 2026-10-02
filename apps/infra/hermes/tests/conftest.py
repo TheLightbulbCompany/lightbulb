@@ -31,10 +31,12 @@ def _clear_sync_state():
     sync._SYNCED.clear()
     sync._MTIMES.clear()
     sync._CLI_PULLED.clear()
+    sync._STATE_ROWS.clear()
     yield
     sync._SYNCED.clear()
     sync._MTIMES.clear()
     sync._CLI_PULLED.clear()
+    sync._STATE_ROWS.clear()
 
 
 @pytest.fixture

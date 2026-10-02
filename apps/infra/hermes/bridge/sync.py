@@ -54,6 +54,9 @@ _MTIMES: dict[str, dict[str, int]] = {}
 #: _ETAGS: S3's ETag for each file as of the last restore/pull/save -- the version a delete is
 #: conditioned on, so an object someone else rewrote since is never deleted (_propagate_deletes).
 _ETAGS: dict[str, dict[str, str]] = {}
+#: _STATE_ROWS: Hermes's state.db transcript as of its last upload (_transcript_rows), so a save
+#: whose state.db changed only bookkeeping does not upload the whole file again.
+_STATE_ROWS: dict[str, tuple] = {}
 
 # Fix round (minor 12): two turns for the SAME agent in different rooms run concurrently in
 # one process (the FIFO group is room+agent), and both call save_profile on the one profile
@@ -434,6 +437,33 @@ def _emit_restore_metric(seconds: float, objects: int) -> None:
     )
 
 
+#: Hermes's durable lease tables in state.db (hermes_state_common.py:506-520).
+_LEASE_TABLES = ("session_turn_leases", "compression_locks")
+
+
+def clear_turn_leases(db: Path) -> None:
+    """Drop every turn lease and compression lock a restored state.db carries.
+
+    save_profile snapshots state.db while another conversation of the agent may be mid-turn, so
+    the S3 copy can hold that turn's lease (holder ``pid=<n>:turn=...``, TTL 300 s,
+    agent/turn_facade_lease.py:20-21). Hermes reclaims a lease only once it expires or its pid is
+    provably dead -- and never when the pid is its OWN (hermes_state.py:121-145) -- and a fresh
+    microVM's bridge often has the very pid the old one had. A resurrected lease would make the
+    next turn on that key wait up to 300 s, then drop our room history for a DB reload
+    (turn_facade_lease.py:284-296). A cold restore runs once per process, before anything here
+    opens the file, so every lease in it belongs to a dead process. Hermes has no startup sweep
+    of its own for these (it relies on pid liveness, which a microVM restart defeats)."""
+    if not db.is_file() or not _is_sqlite(db):
+        return
+    try:
+        with contextlib.closing(sqlite3.connect(db)) as conn, conn:
+            for table in _LEASE_TABLES:
+                with contextlib.suppress(sqlite3.OperationalError):  # a state.db older than the table
+                    conn.execute(f"DELETE FROM {table}")
+    except sqlite3.Error:
+        log.warning("could not clear restored leases in %s", db, exc_info=True)
+
+
 def restore_profile(agent_id: str) -> float:
     """Download the agent's profile dir from S3 once per process. Returns seconds taken."""
     with profile_lock(agent_id):
@@ -479,6 +509,7 @@ def _restore_profile(agent_id: str) -> float:
         _remember_cli_credential(agent_id, rel, obj, target)
 
     _fan_out(_download, wanted)
+    clear_turn_leases(dest / "state.db")
     n = len(wanted)
     _restored.add(agent_id)
     took = time.time() - t0
@@ -494,9 +525,21 @@ def _restore_profile(agent_id: str) -> float:
     return took
 
 
-def save_profile(agent_id: str) -> float:
+def _transcript_rows(conn) -> tuple | None:
+    """(newest message id, messages, sessions) of a Hermes state.db -- what a recorded turn, an
+    ended session or a prune changes. Not titles, token counters or end stamps alone: those ride
+    the next upload, and a crash before it loses only them. None when the file is not one."""
+    try:
+        return conn.execute("SELECT (SELECT MAX(id) FROM messages), (SELECT COUNT(*) FROM messages), "
+                            "(SELECT COUNT(*) FROM sessions)").fetchone()
+    except sqlite3.Error:
+        return None
+
+
+def save_profile(agent_id: str, sqlite: bool = True) -> float:
     """Upload what THIS turn changed. SQLite files go through the backup API; excluded
     paths (request dumps, logs, per-turn context, WAL/SHM) never leave the microVM.
+    ``sqlite=False`` leaves the SQLite files for a later save (_save_on_sigterm's first pass).
 
     Ruling M6-R51: only files that are new or whose change stamp moved since the last
     restore/pull/save go up. Uploading the whole tree (what this did before) silently reverted
@@ -525,6 +568,8 @@ def save_profile(agent_id: str) -> float:
             rel = path.relative_to(src).as_posix()
             if not path.is_file() or is_excluded(rel) or is_reproducible(rel):
                 continue
+            if not sqlite and path.suffix in (".db", ".sqlite"):
+                continue
             stamp = _change_stamp(path)
             if mtimes.get(rel) == stamp:
                 continue  # untouched by this turn: S3's copy is the source of truth
@@ -543,13 +588,20 @@ def save_profile(agent_id: str) -> float:
                 log.warning("save %s: could not upload %s; retrying next save", agent_id, rel, exc_info=True)
 
         def _upload_one(path: Path, rel: str, stamp: int) -> None:
-            upload = path
+            upload, rows = path, None
             if path.suffix in (".db", ".sqlite") and _is_sqlite(path):
                 snap = path.with_name(path.name + ".s3snap")
                 snap.unlink(missing_ok=True)  # a leftover from an interrupted save poisons backup
-                with sqlite3.connect(path) as conn, sqlite3.connect(snap) as out:
-                    conn.backup(out)  # a real failure raises: retried next save, never raw bytes
+                with contextlib.closing(sqlite3.connect(path)) as conn:
+                    rows = _transcript_rows(conn) if rel == "state.db" else None
+                    if rows is not None and rows == _STATE_ROWS.get(agent_id):
+                        mtimes[rel] = stamp  # Hermes's post-turn bookkeeping only (title, tokens)
+                        return
+                    with contextlib.closing(sqlite3.connect(snap)) as out:
+                        conn.backup(out)  # a real failure raises: retried next save, never raw bytes
                 upload = snap
+                # Uploaded whole whenever its transcript moved; state.db grows with recorded turns.
+                log.info("save %s: %s snapshot %d bytes", agent_id, rel, snap.stat().st_size)
             # anything else -- including a .db that is not SQLite (DuckDB, Thumbs.db) -- goes up raw
             # I1: the instant is read BEFORE the PUT, never after. Reading it after would put it
             # past the object's real LastModified by the PUT's own latency plus any clock skew,
@@ -566,6 +618,8 @@ def save_profile(agent_id: str) -> float:
             mtimes[rel] = stamp
             synced[rel] = now
             _ETAGS.setdefault(agent_id, {})[rel] = etag
+            if rows is not None:
+                _STATE_ROWS[agent_id] = rows
 
         _fan_out(_upload, changed)
         n = len(changed)

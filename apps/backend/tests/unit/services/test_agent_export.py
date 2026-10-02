@@ -1868,6 +1868,10 @@ def test_download_s3_profile_excludes_runtime_and_secret_keys(s3_hermes_bucket, 
         "memories/USER.md": b"Owner runs a bakery",
         "memories/MEMORY.md": b"agent notes",
         "memories/user_profile_overflow.txt": b"more owner context",
+        # Hermes's session store: every room/mail/call/Paperclip transcript.
+        "state.db": b"SQLite format 3",
+        "state.db-wal": b"wal",
+        "state.db-shm": b"shm",
     }
     for key, body in {**keep, **drop}.items():
         s3_hermes_bucket.put_object(Bucket="test-replicas", Key=f"{prefix}/{key}", Body=body)

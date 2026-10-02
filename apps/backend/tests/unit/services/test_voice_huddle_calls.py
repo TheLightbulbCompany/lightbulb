@@ -1,3 +1,4 @@
+import asyncio
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -264,13 +265,12 @@ async def test_sweeper_closes_unreported_huddle_at_deadline_billing_zero():
 
 
 async def test_sweeper_gives_huddle_rows_a_grace_so_the_worker_end_wins():
-    dm = {**FREE_HUDDLE, "callId": "call-dm", "kind": "dm"}
     with (
-        patch.object(vc.container_repo, "get_by_status", AsyncMock(side_effect=[[dict(FREE_HUDDLE), dm], []])),
+        patch.object(vc.container_repo, "get_by_status", AsyncMock(side_effect=[[dict(FREE_HUDDLE)], []])),
         patch.object(vc, "close_call", AsyncMock(return_value=True)) as close,
     ):
-        assert await vc.sweep_calls_once(now=1600 + 59) == 1
-    assert [c.args[0] for c in close.await_args_list] == ["call-dm"]
+        assert await vc.sweep_calls_once(now=1600 + 59) == 0
+        close.assert_not_awaited()
 
 
 @pytest.mark.parametrize("bad", ["abc", [1]])
@@ -367,3 +367,28 @@ async def test_turn_context_failure_still_dispatches_with_speaker_id():
         out = await vc._turn_context({"callId": "c", "roomId": None}, "user_b")
     assert out.startswith("[Live voice request context") and "user id user_b" in out
     assert "one-to-one voice call" in out
+
+
+async def test_huddle_start_without_a_live_plan_is_402(start_env):
+    vc.voice_billing.billing_mode.return_value = None
+    with pytest.raises(HTTPException) as exc:
+        await _start()
+    assert exc.value.status_code == 402 and exc.value.detail["reason"] == "plan_inactive"
+    vc.put_call.assert_not_awaited()
+
+
+async def test_huddle_start_free_minutes_used_is_402(start_env):
+    vc.voice_billing.budget_seconds.return_value = vc.voice_billing.MIN_CALL_SECONDS - 1
+    with pytest.raises(HTTPException) as exc:
+        await _start()
+    assert exc.value.status_code == 402 and exc.value.detail["reason"] == "free_minutes_used"
+    vc._claim_free.assert_not_awaited()
+
+
+@pytest.mark.parametrize("error", [RuntimeError("ddb"), asyncio.CancelledError()])
+async def test_huddle_start_failed_put_releases_the_free_claim(start_env, error):
+    vc.put_call.side_effect = error
+    with patch.object(vc, "release_hold", AsyncMock()), pytest.raises(type(error)):
+        await _start()
+    call_id = vc._claim_free.await_args.args[1]
+    vc._release_free.assert_awaited_once_with("org_a", call_id)

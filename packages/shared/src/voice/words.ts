@@ -173,10 +173,10 @@ export function floorChange(
   if (left) return `${nameOf(left)} left`;
   const h = floorHolder(attrs);
   if (!h) return null;
-  const joining = agentLiveStatus(attrs, h) === "joining";
+  const s = agentLiveStatus(attrs, h);
   const wasJoining = agentLiveStatus(prevAttrs, h) === "joining";
-  if (h === floorHolder(prevAttrs) && joining === wasJoining) return null;
-  return `${nameOf(h)} is ${joining ? "joining" : "speaking"}`;
+  if (h === floorHolder(prevAttrs) && (s === "joining") === wasJoining) return null;
+  return `${nameOf(h)} is ${s === "joining" || s === "listening" ? s : "speaking"}`;
 }
 
 /** Does an agent's name sound like a person in the room (full name or first word, any case)? */

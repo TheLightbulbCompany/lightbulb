@@ -723,12 +723,12 @@ _HUDDLE_ORPHAN_S = 90  # a huddle row this old whose room has no worker lost it:
 
 
 def _sweep_due(call: dict) -> int:
-    return int(call.get("deadline", 0)) + (_HUDDLE_GRACE_S if call.get("kind") == "huddle" else 0)
+    return int(call.get("deadline", 0)) + _HUDDLE_GRACE_S
 
 
 async def _worker_gone(call: dict, now: int) -> bool:
     """A huddle row whose worker crashed holds the free claim or credit hold until its deadline otherwise."""
-    if call.get("kind") != "huddle" or now - int(call.get("startedAt", now)) < _HUDDLE_ORPHAN_S:
+    if now - int(call.get("startedAt", now)) < _HUDDLE_ORPHAN_S:
         return False
     if not livekit_huddles.configured():
         return False

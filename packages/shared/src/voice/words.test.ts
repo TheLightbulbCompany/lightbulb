@@ -115,6 +115,8 @@ describe("per-agent Live readers", () => {
     expect(floorChange(prev, { ...next, [st("g")]: "joining" }, ["f", "g"], ["f", "g"], nameOf)).toBe("Gauge is joining");
     expect(floorChange(prev, { ...prev, "lightbulb.agent.f.working": "x" }, ["f"], ["f"], nameOf)).toBeNull();
     expect(floorChange(prev, prev, ["f", "n"], ["f"], nameOf)).toBe("Nova left");
+    const joiningG = { ...next, [st("g")]: "joining" };
+    expect(floorChange(joiningG, { ...next, [st("g")]: "listening" }, ["g"], ["g"], nameOf)).toBe("Gauge is listening");
   });
 
   it("hints how to talk", () => {

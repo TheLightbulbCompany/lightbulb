@@ -132,6 +132,9 @@ describe("roomDisplayName", () => {
   it("prefers the room name, then participants, then a kind fallback", () => {
     const p = [{ displayName: "Friday" }, { displayName: "Aden" }];
     expect(roomDisplayName({ kind: "channel", name: "Launch" }, [])).toBe("Launch");
+    expect(roomDisplayName({ kind: "channel", name: "#to-do" }, [])).toBe("to-do");
+    expect(roomDisplayName({ kind: "channel", name: "#" }, [])).toBe("#");
+    expect(roomDisplayName({ kind: "group-dm", name: "#1 fans" }, [])).toBe("#1 fans");
     expect(roomDisplayName({ kind: "dm", name: null }, p)).toBe("Friday");
     expect(roomDisplayName({ kind: "group-dm", name: null }, p)).toBe("Friday and Aden");
     expect(roomDisplayName({ kind: "channel", name: null }, [])).toBe("Untitled channel");

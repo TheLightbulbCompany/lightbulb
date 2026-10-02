@@ -25,6 +25,7 @@ import {
   Pressable,
   StyleSheet,
   Text,
+  useWindowDimensions,
   View,
   type NativeScrollEvent,
   type NativeSyntheticEvent,
@@ -72,6 +73,10 @@ const MUTE_FAILED = "The notification setting could not be saved.";
  * as missed.
  */
 const JUMP_THRESHOLD = 48;
+// What the navigation bar spends beside the title and the actions row: the
+// back button and its margin (76), the actions' glass capsule padding and
+// trailing margin (24), and a gap before the capsule (8). Measured on iOS 26.
+const HEADER_SIDE_CHROME = 108;
 
 export default function ConversationRoute() {
   const { roomId } = useLocalSearchParams<{ roomId: string }>();
@@ -393,6 +398,11 @@ function Conversation() {
   // the JSX prop would run on the normal render and not on a blocked one,
   // which is a rules-of-hooks violation and a real order change, not a lint nit.
   const keyboardOffset = usePushedScreenKeyboardOffset();
+  // The native title view takes its content's width, so the title is bounded
+  // to what the actions leave: Go live doubled the right side and a channel
+  // name ran underneath it.
+  const { width: windowWidth } = useWindowDimensions();
+  const [headerActionsWidth, setHeaderActionsWidth] = useState(72);
 
   // On `headerOptions` rather than inline so the blocked-state early return
   // below keeps the header too — a blocked screen with no title and no
@@ -409,6 +419,7 @@ function Conversation() {
         statusTone={headerStatusTone}
         avatar={headerAvatar}
         palette={palette}
+        maxWidth={windowWidth - HEADER_SIDE_CHROME - headerActionsWidth}
         onPress={roomId ? () => router.push(`/(app)/room/${roomId}/details`) : undefined}
       />
     ),
@@ -420,6 +431,7 @@ function Conversation() {
         onToggleStar={() => void savePrefs({ starred: !room?.starred }, STAR_FAILED)}
         onToggleMute={() => void savePrefs({ muted: !room?.muted }, MUTE_FAILED)}
         voice={headerVoice}
+        onLayout={(event) => setHeaderActionsWidth(event.nativeEvent.layout.width)}
       />
     ),
   };

@@ -1,5 +1,5 @@
 import { SymbolView } from "expo-symbols";
-import { StyleSheet, Text, View } from "react-native";
+import { StyleSheet, Text, View, type LayoutChangeEvent } from "react-native";
 
 import { fonts, radii, useChatPalette } from "../../config/theme";
 import { hapticSelection } from "../../lib/haptics";
@@ -19,6 +19,7 @@ export function RoomHeaderActions({
   onToggleStar,
   onToggleMute,
   voice,
+  onLayout,
 }: {
   starred: boolean;
   muted: boolean;
@@ -27,13 +28,15 @@ export function RoomHeaderActions({
   onToggleMute: () => void;
   /** Go live / Live (any room); passed only when the binary can do voice. */
   voice?: { text: string; label: string; disabled?: boolean; onPress: () => void };
+  /** The screen bounds its title by this row's width. */
+  onLayout?: (event: LayoutChangeEvent) => void;
 }) {
   const palette = useChatPalette();
   const starScale = usePressScale();
   const muteScale = usePressScale();
   const voiceScale = usePressScale();
   return (
-    <View style={styles.row}>
+    <View style={styles.row} onLayout={onLayout}>
       {voice && (
         <AnimatedPressable
           onPress={() => {

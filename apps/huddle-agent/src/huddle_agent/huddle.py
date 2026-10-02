@@ -67,6 +67,7 @@ CANT_REACH = "Sorry, I couldn't reach my backend for that."
 # ponytail: inferred (D §5); a delegation the new voice makes this soon after opening is the driven request
 BIND_SECONDS = 10
 HANDOFF_SECONDS = 8  # the floor-holder asked someone by name: they may answer without naming it
+TRANSCRIPT_FLUSH_S = 10  # how often the lines said since the last batch go to the backend
 QUEUE_SETTLE = 1  # the floor-holder's driven run ended and it stopped speaking this long ago: the next answers
 FOLDED = "Folded into your follow-up; the answer comes on that one."
 QUEUED_BEHIND = "You're finishing something else in this room first; say so briefly, then answer when it's done."
@@ -224,6 +225,12 @@ class Huddle:
         self._cut_by: dict[str, str] = {}  # identity -> the agent they cut off this utterance (cleared on their final)
         self._failed_at: dict[tuple[str, str], float] = {}  # (identity, agent) -> when its voice_failed
         self._closed_seconds = 0.0  # GPT-Live seconds of every voice this job closed
+        # The transcript is persisted by the backend (CloudWatch) in batches, so what people and
+        # agents said in a huddle can be read back when something goes wrong in it.
+        self._huddle_id = str(uuid.uuid4())
+        self._sent_mark = -1  # the newest transcript line the backend has
+        self._sent_at = self._started
+        self._flushing = False
 
     def _spawn(self, coro) -> None:
         t = asyncio.create_task(coro)
@@ -342,10 +349,30 @@ class Huddle:
         self._presence_v = version = max(self._presence_v + 1, time.time_ns())
         await asyncio.wait_for(self._backend.presence(sorted(people), version), PRESENCE_TIMEOUT)
 
+    async def _flush_transcript(self) -> None:
+        """Send the backend every transcript line it has not seen. A failed send is retried on the
+        next tick; the lines stay here until one lands."""
+        lines = self._transcript.after(self._sent_mark)
+        self._sent_at = self._clock()
+        if not lines or self._flushing:
+            return
+        self._flushing = True
+        try:
+            await self._backend.transcript(
+                self._huddle_id,
+                [{"mark": x.mark, "kind": x.kind, "name": x.name, "text": x.text, "at": x.at, "to": x.to} for x in lines],
+            )
+            self._sent_mark = lines[-1].mark
+        except Exception:
+            logger.info("huddle transcript post failed; retrying next tick", exc_info=True)
+        finally:
+            self._flushing = False
+
     async def clear_presence(self) -> None:
         """The job is shutting down: clear the room's Live marker before anything else, unless people are
         still in the call (a worker restart), whose marker stays theirs. A missed one is healed by the
         clients' refetch and the backend's orphan sweep."""
+        await self._flush_transcript()  # last chance for what was said since the previous batch
         if self._people and not self._idle_ended:
             return
         try:
@@ -1010,6 +1037,8 @@ class Huddle:
             self._spawn(self._refresh_team())
         self._expire_news(now)
         self._sync_state()
+        if now - self._sent_at >= TRANSCRIPT_FLUSH_S and not self._flushing:
+            self._spawn(self._flush_transcript())
         v, w = self._voice, self._window
         if v is None:
             if self._people and now - self._last_heard >= ROOM_IDLE_SECONDS:

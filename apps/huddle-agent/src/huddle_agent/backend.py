@@ -121,6 +121,9 @@ class Backend:
                     raise
             await asyncio.sleep(2**attempt)
 
+    async def transcript(self, huddle_id: str, lines: list[dict]) -> None:
+        await self._post(f"/internal/huddles/{self._room_id}/transcript", {"huddleId": huddle_id, "lines": lines})
+
     async def presence(self, user_ids: list[str], version: int = 0) -> None:
         body = {"userIds": user_ids, "version": version}
         await self._post(f"/internal/huddles/{self._room_id}/presence", body)

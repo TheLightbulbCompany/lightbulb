@@ -82,6 +82,7 @@ class FakeBackend:
         self.presences: list[list[str]] = []
         self.versions: list[int] = []
         self.team_calls = 0
+        self.transcripts: list[tuple[str, list[dict]]] = []
 
     async def team(self):
         self.team_calls += 1
@@ -138,6 +139,9 @@ class FakeBackend:
     async def presence(self, user_ids, version=0):
         self.presences.append(user_ids)
         self.versions.append(version)
+
+    async def transcript(self, huddle_id, lines):
+        self.transcripts.append((huddle_id, lines))
 
 
 class FakeLive:
@@ -2070,3 +2074,27 @@ async def test_route_sends_line_times_for_the_backend_reask_rule():
     clock.t += 7
     await say(h, "u2", "no idea honestly")
     assert backend.route_bodies[-1]["at"] == [1000, 1007]
+
+
+async def test_the_transcript_reaches_the_backend_in_batches_and_at_shutdown():
+    """What people and agents said is persisted (the backend logs it) so a bad call can be read
+    back: every TRANSCRIPT_FLUSH_S while lines accumulate, and whatever is left when the job ends."""
+    from huddle_agent.huddle import TRANSCRIPT_FLUSH_S
+
+    h, room, backend, lives, clock, log = make()
+    await h.on_participants({"u1": "Prasiddha", "u2": "Aden"})
+    await say(h, "u1", "hey everyone")
+    await say(h, "u2", "morning")
+    await h.tick()
+    await settle(h)
+    assert backend.transcripts == []  # not yet: a batch every TRANSCRIPT_FLUSH_S
+    clock.t += TRANSCRIPT_FLUSH_S
+    await h.tick()
+    await settle(h)
+    huddle_id, lines = backend.transcripts[0]
+    assert [(x["mark"], x["name"], x["text"]) for x in lines] == [(0, "Prasiddha", "hey everyone"), (1, "Aden", "morning")]
+    await say(h, "u1", "one more thing")
+    await h.clear_presence()  # shutdown: the lines since the last batch go first
+    assert backend.transcripts[-1][0] == huddle_id
+    assert [x["text"] for x in backend.transcripts[-1][1]] == ["one more thing"]
+    assert len(backend.transcripts) == 2

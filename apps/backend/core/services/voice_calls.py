@@ -382,14 +382,22 @@ async def _runtime(owner_id: str, path: str, body: dict, *, timeout_s: float = _
     )
 
 
-def prewake_owner(owner_id: str) -> None:
-    """Fire-and-forget wake of the workspace runtime (one health RPC), so the first turn finds it warm."""
+def prewake_owner(owner_id: str, team: list[dict] | None = None) -> None:
+    """Fire-and-forget wake of the workspace runtime (one health RPC), then a profile pull for every
+    agent in the room (the bridge's profile.warm, off its request thread), so the first summon finds
+    both warm. Pulse's first voice answer waited 23 s on its cold profile restore alone."""
 
     async def wake():
         try:
             await container_rpc.call(owner_id, "health")
         except Exception:  # noqa: BLE001 -- best effort; the first turn wakes it otherwise
             logger.info("voice owner prewake failed", exc_info=True)
+            return
+        for member in team or ():
+            try:
+                await container_rpc.call(owner_id, "profile.warm", {"agentId": member["id"]}, timeout_s=10.0)
+            except Exception:  # noqa: BLE001 -- an old image answers "unavailable"; the summon restores
+                logger.info("voice profile prewarm failed agent=%s", member["id"], exc_info=True)
 
     _fire(wake())
 

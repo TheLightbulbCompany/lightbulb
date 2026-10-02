@@ -77,7 +77,6 @@ const mockSubmit = jest.fn(async (_s: string, request: LocalSessionCommand, _rep
 const mockGetCommand = jest.fn();
 const mockListOutbox = jest.fn(async () => ({ commands: [] as LocalSessionCommandReceipt[] }));
 const mockGetPrivateApproval = jest.fn();
-const mockAnswerNativeSend = jest.fn(async () => ({ requestId: "e12fd3e8-32ca-4b65-8eaf-ab979e3c9449", state: "applied" }));
 const mockAskToJoin = jest.fn(async (): Promise<LocalSession> => ({ ...mockSession, joinRequest: "pending" }));
 const mockDecideJoin = jest.fn(async (): Promise<LocalSession> => mockSession);
 const mockLive = {
@@ -96,7 +95,6 @@ const mockLive = {
     getLocalSessionCommand: mockGetCommand,
     listLocalSessionOutbox: mockListOutbox,
     getPrivateSendApproval: mockGetPrivateApproval,
-    answerNativeSendApproval: mockAnswerNativeSend,
     requestLocalSessionJoin: mockAskToJoin,
     decideLocalSessionJoin: mockDecideJoin,
     sendMessage: jest.fn(), downloadAttachment: jest.fn(), attachmentUrl: jest.fn(), uploadAttachment: jest.fn(), markUnread: jest.fn(),
@@ -132,7 +130,6 @@ describe("session screen", () => {
     mockListOutbox.mockResolvedValue({ commands: [] });
     mockGetPrivateApproval.mockReset();
     mockGetPrivateApproval.mockRejectedValue(new ApiError(404, null));
-    mockAnswerNativeSend.mockClear();
     mockAskToJoin.mockClear();
     mockDecideJoin.mockClear();
   });
@@ -440,59 +437,6 @@ describe("session screen", () => {
     await waitFor(() => expect(mockSubmit).toHaveBeenCalledWith("sess-1", expect.objectContaining({
       kind: "approve", approvalId, inputDigest, decision: "allow",
     })));
-  });
-
-  it("approves a pending Codex send from an idle session using the private payload", async () => {
-    const approvalId = "appr-0123456789abcdef0123456789abcdef";
-    const inputDigest = "a".repeat(64);
-    const requestId = "e12fd3e8-32ca-4b65-8eaf-ab979e3c9449";
-    mockSession = { ...base, provider: "codex", status: "idle", nativeSendApproval: true, pendingApproval: {
-      approvalId, inputDigest, tool: "mcp__lightbulb_native_sessions__send",
-      summary: "Lightbulb message", exact: false, modes: [],
-    } };
-    mockGetPrivateApproval.mockResolvedValueOnce({ approvalId, inputDigest, destination: "room:one",
-      text: "private Codex body", requestId });
-    await render(<SessionScreen />);
-    expect(await screen.findByText("private Codex body")).toBeTruthy();
-    await fireEvent.press(screen.getByRole("button", { name: "Approve" }));
-    await waitFor(() => expect(mockAnswerNativeSend).toHaveBeenCalledWith("sess-1", {
-      approvalId, inputDigest, requestId, decision: "allow",
-    }));
-    expect(mockSubmit).not.toHaveBeenCalled();
-  });
-
-  it("shows an idle Claude send intent after the MCP call returns", async () => {
-    const approvalId = "appr-0123456789abcdef0123456789abcdef";
-    const inputDigest = "a".repeat(64);
-    const requestId = "e12fd3e8-32ca-4b65-8eaf-ab979e3c9449";
-    mockSession = { ...base, status: "idle", nativeSendApproval: true, pendingApproval: {
-      approvalId, inputDigest, tool: "mcp__lightbulb_native_sessions__send",
-      summary: "Lightbulb message", exact: false, modes: [],
-    } };
-    mockGetPrivateApproval.mockResolvedValueOnce({ approvalId, inputDigest, destination: "room:one",
-      text: "private Claude body", requestId });
-    await render(<SessionScreen />);
-    expect(await screen.findByText("private Claude body")).toBeTruthy();
-    await fireEvent.press(screen.getByRole("button", { name: "Approve" }));
-    await waitFor(() => expect(mockAnswerNativeSend).toHaveBeenCalledWith("sess-1", {
-      approvalId, inputDigest, requestId, decision: "allow",
-    }));
-    expect(mockSubmit).not.toHaveBeenCalled();
-  });
-
-  it("shows an offline Claude send intent without offering approval", async () => {
-    const approvalId = "appr-0123456789abcdef0123456789abcdef";
-    const inputDigest = "a".repeat(64);
-    mockSession = { ...base, status: "offline", nativeSendApproval: true, pendingApproval: {
-      approvalId, inputDigest, tool: "mcp__lightbulb_native_sessions__send",
-      summary: "Lightbulb message", exact: false, modes: [],
-    } };
-    mockGetPrivateApproval.mockResolvedValueOnce({ approvalId, inputDigest, destination: "room:one",
-      text: "private Claude body", requestId: "e12fd3e8-32ca-4b65-8eaf-ab979e3c9449" });
-    await render(<SessionScreen />);
-    expect(await screen.findByText("private Claude body")).toBeTruthy();
-    expect(screen.queryByRole("button", { name: "Approve" })).toBeNull();
-    expect(screen.getAllByText(/Your Mac is offline/).length).toBeGreaterThan(0);
   });
 
   it("keeps a private send generic for a teammate with session control", async () => {

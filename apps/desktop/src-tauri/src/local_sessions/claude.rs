@@ -1576,7 +1576,7 @@ mod tests {
         assert_eq!(receipt_event[0]["tool"]["input"], json!({}));
         for content in [
             json!({"ok":true,"data":{"destination":"person:private","targetRequestId":"private-request"}}),
-            json!({"_lightbulbNativeSessionTool":"send","ok":true,"data":{"state":"pending_approval","requestId":"private-request","approvalId":"appr-private"}}),
+            json!({"_lightbulbNativeSessionTool":"send","ok":true,"data":{"state":"applied","requestId":"private-request","messageId":"msg-private"}}),
             json!({"_lightbulbNativeSessionTool":"receipt","ok":false,"data":{"state":"rejected","error":{"message":"owner secret"}}}),
             json!({"_lightbulbNativeSessionTool":"receipt","ok":false,"error":"owner secret"}),
         ] {

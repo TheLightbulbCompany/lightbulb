@@ -134,6 +134,7 @@ export default function ThreadScreen() {
   ), [rooms.activeRoom?.shared, workspaceSessions.sessions]);
   const sessionTargets = useMemo(() => sessionCandidates
     .filter(({ session }) => session.shared !== false && canSendToSession(session)
+      && members?.some((member) => member.kind === "human" && member.id === session.humanUserId)
       && canControlSession(session, session.humanUserId === userId, userId))
     .map((candidate) => ({
     candidate, ownerName: candidate.session.humanUserId === userId ? "You" : memberName(members, candidate.session.humanUserId),

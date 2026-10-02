@@ -200,8 +200,7 @@ async def find_sessions(query: str = "", limit: int = 30) -> dict:
                     session.capabilities_verified
                     and session.control_unavailable_reason is None
                     and session.capabilities.send_mode != "none"
-                    and session.status != "ended"
-                    and (session.status != "offline" or session.capabilities.send_mode == "queue")
+                    and session.status not in {"ended", "offline"}
                     and (
                         auth.user_id == session.human_user_id
                         or session.team_control
@@ -232,9 +231,9 @@ async def read_messages(room_id: str, after_seq: int | None = None, limit: int =
 async def send_message(
     room_id: str,
     text: str,
-    request_id: str,
+    request_id: uuid.UUID,
     session_id: str | None = None,
-    reply_to_message_id: str | None = None,
+    reply_to_message_id: uuid.UUID | None = None,
     mention_ids: list[str] | None = None,
 ) -> dict:
     """Send as the signed-in person; optionally reply in a thread or address room members and a session."""
@@ -244,7 +243,7 @@ async def send_message(
     selected = list(dict.fromkeys(mention_ids or []))
     if len(selected) > 32 or any(member_id not in members for member_id in selected):
         raise messaging.ApiProblem("MEMBER_NOT_FOUND", "Mentioned member is not in this room.")
-    reply_id = str(uuid.UUID(reply_to_message_id)) if reply_to_message_id else None
+    reply_id = str(reply_to_message_id) if reply_to_message_id else None
     thread_root_id = None
     if reply_id:
         parent = await messaging_repo.get_message_by_id(room_id, reply_id)
@@ -255,7 +254,7 @@ async def send_message(
         auth,
         room_id,
         messaging.CreateMessageRequest(
-            client_message_id=uuid.UUID(request_id),
+            client_message_id=request_id,
             text=text,
             mentions=[{"kind": members[member_id].kind, "id": member_id} for member_id in selected],
             session_mentions=[session_id] if session_id else [],
@@ -274,13 +273,13 @@ async def send_message(
 
 
 @mcp.tool()
-async def message_receipt(room_id: str, request_id: str) -> dict:
+async def message_receipt(room_id: str, request_id: uuid.UUID) -> dict:
     """Reconcile a send by its request ID, including when the send response was lost."""
     auth = _caller()
     await messaging.require_room_member(auth.org_id, auth.user_id, room_id)
     receipt = await messaging_repo._get(
         messaging_repo.room_pk(room_id),
-        messaging_repo.human_idemp_sk(auth.user_id, str(uuid.UUID(request_id))),
+        messaging_repo.human_idemp_sk(auth.user_id, str(request_id)),
     )
     if receipt is None:
         return {"state": "not_found"}

@@ -338,9 +338,10 @@ export function MessagingWorkspaceProvider({
   ), [workspaceSessions.sessions]);
   const sessionTargets = useMemo(() => rooms.activeRoom?.shared ? [] : sessionCandidates
     .filter(({ session }) => session.shared !== false && canSendToSession(session)
+      && rooms.activeRoom?.members.some((member) => member.kind === "human" && member.id === session.humanUserId)
       && canControlSession(session, session.humanUserId === userId, userId))
     .map((candidate) => ({ candidate, ...resolveSessionOwner(candidate.session.humanUserId) })),
-  [rooms.activeRoom?.shared, sessionCandidates, userId, resolveSessionOwner]);
+  [rooms.activeRoom?.shared, rooms.activeRoom?.members, sessionCandidates, userId, resolveSessionOwner]);
   const directoryRooms: DirectoryRoom[] = useMemo(() => rooms.rooms.map((room) => ({
     ...room,
     // Straight off the room summary — this used to come from a per-DM

@@ -156,7 +156,7 @@ describe("listing detail", () => {
     await render(<ListingDetailScreen />);
     expect(screen.getByText("Not available in the app.")).toBeTruthy();
     expect(screen.queryByText(/\$10\.00/)).toBeNull();
-    expect(screen.queryByText(/flickmeon\.ai/)).toBeNull();
+    expect(screen.queryByText(/thelightbulb\.company/)).toBeNull();
     expect(screen.queryByLabelText("Deploy to my workspace")).toBeNull();
     expect(screen.queryByText("Get")).toBeNull();
     expect(mockDeploy).not.toHaveBeenCalled();

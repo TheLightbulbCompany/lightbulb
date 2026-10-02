@@ -123,7 +123,7 @@ describe("purchaseSafeMessage", () => {
       // The poisoned server copy (Upgrade / pick a plan / $ / thelightbulb.company)
       // never survives into the sanitized output.
       expect(out).not.toMatch(/upgrade|pick a plan|\$\d/i);
-      expect(out).not.toMatch(/flickmeon\.ai/i);
+      expect(out).not.toMatch(/thelightbulb\.company/i);
     },
   );
 

@@ -28,7 +28,7 @@ describe("BoardView subscription gate", () => {
     expect(
       await screen.findByText("Teams isn't available for this workspace right now."),
     ).toBeTruthy();
-    expect(screen.queryByText(/flickmeon\.ai/)).toBeNull();
+    expect(screen.queryByText(/thelightbulb\.company/)).toBeNull();
     expect(screen.queryByText(/Manage/)).toBeNull();
     expect(screen.queryByRole("button")).toBeNull();
   });

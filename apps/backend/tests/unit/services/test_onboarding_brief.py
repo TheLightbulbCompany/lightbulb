@@ -365,7 +365,13 @@ async def test_staging_writes_the_agents_profile(monkeypatch):
         ("Here's our website: acme.com.au", ("grow", "acme.com.au")),
         ("Here's our website: shop.acme.tech/about", ("grow", "shop.acme.tech/about")),
         ("We build on node.js", ("new", "We build on node.js")),
-        ("see README.md for details", ("new", "see README.md for details")),
+        ("Here's our website: acme.sh", ("grow", "acme.sh")),
+        ("Our website is https://acme.com/pricing — we sell candles", ("grow", "https://acme.com/pricing")),
+        ("https://acme.com", ("grow", "https://acme.com")),
+        ("<https://acme.com>", ("grow", "https://acme.com")),
+        ("We sell on amazon.com and etsy", ("new", "We sell on amazon.com and etsy")),
+        ("Here's our website: coming soon", ("new", "Here's our website: coming soon")),
+        ("3.5 tonnes a week", ("new", "3.5 tonnes a week")),
     ],
 )
 def test_first_message_intake_picks_the_path_and_the_goal_input(text, expected):

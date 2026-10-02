@@ -38,21 +38,24 @@ input is usually their website; fetch it first. Research the person as
 well as the business (their public presence tells you who you work for).
 """
 
-# A link or a bare domain anywhere in the first message: the owner has an existing
-# business, so the brief takes the "grow" path and the goal title derives from the domain.
+# A link or hostname token. It only means "the owner's site" under the framing in
+# first_message_intake (a website prefix, or the whole message being the link).
 _URL_RE = re.compile(
-    r"(https?://\S+|(?<![@\w.-])(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+(?!(?:js|ts|py|md|txt|json|yml|yaml|csv|pdf|png|jpe?g|gif|svg|html|css|sh|zip|exe|dmg)\b)[a-z]{2,24}\b(?:/\S*)?)",
+    r"(https?://\S+|(?<![@\w.-])(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,24}\b(?:/\S*)?)",
     re.IGNORECASE,
 )
 #: The third pre-typed reply (apps/frontend/src/components/messaging/FirstReplyChips.tsx)
 #: starts with these words. Matching the prefix, not the whole sentence, survives copy tweaks.
 _YOU_PICK_PREFIX = "not sure yet"
+_WEBSITE_PREFIX_RE = re.compile(
+    r"(here's our website|here is our website|our website is|our site is|website:)", re.IGNORECASE
+)
 
 
 def first_message_intake(text: str) -> tuple[str, str | None]:
     """(path, user_input) for the brief from the owner's first message.
 
-    A URL or domain -> ("grow", that token); "Not sure yet..." -> ("new", None), which the
+    A website-framed message or a bare link -> ("grow", the link); "Not sure yet..." -> ("new", None), which the
     brief template renders as the owner asking the CEO to pick; anything else -> ("new", text).
     """
     stripped = text.strip()
@@ -60,7 +63,11 @@ def first_message_intake(text: str) -> tuple[str, str | None]:
         return "new", None
     if re.match(r"(i'm|i am|im) starting", stripped, re.IGNORECASE):
         return "new", stripped
-    match = _URL_RE.search(stripped)
+    prefix = _WEBSITE_PREFIX_RE.match(stripped)
+    if prefix:
+        match = _URL_RE.search(stripped[prefix.end() :])
+    else:
+        match = _URL_RE.fullmatch(stripped.strip("<>\"' "))
     if match:
         return "grow", match.group(0).rstrip(".,;:)")
     return "new", stripped

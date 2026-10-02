@@ -1,4 +1,4 @@
-"""Account-scoped Lightbulb MCP. Native session identity belongs to the Mac bridge."""
+"""Account-scoped Lightbulb MCP. A send is authored by the OAuth client, accountable to the person."""
 
 from __future__ import annotations
 
@@ -7,6 +7,7 @@ import logging
 from contextlib import asynccontextmanager
 import time
 import uuid
+from urllib.parse import urlsplit
 
 import httpx
 from mcp.server import MCPServer
@@ -126,10 +127,9 @@ mcp = MCPServer(
 )
 
 
-@mcp.tool()
-async def find_rooms(query: str = "", limit: int = 30) -> dict:
-    """Find channels and existing DMs that the signed-in person may read."""
-    auth = _caller()
+# The four reads below take an AuthContext so the paired-Mac device routes
+# (routers/messaging.py, /local-sessions/device/*) serve the same answers.
+async def rooms_for(auth: AuthContext, query: str = "", limit: int = 30) -> dict:
     rooms = (await messaging.list_rooms(auth)).rooms
     needle = query.casefold().strip()
     matches = [
@@ -161,10 +161,7 @@ async def find_rooms(query: str = "", limit: int = 30) -> dict:
     }
 
 
-@mcp.tool()
-async def find_sessions(query: str = "", limit: int = 30) -> dict:
-    """Find shared coding sessions by readable title, provider or folder; use sessionId to target one."""
-    auth = _caller()
+async def sessions_for(auth: AuthContext, query: str = "", limit: int = 30) -> dict:
     sessions = (await local_sessions.list_workspace_sessions(auth)).sessions
     owner_ids = sorted({session.human_user_id for session in sessions})
     owner_names = dict(zip(owner_ids, await asyncio.gather(*(messaging.human_display_name(uid) for uid in owner_ids))))
@@ -215,10 +212,7 @@ async def find_sessions(query: str = "", limit: int = 30) -> dict:
     }
 
 
-@mcp.tool()
-async def read_messages(room_id: str, after_seq: int | None = None, limit: int = 25) -> dict:
-    """Read the latest page or continue after a message sequence in a room or DM."""
-    auth = _caller()
+async def messages_for(auth: AuthContext, room_id: str, after_seq: int | None = None, limit: int = 25) -> dict:
     count = max(1, min(limit, 50))
     if after_seq is None:
         room = await messaging.get_room(auth, room_id)
@@ -226,6 +220,61 @@ async def read_messages(room_id: str, after_seq: int | None = None, limit: int =
     else:
         page = await messaging.list_messages(auth, room_id, max(0, after_seq), count)
     return page.model_dump(mode="json", by_alias=True)
+
+
+async def receipt_for(auth: AuthContext, room_id: str, request_id: uuid.UUID) -> dict:
+    await messaging.require_room_member(auth.org_id, auth.user_id, room_id)
+    receipt = await messaging_repo._get(
+        messaging_repo.room_pk(room_id),
+        messaging_repo.human_idemp_sk(auth.user_id, str(request_id)),
+    )
+    if receipt is None:
+        return {"state": "not_found"}
+    message = await messaging_repo.get_message(room_id, int(receipt["messageSeq"]))
+    if message is None or message.get("via") != "lightbulb_mcp" or message.get("actorUserId") != auth.user_id:
+        return {"state": "not_found"}
+    public = messaging.canonical_message(message).model_dump(mode="json", by_alias=True)
+    for send in public.get("sessionSends", []):
+        if send.get("requestId"):
+            try:
+                command = await local_sessions.get_command(auth, None, send["sessionId"], send["requestId"])
+                send["state"] = command.state
+            except messaging.ApiProblem:
+                # The room message remains readable even if this session stopped sharing.
+                pass
+    return {"state": "posted", "message": public}
+
+
+@mcp.tool()
+async def find_rooms(query: str = "", limit: int = 30) -> dict:
+    """Find channels and existing DMs that the signed-in person may read."""
+    return await rooms_for(_caller(), query, limit)
+
+
+@mcp.tool()
+async def find_sessions(query: str = "", limit: int = 30) -> dict:
+    """Find shared coding sessions by readable title, provider or folder; use sessionId to target one."""
+    return await sessions_for(_caller(), query, limit)
+
+
+@mcp.tool()
+async def read_messages(room_id: str, after_seq: int | None = None, limit: int = 25) -> dict:
+    """Read the latest page or continue after a message sequence in a room or DM."""
+    return await messages_for(_caller(), room_id, after_seq, limit)
+
+
+_CLIENTS = {
+    "https://claude.ai/oauth/claude-code-client-metadata": ("claude-code", "Claude Code"),
+    "https://chatgpt.com/oauth/codex/client.json": ("codex", "Codex"),
+}
+
+
+def client_identity(client_id: str) -> tuple[str, str]:
+    """(slug, display name) for the OAuth client that holds the grant."""
+    if client_id in _CLIENTS:
+        return _CLIENTS[client_id]
+    host = urlsplit(client_id).hostname or client_id
+    return host, host
 
 
 @mcp.tool()
@@ -237,8 +286,9 @@ async def send_message(
     reply_to_message_id: uuid.UUID | None = None,
     mention_ids: list[str] | None = None,
 ) -> dict:
-    """Send as the signed-in person; optionally reply in a thread or address room members and a session."""
+    """Send as this client on the signed-in person's behalf; optionally reply in a thread or address room members and a session."""
     auth = _caller(WRITE_SCOPE)
+    slug, client = client_identity(get_access_token().client_id)
     room = await messaging.get_room(auth, room_id)
     members = {member.id: member for member in room.members}
     selected = list(dict.fromkeys(mention_ids or []))
@@ -263,6 +313,11 @@ async def send_message(
             thread_root_message_id=uuid.UUID(thread_root_id) if thread_root_id else None,
         ),
         via="lightbulb_mcp",
+        author_override={
+            "kind": "system",
+            "id": f"mcp:{auth.user_id}:{slug}",
+            "displayName": f"{client} via {await messaging.human_display_name(auth.user_id)}",
+        },
     )
     return {
         "roomId": str(message.room_id),
@@ -276,27 +331,7 @@ async def send_message(
 @mcp.tool()
 async def message_receipt(room_id: str, request_id: uuid.UUID) -> dict:
     """Reconcile a send by its request ID, including when the send response was lost."""
-    auth = _caller()
-    await messaging.require_room_member(auth.org_id, auth.user_id, room_id)
-    receipt = await messaging_repo._get(
-        messaging_repo.room_pk(room_id),
-        messaging_repo.human_idemp_sk(auth.user_id, str(request_id)),
-    )
-    if receipt is None:
-        return {"state": "not_found"}
-    message = await messaging_repo.get_message(room_id, int(receipt["messageSeq"]))
-    if message is None or message.get("via") != "lightbulb_mcp" or message.get("author", {}).get("id") != auth.user_id:
-        return {"state": "not_found"}
-    public = messaging.canonical_message(message).model_dump(mode="json", by_alias=True)
-    for send in public.get("sessionSends", []):
-        if send.get("requestId"):
-            try:
-                command = await local_sessions.get_command(auth, None, send["sessionId"], send["requestId"])
-                send["state"] = command.state
-            except messaging.ApiProblem:
-                # The room message remains readable even if this session stopped sharing.
-                pass
-    return {"state": "posted", "message": public}
+    return await receipt_for(_caller(), room_id, request_id)
 
 
 # API Gateway rewrites Host to the private ALB DNS name. The public OAuth URL is

@@ -90,6 +90,8 @@ async def test_send_resolves_thread_root_and_member_mentions(monkeypatch):
         )
     )
     monkeypatch.setattr(hosted_mcp.messaging, "create_human_message", post)
+    monkeypatch.setattr(hosted_mcp, "get_access_token", lambda: SimpleNamespace(client_id="https://x.example/c"))
+    monkeypatch.setattr(hosted_mcp.messaging, "human_display_name", AsyncMock(return_value="Ann"))
 
     await hosted_mcp.send_message(
         room_id,
@@ -132,3 +134,61 @@ async def test_room_target_search_does_not_offer_offline_queue(monkeypatch):
     monkeypatch.setattr(hosted_mcp.messaging, "human_display_name", AsyncMock(return_value="Tester"))
     result = await hosted_mcp.find_sessions()
     assert result["sessions"][0]["canSend"] is False
+
+
+def test_client_identity_names_known_clients_and_falls_back_to_host():
+    assert hosted_mcp.client_identity("https://claude.ai/oauth/claude-code-client-metadata") == (
+        "claude-code",
+        "Claude Code",
+    )
+    assert hosted_mcp.client_identity("https://chatgpt.com/oauth/codex/client.json") == ("codex", "Codex")
+    assert hosted_mcp.client_identity("https://cursor.example.com/meta.json") == (
+        "cursor.example.com",
+        "cursor.example.com",
+    )
+
+
+@pytest.mark.asyncio
+async def test_send_authors_as_the_client_on_the_humans_behalf(monkeypatch):
+    room_id = str(uuid.uuid4())
+    monkeypatch.setattr(hosted_mcp, "_caller", lambda _scope: AuthContext(user_id="user_sender", org_id="org_test"))
+    monkeypatch.setattr(
+        hosted_mcp,
+        "get_access_token",
+        lambda: SimpleNamespace(client_id="https://claude.ai/oauth/claude-code-client-metadata"),
+    )
+    monkeypatch.setattr(hosted_mcp.messaging, "get_room", AsyncMock(return_value=SimpleNamespace(members=[])))
+    monkeypatch.setattr(hosted_mcp.messaging, "human_display_name", AsyncMock(return_value="Ann"))
+    post = AsyncMock(
+        return_value=SimpleNamespace(
+            room_id=uuid.UUID(room_id), message_id=uuid.uuid4(), message_seq=1, session_sends=[]
+        )
+    )
+    monkeypatch.setattr(hosted_mcp.messaging, "create_human_message", post)
+    await hosted_mcp.send_message(room_id, "hi", str(uuid.uuid4()))
+    assert post.await_args.args[0].user_id == "user_sender"
+    assert post.await_args.kwargs["author_override"] == {
+        "kind": "system",
+        "id": "mcp:user_sender:claude-code",
+        "displayName": "Claude Code via Ann",
+    }
+
+
+@pytest.mark.asyncio
+async def test_receipt_finds_the_client_authored_row_by_its_accountable_human(monkeypatch):
+    room_id, request_id = str(uuid.uuid4()), uuid.uuid4()
+    auth = AuthContext(user_id="user_sender", org_id="org_test")
+    row = {"via": "lightbulb_mcp", "actorUserId": "user_sender", "author": {"kind": "system", "id": "mcp:x"}}
+    monkeypatch.setattr(hosted_mcp.messaging, "require_room_member", AsyncMock())
+    get = AsyncMock(return_value={"messageSeq": 4})
+    monkeypatch.setattr(hosted_mcp.messaging_repo, "_get", get)
+    monkeypatch.setattr(hosted_mcp.messaging_repo, "get_message", AsyncMock(return_value=row))
+    monkeypatch.setattr(
+        hosted_mcp.messaging,
+        "canonical_message",
+        lambda _m: SimpleNamespace(model_dump=lambda **_: {"messageSeq": 4}),
+    )
+    assert (await hosted_mcp.receipt_for(auth, room_id, request_id))["state"] == "posted"
+    assert get.await_args.args[1] == hosted_mcp.messaging_repo.human_idemp_sk("user_sender", str(request_id))
+    row["actorUserId"] = "user_other"
+    assert (await hosted_mcp.receipt_for(auth, room_id, request_id)) == {"state": "not_found"}

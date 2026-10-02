@@ -26,7 +26,7 @@ from core.repositories import container_repo, messaging_repo
 from core.repositories.paperclip_repo import PaperclipRepo
 from core.services import activity, chat_gate
 from core.services import messaging as service
-from core.services import hook_grants, link_preview, local_sessions, native_session_tools, session_pickup
+from core.services import hook_grants, hosted_mcp, link_preview, local_sessions, native_session_tools, session_pickup
 from core.services import local_session_grants
 from core.services import container_rpc, runtime_transport, voice_calls
 from core.services.live_events import get_live_event_publisher, publish_room_activity
@@ -99,6 +99,34 @@ async def prepare_native_session_send(
     device=Depends(native_session_device),
 ):
     return await native_session_tools.prepare_codex_send(device, body)
+
+
+async def device_human(device=Depends(native_session_device)) -> AuthContext:
+    """The paired Mac's enrolled human. Read routes only: a device token never reaches a write."""
+    await local_sessions._enrolled(device.owner_id, device.user_id, device.device_id)
+    return AuthContext(user_id=device.user_id, org_id=device.org_id or None)
+
+
+@router.get("/local-sessions/device/rooms")
+async def device_find_rooms(query: str = "", limit: int = 30, auth: AuthContext = Depends(device_human)):
+    return await hosted_mcp.rooms_for(auth, query, limit)
+
+
+@router.get("/local-sessions/device/rooms/{room_id}/messages")
+async def device_read_messages(
+    room_id: str, after_seq: int | None = None, limit: int = 25, auth: AuthContext = Depends(device_human)
+):
+    return await hosted_mcp.messages_for(auth, room_id, after_seq, limit)
+
+
+@router.get("/local-sessions/device/sessions")
+async def device_find_sessions(query: str = "", limit: int = 30, auth: AuthContext = Depends(device_human)):
+    return await hosted_mcp.sessions_for(auth, query, limit)
+
+
+@router.get("/local-sessions/device/receipt")
+async def device_message_receipt(room_id: str, request_id: uuid.UUID, auth: AuthContext = Depends(device_human)):
+    return await hosted_mcp.receipt_for(auth, room_id, request_id)
 
 
 async def local_session_invocation(request: Request) -> local_session_grants.AgentInvocation:

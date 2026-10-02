@@ -91,6 +91,7 @@ describe("SesInboundStack", () => {
       ResourceRecords: [
         '"v=spf1 include:_spf.google.com include:amazonses.com ~all"',
         '"google-site-verification=v-MtfFMuBP2VYDP5sIB3wVXTQU4SjimPoryr5oX6mQg"',
+        '"google-site-verification=Clg4oJdtZ_0J7pJRFmfJfkKr0KE8C9CVze8I7AIbaWU"',
       ],
     });
   });

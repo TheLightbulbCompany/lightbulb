@@ -29,18 +29,21 @@ const mono = localFont({
   ],
 });
 
+const SITE = "https://about.thelightbulb.company";
 const TITLE = "The Lightbulb Company — the business of ideas";
 const DESCRIPTION =
   "A holding company for products that make people more capable. Lightbulb AI, GooseTown, Ventures, Physical AI.";
 
 export const metadata: Metadata = {
-  metadataBase: new URL("https://thelightbulb.company"),
+  // The company site lives on about.; the apex is the product.
+  metadataBase: new URL(SITE),
   title: TITLE,
   description: DESCRIPTION,
+  alternates: { canonical: SITE },
   openGraph: {
     title: TITLE,
     description: DESCRIPTION,
-    url: "https://thelightbulb.company",
+    url: SITE,
     siteName: "The Lightbulb Company",
     type: "website",
   },

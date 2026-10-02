@@ -3,7 +3,7 @@
     "name": "Lightbulb",
     "slug": "isol8-mobile",
     "owner": "thelightbulbcompany",
-    "version": "0.4.8",
+    "version": "0.4.9",
     "orientation": "portrait",
     "icon": "./assets/images/icon.png",
     "scheme": "flickmeon",
@@ -31,7 +31,7 @@
         "aps-environment": "production"
       },
       "associatedDomains": [
-        "applinks:flickmeon.ai"
+        "applinks:thelightbulb.company"
       ]
     },
     "plugins": [

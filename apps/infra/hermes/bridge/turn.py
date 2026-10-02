@@ -2723,7 +2723,13 @@ def _converse(agent, agent_id: str, session_key: str, run_id: str | None, body: 
                 conversation_history=result.get("messages") or None,
             )
         if replies:
-            result["final_response"] = "\n\n".join(r for r in (*replies, result.get("final_response")) if r)
+            parts = [*replies, result.get("final_response") or ""]
+            if body.get("eventKind") == "room_event":
+                # An ambient run may stand down after a steer (routing v2 §4.1): a [SILENT] last
+                # pass drops the whole reply (the session keeps the stand-down); an earlier
+                # [SILENT] pass is only a marker, never posted next to a real answer.
+                parts = parts[-1:] if _is_silence(parts[-1]) else [p for p in parts if not _is_silence(p)]
+            result["final_response"] = "\n\n".join(p for p in parts if p)
         return result
     finally:
         if key_token is not None:

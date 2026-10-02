@@ -93,3 +93,33 @@ def test_a_leftover_steer_is_answered_in_the_same_run(home, posted, monkeypatch)
     replies = [body for path, body in posted if "agent-messages" in path]
     assert replies and replies[0]["text"] == "first answer\n\nabout X"
     assert turn.RUNS[RUN]["state"] == "ended"
+
+
+def _leftover_steer_reply(monkeypatch, event_kind, first, second):
+    """A run whose steer lands after its last model call: the two passes' replies, combined."""
+    import sys
+    import types
+    from types import SimpleNamespace
+    rf = types.ModuleType("gateway.response_filters")
+    rf.is_intentional_silence_response = lambda r: isinstance(r, str) and r.strip() == "[SILENT]"
+    monkeypatch.setitem(sys.modules, "gateway", sys.modules.get("gateway") or types.ModuleType("gateway"))
+    monkeypatch.setitem(sys.modules, "gateway.response_filters", rf)
+    script = [{"api_calls": 1, "final_response": first, "messages": ["m"], "pending_steer": "Bob: $42k"},
+              {"api_calls": 1, "final_response": second}]
+    agent = SimpleNamespace(run_conversation=lambda **_kw: script.pop(0))
+    monkeypatch.setattr(turn, "_run_conversation", lambda agent, *_a, **kw: agent.run_conversation(**kw))
+    turn.RUNS.clear(); turn.register_run(RUN); turn.attach_agent(RUN, agent)
+    # Not a room session key, so _converse skips the room-transcript setup.
+    return turn._converse(agent, "finance", "plain", RUN, {"eventKind": event_kind}, None, "sys", "q", "q")["final_response"]
+
+
+def test_an_ambient_run_that_stands_down_after_a_late_steer_posts_nothing(monkeypatch):
+    assert _leftover_steer_reply(monkeypatch, "room_event", "MRR is $42k.", "[SILENT]") == "[SILENT]"
+
+
+def test_an_ambient_runs_earlier_silence_marker_is_dropped_beside_a_real_answer(monkeypatch):
+    assert _leftover_steer_reply(monkeypatch, "room_event", "[SILENT]", "Also: churn is 2%.") == "Also: churn is 2%."
+
+
+def test_an_addressed_runs_combined_reply_is_unchanged(monkeypatch):
+    assert _leftover_steer_reply(monkeypatch, "user_request", "MRR is $42k.", "Noted.") == "MRR is $42k.\n\nNoted."

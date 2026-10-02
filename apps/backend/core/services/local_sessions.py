@@ -181,8 +181,6 @@ class PrivateSendApproval(ContractModel):
     approval_id: OpaqueId
     input_digest: Digest
     destination: Annotated[str, Field(min_length=1, max_length=256)]
-    #: Server-resolved name for display only; the digest covers ``destination``.
-    destination_label: Annotated[str, Field(max_length=300)] | None = None
     text: Annotated[str, Field(min_length=1, max_length=4096)]
     request_id: OpaqueId
 
@@ -259,7 +257,6 @@ class LocalSession(ContractModel):
     # Request id per waiting person, so an answer from the session names the request it saw.
     pending_join_ids: dict[str, str] | None = None
     pending_approval: PendingApproval | None = None
-    native_send_approval: bool | None = None
     # Read-only: the harness's own model and permission mode. Neither CLI takes a runtime
     # change from outside its terminal (Claude's mode only rides an approval's setMode).
     model: Label | None = None
@@ -281,7 +278,6 @@ class LocalSession(ContractModel):
             info,
             (
                 "pending_approval",
-                "native_send_approval",
                 "start_id",
                 "model",
                 "display_title",
@@ -549,34 +545,11 @@ def _viewer(auth: Caller) -> str | None:
     return None if isinstance(auth, AgentInvocation) else auth.user_id
 
 
-def _native_send_pending(row: dict) -> dict | None:
-    intent = row.get("nativeSendIntent") or {}
-    if (
-        row.get("endedAt") is not None
-        or row.get("unshared")
-        or intent.get("expiresAt", 0) <= int(time.time())
-        or intent.get("connectionId") != row.get("connectionId")
-        or intent.get("sourceGeneration") != row.get("generation")
-        or not intent.get("approvalId")
-        or not intent.get("inputDigest")
-    ):
-        return None
-    return {
-        "approvalId": intent.get("approvalId"),
-        "tool": "mcp__lightbulb_native_sessions__send",
-        "summary": "Lightbulb message",
-        "inputDigest": intent.get("inputDigest"),
-        "exact": False,
-        "modes": [],
-    }
-
-
 def _session_public(row: dict, viewer: str | None = None) -> LocalSession:
     """One projection for every listing: ended beats lease state, an unverified
     capability set reads as none."""
     public = dict(row)
     public.pop("privateSendApproval", None)
-    public.pop("nativeSendIntent", None)
     public["latestEventSeq"] = row.get("eventSeq", 0)
     public["lastEventAt"] = iso(row.get("lastEventAt"))
     public["endedAt"] = iso(row.get("endedAt"))
@@ -609,14 +582,7 @@ def _session_public(row: dict, viewer: str | None = None) -> LocalSession:
     public["shareUsage"] = bool(row.get("shareUsage"))
     if stats.get("usage") and viewer is not None and (viewer == row["humanUserId"] or public["shareUsage"]):
         public["usage"] = stats["usage"]
-    native_send = _native_send_pending(row)
-    if native_send:
-        public["pendingApproval"] = native_send
-        public["nativeSendApproval"] = True
-    elif public["status"] != "waiting-approval" or (
-        row["provider"] == "codex"
-        and (row.get("pendingApproval") or {}).get("tool") == "mcp__lightbulb_native_sessions__send"
-    ):
+    if public["status"] != "waiting-approval":
         public.pop("pendingApproval", None)
     if row.get("pickupAllowed") or (viewer is not None and viewer == row["humanUserId"]):
         public["pickup"] = _pickup_public(row)
@@ -1027,7 +993,6 @@ async def set_sharing(auth: AuthContext, session_id: str, shared: bool) -> Local
                 updated["unshared"] = True
                 updated.pop("pendingApproval", None)
                 updated.pop("privateSendApproval", None)
-                updated.pop("nativeSendIntent", None)
             try:
                 await repo.put_session(updated, row, enrollment)
             except ClientError as exc:
@@ -1095,27 +1060,10 @@ async def get_private_send_approval(auth: AuthContext, session_id: str) -> Priva
     if auth.user_id != row["humanUserId"]:
         raise ApiProblem("LOCAL_SESSION_NOT_FOUND", "Private approval is unavailable.")
     pending, detail = row.get("pendingApproval") or {}, row.get("privateSendApproval") or {}
-    native_pending = _native_send_pending(row)
-    if native_pending:
-        pending = native_pending
-        intent = row["nativeSendIntent"]
-        detail = (
-            await messaging_repo._get(
-                repo.session_pk(row["ownerId"], row["sessionId"]), f"NATIVE_INTENT#{intent['requestId']}"
-            )
-            or {}
-        )
-        if (
-            intent.get("expiresAt", 0) <= int(time.time())
-            or detail.get("expiresAt", 0) <= int(time.time())
-            or detail.get("approvalId") != intent.get("approvalId")
-            or detail.get("inputDigest") != intent.get("inputDigest")
-        ):
-            raise ApiProblem("LOCAL_SESSION_NOT_FOUND", "Private approval is unavailable.")
     if (
         auth.user_id != row["humanUserId"]
-        or (row["status"] != "waiting-approval" and not native_pending)
-        or (not native_pending and row["onlineUntil"] <= int(time.time()))
+        or row["status"] != "waiting-approval"
+        or row["onlineUntil"] <= int(time.time())
         or row.get("endedAt") is not None
         or pending.get("tool") != "mcp__lightbulb_native_sessions__send"
         or pending.get("approvalId") != detail.get("approvalId")
@@ -1123,10 +1071,7 @@ async def get_private_send_approval(auth: AuthContext, session_id: str) -> Priva
     ):
         raise ApiProblem("LOCAL_SESSION_NOT_FOUND", "Private approval is unavailable.")
     return PrivateSendApproval.model_validate(
-        {
-            key: detail.get(key)
-            for key in ("approvalId", "inputDigest", "destination", "destinationLabel", "text", "requestId")
-        }
+        {key: detail.get(key) for key in ("approvalId", "inputDigest", "destination", "text", "requestId")}
     )
 
 
@@ -1430,20 +1375,6 @@ async def submit_command(
                 origin=origin,
                 offline_queued=offline_send,
             )
-            private_send = row.get("privateSendApproval") or {}
-            if (
-                request.kind == "approve"
-                and (row.get("pendingApproval") or {}).get("tool") == "mcp__lightbulb_native_sessions__send"
-            ):
-                capture_session_event(
-                    row,
-                    "native_send_approval_decided",
-                    request.request_id,
-                    actor_user_id=actor,
-                    request_id=private_send.get("requestId"),
-                    decision=request.decision,
-                    destination_kind=(private_send.get("destination") or "").split(":", 1)[0],
-                )
             if offline_send:
                 from core.services.local_session_relay import publish_resources_changed
 
@@ -1627,6 +1558,7 @@ async def cancel_offline_command(auth: AuthContext, session_id: str, request_id:
 
 AUDIT_ACTIONS = Literal[
     "display_title_changed",
+    # The four native_send_* actions were the retired approval card; old audit rows still carry them.
     "native_send_requested",
     "native_send_approved",
     "native_send_denied",

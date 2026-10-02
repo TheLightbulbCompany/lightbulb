@@ -146,7 +146,7 @@ def enrollment_condition(enrollment: dict) -> dict:
     }
 
 
-def native_source_condition(source: dict, *, approval_id: str | None = None) -> dict:
+def native_source_condition(source: dict) -> dict:
     """Fence tool writes on authority changes without racing transcript/heartbeat revisions."""
     condition = {
         "ConditionCheck": {
@@ -170,17 +170,7 @@ def native_source_condition(source: dict, *, approval_id: str | None = None) -> 
             },
         }
     }
-    if approval_id is not None:
-        condition["ConditionCheck"]["ConditionExpression"] += (
-            " AND nativeSendIntent.approvalId = :approval"
-            " AND nativeSendIntent.#intentState = :dispatching"
-            " AND nativeSendIntent.expiresAt > :now"
-        )
-        condition["ConditionCheck"]["ExpressionAttributeNames"] = {"#intentState": "state"}
-        condition["ConditionCheck"]["ExpressionAttributeValues"].update(
-            {":approval": approval_id, ":dispatching": "dispatching"}
-        )
-    elif source["provider"] == "codex":
+    if source["provider"] == "codex":
         if not source.get("activeTurnId"):
             raise ValueError("Codex source turn is unavailable")
         condition["ConditionCheck"]["ConditionExpression"] += " AND activeTurnId = :turn"

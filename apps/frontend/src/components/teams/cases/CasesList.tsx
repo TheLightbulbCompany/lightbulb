@@ -837,15 +837,25 @@ export function CasesList({ storageKey = null }: { storageKey?: string | null })
     includeAncestors: viewState.treeView ? true : undefined,
     limit: 200,
   });
+  // The filtered read above cannot say whether the workspace has cases at all
+  // (the default view asks for active ones only) or which types exist (it is
+  // filtered by type). One unfiltered read answers both. Upstream's page has
+  // neither and shows the hero for a workspace whose cases are all done.
+  // ponytail: the newest 200 cases; a type used only by older ones is missing
+  // from the filter until selected. A types route upstream is the upgrade.
+  const workspaceQuery = useCasesList({ limit: 200 });
   const projectsQuery = read<{ projects: ProjectRow[] }>("/projects");
   const labelsQuery = read<{ labels: IssueLabel[] }>("/issues/labels");
 
   const allCases = casesQuery.data?.cases ?? [];
+  const workspaceCases = workspaceQuery.data?.cases ?? [];
   const projects = projectsQuery.data?.projects ?? [];
   const labels = labelsQuery.data?.labels ?? [];
   const projectName = new Map(projects.map((p) => [p.id, p.name]));
 
-  const distinctTypes = [...new Set([...allCases.map((c) => c.caseType), ...viewState.typeFilters])].sort();
+  const distinctTypes = [
+    ...new Set([...workspaceCases, ...allCases].map((c) => c.caseType).concat(viewState.typeFilters)),
+  ].sort();
   const filtered = allCases.filter((caseRow) => caseMatchesViewFilters(caseRow, viewState));
 
   const caseSortCompare = (a: CaseSummary, b: CaseSummary) => {
@@ -1003,7 +1013,11 @@ export function CasesList({ storageKey = null }: { storageKey?: string | null })
   if (!casesQuery.data) return <PageSkeleton />;
 
   const hasActiveFilters = activeFilters.length > 0;
-  const noCasesAtAll = allCases.length === 0 && !hasActiveFilters;
+  // The hero is for a workspace with no cases in ANY status. If the unfiltered
+  // read failed, keep the toolbar: it is the only way to the completed cases.
+  const maybeEmpty = allCases.length === 0 && !hasActiveFilters;
+  if (maybeEmpty && !workspaceQuery.data && !workspaceQuery.error) return <PageSkeleton />;
+  const noCasesAtAll = maybeEmpty && !!workspaceQuery.data && workspaceCases.length === 0;
 
   const renderRow = (row: CaseSummary, tree?: CaseTreeRow) => (
     <CaseListRow
@@ -1178,8 +1192,16 @@ export function CasesList({ storageKey = null }: { storageKey?: string | null })
               <div className="mb-4 bg-[var(--plane-sidebar)] p-4">
                 <SearchX className="h-10 w-10 text-[var(--fg-mute)]" />
               </div>
-              <p className="mb-4 text-sm font-medium text-[var(--fg)]">No cases match these filters.</p>
-              <Button onClick={clearFilters}>Clear filters</Button>
+              {hasActiveFilters ? (
+                <>
+                  <p className="mb-4 text-sm font-medium text-[var(--fg)]">No cases match these filters.</p>
+                  <Button onClick={clearFilters}>Clear filters</Button>
+                </>
+              ) : (
+                <p className="text-sm font-medium text-[var(--fg)]">
+                  No active cases. Completed and cancelled cases are under Filters, Status.
+                </p>
+              )}
             </div>
           ) : (
             <div>

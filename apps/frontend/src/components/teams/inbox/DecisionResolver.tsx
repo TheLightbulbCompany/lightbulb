@@ -66,7 +66,7 @@ export interface DecisionResolverProps {
 export function DecisionResolver({ decisionId, originIssue, agentMap, originAgentName }: DecisionResolverProps) {
   const { read, post, mutate } = useTeamsApi();
   const key = teamsQueryKeys.decisions.detail(decisionId);
-  const { data: decision, isLoading, error, mutate: mutateDecision } = read<DecisionOutcome>(key);
+  const { data: decision, isLoading, mutate: mutateDecision } = read<DecisionOutcome>(key);
 
   // Shared across every open decision row → a single fetch carries `targetChanged`.
   const openListKey = teamsQueryKeys.decisions.list("open");
@@ -186,7 +186,10 @@ export function DecisionResolver({ decisionId, originIssue, agentMap, originAgen
     );
   }
 
-  if (error || !decision) {
+  // Unavailable only when there is nothing to show. A failed revalidation keeps
+  // SWR's cached decision beside `error` (the re-read after an ambiguous decide
+  // can fail too): the card stays, still actionable, with its inline error.
+  if (!decision) {
     return (
       <p className="py-3 text-xs text-[var(--fg-mute)]">
         This decision is no longer available — it may have been resolved elsewhere.

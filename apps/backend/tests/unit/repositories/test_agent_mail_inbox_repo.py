@@ -110,3 +110,26 @@ async def test_find_by_message_id_returns_none_without_querying_when_empty(monke
     monkeypatch.setattr(repo, "_get_table", lambda: table)
     assert await repo.find_by_message_id("friday@acme.isol8.co", "") is None
     table.query.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_list_messages_pages_past_sent_rows(monkeypatch):
+    """A page of nothing but sent mail must not hide older inbound."""
+    table = MagicMock()
+    table.query.side_effect = [
+        {"Items": [{"received_key": "z", "direction": "out"}], "LastEvaluatedKey": {"k": 1}},
+        {"Items": [{"received_key": "a", "agent_id": "friday"}]},
+    ]
+    monkeypatch.setattr(repo, "_get_table", lambda: table)
+    rows = await repo.list_messages("agents@acme.isol8.co", agent_id="friday")
+    assert [r["received_key"] for r in rows] == ["a"]
+    assert table.query.call_args_list[1].kwargs["ExclusiveStartKey"] == {"k": 1}
+
+
+@pytest.mark.asyncio
+async def test_list_messages_stops_after_five_pages(monkeypatch):
+    table = MagicMock()
+    table.query.return_value = {"Items": [{"received_key": "z", "direction": "out"}], "LastEvaluatedKey": {"k": 1}}
+    monkeypatch.setattr(repo, "_get_table", lambda: table)
+    assert await repo.list_messages("agents@acme.isol8.co") == []
+    assert table.query.call_count == 5

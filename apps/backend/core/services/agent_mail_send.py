@@ -35,7 +35,14 @@ from core.repositories import agent_email_repo, agent_mail_inbox_repo, container
 from core.repositories.agent_mail_inbox_repo import get_message, parse_reply_key
 from core.repositories.paperclip_repo import PaperclipRepo
 from core.services import ses_email
-from core.services.agent_email import EMAIL_ADDRESS_RE, ensure_team_address, from_header, sender_allowed, team_address
+from core.services.agent_email import (
+    EMAIL_ADDRESS_RE,
+    ensure_team_address,
+    from_header,
+    resolve_agent_name,
+    sender_allowed,
+    team_address,
+)
 from core.services.agent_mail_owner_send import DAILY_SEND_CAP, _env_subject, send_to_owner
 from core.services.agent_mail_reply import AGENT_AUTHORED_HEADERS, send_reply
 from core.services.agent_mail_tenant import ensure_tenant
@@ -157,6 +164,12 @@ async def send(
         to_addr = _single_address(to)
         if not to_addr:
             return _done(path, "forbidden_recipient")
+        # The caller names the sending agent; it must be one of this workspace's
+        # (get_agent is not company-scoped), or a reply would route to a stranger.
+        onboarding = await PaperclipRepo(table_name="paperclip-companies").get_onboarding_state(owner_id) or {}
+        agent_name = await resolve_agent_name(agent_id=agent_id, company_id=onboarding.get("company_id"))
+        if not agent_name:
+            return _done(path, "unknown_agent")
         owner_email = await _owner_email(owner_id)
         address, _reason = await ensure_team_address(owner_id, owner_email)
         if not address:
@@ -170,7 +183,7 @@ async def send(
             return _done(path, "rate_limited")
         sent_subject = _env_subject(subject)
         message_id = await ses_email.send_ses_email(
-            from_addr=await from_header(owner_id, agent_id, address),
+            from_addr=await from_header(owner_id, agent_id, address, agent_name=agent_name),
             to=to_addr,
             subject=sent_subject,
             body_text=body_text,

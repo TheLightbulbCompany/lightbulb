@@ -84,7 +84,7 @@ async def send_mail(owner_id: str, body: SendRequest, request: Request) -> dict:
 
 
 class AddressRequest(BaseModel):
-    agent_id: str
+    agent_id: str | None = None  # still sent by the skill's lightbulb-mail.sh; the address is the workspace's
 
 
 @router.post("/u/{owner_id}/address")

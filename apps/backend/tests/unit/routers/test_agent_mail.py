@@ -178,7 +178,7 @@ def test_inbox_without_address_is_empty(client):
     assert r.json() == {"address": None, "messages": []}
 
 
-@pytest.mark.parametrize("agent", ["agent_1", "agent_2"])
+@pytest.mark.parametrize("agent", ["agent_1", "agent_2", None])
 def test_address_is_the_team_address_for_any_agent(client, agent):
     with (
         patch.object(agent_mail.container_repo, "get_by_owner_id", AsyncMock(return_value=_container())),

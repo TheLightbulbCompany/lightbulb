@@ -1135,11 +1135,16 @@ def test_team_mail_without_a_ceo_is_dropped(client, monkeypatch):
 
 
 def _sent_by(monkeypatch, sent: dict):
-    """``find_by_message_id`` backed by this workspace's sent rows ({message_id: agent_id})."""
+    """``find_by_message_id`` over sent rows: ``{message_id: agent_id}`` at this
+    workspace's address, or ``{message_id: (address, agent_id)}`` elsewhere. Scoped
+    to the queried address, like the real GSI read."""
 
     async def _find(address, message_id):
-        if message_id in sent:
-            return {"address": address, "direction": "out", "agent_id": sent[message_id]}
+        at, agent = (
+            sent[message_id] if isinstance(sent.get(message_id), tuple) else (TEAM_ADDRESS, sent.get(message_id))
+        )
+        if agent and at == address:
+            return {"address": at, "direction": "out", "agent_id": agent}
         return None
 
     monkeypatch.setattr(ses_inbound, "find_by_message_id", _find)
@@ -1221,3 +1226,72 @@ def test_the_first_inbound_creates_the_team_row(client, monkeypatch):
 
     assert _post(client, _body(to=[TEAM_ADDRESS])).json()["status"] == "delivered"
     ensure.assert_awaited_once_with(OWNER_ID, "owner@example.com")
+
+
+def test_a_sent_id_from_another_workspace_does_not_pick_the_agent(client, monkeypatch):
+    _enable(monkeypatch)
+    _dedup_recorded(monkeypatch)
+    _, deliver = _team(monkeypatch, [])
+    _sent_by(monkeypatch, {"<theirs@d>": ("agents@other.agents.isol8.co", "their-friday")})
+
+    _post(client, _body(to=[TEAM_ADDRESS], headers={"Message-ID": "<r@x>", "In-Reply-To": "<theirs@d>"}))
+
+    assert deliver.await_args.kwargs["agent_id"] == CEO_ID
+
+
+def test_a_forged_reply_to_a_real_sent_id_does_not_wake_a_closed_mailbox(client, monkeypatch):
+    """Naming a real sent Message-ID picks the agent, never the right to wake it."""
+    _enable(monkeypatch)
+    _dedup_recorded(monkeypatch)
+    _, deliver = _team(monkeypatch, [])
+    closed = {"owner_id": OWNER_ID, "address": TEAM_ADDRESS, "send_to_anyone": False, "verified_senders": []}
+    monkeypatch.setattr(ses_inbound, "get_by_address", AsyncMock(return_value=closed))
+    _sent_by(monkeypatch, {"<friday-1@d>": "friday"})
+
+    resp = _post(client, _body(to=[TEAM_ADDRESS], headers={"Message-ID": "<r@x>", "In-Reply-To": "<friday-1@d>"}))
+
+    assert resp.json()["status"] == "stored_not_woken"
+    deliver.assert_not_awaited()
+
+
+def test_a_complaint_whose_source_carries_a_display_name_pauses_the_mailbox(client, monkeypatch):
+    _enable(monkeypatch)
+    _claim_notice(monkeypatch)
+    get = AsyncMock(return_value=_row())
+    monkeypatch.setattr(ses_inbound, "get_by_address", get)
+    monkeypatch.setattr(ses_inbound, "ensure_team_address", AsyncMock(return_value=(RECIPIENT, "ok")))
+    upd = AsyncMock(return_value={})
+    monkeypatch.setattr(ses_inbound, "update_settings", upd)
+    monkeypatch.setattr(ses_inbound, "send_to_owner", AsyncMock(return_value="sent"))
+    source = f"=?utf-8?q?Friday_=C2=B7_Acme_agents?= <{RECIPIENT}>"
+
+    r = client.post(
+        "/api/v1/webhooks/ses-events", json=_complaint(source=source), headers={"X-Lightbulb-SES-Secret": SECRET}
+    )
+
+    assert r.json()["status"] == "disabled"
+    get.assert_awaited_once_with(RECIPIENT)
+    upd.assert_awaited_once_with(RECIPIENT, outbound_disabled="complaint")
+
+
+def test_a_complaint_on_a_retired_per_agent_address_pauses_the_team_mailbox(client, monkeypatch):
+    _enable(monkeypatch)
+    _claim_notice(monkeypatch)
+    monkeypatch.setattr(
+        ses_inbound, "get_by_address", AsyncMock(return_value=_row(address="friday@acme.agents.isol8.co"))
+    )
+    ensure = AsyncMock(return_value=(TEAM_ADDRESS, "ok"))
+    monkeypatch.setattr(ses_inbound, "ensure_team_address", ensure)
+    upd = AsyncMock(return_value={})
+    monkeypatch.setattr(ses_inbound, "update_settings", upd)
+    monkeypatch.setattr(ses_inbound, "send_to_owner", AsyncMock(return_value="sent"))
+
+    r = client.post(
+        "/api/v1/webhooks/ses-events",
+        json=_complaint(source="friday@acme.agents.isol8.co"),
+        headers={"X-Lightbulb-SES-Secret": SECRET},
+    )
+
+    assert r.json()["status"] == "disabled"
+    ensure.assert_awaited_once_with(OWNER_ID, "owner@example.com")
+    upd.assert_awaited_once_with(TEAM_ADDRESS, outbound_disabled="complaint")

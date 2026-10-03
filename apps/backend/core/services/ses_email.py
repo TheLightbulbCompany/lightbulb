@@ -40,7 +40,7 @@ reaching the send. See ``routers/webhooks.py``.
 import logging
 from email import policy
 from email.message import EmailMessage
-from email.utils import make_msgid
+from email.utils import make_msgid, parseaddr
 
 import anyio
 import boto3
@@ -137,7 +137,9 @@ async def send_ses_email(
 
         raw = bytes(msg)
 
-        send_kwargs: dict = {"Content": {"Raw": {"Data": raw}}}
+        # The bare envelope sender: SES reports it as a complaint's `mail.source`,
+        # which must match the mailbox row even when From carries a display name.
+        send_kwargs: dict = {"Content": {"Raw": {"Data": raw}}, "FromEmailAddress": parseaddr(from_addr)[1]}
         if settings.AGENT_MAIL_CONFIGURATION_SET.strip():
             send_kwargs["ConfigurationSetName"] = settings.AGENT_MAIL_CONFIGURATION_SET.strip()
         if tenant_name:

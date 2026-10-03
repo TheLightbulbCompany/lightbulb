@@ -74,15 +74,16 @@ async def ensure_team_address(owner_id: str, owner_email: str | None) -> tuple[s
         return None, "mint_failed"
 
 
-async def from_header(owner_id: str, agent_id: str, address: str) -> str:
+async def from_header(owner_id: str, agent_id: str, address: str, agent_name: str | None = None) -> str:
     """``"Friday · Acme agents" <agents@acme.…>`` — the agent's own name on the
-    shared address. Falls back to the bare address when either name is
-    unavailable; never raises, never fails a send."""
+    shared address (``agent_name`` when the caller already resolved it). Falls
+    back to the bare address when either name is unavailable; never raises,
+    never fails a send."""
     try:
         onboarding = await PaperclipRepo(table_name="paperclip-companies").get_onboarding_state(owner_id) or {}
         company_id = onboarding.get("company_id")
         company = await resolve_company_name(company_id) if company_id else None
-        agent = await resolve_agent_name(agent_id=agent_id, company_id=company_id) if company else None
+        agent = agent_name or (await resolve_agent_name(agent_id=agent_id, company_id=company_id) if company else None)
         return formataddr((f"{agent} · {company} agents", address)) if agent else address
     except Exception:  # noqa: BLE001
         logger.warning("agent_email: display name lookup failed for %s/%s", owner_id, agent_id)

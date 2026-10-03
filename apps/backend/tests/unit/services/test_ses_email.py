@@ -53,6 +53,7 @@ async def test_happy_path_returns_message_id_and_builds_raw_mime(monkeypatch):
     # The RFC Message-ID we minted, not the SES id: a reply's In-Reply-To names it.
     assert result == parsed["Message-ID"]
     assert result.startswith("<") and result.endswith("@isol8.co>")
+    assert kwargs["FromEmailAddress"] == "friday@acme.isol8.co"
     assert parsed["From"] == "friday@acme.isol8.co"
     assert parsed["To"] == "alice@x.com"
     assert parsed["Subject"] == "Re: Need help"
@@ -224,3 +225,18 @@ async def test_send_omits_stamps_when_unset(monkeypatch):
     await ses_email.send_ses_reply(from_addr="f@a.isol8.co", to="t@x.y", subject="s", body_text="b")
     kwargs = fake.send_email.call_args.kwargs
     assert "ConfigurationSetName" not in kwargs and "TenantName" not in kwargs
+
+
+@pytest.mark.asyncio
+async def test_a_display_name_from_sends_the_bare_envelope_address(monkeypatch):
+    """SES reports FromEmailAddress as a complaint's mail.source, which the complaint handler looks up."""
+    monkeypatch.setattr(settings, "AGENT_EMAIL_DOMAIN", "isol8.co")
+    fake_client = MagicMock()
+    fake_client.send_email.return_value = {"MessageId": "ses-1"}
+    monkeypatch.setattr(ses_email, "_client", lambda: fake_client)
+
+    await ses_email.send_ses_reply(
+        from_addr='"Friday · Acme agents" <agents@acme.isol8.co>', to="t@x.y", subject="s", body_text="b"
+    )
+
+    assert fake_client.send_email.call_args.kwargs["FromEmailAddress"] == "agents@acme.isol8.co"

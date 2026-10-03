@@ -42,7 +42,7 @@ _MAX_REFERENCES = 20
 # RFC 3834: everything an agent writes is machine-generated. Compliant autoresponders (out-of-office,
 # helpdesk ticketing) do not answer such mail, which stops agent <-> autoresponder ping-pong now that
 # agents may email anyone, and our own inbound loop guard (`is_auto_submitted`) drops it if it ever
-# reaches another agent's address. Set on every agent-authored send: replies, `--to`, and owner mail.
+# comes back to us. Set on every agent-authored send: replies, `--to`, and owner mail.
 AGENT_AUTHORED_HEADERS = {"Auto-Submitted": "auto-generated"}
 
 

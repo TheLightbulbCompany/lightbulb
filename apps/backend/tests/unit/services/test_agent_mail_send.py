@@ -53,6 +53,12 @@ def wired(monkeypatch):
     monkeypatch.setattr(mod, "team_address", AsyncMock(return_value=TEAM))
     monkeypatch.setattr(mod, "from_header", AsyncMock(return_value=f'"Atlas · Acme agents" <{TEAM}>'))
     st.put_sent = AsyncMock()
+    monkeypatch.setattr(
+        mod,
+        "PaperclipRepo",
+        lambda **_: types.SimpleNamespace(get_onboarding_state=AsyncMock(return_value={"company_id": "co_1"})),
+    )
+    monkeypatch.setattr(mod, "resolve_agent_name", AsyncMock(return_value="Atlas"))
     monkeypatch.setattr(mod.agent_mail_inbox_repo, "put_sent", st.put_sent)
     # _owner_email reads the paperclip-companies table — stub the whole helper, not just lookup_owner_email.
     monkeypatch.setattr(mod, "_owner_email", AsyncMock(return_value="owner@x.y"))
@@ -116,7 +122,8 @@ async def test_free_path_sends_with_tenant_and_cap(wired):
     assert await _send(to="vendor@x.y") == "sent"
     assert wired.free_kwargs["to"] == "vendor@x.y"
     assert wired.free_kwargs["from_addr"] == f'"Atlas · Acme agents" <{TEAM}>'
-    mod.from_header.assert_awaited_once_with(OWNER, AGENT, TEAM)
+    mod.from_header.assert_awaited_once_with(OWNER, AGENT, TEAM, agent_name="Atlas")
+    assert mod.resolve_agent_name.await_args.kwargs == {"agent_id": AGENT, "company_id": "co_1"}
     assert wired.free_kwargs["tenant_name"] == "owner-user_1"
     assert wired.free_kwargs["kind"] == "agent_free_send"
     assert wired.free_kwargs["headers"] == {"Auto-Submitted": "auto-generated"}
@@ -127,6 +134,15 @@ async def test_free_send_records_the_writer_under_the_returned_message_id(wired)
     assert await _send(to="vendor@x.y") == "sent"
     kw = wired.put_sent.await_args.kwargs
     assert (kw["address"], kw["message_id"], kw["agent_id"], kw["owner_id"]) == (TEAM, "<sent1@isol8.co>", AGENT, OWNER)
+
+
+@pytest.mark.asyncio
+async def test_free_send_refuses_an_agent_outside_the_company(wired, monkeypatch):
+    monkeypatch.setattr(mod, "resolve_agent_name", AsyncMock(return_value=None))
+    assert await _send(agent_id="agent_foreign", to="vendor@x.y") == "unknown_agent"
+    assert wired.free_kwargs is None
+    wired.put_sent.assert_not_called()
+    mod.container_repo.try_consume_daily_email_send.assert_not_called()
 
 
 @pytest.mark.asyncio

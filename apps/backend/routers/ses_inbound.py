@@ -57,6 +57,7 @@ observability (log/metric correlation); the Lambda does not parse it.
 import hmac
 import logging
 from datetime import datetime, timezone
+from email.utils import parseaddr
 from typing import Any
 
 from fastapi import APIRouter, Request
@@ -442,22 +443,22 @@ async def handle_ses_events(request: Request):
         return {"status": "ignored"}
     mail = detail.get("mail")
     source = mail.get("source") if isinstance(mail, dict) else ""
-    try:
-        candidate = normalize(source) if source else ""
-    except Exception:  # noqa: BLE001 — see below
-        # A non-string/garbage `source` is a PERMANENTLY invalid event.
-        # Letting normalize raise here would surface as an unhandled 500 and
-        # EventBridge would retry the same bad event until it expires. Same
-        # guard the inbound recipient loop uses.
+    if not isinstance(source, str):
+        # A non-string `source` is a PERMANENTLY invalid event; a 500 would make
+        # EventBridge retry it until it expires.
         return {"status": "ignored"}
+    # A From with a display name ("Friday · Acme agents" <agents@…>) reaches us as-is.
+    candidate = normalize(parseaddr(source)[1]) if source else ""
     row = await get_by_address(candidate) if candidate else None
     if not row:
         return {"status": "unknown_source"}
     owner_id = row["owner_id"]
     try:
-        # The workspace's one mailbox: pausing it pauses every agent. A failed
-        # write raises into the 503 below, so EventBridge retries.
-        await update_settings(row["address"], outbound_disabled="complaint")
+        # The workspace's one mailbox: pausing it pauses every agent — also when
+        # the complaint names a retired per-agent address. A failed write raises
+        # into the 503 below, so EventBridge retries.
+        team, _reason = await ensure_team_address(owner_id, await _owner_email(owner_id))
+        await update_settings(team or row["address"], outbound_disabled="complaint")
         # ONE notice per owner per UTC day. SES fans a complaint out per
         # recipient address, and `send_to_owner(system_notice=True)` bypasses
         # the daily send cap by design — this durable claim is the only bound

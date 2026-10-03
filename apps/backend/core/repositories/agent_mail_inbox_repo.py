@@ -137,20 +137,24 @@ async def list_messages(
     cond = Key("address").eq(_normalize(address))
     if since:
         cond = cond & Key("received_key").gt(since)
-    # ponytail: one 50-item page filtered in Python — a busy shared mailbox can
-    # return fewer than ``limit`` for one agent; paginate when that bites.
-    resp = await run_in_thread(
-        _get_table().query,
-        KeyConditionExpression=cond,
-        ScanIndexForward=False,
-        Limit=50,
-    )
-    items = [
-        i
-        for i in resp.get("Items", [])
-        if i.get("direction") != "out" and (agent_id is None or i.get("agent_id") == agent_id)
-    ]
-    return items[: max(1, min(int(limit), 50))]
+    limit = max(1, min(int(limit), 50))
+    kwargs: dict = {"KeyConditionExpression": cond, "ScanIndexForward": False, "Limit": 50}
+    items: list[dict] = []
+    # ponytail: at most 5 pages (250 rows) per call — sent rows and other agents'
+    # mail share the partition, so mail older than that returns short; raise the
+    # page bound if a workspace's traffic outgrows it.
+    for _ in range(5):
+        resp = await run_in_thread(_get_table().query, **kwargs)
+        items += [
+            i
+            for i in resp.get("Items", [])
+            if i.get("direction") != "out" and (agent_id is None or i.get("agent_id") == agent_id)
+        ]
+        last = resp.get("LastEvaluatedKey")
+        if len(items) >= limit or not last:
+            break
+        kwargs["ExclusiveStartKey"] = last
+    return items[:limit]
 
 
 async def get_message(address: str, received_key: str) -> dict | None:

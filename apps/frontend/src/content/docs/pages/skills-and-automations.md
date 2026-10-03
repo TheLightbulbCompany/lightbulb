@@ -37,4 +37,4 @@ Anything always-on — webhooks, routines, and autonomous runs — requires a Wo
 
 Set a monthly budget per agent in Teams and watch spend in **Usage**. On the free tier, inference is capped by a daily allowance.
 
-Next: [Connectors and agent email](/docs/browser-and-apps).
+Next: [Connectors and team email](/docs/browser-and-apps).

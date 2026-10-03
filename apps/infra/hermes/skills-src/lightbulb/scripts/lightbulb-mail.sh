@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Isol8 agent-mail CLI — your address, your inbox, and the one way to send.
+# Isol8 agent-mail CLI — the team address, its inbox, and the one way to send.
 # All policy (who you may email) is decided by the backend; this only relays.
 set -euo pipefail
 

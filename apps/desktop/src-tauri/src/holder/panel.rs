@@ -305,8 +305,9 @@ fn show(app: &AppHandle, window: &tauri::Window, holder: &HolderInfo, r: Rect) -
     let url: Url = format!("http://127.0.0.1:{}/?key={key}", server.port).parse().map_err(|e: url::ParseError| e.to_string())?;
     let port = server.port;
     let builder = tauri::webview::WebviewBuilder::new(label, WebviewUrl::External(url)).on_navigation(move |u| loopback_page(u, port));
-    let view = window.add_child(builder, position, size).map_err(|e| e.to_string())?;
-    let _ = view.set_focus();
+    // No programmatic focus: the owner clicks into the terminal to type, so the page placing it
+    // can never redirect keystrokes into the session.
+    window.add_child(builder, position, size).map_err(|e| e.to_string())?;
     Ok(())
 }
 

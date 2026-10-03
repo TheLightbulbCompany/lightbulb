@@ -18,12 +18,19 @@ from botocore.exceptions import ClientError
 from core.config import settings
 from core.constants import SYSTEM_ACTOR_ID
 from core.observability.metrics import put_metric
-from core.repositories import messaging_repo
+from core.repositories import container_repo, messaging_repo
 from core.repositories.paperclip_repo import PaperclipRepo
 from core.services import clerk_admin, meeting_bots, meeting_rsvp, messaging
 from core.services.agent_mail_inbound import authenticated_sender, parse_from_address
 
 logger = logging.getLogger(__name__)
+
+MEETING_LEASE_S = 60
+
+
+class MeetingBusy(Exception):
+    """Another delivery holds this meeting's lease: the SES route 503s and SES redelivers."""
+
 
 _MEET_URL = re.compile(r"https://meet\.google\.com/[a-z]{3}-[a-z]{4}-[a-z]{3}")
 _LINE = re.compile(r'^((?:[^:"]|"[^"]*")*):(.*)$')  # name;params:value -- a quoted param may hold ':'
@@ -38,7 +45,7 @@ class Invite:
     end: datetime | None
     summary: str
     description: str
-    organizer_email: str
+    organizer_email: str | None
     attendee_emails: list[str]
     meeting_url: str | None
 
@@ -49,6 +56,12 @@ def _text(value: str) -> str:
 
 def _email(value: str) -> str:
     return re.sub(r"(?i)^mailto:", "", value).strip().lower()
+
+
+def _organizer(value: str) -> str | None:
+    """One bare address, or None: a list would put many recipients on the one RSVP."""
+    email = _email(value)
+    return None if re.search(r"[,;<>\s]", email) else email
 
 
 def _when(params: str, value: str) -> datetime:
@@ -116,7 +129,7 @@ def _parse(calendar_text: str) -> Invite | None:
         end=end,
         summary=get("SUMMARY").strip(),
         description=get("DESCRIPTION"),
-        organizer_email=_email(props.get("ORGANIZER", ("", ""))[1]),
+        organizer_email=_organizer(props.get("ORGANIZER", ("", ""))[1]),
         attendee_emails=attendees[:100],
         meeting_url=url or None,
     )
@@ -376,6 +389,19 @@ async def handle_team_mail(owner_id: str, payload, team: dict) -> str | None:
     if invite is None or (invite.method == "REQUEST" and not invite.meeting_url):
         return None  # not a Meet invite we can join: the CEO reads it as mail
     room_id = messaging_repo.meeting_room_id(owner_id, invite.uid)
+    # One lease per meeting serializes everything below (sequence check, line, META, RSVP)
+    # across concurrent deliveries; the loser 503s and SES redelivers after the holder is done.
+    lease = f"meeting#{room_id}"
+    token = await container_repo.try_claim_owner_lifecycle(lease, stale_s=MEETING_LEASE_S)
+    if not token:
+        raise MeetingBusy(room_id)
+    try:
+        return await _apply(owner_id, invite, room_id, creator, by_email, team)
+    finally:
+        await container_repo.release_owner_lifecycle_claim(lease, token=token)
+
+
+async def _apply(owner_id: str, invite: Invite, room_id: str, creator: str, by_email: dict, team: dict) -> str | None:
     room = await messaging_repo.get_room(room_id) or {}
     if room.get("archivedAt") or room.get("deletedAt"):
         return "meeting_ignored"  # a member closed this meeting's room; a move/cancel must not reopen it

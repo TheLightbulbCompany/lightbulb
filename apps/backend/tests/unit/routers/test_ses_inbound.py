@@ -60,11 +60,11 @@ RECIPIENT = "agents@acme-robotics.isol8.co"
 def _team_mailbox(monkeypatch):
     """Every recipient in this file is the workspace's team address unless a test
     says otherwise; its mail is the CEO's (``AGENT_ID`` here) unless it answers
-    an agent's own sent mail. A missing row cannot be created by default."""
+    an agent's own sent mail. A missing row cannot be created by default (terminally)."""
     monkeypatch.setattr(ses_inbound, "is_team_address", AsyncMock(return_value=(OWNER_ID, "acme-robotics")))
     monkeypatch.setattr(ses_inbound, "_ceo", AsyncMock(return_value=AGENT_ID))
     monkeypatch.setattr(ses_inbound, "_owner_email", AsyncMock(return_value="owner@example.com"))
-    monkeypatch.setattr(ses_inbound, "ensure_team_address", AsyncMock(return_value=(None, "mint_failed")))
+    monkeypatch.setattr(ses_inbound, "ensure_team_address", AsyncMock(return_value=(None, "disabled")))
 
 
 @pytest.fixture
@@ -1073,6 +1073,8 @@ def _team(monkeypatch, members):
         AsyncMock(return_value=[{"user_id": f"user_{i}", **m} for i, m in enumerate(members)]),
     )
     monkeypatch.setattr(meeting_invites.messaging_repo, "get_room", AsyncMock(side_effect=[None, {}, {}]))
+    monkeypatch.setattr(meeting_invites.container_repo, "try_claim_owner_lifecycle", AsyncMock(return_value="tok"))
+    monkeypatch.setattr(meeting_invites.container_repo, "release_owner_lifecycle_claim", AsyncMock())
     put = AsyncMock()
     monkeypatch.setattr(meeting_invites, "_create_room", put)
     monkeypatch.setattr(meeting_invites, "_post_line", AsyncMock())
@@ -1340,3 +1342,26 @@ def test_a_complaint_from_an_unknown_domain_is_unknown_source(client, monkeypatc
 
     assert r.status_code == 200 and r.json()["status"] == "unknown_source"
     upd.assert_not_awaited()
+
+
+@pytest.mark.parametrize(
+    ("reason", "code", "status", "rollbacks"),
+    [
+        ("mint_failed", 503, "error", 1),
+        ("slug_allocation_failed", 503, "error", 1),
+        ("disabled", 200, "dropped_unknown_recipient", 0),
+    ],
+)
+def test_a_transient_team_row_failure_on_the_first_mail_is_retried(
+    client, monkeypatch, reason, code, status, rollbacks
+):
+    _enable(monkeypatch)
+    _dedup_recorded(monkeypatch)
+    monkeypatch.setattr(ses_inbound, "get_by_address", AsyncMock(return_value=None))
+    monkeypatch.setattr(ses_inbound, "ensure_team_address", AsyncMock(return_value=(None, reason)))
+    monkeypatch.setattr(ses_inbound, "delete_event", delete := AsyncMock())
+
+    resp = _post(client, _body())
+
+    assert (resp.status_code, resp.json()["status"]) == (code, status)
+    assert delete.await_count == rollbacks

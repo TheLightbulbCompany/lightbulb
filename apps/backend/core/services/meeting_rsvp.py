@@ -87,6 +87,8 @@ async def _accept(owner_id: str, invite: Invite) -> str:
     # and the bot, not an RSVP.
     if address.lower() not in {e.lower() for e in invite.attendee_emails}:
         return "not_invited"
+    if not agent_email.EMAIL_ADDRESS_RE.match(invite.organizer_email) or re.search(r"[,;<>\s]", invite.organizer_email):
+        return "bad_organizer"  # exactly one bare address: a list would be many sends for one cap unit
     # The shared address answers sender-chosen organizers: it draws the owner's daily send cap.
     if not await agent_mail_send.consume_cap(owner_id):
         return "rate_limited"

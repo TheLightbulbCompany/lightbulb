@@ -31,7 +31,7 @@ function readPending(scope: string): Pending | null {
     return item.scope === scope && typeof item.startId === "string" && typeof item.startedAt === "number"
       && Date.now() >= item.startedAt && Date.now() - item.startedAt < 6 * 60 * 60 * 1000
       ? { startId: item.startId, scope, startedAt: item.startedAt, phase: "unknown",
-        error: "Could not confirm whether your Mac started this session. Check Terminal and Sessions before trying again." } : null;
+        error: "Could not confirm whether your Mac started this session. Check the Lightbulb app and Sessions before trying again." } : null;
   } catch { return null; }
 }
 /** The viewer's own paired Macs (id, generation, name). `enabled` false: no request. */
@@ -136,8 +136,8 @@ export function NewSessionView({ sessions, onEvent, onOpenSession, onClose }: {
     if (!pending || pending.phase === "failed" || pending.phase === "unknown") return;
     const timer = setTimeout(() => setPending((p) => p && p.startId === pending.startId
       ? { ...p, phase: "unknown", error: p.phase === "opened"
-        ? "Terminal opened on your Mac, but the session never reported in. Check Terminal there."
-        : "Could not confirm whether your Mac started this session. Check Terminal and Sessions before trying again." } : p), PENDING_MS);
+        ? "The session opened on your Mac, but it never reported in. Check the Lightbulb app there."
+        : "Could not confirm whether your Mac started this session. Check the Lightbulb app and Sessions before trying again." } : p), PENDING_MS);
     return () => clearTimeout(timer);
   }, [pending]);
 
@@ -151,7 +151,7 @@ export function NewSessionView({ sessions, onEvent, onOpenSession, onClose }: {
           ? event.payload.error?.retryable === false
             || ["desktop_generation_lost", "desktop_busy", "desktop_forward_loop"].includes(event.payload.error?.code ?? "")
             ? { ...p, phase: "failed", error: failure(event.payload.error) }
-            : { ...p, phase: "unknown", error: "Could not confirm whether your Mac started this session. Check Terminal and Sessions before trying again." }
+            : { ...p, phase: "unknown", error: "Could not confirm whether your Mac started this session. Check the Lightbulb app and Sessions before trying again." }
           : event.payload.state === "succeeded" ? { ...p, phase: "opened" } : p
         : p);
     });
@@ -214,7 +214,7 @@ export function NewSessionView({ sessions, onEvent, onOpenSession, onClose }: {
     } catch (error) {
       setPending(error instanceof ApiError && error.status < 500
         ? { ...start, phase: "failed", error: error.message }
-        : { ...start, phase: "unknown", error: "Could not confirm whether your Mac started this session. Check Terminal and Sessions before trying again." });
+        : { ...start, phase: "unknown", error: "Could not confirm whether your Mac started this session. Check the Lightbulb app and Sessions before trying again." });
     }
   }
 

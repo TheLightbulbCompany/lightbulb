@@ -131,6 +131,7 @@ export type LiveEventType =
   | "workspace.sessions.changed"
   | "workspace.session.attention"
   | "workspace.session.screen"
+  | "workspace.session.typing"
   | "room.member.updated"
   | "room.subscription.rotated"
   | "room.access.removed"
@@ -156,6 +157,7 @@ export const LIVE_EVENT_TYPES: ReadonlySet<string> = new Set<LiveEventType>([
   "workspace.sessions.changed",
   "workspace.session.attention",
   "workspace.session.screen",
+  "workspace.session.typing",
   "room.member.updated",
   "room.subscription.rotated",
   "room.access.removed",
@@ -225,6 +227,8 @@ export type SessionScreen = {
   sessionId: string; generation: string; epoch: number; seq: number;
   cols: number; rows: number; kind: "snapshot" | "output"; data: string;
 };
+/** An admitted person started (or is still) typing into this owner's live session terminal. */
+export type SessionTyping = { sessionId: string; userId: string };
 export type RoomTypingChanged = { roomId: string; userId: string; displayName: string; expiresAt: string };
 /** A member's typing/working/idle hint on this room, delivered on the member's own user
  *  channel. `expiresAt` is authoritative for BOTH "typing" and "working" (a "working" hint
@@ -297,6 +301,7 @@ export type LiveEvent =
   | LiveEventEnvelope<"workspace.sessions.changed", { humanUserId: string; transcript?: true }>
   | LiveEventEnvelope<"workspace.session.attention", SessionAttention>
   | LiveEventEnvelope<"workspace.session.screen", SessionScreen>
+  | LiveEventEnvelope<"workspace.session.typing", SessionTyping>
   | LiveEventEnvelope<"room.member.updated", RoomMemberUpdated>
   | LiveEventEnvelope<"room.subscription.rotated", RoomSubscriptionRotated>
   | LiveEventEnvelope<"room.access.removed", RoomAccessRemoved>
@@ -407,6 +412,8 @@ function payloadValid(type: LiveEventType, payload: unknown): boolean {
         && Number.isInteger(payload.cols) && (payload.cols as number) >= 1 && (payload.cols as number) <= 1000
         && Number.isInteger(payload.rows) && (payload.rows as number) >= 1 && (payload.rows as number) <= 500
         && (payload.kind === "snapshot" || payload.kind === "output") && text(payload.data);
+    case "workspace.session.typing":
+      return str(payload.sessionId) && str(payload.userId);
     case "workspace.session.attention":
       return str(payload.sessionId) && SESSION_ATTENTION_STATES.has(payload.state as string) &&
         isObj(payload.push) && str(payload.push.title) && text(payload.push.body);

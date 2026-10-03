@@ -236,6 +236,14 @@ async def watch_local_session(session_id: str, auth: AuthContext = Depends(get_c
     await session_screen.watch(auth, session_id)
 
 
+@router.post("/messaging/sessions/{session_id}/input", status_code=204)
+async def type_into_local_session(
+    session_id: str, body: session_screen.SessionInput, auth: AuthContext = Depends(get_current_user)
+):
+    """An admitted person types into a running session's live terminal (owner ruling 2026-10-03)."""
+    await session_screen.type_into(auth, session_id, body)
+
+
 @router.patch("/messaging/sessions/{session_id}/display-title", response_model=local_sessions.LocalSession)
 async def set_local_session_display_title(
     session_id: str,

@@ -84,6 +84,7 @@ FEATURES = [
     "nativeControlCapabilities",
     "privateSendApproval",
     "liveTerminal",
+    "remoteInput",
 ]
 
 
@@ -101,6 +102,7 @@ class DeviceHeartbeat(ContractModel):
     # What this Mac can do. Each is one boolean, sent only once FEATURES lists it, and lands
     # on every listed session's META as `deviceFeatures` (session_screen reads it).
     live_terminal: bool = False
+    remote_input: bool = False
 
     def device_features(self) -> list[str]:
         return sorted(k for k, on in self.model_dump(by_alias=True, exclude={"type", "sessions"}).items() if on)

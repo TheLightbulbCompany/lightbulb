@@ -1,4 +1,4 @@
-import { act, render as rtlRender, screen, waitFor } from "@testing-library/react";
+import { act, render as rtlRender, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { ReactElement } from "react";
 import { SWRConfig } from "swr";
@@ -33,6 +33,7 @@ const view = (sessions: LocalSession[] = [], open = vi.fn()) =>
 
 beforeEach(() => {
   vi.clearAllMocks(); handlers = []; localStorage.clear();
+  delete (window as { __TAURI__?: unknown }).__TAURI__;
   auth.orgId = "org-a";
   vi.spyOn(crypto, "randomUUID").mockReturnValue(START_ID as `${string}-${string}-${string}-${string}-${string}`);
   mockTargets({ enabled: true, devices: [MAC] });
@@ -216,4 +217,48 @@ it("blocks an over-long first message", async () => {
   expect(screen.getByText("The first message is too long.")).toBeInTheDocument();
   await userEvent.keyboard("{Enter}");
   expect(m.post).not.toHaveBeenCalled();
+});
+
+const desktop = (invoke: (command: string, args?: unknown) => Promise<unknown>) => {
+  (window as { __TAURI__?: unknown }).__TAURI__ = { core: { invoke: vi.fn(invoke) } };
+  return (window as unknown as { __TAURI__: { core: { invoke: ReturnType<typeof vi.fn> } } }).__TAURI__.core.invoke;
+};
+
+it("inside the desktop app it starts a real terminal on this Mac with the chosen tool and folder", async () => {
+  mockTargets({ enabled: false, devices: [] });
+  const invoke = desktop(async (command) => command === "terminal_options" ? { ...OPTIONS, name: "This Mac" } : { linked: true, holderId: "ab12cd34" });
+  render(<NewSessionButton onOpen={vi.fn()} />);
+  expect(await screen.findByRole("button", { name: "New session" })).toBeInTheDocument();
+  render(view());
+  await userEvent.click(await screen.findByRole("button", { name: "Codex", pressed: false }));
+  await userEvent.type(screen.getByPlaceholderText(PLACEHOLDER), "fix the build{Enter}");
+  expect(invoke).toHaveBeenCalledWith("terminal_start", { params: {
+    startId: START_ID, tool: "codex", folder: "/Users/alice/code", model: null, mode: "codex-default", effort: null, prompt: "fix the build",
+  } });
+  expect(m.post).not.toHaveBeenCalled();
+  expect(await screen.findByText("Opened in its own window. Waiting for the session…")).toBeInTheDocument();
+});
+
+it("a local start that fails shows why", async () => {
+  desktop(async (command) => { if (command === "terminal_options") return OPTIONS; throw new Error("That folder is not one of this Mac's approved folders."); });
+  render(view());
+  await userEvent.type(await screen.findByPlaceholderText(PLACEHOLDER), "fix the build{Enter}");
+  expect(await screen.findByRole("alert")).toHaveTextContent("That folder is not one of this Mac's approved folders.");
+});
+
+it("an older desktop app without terminals keeps the remote start", async () => {
+  desktop(async () => { throw new Error("unknown command"); });
+  render(view());
+  await userEvent.type(await screen.findByPlaceholderText(PLACEHOLDER), "fix the build{Enter}");
+  await waitFor(() => expect(m.post).toHaveBeenCalledWith("/desktop-sessions/start?source=web", expect.objectContaining({ deviceId: "mac_1" })));
+});
+
+it("inside the desktop app it lists sessions still running on this Mac and reopens their window", async () => {
+  const invoke = desktop(async (command) => command === "terminal_options" ? OPTIONS
+    : command === "terminal_list" ? [{ id: "ab12cd34", argv: ["/bin/sh", "-c", "x", "lightbulb-start", "s", "/scope", "/opt/bin/claude"], cwd: "/Users/alice/code" }]
+    : null);
+  render(view());
+  const group = await screen.findByRole("group", { name: "Running on this Mac" });
+  await userEvent.click(within(group).getByRole("button", { name: "Open Claude Code · ~/code" }));
+  expect(invoke).toHaveBeenCalledWith("terminal_open", { holderId: "ab12cd34" });
 });

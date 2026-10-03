@@ -4,6 +4,8 @@ pub mod bootstrap;
 pub mod claude_export;
 pub mod device_token;
 pub mod file_access;
+#[cfg(unix)]
+pub mod holder;
 pub mod keychain;
 pub mod local_mcp;
 pub mod local_sessions;
@@ -1837,6 +1839,10 @@ end tell"#,
             desktop_permissions::desktop_permissions_set,
             agent_chrome::agent_chrome_status,
             agent_chrome::agent_chrome_raise,
+            holder::window::terminal_open,
+            holder::window::terminal_list,
+            session_start::terminal_options,
+            session_start::terminal_start,
         ])
         .setup(|app| {
             log("[setup] Lightbulb desktop app starting");

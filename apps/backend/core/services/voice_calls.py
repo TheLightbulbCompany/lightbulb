@@ -825,6 +825,8 @@ async def route_live_line(
     floor: dict | None = None,
     voice_runs: list[dict] | None = None,
     at: list[int] | None = None,
+    setting: str = "live",
+    unclaimed: bool = False,
 ) -> dict:
     """The one Live router (routing v2 §6), every line the worker's position-1 name did not settle,
     routed exactly as if the speaker had typed it in the room: the shared addressing stage (a name
@@ -833,7 +835,9 @@ async def route_live_line(
     (#3591), so every agent listens. Live's own rules: an unfinished line is marked ``hold`` (wait for
     the speaker's next final) but still names the agent it routes to, for a worker that does not hold;
     alone in the call, or after the wake word ``wake`` ("Lightbulb, ..."), Jev's "nobody" counts as Jev
-    down -- the speech can only be for the agents.
+    down -- the speech can only be for the agents. ``setting="meeting"`` (a Google Meet): nobody is
+    implied -- Jev's "none" and a Jev outage both stand -- except an ``unclaimed`` question to the room
+    (the worker waited 3.5 s), which takes the question-to-the-room path and wakes at most one.
     Returns ``_routed(...)``, plus ``"hold": True`` for an unfinished line."""
     meta, _ = await _room_team(owner_id, speaker_id, room_id)
     members = [
@@ -842,7 +846,9 @@ async def route_live_line(
     ]
     if wake:
         utterance = _WAKE_WORD.sub("", utterance, count=1) or utterance
-    author = {"kind": "human", "id": speaker_id, "displayName": await messaging.human_display_name(speaker_id)}
+    # A Meet speaker is already a name ("Priya", "Priya + Dan", "Someone"), not a Clerk user id.
+    name = speaker_id if setting == "meeting" else await messaging.human_display_name(speaker_id)
+    author = {"kind": "human", "id": speaker_id, "displayName": name}
     history = _transcript_history(transcript, members, utterance, at)
     addressing = await messaging.address({"author": author, "text": utterance}, members, history=history, live=True)
     if addressing["hold"]:
@@ -882,6 +888,7 @@ async def route_live_line(
                 to_people=to_people,
                 placement=False,
                 open_lines=_open_voice_lines(floor, voice_runs, members),
+                setting=setting,
             ),
             _ROUTING_TIMEOUT_S,
         )
@@ -889,12 +896,21 @@ async def route_live_line(
         put_metric("voice.routing.timeout")
         decision = {"fallback": True}
     who, forced = decision.get("who"), decision.get("forced")
+    if setting == "meeting":
+        # The Meet floor: no lone-speaker or re-ask forcing; only an unclaimed room question forces one.
+        forced = "question" if unclaimed and who not in candidates else None
+        if not forced:
+            outcome = "routed" if who in candidates else "none" if who == "none" else "fallback"
+            put_metric("voice.routing.jev", dimensions={"outcome": outcome, "setting": setting})
+            return done(*([who] if who in candidates else []))
     if not forced and (who in candidates or (who == "none" and humans > 1 and not wake)):
-        put_metric("voice.routing.jev", dimensions={"outcome": "routed" if who in candidates else "none"})
+        put_metric(
+            "voice.routing.jev", dimensions={"outcome": "routed" if who in candidates else "none", "setting": setting}
+        )
         return done(*([who] if who in candidates else []))
     # Jev down or undecided, a "nobody" a lone speaker or the wake word can't mean, or a "none" the
     # policy refused (a re-ask, a question to the room): openclaw_work's fallback for a human message.
-    put_metric("voice.routing.jev", dimensions={"outcome": "forced" if forced else "fallback"})
+    put_metric("voice.routing.jev", dimensions={"outcome": "forced" if forced else "fallback", "setting": setting})
     if forced:
         put_metric("messaging.jev.forced", dimensions={"reason": forced})
     if to_people:

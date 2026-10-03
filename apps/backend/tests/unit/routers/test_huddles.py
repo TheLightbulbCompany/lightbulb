@@ -352,7 +352,7 @@ def test_route_a_wake_word_line_is_the_one_router_with_wake(client):
     assert resp.json() == routed  # agentId (the first) still there for the shipped worker
     assert route.await_args.kwargs == {
         "owner_id": "org_a", "room_id": ROOM, "speaker_id": "user_a", "utterance": "hi", "transcript": "",
-        "humans": 0, "wake": True, "floor": None, "voice_runs": [], "at": [],
+        "humans": 0, "wake": True, "floor": None, "voice_runs": [], "at": [], "setting": "live", "unclaimed": False,
     }  # fmt: skip
 
 
@@ -363,6 +363,11 @@ def test_route_with_a_people_count_may_be_nobody_or_hold(client):
     assert resp.json() == {"agentId": None, "hold": True}  # the shipped worker ignores "hold"
     assert live.await_args.kwargs["humans"] == 2 and live.await_args.kwargs["wake"] is False
     assert live.await_args.kwargs["floor"] == floor
+    body = {**INTERNAL[6][1], "humans": 2, "setting": "meeting", "unclaimed": True}
+    with patch.object(vc, "route_live_line", AsyncMock(return_value={"agentId": None})) as live:
+        client.post(INTERNAL[6][0], json=body, headers=W)
+    assert live.await_args.kwargs["setting"] == "meeting" and live.await_args.kwargs["unclaimed"] is True
+    assert client.post(INTERNAL[6][0], json={**body, "setting": "zoom"}, headers=W).status_code == 400
 
 
 def test_abort_passes_the_room(client):

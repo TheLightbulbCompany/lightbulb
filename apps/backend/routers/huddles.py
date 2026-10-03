@@ -8,7 +8,7 @@ Three auth models: Clerk for people (`/huddles/*`), the worker secret for the CE
 import hmac
 import logging
 import uuid
-from typing import Annotated, Any
+from typing import Annotated, Any, Literal
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from fastapi.responses import JSONResponse
@@ -96,6 +96,8 @@ class RouteBody(BaseModel):
     voiceRuns: list[dict[str, str]] = Field(default_factory=list, max_length=16)
     # Epoch seconds the transcript's last lines were said, oldest first, aligned to its end (Live reask rule).
     at: list[int] = Field(default_factory=list, max_length=30)
+    setting: Literal["live", "meeting"] = "live"  # "meeting": a Google Meet, stricter floor
+    unclaimed: bool = False  # a question to the room nobody took for 3.5 s (the worker measures it)
 
 
 class EndBody(BaseModel):
@@ -256,6 +258,8 @@ async def route(room_id: str, body: RouteBody):
         floor=body.floor,
         voice_runs=body.voiceRuns,
         at=body.at,
+        setting=body.setting,
+        unclaimed=body.unclaimed,
     )
 
 

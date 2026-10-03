@@ -486,6 +486,14 @@ def _reask_age(latest: dict, history: list[dict], now: datetime) -> float | None
     return (now - when).total_seconds() if when else None
 
 
+#: A Google Meet's one line of context. The worker labels a speaker "Someone" when Meet does not
+#: say who, and "Priya + Dan" when two talk over each other: neither is a new person.
+MEETING_CONTEXT = (
+    "This is a Google Meet with several people; agents speak only when asked. A speaker shown as "
+    "'Someone' is a participant we could not identify, and 'A + B' is A and B talking at once."
+)
+
+
 #: Placement on the same bar (owner ruling 2026-09-24): judgement from the conversation, not rules.
 #: Only a fallback (Jev unavailable) uses the fixed default: reply where the message is.
 PLACEMENT_INSTRUCTIONS = (
@@ -516,12 +524,14 @@ async def _decide_for_message(
     placement: bool = True,
     open_lines: list[str] | None = None,
     later: list[dict] | None = None,
+    setting: str = "live",
 ) -> dict:
     """``to_people``: the caller already knows whether the message speaks to people (Live hears names,
     not @handles); None reads it from the message (``speaks_to_people``). ``placement=False`` (Live) skips
     that question. ``open_lines``: the requests teammates are already working on (``state.open``).
     ``later``: messages posted after the trigger before the decision (``state.after``), so the
-    question rule sees whether someone has answered it since.
+    question rule sees whether someone has answered it since. ``setting="meeting"``: a Google Meet
+    (Live's voice worker), told to Jev in one line.
     A ``forced`` reason on a "none" means the policy did not allow it: the caller's fallback picks."""
     candidates = [
         target["agentId"]
@@ -543,6 +553,8 @@ async def _decide_for_message(
     # The trigger's stored routing fields (raw row) feed its `to`; ``latest`` is its public shape.
     latest = {**latest, **{k: message[k] for k in ("addressing", "to", "dispatchTargets") if k in message}}
     state = _state(meta, latest, history, members=members, options=candidates, open_lines=open_lines)
+    if setting == "meeting":
+        state["room"]["setting"] = MEETING_CONTEXT
     if later:
         names = {m["id"]: m.get("displayName") or m["id"] for m in members}
         state["after"] = [_line(m, names) for m in later[-10:]]

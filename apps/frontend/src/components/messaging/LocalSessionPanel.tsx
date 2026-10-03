@@ -5,7 +5,7 @@ import { useAuth } from "@clerk/nextjs";
 import { capture } from "@/lib/analytics";
 import { Info, MessageSquare, Send } from "lucide-react";
 import {
-  canControlSession, mainEvents, pendingApproval, receiptChip, sendBlockedReason, sessionChanges, sessionFooter, sessionLabel, sessionPlan, sessionStatus, unavailableReason,
+  canControlSession, useSessionResume, mainEvents, pendingApproval, receiptChip, sendBlockedReason, sessionChanges, sessionFooter, sessionLabel, sessionPlan, sessionStatus, unavailableReason,
   useLocalSessionHistory, usePendingPrompt, useSessionAudit, useSessionCommand, useSessionJoinRequest, useSessionOutbox, withAuditNotices,
   type LocalSession, type SessionControlClient, type SessionSource,
 } from "@lightbulb/shared";
@@ -18,6 +18,7 @@ import { toBase64 } from "./sessionInput";
 import { SessionDetails, type SessionDetailsTab } from "./SessionDetails";
 import { canPickUp, SessionPickup } from "./SessionPickup";
 import type { PickupClient } from "./useSessionPickup";
+import { ResumeDelivery, SessionResume } from "./SessionResume";
 
 /** Distance from the bottom, in px, still counted as "at the bottom" (mobile's value). */
 const BOTTOM_SLACK = 80;
@@ -101,6 +102,7 @@ export function LocalSessionPanel({ session, ownerName, own, client, revision, o
     return () => { off(); timers.forEach(clearTimeout); };
   }, [onEvent, session.sessionId, userId]);
   const typing = Object.keys(typers).map(personName);
+  const resume = useSessionResume(client, session, { own, userId, ownerName, nameOf: personName, uuid: () => crypto.randomUUID() });
   const join = useSessionJoinRequest(client, session);
   const audit = useSessionAudit(client, session.sessionId,
     `${revision}:${session.latestEventSeq}:${session.teamControl}:${session.allowedSenders?.join()}:${session.joinRequest}:${session.pickup?.allowed}:${session.status}:${session.pendingApproval?.approvalId}`);
@@ -229,7 +231,7 @@ export function LocalSessionPanel({ session, ownerName, own, client, revision, o
     </div>}
     </>}
     <SubagentPanel provider={session.provider} events={history.events} status={session.status} onPick={id => revealSubagent(content.current, id)} />
-    {session.status === "ended" ? null : control ? <form className="room-composer local-session-composer native-session-composer" onSubmit={event => { event.preventDefault(); atBottomRef.current = true; command.send(text); }}>
+    {session.status === "ended" ? <SessionResume flow={resume} own={own} ownerName={ownerName} /> : control ? <form className="room-composer local-session-composer native-session-composer" onSubmit={event => { event.preventDefault(); atBottomRef.current = true; command.send(text); }}>
       <label htmlFor={id} className="sr-only">Send to {target}</label>
       <div className="native-session-prompt-row"><span className="native-session-glyph" aria-hidden="true">{glyph}</span>
         <textarea id={id} className="room-input" rows={2} value={text} disabled={!command.canSend || command.locked} onChange={event => setText(event.target.value)}
@@ -237,6 +239,7 @@ export function LocalSessionPanel({ session, ownerName, own, client, revision, o
           placeholder="Send a follow-up…" />
         <Button type="submit" size="icon-sm" className="room-send" aria-label="Send follow-up" disabled={!command.canSend || command.locked || !text.trim()}><Send aria-hidden="true" /></Button></div>
       {footer && <p className="native-session-footer" title="Set in the terminal. It cannot be changed from here.">{footer}</p>}
+      <ResumeDelivery flow={resume} />
       {(command.canSteer || command.canInterrupt) && <div className="local-session-actions">
         {command.canSteer && <Button type="button" variant="outline" size="sm" disabled={command.locked || !text.trim()} onClick={() => command.steer(text)}>Steer now</Button>}
         {command.canInterrupt && <Button type="button" variant="outline" size="sm" disabled={command.locked} onClick={command.interrupt}>Stop turn</Button>}

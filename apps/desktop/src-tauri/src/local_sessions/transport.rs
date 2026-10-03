@@ -105,6 +105,14 @@ pub(super) struct Host {
 /// bounds it and lets a session that has since been repaired re-register on the same socket.
 const QUARANTINE: Duration = Duration::from_secs(300);
 
+/// A Mac with nothing running still checks in this often. Resume requests ride the heartbeat
+/// acknowledgement, and an idle (or just-woken) Mac is the usual one to resume on.
+const IDLE_HEARTBEAT: Duration = Duration::from_secs(30);
+
+fn idle_heartbeat() -> Value {
+    json!({"type":"local.device.heartbeat","sessions":[]})
+}
+
 /// A connection that lived long enough was healthy: start over at one second. A short-lived one
 /// (connect-then-die, the 2026-09-12 loop) doubles the wait, capped at 30 s.
 fn reconnect_delay(previous: u64, lived: Duration) -> u64 {
@@ -1032,6 +1040,7 @@ impl Host {
         let mut last_upload = BTreeMap::<String, Instant>::new();
         let mut heartbeat_frames = std::collections::VecDeque::<Value>::new();
         let mut last_heartbeat = Instant::now();
+        let mut last_idle = Instant::now();
         let mut last_early = Instant::now() - Duration::from_secs(1);
         let mut tick = tokio::time::interval(Duration::from_millis(100));
         // This connection carries the live terminal frames of every watched held session.
@@ -1144,6 +1153,10 @@ impl Host {
                         }
                         self.heartbeat_dirty.clear();
                         heartbeat_frames = device_heartbeats_with_controls(&self.mirrors, &registered, relay_reads_stats, relay_reads_controls, relay_reads_live_terminal, relay_reads_remote_input)?.into();
+                        if heartbeat_frames.is_empty() && last_idle.elapsed() >= IDLE_HEARTBEAT {
+                            last_idle = Instant::now();
+                            heartbeat_frames.push_back(idle_heartbeat());
+                        }
                     }
                     if let Some((reported, frame)) = self.ended_frame(&mut recovering_ended)? {
                         send(socket, &frame).await?;
@@ -1344,6 +1357,7 @@ impl Host {
                             let Rpc::Heartbeat{sent,wall} = rpc else {return Err("mismatched session acknowledgment".into());};
                             super::snapshot::offer(&body["pickup"], &self.mirrors);
                             super::screen::offer(&body["watching"]);
+                            super::resume::offer(&body["resume"], &self.mirrors);
                             let server = body["serverTime"].as_u64().ok_or("missing server time")?;
                             if let Some(fresh) = ack_anchor(server, sent, wall) {anchor = Some(fresh);}
                             // A session the relay does not hold is one this Mac has to
@@ -4567,6 +4581,14 @@ mod tests {
     const GOLDEN_ENDED_ACK: &str = include_str!(
         "../../../../../packages/shared/fixtures/local-session-frames/session-ended-ack.json"
     );
+
+    #[test]
+    fn local_sessions_idle_heartbeat_is_the_golden_frame_with_no_sessions() {
+        let golden: Value = serde_json::from_str(GOLDEN_HEARTBEAT).unwrap();
+        let idle = idle_heartbeat();
+        assert_eq!(frame_keys(&idle), frame_keys(&golden));
+        assert_eq!(idle["sessions"], json!([]));
+    }
 
     fn frame_keys(value: &Value) -> BTreeSet<&str> {
         value

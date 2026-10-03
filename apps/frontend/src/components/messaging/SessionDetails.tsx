@@ -89,31 +89,34 @@ function useAccessSwitches(client: Client, session: LocalSession) {
   };
 }
 
-/** The people the owner let in after they asked to join, each with Remove. */
-function AllowedSenders({ session, client, nameOf }: { session: LocalSession; client: Client; nameOf: (userId: string) => string }) {
+/** People the owner can take back one by one, each with Remove. */
+function People({ session, ids, remove, label, about, nameOf }: {
+  session: LocalSession; ids: string[] | undefined; remove: ((sessionId: string, userId: string) => Promise<unknown>) | undefined;
+  label: string; about: string; nameOf: (userId: string) => string;
+}) {
   const [removed, setRemoved] = useState<string[]>([]);
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   // A removal is only hidden until the session catches up; a later allow shows the person again.
-  useEffect(() => { setRemoved(list => list.filter(id => (session.allowedSenders ?? []).includes(id))); }, [session.allowedSenders]);
-  const people = (session.allowedSenders ?? []).filter(id => !removed.includes(id));
-  if (!client.removeLocalSessionSender || people.length === 0) return null;
-  const remove = async (id: string) => {
+  useEffect(() => { setRemoved(list => list.filter(id => (ids ?? []).includes(id))); }, [ids]);
+  const people = (ids ?? []).filter(id => !removed.includes(id));
+  if (!remove || people.length === 0) return null;
+  const take = async (id: string) => {
     // Hidden before the request: the backend announces the change before it answers, and the
     // effect above clears this once the session stops listing the person.
     setBusy(id); setError(null); setRemoved(list => [...list, id]);
-    try { await client.removeLocalSessionSender!(session.sessionId, id); }
+    try { await remove(session.sessionId, id); }
     catch { setRemoved(list => list.filter(x => x !== id)); setError(`Could not remove ${nameOf(id)}. Try again.`); }
     finally { setBusy(null); }
   };
   return <div className="session-setting">
     <div className="session-setting-text">
-      <p className="session-setting-label">People you let in</p>
-      <p className="session-setting-about">They asked to join. They can send follow-ups and answer permission prompts until the session ends.</p>
+      <p className="session-setting-label">{label}</p>
+      <p className="session-setting-about">{about}</p>
       <ul className="session-allowed-senders">
         {people.map(id => <li key={id} className="flex items-center justify-between gap-2">
           <span>{nameOf(id)}</span>
-          <Button type="button" variant="outline" size="sm" disabled={busy !== null} onClick={() => void remove(id)}
+          <Button type="button" variant="outline" size="sm" disabled={busy !== null} onClick={() => void take(id)}
             aria-label={`Remove ${nameOf(id)}`}>Remove</Button>
         </li>)}
       </ul>
@@ -147,7 +150,10 @@ function Access({ session, ownerName, own, client, nameOf, switches: { control, 
     {!ended && client.setLocalSessionTeamControl && <Setting label="Let teammates control this session" checked={control.enabled} disabled={control.saving} onChange={next => void control.set(next)} error={control.error}>
       Workspace members can send follow-ups and answer permission prompts on your Mac. Every action is logged in the transcript. Turns off when the session ends.
     </Setting>}
-    {!ended && <AllowedSenders session={session} client={client} nameOf={nameOf} />}
+    {!ended && <People session={session} ids={session.allowedSenders} remove={client.removeLocalSessionSender} nameOf={nameOf}
+      label="People you let in" about="They asked to join. They can send follow-ups and answer permission prompts until the session ends." />}
+    {ended && <People session={session} ids={session.resumeAllowed} remove={client.revokeLocalSessionResume} nameOf={nameOf}
+      label="Who can resume it" about="They could send to it when it ended. They can start it again on your Mac, in plan mode, with a message." />}
     {/* Off always works. On needs the session shared: a paused session uploads nothing. */}
     {pickup.supported && claude && <Setting label="Let teammates pick up this session" checked={pickup.enabled} disabled={pickup.saving || (!sharing.enabled && !pickup.enabled)} onChange={next => void pickup.set(next)} error={pickup.error}>
       {!sharing.enabled && !pickup.enabled && <p>Share the session with the workspace first.</p>}

@@ -399,6 +399,21 @@ export interface LocalSession {
   pickup?: LocalSessionPickup;
   /** Set on a session that continues a teammate's: whose, and which. */
   pickedUpFrom?: { sessionId: string; humanUserId: string };
+  /** Ended sessions only: who besides the owner may resume it (the people who could send when it ended). */
+  resumeAllowed?: string[];
+  /** A resume waiting for the owner's Mac, or the Mac's refusal of one. */
+  resume?: LocalSessionResume;
+  /** Ended, not background, and the workspace may start sessions on its Macs (server-computed). */
+  resumable?: boolean;
+}
+
+/** A resume someone asked for on an ended session: waiting for the owner's Mac, or refused by it. */
+export interface LocalSessionResume {
+  state: "pending" | "failed";
+  byUserId: string;
+  requestedAt: string;
+  /** Why the Mac refused: ALREADY_RUNNING, FOLDER_MISSING, TOOL_UNAVAILABLE, SHARING_OFF, LAUNCH_FAILED. */
+  reason?: string;
 }
 
 /**
@@ -472,7 +487,8 @@ export interface LocalSessionAuditEntry {
   at: string;
   action: "native_send_requested" | "native_send_approved" | "native_send_denied" | "native_send_cancelled" | "send" | "interrupt" | "approve" | "deny" | "cancel" | "team_control_on" | "team_control_off" | "team_control_ended" | "share_link_created" | "share_link_revoked"
     | "pickup_on" | "pickup_off" | "picked_up" | "pickup_expired"
-    | "join_requested" | "join_allowed" | "join_declined" | "sender_removed";
+    | "join_requested" | "join_allowed" | "join_declined" | "sender_removed"
+    | "resume_requested" | "resume_revoked";
   actorUserId?: string;
   /** Whom an owner's join decision or removal was about. */
   subjectUserId?: string;

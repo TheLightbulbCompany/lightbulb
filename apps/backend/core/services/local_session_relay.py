@@ -21,7 +21,7 @@ from core.dynamodb import utc_now_iso
 from core.observability.product_analytics import capture_product_event
 from core.observability.session_analytics import capture_session_event
 from core.repositories import local_sessions_repo as repo, messaging_repo as store
-from core.services import local_sessions as sessions, session_pickup, session_screen
+from core.services import local_sessions as sessions, session_pickup, session_resume, session_screen
 from core.services.connection_service import ConnectionService
 from core.services.management_api_client import ManagementApiClient
 from core.services.messaging import ApiProblem, ContractModel, make_live_event
@@ -473,6 +473,10 @@ class LocalSessionRelay:
                         if (
                             previous["generation"] != descriptor.generation
                             and message.previous_generation != previous["generation"]
+                            # An ended run has nothing left to fence. A resume is the next run even
+                            # when its Mac forgot the old generation (mirrors are reaped a day after
+                            # the end).
+                            and previous.get("endedAt") is None
                         ):
                             raise _conflict("generation chain", sid=sid, cid=cid)
                         if (
@@ -521,6 +525,8 @@ class LocalSessionRelay:
                     # A resumed conversation re-registers under the same id: registering un-ends it.
                     row.pop("endedAt", None)
                     row.pop("endedReason", None)
+                    # The end rewrites who may resume; a running session has nobody to resume it.
+                    row.pop("resumeAllowed", None)
                     # A prompt belongs to the generation that asked it; a new one re-reports.
                     # So does teammate control, and so do the people the owner let in: a restarted
                     # process is a new run the owner has not opted into, even when no Ended frame
@@ -534,7 +540,8 @@ class LocalSessionRelay:
                         row.pop("teamControl", None)
                         for key in sessions.JOIN_FIELDS:
                             row.pop(key, None)
-                    extra = [self._connection_check(cid, connection)]
+                    # After the join fields reset above: a resume's person is let into the new run.
+                    extra = [self._connection_check(cid, connection), *await session_resume.on_register(previous, row)]
                     # pickupAllowed/pickupSnapshot ride along from `previous`: content sharing, not control.
                     if previous is None:
                         picked_up_from = await session_pickup.lineage(owner, sid)
@@ -570,9 +577,19 @@ class LocalSessionRelay:
                     response["serverTime"] = int(time.time())
                     response["features"] = FEATURES
                 elif isinstance(message, DeviceHeartbeat):
+                    # Resume first, then pick-up: each trims its own list to what is left of the
+                    # envelope. Watching last: an empty list read there stops every relay.
                     response = await session_screen.ack_with_watching(
                         await session_pickup.ack_with_pickup(
-                            await self._device_heartbeat(cid, connection, enrollment, message), owner, human, device
+                            await session_resume.ack_with_resume(
+                                await self._device_heartbeat(cid, connection, enrollment, message),
+                                owner,
+                                human,
+                                device,
+                            ),
+                            owner,
+                            human,
+                            device,
                         ),
                         owner,
                         human,
@@ -771,6 +788,11 @@ class LocalSessionRelay:
         if updated.pop("teamControl", False):
             audit = sessions.audit_row(owner, row["sessionId"], None, "team_control_ended")
             extra.append({"Put": {"TableName": store._table().name, "Item": audit}})
+        # Who may resume it (spec §5.7): the people who could send when it ended. Team control is a
+        # switch on the run, not a person the owner let in, so it lets nobody resume.
+        resumers = sessions.allowed_senders(row)
+        if resumers:
+            updated["resumeAllowed"] = resumers
         # So do the people the owner let in, and every open ask to join.
         for key in sessions.JOIN_FIELDS:
             updated.pop(key, None)

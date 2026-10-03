@@ -57,6 +57,14 @@ describe("messaging HTTP client", () => {
     expect(methods.post).toHaveBeenCalledWith("/messaging/sessions/session%2Fb/commands/request%2Fc/cancel", {});
   });
 
+  it("addresses resume and its revocation", async () => {
+    const { client, methods } = setup();
+    await client.resumeLocalSession("s/1", { resumeId: "r-1", message: "go on" });
+    await client.revokeLocalSessionResume("s/1", "user/bob");
+    expect(methods.post).toHaveBeenCalledWith("/messaging/sessions/s%2F1/resume", { resumeId: "r-1", message: "go on" });
+    expect(methods.del).toHaveBeenCalledWith("/messaging/sessions/s%2F1/resume-allowed/user%2Fbob");
+  });
+
   it("uses the frozen read endpoints and sequence query", async () => {
     const { client, methods } = setup();
     await client.getLiveConfig();

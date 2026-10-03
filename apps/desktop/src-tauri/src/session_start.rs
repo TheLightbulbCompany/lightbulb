@@ -123,7 +123,7 @@ fn valid_model(s: &str) -> bool {
             .all(|b| b.is_ascii_alphanumeric() || b"._:-".contains(&b))
 }
 
-fn tools(home: &Path) -> Vec<Value> {
+pub(crate) fn tools(home: &Path) -> Vec<Value> {
     let mut out = vec![];
     if crate::local_sessions::provider_program(home, "claude").is_some() {
         out.push(
@@ -328,7 +328,8 @@ fn prepare(
 }
 
 /// Start `argv` in a new holder in `folder`: the one launcher for the New session view, a remote
-/// start and a pick-up. It shows in the app's session panel when a person opens it. Only held sessions are shared (spec §5.4).
+/// start, a pick-up and a resume. It shows in the app's session panel when a person opens it.
+/// Only held sessions are shared (spec §5.4).
 pub(crate) async fn start_held(
     folder: PathBuf,
     argv: Vec<String>,

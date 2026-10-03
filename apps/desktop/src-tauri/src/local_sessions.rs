@@ -1412,6 +1412,9 @@ struct Subagent {
 
 /// A subagent that answered and then wrote nothing for this long has ended.
 const SUBAGENT_QUIET_SECS: u64 = 30;
+/// One refill stops reading subagents once it holds this many events, so the session's
+/// own thread is read again within a batch or two however many subagents are writing.
+const SUBAGENT_REFILL_EVENTS: usize = 32;
 
 /// The end a subagent's own files show, independent of anything its parent wrote, so a
 /// reader whose window never held the parent's call or notification still sees it end.
@@ -1443,6 +1446,9 @@ struct Subagents {
     /// Distinguish an older relay from a fresh connection that has not ACKed yet.
     #[serde(skip)]
     relay_known: bool,
+    /// The last subagent a refill visited; the next refill starts after it.
+    #[serde(skip)]
+    next: Option<String>,
 }
 
 impl Subagents {
@@ -1547,6 +1553,7 @@ impl Mirror {
             let mut cursor = self.cursor.clone();
             let mut stats = self.stats.clone();
             let mut queue = Vec::new();
+            let from = cursor.offset;
             for row in cursor.read(path, &self.native.provider)? {
                 stats.observe(&self.native.provider, &row);
                 let events = normalize_public_message(
@@ -1558,9 +1565,14 @@ impl Mirror {
                     enqueue(&mut queue, event);
                 }
             }
+            // The session's own thread goes first: while a read moved and rows are still
+            // unread behind it, subagents wait. (A read that did not move is a half-written
+            // last row, which must not hold them.)
+            let behind = cursor.offset > from
+                && fs::metadata(path).is_ok_and(|m| m.len() > cursor.offset);
             self.cursor = cursor;
             self.stats = stats;
-            if self.subagents.relay {
+            if self.subagents.relay && !behind {
                 self.read_subagents(path.clone(), &mut queue);
             }
             self.queue = queue;
@@ -1605,6 +1617,7 @@ impl Mirror {
     fn read_subagents(&mut self, transcript: PathBuf, queue: &mut Vec<Value>) {
         let native = &self.native;
         let known = &mut self.subagents.known;
+        let next = &mut self.subagents.next;
         if native.provider == "claude" {
             for (id, path, start) in claude::new_subagents(&transcript, &|id| known.contains_key(id)) {
                 let description = start["text"].as_str().unwrap_or("").to_owned();
@@ -1627,7 +1640,22 @@ impl Mirror {
                 enqueue(queue, start);
             }
         }
-        for (id, sub) in known.iter_mut().filter(|(_, s)| !s.closed) {
+        // Round-robin from the one after the last visited, and only until the refill is
+        // full: 148 subagents at 32 rows each once queued an hour of upload ahead of
+        // the session's own next row.
+        let mut open: Vec<_> = known.iter_mut().filter(|(_, s)| !s.closed).collect();
+        let start = open
+            .iter()
+            .position(|(id, _)| next.as_ref().is_some_and(|n| id.as_str() > n.as_str()))
+            .unwrap_or(0);
+        open.rotate_left(start);
+        for (id, sub) in open {
+            if queue.len() >= SUBAGENT_REFILL_EVENTS {
+                break;
+            }
+            // Advance even when this subagent has nothing new: the next refill must start
+            // after it, or a quiet early id would be visited first forever.
+            *next = Some(id.clone());
             let Some(path) = &sub.path else { continue };
             // One stat, not a confined open, for the (usual) subagent with nothing new.
             let meta = fs::metadata(path);
@@ -3017,5 +3045,37 @@ mod tests {
         assert_eq!(batch["events"][0]["ts"], "2026-09-25T10:05:00.000Z");
         mirror.acknowledge(batch["batchId"].as_str().unwrap(), n + 1).unwrap();
         assert!(mirror.next_batch().unwrap().is_none(), "one end, not one per tick");
+    }
+
+    #[test]
+    fn local_sessions_own_thread_is_read_ahead_of_subagents_and_subagents_take_turns() {
+        let dir = tempfile::tempdir().unwrap();
+        let transcript = dir.path().join("s.jsonl");
+        let rows = |name: &str| -> String {
+            (0..40)
+                .map(|i| json!({"type":"assistant","sessionId":"s","version":"2.1.269","uuid":"u",
+                    "message":{"role":"assistant","content":[{"type":"text","text":format!("{name}-{i}")}]}}).to_string() + "\n")
+                .collect()
+        };
+        // 40 rows each: more than one read takes.
+        fs::write(&transcript, rows("p")).unwrap();
+        let subs = dir.path().join("s/subagents");
+        fs::create_dir_all(&subs).unwrap();
+        fs::write(subs.join("agent-a1.jsonl"), rows("a1")).unwrap();
+        fs::write(subs.join("agent-a2.jsonl"), rows("a2")).unwrap();
+        let mut mirror = test_mirror(transcript);
+        mirror.subagents.relay = true;
+        let mut order = vec![];
+        let mut seq = 0;
+        while let Some(batch) = mirror.next_batch().unwrap() {
+            let events = batch["events"].as_array().unwrap();
+            order.extend(events.iter().filter(|e| e["lifecycle"].is_null()).map(|e| e["text"].as_str().unwrap().to_owned()));
+            seq += events.len() as u64;
+            mirror.acknowledge(batch["batchId"].as_str().unwrap(), seq).unwrap();
+        }
+        let at = |text: &str| order.iter().position(|t| t == text).unwrap_or_else(|| panic!("{text} never mirrored"));
+        assert_eq!(order.len(), 120);
+        assert!(order[..40].iter().all(|t| t.starts_with("p-")), "the session's own rows go out before any subagent's");
+        assert!(at("a2-0") < at("a1-39"), "a second subagent is read before the first one's backlog is done");
     }
 }

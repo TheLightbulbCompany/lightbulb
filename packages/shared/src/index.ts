@@ -184,6 +184,7 @@ export {
   subagentStatus,
   subagentState,
   subagentStrip,
+  sessionClock,
   backgroundWaiting,
   subagentTags,
   stripAnsi,

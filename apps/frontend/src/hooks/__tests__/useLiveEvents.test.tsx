@@ -174,6 +174,7 @@ describe("LiveEventsProvider", () => {
       token: "session-token",
       userId: "user-a",
       displayName: "Alice Example",
+      workspaceId: "org-a",
       workspaceName: "Acme",
     })));
     expect(shared.liveConnected).toBe(false);

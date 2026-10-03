@@ -223,13 +223,14 @@ fn send_auth_token(
     display_name: String,
     user_id: String,
     permissions: Option<DesktopPermissions>,
+    workspace_id: Option<String>,
     workspace_name: Option<String>,
     state: State<'_, AuthState>,
     app: tauri::AppHandle,
 ) -> Result<(), String> {
     // Only for the `lightbulb` command's "Shared with <workspace>" line.
     #[cfg(unix)]
-    cli::set_workspace(workspace_name);
+    cli::set_workspace(workspace_id.zip(workspace_name));
     {
         // Cache the latest token for telemetry / diagnostic dumps. We do
         // NOT use this as the "did bootstrap already happen" sentinel

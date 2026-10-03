@@ -106,11 +106,17 @@ fn answer(mut conn: UnixStream, start: &(dyn Fn(Value) -> Reply + Send + Sync)) 
     conn.write_all(format!("{}\n", serde_json::to_string(&reply)?).as_bytes())
 }
 
-static WORKSPACE: Mutex<Option<String>> = Mutex::new(None);
+/// (workspace id, name) the app's signed-in page is in, for the "Shared with …" line.
+static WORKSPACE: Mutex<Option<(String, String)>> = Mutex::new(None);
 
-/// The workspace the app's signed-in page is in, for the "Shared with …" line.
-pub fn set_workspace(name: Option<String>) {
-    *WORKSPACE.lock().unwrap() = name;
+pub fn set_workspace(workspace: Option<(String, String)>) {
+    *WORKSPACE.lock().unwrap() = workspace;
+}
+
+/// The page's workspace name, only when it is the workspace this Mac shares to: a page switched
+/// to another workspace must never name the wrong one (the person's only privacy signal).
+pub fn shared_workspace(page: Option<&(String, String)>, enrolled_owner: Option<&str>) -> Option<String> {
+    page.filter(|(id, _)| Some(id.as_str()) == enrolled_owner).map(|(_, name)| name.clone())
 }
 
 /// The app's end, started at launch.
@@ -120,7 +126,9 @@ pub fn serve(app: tauri::AppHandle) -> Result<(), String> {
         let side = |key: &str, default: u16| request[key].as_u64().and_then(|v| u16::try_from(v).ok()).unwrap_or(default);
         let size = (side("cols", 80), side("rows", 24));
         let info = crate::session_start::cli_start(&app, request["start"].clone(), size)?;
-        Ok(Started { socket: info.socket, workspace: WORKSPACE.lock().unwrap().clone() })
+        let owner = crate::local_sessions::enrollment::enrolled_owner(&app);
+        let workspace = shared_workspace(WORKSPACE.lock().unwrap().as_ref(), owner.as_deref());
+        Ok(Started { socket: info.socket, workspace })
     })
     .map_err(|e| e.to_string())
 }
@@ -237,7 +245,10 @@ pub fn pump(holder: &mut impl Read, out: &mut impl Write) -> (Outcome, bool) {
 /// cursor, plain colours, and the main screen if the provider left the alternate one on.
 pub fn reset_sequence(alternate_screen: bool) -> Vec<u8> {
     let mut out = if alternate_screen { b"\x1b[?1049l".to_vec() } else { vec![] };
-    out.extend_from_slice(b"\x1b[?2004l\x1b[?1004l\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l\x1b[?25h\x1b[0m");
+    out.extend_from_slice(b"\x1b[?2004l\x1b[?1004l\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l");
+    // Synchronized output, the kitty keyboard stack, cursor and keypad application modes.
+    // Not `\x1b[r`: resetting the scroll region moves the cursor home.
+    out.extend_from_slice(b"\x1b[?2026l\x1b[<u\x1b[?1l\x1b>\x1b[?25h\x1b[0m");
     out
 }
 
@@ -287,8 +298,7 @@ fn block_signals() -> libc::sigset_t {
     }
 }
 
-fn attach(socket: &Path, (cols, rows): (u16, u16)) -> i32 {
-    let signals = block_signals();
+fn attach(socket: &Path, (cols, rows): (u16, u16), signals: libc::sigset_t) -> i32 {
     let holder = match UnixStream::connect(socket) {
         Ok(holder) if same_user(&holder) => holder,
         _ => {
@@ -362,6 +372,10 @@ fn attach(socket: &Path, (cols, rows): (u16, u16)) -> i32 {
 
 /// `lightbulb …`: the process exit code.
 pub fn main(args: &[String]) -> i32 {
+    // First, so a Ctrl-C or SIGHUP while the app starts the session stays pending and detaches
+    // with the Decision 4 line in `attach`, instead of killing this silently with the session
+    // started anyway. The early exits below just exit with it pending.
+    let signals = block_signals();
     let ask = match parse(args) {
         Ok(ask) => ask,
         Err(message) => {
@@ -382,7 +396,7 @@ pub fn main(args: &[String]) -> i32 {
     match ask_app(&app_socket(), &request(&ask, &folder, size)) {
         Ok(started) => {
             println!("{}", shared_line(started.workspace.as_deref(), &ask.tool));
-            attach(&started.socket, size)
+            attach(&started.socket, size, signals)
         }
         Err(message) => {
             eprintln!("{message}");
@@ -552,6 +566,18 @@ mod tests {
         assert!(reset_sequence(true).starts_with(b"\x1b[?1049l"));
         assert!(!reset_sequence(false).windows(8).any(|w| w == b"\x1b[?1049l"), "would jump the cursor to a stale saved position");
         assert!(reset_sequence(false).ends_with(b"\x1b[?25h\x1b[0m"));
+        for mode in [&b"\x1b[?2026l"[..], b"\x1b[<u", b"\x1b[?1l", b"\x1b>"] {
+            assert!(reset_sequence(false).windows(mode.len()).any(|w| w == mode), "{mode:?}");
+        }
+    }
+
+    #[test]
+    fn cli_names_the_page_workspace_only_when_it_is_the_shared_one() {
+        let page = ("org_a".to_string(), "Acme".to_string());
+        assert_eq!(shared_workspace(Some(&page), Some("org_a")).as_deref(), Some("Acme"));
+        assert_eq!(shared_workspace(Some(&page), Some("org_b")), None, "page switched to another workspace");
+        assert_eq!(shared_workspace(Some(&page), None), None);
+        assert_eq!(shared_workspace(None, Some("org_a")), None, "signed out");
     }
 
     #[test]

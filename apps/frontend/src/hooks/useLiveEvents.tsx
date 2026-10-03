@@ -188,6 +188,8 @@ export function LiveEventsProvider({ children }: { children: ReactNode }) {
         displayName: user.fullName || user.firstName || "User",
         userId: user.id,
         permissions: grant.permissions,
+        // The id lets the app name this workspace only when it is the one this Mac shares to.
+        workspaceId: orgId ?? null,
         workspaceName,
       }).catch(() => {});
     };
@@ -197,7 +199,7 @@ export function LiveEventsProvider({ children }: { children: ReactNode }) {
       cancelled = true;
       window.clearInterval(refresh);
     };
-  }, [user?.id, user?.fullName, user?.firstName, workspaceName, getToken, desktopPermissionRevision, nodeStatus]);
+  }, [user?.id, user?.fullName, user?.firstName, orgId, workspaceName, getToken, desktopPermissionRevision, nodeStatus]);
 
   const value = useMemo<LiveEventsContextValue>(() => ({
     httpReady,

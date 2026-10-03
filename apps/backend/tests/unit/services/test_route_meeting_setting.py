@@ -43,6 +43,7 @@ async def _meet(text, decision, unclaimed=False):
 
 
 NOBODY = {"agentId": None, "agentIds": []}
+_REAL_ROOM_TEAM = vc._room_team  # captured before the autouse fixture mocks it
 
 
 async def test_meeting_setting_disables_the_lone_speaker_fallback(env):
@@ -79,3 +80,31 @@ async def test_jev_is_told_it_is_a_meeting():
         assert decide.await_args.args[0]["room"]["setting"] == jev.MEETING_CONTEXT
         await jev._decide_for_message({"ownerId": "org_a"}, message, message, MEMBERS, [], placement=False)
         assert "setting" not in decide.await_args.args[0]["room"]
+
+
+async def test_a_meeting_line_authorizes_as_the_inviting_owner_and_keeps_the_label():
+    """The real _room_team: a Meet label is no member, so the line acts as the room's owner member."""
+    room = "11111111-1111-4111-8111-111111111111"
+    members = [*MEMBERS, {"kind": "human", "id": "user_inviter", "role": "owner"}]
+    meta = {"roomId": room, "ownerId": "org_a", "kind": "channel", "name": "meet"}
+    get_member = AsyncMock(return_value={"kind": "human", "id": "user_inviter", "role": "owner"})
+    decide = AsyncMock(return_value={"who": "none"})
+    with (
+        patch.object(vc, "_room_team", _REAL_ROOM_TEAM),
+        patch.object(vc.messaging_repo, "list_members", AsyncMock(return_value=members)),
+        patch.object(vc.messaging.messaging_repo, "get_room", AsyncMock(return_value=meta)),
+        patch.object(vc.messaging.messaging_repo, "get_member", get_member),
+        patch.object(vc.jev, "_decide_for_message", decide),
+    ):
+        got = await vc.route_live_line(
+            owner_id="org_a",
+            room_id=room,
+            speaker_id="Priya + Dan",
+            utterance="hmm",
+            transcript="",
+            humans=2,
+            setting="meeting",
+        )
+    assert got == NOBODY
+    get_member.assert_awaited_once_with(room, "human", "user_inviter")
+    assert decide.await_args.args[1]["author"] == {"kind": "human", "id": "Priya + Dan", "displayName": "Priya + Dan"}

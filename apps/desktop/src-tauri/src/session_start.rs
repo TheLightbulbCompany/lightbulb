@@ -297,9 +297,20 @@ pub async fn start(
     let result = async {
         let (start, folder, argv, scope) = prepare(&app, params, &cancel)?;
         let argv = held_argv(&argv, Some((start.start_id.as_str(), scope.as_str())));
+        let place = folder.file_name().map_or_else(|| folder.display().to_string(), |n| n.to_string_lossy().into_owned());
         start_held(folder, argv)
             .await
             .map_err(|e| ("LAUNCH_FAILED", format!("The session didn't start: {e}")))?;
+        // Started from elsewhere with no window: tell the owner at this Mac (spec §5.2).
+        let tool = if start.tool == "codex" { "Codex" } else { "Claude Code" };
+        let _ = crate::notify::native_notify(
+            format!("{tool} started in {place}"),
+            Some("End it from its panel in Lightbulb.".into()),
+            Some(format!("start-{}", start.start_id)),
+            None,
+            None,
+        )
+        .await;
         Ok(json!({"started": true, "tool": start.tool}))
     }
     .await;

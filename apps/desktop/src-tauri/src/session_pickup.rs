@@ -807,6 +807,15 @@ async fn pick_up(ticket: Value, folder: Option<String>, env: &Env) -> Result<Val
     crate::session_start::start_held(cwd, argv)
         .await
         .map_err(|e| fail("LAUNCH_FAILED", &format!("The session didn't start: {e}")))?;
+    // Started with no window: tell the owner at this Mac (spec §5.2).
+    let _ = crate::notify::native_notify(
+        format!("Picked up {}", ticket.session.title.as_deref().filter(|t| !t.is_empty()).unwrap_or("a session")),
+        Some("End it from its panel in Lightbulb.".into()),
+        Some(format!("pickup-{session}")),
+        None,
+        None,
+    )
+    .await;
     let (branch, worktree) = code.unzip();
     Ok(json!({
         "ok": true,

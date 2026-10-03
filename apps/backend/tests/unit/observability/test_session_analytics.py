@@ -4,7 +4,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from core.auth import AuthContext
-from core.observability.session_analytics import capture_session_event, capture_session_mention
+from core.observability.session_analytics import capture_session_event
 from core.services import local_session_relay, local_sessions
 from routers.messaging import SessionOpenRequest, record_local_session_open
 
@@ -42,18 +42,6 @@ def test_session_event_is_content_free_and_idempotent():
         "offline_queued": True,
     }
     assert "private" not in str(first)
-
-
-def test_room_mention_result_joins_session_without_content():
-    with patch("core.observability.session_analytics.capture_product_event") as capture:
-        capture_session_mention("org_1", "user_2", "session-1", "message-1", "rejected")
-    assert capture.call_args.kwargs["properties"] == {
-        "workspace_id": "org_1",
-        "session_id": "session-1",
-        "request_id": "m-message-1-session-1",
-        "origin": "room_mention",
-        "state": "rejected",
-    }
 
 
 @pytest.mark.asyncio

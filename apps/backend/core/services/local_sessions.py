@@ -459,7 +459,6 @@ class CommandReceipt(LocalSessionCommand):
     created_at: int
     deliver_by: int
     held: bool = False
-    reply_posted: bool = False
     provider_message_id: str | None = None
     cancelled_at: int | None = None
     native_hop: int | None = Field(default=None, ge=1, le=2)
@@ -976,6 +975,40 @@ async def live_sessions_for_room(owner: str, room_id: str, members: list[dict]) 
         return []
 
 
+async def referenced_sessions(owner: str, members: list[dict], session_ids: list[str]) -> list[dict]:
+    """The sessions a room message references, projected for agent ingress. A reference is a
+    link, not a wake (owner ruling 2026-10-02), so offline and ended sessions resolve too --
+    under the message writer's own rule: shared, interactive, owner still in the room, and
+    no member from another organization. Never raises: a missing line beats a lost turn."""
+    if any(messaging_repo.member_home(member, owner) != owner for member in members):
+        return []
+    humans = {member["id"] for member in members if member.get("kind") == "human"}
+    out: list[dict] = []
+    for session_id in dict.fromkeys(session_ids):
+        try:
+            row = await repo.get_session(owner, session_id)
+            if (
+                row is None
+                or row.get("ownerId") != owner
+                or row.get("unshared")
+                or row.get("kind") == "background"
+                or row.get("humanUserId") not in humans
+            ):
+                continue
+            public = _session_public(row)
+            out.append(
+                {
+                    "sessionId": session_id,
+                    "provider": public.provider,
+                    "title": public.display_title or public.title or public.cwd_name,
+                    "status": public.status,
+                }
+            )
+        except Exception:
+            logger.warning("Referenced session %s unresolved", session_id, exc_info=True)
+    return out
+
+
 async def set_sharing(auth: AuthContext, session_id: str, shared: bool) -> LocalSession:
     """The owner pauses or resumes sharing one session. While paused the relay drops its
     transcript instead of storing it (one notice marks the gap) and nobody else can see it."""
@@ -1156,8 +1189,6 @@ async def submit_command(
     session_id: str,
     request: LocalSessionCommand,
     *,
-    origin_room_id: str | None = None,
-    origin_message_id: str | None = None,
     source_session_id: str | None = None,
     source_generation: str | None = None,
     source_turn_id: str | None = None,
@@ -1190,7 +1221,6 @@ async def submit_command(
             or request.kind != "send"
             or replaces_request_id == request.request_id
             or room_id
-            or origin_room_id
             or source_session_id
         ):
             raise ApiProblem("INVALID_REQUEST", "Only a direct human follow-up can replace an offline send.")
@@ -1234,7 +1264,6 @@ async def submit_command(
                 or original.get("actorUserId") != auth.user_id
                 or original.get("kind") != "send"
                 or original.get("roomId") != ""
-                or original.get("originRoomId")
                 or not original.get("offlineIdentity")
                 or original.get("state") != "rejected"
                 or original.get("cancelledAt")
@@ -1279,7 +1308,6 @@ async def submit_command(
         offline_send = (
             not isinstance(auth, AgentInvocation)
             and not room_id
-            and not origin_room_id
             and not source_session_id
             and request.kind == "send"
             and request.expected_turn_id is None
@@ -1287,8 +1315,6 @@ async def submit_command(
             and row["capabilities"]["sendMode"] == "queue"
         )
         _require_control(row, request, allow_offline_send=offline_send)
-        if origin_room_id and row["provider"] == "codex" and not row.get("roomReplyRequestId"):
-            raise ApiProblem("LOCAL_SESSION_UNSUPPORTED", "Update Lightbulb on the Mac to use Codex room mentions.")
         if isinstance(auth, AgentInvocation) and now >= auth.expires_at:
             raise ApiProblem("LOCAL_SESSION_FORBIDDEN", "Local session invocation is unavailable.")
         if offline_send and auth.user_id != row["humanUserId"]:
@@ -1330,9 +1356,6 @@ async def submit_command(
                 if offline_send
                 else {}
             ),
-            **({"originRoomId": origin_room_id} if origin_room_id else {}),
-            **({"originMessageId": origin_message_id} if origin_message_id else {}),
-            **({"originEventSeq": row.get("eventSeq", 0)} if origin_room_id else {}),
             **({"nativeHop": native_hop} if native_hop is not None else {}),
             **({"replacesRequestId": replaces_request_id} if replaces_request_id else {}),
             **(
@@ -1364,7 +1387,7 @@ async def submit_command(
                 room_meta_fenced_by_extra=room_meta_fenced_by_extra,
             )
             actor = getattr(auth, "user_id", None) or row["humanUserId"]
-            origin = "room_mention" if origin_room_id else "native" if source_session_id else "direct"
+            origin = "native" if source_session_id else "direct"
             capture_session_event(
                 row,
                 "local_session_command_admitted",

@@ -84,11 +84,7 @@ async def test_send_resolves_thread_root_and_member_mentions(monkeypatch):
         "get_message_by_id",
         AsyncMock(return_value={"messageId": reply_id, "threadRootMessageId": root_id}),
     )
-    post = AsyncMock(
-        return_value=SimpleNamespace(
-            room_id=uuid.UUID(room_id), message_id=uuid.uuid4(), message_seq=7, session_sends=[]
-        )
-    )
+    post = AsyncMock(return_value=SimpleNamespace(room_id=uuid.UUID(room_id), message_id=uuid.uuid4(), message_seq=7))
     monkeypatch.setattr(hosted_mcp.messaging, "create_human_message", post)
     monkeypatch.setattr(hosted_mcp, "get_access_token", lambda: SimpleNamespace(client_id="https://x.example/c"))
     monkeypatch.setattr(hosted_mcp.messaging, "human_display_name", AsyncMock(return_value="Ann"))
@@ -159,11 +155,7 @@ async def test_send_authors_as_the_client_on_the_humans_behalf(monkeypatch):
     )
     monkeypatch.setattr(hosted_mcp.messaging, "get_room", AsyncMock(return_value=SimpleNamespace(members=[])))
     monkeypatch.setattr(hosted_mcp.messaging, "human_display_name", AsyncMock(return_value="Ann"))
-    post = AsyncMock(
-        return_value=SimpleNamespace(
-            room_id=uuid.UUID(room_id), message_id=uuid.uuid4(), message_seq=1, session_sends=[]
-        )
-    )
+    post = AsyncMock(return_value=SimpleNamespace(room_id=uuid.UUID(room_id), message_id=uuid.uuid4(), message_seq=1))
     monkeypatch.setattr(hosted_mcp.messaging, "create_human_message", post)
     await hosted_mcp.send_message(room_id, "hi", str(uuid.uuid4()))
     assert post.await_args.args[0].user_id == "user_sender"

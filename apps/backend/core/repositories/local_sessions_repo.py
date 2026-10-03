@@ -11,7 +11,6 @@ import time
 import uuid
 from collections.abc import Sequence
 
-from core.dynamodb import run_in_thread
 from core.repositories import container_repo, messaging_repo as store
 
 
@@ -45,52 +44,6 @@ async def list_user_sessions(owner_id: str, user_id: str) -> list[dict]:
 
 async def get_command(owner_id: str, local_session_id: str, request_id: str) -> dict | None:
     return await store._get(session_pk(owner_id, local_session_id), f"COMMAND#{request_id}")
-
-
-def replyto_item(
-    owner_id: str,
-    session_id: str,
-    *,
-    room_id: str,
-    message_id: str,
-    request_id: str,
-    provider_message_id: str,
-    after_event_seq: int,
-    provider: str,
-    where: str,
-) -> dict:
-    now = int(time.time())
-    return {
-        "pk": session_pk(owner_id, session_id),
-        "sk": f"REPLY#{request_id}",
-        "roomId": room_id,
-        "messageId": message_id,
-        "requestId": request_id,
-        "providerMessageId": provider_message_id,
-        "afterEventSeq": after_event_seq,
-        "provider": provider,
-        "where": where,
-        "at": now,
-        "expiresAt": now + 24 * 3600,
-    }
-
-
-async def put_replyto(owner_id: str, session_id: str, **fields) -> None:
-    await run_in_thread(
-        store._table().put_item,
-        Item=replyto_item(owner_id, session_id, **fields),
-    )
-
-
-async def list_replyto(owner_id: str, session_id: str) -> list[dict]:
-    return await store._query(session_pk(owner_id, session_id), begins_with="REPLY#")
-
-
-async def delete_replyto(owner_id: str, session_id: str, request_id: str) -> None:
-    await run_in_thread(
-        store._table().delete_item,
-        Key={"pk": session_pk(owner_id, session_id), "sk": f"REPLY#{request_id}"},
-    )
 
 
 async def list_events(
@@ -251,7 +204,7 @@ async def put_session(row: dict, previous: dict | None, enrollment: dict, *, ext
 
 def room_conditions(owner: str, human: str, receipt: dict, *, include_meta: bool = True) -> list[dict]:
     """Fence room-originated commands at admission and delivery against both human memberships."""
-    room = receipt.get("roomId") or receipt.get("originRoomId")
+    room = receipt.get("roomId")
     if not room:
         # An offline teammate's old token is not authority at delivery time.
         # Membership removal deactivates this stream; fence the final dispatch.

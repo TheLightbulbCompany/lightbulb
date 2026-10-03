@@ -312,6 +312,28 @@ def _canonical_message(item: dict[str, Any]) -> dict[str, Any]:
     if clean_attachments:
         message["attachments"] = clean_attachments
 
+    # A session reference (owner ruling 2026-10-02: a chip is a link, never a wake): the
+    # ids plus the readable label snapshot. Load-bearing like attachments -- the live copy
+    # merges over the sender's POST response at the same revision, so leaving these out
+    # strips the sender's own card and shows recipients none. Omitted when there are none.
+    session_mentions = item.get("sessionMentions") or []
+    if not isinstance(session_mentions, list) or len(session_mentions) > 4:
+        raise ValueError("invalid canonical sessionMentions")
+    labels = item.get("sessionTargetLabels") or {}
+    if not isinstance(labels, dict):
+        raise ValueError("invalid canonical sessionTargetLabels")
+    if session_mentions:
+        clean_labels = {}
+        for session_id in session_mentions:
+            _require_uuid(session_id, "sessionMentions")
+            label = labels.get(session_id)
+            if label is not None and (not isinstance(label, str) or len(label) > 256):
+                raise ValueError("invalid canonical sessionTargetLabels")
+            if label:
+                clean_labels[session_id] = label
+        message["sessionMentions"] = list(session_mentions)
+        message["sessionTargetLabels"] = clean_labels
+
     for field in ("replyToMessageId", "threadRootMessageId"):
         if message[field] is not None:
             _require_uuid(message[field], field)
@@ -822,24 +844,6 @@ def _project_message_update(item: dict[str, Any]) -> None:
     _publish_preview_change(item, meta, revision)
 
 
-def _project_session_sends_update(item: dict[str, Any]) -> None:
-    room_id = _require_uuid(item.get("roomId"), "roomId")
-    message_id = _require_uuid(item.get("messageId"), "messageId")
-    seq = _require_int(item.get("messageSeq"), "messageSeq", minimum=1)
-    meta = _get_item(f"ROOM#{room_id}", "META")
-    if not meta:
-        raise ValueError("room metadata is missing")
-    delivery_key = _require_uuid(meta.get("deliveryKey"), "deliveryKey")
-    workspace_id = _workspace_id_for_meta(f"ROOM#{room_id}", "META", meta)
-    if workspace_id is None:
-        return
-    _publish(f"/ws/{workspace_id}/rooms/{room_id}/{delivery_key}", {
-        "schemaVersion": 1, "eventId": str(uuid5(UUID(message_id), "session-sends")),
-        "type": "room.message.updated", "occurredAt": item["sessionSendsAt"], "roomId": room_id,
-        "payload": {"roomId": room_id, "messageId": message_id, "messageSeq": seq},
-    })
-
-
 def _project_message(item: dict[str, Any]) -> None:
     # A delayed INSERT replay must not republish content subsequently deleted.
     latest = _get_item(item["pk"], item["sk"])
@@ -937,8 +941,6 @@ def process_record(record: dict[str, Any]) -> None:
         # The stream contains NEW_IMAGE only. Later reaction writes replay the
         # same revision's event ID, which clients already deduplicate.
         if sk.startswith("MSG#"):
-            if item.get("sessionSendsAt"):
-                _project_session_sends_update(item)
             if int(item.get("messageRevision", 0)) > 0 and not _thread_touch_only(item):
                 _project_message_update(item)
         return

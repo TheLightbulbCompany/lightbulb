@@ -882,6 +882,7 @@ async def create_message(
     acting_human_id: str | None = None,
     extra_conditions: list[dict] | None = None,
     via: str | None = None,
+    session_mentions: list[str] | None = None,
     session_target_labels: dict[str, str] | None = None,
     addressing: dict | None = None,
     in_reply_to: str | None = None,
@@ -952,6 +953,9 @@ async def create_message(
         if acting_human_id:
             # The accountable human behind a system-authored post (hosted MCP receipts read it).
             message["actorUserId"] = acting_human_id
+        if session_mentions:
+            # A reference, like a document link: it never wakes the session (owner ruling 2026-10-02).
+            message["sessionMentions"] = session_mentions
         if session_target_labels:
             message["sessionTargetLabels"] = session_target_labels
         if silent:
@@ -1297,75 +1301,6 @@ async def set_reaction(owner_id: str, room_id: str, seq: int, user_id: str, emoj
             if not _is_cancelled(exc):
                 raise
     raise MessagingRepoError("Reaction could not be updated. Refresh and try again.")
-
-
-async def set_session_sends(room_id: str, seq: int, session_sends: list[dict]) -> dict:
-    try:
-        await _transact(
-            [
-                {
-                    "Update": {
-                        "TableName": _table().name,
-                        "Key": {"pk": room_pk(room_id), "sk": msg_sk(seq)},
-                        "UpdateExpression": "SET sessionSends = :sends, sessionSendsAt = :now",
-                        "ConditionExpression": "attribute_exists(sk) AND attribute_not_exists(sessionSends)",
-                        "ExpressionAttributeValues": {":sends": session_sends, ":now": utc_now_iso()},
-                    }
-                },
-                {
-                    "Update": {
-                        "TableName": _table().name,
-                        "Key": {"pk": room_pk(room_id), "sk": "META"},
-                        "UpdateExpression": "ADD sessionSendsRevision :one",
-                        "ConditionExpression": "attribute_exists(sk)",
-                        "ExpressionAttributeValues": {":one": 1},
-                    }
-                },
-            ]
-        )
-    except ClientError as exc:
-        if not _is_cancelled(exc):
-            raise
-        current = await get_message(room_id, seq)
-        if current is None or "sessionSends" not in current:
-            raise
-        return current
-    current = await get_message(room_id, seq)
-    if current is None:
-        raise MessagingRepoError("Session send message disappeared.")
-    return current
-
-
-def session_send_update_items(
-    room_id: str, message: dict, expected: list[dict], updated: list[dict], *, room_owner: str, room_revision: int
-) -> list[dict]:
-    """CAS one room-message send marker and invalidate clients in the same transaction."""
-    table = _table().name
-    return [
-        {
-            "Update": {
-                "TableName": table,
-                "Key": {"pk": room_pk(room_id), "sk": msg_sk(message["messageSeq"])},
-                "UpdateExpression": "SET sessionSends = :updated, sessionSendsAt = :now",
-                "ConditionExpression": "sessionSends = :expected AND messageId = :message_id",
-                "ExpressionAttributeValues": {
-                    ":expected": expected,
-                    ":updated": updated,
-                    ":now": utc_now_iso(),
-                    ":message_id": message["messageId"],
-                },
-            }
-        },
-        {
-            "Update": {
-                "TableName": table,
-                "Key": {"pk": room_pk(room_id), "sk": "META"},
-                "UpdateExpression": "ADD sessionSendsRevision :one",
-                "ConditionExpression": "ownerId = :owner AND revision = :revision",
-                "ExpressionAttributeValues": {":one": 1, ":owner": room_owner, ":revision": room_revision},
-            }
-        },
-    ]
 
 
 async def _replay_or_conflict(receipt: dict, req_hash: str) -> dict:

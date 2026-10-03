@@ -2,7 +2,7 @@
 
 import { createContext, useContext, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useAuth } from "@clerk/nextjs";
-import { canChangeListenMode, canControlSession, canSendToSession, markSessionsSeen, resolveTypedMentions, runView, sessionArchived, sessionMentionCandidates, sessionUnread, useWorkspaceSessions, workspaceSections, type CreateMessageRequest, type ListenMode, type MemberRef, type RoomMember, type SessionSource, type RoomSummary } from "@lightbulb/shared";
+import { canChangeListenMode, markSessionsSeen, resolveTypedMentions, runView, sessionArchived, sessionMentionCandidates, sessionUnread, useWorkspaceSessions, workspaceSections, type CreateMessageRequest, type ListenMode, type MemberRef, type RoomMember, type SessionSource, type RoomSummary } from "@lightbulb/shared";
 import { useRooms } from "@/hooks/useRooms";
 import { useBilling } from "@/hooks/useBilling";
 import { useAgents } from "@/hooks/useAgents";
@@ -336,12 +336,15 @@ export function MessagingWorkspaceProvider({
   const sessionCandidates = useMemo(() => sessionMentionCandidates(
     workspaceSessions.sessions.filter((session) => session.kind !== "background"),
   ), [workspaceSessions.sessions]);
+  // What a reference card resolves against: every interactive session the viewer can open,
+  // not the sendable subset below (an offline, ended or read-only teammate session is still a reference).
+  const visibleSessions = useMemo(() => sessionCandidates.map(({ session }) => session), [sessionCandidates]);
+  // Reference rule (#3623): shared session whose owner is in the room; no send/control grant needed.
   const sessionTargets = useMemo(() => rooms.activeRoom?.shared ? [] : sessionCandidates
-    .filter(({ session }) => session.shared !== false && canSendToSession(session)
-      && rooms.activeRoom?.members.some((member) => member.kind === "human" && member.id === session.humanUserId)
-      && canControlSession(session, session.humanUserId === userId, userId))
+    .filter(({ session }) => session.shared !== false
+      && rooms.activeRoom?.members.some((member) => member.kind === "human" && member.id === session.humanUserId))
     .map((candidate) => ({ candidate, ...resolveSessionOwner(candidate.session.humanUserId) })),
-  [rooms.activeRoom?.shared, rooms.activeRoom?.members, sessionCandidates, userId, resolveSessionOwner]);
+  [rooms.activeRoom?.shared, rooms.activeRoom?.members, sessionCandidates, resolveSessionOwner]);
   const directoryRooms: DirectoryRoom[] = useMemo(() => rooms.rooms.map((room) => ({
     ...room,
     // Straight off the room summary — this used to come from a per-DM
@@ -780,6 +783,7 @@ export function MessagingWorkspaceProvider({
     runs: rooms.runs.map(runView),
     composer,
     threadComposer,
+    sessions: visibleSessions,
     onSelectThread: setThreadId,
     selectedThreadId: threadId,
     onSelectParticipant: selectMessageParticipant,
@@ -817,9 +821,6 @@ export function MessagingWorkspaceProvider({
     onLinkToWork: () => openPanel("teams-issues", {}, { pushUrl: true }),
     onDownloadAttachment: rooms.downloadAttachment,
     onAttachmentUrl: rooms.attachmentUrl,
-    onGetSessionCommand: rooms.resourceSource.client.getLocalSessionCommand,
-    onRetrySessionSend: rooms.resourceSource.client.retrySessionSend,
-    onCancelSessionSend: rooms.resourceSource.client.cancelSessionSend,
   } : null;
 
   // Muted rooms never badge anywhere: not the sidebar, not the browser-tab title.

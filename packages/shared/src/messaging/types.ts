@@ -35,8 +35,6 @@ export interface RoomSummary {
   name: string | null;
   kind: RoomKind;
   roomRevision: number;
-  /** Advances when command receipts are attached to an existing message. */
-  sessionSendsRevision?: number;
   lastMessageSeq: number;
   /** The latest live top-level message's time, else the room's createdAt; the list is sorted on it. */
   lastMessageAt: string | null;
@@ -191,15 +189,10 @@ export interface CanonicalRoomMessage {
    *  readState.ts's `addressed`. */
   addressedAgentIds?: string[];
   attachments?: MessageAttachment[];
-  sessionSends?: SessionSend[];
-}
-
-export interface SessionSend {
-  sessionId: string;
-  requestId?: string;
-  error?: string;
-  /** Human-readable label captured when the room message targeted this session. */
-  displayLabel?: string;
+  /** Session chips: references, like document links. They never message the session. */
+  sessionMentions?: string[];
+  /** "<Provider> · <title> · <owner>" per mentioned session, captured when the message was sent. */
+  sessionTargetLabels?: Record<string, string>;
 }
 
 export interface MessageAttachment {
@@ -557,8 +550,6 @@ export type LocalSessionCommandReceipt = {
   deliverBy: number;
   held: boolean;
   cancelledAt?: number;
-  /** A matching native room-mention prompt completed and its canonical reply was posted. */
-  replyPosted?: boolean;
   providerMessageId: string | null;
   nativeHop?: 1 | 2;
 } & ({ actorUserId: string; actor?: never; invocationExpiresAt?: never }

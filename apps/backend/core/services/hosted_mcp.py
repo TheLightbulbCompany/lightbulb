@@ -233,16 +233,7 @@ async def receipt_for(auth: AuthContext, room_id: str, request_id: uuid.UUID) ->
     message = await messaging_repo.get_message(room_id, int(receipt["messageSeq"]))
     if message is None or message.get("via") != "lightbulb_mcp" or message.get("actorUserId") != auth.user_id:
         return {"state": "not_found"}
-    public = messaging.canonical_message(message).model_dump(mode="json", by_alias=True)
-    for send in public.get("sessionSends", []):
-        if send.get("requestId"):
-            try:
-                command = await local_sessions.get_command(auth, None, send["sessionId"], send["requestId"])
-                send["state"] = command.state
-            except messaging.ApiProblem:
-                # The room message remains readable even if this session stopped sharing.
-                pass
-    return {"state": "posted", "message": public}
+    return {"state": "posted", "message": messaging.canonical_message(message).model_dump(mode="json", by_alias=True)}
 
 
 @mcp.tool()
@@ -253,7 +244,7 @@ async def find_rooms(query: str = "", limit: int = 30) -> dict:
 
 @mcp.tool()
 async def find_sessions(query: str = "", limit: int = 30) -> dict:
-    """Find shared coding sessions by readable title, provider or folder; use sessionId to target one."""
+    """Find shared coding sessions by readable title, provider or folder; use sessionId to reference one in send_message."""
     return await sessions_for(_caller(), query, limit)
 
 
@@ -286,7 +277,7 @@ async def send_message(
     reply_to_message_id: uuid.UUID | None = None,
     mention_ids: list[str] | None = None,
 ) -> dict:
-    """Send as this client on the signed-in person's behalf; optionally reply in a thread or address room members and a session."""
+    """Send as this client on the signed-in person's behalf; optionally reply in a thread, address room members, or reference a session (session_id is a link: the session is not messaged)."""
     auth = _caller(WRITE_SCOPE)
     slug, client = client_identity(get_access_token().client_id)
     room = await messaging.get_room(auth, room_id)
@@ -324,7 +315,6 @@ async def send_message(
         "messageId": str(message.message_id),
         "messageSeq": message.message_seq,
         "state": "posted",
-        "sessionSends": [send.model_dump(mode="json", by_alias=True) for send in message.session_sends],
     }
 
 

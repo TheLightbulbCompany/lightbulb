@@ -40,7 +40,11 @@ def _authed_env(chaos_ddb):
         app.dependency_overrides.pop(get_current_user, None)
 
 
-@schema.parametrize()
+# Narrowed at parametrize time, not by a skip inside the test: schemathesis generates its
+# Hypothesis coverage cases for every parametrized operation DURING COLLECTION, so the old
+# whole-schema parametrize spent ~16 min of every Backend CI run building cases for ~567
+# operations this test then skipped (measured 2026-10-03: 33-55 min of collection per run).
+@schema.include(name=sorted(ALLOWLIST)).parametrize()
 @settings(
     max_examples=20,
     deadline=None,
@@ -48,6 +52,7 @@ def _authed_env(chaos_ddb):
 )
 @pytest.mark.chaos
 def test_contract_authed_slice(case, _authed_env):
+    # The include() above is the filter; this guard only catches an over-broad match.
     if case.operation.label not in ALLOWLIST:
         pytest.skip("not in authed deep-slice allowlist")
     case.call_and_validate(checks=[not_a_server_error])

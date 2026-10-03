@@ -23,8 +23,6 @@ from tests.unit.services import test_local_sessions as registry_tests
 from tests.unit.services.test_local_sessions import ALICE, BOB, CLI, MAC, OTHER_ROOM, OWNER, ROOM, command
 
 db = registry_tests.db
-ORIGIN_MESSAGE_ID = "33333333-3333-4333-8333-333333333333"
-ORIGIN_ROOT_ID = "44444444-4444-4444-8444-444444444444"
 # The desktop's Rust tests assert the same documents; Rust-versus-Python skew has cost a prod outage.
 FIXTURES = Path(__file__).resolve().parents[5] / "packages" / "shared" / "fixtures" / "local-session-frames"
 
@@ -181,601 +179,6 @@ async def test_start_id_arrives_late_belongs_only_to_owner_and_one_generation(tr
     assert service._session_public(await repo.get_session(OWNER, sid), ALICE.user_id).start_id is None
 
 
-def _mention_outcome(sid, request_id, outcome="applied", provider_id="provider-1", held=False):
-    return {
-        "type": "local.session.receipt",
-        "sessionId": sid,
-        "generation": "generation-1",
-        "requestId": request_id,
-        "outcome": outcome,
-        "providerMessageId": provider_id if outcome == "applied" else None,
-        "held": held,
-    }
-
-
-def _reply_events(sid, provider_id="provider-1", text="All done."):
-    return {
-        "type": "local.session.events",
-        "sessionId": sid,
-        "generation": "generation-1",
-        "batchId": "reply-batch",
-        "afterSeq": 0,
-        "events": [
-            {"kind": "text", "role": "user", "text": "the prompt", "itemId": provider_id},
-            {"kind": "text", "role": "assistant", "text": text, "itemId": "assistant-1"},
-            {"kind": "lifecycle", "role": "system", "text": "", "lifecycle": "turn_end", "itemId": "turn-1"},
-        ],
-    }
-
-
-def test_codex_reply_prompt_prefers_exact_request_id_and_preserves_legacy_fallback():
-    module = importlib.import_module("core.services.local_session_relay")
-    event = service.LocalSessionEventBody(kind="text", role="user", text="prompt", origin_request_id="mention-1")
-    assert event.model_dump(by_alias=True)["originRequestId"] == "mention-1"
-    pointer = {"provider": "codex", "requestId": "mention-1", "providerMessageId": "queue-1"}
-    assert module._matches_reply_prompt({"role": "user", "itemId": "native-1", "originRequestId": "mention-1"}, pointer)
-    assert not module._matches_reply_prompt(
-        {"role": "user", "itemId": "queue-1", "originRequestId": "other-mention"}, pointer
-    )
-    assert module._matches_reply_prompt({"role": "user", "itemId": "queue-1"}, pointer)
-    assert not module._matches_reply_prompt({"role": "user", "itemId": "native-1"}, pointer)
-    assert module._matches_reply_prompt(
-        {"role": "user", "itemId": "native-claude"},
-        {"provider": "claude", "requestId": "mention-1", "providerMessageId": "native-claude"},
-    )
-
-
-async def _upload_reply_events(transport, frame):
-    # These cases exercise the heartbeat/Ended retry paths; leave the new
-    # immediate turn-end worker to its own case rather than racing it here.
-    module = importlib.import_module("core.services.local_session_relay")
-    with patch.object(module, "_spawn"):
-        await relay(transport).handle_message("conn-1", frame)
-
-
-async def _applied_mention(transport, outcome="applied", *, thread=False, sender=ALICE, held=False):
-    sid = await start(transport)
-    await relay(transport).handle_message("conn-1", heartbeat(sid, roomReplyRequestId=True))
-    table = messaging_repo._table()
-    if sender != ALICE:
-        table.update_item(
-            Key={"pk": repo.session_pk(OWNER, sid), "sk": "META"},
-            UpdateExpression="SET teamControl = :yes",
-            ExpressionAttributeValues={":yes": True},
-        )
-    if thread:
-        table.put_item(
-            Item={
-                "pk": messaging_repo.room_pk(ROOM),
-                "sk": messaging_repo.msg_sk(1),
-                "messageId": ORIGIN_ROOT_ID,
-                "roomId": ROOM,
-                "messageSeq": 1,
-                "threadRootMessageId": None,
-                "author": {"kind": "human", "id": sender.user_id},
-            }
-        )
-    origin_seq = 2 if thread else 1
-    table.put_item(
-        Item={
-            "pk": messaging_repo.room_pk(ROOM),
-            "sk": messaging_repo.msg_sk(origin_seq),
-            "messageId": ORIGIN_MESSAGE_ID,
-            "roomId": ROOM,
-            "messageSeq": origin_seq,
-            "threadRootMessageId": ORIGIN_ROOT_ID if thread else None,
-            **({"threadRootSeq": 1} if thread else {}),
-            "author": {"kind": "human", "id": sender.user_id},
-        }
-    )
-    table.update_item(
-        Key={"pk": messaging_repo.room_pk(ROOM), "sk": "META"},
-        UpdateExpression="SET lastSeq = :seq, topCount = :one",
-        ExpressionAttributeValues={":seq": origin_seq, ":one": 1},
-    )
-    receipt = await service.submit_command(
-        sender,
-        None,
-        sid,
-        command(service, requestId="mention-1"),
-        origin_room_id=ROOM,
-        origin_message_id=ORIGIN_MESSAGE_ID,
-    )
-    # This helper tests reply wiring, not the five-second dispatch claim. A loaded
-    # CI runner can exhaust that claim before this fixture sends its fake receipt.
-    with patch("core.services.local_session_relay.CLAIM_SECONDS", 30):
-        await relay(transport).dispatch_session(OWNER, sid)
-    assert (await repo.get_command(OWNER, sid, receipt.request_id))["state"] == "dispatched"
-    await relay(transport).handle_message("conn-1", _mention_outcome(sid, receipt.request_id, outcome, held=held))
-    return sid, receipt
-
-
-@pytest.mark.asyncio
-async def test_codex_room_mention_requires_new_desktop_reply_correlation(transport):
-    sid = await start(transport)
-    with pytest.raises(ApiProblem) as error:
-        await service.submit_command(
-            ALICE,
-            None,
-            sid,
-            command(service, requestId="old-desktop-mention"),
-            origin_room_id=ROOM,
-            origin_message_id=ORIGIN_MESSAGE_ID,
-        )
-    assert error.value.error.code == "LOCAL_SESSION_UNSUPPORTED"
-
-
-@pytest.mark.asyncio
-async def test_queued_codex_mention_is_rejected_if_reconnected_desktop_loses_reply_correlation(transport):
-    sid = await start(transport)
-    await relay(transport).handle_message("conn-1", heartbeat(sid, roomReplyRequestId=True))
-    receipt = await service.submit_command(
-        ALICE,
-        None,
-        sid,
-        command(service, requestId="mention-before-reconnect"),
-        origin_room_id=ROOM,
-        origin_message_id=ORIGIN_MESSAGE_ID,
-    )
-    connect(transport, "conn-2", "2000")
-    await relay(transport).handle_message("conn-2", registration())
-    assert (await repo.get_command(OWNER, sid, receipt.request_id))["state"] == "rejected"
-    assert not any(body["type"] == "local.session.command" for _, body in transport[3])
-
-
-@pytest.mark.asyncio
-async def test_applied_mention_receipt_writes_pointer_once(transport):
-    sid, receipt = await _applied_mention(transport)
-    pointers = await repo.list_replyto(OWNER, sid)
-    assert len(pointers) == 1
-    pointer = pointers[0]
-    assert pointer["roomId"] == ROOM and pointer["messageId"] == ORIGIN_MESSAGE_ID
-    assert pointer["requestId"] == receipt.request_id
-    assert pointer["providerMessageId"] == "provider-1"
-    await relay(transport).handle_message("conn-1", _mention_outcome(sid, receipt.request_id))
-    assert await repo.list_replyto(OWNER, sid) == pointers  # replay does not re-arm anything
-
-
-@pytest.mark.asyncio
-async def test_rejected_mention_receipt_writes_no_reply_pointer(transport):
-    sid, _ = await _applied_mention(transport, outcome="rejected")
-    assert await repo.list_replyto(OWNER, sid) == []
-
-
-@pytest.mark.asyncio
-async def test_busy_to_idle_posts_one_silent_session_reply(transport):
-    sid, _ = await _applied_mention(transport)
-    await _upload_reply_events(transport, _reply_events(sid))
-    await relay(transport).handle_message(
-        "conn-1", heartbeat(sid, status="idle", activeTurnId=None, lastAssistantMessage="All done.")
-    )
-    module = importlib.import_module("core.services.local_session_relay")
-    await asyncio.gather(*module._tasks)
-    messages = await messaging_repo._query(messaging_repo.room_pk(ROOM), begins_with="MSG#")
-    replies = [m for m in messages if m["author"]["kind"] == "system"]
-    assert len(replies) == 1
-    assert replies[0]["silent"] is True and replies[0]["dispatchTargets"] == []
-    assert replies[0]["mentions"] == []
-    assert "All done." in replies[0]["text"] and f"session={sid}" in replies[0]["text"]
-    await relay(transport).handle_message("conn-1", heartbeat(sid, status="idle", activeTurnId=None))
-    assert await repo.list_replyto(OWNER, sid) == []
-
-
-@pytest.mark.asyncio
-async def test_room_reply_includes_every_block_of_the_final_native_answer(transport):
-    sid, _ = await _applied_mention(transport)
-    batch = _reply_events(sid, text="First block. " * 35 + "https://exam")
-    batch["events"].insert(1, {"kind": "text", "role": "assistant", "text": "Working note.", "itemId": "commentary"})
-    batch["events"].insert(-1, {"kind": "text", "role": "assistant", "text": "ple.com", "itemId": "assistant-1"})
-    await _upload_reply_events(transport, batch)
-    await relay(transport).handle_message("conn-1", heartbeat(sid, status="idle", activeTurnId=None))
-    module = importlib.import_module("core.services.local_session_relay")
-    await asyncio.gather(*module._tasks)
-    messages = await messaging_repo._query(messaging_repo.room_pk(ROOM), begins_with="MSG#")
-    reply = next(message for message in messages if message["author"]["kind"] == "system")
-    assert reply["text"].count("First block.") == 35
-    assert "https://example.com" in reply["text"]
-    assert "Working note." not in reply["text"]
-    assert reply["threadRootMessageId"] == ORIGIN_MESSAGE_ID
-    assert reply["replyToMessageId"] == ORIGIN_MESSAGE_ID
-    assert reply["threadRootSeq"] == 1
-
-
-@pytest.mark.asyncio
-async def test_final_transcript_batch_posts_reply_before_an_idle_heartbeat(transport):
-    sid, _ = await _applied_mention(transport)
-    await relay(transport).handle_message("conn-1", _reply_events(sid))
-    module = importlib.import_module("core.services.local_session_relay")
-    await asyncio.gather(*module._tasks)
-    messages = await messaging_repo._query(messaging_repo.room_pk(ROOM), begins_with="MSG#")
-    assert len([m for m in messages if m["author"]["kind"] == "system"]) == 1
-    assert await repo.list_replyto(OWNER, sid) == []
-
-
-@pytest.mark.asyncio
-async def test_codex_room_reply_uses_request_id_across_distinct_queue_and_native_ids(transport, db):
-    sid, receipt = await _applied_mention(transport, held=True)
-    db[0].update_item(
-        Key={"pk": repo.session_pk(OWNER, sid), "sk": f"REPLY#{receipt.request_id}"},
-        UpdateExpression="SET provider = :provider",
-        ExpressionAttributeValues={":provider": "codex"},
-    )
-    batch = _reply_events(sid, provider_id="native-user", text="The right answer.")
-    batch["events"] = [
-        {
-            "kind": "text",
-            "role": "user",
-            "text": "same queue id",
-            "itemId": "provider-1",
-            "originRequestId": "another-request",
-        },
-        {"kind": "text", "role": "assistant", "text": "The wrong answer."},
-        {"kind": "lifecycle", "role": "system", "text": "", "lifecycle": "turn_end"},
-        {**batch["events"][0], "originRequestId": receipt.request_id},
-        *batch["events"][1:],
-    ]
-    await relay(transport).handle_message("conn-1", batch)
-    module = importlib.import_module("core.services.local_session_relay")
-    await asyncio.gather(*module._tasks)
-    messages = await messaging_repo._query(messaging_repo.room_pk(ROOM), begins_with="MSG#")
-    replies = [m for m in messages if m["author"]["kind"] == "system"]
-    assert len(replies) == 1 and "The right answer." in replies[0]["text"]
-    assert "The wrong answer." not in replies[0]["text"]
-    assert await repo.list_replyto(OWNER, sid) == []
-    completed = await service.get_command(ALICE, None, sid, receipt.request_id)
-    assert completed.reply_posted is True and completed.held is True
-
-
-@pytest.mark.asyncio
-async def test_thread_mention_reply_stays_in_its_originating_thread(transport):
-    sid, _ = await _applied_mention(transport, thread=True)
-    await _upload_reply_events(transport, _reply_events(sid, text="Thread answer."))
-    await relay(transport).handle_message(
-        "conn-1", heartbeat(sid, status="idle", activeTurnId=None, lastAssistantMessage="Thread answer.")
-    )
-    module = importlib.import_module("core.services.local_session_relay")
-    await asyncio.gather(*module._tasks)
-    messages = await messaging_repo._query(messaging_repo.room_pk(ROOM), begins_with="MSG#")
-    reply = next(m for m in messages if m["author"]["kind"] == "system")
-    assert reply["threadRootMessageId"] == ORIGIN_ROOT_ID
-    assert reply["replyToMessageId"] == ORIGIN_MESSAGE_ID
-    assert reply["threadRootSeq"] == 1
-    assert reply["author"]["id"] == sid
-    assert reply["author"]["displayName"].startswith("Codex · ")
-    assert reply["text"].startswith("Thread answer.")
-
-
-@pytest.mark.asyncio
-async def test_exact_mention_reply_marks_the_held_receipt_complete_idempotently(transport):
-    sid, receipt = await _applied_mention(transport, held=True)
-    stored = await repo.get_command(OWNER, sid, receipt.request_id)
-    assert stored["held"] is True
-    await _upload_reply_events(transport, _reply_events(sid, text="Native answer."))
-    module = importlib.import_module("core.services.local_session_relay")
-
-    await module.post_session_replies(await repo.get_session(OWNER, sid))
-    completed = await service.get_command(ALICE, None, sid, receipt.request_id)
-    assert completed.held is True
-    assert completed.reply_posted is True
-    assert await repo.list_replyto(OWNER, sid) == []
-
-    # A replay after pointer cleanup cannot duplicate the canonical room reply.
-    await module.post_session_replies(await repo.get_session(OWNER, sid))
-    messages = await messaging_repo._query(messaging_repo.room_pk(ROOM), begins_with="MSG#")
-    assert len([message for message in messages if message["author"]["kind"] == "system"]) == 1
-
-
-@pytest.mark.asyncio
-async def test_reply_marker_failure_keeps_pointer_for_idempotent_retry(transport, monkeypatch):
-    sid, receipt = await _applied_mention(transport, held=True)
-    await _upload_reply_events(transport, _reply_events(sid, text="Retry answer."))
-    original = repo.replace_command
-    failed = False
-
-    async def fail_once(previous, updated, *, checks=(), extra=()):
-        nonlocal failed
-        if updated.get("replyPosted") and not failed:
-            failed = True
-            raise RuntimeError("simulated marker write failure")
-        return await original(previous, updated, checks=checks, extra=extra)
-
-    monkeypatch.setattr(repo, "replace_command", fail_once)
-    module = importlib.import_module("core.services.local_session_relay")
-    row = await repo.get_session(OWNER, sid)
-    await module.post_session_replies(row)
-    assert await repo.list_replyto(OWNER, sid)
-    assert (await repo.get_command(OWNER, sid, receipt.request_id)).get("replyPosted") is not True
-
-    await module.post_session_replies(row)
-    completed = await service.get_command(ALICE, None, sid, receipt.request_id)
-    assert completed.reply_posted is True and completed.held is True
-    assert await repo.list_replyto(OWNER, sid) == []
-    messages = await messaging_repo._query(messaging_repo.room_pk(ROOM), begins_with="MSG#")
-    assert len([message for message in messages if message["author"]["kind"] == "system"]) == 1
-
-
-@pytest.mark.asyncio
-async def test_unmentioned_session_idle_heartbeat_posts_no_reply(transport):
-    sid = await start(transport)
-    await relay(transport).handle_message(
-        "conn-1", heartbeat(sid, status="idle", activeTurnId=None, lastAssistantMessage="Unrelated.")
-    )
-    module = importlib.import_module("core.services.local_session_relay")
-    await asyncio.gather(*module._tasks)
-    messages = await messaging_repo._query(messaging_repo.room_pk(ROOM), begins_with="MSG#")
-    assert not any(m["author"]["kind"] == "system" for m in messages)
-
-
-@pytest.mark.asyncio
-async def test_reply_is_suppressed_if_the_room_became_foreign(transport, db):
-    sid, _ = await _applied_mention(transport)
-    await _upload_reply_events(transport, _reply_events(sid, text="Private reply."))
-    db[0].put_item(
-        Item={
-            "pk": messaging_repo.room_pk(ROOM),
-            "sk": messaging_repo.member_sk("human", "outsider"),
-            "kind": "human",
-            "id": "outsider",
-            "homeOwnerId": "other-workspace",
-        }
-    )
-    await relay(transport).handle_message(
-        "conn-1", heartbeat(sid, status="idle", activeTurnId=None, lastAssistantMessage="Private reply.")
-    )
-    module = importlib.import_module("core.services.local_session_relay")
-    await asyncio.gather(*module._tasks)
-    messages = await messaging_repo._query(messaging_repo.room_pk(ROOM), begins_with="MSG#")
-    assert not any(m["author"]["kind"] == "system" for m in messages)
-
-
-@pytest.mark.asyncio
-async def test_room_join_after_access_check_cannot_receive_native_answer(transport, db, monkeypatch):
-    sid, _ = await _applied_mention(transport)
-    await _upload_reply_events(transport, _reply_events(sid, text="private answer " * 40))
-    original = messaging_repo.has_foreign_members
-
-    async def join_after_check(room_id, owner_id):
-        result = await original(room_id, owner_id)
-        db[0].put_item(
-            Item={
-                "pk": messaging_repo.room_pk(ROOM),
-                "sk": messaging_repo.member_sk("human", "outsider"),
-                "kind": "human",
-                "id": "outsider",
-                "homeOwnerId": "other-workspace",
-            }
-        )
-        db[0].update_item(
-            Key={"pk": messaging_repo.room_pk(ROOM), "sk": "META"},
-            UpdateExpression="ADD revision :one",
-            ExpressionAttributeValues={":one": 1},
-        )
-        return result
-
-    monkeypatch.setattr(messaging_repo, "has_foreign_members", join_after_check)
-    module = importlib.import_module("core.services.local_session_relay")
-    await module.post_session_replies(await repo.get_session(OWNER, sid))
-    messages = await messaging_repo._query(messaging_repo.room_pk(ROOM), begins_with="MSG#")
-    assert not any(m["author"]["kind"] == "system" for m in messages)
-    assert await repo.list_replyto(OWNER, sid) == []
-
-
-@pytest.mark.asyncio
-async def test_room_revision_race_rechecks_access_and_posts_once(transport, db, monkeypatch):
-    sid, _ = await _applied_mention(transport)
-    await _upload_reply_events(transport, _reply_events(sid, text="Full answer."))
-    original = messaging_repo.has_foreign_members
-    changed = False
-
-    async def change_room_revision(room_id, owner_id):
-        nonlocal changed
-        result = await original(room_id, owner_id)
-        if not changed:
-            changed = True
-            db[0].update_item(
-                Key={"pk": messaging_repo.room_pk(ROOM), "sk": "META"},
-                UpdateExpression="ADD revision :one",
-                ExpressionAttributeValues={":one": 1},
-            )
-        return result
-
-    monkeypatch.setattr(messaging_repo, "has_foreign_members", change_room_revision)
-    module = importlib.import_module("core.services.local_session_relay")
-    await module.post_session_replies(await repo.get_session(OWNER, sid))
-    messages = await messaging_repo._query(messaging_repo.room_pk(ROOM), begins_with="MSG#")
-    replies = [message for message in messages if message["author"]["kind"] == "system"]
-    assert len(replies) == 1
-    assert "Full answer." in replies[0]["text"]
-    assert await repo.list_replyto(OWNER, sid) == []
-
-
-@pytest.mark.asyncio
-async def test_teammate_owned_session_replies_when_sender_remains_in_room(transport, db):
-    sid, _ = await _applied_mention(transport, sender=BOB)
-    db[0].delete_item(Key={"pk": messaging_repo.room_pk(ROOM), "sk": messaging_repo.member_sk("human", ALICE.user_id)})
-    await _upload_reply_events(transport, _reply_events(sid))
-    await relay(transport).handle_message("conn-1", heartbeat(sid, status="idle", activeTurnId=None))
-    module = importlib.import_module("core.services.local_session_relay")
-    await asyncio.gather(*module._tasks)
-    messages = await messaging_repo._query(messaging_repo.room_pk(ROOM), begins_with="MSG#")
-    assert len([m for m in messages if m["author"]["kind"] == "system"]) == 1
-    assert await repo.list_replyto(OWNER, sid) == []
-
-
-@pytest.mark.asyncio
-async def test_two_queued_commands_reply_to_their_own_rooms(transport):
-    sid, _ = await _applied_mention(transport)
-    second_id = "55555555-5555-4555-8555-555555555555"
-    table = messaging_repo._table()
-    table.put_item(
-        Item={
-            "pk": messaging_repo.room_pk(OTHER_ROOM),
-            "sk": messaging_repo.msg_sk(1),
-            "messageId": second_id,
-            "roomId": OTHER_ROOM,
-            "messageSeq": 1,
-            "threadRootMessageId": None,
-            "author": {"kind": "human", "id": ALICE.user_id},
-        }
-    )
-    table.update_item(
-        Key={"pk": messaging_repo.room_pk(OTHER_ROOM), "sk": "META"},
-        UpdateExpression="SET lastSeq = :seq, topCount = :seq",
-        ExpressionAttributeValues={":seq": 1},
-    )
-    second = await service.submit_command(
-        ALICE,
-        None,
-        sid,
-        command(service, requestId="mention-2"),
-        origin_room_id=OTHER_ROOM,
-        origin_message_id=second_id,
-    )
-    await relay(transport).dispatch_session(OWNER, sid)
-    await relay(transport).handle_message("conn-1", _mention_outcome(sid, second.request_id, provider_id="provider-2"))
-    assert len(await repo.list_replyto(OWNER, sid)) == 2
-    batch = _reply_events(sid)
-    batch["events"].extend(
-        [
-            {"kind": "text", "role": "user", "text": "second prompt", "itemId": "provider-2"},
-            {"kind": "text", "role": "assistant", "text": "Second answer.", "itemId": "assistant-2"},
-            {"kind": "lifecycle", "role": "system", "text": "", "lifecycle": "turn_end", "itemId": "turn-2"},
-        ]
-    )
-    await _upload_reply_events(transport, batch)
-    await relay(transport).handle_message("conn-1", heartbeat(sid, status="idle", activeTurnId=None))
-    module = importlib.import_module("core.services.local_session_relay")
-    await asyncio.gather(*module._tasks)
-    first_room = await messaging_repo._query(messaging_repo.room_pk(ROOM), begins_with="MSG#")
-    second_room = await messaging_repo._query(messaging_repo.room_pk(OTHER_ROOM), begins_with="MSG#")
-    assert [m["text"] for m in first_room if m["author"]["kind"] == "system"][0].find("All done.") >= 0
-    assert [m["text"] for m in second_room if m["author"]["kind"] == "system"][0].find("Second answer.") >= 0
-    assert await repo.list_replyto(OWNER, sid) == []
-
-
-@pytest.mark.asyncio
-async def test_two_idle_workers_post_one_line_for_one_command(transport):
-    sid, _ = await _applied_mention(transport)
-    await _upload_reply_events(transport, _reply_events(sid))
-    module = importlib.import_module("core.services.local_session_relay")
-    row = await repo.get_session(OWNER, sid)
-    # Moto can expose an IDEMP row before its paired MSG row during concurrent
-    # TransactWrite calls. DynamoDB commits both atomically; serialize the fake
-    # transaction and strong read while keeping the two workers concurrent.
-    atomic = asyncio.Lock()
-    real_get, real_transact = messaging_repo._get, messaging_repo._transact
-
-    async def locked_get(*args, **kwargs):
-        async with atomic:
-            return await real_get(*args, **kwargs)
-
-    async def locked_transact(*args, **kwargs):
-        async with atomic:
-            return await real_transact(*args, **kwargs)
-
-    with patch.object(messaging_repo, "_get", locked_get), patch.object(messaging_repo, "_transact", locked_transact):
-        await asyncio.gather(module.post_session_replies(row), module.post_session_replies(row))
-    messages = await messaging_repo._query(messaging_repo.room_pk(ROOM), begins_with="MSG#")
-    assert len([m for m in messages if m["author"]["kind"] == "system"]) == 1
-    assert await repo.list_replyto(OWNER, sid) == []
-
-
-@pytest.mark.asyncio
-async def test_idle_heartbeat_retries_after_room_write_failure(transport, monkeypatch):
-    sid, _ = await _applied_mention(transport)
-    await _upload_reply_events(transport, _reply_events(sid))
-    real = messaging_repo.create_message
-    attempts = 0
-
-    async def flaky(**kwargs):
-        nonlocal attempts
-        attempts += 1
-        if attempts == 1:
-            await real(**kwargs)
-            raise RuntimeError("lost room write response")
-        return await real(**kwargs)
-
-    monkeypatch.setattr(messaging_repo, "create_message", flaky)
-    module = importlib.import_module("core.services.local_session_relay")
-    await relay(transport).handle_message("conn-1", heartbeat(sid, status="idle", activeTurnId=None))
-    await asyncio.gather(*module._tasks)
-    assert len(await repo.list_replyto(OWNER, sid)) == 1
-    await relay(transport).handle_message("conn-1", heartbeat(sid, status="idle", activeTurnId=None))
-    await asyncio.gather(*module._tasks)
-    assert attempts == 2 and await repo.list_replyto(OWNER, sid) == []
-    messages = await messaging_repo._query(messaging_repo.room_pk(ROOM), begins_with="MSG#")
-    assert len([m for m in messages if m["author"]["kind"] == "system"]) == 1
-
-
-@pytest.mark.asyncio
-async def test_idle_heartbeat_waits_for_transcript_then_retries(transport):
-    sid, _ = await _applied_mention(transport)
-    module = importlib.import_module("core.services.local_session_relay")
-    await relay(transport).handle_message("conn-1", heartbeat(sid, status="idle", activeTurnId=None))
-    await asyncio.gather(*module._tasks)
-    assert len(await repo.list_replyto(OWNER, sid)) == 1
-    await _upload_reply_events(transport, _reply_events(sid))
-    await relay(transport).handle_message("conn-1", heartbeat(sid, status="idle", activeTurnId=None))
-    await asyncio.gather(*module._tasks)
-    assert await repo.list_replyto(OWNER, sid) == []
-
-
-@pytest.mark.asyncio
-async def test_ended_session_flushes_a_completed_reply_without_another_heartbeat(transport):
-    sid, _ = await _applied_mention(transport)
-    module = importlib.import_module("core.services.local_session_relay")
-    with patch.object(module, "_spawn"):
-        await relay(transport).handle_message("conn-1", _reply_events(sid))
-    await relay(transport).handle_message(
-        "conn-1",
-        {
-            "type": "local.session.ended",
-            "sessionId": sid,
-            "generation": "generation-1",
-            "reason": "exited",
-            "endedAt": int(time.time()),
-        },
-    )
-    await asyncio.gather(*module._tasks)
-    messages = await messaging_repo._query(messaging_repo.room_pk(ROOM), begins_with="MSG#")
-    assert len([m for m in messages if m["author"]["kind"] == "system"]) == 1
-    assert await repo.list_replyto(OWNER, sid) == []
-
-
-@pytest.mark.asyncio
-async def test_replayed_ended_ack_retries_a_lost_reply_write(transport, monkeypatch):
-    sid, _ = await _applied_mention(transport)
-    await _upload_reply_events(transport, _reply_events(sid))
-    real = messaging_repo.create_message
-    attempts = 0
-
-    async def flaky(**kwargs):
-        nonlocal attempts
-        attempts += 1
-        result = await real(**kwargs)
-        if attempts == 1:
-            raise RuntimeError("lost response")
-        return result
-
-    monkeypatch.setattr(messaging_repo, "create_message", flaky)
-    frame = {
-        "type": "local.session.ended",
-        "sessionId": sid,
-        "generation": "generation-1",
-        "reason": "exited",
-        "endedAt": int(time.time()),
-    }
-    module = importlib.import_module("core.services.local_session_relay")
-    await relay(transport).handle_message("conn-1", frame)
-    await asyncio.gather(*module._tasks)
-    assert len(await repo.list_replyto(OWNER, sid)) == 1
-    await relay(transport).handle_message("conn-1", frame)
-    await asyncio.gather(*module._tasks)
-    messages = await messaging_repo._query(messaging_repo.room_pk(ROOM), begins_with="MSG#")
-    assert attempts == 2 and len([m for m in messages if m["author"]["kind"] == "system"]) == 1
-    assert await repo.list_replyto(OWNER, sid) == []
-
-
 @pytest.mark.asyncio
 @pytest.mark.parametrize("change", ["none", "member", "expiry"])
 async def test_agent_dispatch_uses_typed_author_and_fences_revocation_or_expiry(transport, db, monkeypatch, change):
@@ -838,23 +241,6 @@ async def test_dispatch_labels_the_sender_with_room_handle_and_name(transport, d
     expected = next(m for m in with_human_handles(await messaging_repo.list_members(ROOM)) if m["id"] == BOB.user_id)
     assert commands[0]["actor"] == {"kind": "human", "handle": expected["mentionHandle"], "displayName": "Bob Example"}
     assert commands[0]["command"]["actorUserId"] == BOB.user_id
-    assert "replyPosted" not in commands[0]["command"]
-
-
-@pytest.mark.asyncio
-async def test_room_mention_labels_sender_without_making_command_room_scoped(transport, db):
-    db[0].update_item(
-        Key={"pk": messaging_repo.room_pk(ROOM), "sk": messaging_repo.member_sk("human", BOB.user_id)},
-        UpdateExpression="SET displayName = :name",
-        ExpressionAttributeValues={":name": "Bob Example"},
-    )
-    await _applied_mention(transport, sender=BOB)
-    commands = [body for _, body in transport[3] if body["type"] == "local.session.command"]
-    assert len(commands) == 1
-    assert commands[0]["command"]["roomId"] == ""
-    assert commands[0]["roomMention"] is True
-    assert commands[0]["actor"] == {"kind": "human", "handle": "bob-example", "displayName": "Bob Example"}
-    assert "replyPosted" not in commands[0]["command"]
 
 
 @pytest.mark.asyncio
@@ -1246,15 +632,13 @@ async def test_offline_send_expires_on_receipt_read_without_a_reconnect(transpor
 
 
 @pytest.mark.asyncio
-async def test_offline_queue_excludes_room_mentions_and_live_controls(transport):
+async def test_offline_queue_excludes_native_sends_and_live_controls(transport):
     sid = await start(transport)
     messaging_repo._table().update_item(
         Key={"pk": repo.session_pk(OWNER, sid), "sk": "META"},
         UpdateExpression="SET onlineUntil = :past",
         ExpressionAttributeValues={":past": int(time.time()) - 1},
     )
-    with pytest.raises(ApiProblem, match="offline"):
-        await service.submit_command(ALICE, None, sid, command(service), origin_room_id=ROOM)
     with pytest.raises(ApiProblem, match="offline"):
         await service.submit_command(
             ALICE,
@@ -2531,3 +1915,41 @@ async def test_subagent_events_round_trip_and_a_long_background_end_notifies_onc
     with patch("time.time", return_value=10500):
         feed = await activity.list_activity(ALICE, cursor=None, limit=30, teams_ctx=teams)
     assert len([i for i in feed.items if i.kind == "session"]) == 3
+
+
+@pytest.mark.asyncio
+async def test_same_mac_native_session_send_names_each_item_once_and_dispatches(transport, monkeypatch):
+    source = await start(transport)
+    target = (await relay(transport).handle_message("conn-1", registration(nativeConversationId="thread-2")))[
+        "sessionId"
+    ]
+    now = time.time()
+    monkeypatch.setattr(time, "time", lambda: now)
+    sent = await service.submit_command(
+        ALICE,
+        None,
+        target,
+        command(service),
+        source_session_id=source,
+        source_generation="generation-1",
+        source_turn_id="turn-1",
+        native_hop=1,
+        source_pairing=(ALICE.user_id, MAC),
+    )
+    transactions, transact = [], messaging_repo._transact
+
+    async def recorded(items):
+        transactions.append(items)
+        await transact(items)
+
+    monkeypatch.setattr(messaging_repo, "_transact", recorded)
+    await relay(transport).dispatch_session(OWNER, target)
+    assert transactions
+    for items in transactions:
+        keys = [
+            (op["TableName"], json.dumps(op.get("Key") or {k: op["Item"][k] for k in ("pk", "sk")}, sort_keys=True))
+            for item in items
+            for op in item.values()
+        ]
+        assert len(keys) == len(set(keys))
+    assert (await repo.get_command(OWNER, target, sent.request_id))["state"] == "dispatched"

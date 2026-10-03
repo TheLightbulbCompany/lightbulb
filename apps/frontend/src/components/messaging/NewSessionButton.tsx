@@ -10,6 +10,7 @@ import { Button } from "@/components/ui/button";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { useApi } from "@/lib/api";
 import { SessionToolIcon } from "./SessionToolIcon";
+import { heldLabel, openHeldSession, startLocalTerminal, useHeldSessions, useLocalMac } from "./localTerminal";
 
 type Option = { id: string; label: string };
 type Tool = { id: "claude" | "codex"; label: string; modeLabel: string; models: Option[]; modes: Option[]; efforts?: Option[]; defaultMode?: string; defaultEffort?: string | null };
@@ -68,7 +69,8 @@ const shortPath = (path: string) => path.replace(/^\/Users\/[^/]+(?=\/|$)/, "~")
 /** The sidebar's New session button. Hidden unless desktop execution is on for this workspace. */
 export function NewSessionButton({ onOpen }: { onOpen: () => void }) {
   const { data: targets } = useTargets();
-  if (!targets?.enabled) return null;
+  const localMac = useLocalMac();
+  if (!targets?.enabled && !localMac) return null;
   return <Button variant="ghost" size="icon-sm" aria-label="New session" onClick={onOpen}><SquareTerminal aria-hidden="true" /></Button>;
 }
 
@@ -105,13 +107,18 @@ export function NewSessionView({ sessions, onEvent, onOpenSession, onClose }: {
     } catch { /* Browser storage may be disabled; the current view still holds the start. */ }
   }, [scope, pending]);
 
+  // Inside the desktop app this Mac answers for itself and the session opens in its own window.
+  const localMac = useLocalMac();
+  const held = useHeldSessions();
+  const [reopenError, setReopenError] = useState<string | null>(null);
   const { data: targets, mutate: refreshTargets } = useTargets();
   useEffect(() => { void refreshTargets(); }, [refreshTargets]);
-  const macs = targets?.enabled ? targets.devices : null;
+  const macs = !localMac && targets?.enabled ? targets.devices : null;
   const mac = macs?.find((m) => m.deviceId === deviceId) ?? macs?.[0];
-  const { data: options, error: optionsError } = useSWR(mac ? ["desktop-session-options", mac.deviceId, mac.generation] : null,
+  const { data: remoteOptions, error: optionsError } = useSWR(!localMac && mac ? ["desktop-session-options", mac.deviceId, mac.generation] : null,
     () => api.get(`/desktop-sessions/targets/${encodeURIComponent(mac!.deviceId)}/options?generation=${encodeURIComponent(mac!.generation)}`) as Promise<MacOptions>,
     { revalidateOnFocus: false });
+  const options: MacOptions | undefined = localMac ?? remoteOptions;
   // The Mac's own name (it reports it); the target list only knows "Your Mac".
   const macName = options?.name || mac?.name || "your Mac";
   const selected = options?.tools.find((t) => t.id === tool) ?? options?.tools[0];
@@ -164,7 +171,10 @@ export function NewSessionView({ sessions, onEvent, onOpenSession, onClose }: {
 
   const busy = pending !== null && pending.phase !== "failed";
   const tooLong = new TextEncoder().encode(prompt).length > MAX_PROMPT_BYTES;
-  const blocked = !targets ? null
+  const blocked = localMac
+    ? (localMac.tools.length === 0 ? `Install Claude Code or Codex on ${macName} first.`
+      : folders.length === 0 ? "Approve a folder in the desktop app first: Settings → File access." : null)
+    : !targets ? null
     : !macs ? "Starting sessions from Lightbulb is not on for this workspace."
     : !mac ? "No Mac is ready. Open the Lightbulb desktop app on your Mac and sign in."
     : optionsError ? `Can't reach ${macName}. Is the Lightbulb app open on it?`
@@ -175,15 +185,29 @@ export function NewSessionView({ sessions, onEvent, onOpenSession, onClose }: {
     : folders.length === 0 ? "Approve a folder in the desktop app first: Settings → File access."
     : null;
   const ready = !!options && !!selected && !blocked;
-  const canStart = !!scope && !!mac && !!options?.sharing && !!selected && !!folderPath && !blocked && !busy && !tooLong && !!prompt.trim();
+  const canStart = !!scope && (!!localMac || (!!mac && !!options?.sharing)) && !!selected && !!folderPath && !blocked && !busy && !tooLong && !!prompt.trim();
 
   async function start() {
-    if (!canStart || !scope || !mac || !selected) return;
-    writeLastUsed(userId, { deviceId: mac.deviceId, tool: selected.id, folders: [folderPath, ...recent.filter((f) => f !== folderPath)].slice(0, 20) });
+    if (!canStart || !scope || !selected || (!localMac && !mac)) return;
+    writeLastUsed(userId, { deviceId: mac?.deviceId, tool: selected.id, folders: [folderPath, ...recent.filter((f) => f !== folderPath)].slice(0, 20) });
     // Minted here so the Mac's answer can never arrive before we know what to listen for.
     const startId = crypto.randomUUID();
     const start = { startId, scope, startedAt: Date.now() };
     setPending({ ...start, phase: "starting" });
+    if (localMac) {
+      try {
+        const { linked } = await startLocalTerminal({ startId, tool: selected.id, folder: folderPath,
+          model: modelId || null, mode: modeId || null, effort: effortId || null, prompt });
+        // Linked: wait here until it reports in, then become it. Not linked (sharing off): it
+        // lives only in its window.
+        if (linked) setPending({ ...start, phase: "opened" });
+        else { setPending(null); onClose(); }
+      } catch (error) {
+        setPending({ ...start, phase: "failed", error: error instanceof Error ? error.message : String(error) });
+      }
+      return;
+    }
+    if (!mac) return;
     try {
       await api.post("/desktop-sessions/start?source=web", {
         startId, deviceId: mac.deviceId, generation: mac.generation, tool: selected.id, folder: folderPath,
@@ -196,19 +220,30 @@ export function NewSessionView({ sessions, onEvent, onOpenSession, onClose }: {
     }
   }
 
-  const where = mac ? `${macName}${folderPath ? ` · ${shortPath(folderPath)}` : ""}` : "";
+  const where = mac || localMac ? `${macName}${folderPath ? ` · ${shortPath(folderPath)}` : ""}` : "";
   return <section className="room-panel room-session-focus" aria-label="New session">
     <div className="room-session-main">
       <header className="room-context-header">
         <h3 className="font-semibold">New session</h3>
         <Button variant="ghost" size="icon-sm" className="ml-auto" aria-label="Close new session" onClick={onClose}><X aria-hidden="true" /></Button>
       </header>
+      {held.length > 0 && <div className="new-session-body text-sm" role="group" aria-label="Running on this Mac">
+        <p className="text-muted-foreground">Running on this Mac</p>
+        {held.map((h) => <Button key={h.id} variant="outline" size="sm" className="justify-start"
+          onClick={() => { setReopenError(null); openHeldSession(h.id).catch((e) => setReopenError(e instanceof Error ? e.message : String(e))); }}>
+          Open {heldLabel(h)}
+        </Button>)}
+        {reopenError && <p role="alert" className="text-err">{reopenError}</p>}
+      </div>}
       <div className="new-session-body text-sm text-muted-foreground">
         {blocked === "sharing"
           ? <p role="status">Session sharing is off on {macName}. Turn it on in <Link className="underline underline-offset-4" href="/settings">Settings → Native terminal sessions</Link>.</p>
           : blocked && <p role="status">{blocked}</p>}
+        {pending?.phase === "unknown" && <Button variant="link" size="sm" className="h-auto p-0"
+          onClick={() => { try { if (scope) localStorage.removeItem(pendingKey(scope)); } catch { /* storage off */ } setPending(null); }}>
+          Dismiss and start another</Button>}
         {busy && <p role="status">{pending?.phase === "unknown" ? pending.error
-          : pending?.phase === "opened" ? `Opened in Terminal on ${where}. Waiting for the session…` : `Starting on ${where}…`}</p>}
+          : pending?.phase === "opened" ? (localMac ? "Opened in its own window. Waiting for the session…" : `Opened in Terminal on ${where}. Waiting for the session…`) : `Starting on ${where}…`}</p>}
         {pending?.phase === "failed" && <p role="alert" className="text-err">{pending.error}</p>}
         {tooLong && <p role="alert" className="text-err">The first message is too long.</p>}
       </div>

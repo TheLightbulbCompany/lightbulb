@@ -1,8 +1,6 @@
 import { useAuth } from "@clerk/clerk-expo";
 import {
   buildTimeline,
-  canControlSession,
-  canSendToSession,
   lastOwnMessageId,
   roomDisplayName,
   placeRuns,
@@ -132,10 +130,10 @@ export default function ThreadScreen() {
   const sessionCandidates = useMemo(() => rooms.activeRoom?.shared ? [] : sessionMentionCandidates(
     workspaceSessions.sessions.filter((session) => session.kind !== "background"),
   ), [rooms.activeRoom?.shared, workspaceSessions.sessions]);
+  // A chip is a reference, not a send: offer every shared session whose owner is in the room (#3623).
   const sessionTargets = useMemo(() => sessionCandidates
-    .filter(({ session }) => session.shared !== false && canSendToSession(session)
-      && members?.some((member) => member.kind === "human" && member.id === session.humanUserId)
-      && canControlSession(session, session.humanUserId === userId, userId))
+    .filter(({ session }) => session.shared !== false
+      && members?.some((member) => member.kind === "human" && member.id === session.humanUserId))
     .map((candidate) => ({
     candidate, ownerName: candidate.session.humanUserId === userId ? "You" : memberName(members, candidate.session.humanUserId),
   })), [sessionCandidates, members, userId]);
@@ -274,7 +272,6 @@ export default function ThreadScreen() {
                 message={root}
                 collapsed={false}
                 replyCount={0}
-                receiptRefreshKey={replies.length}
                 currentUserId={userId ?? ""}
                 reactionError={reactionErrorMessageId === root.messageId}
                 onToggleReaction={(emoji, active) => reactToMessage(root.messageId, emoji, active)}
@@ -282,10 +279,6 @@ export default function ThreadScreen() {
                 attachmentUrl={rooms.attachmentUrl}
                 members={members ?? []}
                 sessionCandidates={sessionCandidates}
-                getSessionCommand={rooms.resourceSource.client.getLocalSessionCommand}
-                retrySessionSend={rooms.resourceSource.client.retrySessionSend}
-                cancelSessionSend={rooms.resourceSource.client.cancelSessionSend}
-                onSessionSendChanged={rooms.loadHistory}
               />
               <View style={[styles.hairline, { backgroundColor: palette.edge }]} />
               {replies.length > 0 && (
@@ -325,7 +318,6 @@ export default function ThreadScreen() {
                 message={item.message}
                 collapsed={item.collapsed}
                 replyCount={0}
-                receiptRefreshKey={replies.length}
                 currentUserId={userId ?? ""}
                 showTime={!noTimeIds.has(item.message.messageId)}
                 readLabel={
@@ -352,10 +344,6 @@ export default function ThreadScreen() {
                 attachmentUrl={rooms.attachmentUrl}
                 members={members ?? []}
                 sessionCandidates={sessionCandidates}
-                getSessionCommand={rooms.resourceSource.client.getLocalSessionCommand}
-                retrySessionSend={rooms.resourceSource.client.retrySessionSend}
-                cancelSessionSend={rooms.resourceSource.client.cancelSessionSend}
-                onSessionSendChanged={rooms.loadHistory}
               />
               {placed.after.get(item.message.messageId)?.map((run) => (
                 <RunBlock

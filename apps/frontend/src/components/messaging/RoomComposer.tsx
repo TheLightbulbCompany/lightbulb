@@ -506,7 +506,7 @@ function ComposerAttempt({
     replaceText(next.text, next.selectionStart, next.selectionEnd);
   }
 
-  const hint = sessionMentions.length ? `${sessionMentions.length} session${sessionMentions.length === 1 ? "" : "s"} will reply in a thread` : respondHint(roomKind, members, mentions, runningAgentIds);
+  const hint = respondHint(roomKind, members, mentions, runningAgentIds);
   // Who-will-reply matters at the moment of sending, not while the box is empty.
   const showHint = !!hint && hasContent;
 

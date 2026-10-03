@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { act, cleanup, renderHook, waitFor } from "@testing-library/react";
+import { act, cleanup, renderHook } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { ApiError } from "../api/error";
@@ -7,7 +7,7 @@ import type { LocalSession, LocalSessionCommand, LocalSessionCommandReceipt } fr
 import type { SessionSource } from "./useLocalSessionHistory";
 import type { SessionControlClient } from "./sessionControls";
 import { canSendToSession, sessionLabel } from "./localSessionLabels";
-import { AUTO_CHECK_INTERVAL_MS, pendingPrompt, receiptChip, useSessionCommand, useSessionOutbox, useSessionSendReceipt, type SessionCommandAttempt } from "./useSessionCommand";
+import { AUTO_CHECK_INTERVAL_MS, pendingPrompt, receiptChip, useSessionCommand, useSessionOutbox, type SessionCommandAttempt } from "./useSessionCommand";
 
 const session: LocalSession = {
   sessionId: "session-123456", deviceId: "mac", humanUserId: "alice", provider: "claude",
@@ -18,7 +18,7 @@ const session: LocalSession = {
 const receipt = (request: LocalSessionCommand, state: LocalSessionCommandReceipt["state"] = "applied"): LocalSessionCommandReceipt => ({
   ...request, text: request.text ?? null, expectedTurnId: request.expectedTurnId ?? null,
   sessionId: session.sessionId, roomId: "room", actorUserId: "bob", commandSeq: 1, state,
-  createdAt: 1, deliverBy: 31, held: false, providerMessageId: null, replyPosted: false,
+  createdAt: 1, deliverBy: 31, held: false, providerMessageId: null,
 });
 // The auto-check budget the hook derives from THIS fixture's own deliverBy/createdAt,
 // not a hardcoded 15 — matches useSessionCommand's `Math.ceil((deliverBy - createdAt) / (interval/1000))`.
@@ -89,99 +89,6 @@ describe("useSessionOutbox", () => {
     await act(async () => {});
     await act(async () => { await vi.advanceTimersByTimeAsync(30_000); });
     expect(result.current.commands.map(command => command.requestId)).toEqual(["new"]);
-  });
-});
-
-describe("useSessionSendReceipt", () => {
-  it("shows a stored rejection without fetching", () => {
-    const { result } = renderHook(() => useSessionSendReceipt(get, { sessionId: "s1", error: "LOCAL_SESSION_OFFLINE" }));
-    expect(result.current.chip).toEqual({ label: "Not delivered", tone: "error", detail: "The session's Mac is offline. Try again when it reconnects." });
-    expect(get).not.toHaveBeenCalled();
-  });
-
-  it("keeps a cancelled room target dismissed", () => {
-    const { result } = renderHook(() => useSessionSendReceipt(get, { sessionId: "s1", error: "CANCELLED" }));
-    expect(result.current.chip).toBeNull();
-    expect(get).not.toHaveBeenCalled();
-  });
-
-  it("checks a command and shows its applied receipt", async () => {
-    get.mockResolvedValue(receipt({ requestId: "r1", expectedGeneration: "g1", kind: "send", text: "hi" }));
-    const { result } = renderHook(() => useSessionSendReceipt(get, { sessionId: "s1", requestId: "r1" }));
-    expect(result.current.chip?.label).toBe("Sending");
-    await waitFor(() => expect(result.current.chip).toBeNull());
-    expect(get).toHaveBeenCalledWith("s1", "r1");
-    expect(get).toHaveBeenCalledTimes(1);
-  });
-
-  it("keeps checking a held room send until its exact native reply is posted", async () => {
-    vi.useFakeTimers();
-    get.mockResolvedValueOnce({ ...receipt({ requestId: "r1", expectedGeneration: "g1", kind: "send", text: "hi" }), held: true })
-      .mockResolvedValueOnce({ ...receipt({ requestId: "r1", expectedGeneration: "g1", kind: "send", text: "hi" }), held: true, replyPosted: true });
-    const { result } = renderHook(() => useSessionSendReceipt(get, { sessionId: "s1", requestId: "r1" }));
-    await act(async () => {});
-    expect(result.current.chip).toBeNull();
-    await act(async () => { await vi.advanceTimersByTimeAsync(AUTO_CHECK_INTERVAL_MS); });
-    expect(result.current.chip).toBeNull();
-    expect(get).toHaveBeenCalledTimes(2);
-  });
-
-  it("stops polling after the bounded held-reply window", async () => {
-    vi.useFakeTimers();
-    get.mockResolvedValue({ ...receipt({ requestId: "r1", expectedGeneration: "g1", kind: "send", text: "hi" }), held: true });
-    renderHook(() => useSessionSendReceipt(get, { sessionId: "s1", requestId: "r1" }));
-    await act(async () => { await vi.advanceTimersByTimeAsync(121_000); });
-    const calls = get.mock.calls.length;
-    await act(async () => { await vi.advanceTimersByTimeAsync(AUTO_CHECK_INTERVAL_MS * 5); });
-    expect(get).toHaveBeenCalledTimes(calls);
-  });
-
-  it("refetches after room replies change and trusts only replyPosted", async () => {
-    vi.useFakeTimers();
-    get.mockResolvedValueOnce({ ...receipt({ requestId: "r1", expectedGeneration: "g1", kind: "send", text: "hi" }), held: true })
-      .mockResolvedValueOnce({ ...receipt({ requestId: "r1", expectedGeneration: "g1", kind: "send", text: "hi" }), held: true })
-      .mockResolvedValueOnce({ ...receipt({ requestId: "r1", expectedGeneration: "g1", kind: "send", text: "hi" }), held: true, replyPosted: true });
-    const { result, rerender } = renderHook(({ replies }) => useSessionSendReceipt(get, { sessionId: "s1", requestId: "r1" }, replies), {
-      initialProps: { replies: 0 },
-    });
-    await act(async () => { await Promise.resolve(); });
-    expect(result.current.chip).toBeNull();
-    rerender({ replies: 1 });
-    await act(async () => { await Promise.resolve(); });
-    expect(result.current.chip).toBeNull();
-    expect(get).toHaveBeenCalledTimes(2);
-    rerender({ replies: 2 });
-    await act(async () => { await Promise.resolve(); });
-    expect(result.current.chip).toBeNull();
-    expect(get).toHaveBeenCalledTimes(3);
-  });
-
-  it("restarts the bounded poll window after a late room reply invalidation", async () => {
-    vi.useFakeTimers();
-    get.mockImplementation(async () => ({
-      ...receipt({ requestId: "r1", expectedGeneration: "g1", kind: "send", text: "hi" }),
-      held: true,
-      replyPosted: get.mock.calls.length >= 62,
-    }));
-    const { result, rerender } = renderHook(({ replies }) => useSessionSendReceipt(get, { sessionId: "s1", requestId: "r1" }, replies), {
-      initialProps: { replies: 0 },
-    });
-    await act(async () => { await vi.advanceTimersByTimeAsync(121_000); });
-    expect(get).toHaveBeenCalledTimes(60);
-    expect(result.current.chip).toBeNull();
-
-    rerender({ replies: 1 });
-    await act(async () => { await Promise.resolve(); });
-    expect(get).toHaveBeenCalledTimes(61);
-    expect(result.current.chip).toBeNull();
-    await act(async () => { await vi.advanceTimersByTimeAsync(AUTO_CHECK_INTERVAL_MS); });
-    expect(get).toHaveBeenCalledTimes(62);
-    expect(result.current.chip).toBeNull();
-  });
-
-  it("renders nothing without a command reader", () => {
-    const { result } = renderHook(() => useSessionSendReceipt(undefined, { sessionId: "s1", requestId: "r1" }));
-    expect(result.current.chip).toBeNull();
   });
 });
 
@@ -394,7 +301,7 @@ describe("useSessionCommand", () => {
   it("names the agent on an agent-issued receipt", async () => {
     submit.mockImplementation(async (_s: string, request: LocalSessionCommand): Promise<LocalSessionCommandReceipt> => ({
       ...request, text: request.text ?? null, expectedTurnId: null, sessionId: session.sessionId, roomId: "room",
-      commandSeq: 1, state: "pending", createdAt: 1, deliverBy: 31, held: false, replyPosted: false, providerMessageId: null,
+      commandSeq: 1, state: "pending", createdAt: 1, deliverBy: 31, held: false, providerMessageId: null,
       actor: { kind: "agent", id: "friday" }, invocationExpiresAt: 99,
     }));
     const { result } = renderHook(() => useSessionCommand(client, session, { uuid, onAccessLost, onSent, agentName: (id) => (id === "friday" ? "Friday" : id) }));

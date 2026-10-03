@@ -99,42 +99,6 @@ def command(service, **changes):
 
 
 @pytest.mark.asyncio
-async def test_command_origin_stays_in_storage_and_off_the_desktop_wire(db):
-    sid = await registered()
-    # Room-origin Codex commands require the reply-correlation capability that
-    # the desktop advertises after its first heartbeat.
-    db[0].update_item(
-        Key={"pk": repo.session_pk(OWNER, sid), "sk": "META"},
-        UpdateExpression="SET roomReplyRequestId = :enabled",
-        ExpressionAttributeValues={":enabled": True},
-    )
-    receipt = await service.submit_command(
-        ALICE, None, sid, command(service), origin_room_id=ROOM, origin_message_id="msg-1"
-    )
-    stored = await repo.get_command(OWNER, sid, receipt.request_id)
-    assert stored["originRoomId"] == ROOM and stored["originMessageId"] == "msg-1"
-    assert stored["originEventSeq"] == 0
-    assert "originRoomId" not in receipt.model_dump(by_alias=True)
-    assert "originMessageId" not in receipt.model_dump(by_alias=True)
-    assert await service.submit_command(ALICE, None, sid, command(service)) == receipt
-    # The room origin fences delivery too, even though the native command is roomless.
-    checks = repo.room_conditions(OWNER, ALICE.user_id, stored)
-    db[0].delete_item(Key={"pk": f"ROOM#{ROOM}", "sk": f"MEMBER#human#{ALICE.user_id}"})
-    from botocore.exceptions import ClientError
-
-    with pytest.raises(ClientError):
-        await messaging_repo._transact(checks)
-
-
-@pytest.mark.asyncio
-async def test_command_without_origin_stores_no_origin_keys(db):
-    sid = await registered()
-    receipt = await service.submit_command(ALICE, None, sid, command(service))
-    stored = await repo.get_command(OWNER, sid, receipt.request_id)
-    assert "originRoomId" not in stored and "originMessageId" not in stored
-
-
-@pytest.mark.asyncio
 async def test_lightbulb_display_title_survives_native_registration(db, monkeypatch):
     from core.services import local_session_relay
 
@@ -161,19 +125,6 @@ async def test_lightbulb_display_title_survives_native_registration(db, monkeypa
     )
     current = await service.get_session(ALICE, sid)
     assert current.title == "Updated native title" and current.display_title == "Chosen title"
-
-
-@pytest.mark.asyncio
-async def test_replyto_keeps_each_queued_command_until_its_own_write_succeeds(db):
-    sid = await registered()
-    fields = dict(provider_message_id="provider-1", after_event_seq=0, provider="codex", where="repo")
-    await repo.put_replyto(OWNER, sid, room_id=ROOM, message_id="msg-1", request_id="req-1", **fields)
-    await repo.put_replyto(OWNER, sid, room_id=OTHER_ROOM, message_id="msg-2", request_id="req-2", **fields)
-    pointers = await repo.list_replyto(OWNER, sid)
-    assert {pointer["requestId"] for pointer in pointers} == {"req-1", "req-2"}
-    assert all(pointer["expiresAt"] > int(time.time()) for pointer in pointers)
-    await repo.delete_replyto(OWNER, sid, "req-1")
-    assert [pointer["requestId"] for pointer in await repo.list_replyto(OWNER, sid)] == ["req-2"]
 
 
 @pytest.mark.asyncio

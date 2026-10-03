@@ -2,8 +2,6 @@ import { useAuth } from "@clerk/clerk-expo";
 import { SymbolView } from "expo-symbols";
 import {
   buildTimeline,
-  canControlSession,
-  canSendToSession,
   lastOwnMessageId,
   liveMarker,
   roomDisplayName,
@@ -226,10 +224,10 @@ function Conversation() {
   const sessionCandidates = useMemo(() => room?.shared ? [] : sessionMentionCandidates(
     workspaceSessions.sessions.filter((session) => session.kind !== "background"),
   ), [room?.shared, workspaceSessions.sessions]);
+  // A chip is a reference, not a send: offer every shared session whose owner is in the room (#3623).
   const sessionTargets = useMemo(() => sessionCandidates
-    .filter(({ session }) => session.shared !== false && canSendToSession(session)
-      && members?.some((member) => member.kind === "human" && member.id === session.humanUserId)
-      && canControlSession(session, session.humanUserId === userId, userId))
+    .filter(({ session }) => session.shared !== false
+      && members?.some((member) => member.kind === "human" && member.id === session.humanUserId))
     .map((candidate) => ({
     candidate, ownerName: candidate.session.humanUserId === userId ? "You" : memberName(members, candidate.session.humanUserId),
   })), [sessionCandidates, members, userId]);
@@ -612,10 +610,6 @@ function Conversation() {
                   attachmentUrl={rooms.attachmentUrl}
                   members={members ?? []}
                   sessionCandidates={sessionCandidates}
-                  getSessionCommand={rooms.resourceSource.client.getLocalSessionCommand}
-                  retrySessionSend={rooms.resourceSource.client.retrySessionSend}
-                  cancelSessionSend={rooms.resourceSource.client.cancelSessionSend}
-                  onSessionSendChanged={rooms.loadHistory}
                 />
                 {placed.after.get(item.message.messageId)?.map((run) => (
                   <RunBlock

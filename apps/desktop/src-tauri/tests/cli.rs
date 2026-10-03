@@ -169,14 +169,31 @@ fn cli_attach_detaches_the_other_interactive_client() {
 }
 
 #[test]
-fn cli_leaves_with_code_0_when_the_app_takes_the_session() {
+fn cli_keeps_the_session_when_the_app_panel_joins_it() {
     let (app, holder) = app_with_holder(&["/bin/cat"]);
     let mut cli = Cli::start(&app);
     cli.wait_raw();
     let mut panel = UnixStream::connect(&holder).unwrap();
-    panel.write_all(&encode(HELLO, br#"{"role":"interactive"}"#)).unwrap();
+    panel.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+    panel.write_all(&encode(HELLO, br#"{"role":"interactive","join":true}"#)).unwrap();
+    let (_, hello) = read_frame(&mut panel).unwrap();
+    assert_eq!(serde_json::from_slice::<serde_json::Value>(&hello).unwrap()["joined"], true);
+    panel.write_all(&encode(INPUT, b"typed-in-panel\r")).unwrap();
+    cli.wait_for("typed-in-panel");
+    cli.keys.write_all(b"typed-in-cli\r").unwrap();
+    cli.wait_for("typed-in-cli");
+    assert!(cli.child.try_wait().unwrap().is_none(), "the terminal stays attached");
+}
+
+#[test]
+fn cli_leaves_with_code_0_when_another_terminal_takes_the_session() {
+    let (app, holder) = app_with_holder(&["/bin/cat"]);
+    let mut cli = Cli::start(&app);
+    cli.wait_raw();
+    let mut other = UnixStream::connect(&holder).unwrap();
+    other.write_all(&encode(HELLO, br#"{"role":"interactive"}"#)).unwrap();
     assert_eq!(cli.exit_code(), 0);
     assert!(cli.cooked());
-    cli.wait_for("moved to the Lightbulb app");
+    cli.wait_for("opened in another terminal");
     assert!(manager::hello(&holder).is_some(), "the session keeps running in the app");
 }

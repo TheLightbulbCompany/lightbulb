@@ -268,7 +268,8 @@ pub fn shared_line(workspace: Option<&str>, tool: &str) -> String {
 pub enum Outcome {
     /// The provider exited with this code.
     Exited(i32),
-    /// Another terminal (the app's panel) took the keyboard; the session keeps running.
+    /// Another interactive client took the keyboard (the app's panel joins instead, so only a
+    /// second terminal does); the session keeps running.
     Moved,
     /// The connection ended without either.
     Lost,
@@ -418,7 +419,7 @@ fn attach(socket: &Path, (cols, rows): (u16, u16), signals: libc::sigset_t) -> i
     let _ = out.write_all(&reset_sequence(alternate));
     let (code, line) = match outcome {
         Outcome::Exited(code) => (code, None),
-        Outcome::Moved => (0, Some("● This session moved to the Lightbulb app. It keeps running there.")),
+        Outcome::Moved => (0, Some("● This session was opened in another terminal. It keeps running in the Lightbulb app.")),
         Outcome::Lost => match STOPPED_BY.load(Ordering::SeqCst) {
             0 => (1, Some("● Lost this session's terminal. If it is still running, it is in the Lightbulb app.")),
             sig => (128 + sig, Some("● Detached. The session keeps running in the Lightbulb app.")),

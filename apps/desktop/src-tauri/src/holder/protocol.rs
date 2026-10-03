@@ -2,9 +2,12 @@
 
 use std::io::{Error, ErrorKind, Read, Result};
 
-/// Client → holder: `{"role":"interactive"|"watch"|"type"|"recorder", "cols"?, "rows"?, "replayFrom"?}`.
+/// Client → holder: `{"role":"interactive"|"watch"|"type"|"recorder", "cols"?, "rows"?, "replayFrom"?, "join"?}`.
 /// Holder → client: session facts (`"watch": true` when it serves watch clients, `"type": true`
-/// when it takes `type` ones).
+/// when it takes `type` ones, `"joined": true` when a `join` client found an interactive one).
+/// An interactive `join` client never takes the keyboard from another: while one is attached it
+/// watches and types at that client's size (its RESIZE is ignored), and gets PROMOTED when that
+/// client leaves. Without one it is the interactive client.
 pub const HELLO: u8 = 1;
 /// Holder → client: `u64 BE offset` of the first byte, then provider output.
 pub const OUTPUT: u8 = 2;
@@ -24,6 +27,9 @@ pub const GAP: u8 = 7;
 pub const SNAPSHOT: u8 = 8;
 /// Holder → the interactive client another client replaced.
 pub const DETACHED: u8 = 9;
+/// Holder → a joined client: the interactive client left and this one is it now (empty payload).
+/// It sends its own RESIZE next.
+pub const PROMOTED: u8 = 10;
 
 /// No frame is larger than this; a longer declared length is refused before allocating it.
 pub const MAX_PAYLOAD: usize = 8 << 20;

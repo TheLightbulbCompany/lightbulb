@@ -237,6 +237,8 @@ pub fn run_with_env(socket: &Path, argv: &[String], cwd: &Path, env: Vec<(String
     let mut interactive: Option<u64> = None;
     let mut watchers: HashSet<u64> = HashSet::new();
     let mut typists: HashSet<u64> = HashSet::new();
+    // Interactive `join` clients waiting for the keyboard, oldest first (also watchers and typists).
+    let mut joined: Vec<u64> = vec![];
     let mut exited: Option<(String, u32, Instant)> = None;
 
     loop {
@@ -273,14 +275,24 @@ pub fn run_with_env(socket: &Path, argv: &[String], cwd: &Path, env: Vec<(String
                 let Some(conn) = pending.remove(&id) else { continue };
                 let Some(client) = Client::start(conn) else { continue };
                 let role = serde_json::from_slice::<serde_json::Value>(&payload).unwrap_or_default();
+                // The app's panel joins a session a terminal (`lightbulb claude`) already has: it
+                // never takes that terminal's keyboard or size.
+                let joining = role["role"] == "interactive" && role["join"] == true && interactive.is_some();
                 let (rows, cols) = model.size();
                 let facts = serde_json::json!({"protocol": 1, "pid": std::process::id(),
                     "providerPid": provider_pid, "argv": argv, "cwd": cwd, "rows": rows, "cols": cols,
-                    "watch": true, "type": true});
+                    "watch": true, "type": true, "joined": joining});
                 if !client.send(encode(HELLO, facts.to_string().as_bytes())) {
                     continue;
                 }
-                if role["role"] == "interactive" {
+                if joining {
+                    if !client.send(encode(SNAPSHOT, &with_offset(total, &model.snapshot()))) {
+                        continue;
+                    }
+                    watchers.insert(id);
+                    typists.insert(id);
+                    joined.push(id);
+                } else if role["role"] == "interactive" {
                     // Take the window's size first, so its snapshot is drawn at that size.
                     if let (Some(cols), Some(rows)) = (role["cols"].as_u64(), role["rows"].as_u64()) {
                         let (cols, rows) = (cols.clamp(1, 1000) as u16, rows.clamp(1, 500) as u16);
@@ -357,8 +369,19 @@ pub fn run_with_env(socket: &Path, argv: &[String], cwd: &Path, env: Vec<(String
                 clients.remove(&id);
                 watchers.remove(&id);
                 typists.remove(&id);
+                joined.retain(|j| *j != id);
                 if interactive == Some(id) {
                     interactive = None;
+                    // The oldest joined client takes the keyboard and then sends its own size.
+                    while !joined.is_empty() {
+                        let next = joined.remove(0);
+                        watchers.remove(&next);
+                        typists.remove(&next);
+                        if clients.get(&next).is_some_and(|c| c.send(encode(PROMOTED, b""))) {
+                            interactive = Some(next);
+                            break;
+                        }
+                    }
                 }
             }
             Event::Exit(status, code) => {

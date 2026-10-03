@@ -293,3 +293,71 @@ fn holder_type_client_types_but_never_resizes_and_gets_no_output() {
     t.set_read_timeout(Some(Duration::from_millis(300))).unwrap();
     assert!(read_frame(&mut t).is_err(), "a type client receives no output");
 }
+
+/// The size a `recorder` reads in the holder's HELLO: what the pty is now.
+fn size_of(socket: &Path) -> (u64, u64) {
+    let mut r = UnixStream::connect(socket).unwrap();
+    r.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+    r.write_all(&encode(HELLO, br#"{"role":"recorder"}"#)).unwrap();
+    let (_, facts) = read_frame(&mut r).unwrap();
+    let facts: serde_json::Value = serde_json::from_slice(&facts).unwrap();
+    (facts["cols"].as_u64().unwrap(), facts["rows"].as_u64().unwrap())
+}
+
+#[test]
+fn holder_join_client_shares_a_terminal_and_takes_it_only_when_that_terminal_leaves() {
+    let socket = start_cat(&temp_dir());
+    // `lightbulb claude`: the interactive client, at its terminal's size.
+    let mut cli = UnixStream::connect(&socket).unwrap();
+    cli.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+    cli.write_all(&encode(HELLO, br#"{"role":"interactive","cols":50,"rows":10}"#)).unwrap();
+    assert_eq!(read_frame(&mut cli).unwrap().0, HELLO);
+    assert_eq!(read_frame(&mut cli).unwrap().0, SNAPSHOT);
+
+    // The app's panel joins: it is told so, at the terminal's size, and starts from the screen.
+    let mut panel = UnixStream::connect(&socket).unwrap();
+    panel.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+    panel.write_all(&encode(HELLO, br#"{"role":"interactive","join":true,"cols":90,"rows":30}"#)).unwrap();
+    let (kind, hello) = read_frame(&mut panel).unwrap();
+    assert_eq!(kind, HELLO);
+    let facts: serde_json::Value = serde_json::from_slice(&hello).unwrap();
+    assert_eq!((facts["joined"].as_bool(), facts["cols"].as_u64(), facts["rows"].as_u64()), (Some(true), Some(50), Some(10)));
+    assert_eq!(read_frame(&mut panel).unwrap().0, SNAPSHOT);
+
+    // Both type; the joiner's RESIZE is ignored; the terminal is never detached.
+    cli.write_all(&encode(INPUT, b"from-cli\r")).unwrap();
+    read_until(&mut panel, b"from-cli");
+    panel.write_all(&encode(RESIZE, &[0, 90, 0, 30])).unwrap();
+    panel.write_all(&encode(INPUT, b"from-panel\r")).unwrap();
+    let mut seen = vec![];
+    while !seen.windows(10).any(|w| w == b"from-panel") {
+        let (kind, payload) = read_frame(&mut cli).expect("output before timeout");
+        assert_ne!(kind, DETACHED, "a joining client never takes the terminal's keyboard");
+        if kind == OUTPUT {
+            seen.extend_from_slice(split_offset(&payload).unwrap().1);
+        }
+    }
+    assert_eq!(size_of(&socket), (50, 10), "the terminal keeps the size");
+
+    // The terminal leaves: the joiner is promoted, and its RESIZE now applies.
+    drop(cli);
+    while read_frame(&mut panel).expect("PROMOTED before the timeout").0 != PROMOTED {}
+    panel.write_all(&encode(RESIZE, &[0, 90, 0, 30])).unwrap();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while size_of(&socket) != (90, 30) {
+        assert!(Instant::now() < deadline, "the promoted client's RESIZE applies");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+#[test]
+fn holder_join_client_with_nobody_attached_is_the_interactive_client() {
+    let socket = start_cat(&temp_dir());
+    let mut panel = UnixStream::connect(&socket).unwrap();
+    panel.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+    panel.write_all(&encode(HELLO, br#"{"role":"interactive","join":true,"cols":70,"rows":20}"#)).unwrap();
+    let (_, hello) = read_frame(&mut panel).unwrap();
+    assert_eq!(serde_json::from_slice::<serde_json::Value>(&hello).unwrap()["joined"], false);
+    assert_eq!(read_frame(&mut panel).unwrap().0, SNAPSHOT);
+    assert_eq!(size_of(&socket), (70, 20));
+}

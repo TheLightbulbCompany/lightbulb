@@ -145,8 +145,9 @@ fn relay(stream: TcpStream) -> std::io::Result<()> {
     let mut ws = tungstenite::accept_hdr(stream.try_clone()?, callback).map_err(std::io::Error::other)?;
     let Some(id) = admitted.lock().unwrap().take() else { return Ok(()) };
     let socket = manager::socket_dir().join(format!("{id}.sock"));
-    // The page sends its size first; the holder needs it before drawing the snapshot.
-    let mut hello = json!({"role": "interactive"});
+    // The page sends its size first; the holder needs it before drawing the snapshot. `join`: a
+    // terminal already running the session (`lightbulb claude`) keeps its keyboard and size.
+    let mut hello = json!({"role": "interactive", "join": true});
     if let Said::Frame(RESIZE, size) = said(ws.read()) {
         if size.len() == 4 {
             hello["cols"] = u16::from_be_bytes([size[0], size[1]]).into();

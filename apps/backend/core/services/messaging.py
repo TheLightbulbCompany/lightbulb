@@ -1668,7 +1668,8 @@ async def _room_summaries(owner_id: str, user_id: str) -> list[RoomSummary]:
     discovered = [
         row
         for row in await messaging_repo.list_rooms_for_member(owner_id, "human", user_id)
-        if not row["meta"].get("deletedAt")
+        # ``hidden``: a Google Meet's room -- the meeting's record, never a place people go.
+        if not row["meta"].get("deletedAt") and not row["meta"].get("hidden")
     ]
     limit = asyncio.Semaphore(_SUMMARY_CONCURRENCY)
 
@@ -3646,6 +3647,17 @@ async def create_agent_message(owner_id: str, request: AgentMessageRequest) -> A
     meta = await messaging_repo.get_room(room_id)
     if meta is None or meta.get("deletedAt") or meta.get("ownerId") != owner_id:
         raise ApiProblem("ROOM_NOT_FOUND", "Room not found.")
+    bound = request.run_id or request.reply_to_message_id or request.thread_root_message_id
+    if meta.get("hidden") and not (bound or request.uploaded_attachments):
+        # A Google Meet's room is read by nobody: what an agent posts there (a late Live answer)
+        # goes to the meeting's output room when it sits there. Every door resolves the same room,
+        # so a replay hashes the same and stays idempotent. A post bound to the hidden room (a run,
+        # a reply, a thread, a runtime-uploaded attachment) stays there: those are checked against it.
+        from core.services.meeting_invites import output_room
+
+        target = await output_room(owner_id, room_id)
+        if target != room_id and await messaging_repo.get_member(target, "agent", agent_id):
+            room_id, meta = target, await messaging_repo.get_room(target)
     member = await messaging_repo.get_member(room_id, "agent", agent_id)
     if member is None:
         raise ApiProblem("MEMBER_NOT_FOUND", "Agent is not a current room member.")

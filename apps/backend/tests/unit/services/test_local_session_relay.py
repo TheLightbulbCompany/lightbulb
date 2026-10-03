@@ -567,6 +567,58 @@ async def test_offline_human_send_waits_for_verified_successor_and_keeps_one_req
 
 
 @pytest.mark.asyncio
+async def test_queued_send_leaves_with_a_fresh_window_and_a_stale_one_still_expires(transport):
+    # Prod 2026-10-03: the Mac's Journal::admit refuses deliverBy - createdAt > 30, so a
+    # follow-up queued with a 24 h deliverBy was "Not delivered" after every reconnect.
+    sid = await start(transport)
+    offline = {"Key": {"pk": repo.session_pk(OWNER, sid), "sk": "META"}, "UpdateExpression": "SET onlineUntil = :past"}
+    messaging_repo._table().update_item(**offline, ExpressionAttributeValues={":past": int(time.time()) - 1})
+    queued = await service.submit_command(ALICE, None, sid, command(service))
+    stale = await service.submit_command(ALICE, None, sid, command(service, requestId="stale", text="later"))
+    assert queued.deliver_by - queued.created_at == 24 * 3600
+
+    connect(transport, "conn-2", "2000")
+    later = time.time() + 600
+    with patch("time.time", return_value=later):
+        await relay(transport).handle_message("conn-2", registration(status="idle"))
+    sent = [body["command"] for _, body in transport[3] if body["type"] == "local.session.command"]
+    assert [c["requestId"] for c in sent] == [queued.request_id]
+    assert sent[0]["createdAt"] == int(later) and sent[0]["deliverBy"] - sent[0]["createdAt"] <= 30
+    assert "queuedAt" not in sent[0]
+    row = await repo.get_command(OWNER, sid, queued.request_id)
+    assert row["state"] == "dispatched" and row["queuedAt"] == queued.created_at
+
+    with patch("time.time", return_value=stale.deliver_by + 1):
+        await relay(transport).dispatch_session(OWNER, sid)
+    assert (await repo.get_command(OWNER, sid, "stale"))["state"] == "rejected"
+
+    # Any long-lived command gets the same window, not only offline sends (e.g. a resume).
+    table = messaging_repo._table()
+    table.update_item(
+        Key={"pk": row["pk"], "sk": row["sk"]},
+        UpdateExpression="SET #s = :a",
+        ExpressionAttributeNames={"#s": "state"},
+        ExpressionAttributeValues={":a": "applied"},
+    )
+    now = int(time.time())
+    plain = {k: v for k, v in row.items() if k not in {"offlineIdentity", "queuedAt", "connectionId", "claimUntil"}}
+    plain.update(
+        sk="COMMAND#plain",
+        requestId="plain",
+        state="pending",
+        createdAt=now,
+        deliverBy=now + 3600,
+        commandSeq=row["commandSeq"] + 2,
+    )
+    table.put_item(Item=plain)
+    transport[3].clear()
+    await relay(transport).dispatch_session(OWNER, sid)
+    sent = [body["command"] for _, body in transport[3] if body["type"] == "local.session.command"]
+    assert [c["requestId"] for c in sent] == ["plain"] and sent[0]["deliverBy"] - sent[0]["createdAt"] <= 30
+    assert (await repo.get_command(OWNER, sid, "plain"))["queuedAt"] == now
+
+
+@pytest.mark.asyncio
 async def test_offline_teammate_send_is_rejected_when_successor_resets_control(transport):
     sid = await start(transport)
     table = messaging_repo._table()

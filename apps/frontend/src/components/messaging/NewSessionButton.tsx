@@ -205,9 +205,10 @@ export function NewSessionView({ sessions, onEvent, onOpenSession, onClose }: {
       }
       return;
     }
+    if (!mac) return;
     try {
       await api.post("/desktop-sessions/start?source=web", {
-        startId, deviceId: mac!.deviceId, generation: mac.generation, tool: selected.id, folder: folderPath,
+        startId, deviceId: mac.deviceId, generation: mac.generation, tool: selected.id, folder: folderPath,
         model: modelId || null, mode: modeId || null, effort: effortId || null, prompt,
       });
     } catch (error) {

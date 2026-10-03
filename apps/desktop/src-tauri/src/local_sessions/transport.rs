@@ -859,6 +859,11 @@ impl Host {
                         Err(error) => failures.push(error),
                     }
                 }
+                // Shared iff held (spec §5.4): an unheld session never gets a mirror.
+                let holders = tokio::task::spawn_blocking(crate::holder::manager::list)
+                    .await
+                    .unwrap_or_default();
+                keep_held(&mut found, &holders);
                 for error in &failures {
                     // A listing that failed is not evidence that anything stopped;
                     // say so once per distinct failure, not once a minute forever.

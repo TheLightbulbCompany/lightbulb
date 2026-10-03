@@ -306,9 +306,9 @@ The room itself exists since Task 3 (created when the invite arrived, agents in 
 
 ### Task 14: Dev acceptance and the founder flag
 
-- [ ] **Step 1:** Behind `MEETINGS_ENABLED` (CDK env, default `false` in prod, `true` in dev): `meeting_bots.create` and the webhook refuse when off (an invite still becomes a room and an RSVP is still sent — the flag gates money).
-- [ ] **Step 2:** In dev (prod LiveKit project is shared; Recall is one account): invite `agents@<founder-dev-slug>.dev.thelightbulb.company` to a real Meet; verify RSVP, bot in lobby, admission, "Friday, what's today's date?" answered, a second person's question, an unclaimed question routed after 3.5 s, hang-up → notes in the meeting room, organizer reply. Receipts on the PR.
-- [ ] **Step 3:** Flip `MEETINGS_ENABLED` for prod via the usual CDK env change once the owner has run one founder meeting.
+- [ ] **Step 1:** Behind `MEETINGS_ENABLED` + `MEETINGS_OWNER_ALLOWLIST` (final-review ruling 10-03: the desktop-execution pattern — CDK derives both from the `MEETINGS_OWNER_DEV` / `MEETINGS_OWNER_PROD` GitHub Actions variables at synth time; unset means closed in BOTH envs; dev stays closed because it has no LiveKit project): `meetings_allowed(owner_id)` gates `meeting_bots.create` and both webhooks. For an owner not allowed, the invite still becomes a room, the line says "Meetings aren't enabled for this workspace yet — the room is here for notes." and no RSVP is sent.
+- [ ] **Step 2:** On PROD as the founder (the only LiveKit project + worker; set `MEETINGS_OWNER_PROD` to the founder org id): invite `agents@<founder-slug>.thelightbulb.company` to a real Meet; verify RSVP, bot in lobby, admission, "Friday, what's today's date?" answered, a second person's question, an unclaimed question routed after 3.5 s, hang-up → notes in the meeting room, organizer reply. Receipts on the PR.
+- [ ] **Step 3:** Widen `MEETINGS_OWNER_PROD` (or clear it to open meetings to every workspace) once the owner has run one founder meeting and the spike numbers (self-echo, first-audio latency, 4-core CPU) are in the spec.
 
 ---
 

@@ -1,4 +1,4 @@
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -314,3 +314,137 @@ def test_address_mint_failure_409(client):
         g = client.get("/api/v1/agent-mail/address")
     assert r.status_code == 409 and r.json()["detail"]["status"] == "slug_allocation_failed"
     assert g.status_code == 409
+
+
+# ---- the team inbox (any member) ---------------------------------------------
+
+M1, M2, FOREIGN = (
+    "11111111-1111-4111-8111-111111111111",
+    "22222222-2222-4222-8222-222222222222",
+    "33333333-3333-4333-8333-333333333333",
+)
+_ROOMS = {
+    M1: {
+        "ownerId": "org_test_456",
+        "meeting": {
+            "title": "Weekly sync",
+            "organizer": "pat@acme.com",
+            "status": "scheduled",
+            "startAt": 200,
+            "endAt": 260,
+            "recurrence": {"rule": "FREQ=WEEKLY"},
+            "transcriptId": "t-now",
+            "transcriptRoomId": "room-now",
+            "history": [{"startAt": 100, "transcriptId": "t-past", "transcriptRoomId": "room-past"}],
+        },
+    },
+    M2: {"ownerId": "org_test_456", "meeting": {"title": "One-off", "status": "ended", "startAt": 300}},
+    FOREIGN: {"ownerId": "org_other", "meeting": {"title": "Theirs", "status": "scheduled", "startAt": 400}},
+}
+_ROWS = [
+    {
+        "received_key": "k3",
+        "direction": "out",
+        "to": "pat@acme.com",
+        "subject": "Re: hi",
+        "received_at": "t3",
+        "agent_id": "a1",
+    },
+    {
+        "received_key": "k2",
+        "from_addr": "pat@acme.com",
+        "subject": "hi",
+        "received_at": "t2",
+        "agent_id": "a1",
+        "text": "x" * 3000,
+    },
+]
+
+
+def _inbox(rows=_ROWS, nxt="k2"):
+    a, b, c = _mailbox({"address": TEAM, "meetings": {M1, M2, FOREIGN, "gone"}})
+    return (
+        a,
+        b,
+        c,
+        patch.object(agent_mail.messaging_repo, "get_room", AsyncMock(side_effect=lambda r: _ROOMS.get(r))),
+        patch.object(agent_mail, "list_page", AsyncMock(return_value=(rows, nxt))),
+    )
+
+
+async def test_a_member_reads_meetings_and_mail_both_ways(async_client_org_member):
+    a, b, c, d, e = _inbox()
+    with a, b, c, d, e as page:
+        r = await async_client_org_member.get("/api/v1/agent-mail/inbox", params={"before": "k9", "limit": 2})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["address"] == TEAM and body["next"] == "k2"
+    assert page.await_args.args == (TEAM,) and page.await_args.kwargs == {"before": "k9", "limit": 2}
+    # Newest first; another workspace's record and a deleted one are skipped.
+    assert [m["id"] for m in body["meetings"]] == [M2, M1]
+    assert body["meetings"][1] == {
+        "id": M1,
+        "title": "Weekly sync",
+        "organizer": "pat@acme.com",
+        "status": "scheduled",
+        "start_at": 200,
+        "end_at": 260,
+        "repeats": True,
+        "transcripts": [{"start_at": 200}, {"start_at": 100}],
+    }
+    assert body["meetings"][0]["repeats"] is False and body["meetings"][0]["transcripts"] == []
+    out, inn = body["messages"]
+    assert out == {
+        "key": "k3",
+        "direction": "out",
+        "from": TEAM,
+        "to": "pat@acme.com",
+        "subject": "Re: hi",
+        "at": "t3",
+        "agent_id": "a1",
+        "text": "",
+    }
+    assert inn["direction"] == "in" and inn["from"] == "pat@acme.com" and inn["to"] == TEAM
+    assert len(inn["text"]) == 2000
+
+
+def test_inbox_limit_is_capped(client):
+    assert client.get("/api/v1/agent-mail/inbox", params={"limit": 51}).status_code == 422
+
+
+def test_inbox_without_a_team_address_is_409(client):
+    a, b, c = _mailbox(ensure=(None, "slug_allocation_failed"))
+    with a, b, c:
+        r = client.get("/api/v1/agent-mail/inbox")
+    assert r.status_code == 409 and r.json()["detail"]["status"] == "slug_allocation_failed"
+
+
+@pytest.mark.parametrize(("start_at", "att", "room"), [(200, "t-now", "room-now"), (100, "t-past", "room-past")])
+async def test_a_member_reads_current_and_past_transcripts(async_client_org_member, start_at, att, room):
+    load = MagicMock(return_value=(None, b"[20:23] Pat: Hi\n"))
+    with (
+        patch.object(agent_mail.messaging_repo, "get_room", AsyncMock(side_effect=lambda r: _ROOMS.get(r))),
+        patch.object(agent_mail.messaging, "load_attachment", load),
+    ):
+        r = await async_client_org_member.get(f"/api/v1/agent-mail/meetings/{M1}/transcript?start_at={start_at}")
+    assert r.status_code == 200 and r.text == "[20:23] Pat: Hi\n"
+    assert r.headers["content-type"] == "text/plain; charset=utf-8"
+    load.assert_called_once_with("org_test_456", room, att)
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        f"{FOREIGN}/transcript?start_at=400",  # another workspace's meeting
+        f"{M1}/transcript?start_at=150",  # no such occurrence
+        f"{M2}/transcript?start_at=300",  # an occurrence with no transcript
+        "not-a-uuid/transcript?start_at=1",
+    ],
+)
+def test_transcript_404s(client, path):
+    get_room = AsyncMock(side_effect=lambda r: _ROOMS.get(r))
+    with patch.object(agent_mail.messaging_repo, "get_room", get_room):
+        r = client.get(f"/api/v1/agent-mail/meetings/{path}")
+    assert r.status_code == 404
+    if path.startswith("not-a-uuid"):
+        get_room.assert_not_awaited()

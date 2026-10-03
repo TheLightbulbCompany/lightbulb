@@ -62,7 +62,7 @@ async def on_transcript(room_id: str, lines: list[dict], final: bool) -> None:
     )
     await meeting_invites._patch_meeting(
         room_id,
-        {"transcriptAttachedAt": int(time.time()), "transcriptId": str(attachment.id)},
+        {"transcriptAttachedAt": int(time.time()), "transcriptId": str(attachment.id), "transcriptRoomId": target},
         when=lambda m: m.get("startAt") == occurrence,
     )
 
@@ -147,6 +147,7 @@ _MAIL_TRANSCRIPT_CHARS = 200_000
 async def _transcript_text(owner_id: str, room_id: str, meeting: dict) -> str | None:
     if not meeting.get("transcriptId"):
         return None
+    room_id = meeting.get("transcriptRoomId") or room_id  # the room it was stored for
     _, data = await run_in_thread(messaging.load_attachment, owner_id, room_id, meeting["transcriptId"])
     text = data.decode("utf-8", "replace")
     return text if len(text) <= _MAIL_TRANSCRIPT_CHARS else text[:_MAIL_TRANSCRIPT_CHARS] + "… (truncated)"

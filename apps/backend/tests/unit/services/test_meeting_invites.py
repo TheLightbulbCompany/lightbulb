@@ -246,6 +246,8 @@ def room(monkeypatch):
     booked = {"recallBotId": "bot-1", "status": "bot_created"}  # returned, not stored: META keeps the invite's status
     m.sync = AsyncMock(side_effect=lambda o, r, meeting, p: {**meeting, **booked})
     monkeypatch.setattr(meeting_invites, "_sync_bot", m.sync)
+    m.add_meeting = AsyncMock()
+    monkeypatch.setattr(meeting_invites.agent_email_repo, "add_meeting", m.add_meeting)
     return m
 
 
@@ -1332,3 +1334,34 @@ async def test_a_same_occurrence_booking_retry_adopts_the_bot_its_kept_nonce_boo
     meeting = room.state["meta"]["meeting"]
     assert meeting["recallBotId"] == "bot-9" and meeting["status"] == "bot_created"
     assert meeting["startAt"] == _epoch(2026, 11, 7, 15, 0) and "botError" not in meeting
+
+
+async def test_a_new_meeting_is_recorded_on_the_team_row_once(room):
+    await meeting_invites.handle_team_mail("org_1", _mail(GOOGLE), TEAM)
+    moved = GOOGLE.replace("SEQUENCE:0", "SEQUENCE:1").replace("T150000", "T160000")
+    await meeting_invites.handle_team_mail("org_1", _mail(moved), TEAM)
+    room.add_meeting.assert_awaited_once_with(
+        TEAM["address"], meeting_invites.messaging_repo.meeting_room_id("org_1", UID)
+    )
+
+
+async def test_a_re_dated_occurrence_keeps_its_transcript_in_history(room, now, metrics):
+    old = [{"startAt": 1, "transcriptId": "t0", "transcriptRoomId": "d"}] * 30
+    _ended_series(room, transcriptId="t1", transcriptRoomId="default-room", history=old)
+    now["t"] = _epoch(2026, 11, 7, 15, 40)
+    await meeting_invites.advance("r")
+    history = room.state["meta"]["meeting"]["history"]
+    assert len(history) == 30
+    assert history[0] == {
+        "startAt": _epoch(2026, 11, 7, 15, 0),
+        "transcriptId": "t1",
+        "transcriptRoomId": "default-room",
+    }
+
+
+async def test_an_occurrence_without_a_transcript_adds_no_history(room, now, metrics):
+    _ended_series(room)
+    room.state["meta"]["meeting"].pop("transcriptId")
+    now["t"] = _epoch(2026, 11, 7, 15, 40)
+    await meeting_invites.advance("r")
+    assert "history" not in room.state["meta"]["meeting"]

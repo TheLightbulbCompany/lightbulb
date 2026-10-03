@@ -239,3 +239,18 @@ async def test_put_has_no_public_field(monkeypatch):
     item = await repo.put(address="a@b.c", owner_id="o", verified_senders=["O@x.y"])
     assert "public" not in item
     assert item["verified_senders"] == ["o@x.y"]
+
+
+@pytest.mark.asyncio
+async def test_add_meeting_is_an_idempotent_set_add(agent_email_table):
+    await repo.put(address="agents@acme.isol8.co", owner_id="o", verified_senders=[])
+    await repo.add_meeting("Agents@acme.isol8.co", "m1")
+    await repo.add_meeting("agents@acme.isol8.co", "m1")
+    await repo.add_meeting("agents@acme.isol8.co", "m2")
+    assert (await repo.get_by_address("agents@acme.isol8.co"))["meetings"] == {"m1", "m2"}
+
+
+@pytest.mark.asyncio
+async def test_add_meeting_never_raises(agent_email_table):
+    await repo.add_meeting("nobody@acme.isol8.co", "m1")  # no row: the condition fails, logged only
+    assert await repo.get_by_address("nobody@acme.isol8.co") is None

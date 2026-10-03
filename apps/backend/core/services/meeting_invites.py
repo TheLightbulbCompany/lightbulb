@@ -21,7 +21,7 @@ from dateutil.rrule import rruleset, rrulestr
 from core.config import settings
 from core.constants import SYSTEM_ACTOR_ID
 from core.observability.metrics import put_metric
-from core.repositories import container_repo, messaging_repo
+from core.repositories import agent_email_repo, container_repo, messaging_repo
 from core.services import clerk_admin, meeting_bots, meeting_rsvp, messaging
 from core.services.agent_mail_inbound import authenticated_sender, parse_from_address
 
@@ -567,6 +567,7 @@ async def _apply(owner_id: str, invite: Invite, room_id: str, creator: str, team
         meta = await messaging_repo.get_room(room_id)
         if meta is None:
             return None  # no room came of it: the CEO reads it as mail
+        await agent_email_repo.add_meeting(team.get("address") or "", room_id)  # the inbox lists it; never raises
         current = meta.get("meeting")  # ours, or a racing delivery's
     elif (
         int((((await messaging_repo.get_room(room_id)) or {}).get("meeting") or {}).get("sequence", 0))
@@ -617,8 +618,17 @@ async def _apply(owner_id: str, invite: Invite, room_id: str, creator: str, team
     return "meeting_scheduled"
 
 
-_CALL_KEYS = ("inCallAt", "lastBotStatus", "transcriptAttachedAt", "transcriptId", "notesRunId", "notesMailedAt")
+_CALL_KEYS = (
+    "inCallAt",
+    "lastBotStatus",
+    "transcriptAttachedAt",
+    "transcriptId",
+    "transcriptRoomId",
+    "notesRunId",
+    "notesMailedAt",
+)
 _OCCURRENCE_KEYS = (*_BOT_KEYS, *_CALL_KEYS)
+_HISTORY_MAX = 30
 
 
 async def _reschedule_locked(owner_id: str, room_id: str, meeting: dict, *, now: float) -> str:
@@ -639,6 +649,9 @@ async def _reschedule_locked(owner_id: str, room_id: str, meeting: dict, *, now:
             return "series_over"
         fields = {"startAt": int(nxt[0].timestamp()), "endAt": int(nxt[1].timestamp()), "status": "scheduled"}
         drop = _OCCURRENCE_KEYS
+    if meeting.get("transcriptId"):  # the occurrence's keys go; its transcript stays readable from the inbox
+        past = {k: meeting.get(k) for k in ("startAt", "transcriptId", "transcriptRoomId")}
+        fields["history"] = [past, *(meeting.get("history") or [])][:_HISTORY_MAX]
     written = await _patch_meeting(room_id, fields, drop=drop)
     await _seat_new_agents(owner_id, room_id)
     try:

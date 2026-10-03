@@ -6,12 +6,16 @@ Prefix-convention table (``core.dynamodb.get_table``), matching
 ``channel_link_repo``.
 """
 
+import logging
+
 from boto3.dynamodb.conditions import Key
 from botocore.exceptions import ClientError
 
 from core.config import settings
 from core.dynamodb import get_table, run_in_thread, utc_now_iso
 from core.repositories import company_slug_repo
+
+logger = logging.getLogger(__name__)
 
 
 def _get_table():
@@ -170,3 +174,19 @@ async def update_settings(
             return None
         raise
     return resp.get("Attributes")
+
+
+async def add_meeting(address: str, meeting_id: str) -> None:
+    """Record a meeting (its room id) on the workspace's row, for the team inbox. A DynamoDB ``ADD``
+    to a string set, so a replay is a no-op; ids are never removed. Best effort: the team-mail path
+    must not fail over a listing, so a failure is logged and swallowed."""
+    try:
+        await run_in_thread(
+            _get_table().update_item,
+            Key={"address": normalize(address)},
+            UpdateExpression="ADD meetings :m",
+            ConditionExpression="attribute_exists(address)",
+            ExpressionAttributeValues={":m": {meeting_id}},
+        )
+    except Exception:  # noqa: BLE001 -- see docstring
+        logger.warning("agent_email_repo: add_meeting failed for %s", meeting_id, exc_info=True)

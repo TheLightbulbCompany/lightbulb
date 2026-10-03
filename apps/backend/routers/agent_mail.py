@@ -12,15 +12,19 @@ several backend tasks run behind the ALB, so it is not a real quota. The
 durable fence is the per-owner daily cap enforced in ``agent_mail_send``.
 """
 
+import asyncio
 import hmac
 import re
+import uuid
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from pydantic import BaseModel
 
 from core.auth import AuthContext, get_current_user, resolve_owner_id
-from core.repositories import agent_email_repo, container_repo
-from core.repositories.agent_mail_inbox_repo import list_messages, reply_key
+from core.dynamodb import run_in_thread
+from core.repositories import agent_email_repo, container_repo, messaging_repo
+from core.repositories.agent_mail_inbox_repo import list_messages, list_page, reply_key
+from core.services import meeting_invites, messaging
 from core.services.agent_email import EMAIL_ADDRESS_RE, ensure_team_address, team_address
 from core.services.agent_mail_send import _owner_email, send
 from core.services.rate_bucket import RateBucket
@@ -193,3 +197,89 @@ async def patch_address(body: AddressSettings, auth: AuthContext = Depends(get_c
     if row is None:
         raise HTTPException(status_code=404, detail={"status": "no_address"})
     return _project(row)
+
+
+# ---- the team inbox, read by any workspace member (Clerk) -------------------
+
+_PREVIEW_CHARS = 2_000
+_MEETINGS_MAX = 50
+_TRANSCRIPTS_MAX = 10
+
+
+def _occurrences(meeting: dict) -> list[dict]:
+    """Every occurrence with a transcript, newest first: the current one, then ``history``."""
+    current = [meeting] if meeting.get("transcriptId") else []
+    return [o for o in current + list(meeting.get("history") or []) if o.get("transcriptId")]
+
+
+def _meeting_view(room_id: str, meeting: dict) -> dict:
+    return {
+        "id": room_id,
+        "title": meeting.get("title") or "Meeting",
+        "organizer": meeting.get("organizer"),
+        "status": meeting.get("status"),
+        "start_at": meeting.get("startAt"),
+        "end_at": meeting.get("endAt"),
+        "repeats": bool(meeting.get("recurrence")),
+        "transcripts": [{"start_at": o.get("startAt")} for o in _occurrences(meeting)[:_TRANSCRIPTS_MAX]],
+    }
+
+
+def _mail_view(address: str, r: dict) -> dict:
+    out = r.get("direction") == "out"
+    return {
+        "key": r["received_key"],
+        "direction": "out" if out else "in",
+        "from": address if out else r.get("from_addr", ""),
+        "to": r.get("to", "") if out else address,
+        "subject": r.get("subject", ""),
+        "at": r.get("received_at", ""),
+        "agent_id": r.get("agent_id"),
+        "text": (r.get("text") or "")[:_PREVIEW_CHARS],
+    }
+
+
+async def _meeting(owner_id: str, meeting_id: str) -> dict | None:
+    """The live meeting record, only when it is this workspace's."""
+    meta = await messaging_repo.get_room(meeting_id)
+    return meta["meeting"] if meta and meta.get("ownerId") == owner_id and meta.get("meeting") else None
+
+
+@router.get("/inbox")
+async def team_inbox(
+    before: str | None = None,
+    limit: int = Query(30, ge=1, le=50),
+    auth: AuthContext = Depends(get_current_user),
+) -> dict:
+    owner_id = resolve_owner_id(auth)
+    row, _ = await _team_row(owner_id)
+    address = row["address"]
+    # ponytail: one read per meeting id ever recorded; page or cap the ids if a workspace books hundreds.
+    ids = sorted(row.get("meetings") or ())
+    records = await asyncio.gather(*(_meeting(owner_id, i) for i in ids))
+    meetings = sorted(
+        (_meeting_view(i, m) for i, m in zip(ids, records, strict=True) if m),
+        key=lambda m: int(m["start_at"] or 0),
+        reverse=True,
+    )[:_MEETINGS_MAX]
+    rows, nxt = await list_page(address, before=before, limit=limit)
+    return {"address": address, "meetings": meetings, "messages": [_mail_view(address, r) for r in rows], "next": nxt}
+
+
+@router.get("/meetings/{meeting_id}/transcript")
+async def meeting_transcript(meeting_id: str, start_at: int, auth: AuthContext = Depends(get_current_user)) -> Response:
+    owner_id = resolve_owner_id(auth)
+    try:
+        meeting_id = str(uuid.UUID(meeting_id))
+    except ValueError:
+        raise HTTPException(status_code=404, detail={"status": "not_found"}) from None
+    meeting = await _meeting(owner_id, meeting_id) or {}
+    hit = next((o for o in _occurrences(meeting) if int(o.get("startAt") or 0) == start_at), None)
+    if hit is None:
+        raise HTTPException(status_code=404, detail={"status": "not_found"})
+    room_id = hit.get("transcriptRoomId") or await meeting_invites.output_room(owner_id, meeting_id)
+    try:
+        _, data = await run_in_thread(messaging.load_attachment, owner_id, room_id, hit["transcriptId"])
+    except messaging.ApiProblem:
+        raise HTTPException(status_code=404, detail={"status": "not_found"}) from None
+    return Response(content=data, media_type="text/plain; charset=utf-8")

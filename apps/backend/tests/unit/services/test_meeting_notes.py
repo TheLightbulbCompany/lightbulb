@@ -93,6 +93,7 @@ async def test_a_final_transcript_attaches_once(env):
     )
     assert env.line.await_args.kwargs["attachments"] == [{"id": "att-1", "fileName": "transcript.txt"}]
     assert env.meta["meeting"]["transcriptAttachedAt"]
+    assert (env.meta["meeting"]["transcriptId"], env.meta["meeting"]["transcriptRoomId"]) == ("att-1", DEFAULT)
     await mod.on_transcript(ROOM, whole, True)  # a retried final
     env.store.assert_called_once()
 
@@ -307,3 +308,9 @@ async def test_without_a_transcript_the_mail_says_none_was_captured(legacy):
     legacy.meta["meeting"].pop("transcriptId")
     await mod.on_ended(ROOM)
     assert legacy.send.await_args.kwargs["body_text"].endswith("No transcript was captured.")
+
+
+async def test_the_mail_reads_the_transcript_from_the_room_it_was_stored_for(legacy):
+    legacy.meta["meeting"]["transcriptRoomId"] = "stored-room"
+    await mod.on_ended(ROOM)
+    legacy.load.assert_called_once_with("org_1", "stored-room", "att-1")

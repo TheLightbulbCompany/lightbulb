@@ -16,7 +16,7 @@ hook-token-authenticated owner before it is honoured.
 
 Agent-SENT mail is recorded here too (``put_sent``, ``direction="out"``) so the
 ``by-message-id`` GSI can trace a reply's ``In-Reply-To``/``References`` back
-to the agent who wrote the thread; ``list_messages`` never shows those rows.
+to the agent who wrote the thread; ``list_messages`` never shows those rows (``list_page`` does).
 """
 
 import logging
@@ -155,6 +155,19 @@ async def list_messages(
             break
         kwargs["ExclusiveStartKey"] = last
     return items[:limit]
+
+
+async def list_page(address: str, *, before: str | None = None, limit: int = 30) -> tuple[list[dict], str | None]:
+    """One newest-first page of BOTH directions at ``address`` and the ``received_key`` to pass as
+    ``before`` for the next page (None at the end)."""
+    cond = Key("address").eq(_normalize(address))
+    if before:
+        cond = cond & Key("received_key").lt(before)
+    resp = await run_in_thread(
+        _get_table().query, KeyConditionExpression=cond, ScanIndexForward=False, Limit=max(1, min(int(limit), 50))
+    )
+    items = resp.get("Items", [])
+    return items, (items[-1]["received_key"] if items and resp.get("LastEvaluatedKey") else None)
 
 
 async def get_message(address: str, received_key: str) -> dict | None:

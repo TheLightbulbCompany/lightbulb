@@ -687,6 +687,7 @@ fn prune(root: &Path) {
 }
 
 struct Env {
+    app: tauri::AppHandle,
     data: PathBuf,
     home: PathBuf,
     approved: Vec<PathBuf>,
@@ -804,8 +805,9 @@ async fn pick_up(ticket: Value, folder: Option<String>, env: &Env) -> Result<Val
     };
     let session = uuid::Uuid::new_v4().to_string();
     let argv = argv(&claude, &transcript, &session);
-    crate::session_start::launch(&env.data.join("session-launch"), &cwd, &argv, &session)
-        .map_err(|(code, message)| fail(code, &message))?;
+    crate::session_start::start_held(&env.app, cwd, argv)
+        .await
+        .map_err(|e| fail("LAUNCH_FAILED", &format!("The session didn't start: {e}")))?;
     let (branch, worktree) = code.unzip();
     Ok(json!({
         "ok": true,
@@ -901,6 +903,7 @@ pub async fn session_pickup(
         .app_data_dir()
         .map_err(|_| fail("STORAGE_FAILED", "Desktop storage is unavailable."))?;
     let env = Env {
+        app: app.clone(),
         device_id: crate::pair_state::load(&data).map(|p| p.device_id_mac),
         data,
         home: std::env::var_os("HOME")
@@ -1275,9 +1278,6 @@ mod tests {
                 "user"
             ]
         );
-        let script =
-            crate::session_start::script(Path::new("/w"), Path::new("/t/x.command"), &argv);
-        assert!(script.contains("exec '/bin/claude' '--resume' '/d/it'\\''s.jsonl' '--fork-session' '--session-id' 'u-1' '--setting-sources' 'user'\n"));
     }
 
     #[test]

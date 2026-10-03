@@ -77,7 +77,7 @@ export function NewSessionButton({ onOpen }: { onOpen: () => void }) {
 /**
  * An empty session you just type into, the way Claude Code and Codex start one.
  * Every choice is among what the caller's OWN Mac reported (installed CLIs, approved
- * folders), pre-filled from last use; the Mac re-validates and opens Terminal (no
+ * folders), pre-filled from last use; the Mac re-validates and opens the session there (no
  * prompt there: only the person the Mac is paired to can start sessions on it). The view becomes the live session once it reports in under Sessions.
  */
 export function NewSessionView({ sessions, onEvent, onOpenSession, onClose }: {
@@ -233,7 +233,7 @@ export function NewSessionView({ sessions, onEvent, onOpenSession, onClose }: {
           onClick={() => { try { if (scope) localStorage.removeItem(pendingKey(scope)); } catch { /* storage off */ } setPending(null); }}>
           Dismiss and start another</Button>}
         {busy && <p role="status">{pending?.phase === "unknown" ? pending.error
-          : pending?.phase === "opened" ? (localMac ? "Opened in its own window. Waiting for the session…" : `Opened in Terminal on ${where}. Waiting for the session…`) : `Starting on ${where}…`}</p>}
+          : pending?.phase === "opened" ? (localMac ? "Opened in its own window. Waiting for the session…" : `Opened on ${where}. Waiting for the session…`) : `Starting on ${where}…`}</p>}
         {pending?.phase === "failed" && <p role="alert" className="text-err">{pending.error}</p>}
         {tooLong && <p role="alert" className="text-err">The first message is too long.</p>}
       </div>

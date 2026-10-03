@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, fireEvent } from "@testing-library/react";
+import { SWRConfig } from "swr";
 import { AgentInspectorPanel } from "../AgentInspectorPanel";
 
 // The inspector mounts the SAME per-agent control tabs AgentsPanel does. Stub
@@ -35,9 +36,24 @@ vi.mock("@/components/teams/panels/RoutinesPanel", () => ({
 // props fed by the shell — a small helper renders with the current fixtures.
 let agentParam: string | null = "agent_42";
 let inspectorTabParam: string | null = null;
+// Some unmocked children use SWR directly. Isolate it per render so no
+// revalidation or retry fires after the test environment is torn down
+// (that surfaced as an intermittent "document is not defined").
 const renderInspector = () =>
   render(
-    <AgentInspectorPanel agentId={agentParam} initialTab={inspectorTabParam} />,
+    <SWRConfig
+      value={{
+        provider: () => new Map(),
+        shouldRetryOnError: false,
+        revalidateOnFocus: false,
+        revalidateOnReconnect: false,
+        refreshInterval: 0,
+        isVisible: () => true,
+        isOnline: () => true,
+      }}
+    >
+      <AgentInspectorPanel agentId={agentParam} initialTab={inspectorTabParam} />
+    </SWRConfig>,
   );
 
 // agents.list feeds the header (name/emoji), mirroring AgentsPanel.

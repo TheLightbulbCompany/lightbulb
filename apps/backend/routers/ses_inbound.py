@@ -216,7 +216,10 @@ async def handle_ses_inbound(body: SesInboundBody, request: Request):
             team = await is_team_address(candidate)
             if team is not None:
                 row = await meeting_invites.team_row(team[0], candidate)
-                break
+                if row is not None:
+                    break
+                team = None  # no CEO to read it: try the next recipient
+                continue
             row = await get_by_address(candidate)
             if row is not None:
                 break

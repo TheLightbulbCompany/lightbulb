@@ -1122,3 +1122,37 @@ def test_a_members_invite_to_the_team_address_is_a_meeting(client, monkeypatch):
     assert resp.json()["status"] == "meeting_scheduled"
     put.assert_awaited_once()
     deliver.assert_not_awaited()
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [("UID:evt-1", "SEQUENCE:abc\r\nUID:evt-1"), ("DTSTART:20261003T190000Z", "DTSTART;TZID=America:20261003T190000")],
+)
+def test_a_members_malformed_invite_is_ceo_mail_not_5xx(client, monkeypatch, bad):
+    _enable(monkeypatch)
+    _dedup_recorded(monkeypatch)
+    put, deliver = _team(monkeypatch, [{"email": SENDER}])
+
+    resp = _post(client, _body(to=[TEAM_ADDRESS], calendar=INVITE.replace(*bad)))
+
+    assert resp.status_code == 200 and resp.json()["status"] == "delivered"
+    put.assert_not_awaited()
+    assert deliver.await_args.kwargs["agent_id"] == CEO_ID
+
+
+def test_a_team_address_without_a_ceo_falls_through_to_the_next_recipient(client, monkeypatch):
+    from core.services import meeting_invites
+
+    _enable(monkeypatch)
+    _dedup_recorded(monkeypatch)
+    monkeypatch.setattr(ses_inbound, "is_team_address", AsyncMock(side_effect=[(OWNER_ID, "acme"), None]))
+    monkeypatch.setattr(meeting_invites, "team_row", AsyncMock(return_value=None))
+    monkeypatch.setattr(ses_inbound, "get_by_address", AsyncMock(return_value=_row()))
+    monkeypatch.setattr(ses_inbound, "trial_block_reason", AsyncMock(return_value=None))
+    deliver = AsyncMock(return_value="delivered")
+    monkeypatch.setattr(ses_inbound, "deliver_to_agent", deliver)
+
+    resp = _post(client, _body(to=[TEAM_ADDRESS, RECIPIENT], calendar=INVITE))
+
+    assert resp.json()["status"] == "delivered"
+    assert deliver.await_args.kwargs["agent_id"] == AGENT_ID

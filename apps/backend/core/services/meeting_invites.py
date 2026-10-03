@@ -10,7 +10,7 @@ import logging
 import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+from zoneinfo import ZoneInfo
 
 from core.repositories import agent_email_repo, meetings_repo
 from core.repositories.paperclip_repo import PaperclipRepo
@@ -59,7 +59,17 @@ def _when(params: str, value: str) -> datetime:
 
 
 def parse(calendar_text: str) -> Invite | None:
-    """The first VEVENT of an iCalendar body, or None (no VEVENT, no UID, an unknown zone)."""
+    """The first VEVENT of an iCalendar body, or None for anything it cannot use: no VEVENT, no
+    UID, an oversized UID, a single-instance RECURRENCE-ID edit, or any unreadable value. Total:
+    it never raises, so a malformed invite is mail, never a 5xx."""
+    try:
+        return _parse(calendar_text)
+    except Exception:  # noqa: BLE001 -- sender-written input; no content in the log
+        logger.debug("meeting invite: unparseable calendar part")
+        return None
+
+
+def _parse(calendar_text: str) -> Invite | None:
     text = re.sub(r"\n[ \t]", "", (calendar_text or "").replace("\r\n", "\n"))
     method, stack, props, attendees = "REQUEST", [], {}, []
     for line in text.split("\n"):
@@ -81,18 +91,15 @@ def parse(calendar_text: str) -> Invite | None:
                 attendees.append(_email(value))
             props.setdefault(name, (params, value))
     uid = props.get("UID", ("", ""))[1].strip()
-    if not uid or "DTSTART" not in props:
+    # ponytail: RRULE series get only the row the first invite wrote; per-instance handling when a recurring customer meeting appears.
+    if not uid or len(uid) > 512 or "DTSTART" not in props or "RECURRENCE-ID" in props:
         return None
-    try:
-        start = _when(*props["DTSTART"])
-        end = _when(*props["DTEND"]) if "DTEND" in props else None
-    except (ValueError, ZoneInfoNotFoundError):
-        logger.warning("meeting invite %s: unreadable DTSTART/DTEND", uid)
-        return None
+    start = _when(*props["DTSTART"])
+    end = _when(*props["DTEND"]) if "DTEND" in props else None
     get = lambda key: _text(props.get(key, ("", ""))[1])  # noqa: E731
-    url = get("X-GOOGLE-CONFERENCE").strip() or next(
-        (u.group(0) for u in (_MEET_URL.search(get(k)) for k in ("LOCATION", "DESCRIPTION")) if u), None
-    )
+    conference = get("X-GOOGLE-CONFERENCE").strip()
+    url = conference if _MEET_URL.fullmatch(conference) else None
+    url = url or next((u.group(0) for u in (_MEET_URL.search(get(k)) for k in ("LOCATION", "DESCRIPTION")) if u), None)
     cancelled = method == "CANCEL" or get("STATUS").strip().upper() == "CANCELLED"
     return Invite(
         uid=uid,
@@ -103,7 +110,7 @@ def parse(calendar_text: str) -> Invite | None:
         summary=get("SUMMARY").strip(),
         description=get("DESCRIPTION"),
         organizer_email=_email(props.get("ORGANIZER", ("", ""))[1]),
-        attendee_emails=attendees,
+        attendee_emails=attendees[:100],
         meeting_url=url or None,
     )
 
@@ -129,17 +136,20 @@ async def team_row(owner_id: str, address: str) -> dict | None:
 async def handle_team_mail(owner_id: str, payload, team: dict) -> str | None:
     """A member's invite becomes (or updates, or cancels) a meeting row and returns the outcome.
     None means "this is mail": no calendar part, an unreadable one, or a stranger's invite."""
-    invite = parse(payload.calendar) if getattr(payload, "calendar", None) else None
-    if invite is None or (invite.method == "REQUEST" and not invite.meeting_url):
-        return None  # not a Meet invite we can join: the CEO reads it as mail
-    # The ICS organizer and attendees are sender-written; only the authenticated From decides.
+    if not getattr(payload, "calendar", None):
+        return None
+    # The ICS organizer and attendees are sender-written; only the authenticated From decides,
+    # and only a member's calendar part is parsed at all.
     sender = parse_from_address(payload.from_)
     if not authenticated_sender(payload.verdicts or {}, payload.headers or {}, sender):
         return None
     members = {str(m["email"]).lower() for m in await clerk_admin.list_organization_members(owner_id) if m.get("email")}
-    inviter = sender if sender and (sender in members or sender_allowed(team, sender)) else None
-    if inviter is None:
+    if not sender or not (sender in members or sender_allowed(team, sender)):
         return None  # a stranger's mail: no bot, no room -- the CEO reads it as mail
+    inviter = sender
+    invite = parse(payload.calendar)
+    if invite is None or (invite.method == "REQUEST" and not invite.meeting_url):
+        return None  # not a Meet invite we can join: the CEO reads it as mail
     existing = await meetings_repo.get_meeting(owner_id, invite.uid)
     if existing and int(existing.get("sequence", 0)) > invite.sequence:
         return "meeting_stale"

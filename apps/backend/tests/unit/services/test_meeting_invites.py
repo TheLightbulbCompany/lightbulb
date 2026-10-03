@@ -114,6 +114,36 @@ def test_a_windows_tzid_is_none():
     assert meeting_invites.parse(OUTLOOK.replace("America/Los_Angeles", "Pacific Standard Time")) is None
 
 
+@pytest.mark.parametrize(
+    "bad",
+    [
+        ("SEQUENCE:0", "SEQUENCE:abc"),
+        ("DTSTART;TZID=America/New_York:", "DTSTART;TZID=America:"),
+        ("UID:7kukuqrfedlm2f9t0vr42q2gjv@google.com", "UID:" + "x" * 513),
+        ("SEQUENCE:0", "RECURRENCE-ID;TZID=America/New_York:20261010T150000\r\nSEQUENCE:0"),
+    ],
+    ids=["bad-sequence", "zone-directory", "uid-too-long", "recurrence-id"],
+)
+def test_unusable_invites_are_none(bad):
+    assert meeting_invites.parse(GOOGLE.replace(*bad)) is None
+
+
+def test_a_non_meet_conference_url_is_not_trusted():
+    zoom = GOOGLE.replace(
+        "X-GOOGLE-CONFERENCE:https://meet.google.com/abc-defg-hij", "X-GOOGLE-CONFERENCE:https://evil.example/j/1"
+    )
+    assert meeting_invites.parse(zoom).meeting_url == "https://meet.google.com/abc-defg-hij"  # from DESCRIPTION
+    only = zoom.replace("Join with Google Meet: https://m", "Join: https://x").replace(
+        " eet.google.com/abc-defg-hij", " .example/"
+    )
+    assert meeting_invites.parse(only).meeting_url is None
+
+
+def test_attendees_are_capped():
+    many = "\r\n".join(f"ATTENDEE:mailto:p{i}@acme.com" for i in range(150))
+    assert len(meeting_invites.parse(GOOGLE.replace("SEQUENCE:0", many + "\r\nSEQUENCE:0")).attendee_emails) == 100
+
+
 def test_utc_and_date_only_starts():
     utc = meeting_invites.parse(
         OUTLOOK.replace("DTSTART;TZID=America/Los_Angeles:20261005T090000", "DTSTART:20261005T090000Z")

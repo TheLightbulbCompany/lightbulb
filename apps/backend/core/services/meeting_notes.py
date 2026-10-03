@@ -21,6 +21,7 @@ logger = logging.getLogger(__name__)
 
 _WAIT_S, _POLL_S = 60, 2  # outlasts the worker's 45 s final-transcript retry budget
 _CLAIM_S = 120  # a notes attempt younger than this is still running; older, it died and is retried
+_NOTES_TRIES, _NOTES_RETRY_S = 3, 10
 
 
 def owed(meeting: dict) -> bool:
@@ -80,6 +81,7 @@ async def on_ended(room_id: str) -> None:
         attempted = True
         put_metric("meeting.notes.failed")
         logger.warning("meeting room %s: notes failed", room_id, exc_info=True)
+    # Not gated on the notes succeeding: a parked series is worse than one occurrence's lost notes.
     if attempted:  # not while another end path is on the notes: it advances when it is done
         await meeting_invites.advance(room_id)
 
@@ -95,12 +97,19 @@ async def _on_ended(room_id: str) -> bool:
     token = await container_repo.try_claim_owner_lifecycle(lease, stale_s=_CLAIM_S)
     if not token:
         return False  # another end path is on the notes
-    try:
-        await _notes(room_id, meta)
-    except Exception:
-        # A failed attempt frees the claim at once, so the next terminal webhook retries it.
-        await container_repo.release_owner_lifecycle_claim(lease, token=token)
-        raise
+    # Two more tries under the same claim before the series advances past this occurrence;
+    # each step of _notes is idempotent on its own marker and key.
+    for attempt in range(_NOTES_TRIES):
+        try:
+            await _notes(room_id, meta)
+            return True
+        except Exception:
+            if attempt == _NOTES_TRIES - 1:
+                # A failed attempt frees the claim at once, so the next terminal webhook retries it.
+                await container_repo.release_owner_lifecycle_claim(lease, token=token)
+                raise
+            logger.warning("meeting room %s: notes attempt %d failed", room_id, attempt + 1, exc_info=True)
+            await asyncio.sleep(_NOTES_RETRY_S)
     return True
 
 
@@ -123,19 +132,23 @@ async def _notes(room_id: str, meta: dict) -> None:
     target = await meeting_invites.output_room(owner_id, room_id)
     company = await PaperclipRepo(table_name="paperclip-companies").resolve_owner_row(owner_id)
     ceo = (getattr(company, "starter_agent_ids", None) or {}).get("ceo")
+    if not meeting.get("transcriptAttachedAt"):
+        # No notes run: the output room is the workspace's default room, whose history is not the
+        # meeting's, so notes written from it would be invented.
+        await meeting_invites._post_line(
+            owner_id,
+            target,
+            f"meeting:{room_id}:{occurrence}:no-transcript",
+            f"**{title}** ended. No transcript was captured, so there are no notes.",
+        )
     # The run is dispatched in the output room, so the CEO must sit there.
-    if ceo and not meeting.get("notesRunId") and await messaging_repo.get_member(target, "agent", ceo):
+    elif ceo and not meeting.get("notesRunId") and await messaging_repo.get_member(target, "agent", ceo):
         message = await meeting_invites._post_line(
             owner_id,
             target,
             f"meeting:{room_id}:{occurrence}:notes",
             f"Write the meeting notes for {title}: decisions, open questions, action items as Paperclip "
-            "tasks for their owners, two paragraphs max; "
-            + (
-                "the transcript is attached"
-                if meeting.get("transcriptAttachedAt")
-                else "no transcript was captured; write notes from the room history"
-            ),
+            "tasks for their owners, two paragraphs max; the transcript is attached",
             dispatch_targets=[{"agentId": ceo, "eventKind": "user_request"}],
         )
         if message:

@@ -133,10 +133,15 @@ async def test_on_ended_waits_for_the_transcript_then_proceeds(env):
 async def test_on_ended_proceeds_without_a_transcript_after_sixty_seconds(env):
     await mod.on_ended(ROOM)
     assert env.sleep.await_count == 30 and env.sleep.await_args.args == (2,)
+    # No notes run from the default room's unrelated history: one plain line, then the mail.
     env.line.assert_awaited_once()
-    text = env.line.await_args.args[3]
-    assert text.endswith("no transcript was captured; write notes from the room history")
-    assert "the transcript is attached" not in text
+    assert env.line.await_args.args[1:] == (
+        DEFAULT,
+        f"meeting:{ROOM}:1790972400:no-transcript",
+        "**Weekly sync** ended. No transcript was captured, so there are no notes.",
+    )
+    assert "dispatch_targets" not in env.line.await_args.kwargs and "notesRunId" not in env.meta["meeting"]
+    env.send.assert_awaited_once()
 
 
 async def test_the_organizer_mail_carries_the_room_url_and_no_meeting_url(env):
@@ -165,20 +170,20 @@ async def test_on_ended_never_raises(env):
 
 async def test_a_crash_after_the_claim_is_finished_by_a_later_on_ended(env):
     env.meta["meeting"]["transcriptAttachedAt"] = 1
-    env.send.side_effect = [RuntimeError("ses"), "<id@ses>"]
-    await mod.on_ended(ROOM)  # the notes message went out, the mail did not
+    env.send.side_effect = [RuntimeError("ses")] * 3 + ["<id@ses>"]
+    await mod.on_ended(ROOM)  # the notes message went out, the mail did not (three tries)
     assert env.meta["meeting"]["notesRunId"] and "notesMailedAt" not in env.meta["meeting"]
     env.release.assert_awaited_once_with(f"meeting-notes#{ROOM}", token="tok")  # a caught failure frees the claim
     env.claim.return_value = None  # a crashed attempt released nothing: within 120 s its claim still stands
     await mod.on_ended(ROOM)
-    assert env.send.await_count == 1
+    assert env.send.await_count == 3
     env.claim.return_value = "tok2"  # 121 s later it is stale
     await mod.on_ended(ROOM)
     assert env.claim.await_args.args == (f"meeting-notes#{ROOM}",) and env.claim.await_args.kwargs == {"stale_s": 120}
     env.line.assert_awaited_once()  # the notes run is not asked for twice
-    assert env.send.await_count == 2 and env.meta["meeting"]["notesMailedAt"]
+    assert env.send.await_count == 4 and env.meta["meeting"]["notesMailedAt"]
     await mod.on_ended(ROOM)  # done: nothing more
-    assert env.send.await_count == 2
+    assert env.send.await_count == 4
 
 
 async def test_a_failed_send_leaves_the_marker_unset_so_the_retry_mails(env):
@@ -189,7 +194,7 @@ async def test_a_failed_send_leaves_the_marker_unset_so_the_retry_mails(env):
     env.release.assert_awaited_once()  # freed at once: `done` arrives well inside the claim's 120 s
     env.send.return_value = "<id@ses>"
     await mod.on_ended(ROOM)  # the terminal webhook's redelivery
-    assert env.meta["meeting"]["notesMailedAt"] and env.send.await_count == 2
+    assert env.meta["meeting"]["notesMailedAt"] and env.send.await_count == 4  # three tries, then the redelivery
     env.line.assert_awaited_once()  # the notes run is not repeated
 
 
@@ -326,7 +331,7 @@ async def test_a_redate_during_the_wait_keeps_todays_key_and_tomorrows_run(env):
     env.sleep.side_effect = redate
     await mod.on_ended(ROOM)
     assert env.sleep.await_count == 1  # stopped waiting on the other occurrence's read
-    assert env.line.await_args.args[2] == f"meeting:{ROOM}:{today}:notes"
+    assert env.line.await_args.args[2] == f"meeting:{ROOM}:{today}:no-transcript"
     assert "notesRunId" not in env.meta["meeting"]
     # Tomorrow's call happens: its own notes run goes out under its own key.
     env.meta["meeting"].update(status="ended", inCallAt=1, transcriptAttachedAt=1)
@@ -339,3 +344,23 @@ async def test_the_after_meeting_mail_goes_to_the_inviting_member(env):
     env.meta["meeting"].update(transcriptAttachedAt=1, invitedBy="member@acme.com", organizer="host@outside.example")
     await mod.on_ended(ROOM)
     assert env.send.await_args.kwargs["to"] == "member@acme.com"
+
+
+async def test_a_notes_attempt_that_fails_once_is_retried_before_the_advance(env):
+    env.meta["meeting"]["transcriptAttachedAt"] = 1
+    env.send.side_effect = [RuntimeError("ses"), "<id@ses>"]
+    await mod.on_ended(ROOM)
+    env.line.assert_awaited_once()  # one notes run
+    assert env.send.await_count == 2 and env.meta["meeting"]["notesMailedAt"]
+    env.sleep.assert_awaited_once_with(10)
+    env.release.assert_not_awaited()
+    env.advance.assert_awaited_once_with(ROOM)
+
+
+async def test_three_failed_notes_attempts_still_advance_the_series(env):
+    env.meta["meeting"]["transcriptAttachedAt"] = 1
+    env.send.side_effect = RuntimeError("ses")
+    await mod.on_ended(ROOM)
+    assert env.send.await_count == 3 and "notesMailedAt" not in env.meta["meeting"]
+    env.release.assert_awaited_once()
+    env.advance.assert_awaited_once_with(ROOM)

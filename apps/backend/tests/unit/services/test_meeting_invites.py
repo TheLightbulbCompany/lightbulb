@@ -1442,3 +1442,48 @@ async def test_a_transcript_written_after_the_callers_read_still_lands_in_histor
     assert await meeting_invites._reschedule_locked("org_1", "r", stale, now=now["t"]) == "advanced"
     meeting = room.state["meta"]["meeting"]
     assert meeting["history"][0]["transcriptId"] == "t-late" and "transcriptId" not in meeting
+
+
+async def test_a_late_answer_from_an_agent_outside_the_default_room_is_surfaced_there(table, monkeypatch):  # noqa: F811
+    repo, messaging = meeting_invites.messaging_repo, meeting_invites.messaging
+    monkeypatch.setattr(messaging, "human_emails", AsyncMock(return_value={}))
+    monkeypatch.setattr(messaging, "load_agent_roster", AsyncMock(return_value=[{"id": FRIDAY, "name": "Friday"}]))
+    human = [_member("human", USER_A, "owner")]
+    default, hidden = messaging.default_room_id(OWNER), repo.deterministic_room_id(OWNER, USER_A, "meet")
+    rooms = (
+        (default, human, {}),
+        (
+            hidden,
+            human + [_member("agent", FRIDAY, listen="mentions", handle="friday")],
+            {"meeting": {"uid": "a", "title": "Weekly sync"}, "hidden": True},
+        ),
+    )
+    for room_id, members, extra in rooms:
+        await repo.create_room(
+            owner_id=OWNER,
+            room_id=room_id,
+            client_room_id=room_id,
+            creator_user_id=USER_A,
+            name="r",
+            kind="channel",
+            members=members,
+            req_hash=repo.request_hash(room_id),
+            extra=extra,
+        )
+    request = messaging.AgentMessageRequest.model_validate(
+        {
+            "eventId": "live-late:run-9",
+            "roomId": hidden,
+            "agentId": FRIDAY,
+            "text": "Three tasks open.",
+            "replyToMessageId": None,
+            "threadRootMessageId": None,
+        }
+    )
+    first = await messaging.create_agent_message(OWNER, request)
+    again = await messaging.create_agent_message(OWNER, request)  # a replay posts nothing new
+    assert str(first.room_id) == default and again.message_id == first.message_id
+    assert (await repo.get_room(default))["lastSeq"] == 1 and (await repo.get_room(hidden))["lastSeq"] == 0
+    line = await repo.get_message_by_id(default, str(first.message_id))
+    assert line["author"]["kind"] == "system"
+    assert line["text"] == "**Friday**, after **Weekly sync**:\n\nThree tasks open."

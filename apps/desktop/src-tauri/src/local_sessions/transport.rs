@@ -4483,7 +4483,7 @@ mod tests {
                 "the relay rejects the whole frame over one unknown status word"
             );
             let ack = json!({"type":"local.device.heartbeat.ack","rejected":[SID_B],
-                "reconcile":[],"serverTime":1010});
+                "reconcile":[],"serverTime":1010,"watching":[]});
             let golden_ack: Value = serde_json::from_str(GOLDEN_HEARTBEAT_ACK).unwrap();
             assert_eq!(frame_keys(&ack), frame_keys(&golden_ack));
             reply(&mut socket, ack).await;

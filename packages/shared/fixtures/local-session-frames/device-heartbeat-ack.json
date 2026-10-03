@@ -1,1 +1,1 @@
-{"type":"local.device.heartbeat.ack","rejected":["s2"],"reconcile":[{"sessionId":"s","requestId":"r","generation":"g","state":"unknown"}],"serverTime":10010}
+{"type":"local.device.heartbeat.ack","rejected":["s2"],"reconcile":[{"sessionId":"s","requestId":"r","generation":"g","state":"unknown"}],"serverTime":10010,"watching":[]}

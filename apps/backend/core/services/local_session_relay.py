@@ -21,7 +21,7 @@ from core.dynamodb import utc_now_iso
 from core.observability.product_analytics import capture_product_event
 from core.observability.session_analytics import capture_session_event
 from core.repositories import local_sessions_repo as repo, messaging_repo as store
-from core.services import local_sessions as sessions, session_pickup
+from core.services import local_sessions as sessions, session_pickup, session_screen
 from core.services.connection_service import ConnectionService
 from core.services.management_api_client import ManagementApiClient
 from core.services.messaging import ApiProblem, ContractModel, make_live_event
@@ -555,8 +555,13 @@ class LocalSessionRelay:
                     response["serverTime"] = int(time.time())
                     response["features"] = FEATURES
                 elif isinstance(message, DeviceHeartbeat):
-                    response = await session_pickup.ack_with_pickup(
-                        await self._device_heartbeat(cid, connection, enrollment, message), owner, human, device
+                    response = await session_screen.ack_with_watching(
+                        await session_pickup.ack_with_pickup(
+                            await self._device_heartbeat(cid, connection, enrollment, message), owner, human, device
+                        ),
+                        owner,
+                        human,
+                        device,
                     )
                     notify_resources = False
                 elif isinstance(message, Ended):

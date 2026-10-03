@@ -50,6 +50,7 @@ from routers import (
     desktop_execution,
     desktop_sessions,
     desktop_session_pickup,
+    desktop_session_resume,
     google_accounts,
     integrations,
     launch,
@@ -849,6 +850,7 @@ app.include_router(gateway_relay.router, prefix="/api/v1/gateway", tags=["gatewa
 app.include_router(desktop_execution.router, prefix="/api/v1/desktop-execution", tags=["desktop"])
 app.include_router(desktop_sessions.router, prefix="/api/v1", tags=["desktop"])
 app.include_router(desktop_session_pickup.router, prefix="/api/v1", tags=["desktop"])
+app.include_router(desktop_session_resume.router, prefix="/api/v1", tags=["desktop"])
 
 # Billing routes
 app.include_router(billing.router, prefix="/api/v1/billing", tags=["billing"])

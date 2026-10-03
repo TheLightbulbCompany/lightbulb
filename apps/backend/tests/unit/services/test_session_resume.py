@@ -1,8 +1,10 @@
 """Resume (spec §5.7): real Moto transactions through the relay, the HTTP routes and the device route."""
 
+import json
 import time
 
 import pytest
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse
 from httpx import ASGITransport, AsyncClient
@@ -12,7 +14,11 @@ from core.repositories import local_sessions_repo as repo, messaging_repo
 from core.services import local_sessions as service, session_resume
 from core.services.local_session_grants import AgentInvocation
 from core.services.messaging import ApiProblem
-from tests.unit.services import test_local_session_relay as relay_tests, test_local_sessions as registry_tests
+from tests.unit.services import (
+    test_local_session_relay as relay_tests,
+    test_local_sessions as registry_tests,
+    test_session_pickup as pickup_tests,
+)
 from tests.unit.services.test_local_session_relay import connect, fixture, registration, relay
 from tests.unit.services.test_local_sessions import ALICE, BOB, CLI, MAC, OWNER, ROOM
 
@@ -190,3 +196,71 @@ async def test_resume_routes(transport):
         app.dependency_overrides[get_current_user] = lambda: ALICE
         revoked = await client.delete(f"{base}/resume-allowed/{BOB.user_id}")
         assert revoked.status_code == 200 and revoked.json()["resumeAllowed"] == []
+
+
+@pytest.mark.asyncio
+async def test_an_idle_mac_hears_about_the_resume_on_its_next_heartbeat(transport):
+    sid = await ended_session(transport, BOB)
+    await ask(BOB, sid, "carry on")
+    golden = fixture("device-heartbeat-ack-resume")
+    # Nothing runs on the Mac: its heartbeat lists no sessions and still carries the want.
+    ack = await relay(transport).handle_message("conn-1", {"type": "local.device.heartbeat", "sessions": []})
+    (entry,) = ack["resume"]
+    assert set(ack) == set(golden) and set(entry) == set(golden["resume"][0])
+    assert entry == {
+        "resumeId": RESUME,
+        "sessionId": sid,
+        "provider": "claude",
+        "conversationId": CONVERSATION,
+        "byUserId": BOB.user_id,
+        "byName": "Bob",
+        "title": "a session",
+        "mode": "plan",
+    }
+    assert "carry on" not in json.dumps(ack)
+    messaging_repo._table().update_item(
+        Key={"pk": repo.user_pk(OWNER, ALICE.user_id), "sk": f"RESUMEWANT#{MAC}#{sid}"},
+        UpdateExpression="SET expiresAt = :past",
+        ExpressionAttributeValues={":past": int(time.time()) - 1},
+    )
+    later = await relay(transport).handle_message("conn-1", {"type": "local.device.heartbeat", "sessions": []})
+    assert "resume" not in later  # TTL deletes lazily; an expired want is never delivered
+
+
+@pytest.fixture
+def mac_key(transport, db):
+    key = Ed25519PrivateKey.generate()
+    db[1].update_item(
+        Key={"owner_id": OWNER},
+        UpdateExpression="SET paired_devices.#mac.publicKey = :key",
+        ExpressionAttributeNames={"#mac": MAC},
+        ExpressionAttributeValues={":key": pickup_tests._public(key)},
+    )
+    return key
+
+
+async def report(sid, body, key):
+    from routers.desktop_session_resume import router
+
+    app = FastAPI()
+    app.include_router(router)
+    headers = {"Authorization": f"Bearer {pickup_tests.token(MAC, OWNER, key)}"} if key else {}
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        return await client.post(f"/desktop/session-resume/{sid}/failed", json=body, headers=headers)
+
+
+@pytest.mark.asyncio
+async def test_the_mac_says_why_it_would_not_resume_and_is_not_asked_again(transport, mac_key):
+    sid = await ended_session(transport, BOB)
+    await ask(BOB, sid)
+    assert (await report(sid, {"resumeId": RESUME, "code": "ALREADY_RUNNING"}, None)).status_code == 403
+    assert (await report(sid, {"resumeId": RESUME, "code": "rm -rf"}, mac_key)).status_code == 400
+    assert (await report(sid, {"resumeId": RESUME, "code": "ALREADY_RUNNING"}, mac_key)).status_code == 204
+    status = (await service.get_session(BOB, sid)).resume
+    assert (status.state, status.reason) == ("failed", "ALREADY_RUNNING")
+    assert await want(sid) is None
+    # A second report of the same request changes nothing; a refused resume may be asked again.
+    assert (await report(sid, {"resumeId": RESUME, "code": "LAUNCH_FAILED"}, mac_key)).status_code == 204
+    assert (await service.get_session(BOB, sid)).resume.reason == "ALREADY_RUNNING"
+    again = await ask(BOB, sid, resume_id="cccccccc-3333-4333-8333-333333333333")
+    assert again.resume.state == "pending"

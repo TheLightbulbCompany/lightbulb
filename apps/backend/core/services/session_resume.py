@@ -16,6 +16,7 @@ starts it when it wakes. Both expire after RESUME_SECONDS (the want row by Dynam
 
 from __future__ import annotations
 
+import json
 import logging
 import time
 import uuid
@@ -188,3 +189,83 @@ async def revoke_resume(auth: AuthContext, session_id: str, user_id: str) -> ses
         await publish_resources_changed(owner, row["humanUserId"])
         return sessions._session_public(updated, auth.user_id)
     raise ApiProblem("LOCAL_SESSION_CONFLICT", "Session changed. Try again.")
+
+
+#: Acknowledgement entries, newest kept: the relay envelope is 16 KiB.
+ACK_CAP = 8
+WANT_FIELDS = ("resumeId", "sessionId", "provider", "conversationId", "byUserId", "byName", "title", "mode")
+
+
+async def ack_with_resume(ack: dict, owner: str, human: str, device: str) -> dict:
+    """Add this device's waiting resumes to a heartbeat acknowledgement, beside pick-up's
+    (``session_pickup.ack_with_pickup``). Installed desktops ignore the extra key; an empty list
+    is omitted."""
+    try:
+        rows = await store._query(repo.user_pk(owner, human), begins_with=f"RESUMEWANT#{device}#")
+    except Exception:
+        logger.warning("Session resume wants unavailable")  # never costs the heartbeat
+        return ack
+    now = int(time.time())
+    entries = [
+        {key: r[key] for key in WANT_FIELDS}
+        for r in sorted(rows, key=lambda r: r.get("at", 0))
+        if int(r.get("expiresAt", 0)) > now  # TTL deletes lazily
+    ][-ACK_CAP:]
+    while entries:
+        candidate = {**ack, "resume": entries}
+        if len(json.dumps(candidate, separators=(",", ":")).encode("utf-8")) <= sessions.MAX_ENVELOPE_BYTES:
+            return candidate
+        entries = entries[1:]  # oldest first
+    return ack
+
+
+class ResumeFailed(ContractModel):
+    resume_id: str
+    code: Annotated[str, Field(pattern=r"^[A-Z_]{1,32}$")]
+
+
+async def authorize_device(token: str, session_id: str) -> dict | None:
+    """The paired Mac that owns this session, for its own human. None on any failure."""
+    from core.services.machine_auth import _device
+
+    identity = await _device(token, "openclaw-macos")
+    if identity is None or identity.device_id is None:
+        return None
+    try:
+        sid = validate_uuid(session_id, label="local session ID")
+    except ApiProblem:
+        return None
+    row = await repo.get_session(identity.owner_id, sid)
+    if row is None or row["humanUserId"] != identity.user_id or row["deviceId"] != identity.device_id:
+        return None
+    return row
+
+
+async def mark_failed(row: dict, failed: ResumeFailed) -> None:
+    """The Mac would not start it: say why, and stop asking. A request that has moved on (a newer
+    one, taken back, expired) is left alone."""
+    from core.services.local_session_relay import publish_resources_changed
+
+    for _ in range(6):
+        current = await repo.get_session(row["ownerId"], row["sessionId"])
+        waiting = (current or {}).get("resume")
+        if not live(waiting) or waiting["resumeId"] != failed.resume_id:
+            return
+        refused = {k: v for k, v in waiting.items() if k != "text"} | {"state": "failed", "code": failed.code}
+        update = {
+            "TableName": store._table().name,
+            "Key": {"pk": current["pk"], "sk": "META"},
+            "UpdateExpression": "SET #resume = :resume, revision = :new",
+            "ConditionExpression": "revision = :old",
+            "ExpressionAttributeNames": {"#resume": "resume"},
+            "ExpressionAttributeValues": {":resume": refused, ":new": str(uuid.uuid4()), ":old": current["revision"]},
+        }
+        try:
+            await store._transact([{"Update": update}, _want_delete(current)])
+            break
+        except ClientError as exc:
+            if not store._is_cancelled(exc):
+                raise
+    else:
+        raise ApiProblem("LOCAL_SESSION_CONFLICT", "Session changed. Try again.")
+    await publish_resources_changed(row["ownerId"], row["humanUserId"])

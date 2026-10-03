@@ -16,23 +16,12 @@ from core.repositories import agent_email_repo, meetings_repo
 from core.repositories.paperclip_repo import PaperclipRepo
 from core.services import clerk_admin
 from core.services.agent_email import sender_allowed
+from core.services.agent_mail_inbound import authenticated_sender, parse_from_address
 
 logger = logging.getLogger(__name__)
 
 _MEET_URL = re.compile(r"https://meet\.google\.com/[a-z]{3}-[a-z]{4}-[a-z]{3}")
 _LINE = re.compile(r'^((?:[^:"]|"[^"]*")*):(.*)$')  # name;params:value -- a quoted param may hold ':'
-# ponytail: Outlook writes Windows zone names; only the common ones are mapped. An unmapped
-# zone makes parse() return None, so the invite stays mail for the CEO instead of a wrong time.
-_WINDOWS_TZ = {
-    "Eastern Standard Time": "America/New_York",
-    "Central Standard Time": "America/Chicago",
-    "Mountain Standard Time": "America/Denver",
-    "Pacific Standard Time": "America/Los_Angeles",
-    "GMT Standard Time": "Europe/London",
-    "W. Europe Standard Time": "Europe/Berlin",
-    "India Standard Time": "Asia/Kolkata",
-    "UTC": "UTC",
-}
 
 
 @dataclass(frozen=True)
@@ -64,7 +53,8 @@ def _when(params: str, value: str) -> datetime:
     if value.endswith("Z"):
         return datetime.strptime(value, "%Y%m%dT%H%M%SZ").replace(tzinfo=timezone.utc)
     tzid = re.search(r'TZID="?([^";:]+)', params)
-    zone = ZoneInfo(_WINDOWS_TZ.get(tzid.group(1), tzid.group(1))) if tzid else timezone.utc
+    # ponytail: Windows TZIDs (Outlook) unsupported → invite stays mail; read the VTIMEZONE offsets when an Outlook+Meet customer appears.
+    zone = ZoneInfo(tzid.group(1)) if tzid else timezone.utc
     return datetime.strptime(value, "%Y%m%dT%H%M%S").replace(tzinfo=zone)
 
 
@@ -142,11 +132,14 @@ async def handle_team_mail(owner_id: str, payload, team: dict) -> str | None:
     invite = parse(payload.calendar) if getattr(payload, "calendar", None) else None
     if invite is None or (invite.method == "REQUEST" and not invite.meeting_url):
         return None  # not a Meet invite we can join: the CEO reads it as mail
+    # The ICS organizer and attendees are sender-written; only the authenticated From decides.
+    sender = parse_from_address(payload.from_)
+    if not authenticated_sender(payload.verdicts or {}, payload.headers or {}, sender):
+        return None
     members = {str(m["email"]).lower() for m in await clerk_admin.list_organization_members(owner_id) if m.get("email")}
-    people = [invite.organizer_email, *invite.attendee_emails]
-    inviter = next((p for p in people if p and (p in members or sender_allowed(team, p))), None)
+    inviter = sender if sender and (sender in members or sender_allowed(team, sender)) else None
     if inviter is None:
-        return None  # a stranger's invite: no bot, no room -- the CEO reads it as mail
+        return None  # a stranger's mail: no bot, no room -- the CEO reads it as mail
     existing = await meetings_repo.get_meeting(owner_id, invite.uid)
     if existing and int(existing.get("sequence", 0)) > invite.sequence:
         return "meeting_stale"

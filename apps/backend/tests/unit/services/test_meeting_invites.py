@@ -67,8 +67,8 @@ OUTLOOK = "\r\n".join(
         "UID:040000008200E00074C5B7101A82E00800000000A0B1C2D3E4F5A6B7C8D9E0F10000000",
         " 01000000001234567890ABCDEF",
         "SUMMARY;LANGUAGE=en-US:Pipeline review",
-        "DTSTART;TZID=Pacific Standard Time:20261005T090000",
-        "DTEND;TZID=Pacific Standard Time:20261005T100000",
+        "DTSTART;TZID=America/Los_Angeles:20261005T090000",
+        "DTEND;TZID=America/Los_Angeles:20261005T100000",
         "LOCATION;LANGUAGE=en-US:https://meet.google.com/xyz-abcd-efg",
         "SEQUENCE:2",
         "END:VEVENT",
@@ -110,15 +110,23 @@ def test_no_vevent_or_uid_is_none():
     assert meeting_invites.parse(GOOGLE.replace("UID:", "X-UID:")) is None
 
 
+def test_a_windows_tzid_is_none():
+    assert meeting_invites.parse(OUTLOOK.replace("America/Los_Angeles", "Pacific Standard Time")) is None
+
+
 def test_utc_and_date_only_starts():
     utc = meeting_invites.parse(
-        OUTLOOK.replace("DTSTART;TZID=Pacific Standard Time:20261005T090000", "DTSTART:20261005T090000Z")
+        OUTLOOK.replace("DTSTART;TZID=America/Los_Angeles:20261005T090000", "DTSTART:20261005T090000Z")
     )
     assert utc.start == datetime(2026, 10, 5, 9, 0, tzinfo=timezone.utc)
     day = meeting_invites.parse(
-        OUTLOOK.replace("DTSTART;TZID=Pacific Standard Time:20261005T090000", "DTSTART;VALUE=DATE:20261005")
+        OUTLOOK.replace("DTSTART;TZID=America/Los_Angeles:20261005T090000", "DTSTART;VALUE=DATE:20261005")
     )
     assert day.start == datetime(2026, 10, 5, tzinfo=timezone.utc)
+
+
+def _mail(calendar, sender="Prasiddha <Prasiddha@acme.com>", dmarc="PASS"):
+    return SimpleNamespace(calendar=calendar, from_=sender, verdicts={"dmarc": dmarc}, headers={})
 
 
 TEAM = {"owner_id": "org_1", "agent_id": "ceo-1", "address": "agents@acme.thelightbulb.company", "verified_senders": []}
@@ -140,7 +148,7 @@ def repo(monkeypatch):
 
 
 async def test_a_members_invite_becomes_a_meeting_row(repo):
-    out = await meeting_invites.handle_team_mail("org_1", SimpleNamespace(calendar=GOOGLE), TEAM)
+    out = await meeting_invites.handle_team_mail("org_1", _mail(GOOGLE), TEAM)
     assert out == "meeting_scheduled"
     row = repo.put.await_args.args[0]
     assert row["uid"] == "7kukuqrfedlm2f9t0vr42q2gjv@google.com"
@@ -149,25 +157,38 @@ async def test_a_members_invite_becomes_a_meeting_row(repo):
 
 
 async def test_a_strangers_invite_schedules_nothing(repo):
-    repo.members.return_value = [{"email": "someone-else@acme.com"}]
-    out = await meeting_invites.handle_team_mail("org_1", SimpleNamespace(calendar=GOOGLE), TEAM)
+    # The ICS names a member as ORGANIZER and lists them as an attendee -- both sender-written.
+    out = await meeting_invites.handle_team_mail("org_1", _mail(GOOGLE, sender="mallory@evil.example"), TEAM)
     assert out is None  # the route delivers it to the CEO as mail
     repo.put.assert_not_awaited()
 
 
+async def test_an_unauthenticated_member_from_schedules_nothing(repo):
+    out = await meeting_invites.handle_team_mail("org_1", _mail(GOOGLE, dmarc="FAIL"), TEAM)
+    assert out is None
+    repo.put.assert_not_awaited()
+
+
+async def test_a_member_forwarding_an_outside_invite_is_scheduled(repo):
+    cal = GOOGLE.replace("mailto:Prasiddha@acme.com", "mailto:client@outside.example")
+    assert await meeting_invites.handle_team_mail("org_1", _mail(cal), TEAM) == "meeting_scheduled"
+    row = repo.put.await_args.args[0]
+    assert row["organizer"] == "client@outside.example" and row["createdBy"] == "prasiddha@acme.com"
+
+
 async def test_plain_team_mail_is_mail(repo):
-    assert await meeting_invites.handle_team_mail("org_1", SimpleNamespace(calendar=None), TEAM) is None
+    assert await meeting_invites.handle_team_mail("org_1", _mail(None), TEAM) is None
     repo.members.assert_not_awaited()
 
 
 async def test_cancel_marks_the_row_cancelled(repo):
     repo.get.return_value = {"sequence": 0, "organizer": "prasiddha@acme.com", "status": "scheduled"}
     cal = GOOGLE.replace("METHOD:REQUEST", "METHOD:CANCEL").replace("SEQUENCE:0", "SEQUENCE:1")
-    assert await meeting_invites.handle_team_mail("org_1", SimpleNamespace(calendar=cal), TEAM) == "meeting_cancelled"
+    assert await meeting_invites.handle_team_mail("org_1", _mail(cal), TEAM) == "meeting_cancelled"
     repo.set_status.assert_awaited_once_with("org_1", "7kukuqrfedlm2f9t0vr42q2gjv@google.com", "cancelled", sequence=1)
 
 
 async def test_an_older_sequence_does_not_overwrite(repo):
     repo.get.return_value = {"sequence": 3, "organizer": "prasiddha@acme.com", "status": "scheduled"}
-    assert await meeting_invites.handle_team_mail("org_1", SimpleNamespace(calendar=GOOGLE), TEAM) == "meeting_stale"
+    assert await meeting_invites.handle_team_mail("org_1", _mail(GOOGLE), TEAM) == "meeting_stale"
     repo.put.assert_not_awaited()

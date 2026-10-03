@@ -1086,7 +1086,8 @@ def _team(monkeypatch, members):
     from core.services import meeting_invites
 
     monkeypatch.setattr(ses_inbound, "is_team_address", AsyncMock(return_value=(OWNER_ID, "acme")))
-    team_row = {"owner_id": OWNER_ID, "agent_id": CEO_ID, "address": TEAM_ADDRESS, "verified_senders": [SENDER]}
+    team_row = {"owner_id": OWNER_ID, "agent_id": CEO_ID, "address": TEAM_ADDRESS, "send_to_anyone": True}
+    monkeypatch.setattr(ses_inbound, "try_consume_stranger_wake", AsyncMock(return_value=True))
     monkeypatch.setattr(meeting_invites, "team_row", AsyncMock(return_value=team_row))
     monkeypatch.setattr(meeting_invites.clerk_admin, "list_organization_members", AsyncMock(return_value=members))
     monkeypatch.setattr(meeting_invites.meetings_repo, "get_meeting", AsyncMock(return_value=None))
@@ -1114,9 +1115,9 @@ def test_a_strangers_invite_to_the_team_address_is_ceo_mail(client, monkeypatch)
 def test_a_members_invite_to_the_team_address_is_a_meeting(client, monkeypatch):
     _enable(monkeypatch)
     _dedup_recorded(monkeypatch)
-    put, deliver = _team(monkeypatch, [{"email": "stranger@elsewhere.com"}])
+    put, deliver = _team(monkeypatch, [{"email": SENDER}])
 
-    resp = _post(client, _body(to=[TEAM_ADDRESS], calendar=INVITE))
+    resp = _post(client, _body(to=[TEAM_ADDRESS], calendar=INVITE))  # From: SENDER, a member
 
     assert resp.json()["status"] == "meeting_scheduled"
     put.assert_awaited_once()

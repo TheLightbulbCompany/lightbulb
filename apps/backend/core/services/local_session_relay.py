@@ -83,6 +83,7 @@ FEATURES = [
     "sessionSubagents",
     "nativeControlCapabilities",
     "privateSendApproval",
+    "liveTerminal",
 ]
 
 
@@ -97,6 +98,12 @@ class DeviceHeartbeat(ContractModel):
 
     type: Literal["local.device.heartbeat"]
     sessions: Annotated[list[HeartbeatSession], Field(max_length=24)]
+    # What this Mac can do. Each is one boolean, sent only once FEATURES lists it, and lands
+    # on every listed session's META as `deviceFeatures` (session_screen reads it).
+    live_terminal: bool = False
+
+    def device_features(self) -> list[str]:
+        return sorted(k for k, on in self.model_dump(by_alias=True, exclude={"type", "sessions"}).items() if on)
 
 
 class Ended(ContractModel):
@@ -513,6 +520,9 @@ class LocalSessionRelay:
                     # So does teammate control, and so do the people the owner let in: a restarted
                     # process is a new run the owner has not opted into, even when no Ended frame
                     # arrived for the old one. A relay reconnect keeps the generation, and all three.
+                    # A new connection may be an older desktop: it re-advertises on its first heartbeat.
+                    if (previous or {}).get("connectionId") != cid:
+                        row.pop("deviceFeatures", None)
                     if previous is None or previous["generation"] != descriptor.generation:
                         row.pop("pendingApproval", None)
                         row.pop("privateSendApproval", None)
@@ -655,6 +665,9 @@ class LocalSessionRelay:
                     controlUnavailableReason=item.control_unavailable_reason,
                     onlineUntil=now + LIVENESS_SECONDS,
                     workspace=item.workspace.model_dump(by_alias=True),
+                    # Rides the write every heartbeat makes anyway: no extra write, and /viewing
+                    # already holds this row.
+                    deviceFeatures=message.device_features(),
                     **labels,
                 )
                 if item.capabilities is not None and row["capabilitiesVerified"]:

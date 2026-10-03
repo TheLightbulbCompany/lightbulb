@@ -29,6 +29,14 @@ async def ack(transport, sid):
     return await relay(transport).handle_message("conn-1", heartbeat(sid))
 
 
+@pytest.fixture(autouse=True)
+def _nudges_reach_the_test_mac(request, monkeypatch):
+    """`watch` nudges through the process relay; point it at this test's fake socket."""
+    if "transport" in request.fixturenames:
+        transport = request.getfixturevalue("transport")
+        monkeypatch.setattr("core.services.local_session_relay.get_local_session_relay", lambda: relay(transport))
+
+
 @pytest.mark.asyncio
 async def test_a_teammate_watching_puts_the_session_in_its_macs_heartbeat_ack(transport):
     sid = await start(transport)
@@ -155,3 +163,86 @@ def test_the_golden_screen_frame_is_valid_and_fits_one_relay_frame():
     raw = "A" * (4 * ((session_screen.MAX_RAW_BYTES + 2) // 3))
     big = {**fixture("session-screen"), "generation": "g" * 64, "data": raw}
     assert len(_json.dumps(big, separators=(",", ":"))) <= 16 * 1024
+
+
+def _nudges(transport):
+    return [body for _, body in transport[3] if body["type"] == "local.session.watch"]
+
+
+@pytest.mark.asyncio
+async def test_a_new_viewer_nudges_a_capable_mac_once_and_a_repeat_post_does_not(transport):
+    sid = await start(transport)
+    await ack(transport, sid)  # the golden heartbeat advertises liveTerminal
+    transport[3].clear()
+    await session_screen.watch(BOB, sid)
+    assert transport[3] == [("conn-1", {"type": "local.session.watch", "sessionId": sid, "generation": "generation-1"})]
+    await session_screen.watch(BOB, sid)  # the same person, 15 s later: not new
+    assert len(_nudges(transport)) == 1
+    await session_screen.watch(ALICE, sid)  # another person is new
+    assert len(_nudges(transport)) == 2
+
+
+@pytest.mark.asyncio
+async def test_a_mac_that_never_advertised_live_terminal_is_never_nudged(transport):
+    sid = await start(transport)
+    await session_screen.watch(BOB, sid)  # registered, no heartbeat yet
+    older = heartbeat(sid)
+    older.pop("liveTerminal")
+    await relay(transport).handle_message("conn-1", older)
+    await session_screen.watch(ALICE, sid)
+    assert _nudges(transport) == []
+    assert [w["sessionId"] for w in (await relay(transport).handle_message("conn-1", older))["watching"]] == [sid]
+
+
+@pytest.mark.asyncio
+async def test_a_reconnect_forgets_the_capability_until_the_next_heartbeat(transport):
+    from tests.unit.services.test_local_session_relay import registration
+
+    sid = await start(transport)
+    await ack(transport, sid)
+    connect(transport, cid="conn-2", stamp="2000")
+    await relay(transport).handle_message("conn-2", registration())
+    await session_screen.watch(BOB, sid)
+    assert _nudges(transport) == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("case", ["unshared", "ended"])
+async def test_no_nudge_for_an_unshared_or_ended_session(transport, db, case):
+    sid = await start(transport)
+    await ack(transport, sid)
+    if case == "unshared":
+        await service.set_sharing(ALICE, sid, False)
+    else:
+        db[0].update_item(
+            Key={"pk": repo.session_pk(OWNER, sid), "sk": "META"},
+            UpdateExpression="SET endedAt = :t",
+            ExpressionAttributeValues={":t": 1},
+        )
+    transport[3].clear()
+    with pytest.raises(ApiProblem):
+        await session_screen.watch(BOB, sid)
+    assert transport[3] == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure", ["gone", "raises"])
+async def test_a_failed_nudge_never_fails_viewing(transport, monkeypatch, failure):
+    sid = await start(transport)
+    await ack(transport, sid)
+
+    async def send(_cid, _body):
+        if failure == "raises":
+            raise RuntimeError("network")
+        return False
+
+    monkeypatch.setattr(transport[2], "send_message_async", send)
+    await session_screen.watch(BOB, sid)
+    assert [w["sessionId"] for w in (await ack(transport, sid))["watching"]] == [sid]
+
+
+def test_the_golden_watch_frame_fits_the_relay_envelope():
+    from core.services.local_session_relay import check_envelope
+
+    check_envelope(fixture("session-watch"))
+    assert set(fixture("session-watch")) == {"type", "sessionId", "generation"}

@@ -4,6 +4,8 @@
 //! chunks of at most 11 KiB raw (base64 plus envelope fits the 16 KiB relay frame), each with the
 //! terminal's size; a fresh snapshot every 10 s, when the viewer set grows, after a resize and
 //! after a lost frame. Nothing is queued for later; nothing is sent while nobody watches.
+//! A `local.session.watch` nudge from the backend starts a relay at once (a new viewer sees the
+//! screen in about a second, not at the next ack); the acks still keep it going and stop it.
 
 use super::transport::relay_log;
 use super::{process, Mirror, NativeSession, Process};
@@ -27,6 +29,9 @@ const SNAPSHOT_EVERY: Duration = Duration::from_secs(10);
 /// A relay no heartbeat ack has renewed for this long stops (its relay socket is down).
 const LEASE: Duration = Duration::from_secs(30);
 const TICK: Duration = Duration::from_millis(50);
+/// A nudged relay outlives acks that miss it for this long: an ack the backend built just before
+/// the viewer arrived can land after the nudge. Longer than one 10 s heartbeat.
+const GRACE: Duration = Duration::from_secs(15);
 
 #[derive(Clone)]
 struct Live {
@@ -44,17 +49,28 @@ struct Ctl {
     snapshot: AtomicBool,
     stop: AtomicBool,
     until: Mutex<Instant>,
+    /// Absence from `watching` does not stop the relay before this (a nudge sets it).
+    keep: Mutex<Instant>,
 }
 
 impl Ctl {
     fn new(since: u64) -> Self {
         Self { since: AtomicU64::new(since), snapshot: AtomicBool::new(false), stop: AtomicBool::new(false),
-            until: Mutex::new(Instant::now() + LEASE) }
+            until: Mutex::new(Instant::now() + LEASE), keep: Mutex::new(Instant::now()) }
     }
     fn renew(&self) {
         if let Ok(mut until) = self.until.lock() {
             *until = Instant::now() + LEASE;
         }
+    }
+    fn nudged(&self) {
+        self.renew();
+        if let Ok(mut keep) = self.keep.lock() {
+            *keep = Instant::now() + GRACE;
+        }
+    }
+    fn kept(&self) -> bool {
+        self.keep.lock().is_ok_and(|keep| Instant::now() < *keep)
     }
     fn stopped(&self) -> bool {
         self.stop.load(SeqCst) || self.until.lock().map_or(true, |until| Instant::now() >= *until)
@@ -139,10 +155,17 @@ pub(super) fn offer(watching: &Value) {
     let Some(list) = watching.as_array() else { return };
     let wanted = parse(list);
     let Ok(mut relays) = RELAYS.lock() else { return };
+    settle(&mut relays, &wanted, spawn);
+}
+
+fn settle(relays: &mut BTreeMap<String, Arc<Ctl>>, wanted: &BTreeMap<String, u64>, spawn: impl Fn(String, u64) -> Arc<Ctl>) {
     relays.retain(|_, ctl| !ctl.stopped());
     let running = relays.iter().map(|(sid, ctl)| (sid.clone(), ctl.since.load(SeqCst))).collect();
-    let (start, stop, snapshot) = plan(&running, &wanted);
+    let (start, stop, snapshot) = plan(&running, wanted);
     for sid in stop {
+        if relays.get(&sid).is_some_and(|ctl| ctl.kept()) {
+            continue;
+        }
         if let Some(ctl) = relays.remove(&sid) {
             ctl.stop.store(true, SeqCst);
         }
@@ -162,6 +185,36 @@ pub(super) fn offer(watching: &Value) {
         let since = wanted[&sid];
         relays.insert(sid.clone(), spawn(sid, since));
     }
+}
+
+/// A backend `local.session.watch`: someone just started watching. Never answered; anything this
+/// Mac cannot stream (not its session, another generation, ended) is ignored.
+pub(super) fn nudge(body: &Value) {
+    let Some(sid) = LIVE.lock().ok().and_then(|live| nudged(body, |sid| live.get(sid).map(|l| l.generation.clone())))
+    else { return };
+    let Ok(mut relays) = RELAYS.lock() else { return };
+    relays.retain(|_, ctl| !ctl.stopped());
+    nudge_relay(&mut relays, sid, spawn);
+}
+
+/// The nudged session id, when `generation_of` (the live mirrors) knows it at that generation.
+fn nudged(body: &Value, generation_of: impl Fn(&str) -> Option<String>) -> Option<String> {
+    let sid = body["sessionId"].as_str().filter(|s| uuid::Uuid::parse_str(s).is_ok())?;
+    (generation_of(sid)? == body["generation"].as_str()?).then(|| sid.to_owned())
+}
+
+fn nudge_relay(relays: &mut BTreeMap<String, Arc<Ctl>>, sid: String, spawn: impl Fn(String, u64) -> Arc<Ctl>) {
+    if let Some(ctl) = relays.get(&sid) {
+        // Running already: the new viewer needs a screen now, not in up to 10 s.
+        ctl.snapshot.store(true, SeqCst);
+        ctl.nudged();
+        return;
+    }
+    // The holder snapshots a new watch client unasked. `since` is unknown until an ack lists it;
+    // MAX keeps that first ack from asking for a second snapshot.
+    let ctl = spawn(sid.clone(), u64::MAX);
+    ctl.nudged();
+    relays.insert(sid, ctl);
 }
 
 /// One session's relay on its own thread; the caller keeps the returned control in `RELAYS`.
@@ -365,6 +418,44 @@ mod tests {
         let sid = "aaaabbbb-cccc-4ddd-8eee-ffff00001111";
         assert_eq!(parse(&[json!({"sessionId": sid, "since": 3}), json!({"sessionId": "../x", "since": 1})]),
             BTreeMap::from([(sid.to_owned(), 3)]));
+    }
+
+    #[test]
+    fn a_nudge_is_taken_only_for_a_live_mirror_of_the_same_generation() {
+        let sid = "aaaabbbb-cccc-4ddd-8eee-ffff00001111";
+        let live = |s: &str| (s == sid).then(|| "gen-1".to_owned());
+        let frame = |s: &str, g: &str| json!({"type": "local.session.watch", "sessionId": s, "generation": g});
+        assert_eq!(nudged(&frame(sid, "gen-1"), live).as_deref(), Some(sid));
+        assert_eq!(nudged(&frame(sid, "gen-0"), live), None, "another generation");
+        assert_eq!(nudged(&frame("bbbbcccc-dddd-4eee-8fff-000011112222", "gen-1"), live), None, "not this Mac's");
+        assert_eq!(nudged(&json!({"type": "local.session.watch"}), live), None);
+        // An ended mirror is never in LIVE (`index` skips it), so it is "not this Mac's".
+    }
+
+    #[test]
+    fn a_nudged_relay_survives_an_ack_without_it_inside_the_grace_and_stops_after() {
+        let sid = "aaaabbbb-cccc-4ddd-8eee-ffff00001111".to_owned();
+        let spawned = std::cell::RefCell::new(vec![]);
+        let fake = |sid: String, since: u64| { spawned.borrow_mut().push((sid, since)); Arc::new(Ctl::new(since)) };
+        let mut relays = BTreeMap::new();
+        nudge_relay(&mut relays, sid.clone(), &fake);
+        assert_eq!(*spawned.borrow(), [(sid.clone(), u64::MAX)], "started at once, before any ack");
+        settle(&mut relays, &BTreeMap::new(), &fake);
+        assert!(relays.contains_key(&sid), "an ack built before the viewer arrived does not stop it");
+        // The first ack that lists it renews it without a second snapshot.
+        settle(&mut relays, &BTreeMap::from([(sid.clone(), 1_760_000_000)]), &fake);
+        assert!(!relays[&sid].snapshot.load(SeqCst));
+        assert_eq!(relays[&sid].since.load(SeqCst), 1_760_000_000);
+        *relays[&sid].keep.lock().unwrap() = Instant::now();
+        let ctl = relays[&sid].clone();
+        settle(&mut relays, &BTreeMap::new(), &fake);
+        assert!(!relays.contains_key(&sid) && ctl.stop.load(SeqCst), "after the grace the ack rules again");
+        assert_eq!(spawned.borrow().len(), 1);
+        // A nudge for a running relay asks it for a fresh screen instead of starting another.
+        let mut relays = BTreeMap::from([(sid.clone(), Arc::new(Ctl::new(5)))]);
+        nudge_relay(&mut relays, sid.clone(), &fake);
+        assert!(relays[&sid].snapshot.load(SeqCst) && relays[&sid].kept());
+        assert_eq!(spawned.borrow().len(), 1);
     }
 
     #[test]

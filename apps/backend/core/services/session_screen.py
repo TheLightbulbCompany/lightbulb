@@ -66,6 +66,23 @@ async def watch(auth: sessions.Caller, session_id: str) -> None:
         + (":now" if fresh else "if_not_exists(since, :now)"),
         ExpressionAttributeValues={":sid": row["sessionId"], ":exp": expires, ":now": now},
     )
+    if fresh and "liveTerminal" in row.get("deviceFeatures", ()):
+        await _nudge(row)
+
+
+async def _nudge(row: dict) -> None:
+    """Tell the Mac now, not at its next heartbeat ack (up to 10 s). Only a Mac that advertised
+    `liveTerminal`: an older desktop drops its connection over a frame it does not know. The
+    Mac never answers; the ack's `watching` stays the backstop and the stop signal."""
+    from core.services.local_session_relay import check_envelope, get_local_session_relay  # imports this module
+
+    envelope = {"type": "local.session.watch", "sessionId": row["sessionId"], "generation": row["generation"]}
+    try:
+        check_envelope(envelope)
+        if not await get_local_session_relay().management.send_message_async(row["connectionId"], envelope):
+            logger.info("session watch nudge not delivered")
+    except Exception as exc:  # noqa: BLE001 -- best effort; the next ack carries the same news
+        logger.info("session watch nudge failed error=%s", type(exc).__name__)
 
 
 async def ack_with_watching(ack: dict, owner: str, human: str, device: str) -> dict:

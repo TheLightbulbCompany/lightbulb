@@ -257,7 +257,9 @@ async def _bot_failed(owner_id: str, room_id: str, meeting: dict, exc: Exception
         f"meeting:{meeting['uid']}:{meeting['sequence']}:{meeting['startAt']}:{verb}_failed:{code}",
         f"Couldn't {verb} a bot for this meeting: {reason}. Forward the invite again to retry.",
     )
-    return await _patch_meeting(room_id, {"status": "bot_failed", "botError": code}, drop=() if keep else _BOT_KEYS[:3])
+    return await _patch_meeting(
+        room_id, {"status": "bot_failed", "botError": code}, drop=() if keep else ("ticketNonce", "botClaimAt")
+    )
 
 
 async def _sync_bot(owner_id: str, room_id: str, meeting: dict, prior: dict | None) -> dict:
@@ -332,9 +334,19 @@ async def _sync_bot(owner_id: str, room_id: str, meeting: dict, prior: dict | No
         return await _bot_failed(owner_id, room_id, meeting, exc, "book", keep=not _definitive(exc))
     except Exception as exc:  # noqa: BLE001
         return await _bot_failed(owner_id, room_id, meeting, exc, "book", keep=True)
-    return await _patch_meeting(
-        room_id, {"status": "bot_created", "recallBotId": bot_id, "ticketNonce": nonce}, drop=("botError", "botClaimAt")
-    )
+    booked = {"recallBotId": bot_id, "ticketNonce": nonce}
+    stored = ((await messaging_repo.get_room(room_id)) or {}).get("meeting") or {}
+    if stored.get("status") != "cancelled":
+        booked["status"] = "bot_created"
+    written = await _patch_meeting(room_id, booked, drop=("botError", "botClaimAt"))
+    if stored.get("status") == "cancelled" or (stored.get("startAt"), stored.get("meetingUrl")) != (
+        meeting["startAt"],
+        meeting["meetingUrl"],
+    ):
+        # A CANCEL or a move landed while the POST was in flight and found no bot to act on:
+        # act on it now, against what is stored, with this bot.
+        return await _sync_bot(owner_id, room_id, written, meeting)
+    return written
 
 
 async def handle_team_mail(owner_id: str, payload, team: dict) -> str | None:

@@ -690,3 +690,32 @@ async def test_a_winner_timing_out_after_the_other_delivery_booked_is_not_a_fail
     await meeting_invites.handle_team_mail("org_1", _mail(GOOGLE), TEAM)
     assert room.state["meta"]["meeting"]["recallBotId"] == "bot-1"
     assert _bot_lines(room) == []
+
+
+async def test_a_cancel_during_the_booking_pulls_the_new_bot(room, bots):
+    async def create(**kw):  # the CANCEL lands while the POST is in flight
+        assert await meeting_invites.handle_team_mail("org_1", _mail(CANCEL), TEAM) == "meeting_cancelled"
+        return "bot-1"
+
+    bots.create.side_effect = create
+    await meeting_invites.handle_team_mail("org_1", _mail(GOOGLE), TEAM)
+    bots.leave.assert_awaited_once_with("bot-1")
+    meeting = room.state["meta"]["meeting"]
+    assert meeting["status"] == "cancelled" and "recallBotId" not in meeting
+
+
+async def test_a_move_during_the_booking_reschedules_the_new_bot(room, bots):
+    async def create(**kw):  # the move lands while the POST is in flight
+        await meeting_invites.handle_team_mail("org_1", _mail(MOVED), TEAM)
+        return "bot-1"
+
+    bots.create.side_effect = create
+    await meeting_invites.handle_team_mail("org_1", _mail(GOOGLE), TEAM)
+    bots.create.assert_awaited_once()
+    bots.reschedule.assert_awaited_once()
+    assert bots.reschedule.await_args.args == ("bot-1",)
+    assert bots.reschedule.await_args.kwargs["meeting"]["startAt"] == int(
+        datetime(2026, 10, 3, 20, 0, tzinfo=timezone.utc).timestamp()
+    )
+    meeting = room.state["meta"]["meeting"]
+    assert meeting["status"] == "bot_created" and meeting["recallBotId"] == "bot-1"

@@ -262,6 +262,18 @@ pub fn verify_current_generation(path: &Path, session: &str, since: &str) -> Res
     version.ok_or_else(|| UNSTARTED.into())
 }
 
+/// Every conversation a running Claude process has, held or private, straight from
+/// `claude agents --json` before any sharing filter. Only the ids: nothing else is kept.
+pub(super) async fn running_conversations(home: &Path) -> Result<Vec<String>> {
+    let Some(program) = provider_program(home, "claude") else {
+        return Ok(vec![]);
+    };
+    let rows: Vec<Value> =
+        serde_json::from_str(&native_output(&program, &["agents", "--json"]).await?)
+            .map_err(|_| "native Claude listing unavailable")?;
+    Ok(rows.iter().filter_map(|r| r["sessionId"].as_str().map(str::to_owned)).collect())
+}
+
 pub(super) async fn discover(home: &Path) -> Result<Vec<NativeSession>> {
     let Some(program) = provider_program(home, "claude") else {
         return Ok(vec![]);

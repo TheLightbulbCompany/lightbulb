@@ -141,19 +141,31 @@ pub fn run_with_env(socket: &Path, argv: &[String], cwd: &Path, env: Vec<(String
         cmd.env("LANG", "en_US.UTF-8");
     }
     cmd.cwd(cwd);
-    let mut child = pair.slave.spawn_command(cmd).map_err(std::io::Error::other)?;
-    drop(pair.slave);
-    let provider_pid = child.process_id().unwrap_or(0);
-    let mut reader = pair.master.try_clone_reader().map_err(std::io::Error::other)?;
-    let mut pty = pair.master.take_writer().map_err(std::io::Error::other)?;
-
     // Bind under another name and rename into place: `list` deletes a `.sock` that refuses a
     // connection, so the socket must never appear under its real name before it is listening.
+    // It is published before the provider starts, so the provider's first hook finds the holder
+    // (an early `hello` waits in the listen backlog until the event loop answers it).
     let binding = socket.with_extension("bind");
     let _ = std::fs::remove_file(&binding);
     let listener = UnixListener::bind(&binding)?;
     std::fs::set_permissions(&binding, std::fs::Permissions::from_mode(0o600))?;
     std::fs::rename(&binding, socket)?;
+
+    let started = (|| {
+        let child = pair.slave.spawn_command(cmd).map_err(std::io::Error::other)?;
+        let reader = pair.master.try_clone_reader().map_err(std::io::Error::other)?;
+        let pty = pair.master.take_writer().map_err(std::io::Error::other)?;
+        Ok::<_, std::io::Error>((child, reader, pty))
+    })();
+    let (mut child, mut reader, mut pty) = match started {
+        Ok(parts) => parts,
+        Err(e) => {
+            let _ = std::fs::remove_file(socket);
+            return Err(e);
+        }
+    };
+    drop(pair.slave);
+    let provider_pid = child.process_id().unwrap_or(0);
 
     let (tx, rx) = channel::<Event>();
     // Output read but not yet handled. Past OUTPUT_BACKLOG the reader waits, so a provider

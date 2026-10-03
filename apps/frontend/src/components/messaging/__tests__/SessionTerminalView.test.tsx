@@ -1,11 +1,14 @@
 import { act, render } from "@testing-library/react";
-import { afterEach, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { LiveEvent } from "@lightbulb/shared";
 import { SessionTerminalView } from "../SessionTerminalView";
 
 const writes: Uint8Array[] = [];
+const hooks: { data?: (d: string) => void; key?: (e: unknown) => boolean } = {};
 vi.mock("@xterm/xterm", () => ({ Terminal: class {
-  cols = 80; rows = 24; open() {} reset() {} dispose() {}
+  cols = 80; rows = 24; options = { disableStdin: true }; open() {} reset() {} dispose() {}
+  onData(cb: (d: string) => void) { hooks.data = cb; }
+  attachCustomKeyEventHandler(cb: (e: unknown) => boolean) { hooks.key = cb; }
   resize(c: number, r: number) { this.cols = c; this.rows = r; }
   write(data: Uint8Array, done?: () => void) { writes.push(data); done?.(); }
 } }));
@@ -46,4 +49,56 @@ it("goes back to not-live when frames stop, and live again on the next snapshot"
   expect(onLive).toHaveBeenLastCalledWith(false);
   act(() => { emit(screenEvent("s1", "snapshot", 1)); });
   expect(onLive).toHaveBeenLastCalledWith(true);
+});
+
+const b64 = (s: string) => btoa(s);
+const mount = async (admitted: boolean, input: (d: Uint8Array, e: number) => Promise<unknown>, session: { sessionId: string; generation: string } = { sessionId: "s1", generation: "g1" }) => {
+  let emit: (e: LiveEvent) => void = () => {};
+  const props = { onEvent: (h: (e: LiveEvent) => void) => { emit = h; return () => {}; }, watch: async () => undefined, onLive: () => {}, input };
+  const view = render(<SessionTerminalView session={session} admitted={admitted} {...props} />);
+  await act(async () => { await vi.runOnlyPendingTimersAsync(); });
+  act(() => { emit(screenEvent("s1")); });
+  return { view, props, session, rerender: (a: boolean, s = session) => view.rerender(<SessionTerminalView session={s} admitted={a} {...props} />) };
+};
+const type = async (d: string) => { act(() => { hooks.data!(d); }); await act(async () => { await vi.advanceTimersByTimeAsync(50); }); };
+const sent = (input: ReturnType<typeof vi.fn>) => input.mock.calls.map(([d, e]) => [btoa(String.fromCharCode(...(d as Uint8Array))), e]);
+
+describe("typing into the live terminal", () => {
+  beforeEach(() => { vi.useFakeTimers(); vi.stubGlobal("requestAnimationFrame", (cb: () => void) => setTimeout(cb, 0)); vi.stubGlobal("cancelAnimationFrame", (id: number) => clearTimeout(id)); });
+  afterEach(() => { vi.unstubAllGlobals(); });
+
+  it("sends an admitted viewer's keystrokes with the screen epoch", async () => {
+    const input = vi.fn(async () => undefined);
+    await mount(true, input);
+    await type("ls");
+    expect(sent(input)).toEqual([[b64("ls"), 1]]);
+  });
+  it("sends nothing for a viewer who is not admitted", async () => {
+    const input = vi.fn(async () => undefined);
+    await mount(false, input);
+    await type("ls");
+    expect(input).not.toHaveBeenCalled();
+  });
+  it("sends Shift+Enter as ESC CR", async () => {
+    const input = vi.fn(async () => undefined);
+    await mount(true, input);
+    let handled = true;
+    act(() => { handled = hooks.key!({ type: "keydown", key: "Enter", shiftKey: true }); });
+    await act(async () => { await vi.advanceTimersByTimeAsync(50); });
+    expect(handled).toBe(false);
+    expect(sent(input)).toEqual([[b64("\x1b\r"), 1]]);
+  });
+  it("stops at once when admission is taken away", async () => {
+    const input = vi.fn(async () => undefined);
+    const m = await mount(true, input);
+    m.rerender(false);
+    await type("ls");
+    expect(input).not.toHaveBeenCalled();
+  });
+  it("never sends xterm's own probe replies", async () => {
+    const input = vi.fn(async () => undefined);
+    await mount(true, input);
+    await type("\x1b[?1;2c"); await type("\x1b[12;40R"); await type("\x1b[I");
+    expect(input).not.toHaveBeenCalled();
+  });
 });

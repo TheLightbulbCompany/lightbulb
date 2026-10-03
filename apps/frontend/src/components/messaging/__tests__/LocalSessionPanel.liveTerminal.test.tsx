@@ -1,5 +1,6 @@
-import { render, screen } from "@testing-library/react";
+import { act, render, screen } from "@testing-library/react";
 import { expect, it, vi } from "vitest";
+import type { LiveEvent } from "@lightbulb/shared";
 import type { LocalSession } from "@lightbulb/shared";
 import { LocalSessionPanel } from "../LocalSessionPanel";
 
@@ -29,4 +30,16 @@ it("keeps Ask to join under the live terminal for a teammate who may not send", 
   render(<LocalSessionPanel session={session} ownerName="Alice" own={false} client={client as never} revision={0} onAccessLost={() => {}} onEvent={() => () => {}} />);
   const terminal = await screen.findByRole("region", { name: "Live terminal (view only)" });
   expect(below(terminal, await screen.findByText(/Only Alice can send/))).toBe(true);
+});
+
+it("shows who is typing into the owner's session for 6 s after the last event", async () => {
+  vi.useFakeTimers();
+  let emit: (e: LiveEvent) => void = () => {};
+  render(<LocalSessionPanel session={session} ownerName="Alice" own client={client as never} revision={0} onAccessLost={() => {}} nameOf={(id) => (id === "bob" ? "Bob" : "?")}
+    onEvent={(h) => { emit = h; return () => {}; }} />);
+  act(() => { emit({ schemaVersion: 1, eventId: "t1", type: "workspace.session.typing", occurredAt: "now", payload: { sessionId: "s", userId: "bob" } } as LiveEvent); });
+  expect(screen.getByText("Bob is typing")).toBeTruthy();
+  await act(async () => { await vi.advanceTimersByTimeAsync(6_001); });
+  expect(screen.queryByText("Bob is typing")).toBeNull();
+  vi.useRealTimers();
 });

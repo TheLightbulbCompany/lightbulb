@@ -237,7 +237,7 @@ export function NewSessionView({ sessions, onEvent, onOpenSession, onClose }: {
         {pending?.phase === "failed" && <p role="alert" className="text-err">{pending.error}</p>}
         {tooLong && <p role="alert" className="text-err">The first message is too long.</p>}
         {localMac?.cli && !busy && <p>Or in any terminal, inside an approved folder: <code>lightbulb claude</code> or <code>lightbulb codex</code>.</p>}
-        {localMac?.cli?.pathLine && !busy && <p>First add it to your PATH: <code className="select-all">{localMac.cli.pathLine}</code></p>}
+        {localMac?.cli?.pathLine && !busy && <p>First add it to your PATH, then open a new terminal: <code className="select-all">{localMac.cli.pathLine}</code></p>}
       </div>
       {(ready || (macs && macs.length > 1)) && <div className="new-session-strip">
         {/* The Mac chip stays even when this Mac is blocked: another one may not be. */}

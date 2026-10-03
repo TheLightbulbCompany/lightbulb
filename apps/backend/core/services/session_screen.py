@@ -96,9 +96,9 @@ async def ack_with_watching(ack: dict, owner: str, human: str, device: str) -> d
         now = int(_clock())
         rows = await store._query(repo.user_pk(owner, human), begins_with=f"WATCH#{device}#")
         watching = []
-        for r in sorted(rows, key=lambda r: int(r.get("since", 0)))[-ACK_CAP:]:
-            if int(r.get("expiresAt", 0)) <= now:
-                continue
+        # Expired rows first: their TTL delete lags up to 48 h and must not push live ones out.
+        live = [r for r in rows if int(r.get("expiresAt", 0)) > now]
+        for r in sorted(live, key=lambda r: int(r.get("since", 0)))[-ACK_CAP:]:
             meta = await repo.get_session(owner, r["sessionId"])
             if meta is None or meta.get("endedAt") is not None or meta.get("unshared"):
                 continue
@@ -141,6 +141,12 @@ class Screen(ContractModel):
         return value
 
 
+def _spent_up(sid: str, size: int, now: float) -> bool:
+    """This frame would not fit this minute's budget: drop it before it costs any read."""
+    at, spent = _spent.get(sid, (-1, 0))
+    return at == int(now // 60) and spent + size > BUDGET_BYTES_PER_MINUTE
+
+
 def _spend(sid: str, size: int, now: float) -> bool:
     minute = int(now // 60)
     if len(_spent) > 10_000:
@@ -162,6 +168,10 @@ async def forward(relay, cid: str, body: dict) -> None:
     Checks the row like any session frame; never writes it, nor anything else."""
     try:
         frame = Screen.model_validate(body)
+        size = len(base64.b64decode(frame.data))
+        # Only drops: the real spend is below, after the frame is proven to be this Mac's.
+        if _spent_up(str(frame.session_id), size, _clock()):
+            return
         connection, _ = await relay.connect(cid)
         owner = connection.get("org_id") or connection["user_id"]
         sid = str(frame.session_id)
@@ -182,7 +192,7 @@ async def forward(relay, cid: str, body: dict) -> None:
             for r in await store._query(repo.session_pk(owner, sid), begins_with="VIEWER#")
             if int(r.get("expiresAt", 0)) > now
         ]
-        if not viewers or not _spend(sid, len(base64.b64decode(frame.data)), now):
+        if not viewers or not _spend(sid, size, now):
             return
         event = make_live_event(
             "workspace.session.screen", frame.model_dump(mode="json", by_alias=True, exclude={"type"})

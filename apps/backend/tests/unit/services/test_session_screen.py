@@ -156,6 +156,30 @@ async def test_screen_frames_over_the_minute_budget_are_dropped(transport, monke
     for seq in range(2):
         await session_screen.forward(relay(transport), "conn-1", frame(sid, seq=seq))  # 3 raw bytes each
     assert len(await _published(transport)) == 1
+    reads = []
+    real = repo.get_session
+    monkeypatch.setattr(repo, "get_session", lambda *a: reads.append(a) or real(*a))
+    await session_screen.forward(relay(transport), "conn-1", frame(sid, seq=2))
+    assert reads == [] and len(await _published(transport)) == 1, "an over-budget frame costs no read"
+
+
+@pytest.mark.asyncio
+async def test_expired_watch_rows_never_push_a_live_session_out_of_the_ack(transport, db):
+    sid = await start(transport)
+    await session_screen.watch(BOB, sid)
+    row = await repo.get_session(OWNER, sid)
+    now = int(time.time())
+    for i in range(session_screen.ACK_CAP + 1):  # TTL has not deleted them yet; all newer than ours
+        db[0].put_item(
+            Item={
+                "pk": repo.user_pk(OWNER, row["humanUserId"]),
+                "sk": f"WATCH#{row['deviceId']}#00000000-0000-4000-8000-{i:012d}",
+                "sessionId": f"00000000-0000-4000-8000-{i:012d}",
+                "since": now + 100 + i,
+                "expiresAt": now - 1,
+            }
+        )
+    assert [w["sessionId"] for w in (await ack(transport, sid))["watching"]] == [sid]
 
 
 def test_the_golden_screen_frame_is_valid_and_fits_one_relay_frame():

@@ -229,9 +229,9 @@ def room(monkeypatch):
     ]
     monkeypatch.setattr(meeting_invites.messaging, "load_agent_roster", AsyncMock(return_value=roster))
     monkeypatch.setattr(meeting_invites.messaging, "human_display_name", AsyncMock(side_effect=lambda u: u))
-    # Meetings allowed, Recall stubbed out: the `bots` fixture puts the real booking back.
-    monkeypatch.setattr(meeting_invites.settings, "MEETINGS_ENABLED", True)
-    monkeypatch.setattr(meeting_invites.settings, "MEETINGS_OWNER_ALLOWLIST", "")
+    # Meetings available, Recall stubbed out: the `bots` fixture puts the real booking back.
+    monkeypatch.setattr(meeting_invites.settings, "LIVEKIT_URL", "wss://lk.test")
+    monkeypatch.setattr(meeting_invites.settings, "RECALL_API_KEY", "rk")
     monkeypatch.setattr(meeting_invites, "_sync_bot", AsyncMock(side_effect=lambda o, r, meeting, p: meeting))
     return m
 
@@ -502,22 +502,15 @@ async def test_an_invite_books_one_bot(room, bots):
     bots.create.assert_awaited_once()
 
 
-@pytest.mark.parametrize("enabled,allowlist", [(False, ""), (True, "org_other, org_2")])
-async def test_meetings_not_allowed_keep_the_room_for_notes(room, bots, monkeypatch, enabled, allowlist):
-    monkeypatch.setattr(meeting_invites.settings, "MEETINGS_ENABLED", enabled)
-    monkeypatch.setattr(meeting_invites.settings, "MEETINGS_OWNER_ALLOWLIST", allowlist)
+@pytest.mark.parametrize("missing", ["LIVEKIT_URL", "RECALL_API_KEY"])
+async def test_meetings_unavailable_keep_the_room_for_notes(room, bots, monkeypatch, missing):
+    monkeypatch.setattr(meeting_invites.settings, missing, "")
     room.accept.return_value = True
     assert await meeting_invites.handle_team_mail("org_1", _mail(GOOGLE), TEAM) == "meeting_scheduled"
     bots.create.assert_not_awaited()
     room.accept.assert_not_awaited()
     assert room.state["meta"]["meeting"]["status"] == "scheduled"
-    assert _lines(room) == ["Meetings aren't enabled for this workspace yet — the room is here for notes."]
-
-
-async def test_an_allowlisted_owner_books(room, bots, monkeypatch):
-    monkeypatch.setattr(meeting_invites.settings, "MEETINGS_OWNER_ALLOWLIST", "org_other,org_1")
-    await meeting_invites.handle_team_mail("org_1", _mail(GOOGLE), TEAM)
-    bots.create.assert_awaited_once()
+    assert _lines(room) == ["Meetings aren't available in this environment yet — the room is here for notes."]
 
 
 async def test_a_full_bot_pool_is_bot_failed_not_a_raise(room, bots):
@@ -653,15 +646,6 @@ async def test_a_cancel_whose_leave_fails_says_so_and_retries(room, bots):
     assert _lines(room)[-1] == "Couldn't pull the bot out of this meeting."
     await meeting_invites.handle_team_mail("org_1", _mail(CANCEL), TEAM)
     assert bots.leave.await_count == 2 and "recallBotId" not in room.state["meta"]["meeting"]
-
-
-async def test_no_api_key_is_bot_failed_without_a_line(room, bots, monkeypatch):
-    monkeypatch.setattr(meeting_invites.settings, "RECALL_API_KEY", "")
-    await meeting_invites.handle_team_mail("org_1", _mail(GOOGLE), TEAM)
-    bots.create.assert_not_awaited()
-    meeting = room.state["meta"]["meeting"]
-    assert meeting["status"] == "bot_failed" and meeting["botError"] == "no_api_key"
-    assert _bot_lines(room) == []
 
 
 async def test_an_unreadable_recall_answer_is_bot_failed(room, bots):

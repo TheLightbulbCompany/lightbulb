@@ -298,12 +298,9 @@ async def _sync_bot(owner_id: str, room_id: str, meeting: dict, prior: dict | No
             if not (isinstance(exc, meeting_bots.RecallError) and exc.code == "400"):
                 return await _bot_failed(owner_id, room_id, meeting, exc, "move", keep=True)
             # 400: under 10 minutes out Recall wants a fresh bot -- replaced below
-    if not settings.meetings_allowed(owner_id):
-        logger.info("meeting room %s: meetings not allowed for the owner, no bot booked", room_id)
+    if not settings.meetings_available():
+        logger.info("meeting room %s: meetings unavailable here, no bot booked", room_id)
         return meeting
-    if not settings.RECALL_API_KEY:
-        logger.warning("meeting room %s: RECALL_API_KEY unset, no bot booked", room_id)
-        return await _patch_meeting(room_id, {"status": "bot_failed", "botError": "no_api_key"})
     if bot_id:  # a new time, a new link, or a failed move: the old bot goes before a new one comes
         try:
             await meeting_bots.leave(bot_id)
@@ -386,7 +383,7 @@ async def handle_team_mail(owner_id: str, payload, team: dict) -> str | None:
     if current and int(current.get("sequence", 0)) > invite.sequence:
         return "meeting_stale"
     start_at = int(invite.start.timestamp())
-    allowed = settings.meetings_allowed(owner_id)
+    allowed = settings.meetings_available()
     if invite.method == "CANCEL":
         if not current or current.get("organizer") != invite.organizer_email:
             return "meeting_ignored"
@@ -410,7 +407,7 @@ async def handle_team_mail(owner_id: str, payload, team: dict) -> str | None:
             else f"Agents will join **{fields['title']}** on {_when_text(invite.start)}."
         )
         if not allowed:  # the room still keeps the meeting's notes; no bot books, no RSVP goes out
-            text = "Meetings aren't enabled for this workspace yet — the room is here for notes."
+            text = "Meetings aren't available in this environment yet — the room is here for notes."
     # The line's key is the invite's own transition: a new room counts as coming from "scheduled",
     # so a retry after the create replays its line; cancelled -> scheduled is a new key, so a
     # same-sequence re-invite announces itself again.

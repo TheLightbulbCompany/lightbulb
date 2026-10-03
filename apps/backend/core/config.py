@@ -107,10 +107,9 @@ class Settings(BaseSettings):
         """Parse CORS_ORIGINS as comma-separated list."""
         return [origin.strip() for origin in self.CORS_ORIGINS.split(",") if origin.strip()]
 
-    def meetings_allowed(self, owner_id: str) -> bool:
-        """The meetings money gate: bot booking and the Recall webhooks act only for these owners."""
-        allow = {o.strip() for o in self.MEETINGS_OWNER_ALLOWLIST.split(",") if o.strip()}
-        return self.MEETINGS_ENABLED and (not allow or owner_id in allow)
+    def meetings_available(self) -> bool:
+        """Meetings need a LiveKit project and a Recall key; dev has no LiveKit, so it books nothing."""
+        return bool(self.LIVEKIT_URL and self.RECALL_API_KEY)
 
     @property
     def clerk_authorized_parties_list(self) -> list[str]:
@@ -214,10 +213,7 @@ class Settings(BaseSettings):
     LIVEKIT_API_KEY: str = ""
     LIVEKIT_API_SECRET: str = ""
     HUDDLE_WORKER_SECRET: str = ""
-    # Meetings (Recall.ai bots). Off = an invite still opens the meeting room but books no bot (money gate).
-    MEETINGS_ENABLED: bool = False
-    MEETINGS_OWNER_ALLOWLIST: str = ""
-    """Comma-separated owner ids allowed to book bots. Empty = every owner (when MEETINGS_ENABLED)."""
+    # Meetings (Recall.ai bots). See meetings_available(): without LiveKit + a Recall key an invite opens the room only.
     RECALL_API_BASE: str = "https://us-east-1.recall.ai"
     RECALL_API_KEY: str = ""
     RECALL_WEBHOOK_SECRET: str = ""

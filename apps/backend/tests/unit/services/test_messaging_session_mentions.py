@@ -1,8 +1,8 @@
-"""Human room messages can address sessions without making sessions room members."""
+"""A session chip in a room message is a reference, like a document link (owner ruling
+2026-10-02): it is stored with a readable label and never wakes or messages the session."""
 
 import time
 import uuid
-from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
@@ -30,80 +30,72 @@ def _member(kind="human", *, listen_mode=None):
 
 
 def _session(**changes):
+    # A Codex session on an older Mac (no roomReplyRequestId): a reference needs no reply support.
     return {
         "sessionId": SESSION,
         "provider": "codex",
-        "roomReplyRequestId": True,
         "ownerId": OWNER,
         "humanUserId": USER,
         "generation": "gen-1",
-        "status": "idle",
-        "onlineUntil": int(time.time()) + 60,
+        "status": "offline",
+        "onlineUntil": int(time.time()) - 60,
         "capabilities": {"sendMode": "queue", "steer": False, "interrupt": False},
         "capabilitiesVerified": True,
+        "deviceId": "mac-1",
+        "providerVersion": "0.1",
+        "activeTurnId": None,
         **changes,
     }
 
 
-def _wire(monkeypatch, *, members=None, foreign=False, replayed=False):
+def _wire(monkeypatch, *, members=None, foreign=False, kind="channel"):
     members = members or [_member()]
     monkeypatch.setattr(
         messaging,
         "require_room_member",
-        AsyncMock(return_value=({"kind": "channel", "ownerId": OWNER}, _member())),
+        AsyncMock(return_value=({"kind": kind, "ownerId": OWNER}, _member())),
     )
     monkeypatch.setattr(messaging.messaging_repo, "get_member", AsyncMock(return_value=_member("agent")))
     monkeypatch.setattr(messaging.messaging_repo, "list_members", AsyncMock(return_value=members))
     monkeypatch.setattr(messaging.messaging_repo, "has_foreign_members", AsyncMock(return_value=foreign))
     monkeypatch.setattr(messaging.messaging_repo, "_get", AsyncMock(return_value=None))
     monkeypatch.setattr(messaging, "human_display_name", AsyncMock(return_value="Owner"))
-    item = {
-        "roomId": ROOM,
-        "messageId": str(uuid.UUID(int=99)),
-        "messageSeq": 1,
-        "roomRevision": 1,
-        "author": {"kind": "human", "id": USER, "displayName": "Owner"},
-        "text": "tag the session",
-        "mentions": [],
-        "replyToMessageId": None,
-        "threadRootMessageId": None,
-        "createdAt": messaging.utc_now().isoformat(),
-        "runId": None,
-        "dispatchTargets": [],
-        "attachments": [],
-    }
+    monkeypatch.setattr(
+        messaging, "address", AsyncMock(return_value={"agents": [], "humans": [], "anyone": False, "path": "none"})
+    )
 
     async def create_message(**kwargs):
-        item.update(text=kwargs["text"], mentions=kwargs["mentions"], dispatchTargets=kwargs["dispatch_targets"])
+        item = {
+            "roomId": ROOM,
+            "messageId": str(uuid.UUID(int=99)),
+            "messageSeq": 1,
+            "roomRevision": 1,
+            "author": kwargs["author"],
+            "text": kwargs["text"],
+            "mentions": kwargs["mentions"],
+            "createdAt": messaging.utc_now().isoformat(),
+            "dispatchTargets": kwargs["dispatch_targets"],
+        }
+        if kwargs.get("session_mentions"):
+            item["sessionMentions"] = kwargs["session_mentions"]
         if kwargs.get("session_target_labels"):
             item["sessionTargetLabels"] = kwargs["session_target_labels"]
-        return {key: value for key, value in item.items() if replayed or key != "sessionSends"}, replayed
-
-    async def set_sends(room_id, seq, sends):
-        item["sessionSends"] = sends
-        return item.copy()
+        return item, False
 
     create = AsyncMock(side_effect=create_message)
-    set_session_sends = AsyncMock(side_effect=set_sends)
     monkeypatch.setattr(messaging.messaging_repo, "create_message", create)
-    monkeypatch.setattr(messaging.messaging_repo, "set_session_sends", set_session_sends)
-    from core.services import live_events, local_session_relay
-
-    monkeypatch.setattr(live_events, "get_live_event_publisher", lambda: SimpleNamespace(publish_room=AsyncMock()))
-    dispatch = AsyncMock()
-    monkeypatch.setattr(
-        local_session_relay, "get_local_session_relay", lambda: SimpleNamespace(dispatch_session=dispatch)
-    )
     monkeypatch.setattr(local_sessions, "authorize_session", AsyncMock(return_value=(_session(), {})))
-    return create, set_session_sends, dispatch, item
+    submit = AsyncMock()
+    monkeypatch.setattr(local_sessions, "submit_command", submit)
+    return create, submit
 
 
-async def _send(text="tag the session", *, sessions=None, mentions=None, client_id=None):
+async def _send(text="look at this", *, sessions=None, mentions=None):
     return await messaging.create_human_message(
         AuthContext(user_id=USER, org_id=OWNER),
         ROOM,
         messaging.CreateMessageRequest(
-            client_message_id=client_id or uuid.uuid4(),
+            client_message_id=uuid.uuid4(),
             text=text,
             mentions=mentions or [],
             session_mentions=sessions or [],
@@ -114,81 +106,42 @@ async def _send(text="tag the session", *, sessions=None, mentions=None, client_
 
 
 @pytest.mark.asyncio
-async def test_tagged_session_gets_one_roomless_command_and_receipt(monkeypatch):
-    create, set_sends, dispatch, _ = _wire(monkeypatch)
-    local_sessions.authorize_session.return_value = (_session(displayTitle="Readable name", title="Native title"), {})
-    submit = AsyncMock(return_value=SimpleNamespace(request_id="receipt-1"))
-    monkeypatch.setattr(local_sessions, "submit_command", submit)
+async def test_a_session_mention_is_stored_with_its_label_and_never_sent(monkeypatch):
+    create, submit = _wire(monkeypatch)
+    local_sessions.authorize_session.return_value = (_session(displayTitle="Readable name", title="Native"), {})
     result = await _send(sessions=[SESSION, SESSION])
-    assert create.await_count == 1 and submit.await_count == 1
-    assert submit.await_args.args[1:3] == (None, SESSION)
-    assert submit.await_args.kwargs["origin_room_id"] == ROOM
-    assert submit.await_args.kwargs["origin_message_id"] == str(uuid.UUID(int=99))
     label = "Codex · Readable name · Owner"
+    assert create.await_args.kwargs["session_mentions"] == [SESSION]
     assert create.await_args.kwargs["session_target_labels"] == {SESSION: label}
-    assert set_sends.await_args.args[2] == [{"sessionId": SESSION, "displayLabel": label, "requestId": "receipt-1"}]
-    dispatch.assert_awaited_once_with(OWNER, SESSION)
-    assert result.session_sends == [
-        messaging.SessionSend(session_id=SESSION, display_label=label, request_id="receipt-1")
-    ]
+    assert result.session_mentions == [SESSION] and result.session_target_labels == {SESSION: label}
+    submit.assert_not_awaited()
+    # A reference checks visibility, not control: any workspace member may link a session.
+    assert "owner_only" not in local_sessions.authorize_session.await_args.kwargs
 
 
 @pytest.mark.asyncio
-async def test_busy_immediate_session_gets_its_active_turn_id(monkeypatch):
-    _wire(monkeypatch)
-    local_sessions.authorize_session.return_value = (
-        _session(
-            status="busy",
-            activeTurnId="turn-7",
-            capabilities={"sendMode": "immediate", "steer": True, "interrupt": False},
-        ),
-        {},
-    )
-    submit = AsyncMock(return_value=SimpleNamespace(request_id="receipt-1"))
-    monkeypatch.setattr(local_sessions, "submit_command", submit)
+async def test_a_session_mention_leaves_agent_dispatch_unchanged(monkeypatch):
+    create, _ = _wire(monkeypatch, members=[_member(), _member("agent", listen_mode="active")])
     await _send(sessions=[SESSION])
-    assert submit.await_args.args[3].expected_turn_id == "turn-7"
+    assert create.await_args.kwargs["dispatch_targets"] == [{"agentId": FRIDAY, "eventKind": "room_event"}]
+    _wire(monkeypatch, members=[_member(), _member("agent", listen_mode="active")], kind="dm")
+    dm = await _send(sessions=[SESSION])
+    assert dm.addressed_agent_ids == [FRIDAY]
 
 
 @pytest.mark.asyncio
-async def test_unauthorized_or_offline_session_posts_nothing(monkeypatch):
-    create, _, _, _ = _wire(monkeypatch)
-    local_sessions.authorize_session.side_effect = messaging.ApiProblem("LOCAL_SESSION_FORBIDDEN", "denied")
-    with pytest.raises(messaging.ApiProblem, match="denied"):
+async def test_a_session_the_room_cannot_see_is_refused(monkeypatch):
+    create, _ = _wire(monkeypatch)
+    local_sessions.authorize_session.side_effect = messaging.ApiProblem("LOCAL_SESSION_NOT_FOUND", "gone")
+    with pytest.raises(messaging.ApiProblem, match="gone"):
         await _send(sessions=[SESSION])
-    create.assert_not_awaited()
-    local_sessions.authorize_session.side_effect = None
-    local_sessions.authorize_session.return_value = (_session(status="offline"), {})
-    with pytest.raises(messaging.ApiProblem) as exc:
-        await _send(sessions=[SESSION])
-    assert exc.value.error.code == "LOCAL_SESSION_OFFLINE"
-    create.assert_not_awaited()
-
-
-@pytest.mark.asyncio
-async def test_session_owner_must_belong_to_target_room(monkeypatch):
-    create, _, _, _ = _wire(monkeypatch)
-    messaging.messaging_repo.get_member.return_value = None
-    with pytest.raises(messaging.ApiProblem) as exc:
-        await _send(sessions=[SESSION])
-    assert exc.value.error.code == "LOCAL_SESSION_FORBIDDEN"
-    create.assert_not_awaited()
-
-
-@pytest.mark.asyncio
-async def test_older_mac_cannot_commit_a_codex_room_mention(monkeypatch):
-    create, _, _, _ = _wire(monkeypatch)
-    local_sessions.authorize_session.return_value = (_session(roomReplyRequestId=False), {})
-    with pytest.raises(messaging.ApiProblem) as exc:
-        await _send(sessions=[SESSION])
-    assert exc.value.error.code == "LOCAL_SESSION_UNSUPPORTED"
     create.assert_not_awaited()
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("changes", [{"unshared": True}, {"kind": "background"}])
-async def test_private_or_background_session_cannot_be_mentioned(monkeypatch, changes):
-    create, _, _, _ = _wire(monkeypatch)
+async def test_private_or_background_session_cannot_be_referenced(monkeypatch, changes):
+    create, _ = _wire(monkeypatch)
     local_sessions.authorize_session.return_value = (_session(**changes), {})
     with pytest.raises(messaging.ApiProblem) as exc:
         await _send(sessions=[SESSION])
@@ -197,87 +150,33 @@ async def test_private_or_background_session_cannot_be_mentioned(monkeypatch, ch
 
 
 @pytest.mark.asyncio
-async def test_foreign_room_and_oversize_command_post_nothing(monkeypatch):
-    create, _, _, _ = _wire(monkeypatch, foreign=True)
+async def test_session_owner_must_belong_to_the_room(monkeypatch):
+    create, _ = _wire(monkeypatch, members=[_member("agent", listen_mode="active")])
     with pytest.raises(messaging.ApiProblem) as exc:
         await _send(sessions=[SESSION])
     assert exc.value.error.code == "LOCAL_SESSION_FORBIDDEN"
     create.assert_not_awaited()
-    messaging.messaging_repo.has_foreign_members.return_value = False
+
+
+@pytest.mark.asyncio
+async def test_a_room_shared_with_another_org_cannot_reference_sessions(monkeypatch):
+    create, _ = _wire(monkeypatch, foreign=True)
     with pytest.raises(messaging.ApiProblem) as exc:
-        await _send("x" * local_sessions.MAX_COMMAND_BYTES, sessions=[SESSION])
-    assert exc.value.error.code == "INVALID_REQUEST"
+        await _send(sessions=[SESSION])
+    assert exc.value.error.code == "LOCAL_SESSION_FORBIDDEN"
     create.assert_not_awaited()
 
 
 @pytest.mark.asyncio
-async def test_room_becoming_foreign_after_message_write_sends_no_session_command(monkeypatch):
-    create, set_sends, _, _ = _wire(monkeypatch)
-    messaging.messaging_repo.has_foreign_members.side_effect = [False, True]
-    submit = AsyncMock()
-    monkeypatch.setattr(local_sessions, "submit_command", submit)
-    await _send(sessions=[SESSION])
-    create.assert_awaited_once()
-    submit.assert_not_awaited()
-    assert set_sends.await_args.args[2] == [
-        {"sessionId": SESSION, "displayLabel": "Codex · Session · Owner", "error": "LOCAL_SESSION_FORBIDDEN"}
-    ]
-
-
-@pytest.mark.asyncio
-async def test_session_tag_mutes_ambient_agent_but_keeps_explicit_agent_mention(monkeypatch):
-    _wire(monkeypatch, members=[_member(), _member("agent", listen_mode="active")])
-    monkeypatch.setattr(local_sessions, "submit_command", AsyncMock(return_value=SimpleNamespace(request_id="r1")))
-    ambient = await _send(sessions=[SESSION])
-    assert ambient.addressed_agent_ids == []
-    assert messaging.messaging_repo.create_message.await_args.kwargs["dispatch_targets"] == []
-    explicit = await _send(sessions=[SESSION], mentions=[{"kind": "agent", "id": FRIDAY}])
-    assert explicit.addressed_agent_ids == [FRIDAY]
-
-
-@pytest.mark.asyncio
-async def test_retry_reuses_recorded_sends_without_a_second_command(monkeypatch):
-    _, set_sends, _, item = _wire(monkeypatch, replayed=True)
-    item["sessionSends"] = [{"sessionId": SESSION, "requestId": "receipt-1"}]
-    messaging.messaging_repo._get.return_value = {"requestHash": "already committed"}
-    submit = AsyncMock()
-    monkeypatch.setattr(local_sessions, "submit_command", submit)
-    result = await _send(sessions=[SESSION])
-    assert result.session_sends[0].request_id == "receipt-1"
-    submit.assert_not_awaited()
-    set_sends.assert_not_awaited()
-
-
-@pytest.mark.asyncio
-async def test_retry_after_message_commit_reuses_the_existing_command(monkeypatch):
-    _, set_sends, _, item = _wire(monkeypatch, replayed=True)
-    messaging.messaging_repo._get.return_value = {"requestHash": "already committed"}
-    from core.repositories import local_sessions_repo
-
-    monkeypatch.setattr(
-        local_sessions_repo,
-        "get_command",
-        AsyncMock(return_value={"originRoomId": ROOM, "originMessageId": item["messageId"]}),
-    )
-    submit = AsyncMock()
-    monkeypatch.setattr(local_sessions, "submit_command", submit)
-    result = await _send(sessions=[SESSION])
-    assert result.session_sends[0].request_id == f"m-{item['messageId']}-{SESSION}"
-    submit.assert_not_awaited()
-    assert set_sends.await_count == 1
-
-
-@pytest.mark.asyncio
 async def test_session_ids_participate_in_message_idempotency_hash(monkeypatch):
-    create, _, _, _ = _wire(monkeypatch)
-    monkeypatch.setattr(local_sessions, "submit_command", AsyncMock(return_value=SimpleNamespace(request_id="r1")))
+    create, _ = _wire(monkeypatch)
     await _send(sessions=[SESSION])
     first = create.await_args.kwargs["req_hash"]
     await _send(sessions=[str(uuid.UUID(int=43))])
     assert create.await_args.kwargs["req_hash"] != first
 
 
-def test_session_sends_are_absent_when_empty_and_optional_fields_are_omitted():
+def test_session_mentions_are_absent_when_empty_and_derived_from_legacy_labels():
     item = {
         "roomId": ROOM,
         "messageId": str(uuid.UUID(int=99)),
@@ -288,102 +187,51 @@ def test_session_sends_are_absent_when_empty_and_optional_fields_are_omitted():
         "mentions": [],
         "createdAt": messaging.utc_now().isoformat(),
     }
-    assert "sessionSends" not in messaging.canonical_message(item).model_dump(mode="json", by_alias=True)
-    with_sends = messaging.canonical_message({**item, "sessionSends": [{"sessionId": SESSION, "error": "offline"}]})
-    assert with_sends.model_dump(mode="json", by_alias=True)["sessionSends"] == [
-        {"sessionId": SESSION, "error": "offline"}
-    ]
-
-
-@pytest.mark.asyncio
-async def test_room_retry_refuses_unknown_outcome(monkeypatch):
-    from core.repositories import local_sessions_repo
-
-    item = {"messageId": str(uuid.uuid4())}
-    current = [{"sessionId": SESSION, "requestId": "old-request"}]
-    monkeypatch.setattr(
-        messaging,
-        "_room_session_send",
-        AsyncMock(return_value=({"ownerId": OWNER, "revision": 1}, item, current, 0, SESSION)),
-    )
-    monkeypatch.setattr(
-        local_sessions_repo,
-        "get_command",
-        AsyncMock(
-            return_value={
-                "state": "unknown",
-                "actorUserId": USER,
-                "sessionId": SESSION,
-                "originRoomId": ROOM,
-                "originMessageId": item["messageId"],
-            }
-        ),
-    )
-    with pytest.raises(messaging.ApiProblem) as exc:
-        await messaging.retry_room_session_send(
-            AuthContext(user_id=USER, org_id=OWNER),
-            ROOM,
-            item["messageId"],
-            SESSION,
-            messaging.RetrySessionSendRequest(request_id=uuid.uuid4(), expected_request_id="old-request"),
-        )
-    assert exc.value.error.code == "LOCAL_SESSION_CONFLICT"
-
-
-@pytest.mark.asyncio
-async def test_cancel_pending_rejects_command_and_updates_room_atomically(monkeypatch):
-    from core.repositories import local_sessions_repo
-
-    item = {
-        "roomId": ROOM,
-        "messageId": str(uuid.uuid4()),
-        "messageSeq": 1,
-        "roomRevision": 1,
-        "author": {"kind": "human", "id": USER, "displayName": "Owner"},
-        "text": "ask",
-        "mentions": [],
-        "createdAt": messaging.utc_now().isoformat(),
-        "sessionSends": [{"sessionId": SESSION, "requestId": "old-request"}],
+    wire = messaging.canonical_message(item).model_dump(mode="json", by_alias=True)
+    assert "sessionMentions" not in wire and "sessionTargetLabels" not in wire
+    legacy = {
+        **item,
+        "sessionTargetLabels": {SESSION: "Codex · Launch · Owner"},
+        "sessionSends": [{"sessionId": SESSION}],
     }
-    monkeypatch.setattr(
-        messaging,
-        "_room_session_send",
-        AsyncMock(return_value=({"ownerId": OWNER, "revision": 1}, item, item["sessionSends"], 0, SESSION)),
+    wire = messaging.canonical_message(legacy).model_dump(mode="json", by_alias=True)
+    assert wire["sessionMentions"] == [SESSION] and "sessionSends" not in wire
+
+
+@pytest.mark.asyncio
+async def test_agent_ingress_names_referenced_sessions_the_room_may_see(monkeypatch):
+    """Resolved from the rows, not the bounded live summary: an ended session is still a
+    reference the agent can read by id; an unshared one or a stranger's stays hidden."""
+    from core.services import openclaw_work
+
+    monkeypatch.setattr(openclaw_work.messaging_repo, "list_messages_before", AsyncMock(return_value=[]))
+    unshared, stranger, ended = (str(uuid.UUID(int=n)) for n in (43, 44, 45))
+    rows = {
+        SESSION: _session(title="Launch", status="idle", onlineUntil=int(time.time()) + 60),
+        unshared: _session(sessionId=unshared, unshared=True),
+        stranger: _session(sessionId=stranger, humanUserId="user_elsewhere"),
+        ended: _session(sessionId=ended, provider="claude", title="Old fix", endedAt=int(time.time()) - 5),
+    }
+    monkeypatch.setattr(local_sessions.repo, "get_session", AsyncMock(side_effect=lambda owner, sid: rows.get(sid)))
+    body = await openclaw_work.build_ingress_body(
+        meta={"roomId": ROOM, "ownerId": OWNER, "name": "general", "kind": "channel", "revision": 1},
+        target_agent_id=FRIDAY,
+        event_kind="user_request",
+        message={
+            "messageId": str(uuid.UUID(int=99)),
+            "messageSeq": 4,
+            "roomId": ROOM,
+            "roomRevision": 1,
+            "author": {"kind": "human", "id": USER, "displayName": "Owner"},
+            "text": "see this",
+            "mentions": [],
+            "createdAt": "2026-10-02T00:00:00Z",
+            "sessionMentions": [SESSION, unshared, stranger, ended],
+        },
+        members=[_member()],
+        sessions=[{"sessionId": SESSION, "provider": "codex", "title": "Launch", "status": "idle"}],
     )
-    monkeypatch.setattr(
-        local_sessions_repo,
-        "get_command",
-        AsyncMock(
-            return_value={
-                "state": "pending",
-                "actorUserId": USER,
-                "sessionId": SESSION,
-                "originRoomId": ROOM,
-                "originMessageId": item["messageId"],
-            }
-        ),
-    )
-    replace = AsyncMock()
-    monkeypatch.setattr(local_sessions_repo, "replace_command", replace)
-    monkeypatch.setattr(messaging.messaging_repo, "_table", lambda: SimpleNamespace(name="messages"))
-    monkeypatch.setattr(
-        messaging.messaging_repo,
-        "get_message",
-        AsyncMock(
-            return_value={
-                **item,
-                "sessionSends": [{"sessionId": SESSION, "requestId": "old-request", "error": "CANCELLED"}],
-            }
-        ),
-    )
-    result = await messaging.cancel_room_session_send(
-        AuthContext(user_id=USER, org_id=OWNER),
-        ROOM,
-        item["messageId"],
-        SESSION,
-        messaging.CancelSessionSendRequest(expected_request_id="old-request"),
-    )
-    assert replace.await_args.args[1]["state"] == "rejected"
-    updated = replace.await_args.kwargs["extra"][0]["Update"]["ExpressionAttributeValues"][":updated"]
-    assert updated[0]["error"] == "CANCELLED"
-    assert result.session_sends[0].error == "CANCELLED"
+    assert body["referencedSessions"] == [
+        {"sessionId": SESSION, "provider": "codex", "title": "Launch", "status": "idle"},
+        {"sessionId": ended, "provider": "claude", "title": "Old fix", "status": "ended"},
+    ]

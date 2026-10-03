@@ -56,16 +56,6 @@ def test_source_agent_never_receives_its_own_dm():
     assert targets == []
 
 
-def test_a_message_to_a_native_session_is_not_ambient():
-    """Prod 2026-10-02: '@claude-ready430 reply pong' in the Atlas DM ran the session and Atlas."""
-    assert select_dispatch_targets([FRIDAY, HUMAN], [], None, room_kind="dm", session_addressed=True) == []
-    mentions = [{"kind": "agent", "id": FRIDAY["id"]}]
-    assert select_dispatch_targets([FRIDAY, HUMAN], mentions, None, room_kind="dm", session_addressed=True) == [
-        {"agentId": FRIDAY["id"], "eventKind": "user_request"},
-    ]
-    assert select_dispatch_targets([FRIDAY, HUMAN], [], None, room_kind="channel", session_addressed=True) == []
-
-
 def test_the_addressing_stages_agents_ride_in_mentions():
     """Routing v2 §3.1: callers pass ``address``'s agents with the @mentions; all of them run."""
     named = [{"kind": "agent", "id": FRIDAY["id"]}, {"kind": "agent", "id": GAUGE["id"]}]

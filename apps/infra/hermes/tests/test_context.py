@@ -42,6 +42,12 @@ def test_the_turn_user_message_falls_back_to_id_with_no_display_name():
     assert turn._turn_user_message(body) == "user_9: ship it"
 
 
+def test_the_turn_user_message_names_referenced_sessions():
+    body = {**f.ingress(), "referencedSessions": [
+        {"sessionId": "s1", "provider": "codex", "title": "Launch check", "status": "idle"}]}
+    assert turn._turn_user_message(body) == "Prez: ship it\nReferenced sessions: Codex · Launch check (idle) [s1]"
+
+
 def test__run_hermes_passes_the_display_name_prefixed_user_message(home, monkeypatch):
     seen = {}
 

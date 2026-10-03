@@ -612,10 +612,6 @@ function Conversation() {
                   attachmentUrl={rooms.attachmentUrl}
                   members={members ?? []}
                   sessionCandidates={sessionCandidates}
-                  getSessionCommand={rooms.resourceSource.client.getLocalSessionCommand}
-                  retrySessionSend={rooms.resourceSource.client.retrySessionSend}
-                  cancelSessionSend={rooms.resourceSource.client.cancelSessionSend}
-                  onSessionSendChanged={rooms.loadHistory}
                 />
                 {placed.after.get(item.message.messageId)?.map((run) => (
                   <RunBlock

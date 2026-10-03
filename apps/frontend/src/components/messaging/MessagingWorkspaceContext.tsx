@@ -336,6 +336,9 @@ export function MessagingWorkspaceProvider({
   const sessionCandidates = useMemo(() => sessionMentionCandidates(
     workspaceSessions.sessions.filter((session) => session.kind !== "background"),
   ), [workspaceSessions.sessions]);
+  // What a reference card resolves against: every interactive session the viewer can open,
+  // not the sendable subset below (an offline, ended or read-only teammate session is still a reference).
+  const visibleSessions = useMemo(() => sessionCandidates.map(({ session }) => session), [sessionCandidates]);
   const sessionTargets = useMemo(() => rooms.activeRoom?.shared ? [] : sessionCandidates
     .filter(({ session }) => session.shared !== false && canSendToSession(session)
       && rooms.activeRoom?.members.some((member) => member.kind === "human" && member.id === session.humanUserId)
@@ -780,6 +783,7 @@ export function MessagingWorkspaceProvider({
     runs: rooms.runs.map(runView),
     composer,
     threadComposer,
+    sessions: visibleSessions,
     onSelectThread: setThreadId,
     selectedThreadId: threadId,
     onSelectParticipant: selectMessageParticipant,
@@ -817,9 +821,6 @@ export function MessagingWorkspaceProvider({
     onLinkToWork: () => openPanel("teams-issues", {}, { pushUrl: true }),
     onDownloadAttachment: rooms.downloadAttachment,
     onAttachmentUrl: rooms.attachmentUrl,
-    onGetSessionCommand: rooms.resourceSource.client.getLocalSessionCommand,
-    onRetrySessionSend: rooms.resourceSource.client.retrySessionSend,
-    onCancelSessionSend: rooms.resourceSource.client.cancelSessionSend,
   } : null;
 
   // Muted rooms never badge anywhere: not the sidebar, not the browser-tab title.

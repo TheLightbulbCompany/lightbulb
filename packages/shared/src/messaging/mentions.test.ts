@@ -147,23 +147,23 @@ describe("session mentions", () => {
   });
 
   it("renders tagged prose as a session chip and leaves code alone", () => {
-    expect(linkifySessionMentions("`@claude-lightbulb-s1` @claude-lightbulb-s1", [{ sessionId: "s1", requestId: "r1" }]))
+    expect(linkifySessionMentions("`@claude-lightbulb-s1` @claude-lightbulb-s1", { sessionMentions: ["s1"] }))
       .toBe("`@claude-lightbulb-s1` [@Claude Code session](mention:session:s1)");
-    expect(linkifySessionMentions("@claude-lightbulb-s1", [{ sessionId: "s2", requestId: "r2" }]))
+    expect(linkifySessionMentions("@claude-lightbulb-s1", { sessionMentions: ["s2"] }))
       .toBe("@claude-lightbulb-s1");
     expect(parseMentionHref("mention:session:s1")).toEqual({ kind: "session", id: "s1" });
   });
   it("uses the stored label and hides legacy UUIDs in plain previews", () => {
     const id = "514fe2b5-9032-5f8a-b9a6-899456e31363";
     const text = `Ask @claude-lightbulb-${id}`;
-    expect(linkifySessionMentions(text, [{ sessionId: id, displayLabel: "Claude Code · Launch check · Aden" }]))
+    expect(linkifySessionMentions(text, { sessionMentions: [id], sessionTargetLabels: { [id]: "Claude Code · Launch check · Aden" } }))
       .toBe(`Ask [@Claude Code · Launch check · Aden](mention:session:${id})`);
     expect(displaySessionMentions(text, undefined)).toBe("Ask @Claude Code session");
     expect(linkifySessionMentions(text, undefined)).toBe("Ask @Claude Code session");
     expect(displaySessionMentions("Ask @claude-launch-check", undefined, [session({ sessionId: id, displayTitle: "Launch check" })]))
       .toBe("Ask @Claude · Launch check");
-    expect(linkifySessionMentions("Ask @claude-launch-check-phase-2", [
-      { sessionId: id, displayLabel: "Claude Code · Launch check · phase 2 · Aden" },
-    ])).toBe(`Ask [@Claude Code · Launch check · phase 2 · Aden](mention:session:${id})`);
+    expect(linkifySessionMentions("Ask @claude-launch-check-phase-2", {
+      sessionMentions: [id], sessionTargetLabels: { [id]: "Claude Code · Launch check · phase 2 · Aden" },
+    })).toBe(`Ask [@Claude Code · Launch check · phase 2 · Aden](mention:session:${id})`);
   });
 });

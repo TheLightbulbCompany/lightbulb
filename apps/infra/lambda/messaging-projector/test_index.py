@@ -150,19 +150,6 @@ class FakeDdb:
 
 
 class ProjectorTests(unittest.TestCase):
-    def test_session_sends_modify_publishes_room_invalidation_without_message_content(self):
-        old = message_item()
-        updated = {**old, "sessionSends": [{"sessionId": "s1", "requestId": "r1"}], "sessionSendsAt": CREATED_AT}
-        index._ddb_client = FakeDdb({(f"ROOM#{ROOM_ID}", "META"): {"deliveryKey": DELIVERY_KEY, "workspaceId": WORKSPACE_ID}})
-        record = stream_record(updated)
-        record["eventName"] = "MODIFY"
-        with patch.object(index, "_publish") as publish:
-            index.process_record(record)
-            event = publish.call_args.args[1]
-            self.assertEqual(event["type"], "room.message.updated")
-            self.assertEqual(event["payload"], {"roomId": ROOM_ID, "messageId": MESSAGE_ID, "messageSeq": 1})
-            self.assertNotIn("sessionSends", event)
-
     def test_edit_and_delete_publish_invalidation_without_content_or_notifications(self):
         for deleted in (None, CREATED_AT):
             old = message_item()
@@ -307,6 +294,45 @@ class ProjectorTests(unittest.TestCase):
         )
         index.process_record(stream_record(message_item()))
         self.assertNotIn("attachments", publish.call_args.args[1]["payload"])
+
+    @patch("index._publish")
+    def test_session_reference_rides_the_live_event(self, publish):
+        # A session chip is a reference (owner ruling 2026-10-02). The live copy merges over the
+        # sender's POST response at the same revision, so a payload without these fields would
+        # strip the sender's card and show recipients none until an HTTP reload.
+        index._ddb_client = FakeDdb(
+            {(f"ROOM#{ROOM_ID}", "META"): {"deliveryKey": DELIVERY_KEY, "ownerId": OWNER_ID, "workspaceId": WORKSPACE_ID}}
+        )
+        session_id = "88888888-8888-4888-8888-888888888888"
+        item = message_item()
+        item["sessionMentions"] = [session_id]
+        item["sessionTargetLabels"] = {session_id: "Codex · Launch check · Owner", "stale-id": "dropped"}
+        index.process_record(stream_record(item))
+
+        payload = publish.call_args.args[1]["payload"]
+        self.assertEqual(payload["sessionMentions"], [session_id])
+        self.assertEqual(payload["sessionTargetLabels"], {session_id: "Codex · Launch check · Owner"})
+
+    @patch("index._publish")
+    def test_message_without_session_reference_omits_the_keys(self, publish):
+        index._ddb_client = FakeDdb(
+            {(f"ROOM#{ROOM_ID}", "META"): {"deliveryKey": DELIVERY_KEY, "ownerId": OWNER_ID, "workspaceId": WORKSPACE_ID}}
+        )
+        index.process_record(stream_record(message_item()))
+        payload = publish.call_args.args[1]["payload"]
+        self.assertNotIn("sessionMentions", payload)
+        self.assertNotIn("sessionTargetLabels", payload)
+
+    @patch("index._publish")
+    def test_malformed_session_reference_fails_the_record_and_publishes_nothing(self, publish):
+        index._ddb_client = FakeDdb(
+            {(f"ROOM#{ROOM_ID}", "META"): {"deliveryKey": DELIVERY_KEY, "ownerId": OWNER_ID, "workspaceId": WORKSPACE_ID}}
+        )
+        item = message_item()
+        item["sessionMentions"] = ["not-a-uuid"]
+        with self.assertRaises(ValueError):
+            index.process_record(stream_record(item))
+        publish.assert_not_called()
 
     @patch("index._publish")
     def test_malformed_attachment_fails_the_record_and_publishes_nothing(self, publish):

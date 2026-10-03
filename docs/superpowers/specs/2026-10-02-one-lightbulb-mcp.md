@@ -20,7 +20,7 @@ Enrollment replaces the `lightbulb_native_sessions` entry with `lightbulb`; if a
 
 ## Tools (identical names and schemas on both servers)
 
-`find_rooms`, `find_sessions`, `read_messages`, `send_message(room_id | person_id | session_id, text, request_id, reply_to_message_id?)`, `message_receipt(request_id)`. The local bridge drops `list_targets`/`send`/`receipt` (the sharing skill text is updated in the same PR). `find_sessions` on the local bridge marks the calling session (`isThisSession: true`) so the model never addresses itself.
+`find_rooms`, `find_sessions`, `read_messages`, `send_message(room_id | person_id | session_id, text, request_id, reply_to_message_id?)`, `message_receipt(request_id)`. On the hosted server `session_id` is a reference (owner ruling 2026-10-02: "a session chip is a reference; ask a session in its own composer or through an agent"): the message is posted to the room with a session card and the session is not messaged. The local bridge drops `list_targets`/`send`/`receipt` (the sharing skill text is updated in the same PR). `find_sessions` on the local bridge marks the calling session (`isThisSession: true`) so the model never addresses itself.
 
 ## Backend
 

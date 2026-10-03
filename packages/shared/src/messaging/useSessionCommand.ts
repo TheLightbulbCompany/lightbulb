@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 
 import { ApiError } from "../api/error";
 import { canSendToSession } from "./localSessionLabels";
-import type { LocalSession, LocalSessionCommand, LocalSessionCommandReceipt, LocalSessionEvent, SessionSend } from "./types";
+import type { LocalSession, LocalSessionCommand, LocalSessionCommandReceipt, LocalSessionEvent } from "./types";
 import type { SessionControlClient } from "./sessionControls";
 import { accessLost, type SessionSource } from "./useLocalSessionHistory";
 
@@ -17,23 +17,13 @@ export type SessionCommandAttempt = {
 /** Canonical command JSON is bounded to 8 KiB UTF-8, including every field. */
 export const COMMAND_MAX_BYTES = 8192;
 
-// Held room mentions can finish after native admission, so their reply check
-// gets a separate bounded window; ordinary command checks use deliverBy.
 export const AUTO_CHECK_INTERVAL_MS = 2000;
-const HELD_REPLY_CHECK_LIMIT = 60;
 const AUTO_CHECK_WINDOW_SECONDS = 30;
 
 /** The one status chip a pending follow-up carries; `detail` is the longer explanation (tooltip / second line). */
 export type SessionReceiptChip = { label: string; tone: "pending" | "ok" | "warn" | "error"; detail: string | null };
 
 const UNKNOWN_DETAIL = "It may already be on your Mac. Check delivery; do not send it again.";
-const SEND_ERRORS: Record<string, string> = {
-  LOCAL_SESSION_OFFLINE: "The session's Mac is offline. Try again when it reconnects.",
-  LOCAL_SESSION_NOT_FOUND: "This session is no longer available.",
-  LOCAL_SESSION_FORBIDDEN: "You cannot send to this session from this room.",
-  LOCAL_SESSION_QUEUE_FULL: "This session has too many waiting follow-ups. Try again later.",
-  INVALID_REQUEST: "The session could not accept this message.",
-};
 
 /**
  * Presentation only: maps the attempt/receipt state machine onto one short
@@ -56,54 +46,6 @@ export function receiptChip(attempt: SessionCommandAttempt | null | undefined, a
                   ? { label: "Queued for session", tone: "pending", detail: "The Mac will recheck this session before delivery. Expires after 24 hours." }
                   : { label: "Sending", tone: "pending", detail: receipt.state === "dispatched" ? "Waiting for the session to accept it." : null };
   return chip && receipt?.actor ? { ...chip, label: `${agentName(receipt.actor.id)} · ${chip.label}` } : chip;
-}
-
-export function useSessionSendReceipt(
-  getSessionCommand: ((sessionId: string, requestId: string) => Promise<LocalSessionCommandReceipt>) | undefined,
-  send: SessionSend,
-  refreshKey?: number,
-): { chip: SessionReceiptChip | null; receipt: LocalSessionCommandReceipt | null } {
-  const [receipt, setReceipt] = useState<LocalSessionCommandReceipt | null>(null);
-  const [failed, setFailed] = useState(false);
-  const heldReplyChecks = useRef<{ key: string; refreshKey?: number; count: number } | null>(null);
-  useEffect(() => {
-    if (!getSessionCommand || !send.requestId || send.error) return;
-    const key = `${send.sessionId}/${send.requestId}`;
-    if (heldReplyChecks.current?.key !== key || heldReplyChecks.current.refreshKey !== refreshKey) {
-      heldReplyChecks.current = { key, refreshKey, count: 0 };
-    }
-    let cancelled = false;
-    let timer: ReturnType<typeof setTimeout>;
-    const poll = async (count: number) => {
-      try {
-        const next = await getSessionCommand(send.sessionId, send.requestId!);
-        if (cancelled) return;
-        setReceipt(next);
-        setFailed(false);
-        const heldRoomSend = next.kind === "send" && next.state === "applied" && next.held && !next.replyPosted;
-        const heldCount = heldRoomSend ? ++heldReplyChecks.current!.count : 0;
-        const unsettled = next.state === "pending" || next.state === "dispatched" || next.state === "unknown" || heldRoomSend;
-        const limit = Math.max(1, Math.ceil((next.deliverBy - next.createdAt) / (AUTO_CHECK_INTERVAL_MS / 1000)));
-        if (heldRoomSend ? heldCount < HELD_REPLY_CHECK_LIMIT : unsettled && count < limit) timer = setTimeout(() => void poll(count + 1), AUTO_CHECK_INTERVAL_MS);
-      } catch {
-        if (cancelled) return;
-        setFailed(true);
-        if (count < 5) timer = setTimeout(() => void poll(count + 1), AUTO_CHECK_INTERVAL_MS);
-      }
-    };
-    void poll(0);
-    return () => { cancelled = true; clearTimeout(timer); };
-  }, [getSessionCommand, send.sessionId, send.requestId, send.error, refreshKey]);
-  if (send.error === "CANCELLED") return { chip: null, receipt: null };
-  if (send.error) return { chip: { label: "Not delivered", tone: "error", detail: SEND_ERRORS[send.error] ?? "The session could not accept this message." }, receipt: null };
-  if (!send.requestId || !getSessionCommand) return { chip: null, receipt: null };
-  if (!receipt || receipt.requestId !== send.requestId) return { chip: failed
-    ? { label: "Delivery unknown", tone: "warn", detail: UNKNOWN_DETAIL }
-    : { label: "Sending", tone: "pending", detail: null }, receipt: null };
-  return { chip: receiptChip({
-    request: { requestId: send.requestId, expectedGeneration: receipt.expectedGeneration, kind: "send", text: "" },
-    state: "received", receipt,
-  }), receipt };
 }
 
 /**

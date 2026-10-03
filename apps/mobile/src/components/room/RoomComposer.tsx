@@ -516,7 +516,7 @@ export function RoomComposer({
         : null;
   // Who this message will actually reach, by the same rule the backend
   // dispatches on — so the answer is not a guess the two could disagree about.
-  const hint = sessionMentions.length ? null : respondHint(roomKind, members, mentions, runningAgentIds ?? []);
+  const hint = respondHint(roomKind, members, mentions, runningAgentIds ?? []);
   const hasContent = !!body || draft.attachments.length > 0;
   // Photos upload as they are picked, so sending waits only on the ones still
   // in flight — and a failed one has to be retried or removed first, rather

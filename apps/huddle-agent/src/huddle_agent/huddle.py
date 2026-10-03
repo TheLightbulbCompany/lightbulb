@@ -113,7 +113,9 @@ SPEAKER_WINDOWS = 50
 # ponytail: an open speaking span (an `on` whose `off` never came) or an utterance start older than
 # this is stale; a longer unbroken monologue loses its label past it
 MEET_SPAN_MAX_S = 30
-TRANSCRIPT_CHUNK = 500  # TranscriptBody.lines max (backend huddles.py)
+# TranscriptBody.lines max (backend huddles.py): a rolling flush, and a meeting's one final request
+TRANSCRIPT_CHUNK = 500
+TRANSCRIPT_FINAL_MAX = 5_000
 
 
 def _retryable(e: BackendError) -> bool:
@@ -510,9 +512,27 @@ class Huddle:
         async with self._flush_lock:
             lines = self._transcript.after(self._sent_mark)
             self._sent_at = self._clock()
-            # a meeting's single final post is chunked; only the last chunk says final
-            for i in range(0, len(lines), TRANSCRIPT_CHUNK):
-                part = lines[i : i + TRANSCRIPT_CHUNK]
+            final = self.setting == "meeting"
+            if final:
+                # One request carries the whole transcript: chunks could land on different
+                # backend tasks. A meeting never flushes before this, so `lines` is all of it.
+                if not lines:
+                    return
+                if len(lines) > TRANSCRIPT_FINAL_MAX:
+                    logger.warning(
+                        "meeting transcript: %d lines, keeping the newest %d",
+                        len(lines),
+                        TRANSCRIPT_FINAL_MAX,
+                    )
+                    lines = lines[-TRANSCRIPT_FINAL_MAX:]
+                parts = [lines]
+            else:
+                parts = [
+                    lines[i : i + TRANSCRIPT_CHUNK]
+                    for i in range(0, len(lines), TRANSCRIPT_CHUNK)
+                ]
+            sent = 0
+            for part in parts:
                 try:
                     await self._backend.transcript(
                         self._huddle_id,
@@ -527,16 +547,16 @@ class Huddle:
                             }
                             for x in part
                         ],
-                        final=self.setting == "meeting"
-                        and i + TRANSCRIPT_CHUNK >= len(lines),
+                        final=final,
                     )
                 except Exception:
                     logger.info(
                         "huddle transcript post failed; %d lines unsent",
-                        len(lines) - i,
+                        len(lines) - sent,
                         exc_info=True,
                     )
                     return
+                sent += len(part)
                 self._sent_mark = part[-1].mark
 
     async def clear_presence(self) -> None:

@@ -131,13 +131,34 @@ async def test_a_stale_utterance_start_is_ignored():
     assert MEET not in h._utter_from
 
 
-async def test_the_final_transcript_goes_in_chunks_of_500():
+async def test_the_final_transcript_is_one_whole_request():
     h, room, backend, lives, clock, log = await meeting()
     for i in range(1200):
         h._transcript.add_person(MEET, "Priya (Meet)", f"line {i}", at=clock.t)
     await h._flush_transcript()
+    assert [len(x[1]) for x in backend.transcripts] == [1200]
+    assert backend.finals == [True]
+
+
+async def test_a_live_flush_still_goes_in_chunks_of_500():
+    h, room, backend, lives, clock, log = make()
+    for i in range(1200):
+        h._transcript.add_person("u1", "Priya", f"line {i}", at=clock.t)
+    await h._flush_transcript()
     assert [len(x[1]) for x in backend.transcripts] == [500, 500, 200]
-    assert backend.finals == [False, False, True]
+    assert backend.finals == [False, False, False]
+
+
+async def test_the_final_transcript_keeps_the_newest_5000(caplog):
+    h, room, backend, lives, clock, log = await meeting()
+    for i in range(5003):
+        h._transcript.add_person(MEET, "Priya (Meet)", f"line {i}", at=clock.t)
+    await h._flush_transcript()
+    ((_, lines),) = backend.transcripts
+    assert (
+        len(lines) == 5000 and lines[0]["text"] == "line 3" and backend.finals == [True]
+    )
+    assert "keeping the newest 5000" in caplog.text
 
 
 async def test_two_questions_route_once_and_a_summon_disarms_the_timer():

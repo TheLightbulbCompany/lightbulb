@@ -12,6 +12,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { NativeSessionTranscript, ReceiptChip, SubagentPanel, revealSubagent, type Person } from "./NativeSessionTranscript";
 import { SessionApprovalCard } from "./SessionControls";
+import { SessionTerminalView } from "./SessionTerminalView";
 import { useLocalTerminal } from "./localTerminal";
 import { SessionDetails, type SessionDetailsTab } from "./SessionDetails";
 import { canPickUp, SessionPickup } from "./SessionPickup";
@@ -22,14 +23,16 @@ const BOTTOM_SLACK = 80;
 /** Within this many pixels of the top, older output is fetched. */
 const SCROLLBACK_SLACK = 240;
 
-type Client = SessionSource["client"] & SessionControlClient & PickupClient & Parameters<typeof SessionDetails>[0]["client"] & JoinDecider;
+type Client = SessionSource["client"] & SessionControlClient & PickupClient & Parameters<typeof SessionDetails>[0]["client"] & JoinDecider & { watchLocalSession?: (sessionId: string) => Promise<unknown> };
 
 /**
  * A shared session: its status on one line, the conversation as its terminal
  * draws it, and the prompt. What the session is running, what it changed and
  * who may do what with it live behind Details, so the transcript has the room.
  */
-export function LocalSessionPanel({ session, ownerName, own, client, revision, onAccessLost, participants = [], onMessageOwner, nameOf }: {
+export function LocalSessionPanel({ session, ownerName, own, client, revision, onAccessLost, participants = [], onMessageOwner, nameOf, onEvent }: {
+  /** Live events, for watching a running session's terminal from another machine. */
+  onEvent?: SessionSource["onEvent"];
   session: LocalSession; ownerName: string; own: boolean; client: Client;
   /** A workspace member's name for the audit lines; defaults to the participants list. */
   nameOf?: (userId: string) => string;
@@ -50,6 +53,10 @@ export function LocalSessionPanel({ session, ownerName, own, client, revision, o
   const slot = useRef<HTMLDivElement>(null);
   // Running on this Mac: the real terminal replaces the session view (rulings 2026-10-03 §2).
   const local = useLocalTerminal(session.status === "ended" ? null : { sessionId: session.sessionId }, slot, details === null);
+  // Not at that Mac: watch the same terminal live, read-only, while it runs (rulings §4, §6).
+  const watchRemote = local === "none" && session.status !== "ended" && session.status !== "offline" && !!onEvent && !!client.watchLocalSession;
+  const [screenLive, setScreenLive] = useState(false);
+  const liveTerminal = watchRemote && screenLive;
   const id = useId();
   const people = useMemo(() => [{ kind: "human" as const, id: session.humanUserId, displayName: ownerName }, ...participants], [session.humanUserId, ownerName, participants]);
   const agentName = useCallback((agentId: string) => people.find(p => p.id === agentId)?.displayName ?? "Agent", [people]);
@@ -122,7 +129,7 @@ export function LocalSessionPanel({ session, ownerName, own, client, revision, o
     const observer = new ResizeObserver(() => { if (atBottomRef.current) toBottom(); });
     observer.observe(node);
     return () => observer.disconnect();
-  }, [toBottom]);
+  }, [toBottom, liveTerminal]);
   const onScroll = () => {
     const node = scroller.current;
     if (!node) return;
@@ -138,6 +145,20 @@ export function LocalSessionPanel({ session, ownerName, own, client, revision, o
   const added = changes.reduce((n, file) => n + file.added, 0);
   const removed = changes.reduce((n, file) => n + file.removed, 0);
   const done = plan?.filter(step => step.status === "completed").length ?? 0;
+
+  // The transcript, or (under a live terminal) just its pending and queued rows: sent follow-ups stay visible.
+  const transcript = <>
+          <NativeSessionTranscript provider={session.provider} events={liveTerminal ? [] : events} busy={busy && !history.hasNewer && !liveTerminal} ownerName={ownerName} participants={people}
+            status={session.status} pending={pendingText && !history.hasNewer ? { text: pendingText, chip: command.chip,
+              onRetry: command.receipt?.state === "rejected" ? command.retry : undefined,
+              onCancel: command.receipt?.state === "rejected" ? command.dismiss : command.canCancel ? () => void command.cancel() : undefined } : null}
+            outbox={queuedOutbox.map(receipt => ({
+              requestId: receipt.requestId, text: receipt.text ?? "",
+              chip: receiptChip({ request: { requestId: receipt.requestId, expectedGeneration: receipt.expectedGeneration, kind: "send", text: receipt.text ?? "" }, state: "received", receipt }, agentName),
+              onCancel: outbox.canCancel && receipt.state === "pending" ? () => void outbox.cancel(receipt.requestId) : undefined,
+            }))} />
+    {queuedOutbox.some(receipt => receipt.state === "pending" || receipt.state === "dispatched" || receipt.state === "unknown") && <Button type="button" variant="outline" size="sm" onClick={() => void outbox.refresh()}>Check queued delivery</Button>}
+  </>;
 
   return <>
     <div className="session-status">
@@ -171,26 +192,20 @@ export function LocalSessionPanel({ session, ownerName, own, client, revision, o
     </div>}
     {local !== "none"
       ? <div ref={slot} className="local-session-terminal" role="region" aria-label="Session terminal" />
-      : <div className="local-session-scroll">
+      : <>
+      {watchRemote && <SessionTerminalView session={session} onEvent={onEvent!} watch={client.watchLocalSession!} onLive={setScreenLive} />}
+      {liveTerminal ? <div className="local-session-feedback">{transcript}</div> : <div className="local-session-scroll">
       <div ref={scroller} className="room-context-body local-session-history" role="region" aria-label="Native session history" tabIndex={0} onScroll={onScroll}>
         <div ref={content}>
           {history.loading && <div className="native-session-shimmer" role="status" aria-label="Loading session history" />}
-          <NativeSessionTranscript provider={session.provider} events={events} busy={busy && !history.hasNewer} ownerName={ownerName} participants={people}
-            status={session.status} pending={pendingText && !history.hasNewer ? { text: pendingText, chip: command.chip,
-              onRetry: command.receipt?.state === "rejected" ? command.retry : undefined,
-              onCancel: command.receipt?.state === "rejected" ? command.dismiss : command.canCancel ? () => void command.cancel() : undefined } : null}
-            outbox={queuedOutbox.map(receipt => ({
-              requestId: receipt.requestId, text: receipt.text ?? "",
-              chip: receiptChip({ request: { requestId: receipt.requestId, expectedGeneration: receipt.expectedGeneration, kind: "send", text: receipt.text ?? "" }, state: "received", receipt }, agentName),
-              onCancel: outbox.canCancel && receipt.state === "pending" ? () => void outbox.cancel(receipt.requestId) : undefined,
-            }))} />
-          {queuedOutbox.some(receipt => receipt.state === "pending" || receipt.state === "dispatched" || receipt.state === "unknown") && <Button type="button" variant="outline" size="sm" onClick={() => void outbox.refresh()}>Check queued delivery</Button>}
+          {transcript}
           {history.error && <div role="alert"><p>{history.error}</p><Button variant="outline" onClick={() => void history.retry()}>Retry history</Button></div>}
           {!history.loading && !history.error && history.events.length === 0 && !pendingText && <p>No shared output yet.</p>}
 
         </div>
       </div>
     </div>}
+    </>}
     <SubagentPanel provider={session.provider} events={history.events} status={session.status} onPick={id => revealSubagent(content.current, id)} />
     {session.status === "ended" ? null : control ? <form className="room-composer local-session-composer native-session-composer" onSubmit={event => { event.preventDefault(); atBottomRef.current = true; command.send(text); }}>
       <label htmlFor={id} className="sr-only">Send to {target}</label>

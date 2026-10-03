@@ -636,3 +636,10 @@ button.native-session-panel-row:hover .native-session-panel-activity { color: va
 .local-session-add { color: var(--ok); margin-left: 8px; }
 .local-session-del { color: var(--err); margin-left: 4px; }
 .native-session-tool > .native-session-muted { white-space: nowrap; }
+
+.session-terminal-view { flex: 1; min-height: 0; overflow: hidden; background: #16161a; padding: 6px 8px; }
+/* Laid out but unseen until its first snapshot, so xterm can measure itself. */
+.session-terminal-view[data-live="false"] { position: absolute; visibility: hidden; }
+/* Pending and queued follow-ups stay visible under the live terminal. */
+.local-session-feedback:empty { display: none; }
+.local-session-feedback { flex: none; max-height: 30%; overflow: auto; }

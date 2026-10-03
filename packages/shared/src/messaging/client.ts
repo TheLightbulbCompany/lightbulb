@@ -90,6 +90,8 @@ export interface MessagingClient {
   setLocalSessionTeamControl(sessionId: string, enabled: boolean): Promise<LocalSession>;
   /** A teammate asks the session's owner to let them send. Repeating while pending changes nothing. */
   requestLocalSessionJoin(sessionId: string): Promise<LocalSession>;
+  /** Keep a running session's live terminal coming to this person; sent every 15 s while it is on screen. */
+  watchLocalSession(sessionId: string): Promise<void>;
   /** The owner allows or declines one person's ask. Allow lets just that person send. */
   decideLocalSessionJoin(sessionId: string, userId: string, decision: "allow" | "decline", requestId?: string): Promise<LocalSession>;
   /** The owner takes one allowed person's access back. */
@@ -160,6 +162,7 @@ export function createMessagingClient(api: ApiMethods): MessagingClient {
     setLocalSessionSharing: (sessionId, shared) => api.put(`${sessionPath(sessionId)}/sharing`, { shared }) as Promise<LocalSession>,
     setLocalSessionTeamControl: (sessionId, enabled) => api.put(`${sessionPath(sessionId)}/team-control`, { enabled }) as Promise<LocalSession>,
     requestLocalSessionJoin: (sessionId) => api.post(`${sessionPath(sessionId)}/join-requests`, {}) as Promise<LocalSession>,
+    watchLocalSession: (sessionId) => api.post(`${sessionPath(sessionId)}/viewing`, {}) as Promise<void>,
     decideLocalSessionJoin: (sessionId, userId, decision, requestId) =>
       api.post(`${sessionPath(sessionId)}/join-requests/${encodeURIComponent(userId)}`, { decision, ...(requestId ? { requestId } : {}) }) as Promise<LocalSession>,
     removeLocalSessionSender: (sessionId, userId) =>

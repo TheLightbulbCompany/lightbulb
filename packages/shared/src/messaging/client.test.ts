@@ -242,3 +242,10 @@ it("cancels history immediately and skips an already-cancelled read", async () =
   await expect(client.listMessages(roomId, 0, 100, { signal: controller.signal })).rejects.toThrow("cancelled");
   expect(get).toHaveBeenCalledTimes(1);
 });
+
+it("keeps a running session's live terminal coming by posting /viewing", async () => {
+  const post = vi.fn(async () => undefined);
+  const client = createMessagingClient({ post } as unknown as ApiMethods);
+  await client.watchLocalSession("s 1");
+  expect(post).toHaveBeenCalledWith("/messaging/sessions/s%201/viewing", {});
+});

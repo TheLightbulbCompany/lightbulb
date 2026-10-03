@@ -30,12 +30,12 @@ def _signed(payload: dict, secret: str = SECRET) -> tuple[bytes, dict]:
     return body, {"webhook-id": "msg_1", "webhook-timestamp": stamp, "webhook-signature": f"v1,{sig}"}
 
 
-def _status(code: str, bot_id: str = "bot-1", sub_code: str | None = None, room: str = ROOM) -> dict:
+def _status(code: str, bot_id: str = "bot-1", sub_code: str | None = None, room: str = ROOM, nonce: str = "n") -> dict:
     return {
         "event": f"bot.{code}",
         "data": {
             "data": {"code": code, "sub_code": sub_code, "updated_at": "2026-10-03T00:00:00Z"},
-            "bot": {"id": bot_id, "metadata": {"roomId": room}},
+            "bot": {"id": bot_id, "metadata": {"roomId": room, "nonce": nonce}},
         },
     }
 
@@ -76,6 +76,7 @@ def env():
         patch.object(mod.meeting_invites, "_post_line", AsyncMock()) as line,
         patch.object(mod.clerk_admin, "get_organization", AsyncMock(return_value={"name": "Acme"})),
         patch.object(lk, "dispatch_meet", AsyncMock()) as dispatch,
+        patch.object(mod.meeting_bots, "leave", AsyncMock()) as bot_leave,
         patch.object(lk, "close_room", AsyncMock()) as close,
         patch.object(lk, "send_meet_speaker", AsyncMock()) as speaker,
         patch.object(mod.voice_calls, "prewake_owner", MagicMock()) as wake,
@@ -95,6 +96,7 @@ def env():
             "notes": notes,
             "release": release,
             "claim": claim,
+            "bot_leave": bot_leave,
         }
 
 
@@ -342,3 +344,22 @@ def test_worker_leave_needs_the_room_token(env):
         headers={"X-Lightbulb-Huddle-Secret": WORKER},
     )
     assert resp.status_code == 401
+
+
+def test_an_untracked_bot_of_this_booking_is_adopted_then_processed(env):
+    meeting = env["meta"]["meeting"]
+    del meeting["recallBotId"]
+    meeting["status"] = "scheduled"
+    assert _post(env["client"], _status("in_call_recording", bot_id="bot-2")).status_code == 200
+    meeting = env["meta"]["meeting"]
+    assert meeting["recallBotId"] == "bot-2" and meeting["status"] == "in_call"
+    env["dispatch"].assert_awaited_once()
+    env["bot_leave"].assert_not_awaited()
+
+
+def test_an_extra_bot_is_told_to_leave(env):
+    env["bot_leave"].side_effect = RuntimeError("already gone")
+    assert _post(env["client"], _status("in_call_recording", bot_id="bot-2")).status_code == 200
+    env["bot_leave"].assert_awaited_once_with("bot-2")
+    env["dispatch"].assert_not_awaited()
+    assert env["meta"]["meeting"]["recallBotId"] == "bot-1"

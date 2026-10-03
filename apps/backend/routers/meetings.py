@@ -103,7 +103,7 @@ async def _finish(room_id: str, status: str, sub_code: str, notes: bool, in_call
             logger.warning("meeting room %s: end step %s failed", room_id, step, exc_info=True)
 
 
-async def _on_status(bot_id: str, room_id: str, code: str, sub_code: str) -> None:
+async def _on_status(bot_id: str, room_id: str, code: str, sub_code: str, nonce: str = "") -> None:
     """One transition, under the meeting's lease and decided from a META read taken inside it, so
     an invite, another status (Meet sends two in-call codes within a second) or the idle leave
     cannot interleave. A busy lease raises: the route answers 5xx and Recall redelivers."""
@@ -113,7 +113,24 @@ async def _on_status(bot_id: str, room_id: str, code: str, sub_code: str) -> Non
         meeting = meta.get("meeting") or {}
         status = meeting.get("status")
         if meeting.get("recallBotId") != bot_id:
-            return  # another bot's
+            # Recall books a second bot on a repeated create: the one of this booking (its nonce)
+            # that the room lost track of is adopted; any other live bot is told to leave.
+            if (
+                (not meeting.get("recallBotId") or status == "bot_failed")
+                and status not in ("cancelled", "ended")
+                and nonce
+                and nonce == meeting.get("ticketNonce")
+            ):
+                fields = {"recallBotId": bot_id, "status": "bot_created"}
+                meeting = await meeting_invites._patch_meeting(room_id, fields, drop=("botError", "lastBotStatus"))
+                status = "bot_created"
+            else:
+                if target == "in_call":
+                    try:
+                        await meeting_bots.leave(bot_id)
+                    except Exception:  # noqa: BLE001 -- automatic_leave reaps it anyway; 200 either way
+                        logger.warning("meeting room %s: extra bot leave failed", room_id, exc_info=True)
+                return
         if status in _TERMINAL:  # never revived; a redelivery only retries notes a crash left undone
             if meeting_notes.owed(meeting):
                 voice_calls._fire(meeting_notes.on_ended(room_id))
@@ -170,7 +187,8 @@ async def recall_status(request: Request):
         code = str(data.get("code") or payload.get("event") or "").removeprefix("bot.")
         if code in _TARGET:
             try:
-                await _on_status(bot_id, room_id, code, str(data.get("sub_code") or ""))
+                nonce = str((payload["data"]["bot"].get("metadata") or {}).get("nonce") or "")
+                await _on_status(bot_id, room_id, code, str(data.get("sub_code") or ""), nonce)
             except meeting_invites.MeetingBusy:
                 raise HTTPException(status_code=503, detail="retry") from None
             except Exception:

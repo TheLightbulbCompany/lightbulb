@@ -37,6 +37,7 @@ async def test_an_agent_named_agents_cannot_take_the_team_mailbox(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_is_team_address_resolves_slug_owner(monkeypatch):
+    monkeypatch.setattr(agent_email_repo.settings, "AGENT_EMAIL_DOMAIN", "thelightbulb.company")
     monkeypatch.setattr(
         agent_email_repo.company_slug_repo, "get_by_slug", AsyncMock(return_value={"slug": "acme", "owner_id": "org_1"})
     )

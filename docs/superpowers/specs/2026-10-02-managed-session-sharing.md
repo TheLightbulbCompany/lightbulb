@@ -145,6 +145,9 @@ else: no network, no auth, no session bookkeeping.
   webview is loaded from `https://thelightbulb.company` (`capabilities/default.json`); it may
   ask to open a terminal window but never send input. A bug or compromise in the web app
   therefore cannot type into a shell.
+  The window maps **Shift+Enter to `ESC CR`** (what Option+Enter sends): xterm.js sends a plain
+  `CR` for Shift+Enter, which submits the prompt in Claude Code (measured in WebKit); `ESC CR`
+  inserts a newline. `macOptionIsMeta` is on.
 - **Recorder.** Per holder: live chunks of at most 1 s or 11 KiB raw (base64 must fit the
   16 KiB relay frame with its envelope), carrying `fromOffset`, `cols`, `rows`, sent as
   `local.session.screen`. Every 30 s or 256 KiB it uploads an append-only **segment** of raw
@@ -375,6 +378,18 @@ Phase 1a, task 1.1 (holder prototype, `spike/managed-sessions`, Claude Code 2.1.
   earlier pass-through test.
 - Output volume: 47 KB over 122 s (~0.4 KB/s).
 - Claude's normal "trust this folder" question appears for a new folder, as in any terminal.
+
+Phase 1a, task 1.2 (xterm.js 5.5 in headless WebKit through Playwright 1.63, against the held
+session; Safari's engine without driving the owner's screen):
+
+- Renders correctly at 136x45; resizing to 93x33 redrew once, no duplicated prompt box.
+- **Shift+Enter submitted the prompt** (xterm.js sends `CR`). Option+Enter (`ESC CR`) inserted a
+  newline. Fix: map Shift+Enter to `ESC CR` in the terminal window (§5.2).
+- Option+B moved back one word (`macOptionIsMeta`).
+- A three-line `term.paste` (the Cmd+V path) stayed in the prompt; status stayed idle.
+- The `/` menu opened and filtered as typed.
+- `Esc` during a running reply showed "Interrupted"; `/exit` ended the session and the holder.
+- Not covered: OS clipboard Cmd+C/Cmd+V, image drop (needs the real app), 8-hour memory.
 
 Reviews: desktop architecture, backend/security architecture, and an over-engineering pass
 (2026-10-02); their blocking findings are resolved in this revision. Research: Happy Coder

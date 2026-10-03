@@ -1,7 +1,7 @@
 # Managed session sharing
 
-Status: draft, revision 2 (after two architecture reviews and an over-engineering review),
-2026-10-02. Mockups: "Session Sharing Screens",
+Status: draft, revision 3, 2026-10-03: recording removed; live view only. Revision 2 followed
+two architecture reviews and an over-engineering review. Mockups: "Session Sharing Screens",
 https://claude.ai/artifact/Jf4r2sd92ubE3pcgG9BnHZ (private to the owner).
 
 ## 1. Problem
@@ -29,8 +29,9 @@ imitation of each terminal:
    runs in a pseudo-terminal (pty) that Lightbulb holds. Not Happy's kill-and-relaunch.
 3. **The owner codes in a terminal panel inside the desktop app.** The same session can be
    attached from an outside terminal with `lightbulb claude`.
-4. **Teammates see the same real view**, live while the session runs and recorded
-   afterwards. The terminal output is recorded and stored, unredacted (accepted).
+4. **Teammates watch the real terminal while it is running.** Nothing is recorded or stored
+   (ruling 2026-10-03: "sharing a terminal that is running vs not"). A session that is not
+   running has nothing to watch; it shows the session view that already exists.
 5. **Resume:** the owner and teammates allowed to send can resume an ended session,
    including from the iPhone.
 6. **The phone keeps the session view** (the structured record), plus Resume.
@@ -68,9 +69,9 @@ pause sharing (`set_sharing`) for a running shared session.
 | Owner, started in the app | The real terminal in a panel | — |
 | Owner, started with `lightbulb claude` | The session is listed; opening it moves the session's keyboard and size to the panel | The real terminal, unchanged, after one "Shared with <workspace>" line |
 | Owner, plain `claude` | Nothing | The real terminal, private |
-| Teammate (web, desktop) | The real terminal view: live, frozen with an "Offline" note while the Mac is away, recorded after it ends; message box and Resume under it | — |
+| Teammate (web, desktop) | Running: the real terminal, live, watch-only, with the message box under it. Not running (ended, or the owner's Mac or app is off): the existing session view, and Resume | — |
 | Owner or teammate on the phone | The session view, approval cards, message box, Resume | — |
-| Agents (Friday) | The structured record, as today. Never the recording. | — |
+| Agents (Friday) | The structured record, as today. Never the screen. | — |
 
 ## 5. Design
 
@@ -83,12 +84,11 @@ pause sharing (`set_sharing`) for a running shared session.
  │   output log with byte offsets (ring, 1 MiB)    │
  │   unix socket: hello · attach · input · resize  │
  └──────▲──────────────────────▲───────────────────┘
-        │ one interactive      │ recorder (output only)
-        │ client at a time     │
+        │ one interactive      │ live relay (output only,
+        │ client at a time     │ only while someone watches)
  `lightbulb claude`      Lightbulb desktop app
- or the app's            ├─ terminal window (local assets, own IPC permission)
- terminal window         ├─ recorder ─ live chunks ──► relay ─► watching viewers' user channels
-                         │           └ segments + keyframes ─► S3 (presigned PUT) + manifest row
+ or the app's            ├─ terminal window (its own loopback page and key)
+ terminal window         ├─ live relay ─ snapshot + output ─► relay ─► watching viewers' user channels
                          └─ existing mirror (hooks, transcript) ─► relay ─► EVENT# rows
 ```
 
@@ -126,7 +126,7 @@ else: no network, no auth, no session bookkeeping.
   that offset or `gap{fromOffset, toOffset}` if they are gone.
 - **Clients.** One interactive client at a time (the panel or `lightbulb claude`): the newest
   attach takes over keyboard and size and the previous one is told it was detached. The app's
-  recorder attaches output-only.
+  live relay attaches output-only.
 - **Discovery of holders.** No manifest file. The app lists sockets in
   `/private/tmp/lightbulb-sessions-<uid>/h/<short id>.sock` (the directory the app already
   uses), connects, and reads `hello{protocol, pid, pidBirth, provider, cwd, providerPid,
@@ -139,7 +139,7 @@ else: no network, no auth, no session bookkeeping.
 ### 5.2 Desktop app
 
 - **Holder manager** (Rust): starts holders (folder + provider + args), finds running ones,
-  keeps the recorder attached to each, and exposes the list.
+  attaches a live relay to a holder while someone is watching it, and exposes the list.
 - **Terminal window.** xterm.js in its own webview, served by a loopback server in the app and
   connected to its holder over a WebSocket that needs the window's own random key; there are no
   Tauri commands that type into a session. The main app
@@ -149,13 +149,11 @@ else: no network, no auth, no session bookkeeping.
   The window maps **Shift+Enter to `ESC CR`** (what Option+Enter sends): xterm.js sends a plain
   `CR` for Shift+Enter, which submits the prompt in Claude Code (measured in WebKit); `ESC CR`
   inserts a newline. `macOptionIsMeta` is on.
-- **Recorder.** Per holder: live chunks of at most 1 s or 11 KiB raw (base64 must fit the
-  16 KiB relay frame with its envelope), carrying `fromOffset`, `cols`, `rows`, sent as
-  `local.session.screen`. Every 30 s or 256 KiB it uploads an append-only **segment** of raw
-  output plus a **keyframe** (the holder's snapshot) to S3 through a presigned PUT, then
-  commits a manifest entry over the relay (§5.5). After an app restart it asks the holder to
-  replay from its last committed offset; anything older is one `gap`. It flushes before the
-  session's `Ended` is sent.
+- **Live relay.** Started when the backend says someone is watching a session, stopped when
+  nobody is. It attaches to the holder output-only, sends the holder's snapshot first, then
+  output in chunks of at most 1 s or 11 KiB raw (base64 must fit the 16 KiB relay frame with
+  its envelope), each with `cols` and `rows`, as `local.session.screen`. Nothing is kept: no
+  queue, no replay, no upload when nobody watches.
 - **Remote start, pick-up and Resume** (`session_start.rs`, `session_pickup.rs` share one
   launcher, `session_pickup.rs:807` → `session_start::launch`) start a held session, bring the
   terminal window to the front and post a native notification. A hidden launch would lose the
@@ -203,43 +201,30 @@ A session is shared iff its provider process descends from a holder:
 Identity is unchanged: session id = uuid5(owner, device, provider, profile, conversation);
 generation = the provider process's pid + birth.
 
-### 5.5 Recording and the live view
+### 5.5 Watching a running terminal
 
-- **Live:** `local.session.screen {sessionId, generation, fromOffset, cols, rows,
-  kind: "output"|"gap", data}` on the existing relay. The backend does **not** store it and
-  does **not** write the session META row (META's revision guards sends and approvals,
-  `local_sessions_repo.py:246`; a 1 Hz writer there would starve them). It checks the row
-  (generation, not ended, not `unshared`, enrollment) and publishes to current viewers off
-  the ack path. While `unshared`, chunks are acked and dropped and the recorder writes a `gap`.
-- **Viewers:** `POST /messaging/sessions/{id}/viewing` every 15 s writes a `VIEWER#<user>` row
-  with a 45 s TTL in the session partition. Its only job is to bound fan-out to people
-  actually watching. Publishing uses each viewer's existing user channel
-  (`live_events.publish_user`), which already stops for members who have been removed.
+Running means the holder is alive and the owner's app is connected. Not running means there
+is nothing to watch.
+
+- **Watching:** a viewer sends `POST /messaging/sessions/{id}/viewing` every 15 s, which
+  writes a `VIEWER#<user>` row with a 45 s TTL in the session partition (the Mac live-view
+  pattern, `mac_live.py`). While any viewer row exists, the device-heartbeat ack tells the Mac
+  which sessions are watched; the Mac runs a live relay for exactly those (§5.2).
+- **Frames:** `local.session.screen {sessionId, generation, cols, rows, kind:
+  "snapshot"|"output", data}` on the existing relay. The backend stores nothing and does not
+  write the session META row (its revision guards sends and approvals,
+  `local_sessions_repo.py:246`). It checks the row (generation, not ended, not `unshared`,
+  enrollment) and publishes to each current viewer's existing user channel
+  (`live_events.publish_user`, which already stops for removed members), off the ack path.
   The new event type is added to `USER_LIVE_EVENT_TYPES` and the shared contract.
-- **Stored recording:** segments and keyframes in S3 under
-  `session-recording/<owner>/<sessionId>/` (outside the `<owner>/` prefix agent runtimes can
-  read; same reasoning as `session_pickup.py:13-15`). The recorder uploads with a presigned
-  PUT; `local.session.recording` commits `{segmentNo, fromOffset, toOffset, keyframe}` as a
-  `SEGMENT#<generationNo>#<segmentNo>` row (the offset restarts with each holder, so the
-  generation number keeps keys unique across Resume).
-- **Viewer:** `GET /messaging/sessions/{id}/recording` returns the segment list with
-  presigned GETs. A viewer opening a live session loads the latest keyframe and the live
-  chunks after it; scrolling back fetches earlier segments. An ended session is the same
-  without live chunks. While the Mac is offline the last screen stays with an "Offline" note.
-  Sessions recorded before this release fall back to the session view.
-- **Resume appends, never replaces.** A resumed session keeps its session id; its new run is
-  recorded under the next generation number and shown after the earlier run, separated by a
-  line "Resumed by <Name> · <time>". The earlier recording stays as it was.
-- **Bounds:** the backend caps each session at 2 MiB per minute and 200 MiB in total; above
-  that it records one `gap` and drops the rest.
-- **Readers:** humans who can read the session. The `/viewing` and `/recording` routes refuse
-  `AgentInvocation`, room-scoped and machine/MCP callers, and no agent or MCP tool exposes the
-  recording.
-- **Deletion:** session delete and the workspace / account wipes call
-  `session_pickup.delete_prefix`-style deletion of the session's recording prefix alongside
-  `local_sessions_repo.delete_owner`. Retention: open question 3.
-- The messaging projector's DynamoDB stream subscription gets a key filter (`MSG#`, `LIVE#`)
-  so session rows stop invoking it (`api-stack.ts:714-730`).
+- **Viewer:** a read-only xterm.js at the snapshot's size, scaled to fit. A new viewer, or one
+  that misses a frame, gets a fresh snapshot: the Mac sends one whenever the viewer set gains
+  a member, and every 10 s while watched. No history is fetched.
+- **Not running:** the client shows the existing session view with "Ended" or "Owner's Mac is
+  offline", and Resume (§5.7) for an ended session.
+- **Readers:** humans who can read the session. `/viewing` refuses `AgentInvocation`,
+  room-scoped and machine/MCP callers; no agent or MCP tool exposes the screen.
+- **Bound:** the backend drops screen frames above 2 MiB per minute per session.
 
 ### 5.6 The structured record
 
@@ -289,8 +274,9 @@ No terminal view. The session view, approval cards and message box as today, plu
 - **Resume by a teammate** starts a program on the owner's Mac. Bounded by: only people the
   owner allowed to send, the same folder and binary, `plan` mode, a visible window and
   notification, the owner's local Stop, and the Mac's consent switch.
-- **Recording is unredacted.** It shows anything on screen. Accepted because sharing is
-  explicit. Humans only; never agents (§5.5). Paused periods are not recorded.
+- **The live view is unredacted.** It shows anything on screen while someone watches. Accepted
+  because sharing is explicit. Humans only, never agents. Nothing is stored, and nothing is
+  sent while sharing is paused or nobody is watching.
 - **Local sockets** are uid-checked.
 - **Terms.** The unmodified Claude Code binary runs with the user's own login, which
   Anthropic's legal page does not restrict ("Nor does it prevent an end user from signing in
@@ -300,11 +286,11 @@ No terminal view. The session view, approval cards and message box as today, plu
 
 | Event | Result |
 |---|---|
-| App restarts, crashes or updates | Holders keep running. The app finds them, the window reattaches from a snapshot, the recorder replays from its last committed offset or writes a `gap`. |
+| App restarts, crashes or updates | Holders keep running. The app finds them and the window reattaches from a snapshot. Viewers see "Owner's Mac is offline" until the app is back, then a fresh snapshot. |
 | Holder crashes | The session ends, as if its terminal crashed. |
 | Outside terminal closed | The CLI detaches; the session keeps running and stays in the app. |
-| Mac sleeps | Viewers see "Offline" and the last screen. |
-| Relay down | Live chunks are skipped; the recorder catches up from the holder's log or records a `gap`. |
+| Mac sleeps | Viewers see "Owner's Mac is offline" and the session view. |
+| Relay down | Live frames are dropped; viewers get a fresh snapshot when it returns. |
 | Holder protocol mismatch | "Restart this session to update it". |
 | Old desktop build | Its registrations are refused after the release; its sessions are not shared. |
 
@@ -339,17 +325,16 @@ Windows and Linux.
    mirrored; `codex queue` delivers.
 6. **Esc and prompts:** `Esc` during a turn interrupts cleanly; record what it does with a
    permission prompt open (input to the later remote Stop).
-7. **Volume and replay:** one real working hour's output volume, and the time to show a
-   long session from a keyframe.
+7. **Volume:** one real working hour's output volume while watched.
 
 ## 11. Open questions
 
 1. Does closing the terminal window detach (session keeps running) or end the session?
-2. Recording retention: as long as the session row, or a fixed period?
-3. Should a teammate's Resume require anything more when the owner's Mac is locked or the
+2. Should a teammate's Resume require anything more when the owner's Mac is locked or the
    owner is away?
-4. Phase 1 needs the real app identity (kill tests 1 and 2). Is a founder-only first build
-   acceptable (the `DESKTOP_EXECUTION_OWNER_ALLOWLIST` pattern), given the no-flags ruling?
+3. Answered 2026-10-03: no founder-only build; Phase 2 shipped to everyone.
+4. Who may watch a running terminal: everyone who can read the session, or people the owner
+   admits?
 
 ## 12. Evidence
 

@@ -2,9 +2,9 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Let the owner code in a real Claude Code / Codex terminal inside the Lightbulb desktop app, share exactly the sessions started through Lightbulb, show teammates the same real view (live and recorded), and let the owner or an admitted teammate resume an ended session from any device.
+**Goal:** Let the owner code in a real Claude Code / Codex terminal inside the Lightbulb desktop app, share exactly the sessions started through Lightbulb, let teammates watch the real terminal while it runs, and let the owner or an admitted teammate resume an ended session from any device.
 
-**Architecture:** A detached holder process per session owns a pty running the unmodified provider, keeps a terminal model (snapshot, modes, probe answers) and an offset-addressed output log. The desktop app attaches a local-assets terminal window and a recorder; live chunks go over the existing local-session relay to watching viewers, stored segments and keyframes go to S3. The existing transcript mirror stays, restricted to held sessions, for the phone and agents. Resume has its own rail through the device heartbeat, like pick-up.
+**Architecture:** A detached holder process per session owns a pty running the unmodified provider, keeps a terminal model (snapshot, modes, probe answers) and an offset-addressed output log. The desktop app attaches a local-assets terminal window and a recorder; while someone watches, a snapshot and live output go over the existing local-session relay to those viewers; nothing is stored. The existing transcript mirror stays, restricted to held sessions, for the phone and agents. Resume has its own rail through the device heartbeat, like pick-up.
 
 **Tech Stack:** Rust (Tauri 2, `portable-pty`, a terminal emulator crate), TypeScript/React (Next.js web, `@lightbulb/shared`, Expo iOS), xterm.js, Python/FastAPI, DynamoDB, S3, AppSync Events.
 
@@ -21,7 +21,7 @@ Five subsystems, and Phase 1 decides facts the rest depends on (which emulator c
 | 1b | Real-app kill tests (update survival, macOS identity, volume) | 1a, open question 4 |
 | 2 | Holder + local terminal window, local only | 1b |
 | 3 | Explicit sharing (held-only mirrors, hook filter, server refusal, migration) | 2 |
-| 4 | Recording + teammate terminal viewer | 3 |
+| 4 | Teammates watch a running terminal (live only, nothing stored) | 3 |
 | 5 | Resume (desktop, backend, web, iPhone) | 3 |
 | 6 | `lightbulb` command | 2 |
 
@@ -42,7 +42,7 @@ Five subsystems, and Phase 1 decides facts the rest depends on (which emulator c
 1. **Multi-line paste into a window attached after >1 MiB of output**: expect it to arrive as one paste, not submit early. (Task 1.2; Phase 2 test.)
 2. **A session started with no window attached** (remote start, Resume): expect it to start normally and draw correctly when a window attaches. (Task 1.1 Step 5; Phase 2 test.)
 3. **A `claude` started inside a held session's shell**: expect it to stay private. (Phase 3 test.)
-4. **A teammate opens a five-hour session**: expect the current screen within a few seconds, with history behind it. (Task 1.7; Phase 4 test.)
+4. **A teammate opens a session that has been running for hours**: expect the current screen within a second or two (a snapshot, no history). (Phase 4 test.)
 5. **A teammate resumes while the owner's Mac is asleep**: expect it to wait, run on wake in `plan` mode, and the message to arrive at most once, with "unknown" shown if its outcome is lost. (Phase 5 test.)
 
 ---
@@ -204,12 +204,14 @@ Needs the holder inside a real signed build, so it waits for the owner's answer 
 - One-time desktop notice; edit the parity plan and the one-MCP spec per spec §3.
 - Tests: plain `claude` not mirrored; held one mirrored; a grandchild `claude` not mirrored; a private session's `PermissionRequest` hook returns without waiting; register without `holderId` refused.
 
-## Phase 4: recording and the teammate viewer
+## Phase 4: teammates watch a running terminal
 
-- Desktop recorder: live `local.session.screen` (≤ 11 KiB raw), 30 s / 256 KiB segments + keyframes uploaded by presigned PUT, `local.session.recording` commits, replay-from-offset after restart, flush before `Ended`.
-- Backend: screen handler (row checks, no META write, publish off the ack path, drop while `unshared`); `SEGMENT#<generationNo>#<segmentNo>` rows; `POST /viewing` (`VIEWER#<user>`, 45 s TTL); `GET /recording`; per-session 2 MiB/min and 200 MiB caps; deletion with session delete and both wipes; projector stream filter `MSG#`/`LIVE#` in `api-stack.ts:714-730`; new user live event type in `USER_LIVE_EVENT_TYPES` and the shared contract.
-- Web: `SessionTerminalView.tsx` (read-only xterm.js from keyframe + live chunks, scaled, Offline and Ended states, fallback to the session view for sessions without a recording); message box, Ask to join and Resume under it.
-- Tests: frame over 16 KiB rejected; chunks dropped while paused; ended or unenrolled stops the live push; agent, room-scoped and MCP callers refused on `/viewing` and `/recording`; wipe deletes the recording prefix; cap exceeded writes one `gap`.
+No recording (owner ruling 2026-10-03): running = watchable live; not running = the existing session view.
+
+- Backend: `POST /messaging/sessions/{id}/viewing` (`VIEWER#<user>` row, 45 s TTL); watched session ids in the device-heartbeat ack; `local.session.screen` handler (row checks, no META write, nothing stored, publish to viewers' user channels off the ack path, dropped while `unshared`, 2 MiB/min bound); new user live event type in `USER_LIVE_EVENT_TYPES` and the shared contract.
+- Desktop: a live relay per watched holder (attach output-only, snapshot first, chunks ≤ 11 KiB raw, a snapshot when the viewer set grows and every 10 s); stops when nobody watches.
+- Web: `SessionTerminalView.tsx` (read-only xterm.js from snapshot + live frames, scaled) as the default view of a running held session; the existing session view when it is not running; message box, Ask to join and Resume under it.
+- Tests: frame over 16 KiB rejected; frames dropped while paused; ended or unenrolled stops the push; agent, room-scoped and MCP callers refused on `/viewing`; nothing is sent while nobody watches; a late viewer gets a snapshot.
 
 ## Phase 5: Resume
 

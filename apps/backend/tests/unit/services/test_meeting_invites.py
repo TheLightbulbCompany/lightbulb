@@ -238,7 +238,9 @@ def room(monkeypatch):
     # Meetings available, Recall stubbed out: the `bots` fixture puts the real booking back.
     monkeypatch.setattr(meeting_invites.settings, "LIVEKIT_URL", "wss://lk.test")
     monkeypatch.setattr(meeting_invites.settings, "RECALL_API_KEY", "rk")
-    monkeypatch.setattr(meeting_invites, "_sync_bot", AsyncMock(side_effect=lambda o, r, meeting, p: meeting))
+    booked = {"recallBotId": "bot-1", "status": "bot_created"}  # returned, not stored: META keeps the invite's status
+    m.sync = AsyncMock(side_effect=lambda o, r, meeting, p: {**meeting, **booked})
+    monkeypatch.setattr(meeting_invites, "_sync_bot", m.sync)
     return m
 
 
@@ -828,3 +830,13 @@ async def test_a_cancel_without_dtstart_cancels_the_stored_meeting(room):
     meeting = room.state["meta"]["meeting"]
     assert meeting["status"] == "cancelled" and meeting["startAt"]
     assert _lines(room)[-1] == "This meeting was cancelled."
+
+
+async def test_no_rsvp_unless_a_bot_is_booked(room):
+    room.accept.return_value = True
+    room.sync.side_effect = lambda o, r, meeting, p: {**meeting, "status": "bot_failed", "recallBotId": "bot-1"}
+    assert await meeting_invites.handle_team_mail("org_1", _mail(GOOGLE), TEAM) == "meeting_scheduled"
+    room.sync.side_effect = lambda o, r, meeting, p: meeting  # nothing booked at all
+    await meeting_invites.handle_team_mail("org_1", _mail(GOOGLE.replace("SEQUENCE:0", "SEQUENCE:1")), TEAM)
+    room.accept.assert_not_awaited()
+    assert "rsvpSequence" not in room.state["meta"]["meeting"]

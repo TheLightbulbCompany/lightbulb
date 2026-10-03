@@ -481,6 +481,9 @@ async def _apply(owner_id: str, invite: Invite, room_id: str, creator: str, by_e
         return "meeting_cancelled"
     if (
         allowed
+        # "going" only when a bot really is: a failed or unbooked meeting sends no RSVP
+        and meeting.get("recallBotId")
+        and meeting.get("status") in ("bot_created", "in_call")
         and not team.get("outbound_disabled")
         and meeting.get("rsvpSequence") != invite.sequence
         and await meeting_rsvp.accept(owner_id, invite)

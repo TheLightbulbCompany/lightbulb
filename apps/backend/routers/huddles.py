@@ -157,7 +157,12 @@ async def join(room_id: str, auth: Annotated[AuthContext, Depends(get_current_us
     owner_id = resolve_owner_id(auth)
     # Member of the owner's own room (guests 404), not archived. Any room kind; with no agent
     # member it is a people-only voice room: no worker dispatch, no runtime wake.
-    _, team = await voice_calls._room_team(owner_id, auth.user_id, room_id, need_team=False)
+    meta, team = await voice_calls._room_team(owner_id, auth.user_id, room_id, need_team=False)
+    if (meta.get("meeting") or {}).get("status") == "in_call":  # a Live worker never shares a room with a meeting
+        raise HTTPException(
+            status_code=409,
+            detail={"code": "meeting_in_call", "message": "This room's meeting is live. Join it in Google Meet."},
+        )
     name = await messaging.human_display_name(auth.user_id)
     token = livekit_huddles.mint_token(room_id=room_id, user_id=auth.user_id, name=name)
     out = {"serverUrl": settings.LIVEKIT_URL, "roomName": livekit_huddles.room_name(room_id), "token": token}

@@ -116,6 +116,19 @@ def test_join_guest_is_404(client):
     mint.assert_not_called()
 
 
+def test_join_is_409_while_the_rooms_meeting_is_in_call(client):
+    meta = {"ownerId": "org_a", "meeting": {"status": "in_call"}}
+    resp, mint, dispatch = _join(client, room_team=AsyncMock(return_value=(meta, TEAM)))
+    assert resp.status_code == 409
+    assert resp.json()["detail"] == {
+        "code": "meeting_in_call",
+        "message": "This room's meeting is live. Join it in Google Meet.",
+    }
+    mint.assert_not_called()
+    dispatch.assert_not_awaited()
+    _join.wake.assert_not_called()
+
+
 def test_join_archived_is_409(client):
     resp, mint, _ = _join(client, room_team=_problem(409, "room_archived"))
     assert resp.status_code == 409 and resp.json()["detail"]["code"] == "room_archived"

@@ -342,6 +342,61 @@ async def test_nobody_is_let_in_by_a_run_nobody_asked_for_or_by_someone_who_left
 
 
 @pytest.mark.asyncio
+async def test_a_resumer_removed_after_the_read_gets_neither_entry_nor_message(transport, monkeypatch):
+    sid = await ended_session(transport, BOB)
+    await ask(BOB, sid, "carry on")
+    real = messaging_repo.get_user_stream
+    reads = []
+
+    async def stale_once(owner, user_id):
+        reads.append(user_id)
+        stream = await real(owner, user_id)
+        # The first read (on_register's) still sees Bob in; he is removed right after it.
+        return {**stream, "active": True} if len(reads) == 1 else stream
+
+    await messaging_repo.deactivate_user_stream(OWNER, BOB.user_id)
+    monkeypatch.setattr(messaging_repo, "get_user_stream", stale_once)
+    await relay(transport).handle_message("conn-1", successor())
+    row = await repo.get_session(OWNER, sid)
+    # The condition cancelled the first write; the retry saw the removal. The run still registered.
+    assert row["generation"] == "generation-2" and "allowedSenders" not in row and "resume" not in row
+    assert await want(sid) is None and commands(transport) == []
+
+
+@pytest.mark.asyncio
+async def test_a_resumer_removed_before_delivery_is_not_sent(transport, monkeypatch):
+    sid = await ended_session(transport, BOB)
+    await ask(BOB, sid, "carry on")
+    real = messaging_repo.get_user_stream
+    reads = []
+
+    async def removed_after_register(owner, user_id):
+        reads.append(user_id)
+        stream = await real(owner, user_id)
+        return stream if len(reads) == 1 else {**stream, "active": False}
+
+    monkeypatch.setattr(messaging_repo, "get_user_stream", removed_after_register)
+    await relay(transport).handle_message("conn-1", successor())
+    assert commands(transport) == []
+    assert (await service.get_command(BOB, None, sid, RESUME)).state == "rejected"
+
+
+@pytest.mark.asyncio
+async def test_the_same_run_re_registering_does_not_consume_the_resume(transport):
+    sid = await ended_session(transport, BOB)
+    await ask(BOB, sid, "carry on")
+    # The desktop's ended-mirror recovery registers the old generation again: nothing was resumed.
+    await relay(transport).handle_message("conn-1", descriptor(generation="generation-1"))
+    row = await repo.get_session(OWNER, sid)
+    assert row["resume"]["resumeId"] == RESUME and await want(sid) is not None
+    assert commands(transport) == []
+    await relay(transport).handle_message("conn-1", successor())
+    row = await repo.get_session(OWNER, sid)
+    assert "resume" not in row and await want(sid) is None and row["allowedSenders"] == [BOB.user_id]
+    assert len(commands(transport)) == 1
+
+
+@pytest.mark.asyncio
 async def test_the_owner_resuming_lets_nobody_else_in(transport):
     sid = await ended_session(transport, BOB)
     await ask(ALICE, sid, "carry on")

@@ -278,24 +278,41 @@ async def mark_failed(row: dict, failed: ResumeFailed) -> None:
 
 
 async def on_register(previous: dict | None, row: dict) -> list[dict]:
-    """Every registration, before its write. A registration un-ends the session, so a waiting
-    request leaves the row either way. The first registration of a NEW process while one waits is
-    that resume: the resumer joins ``allowedSenders`` and their first message is admitted as an
-    ordinary send, both in the registration's own transaction -- it exists once or not at all,
-    and the relay's dispatch delivers it at most once. Mutates ``row``; returns the extra
-    transaction items. Reads only the generation, so it holds with or without a ``holderId``."""
-    waiting = row.pop("resume", None)
+    """Every registration, before its write. The first registration of a NEW process while one
+    waits is that resume: it leaves the row, the resumer joins ``allowedSenders`` and their first
+    message is admitted as an ordinary send, all in the registration's own transaction -- it
+    exists once or not at all, and the relay's dispatch delivers it at most once. A registration
+    of the SAME generation (the desktop re-registering an ended mirror to drain its backlog)
+    resumed nothing, so the request and its want row stay. The resumer's workspace membership is
+    a transaction condition, and the command carries ``offlineIdentity`` so dispatch rechecks it
+    like any offline teammate send; if the condition cancels the write, the relay's retry re-reads
+    the stream and drops the seed. Mutates ``row``; returns the extra transaction items. Reads
+    only the generation, so it holds with or without a ``holderId``."""
+    waiting = row.get("resume")
     if previous is None or not live(waiting):
+        row.pop("resume", None)
         return []
-    items = [_want_delete(previous)]
     if previous["generation"] == row["generation"]:
-        return items  # the same process came back: nothing was resumed
+        return []  # the same process came back: nothing was resumed, the request keeps waiting
+    row.pop("resume")
+    items = [_want_delete(previous)]
     owner, sid, by = row["ownerId"], row["sessionId"], waiting["byUserId"]
     if by != row["humanUserId"]:
         stream = await store.get_user_stream(owner, by)
         if not stream or not stream.get("active"):
             return items  # they left the workspace while it waited
         row["allowedSenders"] = [*(row.get("allowedSenders") or []), by]
+        # Removal after the read above cancels the write; the retry sees it and drops the seed.
+        items.append(
+            {
+                "ConditionCheck": {
+                    "TableName": store._table().name,
+                    "Key": {"pk": store.owner_pk(owner), "sk": store.userstream_sk(by)},
+                    "ConditionExpression": "active = :active",
+                    "ExpressionAttributeValues": {":active": True},
+                }
+            }
+        )
     if waiting.get("text"):
         now = int(time.time())
         request = sessions.LocalSessionCommand(
@@ -316,6 +333,10 @@ async def on_register(previous: dict | None, row: dict) -> list[dict]:
             "deliverBy": now + 30,
             # submit_command's own hash: the same request sent again is recognised, never doubled.
             "requestHash": store.request_hash(owner, sid, "", by, payload),
+            # Dispatch rechecks the sender's membership for a command carrying this.
+            "offlineIdentity": {
+                key: row[key] for key in ("deviceId", "provider", "profileFingerprint", "nativeConversationId")
+            },
         }
         auth = AuthContext(user_id=by, org_id=owner if owner != by else None)
         audit = sessions.audit_row(owner, sid, auth, "send", request_id=request.request_id)

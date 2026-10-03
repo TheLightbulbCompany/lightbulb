@@ -83,11 +83,14 @@ def _claim_name(room_id: str, target: str) -> str:
     return f"meet-{'in_call' if target == 'in_call' else 'ended'}:{room_id}"
 
 
-async def _finish(room_id: str, status: str, sub_code: str, notes: bool) -> None:
+async def _finish(room_id: str, status: str, sub_code: str, notes: bool, in_call_at: int | None = None) -> None:
     """The rest of the one end path, once ``status`` is written. Never raises: the written status
     turns every retry into a no-op, so a step that failed here would otherwise be lost for good.
-    Notes first, the room's close last."""
+    Notes first, the room's close last. Presence is a metric only: we pay for the bot's time, the
+    workspace's allowance pays only for agent speech (voice_billing)."""
+    presence = time.time() - in_call_at if in_call_at else None
     steps = [
+        ("presence", lambda: put_metric("meeting.presence.seconds", presence, unit="Seconds") if presence else None),
         ("notes", lambda: voice_calls._fire(meeting_notes.on_ended(room_id)) if notes else None),
         ("metric", lambda: put_metric("meeting.ended", dimensions={"sub_code": sub_code or "none"})),
         ("publish", lambda: _publish(room_id, status)),
@@ -123,7 +126,9 @@ async def _on_status(bot_id: str, room_id: str, code: str, sub_code: str) -> Non
     owner_id = meta["ownerId"]
     try:
         if target == "in_call":
-            await meeting_invites._patch_meeting(room_id, {"status": "in_call", "lastBotStatus": code})
+            await meeting_invites._patch_meeting(
+                room_id, {"status": "in_call", "lastBotStatus": code, "inCallAt": int(time.time())}
+            )
             try:
                 org = await clerk_admin.get_organization(owner_id) or {}
             except Exception:  # noqa: BLE001 -- a Clerk blip must not cost the meeting its agents
@@ -144,14 +149,16 @@ async def _on_status(bot_id: str, room_id: str, code: str, sub_code: str) -> Non
             await _publish(room_id, "in_call")
         elif target == "ended":
             await meeting_invites._patch_meeting(room_id, {"status": "ended", "lastBotStatus": code})
-            await _finish(room_id, "ended", sub_code, notes=True)
+            await _finish(room_id, "ended", sub_code, notes=True, in_call_at=meeting.get("inCallAt"))
         else:
             text = _FATAL_TEXT.get(sub_code) or f"The agents couldn't join this meeting ({sub_code or 'unknown'})."
             await meeting_invites._post_line(owner_id, room_id, f"meeting:{bot_id}:fatal", text)
             fields = {"status": "bot_failed", "botError": sub_code, "lastBotStatus": code}
             await meeting_invites._patch_meeting(room_id, fields)
             # A bot that dies mid-call still leaves a conversation worth its notes.
-            await _finish(room_id, "bot_failed", sub_code, notes=status == "in_call")
+            await _finish(
+                room_id, "bot_failed", sub_code, notes=status == "in_call", in_call_at=meeting.get("inCallAt")
+            )
     except Exception:
         await container_repo.release_pass(claim)  # Recall's retry must find the door open
         raise
@@ -235,5 +242,5 @@ async def leave(room_id: str, body: RoomBody):
         # Recall's automatic_leave reaps a bot left alone; the LiveKit room still closes below.
         put_metric("meeting.leave_failed")
         logger.warning("meeting room %s: bot leave failed", room_id, exc_info=True)
-    await _finish(room_id, "ended", "idle_leave", notes=True)
+    await _finish(room_id, "ended", "idle_leave", notes=True, in_call_at=meeting.get("inCallAt"))
     return {"ok": True}

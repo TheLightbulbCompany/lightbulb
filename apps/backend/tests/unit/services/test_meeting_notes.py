@@ -28,11 +28,13 @@ def env(monkeypatch):
         },
     }
 
-    async def patch_meeting(room_id, fields, drop=()):
+    async def patch_meeting(room_id, fields, drop=(), when=None):
+        if when is not None and not when(meta["meeting"]):
+            return None
         meta["meeting"] = {**meta["meeting"], **fields}
         return meta["meeting"]
 
-    attachment = SimpleNamespace(model_dump=lambda **_: {"id": "att-1", "fileName": "transcript.txt"})
+    attachment = SimpleNamespace(id="att-1", model_dump=lambda **_: {"id": "att-1", "fileName": "transcript.txt"})
     m = SimpleNamespace(
         meta=meta,
         store=MagicMock(return_value=attachment),
@@ -84,7 +86,11 @@ async def test_a_final_transcript_attaches_once(env):
     assert (owner, room, name, ctype) == ("org_1", DEFAULT, "transcript.txt", "text/plain")
     assert data.decode() == "[20:23] Pat: Hi all\n[20:24] Ada: Hello\n"  # UTC, by mark
     env.line.assert_awaited_once()
-    assert env.line.await_args.args[1:] == (DEFAULT, f"meeting:{ROOM}:1790972400:transcript", "Transcript attached.")
+    assert env.line.await_args.args[1:] == (
+        DEFAULT,
+        f"meeting:{ROOM}:1790972400:transcript",
+        "Transcript of **Weekly sync** attached.",
+    )
     assert env.line.await_args.kwargs["attachments"] == [{"id": "att-1", "fileName": "transcript.txt"}]
     assert env.meta["meeting"]["transcriptAttachedAt"]
     await mod.on_transcript(ROOM, whole, True)  # a retried final
@@ -246,3 +252,58 @@ async def test_on_ended_advances_after_the_attempt_either_way_but_not_beside_ano
     env.claim.return_value = None  # another end path holds the notes: it advances when done
     await mod.on_ended(ROOM)
     env.advance.assert_awaited_once()
+
+
+async def test_a_transcript_without_a_call_is_dropped(env):
+    del env.meta["meeting"]["inCallAt"]
+    await mod.on_transcript(ROOM, [_line(0, "Pat", "Hi", 1.0)], True)
+    env.store.assert_not_called()
+    env.metric.assert_called_once_with("meeting.transcript.dropped")
+
+
+async def test_no_marker_lands_on_the_next_occurrence(env):
+    """The series re-dated while the notes ran: yesterday's markers are not written onto today."""
+    env.meta["meeting"]["transcriptAttachedAt"] = 1
+
+    async def redated(*_a, **_k):  # advance() won the race mid-notes
+        env.meta["meeting"] = {**env.meta["meeting"], "startAt": 1791058800, "status": "scheduled"}
+        env.meta["meeting"].pop("transcriptAttachedAt")
+        return {"messageId": "msg-1"}
+
+    env.line.side_effect = redated
+    await mod.on_ended(ROOM)
+    assert "notesRunId" not in env.meta["meeting"] and "notesMailedAt" not in env.meta["meeting"]
+
+
+@pytest.fixture
+def legacy(env, monkeypatch):
+    """A workspace with no default room: the hidden meeting room is the output room."""
+    monkeypatch.setattr(
+        mod.messaging_repo, "get_room", AsyncMock(side_effect=lambda r: None if r == DEFAULT else env.meta)
+    )
+    env.meta["meeting"].update(transcriptAttachedAt=1, transcriptId="att-1")
+    env.load = MagicMock(return_value=(None, b"[20:23] Pat: Hi all\n"))
+    monkeypatch.setattr(mod.messaging, "load_attachment", env.load)
+    return env
+
+
+async def test_without_a_default_room_the_mail_carries_the_transcript_and_no_link(legacy):
+    await mod.on_ended(ROOM)
+    kw = legacy.send.await_args.kwargs
+    assert kw["subject"] == "Transcript: Weekly sync"
+    assert kw["body_text"] == "Your Lightbulb agents joined Weekly sync.\n\n[20:23] Pat: Hi all\n"
+    assert "/chat?room=" not in kw["body_text"]
+    legacy.load.assert_called_once_with("org_1", ROOM, "att-1")
+
+
+async def test_a_long_transcript_is_cut_and_says_so(legacy):
+    legacy.load.return_value = (None, b"x" * 300_000)
+    await mod.on_ended(ROOM)
+    body = legacy.send.await_args.kwargs["body_text"]
+    assert body.endswith("x" * 10 + "… (truncated)") and body.count("x") == 200_000
+
+
+async def test_without_a_transcript_the_mail_says_none_was_captured(legacy):
+    legacy.meta["meeting"].pop("transcriptId")
+    await mod.on_ended(ROOM)
+    assert legacy.send.await_args.kwargs["body_text"].endswith("No transcript was captured.")

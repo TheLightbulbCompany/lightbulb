@@ -3645,6 +3645,15 @@ async def create_agent_message(owner_id: str, request: AgentMessageRequest) -> A
     meta = await messaging_repo.get_room(room_id)
     if meta is None or meta.get("deletedAt") or meta.get("ownerId") != owner_id:
         raise ApiProblem("ROOM_NOT_FOUND", "Room not found.")
+    if meta.get("hidden"):
+        # A Google Meet's room is read by nobody: what an agent posts there (a late Live answer)
+        # goes to the meeting's output room when it sits there. Every door resolves the same room,
+        # so a replay hashes the same and stays idempotent.
+        from core.services.meeting_invites import output_room
+
+        target = await output_room(owner_id, room_id)
+        if target != room_id and await messaging_repo.get_member(target, "agent", agent_id):
+            room_id, meta = target, await messaging_repo.get_room(target)
     member = await messaging_repo.get_member(room_id, "agent", agent_id)
     if member is None:
         raise ApiProblem("MEMBER_NOT_FOUND", "Agent is not a current room member.")

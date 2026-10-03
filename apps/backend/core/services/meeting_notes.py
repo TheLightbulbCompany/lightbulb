@@ -44,10 +44,10 @@ async def on_transcript(room_id: str, lines: list[dict], final: bool) -> None:
     meeting = meta.get("meeting") or {}
     if meeting.get("transcriptAttachedAt") or not meta.get("ownerId"):
         return
-    if meeting.get("status") not in ("in_call", "ended", "bot_failed"):
-        put_metric("meeting.transcript.dropped")  # late: the series moved on; never the next occurrence's
+    if meeting.get("status") not in ("in_call", "ended", "bot_failed") or not meeting.get("inCallAt"):
+        put_metric("meeting.transcript.dropped")  # no call, or late: the series moved on to its next occurrence
         return
-    owner_id = meta["ownerId"]
+    owner_id, occurrence = meta["ownerId"], meeting.get("startAt")
     target = await meeting_invites.output_room(owner_id, room_id)
     data = _render(sorted(lines, key=lambda x: int(x["mark"]))).encode()
     # Upload, post, then mark: a crash in between retries into a replayed post (one message), at
@@ -56,11 +56,15 @@ async def on_transcript(room_id: str, lines: list[dict], final: bool) -> None:
     await meeting_invites._post_line(
         owner_id,
         target,
-        f"meeting:{room_id}:{meeting.get('startAt')}:transcript",
-        "Transcript attached.",
+        f"meeting:{room_id}:{occurrence}:transcript",
+        f"Transcript of **{meeting.get('title') or 'Meeting'}** attached.",
         attachments=[attachment.model_dump(mode="json", by_alias=True)],
     )
-    await meeting_invites._patch_meeting(room_id, {"transcriptAttachedAt": int(time.time())})
+    await meeting_invites._patch_meeting(
+        room_id,
+        {"transcriptAttachedAt": int(time.time()), "transcriptId": str(attachment.id)},
+        when=lambda m: m.get("startAt") == occurrence,
+    )
 
 
 async def on_ended(room_id: str) -> None:
@@ -101,6 +105,8 @@ async def _on_ended(room_id: str) -> bool:
 
 
 async def _notes(room_id: str, meta: dict) -> None:
+    occurrence = meta["meeting"].get("startAt")
+    this_occurrence = lambda m: m.get("startAt") == occurrence  # noqa: E731 -- never mark the next one
     # The worker's final transcript POST and Recall's call_ended race: give the transcript a moment.
     for _ in range(_WAIT_S // _POLL_S):
         if (meta.get("meeting") or {}).get("transcriptAttachedAt"):
@@ -129,16 +135,30 @@ async def _notes(room_id: str, meta: dict) -> None:
         )
         if message:
             run_id = messaging_repo.run_id_for(ceo, message["messageId"])
-            await meeting_invites._patch_meeting(room_id, {"notesRunId": run_id})
-    if not await _mail_organizer(owner_id, target, meeting.get("organizer"), title):
+            await meeting_invites._patch_meeting(room_id, {"notesRunId": run_id}, when=this_occurrence)
+    if not await _mail_organizer(owner_id, room_id, target, meeting, title):
         raise RuntimeError("the organizer mail was not sent")
-    await meeting_invites._patch_meeting(room_id, {"notesMailedAt": int(time.time())})
+    await meeting_invites._patch_meeting(room_id, {"notesMailedAt": int(time.time())}, when=this_occurrence)
 
 
-async def _mail_organizer(owner_id: str, room_id: str, organizer: str | None, title: str) -> bool:
+_MAIL_TRANSCRIPT_CHARS = 200_000
+
+
+async def _transcript_text(owner_id: str, room_id: str, meeting: dict) -> str | None:
+    if not meeting.get("transcriptId"):
+        return None
+    _, data = await run_in_thread(messaging.load_attachment, owner_id, room_id, meeting["transcriptId"])
+    text = data.decode("utf-8", "replace")
+    return text if len(text) <= _MAIL_TRANSCRIPT_CHARS else text[:_MAIL_TRANSCRIPT_CHARS] + "… (truncated)"
+
+
+async def _mail_organizer(owner_id: str, room_id: str, target: str, meeting: dict, title: str) -> bool:
     """True when the notes are done: mailed, or deliberately not (no address, no organizer, a paused
     row, the owner's daily mail cap spent). False is a failed send: the marker stays unset and the
-    terminal webhook's retry sends again."""
+    terminal webhook's retry sends again. With a default room the mail links to it; without one
+    (``target`` is the hidden meeting room itself) nobody can open the room, so the transcript
+    travels in the mail."""
+    organizer = meeting.get("organizer")
     address = await agent_email.team_address(owner_id)
     if not address or not organizer:
         return True
@@ -147,12 +167,19 @@ async def _mail_organizer(owner_id: str, room_id: str, organizer: str | None, ti
     if not await agent_mail_send.consume_cap(owner_id):  # the same per-owner daily cap as all agent mail
         logger.info("meeting room %s: daily mail cap spent, notes mail not sent", room_id)
         return True
-    link = f"{settings.FRONTEND_URL.rstrip('/')}/chat?room={room_id}"
+    name = " ".join(title.split())
+    if target != room_id:
+        subject = f"Notes: {name}"
+        body = f"The notes and transcript are in your Lightbulb room: {settings.FRONTEND_URL.rstrip('/')}/chat?room={target}"
+    else:
+        transcript = await _transcript_text(owner_id, target, meeting)
+        subject = f"Transcript: {name}"
+        body = f"Your Lightbulb agents joined {name}.\n\n" + (transcript or "No transcript was captured.")
     sent = await ses_email.send_ses_email(
         from_addr=address,
         to=organizer,
-        subject=f"Notes: {' '.join(title.split())}",
-        body_text=f"The notes and transcript are in your Lightbulb room: {link}",
+        subject=subject,
+        body_text=body,
         headers=dict(AGENT_AUTHORED_HEADERS),
         kind="meeting_notes",
         tenant_name=await agent_mail_tenant.ensure_tenant(owner_id),

@@ -39,7 +39,6 @@ _TARGET = {
     "fatal": "bot_failed",
 }
 _TERMINAL = {"ended", "bot_failed", "cancelled"}
-_FATAL_TEXT = {"google_meet_knocking_disabled": "The host didn't let the agents in."}
 _LEAVE_TRIES, _LEAVE_GAP_S = 3, 2
 _SPEAKING = {"speech_on": True, "speech_off": False, "join": False, "leave": False}
 
@@ -157,7 +156,12 @@ async def _on_status(bot_id: str, room_id: str, code: str, sub_code: str) -> Non
             await meeting_invites._patch_meeting(room_id, {"status": "ended", "lastBotStatus": code})
             await _finish(room_id, "ended", sub_code, notes=True, in_call_at=meeting.get("inCallAt"))
         else:
-            text = _FATAL_TEXT.get(sub_code) or f"The agents couldn't join this meeting ({sub_code or 'unknown'})."
+            title = meeting.get("title") or "Meeting"
+            text = (
+                f"The host didn't let the agents into **{title}**."
+                if sub_code == "google_meet_knocking_disabled"
+                else f"The agents couldn't join **{title}** ({sub_code or 'unknown'})."
+            )
             await meeting_invites._post_line(owner_id, room_id, f"meeting:{bot_id}:fatal", text)
             fields = {"status": "bot_failed", "botError": sub_code, "lastBotStatus": code}
             await meeting_invites._patch_meeting(room_id, fields)

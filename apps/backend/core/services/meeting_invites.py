@@ -35,11 +35,17 @@ class MeetingBusy(Exception):
 
 
 @asynccontextmanager
-async def meeting_lease(room_id: str):
+async def meeting_lease(room_id: str, *, tries: int = 1):
     """THE one lease every meeting lifecycle transition runs under -- an invite, a Recall status,
-    the worker's idle leave -- so each decides from a fresh META read nobody else is changing."""
+    the worker's idle leave -- so each decides from a fresh META read nobody else is changing.
+    ``tries`` > 1 retries only the acquisition, 2 s apart."""
     lease = f"meeting#{room_id}"
-    token = await container_repo.try_claim_owner_lifecycle(lease, stale_s=MEETING_LEASE_S)
+    token = None
+    for attempt in range(tries):
+        if attempt:
+            await asyncio.sleep(2)
+        if token := await container_repo.try_claim_owner_lifecycle(lease, stale_s=MEETING_LEASE_S):
+            break
     if not token:
         raise MeetingBusy(room_id)
     try:
@@ -48,6 +54,7 @@ async def meeting_lease(room_id: str):
         await container_repo.release_owner_lifecycle_claim(lease, token=token)
 
 
+_MAX_SERIES_AGE_S = 20 * 365 * 86400
 _MEET_URL = re.compile(r"https://meet\.google\.com/[a-z]{3}-[a-z]{4}-[a-z]{3}")
 _LINE = re.compile(r'^((?:[^:"]|"[^"]*")*):(.*)$')  # name;params:value -- a quoted param may hold ':'
 
@@ -67,6 +74,7 @@ class Invite:
     # A series: {"rule", "first", "tz", "exdates", "duration"}; start/end are then its next occurrence.
     recurrence: dict | None = None
     instance_of: str | None = None  # the series UID of a lone RECURRENCE-ID event (uid is then "<UID>#<id>")
+    recurrence_id_line: str | None = None  # that event's RECURRENCE-ID property as received, for the RSVP
 
 
 def _text(value: str) -> str:
@@ -151,29 +159,38 @@ def _parse(calendar_text: str) -> Invite | None:
     props, attendees, exdates = next((e for e in events if "RECURRENCE-ID" not in e[0]), events[0])
     get = lambda key: _text(props.get(key, ("", ""))[1])  # noqa: E731
     cancelled = method == "CANCEL" or get("STATUS").strip().upper() == "CANCELLED"
-    uid, instance_of = props.get("UID", ("", ""))[1].strip(), None
+    uid, instance_of, rid_line = props.get("UID", ("", ""))[1].strip(), None, None
     if uid and "RECURRENCE-ID" in props:  # one occurrence on its own: a one-off meeting of its own
-        instance_of, uid = uid, f"{uid}#{props['RECURRENCE-ID'][1].strip()}"
+        rid_params, rid = props["RECURRENCE-ID"]
+        instance_of, uid = uid, f"{uid}#{rid.strip()}"
+        rid_line = f"RECURRENCE-ID{';' + rid_params if rid_params else ''}:{rid.strip()}"
     if not uid or len(uid) > 512 or not ("DTSTART" in props or cancelled):
         return None
     start = _when(*props["DTSTART"]) if "DTSTART" in props else None
     end = _when(*props["DTEND"]) if "DTEND" in props else None
     recurrence = None
     if "RRULE" in props and start and not instance_of and not cancelled:  # a CANCEL acts on the stored meeting
-        rule = props["RRULE"][1].strip()
-        if re.search(r"(?i)FREQ=(SECONDLY|MINUTELY)", rule):
-            return None  # no meeting recurs by the minute; refusing bounds the rule walk
+        rule, now = props["RRULE"][1].strip(), time.time()
+        # Bounds on a sender-written rule: the walk from its first start must stay short.
+        if (
+            len(rule) > 512
+            or not re.search(r"(?i)(^|;)FREQ=(DAILY|WEEKLY|MONTHLY|YEARLY)(;|$)", rule)
+            or start.timestamp() < now - _MAX_SERIES_AGE_S
+        ):
+            return None
         recurrence = {
             "rule": rule,
             "first": int(start.timestamp()),
             "tz": getattr(start.tzinfo, "key", "UTC"),
-            "exdates": [int(_when(p, v).timestamp()) for p, v in exdates],
-            "duration": int((end - start).total_seconds()) if end else 0,
+            "exdates": sorted(t for t in (int(_when(p, v).timestamp()) for p, v in exdates) if t >= now)[:200],
+            "duration": min(max(int((end - start).total_seconds()) if end else 0, 0), 86400),
         }
-        nxt = next_occurrence(recurrence, time.time())
-        if nxt is None:
-            return None  # the series is over: nothing to join
-        start, end = nxt
+        nxt = next_occurrence(recurrence, now)
+        if nxt is None:  # the series is over (a "this and following" edit cut it): release its bot
+            cancelled, recurrence = True, None
+            start = end = None
+        else:
+            start, end = nxt
     conference = get("X-GOOGLE-CONFERENCE").strip()
     url = conference if _MEET_URL.fullmatch(conference) else None
     url = url or next((u.group(0) for u in (_MEET_URL.search(get(k)) for k in ("LOCATION", "DESCRIPTION")) if u), None)
@@ -190,6 +207,7 @@ def _parse(calendar_text: str) -> Invite | None:
         meeting_url=url or None,
         recurrence=recurrence,
         instance_of=instance_of,
+        recurrence_id_line=rid_line,
     )
 
 
@@ -201,6 +219,9 @@ def _when_text(start: datetime) -> str:
 async def output_room(owner_id: str, room_id: str) -> str:
     """Where a meeting's lines go: the workspace's default room while it stands, else the meeting's
     own room (the only fallback policy; nothing is lost)."""
+    # ponytail: with no default room, lines land in the hidden meeting room, so a booking failure
+    # is seen by nobody (the notes mail still reaches the organizer). Upgrade: a per-workspace
+    # meeting output room setting.
     default = messaging.default_room_id(owner_id)
     meta = await messaging_repo.get_room(default)
     return default if meta and not meta.get("archivedAt") and not meta.get("deletedAt") else room_id
@@ -264,7 +285,7 @@ async def _create_room(owner_id: str, room_id: str, invite: Invite, creator: str
         for a in roster
     ]
     await messaging_repo.ensure_user_stream(owner_id, creator)
-    name = f"{(invite.summary or 'Meeting')[:60]} — {invite.start:%b %-d}"
+    name = (invite.summary or "Meeting")[:60]  # every voice prompt names the call by it
     normalized = [{k: m.get(k) for k in ("kind", "id", "role", "listenMode")} for m in members]
     try:
         await messaging_repo.create_room(
@@ -286,17 +307,21 @@ async def _create_room(owner_id: str, room_id: str, invite: Invite, creator: str
             raise
 
 
-async def _patch_meeting(room_id: str, fields: dict, drop: tuple = ()) -> dict | None:
+async def _patch_meeting(room_id: str, fields: dict, drop: tuple = (), when=None) -> dict | None:
     """THE one writer of the room META's ``meeting`` map: re-read it, lay only the caller's own
     fields over it (dropping ``drop``), and write under the revision CAS -- so the invite path, the
     bot path and the RSVP never erase each other's keys. A write carrying an older ``sequence`` than
     the stored one writes nothing and returns None (checked against a fresh read before every attempt).
     The write is bound to the revision that was READ, so a writer in between (a webhook's ``ended``
     under a transcript write) cancels it and the merge is redone over the new state.
+    ``when`` is a predicate on the stored map, checked on every attempt: False writes nothing and
+    returns None (a marker meant for one occurrence never lands on the next).
     Three lost races raise, so SES redelivers. Returns the map as written."""
     for attempt in (1, 2, 3):
         meta = (await messaging_repo.get_room(room_id)) or {}
         stored = meta.get("meeting") or {}
+        if when is not None and not when(stored):
+            return None
         if "sequence" in fields and int(stored.get("sequence", 0)) > int(fields["sequence"]):
             logger.info("meeting room %s: a newer invite (sequence %s) won the race", room_id, stored["sequence"])
             return None
@@ -315,6 +340,10 @@ async def _patch_meeting(room_id: str, fields: dict, drop: tuple = ()) -> dict |
 
 _BOT_KEYS = ("recallBotId", "ticketNonce", "botClaimAt", "botError")
 _CLAIM_S = 60  # a claimed-but-unwritten booking younger than this is another delivery's POST in flight
+
+
+def _title(meeting: dict) -> str:
+    return meeting.get("title") or "Meeting"
 
 
 def _code(exc: Exception) -> str:
@@ -343,7 +372,7 @@ async def _bot_failed(owner_id: str, room_id: str, meeting: dict, exc: Exception
         owner_id,
         room_id,
         f"meeting:{meeting['uid']}:{meeting['sequence']}:{meeting['startAt']}:{verb}_failed:{code}",
-        f"Couldn't {verb} a bot for this meeting: {reason}. Forward the invite again to retry.",
+        f"Couldn't {verb} a bot for **{_title(meeting)}**: {reason}. Forward the invite again to retry.",
     )
     return await _patch_meeting(
         room_id, {"status": "bot_failed", "botError": code}, drop=() if keep else ("ticketNonce", "botClaimAt")
@@ -366,7 +395,7 @@ async def _sync_bot(owner_id: str, room_id: str, meeting: dict, prior: dict | No
                 owner_id,
                 room_id,
                 f"meeting:{meeting['uid']}:{meeting['sequence']}:leave_failed",
-                "Couldn't pull the bot out of this meeting.",
+                f"Couldn't pull the bot out of **{_title(meeting)}**.",
             )
             return await _patch_meeting(room_id, {"botError": code})
         return await _patch_meeting(room_id, {}, drop=_BOT_KEYS)
@@ -393,7 +422,7 @@ async def _sync_bot(owner_id: str, room_id: str, meeting: dict, prior: dict | No
                 owner_id,
                 room_id,
                 f"meeting:{meeting['uid']}:{meeting['sequence']}:{meeting['startAt']}:replace_failed",
-                "Couldn't move the bot; it will join at the old time.",
+                f"Couldn't move the bot for **{_title(meeting)}**; it will join at the old time.",
             )
             return await _patch_meeting(room_id, {"status": "bot_failed", "botError": code})
         meeting = await _patch_meeting(room_id, {"status": "scheduled"}, drop=_BOT_KEYS)
@@ -456,7 +485,7 @@ async def handle_team_mail(owner_id: str, payload, team: dict) -> str | None:
     creator = by_email.get(sender) if sender else None
     if creator is None:
         return None  # a stranger's mail: no bot, no room -- the CEO reads it as mail
-    invite = parse(payload.calendar)
+    invite = await asyncio.to_thread(parse, payload.calendar)  # the rule walk is CPU work
     if invite is None or (invite.method == "REQUEST" and not invite.meeting_url):
         return None  # not a Meet invite we can join: the CEO reads it as mail
     series_room = messaging_repo.meeting_room_id(owner_id, invite.instance_of) if invite.instance_of else None
@@ -472,17 +501,6 @@ async def handle_team_mail(owner_id: str, payload, team: dict) -> str | None:
 
 
 _ENDED = ("ended", "bot_failed")  # an occurrence is over; only advance() schedules a series' next one
-_OCCURRENCE_KEYS = (
-    "recallBotId",
-    "ticketNonce",
-    "botClaimAt",
-    "botError",
-    "lastBotStatus",
-    "inCallAt",
-    "transcriptAttachedAt",
-    "notesRunId",
-    "notesMailedAt",
-)
 
 
 async def _apply(owner_id: str, invite: Invite, room_id: str, creator: str, team: dict) -> str | None:
@@ -493,12 +511,18 @@ async def _apply(owner_id: str, invite: Invite, room_id: str, creator: str, team
     if current and int(current.get("sequence", 0)) > invite.sequence:
         return "meeting_stale"
     allowed = settings.meetings_available()
+    now = time.time()
+    status = (current or {}).get("status")
+    series = invite.method == "REQUEST" and bool(current) and bool(current.get("recurrence") or invite.recurrence)
+    # A series' bot in (or due in) its call is never re-dated by an invite: advance() does it after.
+    live = series and (status == "in_call" or (status == "bot_created" and int(current.get("startAt", 0)) <= now))
+    over = series and status in _ENDED  # re-dated by _reschedule_locked, never onto an occurrence that happened
     if invite.method == "CANCEL":
         if not current or current.get("organizer") != invite.organizer_email:
             return "meeting_ignored"
         start_at = int(current.get("startAt", 0))  # a cancellation need not carry DTSTART
         fields = {"status": "cancelled", "sequence": invite.sequence}
-        text = "This meeting was cancelled."
+        text = f"**{_title(current)}** was cancelled."
     else:
         start_at = int(invite.start.timestamp())
         # The invite owns these keys only; status, bot and RSVP keys belong to their own writers.
@@ -513,10 +537,10 @@ async def _apply(owner_id: str, invite: Invite, room_id: str, creator: str, team
         }
         if invite.recurrence:
             fields["recurrence"] = invite.recurrence
+        if live or over:
+            del fields["startAt"], fields["endAt"]
         moved = (
-            current
-            and current.get("status") not in ("cancelled", *_ENDED)
-            and int(current.get("startAt", 0)) != start_at
+            current and not live and status not in ("cancelled", *_ENDED) and int(current.get("startAt", 0)) != start_at
         )
         when = _when_text(invite.start)
         if moved:
@@ -526,11 +550,11 @@ async def _apply(owner_id: str, invite: Invite, room_id: str, creator: str, team
         else:
             text = f"Agents will join **{fields['title']}** on {when}."
         if not allowed:  # the meeting is still recorded; no bot books, no RSVP goes out
-            text = "Meetings aren't available in this environment yet."
+            text = f"Meetings aren't available in this environment yet, so no agents will join **{fields['title']}**."
     # The line's key is the invite's own transition: a new room counts as coming from "scheduled",
     # so a retry after the create replays its line; cancelled -> scheduled is a new key, so a
     # same-sequence re-invite announces itself again.
-    before = "cancelled" if (current or {}).get("status") == "cancelled" else "scheduled"
+    before = "cancelled" if status == "cancelled" else "scheduled"
     after = "cancelled" if invite.method == "CANCEL" else "scheduled"
     if current is None:
         await _create_room(owner_id, room_id, invite, creator, {**fields, "status": "scheduled"})
@@ -549,6 +573,16 @@ async def _apply(owner_id: str, invite: Invite, room_id: str, creator: str, team
     meeting = await _patch_meeting(room_id, fields, drop=drop)
     if meeting is None:
         return "meeting_stale"  # a newer invite landed meanwhile: it owns the line, the bot and the RSVP
+    if over and allowed:
+        # A re-forward restarts a parked series: the next occurrence, then its line.
+        if await _reschedule_locked(owner_id, room_id, meeting, now=now) == "series_over":
+            return "meeting_ignored"
+        meeting = ((await messaging_repo.get_room(room_id)) or {}).get("meeting") or meeting
+        start_at = int(meeting["startAt"])
+        text = (
+            f"Agents will join **{fields['title']}** each time it meets. "
+            f"Next: {_when_text(datetime.fromtimestamp(start_at, invite.start.tzinfo))}."
+        )
     # META first, then the line: only a write that stood announces itself, and a failure between
     # them retries (under the lease) into the same keyed line.
     # A replayed cancel (already cancelled, sequence not higher) announces nothing; the bot sync below still retries.
@@ -559,7 +593,8 @@ async def _apply(owner_id: str, invite: Invite, room_id: str, creator: str, team
     )
     if not replayed_cancel:
         await _post_line(owner_id, room_id, f"meeting:{invite.uid}:{invite.sequence}:{start_at}:{before}>{after}", text)
-    meeting = await _sync_bot(owner_id, room_id, meeting, current)
+    if not (live or over):  # the bot in a live call is never moved or pulled by an invite
+        meeting = await _sync_bot(owner_id, room_id, meeting, current)
     logger.info("meeting room %s: %s", room_id, meeting["status"])
     if invite.method == "CANCEL":
         return "meeting_cancelled"
@@ -576,13 +611,66 @@ async def _apply(owner_id: str, invite: Invite, room_id: str, creator: str, team
     return "meeting_scheduled"
 
 
-async def advance(room_id: str) -> None:
-    """A series' next occurrence, once this one is over (``ended`` or ``bot_failed``): the meeting is
-    re-dated and ``scheduled`` with its per-occurrence keys gone, and a fresh bot is booked. Never
-    raises; every outcome is a metric."""
+_CALL_KEYS = ("inCallAt", "lastBotStatus", "transcriptAttachedAt", "transcriptId", "notesRunId", "notesMailedAt")
+_OCCURRENCE_KEYS = (*_BOT_KEYS, *_CALL_KEYS)
+
+
+async def _reschedule_locked(owner_id: str, room_id: str, meeting: dict, *, now: float) -> str:
+    """A series occurrence that is over, or whose booking failed, gets its next bot. The caller
+    holds ``meeting_lease``. Returns "series_over", "bot_failed" or "advanced"; a failure after
+    the write is ``bot_failed`` with a line, never ``scheduled`` without a bot."""
+    end = int(meeting.get("endAt") or meeting.get("startAt") or 0)
+    # bot_failed with no call and no bot status: the BOOKING failed. Its nonce (_BOT_KEYS) stays,
+    # so a create Recall did take is adopted, and its dates stay while that occurrence is ahead.
+    booking = meeting.get("status") == "bot_failed" and not (meeting.get("inCallAt") or meeting.get("lastBotStatus"))
+    fields: dict = {}
+    if not (booking and end > now):
+        nxt = await asyncio.to_thread(next_occurrence, meeting["recurrence"], max(now, end))
+        if nxt is None:
+            return "series_over"
+        fields = {"startAt": int(nxt[0].timestamp()), "endAt": int(nxt[1].timestamp()), "status": "scheduled"}
+    written = await _patch_meeting(room_id, fields, drop=_CALL_KEYS if booking else _OCCURRENCE_KEYS)
+    await _seat_new_agents(owner_id, room_id)
     try:
-        outcome = await _advance(room_id)
-    except Exception:  # noqa: BLE001 -- a later terminal webhook retries
+        result = await _sync_bot(owner_id, room_id, written, meeting)
+    except Exception as exc:  # noqa: BLE001 -- MeetingBusy (a Recall 409) included
+        result = await _bot_failed(owner_id, room_id, written, exc, "book", keep=True)
+    return "bot_failed" if result.get("status") == "bot_failed" else "advanced"
+
+
+async def _seat_new_agents(owner_id: str, room_id: str) -> None:
+    """Agents hired since the room was made join it on ``mentions``. Best effort."""
+    try:
+        present = {m["id"] for m in await messaging_repo.list_members(room_id)}
+        roster = await messaging.load_agent_roster(owner_id)
+        handles = messaging.mention_handles(roster)
+        for a in roster:
+            if a["id"] in present or len(present) >= messaging_repo.MAX_ROOM_MEMBERS:
+                continue
+            member = {"kind": "agent", "id": a["id"], "displayName": a["name"], "role": "member"}
+            member |= {"mentionHandle": handles[a["id"]], "listenMode": "mentions"}
+            await messaging_repo.upsert_member(room_id=room_id, owner_id=owner_id, member=member)
+            present.add(a["id"])
+    except Exception:  # noqa: BLE001 -- the call still runs with the agents already seated
+        logger.warning("meeting room %s: seating new agents failed", room_id, exc_info=True)
+
+
+_ADVANCE_RUNS, _ADVANCE_GAP_S = 3, 20
+
+
+async def advance(room_id: str) -> None:
+    """A series' next occurrence, once this one is over (``ended`` or ``bot_failed``). A booking
+    that fails is retried twice, 20 s apart, so a Recall blip does not park a daily series. Never
+    raises; every outcome is a metric."""
+    outcome = "error"
+    try:
+        for run in range(_ADVANCE_RUNS):
+            if run:
+                await asyncio.sleep(_ADVANCE_GAP_S)
+            outcome = await _advance(room_id)
+            if outcome != "bot_failed":
+                break
+    except Exception:  # noqa: BLE001 -- a later terminal webhook or a re-forward retries
         outcome = "error"
         logger.warning("meeting room %s: advance failed", room_id, exc_info=True)
     put_metric("meeting.advance", dimensions={"outcome": outcome})
@@ -591,23 +679,12 @@ async def advance(room_id: str) -> None:
 async def _advance(room_id: str) -> str:
     if not (((await messaging_repo.get_room(room_id)) or {}).get("meeting") or {}).get("recurrence"):
         return "not_series"  # the common one-off: no lease taken
-    for attempt in range(4):  # the first try and three retries, 2 s apart: an end path may hold the lease
-        if attempt:
-            await asyncio.sleep(2)
-        try:
-            async with meeting_lease(room_id):
-                meta = await messaging_repo.get_room(room_id) or {}
-                meeting = meta.get("meeting") or {}
-                if not meeting.get("recurrence") or meeting.get("status") not in _ENDED:
-                    return "not_due"
-                over = max(time.time(), int(meeting.get("endAt") or meeting.get("startAt") or 0))
-                nxt = next_occurrence(meeting["recurrence"], over)
-                if nxt is None:
-                    return "series_over"
-                fields = {"startAt": int(nxt[0].timestamp()), "endAt": int(nxt[1].timestamp()), "status": "scheduled"}
-                written = await _patch_meeting(room_id, fields, drop=_OCCURRENCE_KEYS)
-                await _sync_bot(meta["ownerId"], room_id, written, meeting)
-                return "advanced"
-        except MeetingBusy:
-            continue
-    return "busy"
+    try:
+        async with meeting_lease(room_id, tries=4):  # an end path may hold it for a moment
+            meta = await messaging_repo.get_room(room_id) or {}
+            meeting = meta.get("meeting") or {}
+            if not meeting.get("recurrence") or meeting.get("status") not in _ENDED:
+                return "not_due"
+            return await _reschedule_locked(meta["ownerId"], room_id, meeting, now=time.time())
+    except MeetingBusy:
+        return "busy"

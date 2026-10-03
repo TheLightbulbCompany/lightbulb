@@ -45,7 +45,7 @@ def env():
     meta = {
         "roomId": ROOM,
         "ownerId": "org_a",
-        "meeting": {"uid": "u1", "status": "bot_created", "recallBotId": "bot-1", "ticketNonce": "n"},
+        "meeting": {"uid": "u1", "title": "Sync", "status": "bot_created", "recallBotId": "bot-1", "ticketNonce": "n"},
     }
 
     async def patch_meeting(room_id, fields, drop=()):
@@ -144,7 +144,11 @@ def test_fatal_knocking_disabled_posts_a_plain_line(env):
     meeting = env["meta"]["meeting"]
     assert meeting["status"] == "bot_failed" and meeting["botError"] == "google_meet_knocking_disabled"
     env["line"].assert_awaited_once()
-    assert env["line"].await_args.args[1:] == (ROOM, "meeting:bot-1:fatal", "The host didn't let the agents in.")
+    assert env["line"].await_args.args[1:] == (
+        ROOM,
+        "meeting:bot-1:fatal",
+        "The host didn't let the agents into **Sync**.",
+    )
     _post(env["client"], _status("done"))  # Recall follows a fatal with done: nothing more
     env["line"].assert_awaited_once()
     env["close"].assert_awaited_once()

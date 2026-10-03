@@ -724,7 +724,6 @@ async def test_prewake_warms_every_room_agents_profile_after_the_health_wake(mon
 async def test_post_late_answer_is_the_agents_own_message_once_per_run(monkeypatch):
     create = AsyncMock()
     monkeypatch.setattr(vc.messaging, "create_agent_message", create)
-    monkeypatch.setattr(vc.messaging_repo, "get_room", AsyncMock(return_value={"ownerId": "org_a"}))
     room, agent = "11111111-1111-4111-8111-111111111111", "22222222-2222-4222-8222-222222222222"
     await vc.post_late_answer("org_a", room, agent, "run-9", "what's on my board?", "Three tasks open; two due today.")
     req = create.await_args.args[1]
@@ -732,24 +731,6 @@ async def test_post_late_answer_is_the_agents_own_message_once_per_run(monkeypat
     assert (req.event_id, str(req.room_id), str(req.agent_id)) == ("live-late:run-9", room, agent)
     assert req.text == 'From the Live call "what\'s on my board?":\n\nThree tasks open; two due today.'
     assert req.run_id is None  # a voice run is not a ledger run
-
-
-@pytest.mark.asyncio
-async def test_a_late_answer_from_a_meet_goes_to_the_output_room_when_the_agent_sits_there(monkeypatch):
-    create = AsyncMock()
-    meeting_room, agent = "11111111-1111-4111-8111-111111111111", "22222222-2222-4222-8222-222222222222"
-    default = vc.messaging.default_room_id("org_a")
-    rooms = {meeting_room: {"ownerId": "org_a", "hidden": True, "meeting": {}}, default: {"ownerId": "org_a"}}
-    member = AsyncMock(return_value={"id": agent})
-    monkeypatch.setattr(vc.messaging, "create_agent_message", create)
-    monkeypatch.setattr(vc.messaging_repo, "get_room", AsyncMock(side_effect=rooms.get))
-    monkeypatch.setattr(vc.messaging_repo, "get_member", member)
-    await vc.post_late_answer("org_a", meeting_room, agent, "run-9", "q", "a")
-    assert str(create.await_args.args[1].room_id) == default
-    member.assert_awaited_once_with(default, "agent", agent)
-    member.return_value = None  # an agent not in the default room can only post where it sits
-    await vc.post_late_answer("org_a", meeting_room, agent, "run-9", "q", "a")
-    assert str(create.await_args.args[1].room_id) == meeting_room
 
 
 async def test_a_meeting_summon_is_authorized_as_the_owner_and_a_live_stranger_is_still_403(start_env):

@@ -153,6 +153,18 @@ declining and removing are logged in the transcript. Everything is cleared when
 the session ends. Only people ask and are allowed: you cannot ask to join, and
 an allowed person's permission never extends to an agent acting for them.
 
+**Live terminal**: a running held session shows its real terminal in the
+session panel (desktop app on the owner's Mac; the owner types there, **End**
+takes two clicks, and the separate terminal window is gone). Teammates who can
+read the session, and the owner on another device, watch the same terminal live;
+it falls back to the transcript when the session is not running or has no
+frames. The owner, anyone accepted through **Ask to join**, or everyone when
+**Let teammates control this session** is on can type straight into it,
+including answering the tool's own prompts; others watch read-only. The message
+box stays under the terminal. Pausing sharing or removing someone cuts their
+input at once, and the owner sees "<name> is typing". You never get the screen
+or keyboard: you cannot watch or type into a person's terminal.
+
 **Pick up** continues someone's Claude Code session on your own Mac, in your
 own Terminal, with the files it changed on a new branch and folder; the
 original carries on unchanged. It needs the desktop app: in a browser it says

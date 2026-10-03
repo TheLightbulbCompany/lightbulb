@@ -42,6 +42,9 @@ export async function startLocalTerminal(params: Record<string, unknown>): Promi
 export type LocalTerminal = "checking" | "local" | "none";
 /** How often the panel's place is re-read: it moves when the content above it changes height. */
 const TRACK_MS = 250;
+/** While no holder answers: re-ask this often, for this long after the panel opens. */
+const REPROBE_MS = 2000;
+const REPROBE_FOR_MS = 30_000;
 // Strictly increasing: the backend drops a non-greater `at`, and a close and the next open can share a clock tick.
 let last = 0;
 const now = () => (last = Math.max(performance.timeOrigin + performance.now(), last + 0.01));
@@ -61,16 +64,23 @@ export function useLocalTerminal(target: { sessionId: string } | { holderId: str
     if (!invoke || !target || !key) return;
     let alive = true;
     let sent = "";
+    let none = false; // the last answer was "this Mac does not run it (yet)"
+    let probedAt = 0;
+    const t0 = Date.now();
     const report = () => {
       const box = slot.current?.getBoundingClientRect();
       const rect = visible && box && box.width > 0 && box.height > 0 ? { x: box.left, y: box.top, width: box.width, height: box.height } : null;
       const shape = JSON.stringify(rect);
-      if (shape === sent) return;
+      // The holder can register after the panel opens (the desktop indexes it once a second): keep asking, slowly, for a while.
+      const reprobe = none && rect && Date.now() - probedAt >= REPROBE_MS && Date.now() - t0 < REPROBE_FOR_MS;
+      if (shape === sent && !reprobe) return;
       sent = shape;
+      probedAt = Date.now();
       invoke("terminal_panel", { ...target, rect, at: now() }).then(
         (reply) => {
           const r = reply as { live?: boolean; stale?: boolean };
           if (r?.stale) { sent = ""; return; } // lost a race: re-send on the next tick
+          none = !r?.live;
           if (alive) setResult({ key, value: r?.live ? "local" : "none" });
         },
         () => { sent = ""; if (alive) setResult({ key, value: "none" }); });

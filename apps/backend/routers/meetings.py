@@ -39,7 +39,6 @@ _TARGET = {
     "fatal": "bot_failed",
 }
 _TERMINAL = {"ended", "bot_failed", "cancelled"}
-_FATAL_TEXT = {"google_meet_knocking_disabled": "The host didn't let the agents in."}
 _LEAVE_TRIES, _LEAVE_GAP_S = 3, 2
 _SPEAKING = {"speech_on": True, "speech_off": False, "join": False, "leave": False}
 
@@ -83,12 +82,18 @@ async def _publish(room_id: str, status: str) -> None:
 async def _finish(room_id: str, status: str, sub_code: str, notes: bool, in_call_at: int | None = None) -> None:
     """The rest of the one end path, once ``status`` is written. Never raises: the written status
     turns every retry into a no-op, so a step that failed here would otherwise be lost for good.
-    Notes first, the room's close last. Presence is a metric only: we pay for the bot's time, the
-    workspace's allowance pays only for agent speech (voice_billing)."""
+    Notes first (only for a call the bot was in; a series advances after them, or at once without
+    them), the room's close last. Presence is a metric only: we pay for the bot's time, the
+    workspace's allowance pays only for agent speech (voice_billing). Both are fired, never awaited:
+    the caller may hold the meeting lease that ``advance`` waits for."""
     presence = time.time() - in_call_at if in_call_at else None
+    notes = notes and bool(in_call_at)
     steps = [
         ("presence", lambda: put_metric("meeting.presence.seconds", presence, unit="Seconds") if presence else None),
-        ("notes", lambda: voice_calls._fire(meeting_notes.on_ended(room_id)) if notes else None),
+        (
+            "notes",
+            lambda: voice_calls._fire(meeting_notes.on_ended(room_id) if notes else meeting_invites.advance(room_id)),
+        ),
         ("metric", lambda: put_metric("meeting.ended", dimensions={"sub_code": sub_code or "none"})),
         ("publish", lambda: _publish(room_id, status)),
         ("close_room", lambda: livekit_huddles.close_room(room_id, meet=True)),
@@ -103,7 +108,7 @@ async def _finish(room_id: str, status: str, sub_code: str, notes: bool, in_call
             logger.warning("meeting room %s: end step %s failed", room_id, step, exc_info=True)
 
 
-async def _on_status(bot_id: str, room_id: str, code: str, sub_code: str) -> None:
+async def _on_status(bot_id: str, room_id: str, code: str, sub_code: str, nonce: str = "") -> None:
     """One transition, under the meeting's lease and decided from a META read taken inside it, so
     an invite, another status (Meet sends two in-call codes within a second) or the idle leave
     cannot interleave. A busy lease raises: the route answers 5xx and Recall redelivers."""
@@ -113,10 +118,29 @@ async def _on_status(bot_id: str, room_id: str, code: str, sub_code: str) -> Non
         meeting = meta.get("meeting") or {}
         status = meeting.get("status")
         if meeting.get("recallBotId") != bot_id:
-            return  # another bot's
-        if status in _TERMINAL:  # never revived; a redelivery only retries notes a crash left undone
+            # Recall books a second bot on a repeated create: the one of this booking (its nonce)
+            # that the room lost track of is adopted; any other live bot is told to leave.
+            if (
+                (not meeting.get("recallBotId") or status == "bot_failed")
+                and status not in ("cancelled", "ended")
+                and nonce
+                and nonce == meeting.get("ticketNonce")
+            ):
+                fields = {"recallBotId": bot_id, "status": "bot_created"}
+                meeting = await meeting_invites._patch_meeting(room_id, fields, drop=("botError", "lastBotStatus"))
+                status = "bot_created"
+            else:
+                if target == "in_call":
+                    try:
+                        await meeting_bots.leave(bot_id)
+                    except Exception:  # noqa: BLE001 -- automatic_leave reaps it anyway; 200 either way
+                        logger.warning("meeting room %s: extra bot leave failed", room_id, exc_info=True)
+                return
+        if status in _TERMINAL:  # never revived; a redelivery retries notes or a series' advance left undone
             if meeting_notes.owed(meeting):
                 voice_calls._fire(meeting_notes.on_ended(room_id))
+            elif meeting.get("recurrence"):
+                voice_calls._fire(meeting_invites.advance(room_id))
             return
         if target == status or code == meeting.get("lastBotStatus"):
             return  # a replay, or a step this meeting already took
@@ -149,7 +173,12 @@ async def _on_status(bot_id: str, room_id: str, code: str, sub_code: str) -> Non
             await meeting_invites._patch_meeting(room_id, {"status": "ended", "lastBotStatus": code})
             await _finish(room_id, "ended", sub_code, notes=True, in_call_at=meeting.get("inCallAt"))
         else:
-            text = _FATAL_TEXT.get(sub_code) or f"The agents couldn't join this meeting ({sub_code or 'unknown'})."
+            title = meeting.get("title") or "Meeting"
+            text = (
+                f"The host didn't let the agents into **{title}**."
+                if sub_code == "google_meet_knocking_disabled"
+                else f"The agents couldn't join **{title}** ({sub_code or 'unknown'})."
+            )
             await meeting_invites._post_line(owner_id, room_id, f"meeting:{bot_id}:fatal", text)
             fields = {"status": "bot_failed", "botError": sub_code, "lastBotStatus": code}
             await meeting_invites._patch_meeting(room_id, fields)
@@ -170,7 +199,8 @@ async def recall_status(request: Request):
         code = str(data.get("code") or payload.get("event") or "").removeprefix("bot.")
         if code in _TARGET:
             try:
-                await _on_status(bot_id, room_id, code, str(data.get("sub_code") or ""))
+                nonce = str((payload["data"]["bot"].get("metadata") or {}).get("nonce") or "")
+                await _on_status(bot_id, room_id, code, str(data.get("sub_code") or ""), nonce)
             except meeting_invites.MeetingBusy:
                 raise HTTPException(status_code=503, detail="retry") from None
             except Exception:

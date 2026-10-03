@@ -64,7 +64,7 @@ async def test_create_body(recall, caplog):
             }
         ],
     }
-    assert body["metadata"] == {"roomId": "room-1"}
+    assert body["metadata"] == {"roomId": "room-1", "nonce": "nonce-1"}
     assert body["variant"] == {"google_meet": "web_4_core"}
     assert body["automatic_leave"] == {"waiting_room_timeout": 600, "noone_joined_timeout": 1200}
     chat = body["chat"]["on_bot_join"]
@@ -170,3 +170,14 @@ async def test_a_long_company_name_fits_recalls_bot_name_cap(recall):
     await meeting_bots.create(room_id="room-1", meeting=_meeting(60), company="A" * 120)
     name = json.loads(recall[0][0].content)["bot_name"]
     assert len(name) == 100 and name.endswith(" agents · Lightbulb")
+
+
+async def test_find_for_room_adopts_only_a_live_bot_of_this_booking(recall):
+    calls, responses = recall
+    ended = {"id": "bot-0", "status_changes": [{"code": "joining_call"}, {"code": "done"}]}
+    scheduled = {"id": "bot-1", "status_changes": []}
+    responses.extend([(200, {"results": [ended, scheduled]}), (200, {"results": [ended]})])
+    assert await meeting_bots.find_for_room("room-1", "nonce-1") == "bot-1"
+    assert await meeting_bots.find_for_room("room-1", "nonce-1") is None
+    assert calls[0].method == "GET" and calls[0].url.path == "/api/v1/bot/"
+    assert dict(calls[0].url.params) == {"metadata__roomId": "room-1", "metadata__nonce": "nonce-1"}

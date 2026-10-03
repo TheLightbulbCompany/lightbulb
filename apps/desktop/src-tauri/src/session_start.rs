@@ -542,6 +542,13 @@ pub(crate) fn cli_start(
         .then(|| crate::local_sessions::provider_program(&home, &start.tool))
         .flatten()
         .ok_or(format!("{} is not installed on this Mac.", start.tool))?;
+    if start.tool == "codex" {
+        // The installed Codex's own command list: a subcommand added after this build still refuses.
+        let installed = crate::cli::help_commands(&codex_help(&program));
+        if let Some(reason) = crate::cli::codex_refusal(&start.args, &installed) {
+            return Err(reason);
+        }
+    }
     let approved: Vec<PathBuf> = approved_folders()
         .iter()
         .filter_map(|a| crate::file_access::canonicalize(a).ok())

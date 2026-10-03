@@ -17,32 +17,87 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-/// Codex subcommands that run without the interactive terminal (`resume` and `fork` are TUIs).
-const CODEX_NON_TUI: &[&str] = &[
-    "exec", "e", "review", "login", "logout", "mcp", "mcp-server", "app-server", "app",
-    "completion", "sandbox", "debug", "apply", "a", "cloud", "features", "help",
+/// Codex subcommands that open the interactive terminal; every other subcommand has none to share.
+const CODEX_TUI: &[&str] = &["resume", "fork"];
+
+/// Every Codex subcommand name and alias we know (current `codex --help` plus hidden and older
+/// ones). The app also reads the installed Codex's own `--help`, so a new one cannot slip past it.
+const CODEX_SUBCOMMANDS: &[&str] = &[
+    "agents", "exec", "e", "review", "login", "logout", "mcp", "mcp-server", "plugin", "app-server",
+    "remote-control", "app", "completion", "update", "doctor", "sandbox", "debug", "apply", "a",
+    "resume", "queue", "archive", "delete", "migrate-rollouts", "unarchive", "fork", "cloud",
+    "cloud-tasks", "exec-server", "execpolicy", "features", "help", "responses-api-proxy",
+    "stdio-to-uds", "generate-ts",
 ];
+
+/// Codex options that take a separate value word (`codex --help`).
+const CODEX_VALUE_FLAGS: &[&str] = &[
+    "-c", "--config", "--enable", "--disable", "--remote", "--remote-auth-token-env", "-i", "--image",
+    "-m", "--model", "--local-provider", "-p", "--profile", "-s", "--sandbox", "-C", "--cd",
+    "--add-dir", "-a", "--ask-for-approval",
+];
+
+/// The first positional word, as Codex's own parser finds it: skip options and the value word of
+/// a value-taking option; `--opt=value` and `-mVALUE` carry their own value; stop at `--`.
+/// Codex runs it as a subcommand when it is one, and otherwise takes it as the prompt.
+// ponytail: `-i` takes several files in Codex; only the first is skipped.
+pub(crate) fn first_positional(args: &[String]) -> Option<&str> {
+    let mut it = args.iter();
+    while let Some(arg) = it.next() {
+        if arg == "--" {
+            return None;
+        }
+        if CODEX_VALUE_FLAGS.contains(&arg.as_str()) {
+            it.next();
+        } else if !arg.starts_with('-') || arg == "-" {
+            return Some(arg);
+        }
+    }
+    None
+}
+
+/// The command names and aliases under `Commands:` in a `codex --help` text. Entries are indented
+/// two spaces; wrapped description lines are indented more and add only their `[aliases: ..]`.
+pub(crate) fn help_commands(help: &str) -> Vec<String> {
+    let mut out = vec![];
+    let mut lines = help.lines().skip_while(|l| l.trim_end() != "Commands:").skip(1);
+    while let Some(line) = lines.next().filter(|l| !l.trim().is_empty()) {
+        if line.starts_with("  ") && !line.starts_with("   ") {
+            out.extend(line.split_whitespace().next().map(str::to_string));
+        }
+        if let Some(rest) = line.split("[aliases:").nth(1) {
+            out.extend(rest.split(']').next().unwrap_or("").split(',').map(|a| a.trim().to_string()).filter(|a| !a.is_empty()));
+        }
+    }
+    out
+}
+
+/// The reason a Codex subcommand has no terminal to share, if the first positional is one.
+/// `installed` is the installed Codex's own command list (empty when it is not known).
+pub(crate) fn codex_refusal(args: &[String], installed: &[String]) -> Option<String> {
+    let word = first_positional(args)?;
+    let known = CODEX_SUBCOMMANDS.contains(&word) || installed.iter().any(|c| c == word);
+    (known && !CODEX_TUI.contains(&word)).then(|| not_interactive("codex", word))
+}
+
+fn not_interactive(tool: &str, arg: &str) -> String {
+    format!("lightbulb {tool} starts an interactive shared session, and `{tool} {arg}` has no terminal to share. Run plain `{tool} {arg}` instead.")
+}
 
 /// Why these arguments cannot be a shared session, if they cannot: the non-interactive forms
 /// have no terminal to share. Everything after `--` is the provider's own text, never checked.
-// ponytail: a Codex flag whose VALUE is exactly a subcommand name (`--profile review`) is refused
-// too; a per-flag value table would fix it if anyone hits it.
 pub fn refusal(tool: &str, args: &[String]) -> Option<String> {
+    if tool == "codex" {
+        return codex_refusal(args, &[]);
+    }
     let before_dashes = args.iter().take_while(|a| *a != "--");
     for arg in before_dashes {
-        let refused = match tool {
-            "claude" => {
-                arg == "--print"
-                    || arg.starts_with("--print=")
-                    || (arg.len() > 1 && arg.starts_with('-') && !arg.starts_with("--") && arg[1..].bytes().all(|b| b.is_ascii_alphabetic()) && arg.contains('p'))
-            }
-            "codex" => CODEX_NON_TUI.contains(&arg.as_str()),
-            _ => false,
-        };
+        let refused = tool == "claude"
+            && (arg == "--print"
+                || arg.starts_with("--print=")
+                || (arg.len() > 1 && arg.starts_with('-') && !arg.starts_with("--") && arg[1..].bytes().all(|b| b.is_ascii_alphabetic()) && arg.contains('p')));
         if refused {
-            return Some(format!(
-                "lightbulb {tool} starts an interactive shared session, and `{tool} {arg}` has no terminal to share. Run plain `{tool} {arg}` instead."
-            ));
+            return Some(not_interactive(tool, arg));
         }
     }
     None
@@ -409,15 +464,22 @@ pub fn main(args: &[String]) -> i32 {
 static INSTALLED: OnceLock<Option<String>> = OnceLock::new();
 
 /// `~/.local/bin/lightbulb` → `exe`, in the user's own folder (no admin rights). Creates it, or
-/// repairs a link that dangles or points at another copy of this app; leaves anything else alone.
+/// repairs a link to another copy of this app (moved away or not); leaves anything else alone.
 pub fn install(exe: &Path, home: &Path) -> Result<(), String> {
     let bin = home.join(".local/bin");
     let link = bin.join("lightbulb");
-    match std::fs::read_link(&link) {
-        Ok(target) if target == exe => return Ok(()),
-        Ok(target) if !link.exists() || target.file_name() == exe.file_name() => {}
-        Ok(_) => return Err("~/.local/bin/lightbulb points at another program; leaving it".into()),
-        Err(_) if link.symlink_metadata().is_ok() => return Err("~/.local/bin/lightbulb is not Lightbulb's; leaving it".into()),
+    match std::fs::symlink_metadata(&link) {
+        Ok(meta) if meta.file_type().is_symlink() => {
+            let target = std::fs::read_link(&link).map_err(|e| e.to_string())?;
+            if target == exe {
+                return Ok(());
+            }
+            // Dangling or not, only a link to a Lightbulb app binary is ours to repair.
+            if target.file_name() != exe.file_name() {
+                return Err("~/.local/bin/lightbulb points at another program; leaving it".into());
+            }
+        }
+        Ok(_) => return Err("~/.local/bin/lightbulb is not Lightbulb's; leaving it".into()),
         Err(_) => {}
     }
     std::fs::create_dir_all(&bin).map_err(|e| e.to_string())?;
@@ -483,12 +545,30 @@ mod tests {
         for no in [&["-p", "hi"][..], &["--print", "hi"], &["-cp", "hi"], &["--print=json"]] {
             assert!(refusal("claude", &words(no)).is_some(), "{no:?}");
         }
-        for ok in [&["resume"][..], &["fork"], &["--full-auto", "fix the build"], &["-m", "o3"], &["--", "exec"], &[]] {
+        for ok in [&[][..], &["resume"], &["resume", "--last"], &["fork"], &["fixit"], &["fix the build"], &["-C", "app"],
+            &["--profile", "review"], &["-c", "x=1", "hello"], &["--full-auto", "hello"], &["--", "exec"], &["-m", "o3"]] {
             assert_eq!(refusal("codex", &words(ok)), None, "{ok:?}");
         }
-        for no in [&["exec", "hi"][..], &["e", "hi"], &["review"], &["-m", "o3", "exec", "hi"], &["login"], &["mcp", "list"], &["app-server"]] {
+        for no in [&["plugin", "list"][..], &["queue"], &["archive", "x"], &["delete", "x"], &["migrate-rollouts"], &["execpolicy"],
+            &["exec", "hi"], &["e", "hi"], &["-m", "o3", "exec", "hi"], &["--model=o3", "review"], &["agents"]] {
             assert!(refusal("codex", &words(no)).is_some(), "{no:?}");
         }
+        // The installed Codex's own list catches a command this build has never heard of.
+        assert!(codex_refusal(&words(&["newthing"]), &["newthing".to_string()]).is_some());
+        assert_eq!(codex_refusal(&words(&["fork"]), &["fork".to_string()]), None);
+    }
+
+    #[test]
+    fn cli_reads_the_commands_from_codex_help() {
+        let help = "Codex CLI\n\nCommands:\n  exec              Run Codex non-interactively [aliases: e]\n  plugin            Manage Codex plugins\n  apply             Apply the latest diff produced by Codex agent as a `git apply` to your local\n                    working tree [aliases: a]\n  fork              Fork a previous interactive session (picker by default; use --last to fork the\n                    most recent)\n\nArguments:\n  [PROMPT]\n";
+        let got = help_commands(help);
+        for name in ["exec", "e", "plugin", "fork", "apply", "a"] {
+            assert!(got.iter().any(|c| c == name), "{name} in {got:?}");
+        }
+        for word in ["working", "most", "most", "recent)", "Arguments:", "[PROMPT]", "Run"] {
+            assert!(!got.iter().any(|c| c == word), "{word} in {got:?}");
+        }
+        assert!(help_commands("no commands here").is_empty());
     }
 
     #[test]
@@ -609,6 +689,13 @@ mod tests {
         std::fs::write(&link, b"#!/bin/sh\n").unwrap();
         assert!(install(&exe, home.path()).is_err());
         assert_eq!(std::fs::read(&link).unwrap(), b"#!/bin/sh\n");
+
+        // An unrelated link whose target is gone is not ours either.
+        std::fs::remove_file(&link).unwrap();
+        let nowhere = home.path().join("nowhere/other-tool");
+        std::os::unix::fs::symlink(&nowhere, &link).unwrap();
+        assert!(install(&exe, home.path()).is_err());
+        assert_eq!(std::fs::read_link(&link).unwrap(), nowhere);
     }
 
     #[test]

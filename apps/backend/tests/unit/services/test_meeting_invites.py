@@ -516,6 +516,7 @@ async def test_an_invite_books_one_bot(room, bots):
     meeting = room.state["meta"]["meeting"]
     assert meeting["status"] == "bot_created" and meeting["recallBotId"] == "bot-1"
     assert meeting["ticketNonce"] == kw["meeting"]["ticketNonce"]  # persisted before the POST
+    bots.find.assert_not_awaited()  # a nonce claimed just now has no bot to adopt: no List Bots call
     await meeting_invites.handle_team_mail("org_1", _mail(GOOGLE), TEAM)  # SES retry / resend
     bots.create.assert_awaited_once()
 

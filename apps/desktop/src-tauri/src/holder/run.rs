@@ -9,6 +9,7 @@ use std::io::{Result, Write};
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::Path;
+use std::sync::atomic::Ordering;
 use std::sync::mpsc::{channel, sync_channel, SyncSender, TrySendError};
 use std::time::{Duration, Instant};
 
@@ -18,6 +19,8 @@ const ROWS: u16 = 40;
 const COLS: u16 = 120;
 /// Frames queued for one client before it counts as stalled and is disconnected.
 const CLIENT_QUEUE: usize = 1024;
+/// Output bytes read but not yet handled before the pty reader waits.
+const OUTPUT_BACKLOG: usize = 8 << 20;
 /// How long to keep reading output after the provider exits.
 const EXIT_DRAIN: Duration = Duration::from_secs(1);
 
@@ -130,12 +133,24 @@ pub fn run_with_env(socket: &Path, argv: &[String], cwd: &Path, env: Vec<(String
     std::fs::set_permissions(socket, std::fs::Permissions::from_mode(0o600))?;
 
     let (tx, rx) = channel::<Event>();
+    // Output read but not yet handled. Past OUTPUT_BACKLOG the reader waits, so a provider
+    // writing faster than the holder serves is held back by its terminal instead of growing
+    // memory. Only output is bounded: bounding input too could deadlock a paste.
+    let backlog = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let reader_backlog = backlog.clone();
     let out_tx = tx.clone();
     std::thread::spawn(move || {
         let mut buf = [0u8; 65536];
         while let Ok(n) = std::io::Read::read(&mut reader, &mut buf) {
-            if n == 0 || out_tx.send(Event::Output(buf[..n].to_vec())).is_err() {
+            if n == 0 {
                 break;
+            }
+            reader_backlog.fetch_add(n, Ordering::SeqCst);
+            if out_tx.send(Event::Output(buf[..n].to_vec())).is_err() {
+                break;
+            }
+            while reader_backlog.load(Ordering::SeqCst) > OUTPUT_BACKLOG {
+                std::thread::sleep(Duration::from_millis(5));
             }
         }
         let _ = out_tx.send(Event::Eof);
@@ -193,6 +208,7 @@ pub fn run_with_env(socket: &Path, argv: &[String], cwd: &Path, env: Vec<(String
         };
         match event {
             Event::Output(bytes) => {
+                backlog.fetch_sub(bytes.len(), Ordering::SeqCst);
                 let answers = model.feed(&bytes);
                 if !answers.is_empty() && exited.is_none() {
                     let _ = pty.write_all(&answers);
@@ -271,9 +287,12 @@ pub fn run_with_env(socket: &Path, argv: &[String], cwd: &Path, env: Vec<(String
                 for client in clients.values() {
                     client.send(frame.clone());
                 }
-                // Let the writers deliver the last frames before the process ends.
-                drop(clients);
-                std::thread::sleep(Duration::from_millis(100));
+                // Let every writer deliver its last frames (a stalled one gets two seconds).
+                let writers: Vec<_> = clients.into_values().map(|c| c.writer).collect();
+                let deadline = Instant::now() + Duration::from_secs(2);
+                while writers.iter().any(|w| !w.is_finished()) && Instant::now() < deadline {
+                    std::thread::sleep(Duration::from_millis(10));
+                }
                 let _ = std::fs::remove_file(socket);
                 return Ok(());
             }
@@ -286,20 +305,21 @@ pub fn run_with_env(socket: &Path, argv: &[String], cwd: &Path, env: Vec<(String
 struct Client {
     queue: SyncSender<Vec<u8>>,
     stream: UnixStream,
+    writer: std::thread::JoinHandle<()>,
 }
 
 impl Client {
     fn start(stream: UnixStream) -> Option<Self> {
         let mut writer = stream.try_clone().ok()?;
         let (queue, frames) = sync_channel::<Vec<u8>>(CLIENT_QUEUE);
-        std::thread::spawn(move || {
+        let writer = std::thread::spawn(move || {
             for frame in frames {
                 if writer.write_all(&frame).is_err() {
                     return;
                 }
             }
         });
-        Some(Self { queue, stream })
+        Some(Self { queue, stream, writer })
     }
 
     /// False when the client is gone or too slow; the caller drops it.

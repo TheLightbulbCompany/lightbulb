@@ -17,31 +17,38 @@ const CPR: &[u8] = b"\x1b[6n";
 
 pub struct Model {
     parser: vt100::Parser,
+    /// The last bytes of the previous read: a query split across two reads is still answered.
+    tail: Vec<u8>,
 }
+const TAIL: usize = 16;
 
-fn contains(hay: &[u8], needle: &[u8]) -> bool {
-    hay.windows(needle.len()).any(|w| w == needle)
+/// How many times `needle` ends inside the new bytes (after the first `skip` bytes of `hay`).
+fn completed(hay: &[u8], needle: &[u8], skip: usize) -> usize {
+    hay.windows(needle.len()).enumerate().filter(|(i, w)| *w == needle && i + needle.len() > skip).count()
 }
 
 impl Model {
     pub fn new(rows: u16, cols: u16) -> Self {
-        Self { parser: vt100::Parser::new(rows, cols, 5000) }
+        Self { parser: vt100::Parser::new(rows, cols, 5000), tail: Vec::new() }
     }
 
     /// Feed provider output. Returns what to write back to the pty: the probe answers.
-    /// ponytail: a query split across two reads goes unanswered; providers send each in one write.
     pub fn feed(&mut self, bytes: &[u8]) -> Vec<u8> {
+        let skip = self.tail.len();
+        let mut seen = std::mem::take(&mut self.tail);
+        seen.extend_from_slice(bytes);
         let mut answers = Vec::new();
         for (query, answer) in PROBES {
-            if contains(bytes, query) {
+            for _ in 0..completed(&seen, query, skip) {
                 answers.extend_from_slice(answer);
             }
         }
         self.parser.process(bytes);
-        if contains(bytes, CPR) {
+        for _ in 0..completed(&seen, CPR, skip) {
             let (row, col) = self.parser.screen().cursor_position();
             answers.extend_from_slice(format!("\x1b[{};{}R", row + 1, col + 1).as_bytes());
         }
+        self.tail = seen[seen.len().saturating_sub(TAIL)..].to_vec();
         answers
     }
 
@@ -92,6 +99,14 @@ mod tests {
         assert_eq!(model.feed(b"\x1b]11;?\x07"), b"\x1b]11;rgb:1616/1616/1a1a\x07");
         assert_eq!(model.feed(b"plain output"), b"");
         assert_eq!(model.feed(b"\x1b[3;5H\x1b[6n"), b"\x1b[3;5R");
+    }
+
+    #[test]
+    fn holder_model_answers_a_query_split_across_two_reads_exactly_once() {
+        let mut model = Model::new(40, 120);
+        assert_eq!(model.feed(b"text \x1b]11"), b"");
+        assert_eq!(model.feed(b";?\x07 more"), b"\x1b]11;rgb:1616/1616/1a1a\x07");
+        assert_eq!(model.feed(b"later"), b"", "an answered query is not answered again");
     }
 
     #[test]

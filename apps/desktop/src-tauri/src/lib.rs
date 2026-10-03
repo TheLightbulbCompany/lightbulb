@@ -223,9 +223,13 @@ fn send_auth_token(
     display_name: String,
     user_id: String,
     permissions: Option<DesktopPermissions>,
+    workspace_name: Option<String>,
     state: State<'_, AuthState>,
     app: tauri::AppHandle,
 ) -> Result<(), String> {
+    // Only for the `lightbulb` command's "Shared with <workspace>" line.
+    #[cfg(unix)]
+    cli::set_workspace(workspace_name);
     {
         // Cache the latest token for telemetry / diagnostic dumps. We do
         // NOT use this as the "did bootstrap already happen" sentinel
@@ -1964,6 +1968,12 @@ end tell"#,
             {
                 let handle = app.handle().clone();
                 tauri::async_runtime::spawn_blocking(move || holder::window::restore_windows(&handle));
+            }
+
+            // The `lightbulb` command's request socket.
+            #[cfg(unix)]
+            if let Err(e) = cli::serve(app.handle().clone()) {
+                log(&format!("[cli] the lightbulb command is unavailable: {e}"));
             }
 
             Ok(())

@@ -77,9 +77,9 @@ export function CaseEventRow({ event, compact = false }: { event: CaseEvent; com
               <span aria-hidden>·</span>
               <span>{issueRelationLabel(event)}</span>
               <Link
-                href={issueHref(issue.identifier)}
+                href={issueHref(issue.id)}
                 prefetch={false}
-                onClick={(e) => handleShellLinkClick(e, issueHref(issue.identifier))}
+                onClick={(e) => handleShellLinkClick(e, issueHref(issue.id))}
                 className="inline-flex min-w-0 items-center gap-1 text-[var(--fg-soft)] hover:underline"
                 title={issue.title}
               >

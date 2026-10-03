@@ -39,9 +39,9 @@ function EmptyValue() {
 export function IssueReferencePill({
   issue,
 }: {
-  issue: { identifier: string; title: string; status?: string };
+  issue: { id?: string; identifier: string; title: string; status?: string };
 }) {
-  const href = issueHref(issue.identifier);
+  const href = issueHref(issue.id ?? issue.identifier);
   return (
     <Link
       href={href}

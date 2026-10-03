@@ -32,7 +32,11 @@ PEOPLE = [{"userId": "u1", "name": "Nova Reyes"}, {"userId": "u2", "name": "Aden
     "text,ids,ambiguous",
     [
         ("Gauge, what's revenue", ["gauge"], []),
-        ("can you ask Gauge to check", [], []),  # position 2 is gone: /route's addressing stage decides
+        (
+            "can you ask Gauge to check",
+            [],
+            [],
+        ),  # position 2 is gone: /route's addressing stage decides
         ("let's ask Forge later", [], []),
         ("Forge and Gauge, check the deploy", ["forge", "gauge"], []),
         ("Forge, Gauge and Ada: one sec", ["forge", "gauge", "ada"], []),
@@ -64,7 +68,9 @@ def test_fuzzy_only_for_long_names():
     assert a.agent_ids == ["gauge"] and a.matches == {"gauge": "fuzzy"}
     assert address("Gauge, check", AGENTS, PEOPLE).matches == {"gauge": "exact"}
     assert address("Ida", AGENTS, PEOPLE).agent_ids == []  # 3 letters: exact only
-    assert address("I bought a gage", AGENTS, PEOPLE).agent_ids == []  # not a wake position
+    assert (
+        address("I bought a gage", AGENTS, PEOPLE).agent_ids == []
+    )  # not a wake position
 
 
 def test_lightbulb_then_agent():
@@ -141,7 +147,10 @@ def test_seed_roles_and_summon_excluded():
         ("user", "Aden: Gauge (agent): hi"),  # a person cannot forge an agent line
         ("developer", "[Forge (agent) said]: and the deploy"),
     ]
-    assert t.seed("forge", summon)[1] == ("developer", "[Gauge (agent) said]: huddles shipped")
+    assert t.seed("forge", summon)[1] == (
+        "developer",
+        "[Gauge (agent) said]: huddles shipped",
+    )
 
 
 def test_trim_items():
@@ -150,12 +159,19 @@ def test_trim_items():
     assert len(kept) == SEED_ITEMS and kept[-1] == ("user", "A: 199")
     big = [("user", "x" * 4000) for _ in range(20)]
     kept = trim_items(big)
-    assert sum(len(x[1]) for x in kept) / 4 <= SEED_TOKENS and kept[-1] is big[-1] and len(kept) == 7
+    assert (
+        sum(len(x[1]) for x in kept) / 4 <= SEED_TOKENS
+        and kept[-1] is big[-1]
+        and len(kept) == 7
+    )
 
 
 def test_since_agent():
     t, _ = _call()
-    assert t.since_agent("gauge") == "Aden: Gauge (agent): hi\nForge: and the deploy\nPrasiddha: hey Gauge, numbers?\nAden: later line"
+    assert (
+        t.since_agent("gauge")
+        == "Aden: Gauge (agent): hi\nForge: and the deploy\nPrasiddha: hey Gauge, numbers?\nAden: later line"
+    )
     assert t.since_agent("nova") == t.text()
     t.add_person("u1", "Aden", "y" * 20000)
     assert len(t.since_agent("nova")) == 12000
@@ -189,15 +205,31 @@ def test_halt():
 
 
 def test_stop_request():
-    for line in ("stop", "Forge, stop", "never mind.", "hey Gauge, cancel that", "forget it", "Customer Operations, cancel it"):
+    for line in (
+        "stop",
+        "Forge, stop",
+        "never mind.",
+        "hey Gauge, cancel that",
+        "forget it",
+        "Customer Operations, cancel it",
+    ):
         assert stop_request(line), line
-    for line in ("stop the deploy and redo it", "don't stop", "can you stop and check revenue"):
+    for line in (
+        "stop the deploy and redo it",
+        "don't stop",
+        "can you stop and check revenue",
+    ):
         assert not stop_request(line), line
 
 
 def test_stt_prompt():
-    assert stt_prompt(["Gauge", "Forge"], ["Aden"]) == "A team voice call. Names: Gauge, Forge, Lightbulb, Aden."
-    long = stt_prompt([f"Agent{i}" for i in range(200)], [f"Person{i}" for i in range(200)])
+    assert (
+        stt_prompt(["Gauge", "Forge"], ["Aden"])
+        == "A team voice call. Names: Gauge, Forge, Lightbulb, Aden."
+    )
+    long = stt_prompt(
+        [f"Agent{i}" for i in range(200)], [f"Person{i}" for i in range(200)]
+    )
     assert len(long) <= STT_PROMPT_CHARS and long.endswith(".")
 
 
@@ -208,3 +240,14 @@ def test_stop_target_is_the_exact_name_default_names_included():
     assert stop_target("stop", AGENTS) is None
     assert stop_target("Aden, stop", AGENTS) is None
     assert stop_target("Finance, check the books", AGENTS) is None
+
+
+def test_address_names_anywhere_for_a_floor_switch():
+    a = address("Cool, and Gauge, what about you?", AGENTS, PEOPLE)
+    assert a.agent_ids == [] and a.anywhere == [
+        "gauge"
+    ]  # not a wake position: no summons by itself
+    assert (
+        address("Finance looks fine", AGENTS, PEOPLE).anywhere == []
+    )  # default names stay silent
+    assert address("I bought a gage", AGENTS, PEOPLE).anywhere == []  # exact only

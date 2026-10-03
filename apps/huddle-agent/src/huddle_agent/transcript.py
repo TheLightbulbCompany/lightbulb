@@ -34,9 +34,13 @@ class Transcript:
         self._lines: list[Line] = []
         self._next = 0
 
-    def _add(self, kind: str, who: str, name: str, text: str, at: float, to: str = "") -> int:
+    def _add(
+        self, kind: str, who: str, name: str, text: str, at: float, to: str = ""
+    ) -> int:
         mark, self._next = self._next, self._next + 1
-        self._lines.append(Line(kind, who, name, " ".join(text.splitlines()), mark, at, to))  # one line each
+        self._lines.append(
+            Line(kind, who, name, " ".join(text.splitlines()), mark, at, to)
+        )  # one line each
         while len(self._lines) > 1 and len(self.text()) > self.max_chars:
             self._lines.pop(0)
         return mark
@@ -44,12 +48,17 @@ class Transcript:
     def add_person(self, identity: str, name: str, text: str, at: float = 0.0) -> int:
         return self._add("person", identity, name, text, at)
 
-    def add_agent(self, agent_id: str, name: str, text: str, at: float = 0.0, to: str = "") -> int:
+    def add_agent(
+        self, agent_id: str, name: str, text: str, at: float = 0.0, to: str = ""
+    ) -> int:
         return self._add("agent", agent_id, name, text, at, to)
 
     def text(self, lines: list[Line] | None = None) -> str:
         """ "Name: text", or "Agent → Person: text" for a voice's answer (the backend parses the arrow)."""
-        return "\n".join(f"{x.name}{f' → {x.to}' if x.to else ''}: {x.text}" for x in (self._lines if lines is None else lines))
+        return "\n".join(
+            f"{x.name}{f' → {x.to}' if x.to else ''}: {x.text}"
+            for x in (self._lines if lines is None else lines)
+        )
 
     def after(self, mark: int) -> list[Line]:
         """The lines said after `mark` (all of them for -1), oldest first."""
@@ -61,7 +70,14 @@ class Transcript:
 
     def since_agent(self, agent_id: str) -> str:
         """Everything said after this agent last spoke (all of it if it never has), newest kept."""
-        last = max((i for i, x in enumerate(self._lines) if x.kind == "agent" and x.who == agent_id), default=-1)
+        last = max(
+            (
+                i
+                for i, x in enumerate(self._lines)
+                if x.kind == "agent" and x.who == agent_id
+            ),
+            default=-1,
+        )
         return self.text(self._lines[last + 1 :])[-SINCE_AGENT_CHARS:]
 
     def seed(self, agent_id: str, before_mark: int) -> list[tuple[str, str]]:
@@ -80,7 +96,9 @@ class Transcript:
         return trim_items(items)
 
 
-def trim_items(items: list, tokens: int = SEED_TOKENS, max_items: int = SEED_ITEMS) -> list:
+def trim_items(
+    items: list, tokens: int = SEED_TOKENS, max_items: int = SEED_ITEMS
+) -> list:
     """The newest items within `max_items` and `tokens` (chars/4 of each item's text)."""
     kept, budget = [], tokens * 4
     for item in reversed(items):
@@ -97,7 +115,11 @@ SOUNDEX_RATIO = 0.6
 STT_PROMPT_CHARS = 400
 
 _LEADS = {"hey", "ok", "okay", "so"}
-_STRONG_LEADS = {"hey", "ok", "okay"}  # the only leads that make a default or person-colliding name a summons
+_STRONG_LEADS = {
+    "hey",
+    "ok",
+    "okay",
+}  # the only leads that make a default or person-colliding name a summons
 _MODALS = {"can", "could", "would", "will"}
 # STT writes the wake word as "Lightbulb", "light bulb" or "light-bulb".
 _LIGHTBULB = [("lightbulb",), ("light", "bulb")]
@@ -108,10 +130,18 @@ class Address:
     agent_ids: list[str] = field(default_factory=list)  # in the order they were named
     matches: dict[str, str] = field(default_factory=dict)  # id -> "exact" | "fuzzy"
     lightbulb: bool = False
-    ambiguous: list[str] = field(default_factory=list)  # bare leading names that are also a person's
+    ambiguous: list[str] = field(
+        default_factory=list
+    )  # bare leading names that are also a person's
+    # Agents named exactly ANYWHERE in the line (non-default names, not a person's). Not a summons
+    # by itself: while another agent holds the floor, its speaker's line goes to /route's addressing
+    # stage, which tells "Cool, and Friday, what about you?" from "let's ask Friday later".
+    anywhere: list[str] = field(default_factory=list)
 
 
-_WAKE_WORD = re.compile(r"^\s*(?:(?:hey|ok|okay|so)[\s,]+)?light[\s-]?bulb\b[\s,.!?]*", re.I)
+_WAKE_WORD = re.compile(
+    r"^\s*(?:(?:hey|ok|okay|so)[\s,]+)?light[\s-]?bulb\b[\s,.!?]*", re.I
+)
 
 
 def strip_wake(text: str) -> str:
@@ -123,7 +153,14 @@ def soundex(word: str) -> str:
     letters = [c for c in word.lower() if c.isalpha()]
     if not letters:
         return ""
-    code = lambda c: next((str(d) for d, g in enumerate(("bfpv", "cgjkqsxz", "dt", "l", "mn", "r"), 1) if c in g), "")
+    code = lambda c: next(
+        (
+            str(d)
+            for d, g in enumerate(("bfpv", "cgjkqsxz", "dt", "l", "mn", "r"), 1)
+            if c in g
+        ),
+        "",
+    )
     out, prev = letters[0].upper(), code(letters[0])
     for c in letters[1:]:
         d = code(c)
@@ -135,7 +172,9 @@ def soundex(word: str) -> str:
 
 
 def _tokens(text: str) -> list[str]:
-    return re.findall(r"[a-z0-9']+|[^\s\-a-z0-9']", text.lower())  # a hyphen splits words
+    return re.findall(
+        r"[a-z0-9']+|[^\s\-a-z0-9']", text.lower()
+    )  # a hyphen splits words
 
 
 def _fuzzy(said: tuple[str, ...], name: tuple[str, ...]) -> bool:
@@ -146,10 +185,16 @@ def _fuzzy(said: tuple[str, ...], name: tuple[str, ...]) -> bool:
     if ratio >= FUZZY_RATIO:
         return True
     # A sound-alike must also look alike: "Forj" is Forge, "Guys" (also G200) is not Gauge.
-    return ratio >= SOUNDEX_RATIO and abs(len(s) - len(n)) <= 1 and all(soundex(a) == soundex(b) for a, b in zip(said, name))
+    return (
+        ratio >= SOUNDEX_RATIO
+        and abs(len(s) - len(n)) <= 1
+        and all(soundex(a) == soundex(b) for a, b in zip(said, name))
+    )
 
 
-def _name_at(tokens: list[str], i: int, cands: list[tuple[tuple[str, ...], dict | None]]):
+def _name_at(
+    tokens: list[str], i: int, cands: list[tuple[tuple[str, ...], dict | None]]
+):
     """The name starting at token i: longest exact match first, then fuzzy. A None row is Lightbulb."""
     for exact in (True, False):
         for words, row in cands:
@@ -163,8 +208,10 @@ def _name_at(tokens: list[str], i: int, cands: list[tuple[tuple[str, ...], dict 
     return None
 
 
-def _name_list(tokens: list[str], i: int, cands) -> tuple[list[tuple[dict | None, str]], int]:
-    """"Forge", "Forge and Gauge", "Forge, Gauge and Ada": every name in order, and where the list ends."""
+def _name_list(
+    tokens: list[str], i: int, cands
+) -> tuple[list[tuple[dict | None, str]], int]:
+    """ "Forge", "Forge and Gauge", "Forge, Gauge and Ada": every name in order, and where the list ends."""
     found, end = [], i
     while (hit := _name_at(tokens, i, cands)) is not None:
         found.append(hit[:2])
@@ -181,9 +228,15 @@ def _name_list(tokens: list[str], i: int, cands) -> tuple[list[tuple[dict | None
 def address(text: str, agents: list[dict], people: list[dict]) -> Address:
     """Who the utterance summons by name, from the C1 `/team` rows."""
     tokens = _tokens(text)
-    cands = [(w, None) for w in _LIGHTBULB] + [(tuple(_tokens(a["name"])), a) for a in agents if _tokens(a["name"])]
+    cands = [(w, None) for w in _LIGHTBULB] + [
+        (tuple(_tokens(a["name"])), a) for a in agents if _tokens(a["name"])
+    ]
     cands.sort(key=lambda c: -len(" ".join(c[0])))
-    person_names = {" ".join(_tokens(n)) for p in people for n in (p.get("name") or "", (p.get("name") or "").split(" ")[0])}
+    person_names = {
+        " ".join(_tokens(n))
+        for p in people
+        for n in (p.get("name") or "", (p.get("name") or "").split(" ")[0])
+    }
     person_names.discard("")
     out = Address()
 
@@ -201,7 +254,9 @@ def address(text: str, agents: list[dict], people: list[dict]) -> Address:
         i = 2 if len(tokens) > 1 and tokens[1] == "," else 1
     names, j = _name_list(tokens, i, cands)
     j += 1 if j < len(tokens) and tokens[j] == "," else 0
-    asks = len(tokens) > j + 1 and tokens[j] in _MODALS and tokens[j + 1] == "you"  # "Finance, can you …"
+    asks = (
+        len(tokens) > j + 1 and tokens[j] in _MODALS and tokens[j + 1] == "you"
+    )  # "Finance, can you …"
     for row, kind in names:
         if row is None or lead in _STRONG_LEADS:
             take(row, kind)
@@ -209,12 +264,43 @@ def address(text: str, agents: list[dict], people: list[dict]) -> Address:
             out.ambiguous.append(row["id"])
         elif not row.get("defaultName") or asks:
             take(row, kind)
+    for k in range(len(tokens)):
+        hit = _name_at(tokens, k, cands)
+        if (
+            hit is None
+            or hit[0] is None
+            or hit[1] != "exact"
+            or hit[0].get("defaultName")
+        ):
+            continue
+        if (
+            " ".join(_tokens(hit[0]["name"])) in person_names
+            or hit[0]["id"] in out.anywhere
+        ):
+            continue
+        out.anywhere.append(hit[0]["id"])
     return out
 
 
 # Backchannels and fillers: never enough to cut Lightbulb off. Multi-word ones go first.
 _FILLER_PHRASES = re.compile(r"\b(?:got it|mm[\s-]?hmm|uh[\s-]?huh)\b")
-_FILLER = {"yeah", "yep", "yes", "mm", "mhm", "hmm", "right", "ok", "okay", "sure", "cool", "nice", "true", "uh", "um"}
+_FILLER = {
+    "yeah",
+    "yep",
+    "yes",
+    "mm",
+    "mhm",
+    "hmm",
+    "right",
+    "ok",
+    "okay",
+    "sure",
+    "cool",
+    "nice",
+    "true",
+    "uh",
+    "um",
+}
 _HALT = re.compile(r"\b(?:stop|wait|hold on|hang on|one sec)\b")
 
 
@@ -254,7 +340,9 @@ def stop_target(text: str, agents: list[dict]) -> str | None:
     """The agent a stop names, by its exact name: naming is enough for a stop, default names included."""
     m = _stop_match(text)
     said = m and (m.group(1) or m.group(2))
-    return next((a["id"] for a in agents if said and " ".join(_tokens(a["name"])) == said), None)
+    return next(
+        (a["id"] for a in agents if said and " ".join(_tokens(a["name"])) == said), None
+    )
 
 
 def addressed_by_name(said: str, people: dict[str, str]) -> str | None:

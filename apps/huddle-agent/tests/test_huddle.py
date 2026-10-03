@@ -2747,3 +2747,28 @@ async def test_a_startup_snapshot_finishing_after_the_first_join_does_not_end_th
     clock.t += EMPTY_ROOM_GRACE
     await h.tick()
     assert room.shut is True and log[-1] == "shutdown"
+
+
+async def test_a_mid_sentence_name_switches_the_floor_when_the_backend_says_it_was_addressed(
+    capsys,
+):
+    """10-02 21:23 EDT: "Cool, and Friday, what about you?" while Forge held the floor went to Forge. The
+    worker's fast path only matches a name at the start of a line; a name anywhere in the floor-holder's
+    speaker's line now goes to /route's addressing stage, and an addressed agent takes the floor."""
+    h, room, backend, lives, clock, log = await summoned("Forge")
+    backend.jev_to = "gauge"  # /route: Gauge was addressed
+    await say(h, "u1", "Cool, and Gauge, what about you?")
+    assert backend.routes[-1][1] == "Cool, and Gauge, what about you?"
+    assert (lives[-1].agent_id, lives[-1].speaker) == ("gauge", "u1")
+    assert metric_count(capsys, "live.route.switch") == 1
+
+
+async def test_a_mid_sentence_mention_keeps_the_floor():
+    h, room, backend, lives, clock, log = await summoned("Forge")
+    backend.jev_to = None  # /route: a mention, not a summons
+    await say(h, "u1", "let's ask Gauge later")
+    assert [x.agent_id for x in lives] == ["forge"]
+    await say(
+        h, "u1", "Finance looks fine to me"
+    )  # a default name mid-sentence never goes to /route
+    assert backend.routes[-1][1] == "let's ask Gauge later"

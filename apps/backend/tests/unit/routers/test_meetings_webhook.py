@@ -6,9 +6,7 @@ import hashlib
 import hmac
 import json
 import os
-import sys
 import time
-import types
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -56,9 +54,8 @@ def env():
 
     publisher = MagicMock(publish_room=AsyncMock(return_value=True))
     lk = mod.livekit_huddles
-    notes = types.SimpleNamespace(on_ended=AsyncMock())
     with (
-        patch.dict(sys.modules, {"core.services.meeting_notes": notes}),
+        patch.object(mod.meeting_notes, "on_ended", AsyncMock()) as notes,
         patch.object(mod.container_repo, "release_pass", AsyncMock()) as release,
         patch.object(mod.voice_calls, "room_agents", AsyncMock(return_value=TEAM)),
         patch.object(mod.settings, "MEETINGS_ENABLED", True),
@@ -86,7 +83,7 @@ def env():
             "line": line,
             "publisher": publisher,
             "metric": metric,
-            "notes": notes.on_ended,
+            "notes": notes,
             "release": release,
         }
 

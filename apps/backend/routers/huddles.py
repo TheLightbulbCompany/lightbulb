@@ -18,7 +18,7 @@ from core.auth import AuthContext, get_current_user, resolve_owner_id
 from core.config import settings
 from core.observability.metrics import put_metric
 from core.repositories import container_repo, messaging_repo
-from core.services import livekit_huddles, messaging, voice_calls
+from core.services import livekit_huddles, meeting_notes, messaging, voice_calls
 from core.services.live_events import get_live_event_publisher
 from routers.messaging import _require_hook_token
 
@@ -127,6 +127,7 @@ class TranscriptBody(BaseModel):
     roomToken: _Id
     huddleId: _Id
     lines: list[TranscriptLine] = Field(max_length=500)
+    final: bool = False  # a meeting's last chunk: the transcript is complete
 
 
 class LateAnswerBody(BaseModel):
@@ -282,9 +283,13 @@ async def end(call_id: str, body: EndBody):
 async def transcript(room_id: str, body: TranscriptBody):
     """The worker's rolling transcript, in batches: what people and agents said in a huddle, kept
     in the backend's CloudWatch log (search `live transcript huddle=<id>`) so a bad call can be
-    read back. Nothing is posted to the room."""
+    read back. A meeting's chunks become its room's ``transcript.txt`` once the final one lands;
+    nothing else is posted to the room."""
     room_id = _room_id(room_id)
     _require_room_token(body.roomToken, room_id, body.ownerId)
+    meta = await messaging_repo.get_room(room_id) or {}
+    if meta.get("meeting") and meta.get("ownerId") == body.ownerId:
+        await meeting_notes.on_transcript(room_id, [x.model_dump() for x in body.lines], body.final)
     rendered = "\n".join(
         f"[{x.mark} @{int(x.at)}] {x.name}{' → ' + x.to if x.to else ''}: {x.text}" for x in body.lines
     )

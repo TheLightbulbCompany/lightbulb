@@ -175,8 +175,9 @@ def room(monkeypatch):
         if seen is not None:
             if seen[0] != kw["req_hash"]:
                 raise meeting_invites.messaging_repo.IdempotencyConflict("different request")
-            return
+            return {"messageId": kw["idemp_sk"]}, True
         state["lines"][kw["idemp_sk"]] = (kw["req_hash"], kw["text"])
+        return {"messageId": kw["idemp_sk"]}, False
 
     def create(**kw):
         state["meta"] = {"roomId": kw["room_id"], **kw["extra"]}

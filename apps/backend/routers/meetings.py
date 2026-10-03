@@ -15,7 +15,15 @@ from fastapi import APIRouter, BackgroundTasks, HTTPException, Request
 from core.config import settings
 from core.observability.metrics import put_metric
 from core.repositories import container_repo, messaging_repo
-from core.services import clerk_admin, livekit_huddles, meeting_bots, meeting_invites, messaging, voice_calls
+from core.services import (
+    clerk_admin,
+    livekit_huddles,
+    meeting_bots,
+    meeting_invites,
+    meeting_notes,
+    messaging,
+    voice_calls,
+)
 from core.services.live_events import get_live_event_publisher
 from routers.huddles import RoomBody, _problem, _require_room_token, _room_id, _Worker
 
@@ -32,7 +40,6 @@ _TARGET = {
 _TERMINAL = {"ended", "bot_failed", "cancelled"}
 _FATAL_TEXT = {"google_meet_knocking_disabled": "The host didn't let the agents in."}
 _SPEAKING = {"speech_on": True, "speech_off": False, "join": False, "leave": False}
-_notes_missing_logged = False
 
 
 async def _verified(request: Request) -> dict | None:
@@ -71,18 +78,6 @@ async def _publish(room_id: str, status: str) -> None:
         logger.warning("meeting room %s: live publish failed", room_id, exc_info=True)
 
 
-def _notes(room_id: str) -> None:
-    global _notes_missing_logged
-    try:
-        from core.services import meeting_notes  # Task 12
-    except ImportError:
-        if not _notes_missing_logged:
-            _notes_missing_logged = True
-            logger.info("meeting_notes not built yet: no notes run")
-        return
-    voice_calls._fire(meeting_notes.on_ended(room_id))
-
-
 def _claim_name(room_id: str, target: str) -> str:
     # Every terminal path (call_ended, done, fatal, the idle leave) shares one claim.
     return f"meet-{'in_call' if target == 'in_call' else 'ended'}:{room_id}"
@@ -93,7 +88,7 @@ async def _finish(room_id: str, status: str, sub_code: str, notes: bool) -> None
     turns every retry into a no-op, so a step that failed here would otherwise be lost for good.
     Notes first, the room's close last."""
     steps = [
-        ("notes", lambda: _notes(room_id) if notes else None),
+        ("notes", lambda: voice_calls._fire(meeting_notes.on_ended(room_id)) if notes else None),
         ("metric", lambda: put_metric("meeting.ended", dimensions={"sub_code": sub_code or "none"})),
         ("publish", lambda: _publish(room_id, status)),
         ("close_room", lambda: livekit_huddles.close_room(room_id, meet=True)),

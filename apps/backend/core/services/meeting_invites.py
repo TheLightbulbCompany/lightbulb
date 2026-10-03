@@ -127,11 +127,14 @@ def _when_text(start: datetime) -> str:
     return f"{start:%a %b %-d, %-I:%M %p %Z}"
 
 
-async def _post_line(owner_id: str, room_id: str, key: str, text: str) -> None:
-    """One system line. The key is the receipt: an SES retry, or a resend whose wording differs
-    under the same key, replays it instead of doubling it or raising."""
+async def _post_line(
+    owner_id: str, room_id: str, key: str, text: str, *, attachments: list | None = None, dispatch_targets: list = ()
+) -> dict | None:
+    """One system line, returned (None when the room is gone). The key is the receipt: an SES
+    retry, or a resend whose wording differs under the same key, replays it instead of doubling
+    it or raising."""
     try:
-        await messaging_repo.create_message(
+        message, _ = await messaging_repo.create_message(
             room_id=room_id,
             owner_id=owner_id,
             idemp_pk=messaging_repo.room_pk(room_id),
@@ -143,12 +146,14 @@ async def _post_line(owner_id: str, room_id: str, key: str, text: str) -> None:
             reply_to_message_id=None,
             thread_root_message_id=None,
             run_id=None,
-            dispatch_targets=[],
+            dispatch_targets=list(dispatch_targets),
             source_agent_id=None,
             client_message_id=None,
+            attachments=attachments,
         )
+        return message
     except (messaging_repo.IdempotencyConflict, messaging_repo.RoomArchived, messaging_repo.RoomNotFound):
-        pass  # replayed, or a member archived/deleted the room since: nothing left to announce
+        return None  # replayed, or a member archived/deleted the room since: nothing left to announce
 
 
 async def _create_room(owner_id: str, room_id: str, invite: Invite, creator: str, by_email: dict, meeting: dict):

@@ -671,15 +671,33 @@ def test_transcript_batches_are_logged_for_debugging(client, caplog):
         {"mark": 0, "kind": "person", "name": "Prasiddha", "text": "Hey guys, how's it going?", "at": 1790972595.0},
         {"mark": 1, "kind": "agent", "name": "Pulse", "text": "Going well.", "at": 1790972630.0, "to": "Prasiddha"},
     ]
-    with caplog.at_level("INFO", logger="routers.huddles"):
+    with (
+        caplog.at_level("INFO", logger="routers.huddles"),
+        patch.object(mod.messaging_repo, "get_room", AsyncMock(return_value={"ownerId": "org_a"})),
+        patch.object(mod.meeting_notes, "on_transcript", AsyncMock()) as notes,
+    ):
         resp = client.post(
             TRANSCRIPT, json={"ownerId": "org_a", "roomToken": RT, "huddleId": "h1", "lines": lines}, headers=W
         )
     assert resp.status_code == 200
+    notes.assert_not_awaited()  # not a meeting room: nothing reaches the room
     record = next(r for r in caplog.records if "live transcript" in r.getMessage())
     assert "huddle=h1" in record.getMessage()
     assert "[0 @1790972595] Prasiddha: Hey guys, how's it going?" in record.getMessage()
     assert "[1 @1790972630] Pulse → Prasiddha: Going well." in record.getMessage()
+
+
+def test_a_meeting_rooms_chunks_reach_the_notes_with_the_final_flag(client):
+    line = {"mark": 7, "kind": "person", "name": "Pat", "text": "Ship it", "at": 1.0, "to": ""}
+    body = {"ownerId": "org_a", "roomToken": RT, "huddleId": "h1", "lines": [line]}
+    meta = {"ownerId": "org_a", "meeting": {"status": "in_call"}}
+    with (
+        patch.object(mod.messaging_repo, "get_room", AsyncMock(return_value=meta)),
+        patch.object(mod.meeting_notes, "on_transcript", AsyncMock()) as notes,
+    ):
+        assert client.post(TRANSCRIPT, json=body, headers=W).status_code == 200
+        assert client.post(TRANSCRIPT, json={**body, "final": True}, headers=W).status_code == 200
+    assert [c.args for c in notes.await_args_list] == [(ROOM, [line], False), (ROOM, [line], True)]
 
 
 def test_transcript_refuses_a_bad_room_token(client):

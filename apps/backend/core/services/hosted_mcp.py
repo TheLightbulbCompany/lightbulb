@@ -193,18 +193,6 @@ async def sessions_for(auth: AuthContext, query: str = "", limit: int = 30) -> d
                 "ownerUserId": session.human_user_id,
                 "ownerName": owner_names[session.human_user_id],
                 "status": session.status,
-                "sendMode": session.capabilities.send_mode,
-                "canSend": (
-                    session.capabilities_verified
-                    and session.control_unavailable_reason is None
-                    and session.capabilities.send_mode != "none"
-                    and session.status not in {"ended", "offline"}
-                    and (
-                        auth.user_id == session.human_user_id
-                        or session.team_control
-                        or auth.user_id in session.allowed_senders
-                    )
-                ),
             }
             for session in matches[: max(1, min(limit, 50))]
         ],

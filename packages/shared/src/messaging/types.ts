@@ -550,8 +550,6 @@ export type LocalSessionCommandReceipt = {
   deliverBy: number;
   held: boolean;
   cancelledAt?: number;
-  /** A matching native room-mention prompt completed and its canonical reply was posted. */
-  replyPosted?: boolean;
   providerMessageId: string | null;
   nativeHop?: 1 | 2;
 } & ({ actorUserId: string; actor?: never; invocationExpiresAt?: never }

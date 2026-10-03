@@ -17,15 +17,14 @@ from typing import Annotated, Literal
 from botocore.exceptions import ClientError
 from pydantic import Field, TypeAdapter, ValidationError
 
-from core.config import settings
 from core.dynamodb import utc_now_iso
 from core.observability.product_analytics import capture_product_event
 from core.observability.session_analytics import capture_session_event
 from core.repositories import local_sessions_repo as repo, messaging_repo as store
-from core.services import local_sessions as sessions, notification_copy, session_pickup
+from core.services import local_sessions as sessions, session_pickup
 from core.services.connection_service import ConnectionService
 from core.services.management_api_client import ManagementApiClient
-from core.services.messaging import MESSAGE_TEXT_MAX_BYTES, ApiProblem, ContractModel, make_live_event
+from core.services.messaging import ApiProblem, ContractModel, make_live_event
 
 CLIENT_ID = "lightbulb-local-sessions"
 LIVENESS_SECONDS = 30
@@ -71,6 +70,8 @@ class HeartbeatSession(ContractModel):
     workspace: sessions.WorkspaceSummary = Field(default_factory=sessions.WorkspaceSummary)
     # Sent only by a desktop that saw FEATURES in the registration ACK. Null is silence.
     stats: sessions.SessionStats | None = None
+    # ponytail: accepted and ignored -- a Mac registered before this relay stopped listing
+    # roomReplyRequestId keeps sending it until it re-registers; delete with that desktop.
     room_reply_request_id: bool | None = None
     # A newer desktop sends this only after the relay advertises support.
     capabilities: sessions.Capabilities | None = None
@@ -80,7 +81,6 @@ class HeartbeatSession(ContractModel):
 FEATURES = [
     "sessionStats",
     "sessionSubagents",
-    "roomReplyRequestId",
     "nativeControlCapabilities",
     "privateSendApproval",
 ]
@@ -187,9 +187,7 @@ async def _actor_label(command: dict) -> dict | None:
 
     if (command.get("actor") or {}).get("kind") == "session":
         return {"kind": "session", "displayName": "Shared native session"}
-    # Room mentions are authorized as roomless commands, but retain their
-    # server-stored source room for sender attribution on the desktop.
-    room_id = command.get("roomId") or command.get("originRoomId")
+    room_id = command.get("roomId")
     if not room_id:
         return None
     kind, member_id = ("agent", command["actor"]["id"]) if "actor" in command else ("human", command["actorUserId"])
@@ -326,170 +324,6 @@ async def notify_attention(row: dict, state: str, subagent: Event | None = None)
     except Exception:
         logger.warning("Session attention live event failed")
     await send_push_to_user(human, title, body, push["data"])
-
-
-async def post_session_replies(row: dict) -> None:
-    """Match each admitted prompt to its transcript turn, then post idempotently.
-
-    A pointer survives a failed room write. The next idle heartbeat retries it; only a
-    successful write (or a definite loss of room visibility) removes the pointer.
-    """
-    owner, sid = row["ownerId"], row["sessionId"]
-    try:
-        pointers = await repo.list_replyto(owner, sid)
-        if not pointers:
-            return
-        if row.get("unshared"):
-            for pointer in pointers:
-                await repo.delete_replyto(owner, sid, pointer["requestId"])
-            return
-        end_seq = int(row.get("eventSeq", 0))
-        start_seq = min(int(pointer["afterEventSeq"]) for pointer in pointers) + 1
-        if start_seq > end_seq:
-            return
-        # ponytail: scan this session's events after the oldest pending command;
-        # index provider message ids if long turns make idle heartbeats costly.
-        events = await store._query(
-            repo.session_pk(owner, sid), between=(f"EVENT#{start_seq:020d}", f"EVENT#{end_seq:020d}")
-        )
-    except Exception:
-        logger.warning("session reply lookup failed", exc_info=True)
-        return
-    for pointer in pointers:
-        request_id = pointer["requestId"]
-        try:
-            if int(pointer["expiresAt"]) <= int(time.time()):
-                await repo.delete_replyto(owner, sid, request_id)
-                continue
-            start = next(
-                (i for i, event in enumerate(events) if _matches_reply_prompt(event, pointer)),
-                None,
-            )
-            if start is None:
-                continue  # the transcript has not reached this admitted prompt yet
-            ended = next(
-                (
-                    i
-                    for i in range(start + 1, len(events))
-                    if events[i].get("lifecycle") in {"turn_end", "turn_aborted"}
-                ),
-                None,
-            )
-            if ended is None:
-                continue
-            if events[ended].get("lifecycle") == "turn_aborted":
-                await repo.delete_replyto(owner, sid, request_id)
-                continue
-            answer_blocks = [
-                event
-                for event in events[start + 1 : ended]
-                if event.get("kind") == "text"
-                and event.get("role") == "assistant"
-                and not event.get("subagent")
-                and event.get("text", "").strip()
-            ]
-            if not answer_blocks:
-                continue
-            final = answer_blocks[-1]
-            final_id = final.get("itemId")
-            reply = "".join(
-                event["text"]
-                for event in answer_blocks
-                if event is final or (final_id and event.get("itemId") == final_id)
-            ).strip()
-            room_id = pointer["roomId"]
-            tool = {"claude": "Claude Code", "codex": "Codex"}.get(pointer["provider"], "Session")
-            name = notification_copy.line(row.get("displayTitle") or row.get("title") or pointer["where"], 80)
-            link = f"{settings.FRONTEND_URL.rstrip('/')}/chat?panel=session&session={sid}"
-            legacy_prefix = f"**{tool} · {pointer['where']}** replied:\n\n"
-            suffix = f"\n\n[Open session]({link})"
-            budget = MESSAGE_TEXT_MAX_BYTES - len((legacy_prefix + suffix).encode("utf-8")) - 80
-            if len(reply.encode("utf-8")) > budget:
-                reply = (
-                    reply.encode("utf-8")[:budget].decode("utf-8", "ignore").rstrip()
-                    + "\n\n[Truncated; open the session for the full answer.]"
-                )
-            text = reply + suffix
-            for attempt in range(2):
-                room = await store.get_room(room_id)
-                if (
-                    room is None
-                    or room.get("deletedAt")
-                    or room.get("archivedAt")
-                    or room.get("ownerId") != owner
-                    or await store.has_foreign_members(room_id, owner)
-                ):
-                    await repo.delete_replyto(owner, sid, request_id)
-                    break
-                origin = await store.get_message_by_id(room_id, pointer["messageId"])
-                if (
-                    origin is None
-                    or origin.get("deletedAt")
-                    or origin.get("author", {}).get("kind") != "human"
-                    or await store.get_member(room_id, "human", origin["author"]["id"]) is None
-                ):
-                    await repo.delete_replyto(owner, sid, request_id)
-                    break
-                try:
-                    await store.create_message(
-                        room_id=room_id,
-                        owner_id=owner,
-                        idemp_pk=store.owner_pk(owner),
-                        idemp_sk=store.agent_idemp_sk(f"session-reply:{request_id}"),
-                        # Preserve the old idempotency hash for a reply retried across this rollout.
-                        req_hash=store.request_hash(room_id, request_id, legacy_prefix + reply + suffix),
-                        author={"kind": "system", "id": sid, "displayName": f"{tool} · {name}"},
-                        text=text,
-                        mentions=[],
-                        reply_to_message_id=origin["messageId"],
-                        thread_root_message_id=origin.get("threadRootMessageId") or origin["messageId"],
-                        run_id=None,
-                        dispatch_targets=[],
-                        source_agent_id=None,
-                        client_message_id=None,
-                        thread_root_seq=origin.get("threadRootSeq") or origin.get("messageSeq"),
-                        silent=True,
-                        expected_room_revision=int(room["revision"]),
-                    )
-                except store.MessageConflict:
-                    if attempt == 0:
-                        continue  # one immediate access refresh, including an ended session
-                    raise
-                command = await repo.get_command(owner, sid, request_id)
-                if command is None:
-                    raise RuntimeError("session reply command disappeared before receipt completion")
-                if not command.get("replyPosted"):
-                    if command.get("state") != "applied":
-                        raise RuntimeError("session reply command is not applied")
-                    await repo.replace_command(
-                        command,
-                        _revised(command, replyPosted=True, updatedAt=int(time.time())),
-                    )
-                    capture_session_event(
-                        row,
-                        "local_session_reply_posted",
-                        request_id,
-                        actor_user_id=command.get("actorUserId") or row["humanUserId"],
-                        request_id=request_id,
-                        origin="room_mention" if command.get("originRoomId") else "direct",
-                    )
-                await repo.delete_replyto(owner, sid, request_id)
-                break
-        except Exception:
-            logger.warning("session reply line failed request=%s", request_id, exc_info=True)
-
-
-def _matches_reply_prompt(event: dict, pointer: dict) -> bool:
-    if event.get("role") != "user":
-        return False
-    if pointer["provider"] == "codex":
-        request_id = event.get("originRequestId")
-        return (
-            request_id == pointer["requestId"]
-            if request_id is not None
-            else event.get("itemId") == pointer["providerMessageId"]
-        )
-    return event.get("itemId") == pointer["providerMessageId"]
 
 
 _NO_PROMPT = object()
@@ -660,7 +494,6 @@ class LocalSessionRelay:
                             by_alias=True
                         ),
                         capabilitiesVerified=compatible,
-                        roomReplyRequestId=False,
                         lastEventAt=int(time.time()),
                     )
                     if descriptor.start_id is None and previous and previous["generation"] == descriptor.generation:
@@ -842,8 +675,6 @@ class LocalSessionRelay:
                     updated.pop("subagentEnded", None)
                 if item.stats is not None:
                     updated["stats"] = item.stats.model_dump(by_alias=True, exclude_none=True)
-                if item.room_reply_request_id is not None and row["provider"] == "codex":
-                    updated["roomReplyRequestId"] = item.room_reply_request_id and row["capabilitiesVerified"]
                 # The prompt is answered (here or in the terminal) once the session stops waiting.
                 if item.status != "waiting-approval":
                     updated.pop("pendingApproval", None)
@@ -861,10 +692,6 @@ class LocalSessionRelay:
                     # The write above is revision-fenced, so exactly one frame wins a transition:
                     # one state change is one notification, retries included.
                     _spawn(notify_attention(updated, attention))
-                if item.status == "idle":
-                    # Transcript upload can follow the busy->idle heartbeat, and a room
-                    # write can fail transiently: each idle heartbeat retries pending replies.
-                    _spawn(post_session_replies(updated))
                 # A workspace scan is worth a refetch but is not the user doing something,
                 # so it hints without stamping lastEventAt. A lapsed lease reads as
                 # offline, so recovery must reach the room even when nothing else moved;
@@ -897,7 +724,6 @@ class LocalSessionRelay:
         if row is None or row["deviceId"] != connection["device_id"] or row["generation"] != message.generation:
             return ack
         if row.get("endedAt") is not None:
-            _spawn(post_session_replies(row))  # a replayed Ended ack can repair a failed room write
             return ack
         # A device clock ahead of the server cannot park a session in the future,
         # where it would outrank every live row in a lastEventAt ordering.
@@ -915,7 +741,6 @@ class LocalSessionRelay:
             updated.pop(key, None)
         await repo.put_session(updated, row, enrollment, extra=extra)
         _capture_lifecycle(updated, "local_session_ended", end_reason=message.reason)
-        _spawn(post_session_replies(updated))
         await publish_resources_changed(owner, row["humanUserId"])
         return ack
 
@@ -1005,8 +830,6 @@ class LocalSessionRelay:
                 if detail is not None:
                     updated["privateSendApproval"] = detail.model_dump(by_alias=True)
         await repo.put_session(updated, row, enrollment, extra=[self._connection_check(cid, connection), *updates])
-        if any(event.lifecycle == "turn_end" for event in message.events):
-            _spawn(post_session_replies(updated))
         # The write is cursor-fenced and a replayed batch returned above, so each end notifies once.
         if notify_ended is not None:
             _spawn(notify_attention(updated, "finished", notify_ended))
@@ -1086,32 +909,10 @@ class LocalSessionRelay:
             ):
                 raise _conflict("receipt settlement", sid=sid)
             outcome["settled"] = True
-        if message.outcome == "applied" and command.get("originRoomId") and not message.provider_message_id:
-            raise _conflict("mention receipt has no provider message id", sid=sid)
         if command["state"] in {"applied", "rejected"}:
             if any(command.get(key) != value for key, value in outcome.items()):
                 raise _conflict("receipt outcome", sid=sid)
         else:
-            extra = []
-            if message.outcome == "applied" and command.get("originRoomId"):
-                extra.append(
-                    {
-                        "Put": {
-                            "TableName": store._table().name,
-                            "Item": repo.replyto_item(
-                                row["ownerId"],
-                                sid,
-                                room_id=command["originRoomId"],
-                                message_id=command["originMessageId"],
-                                request_id=message.request_id,
-                                provider_message_id=message.provider_message_id,
-                                after_event_seq=int(command.get("originEventSeq", 0)),
-                                provider=row["provider"],
-                                where=row.get("cwdName") or row.get("title") or sid[:8],
-                            ),
-                        }
-                    }
-                )
             await repo.replace_command(
                 command,
                 _revised(command, **outcome, updatedAt=int(time.time())),
@@ -1121,7 +922,6 @@ class LocalSessionRelay:
                     self._session_check(row),
                     self._connection_check(cid, connection),
                 ],
-                extra=extra,
             )
             capture_session_event(
                 row,
@@ -1133,11 +933,7 @@ class LocalSessionRelay:
                 if (command.get("actor") or {}).get("kind") == "session"
                 else None,
                 command_kind=command["kind"],
-                origin="room_mention"
-                if command.get("originRoomId")
-                else "native"
-                if (command.get("actor") or {}).get("kind") == "session"
-                else "direct",
+                origin="native" if (command.get("actor") or {}).get("kind") == "session" else "direct",
                 state=message.outcome,
             )
         return {
@@ -1188,8 +984,6 @@ class LocalSessionRelay:
                 raise ApiProblem("LOCAL_SESSION_FORBIDDEN", "Sender is no longer in this workspace.")
         sessions.require_command_scope(auth, current, command["kind"])
         sessions._require_control(current, sessions._public(sessions.LocalSessionCommand, command))
-        if command.get("originRoomId") and current["provider"] == "codex" and not current.get("roomReplyRequestId"):
-            raise ApiProblem("LOCAL_SESSION_UNSUPPORTED", "Update Lightbulb on the Mac to use Codex room mentions.")
         connection, _ = await self.connect(current["connectionId"])
         if connection["device_id"] != current["deviceId"] or connection["user_id"] != current["humanUserId"]:
             raise _conflict("dispatch identity", sid=sid)
@@ -1303,10 +1097,7 @@ class LocalSessionRelay:
                         continue
                     public = sessions._public(sessions.CommandReceipt, claim).model_dump(mode="json", by_alias=True)
                     public["state"] = "dispatched"
-                    public.pop("replyPosted", None)  # HTTP-only progress; the desktop rejects unknown command fields.
                     envelope = {"type": "local.session.command", "command": public, "actor": actor}
-                    if command.get("originRoomId"):
-                        envelope["roomMention"] = True
                     check_envelope(envelope)
                 except ApiProblem:
                     await repo.replace_command(claim, _revised(claim, state="rejected", updatedAt=int(time.time())))

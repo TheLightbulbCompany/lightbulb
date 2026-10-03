@@ -1023,7 +1023,6 @@ impl Host {
         let mut last_probe = Instant::now();
         // Learned from the relay's own registration ACK; never assumed.
         let mut relay_reads_stats = false;
-        let mut relay_reads_reply_id = false;
         let mut relay_reads_controls = false;
         let mut relay_reads_private_approval = false;
         // An end the relay has not been told about -- because it happened while the
@@ -1124,7 +1123,7 @@ impl Host {
                             last_early = Instant::now();
                         }
                         self.heartbeat_dirty.clear();
-                        heartbeat_frames = device_heartbeats_with_controls(&self.mirrors, &registered, relay_reads_stats, relay_reads_reply_id, relay_reads_controls)?.into();
+                        heartbeat_frames = device_heartbeats_with_controls(&self.mirrors, &registered, relay_reads_stats, relay_reads_controls)?.into();
                     }
                     if let Some((reported, frame)) = self.ended_frame(&mut recovering_ended)? {
                         send(socket, &frame).await?;
@@ -1163,11 +1162,10 @@ impl Host {
                         }
                     };
                     let batch = batch.map(|events| {
-                        let pinned = pin_batch_wire(mirror, events, relay_reads_reply_id);
                         if relay_reads_private_approval {
-                            attach_private_send(mirror, pinned)
+                            attach_private_send(mirror, events)
                         } else {
-                            pinned
+                            events
                         }
                     });
                     persist_changed(&self.dir, key, mirror, &before)?;
@@ -1244,7 +1242,6 @@ impl Host {
                                 continue;
                             }
                             relay_reads_stats = body["features"].as_array().is_some_and(|f| f.iter().any(|x| x == "sessionStats"));
-                            relay_reads_reply_id = body["features"].as_array().is_some_and(|f| f.iter().any(|x| x == "roomReplyRequestId"));
                             relay_reads_controls = body["features"].as_array().is_some_and(|f| f.iter().any(|x| x == "nativeControlCapabilities"));
                             relay_reads_private_approval = body["features"].as_array().is_some_and(|f| f.iter().any(|x| x == "privateSendApproval"));
                             let sid = body["sessionId"].as_str().filter(|s|uuid::Uuid::parse_str(s).is_ok()).ok_or("invalid session ID")?;
@@ -1297,9 +1294,6 @@ impl Host {
                                 registered.remove(&key);
                             } else {
                                 registered.insert(key.clone());
-                                if relay_reads_reply_id {
-                                    self.heartbeat_dirty.insert(key.clone());
-                                }
                             }
                             self.finish_deferred_end(&key)?;
                             let rtt = sent.elapsed().as_secs_f64();
@@ -1762,7 +1756,6 @@ fn parse_command(body: &Value, human: &str) -> Result<Command> {
         serde_json::from_value(body["command"].clone()).map_err(|_| "invalid native command")?;
     command.label = serde_json::from_value::<ActorLabel>(body["actor"].clone()).ok();
     command.own = command.actor.is_none() && command.actor_user_id.as_deref() == Some(human);
-    command.room_mention = body["roomMention"] == true;
     Ok(command)
 }
 
@@ -1963,16 +1956,14 @@ fn device_heartbeats(
     mirrors: &BTreeMap<String, Mirror>,
     registered: &BTreeSet<String>,
     with_stats: bool,
-    with_reply_id: bool,
 ) -> Result<Vec<Value>> {
-    device_heartbeats_with_controls(mirrors, registered, with_stats, with_reply_id, false)
+    device_heartbeats_with_controls(mirrors, registered, with_stats, false)
 }
 
 fn device_heartbeats_with_controls(
     mirrors: &BTreeMap<String, Mirror>,
     registered: &BTreeSet<String>,
     with_stats: bool,
-    with_reply_id: bool,
     with_controls: bool,
 ) -> Result<Vec<Value>> {
     let envelope = |sessions: &[Value]| json!({"type":"local.device.heartbeat","sessions":sessions});
@@ -1991,9 +1982,6 @@ fn device_heartbeats_with_controls(
         let mut entry = entry;
         if let Some(stats) = m.stats.wire().filter(|_| with_stats) {
             entry["stats"] = stats;
-        }
-        if with_reply_id && m.native.provider == "codex" {
-            entry["roomReplyRequestId"] = json!(true);
         }
         if with_controls {
             let live = m.native.provider == "codex"
@@ -2027,15 +2015,6 @@ fn device_heartbeats_with_controls(
         frames.push(envelope(&sessions));
     }
     Ok(frames)
-}
-
-fn pin_batch_wire(mirror: &mut Mirror, mut batch: Value, with_reply_id: bool) -> Value {
-    // A lost ACK may be retried after reconnecting to a different relay version.
-    if batch.get("_roomReplyRequestId").is_none() {
-        batch["_roomReplyRequestId"] = json!(with_reply_id);
-        mirror.pending = Some(batch.clone());
-    }
-    batch
 }
 
 fn attach_private_send(mirror: &mut Mirror, mut batch: Value) -> Value {
@@ -2083,17 +2062,9 @@ fn attach_private_send(mirror: &mut Mirror, mut batch: Value) -> Value {
 }
 
 fn wire_batch(mut batch: Value) -> Value {
-    let with_reply_id = batch["_roomReplyRequestId"] == true;
+    // ponytail: a batch an older build pinned to disk still carries the retired
+    // room-reply marker; delete once no Mac can hold one from before this release.
     batch.as_object_mut().map(|fields| fields.remove("_roomReplyRequestId"));
-    if !with_reply_id {
-        if let Some(events) = batch["events"].as_array_mut() {
-            for event in events {
-                if let Some(fields) = event.as_object_mut() {
-                    fields.remove("originRequestId");
-                }
-            }
-        }
-    }
     batch
 }
 
@@ -2198,20 +2169,20 @@ mod tests {
         let key = native_key(&mirror.native);
         let mirrors = BTreeMap::from([(key.clone(), mirror.clone())]);
         let registered = BTreeSet::from([key]);
-        assert!(device_heartbeats(&mirrors, &registered, false, false).unwrap()[0]["sessions"][0].get("capabilities").is_none());
-        let frames = device_heartbeats_with_controls(&mirrors, &registered, false, false, true).unwrap();
+        assert!(device_heartbeats(&mirrors, &registered, false).unwrap()[0]["sessions"][0].get("capabilities").is_none());
+        let frames = device_heartbeats_with_controls(&mirrors, &registered, false, true).unwrap();
         let entry = &frames[0]["sessions"][0];
         assert_eq!(entry["capabilities"], json!({"sendMode":"queue","steer":true,"interrupt":true}));
         mirror.native.socket = None;
         mirror.native.socket_inode = None;
         let key = native_key(&mirror.native);
-        let frames = device_heartbeats_with_controls(&BTreeMap::from([(key.clone(), mirror.clone())]), &BTreeSet::from([key]), false, false, true).unwrap();
+        let frames = device_heartbeats_with_controls(&BTreeMap::from([(key.clone(), mirror.clone())]), &BTreeSet::from([key]), false, true).unwrap();
         assert_eq!(frames[0]["sessions"][0]["capabilities"], json!({"sendMode":"queue","steer":false,"interrupt":false}));
         mirror.native.socket = Some(PathBuf::from("/private/tmp/codex-daemon-501/socket"));
         mirror.native.socket_inode = Some(7);
         mirror.native.provider = "claude".into();
         let key = native_key(&mirror.native);
-        let frames = device_heartbeats_with_controls(&BTreeMap::from([(key.clone(), mirror)]), &BTreeSet::from([key]), false, false, true).unwrap();
+        let frames = device_heartbeats_with_controls(&BTreeMap::from([(key.clone(), mirror)]), &BTreeSet::from([key]), false, true).unwrap();
         let entry = &frames[0]["sessions"][0];
         assert_eq!(entry["capabilities"], json!({"sendMode":"queue","steer":false,"interrupt":false}));
     }
@@ -2289,7 +2260,6 @@ mod tests {
         let frames = device_heartbeats(
             &BTreeMap::from([(SID.to_string(), mirror)]),
             &BTreeSet::from([SID.to_string()]),
-            false,
             false,
         )
         .unwrap();
@@ -2825,7 +2795,7 @@ mod tests {
         host.ended_pending.push(SID.into());
         let mut registered = BTreeSet::from([SID.to_string(), SID_B.to_string()]);
         let listed = |mirrors: &BTreeMap<String, Mirror>, registered: &BTreeSet<String>| {
-            device_heartbeats(mirrors, registered, false, false).unwrap()[0]["sessions"]
+            device_heartbeats(mirrors, registered, false).unwrap()[0]["sessions"]
                 .as_array()
                 .unwrap()
                 .len()
@@ -3104,8 +3074,7 @@ mod tests {
         mirror.waiting = Some(prompt.clone());
         let batch = json!({"type":"local.session.events","sessionId":SID,"generation":"gen-1",
             "batchId":"batch-1","afterSeq":0,"events":[approval_row("", &prompt)]});
-        let pinned = pin_batch_wire(&mut mirror, batch, false);
-        let wire = wire_batch(attach_private_send(&mut mirror, pinned));
+        let wire = wire_batch(attach_private_send(&mut mirror, batch));
         assert_eq!(wire["privateApproval"], detail);
         assert!(!wire["events"].to_string().contains("private body"));
         assert!(!wire["events"].to_string().contains("person:bob"));
@@ -3200,7 +3169,7 @@ mod tests {
         let mirrors = BTreeMap::from([(SID.to_string(), mirror)]);
         let registered = BTreeSet::from([SID.to_string()]);
         let entry = |with: bool, mirrors: &BTreeMap<String, Mirror>| {
-            device_heartbeats(mirrors, &registered, with, false).unwrap()[0]["sessions"][0].clone()
+            device_heartbeats(mirrors, &registered, with).unwrap()[0]["sessions"][0].clone()
         };
         assert!(entry(true, &mirrors).get("stats").is_none(), "nothing reported, nothing sent");
         let mut mirrors = mirrors;
@@ -3210,28 +3179,6 @@ mod tests {
         );
         assert!(entry(false, &mirrors).get("stats").is_none(), "an older relay rejects the field");
         assert_eq!(entry(true, &mirrors)["stats"]["permissionMode"], "plan");
-    }
-
-    #[test]
-    fn local_sessions_reply_request_id_needs_relay_support() {
-        let mut mirror = test_mirror(SID, "gen-1");
-        mirror.session_id = Some(SID.into());
-        let mirrors = BTreeMap::from([(SID.to_string(), mirror)]);
-        let registered = BTreeSet::from([SID.to_string()]);
-        assert!(device_heartbeats(&mirrors, &registered, false, false).unwrap()[0]["sessions"][0]
-            .get("roomReplyRequestId").is_none());
-        assert_eq!(device_heartbeats(&mirrors, &registered, false, true).unwrap()[0]["sessions"][0]
-            ["roomReplyRequestId"], true);
-        let batch = json!({"events":[{"kind":"text","originRequestId":"request-1"}]});
-        let mut old_mirror = test_mirror(SID, "gen-1");
-        let old = pin_batch_wire(&mut old_mirror, batch.clone(), false);
-        assert!(wire_batch(old)["events"][0].get("originRequestId").is_none());
-        let pending = old_mirror.pending.clone().unwrap();
-        let retried = pin_batch_wire(&mut old_mirror, pending, true);
-        assert!(wire_batch(retried)["events"][0].get("originRequestId").is_none());
-        let mut new_mirror = test_mirror(SID, "gen-1");
-        let new = pin_batch_wire(&mut new_mirror, batch, true);
-        assert_eq!(wire_batch(new)["events"][0]["originRequestId"], "request-1");
     }
 
     #[test]
@@ -3293,11 +3240,6 @@ mod tests {
             parse_command(&frame, "alice").unwrap().own,
             "the enrolled human's own prompt"
         );
-        let mut mention = frame.clone();
-        mention["roomMention"] = json!(true);
-        let mention = parse_command(&mention, "alice").unwrap();
-        assert!(mention.room_mention);
-        assert_eq!(mention.native_text("codex", ""), format!("{OWNER_LABEL}{ROUTE_NOTE}[Lightbulb request: r1]\nhello"));
         let mut bare = frame.clone();
         bare.as_object_mut().unwrap().remove("actor");
         assert!(parse_command(&bare, "bob").unwrap().label.is_none());
@@ -5018,7 +4960,7 @@ mod tests {
             mirrors.insert(key.to_string(), mirror);
             registered.insert(key.to_string());
         }
-        let frames = device_heartbeats(&mirrors, &registered, false, false).unwrap();
+        let frames = device_heartbeats(&mirrors, &registered, false).unwrap();
         assert_eq!(frames.len(), 1, "the two that fit share one frame");
         assert_eq!(
             frames[0]["sessions"].as_array().unwrap().len(),
@@ -5041,7 +4983,7 @@ mod tests {
             mirrors.insert(key.clone(), mirror);
             registered.insert(key);
         }
-        let frames = device_heartbeats(&mirrors, &registered, false, false).unwrap();
+        let frames = device_heartbeats(&mirrors, &registered, false).unwrap();
         assert_eq!(frames.len(), 2);
         assert_eq!(
             frames[0]["sessions"].as_array().unwrap().len(),

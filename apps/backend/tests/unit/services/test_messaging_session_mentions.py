@@ -30,7 +30,6 @@ def _member(kind="human", *, listen_mode=None):
 
 
 def _session(**changes):
-    # A Codex session on an older Mac (no roomReplyRequestId): a reference needs no reply support.
     return {
         "sessionId": SESSION,
         "provider": "codex",

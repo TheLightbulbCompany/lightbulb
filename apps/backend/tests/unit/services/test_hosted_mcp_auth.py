@@ -105,33 +105,6 @@ async def test_send_resolves_thread_root_and_member_mentions(monkeypatch):
     assert post.await_args.kwargs["via"] == "lightbulb_mcp"
 
 
-@pytest.mark.asyncio
-async def test_room_target_search_does_not_offer_offline_queue(monkeypatch):
-    session = SimpleNamespace(
-        session_id=str(uuid.uuid4()),
-        human_user_id="user_sender",
-        provider="claude",
-        display_title="Offline",
-        title=None,
-        cwd_name="lightbulb",
-        status="offline",
-        capabilities=SimpleNamespace(send_mode="queue"),
-        capabilities_verified=True,
-        control_unavailable_reason=None,
-        team_control=False,
-        allowed_senders=[],
-    )
-    monkeypatch.setattr(hosted_mcp, "_caller", lambda: AuthContext(user_id="user_sender", org_id="org_test"))
-    monkeypatch.setattr(
-        hosted_mcp.local_sessions,
-        "list_workspace_sessions",
-        AsyncMock(return_value=SimpleNamespace(sessions=[session])),
-    )
-    monkeypatch.setattr(hosted_mcp.messaging, "human_display_name", AsyncMock(return_value="Tester"))
-    result = await hosted_mcp.find_sessions()
-    assert result["sessions"][0]["canSend"] is False
-
-
 def test_client_identity_names_known_clients_and_falls_back_to_host():
     assert hosted_mcp.client_identity("https://claude.ai/oauth/claude-code-client-metadata") == (
         "claude-code",

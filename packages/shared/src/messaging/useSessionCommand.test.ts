@@ -18,7 +18,7 @@ const session: LocalSession = {
 const receipt = (request: LocalSessionCommand, state: LocalSessionCommandReceipt["state"] = "applied"): LocalSessionCommandReceipt => ({
   ...request, text: request.text ?? null, expectedTurnId: request.expectedTurnId ?? null,
   sessionId: session.sessionId, roomId: "room", actorUserId: "bob", commandSeq: 1, state,
-  createdAt: 1, deliverBy: 31, held: false, providerMessageId: null, replyPosted: false,
+  createdAt: 1, deliverBy: 31, held: false, providerMessageId: null,
 });
 // The auto-check budget the hook derives from THIS fixture's own deliverBy/createdAt,
 // not a hardcoded 15 — matches useSessionCommand's `Math.ceil((deliverBy - createdAt) / (interval/1000))`.
@@ -301,7 +301,7 @@ describe("useSessionCommand", () => {
   it("names the agent on an agent-issued receipt", async () => {
     submit.mockImplementation(async (_s: string, request: LocalSessionCommand): Promise<LocalSessionCommandReceipt> => ({
       ...request, text: request.text ?? null, expectedTurnId: null, sessionId: session.sessionId, roomId: "room",
-      commandSeq: 1, state: "pending", createdAt: 1, deliverBy: 31, held: false, replyPosted: false, providerMessageId: null,
+      commandSeq: 1, state: "pending", createdAt: 1, deliverBy: 31, held: false, providerMessageId: null,
       actor: { kind: "agent", id: "friday" }, invocationExpiresAt: 99,
     }));
     const { result } = renderHook(() => useSessionCommand(client, session, { uuid, onAccessLost, onSent, agentName: (id) => (id === "friday" ? "Friday" : id) }));

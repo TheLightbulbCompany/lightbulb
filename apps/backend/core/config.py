@@ -209,6 +209,11 @@ class Settings(BaseSettings):
     LIVEKIT_API_KEY: str = ""
     LIVEKIT_API_SECRET: str = ""
     HUDDLE_WORKER_SECRET: str = ""
+    # Meetings (Recall.ai bots). Off = an invite still opens the meeting room but books no bot (money gate).
+    MEETINGS_ENABLED: bool = False
+    RECALL_API_BASE: str = "https://us-east-1.recall.ai"
+    MEET_BOT_PAGE_URL: str = ""
+    """The bot's Output Media page. Empty = ``{FRONTEND_URL}/meet-bot``."""
     OPENROUTER_MARKUP: str = ""
     """Managed-credit markup (repo-root openrouter-pricing.json, injected by CDK). Voice debits use it."""
     METRONOME_WEBHOOK_SECRET: str = ""

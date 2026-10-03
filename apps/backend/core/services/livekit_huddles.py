@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import hmac
 import json
@@ -30,6 +31,16 @@ def room_token(room_id: str, owner_id: str) -> str:
     """Binds a dispatched worker to its room: the internal routes accept only this room's token."""
     key = settings.HUDDLE_WORKER_SECRET.encode()
     return hmac.new(key, f"{room_id}:{owner_id}".encode(), hashlib.sha256).hexdigest()
+
+
+def meet_ticket(room_id: str, nonce: str, exp_epoch: int) -> str:
+    """The Recall bot page's credential: ``base64url(room|nonce|exp).hmac``. The nonce (stored on
+    the room META as ``meeting.ticketNonce``) binds it to one booked bot, since Recall assigns
+    the bot id only after the page URL is already fixed. Task 8 verifies it."""
+    if not settings.LIVEKIT_API_SECRET:
+        raise RuntimeError("LIVEKIT_API_SECRET unset: no meet ticket")
+    body = base64.urlsafe_b64encode(f"{room_id}|{nonce}|{exp_epoch}".encode()).decode().rstrip("=")
+    return f"{body}.{hmac.new(settings.LIVEKIT_API_SECRET.encode(), body.encode(), hashlib.sha256).hexdigest()}"
 
 
 def room_name(room_id: str) -> str:

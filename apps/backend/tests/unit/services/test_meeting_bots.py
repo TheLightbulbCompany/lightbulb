@@ -1,0 +1,127 @@
+"""The Recall adapter: request bodies, join timing, leave fallback, webhook signatures."""
+
+import base64
+import hashlib
+import hmac
+import json
+import logging
+import time
+
+import httpx
+import pytest
+
+from core.services import meeting_bots
+
+KEY = "rk_live_SECRET_KEY_VALUE"
+URL = "https://meet.google.com/abc-defg-hij"
+
+
+@pytest.fixture
+def recall(monkeypatch):
+    calls = []
+    responses = []
+
+    def handler(request):
+        calls.append(request)
+        status, body = responses.pop(0) if responses else (201, {"id": "bot-1"})
+        return httpx.Response(status, json=body)
+
+    monkeypatch.setattr(meeting_bots, "_transport", httpx.MockTransport(handler))
+    monkeypatch.setattr(
+        meeting_bots,
+        "_secrets",
+        {"recall_api_key": KEY, "recall_webhook_secret": "whsec_" + base64.b64encode(b"k" * 24).decode()},
+    )
+    monkeypatch.setattr(meeting_bots.settings, "LIVEKIT_API_SECRET", "lk-secret")
+    monkeypatch.setattr(meeting_bots.settings, "MEET_BOT_PAGE_URL", "https://app.example/meet-bot")
+    return calls, responses
+
+
+def _meeting(start_in_s):
+    start = int(time.time()) + start_in_s
+    return {"startAt": start, "endAt": start + 1800, "meetingUrl": URL, "ticketNonce": "nonce-1"}
+
+
+async def test_create_body(recall, caplog):
+    calls, _ = recall
+    caplog.set_level(logging.DEBUG)
+    assert await meeting_bots.create(room_id="room-1", meeting=_meeting(12 * 60), company="Acme") == "bot-1"
+    (req,) = calls
+    assert req.method == "POST" and str(req.url) == "https://us-east-1.recall.ai/api/v1/bot/"
+    assert req.headers["authorization"] == f"Token {KEY}" and req.headers["idempotency-key"] == "nonce-1"
+    body = json.loads(req.content)
+    assert body["meeting_url"] == URL and body["bot_name"] == "Acme agents · Lightbulb"
+    assert body["recording_config"] == {"retention": None}
+    assert body["metadata"] == {"roomId": "room-1"}
+    assert body["variant"] == {"google_meet": "web_4_core"}
+    assert body["automatic_leave"] == {"waiting_room_timeout": 600, "noone_joined_timeout": 300}
+    chat = body["chat"]["on_bot_join"]
+    assert chat["send_to"] == "everyone" and chat["pin"] and len(chat["message"]) <= 500 and "Acme" in chat["message"]
+    page = body["output_media"]["camera"]["config"]["url"]
+    assert body["output_media"]["camera"]["kind"] == "webpage"
+    assert page.startswith("https://app.example/meet-bot#t=")
+    payload, sig = page.split("#t=")[1].split(".")
+    assert hmac.compare_digest(sig, hmac.new(b"lk-secret", payload.encode(), hashlib.sha256).hexdigest())
+    room, nonce, _exp = base64.urlsafe_b64decode(payload + "==").decode().split("|")
+    assert (room, nonce) == ("room-1", "nonce-1")
+    assert "join_at" in body
+    assert all(KEY not in r.getMessage() and URL not in r.getMessage() for r in caplog.records)
+
+
+async def test_a_meeting_a_minute_out_joins_now(recall):
+    calls, _ = recall
+    await meeting_bots.create(room_id="room-1", meeting=_meeting(60), company="Acme")
+    assert "join_at" not in json.loads(calls[0].content)
+
+
+async def test_errors_are_recall_errors(recall, monkeypatch):
+    _, responses = recall
+    responses.append((507, {"detail": "out of adhoc bots"}))
+    with pytest.raises(meeting_bots.RecallError) as err:
+        await meeting_bots.create(room_id="room-1", meeting=_meeting(60), company="Acme")
+    assert err.value.code == "507" and "free" in err.value.reason
+
+    def slow(request):
+        raise httpx.ReadTimeout("slow")
+
+    monkeypatch.setattr(meeting_bots, "_transport", httpx.MockTransport(slow))
+    with pytest.raises(meeting_bots.RecallError) as err:
+        await meeting_bots.leave("bot-1")
+    assert err.value.code == "timeout"
+
+
+async def test_reschedule_patches_join_at_and_reticket(recall):
+    calls, responses = recall
+    responses.append((200, {"id": "bot-1"}))
+    await meeting_bots.reschedule("bot-1", room_id="room-1", meeting=_meeting(3600))
+    assert calls[0].method == "PATCH" and calls[0].url.path == "/api/v1/bot/bot-1/"
+    assert set(json.loads(calls[0].content)) == {"join_at", "output_media"}
+
+
+async def test_leave_deletes_then_falls_back_to_leave_call(recall):
+    calls, responses = recall
+    responses.extend([(204, None), (405, {"detail": "dispatched"}), (200, {})])
+    await meeting_bots.leave("bot-1")
+    await meeting_bots.leave("bot-2")
+    assert [(c.method, c.url.path) for c in calls] == [
+        ("DELETE", "/api/v1/bot/bot-1/"),
+        ("DELETE", "/api/v1/bot/bot-2/"),
+        ("POST", "/api/v1/bot/bot-2/leave_call/"),
+    ]
+
+
+def _signed(body, stamp, key=b"k" * 24):
+    sig = base64.b64encode(hmac.new(key, f"msg_1.{stamp}.".encode() + body, hashlib.sha256).digest()).decode()
+    return {"webhook-id": "msg_1", "webhook-timestamp": str(stamp), "webhook-signature": f"v1,{sig}"}
+
+
+async def test_webhook_signature(recall):
+    body, now = b'{"event":"bot.done"}', int(time.time())
+    assert await meeting_bots.verify_webhook(_signed(body, now), body)
+    rotated = _signed(body, now)
+    rotated["webhook-signature"] = "v1,AAAA " + rotated["webhook-signature"]
+    assert await meeting_bots.verify_webhook(rotated, body)
+    assert not await meeting_bots.verify_webhook(_signed(body, now), body + b" ")
+    assert not await meeting_bots.verify_webhook(_signed(body, now, key=b"x" * 24), body)
+    assert not await meeting_bots.verify_webhook(_signed(body, now - 600), body)
+    assert not await meeting_bots.verify_webhook({}, body)

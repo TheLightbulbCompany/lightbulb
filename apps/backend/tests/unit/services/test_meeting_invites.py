@@ -426,3 +426,96 @@ async def test_a_clerk_failure_propagates(room):
     with pytest.raises(RuntimeError):
         await meeting_invites.handle_team_mail("org_1", _mail(GOOGLE), TEAM)
     assert room.members.await_args.kwargs == {"strict": True}
+
+
+@pytest.fixture
+def bots(room, monkeypatch):
+    """Recall faked at the adapter; MEETINGS_ENABLED on."""
+    b = SimpleNamespace(
+        create=AsyncMock(return_value="bot-1"),
+        reschedule=AsyncMock(),
+        leave=AsyncMock(),
+        metric=[],
+    )
+    monkeypatch.setattr(meeting_invites.settings, "MEETINGS_ENABLED", True)
+    monkeypatch.setattr(meeting_invites.meeting_bots, "create", b.create)
+    monkeypatch.setattr(meeting_invites.meeting_bots, "reschedule", b.reschedule)
+    monkeypatch.setattr(meeting_invites.meeting_bots, "leave", b.leave)
+    monkeypatch.setattr(meeting_invites.clerk_admin, "get_organization", AsyncMock(return_value={"name": "Acme"}))
+    monkeypatch.setattr(meeting_invites, "put_metric", lambda name, **kw: b.metric.append((name, kw)))
+    return b
+
+
+MOVED = GOOGLE.replace("SEQUENCE:0", "SEQUENCE:1").replace("T150000", "T160000")
+CANCEL = GOOGLE.replace("METHOD:REQUEST", "METHOD:CANCEL").replace("SEQUENCE:0", "SEQUENCE:1")
+
+
+async def test_an_invite_books_one_bot(room, bots):
+    assert await meeting_invites.handle_team_mail("org_1", _mail(GOOGLE), TEAM) == "meeting_scheduled"
+    bots.create.assert_awaited_once()
+    kw = bots.create.await_args.kwargs
+    assert kw["company"] == "Acme" and kw["room_id"] == room.state["meta"]["roomId"]
+    meeting = room.state["meta"]["meeting"]
+    assert meeting["status"] == "bot_created" and meeting["recallBotId"] == "bot-1"
+    assert meeting["ticketNonce"] == kw["meeting"]["ticketNonce"]  # persisted before the POST
+    await meeting_invites.handle_team_mail("org_1", _mail(GOOGLE), TEAM)  # SES retry / resend
+    bots.create.assert_awaited_once()
+
+
+async def test_meetings_disabled_books_nothing(room, bots, monkeypatch):
+    monkeypatch.setattr(meeting_invites.settings, "MEETINGS_ENABLED", False)
+    assert await meeting_invites.handle_team_mail("org_1", _mail(GOOGLE), TEAM) == "meeting_scheduled"
+    bots.create.assert_not_awaited()
+    assert room.state["meta"]["meeting"]["status"] == "scheduled"
+    assert len(_lines(room)) == 1
+
+
+async def test_a_full_bot_pool_is_bot_failed_not_a_raise(room, bots):
+    bots.create.side_effect = meeting_invites.meeting_bots.RecallError("507")
+    assert await meeting_invites.handle_team_mail("org_1", _mail(GOOGLE), TEAM) == "meeting_scheduled"
+    meeting = room.state["meta"]["meeting"]
+    assert meeting["status"] == "bot_failed" and meeting["botError"] == "507"
+    assert "recallBotId" not in meeting and "ticketNonce" not in meeting
+    assert bots.metric == [("meeting.bot_failed", {"dimensions": {"code": "507"}})]
+    assert _lines(room)[-1] == (
+        "Couldn't book a bot for this meeting: no meeting bots are free right now. Forward the invite again to retry."
+    )
+
+
+async def test_a_resend_on_bot_failed_retries_create(room, bots):
+    bots.create.side_effect = [meeting_invites.meeting_bots.RecallError("507"), "bot-2"]
+    await meeting_invites.handle_team_mail("org_1", _mail(GOOGLE), TEAM)
+    await meeting_invites.handle_team_mail("org_1", _mail(GOOGLE), TEAM)
+    assert bots.create.await_count == 2
+    meeting = room.state["meta"]["meeting"]
+    assert meeting["status"] == "bot_created" and meeting["recallBotId"] == "bot-2" and "botError" not in meeting
+
+
+async def test_a_move_reschedules_the_bot_once(room, bots):
+    await meeting_invites.handle_team_mail("org_1", _mail(GOOGLE), TEAM)
+    await meeting_invites.handle_team_mail("org_1", _mail(MOVED), TEAM)
+    bots.create.assert_awaited_once()
+    bots.reschedule.assert_awaited_once()
+    assert bots.reschedule.await_args.args == ("bot-1",)
+    assert bots.reschedule.await_args.kwargs["meeting"]["startAt"] == int(
+        datetime(2026, 10, 3, 20, 0, tzinfo=timezone.utc).timestamp()
+    )
+    assert room.state["meta"]["meeting"]["status"] == "bot_created"
+
+
+async def test_a_move_too_close_to_start_replaces_the_bot(room, bots):
+    bots.create.side_effect = ["bot-1", "bot-2"]
+    bots.reschedule.side_effect = meeting_invites.meeting_bots.RecallError("400")
+    await meeting_invites.handle_team_mail("org_1", _mail(GOOGLE), TEAM)
+    await meeting_invites.handle_team_mail("org_1", _mail(MOVED), TEAM)
+    bots.leave.assert_awaited_once_with("bot-1")
+    assert room.state["meta"]["meeting"]["recallBotId"] == "bot-2"
+
+
+async def test_cancel_pulls_the_bot_once(room, bots):
+    await meeting_invites.handle_team_mail("org_1", _mail(GOOGLE), TEAM)
+    assert await meeting_invites.handle_team_mail("org_1", _mail(CANCEL), TEAM) == "meeting_cancelled"
+    bots.leave.assert_awaited_once_with("bot-1")
+    meeting = room.state["meta"]["meeting"]
+    assert meeting["status"] == "cancelled" and "recallBotId" not in meeting
+    bots.create.assert_awaited_once()

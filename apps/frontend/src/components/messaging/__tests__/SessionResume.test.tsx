@@ -1,0 +1,48 @@
+import { render, screen } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
+import { expect, it, vi } from "vitest";
+import { useSessionResume, type LocalSession } from "@lightbulb/shared";
+import { ResumeDelivery, SessionResume } from "../SessionResume";
+
+const ended = (changes: Partial<LocalSession> = {}): LocalSession => ({
+  sessionId: "s1", deviceId: "mac", humanUserId: "alice", provider: "claude", providerVersion: "2.1.288", generation: "g1", status: "ended",
+  activeTurnId: null, capabilities: { sendMode: "queue", steer: false, interrupt: false }, capabilitiesVerified: true, controlUnavailableReason: null,
+  latestEventSeq: 3, title: "Fix login", resumeAllowed: ["bob"], ...changes,
+});
+const client = () => ({ submitLocalSessionCommand: vi.fn(), resumeLocalSession: vi.fn(async () => ended()), getLocalSessionCommand: vi.fn() });
+
+function Harness({ s, c, own = false, userId = "bob" }: { s: LocalSession; c: ReturnType<typeof client>; own?: boolean; userId?: string }) {
+  const flow = useSessionResume(c, s, { own, userId, ownerName: "Alice", nameOf: id => (id === "bob" ? "Bob" : "Someone"), uuid: () => "r-1" });
+  return <><SessionResume flow={flow} own={own} ownerName="Alice" /><ResumeDelivery flow={flow} /></>;
+}
+
+it("lets someone who could send resume it with a message, in plan mode on the owner's Mac", async () => {
+  const c = client();
+  render(<Harness s={ended()} c={c} />);
+  expect(screen.getByText("Starts it again on Alice’s Mac in plan mode. Alice sees it there and can end it.")).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Resume" })).toBeInTheDocument();
+  await userEvent.type(screen.getByLabelText("Message to send when it resumes"), "Carry on");
+  await userEvent.click(screen.getByRole("button", { name: "Resume and send" }));
+  expect(c.resumeLocalSession).toHaveBeenCalledWith("s1", { resumeId: "r-1", message: "Carry on" });
+});
+
+it("offers nothing to someone who could not send when it ended", () => {
+  const { container } = render(<Harness s={ended()} c={client()} userId="carol" />);
+  expect(container).toBeEmptyDOMElement();
+});
+
+it("shows a waiting resume instead of a second button", () => {
+  render(<Harness s={ended({ resume: { state: "pending", byUserId: "bob", requestedAt: "2026-10-03T10:00:00Z" } })} c={client()} />);
+  expect(screen.getByRole("status")).toHaveTextContent("You asked to resume this session. It starts on Alice’s Mac when that Mac is on, within 24 hours.");
+  expect(screen.queryByRole("button")).not.toBeInTheDocument();
+});
+
+it("says Delivery unknown when the first message's outcome is lost", async () => {
+  const c = client();
+  c.getLocalSessionCommand.mockResolvedValue({ state: "unknown", requestId: "r-1" });
+  const { rerender } = render(<Harness s={ended({ sessionId: "s-lost" })} c={c} />);
+  await userEvent.type(screen.getByLabelText("Message to send when it resumes"), "Carry on");
+  await userEvent.click(screen.getByRole("button", { name: "Resume and send" }));
+  rerender(<Harness s={ended({ sessionId: "s-lost", status: "idle", generation: "g2" })} c={c} />);
+  expect(await screen.findByText(/Delivery unknown/)).toBeInTheDocument();
+});

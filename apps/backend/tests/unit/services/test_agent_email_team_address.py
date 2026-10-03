@@ -9,17 +9,17 @@ from core.services import agent_email
 @pytest.mark.asyncio
 async def test_team_address_is_agents_at_the_company_subdomain(monkeypatch):
     monkeypatch.setattr(agent_email.settings, "AGENT_EMAIL_DOMAIN", "thelightbulb.company")
-    monkeypatch.setattr(agent_email, "slug_for_owner", AsyncMock(return_value="acme"))
+    monkeypatch.setattr(agent_email.company_slug_repo, "get_by_owner", AsyncMock(return_value={"slug": "acme"}))
     assert await agent_email.team_address("org_1") == "agents@acme.thelightbulb.company"
 
 
 @pytest.mark.asyncio
 async def test_team_address_none_without_domain_or_slug(monkeypatch):
     monkeypatch.setattr(agent_email.settings, "AGENT_EMAIL_DOMAIN", "")
-    monkeypatch.setattr(agent_email, "slug_for_owner", AsyncMock(return_value="acme"))
+    monkeypatch.setattr(agent_email.company_slug_repo, "get_by_owner", AsyncMock(return_value={"slug": "acme"}))
     assert await agent_email.team_address("org_1") is None
     monkeypatch.setattr(agent_email.settings, "AGENT_EMAIL_DOMAIN", "thelightbulb.company")
-    monkeypatch.setattr(agent_email, "slug_for_owner", AsyncMock(return_value=None))
+    monkeypatch.setattr(agent_email.company_slug_repo, "get_by_owner", AsyncMock(return_value=None))
     assert await agent_email.team_address("org_1") is None
 
 
@@ -72,7 +72,7 @@ async def test_ensure_agent_address_refuses_reserved_name(monkeypatch):
     monkeypatch.setattr(agent_email, "resolve_agent_name", AsyncMock(return_value="Agents"))
     assert await agent_email.ensure_agent_address(owner_id="org_1", agent_id="a1", owner_email="") == (
         None,
-        "reserved",
+        "mint_failed",
     )
 
 

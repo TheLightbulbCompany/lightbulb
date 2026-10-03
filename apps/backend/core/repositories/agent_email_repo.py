@@ -100,16 +100,15 @@ async def is_team_address(address: str) -> tuple[str, str] | None:
     reserved company slug; no per-agent row exists for it."""
     local, _, host = normalize(address).partition("@")
     domain = (settings.AGENT_EMAIL_DOMAIN or "").strip().lower()
-    if local != "agents" or not domain or "." not in host:
+    if local != "agents" or not domain:
         return None
     slug = host.split(".", 1)[0]
     if host != f"{slug}.{domain}":
         return None
     row = await company_slug_repo.get_by_slug(slug)
-    owner_id = row.get("owner_id") if row else None
-    if not owner_id or str(owner_id).startswith(company_slug_repo.PENDING_PREFIX):
+    if not row or str(row.get("owner_id", "")).startswith(company_slug_repo.PENDING_PREFIX):
         return None
-    return owner_id, slug
+    return row["owner_id"], slug
 
 
 async def query_by_owner(owner_id: str) -> list[dict]:

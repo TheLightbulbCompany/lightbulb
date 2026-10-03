@@ -39,18 +39,14 @@ EMAIL_ADDRESS_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 
 
 # Mailboxes no agent may take: `agents@{slug}` is the workspace's team address.
-RESERVED_LOCAL_PARTS = frozenset({"agents", "team", "lightbulb", "meetings"})
-
-
-async def slug_for_owner(owner_id: str) -> str | None:
-    row = await company_slug_repo.get_by_owner(owner_id)
-    return row.get("slug") if row else None
+RESERVED_LOCAL_PARTS = frozenset({"agents"})
 
 
 async def team_address(owner_id: str) -> str | None:
     """``agents@{slug}.{domain}``, or None when there is no domain or slug."""
     domain = (settings.AGENT_EMAIL_DOMAIN or "").strip()
-    slug = await slug_for_owner(owner_id)
+    row = await company_slug_repo.get_by_owner(owner_id)
+    slug = row.get("slug") if row else None
     if not domain or not slug:
         return None
     return build_agent_email_address(slug=slug, agent_name="agents", domain=domain)
@@ -268,8 +264,6 @@ async def ensure_agent_address(*, owner_id: str, agent_id: str, owner_email: str
         agent_name = await resolve_agent_name(agent_id=agent_id, company_id=company_id)
         if not agent_name:
             return None, "agent_name_unavailable"
-        if _agent_slug(agent_name) in RESERVED_LOCAL_PARTS:
-            return None, "reserved"
         address = await mint_agent_email_address(
             owner_id=owner_id, agent_id=agent_id, agent_name=agent_name, owner_email=owner_email, slug=slug
         )

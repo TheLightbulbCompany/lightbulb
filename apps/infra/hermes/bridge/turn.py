@@ -368,6 +368,10 @@ def run_call_turn(identity: dict, request: dict, reserved: bool = False) -> None
             log.error("call turn %s failed\n%s", run_id, traceback.format_exc())
         finish_run(run_id, outcome)
         frames.finished(outcome, output, error)
+        if outcome == "completed" and output.strip() and not frames.delivered:
+            # The call ended before the answer (10-02: Forge's landed 50 s after hang-up and went
+            # nowhere): the room gets it as this agent's own message, once per run.
+            _post_late_call_answer(identity, request, output)
         report_usage(session_key, agent_id, run_id, outcome == "completed", int((time.time() - started) * 1000), usage,
                      family=identity.get("family"))
         _await_post_turn_writes(_pop_post_turn_agent())
@@ -381,6 +385,17 @@ def run_call_turn(identity: dict, request: dict, reserved: bool = False) -> None
             log.warning("save_root_auth failed for call turn", exc_info=True)
     finally:
         _end_turn()
+
+
+def _post_late_call_answer(identity: dict, request: dict, output: str) -> None:
+    asked = str((request.get("voice") or {}).get("utterance") or "").strip()[:160]
+    text = f'From the Live call "{asked}":\n\n{output.strip()}' if asked else f"From the Live call:\n\n{output.strip()}"
+    try:
+        _post_backend(f"agent-messages/{OWNER}", {
+            "eventId": f"live-late:{identity['runId']}", "roomId": identity["roomId"], "agentId": identity["agentId"],
+            "replyToMessageId": None, "threadRootMessageId": None, "text": text})
+    except Exception:  # noqa: BLE001 -- the run completed; losing the post is the old behaviour, logged
+        log.warning("late call answer post failed run=%s", identity["runId"], exc_info=True)
 
 
 def register_paperclip_run(identity: dict, request: dict) -> str:
@@ -1465,7 +1480,18 @@ class FramePublisher:
 class VoiceFramePublisher(FramePublisher):
     def __init__(self, endpoint, room_id, agent_id, run_id, publish=None):
         # The emit guards require a non-empty channel; the backend sink has none, so reuse the endpoint.
-        super().__init__(endpoint, endpoint, room_id, agent_id, run_id, None, publish or _backend_publish(endpoint))
+        inner = publish or _backend_publish(endpoint)
+        self.delivered = True  # the last batch reached a worker (the backend answers 202 when none heard it)
+
+        def tracking(_endpoint, _channel, *events):
+            status = inner(_endpoint, _channel, *events)
+            # Only a batch the worker reads says anything: the sink answers 200 without posting
+            # the rest (run_active, reasoning), which must not overwrite a closing batch's 202.
+            if any(((e.get("payload") or {}).get("frame") or {}).get("type") in HUDDLE_FRAMES for e in events):
+                self.delivered = status == 200
+            return status
+
+        super().__init__(endpoint, endpoint, room_id, agent_id, run_id, None, tracking)
 
     def _event(self, frame: dict) -> dict:
         return voice_frame_event(self._room_id, self._run_id, self._agent_id, frame)

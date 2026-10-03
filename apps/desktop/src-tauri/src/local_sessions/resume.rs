@@ -7,8 +7,11 @@
 //! conversation (two `claude --resume` processes would fork it). Anyone but this Mac's own human
 //! gets plan mode whatever the request says. It starts the provider in a holder the way New
 //! session does. A refusal is reported to the backend once; it never touches a mirror.
+use super::transport::relay_log;
 use super::*;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
+use std::sync::OnceLock;
+use std::time::Duration;
 use tokio::sync::mpsc;
 
 #[derive(Clone, Debug, PartialEq)]
@@ -138,6 +141,133 @@ fn codex_cwd(home: &Path, thread: &str) -> Option<PathBuf> {
     row["payload"]["cwd"].as_str().map(PathBuf::from)
 }
 
+static APP: OnceLock<tauri::AppHandle> = OnceLock::new();
+
+/// From the app's setup: a resume is shown in the app, so starting one needs it.
+pub(crate) fn install(app: &tauri::AppHandle) {
+    let _ = APP.set(app.clone());
+}
+
+pub(super) struct Resumer {
+    pub api: String,
+    pub key_pem: String,
+    pub device: String,
+    pub owner: String,
+    /// This Mac's own human: the only person who gets anything but plan mode.
+    pub human: String,
+}
+
+/// Runs on its own task (see `enrollment.rs`), never inside the relay's `select!`.
+pub(super) async fn run(mut rx: mpsc::Receiver<Vec<Wanted>>, me: Resumer) {
+    // The same request rides every acknowledgement until its run registers: act on it once.
+    let mut handled = HashSet::<String>::new();
+    while let Some(list) = rx.recv().await {
+        for wanted in list {
+            if !handled.insert(wanted.resume_id.clone()) {
+                continue;
+            }
+            let Some(app) = APP.get().cloned() else {
+                handled.remove(&wanted.resume_id);
+                continue;
+            };
+            let short = &wanted.session_id[..8];
+            match start(&app, &wanted, &me).await {
+                Ok(true) => relay_log(&format!("{short} resumed")),
+                Ok(false) => relay_log(&format!("{short} already runs in a holder; its registration answers the resume")),
+                Err(code) => {
+                    relay_log(&format!("{short} resume refused: {code}"));
+                    if let Err(e) = report(&me, &wanted, code).await {
+                        relay_log(&format!("{short} resume refusal not reported: {e}"));
+                        handled.remove(&wanted.resume_id); // the next acknowledgement asks again
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn home_dir() -> PathBuf {
+    std::env::var_os("HOME").map(PathBuf::from).unwrap_or_default()
+}
+
+async fn start(app: &tauri::AppHandle, w: &Wanted, me: &Resumer) -> std::result::Result<bool, &'static str> {
+    if !super::enrollment::sharing_on(app) {
+        return Err("SHARING_OFF");
+    }
+    let own = w.by_user_id == me.human;
+    let want = w.clone();
+    let Some((folder, argv)) = tauri::async_runtime::spawn_blocking(move || prepare(&want, own, &home_dir()))
+        .await
+        .map_err(|_| "LAUNCH_FAILED")??
+    else {
+        return Ok(false);
+    };
+    crate::session_start::start_held(app, &folder, &argv).await.map_err(|_| "LAUNCH_FAILED")?;
+    let who = if own { "You".to_owned() } else { w.by_name.clone() };
+    let how = if own && w.mode == "default" {
+        "End it from its panel in Lightbulb."
+    } else {
+        "In plan mode. End it from its panel in Lightbulb."
+    };
+    let _ = crate::notify::native_notify(
+        format!("{who} resumed {}", w.title),
+        Some(how.into()),
+        Some(format!("resume-{}", w.resume_id)),
+        None,
+        None,
+    )
+    .await;
+    Ok(true)
+}
+
+/// Everything this Mac must agree to before anything starts. `Ok(None)`: a holder already runs
+/// this conversation -- most likely the one this resume started before the app restarted -- and
+/// its registration answers the request.
+fn prepare(w: &Wanted, own: bool, home: &Path) -> std::result::Result<Option<(PathBuf, Vec<String>)>, &'static str> {
+    if crate::holder::manager::list().iter().any(|h| h.argv.iter().any(|a| a == &w.conversation_id)) {
+        return Ok(None);
+    }
+    if w.running {
+        return Err("ALREADY_RUNNING");
+    }
+    if !crate::session_start::tools(home).iter().any(|t| t["id"] == w.provider.as_str()) {
+        return Err("TOOL_UNAVAILABLE");
+    }
+    let program = provider_program(home, &w.provider).ok_or("TOOL_UNAVAILABLE")?;
+    let claude = std::env::var_os("CLAUDE_CONFIG_DIR").map(PathBuf::from).unwrap_or_else(|| home.join(".claude"));
+    let folder = folder(home, &claude, w).ok_or("FOLDER_MISSING")?;
+    Ok(Some((folder, argv(&program, w, own))))
+}
+
+async fn report(me: &Resumer, w: &Wanted, code: &str) -> Result<()> {
+    let token = crate::device_token::mint_device_token(
+        &me.key_pem,
+        &me.device,
+        &me.owner,
+        crate::device_token::DEVICE_TOKEN_LIFETIME_SECS,
+    )?;
+    let url = format!("{}/api/v1/desktop/session-resume/{}/failed", me.api.trim_end_matches('/'), w.session_id);
+    let client = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .timeout(Duration::from_secs(30))
+        .build()
+        .map_err(|e| e.to_string())?;
+    let status = client
+        .post(url)
+        .bearer_auth(token)
+        .json(&json!({"resumeId": w.resume_id, "code": code}))
+        .send()
+        .await
+        .map_err(|_| "resume report failed")?
+        .status()
+        .as_u16();
+    if (200..300).contains(&status) {
+        Ok(())
+    } else {
+        Err(format!("resume report returned {status}"))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -212,5 +342,23 @@ mod tests {
         assert_eq!(folder(home.path(), &claude, &wanted("codex", "plan")), Some(canonical));
         fs::remove_dir_all(&work).unwrap();
         assert_eq!(folder(home.path(), &claude, &wanted("claude", "plan")), None, "a folder that is gone refuses it");
+    }
+
+    #[test]
+    fn resume_prepare_refuses_a_conversation_another_run_already_holds() {
+        let mut w = wanted("claude", "plan");
+        w.running = true;
+        assert_eq!(prepare(&w, true, Path::new("/nonexistent")), Err("ALREADY_RUNNING"));
+    }
+
+    #[test]
+    fn resume_prepare_refuses_a_missing_cli_before_anything_starts() {
+        let home = tempfile::tempdir().unwrap();
+        let mut w = wanted("codex", "plan");
+        w.provider = "codex".into();
+        // An empty home has no Codex models cache, and CI's PATH has no `codex` with `--no-daemon`.
+        if crate::session_start::tools(home.path()).iter().all(|t| t["id"] != "codex") {
+            assert_eq!(prepare(&w, false, home.path()), Err("TOOL_UNAVAILABLE"));
+        }
     }
 }

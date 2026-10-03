@@ -124,7 +124,7 @@ fn valid_model(s: &str) -> bool {
             .all(|b| b.is_ascii_alphanumeric() || b"._:-".contains(&b))
 }
 
-fn tools(home: &Path) -> Vec<Value> {
+pub(crate) fn tools(home: &Path) -> Vec<Value> {
     let mut out = vec![];
     if crate::local_sessions::provider_program(home, "claude").is_some() {
         out.push(
@@ -484,6 +484,30 @@ pub async fn terminal_start(app: tauri::AppHandle, params: Value) -> Result<Valu
     }
     crate::log(&format!("[session-start] held {} {}", start.start_id, start.tool));
     Ok(json!({"holderId": info.id, "tool": start.tool, "linked": scope.is_some()}))
+}
+
+/// Start a held session and put it in front of the owner. Resume starts here.
+pub(crate) async fn start_held(
+    app: &tauri::AppHandle,
+    folder: &Path,
+    argv: &[String],
+) -> Result<crate::holder::manager::HolderInfo, String> {
+    let (folder, argv) = (folder.to_path_buf(), argv.to_vec());
+    let info = tauri::async_runtime::spawn_blocking(move || crate::holder::manager::start(&folder, &argv))
+        .await
+        .map_err(|e| e.to_string())??;
+    if let Err(e) = show_held(app, &info) {
+        // Nobody can see it, and a retry would start a second one: stop it.
+        crate::holder::manager::stop(info.pid);
+        return Err(e);
+    }
+    Ok(info)
+}
+
+/// The one place a resumed session is shown. Phase 4 replaces this body with the session panel's
+/// live terminal.
+pub(crate) fn show_held(app: &tauri::AppHandle, info: &crate::holder::manager::HolderInfo) -> Result<(), String> {
+    crate::holder::window::open_window(app, info)
 }
 
 #[cfg(test)]

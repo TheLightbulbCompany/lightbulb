@@ -284,6 +284,17 @@ impl Controller {
                         owner: enrollment.owner_id.clone(),
                     },
                 );
+                // Resume runs on its own task too: starting a holder must never stall a relay frame.
+                let resumes = super::resume::run(
+                    super::resume::channel(),
+                    super::resume::Resumer {
+                        api: crate::LIGHTBULB_API_BASE.into(),
+                        key_pem: identity.private_key_pem.clone(),
+                        device: enrollment.device_id.clone(),
+                        owner: enrollment.owner_id.clone(),
+                        human: enrollment.human_user_id.clone(),
+                    },
+                );
                 let wake = Arc::new(tokio::sync::Notify::new());
                 let hook_wake = wake.clone();
                 let status = self.status.clone();
@@ -294,6 +305,7 @@ impl Controller {
                     // stopping or restarting sharing stops it; its ending (or panicking)
                     // ends only itself.
                     let _snapshots = AbortOnDrop(tauri::async_runtime::spawn(snapshots));
+                    let _resumes = AbortOnDrop(tauri::async_runtime::spawn(resumes));
                     let _native_tools = AbortOnDrop(tauri::async_runtime::spawn(native_tools));
                     let hooks = async move {
                         let mut bytes = [0u8; 2048];

@@ -1917,6 +1917,7 @@ end tell"#,
             // Click/foreground delegate only. Permission is asked by the webview
             // once someone signs in (`notify::notification_permission`).
             notify::install(app.handle());
+            local_sessions::resume::install(app.handle());
 
             // Native sharing is an independent consented service. A missing
             // OpenClaw sidecar/gateway cannot prevent a retained pair restoring it.

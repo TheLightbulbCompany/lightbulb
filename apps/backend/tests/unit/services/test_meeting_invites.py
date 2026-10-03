@@ -840,3 +840,16 @@ async def test_no_rsvp_unless_a_bot_is_booked(room):
     await meeting_invites.handle_team_mail("org_1", _mail(GOOGLE.replace("SEQUENCE:0", "SEQUENCE:1")), TEAM)
     room.accept.assert_not_awaited()
     assert "rsvpSequence" not in room.state["meta"]["meeting"]
+
+
+def test_tzid_parameter_name_is_case_insensitive():
+    lower = OUTLOOK.replace("DTSTART;TZID=", "DTSTART;tzid=")
+    assert meeting_invites.parse(lower).start == meeting_invites.parse(OUTLOOK).start
+
+
+async def test_a_replayed_cancel_posts_no_second_line(room):
+    await meeting_invites.handle_team_mail("org_1", _mail(GOOGLE), TEAM)
+    cal = GOOGLE.replace("METHOD:REQUEST", "METHOD:CANCEL").replace("SEQUENCE:0", "SEQUENCE:1")
+    await meeting_invites.handle_team_mail("org_1", _mail(cal), TEAM)
+    await meeting_invites.handle_team_mail("org_1", _mail(cal), TEAM)
+    assert _lines(room).count("This meeting was cancelled.") == 1

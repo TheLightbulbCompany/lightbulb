@@ -85,7 +85,7 @@ def _when(params: str, value: str) -> datetime:
         return datetime.strptime(value[:8], "%Y%m%d").replace(tzinfo=timezone.utc)
     if value.endswith("Z"):
         return datetime.strptime(value, "%Y%m%dT%H%M%SZ").replace(tzinfo=timezone.utc)
-    tzid = re.search(r'TZID="?([^";:]+)', params)
+    tzid = re.search(r'TZID="?([^";:]+)', params, re.IGNORECASE)
     # ponytail: Windows TZIDs (Outlook) unsupported → invite stays mail; read the VTIMEZONE offsets when an Outlook+Meet customer appears.
     zone = ZoneInfo(tzid.group(1)) if tzid else timezone.utc
     return datetime.strptime(value, "%Y%m%dT%H%M%S").replace(tzinfo=zone)
@@ -474,7 +474,14 @@ async def _apply(owner_id: str, invite: Invite, room_id: str, creator: str, by_e
         return "meeting_stale"  # a newer invite landed meanwhile: it owns the line, the bot and the RSVP
     # META first, then the line: only a write that stood announces itself, and a failure between
     # them retries (under the lease) into the same keyed line.
-    await _post_line(owner_id, room_id, f"meeting:{invite.uid}:{invite.sequence}:{start_at}:{before}>{after}", text)
+    # A replayed cancel (already cancelled, sequence not higher) announces nothing; the bot sync below still retries.
+    replayed_cancel = (
+        invite.method == "CANCEL"
+        and (current or {}).get("status") == "cancelled"
+        and int(current.get("sequence", 0)) >= invite.sequence
+    )
+    if not replayed_cancel:
+        await _post_line(owner_id, room_id, f"meeting:{invite.uid}:{invite.sequence}:{start_at}:{before}>{after}", text)
     meeting = await _sync_bot(owner_id, room_id, meeting, current)
     logger.info("meeting room %s: %s", room_id, meeting["status"])
     if invite.method == "CANCEL":

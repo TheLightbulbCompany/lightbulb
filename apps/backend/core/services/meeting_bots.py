@@ -27,6 +27,7 @@ _REASONS = {
     "timeout": "the meeting-bot service didn't answer",
     "bad_response": "the meeting-bot service sent an unreadable answer",
 }
+_BOT_SUFFIX = " agents · Lightbulb"  # Recall caps bot_name at 100 chars; the company part gives way
 _TICKET_GRACE_S = 4 * 3600  # the ticket outlives the scheduled end by this much, then dies
 _WEBHOOK_TOLERANCE_S = 300
 _SPEECH_EVENTS = [
@@ -81,7 +82,7 @@ async def create(*, room_id: str, meeting: dict, company: str) -> str:
     join_at = int(meeting["startAt"]) - 120
     body = {
         "meeting_url": meeting["meetingUrl"],
-        "bot_name": f"{company} agents · Lightbulb",
+        "bot_name": company[: 100 - len(_BOT_SUFFIX)] + _BOT_SUFFIX,
         # ZDR; mixed audio reaches the page, speaker events reach Task 7's route. No transcription.
         "recording_config": {
             "retention": None,

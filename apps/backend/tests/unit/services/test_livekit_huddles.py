@@ -19,7 +19,8 @@ class FakeAPI:
             remove_participant=self._remove,
             delete_room=self._delete,
         )
-        self.agent_dispatch = SimpleNamespace(create_dispatch=self._dispatch)
+        self.dispatched = []
+        self.agent_dispatch = SimpleNamespace(create_dispatch=self._dispatch, list_dispatch=self._dispatches)
 
     async def __aenter__(self):
         return self
@@ -45,6 +46,9 @@ class FakeAPI:
 
     async def _send(self, req):
         self.calls.append(("send", req))
+
+    async def _dispatches(self, room):
+        return self.dispatched
 
     async def _dispatch(self, req):
         self.calls.append(("dispatch", req))
@@ -116,6 +120,15 @@ async def test_dispatch_ceo(monkeypatch):
     _, req = f.calls[0]
     assert req.agent_name == "lightbulb-huddle" and req.room == "huddle-dev-r1"
     assert json.loads(req.metadata) == {"a": 1}
+
+
+async def test_dispatch_meet_is_one_worker_per_room(monkeypatch):
+    f = fake(monkeypatch)
+    await lh.dispatch_meet("r1", {"a": 1})
+    assert f.calls[0][1].room == "meet-dev-r1"
+    f.dispatched = [object()]  # a retried in_call finds the first dispatch
+    await lh.dispatch_meet("r1", {"a": 1})
+    assert len(f.calls) == 1
 
 
 async def test_send_frames(monkeypatch):

@@ -145,7 +145,16 @@ async def dispatch_ceo(room_id: str, metadata: dict) -> None:
 
 
 async def dispatch_meet(room_id: str, metadata: dict) -> None:
-    await _dispatch(meet_room_name(room_id), metadata)
+    """One worker per meeting room: a retried in_call finds the first dispatch and adds none."""
+    room = meet_room_name(room_id)
+    async with _api() as lk:
+        try:
+            if await lk.agent_dispatch.list_dispatch(room):
+                return
+        except api.TwirpError as e:
+            if e.code != api.TwirpErrorCode.NOT_FOUND:  # no room yet: nothing dispatched
+                raise
+    await _dispatch(room, metadata)
 
 
 async def _best_effort(what: str, room_id: str, call) -> None:

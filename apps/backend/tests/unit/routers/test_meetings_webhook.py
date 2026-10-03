@@ -52,11 +52,20 @@ def env():
         meta["meeting"] = {**meta["meeting"], **fields}
         return meta["meeting"]
 
+    async def noop():
+        return None
+
+    def notes_done(_room_id):  # the real on_ended marks its own completion
+        meta["meeting"]["notesMailedAt"] = 1
+        return noop()
+
     publisher = MagicMock(publish_room=AsyncMock(return_value=True))
+    repo = mod.meeting_invites.container_repo
     lk = mod.livekit_huddles
     with (
-        patch.object(mod.meeting_notes, "on_ended", AsyncMock()) as notes,
-        patch.object(mod.container_repo, "release_pass", AsyncMock()) as release,
+        patch.object(mod.meeting_notes, "on_ended", MagicMock(side_effect=notes_done)) as notes,
+        patch.object(repo, "try_claim_owner_lifecycle", AsyncMock(return_value="tok")) as claim,
+        patch.object(repo, "release_owner_lifecycle_claim", AsyncMock()) as release,
         patch.object(mod.voice_calls, "room_agents", AsyncMock(return_value=TEAM)),
         patch.object(mod.settings, "LIVEKIT_URL", "wss://lk.test"),
         patch.object(mod.settings, "RECALL_API_KEY", "rk"),
@@ -65,7 +74,6 @@ def env():
         patch.object(mod.messaging_repo, "get_room", AsyncMock(side_effect=lambda _r: meta)),
         patch.object(mod.meeting_invites, "_patch_meeting", AsyncMock(side_effect=patch_meeting)),
         patch.object(mod.meeting_invites, "_post_line", AsyncMock()) as line,
-        patch.object(mod.container_repo, "try_claim_pass", AsyncMock(return_value=True)),
         patch.object(mod.clerk_admin, "get_organization", AsyncMock(return_value={"name": "Acme"})),
         patch.object(lk, "dispatch_meet", AsyncMock()) as dispatch,
         patch.object(lk, "close_room", AsyncMock()) as close,
@@ -86,6 +94,7 @@ def env():
             "metric": metric,
             "notes": notes,
             "release": release,
+            "claim": claim,
         }
 
 
@@ -199,7 +208,8 @@ def test_worker_idle_leave_ends_once_even_when_call_ended_lands_mid_leave(env):
     leave.assert_awaited_once_with("bot-1")
     assert env["meta"]["meeting"]["status"] == "ended"
     env["close"].assert_awaited_once_with(ROOM, meet=True)
-    env["notes"].assert_called_once_with(ROOM)
+    # The call_ended found the notes not yet done and asked too; on_ended's own claim makes it one run.
+    assert env["notes"].call_args_list == [((ROOM,),), ((ROOM,),)]
 
 
 def test_a_failed_leave_still_ends_the_meeting(env):
@@ -231,11 +241,44 @@ def test_fatal_mid_call_runs_the_notes(env):
     env["line"].assert_awaited_once()
 
 
-def test_a_failed_transition_is_5xx_and_releases_the_claim(env):
+def test_a_failed_transition_is_5xx_and_releases_the_lease(env):
     with patch.object(mod.meeting_invites, "_patch_meeting", AsyncMock(side_effect=RuntimeError("ddb"))):
         assert _post(env["client"], _status("in_call_recording")).status_code == 500
-    env["release"].assert_awaited_once_with(f"meet-in_call:{ROOM}")
+    env["release"].assert_awaited_once_with(f"meeting#{ROOM}", token="tok")
+    assert env["meta"]["meeting"]["status"] == "bot_created"
+
+
+def test_a_failed_dispatch_is_5xx_with_in_call_unwritten_so_the_retry_dispatches(env):
+    env["dispatch"].side_effect = [RuntimeError("twirp"), None]
+    assert _post(env["client"], _status("in_call_recording")).status_code == 500
+    assert env["meta"]["meeting"]["status"] == "bot_created"
+    env["wake"].assert_not_called()
+    assert _post(env["client"], _status("in_call_recording")).status_code == 200  # Recall's retry
+    assert env["dispatch"].await_count == 2 and env["meta"]["meeting"]["status"] == "in_call"
+
+
+def test_in_call_after_ended_revives_nothing(env):
+    env["meta"]["meeting"].update(status="ended", notesMailedAt=1)
+    assert _post(env["client"], _status("in_call_recording")).status_code == 200
     env["dispatch"].assert_not_awaited()
+    env["notes"].assert_not_called()
+    assert env["meta"]["meeting"]["status"] == "ended"
+
+
+def test_a_busy_lease_is_5xx_so_recall_retries(env):
+    env["claim"].return_value = None
+    assert _post(env["client"], _status("in_call_recording")).status_code == 503
+    env["dispatch"].assert_not_awaited()
+    env["meta"]["meeting"]["status"] = "in_call"
+    assert _leave(env["client"]).status_code == 503
+    assert env["meta"]["meeting"]["status"] == "in_call"
+
+
+def test_a_redelivery_to_an_ended_meeting_retries_unfinished_notes(env):
+    env["meta"]["meeting"].update(status="ended")
+    assert _post(env["client"], _status("done")).status_code == 200
+    env["notes"].assert_called_once_with(ROOM)
+    env["close"].assert_not_awaited()
 
 
 def test_a_clerk_blip_still_dispatches(env):

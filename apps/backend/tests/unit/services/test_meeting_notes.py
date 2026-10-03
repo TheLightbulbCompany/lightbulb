@@ -24,12 +24,6 @@ def env(monkeypatch):
         meta["meeting"] = {**meta["meeting"], **fields}
         return meta["meeting"]
 
-    async def set_if_absent(room_id, field, value, also=None):
-        if field in meta["meeting"]:
-            return False
-        meta["meeting"] = {**meta["meeting"], field: value}
-        return True
-
     attachment = SimpleNamespace(model_dump=lambda **_: {"id": "att-1", "fileName": "transcript.txt"})
     m = SimpleNamespace(
         meta=meta,
@@ -38,9 +32,10 @@ def env(monkeypatch):
         send=AsyncMock(return_value="<id@ses>"),
         row={"address": "agents@acme.thelightbulb.company"},
         sleep=AsyncMock(),
+        claim=AsyncMock(return_value="tok"),
     )
+    monkeypatch.setattr(mod.container_repo, "try_claim_owner_lifecycle", m.claim)
     monkeypatch.setattr(mod.messaging_repo, "get_room", AsyncMock(side_effect=lambda _r: meta))
-    monkeypatch.setattr(mod.messaging_repo, "set_meeting_field_if_absent", AsyncMock(side_effect=set_if_absent))
     monkeypatch.setattr(mod.meeting_invites, "_patch_meeting", AsyncMock(side_effect=patch_meeting))
     monkeypatch.setattr(mod.meeting_invites, "_post_line", m.line)
     monkeypatch.setattr(mod.messaging, "store_attachment", m.store)
@@ -139,3 +134,20 @@ async def test_on_ended_never_raises(env):
     env.line.side_effect = RuntimeError("boom")
     env.meta["meeting"]["transcriptAttachedAt"] = 1
     await mod.on_ended(ROOM)
+
+
+async def test_a_crash_after_the_claim_is_finished_by_a_later_on_ended(env):
+    env.meta["meeting"]["transcriptAttachedAt"] = 1
+    env.send.side_effect = [RuntimeError("ses"), "<id@ses>"]
+    await mod.on_ended(ROOM)  # the notes message went out, the mail did not
+    assert env.meta["meeting"]["notesRunId"] and "notesMailedAt" not in env.meta["meeting"]
+    env.claim.return_value = None  # within 120 s the first attempt's claim still stands
+    await mod.on_ended(ROOM)
+    assert env.send.await_count == 1
+    env.claim.return_value = "tok2"  # 121 s later it is stale
+    await mod.on_ended(ROOM)
+    assert env.claim.await_args.args == (f"meeting-notes#{ROOM}",) and env.claim.await_args.kwargs == {"stale_s": 120}
+    env.line.assert_awaited_once()  # the notes run is not asked for twice
+    assert env.send.await_count == 2 and env.meta["meeting"]["notesMailedAt"]
+    await mod.on_ended(ROOM)  # done: nothing more
+    assert env.send.await_count == 2

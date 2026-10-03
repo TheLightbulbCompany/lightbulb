@@ -11,7 +11,7 @@ import time
 from core.config import settings
 from core.dynamodb import run_in_thread
 from core.observability.metrics import put_metric
-from core.repositories import agent_email_repo, messaging_repo
+from core.repositories import agent_email_repo, container_repo, messaging_repo
 from core.repositories.paperclip_repo import PaperclipRepo
 from core.services import agent_email, agent_mail_tenant, meeting_invites, messaging, ses_email
 from core.services.agent_mail_reply import AGENT_AUTHORED_HEADERS
@@ -19,6 +19,13 @@ from core.services.agent_mail_reply import AGENT_AUTHORED_HEADERS
 logger = logging.getLogger(__name__)
 
 _WAIT_S, _POLL_S = 20, 2
+_CLAIM_S = 120  # a notes attempt younger than this is still running; older, it died and is retried
+
+
+def owed(meeting: dict) -> bool:
+    """An ended meeting (or a bot that failed mid-call) whose notes have not finished."""
+    held = meeting.get("status") == "ended" or (meeting.get("status") == "bot_failed" and meeting.get("inCallAt"))
+    return bool(held) and not meeting.get("notesMailedAt")
 
 
 def _render(lines: list[dict]) -> str:
@@ -63,10 +70,12 @@ async def on_ended(room_id: str) -> None:
 
 async def _on_ended(room_id: str) -> None:
     meta = await messaging_repo.get_room(room_id) or {}
-    if not meta.get("meeting") or not await messaging_repo.set_meeting_field_if_absent(
-        room_id, "notesRunId", "pending"
-    ):
-        return  # not a meeting, or another end path already took the notes
+    if not meta.get("meeting") or meta["meeting"].get("notesMailedAt"):
+        return  # not a meeting, or its notes are done
+    # A lease, never released: a crash mid-way frees it after _CLAIM_S and the next on_ended (a
+    # Recall redelivery) finishes -- each step below is idempotent on its own marker.
+    if not await container_repo.try_claim_owner_lifecycle(f"meeting-notes#{room_id}", stale_s=_CLAIM_S):
+        return  # another end path is on the notes
     # The worker's final transcript POST and Recall's call_ended race: give the transcript a moment.
     for _ in range(_WAIT_S // _POLL_S):
         if (meta.get("meeting") or {}).get("transcriptAttachedAt"):
@@ -77,7 +86,7 @@ async def _on_ended(room_id: str) -> None:
     title = meeting.get("title") or "Meeting"
     company = await PaperclipRepo(table_name="paperclip-companies").resolve_owner_row(owner_id)
     ceo = (getattr(company, "starter_agent_ids", None) or {}).get("ceo")
-    if ceo:
+    if ceo and not meeting.get("notesRunId"):
         message = await meeting_invites._post_line(
             owner_id,
             room_id,
@@ -95,6 +104,7 @@ async def _on_ended(room_id: str) -> None:
             run_id = messaging_repo.run_id_for(ceo, message["messageId"])
             await meeting_invites._patch_meeting(room_id, {"notesRunId": run_id})
     await _mail_organizer(owner_id, room_id, meeting.get("organizer"), title)
+    await meeting_invites._patch_meeting(room_id, {"notesMailedAt": int(time.time())})
 
 
 async def _mail_organizer(owner_id: str, room_id: str, organizer: str | None, title: str) -> None:

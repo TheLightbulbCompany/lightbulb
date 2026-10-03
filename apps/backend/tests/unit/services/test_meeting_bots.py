@@ -164,3 +164,9 @@ def test_no_webhook_secret_refuses_everything(recall, monkeypatch):
     body, now = b"{}", int(time.time())
     monkeypatch.setattr(meeting_bots.settings, "RECALL_WEBHOOK_SECRET", "")
     assert not meeting_bots.verify_webhook(_signed(body, now), body)
+
+
+async def test_a_long_company_name_fits_recalls_bot_name_cap(recall):
+    await meeting_bots.create(room_id="room-1", meeting=_meeting(60), company="A" * 120)
+    name = json.loads(recall[0][0].content)["bot_name"]
+    assert len(name) == 100 and name.endswith(" agents · Lightbulb")

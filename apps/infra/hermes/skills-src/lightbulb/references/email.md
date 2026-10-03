@@ -37,6 +37,12 @@ past that their mail is inbox-only until the next day. Everything you send is
 marked as machine-generated (`Auto-Submitted`), so well-behaved autoresponders
 will not answer it.
 
+**Meetings.** When someone adds the team address to a Google Calendar event with a
+Meet link, the team accepts, a room opens for that meeting, and one
+"<Company> agents · Lightbulb" participant joins the call, where people talk to
+agents by name. Afterwards the transcript and notes land in that room and action
+items become tasks. You do not join by yourself and cannot be invited by chat.
+
 **Sending — one command, three recipients:**
 
 ```bash

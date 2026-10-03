@@ -9,6 +9,7 @@ import logging
 import re
 import secrets
 import time
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
@@ -29,7 +30,21 @@ MEETING_LEASE_S = 60
 
 
 class MeetingBusy(Exception):
-    """Another delivery holds this meeting's lease: the SES route 503s and SES redelivers."""
+    """Another transition holds this meeting's lease: the caller answers 5xx and is redelivered."""
+
+
+@asynccontextmanager
+async def meeting_lease(room_id: str):
+    """THE one lease every meeting lifecycle transition runs under -- an invite, a Recall status,
+    the worker's idle leave -- so each decides from a fresh META read nobody else is changing."""
+    lease = f"meeting#{room_id}"
+    token = await container_repo.try_claim_owner_lifecycle(lease, stale_s=MEETING_LEASE_S)
+    if not token:
+        raise MeetingBusy(room_id)
+    try:
+        yield
+    finally:
+        await container_repo.release_owner_lifecycle_claim(lease, token=token)
 
 
 _MEET_URL = re.compile(r"https://meet\.google\.com/[a-z]{3}-[a-z]{4}-[a-z]{3}")
@@ -389,16 +404,10 @@ async def handle_team_mail(owner_id: str, payload, team: dict) -> str | None:
     if invite is None or (invite.method == "REQUEST" and not invite.meeting_url):
         return None  # not a Meet invite we can join: the CEO reads it as mail
     room_id = messaging_repo.meeting_room_id(owner_id, invite.uid)
-    # One lease per meeting serializes everything below (sequence check, line, META, RSVP)
-    # across concurrent deliveries; the loser 503s and SES redelivers after the holder is done.
-    lease = f"meeting#{room_id}"
-    token = await container_repo.try_claim_owner_lifecycle(lease, stale_s=MEETING_LEASE_S)
-    if not token:
-        raise MeetingBusy(room_id)
-    try:
+    # The lease serializes everything below (sequence check, META, line, bot, RSVP) across
+    # concurrent deliveries; the loser 503s and SES redelivers after the holder is done.
+    async with meeting_lease(room_id):
         return await _apply(owner_id, invite, room_id, creator, by_email, team)
-    finally:
-        await container_repo.release_owner_lifecycle_claim(lease, token=token)
 
 
 async def _apply(owner_id: str, invite: Invite, room_id: str, creator: str, by_email: dict, team: dict) -> str | None:
@@ -452,11 +461,12 @@ async def _apply(owner_id: str, invite: Invite, room_id: str, creator: str, by_e
         return "meeting_stale"  # a newer invite committed after the read above: no line, no bot, no RSVP
     if invite.method == "REQUEST" and (not current or current.get("status") == "cancelled"):
         fields["status"] = "scheduled"
-    # Line first, then META: a failure between them retries into the same (replayed) line.
-    await _post_line(owner_id, room_id, f"meeting:{invite.uid}:{invite.sequence}:{start_at}:{before}>{after}", text)
     meeting = await _patch_meeting(room_id, fields)
     if meeting is None:
-        return "meeting_stale"  # a newer invite landed meanwhile: it owns the bot and the RSVP
+        return "meeting_stale"  # a newer invite landed meanwhile: it owns the line, the bot and the RSVP
+    # META first, then the line: only a write that stood announces itself, and a failure between
+    # them retries (under the lease) into the same keyed line.
+    await _post_line(owner_id, room_id, f"meeting:{invite.uid}:{invite.sequence}:{start_at}:{before}>{after}", text)
     meeting = await _sync_bot(owner_id, room_id, meeting, current)
     logger.info("meeting room %s: %s", room_id, meeting["status"])
     if invite.method == "CANCEL":

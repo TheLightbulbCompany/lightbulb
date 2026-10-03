@@ -14,7 +14,7 @@ from fastapi import APIRouter, BackgroundTasks, HTTPException, Request
 
 from core.config import settings
 from core.observability.metrics import put_metric
-from core.repositories import container_repo, messaging_repo
+from core.repositories import messaging_repo
 from core.services import (
     clerk_admin,
     livekit_huddles,
@@ -78,11 +78,6 @@ async def _publish(room_id: str, status: str) -> None:
         logger.warning("meeting room %s: live publish failed", room_id, exc_info=True)
 
 
-def _claim_name(room_id: str, target: str) -> str:
-    # Every terminal path (call_ended, done, fatal, the idle leave) shares one claim.
-    return f"meet-{'in_call' if target == 'in_call' else 'ended'}:{room_id}"
-
-
 async def _finish(room_id: str, status: str, sub_code: str, notes: bool, in_call_at: int | None = None) -> None:
     """The rest of the one end path, once ``status`` is written. Never raises: the written status
     turns every retry into a no-op, so a step that failed here would otherwise be lost for good.
@@ -107,28 +102,24 @@ async def _finish(room_id: str, status: str, sub_code: str, notes: bool, in_call
 
 
 async def _on_status(bot_id: str, room_id: str, code: str, sub_code: str) -> None:
+    """One transition, under the meeting's lease and decided from a META read taken inside it, so
+    an invite, another status (Meet sends two in-call codes within a second) or the idle leave
+    cannot interleave. A busy lease raises: the route answers 5xx and Recall redelivers."""
     target = _TARGET[code]
-    meta = await messaging_repo.get_room(room_id) or {}
-    meeting = meta.get("meeting") or {}
-    status = meeting.get("status")
-    if (
-        meeting.get("recallBotId") != bot_id
-        or status in _TERMINAL
-        or target == status
-        or code == meeting.get("lastBotStatus")
-    ):
-        return  # another bot's, a replay, or a step this meeting already took
-    # Svix delivers in parallel and Meet sends in_call_not_recording then in_call_recording within
-    # a second: one transition per room and kind, or the second dispatch evicts the first worker.
-    claim = _claim_name(room_id, target)
-    if not await container_repo.try_claim_pass(claim, interval_s=60):
-        return
-    owner_id = meta["ownerId"]
-    try:
+    async with meeting_invites.meeting_lease(room_id):
+        meta = await messaging_repo.get_room(room_id) or {}
+        meeting = meta.get("meeting") or {}
+        status = meeting.get("status")
+        if meeting.get("recallBotId") != bot_id:
+            return  # another bot's
+        if status in _TERMINAL:  # never revived; a redelivery only retries notes a crash left undone
+            if meeting_notes.owed(meeting):
+                voice_calls._fire(meeting_notes.on_ended(room_id))
+            return
+        if target == status or code == meeting.get("lastBotStatus"):
+            return  # a replay, or a step this meeting already took
+        owner_id = meta["ownerId"]
         if target == "in_call":
-            await meeting_invites._patch_meeting(
-                room_id, {"status": "in_call", "lastBotStatus": code, "inCallAt": int(time.time())}
-            )
             try:
                 org = await clerk_admin.get_organization(owner_id) or {}
             except Exception:  # noqa: BLE001 -- a Clerk blip must not cost the meeting its agents
@@ -140,11 +131,16 @@ async def _on_status(bot_id: str, room_id: str, code: str, sub_code: str) -> Non
                 "source": "meet",
                 "company": org.get("name") or "Your team",
             }
+            # Dispatch BEFORE in_call is written: a failure raises with the step untaken, so
+            # Recall's retry dispatches again instead of leaving a paid bot with no worker.
             try:
                 await livekit_huddles.dispatch_meet(room_id, metadata)
             except Exception:  # noqa: BLE001 -- Twirp, aiohttp and timeouts alike
                 put_metric("huddle.livekit.error")
-                logger.warning("meeting room %s: worker dispatch failed", room_id, exc_info=True)
+                raise
+            await meeting_invites._patch_meeting(
+                room_id, {"status": "in_call", "lastBotStatus": code, "inCallAt": int(time.time())}
+            )
             voice_calls.prewake_owner(owner_id, team=await voice_calls.room_agents(room_id))
             await _publish(room_id, "in_call")
         elif target == "ended":
@@ -159,9 +155,6 @@ async def _on_status(bot_id: str, room_id: str, code: str, sub_code: str) -> Non
             await _finish(
                 room_id, "bot_failed", sub_code, notes=status == "in_call", in_call_at=meeting.get("inCallAt")
             )
-    except Exception:
-        await container_repo.release_pass(claim)  # Recall's retry must find the door open
-        raise
 
 
 @router.post("/webhooks/recall")
@@ -176,6 +169,8 @@ async def recall_status(request: Request):
         if code in _TARGET:
             try:
                 await _on_status(bot_id, room_id, code, str(data.get("sub_code") or ""))
+            except meeting_invites.MeetingBusy:
+                raise HTTPException(status_code=503, detail="retry") from None
             except Exception:
                 put_metric("meeting.webhook.error")
                 logger.warning("recall status %s failed room=%s", code, room_id, exc_info=True)
@@ -225,18 +220,18 @@ async def leave(room_id: str, body: RoomBody):
     """The worker's idle leave: end the meeting, then pull the bot (its call_ended no-ops)."""
     room_id = _room_id(room_id)
     _require_room_token(body.roomToken, room_id, body.ownerId)
-    meta = await messaging_repo.get_room(room_id)
-    if not meta or meta.get("ownerId") != body.ownerId:
-        raise _problem(404, "room_not_found")
-    meeting = meta.get("meeting") or {}
-    status = meeting.get("status")
-    if not meeting.get("recallBotId") or status in _TERMINAL:
-        return {"ok": True}
-    claim = _claim_name(room_id, "ended")
-    if not await container_repo.try_claim_pass(claim, interval_s=60):
-        return {"ok": True}  # a call_ended is already ending it
-    # Ended BEFORE the leave, so the call_ended the leave provokes finds the step taken.
-    await meeting_invites._patch_meeting(room_id, {"status": "ended", "lastBotStatus": "idle_leave"})
+    try:
+        async with meeting_invites.meeting_lease(room_id):
+            meta = await messaging_repo.get_room(room_id)
+            if not meta or meta.get("ownerId") != body.ownerId:
+                raise _problem(404, "room_not_found")
+            meeting = meta.get("meeting") or {}
+            if not meeting.get("recallBotId") or meeting.get("status") in _TERMINAL:
+                return {"ok": True}
+            # Ended BEFORE the leave, so the call_ended the leave provokes finds the step taken.
+            await meeting_invites._patch_meeting(room_id, {"status": "ended", "lastBotStatus": "idle_leave"})
+    except meeting_invites.MeetingBusy:
+        raise _problem(503, "meeting_busy") from None
     try:
         await meeting_bots.leave(meeting["recallBotId"])
     except Exception:  # noqa: BLE001 -- never undo: a call_ended may already have seen "ended"

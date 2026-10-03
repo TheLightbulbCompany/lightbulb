@@ -65,7 +65,10 @@ it("a close and the next open in one tick carry strictly increasing times", asyn
 it("keeps asking while no holder answers, and promotes the panel when one does", async () => {
   vi.useFakeTimers();
   try {
-    const invoke = vi.fn().mockResolvedValueOnce({ live: false }).mockResolvedValue({ live: true });
+    // A base implementation (Tauri's invoke always returns a promise): restoreAllMocks keeps it,
+    // so the unmount's rect-null call still gets a promise.
+    let calls = 0;
+    const invoke = vi.fn(async () => ({ live: calls++ > 0 }));
     (window as { __TAURI__?: unknown }).__TAURI__ = { core: { invoke } };
     render(panel(session));
     await vi.advanceTimersByTimeAsync(100);
@@ -83,12 +86,13 @@ it("keeps asking while no holder answers, and promotes the panel when one does",
 it("keeps asking after the first half minute, more slowly, while the session runs", async () => {
   vi.useFakeTimers();
   try {
-    const invoke = vi.fn().mockResolvedValue({ live: false });
+    let live = false;
+    const invoke = vi.fn(async () => ({ live }));
     (window as { __TAURI__?: unknown }).__TAURI__ = { core: { invoke } };
     render(panel(session));
     await vi.advanceTimersByTimeAsync(31_000);
     const early = invoke.mock.calls.length;
-    invoke.mockResolvedValue({ live: true });
+    live = true;
     await vi.advanceTimersByTimeAsync(10_500);
     expect(invoke.mock.calls.length).toBeGreaterThan(early);
     expect(screen.getByRole("region", { name: "Session terminal" })).toBeInTheDocument();

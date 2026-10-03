@@ -183,6 +183,13 @@ fn run(sid: &str, ctl: &Ctl) -> Result<(), String> {
         return Err("its holder predates live terminals; restart the session to share its screen".into());
     }
     let mut conn = UnixStream::connect(&holder.socket).map_err(|e| e.to_string())?;
+    let result = watch(&mut conn, sid, &generation, ctl);
+    // Every exit, early ones included: the reader thread's clone is unblocked only by this.
+    let _ = conn.shutdown(std::net::Shutdown::Both);
+    result
+}
+
+fn watch(conn: &mut UnixStream, sid: &str, generation: &str, ctl: &Ctl) -> Result<(), String> {
     conn.write_all(&encode(HELLO, br#"{"role":"watch"}"#)).map_err(|e| e.to_string())?;
     let mut reader = conn.try_clone().map_err(|e| e.to_string())?;
     let (tx, frames) = std::sync::mpsc::sync_channel(256);
@@ -199,9 +206,7 @@ fn run(sid: &str, ctl: &Ctl) -> Result<(), String> {
     }
     let facts: Value = serde_json::from_slice(&hello).unwrap_or_default();
     let size = (facts["cols"].as_u64().unwrap_or(120) as u16, facts["rows"].as_u64().unwrap_or(40) as u16);
-    let result = pump(&frames, &mut conn, (sid, &generation), size, ctl, &send_out);
-    let _ = conn.shutdown(std::net::Shutdown::Both);
-    result
+    pump(&frames, conn, (sid, generation), size, ctl, &send_out)
 }
 
 struct Out<'a> {

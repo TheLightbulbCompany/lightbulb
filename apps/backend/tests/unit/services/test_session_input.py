@@ -133,16 +133,25 @@ async def test_agents_are_refused_even_for_their_own_requester(transport):
     await refused("LOCAL_SESSION_FORBIDDEN", transport, agent, sid)
 
 
-def test_the_route_takes_a_clerk_session_and_no_room():
-    """MCP's opaque OAuth tokens and device tokens never pass `get_current_user` (a JWT check);
-    the route has no room parameter, so there is no room-scoped door."""
+@pytest.mark.parametrize(
+    ("route", "fields"),
+    [
+        ("type_into_local_session", {"session_id", "body", "auth"}),
+        ("watch_local_session", {"session_id", "auth"}),
+        ("resume_local_session", {"session_id", "body", "auth"}),
+    ],
+)
+def test_the_human_only_routes_take_a_clerk_session_and_no_room(route, fields):
+    """/input, /viewing and /resume: MCP's opaque OAuth tokens, device tokens (EdDSA) and agent
+    invocations never pass `get_current_user` (an RS256 Clerk JWT check); no room parameter, so
+    there is no room-scoped door. The services refuse an AgentInvocation on their own as well."""
     import inspect
 
     from core.auth import get_current_user
     from routers import messaging as routes
 
-    params = inspect.signature(routes.type_into_local_session).parameters
-    assert set(params) == {"session_id", "body", "auth"}
+    params = inspect.signature(getattr(routes, route)).parameters
+    assert set(params) == fields
     assert params["auth"].default.dependency is get_current_user
 
 

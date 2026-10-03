@@ -1295,3 +1295,48 @@ def test_a_complaint_on_a_retired_per_agent_address_pauses_the_team_mailbox(clie
     assert r.json()["status"] == "disabled"
     ensure.assert_awaited_once_with(OWNER_ID, "owner@example.com")
     upd.assert_awaited_once_with(TEAM_ADDRESS, outbound_disabled="complaint")
+
+
+def test_a_late_complaint_on_a_deleted_per_agent_address_pauses_the_team_mailbox(client, monkeypatch):
+    """The cleanup script deleted ``friday@acme…``'s row; its host still names the workspace."""
+    from core.repositories import agent_email_repo
+
+    _enable(monkeypatch)
+    _claim_notice(monkeypatch)
+    monkeypatch.setattr(ses_inbound, "get_by_address", AsyncMock(return_value=None))
+    monkeypatch.setattr(
+        agent_email_repo.company_slug_repo,
+        "get_by_slug",
+        AsyncMock(return_value={"slug": "acme", "owner_id": OWNER_ID}),
+    )
+    ensure = AsyncMock(return_value=(TEAM_ADDRESS, "ok"))
+    monkeypatch.setattr(ses_inbound, "ensure_team_address", ensure)
+    upd = AsyncMock(return_value={})
+    monkeypatch.setattr(ses_inbound, "update_settings", upd)
+    monkeypatch.setattr(ses_inbound, "send_to_owner", AsyncMock(return_value="sent"))
+
+    r = client.post(
+        "/api/v1/webhooks/ses-events",
+        json=_complaint(source=f"friday@acme.{DOMAIN}"),
+        headers={"X-Lightbulb-SES-Secret": SECRET},
+    )
+
+    assert r.json()["status"] == "disabled"
+    ensure.assert_awaited_once_with(OWNER_ID, "owner@example.com")
+    upd.assert_awaited_once_with(TEAM_ADDRESS, outbound_disabled="complaint")
+
+
+def test_a_complaint_from_an_unknown_domain_is_unknown_source(client, monkeypatch):
+    _enable(monkeypatch)
+    monkeypatch.setattr(ses_inbound, "get_by_address", AsyncMock(return_value=None))
+    upd = AsyncMock()
+    monkeypatch.setattr(ses_inbound, "update_settings", upd)
+
+    r = client.post(
+        "/api/v1/webhooks/ses-events",
+        json=_complaint(source="friday@acme.example.com"),
+        headers={"X-Lightbulb-SES-Secret": SECRET},
+    )
+
+    assert r.status_code == 200 and r.json()["status"] == "unknown_source"
+    upd.assert_not_awaited()

@@ -66,7 +66,13 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from core.config import settings
 from core.observability.metrics import put_metric
-from core.repositories.agent_email_repo import get_by_address, is_team_address, normalize, update_settings
+from core.repositories.agent_email_repo import (
+    get_by_address,
+    is_team_address,
+    normalize,
+    owner_for_host,
+    update_settings,
+)
 from core.repositories.agent_mail_inbox_repo import find_by_message_id, put_message, reply_key
 from core.repositories.container_repo import try_claim_daily_system_notice, try_consume_stranger_wake
 from core.repositories.paperclip_repo import PaperclipRepo
@@ -450,15 +456,20 @@ async def handle_ses_events(request: Request):
     # A From with a display name ("Friday · Acme agents" <agents@…>) reaches us as-is.
     candidate = normalize(parseaddr(source)[1]) if source else ""
     row = await get_by_address(candidate) if candidate else None
-    if not row:
+    # A retired per-agent address has no row any more; its host still names the workspace.
+    resolved = (row["owner_id"], None) if row else (await owner_for_host(candidate) if candidate else None)
+    if not resolved:
         return {"status": "unknown_source"}
-    owner_id = row["owner_id"]
+    owner_id = resolved[0]
     try:
         # The workspace's one mailbox: pausing it pauses every agent — also when
         # the complaint names a retired per-agent address. A failed write raises
         # into the 503 below, so EventBridge retries.
         team, _reason = await ensure_team_address(owner_id, await _owner_email(owner_id))
-        await update_settings(team or row["address"], outbound_disabled="complaint")
+        address = team or (row or {}).get("address")
+        if not address:
+            raise RuntimeError("no mailbox row to pause")  # 503: EventBridge retries
+        await update_settings(address, outbound_disabled="complaint")
         # ONE notice per owner per UTC day. SES fans a complaint out per
         # recipient address, and `send_to_owner(system_notice=True)` bypasses
         # the daily send cap by design — this durable claim is the only bound

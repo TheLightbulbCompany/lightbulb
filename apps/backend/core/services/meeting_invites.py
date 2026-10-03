@@ -212,6 +212,11 @@ async def _patch_meeting(room_id: str, meeting: dict) -> None:
                 raise  # a throttle or access error: SES retries the whole mail
             if attempt == 2:
                 logger.warning("meeting room %s: META patch lost the revision race twice", room_id)
+                return
+            newer = ((await messaging_repo.get_room(room_id) or {}).get("meeting") or {}).get("sequence", 0)
+            if int(newer) > int(meeting.get("sequence", 0)):
+                logger.info("meeting room %s: a newer invite (sequence %s) won the race", room_id, newer)
+                return
 
 
 async def handle_team_mail(owner_id: str, payload, team: dict) -> str | None:

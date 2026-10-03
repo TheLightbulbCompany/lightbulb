@@ -60,9 +60,15 @@ async def get_by_address(address: str) -> dict | None:
 async def is_team_address(address: str) -> tuple[str, str] | None:
     """``(owner_id, slug)`` when ``address`` is ``agents@{slug}.{domain}`` for a
     reserved company slug — whether or not its row exists yet."""
-    local, _, host = normalize(address).partition("@")
+    return await owner_for_host(address) if normalize(address).partition("@")[0] == "agents" else None
+
+
+async def owner_for_host(address: str) -> tuple[str, str] | None:
+    """``(owner_id, slug)`` when ``address``'s host is ``{slug}.{domain}`` for a reserved
+    company slug, whatever the local part — so a retired ``friday@{slug}…`` still resolves."""
+    host = normalize(address).partition("@")[2]
     domain = (settings.AGENT_EMAIL_DOMAIN or "").strip().lower()
-    if local != "agents" or not domain:
+    if not domain:
         return None
     slug = host.split(".", 1)[0]
     if host != f"{slug}.{domain}":

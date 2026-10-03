@@ -330,6 +330,20 @@ async def test_a_lost_meta_race_is_retried_once(room):
     assert room.patch.await_count == 4
 
 
+async def test_a_lost_race_to_a_newer_sequence_is_not_retried(room):
+    await meeting_invites.handle_team_mail("org_1", _mail(GOOGLE), TEAM)
+
+    def newer_won(room_id, updates):
+        room.state["meta"] = {**room.state["meta"], "meeting": {**room.state["meta"]["meeting"], "sequence": 5}}
+        raise _cas_lost()
+
+    room.patch.side_effect = newer_won
+    moved = GOOGLE.replace("SEQUENCE:0", "SEQUENCE:1").replace("T150000", "T160000")
+    assert await meeting_invites.handle_team_mail("org_1", _mail(moved), TEAM) == "meeting_scheduled"
+    assert room.patch.await_count == 1
+    assert room.state["meta"]["meeting"]["sequence"] == 5
+
+
 async def test_a_racing_second_creator_falls_through_to_the_update(room):
     def lost_race(**kw):
         room.state["meta"] = {"roomId": kw["room_id"], **kw["extra"]}  # the other member's create landed

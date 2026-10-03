@@ -297,3 +297,46 @@ async def test_local_session_rejection_log_never_carries_unsafe_sid_or_frame_tex
         "conn-1",
         {"type": "local.session.error", "code": "INVALID_REQUEST"},
     )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("frame", "answered"),
+    [("local.device.heartbeat", True), ("local.session.register", True), ("local.session.events", False)],
+)
+async def test_unexpected_relay_failure_answers_the_waiting_request_at_once(
+    app, connection_service, caplog, frame, answered
+):
+    import logging
+
+    caplog.set_level(logging.ERROR, logger="routers.websocket_chat")
+    connection_service.get_connection.return_value = {
+        "user_id": "user-1",
+        "org_id": "org-1",
+        "connection_type": "local-session",
+        "auth_kind": "device",
+        "client_id": "lightbulb-local-sessions",
+        "device_id": "a" * 64,
+    }
+    machine = MagicMock()
+    machine.handle_message = AsyncMock(side_effect=RuntimeError("dynamodb said no"))
+    machine.management.send_message_async = AsyncMock()
+    with patch("core.services.local_session_relay.get_local_session_relay", return_value=machine):
+        response = await _post(
+            app,
+            "/ws/message",
+            headers={"x-connection-id": "conn-1"},
+            json={"type": frame, "sessions": [{"title": "private terminal text"}]},
+        )
+    assert response.status_code == 200
+    if answered:
+        # No sessionId: INTERNAL answers the desktop's one in-flight request, never quarantines a session.
+        assert machine.management.send_message_async.call_args.args == (
+            "conn-1",
+            {"type": "local.session.error", "code": "INTERNAL"},
+        )
+    else:
+        machine.management.send_message_async.assert_not_awaited()
+    failed = next(r for r in caplog.records if r.getMessage() == "local session frame failed")
+    assert failed.frame == frame and failed.cid == "conn-1"
+    assert "private terminal text" not in caplog.text

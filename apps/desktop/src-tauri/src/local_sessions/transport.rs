@@ -1386,6 +1386,14 @@ impl Host {
                         },
                         Some("local.session.error") => {
                             let code = body["code"].as_str().unwrap_or("?").to_owned();
+                            if code == "INTERNAL" {
+                                // The relay failed, not this frame. It answers only the in-flight
+                                // request (register, heartbeat or end): free the slot so that frame
+                                // goes again on its own cadence. Never a quarantine.
+                                relay_log("relay failed a request on its side; retrying");
+                                pending_rpc = None;
+                                continue;
+                            }
                             let named = body["sessionId"].as_str().and_then(|sid| {
                                 self.mirrors.iter().find(|(_, m)| m.session_id.as_deref() == Some(sid)).map(|(k, _)| k.clone())
                             });
@@ -4145,6 +4153,31 @@ mod tests {
         server.await.unwrap();
         let b: Mirror = private_read(&dir.path().join("b-session.json")).unwrap();
         assert_eq!(b.session_id.as_deref(), Some(SID_B));
+    }
+    #[tokio::test]
+    async fn local_sessions_internal_relay_error_retries_the_inflight_registration_without_quarantine() {
+        let dir = tempfile::tempdir().unwrap();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (tcp, _) = listener.accept().await.unwrap();
+            let mut socket = tokio_tungstenite::accept_async(tcp).await.unwrap();
+            let first = next_frame(&mut socket).await;
+            assert_eq!(first["session"]["generation"], "g-a");
+            reply(&mut socket, json!({"type":"local.session.error","code":"INTERNAL"})).await;
+            let retry = next_frame(&mut socket).await;
+            assert_eq!(retry["session"]["generation"], "g-a", "the same session retries at once");
+            reply(&mut socket, json!({"type":"local.session.registered","sessionId":SID,"generation":"g-a",
+                "afterSeq":0,"serverTime":100,"reconcile":null})).await;
+            socket.close(None).await.unwrap();
+        });
+        let mut host = test_host(dir.path(), vec![("a-session", test_mirror("native-a", "g-a"))]);
+        let (_tx, mut rx) = tokio::sync::mpsc::channel(1);
+        let (mut socket, _) = tokio_tungstenite::connect_async(format!("ws://{address}")).await.unwrap();
+        let _ = host.connection(&mut socket, &mut rx, "alice").await;
+        server.await.unwrap();
+        let a: Mirror = private_read(&dir.path().join("a-session.json")).unwrap();
+        assert_eq!(a.session_id.as_deref(), Some(SID));
     }
     #[tokio::test]
     async fn local_sessions_rejected_batch_keeps_the_connection_and_the_pending_batch() {

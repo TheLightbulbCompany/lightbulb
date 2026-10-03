@@ -442,6 +442,46 @@ fn start_inner(
     Ok(json!({"started": true, "tool": start.tool}))
 }
 
+/// The argv a holder runs for a start. With a start link, `/bin/sh` exports the link with its own
+/// pid and then execs the provider in place, so the launch pid is the provider's pid, as the
+/// `.command` script does for Terminal.
+fn held_argv(argv: &[String], link: Option<(&str, &str)>) -> Vec<String> {
+    let Some((start_id, scope)) = link else { return argv.to_vec() };
+    let mut out: Vec<String> = vec![
+        "/bin/sh".into(),
+        "-c".into(),
+        r#"export LIGHTBULB_SESSION_START_ID="$1" LIGHTBULB_SESSION_SCOPE="$2" LIGHTBULB_SESSION_LAUNCH_PID=$$; shift 2; exec "$@""#.into(),
+        "lightbulb-start".into(),
+        start_id.into(),
+        scope.into(),
+    ];
+    out.extend(argv.iter().cloned());
+    out
+}
+
+/// This Mac's tools, approved folders and name, for the desktop app's own New session view.
+#[tauri::command]
+pub fn terminal_options(app: tauri::AppHandle) -> Value {
+    options(&app)
+}
+
+/// From the desktop app's own New session view: the same checks as a remote start (installed
+/// tool, approved folder, closed model and mode lists, prompt after `--`), then a held session
+/// in a terminal window instead of Terminal.app.
+#[tauri::command]
+pub async fn terminal_start(app: tauri::AppHandle, params: Value) -> Result<Value, String> {
+    let (start, folder, argv) = validate(params, &home()).map_err(|(_, message)| message)?;
+    // With sharing on, link the start so the view that asked becomes the session once it reports.
+    let scope = crate::local_sessions::enrollment::launch_scope(&app).ok();
+    let argv = held_argv(&argv, scope.as_deref().map(|s| (start.start_id.as_str(), s)));
+    let info = tauri::async_runtime::spawn_blocking(move || crate::holder::manager::start(&folder, &argv))
+        .await
+        .map_err(|e| e.to_string())??;
+    crate::holder::window::open_window(&app, &info)?;
+    crate::log(&format!("[session-start] held {} {}", start.start_id, start.tool));
+    Ok(json!({"holderId": info.id, "tool": start.tool, "linked": scope.is_some()}))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -631,5 +671,16 @@ mod tests {
         assert!(out.status.success());
         assert_eq!(String::from_utf8_lossy(&out.stdout), "-- hi $(whoami)\n");
         assert!(!path.exists());
+    }
+
+    #[test]
+    fn held_start_runs_the_provider_in_place_with_its_start_link() {
+        let argv = vec!["/opt/claude".to_string(), "--permission-mode".into(), "manual".into(), "--".into(), "fix it".into()];
+        assert_eq!(held_argv(&argv, None), argv);
+        let held = held_argv(&argv, Some(("start-1", "/scope")));
+        assert_eq!(&held[..2], &["/bin/sh", "-c"]);
+        assert!(held[2].contains("LAUNCH_PID=$$") && held[2].ends_with(r#"exec "$@""#));
+        assert_eq!(&held[3..6], &["lightbulb-start", "start-1", "/scope"]);
+        assert_eq!(&held[6..], &argv[..]);
     }
 }

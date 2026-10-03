@@ -21,8 +21,6 @@ const XTERM: &[u8] = include_bytes!("../../terminal/xterm.js");
 const XTERM_CSS: &[u8] = include_bytes!("../../terminal/xterm.css");
 const FIT: &[u8] = include_bytes!("../../terminal/addon-fit.js");
 
-pub const PROVIDERS: [&str; 2] = ["claude", "codex"];
-
 struct Server {
     port: u16,
     /// Window key → holder id. A key is minted per window and only ever appears in that
@@ -133,7 +131,7 @@ fn relay(stream: TcpStream) -> std::io::Result<()> {
     }
 }
 
-fn open_window(app: &AppHandle, info: &HolderInfo) -> Result<(), String> {
+pub(crate) fn open_window(app: &AppHandle, info: &HolderInfo) -> Result<(), String> {
     let label = format!("terminal-{}", info.id);
     if let Some(window) = app.get_webview_window(&label) {
         return window.set_focus().map_err(|e| e.to_string());
@@ -142,7 +140,10 @@ fn open_window(app: &AppHandle, info: &HolderInfo) -> Result<(), String> {
     let key = uuid::Uuid::new_v4().simple().to_string() + &uuid::Uuid::new_v4().simple().to_string();
     server.keys.lock().unwrap().insert(key.clone(), info.id.clone());
     let url = format!("http://127.0.0.1:{}/?key={key}", server.port).parse().map_err(|e: url::ParseError| e.to_string())?;
-    let program = info.argv.first().map(|p| p.rsplit('/').next().unwrap_or(p)).unwrap_or("session");
+    // The provider's name, not a launcher wrapped around it (`/bin/sh` for a linked start).
+    let program = info.argv.iter().map(|a| a.rsplit('/').next().unwrap_or(a))
+        .find(|name| matches!(*name, "claude" | "codex")).unwrap_or("session");
+    let program = match program { "claude" => "Claude Code", "codex" => "Codex", other => other };
     let folder = info.cwd.file_name().map(|f| f.to_string_lossy().into_owned()).unwrap_or_default();
     WebviewWindowBuilder::new(app, label, WebviewUrl::External(url))
         .title(format!("{program} — {folder}"))
@@ -152,33 +153,18 @@ fn open_window(app: &AppHandle, info: &HolderInfo) -> Result<(), String> {
         .map_err(|e| e.to_string())
 }
 
-/// From the main webview. `provider` starts a new session after the person picks a folder;
-/// `holder_id` opens (or focuses) the window of a running one.
+/// From the main webview: open (or focus) the window of a running session. New sessions start
+/// through `session_start::terminal_start`, with the same checks as a remote start.
 #[tauri::command]
-pub async fn terminal_open(app: AppHandle, provider: Option<String>, holder_id: Option<String>) -> Result<Option<HolderInfo>, String> {
-    if let Some(id) = holder_id {
-        let info = manager::list().into_iter().find(|h| h.id == id).ok_or("That session has ended.")?;
-        open_window(&app, &info)?;
-        return Ok(Some(info));
-    }
-    let provider = provider.ok_or("Choose Claude Code or Codex.")?;
-    if !PROVIDERS.contains(&provider.as_str()) {
-        return Err("Only Claude Code and Codex sessions can be started here.".into());
-    }
-    let picker_app = app.clone();
-    let folder = tauri::async_runtime::spawn_blocking(move || {
-        use tauri_plugin_dialog::DialogExt;
-        picker_app.dialog().file().set_title("Choose a folder for this session").blocking_pick_folder()
-    })
-    .await
-    .map_err(|e| e.to_string())?;
-    let Some(folder) = folder else { return Ok(None) };
-    let folder = folder.into_path().map_err(|e| e.to_string())?;
-    let info = tauri::async_runtime::spawn_blocking(move || manager::start(&folder, &[provider]))
+pub async fn terminal_open(app: AppHandle, holder_id: String) -> Result<HolderInfo, String> {
+    let info = tauri::async_runtime::spawn_blocking(manager::list)
         .await
-        .map_err(|e| e.to_string())??;
+        .map_err(|e| e.to_string())?
+        .into_iter()
+        .find(|h| h.id == holder_id)
+        .ok_or("That session has ended.")?;
     open_window(&app, &info)?;
-    Ok(Some(info))
+    Ok(info)
 }
 
 /// From the main webview: the running sessions on this Mac (no keys, nothing that can type).

@@ -184,11 +184,11 @@ def room(monkeypatch):
     def patch(room_id, updates):
         state["meta"] = {**state["meta"], **updates}
 
-    def set_if_absent(room_id, field, value):  # the repo's conditional nested write
+    def set_if_absent(room_id, field, value, also=None):  # the repo's conditional nested write
         meeting = (state["meta"] or {}).get("meeting")
         if meeting is None or field in meeting:
             return False
-        state["meta"] = {**state["meta"], "meeting": {**meeting, field: value}}
+        state["meta"] = {**state["meta"], "meeting": {**meeting, field: value, **(also or {})}}
         return True
 
     m = SimpleNamespace(
@@ -332,10 +332,11 @@ async def test_a_lost_meta_race_is_retried_once(room):
     moved = GOOGLE.replace("SEQUENCE:0", "SEQUENCE:1").replace("T150000", "T160000")
     assert await meeting_invites.handle_team_mail("org_1", _mail(moved), TEAM) == "meeting_scheduled"
     assert room.patch.await_count == 2
-    room.patch.side_effect = [_cas_lost(), _cas_lost()]
+    room.patch.side_effect = [_cas_lost(), _cas_lost(), _cas_lost()]
     again = moved.replace("SEQUENCE:1", "SEQUENCE:2")
-    assert await meeting_invites.handle_team_mail("org_1", _mail(again), TEAM) == "meeting_scheduled"
-    assert room.patch.await_count == 4
+    with pytest.raises(meeting_invites.ClientError):  # three lost races: SES redelivers
+        await meeting_invites.handle_team_mail("org_1", _mail(again), TEAM)
+    assert room.patch.await_count == 5
 
 
 async def test_a_lost_race_to_a_newer_sequence_is_not_retried(room):
@@ -484,7 +485,7 @@ async def test_a_full_bot_pool_is_bot_failed_not_a_raise(room, bots):
     assert await meeting_invites.handle_team_mail("org_1", _mail(GOOGLE), TEAM) == "meeting_scheduled"
     meeting = room.state["meta"]["meeting"]
     assert meeting["status"] == "bot_failed" and meeting["botError"] == "507"
-    assert "recallBotId" not in meeting and "ticketNonce" not in meeting
+    assert "recallBotId" not in meeting and meeting["ticketNonce"]  # a 5xx may have booked: the key stays
     assert bots.metric == [("meeting.bot_failed", {"dimensions": {"code": "507"}})]
     assert _lines(room)[-1] == (
         "Couldn't book a bot for this meeting: no meeting bots are free right now. Forward the invite again to retry."
@@ -545,7 +546,7 @@ async def test_two_deliveries_book_one_bot(room, bots):
 
     bots.create.side_effect = create
     await meeting_invites.handle_team_mail("org_1", _mail(GOOGLE), TEAM)
-    assert len(nonces) == 2 and len(set(nonces)) == 1  # one Idempotency-Key: Recall books one bot
+    assert len(nonces) == 1  # the second delivery saw a fresh claim and left the POST to it
     assert room.state["meta"]["meeting"]["ticketNonce"] == nonces[0]
 
 
@@ -628,3 +629,64 @@ async def test_an_unreadable_recall_answer_is_bot_failed(room, bots):
     assert await meeting_invites.handle_team_mail("org_1", _mail(GOOGLE), TEAM) == "meeting_scheduled"
     assert room.state["meta"]["meeting"]["status"] == "bot_failed"
     assert _bot_lines(room)[-1].startswith("Couldn't book a bot for this meeting: the meeting-bot service sent")
+
+
+async def test_a_definitive_4xx_mints_a_fresh_nonce_on_retry(room, bots):
+    bots.create.side_effect = [meeting_invites.meeting_bots.RecallError("400"), "bot-2"]
+    await meeting_invites.handle_team_mail("org_1", _mail(GOOGLE), TEAM)
+    assert "ticketNonce" not in room.state["meta"]["meeting"]
+    await meeting_invites.handle_team_mail("org_1", _mail(GOOGLE), TEAM)
+    first, second = (c.kwargs["meeting"]["ticketNonce"] for c in bots.create.await_args_list)
+    assert first != second and room.state["meta"]["meeting"]["recallBotId"] == "bot-2"
+
+
+async def test_a_timeout_retry_reuses_the_nonce(room, bots):
+    bots.create.side_effect = [meeting_invites.meeting_bots.RecallError("timeout"), "bot-1"]
+    await meeting_invites.handle_team_mail("org_1", _mail(GOOGLE), TEAM)
+    await meeting_invites.handle_team_mail("org_1", _mail(GOOGLE), TEAM)
+    first, second = (c.kwargs["meeting"]["ticketNonce"] for c in bots.create.await_args_list)
+    assert first == second
+
+
+async def test_two_first_deliveries_racing_the_room_create_book_one_bot(room, bots):
+    """B misses the room, A creates it and claims the nonce mid-POST, then B's create loses and
+    re-reads: B must neither erase A's claim nor POST."""
+    calls = []
+
+    async def create(**kw):
+        calls.append(kw["meeting"]["ticketNonce"])
+        if len(calls) == 1:  # B arrives during A's POST, having read no room
+            seen = {"n": 0}
+
+            def get(room_id):
+                seen["n"] += 1
+                return None if seen["n"] == 1 else room.state["meta"]
+
+            room.get.side_effect = get
+            room.create.side_effect = meeting_invites.messaging_repo.MessagingRepoError("lost the create")
+            await meeting_invites.handle_team_mail("org_1", _mail(GOOGLE), TEAM)
+        return "bot-1"
+
+    bots.create.side_effect = create
+    await meeting_invites.handle_team_mail("org_1", _mail(GOOGLE), TEAM)
+    meeting = room.state["meta"]["meeting"]
+    assert len(calls) == 1 and meeting["ticketNonce"] == calls[0] and meeting["recallBotId"] == "bot-1"
+
+
+async def test_the_rsvp_write_keeps_the_bot(room, bots):
+    room.accept.return_value = True
+    await meeting_invites.handle_team_mail("org_1", _mail(GOOGLE), TEAM)
+    meeting = room.state["meta"]["meeting"]
+    assert meeting["rsvpSequence"] == 0 and meeting["recallBotId"] == "bot-1" and meeting["ticketNonce"]
+
+
+async def test_a_winner_timing_out_after_the_other_delivery_booked_is_not_a_failure(room, bots):
+    async def create(**kw):  # the POST times out, but the bot it booked was written meanwhile
+        meta = room.state["meta"]
+        room.state["meta"] = {**meta, "meeting": {**meta["meeting"], "recallBotId": "bot-1", "status": "bot_created"}}
+        raise meeting_invites.meeting_bots.RecallError("timeout")
+
+    bots.create.side_effect = create
+    await meeting_invites.handle_team_mail("org_1", _mail(GOOGLE), TEAM)
+    assert room.state["meta"]["meeting"]["recallBotId"] == "bot-1"
+    assert _bot_lines(room) == []

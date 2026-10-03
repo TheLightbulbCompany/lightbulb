@@ -1736,9 +1736,11 @@ async def patch_room_meta(room_id: str, updates: dict[str, Any]) -> dict:
     return {**{k: v for k, v in meta.items() if k not in removed}, **named, "revision": revision, "updatedAt": now}
 
 
-async def set_meeting_field_if_absent(room_id: str, field: str, value: Any) -> bool:
-    """Set ``meeting.<field>`` only if the meeting has none (bumping the revision). False = another
-    writer got there first: re-read META for theirs."""
+async def set_meeting_field_if_absent(room_id: str, field: str, value: Any, also: dict | None = None) -> bool:
+    """Set ``meeting.<field>`` (plus ``also``'s meeting fields) only if the meeting has no
+    ``field`` yet, bumping the revision. False = another writer got there first: re-read META."""
+    also = also or {}
+    sets = "".join(f", meeting.#a{i} = :a{i}" for i in range(len(also)))
     try:
         await _transact(
             [
@@ -1746,10 +1748,15 @@ async def set_meeting_field_if_absent(room_id: str, field: str, value: Any) -> b
                     "Update": {
                         "TableName": _table().name,
                         "Key": {"pk": room_pk(room_id), "sk": "META"},
-                        "UpdateExpression": "SET meeting.#f = :v, revision = revision + :one, updatedAt = :now",
+                        "UpdateExpression": f"SET meeting.#f = :v{sets}, revision = revision + :one, updatedAt = :now",
                         "ConditionExpression": "attribute_exists(meeting) AND attribute_not_exists(meeting.#f)",
-                        "ExpressionAttributeNames": {"#f": field},
-                        "ExpressionAttributeValues": {":v": _ddb_safe(value), ":one": 1, ":now": utc_now_iso()},
+                        "ExpressionAttributeNames": {"#f": field, **{f"#a{i}": k for i, k in enumerate(also)}},
+                        "ExpressionAttributeValues": {
+                            ":v": _ddb_safe(value),
+                            **{f":a{i}": _ddb_safe(v) for i, v in enumerate(also.values())},
+                            ":one": 1,
+                            ":now": utc_now_iso(),
+                        },
                     }
                 }
             ]

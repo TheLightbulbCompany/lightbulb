@@ -1270,8 +1270,8 @@ async def test_set_meeting_field_if_absent_has_one_winner(table):
     room_id, meta = await _room()
     assert not await repo.set_meeting_field_if_absent(room_id, "ticketNonce", "a")  # no meeting yet
     await repo.patch_room_meta(room_id, {"meeting": {"uid": "u1", "status": "scheduled"}})
-    assert await repo.set_meeting_field_if_absent(room_id, "ticketNonce", "a")
-    assert not await repo.set_meeting_field_if_absent(room_id, "ticketNonce", "b")
+    assert await repo.set_meeting_field_if_absent(room_id, "ticketNonce", "a", {"botClaimAt": 5})
+    assert not await repo.set_meeting_field_if_absent(room_id, "ticketNonce", "b", {"botClaimAt": 6})
     stored = await repo.get_room(room_id)
-    assert stored["meeting"] == {"uid": "u1", "status": "scheduled", "ticketNonce": "a"}
+    assert stored["meeting"] == {"uid": "u1", "status": "scheduled", "ticketNonce": "a", "botClaimAt": 5}
     assert stored["revision"] == meta["revision"] + 2

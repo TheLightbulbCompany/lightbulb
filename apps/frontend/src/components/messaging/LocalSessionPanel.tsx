@@ -14,6 +14,7 @@ import { NativeSessionTranscript, ReceiptChip, SubagentPanel, revealSubagent, ty
 import { SessionApprovalCard } from "./SessionControls";
 import { SessionTerminalView } from "./SessionTerminalView";
 import { useLocalTerminal } from "./localTerminal";
+import { toBase64 } from "./sessionInput";
 import { SessionDetails, type SessionDetailsTab } from "./SessionDetails";
 import { canPickUp, SessionPickup } from "./SessionPickup";
 import type { PickupClient } from "./useSessionPickup";
@@ -23,7 +24,7 @@ const BOTTOM_SLACK = 80;
 /** Within this many pixels of the top, older output is fetched. */
 const SCROLLBACK_SLACK = 240;
 
-type Client = SessionSource["client"] & SessionControlClient & PickupClient & Parameters<typeof SessionDetails>[0]["client"] & JoinDecider & { watchLocalSession?: (sessionId: string) => Promise<unknown> };
+type Client = SessionSource["client"] & SessionControlClient & PickupClient & Parameters<typeof SessionDetails>[0]["client"] & JoinDecider & { watchLocalSession?: (sessionId: string) => Promise<unknown>; sendLocalSessionInput?: (sessionId: string, data: string, epoch: number) => Promise<unknown> };
 
 /**
  * A shared session: its status on one line, the conversation as its terminal
@@ -84,6 +85,22 @@ export function LocalSessionPanel({ session, ownerName, own, client, revision, o
     capture("session_opened", { own, provider: session.provider, workspace_id: orgId, session_id: session.sessionId, origin: "web" });
   }, [session.sessionId, own, session.provider, orgId]);
   const control = canControlSession(session, own, userId);
+  // "<Name> is typing": the owner sees who is typing into the live terminal for ~6 s after each event.
+  const [typers, setTypers] = useState<Record<string, number>>({});
+  useEffect(() => {
+    if (!onEvent) return;
+    const timers = new Set<ReturnType<typeof setTimeout>>();
+    const off = onEvent((event) => {
+      if (event.type !== "workspace.session.typing" || event.payload.sessionId !== session.sessionId || event.payload.userId === userId) return;
+      const who = event.payload.userId;
+      const at = Date.now();
+      setTypers((t) => ({ ...t, [who]: at }));
+      const timer = setTimeout(() => { timers.delete(timer); setTypers((t) => { if (t[who] !== at) return t; const { [who]: _gone, ...rest } = t; return rest; }); }, 6000);
+      timers.add(timer);
+    });
+    return () => { off(); timers.forEach(clearTimeout); };
+  }, [onEvent, session.sessionId, userId]);
+  const typing = Object.keys(typers).map(personName);
   const join = useSessionJoinRequest(client, session);
   const audit = useSessionAudit(client, session.sessionId,
     `${revision}:${session.latestEventSeq}:${session.teamControl}:${session.allowedSenders?.join()}:${session.joinRequest}:${session.pickup?.allowed}:${session.status}:${session.pendingApproval?.approvalId}`);
@@ -190,10 +207,13 @@ export function LocalSessionPanel({ session, ownerName, own, client, revision, o
       {waitingOn && <p className="local-session-waiting-reason">{waitingOn}</p>}
       {own ? <p className="text-sm">Answer it in your terminal; this prompt can&apos;t be answered from here.</p> : messageOwner}
     </div>}
+    {typing.length > 0 && <p role="status" className="text-sm text-muted-foreground">{typing.join(", ")} {typing.length === 1 ? "is" : "are"} typing</p>}
     {local !== "none"
       ? <div ref={slot} className="local-session-terminal" role="region" aria-label="Session terminal" />
       : <>
-      {watchRemote && <SessionTerminalView session={session} onEvent={onEvent!} watch={client.watchLocalSession!} onLive={setScreenLive} />}
+      {watchRemote && <SessionTerminalView session={session} onEvent={onEvent!} watch={client.watchLocalSession!} onLive={setScreenLive}
+        admitted={control && session.shared !== false}
+        input={client.sendLocalSessionInput ? (bytes, epoch) => client.sendLocalSessionInput!(session.sessionId, toBase64(bytes), epoch) : undefined} />}
       {liveTerminal ? <div className="local-session-feedback">{transcript}</div> : <div className="local-session-scroll">
       <div ref={scroller} className="room-context-body local-session-history" role="region" aria-label="Native session history" tabIndex={0} onScroll={onScroll}>
         <div ref={content}>

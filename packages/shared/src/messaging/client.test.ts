@@ -249,3 +249,10 @@ it("keeps a running session's live terminal coming by posting /viewing", async (
   await client.watchLocalSession("s 1");
   expect(post).toHaveBeenCalledWith("/messaging/sessions/s%201/viewing", {});
 });
+
+it("posts an admitted viewer's keystrokes with the screen epoch to /input", async () => {
+  const post = vi.fn(async () => undefined);
+  const client = createMessagingClient({ post } as unknown as ApiMethods);
+  await client.sendLocalSessionInput("s 1", "aGk=", 3);
+  expect(post).toHaveBeenCalledWith("/messaging/sessions/s%201/input", { data: "aGk=", epoch: 3 });
+});

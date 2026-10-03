@@ -3,7 +3,9 @@
 //! `local.session.screen` frames on the relay socket: the holder's snapshot first, then output in
 //! chunks of at most 11 KiB raw (base64 plus envelope fits the 16 KiB relay frame), each with the
 //! terminal's size; a fresh snapshot every 10 s, when the viewer set grows, after a resize and
-//! after a lost frame. Nothing is queued for later; nothing is sent while nobody watches.
+//! after a lost frame (at most one a second). Nothing is queued for later; nothing is sent while
+//! nobody watches. Output past the backend's budget (2 MiB raw a minute) is dropped here, not
+//! sent to be dropped there, and a snapshot follows once the budget is back.
 //! A `local.session.watch` nudge from the backend starts a relay at once (a new viewer sees the
 //! screen in about a second, not at the next ack); the acks still keep it going and stop it.
 
@@ -32,6 +34,12 @@ const TICK: Duration = Duration::from_millis(50);
 /// A nudged relay outlives acks that miss it for this long: an ack the backend built just before
 /// the viewer arrived can land after the nudge. Longer than one 10 s heartbeat.
 const GRACE: Duration = Duration::from_secs(15);
+/// Snapshot requests are at most this often: a lost frame on a slow uplink must not become a
+/// full screen every tick.
+const SNAPSHOT_GAP: Duration = Duration::from_secs(1);
+/// The backend's per-session budget (`session_screen.BUDGET_BYTES_PER_MINUTE`).
+const BUDGET_PER_MINUTE: usize = 2 * 1024 * 1024;
+const BURST: usize = 256 * 1024;
 
 #[derive(Clone)]
 struct Live {
@@ -84,7 +92,9 @@ impl Ctl {
 
 /// The relay loop's receiving end for this connection; relays send through the newest one.
 pub(super) fn channel() -> mpsc::Receiver<Value> {
-    let (tx, rx) = mpsc::channel(64);
+    // Shallow: these frames go out ahead of nothing, and a deep queue on a slow uplink sits in
+    // front of every heartbeat and command answer. A full queue is a lost frame (a snapshot later).
+    let (tx, rx) = mpsc::channel(8);
     if let Ok(mut slot) = OUT.lock() {
         *slot = Some(tx);
     }
@@ -272,7 +282,37 @@ fn watch(conn: &mut UnixStream, sid: &str, generation: &str, ctl: &Ctl, send: &d
     }
     let facts: Value = serde_json::from_slice(&hello).unwrap_or_default();
     let size = (facts["cols"].as_u64().unwrap_or(120) as u16, facts["rows"].as_u64().unwrap_or(40) as u16);
-    pump(&frames, conn, (sid, generation), size, ctl, send)
+    pump(&frames, conn, (sid, generation), size, ctl, send, Budget::new())
+}
+
+/// Raw screen bytes this relay may still send: refills at the backend's rate, holds a burst.
+struct Budget {
+    tokens: f64,
+    cap: f64,
+    per_s: f64,
+    at: Instant,
+}
+
+impl Budget {
+    fn new() -> Self {
+        Self { tokens: BURST as f64, cap: BURST as f64, per_s: BUDGET_PER_MINUTE as f64 / 60.0, at: Instant::now() }
+    }
+    fn left(&mut self) -> f64 {
+        let now = Instant::now();
+        self.tokens = (self.tokens + now.duration_since(self.at).as_secs_f64() * self.per_s).min(self.cap);
+        self.at = now;
+        self.tokens
+    }
+    /// Output only when it fits. A snapshot always goes (it may overdraw): it ends a gap, and
+    /// the next request waits for the budget to be back above zero.
+    fn take(&mut self, bytes: usize, overdraw: bool) -> bool {
+        if !overdraw && self.left() < bytes as f64 {
+            return false;
+        }
+        self.left();
+        self.tokens -= bytes as f64;
+        true
+    }
 }
 
 struct Out<'a> {
@@ -281,34 +321,55 @@ struct Out<'a> {
     seq: u64,
     ctl: &'a Ctl,
     send: &'a dyn Fn(Value) -> bool,
+    budget: Budget,
+    /// A frame was lost since the last snapshot: viewers wait for the next one, so output is waste.
+    stale: bool,
 }
 
 impl Out<'_> {
     fn emit(&mut self, kind: &str, bytes: &[u8], size: (u16, u16)) {
+        let snapshot = kind == "snapshot";
+        if self.stale && !snapshot {
+            return;
+        }
+        if !self.budget.take(bytes.len(), snapshot) {
+            // Skip the seqs it would have used: the gap tells viewers to wait for a snapshot.
+            self.seq += bytes.len().div_ceil(CHUNK).max(1) as u64;
+            self.lost();
+            return;
+        }
+        self.stale = false;
         for frame in frames_for(self.ids, self.epoch, &mut self.seq, size, kind, bytes) {
             if !(self.send)(frame) {
-                // Viewers skip to the next snapshot after a missing frame: make it now.
-                self.ctl.snapshot.store(true, SeqCst);
+                self.lost();
             }
         }
+    }
+    fn lost(&mut self) {
+        // Viewers skip to the next snapshot after a missing frame: ask for one.
+        self.stale = true;
+        self.ctl.snapshot.store(true, SeqCst);
     }
 }
 
 /// Holder frames in, relay frames out, until the lease ends, the session exits or the holder goes.
 fn pump(frames: &Receiver<(u8, Vec<u8>)>, to_holder: &mut impl Write, ids: (&str, &str), mut size: (u16, u16),
-        ctl: &Ctl, send: &dyn Fn(Value) -> bool) -> Result<(), String> {
+        ctl: &Ctl, send: &dyn Fn(Value) -> bool, budget: Budget) -> Result<(), String> {
     let epoch = SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_millis() as u64);
     ctl.epoch.store(epoch, SeqCst);
-    let mut out = Out { ids, epoch, seq: 0, ctl, send };
+    let mut out = Out { ids, epoch, seq: 0, ctl, send, budget, stale: false };
     let mut pending: Vec<u8> = Vec::new();
     let mut held_since: Option<Instant> = None;
-    // The holder sends a watch client its first snapshot unasked.
-    let mut last_snapshot = Instant::now();
+    // The holder sends a watch client its first snapshot unasked; a request may follow at once
+    // (a resize, a lost frame), and the periodic one comes a gap early.
+    let mut last_snapshot = Instant::now().checked_sub(SNAPSHOT_GAP).unwrap_or_else(Instant::now);
     loop {
         if ctl.stopped() {
             return Ok(());
         }
-        if ctl.snapshot.swap(false, SeqCst) || last_snapshot.elapsed() >= SNAPSHOT_EVERY {
+        let due = ctl.snapshot.load(SeqCst) || last_snapshot.elapsed() >= SNAPSHOT_EVERY;
+        if due && last_snapshot.elapsed() >= SNAPSHOT_GAP && out.budget.left() > 0.0 {
+            ctl.snapshot.store(false, SeqCst);
             to_holder.write_all(&encode(SNAPSHOT, b"")).map_err(|e| e.to_string())?;
             last_snapshot = Instant::now();
         }
@@ -401,7 +462,7 @@ mod tests {
         tx.send((EXIT, b"{}".to_vec())).unwrap();
         let sent = std::cell::RefCell::new(vec![]);
         let mut to_holder = vec![];
-        pump(&rx, &mut to_holder, ("sid", "gen"), (120, 40), &Ctl::new(0), &|f| { sent.borrow_mut().push(f); true }).unwrap();
+        pump(&rx, &mut to_holder, ("sid", "gen"), (120, 40), &Ctl::new(0), &|f| { sent.borrow_mut().push(f); true }, Budget::new()).unwrap();
         let sent = sent.into_inner();
         let shape: Vec<(String, u64)> = sent.iter().map(|f| (f["kind"].as_str().unwrap().into(), f["cols"].as_u64().unwrap())).collect();
         assert_eq!(shape, [("snapshot".into(), 120), ("output".into(), 120), ("output".into(), 120), ("output".into(), 90)]);
@@ -409,18 +470,69 @@ mod tests {
         assert!(to_holder.windows(5).any(|w| w == encode(SNAPSHOT, b"").as_slice()), "a resize asks for a fresh screen");
     }
 
+    /// A holder that answers every snapshot request with `answer` and notes when it was asked.
+    struct Answering {
+        tx: std::sync::mpsc::Sender<(u8, Vec<u8>)>,
+        answer: Vec<(u8, Vec<u8>)>,
+        asked: Vec<Instant>,
+    }
+
+    impl Write for Answering {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            assert_eq!(buf, encode(SNAPSHOT, b"").as_slice());
+            self.asked.push(Instant::now());
+            for frame in &self.answer {
+                let _ = self.tx.send(frame.clone());
+            }
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    fn leased(for_: Duration) -> Ctl {
+        let ctl = Ctl::new(0);
+        *ctl.until.lock().unwrap() = Instant::now() + for_;
+        ctl
+    }
+
     #[test]
-    fn screen_relay_asks_again_after_a_lost_frame_and_stops_when_its_lease_ends() {
+    fn screen_relay_asks_again_after_a_lost_frame_at_most_once_a_second_and_stops_when_its_lease_ends() {
         let (tx, rx) = std::sync::mpsc::channel();
         tx.send((SNAPSHOT, with_offset(0, b"screen"))).unwrap();
-        let ctl = Ctl::new(0);
-        *ctl.until.lock().unwrap() = Instant::now() + Duration::from_millis(300);
-        let mut to_holder = vec![];
+        let ctl = leased(Duration::from_millis(2500));
+        let mut holder = Answering { tx, answer: vec![(SNAPSHOT, with_offset(0, b"screen"))], asked: vec![] };
         let started = Instant::now();
-        pump(&rx, &mut to_holder, ("sid", "gen"), (80, 24), &ctl, &|_| false).unwrap();
-        assert!(started.elapsed() < Duration::from_secs(2));
-        assert!(to_holder.starts_with(&encode(SNAPSHOT, b"")), "the lost snapshot is asked for again");
-        drop(tx);
+        // Every frame is lost, so every snapshot asks for the next one.
+        pump(&rx, &mut holder, ("sid", "gen"), (80, 24), &ctl, &|_| false, Budget::new()).unwrap();
+        assert!(started.elapsed() < Duration::from_secs(4));
+        assert!((2..=3).contains(&holder.asked.len()), "asked {} times, not every tick", holder.asked.len());
+        for pair in holder.asked.windows(2) {
+            assert!(pair[1] - pair[0] >= SNAPSHOT_GAP - Duration::from_millis(10));
+        }
+    }
+
+    #[test]
+    fn output_over_the_budget_is_dropped_and_a_snapshot_follows_once_the_budget_is_back() {
+        let (tx, rx) = std::sync::mpsc::channel();
+        tx.send((SNAPSHOT, with_offset(0, &vec![b's'; 4096]))).unwrap();
+        tx.send((OUTPUT, with_offset(4096, &vec![b'a'; 100]))).unwrap();
+        tx.send((OUTPUT, with_offset(4196, b"more"))).unwrap();
+        let ctl = leased(Duration::from_millis(3000));
+        let mut holder = Answering { tx, answer: vec![(SNAPSHOT, with_offset(4200, b"fresh")), (OUTPUT, with_offset(4200, b"after"))],
+            asked: vec![] };
+        // Empty, refilling 2000 bytes a second: the snapshot overdraws it to -4096 for about 2 s.
+        let budget = Budget { tokens: 0.0, cap: 64.0 * 1024.0, per_s: 2000.0, at: Instant::now() };
+        let sent = std::cell::RefCell::new(vec![]);
+        let started = Instant::now();
+        pump(&rx, &mut holder, ("sid", "gen"), (80, 24), &ctl, &|f| { sent.borrow_mut().push(f); true }, budget).unwrap();
+        let sent = sent.into_inner();
+        let shape: Vec<(String, u64)> = sent.iter().map(|f| (f["kind"].as_str().unwrap().into(), f["seq"].as_u64().unwrap())).collect();
+        // seq 1 is the dropped output's: the gap sends viewers to the next snapshot; "more" never went.
+        assert_eq!(shape, [("snapshot".into(), 0), ("snapshot".into(), 2), ("output".into(), 3)]);
+        assert_eq!(holder.asked.len(), 1, "one request, not one a tick");
+        assert!(holder.asked[0] - started >= Duration::from_millis(1800), "asked only once the budget was back");
     }
 
     #[test]

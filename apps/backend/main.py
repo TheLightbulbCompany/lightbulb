@@ -54,6 +54,7 @@ from routers import (
     integrations,
     launch,
     mac_cdp,
+    meet_bot,
     meetings,
     messaging,
     meta_webhook,
@@ -855,6 +856,7 @@ app.include_router(desktop_session_pickup.router, prefix="/api/v1", tags=["deskt
 app.include_router(billing.router, prefix="/api/v1/billing", tags=["billing"])
 app.include_router(huddles.router, prefix="/api/v1", tags=["huddles"])
 app.include_router(meetings.router, prefix="/api/v1", tags=["meetings"])
+app.include_router(meet_bot.router, prefix="/api/v1", tags=["meetings"])
 
 # Apple In-App Purchase: the app's link endpoint + Apple's notification
 # receiver. The router carries its own /billing and /webhooks paths because the

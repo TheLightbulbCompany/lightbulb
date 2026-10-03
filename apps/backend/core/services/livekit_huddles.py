@@ -7,6 +7,7 @@ import hashlib
 import hmac
 import json
 import logging
+import time
 from datetime import timedelta
 
 from livekit import api
@@ -44,6 +45,24 @@ def meet_ticket(room_id: str, nonce: str, exp_epoch: int) -> str:
     return f"{body}.{hmac.new(settings.LIVEKIT_API_SECRET.encode(), b'meet-ticket|' + body.encode(), hashlib.sha256).hexdigest()}"
 
 
+def verify_meet_ticket(ticket: str) -> tuple[str, str] | None:
+    """``(room_id, nonce)`` from a ``meet_ticket`` whose signature holds and whose ``exp`` is ahead."""
+    body, _, sig = (ticket or "").partition(".")
+    secret = settings.LIVEKIT_API_SECRET
+    if not (secret and body and sig):
+        return None
+    expected = hmac.new(secret.encode(), b"meet-ticket|" + body.encode(), hashlib.sha256).hexdigest()
+    if not hmac.compare_digest(sig.encode(), expected.encode()):
+        return None
+    try:
+        room_id, nonce, exp = base64.urlsafe_b64decode(body + "=" * (-len(body) % 4)).decode().split("|")
+        if int(exp) > time.time():
+            return room_id, nonce
+    except ValueError:
+        pass
+    return None
+
+
 def room_name(room_id: str) -> str:
     return f"huddle-{settings.ENVIRONMENT}-{room_id}"
 
@@ -57,23 +76,32 @@ def _api() -> api.LiveKitAPI:
     return api.LiveKitAPI(settings.LIVEKIT_URL, settings.LIVEKIT_API_KEY, settings.LIVEKIT_API_SECRET)
 
 
-def mint_token(*, room_id: str, user_id: str, name: str) -> str:
+def _token(identity: str, name: str, room: str, ttl: timedelta, sources: list[str] | None = None) -> str:
+    grants = api.VideoGrants(
+        room_join=True,
+        room=room,
+        can_publish=True,
+        can_subscribe=True,
+        can_publish_data=True,
+        can_publish_sources=sources,
+    )
     return (
         api.AccessToken(settings.LIVEKIT_API_KEY, settings.LIVEKIT_API_SECRET)
-        .with_identity(user_id)
+        .with_identity(identity)
         .with_name(name)
-        .with_grants(
-            api.VideoGrants(
-                room_join=True,
-                room=room_name(room_id),
-                can_publish=True,
-                can_subscribe=True,
-                can_publish_data=True,
-            )
-        )
-        .with_ttl(timedelta(minutes=15))
+        .with_grants(grants)
+        .with_ttl(ttl)
         .to_jwt()
     )
+
+
+def mint_token(*, room_id: str, user_id: str, name: str) -> str:
+    return _token(user_id, name, room_name(room_id), timedelta(minutes=15))
+
+
+def mint_meet_token(room_id: str) -> str:
+    """The Recall bot page's LiveKit seat: its mic (the meeting's mixed audio) and data, for 6 h."""
+    return _token(f"meet:{room_id}", "Meeting", meet_room_name(room_id), timedelta(hours=6), ["microphone"])
 
 
 async def _identities(room_id: str) -> list[str]:

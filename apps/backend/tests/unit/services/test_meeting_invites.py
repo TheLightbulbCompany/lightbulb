@@ -160,65 +160,131 @@ def _mail(calendar, sender="Prasiddha <Prasiddha@acme.com>", dmarc="PASS"):
 
 
 TEAM = {"owner_id": "org_1", "agent_id": "ceo-1", "address": "agents@acme.thelightbulb.company", "verified_senders": []}
+UID = "7kukuqrfedlm2f9t0vr42q2gjv@google.com"
+CEO, ENG = "11111111-1111-4111-8111-111111111111", "22222222-2222-4222-8222-222222222222"
+WITH_DANA = GOOGLE.replace("SEQUENCE:0", "ATTENDEE;CN=Dana:mailto:dana@acme.com\r\nSEQUENCE:0")
 
 
 @pytest.fixture
-def repo(monkeypatch):
-    mocks = SimpleNamespace(
-        put=AsyncMock(),
-        get=AsyncMock(return_value=None),
-        set_status=AsyncMock(),
-        members=AsyncMock(return_value=[{"email": "Prasiddha@acme.com"}]),
+def room(monkeypatch):
+    """A fake room store: create_room writes META with ``extra``, patch_room_meta merges into it."""
+    state = {"meta": None}
+
+    def create(**kw):
+        state["meta"] = {"roomId": kw["room_id"], **kw["extra"]}
+
+    def patch(room_id, updates):
+        state["meta"] = {**state["meta"], **updates}
+
+    m = SimpleNamespace(
+        state=state,
+        get=AsyncMock(side_effect=lambda room_id: state["meta"]),
+        create=AsyncMock(side_effect=create),
+        patch=AsyncMock(side_effect=patch),
+        post=AsyncMock(),
+        members=AsyncMock(
+            return_value=[
+                {"user_id": "user_p", "email": "Prasiddha@acme.com"},
+                {"user_id": "user_d", "email": "dana@acme.com"},
+            ]
+        ),
     )
-    monkeypatch.setattr(meeting_invites.meetings_repo, "put_meeting", mocks.put)
-    monkeypatch.setattr(meeting_invites.meetings_repo, "get_meeting", mocks.get)
-    monkeypatch.setattr(meeting_invites.meetings_repo, "set_status", mocks.set_status)
-    monkeypatch.setattr(meeting_invites.clerk_admin, "list_organization_members", mocks.members)
-    return mocks
+    repo = meeting_invites.messaging_repo
+    monkeypatch.setattr(repo, "get_room", m.get)
+    monkeypatch.setattr(repo, "create_room", m.create)
+    monkeypatch.setattr(repo, "patch_room_meta", m.patch)
+    monkeypatch.setattr(repo, "create_message", m.post)
+    monkeypatch.setattr(repo, "ensure_user_stream", AsyncMock())
+    monkeypatch.setattr(meeting_invites.clerk_admin, "list_organization_members", m.members)
+    company = SimpleNamespace(starter_agent_ids={"ceo": CEO, "engineering": ENG})
+    monkeypatch.setattr(
+        meeting_invites, "PaperclipRepo", lambda **_: SimpleNamespace(resolve_owner_row=AsyncMock(return_value=company))
+    )
+    roster = [
+        {"id": CEO, "name": "CEO"},
+        {"id": ENG, "name": "Engineering"},
+        {"id": "33333333-3333-4333-8333-333333333333", "name": "Hired"},
+    ]
+    monkeypatch.setattr(meeting_invites.messaging, "load_agent_roster", AsyncMock(return_value=roster))
+    monkeypatch.setattr(meeting_invites.messaging, "human_display_name", AsyncMock(side_effect=lambda u: u))
+    return m
 
 
-async def test_a_members_invite_becomes_a_meeting_row(repo):
-    out = await meeting_invites.handle_team_mail("org_1", _mail(GOOGLE), TEAM)
-    assert out == "meeting_scheduled"
-    row = repo.put.await_args.args[0]
-    assert row["uid"] == "7kukuqrfedlm2f9t0vr42q2gjv@google.com"
-    assert row["status"] == "scheduled" and row["createdBy"] == "prasiddha@acme.com"
-    assert row["startAt"] == int(datetime(2026, 10, 3, 19, 0, tzinfo=timezone.utc).timestamp())
+def _lines(room):
+    return [c.kwargs["text"] for c in room.post.await_args_list]
 
 
-async def test_a_strangers_invite_schedules_nothing(repo):
+async def test_a_members_invite_opens_the_meeting_room(room):
+    assert await meeting_invites.handle_team_mail("org_1", _mail(WITH_DANA), TEAM) == "meeting_scheduled"
+    room.create.assert_awaited_once()
+    kw = room.create.await_args.kwargs
+    assert kw["room_id"] == meeting_invites.messaging_repo.meeting_room_id("org_1", UID)
+    assert kw["kind"] == "channel" and kw["name"] == "Acme weekly sync — Oct 3" and kw["creator_user_id"] == "user_p"
+    assert {(m["id"], m["role"], m["listenMode"]) for m in kw["members"]} == {
+        ("user_p", "owner", None),
+        ("user_d", "member", None),
+        (CEO, "member", "mentions"),
+        (ENG, "member", "mentions"),
+    }
+    meeting = kw["extra"]["meeting"]
+    assert meeting["uid"] == UID and meeting["status"] == "scheduled" and meeting["createdBy"] == "prasiddha@acme.com"
+    assert meeting["startAt"] == int(datetime(2026, 10, 3, 19, 0, tzinfo=timezone.utc).timestamp())
+    assert _lines(room) == ["Agents will join **Acme weekly sync** on Sat Oct 3, 3:00 PM EDT."]
+    assert all("meet.google.com" not in line for line in _lines(room))
+    room.patch.assert_not_awaited()
+
+
+async def test_a_strangers_invite_schedules_nothing(room):
     # The ICS names a member as ORGANIZER and lists them as an attendee -- both sender-written.
     out = await meeting_invites.handle_team_mail("org_1", _mail(GOOGLE, sender="mallory@evil.example"), TEAM)
     assert out is None  # the route delivers it to the CEO as mail
-    repo.put.assert_not_awaited()
+    room.create.assert_not_awaited()
 
 
-async def test_an_unauthenticated_member_from_schedules_nothing(repo):
-    out = await meeting_invites.handle_team_mail("org_1", _mail(GOOGLE, dmarc="FAIL"), TEAM)
-    assert out is None
-    repo.put.assert_not_awaited()
+async def test_an_unauthenticated_member_from_schedules_nothing(room):
+    assert await meeting_invites.handle_team_mail("org_1", _mail(GOOGLE, dmarc="FAIL"), TEAM) is None
+    room.create.assert_not_awaited()
 
 
-async def test_a_member_forwarding_an_outside_invite_is_scheduled(repo):
+async def test_a_member_forwarding_an_outside_invite_is_scheduled(room):
     cal = GOOGLE.replace("mailto:Prasiddha@acme.com", "mailto:client@outside.example")
     assert await meeting_invites.handle_team_mail("org_1", _mail(cal), TEAM) == "meeting_scheduled"
-    row = repo.put.await_args.args[0]
-    assert row["organizer"] == "client@outside.example" and row["createdBy"] == "prasiddha@acme.com"
+    meeting = room.create.await_args.kwargs["extra"]["meeting"]
+    assert meeting["organizer"] == "client@outside.example" and meeting["createdBy"] == "prasiddha@acme.com"
 
 
-async def test_plain_team_mail_is_mail(repo):
+async def test_plain_team_mail_is_mail(room):
     assert await meeting_invites.handle_team_mail("org_1", _mail(None), TEAM) is None
-    repo.members.assert_not_awaited()
+    room.members.assert_not_awaited()
 
 
-async def test_cancel_marks_the_row_cancelled(repo):
-    repo.get.return_value = {"sequence": 0, "organizer": "prasiddha@acme.com", "status": "scheduled"}
+async def test_a_sequence_bump_moves_the_meeting(room):
+    await meeting_invites.handle_team_mail("org_1", _mail(GOOGLE), TEAM)
+    moved = GOOGLE.replace("SEQUENCE:0", "SEQUENCE:1").replace("T150000", "T160000")
+    assert await meeting_invites.handle_team_mail("org_1", _mail(moved), TEAM) == "meeting_scheduled"
+    room.create.assert_awaited_once()
+    meeting = room.patch.await_args.args[1]["meeting"]
+    assert meeting["sequence"] == 1
+    assert meeting["startAt"] == int(datetime(2026, 10, 3, 20, 0, tzinfo=timezone.utc).timestamp())
+    assert _lines(room)[-1] == "**Acme weekly sync** moved to Sat Oct 3, 4:00 PM EDT."
+
+
+async def test_cancel_marks_the_room_cancelled(room):
+    await meeting_invites.handle_team_mail("org_1", _mail(GOOGLE), TEAM)
     cal = GOOGLE.replace("METHOD:REQUEST", "METHOD:CANCEL").replace("SEQUENCE:0", "SEQUENCE:1")
     assert await meeting_invites.handle_team_mail("org_1", _mail(cal), TEAM) == "meeting_cancelled"
-    repo.set_status.assert_awaited_once_with("org_1", "7kukuqrfedlm2f9t0vr42q2gjv@google.com", "cancelled", sequence=1)
+    assert room.state["meta"]["meeting"]["status"] == "cancelled"
+    assert _lines(room)[-1] == "This meeting was cancelled."
 
 
-async def test_an_older_sequence_does_not_overwrite(repo):
-    repo.get.return_value = {"sequence": 3, "organizer": "prasiddha@acme.com", "status": "scheduled"}
+async def test_a_cancel_without_a_room_is_ignored(room):
+    cal = GOOGLE.replace("METHOD:REQUEST", "METHOD:CANCEL")
+    assert await meeting_invites.handle_team_mail("org_1", _mail(cal), TEAM) == "meeting_ignored"
+    room.create.assert_not_awaited()
+
+
+async def test_an_older_sequence_does_not_overwrite(room):
+    room.state["meta"] = {"meeting": {"sequence": 3, "organizer": "prasiddha@acme.com", "status": "scheduled"}}
     assert await meeting_invites.handle_team_mail("org_1", _mail(GOOGLE), TEAM) == "meeting_stale"
-    repo.put.assert_not_awaited()
+    room.patch.assert_not_awaited()
+    room.post.assert_not_awaited()

@@ -1089,10 +1089,16 @@ def _team(monkeypatch, members):
     team_row = {"owner_id": OWNER_ID, "agent_id": CEO_ID, "address": TEAM_ADDRESS, "send_to_anyone": True}
     monkeypatch.setattr(ses_inbound, "try_consume_stranger_wake", AsyncMock(return_value=True))
     monkeypatch.setattr(meeting_invites, "team_row", AsyncMock(return_value=team_row))
-    monkeypatch.setattr(meeting_invites.clerk_admin, "list_organization_members", AsyncMock(return_value=members))
-    monkeypatch.setattr(meeting_invites.meetings_repo, "get_meeting", AsyncMock(return_value=None))
+    monkeypatch.setattr(
+        meeting_invites.clerk_admin,
+        "list_organization_members",
+        AsyncMock(return_value=[{"user_id": f"user_{i}", **m} for i, m in enumerate(members)]),
+    )
+    monkeypatch.setattr(meeting_invites.messaging_repo, "get_room", AsyncMock(return_value=None))
     put = AsyncMock()
-    monkeypatch.setattr(meeting_invites.meetings_repo, "put_meeting", put)
+    monkeypatch.setattr(meeting_invites, "_create_room", put)
+    monkeypatch.setattr(meeting_invites, "_post_line", AsyncMock())
+    monkeypatch.setattr(meeting_invites.messaging_repo, "patch_room_meta", AsyncMock())
     monkeypatch.setattr(ses_inbound, "trial_block_reason", AsyncMock(return_value=None))
     deliver = AsyncMock(return_value="delivered")
     monkeypatch.setattr(ses_inbound, "deliver_to_agent", deliver)

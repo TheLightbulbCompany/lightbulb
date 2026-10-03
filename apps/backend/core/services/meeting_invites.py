@@ -12,10 +12,10 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 
-from core.repositories import agent_email_repo, meetings_repo
+from core.constants import SYSTEM_ACTOR_ID
+from core.repositories import agent_email_repo, messaging_repo
 from core.repositories.paperclip_repo import PaperclipRepo
-from core.services import clerk_admin
-from core.services.agent_email import sender_allowed
+from core.services import clerk_admin, messaging
 from core.services.agent_mail_inbound import authenticated_sender, parse_from_address
 
 logger = logging.getLogger(__name__)
@@ -133,9 +133,86 @@ async def team_row(owner_id: str, address: str) -> dict | None:
     return {**own, "address": address, "owner_id": owner_id, "agent_id": ceo}
 
 
+def _when_text(start: datetime) -> str:
+    """``Fri Oct 3, 3:00 PM EDT`` in the invite's own zone."""
+    return f"{start:%a %b %-d, %-I:%M %p %Z}"
+
+
+async def _post_line(owner_id: str, room_id: str, key: str, text: str) -> None:
+    """One system line; the key makes an SES retry replay it instead of doubling it."""
+    await messaging_repo.create_message(
+        room_id=room_id,
+        owner_id=owner_id,
+        idemp_pk=messaging_repo.room_pk(room_id),
+        idemp_sk=messaging_repo.human_idemp_sk(SYSTEM_ACTOR_ID, key),
+        req_hash=messaging_repo.request_hash(text),
+        author={"kind": "system", "id": SYSTEM_ACTOR_ID, "displayName": "Lightbulb"},
+        text=text,
+        mentions=[],
+        reply_to_message_id=None,
+        thread_root_message_id=None,
+        run_id=None,
+        dispatch_targets=[],
+        source_agent_id=None,
+        client_message_id=None,
+    )
+
+
+async def _create_room(owner_id: str, room_id: str, invite: Invite, creator: str, by_email: dict, meeting: dict):
+    """The meeting's channel: the inviting member owns it, other member attendees join, and every
+    starter agent listens on ``mentions``. A replay or a conflicting create returns quietly; the
+    caller's update path takes it from there."""
+    company = await PaperclipRepo(table_name="paperclip-companies").resolve_owner_row(owner_id)
+    starter = set((getattr(company, "starter_agent_ids", None) or {}).values())
+    roster = [a for a in await messaging.load_agent_roster(owner_id) if a["id"] in starter]
+    handles = messaging.mention_handles(roster)
+    others = [by_email[e] for e in dict.fromkeys(invite.attendee_emails) if by_email.get(e) not in (None, creator)]
+    humans = [creator, *others][: messaging_repo.MAX_ROOM_MEMBERS - len(roster)]
+    members = [
+        {
+            "kind": "human",
+            "id": user_id,
+            "displayName": await messaging.human_display_name(user_id),
+            "mentionHandle": None,
+            "role": "owner" if user_id == creator else "member",
+            "listenMode": None,
+        }
+        for user_id in humans
+    ] + [
+        {
+            "kind": "agent",
+            "id": a["id"],
+            "displayName": a["name"],
+            "mentionHandle": handles[a["id"]],
+            "role": "member",
+            "listenMode": "mentions",
+        }
+        for a in roster
+    ]
+    for user_id in humans:
+        await messaging_repo.ensure_user_stream(owner_id, user_id)
+    name = f"{(invite.summary or 'Meeting')[:60]} — {invite.start:%b %-d}"
+    normalized = [{k: m.get(k) for k in ("kind", "id", "role", "listenMode")} for m in members]
+    try:
+        await messaging_repo.create_room(
+            owner_id=owner_id,
+            room_id=room_id,
+            client_room_id=f"meeting:{invite.uid}",
+            creator_user_id=creator,
+            name=name,
+            kind="channel",
+            members=members,
+            req_hash=messaging_repo.request_hash(name, "channel", normalized),
+            extra={"meeting": meeting},
+        )
+    except messaging_repo.IdempotencyConflict:
+        pass
+
+
 async def handle_team_mail(owner_id: str, payload, team: dict) -> str | None:
-    """A member's invite becomes (or updates, or cancels) a meeting row and returns the outcome.
-    None means "this is mail": no calendar part, an unreadable one, or a stranger's invite."""
+    """A member's invite creates (or updates, or cancels) the meeting's room -- the room META's
+    ``meeting`` is the record -- and returns the outcome. None means "this is mail": no calendar
+    part, an unreadable one, or a stranger's invite."""
     if not getattr(payload, "calendar", None):
         return None
     # The ICS organizer and attendees are sender-written; only the authenticated From decides,
@@ -143,37 +220,52 @@ async def handle_team_mail(owner_id: str, payload, team: dict) -> str | None:
     sender = parse_from_address(payload.from_)
     if not authenticated_sender(payload.verdicts or {}, payload.headers or {}, sender):
         return None
-    members = {str(m["email"]).lower() for m in await clerk_admin.list_organization_members(owner_id) if m.get("email")}
-    if not sender or not (sender in members or sender_allowed(team, sender)):
+    by_email = {
+        str(m["email"]).lower(): m["user_id"]
+        for m in await clerk_admin.list_organization_members(owner_id)
+        if m.get("email")
+    }
+    creator = by_email.get(sender) if sender else None
+    if creator is None:
         return None  # a stranger's mail: no bot, no room -- the CEO reads it as mail
-    inviter = sender
     invite = parse(payload.calendar)
     if invite is None or (invite.method == "REQUEST" and not invite.meeting_url):
         return None  # not a Meet invite we can join: the CEO reads it as mail
-    existing = await meetings_repo.get_meeting(owner_id, invite.uid)
-    if existing and int(existing.get("sequence", 0)) > invite.sequence:
+    room_id = messaging_repo.meeting_room_id(owner_id, invite.uid)
+    current = ((await messaging_repo.get_room(room_id)) or {}).get("meeting")
+    if current and int(current.get("sequence", 0)) > invite.sequence:
         return "meeting_stale"
+    start_at = int(invite.start.timestamp())
     if invite.method == "CANCEL":
-        if not existing or existing.get("organizer") != invite.organizer_email:
+        if not current or current.get("organizer") != invite.organizer_email:
             return "meeting_ignored"
-        await meetings_repo.set_status(owner_id, invite.uid, "cancelled", sequence=invite.sequence)
-        return "meeting_cancelled"
-    status = existing.get("status") if existing and existing.get("status") != "cancelled" else "scheduled"
-    await meetings_repo.put_meeting(
-        {
-            **(existing or {}),
-            "ownerId": owner_id,
+        meeting = {**current, "status": "cancelled", "sequence": invite.sequence}
+        text = "This meeting was cancelled."
+    else:
+        meeting = {
+            **(current or {}),
             "uid": invite.uid,
             "sequence": invite.sequence,
-            "title": invite.summary,
-            "startAt": int(invite.start.timestamp()),
+            "title": invite.summary or "Meeting",
+            "startAt": start_at,
             "endAt": int(invite.end.timestamp()) if invite.end else None,
             "meetingUrl": invite.meeting_url,
             "organizer": invite.organizer_email,
-            "attendees": invite.attendee_emails,
-            "status": status,
-            "createdBy": (existing or {}).get("createdBy") or inviter,
+            "createdBy": (current or {}).get("createdBy") or sender,
+            "status": "scheduled" if not current or current.get("status") == "cancelled" else current["status"],
         }
-    )
-    logger.info("meeting %s from invite: url …%s", invite.uid, (invite.meeting_url or "")[-4:])
-    return "meeting_scheduled"
+        moved = current and current.get("status") != "cancelled" and int(current.get("startAt", 0)) != start_at
+        text = (
+            f"**{meeting['title']}** moved to {_when_text(invite.start)}."
+            if moved
+            else f"Agents will join **{meeting['title']}** on {_when_text(invite.start)}."
+        )
+    if current is None:
+        await _create_room(owner_id, room_id, invite, creator, by_email, meeting)
+        current = ((await messaging_repo.get_room(room_id)) or {}).get("meeting")
+    # Line first, then META: a failure between them retries into the same (replayed) line.
+    await _post_line(owner_id, room_id, f"meeting:{invite.uid}:{invite.sequence}:{start_at}:{meeting['status']}", text)
+    if meeting != current:
+        await messaging_repo.patch_room_meta(room_id, {"meeting": meeting})
+    logger.info("meeting room %s: %s", room_id, meeting["status"])
+    return "meeting_cancelled" if invite.method == "CANCEL" else "meeting_scheduled"

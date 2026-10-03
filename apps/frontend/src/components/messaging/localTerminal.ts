@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, type RefObject } from "react";
 
 type Invoke = (command: string, args?: Record<string, unknown>) => Promise<unknown>;
 type Option = { id: string; label: string };
@@ -31,9 +31,53 @@ export function useLocalMac(): LocalMacOptions | null {
   return options;
 }
 
-/** Start a session in a terminal window on this Mac. `linked`: it will report in under Sessions. */
-export async function startLocalTerminal(params: Record<string, unknown>): Promise<{ linked: boolean }> {
+/** Start a held session on this Mac. It shows in this view at once and joins Sessions when it reports in. */
+export async function startLocalTerminal(params: Record<string, unknown>): Promise<{ holderId: string }> {
   const invoke = bridge();
   if (!invoke) throw new Error("Open Lightbulb on your Mac to start a terminal here.");
-  return (await invoke("terminal_start", { params })) as { linked: boolean };
+  return (await invoke("terminal_start", { params })) as { holderId: string };
+}
+
+export type LocalTerminal = "checking" | "local" | "none";
+/** How often the panel's place is re-read: it moves when the content above it changes height. */
+const TRACK_MS = 250;
+const now = () => performance.timeOrigin + performance.now();
+
+/**
+ * The session's live terminal on this Mac, drawn by the desktop app over `slot` (its own webview;
+ * this page never touches the terminal or its key). "local": it is there. "none": not in the
+ * desktop app, or this Mac does not run the session. `visible` false (an overlay is open) and
+ * unmounting take it away; neither ends the session.
+ */
+export function useLocalTerminal(target: { sessionId: string } | { holderId: string } | null,
+  slot: RefObject<HTMLElement | null>, visible: boolean): LocalTerminal {
+  const invoke = bridge();
+  const key = target ? ("sessionId" in target ? `s:${target.sessionId}` : `h:${target.holderId}`) : null;
+  const [result, setResult] = useState<{ key: string; value: LocalTerminal } | null>(null);
+  useEffect(() => {
+    if (!invoke || !target || !key) return;
+    let alive = true;
+    let sent = "";
+    const report = () => {
+      const box = slot.current?.getBoundingClientRect();
+      const rect = visible && box && box.width > 0 && box.height > 0 ? { x: box.left, y: box.top, width: box.width, height: box.height } : null;
+      const shape = JSON.stringify(rect);
+      if (shape === sent) return;
+      sent = shape;
+      invoke("terminal_panel", { ...target, rect, at: now() }).then(
+        (reply) => { const r = reply as { live?: boolean; stale?: boolean }; if (alive && !r?.stale) setResult({ key, value: r?.live ? "local" : "none" }); },
+        () => { if (alive) setResult({ key, value: "none" }); });
+    };
+    report();
+    const timer = setInterval(report, TRACK_MS);
+    addEventListener("resize", report);
+    return () => {
+      alive = false; clearInterval(timer); removeEventListener("resize", report);
+      void invoke("terminal_panel", { ...target, rect: null, at: now() }).catch(() => {});
+    };
+    // `key` names the target; `target` itself is a fresh object every render.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [invoke, key, visible, slot]);
+  if (!invoke || !target) return "none";
+  return result?.key === key ? result.value : "checking";
 }

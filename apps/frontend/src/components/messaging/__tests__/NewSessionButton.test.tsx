@@ -226,7 +226,8 @@ const desktop = (invoke: (command: string, args?: unknown) => Promise<unknown>) 
 
 it("inside the desktop app it starts a real terminal on this Mac with the chosen tool and folder", async () => {
   mockTargets({ enabled: false, devices: [] });
-  const invoke = desktop(async (command) => command === "terminal_options" ? { ...OPTIONS, name: "This Mac" } : { linked: true, holderId: "ab12cd34" });
+  const invoke = desktop(async (command) => command === "terminal_options" ? { ...OPTIONS, name: "This Mac" }
+    : command === "terminal_panel" ? { live: true } : { holderId: "ab12cd34", tool: "codex" });
   render(<NewSessionButton onOpen={vi.fn()} />);
   expect(await screen.findByRole("button", { name: "New session" })).toBeInTheDocument();
   render(view());
@@ -236,7 +237,8 @@ it("inside the desktop app it starts a real terminal on this Mac with the chosen
     startId: START_ID, tool: "codex", folder: "/Users/alice/code", model: null, mode: "codex-default", effort: null, prompt: "fix the build",
   } });
   expect(m.post).not.toHaveBeenCalled();
-  expect(await screen.findByText("Opened in its own window. Waiting for the session…")).toBeInTheDocument();
+  expect(await screen.findByText("Running on this Mac. It moves to Sessions when it reports in.")).toBeInTheDocument();
+  await waitFor(() => expect(invoke).toHaveBeenCalledWith("terminal_panel", expect.objectContaining({ holderId: "ab12cd34" })));
 });
 
 it("a local start that fails shows why", async () => {

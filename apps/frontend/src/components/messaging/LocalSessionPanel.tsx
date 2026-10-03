@@ -12,6 +12,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { NativeSessionTranscript, ReceiptChip, SubagentPanel, revealSubagent, type Person } from "./NativeSessionTranscript";
 import { SessionApprovalCard } from "./SessionControls";
+import { useLocalTerminal } from "./localTerminal";
 import { SessionDetails, type SessionDetailsTab } from "./SessionDetails";
 import { canPickUp, SessionPickup } from "./SessionPickup";
 import type { PickupClient } from "./useSessionPickup";
@@ -46,6 +47,9 @@ export function LocalSessionPanel({ session, ownerName, own, client, revision, o
   const [text, setText] = useState("");
   const [details, setDetails] = useState<SessionDetailsTab | null>(null);
   const [tab, setTab] = useState<SessionDetailsTab>("about");
+  const slot = useRef<HTMLDivElement>(null);
+  // Running on this Mac: the real terminal replaces the session view (rulings 2026-10-03 §2).
+  const local = useLocalTerminal(session.status === "ended" ? null : { sessionId: session.sessionId }, slot, details === null);
   const id = useId();
   const people = useMemo(() => [{ kind: "human" as const, id: session.humanUserId, displayName: ownerName }, ...participants], [session.humanUserId, ownerName, participants]);
   const agentName = useCallback((agentId: string) => people.find(p => p.id === agentId)?.displayName ?? "Agent", [people]);
@@ -165,7 +169,9 @@ export function LocalSessionPanel({ session, ownerName, own, client, revision, o
       {waitingOn && <p className="local-session-waiting-reason">{waitingOn}</p>}
       {own ? <p className="text-sm">Answer it in your terminal; this prompt can&apos;t be answered from here.</p> : messageOwner}
     </div>}
-    <div className="local-session-scroll">
+    {local !== "none"
+      ? <div ref={slot} className="local-session-terminal" role="region" aria-label="Session terminal" />
+      : <div className="local-session-scroll">
       <div ref={scroller} className="room-context-body local-session-history" role="region" aria-label="Native session history" tabIndex={0} onScroll={onScroll}>
         <div ref={content}>
           {history.loading && <div className="native-session-shimmer" role="status" aria-label="Loading session history" />}
@@ -184,7 +190,7 @@ export function LocalSessionPanel({ session, ownerName, own, client, revision, o
 
         </div>
       </div>
-    </div>
+    </div>}
     <SubagentPanel provider={session.provider} events={history.events} status={session.status} onPick={id => revealSubagent(content.current, id)} />
     {session.status === "ended" ? null : control ? <form className="room-composer local-session-composer native-session-composer" onSubmit={event => { event.preventDefault(); atBottomRef.current = true; command.send(text); }}>
       <label htmlFor={id} className="sr-only">Send to {target}</label>

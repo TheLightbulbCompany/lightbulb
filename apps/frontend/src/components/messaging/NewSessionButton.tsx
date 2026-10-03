@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import useSWR from "swr";
 import { useAuth } from "@clerk/nextjs";
@@ -10,7 +10,7 @@ import { Button } from "@/components/ui/button";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { useApi } from "@/lib/api";
 import { SessionToolIcon } from "./SessionToolIcon";
-import { startLocalTerminal, useLocalMac } from "./localTerminal";
+import { startLocalTerminal, useLocalMac, useLocalTerminal } from "./localTerminal";
 
 type Option = { id: string; label: string };
 type Tool = { id: "claude" | "codex"; label: string; modeLabel: string; models: Option[]; modes: Option[]; efforts?: Option[]; defaultMode?: string; defaultEffort?: string | null };
@@ -19,7 +19,7 @@ type MacOptions = { name?: string | null; sharing: boolean; folders: string[]; t
 type Targets = { enabled: boolean; devices: Mac[] };
 const MAX_PROMPT_BYTES = 4096; // the backend's byte cap
 const PENDING_MS = 150_000; // longer than the backend's wait for the Mac
-type Pending = { startId: string; scope: string; startedAt: number; phase: "starting" | "opened" | "unknown" | "failed"; error?: string };
+type Pending = { startId: string; scope: string; startedAt: number; phase: "starting" | "opened" | "unknown" | "failed"; error?: string; holderId?: string };
 
 const TARGETS_KEY = "desktop-session-targets";
 const pendingKey = (scope: string) => `lightbulb.newSession.pending.${scope}`;
@@ -109,6 +109,8 @@ export function NewSessionView({ sessions, onEvent, onOpenSession, onClose }: {
 
   // Inside the desktop app this Mac answers for itself and the session opens in its own window.
   const localMac = useLocalMac();
+  const slot = useRef<HTMLDivElement>(null);
+  const local = useLocalTerminal(pending?.phase === "opened" && pending.holderId ? { holderId: pending.holderId } : null, slot, true);
   const { data: targets, mutate: refreshTargets } = useTargets();
   useEffect(() => { void refreshTargets(); }, [refreshTargets]);
   const macs = !localMac && targets?.enabled ? targets.devices : null;
@@ -194,12 +196,10 @@ export function NewSessionView({ sessions, onEvent, onOpenSession, onClose }: {
     setPending({ ...start, phase: "starting" });
     if (localMac) {
       try {
-        const { linked } = await startLocalTerminal({ startId, tool: selected.id, folder: folderPath,
+        const { holderId } = await startLocalTerminal({ startId, tool: selected.id, folder: folderPath,
           model: modelId || null, mode: modeId || null, effort: effortId || null, prompt });
-        // Linked: wait here until it reports in, then become it. Not linked (sharing off): it
-        // lives only in its window.
-        if (linked) setPending({ ...start, phase: "opened" });
-        else { setPending(null); onClose(); }
+        // It shows here at once; once it reports in, this view becomes the session.
+        setPending({ ...start, phase: "opened", holderId });
       } catch (error) {
         setPending({ ...start, phase: "failed", error: error instanceof Error ? error.message : String(error) });
       }
@@ -233,10 +233,11 @@ export function NewSessionView({ sessions, onEvent, onOpenSession, onClose }: {
           onClick={() => { try { if (scope) localStorage.removeItem(pendingKey(scope)); } catch { /* storage off */ } setPending(null); }}>
           Dismiss and start another</Button>}
         {busy && <p role="status">{pending?.phase === "unknown" ? pending.error
-          : pending?.phase === "opened" ? (localMac ? "Opened in its own window. Waiting for the session…" : `Opened in Terminal on ${where}. Waiting for the session…`) : `Starting on ${where}…`}</p>}
+          : pending?.phase === "opened" ? (localMac ? "Running on this Mac. It moves to Sessions when it reports in." : `Opened in Terminal on ${where}. Waiting for the session…`) : `Starting on ${where}…`}</p>}
         {pending?.phase === "failed" && <p role="alert" className="text-err">{pending.error}</p>}
         {tooLong && <p role="alert" className="text-err">The first message is too long.</p>}
       </div>
+      {local !== "none" && <div ref={slot} className="local-session-terminal" role="region" aria-label="Session terminal" />}
       {(ready || (macs && macs.length > 1)) && <div className="new-session-strip">
         {/* The Mac chip stays even when this Mac is blocked: another one may not be. */}
         {macs && macs.length > 1 && <select aria-label="Mac" className="new-session-chip" value={mac?.deviceId} disabled={busy}

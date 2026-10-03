@@ -5,6 +5,7 @@ before the body is parsed. The status route works inline (Recall retries it only
 the realtime route answers 2xx at once -- Recall delivers those serially.
 """
 
+import asyncio
 import json
 import logging
 import time
@@ -39,6 +40,7 @@ _TARGET = {
 }
 _TERMINAL = {"ended", "bot_failed", "cancelled"}
 _FATAL_TEXT = {"google_meet_knocking_disabled": "The host didn't let the agents in."}
+_LEAVE_TRIES, _LEAVE_GAP_S = 3, 2
 _SPEAKING = {"speech_on": True, "speech_off": False, "join": False, "leave": False}
 
 
@@ -232,11 +234,16 @@ async def leave(room_id: str, body: RoomBody):
             await meeting_invites._patch_meeting(room_id, {"status": "ended", "lastBotStatus": "idle_leave"})
     except meeting_invites.MeetingBusy:
         raise _problem(503, "meeting_busy") from None
-    try:
-        await meeting_bots.leave(meeting["recallBotId"])
-    except Exception:  # noqa: BLE001 -- never undo: a call_ended may already have seen "ended"
-        # Recall's automatic_leave reaps a bot left alone; the LiveKit room still closes below.
-        put_metric("meeting.leave_failed")
-        logger.warning("meeting room %s: bot leave failed", room_id, exc_info=True)
+    for attempt in range(1, _LEAVE_TRIES + 1):
+        try:
+            await meeting_bots.leave(meeting["recallBotId"])
+            break
+        except Exception:  # noqa: BLE001 -- never undo: a call_ended may already have seen "ended"
+            if attempt < _LEAVE_TRIES:
+                await asyncio.sleep(_LEAVE_GAP_S)
+                continue
+            # Recall's automatic_leave reaps a bot left alone; the LiveKit room still closes below.
+            put_metric("meeting.leave_failed")
+            logger.warning("meeting room %s: bot leave failed", room_id, exc_info=True)
     await _finish(room_id, "ended", "idle_leave", notes=True, in_call_at=meeting.get("inCallAt"))
     return {"ok": True}

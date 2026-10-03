@@ -765,4 +765,8 @@ def test_meeting_actor_maps_only_non_members_of_a_meeting():
     assert vc._meeting_actor(members, "Priya + Dan", True) == ("user_owner", "Priya + Dan")
     assert vc._meeting_actor(members, "user_m", True) == ("user_m", None)
     assert vc._meeting_actor(members, "meet:r", False) == ("meet:r", None)
+    # The worker's Meet label is display only: the bot's line shows it, and nothing else reads it.
+    assert vc._meeting_actor(members, "meet:r", True, " Priya  +\nDan ") == ("user_owner", "Priya + Dan")
+    assert vc._meeting_actor(members, "meet:r", False, "Priya") == ("meet:r", None)
+    assert vc._meeting_actor(members, "user_m", True, "Priya") == ("user_m", None)
     assert vc._meeting_actor(members[1:], "Priya", True) == ("Priya", "Priya")  # no owner member: 403s as before

@@ -5,6 +5,7 @@ Three auth models: Clerk for people (`/huddles/*`), the worker secret for the CE
 (`/internal/huddles/{ownerId}/rooms/{roomId}/frames`).
 """
 
+import contextlib
 import hmac
 import logging
 import uuid
@@ -18,7 +19,7 @@ from core.auth import AuthContext, get_current_user, resolve_owner_id
 from core.config import settings
 from core.observability.metrics import put_metric
 from core.repositories import container_repo, messaging_repo
-from core.services import livekit_huddles, meeting_notes, messaging, voice_calls
+from core.services import livekit_huddles, meeting_invites, meeting_notes, messaging, voice_calls
 from core.services.live_events import get_live_event_publisher
 from routers.messaging import _require_hook_token
 
@@ -26,6 +27,8 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 _Id = Annotated[str, Field(min_length=1, max_length=128)]
+# A Meet speaker's label ("Priya", "Priya + Dan"): shown in a meeting room, never used to authorize.
+_SpeakerName = Annotated[str | None, Field(max_length=120)]
 DISPATCH_DEDUPE_S = 40
 
 
@@ -70,12 +73,14 @@ class SummonBody(BaseModel):
     ownerId: _Id
     roomToken: _Id
     speakerUserId: _Id
+    speakerName: _SpeakerName = None
 
 
 class TurnBody(BaseModel):
     ownerId: _Id
     roomToken: _Id
     speakerUserId: _Id
+    speakerName: _SpeakerName = None
     agentId: _Id
     runId: uuid.UUID  # the worker's, once per delegation and resent on every retry
     utterance: str = Field(min_length=1, max_length=4_000)
@@ -158,13 +163,27 @@ async def join(room_id: str, auth: Annotated[AuthContext, Depends(get_current_us
     # Member of the owner's own room (guests 404), not archived. Any room kind; with no agent
     # member it is a people-only voice room: no worker dispatch, no runtime wake.
     meta, team = await voice_calls._room_team(owner_id, auth.user_id, room_id, need_team=False)
-    if (meta.get("meeting") or {}).get("status") == "in_call":  # a Live worker never shares a room with a meeting
-        raise HTTPException(
-            status_code=409,
-            detail={"code": "meeting_in_call", "message": "This room's meeting is live. Join it in Google Meet."},
-        )
-    name = await messaging.human_display_name(auth.user_id)
-    token = livekit_huddles.mint_token(room_id=room_id, user_id=auth.user_id, name=name)
+    in_call = HTTPException(
+        status_code=409,
+        detail={"code": "meeting_in_call", "message": "This room's meeting is live. Join it in Google Meet."},
+    )
+    # A meeting room's join runs under the meeting's lease, on a META read taken inside it, so it
+    # cannot interleave with the meeting going in_call: a Live worker never shares a room with one.
+    lease = meeting_invites.meeting_lease(room_id) if meta.get("meeting") else contextlib.nullcontext()
+    try:
+        async with lease:
+            if meta.get("meeting"):
+                meta = await messaging_repo.get_room(room_id) or meta
+            if (meta.get("meeting") or {}).get("status") == "in_call":
+                raise in_call
+            return await _join(room_id, owner_id, auth.user_id, team)
+    except meeting_invites.MeetingBusy:
+        raise in_call from None
+
+
+async def _join(room_id: str, owner_id: str, user_id: str, team: list[dict]) -> dict:
+    name = await messaging.human_display_name(user_id)
+    token = livekit_huddles.mint_token(room_id=room_id, user_id=user_id, name=name)
     out = {"serverUrl": settings.LIVEKIT_URL, "roomName": livekit_huddles.room_name(room_id), "token": token}
     if not team:
         return {**out, "lightbulb": False}
@@ -239,7 +258,13 @@ async def turn(call_id: str, body: TurnBody):
     call = await _worker_call(call_id, body.roomToken)
     if call.get("kind") != "huddle" or call.get("ownerId") != body.ownerId or call.get("status") != voice_calls.OPEN:
         raise _problem(404, "call_not_found")
-    args = {"call": call, "agent_id": body.agentId, "speaker_id": body.speakerUserId, "utterance": body.utterance}
+    args = {
+        "call": call,
+        "agent_id": body.agentId,
+        "speaker_id": body.speakerUserId,
+        "speaker_name": body.speakerName,
+        "utterance": body.utterance,
+    }
     if body.steerRunId:
         steered = await voice_calls.steer_voice_run(run_id=str(body.steerRunId), **args)
         if steered:

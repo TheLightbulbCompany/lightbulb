@@ -367,8 +367,10 @@ async def _sync_bot(owner_id: str, room_id: str, meeting: dict, prior: dict | No
             room_id=room_id, meeting={**meeting, "ticketNonce": nonce}, company=org.get("name") or "Your team"
         )
     except meeting_bots.RecallError as exc:
-        if exc.code == "409":  # the same key is in flight from the other delivery: it writes the bot
-            return meeting
+        if exc.code == "409":
+            # The same key is still in flight at Recall and no bot id is stored: never acknowledge.
+            # SES redelivers; the retry reuses the stored nonce and gets the cached bot.
+            raise MeetingBusy(room_id) from None
         return await _bot_failed(owner_id, room_id, meeting, exc, "book", keep=not _definitive(exc))
     except Exception as exc:  # noqa: BLE001
         return await _bot_failed(owner_id, room_id, meeting, exc, "book", keep=True)

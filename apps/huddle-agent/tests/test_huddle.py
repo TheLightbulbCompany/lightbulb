@@ -61,6 +61,7 @@ class FakeBackend:
         self.log = log
         self.team_data = copy.deepcopy(TEAM)
         self.summons: list[str] = []
+        self.summon_names: list[str | None] = []
         self.summon_error: BackendError | None = None
         self.sessions: list[str] = []
         self.session_extra: dict[str, dict] = {}
@@ -127,8 +128,9 @@ class FakeBackend:
         agent = self.route_to if humans is None else self.jev_to
         return {"agentId": agent, "agentIds": [agent] if agent else [], **extra}
 
-    async def summon(self, speaker):
+    async def summon(self, speaker, speaker_name=None):
         self.summons.append(speaker)
+        self.summon_names.append(speaker_name)
         await asyncio.sleep(0)  # a real POST yields
         if self.summon_error:
             raise self.summon_error
@@ -158,6 +160,7 @@ class FakeBackend:
         transcript,
         steer_run_id=None,
         steer_only=False,
+        speaker_name=None,
     ):
         if (
             steer_only
@@ -175,6 +178,7 @@ class FakeBackend:
             {
                 "callId": call_id,
                 "speaker": speaker,
+                "speakerName": speaker_name,
                 "agentId": agent_id,
                 "runId": run_id,
                 "utterance": utterance,
@@ -645,7 +649,7 @@ async def test_held_news_seeds_its_own_agent_and_is_consumed():
 async def test_budget_is_summed_usage_including_the_open_voice():
     h, room, backend, lives, clock, log = make()
     backend_summon = dict(SUMMON, budgetSeconds=120)
-    backend.summon = lambda speaker: _resolved(backend_summon)
+    backend.summon = lambda speaker, speaker_name=None: _resolved(backend_summon)
     await h.on_participants({"u1": "Prasiddha"})
     await say(h, "u1", "Forge, hi")
     lives[0].final_usage = 100

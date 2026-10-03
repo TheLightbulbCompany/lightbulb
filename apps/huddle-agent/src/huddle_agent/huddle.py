@@ -1274,7 +1274,7 @@ class Huddle:
 
     async def _ensure_window(self, speaker: str) -> _Window:
         if self._window is None:
-            r = await self._backend.summon(speaker)
+            r = await self._backend.summon(speaker, self._said_by.get(speaker))
             self._window = _Window(
                 r["callId"], float(r["deadline"]), float(r["budgetSeconds"])
             )
@@ -1436,6 +1436,8 @@ class Huddle:
                             utterance[:MAX_UTTERANCE],
                             transcript,
                             steer_run_id,
+                            # The raw identity pins the audio; the Meet label is what the backend shows.
+                            speaker_name=self._said_by.get(v.speaker),
                         )
                         or {}
                     )
@@ -1852,6 +1854,7 @@ class Huddle:
                 "",
                 steer_run_id=run.run_id,
                 steer_only=True,
+                speaker_name=self._said_by.get(speaker),
             )
         except BackendError as e:
             logger.info("huddle late-line steer failed: %s", e.code)

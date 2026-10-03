@@ -214,12 +214,47 @@ def test_worker_idle_leave_ends_once_even_when_call_ended_lands_mid_leave(env):
 
 def test_a_failed_leave_still_ends_the_meeting(env):
     env["meta"]["meeting"]["status"] = "in_call"
-    with patch.object(mod.meeting_bots, "leave", AsyncMock(side_effect=mod.meeting_bots.RecallError("500"))):
+    with (
+        patch.object(mod.meeting_bots, "leave", AsyncMock(side_effect=mod.meeting_bots.RecallError("500"))) as leave,
+        patch.object(mod.asyncio, "sleep", AsyncMock()) as sleep,
+    ):
         assert _leave(env["client"]).status_code == 200
+    assert leave.await_count == 3 and [c.args for c in sleep.await_args_list] == [(2,), (2,)]
     assert env["meta"]["meeting"]["status"] == "ended"
     env["close"].assert_awaited_once_with(ROOM, meet=True)
     env["notes"].assert_called_once_with(ROOM)
-    env["metric"].assert_any_call("meeting.leave_failed")
+    assert env["metric"].call_args_list.count((("meeting.leave_failed",),)) == 1
+
+
+def test_a_leave_that_succeeds_on_a_retry_counts_no_failure(env):
+    env["meta"]["meeting"]["status"] = "in_call"
+    flaky = AsyncMock(side_effect=[mod.meeting_bots.RecallError("500"), None])
+    with patch.object(mod.meeting_bots, "leave", flaky), patch.object(mod.asyncio, "sleep", AsyncMock()):
+        assert _leave(env["client"]).status_code == 200
+    assert flaky.await_count == 2
+    assert (("meeting.leave_failed",),) not in env["metric"].call_args_list
+    env["close"].assert_awaited_once_with(ROOM, meet=True)
+
+
+def test_the_done_webhook_retries_notes_that_failed_on_call_ended(env):
+    env["meta"]["meeting"]["status"] = "in_call"
+
+    async def noop():
+        return None
+
+    env["notes"].side_effect = lambda _room: noop()  # the first notes attempt fails: no notesMailedAt
+    assert _post(env["client"], _status("call_ended")).status_code == 200
+    assert mod.meeting_notes.owed(env["meta"]["meeting"])
+
+    def done(_room):
+        env["meta"]["meeting"]["notesMailedAt"] = 1
+        return noop()
+
+    env["notes"].side_effect = done
+    assert _post(env["client"], _status("done")).status_code == 200  # Recall's `done` follows call_ended
+    assert env["notes"].call_count == 2 and not mod.meeting_notes.owed(env["meta"]["meeting"])
+    assert _post(env["client"], _status("done")).status_code == 200  # a redelivery: nothing left to do
+    assert env["notes"].call_count == 2
 
 
 def test_a_failed_close_room_loses_no_other_end_step(env):

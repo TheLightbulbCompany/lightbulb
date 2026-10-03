@@ -104,9 +104,15 @@ class Backend:
         }
         return await self._post(f"/internal/huddles/{self._room_id}/route", body)
 
-    async def summon(self, speaker: str) -> dict:
+    @staticmethod
+    def _label(speaker_name: str | None) -> dict:
+        return {"speakerName": speaker_name[:120]} if speaker_name else {}
+
+    async def summon(self, speaker: str, speaker_name: str | None = None) -> dict:
+        """speaker_name: a meeting line's Meet speaker label; the backend shows it, never trusts it."""
         return await self._post(
-            f"/internal/huddles/{self._room_id}/summon", {"speakerUserId": speaker}
+            f"/internal/huddles/{self._room_id}/summon",
+            {"speakerUserId": speaker, **self._label(speaker_name)},
         )
 
     async def session(self, agent_id: str) -> dict:
@@ -124,10 +130,12 @@ class Backend:
         transcript: str,
         steer_run_id: str | None = None,
         steer_only: bool = False,
+        speaker_name: str | None = None,
     ) -> dict:
         """steer_only: steer `steer_run_id` or do nothing (never dispatch a new run)."""
         body = {
             "speakerUserId": speaker,
+            **self._label(speaker_name),
             "agentId": agent_id,
             "runId": run_id,
             "utterance": utterance,

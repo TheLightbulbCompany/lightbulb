@@ -49,8 +49,22 @@ def _problem(status, code):
     return AsyncMock(side_effect=vc._problem(status, code=code))
 
 
-def _join(client, *, has_ceo=False, room_team=None, dispatch_error=None, path_room=ROOM, fresh=True):
+def _join(
+    client,
+    *,
+    has_ceo=False,
+    room_team=None,
+    dispatch_error=None,
+    path_room=ROOM,
+    fresh=True,
+    lease="tok",
+    fresh_meta=None,
+):
+    repo = mod.meeting_invites.container_repo
     with (
+        patch.object(repo, "try_claim_owner_lifecycle", AsyncMock(return_value=lease)) as claim,
+        patch.object(repo, "release_owner_lifecycle_claim", AsyncMock()) as release,
+        patch.object(mod.messaging_repo, "get_room", AsyncMock(return_value=fresh_meta)),
         patch.object(vc, "prewake_owner", MagicMock()) as wake,
         patch.object(vc, "prewarm_cards", MagicMock()) as warm,
         patch.object(mod.container_repo, "try_claim_pass", AsyncMock(return_value=fresh)),
@@ -61,7 +75,7 @@ def _join(client, *, has_ceo=False, room_team=None, dispatch_error=None, path_ro
         patch.object(lk, "dispatch_ceo", AsyncMock(side_effect=dispatch_error)) as dispatch,
     ):
         resp = client.post(f"/api/v1/huddles/{path_room}/join")
-        _join.wake, _join.warm = wake, warm
+        _join.wake, _join.warm, _join.claim, _join.release = wake, warm, claim, release
         return resp, mint, dispatch
 
 
@@ -127,6 +141,45 @@ def test_join_is_409_while_the_rooms_meeting_is_in_call(client):
     mint.assert_not_called()
     dispatch.assert_not_awaited()
     _join.wake.assert_not_called()
+
+
+def test_a_live_room_join_takes_no_meeting_lease(client):
+    assert _join(client)[0].status_code == 200
+    _join.claim.assert_not_awaited()
+
+
+def test_a_meeting_room_join_runs_under_the_meeting_lease(client):
+    scheduled = {"ownerId": "org_a", "meeting": {"status": "bot_created"}}
+    resp, _, dispatch = _join(client, room_team=AsyncMock(return_value=(scheduled, TEAM)))
+    assert resp.status_code == 200
+    dispatch.assert_awaited_once()
+    _join.claim.assert_awaited_once()
+    assert _join.claim.await_args.args == (f"meeting#{ROOM}",)
+    _join.release.assert_awaited_once_with(f"meeting#{ROOM}", token="tok")
+
+
+def test_join_is_409_when_the_meeting_went_in_call_since_the_first_read(client):
+    scheduled = {"ownerId": "org_a", "meeting": {"status": "bot_created"}}
+    resp, mint, dispatch = _join(
+        client,
+        room_team=AsyncMock(return_value=(scheduled, TEAM)),
+        fresh_meta={"ownerId": "org_a", "meeting": {"status": "in_call"}},
+    )
+    assert resp.status_code == 409 and resp.json()["detail"]["code"] == "meeting_in_call"
+    mint.assert_not_called()
+    dispatch.assert_not_awaited()
+
+
+def test_join_is_409_while_the_meeting_lease_is_busy(client):
+    scheduled = {"ownerId": "org_a", "meeting": {"status": "bot_created"}}
+    resp, mint, dispatch = _join(client, room_team=AsyncMock(return_value=(scheduled, TEAM)), lease=None)
+    assert resp.status_code == 409
+    assert resp.json()["detail"] == {
+        "code": "meeting_in_call",
+        "message": "This room's meeting is live. Join it in Google Meet.",
+    }
+    mint.assert_not_called()
+    dispatch.assert_not_awaited()
 
 
 def test_join_archived_is_409(client):
@@ -311,6 +364,18 @@ def test_turn_dispatches_the_workers_run_for_the_named_agent(client):
     assert kw["run_id"] == RUN and kw["agent_id"] == "agent-fin" and kw["speaker_id"] == "user_a"
     assert kw["call"]["callId"] == "c1"
     steer.assert_not_awaited()
+
+
+def test_turn_passes_the_speaker_label_through_and_bounds_it(client):
+    resp, steer, dispatch = _turn(client, {**INTERNAL[1][1], "speakerName": "Priya + Dan", "steerRunId": RUN})
+    assert resp.status_code == 200
+    assert steer.await_args.kwargs["speaker_name"] == dispatch.await_args.kwargs["speaker_name"] == "Priya + Dan"
+    assert dispatch.await_args.kwargs["speaker_id"] == "user_a"  # the id still decides who acts
+    assert _turn(client, {**INTERNAL[1][1], "speakerName": "x" * 121})[0].status_code in (400, 422)
+    assert client.post(INTERNAL[0][0], json={**INTERNAL[0][1], "speakerName": "x" * 121}, headers=W).status_code in (
+        400,
+        422,
+    )
 
 
 def test_turn_steers_first_and_skips_the_dispatch(client):

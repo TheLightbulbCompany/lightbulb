@@ -679,6 +679,20 @@ async def test_a_definitive_4xx_mints_a_fresh_nonce_on_retry(room, bots):
     assert first != second and room.state["meta"]["meeting"]["recallBotId"] == "bot-2"
 
 
+async def test_a_409_from_recall_is_never_acknowledged_without_a_bot(room, bots):
+    """The first POST timed out here but is still in flight at Recall: the retry's 409 raises, so
+    the SES route 5xx's, and the redelivery reuses the stored nonce and gets the cached bot."""
+    err = meeting_invites.meeting_bots.RecallError
+    bots.create.side_effect = [err("timeout"), err("409"), "bot-1"]
+    await meeting_invites.handle_team_mail("org_1", _mail(GOOGLE), TEAM)
+    with pytest.raises(meeting_invites.MeetingBusy):
+        await meeting_invites.handle_team_mail("org_1", _mail(GOOGLE), TEAM)
+    assert "recallBotId" not in room.state["meta"]["meeting"]
+    assert await meeting_invites.handle_team_mail("org_1", _mail(GOOGLE), TEAM) == "meeting_scheduled"
+    nonces = {c.kwargs["meeting"]["ticketNonce"] for c in bots.create.await_args_list}
+    assert len(nonces) == 1 and room.state["meta"]["meeting"]["recallBotId"] == "bot-1"
+
+
 async def test_a_timeout_retry_reuses_the_nonce(room, bots):
     bots.create.side_effect = [meeting_invites.meeting_bots.RecallError("timeout"), "bot-1"]
     await meeting_invites.handle_team_mail("org_1", _mail(GOOGLE), TEAM)

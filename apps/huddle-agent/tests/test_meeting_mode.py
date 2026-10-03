@@ -249,3 +249,40 @@ async def test_a_final_transcript_never_acknowledged_stays_unsent(monkeypatch):
     assert len(calls) == 3 and h._transcript.after(
         h._sent_mark
     )  # bounded; the lines stay for a later flush
+
+
+async def test_summon_and_turn_carry_the_meet_speaker_label_beside_the_raw_identity():
+    h, room, backend, lives, clock, log = await meeting()
+    speaker(h, "p1", "Priya", True)
+    clock.t += 2.5
+    speaker(h, "p1", "Priya", False)
+    await hear(h, "Forge, check the board")
+    assert (
+        lives[0].speaker == MEET
+    )  # LiveKit audio stays pinned to the bot's participant
+    assert (backend.summons, backend.summon_names) == ([MEET], ["Priya"])
+    turn = backend.turns[0]
+    assert (turn["speaker"], turn["speakerName"]) == (MEET, "Priya")
+
+
+async def test_the_backend_client_sends_speaker_name(monkeypatch):
+    import httpx
+
+    from huddle_agent.backend import Backend
+
+    sent = []
+
+    def handler(request):
+        sent.append(json.loads(request.content))
+        return httpx.Response(200, json={})
+
+    client = httpx.AsyncClient(
+        base_url="https://api.test", transport=httpx.MockTransport(handler)
+    )
+    monkeypatch.setenv("LIGHTBULB_API_URL", "https://api.test")
+    b = Backend("room-1", "org_a", "rt", client=client)
+    await b.summon(MEET, "Priya")
+    await b.turn("c1", MEET, "forge", "run-1", "check CI", "", speaker_name="Priya")
+    await b.turn("c1", "u1", "forge", "run-2", "check CI", "")
+    assert [x.get("speakerName") for x in sent] == ["Priya", "Priya", None]
+    assert [x["speakerUserId"] for x in sent] == [MEET, MEET, "u1"]

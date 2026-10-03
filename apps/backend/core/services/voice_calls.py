@@ -361,17 +361,24 @@ async def _room_team(owner_id: str, user_id: str, room_id: str, *, need_team: bo
     return meta, team
 
 
-def _meeting_actor(members: list[dict], speaker_id: str, meeting: bool) -> tuple[str, str | None]:
+def _meet_label(speaker_name: str | None) -> str:
+    return " ".join((speaker_name or "").split()) or "Someone"
+
+
+def _meeting_actor(
+    members: list[dict], speaker_id: str, meeting: bool, speaker_name: str | None = None
+) -> tuple[str, str | None]:
     """Who a worker-supplied speaker acts as, and the label to show for them (None: a real member,
     look the name up). A Meet speaker is the bot's ``meet:<roomId>`` participant or a label ("Priya",
     "Priya + Dan"), not a user: in a meeting room it acts as the member who invited the bot (the
-    room's owner). No owner member, or not a meeting -> the id passes through and 403s as before."""
+    room's owner). No owner member, or not a meeting -> the id passes through and 403s as before.
+    ``speaker_name`` is the worker's label for the bot's line: display only, never who acts."""
     humans = [m for m in members if m.get("kind") == "human"]
     bot = speaker_id.startswith("meet:")
     if not meeting or (not bot and any(m["id"] == speaker_id for m in humans)):
         return speaker_id, None
     owner = next((m["id"] for m in humans if m.get("role") == "owner"), speaker_id)
-    return owner, "Someone" if bot else speaker_id
+    return owner, (_meet_label(speaker_name) if bot else speaker_id)
 
 
 _HOLD_ATTEMPTS = 3
@@ -673,7 +680,14 @@ async def _speaker_name(speaker_id: str) -> str:
 
 
 async def dispatch_voice_run(
-    *, call: dict, run_id: str, agent_id: str, speaker_id: str, utterance: str, transcript: str
+    *,
+    call: dict,
+    run_id: str,
+    agent_id: str,
+    speaker_id: str,
+    utterance: str,
+    transcript: str,
+    speaker_name: str | None = None,
 ) -> dict:
     """One voice request = one ordinary run on agent:{agent}:lightbulb:channel:{room}. run_id is the
     worker's, reused on every retry, so a delivered-but-timed-out invoke is replayed, never re-run."""
@@ -682,7 +696,9 @@ async def dispatch_voice_run(
     if not meta or not any(m.get("kind") == "agent" and m["id"] == agent_id for m in members):
         raise _problem(409, code="agent_not_in_room")
     # The label only: the VOICERUN row keeps the worker's id, so a Meet guest never gets the owner's C8 rights.
-    name = _meeting_actor(members, speaker_id, bool(meta.get("meeting")))[1] or await _speaker_name(speaker_id)
+    name = _meeting_actor(members, speaker_id, bool(meta.get("meeting")), speaker_name)[1] or await _speaker_name(
+        speaker_id
+    )
     spoken = transcript[-_TRANSCRIPT_CHARS:].strip()
     session_id = f"agent:{agent_id}:lightbulb:channel:{room_id}"  # == the bridge's turn.lightbulb_session_key
     body = {
@@ -746,13 +762,15 @@ async def _run_control(owner_id: str, run_id: str, action: str, body: dict) -> i
         return None
 
 
-async def steer_voice_run(*, call: dict, run_id: str, agent_id: str, speaker_id: str, utterance: str) -> dict | None:
+async def steer_voice_run(
+    *, call: dict, run_id: str, agent_id: str, speaker_id: str, utterance: str, speaker_name: str | None = None
+) -> dict | None:
     """A follow-up steers the agent's live voice run. None (dispatch a new run instead) when the run
     is not this room's and agent's, or the bridge no longer has it."""
     row = await messaging_repo.get_voice_run(call["ownerId"], run_id)
     if not row or row.get("roomId") != call["roomId"] or row.get("agentId") != agent_id:
         return None
-    name = "Someone" if speaker_id.startswith("meet:") else await _speaker_name(speaker_id)
+    name = _meet_label(speaker_name) if speaker_id.startswith("meet:") else await _speaker_name(speaker_id)
     if await _run_control(call["ownerId"], run_id, "steer", {"text": f"{name} (voice): {utterance}"}) != 202:
         return None
     # The latest requester is who C8 checks: a guest's steer must not borrow the member's rights.

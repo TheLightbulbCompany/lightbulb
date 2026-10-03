@@ -33,7 +33,11 @@ def env(monkeypatch):
         row={"address": "agents@acme.thelightbulb.company"},
         sleep=AsyncMock(),
         claim=AsyncMock(return_value="tok"),
+        release=AsyncMock(),
+        cap=AsyncMock(return_value=True),
     )
+    monkeypatch.setattr(mod.container_repo, "release_owner_lifecycle_claim", m.release)
+    monkeypatch.setattr(mod.agent_mail_send, "consume_cap", m.cap)
     monkeypatch.setattr(mod.container_repo, "try_claim_owner_lifecycle", m.claim)
     monkeypatch.setattr(mod.messaging_repo, "get_room", AsyncMock(side_effect=lambda _r: meta))
     monkeypatch.setattr(mod.meeting_invites, "_patch_meeting", AsyncMock(side_effect=patch_meeting))
@@ -103,9 +107,9 @@ async def test_on_ended_waits_for_the_transcript_then_proceeds(env):
     env.line.assert_awaited_once()
 
 
-async def test_on_ended_proceeds_without_a_transcript_after_twenty_seconds(env):
+async def test_on_ended_proceeds_without_a_transcript_after_sixty_seconds(env):
     await mod.on_ended(ROOM)
-    assert env.sleep.await_count == 10
+    assert env.sleep.await_count == 30 and env.sleep.await_args.args == (2,)
     env.line.assert_awaited_once()
     text = env.line.await_args.args[3]
     assert text.endswith("no transcript was captured; write notes from the room history")
@@ -141,7 +145,8 @@ async def test_a_crash_after_the_claim_is_finished_by_a_later_on_ended(env):
     env.send.side_effect = [RuntimeError("ses"), "<id@ses>"]
     await mod.on_ended(ROOM)  # the notes message went out, the mail did not
     assert env.meta["meeting"]["notesRunId"] and "notesMailedAt" not in env.meta["meeting"]
-    env.claim.return_value = None  # within 120 s the first attempt's claim still stands
+    env.release.assert_awaited_once_with(f"meeting-notes#{ROOM}", token="tok")  # a caught failure frees the claim
+    env.claim.return_value = None  # a crashed attempt released nothing: within 120 s its claim still stands
     await mod.on_ended(ROOM)
     assert env.send.await_count == 1
     env.claim.return_value = "tok2"  # 121 s later it is stale
@@ -158,7 +163,26 @@ async def test_a_failed_send_leaves_the_marker_unset_so_the_retry_mails(env):
     env.send.return_value = None  # send_ses_email's non-raising failure
     await mod.on_ended(ROOM)
     assert "notesMailedAt" not in env.meta["meeting"]
+    env.release.assert_awaited_once()  # freed at once: `done` arrives well inside the claim's 120 s
     env.send.return_value = "<id@ses>"
     await mod.on_ended(ROOM)  # the terminal webhook's redelivery
     assert env.meta["meeting"]["notesMailedAt"] and env.send.await_count == 2
     env.line.assert_awaited_once()  # the notes run is not repeated
+
+
+async def test_the_notes_mail_draws_the_owners_daily_cap(env):
+    env.meta["meeting"]["transcriptAttachedAt"] = 1
+    await mod.on_ended(ROOM)
+    env.cap.assert_awaited_once_with("org_1")
+    env.send.assert_awaited_once()
+
+
+async def test_a_spent_daily_cap_sends_nothing_and_is_not_retried(env):
+    env.meta["meeting"]["transcriptAttachedAt"] = 1
+    env.cap.return_value = False
+    await mod.on_ended(ROOM)
+    env.send.assert_not_awaited()
+    assert env.meta["meeting"]["notesMailedAt"]  # a deliberate non-send: done
+    env.release.assert_not_awaited()
+    await mod.on_ended(ROOM)
+    env.cap.assert_awaited_once()

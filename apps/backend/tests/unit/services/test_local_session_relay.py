@@ -1571,7 +1571,8 @@ async def test_device_heartbeat_retries_only_the_row_that_lost_its_revision_race
     # The contested row is re-read and written again; the others are written once, so the
     # frame itself ran once.
     assert puts == {sids[0]: 1, contested: 2, sids[2]: 1}
-    assert all((await repo.get_session(OWNER, sid))["status"] == "idle" for sid in sids)
+    rows = [await repo.get_session(OWNER, sid) for sid in sids]
+    assert [row["status"] for row in rows] == ["idle"] * 3
 
 
 @pytest.mark.asyncio

@@ -97,11 +97,18 @@ async def _on_ended(room_id: str) -> bool:
     token = await container_repo.try_claim_owner_lifecycle(lease, stale_s=_CLAIM_S)
     if not token:
         return False  # another end path is on the notes
-    # Two more tries under the same claim before the series advances past this occurrence;
-    # each step of _notes is idempotent on its own marker and key.
+    # Two more tries under the same claim before the series advances past this occurrence; each
+    # step of _notes is idempotent on its own marker and key. The transcript wait runs once: a
+    # retry reuses what it found, so three attempts stay well inside the claim's _CLAIM_S.
+    occurrence = meta["meeting"].get("startAt")  # fixed before the wait: never mark the next one
+    try:
+        meta = await _wait_for_transcript(room_id, meta)
+    except Exception:
+        await container_repo.release_owner_lifecycle_claim(lease, token=token)
+        raise
     for attempt in range(_NOTES_TRIES):
         try:
-            await _notes(room_id, meta)
+            await _notes(room_id, meta, occurrence)
             return True
         except Exception:
             if attempt == _NOTES_TRIES - 1:
@@ -113,9 +120,10 @@ async def _on_ended(room_id: str) -> bool:
     return True
 
 
-async def _notes(room_id: str, meta: dict) -> None:
+async def _wait_for_transcript(room_id: str, meta: dict) -> dict:
+    """The META to write the notes from: once its transcript is attached, or after the wait."""
     occurrence = meta["meeting"].get("startAt")
-    this_occurrence = lambda m: m.get("startAt") == occurrence  # noqa: E731 -- never mark the next one
+    this_occurrence = lambda m: m.get("startAt") == occurrence  # noqa: E731
     # The worker's final transcript POST and Recall's call_ended race: give the transcript a moment.
     # A read of another occurrence (the series was re-dated meanwhile) ends the wait; the last read
     # of this occurrence stands.
@@ -127,6 +135,11 @@ async def _notes(room_id: str, meta: dict) -> None:
         if not this_occurrence(fresh.get("meeting") or {}):
             break
         meta = fresh
+    return meta
+
+
+async def _notes(room_id: str, meta: dict, occurrence) -> None:
+    this_occurrence = lambda m: m.get("startAt") == occurrence  # noqa: E731 -- never mark the next one
     owner_id, meeting = meta["ownerId"], meta["meeting"]
     title = meeting.get("title") or "Meeting"
     target = await meeting_invites.output_room(owner_id, room_id)
@@ -189,12 +202,15 @@ async def _mail_organizer(owner_id: str, room_id: str, target: str, meeting: dic
         logger.info("meeting room %s: daily mail cap spent, notes mail not sent", room_id)
         return True
     name = " ".join(title.split())
-    if target != room_id:
+    if target != room_id and meeting.get("transcriptAttachedAt"):
         subject = f"Notes: {name}"
         body = f"The notes and transcript are in your Lightbulb room: {settings.FRONTEND_URL.rstrip('/')}/chat?room={target}"
+    elif target != room_id:  # nothing to point at: no transcript, so no notes
+        subject = f"Ended: {name}"
+        body = f"{name} ended. No transcript was captured, so there are no notes."
     else:
         transcript = await _transcript_text(owner_id, target, meeting)
-        subject = f"Transcript: {name}"
+        subject = f"Transcript: {name}" if transcript else f"Ended: {name}"
         body = f"Your Lightbulb agents joined {name}.\n\n" + (transcript or "No transcript was captured.")
     sent = await ses_email.send_ses_email(
         from_addr=address,

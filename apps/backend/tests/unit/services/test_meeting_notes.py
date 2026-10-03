@@ -313,6 +313,7 @@ async def test_without_a_transcript_the_mail_says_none_was_captured(legacy):
     legacy.meta["meeting"].pop("transcriptId")
     await mod.on_ended(ROOM)
     assert legacy.send.await_args.kwargs["body_text"].endswith("No transcript was captured.")
+    assert legacy.send.await_args.kwargs["subject"] == "Ended: Weekly sync"
 
 
 async def test_the_mail_reads_the_transcript_from_the_room_it_was_stored_for(legacy):
@@ -364,3 +365,17 @@ async def test_three_failed_notes_attempts_still_advance_the_series(env):
     assert env.send.await_count == 3 and "notesMailedAt" not in env.meta["meeting"]
     env.release.assert_awaited_once()
     env.advance.assert_awaited_once_with(ROOM)
+
+
+async def test_with_no_transcript_the_mail_promises_no_notes(env):
+    await mod.on_ended(ROOM)
+    kw = env.send.await_args.kwargs
+    assert kw["subject"] == "Ended: Weekly sync"
+    assert kw["body_text"] == "Weekly sync ended. No transcript was captured, so there are no notes."
+
+
+async def test_a_retry_does_not_wait_for_the_transcript_again(env):
+    env.send.side_effect = [RuntimeError("ses"), "<id@ses>"]
+    await mod.on_ended(ROOM)  # no transcript: the 60 s wait once, then one 10 s retry gap
+    assert [c.args for c in env.sleep.await_args_list] == [(2,)] * 30 + [(10,)]
+    assert env.send.await_count == 2 and env.meta["meeting"]["notesMailedAt"]

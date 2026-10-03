@@ -67,8 +67,17 @@ and the fast cold restore were in prod by then). Each is a ruling, not a proposa
    mid-sentence switch, late answers to the room, holding line, prompt diet), then plan exactly what
    Meet changes in Live and in the app, then build Meet.
 
-What the owner still has to settle: §16 items 1 (who pays for presence), 7 (consent wording, now
-that notes are stored) and 8 (startup program); items 2, 4 and 5 are answered above.
+9. **Everyone gets meetings; presence is on us for now.** Ruling 10-02 23:05 EDT: "everyone
+   should get meetings, we can eat that cost for now". Bot presence (Recall + LiveKit + STT,
+   ~$1.5/h list) is platform-paid and not metered to the customer, on every plan including trial;
+   what the customer's **daily 10-minute allowance** (`voice_billing.FREE_SECONDS_PER_DAY` = 600,
+   then credits) covers is **agent speech**, in a meeting exactly as in Live — one counter, one
+   card. Read this way so a free workspace's bot never walks out of a 30-minute meeting at minute
+   ten; if the owner meant presence itself to draw down the allowance, that is the change. Revisit
+   presence billing (§10) when bot-hours are a line item.
+
+What the owner still has to settle: §16 items 7 (consent wording, now that notes are stored) and
+8 (startup program); items 1, 2, 4 and 5 are answered above.
 
 Every vendor claim cites a primary source. **(inferred)** marks reasoning that no source states;
 **(measure)** marks something we must test before relying on it. Recall's docs were read on
@@ -408,8 +417,8 @@ Option D unchanged.
   Metronome event `meeting_bot`, provider cost = Recall rate + LiveKit agent session + mixed-track
   STT, at the managed-credit markup; hold credits for a capped duration at start (default cap 3 h,
   enforced by leaving the meeting).
-- **Free and trial workspaces:** proposed no meeting bots, or a small daily allowance (open
-  question).
+- **Free and trial workspaces:** every plan gets meetings; presence is platform-paid for now and
+  agent speech draws on the daily allowance (§0.9).
 - Recall is paid by us from a prepaid balance with auto top-up; a negative balance interrupts new
   bots [A21], so alarm on the balance.
 

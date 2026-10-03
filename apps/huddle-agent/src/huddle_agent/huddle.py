@@ -113,6 +113,10 @@ SPEAKER_WINDOWS = 50
 # ponytail: an open speaking span (an `on` whose `off` never came) or an utterance start older than
 # this is stale; a longer unbroken monologue loses its label past it
 MEET_SPAN_MAX_S = 30
+# The final POST's backoff and its whole budget. The budget stays under the job's shutdown window
+# (agent.py SHUTDOWN_S): the flush usually runs from the shutdown callback.
+FINAL_TRANSCRIPT_RETRY_S = (1, 2, 4, 8, 16)
+FINAL_TRANSCRIPT_BUDGET_S = 45
 # TranscriptBody.lines max (backend huddles.py): a rolling flush, and a meeting's one final request
 TRANSCRIPT_CHUNK = 500
 TRANSCRIPT_FINAL_MAX = 5_000
@@ -533,24 +537,25 @@ class Huddle:
                 ]
             sent = 0
             for part in parts:
+                body = [
+                    {
+                        "mark": x.mark,
+                        "kind": x.kind,
+                        "name": x.name,
+                        "text": x.text,
+                        "at": x.at,
+                        "to": x.to,
+                    }
+                    for x in part
+                ]
                 try:
-                    await self._backend.transcript(
-                        self._huddle_id,
-                        [
-                            {
-                                "mark": x.mark,
-                                "kind": x.kind,
-                                "name": x.name,
-                                "text": x.text,
-                                "at": x.at,
-                                "to": x.to,
-                            }
-                            for x in part
-                        ],
-                        final=final,
-                    )
+                    if final:
+                        await self._post_final_transcript(body)
+                    else:
+                        await self._backend.transcript(self._huddle_id, body)
                 except Exception:
-                    logger.info(
+                    logger.log(
+                        logging.ERROR if final else logging.INFO,
                         "huddle transcript post failed; %d lines unsent",
                         len(lines) - sent,
                         exc_info=True,
@@ -558,6 +563,33 @@ class Huddle:
                     return
                 sent += len(part)
                 self._sent_mark = part[-1].mark
+
+    async def _post_final_transcript(self, body: list[dict]) -> None:
+        """A meeting's one transcript POST, retried: a transient error must not lose the meeting's
+        transcript. Only a 2xx is an acknowledgement (the backend client raises on anything else)."""
+
+        async def post() -> None:
+            for attempt, delay in enumerate((*FINAL_TRANSCRIPT_RETRY_S, None), 1):
+                try:
+                    await self._backend.transcript(self._huddle_id, body, final=True)
+                    logger.info(
+                        "meeting transcript posted: %d lines, attempt %d",
+                        len(body),
+                        attempt,
+                    )
+                    return
+                except Exception as e:
+                    if delay is None:
+                        raise
+                    logger.warning(
+                        "meeting transcript post failed (%s); retry %d in %ss",
+                        type(e).__name__,
+                        attempt,
+                        delay,
+                    )
+                    await asyncio.sleep(delay)
+
+        await asyncio.wait_for(post(), FINAL_TRANSCRIPT_BUDGET_S)
 
     async def clear_presence(self) -> None:
         """The job is shutting down: clear the room's Live marker before anything else, unless people are

@@ -45,7 +45,9 @@ from huddle_agent.transcript import trim_items
 logger = logging.getLogger("huddle")
 AGENT_IDENTITY = "agent-ceo"  # C4: every agent voice publishes as this one participant
 WORKER_DISPLAY_NAME = "Lightbulb"  # clients render tiles from attributes, not this name
-server = AgentServer()
+# LiveKit's default (10 s) would kill a meeting's final transcript retry (huddle.FINAL_TRANSCRIPT_BUDGET_S).
+SHUTDOWN_S = 60
+server = AgentServer(shutdown_process_timeout=SHUTDOWN_S)
 
 
 class _Voice(Agent):

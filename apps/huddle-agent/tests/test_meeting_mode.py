@@ -214,3 +214,38 @@ async def test_meeting_idle_leaves_after_60_minutes_via_the_backend():
     assert room.shut
     await h.clear_presence()  # the shutdown flush: nothing new, no second post
     assert len(backend.transcripts) == 1
+
+
+async def test_the_final_transcript_post_is_retried_until_acknowledged(monkeypatch):
+    h, room, backend, lives, clock, log = await meeting()
+    monkeypatch.setattr(h_mod, "FINAL_TRANSCRIPT_RETRY_S", (0, 0, 0, 0, 0))
+    await hear(h, "first")
+    post, fails = backend.transcript, [BackendError(503, "http_503", None)] * 2
+
+    async def flaky(*a, **kw):
+        if fails:
+            raise fails.pop()
+        await post(*a, **kw)
+
+    backend.transcript = flaky
+    await h._flush_transcript()
+    assert backend.finals == [True] and not fails  # failed twice, then acknowledged
+    await h._flush_transcript()
+    assert len(backend.transcripts) == 1  # acknowledged: never sent again
+
+
+async def test_a_final_transcript_never_acknowledged_stays_unsent(monkeypatch):
+    h, room, backend, lives, clock, log = await meeting()
+    monkeypatch.setattr(h_mod, "FINAL_TRANSCRIPT_RETRY_S", (0, 0))
+    await hear(h, "first")
+    calls = []
+
+    async def down(*a, **kw):
+        calls.append(1)
+        raise BackendError(503, "http_503", None)
+
+    backend.transcript = down
+    await h._flush_transcript()
+    assert len(calls) == 3 and h._transcript.after(
+        h._sent_mark
+    )  # bounded; the lines stay for a later flush

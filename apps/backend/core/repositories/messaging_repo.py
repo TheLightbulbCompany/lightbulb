@@ -1687,8 +1687,11 @@ _ROOM_META_FIELDS = ("name", "topic", "archivedAt", "archivedBy", "meeting")
 _ROOM_META_REMOVABLE = ("archivedAt", "archivedBy")
 
 
-async def patch_room_meta(room_id: str, updates: dict[str, Any]) -> dict:
+async def patch_room_meta(room_id: str, updates: dict[str, Any], *, expected_revision: int | None = None) -> dict:
     """Update the caller-editable META fields under the usual revision CAS.
+
+    ``expected_revision`` binds the write to the revision the CALLER read (a read-merge-write),
+    instead of the one read here; a writer in between then cancels the transaction.
 
     ``name`` is mirrored into the owner catalog row because
     ``list_rooms_for_member`` joins the sidebar off it; ``topic`` is not in
@@ -1702,7 +1705,7 @@ async def patch_room_meta(room_id: str, updates: dict[str, Any]) -> dict:
     named = {k: v for k, v in named.items() if k not in removed}
     now = utc_now_iso()
     table_name = _table().name
-    revision = int(meta["revision"]) + 1
+    revision = (int(meta["revision"]) if expected_revision is None else expected_revision) + 1
     names = {f"#{k}": k for k in [*named, *removed]}
     values = {f":{k}": _ddb_safe(v) for k, v in named.items()}
     sets = ", ".join(f"#{k} = :{k}" for k in named)

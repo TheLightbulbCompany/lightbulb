@@ -151,3 +151,14 @@ async def test_a_crash_after_the_claim_is_finished_by_a_later_on_ended(env):
     assert env.send.await_count == 2 and env.meta["meeting"]["notesMailedAt"]
     await mod.on_ended(ROOM)  # done: nothing more
     assert env.send.await_count == 2
+
+
+async def test_a_failed_send_leaves_the_marker_unset_so_the_retry_mails(env):
+    env.meta["meeting"]["transcriptAttachedAt"] = 1
+    env.send.return_value = None  # send_ses_email's non-raising failure
+    await mod.on_ended(ROOM)
+    assert "notesMailedAt" not in env.meta["meeting"]
+    env.send.return_value = "<id@ses>"
+    await mod.on_ended(ROOM)  # the terminal webhook's redelivery
+    assert env.meta["meeting"]["notesMailedAt"] and env.send.await_count == 2
+    env.line.assert_awaited_once()  # the notes run is not repeated

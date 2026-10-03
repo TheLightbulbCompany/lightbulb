@@ -1275,3 +1275,15 @@ async def test_set_meeting_field_if_absent_has_one_winner(table):
     stored = await repo.get_room(room_id)
     assert stored["meeting"] == {"uid": "u1", "status": "scheduled", "ticketNonce": "a", "botClaimAt": 5}
     assert stored["revision"] == meta["revision"] + 2
+
+
+@pytest.mark.asyncio
+async def test_patch_room_meta_bound_to_a_stale_revision_is_cancelled(table):
+    from botocore.exceptions import ClientError
+
+    room_id, meta = await _room()
+    await repo.patch_room_meta(room_id, {"topic": "first"}, expected_revision=meta["revision"])
+    with pytest.raises(ClientError) as lost:  # someone wrote since the caller's read
+        await repo.patch_room_meta(room_id, {"topic": "stale"}, expected_revision=meta["revision"])
+    assert repo._is_cancelled(lost.value)
+    assert (await repo.get_room(room_id))["topic"] == "first"

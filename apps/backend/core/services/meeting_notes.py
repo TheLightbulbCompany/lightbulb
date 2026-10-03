@@ -103,18 +103,20 @@ async def _on_ended(room_id: str) -> None:
         if message:
             run_id = messaging_repo.run_id_for(ceo, message["messageId"])
             await meeting_invites._patch_meeting(room_id, {"notesRunId": run_id})
-    await _mail_organizer(owner_id, room_id, meeting.get("organizer"), title)
-    await meeting_invites._patch_meeting(room_id, {"notesMailedAt": int(time.time())})
+    if await _mail_organizer(owner_id, room_id, meeting.get("organizer"), title):
+        await meeting_invites._patch_meeting(room_id, {"notesMailedAt": int(time.time())})
 
 
-async def _mail_organizer(owner_id: str, room_id: str, organizer: str | None, title: str) -> None:
+async def _mail_organizer(owner_id: str, room_id: str, organizer: str | None, title: str) -> bool:
+    """True when the notes are done: mailed, or deliberately not (no address, no organizer, a paused
+    row). False is a failed send: the marker stays unset and the terminal webhook's retry sends again."""
     address = await agent_email.team_address(owner_id)
     if not address or not organizer:
-        return
+        return True
     if (await agent_email_repo.get_by_address(address) or {}).get("outbound_disabled"):
-        return
+        return True
     link = f"{settings.FRONTEND_URL.rstrip('/')}/chat?room={room_id}"
-    await ses_email.send_ses_email(
+    sent = await ses_email.send_ses_email(
         from_addr=address,
         to=organizer,
         subject=f"Notes: {' '.join(title.split())}",
@@ -123,3 +125,4 @@ async def _mail_organizer(owner_id: str, room_id: str, organizer: str | None, ti
         kind="meeting_notes",
         tenant_name=await agent_mail_tenant.ensure_tenant(owner_id),
     )
+    return sent is not None

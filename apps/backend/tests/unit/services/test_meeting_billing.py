@@ -29,7 +29,8 @@ async def test_presence_is_not_billed_and_speech_draws_the_allowance(monkeypatch
     with (
         patch.object(meetings.messaging_repo, "get_room", AsyncMock(side_effect=lambda _r: meta)),
         patch.object(meetings.meeting_invites, "_patch_meeting", AsyncMock(side_effect=patch_meeting)),
-        patch.object(meetings.container_repo, "try_claim_pass", AsyncMock(return_value=True)),
+        patch.object(meetings.meeting_invites.container_repo, "try_claim_owner_lifecycle", AsyncMock(return_value="t")),
+        patch.object(meetings.meeting_invites.container_repo, "release_owner_lifecycle_claim", AsyncMock()),
         patch.object(meetings.clerk_admin, "get_organization", AsyncMock(return_value={})),
         patch.object(meetings.livekit_huddles, "dispatch_meet", AsyncMock()),
         patch.object(meetings.livekit_huddles, "close_room", AsyncMock()),

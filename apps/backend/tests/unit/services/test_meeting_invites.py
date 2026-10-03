@@ -185,8 +185,10 @@ def room(monkeypatch):
     def create(**kw):
         state["meta"] = {"roomId": kw["room_id"], **kw["extra"]}
 
-    def patch(room_id, updates):
-        state["meta"] = {**state["meta"], **updates}
+    def patch(room_id, updates, expected_revision=None):  # the repo's CAS on the revision the caller read
+        if expected_revision != state["meta"].get("revision", 0):
+            raise _cas_lost()
+        state["meta"] = {**state["meta"], **updates, "revision": expected_revision + 1}
 
     def set_if_absent(room_id, field, value, also=None):  # the repo's conditional nested write
         meeting = (state["meta"] or {}).get("meeting")
@@ -354,7 +356,7 @@ async def test_a_lost_meta_race_is_retried_once(room):
 async def test_a_lost_race_to_a_newer_sequence_is_not_retried(room):
     await meeting_invites.handle_team_mail("org_1", _mail(GOOGLE), TEAM)
 
-    def newer_won(room_id, updates):
+    def newer_won(room_id, updates, **_):
         room.state["meta"] = {**room.state["meta"], "meeting": {**room.state["meta"]["meeting"], "sequence": 5}}
         raise _cas_lost()
 
@@ -597,10 +599,10 @@ async def test_two_deliveries_book_one_bot(room, bots):
 async def test_a_bot_id_survives_two_lost_meta_races(room, bots):
     merge, fails = room.patch.side_effect, [_cas_lost(), _cas_lost()]
 
-    def flaky(room_id, updates):
+    def flaky(room_id, updates, **kw):
         if fails:
             raise fails.pop(0)
-        merge(room_id, updates)
+        merge(room_id, updates, **kw)
 
     room.patch.side_effect = flaky
     await meeting_invites.handle_team_mail("org_1", _mail(GOOGLE), TEAM)
@@ -784,3 +786,21 @@ async def test_the_meeting_lease_is_released_when_the_handler_raises(room):
 def test_a_multi_address_organizer_is_dropped():
     cal = GOOGLE.replace("mailto:Prasiddha@acme.com", "mailto:a@x.com,b@y.com")
     assert meeting_invites.parse(cal).organizer_email is None
+
+
+async def test_a_write_is_bound_to_the_revision_it_read(room):
+    """A transcript write that read ``in_call`` must not put it back over a webhook's ``ended``."""
+    room.state["meta"] = {"roomId": "r", "revision": 1, "meeting": {"status": "in_call"}}
+    reads = iter([dict(room.state["meta"])])  # A's first read, then B commits before A writes
+
+    def get(room_id):
+        stale = next(reads, None)
+        if stale is not None:
+            room.state["meta"] = {"roomId": "r", "revision": 2, "meeting": {"status": "ended"}}
+            return stale
+        return room.state["meta"]
+
+    room.get.side_effect = get
+    written = await meeting_invites._patch_meeting("r", {"transcriptAttachedAt": 5})
+    assert written == room.state["meta"]["meeting"] == {"status": "ended", "transcriptAttachedAt": 5}
+    assert [c.kwargs["expected_revision"] for c in room.patch.await_args_list] == [1, 2]

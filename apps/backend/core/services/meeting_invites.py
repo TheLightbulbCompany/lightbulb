@@ -244,9 +244,12 @@ async def _patch_meeting(room_id: str, fields: dict, drop: tuple = ()) -> dict |
     fields over it (dropping ``drop``), and write under the revision CAS -- so the invite path, the
     bot path and the RSVP never erase each other's keys. A write carrying an older ``sequence`` than
     the stored one writes nothing and returns None (checked against a fresh read before every attempt).
+    The write is bound to the revision that was READ, so a writer in between (a webhook's ``ended``
+    under a transcript write) cancels it and the merge is redone over the new state.
     Three lost races raise, so SES redelivers. Returns the map as written."""
     for attempt in (1, 2, 3):
-        stored = ((await messaging_repo.get_room(room_id)) or {}).get("meeting") or {}
+        meta = (await messaging_repo.get_room(room_id)) or {}
+        stored = meta.get("meeting") or {}
         if "sequence" in fields and int(stored.get("sequence", 0)) > int(fields["sequence"]):
             logger.info("meeting room %s: a newer invite (sequence %s) won the race", room_id, stored["sequence"])
             return None
@@ -254,7 +257,9 @@ async def _patch_meeting(room_id: str, fields: dict, drop: tuple = ()) -> dict |
         if merged == stored:
             return stored
         try:
-            await messaging_repo.patch_room_meta(room_id, {"meeting": merged})
+            await messaging_repo.patch_room_meta(
+                room_id, {"meeting": merged}, expected_revision=int(meta.get("revision", 0))
+            )
             return merged
         except ClientError as exc:
             if not messaging_repo._is_cancelled(exc) or attempt == 3:

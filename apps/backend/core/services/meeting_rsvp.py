@@ -10,7 +10,7 @@ from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
 from core.observability.metrics import put_metric
-from core.services import agent_email, agent_mail_tenant, ses_email
+from core.services import agent_email, agent_mail_send, agent_mail_tenant, ses_email
 from core.services.agent_mail_reply import AGENT_AUTHORED_HEADERS
 
 if TYPE_CHECKING:
@@ -87,6 +87,9 @@ async def _accept(owner_id: str, invite: Invite) -> str:
     # and the bot, not an RSVP.
     if address.lower() not in {e.lower() for e in invite.attendee_emails}:
         return "not_invited"
+    # The shared address answers sender-chosen organizers: it draws the owner's daily send cap.
+    if not await agent_mail_send.consume_cap(owner_id):
+        return "rate_limited"
     sent = await ses_email.send_ses_email(
         from_addr=address,
         to=invite.organizer_email,

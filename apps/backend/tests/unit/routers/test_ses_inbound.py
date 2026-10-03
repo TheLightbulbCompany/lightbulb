@@ -1072,7 +1072,7 @@ def _team(monkeypatch, members):
         "list_organization_members",
         AsyncMock(return_value=[{"user_id": f"user_{i}", **m} for i, m in enumerate(members)]),
     )
-    monkeypatch.setattr(meeting_invites.messaging_repo, "get_room", AsyncMock(side_effect=[None, {}]))
+    monkeypatch.setattr(meeting_invites.messaging_repo, "get_room", AsyncMock(side_effect=[None, {}, {}]))
     put = AsyncMock()
     monkeypatch.setattr(meeting_invites, "_create_room", put)
     monkeypatch.setattr(meeting_invites, "_post_line", AsyncMock())

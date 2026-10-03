@@ -200,23 +200,32 @@ async def _create_room(owner_id: str, room_id: str, invite: Invite, creator: str
         pass
 
 
-async def _patch_meeting(room_id: str, meeting: dict) -> None:
+async def _newer_stored(room_id: str, sequence) -> bool:
+    """True when the room META already holds a later invite's sequence: an older delivery that read
+    the room before the newer one committed must not overwrite it."""
+    newer = ((await messaging_repo.get_room(room_id) or {}).get("meeting") or {}).get("sequence", 0)
+    if int(newer) > int(sequence):
+        logger.info("meeting room %s: a newer invite (sequence %s) is already stored", room_id, newer)
+        return True
+    return False
+
+
+async def _patch_meeting(room_id: str, meeting: dict) -> bool:
     """``patch_room_meta`` under its revision CAS, retried once against a concurrent META edit
-    (a rename). Losing twice is logged, not raised: the next resend of the invite heals it."""
+    (a rename). Losing twice is logged, not raised: the next resend of the invite heals it. False
+    when a newer sequence is stored, so nothing was written."""
     for attempt in (1, 2):
+        if await _newer_stored(room_id, meeting.get("sequence", 0)):
+            return False
         try:
             await messaging_repo.patch_room_meta(room_id, {"meeting": meeting})
-            return
+            return True
         except ClientError as exc:
             if not messaging_repo._is_cancelled(exc):
                 raise  # a throttle or access error: SES retries the whole mail
             if attempt == 2:
                 logger.warning("meeting room %s: META patch lost the revision race twice", room_id)
-                return
-            newer = ((await messaging_repo.get_room(room_id) or {}).get("meeting") or {}).get("sequence", 0)
-            if int(newer) > int(meeting.get("sequence", 0)):
-                logger.info("meeting room %s: a newer invite (sequence %s) won the race", room_id, newer)
-                return
+    return True
 
 
 async def handle_team_mail(owner_id: str, payload, team: dict) -> str | None:
@@ -282,12 +291,14 @@ async def handle_team_mail(owner_id: str, payload, team: dict) -> str | None:
         if meta is None:
             return None  # no room came of it: the CEO reads it as mail
         current = meta.get("meeting")
+    elif await _newer_stored(room_id, invite.sequence):
+        return "meeting_stale"  # a newer invite committed after the read above
     # Line first, then META: a failure between them retries into the same (replayed) line.
     await _post_line(
         owner_id, room_id, f"meeting:{invite.uid}:{invite.sequence}:{start_at}:{prev_status}>{meeting['status']}", text
     )
-    if meeting != current:
-        await _patch_meeting(room_id, meeting)
+    if meeting != current and not await _patch_meeting(room_id, meeting):
+        return "meeting_stale"
     logger.info("meeting room %s: %s", room_id, meeting["status"])
     if invite.method == "CANCEL":
         return "meeting_cancelled"

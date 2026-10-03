@@ -339,9 +339,31 @@ async def test_a_lost_race_to_a_newer_sequence_is_not_retried(room):
 
     room.patch.side_effect = newer_won
     moved = GOOGLE.replace("SEQUENCE:0", "SEQUENCE:1").replace("T150000", "T160000")
-    assert await meeting_invites.handle_team_mail("org_1", _mail(moved), TEAM) == "meeting_scheduled"
+    assert await meeting_invites.handle_team_mail("org_1", _mail(moved), TEAM) == "meeting_stale"
     assert room.patch.await_count == 1
     assert room.state["meta"]["meeting"]["sequence"] == 5
+
+
+async def test_an_older_sequence_that_read_the_room_first_writes_nothing(room):
+    room.accept.return_value = True
+    await meeting_invites.handle_team_mail("org_1", _mail(GOOGLE), TEAM)
+    stale_view = room.state["meta"]
+    room.state["meta"] = {**stale_view, "meeting": {**stale_view["meeting"], "sequence": 3}}  # SEQUENCE 3 committed
+    views = iter([stale_view])  # SEQUENCE 2 read the room before it did
+    room.get.side_effect = lambda room_id: next(views, room.state["meta"])
+    lines, patches = _lines(room), room.patch.await_count
+    moved = GOOGLE.replace("SEQUENCE:0", "SEQUENCE:2").replace("T150000", "T160000")
+    assert await meeting_invites.handle_team_mail("org_1", _mail(moved), TEAM) == "meeting_stale"
+    assert room.patch.await_count == patches and _lines(room) == lines
+    room.accept.assert_awaited_once()
+    assert room.state["meta"]["meeting"]["sequence"] == 3
+
+
+async def test_a_stale_patch_writes_nothing(room):
+    await meeting_invites.handle_team_mail("org_1", _mail(GOOGLE), TEAM)
+    room.state["meta"]["meeting"]["sequence"] = 3
+    assert await meeting_invites._patch_meeting(room.state["meta"]["roomId"], {"sequence": 2}) is False
+    assert room.state["meta"]["meeting"]["sequence"] == 3
 
 
 async def test_a_racing_second_creator_falls_through_to_the_update(room):

@@ -2,7 +2,7 @@
 
 from dataclasses import replace
 from datetime import datetime, timezone
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 
@@ -30,6 +30,7 @@ def send(monkeypatch):
     monkeypatch.setattr(meeting_rsvp.agent_email, "team_address", AsyncMock(return_value=ADDRESS))
     monkeypatch.setattr(meeting_rsvp.agent_mail_tenant, "ensure_tenant", AsyncMock(return_value="tenant-1"))
     monkeypatch.setattr(meeting_rsvp.ses_email, "send_ses_email", send)
+    monkeypatch.setattr(meeting_rsvp.agent_mail_send, "consume_cap", AsyncMock(return_value=True))
     return send
 
 
@@ -54,6 +55,14 @@ async def test_accept_sends_one_reply(send):
 async def test_a_multiline_summary_stays_one_subject_line(send):
     await meeting_rsvp.accept("org_1", replace(INVITE, summary="Sync\nwith  team"))
     assert send.await_args.kwargs["subject"] == "Accepted: Sync with team"
+
+
+async def test_an_exhausted_daily_cap_sends_nothing(send, monkeypatch):
+    monkeypatch.setattr(meeting_rsvp.agent_mail_send, "consume_cap", AsyncMock(return_value=False))
+    monkeypatch.setattr(meeting_rsvp, "put_metric", put := Mock())
+    assert await meeting_rsvp.accept("org_1", INVITE) is False
+    send.assert_not_awaited()
+    put.assert_called_once_with("meeting.rsvp", dimensions={"result": "rate_limited"})
 
 
 async def test_a_forwarded_invite_is_not_answered(send):

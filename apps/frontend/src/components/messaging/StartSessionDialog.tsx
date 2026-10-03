@@ -7,11 +7,11 @@ import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import { copyText } from "./messageLinks";
 
-const COMMANDS = [{ tool: "Claude Code", command: "claude" }, { tool: "Codex", command: "codex" }];
+const COMMANDS = [{ tool: "Claude Code", command: "lightbulb claude" }, { tool: "Codex", command: "lightbulb codex" }];
 
 /**
- * How to start a shared session. A session runs in your own terminal and Lightbulb mirrors it;
- * nothing here starts one on your Mac (a remote spawn would make a paired Mac a remote shell).
+ * How to start a shared session. Only sessions started in Lightbulb are shared: New session in the
+ * desktop app, or `lightbulb claude|codex` in a terminal. A plain `claude` or `codex` stays private.
  */
 export function StartSessionDialog() {
   const [copied, setCopied] = useState<string | null>(null);
@@ -20,11 +20,11 @@ export function StartSessionDialog() {
     <DialogContent>
       <DialogHeader>
         <DialogTitle>Start a shared session</DialogTitle>
-        <DialogDescription>Sessions run in your own terminal. Lightbulb shows them here while they run.</DialogDescription>
+        <DialogDescription>Only sessions you start in Lightbulb are shared. A plain <code>claude</code> or <code>codex</code> session stays private.</DialogDescription>
       </DialogHeader>
       <ol className="list-decimal space-y-3 pl-5 text-sm">
         <li>In the Lightbulb desktop app on your Mac, turn on sharing in <Link className="underline underline-offset-4" href="/settings">Settings → Native terminal sessions</Link>. You only do this once.</li>
-        <li>Open a terminal in your project and run one of these:
+        <li>Use New session in the desktop app, or open a terminal in a project inside an approved folder and run one of these:
           <ul className="mt-2 space-y-2">{COMMANDS.map(({ tool, command }) => <li key={command} className="flex items-center gap-2">
             <code className="rounded bg-muted px-2 py-1 font-mono">{command}</code>
             <span className="text-muted-foreground">{tool}</span>

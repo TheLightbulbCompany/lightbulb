@@ -5,8 +5,9 @@ description: Use for Lightbulb session messages labelled "[Sent from Lightbulb b
 
 # Lightbulb session sharing
 
-A session started in Lightbulb (the desktop app's New session, a remote start
-or a pick-up) is shared; a plain `claude` or `codex` session is private. If
+A session started in Lightbulb (the desktop app's New session, a remote start,
+a pick-up, a resume, or `lightbulb claude` / `lightbulb codex` in a terminal) is
+shared; a plain `claude` or `codex` session is private. If
 this session is shared, members of the owner's Lightbulb workspace can read its prompts, tool calls, output previews and
 answers. Nothing here changes your permissions, tools, or files.
 

@@ -228,8 +228,9 @@ async def test_email_carries_rfc8058_one_click_headers_and_a_footer_link(monkeyp
     client.send_email.return_value = {"MessageId": "m-1"}
     monkeypatch.setattr(ses_email, "_client", lambda: client)
     push = daily_digest.render_push({"mention": 2})
-    assert await daily_digest._send_email("x+clerk_test@example.com", "u_1", push) == "m-1"
+    sent_id = await daily_digest._send_email("x+clerk_test@example.com", "u_1", push)
     raw = client.send_email.call_args.kwargs["Content"]["Raw"]["Data"].decode()
+    assert f"Message-ID: {sent_id}" in raw  # our own RFC id, not SES's
     headers = dict(line.split(": ", 1) for line in raw.split("\n\n", 1)[0].splitlines())
     assert headers["List-Unsubscribe-Post"] == "List-Unsubscribe=One-Click"
     # One unencoded header line (never RFC 2047-folded) that parses as <url>.

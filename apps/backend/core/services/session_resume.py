@@ -86,11 +86,15 @@ async def request_resume(
         row, enrollment = await sessions.authorize_session(auth, None, session_id)
         sid, own, waiting = row["sessionId"], me == row["humanUserId"], row.get("resume")
         if live(waiting) and waiting["resumeId"] == resume_id and waiting["byUserId"] == me:
+            if waiting.get("text") != text:
+                raise ApiProblem("IDEMPOTENCY_CONFLICT", "resumeId was already used with another message.")
             return sessions._session_public(row, me)  # the same click, retried
         if row.get("endedAt") is None:
             # The Mac may have registered this very request's run before a retry of the click lands.
             first = await repo.get_command(owner, sid, resume_id)
             if first and first.get("actorUserId") == me:
+                if first.get("text") != text:
+                    raise ApiProblem("IDEMPOTENCY_CONFLICT", "resumeId was already used with another message.")
                 return sessions._session_public(row, me)
             raise ApiProblem("LOCAL_SESSION_CONFLICT", "This session is still running.")
         if not own and me not in (row.get("resumeAllowed") or []):

@@ -397,6 +397,30 @@ async def test_the_same_run_re_registering_does_not_consume_the_resume(transport
 
 
 @pytest.mark.asyncio
+async def test_the_same_run_re_registering_keeps_who_may_resume(transport):
+    sid = await ended_session(transport, BOB)
+    # Ended-mirror recovery: the same generation registers again to drain its backlog.
+    await relay(transport).handle_message("conn-1", descriptor(generation="generation-1"))
+    assert (await repo.get_session(OWNER, sid))["resumeAllowed"] == [BOB.user_id]
+    await relay(transport).handle_message("conn-1", successor())
+    assert "resumeAllowed" not in await repo.get_session(OWNER, sid)
+
+
+@pytest.mark.asyncio
+async def test_a_retry_that_changes_the_message_is_refused(transport):
+    sid = await ended_session(transport, BOB)
+    await ask(BOB, sid, "carry on")
+    with pytest.raises(ApiProblem) as waiting:
+        await ask(BOB, sid, "do something else")
+    assert waiting.value.error.code == "IDEMPOTENCY_CONFLICT"
+    await relay(transport).handle_message("conn-1", successor())
+    with pytest.raises(ApiProblem) as registered:
+        await ask(BOB, sid, "do something else")
+    assert registered.value.error.code == "IDEMPOTENCY_CONFLICT"
+    assert (await ask(BOB, sid, "carry on")).session_id == sid
+
+
+@pytest.mark.asyncio
 async def test_the_owner_resuming_lets_nobody_else_in(transport):
     sid = await ended_session(transport, BOB)
     await ask(ALICE, sid, "carry on")

@@ -525,8 +525,6 @@ class LocalSessionRelay:
                     # A resumed conversation re-registers under the same id: registering un-ends it.
                     row.pop("endedAt", None)
                     row.pop("endedReason", None)
-                    # The end rewrites who may resume; a running session has nobody to resume it.
-                    row.pop("resumeAllowed", None)
                     # A prompt belongs to the generation that asked it; a new one re-reports.
                     # So does teammate control, and so do the people the owner let in: a restarted
                     # process is a new run the owner has not opted into, even when no Ended frame
@@ -535,6 +533,9 @@ class LocalSessionRelay:
                     if (previous or {}).get("connectionId") != cid:
                         row.pop("deviceFeatures", None)
                     if previous is None or previous["generation"] != descriptor.generation:
+                        # The end rewrites who may resume; a new run has nobody to resume it. The
+                        # same generation re-registering to drain an ended mirror keeps them.
+                        row.pop("resumeAllowed", None)
                         row.pop("pendingApproval", None)
                         row.pop("privateSendApproval", None)
                         row.pop("teamControl", None)

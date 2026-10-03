@@ -1961,8 +1961,9 @@ async def test_the_last_human_leaving_clears_the_marker_first_even_if_the_post_h
     backend.presence = hang
     await leave_all(h, clock)
     tail = log[log.index(("presence", ())) + 1 :]
-    assert tail.index("end") < tail.index("shutdown") == len(tail) - 1  # timed out, ended, then left
-    )  # timed out, ended the call, then left
+    assert (
+        tail.index("end") < tail.index("shutdown") == len(tail) - 1
+    )  # timed out, ended, then left
 
 
 async def test_shutdown_clears_the_marker_only_when_nobody_is_left():

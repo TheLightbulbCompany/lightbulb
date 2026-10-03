@@ -1,7 +1,7 @@
 import { useAuth } from "@clerk/clerk-expo";
 import { SymbolView } from "expo-symbols";
 import {
-  ApiError, buildRows, canControlSession, groupRows, mainEvents, pendingApproval, receiptChip, sessionLabel, sessionRingState, sessionStatus, sessionTitle, sessionViewKey, unavailableReason, useLocalSessionHistory, usePendingPrompt, useSessionCommand, useSessionOutbox, useWorkspaceSessions,
+  ApiError, buildRows, canControlSession, groupRows, mainEvents, pendingApproval, receiptChip, sessionLabel, sessionRingState, sessionStatus, sessionTitle, sessionViewKey, unavailableReason, useLocalSessionHistory, usePendingPrompt, useSessionCommand, useSessionOutbox, useSessionResume, useWorkspaceSessions,
   type LocalSession, type SessionControlClient, type SessionSource, type TranscriptItem,
 } from "@lightbulb/shared";
 import { randomUUID } from "expo-crypto";
@@ -20,6 +20,7 @@ import { Avatar } from "../../../components/room/Avatar";
 import { AskToJoin, JoinRequests } from "../../../components/session/SessionJoin";
 import { SessionApprovalCard } from "../../../components/session/SessionApprovalCard";
 import { SessionOverview } from "../../../components/session/SessionOverview";
+import { ResumeDelivery, SessionResume } from "../../../components/session/SessionResume";
 import { SessionPromptRow } from "../../../components/session/SessionPromptRow";
 import { SessionRenameSheet } from "../../../components/session/SessionRenameSheet";
 import { PendingPromptRow, TranscriptRowView, WorkingRow } from "../../../components/session/TranscriptRow";
@@ -266,6 +267,8 @@ function SessionBody({
   const history = useLocalSessionHistory(client, session.sessionId, session.latestEventSeq, revision, onAccessLost, { pollMs });
   const [text, setText] = useState("");
   const command = useSessionCommand(client, session, { uuid: randomUUID, onAccessLost, onSent: () => setText(""), agentName: name, allowInterrupt: own || !!session.teamControl, allowOffline: true });
+  const { userId } = useAuth();
+  const resume = useSessionResume(client, session, { own, userId, ownerName, nameOf: (who) => personName(who), uuid: randomUUID });
   const outbox = useSessionOutbox(client, session.sessionId,
     `${session.status}:${session.status === "offline" ? revision : 0}:${command.attempt?.request.requestId}:${command.receipt?.state}`,
     session.status !== "offline" && session.status !== "ended");
@@ -417,7 +420,9 @@ function SessionBody({
             way to the session's newest output. */}
         {(!atBottom || history.hasNewer) && <JumpToLatest palette={palette} onPress={jumpToLatest} />}
       </View>
-      {ended ? null : control ? <SessionPromptRow session={session} text={text} onChangeText={setText} command={command} pendingShown={pendingShown} />
+      {!ended && <ResumeDelivery flow={resume} />}
+      {ended ? <SessionResume flow={resume} own={own} ownerName={ownerName} />
+        : control ? <SessionPromptRow session={session} text={text} onChangeText={setText} command={command} pendingShown={pendingShown} />
         : <AskToJoin session={session} client={client} ownerName={ownerName} />}
       <BottomSheet visible={detailsOpen} onClose={onCloseDetails} large>
         <View style={styles.sheetContent}>

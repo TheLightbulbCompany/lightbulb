@@ -347,6 +347,8 @@ async def entrypoint(ctx: JobContext) -> None:
         on_vocabulary=lambda prompt: stt_engine.update_options(
             prompt=prompt
         ),  # open streams take it in place
+        # a Google Meet bridged in by a Recall bot (the meeting dispatch)
+        setting="meeting" if meta.get("source") == "meet" else "live",
     )
     tasks: set[asyncio.Task] = set()
 
@@ -361,11 +363,18 @@ async def entrypoint(ctx: JobContext) -> None:
         t.add_done_callback(_done)
         return t
 
+    def person(p: rtc.Participant) -> bool:
+        # the Recall bot's `meet:<roomId>` participant is the whole meeting: it counts as a person
+        return (
+            p.kind == rtc.ParticipantKind.PARTICIPANT_KIND_STANDARD
+            or p.identity.startswith("meet:")
+        )
+
     def humans() -> dict[str, str]:
         return {
             p.identity: p.name or p.identity
             for p in ctx.room.remote_participants.values()
-            if p.kind == rtc.ParticipantKind.PARTICIPANT_KIND_STANDARD
+            if person(p)
         }
 
     async def transcribe(track: rtc.Track, p: rtc.RemoteParticipant) -> None:
@@ -420,11 +429,7 @@ async def entrypoint(ctx: JobContext) -> None:
             t.cancel()
 
     def start_stt(track: rtc.Track | None, p: rtc.Participant) -> None:
-        if (
-            track is None
-            or track.kind != rtc.TrackKind.KIND_AUDIO
-            or p.kind != rtc.ParticipantKind.PARTICIPANT_KIND_STANDARD
-        ):
+        if track is None or track.kind != rtc.TrackKind.KIND_AUDIO or not person(p):
             return
         stop_stt(p.identity)
         stt_tasks[p.identity] = spawn(transcribe(track, p))

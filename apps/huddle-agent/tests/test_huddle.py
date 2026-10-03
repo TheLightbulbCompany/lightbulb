@@ -85,6 +85,7 @@ class FakeBackend:
         self.versions: list[int] = []
         self.team_calls = 0
         self.transcripts: list[tuple[str, list[dict]]] = []
+        self.finals: list[bool] = []
         self.late_answers: list[tuple[str, str, str, str]] = []
         self.transcript_gate: asyncio.Event | None = None
         self.presence_gate: asyncio.Event | None = None
@@ -103,11 +104,19 @@ class FakeBackend:
         floor=None,
         voice_runs=(),
         at=(),
+        setting="live",
+        unclaimed=False,
     ):
         self.routes.append((speaker, utterance, transcript))
         self.route_humans.append(humans)
         self.route_bodies.append(
-            {"floor": floor, "voiceRuns": list(voice_runs), "at": list(at)}
+            {
+                "floor": floor,
+                "voiceRuns": list(voice_runs),
+                "at": list(at),
+                "setting": setting,
+                "unclaimed": unclaimed,
+            }
         )
         extra, gate = (
             self.route_extra,
@@ -200,10 +209,14 @@ class FakeBackend:
     async def late_answer(self, agent_id, run_id, request, answer):
         self.late_answers.append((agent_id, run_id, request, answer))
 
-    async def transcript(self, huddle_id, lines):
+    async def transcript(self, huddle_id, lines, final=False):
         if self.transcript_gate:
             await self.transcript_gate.wait()
         self.transcripts.append((huddle_id, lines))
+        self.finals.append(final)
+
+    async def leave_meeting(self):
+        self.log.append("leave_meeting")
 
 
 class FakeLive:
@@ -256,7 +269,7 @@ class FakeLive:
         self.usage = self.final_usage
 
 
-def make():
+def make(**kw):
     log: list[str] = []
     room, backend, clock = FakeRoom(), FakeBackend(log), Clock()
     room.log = log
@@ -287,6 +300,7 @@ def make():
         clock=clock,
         sleep=sleep,
         on_vocabulary=vocab.append,
+        **kw,
     )
     h.fail, h.gate, h.vocab = fail, gate, vocab
     return h, room, backend, lives, clock, log
@@ -2019,6 +2033,8 @@ async def test_backend_client_option_d_routes(monkeypatch):
                 "floor": None,
                 "voiceRuns": [],
                 "at": [],
+                "setting": "live",
+                "unclaimed": False,
                 **base,
             },
         ),

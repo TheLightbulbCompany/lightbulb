@@ -29,7 +29,9 @@ class Line:
 
 
 class Transcript:
-    def __init__(self, max_chars: int = 30000):
+    def __init__(
+        self, max_chars: int | None = 30000
+    ):  # None: keep every line (a meeting)
         self.max_chars = max_chars
         self._lines: list[Line] = []
         self._next = 0
@@ -41,7 +43,11 @@ class Transcript:
         self._lines.append(
             Line(kind, who, name, " ".join(text.splitlines()), mark, at, to)
         )  # one line each
-        while len(self._lines) > 1 and len(self.text()) > self.max_chars:
+        while (
+            self.max_chars
+            and len(self._lines) > 1
+            and len(self.text()) > self.max_chars
+        ):
             self._lines.pop(0)
         return mark
 
@@ -315,6 +321,16 @@ def real_speech(text: str) -> bool:
         return True
     words = re.findall(r"[a-z0-9']+", _FILLER_PHRASES.sub(" ", t))
     return sum(w not in _FILLER for w in words) >= 2
+
+
+_QUESTION_START = re.compile(
+    r"^(?:who|what|when|where|why|how|can|could|should|is|are|do|does)\b", re.I
+)
+
+
+def is_question(text: str) -> bool:
+    t = text.strip()
+    return t.endswith("?") or bool(_QUESTION_START.match(t))
 
 
 def pause(text: str) -> bool:

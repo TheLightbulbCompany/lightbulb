@@ -41,9 +41,10 @@ class Backend:
             )
         )
 
-    async def _post(self, path: str, body: dict) -> dict:
+    async def _post(self, path: str, body: dict, method: str = "POST") -> dict:
         try:
-            r = await self._http.post(
+            r = await self._http.request(
+                method,
                 path,
                 json={**body, "ownerId": self._owner_id, "roomToken": self._room_token},
             )
@@ -83,10 +84,13 @@ class Backend:
         floor: dict | None = None,
         voice_runs: list[dict] = (),
         at: list[int] = (),
+        setting: str = "live",
+        unclaimed: bool = False,
     ) -> dict:
         """{agentId, agentIds, hold?}: agentIds empty is nobody; `hold` is an unfinished line. `humans` (people
         in the call) lets Jev pick nobody when 2+ are talking; None is the wake word. `floor`/`voiceRuns` are
-        Live's open requests; `at` is when each of the transcript's last lines was said (epoch s, oldest first)."""
+        Live's open requests; `at` is when each of the transcript's last lines was said (epoch s, oldest first).
+        `setting` is "live" or "meeting"; `unclaimed`: a meeting question nobody took within UNCLAIMED_QUESTION_S."""
         body = {
             "speakerUserId": speaker,
             "utterance": utterance,
@@ -95,6 +99,8 @@ class Backend:
             "floor": floor,
             "voiceRuns": list(voice_runs),
             "at": list(at),
+            "setting": setting,
+            "unclaimed": unclaimed,
         }
         return await self._post(f"/internal/huddles/{self._room_id}/route", body)
 
@@ -164,11 +170,18 @@ class Backend:
         }
         await self._post(f"/internal/huddles/{self._room_id}/late-answer", body)
 
-    async def transcript(self, huddle_id: str, lines: list[dict]) -> None:
+    async def transcript(
+        self, huddle_id: str, lines: list[dict], final: bool = False
+    ) -> None:
+        """final: a meeting's whole transcript, sent once as the worker leaves."""
         await self._post(
             f"/internal/huddles/{self._room_id}/transcript",
-            {"huddleId": huddle_id, "lines": lines},
+            {"huddleId": huddle_id, "lines": lines, "final": final},
         )
+
+    async def leave_meeting(self) -> None:
+        """The meeting bot leaves the Google Meet (Recall), then this worker leaves the room."""
+        await self._post(f"/internal/meetings/{self._room_id}", {}, method="DELETE")
 
     async def presence(self, user_ids: list[str], version: int = 0) -> None:
         body = {"userIds": user_ids, "version": version}

@@ -217,6 +217,21 @@ class PickedUpFrom(ContractModel):
     human_user_id: str
 
 
+class ResumeStatus(ContractModel):
+    """A resume someone asked for on this ended session: waiting for the owner's Mac, or refused by
+    it. Never the message itself."""
+
+    state: Literal["pending", "failed"]
+    by_user_id: str
+    requested_at: str
+    # Why the Mac refused: ALREADY_RUNNING, FOLDER_MISSING, TOOL_UNAVAILABLE, SHARING_OFF, LAUNCH_FAILED.
+    reason: str | None = None
+
+    @model_serializer(mode="wrap")
+    def wire(self, handler, info):
+        return _drop_none(self, handler(self), info, ("reason",))
+
+
 class LocalSession(ContractModel):
     workspace: WorkspaceSummary = Field(default_factory=WorkspaceSummary)
     session_id: str
@@ -269,6 +284,10 @@ class LocalSession(ContractModel):
     pickup: PickupStatus | None = None
     # Set on the first registration of a session that a teammate's pick-up started.
     picked_up_from: PickedUpFrom | None = None
+    # Ended sessions only: who besides the owner may resume it -- the people who could send when it ended.
+    resume_allowed: list[str] = Field(default_factory=list)
+    # A resume waiting for the owner's Mac, or the Mac's refusal of one (spec §5.7).
+    resume: ResumeStatus | None = None
 
     @model_serializer(mode="wrap")
     def wire(self, handler, info):
@@ -285,6 +304,7 @@ class LocalSession(ContractModel):
                 "usage",
                 "pickup",
                 "picked_up_from",
+                "resume",
                 "join_request",
                 "join_request_id",
                 "pending_joins",
@@ -563,6 +583,17 @@ def _session_public(row: dict, viewer: str | None = None) -> LocalSession:
         public["capabilities"] = Capabilities().model_dump(by_alias=True)
     public["teamControl"] = team_control_on(row)
     public["allowedSenders"] = allowed_senders(row)
+    ended = row.get("endedAt") is not None
+    public["resumeAllowed"] = list(row.get("resumeAllowed") or []) if ended else []
+    # The stored request carries the message; only its state, author and time are public.
+    waiting = public.pop("resume", None)
+    if ended and waiting and int(waiting["until"]) > int(time.time()):
+        public["resume"] = {
+            "state": waiting["state"],
+            "byUserId": waiting["byUserId"],
+            "requestedAt": iso(waiting["at"]),
+            "reason": waiting.get("code"),
+        }
     request = (row.get("joinRequests") or {}).get(viewer) if viewer else None
     if request and row.get("endedAt") is None:
         public["joinRequest"] = request["state"]
@@ -1604,6 +1635,8 @@ AUDIT_ACTIONS = Literal[
     "join_allowed",
     "join_declined",
     "sender_removed",
+    "resume_requested",
+    "resume_revoked",
 ]
 
 

@@ -509,6 +509,8 @@ class LocalSessionRelay:
                     # A resumed conversation re-registers under the same id: registering un-ends it.
                     row.pop("endedAt", None)
                     row.pop("endedReason", None)
+                    # The end rewrites who may resume; a running session has nobody to resume it.
+                    row.pop("resumeAllowed", None)
                     # A prompt belongs to the generation that asked it; a new one re-reports.
                     # So does teammate control, and so do the people the owner let in: a restarted
                     # process is a new run the owner has not opted into, even when no Ended frame
@@ -736,6 +738,11 @@ class LocalSessionRelay:
         if updated.pop("teamControl", False):
             audit = sessions.audit_row(owner, row["sessionId"], None, "team_control_ended")
             extra.append({"Put": {"TableName": store._table().name, "Item": audit}})
+        # Who may resume it (spec §5.7): the people who could send when it ended. Team control is a
+        # switch on the run, not a person the owner let in, so it lets nobody resume.
+        resumers = sessions.allowed_senders(row)
+        if resumers:
+            updated["resumeAllowed"] = resumers
         # So do the people the owner let in, and every open ask to join.
         for key in sessions.JOIN_FIELDS:
             updated.pop(key, None)

@@ -73,4 +73,23 @@ describe("useSessionResume", () => {
     second.rerender({ s: ended({ sessionId: "s-missing", status: "idle", generation: "g2" }) });
     await waitFor(() => expect(second.result.current.chip?.label).toBe("Not delivered"));
   });
+
+  it("shows a waiting resume at once, and a Mac's refusal when a later read carries it", async () => {
+    const pending = ended({ sessionId: "s-wait", resume: { state: "pending", byUserId: "bob", requestedAt: "" } });
+    const refused = ended({ sessionId: "s-wait", resume: { state: "failed", byUserId: "bob", requestedAt: "", reason: "FOLDER_MISSING" } });
+    const getLocalSession = vi.fn().mockResolvedValue(refused);
+    const client = { submitLocalSessionCommand: vi.fn(), resumeLocalSession: vi.fn(async () => pending), getLocalSession };
+    vi.useFakeTimers();
+    const { result } = renderHook(() => useSessionResume(client, ended({ sessionId: "s-wait" }), { ...opts, uuid: () => "r-1" }));
+    expect(result.current.available).toBe(true);
+    await act(async () => { await result.current.resume(""); });
+    expect(result.current.available).toBe(false); // the prop never changed
+    expect(result.current.status).toContain("You asked to resume this session");
+    await act(async () => { await vi.advanceTimersByTimeAsync(2100); });
+    expect(getLocalSession).toHaveBeenCalledWith("s-wait");
+    expect(result.current.status).toBe("Not resumed: its folder is no longer on Alice’s Mac.");
+    expect(result.current.available).toBe(true);
+    await act(async () => { await vi.advanceTimersByTimeAsync(10000); });
+    expect(getLocalSession).toHaveBeenCalledTimes(1); // no longer pending: polling stopped
+  });
 });

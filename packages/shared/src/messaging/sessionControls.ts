@@ -17,7 +17,7 @@ type Client = Pick<ReturnType<typeof createMessagingClient>,
   "submitLocalSessionCommand" | "cancelLocalSessionCommand" | "listLocalSessionOutbox" | "getPrivateSendApproval"
   | "setLocalSessionTeamControl" | "listLocalSessionAudit" | "setLocalSessionUsageSharing"
   | "setLocalSessionPickup" | "setLocalSessionSharing" | "requestLocalSessionJoin" | "removeLocalSessionSender"
-  | "resumeLocalSession" | "revokeLocalSessionResume" | "getLocalSessionCommand">;
+  | "resumeLocalSession" | "revokeLocalSessionResume" | "getLocalSessionCommand" | "getLocalSession">;
 
 /** A session client that may predate the control routes (test doubles, older callers). */
 export type SessionControlClient = Pick<Client, "submitLocalSessionCommand"> & Partial<Omit<Client, "submitLocalSessionCommand">>;
@@ -408,10 +408,14 @@ export type SessionResumeFlow = {
  * delivery may remount when the session starts running again. */
 const firstMessages = new Map<string, { requestId: string; text: string }>();
 
-export function useSessionResume(client: SessionControlClient, session: LocalSession, opts: {
+export function useSessionResume(client: SessionControlClient, prop: LocalSession, opts: {
   own: boolean; userId?: string | null; ownerName: string; nameOf: (userId: string) => string; uuid: () => string;
 }): SessionResumeFlow {
   const { own, userId, ownerName, nameOf, uuid } = opts;
+  // Ended sessions are absent from workspace listings, so the page's copy goes stale once a resume
+  // is asked or refused: keep the newer read while this is still the same ended run.
+  const [fresh, setFresh] = useState<LocalSession | null>(null);
+  const session = fresh && fresh.sessionId === prop.sessionId && fresh.generation === prop.generation && prop.status === "ended" ? fresh : prop;
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [first, setFirst] = useState(() => firstMessages.get(session.sessionId) ?? null);
@@ -427,8 +431,9 @@ export function useSessionResume(client: SessionControlClient, session: LocalSes
     const text = message.trim();
     setSaving(true); setError(null);
     try {
-      await client.resumeLocalSession(session.sessionId, { resumeId, ...(text ? { message: text } : {}) });
+      const updated = await client.resumeLocalSession(session.sessionId, { resumeId, ...(text ? { message: text } : {}) });
       attemptId.current = null;
+      if (updated?.status === "ended") setFresh(updated);
       if (text) {
         const sent = { requestId: resumeId, text };
         firstMessages.set(session.sessionId, sent);
@@ -446,6 +451,25 @@ export function useSessionResume(client: SessionControlClient, session: LocalSes
       return false;
     } finally { setSaving(false); }
   }, [client, session.sessionId, uuid]);
+  const pending = session.status === "ended" && session.resume?.state === "pending";
+  useEffect(() => {
+    const read = client.getLocalSession;
+    if (!pending || !read) return;
+    let alive = true;
+    let tries = 0;
+    const tick = async () => {
+      tries += 1;
+      try {
+        const latest = await read(session.sessionId);
+        if (!alive) return;
+        if (latest.status === "ended") setFresh(latest);
+        if (latest.status !== "ended" || latest.resume?.state !== "pending") clearInterval(timer);
+      } catch { /* the next tick asks again */ }
+      if (tries >= 15) clearInterval(timer);
+    };
+    const timer = setInterval(() => void tick(), AUTO_CHECK_INTERVAL_MS);
+    return () => { alive = false; clearInterval(timer); };
+  }, [client, session.sessionId, pending]);
   useEffect(() => {
     const get = client.getLocalSessionCommand;
     if (!first || !running || !get) return;

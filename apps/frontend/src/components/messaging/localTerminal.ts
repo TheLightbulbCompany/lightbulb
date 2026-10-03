@@ -42,9 +42,11 @@ export async function startLocalTerminal(params: Record<string, unknown>): Promi
 export type LocalTerminal = "checking" | "local" | "none";
 /** How often the panel's place is re-read: it moves when the content above it changes height. */
 const TRACK_MS = 250;
-/** While no holder answers: re-ask this often, for this long after the panel opens. */
+/** While no holder answers: re-ask this often for the first REPROBE_FOR_MS, then every REPROBE_SLOW_MS
+ *  until the session ends or the panel unmounts. */
 const REPROBE_MS = 2000;
 const REPROBE_FOR_MS = 30_000;
+const REPROBE_SLOW_MS = 10_000;
 // Strictly increasing: the backend drops a non-greater `at`, and a close and the next open can share a clock tick.
 let last = 0;
 const now = () => (last = Math.max(performance.timeOrigin + performance.now(), last + 0.01));
@@ -71,8 +73,11 @@ export function useLocalTerminal(target: { sessionId: string } | { holderId: str
       const box = slot.current?.getBoundingClientRect();
       const rect = visible && box && box.width > 0 && box.height > 0 ? { x: box.left, y: box.top, width: box.width, height: box.height } : null;
       const shape = JSON.stringify(rect);
-      // The holder can register after the panel opens (the desktop indexes it once a second): keep asking, slowly, for a while.
-      const reprobe = none && rect && Date.now() - probedAt >= REPROBE_MS && Date.now() - t0 < REPROBE_FOR_MS;
+      // The holder can be found after the panel opens (the session can register before its holder
+      // is indexed): keep asking while it runs. The slot is unmounted while the answer is "none", so
+      // the probe carries no rect; a "live" answer mounts the slot and the next tick places it.
+      const gap = Date.now() - t0 < REPROBE_FOR_MS ? REPROBE_MS : REPROBE_SLOW_MS;
+      const reprobe = none && Date.now() - probedAt >= gap;
       if (shape === sent && !reprobe) return;
       sent = shape;
       probedAt = Date.now();

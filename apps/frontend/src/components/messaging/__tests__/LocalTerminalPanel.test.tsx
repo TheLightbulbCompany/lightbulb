@@ -70,7 +70,27 @@ it("keeps asking while no holder answers, and promotes the panel when one does",
     render(panel(session));
     await vi.advanceTimersByTimeAsync(100);
     expect(screen.getByRole("region", { name: "Native session history" })).toBeInTheDocument();
+    expect(screen.queryByRole("region", { name: "Session terminal" })).toBeNull();
     await vi.advanceTimersByTimeAsync(2500);
+    // The slot was gone while the answer was "none": the probe asks without a rect.
+    expect(invoke).toHaveBeenCalledWith("terminal_panel", { sessionId: "session", rect: null, at: expect.any(Number) });
+    expect(screen.getByRole("region", { name: "Session terminal" })).toBeInTheDocument();
+    await vi.advanceTimersByTimeAsync(300);
+    expect(invoke).toHaveBeenLastCalledWith("terminal_panel", { sessionId: "session", rect: { x: 300, y: 120, width: 800, height: 500 }, at: expect.any(Number) });
+  } finally { vi.useRealTimers(); }
+});
+
+it("keeps asking after the first half minute, more slowly, while the session runs", async () => {
+  vi.useFakeTimers();
+  try {
+    const invoke = vi.fn().mockResolvedValue({ live: false });
+    (window as { __TAURI__?: unknown }).__TAURI__ = { core: { invoke } };
+    render(panel(session));
+    await vi.advanceTimersByTimeAsync(31_000);
+    const early = invoke.mock.calls.length;
+    invoke.mockResolvedValue({ live: true });
+    await vi.advanceTimersByTimeAsync(10_500);
+    expect(invoke.mock.calls.length).toBeGreaterThan(early);
     expect(screen.getByRole("region", { name: "Session terminal" })).toBeInTheDocument();
   } finally { vi.useRealTimers(); }
 });

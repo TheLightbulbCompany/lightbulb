@@ -330,7 +330,8 @@ async def test_a_lost_meta_race_is_retried_once(room):
     assert room.patch.await_count == 2
     room.patch.side_effect = [_cas_lost(), _cas_lost()]
     again = moved.replace("SEQUENCE:1", "SEQUENCE:2")
-    assert await meeting_invites.handle_team_mail("org_1", _mail(again), TEAM) == "meeting_scheduled"
+    with pytest.raises(type(_cas_lost())):  # lost twice: nothing was written, so SES must retry
+        await meeting_invites.handle_team_mail("org_1", _mail(again), TEAM)
     assert room.patch.await_count == 4
 
 
@@ -378,6 +379,13 @@ async def test_a_racing_second_creator_falls_through_to_the_update(room):
     room.create.side_effect = lost_race
     assert await meeting_invites.handle_team_mail("org_1", _mail(GOOGLE), TEAM) == "meeting_scheduled"
     assert _lines(room) == ["Agents will join **Acme weekly sync** on Sat Oct 3, 3:00 PM EDT."]
+
+
+async def test_a_cancelled_create_that_left_no_room_propagates(room):
+    room.create.side_effect = meeting_invites.messaging_repo.MessagingRepoError("cancelled, no receipt")
+    with pytest.raises(meeting_invites.messaging_repo.MessagingRepoError):
+        await meeting_invites.handle_team_mail("org_1", _mail(GOOGLE), TEAM)
+    assert _lines(room) == []
 
 
 async def test_a_throttle_on_the_retry_propagates(room):

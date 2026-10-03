@@ -66,6 +66,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from core.config import settings
 from core.observability.metrics import put_metric
+from core.repositories import company_slug_repo
 from core.repositories.agent_email_repo import (
     get_by_address,
     is_team_address,
@@ -428,6 +429,17 @@ _PAUSED_BODY = (
 )
 
 
+async def _slug_held_since(slug: str, sent_at: Any) -> bool:
+    """True when the slug row was reserved at or before ``sent_at`` (the complained mail's SES
+    timestamp). A missing or unparseable time on either side proves nothing: False."""
+    try:
+        reserved = datetime.fromisoformat((await company_slug_repo.get_by_slug(slug) or {})["created_at"])
+        sent = datetime.fromisoformat(sent_at)
+    except (KeyError, TypeError, ValueError):
+        return False
+    return sent.replace(tzinfo=sent.tzinfo or timezone.utc) >= reserved.replace(tzinfo=reserved.tzinfo or timezone.utc)
+
+
 @router.post("/ses-events", include_in_schema=False)
 async def handle_ses_events(request: Request):
     """SES complaint events (configuration-set → EventBridge → API destination)."""
@@ -461,6 +473,10 @@ async def handle_ses_events(request: Request):
     row = await get_by_address(candidate) if candidate else None
     # A retired per-agent address has no row any more; its host still names the workspace.
     resolved = (row["owner_id"], None) if row else (await owner_for_host(candidate) if candidate else None)
+    if resolved and not row and not await _slug_held_since(resolved[1], mail.get("timestamp")):
+        # A wipe frees a slug for another workspace: a complaint about mail sent before this
+        # owner reserved it is the previous owner's, and must pause nothing.
+        resolved = None
     if not resolved:
         return {"status": "unknown_source"}
     owner_id = resolved[0]

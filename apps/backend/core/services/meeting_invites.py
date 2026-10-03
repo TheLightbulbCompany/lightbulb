@@ -209,8 +209,10 @@ async def _create_room(owner_id: str, room_id: str, invite: Invite, creator: str
         )
     except messaging_repo.MessagingRepoError:
         # A replay with a different body, or a second member's forward racing this one (its META
-        # Put cancels with no receipt of ours): either way the room is someone's, so update it.
-        pass
+        # Put cancels with no receipt of ours): the room is someone's, so update it. A cancel that
+        # left no room was transient: raise, so the route 503s and SES redelivers.
+        if await messaging_repo.get_room(room_id) is None:
+            raise
 
 
 async def _newer_stored(room_id: str, sequence) -> bool:
@@ -225,8 +227,8 @@ async def _newer_stored(room_id: str, sequence) -> bool:
 
 async def _patch_meeting(room_id: str, meeting: dict) -> bool:
     """``patch_room_meta`` under its revision CAS, retried once against a concurrent META edit
-    (a rename). Losing twice is logged, not raised: the next resend of the invite heals it. False
-    when a newer sequence is stored, so nothing was written."""
+    (a rename). Losing twice raises: the route 503s and SES redelivers. False when a newer
+    sequence is stored, so nothing was written."""
     for attempt in (1, 2):
         if await _newer_stored(room_id, meeting.get("sequence", 0)):
             return False
@@ -234,11 +236,10 @@ async def _patch_meeting(room_id: str, meeting: dict) -> bool:
             await messaging_repo.patch_room_meta(room_id, {"meeting": meeting})
             return True
         except ClientError as exc:
-            if not messaging_repo._is_cancelled(exc):
-                raise  # a throttle or access error: SES retries the whole mail
-            if attempt == 2:
-                logger.warning("meeting room %s: META patch lost the revision race twice", room_id)
-    return True
+            # a throttle or access error, or the revision race lost twice: SES retries the mail
+            if attempt == 2 or not messaging_repo._is_cancelled(exc):
+                raise
+    raise AssertionError("unreachable")
 
 
 async def handle_team_mail(owner_id: str, payload, team: dict) -> str | None:

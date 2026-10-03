@@ -1,7 +1,6 @@
 """Calendar invites to the team address ``agents@{slug}``: parse the ``text/calendar`` part and
 turn a workspace member's invite into a meeting room. Everything else -- plain team mail and a
-stranger's invite alike -- is ordinary mail for the CEO, delivered by the inbound route exactly
-as mail to the CEO's own address would be (``team_row``).
+stranger's invite alike -- is ordinary team mail, delivered by the inbound route.
 """
 
 from __future__ import annotations
@@ -15,7 +14,7 @@ from zoneinfo import ZoneInfo
 from botocore.exceptions import ClientError
 
 from core.constants import SYSTEM_ACTOR_ID
-from core.repositories import agent_email_repo, messaging_repo
+from core.repositories import messaging_repo
 from core.repositories.paperclip_repo import PaperclipRepo
 from core.services import clerk_admin, messaging
 from core.services.agent_mail_inbound import authenticated_sender, parse_from_address
@@ -115,24 +114,6 @@ def _parse(calendar_text: str) -> Invite | None:
         attendee_emails=attendees[:100],
         meeting_url=url or None,
     )
-
-
-async def team_row(owner_id: str, address: str) -> dict | None:
-    """The CEO's own address row re-pointed at the team address, so team mail is gated, stored,
-    capped and delivered exactly like mail to the CEO. None when the workspace has no CEO."""
-    row = await PaperclipRepo(table_name="paperclip-companies").resolve_owner_row(owner_id)
-    ceo = (getattr(row, "starter_agent_ids", None) or {}).get("ceo")
-    if not ceo:
-        return None
-    own = next(
-        (
-            r
-            for r in await agent_email_repo.query_by_owner(owner_id)
-            if r.get("agent_id") == ceo and r.get("status") == "active"
-        ),
-        {"send_to_anyone": True},
-    )
-    return {**own, "address": address, "owner_id": owner_id, "agent_id": ceo}
 
 
 def _when_text(start: datetime) -> str:

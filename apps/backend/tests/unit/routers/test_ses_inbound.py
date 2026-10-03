@@ -53,7 +53,18 @@ OWNER_ID = "owner_1"
 AGENT_ID = "agent_1"
 MESSAGE_ID = "ses-msg-123"
 SENDER = "sender@example.com"
-RECIPIENT = "friday@acme-robotics.isol8.co"
+RECIPIENT = "agents@acme-robotics.isol8.co"
+
+
+@pytest.fixture(autouse=True)
+def _team_mailbox(monkeypatch):
+    """Every recipient in this file is the workspace's team address unless a test
+    says otherwise; its mail is the CEO's (``AGENT_ID`` here) unless it answers
+    an agent's own sent mail. A missing row cannot be created by default."""
+    monkeypatch.setattr(ses_inbound, "is_team_address", AsyncMock(return_value=(OWNER_ID, "acme-robotics")))
+    monkeypatch.setattr(ses_inbound, "_ceo", AsyncMock(return_value=AGENT_ID))
+    monkeypatch.setattr(ses_inbound, "_owner_email", AsyncMock(return_value="owner@example.com"))
+    monkeypatch.setattr(ses_inbound, "ensure_team_address", AsyncMock(return_value=(None, "mint_failed")))
 
 
 @pytest.fixture
@@ -85,7 +96,6 @@ def _dedup_recorded(monkeypatch):
 def _row(*, verified_senders=None, address: str = RECIPIENT):
     return {
         "owner_id": OWNER_ID,
-        "agent_id": AGENT_ID,
         "address": address,
         "verified_senders": verified_senders if verified_senders is not None else [SENDER],
         "status": "active",
@@ -203,9 +213,11 @@ def test_empty_message_id_skips_dedup_and_delivers(client, monkeypatch):
 
 
 def test_unknown_recipient_is_dropped(client, monkeypatch):
+    """Only the team address is a mailbox: a retired per-agent address is nobody."""
     _enable(monkeypatch)
     _dedup_recorded(monkeypatch)
-    monkeypatch.setattr(ses_inbound, "get_by_address", AsyncMock(return_value=None))
+    monkeypatch.setattr(ses_inbound, "is_team_address", AsyncMock(return_value=None))
+    monkeypatch.setattr(ses_inbound, "get_by_address", AsyncMock(return_value=_row()))
     deliver_mock = AsyncMock()
     monkeypatch.setattr(ses_inbound, "deliver_to_agent", deliver_mock)
 
@@ -274,8 +286,7 @@ def capped_owner(monkeypatch):
     _dedup_recorded(monkeypatch)
     row = {
         "owner_id": OWNER_ID,
-        "agent_id": AGENT_ID,
-        "address": "friday@acme.isol8.co",
+        "address": "agents@acme.isol8.co",
         "verified_senders": ["owner@example.com"],
     }
     monkeypatch.setattr(ses_inbound, "get_by_address", AsyncMock(return_value=row))
@@ -291,8 +302,8 @@ def _capped_body(**overrides):
 def test_over_cap_sends_an_autoreply_and_reports_capped_notified(client, monkeypatch, capped_owner):
     calls = []
 
-    async def _autoreply(*, owner_id, reason, from_addr, to, in_reply_to, subject):
-        calls.append({"owner_id": owner_id, "reason": reason, "from": from_addr, "to": to})
+    async def _autoreply(*, owner_id, agent_id, reason, from_addr, to, in_reply_to, subject):
+        calls.append({"owner_id": owner_id, "agent_id": agent_id, "reason": reason, "from": from_addr, "to": to})
         return True
 
     monkeypatch.setattr(ses_inbound, "send_cap_autoreply", _autoreply)
@@ -303,7 +314,8 @@ def test_over_cap_sends_an_autoreply_and_reports_capped_notified(client, monkeyp
     assert resp.json()["status"] == "capped_notified"
     assert len(calls) == 1
     # Sent FROM the agent's own address, TO the owner who wrote in.
-    assert calls[0]["from"] == "friday@acme.isol8.co"
+    assert calls[0]["from"] == "agents@acme.isol8.co"
+    assert calls[0]["agent_id"] == AGENT_ID
     assert calls[0]["to"] == "owner@example.com"
 
 
@@ -314,7 +326,7 @@ def test_over_cap_autoreply_threads_on_message_id_header_not_ses_id(client, monk
     different values here so this test fails if someone reverts to the SES id."""
     calls = []
 
-    async def _autoreply(*, owner_id, reason, from_addr, to, in_reply_to, subject):
+    async def _autoreply(*, owner_id, agent_id, reason, from_addr, to, in_reply_to, subject):
         calls.append(in_reply_to)
         return True
 
@@ -906,7 +918,7 @@ def _claim_notice(monkeypatch, granted=True):
     return claim
 
 
-def _complaint(source="friday@acme-robotics.isol8.co", event_type="Complaint"):
+def _complaint(source=RECIPIENT, event_type="Complaint"):
     return {
         "detail-type": "Email Complaint Received",
         "source": "aws.ses",
@@ -918,24 +930,18 @@ def _complaint(source="friday@acme-robotics.isol8.co", event_type="Complaint"):
     }
 
 
-def test_ses_events_complaint_disables_owner_outbound(client, monkeypatch):
+def test_ses_events_complaint_disables_the_one_mailbox(client, monkeypatch):
     _enable(monkeypatch)
     _claim_notice(monkeypatch)
     monkeypatch.setattr(ses_inbound, "get_by_address", AsyncMock(return_value=_row()))
-    monkeypatch.setattr(
-        ses_inbound,
-        "query_by_owner",
-        AsyncMock(return_value=[_row(), dict(_row(), address="atlas@acme-robotics.isol8.co")]),
-    )
     upd = AsyncMock(return_value={})
     monkeypatch.setattr(ses_inbound, "update_settings", upd)
     notify = AsyncMock(return_value="sent")
     monkeypatch.setattr(ses_inbound, "send_to_owner", notify)
     r = client.post("/api/v1/webhooks/ses-events", json=_complaint(), headers={"X-Lightbulb-SES-Secret": SECRET})
-    assert r.status_code == 200 and r.json()["status"] == "disabled" and r.json()["addresses"] == 2
+    assert r.status_code == 200 and r.json()["status"] == "disabled"
     assert r.json()["notified"] is True
-    assert {c.args[0] for c in upd.call_args_list} == {"friday@acme-robotics.isol8.co", "atlas@acme-robotics.isol8.co"}
-    assert all(c.kwargs == {"outbound_disabled": "complaint"} for c in upd.call_args_list)
+    upd.assert_awaited_once_with(RECIPIENT, outbound_disabled="complaint")
     assert notify.call_args.kwargs["owner_id"] == OWNER_ID
     # The notice is the PLATFORM speaking, not Friday saying hello — it must
     # not consume the owner's once-only first-contact slot.
@@ -993,41 +999,13 @@ def test_ses_events_non_dict_json_body_400(client, monkeypatch):
     assert r.status_code == 400 and r.json()["status"] == "bad_json"
 
 
-def test_ses_events_partial_disable_failure_still_disables_and_notifies(client, monkeypatch):
-    """One row's update_settings raising must not abort the loop or skip the
-    owner notification for the rows that DID succeed -- only the failed row
-    is excluded from the `addresses` count."""
+def test_ses_events_disable_failure_returns_503_no_notify(client, monkeypatch):
+    """A failed disable means nothing was disabled -- 503 so the EventBridge
+    API destination retries, and the owner is NOT told sending is paused when
+    it demonstrably isn't yet."""
     _enable(monkeypatch)
     _claim_notice(monkeypatch)
     monkeypatch.setattr(ses_inbound, "get_by_address", AsyncMock(return_value=_row()))
-    monkeypatch.setattr(
-        ses_inbound,
-        "query_by_owner",
-        AsyncMock(return_value=[_row(), dict(_row(), address="atlas@acme-robotics.isol8.co")]),
-    )
-    monkeypatch.setattr(ses_inbound, "update_settings", AsyncMock(side_effect=[RuntimeError("ddb blip"), {}]))
-    notify = AsyncMock(return_value="sent")
-    monkeypatch.setattr(ses_inbound, "send_to_owner", notify)
-
-    r = client.post("/api/v1/webhooks/ses-events", json=_complaint(), headers={"X-Lightbulb-SES-Secret": SECRET})
-
-    assert r.status_code == 200
-    assert r.json()["status"] == "disabled" and r.json()["addresses"] == 1
-    notify.assert_awaited_once()
-
-
-def test_ses_events_all_disable_failures_returns_503_no_notify(client, monkeypatch):
-    """Every row failing means nothing was actually disabled -- 503 so the
-    EventBridge API destination retries, and the owner is NOT told sending is
-    paused when it demonstrably isn't yet."""
-    _enable(monkeypatch)
-    _claim_notice(monkeypatch)
-    monkeypatch.setattr(ses_inbound, "get_by_address", AsyncMock(return_value=_row()))
-    monkeypatch.setattr(
-        ses_inbound,
-        "query_by_owner",
-        AsyncMock(return_value=[_row(), dict(_row(), address="atlas@acme-robotics.isol8.co")]),
-    )
     monkeypatch.setattr(ses_inbound, "update_settings", AsyncMock(side_effect=RuntimeError("ddb blip")))
     notify = AsyncMock(return_value="sent")
     monkeypatch.setattr(ses_inbound, "send_to_owner", notify)
@@ -1045,7 +1023,6 @@ def test_ses_events_notice_is_once_per_owner_per_day(client, monkeypatch):
     suppressed event."""
     _enable(monkeypatch)
     monkeypatch.setattr(ses_inbound, "get_by_address", AsyncMock(return_value=_row()))
-    monkeypatch.setattr(ses_inbound, "query_by_owner", AsyncMock(return_value=[_row()]))
     upd = AsyncMock(return_value={})
     monkeypatch.setattr(ses_inbound, "update_settings", upd)
     notify = AsyncMock(return_value="sent")
@@ -1086,9 +1063,10 @@ def _team(monkeypatch, members):
     from core.services import meeting_invites
 
     monkeypatch.setattr(ses_inbound, "is_team_address", AsyncMock(return_value=(OWNER_ID, "acme")))
-    team_row = {"owner_id": OWNER_ID, "agent_id": CEO_ID, "address": TEAM_ADDRESS, "send_to_anyone": True}
+    team_row = {"owner_id": OWNER_ID, "address": TEAM_ADDRESS, "send_to_anyone": True}
     monkeypatch.setattr(ses_inbound, "try_consume_stranger_wake", AsyncMock(return_value=True))
-    monkeypatch.setattr(meeting_invites, "team_row", AsyncMock(return_value=team_row))
+    monkeypatch.setattr(ses_inbound, "get_by_address", AsyncMock(return_value=team_row))
+    monkeypatch.setattr(ses_inbound, "_ceo", AsyncMock(return_value=CEO_ID))
     monkeypatch.setattr(
         meeting_invites.clerk_admin,
         "list_organization_members",
@@ -1146,19 +1124,100 @@ def test_a_members_malformed_invite_is_ceo_mail_not_5xx(client, monkeypatch, bad
     assert deliver.await_args.kwargs["agent_id"] == CEO_ID
 
 
-def test_a_team_address_without_a_ceo_falls_through_to_the_next_recipient(client, monkeypatch):
-    from core.services import meeting_invites
-
+def test_team_mail_without_a_ceo_is_dropped(client, monkeypatch):
     _enable(monkeypatch)
     _dedup_recorded(monkeypatch)
-    monkeypatch.setattr(ses_inbound, "is_team_address", AsyncMock(side_effect=[(OWNER_ID, "acme"), None]))
-    monkeypatch.setattr(meeting_invites, "team_row", AsyncMock(return_value=None))
-    monkeypatch.setattr(ses_inbound, "get_by_address", AsyncMock(return_value=_row()))
-    monkeypatch.setattr(ses_inbound, "trial_block_reason", AsyncMock(return_value=None))
-    deliver = AsyncMock(return_value="delivered")
-    monkeypatch.setattr(ses_inbound, "deliver_to_agent", deliver)
+    _, deliver = _team(monkeypatch, [])
+    monkeypatch.setattr(ses_inbound, "_ceo", AsyncMock(return_value=None))
 
-    resp = _post(client, _body(to=[TEAM_ADDRESS, RECIPIENT], calendar=INVITE))
+    assert _post(client, _body(to=[TEAM_ADDRESS])).json()["status"] == "dropped_unknown_recipient"
+    deliver.assert_not_awaited()
 
-    assert resp.json()["status"] == "delivered"
-    assert deliver.await_args.kwargs["agent_id"] == AGENT_ID
+
+def _sent_by(monkeypatch, sent: dict):
+    """``find_by_message_id`` backed by this workspace's sent rows ({message_id: agent_id})."""
+
+    async def _find(address, message_id):
+        if message_id in sent:
+            return {"address": address, "direction": "out", "agent_id": sent[message_id]}
+        return None
+
+    monkeypatch.setattr(ses_inbound, "find_by_message_id", _find)
+
+
+def test_a_reply_to_an_agents_mail_goes_to_that_agent(client, monkeypatch):
+    _enable(monkeypatch)
+    _dedup_recorded(monkeypatch)
+    _, deliver = _team(monkeypatch, [])
+    _sent_by(monkeypatch, {"<friday-1@agents.isol8.co>": "friday"})
+    headers = {"Message-ID": "<r@x>", "In-Reply-To": "<friday-1@agents.isol8.co>"}
+
+    assert _post(client, _body(to=[TEAM_ADDRESS], headers=headers)).json()["status"] == "delivered"
+
+    assert deliver.await_args.kwargs["agent_id"] == "friday"
+    stored = ses_inbound.put_message.await_args.kwargs
+    assert stored["agent_id"] == "friday"
+
+
+def test_the_thread_root_decides_before_the_immediate_parent(client, monkeypatch):
+    _enable(monkeypatch)
+    _dedup_recorded(monkeypatch)
+    _, deliver = _team(monkeypatch, [])
+    _sent_by(monkeypatch, {"<atlas-root@d>": "atlas", "<friday-2@d>": "friday"})
+    headers = {"Message-ID": "<r@x>", "References": "<atlas-root@d> <friday-2@d>", "In-Reply-To": "<friday-2@d>"}
+
+    _post(client, _body(to=[TEAM_ADDRESS], headers=headers))
+
+    assert deliver.await_args.kwargs["agent_id"] == "atlas"
+
+
+def test_a_reply_to_a_strangers_root_goes_to_the_agent_who_answered(client, monkeypatch):
+    """References[0] is the human's own first mail (not ours), so In-Reply-To decides."""
+    _enable(monkeypatch)
+    _dedup_recorded(monkeypatch)
+    _, deliver = _team(monkeypatch, [])
+    _sent_by(monkeypatch, {"<friday-2@d>": "friday"})
+    headers = {"Message-ID": "<r@x>", "references": "<human-root@x> <friday-2@d>", "In-Reply-To": "<friday-2@d>"}
+
+    _post(client, _body(to=[TEAM_ADDRESS], headers=headers))
+
+    assert deliver.await_args.kwargs["agent_id"] == "friday"
+
+
+def test_mail_that_answers_nothing_we_sent_goes_to_the_ceo(client, monkeypatch):
+    _enable(monkeypatch)
+    _dedup_recorded(monkeypatch)
+    _, deliver = _team(monkeypatch, [])
+    _sent_by(monkeypatch, {})
+    headers = {"Message-ID": "<r@x>", "In-Reply-To": "<someone-elses@x>"}
+
+    _post(client, _body(to=[TEAM_ADDRESS], headers=headers))
+
+    assert deliver.await_args.kwargs["agent_id"] == CEO_ID
+
+
+def test_an_inbound_row_is_not_a_writer(client, monkeypatch):
+    """Only a sent (``direction=out``) row names a writer; a stored inbound with that id does not."""
+    _enable(monkeypatch)
+    _dedup_recorded(monkeypatch)
+    _, deliver = _team(monkeypatch, [])
+    monkeypatch.setattr(
+        ses_inbound, "find_by_message_id", AsyncMock(return_value={"agent_id": "friday", "received_key": "k"})
+    )
+
+    _post(client, _body(to=[TEAM_ADDRESS], headers={"Message-ID": "<r@x>", "In-Reply-To": "<p@x>"}))
+
+    assert deliver.await_args.kwargs["agent_id"] == CEO_ID
+
+
+def test_the_first_inbound_creates_the_team_row(client, monkeypatch):
+    _enable(monkeypatch)
+    _dedup_recorded(monkeypatch)
+    _, deliver = _team(monkeypatch, [])
+    row = {"owner_id": OWNER_ID, "address": TEAM_ADDRESS, "send_to_anyone": True}
+    monkeypatch.setattr(ses_inbound, "get_by_address", AsyncMock(side_effect=[None, row]))
+    ensure = AsyncMock(return_value=(TEAM_ADDRESS, "ok"))
+    monkeypatch.setattr(ses_inbound, "ensure_team_address", ensure)
+
+    assert _post(client, _body(to=[TEAM_ADDRESS])).json()["status"] == "delivered"
+    ensure.assert_awaited_once_with(OWNER_ID, "owner@example.com")

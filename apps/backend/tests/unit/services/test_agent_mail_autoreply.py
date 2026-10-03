@@ -17,14 +17,19 @@ def sent(monkeypatch):
     monkeypatch.setattr(mod.settings, "AGENT_EMAIL_DOMAIN", "isol8.co")
     monkeypatch.setattr(mod.ses_email, "send_ses_reply", _send)
     monkeypatch.setattr(mod.container_repo, "try_consume_daily_email_send", AsyncMock(return_value=True))
+    monkeypatch.setattr(
+        mod, "from_header", AsyncMock(side_effect=lambda o, a, address: f'"{a} · Acme agents" <{address}>')
+    )
+    monkeypatch.setattr(mod.agent_mail_inbox_repo, "put_sent", AsyncMock())
     return box
 
 
 async def _call(reason, **overrides):
     kwargs = {
         "owner_id": "owner_1",
+        "agent_id": "Friday",
         "reason": reason,
-        "from_addr": "friday@acme.isol8.co",
+        "from_addr": "agents@acme.isol8.co",
         "to": "owner@example.com",
         "in_reply_to": "<m1@mail>",
         "subject": "Re: hello",
@@ -56,7 +61,9 @@ async def test_trial_expired_does_ask_for_payment(sent):
 @pytest.mark.asyncio
 async def test_threads_with_the_conversation(sent):
     await _call(DAILY_CAP)
-    assert sent[0]["from"] == "friday@acme.isol8.co"
+    assert sent[0]["from"] == '"Friday · Acme agents" <agents@acme.isol8.co>'
+    kw = mod.agent_mail_inbox_repo.put_sent.await_args.kwargs
+    assert (kw["address"], kw["message_id"], kw["agent_id"]) == ("agents@acme.isol8.co", "msg-1", "Friday")
     assert sent[0]["to"] == "owner@example.com"
     assert sent[0]["headers"]["In-Reply-To"] == "<m1@mail>"
 

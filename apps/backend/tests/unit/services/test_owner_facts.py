@@ -128,21 +128,19 @@ def test_build_owner_facts_uses_ultra_plan_label():
     assert facts["plan"] == "Ultra ($150/mo)"
 
 
-def _facts_env(monkeypatch, owner_facts, rows, written):
-    """Shared doubles: billing row, hermes-profile write capture, address rows.
+def _facts_env(monkeypatch, owner_facts, address, written):
+    """Shared doubles: billing row, hermes-profile write capture, the team address.
 
     The write lands via ``hermes_profiles.write_facts_to_profiles``; there is no EFS branch
-    and nothing to classify.
+    and nothing to classify. ``address`` may be a callable that raises.
     """
     from core.services import hermes_profiles
 
     async def fake_billing(owner_id, *, consistent_read=False):
         return {"subscription_status": "active", "provider_choice": "openrouter_managed"}
 
-    async def fake_query_by_owner(owner_id):
-        if callable(rows):
-            return rows(owner_id)
-        return rows
+    async def fake_team_address(owner_id):
+        return address(owner_id) if callable(address) else address
 
     async def fake_roster(owner_id):
         return [{"id": "agent-ceo"}]
@@ -151,85 +149,33 @@ def _facts_env(monkeypatch, owner_facts, rows, written):
         written["content"] = facts_json
 
     monkeypatch.setattr(owner_facts.billing_repo, "get_by_owner_id", fake_billing)
-    monkeypatch.setattr(owner_facts.agent_email_repo, "query_by_owner", fake_query_by_owner)
+    monkeypatch.setattr(owner_facts, "team_address", fake_team_address)
     monkeypatch.setattr("core.services.messaging.load_agent_roster", fake_roster)
     monkeypatch.setattr(hermes_profiles, "write_facts_to_profiles", fake_write_facts)
 
 
 @pytest.mark.asyncio
-async def test_write_owner_facts_includes_email_address(monkeypatch):
+async def test_write_owner_facts_email_address_is_the_team_address(monkeypatch):
     import json
 
     from core.services import owner_facts
 
     written = {}
-    _facts_env(
-        monkeypatch,
-        owner_facts,
-        [{"address": "acme@agents.isol8.co", "status": "active", "created_at": "2026-01-01T00:00:00Z"}],
-        written,
-    )
+    _facts_env(monkeypatch, owner_facts, "agents@acme.isol8.co", written)
 
     await owner_facts.write_owner_facts("user_abc")
 
-    assert json.loads(written["content"])["email_address"] == "acme@agents.isol8.co"
+    assert json.loads(written["content"])["email_address"] == "agents@acme.isol8.co"
 
 
 @pytest.mark.asyncio
-async def test_write_owner_facts_ignores_alias_rows(monkeypatch):
-    """An alias still routes, but it is not the address we advertise."""
+async def test_write_owner_facts_email_address_none_without_a_slug(monkeypatch):
     import json
 
     from core.services import owner_facts
 
     written = {}
-    _facts_env(
-        monkeypatch,
-        owner_facts,
-        [
-            {"address": "old@agents.isol8.co", "status": "alias", "created_at": "2026-01-01T00:00:00Z"},
-            {"address": "acme@agents.isol8.co", "status": "active", "created_at": "2026-02-01T00:00:00Z"},
-        ],
-        written,
-    )
-
-    await owner_facts.write_owner_facts("user_abc")
-
-    assert json.loads(written["content"])["email_address"] == "acme@agents.isol8.co"
-
-
-@pytest.mark.asyncio
-async def test_write_owner_facts_picks_oldest_active_deterministically(monkeypatch):
-    """Two active rows can exist after a rare re-provision; the choice must
-    not depend on DynamoDB's arbitrary return order."""
-    import json
-
-    from core.services import owner_facts
-
-    written = {}
-    _facts_env(
-        monkeypatch,
-        owner_facts,
-        [
-            {"address": "second@agents.isol8.co", "status": "active", "created_at": "2026-03-01T00:00:00Z"},
-            {"address": "first@agents.isol8.co", "status": "active", "created_at": "2026-01-01T00:00:00Z"},
-        ],
-        written,
-    )
-
-    await owner_facts.write_owner_facts("user_abc")
-
-    assert json.loads(written["content"])["email_address"] == "first@agents.isol8.co"
-
-
-@pytest.mark.asyncio
-async def test_write_owner_facts_email_address_none_when_unminted(monkeypatch):
-    import json
-
-    from core.services import owner_facts
-
-    written = {}
-    _facts_env(monkeypatch, owner_facts, [], written)
+    _facts_env(monkeypatch, owner_facts, None, written)
 
     await owner_facts.write_owner_facts("user_abc")
 
@@ -244,10 +190,10 @@ async def test_write_owner_facts_survives_email_lookup_failure(monkeypatch):
 
     written = {}
 
-    def boom_rows(owner_id):
+    def boom(owner_id):
         raise RuntimeError("dynamo down")
 
-    _facts_env(monkeypatch, owner_facts, boom_rows, written)
+    _facts_env(monkeypatch, owner_facts, boom, written)
 
     await owner_facts.write_owner_facts("user_abc")
 
@@ -380,7 +326,7 @@ async def test_owner_timezone_is_the_org_creators(monkeypatch):
     get_tz = AsyncMock(return_value="Asia/Kolkata")
     monkeypatch.setattr(user_repo, "get_timezone", get_tz, raising=False)
     written = {}
-    _facts_env(monkeypatch, owner_facts, [], written)
+    _facts_env(monkeypatch, owner_facts, None, written)
 
     await owner_facts.write_owner_facts("org_1")
 

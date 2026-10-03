@@ -1,9 +1,9 @@
 """Turn a decoded reply-context into a sent, threaded reply email.
 
-Consumes the ``agent-email-addresses`` address book (via
-``agent_email_repo``) to resolve which of an owner's addresses belongs to
-the replying agent, and the SES-backed outbound-email seam (``ses_email``)
-to actually send the reply from the agent's own subdomain address. Resend
+Sends from the workspace's team address under the replying agent's own name
+(``agent_email.from_header``) through the SES-backed outbound seam
+(``ses_email``), and records the sent message so a reply to it comes back to
+the same agent (``agent_mail_inbox_repo.put_sent``). Resend
 cannot originate mail from an arbitrary owner subdomain, so agent replies
 go out via SES while the app's own welcome/support mail stays on
 ``email_service`` (Resend) — see that module's docstring. Both dependencies
@@ -18,14 +18,9 @@ caller can log/metric on instead.
 import logging
 
 from core.config import settings
-
-# agent_email_repo is unused directly in this module now that
-# resolve_from_address lives in core.services.agent_email — kept imported so
-# tests can still reach it as `agent_mail_reply.agent_email_repo` (it's the
-# same shared repo module resolve_from_address queries).
-from core.repositories import agent_email_repo  # noqa: F401
+from core.repositories import agent_mail_inbox_repo
 from core.services import ses_email
-from core.services.agent_email import resolve_from_address
+from core.services.agent_email import from_header, team_address
 
 logger = logging.getLogger(__name__)
 
@@ -84,8 +79,8 @@ async def send_reply(*, ctx: dict, body_text: str, body_html: str | None = None,
         if not settings.AGENT_EMAIL_DOMAIN.strip():
             return "disabled"
 
-        from_addr = await resolve_from_address(ctx["owner_id"], ctx["agent_id"])
-        if from_addr is None:
+        address = await team_address(ctx["owner_id"])
+        if address is None:
             return "no_address"
 
         in_reply_to = _header_safe(ctx.get("in_reply_to") or "")
@@ -111,7 +106,7 @@ async def send_reply(*, ctx: dict, body_text: str, body_html: str | None = None,
         subject = ctx["subject"] if not in_reply_to else reply_subject(ctx["subject"])
 
         message_id = await ses_email.send_ses_reply(
-            from_addr=from_addr,
+            from_addr=await from_header(ctx["owner_id"], ctx["agent_id"], address),
             to=ctx["reply_to"],
             subject=subject,
             body_text=body_text,
@@ -125,6 +120,14 @@ async def send_reply(*, ctx: dict, body_text: str, body_html: str | None = None,
                 ctx.get("agent_id"),
             )
             return "not_sent"
+        await agent_mail_inbox_repo.put_sent(
+            address=address,
+            message_id=message_id,
+            owner_id=ctx["owner_id"],
+            agent_id=ctx["agent_id"],
+            to=ctx["reply_to"],
+            subject=subject,
+        )
         return "sent"
     except Exception:
         logger.exception("send_reply failed for agent_id=%s", ctx.get("agent_id"))

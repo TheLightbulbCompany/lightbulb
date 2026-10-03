@@ -1,4 +1,4 @@
-"""agent_mail_reply: derive from-address, thread headers, and send a reply."""
+"""agent_mail_reply: the team address under the agent's name, thread headers, and send a reply."""
 
 import os
 from unittest.mock import AsyncMock
@@ -8,6 +8,13 @@ import pytest
 os.environ.setdefault("CLERK_ISSUER", "https://test.clerk.accounts.dev")
 
 from core.services import agent_mail_reply  # noqa: E402
+
+
+@pytest.fixture(autouse=True)
+def _team_mailbox(monkeypatch):
+    """From is the bare team address unless a test says otherwise; sent mail is recorded."""
+    monkeypatch.setattr(agent_mail_reply, "from_header", AsyncMock(side_effect=lambda o, a, address: address))
+    monkeypatch.setattr(agent_mail_reply.agent_mail_inbox_repo, "put_sent", AsyncMock())
 
 
 class _ReplyHarness:
@@ -23,15 +30,7 @@ def reply_harness(monkeypatch):
     current value at call time."""
     harness = _ReplyHarness()
     monkeypatch.setattr(agent_mail_reply.settings, "AGENT_EMAIL_DOMAIN", "agents.isol8.co")
-    monkeypatch.setattr(
-        agent_mail_reply.agent_email_repo,
-        "query_by_owner",
-        AsyncMock(
-            return_value=[
-                {"address": "friday@agents.isol8.co", "agent_id": "a1", "status": "active"},
-            ]
-        ),
-    )
+    monkeypatch.setattr(agent_mail_reply, "team_address", AsyncMock(return_value="friday@agents.isol8.co"))
 
     async def _send_ses_reply(**kwargs):
         harness.sent_body = kwargs["body_text"]
@@ -66,46 +65,9 @@ def test_reply_subject_already_prefixed_lowercase():
 
 
 @pytest.mark.asyncio
-async def test_resolve_from_address_picks_active_over_alias(monkeypatch):
-    monkeypatch.setattr(
-        agent_mail_reply.agent_email_repo,
-        "query_by_owner",
-        AsyncMock(
-            return_value=[
-                {"address": "acme@d", "agent_id": "a1", "status": "active"},
-                {"address": "old@d", "agent_id": "a1", "status": "alias"},
-            ]
-        ),
-    )
-    assert await agent_mail_reply.resolve_from_address("o", "a1") == "acme@d"
-
-
-@pytest.mark.asyncio
-async def test_resolve_from_address_no_match_returns_none(monkeypatch):
-    monkeypatch.setattr(
-        agent_mail_reply.agent_email_repo,
-        "query_by_owner",
-        AsyncMock(
-            return_value=[
-                {"address": "acme@d", "agent_id": "a1", "status": "active"},
-            ]
-        ),
-    )
-    assert await agent_mail_reply.resolve_from_address("o", "no_such_agent") is None
-
-
-@pytest.mark.asyncio
 async def test_send_reply_happy_path(monkeypatch):
     monkeypatch.setattr(agent_mail_reply.settings, "AGENT_EMAIL_DOMAIN", "agents.isol8.co")
-    monkeypatch.setattr(
-        agent_mail_reply.agent_email_repo,
-        "query_by_owner",
-        AsyncMock(
-            return_value=[
-                {"address": "acme@agents.isol8.co", "agent_id": "a1", "status": "active"},
-            ]
-        ),
-    )
+    monkeypatch.setattr(agent_mail_reply, "team_address", AsyncMock(return_value="acme@agents.isol8.co"))
     send_mock = AsyncMock(return_value="ses-123")
     monkeypatch.setattr(agent_mail_reply.ses_email, "send_ses_reply", send_mock)
 
@@ -171,15 +133,7 @@ def test_references_truncation_keeps_the_ROOT_and_the_recent_tail():
 @pytest.mark.asyncio
 async def test_send_reply_emits_the_full_inherited_chain(monkeypatch):
     monkeypatch.setattr(agent_mail_reply.settings, "AGENT_EMAIL_DOMAIN", "agents.isol8.co")
-    monkeypatch.setattr(
-        agent_mail_reply.agent_email_repo,
-        "query_by_owner",
-        AsyncMock(
-            return_value=[
-                {"address": "acme@agents.isol8.co", "agent_id": "a1", "status": "active"},
-            ]
-        ),
-    )
+    monkeypatch.setattr(agent_mail_reply, "team_address", AsyncMock(return_value="acme@agents.isol8.co"))
     send_mock = AsyncMock(return_value="ses-123")
     monkeypatch.setattr(agent_mail_reply.ses_email, "send_ses_reply", send_mock)
 
@@ -203,15 +157,7 @@ async def test_send_reply_first_contact_uses_subject_verbatim_no_re_prefix(monke
     """A first contact (empty in_reply_to) is a brand-new email, not a reply --
     it must not get the "Re: " prefix reply_subject would otherwise add."""
     monkeypatch.setattr(agent_mail_reply.settings, "AGENT_EMAIL_DOMAIN", "agents.isol8.co")
-    monkeypatch.setattr(
-        agent_mail_reply.agent_email_repo,
-        "query_by_owner",
-        AsyncMock(
-            return_value=[
-                {"address": "friday@agents.isol8.co", "agent_id": "a1", "status": "active"},
-            ]
-        ),
-    )
+    monkeypatch.setattr(agent_mail_reply, "team_address", AsyncMock(return_value="friday@agents.isol8.co"))
     send_mock = AsyncMock(return_value="ses-123")
     monkeypatch.setattr(agent_mail_reply.ses_email, "send_ses_reply", send_mock)
 
@@ -234,15 +180,7 @@ async def test_send_reply_first_contact_uses_subject_verbatim_no_re_prefix(monke
 @pytest.mark.asyncio
 async def test_send_reply_with_in_reply_to_still_gets_re_prefix(monkeypatch):
     monkeypatch.setattr(agent_mail_reply.settings, "AGENT_EMAIL_DOMAIN", "agents.isol8.co")
-    monkeypatch.setattr(
-        agent_mail_reply.agent_email_repo,
-        "query_by_owner",
-        AsyncMock(
-            return_value=[
-                {"address": "friday@agents.isol8.co", "agent_id": "a1", "status": "active"},
-            ]
-        ),
-    )
+    monkeypatch.setattr(agent_mail_reply, "team_address", AsyncMock(return_value="friday@agents.isol8.co"))
     send_mock = AsyncMock(return_value="ses-123")
     monkeypatch.setattr(agent_mail_reply.ses_email, "send_ses_reply", send_mock)
 
@@ -266,15 +204,7 @@ async def test_send_reply_returns_not_sent_when_send_ses_reply_returns_none(monk
     email is disabled. That must not be reported as "sent" — the agent would
     tell the user it replied when nothing actually went out."""
     monkeypatch.setattr(agent_mail_reply.settings, "AGENT_EMAIL_DOMAIN", "agents.isol8.co")
-    monkeypatch.setattr(
-        agent_mail_reply.agent_email_repo,
-        "query_by_owner",
-        AsyncMock(
-            return_value=[
-                {"address": "acme@agents.isol8.co", "agent_id": "a1", "status": "active"},
-            ]
-        ),
-    )
+    monkeypatch.setattr(agent_mail_reply, "team_address", AsyncMock(return_value="acme@agents.isol8.co"))
     send_mock = AsyncMock(return_value=None)
     monkeypatch.setattr(agent_mail_reply.ses_email, "send_ses_reply", send_mock)
 
@@ -294,11 +224,7 @@ async def test_send_reply_returns_not_sent_when_send_ses_reply_returns_none(monk
 @pytest.mark.asyncio
 async def test_send_reply_no_address(monkeypatch):
     monkeypatch.setattr(agent_mail_reply.settings, "AGENT_EMAIL_DOMAIN", "agents.isol8.co")
-    monkeypatch.setattr(
-        agent_mail_reply.agent_email_repo,
-        "query_by_owner",
-        AsyncMock(return_value=[]),
-    )
+    monkeypatch.setattr(agent_mail_reply, "team_address", AsyncMock(return_value=None))
     send_mock = AsyncMock()
     monkeypatch.setattr(agent_mail_reply.ses_email, "send_ses_reply", send_mock)
 
@@ -321,7 +247,7 @@ async def test_send_reply_disabled_when_domain_empty(monkeypatch):
     send_mock = AsyncMock()
     monkeypatch.setattr(agent_mail_reply.ses_email, "send_ses_reply", send_mock)
     query_mock = AsyncMock()
-    monkeypatch.setattr(agent_mail_reply.agent_email_repo, "query_by_owner", query_mock)
+    monkeypatch.setattr(agent_mail_reply, "team_address", query_mock)
 
     ctx = {
         "owner_id": "o",
@@ -354,15 +280,7 @@ def test_header_safe_strips_surrounding_whitespace():
 @pytest.mark.asyncio
 async def test_send_reply_strips_crlf_injection_from_threading_headers(monkeypatch):
     monkeypatch.setattr(agent_mail_reply.settings, "AGENT_EMAIL_DOMAIN", "agents.isol8.co")
-    monkeypatch.setattr(
-        agent_mail_reply.agent_email_repo,
-        "query_by_owner",
-        AsyncMock(
-            return_value=[
-                {"address": "acme@agents.isol8.co", "agent_id": "a1", "status": "active"},
-            ]
-        ),
-    )
+    monkeypatch.setattr(agent_mail_reply, "team_address", AsyncMock(return_value="acme@agents.isol8.co"))
     send_mock = AsyncMock(return_value="ses-123")
     monkeypatch.setattr(agent_mail_reply.ses_email, "send_ses_reply", send_mock)
 
@@ -388,15 +306,7 @@ async def test_send_reply_strips_crlf_injection_from_threading_headers(monkeypat
 @pytest.mark.asyncio
 async def test_send_reply_never_raises_on_send_error(monkeypatch):
     monkeypatch.setattr(agent_mail_reply.settings, "AGENT_EMAIL_DOMAIN", "agents.isol8.co")
-    monkeypatch.setattr(
-        agent_mail_reply.agent_email_repo,
-        "query_by_owner",
-        AsyncMock(
-            return_value=[
-                {"address": "acme@agents.isol8.co", "agent_id": "a1", "status": "active"},
-            ]
-        ),
-    )
+    monkeypatch.setattr(agent_mail_reply, "team_address", AsyncMock(return_value="acme@agents.isol8.co"))
     monkeypatch.setattr(
         agent_mail_reply.ses_email,
         "send_ses_reply",
@@ -413,3 +323,22 @@ async def test_send_reply_never_raises_on_send_error(monkeypatch):
     result = await agent_mail_reply.send_reply(ctx=ctx, body_text="thanks")
 
     assert result == "error"
+
+
+@pytest.mark.asyncio
+async def test_send_reply_is_the_agent_on_the_team_address_and_records_the_send(monkeypatch):
+    monkeypatch.setattr(agent_mail_reply.settings, "AGENT_EMAIL_DOMAIN", "isol8.co")
+    monkeypatch.setattr(agent_mail_reply, "team_address", AsyncMock(return_value="agents@acme.isol8.co"))
+    monkeypatch.setattr(
+        agent_mail_reply, "from_header", AsyncMock(return_value='"Friday · Acme agents" <agents@acme.isol8.co>')
+    )
+    send_mock = AsyncMock(return_value="<r1@isol8.co>")
+    monkeypatch.setattr(agent_mail_reply.ses_email, "send_ses_reply", send_mock)
+    ctx = {"owner_id": "o", "agent_id": "friday", "reply_to": "alice@x.com", "in_reply_to": "<m@x>", "subject": "Hi"}
+
+    assert await agent_mail_reply.send_reply(ctx=ctx, body_text="thanks") == "sent"
+
+    assert send_mock.await_args.kwargs["from_addr"] == '"Friday · Acme agents" <agents@acme.isol8.co>'
+    agent_mail_reply.from_header.assert_awaited_once_with("o", "friday", "agents@acme.isol8.co")
+    kw = agent_mail_reply.agent_mail_inbox_repo.put_sent.await_args.kwargs
+    assert (kw["address"], kw["message_id"], kw["agent_id"]) == ("agents@acme.isol8.co", "<r1@isol8.co>", "friday")

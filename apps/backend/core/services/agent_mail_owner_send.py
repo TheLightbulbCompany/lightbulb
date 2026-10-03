@@ -11,14 +11,14 @@ comes from ``first_contact_state``, which only the server can read or write,
 so an agent cannot skip the guard by mislabelling its send — and does not
 have to make a judgment call it might get wrong.
 
-**The address is minted HERE, not at provisioning.** Minting late is what
+**The team address's row is created HERE, not at provisioning.** Creating it late is what
 lets the slug derive from the company name the agent actually chose rather
 than the auto-generated placeholder (``generate_company_name`` falls back to
 the owner's email local part for a personal owner, so provision-time minting
 makes them advertise it forever — and ``company_slug_repo`` has no delete
-path to undo that). Both ``allocate_company_slug`` and
-``mint_agent_email_address`` are already idempotent, so this costs one call
-on a path that runs anyway.
+path to undo that). ``ensure_team_address`` is idempotent, so this costs one
+call on a path that runs anyway. The mail goes out under the sending agent's
+own name (``agent_email.from_header``).
 
 The company name is read LIVE from Paperclip rather than from our own row.
 It has to be: the whole point of deferring the mint is that the agent renames
@@ -31,10 +31,10 @@ from datetime import datetime, timezone
 from core.auth import is_org_owner_id
 from core.config import settings
 from core.observability.metrics import put_metric
-from core.repositories import container_repo
+from core.repositories import agent_mail_inbox_repo, container_repo
 from core.repositories.paperclip_repo import PaperclipRepo
 from core.services import ses_email
-from core.services.agent_email import ensure_agent_address
+from core.services.agent_email import ensure_team_address, from_header
 from core.services.agent_export import resolve_apex_ceo_agent_id
 from core.services.agent_mail_reply import AGENT_AUTHORED_HEADERS
 from core.services.owner_facts import write_owner_facts
@@ -171,9 +171,7 @@ async def send_to_owner(
         if not resolved_agent_id:
             return await _fail("incomplete_provisioning", "error")
 
-        address, reason = await ensure_agent_address(
-            owner_id=owner_id, agent_id=resolved_agent_id, owner_email=owner_email
-        )
+        address, reason = await ensure_team_address(owner_id, owner_email)
         if not address:
             result = "no_address" if reason in ("slug_allocation_failed", "mint_failed") else "error"
             return await _fail(reason, result)
@@ -187,10 +185,11 @@ async def send_to_owner(
         except Exception:  # noqa: BLE001
             logger.warning("owner_send: facts rewrite failed for %s", owner_id)
 
+        sent_subject = _env_subject(subject)
         message_id = await ses_email.send_ses_reply(
-            from_addr=address,
+            from_addr=await from_header(owner_id, resolved_agent_id, address),
             to=owner_email,
-            subject=_env_subject(subject),
+            subject=sent_subject,
             body_text=body_text,
             body_html=body_html,
             headers=dict(AGENT_AUTHORED_HEADERS),
@@ -198,6 +197,14 @@ async def send_to_owner(
         )
         if message_id is None:
             return await _fail("ses_send_failed", "error")
+        await agent_mail_inbox_repo.put_sent(
+            address=address,
+            message_id=message_id,
+            owner_id=owner_id,
+            agent_id=resolved_agent_id,
+            to=owner_email,
+            subject=sent_subject,
+        )
 
         if is_first_contact:
             await repo.settle_first_contact(owner_id, onboarding_generation=generation, state="sent")

@@ -1,12 +1,6 @@
-"""Address-book for provisioned agent email.
-
-One row per provisioned agent email address. The address is the partition
-key because inbound mail is routed by recipient; a ``by-owner`` GSI lists an
-owner's addresses.
-
-``status`` is ``"active"`` for the current primary address and ``"alias"``
-for a superseded one that must keep routing — so an owner can accumulate
-several rows over time and readers must select deliberately.
+"""The workspace's agent mailbox row: one per workspace, keyed by its team
+address ``agents@{slug}.{domain}`` (inbound mail is routed by recipient); a
+``by-owner`` GSI finds it, and both wipes delete through it.
 
 Prefix-convention table (``core.dynamodb.get_table``), matching
 ``channel_link_repo``.
@@ -29,51 +23,25 @@ def normalize(value: str) -> str:
     return value.strip().lower()
 
 
-async def put(
-    *,
-    address: str,
-    owner_id: str,
-    agent_id: str,
-    verified_senders: list[str],
-) -> dict | None:
-    """Claim ``address`` for ``owner_id`` — a CREATE primitive, not an update.
+async def put(*, address: str, owner_id: str, verified_senders: list[str]) -> dict | None:
+    """Create the workspace's row — a CREATE, never an overwrite: conditional on
+    ``attribute_not_exists(address)``, so a racing create can never reset the
+    owner's settings. Returns the item, or None when a row already exists.
 
-    This is a conditional put mirroring ``company_slug_repo.reserve``:
-    ``attribute_not_exists(address) OR owner_id = :owner`` — so a concurrent
-    or reordered write can never overwrite another owner's row. Returns the
-    written item, or ``None`` when another owner already holds ``address``
-    (on ``ConditionalCheckFailedException`` — never raises for that case).
-
-    It ALWAYS writes ``status="active"`` and a fresh ``created_at``, even
-    when re-affirming a row this owner already holds. There is deliberately
-    no update primitive here: a future rename/alias flow that needs to demote
-    a row to ``status="alias"`` without resetting ``created_at`` (the
-    deterministic tie-break `owner_facts._lookup_email_address` sorts on)
-    must add a dedicated update primitive rather than calling this.
-
-    New rows are OPEN by default (``send_to_anyone=True``, owner ruling
-    2026-09-24): anyone whose mail is authenticated may wake the agent and the
-    agent may email anyone. The owner can turn it off per agent with
-    ``update_settings``; rows minted before the ruling are switched by a
-    one-off repair script, not by read-time logic.
+    New rows are OPEN (``send_to_anyone=True``, owner ruling 2026-09-24): any
+    authenticated sender may wake the agents and they may email anyone. The
+    owner turns it off with ``update_settings``.
     """
     item = {
         "address": normalize(address),
         "owner_id": owner_id,
-        "agent_id": agent_id,
         "verified_senders": [normalize(s) for s in verified_senders],
         "send_to_anyone": True,
         "status": "active",
         "created_at": utc_now_iso(),
     }
-    table = _get_table()
     try:
-        await run_in_thread(
-            table.put_item,
-            Item=item,
-            ConditionExpression="attribute_not_exists(address) OR owner_id = :owner",
-            ExpressionAttributeValues={":owner": owner_id},
-        )
+        await run_in_thread(_get_table().put_item, Item=item, ConditionExpression="attribute_not_exists(address)")
         return item
     except ClientError as e:
         if e.response.get("Error", {}).get("Code") == "ConditionalCheckFailedException":
@@ -82,14 +50,8 @@ async def put(
 
 
 async def get_by_address(address: str) -> dict | None:
-    """Strongly consistent — this is the mint-time idempotency guard
-    (`agent_email.mint_agent_email_address` calls it before `put`). An
-    eventually-consistent miss right after a same-address write would let
-    `put` "win" a race it should have folded into, overwriting the existing
-    row and resetting its `created_at` — which flips the deterministic
-    earliest-`created_at` tie-break `owner_facts._lookup_email_address`
-    sorts on. Base-table GetItem supports `ConsistentRead`; the `by-owner`
-    GSI in `query_by_owner` below does not, so that one stays eventual."""
+    """Strongly consistent: ``ensure_team_address`` reads it before and after a
+    create, and an eventual miss right after the write would report a failed mint."""
     table = _get_table()
     response = await run_in_thread(table.get_item, Key={"address": normalize(address)}, ConsistentRead=True)
     return response.get("Item")
@@ -97,7 +59,7 @@ async def get_by_address(address: str) -> dict | None:
 
 async def is_team_address(address: str) -> tuple[str, str] | None:
     """``(owner_id, slug)`` when ``address`` is ``agents@{slug}.{domain}`` for a
-    reserved company slug; no per-agent row exists for it."""
+    reserved company slug — whether or not its row exists yet."""
     local, _, host = normalize(address).partition("@")
     domain = (settings.AGENT_EMAIL_DOMAIN or "").strip().lower()
     if local != "agents" or not domain:
@@ -143,12 +105,8 @@ async def delete_all_for_owner(owner_id: str) -> list[str]:
 
 
 async def scan_all() -> list[dict]:
-    """Every row in the table, paginated.
-
-    Only the orphan sweep uses this — a full scan is the ONLY way to find rows
-    whose owner no longer exists, because the owner id is gone from everywhere
-    that would let you query for it. Not for request-path use.
-    """
+    """Every row in the table, paginated. For one-off sweeps
+    (``scripts/delete_per_agent_mail_rows.py``), never the request path."""
     table = _get_table()
     items: list[dict] = []
     kwargs: dict = {}

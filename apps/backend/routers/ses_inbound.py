@@ -65,21 +65,17 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from core.config import settings
 from core.observability.metrics import put_metric
-from core.repositories.agent_email_repo import (
-    get_by_address,
-    is_team_address,
-    normalize,
-    query_by_owner,
-    update_settings,
-)
+from core.repositories.agent_email_repo import get_by_address, is_team_address, normalize, update_settings
 from core.repositories.agent_mail_inbox_repo import find_by_message_id, put_message, reply_key
 from core.repositories.container_repo import try_claim_daily_system_notice, try_consume_stranger_wake
+from core.repositories.paperclip_repo import PaperclipRepo
 from core.services import meeting_invites
-from core.services.agent_email import sender_allowed
+from core.services.agent_email import ensure_team_address, sender_allowed
 from core.services.agent_mail_autoreply import send_cap_autoreply
 from core.services.agent_mail_thread import thread_session_key
 from core.services.agent_mail_delivery import deliver_to_agent
 from core.services.agent_mail_owner_send import send_to_owner
+from core.services.agent_mail_send import _owner_email
 from core.services.agent_mail_inbound import (
     STRANGER_WAKES_PER_OWNER_PER_DAY,
     STRANGER_WAKES_PER_SENDER_PER_DAY,
@@ -116,6 +112,23 @@ def _final(status: str, *, code: int = 200):
     if code == 200:
         return {"status": status}
     return JSONResponse(status_code=code, content={"status": status})
+
+
+async def _thread_writer(address: str, headers: dict[str, str]) -> str | None:
+    """The agent whose sent mail this answers: the writer of ``References[0]``
+    (the thread root), else of ``In-Reply-To``. Only rows at this workspace's
+    address count, so a message id seen elsewhere cannot steer delivery."""
+    for name in ("References", "In-Reply-To"):
+        ids = next((v for k, v in headers.items() if k.lower() == name.lower()), "").split()
+        item = await find_by_message_id(address, ids[0]) if ids else None
+        if item and item.get("direction") == "out":
+            return item.get("agent_id")
+    return None
+
+
+async def _ceo(owner_id: str) -> str | None:
+    row = await PaperclipRepo(table_name="paperclip-companies").resolve_owner_row(owner_id)
+    return (getattr(row, "starter_agent_ids", None) or {}).get("ceo")
 
 
 async def _rollback_dedup(message_id: str) -> None:
@@ -199,28 +212,23 @@ async def handle_ses_inbound(body: SesInboundBody, request: Request):
             if dedup is WebhookDedupResult.ALREADY_SEEN:
                 return _final("duplicate")
 
-        # Resolve recipient: first provisioned address in `to` that we know
-        # about wins. A message can be addressed to multiple recipients;
-        # only one of them needs to be one of ours.
-        #
-        # The team address `agents@{slug}` has no row of its own: its mail is
-        # the CEO's (see `meeting_invites.team_row`), except a member's
-        # calendar invite, which becomes a meeting below.
+        # Resolve recipient: the workspace's team address `agents@{slug}` is
+        # its only mailbox (owner ruling 2026-10-03), and the first one in `to`
+        # wins. Its row is created on first use. Which AGENT reads the mail is
+        # decided below, after the gates: the thread's writer, else the CEO.
         row = None
-        team = None
         for addr in body.to:
             try:
                 candidate = normalize(addr)
             except Exception:  # noqa: BLE001 — a malformed recipient entry must not abort scanning the rest of `to`.
                 continue
             team = await is_team_address(candidate)
-            if team is not None:
-                row = await meeting_invites.team_row(team[0], candidate)
-                if row is not None:
-                    break
-                team = None  # no CEO to read it: try the next recipient
+            if team is None:
                 continue
             row = await get_by_address(candidate)
+            if row is None:
+                address, _reason = await ensure_team_address(team[0], await _owner_email(team[0]))
+                row = await get_by_address(address) if address == candidate else None
             if row is not None:
                 break
         if row is None:
@@ -256,7 +264,7 @@ async def handle_ses_inbound(body: SesInboundBody, request: Request):
 
         # A member's invite to the team address is a meeting, not mail. After
         # the spam/spoof gates, before the loop guard: an invite is not a reply.
-        if team is not None and body.calendar:
+        if body.calendar:
             outcome = await meeting_invites.handle_team_mail(row["owner_id"], body, row)
             if outcome is not None:
                 return _final(outcome)
@@ -265,6 +273,13 @@ async def handle_ses_inbound(body: SesInboundBody, request: Request):
         # agent replying to one of these could re-trigger itself forever.
         if is_auto_submitted(body.headers or {}):
             return _final("dropped_auto_submitted")
+
+        # A reply to an agent's mail goes back to that agent — resolved BEFORE
+        # delivery, since the thread's session key carries no agent id and the
+        # bridge qualifies it per agent. Everything else is the CEO's.
+        agent_id = await _thread_writer(row["address"], body.headers or {}) or await _ceo(row["owner_id"])
+        if not agent_id:
+            return _final("dropped_unknown_recipient")
 
         # Store first — every gated-clean message lands in the inbox whether or
         # not it wakes the agent. Waking is open to any authenticated sender
@@ -278,7 +293,7 @@ async def handle_ses_inbound(body: SesInboundBody, request: Request):
         stored = await find_by_message_id(row["address"], body.message_id) or await put_message(
             address=row["address"],
             owner_id=row["owner_id"],
-            agent_id=row["agent_id"],
+            agent_id=agent_id,
             message_id=body.message_id,
             from_addr=sender,
             subject=body.subject or "",
@@ -330,6 +345,7 @@ async def handle_ses_inbound(body: SesInboundBody, request: Request):
                 return _final("dropped_over_cap")
             notified = await send_cap_autoreply(
                 owner_id=row["owner_id"],
+                agent_id=agent_id,
                 reason=cap_reason,
                 from_addr=row["address"],
                 to=sender,
@@ -371,7 +387,7 @@ async def handle_ses_inbound(body: SesInboundBody, request: Request):
 
         result = await deliver_to_agent(
             owner_id=row["owner_id"],
-            agent_id=row["agent_id"],
+            agent_id=agent_id,
             message=message,
             idempotency_key=body.message_id,
             # Same mail thread -> same OpenClaw session, so a reply is a
@@ -439,19 +455,9 @@ async def handle_ses_events(request: Request):
         return {"status": "unknown_source"}
     owner_id = row["owner_id"]
     try:
-        rows = [r for r in await query_by_owner(owner_id) if r.get("status") == "active"]
-        disabled = 0
-        for r in rows:
-            try:
-                await update_settings(r["address"], outbound_disabled="complaint")
-                disabled += 1
-            except Exception:  # noqa: BLE001 — per-row best-effort; keep disabling the rest
-                logger.warning("ses_events: disable failed for %s", r["address"], exc_info=True)
-        if rows and disabled == 0:
-            # Every row failed -- nothing was actually disabled, so ask the
-            # EventBridge API destination to retry (it retries on 5xx) rather
-            # than claim success or silently notify the owner of a no-op.
-            return JSONResponse(status_code=503, content={"status": "error"})
+        # The workspace's one mailbox: pausing it pauses every agent. A failed
+        # write raises into the 503 below, so EventBridge retries.
+        await update_settings(row["address"], outbound_disabled="complaint")
         # ONE notice per owner per UTC day. SES fans a complaint out per
         # recipient address, and `send_to_owner(system_notice=True)` bypasses
         # the daily send cap by design — this durable claim is the only bound
@@ -476,7 +482,7 @@ async def handle_ses_events(request: Request):
                 )
             except Exception:  # noqa: BLE001 — notification is best-effort
                 logger.warning("ses_events: owner notify failed for %s", owner_id, exc_info=True)
-        return {"status": "disabled", "owner_id": owner_id, "addresses": disabled, "notified": notified}
+        return {"status": "disabled", "owner_id": owner_id, "notified": notified}
     except Exception:  # noqa: BLE001 — mirrors handle_ses_inbound's transient-vs-terminal split
         logger.exception("ses_events handler failed for owner %s", owner_id)
         return JSONResponse(status_code=503, content={"status": "error"})

@@ -9,6 +9,9 @@ passes can widen it:
 | ``reply_key`` (stored inbound)  | row not ``outbound_disabled``; key is owner's; sender is owner/allowlisted, OR ``send_to_anyone`` |
 | arbitrary ``to``                | row ``send_to_anyone`` and not ``outbound_disabled`` |
 
+Every agent sends from the workspace's ONE address (``agents@{slug}``) under its
+own name, so every flag below is read from that one row and binds every agent.
+
 ``send_to_anyone`` is the ONE "open email" switch: new rows are minted with it ON
 (owner ruling 2026-09-24), and ``routers/ses_inbound.py`` reads the same flag to
 let any authenticated sender WAKE the agent. Turning it off (Control → Agents →
@@ -28,11 +31,11 @@ from email.utils import getaddresses
 from core.auth import is_org_owner_id
 from core.config import settings
 from core.observability.metrics import put_metric
-from core.repositories import agent_email_repo, container_repo
+from core.repositories import agent_email_repo, agent_mail_inbox_repo, container_repo
 from core.repositories.agent_mail_inbox_repo import get_message, parse_reply_key
 from core.repositories.paperclip_repo import PaperclipRepo
 from core.services import ses_email
-from core.services.agent_email import EMAIL_ADDRESS_RE, ensure_agent_address, resolve_from_address, sender_allowed
+from core.services.agent_email import EMAIL_ADDRESS_RE, ensure_team_address, from_header, sender_allowed, team_address
 from core.services.agent_mail_owner_send import DAILY_SEND_CAP, _env_subject, send_to_owner
 from core.services.agent_mail_reply import AGENT_AUTHORED_HEADERS, send_reply
 from core.services.agent_mail_tenant import ensure_tenant
@@ -111,7 +114,7 @@ async def send(
                 return _done(path, "bad_reply_key")
             address, received_key = parsed
             msg = await get_message(address, received_key)
-            if not msg or msg.get("owner_id") != owner_id:
+            if not msg or msg.get("owner_id") != owner_id or msg.get("direction") == "out":
                 return _done(path, "bad_reply_key")
             # Stored state decides the replying agent — never fall back to the
             # caller-supplied agent_id, which would let a container claim to
@@ -119,14 +122,11 @@ async def send(
             msg_agent_id = msg.get("agent_id")
             if not msg_agent_id:
                 return _done(path, "bad_reply_key")
-            # send_reply sends from the agent's CURRENT active address
-            # (resolve_from_address), which can differ from the inbound
-            # message's address under alias rotation — check outbound_disabled
-            # on the row it will actually send from, not the inbound one.
-            from_addr = await resolve_from_address(owner_id, msg_agent_id)
-            if not from_addr:
+            # The flags live on the workspace's one row, which send_reply sends from.
+            from_addr = await team_address(owner_id)
+            row = await agent_email_repo.get_by_address(from_addr) if from_addr else None
+            if not row:
                 return _done(path, "no_address")
-            row = await agent_email_repo.get_by_address(from_addr) or {}
             if row.get("outbound_disabled"):
                 return _done(path, "outbound_disabled")
             # A stranger who emailed first does not thereby earn a reply — only
@@ -158,9 +158,7 @@ async def send(
         if not to_addr:
             return _done(path, "forbidden_recipient")
         owner_email = await _owner_email(owner_id)
-        address, _reason = await ensure_agent_address(
-            owner_id=owner_id, agent_id=agent_id, owner_email=owner_email or ""
-        )
+        address, _reason = await ensure_team_address(owner_id, owner_email)
         if not address:
             return _done(path, "no_address")
         row = await agent_email_repo.get_by_address(address) or {}
@@ -170,17 +168,28 @@ async def send(
             return _done(path, "forbidden_recipient")
         if not await _consume_cap(owner_id):
             return _done(path, "rate_limited")
+        sent_subject = _env_subject(subject)
         message_id = await ses_email.send_ses_email(
-            from_addr=address,
+            from_addr=await from_header(owner_id, agent_id, address),
             to=to_addr,
-            subject=_env_subject(subject),
+            subject=sent_subject,
             body_text=body_text,
             body_html=body_html,
             kind="agent_free_send",
             headers=dict(AGENT_AUTHORED_HEADERS),
             tenant_name=tenant,
         )
-        return _done(path, "sent" if message_id else "error")
+        if not message_id:
+            return _done(path, "error")
+        await agent_mail_inbox_repo.put_sent(
+            address=address,
+            message_id=message_id,
+            owner_id=owner_id,
+            agent_id=agent_id,
+            to=to_addr,
+            subject=sent_subject,
+        )
+        return _done(path, "sent")
     except Exception:
         logger.exception("agent_mail_send failed owner=%s agent=%s path=%s", owner_id, agent_id, path)
         return _done(path, "error")

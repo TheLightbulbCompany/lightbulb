@@ -7,6 +7,7 @@ stops the agent being told it has no address.
 """
 
 import types
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -29,7 +30,7 @@ def wired(monkeypatch):
         friday_agent_id="agent_friday",
         live_ceo_agent_id="agent_ceo_live",
         live_ceo_calls=0,
-        minted="friday@acme-robotics.isol8.co",
+        minted="agents@acme-robotics.isol8.co",
         ensure_agent_id=None,
         ensure_reason="mint_failed",
         facts_written=False,
@@ -71,9 +72,14 @@ def wired(monkeypatch):
     async def _owner_email(*, org_id, fallback_user_id):
         return st.owner_email
 
-    async def _ensure(*, owner_id, agent_id, owner_email):
-        st.ensure_agent_id = agent_id
+    async def _ensure(owner_id, owner_email):
         return (st.minted, "ok") if st.minted else (None, st.ensure_reason)
+
+    async def _from(owner_id, agent_id, address):
+        st.ensure_agent_id = agent_id
+        return f'"Agent · Acme agents" <{address}>'
+
+    st.put_sent = AsyncMock()
 
     async def _live_ceo(*, owner_id):
         st.live_ceo_calls += 1
@@ -105,7 +111,9 @@ def wired(monkeypatch):
 
     monkeypatch.setattr(mod, "PaperclipRepo", _repo_factory)
     monkeypatch.setattr(mod, "lookup_owner_email", _owner_email)
-    monkeypatch.setattr(mod, "ensure_agent_address", _ensure)
+    monkeypatch.setattr(mod, "ensure_team_address", _ensure)
+    monkeypatch.setattr(mod, "from_header", _from)
+    monkeypatch.setattr(mod.agent_mail_inbox_repo, "put_sent", st.put_sent)
     monkeypatch.setattr(mod, "resolve_apex_ceo_agent_id", _live_ceo, raising=False)
     monkeypatch.setattr(mod, "write_owner_facts", _facts)
     monkeypatch.setattr(mod.ses_email, "send_ses_reply", _send)
@@ -130,7 +138,9 @@ async def test_happy_path_sends_and_settles_sent(wired):
     assert await _send() == "sent"
     assert wired.ses_calls == 1
     assert wired.settled == "sent"
-    assert wired.sent_from == "friday@acme-robotics.isol8.co"
+    assert wired.sent_from == '"Agent · Acme agents" <agents@acme-robotics.isol8.co>'
+    kw = wired.put_sent.await_args.kwargs
+    assert (kw["address"], kw["message_id"]) == ("agents@acme-robotics.isol8.co", "msg-1")
     assert wired.sent_to == "owner@example.com"
     assert wired.sent_headers == {"Auto-Submitted": "auto-generated"}
 
@@ -242,14 +252,14 @@ async def test_ses_failure_settles_failed(wired):
 @pytest.mark.asyncio
 async def test_unreachable_paperclip_fails_rather_than_minting_a_junk_slug(wired):
     """company_slug_repo has no delete path, so a fallback name would freeze
-    permanently. (The company-name→slug resolution itself now lives inside
-    ensure_agent_address, tested in test_agent_email.py; here we only verify
+    permanently. (The company-name→slug resolution itself lives inside
+    ensure_team_address, tested in test_agent_email.py; here we only verify
     that owner_send propagates the reason and fails closed.)"""
     wired.minted = None
-    wired.ensure_reason = "company_name_unavailable"
-    assert await _send() == "error"
+    wired.ensure_reason = "slug_allocation_failed"
+    assert await _send() == "no_address"
     assert wired.settled == "failed"
-    assert wired.settle_reason == "company_name_unavailable"
+    assert wired.settle_reason == "slug_allocation_failed"
     assert wired.ses_calls == 0
 
 

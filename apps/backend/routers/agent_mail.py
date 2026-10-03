@@ -21,7 +21,7 @@ from pydantic import BaseModel
 from core.auth import AuthContext, get_current_user, resolve_owner_id
 from core.repositories import agent_email_repo, container_repo
 from core.repositories.agent_mail_inbox_repo import list_messages, reply_key
-from core.services.agent_email import EMAIL_ADDRESS_RE, ensure_agent_address, resolve_from_address
+from core.services.agent_email import EMAIL_ADDRESS_RE, ensure_team_address, team_address
 from core.services.agent_mail_send import _owner_email, send
 from core.services.rate_bucket import RateBucket
 
@@ -89,21 +89,19 @@ class AddressRequest(BaseModel):
 
 @router.post("/u/{owner_id}/address")
 async def mint_address(owner_id: str, body: AddressRequest, request: Request) -> dict:
+    """The workspace's team address — the same for every agent, which sends from it as itself."""
     await _require_hook_token(owner_id, request)
-    owner_email = await _owner_email(owner_id)
-    address, reason = await ensure_agent_address(
-        owner_id=owner_id, agent_id=body.agent_id, owner_email=owner_email or ""
-    )
+    address, reason = await ensure_team_address(owner_id, await _owner_email(owner_id))
     return {"address": address, "reason": reason}
 
 
 @router.get("/u/{owner_id}/inbox")
 async def inbox(owner_id: str, agent_id: str, request: Request, since: str | None = None, limit: int = 20) -> dict:
     await _require_hook_token(owner_id, request)
-    address = await resolve_from_address(owner_id, agent_id)
+    address = await team_address(owner_id)
     if not address:
         return {"address": None, "messages": []}
-    rows = await list_messages(address, since=since, limit=limit)
+    rows = await list_messages(address, since=since, limit=limit, agent_id=agent_id)
     return {
         "address": address,
         "messages": [
@@ -125,7 +123,6 @@ async def inbox(owner_id: str, agent_id: str, request: Request, since: str | Non
 def _project(row: dict) -> dict:
     return {
         "address": row.get("address"),
-        "agent_id": row.get("agent_id"),
         "verified_senders": row.get("verified_senders") or [],
         "send_to_anyone": bool(row.get("send_to_anyone")),
         "outbound_disabled": row.get("outbound_disabled"),
@@ -143,10 +140,24 @@ def _validate_senders(entries: list[str]) -> list[str]:
     return out
 
 
-@router.get("/addresses")
-async def list_addresses(auth: AuthContext = Depends(get_current_user)) -> dict:
-    rows = await agent_email_repo.query_by_owner(resolve_owner_id(auth))
-    return {"addresses": [_project(r) for r in rows if r.get("status") == "active"]}
+async def _team_row(owner_id: str) -> tuple[dict, str | None]:
+    """The workspace's one mailbox row, created if absent, and the owner's email
+    (None when the lookup fails — that must not block reading or saving)."""
+    try:
+        owner_email = await _owner_email(owner_id)
+    except Exception:  # noqa: BLE001
+        owner_email = None
+    address, reason = await ensure_team_address(owner_id, owner_email)
+    row = await agent_email_repo.get_by_address(address) if address else None
+    if not row:
+        raise HTTPException(status_code=409, detail={"status": reason})
+    return row, owner_email
+
+
+@router.get("/address")
+async def get_address(auth: AuthContext = Depends(get_current_user)) -> dict:
+    row, _ = await _team_row(resolve_owner_id(auth))
+    return _project(row)
 
 
 class AddressSettings(BaseModel):
@@ -155,19 +166,10 @@ class AddressSettings(BaseModel):
     outbound_disabled: str | None = None  # only explicit null is honoured (re-enable)
 
 
-@router.patch("/addresses/{agent_id}")
-async def patch_address(agent_id: str, body: AddressSettings, auth: AuthContext = Depends(get_current_user)) -> dict:
+@router.patch("/address")
+async def patch_address(body: AddressSettings, auth: AuthContext = Depends(get_current_user)) -> dict:
     owner_id = resolve_owner_id(auth)
-    address = await resolve_from_address(owner_id, agent_id)
-    owner_email: str | None = None
-    owner_email_read = False
-    if not address:
-        owner_email, owner_email_read = await _owner_email(owner_id), True
-        address, reason = await ensure_agent_address(
-            owner_id=owner_id, agent_id=agent_id, owner_email=owner_email or ""
-        )
-        if not address:
-            raise HTTPException(status_code=409, detail={"status": reason})
+    row, owner_email = await _team_row(owner_id)
     kwargs: dict = {}
     if body.verified_senders is not None:
         try:
@@ -177,11 +179,6 @@ async def patch_address(agent_id: str, body: AddressSettings, auth: AuthContext 
         # The panel tells the owner "You are always allowed", and sender_allowed has no owner
         # special case, so the server keeps that promise: the owner's own address is re-added to
         # whatever list is saved (an empty or edited list can never lock them out of waking their agent).
-        if not owner_email_read:
-            try:
-                owner_email = await _owner_email(owner_id)
-            except Exception:  # noqa: BLE001 — a failed lookup must not block saving the list
-                owner_email = None
         owner = agent_email_repo.normalize(owner_email) if owner_email else None
         if owner and owner not in senders:
             senders.append(owner)
@@ -192,7 +189,7 @@ async def patch_address(agent_id: str, body: AddressSettings, auth: AuthContext 
         if body.outbound_disabled is not None:
             raise HTTPException(status_code=400, detail={"status": "outbound_disabled_readonly"})
         kwargs["outbound_disabled"] = None
-    row = await agent_email_repo.update_settings(address, **kwargs)
+    row = await agent_email_repo.update_settings(row["address"], **kwargs)
     if row is None:
         raise HTTPException(status_code=404, detail={"status": "no_address"})
     return _project(row)

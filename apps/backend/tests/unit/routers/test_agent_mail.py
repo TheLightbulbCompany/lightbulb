@@ -17,7 +17,7 @@ def _reset():
 
 # `client` comes from tests/conftest.py: TestClient(app) with get_current_user
 # overridden to AuthContext(user_id="user_test_123") (personal). Hook-token
-# routes ignore that override; the /addresses routes rely on it.
+# routes ignore that override; the /address routes rely on it.
 
 
 def _container(owner_id=OWNER):
@@ -144,7 +144,7 @@ def test_send_401s_do_not_charge_the_rate_limit_bucket(client):
 def test_inbox_lists_with_keys_and_truncates(client):
     with (
         patch.object(agent_mail.container_repo, "get_by_owner_id", AsyncMock(return_value=_container())),
-        patch.object(agent_mail, "resolve_from_address", AsyncMock(return_value="a@acme.isol8.co")),
+        patch.object(agent_mail, "team_address", AsyncMock(return_value="agents@acme.isol8.co")),
         patch.object(
             agent_mail,
             "list_messages",
@@ -159,32 +159,35 @@ def test_inbox_lists_with_keys_and_truncates(client):
                     }
                 ]
             ),
-        ),
+        ) as listed,
     ):
         r = client.get(f"/api/v1/agent-mail/u/{OWNER}/inbox?agent_id={AGENT}&limit=5", headers=H)
     body = r.json()
-    assert body["address"] == "a@acme.isol8.co"
-    assert body["messages"][0]["key"] == "a@acme.isol8.co/2026#m1"
+    assert listed.call_args.kwargs["agent_id"] == AGENT  # the shared mailbox, filtered to this agent's mail
+    assert body["address"] == "agents@acme.isol8.co"
+    assert body["messages"][0]["key"] == "agents@acme.isol8.co/2026#m1"
     assert len(body["messages"][0]["text"]) == 8000
 
 
 def test_inbox_without_address_is_empty(client):
     with (
         patch.object(agent_mail.container_repo, "get_by_owner_id", AsyncMock(return_value=_container())),
-        patch.object(agent_mail, "resolve_from_address", AsyncMock(return_value=None)),
+        patch.object(agent_mail, "team_address", AsyncMock(return_value=None)),
     ):
         r = client.get(f"/api/v1/agent-mail/u/{OWNER}/inbox?agent_id={AGENT}", headers=H)
     assert r.json() == {"address": None, "messages": []}
 
 
-def test_address_mints(client):
+@pytest.mark.parametrize("agent", ["agent_1", "agent_2"])
+def test_address_is_the_team_address_for_any_agent(client, agent):
     with (
         patch.object(agent_mail.container_repo, "get_by_owner_id", AsyncMock(return_value=_container())),
         patch.object(agent_mail, "_owner_email", AsyncMock(return_value="o@x.y")),
-        patch.object(agent_mail, "ensure_agent_address", AsyncMock(return_value=("a@acme.isol8.co", "ok"))),
+        patch.object(agent_mail, "ensure_team_address", AsyncMock(return_value=("agents@acme.isol8.co", "ok"))) as e,
     ):
-        r = client.post(f"/api/v1/agent-mail/u/{OWNER}/address", json={"agent_id": AGENT}, headers=H)
-    assert r.json() == {"address": "a@acme.isol8.co", "reason": "ok"}
+        r = client.post(f"/api/v1/agent-mail/u/{OWNER}/address", json={"agent_id": agent}, headers=H)
+    assert r.json() == {"address": "agents@acme.isol8.co", "reason": "ok"}
+    assert e.call_args.args == (OWNER, "o@x.y")
 
 
 def test_validate_sender_entries():
@@ -197,56 +200,54 @@ def test_validate_sender_entries():
 # ---- Clerk routes (owner = user_test_123 via the shared client fixture) ----
 
 
-def test_list_addresses_projects_active_rows(client):
-    rows = [
-        {
-            "address": "f@acme.isol8.co",
-            "agent_id": "agent_f",
-            "verified_senders": ["o@x.y"],
-            "send_to_anyone": False,
-            "status": "active",
-        },
-        {"address": "old@acme.isol8.co", "agent_id": "agent_f", "status": "alias"},
-    ]
-    with patch.object(agent_mail.agent_email_repo, "query_by_owner", AsyncMock(return_value=rows)) as q:
-        r = client.get("/api/v1/agent-mail/addresses")
+TEAM = "agents@acme.isol8.co"
+
+
+def _mailbox(row=None, ensure=(TEAM, "ok"), owner_email="o@x.y"):
+    """The workspace's one row behind ``_team_row``."""
+    lookup = (
+        AsyncMock(side_effect=owner_email)
+        if isinstance(owner_email, Exception)
+        else AsyncMock(return_value=owner_email)
+    )
+    return (
+        patch.object(agent_mail, "_owner_email", lookup),
+        patch.object(agent_mail, "ensure_team_address", AsyncMock(return_value=ensure)),
+        patch.object(agent_mail.agent_email_repo, "get_by_address", AsyncMock(return_value=row or {"address": TEAM})),
+    )
+
+
+def test_get_address_returns_the_single_row(client):
+    row = {"address": TEAM, "owner_id": "org_test_456", "verified_senders": ["o@x.y"], "send_to_anyone": False}
+    a, b, c = _mailbox(row)
+    with a, b as ensure, c:
+        r = client.get("/api/v1/agent-mail/address")
     assert r.status_code == 200
-    assert q.call_args.args == ("org_test_456",)
+    assert ensure.call_args.args == ("org_test_456", "o@x.y")
     assert r.json() == {
-        "addresses": [
-            {
-                "address": "f@acme.isol8.co",
-                "agent_id": "agent_f",
-                "verified_senders": ["o@x.y"],
-                "send_to_anyone": False,
-                "outbound_disabled": None,
-                "status": "active",
-            }
-        ]
+        "address": TEAM,
+        "verified_senders": ["o@x.y"],
+        "send_to_anyone": False,
+        "outbound_disabled": None,
+        "status": None,
     }
 
 
-def test_patch_address_lowercases_and_mints_when_missing(client):
-    updated = {
-        "address": "f@acme.isol8.co",
-        "agent_id": "agent_f",
-        "verified_senders": ["bob@x.y", "@clientco.com"],
-        "send_to_anyone": True,
-        "status": "active",
-    }
-    with (
-        patch.object(agent_mail, "resolve_from_address", AsyncMock(return_value=None)),
-        patch.object(agent_mail, "_owner_email", AsyncMock(return_value="o@x.y")),
-        patch.object(agent_mail, "ensure_agent_address", AsyncMock(return_value=("f@acme.isol8.co", "ok"))) as mint,
-        patch.object(agent_mail.agent_email_repo, "update_settings", AsyncMock(return_value=updated)) as upd,
-    ):
+def test_the_per_agent_routes_are_gone(client):
+    assert client.get("/api/v1/agent-mail/addresses").status_code in (404, 405)
+    assert client.patch("/api/v1/agent-mail/addresses/agent_f", json={}).status_code in (404, 405)
+
+
+def test_patch_address_lowercases_and_keeps_the_owner(client):
+    updated = {"address": TEAM, "verified_senders": ["bob@x.y", "@clientco.com", "o@x.y"], "send_to_anyone": True}
+    a, b, c = _mailbox()
+    with a, b, c, patch.object(agent_mail.agent_email_repo, "update_settings", AsyncMock(return_value=updated)) as upd:
         r = client.patch(
-            "/api/v1/agent-mail/addresses/agent_f",
+            "/api/v1/agent-mail/address",
             json={"verified_senders": ["Bob@X.y", "@ClientCo.com"], "send_to_anyone": True},
         )
     assert r.status_code == 200 and r.json()["send_to_anyone"] is True
-    assert mint.call_args.kwargs["agent_id"] == "agent_f" and mint.call_args.kwargs["owner_id"] == "org_test_456"
-    assert upd.call_args.args == ("f@acme.isol8.co",)
+    assert upd.call_args.args == (TEAM,)
     # The owner's own address ("o@x.y") is always kept in the saved list.
     assert upd.call_args.kwargs == {"verified_senders": ["bob@x.y", "@clientco.com", "o@x.y"], "send_to_anyone": True}
 
@@ -260,53 +261,37 @@ def test_patch_address_lowercases_and_mints_when_missing(client):
     ],
 )
 def test_patch_address_always_keeps_the_owner_allowed(client, saved, expected):
-    with (
-        patch.object(agent_mail, "resolve_from_address", AsyncMock(return_value="f@acme.isol8.co")),
-        patch.object(agent_mail, "_owner_email", AsyncMock(return_value="Owner@X.y")),
-        patch.object(agent_mail.agent_email_repo, "update_settings", AsyncMock(return_value={})) as upd,
-    ):
-        r = client.patch("/api/v1/agent-mail/addresses/agent_f", json={"verified_senders": saved})
+    a, b, c = _mailbox(owner_email="Owner@X.y")
+    with a, b, c, patch.object(agent_mail.agent_email_repo, "update_settings", AsyncMock(return_value={})) as upd:
+        r = client.patch("/api/v1/agent-mail/address", json={"verified_senders": saved})
     assert r.status_code == 200
     assert upd.call_args.kwargs == {"verified_senders": expected}
 
 
 def test_patch_address_saves_the_list_even_if_the_owner_lookup_fails(client):
-    with (
-        patch.object(agent_mail, "resolve_from_address", AsyncMock(return_value="f@acme.isol8.co")),
-        patch.object(agent_mail, "_owner_email", AsyncMock(side_effect=RuntimeError("clerk down"))),
-        patch.object(agent_mail.agent_email_repo, "update_settings", AsyncMock(return_value={})) as upd,
-    ):
-        r = client.patch("/api/v1/agent-mail/addresses/agent_f", json={"verified_senders": ["bob@x.y"]})
+    a, b, c = _mailbox(owner_email=RuntimeError("clerk down"))
+    with a, b, c, patch.object(agent_mail.agent_email_repo, "update_settings", AsyncMock(return_value={})) as upd:
+        r = client.patch("/api/v1/agent-mail/address", json={"verified_senders": ["bob@x.y"]})
     assert r.status_code == 200
     assert upd.call_args.kwargs == {"verified_senders": ["bob@x.y"]}
 
 
-def test_patch_address_without_a_list_does_not_look_up_the_owner(client):
-    owner_lookup = AsyncMock(return_value="owner@x.y")
-    with (
-        patch.object(agent_mail, "resolve_from_address", AsyncMock(return_value="f@acme.isol8.co")),
-        patch.object(agent_mail, "_owner_email", owner_lookup),
-        patch.object(agent_mail.agent_email_repo, "update_settings", AsyncMock(return_value={})) as upd,
-    ):
-        client.patch("/api/v1/agent-mail/addresses/agent_f", json={"send_to_anyone": False})
-    owner_lookup.assert_not_called()
-    assert upd.call_args.kwargs == {"send_to_anyone": False}
-
-
 def test_patch_address_bad_sender_400(client):
-    with patch.object(agent_mail, "resolve_from_address", AsyncMock(return_value="f@acme.isol8.co")):
-        r = client.patch("/api/v1/agent-mail/addresses/agent_f", json={"verified_senders": ["nope"]})
+    a, b, c = _mailbox()
+    with a, b, c:
+        r = client.patch("/api/v1/agent-mail/address", json={"verified_senders": ["nope"]})
     assert r.status_code == 400
 
 
 def test_patch_address_reenable_sends_null(client):
+    a, b, c = _mailbox()
     with (
-        patch.object(agent_mail, "resolve_from_address", AsyncMock(return_value="f@acme.isol8.co")),
-        patch.object(
-            agent_mail.agent_email_repo, "update_settings", AsyncMock(return_value={"address": "f@acme.isol8.co"})
-        ) as upd,
+        a,
+        b,
+        c,
+        patch.object(agent_mail.agent_email_repo, "update_settings", AsyncMock(return_value={"address": TEAM})) as upd,
     ):
-        r = client.patch("/api/v1/agent-mail/addresses/agent_f", json={"outbound_disabled": None})
+        r = client.patch("/api/v1/agent-mail/address", json={"outbound_disabled": None})
     assert r.status_code == 200
     assert upd.call_args.kwargs == {"outbound_disabled": None}
 
@@ -315,20 +300,17 @@ def test_patch_address_nonnull_outbound_disabled_400(client):
     """outbound_disabled is read-only from the owner settings surface except
     for the explicit-null re-enable — any other value must be rejected, not
     silently ignored."""
-    with (
-        patch.object(agent_mail, "resolve_from_address", AsyncMock(return_value="f@acme.isol8.co")),
-        patch.object(agent_mail.agent_email_repo, "update_settings", AsyncMock()) as upd,
-    ):
-        r = client.patch("/api/v1/agent-mail/addresses/agent_f", json={"outbound_disabled": "spam"})
+    a, b, c = _mailbox()
+    with a, b, c, patch.object(agent_mail.agent_email_repo, "update_settings", AsyncMock()) as upd:
+        r = client.patch("/api/v1/agent-mail/address", json={"outbound_disabled": "spam"})
     assert r.status_code == 400 and r.json()["detail"]["status"] == "outbound_disabled_readonly"
     upd.assert_not_called()
 
 
-def test_patch_address_mint_failure_409(client):
-    with (
-        patch.object(agent_mail, "resolve_from_address", AsyncMock(return_value=None)),
-        patch.object(agent_mail, "_owner_email", AsyncMock(return_value="o@x.y")),
-        patch.object(agent_mail, "ensure_agent_address", AsyncMock(return_value=(None, "company_name_unavailable"))),
-    ):
-        r = client.patch("/api/v1/agent-mail/addresses/agent_f", json={"send_to_anyone": True})
-    assert r.status_code == 409 and r.json()["detail"]["status"] == "company_name_unavailable"
+def test_address_mint_failure_409(client):
+    a, b, c = _mailbox(ensure=(None, "slug_allocation_failed"))
+    with a, b, c:
+        r = client.patch("/api/v1/agent-mail/address", json={"send_to_anyone": True})
+        g = client.get("/api/v1/agent-mail/address")
+    assert r.status_code == 409 and r.json()["detail"]["status"] == "slug_allocation_failed"
+    assert g.status_code == 409

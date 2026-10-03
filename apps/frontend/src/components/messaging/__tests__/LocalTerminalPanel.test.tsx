@@ -61,3 +61,16 @@ it("a close and the next open in one tick carry strictly increasing times", asyn
   expect(ats.length).toBeGreaterThanOrEqual(3);
   ats.forEach((at, i) => { if (i) expect(at).toBeGreaterThan(ats[i - 1]); });
 });
+
+it("keeps asking while no holder answers, and promotes the panel when one does", async () => {
+  vi.useFakeTimers();
+  try {
+    const invoke = vi.fn().mockResolvedValueOnce({ live: false }).mockResolvedValue({ live: true });
+    (window as { __TAURI__?: unknown }).__TAURI__ = { core: { invoke } };
+    render(panel(session));
+    await vi.advanceTimersByTimeAsync(100);
+    expect(screen.getByRole("region", { name: "Native session history" })).toBeInTheDocument();
+    await vi.advanceTimersByTimeAsync(2500);
+    expect(screen.getByRole("region", { name: "Session terminal" })).toBeInTheDocument();
+  } finally { vi.useRealTimers(); }
+});

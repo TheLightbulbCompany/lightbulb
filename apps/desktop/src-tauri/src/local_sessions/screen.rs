@@ -352,10 +352,19 @@ impl Out<'_> {
     }
 }
 
+static LAST_EPOCH: AtomicU64 = AtomicU64::new(0);
+
+/// Wall-clock milliseconds, but never equal to or below an earlier epoch: a viewer drops a lower one as stale,
+/// and a clock step back or two relays in one millisecond would otherwise freeze it.
+fn next_epoch(last: &AtomicU64, now_ms: u64) -> u64 {
+    let prev = last.fetch_update(SeqCst, SeqCst, |l| Some(now_ms.max(l + 1))).unwrap_or(0);
+    now_ms.max(prev + 1)
+}
+
 /// Holder frames in, relay frames out, until the lease ends, the session exits or the holder goes.
 fn pump(frames: &Receiver<(u8, Vec<u8>)>, to_holder: &mut impl Write, ids: (&str, &str), mut size: (u16, u16),
         ctl: &Ctl, send: &dyn Fn(Value) -> bool, budget: Budget) -> Result<(), String> {
-    let epoch = SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_millis() as u64);
+    let epoch = next_epoch(&LAST_EPOCH, SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_millis() as u64));
     ctl.epoch.store(epoch, SeqCst);
     let mut out = Out { ids, epoch, seq: 0, ctl, send, budget, stale: false };
     let mut pending: Vec<u8> = Vec::new();
@@ -431,6 +440,15 @@ mod tests {
     use super::*;
     use crate::holder::protocol::with_offset;
     use std::collections::BTreeSet;
+
+    #[test]
+    fn epochs_increase_in_one_millisecond_and_when_the_clock_steps_back() {
+        let last = AtomicU64::new(0);
+        let a = next_epoch(&last, 1000);
+        let b = next_epoch(&last, 1000);
+        let c = next_epoch(&last, 900);
+        assert!(a < b && b < c);
+    }
 
     const GOLDEN: &str =
         include_str!("../../../../../packages/shared/fixtures/local-session-frames/session-screen.json");

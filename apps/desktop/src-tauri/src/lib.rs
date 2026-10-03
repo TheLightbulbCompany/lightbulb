@@ -1376,12 +1376,13 @@ async fn apply_update_manifest(
             format!("install: {e}")
         })?;
 
-    #[cfg(unix)]
-    holder::window::app_exiting();
     process_owner::mark_restarting(&app.config().identifier).map_err(|e| {
         log(&format!("[updater] safe restart unavailable: {e}"));
         format!("restart safely: {e}")
     })?;
+    // Only now is the restart certain: from here a closing window is not a person's close.
+    #[cfg(unix)]
+    holder::window::app_exiting();
     log("[updater] install complete, restarting");
     app.restart();
 }

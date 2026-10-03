@@ -270,6 +270,12 @@ _BRIDGE_RUNS = "/internal/calls/v1/runs"
 _TURN_TIMEOUT_S = 18.0
 _ROUTING_TIMEOUT_S = 3.0  # routing shares the 30 s API Gateway budget with the dispatch
 _TRANSCRIPT_CHARS = 6000
+# A voice answer is spoken while a person waits, so its prompt is kept small: the newest few room
+# messages, each cut short, instead of the 50 a chat turn carries (Pulse's first voice turn was a
+# 30k-token prompt, 3-6 s of model time before a word was spoken). The room session keeps the full
+# history from its chat turns; this only bounds what a voice turn adds.
+_VOICE_HISTORY_MESSAGES = 12
+_VOICE_HISTORY_CHARS = 500
 _background: set[asyncio.Task] = set()
 
 
@@ -292,6 +298,14 @@ You decide how to handle it; pick whatever fits the request:
   Only promise to follow up if you actually created that task.
 Your reply is spoken: no markdown, no lists, no code, no links, no ids. Never claim an action succeeded before it did.
 This turn has a hard limit of a few model steps; when it runs out you must answer with what you have.]"""
+
+
+def _voice_history(history: list[dict]) -> list[dict]:
+    out = []
+    for row in history[-_VOICE_HISTORY_MESSAGES:]:
+        text = row.get("text") or ""
+        out.append({**row, "text": text[:_VOICE_HISTORY_CHARS] + "…"} if len(text) > _VOICE_HISTORY_CHARS else row)
+    return out
 
 
 def _problem(status: int, **detail) -> HTTPException:
@@ -659,7 +673,7 @@ async def dispatch_voice_run(
                 "speaker": {"id": speaker_id, "name": name},
                 "utterance": utterance,
             },
-            "recentHistory": await openclaw_work.room_history(meta, int(meta.get("lastSeq") or 0) + 1),
+            "recentHistory": _voice_history(await openclaw_work.room_history(meta, int(meta.get("lastSeq") or 0) + 1)),
             "participants": openclaw_work.ingress_participants(members),
         },
     }

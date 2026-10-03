@@ -416,11 +416,16 @@ async def test_voice_run_is_an_ordinary_run_on_the_room_key(run_env):
     assert out == {"runId": "run-1", "agentId": "fin-1", "steered": False}
 
 
-async def test_voice_run_history_drops_the_oldest_past_one_mib(run_env):
-    vc.openclaw_work.room_history.return_value = [{"messageId": f"m{i}", "text": "x" * 400_000} for i in range(3)]
+async def test_voice_run_history_is_the_newest_few_messages_cut_short(run_env):
+    """A voice answer is spoken while someone waits: the prompt carries the newest 12 room messages,
+    each cut to 500 characters, not the 50 full messages a chat turn gets (a 30k-token first prompt
+    cost 3-6 s of model time before a word was spoken)."""
+    vc.openclaw_work.room_history.return_value = [{"messageId": f"m{i}", "text": "x" * 400_000} for i in range(50)]
     await _dispatch()
     history = run_env.await_args.kwargs["json_body"]["request"]["recentHistory"]
-    assert [m["messageId"] for m in history] == ["m1", "m2"]
+    assert [m["messageId"] for m in history] == [f"m{i}" for i in range(38, 50)]
+    assert all(len(m["text"]) == vc._VOICE_HISTORY_CHARS + 1 and m["text"].endswith("…") for m in history)
+    assert vc._VOICE_HISTORY_MESSAGES == 12 and vc._VOICE_HISTORY_CHARS == 500
 
 
 async def test_voice_run_for_an_agent_not_in_the_room_is_409(run_env):

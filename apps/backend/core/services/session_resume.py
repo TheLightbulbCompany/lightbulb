@@ -88,6 +88,10 @@ async def request_resume(
         if live(waiting) and waiting["resumeId"] == resume_id and waiting["byUserId"] == me:
             return sessions._session_public(row, me)  # the same click, retried
         if row.get("endedAt") is None:
+            # The Mac may have registered this very request's run before a retry of the click lands.
+            first = await repo.get_command(owner, sid, resume_id)
+            if first and first.get("actorUserId") == me:
+                return sessions._session_public(row, me)
             raise ApiProblem("LOCAL_SESSION_CONFLICT", "This session is still running.")
         if not own and me not in (row.get("resumeAllowed") or []):
             raise ApiProblem(
@@ -117,6 +121,8 @@ async def request_resume(
         try:
             name = await human_display_name(me)
         except Exception:
+            name = ""
+        if not name or name == me:  # an unresolved lookup falls back to the raw user id
             name = "A teammate"
         now, mode = int(time.time()), _mode(row, own)
         resume = {

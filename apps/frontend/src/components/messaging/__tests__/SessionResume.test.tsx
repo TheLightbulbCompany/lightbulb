@@ -7,7 +7,7 @@ import { ResumeDelivery, SessionResume } from "../SessionResume";
 const ended = (changes: Partial<LocalSession> = {}): LocalSession => ({
   sessionId: "s1", deviceId: "mac", humanUserId: "alice", provider: "claude", providerVersion: "2.1.288", generation: "g1", status: "ended",
   activeTurnId: null, capabilities: { sendMode: "queue", steer: false, interrupt: false }, capabilitiesVerified: true, controlUnavailableReason: null,
-  latestEventSeq: 3, title: "Fix login", resumeAllowed: ["bob"], ...changes,
+  latestEventSeq: 3, title: "Fix login", resumeAllowed: ["bob"], resumable: true, ...changes,
 });
 const client = () => ({ submitLocalSessionCommand: vi.fn(), resumeLocalSession: vi.fn(async () => ended()), getLocalSessionCommand: vi.fn() });
 

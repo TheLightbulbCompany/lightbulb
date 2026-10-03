@@ -403,6 +403,8 @@ export interface LocalSession {
   resumeAllowed?: string[];
   /** A resume waiting for the owner's Mac, or the Mac's refusal of one. */
   resume?: LocalSessionResume;
+  /** Ended, not background, and the workspace may start sessions on its Macs (server-computed). */
+  resumable?: boolean;
 }
 
 /** A resume someone asked for on an ended session: waiting for the owner's Mac, or refused by it. */

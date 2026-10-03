@@ -288,6 +288,8 @@ class LocalSession(ContractModel):
     resume_allowed: list[str] = Field(default_factory=list)
     # A resume waiting for the owner's Mac, or the Mac's refusal of one (spec §5.7).
     resume: ResumeStatus | None = None
+    # Server-computed: ended, not background, and this workspace may start sessions on its Macs.
+    resumable: bool = False
 
     @model_serializer(mode="wrap")
     def wire(self, handler, info):
@@ -585,6 +587,11 @@ def _session_public(row: dict, viewer: str | None = None) -> LocalSession:
     public["allowedSenders"] = allowed_senders(row)
     ended = row.get("endedAt") is not None
     public["resumeAllowed"] = list(row.get("resumeAllowed") or []) if ended else []
+    from core.services import session_resume  # lazy: it imports this module
+
+    public["resumable"] = (
+        ended and row.get("kind") != "background" and session_resume.submissions_enabled(row["ownerId"])
+    )
     # The stored request carries the message; only its state, author and time are public.
     waiting = public.pop("resume", None)
     if ended and waiting and int(waiting["until"]) > int(time.time()):

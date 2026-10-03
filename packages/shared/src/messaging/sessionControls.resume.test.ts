@@ -9,7 +9,7 @@ import type { LocalSession } from "./types";
 const ended = (changes: Partial<LocalSession> = {}): LocalSession => ({
   sessionId: "s1", deviceId: "mac", humanUserId: "alice", provider: "claude", providerVersion: "2.1.288",
   generation: "g1", status: "ended", activeTurnId: null, capabilities: { sendMode: "queue", steer: false, interrupt: false },
-  capabilitiesVerified: true, controlUnavailableReason: null, latestEventSeq: 3, resumeAllowed: ["bob"], ...changes,
+  capabilitiesVerified: true, controlUnavailableReason: null, latestEventSeq: 3, resumeAllowed: ["bob"], resumable: true, ...changes,
 });
 const nameOf = (id: string) => (id === "bob" ? "Bob" : "Someone");
 afterEach(() => { cleanup(); vi.useRealTimers(); });
@@ -20,6 +20,7 @@ describe("canResumeSession", () => {
     expect(canResumeSession(ended(), false, "bob")).toBe(true);
     expect(canResumeSession(ended(), false, "carol")).toBe(false);
     expect(canResumeSession(ended({ status: "idle" }), true)).toBe(false);
+    expect(canResumeSession(ended({ resumable: false }), true)).toBe(false);
     expect(canResumeSession(ended({ resume: { state: "pending", byUserId: "bob", requestedAt: "" } }), true)).toBe(false);
     expect(canResumeSession(ended({ resume: { state: "failed", byUserId: "bob", requestedAt: "", reason: "FOLDER_MISSING" } }), false, "bob")).toBe(true);
   });

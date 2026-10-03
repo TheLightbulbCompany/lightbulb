@@ -202,7 +202,10 @@ async fn start(app: &tauri::AppHandle, w: &Wanted, me: &Resumer) -> std::result:
     else {
         return Ok(false);
     };
-    crate::session_start::start_held(app, &folder, &argv).await.map_err(|_| "LAUNCH_FAILED")?;
+    crate::session_start::start_held(app, &folder, &argv).await.map_err(|e| {
+        relay_log(&format!("{} resume launch failed: {e}", &w.session_id[..w.session_id.len().min(8)]));
+        "LAUNCH_FAILED"
+    })?;
     let who = if own { "You".to_owned() } else { w.by_name.clone() };
     let how = if own && w.mode == "default" {
         "End it from its panel in Lightbulb."

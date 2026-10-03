@@ -365,12 +365,18 @@ const UNAVAILABLE: Record<string, string> = {
   "unsupported-version": "The owner's Claude Code is too old to be picked up from.",
 };
 
+/** An ApiProblem body's own `message`, when it carries one. */
+function problemMessage(body: unknown): string | null {
+  const m = (body as { message?: unknown } | null)?.message;
+  return typeof m === "string" && m ? m : null;
+}
+
 /**
  * "Resume and send" (spec §5.7): an ended session, for its owner and for the people who could send
  * to it when it ended, while no other resume waits. The backend enforces the same rule.
  */
 export function canResumeSession(session: LocalSession, own: boolean, userId?: string | null): boolean {
-  return session.status === "ended" && session.kind !== "background" && session.resume?.state !== "pending" &&
+  return session.resumable === true && session.status === "ended" && session.kind !== "background" && session.resume?.state !== "pending" &&
     (own || (!!userId && (session.resumeAllowed ?? []).includes(userId)));
 }
 
@@ -433,7 +439,7 @@ export function useSessionResume(client: SessionControlClient, session: LocalSes
       // A refusal is final for this id; only an unanswered request is retried as itself.
       if (e instanceof ApiError && e.status < 500) attemptId.current = null;
       setError(!(e instanceof ApiError) ? "Could not reach Lightbulb. Try again."
-        : e.status === 409 ? "Someone already asked to resume this session, or it is running again."
+        : e.status === 409 ? problemMessage(e.body) ?? "Someone already asked to resume this session, or it is running again."
           : e.status === 403 ? "You can no longer resume this session."
             : e.status === 400 || e.status === 422 ? "That message is too long."
               : "Could not resume this session. Try again.");

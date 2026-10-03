@@ -349,3 +349,33 @@ async def test_the_owner_resuming_lets_nobody_else_in(transport):
     assert "allowedSenders" not in await repo.get_session(OWNER, sid)
     (sent,) = commands(transport)
     assert sent["actorUserId"] == ALICE.user_id
+
+
+@pytest.mark.asyncio
+async def test_resumable_is_true_only_for_an_ended_session_in_an_enabled_workspace(transport, monkeypatch):
+    sid = await ended_session(transport, BOB)
+    assert (await service.get_session(ALICE, sid)).resumable is True
+    monkeypatch.setattr(session_resume, "submissions_enabled", lambda owner: False)
+    assert (await service.get_session(ALICE, sid)).resumable is False
+    monkeypatch.setattr(session_resume, "submissions_enabled", lambda owner: True)
+    await relay(transport).handle_message("conn-1", successor())
+    assert (await service.get_session(ALICE, sid)).resumable is False
+
+
+@pytest.mark.asyncio
+async def test_a_retried_click_after_the_run_registered_still_succeeds(transport):
+    sid = await ended_session(transport, BOB)
+    await ask(BOB, sid, "carry on")
+    await relay(transport).handle_message("conn-1", successor())
+    assert (await ask(BOB, sid, "carry on")).session_id == sid  # no "still running"
+
+
+@pytest.mark.asyncio
+async def test_an_unresolved_name_reads_a_teammate(transport, monkeypatch):
+    async def unresolved(user_id):
+        return user_id
+
+    monkeypatch.setattr("core.services.messaging.human_display_name", unresolved)
+    sid = await ended_session(transport, BOB)
+    await ask(BOB, sid)
+    assert (await want(sid))["byName"] == "A teammate"

@@ -442,6 +442,11 @@ pub(crate) fn sharing_on(app: &tauri::AppHandle) -> bool {
         .and_then(|dir| private_read::<Enrollment>(&dir.join("enrollment.json")))
         .is_ok_and(|e| e.enabled && !e.paused && !e.remote_disabled)
 }
+/// The workspace this Mac's sessions are shared to, if enrolled.
+pub(crate) fn enrolled_owner(app: &tauri::AppHandle) -> Option<String> {
+    let dir = state_dir(app).ok()?;
+    private_read::<Enrollment>(&dir.join("enrollment.json")).ok().map(|e| e.owner_id)
+}
 pub(crate) fn scope_key(enrollment: &Enrollment) -> String {
     fingerprint(&json!([enrollment.owner_id, enrollment.human_user_id, enrollment.device_id]).to_string())
 }
@@ -605,6 +610,11 @@ pub async fn local_sessions_auth(
             .lock()
             .map_err(|_| "sharing state unavailable")?;
         state.revision.fetch_add(1, Ordering::SeqCst);
+        // Signed out: forget the page's workspace name for the `lightbulb` command's line.
+        #[cfg(unix)]
+        if human_user_id.is_none() {
+            crate::cli::set_workspace(None);
+        }
         *human = Some(human_user_id);
         state.stop();
     }

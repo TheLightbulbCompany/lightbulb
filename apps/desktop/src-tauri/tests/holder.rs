@@ -19,10 +19,14 @@ fn start_cat(dir: &Path) -> PathBuf {
 }
 
 fn start(dir: &Path, argv: &[&str]) -> PathBuf {
+    start_sized(dir, argv, None)
+}
+
+fn start_sized(dir: &Path, argv: &[&str], size: Option<(u16, u16)>) -> PathBuf {
     let socket = dir.join("held.sock");
     let (s, d) = (socket.clone(), dir.to_path_buf());
     let argv: Vec<String> = argv.iter().map(|a| a.to_string()).collect();
-    std::thread::spawn(move || run::run_with_env(&s, &argv, &d, vec![("PATH".into(), "/usr/bin:/bin".into())]));
+    std::thread::spawn(move || run::run_with_env(&s, &argv, &d, vec![("PATH".into(), "/usr/bin:/bin".into())], size));
     let deadline = Instant::now() + Duration::from_secs(5);
     while !socket.exists() && Instant::now() < deadline {
         std::thread::sleep(Duration::from_millis(20));
@@ -145,8 +149,8 @@ fn holder_answers_hello_before_any_output() {
 }
 
 #[test]
-fn holder_delivers_a_provider_s_last_words_before_exit() {
-    let socket = start(&temp_dir(), &["/bin/sh", "-c", "read x; printf final-words; exit 0"]);
+fn holder_delivers_a_provider_s_last_words_and_exit_code_before_exit() {
+    let socket = start(&temp_dir(), &["/bin/sh", "-c", "read x; printf final-words; exit 3"]);
     let mut c = attach(&socket, "interactive");
     c.write_all(&encode(INPUT, b"go\r")).unwrap();
     let mut seen = vec![];
@@ -154,11 +158,51 @@ fn holder_delivers_a_provider_s_last_words_before_exit() {
         let (kind, payload) = read_frame(&mut c).expect("frames before timeout");
         match kind {
             OUTPUT => seen.extend_from_slice(split_offset(&payload).unwrap().1),
-            EXIT => break,
+            EXIT => {
+                let exit: serde_json::Value = serde_json::from_slice(&payload).unwrap();
+                assert_eq!(exit["code"], 3, "the command exits with this");
+                break;
+            }
             _ => {}
         }
     }
     assert!(seen.windows(11).any(|w| w == b"final-words"));
+}
+
+#[test]
+fn holder_replays_a_new_terminal_from_the_start_instead_of_a_snapshot() {
+    let socket = start_cat(&temp_dir());
+    let mut first = attach(&socket, "interactive");
+    first.write_all(&encode(INPUT, b"early-output\r")).unwrap();
+    read_until(&mut first, b"early-output");
+
+    let mut c = UnixStream::connect(&socket).unwrap();
+    c.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+    c.write_all(&encode(HELLO, br#"{"role":"interactive","replayFrom":0}"#)).unwrap();
+    assert_eq!(read_frame(&mut c).unwrap().0, HELLO);
+    let (kind, payload) = read_frame(&mut c).unwrap();
+    assert_eq!(kind, OUTPUT, "all output from offset 0, not a screen-clearing snapshot");
+    let (offset, bytes) = split_offset(&payload).unwrap();
+    assert_eq!(offset, 0);
+    assert!(bytes.windows(12).any(|w| w == b"early-output"));
+
+    // An offset the holder does not have: the snapshot, as before.
+    let mut late = UnixStream::connect(&socket).unwrap();
+    late.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+    late.write_all(&encode(HELLO, br#"{"role":"interactive","replayFrom":99999999}"#)).unwrap();
+    assert_eq!(read_frame(&mut late).unwrap().0, HELLO);
+    assert_eq!(read_frame(&mut late).unwrap().0, SNAPSHOT);
+}
+
+#[test]
+fn holder_starts_at_the_size_it_was_given() {
+    let socket = start_sized(&temp_dir(), &["/bin/cat"], Some((50, 10)));
+    let mut r = UnixStream::connect(&socket).unwrap();
+    r.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+    r.write_all(&encode(HELLO, br#"{"role":"recorder"}"#)).unwrap();
+    let (_, facts) = read_frame(&mut r).unwrap();
+    let facts: serde_json::Value = serde_json::from_slice(&facts).unwrap();
+    assert_eq!((facts["cols"].as_u64(), facts["rows"].as_u64()), (Some(50), Some(10)));
 }
 
 #[test]
@@ -183,7 +227,7 @@ fn holder_manager_refuses_a_planted_symlink_for_its_folder() {
     let elsewhere = base.with_extension("target");
     std::fs::create_dir_all(&elsewhere).unwrap();
     std::os::unix::fs::symlink(&elsewhere, &base).unwrap();
-    let err = manager::start_with(Path::new("/bin/false"), &base.join("h"), Path::new("/"), &["/bin/cat".into()]).unwrap_err();
+    let err = manager::start_with(Path::new("/bin/false"), &base.join("h"), Path::new("/"), &["/bin/cat".into()], None).unwrap_err();
     assert!(err.contains("not safe"), "{err}");
     assert!(!elsewhere.join("h").exists(), "nothing is created through the symlink");
 }

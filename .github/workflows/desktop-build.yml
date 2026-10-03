@@ -80,6 +80,10 @@ jobs:
     - name: Cargo test (lib)
       run: TAURI_CONFIG='{"bundle":{"externalBin":[],"resources":[]}}' cargo test --manifest-path
         apps/desktop/src-tauri/Cargo.toml --lib
+    # The holder and the `lightbulb` command end to end: real binary, real pty.
+    - name: Cargo test (held sessions)
+      run: TAURI_CONFIG='{"bundle":{"externalBin":[],"resources":[]}}' cargo test --manifest-path
+        apps/desktop/src-tauri/Cargo.toml --test holder --test cli
     # Run separately and unfiltered: a shared name filter matches none of the example's tests.
     - name: Cargo test (probe example)
       run: TAURI_CONFIG='{"bundle":{"externalBin":[],"resources":[]}}' cargo test --manifest-path

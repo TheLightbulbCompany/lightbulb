@@ -40,7 +40,7 @@ pub fn socket_dir() -> PathBuf {
 
 /// Create (or accept) the socket directory and its parent: real directories owned by this user,
 /// never through a symlink another account planted at the predictable /tmp path.
-fn ensure_dir(dir: &Path) -> Result<(), String> {
+pub(crate) fn ensure_dir(dir: &Path) -> Result<(), String> {
     use std::os::unix::fs::{DirBuilderExt, MetadataExt};
     let uid = unsafe { libc::getuid() };
     for d in [dir.parent().unwrap_or(dir), dir] {
@@ -65,17 +65,27 @@ pub fn stop(pid: u32) {
 
 /// Start a holder from this app's own binary (`<exe> holder <socket> -- argv`).
 pub fn start(cwd: &Path, argv: &[String]) -> Result<HolderInfo, String> {
-    let exe = std::env::current_exe().map_err(|e| e.to_string())?;
-    start_with(&exe, &socket_dir(), cwd, argv)
+    start_sized(cwd, argv, None)
 }
 
-pub fn start_with(exe: &Path, dir: &Path, cwd: &Path, argv: &[String]) -> Result<HolderInfo, String> {
+/// Start a holder whose terminal begins at `size` (`cols`, `rows`): the size of the terminal
+/// that attaches to it first.
+pub fn start_sized(cwd: &Path, argv: &[String], size: Option<(u16, u16)>) -> Result<HolderInfo, String> {
+    let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+    start_with(&exe, &socket_dir(), cwd, argv, size)
+}
+
+pub fn start_with(exe: &Path, dir: &Path, cwd: &Path, argv: &[String], size: Option<(u16, u16)>) -> Result<HolderInfo, String> {
     ensure_dir(dir)?;
     // Eight hex characters keep the socket path well under the 104-byte limit.
     let id = uuid::Uuid::new_v4().simple().to_string()[..8].to_owned();
     let socket = dir.join(format!("{id}.sock"));
     let mut cmd = std::process::Command::new(exe);
-    cmd.arg("holder").arg(&socket).arg("--").args(argv).current_dir(cwd);
+    cmd.arg("holder").arg(&socket);
+    if let Some((cols, rows)) = size {
+        cmd.arg(format!("--size={cols}x{rows}"));
+    }
+    cmd.arg("--").args(argv).current_dir(cwd);
     cmd.stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null());
     // Its own session: no controlling terminal, untouched by the app's process group.
     unsafe {

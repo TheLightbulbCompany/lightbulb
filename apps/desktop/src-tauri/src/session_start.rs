@@ -171,6 +171,7 @@ pub fn options(app: &tauri::AppHandle) -> Value {
         "sharing": crate::local_sessions::enrollment::sharing_on(app),
         "folders": approved_folders(),
         "tools": tools(&home()),
+        "cli": crate::cli::status(),
     })
 }
 
@@ -377,6 +378,82 @@ pub async fn terminal_start(app: tauri::AppHandle, params: Value) -> Result<Valu
     Ok(json!({"holderId": info.id, "tool": start.tool}))
 }
 
+/// Whether `folder` (canonical) is one of the approved folders or anywhere inside one: the
+/// person running `lightbulb` is at this Mac and already in that folder. A view or a remote
+/// start still names an approved folder exactly (`validate`).
+fn inside_approved(folder: &Path, approved: &[PathBuf]) -> bool {
+    approved.iter().any(|a| crate::file_access::is_inside(folder, a))
+}
+
+/// The `lightbulb` command's argv: the person's own arguments, unchanged. Codex also gets
+/// `--no-daemon`, which keeps it a dedicated writer so its start hook links to this start.
+fn cli_argv(program: &Path, tool: &str, args: &[String]) -> Vec<String> {
+    let mut argv = vec![program.to_string_lossy().into_owned()];
+    if tool == "codex" {
+        argv.push("--no-daemon".into());
+    }
+    argv.extend(args.iter().cloned());
+    argv
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+struct CliStart {
+    tool: String,
+    folder: String,
+    args: Vec<String>,
+    start_id: String,
+}
+
+/// `lightbulb claude|codex` in a terminal (`cli.rs`): the tool must be installed, the folder an
+/// approved folder or inside one, and sharing on. No window, because the terminal that asked
+/// attaches itself. Never starts a session that would not be shared.
+pub(crate) fn cli_start(
+    app: &tauri::AppHandle,
+    params: Value,
+    size: (u16, u16),
+) -> Result<crate::holder::manager::HolderInfo, String> {
+    let start: CliStart = serde_json::from_value(params).map_err(|_| "Malformed request.".to_string())?;
+    if let Some(reason) = crate::cli::refusal(&start.tool, &start.args) {
+        return Err(reason);
+    }
+    if start.args.iter().any(|a| a.contains('\0')) || start.args.iter().map(String::len).sum::<usize>() > 64 << 10
+        || start.start_id.is_empty() || start.start_id.len() > 64
+        || !start.start_id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
+    {
+        return Err("Malformed request.".into());
+    }
+    let scope = crate::local_sessions::enrollment::launch_scope(app).map_err(|_| {
+        "Session sharing is off in Lightbulb on this Mac. Turn it on in Settings → Native terminal sessions, then run this again.".to_string()
+    })?;
+    let home = home();
+    let program = tools(&home)
+        .iter()
+        .any(|t| t["id"] == start.tool.as_str())
+        .then(|| crate::local_sessions::provider_program(&home, &start.tool))
+        .flatten()
+        .ok_or(format!("{} is not installed on this Mac.", start.tool))?;
+    if start.tool == "codex" {
+        // The installed Codex's own command list: a subcommand added after this build still refuses.
+        let installed = crate::cli::help_commands(&codex_help(&program));
+        if let Some(reason) = crate::cli::codex_refusal(&start.args, &installed) {
+            return Err(reason);
+        }
+    }
+    let approved: Vec<PathBuf> = approved_folders()
+        .iter()
+        .filter_map(|a| crate::file_access::canonicalize(a).ok())
+        .collect();
+    let folder = crate::file_access::canonicalize(&start.folder)
+        .ok()
+        .filter(|f| f.is_dir() && inside_approved(f, &approved))
+        .ok_or("This folder is not inside a folder you approved for Lightbulb. Add it in the Lightbulb app under Settings → File access, then run this again.".to_string())?;
+    let argv = held_argv(&cli_argv(&program, &start.tool, &start.args), Some((start.start_id.as_str(), scope.as_str())));
+    let info = crate::holder::manager::start_sized(&folder, &argv, Some(size))?;
+    crate::log(&format!("[session-start] terminal command {} {} in {}", start.start_id, start.tool, folder.display()));
+    Ok(info)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -529,5 +606,22 @@ mod tests {
         assert!(held[2].contains("LAUNCH_PID=$$") && held[2].ends_with(r#"exec "$@""#));
         assert_eq!(&held[3..6], &["lightbulb-start", "start-1", "/scope"]);
         assert_eq!(&held[6..], &argv[..]);
+    }
+
+    #[test]
+    fn session_start_terminal_command_folder_is_an_approved_folder_or_inside_one() {
+        let approved = [PathBuf::from("/Users/a/code")];
+        assert!(inside_approved(Path::new("/Users/a/code"), &approved));
+        assert!(inside_approved(Path::new("/Users/a/code/app"), &approved));
+        assert!(!inside_approved(Path::new("/Users/a/codex"), &approved), "by component, not by prefix");
+        assert!(!inside_approved(Path::new("/Users/a"), &approved), "never above an approved folder");
+    }
+
+    #[test]
+    fn session_start_terminal_command_passes_the_person_s_arguments_unchanged() {
+        let args: Vec<String> = ["--resume", "abc", "--dangerously-skip-permissions"].iter().map(|s| s.to_string()).collect();
+        assert_eq!(cli_argv(Path::new("/bin/claude"), "claude", &args), ["/bin/claude", "--resume", "abc", "--dangerously-skip-permissions"]);
+        // Codex: only the plumbing the start link needs, then the person's words.
+        assert_eq!(cli_argv(Path::new("/bin/codex"), "codex", &args[..2]), ["/bin/codex", "--no-daemon", "--resume", "abc"]);
     }
 }

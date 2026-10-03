@@ -6,6 +6,8 @@ pub mod device_token;
 pub mod file_access;
 #[cfg(unix)]
 pub mod holder;
+#[cfg(unix)]
+pub mod cli;
 pub mod keychain;
 pub mod local_mcp;
 pub mod local_sessions;
@@ -221,9 +223,14 @@ fn send_auth_token(
     display_name: String,
     user_id: String,
     permissions: Option<DesktopPermissions>,
+    workspace_id: Option<String>,
+    workspace_name: Option<String>,
     state: State<'_, AuthState>,
     app: tauri::AppHandle,
 ) -> Result<(), String> {
+    // Only for the `lightbulb` command's "Shared with <workspace>" line.
+    #[cfg(unix)]
+    cli::set_workspace(workspace_id.zip(workspace_name));
     {
         // Cache the latest token for telemetry / diagnostic dumps. We do
         // NOT use this as the "did bootstrap already happen" sentinel
@@ -1961,6 +1968,15 @@ end tell"#,
                     handle_deep_link_url(&app_handle, &url_obj.to_string());
                 }
             });
+
+            // The `lightbulb` command: its request socket, and its link in ~/.local/bin.
+            #[cfg(unix)]
+            {
+                if let Err(e) = cli::serve(app.handle().clone()) {
+                    log(&format!("[cli] the lightbulb command is unavailable: {e}"));
+                }
+                tauri::async_runtime::spawn_blocking(cli::install_at_launch);
+            }
 
             Ok(())
         })

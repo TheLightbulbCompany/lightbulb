@@ -236,6 +236,8 @@ export function NewSessionView({ sessions, onEvent, onOpenSession, onClose }: {
           : pending?.phase === "opened" ? (localMac ? "Running on this Mac. It moves to Sessions when it reports in." : `Opened on ${where}. Waiting for the session…`) : `Starting on ${where}…`}</p>}
         {pending?.phase === "failed" && <p role="alert" className="text-err">{pending.error}</p>}
         {tooLong && <p role="alert" className="text-err">The first message is too long.</p>}
+        {localMac?.cli && !busy && <p>Or in any terminal, inside an approved folder: <code>lightbulb claude</code> or <code>lightbulb codex</code>.</p>}
+        {localMac?.cli?.pathLine && !busy && <p>First add it to your PATH, then open a new terminal: <code className="select-all">{localMac.cli.pathLine}</code></p>}
       </div>
       {local !== "none" && <div ref={slot} className="local-session-terminal" role="region" aria-label="Session terminal" />}
       {(ready || (macs && macs.length > 1)) && <div className="new-session-strip">

@@ -2,8 +2,9 @@
 
 use std::io::{Error, ErrorKind, Read, Result};
 
-/// Client → holder: `{"role":"interactive"|"watch"|"type"|"recorder"}`. Holder → client: session
-/// facts (`"watch": true` when it serves watch clients, `"type": true` when it takes `type` ones).
+/// Client → holder: `{"role":"interactive"|"watch"|"type"|"recorder", "cols"?, "rows"?, "replayFrom"?}`.
+/// Holder → client: session facts (`"watch": true` when it serves watch clients, `"type": true`
+/// when it takes `type` ones).
 pub const HELLO: u8 = 1;
 /// Holder → client: `u64 BE offset` of the first byte, then provider output.
 pub const OUTPUT: u8 = 2;
@@ -12,7 +13,7 @@ pub const INPUT: u8 = 3;
 /// Interactive client → holder (a `type` client's is ignored), and holder → watch clients after a size change:
 /// `u16 BE cols`, `u16 BE rows`.
 pub const RESIZE: u8 = 4;
-/// Holder → client: the provider exited, `{"status":"…"}`.
+/// Holder → client: the provider exited, `{"status":"…","code":N}`.
 pub const EXIT: u8 = 5;
 /// Client → holder: `u64 BE from`; answered with OUTPUT from there (and GAP first if it is gone).
 pub const REPLAY: u8 = 6;

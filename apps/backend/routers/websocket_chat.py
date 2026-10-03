@@ -52,6 +52,9 @@ def require_ws_internal_caller(
 
 router = APIRouter(tags=["websocket"], dependencies=[Depends(require_ws_internal_caller)])
 
+# The single-flight requests a desktop waits on (transport.rs `Rpc`).
+_AWAITED_FRAMES = {"local.session.register", "local.device.heartbeat", "local.session.ended"}
+
 
 def _assert_local_session_connection(
     row: dict | None,
@@ -162,5 +165,16 @@ async def ws_message(
                 "cid": x_connection_id,
             },
         )
+    except Exception:
+        raw_frame = body.get("type") if isinstance(body, dict) else None
+        frame = raw_frame if isinstance(raw_frame, str) and len(raw_frame) <= 64 else None
+        logger.exception("local session frame failed", extra={"frame": frame, "cid": x_connection_id})
+        # Answer only the frames the desktop holds its one request slot for, so it retries
+        # at once instead of dropping the socket at its 10 s timeout. Events and receipts
+        # re-send on their own, and a desktop older than INTERNAL quarantines a session
+        # for 5 minutes on a named error.
+        if frame not in _AWAITED_FRAMES:
+            return Response(status_code=200)
+        response = {"type": "local.session.error", "code": "INTERNAL"}
     await relay.management.send_message_async(x_connection_id, response)
     return Response(status_code=200)

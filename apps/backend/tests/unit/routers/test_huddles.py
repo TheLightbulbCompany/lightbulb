@@ -463,9 +463,17 @@ def _frames(client, *, events=EVENTS, headers=HOOK, room=None, send_error=None):
 
 def test_frames_relay_by_room_even_after_the_window_closed(client):
     resp, send, container, _ = _frames(client)
-    assert resp.status_code == 200
+    assert resp.status_code == 200 and resp.json() == {"ok": True, "delivered": True}
     send.assert_awaited_once_with(ROOM, EVENTS["events"])
     assert container.await_args.args[0] == "org_a"
+
+
+def test_frames_nobody_heard_answer_202_so_the_bridge_posts_the_answer_itself(client):
+    """The call ended before the run did (10-02: Forge's answer landed 50 s after hang-up): the
+    relay fails, the run still finishes, and the bridge reads the 202 as 'post it in the room'."""
+    resp, send, _, metric = _frames(client, send_error=RuntimeError("no worker in the room"))
+    assert resp.status_code == 202 and resp.json() == {"ok": True, "delivered": False}
+    metric.assert_any_call("huddle.frame.no_worker")
 
 
 def test_frames_need_the_owners_hook_token(client):
@@ -680,3 +688,25 @@ def test_transcript_batches_are_logged_for_debugging(client, caplog):
 def test_transcript_refuses_a_bad_room_token(client):
     body = {"ownerId": "org_a", "roomToken": "nope", "huddleId": "h1", "lines": []}
     assert client.post(TRANSCRIPT, json=body, headers=W).status_code == 401
+
+
+LATE = f"/api/v1/internal/huddles/{ROOM}/late-answer"
+
+
+def test_a_late_answer_is_posted_into_the_room_by_its_agent(client):
+    with patch.object(mod.voice_calls, "post_late_answer", AsyncMock()) as post:
+        body = {
+            "ownerId": "org_a",
+            "roomToken": RT,
+            "agentId": "agent-fin",
+            "runId": "run-9",
+            "request": "my board?",
+            "answer": "Three tasks open.",
+        }
+        assert client.post(LATE, json=body, headers=W).status_code == 200
+    post.assert_awaited_once_with("org_a", ROOM, "agent-fin", "run-9", "my board?", "Three tasks open.")
+
+
+def test_a_late_answer_refuses_a_bad_room_token(client):
+    body = {"ownerId": "org_a", "roomToken": "nope", "agentId": "agent-fin", "runId": "run-9", "answer": "x"}
+    assert client.post(LATE, json=body, headers=W).status_code == 401

@@ -717,3 +717,16 @@ async def test_prewake_warms_every_room_agents_profile_after_the_health_wake(mon
         ("org_a", "profile.warm", {"agentId": "a1"}),
         ("org_a", "profile.warm", {"agentId": "a2"}),
     ]
+
+
+@pytest.mark.asyncio
+async def test_post_late_answer_is_the_agents_own_message_once_per_run(monkeypatch):
+    create = AsyncMock()
+    monkeypatch.setattr(vc.messaging, "create_agent_message", create)
+    room, agent = "11111111-1111-4111-8111-111111111111", "22222222-2222-4222-8222-222222222222"
+    await vc.post_late_answer("org_a", room, agent, "run-9", "what's on my board?", "Three tasks open; two due today.")
+    req = create.await_args.args[1]
+    assert create.await_args.args[0] == "org_a"
+    assert (req.event_id, str(req.room_id), str(req.agent_id)) == ("live-late:run-9", room, agent)
+    assert req.text == 'From the Live call "what\'s on my board?":\n\nThree tasks open; two due today.'
+    assert req.run_id is None  # a voice run is not a ledger run

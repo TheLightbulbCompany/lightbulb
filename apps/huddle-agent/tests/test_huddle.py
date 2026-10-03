@@ -85,6 +85,7 @@ class FakeBackend:
         self.versions: list[int] = []
         self.team_calls = 0
         self.transcripts: list[tuple[str, list[dict]]] = []
+        self.late_answers: list[tuple[str, str, str, str]] = []
         self.transcript_gate: asyncio.Event | None = None
         self.presence_gate: asyncio.Event | None = None
 
@@ -195,6 +196,9 @@ class FakeBackend:
             await gate.wait()
         self.presences.append(user_ids)
         self.versions.append(version)
+
+    async def late_answer(self, agent_id, run_id, request, answer):
+        self.late_answers.append((agent_id, run_id, request, answer))
 
     async def transcript(self, huddle_id, lines):
         if self.transcript_gate:
@@ -619,7 +623,7 @@ async def test_held_news_seeds_its_own_agent_and_is_consumed():
     await say(h, "u1", "Gauge, anything new?")
     assert (
         "developer",
-        "Earlier you finished the revenue: Revenue is up.; mention it if relevant",
+        "You finished the revenue. Your answer: Revenue is up. Deliver it now, briefly and completely, before anything else.",
     ) in lives[0].seed
     assert "gauge" not in h._news
 
@@ -2772,3 +2776,44 @@ async def test_a_mid_sentence_mention_keeps_the_floor():
         h, "u1", "Finance looks fine to me"
     )  # a default name mid-sentence never goes to /route
     assert backend.routes[-1][1] == "let's ask Gauge later"
+
+
+async def test_news_nobody_hears_is_posted_to_the_room_not_dropped():
+    """10-02: Forge's answer landed after hang-up and went nowhere. News pushed out by the cap, expired by
+    NEWS_TTL, or still pending when the huddle ends is posted by its agent into the room."""
+    h, room, backend, lives, clock, log = make()
+    await h.on_participants({"u1": "Prasiddha"})
+    for i in range(h_mod.NEWS_PER_AGENT + 1):
+        answer(h, f"r{i}", "gauge", f"Answer {i}.")
+    await settle(h)
+    assert backend.late_answers == [
+        ("gauge", "r0", "", "Answer 0.")
+    ]  # the one the cap pushed out
+    clock.t += h_mod.NEWS_TTL + 1
+    await h.tick()
+    await settle(h)
+    assert [x[1] for x in backend.late_answers] == [
+        f"r{i}" for i in range(h_mod.NEWS_PER_AGENT + 1)
+    ]  # expired
+    answer(h, "r-last", "forge", "Done at last.")
+    await h.clear_presence()  # the huddle ends with it unheard
+    assert (
+        backend.late_answers[-1] == ("forge", "r-last", "", "Done at last.")
+        and h._news == {}
+    )
+
+
+async def test_a_slow_driven_run_gets_one_holding_line(capsys):
+    h, room, backend, lives, clock, log = await summoned(
+        "Forge", drive=True
+    )  # the driven run keeps running
+    assert ("thinking", h_mod.HOLDING_LINE, None) not in lives[0].calls
+    clock.t += h_mod.HOLDING_LINE_S
+    await h.tick()
+    assert ("thinking", h_mod.HOLDING_LINE, None) in lives[0].calls
+    clock.t += 5
+    await h.tick()
+    assert (
+        lives[0].calls.count(("thinking", h_mod.HOLDING_LINE, None)) == 1
+    )  # once per run
+    assert metric_count(capsys, "live.holding_line") == 1

@@ -397,6 +397,13 @@ async def test_a_racing_second_creator_falls_through_to_the_update(room):
     assert _lines(room) == ["Agents will join **Acme weekly sync** on Sat Oct 3, 3:00 PM EDT."]
 
 
+async def test_a_cancelled_create_that_left_no_room_propagates(room):
+    room.create.side_effect = meeting_invites.messaging_repo.MessagingRepoError("cancelled, no receipt")
+    with pytest.raises(meeting_invites.messaging_repo.MessagingRepoError):
+        await meeting_invites.handle_team_mail("org_1", _mail(GOOGLE), TEAM)
+    assert _lines(room) == []
+
+
 async def test_a_throttle_on_the_retry_propagates(room):
     from botocore.exceptions import ClientError
 

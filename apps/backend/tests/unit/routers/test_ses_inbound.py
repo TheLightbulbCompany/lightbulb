@@ -35,7 +35,7 @@ patch-target convention for the sibling Resend webhook.
 """
 
 from datetime import datetime, timezone
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, call
 
 import pytest
 from fastapi import FastAPI
@@ -1016,6 +1016,33 @@ def test_ses_events_disable_failure_returns_503_no_notify(client, monkeypatch):
     notify.assert_not_awaited()
 
 
+@pytest.mark.parametrize(
+    "sent_at, status",
+    [
+        ("2026-09-01T00:00:00.000Z", "unknown_source"),  # sent before this owner reserved the slug
+        (None, "unknown_source"),
+        ("not a time", "unknown_source"),
+        ("2026-10-02T00:00:00.000Z", "disabled"),
+    ],
+)
+def test_ses_events_retired_address_never_crosses_a_reused_slug(client, monkeypatch, sent_at, status):
+    _enable(monkeypatch)
+    _claim_notice(monkeypatch)
+    monkeypatch.setattr(ses_inbound, "get_by_address", AsyncMock(return_value=None))
+    monkeypatch.setattr(ses_inbound, "owner_for_host", AsyncMock(return_value=(OWNER_ID, "acme-robotics")))
+    reserved = {"owner_id": OWNER_ID, "created_at": "2026-10-01T00:00:00+00:00"}
+    monkeypatch.setattr(ses_inbound.company_slug_repo, "get_by_slug", AsyncMock(return_value=reserved))
+    monkeypatch.setattr(ses_inbound, "ensure_team_address", AsyncMock(return_value=(RECIPIENT, None)))
+    upd = AsyncMock(return_value={})
+    monkeypatch.setattr(ses_inbound, "update_settings", upd)
+    monkeypatch.setattr(ses_inbound, "send_to_owner", AsyncMock(return_value="sent"))
+    event = _complaint(source="friday@acme-robotics.agents.isol8.co")
+    event["detail"]["mail"]["timestamp"] = sent_at
+    r = client.post("/api/v1/webhooks/ses-events", json=event, headers={"X-Lightbulb-SES-Secret": SECRET})
+    assert r.status_code == 200 and r.json()["status"] == status
+    assert upd.await_args_list == ([call(RECIPIENT, outbound_disabled="complaint")] if status == "disabled" else [])
+
+
 def test_ses_events_notice_is_once_per_owner_per_day(client, monkeypatch):
     """SES fans one complaint out per recipient address, and the notice rides
     `send_to_owner(system_notice=True)` which bypasses the daily send cap -- the
@@ -1309,7 +1336,7 @@ def test_a_late_complaint_on_a_deleted_per_agent_address_pauses_the_team_mailbox
     monkeypatch.setattr(
         agent_email_repo.company_slug_repo,
         "get_by_slug",
-        AsyncMock(return_value={"slug": "acme", "owner_id": OWNER_ID}),
+        AsyncMock(return_value={"slug": "acme", "owner_id": OWNER_ID, "created_at": "2026-09-01T00:00:00+00:00"}),
     )
     ensure = AsyncMock(return_value=(TEAM_ADDRESS, "ok"))
     monkeypatch.setattr(ses_inbound, "ensure_team_address", ensure)
@@ -1317,11 +1344,9 @@ def test_a_late_complaint_on_a_deleted_per_agent_address_pauses_the_team_mailbox
     monkeypatch.setattr(ses_inbound, "update_settings", upd)
     monkeypatch.setattr(ses_inbound, "send_to_owner", AsyncMock(return_value="sent"))
 
-    r = client.post(
-        "/api/v1/webhooks/ses-events",
-        json=_complaint(source=f"friday@acme.{DOMAIN}"),
-        headers={"X-Lightbulb-SES-Secret": SECRET},
-    )
+    event = _complaint(source=f"friday@acme.{DOMAIN}")
+    event["detail"]["mail"]["timestamp"] = "2026-10-01T00:00:00.000Z"  # sent while this owner held the slug
+    r = client.post("/api/v1/webhooks/ses-events", json=event, headers={"X-Lightbulb-SES-Secret": SECRET})
 
     assert r.json()["status"] == "disabled"
     ensure.assert_awaited_once_with(OWNER_ID, "owner@example.com")

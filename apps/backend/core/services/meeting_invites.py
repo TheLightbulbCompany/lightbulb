@@ -233,8 +233,10 @@ async def _create_room(owner_id: str, room_id: str, invite: Invite, creator: str
         )
     except messaging_repo.MessagingRepoError:
         # A replay with a different body, or a second member's forward racing this one (its META
-        # Put cancels with no receipt of ours): either way the room is someone's, so update it.
-        pass
+        # Put cancels with no receipt of ours): the room is someone's, so update it. A cancel that
+        # left no room was transient: raise, so the route 503s and SES redelivers.
+        if await messaging_repo.get_room(room_id) is None:
+            raise
 
 
 async def _patch_meeting(room_id: str, fields: dict, drop: tuple = ()) -> dict | None:

@@ -79,7 +79,6 @@ function buildServiceStack(environment: "dev" | "prod"): Template {
       ownerBedrockBoundary: container.ownerBedrockBoundary,
       workspaceMemoryId: container.workspaceMemory.attrMemoryId,
     },
-    meetingsEnabled: environment === "dev",
     managementApiUrl: "https://example.execute-api.us-east-1.amazonaws.com",
     webSocketUrl: "wss://example.execute-api.us-east-1.amazonaws.com",
     gatewayRelayUrl: "wss://bv-dev.thelightbulb.company/api/v1/gateway/ws",
@@ -209,16 +208,30 @@ describe("ServiceStack — clean handoff / rolling deploy", () => {
     expect(env.LIVEKIT_URL).toBe("");
   });
 
-  test.each([["dev", "true"], ["prod", "false"]] as const)("wires the Recall secrets and %s MEETINGS_ENABLED=%s", (envName, flag) => {
-    const t = envName === "dev" ? SERVICE_TEMPLATE_DEV : buildServiceStack("prod");
-    const backend = Object.values(t.findResources("AWS::ECS::TaskDefinition"))
-      .flatMap((td: any) => td.Properties.ContainerDefinitions)
-      .find((c: any) => c.Name === "backend");
-    const names = backend.Secrets.map((s: any) => s.Name);
-    expect(names).toEqual(expect.arrayContaining(["RECALL_API_KEY", "RECALL_WEBHOOK_SECRET"]));
-    const env = Object.fromEntries(backend.Environment.map((e: any) => [e.Name, e.Value]));
-    expect(env.MEETINGS_ENABLED).toBe(flag);
-  });
+  test.each([
+    ["dev", "", "", "false", ""],
+    ["prod", "", "", "false", ""],
+    ["prod", "", "org_a,org_b", "true", "org_a,org_b"],
+    ["dev", "", "org_a", "false", ""],
+  ] as const)(
+    "wires the Recall secrets; %s with MEETINGS_OWNER_DEV=%j PROD=%j is MEETINGS_ENABLED=%s",
+    (envName, devOwners, prodOwners, flag, allowlist) => {
+      vi.stubEnv("MEETINGS_OWNER_DEV", devOwners);
+      vi.stubEnv("MEETINGS_OWNER_PROD", prodOwners);
+      try {
+        const backend = Object.values(buildServiceStack(envName).findResources("AWS::ECS::TaskDefinition"))
+          .flatMap((td: any) => td.Properties.ContainerDefinitions)
+          .find((c: any) => c.Name === "backend");
+        const names = backend.Secrets.map((s: any) => s.Name);
+        expect(names).toEqual(expect.arrayContaining(["RECALL_API_KEY", "RECALL_WEBHOOK_SECRET"]));
+        const env = Object.fromEntries(backend.Environment.map((e: any) => [e.Name, e.Value]));
+        expect(env.MEETINGS_ENABLED).toBe(flag);
+        expect(env.MEETINGS_OWNER_ALLOWLIST).toBe(allowlist);
+      } finally {
+        vi.unstubAllEnvs();
+      }
+    },
+  );
 
   test("wires the voice key and the inference markup into the backend task", () => {
     const backend = Object.values(template.findResources("AWS::ECS::TaskDefinition"))

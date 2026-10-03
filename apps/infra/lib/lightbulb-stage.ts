@@ -274,7 +274,6 @@ export class LightbulbStage extends cdk.Stage {
       stripeProjectsCatalog: env === "prod" ? "prod" : "testing",
       // Prod only; dev stays dark.
       livekitUrl: LIVEKIT_URL_BY_ENV[env],
-      meetingsEnabled: env === "dev",
     });
 
     // The service ships AGENT_MAIL_CONFIGURATION_SET, and ses_email.py stamps

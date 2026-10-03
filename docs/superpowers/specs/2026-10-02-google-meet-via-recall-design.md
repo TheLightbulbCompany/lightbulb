@@ -4,7 +4,71 @@ Status: draft for owner review (2026-10-02). Builds on Option D
 (`2026-10-02-voice-agent-is-the-voice-design.md`): the agent is the voice. Delete when shipped.
 
 Owner decisions this design keeps: Recall.ai for Meet now, our own bot only if cost or dependency
-demands it; agents are summoned by name, never ambient; nothing is stored.
+demands it; agents are summoned by name, never ambient.
+
+## 0. Decisions of 2026-10-02 evening (these win wherever a later section differs)
+
+Taken with the owner after the first fully recorded Live calls (routing v2, transcript persistence
+and the fast cold restore were in prod by then). Each is a ruling, not a proposal.
+
+1. **The door is a calendar invite to one team address: `agents@{slug}.thelightbulb.company`.**
+   Not per-agent addresses (nobody uses agent mail yet; "rename can break it" is accepted), not a
+   Settings page as the selector, not pasting links "willy nilly in chat". The address is reserved
+   (an agent named "Agents" cannot take it). Chat/link invites remain only as an ad-hoc fallback.
+   Mail to `agents@` without an invite is ordinary team mail: the CEO triages, as Jev picks a
+   responder in #general. The invite's `.ics` (time, Meet link, organizer, attendees, title,
+   description, SEQUENCE for updates and cancellations) creates the meeting; we RSVP "Accepted" from
+   `agents@`, so the organizer and guests see the team on the invite before the meeting — the honest
+   consent moment. This replaces §3's per-agent-identity analysis and §6's "paste a link" door.
+2. **Everyone attends; no cap.** "Why not bring everyone?" — nothing technical prevents it: one bot,
+   every agent eligible behind it, routing decides who speaks, one voice at a time. The CEO hosts
+   (answers "hey Lightbulb" / unaddressed asks); the others speak when named or picked for an
+   unclaimed question in their domain. "Lightbulb: only Friday" in the event description narrows.
+   Cost of everyone is bounded by **memory**: each agent's session keeps its own turns plus the shared
+   notes, never the whole transcript (§0.6).
+3. **What differs from Live is three things, and only three** (the owner rejected a longer list):
+   the **floor rule** (an agent speaks when named, or when a question to the room goes unclaimed for
+   ~3.5 s [Bohus 2011]; never into human-to-human talk; Live's lone-speaker ⇒ someone-answers
+   fallback is off); the **single tile** (the speaking agent's name and avatar, and an "about to
+   speak" cue, on the bot's video [Skantze 2021]); and the **plumbing** (§7). Speed-vs-completeness
+   is NOT a meeting rule: Live already has it ("a couple of quick tool steps, hand real work off");
+   the 55 s board lookup was that rule unenforced, fixed in Live for both. Memory is NOT different:
+   Hermes sessions on the meeting room's key plus AgentCore Memory, exactly as chat and Live.
+4. **Meeting state is a hypothesis, not a decision.** The room experiment (D-class) showed a goal
+   ledger buys nothing in rooms; the meeting literature says the opposite for meetings (capa: a
+   prompt-only delegate missed 51.4% of its real chances on AMI; explicit state — topic, decisions,
+   open questions, stances, floor — took that to 2.5% with 0.6% false contributions, and the ablation
+   credits the state, not more transcript). So: build the **notes** regardless (they are the product
+   output of a meeting), and gate "the router reads them" on our own measurement — replay
+   meeting-style transcripts through Jev with state on and off, like the room bench, before wiring it.
+   Use the papers' frameworks (Addlesee's G/AG/CG goal annotations as the schema; recall, not
+   accuracy, as the metric [Inoue 2025]) and think of in-app Live and Meet together: a result that
+   helps meetings is tried in multi-person Live too.
+5. **Raised hand.** News that answers a person's own question: no hand, delivered at the next pause,
+   to the room if the asker left or no pause comes within ~1 min. Unsolicited news: hand up and ONE
+   short bid at a pause ("Pulse here — I have the Q3 numbers when you want them"), delivered on "go
+   ahead", a tap or its name, to the room after a few minutes. In a meeting both behave like the bid,
+   except a direct answer to the asker within seconds. The tile says what the hand is for (the
+   request label). **P2 (owner):** a meeting also ends with work still running — add an intermediate
+   state between "working" and "raised hand / done": "finishing — will post in the room", so people
+   leaving know where the answer lands. (Live already posts unheard answers to the room, 10-02.)
+6. **After the meeting: a room per meeting** ("Design review — Oct 3") with the notes (decisions,
+   open questions, action items as Paperclip tasks), the transcript as an attachment (not as
+   messages, so agents observe the notes, not every line), the attending agents as members; linked
+   from the calendar event; a one-line reply from `agents@` to the organizer with the link.
+   **Open:** this revises Option D's "nothing is stored" — we store notes and transcript in the
+   inviting workspace; Recall keeps ZDR. The pinned consent chat (§6, §12) must say so.
+7. **Admission.** v1: the bot knocks, the host admits (10-min lobby cap), tile named for who is
+   there ("Acme agents · Lightbulb"). Upgrade for Google-connected organizers: the platform-owned
+   bot Workspace (owner accepted that we own it — the Otter/Fireflies model) is put on their event
+   through their own `gog` calendar (full `calendar` scope exists), so it enters directly. M365 is
+   `Calendars.Read` only → lobby.
+8. **Order of work:** fix what the recorded Live calls found first (done 10-02: empty-room race,
+   mid-sentence switch, late answers to the room, holding line, prompt diet), then plan exactly what
+   Meet changes in Live and in the app, then build Meet.
+
+What the owner still has to settle: §16 items 1 (who pays for presence), 7 (consent wording, now
+that notes are stored) and 8 (startup program); items 2, 4 and 5 are answered above.
 
 Every vendor claim cites a primary source. **(inferred)** marks reasoning that no source states;
 **(measure)** marks something we must test before relying on it. Recall's docs were read on
@@ -213,20 +277,21 @@ as in Live.
 
 ## 6. The experience
 
-- **Invite.** In a Lightbulb room: "Bring Lightbulb to a meeting" → paste a Meet link, or pick an
-  upcoming event from the owner's connected Google calendar. Phase 2: invite the agent's email to
-  the event and it comes at start time.
+- **Invite.** Add `agents@{slug}.thelightbulb.company` to the calendar event (§0.1). The team
+  accepts; at start time the bot comes. Pasting a Meet link in a room is the ad-hoc fallback only.
 - **Joining.** The room shows "Lightbulb is waiting to be let in" until the host admits it, then
   "In the meeting". Its Meet tile shows the Lightbulb mark and the team.
-- **On join** it posts and pins one chat line: "Lightbulb is listening for its name to answer
-  questions. Nothing is recorded or saved." (inside Meet's 500-character limit [A19]).
+- **On join** it posts and pins one chat line (inside Meet's 500-character limit [A19]). Wording is
+  open (§0.6): the notes and a transcript go to the inviting team's Lightbulb workspace; Recall
+  itself keeps nothing.
 - **Summon by name.** "Nova, what did we ship last week?" The tile switches to Nova, Nova answers
   in her own voice, and work goes to Nova's Hermes session exactly as in Live. "Lightbulb, …" means
   "ask the team" (Option D routing). Silence otherwise: agents never speak unprompted, except to
   deliver a result someone in this meeting asked for (Option D's proactive rule).
 - **Leaving.** "Lightbulb, leave", a Leave button in the room, the host removing it, or everyone
   leaving (Recall's `everyone_left_timeout`).
-- **Nothing is posted to the room** (Option D). The room shows only the bot's status.
+- **Afterwards** the meeting's room holds the notes and transcript (§0.6); during the meeting the
+  room shows the bot's status and, as of 10-02, any answer that finished after the floor moved on.
 
 ---
 
@@ -439,12 +504,15 @@ the first two lines with ~$0.44 [D3][D4]; Attendee hosted replaces them with $0.
 - **Phase 0, spike (3 days):** Recall PAYG account; one ad-hoc bot whose Output Media page joins a
   dev LiveKit room; measure echo, round-trip latency, CPU on `web_4_core`; same day try dial-in via
   LiveKit SIP + Twilio into a Workspace Meet.
-- **Phase 1, MVP:** paste a Meet link from a room; one anonymous "Lightbulb" bot; summon by name;
-  mixed audio; agent tile; pinned consent chat; ZDR; meeting billing; failure messages. Behind a
-  flag for the founder workspace first.
-- **Phase 2:** pick from the owner's Google calendar and schedule (`join_at` ≥ 10 min avoids the
-  ad-hoc pool [A11]); invite-by-email via the SES `text/calendar` change (section 3); speaker names
-  from Recall transcripts.
+- **Phase 1, MVP (per §0):** the reserved `agents@` address and the SES `text/calendar` change
+  (section 3: the Lambda extracts the invite, the backend parses it, RSVPs, and schedules the bot
+  with `join_at` ≥ 10 min [A11]); one anonymous "Acme agents · Lightbulb" bot; everyone attends,
+  the CEO hosts; meeting floor rule; speaker names from Recall transcripts (needed for the
+  addressing stage, so phase 1 not 2); agent tile with the holding cue; pinned consent chat; a room
+  per meeting with notes and transcript; meeting billing; failure messages. Founder workspace first.
+- **Phase 2:** auto-admit for Google-connected organizers via the platform bot Workspace (§0.7);
+  the raised-hand bid and the "finishing" state (§0.5); meeting-state-for-routing if the measurement
+  (§0.4) says so; paste-a-link fallback.
 - **Phase 3:** signed-in "Lightbulb" account pool on a dedicated Workspace; Zoom (OBF) and Teams.
 - **Phase 4 (only if asked):** per-agent Google identities; self-hosted Attendee or our own bot if
   bot-hours justify it; dial-in fallback for org-only meetings.

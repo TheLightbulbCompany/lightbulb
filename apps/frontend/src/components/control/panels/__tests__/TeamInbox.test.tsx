@@ -7,6 +7,7 @@ const mockDownload = vi.fn();
 vi.mock("@/lib/api", () => ({
   useApi: () => ({ get: mockGet, downloadBlob: mockDownload }),
 }));
+vi.mock("@clerk/nextjs", () => ({ useOrganization: () => ({ organization: { id: "org_1" } }) }));
 
 import { TeamInbox } from "../TeamInbox";
 
@@ -21,8 +22,8 @@ const page = {
       title: "Weekly sync",
       organizer: "pat@acme.com",
       status: "scheduled",
-      start_at: 1791158400,
-      end_at: 1791160200,
+      start_at: 4102444800, // 2100: always ahead
+      end_at: 4102446600,
       repeats: true,
       transcripts: [{ start_at: 1790553600 }],
     },
@@ -123,5 +124,44 @@ describe("TeamInbox", () => {
     expect(await screen.findByText(/Nothing has arrived yet/)).toBeInTheDocument();
     expect(screen.queryByText("Meetings")).toBeNull();
     expect(screen.queryByRole("button", { name: "Load more" })).toBeNull();
+  });
+
+  it("shows the error with a Refresh that retries", async () => {
+    mockGet.mockRejectedValueOnce(new Error("500"));
+    renderInbox();
+
+    expect(await screen.findByText("Couldn't load the inbox.")).toBeInTheDocument();
+    mockGet.mockResolvedValue(page);
+    fireEvent.click(screen.getByRole("button", { name: "Refresh inbox" }));
+    expect(await screen.findByText("Weekly sync")).toBeInTheDocument();
+  });
+
+  it("never says Next for a series with nothing ahead", async () => {
+    const series = (title: string, status: string, start_at: number) => ({
+      ...page.meetings[0],
+      id: title,
+      title,
+      status,
+      start_at,
+      transcripts: [],
+    });
+    mockGet.mockResolvedValue({
+      address: ADDR,
+      meetings: [
+        series("Ended one", "ended", 1790553600),
+        series("Cancelled one", "cancelled", 4102444800),
+        series("Past one", "scheduled", 1790553600),
+      ],
+      messages: [],
+      next: null,
+    });
+    renderInbox();
+
+    await screen.findByText("Ended one");
+    expect(screen.getByText(/^Repeats · Last met /)).toBeInTheDocument();
+    expect(screen.queryByText(/Next/)).toBeNull();
+    expect(screen.getAllByText(/^Repeats/)).toHaveLength(1); // the other two show their plain date
+    expect(screen.getByText(/ · Cancelled$/)).toBeInTheDocument();
+    expect(screen.getByText(/ · Agents will join$/)).toBeInTheDocument();
   });
 });

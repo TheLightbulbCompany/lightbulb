@@ -204,6 +204,7 @@ async def patch_address(body: AddressSettings, auth: AuthContext = Depends(get_c
 _PREVIEW_CHARS = 2_000
 _MEETINGS_MAX = 50
 _TRANSCRIPTS_MAX = 10
+_READS_IN_FLIGHT = 8
 
 
 def _occurrences(meeting: dict) -> list[dict]:
@@ -253,11 +254,22 @@ async def team_inbox(
     auth: AuthContext = Depends(get_current_user),
 ) -> dict:
     owner_id = resolve_owner_id(auth)
-    row, _ = await _team_row(owner_id)
+    # DynamoDB only: no owner-email (Clerk) lookup and no mint; GET /address creates the row.
+    address = await team_address(owner_id)
+    row = await agent_email_repo.get_by_address(address) if address else None
+    if not row:
+        raise HTTPException(status_code=409, detail={"status": "no_address"})
     address = row["address"]
-    # ponytail: one read per meeting id ever recorded; page or cap the ids if a workspace books hundreds.
+    # ponytail: one read per meeting id ever recorded (a string set has no order to take the newest
+    # by); upgrade to a batch_get_item or a bounded list when a workspace books hundreds.
     ids = sorted(row.get("meetings") or ())
-    records = await asyncio.gather(*(_meeting(owner_id, i) for i in ids))
+    gate = asyncio.Semaphore(_READS_IN_FLIGHT)
+
+    async def read(i: str) -> dict | None:
+        async with gate:
+            return await _meeting(owner_id, i)
+
+    records = await asyncio.gather(*(read(i) for i in ids))
     meetings = sorted(
         (_meeting_view(i, m) for i, m in zip(ids, records, strict=True) if m),
         key=lambda m: int(m["start_at"] or 0),

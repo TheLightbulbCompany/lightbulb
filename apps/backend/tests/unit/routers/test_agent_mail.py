@@ -1,3 +1,4 @@
+import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -363,11 +364,12 @@ _ROWS = [
 
 
 def _inbox(rows=_ROWS, nxt="k2"):
-    a, b, c = _mailbox({"address": TEAM, "meetings": {M1, M2, FOREIGN, "gone"}})
+    row = {"address": TEAM, "meetings": {M1, M2, FOREIGN, "gone"}}
     return (
-        a,
-        b,
-        c,
+        patch.object(agent_mail, "team_address", AsyncMock(return_value=TEAM)),
+        patch.object(agent_mail.agent_email_repo, "get_by_address", AsyncMock(return_value=row)),
+        # The inbox makes no Clerk call and mints nothing.
+        patch.object(agent_mail, "_owner_email", AsyncMock(side_effect=AssertionError("no Clerk call"))),
         patch.object(agent_mail.messaging_repo, "get_room", AsyncMock(side_effect=lambda r: _ROOMS.get(r))),
         patch.object(agent_mail, "list_page", AsyncMock(return_value=(rows, nxt))),
     )
@@ -415,11 +417,38 @@ def test_inbox_limit_is_capped(client):
     assert client.get("/api/v1/agent-mail/inbox", params={"limit": 51}).status_code == 422
 
 
-def test_inbox_without_a_team_address_is_409(client):
-    a, b, c = _mailbox(ensure=(None, "slug_allocation_failed"))
-    with a, b, c:
+@pytest.mark.parametrize(("address", "row"), [(None, None), (TEAM, None)])
+def test_inbox_without_a_team_address_is_409(client, address, row):
+    with (
+        patch.object(agent_mail, "team_address", AsyncMock(return_value=address)),
+        patch.object(agent_mail.agent_email_repo, "get_by_address", AsyncMock(return_value=row)),
+        patch.object(agent_mail, "ensure_team_address", AsyncMock(side_effect=AssertionError("no mint"))),
+    ):
         r = client.get("/api/v1/agent-mail/inbox")
-    assert r.status_code == 409 and r.json()["detail"]["status"] == "slug_allocation_failed"
+    assert r.status_code == 409 and r.json()["detail"]["status"] == "no_address"
+
+
+async def test_inbox_reads_at_most_eight_meetings_at_once(async_client_org_member):
+    ids = {f"{i:08d}-1111-4111-8111-111111111111" for i in range(20)}
+    state = {"now": 0, "peak": 0}
+
+    async def get_room(_r):
+        state["now"] += 1
+        state["peak"] = max(state["peak"], state["now"])
+        await asyncio.sleep(0)
+        state["now"] -= 1
+        return None
+
+    with (
+        patch.object(agent_mail, "team_address", AsyncMock(return_value=TEAM)),
+        patch.object(
+            agent_mail.agent_email_repo, "get_by_address", AsyncMock(return_value={"address": TEAM, "meetings": ids})
+        ),
+        patch.object(agent_mail.messaging_repo, "get_room", AsyncMock(side_effect=get_room)) as reads,
+        patch.object(agent_mail, "list_page", AsyncMock(return_value=([], None))),
+    ):
+        r = await async_client_org_member.get("/api/v1/agent-mail/inbox")
+    assert r.status_code == 200 and reads.await_count == 20 and state["peak"] == 8
 
 
 @pytest.mark.parametrize(("start_at", "att", "room"), [(200, "t-now", "room-now"), (100, "t-past", "room-past")])

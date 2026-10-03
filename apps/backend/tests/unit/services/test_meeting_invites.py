@@ -1336,13 +1336,19 @@ async def test_a_same_occurrence_booking_retry_adopts_the_bot_its_kept_nonce_boo
     assert meeting["startAt"] == _epoch(2026, 11, 7, 15, 0) and "botError" not in meeting
 
 
-async def test_a_new_meeting_is_recorded_on_the_team_row_once(room):
+async def test_every_standing_delivery_records_the_meeting_on_the_team_row(room):
     await meeting_invites.handle_team_mail("org_1", _mail(GOOGLE), TEAM)
     moved = GOOGLE.replace("SEQUENCE:0", "SEQUENCE:1").replace("T150000", "T160000")
     await meeting_invites.handle_team_mail("org_1", _mail(moved), TEAM)
-    room.add_meeting.assert_awaited_once_with(
-        TEAM["address"], meeting_invites.messaging_repo.meeting_room_id("org_1", UID)
-    )
+    room_id = meeting_invites.messaging_repo.meeting_room_id("org_1", UID)
+    assert room.add_meeting.await_args_list == [((TEAM["address"], room_id),)] * 2  # an idempotent ADD
+    assert await meeting_invites.handle_team_mail("org_1", _mail(GOOGLE), TEAM) == "meeting_stale"
+    assert room.add_meeting.await_count == 2  # a stale delivery records nothing
+
+
+async def test_a_failing_team_row_write_never_fails_the_invite(room):
+    room.add_meeting.side_effect = RuntimeError("dynamodb down")
+    assert await meeting_invites.handle_team_mail("org_1", _mail(GOOGLE), TEAM) == "meeting_scheduled"
 
 
 async def test_a_re_dated_occurrence_keeps_its_transcript_in_history(room, now, metrics):
@@ -1425,3 +1431,14 @@ async def test_a_series_made_a_single_event_keeps_the_last_transcript(room, bots
     meeting = room.state["meta"]["meeting"]
     assert "transcriptId" not in meeting
     assert meeting["history"] == [{"startAt": started, "transcriptId": "t1", "transcriptRoomId": "default-room"}]
+
+
+async def test_a_transcript_written_after_the_callers_read_still_lands_in_history(room, now, metrics):
+    _ended_series(room)
+    stored = room.state["meta"]["meeting"]
+    stale = {k: v for k, v in stored.items() if k not in ("transcriptId", "transcriptRoomId")}
+    stored.update(transcriptId="t-late", transcriptRoomId="default-room")  # after the caller read
+    now["t"] = _epoch(2026, 11, 7, 15, 40)
+    assert await meeting_invites._reschedule_locked("org_1", "r", stale, now=now["t"]) == "advanced"
+    meeting = room.state["meta"]["meeting"]
+    assert meeting["history"][0]["transcriptId"] == "t-late" and "transcriptId" not in meeting

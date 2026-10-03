@@ -11,6 +11,7 @@ const inboxGet = (url: string) =>
 vi.mock("@/lib/api", () => ({
   useApi: () => ({ get: inboxGet, patch: mockPatch }),
 }));
+vi.mock("@clerk/nextjs", () => ({ useOrganization: () => ({ organization: { id: "org_1" } }) }));
 
 import { AgentEmailSection } from "../AgentEmailSection";
 

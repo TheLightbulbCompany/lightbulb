@@ -3,6 +3,7 @@
 import { useState } from "react";
 import useSWRInfinite from "swr/infinite";
 import { ArrowDownLeft, ArrowUpRight, Calendar, RefreshCw } from "lucide-react";
+import { useOrganization } from "@clerk/nextjs";
 import { agentDisplayName, type Agent } from "@lightbulb/shared";
 
 import { Button } from "@/components/ui/button";
@@ -59,7 +60,11 @@ const TIME = new Intl.DateTimeFormat(undefined, { hour: "numeric", minute: "2-di
 function meetingWhen(m: InboxMeeting): string {
   if (!m.start_at) return "";
   const when = WHEN.format(new Date(m.start_at * 1000));
-  return m.repeats ? `Repeats · Next ${when}` : when;
+  if (!m.repeats) return when;
+  if (m.status === "ended") return `Repeats · Last met ${when}`;
+  // A series with no next occurrence ahead: just its date, never "Next" in the past.
+  const over = ["cancelled", "bot_failed"].includes(m.status ?? "") || m.start_at * 1000 < Date.now();
+  return over ? when : `Repeats · Next ${when}`;
 }
 
 function shortTime(iso: string): string {
@@ -72,19 +77,22 @@ type Transcript = { text?: string; error?: boolean };
 
 export function TeamInbox({ agents }: { agents?: Agent[] }) {
   const api = useApi();
+  // The workspace is part of every cache key: switching workspaces never shows the last one's mail.
+  const orgId = useOrganization().organization?.id;
   const { data, error, isLoading, isValidating, mutate, setSize } = useSWRInfinite<InboxPage>(
     (index, prev: InboxPage | null) => {
-      if (index === 0) return "/agent-mail/inbox";
-      return prev?.next ? `/agent-mail/inbox?before=${encodeURIComponent(prev.next)}` : null;
+      if (!orgId) return null;
+      if (index === 0) return ["/agent-mail/inbox", orgId];
+      return prev?.next ? [`/agent-mail/inbox?before=${encodeURIComponent(prev.next)}`, orgId] : null;
     },
-    (url: string) => api.get(url) as Promise<InboxPage>,
+    ([url]: [string, string]) => api.get(url) as Promise<InboxPage>,
     { revalidateOnFocus: true, shouldRetryOnError: false },
   );
   const [openMail, setOpenMail] = useState<string | null>(null);
   const [transcripts, setTranscripts] = useState<Record<string, Transcript>>({});
 
   const toggleTranscript = async (meetingId: string, startAt: number) => {
-    const key = `${meetingId}:${startAt}`;
+    const key = `${orgId}:${meetingId}:${startAt}`;
     if (transcripts[key]) {
       setTranscripts((t) => {
         const rest = { ...t };
@@ -105,7 +113,29 @@ export function TeamInbox({ agents }: { agents?: Agent[] }) {
     setTranscripts((t) => (t[key] ? { ...t, [key]: result } : t));
   };
 
-  if (error && !data) return <p className="text-xs text-err">Couldn&apos;t load the inbox.</p>;
+  const header = (
+    <div className="flex items-center justify-between">
+      <span className="text-xs font-semibold">Inbox</span>
+      <Button
+        type="button"
+        variant="ghost"
+        size="sm"
+        aria-label="Refresh inbox"
+        disabled={isValidating}
+        onClick={() => mutate()}
+      >
+        <RefreshCw size={14} />
+      </Button>
+    </div>
+  );
+  if (error && !data) {
+    return (
+      <div className="space-y-3">
+        {header}
+        <p className="text-xs text-err">Couldn&apos;t load the inbox.</p>
+      </div>
+    );
+  }
   if (isLoading || !data) return <p className="text-xs text-[var(--midnight-muted)]">Loading inbox…</p>;
 
   const meetings = data[0]?.meetings ?? [];
@@ -115,19 +145,7 @@ export function TeamInbox({ agents }: { agents?: Agent[] }) {
 
   return (
     <div className="space-y-3">
-      <div className="flex items-center justify-between">
-        <span className="text-xs font-semibold">Inbox</span>
-        <Button
-          type="button"
-          variant="ghost"
-          size="sm"
-          aria-label="Refresh inbox"
-          disabled={isValidating}
-          onClick={() => mutate()}
-        >
-          <RefreshCw size={14} />
-        </Button>
-      </div>
+      {header}
 
       {meetings.length === 0 && messages.length === 0 && (
         <p className="text-xs text-[var(--midnight-muted)]">
@@ -151,7 +169,7 @@ export function TeamInbox({ agents }: { agents?: Agent[] }) {
                     {m.transcripts.length > 0 && (
                       <div className="mt-1 flex flex-wrap gap-1">
                         {m.transcripts.map((t) => {
-                          const shown = transcripts[`${m.id}:${t.start_at}`];
+                          const shown = transcripts[`${orgId}:${m.id}:${t.start_at}`];
                           return (
                             <Button
                               key={t.start_at}
@@ -168,7 +186,7 @@ export function TeamInbox({ agents }: { agents?: Agent[] }) {
                       </div>
                     )}
                     {m.transcripts.map((t) => {
-                      const shown = transcripts[`${m.id}:${t.start_at}`];
+                      const shown = transcripts[`${orgId}:${m.id}:${t.start_at}`];
                       if (!shown) return null;
                       if (shown.error) {
                         return <p key={t.start_at} className="mt-1 text-err">Couldn&apos;t load the transcript.</p>;

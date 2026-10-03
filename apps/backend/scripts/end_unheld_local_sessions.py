@@ -27,7 +27,7 @@ from botocore.exceptions import ClientError
 
 from core.repositories import messaging_repo as store
 from core.services import local_sessions as sessions
-from core.services.local_session_relay import _revised, publish_resources_changed
+from core.services.local_session_relay import _capture_lifecycle, _revised, publish_resources_changed
 
 
 async def unheld() -> list[dict]:
@@ -48,7 +48,7 @@ async def unheld() -> list[dict]:
         kwargs["ExclusiveStartKey"] = response["LastEvaluatedKey"]
 
 
-async def end(row: dict, now: int) -> None:
+async def end(row: dict, now: int) -> dict:
     """What `LocalSessionRelay._ended` writes, fenced by the row's revision."""
     updated = _revised(row, status="ended", endedAt=now, lastEventAt=now, endedReason="exited")
     for key in ("pendingApproval", "privateSendApproval", "teamControl", *sessions.JOIN_FIELDS):
@@ -68,6 +68,7 @@ async def end(row: dict, now: int) -> None:
         audit = sessions.audit_row(row["ownerId"], row["sessionId"], None, "team_control_ended")
         items.append({"Put": {"TableName": table, "Item": audit}})
     await store._transact(items)
+    return updated
 
 
 async def main(argv: list[str] | None = None) -> int:
@@ -80,10 +81,11 @@ async def main(argv: list[str] | None = None) -> int:
         if not args.apply:
             continue
         try:
-            await end(row, now)
+            updated = await end(row, now)
         except ClientError as exc:  # a concurrent write; a re-run picks the row up again
             print(f"  skipped: {exc.response['Error']['Code']}")
             continue
+        _capture_lifecycle(updated, "local_session_ended", end_reason="exited")
         await publish_resources_changed(row["ownerId"], row["humanUserId"])
         ended += 1
     print(f"{ended} session(s) ended" if args.apply else "dry run; re-run with --apply")

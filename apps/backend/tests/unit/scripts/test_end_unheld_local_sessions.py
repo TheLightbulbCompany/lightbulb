@@ -1,6 +1,6 @@
 """The one-off end of unheld local sessions (delete with the script)."""
 
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 
@@ -15,6 +15,7 @@ db = registry_tests.db
 @pytest.mark.asyncio
 async def test_ends_live_unheld_sessions_only(db, monkeypatch):
     monkeypatch.setattr(script, "publish_resources_changed", AsyncMock())
+    monkeypatch.setattr(script, "_capture_lifecycle", Mock())
     unheld = await registered()
     held = await registered(conversation="thread-2")
     db[0].put_item(Item={**(await repo.get_session(OWNER, held)), "holderId": "ab12cd34"})
@@ -28,3 +29,7 @@ async def test_ends_live_unheld_sessions_only(db, monkeypatch):
     assert "endedAt" not in await repo.get_session(OWNER, held)
     assert await script.unheld() == []
     script.publish_resources_changed.assert_awaited_once()
+    script._capture_lifecycle.assert_called_once()
+    (row,), kwargs = script._capture_lifecycle.call_args[0][:1], script._capture_lifecycle.call_args.kwargs
+    assert row["sessionId"] == unheld and script._capture_lifecycle.call_args.args[1] == "local_session_ended"
+    assert kwargs == {"end_reason": "exited"}

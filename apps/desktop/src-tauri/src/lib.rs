@@ -4,6 +4,8 @@ pub mod bootstrap;
 pub mod claude_export;
 pub mod device_token;
 pub mod file_access;
+#[cfg(unix)]
+pub mod holder;
 pub mod keychain;
 pub mod local_mcp;
 pub mod local_sessions;

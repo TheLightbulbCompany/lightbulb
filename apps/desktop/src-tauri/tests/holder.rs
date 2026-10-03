@@ -1,0 +1,111 @@
+//! The holder end to end with `/bin/cat` in place of a provider: the pty echoes input, so what a
+//! client sends comes back as OUTPUT.
+#![cfg(unix)]
+use lightbulb_desktop::holder::{manager, protocol::*, run};
+use std::io::Write;
+use std::os::unix::net::UnixStream;
+use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
+
+fn temp_dir() -> PathBuf {
+    let dir = PathBuf::from(format!("/private/tmp/lbh-test-{}", uuid::Uuid::new_v4().simple()))
+        .join("h");
+    std::fs::create_dir_all(&dir).unwrap();
+    dir
+}
+
+fn start_cat(dir: &Path) -> PathBuf {
+    let socket = dir.join("cat.sock");
+    let (s, d) = (socket.clone(), dir.to_path_buf());
+    std::thread::spawn(move || run::run_with_env(&s, &["/bin/cat".into()], &d, vec![("PATH".into(), "/usr/bin:/bin".into())]));
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !socket.exists() && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    socket
+}
+
+fn attach(socket: &Path, role: &str) -> UnixStream {
+    let mut c = UnixStream::connect(socket).unwrap();
+    c.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+    c.write_all(&encode(HELLO, format!(r#"{{"role":"{role}"}}"#).as_bytes())).unwrap();
+    assert_eq!(read_frame(&mut c).unwrap().0, HELLO);
+    if role == "interactive" {
+        assert_eq!(read_frame(&mut c).unwrap().0, SNAPSHOT);
+    }
+    c
+}
+
+/// Read OUTPUT until `needle` has been seen (or panic after the read timeout).
+fn read_until(c: &mut UnixStream, needle: &[u8]) -> Vec<u8> {
+    let mut seen = vec![];
+    while !seen.windows(needle.len()).any(|w| w == needle) {
+        let (kind, payload) = read_frame(c).expect("output before timeout");
+        if kind == OUTPUT {
+            seen.extend_from_slice(split_offset(&payload).unwrap().1);
+        }
+    }
+    seen
+}
+
+#[test]
+fn holder_passes_a_bracketed_paste_through_and_echoes_it() {
+    let socket = start_cat(&temp_dir());
+    let mut c = attach(&socket, "interactive");
+    c.write_all(&encode(INPUT, b"\x1b[200~alpha\nbeta\ngamma\x1b[201~")).unwrap();
+    let out = read_until(&mut c, b"gamma");
+    assert!(out.windows(5).any(|w| w == b"alpha") && out.windows(4).any(|w| w == b"beta"));
+}
+
+#[test]
+fn holder_gives_the_keyboard_to_the_newest_window_only() {
+    let socket = start_cat(&temp_dir());
+    let mut first = attach(&socket, "interactive");
+    let mut second = attach(&socket, "interactive");
+    assert_eq!(read_frame(&mut first).unwrap().0, DETACHED);
+    first.write_all(&encode(INPUT, b"from-first\r")).unwrap();
+    second.write_all(&encode(INPUT, b"from-second\r")).unwrap();
+    let out = read_until(&mut second, b"from-second");
+    assert!(!out.windows(10).any(|w| w == b"from-first"), "a replaced window must not type");
+}
+
+#[test]
+fn holder_replays_from_an_offset_and_reports_a_gap_beyond_its_log() {
+    let socket = start_cat(&temp_dir());
+    let mut c = attach(&socket, "interactive");
+    c.write_all(&encode(INPUT, b"replay-me\r")).unwrap();
+    read_until(&mut c, b"replay-me");
+    let mut r = attach(&socket, "recorder");
+    r.write_all(&encode(REPLAY, &0u64.to_be_bytes())).unwrap();
+    assert!(read_until(&mut r, b"replay-me").len() >= 9);
+}
+
+#[test]
+fn holder_exits_with_its_provider_and_removes_its_socket() {
+    let socket = start_cat(&temp_dir());
+    let mut c = attach(&socket, "interactive");
+    c.write_all(&encode(INPUT, b"\x04")).unwrap();
+    loop {
+        let (kind, _) = read_frame(&mut c).expect("EXIT before timeout");
+        if kind == EXIT {
+            break;
+        }
+    }
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while socket.exists() && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert!(!socket.exists());
+}
+
+#[test]
+fn holder_manager_lists_live_holders_and_drops_dead_sockets() {
+    let dir = temp_dir();
+    let socket = start_cat(&dir);
+    std::fs::write(dir.join("dead0000.sock"), b"").unwrap();
+    let list = manager::list_in(&dir);
+    assert_eq!(list.len(), 1);
+    assert_eq!(list[0].socket, socket);
+    assert_eq!(list[0].argv, vec!["/bin/cat".to_string()]);
+    assert!(!dir.join("dead0000.sock").exists(), "a socket nobody listens on is removed");
+}

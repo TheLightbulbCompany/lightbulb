@@ -1,5 +1,5 @@
 import {
-  agentA11yName, agentLiveStatus, agentNaming, agentStateLine, agentWorking, floorChange, floorHolder, LIVE_AGENT_IDENTITY, liveAgents,
+  AGENTS_JOINING, agentA11yName, agentLiveStatus, agentNaming, agentStateLine, agentWorking, floorChange, floorHolder, LIVE_AGENT_IDENTITY, liveAgents,
   liveErrorText, liveHappening, liveHint, LISTENING_TO, nameCollides, orderAgentSlots, queuePosition, voiceFailedText, wakingText,
 } from "@lightbulb/shared";
 import { RoomContext, useIsSpeaking, useParticipants, useTracks } from "@livekit/components-react";
@@ -155,7 +155,7 @@ function Stage() {
           {stageStatus === "speaking" && !reduced ? <LevelRing level={level} size={88} color={palette.live}>{avatar}</LevelRing> : avatar}
           <Text style={[styles.lightbulbName, { color: palette.fg }]}>{stageName}</Text>
           <Text style={[styles.status, { color: palette.fgSoft }]} accessibilityLiveRegion="polite">
-            {live.workerPresent ? agentStateLine(stageStatus, stageExtras) || (holder ? "" : "Tap someone or say their name") : gaveUp ? "" : "Joining…"}
+            {live.workerPresent ? agentStateLine(stageStatus, stageExtras) || (holder ? "" : "Tap someone or say their name") : gaveUp ? "" : AGENTS_JOINING}
           </Text>
           {!!happening && <Text style={[styles.status, { color: palette.fgSoft }]}>{happening}</Text>}
         </View>

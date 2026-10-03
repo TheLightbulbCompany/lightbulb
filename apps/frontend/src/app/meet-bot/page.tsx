@@ -73,7 +73,8 @@ export default function MeetBotPage() {
         } catch { fails++; }
         if (stop) return;
         setNotice("Reconnecting…");
-        void room?.disconnect();
+        // `room` is assigned inside session(); TS narrows the closure-captured let to null here.
+        void (room as Room | null)?.disconnect();
         await sleep(BACKOFF_MS[Math.min(fails, BACKOFF_MS.length) - 1] ?? BACKOFF_MS[0]);
       }
       if (!stop) setNotice("Couldn't reach the agents.");

@@ -697,7 +697,7 @@ def test_a_meeting_rooms_chunks_reach_the_notes_with_the_final_flag(client):
     ):
         assert client.post(TRANSCRIPT, json=body, headers=W).status_code == 200
         assert client.post(TRANSCRIPT, json={**body, "final": True}, headers=W).status_code == 200
-    assert [c.args for c in notes.await_args_list] == [(ROOM, [line], False), (ROOM, [line], True)]
+    assert [c.args for c in notes.await_args_list] == [(ROOM, "h1", [line], False), (ROOM, "h1", [line], True)]
 
 
 def test_transcript_refuses_a_bad_room_token(client):

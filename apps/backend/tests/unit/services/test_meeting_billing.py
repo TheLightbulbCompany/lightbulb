@@ -24,8 +24,8 @@ async def test_presence_is_not_billed_and_speech_draws_the_allowance(monkeypatch
         return meta["meeting"]
 
     clock = MagicMock(return_value=1000.0)
-    metronome = MagicMock()
-    monkeypatch.setattr(vc, "_metronome", metronome)
+    metronome = MagicMock(ingest=AsyncMock())
+    monkeypatch.setattr(vc, "_metronome", MagicMock(return_value=metronome))
     with (
         patch.object(meetings.messaging_repo, "get_room", AsyncMock(side_effect=lambda _r: meta)),
         patch.object(meetings.meeting_invites, "_patch_meeting", AsyncMock(side_effect=patch_meeting)),
@@ -44,19 +44,25 @@ async def test_presence_is_not_billed_and_speech_draws_the_allowance(monkeypatch
         clock.return_value = 2800.0
         await meetings._on_status("bot-1", ROOM, "call_ended", "")
     metric.assert_any_call("meeting.presence.seconds", 1800.0, unit="Seconds")
-    metronome.assert_not_called()
 
-    # Speech: a 180 s agent answer in the meeting room closes like any Live call, on the free counter.
+    # Speech: a 180 s agent answer in the meeting room closes like any Live call. On paid credits
+    # that is the existing Metronome path -- the same mock the presence path above never touched.
     with mock_aws():
         ddb = boto3.resource("dynamodb", region_name="us-east-1")
-        ddb.create_table(
-            TableName="containers-t",
-            KeySchema=[{"AttributeName": "owner_id", "KeyType": "HASH"}],
-            AttributeDefinitions=[{"AttributeName": "owner_id", "AttributeType": "S"}],
-            BillingMode="PAY_PER_REQUEST",
-        )
+        for name in ("containers-t", "fast-gate-t"):
+            ddb.create_table(
+                TableName=name,
+                KeySchema=[{"AttributeName": "owner_id", "KeyType": "HASH"}],
+                AttributeDefinitions=[{"AttributeName": "owner_id", "AttributeType": "S"}],
+                BillingMode="PAY_PER_REQUEST",
+            )
         containers = ddb.Table("containers-t")
         monkeypatch.setattr(vc, "_table", lambda: containers)
+        monkeypatch.setattr(vc, "_fast_gate_table_name", lambda: "fast-gate-t")
+        monkeypatch.setattr(vc.voice_billing.settings, "OPENROUTER_MARKUP", "1.2")
+        ddb.Table("fast-gate-t").put_item(
+            Item={"owner_id": "org_a", "remaining_microcents": 1_000_000, "openrouter_reserved_microcents": 36_000}
+        )
         call = {
             "owner_id": "__call__#c1",
             "callId": "c1",
@@ -65,15 +71,15 @@ async def test_presence_is_not_billed_and_speech_draws_the_allowance(monkeypatch
             "roomId": ROOM,
             "startedAt": 1000,
             "deadline": 1600,
-            "billing": "free",
-            "holdMicrocents": 0,
+            "billing": "credits",
+            "holdMicrocents": 36_000,
             "status": vc.OPEN,
         }
         containers.put_item(Item=call)
         assert await vc.close_call("c1", now=1300, usage_seconds=180)
-        used = containers.get_item(Key={"owner_id": "__voice__#org_a"})["Item"]["usedSeconds"]
-    assert int(used) == 180
-    metronome.assert_not_called()
+    metronome.ingest.assert_awaited_once()
+    (event,) = metronome.ingest.await_args.args[0]
+    assert event["transaction_id"] == "c1" and event["properties"]["seconds"] == "180"
 
 
 @pytest.fixture(autouse=True)

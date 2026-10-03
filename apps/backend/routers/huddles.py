@@ -289,7 +289,7 @@ async def transcript(room_id: str, body: TranscriptBody):
     _require_room_token(body.roomToken, room_id, body.ownerId)
     meta = await messaging_repo.get_room(room_id) or {}
     if meta.get("meeting") and meta.get("ownerId") == body.ownerId:
-        await meeting_notes.on_transcript(room_id, [x.model_dump() for x in body.lines], body.final)
+        await meeting_notes.on_transcript(room_id, body.huddleId, [x.model_dump() for x in body.lines], body.final)
     rendered = "\n".join(
         f"[{x.mark} @{int(x.at)}] {x.name}{' → ' + x.to if x.to else ''}: {x.text}" for x in body.lines
     )

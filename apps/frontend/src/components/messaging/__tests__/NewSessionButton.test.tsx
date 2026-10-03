@@ -262,3 +262,18 @@ it("a start nobody could confirm can be dismissed, so the view is not locked for
   await waitFor(() => expect(screen.getByPlaceholderText(PLACEHOLDER)).toBeEnabled());
   expect(localStorage.getItem("lightbulb.newSession.pending.alice:org-a")).toBeNull();
 });
+
+it("inside the desktop app it shows the terminal command and the PATH line it needs", async () => {
+  const line = `echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.zshrc`;
+  desktop(async (command) => command === "terminal_options" ? { ...OPTIONS, cli: { pathLine: line } } : { linked: true });
+  render(view());
+  expect(await screen.findByText("lightbulb claude")).toBeInTheDocument();
+  expect(screen.getByText(line)).toBeInTheDocument();
+});
+
+it("a desktop app without the command shows no terminal hint", async () => {
+  desktop(async (command) => command === "terminal_options" ? OPTIONS : { linked: true });
+  render(view());
+  expect(await screen.findByRole("combobox", { name: "Folder" })).toBeInTheDocument();
+  expect(screen.queryByText("lightbulb claude")).toBeNull();
+});

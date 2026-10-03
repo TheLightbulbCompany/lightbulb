@@ -391,6 +391,67 @@ pub fn main(args: &[String]) -> i32 {
     }
 }
 
+/// Set once `~/.local/bin/lightbulb` is in place: the PATH line to show, if one is needed.
+static INSTALLED: OnceLock<Option<String>> = OnceLock::new();
+
+/// `~/.local/bin/lightbulb` → `exe`, in the user's own folder (no admin rights). Creates it, or
+/// repairs a link that dangles or points at another copy of this app; leaves anything else alone.
+pub fn install(exe: &Path, home: &Path) -> Result<(), String> {
+    let bin = home.join(".local/bin");
+    let link = bin.join("lightbulb");
+    match std::fs::read_link(&link) {
+        Ok(target) if target == exe => return Ok(()),
+        Ok(target) if !link.exists() || target.file_name() == exe.file_name() => {}
+        Ok(_) => return Err("~/.local/bin/lightbulb points at another program; leaving it".into()),
+        Err(_) if link.symlink_metadata().is_ok() => return Err("~/.local/bin/lightbulb is not Lightbulb's; leaving it".into()),
+        Err(_) => {}
+    }
+    std::fs::create_dir_all(&bin).map_err(|e| e.to_string())?;
+    let staged = bin.join(format!(".lightbulb-{}", std::process::id()));
+    let _ = std::fs::remove_file(&staged);
+    std::os::unix::fs::symlink(exe, &staged).map_err(|e| e.to_string())?;
+    std::fs::rename(&staged, &link).map_err(|e| e.to_string())
+}
+
+/// The one line that puts `~/.local/bin` on the login shell's PATH, if it is not there.
+pub fn path_line(shell: &str, path: &str, home: &Path) -> Option<String> {
+    let bin = home.join(".local/bin");
+    if std::env::split_paths(path).any(|p| p == bin) {
+        return None;
+    }
+    Some(match Path::new(shell).file_name().and_then(|n| n.to_str()) {
+        Some("fish") => "fish_add_path ~/.local/bin".into(),
+        Some("bash") => r#"echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.bash_profile"#.into(),
+        _ => r#"echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.zshrc"#.into(),
+    })
+}
+
+/// At launch. Only an installed app links itself: a copy run from the disk image, a translocated
+/// path or a build folder moves away and would leave the link dangling.
+pub fn install_at_launch() {
+    let Some(home) = std::env::var_os("HOME").map(PathBuf::from) else { return };
+    let Ok(exe) = std::env::current_exe().and_then(std::fs::canonicalize) else { return };
+    if !(exe.starts_with("/Applications") || exe.starts_with(home.join("Applications"))) {
+        return;
+    }
+    if let Err(e) = install(&exe, &home) {
+        crate::log(&format!("[cli] {e}"));
+        return;
+    }
+    // The login shell's PATH, not this GUI app's.
+    let env = crate::holder::run::login_environment();
+    let path = env.iter().find(|(k, _)| k == "PATH").map(|(_, v)| v.as_str()).unwrap_or_default();
+    let _ = INSTALLED.set(path_line(&std::env::var("SHELL").unwrap_or_default(), path, &home));
+}
+
+/// For the New session view: null until the command is installed.
+pub fn status() -> Value {
+    match INSTALLED.get() {
+        Some(path_line) => json!({ "pathLine": path_line }),
+        None => Value::Null,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -491,5 +552,46 @@ mod tests {
         assert!(reset_sequence(true).starts_with(b"\x1b[?1049l"));
         assert!(!reset_sequence(false).windows(8).any(|w| w == b"\x1b[?1049l"), "would jump the cursor to a stale saved position");
         assert!(reset_sequence(false).ends_with(b"\x1b[?25h\x1b[0m"));
+    }
+
+    #[test]
+    fn cli_install_links_repairs_and_never_clobbers() {
+        let home = tempfile::tempdir().unwrap();
+        let macos = home.path().join("Lightbulb.app/Contents/MacOS");
+        std::fs::create_dir_all(&macos).unwrap();
+        let exe = macos.join("lightbulb-desktop");
+        std::fs::write(&exe, b"").unwrap();
+        let link = home.path().join(".local/bin/lightbulb");
+        install(&exe, home.path()).unwrap();
+        assert_eq!(std::fs::read_link(&link).unwrap(), exe);
+        install(&exe, home.path()).unwrap();
+
+        // A link left by a copy of the app that moved away is repaired.
+        std::fs::remove_file(&link).unwrap();
+        std::os::unix::fs::symlink(home.path().join("gone/lightbulb-desktop"), &link).unwrap();
+        install(&exe, home.path()).unwrap();
+        assert_eq!(std::fs::read_link(&link).unwrap(), exe);
+
+        // Someone else's `lightbulb`, a link or a file, stays.
+        let other = home.path().join("other-tool");
+        std::fs::write(&other, b"").unwrap();
+        std::fs::remove_file(&link).unwrap();
+        std::os::unix::fs::symlink(&other, &link).unwrap();
+        assert!(install(&exe, home.path()).is_err());
+        assert_eq!(std::fs::read_link(&link).unwrap(), other);
+        std::fs::remove_file(&link).unwrap();
+        std::fs::write(&link, b"#!/bin/sh\n").unwrap();
+        assert!(install(&exe, home.path()).is_err());
+        assert_eq!(std::fs::read(&link).unwrap(), b"#!/bin/sh\n");
+    }
+
+    #[test]
+    fn cli_path_line_only_when_the_login_path_lacks_the_folder() {
+        let home = Path::new("/Users/a");
+        assert_eq!(path_line("/bin/zsh", "/usr/bin:/Users/a/.local/bin", home), None);
+        assert_eq!(path_line("/bin/zsh", "/usr/bin:/Users/a/.local/bin/", home), None);
+        assert_eq!(path_line("/bin/zsh", "/usr/bin", home).unwrap(), r#"echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.zshrc"#);
+        assert_eq!(path_line("/bin/bash", "/usr/bin", home).unwrap(), r#"echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.bash_profile"#);
+        assert_eq!(path_line("/opt/homebrew/bin/fish", "/usr/bin", home).unwrap(), "fish_add_path ~/.local/bin");
     }
 }

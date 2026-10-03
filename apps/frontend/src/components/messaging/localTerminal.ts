@@ -8,6 +8,7 @@ export type LocalMacOptions = {
   name?: string | null;
   sharing: boolean;
   folders: string[];
+  cli?: { pathLine: string | null } | null;
   tools: { id: "claude" | "codex"; label: string; modeLabel: string; models: Option[]; modes: Option[]; efforts?: Option[]; defaultMode?: string; defaultEffort?: string | null }[];
 };
 

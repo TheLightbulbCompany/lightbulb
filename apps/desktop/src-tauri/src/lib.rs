@@ -1970,10 +1970,13 @@ end tell"#,
                 tauri::async_runtime::spawn_blocking(move || holder::window::restore_windows(&handle));
             }
 
-            // The `lightbulb` command's request socket.
+            // The `lightbulb` command: its request socket, and its link in ~/.local/bin.
             #[cfg(unix)]
-            if let Err(e) = cli::serve(app.handle().clone()) {
-                log(&format!("[cli] the lightbulb command is unavailable: {e}"));
+            {
+                if let Err(e) = cli::serve(app.handle().clone()) {
+                    log(&format!("[cli] the lightbulb command is unavailable: {e}"));
+                }
+                tauri::async_runtime::spawn_blocking(cli::install_at_launch);
             }
 
             Ok(())

@@ -172,6 +172,7 @@ pub fn options(app: &tauri::AppHandle) -> Value {
         "sharing": crate::local_sessions::enrollment::sharing_on(app),
         "folders": approved_folders(),
         "tools": tools(&home()),
+        "cli": crate::cli::status(),
     })
 }
 

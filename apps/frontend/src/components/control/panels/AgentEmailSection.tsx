@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import useSWR from "swr";
 import { Check, Copy, Mail } from "lucide-react";
 import { ApiError } from "@lightbulb/shared";
@@ -40,7 +40,7 @@ export function AgentEmailSection() {
   const { data: row, error, isLoading, mutate } = useSWR<AddressRow>(
     "/agent-mail/address",
     () => api.get("/agent-mail/address") as Promise<AddressRow>,
-    { revalidateOnFocus: false },
+    { revalidateOnFocus: false, shouldRetryOnError: false },
   );
   const [copied, setCopied] = useState(false);
   const [senders, setSenders] = useState("");
@@ -58,11 +58,18 @@ export function AgentEmailSection() {
     setAnyone(anyoneFromRow);
   }, [row?.address, sendersFromRow, anyoneFromRow]);
 
+  const copyTimer = useRef<ReturnType<typeof setTimeout>>(undefined);
+  useEffect(() => () => clearTimeout(copyTimer.current), []);
   const copy = async () => {
-    if (!row) return;
-    await navigator.clipboard.writeText(row.address);
+    if (!row || !navigator.clipboard) return;
+    try {
+      await navigator.clipboard.writeText(row.address);
+    } catch {
+      return;
+    }
     setCopied(true);
-    setTimeout(() => setCopied(false), 1500);
+    clearTimeout(copyTimer.current);
+    copyTimer.current = setTimeout(() => setCopied(false), 1500);
   };
 
   if (error instanceof ApiError && error.status === 409) {

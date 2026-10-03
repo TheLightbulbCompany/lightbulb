@@ -48,7 +48,7 @@ describe("AgentEmailSection", () => {
 
   it("copies the address and shows Copied", async () => {
     const writeText = vi.fn().mockResolvedValue(undefined);
-    Object.assign(navigator, { clipboard: { writeText } });
+    Object.defineProperty(navigator, "clipboard", { value: { writeText }, configurable: true });
     mockGet.mockResolvedValue(baseAddress);
     renderSection();
 
@@ -56,6 +56,16 @@ describe("AgentEmailSection", () => {
     fireEvent.click(screen.getByRole("button", { name: /copy address/i }));
     expect(writeText).toHaveBeenCalledWith(ADDR);
     expect(await screen.findByText(/copied/i)).toBeInTheDocument();
+  });
+
+  it("does nothing, and does not throw, when the clipboard is unavailable", async () => {
+    Object.defineProperty(navigator, "clipboard", { value: undefined, configurable: true });
+    mockGet.mockResolvedValue(baseAddress);
+    renderSection();
+
+    await screen.findByText(ADDR);
+    fireEvent.click(screen.getByRole("button", { name: /copy address/i }));
+    expect(screen.queryByText(/copied/i)).not.toBeInTheDocument();
   });
 
   it("saves via PATCH /agent-mail/address with the edited senders and anyone flag", async () => {

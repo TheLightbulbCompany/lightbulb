@@ -1,8 +1,6 @@
 import { useAuth } from "@clerk/clerk-expo";
 import {
   buildTimeline,
-  canControlSession,
-  canSendToSession,
   lastOwnMessageId,
   roomDisplayName,
   placeRuns,
@@ -132,10 +130,10 @@ export default function ThreadScreen() {
   const sessionCandidates = useMemo(() => rooms.activeRoom?.shared ? [] : sessionMentionCandidates(
     workspaceSessions.sessions.filter((session) => session.kind !== "background"),
   ), [rooms.activeRoom?.shared, workspaceSessions.sessions]);
+  // A chip is a reference, not a send: offer every shared session whose owner is in the room (#3623).
   const sessionTargets = useMemo(() => sessionCandidates
-    .filter(({ session }) => session.shared !== false && canSendToSession(session)
-      && members?.some((member) => member.kind === "human" && member.id === session.humanUserId)
-      && canControlSession(session, session.humanUserId === userId, userId))
+    .filter(({ session }) => session.shared !== false
+      && members?.some((member) => member.kind === "human" && member.id === session.humanUserId))
     .map((candidate) => ({
     candidate, ownerName: candidate.session.humanUserId === userId ? "You" : memberName(members, candidate.session.humanUserId),
   })), [sessionCandidates, members, userId]);

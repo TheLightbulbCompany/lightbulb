@@ -249,6 +249,33 @@ async def get_current_user(
         raise HTTPException(status_code=401, detail="Could not validate credentials")
 
 
+HUMAN_SESSION_REQUIRED = "human_session_required"
+
+
+async def get_human_session(
+    credentials: HTTPAuthorizationCredentials = Depends(security),
+) -> AuthContext:
+    """`get_current_user`, then only a first-party Clerk SESSION token: for the doors that put a
+    person's keystrokes or screen on a Mac (local-session /input, /viewing, /resume). A session
+    token carries `sid`; an OAuth access token issued as a JWT (`typ: at+jwt`, a `client_id`
+    claim) and a JWT-template token (no `sid`) are refused with 403. The web, desktop webview
+    and mobile call these routes with Clerk's default session token (no template)."""
+    ctx = await get_current_user(credentials)
+    token = credentials.credentials
+    # Already verified above; these reads only classify it.
+    header = jwt.get_unverified_header(token)
+    claims = jwt.decode(token, options={"verify_signature": False})
+    if (
+        str(header.get("typ", "")).lower() in ("at+jwt", "application/at+jwt")
+        or "client_id" in claims
+        or not claims.get("sid")
+    ):
+        put_metric("auth.human_session.refused")
+        logger.warning("AUTH REFUSED: not a first-party session token")
+        raise HTTPException(status_code=403, detail=HUMAN_SESSION_REQUIRED)
+    return ctx
+
+
 async def get_optional_user(
     credentials: HTTPAuthorizationCredentials | None = Depends(security_optional),
 ) -> AuthContext | None:

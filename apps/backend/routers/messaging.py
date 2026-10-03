@@ -20,7 +20,7 @@ from pydantic import Field
 from core.observability.metrics import put_metric
 from core.observability.session_analytics import capture_session_event
 from core.dynamodb import run_in_thread
-from core.auth import AuthContext, get_current_user, resolve_owner_id
+from core.auth import AuthContext, get_current_user, get_human_session, resolve_owner_id
 from core.config import settings
 from core.repositories import container_repo, messaging_repo
 from core.repositories.paperclip_repo import PaperclipRepo
@@ -232,14 +232,14 @@ async def record_local_session_open(
 
 
 @router.post("/messaging/sessions/{session_id}/viewing", status_code=204)
-async def watch_local_session(session_id: str, auth: AuthContext = Depends(get_current_user)):
+async def watch_local_session(session_id: str, auth: AuthContext = Depends(get_human_session)):
     """A person keeps a running session's live terminal coming: every 15 s while it is on screen."""
     await session_screen.watch(auth, session_id)
 
 
 @router.post("/messaging/sessions/{session_id}/input", status_code=204)
 async def type_into_local_session(
-    session_id: str, body: session_screen.SessionInput, auth: AuthContext = Depends(get_current_user)
+    session_id: str, body: session_screen.SessionInput, auth: AuthContext = Depends(get_human_session)
 ):
     """An admitted person types into a running session's live terminal (owner ruling 2026-10-03)."""
     await session_screen.type_into(auth, session_id, body)
@@ -325,7 +325,7 @@ async def report_local_session_pickup(
 
 @router.post("/messaging/sessions/{session_id}/resume", response_model=local_sessions.LocalSession)
 async def resume_local_session(
-    session_id: str, body: session_resume.ResumeRequest, auth: AuthContext = Depends(get_current_user)
+    session_id: str, body: session_resume.ResumeRequest, auth: AuthContext = Depends(get_human_session)
 ):
     """Resume and send: the owner, or someone who could send to it when it ended. It starts on the
     owner's Mac at that Mac's next heartbeat, within 24 hours."""

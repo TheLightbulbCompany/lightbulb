@@ -11,7 +11,7 @@ from fastapi import FastAPI
 from fastapi.responses import JSONResponse
 from httpx import ASGITransport, AsyncClient
 
-from core.auth import AuthContext, get_current_user
+from core.auth import AuthContext, get_current_user, get_human_session
 from core.repositories import local_sessions_repo as repo, messaging_repo
 from core.services import local_sessions as service, session_resume
 from core.services.local_session_grants import AgentInvocation
@@ -191,7 +191,7 @@ async def test_resume_routes(transport):
     app.add_exception_handler(ApiProblem, lambda r, exc: JSONResponse(status_code=exc.status_code, content=exc.body()))
     base = f"/api/v1/messaging/sessions/{sid}"
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
-        app.dependency_overrides[get_current_user] = lambda: BOB
+        app.dependency_overrides[get_human_session] = lambda: BOB
         assert (await client.post(f"{base}/resume", json={"resumeId": RESUME, "argv": ["sh"]})).status_code == 422
         resumed = await client.post(f"{base}/resume", json={"resumeId": RESUME, "message": "go on"})
         assert resumed.status_code == 200 and resumed.json()["resume"]["state"] == "pending"

@@ -236,13 +236,13 @@ fn run(sid: &str, ctl: &Ctl) -> Result<(), String> {
         return Err("its holder predates live terminals; restart the session to share its screen".into());
     }
     let mut conn = UnixStream::connect(&holder.socket).map_err(|e| e.to_string())?;
-    let result = watch(&mut conn, sid, &generation, ctl);
+    let result = watch(&mut conn, sid, &generation, ctl, &send_out);
     // Every exit, early ones included: the reader thread's clone is unblocked only by this.
     let _ = conn.shutdown(std::net::Shutdown::Both);
     result
 }
 
-fn watch(conn: &mut UnixStream, sid: &str, generation: &str, ctl: &Ctl) -> Result<(), String> {
+fn watch(conn: &mut UnixStream, sid: &str, generation: &str, ctl: &Ctl, send: &dyn Fn(Value) -> bool) -> Result<(), String> {
     conn.write_all(&encode(HELLO, br#"{"role":"watch"}"#)).map_err(|e| e.to_string())?;
     let mut reader = conn.try_clone().map_err(|e| e.to_string())?;
     let (tx, frames) = std::sync::mpsc::sync_channel(256);
@@ -259,7 +259,7 @@ fn watch(conn: &mut UnixStream, sid: &str, generation: &str, ctl: &Ctl) -> Resul
     }
     let facts: Value = serde_json::from_slice(&hello).unwrap_or_default();
     let size = (facts["cols"].as_u64().unwrap_or(120) as u16, facts["rows"].as_u64().unwrap_or(40) as u16);
-    pump(&frames, conn, (sid, generation), size, ctl, &send_out)
+    pump(&frames, conn, (sid, generation), size, ctl, send)
 }
 
 struct Out<'a> {
@@ -456,6 +456,44 @@ mod tests {
         nudge_relay(&mut relays, sid.clone(), &fake);
         assert!(relays[&sid].snapshot.load(SeqCst) && relays[&sid].kept());
         assert_eq!(spawned.borrow().len(), 1);
+    }
+
+    #[test]
+    fn a_nudge_streams_the_holders_snapshot_before_any_ack() {
+        let sid = "aaaabbbb-cccc-4ddd-8eee-ffff00001111".to_owned();
+        let (mac, mut holder) = UnixStream::pair().unwrap();
+        // A held session's holder: answers the watch HELLO, snapshots the new client unasked, exits.
+        let fake_holder = std::thread::spawn(move || {
+            let (kind, hello) = read_frame(&mut holder).unwrap();
+            assert_eq!((kind, hello.as_slice()), (HELLO, br#"{"role":"watch"}"#.as_slice()));
+            holder.write_all(&encode(HELLO, br#"{"cols":100,"rows":30}"#)).unwrap();
+            holder.write_all(&encode(SNAPSHOT, &with_offset(0, b"\x1b[Hscreen"))).unwrap();
+            holder.write_all(&encode(EXIT, b"{}")).unwrap();
+        });
+        let sent = Arc::new(Mutex::new(vec![]));
+        let out = sent.clone();
+        // `spawn` as `run` uses it, minus the holder lookup: the relay thread attaches at once.
+        let attach = |sid: String, since: u64| {
+            let ctl = Arc::new(Ctl::new(since));
+            let (theirs, out) = (ctl.clone(), out.clone());
+            let mut mac = mac.try_clone().unwrap();
+            std::thread::spawn(move || {
+                watch(&mut mac, &sid, "gen-1", &theirs, &|f| { out.lock().unwrap().push(f); true }).unwrap();
+            });
+            ctl
+        };
+        let mut relays = BTreeMap::new();
+        nudge_relay(&mut relays, sid.clone(), attach); // no `offer`, no ack
+        fake_holder.join().unwrap();
+        let started = Instant::now();
+        while sent.lock().unwrap().is_empty() && started.elapsed() < Duration::from_secs(2) {
+            std::thread::yield_now();
+        }
+        let first = sent.lock().unwrap().first().cloned().expect("a screen frame before any ack");
+        assert_eq!((first["type"].as_str(), first["kind"].as_str(), first["seq"].as_u64()),
+            (Some("local.session.screen"), Some("snapshot"), Some(0)));
+        assert_eq!((first["sessionId"].as_str(), first["cols"].as_u64()), (Some(sid.as_str()), Some(100)));
+        let _ = mac.shutdown(std::net::Shutdown::Both);
     }
 
     #[test]

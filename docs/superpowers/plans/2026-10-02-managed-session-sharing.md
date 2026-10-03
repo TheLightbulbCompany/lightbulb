@@ -180,10 +180,9 @@ Needs the holder inside a real signed build, so it waits for the owner's answer 
 - [ ] **Step 3:** `git commit -S --allow-empty -m test` in a scratch repo and `ssh -T git@github.com` succeed.
 - [ ] **Step 4:** Record; commit.
 
-### Task 1.7: Volume and long-session open
+### Task 1.7: Volume
 
 - [ ] **Step 1:** From Task 1.1's log and one real working hour in the app, record total bytes and peak bytes per second.
-- [ ] **Step 2:** Time showing a five-hour session from its last keyframe in Safari (Task 1.2 page fed the snapshot bytes). Target: under 3 s.
 - [ ] **Step 3:** Record; commit.
 
 ---

@@ -160,13 +160,15 @@ function ReactionChips({
 function SessionCard({ sessionId, label, session }: { sessionId: string; label?: string; session?: LocalSession }) {
   const palette = useChatPalette();
   const name = session ? sessionLabel(session) : label?.split(" · ").slice(0, -1).join(" · ") || "Session";
-  const status = session ? sessionStatus[session.status] : "Unavailable";
-  return <Pressable accessibilityRole="button" accessibilityLabel={`Open session ${name}, ${status}`} accessibilityState={{ disabled: !session }}
-    disabled={!session} onPress={() => router.push({ pathname: "/(app)/session/[sessionId]", params: { sessionId } })}
+  const status = session ? sessionStatus[session.status] : null;
+  // Open always routes by the stored id: a session that left the workspace list (ended more
+  // than a week ago) still opens by id, and the session screen says so when access is really gone.
+  return <Pressable accessibilityRole="button" accessibilityLabel={status ? `Open session ${name}, ${status}` : `Open session ${name}`}
+    onPress={() => router.push({ pathname: "/(app)/session/[sessionId]", params: { sessionId } })}
     style={[styles.sessionCard, { borderColor: palette.edge }]}>
     <Text style={[styles.sessionActionText, { color: palette.fg }]}>{name}</Text>
-    <MetaText palette={palette}>{status}</MetaText>
-    {session ? <Text style={[styles.sessionActionText, { color: palette.link }]}>Open session</Text> : null}
+    {status ? <MetaText palette={palette}>{status}</MetaText> : null}
+    <Text style={[styles.sessionActionText, { color: palette.link }]}>Open session</Text>
   </Pressable>;
 }
 

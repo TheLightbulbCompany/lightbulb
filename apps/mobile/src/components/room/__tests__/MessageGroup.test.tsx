@@ -58,13 +58,17 @@ it("renders a session mention as a reference card that opens the session", async
   expect(router.push).toHaveBeenCalledWith({ pathname: "/(app)/session/[sessionId]", params: { sessionId: "s1" } });
 });
 
-it("keeps a reference readable when the session is not visible here", async () => {
+it("keeps a reference openable by id when the session is not in the workspace list", async () => {
+  // An ended session leaves the list after a week but still opens by id; the session
+  // screen, not the card, decides whether access is really gone.
   await render(<MessageGroup message={{ ...message, via: "lightbulb_mcp", text: "Please check",
     sessionMentions: ["s1"], sessionTargetLabels: { s1: "Codex · Launch check · Aden Kim" } }}
     collapsed={false} replyCount={0} currentUserId="user-a" attachmentUrl={attachmentUrl} />);
   expect(screen.getByText("Codex · Launch check")).toBeTruthy();
-  expect(screen.getByText("Unavailable")).toBeTruthy();
-  expect(screen.queryByText("Open session")).toBeNull();
+  expect(screen.queryByText("Unavailable")).toBeNull();
+  await fireEvent.press(screen.getByLabelText("Open session Codex · Launch check"));
+  const { router } = jest.requireMock("expo-router");
+  expect(router.push).toHaveBeenCalledWith({ pathname: "/(app)/session/[sessionId]", params: { sessionId: "s1" } });
 });
 
 describe("MessageGroup reactions", () => {

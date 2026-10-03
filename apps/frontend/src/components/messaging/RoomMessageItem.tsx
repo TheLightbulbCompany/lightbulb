@@ -64,10 +64,12 @@ function SessionCard({ sessionId, label, session, onOpen }: {
   sessionId: string; label?: string; session?: LocalSession; onOpen?: (sessionId: string) => void;
 }) {
   const name = session ? sessionLabel(session) : label?.split(" · ").slice(0, -1).join(" · ") || "Session";
+  // Open always routes by the stored id: a session that left the workspace list (ended more
+  // than a week ago) still opens by id, and the detail view says so when access is really gone.
   return <span className="flex flex-wrap items-center gap-2 rounded-md border px-2 py-1 text-xs" data-session-card={sessionId}>
     <span className="font-medium">{name}</span>
-    <span className="text-muted-foreground">{session ? sessionStatus[session.status] : "Unavailable"}</span>
-    {session && onOpen && <Button type="button" variant="ghost" size="sm" aria-label={`Open session ${name}`} onClick={() => onOpen(sessionId)}>Open session</Button>}
+    {session && <span className="text-muted-foreground">{sessionStatus[session.status]}</span>}
+    {onOpen && <Button type="button" variant="ghost" size="sm" aria-label={`Open session ${name}`} onClick={() => onOpen(sessionId)}>Open session</Button>}
   </span>;
 }
 

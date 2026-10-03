@@ -53,8 +53,9 @@ it("renders a session mention as a reference card with no delivery state", () =>
   const view = render(<RoomPanel {...props} messages={[tagged]} />);
   expect(screen.getByText("Please review this")).toBeInTheDocument();
   expect(screen.getByText("Claude Code · Launch check")).toBeInTheDocument();
-  expect(screen.getByText("Unavailable")).toBeInTheDocument();
-  expect(screen.queryByRole("button", { name: /Open session/ })).not.toBeInTheDocument();
+  // Not in the viewer's list (e.g. ended over a week ago): no status, but Open still routes by id.
+  expect(screen.queryByText("Unavailable")).not.toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Open session Claude Code · Launch check" })).toBeInTheDocument();
   expect(screen.queryByRole("button", { name: "Retry" })).not.toBeInTheDocument();
   // The card resolves from every session the viewer can open, not the composer's sendable targets:
   // an ended teammate session still opens.

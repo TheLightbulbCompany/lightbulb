@@ -123,6 +123,13 @@ pub fn list() -> Vec<HolderInfo>;
 
 ### Task 5: Terminal window and guarded commands
 
+> **Changed during implementation (PR #3629):** the window is served by a loopback HTTP server
+> in the app and talks to its holder over a WebSocket that needs a per-window random key and
+> the server's own origin. There are no `holder_*` Tauri commands at all, so nothing needs a
+> caller guard: the main webview (remote origin, which can call every app command) gets only
+> `terminal_open` (new sessions go through a native folder picker) and `terminal_list`. The
+> `lbterm://` scheme and `capabilities/terminal.json` below were not needed.
+
 **Files:**
 - Create: `apps/desktop/src-tauri/terminal/index.html`, `terminal.js`, and vendored `xterm.js`, `xterm.css`, `addon-fit.js` (xterm 5.5.0, addon-fit 0.10.0, from npm, with their MIT LICENSE)
 - Create: `apps/desktop/src-tauri/src/holder/window.rs`

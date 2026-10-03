@@ -140,8 +140,9 @@ else: no network, no auth, no session bookkeeping.
 
 - **Holder manager** (Rust): starts holders (folder + provider + args), finds running ones,
   keeps the recorder attached to each, and exposes the list.
-- **Terminal window.** xterm.js in its **own webview loaded from bundled local assets**, with
-  a Tauri capability that is the only one allowed to call the holder commands. The main app
+- **Terminal window.** xterm.js in its own webview, served by a loopback server in the app and
+  connected to its holder over a WebSocket that needs the window's own random key; there are no
+  Tauri commands that type into a session. The main app
   webview is loaded from `https://thelightbulb.company` (`capabilities/default.json`); it may
   ask to open a terminal window but never send input. A bug or compromise in the web app
   therefore cannot type into a shell.

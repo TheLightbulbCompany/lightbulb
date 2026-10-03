@@ -269,3 +269,53 @@ async def mark_failed(row: dict, failed: ResumeFailed) -> None:
     else:
         raise ApiProblem("LOCAL_SESSION_CONFLICT", "Session changed. Try again.")
     await publish_resources_changed(row["ownerId"], row["humanUserId"])
+
+
+async def on_register(previous: dict | None, row: dict) -> list[dict]:
+    """Every registration, before its write. A registration un-ends the session, so a waiting
+    request leaves the row either way. The first registration of a NEW process while one waits is
+    that resume: the resumer joins ``allowedSenders`` and their first message is admitted as an
+    ordinary send, both in the registration's own transaction -- it exists once or not at all,
+    and the relay's dispatch delivers it at most once. Mutates ``row``; returns the extra
+    transaction items. Reads only the generation, so it holds with or without a ``holderId``."""
+    waiting = row.pop("resume", None)
+    if previous is None or not live(waiting):
+        return []
+    items = [_want_delete(previous)]
+    if previous["generation"] == row["generation"]:
+        return items  # the same process came back: nothing was resumed
+    owner, sid, by = row["ownerId"], row["sessionId"], waiting["byUserId"]
+    if by != row["humanUserId"]:
+        stream = await store.get_user_stream(owner, by)
+        if not stream or not stream.get("active"):
+            return items  # they left the workspace while it waited
+        row["allowedSenders"] = [*(row.get("allowedSenders") or []), by]
+    if waiting.get("text"):
+        now = int(time.time())
+        request = sessions.LocalSessionCommand(
+            requestId=waiting["resumeId"], expectedGeneration=row["generation"], kind="send", text=waiting["text"]
+        )
+        payload = request.model_dump(by_alias=True)
+        row["commandSeq"] = row.get("commandSeq", 0) + 1
+        command = {
+            **payload,
+            "pk": row["pk"],
+            "sk": f"COMMAND#{request.request_id}",
+            "sessionId": sid,
+            "roomId": "",
+            "actorUserId": by,
+            "commandSeq": row["commandSeq"],
+            "state": "pending",
+            "createdAt": now,
+            "deliverBy": now + 30,
+            # submit_command's own hash: the same request sent again is recognised, never doubled.
+            "requestHash": store.request_hash(owner, sid, "", by, payload),
+        }
+        auth = AuthContext(user_id=by, org_id=owner if owner != by else None)
+        audit = sessions.audit_row(owner, sid, auth, "send", request_id=request.request_id)
+        table = store._table().name
+        items += [
+            {"Put": {"TableName": table, "Item": command, "ConditionExpression": "attribute_not_exists(sk)"}},
+            {"Put": {"TableName": table, "Item": audit}},
+        ]
+    return items

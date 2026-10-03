@@ -2,8 +2,10 @@
 
 import json
 import time
+from unittest.mock import patch
 
 import pytest
+from botocore.exceptions import ClientError
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse
@@ -264,3 +266,86 @@ async def test_the_mac_says_why_it_would_not_resume_and_is_not_asked_again(trans
     assert (await service.get_session(BOB, sid)).resume.reason == "ALREADY_RUNNING"
     again = await ask(BOB, sid, resume_id="cccccccc-3333-4333-8333-333333333333")
     assert again.resume.state == "pending"
+
+
+@pytest.mark.asyncio
+async def test_the_new_run_lets_the_resumer_in_and_sends_their_message_once(transport):
+    sid = await ended_session(transport, BOB)
+    await ask(BOB, sid, "carry on")
+    await relay(transport).handle_message("conn-1", successor())
+    row = await repo.get_session(OWNER, sid)
+    assert row["allowedSenders"] == [BOB.user_id] and "resume" not in row and await want(sid) is None
+    (sent,) = commands(transport)
+    assert (sent["requestId"], sent["text"], sent["expectedGeneration"], sent["actorUserId"]) == (
+        RESUME,
+        "carry on",
+        "generation-2",
+        BOB.user_id,
+    )
+    assert (await service.get_command(BOB, None, sid, RESUME)).state == "dispatched"
+    # The relay reconnects and registers the same run again: nothing is sent twice.
+    connect(transport, "conn-2", "2000")
+    await relay(transport).handle_message("conn-2", descriptor(generation="generation-2"))
+    assert len(commands(transport)) == 1
+    # Bob's client sending the same request is recognised, never doubled.
+    again = service.LocalSessionCommand(
+        requestId=RESUME, expectedGeneration="generation-2", kind="send", text="carry on"
+    )
+    assert (await service.submit_command(BOB, None, sid, again)).request_id == RESUME
+    assert len(commands(transport)) == 1
+
+
+@pytest.mark.asyncio
+async def test_a_lost_first_message_reads_unknown_and_is_never_sent_again(transport, monkeypatch):
+    sid = await ended_session(transport, BOB)
+    await ask(BOB, sid, "carry on")
+    now = time.time()
+    monkeypatch.setattr(time, "time", lambda: now)  # the dispatch lease is wall-clock
+    gone = ClientError({"Error": {"Code": "GoneException", "Message": ""}}, "PostToConnection")
+    with patch.object(transport[2]._client, "post_to_connection", side_effect=gone) as post:
+        await relay(transport).handle_message("conn-1", successor())
+        connect(transport, "conn-2", "2000")
+        await relay(transport).handle_message("conn-2", descriptor(generation="generation-2"))
+        assert post.call_count == 1
+    assert (await service.get_command(BOB, None, sid, RESUME)).state == "unknown"
+
+
+@pytest.mark.asyncio
+async def test_a_session_ended_long_ago_resumes_without_its_old_generation(transport):
+    sid = await ended_session(transport, BOB)
+    await ask(BOB, sid)
+    # The Mac reaps an ended mirror a day after the end, so the new run names no predecessor.
+    await relay(transport).handle_message("conn-1", successor(previous=None))
+    row = await repo.get_session(OWNER, sid)
+    assert row["generation"] == "generation-2" and row["allowedSenders"] == [BOB.user_id]
+    assert commands(transport) == []  # no message, nothing sent
+
+
+@pytest.mark.asyncio
+async def test_a_running_session_still_fences_an_unchained_generation(transport):
+    await service.set_enrollment(ALICE, service.EnrollmentRequest(deviceId=MAC, cliDeviceId=CLI, enabled=True))
+    connect(transport)
+    await relay(transport).handle_message("conn-1", descriptor())
+    with pytest.raises(ApiProblem):
+        await relay(transport).handle_message("conn-1", successor(previous=None))
+
+
+@pytest.mark.asyncio
+async def test_nobody_is_let_in_by_a_run_nobody_asked_for_or_by_someone_who_left(transport):
+    sid = await ended_session(transport, BOB)
+    await ask(BOB, sid, "carry on")
+    await messaging_repo.deactivate_user_stream(OWNER, BOB.user_id)
+    await relay(transport).handle_message("conn-1", successor())
+    row = await repo.get_session(OWNER, sid)
+    assert "allowedSenders" not in row and "resume" not in row and await want(sid) is None
+    assert commands(transport) == []
+
+
+@pytest.mark.asyncio
+async def test_the_owner_resuming_lets_nobody_else_in(transport):
+    sid = await ended_session(transport, BOB)
+    await ask(ALICE, sid, "carry on")
+    await relay(transport).handle_message("conn-1", successor())
+    assert "allowedSenders" not in await repo.get_session(OWNER, sid)
+    (sent,) = commands(transport)
+    assert sent["actorUserId"] == ALICE.user_id

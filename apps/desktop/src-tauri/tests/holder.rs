@@ -160,3 +160,30 @@ fn holder_delivers_a_provider_s_last_words_before_exit() {
     }
     assert!(seen.windows(11).any(|w| w == b"final-words"));
 }
+
+#[test]
+fn holder_takes_the_window_size_from_its_hello() {
+    let socket = start_cat(&temp_dir());
+    let mut c = UnixStream::connect(&socket).unwrap();
+    c.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+    c.write_all(&encode(HELLO, br#"{"role":"interactive","cols":50,"rows":10}"#)).unwrap();
+    assert_eq!(read_frame(&mut c).unwrap().0, HELLO);
+    assert_eq!(read_frame(&mut c).unwrap().0, SNAPSHOT);
+    let mut r = UnixStream::connect(&socket).unwrap();
+    r.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+    r.write_all(&encode(HELLO, br#"{"role":"recorder"}"#)).unwrap();
+    let (_, facts) = read_frame(&mut r).unwrap();
+    let facts: serde_json::Value = serde_json::from_slice(&facts).unwrap();
+    assert_eq!((facts["cols"].as_u64(), facts["rows"].as_u64()), (Some(50), Some(10)));
+}
+
+#[test]
+fn holder_manager_refuses_a_planted_symlink_for_its_folder() {
+    let base = PathBuf::from(format!("/private/tmp/lbh-test-{}", uuid::Uuid::new_v4().simple()));
+    let elsewhere = base.with_extension("target");
+    std::fs::create_dir_all(&elsewhere).unwrap();
+    std::os::unix::fs::symlink(&elsewhere, &base).unwrap();
+    let err = manager::start_with(Path::new("/bin/false"), &base.join("h"), Path::new("/"), &["/bin/cat".into()]).unwrap_err();
+    assert!(err.contains("not safe"), "{err}");
+    assert!(!elsewhere.join("h").exists(), "nothing is created through the symlink");
+}

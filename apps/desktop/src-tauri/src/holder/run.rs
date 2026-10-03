@@ -234,6 +234,12 @@ pub fn run_with_env(socket: &Path, argv: &[String], cwd: &Path, env: Vec<(String
                     continue;
                 }
                 if role["role"] == "interactive" {
+                    // Take the window's size first, so its snapshot is drawn at that size.
+                    if let (Some(cols), Some(rows)) = (role["cols"].as_u64(), role["rows"].as_u64()) {
+                        let (cols, rows) = (cols.clamp(1, 1000) as u16, rows.clamp(1, 500) as u16);
+                        let _ = pair.master.resize(PtySize { rows, cols, pixel_width: 0, pixel_height: 0 });
+                        model.resize(rows, cols);
+                    }
                     if let Some(previous) = interactive.replace(id).filter(|p| *p != id) {
                         if let Some(c) = clients.get(&previous) {
                             c.send(encode(DETACHED, b""));

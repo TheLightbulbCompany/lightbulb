@@ -479,7 +479,7 @@ pub async fn terminal_start(app: tauri::AppHandle, params: Value) -> Result<Valu
         .map_err(|e| e.to_string())??;
     if let Err(e) = crate::holder::window::open_window(&app, &info) {
         // Nobody can see it, and a retry would start a second one: stop it.
-        unsafe { libc::kill(info.pid as libc::pid_t, libc::SIGTERM) };
+        crate::holder::manager::stop(info.pid);
         return Err(e);
     }
     crate::log(&format!("[session-start] held {} {}", start.start_id, start.tool));

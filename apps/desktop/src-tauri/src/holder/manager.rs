@@ -26,12 +26,29 @@ pub fn socket_dir() -> PathBuf {
     PathBuf::from(format!("/private/tmp/lightbulb-sessions-{}/h", unsafe { libc::getuid() }))
 }
 
+/// Create (or accept) the socket directory and its parent: real directories owned by this user,
+/// never through a symlink another account planted at the predictable /tmp path.
 fn ensure_dir(dir: &Path) -> Result<(), String> {
-    std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+    use std::os::unix::fs::{DirBuilderExt, MetadataExt};
+    let uid = unsafe { libc::getuid() };
     for d in [dir.parent().unwrap_or(dir), dir] {
+        match std::fs::symlink_metadata(d) {
+            Ok(meta) if meta.file_type().is_dir() && meta.uid() == uid => {}
+            Ok(_) => return Err("The session folder is not safe to use.".into()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                std::fs::DirBuilder::new().mode(0o700).create(d).map_err(|e| e.to_string())?;
+            }
+            Err(e) => return Err(e.to_string()),
+        }
         std::fs::set_permissions(d, std::fs::Permissions::from_mode(0o700)).map_err(|e| e.to_string())?;
     }
     Ok(())
+}
+
+/// Stop a holder and everything it started for itself (its login shell while starting up).
+/// It leads its own process group (`setsid`), so the group id is its pid.
+pub fn stop(pid: u32) {
+    unsafe { libc::kill(-(pid as libc::pid_t), libc::SIGTERM) };
 }
 
 /// Start a holder from this app's own binary (`<exe> holder <socket> -- argv`).
@@ -69,7 +86,7 @@ pub fn start_with(exe: &Path, dir: &Path, cwd: &Path, argv: &[String]) -> Result
         std::thread::sleep(Duration::from_millis(50));
     }
     // Never leave a session running that nobody was told about.
-    unsafe { libc::kill(pid, libc::SIGTERM) };
+    stop(pid as u32);
     Err("The session did not start in time. Try again.".into())
 }
 

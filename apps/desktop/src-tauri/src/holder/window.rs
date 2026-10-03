@@ -115,8 +115,18 @@ fn relay(stream: TcpStream) -> std::io::Result<()> {
     };
     let mut ws = tungstenite::accept_hdr(stream.try_clone()?, callback).map_err(std::io::Error::other)?;
     let Some(id) = admitted.lock().unwrap().take() else { return Ok(()) };
+    // The page sends its size first; the holder needs it before drawing the snapshot.
+    let mut hello = serde_json::json!({"role": "interactive"});
+    if let Ok(Message::Binary(bytes)) = ws.read() {
+        if let Ok((RESIZE, size)) = read_frame(&mut bytes.as_ref()) {
+            if size.len() == 4 {
+                hello["cols"] = u16::from_be_bytes([size[0], size[1]]).into();
+                hello["rows"] = u16::from_be_bytes([size[2], size[3]]).into();
+            }
+        }
+    }
     let mut holder = UnixStream::connect(manager::socket_dir().join(format!("{id}.sock")))?;
-    holder.write_all(&encode(HELLO, br#"{"role":"interactive"}"#))?;
+    holder.write_all(&encode(HELLO, hello.to_string().as_bytes()))?;
     // Holder → window: every frame as one binary message, on its own thread.
     let mut from_holder = holder.try_clone()?;
     let mut to_window = tungstenite::WebSocket::from_raw_socket(stream.try_clone()?, tungstenite::protocol::Role::Server, None);

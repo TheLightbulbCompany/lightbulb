@@ -305,6 +305,12 @@ async def post_late_answer(owner_id: str, room_id: str, agent_id: str, run_id: s
     is the run), carrying the question it answers so it reads on its own."""
     asked = f' "{request.strip()[:160]}"' if request.strip() else ""
     text = f"From the Live call{asked}:\n\n{answer.strip()}"
+    if ((await messaging_repo.get_room(room_id)) or {}).get("hidden"):  # a Meet's room: nobody reads it
+        from core.services.meeting_invites import output_room
+
+        target = await output_room(owner_id, room_id)
+        if await messaging_repo.get_member(target, "agent", agent_id):  # it can only post where it sits
+            room_id = target
     await messaging.create_agent_message(
         owner_id,
         messaging.AgentMessageRequest(

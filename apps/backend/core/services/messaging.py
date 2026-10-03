@@ -1666,7 +1666,8 @@ async def _room_summaries(owner_id: str, user_id: str) -> list[RoomSummary]:
     discovered = [
         row
         for row in await messaging_repo.list_rooms_for_member(owner_id, "human", user_id)
-        if not row["meta"].get("deletedAt")
+        # ``hidden``: a Google Meet's room -- the meeting's record, never a place people go.
+        if not row["meta"].get("deletedAt") and not row["meta"].get("hidden")
     ]
     limit = asyncio.Semaphore(_SUMMARY_CONCURRENCY)
 

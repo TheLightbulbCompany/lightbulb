@@ -1,5 +1,6 @@
-"""After a meeting: its transcript lands in the meeting room as ``transcript.txt`` (never as
-messages), one CEO run writes the notes there, and the organizer gets one mail with the room link.
+"""After a meeting: its transcript lands in the meeting's output room (the workspace's default
+room) as ``transcript.txt`` (never as messages), one CEO run writes the notes there, and the
+organizer gets one mail with the room link. A series then moves on to its next occurrence.
 """
 
 from __future__ import annotations
@@ -23,8 +24,8 @@ _CLAIM_S = 120  # a notes attempt younger than this is still running; older, it 
 
 
 def owed(meeting: dict) -> bool:
-    """An ended meeting (or a bot that failed mid-call) whose notes have not finished."""
-    held = meeting.get("status") == "ended" or (meeting.get("status") == "bot_failed" and meeting.get("inCallAt"))
+    """A call that happened (the bot was in it) and is over, whose notes have not finished."""
+    held = meeting.get("status") in ("ended", "bot_failed") and meeting.get("inCallAt")
     return bool(held) and not meeting.get("notesMailedAt")
 
 
@@ -40,19 +41,22 @@ async def on_transcript(room_id: str, lines: list[dict], final: bool) -> None:
     if not final or not lines:
         return
     meta = await messaging_repo.get_room(room_id) or {}
-    if (meta.get("meeting") or {}).get("transcriptAttachedAt") or not meta.get("ownerId"):
+    meeting = meta.get("meeting") or {}
+    if meeting.get("transcriptAttachedAt") or not meta.get("ownerId"):
+        return
+    if meeting.get("status") not in ("in_call", "ended", "bot_failed"):
+        put_metric("meeting.transcript.dropped")  # late: the series moved on; never the next occurrence's
         return
     owner_id = meta["ownerId"]
+    target = await meeting_invites.output_room(owner_id, room_id)
     data = _render(sorted(lines, key=lambda x: int(x["mark"]))).encode()
     # Upload, post, then mark: a crash in between retries into a replayed post (one message), at
     # worst leaving an orphaned S3 object -- never a meeting with no transcript.
-    attachment = await run_in_thread(
-        messaging.store_attachment, owner_id, room_id, "transcript.txt", "text/plain", data
-    )
+    attachment = await run_in_thread(messaging.store_attachment, owner_id, target, "transcript.txt", "text/plain", data)
     await meeting_invites._post_line(
         owner_id,
-        room_id,
-        f"meeting:{room_id}:transcript",
+        target,
+        f"meeting:{room_id}:{meeting.get('startAt')}:transcript",
         "Transcript attached.",
         attachments=[attachment.model_dump(mode="json", by_alias=True)],
     )
@@ -60,34 +64,40 @@ async def on_transcript(room_id: str, lines: list[dict], final: bool) -> None:
 
 
 async def on_ended(room_id: str) -> None:
-    """One notes run and one organizer mail per meeting. Fire-and-forget: never raises.
+    """One notes run and one organizer mail per occurrence, then a series' advance (after the
+    attempt, success or failure). Fire-and-forget: never raises.
 
     There is no sweeper: the retry is Recall's own webhooks. ``done`` follows ``call_ended`` (and a
     failed delivery is redelivered), and the status route calls this again on every terminal webhook
     while the notes are ``owed`` -- so an attempt that failed here is finished by the next one."""
     try:
-        await _on_ended(room_id)
+        attempted = await _on_ended(room_id)
     except Exception:  # noqa: BLE001
+        attempted = True
         put_metric("meeting.notes.failed")
         logger.warning("meeting room %s: notes failed", room_id, exc_info=True)
+    if attempted:  # not while another end path is on the notes: it advances when it is done
+        await meeting_invites.advance(room_id)
 
 
-async def _on_ended(room_id: str) -> None:
+async def _on_ended(room_id: str) -> bool:
+    """False only when another end path holds the notes."""
     meta = await messaging_repo.get_room(room_id) or {}
-    if not meta.get("meeting") or meta["meeting"].get("notesMailedAt"):
-        return  # not a meeting, or its notes are done
+    if not owed(meta.get("meeting") or {}):
+        return True  # not a meeting, no call happened, or its notes are done
     # A lease, released only on a failure: a crash mid-way frees it after _CLAIM_S and the next
     # on_ended (a Recall redelivery) finishes -- each step is idempotent on its own marker.
     lease = f"meeting-notes#{room_id}"
     token = await container_repo.try_claim_owner_lifecycle(lease, stale_s=_CLAIM_S)
     if not token:
-        return  # another end path is on the notes
+        return False  # another end path is on the notes
     try:
         await _notes(room_id, meta)
     except Exception:
         # A failed attempt frees the claim at once, so the next terminal webhook retries it.
         await container_repo.release_owner_lifecycle_claim(lease, token=token)
         raise
+    return True
 
 
 async def _notes(room_id: str, meta: dict) -> None:
@@ -99,13 +109,15 @@ async def _notes(room_id: str, meta: dict) -> None:
         meta = await messaging_repo.get_room(room_id) or meta
     owner_id, meeting = meta["ownerId"], meta["meeting"]
     title = meeting.get("title") or "Meeting"
+    target = await meeting_invites.output_room(owner_id, room_id)
     company = await PaperclipRepo(table_name="paperclip-companies").resolve_owner_row(owner_id)
     ceo = (getattr(company, "starter_agent_ids", None) or {}).get("ceo")
-    if ceo and not meeting.get("notesRunId"):
+    # The run is dispatched in the output room, so the CEO must sit there.
+    if ceo and not meeting.get("notesRunId") and await messaging_repo.get_member(target, "agent", ceo):
         message = await meeting_invites._post_line(
             owner_id,
-            room_id,
-            f"meeting:{room_id}:notes",
+            target,
+            f"meeting:{room_id}:{meeting.get('startAt')}:notes",
             f"Write the meeting notes for {title}: decisions, open questions, action items as Paperclip "
             "tasks for their owners, two paragraphs max; "
             + (
@@ -118,7 +130,7 @@ async def _notes(room_id: str, meta: dict) -> None:
         if message:
             run_id = messaging_repo.run_id_for(ceo, message["messageId"])
             await meeting_invites._patch_meeting(room_id, {"notesRunId": run_id})
-    if not await _mail_organizer(owner_id, room_id, meeting.get("organizer"), title):
+    if not await _mail_organizer(owner_id, target, meeting.get("organizer"), title):
         raise RuntimeError("the organizer mail was not sent")
     await meeting_invites._patch_meeting(room_id, {"notesMailedAt": int(time.time())})
 

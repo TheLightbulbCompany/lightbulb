@@ -6,7 +6,9 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+from core.auth import AuthContext
 from core.services import meeting_invites
+from tests.unit.repositories.test_messaging_repo import OWNER, USER_A, _member, table  # noqa: F401
 
 GOOGLE = "\r\n".join(
     [
@@ -120,9 +122,10 @@ def test_a_windows_tzid_is_none():
         ("SEQUENCE:0", "SEQUENCE:abc"),
         ("DTSTART;TZID=America/New_York:", "DTSTART;TZID=America:"),
         ("UID:7kukuqrfedlm2f9t0vr42q2gjv@google.com", "UID:" + "x" * 513),
-        ("SEQUENCE:0", "RECURRENCE-ID;TZID=America/New_York:20261010T150000\r\nSEQUENCE:0"),
+        ("SEQUENCE:0", "RRULE:FREQ=WEEKLY;BYDAY=XX\r\nSEQUENCE:0"),
+        ("SEQUENCE:0", "RRULE:FREQ=MINUTELY\r\nSEQUENCE:0"),
     ],
-    ids=["bad-sequence", "zone-directory", "uid-too-long", "recurrence-id"],
+    ids=["bad-sequence", "zone-directory", "uid-too-long", "bad-rrule", "minutely"],
 )
 def test_unusable_invites_are_none(bad):
     assert meeting_invites.parse(GOOGLE.replace(*bad)) is None
@@ -162,6 +165,7 @@ def _mail(calendar, sender="Prasiddha <Prasiddha@acme.com>", dmarc="PASS"):
 TEAM = {"owner_id": "org_1", "agent_id": "ceo-1", "address": "agents@acme.thelightbulb.company", "verified_senders": []}
 UID = "7kukuqrfedlm2f9t0vr42q2gjv@google.com"
 CEO, ENG = "11111111-1111-4111-8111-111111111111", "22222222-2222-4222-8222-222222222222"
+HIRED = "33333333-3333-4333-8333-333333333333"
 WITH_DANA = GOOGLE.replace("SEQUENCE:0", "ATTENDEE;CN=Dana:mailto:dana@acme.com\r\nSEQUENCE:0")
 
 
@@ -224,14 +228,10 @@ def room(monkeypatch):
     monkeypatch.setattr(meeting_invites.container_repo, "try_claim_owner_lifecycle", m.claim)
     monkeypatch.setattr(meeting_invites.container_repo, "release_owner_lifecycle_claim", m.release)
     monkeypatch.setattr(meeting_invites.meeting_rsvp, "accept", m.accept)
-    company = SimpleNamespace(starter_agent_ids={"ceo": CEO, "engineering": ENG})
-    monkeypatch.setattr(
-        meeting_invites, "PaperclipRepo", lambda **_: SimpleNamespace(resolve_owner_row=AsyncMock(return_value=company))
-    )
     roster = [
         {"id": CEO, "name": "CEO"},
         {"id": ENG, "name": "Engineering"},
-        {"id": "33333333-3333-4333-8333-333333333333", "name": "Hired"},
+        {"id": HIRED, "name": "Hired"},
     ]
     monkeypatch.setattr(meeting_invites.messaging, "load_agent_roster", AsyncMock(return_value=roster))
     monkeypatch.setattr(meeting_invites.messaging, "human_display_name", AsyncMock(side_effect=lambda u: u))
@@ -254,11 +254,13 @@ async def test_a_members_invite_opens_the_meeting_room(room):
     kw = room.create.await_args.kwargs
     assert kw["room_id"] == meeting_invites.messaging_repo.meeting_room_id("org_1", UID)
     assert kw["kind"] == "channel" and kw["name"] == "Acme weekly sync — Oct 3" and kw["creator_user_id"] == "user_p"
+    # Hidden; the inviter is its one human (Dana, a member attendee, is not seated); every agent listens.
+    assert kw["extra"]["hidden"] is True
     assert {(m["id"], m["role"], m["listenMode"]) for m in kw["members"]} == {
         ("user_p", "owner", None),
-        ("user_d", "member", None),
         (CEO, "member", "mentions"),
         (ENG, "member", "mentions"),
+        (HIRED, "member", "mentions"),
     }
     meeting = kw["extra"]["meeting"]
     assert meeting["uid"] == UID and meeting["status"] == "scheduled"
@@ -525,7 +527,7 @@ async def test_meetings_unavailable_keep_the_room_for_notes(room, bots, monkeypa
     bots.create.assert_not_awaited()
     room.accept.assert_not_awaited()
     assert room.state["meta"]["meeting"]["status"] == "scheduled"
-    assert _lines(room) == ["Meetings aren't available in this environment yet — the room is here for notes."]
+    assert _lines(room) == ["Meetings aren't available in this environment yet."]
 
 
 async def test_a_full_bot_pool_is_bot_failed_not_a_raise(room, bots):
@@ -867,3 +869,224 @@ async def test_a_replayed_cancel_posts_no_second_line(room):
     await meeting_invites.handle_team_mail("org_1", _mail(cal), TEAM)
     await meeting_invites.handle_team_mail("org_1", _mail(cal), TEAM)
     assert _lines(room).count("This meeting was cancelled.") == 1
+
+
+# --- a meeting is a workspace call: no channel, every agent, output in the default room, series ---
+
+NY = __import__("zoneinfo").ZoneInfo("America/New_York")
+SERIES = GOOGLE.replace("SEQUENCE:0", "RRULE:FREQ=WEEKLY;BYDAY=SA\r\nSEQUENCE:0")
+ONE_OCCURRENCE = GOOGLE.replace("SEQUENCE:0", "RECURRENCE-ID;TZID=America/New_York:20261010T150000\r\nSEQUENCE:0")
+
+
+def _epoch(*args):
+    return int(datetime(*args, tzinfo=NY).timestamp())
+
+
+@pytest.fixture
+def now(monkeypatch):
+    clock = {"t": _epoch(2026, 11, 5, 12, 0)}  # a Thursday, after DST ended on Nov 1
+    monkeypatch.setattr(meeting_invites.time, "time", lambda: clock["t"])
+    return clock
+
+
+def test_a_series_is_dated_to_its_next_occurrence_on_the_same_wall_clock(now):
+    inv = meeting_invites.parse(SERIES)
+    assert inv.start == datetime(2026, 11, 7, 15, 0, tzinfo=NY)  # 3 PM EST, as 3 PM EDT was
+    assert int(inv.start.timestamp()) == int(datetime(2026, 11, 7, 20, 0, tzinfo=timezone.utc).timestamp())
+    assert inv.end - inv.start == __import__("datetime").timedelta(minutes=30)
+    assert inv.recurrence == {
+        "rule": "FREQ=WEEKLY;BYDAY=SA",
+        "first": _epoch(2026, 10, 3, 15, 0),
+        "tz": "America/New_York",
+        "exdates": [],
+        "duration": 1800,
+    }
+
+
+def test_an_exdate_skips_its_occurrence(now):
+    cal = SERIES.replace("SEQUENCE:0", "EXDATE;TZID=America/New_York:20261031T150000,20261107T150000\r\nSEQUENCE:0")
+    inv = meeting_invites.parse(cal)
+    assert inv.start == datetime(2026, 11, 14, 15, 0, tzinfo=NY)
+    assert len(inv.recurrence["exdates"]) == 2
+
+
+def test_an_occurrence_in_progress_is_the_next_one(now):
+    now["t"] = _epoch(2026, 11, 7, 15, 10)
+    assert meeting_invites.parse(SERIES).start == datetime(2026, 11, 7, 15, 0, tzinfo=NY)
+
+
+def test_a_finished_series_is_mail(now):
+    assert meeting_invites.parse(SERIES.replace("BYDAY=SA", "BYDAY=SA;COUNT=2")) is None
+
+
+def test_the_master_wins_over_an_edited_occurrence(now):
+    edited = ONE_OCCURRENCE.replace("SUMMARY:Acme weekly sync", "SUMMARY:Edited one")
+    events = edited[edited.index("BEGIN:VEVENT") : edited.index("END:VCALENDAR")]
+    cal = SERIES.replace("END:VCALENDAR", events + "END:VCALENDAR")  # Google sends the master, then exceptions
+    inv = meeting_invites.parse(cal.replace("BEGIN:VEVENT", events + "BEGIN:VEVENT", 1))  # and either order
+    assert inv.uid == UID and inv.summary == "Acme weekly sync" and inv.recurrence and inv.instance_of is None
+
+
+def test_a_lone_occurrence_is_a_one_off_of_its_own():
+    inv = meeting_invites.parse(ONE_OCCURRENCE)
+    assert inv.uid == f"{UID}#20261010T150000" and inv.instance_of == UID and inv.recurrence is None
+
+
+async def test_one_occurrence_of_a_followed_series_is_ignored(room):
+    room.state["meta"] = {"roomId": "series", "meeting": {"uid": UID, "status": "scheduled"}}
+    assert await meeting_invites.handle_team_mail("org_1", _mail(ONE_OCCURRENCE), TEAM) == "meeting_ignored"
+    room.create.assert_not_awaited()
+
+
+async def test_one_occurrence_alone_books_its_own_meeting(room):
+    reads = []
+
+    def get(room_id):
+        reads.append(room_id)
+        return room.state["meta"]
+
+    room.get.side_effect = get
+    assert await meeting_invites.handle_team_mail("org_1", _mail(ONE_OCCURRENCE), TEAM) == "meeting_scheduled"
+    assert reads[0] == meeting_invites.messaging_repo.meeting_room_id("org_1", UID)  # the series looked up first
+    kw = room.create.await_args.kwargs
+    assert kw["room_id"] == meeting_invites.messaging_repo.meeting_room_id("org_1", f"{UID}#20261010T150000")
+
+
+async def test_a_series_invite_stores_its_rule_and_says_so(room, now):
+    assert await meeting_invites.handle_team_mail("org_1", _mail(SERIES), TEAM) == "meeting_scheduled"
+    meeting = room.state["meta"]["meeting"]
+    assert meeting["recurrence"]["rule"] == "FREQ=WEEKLY;BYDAY=SA"
+    assert meeting["startAt"] == _epoch(2026, 11, 7, 15, 0) and meeting["endAt"] == _epoch(2026, 11, 7, 15, 30)
+    assert _lines(room) == ["Agents will join **Acme weekly sync** each time it meets. Next: Sat Nov 7, 3:00 PM EST."]
+    # The organizer turns the series into a one-off: the rule goes.
+    await meeting_invites.handle_team_mail("org_1", _mail(GOOGLE.replace("SEQUENCE:0", "SEQUENCE:1")), TEAM)
+    assert "recurrence" not in room.state["meta"]["meeting"]
+
+
+async def test_a_re_invite_after_the_meeting_ended_is_not_a_move(room):
+    await meeting_invites.handle_team_mail("org_1", _mail(GOOGLE), TEAM)
+    room.state["meta"]["meeting"]["status"] = "ended"
+    await meeting_invites.handle_team_mail("org_1", _mail(MOVED), TEAM)
+    assert not any("moved" in line for line in _lines(room))
+
+
+async def test_lines_go_to_the_default_room_else_the_meetings_own(room):
+    default = meeting_invites.messaging.default_room_id("org_1")
+    meeting_room = meeting_invites.messaging_repo.meeting_room_id("org_1", UID)
+    rooms = {default: {"roomId": default}}
+    room.get.side_effect = lambda room_id: rooms.get(room_id) if room_id == default else room.state["meta"]
+    await meeting_invites.handle_team_mail("org_1", _mail(GOOGLE), TEAM)
+    assert room.post.await_args.kwargs["room_id"] == default
+    assert room.post.await_args.kwargs["idemp_pk"] == meeting_invites.messaging_repo.room_pk(default)
+    rooms[default]["archivedAt"] = "2026-10-03T00:00:00Z"
+    assert await meeting_invites.output_room("org_1", meeting_room) == meeting_room
+    rooms.clear()
+    assert await meeting_invites.output_room("org_1", meeting_room) == meeting_room
+
+
+def _ended_series(room, **extra):
+    room.state["meta"] = {
+        "roomId": "r",
+        "ownerId": "org_1",
+        "revision": 0,
+        "meeting": {
+            "uid": UID,
+            "sequence": 0,
+            "status": "ended",
+            "startAt": _epoch(2026, 11, 7, 15, 0),
+            "endAt": _epoch(2026, 11, 7, 15, 30),
+            "meetingUrl": "https://meet.google.com/abc-defg-hij",
+            "recurrence": meeting_invites.parse(SERIES).recurrence,
+            **{k: 1 for k in meeting_invites._OCCURRENCE_KEYS},
+            **extra,
+        },
+    }
+
+
+@pytest.fixture
+def metrics(monkeypatch):
+    seen = []
+    monkeypatch.setattr(meeting_invites, "put_metric", lambda name, **kw: seen.append((name, kw)))
+    return seen
+
+
+async def test_advance_books_the_next_occurrence(room, now, metrics):
+    _ended_series(room)
+    now["t"] = _epoch(2026, 11, 7, 15, 40)
+    await meeting_invites.advance("r")
+    meeting = room.state["meta"]["meeting"]
+    assert meeting["status"] == "scheduled"
+    assert meeting["startAt"] == _epoch(2026, 11, 14, 15, 0) and meeting["endAt"] == _epoch(2026, 11, 14, 15, 30)
+    assert not set(meeting_invites._OCCURRENCE_KEYS) & set(meeting)
+    owner, room_id, written, prior = room.sync.await_args.args
+    assert (owner, room_id, written) == ("org_1", "r", meeting) and prior["recallBotId"] == 1
+    assert metrics == [("meeting.advance", {"dimensions": {"outcome": "advanced"}})]
+    await meeting_invites.advance("r")  # a second trigger: the next occurrence is not over yet
+    assert room.sync.await_count == 1 and metrics[-1][1]["dimensions"]["outcome"] == "not_due"
+
+
+async def test_advance_of_an_early_end_skips_the_current_occurrence(room, now, metrics):
+    _ended_series(room)
+    now["t"] = _epoch(2026, 11, 7, 15, 5)  # the idle leave ended it 25 minutes early
+    await meeting_invites.advance("r")
+    assert room.state["meta"]["meeting"]["startAt"] == _epoch(2026, 11, 14, 15, 0)
+
+
+async def test_advance_at_the_end_of_a_series(room, now, metrics):
+    _ended_series(room, recurrence={**meeting_invites.parse(SERIES).recurrence, "rule": "FREQ=WEEKLY;COUNT=6"})
+    now["t"] = _epoch(2026, 11, 7, 15, 40)
+    await meeting_invites.advance("r")
+    assert room.state["meta"]["meeting"]["status"] == "ended"
+    room.sync.assert_not_awaited()
+    assert metrics == [("meeting.advance", {"dimensions": {"outcome": "series_over"}})]
+
+
+async def test_advance_retries_a_busy_lease_then_gives_up(room, now, metrics, monkeypatch):
+    _ended_series(room)
+    sleep = AsyncMock()
+    monkeypatch.setattr(meeting_invites.asyncio, "sleep", sleep)
+    room.claim.return_value = None
+    await meeting_invites.advance("r")
+    assert room.claim.await_count == 4 and [c.args for c in sleep.await_args_list] == [(2,)] * 3
+    assert room.state["meta"]["meeting"]["status"] == "ended"
+    assert metrics == [("meeting.advance", {"dimensions": {"outcome": "busy"}})]
+    room.claim.side_effect = [None, "tok"]  # held once, then free
+    await meeting_invites.advance("r")
+    assert room.state["meta"]["meeting"]["status"] == "scheduled"
+
+
+async def test_advance_leaves_one_offs_and_live_meetings_alone(room, metrics):
+    _ended_series(room, recurrence=None)
+    await meeting_invites.advance("r")
+    room.claim.assert_not_awaited()  # a one-off takes no lease
+    _ended_series(room, status="in_call")
+    await meeting_invites.advance("r")
+    room.sync.assert_not_awaited()
+    assert [m[1]["dimensions"]["outcome"] for m in metrics] == ["not_series", "not_due"]
+
+
+async def test_advance_never_raises(room, metrics):
+    _ended_series(room)
+    room.get.side_effect = RuntimeError("ddb")
+    await meeting_invites.advance("r")
+    assert metrics == [("meeting.advance", {"dimensions": {"outcome": "error"}})]
+
+
+async def test_a_hidden_room_is_in_no_room_list_but_an_old_meeting_room_stays(table, monkeypatch):  # noqa: F811
+    repo, messaging = meeting_invites.messaging_repo, meeting_invites.messaging
+    monkeypatch.setattr(messaging, "human_emails", AsyncMock(return_value={}))
+    members = [_member("human", USER_A, "owner")]
+    for client, extra in (("hidden", {"meeting": {"uid": "a"}, "hidden": True}), ("old", {"meeting": {"uid": "b"}})):
+        await repo.create_room(
+            owner_id=OWNER,
+            room_id=repo.deterministic_room_id(OWNER, USER_A, client),
+            client_room_id=client,
+            creator_user_id=USER_A,
+            name=client,
+            kind="channel",
+            members=members,
+            req_hash=repo.request_hash(client),
+            extra=extra,
+        )
+    listed = await messaging.list_rooms(AuthContext(user_id=USER_A, org_id=OWNER))
+    assert [r.name for r in listed.rooms] == ["old"]

@@ -64,6 +64,7 @@ def env():
     lk = mod.livekit_huddles
     with (
         patch.object(mod.meeting_notes, "on_ended", MagicMock(side_effect=notes_done)) as notes,
+        patch.object(mod.meeting_invites, "advance", MagicMock(side_effect=lambda _r: noop())) as advance,
         patch.object(repo, "try_claim_owner_lifecycle", AsyncMock(return_value="tok")) as claim,
         patch.object(repo, "release_owner_lifecycle_claim", AsyncMock()) as release,
         patch.object(mod.voice_calls, "room_agents", AsyncMock(return_value=TEAM)),
@@ -95,6 +96,7 @@ def env():
             "notes": notes,
             "release": release,
             "claim": claim,
+            "advance": advance,
         }
 
 
@@ -128,7 +130,7 @@ def test_in_call_dispatches_the_worker_once_and_prewakes(env):
 
 
 def test_call_ended_closes_the_room_once(env):
-    env["meta"]["meeting"]["status"] = "in_call"
+    env["meta"]["meeting"].update(status="in_call", inCallAt=1)
     _post(env["client"], _status("call_ended", sub_code="call_ended_by_host"))
     _post(env["client"], _status("done"))
     assert env["meta"]["meeting"]["status"] == "ended"
@@ -197,7 +199,7 @@ def _leave(client):
 
 
 def test_worker_idle_leave_ends_once_even_when_call_ended_lands_mid_leave(env):
-    env["meta"]["meeting"]["status"] = "in_call"
+    env["meta"]["meeting"].update(status="in_call", inCallAt=1)
 
     async def leave_provokes_call_ended(bot_id):
         assert env["meta"]["meeting"]["status"] == "ended"  # written before the bot is pulled
@@ -213,7 +215,7 @@ def test_worker_idle_leave_ends_once_even_when_call_ended_lands_mid_leave(env):
 
 
 def test_a_failed_leave_still_ends_the_meeting(env):
-    env["meta"]["meeting"]["status"] = "in_call"
+    env["meta"]["meeting"].update(status="in_call", inCallAt=1)
     with (
         patch.object(mod.meeting_bots, "leave", AsyncMock(side_effect=mod.meeting_bots.RecallError("500"))) as leave,
         patch.object(mod.asyncio, "sleep", AsyncMock()) as sleep,
@@ -227,7 +229,7 @@ def test_a_failed_leave_still_ends_the_meeting(env):
 
 
 def test_a_leave_that_succeeds_on_a_retry_counts_no_failure(env):
-    env["meta"]["meeting"]["status"] = "in_call"
+    env["meta"]["meeting"].update(status="in_call", inCallAt=1)
     flaky = AsyncMock(side_effect=[mod.meeting_bots.RecallError("500"), None])
     with patch.object(mod.meeting_bots, "leave", flaky), patch.object(mod.asyncio, "sleep", AsyncMock()):
         assert _leave(env["client"]).status_code == 200
@@ -237,7 +239,7 @@ def test_a_leave_that_succeeds_on_a_retry_counts_no_failure(env):
 
 
 def test_the_done_webhook_retries_notes_that_failed_on_call_ended(env):
-    env["meta"]["meeting"]["status"] = "in_call"
+    env["meta"]["meeting"].update(status="in_call", inCallAt=1)
 
     async def noop():
         return None
@@ -258,7 +260,7 @@ def test_the_done_webhook_retries_notes_that_failed_on_call_ended(env):
 
 
 def test_a_failed_close_room_loses_no_other_end_step(env):
-    env["meta"]["meeting"]["status"] = "in_call"
+    env["meta"]["meeting"].update(status="in_call", inCallAt=1)
     env["close"].side_effect = RuntimeError("twirp")
     assert _post(env["client"], _status("call_ended", sub_code="x")).status_code == 200
     env["notes"].assert_called_once_with(ROOM)
@@ -268,7 +270,7 @@ def test_a_failed_close_room_loses_no_other_end_step(env):
 
 
 def test_fatal_mid_call_runs_the_notes(env):
-    env["meta"]["meeting"]["status"] = "in_call"
+    env["meta"]["meeting"].update(status="in_call", inCallAt=1)
     _post(env["client"], _status("fatal", sub_code="bot_kicked_from_call"))
     assert env["meta"]["meeting"]["status"] == "bot_failed"
     env["notes"].assert_called_once_with(ROOM)
@@ -304,13 +306,13 @@ def test_a_busy_lease_is_5xx_so_recall_retries(env):
     env["claim"].return_value = None
     assert _post(env["client"], _status("in_call_recording")).status_code == 503
     env["dispatch"].assert_not_awaited()
-    env["meta"]["meeting"]["status"] = "in_call"
+    env["meta"]["meeting"].update(status="in_call", inCallAt=1)
     assert _leave(env["client"]).status_code == 503
     assert env["meta"]["meeting"]["status"] == "in_call"
 
 
 def test_a_redelivery_to_an_ended_meeting_retries_unfinished_notes(env):
-    env["meta"]["meeting"].update(status="ended")
+    env["meta"]["meeting"].update(status="ended", inCallAt=1)
     assert _post(env["client"], _status("done")).status_code == 200
     env["notes"].assert_called_once_with(ROOM)
     env["close"].assert_not_awaited()
@@ -342,3 +344,21 @@ def test_worker_leave_needs_the_room_token(env):
         headers={"X-Lightbulb-Huddle-Secret": WORKER},
     )
     assert resp.status_code == 401
+
+
+def test_an_ended_call_the_bot_never_joined_runs_no_notes_and_advances(env):
+    env["meta"]["meeting"]["status"] = "bot_created"
+    assert _post(env["client"], _status("call_ended", sub_code="bot_kicked_from_waiting_room")).status_code == 200
+    assert env["meta"]["meeting"]["status"] == "ended"
+    env["notes"].assert_not_called()
+    env["advance"].assert_called_once_with(ROOM)
+
+
+def test_a_terminal_redelivery_retries_a_series_advance(env):
+    env["meta"]["meeting"].update(status="ended", inCallAt=1, notesMailedAt=1, recurrence={"rule": "FREQ=WEEKLY"})
+    assert _post(env["client"], _status("done")).status_code == 200
+    env["notes"].assert_not_called()
+    env["advance"].assert_called_once_with(ROOM)
+    env["meta"]["meeting"].pop("recurrence")
+    assert _post(env["client"], _status("done")).status_code == 200  # a one-off: nothing to advance
+    env["advance"].assert_called_once()

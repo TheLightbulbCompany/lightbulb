@@ -83,12 +83,18 @@ async def _publish(room_id: str, status: str) -> None:
 async def _finish(room_id: str, status: str, sub_code: str, notes: bool, in_call_at: int | None = None) -> None:
     """The rest of the one end path, once ``status`` is written. Never raises: the written status
     turns every retry into a no-op, so a step that failed here would otherwise be lost for good.
-    Notes first, the room's close last. Presence is a metric only: we pay for the bot's time, the
-    workspace's allowance pays only for agent speech (voice_billing)."""
+    Notes first (only for a call the bot was in; a series advances after them, or at once without
+    them), the room's close last. Presence is a metric only: we pay for the bot's time, the
+    workspace's allowance pays only for agent speech (voice_billing). Both are fired, never awaited:
+    the caller may hold the meeting lease that ``advance`` waits for."""
     presence = time.time() - in_call_at if in_call_at else None
+    notes = notes and bool(in_call_at)
     steps = [
         ("presence", lambda: put_metric("meeting.presence.seconds", presence, unit="Seconds") if presence else None),
-        ("notes", lambda: voice_calls._fire(meeting_notes.on_ended(room_id)) if notes else None),
+        (
+            "notes",
+            lambda: voice_calls._fire(meeting_notes.on_ended(room_id) if notes else meeting_invites.advance(room_id)),
+        ),
         ("metric", lambda: put_metric("meeting.ended", dimensions={"sub_code": sub_code or "none"})),
         ("publish", lambda: _publish(room_id, status)),
         ("close_room", lambda: livekit_huddles.close_room(room_id, meet=True)),
@@ -114,9 +120,11 @@ async def _on_status(bot_id: str, room_id: str, code: str, sub_code: str) -> Non
         status = meeting.get("status")
         if meeting.get("recallBotId") != bot_id:
             return  # another bot's
-        if status in _TERMINAL:  # never revived; a redelivery only retries notes a crash left undone
+        if status in _TERMINAL:  # never revived; a redelivery retries notes or a series' advance left undone
             if meeting_notes.owed(meeting):
                 voice_calls._fire(meeting_notes.on_ended(room_id))
+            elif meeting.get("recurrence"):
+                voice_calls._fire(meeting_invites.advance(room_id))
             return
         if target == status or code == meeting.get("lastBotStatus"):
             return  # a replay, or a step this meeting already took

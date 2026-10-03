@@ -466,24 +466,20 @@ pub fn terminal_options(app: tauri::AppHandle) -> Value {
 }
 
 /// From the desktop app's own New session view: the same checks as a remote start (installed
-/// tool, approved folder, closed model and mode lists, prompt after `--`), then a held session
-/// in a terminal window instead of Terminal.app.
+/// tool, approved folder, closed model and mode lists, prompt after `--`), then a held, linked
+/// session. The page shows it in its panel at once (by holder id) and as a session once it reports.
 #[tauri::command]
 pub async fn terminal_start(app: tauri::AppHandle, params: Value) -> Result<Value, String> {
     let (start, folder, argv) = validate(params, &home()).map_err(|(_, message)| message)?;
-    // With sharing on, link the start so the view that asked becomes the session once it reports.
-    let scope = crate::local_sessions::enrollment::launch_scope(&app).ok();
-    let argv = held_argv(&argv, scope.as_deref().map(|s| (start.start_id.as_str(), s)));
+    // Sessions started here are shared (ruling 8): without sharing there is nowhere to show it.
+    let scope = crate::local_sessions::enrollment::launch_scope(&app)
+        .map_err(|_| "Turn on session sharing in Lightbulb on this Mac first.".to_string())?;
+    let argv = held_argv(&argv, Some((start.start_id.as_str(), scope.as_str())));
     let info = tauri::async_runtime::spawn_blocking(move || crate::holder::manager::start(&folder, &argv))
         .await
         .map_err(|e| e.to_string())??;
-    if let Err(e) = crate::holder::window::open_window(&app, &info) {
-        // Nobody can see it, and a retry would start a second one: stop it.
-        crate::holder::manager::stop(info.pid);
-        return Err(e);
-    }
     crate::log(&format!("[session-start] held {} {}", start.start_id, start.tool));
-    Ok(json!({"holderId": info.id, "tool": start.tool, "linked": scope.is_some()}))
+    Ok(json!({"holderId": info.id, "tool": start.tool}))
 }
 
 #[cfg(test)]

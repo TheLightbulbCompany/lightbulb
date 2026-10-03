@@ -946,7 +946,7 @@ class LocalSessionRelay:
     async def _dispatch_checks(self, row: dict, command: dict, claim: bool) -> list[dict] | None:
         owner, sid = row["ownerId"], row["sessionId"]
         native_actor = (command.get("actor") or {}).get("kind") == "session"
-        source_checks = []
+        source_checks, source_pairing = [], None
         if native_actor:
             source = await repo.get_session(owner, command["actor"]["id"])
             if (
@@ -966,11 +966,21 @@ class LocalSessionRelay:
                 or source_connection["user_id"] != source["humanUserId"]
             ):
                 raise _conflict("source connection changed", sid=sid)
+            # A DynamoDB transaction cannot name one item twice. Pairing is one row per
+            # owner, and a source on the target's Mac shares its enrollment and connection.
+            source_pairing = (source["humanUserId"], source["deviceId"])
             source_checks = [
-                repo.pairing_condition(owner, source["humanUserId"], source["deviceId"], None),
-                repo.enrollment_condition(source_enrollment),
+                *(
+                    []
+                    if source_pairing == (row["humanUserId"], row["deviceId"])
+                    else [repo.enrollment_condition(source_enrollment)]
+                ),
                 self._session_check(source),
-                self._connection_check(source["connectionId"], source_connection),
+                *(
+                    []
+                    if source["connectionId"] == row["connectionId"]
+                    else [self._connection_check(source["connectionId"], source_connection)]
+                ),
             ]
             auth = sessions.AuthContext(
                 user_id=source["humanUserId"], org_id=owner if owner != source["humanUserId"] else None
@@ -997,7 +1007,7 @@ class LocalSessionRelay:
         return [
             *repo.room_conditions(owner, row["humanUserId"], command),
             *source_checks,
-            repo.pairing_condition(owner, row["humanUserId"], row["deviceId"], None),
+            repo.pairing_condition(owner, row["humanUserId"], row["deviceId"], None, also=source_pairing),
             repo.enrollment_condition(enrollment),
             self._session_check(row),
             self._connection_check(row["connectionId"], connection),

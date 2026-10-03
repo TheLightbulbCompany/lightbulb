@@ -344,7 +344,8 @@ async def _session_send(auth: AuthContext, source: dict, session_id: str, text: 
     try:
         await relay.dispatch_session(source["ownerId"], session_id)
     except Exception:
-        pass  # Durable admission stays queued; the device heartbeat retries delivery.
+        # Durable admission stays queued; the device heartbeat retries delivery.
+        logger.warning("native session send dispatch failed session=%s", session_id, exc_info=True)
     return {"state": receipt.state, "destination": f"session:{session_id}", "targetRequestId": request_id}
 
 

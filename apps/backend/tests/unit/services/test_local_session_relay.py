@@ -1915,3 +1915,41 @@ async def test_subagent_events_round_trip_and_a_long_background_end_notifies_onc
     with patch("time.time", return_value=10500):
         feed = await activity.list_activity(ALICE, cursor=None, limit=30, teams_ctx=teams)
     assert len([i for i in feed.items if i.kind == "session"]) == 3
+
+
+@pytest.mark.asyncio
+async def test_same_mac_native_session_send_names_each_item_once_and_dispatches(transport, monkeypatch):
+    source = await start(transport)
+    target = (await relay(transport).handle_message("conn-1", registration(nativeConversationId="thread-2")))[
+        "sessionId"
+    ]
+    now = time.time()
+    monkeypatch.setattr(time, "time", lambda: now)
+    sent = await service.submit_command(
+        ALICE,
+        None,
+        target,
+        command(service),
+        source_session_id=source,
+        source_generation="generation-1",
+        source_turn_id="turn-1",
+        native_hop=1,
+        source_pairing=(ALICE.user_id, MAC),
+    )
+    transactions, transact = [], messaging_repo._transact
+
+    async def recorded(items):
+        transactions.append(items)
+        await transact(items)
+
+    monkeypatch.setattr(messaging_repo, "_transact", recorded)
+    await relay(transport).dispatch_session(OWNER, target)
+    assert transactions
+    for items in transactions:
+        keys = [
+            (op["TableName"], json.dumps(op.get("Key") or {k: op["Item"][k] for k in ("pk", "sk")}, sort_keys=True))
+            for item in items
+            for op in item.values()
+        ]
+        assert len(keys) == len(set(keys))
+    assert (await repo.get_command(OWNER, target, sent.request_id))["state"] == "dispatched"

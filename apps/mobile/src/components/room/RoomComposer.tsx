@@ -603,7 +603,7 @@ export function RoomComposer({
               accessibilityRole="button"
               accessibilityLabel={`Mention ${candidate.session.provider === "claude" ? "Claude Code" : "Codex"} session ${sessionTitle(candidate.session)}, owned by ${ownerName}`}
             >
-              <Avatar name={ownerName} kind="agent" size={22} palette={palette} />
+              <Avatar name={ownerName} kind="agent" size={22} palette={palette} vendor={candidate.session.provider} />
               <View style={styles.optionLabels}>
                 <Text style={[styles.optionName, { color: palette.fg }]} numberOfLines={1}>
                   {candidate.session.provider === "claude" ? "Claude Code" : "Codex"} · {sessionTitle(candidate.session)}

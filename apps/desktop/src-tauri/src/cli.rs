@@ -27,7 +27,7 @@ const CODEX_SUBCOMMANDS: &[&str] = &[
     "remote-control", "app", "completion", "update", "doctor", "sandbox", "debug", "apply", "a",
     "resume", "queue", "archive", "delete", "migrate-rollouts", "unarchive", "fork", "cloud",
     "cloud-tasks", "exec-server", "execpolicy", "features", "help", "responses-api-proxy",
-    "stdio-to-uds", "generate-ts",
+    "stdio-to-uds", "generate-ts", "tcp-tunnel",
 ];
 
 /// Codex options that take a separate value word (`codex --help`).
@@ -87,6 +87,11 @@ fn not_interactive(tool: &str, arg: &str) -> String {
 /// Why these arguments cannot be a shared session, if they cannot: the non-interactive forms
 /// have no terminal to share. Everything after `--` is the provider's own text, never checked.
 pub fn refusal(tool: &str, args: &[String]) -> Option<String> {
+    // Informational flags print and exit: no terminal to share.
+    let info: &[&str] = if tool == "codex" { &["-h", "--help", "-V", "--version"] } else { &["-h", "--help", "-v", "--version"] };
+    if let Some(flag) = args.iter().take_while(|a| *a != "--").find(|a| info.contains(&a.as_str())) {
+        return Some(not_interactive(tool, flag));
+    }
     if tool == "codex" {
         return codex_refusal(args, &[]);
     }
@@ -553,6 +558,14 @@ mod tests {
             &["exec", "hi"], &["e", "hi"], &["-m", "o3", "exec", "hi"], &["--model=o3", "review"], &["agents"]] {
             assert!(refusal("codex", &words(no)).is_some(), "{no:?}");
         }
+        for no in [&["--version"][..], &["-V"], &["--help"], &["-h"], &["tcp-tunnel"]] {
+            assert!(refusal("codex", &words(no)).is_some(), "{no:?}");
+        }
+        assert_eq!(refusal("codex", &words(&["--", "--version"])), None);
+        for no in [&["--version"][..], &["-v"], &["--help"], &["-h"]] {
+            assert!(refusal("claude", &words(no)).is_some(), "{no:?}");
+        }
+        assert_eq!(refusal("claude", &words(&["--", "--help"])), None);
         // The installed Codex's own list catches a command this build has never heard of.
         assert!(codex_refusal(&words(&["newthing"]), &["newthing".to_string()]).is_some());
         assert_eq!(codex_refusal(&words(&["fork"]), &["fork".to_string()]), None);

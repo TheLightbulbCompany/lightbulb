@@ -60,7 +60,8 @@ export function openHeldSession(holderId: string): Promise<unknown> {
 
 /** "Claude Code · ~/code/site" for a held session. */
 export function heldLabel(session: HeldSession): string {
-  const program = session.argv.map((a) => a.split("/").pop()).find((name) => name === "claude" || name === "codex");
+  // The path, not the file name: Claude Code's binary is `…/claude/versions/<number>`.
+  const has = (name: string) => session.argv.some((a) => a.includes(name));
   const folder = session.cwd.replace(/^\/Users\/[^/]+(?=\/|$)/, "~");
-  return `${program === "codex" ? "Codex" : program === "claude" ? "Claude Code" : "Session"} · ${folder}`;
+  return `${has("codex") ? "Codex" : has("claude") ? "Claude Code" : "Session"} · ${folder}`;
 }

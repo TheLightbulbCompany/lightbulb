@@ -239,6 +239,9 @@ export function NewSessionView({ sessions, onEvent, onOpenSession, onClose }: {
         {blocked === "sharing"
           ? <p role="status">Session sharing is off on {macName}. Turn it on in <Link className="underline underline-offset-4" href="/settings">Settings → Native terminal sessions</Link>.</p>
           : blocked && <p role="status">{blocked}</p>}
+        {pending?.phase === "unknown" && <Button variant="link" size="sm" className="h-auto p-0"
+          onClick={() => { try { if (scope) localStorage.removeItem(pendingKey(scope)); } catch { /* storage off */ } setPending(null); }}>
+          Dismiss and start another</Button>}
         {busy && <p role="status">{pending?.phase === "unknown" ? pending.error
           : pending?.phase === "opened" ? (localMac ? "Opened in its own window. Waiting for the session…" : `Opened in Terminal on ${where}. Waiting for the session…`) : `Starting on ${where}…`}</p>}
         {pending?.phase === "failed" && <p role="alert" className="text-err">{pending.error}</p>}

@@ -1,0 +1,6 @@
+# Schemathesis builds its coverage-phase cases for every API operation during pytest
+# COLLECTION, before any test runs: 30-55 min of every Backend CI run (measured
+# 2026-10-03). Random fuzzing (max_examples per test) still runs; only the
+# deterministic boundary cases are dropped. Owner call 2026-10-03.
+[phases.coverage]
+enabled = false

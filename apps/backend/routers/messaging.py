@@ -26,7 +26,15 @@ from core.repositories import container_repo, messaging_repo
 from core.repositories.paperclip_repo import PaperclipRepo
 from core.services import activity, chat_gate
 from core.services import messaging as service
-from core.services import hook_grants, hosted_mcp, link_preview, local_sessions, native_session_tools, session_pickup
+from core.services import (
+    hook_grants,
+    hosted_mcp,
+    link_preview,
+    local_sessions,
+    native_session_tools,
+    session_pickup,
+    session_resume,
+)
 from core.services import local_session_grants
 from core.services import container_rpc, runtime_transport, voice_calls
 from core.services.live_events import get_live_event_publisher, publish_room_activity
@@ -298,6 +306,21 @@ async def report_local_session_pickup(
     session_id: str, pickup_id: str, body: session_pickup.PickupOutcome, auth: AuthContext = Depends(get_current_user)
 ):
     await session_pickup.report_outcome(auth, session_id, pickup_id, body)
+
+
+@router.post("/messaging/sessions/{session_id}/resume", response_model=local_sessions.LocalSession)
+async def resume_local_session(
+    session_id: str, body: session_resume.ResumeRequest, auth: AuthContext = Depends(get_current_user)
+):
+    """Resume and send: the owner, or someone who could send to it when it ended. It starts on the
+    owner's Mac at that Mac's next heartbeat, within 24 hours."""
+    return await session_resume.request_resume(auth, session_id, body)
+
+
+@router.delete("/messaging/sessions/{session_id}/resume-allowed/{user_id}", response_model=local_sessions.LocalSession)
+async def revoke_local_session_resume(session_id: str, user_id: str, auth: AuthContext = Depends(get_current_user)):
+    """The owner takes one person's resume back."""
+    return await session_resume.revoke_resume(auth, session_id, user_id)
 
 
 @router.post("/messaging/sessions/{session_id}/share-links", response_model=local_sessions.ShareLink, status_code=201)

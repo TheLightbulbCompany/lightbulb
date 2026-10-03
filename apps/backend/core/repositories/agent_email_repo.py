@@ -15,8 +15,9 @@ Prefix-convention table (``core.dynamodb.get_table``), matching
 from boto3.dynamodb.conditions import Key
 from botocore.exceptions import ClientError
 
-from core.repositories import company_slug_repo
+from core.config import settings
 from core.dynamodb import get_table, run_in_thread, utc_now_iso
+from core.repositories import company_slug_repo
 
 
 def _get_table():
@@ -98,9 +99,12 @@ async def is_team_address(address: str) -> tuple[str, str] | None:
     """``(owner_id, slug)`` when ``address`` is ``agents@{slug}.{domain}`` for a
     reserved company slug; no per-agent row exists for it."""
     local, _, host = normalize(address).partition("@")
-    if local != "agents" or "." not in host:
+    domain = (settings.AGENT_EMAIL_DOMAIN or "").strip().lower()
+    if local != "agents" or not domain or "." not in host:
         return None
     slug = host.split(".", 1)[0]
+    if host != f"{slug}.{domain}":
+        return None
     row = await company_slug_repo.get_by_slug(slug)
     owner_id = row.get("owner_id") if row else None
     if not owner_id or str(owner_id).startswith(company_slug_repo.PENDING_PREFIX):

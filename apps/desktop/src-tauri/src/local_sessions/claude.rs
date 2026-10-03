@@ -78,10 +78,23 @@ pub(super) async fn capture(home: &Path, program: &Path, row: &Value) -> Result<
         ],
     )
     .await?;
-    let observed = match transcript
-        .as_ref()
-        .map(|path| verify_current_generation(path, conversation, since.trim()))
-    {
+    // Up to 2 MiB of synchronous reads each, for the generation check and the title:
+    // off the async runtime's threads.
+    let (generation, title) = match transcript.clone() {
+        Some(path) => {
+            let (session, since) = (conversation.to_owned(), since.trim().to_owned());
+            tokio::task::spawn_blocking(move || {
+                (
+                    Some(verify_current_generation(&path, &session, &since)),
+                    latest_title(&path),
+                )
+            })
+            .await
+            .map_err(|_| "transcript unavailable")?
+        }
+        None => (None, None),
+    };
+    let observed = match generation {
         Some(Ok(runtime)) => Ok(runtime),
         Some(Err(reason)) if reason == "unsupported-version" => Err(reason),
         // The transcript cannot say: none yet (a fresh or /clear'ed session writes it
@@ -142,10 +155,7 @@ pub(super) async fn capture(home: &Path, program: &Path, row: &Value) -> Result<
     if process(pid)? != execution {
         return Err("process changed during discovery".into());
     }
-    let title = transcript
-        .as_ref()
-        .and_then(|path| latest_title(path))
-        .or_else(|| row["name"].as_str().map(|n| n.chars().take(120).collect()));
+    let title = title.or_else(|| row["name"].as_str().map(|n| n.chars().take(120).collect()));
     let cwd_name = basename(row["cwd"].as_str());
     Ok(NativeSession {
         provider: "claude".into(),

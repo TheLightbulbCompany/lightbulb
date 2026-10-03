@@ -134,10 +134,17 @@ impl Host {
             .ok_or("missing local session")?
             .native
             .clone();
-        let observed = match workspace::session_root(&native, &self.home).await {
-            Ok(cwd) => workspace::scan(&cwd, &self.home).await,
-            Err(error) => Err(error),
-        };
+        // lsof, git and bounded file reads: its own task, so they never hold the runtime
+        // thread the connection loop and discovery share.
+        let home = self.home.clone();
+        let observed = tokio::spawn(async move {
+            match workspace::session_root(&native, &home).await {
+                Ok(cwd) => workspace::scan(&cwd, &home).await,
+                Err(error) => Err(error),
+            }
+        })
+        .await
+        .map_err(|_| "workspace scan stopped")?;
         let root = observed.as_ref().ok().map(|(root, _)| root.clone());
         let keys: Vec<_> = self
             .mirrors
@@ -961,7 +968,11 @@ impl Host {
                 delay = reconnect_delay(delay, lived);
             }
         };
-        tokio::select! {_ = discovery=>{},_ = network=>{}}
+        // Its own task: a slow pass (transcript reads, lsof) must never hold up the
+        // connection loop that reads the relay's answers.
+        let mut discovery = tokio::spawn(discovery);
+        tokio::select! {_ = &mut discovery=>{},_ = network=>{}}
+        discovery.abort();
     }
 
     pub(super) async fn supervise(
@@ -1043,7 +1054,10 @@ impl Host {
             }
         }
         self.ended_pending.extend(unreported);
+        let mut laps = Laps::new();
+        let mut arm = "start";
         loop {
+            laps.next(arm);
             if self.stop.load(Ordering::SeqCst) {
                 return Ok(());
             }
@@ -1065,12 +1079,7 @@ impl Host {
                     self.workspace_key = Some(key.clone());
                 }
             }
-            if pending_rpc
-                .as_ref()
-                .is_some_and(|rpc| rpc.sent().elapsed() > Duration::from_secs(10))
-            {
-                return Err("session acknowledgment timed out".into());
-            }
+            laps.lap("workspace scan");
             if anchor.as_ref().is_some_and(|a| a.now().is_none()) {
                 anchor = None;
             }
@@ -1089,6 +1098,7 @@ impl Host {
                     .await?;
                 }
             }
+            laps.lap("deferred command");
             if pending_rpc.is_none() {
                 if let Some(key) = registration_due_with_recovery(
                     &self.mirrors,
@@ -1136,6 +1146,7 @@ impl Host {
                     }
                 }
             }
+            laps.lap("registration or heartbeat");
             {
                 let keys: Vec<_> = self.mirrors.keys().cloned().collect();
                 for key in &keys {
@@ -1175,8 +1186,11 @@ impl Host {
                     }
                 }
             }
+            laps.lap("uploads");
+            let deadline = pending_rpc.as_ref().map(|rpc| rpc.sent() + Duration::from_secs(10));
             tokio::select! {
                 _ = tick.tick() => {
+                    arm = "tick";
                     self.liveness_tick();
                     if last_recovery_scan.elapsed() >= Duration::from_secs(1) {
                         last_recovery_scan = Instant::now();
@@ -1205,6 +1219,7 @@ impl Host {
                         None => std::future::pending().await,
                     }
                 } => {
+                    arm = "hook";
                     match event {
                         Some(event) => {
                             if let Some(key) = self.apply_hook(&event)? {
@@ -1217,14 +1232,16 @@ impl Host {
                     }
                 },
                 update = updates.recv() => {
+                    arm = "discovery update";
                     let Some(update) = update else {return Err("discovery stopped".into());};
                     for key in self.observe(update)? {
                         registered.remove(&key);
                         recovering_ended.remove(&key);
                     }
                 },
-                incoming = socket.next() => {
-                    let message = incoming.ok_or("session socket closed")?.map_err(|_| "session socket failed")?;
+                incoming = next_or_deadline(socket, deadline) => {
+                    arm = "relay frame";
+                    let message = incoming?.ok_or("session socket closed")?.map_err(|_| "session socket failed")?;
                     let Message::Text(text) = message else {
                         if matches!(message, Message::Close(_)) {return Err("session socket closed".into());}
                         if let Message::Ping(bytes) = message {socket.send(Message::Pong(bytes)).await.map_err(|_| "session socket failed")?;}
@@ -1296,10 +1313,7 @@ impl Host {
                                 registered.insert(key.clone());
                             }
                             self.finish_deferred_end(&key)?;
-                            let rtt = sent.elapsed().as_secs_f64();
-                            deadline_now(server,0.0,rtt,SystemTime::now().duration_since(wall).ok().map(|d|d.as_secs_f64()))
-                                .filter(|_|rtt <= 10.0).ok_or("stale time acknowledgment")?;
-                            anchor = Some(ClockAnchor {server,round_trip:rtt,at:Instant::now(),wall:SystemTime::now()});
+                            if let Some(fresh) = ack_anchor(server, sent, wall) {anchor = Some(fresh);}
                             if !body["reconcile"].is_null() {
                                 let request = body["reconcile"]["requestId"].as_str().ok_or("invalid reconciliation")?;
                                 let generation = body["reconcile"]["generation"].as_str().ok_or("invalid reconciliation")?;
@@ -1312,10 +1326,7 @@ impl Host {
                             let Rpc::Heartbeat{sent,wall} = rpc else {return Err("mismatched session acknowledgment".into());};
                             super::snapshot::offer(&body["pickup"], &self.mirrors);
                             let server = body["serverTime"].as_u64().ok_or("missing server time")?;
-                            let rtt = sent.elapsed().as_secs_f64();
-                            deadline_now(server,0.0,rtt,SystemTime::now().duration_since(wall).ok().map(|d|d.as_secs_f64()))
-                                .filter(|_|rtt <= 10.0).ok_or("stale time acknowledgment")?;
-                            anchor = Some(ClockAnchor {server,round_trip:rtt,at:Instant::now(),wall:SystemTime::now()});
+                            if let Some(fresh) = ack_anchor(server, sent, wall) {anchor = Some(fresh);}
                             // A session the relay does not hold is one this Mac has to
                             // register again; it is never heartbeated back into existence.
                             for rejected in body["rejected"].as_array().into_iter().flatten() {
@@ -2089,6 +2100,69 @@ fn quarantine(
     quarantined.insert(key.to_owned(), Instant::now());
     registered.remove(key);
     sent_batches.remove(key);
+}
+
+/// The next relay frame, or the in-flight request's ten seconds running out. Biased: a loop
+/// that overslept the deadline still reads an answer already in the socket buffer first.
+async fn next_or_deadline<S: futures_util::Stream + Unpin>(
+    socket: &mut S,
+    deadline: Option<Instant>,
+) -> Result<Option<S::Item>> {
+    tokio::select! {
+        biased;
+        incoming = socket.next() => Ok(incoming),
+        _ = tokio::time::sleep_until(deadline.unwrap_or_else(Instant::now).into()), if deadline.is_some() => {
+            Err("session acknowledgment timed out".into())
+        }
+    }
+}
+
+/// The clock anchor an acknowledgment proves. A round trip over ten seconds (a stalled loop
+/// read it late) or clocks that disagree prove nothing: the ACK still counts, and the
+/// previous anchor stays.
+fn ack_anchor(server: u64, sent: Instant, wall: SystemTime) -> Option<ClockAnchor> {
+    let rtt = sent.elapsed().as_secs_f64();
+    let wall_elapsed = SystemTime::now().duration_since(wall).ok().map(|d| d.as_secs_f64());
+    if deadline_now(server, 0.0, rtt, wall_elapsed).filter(|_| rtt <= 10.0).is_none() {
+        relay_log(&format!("stale time acknowledgment after {rtt:.1}s; clock anchor kept"));
+        return None;
+    }
+    Some(ClockAnchor { server, round_trip: rtt, at: Instant::now(), wall: SystemTime::now() })
+}
+
+/// Times one connection-loop iteration. The loop reads the socket only in its `select!`,
+/// so an iteration over a second delays every answer by as much; the log names its slowest step.
+struct Laps {
+    iteration: Instant,
+    lap: Instant,
+    slowest: (&'static str, Duration),
+}
+impl Laps {
+    fn new() -> Self {
+        let now = Instant::now();
+        Self { iteration: now, lap: now, slowest: ("", Duration::ZERO) }
+    }
+    fn lap(&mut self, step: &'static str) {
+        let took = self.lap.elapsed();
+        if took > self.slowest.1 {
+            self.slowest = (step, took);
+        }
+        self.lap = Instant::now();
+    }
+    /// Closes the iteration whose `select!` ran `arm`, then starts the next one.
+    fn next(&mut self, arm: &'static str) {
+        self.lap(arm);
+        let took = self.iteration.elapsed();
+        if took > Duration::from_secs(1) {
+            relay_log(&format!(
+                "connection loop iteration took {:.1}s; slowest step: {} ({:.1}s)",
+                took.as_secs_f64(),
+                self.slowest.0,
+                self.slowest.1.as_secs_f64()
+            ));
+        }
+        *self = Self::new();
+    }
 }
 
 async fn send(socket: &mut Socket, body: &Value) -> Result<()> {
@@ -4274,6 +4348,30 @@ mod tests {
             quarantined.insert("stale".to_string(), expired);
             assert!(!quarantine_active(&quarantined, "stale"));
         }
+    }
+    #[tokio::test]
+    async fn local_sessions_an_answer_already_buffered_wins_over_an_overslept_deadline() {
+        // The loop was busy past the deadline; the answer arrived before it.
+        let overslept = Some(Instant::now() - Duration::from_secs(1));
+        let mut answered = futures_util::stream::iter(["ack"]);
+        assert_eq!(next_or_deadline(&mut answered, overslept).await, Ok(Some("ack")));
+        let mut silent = futures_util::stream::pending::<&str>();
+        assert!(next_or_deadline(&mut silent, overslept).await.is_err());
+        // Nothing in flight: no deadline at all.
+        let idle = tokio::time::timeout(Duration::from_millis(50), next_or_deadline(&mut silent, None));
+        assert!(idle.await.is_err());
+    }
+    #[test]
+    fn local_sessions_a_late_acknowledgment_counts_but_keeps_the_previous_clock_anchor() {
+        let server = epoch_secs();
+        let late = ack_anchor(
+            server,
+            Instant::now() - Duration::from_secs(11),
+            SystemTime::now() - Duration::from_secs(11),
+        );
+        assert!(late.is_none(), "a late ACK must not move the anchor");
+        let prompt = ack_anchor(server, Instant::now(), SystemTime::now()).expect("a prompt ACK anchors");
+        assert_eq!(prompt.server, server);
     }
     #[test]
     fn local_sessions_reconnect_delay_backs_off_unless_the_connection_lived() {

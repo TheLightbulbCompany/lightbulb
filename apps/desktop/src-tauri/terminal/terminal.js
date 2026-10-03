@@ -34,7 +34,7 @@ term.attachCustomKeyEventHandler((e) => {
 });
 term.onData((d) => send(INPUT, enc.encode(d)));
 term.onBinary((d) => send(INPUT, Uint8Array.from(d, (c) => c.charCodeAt(0))));
-ws.onopen = () => { resize(); term.focus(); };
+ws.onopen = () => { resize(); };
 const end = document.getElementById("end");
 let pending = new Uint8Array();
 ws.onmessage = (event) => {

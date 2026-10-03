@@ -1,5 +1,6 @@
 """Invites to the team address: the parser, and the member/stranger split in handle_team_mail."""
 
+import time
 from datetime import datetime, timezone
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -493,6 +494,7 @@ def bots(room, monkeypatch):
     """Recall faked at the adapter; the real booking path."""
     b = SimpleNamespace(
         create=AsyncMock(return_value="bot-1"),
+        find=AsyncMock(return_value=None),
         reschedule=AsyncMock(),
         leave=AsyncMock(),
         metric=[],
@@ -500,6 +502,7 @@ def bots(room, monkeypatch):
     monkeypatch.setattr(meeting_invites, "_sync_bot", _SYNC_BOT)
     monkeypatch.setattr(meeting_invites.settings, "RECALL_API_KEY", "rk")
     monkeypatch.setattr(meeting_invites.meeting_bots, "create", b.create)
+    monkeypatch.setattr(meeting_invites.meeting_bots, "find_for_room", b.find)
     monkeypatch.setattr(meeting_invites.meeting_bots, "reschedule", b.reschedule)
     monkeypatch.setattr(meeting_invites.meeting_bots, "leave", b.leave)
     monkeypatch.setattr(meeting_invites.clerk_admin, "get_organization", AsyncMock(return_value={"name": "Acme"}))
@@ -519,6 +522,7 @@ async def test_an_invite_books_one_bot(room, bots):
     meeting = room.state["meta"]["meeting"]
     assert meeting["status"] == "bot_created" and meeting["recallBotId"] == "bot-1"
     assert meeting["ticketNonce"] == kw["meeting"]["ticketNonce"]  # persisted before the POST
+    bots.find.assert_not_awaited()  # a nonce claimed just now has no bot to adopt: no List Bots call
     await meeting_invites.handle_team_mail("org_1", _mail(GOOGLE), TEAM)  # SES retry / resend
     bots.create.assert_awaited_once()
 
@@ -1275,5 +1279,56 @@ async def test_a_booking_failure_whose_occurrence_passed_is_a_new_booking(room, 
     assert await meeting_invites.handle_team_mail("org_1", _mail(SERIES), TEAM) == "meeting_scheduled"
     booked = bots.create.await_args.kwargs["meeting"]
     assert booked["startAt"] == _epoch(2026, 11, 14, 15, 0) and booked["ticketNonce"] != "nonce-1"
+    bots.find.assert_not_awaited()  # a nonce claimed just now: no lookup, a fresh create
     meeting = room.state["meta"]["meeting"]
     assert meeting["status"] == "bot_created" and "botError" not in meeting
+
+
+async def test_a_lost_create_answer_is_adopted_not_booked_twice(room, bots):
+    """Recall booked the bot but the answer timed out: the redelivery finds it by its nonce."""
+    bots.create.side_effect = meeting_invites.meeting_bots.RecallError("timeout")
+    await meeting_invites.handle_team_mail("org_1", _mail(GOOGLE), TEAM)
+    nonce = room.state["meta"]["meeting"]["ticketNonce"]
+    bots.find.return_value = "bot-1"
+    await meeting_invites.handle_team_mail("org_1", _mail(GOOGLE), TEAM)
+    bots.create.assert_awaited_once()
+    assert bots.find.await_args.args == (room.state["meta"]["roomId"], nonce)
+    meeting = room.state["meta"]["meeting"]
+    assert meeting["recallBotId"] == "bot-1" and meeting["status"] == "bot_created" and "botError" not in meeting
+
+
+async def test_an_abandoned_claim_is_taken_over_once_past_30s(room, bots):
+    """The process died between the claim and the bot write: a young claim waits, an old one is
+    adopted if Recall has the bot, else booked under the same nonce."""
+    await meeting_invites.handle_team_mail("org_1", _mail(GOOGLE), TEAM)
+    meeting = room.state["meta"]["meeting"]
+    nonce = meeting.pop("ticketNonce")
+    room.state["meta"]["meeting"] = {
+        **{k: v for k, v in meeting.items() if k != "recallBotId"},
+        "status": "scheduled",
+        "ticketNonce": nonce,
+        "botClaimAt": int(time.time()) - 5,
+    }
+    await meeting_invites.handle_team_mail("org_1", _mail(GOOGLE), TEAM)
+    assert bots.create.await_count == 1 and "recallBotId" not in room.state["meta"]["meeting"]
+    room.state["meta"]["meeting"]["botClaimAt"] = int(time.time()) - 31
+    bots.create.return_value = "bot-2"
+    await meeting_invites.handle_team_mail("org_1", _mail(GOOGLE), TEAM)
+    await meeting_invites.handle_team_mail("org_1", _mail(GOOGLE), TEAM)
+    assert bots.create.await_count == 2 and bots.create.await_args.kwargs["meeting"]["ticketNonce"] == nonce
+    assert room.state["meta"]["meeting"]["recallBotId"] == "bot-2"
+
+
+async def test_a_same_occurrence_booking_retry_adopts_the_bot_its_kept_nonce_booked(room, bots, now):
+    _series_meeting(room, "bot_failed")
+    for key in ("recallBotId", "lastBotStatus", "inCallAt", "transcriptAttachedAt", "notesRunId", "notesMailedAt"):
+        del room.state["meta"]["meeting"][key]
+    room.state["meta"]["meeting"].update(ticketNonce="nonce-1", botClaimAt=1, botError="timeout")
+    now["t"] = _epoch(2026, 11, 7, 12, 0)
+    bots.find.return_value = "bot-9"  # the timed-out create did book it
+    await meeting_invites.advance("r")
+    bots.find.assert_awaited_once_with("r", "nonce-1")
+    bots.create.assert_not_awaited()
+    meeting = room.state["meta"]["meeting"]
+    assert meeting["recallBotId"] == "bot-9" and meeting["status"] == "bot_created"
+    assert meeting["startAt"] == _epoch(2026, 11, 7, 15, 0) and "botError" not in meeting

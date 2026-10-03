@@ -339,7 +339,7 @@ async def _patch_meeting(room_id: str, fields: dict, drop: tuple = (), when=None
 
 
 _BOT_KEYS = ("recallBotId", "ticketNonce", "botClaimAt", "botError")
-_CLAIM_S = 60  # a claimed-but-unwritten booking younger than this is another delivery's POST in flight
+_CLAIM_S = 30  # a claimed-but-unwritten booking younger than this may be another delivery's POST in flight
 
 
 def _title(meeting: dict) -> str:
@@ -426,20 +426,26 @@ async def _sync_bot(owner_id: str, room_id: str, meeting: dict, prior: dict | No
             )
             return await _patch_meeting(room_id, {"status": "bot_failed", "botError": code})
         meeting = await _patch_meeting(room_id, {"status": "scheduled"}, drop=_BOT_KEYS)
-    # One booking per meeting: the nonce is claimed with a conditional write. A delivery that loses
-    # the claim POSTs only to retry a failed booking or to recover a claim whose POST never reported
-    # back; the stored nonce rides as Recall's Idempotency-Key either way.
+    # One booking per meeting: the nonce is claimed with a conditional write and rides in the bot's
+    # metadata. Recall does not deduplicate a create, so a create under a nonce an EARLIER attempt
+    # claimed is preceded by a lookup that adopts the bot a lost answer or a dead process left
+    # behind. A nonce claimed just now has no bot, and List Bots is 60/min for the whole workspace.
     nonce, now = secrets.token_urlsafe(32), int(time.time())
+    bot_id = None
     if not await messaging_repo.set_meeting_field_if_absent(room_id, "ticketNonce", nonce, {"botClaimAt": now}):
         stored = ((await messaging_repo.get_room(room_id)) or {}).get("meeting") or {}
         if stored.get("recallBotId"):
             return stored
-        if stored.get("status") != "bot_failed" and now - int(stored.get("botClaimAt", 0)) < _CLAIM_S:
-            return stored  # the claimant's POST is in flight; it writes the bot
         nonce = stored.get("ticketNonce") or nonce
-    org = await clerk_admin.get_organization(owner_id) or {}
+        try:
+            bot_id = await meeting_bots.find_for_room(room_id, nonce)
+        except Exception as exc:  # noqa: BLE001 -- a bot may stand under this nonce: keep it
+            return await _bot_failed(owner_id, room_id, meeting, exc, "book", keep=True)
+        if not bot_id and stored.get("status") != "bot_failed" and now - int(stored.get("botClaimAt", 0)) < _CLAIM_S:
+            return stored  # a claim this young may be another delivery's POST; past it, the lease says it died
+    org = {} if bot_id else await clerk_admin.get_organization(owner_id) or {}
     try:
-        bot_id = await meeting_bots.create(
+        bot_id = bot_id or await meeting_bots.create(
             room_id=room_id, meeting={**meeting, "ticketNonce": nonce}, company=org.get("name") or "Your team"
         )
     except meeting_bots.RecallError as exc:

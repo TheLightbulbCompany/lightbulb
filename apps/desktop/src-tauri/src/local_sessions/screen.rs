@@ -44,18 +44,23 @@ static DIR: Mutex<Option<PathBuf>> = Mutex::new(None);
 static OUT: Mutex<Option<mpsc::Sender<Value>>> = Mutex::new(None);
 static RELAYS: Mutex<BTreeMap<String, Arc<Ctl>>> = Mutex::new(BTreeMap::new());
 
-struct Ctl {
+pub(super) struct Ctl {
     since: AtomicU64,
+    /// The epoch `pump` stamps on this relay's frames; 0 until it starts. Remote input must
+    /// carry it (`remote_input`): typing aimed at an older screen is dropped.
+    pub(super) epoch: AtomicU64,
+    /// This relay's one `type` client to the holder (`remote_input`); it closes when we stop.
+    pub(super) typist: Mutex<Option<std::sync::mpsc::SyncSender<Vec<u8>>>>,
     snapshot: AtomicBool,
-    stop: AtomicBool,
+    pub(super) stop: AtomicBool,
     until: Mutex<Instant>,
     /// Absence from `watching` does not stop the relay before this (a nudge sets it).
     keep: Mutex<Instant>,
 }
 
 impl Ctl {
-    fn new(since: u64) -> Self {
-        Self { since: AtomicU64::new(since), snapshot: AtomicBool::new(false), stop: AtomicBool::new(false),
+    pub(super) fn new(since: u64) -> Self {
+        Self { since: AtomicU64::new(since), epoch: AtomicU64::new(0), typist: Mutex::new(None), snapshot: AtomicBool::new(false), stop: AtomicBool::new(false),
             until: Mutex::new(Instant::now() + LEASE), keep: Mutex::new(Instant::now()) }
     }
     fn renew(&self) {
@@ -72,7 +77,7 @@ impl Ctl {
     fn kept(&self) -> bool {
         self.keep.lock().is_ok_and(|keep| Instant::now() < *keep)
     }
-    fn stopped(&self) -> bool {
+    pub(super) fn stopped(&self) -> bool {
         self.stop.load(SeqCst) || self.until.lock().map_or(true, |until| Instant::now() >= *until)
     }
 }
@@ -197,8 +202,16 @@ pub(super) fn nudge(body: &Value) {
     nudge_relay(&mut relays, sid, spawn);
 }
 
+/// The running relay of a session this Mac holds at `body`'s generation: what remote input
+/// may reach. None when nobody watches it (nobody types blind), or it is another generation.
+pub(super) fn live_relay(body: &Value) -> Option<(String, Arc<Ctl>)> {
+    let sid = LIVE.lock().ok().and_then(|live| nudged(body, |sid| live.get(sid).map(|l| l.generation.clone())))?;
+    let ctl = RELAYS.lock().ok()?.get(&sid).filter(|ctl| !ctl.stopped())?.clone();
+    Some((sid, ctl))
+}
+
 /// The nudged session id, when `generation_of` (the live mirrors) knows it at that generation.
-fn nudged(body: &Value, generation_of: impl Fn(&str) -> Option<String>) -> Option<String> {
+pub(super) fn nudged(body: &Value, generation_of: impl Fn(&str) -> Option<String>) -> Option<String> {
     let sid = body["sessionId"].as_str().filter(|s| uuid::Uuid::parse_str(s).is_ok())?;
     (generation_of(sid)? == body["generation"].as_str()?).then(|| sid.to_owned())
 }
@@ -285,6 +298,7 @@ impl Out<'_> {
 fn pump(frames: &Receiver<(u8, Vec<u8>)>, to_holder: &mut impl Write, ids: (&str, &str), mut size: (u16, u16),
         ctl: &Ctl, send: &dyn Fn(Value) -> bool) -> Result<(), String> {
     let epoch = SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_millis() as u64);
+    ctl.epoch.store(epoch, SeqCst);
     let mut out = Out { ids, epoch, seq: 0, ctl, send };
     let mut pending: Vec<u8> = Vec::new();
     let mut held_since: Option<Instant> = None;
@@ -500,7 +514,7 @@ mod tests {
     fn a_session_maps_to_the_holder_that_is_its_parent_or_that_was_started_for_it() {
         let holder = |id: &str, provider_pid: u32, argv: &[&str]| HolderInfo {
             id: id.into(), socket: PathBuf::from(format!("/x/{id}.sock")), pid: 1, provider_pid,
-            argv: argv.iter().map(|s| s.to_string()).collect(), cwd: "/w".into(), watch: true };
+            argv: argv.iter().map(|s| s.to_string()).collect(), cwd: "/w".into(), watch: true, type_input: true };
         let holders = [holder("aaaa0001", 500, &["/claude"]),
             holder("aaaa0002", 600, &["/bin/sh", "-c", "x", "lightbulb-start", "start-9", "/scope", "/codex"])];
         let claude = Process { pid: 500, birth_micros: 42, executable: "/claude".into() };

@@ -36,9 +36,9 @@ def _fresh(request, monkeypatch):
 
 
 async def capable(transport, sid, remote_input=True):
-    frame = heartbeat(sid)
-    if remote_input:
-        frame["remoteInput"] = True
+    frame = heartbeat(sid)  # the golden heartbeat advertises remoteInput
+    if not remote_input:
+        frame.pop("remoteInput")
     await relay(transport).handle_message("conn-1", frame)
 
 

@@ -2,14 +2,14 @@
 
 use std::io::{Error, ErrorKind, Read, Result};
 
-/// Client → holder: `{"role":"interactive"|"watch"|"recorder"}`. Holder → client: session facts
-/// (`"watch": true` when it serves watch clients).
+/// Client → holder: `{"role":"interactive"|"watch"|"type"|"recorder"}`. Holder → client: session
+/// facts (`"watch": true` when it serves watch clients, `"type": true` when it takes `type` ones).
 pub const HELLO: u8 = 1;
 /// Holder → client: `u64 BE offset` of the first byte, then provider output.
 pub const OUTPUT: u8 = 2;
-/// Interactive client → holder: bytes for the pty.
+/// Interactive or `type` client → holder: bytes for the pty.
 pub const INPUT: u8 = 3;
-/// Interactive client → holder, and holder → watch clients after a size change:
+/// Interactive client → holder (a `type` client's is ignored), and holder → watch clients after a size change:
 /// `u16 BE cols`, `u16 BE rows`.
 pub const RESIZE: u8 = 4;
 /// Holder → client: the provider exited, `{"status":"…"}`.

@@ -1,5 +1,6 @@
 //! The holder process: one pty, one provider, a terminal model, an offset-addressed output log,
-//! and a unix socket. One interactive client at a time; any number of output-only clients.
+//! and a unix socket. One interactive client at a time; any number of output-only clients, and
+//! input-only `type` clients (a remote, admitted teammate's keystrokes relayed by the app).
 
 use super::model::{is_probe_reply, Model};
 use super::protocol::*;
@@ -211,6 +212,7 @@ pub fn run_with_env(socket: &Path, argv: &[String], cwd: &Path, env: Vec<(String
     let mut clients: HashMap<u64, Client> = HashMap::new();
     let mut interactive: Option<u64> = None;
     let mut watchers: HashSet<u64> = HashSet::new();
+    let mut typists: HashSet<u64> = HashSet::new();
     let mut exited: Option<(String, Instant)> = None;
 
     loop {
@@ -250,7 +252,7 @@ pub fn run_with_env(socket: &Path, argv: &[String], cwd: &Path, env: Vec<(String
                 let (rows, cols) = model.size();
                 let facts = serde_json::json!({"protocol": 1, "pid": std::process::id(),
                     "providerPid": provider_pid, "argv": argv, "cwd": cwd, "rows": rows, "cols": cols,
-                    "watch": true});
+                    "watch": true, "type": true});
                 if !client.send(encode(HELLO, facts.to_string().as_bytes())) {
                     continue;
                 }
@@ -277,10 +279,17 @@ pub fn run_with_env(socket: &Path, argv: &[String], cwd: &Path, env: Vec<(String
                         continue;
                     }
                     watchers.insert(id);
+                } else if role["role"] == "type" {
+                    // Input only: it gets no output and never resizes (the window or CLI owns the
+                    // size). Dropping its Client still delivers the queued HELLO.
+                    typists.insert(id);
+                    continue;
                 }
                 clients.insert(id, client);
             }
-            Event::Frame(id, INPUT, payload) if interactive == Some(id) && !is_probe_reply(&payload) => {
+            Event::Frame(id, INPUT, payload)
+                if (interactive == Some(id) || typists.contains(&id)) && !is_probe_reply(&payload) =>
+            {
                 let _ = pty.write_all(&payload);
             }
             Event::Frame(id, RESIZE, payload) if interactive == Some(id) && payload.len() == 4 => {
@@ -312,6 +321,7 @@ pub fn run_with_env(socket: &Path, argv: &[String], cwd: &Path, env: Vec<(String
                 pending.remove(&id);
                 clients.remove(&id);
                 watchers.remove(&id);
+                typists.remove(&id);
                 if interactive == Some(id) {
                     interactive = None;
                 }

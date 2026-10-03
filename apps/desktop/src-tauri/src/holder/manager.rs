@@ -20,6 +20,8 @@ pub struct HolderInfo {
     pub argv: Vec<String>,
     pub cwd: PathBuf,
     pub watch: bool,
+    /// It takes input-only `type` clients (remote typing).
+    pub type_input: bool,
 }
 
 impl HolderInfo {
@@ -143,5 +145,6 @@ pub fn hello(socket: &Path) -> Option<HolderInfo> {
         argv: serde_json::from_value(v["argv"].clone()).ok()?,
         cwd: PathBuf::from(v["cwd"].as_str()?),
         watch: v["watch"].as_bool().unwrap_or(false),
+        type_input: v["type"].as_bool().unwrap_or(false),
     })
 }

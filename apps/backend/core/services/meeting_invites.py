@@ -224,7 +224,9 @@ async def _patch_meeting(room_id: str, meeting: dict) -> None:
         try:
             await messaging_repo.patch_room_meta(room_id, {"meeting": meeting})
             return
-        except ClientError:
+        except ClientError as exc:
+            if not messaging_repo._is_cancelled(exc):
+                raise  # a throttle or access error: SES retries the whole mail
             if attempt == 2:
                 logger.warning("meeting room %s: META patch lost the revision race twice", room_id)
 
@@ -279,6 +281,9 @@ async def handle_team_mail(owner_id: str, payload, team: dict) -> str | None:
             if moved
             else f"Agents will join **{meeting['title']}** on {_when_text(invite.start)}."
         )
+    # A new room counts as coming from "scheduled", so a retry after the create replays its line;
+    # cancelled -> scheduled is a new key, so a same-sequence re-invite announces itself again.
+    prev_status = (current or {}).get("status", "scheduled")
     if current is None:
         await _create_room(owner_id, room_id, invite, creator, by_email, meeting)
         meta = await messaging_repo.get_room(room_id)
@@ -286,7 +291,9 @@ async def handle_team_mail(owner_id: str, payload, team: dict) -> str | None:
             return None  # no room came of it: the CEO reads it as mail
         current = meta.get("meeting")
     # Line first, then META: a failure between them retries into the same (replayed) line.
-    await _post_line(owner_id, room_id, f"meeting:{invite.uid}:{invite.sequence}:{start_at}:{meeting['status']}", text)
+    await _post_line(
+        owner_id, room_id, f"meeting:{invite.uid}:{invite.sequence}:{start_at}:{prev_status}>{meeting['status']}", text
+    )
     if meeting != current:
         await _patch_meeting(room_id, meeting)
     logger.info("meeting room %s: %s", room_id, meeting["status"])

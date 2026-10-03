@@ -336,3 +336,24 @@ async def test_a_racing_second_creator_falls_through_to_the_update(room):
     room.create.side_effect = lost_race
     assert await meeting_invites.handle_team_mail("org_1", _mail(GOOGLE), TEAM) == "meeting_scheduled"
     assert _lines(room) == ["Agents will join **Acme weekly sync** on Sat Oct 3, 3:00 PM EDT."]
+
+
+async def test_a_throttle_on_the_retry_propagates(room):
+    from botocore.exceptions import ClientError
+
+    await meeting_invites.handle_team_mail("org_1", _mail(GOOGLE), TEAM)
+    throttle = ClientError({"Error": {"Code": "ThrottlingException"}}, "TransactWriteItems")
+    room.patch.side_effect = [_cas_lost(), throttle]
+    moved = GOOGLE.replace("SEQUENCE:0", "SEQUENCE:1").replace("T150000", "T160000")
+    with pytest.raises(ClientError):
+        await meeting_invites.handle_team_mail("org_1", _mail(moved), TEAM)
+
+
+async def test_a_reinvite_after_cancel_announces_itself_again(room):
+    await meeting_invites.handle_team_mail("org_1", _mail(GOOGLE), TEAM)
+    cancel = GOOGLE.replace("METHOD:REQUEST", "METHOD:CANCEL")
+    assert await meeting_invites.handle_team_mail("org_1", _mail(cancel), TEAM) == "meeting_cancelled"
+    assert await meeting_invites.handle_team_mail("org_1", _mail(GOOGLE), TEAM) == "meeting_scheduled"
+    join = "Agents will join **Acme weekly sync** on Sat Oct 3, 3:00 PM EDT."
+    assert _lines(room) == [join, "This meeting was cancelled.", join]
+    assert room.state["meta"]["meeting"]["status"] == "scheduled"

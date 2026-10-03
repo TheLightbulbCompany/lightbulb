@@ -304,6 +304,10 @@ def _build_payload(ses, raw_mime):
     body = msg.get_body(preferencelist=("plain",))
     text = str(body.get_content()) if body is not None else ""
 
+    # A calendar invite rides as a text/calendar sibling of text/plain; the
+    # backend parses it. First one wins, capped so a huge part can't bloat the POST.
+    calendar = next((p.get_content()[:65536] for p in msg.walk() if p.get_content_type() == "text/calendar"), None)
+
     # Headers are forwarded verbatim for the inbox/threading, and are NOT an
     # authentication source: the backend's wake gate reads the identity fields
     # in `verdicts` below instead (see `_extract_verdicts`).
@@ -321,6 +325,7 @@ def _build_payload(ses, raw_mime):
         "headers": headers,
         "verdicts": _extract_verdicts(receipt, msg, mail),
         "attachments": _process_attachments(msg, message_id),
+        "calendar": calendar,
     }
 
 

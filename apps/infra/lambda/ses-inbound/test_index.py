@@ -207,6 +207,39 @@ def test_handler_posts_clean_payload_with_verdicts_and_attachment():
     assert put_kwargs["Body"] == b"hello world"
 
 
+def _calendar_mime(ics):
+    msg = email.message.EmailMessage()
+    msg["From"] = "jane@example.com"
+    msg["Subject"] = "Invitation"
+    msg.set_content("plain body")
+    msg.add_alternative(ics, subtype="calendar", params={"method": "REQUEST"})
+    return msg.as_bytes()
+
+
+def test_calendar_part_is_carried_as_text():
+    import index
+
+    raw = _calendar_mime("BEGIN:VCALENDAR\r\nMETHOD:REQUEST\r\nEND:VCALENDAR\r\n")
+    payload = index._build_payload(_ses_event()["Records"][0]["ses"], raw)
+    assert payload["calendar"].startswith("BEGIN:VCALENDAR")
+    assert payload["text"].strip() == "plain body"
+
+
+def test_calendar_is_none_without_a_calendar_part():
+    import index
+
+    payload = index._build_payload(_ses_event()["Records"][0]["ses"], _build_raw_mime())
+    assert payload["calendar"] is None
+
+
+def test_calendar_part_is_capped_at_65536_chars():
+    import index
+
+    raw = _calendar_mime("BEGIN:VCALENDAR\r\n" + "X" * 100_000 + "\r\nEND:VCALENDAR\r\n")
+    payload = index._build_payload(_ses_event()["Records"][0]["ses"], raw)
+    assert len(payload["calendar"]) == 65536
+
+
 def test_destination_with_multiple_recipients_all_forwarded():
     """`to` is the full SES envelope destination list, not just one address."""
     import index

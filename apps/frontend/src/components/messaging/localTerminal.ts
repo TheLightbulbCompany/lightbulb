@@ -37,3 +37,30 @@ export async function startLocalTerminal(params: Record<string, unknown>): Promi
   if (!invoke) throw new Error("Open Lightbulb on your Mac to start a terminal here.");
   return (await invoke("terminal_start", { params })) as { linked: boolean };
 }
+
+export type HeldSession = { id: string; argv: string[]; cwd: string };
+
+/** Sessions still running on this Mac (their window may be closed), in the desktop app only. */
+export function useHeldSessions(): HeldSession[] {
+  const [held, setHeld] = useState<HeldSession[]>([]);
+  useEffect(() => {
+    const invoke = bridge();
+    if (!invoke) return;
+    let live = true;
+    invoke("terminal_list").then((list) => { if (live && Array.isArray(list)) setHeld(list as HeldSession[]); }, () => {});
+    return () => { live = false; };
+  }, []);
+  return held;
+}
+
+/** Reopen the window of a running session. */
+export function openHeldSession(holderId: string): Promise<unknown> {
+  return bridge()?.("terminal_open", { holderId }) ?? Promise.resolve(null);
+}
+
+/** "Claude Code · ~/code/site" for a held session. */
+export function heldLabel(session: HeldSession): string {
+  const program = session.argv.map((a) => a.split("/").pop()).find((name) => name === "claude" || name === "codex");
+  const folder = session.cwd.replace(/^\/Users\/[^/]+(?=\/|$)/, "~");
+  return `${program === "codex" ? "Codex" : program === "claude" ? "Claude Code" : "Session"} · ${folder}`;
+}

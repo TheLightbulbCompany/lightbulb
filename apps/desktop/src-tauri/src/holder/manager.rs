@@ -56,6 +56,7 @@ pub fn start_with(exe: &Path, dir: &Path, cwd: &Path, argv: &[String]) -> Result
         });
     }
     let mut child = cmd.spawn().map_err(|e| e.to_string())?;
+    let pid = child.id() as libc::pid_t;
     // Reap it if it exits while this app is alive; after an app restart launchd reaps it.
     std::thread::spawn(move || {
         let _ = child.wait();
@@ -67,7 +68,9 @@ pub fn start_with(exe: &Path, dir: &Path, cwd: &Path, argv: &[String]) -> Result
         }
         std::thread::sleep(Duration::from_millis(50));
     }
-    Err("the session did not start".into())
+    // Never leave a session running that nobody was told about.
+    unsafe { libc::kill(pid, libc::SIGTERM) };
+    Err("The session did not start in time. Try again.".into())
 }
 
 /// The running holders, oldest first. Removes sockets whose holder is gone.

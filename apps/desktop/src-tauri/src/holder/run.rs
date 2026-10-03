@@ -9,12 +9,17 @@ use std::io::{Result, Write};
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::Path;
-use std::sync::mpsc::channel;
+use std::sync::mpsc::{channel, sync_channel, SyncSender, TrySendError};
+use std::time::{Duration, Instant};
 
 /// Output kept for `REPLAY`. Older output is answered with `GAP`.
 pub const LOG_CAP: usize = 1 << 20;
 const ROWS: u16 = 40;
 const COLS: u16 = 120;
+/// Frames queued for one client before it counts as stalled and is disconnected.
+const CLIENT_QUEUE: usize = 1024;
+/// How long to keep reading output after the provider exits.
+const EXIT_DRAIN: Duration = Duration::from_secs(1);
 
 /// The user's login-shell environment, read once (as VS Code does). The provider is started
 /// directly with it: running it *through* an interactive shell runs the user's rc prompts
@@ -44,6 +49,8 @@ enum Event {
     Frame(u64, u8, Vec<u8>),
     Gone(u64),
     Exit(String),
+    /// The pty reader stopped: no more output.
+    Eof,
 }
 
 pub fn run(socket: &Path, argv: &[String], cwd: &Path) -> Result<()> {
@@ -87,6 +94,7 @@ pub fn run_with_env(socket: &Path, argv: &[String], cwd: &Path, env: Vec<(String
                 break;
             }
         }
+        let _ = out_tx.send(Event::Eof);
     });
     let exit_tx = tx.clone();
     std::thread::spawn(move || {
@@ -120,19 +128,29 @@ pub fn run_with_env(socket: &Path, argv: &[String], cwd: &Path, env: Vec<(String
     let mut model = Model::new(ROWS, COLS);
     let mut log: VecDeque<u8> = VecDeque::new();
     let mut total: u64 = 0;
-    let mut clients: HashMap<u64, UnixStream> = HashMap::new();
+    // Connected but not yet introduced: they get nothing until their HELLO is answered.
+    let mut pending: HashMap<u64, UnixStream> = HashMap::new();
+    let mut clients: HashMap<u64, Client> = HashMap::new();
     let mut interactive: Option<u64> = None;
-    let send = |clients: &mut HashMap<u64, UnixStream>, id: u64, frame: &[u8]| {
-        if clients.get_mut(&id).is_some_and(|c| c.write_all(frame).is_err()) {
-            clients.remove(&id);
-        }
-    };
+    let mut exited: Option<(String, Instant)> = None;
 
-    for event in rx {
+    loop {
+        let event = match &exited {
+            // The provider is gone: finish once its last output is read (or after a moment,
+            // when a leftover child still holds the terminal open).
+            Some((_, at)) => match rx.recv_timeout(EXIT_DRAIN.saturating_sub(at.elapsed())) {
+                Ok(event) => event,
+                Err(_) => Event::Eof,
+            },
+            None => match rx.recv() {
+                Ok(event) => event,
+                Err(_) => return Ok(()),
+            },
+        };
         match event {
             Event::Output(bytes) => {
                 let answers = model.feed(&bytes);
-                if !answers.is_empty() {
+                if !answers.is_empty() && exited.is_none() {
                     let _ = pty.write_all(&answers);
                 }
                 let frame = encode(OUTPUT, &with_offset(total, &bytes));
@@ -140,23 +158,32 @@ pub fn run_with_env(socket: &Path, argv: &[String], cwd: &Path, env: Vec<(String
                 log.extend(&bytes);
                 let excess = log.len().saturating_sub(LOG_CAP);
                 log.drain(..excess);
-                clients.retain(|_, c| c.write_all(&frame).is_ok());
+                clients.retain(|_, c| c.send(frame.clone()));
             }
             Event::Connect(id, conn) => {
-                clients.insert(id, conn);
+                pending.insert(id, conn);
             }
             Event::Frame(id, HELLO, payload) => {
+                let Some(conn) = pending.remove(&id) else { continue };
+                let Some(client) = Client::start(conn) else { continue };
                 let role = serde_json::from_slice::<serde_json::Value>(&payload).unwrap_or_default();
                 let (rows, cols) = model.size();
                 let facts = serde_json::json!({"protocol": 1, "pid": std::process::id(),
                     "providerPid": provider_pid, "argv": argv, "cwd": cwd, "rows": rows, "cols": cols});
-                send(&mut clients, id, &encode(HELLO, facts.to_string().as_bytes()));
+                if !client.send(encode(HELLO, facts.to_string().as_bytes())) {
+                    continue;
+                }
                 if role["role"] == "interactive" {
                     if let Some(previous) = interactive.replace(id).filter(|p| *p != id) {
-                        send(&mut clients, previous, &encode(DETACHED, b""));
+                        if let Some(c) = clients.get(&previous) {
+                            c.send(encode(DETACHED, b""));
+                        }
                     }
-                    send(&mut clients, id, &encode(SNAPSHOT, &with_offset(total, &model.snapshot())));
+                    if !client.send(encode(SNAPSHOT, &with_offset(total, &model.snapshot()))) {
+                        continue;
+                    }
                 }
+                clients.insert(id, client);
             }
             Event::Frame(id, INPUT, payload) if interactive == Some(id) && !is_probe_reply(&payload) => {
                 let _ = pty.write_all(&payload);
@@ -168,33 +195,78 @@ pub fn run_with_env(socket: &Path, argv: &[String], cwd: &Path, env: Vec<(String
                 model.resize(rows, cols);
             }
             Event::Frame(id, REPLAY, payload) => {
-                let Some((from, _)) = split_offset(&payload) else { continue };
+                let (Some((from, _)), Some(client)) = (split_offset(&payload), clients.get(&id)) else { continue };
                 let oldest = total - log.len() as u64;
                 if from < oldest {
                     let mut gap = from.to_be_bytes().to_vec();
                     gap.extend_from_slice(&oldest.to_be_bytes());
-                    send(&mut clients, id, &encode(GAP, &gap));
+                    client.send(encode(GAP, &gap));
                 }
                 let start = from.clamp(oldest, total);
                 let bytes: Vec<u8> = log.iter().skip((start - oldest) as usize).copied().collect();
-                send(&mut clients, id, &encode(OUTPUT, &with_offset(start, &bytes)));
+                client.send(encode(OUTPUT, &with_offset(start, &bytes)));
             }
             Event::Frame(..) => {}
             Event::Gone(id) => {
+                pending.remove(&id);
                 clients.remove(&id);
                 if interactive == Some(id) {
                     interactive = None;
                 }
             }
             Event::Exit(status) => {
-                let frame = encode(EXIT, serde_json::json!({ "status": status }).to_string().as_bytes());
-                for c in clients.values_mut() {
-                    let _ = c.write_all(&frame);
+                exited = Some((status, Instant::now()));
+            }
+            Event::Eof => {
+                if exited.is_none() {
+                    // The terminal closed first; the exit status follows from the wait thread.
+                    continue;
                 }
+                let status = exited.take().map(|(status, _)| status).unwrap_or_default();
+                let frame = encode(EXIT, serde_json::json!({ "status": status }).to_string().as_bytes());
+                for client in clients.values() {
+                    client.send(frame.clone());
+                }
+                // Let the writers deliver the last frames before the process ends.
+                drop(clients);
+                std::thread::sleep(Duration::from_millis(100));
                 let _ = std::fs::remove_file(socket);
                 return Ok(());
             }
         }
     }
-    Ok(())
 }
+
+/// A connected client. Frames go through a bounded queue to its own writer thread, so a window
+/// that stops reading can never block the holder; when its queue fills it is disconnected.
+struct Client {
+    queue: SyncSender<Vec<u8>>,
+    stream: UnixStream,
+}
+
+impl Client {
+    fn start(stream: UnixStream) -> Option<Self> {
+        let mut writer = stream.try_clone().ok()?;
+        let (queue, frames) = sync_channel::<Vec<u8>>(CLIENT_QUEUE);
+        std::thread::spawn(move || {
+            for frame in frames {
+                if writer.write_all(&frame).is_err() {
+                    return;
+                }
+            }
+        });
+        Some(Self { queue, stream })
+    }
+
+    /// False when the client is gone or too slow; the caller drops it.
+    fn send(&self, frame: Vec<u8>) -> bool {
+        match self.queue.try_send(frame) {
+            Ok(()) => true,
+            Err(TrySendError::Full(_)) | Err(TrySendError::Disconnected(_)) => {
+                let _ = self.stream.shutdown(std::net::Shutdown::Both);
+                false
+            }
+        }
+    }
+}
+

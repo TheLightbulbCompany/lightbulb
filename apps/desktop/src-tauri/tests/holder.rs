@@ -15,9 +15,14 @@ fn temp_dir() -> PathBuf {
 }
 
 fn start_cat(dir: &Path) -> PathBuf {
-    let socket = dir.join("cat.sock");
+    start(dir, &["/bin/cat"])
+}
+
+fn start(dir: &Path, argv: &[&str]) -> PathBuf {
+    let socket = dir.join("held.sock");
     let (s, d) = (socket.clone(), dir.to_path_buf());
-    std::thread::spawn(move || run::run_with_env(&s, &["/bin/cat".into()], &d, vec![("PATH".into(), "/usr/bin:/bin".into())]));
+    let argv: Vec<String> = argv.iter().map(|a| a.to_string()).collect();
+    std::thread::spawn(move || run::run_with_env(&s, &argv, &d, vec![("PATH".into(), "/usr/bin:/bin".into())]));
     let deadline = Instant::now() + Duration::from_secs(5);
     while !socket.exists() && Instant::now() < deadline {
         std::thread::sleep(Duration::from_millis(20));
@@ -108,4 +113,50 @@ fn holder_manager_lists_live_holders_and_drops_dead_sockets() {
     assert_eq!(list[0].socket, socket);
     assert_eq!(list[0].argv, vec!["/bin/cat".to_string()]);
     assert!(!dir.join("dead0000.sock").exists(), "a socket nobody listens on is removed");
+}
+
+#[test]
+fn holder_keeps_serving_its_window_when_another_client_stops_reading() {
+    let socket = start_cat(&temp_dir());
+    let mut stalled = attach(&socket, "recorder"); // never read again
+    let mut c = attach(&socket, "interactive");
+    let mut reader = c.try_clone().unwrap();
+    let echo = std::thread::spawn(move || read_until(&mut reader, b"still-alive"));
+    // Lines stay under the terminal's 1024-byte line limit.
+    for _ in 0..800 {
+        c.write_all(&encode(INPUT, &[b'x'; 500])).unwrap();
+        c.write_all(&encode(INPUT, b"\r")).unwrap();
+    }
+    c.write_all(&encode(INPUT, b"still-alive\r")).unwrap();
+    assert!(echo.join().unwrap().windows(11).any(|w| w == b"still-alive"));
+    let _ = stalled.write_all(b"");
+}
+
+#[test]
+fn holder_answers_hello_before_any_output() {
+    let socket = start_cat(&temp_dir());
+    let mut c = attach(&socket, "interactive");
+    let mut late = UnixStream::connect(&socket).unwrap();
+    late.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+    c.write_all(&encode(INPUT, b"output-before-hello\r")).unwrap();
+    read_until(&mut c, b"output-before-hello");
+    late.write_all(&encode(HELLO, br#"{"role":"recorder"}"#)).unwrap();
+    assert_eq!(read_frame(&mut late).unwrap().0, HELLO);
+}
+
+#[test]
+fn holder_delivers_a_provider_s_last_words_before_exit() {
+    let socket = start(&temp_dir(), &["/bin/sh", "-c", "read x; printf final-words; exit 0"]);
+    let mut c = attach(&socket, "interactive");
+    c.write_all(&encode(INPUT, b"go\r")).unwrap();
+    let mut seen = vec![];
+    loop {
+        let (kind, payload) = read_frame(&mut c).expect("frames before timeout");
+        match kind {
+            OUTPUT => seen.extend_from_slice(split_offset(&payload).unwrap().1),
+            EXIT => break,
+            _ => {}
+        }
+    }
+    assert!(seen.windows(11).any(|w| w == b"final-words"));
 }

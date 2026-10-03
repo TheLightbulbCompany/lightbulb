@@ -144,7 +144,7 @@ pub fn ask_app(path: &Path, request: &Value) -> Result<Started, String> {
 
 use crate::holder::model::strip_queries;
 use crate::holder::protocol::{encode, read_frame, split_offset, DETACHED, EXIT, HELLO, INPUT, OUTPUT, RESIZE, SNAPSHOT};
-use std::sync::atomic::{AtomicI32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
 use std::sync::OnceLock;
 
 /// The command's words when this binary runs as `lightbulb …` (the `~/.local/bin` link) or as
@@ -217,6 +217,7 @@ pub fn pump(holder: &mut impl Read, out: &mut impl Write) -> (Outcome, bool) {
                 let Some((_, bytes)) = split_offset(&payload) else { continue };
                 let bytes = strip_queries(bytes);
                 screen.process(&bytes);
+                ALTERNATE.store(screen.screen().alternate_screen(), Ordering::SeqCst);
                 if out.write_all(&bytes).and_then(|()| out.flush()).is_err() {
                     break Outcome::Lost;
                 }
@@ -244,6 +245,8 @@ pub fn reset_sequence(alternate_screen: bool) -> Vec<u8> {
 static SAVED: OnceLock<libc::termios> = OnceLock::new();
 /// The signal that ended the attachment, 0 if none.
 static STOPPED_BY: AtomicI32 = AtomicI32::new(0);
+/// Whether the provider has the alternate screen on, for the panic hook's reset.
+static ALTERNATE: AtomicBool = AtomicBool::new(false);
 
 fn window_size() -> (u16, u16) {
     let mut ws: libc::winsize = unsafe { std::mem::zeroed() };
@@ -306,6 +309,8 @@ fn attach(socket: &Path, (cols, rows): (u16, u16)) -> i32 {
     let default_hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
         restore();
+        let reset = reset_sequence(ALTERNATE.load(Ordering::SeqCst));
+        unsafe { libc::write(1, reset.as_ptr().cast(), reset.len()) };
         default_hook(info);
     }));
     raw_mode();

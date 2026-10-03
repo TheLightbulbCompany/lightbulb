@@ -2,7 +2,7 @@
 
 use std::io::{Error, ErrorKind, Read, Result};
 
-/// Client → holder: `{"role":"interactive"|"recorder"}`. Holder → client: session facts.
+/// Client → holder: `{"role":"interactive"|"recorder", "cols"?, "rows"?, "replayFrom"?}`. Holder → client: session facts.
 pub const HELLO: u8 = 1;
 /// Holder → client: `u64 BE offset` of the first byte, then provider output.
 pub const OUTPUT: u8 = 2;
@@ -10,7 +10,7 @@ pub const OUTPUT: u8 = 2;
 pub const INPUT: u8 = 3;
 /// Interactive client → holder: `u16 BE cols`, `u16 BE rows`.
 pub const RESIZE: u8 = 4;
-/// Holder → client: the provider exited, `{"status":"…"}`.
+/// Holder → client: the provider exited, `{"status":"…","code":N}`.
 pub const EXIT: u8 = 5;
 /// Client → holder: `u64 BE from`; answered with OUTPUT from there (and GAP first if it is gone).
 pub const REPLAY: u8 = 6;

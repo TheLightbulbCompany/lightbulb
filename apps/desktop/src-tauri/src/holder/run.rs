@@ -24,6 +24,12 @@ const OUTPUT_BACKLOG: usize = 8 << 20;
 /// How long to keep reading output after the provider exits.
 const EXIT_DRAIN: Duration = Duration::from_secs(1);
 
+/// `--size=<cols>x<rows>`: the size of the terminal that asked for this session.
+pub fn parse_size(arg: &str) -> Option<(u16, u16)> {
+    let (cols, rows) = arg.strip_prefix("--size=")?.split_once('x')?;
+    Some((cols.parse().ok()?, rows.parse().ok()?))
+}
+
 /// The user's login-shell environment, read once (as VS Code does). The provider is started
 /// directly with it: running it *through* an interactive shell runs the user's rc prompts
 /// (oh-my-zsh "update? [Y/n]") inside the session.
@@ -79,6 +85,14 @@ mod tests {
     use super::*;
 
     #[test]
+    fn holder_size_argument_parses_and_refuses_anything_else() {
+        assert_eq!(parse_size("--size=120x40"), Some((120, 40)));
+        assert_eq!(parse_size("--"), None);
+        assert_eq!(parse_size("--size=x"), None);
+        assert_eq!(parse_size("--size=80"), None);
+    }
+
+    #[test]
     fn holder_environment_parses_and_refuses_an_empty_capture() {
         let wrap = |json: &str| format!("Welcome back!\n{ENV_BEGIN}{json}{ENV_END}\nbye\n").into_bytes();
         let env = parse_environment(&wrap(r#"{"HOME":"/Users/a","PATH":"/usr/bin","SHLVL":"2","MULTI":"a\nb"}"#)).unwrap();
@@ -99,13 +113,13 @@ enum Event {
     Connect(u64, UnixStream),
     Frame(u64, u8, Vec<u8>),
     Gone(u64),
-    Exit(String),
+    Exit(String, u32),
     /// The pty reader stopped: no more output.
     Eof,
 }
 
-pub fn run(socket: &Path, argv: &[String], cwd: &Path) -> Result<()> {
-    run_with_env(socket, argv, cwd, login_environment())
+pub fn run(socket: &Path, argv: &[String], cwd: &Path, size: Option<(u16, u16)>) -> Result<()> {
+    run_with_env(socket, argv, cwd, login_environment(), size)
 }
 
 /// Variables one Claude Code session sets for its own children. A held session that inherits
@@ -122,11 +136,14 @@ pub fn provider_environment(env: Vec<(String, String)>) -> Vec<(String, String)>
     env.into_iter().filter(|(k, _)| !SESSION_MARKERS.contains(&k.as_str())).collect()
 }
 
-pub fn run_with_env(socket: &Path, argv: &[String], cwd: &Path, env: Vec<(String, String)>) -> Result<()> {
+pub fn run_with_env(socket: &Path, argv: &[String], cwd: &Path, env: Vec<(String, String)>, size: Option<(u16, u16)>) -> Result<()> {
+    // The terminal that asked for this session, if one did: its first screen is drawn at that
+    // size, so a replay of it fits that terminal.
+    let (cols, rows) = size.map_or((COLS, ROWS), |(c, r)| (c.clamp(1, 1000), r.clamp(1, 500)));
     let env = provider_environment(env);
     let program = argv.first().ok_or_else(|| std::io::Error::other("no program"))?;
     let pair = native_pty_system()
-        .openpty(PtySize { rows: ROWS, cols: COLS, pixel_width: 0, pixel_height: 0 })
+        .openpty(PtySize { rows, cols, pixel_width: 0, pixel_height: 0 })
         .map_err(std::io::Error::other)?;
     let mut cmd = CommandBuilder::new(program);
     cmd.args(&argv[1..]);
@@ -176,8 +193,11 @@ pub fn run_with_env(socket: &Path, argv: &[String], cwd: &Path, env: Vec<(String
     });
     let exit_tx = tx.clone();
     std::thread::spawn(move || {
-        let status = child.wait().map(|s| format!("{s:?}")).unwrap_or_else(|e| e.to_string());
-        let _ = exit_tx.send(Event::Exit(status));
+        let (status, code) = match child.wait() {
+            Ok(s) => (format!("{s:?}"), s.exit_code()),
+            Err(e) => (e.to_string(), 1),
+        };
+        let _ = exit_tx.send(Event::Exit(status, code));
     });
     std::thread::spawn(move || {
         for (id, conn) in (1u64..).zip(listener.incoming()) {
@@ -203,20 +223,20 @@ pub fn run_with_env(socket: &Path, argv: &[String], cwd: &Path, env: Vec<(String
         }
     });
 
-    let mut model = Model::new(ROWS, COLS);
+    let mut model = Model::new(rows, cols);
     let mut log: VecDeque<u8> = VecDeque::new();
     let mut total: u64 = 0;
     // Connected but not yet introduced: they get nothing until their HELLO is answered.
     let mut pending: HashMap<u64, UnixStream> = HashMap::new();
     let mut clients: HashMap<u64, Client> = HashMap::new();
     let mut interactive: Option<u64> = None;
-    let mut exited: Option<(String, Instant)> = None;
+    let mut exited: Option<(String, u32, Instant)> = None;
 
     loop {
         let event = match &exited {
             // The provider is gone: finish once its last output is read (or after a moment,
             // when a leftover child still holds the terminal open).
-            Some((_, at)) => match rx.recv_timeout(EXIT_DRAIN.saturating_sub(at.elapsed())) {
+            Some((_, _, at)) => match rx.recv_timeout(EXIT_DRAIN.saturating_sub(at.elapsed())) {
                 Ok(event) => event,
                 Err(_) => Event::Eof,
             },
@@ -264,7 +284,18 @@ pub fn run_with_env(socket: &Path, argv: &[String], cwd: &Path, env: Vec<(String
                             c.send(encode(DETACHED, b""));
                         }
                     }
-                    if !client.send(encode(SNAPSHOT, &with_offset(total, &model.snapshot()))) {
+                    // A terminal that just started this session asks for all its output instead
+                    // of a snapshot (which clears the screen): it then draws under what that
+                    // terminal already shows, as the provider run directly would.
+                    let oldest = total - log.len() as u64;
+                    let first = match role["replayFrom"].as_u64().filter(|from| (oldest..=total).contains(from)) {
+                        Some(from) => {
+                            let bytes: Vec<u8> = log.iter().skip((from - oldest) as usize).copied().collect();
+                            encode(OUTPUT, &with_offset(from, &bytes))
+                        }
+                        None => encode(SNAPSHOT, &with_offset(total, &model.snapshot())),
+                    };
+                    if !client.send(first) {
                         continue;
                     }
                 }
@@ -299,16 +330,16 @@ pub fn run_with_env(socket: &Path, argv: &[String], cwd: &Path, env: Vec<(String
                     interactive = None;
                 }
             }
-            Event::Exit(status) => {
-                exited = Some((status, Instant::now()));
+            Event::Exit(status, code) => {
+                exited = Some((status, code, Instant::now()));
             }
             Event::Eof => {
                 if exited.is_none() {
                     // The terminal closed first; the exit status follows from the wait thread.
                     continue;
                 }
-                let status = exited.take().map(|(status, _)| status).unwrap_or_default();
-                let frame = encode(EXIT, serde_json::json!({ "status": status }).to_string().as_bytes());
+                let (status, code) = exited.take().map(|(s, c, _)| (s, c)).unwrap_or_default();
+                let frame = encode(EXIT, serde_json::json!({ "status": status, "code": code }).to_string().as_bytes());
                 for client in clients.values() {
                     client.send(frame.clone());
                 }

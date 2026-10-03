@@ -8,13 +8,15 @@ fn main() {
     }
     #[cfg(unix)]
     if std::env::args().nth(1).as_deref() == Some("holder") {
-        // `holder <socket> -- <argv…>`: one held session, in its own process.
+        // `holder <socket> [--size=<cols>x<rows>] -- <argv…>`: one held session, in its own process.
         let args: Vec<String> = std::env::args().collect();
-        let (Some(socket), Some(argv)) = (args.get(2), args.get(4..).filter(|a| args.get(3).map(String::as_str) == Some("--") && !a.is_empty())) else {
+        let size = args.get(3).and_then(|a| lightbulb_desktop::holder::run::parse_size(a));
+        let dash = if size.is_some() { 4 } else { 3 };
+        let (Some(socket), Some(argv)) = (args.get(2), args.get(dash + 1..).filter(|a| args.get(dash).map(String::as_str) == Some("--") && !a.is_empty())) else {
             std::process::exit(2);
         };
         let cwd = std::env::current_dir().unwrap_or_else(|_| "/".into());
-        let code = match lightbulb_desktop::holder::run::run(std::path::Path::new(socket), argv, &cwd) {
+        let code = match lightbulb_desktop::holder::run::run(std::path::Path::new(socket), argv, &cwd, size) {
             Ok(()) => 0,
             Err(_) => 1,
         };

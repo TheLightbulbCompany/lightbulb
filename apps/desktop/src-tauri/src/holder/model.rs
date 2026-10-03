@@ -14,6 +14,31 @@ const PROBES: &[(&[u8], &[u8])] = &[
     (b"\x1b]11;?\x07", b"\x1b]11;rgb:1616/1616/1a1a\x07"),
 ];
 const CPR: &[u8] = b"\x1b[6n";
+/// Kitty keyboard protocol query. The holder does not claim kitty support, so it is not answered.
+const KITTY_QUERY: &[u8] = b"\x1b[?u";
+
+/// Provider output for a client that is a real terminal: without the queries the holder has
+/// already answered. The terminal would answer them again, and its answers, read in one burst,
+/// would reach the provider as typing.
+// ponytail: a query split across two output chunks still reaches the terminal; its lone reply
+// is then dropped by `is_probe_reply`. Carry a tail like `Model::feed` if that shows up.
+pub fn strip_queries(bytes: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut rest = bytes;
+    'scan: while let Some((&first, tail)) = rest.split_first() {
+        if first == 0x1b {
+            for query in PROBES.iter().map(|(q, _)| *q).chain([CPR, KITTY_QUERY]) {
+                if let Some(after) = rest.strip_prefix(query) {
+                    rest = after;
+                    continue 'scan;
+                }
+            }
+        }
+        out.push(first);
+        rest = tail;
+    }
+    out
+}
 
 pub struct Model {
     parser: vt100::Parser,
@@ -91,6 +116,13 @@ pub fn is_probe_reply(input: &[u8]) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn holder_model_strips_answered_queries_for_a_real_terminal() {
+        assert_eq!(strip_queries(b"a\x1b[cb\x1b]11;?\x07c\x1b[6nd\x1b[?ue\x1b[>0qf"), b"abcdef");
+        let drawing = b"\x1b[31mred\x1b[0m\x1b[?2004h\x1b[?1049h\x1b[?1u";
+        assert_eq!(strip_queries(drawing), drawing.to_vec(), "everything else passes untouched");
+    }
 
     #[test]
     fn holder_model_answers_the_queries_claude_sends_at_start() {

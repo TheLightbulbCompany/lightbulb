@@ -32,3 +32,18 @@ it("watches while on screen, draws the snapshot read-only, and ignores other ses
   await act(async () => { await vi.advanceTimersByTimeAsync(30_000); });
   expect(watch).toHaveBeenCalledTimes(2);
 });
+
+it("goes back to not-live when frames stop, and live again on the next snapshot", async () => {
+  vi.useFakeTimers();
+  let emit: (e: LiveEvent) => void = () => {};
+  const onLive = vi.fn();
+  render(<SessionTerminalView session={{ sessionId: "s1", generation: "g1" }}
+    onEvent={(h) => { emit = h; return () => {}; }} watch={async () => undefined} onLive={onLive} />);
+  await act(async () => { await vi.runOnlyPendingTimersAsync(); });
+  act(() => { emit(screenEvent("s1")); });
+  expect(onLive).toHaveBeenLastCalledWith(true);
+  await act(async () => { await vi.advanceTimersByTimeAsync(31_000); });
+  expect(onLive).toHaveBeenLastCalledWith(false);
+  act(() => { emit(screenEvent("s1", "snapshot", 1)); });
+  expect(onLive).toHaveBeenLastCalledWith(true);
+});

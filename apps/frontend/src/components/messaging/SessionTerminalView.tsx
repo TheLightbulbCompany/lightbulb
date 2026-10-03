@@ -7,6 +7,8 @@ import "@xterm/xterm/css/xterm.css";
 import { NEW_SCREEN, receiveScreen } from "./sessionScreen";
 
 const WATCH_EVERY_MS = 15_000;
+/** Snapshots come every 10 s; this long with no frame at all and the picture is frozen, so the transcript takes over again. */
+const STALE_AFTER_MS = 30_000;
 const decode = (data: string) => Uint8Array.from(atob(data), (c) => c.charCodeAt(0));
 
 /** A running session's real terminal, live and read-only (rulings 2026-10-03 §4): for teammates,
@@ -23,20 +25,21 @@ export function SessionTerminalView({ session, onEvent, watch, onLive }: {
   const [scale, setScale] = useState(1);
   useEffect(() => {
     let refused = false;
-    const ping = () => void watch(session.sessionId).catch((e) => { if (e instanceof ApiError && (e.status === 403 || e.status === 404)) refused = true; });
+    const ping = () => void watch(session.sessionId).catch((e) => { if (e instanceof ApiError && (e.status === 403 || e.status === 404)) { refused = true; setLive(false); onLive(false); } });
     ping();
     const timer = setInterval(() => { if (!refused) ping(); }, WATCH_EVERY_MS);
     return () => clearInterval(timer);
-  }, [session.sessionId, watch]);
+  }, [session.sessionId, watch, onLive]);
   useEffect(() => {
     let term: Terminal | null = null;
     let order = NEW_SCREEN;
     const queued: SessionScreen[] = [];
     let alive = true;
+    let stale: ReturnType<typeof setTimeout> | undefined;
     const fit = () => {
       const drawn = host.current?.querySelector<HTMLElement>(".xterm-screen");
       const box = host.current?.parentElement;
-      if (drawn?.offsetWidth && box) setScale(Math.min(1, box.clientWidth / drawn.offsetWidth));
+      if (drawn?.offsetWidth && box) setScale(Math.min(1, box.clientWidth / drawn.offsetWidth, box.clientHeight / drawn.offsetHeight));
     };
     const apply = (frames: SessionScreen[]) => {
       if (!term) { queued.push(...frames); return; }
@@ -57,13 +60,15 @@ export function SessionTerminalView({ session, onEvent, watch, onLive }: {
       if (event.type !== "workspace.session.screen") return;
       const frame = event.payload;
       if (frame.sessionId !== session.sessionId || frame.generation !== session.generation) return;
+      clearTimeout(stale);
+      stale = setTimeout(() => { setLive(false); onLive(false); }, STALE_AFTER_MS);
       const step = receiveScreen(order, frame);
       order = step.order;
       apply(step.write);
     });
     const observer = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(fit);
     if (host.current?.parentElement) observer?.observe(host.current.parentElement);
-    return () => { alive = false; off(); observer?.disconnect(); term?.dispose(); onLive(false); };
+    return () => { alive = false; clearTimeout(stale); off(); observer?.disconnect(); term?.dispose(); onLive(false); };
   }, [session.sessionId, session.generation, onEvent, onLive]);
   return <div className="session-terminal-view" data-live={live} role="region" aria-label="Live terminal (view only)">
     <div ref={host} style={{ transform: `scale(${scale})`, transformOrigin: "top left" }} />

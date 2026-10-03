@@ -204,14 +204,24 @@ def test_worker_idle_leave_ends_once_even_when_call_ended_lands_mid_leave(env):
     env["notes"].assert_called_once_with(ROOM)
 
 
-def test_a_failed_leave_restores_the_meeting_and_releases_the_claim(env):
+def test_a_failed_leave_still_ends_the_meeting(env):
     env["meta"]["meeting"]["status"] = "in_call"
     with patch.object(mod.meeting_bots, "leave", AsyncMock(side_effect=mod.meeting_bots.RecallError("500"))):
-        with pytest.raises(mod.meeting_bots.RecallError):
-            _leave(env["client"])
-    assert env["meta"]["meeting"]["status"] == "in_call"
-    env["release"].assert_awaited_once_with(f"meet-ended:{ROOM}")
-    env["close"].assert_not_awaited()
+        assert _leave(env["client"]).status_code == 200
+    assert env["meta"]["meeting"]["status"] == "ended"
+    env["close"].assert_awaited_once_with(ROOM, meet=True)
+    env["notes"].assert_called_once_with(ROOM)
+    env["metric"].assert_any_call("meeting.leave_failed")
+
+
+def test_a_failed_close_room_loses_no_other_end_step(env):
+    env["meta"]["meeting"]["status"] = "in_call"
+    env["close"].side_effect = RuntimeError("twirp")
+    assert _post(env["client"], _status("call_ended", sub_code="x")).status_code == 200
+    env["notes"].assert_called_once_with(ROOM)
+    env["metric"].assert_any_call("meeting.ended", dimensions={"sub_code": "x"})
+    env["metric"].assert_any_call("meeting.finish_step_failed", dimensions={"step": "close_room"})
+    env["publisher"].publish_room.assert_awaited_once()
 
 
 def test_fatal_mid_call_runs_the_notes(env):

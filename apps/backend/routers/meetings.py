@@ -89,13 +89,23 @@ def _claim_name(room_id: str, target: str) -> str:
 
 
 async def _finish(room_id: str, status: str, sub_code: str, notes: bool) -> None:
-    """The rest of the one end path, once ``status`` is written: the LiveKit room closed, the
-    metric, the live hint, the notes run."""
-    await livekit_huddles.close_room(room_id, meet=True)
-    put_metric("meeting.ended", dimensions={"sub_code": sub_code or "none"})
-    await _publish(room_id, status)
-    if notes:
-        _notes(room_id)
+    """The rest of the one end path, once ``status`` is written. Never raises: the written status
+    turns every retry into a no-op, so a step that failed here would otherwise be lost for good.
+    Notes first, the room's close last."""
+    steps = [
+        ("notes", lambda: _notes(room_id) if notes else None),
+        ("metric", lambda: put_metric("meeting.ended", dimensions={"sub_code": sub_code or "none"})),
+        ("publish", lambda: _publish(room_id, status)),
+        ("close_room", lambda: livekit_huddles.close_room(room_id, meet=True)),
+    ]
+    for step, run in steps:
+        try:
+            result = run()
+            if result is not None:
+                await result
+        except Exception:  # noqa: BLE001 -- one failed step must not cost the others
+            put_metric("meeting.finish_step_failed", dimensions={"step": step})
+            logger.warning("meeting room %s: end step %s failed", room_id, step, exc_info=True)
 
 
 async def _on_status(bot_id: str, room_id: str, code: str, sub_code: str) -> None:
@@ -226,10 +236,9 @@ async def leave(room_id: str, body: RoomBody):
     await meeting_invites._patch_meeting(room_id, {"status": "ended", "lastBotStatus": "idle_leave"})
     try:
         await meeting_bots.leave(meeting["recallBotId"])
-    except Exception:
-        # The bot is still in the call: undo, so the worker's retry (or Recall's end) can end it.
-        await meeting_invites._patch_meeting(room_id, {"status": status, "lastBotStatus": meeting.get("lastBotStatus")})
-        await container_repo.release_pass(claim)
-        raise
+    except Exception:  # noqa: BLE001 -- never undo: a call_ended may already have seen "ended"
+        # Recall's automatic_leave reaps a bot left alone; the LiveKit room still closes below.
+        put_metric("meeting.leave_failed")
+        logger.warning("meeting room %s: bot leave failed", room_id, exc_info=True)
     await _finish(room_id, "ended", "idle_leave", notes=True)
     return {"ok": True}

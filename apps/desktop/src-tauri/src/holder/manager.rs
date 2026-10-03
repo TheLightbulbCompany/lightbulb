@@ -22,6 +22,15 @@ pub struct HolderInfo {
     pub watch: bool,
 }
 
+impl HolderInfo {
+    /// The start id a linked start hands its `/bin/sh` wrapper (`session_start::held_argv`).
+    pub fn start_id(&self) -> Option<&str> {
+        let linked = self.argv.first().is_some_and(|a| a == "/bin/sh")
+            && self.argv.get(3).is_some_and(|a| a == "lightbulb-start");
+        linked.then(|| self.argv.get(4).map(String::as_str)).flatten()
+    }
+}
+
 /// `/private/tmp/lightbulb-sessions-<uid>/h`, beside the app's other local-session sockets.
 pub fn socket_dir() -> PathBuf {
     PathBuf::from(format!("/private/tmp/lightbulb-sessions-{}/h", unsafe { libc::getuid() }))

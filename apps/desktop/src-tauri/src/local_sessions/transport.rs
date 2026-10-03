@@ -1018,6 +1018,8 @@ impl Host {
         let mut last_heartbeat = Instant::now();
         let mut last_early = Instant::now() - Duration::from_secs(1);
         let mut tick = tokio::time::interval(Duration::from_millis(100));
+        // This connection carries the live terminal frames of every watched held session.
+        let mut screens = super::screen::channel();
         let mut reaped = Instant::now();
         let mut last_recovery_scan = Instant::now();
         let mut last_probe = Instant::now();
@@ -1028,6 +1030,7 @@ impl Host {
         // An end the relay has not been told about -- because it happened while the
         // socket was down, or in a previous run of this process -- is still owed to it.
         self.liveness_tick();
+        super::screen::index(&self.dir, &self.mirrors);
         let mut recovering_ended = ended_recovery_keys(&self.mirrors);
         let mut unreported: Vec<String> = self
             .mirrors
@@ -1186,6 +1189,7 @@ impl Host {
                         last_probe = Instant::now();
                         let moved = self.approval_tick();
                         self.heartbeat_dirty.extend(moved);
+                        super::screen::index(&self.dir, &self.mirrors);
                     }
                     if reaped.elapsed() >= Duration::from_secs(60) {
                         reaped = Instant::now();
@@ -1222,6 +1226,10 @@ impl Host {
                         registered.remove(&key);
                         recovering_ended.remove(&key);
                     }
+                },
+                Some(frame) = screens.recv() => {
+                    // Fire and forget: the relay never answers a screen frame.
+                    send(socket, &frame).await?;
                 },
                 incoming = socket.next() => {
                     let message = incoming.ok_or("session socket closed")?.map_err(|_| "session socket failed")?;
@@ -1311,6 +1319,7 @@ impl Host {
                             let rpc = pending_rpc.take().ok_or("unsolicited session acknowledgment")?;
                             let Rpc::Heartbeat{sent,wall} = rpc else {return Err("mismatched session acknowledgment".into());};
                             super::snapshot::offer(&body["pickup"], &self.mirrors);
+                            super::screen::offer(&body["watching"]);
                             let server = body["serverTime"].as_u64().ok_or("missing server time")?;
                             let rtt = sent.elapsed().as_secs_f64();
                             deadline_now(server,0.0,rtt,SystemTime::now().duration_since(wall).ok().map(|d|d.as_secs_f64()))

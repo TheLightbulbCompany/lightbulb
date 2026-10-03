@@ -8,6 +8,7 @@ mod native_mcp;
 mod native_tools;
 pub use native_mcp::serve_mcp;
 pub(crate) mod snapshot;
+pub(crate) mod screen;
 mod stats;
 mod start_links;
 mod transport;

@@ -126,6 +126,10 @@ MAINTENANCE (Lightbulb engineers): every claim in this skill is anchored to
                                  Allow / Decline); core/services/local_session_relay.py (cleared on Ended and on a new
                                  generation); apps/frontend/src/components/messaging/LocalSessionPanel.tsx (Ask to join /
                                  Requested / declined line); SessionDetails.tsx (People you let in, Remove).
+  - Session live terminal ... references/surfaces.md ("Live terminal" paragraph)
+                              <- apps/frontend/src/components/messaging/{LocalSessionPanel,SessionTerminalView}.tsx
+                                 (terminal in the panel, transcript fallback, "<name> is typing", read-only for
+                                 non-admitted); core/services/local_sessions.py (may_control / allowedSenders gate on input).
   - Session pick-up ......... references/surfaces.md ("Pick up" paragraph)
                               <- apps/frontend/src/components/messaging/SessionPickup.tsx (canPickUp: allowed + snapshot ready;
                                  desktop-only, browser copy); SessionDetails.tsx (the pick-up switch: needs sharing on,

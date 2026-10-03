@@ -4586,7 +4586,10 @@ mod tests {
     fn local_sessions_idle_heartbeat_is_the_golden_frame_with_no_sessions() {
         let golden: Value = serde_json::from_str(GOLDEN_HEARTBEAT).unwrap();
         let idle = idle_heartbeat();
-        assert_eq!(frame_keys(&idle), frame_keys(&golden));
+        // The golden frame also carries the live-terminal features; an idle Mac has nothing to
+        // watch, and its relay features are unknown until a registration ACK.
+        assert!(frame_keys(&idle).is_subset(&frame_keys(&golden)));
+        assert_eq!(frame_keys(&idle), BTreeSet::from(["type", "sessions"]));
         assert_eq!(idle["sessions"], json!([]));
     }
 

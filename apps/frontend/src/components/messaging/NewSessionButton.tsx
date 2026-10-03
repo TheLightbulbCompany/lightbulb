@@ -107,7 +107,7 @@ export function NewSessionView({ sessions, onEvent, onOpenSession, onClose }: {
     } catch { /* Browser storage may be disabled; the current view still holds the start. */ }
   }, [scope, pending]);
 
-  // Inside the desktop app this Mac answers for itself and the session opens in its own window.
+  // Inside the desktop app this Mac answers for itself and the session opens in this panel.
   const localMac = useLocalMac();
   const slot = useRef<HTMLDivElement>(null);
   const local = useLocalTerminal(pending?.phase === "opened" && pending.holderId ? { holderId: pending.holderId } : null, slot, true);

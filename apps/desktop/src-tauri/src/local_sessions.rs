@@ -1653,6 +1653,8 @@ impl Mirror {
             if queue.len() >= SUBAGENT_REFILL_EVENTS {
                 break;
             }
+            // Advance even when this subagent has nothing new: the next refill must start
+            // after it, or a quiet early id would be visited first forever.
             *next = Some(id.clone());
             let Some(path) = &sub.path else { continue };
             // One stat, not a confined open, for the (usual) subagent with nothing new.

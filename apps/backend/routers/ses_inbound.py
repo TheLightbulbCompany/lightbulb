@@ -65,9 +65,16 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from core.config import settings
 from core.observability.metrics import put_metric
-from core.repositories.agent_email_repo import get_by_address, normalize, query_by_owner, update_settings
+from core.repositories.agent_email_repo import (
+    get_by_address,
+    is_team_address,
+    normalize,
+    query_by_owner,
+    update_settings,
+)
 from core.repositories.agent_mail_inbox_repo import find_by_message_id, put_message, reply_key
 from core.repositories.container_repo import try_claim_daily_system_notice, try_consume_stranger_wake
+from core.services import meeting_invites
 from core.services.agent_email import sender_allowed
 from core.services.agent_mail_autoreply import send_cap_autoreply
 from core.services.agent_mail_thread import thread_session_key
@@ -150,6 +157,8 @@ class SesInboundBody(BaseModel):
     # flat verdict off this dict must therefore `str()` it first.
     verdicts: dict[str, Any] = Field(default_factory=dict)
     attachments: list[dict] = Field(default_factory=list)
+    # The first `text/calendar` part, raw, when the mail carries one (a calendar invite).
+    calendar: str | None = None
 
 
 @router.post(
@@ -193,12 +202,21 @@ async def handle_ses_inbound(body: SesInboundBody, request: Request):
         # Resolve recipient: first provisioned address in `to` that we know
         # about wins. A message can be addressed to multiple recipients;
         # only one of them needs to be one of ours.
+        #
+        # The team address `agents@{slug}` has no row of its own: its mail is
+        # the CEO's (see `meeting_invites.team_row`), except a member's
+        # calendar invite, which becomes a meeting below.
         row = None
+        team = None
         for addr in body.to:
             try:
                 candidate = normalize(addr)
             except Exception:  # noqa: BLE001 — a malformed recipient entry must not abort scanning the rest of `to`.
                 continue
+            team = await is_team_address(candidate)
+            if team is not None:
+                row = await meeting_invites.team_row(team[0], candidate)
+                break
             row = await get_by_address(candidate)
             if row is not None:
                 break
@@ -232,6 +250,13 @@ async def handle_ses_inbound(body: SesInboundBody, request: Request):
             dkim = str(verdicts.get("dkim") or "").upper()
             if spf == "FAIL" and dkim == "FAIL":
                 return _final("dropped_failed_authentication")
+
+        # A member's invite to the team address is a meeting, not mail. After
+        # the spam/spoof gates, before the loop guard: an invite is not a reply.
+        if team is not None and body.calendar:
+            outcome = await meeting_invites.handle_team_mail(row["owner_id"], body, row)
+            if outcome is not None:
+                return _final(outcome)
 
         # Loop guard: never deliver autoresponder/bulk/list traffic — an
         # agent replying to one of these could re-trigger itself forever.

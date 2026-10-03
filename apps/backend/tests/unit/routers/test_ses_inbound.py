@@ -1062,3 +1062,62 @@ def test_ses_events_notice_is_once_per_owner_per_day(client, monkeypatch):
     assert second.json()["status"] == "disabled" and second.json()["notified"] is False
     # Disabling is NOT suppressed -- only the email is.
     assert upd.await_count == 2
+
+
+TEAM_ADDRESS = "agents@acme.agents.isol8.co"
+CEO_ID = "ceo-1"
+INVITE = "\r\n".join(
+    [
+        "BEGIN:VCALENDAR",
+        "METHOD:REQUEST",
+        "BEGIN:VEVENT",
+        "UID:evt-1@google.com",
+        "DTSTART:20261003T190000Z",
+        "ORGANIZER;CN=Stranger:mailto:stranger@elsewhere.com",
+        f"ATTENDEE;CN=agents:mailto:{TEAM_ADDRESS}",
+        "X-GOOGLE-CONFERENCE:https://meet.google.com/abc-defg-hij",
+        "END:VEVENT",
+        "END:VCALENDAR",
+    ]
+)
+
+
+def _team(monkeypatch, members):
+    from core.services import meeting_invites
+
+    monkeypatch.setattr(ses_inbound, "is_team_address", AsyncMock(return_value=(OWNER_ID, "acme")))
+    team_row = {"owner_id": OWNER_ID, "agent_id": CEO_ID, "address": TEAM_ADDRESS, "verified_senders": [SENDER]}
+    monkeypatch.setattr(meeting_invites, "team_row", AsyncMock(return_value=team_row))
+    monkeypatch.setattr(meeting_invites.clerk_admin, "list_organization_members", AsyncMock(return_value=members))
+    monkeypatch.setattr(meeting_invites.meetings_repo, "get_meeting", AsyncMock(return_value=None))
+    put = AsyncMock()
+    monkeypatch.setattr(meeting_invites.meetings_repo, "put_meeting", put)
+    monkeypatch.setattr(ses_inbound, "trial_block_reason", AsyncMock(return_value=None))
+    deliver = AsyncMock(return_value="delivered")
+    monkeypatch.setattr(ses_inbound, "deliver_to_agent", deliver)
+    return put, deliver
+
+
+def test_a_strangers_invite_to_the_team_address_is_ceo_mail(client, monkeypatch):
+    _enable(monkeypatch)
+    _dedup_recorded(monkeypatch)
+    put, deliver = _team(monkeypatch, [{"email": "member@acme.com"}])
+
+    resp = _post(client, _body(to=[TEAM_ADDRESS], calendar=INVITE))
+
+    assert resp.json()["status"] == "delivered"
+    put.assert_not_awaited()
+    deliver.assert_awaited_once()
+    assert deliver.await_args.kwargs["agent_id"] == CEO_ID
+
+
+def test_a_members_invite_to_the_team_address_is_a_meeting(client, monkeypatch):
+    _enable(monkeypatch)
+    _dedup_recorded(monkeypatch)
+    put, deliver = _team(monkeypatch, [{"email": "stranger@elsewhere.com"}])
+
+    resp = _post(client, _body(to=[TEAM_ADDRESS], calendar=INVITE))
+
+    assert resp.json()["status"] == "meeting_scheduled"
+    put.assert_awaited_once()
+    deliver.assert_not_awaited()

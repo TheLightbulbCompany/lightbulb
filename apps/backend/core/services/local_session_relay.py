@@ -621,8 +621,13 @@ class LocalSessionRelay:
         # It still fires when the frame fails part-way, because the retry finds those rows already
         # matching and would not hint again.
         hint = False
+        # A row that loses its revision race (an upload or a dispatch wrote it meanwhile) goes
+        # back on the end of this list to be re-read and re-applied alone, twice at most: one
+        # conflict must not rerun every other row. Past that, handle_message reruns the frame.
+        items = list(message.sessions)
+        retries: dict[str, int] = {}
         try:
-            for item in message.sessions:
+            for item in items:
                 row = await repo.get_session(owner, item.session_id)
                 if (
                     row is None
@@ -687,7 +692,14 @@ class LocalSessionRelay:
                 controls_changed = row.get("capabilities") != updated.get("capabilities")
                 if moved:
                     updated["lastEventAt"] = now
-                await repo.put_session(updated, row, enrollment, extra=[self._connection_check(cid, connection)])
+                try:
+                    await repo.put_session(updated, row, enrollment, extra=[self._connection_check(cid, connection)])
+                except ClientError as exc:
+                    if not store._is_cancelled(exc) or retries.get(item.session_id, 0) >= 2:
+                        raise
+                    retries[item.session_id] = retries.get(item.session_id, 0) + 1
+                    items.append(item)
+                    continue
                 if attention:
                     # The write above is revision-fenced, so exactly one frame wins a transition:
                     # one state change is one notification, retries included.

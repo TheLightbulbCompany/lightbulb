@@ -1547,6 +1547,34 @@ async def test_device_heartbeat_renews_listed_sessions_and_rejects_foreign_or_en
 
 
 @pytest.mark.asyncio
+async def test_device_heartbeat_retries_only_the_row_that_lost_its_revision_race(transport):
+    module = importlib.import_module("core.services.local_session_relay")
+    sids = [await start(transport)]
+    for thread in ("thread-2", "thread-3"):
+        registered = await relay(transport).handle_message("conn-1", registration(nativeConversationId=thread))
+        sids.append(registered["sessionId"])
+    frame = heartbeat(sids[0], status="idle")
+    frame["sessions"] += [{**frame["sessions"][0], "sessionId": sid} for sid in sids[1:]]
+    contested, real, puts = sids[1], repo.put_session, {sid: 0 for sid in sids}
+
+    async def upload_wins_once(row, previous, enrollment, **kwargs):
+        puts[row["sessionId"]] += 1
+        if row["sessionId"] == contested and puts[contested] == 1:
+            # An upload writes the same row between the heartbeat's read and its fenced write.
+            await real(module._revised(previous), previous, enrollment)
+        await real(row, previous, enrollment, **kwargs)
+
+    with patch.object(repo, "put_session", side_effect=upload_wins_once):
+        response = await relay(transport).handle_message("conn-1", frame)
+
+    assert response["type"] == "local.device.heartbeat.ack" and response["rejected"] == []
+    # The contested row is re-read and written again; the others are written once, so the
+    # frame itself ran once.
+    assert puts == {sids[0]: 1, contested: 2, sids[2]: 1}
+    assert all((await repo.get_session(OWNER, sid))["status"] == "idle" for sid in sids)
+
+
+@pytest.mark.asyncio
 async def test_ended_frame_marks_row_ended_idempotently_and_hints(transport):
     with patch("time.time", return_value=10000):
         sid = await start(transport)

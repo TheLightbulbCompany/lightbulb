@@ -19,6 +19,7 @@ logger = logging.getLogger(__name__)
 AGENT_IDENTITY = "agent-ceo"
 AGENT_NAME = "lightbulb-huddle"
 FRAME_TOPIC = "call.frame"
+MEET_SPEAKER_TOPIC = "meet.speaker"
 MAX_PACKET_BYTES = 14_000  # LiveKit drops data packets over ~15 KB
 _OVERHEAD = b'{"events":[]}'
 
@@ -45,6 +46,11 @@ def meet_ticket(room_id: str, nonce: str, exp_epoch: int) -> str:
 
 def room_name(room_id: str) -> str:
     return f"huddle-{settings.ENVIRONMENT}-{room_id}"
+
+
+def meet_room_name(room_id: str) -> str:
+    """A meeting's LiveKit room: the Recall bot's page and the worker meet here."""
+    return f"meet-{settings.ENVIRONMENT}-{room_id}"
 
 
 def _api() -> api.LiveKitAPI:
@@ -89,13 +95,19 @@ async def participants(room_id: str) -> list[str]:
     return [i for i in await _identities(room_id) if i != AGENT_IDENTITY]
 
 
-async def dispatch_ceo(room_id: str, metadata: dict) -> None:
+async def _dispatch(room: str, metadata: dict) -> None:
     async with _api() as lk:
         await lk.agent_dispatch.create_dispatch(
-            api.CreateAgentDispatchRequest(
-                agent_name=AGENT_NAME, room=room_name(room_id), metadata=json.dumps(metadata)
-            )
+            api.CreateAgentDispatchRequest(agent_name=AGENT_NAME, room=room, metadata=json.dumps(metadata))
         )
+
+
+async def dispatch_ceo(room_id: str, metadata: dict) -> None:
+    await _dispatch(room_name(room_id), metadata)
+
+
+async def dispatch_meet(room_id: str, metadata: dict) -> None:
+    await _dispatch(meet_room_name(room_id), metadata)
 
 
 async def _best_effort(what: str, room_id: str, call) -> None:
@@ -121,11 +133,11 @@ async def remove_participant(room_id: str, identity: str) -> None:
     )
 
 
-async def close_room(room_id: str) -> None:
-    """An archived or deleted channel's huddle ends for everyone (the worker's shutdown closes its call)."""
-    await _best_effort(
-        "close_room", room_id, lambda lk: lk.room.delete_room(api.DeleteRoomRequest(room=room_name(room_id)))
-    )
+async def close_room(room_id: str, *, meet: bool = False) -> None:
+    """An archived or deleted channel's huddle (or an ended meeting's room) ends for everyone (the
+    worker's shutdown closes its call)."""
+    room = meet_room_name(room_id) if meet else room_name(room_id)
+    await _best_effort("close_room", room_id, lambda lk: lk.room.delete_room(api.DeleteRoomRequest(room=room)))
 
 
 def _packets(events: list[dict]) -> list[bytes]:
@@ -162,3 +174,16 @@ async def send_frames(room_id: str, events: list[dict]) -> None:
                     kind=lk_models.DataPacket.RELIABLE,
                 )
             )
+
+
+async def send_meet_speaker(room_id: str, event: dict) -> None:
+    """One Recall speaker event to everyone in the meeting's room (the worker reads who is talking)."""
+    async with _api() as lk:
+        await lk.room.send_data(
+            api.SendDataRequest(
+                room=meet_room_name(room_id),
+                data=json.dumps(event, separators=(",", ":")).encode(),
+                topic=MEET_SPEAKER_TOPIC,
+                kind=lk_models.DataPacket.RELIABLE,
+            )
+        )

@@ -175,9 +175,12 @@ pub(crate) fn open_window(app: &AppHandle, info: &HolderInfo) -> Result<(), Stri
 /// "Claude Code" or "Codex" for a holder's argv. The provider's path is searched, not its file
 /// name: Claude Code's binary is `…/claude/versions/<number>`, and a linked start wraps it in `/bin/sh`.
 pub fn provider_label(argv: &[String]) -> &'static str {
-    if argv.iter().any(|a| a.contains("codex")) {
+    // Only the executable: the first message is in argv too, and may mention either name.
+    let wrapped = argv.first().is_some_and(|a| a == "/bin/sh") && argv.get(3).is_some_and(|a| a == "lightbulb-start");
+    let program = argv.get(if wrapped { 6 } else { 0 }).map(String::as_str).unwrap_or("");
+    if program.contains("codex") {
         "Codex"
-    } else if argv.iter().any(|a| a.contains("claude")) {
+    } else if program.contains("claude") {
         "Claude Code"
     } else {
         "Session"
@@ -226,6 +229,7 @@ mod tests {
         assert_eq!(provider_label(&argv(&["/bin/sh", "-c", "x", "lightbulb-start", "id", "/scope", "/Users/a/.local/share/claude/versions/2.1.288", "--", "hi"])), "Claude Code");
         assert_eq!(provider_label(&argv(&["/opt/homebrew/bin/codex", "--no-daemon"])), "Codex");
         assert_eq!(provider_label(&argv(&["/bin/cat"])), "Session");
+        assert_eq!(provider_label(&argv(&["/Users/a/.local/share/claude/versions/2.1.288", "--", "fix the codex integration"])), "Claude Code");
     }
 
     #[test]

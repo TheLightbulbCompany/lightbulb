@@ -61,7 +61,10 @@ export function openHeldSession(holderId: string): Promise<unknown> {
 /** "Claude Code · ~/code/site" for a held session. */
 export function heldLabel(session: HeldSession): string {
   // The path, not the file name: Claude Code's binary is `…/claude/versions/<number>`.
-  const has = (name: string) => session.argv.some((a) => a.includes(name));
+  // Only the executable: the first message is in argv too. A linked start wraps it in /bin/sh.
+  const wrapped = session.argv[0] === "/bin/sh" && session.argv[3] === "lightbulb-start";
+  const program = session.argv[wrapped ? 6 : 0] ?? "";
+  const has = (name: string) => program.includes(name);
   const folder = session.cwd.replace(/^\/Users\/[^/]+(?=\/|$)/, "~");
   return `${has("codex") ? "Codex" : has("claude") ? "Claude Code" : "Session"} · ${folder}`;
 }

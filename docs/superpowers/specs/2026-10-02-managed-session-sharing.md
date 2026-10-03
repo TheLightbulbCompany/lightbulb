@@ -103,10 +103,14 @@ else: no network, no auth, no session bookkeeping.
 - **Binary.** Shipped in the bundle's resources and signed like the existing sidecars
   (`tauri.conf.json` `resources`). It runs from inside the bundle if kill test 1 shows the
   updater's bundle replacement does not kill it; only if that fails is it copied out.
-- **Environment.** The child is started through the user's login shell
-  (`$SHELL -l -i -c "exec <provider> <args>"`, so `.zshrc` PATH and version managers apply).
-  The holder sets `TERM=xterm-256color`, `COLORTERM=truecolor`, and `LANG` from the user's
-  locale when unset (a GUI app's environment has none).
+- **Environment.** The holder reads the user's login-shell environment once
+  (`$SHELL -l -i -c 'env -0'` with stdin closed and `DISABLE_AUTO_UPDATE=true`, as VS Code
+  does), then starts the provider **directly** with it. Running the provider *through* an
+  interactive shell is wrong: the shell's own startup prompts run inside the session (the spike
+  hit oh-my-zsh's "Would you like to update? [Y/n]", which swallowed the first keystrokes).
+  Starting it directly also makes the provider the holder's own child. The holder sets
+  `TERM=xterm-256color`, `COLORTERM=truecolor`, and `LANG` when unset (a GUI app's
+  environment has none).
 - **Terminal model.** The holder feeds all output through an in-process terminal emulator
   (a Rust crate such as `alacritty_terminal` or `vt100`; Phase 1 picks one). It:
   - tracks screen, scrollback and modes (alt screen, bracketed paste `?2004`, focus `?1004`,
@@ -354,6 +358,23 @@ Live tests on the founder's Mac, 2026-10-02 (Claude Code 2.1.287/288, Codex 0.15
   turn cleanly, ~0.9 KB/s during a reply. Tested against a simulated terminal only.
 - `SIGINT` to an interactive `claude` closes the whole session.
 - `claude --resume <id>` from a new process kept the conversation.
+
+Phase 1a, task 1.1 (holder prototype, `spike/managed-sessions`, Claude Code 2.1.288, `vt100`
+0.16, `portable-pty` 0.9):
+
+- Claude started with **no client attached** came up normally; a client attaching 15 s later
+  got a correct snapshot, including bracketed-paste mode (`?2004h`).
+- The only terminal queries Claude sent were the kitty keyboard query and DA1
+  (`ESC[?u ESC[c`); answering DA1 alone is enough. `vt100` does not track kitty keyboard or
+  synchronized output; nothing visibly broke without them.
+- A client killed mid-turn and a new one attached: same provider pid, the snapshot showed the
+  turn's output.
+- A three-line bracketed paste at idle stayed in the prompt (status stayed idle).
+- `Esc` with a permission prompt open rejected it; the file was not written. `Esc` during a
+  turn was inconclusive this run (the turn finished first); it interrupted cleanly in the
+  earlier pass-through test.
+- Output volume: 47 KB over 122 s (~0.4 KB/s).
+- Claude's normal "trust this folder" question appears for a new folder, as in any terminal.
 
 Reviews: desktop architecture, backend/security architecture, and an over-engineering pass
 (2026-10-02); their blocking findings are resolved in this revision. Research: Happy Coder

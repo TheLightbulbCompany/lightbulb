@@ -120,21 +120,6 @@ async def delete_all_for_owner(owner_id: str) -> list[str]:
     return addresses
 
 
-async def scan_all() -> list[dict]:
-    """Every row in the table, paginated. For one-off sweeps
-    (``scripts/delete_per_agent_mail_rows.py``), never the request path."""
-    table = _get_table()
-    items: list[dict] = []
-    kwargs: dict = {}
-    while True:
-        page = await run_in_thread(table.scan, **kwargs)
-        items.extend(page.get("Items", []))
-        last = page.get("LastEvaluatedKey")
-        if not last:
-            return items
-        kwargs["ExclusiveStartKey"] = last
-
-
 _UNSET = object()
 
 

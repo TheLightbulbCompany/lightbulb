@@ -165,6 +165,9 @@ CEO, ENG = "11111111-1111-4111-8111-111111111111", "22222222-2222-4222-8222-2222
 WITH_DANA = GOOGLE.replace("SEQUENCE:0", "ATTENDEE;CN=Dana:mailto:dana@acme.com\r\nSEQUENCE:0")
 
 
+_SYNC_BOT = meeting_invites._sync_bot
+
+
 @pytest.fixture
 def room(monkeypatch):
     """A fake room store: create_room writes META with ``extra``, patch_room_meta merges into it."""
@@ -175,14 +178,24 @@ def room(monkeypatch):
         if seen is not None:
             if seen[0] != kw["req_hash"]:
                 raise meeting_invites.messaging_repo.IdempotencyConflict("different request")
-            return
+            return {"messageId": kw["idemp_sk"]}, True
         state["lines"][kw["idemp_sk"]] = (kw["req_hash"], kw["text"])
+        return {"messageId": kw["idemp_sk"]}, False
 
     def create(**kw):
         state["meta"] = {"roomId": kw["room_id"], **kw["extra"]}
 
-    def patch(room_id, updates):
-        state["meta"] = {**state["meta"], **updates}
+    def patch(room_id, updates, expected_revision=None):  # the repo's CAS on the revision the caller read
+        if expected_revision != state["meta"].get("revision", 0):
+            raise _cas_lost()
+        state["meta"] = {**state["meta"], **updates, "revision": expected_revision + 1}
+
+    def set_if_absent(room_id, field, value, also=None):  # the repo's conditional nested write
+        meeting = (state["meta"] or {}).get("meeting")
+        if meeting is None or field in meeting:
+            return False
+        state["meta"] = {**state["meta"], "meeting": {**meeting, field: value, **(also or {})}}
+        return True
 
     m = SimpleNamespace(
         state=state,
@@ -202,6 +215,7 @@ def room(monkeypatch):
     monkeypatch.setattr(repo, "get_room", m.get)
     monkeypatch.setattr(repo, "create_room", m.create)
     monkeypatch.setattr(repo, "patch_room_meta", m.patch)
+    monkeypatch.setattr(repo, "set_meeting_field_if_absent", AsyncMock(side_effect=set_if_absent))
     monkeypatch.setattr(repo, "create_message", m.post)
     monkeypatch.setattr(repo, "ensure_user_stream", AsyncMock())
     monkeypatch.setattr(meeting_invites.clerk_admin, "list_organization_members", m.members)
@@ -221,6 +235,12 @@ def room(monkeypatch):
     ]
     monkeypatch.setattr(meeting_invites.messaging, "load_agent_roster", AsyncMock(return_value=roster))
     monkeypatch.setattr(meeting_invites.messaging, "human_display_name", AsyncMock(side_effect=lambda u: u))
+    # Meetings available, Recall stubbed out: the `bots` fixture puts the real booking back.
+    monkeypatch.setattr(meeting_invites.settings, "LIVEKIT_URL", "wss://lk.test")
+    monkeypatch.setattr(meeting_invites.settings, "RECALL_API_KEY", "rk")
+    booked = {"recallBotId": "bot-1", "status": "bot_created"}  # returned, not stored: META keeps the invite's status
+    m.sync = AsyncMock(side_effect=lambda o, r, meeting, p: {**meeting, **booked})
+    monkeypatch.setattr(meeting_invites, "_sync_bot", m.sync)
     return m
 
 
@@ -328,17 +348,17 @@ async def test_a_lost_meta_race_is_retried_once(room):
     moved = GOOGLE.replace("SEQUENCE:0", "SEQUENCE:1").replace("T150000", "T160000")
     assert await meeting_invites.handle_team_mail("org_1", _mail(moved), TEAM) == "meeting_scheduled"
     assert room.patch.await_count == 2
-    room.patch.side_effect = [_cas_lost(), _cas_lost()]
+    room.patch.side_effect = [_cas_lost(), _cas_lost(), _cas_lost()]
     again = moved.replace("SEQUENCE:1", "SEQUENCE:2")
-    with pytest.raises(type(_cas_lost())):  # lost twice: nothing was written, so SES must retry
+    with pytest.raises(meeting_invites.ClientError):  # three lost races: SES redelivers
         await meeting_invites.handle_team_mail("org_1", _mail(again), TEAM)
-    assert room.patch.await_count == 4
+    assert room.patch.await_count == 5
 
 
 async def test_a_lost_race_to_a_newer_sequence_is_not_retried(room):
     await meeting_invites.handle_team_mail("org_1", _mail(GOOGLE), TEAM)
 
-    def newer_won(room_id, updates):
+    def newer_won(room_id, updates, **_):
         room.state["meta"] = {**room.state["meta"], "meeting": {**room.state["meta"]["meeting"], "sequence": 5}}
         raise _cas_lost()
 
@@ -367,7 +387,7 @@ async def test_an_older_sequence_that_read_the_room_first_writes_nothing(room):
 async def test_a_stale_patch_writes_nothing(room):
     await meeting_invites.handle_team_mail("org_1", _mail(GOOGLE), TEAM)
     room.state["meta"]["meeting"]["sequence"] = 3
-    assert await meeting_invites._patch_meeting(room.state["meta"]["roomId"], {"sequence": 2}) is False
+    assert await meeting_invites._patch_meeting(room.state["meta"]["roomId"], {"sequence": 2}) is None
     assert room.state["meta"]["meeting"]["sequence"] == 3
 
 
@@ -462,6 +482,298 @@ async def test_a_clerk_failure_propagates(room):
     assert room.members.await_args.kwargs == {"strict": True}
 
 
+@pytest.fixture
+def bots(room, monkeypatch):
+    """Recall faked at the adapter; the real booking path."""
+    b = SimpleNamespace(
+        create=AsyncMock(return_value="bot-1"),
+        reschedule=AsyncMock(),
+        leave=AsyncMock(),
+        metric=[],
+    )
+    monkeypatch.setattr(meeting_invites, "_sync_bot", _SYNC_BOT)
+    monkeypatch.setattr(meeting_invites.settings, "RECALL_API_KEY", "rk")
+    monkeypatch.setattr(meeting_invites.meeting_bots, "create", b.create)
+    monkeypatch.setattr(meeting_invites.meeting_bots, "reschedule", b.reschedule)
+    monkeypatch.setattr(meeting_invites.meeting_bots, "leave", b.leave)
+    monkeypatch.setattr(meeting_invites.clerk_admin, "get_organization", AsyncMock(return_value={"name": "Acme"}))
+    monkeypatch.setattr(meeting_invites, "put_metric", lambda name, **kw: b.metric.append((name, kw)))
+    return b
+
+
+MOVED = GOOGLE.replace("SEQUENCE:0", "SEQUENCE:1").replace("T150000", "T160000")
+CANCEL = GOOGLE.replace("METHOD:REQUEST", "METHOD:CANCEL").replace("SEQUENCE:0", "SEQUENCE:1")
+
+
+async def test_an_invite_books_one_bot(room, bots):
+    assert await meeting_invites.handle_team_mail("org_1", _mail(GOOGLE), TEAM) == "meeting_scheduled"
+    bots.create.assert_awaited_once()
+    kw = bots.create.await_args.kwargs
+    assert kw["company"] == "Acme" and kw["room_id"] == room.state["meta"]["roomId"]
+    meeting = room.state["meta"]["meeting"]
+    assert meeting["status"] == "bot_created" and meeting["recallBotId"] == "bot-1"
+    assert meeting["ticketNonce"] == kw["meeting"]["ticketNonce"]  # persisted before the POST
+    await meeting_invites.handle_team_mail("org_1", _mail(GOOGLE), TEAM)  # SES retry / resend
+    bots.create.assert_awaited_once()
+
+
+@pytest.mark.parametrize("missing", ["LIVEKIT_URL", "RECALL_API_KEY"])
+async def test_meetings_unavailable_keep_the_room_for_notes(room, bots, monkeypatch, missing):
+    monkeypatch.setattr(meeting_invites.settings, missing, "")
+    room.accept.return_value = True
+    assert await meeting_invites.handle_team_mail("org_1", _mail(GOOGLE), TEAM) == "meeting_scheduled"
+    bots.create.assert_not_awaited()
+    room.accept.assert_not_awaited()
+    assert room.state["meta"]["meeting"]["status"] == "scheduled"
+    assert _lines(room) == ["Meetings aren't available in this environment yet — the room is here for notes."]
+
+
+async def test_a_full_bot_pool_is_bot_failed_not_a_raise(room, bots):
+    bots.create.side_effect = meeting_invites.meeting_bots.RecallError("507")
+    assert await meeting_invites.handle_team_mail("org_1", _mail(GOOGLE), TEAM) == "meeting_scheduled"
+    meeting = room.state["meta"]["meeting"]
+    assert meeting["status"] == "bot_failed" and meeting["botError"] == "507"
+    assert "recallBotId" not in meeting and meeting["ticketNonce"]  # a 5xx may have booked: the key stays
+    assert bots.metric == [("meeting.bot_failed", {"dimensions": {"code": "507"}})]
+    assert _lines(room)[-1] == (
+        "Couldn't book a bot for this meeting: no meeting bots are free right now. Forward the invite again to retry."
+    )
+
+
+async def test_a_resend_on_bot_failed_retries_create(room, bots):
+    bots.create.side_effect = [meeting_invites.meeting_bots.RecallError("507"), "bot-2"]
+    await meeting_invites.handle_team_mail("org_1", _mail(GOOGLE), TEAM)
+    await meeting_invites.handle_team_mail("org_1", _mail(GOOGLE), TEAM)
+    assert bots.create.await_count == 2
+    meeting = room.state["meta"]["meeting"]
+    assert meeting["status"] == "bot_created" and meeting["recallBotId"] == "bot-2" and "botError" not in meeting
+
+
+async def test_a_move_reschedules_the_bot_once(room, bots):
+    await meeting_invites.handle_team_mail("org_1", _mail(GOOGLE), TEAM)
+    await meeting_invites.handle_team_mail("org_1", _mail(MOVED), TEAM)
+    bots.create.assert_awaited_once()
+    bots.reschedule.assert_awaited_once()
+    assert bots.reschedule.await_args.args == ("bot-1",)
+    assert bots.reschedule.await_args.kwargs["meeting"]["startAt"] == int(
+        datetime(2026, 10, 3, 20, 0, tzinfo=timezone.utc).timestamp()
+    )
+    assert room.state["meta"]["meeting"]["status"] == "bot_created"
+
+
+async def test_a_move_too_close_to_start_replaces_the_bot(room, bots):
+    bots.create.side_effect = ["bot-1", "bot-2"]
+    bots.reschedule.side_effect = meeting_invites.meeting_bots.RecallError("400")
+    await meeting_invites.handle_team_mail("org_1", _mail(GOOGLE), TEAM)
+    await meeting_invites.handle_team_mail("org_1", _mail(MOVED), TEAM)
+    bots.leave.assert_awaited_once_with("bot-1")
+    assert room.state["meta"]["meeting"]["recallBotId"] == "bot-2"
+
+
+async def test_cancel_pulls_the_bot_once(room, bots):
+    await meeting_invites.handle_team_mail("org_1", _mail(GOOGLE), TEAM)
+    assert await meeting_invites.handle_team_mail("org_1", _mail(CANCEL), TEAM) == "meeting_cancelled"
+    bots.leave.assert_awaited_once_with("bot-1")
+    meeting = room.state["meta"]["meeting"]
+    assert meeting["status"] == "cancelled" and "recallBotId" not in meeting
+    bots.create.assert_awaited_once()
+
+
+def _bot_lines(room):
+    return [line for line in _lines(room) if "bot" in line]
+
+
+async def test_two_deliveries_book_one_bot(room, bots):
+    nonces = []
+
+    async def create(**kw):
+        nonces.append(kw["meeting"]["ticketNonce"])
+        if len(nonces) == 1:  # a second SES delivery lands while the first POST is in flight
+            await meeting_invites.handle_team_mail("org_1", _mail(GOOGLE), TEAM)
+        return "bot-1"
+
+    bots.create.side_effect = create
+    await meeting_invites.handle_team_mail("org_1", _mail(GOOGLE), TEAM)
+    assert len(nonces) == 1  # the second delivery saw a fresh claim and left the POST to it
+    assert room.state["meta"]["meeting"]["ticketNonce"] == nonces[0]
+
+
+async def test_a_bot_id_survives_two_lost_meta_races(room, bots):
+    merge, fails = room.patch.side_effect, [_cas_lost(), _cas_lost()]
+
+    def flaky(room_id, updates, **kw):
+        if fails:
+            raise fails.pop(0)
+        merge(room_id, updates, **kw)
+
+    room.patch.side_effect = flaky
+    await meeting_invites.handle_team_mail("org_1", _mail(GOOGLE), TEAM)
+    assert room.state["meta"]["meeting"]["recallBotId"] == "bot-1"
+
+
+async def test_a_bot_write_losing_three_times_raises_for_ses(room, bots):
+    room.patch.side_effect = _cas_lost()
+    with pytest.raises(meeting_invites.ClientError):
+        await meeting_invites.handle_team_mail("org_1", _mail(GOOGLE), TEAM)
+
+
+async def test_a_move_that_recall_drops_keeps_the_old_bot(room, bots):
+    bots.reschedule.side_effect = meeting_invites.meeting_bots.RecallError("503")
+    await meeting_invites.handle_team_mail("org_1", _mail(GOOGLE), TEAM)
+    await meeting_invites.handle_team_mail("org_1", _mail(MOVED), TEAM)
+    meeting = room.state["meta"]["meeting"]
+    assert meeting["status"] == "bot_failed" and meeting["botError"] == "503" and meeting["recallBotId"] == "bot-1"
+    bots.leave.assert_not_awaited()
+    bots.create.side_effect = ["bot-2"]
+    await meeting_invites.handle_team_mail("org_1", _mail(MOVED), TEAM)  # forwarded again
+    bots.leave.assert_awaited_once_with("bot-1")
+    assert room.state["meta"]["meeting"]["recallBotId"] == "bot-2"
+
+
+async def test_a_replacement_whose_leave_fails_keeps_the_old_bot(room, bots):
+    bots.reschedule.side_effect = meeting_invites.meeting_bots.RecallError("400")
+    bots.leave.side_effect = meeting_invites.meeting_bots.RecallError("503")
+    await meeting_invites.handle_team_mail("org_1", _mail(GOOGLE), TEAM)
+    await meeting_invites.handle_team_mail("org_1", _mail(MOVED), TEAM)
+    bots.create.assert_awaited_once()
+    assert room.state["meta"]["meeting"]["recallBotId"] == "bot-1"
+    assert _bot_lines(room) == ["Couldn't move the bot; it will join at the old time."]
+
+
+async def test_a_new_meet_link_replaces_the_bot(room, bots):
+    bots.create.side_effect = ["bot-1", "bot-2"]
+    await meeting_invites.handle_team_mail("org_1", _mail(GOOGLE), TEAM)
+    first = room.state["meta"]["meeting"]["ticketNonce"]
+    relinked = GOOGLE.replace("abc-defg-hij", "xyz-wxyz-xyz").replace("SEQUENCE:0", "SEQUENCE:1")
+    await meeting_invites.handle_team_mail("org_1", _mail(relinked), TEAM)
+    bots.leave.assert_awaited_once_with("bot-1")
+    bots.reschedule.assert_not_awaited()
+    meeting = room.state["meta"]["meeting"]
+    assert meeting["recallBotId"] == "bot-2" and meeting["ticketNonce"] != first
+    assert bots.create.await_args.kwargs["meeting"]["meetingUrl"] == "https://meet.google.com/xyz-wxyz-xyz"
+
+
+async def test_a_cancel_whose_leave_fails_says_so_and_retries(room, bots):
+    bots.leave.side_effect = [meeting_invites.meeting_bots.RecallError("503"), None]
+    await meeting_invites.handle_team_mail("org_1", _mail(GOOGLE), TEAM)
+    await meeting_invites.handle_team_mail("org_1", _mail(CANCEL), TEAM)
+    assert room.state["meta"]["meeting"]["recallBotId"] == "bot-1"
+    assert _lines(room)[-1] == "Couldn't pull the bot out of this meeting."
+    await meeting_invites.handle_team_mail("org_1", _mail(CANCEL), TEAM)
+    assert bots.leave.await_count == 2 and "recallBotId" not in room.state["meta"]["meeting"]
+
+
+async def test_an_unreadable_recall_answer_is_bot_failed(room, bots):
+    bots.create.side_effect = meeting_invites.meeting_bots.RecallError("bad_response")
+    assert await meeting_invites.handle_team_mail("org_1", _mail(GOOGLE), TEAM) == "meeting_scheduled"
+    assert room.state["meta"]["meeting"]["status"] == "bot_failed"
+    assert _bot_lines(room)[-1].startswith("Couldn't book a bot for this meeting: the meeting-bot service sent")
+
+
+async def test_a_definitive_4xx_mints_a_fresh_nonce_on_retry(room, bots):
+    bots.create.side_effect = [meeting_invites.meeting_bots.RecallError("400"), "bot-2"]
+    await meeting_invites.handle_team_mail("org_1", _mail(GOOGLE), TEAM)
+    assert "ticketNonce" not in room.state["meta"]["meeting"]
+    await meeting_invites.handle_team_mail("org_1", _mail(GOOGLE), TEAM)
+    first, second = (c.kwargs["meeting"]["ticketNonce"] for c in bots.create.await_args_list)
+    assert first != second and room.state["meta"]["meeting"]["recallBotId"] == "bot-2"
+
+
+async def test_a_409_from_recall_is_never_acknowledged_without_a_bot(room, bots):
+    """The first POST timed out here but is still in flight at Recall: the retry's 409 raises, so
+    the SES route 5xx's, and the redelivery reuses the stored nonce and gets the cached bot."""
+    err = meeting_invites.meeting_bots.RecallError
+    bots.create.side_effect = [err("timeout"), err("409"), "bot-1"]
+    await meeting_invites.handle_team_mail("org_1", _mail(GOOGLE), TEAM)
+    with pytest.raises(meeting_invites.MeetingBusy):
+        await meeting_invites.handle_team_mail("org_1", _mail(GOOGLE), TEAM)
+    assert "recallBotId" not in room.state["meta"]["meeting"]
+    assert await meeting_invites.handle_team_mail("org_1", _mail(GOOGLE), TEAM) == "meeting_scheduled"
+    nonces = {c.kwargs["meeting"]["ticketNonce"] for c in bots.create.await_args_list}
+    assert len(nonces) == 1 and room.state["meta"]["meeting"]["recallBotId"] == "bot-1"
+
+
+async def test_a_timeout_retry_reuses_the_nonce(room, bots):
+    bots.create.side_effect = [meeting_invites.meeting_bots.RecallError("timeout"), "bot-1"]
+    await meeting_invites.handle_team_mail("org_1", _mail(GOOGLE), TEAM)
+    await meeting_invites.handle_team_mail("org_1", _mail(GOOGLE), TEAM)
+    first, second = (c.kwargs["meeting"]["ticketNonce"] for c in bots.create.await_args_list)
+    assert first == second
+
+
+async def test_two_first_deliveries_racing_the_room_create_book_one_bot(room, bots):
+    """B misses the room, A creates it and claims the nonce mid-POST, then B's create loses and
+    re-reads: B must neither erase A's claim nor POST."""
+    calls = []
+
+    async def create(**kw):
+        calls.append(kw["meeting"]["ticketNonce"])
+        if len(calls) == 1:  # B arrives during A's POST, having read no room
+            seen = {"n": 0}
+
+            def get(room_id):
+                seen["n"] += 1
+                return None if seen["n"] == 1 else room.state["meta"]
+
+            room.get.side_effect = get
+            room.create.side_effect = meeting_invites.messaging_repo.MessagingRepoError("lost the create")
+            await meeting_invites.handle_team_mail("org_1", _mail(GOOGLE), TEAM)
+        return "bot-1"
+
+    bots.create.side_effect = create
+    await meeting_invites.handle_team_mail("org_1", _mail(GOOGLE), TEAM)
+    meeting = room.state["meta"]["meeting"]
+    assert len(calls) == 1 and meeting["ticketNonce"] == calls[0] and meeting["recallBotId"] == "bot-1"
+
+
+async def test_the_rsvp_write_keeps_the_bot(room, bots):
+    room.accept.return_value = True
+    await meeting_invites.handle_team_mail("org_1", _mail(GOOGLE), TEAM)
+    meeting = room.state["meta"]["meeting"]
+    assert meeting["rsvpSequence"] == 0 and meeting["recallBotId"] == "bot-1" and meeting["ticketNonce"]
+
+
+async def test_a_winner_timing_out_after_the_other_delivery_booked_is_not_a_failure(room, bots):
+    async def create(**kw):  # the POST times out, but the bot it booked was written meanwhile
+        meta = room.state["meta"]
+        room.state["meta"] = {**meta, "meeting": {**meta["meeting"], "recallBotId": "bot-1", "status": "bot_created"}}
+        raise meeting_invites.meeting_bots.RecallError("timeout")
+
+    bots.create.side_effect = create
+    await meeting_invites.handle_team_mail("org_1", _mail(GOOGLE), TEAM)
+    assert room.state["meta"]["meeting"]["recallBotId"] == "bot-1"
+    assert _bot_lines(room) == []
+
+
+async def test_a_cancel_during_the_booking_pulls_the_new_bot(room, bots):
+    async def create(**kw):  # the CANCEL lands while the POST is in flight
+        assert await meeting_invites.handle_team_mail("org_1", _mail(CANCEL), TEAM) == "meeting_cancelled"
+        return "bot-1"
+
+    bots.create.side_effect = create
+    await meeting_invites.handle_team_mail("org_1", _mail(GOOGLE), TEAM)
+    bots.leave.assert_awaited_once_with("bot-1")
+    meeting = room.state["meta"]["meeting"]
+    assert meeting["status"] == "cancelled" and "recallBotId" not in meeting
+
+
+async def test_a_move_during_the_booking_reschedules_the_new_bot(room, bots):
+    async def create(**kw):  # the move lands while the POST is in flight
+        await meeting_invites.handle_team_mail("org_1", _mail(MOVED), TEAM)
+        return "bot-1"
+
+    bots.create.side_effect = create
+    await meeting_invites.handle_team_mail("org_1", _mail(GOOGLE), TEAM)
+    bots.create.assert_awaited_once()
+    bots.reschedule.assert_awaited_once()
+    assert bots.reschedule.await_args.args == ("bot-1",)
+    assert bots.reschedule.await_args.kwargs["meeting"]["startAt"] == int(
+        datetime(2026, 10, 3, 20, 0, tzinfo=timezone.utc).timestamp()
+    )
+    meeting = room.state["meta"]["meeting"]
+    assert meeting["status"] == "bot_created" and meeting["recallBotId"] == "bot-1"
+
+
 async def test_a_delivery_while_the_meeting_lease_is_held_retries_then_sees_the_newer_sequence(room):
     room.claim.return_value = None  # another delivery (the SEQUENCE:1 move) holds the lease
     with pytest.raises(meeting_invites.MeetingBusy):  # the SES route 503s; SES redelivers
@@ -492,6 +804,24 @@ def test_a_multi_address_organizer_is_dropped():
     assert meeting_invites.parse(cal).organizer_email is None
 
 
+async def test_a_write_is_bound_to_the_revision_it_read(room):
+    """A transcript write that read ``in_call`` must not put it back over a webhook's ``ended``."""
+    room.state["meta"] = {"roomId": "r", "revision": 1, "meeting": {"status": "in_call"}}
+    reads = iter([dict(room.state["meta"])])  # A's first read, then B commits before A writes
+
+    def get(room_id):
+        stale = next(reads, None)
+        if stale is not None:
+            room.state["meta"] = {"roomId": "r", "revision": 2, "meeting": {"status": "ended"}}
+            return stale
+        return room.state["meta"]
+
+    room.get.side_effect = get
+    written = await meeting_invites._patch_meeting("r", {"transcriptAttachedAt": 5})
+    assert written == room.state["meta"]["meeting"] == {"status": "ended", "transcriptAttachedAt": 5}
+    assert [c.kwargs["expected_revision"] for c in room.patch.await_args_list] == [1, 2]
+
+
 NO_START = "DTSTART;TZID=America/New_York:20261003T150000\r\n"
 
 
@@ -514,3 +844,26 @@ async def test_a_cancel_without_dtstart_cancels_the_stored_meeting(room):
     meeting = room.state["meta"]["meeting"]
     assert meeting["status"] == "cancelled" and meeting["startAt"]
     assert _lines(room)[-1] == "This meeting was cancelled."
+
+
+async def test_no_rsvp_unless_a_bot_is_booked(room):
+    room.accept.return_value = True
+    room.sync.side_effect = lambda o, r, meeting, p: {**meeting, "status": "bot_failed", "recallBotId": "bot-1"}
+    assert await meeting_invites.handle_team_mail("org_1", _mail(GOOGLE), TEAM) == "meeting_scheduled"
+    room.sync.side_effect = lambda o, r, meeting, p: meeting  # nothing booked at all
+    await meeting_invites.handle_team_mail("org_1", _mail(GOOGLE.replace("SEQUENCE:0", "SEQUENCE:1")), TEAM)
+    room.accept.assert_not_awaited()
+    assert "rsvpSequence" not in room.state["meta"]["meeting"]
+
+
+def test_tzid_parameter_name_is_case_insensitive():
+    lower = OUTLOOK.replace("DTSTART;TZID=", "DTSTART;tzid=")
+    assert meeting_invites.parse(lower).start == meeting_invites.parse(OUTLOOK).start
+
+
+async def test_a_replayed_cancel_posts_no_second_line(room):
+    await meeting_invites.handle_team_mail("org_1", _mail(GOOGLE), TEAM)
+    cal = GOOGLE.replace("METHOD:REQUEST", "METHOD:CANCEL").replace("SEQUENCE:0", "SEQUENCE:1")
+    await meeting_invites.handle_team_mail("org_1", _mail(cal), TEAM)
+    await meeting_invites.handle_team_mail("org_1", _mail(cal), TEAM)
+    assert _lines(room).count("This meeting was cancelled.") == 1

@@ -61,6 +61,7 @@ class FakeBackend:
         self.log = log
         self.team_data = copy.deepcopy(TEAM)
         self.summons: list[str] = []
+        self.summon_names: list[str | None] = []
         self.summon_error: BackendError | None = None
         self.sessions: list[str] = []
         self.session_extra: dict[str, dict] = {}
@@ -85,6 +86,7 @@ class FakeBackend:
         self.versions: list[int] = []
         self.team_calls = 0
         self.transcripts: list[tuple[str, list[dict]]] = []
+        self.finals: list[bool] = []
         self.late_answers: list[tuple[str, str, str, str]] = []
         self.transcript_gate: asyncio.Event | None = None
         self.presence_gate: asyncio.Event | None = None
@@ -103,11 +105,19 @@ class FakeBackend:
         floor=None,
         voice_runs=(),
         at=(),
+        setting="live",
+        unclaimed=False,
     ):
         self.routes.append((speaker, utterance, transcript))
         self.route_humans.append(humans)
         self.route_bodies.append(
-            {"floor": floor, "voiceRuns": list(voice_runs), "at": list(at)}
+            {
+                "floor": floor,
+                "voiceRuns": list(voice_runs),
+                "at": list(at),
+                "setting": setting,
+                "unclaimed": unclaimed,
+            }
         )
         extra, gate = (
             self.route_extra,
@@ -118,8 +128,9 @@ class FakeBackend:
         agent = self.route_to if humans is None else self.jev_to
         return {"agentId": agent, "agentIds": [agent] if agent else [], **extra}
 
-    async def summon(self, speaker):
+    async def summon(self, speaker, speaker_name=None):
         self.summons.append(speaker)
+        self.summon_names.append(speaker_name)
         await asyncio.sleep(0)  # a real POST yields
         if self.summon_error:
             raise self.summon_error
@@ -149,6 +160,7 @@ class FakeBackend:
         transcript,
         steer_run_id=None,
         steer_only=False,
+        speaker_name=None,
     ):
         if (
             steer_only
@@ -166,6 +178,7 @@ class FakeBackend:
             {
                 "callId": call_id,
                 "speaker": speaker,
+                "speakerName": speaker_name,
                 "agentId": agent_id,
                 "runId": run_id,
                 "utterance": utterance,
@@ -200,10 +213,14 @@ class FakeBackend:
     async def late_answer(self, agent_id, run_id, request, answer):
         self.late_answers.append((agent_id, run_id, request, answer))
 
-    async def transcript(self, huddle_id, lines):
+    async def transcript(self, huddle_id, lines, final=False):
         if self.transcript_gate:
             await self.transcript_gate.wait()
         self.transcripts.append((huddle_id, lines))
+        self.finals.append(final)
+
+    async def leave_meeting(self):
+        self.log.append("leave_meeting")
 
 
 class FakeLive:
@@ -256,7 +273,7 @@ class FakeLive:
         self.usage = self.final_usage
 
 
-def make():
+def make(**kw):
     log: list[str] = []
     room, backend, clock = FakeRoom(), FakeBackend(log), Clock()
     room.log = log
@@ -287,6 +304,7 @@ def make():
         clock=clock,
         sleep=sleep,
         on_vocabulary=vocab.append,
+        **kw,
     )
     h.fail, h.gate, h.vocab = fail, gate, vocab
     return h, room, backend, lives, clock, log
@@ -631,7 +649,7 @@ async def test_held_news_seeds_its_own_agent_and_is_consumed():
 async def test_budget_is_summed_usage_including_the_open_voice():
     h, room, backend, lives, clock, log = make()
     backend_summon = dict(SUMMON, budgetSeconds=120)
-    backend.summon = lambda speaker: _resolved(backend_summon)
+    backend.summon = lambda speaker, speaker_name=None: _resolved(backend_summon)
     await h.on_participants({"u1": "Prasiddha"})
     await say(h, "u1", "Forge, hi")
     lives[0].final_usage = 100
@@ -2019,6 +2037,8 @@ async def test_backend_client_option_d_routes(monkeypatch):
                 "floor": None,
                 "voiceRuns": [],
                 "at": [],
+                "setting": "live",
+                "unclaimed": False,
                 **base,
             },
         ),

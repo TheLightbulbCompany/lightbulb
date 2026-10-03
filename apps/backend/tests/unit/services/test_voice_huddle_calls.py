@@ -36,6 +36,7 @@ def start_env():
             AsyncMock(return_value=SimpleNamespace(company_id="co-1", starter_agent_ids={"ceo": "ceo-1"})),
         ),
         patch.object(vc, "_room_team", AsyncMock(return_value=({"name": "general", "ownerId": "org_a"}, TEAM))),
+        patch.object(vc.messaging_repo, "get_room", AsyncMock(return_value={"ownerId": "org_a"})),
         patch.object(vc.container_repo, "get_by_status", AsyncMock(return_value=[])),
         patch.object(vc, "put_call", AsyncMock()),
         patch.object(vc, "prewake_owner", MagicMock()),
@@ -730,3 +731,42 @@ async def test_post_late_answer_is_the_agents_own_message_once_per_run(monkeypat
     assert (req.event_id, str(req.room_id), str(req.agent_id)) == ("live-late:run-9", room, agent)
     assert req.text == 'From the Live call "what\'s on my board?":\n\nThree tasks open; two due today.'
     assert req.run_id is None  # a voice run is not a ledger run
+
+
+async def test_a_meeting_summon_is_authorized_as_the_owner_and_a_live_stranger_is_still_403(start_env):
+    members = [
+        {"kind": "human", "id": "user_owner", "role": "owner"},
+        {"kind": "human", "id": "user_m", "role": "member"},
+        {"kind": "agent", "id": "ceo-1"},
+    ]
+
+    async def team(owner_id, user_id, room_id, **_):  # the real guard's shape: members only
+        if user_id not in ("user_owner", "user_m"):
+            raise vc._problem(403, code="not_a_member")
+        return {"name": "sync", "ownerId": owner_id}, TEAM
+
+    vc._room_team.side_effect = team
+    with patch.object(vc.messaging_repo, "list_members", AsyncMock(return_value=members)):
+        vc.messaging_repo.get_room.return_value = {"ownerId": "org_a", "meeting": {"status": "in_call"}}
+        opened = await vc.open_voice_window(owner_id="org_a", room_id="room-1", speaker_user_id="meet:room-1")
+        assert opened["joined"] is False
+        vc._room_team.assert_awaited_with("org_a", "user_owner", "room-1")
+        assert vc.put_call.await_args.args[0]["userId"] == "user_owner"  # the inviter's window and allowance
+        vc.messaging_repo.get_room.return_value = {"ownerId": "org_a"}  # a Live room: no mapping
+        for stranger in ("meet:room-1", "user_x"):
+            with pytest.raises(HTTPException) as exc:
+                await vc.open_voice_window(owner_id="org_a", room_id="room-1", speaker_user_id=stranger)
+            assert exc.value.status_code == 403
+
+
+def test_meeting_actor_maps_only_non_members_of_a_meeting():
+    members = [{"kind": "human", "id": "user_owner", "role": "owner"}, {"kind": "human", "id": "user_m"}]
+    assert vc._meeting_actor(members, "meet:r", True) == ("user_owner", "Someone")
+    assert vc._meeting_actor(members, "Priya + Dan", True) == ("user_owner", "Priya + Dan")
+    assert vc._meeting_actor(members, "user_m", True) == ("user_m", None)
+    assert vc._meeting_actor(members, "meet:r", False) == ("meet:r", None)
+    # The worker's Meet label is display only: the bot's line shows it, and nothing else reads it.
+    assert vc._meeting_actor(members, "meet:r", True, " Priya  +\nDan ") == ("user_owner", "Priya + Dan")
+    assert vc._meeting_actor(members, "meet:r", False, "Priya") == ("meet:r", None)
+    assert vc._meeting_actor(members, "user_m", True, "Priya") == ("user_m", None)
+    assert vc._meeting_actor(members[1:], "Priya", True) == ("Priya", "Priya")  # no owner member: 403s as before

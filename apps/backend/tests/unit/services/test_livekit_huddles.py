@@ -19,7 +19,8 @@ class FakeAPI:
             remove_participant=self._remove,
             delete_room=self._delete,
         )
-        self.agent_dispatch = SimpleNamespace(create_dispatch=self._dispatch)
+        self.dispatched = []
+        self.agent_dispatch = SimpleNamespace(create_dispatch=self._dispatch, list_dispatch=self._dispatches)
 
     async def __aenter__(self):
         return self
@@ -46,6 +47,9 @@ class FakeAPI:
     async def _send(self, req):
         self.calls.append(("send", req))
 
+    async def _dispatches(self, room):
+        return self.dispatched
+
     async def _dispatch(self, req):
         self.calls.append(("dispatch", req))
 
@@ -56,6 +60,13 @@ def cfg(monkeypatch):
         LIVEKIT_URL="wss://lk", LIVEKIT_API_KEY="key", LIVEKIT_API_SECRET="s" * 40, ENVIRONMENT="dev"
     ).items():
         monkeypatch.setattr(lh.settings, k, v)
+    rooms = {}
+
+    async def get_room(room_id):
+        return rooms.get(room_id)
+
+    monkeypatch.setattr(lh.messaging_repo, "get_room", get_room)
+    return rooms
 
 
 def fake(monkeypatch, **kw):
@@ -80,6 +91,23 @@ async def test_has_ceo_and_participants(monkeypatch):
     assert await lh.has_ceo("r1") is False
 
 
+@pytest.mark.parametrize(
+    "meeting,room",
+    [(None, "huddle-dev-r1"), ({"status": "scheduled"}, "huddle-dev-r1"), ({"status": "in_call"}, "meet-dev-r1")],
+)
+async def test_frames_and_worker_check_follow_an_in_call_meeting(monkeypatch, cfg, meeting, room):
+    if meeting:
+        cfg["r1"] = {"meeting": meeting}
+    f = fake(monkeypatch, identities=["agent-ceo"])
+    await lh.send_frames("r1", [{"t": 1}])
+    assert await lh.has_ceo("r1") is True
+    assert [req.room for _, req in f.calls] == [room, room]
+    # The Live join's own check and the Live roster never move to the meeting's room.
+    await lh.has_ceo("r1", live=True)
+    await lh.participants("r1")
+    assert [req.room for _, req in f.calls[2:]] == ["huddle-dev-r1", "huddle-dev-r1"]
+
+
 async def test_missing_room_is_empty(monkeypatch):
     fake(monkeypatch, list_error=api.TwirpError("not_found", "no room", status=404))
     assert await lh.has_ceo("r1") is False
@@ -92,6 +120,15 @@ async def test_dispatch_ceo(monkeypatch):
     _, req = f.calls[0]
     assert req.agent_name == "lightbulb-huddle" and req.room == "huddle-dev-r1"
     assert json.loads(req.metadata) == {"a": 1}
+
+
+async def test_dispatch_meet_is_one_worker_per_room(monkeypatch):
+    f = fake(monkeypatch)
+    await lh.dispatch_meet("r1", {"a": 1})
+    assert f.calls[0][1].room == "meet-dev-r1"
+    f.dispatched = [object()]  # a retried in_call finds the first dispatch
+    await lh.dispatch_meet("r1", {"a": 1})
+    assert len(f.calls) == 1
 
 
 async def test_send_frames(monkeypatch):

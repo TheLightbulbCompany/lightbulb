@@ -219,6 +219,8 @@ export class LightbulbStage extends cdk.Stage {
         openaiApiKey: `lightbulb/${env}/openai_api_key`,
         livekitApiKey: `lightbulb/${env}/livekit_api_key`,
         livekitApiSecret: `lightbulb/${env}/livekit_api_secret`,
+        recallApiKey: `lightbulb/${env}/recall_api_key`,
+        recallWebhookSecret: `lightbulb/${env}/recall_webhook_secret`,
         huddleWorkerSecret: `lightbulb/${env}/huddle_worker_secret`,
         paperclipServiceTokenKey: auth.paperclipServiceTokenKey.secretName,
         paperclipEventsWebhookSecret: auth.paperclipEventsWebhookSecret.secretName,

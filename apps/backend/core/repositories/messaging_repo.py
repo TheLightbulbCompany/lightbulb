@@ -1622,8 +1622,11 @@ _ROOM_META_FIELDS = ("name", "topic", "archivedAt", "archivedBy", "meeting")
 _ROOM_META_REMOVABLE = ("archivedAt", "archivedBy")
 
 
-async def patch_room_meta(room_id: str, updates: dict[str, Any]) -> dict:
+async def patch_room_meta(room_id: str, updates: dict[str, Any], *, expected_revision: int | None = None) -> dict:
     """Update the caller-editable META fields under the usual revision CAS.
+
+    ``expected_revision`` binds the write to the revision the CALLER read (a read-merge-write),
+    instead of the one read here; a writer in between then cancels the transaction.
 
     ``name`` is mirrored into the owner catalog row because
     ``list_rooms_for_member`` joins the sidebar off it; ``topic`` is not in
@@ -1637,7 +1640,7 @@ async def patch_room_meta(room_id: str, updates: dict[str, Any]) -> dict:
     named = {k: v for k, v in named.items() if k not in removed}
     now = utc_now_iso()
     table_name = _table().name
-    revision = int(meta["revision"]) + 1
+    revision = (int(meta["revision"]) if expected_revision is None else expected_revision) + 1
     names = {f"#{k}": k for k in [*named, *removed]}
     values = {f":{k}": _ddb_safe(v) for k, v in named.items()}
     sets = ", ".join(f"#{k} = :{k}" for k in named)
@@ -1669,6 +1672,38 @@ async def patch_room_meta(room_id: str, updates: dict[str, Any]) -> dict:
     items[0]["Update"] = {k: v for k, v in items[0]["Update"].items() if v is not None}
     await _transact(items)
     return {**{k: v for k, v in meta.items() if k not in removed}, **named, "revision": revision, "updatedAt": now}
+
+
+async def set_meeting_field_if_absent(room_id: str, field: str, value: Any, also: dict | None = None) -> bool:
+    """Set ``meeting.<field>`` (plus ``also``'s meeting fields) only if the meeting has no
+    ``field`` yet, bumping the revision. False = another writer got there first: re-read META."""
+    also = also or {}
+    sets = "".join(f", meeting.#a{i} = :a{i}" for i in range(len(also)))
+    try:
+        await _transact(
+            [
+                {
+                    "Update": {
+                        "TableName": _table().name,
+                        "Key": {"pk": room_pk(room_id), "sk": "META"},
+                        "UpdateExpression": f"SET meeting.#f = :v{sets}, revision = revision + :one, updatedAt = :now",
+                        "ConditionExpression": "attribute_exists(meeting) AND attribute_not_exists(meeting.#f)",
+                        "ExpressionAttributeNames": {"#f": field, **{f"#a{i}": k for i, k in enumerate(also)}},
+                        "ExpressionAttributeValues": {
+                            ":v": _ddb_safe(value),
+                            **{f":a{i}": _ddb_safe(v) for i, v in enumerate(also.values())},
+                            ":one": 1,
+                            ":now": utc_now_iso(),
+                        },
+                    }
+                }
+            ]
+        )
+        return True
+    except ClientError as exc:
+        if _is_cancelled(exc):
+            return False
+        raise
 
 
 MAX_PINNED_MESSAGES = 50

@@ -45,7 +45,9 @@ from huddle_agent.transcript import trim_items
 logger = logging.getLogger("huddle")
 AGENT_IDENTITY = "agent-ceo"  # C4: every agent voice publishes as this one participant
 WORKER_DISPLAY_NAME = "Lightbulb"  # clients render tiles from attributes, not this name
-server = AgentServer()
+# LiveKit's default (10 s) would kill a meeting's final transcript retry (huddle.FINAL_TRANSCRIPT_BUDGET_S).
+SHUTDOWN_S = 60
+server = AgentServer(shutdown_process_timeout=SHUTDOWN_S)
 
 
 class _Voice(Agent):
@@ -347,6 +349,8 @@ async def entrypoint(ctx: JobContext) -> None:
         on_vocabulary=lambda prompt: stt_engine.update_options(
             prompt=prompt
         ),  # open streams take it in place
+        # a Google Meet bridged in by a Recall bot (the meeting dispatch)
+        setting="meeting" if meta.get("source") == "meet" else "live",
     )
     tasks: set[asyncio.Task] = set()
 
@@ -361,11 +365,18 @@ async def entrypoint(ctx: JobContext) -> None:
         t.add_done_callback(_done)
         return t
 
+    def person(p: rtc.Participant) -> bool:
+        # the Recall bot's `meet:<roomId>` participant is the whole meeting: it counts as a person
+        return (
+            p.kind == rtc.ParticipantKind.PARTICIPANT_KIND_STANDARD
+            or p.identity.startswith("meet:")
+        )
+
     def humans() -> dict[str, str]:
         return {
             p.identity: p.name or p.identity
             for p in ctx.room.remote_participants.values()
-            if p.kind == rtc.ParticipantKind.PARTICIPANT_KIND_STANDARD
+            if person(p)
         }
 
     async def transcribe(track: rtc.Track, p: rtc.RemoteParticipant) -> None:
@@ -408,6 +419,9 @@ async def entrypoint(ctx: JobContext) -> None:
                     stt_engine, e, started_with, vad_state
                 ):
                     raise
+                huddle.stt_stopped(
+                    p.identity
+                )  # the reopened stream starts a new utterance
             finally:
                 await utils.aio.cancel_and_wait(pusher)
                 await audio.aclose()
@@ -416,15 +430,12 @@ async def entrypoint(ctx: JobContext) -> None:
     stt_tasks: dict[str, asyncio.Task] = {}  # identity -> that person's transcription
 
     def stop_stt(identity: str) -> None:
+        huddle.stt_stopped(identity)
         if (t := stt_tasks.pop(identity, None)) is not None:
             t.cancel()
 
     def start_stt(track: rtc.Track | None, p: rtc.Participant) -> None:
-        if (
-            track is None
-            or track.kind != rtc.TrackKind.KIND_AUDIO
-            or p.kind != rtc.ParticipantKind.PARTICIPANT_KIND_STANDARD
-        ):
+        if track is None or track.kind != rtc.TrackKind.KIND_AUDIO or not person(p):
             return
         stop_stt(p.identity)
         stt_tasks[p.identity] = spawn(transcribe(track, p))

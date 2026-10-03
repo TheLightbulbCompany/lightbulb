@@ -361,6 +361,26 @@ async def _room_team(owner_id: str, user_id: str, room_id: str, *, need_team: bo
     return meta, team
 
 
+def _meet_label(speaker_name: str | None) -> str:
+    return " ".join((speaker_name or "").split()) or "Someone"
+
+
+def _meeting_actor(
+    members: list[dict], speaker_id: str, meeting: bool, speaker_name: str | None = None
+) -> tuple[str, str | None]:
+    """Who a worker-supplied speaker acts as, and the label to show for them (None: a real member,
+    look the name up). A Meet speaker is the bot's ``meet:<roomId>`` participant or a label ("Priya",
+    "Priya + Dan"), not a user: in a meeting room it acts as the member who invited the bot (the
+    room's owner). No owner member, or not a meeting -> the id passes through and 403s as before.
+    ``speaker_name`` is the worker's label for the bot's line: display only, never who acts."""
+    humans = [m for m in members if m.get("kind") == "human"]
+    bot = speaker_id.startswith("meet:")
+    if not meeting or (not bot and any(m["id"] == speaker_id for m in humans)):
+        return speaker_id, None
+    owner = next((m["id"] for m in humans if m.get("role") == "owner"), speaker_id)
+    return owner, (_meet_label(speaker_name) if bot else speaker_id)
+
+
 _HOLD_ATTEMPTS = 3
 
 
@@ -492,6 +512,9 @@ async def _open_window(owner_id: str, room_id: str, now: int) -> dict | None:
 async def open_voice_window(*, owner_id: str, room_id: str, speaker_user_id: str) -> dict:
     """C1 /summon: join the room's open window, or gate once and open one. The window meters
     GPT-Live only; voice runs are ordinary room runs and the window owns none of them."""
+    # A meeting's speaker is the Meet bot: the window is the inviting owner's (and draws their allowance).
+    if ((await messaging_repo.get_room(room_id)) or {}).get("meeting"):
+        speaker_user_id, _ = _meeting_actor(await messaging_repo.list_members(room_id), speaker_user_id, True)
     # Before the join too: _room_team 404s unless owner_id owns the room and the speaker is a member.
     meta, _ = await _room_team(owner_id, speaker_user_id, room_id)
     now = int(time.time())
@@ -657,7 +680,14 @@ async def _speaker_name(speaker_id: str) -> str:
 
 
 async def dispatch_voice_run(
-    *, call: dict, run_id: str, agent_id: str, speaker_id: str, utterance: str, transcript: str
+    *,
+    call: dict,
+    run_id: str,
+    agent_id: str,
+    speaker_id: str,
+    utterance: str,
+    transcript: str,
+    speaker_name: str | None = None,
 ) -> dict:
     """One voice request = one ordinary run on agent:{agent}:lightbulb:channel:{room}. run_id is the
     worker's, reused on every retry, so a delivered-but-timed-out invoke is replayed, never re-run."""
@@ -665,7 +695,10 @@ async def dispatch_voice_run(
     meta, members = await asyncio.gather(messaging_repo.get_room(room_id), messaging_repo.list_members(room_id))
     if not meta or not any(m.get("kind") == "agent" and m["id"] == agent_id for m in members):
         raise _problem(409, code="agent_not_in_room")
-    name = await _speaker_name(speaker_id)
+    # The label only: the VOICERUN row keeps the worker's id, so a Meet guest never gets the owner's C8 rights.
+    name = _meeting_actor(members, speaker_id, bool(meta.get("meeting")), speaker_name)[1] or await _speaker_name(
+        speaker_id
+    )
     spoken = transcript[-_TRANSCRIPT_CHARS:].strip()
     session_id = f"agent:{agent_id}:lightbulb:channel:{room_id}"  # == the bridge's turn.lightbulb_session_key
     body = {
@@ -729,13 +762,15 @@ async def _run_control(owner_id: str, run_id: str, action: str, body: dict) -> i
         return None
 
 
-async def steer_voice_run(*, call: dict, run_id: str, agent_id: str, speaker_id: str, utterance: str) -> dict | None:
+async def steer_voice_run(
+    *, call: dict, run_id: str, agent_id: str, speaker_id: str, utterance: str, speaker_name: str | None = None
+) -> dict | None:
     """A follow-up steers the agent's live voice run. None (dispatch a new run instead) when the run
     is not this room's and agent's, or the bridge no longer has it."""
     row = await messaging_repo.get_voice_run(call["ownerId"], run_id)
     if not row or row.get("roomId") != call["roomId"] or row.get("agentId") != agent_id:
         return None
-    name = await _speaker_name(speaker_id)
+    name = _meet_label(speaker_name) if speaker_id.startswith("meet:") else await _speaker_name(speaker_id)
     if await _run_control(call["ownerId"], run_id, "steer", {"text": f"{name} (voice): {utterance}"}) != 202:
         return None
     # The latest requester is who C8 checks: a guest's steer must not borrow the member's rights.
@@ -825,6 +860,8 @@ async def route_live_line(
     floor: dict | None = None,
     voice_runs: list[dict] | None = None,
     at: list[int] | None = None,
+    setting: str = "live",
+    unclaimed: bool = False,
 ) -> dict:
     """The one Live router (routing v2 §6), every line the worker's position-1 name did not settle,
     routed exactly as if the speaker had typed it in the room: the shared addressing stage (a name
@@ -833,20 +870,26 @@ async def route_live_line(
     (#3591), so every agent listens. Live's own rules: an unfinished line is marked ``hold`` (wait for
     the speaker's next final) but still names the agent it routes to, for a worker that does not hold;
     alone in the call, or after the wake word ``wake`` ("Lightbulb, ..."), Jev's "nobody" counts as Jev
-    down -- the speech can only be for the agents.
+    down -- the speech can only be for the agents. ``setting="meeting"`` (a Google Meet): nobody is
+    implied -- Jev's "none" and a Jev outage both stand -- except an ``unclaimed`` question to the room
+    (the worker waited 3.5 s), which takes the question-to-the-room path and wakes at most one. So in a
+    meeting the wake word alone ("Lightbulb, ...") with nothing unclaimed wakes nobody on a "none":
+    a lone speaker never implies an answer there.
     Returns ``_routed(...)``, plus ``"hold": True`` for an unfinished line."""
-    meta, _ = await _room_team(owner_id, speaker_id, room_id)
     members = [
         {**m, "listenMode": "active"} if m.get("kind") == "agent" else m
         for m in await messaging_repo.list_members(room_id)
     ]
+    caller, label = _meeting_actor(members, speaker_id, setting == "meeting")
+    meta, _ = await _room_team(owner_id, caller, room_id)
     if wake:
         utterance = _WAKE_WORD.sub("", utterance, count=1) or utterance
-    author = {"kind": "human", "id": speaker_id, "displayName": await messaging.human_display_name(speaker_id)}
+    name = label or await messaging.human_display_name(speaker_id)
+    author = {"kind": "human", "id": speaker_id, "displayName": name}
     history = _transcript_history(transcript, members, utterance, at)
     addressing = await messaging.address({"author": author, "text": utterance}, members, history=history, live=True)
     if addressing["hold"]:
-        put_metric("voice.routing.jev", dimensions={"outcome": "hold"})
+        put_metric("voice.routing.jev", dimensions={"outcome": "hold", "setting": setting})
 
     def done(*agent_ids: str) -> dict:
         # An unfinished line still answers what it routes to today: the shipped worker reads only
@@ -882,6 +925,7 @@ async def route_live_line(
                 to_people=to_people,
                 placement=False,
                 open_lines=_open_voice_lines(floor, voice_runs, members),
+                setting=setting,
             ),
             _ROUTING_TIMEOUT_S,
         )
@@ -889,12 +933,16 @@ async def route_live_line(
         put_metric("voice.routing.timeout")
         decision = {"fallback": True}
     who, forced = decision.get("who"), decision.get("forced")
-    if not forced and (who in candidates or (who == "none" and humans > 1 and not wake)):
-        put_metric("voice.routing.jev", dimensions={"outcome": "routed" if who in candidates else "none"})
+    if setting == "meeting":
+        # The Meet floor: no lone-speaker or re-ask forcing; only an unclaimed room question forces one.
+        forced = "question" if unclaimed and who not in candidates else None
+    if not forced and (who in candidates or setting == "meeting" or (who == "none" and humans > 1 and not wake)):
+        outcome = "routed" if who in candidates else "none" if who == "none" else "fallback"
+        put_metric("voice.routing.jev", dimensions={"outcome": outcome, "setting": setting})
         return done(*([who] if who in candidates else []))
     # Jev down or undecided, a "nobody" a lone speaker or the wake word can't mean, or a "none" the
     # policy refused (a re-ask, a question to the room): openclaw_work's fallback for a human message.
-    put_metric("voice.routing.jev", dimensions={"outcome": "forced" if forced else "fallback"})
+    put_metric("voice.routing.jev", dimensions={"outcome": "forced" if forced else "fallback", "setting": setting})
     if forced:
         put_metric("messaging.jev.forced", dimensions={"reason": forced})
     if to_people:

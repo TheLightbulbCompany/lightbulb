@@ -90,6 +90,7 @@ LIVE_EVENT_TYPES = frozenset(
         "room.access.removed",
         "room.activity.changed",
         "room.huddle.changed",
+        "room.meeting.changed",
         "room.member.updated",
         "room.message.available",
         "room.message.created",

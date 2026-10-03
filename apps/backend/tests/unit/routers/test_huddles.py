@@ -49,8 +49,22 @@ def _problem(status, code):
     return AsyncMock(side_effect=vc._problem(status, code=code))
 
 
-def _join(client, *, has_ceo=False, room_team=None, dispatch_error=None, path_room=ROOM, fresh=True):
+def _join(
+    client,
+    *,
+    has_ceo=False,
+    room_team=None,
+    dispatch_error=None,
+    path_room=ROOM,
+    fresh=True,
+    lease="tok",
+    fresh_meta=None,
+):
+    repo = mod.meeting_invites.container_repo
     with (
+        patch.object(repo, "try_claim_owner_lifecycle", AsyncMock(return_value=lease)) as claim,
+        patch.object(repo, "release_owner_lifecycle_claim", AsyncMock()) as release,
+        patch.object(mod.messaging_repo, "get_room", AsyncMock(return_value=fresh_meta)),
         patch.object(vc, "prewake_owner", MagicMock()) as wake,
         patch.object(vc, "prewarm_cards", MagicMock()) as warm,
         patch.object(mod.container_repo, "try_claim_pass", AsyncMock(return_value=fresh)),
@@ -61,7 +75,7 @@ def _join(client, *, has_ceo=False, room_team=None, dispatch_error=None, path_ro
         patch.object(lk, "dispatch_ceo", AsyncMock(side_effect=dispatch_error)) as dispatch,
     ):
         resp = client.post(f"/api/v1/huddles/{path_room}/join")
-        _join.wake, _join.warm = wake, warm
+        _join.wake, _join.warm, _join.claim, _join.release = wake, warm, claim, release
         return resp, mint, dispatch
 
 
@@ -114,6 +128,58 @@ def test_join_guest_is_404(client):
     resp, mint, _ = _join(client, room_team=_problem(404, "room_not_found"))
     assert resp.status_code == 404 and resp.json()["detail"]["code"] == "room_not_found"
     mint.assert_not_called()
+
+
+def test_join_is_409_while_the_rooms_meeting_is_in_call(client):
+    meta = {"ownerId": "org_a", "meeting": {"status": "in_call"}}
+    resp, mint, dispatch = _join(client, room_team=AsyncMock(return_value=(meta, TEAM)))
+    assert resp.status_code == 409
+    assert resp.json()["detail"] == {
+        "code": "meeting_in_call",
+        "message": "This room's meeting is live. Join it in Google Meet.",
+    }
+    mint.assert_not_called()
+    dispatch.assert_not_awaited()
+    _join.wake.assert_not_called()
+
+
+def test_a_live_room_join_takes_no_meeting_lease(client):
+    assert _join(client)[0].status_code == 200
+    _join.claim.assert_not_awaited()
+
+
+def test_a_meeting_room_join_runs_under_the_meeting_lease(client):
+    scheduled = {"ownerId": "org_a", "meeting": {"status": "bot_created"}}
+    resp, _, dispatch = _join(client, room_team=AsyncMock(return_value=(scheduled, TEAM)))
+    assert resp.status_code == 200
+    dispatch.assert_awaited_once()
+    _join.claim.assert_awaited_once()
+    assert _join.claim.await_args.args == (f"meeting#{ROOM}",)
+    _join.release.assert_awaited_once_with(f"meeting#{ROOM}", token="tok")
+
+
+def test_join_is_409_when_the_meeting_went_in_call_since_the_first_read(client):
+    scheduled = {"ownerId": "org_a", "meeting": {"status": "bot_created"}}
+    resp, mint, dispatch = _join(
+        client,
+        room_team=AsyncMock(return_value=(scheduled, TEAM)),
+        fresh_meta={"ownerId": "org_a", "meeting": {"status": "in_call"}},
+    )
+    assert resp.status_code == 409 and resp.json()["detail"]["code"] == "meeting_in_call"
+    mint.assert_not_called()
+    dispatch.assert_not_awaited()
+
+
+def test_join_is_409_while_the_meeting_lease_is_busy(client):
+    scheduled = {"ownerId": "org_a", "meeting": {"status": "bot_created"}}
+    resp, mint, dispatch = _join(client, room_team=AsyncMock(return_value=(scheduled, TEAM)), lease=None)
+    assert resp.status_code == 409
+    assert resp.json()["detail"] == {
+        "code": "meeting_in_call",
+        "message": "This room's meeting is live. Join it in Google Meet.",
+    }
+    mint.assert_not_called()
+    dispatch.assert_not_awaited()
 
 
 def test_join_archived_is_409(client):
@@ -300,6 +366,18 @@ def test_turn_dispatches_the_workers_run_for_the_named_agent(client):
     steer.assert_not_awaited()
 
 
+def test_turn_passes_the_speaker_label_through_and_bounds_it(client):
+    resp, steer, dispatch = _turn(client, {**INTERNAL[1][1], "speakerName": "Priya + Dan", "steerRunId": RUN})
+    assert resp.status_code == 200
+    assert steer.await_args.kwargs["speaker_name"] == dispatch.await_args.kwargs["speaker_name"] == "Priya + Dan"
+    assert dispatch.await_args.kwargs["speaker_id"] == "user_a"  # the id still decides who acts
+    assert _turn(client, {**INTERNAL[1][1], "speakerName": "x" * 121})[0].status_code in (400, 422)
+    assert client.post(INTERNAL[0][0], json={**INTERNAL[0][1], "speakerName": "x" * 121}, headers=W).status_code in (
+        400,
+        422,
+    )
+
+
 def test_turn_steers_first_and_skips_the_dispatch(client):
     steered = {"runId": "r-old", "agentId": "agent-fin", "steered": True}
     resp, steer, dispatch = _turn(client, {**INTERNAL[1][1], "steerRunId": RUN}, steered=steered)
@@ -352,7 +430,7 @@ def test_route_a_wake_word_line_is_the_one_router_with_wake(client):
     assert resp.json() == routed  # agentId (the first) still there for the shipped worker
     assert route.await_args.kwargs == {
         "owner_id": "org_a", "room_id": ROOM, "speaker_id": "user_a", "utterance": "hi", "transcript": "",
-        "humans": 0, "wake": True, "floor": None, "voice_runs": [], "at": [],
+        "humans": 0, "wake": True, "floor": None, "voice_runs": [], "at": [], "setting": "live", "unclaimed": False,
     }  # fmt: skip
 
 
@@ -363,6 +441,26 @@ def test_route_with_a_people_count_may_be_nobody_or_hold(client):
     assert resp.json() == {"agentId": None, "hold": True}  # the shipped worker ignores "hold"
     assert live.await_args.kwargs["humans"] == 2 and live.await_args.kwargs["wake"] is False
     assert live.await_args.kwargs["floor"] == floor
+    body = {**INTERNAL[6][1], "humans": 2, "setting": "meeting", "unclaimed": True}
+    meeting_room = {"ownerId": "org_a", "meeting": {"status": "in_call"}}
+    with (
+        patch.object(mod.messaging_repo, "get_room", AsyncMock(return_value=meeting_room)),
+        patch.object(vc, "route_live_line", AsyncMock(return_value={"agentId": None})) as live,
+    ):
+        client.post(INTERNAL[6][0], json=body, headers=W)
+    assert live.await_args.kwargs["setting"] == "meeting" and live.await_args.kwargs["unclaimed"] is True
+    assert client.post(INTERNAL[6][0], json={**body, "setting": "zoom"}, headers=W).status_code == 400
+
+
+def test_route_meeting_setting_outside_a_meeting_room_is_400(client):
+    body = {**INTERNAL[6][1], "humans": 2, "setting": "meeting"}
+    with (
+        patch.object(mod.messaging_repo, "get_room", AsyncMock(return_value={"ownerId": "org_a"})),
+        patch.object(vc, "route_live_line", AsyncMock()) as live,
+    ):
+        resp = client.post(INTERNAL[6][0], json=body, headers=W)
+    assert resp.status_code == 400 and resp.json()["detail"]["code"] == "not_a_meeting"
+    live.assert_not_awaited()
 
 
 def test_abort_passes_the_room(client):
@@ -666,15 +764,46 @@ def test_transcript_batches_are_logged_for_debugging(client, caplog):
         {"mark": 0, "kind": "person", "name": "Prasiddha", "text": "Hey guys, how's it going?", "at": 1790972595.0},
         {"mark": 1, "kind": "agent", "name": "Pulse", "text": "Going well.", "at": 1790972630.0, "to": "Prasiddha"},
     ]
-    with caplog.at_level("INFO", logger="routers.huddles"):
+    with (
+        caplog.at_level("INFO", logger="routers.huddles"),
+        patch.object(mod.messaging_repo, "get_room", AsyncMock(return_value={"ownerId": "org_a"})),
+        patch.object(mod.meeting_notes, "on_transcript", AsyncMock()) as notes,
+    ):
         resp = client.post(
             TRANSCRIPT, json={"ownerId": "org_a", "roomToken": RT, "huddleId": "h1", "lines": lines}, headers=W
         )
     assert resp.status_code == 200
+    notes.assert_not_awaited()  # not a meeting room: nothing reaches the room
     record = next(r for r in caplog.records if "live transcript" in r.getMessage())
     assert "huddle=h1" in record.getMessage()
     assert "[0 @1790972595] Prasiddha: Hey guys, how's it going?" in record.getMessage()
     assert "[1 @1790972630] Pulse → Prasiddha: Going well." in record.getMessage()
+
+
+def test_a_meeting_rooms_chunks_reach_the_notes_with_the_final_flag(client):
+    line = {"mark": 7, "kind": "person", "name": "Pat", "text": "Ship it", "at": 1.0, "to": ""}
+    body = {"ownerId": "org_a", "roomToken": RT, "huddleId": "h1", "lines": [line]}
+    meta = {"ownerId": "org_a", "meeting": {"status": "in_call"}}
+    with (
+        patch.object(mod.messaging_repo, "get_room", AsyncMock(return_value=meta)),
+        patch.object(mod.meeting_notes, "on_transcript", AsyncMock()) as notes,
+    ):
+        assert client.post(TRANSCRIPT, json=body, headers=W).status_code == 200
+        assert client.post(TRANSCRIPT, json={**body, "final": True}, headers=W).status_code == 200
+    assert [c.args for c in notes.await_args_list] == [(ROOM, [line], False), (ROOM, [line], True)]
+
+
+def test_only_a_final_transcript_may_carry_more_than_500_lines(client):
+    line = {"mark": 0, "kind": "person", "name": "Pat", "text": "x", "at": 1.0, "to": ""}
+    body = {"ownerId": "org_a", "roomToken": RT, "huddleId": "h1", "lines": [line] * 501}
+    with (
+        patch.object(mod.messaging_repo, "get_room", AsyncMock(return_value={"ownerId": "org_a"})),
+        patch.object(mod, "put_metric"),
+    ):
+        assert client.post(TRANSCRIPT, json=body, headers=W).status_code == 400
+        assert client.post(TRANSCRIPT, json={**body, "final": True}, headers=W).status_code == 200
+        too_many = {**body, "final": True, "lines": [line] * 5_001}
+        assert client.post(TRANSCRIPT, json=too_many, headers=W).status_code == 400
 
 
 def test_transcript_refuses_a_bad_room_token(client):

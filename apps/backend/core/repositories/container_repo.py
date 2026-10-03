@@ -363,6 +363,11 @@ async def try_claim_pass(name: str, *, interval_s: int, now: int | None = None) 
         return False
 
 
+async def release_pass(name: str) -> None:
+    """Re-open pass ``name`` now: a holder whose work failed lets the retry in before the window ends."""
+    await run_in_thread(_get_table().delete_item, Key={"owner_id": f"{PASS_KEY_PREFIX}{name}"})
+
+
 HUDDLE_KEY_PREFIX = "__huddle__#"
 
 

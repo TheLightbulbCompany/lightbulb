@@ -182,6 +182,8 @@ export default function middleware(req: NextRequest, evt: Parameters<typeof _cle
     return NextResponse.rewrite(url);
   }
   if (launch?.kind === "passthrough") return NextResponse.next();
+  // Recall's bot loads /meet-bot in a bare browser: public, and no Clerk handshake.
+  if (req.nextUrl.pathname === "/meet-bot" || req.nextUrl.pathname.startsWith("/meet-bot/")) return NextResponse.next();
   if (PAPERCLIP_HOSTS.has(host)) {
     // Bypass clerkMiddleware entirely so Clerk's dev-browser handshake
     // doesn't 307-redirect the request away from the beforeFiles rewrite.

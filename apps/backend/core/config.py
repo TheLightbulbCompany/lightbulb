@@ -107,6 +107,10 @@ class Settings(BaseSettings):
         """Parse CORS_ORIGINS as comma-separated list."""
         return [origin.strip() for origin in self.CORS_ORIGINS.split(",") if origin.strip()]
 
+    def meetings_available(self) -> bool:
+        """Meetings need a LiveKit project and a Recall key; dev has no LiveKit, so it books nothing."""
+        return bool(self.LIVEKIT_URL and self.RECALL_API_KEY)
+
     @property
     def clerk_authorized_parties_list(self) -> list[str]:
         """Parse CLERK_AUTHORIZED_PARTIES as comma-separated list."""
@@ -209,6 +213,13 @@ class Settings(BaseSettings):
     LIVEKIT_API_KEY: str = ""
     LIVEKIT_API_SECRET: str = ""
     HUDDLE_WORKER_SECRET: str = ""
+    # Meetings (Recall.ai bots). See meetings_available(): without LiveKit + a Recall key an invite opens the room only.
+    RECALL_API_BASE: str = "https://us-east-1.recall.ai"
+    RECALL_API_KEY: str = ""
+    RECALL_WEBHOOK_SECRET: str = ""
+    """The ``whsec_`` workspace verification secret. Empty = every Recall webhook is refused."""
+    MEET_BOT_PAGE_URL: str = ""
+    """The bot's Output Media page. Empty = ``{FRONTEND_URL}/meet-bot``."""
     OPENROUTER_MARKUP: str = ""
     """Managed-credit markup (repo-root openrouter-pricing.json, injected by CDK). Voice debits use it."""
     METRONOME_WEBHOOK_SECRET: str = ""

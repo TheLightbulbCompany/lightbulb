@@ -5,20 +5,21 @@ Three auth models: Clerk for people (`/huddles/*`), the worker secret for the CE
 (`/internal/huddles/{ownerId}/rooms/{roomId}/frames`).
 """
 
+import contextlib
 import hmac
 import logging
 import uuid
-from typing import Annotated, Any
+from typing import Annotated, Any, Literal
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from core.auth import AuthContext, get_current_user, resolve_owner_id
 from core.config import settings
 from core.observability.metrics import put_metric
 from core.repositories import container_repo, messaging_repo
-from core.services import livekit_huddles, messaging, voice_calls
+from core.services import livekit_huddles, meeting_invites, meeting_notes, messaging, voice_calls
 from core.services.live_events import get_live_event_publisher
 from routers.messaging import _require_hook_token
 
@@ -26,6 +27,8 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 _Id = Annotated[str, Field(min_length=1, max_length=128)]
+# A Meet speaker's label ("Priya", "Priya + Dan"): shown in a meeting room, never used to authorize.
+_SpeakerName = Annotated[str | None, Field(max_length=120)]
 DISPATCH_DEDUPE_S = 40
 
 
@@ -70,12 +73,14 @@ class SummonBody(BaseModel):
     ownerId: _Id
     roomToken: _Id
     speakerUserId: _Id
+    speakerName: _SpeakerName = None
 
 
 class TurnBody(BaseModel):
     ownerId: _Id
     roomToken: _Id
     speakerUserId: _Id
+    speakerName: _SpeakerName = None
     agentId: _Id
     runId: uuid.UUID  # the worker's, once per delegation and resent on every retry
     utterance: str = Field(min_length=1, max_length=4_000)
@@ -96,6 +101,8 @@ class RouteBody(BaseModel):
     voiceRuns: list[dict[str, str]] = Field(default_factory=list, max_length=16)
     # Epoch seconds the transcript's last lines were said, oldest first, aligned to its end (Live reask rule).
     at: list[int] = Field(default_factory=list, max_length=30)
+    setting: Literal["live", "meeting"] = "live"  # "meeting": a Google Meet, stricter floor
+    unclaimed: bool = False  # a question to the room nobody took for 3.5 s (the worker measures it)
 
 
 class EndBody(BaseModel):
@@ -124,7 +131,14 @@ class TranscriptBody(BaseModel):
     ownerId: _Id
     roomToken: _Id
     huddleId: _Id
-    lines: list[TranscriptLine] = Field(max_length=500)
+    lines: list[TranscriptLine] = Field(max_length=5_000)
+    final: bool = False  # a meeting's whole transcript, in one request
+
+    @model_validator(mode="after")
+    def _bounded(self):
+        if not self.final and len(self.lines) > 500:  # rolling flushes stay small; only `final` is whole
+            raise ValueError("a non-final transcript batch holds at most 500 lines")
+        return self
 
 
 class LateAnswerBody(BaseModel):
@@ -148,9 +162,28 @@ async def join(room_id: str, auth: Annotated[AuthContext, Depends(get_current_us
     owner_id = resolve_owner_id(auth)
     # Member of the owner's own room (guests 404), not archived. Any room kind; with no agent
     # member it is a people-only voice room: no worker dispatch, no runtime wake.
-    _, team = await voice_calls._room_team(owner_id, auth.user_id, room_id, need_team=False)
-    name = await messaging.human_display_name(auth.user_id)
-    token = livekit_huddles.mint_token(room_id=room_id, user_id=auth.user_id, name=name)
+    meta, team = await voice_calls._room_team(owner_id, auth.user_id, room_id, need_team=False)
+    in_call = HTTPException(
+        status_code=409,
+        detail={"code": "meeting_in_call", "message": "This room's meeting is live. Join it in Google Meet."},
+    )
+    # A meeting room's join runs under the meeting's lease, on a META read taken inside it, so it
+    # cannot interleave with the meeting going in_call: a Live worker never shares a room with one.
+    lease = meeting_invites.meeting_lease(room_id) if meta.get("meeting") else contextlib.nullcontext()
+    try:
+        async with lease:
+            if meta.get("meeting"):
+                meta = await messaging_repo.get_room(room_id) or meta
+            if (meta.get("meeting") or {}).get("status") == "in_call":
+                raise in_call
+            return await _join(room_id, owner_id, auth.user_id, team)
+    except meeting_invites.MeetingBusy:
+        raise in_call from None
+
+
+async def _join(room_id: str, owner_id: str, user_id: str, team: list[dict]) -> dict:
+    name = await messaging.human_display_name(user_id)
+    token = livekit_huddles.mint_token(room_id=room_id, user_id=user_id, name=name)
     out = {"serverUrl": settings.LIVEKIT_URL, "roomName": livekit_huddles.room_name(room_id), "token": token}
     if not team:
         return {**out, "lightbulb": False}
@@ -162,7 +195,7 @@ async def join(room_id: str, auth: Annotated[AuthContext, Depends(get_current_us
         # The worker takes ~20 s to join: a second click (or person) in that window must not dispatch
         # another, which would evict the first. The window is shorter than the web's 45 s give-up, so
         # its Retry re-dispatches.
-        if not await livekit_huddles.has_ceo(room_id) and await container_repo.try_claim_pass(
+        if not await livekit_huddles.has_ceo(room_id, live=True) and await container_repo.try_claim_pass(
             f"huddle-dispatch:{room_id}", interval_s=DISPATCH_DEDUPE_S
         ):
             await livekit_huddles.dispatch_ceo(
@@ -225,7 +258,13 @@ async def turn(call_id: str, body: TurnBody):
     call = await _worker_call(call_id, body.roomToken)
     if call.get("kind") != "huddle" or call.get("ownerId") != body.ownerId or call.get("status") != voice_calls.OPEN:
         raise _problem(404, "call_not_found")
-    args = {"call": call, "agent_id": body.agentId, "speaker_id": body.speakerUserId, "utterance": body.utterance}
+    args = {
+        "call": call,
+        "agent_id": body.agentId,
+        "speaker_id": body.speakerUserId,
+        "speaker_name": body.speakerName,
+        "utterance": body.utterance,
+    }
     if body.steerRunId:
         steered = await voice_calls.steer_voice_run(run_id=str(body.steerRunId), **args)
         if steered:
@@ -239,6 +278,8 @@ async def turn(call_id: str, body: TurnBody):
 async def route(room_id: str, body: RouteBody):
     room_id = _room_id(room_id)
     _require_room_token(body.roomToken, room_id, body.ownerId)
+    if body.setting == "meeting" and not ((await messaging_repo.get_room(room_id)) or {}).get("meeting"):
+        raise _problem(400, "not_a_meeting")  # the meeting floor never runs in a Live room
     args = {
         "owner_id": body.ownerId,
         "room_id": room_id,
@@ -256,6 +297,8 @@ async def route(room_id: str, body: RouteBody):
         floor=body.floor,
         voice_runs=body.voiceRuns,
         at=body.at,
+        setting=body.setting,
+        unclaimed=body.unclaimed,
     )
 
 
@@ -278,9 +321,13 @@ async def end(call_id: str, body: EndBody):
 async def transcript(room_id: str, body: TranscriptBody):
     """The worker's rolling transcript, in batches: what people and agents said in a huddle, kept
     in the backend's CloudWatch log (search `live transcript huddle=<id>`) so a bad call can be
-    read back. Nothing is posted to the room."""
+    read back. A meeting's ``final`` request carries the whole transcript and becomes its room's
+    ``transcript.txt``; nothing else is posted to the room."""
     room_id = _room_id(room_id)
     _require_room_token(body.roomToken, room_id, body.ownerId)
+    meta = await messaging_repo.get_room(room_id) or {}
+    if meta.get("meeting") and meta.get("ownerId") == body.ownerId:
+        await meeting_notes.on_transcript(room_id, [x.model_dump() for x in body.lines], body.final)
     rendered = "\n".join(
         f"[{x.mark} @{int(x.at)}] {x.name}{' → ' + x.to if x.to else ''}: {x.text}" for x in body.lines
     )

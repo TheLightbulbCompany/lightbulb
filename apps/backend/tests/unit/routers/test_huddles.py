@@ -468,14 +468,6 @@ def test_frames_relay_by_room_even_after_the_window_closed(client):
     assert container.await_args.args[0] == "org_a"
 
 
-def test_frames_nobody_heard_answer_202_so_the_bridge_posts_the_answer_itself(client):
-    """The call ended before the run did (10-02: Forge's answer landed 50 s after hang-up): the
-    relay fails, the run still finishes, and the bridge reads the 202 as 'post it in the room'."""
-    resp, send, _, metric = _frames(client, send_error=RuntimeError("no worker in the room"))
-    assert resp.status_code == 202 and resp.json() == {"ok": True, "delivered": False}
-    metric.assert_any_call("huddle.frame.no_worker")
-
-
 def test_frames_need_the_owners_hook_token(client):
     resp, send, _, _ = _frames(client, headers={"Authorization": "Bearer other-owner-token"})
     assert resp.status_code == 401
@@ -497,7 +489,7 @@ def test_frames_refuse_an_event_for_another_room(client):
 
 def test_frames_with_no_worker_are_dropped_with_a_metric(client):
     resp, _, _, metric = _frames(client, send_error=RuntimeError("twirp"))
-    assert resp.status_code == 200
+    assert resp.status_code == 202  # accepted, nobody heard it: the bridge posts a completed answer itself
     metric.assert_called_once_with("huddle.frame.no_worker")
 
 

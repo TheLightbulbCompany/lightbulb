@@ -22,11 +22,20 @@ from tests.unit.services.test_local_session_relay import (  # noqa: F401 -- fixt
     start,
     transport,
 )
-from tests.unit.services.test_local_sessions import ALICE, BOB, OWNER, ROOM
+from tests.unit.services.test_local_sessions import ALICE, BOB, OUTSIDER, OWNER, ROOM
 
 
 async def ack(transport, sid):
     return await relay(transport).handle_message("conn-1", heartbeat(sid))
+
+
+@pytest.fixture(autouse=True)
+async def _teammates_are_members(request):
+    """Teammates are in the workspace (an active user stream) unless a test removes them."""
+    if "transport" in request.fixturenames:
+        request.getfixturevalue("transport")
+        for person in (BOB, OUTSIDER):
+            await messaging_repo.ensure_user_stream(OWNER, person.user_id)
 
 
 @pytest.fixture(autouse=True)
@@ -270,3 +279,14 @@ def test_the_golden_watch_frame_fits_the_relay_envelope():
 
     check_envelope(fixture("session-watch"))
     assert set(fixture("session-watch")) == {"type", "sessionId", "generation"}
+
+
+@pytest.mark.asyncio
+async def test_a_removed_member_cannot_keep_a_watch_alive(transport):
+    sid = await start(transport)
+    await session_screen.watch(BOB, sid)
+    await messaging_repo.deactivate_user_stream(OWNER, BOB.user_id)
+    with pytest.raises(ApiProblem) as problem:
+        await session_screen.watch(BOB, sid)  # their Clerk JWT is still valid
+    assert problem.value.error.code == "LOCAL_SESSION_FORBIDDEN"
+    await session_screen.watch(ALICE, sid)  # the owner still watches

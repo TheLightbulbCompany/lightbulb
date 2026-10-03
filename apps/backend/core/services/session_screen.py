@@ -47,10 +47,22 @@ def _watch_key(row: dict) -> dict:
     }
 
 
+async def _still_a_member(row: dict, user: str) -> None:
+    """A teammate must be in the workspace NOW: removal deactivates their user stream, while an
+    already-issued Clerk JWT stays valid until it expires. The same fence as resume and offline
+    sends. The owner's own Mac session is theirs."""
+    if user == row["humanUserId"]:
+        return
+    stream = await store.get_user_stream(row["ownerId"], user)
+    if not stream or not stream.get("active"):
+        raise sessions.ApiProblem("LOCAL_SESSION_FORBIDDEN", "You are no longer in this workspace.")
+
+
 async def watch(auth: sessions.Caller, session_id: str) -> None:
     """A person has this running session's terminal on screen. Humans who can read it only:
     `authorize_session` refuses agents on the roomless path, and no room id is accepted here."""
     row, _ = await sessions.authorize_session(auth, None, session_id)
+    await _still_a_member(row, auth.user_id)
     now = int(_clock())
     if row.get("endedAt") is not None or row.get("unshared") or int(row.get("onlineUntil", 0)) <= now:
         raise sessions.ApiProblem("LOCAL_SESSION_OFFLINE", "This session is not running.")
@@ -278,6 +290,7 @@ async def type_into(auth: AuthContext, session_id: str, body: SessionInput) -> N
     is accepted, and the route takes a Clerk session JWT only, so MCP's opaque tokens never
     reach it. A refused call sends nothing to the Mac."""
     row, _ = await sessions.authorize_session(auth, None, session_id, owner_only=True)
+    await _still_a_member(row, auth.user_id)
     now = _clock()
     if row.get("endedAt") is not None or row.get("unshared") or int(row.get("onlineUntil", 0)) <= now:
         raise sessions.ApiProblem("LOCAL_SESSION_OFFLINE", "This session is not running.")

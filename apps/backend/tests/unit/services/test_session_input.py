@@ -35,6 +35,15 @@ def _fresh(request, monkeypatch):
         monkeypatch.setattr("core.services.local_session_relay.get_local_session_relay", lambda: relay(transport))
 
 
+@pytest.fixture(autouse=True)
+async def _teammates_are_members(request):
+    """Teammates are in the workspace (an active user stream) unless a test removes them."""
+    if "transport" in request.fixturenames:
+        request.getfixturevalue("transport")
+        for person in (BOB, OUTSIDER):
+            await messaging_repo.ensure_user_stream(OWNER, person.user_id)
+
+
 async def capable(transport, sid, remote_input=True):
     frame = heartbeat(sid)  # the golden heartbeat advertises remoteInput
     if not remote_input:
@@ -275,3 +284,15 @@ async def test_a_failed_send_is_offline_and_still_audited(transport, db, monkeyp
         await session_screen.type_into(BOB, sid, body())
     assert problem.value.error.code == "LOCAL_SESSION_OFFLINE"
     assert len(typed_rows(db, sid)) == 1
+
+
+@pytest.mark.asyncio
+async def test_a_removed_member_cannot_type_even_while_still_admitted(transport):
+    sid = await start(transport)
+    await capable(transport, sid)
+    await admit(sid)
+    await messaging_repo.deactivate_user_stream(OWNER, BOB.user_id)
+    transport[3].clear()
+    await refused("LOCAL_SESSION_FORBIDDEN", transport, BOB, sid)  # their Clerk JWT is still valid
+    await session_screen.type_into(ALICE, sid, body())
+    assert len(sent(transport)) == 1, "the owner still types"

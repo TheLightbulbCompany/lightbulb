@@ -50,7 +50,7 @@ it("renders a session mention as a reference card that opens the session", async
     sessionMentions: ["s1"], sessionTargetLabels: { s1: "Claude Code · Launch check · You" } }}
     collapsed={false} replyCount={0} currentUserId="user-a" attachmentUrl={attachmentUrl}
     sessionCandidates={[{ session, handle: "claude-lightbulb-s1", collided: false }]} />);
-  expect(screen.getByText("@Claude · Launch check")).toBeTruthy();
+  expect(screen.getByText("@Claude Code · Launch check · You")).toBeTruthy();
   expect(screen.getByText("Idle")).toBeTruthy();
   expect(screen.queryByText("Waiting for session")).toBeNull();
   await fireEvent.press(screen.getByLabelText("Open session Claude · Launch check, Idle"));

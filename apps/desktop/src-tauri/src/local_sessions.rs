@@ -1828,38 +1828,45 @@ mod tests {
     #[test]
     fn local_sessions_only_a_holders_own_provider_is_mirrored() {
         use std::time::{Duration, Instant};
-        let dir = tempfile::Builder::new().prefix("lbh-").tempdir_in("/private/tmp").unwrap();
-        let (socket, cwd) = (dir.path().join("ab12cd34.sock"), dir.path().to_path_buf());
-        // A real holder, in this process: its provider is a shell that starts a child of its own.
-        std::thread::spawn(move || {
-            crate::holder::run::run_with_env(
-                &socket,
-                &["/bin/sh".into(), "-c".into(), "/bin/sleep 30 & wait".into()],
-                &cwd,
-                vec![("PATH".into(), "/usr/bin:/bin".into())],
-            )
-        });
-        let deadline = Instant::now() + Duration::from_secs(5);
-        let holders = loop {
-            let found = crate::holder::manager::list_in(dir.path());
-            if !found.is_empty() {
-                break found;
+        // A real process tree, with this test process as the holder: `holder_of` reads only the
+        // holder's pid, its provider's pid and the provider's real parent. (An in-process pty
+        // holder made this test depend on openpty and socket timing on the CI runner.)
+        struct Tree(std::process::Child, Option<u32>);
+        impl Drop for Tree {
+            fn drop(&mut self) {
+                if let Some(pid) = self.1 {
+                    unsafe { libc::kill(pid as i32, libc::SIGKILL) };
+                }
+                let _ = self.0.kill();
+                let _ = self.0.wait();
             }
-            assert!(Instant::now() < deadline, "the holder started");
-            std::thread::sleep(Duration::from_millis(20));
-        };
-        let provider = holders[0].provider_pid;
+        }
+        let mut tree = Tree(
+            std::process::Command::new("/bin/sh").args(["-c", "/bin/sleep 30 & wait"]).spawn().expect("spawn the provider"),
+            None,
+        );
+        let provider = tree.0.id();
+        let deadline = Instant::now() + Duration::from_secs(20);
         let grandchild: u32 = loop {
-            let out = std::process::Command::new("/usr/bin/pgrep")
-                .args(["-P", &provider.to_string()])
-                .output()
-                .unwrap();
+            let out = std::process::Command::new("/usr/bin/pgrep").args(["-P", &provider.to_string()]).output().unwrap();
             if let Some(pid) = String::from_utf8_lossy(&out.stdout).lines().next().and_then(|l| l.trim().parse().ok()) {
                 break pid;
             }
-            assert!(Instant::now() < deadline, "the provider started its child");
+            if let Ok(Some(status)) = tree.0.try_wait() {
+                panic!("the provider exited before starting its child: {status}");
+            }
+            assert!(Instant::now() < deadline, "the provider started no child in 20 s");
             std::thread::sleep(Duration::from_millis(20));
         };
+        tree.1 = Some(grandchild);
+        let holders = [HolderInfo {
+            id: "ab12cd34".into(),
+            socket: "/nonexistent/ab12cd34.sock".into(),
+            pid: std::process::id(),
+            provider_pid: provider,
+            argv: vec![],
+            cwd: "/".into(),
+        }];
         let mut found = vec![
             native_at("claude", "held", provider),
             native_at("claude", "inside", grandchild),
@@ -1872,10 +1879,6 @@ mod tests {
             [("held", Some("ab12cd34"))],
             "the holder's own provider is shared; a claude it starts and a plain one are not"
         );
-        unsafe {
-            libc::kill(grandchild as i32, libc::SIGKILL);
-            libc::kill(provider as i32, libc::SIGKILL);
-        }
     }
 
     #[test]

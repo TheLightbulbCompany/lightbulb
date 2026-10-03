@@ -147,9 +147,13 @@ pub fn run_with_env(socket: &Path, argv: &[String], cwd: &Path, env: Vec<(String
     let mut reader = pair.master.try_clone_reader().map_err(std::io::Error::other)?;
     let mut pty = pair.master.take_writer().map_err(std::io::Error::other)?;
 
-    let _ = std::fs::remove_file(socket);
-    let listener = UnixListener::bind(socket)?;
-    std::fs::set_permissions(socket, std::fs::Permissions::from_mode(0o600))?;
+    // Bind under another name and rename into place: `list` deletes a `.sock` that refuses a
+    // connection, so the socket must never appear under its real name before it is listening.
+    let binding = socket.with_extension("bind");
+    let _ = std::fs::remove_file(&binding);
+    let listener = UnixListener::bind(&binding)?;
+    std::fs::set_permissions(&binding, std::fs::Permissions::from_mode(0o600))?;
+    std::fs::rename(&binding, socket)?;
 
     let (tx, rx) = channel::<Event>();
     // Output read but not yet handled. Past OUTPUT_BACKLOG the reader waits, so a provider

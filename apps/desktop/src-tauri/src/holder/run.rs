@@ -26,21 +26,56 @@ const EXIT_DRAIN: Duration = Duration::from_secs(1);
 /// (oh-my-zsh "update? [Y/n]") inside the session.
 pub fn login_environment() -> Vec<(String, String)> {
     let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".into());
-    let out = std::process::Command::new(&shell)
-        .args(["-l", "-i", "-c", "env -0"])
-        .env("DISABLE_AUTO_UPDATE", "true")
-        .stdin(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .output()
-        .map(|o| o.stdout)
-        .unwrap_or_default();
-    out.split(|b| *b == 0)
-        .filter_map(|pair| {
-            let pair = String::from_utf8_lossy(pair);
-            let (k, v) = pair.split_once('=')?;
-            (!k.is_empty() && !matches!(k, "SHLVL" | "_" | "PWD" | "OLDPWD")).then(|| (k.to_owned(), v.to_owned()))
-        })
-        .collect()
+    // This app's own binary prints the environment it inherits as JSON: exact for any value,
+    // and independent of `env -0`, which macOS's `env` lacks before recent releases.
+    let captured = std::env::current_exe().ok().and_then(|exe| {
+        let exe = format!("'{}'", exe.to_string_lossy().replace('\'', r"'\''"));
+        let out = std::process::Command::new(&shell)
+            .args(["-l", "-i", "-c", &format!("exec {exe} print-env")])
+            .env("DISABLE_AUTO_UPDATE", "true")
+            .stdin(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .output()
+            .ok()
+            .filter(|o| o.status.success())?;
+        parse_environment(&out.stdout)
+    });
+    // Never start a provider with an empty environment: fall back to what this process has.
+    captured.unwrap_or_else(|| std::env::vars().collect())
+}
+
+/// The JSON `print-env` writes; None unless it holds at least HOME and PATH.
+pub fn parse_environment(json: &[u8]) -> Option<Vec<(String, String)>> {
+    let map: std::collections::BTreeMap<String, String> = serde_json::from_slice(json).ok()?;
+    if !map.contains_key("HOME") || !map.contains_key("PATH") {
+        return None;
+    }
+    Some(
+        map.into_iter()
+            .filter(|(k, _)| !k.is_empty() && !matches!(k.as_str(), "SHLVL" | "_" | "PWD" | "OLDPWD" | "DISABLE_AUTO_UPDATE"))
+            .collect(),
+    )
+}
+
+/// `lightbulb-desktop print-env`: this process's environment as one JSON object.
+pub fn print_environment() {
+    let map: std::collections::BTreeMap<String, String> =
+        std::env::vars_os().map(|(k, v)| (k.to_string_lossy().into_owned(), v.to_string_lossy().into_owned())).collect();
+    println!("{}", serde_json::to_string(&map).unwrap_or_else(|_| "{}".into()));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn holder_environment_parses_and_refuses_an_empty_capture() {
+        let env = parse_environment(br#"{"HOME":"/Users/a","PATH":"/usr/bin","SHLVL":"2","MULTI":"a\nb"}"#).unwrap();
+        assert!(env.contains(&("MULTI".into(), "a\nb".into())));
+        assert!(!env.iter().any(|(k, _)| k == "SHLVL"));
+        assert_eq!(parse_environment(b""), None);
+        assert_eq!(parse_environment(br#"{"PATH":"/usr/bin"}"#), None);
+    }
 }
 
 enum Event {

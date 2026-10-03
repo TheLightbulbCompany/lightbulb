@@ -2,6 +2,11 @@
 
 fn main() {
     #[cfg(unix)]
+    if std::env::args().nth(1).as_deref() == Some("print-env") {
+        lightbulb_desktop::holder::run::print_environment();
+        return;
+    }
+    #[cfg(unix)]
     if std::env::args().nth(1).as_deref() == Some("holder") {
         // `holder <socket> -- <argv…>`: one held session, in its own process.
         let args: Vec<String> = std::env::args().collect();

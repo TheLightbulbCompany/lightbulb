@@ -13,11 +13,10 @@ Event = Literal[
     "local_session_reconnected",
     "local_session_command_admitted",
     "local_session_command_settled",
-    "local_session_reply_posted",
     "native_send_outcome",
     "local_session_team_control_changed",
 ]
-Origin = Literal["web", "ios", "direct", "room_mention", "native"]
+Origin = Literal["web", "ios", "direct", "native"]
 State = Literal["on", "off", "pending", "applied", "rejected", "unknown", "cancelled"]
 
 

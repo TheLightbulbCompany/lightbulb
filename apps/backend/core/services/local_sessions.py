@@ -459,7 +459,6 @@ class CommandReceipt(LocalSessionCommand):
     created_at: int
     deliver_by: int
     held: bool = False
-    reply_posted: bool = False
     provider_message_id: str | None = None
     cancelled_at: int | None = None
     native_hop: int | None = Field(default=None, ge=1, le=2)
@@ -1190,8 +1189,6 @@ async def submit_command(
     session_id: str,
     request: LocalSessionCommand,
     *,
-    origin_room_id: str | None = None,
-    origin_message_id: str | None = None,
     source_session_id: str | None = None,
     source_generation: str | None = None,
     source_turn_id: str | None = None,
@@ -1224,7 +1221,6 @@ async def submit_command(
             or request.kind != "send"
             or replaces_request_id == request.request_id
             or room_id
-            or origin_room_id
             or source_session_id
         ):
             raise ApiProblem("INVALID_REQUEST", "Only a direct human follow-up can replace an offline send.")
@@ -1268,7 +1264,6 @@ async def submit_command(
                 or original.get("actorUserId") != auth.user_id
                 or original.get("kind") != "send"
                 or original.get("roomId") != ""
-                or original.get("originRoomId")
                 or not original.get("offlineIdentity")
                 or original.get("state") != "rejected"
                 or original.get("cancelledAt")
@@ -1313,7 +1308,6 @@ async def submit_command(
         offline_send = (
             not isinstance(auth, AgentInvocation)
             and not room_id
-            and not origin_room_id
             and not source_session_id
             and request.kind == "send"
             and request.expected_turn_id is None
@@ -1321,8 +1315,6 @@ async def submit_command(
             and row["capabilities"]["sendMode"] == "queue"
         )
         _require_control(row, request, allow_offline_send=offline_send)
-        if origin_room_id and row["provider"] == "codex" and not row.get("roomReplyRequestId"):
-            raise ApiProblem("LOCAL_SESSION_UNSUPPORTED", "Update Lightbulb on the Mac to use Codex room mentions.")
         if isinstance(auth, AgentInvocation) and now >= auth.expires_at:
             raise ApiProblem("LOCAL_SESSION_FORBIDDEN", "Local session invocation is unavailable.")
         if offline_send and auth.user_id != row["humanUserId"]:
@@ -1364,9 +1356,6 @@ async def submit_command(
                 if offline_send
                 else {}
             ),
-            **({"originRoomId": origin_room_id} if origin_room_id else {}),
-            **({"originMessageId": origin_message_id} if origin_message_id else {}),
-            **({"originEventSeq": row.get("eventSeq", 0)} if origin_room_id else {}),
             **({"nativeHop": native_hop} if native_hop is not None else {}),
             **({"replacesRequestId": replaces_request_id} if replaces_request_id else {}),
             **(
@@ -1398,7 +1387,7 @@ async def submit_command(
                 room_meta_fenced_by_extra=room_meta_fenced_by_extra,
             )
             actor = getattr(auth, "user_id", None) or row["humanUserId"]
-            origin = "room_mention" if origin_room_id else "native" if source_session_id else "direct"
+            origin = "native" if source_session_id else "direct"
             capture_session_event(
                 row,
                 "local_session_command_admitted",

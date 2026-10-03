@@ -1,4 +1,4 @@
-import { act, render as rtlRender, screen, waitFor, within } from "@testing-library/react";
+import { act, render as rtlRender, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { ReactElement } from "react";
 import { SWRConfig } from "swr";
@@ -251,16 +251,6 @@ it("an older desktop app without terminals keeps the remote start", async () => 
   render(view());
   await userEvent.type(await screen.findByPlaceholderText(PLACEHOLDER), "fix the build{Enter}");
   await waitFor(() => expect(m.post).toHaveBeenCalledWith("/desktop-sessions/start?source=web", expect.objectContaining({ deviceId: "mac_1" })));
-});
-
-it("inside the desktop app it lists sessions still running on this Mac and reopens their window", async () => {
-  const invoke = desktop(async (command) => command === "terminal_options" ? OPTIONS
-    : command === "terminal_list" ? [{ id: "ab12cd34", argv: ["/bin/sh", "-c", "x", "lightbulb-start", "s", "/scope", "/Users/alice/.local/share/claude/versions/2.1.288"], cwd: "/Users/alice/code" }]
-    : null);
-  render(view());
-  const group = await screen.findByRole("group", { name: "Running on this Mac" });
-  await userEvent.click(within(group).getByRole("button", { name: "Open Claude Code · ~/code" }));
-  expect(invoke).toHaveBeenCalledWith("terminal_open", { holderId: "ab12cd34" });
 });
 
 it("a start nobody could confirm can be dismissed, so the view is not locked for hours", async () => {

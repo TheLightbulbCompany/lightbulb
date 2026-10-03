@@ -187,24 +187,38 @@ pub fn provider_label(argv: &[String]) -> &'static str {
     }
 }
 
-/// From the main webview: open (or focus) the window of a running session. New sessions start
-/// through `session_start::terminal_start`, with the same checks as a remote start.
-#[tauri::command]
-pub async fn terminal_open(app: AppHandle, holder_id: String) -> Result<HolderInfo, String> {
-    let info = tauri::async_runtime::spawn_blocking(manager::list)
-        .await
-        .map_err(|e| e.to_string())?
-        .into_iter()
-        .find(|h| h.id == holder_id)
-        .ok_or("That session has ended.")?;
-    open_window(&app, &info)?;
-    Ok(info)
+/// Set once the app is quitting or restarting: its windows go away, the sessions do not.
+static APP_EXITING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+pub fn app_exiting() {
+    APP_EXITING.store(true, std::sync::atomic::Ordering::SeqCst);
 }
 
-/// From the main webview: the running sessions on this Mac (no keys, nothing that can type).
-#[tauri::command]
-pub async fn terminal_list() -> Vec<HolderInfo> {
-    tauri::async_runtime::spawn_blocking(manager::list).await.unwrap_or_default()
+/// The holder id a terminal window's label names.
+pub fn holder_of(label: &str) -> Option<&str> {
+    label.strip_prefix("terminal-").filter(|id| !id.is_empty() && id.bytes().all(|b| b.is_ascii_alphanumeric()))
+}
+
+/// A person closed a terminal window: that ends its session, like closing a terminal. The app
+/// quitting or updating is not a close; those sessions keep running and `restore_windows`
+/// brings their windows back.
+pub fn window_closed(label: &str) {
+    let Some(id) = holder_of(label) else { return };
+    if APP_EXITING.load(std::sync::atomic::Ordering::SeqCst) {
+        return;
+    }
+    if let Some(info) = manager::hello(&manager::socket_dir().join(format!("{id}.sock"))) {
+        manager::stop(info.pid);
+    }
+}
+
+/// On launch: a window for every session that kept running while the app was away.
+pub fn restore_windows(app: &AppHandle) {
+    for info in manager::list() {
+        if let Err(e) = open_window(app, &info) {
+            crate::log(&format!("[terminal] could not restore a session window: {e}"));
+        }
+    }
 }
 
 #[cfg(test)]
@@ -230,6 +244,14 @@ mod tests {
         assert_eq!(provider_label(&argv(&["/opt/homebrew/bin/codex", "--no-daemon"])), "Codex");
         assert_eq!(provider_label(&argv(&["/bin/cat"])), "Session");
         assert_eq!(provider_label(&argv(&["/Users/a/.local/share/claude/versions/2.1.288", "--", "fix the codex integration"])), "Claude Code");
+    }
+
+    #[test]
+    fn terminal_window_labels_name_only_well_formed_holders() {
+        assert_eq!(holder_of("terminal-ab12cd34"), Some("ab12cd34"));
+        assert_eq!(holder_of("main"), None);
+        assert_eq!(holder_of("terminal-"), None);
+        assert_eq!(holder_of("terminal-../x"), None);
     }
 
     #[test]

@@ -10,7 +10,7 @@ import { Button } from "@/components/ui/button";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { useApi } from "@/lib/api";
 import { SessionToolIcon } from "./SessionToolIcon";
-import { heldLabel, openHeldSession, startLocalTerminal, useHeldSessions, useLocalMac } from "./localTerminal";
+import { startLocalTerminal, useLocalMac } from "./localTerminal";
 
 type Option = { id: string; label: string };
 type Tool = { id: "claude" | "codex"; label: string; modeLabel: string; models: Option[]; modes: Option[]; efforts?: Option[]; defaultMode?: string; defaultEffort?: string | null };
@@ -109,8 +109,6 @@ export function NewSessionView({ sessions, onEvent, onOpenSession, onClose }: {
 
   // Inside the desktop app this Mac answers for itself and the session opens in its own window.
   const localMac = useLocalMac();
-  const held = useHeldSessions();
-  const [reopenError, setReopenError] = useState<string | null>(null);
   const { data: targets, mutate: refreshTargets } = useTargets();
   useEffect(() => { void refreshTargets(); }, [refreshTargets]);
   const macs = !localMac && targets?.enabled ? targets.devices : null;
@@ -227,14 +225,6 @@ export function NewSessionView({ sessions, onEvent, onOpenSession, onClose }: {
         <h3 className="font-semibold">New session</h3>
         <Button variant="ghost" size="icon-sm" className="ml-auto" aria-label="Close new session" onClick={onClose}><X aria-hidden="true" /></Button>
       </header>
-      {held.length > 0 && <div className="new-session-body text-sm" role="group" aria-label="Running on this Mac">
-        <p className="text-muted-foreground">Running on this Mac</p>
-        {held.map((h) => <Button key={h.id} variant="outline" size="sm" className="justify-start"
-          onClick={() => { setReopenError(null); openHeldSession(h.id).catch((e) => setReopenError(e instanceof Error ? e.message : String(e))); }}>
-          Open {heldLabel(h)}
-        </Button>)}
-        {reopenError && <p role="alert" className="text-err">{reopenError}</p>}
-      </div>}
       <div className="new-session-body text-sm text-muted-foreground">
         {blocked === "sharing"
           ? <p role="status">Session sharing is off on {macName}. Turn it on in <Link className="underline underline-offset-4" href="/settings">Settings → Native terminal sessions</Link>.</p>

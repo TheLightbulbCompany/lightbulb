@@ -1376,6 +1376,8 @@ async fn apply_update_manifest(
             format!("install: {e}")
         })?;
 
+    #[cfg(unix)]
+    holder::window::app_exiting();
     process_owner::mark_restarting(&app.config().identifier).map_err(|e| {
         log(&format!("[updater] safe restart unavailable: {e}"));
         format!("restart safely: {e}")
@@ -1709,6 +1711,9 @@ pub fn run() {
                     let _ = window.hide();
                     log("[window] main close requested; hiding to tray");
                 }
+                // Closing a terminal window ends its session, like closing a terminal.
+                #[cfg(unix)]
+                holder::window::window_closed(window.label());
             }
         })
         .on_page_load(|webview, payload| {
@@ -1839,8 +1844,6 @@ end tell"#,
             desktop_permissions::desktop_permissions_set,
             agent_chrome::agent_chrome_status,
             agent_chrome::agent_chrome_raise,
-            holder::window::terminal_open,
-            holder::window::terminal_list,
             session_start::terminal_options,
             session_start::terminal_start,
         ])
@@ -1953,11 +1956,23 @@ end tell"#,
                 }
             });
 
+            // Sessions that kept running while the app was away get their windows back.
+            #[cfg(unix)]
+            {
+                let handle = app.handle().clone();
+                tauri::async_runtime::spawn_blocking(move || holder::window::restore_windows(&handle));
+            }
+
             Ok(())
         })
         .build(context)
         .expect("error while running tauri application")
         .run(|_app, _event| {
+            // Quitting or restarting closes windows without ending their sessions.
+            #[cfg(unix)]
+            if matches!(_event, tauri::RunEvent::ExitRequested { .. } | tauri::RunEvent::Exit) {
+                holder::window::app_exiting();
+            }
             // Dock-icon click on an already-running app: macOS delivers
             // applicationShouldHandleReopen instead of spawning a second
             // process, so single_instance never fires for this path.

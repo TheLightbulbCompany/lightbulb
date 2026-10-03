@@ -41,7 +41,9 @@ export async function startLocalTerminal(params: Record<string, unknown>): Promi
 export type LocalTerminal = "checking" | "local" | "none";
 /** How often the panel's place is re-read: it moves when the content above it changes height. */
 const TRACK_MS = 250;
-const now = () => performance.timeOrigin + performance.now();
+// Strictly increasing: the backend drops a non-greater `at`, and a close and the next open can share a clock tick.
+let last = 0;
+const now = () => (last = Math.max(performance.timeOrigin + performance.now(), last + 0.01));
 
 /**
  * The session's live terminal on this Mac, drawn by the desktop app over `slot` (its own webview;
@@ -65,8 +67,12 @@ export function useLocalTerminal(target: { sessionId: string } | { holderId: str
       if (shape === sent) return;
       sent = shape;
       invoke("terminal_panel", { ...target, rect, at: now() }).then(
-        (reply) => { const r = reply as { live?: boolean; stale?: boolean }; if (alive && !r?.stale) setResult({ key, value: r?.live ? "local" : "none" }); },
-        () => { if (alive) setResult({ key, value: "none" }); });
+        (reply) => {
+          const r = reply as { live?: boolean; stale?: boolean };
+          if (r?.stale) { sent = ""; return; } // lost a race: re-send on the next tick
+          if (alive) setResult({ key, value: r?.live ? "local" : "none" });
+        },
+        () => { sent = ""; if (alive) setResult({ key, value: "none" }); });
     };
     report();
     const timer = setInterval(report, TRACK_MS);

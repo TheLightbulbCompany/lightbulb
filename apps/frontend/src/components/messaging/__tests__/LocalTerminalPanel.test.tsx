@@ -49,3 +49,15 @@ it("an ended session never asks for a terminal", async () => {
   expect(await screen.findByRole("region", { name: "Native session history" })).toBeInTheDocument();
   expect(invoke).not.toHaveBeenCalledWith("terminal_panel", expect.anything());
 });
+
+it("a close and the next open in one tick carry strictly increasing times", async () => {
+  vi.spyOn(performance, "now").mockReturnValue(5);
+  const invoke = desktop({ live: true });
+  const first = render(panel(session));
+  await waitFor(() => expect(invoke).toHaveBeenCalled());
+  first.unmount();
+  render(panel(session));
+  const ats = invoke.mock.calls.map(c => (c as unknown as [string, { at: number }])[1].at);
+  expect(ats.length).toBeGreaterThanOrEqual(3);
+  ats.forEach((at, i) => { if (i) expect(at).toBeGreaterThan(ats[i - 1]); });
+});

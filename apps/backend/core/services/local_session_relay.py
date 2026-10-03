@@ -29,6 +29,8 @@ from core.services.messaging import ApiProblem, ContractModel, make_live_event
 CLIENT_ID = "lightbulb-local-sessions"
 LIVENESS_SECONDS = 30
 CLAIM_SECONDS = 5
+# The desktop's Journal::admit refuses a command whose deliverBy - createdAt exceeds this.
+DISPATCH_WINDOW_SECONDS = 30
 PAUSED_NOTICE = "Sharing was paused here. Activity from this point until sharing resumed is not shown."
 logger = logging.getLogger(__name__)
 _ANALYTICS_NS = uuid.uuid5(uuid.NAMESPACE_URL, "lightbulb:local-session-lifecycle")
@@ -1105,7 +1107,20 @@ class LocalSessionRelay:
                         # claim so a fresh snapshot can retry without lease delay.
                         await repo.replace_command(claim, _revised(claim, claimUntil=0))
                         continue
-                    public = sessions._public(sessions.CommandReceipt, claim).model_dump(mode="json", by_alias=True)
+                    # A command that may wait (a queued follow-up: 24 h) leaves with a fresh window,
+                    # because the Mac admits only 30 s. Its stored deliverBy still bounds expiry;
+                    # queuedAt (server-side only) keeps when it was queued.
+                    window = {}
+                    if claim["deliverBy"] - claim["createdAt"] > DISPATCH_WINDOW_SECONDS:
+                        sent_at = int(time.time())
+                        window = {
+                            "queuedAt": claim.get("queuedAt", claim["createdAt"]),
+                            "createdAt": sent_at,
+                            "deliverBy": min(claim["deliverBy"], sent_at + DISPATCH_WINDOW_SECONDS),
+                        }
+                    public = sessions._public(sessions.CommandReceipt, {**claim, **window}).model_dump(
+                        mode="json", by_alias=True
+                    )
                     public["state"] = "dispatched"
                     envelope = {"type": "local.session.command", "command": public, "actor": actor}
                     check_envelope(envelope)
@@ -1114,7 +1129,7 @@ class LocalSessionRelay:
                     _capture_offline_rejection(row, claim, "rejected")
                     continue
                 dispatched = _revised(
-                    claim, state="dispatched", connectionId=row["connectionId"], updatedAt=int(time.time())
+                    claim, **window, state="dispatched", connectionId=row["connectionId"], updatedAt=int(time.time())
                 )
                 await repo.replace_command(claim, dispatched, checks=checks)
                 if int(time.time()) >= claim["claimUntil"]:

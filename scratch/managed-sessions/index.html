@@ -1,0 +1,25 @@
+<!doctype html><meta charset="utf-8"><title>Held session</title>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/css/xterm.css">
+<style>html,body{margin:0;height:100%;background:#16161a}#t{position:absolute;inset:8px}</style>
+<div id="t"></div>
+<script src="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/lib/xterm.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@xterm/addon-fit@0.10.0/lib/addon-fit.min.js"></script>
+<script>
+const term = new Terminal({macOptionIsMeta: true, fontFamily: "Menlo, monospace", fontSize: 13, scrollback: 5000, allowProposedApi: true});
+const fit = new FitAddon.FitAddon(); term.loadAddon(fit); term.open(document.getElementById("t"));
+const ws = new WebSocket("ws://localhost:8765/ws"); ws.binaryType = "arraybuffer";
+const enc = new TextEncoder();
+function send(t, payload) { const p = payload || new Uint8Array(); const f = new Uint8Array(5 + p.length);
+  f[0] = t; new DataView(f.buffer).setUint32(1, p.length); f.set(p, 5); ws.send(f); }
+function resize() { fit.fit(); const p = new Uint8Array(4); const v = new DataView(p.buffer);
+  v.setUint16(0, term.cols); v.setUint16(2, term.rows); send(4, p); }
+let buf = new Uint8Array();
+ws.onopen = () => { send(1, enc.encode(JSON.stringify({role: "interactive"}))); resize(); };
+ws.onmessage = (e) => { const d = new Uint8Array(e.data); const b = new Uint8Array(buf.length + d.length); b.set(buf); b.set(d, buf.length); buf = b;
+  while (buf.length >= 5) { const n = new DataView(buf.buffer, buf.byteOffset).getUint32(1); if (buf.length < 5 + n) break;
+    const t = buf[0], p = buf.slice(5, 5 + n); buf = buf.slice(5 + n);
+    if (t === 2 || t === 8) term.write(p.slice(8)); else if (t === 9) term.write("\r\n[another window took this session]\r\n"); else if (t === 5) term.write("\r\n[session ended]\r\n"); } };
+term.onData(d => send(3, enc.encode(d)));
+term.onBinary(d => send(3, Uint8Array.from(d, c => c.charCodeAt(0))));
+addEventListener("resize", resize); term.focus();
+</script>

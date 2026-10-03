@@ -236,6 +236,15 @@ it("enriches room participants with roster activity while keeping the full creat
   expect(directory.participants.map((member) => member.id)).toEqual(["colleague", "agent-friday", "agent-atlas"]);
 });
 
+it("offers a shared teammate session whose owner is in the room, without a control grant", async () => {
+  // A chip is a reference (#3623): no send/control predicate gates the picker.
+  state.resourceSource.client.listWorkspaceSessions.mockResolvedValue({ sessions: [{ ...(liveSession("s1", "colleague") as object), shared: true, controlUnavailableReason: "not_owner" } as never] });
+  state.activeRoom = { ...room, members: [...room.members, { kind: "human", id: "colleague", displayName: "Colleague", mentionHandle: null, role: "member", listenMode: null, joinedAt: "2026-09-10T00:00:00Z", joinedSeq: 0 }] };
+  mocks.rooms.mockReturnValue(state);
+  render(<MessagingWorkspaceProvider><MessagingDirectory /><MessagingConversation /></MessagingWorkspaceProvider>);
+  await waitFor(() => expect(panel.composer.sessionTargets?.map((t) => t.candidate.session.sessionId)).toEqual(["s1"]));
+});
+
 it("derives sharing from the workspace session list for room and directory participants", async () => {
   state.resourceSource.client.listWorkspaceSessions.mockResolvedValue({ sessions: [{ sessionId: "s1", humanUserId: "colleague", status: "busy" } as never] });
   state.activeRoom = { ...room, members: [...room.members, { kind: "human", id: "colleague", displayName: "Colleague", mentionHandle: null, role: "member", listenMode: null, joinedAt: "2026-09-10T00:00:00Z", joinedSeq: 0 }] };

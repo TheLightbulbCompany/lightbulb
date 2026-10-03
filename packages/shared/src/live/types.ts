@@ -130,6 +130,7 @@ export type LiveEventType =
   | "room.metadata.changed"
   | "workspace.sessions.changed"
   | "workspace.session.attention"
+  | "workspace.session.screen"
   | "room.member.updated"
   | "room.subscription.rotated"
   | "room.access.removed"
@@ -154,6 +155,7 @@ export const LIVE_EVENT_TYPES: ReadonlySet<string> = new Set<LiveEventType>([
   "room.metadata.changed",
   "workspace.sessions.changed",
   "workspace.session.attention",
+  "workspace.session.screen",
   "room.member.updated",
   "room.subscription.rotated",
   "room.access.removed",
@@ -216,6 +218,13 @@ export type SessionAttention = {
   push: { title: string; body: string; data: { source: "session"; sessionId: string } };
 };
 const SESSION_ATTENTION_STATES = new Set<string>(["waiting", "finished", "join_request", "join_allowed", "join_declined"]);
+/** One piece of a running session's live terminal, for a person watching it (spec §5.5). `epoch`
+ *  is one relay run on the Mac and `seq` orders frames within it; a "snapshot" starts the screen
+ *  over. `data` is base64 terminal output. Nothing stores it. */
+export type SessionScreen = {
+  sessionId: string; generation: string; epoch: number; seq: number;
+  cols: number; rows: number; kind: "snapshot" | "output"; data: string;
+};
 export type RoomTypingChanged = { roomId: string; userId: string; displayName: string; expiresAt: string };
 /** A member's typing/working/idle hint on this room, delivered on the member's own user
  *  channel. `expiresAt` is authoritative for BOTH "typing" and "working" (a "working" hint
@@ -287,6 +296,7 @@ export type LiveEvent =
   | LiveEventEnvelope<"room.metadata.changed", RoomMetadataChanged>
   | LiveEventEnvelope<"workspace.sessions.changed", { humanUserId: string; transcript?: true }>
   | LiveEventEnvelope<"workspace.session.attention", SessionAttention>
+  | LiveEventEnvelope<"workspace.session.screen", SessionScreen>
   | LiveEventEnvelope<"room.member.updated", RoomMemberUpdated>
   | LiveEventEnvelope<"room.subscription.rotated", RoomSubscriptionRotated>
   | LiveEventEnvelope<"room.access.removed", RoomAccessRemoved>
@@ -390,6 +400,13 @@ function payloadValid(type: LiveEventType, payload: unknown): boolean {
       // `transcript: true` marks a streaming batch: open panes refetch, the sidebar list does not.
       return str(payload.humanUserId) && (payload.transcript === undefined || payload.transcript === true)
         && Object.keys(payload).every((key) => key === "humanUserId" || key === "transcript");
+    case "workspace.session.screen":
+      return str(payload.sessionId) && str(payload.generation)
+        && Number.isSafeInteger(payload.epoch) && (payload.epoch as number) >= 0
+        && Number.isSafeInteger(payload.seq) && (payload.seq as number) >= 0
+        && Number.isInteger(payload.cols) && (payload.cols as number) >= 1 && (payload.cols as number) <= 1000
+        && Number.isInteger(payload.rows) && (payload.rows as number) >= 1 && (payload.rows as number) <= 500
+        && (payload.kind === "snapshot" || payload.kind === "output") && text(payload.data);
     case "workspace.session.attention":
       return str(payload.sessionId) && SESSION_ATTENTION_STATES.has(payload.state as string) &&
         isObj(payload.push) && str(payload.push.title) && text(payload.push.body);

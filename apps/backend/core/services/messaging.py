@@ -188,6 +188,7 @@ USER_LIVE_EVENT_TYPES = frozenset(
         "room.member.updated",
         "workspace.sessions.changed",
         "workspace.session.attention",
+        "workspace.session.screen",
         "digest.ready",
     }
 )

@@ -297,3 +297,30 @@ async def test_local_session_rejection_log_never_carries_unsafe_sid_or_frame_tex
         "conn-1",
         {"type": "local.session.error", "code": "INVALID_REQUEST"},
     )
+
+
+@pytest.mark.asyncio
+async def test_a_screen_frame_is_forwarded_and_never_answered(app, connection_service):
+    connection_service.get_connection.return_value = {
+        "user_id": "user-1",
+        "org_id": "org-1",
+        "connection_type": "local-session",
+        "auth_kind": "device",
+        "client_id": "lightbulb-local-sessions",
+        "device_id": "a" * 64,
+    }
+    machine = MagicMock()
+    machine.handle_message = AsyncMock(side_effect=AssertionError("screen frames skip the RPC path"))
+    machine.management.send_message_async = AsyncMock()
+    body = {"type": "local.session.screen", "sessionId": "s", "data": "x"}
+    with (
+        patch("core.services.local_session_relay.get_local_session_relay", return_value=machine),
+        patch("core.services.session_screen.forward", AsyncMock()) as forward,
+    ):
+        response = await _post(app, "/ws/message", headers={"x-connection-id": "conn-1"}, json=body)
+        oversized = await _post(
+            app, "/ws/message", headers={"x-connection-id": "conn-1"}, json={**body, "data": "x" * 16384}
+        )
+    assert response.status_code == oversized.status_code == 200
+    forward.assert_awaited_once_with(machine, "conn-1", body)
+    machine.management.send_message_async.assert_not_called()

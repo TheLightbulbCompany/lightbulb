@@ -202,6 +202,10 @@ async fn start(app: &tauri::AppHandle, w: &Wanted, me: &Resumer) -> std::result:
     else {
         return Ok(false);
     };
+    // `running` only knows held sessions: a private `claude --resume` / `codex resume` of the same
+    // conversation is invisible to the mirrors. Two writers on one transcript fork it, so a resume
+    // that cannot prove the conversation is free does not start.
+    free(running_conversations(home_dir(), w.provider.clone()).await, &w.conversation_id)?;
     crate::session_start::start_held(folder, argv).await.map_err(|e| {
         relay_log(&format!("{} resume launch failed: {e}", &w.session_id[..w.session_id.len().min(8)]));
         "LAUNCH_FAILED"
@@ -221,6 +225,38 @@ async fn start(app: &tauri::AppHandle, w: &Wanted, me: &Resumer) -> std::result:
     )
     .await;
     Ok(true)
+}
+
+/// Every conversation a local `provider` process runs now, held or private: the provider's own
+/// unfiltered listing, plus any process whose arguments name a conversation (a `--resume` that
+/// has not reached the listing yet). Err when either cannot be read. Nothing here reaches the
+/// backend: only the refusal code does.
+async fn running_conversations(home: PathBuf, provider: String) -> std::result::Result<Vec<String>, String> {
+    let mut ids = if provider == "codex" {
+        codex::discover(&home).await?.into_iter().map(|s| s.conversation).collect::<Vec<_>>()
+    } else {
+        claude::running_conversations(&home).await?
+    };
+    let args = native_output(Path::new("/bin/ps"), &["-axo", "args="]).await?;
+    ids.extend(
+        args.lines()
+            .filter(|line| line.contains(provider.as_str()))
+            .flat_map(|line| line.split_whitespace().map(str::to_owned).collect::<Vec<_>>()),
+    );
+    Ok(ids)
+}
+
+/// Ok when nothing runs `conversation`; ALREADY_RUNNING when something does; LAUNCH_FAILED when
+/// the listing could not be read (unproven is not free).
+fn free(listing: std::result::Result<Vec<String>, String>, conversation: &str) -> std::result::Result<(), &'static str> {
+    match listing {
+        Ok(ids) if ids.iter().any(|id| id == conversation) => Err("ALREADY_RUNNING"),
+        Ok(_) => Ok(()),
+        Err(e) => {
+            relay_log(&format!("resume refused: local sessions unreadable ({e})"));
+            Err("LAUNCH_FAILED")
+        }
+    }
 }
 
 /// Everything this Mac must agree to before anything starts. `Ok(None)`: a holder already runs
@@ -368,6 +404,17 @@ mod tests {
         assert_eq!(approved_folder(&inside, &list), Ok(crate::file_access::canonicalize(inside.to_str().unwrap()).unwrap()));
         assert_eq!(approved_folder(elsewhere.path(), &list), Err("FOLDER_NOT_APPROVED"));
         assert_eq!(approved_folder(&inside, &[]), Err("FOLDER_NOT_APPROVED"), "approval removed after the end");
+    }
+
+    #[test]
+    fn resume_refuses_a_conversation_a_private_process_runs() {
+        // `claude agents --json` (or Codex discovery) lists a private `claude --resume` of it.
+        let listed = Ok(vec!["99999999-0000-4000-8000-000000000000".into(), CONV.into()]);
+        assert_eq!(free(listed, CONV), Err("ALREADY_RUNNING"));
+        assert_eq!(free(Ok(vec![]), CONV), Ok(()), "nothing runs it: the resume starts");
+        assert_eq!(free(Ok(vec!["other".into()]), CONV), Ok(()));
+        assert_eq!(free(Err("native Claude listing unavailable".into()), CONV), Err("LAUNCH_FAILED"),
+            "an unreadable listing proves nothing: refuse");
     }
 
     #[test]

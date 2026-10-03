@@ -19,7 +19,8 @@ import json
 import logging
 
 from core.config import settings
-from core.repositories import agent_email_repo, billing_repo
+from core.repositories import billing_repo
+from core.services.agent_email import team_address
 from core.dynamodb import run_in_thread, utc_now_iso
 
 logger = logging.getLogger(__name__)
@@ -130,25 +131,14 @@ def build_owner_facts(
 
 
 async def _lookup_email_address(owner_id: str) -> str | None:
-    """The owner's advertised agent email, or None.
-
-    Selects the ``active`` row (aliases still route but are not advertised)
-    and breaks ties on the earliest ``created_at`` — a rare re-provision can
-    leave two active rows, and DynamoDB's return order is arbitrary, so an
-    unordered pick would make the agent's own address nondeterministic.
+    """The workspace's team address (every agent sends from it), or None.
     Never raises: the address is a nicety and must not stop the rest of the
-    facts from being written.
-    """
+    facts from being written."""
     try:
-        rows = await agent_email_repo.query_by_owner(owner_id)
+        return await team_address(owner_id)
     except Exception as e:  # noqa: BLE001 — facts must never block callers
-        logger.warning("owner_facts: agent-email lookup failed for %s: %s", owner_id, e)
+        logger.warning("owner_facts: team-address lookup failed for %s: %s", owner_id, e)
         return None
-    active = [r for r in rows if r.get("status") == "active"]
-    if not active:
-        return None
-    active.sort(key=lambda r: r.get("created_at") or "")
-    return active[0].get("address")
 
 
 async def _lookup_owner_timezone(owner_id: str) -> str:

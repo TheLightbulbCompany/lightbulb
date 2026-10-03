@@ -107,9 +107,9 @@ async def test_welcome_email_renders_as_html_not_plaintext(monkeypatch):
         kind="welcome",
     )
 
-    assert result == "ses-1"
     _, kwargs = fake_client.send_email.call_args
     parsed = message_from_bytes(kwargs["Content"]["Raw"]["Data"], policy=policy.default)
+    assert result == parsed["Message-ID"]
     assert parsed.get_content_type() == "text/html"
     assert not parsed.is_multipart()
     assert parsed["Reply-To"] == "support@isol8.co"

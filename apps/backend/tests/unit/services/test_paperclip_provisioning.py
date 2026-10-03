@@ -616,14 +616,14 @@ async def test_provision_org_does_NOT_allocate_a_slug_or_mint_an_address(monkeyp
         calls.append("allocate")
         return "acme-robotics"
 
-    async def spy_mint(**kwargs):
+    async def spy_mint(*args, **kwargs):
         calls.append("mint")
-        return "friday@acme-robotics.example"
+        return "agents@acme-robotics.example", "ok"
 
     monkeypatch.setattr(company_identity_mod, "allocate_company_slug", spy_allocate)
-    monkeypatch.setattr(agent_email_mod, "mint_agent_email_address", spy_mint)
+    monkeypatch.setattr(agent_email_mod, "ensure_team_address", spy_mint)
     assert not hasattr(mod, "allocate_company_slug")
-    assert not hasattr(mod, "mint_agent_email_address")
+    assert not hasattr(mod, "ensure_team_address")
 
     row = await _provision_org(_svc(admin, repo))
 

@@ -403,7 +403,7 @@ LIFECYCLE_CLAIM_STALE_S = 120
 LIFECYCLE_KEY_PREFIX = "__lifecycle__#"
 
 
-async def try_claim_owner_lifecycle(owner_id: str) -> str | None:
+async def try_claim_owner_lifecycle(owner_id: str, *, stale_s: int = LIFECYCLE_CLAIM_STALE_S) -> str | None:
     """Take the owner's exclusive lifecycle lease, or ``None`` if someone else holds it.
 
     Replaces the EFS file lock ``owner_lifecycle`` used to take: the backend runs 2-4 tasks and
@@ -428,7 +428,7 @@ async def try_claim_owner_lifecycle(owner_id: str) -> str | None:
             ExpressionAttributeValues={
                 ":now": now,
                 ":tok": token,
-                ":cutoff": now - LIFECYCLE_CLAIM_STALE_S,
+                ":cutoff": now - stale_s,
             },
         )
         return token

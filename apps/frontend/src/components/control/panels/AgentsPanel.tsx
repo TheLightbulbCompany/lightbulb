@@ -6,7 +6,6 @@ import {
   RefreshCw,
   Bot,
   Wrench,
-  Mail,
   Plus,
   Trash2,
 } from "lucide-react";
@@ -22,7 +21,7 @@ import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import type { AgentEntry } from "./agents-types";
 
-type AgentTab = "overview" | "tools" | "email";
+type AgentTab = "overview" | "tools";
 
 export interface AgentsPanelProps {
   /**
@@ -128,6 +127,10 @@ export function AgentsPanel({ initialAgentId = null }: AgentsPanelProps = {}) {
         </div>
       </div>
 
+      <div className="border-b border-[var(--edge)]">
+        <AgentEmailSection />
+      </div>
+
       {createStep === "choose" && (
         <div className="px-4 py-3 border-b border-[var(--edge)]">
           <AgentCreateChooser
@@ -209,7 +212,6 @@ export function AgentsPanel({ initialAgentId = null }: AgentsPanelProps = {}) {
                     [
                       { id: "overview", icon: Bot, label: "Overview" },
                       { id: "tools", icon: Wrench, label: "Tools" },
-                      { id: "email", icon: Mail, label: "Email" },
                     ] as const
                   ).map((tab) => (
                     <button
@@ -234,9 +236,6 @@ export function AgentsPanel({ initialAgentId = null }: AgentsPanelProps = {}) {
               )}
               {activeTab === "tools" && (
                 <AgentToolsTab agentId={selected.id} />
-              )}
-              {activeTab === "email" && (
-                <AgentEmailSection agentId={selected.id} />
               )}
             </>
           ) : (

@@ -1,8 +1,8 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import useSWR from "swr";
-import { Mail } from "lucide-react";
+import { Check, Copy, Mail } from "lucide-react";
 import { ApiError } from "@lightbulb/shared";
 
 import { Button } from "@/components/ui/button";
@@ -10,7 +10,6 @@ import { useApi } from "@/lib/api";
 
 interface AddressRow {
   address: string;
-  agent_id: string;
   verified_senders: string[];
   send_to_anyone: boolean;
   outbound_disabled: string | null;
@@ -36,52 +35,55 @@ function describeSaveError(e: unknown): string {
   return e instanceof Error ? e.message : "Save failed";
 }
 
-export function AgentEmailSection({ agentId }: { agentId: string }) {
+export function AgentEmailSection() {
   const api = useApi();
-  const { data, error, isLoading, mutate } = useSWR<{ addresses: AddressRow[] }>(
-    "/agent-mail/addresses",
-    () => api.get("/agent-mail/addresses") as Promise<{ addresses: AddressRow[] }>,
-    { revalidateOnFocus: false },
+  const { data: row, error, isLoading, mutate } = useSWR<AddressRow>(
+    "/agent-mail/address",
+    () => api.get("/agent-mail/address") as Promise<AddressRow>,
+    { revalidateOnFocus: false, shouldRetryOnError: false },
   );
-  const row = data?.addresses.find((a) => a.agent_id === agentId);
+  const [copied, setCopied] = useState(false);
   const [senders, setSenders] = useState("");
   const [anyone, setAnyone] = useState(true);
   const [saving, setSaving] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
-  // Reseed local edit state only when the SERVER VALUES actually change, not
-  // on every SWR revalidation — `row?.verified_senders` is a fresh array
-  // reference on every fetch even when the content is identical, and `save()`
-  // awaits `mutate()`, so a naive array/boolean dependency reruns this on
-  // every save and clobbers whatever the user is mid-typing. Deriving
-  // primitive keys first means the effect only fires on a real content
-  // change, and satisfies exhaustive-deps without a lint escape hatch.
-  // `agentId` is also a dep: on a deep-link retarget (AgentsPanel changes the
-  // selected agent without resetting tabs) two agents can both have no row —
-  // same `undefined` derived values — so without keying on agentId the
-  // effect would not re-fire and the old agent's unsaved edits would carry
-  // over onto the new one.
+  // Reseed local edit state only when the SERVER VALUES actually change, not on every SWR
+  // revalidation: `verified_senders` is a fresh array each fetch, and save() awaits mutate(),
+  // so depending on it would clobber whatever the user is mid-typing.
   const sendersFromRow = (row?.verified_senders ?? []).join("\n");
   const anyoneFromRow = row?.send_to_anyone ?? true;
   useEffect(() => {
     setSenders(sendersFromRow);
     setAnyone(anyoneFromRow);
-  }, [agentId, row?.address, sendersFromRow, anyoneFromRow]);
+  }, [row?.address, sendersFromRow, anyoneFromRow]);
 
-  if (error && !data) return <div className="p-4 text-sm text-err">Failed to load email settings.</div>;
-  if (isLoading || !data) return <div className="p-4 text-sm text-[var(--midnight-muted)]">Loading email…</div>;
+  const copyTimer = useRef<ReturnType<typeof setTimeout>>(undefined);
+  useEffect(() => () => clearTimeout(copyTimer.current), []);
+  const copy = async () => {
+    if (!row || !navigator.clipboard) return;
+    try {
+      await navigator.clipboard.writeText(row.address);
+    } catch {
+      return;
+    }
+    setCopied(true);
+    clearTimeout(copyTimer.current);
+    copyTimer.current = setTimeout(() => setCopied(false), 1500);
+  };
+
+  if (error instanceof ApiError && error.status === 409) {
+    return <div className="p-4 text-sm text-[var(--midnight-muted)]">Your workspace address is being set up — it appears once your company name is set.</div>;
+  }
+  if (error && !row) return <div className="p-4 text-sm text-err">Failed to load email settings.</div>;
+  if (isLoading || !row) return <div className="p-4 text-sm text-[var(--midnight-muted)]">Loading email…</div>;
 
   const save = async () => {
     setSaving(true);
     setErr(null);
     try {
       const list = senders.split("\n").map((s) => s.trim()).filter(Boolean);
-      // No row yet: the backend mints one seeded with the owner's own address, and an empty list
-      // here would overwrite that seed and drop the owner from their own allowlist.
-      await api.patch(`/agent-mail/addresses/${agentId}`, {
-        ...(row || list.length ? { verified_senders: list } : {}),
-        send_to_anyone: anyone,
-      });
+      await api.patch("/agent-mail/address", { verified_senders: list, send_to_anyone: anyone });
       await mutate();
     } catch (e) {
       setErr(describeSaveError(e));
@@ -97,7 +99,7 @@ export function AgentEmailSection({ agentId }: { agentId: string }) {
     setSaving(true);
     setErr(null);
     try {
-      await api.patch(`/agent-mail/addresses/${agentId}`, { outbound_disabled: null });
+      await api.patch("/agent-mail/address", { outbound_disabled: null });
       await mutate();
     } catch (e) {
       setErr(describeSaveError(e));
@@ -108,17 +110,18 @@ export function AgentEmailSection({ agentId }: { agentId: string }) {
 
   return (
     <div className="space-y-4 p-4">
-      <h3 className="flex items-center gap-2 text-sm font-semibold"><Mail size={16} /> Email</h3>
+      <h3 className="flex items-center gap-2 text-sm font-semibold"><Mail size={16} /> Team email</h3>
       <div className="rounded-md border border-[var(--edge)] p-3 space-y-3">
         <div>
-          <div className="label-caps text-[var(--midnight-muted)]">Address</div>
-          {row ? (
-            <code className="text-sm">{row.address}</code>
-          ) : (
-            <p className="text-xs text-[var(--midnight-muted)]">Not created yet — it appears the first time this agent uses email, or when you save below.</p>
-          )}
+          <div className="flex items-center gap-2">
+            <code className="text-sm font-mono">{row.address}</code>
+            <Button type="button" variant="ghost" size="sm" aria-label="Copy address" onClick={copy}>
+              {copied ? <><Check size={14} className="mr-1" /> Copied</> : <Copy size={14} />}
+            </Button>
+          </div>
+          <p className="mt-1 text-xs text-[var(--midnight-muted)]">Add this address to a calendar event to bring the team into the meeting. Mail to it goes to your CEO agent; replies go back to whichever agent wrote first.</p>
         </div>
-        {row?.outbound_disabled && (
+        {row.outbound_disabled && (
           <div role="alert" className="rounded-lg border border-warn bg-cream px-3 py-2 text-ui">
             Outbound email is paused: a recipient reported a message as spam.
             <Button type="button" variant="outline" size="sm" className="ml-2" disabled={saving} onClick={reenable}>
@@ -127,8 +130,8 @@ export function AgentEmailSection({ agentId }: { agentId: string }) {
           </div>
         )}
         <label className="block text-xs">
-          <span className="font-semibold">Who can wake this agent by email</span>
-          <span className="block text-[var(--midnight-muted)]">One per line: an address (bob@example.com) or a domain (@example.com). You are always allowed. Applies when open email is off; while it is on, anyone whose mail passes authentication can wake this agent.</span>
+          <span className="font-semibold">Who can email the team</span>
+          <span className="block text-[var(--midnight-muted)]">One per line: an address (bob@example.com) or a domain (@example.com). You are always allowed. Applies when open email is off; while it is on, anyone whose mail passes authentication can email the team.</span>
           <textarea
             className="mt-1 w-full rounded-md border border-[var(--edge)] bg-transparent p-2 font-mono text-xs"
             rows={4}
@@ -139,7 +142,7 @@ export function AgentEmailSection({ agentId }: { agentId: string }) {
         </label>
         <label className="flex items-center gap-2 text-xs">
           <input type="checkbox" checked={anyone} disabled={saving} onChange={(e) => setAnyone(e.target.checked)} />
-          Open email: anyone can email this agent and it can email anyone (daily limit applies; a spam report pauses all outbound)
+          Open email: anyone can email the team and agents can email anyone (daily limit applies; a spam report pauses all outbound)
         </label>
         {err && <p className="text-xs text-err">{err}</p>}
         <Button type="button" size="sm" disabled={saving} onClick={() => save()}>{saving ? "Saving…" : "Save"}</Button>

@@ -47,11 +47,45 @@ async def test_list_messages_queries_newest_first(monkeypatch):
     table = MagicMock()
     table.query.return_value = {"Items": [{"received_key": "b"}, {"received_key": "a"}]}
     monkeypatch.setattr(repo, "_get_table", lambda: table)
-    rows = await repo.list_messages("friday@acme.isol8.co", since="2026-08-20T00:00:00+00:00", limit=5)
-    assert [r["received_key"] for r in rows] == ["b", "a"]
-    kwargs = table.query.call_args.kwargs
-    assert kwargs["ScanIndexForward"] is False
-    assert kwargs["Limit"] == 5
+    rows = await repo.list_messages("agents@acme.isol8.co", since="2026-08-20T00:00:00+00:00", limit=1)
+    assert [r["received_key"] for r in rows] == ["b"]
+    assert table.query.call_args.kwargs["ScanIndexForward"] is False
+
+
+@pytest.mark.asyncio
+async def test_list_messages_skips_sent_mail_and_filters_by_agent(monkeypatch):
+    table = MagicMock()
+    table.query.return_value = {
+        "Items": [
+            {"received_key": "c", "agent_id": "friday", "direction": "out"},
+            {"received_key": "b", "agent_id": "ceo"},
+            {"received_key": "a", "agent_id": "friday"},
+        ]
+    }
+    monkeypatch.setattr(repo, "_get_table", lambda: table)
+    assert [r["received_key"] for r in await repo.list_messages("agents@acme.isol8.co")] == ["b", "a"]
+    assert [r["received_key"] for r in await repo.list_messages("agents@acme.isol8.co", agent_id="friday")] == ["a"]
+
+
+@pytest.mark.asyncio
+async def test_put_sent_records_the_writer_under_the_rfc_message_id(monkeypatch):
+    table = MagicMock()
+    monkeypatch.setattr(repo, "_get_table", lambda: table)
+    await repo.put_sent(
+        address="Agents@Acme.isol8.co", message_id="<x@d>", owner_id="o", agent_id="friday", to="t@x.y", subject="s"
+    )
+    item = table.put_item.call_args.kwargs["Item"]
+    assert item["address"] == "agents@acme.isol8.co"
+    assert (item["direction"], item["message_id"], item["agent_id"]) == ("out", "<x@d>", "friday")
+    assert item["received_key"].endswith("#<x@d>") and item["ttl"] > 0
+
+
+@pytest.mark.asyncio
+async def test_put_sent_never_raises(monkeypatch):
+    table = MagicMock()
+    table.put_item.side_effect = RuntimeError("ddb down")
+    monkeypatch.setattr(repo, "_get_table", lambda: table)
+    await repo.put_sent(address="a@b.c", message_id="<x@d>", owner_id="o", agent_id="a", to="t@x.y", subject="s")
 
 
 @pytest.mark.asyncio
@@ -76,3 +110,26 @@ async def test_find_by_message_id_returns_none_without_querying_when_empty(monke
     monkeypatch.setattr(repo, "_get_table", lambda: table)
     assert await repo.find_by_message_id("friday@acme.isol8.co", "") is None
     table.query.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_list_messages_pages_past_sent_rows(monkeypatch):
+    """A page of nothing but sent mail must not hide older inbound."""
+    table = MagicMock()
+    table.query.side_effect = [
+        {"Items": [{"received_key": "z", "direction": "out"}], "LastEvaluatedKey": {"k": 1}},
+        {"Items": [{"received_key": "a", "agent_id": "friday"}]},
+    ]
+    monkeypatch.setattr(repo, "_get_table", lambda: table)
+    rows = await repo.list_messages("agents@acme.isol8.co", agent_id="friday")
+    assert [r["received_key"] for r in rows] == ["a"]
+    assert table.query.call_args_list[1].kwargs["ExclusiveStartKey"] == {"k": 1}
+
+
+@pytest.mark.asyncio
+async def test_list_messages_stops_after_five_pages(monkeypatch):
+    table = MagicMock()
+    table.query.return_value = {"Items": [{"received_key": "z", "direction": "out"}], "LastEvaluatedKey": {"k": 1}}
+    monkeypatch.setattr(repo, "_get_table", lambda: table)
+    assert await repo.list_messages("agents@acme.isol8.co") == []
+    assert table.query.call_count == 5

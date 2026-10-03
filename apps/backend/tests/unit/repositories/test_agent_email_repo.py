@@ -1,4 +1,4 @@
-"""agent_email_repo: address-keyed rows with a by-owner GSI."""
+"""agent_email_repo: the workspace's one mailbox row, address-keyed with a by-owner GSI."""
 
 import os
 from unittest.mock import MagicMock, patch
@@ -48,14 +48,13 @@ async def test_put_normalizes_and_get_by_address(agent_email_table):
     await agent_email_repo.put(
         address="Acme@Agents.Isol8.co",
         owner_id="user_1",
-        agent_id="agent_friday",
         verified_senders=["Owner@Example.com"],
     )
 
     row = await agent_email_repo.get_by_address("acme@agents.isol8.co")
     assert row is not None
     assert row["owner_id"] == "user_1"
-    assert row["agent_id"] == "agent_friday"
+    assert "agent_id" not in row
     assert row["verified_senders"] == ["owner@example.com"]
     assert "public" not in row
     assert row["status"] == "active"
@@ -65,7 +64,7 @@ async def test_put_normalizes_and_get_by_address(agent_email_table):
 @pytest.mark.asyncio
 async def test_put_mints_open_rows_and_the_owner_can_close_them(agent_email_table):
     """Owner ruling 2026-09-24: agent email is open by default in both directions."""
-    await repo.put(address="acme@agents.isol8.co", owner_id="user_1", agent_id="agent_friday", verified_senders=[])
+    await repo.put(address="acme@agents.isol8.co", owner_id="user_1", verified_senders=[])
 
     assert (await repo.get_by_address("acme@agents.isol8.co"))["send_to_anyone"] is True
 
@@ -93,7 +92,6 @@ async def test_get_by_address_is_case_insensitive_on_read(agent_email_table):
     await agent_email_repo.put(
         address="acme@agents.isol8.co",
         owner_id="user_1",
-        agent_id="agent_friday",
         verified_senders=[],
     )
 
@@ -104,18 +102,13 @@ async def test_get_by_address_is_case_insensitive_on_read(agent_email_table):
 
 @pytest.mark.asyncio
 async def test_get_by_address_uses_consistent_read(agent_email_table, monkeypatch):
-    """`mint_agent_email_address` uses `get_by_address` as its idempotency
-    guard before `put`. A stale (eventually-consistent) GetItem miss would
-    let `put` overwrite an existing row and reset its `created_at`, which
-    flips the deterministic earliest-`created_at` tie-break in
-    `owner_facts._lookup_email_address`. GetItem against the base table
-    supports `ConsistentRead=True`, so the guard must ask for it."""
+    """`ensure_team_address` reads the row right before and after a create; an
+    eventual miss would report a failed mint. GetItem supports ConsistentRead."""
     from core.repositories import agent_email_repo
 
     await agent_email_repo.put(
         address="acme@agents.isol8.co",
         owner_id="user_1",
-        agent_id="agent_friday",
         verified_senders=[],
     )
 
@@ -139,53 +132,45 @@ async def test_get_by_address_uses_consistent_read(agent_email_table, monkeypatc
 
 
 @pytest.mark.asyncio
-async def test_put_is_idempotent_for_the_same_owner(agent_email_table):
-    """Re-affirming your own address is a success, not a conflict — mirrors
-    ``company_slug_repo.reserve``'s idempotent-for-the-same-owner posture."""
+async def test_put_never_overwrites_an_existing_row(agent_email_table):
+    """A create, not an upsert: a racing second create (same owner or not) must
+    not reset the owner's settings."""
     from core.repositories import agent_email_repo
 
-    first = await agent_email_repo.put(
-        address="acme@agents.isol8.co",
-        owner_id="user_1",
-        agent_id="agent_friday",
-        verified_senders=[],
-    )
+    first = await agent_email_repo.put(address="acme@agents.isol8.co", owner_id="user_1", verified_senders=[])
+    await agent_email_repo.update_settings("acme@agents.isol8.co", send_to_anyone=False)
     second = await agent_email_repo.put(
-        address="acme@agents.isol8.co",
-        owner_id="user_1",
-        agent_id="agent_friday",
-        verified_senders=["owner@example.com"],
+        address="acme@agents.isol8.co", owner_id="user_1", verified_senders=["owner@example.com"]
     )
 
     assert first is not None
-    assert second is not None
-    assert second["verified_senders"] == ["owner@example.com"]
+    assert second is None
+    row = await agent_email_repo.get_by_address("acme@agents.isol8.co")
+    assert row["send_to_anyone"] is False
+    assert row["verified_senders"] == []
 
 
 @pytest.mark.asyncio
 async def test_put_rejects_and_returns_none_for_a_conflicting_owner(agent_email_table):
     """The conditional put must reject a different owner's write rather than
-    last-writer-wins clobbering the existing row's owner_id/agent_id."""
+    last-writer-wins clobbering the existing row's owner_id."""
     from core.repositories import agent_email_repo
 
     await agent_email_repo.put(
         address="acme@agents.isol8.co",
         owner_id="user_1",
-        agent_id="agent_friday",
         verified_senders=[],
     )
 
     result = await agent_email_repo.put(
         address="acme@agents.isol8.co",
         owner_id="user_2",
-        agent_id="agent_intruder",
         verified_senders=["intruder@example.com"],
     )
     assert result is None
 
     row = await agent_email_repo.get_by_address("acme@agents.isol8.co")
     assert row["owner_id"] == "user_1"
-    assert row["agent_id"] == "agent_friday"
     assert row["verified_senders"] == []
 
 
@@ -196,19 +181,16 @@ async def test_query_by_owner_returns_only_that_owner(agent_email_table):
     await agent_email_repo.put(
         address="acme@agents.isol8.co",
         owner_id="user_1",
-        agent_id="agent_friday",
         verified_senders=[],
     )
     await agent_email_repo.put(
         address="acme-atlas@agents.isol8.co",
         owner_id="user_1",
-        agent_id="agent_atlas",
         verified_senders=[],
     )
     await agent_email_repo.put(
         address="other@agents.isol8.co",
         owner_id="user_2",
-        agent_id="agent_friday",
         verified_senders=[],
     )
 
@@ -254,6 +236,6 @@ async def test_update_settings_missing_row_returns_none(monkeypatch):
 async def test_put_has_no_public_field(monkeypatch):
     table = MagicMock()
     monkeypatch.setattr(repo, "_get_table", lambda: table)
-    item = await repo.put(address="a@b.c", owner_id="o", agent_id="ag", verified_senders=["O@x.y"])
+    item = await repo.put(address="a@b.c", owner_id="o", verified_senders=["O@x.y"])
     assert "public" not in item
     assert item["verified_senders"] == ["o@x.y"]

@@ -1,7 +1,7 @@
 """Stored inbound agent mail — the inbox an agent reads on demand.
 
-One row per delivered-or-stored inbound message. PK is the agent's address
-(mail is routed by recipient), SK is ``{received_at}#{message_id}`` so the
+One row per delivered-or-stored inbound message. PK is the workspace's team
+address (mail is routed by recipient), SK is ``{received_at}#{message_id}`` so the
 base-table query is newest-first by ISO timestamp. 30-day TTL. "One row per
 message" is kept true across SES retries by ``find_by_message_id`` — a 503'd
 delivery rolls back the ingest dedup row so SES re-invokes with the same
@@ -13,13 +13,20 @@ The ``reply_key`` (``"{address}/{received_key}"``) is what the delivered chat
 message carries and what ``lightbulb-mail.sh send --reply`` hands back — it is
 NOT a credential: the send door checks the row's ``owner_id`` against the
 hook-token-authenticated owner before it is honoured.
+
+Agent-SENT mail is recorded here too (``put_sent``, ``direction="out"``) so the
+``by-message-id`` GSI can trace a reply's ``In-Reply-To``/``References`` back
+to the agent who wrote the thread; ``list_messages`` never shows those rows.
 """
 
+import logging
 import time
 
 from boto3.dynamodb.conditions import Key
 
 from core.dynamodb import get_table, run_in_thread, utc_now_iso
+
+logger = logging.getLogger(__name__)
 
 _MAX_TEXT_CHARS = 64_000
 _TTL_SECONDS = 30 * 24 * 3600
@@ -98,17 +105,56 @@ async def put_message(
     return item
 
 
-async def list_messages(address: str, *, since: str | None = None, limit: int = 20) -> list[dict]:
+async def put_sent(*, address: str, message_id: str, owner_id: str, agent_id: str, to: str, subject: str) -> None:
+    """Record one agent-sent message under its RFC ``Message-ID``. Best-effort:
+    the mail has already left, so a failed write only costs the thread's routing
+    (a reply then goes to the CEO) and must never turn a sent mail into an error."""
+    try:
+        now = utc_now_iso()
+        await run_in_thread(
+            _get_table().put_item,
+            Item={
+                "address": _normalize(address),
+                "received_key": f"{now}#{message_id}",
+                "direction": "out",
+                "owner_id": owner_id,
+                "agent_id": agent_id,
+                "message_id": message_id,
+                "to": to,
+                "subject": subject,
+                "received_at": now,
+                "ttl": int(time.time()) + _TTL_SECONDS,
+            },
+        )
+    except Exception:  # noqa: BLE001 — see docstring
+        logger.warning("agent_mail_inbox: put_sent failed for %s", message_id, exc_info=True)
+
+
+async def list_messages(
+    address: str, *, since: str | None = None, limit: int = 20, agent_id: str | None = None
+) -> list[dict]:
+    """Newest-first inbound mail at ``address``, optionally only ``agent_id``'s."""
     cond = Key("address").eq(_normalize(address))
     if since:
         cond = cond & Key("received_key").gt(since)
-    resp = await run_in_thread(
-        _get_table().query,
-        KeyConditionExpression=cond,
-        ScanIndexForward=False,
-        Limit=max(1, min(int(limit), 50)),
-    )
-    return resp.get("Items", [])
+    limit = max(1, min(int(limit), 50))
+    kwargs: dict = {"KeyConditionExpression": cond, "ScanIndexForward": False, "Limit": 50}
+    items: list[dict] = []
+    # ponytail: at most 5 pages (250 rows) per call — sent rows and other agents'
+    # mail share the partition, so mail older than that returns short; raise the
+    # page bound if a workspace's traffic outgrows it.
+    for _ in range(5):
+        resp = await run_in_thread(_get_table().query, **kwargs)
+        items += [
+            i
+            for i in resp.get("Items", [])
+            if i.get("direction") != "out" and (agent_id is None or i.get("agent_id") == agent_id)
+        ]
+        last = resp.get("LastEvaluatedKey")
+        if len(items) >= limit or not last:
+            break
+        kwargs["ExclusiveStartKey"] = last
+    return items[:limit]
 
 
 async def get_message(address: str, received_key: str) -> dict | None:

@@ -19,7 +19,7 @@ A skill is a packaged capability an agent reads before acting — a workflow, a 
 - **The board** — assigning a task to an agent, or commenting on its task, starts a fresh run.
 - **A schedule** — a routine runs an agent on a cadence. Your CEO's nightly self-directed check-in is one.
 - **An event** — a webhook from an external service starts a routine run.
-- **Email** — by default mail from anyone whose sender authentication passes arrives as a message the agent can reply to. Turn **Open email** off (Control Panel → Agents → Email) and only you and your allow-listed senders wake it; everything else waits in its inbox.
+- **Email** — by default mail from anyone whose sender authentication passes arrives as a message the agent can reply to. Turn **Open email** off (Control Panel → Agents → Team email) and only you and your allow-listed senders wake it; everything else waits in its inbox.
 
 ## Routines and webhooks
 
@@ -37,4 +37,4 @@ Anything always-on — webhooks, routines, and autonomous runs — requires a Wo
 
 Set a monthly budget per agent in Teams and watch spend in **Usage**. On the free tier, inference is capped by a daily allowance.
 
-Next: [Connectors and agent email](/docs/browser-and-apps).
+Next: [Connectors and team email](/docs/browser-and-apps).

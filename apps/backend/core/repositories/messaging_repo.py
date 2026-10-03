@@ -247,6 +247,11 @@ def vendor_room_id(owner_id: str) -> str:
     return str(uuid.uuid5(uuid.NAMESPACE_URL, f"lightbulb-vendor-room|{owner_id}"))
 
 
+def meeting_room_id(owner_id: str, uid: str) -> str:
+    """The channel a calendar invite (by its UID) opens in the owner's workspace."""
+    return str(uuid.uuid5(uuid.NAMESPACE_URL, f"lightbulb-meeting|{owner_id}|{uid}"))
+
+
 def request_hash(*parts: Any) -> str:
     """SHA-256 over canonical JSON request fields."""
     return _sha256(json.dumps(list(parts), sort_keys=True, separators=(",", ":"), default=str))
@@ -678,6 +683,7 @@ async def create_room(
     kind: str,
     members: list[dict],
     req_hash: str,
+    extra: dict | None = None,
 ) -> dict:
     """One transaction: META + owner catalog + IDEMP + every member row + one
     delivery cursor per agent (at seq 0). ``members`` must already include the
@@ -709,6 +715,7 @@ async def create_room(
         "workspaceId": workspace_id,
         "createdAt": now,
         "updatedAt": now,
+        **_ddb_safe(extra or {}),
     }
     items: list[dict] = [
         {"Put": {"TableName": table_name, "Item": meta, "ConditionExpression": "attribute_not_exists(pk)"}},
@@ -1610,7 +1617,7 @@ async def delete_room(*, meta: dict, deleted_by: str, new_delivery_key: str, liv
     }
 
 
-_ROOM_META_FIELDS = ("name", "topic", "archivedAt", "archivedBy")
+_ROOM_META_FIELDS = ("name", "topic", "archivedAt", "archivedBy", "meeting")
 # Cleared by REMOVE, not SET null: create_message's fence is attribute_not_exists(archivedAt).
 _ROOM_META_REMOVABLE = ("archivedAt", "archivedBy")
 

@@ -8,7 +8,7 @@ the genuinely missing piece:
 
 | Need | You already have |
 |---|---|
-| React to events | Paperclip: an issue assigned to an agent, or a comment on its issue, wakes that agent as a fresh run. Email: an inbound mail to your address wakes you with a Reply-Key. |
+| React to events | Paperclip: an issue assigned to an agent, or a comment on its issue, wakes that agent as a fresh run. Email: mail to the team address that is for you wakes you with a Reply-Key. |
 | Scheduled / recurring work | Paperclip routines (Teams → Automations) run agents on a schedule — the nightly self-directed wake is one — and they are the ONLY scheduler. Never the machine's own cron: a job added there exists for platform internals, and a job added there runs where no one can see it, outside the company's governance, and is not what the owner asked for. Manage routines through the Paperclip API (`$PAPERCLIP_API_URL`; the paperclip skill's `references/routines.md`). Polling an external source on a schedule is a routine, not new infrastructure. |
 | External event streams | Connected integrations surface as MCP tools automatically. The bundled `gog` CLI supports real-time Gmail **Pub/Sub push**: `gog gmail settings watch start / serve / pull / renew` streams mailbox events to a webhook or pull consumer (watches expire; renew them). |
 | Queryable company state | The Paperclip API is the live work graph (agents, issues, threads, statuses, budgets); session transcripts are what actually happened; your own `memory` toolset is your recall. When workspace memory is on, recalled facts may also appear in your context: that memory is shared by every agent in this workspace, a new fact takes about 2 minutes to become recallable, and anything said in any room may resurface. |

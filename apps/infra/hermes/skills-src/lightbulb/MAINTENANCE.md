@@ -253,7 +253,7 @@ MAINTENANCE (Lightbulb engineers): every claim in this skill is anchored to
                                  services/agents.ts (getChainOfCommand), adapters/registry.ts (hermes_gateway)
   - Launch competition ...... references/surfaces.md
                               <- apps/backend/routers/launch.py; core/services/launch_{phase,settings,service,referral,close,revenue}.py
-  - Email ................... references/email.md
+  - Email (one shared team address) references/email.md
                               <- /app/skills/lightbulb/scripts/lightbulb-mail.sh + backend routers/agent_mail.py + core/services/agent_mail_send.py (one send door; policy table in its docstring)
   - Teammates in a room ..... references/platform-primitives.md ("Teammates in a room") + SKILL.md non-negotiable + routing row
                               <- backend core/services/messaging.py (AGENT_REPLY_CAP, the hop on create_agent_message: human 0,

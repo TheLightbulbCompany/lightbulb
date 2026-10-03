@@ -133,7 +133,7 @@ def _render(req: SupportTicketRequest, meta: dict) -> str:
 
 
 async def submit_ticket(auth: AuthContext, req: SupportTicketRequest) -> str | None:
-    """Enrich + deliver a support ticket. Returns the SES MessageId or None."""
+    """Enrich + deliver a support ticket. Returns the RFC Message-ID or None."""
     meta = await _build_metadata(auth, req)
     subject = f"[Support] {req.category}: {req.message[:60]}"
     reply_to = auth.email or settings.EMAIL_SUPPORT_ADDRESS

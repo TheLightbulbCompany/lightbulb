@@ -190,3 +190,15 @@ async def test_the_webhook_backstop_claims_the_users_live_hold(slug_table):
 
     assert await company_slug_repo.hold(slug="bench-club", user_id="user_1") is True
     assert await company_slug_repo.claim_hold(user_id="user_1", owner_id="org_1") == "bench-club"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("order", [("zeta", "alpha"), ("alpha", "zeta")])
+async def test_get_by_owner_returns_the_oldest_of_two_rows(slug_table, order):
+    from core.repositories import company_slug_repo
+
+    stamps = {"alpha": "2026-10-01T00:00:00Z", "zeta": "2026-09-01T00:00:00Z"}
+    for slug in order:
+        slug_table.put_item(Item={"slug": slug, "owner_id": "org_1", "created_at": stamps[slug]})
+    for _ in range(3):
+        assert (await company_slug_repo.get_by_owner("org_1"))["slug"] == "zeta"

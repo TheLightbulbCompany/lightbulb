@@ -157,7 +157,7 @@ anyway — a hook that has never fired is not a hook that never will.
   looks wrong if nobody said so first.
 - **`verified_senders` gates the wake, and the owner owns the fix.** The one
   affected row is the house org's. Self-serve:
-  `PATCH /api/v1/agent-mail/addresses/{agent_id}` with
+  `PATCH /api/v1/agent-mail/address` with
   `{"verified_senders": ["@thelightbulb.company"]}` — `sender_allowed` accepts a
   bare `@domain` entry and matches the sender's domain exactly (no subdomain
   matching), and `patch_address` resolves the **active** address, so after the

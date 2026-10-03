@@ -4,7 +4,7 @@ description: >
   How the Lightbulb platform you run on actually works, and the only way to
   send email. Read it when the answer depends on Lightbulb's own mechanics
   rather than on the task's domain: emailing your owner or replying to mail
-  (you have your own address and a helper script here — there is no Gmail or
+  (you share the team address and a helper script here — there is no Gmail or
   himalaya to find); connecting a service, channel,
   or webhook trigger; hiring, publishing, or importing an agent; plans,
   providers, credits; where a UI surface lives and what to
@@ -46,7 +46,7 @@ directory (`/app/skills/lightbulb/`).
 | `references/surfaces.md` § Browser (the row) | **Before any work in the shared browser.** Page content → the `browser_*` page tools; raw CDP, other tabs, iframes, cookies, downloads → `browser_cdp`; `alert`/`confirm`/`prompt` → `browser_dialog`; Chrome itself (toolbar, extension icons and popups, the "Add extension" dialog, permission prompts, recording) → `computer_use`, clicking only from a fresh capture. Each run has its own tab. You may install an extension yourself; it lasts past this session only if it is in the workspace list. |
 | `references/surfaces.md` § Shared local-session workspace notices | The room context lists a `sessions` entry for a participant — a live Claude Code or Codex terminal. **Read its recent tail before planning or editing code in that repository** (`lightbulb_local_sessions` `read`, `afterSeq: max(0, latestEventSeq - 40)`), never redo what the session is already doing, and name the session when you report. |
 | `references/integrations.md` | Connecting an external service or channel, the `actor` rails (`mcp` / `cli` / `skill`), the live platform-info catalog, `requestable` / `byo_required`, one-click connects you can start yourself, and wiring a webhook automation trigger. |
-| `references/email.md` | Sending or reading mail: your address, the inbox, verification codes, who can wake you, the three `send` forms, and the limits. |
+| `references/email.md` | Sending or reading mail: the team address, the inbox, verification codes, who can wake you, the three `send` forms, and the limits. |
 | `references/money.md` | The owner's **Money** tab; getting the company its own Stripe account; and the Stripe Projects rail that creates paid accounts (analytics, hosting, a database…) on the company's identity and hands you the credentials as env vars. Carries the workflow-state and HTTP-status tables. |
 | `references/skills.md` | Where your skills live and which of the three directories you can write to. **Read it before using Paperclip's company-skills library** — that path does not reach a Lightbulb agent and answers `supported: false`. |
 | `references/marketplace.md` | Hiring an agent, recommending one, publishing (seller side), whole pre-built companies, the `skills` toolset, and importing an existing Claude Code setup. |

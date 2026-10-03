@@ -28,8 +28,9 @@ from datetime import datetime, timezone
 
 from core.config import settings
 from core.observability.metrics import put_metric
-from core.repositories import container_repo
+from core.repositories import agent_mail_inbox_repo, container_repo
 from core.services import agent_mail_reply, ses_email
+from core.services.agent_email import from_header
 from core.services.agent_mail_owner_send import DAILY_SEND_CAP
 from core.services.trial_cap import DAILY_CAP, INCLUDED_CAP, TRIAL_EXPIRED
 
@@ -63,9 +64,10 @@ _BODIES = {DAILY_CAP: _DAILY_CAP_BODY, INCLUDED_CAP: _INCLUDED_CAP_BODY, TRIAL_E
 
 
 async def send_cap_autoreply(
-    *, owner_id: str, reason: str, from_addr: str, to: str, in_reply_to: str | None, subject: str
+    *, owner_id: str, agent_id: str, reason: str, from_addr: str, to: str, in_reply_to: str | None, subject: str
 ) -> bool:
-    """Answer an inbound that cannot be run. True when SES accepted it.
+    """Answer an inbound that cannot be run, as ``agent_id`` from the team
+    address ``from_addr``. True when SES accepted it.
 
     Never raises — the ingest webhook must stay terminal.
     """
@@ -102,15 +104,25 @@ async def send_cap_autoreply(
             headers["In-Reply-To"] = in_reply_to
             headers["References"] = in_reply_to
 
+        sent_subject = agent_mail_reply._header_safe(subject or "")
         message_id = await ses_email.send_ses_reply(
-            from_addr=from_addr,
+            from_addr=await from_header(owner_id, agent_id, from_addr),
             to=to,
-            subject=agent_mail_reply._header_safe(subject or ""),
+            subject=sent_subject,
             body_text=body,
             body_html=None,
             headers=headers,
         )
         ok = message_id is not None
+        if ok:
+            await agent_mail_inbox_repo.put_sent(
+                address=from_addr,
+                message_id=message_id,
+                owner_id=owner_id,
+                agent_id=agent_id,
+                to=to,
+                subject=sent_subject,
+            )
         put_metric(
             "agent_email.autoreply",
             dimensions={"reason": reason, "result": "sent" if ok else "failed"},

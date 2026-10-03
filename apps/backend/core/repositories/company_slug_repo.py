@@ -160,15 +160,15 @@ async def get_by_slug(slug: str) -> dict | None:
 
 
 async def get_by_owner(owner_id: str) -> dict | None:
-    table = _get_table()
+    """The owner's canonical slug: the oldest row (ties by slug), so an owner left with two
+    rows by a provisioning re-entry gets the same one on every call."""
     response = await run_in_thread(
-        table.query,
+        _get_table().query,
         IndexName="by-owner",
         KeyConditionExpression=Key("owner_id").eq(owner_id),
-        Limit=1,
     )
     items = response.get("Items", [])
-    return items[0] if items else None
+    return min(items, key=lambda r: (r.get("created_at", ""), r.get("slug", ""))) if items else None
 
 
 async def delete_for_owner(owner_id: str) -> str | None:

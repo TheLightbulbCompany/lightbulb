@@ -340,9 +340,9 @@ class Settings(BaseSettings):
     AGENTCORE_MEMORY_ID: str = ""
 
     # Provisioned agent email (set by CDK ServiceStack). This is the BASE
-    # domain (e.g. "isol8.co" in prod) — each company gets its own subdomain,
-    # so an address is "{agent}@{slug}.{AGENT_EMAIL_DOMAIN}" (e.g.
-    # "friday@acme-robotics.isol8.co"). Empty disables address minting
+    # domain (e.g. "thelightbulb.company" in prod) — each company gets its own
+    # subdomain and ONE team address, "agents@{slug}.{AGENT_EMAIL_DOMAIN}" (e.g.
+    # "agents@acme-robotics.thelightbulb.company"). Empty disables address minting
     # entirely, so an env without a verified mail domain never mints.
     AGENT_EMAIL_DOMAIN: str = ""
 

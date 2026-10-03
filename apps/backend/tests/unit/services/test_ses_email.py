@@ -44,13 +44,16 @@ async def test_happy_path_returns_message_id_and_builds_raw_mime(monkeypatch):
         headers={"In-Reply-To": "<m@x>", "References": "<m@x>"},
     )
 
-    assert result == "ses-123"
     fake_client.send_email.assert_called_once()
     _, kwargs = fake_client.send_email.call_args
     raw_bytes = kwargs["Content"]["Raw"]["Data"]
     assert isinstance(raw_bytes, (bytes, bytearray))
 
     parsed = message_from_bytes(raw_bytes)
+    # The RFC Message-ID we minted, not the SES id: a reply's In-Reply-To names it.
+    assert result == parsed["Message-ID"]
+    assert result.startswith("<") and result.endswith("@isol8.co>")
+    assert kwargs["FromEmailAddress"] == "friday@acme.isol8.co"
     assert parsed["From"] == "friday@acme.isol8.co"
     assert parsed["To"] == "alice@x.com"
     assert parsed["Subject"] == "Re: Need help"
@@ -135,9 +138,9 @@ async def test_html_only_body_is_a_single_text_html_part(monkeypatch):
         kind="welcome",
     )
 
-    assert result == "ses-html"
     _, kwargs = fake_client.send_email.call_args
     parsed = message_from_bytes(kwargs["Content"]["Raw"]["Data"], policy=policy.default)
+    assert result == parsed["Message-ID"]
     assert not parsed.is_multipart()
     assert parsed.get_content_type() == "text/html"
     assert parsed.get_content().strip() == "<p>hi</p>"
@@ -222,3 +225,39 @@ async def test_send_omits_stamps_when_unset(monkeypatch):
     await ses_email.send_ses_reply(from_addr="f@a.isol8.co", to="t@x.y", subject="s", body_text="b")
     kwargs = fake.send_email.call_args.kwargs
     assert "ConfigurationSetName" not in kwargs and "TenantName" not in kwargs
+
+
+@pytest.mark.asyncio
+async def test_a_display_name_from_sends_the_bare_envelope_address(monkeypatch):
+    """SES reports FromEmailAddress as a complaint's mail.source, which the complaint handler looks up."""
+    monkeypatch.setattr(settings, "AGENT_EMAIL_DOMAIN", "isol8.co")
+    fake_client = MagicMock()
+    fake_client.send_email.return_value = {"MessageId": "ses-1"}
+    monkeypatch.setattr(ses_email, "_client", lambda: fake_client)
+
+    await ses_email.send_ses_reply(
+        from_addr='"Friday · Acme agents" <agents@acme.isol8.co>', to="t@x.y", subject="s", body_text="b"
+    )
+
+    assert fake_client.send_email.call_args.kwargs["FromEmailAddress"] == "agents@acme.isol8.co"
+
+
+@pytest.mark.asyncio
+async def test_calendar_reply_is_a_text_calendar_alternative(monkeypatch):
+    monkeypatch.setattr(settings, "AGENT_EMAIL_DOMAIN", "isol8.co")
+    fake_client = MagicMock()
+    fake_client.send_email.return_value = {"MessageId": "ses-789"}
+    monkeypatch.setattr(ses_email, "_client", lambda: fake_client)
+
+    ics = "BEGIN:VCALENDAR\r\nMETHOD:REPLY\r\nEND:VCALENDAR\r\n"
+    await ses_email.send_ses_email(
+        from_addr="agents@acme.isol8.co", to="o@x.com", subject="Accepted: x", body_text="ok", calendar=ics
+    )
+
+    parsed = message_from_bytes(
+        fake_client.send_email.call_args.kwargs["Content"]["Raw"]["Data"], policy=policy.default
+    )
+    assert parsed.get_content_type() == "multipart/alternative"
+    part = next(p for p in parsed.walk() if p.get_content_type() == "text/calendar")
+    assert part.get_param("method") == "REPLY" and part.get_content_charset() == "utf-8"
+    assert "METHOD:REPLY" in part.get_content()

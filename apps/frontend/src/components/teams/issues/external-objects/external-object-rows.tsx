@@ -53,9 +53,12 @@ function externalObjectRowLabel(group: IssueExternalObjectGroup): ReactNode {
   const displayKey = externalObjectRowDisplayKey(group);
   const Icon = externalObjectIconsByKey[group.pill.iconKey ?? ""];
   return (
+    // Wraps inside the 100px label column like the rail's other labels
+    // ("Related tasks"): a nowrap/truncate span made the label's min-content its
+    // full width, so "GitHub pull request" overflowed under the value.
     <span className="inline-flex min-w-0 items-start gap-1" title={displayKey}>
       {Icon ? <Icon aria-hidden="true" className="h-3.5 w-3.5 shrink-0 mt-0.5" /> : null}
-      <span className="truncate">{displayKey}</span>
+      <span className="min-w-0 break-words">{displayKey}</span>
     </span>
   );
 }

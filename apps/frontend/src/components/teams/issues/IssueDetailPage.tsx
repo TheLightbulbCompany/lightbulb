@@ -92,7 +92,63 @@ export interface IssueDetailPageProps {
   issueId: string;
 }
 
+// A task can be opened by identifier (INT-7, e.g. from a Case link) or by uuid.
+// Paperclip's detail route accepts either, but its sub-resource routes
+// (children, ...) need the uuid, and every cache key and live-event match is
+// uuid-keyed. So resolve the issue first and run the whole page against
+// `issue.id`; `routeId` is only the panel's own id (for closing the dock).
 export function IssueDetailPage({ issueId }: IssueDetailPageProps) {
+  const { issue, isLoading, isError, error } = useIssueDetail(issueId);
+  if (!issue) return <IssueDetailStatus isLoading={isLoading} error={isError ? error : null} />;
+  return <IssueDetailView key={issue.id} issueId={issue.id} routeId={issueId} />;
+}
+
+function IssueDetailStatus({ isLoading, error }: { isLoading: boolean; error: Error | null }) {
+  if (isLoading) {
+    return (
+      <div
+        className="flex h-full items-center justify-center p-8 text-sm italic"
+        style={{
+          fontFamily: "var(--font-serif), serif",
+          color: "var(--midnight-muted)",
+        }}
+      >
+        Loading…
+      </div>
+    );
+  }
+
+  if (error) {
+    return (
+      <div
+        role="alert"
+        className="flex h-full flex-col items-center justify-center p-8 text-sm"
+        style={{ color: "var(--err)" }}
+      >
+        <p>Failed to load issue.</p>
+        {error.message && (
+          <p className="mt-1" style={{ color: "var(--midnight-muted)" }}>
+            {error.message}
+          </p>
+        )}
+      </div>
+    );
+  }
+
+  return (
+    <div
+      className="flex h-full items-center justify-center p-8 text-sm italic"
+      style={{
+        fontFamily: "var(--font-serif), serif",
+        color: "var(--midnight-muted)",
+      }}
+    >
+      Issue not found.
+    </div>
+  );
+}
+
+function IssueDetailView({ issueId, routeId }: { issueId: string; routeId: string }) {
   const { issue, comments, isLoading, isError, error } = useIssueDetail(issueId);
   const { interactions } = useIssueInteractions(issueId);
   const mutations = useIssueMutations();
@@ -160,7 +216,7 @@ export function IssueDetailPage({ issueId }: IssueDetailPageProps) {
     if (nav) {
       // Pass our own id so the desktop dock closes THIS detail panel, not
       // whichever panel happens to be active when the delete confirms.
-      nav.leaveToList("teams-issues", issueId);
+      nav.leaveToList("teams-issues", routeId);
       return;
     }
     const params = new URLSearchParams(window.location.search);
@@ -199,50 +255,7 @@ export function IssueDetailPage({ issueId }: IssueDetailPageProps) {
     );
   };
 
-  if (isLoading && !issue) {
-    return (
-      <div
-        className="flex h-full items-center justify-center p-8 text-sm italic"
-        style={{
-          fontFamily: "var(--font-serif), serif",
-          color: "var(--midnight-muted)",
-        }}
-      >
-        Loading…
-      </div>
-    );
-  }
-
-  if (isError && !issue) {
-    return (
-      <div
-        role="alert"
-        className="flex h-full flex-col items-center justify-center p-8 text-sm"
-        style={{ color: "var(--err)" }}
-      >
-        <p>Failed to load issue.</p>
-        {error?.message && (
-          <p className="mt-1" style={{ color: "var(--midnight-muted)" }}>
-            {error.message}
-          </p>
-        )}
-      </div>
-    );
-  }
-
-  if (!issue) {
-    return (
-      <div
-        className="flex h-full items-center justify-center p-8 text-sm italic"
-        style={{
-          fontFamily: "var(--font-serif), serif",
-          color: "var(--midnight-muted)",
-        }}
-      >
-        Issue not found.
-      </div>
-    );
-  }
+  if (!issue) return <IssueDetailStatus isLoading={isLoading} error={isError ? error : null} />;
 
   return (
     // Every agent-pasted attachment link / image on this page (description,

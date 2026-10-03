@@ -73,10 +73,16 @@ describe("CaseDetailPage", () => {
     // A linked task opens the task panel.
     expect(screen.getByText("LB-12").closest("a")).toHaveAttribute(
       "href",
-      "/chat?panel=teams-issue-detail&detailId=LB-12",
+      "/chat?panel=teams-issue-detail&detailId=iss1",
     );
     // The Activity tab carries the event count.
     expect(screen.getByRole("tab", { name: /Activity/ })).toHaveTextContent("1");
+  });
+
+  it("shows the case summary on the Overview tab", () => {
+    detailRead = { data: { ...DETAIL, summary: "Created to check the Cases panel" } };
+    render(<CaseDetailPage caseId="LB-C7" />);
+    expect(screen.getByText("Created to check the Cases panel")).toBeInTheDocument();
   });
 
   it("says so when the case cannot be read", () => {

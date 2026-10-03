@@ -25,7 +25,13 @@ function normalizeComments(data: CommentsResponse | undefined): IssueComment[] {
 export function useIssueDetail(issueId: string): UseIssueDetailResult {
   const { read } = useTeamsApi();
   const issue = read<Issue>(teamsQueryKeys.issues.detail(issueId));
-  const comments = read<CommentsResponse>(teamsQueryKeys.issues.comments(issueId));
+  // `issueId` may be an identifier (INT-7): the detail route accepts one, but
+  // the comment cache key and its invalidations are uuid-keyed, so read the
+  // thread under the loaded issue's canonical id.
+  const canonicalId = issue.data?.id;
+  const comments = read<CommentsResponse>(
+    canonicalId ? teamsQueryKeys.issues.comments(canonicalId) : null,
+  );
 
   return {
     issue: issue.data,

@@ -23,6 +23,7 @@ import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { DocumentRow } from "@/components/teams/issues/DocumentRow";
 import { LabelPicker } from "@/components/teams/issues/pickers/LabelPicker";
+import { MarkdownView } from "@/components/teams/shared/components/MarkdownView";
 import { PageSkeleton } from "@/components/teams/shared/components/PageSkeleton";
 import type {
   CaseDetail,
@@ -423,6 +424,14 @@ export function CaseDetailPage({ caseId }: { caseId: string }) {
           </TabsList>
 
           <TabsContent value="overview" className="space-y-6">
+            {/* Upstream's detail page never shows `summary` (the case's one-line
+                gist), so a case without documents left Overview empty. */}
+            {caseData.summary ? (
+              <div className="text-sm text-[var(--fg-soft)]">
+                <MarkdownView>{caseData.summary}</MarkdownView>
+              </div>
+            ) : null}
+
             {documents.length > 0 ? (
               <section className="space-y-2">
                 <h2 className="text-sm font-semibold">Documents</h2>

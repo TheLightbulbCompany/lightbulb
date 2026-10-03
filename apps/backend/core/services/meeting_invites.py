@@ -209,16 +209,17 @@ async def _create_room(owner_id: str, room_id: str, invite: Invite, creator: str
         pass
 
 
-async def _patch_meeting(room_id: str, fields: dict, drop: tuple = ()) -> dict:
+async def _patch_meeting(room_id: str, fields: dict, drop: tuple = ()) -> dict | None:
     """THE one writer of the room META's ``meeting`` map: re-read it, lay only the caller's own
     fields over it (dropping ``drop``), and write under the revision CAS -- so the invite path, the
     bot path and the RSVP never erase each other's keys. A write carrying an older ``sequence`` than
-    the stored one yields to it. Three lost races raise, so SES redelivers. Returns the map."""
+    the stored one writes nothing and returns None (checked against a fresh read before every attempt).
+    Three lost races raise, so SES redelivers. Returns the map as written."""
     for attempt in (1, 2, 3):
         stored = ((await messaging_repo.get_room(room_id)) or {}).get("meeting") or {}
         if "sequence" in fields and int(stored.get("sequence", 0)) > int(fields["sequence"]):
             logger.info("meeting room %s: a newer invite (sequence %s) won the race", room_id, stored["sequence"])
-            return stored
+            return None
         merged = {k: v for k, v in {**stored, **fields}.items() if k not in drop}
         if merged == stored:
             return stored
@@ -418,18 +419,22 @@ async def handle_team_mail(owner_id: str, payload, team: dict) -> str | None:
         if meta is None:
             return None  # no room came of it: the CEO reads it as mail
         current = meta.get("meeting")  # ours, or a racing delivery's
+    elif (
+        int((((await messaging_repo.get_room(room_id)) or {}).get("meeting") or {}).get("sequence", 0))
+        > invite.sequence
+    ):
+        return "meeting_stale"  # a newer invite committed after the read above: no line, no bot, no RSVP
     if invite.method == "REQUEST" and (not current or current.get("status") == "cancelled"):
         fields["status"] = "scheduled"
     # Line first, then META: a failure between them retries into the same (replayed) line.
     await _post_line(owner_id, room_id, f"meeting:{invite.uid}:{invite.sequence}:{start_at}:{before}>{after}", text)
     meeting = await _patch_meeting(room_id, fields)
-    outcome = "meeting_cancelled" if invite.method == "CANCEL" else "meeting_scheduled"
-    if int(meeting.get("sequence", 0)) > invite.sequence:
-        return outcome  # a newer invite landed meanwhile: it owns the bot and the RSVP
+    if meeting is None:
+        return "meeting_stale"  # a newer invite landed meanwhile: it owns the bot and the RSVP
     meeting = await _sync_bot(owner_id, room_id, meeting, current)
     logger.info("meeting room %s: %s", room_id, meeting["status"])
     if invite.method == "CANCEL":
-        return outcome
+        return "meeting_cancelled"
     if (
         not team.get("outbound_disabled")
         and meeting.get("rsvpSequence") != invite.sequence

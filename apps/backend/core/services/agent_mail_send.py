@@ -71,7 +71,7 @@ def _single_address(to: str | None) -> str | None:
     return addrs[0]
 
 
-async def _consume_cap(owner_id: str) -> bool:
+async def consume_cap(owner_id: str) -> bool:
     day = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     return await container_repo.try_consume_daily_email_send(owner_id, day=day, cap=DAILY_SEND_CAP)
 
@@ -142,7 +142,7 @@ async def send(
             sender = msg.get("from_addr") or ""
             if not sender_allowed(row, sender) and not row.get("send_to_anyone"):
                 return _done(path, "forbidden_recipient")
-            if not await _consume_cap(owner_id):
+            if not await consume_cap(owner_id):
                 return _done(path, "rate_limited")
             headers = msg.get("headers") or {}
             result = await send_reply(
@@ -179,7 +179,7 @@ async def send(
             return _done(path, "outbound_disabled")
         if not row.get("send_to_anyone"):
             return _done(path, "forbidden_recipient")
-        if not await _consume_cap(owner_id):
+        if not await consume_cap(owner_id):
             return _done(path, "rate_limited")
         sent_subject = _env_subject(subject)
         message_id = await ses_email.send_ses_email(

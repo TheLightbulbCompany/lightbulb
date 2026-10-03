@@ -70,10 +70,26 @@ describe("useIssueDetail", () => {
   });
 
   test("calls read with the queryKeys-derived paths", () => {
-    const read = makeRead({});
+    const read = makeRead({ "/issues/iss_1": { data: { id: "iss_1", title: "Test", status: "todo" } } });
     mockUseTeamsApi.mockReturnValue(baseApi(read));
     renderHook(() => useIssueDetail("iss_1"));
     expect(read).toHaveBeenCalledWith("/issues/iss_1");
     expect(read).toHaveBeenCalledWith("/issues/iss_1/comments");
+  });
+
+  test("defers the comments read until the issue has loaded", () => {
+    const read = makeRead({});
+    mockUseTeamsApi.mockReturnValue(baseApi(read));
+    renderHook(() => useIssueDetail("iss_1"));
+    expect(read).toHaveBeenCalledWith(null);
+    expect(read).not.toHaveBeenCalledWith("/issues/iss_1/comments");
+  });
+
+  test("reads comments under the canonical id when opened by identifier", () => {
+    const read = makeRead({ "/issues/INT-7": { data: { id: "uuid-7", title: "Test", status: "todo" } } });
+    mockUseTeamsApi.mockReturnValue(baseApi(read));
+    renderHook(() => useIssueDetail("INT-7"));
+    expect(read).toHaveBeenCalledWith("/issues/uuid-7/comments");
+    expect(read).not.toHaveBeenCalledWith("/issues/INT-7/comments");
   });
 });

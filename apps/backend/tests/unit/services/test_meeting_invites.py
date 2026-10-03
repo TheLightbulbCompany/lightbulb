@@ -1332,3 +1332,53 @@ async def test_a_same_occurrence_booking_retry_adopts_the_bot_its_kept_nonce_boo
     meeting = room.state["meta"]["meeting"]
     assert meeting["recallBotId"] == "bot-9" and meeting["status"] == "bot_created"
     assert meeting["startAt"] == _epoch(2026, 11, 7, 15, 0) and "botError" not in meeting
+
+
+# --- fix round 2 ---
+
+
+async def test_a_reinvite_after_an_early_end_keeps_tomorrows_booking(room, bots, now):
+    """advance() booked the next occurrence; a same-SEQUENCE resend still parses to today's slot."""
+    _series_meeting(room, "bot_created")
+    nxt = {"startAt": _epoch(2026, 11, 14, 15, 0), "endAt": _epoch(2026, 11, 14, 15, 30), "recallBotId": "bot-2"}
+    room.state["meta"]["meeting"].update(nxt)
+    now["t"] = _epoch(2026, 11, 7, 15, 10)  # today's call ended at 15:08
+    assert await meeting_invites.handle_team_mail("org_1", _mail(SERIES), TEAM) == "meeting_scheduled"
+    meeting = room.state["meta"]["meeting"]
+    assert {k: meeting[k] for k in nxt} == nxt and meeting["status"] == "bot_created"
+    bots.create.assert_not_awaited()
+    bots.reschedule.assert_not_awaited()
+    bots.leave.assert_not_awaited()
+    assert not any("moved" in line for line in _lines(room))
+
+
+async def test_a_finished_series_made_a_single_event_books_it_fresh(room, bots, now):
+    _series_meeting(room, "ended", inCallAt=1)
+    single = GOOGLE.replace("20261003T", "20261120T").replace("SEQUENCE:0", "SEQUENCE:1")
+    assert await meeting_invites.handle_team_mail("org_1", _mail(single), TEAM) == "meeting_scheduled"
+    meeting = room.state["meta"]["meeting"]
+    assert "recurrence" not in meeting and meeting["status"] == "bot_created" and meeting["recallBotId"] == "bot-1"
+    assert meeting["startAt"] == _epoch(2026, 11, 20, 15, 0) and "inCallAt" not in meeting
+    bots.reschedule.assert_not_awaited()
+    bots.leave.assert_not_awaited()  # the finished bot is not touched; a new one is booked
+    assert bots.create.await_args.kwargs["meeting"]["startAt"] == _epoch(2026, 11, 20, 15, 0)
+
+
+def test_a_second_freq_cannot_slip_past_the_bound(now):
+    assert meeting_invites.parse(SERIES.replace("FREQ=WEEKLY;BYDAY=SA", "FREQ=DAILY;FREQ=MINUTELY")) is None
+
+
+def test_the_exdate_of_the_occurrence_in_progress_still_counts(now):
+    now["t"] = _epoch(2026, 11, 7, 15, 10)
+    inv = meeting_invites.parse(
+        SERIES.replace("SEQUENCE:0", "EXDATE;TZID=America/New_York:20261107T150000\r\nSEQUENCE:0")
+    )
+    assert inv.start == datetime(2026, 11, 14, 15, 0, tzinfo=NY)
+    assert inv.recurrence["exdates"] == [_epoch(2026, 11, 7, 15, 0)]
+
+
+async def test_the_inviting_member_is_recorded_for_the_after_meeting_mail(room):
+    cal = GOOGLE.replace("mailto:Prasiddha@acme.com", "mailto:host@outside.example")
+    await meeting_invites.handle_team_mail("org_1", _mail(cal), TEAM)
+    meeting = room.state["meta"]["meeting"]
+    assert meeting["invitedBy"] == "prasiddha@acme.com" and meeting["organizer"] == "host@outside.example"

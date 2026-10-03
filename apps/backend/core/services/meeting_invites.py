@@ -16,7 +16,7 @@ from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 
 from botocore.exceptions import ClientError
-from dateutil.rrule import rruleset, rrulestr
+from dateutil.rrule import DAILY, rruleset, rrulestr
 
 from core.config import settings
 from core.constants import SYSTEM_ACTOR_ID
@@ -174,16 +174,22 @@ def _parse(calendar_text: str) -> Invite | None:
         # Bounds on a sender-written rule: the walk from its first start must stay short.
         if (
             len(rule) > 512
+            or len(re.findall(r"(?i)(?:^|;)FREQ=", rule)) != 1  # a second FREQ would win in dateutil
             or not re.search(r"(?i)(^|;)FREQ=(DAILY|WEEKLY|MONTHLY|YEARLY)(;|$)", rule)
+            or rrulestr(rule, dtstart=start)._freq > DAILY  # and what dateutil resolved agrees
             or start.timestamp() < now - _MAX_SERIES_AGE_S
         ):
             return None
+        duration = min(max(int((end - start).total_seconds()) if end else 0, 0), 86400)
         recurrence = {
             "rule": rule,
             "first": int(start.timestamp()),
             "tz": getattr(start.tzinfo, "key", "UTC"),
-            "exdates": sorted(t for t in (int(_when(p, v).timestamp()) for p, v in exdates) if t >= now)[:200],
-            "duration": min(max(int((end - start).total_seconds()) if end else 0, 0), 86400),
+            # From the occurrence in progress on: its exclusion still matters until it ends.
+            "exdates": sorted(t for t in (int(_when(p, v).timestamp()) for p, v in exdates) if t >= now - duration)[
+                :200
+            ],
+            "duration": duration,
         }
         nxt = next_occurrence(recurrence, now)
         if nxt is None:  # the series is over (a "this and following" edit cut it): release its bot
@@ -503,13 +509,13 @@ async def handle_team_mail(owner_id: str, payload, team: dict) -> str | None:
     # The lease serializes everything below (sequence check, META, line, bot, RSVP) across
     # concurrent deliveries; the loser 503s and SES redelivers after the holder is done.
     async with meeting_lease(room_id):
-        return await _apply(owner_id, invite, room_id, creator, team)
+        return await _apply(owner_id, invite, room_id, creator, team, sender)
 
 
 _ENDED = ("ended", "bot_failed")  # an occurrence is over; only advance() schedules a series' next one
 
 
-async def _apply(owner_id: str, invite: Invite, room_id: str, creator: str, team: dict) -> str | None:
+async def _apply(owner_id: str, invite: Invite, room_id: str, creator: str, team: dict, sender: str) -> str | None:
     room = await messaging_repo.get_room(room_id) or {}
     if room.get("archivedAt") or room.get("deletedAt"):
         return "meeting_ignored"  # a member closed this meeting's room; a move/cancel must not reopen it
@@ -522,12 +528,24 @@ async def _apply(owner_id: str, invite: Invite, room_id: str, creator: str, team
     series = invite.method == "REQUEST" and bool(current) and bool(current.get("recurrence") or invite.recurrence)
     # A series' bot in (or due in) its call is never re-dated by an invite: advance() does it after.
     live = series and (status == "in_call" or (status == "bot_created" and int(current.get("startAt", 0)) <= now))
-    over = series and status in _ENDED  # re-dated by _reschedule_locked, never onto an occurrence that happened
+    # The invite parses to an occurrence already under way while the stored one is ahead (advance
+    # booked it after an early end): the booked occurrence stands, no bot goes into the old slot.
+    ahead = (
+        series
+        and status in ("scheduled", "bot_created")
+        and invite.start.timestamp() < now < int(current.get("startAt", 0))
+    )
+    over = series and bool(invite.recurrence) and status in _ENDED  # re-dated by _reschedule_locked
+    # A finished series made a single event: a fresh booking for it, never a move of the old bot.
+    one_off = series and not invite.recurrence and status in _ENDED
+    revive = one_off and int((invite.end or invite.start).timestamp()) > now
+    keep_dates = live or ahead or over
+    hold_bot = keep_dates or (one_off and not revive)  # no _sync_bot for the date
     if invite.method == "CANCEL":
         if not current or current.get("organizer") != invite.organizer_email:
             return "meeting_ignored"
         start_at = int(current.get("startAt", 0))  # a cancellation need not carry DTSTART
-        fields = {"status": "cancelled", "sequence": invite.sequence}
+        fields = {"status": "cancelled", "sequence": invite.sequence, "invitedBy": sender}
         text = f"**{_title(current)}** was cancelled."
     else:
         start_at = int(invite.start.timestamp())
@@ -540,13 +558,17 @@ async def _apply(owner_id: str, invite: Invite, room_id: str, creator: str, team
             "endAt": int(invite.end.timestamp()) if invite.end else None,
             "meetingUrl": invite.meeting_url,
             "organizer": invite.organizer_email,
+            "invitedBy": sender,  # the member the after-meeting mail goes to; the ORGANIZER is sender-written
         }
         if invite.recurrence:
             fields["recurrence"] = invite.recurrence
-        if live or over:
+        if keep_dates:
             del fields["startAt"], fields["endAt"]
         moved = (
-            current and not live and status not in ("cancelled", *_ENDED) and int(current.get("startAt", 0)) != start_at
+            current
+            and not keep_dates
+            and status not in ("cancelled", *_ENDED)
+            and int(current.get("startAt", 0)) != start_at
         )
         when = _when_text(invite.start)
         if moved:
@@ -576,6 +598,8 @@ async def _apply(owner_id: str, invite: Invite, room_id: str, creator: str, team
     if invite.method == "REQUEST" and (not current or current.get("status") == "cancelled"):
         fields["status"] = "scheduled"
     drop = ("recurrence",) if invite.method == "REQUEST" and not invite.recurrence else ()
+    if revive:
+        fields["status"], drop = "scheduled", (*drop, *_OCCURRENCE_KEYS)
     meeting = await _patch_meeting(room_id, fields, drop=drop)
     if meeting is None:
         return "meeting_stale"  # a newer invite landed meanwhile: it owns the line, the bot and the RSVP
@@ -599,7 +623,7 @@ async def _apply(owner_id: str, invite: Invite, room_id: str, creator: str, team
     )
     if not replayed_cancel:
         await _post_line(owner_id, room_id, f"meeting:{invite.uid}:{invite.sequence}:{start_at}:{before}>{after}", text)
-    if not (live or over):  # the bot in a live call is never moved or pulled by an invite
+    if not hold_bot:  # the bot in a live call, or a booked next occurrence, is never moved by an invite
         meeting = await _sync_bot(owner_id, room_id, meeting, current)
     logger.info("meeting room %s: %s", room_id, meeting["status"])
     if invite.method == "CANCEL":

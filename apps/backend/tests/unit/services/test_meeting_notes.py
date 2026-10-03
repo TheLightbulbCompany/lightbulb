@@ -307,3 +307,28 @@ async def test_without_a_transcript_the_mail_says_none_was_captured(legacy):
     legacy.meta["meeting"].pop("transcriptId")
     await mod.on_ended(ROOM)
     assert legacy.send.await_args.kwargs["body_text"].endswith("No transcript was captured.")
+
+
+async def test_a_redate_during_the_wait_keeps_todays_key_and_tomorrows_run(env):
+    today, tomorrow = env.meta["meeting"]["startAt"], env.meta["meeting"]["startAt"] + 86400
+
+    async def redate(_s):  # a re-invite re-dated the series 30 s after the call ended
+        env.meta["meeting"] = {**env.meta["meeting"], "startAt": tomorrow, "status": "scheduled"}
+        env.meta["meeting"].pop("inCallAt")
+
+    env.sleep.side_effect = redate
+    await mod.on_ended(ROOM)
+    assert env.sleep.await_count == 1  # stopped waiting on the other occurrence's read
+    assert env.line.await_args.args[2] == f"meeting:{ROOM}:{today}:notes"
+    assert "notesRunId" not in env.meta["meeting"]
+    # Tomorrow's call happens: its own notes run goes out under its own key.
+    env.meta["meeting"].update(status="ended", inCallAt=1, transcriptAttachedAt=1)
+    env.claim.return_value = "tok2"
+    await mod.on_ended(ROOM)
+    assert env.line.await_args.args[2] == f"meeting:{ROOM}:{tomorrow}:notes" and env.line.await_count == 2
+
+
+async def test_the_after_meeting_mail_goes_to_the_inviting_member(env):
+    env.meta["meeting"].update(transcriptAttachedAt=1, invitedBy="member@acme.com", organizer="host@outside.example")
+    await mod.on_ended(ROOM)
+    assert env.send.await_args.kwargs["to"] == "member@acme.com"

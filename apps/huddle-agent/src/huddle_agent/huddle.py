@@ -622,6 +622,18 @@ class Huddle:
                 self._route_and_summon(identity, text, mark, humans=len(self._people))
             )
             return
+        if (
+            identity == v.speaker
+            and v.live is not None
+            and [x for x in a.anywhere if x != v.agent_id]
+        ):
+            # "Cool, and Friday, what about you?" while Forge holds the floor (10-02: it went to Forge).
+            # The backend's addressing stage decides addressed vs mentioned; addressed switches the floor.
+            self._spawn(
+                self._route_and_summon(
+                    identity, text, mark, humans=len(self._people), switch=True
+                )
+            )
         if identity == v.speaker:
             v.last_activity = self._clock()
             v.used = True
@@ -746,7 +758,12 @@ class Huddle:
         )
 
     async def _route_and_summon(
-        self, identity: str, text: str, mark: int, humans: int | None = None
+        self,
+        identity: str,
+        text: str,
+        mark: int,
+        humans: int | None = None,
+        switch: bool = False,
     ) -> None:
         """`humans`: people in the call, for a line with no name (None: the Lightbulb wake word, stripped
         so "Lightbulb, Forge, check CI" reaches /route opening with Forge)."""
@@ -804,6 +821,20 @@ class Huddle:
         # Routing v2 §4.2: someone else spoke since. Their line routes itself, seeing this one; Jev decides on that.
         if any(m > mark for who, m in self._spoke.items() if who != identity):
             emit_metric("live.route.superseded", 1, "Count")
+            return
+        if switch and self._voice is not None and agent_ids[0] != self._voice.agent_id:
+            # The floor-holder's own speaker named another agent mid-sentence and /route says it was
+            # addressed: they get the floor now, the way a name at the start of the line would.
+            emit_metric("live.route.switch", 1, "Count")
+            await self.summon(
+                identity,
+                agent_ids[0],
+                request=text,
+                mark=mark,
+                path="switch",
+                then=agent_ids[1:],
+                heard_at=heard_at,
+            )
             return
         if humans is not None and self._voice is not None:
             # A voice is open (it was, or one opened while Jev decided): the picked agents answer this person

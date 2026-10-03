@@ -23,7 +23,7 @@ export interface PickupClient {
   reportLocalSessionPickupOutcome?(sessionId: string, pickupId: string, outcome: LocalSessionPickupOutcome): Promise<void>;
 }
 
-/** What the Mac answers once the session is open in Terminal. */
+/** What the Mac answers once the session is open in Lightbulb. */
 interface Imported {
   branch?: string;
   worktree?: string;
@@ -58,7 +58,7 @@ const MESSAGES: Record<string, string> = {
   FOLDER_NOT_CANDIDATE: "That folder does not hold this session's repository.",
   SNAPSHOT_GONE: "This session can no longer be picked up. Its owner turned pick-up off, or its snapshot expired.",
   WORKTREE_EXISTS: "A folder for this pick-up already exists in your repository and does not match it. Remove it, then pick the session up again.",
-  LAUNCH_FAILED: "The files are in place, but Terminal did not open. Try again.",
+  LAUNCH_FAILED: "The files are in place, but the session did not open in Lightbulb. Try again.",
   TICKET_FAILED: "The pick-up could not be started. Check your connection and try again.",
 };
 /** The backend's answers that mean the snapshot is not there to take: off (403), gone (404), not ready (409). */
@@ -83,7 +83,7 @@ function failure(error: unknown): { code: string; message: string; folders: stri
 }
 
 /**
- * One pick-up, from the click to Terminal opening. `start(folder)` runs again
+ * One pick-up, from the click to the session opening in Lightbulb. `start(folder)` runs again
  * with the same id after the person chooses a folder, so a repeat is one pick-up
  * to the backend, not two.
  */

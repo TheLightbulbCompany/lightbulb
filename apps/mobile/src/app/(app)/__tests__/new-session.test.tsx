@@ -142,7 +142,7 @@ it("keeps an uncertain POST result pending so a retry cannot launch a duplicate 
   expect(screen.getByLabelText("View sessions")).toBeTruthy();
 });
 
-it("keeps a retryable Mac outcome pending because Terminal may already have opened", async () => {
+it("keeps a retryable Mac outcome pending because the session may already have opened", async () => {
   await render(<NewSessionScreen />);
   await waitFor(() => expect(screen.getByLabelText("Session options")).toBeTruthy());
   await fireEvent.changeText(screen.getByLabelText("First message"), "Fix the build safely.");

@@ -620,7 +620,7 @@ async fn reusable(repo: &Path, worktree: &Path, reference: &str, snapshot: &str)
     }
 }
 
-/// The exact argv Terminal runs: a fixed binary, fixed flags, values as their own elements.
+/// The exact argv the holder runs: a fixed binary, fixed flags, values as their own elements.
 fn argv(claude: &Path, transcript: &Path, session: &str) -> Vec<String> {
     vec![
         claude.to_string_lossy().into_owned(),

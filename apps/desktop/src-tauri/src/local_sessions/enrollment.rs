@@ -1084,6 +1084,45 @@ mod tests {
     use super::*;
 
     #[test]
+    fn local_sessions_hook_holder_resolves_through_the_hooks_shell() {
+        use std::time::{Duration, Instant};
+        let sh = |cmd: &str| std::process::Command::new("/bin/sh").args(["-c", cmd]).spawn().unwrap();
+        let children = |pid: u32| -> Vec<u32> {
+            let out = std::process::Command::new("/usr/bin/pgrep").args(["-P", &pid.to_string()]).output().unwrap();
+            String::from_utf8_lossy(&out.stdout).lines().filter_map(|l| l.trim().parse().ok()).collect()
+        };
+        // Outer shell = provider; inner shell = the hook's parent. Compound so the inner stays a shell.
+        let mut outer = sh(r#"/bin/sh -c '/bin/sleep 30; :'; :"#);
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let inner = loop {
+            if let Some(pid) = children(outer.id()).first() {
+                break *pid;
+            }
+            assert!(Instant::now() < deadline, "the provider started its shell");
+            std::thread::sleep(Duration::from_millis(20));
+        };
+        let dir = tempfile::tempdir().unwrap();
+        let holder = HolderInfo {
+            id: "ab12cd34".into(),
+            socket: dir.path().join("h.sock"),
+            pid: std::process::id(),
+            provider_pid: outer.id(),
+            argv: vec![],
+            cwd: "/".into(),
+        };
+        let found = hook_holder(inner, std::slice::from_ref(&holder)).map(|h| h.id.clone());
+        let other = HolderInfo { provider_pid: outer.id() + 1, ..holder.clone() };
+        let none = hook_holder(inner, std::slice::from_ref(&other)).is_none();
+        for pid in children(inner).into_iter().chain([inner]) {
+            unsafe { libc::kill(pid as i32, libc::SIGKILL) };
+        }
+        let _ = outer.kill();
+        let _ = outer.wait();
+        assert_eq!(found.as_deref(), Some("ab12cd34"));
+        assert!(none, "a holder whose provider is another process does not match");
+    }
+
+    #[test]
     fn local_sessions_a_private_sessions_permission_hook_returns_at_once_and_sends_nothing() {
         use std::os::unix::{fs::PermissionsExt, io::IntoRawFd};
         let dir = tempfile::tempdir().unwrap();

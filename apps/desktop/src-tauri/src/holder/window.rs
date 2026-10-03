@@ -59,9 +59,21 @@ fn asset(path: &str) -> Option<(&'static str, &'static [u8])> {
 
 /// One connection: a WebSocket upgrade on `/ws`, else a static file.
 fn serve(mut stream: TcpStream) -> std::io::Result<()> {
+    // Route on the whole request line: TCP may hand over only its first few bytes at first.
+    stream.set_read_timeout(Some(std::time::Duration::from_secs(5)))?;
     let mut head = [0u8; 1024];
-    let n = stream.peek(&mut head)?;
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let mut n = stream.peek(&mut head)?;
+    while n < head.len() && !head[..n].windows(2).any(|w| w == b"\r\n") {
+        if n == 0 || std::time::Instant::now() > deadline {
+            return Ok(());
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        n = stream.peek(&mut head)?;
+    }
     let first = String::from_utf8_lossy(&head[..n]);
+    // The limit was for reading the request line only; a terminal connection idles for hours.
+    stream.set_read_timeout(None)?;
     if first.starts_with("GET /ws") {
         return relay(stream);
     }

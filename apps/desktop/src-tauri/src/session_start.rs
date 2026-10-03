@@ -477,7 +477,11 @@ pub async fn terminal_start(app: tauri::AppHandle, params: Value) -> Result<Valu
     let info = tauri::async_runtime::spawn_blocking(move || crate::holder::manager::start(&folder, &argv))
         .await
         .map_err(|e| e.to_string())??;
-    crate::holder::window::open_window(&app, &info)?;
+    if let Err(e) = crate::holder::window::open_window(&app, &info) {
+        // Nobody can see it, and a retry would start a second one: stop it.
+        unsafe { libc::kill(info.pid as libc::pid_t, libc::SIGTERM) };
+        return Err(e);
+    }
     crate::log(&format!("[session-start] held {} {}", start.start_id, start.tool));
     Ok(json!({"holderId": info.id, "tool": start.tool, "linked": scope.is_some()}))
 }

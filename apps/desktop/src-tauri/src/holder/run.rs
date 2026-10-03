@@ -44,9 +44,16 @@ pub fn login_environment() -> Vec<(String, String)> {
     captured.unwrap_or_else(|| std::env::vars().collect())
 }
 
-/// The JSON `print-env` writes; None unless it holds at least HOME and PATH.
-pub fn parse_environment(json: &[u8]) -> Option<Vec<(String, String)>> {
-    let map: std::collections::BTreeMap<String, String> = serde_json::from_slice(json).ok()?;
+const ENV_BEGIN: &str = "\u{1e}LIGHTBULB-ENV-BEGIN\u{1e}";
+const ENV_END: &str = "\u{1e}LIGHTBULB-ENV-END\u{1e}";
+
+/// The JSON `print-env` writes between its markers (shell startup files may print around it);
+/// None unless it holds at least HOME and PATH.
+pub fn parse_environment(output: &[u8]) -> Option<Vec<(String, String)>> {
+    let text = String::from_utf8_lossy(output);
+    let start = text.rfind(ENV_BEGIN)? + ENV_BEGIN.len();
+    let end = start + text[start..].find(ENV_END)?;
+    let map: std::collections::BTreeMap<String, String> = serde_json::from_str(&text[start..end]).ok()?;
     if !map.contains_key("HOME") || !map.contains_key("PATH") {
         return None;
     }
@@ -61,7 +68,7 @@ pub fn parse_environment(json: &[u8]) -> Option<Vec<(String, String)>> {
 pub fn print_environment() {
     let map: std::collections::BTreeMap<String, String> =
         std::env::vars_os().map(|(k, v)| (k.to_string_lossy().into_owned(), v.to_string_lossy().into_owned())).collect();
-    println!("{}", serde_json::to_string(&map).unwrap_or_else(|_| "{}".into()));
+    println!("{ENV_BEGIN}{}{ENV_END}", serde_json::to_string(&map).unwrap_or_else(|_| "{}".into()));
 }
 
 #[cfg(test)]
@@ -70,11 +77,13 @@ mod tests {
 
     #[test]
     fn holder_environment_parses_and_refuses_an_empty_capture() {
-        let env = parse_environment(br#"{"HOME":"/Users/a","PATH":"/usr/bin","SHLVL":"2","MULTI":"a\nb"}"#).unwrap();
+        let wrap = |json: &str| format!("Welcome back!\n{ENV_BEGIN}{json}{ENV_END}\nbye\n").into_bytes();
+        let env = parse_environment(&wrap(r#"{"HOME":"/Users/a","PATH":"/usr/bin","SHLVL":"2","MULTI":"a\nb"}"#)).unwrap();
         assert!(env.contains(&("MULTI".into(), "a\nb".into())));
         assert!(!env.iter().any(|(k, _)| k == "SHLVL"));
         assert_eq!(parse_environment(b""), None);
-        assert_eq!(parse_environment(br#"{"PATH":"/usr/bin"}"#), None);
+        assert_eq!(parse_environment(&wrap(r#"{"PATH":"/usr/bin"}"#)), None);
+        assert_eq!(parse_environment(br#"{"HOME":"/a","PATH":"/b"}"#), None, "markers are required");
     }
 }
 

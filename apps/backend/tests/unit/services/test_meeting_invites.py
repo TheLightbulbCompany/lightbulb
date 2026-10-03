@@ -168,7 +168,15 @@ WITH_DANA = GOOGLE.replace("SEQUENCE:0", "ATTENDEE;CN=Dana:mailto:dana@acme.com\
 @pytest.fixture
 def room(monkeypatch):
     """A fake room store: create_room writes META with ``extra``, patch_room_meta merges into it."""
-    state = {"meta": None}
+    state = {"meta": None, "lines": {}}
+
+    def post(**kw):  # the repo's receipt: same key + same hash replays, a different hash conflicts
+        seen = state["lines"].get(kw["idemp_sk"])
+        if seen is not None:
+            if seen[0] != kw["req_hash"]:
+                raise meeting_invites.messaging_repo.IdempotencyConflict("different request")
+            return
+        state["lines"][kw["idemp_sk"]] = (kw["req_hash"], kw["text"])
 
     def create(**kw):
         state["meta"] = {"roomId": kw["room_id"], **kw["extra"]}
@@ -181,7 +189,7 @@ def room(monkeypatch):
         get=AsyncMock(side_effect=lambda room_id: state["meta"]),
         create=AsyncMock(side_effect=create),
         patch=AsyncMock(side_effect=patch),
-        post=AsyncMock(),
+        post=AsyncMock(side_effect=post),
         members=AsyncMock(
             return_value=[
                 {"user_id": "user_p", "email": "Prasiddha@acme.com"},
@@ -211,7 +219,7 @@ def room(monkeypatch):
 
 
 def _lines(room):
-    return [c.kwargs["text"] for c in room.post.await_args_list]
+    return [text for _, text in room.state["lines"].values()]
 
 
 async def test_a_members_invite_opens_the_meeting_room(room):
@@ -227,7 +235,8 @@ async def test_a_members_invite_opens_the_meeting_room(room):
         (ENG, "member", "mentions"),
     }
     meeting = kw["extra"]["meeting"]
-    assert meeting["uid"] == UID and meeting["status"] == "scheduled" and meeting["createdBy"] == "prasiddha@acme.com"
+    assert meeting["uid"] == UID and meeting["status"] == "scheduled"
+    assert "createdBy" not in meeting
     assert meeting["startAt"] == int(datetime(2026, 10, 3, 19, 0, tzinfo=timezone.utc).timestamp())
     assert _lines(room) == ["Agents will join **Acme weekly sync** on Sat Oct 3, 3:00 PM EDT."]
     assert all("meet.google.com" not in line for line in _lines(room))
@@ -250,7 +259,8 @@ async def test_a_member_forwarding_an_outside_invite_is_scheduled(room):
     cal = GOOGLE.replace("mailto:Prasiddha@acme.com", "mailto:client@outside.example")
     assert await meeting_invites.handle_team_mail("org_1", _mail(cal), TEAM) == "meeting_scheduled"
     meeting = room.create.await_args.kwargs["extra"]["meeting"]
-    assert meeting["organizer"] == "client@outside.example" and meeting["createdBy"] == "prasiddha@acme.com"
+    assert meeting["organizer"] == "client@outside.example"
+    assert room.create.await_args.kwargs["creator_user_id"] == "user_p"
 
 
 async def test_plain_team_mail_is_mail(room):
@@ -288,3 +298,41 @@ async def test_an_older_sequence_does_not_overwrite(room):
     assert await meeting_invites.handle_team_mail("org_1", _mail(GOOGLE), TEAM) == "meeting_stale"
     room.patch.assert_not_awaited()
     room.post.assert_not_awaited()
+
+
+async def test_a_resend_after_a_move_neither_raises_nor_doubles_the_line(room):
+    await meeting_invites.handle_team_mail("org_1", _mail(GOOGLE), TEAM)
+    moved = GOOGLE.replace("SEQUENCE:0", "SEQUENCE:1").replace("T150000", "T160000")
+    await meeting_invites.handle_team_mail("org_1", _mail(moved), TEAM)
+    # Google resends on a description edit with no SEQUENCE bump: same key, different wording.
+    resent = moved.replace("Weekly sync", "Weekly sync, agenda attached")
+    assert await meeting_invites.handle_team_mail("org_1", _mail(resent), TEAM) == "meeting_scheduled"
+    assert len(_lines(room)) == 2
+
+
+def _cas_lost():
+    from botocore.exceptions import ClientError
+
+    return ClientError({"Error": {"Code": "TransactionCanceledException"}}, "TransactWriteItems")
+
+
+async def test_a_lost_meta_race_is_retried_once(room):
+    await meeting_invites.handle_team_mail("org_1", _mail(GOOGLE), TEAM)
+    room.patch.side_effect = [_cas_lost(), None]
+    moved = GOOGLE.replace("SEQUENCE:0", "SEQUENCE:1").replace("T150000", "T160000")
+    assert await meeting_invites.handle_team_mail("org_1", _mail(moved), TEAM) == "meeting_scheduled"
+    assert room.patch.await_count == 2
+    room.patch.side_effect = [_cas_lost(), _cas_lost()]
+    again = moved.replace("SEQUENCE:1", "SEQUENCE:2")
+    assert await meeting_invites.handle_team_mail("org_1", _mail(again), TEAM) == "meeting_scheduled"
+    assert room.patch.await_count == 4
+
+
+async def test_a_racing_second_creator_falls_through_to_the_update(room):
+    def lost_race(**kw):
+        room.state["meta"] = {"roomId": kw["room_id"], **kw["extra"]}  # the other member's create landed
+        raise meeting_invites.messaging_repo.MessagingRepoError("room create cancelled without a durable receipt")
+
+    room.create.side_effect = lost_race
+    assert await meeting_invites.handle_team_mail("org_1", _mail(GOOGLE), TEAM) == "meeting_scheduled"
+    assert _lines(room) == ["Agents will join **Acme weekly sync** on Sat Oct 3, 3:00 PM EDT."]

@@ -1,5 +1,5 @@
 """Calendar invites to the team address ``agents@{slug}``: parse the ``text/calendar`` part and
-turn a workspace member's invite into a meeting row. Everything else -- plain team mail and a
+turn a workspace member's invite into a meeting room. Everything else -- plain team mail and a
 stranger's invite alike -- is ordinary mail for the CEO, delivered by the inbound route exactly
 as mail to the CEO's own address would be (``team_row``).
 """
@@ -11,6 +11,8 @@ import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
+
+from botocore.exceptions import ClientError
 
 from core.constants import SYSTEM_ACTOR_ID
 from core.repositories import agent_email_repo, messaging_repo
@@ -139,23 +141,27 @@ def _when_text(start: datetime) -> str:
 
 
 async def _post_line(owner_id: str, room_id: str, key: str, text: str) -> None:
-    """One system line; the key makes an SES retry replay it instead of doubling it."""
-    await messaging_repo.create_message(
-        room_id=room_id,
-        owner_id=owner_id,
-        idemp_pk=messaging_repo.room_pk(room_id),
-        idemp_sk=messaging_repo.human_idemp_sk(SYSTEM_ACTOR_ID, key),
-        req_hash=messaging_repo.request_hash(text),
-        author={"kind": "system", "id": SYSTEM_ACTOR_ID, "displayName": "Lightbulb"},
-        text=text,
-        mentions=[],
-        reply_to_message_id=None,
-        thread_root_message_id=None,
-        run_id=None,
-        dispatch_targets=[],
-        source_agent_id=None,
-        client_message_id=None,
-    )
+    """One system line. The key is the receipt: an SES retry, or a resend whose wording differs
+    under the same key, replays it instead of doubling it or raising."""
+    try:
+        await messaging_repo.create_message(
+            room_id=room_id,
+            owner_id=owner_id,
+            idemp_pk=messaging_repo.room_pk(room_id),
+            idemp_sk=messaging_repo.human_idemp_sk(SYSTEM_ACTOR_ID, key),
+            req_hash=messaging_repo.request_hash(key),
+            author={"kind": "system", "id": SYSTEM_ACTOR_ID, "displayName": "Lightbulb"},
+            text=text,
+            mentions=[],
+            reply_to_message_id=None,
+            thread_root_message_id=None,
+            run_id=None,
+            dispatch_targets=[],
+            source_agent_id=None,
+            client_message_id=None,
+        )
+    except messaging_repo.IdempotencyConflict:
+        pass
 
 
 async def _create_room(owner_id: str, room_id: str, invite: Invite, creator: str, by_email: dict, meeting: dict):
@@ -205,8 +211,22 @@ async def _create_room(owner_id: str, room_id: str, invite: Invite, creator: str
             req_hash=messaging_repo.request_hash(name, "channel", normalized),
             extra={"meeting": meeting},
         )
-    except messaging_repo.IdempotencyConflict:
+    except messaging_repo.MessagingRepoError:
+        # A replay with a different body, or a second member's forward racing this one (its META
+        # Put cancels with no receipt of ours): either way the room is someone's, so update it.
         pass
+
+
+async def _patch_meeting(room_id: str, meeting: dict) -> None:
+    """``patch_room_meta`` under its revision CAS, retried once against a concurrent META edit
+    (a rename). Losing twice is logged, not raised: the next resend of the invite heals it."""
+    for attempt in (1, 2):
+        try:
+            await messaging_repo.patch_room_meta(room_id, {"meeting": meeting})
+            return
+        except ClientError:
+            if attempt == 2:
+                logger.warning("meeting room %s: META patch lost the revision race twice", room_id)
 
 
 async def handle_team_mail(owner_id: str, payload, team: dict) -> str | None:
@@ -251,7 +271,6 @@ async def handle_team_mail(owner_id: str, payload, team: dict) -> str | None:
             "endAt": int(invite.end.timestamp()) if invite.end else None,
             "meetingUrl": invite.meeting_url,
             "organizer": invite.organizer_email,
-            "createdBy": (current or {}).get("createdBy") or sender,
             "status": "scheduled" if not current or current.get("status") == "cancelled" else current["status"],
         }
         moved = current and current.get("status") != "cancelled" and int(current.get("startAt", 0)) != start_at
@@ -262,10 +281,13 @@ async def handle_team_mail(owner_id: str, payload, team: dict) -> str | None:
         )
     if current is None:
         await _create_room(owner_id, room_id, invite, creator, by_email, meeting)
-        current = ((await messaging_repo.get_room(room_id)) or {}).get("meeting")
+        meta = await messaging_repo.get_room(room_id)
+        if meta is None:
+            return None  # no room came of it: the CEO reads it as mail
+        current = meta.get("meeting")
     # Line first, then META: a failure between them retries into the same (replayed) line.
     await _post_line(owner_id, room_id, f"meeting:{invite.uid}:{invite.sequence}:{start_at}:{meeting['status']}", text)
     if meeting != current:
-        await messaging_repo.patch_room_meta(room_id, {"meeting": meeting})
+        await _patch_meeting(room_id, meeting)
     logger.info("meeting room %s: %s", room_id, meeting["status"])
     return "meeting_cancelled" if invite.method == "CANCEL" else "meeting_scheduled"

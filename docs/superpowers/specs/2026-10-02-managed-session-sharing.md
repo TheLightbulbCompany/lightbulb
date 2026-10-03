@@ -329,7 +329,8 @@ Windows and Linux.
 
 ## 11. Open questions
 
-1. Does closing the terminal window detach (session keeps running) or end the session?
+1. Answered 2026-10-03: closing a terminal window ends its session (continue with resume); the
+   app quitting or updating does not, and windows are restored on launch (#3641).
 2. Should a teammate's Resume require anything more when the owner's Mac is locked or the
    owner is away?
 3. Answered 2026-10-03: no founder-only build; Phase 2 shipped to everyone.

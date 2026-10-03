@@ -179,9 +179,6 @@ const pipeline = new GitHubWorkflow(app, "isol8-pipeline", {
       // Empty GitHub variables keep desktop submissions closed in both envs.
       DESKTOP_EXECUTION_OWNER_DEV: "${{ vars.DESKTOP_EXECUTION_OWNER_DEV }}",
       DESKTOP_EXECUTION_OWNER_PROD: "${{ vars.DESKTOP_EXECUTION_OWNER_PROD }}",
-      // Empty GitHub variables keep meetings (Recall bot booking) closed in both envs.
-      MEETINGS_OWNER_DEV: "${{ vars.MEETINGS_OWNER_DEV }}",
-      MEETINGS_OWNER_PROD: "${{ vars.MEETINGS_OWNER_PROD }}",
     },
     primaryOutputDirectory: "apps/infra/cdk.out",
   }),

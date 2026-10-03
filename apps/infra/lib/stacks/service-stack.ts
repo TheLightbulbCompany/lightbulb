@@ -1432,11 +1432,6 @@ export class ServiceStack extends cdk.Stack {
     if (desktopOwner && !/^(?:user|org)_[A-Za-z0-9_-]{1,123}$/.test(desktopOwner)) {
       throw new Error(`Invalid desktop execution owner for ${env}`);
     }
-    // Comma-separated owner ids; unset keeps meetings closed (no Recall bot is ever booked).
-    const meetingsOwners = process.env[`MEETINGS_OWNER_${env.toUpperCase()}`] ?? "";
-    if (meetingsOwners && !meetingsOwners.split(",").every((o) => /^(?:user|org)_[A-Za-z0-9_-]{1,123}$/.test(o.trim()))) {
-      throw new Error(`Invalid meetings owner allowlist for ${env}`);
-    }
 
     // Backend container environment + secrets, declared as consts (rather
     // than inline literals) so the provisioning-executor task definition can
@@ -1726,8 +1721,6 @@ export class ServiceStack extends cdk.Stack {
       // Provisioning rail master switch — see the stripeProvisioningEnabled
       // prop doc. Off in both envs until Stripe's write endpoints work.
       STRIPE_PROVISIONING_ENABLED: String(props.stripeProvisioningEnabled ?? false),
-      MEETINGS_ENABLED: meetingsOwners ? "true" : "false",
-      MEETINGS_OWNER_ALLOWLIST: meetingsOwners,
       // Dev keeps timer heartbeats off (spend): arm_nightly_ceo leaves them alone.
       NIGHTLY_CEO_HEARTBEATS_ENABLED: env === "dev" ? "false" : "true",
       // PostHog server-side reads for the admin Activity tab.

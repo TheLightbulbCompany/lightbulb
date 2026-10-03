@@ -85,6 +85,10 @@ mod tests {
         assert!(env.contains(&("MULTI".into(), "a\nb".into())));
         assert!(!env.iter().any(|(k, _)| k == "SHLVL"));
         assert_eq!(parse_environment(b""), None);
+        let kept = provider_environment(vec![("PATH".into(), "/bin".into()), ("CLAUDE_CODE_CHILD_SESSION".into(), "1".into()),
+            ("CLAUDE_CODE_SSE_PORT".into(), "1".into()), ("CLAUDE_CODE_USE_BEDROCK".into(), "1".into())]);
+        assert_eq!(kept.iter().map(|(k, _)| k.as_str()).collect::<Vec<_>>(), ["PATH", "CLAUDE_CODE_USE_BEDROCK"],
+            "another session's markers go; the person's own Claude Code settings stay");
         assert_eq!(parse_environment(&wrap(r#"{"PATH":"/usr/bin"}"#)), None);
         assert_eq!(parse_environment(br#"{"HOME":"/a","PATH":"/b"}"#), None, "markers are required");
     }
@@ -104,7 +108,22 @@ pub fn run(socket: &Path, argv: &[String], cwd: &Path) -> Result<()> {
     run_with_env(socket, argv, cwd, login_environment())
 }
 
+/// Variables one Claude Code session sets for its own children. A held session that inherits
+/// them (the app or `lightbulb` started from inside another session) would count as that
+/// session's child: transcript saving off, the parent's message socket and IDE connection.
+const SESSION_MARKERS: &[&str] = &[
+    "CLAUDECODE", "CLAUDE_CODE_CHILD_SESSION", "CLAUDE_CODE_ENTRYPOINT", "CLAUDE_CODE_EXECPATH",
+    "CLAUDE_CODE_MESSAGING_SOCKET", "CLAUDE_CODE_MESSAGING_TOKEN", "CLAUDE_CODE_SESSION_ATTENDED",
+    "CLAUDE_CODE_SESSION_ID", "CLAUDE_CODE_SSE_PORT", "CLAUDE_PID", "CLAUDE_EFFORT",
+];
+
+/// The environment a provider is started with: the captured one, minus another session's markers.
+pub fn provider_environment(env: Vec<(String, String)>) -> Vec<(String, String)> {
+    env.into_iter().filter(|(k, _)| !SESSION_MARKERS.contains(&k.as_str())).collect()
+}
+
 pub fn run_with_env(socket: &Path, argv: &[String], cwd: &Path, env: Vec<(String, String)>) -> Result<()> {
+    let env = provider_environment(env);
     let program = argv.first().ok_or_else(|| std::io::Error::other("no program"))?;
     let pair = native_pty_system()
         .openpty(PtySize { rows: ROWS, cols: COLS, pixel_width: 0, pixel_height: 0 })

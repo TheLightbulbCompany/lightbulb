@@ -255,10 +255,20 @@ it("an older desktop app without terminals keeps the remote start", async () => 
 
 it("inside the desktop app it lists sessions still running on this Mac and reopens their window", async () => {
   const invoke = desktop(async (command) => command === "terminal_options" ? OPTIONS
-    : command === "terminal_list" ? [{ id: "ab12cd34", argv: ["/bin/sh", "-c", "x", "lightbulb-start", "s", "/scope", "/opt/bin/claude"], cwd: "/Users/alice/code" }]
+    : command === "terminal_list" ? [{ id: "ab12cd34", argv: ["/bin/sh", "-c", "x", "lightbulb-start", "s", "/scope", "/Users/alice/.local/share/claude/versions/2.1.288"], cwd: "/Users/alice/code" }]
     : null);
   render(view());
   const group = await screen.findByRole("group", { name: "Running on this Mac" });
   await userEvent.click(within(group).getByRole("button", { name: "Open Claude Code · ~/code" }));
   expect(invoke).toHaveBeenCalledWith("terminal_open", { holderId: "ab12cd34" });
+});
+
+it("a start nobody could confirm can be dismissed, so the view is not locked for hours", async () => {
+  localStorage.setItem("lightbulb.newSession.pending.alice:org-a", JSON.stringify({ startId: "old", scope: "alice:org-a", startedAt: Date.now() - 60_000, phase: "opened" }));
+  render(view());
+  expect(await screen.findByText(/Could not confirm whether your Mac started this session/)).toBeInTheDocument();
+  expect(screen.getByPlaceholderText(PLACEHOLDER)).toBeDisabled();
+  await userEvent.click(screen.getByRole("button", { name: "Dismiss and start another" }));
+  await waitFor(() => expect(screen.getByPlaceholderText(PLACEHOLDER)).toBeEnabled());
+  expect(localStorage.getItem("lightbulb.newSession.pending.alice:org-a")).toBeNull();
 });

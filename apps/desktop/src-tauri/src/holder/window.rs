@@ -162,10 +162,7 @@ pub(crate) fn open_window(app: &AppHandle, info: &HolderInfo) -> Result<(), Stri
     let key = uuid::Uuid::new_v4().simple().to_string() + &uuid::Uuid::new_v4().simple().to_string();
     server.keys.lock().unwrap().insert(key.clone(), info.id.clone());
     let url = format!("http://127.0.0.1:{}/?key={key}", server.port).parse().map_err(|e: url::ParseError| e.to_string())?;
-    // The provider's name, not a launcher wrapped around it (`/bin/sh` for a linked start).
-    let program = info.argv.iter().map(|a| a.rsplit('/').next().unwrap_or(a))
-        .find(|name| matches!(*name, "claude" | "codex")).unwrap_or("session");
-    let program = match program { "claude" => "Claude Code", "codex" => "Codex", other => other };
+    let program = provider_label(&info.argv);
     let folder = info.cwd.file_name().map(|f| f.to_string_lossy().into_owned()).unwrap_or_default();
     WebviewWindowBuilder::new(app, label, WebviewUrl::External(url))
         .title(format!("{program} — {folder}"))
@@ -173,6 +170,21 @@ pub(crate) fn open_window(app: &AppHandle, info: &HolderInfo) -> Result<(), Stri
         .build()
         .map(|_| ())
         .map_err(|e| e.to_string())
+}
+
+/// "Claude Code" or "Codex" for a holder's argv. The provider's path is searched, not its file
+/// name: Claude Code's binary is `…/claude/versions/<number>`, and a linked start wraps it in `/bin/sh`.
+pub fn provider_label(argv: &[String]) -> &'static str {
+    // Only the executable: the first message is in argv too, and may mention either name.
+    let wrapped = argv.first().is_some_and(|a| a == "/bin/sh") && argv.get(3).is_some_and(|a| a == "lightbulb-start");
+    let program = argv.get(if wrapped { 6 } else { 0 }).map(String::as_str).unwrap_or("");
+    if program.contains("codex") {
+        "Codex"
+    } else if program.contains("claude") {
+        "Claude Code"
+    } else {
+        "Session"
+    }
 }
 
 /// From the main webview: open (or focus) the window of a running session. New sessions start
@@ -209,6 +221,15 @@ mod tests {
         assert_eq!(admit(Some("http://127.0.0.1:4101"), Some("key=k1"), 4100, &keys), None);
         assert_eq!(admit(page, Some("key=guess"), 4100, &keys), None);
         assert_eq!(admit(page, None, 4100, &keys), None);
+    }
+
+    #[test]
+    fn terminal_window_is_titled_by_provider_even_behind_a_wrapper_or_a_versioned_binary() {
+        let argv = |a: &[&str]| a.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        assert_eq!(provider_label(&argv(&["/bin/sh", "-c", "x", "lightbulb-start", "id", "/scope", "/Users/a/.local/share/claude/versions/2.1.288", "--", "hi"])), "Claude Code");
+        assert_eq!(provider_label(&argv(&["/opt/homebrew/bin/codex", "--no-daemon"])), "Codex");
+        assert_eq!(provider_label(&argv(&["/bin/cat"])), "Session");
+        assert_eq!(provider_label(&argv(&["/Users/a/.local/share/claude/versions/2.1.288", "--", "fix the codex integration"])), "Claude Code");
     }
 
     #[test]

@@ -94,6 +94,10 @@ export interface MessagingClient {
   decideLocalSessionJoin(sessionId: string, userId: string, decision: "allow" | "decline", requestId?: string): Promise<LocalSession>;
   /** The owner takes one allowed person's access back. */
   removeLocalSessionSender(sessionId: string, userId: string): Promise<LocalSession>;
+  /** "Resume and send": starts an ended session again on its owner's Mac. Safe to repeat with the same resumeId. */
+  resumeLocalSession(sessionId: string, request: { resumeId: string; message?: string }): Promise<LocalSession>;
+  /** The owner takes one person's resume back. */
+  revokeLocalSessionResume(sessionId: string, userId: string): Promise<LocalSession>;
   listLocalSessionAudit(sessionId: string): Promise<{ entries: LocalSessionAuditEntry[] }>;
   /** Owner-only snapshot links, opened only by signed-in members of the owner's workspace. */
   createLocalSessionShareLink(sessionId: string, expiresInDays: number): Promise<LocalSessionShareLink>;
@@ -164,6 +168,9 @@ export function createMessagingClient(api: ApiMethods): MessagingClient {
       api.post(`${sessionPath(sessionId)}/join-requests/${encodeURIComponent(userId)}`, { decision, ...(requestId ? { requestId } : {}) }) as Promise<LocalSession>,
     removeLocalSessionSender: (sessionId, userId) =>
       api.del(`${sessionPath(sessionId)}/senders/${encodeURIComponent(userId)}`) as Promise<LocalSession>,
+    resumeLocalSession: (sessionId, request) => api.post(`${sessionPath(sessionId)}/resume`, request) as Promise<LocalSession>,
+    revokeLocalSessionResume: (sessionId, userId) =>
+      api.del(`${sessionPath(sessionId)}/resume-allowed/${encodeURIComponent(userId)}`) as Promise<LocalSession>,
     createLocalSessionShareLink: (sessionId, expiresInDays) => api.post(`${sessionPath(sessionId)}/share-links`, { expiresInDays }) as Promise<LocalSessionShareLink>,
     listLocalSessionShareLinks: (sessionId) => api.get(`${sessionPath(sessionId)}/share-links`) as Promise<{ links: LocalSessionShareLink[] }>,
     revokeLocalSessionShareLink: async (sessionId, linkId) => { await api.del(`${sessionPath(sessionId)}/share-links/${encodeURIComponent(linkId)}`); },

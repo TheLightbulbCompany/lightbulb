@@ -1,6 +1,14 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 fn main() {
+    // `lightbulb …` (the ~/.local/bin link) or `lightbulb-desktop cli …`: the command, never the app.
+    #[cfg(unix)]
+    {
+        let argv: Vec<String> = std::env::args().collect();
+        if let Some(args) = lightbulb_desktop::cli::cli_args(&argv) {
+            std::process::exit(lightbulb_desktop::cli::main(args));
+        }
+    }
     #[cfg(unix)]
     if std::env::args().nth(1).as_deref() == Some("print-env") {
         lightbulb_desktop::holder::run::print_environment();

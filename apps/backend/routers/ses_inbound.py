@@ -415,7 +415,7 @@ _PAUSED_SUBJECT = "Outbound email paused"
 _PAUSED_BODY = (
     "A recipient marked an email from one of your agents as spam, so outbound email "
     "from your agents is paused. Your agents can still email you.\n\n"
-    "Review who your agents may email and re-enable sending in Control → Agents → Email."
+    "Review who your agents may email and re-enable sending in Control → Agents → Team email."
 )
 
 

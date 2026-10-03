@@ -25,9 +25,15 @@ def _utc(dt: datetime) -> str:
     return dt.astimezone(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
 
 
+def _clean(value: str) -> str:
+    """Sender-written text minus C0 controls (a bare CR or LF would end the content line)."""
+    return re.sub(r"[\x00-\x1f\x7f]", "", value)
+
+
 def _escape(value: str) -> str:
-    """RFC 5545 TEXT: the inverse of ``meeting_invites._text``."""
-    return re.sub(r"([\\,;])", r"\\\1", value).replace("\r\n", "\\n").replace("\n", "\\n")
+    """RFC 5545 TEXT: the inverse of ``meeting_invites._text``; other controls are dropped."""
+    value = re.sub(r"([\\,;])", r"\\\1", value).replace("\r\n", "\\n").replace("\n", "\\n")
+    return _clean(value)
 
 
 def _fold(line: str) -> str:
@@ -49,11 +55,11 @@ def reply_ics(invite: Invite, address: str, now: datetime) -> str:
         "VERSION:2.0",
         "METHOD:REPLY",
         "BEGIN:VEVENT",
-        f"UID:{invite.uid}",
+        f"UID:{_clean(invite.uid)}",
         f"SEQUENCE:{invite.sequence}",
         f"DTSTAMP:{_utc(now)}",
-        f"ORGANIZER:mailto:{invite.organizer_email}",
-        f"ATTENDEE;PARTSTAT=ACCEPTED;CN=Lightbulb agents:mailto:{address}",
+        f"ORGANIZER:mailto:{_clean(invite.organizer_email)}",
+        f"ATTENDEE;PARTSTAT=ACCEPTED;CN=Lightbulb agents:mailto:{_clean(address)}",
         f"SUMMARY:{_escape(invite.summary)}",
         "END:VEVENT",
         "END:VCALENDAR",

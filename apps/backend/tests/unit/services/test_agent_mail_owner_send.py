@@ -75,7 +75,7 @@ def wired(monkeypatch):
     async def _ensure(owner_id, owner_email):
         return (st.minted, "ok") if st.minted else (None, st.ensure_reason)
 
-    async def _from(owner_id, agent_id, address):
+    async def _from(owner_id, agent_id, address, agent_name=None):
         st.ensure_agent_id = agent_id
         return f'"Agent · Acme agents" <{address}>'
 
@@ -113,6 +113,8 @@ def wired(monkeypatch):
     monkeypatch.setattr(mod, "lookup_owner_email", _owner_email)
     monkeypatch.setattr(mod, "ensure_team_address", _ensure)
     monkeypatch.setattr(mod, "from_header", _from)
+    st.agent_name = "Agent"
+    monkeypatch.setattr(mod, "resolve_agent_name", AsyncMock(side_effect=lambda **_: st.agent_name))
     monkeypatch.setattr(mod.agent_mail_inbox_repo, "put_sent", st.put_sent)
     monkeypatch.setattr(mod, "resolve_apex_ceo_agent_id", _live_ceo, raising=False)
     monkeypatch.setattr(mod, "write_owner_facts", _facts)
@@ -143,6 +145,13 @@ async def test_happy_path_sends_and_settles_sent(wired):
     assert (kw["address"], kw["message_id"]) == ("agents@acme-robotics.isol8.co", "msg-1")
     assert wired.sent_to == "owner@example.com"
     assert wired.sent_headers == {"Auto-Submitted": "auto-generated"}
+
+
+@pytest.mark.asyncio
+async def test_an_unknown_agent_is_never_recorded_as_sender(wired):
+    wired.agent_name = None
+    assert await _send() == "sent"
+    wired.put_sent.assert_not_awaited()
 
 
 @pytest.mark.asyncio

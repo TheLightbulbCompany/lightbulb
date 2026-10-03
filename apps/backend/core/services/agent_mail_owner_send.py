@@ -34,7 +34,7 @@ from core.observability.metrics import put_metric
 from core.repositories import agent_mail_inbox_repo, container_repo
 from core.repositories.paperclip_repo import PaperclipRepo
 from core.services import ses_email
-from core.services.agent_email import ensure_team_address, from_header
+from core.services.agent_email import ensure_team_address, from_header, resolve_agent_name
 from core.services.agent_export import resolve_apex_ceo_agent_id
 from core.services.agent_mail_reply import AGENT_AUTHORED_HEADERS
 from core.services.owner_facts import write_owner_facts
@@ -186,8 +186,9 @@ async def send_to_owner(
             logger.warning("owner_send: facts rewrite failed for %s", owner_id)
 
         sent_subject = _env_subject(subject)
+        agent_name = await resolve_agent_name(agent_id=resolved_agent_id, company_id=company_id)
         message_id = await ses_email.send_ses_reply(
-            from_addr=await from_header(owner_id, resolved_agent_id, address),
+            from_addr=await from_header(owner_id, resolved_agent_id, address, agent_name=agent_name),
             to=owner_email,
             subject=sent_subject,
             body_text=body_text,
@@ -197,14 +198,15 @@ async def send_to_owner(
         )
         if message_id is None:
             return await _fail("ses_send_failed", "error")
-        await agent_mail_inbox_repo.put_sent(
-            address=address,
-            message_id=message_id,
-            owner_id=owner_id,
-            agent_id=resolved_agent_id,
-            to=owner_email,
-            subject=sent_subject,
-        )
+        if agent_name:  # a reply routes to this agent: never record an id that is not this workspace's
+            await agent_mail_inbox_repo.put_sent(
+                address=address,
+                message_id=message_id,
+                owner_id=owner_id,
+                agent_id=resolved_agent_id,
+                to=owner_email,
+                subject=sent_subject,
+            )
 
         if is_first_contact:
             await repo.settle_first_contact(owner_id, onboarding_generation=generation, state="sent")

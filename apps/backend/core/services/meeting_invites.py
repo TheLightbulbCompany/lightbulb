@@ -93,6 +93,8 @@ def _parse(calendar_text: str) -> Invite | None:
             props.setdefault(name, (params, value))
     uid = props.get("UID", ("", ""))[1].strip()
     # ponytail: RRULE series get only the row the first invite wrote; per-instance handling when a recurring customer meeting appears.
+    if method not in ("REQUEST", "CANCEL"):
+        return None  # PUBLISH/COUNTER/REFRESH/REPLY are not invites
     if not uid or len(uid) > 512 or "DTSTART" not in props or "RECURRENCE-ID" in props:
         return None
     start = _when(*props["DTSTART"])
@@ -141,8 +143,8 @@ async def _post_line(owner_id: str, room_id: str, key: str, text: str) -> None:
             source_agent_id=None,
             client_message_id=None,
         )
-    except messaging_repo.IdempotencyConflict:
-        pass
+    except (messaging_repo.IdempotencyConflict, messaging_repo.RoomArchived, messaging_repo.RoomNotFound):
+        pass  # replayed, or a member archived/deleted the room since: nothing left to announce
 
 
 async def _create_room(owner_id: str, room_id: str, invite: Invite, creator: str, by_email: dict, meeting: dict):
@@ -225,7 +227,8 @@ async def handle_team_mail(owner_id: str, payload, team: dict) -> str | None:
         return None
     by_email = {
         str(m["email"]).lower(): m["user_id"]
-        for m in await clerk_admin.list_organization_members(owner_id)
+        # strict: a Clerk blip must 503 (SES retries), not read the member as a stranger forever
+        for m in await clerk_admin.list_organization_members(owner_id, strict=True)
         if m.get("email")
     }
     creator = by_email.get(sender) if sender else None
@@ -235,7 +238,10 @@ async def handle_team_mail(owner_id: str, payload, team: dict) -> str | None:
     if invite is None or (invite.method == "REQUEST" and not invite.meeting_url):
         return None  # not a Meet invite we can join: the CEO reads it as mail
     room_id = messaging_repo.meeting_room_id(owner_id, invite.uid)
-    current = ((await messaging_repo.get_room(room_id)) or {}).get("meeting")
+    room = await messaging_repo.get_room(room_id) or {}
+    if room.get("archivedAt") or room.get("deletedAt"):
+        return "meeting_ignored"  # a member closed this meeting's room; a move/cancel must not reopen it
+    current = room.get("meeting")
     if current and int(current.get("sequence", 0)) > invite.sequence:
         return "meeting_stale"
     start_at = int(invite.start.timestamp())
@@ -280,6 +286,10 @@ async def handle_team_mail(owner_id: str, payload, team: dict) -> str | None:
     logger.info("meeting room %s: %s", room_id, meeting["status"])
     if invite.method == "CANCEL":
         return "meeting_cancelled"
-    if meeting.get("rsvpSequence") != invite.sequence and await meeting_rsvp.accept(owner_id, invite):
+    if (
+        not team.get("outbound_disabled")
+        and meeting.get("rsvpSequence") != invite.sequence
+        and await meeting_rsvp.accept(owner_id, invite)
+    ):
         await _patch_meeting(room_id, {**meeting, "rsvpSequence": invite.sequence})
     return "meeting_scheduled"

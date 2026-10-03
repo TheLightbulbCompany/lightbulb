@@ -120,7 +120,7 @@ async def send_ses_email(
         msg["From"] = from_addr
         msg["To"] = ", ".join(to) if isinstance(to, list) else to
         msg["Subject"] = subject
-        message_id = make_msgid(domain=settings.AGENT_EMAIL_DOMAIN.strip())
+        message_id = make_msgid(domain=settings.AGENT_EMAIL_DOMAIN.strip() or None)
         msg["Message-ID"] = message_id
         for key, val in (headers or {}).items():
             msg[key] = val

@@ -90,3 +90,10 @@ def test_a_non_ascii_summary_folds_without_splitting_a_character():
     ics = meeting_rsvp.reply_ics(replace(INVITE, summary="é" * 80), ADDRESS, NOW)
     assert all(len(line.encode()) <= 75 for line in ics.split("\r\n"))
     assert f"\r\nSUMMARY:{'é' * 80}\r\n" in _unfold(ics)
+
+
+def test_control_characters_cannot_inject_lines():
+    evil = replace(INVITE, summary="Sync\rMETHOD:CANCEL", uid="abc\r@google.com", organizer_email="p@acme.com\x0bX")
+    cal = meeting_rsvp.reply_ics(evil, ADDRESS + "\r", NOW)
+    assert "\r" not in cal.replace("\r\n", "") and "\x0b" not in cal
+    assert "SUMMARY:SyncMETHOD:CANCEL\r\n" in _unfold(cal) and "UID:abc@google.com\r\n" in _unfold(cal)

@@ -382,3 +382,33 @@ async def test_an_rsvp_is_sent_once_per_sequence(room):
     room.accept.assert_awaited_once()
     await meeting_invites.handle_team_mail("org_1", _mail(GOOGLE.replace("SEQUENCE:0", "SEQUENCE:1")), TEAM)
     assert room.accept.await_count == 2 and room.state["meta"]["meeting"]["rsvpSequence"] == 1
+
+
+@pytest.mark.parametrize("method", ["PUBLISH", "COUNTER", "REFRESH", "REPLY"])
+def test_non_invite_methods_are_none(method):
+    assert meeting_invites.parse(GOOGLE.replace("METHOD:REQUEST", f"METHOD:{method}")) is None
+
+
+async def test_a_cancel_for_an_archived_room_is_ignored(room):
+    await meeting_invites.handle_team_mail("org_1", _mail(GOOGLE), TEAM)
+    room.state["meta"]["archivedAt"] = "2026-10-03T00:00:00Z"
+    room.post.side_effect = meeting_invites.messaging_repo.RoomArchived("r")  # what the real repo would do
+    cancel = GOOGLE.replace("METHOD:REQUEST", "METHOD:CANCEL").replace("SEQUENCE:0", "SEQUENCE:1")
+    assert await meeting_invites.handle_team_mail("org_1", _mail(cancel), TEAM) == "meeting_ignored"
+    assert _lines(room) == ["Agents will join **Acme weekly sync** on Sat Oct 3, 3:00 PM EDT."]
+    assert room.state["meta"]["meeting"]["status"] == "scheduled"
+
+
+async def test_a_paused_team_row_sends_no_rsvp(room):
+    room.accept.return_value = True
+    paused = {**TEAM, "outbound_disabled": "complaint"}
+    assert await meeting_invites.handle_team_mail("org_1", _mail(GOOGLE), paused) == "meeting_scheduled"
+    room.accept.assert_not_awaited()
+    assert "rsvpSequence" not in room.state["meta"]["meeting"]
+
+
+async def test_a_clerk_failure_propagates(room):
+    room.members.side_effect = RuntimeError("clerk 502")
+    with pytest.raises(RuntimeError):
+        await meeting_invites.handle_team_mail("org_1", _mail(GOOGLE), TEAM)
+    assert room.members.await_args.kwargs == {"strict": True}

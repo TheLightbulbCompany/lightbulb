@@ -11,6 +11,7 @@ import uuid
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
 from core.auth import AuthContext, get_current_user, resolve_owner_id
@@ -124,6 +125,15 @@ class TranscriptBody(BaseModel):
     roomToken: _Id
     huddleId: _Id
     lines: list[TranscriptLine] = Field(max_length=500)
+
+
+class LateAnswerBody(BaseModel):
+    ownerId: _Id
+    roomToken: _Id
+    agentId: _Id
+    runId: _Id
+    request: str = Field(default="", max_length=2000)
+    answer: str = Field(max_length=20000)
 
 
 class FramesBody(BaseModel):
@@ -279,6 +289,16 @@ async def transcript(room_id: str, body: TranscriptBody):
     return {"ok": True}
 
 
+@router.post("/internal/huddles/{room_id}/late-answer", dependencies=[_Worker])
+async def late_answer(room_id: str, body: LateAnswerBody):
+    """A voice run's answer nobody heard -- it finished after the asker moved on, the news
+    expired, or the call ended -- is posted into the room by its agent instead of dropped."""
+    room_id = _room_id(room_id)
+    _require_room_token(body.roomToken, room_id, body.ownerId)
+    await voice_calls.post_late_answer(body.ownerId, room_id, body.agentId, body.runId, body.request, body.answer)
+    return {"ok": True}
+
+
 @router.post("/internal/huddles/{room_id}/presence", dependencies=[_Worker])
 async def presence(room_id: str, body: PresenceBody):
     room_id = _room_id(room_id)
@@ -311,4 +331,7 @@ async def frames(owner_id: str, room_id: str, body: FramesBody, request: Request
     except Exception:  # noqa: BLE001 -- no worker in the room (or LiveKit down): the run still finishes
         put_metric("huddle.frame.no_worker")
         logger.info("voice frames not relayed room=%s", room_id, exc_info=True)
-    return {"ok": True}
+        # 202, not 200: accepted but nobody heard it. The bridge posts a completed run's answer
+        # into the room itself when its closing batch comes back undelivered (the call ended).
+        return JSONResponse({"ok": True, "delivered": False}, status_code=202)
+    return {"ok": True, "delivered": True}

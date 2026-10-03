@@ -463,7 +463,7 @@ def _frames(client, *, events=EVENTS, headers=HOOK, room=None, send_error=None):
 
 def test_frames_relay_by_room_even_after_the_window_closed(client):
     resp, send, container, _ = _frames(client)
-    assert resp.status_code == 200
+    assert resp.status_code == 200 and resp.json() == {"ok": True, "delivered": True}
     send.assert_awaited_once_with(ROOM, EVENTS["events"])
     assert container.await_args.args[0] == "org_a"
 
@@ -489,7 +489,7 @@ def test_frames_refuse_an_event_for_another_room(client):
 
 def test_frames_with_no_worker_are_dropped_with_a_metric(client):
     resp, _, _, metric = _frames(client, send_error=RuntimeError("twirp"))
-    assert resp.status_code == 200
+    assert resp.status_code == 202  # accepted, nobody heard it: the bridge posts a completed answer itself
     metric.assert_called_once_with("huddle.frame.no_worker")
 
 
@@ -680,3 +680,25 @@ def test_transcript_batches_are_logged_for_debugging(client, caplog):
 def test_transcript_refuses_a_bad_room_token(client):
     body = {"ownerId": "org_a", "roomToken": "nope", "huddleId": "h1", "lines": []}
     assert client.post(TRANSCRIPT, json=body, headers=W).status_code == 401
+
+
+LATE = f"/api/v1/internal/huddles/{ROOM}/late-answer"
+
+
+def test_a_late_answer_is_posted_into_the_room_by_its_agent(client):
+    with patch.object(mod.voice_calls, "post_late_answer", AsyncMock()) as post:
+        body = {
+            "ownerId": "org_a",
+            "roomToken": RT,
+            "agentId": "agent-fin",
+            "runId": "run-9",
+            "request": "my board?",
+            "answer": "Three tasks open.",
+        }
+        assert client.post(LATE, json=body, headers=W).status_code == 200
+    post.assert_awaited_once_with("org_a", ROOM, "agent-fin", "run-9", "my board?", "Three tasks open.")
+
+
+def test_a_late_answer_refuses_a_bad_room_token(client):
+    body = {"ownerId": "org_a", "roomToken": "nope", "agentId": "agent-fin", "runId": "run-9", "answer": "x"}
+    assert client.post(LATE, json=body, headers=W).status_code == 401

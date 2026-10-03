@@ -300,6 +300,25 @@ Your reply is spoken: no markdown, no lists, no code, no links, no ids. Never cl
 This turn has a hard limit of a few model steps; when it runs out you must answer with what you have.]"""
 
 
+async def post_late_answer(owner_id: str, room_id: str, agent_id: str, run_id: str, request: str, answer: str) -> None:
+    """The room gets what the call did not: the agent's own message, once per run (the event id
+    is the run), carrying the question it answers so it reads on its own."""
+    asked = f' "{request.strip()[:160]}"' if request.strip() else ""
+    text = f"From the Live call{asked}:\n\n{answer.strip()}"
+    await messaging.create_agent_message(
+        owner_id,
+        messaging.AgentMessageRequest(
+            event_id=f"live-late:{run_id}",
+            room_id=uuid.UUID(room_id),
+            agent_id=uuid.UUID(agent_id),
+            text=text,
+            reply_to_message_id=None,
+            thread_root_message_id=None,
+        ),
+    )
+    put_metric("voice.huddle.late_answer")
+
+
 def _voice_history(history: list[dict]) -> list[dict]:
     out = []
     for row in history[-_VOICE_HISTORY_MESSAGES:]:

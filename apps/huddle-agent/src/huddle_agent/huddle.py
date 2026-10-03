@@ -70,6 +70,13 @@ TEAM_REFRESH_S = 60
 # ponytail: news limits are not in D (owner decision); live.announce.expired counts every drop
 NEWS_PER_AGENT = 5
 NEWS_TTL = 10 * 60
+# A driven run still working this long after the summon: the voice says so once (Skantze: people
+# talk over a silent system that is about to answer), and promises the room if it takes longer.
+HOLDING_LINE_S = 12
+HOLDING_LINE = (
+    "Your backend self is still working on that request. Say in one short sentence that it is taking a "
+    "moment and that you will post the answer in the room if it takes longer; then keep listening."
+)
 STILL_WAKING = "Your backend is still waking up; say briefly that you're on it and it'll take a moment."
 CANT_REACH = "Sorry, I couldn't reach my backend for that."
 # ponytail: inferred (D §5); a delegation the new voice makes this soon after opening is the driven request
@@ -174,6 +181,8 @@ class _Driven:
     run_id: str  # minted once, resent on every retry (C1)
     bind_until: float = math.inf  # opened + BIND_SECONDS once the voice is up
     posted: bool = False  # /turns accepted it
+    started_at: float = 0.0
+    held: bool = False  # the HOLDING_LINE was said for it
     pending: str | None = None  # a delegation that arrived before /turns answered
 
 
@@ -499,6 +508,10 @@ class Huddle:
         await (
             self._flush_transcript()
         )  # last chance for what was said since the previous batch
+        for agent_id, news in list(self._news.items()):
+            for n in news:
+                await self._late_answer(agent_id, n)  # unheard here: the room gets it
+        self._news.clear()
         if self._people and not self._idle_ended:
             return
         try:
@@ -1065,7 +1078,7 @@ class Huddle:
         seed += [
             (
                 "developer",
-                f"Earlier you finished {n[1][:80]}: {n[2]}; mention it if relevant",
+                f"You finished {n[1][:80]}. Your answer: {n[2]} Deliver it now, briefly and completely, before anything else.",
             )
             for n in news
             if n is not v.announce
@@ -1225,6 +1238,7 @@ class Huddle:
 
     async def _drive(self, v: _Voice, d: _Driven, request: str) -> None:
         """The driven turn: frames go in with delegation null until a delegation binds to it."""
+        d.started_at = self._clock()
         self._runs.started(
             d.run_id,
             v.agent_id,
@@ -1382,8 +1396,7 @@ class Huddle:
             news = self._news.setdefault(run.agent_id, [])
             news.append((run.run_id, run.request, answer, self._clock(), run.speaker))
             while len(news) > NEWS_PER_AGENT:
-                news.pop(0)
-                emit_metric("live.announce.expired", 1, "Count")
+                self._post_news(run.agent_id, news.pop(0))
         self._sync_state()
 
     def failed(self, run: Run) -> None:
@@ -1497,6 +1510,17 @@ class Huddle:
         if v.live is None:
             return
         self._flush_lines(v)
+        d = v.driven
+        if (
+            d is not None
+            and d.posted
+            and not d.held
+            and now - d.started_at >= HOLDING_LINE_S
+            and any(r.run_id == d.run_id for r in self._runs.running(v.agent_id))
+        ):
+            d.held = True
+            emit_metric("live.holding_line", 1, "Count")
+            self._live_call(v, "append_thinking", HOLDING_LINE, delegation_id=None)
         if v.handoff and now >= v.handoff[1]:
             self._end_handoff(v)
         if self._queue and self._settled(v, now):
@@ -1547,12 +1571,32 @@ class Huddle:
     def _expire_news(self, now: float) -> None:
         for agent_id, news in list(self._news.items()):
             kept = [n for n in news if now - n[3] < NEWS_TTL]
-            for _ in range(len(news) - len(kept)):
-                emit_metric("live.announce.expired", 1, "Count")
+            for n in news:
+                if n not in kept:
+                    self._post_news(agent_id, n)
             if kept:
                 self._news[agent_id] = kept
             else:
                 del self._news[agent_id]
+
+    def _post_news(self, agent_id: str, n: tuple) -> None:
+        """News nobody will hear here (expired, pushed out, or the huddle is ending) goes to the room as
+        the agent's own message -- never dropped. 10-02: Forge's answer landed 50 s after hang-up and
+        went nowhere; Pulse's board summary never surfaced."""
+        emit_metric("live.announce.expired", 1, "Count")
+        self._spawn(self._late_answer(agent_id, n))
+
+    async def _late_answer(self, agent_id: str, n: tuple) -> None:
+        try:
+            await self._backend.late_answer(agent_id, n[0], n[1], n[2])
+            emit_metric("live.news.posted", 1, "Count")
+        except Exception:
+            logger.info(
+                "huddle late answer post failed agent=%s run=%s",
+                agent_id,
+                n[0],
+                exc_info=True,
+            )
 
     def _state(self) -> dict[str, str]:
         """C4: what the tiles show, as the worker's participant attributes."""

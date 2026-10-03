@@ -56,9 +56,11 @@ it("renders a session mention as a reference card with no delivery state", () =>
   expect(screen.getByText("Unavailable")).toBeInTheDocument();
   expect(screen.queryByRole("button", { name: /Open session/ })).not.toBeInTheDocument();
   expect(screen.queryByRole("button", { name: "Retry" })).not.toBeInTheDocument();
-  view.rerender(<RoomPanel {...props} messages={[tagged]} composer={{ ...props.composer, sessionTargets: [
-    { candidate: { session: { sessionId: "s1", provider: "claude", title: "Launch check", status: "idle" } as never, handle: "claude-launch-check", collided: false }, ownerName: "Owner" },
-  ] }} />);
+  // The card resolves from every session the viewer can open, not the composer's sendable targets:
+  // an ended teammate session still opens.
+  view.rerender(<RoomPanel {...props} messages={[tagged]} sessions={[
+    { sessionId: "s1", provider: "claude", title: "Launch check", status: "ended" } as never,
+  ]} />);
   expect(screen.getByRole("button", { name: "Open session Claude · Launch check" })).toBeInTheDocument();
 });
 

@@ -259,16 +259,17 @@ async def build_ingress_body(
         # Only once every container runs a plugin that parses it; an older
         # plugin rejects unknown top-level fields with 400.
         body["sessions"] = sessions
-    # A session chip is a reference (owner ruling 2026-10-02): the agent reads the session with
-    # lightbulb_local_sessions. Only sessions this room may see (the live summary) resolve.
-    by_id = {row["sessionId"]: row for row in sessions or []}
-    referenced = [
-        {key: by_id[sid].get(key) for key in ("sessionId", "provider", "title", "status")}
-        for sid in message.get("sessionMentions") or []
-        if sid in by_id
-    ]
-    if referenced:
-        body["referencedSessions"] = referenced
+    if message.get("sessionMentions"):
+        # A session chip is a reference (owner ruling 2026-10-02): the agent reads the session with
+        # lightbulb_local_sessions, so it needs the exact id even for an offline or ended session
+        # the bounded live summary leaves out. Resolved under the writer's own visibility rule.
+        from core.services import local_sessions
+
+        referenced = await local_sessions.referenced_sessions(
+            meta.get("ownerId") or "", members, message["sessionMentions"]
+        )
+        if referenced:
+            body["referencedSessions"] = referenced
     while body["recentHistory"] and json_body_size(body) > _INGRESS_MAX_BYTES:
         body["recentHistory"].pop(0)
     if json_body_size(body) > _INGRESS_MAX_BYTES:

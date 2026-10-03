@@ -976,6 +976,40 @@ async def live_sessions_for_room(owner: str, room_id: str, members: list[dict]) 
         return []
 
 
+async def referenced_sessions(owner: str, members: list[dict], session_ids: list[str]) -> list[dict]:
+    """The sessions a room message references, projected for agent ingress. A reference is a
+    link, not a wake (owner ruling 2026-10-02), so offline and ended sessions resolve too --
+    under the message writer's own rule: shared, interactive, owner still in the room, and
+    no member from another organization. Never raises: a missing line beats a lost turn."""
+    if any(messaging_repo.member_home(member, owner) != owner for member in members):
+        return []
+    humans = {member["id"] for member in members if member.get("kind") == "human"}
+    out: list[dict] = []
+    for session_id in dict.fromkeys(session_ids):
+        try:
+            row = await repo.get_session(owner, session_id)
+            if (
+                row is None
+                or row.get("ownerId") != owner
+                or row.get("unshared")
+                or row.get("kind") == "background"
+                or row.get("humanUserId") not in humans
+            ):
+                continue
+            public = _session_public(row)
+            out.append(
+                {
+                    "sessionId": session_id,
+                    "provider": public.provider,
+                    "title": public.display_title or public.title or public.cwd_name,
+                    "status": public.status,
+                }
+            )
+        except Exception:
+            logger.warning("Referenced session %s unresolved", session_id, exc_info=True)
+    return out
+
+
 async def set_sharing(auth: AuthContext, session_id: str, shared: bool) -> LocalSession:
     """The owner pauses or resumes sharing one session. While paused the relay drops its
     transcript instead of storing it (one notice marks the gap) and nobody else can see it."""

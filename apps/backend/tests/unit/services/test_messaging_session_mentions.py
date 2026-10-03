@@ -41,6 +41,9 @@ def _session(**changes):
         "onlineUntil": int(time.time()) - 60,
         "capabilities": {"sendMode": "queue", "steer": False, "interrupt": False},
         "capabilitiesVerified": True,
+        "deviceId": "mac-1",
+        "providerVersion": "0.1",
+        "activeTurnId": None,
         **changes,
     }
 
@@ -197,13 +200,21 @@ def test_session_mentions_are_absent_when_empty_and_derived_from_legacy_labels()
 
 @pytest.mark.asyncio
 async def test_agent_ingress_names_referenced_sessions_the_room_may_see(monkeypatch):
+    """Resolved from the rows, not the bounded live summary: an ended session is still a
+    reference the agent can read by id; an unshared one or a stranger's stays hidden."""
     from core.services import openclaw_work
 
     monkeypatch.setattr(openclaw_work.messaging_repo, "list_messages_before", AsyncMock(return_value=[]))
-    hidden = str(uuid.UUID(int=43))
-    live = {"sessionId": SESSION, "provider": "codex", "title": "Launch", "status": "idle", "cwdName": "app"}
+    unshared, stranger, ended = (str(uuid.UUID(int=n)) for n in (43, 44, 45))
+    rows = {
+        SESSION: _session(title="Launch", status="idle", onlineUntil=int(time.time()) + 60),
+        unshared: _session(sessionId=unshared, unshared=True),
+        stranger: _session(sessionId=stranger, humanUserId="user_elsewhere"),
+        ended: _session(sessionId=ended, provider="claude", title="Old fix", endedAt=int(time.time()) - 5),
+    }
+    monkeypatch.setattr(local_sessions.repo, "get_session", AsyncMock(side_effect=lambda owner, sid: rows.get(sid)))
     body = await openclaw_work.build_ingress_body(
-        meta={"roomId": ROOM, "name": "general", "kind": "channel", "revision": 1},
+        meta={"roomId": ROOM, "ownerId": OWNER, "name": "general", "kind": "channel", "revision": 1},
         target_agent_id=FRIDAY,
         event_kind="user_request",
         message={
@@ -215,11 +226,12 @@ async def test_agent_ingress_names_referenced_sessions_the_room_may_see(monkeypa
             "text": "see this",
             "mentions": [],
             "createdAt": "2026-10-02T00:00:00Z",
-            "sessionMentions": [SESSION, hidden],
+            "sessionMentions": [SESSION, unshared, stranger, ended],
         },
         members=[_member()],
-        sessions=[live],
+        sessions=[{"sessionId": SESSION, "provider": "codex", "title": "Launch", "status": "idle"}],
     )
     assert body["referencedSessions"] == [
-        {"sessionId": SESSION, "provider": "codex", "title": "Launch", "status": "idle"}
+        {"sessionId": SESSION, "provider": "codex", "title": "Launch", "status": "idle"},
+        {"sessionId": ended, "provider": "claude", "title": "Old fix", "status": "ended"},
     ]

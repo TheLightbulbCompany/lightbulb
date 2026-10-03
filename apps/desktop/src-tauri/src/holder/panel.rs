@@ -35,8 +35,9 @@ struct Server {
     keys: Mutex<HashMap<String, String>>,
 }
 
+static SERVER: OnceLock<Server> = OnceLock::new();
+
 fn server() -> Result<&'static Server, String> {
-    static SERVER: OnceLock<Server> = OnceLock::new();
     if let Some(s) = SERVER.get() {
         return Ok(s);
     }
@@ -304,7 +305,10 @@ fn show(app: &AppHandle, window: &tauri::Window, holder: &HolderInfo, r: Rect) -
     }
     let url: Url = format!("http://127.0.0.1:{}/?key={key}", server.port).parse().map_err(|e: url::ParseError| e.to_string())?;
     let port = server.port;
-    let builder = tauri::webview::WebviewBuilder::new(label, WebviewUrl::External(url)).on_navigation(move |u| loopback_page(u, port));
+    let builder = tauri::webview::WebviewBuilder::new(label, WebviewUrl::External(url))
+        .on_navigation(move |u| loopback_page(u, port))
+        // `window.open` and `target=_blank` are not navigations: refuse them outright.
+        .on_new_window(|_, _| tauri::webview::NewWindowResponse::Deny);
     // No programmatic focus: the owner clicks into the terminal to type, so the page placing it
     // can never redirect keystrokes into the session.
     window.add_child(builder, position, size).map_err(|e| e.to_string())?;
@@ -323,6 +327,12 @@ pub fn close(app: &AppHandle) {
 fn hide(app: &AppHandle) {
     if let Ok(mut shown) = SHOWN.lock() {
         *shown = None;
+    }
+    // A key dies with its view, spent or not.
+    if let Some(server) = SERVER.get() {
+        if let Ok(mut keys) = server.keys.lock() {
+            keys.clear();
+        }
     }
     close_views(app);
 }

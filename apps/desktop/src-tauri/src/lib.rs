@@ -1720,7 +1720,8 @@ pub fn run() {
             if webview.label() == "main" && matches!(payload.event(), tauri::webview::PageLoadEvent::Started) {
                 holder::panel::close(webview.app_handle());
             }
-            if matches!(payload.event(), tauri::webview::PageLoadEvent::Finished) {
+            // Only the site: the panel terminal's loopback page must never reach `shell|open`.
+            if webview.label() == "main" && matches!(payload.event(), tauri::webview::PageLoadEvent::Finished) {
                 log("[page-load] injecting window.open override");
                 let _ = webview.eval(&window_open_override_script());
             }

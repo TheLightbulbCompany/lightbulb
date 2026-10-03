@@ -161,7 +161,8 @@ fn answer(mut conn: UnixStream, start: &(dyn Fn(Value) -> Reply + Send + Sync)) 
     }
     conn.set_read_timeout(Some(Duration::from_secs(5)))?;
     let mut line = String::new();
-    BufReader::new((&conn).take(64 << 10)).read_line(&mut line)?;
+    // JSON escapes a byte to at most 6 (`\u00XX`), so 64 KiB of arguments serialize under 384 KiB plus the envelope.
+    BufReader::new((&conn).take(512 << 10)).read_line(&mut line)?;
     let reply = serde_json::from_str::<Value>(&line).map_err(|_| "Malformed request.".to_string()).and_then(start);
     conn.write_all(format!("{}\n", serde_json::to_string(&reply)?).as_bytes())
 }
@@ -600,6 +601,22 @@ mod tests {
         assert_eq!((ok.socket, ok.workspace.as_deref()), (PathBuf::from("/h/ab12cd34.sock"), Some("Acme")));
         assert!(ask_app(&path, &json!({"start": {"folder": "/elsewhere"}})).unwrap_err().contains("not inside"));
         assert!(ask_app(&dir.path().join("missing.sock"), &json!({})).unwrap_err().contains("not running"));
+    }
+
+    #[test]
+    fn cli_socket_carries_a_request_whose_json_is_larger_than_its_arguments() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("cli.sock");
+        serve_at(&path, |request| {
+            if request["start"]["args"][0].as_str().map(str::len) == Some(60_000) {
+                Ok(Started { socket: "/h/x.sock".into(), workspace: None })
+            } else {
+                Err("bad".into())
+            }
+        })
+        .unwrap();
+        let quotes = "\"".repeat(60_000);
+        assert!(ask_app(&path, &json!({"start": {"args": [quotes]}})).is_ok());
     }
 
     use crate::holder::protocol::{encode, with_offset, DETACHED, EXIT, HELLO, OUTPUT};

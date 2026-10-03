@@ -47,6 +47,10 @@ logger = logging.getLogger("huddle")
 
 IDLE_SECONDS = 20  # no speech from the speaker and no running run of the floor-holder -> the exchange ends
 FIRST_JOIN_GRACE = 60  # join dispatches the worker before the browser connects: wait for the first human
+# The last human left: leave after this long, re-checking who is here. The startup snapshot and the
+# first participant_connected event run concurrently; the snapshot (empty) finishing second once
+# read as "everyone left" and shut a two-person huddle down 1 s after it started (10-02).
+EMPTY_ROOM_GRACE = 3
 THINKING_EVERY = 3  # other people's lines reach the live session at most this often
 ERROR_TOPIC = "huddle.error"
 FRAME_TOPIC = "call.frame"  # C3
@@ -286,6 +290,9 @@ class Huddle:
         )  # talk_end that landed while a summon was still starting
         self._last_heard = self._started  # the room's last speech (or arrival)
         self._idle_ended = self._left = False
+        self._empty_at: float | None = (
+            None  # when the room last read as empty (EMPTY_ROOM_GRACE)
+        )
         self._presence_v = 0
         self._stopped: set[str] = (
             set()
@@ -443,9 +450,10 @@ class Huddle:
         except Exception:
             logger.exception("huddle participants update failed")
         finally:
-            # An empty room before anyone arrived is the dispatch race, not a huddle ending.
-            if not people and self._seen_human:
-                self._room.shutdown()
+            # An empty room before anyone arrived is the dispatch race, not a huddle ending; an
+            # empty one after that is confirmed by tick() after EMPTY_ROOM_GRACE against the latest
+            # snapshot, never by this one.
+            self._empty_at = self._clock() if not people and self._seen_human else None
 
     async def _post_presence(self, people: dict[str, str]) -> None:
         # The version is taken before the first await: these run as concurrent tasks, and the backend
@@ -1429,8 +1437,19 @@ class Huddle:
         now = self._clock()
         if not self._seen_human and now - self._started >= FIRST_JOIN_GRACE:
             self._seen_human = True  # shut down once
+            logger.info("huddle leaving: no human joined within %ss", FIRST_JOIN_GRACE)
             self._room.shutdown()
             return
+        if self._empty_at is not None and now - self._empty_at >= EMPTY_ROOM_GRACE:
+            if self._people:
+                self._empty_at = (
+                    None  # someone (re)connected meanwhile: a stale empty read
+                )
+            else:
+                self._empty_at = None
+                logger.info("huddle leaving: no humans left")
+                self._room.shutdown()
+                return
         if self._people and now - self._team_at >= TEAM_REFRESH_S:
             self._spawn(self._refresh_team())
         self._expire_news(now)

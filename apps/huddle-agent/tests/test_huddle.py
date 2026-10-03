@@ -86,6 +86,7 @@ class FakeBackend:
         self.team_calls = 0
         self.transcripts: list[tuple[str, list[dict]]] = []
         self.transcript_gate: asyncio.Event | None = None
+        self.presence_gate: asyncio.Event | None = None
 
     async def team(self):
         self.team_calls += 1
@@ -189,6 +190,9 @@ class FakeBackend:
         self.log.append("end")
 
     async def presence(self, user_ids, version=0):
+        gate = self.presence_gate
+        if gate:
+            await gate.wait()
         self.presences.append(user_ids)
         self.versions.append(version)
 
@@ -1494,12 +1498,21 @@ async def test_live_session_closing_on_its_own_closes_the_voice():
     assert backend.ends == [("call-1", 42)]
 
 
+async def leave_all(h, clock):
+    """The last human leaves; the worker re-checks after EMPTY_ROOM_GRACE and then leaves too."""
+    from huddle_agent.huddle import EMPTY_ROOM_GRACE
+
+    await h.on_participants({})
+    clock.t += EMPTY_ROOM_GRACE
+    await h.tick()
+
+
 async def test_last_human_leaving_during_a_summon_still_ends_the_call():
     h, room, backend, lives, clock, log = make()
     await h.on_participants({"u1": "Prasiddha"})
     summon = asyncio.create_task(h.talk_start("u1", '{"agentId": "forge"}'))
     await asyncio.sleep(0)
-    await h.on_participants({})
+    await leave_all(h, clock)
     await summon
     assert backend.ends == [("call-1", 42)] and room.shut
 
@@ -1512,7 +1525,7 @@ async def test_shutdown_happens_even_if_end_fails():
 
     backend.presence = boom
     backend.end = boom
-    await h.on_participants({})
+    await leave_all(h, clock)
     assert room.shut
 
 
@@ -1520,7 +1533,11 @@ async def test_last_human_leaving_ends_then_shuts_down():
     h, room, backend, lives, clock, log = await summoned()
     await h.on_participants({})
     assert backend.presences[-1] == [] and backend.ends == [("call-1", 42)]
-    assert log[-2:] == ["end", "shutdown"]
+    assert (
+        log[-1] == "end" and not room.shut
+    )  # the call ends at once; leaving waits for the re-check
+    await leave_all(h, clock)
+    assert log[-1] == "shutdown"
 
 
 async def test_backend_client_shapes_requests_and_errors(monkeypatch):
@@ -1899,7 +1916,7 @@ async def test_empty_room_before_anyone_joins_does_not_shut_down():
     await h.on_participants({})
     assert not room.shut
     await h.on_participants({"u1": "Ana"})
-    await h.on_participants({})
+    await leave_all(h, clock)
     assert room.shut
 
 
@@ -1942,11 +1959,11 @@ async def test_the_last_human_leaving_clears_the_marker_first_even_if_the_post_h
 
     monkeypatch.setattr(h_mod, "PRESENCE_TIMEOUT", 0.01)
     backend.presence = hang
-    await h.on_participants({})
-    assert log[log.index(("presence", ())) + 1 :][-2:] == [
-        "end",
-        "shutdown",
-    ]  # timed out, then shut down
+    await leave_all(h, clock)
+    tail = log[log.index(("presence", ())) + 1 :]
+    assert (
+        tail.index("end") < tail.index("shutdown") == len(tail) - 1
+    )  # timed out, ended, then left
 
 
 async def test_shutdown_clears_the_marker_only_when_nobody_is_left():
@@ -2701,3 +2718,32 @@ async def test_the_transcript_reaches_the_backend_in_batches_and_at_shutdown():
     assert [x["text"] for x in backend.transcripts[1][1]] == ["one more thing"]
     assert [x["text"] for x in backend.transcripts[2][1]] == ["bye"]
     assert len(backend.transcripts) == 3 and backend.transcripts[-1][0] == huddle_id
+
+
+async def test_a_startup_snapshot_finishing_after_the_first_join_does_not_end_the_huddle():
+    """10-02: the entrypoint's startup on_participants (empty) and the first participant_connected
+    event run concurrently; when the empty one finished second it read as "everyone left" and shut
+    a two-person huddle down 1 s in. An empty read only schedules a re-check (EMPTY_ROOM_GRACE)
+    against the latest snapshot; a room that is really empty still ends."""
+    from huddle_agent.huddle import EMPTY_ROOM_GRACE
+
+    h, room, backend, lives, clock, log = make()
+    gate = backend.presence_gate = asyncio.Event()
+    startup = asyncio.ensure_future(
+        h.on_participants({})
+    )  # the snapshot: empty, stalls on its presence post
+    await asyncio.sleep(0)
+    backend.presence_gate = None
+    await h.on_participants({"u1": "Prasiddha"})  # the first join lands meanwhile
+    gate.set()
+    await startup  # the snapshot finishes second
+    assert room.shut is False
+    for _ in range(EMPTY_ROOM_GRACE + 1):
+        clock.t += 1
+        await h.tick()
+    assert room.shut is False  # the latest snapshot has a person in it
+    await h.on_participants({})  # now they really leave
+    assert room.shut is False  # not yet: the grace
+    clock.t += EMPTY_ROOM_GRACE
+    await h.tick()
+    assert room.shut is True and log[-1] == "shutdown"

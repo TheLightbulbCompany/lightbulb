@@ -19,6 +19,18 @@ pub struct HolderInfo {
     pub provider_pid: u32,
     pub argv: Vec<String>,
     pub cwd: PathBuf,
+    pub watch: bool,
+    /// It takes input-only `type` clients (remote typing).
+    pub type_input: bool,
+}
+
+impl HolderInfo {
+    /// The start id a linked start hands its `/bin/sh` wrapper (`session_start::held_argv`).
+    pub fn start_id(&self) -> Option<&str> {
+        let linked = self.argv.first().is_some_and(|a| a == "/bin/sh")
+            && self.argv.get(3).is_some_and(|a| a == "lightbulb-start");
+        linked.then(|| self.argv.get(4).map(String::as_str)).flatten()
+    }
 }
 
 /// `/private/tmp/lightbulb-sessions-<uid>/h`, beside the app's other local-session sockets.
@@ -132,5 +144,7 @@ pub fn hello(socket: &Path) -> Option<HolderInfo> {
         provider_pid: v["providerPid"].as_u64()? as u32,
         argv: serde_json::from_value(v["argv"].clone()).ok()?,
         cwd: PathBuf::from(v["cwd"].as_str()?),
+        watch: v["watch"].as_bool().unwrap_or(false),
+        type_input: v["type"].as_bool().unwrap_or(false),
     })
 }

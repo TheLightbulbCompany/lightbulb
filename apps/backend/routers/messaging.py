@@ -26,7 +26,15 @@ from core.repositories import container_repo, messaging_repo
 from core.repositories.paperclip_repo import PaperclipRepo
 from core.services import activity, chat_gate
 from core.services import messaging as service
-from core.services import hook_grants, hosted_mcp, link_preview, local_sessions, native_session_tools, session_pickup
+from core.services import (
+    hook_grants,
+    hosted_mcp,
+    link_preview,
+    local_sessions,
+    native_session_tools,
+    session_pickup,
+    session_screen,
+)
 from core.services import local_session_grants
 from core.services import container_rpc, runtime_transport, voice_calls
 from core.services.live_events import get_live_event_publisher, publish_room_activity
@@ -220,6 +228,20 @@ async def record_local_session_open(
         origin="ios",
         own=auth.user_id == row["humanUserId"],
     )
+
+
+@router.post("/messaging/sessions/{session_id}/viewing", status_code=204)
+async def watch_local_session(session_id: str, auth: AuthContext = Depends(get_current_user)):
+    """A person keeps a running session's live terminal coming: every 15 s while it is on screen."""
+    await session_screen.watch(auth, session_id)
+
+
+@router.post("/messaging/sessions/{session_id}/input", status_code=204)
+async def type_into_local_session(
+    session_id: str, body: session_screen.SessionInput, auth: AuthContext = Depends(get_current_user)
+):
+    """An admitted person types into a running session's live terminal (owner ruling 2026-10-03)."""
+    await session_screen.type_into(auth, session_id, body)
 
 
 @router.patch("/messaging/sessions/{session_id}/display-title", response_model=local_sessions.LocalSession)

@@ -1,4 +1,4 @@
-// The session window: frames to and from the holder over this window's own WebSocket.
+// The session's terminal in the app's panel: frames to and from the holder over this page's own WebSocket.
 // Frame: [u8 kind][u32 BE length][payload]. Kinds: 2 OUTPUT, 3 INPUT, 4 RESIZE, 5 EXIT, 8 SNAPSHOT, 9 DETACHED.
 const OUTPUT = 2, INPUT = 3, RESIZE = 4, EXIT = 5, SNAPSHOT = 8, DETACHED = 9;
 const term = new Terminal({ macOptionIsMeta: true, scrollback: 5000, fontSize: 13,
@@ -35,6 +35,7 @@ term.attachCustomKeyEventHandler((e) => {
 term.onData((d) => send(INPUT, enc.encode(d)));
 term.onBinary((d) => send(INPUT, Uint8Array.from(d, (c) => c.charCodeAt(0))));
 ws.onopen = () => { resize(); term.focus(); };
+const end = document.getElementById("end");
 let pending = new Uint8Array();
 ws.onmessage = (event) => {
   const data = new Uint8Array(event.data);
@@ -46,9 +47,21 @@ ws.onmessage = (event) => {
     const kind = pending[0], payload = pending.slice(5, 5 + length);
     pending = pending.slice(5 + length);
     if (kind === OUTPUT || kind === SNAPSHOT) term.write(payload.slice(8));
-    else if (kind === DETACHED) note("This session is open in another window.");
-    else if (kind === EXIT) note("This session has ended.");
+    else if (kind === DETACHED) note("This session is open in another terminal.");
+    else if (kind === EXIT) { note("This session has ended."); end.hidden = true; }
   }
 };
-ws.onclose = () => { if (document.getElementById("note").style.display !== "block") note("Disconnected from this session. Reopen it from Lightbulb."); };
+ws.onclose = () => { if (document.getElementById("note").style.display !== "block") note("Disconnected from this session. Open it again from Sessions."); };
 addEventListener("resize", resize);
+// End, like closing a terminal: two clicks, so a stray one never ends a session.
+let armed = 0;
+end.addEventListener("click", () => {
+  if (Date.now() - armed < 3000) {
+    if (ws.readyState === WebSocket.OPEN) ws.send("end");
+    end.disabled = true; end.textContent = "Ending…";
+    return;
+  }
+  armed = Date.now(); end.textContent = "Click again to end";
+  setTimeout(() => { if (!end.disabled) end.textContent = "End session"; }, 3000);
+  term.focus();
+});

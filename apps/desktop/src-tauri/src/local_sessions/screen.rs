@@ -1,0 +1,641 @@
+//! The live terminal relay (spec §5.2, §5.5; rulings 2026-10-03 §4). While the backend's heartbeat
+//! ack lists a held session as watched, attach to its holder as a `watch` client and send
+//! `local.session.screen` frames on the relay socket: the holder's snapshot first, then output in
+//! chunks of at most 11 KiB raw (base64 plus envelope fits the 16 KiB relay frame), each with the
+//! terminal's size; a fresh snapshot every 10 s, when the viewer set grows, after a resize and
+//! after a lost frame (at most one a second). Nothing is queued for later; nothing is sent while
+//! nobody watches. Output past the backend's budget (2 MiB raw a minute) is dropped here, not
+//! sent to be dropped there, and a snapshot follows once the budget is back.
+//! A `local.session.watch` nudge from the backend starts a relay at once (a new viewer sees the
+//! screen in about a second, not at the next ack); the acks still keep it going and stop it.
+
+use super::transport::relay_log;
+use super::{process, Mirror, NativeSession, Process};
+use crate::holder::manager::{self, HolderInfo};
+use crate::holder::protocol::{encode, read_frame, split_offset, EXIT, HELLO, OUTPUT, RESIZE, SNAPSHOT};
+use base64::Engine;
+use serde_json::{json, Value};
+use std::collections::BTreeMap;
+use std::io::Write;
+use std::os::unix::net::UnixStream;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering::SeqCst};
+use std::sync::mpsc::{Receiver, RecvTimeoutError};
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use tokio::sync::mpsc;
+
+const CHUNK: usize = 11 * 1024;
+const FLUSH: Duration = Duration::from_millis(200);
+const SNAPSHOT_EVERY: Duration = Duration::from_secs(10);
+/// A relay no heartbeat ack has renewed for this long stops (its relay socket is down).
+const LEASE: Duration = Duration::from_secs(30);
+const TICK: Duration = Duration::from_millis(50);
+/// A nudged relay outlives acks that miss it for this long: an ack the backend built just before
+/// the viewer arrived can land after the nudge. Longer than one 10 s heartbeat.
+const GRACE: Duration = Duration::from_secs(15);
+/// Snapshot requests are at most this often: a lost frame on a slow uplink must not become a
+/// full screen every tick.
+const SNAPSHOT_GAP: Duration = Duration::from_secs(1);
+/// The backend's per-session budget (`session_screen.BUDGET_BYTES_PER_MINUTE`).
+const BUDGET_PER_MINUTE: usize = 2 * 1024 * 1024;
+const BURST: usize = 256 * 1024;
+
+#[derive(Clone)]
+struct Live {
+    generation: String,
+    native: NativeSession,
+}
+
+static LIVE: Mutex<BTreeMap<String, Live>> = Mutex::new(BTreeMap::new());
+static DIR: Mutex<Option<PathBuf>> = Mutex::new(None);
+static OUT: Mutex<Option<mpsc::Sender<Value>>> = Mutex::new(None);
+static RELAYS: Mutex<BTreeMap<String, Arc<Ctl>>> = Mutex::new(BTreeMap::new());
+
+pub(super) struct Ctl {
+    since: AtomicU64,
+    /// The epoch `pump` stamps on this relay's frames; 0 until it starts. Remote input must
+    /// carry it (`remote_input`): typing aimed at an older screen is dropped.
+    pub(super) epoch: AtomicU64,
+    /// This relay's one `type` client to the holder (`remote_input`); it closes when we stop.
+    pub(super) typist: Mutex<Option<std::sync::mpsc::SyncSender<Vec<u8>>>>,
+    snapshot: AtomicBool,
+    pub(super) stop: AtomicBool,
+    until: Mutex<Instant>,
+    /// Absence from `watching` does not stop the relay before this (a nudge sets it).
+    keep: Mutex<Instant>,
+}
+
+impl Ctl {
+    pub(super) fn new(since: u64) -> Self {
+        Self { since: AtomicU64::new(since), epoch: AtomicU64::new(0), typist: Mutex::new(None), snapshot: AtomicBool::new(false), stop: AtomicBool::new(false),
+            until: Mutex::new(Instant::now() + LEASE), keep: Mutex::new(Instant::now()) }
+    }
+    fn renew(&self) {
+        if let Ok(mut until) = self.until.lock() {
+            *until = Instant::now() + LEASE;
+        }
+    }
+    fn nudged(&self) {
+        self.renew();
+        if let Ok(mut keep) = self.keep.lock() {
+            *keep = Instant::now() + GRACE;
+        }
+    }
+    fn kept(&self) -> bool {
+        self.keep.lock().is_ok_and(|keep| Instant::now() < *keep)
+    }
+    pub(super) fn stopped(&self) -> bool {
+        self.stop.load(SeqCst) || self.until.lock().map_or(true, |until| Instant::now() >= *until)
+    }
+}
+
+/// The relay loop's receiving end for this connection; relays send through the newest one.
+pub(super) fn channel() -> mpsc::Receiver<Value> {
+    // Shallow: these frames go out ahead of nothing, and a deep queue on a slow uplink sits in
+    // front of every heartbeat and command answer. A full queue is a lost frame (a snapshot later).
+    let (tx, rx) = mpsc::channel(8);
+    if let Ok(mut slot) = OUT.lock() {
+        *slot = Some(tx);
+    }
+    rx
+}
+
+/// False when the frame could not be queued: it is gone.
+fn send_out(frame: Value) -> bool {
+    OUT.lock().ok().and_then(|slot| slot.clone()).is_some_and(|tx| tx.try_send(frame).is_ok())
+}
+
+/// The relay loop's live mirrors by session id, refreshed every second.
+pub(super) fn index(dir: &Path, mirrors: &BTreeMap<String, Mirror>) {
+    let live = mirrors
+        .values()
+        .filter(|m| m.ended_at.is_none())
+        .filter_map(|m| Some((m.session_id.clone()?, Live { generation: m.generation.clone(), native: m.native.clone() })))
+        .collect();
+    if let Ok(mut slot) = LIVE.lock() {
+        *slot = live;
+    }
+    if let Ok(mut slot) = DIR.lock() {
+        *slot = Some(dir.to_path_buf());
+    }
+}
+
+/// The holder a shared session runs in, and its generation. `HELLO` carries the provider's pid
+/// but not its birth, so the birth is read here: the same pid and birth as the mirror's process
+/// is that process. Codex's mirror is its rollout writer (a shared daemon on 0.159), never the
+/// holder's child, so an app-started session is matched by its start link instead.
+pub(crate) fn holder_for_session(session_id: &str) -> Option<(HolderInfo, String)> {
+    let live = LIVE.lock().ok()?.get(session_id).cloned()?;
+    let dir = DIR.lock().ok()?.clone()?;
+    let start = super::start_links::linked(&dir, &live.native, &live.generation);
+    let holder = matched(&manager::list(), &live.native.process, start.as_deref(), |pid| process(pid).ok())?;
+    Some((holder, live.generation))
+}
+
+fn matched(holders: &[HolderInfo], provider: &Process, start: Option<&str>, identity: impl Fn(u32) -> Option<Process>) -> Option<HolderInfo> {
+    holders
+        .iter()
+        .find(|h| h.provider_pid == provider.pid && identity(h.provider_pid).as_ref() == Some(provider))
+        .or_else(|| start.and_then(|id| holders.iter().find(|h| h.start_id() == Some(id))))
+        .cloned()
+}
+
+fn parse(watching: &[Value]) -> BTreeMap<String, u64> {
+    watching
+        .iter()
+        .take(64)
+        .filter_map(|e| {
+            let sid = e["sessionId"].as_str().filter(|s| uuid::Uuid::parse_str(s).is_ok())?;
+            Some((sid.to_owned(), e["since"].as_u64().unwrap_or(0)))
+        })
+        .collect()
+}
+
+/// (start, stop, snapshot) for a new watch list against the running relays' `since`.
+fn plan(running: &BTreeMap<String, u64>, wanted: &BTreeMap<String, u64>) -> (Vec<String>, Vec<String>, Vec<String>) {
+    let start = wanted.keys().filter(|s| !running.contains_key(*s)).cloned().collect();
+    let stop = running.keys().filter(|s| !wanted.contains_key(*s)).cloned().collect();
+    let snapshot = wanted
+        .iter()
+        .filter(|(s, since)| running.get(*s).is_some_and(|was| *since > was))
+        .map(|(s, _)| s.clone())
+        .collect();
+    (start, stop, snapshot)
+}
+
+/// A heartbeat ack's `watching`: exactly the sessions of this Mac someone watches now.
+pub(super) fn offer(watching: &Value) {
+    // Absent: an older backend, or it could not read the list. Running relays keep their lease.
+    let Some(list) = watching.as_array() else { return };
+    let wanted = parse(list);
+    let Ok(mut relays) = RELAYS.lock() else { return };
+    settle(&mut relays, &wanted, spawn);
+}
+
+fn settle(relays: &mut BTreeMap<String, Arc<Ctl>>, wanted: &BTreeMap<String, u64>, spawn: impl Fn(String, u64) -> Arc<Ctl>) {
+    relays.retain(|_, ctl| !ctl.stopped());
+    let running = relays.iter().map(|(sid, ctl)| (sid.clone(), ctl.since.load(SeqCst))).collect();
+    let (start, stop, snapshot) = plan(&running, wanted);
+    for sid in stop {
+        if relays.get(&sid).is_some_and(|ctl| ctl.kept()) {
+            continue;
+        }
+        if let Some(ctl) = relays.remove(&sid) {
+            ctl.stop.store(true, SeqCst);
+        }
+    }
+    for sid in snapshot {
+        if let Some(ctl) = relays.get(&sid) {
+            ctl.snapshot.store(true, SeqCst);
+        }
+    }
+    for (sid, ctl) in relays.iter() {
+        if let Some(since) = wanted.get(sid) {
+            ctl.since.store(*since, SeqCst);
+            ctl.renew();
+        }
+    }
+    for sid in start {
+        let since = wanted[&sid];
+        relays.insert(sid.clone(), spawn(sid, since));
+    }
+}
+
+/// A backend `local.session.watch`: someone just started watching. Never answered; anything this
+/// Mac cannot stream (not its session, another generation, ended) is ignored.
+pub(super) fn nudge(body: &Value) {
+    let Some(sid) = LIVE.lock().ok().and_then(|live| nudged(body, |sid| live.get(sid).map(|l| l.generation.clone())))
+    else { return };
+    let Ok(mut relays) = RELAYS.lock() else { return };
+    relays.retain(|_, ctl| !ctl.stopped());
+    nudge_relay(&mut relays, sid, spawn);
+}
+
+/// The running relay of a session this Mac holds at `body`'s generation: what remote input
+/// may reach. None when nobody watches it (nobody types blind), or it is another generation.
+pub(super) fn live_relay(body: &Value) -> Option<(String, Arc<Ctl>)> {
+    let sid = LIVE.lock().ok().and_then(|live| nudged(body, |sid| live.get(sid).map(|l| l.generation.clone())))?;
+    let ctl = RELAYS.lock().ok()?.get(&sid).filter(|ctl| !ctl.stopped())?.clone();
+    Some((sid, ctl))
+}
+
+/// The nudged session id, when `generation_of` (the live mirrors) knows it at that generation.
+pub(super) fn nudged(body: &Value, generation_of: impl Fn(&str) -> Option<String>) -> Option<String> {
+    let sid = body["sessionId"].as_str().filter(|s| uuid::Uuid::parse_str(s).is_ok())?;
+    (generation_of(sid)? == body["generation"].as_str()?).then(|| sid.to_owned())
+}
+
+fn nudge_relay(relays: &mut BTreeMap<String, Arc<Ctl>>, sid: String, spawn: impl Fn(String, u64) -> Arc<Ctl>) {
+    if let Some(ctl) = relays.get(&sid) {
+        // Running already: the new viewer needs a screen now, not in up to 10 s.
+        ctl.snapshot.store(true, SeqCst);
+        ctl.nudged();
+        return;
+    }
+    // The holder snapshots a new watch client unasked. `since` is unknown until an ack lists it;
+    // MAX keeps that first ack from asking for a second snapshot.
+    let ctl = spawn(sid.clone(), u64::MAX);
+    ctl.nudged();
+    relays.insert(sid, ctl);
+}
+
+/// One session's relay on its own thread; the caller keeps the returned control in `RELAYS`.
+fn spawn(sid: String, since: u64) -> Arc<Ctl> {
+    let ctl = Arc::new(Ctl::new(since));
+    let theirs = ctl.clone();
+    std::thread::spawn(move || {
+        if let Err(e) = run(&sid, &theirs) {
+            relay_log(&format!("{} live terminal stopped: {e}", &sid[..8]));
+        }
+        theirs.stop.store(true, SeqCst);
+    });
+    ctl
+}
+
+fn run(sid: &str, ctl: &Ctl) -> Result<(), String> {
+    let (holder, generation) = holder_for_session(sid).ok_or("not a held session")?;
+    if !holder.watch {
+        return Err("its holder predates live terminals; restart the session to share its screen".into());
+    }
+    let mut conn = UnixStream::connect(&holder.socket).map_err(|e| e.to_string())?;
+    let result = watch(&mut conn, sid, &generation, ctl, &send_out);
+    // Every exit, early ones included: the reader thread's clone is unblocked only by this.
+    let _ = conn.shutdown(std::net::Shutdown::Both);
+    result
+}
+
+fn watch(conn: &mut UnixStream, sid: &str, generation: &str, ctl: &Ctl, send: &dyn Fn(Value) -> bool) -> Result<(), String> {
+    conn.write_all(&encode(HELLO, br#"{"role":"watch"}"#)).map_err(|e| e.to_string())?;
+    let mut reader = conn.try_clone().map_err(|e| e.to_string())?;
+    let (tx, frames) = std::sync::mpsc::sync_channel(256);
+    std::thread::spawn(move || {
+        while let Ok(frame) = read_frame(&mut reader) {
+            if tx.send(frame).is_err() {
+                return;
+            }
+        }
+    });
+    let (kind, hello) = frames.recv_timeout(Duration::from_secs(2)).map_err(|_| "the holder did not answer")?;
+    if kind != HELLO {
+        return Err("the holder answered out of turn".into());
+    }
+    let facts: Value = serde_json::from_slice(&hello).unwrap_or_default();
+    let size = (facts["cols"].as_u64().unwrap_or(120) as u16, facts["rows"].as_u64().unwrap_or(40) as u16);
+    pump(&frames, conn, (sid, generation), size, ctl, send, Budget::new())
+}
+
+/// Raw screen bytes this relay may still send: refills at the backend's rate, holds a burst.
+struct Budget {
+    tokens: f64,
+    cap: f64,
+    per_s: f64,
+    at: Instant,
+}
+
+impl Budget {
+    fn new() -> Self {
+        Self { tokens: BURST as f64, cap: BURST as f64, per_s: BUDGET_PER_MINUTE as f64 / 60.0, at: Instant::now() }
+    }
+    fn left(&mut self) -> f64 {
+        let now = Instant::now();
+        self.tokens = (self.tokens + now.duration_since(self.at).as_secs_f64() * self.per_s).min(self.cap);
+        self.at = now;
+        self.tokens
+    }
+    /// Output only when it fits. A snapshot always goes (it may overdraw): it ends a gap, and
+    /// the next request waits for the budget to be back above zero.
+    fn take(&mut self, bytes: usize, overdraw: bool) -> bool {
+        if !overdraw && self.left() < bytes as f64 {
+            return false;
+        }
+        self.left();
+        self.tokens -= bytes as f64;
+        true
+    }
+}
+
+struct Out<'a> {
+    ids: (&'a str, &'a str),
+    epoch: u64,
+    seq: u64,
+    ctl: &'a Ctl,
+    send: &'a dyn Fn(Value) -> bool,
+    budget: Budget,
+    /// A frame was lost since the last snapshot: viewers wait for the next one, so output is waste.
+    stale: bool,
+}
+
+impl Out<'_> {
+    fn emit(&mut self, kind: &str, bytes: &[u8], size: (u16, u16)) {
+        let snapshot = kind == "snapshot";
+        if self.stale && !snapshot {
+            return;
+        }
+        if !self.budget.take(bytes.len(), snapshot) {
+            // Skip the seqs it would have used: the gap tells viewers to wait for a snapshot.
+            self.seq += bytes.len().div_ceil(CHUNK).max(1) as u64;
+            self.lost();
+            return;
+        }
+        self.stale = false;
+        for frame in frames_for(self.ids, self.epoch, &mut self.seq, size, kind, bytes) {
+            if !(self.send)(frame) {
+                self.lost();
+            }
+        }
+    }
+    fn lost(&mut self) {
+        // Viewers skip to the next snapshot after a missing frame: ask for one.
+        self.stale = true;
+        self.ctl.snapshot.store(true, SeqCst);
+    }
+}
+
+/// Holder frames in, relay frames out, until the lease ends, the session exits or the holder goes.
+fn pump(frames: &Receiver<(u8, Vec<u8>)>, to_holder: &mut impl Write, ids: (&str, &str), mut size: (u16, u16),
+        ctl: &Ctl, send: &dyn Fn(Value) -> bool, budget: Budget) -> Result<(), String> {
+    let epoch = SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_millis() as u64);
+    ctl.epoch.store(epoch, SeqCst);
+    let mut out = Out { ids, epoch, seq: 0, ctl, send, budget, stale: false };
+    let mut pending: Vec<u8> = Vec::new();
+    let mut held_since: Option<Instant> = None;
+    // The holder sends a watch client its first snapshot unasked; a request may follow at once
+    // (a resize, a lost frame), and the periodic one comes a gap early.
+    let mut last_snapshot = Instant::now().checked_sub(SNAPSHOT_GAP).unwrap_or_else(Instant::now);
+    loop {
+        if ctl.stopped() {
+            return Ok(());
+        }
+        let due = ctl.snapshot.load(SeqCst) || last_snapshot.elapsed() >= SNAPSHOT_EVERY;
+        if due && last_snapshot.elapsed() >= SNAPSHOT_GAP && out.budget.left() > 0.0 {
+            ctl.snapshot.store(false, SeqCst);
+            to_holder.write_all(&encode(SNAPSHOT, b"")).map_err(|e| e.to_string())?;
+            last_snapshot = Instant::now();
+        }
+        match frames.recv_timeout(TICK) {
+            Ok((SNAPSHOT, payload)) => {
+                let (_, screen) = split_offset(&payload).ok_or("bad snapshot")?;
+                // It already shows whatever output was waiting.
+                pending.clear();
+                held_since = None;
+                out.emit("snapshot", screen, size);
+            }
+            Ok((OUTPUT, payload)) => {
+                pending.extend_from_slice(split_offset(&payload).ok_or("bad output")?.1);
+                held_since.get_or_insert_with(Instant::now);
+            }
+            Ok((RESIZE, payload)) if payload.len() == 4 => {
+                if !pending.is_empty() {
+                    out.emit("output", &std::mem::take(&mut pending), size);
+                    held_since = None;
+                }
+                size = (u16::from_be_bytes([payload[0], payload[1]]), u16::from_be_bytes([payload[2], payload[3]]));
+                ctl.snapshot.store(true, SeqCst);
+            }
+            Ok((EXIT, _)) => {
+                if !pending.is_empty() {
+                    out.emit("output", &pending, size);
+                }
+                return Ok(());
+            }
+            Ok(_) | Err(RecvTimeoutError::Timeout) => {}
+            Err(RecvTimeoutError::Disconnected) => return Err("the holder closed".into()),
+        }
+        if pending.len() >= CHUNK || held_since.is_some_and(|at| at.elapsed() >= FLUSH) {
+            out.emit("output", &std::mem::take(&mut pending), size);
+            held_since = None;
+        }
+    }
+}
+
+/// A snapshot that does not fit one frame continues as "output" frames with the next seqs.
+fn frames_for(ids: (&str, &str), epoch: u64, seq: &mut u64, size: (u16, u16), kind: &str, bytes: &[u8]) -> Vec<Value> {
+    let chunks: Vec<&[u8]> = if bytes.is_empty() { vec![&[]] } else { bytes.chunks(CHUNK).collect() };
+    chunks
+        .into_iter()
+        .enumerate()
+        .map(|(i, chunk)| {
+            let frame = json!({"type": "local.session.screen", "sessionId": ids.0, "generation": ids.1,
+                "epoch": epoch, "seq": *seq, "cols": size.0, "rows": size.1,
+                "kind": if i == 0 { kind } else { "output" },
+                "data": base64::engine::general_purpose::STANDARD.encode(chunk)});
+            *seq += 1;
+            frame
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::holder::protocol::with_offset;
+    use std::collections::BTreeSet;
+
+    const GOLDEN: &str =
+        include_str!("../../../../../packages/shared/fixtures/local-session-frames/session-screen.json");
+
+    #[test]
+    fn screen_frames_have_the_golden_shape_split_at_11_kib_and_fit_a_relay_frame() {
+        let generation = "g".repeat(64);
+        let mut seq = 7;
+        let frames = frames_for(("aaaabbbb-cccc-4ddd-8eee-ffff00001111", &generation), 1_760_000_000_000, &mut seq,
+            (120, 40), "snapshot", &vec![0xffu8; 30 * 1024]);
+        assert_eq!(frames.iter().map(|f| f["kind"].as_str().unwrap()).collect::<Vec<_>>(), ["snapshot", "output", "output"]);
+        assert_eq!(frames.iter().map(|f| f["seq"].as_u64().unwrap()).collect::<Vec<_>>(), [7, 8, 9]);
+        assert_eq!(seq, 10);
+        let golden: Value = serde_json::from_str(GOLDEN).unwrap();
+        let keys = |v: &Value| v.as_object().unwrap().keys().cloned().collect::<BTreeSet<_>>();
+        for f in &frames {
+            assert_eq!(keys(f), keys(&golden));
+            assert!(super::super::ascii_wire_len(f).unwrap() <= 16384);
+        }
+    }
+
+    #[test]
+    fn screen_relay_sends_the_snapshot_then_output_in_order_and_asks_again_after_a_resize() {
+        let (tx, rx) = std::sync::mpsc::channel();
+        tx.send((SNAPSHOT, with_offset(0, b"\x1b[Hscreen"))).unwrap();
+        tx.send((OUTPUT, with_offset(9, &vec![b'a'; 12 * 1024]))).unwrap();
+        tx.send((RESIZE, vec![0, 90, 0, 30])).unwrap();
+        tx.send((OUTPUT, with_offset(12_297, b"after"))).unwrap();
+        tx.send((EXIT, b"{}".to_vec())).unwrap();
+        let sent = std::cell::RefCell::new(vec![]);
+        let mut to_holder = vec![];
+        pump(&rx, &mut to_holder, ("sid", "gen"), (120, 40), &Ctl::new(0), &|f| { sent.borrow_mut().push(f); true }, Budget::new()).unwrap();
+        let sent = sent.into_inner();
+        let shape: Vec<(String, u64)> = sent.iter().map(|f| (f["kind"].as_str().unwrap().into(), f["cols"].as_u64().unwrap())).collect();
+        assert_eq!(shape, [("snapshot".into(), 120), ("output".into(), 120), ("output".into(), 120), ("output".into(), 90)]);
+        assert_eq!(sent.iter().map(|f| f["seq"].as_u64().unwrap()).collect::<Vec<_>>(), [0, 1, 2, 3]);
+        assert!(to_holder.windows(5).any(|w| w == encode(SNAPSHOT, b"").as_slice()), "a resize asks for a fresh screen");
+    }
+
+    /// A holder that answers every snapshot request with `answer` and notes when it was asked.
+    struct Answering {
+        tx: std::sync::mpsc::Sender<(u8, Vec<u8>)>,
+        answer: Vec<(u8, Vec<u8>)>,
+        asked: Vec<Instant>,
+    }
+
+    impl Write for Answering {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            assert_eq!(buf, encode(SNAPSHOT, b"").as_slice());
+            self.asked.push(Instant::now());
+            for frame in &self.answer {
+                let _ = self.tx.send(frame.clone());
+            }
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    fn leased(for_: Duration) -> Ctl {
+        let ctl = Ctl::new(0);
+        *ctl.until.lock().unwrap() = Instant::now() + for_;
+        ctl
+    }
+
+    #[test]
+    fn screen_relay_asks_again_after_a_lost_frame_at_most_once_a_second_and_stops_when_its_lease_ends() {
+        let (tx, rx) = std::sync::mpsc::channel();
+        tx.send((SNAPSHOT, with_offset(0, b"screen"))).unwrap();
+        let ctl = leased(Duration::from_millis(2500));
+        let mut holder = Answering { tx, answer: vec![(SNAPSHOT, with_offset(0, b"screen"))], asked: vec![] };
+        let started = Instant::now();
+        // Every frame is lost, so every snapshot asks for the next one.
+        pump(&rx, &mut holder, ("sid", "gen"), (80, 24), &ctl, &|_| false, Budget::new()).unwrap();
+        assert!(started.elapsed() < Duration::from_secs(4));
+        assert!((2..=3).contains(&holder.asked.len()), "asked {} times, not every tick", holder.asked.len());
+        for pair in holder.asked.windows(2) {
+            assert!(pair[1] - pair[0] >= SNAPSHOT_GAP - Duration::from_millis(10));
+        }
+    }
+
+    #[test]
+    fn output_over_the_budget_is_dropped_and_a_snapshot_follows_once_the_budget_is_back() {
+        let (tx, rx) = std::sync::mpsc::channel();
+        tx.send((SNAPSHOT, with_offset(0, &vec![b's'; 4096]))).unwrap();
+        tx.send((OUTPUT, with_offset(4096, &vec![b'a'; 100]))).unwrap();
+        tx.send((OUTPUT, with_offset(4196, b"more"))).unwrap();
+        let ctl = leased(Duration::from_millis(3000));
+        let mut holder = Answering { tx, answer: vec![(SNAPSHOT, with_offset(4200, b"fresh")), (OUTPUT, with_offset(4200, b"after"))],
+            asked: vec![] };
+        // Empty, refilling 2000 bytes a second: the snapshot overdraws it to -4096 for about 2 s.
+        let budget = Budget { tokens: 0.0, cap: 64.0 * 1024.0, per_s: 2000.0, at: Instant::now() };
+        let sent = std::cell::RefCell::new(vec![]);
+        let started = Instant::now();
+        pump(&rx, &mut holder, ("sid", "gen"), (80, 24), &ctl, &|f| { sent.borrow_mut().push(f); true }, budget).unwrap();
+        let sent = sent.into_inner();
+        let shape: Vec<(String, u64)> = sent.iter().map(|f| (f["kind"].as_str().unwrap().into(), f["seq"].as_u64().unwrap())).collect();
+        // seq 1 is the dropped output's: the gap sends viewers to the next snapshot; "more" never went.
+        assert_eq!(shape, [("snapshot".into(), 0), ("snapshot".into(), 2), ("output".into(), 3)]);
+        assert_eq!(holder.asked.len(), 1, "one request, not one a tick");
+        assert!(holder.asked[0] - started >= Duration::from_millis(1800), "asked only once the budget was back");
+    }
+
+    #[test]
+    fn the_watch_list_starts_new_relays_stops_dropped_ones_and_snapshots_when_viewers_grow() {
+        let running = BTreeMap::from([("a".to_owned(), 10), ("b".to_owned(), 10)]);
+        let wanted = BTreeMap::from([("b".to_owned(), 20), ("c".to_owned(), 5)]);
+        assert_eq!(plan(&running, &wanted), (vec!["c".to_owned()], vec!["a".to_owned()], vec!["b".to_owned()]));
+        assert_eq!(plan(&running, &running), (vec![], vec![], vec![]));
+        let sid = "aaaabbbb-cccc-4ddd-8eee-ffff00001111";
+        assert_eq!(parse(&[json!({"sessionId": sid, "since": 3}), json!({"sessionId": "../x", "since": 1})]),
+            BTreeMap::from([(sid.to_owned(), 3)]));
+    }
+
+    #[test]
+    fn a_nudge_is_taken_only_for_a_live_mirror_of_the_same_generation() {
+        let sid = "aaaabbbb-cccc-4ddd-8eee-ffff00001111";
+        let live = |s: &str| (s == sid).then(|| "gen-1".to_owned());
+        let frame = |s: &str, g: &str| json!({"type": "local.session.watch", "sessionId": s, "generation": g});
+        assert_eq!(nudged(&frame(sid, "gen-1"), live).as_deref(), Some(sid));
+        assert_eq!(nudged(&frame(sid, "gen-0"), live), None, "another generation");
+        assert_eq!(nudged(&frame("bbbbcccc-dddd-4eee-8fff-000011112222", "gen-1"), live), None, "not this Mac's");
+        assert_eq!(nudged(&json!({"type": "local.session.watch"}), live), None);
+        // An ended mirror is never in LIVE (`index` skips it), so it is "not this Mac's".
+    }
+
+    #[test]
+    fn a_nudged_relay_survives_an_ack_without_it_inside_the_grace_and_stops_after() {
+        let sid = "aaaabbbb-cccc-4ddd-8eee-ffff00001111".to_owned();
+        let spawned = std::cell::RefCell::new(vec![]);
+        let fake = |sid: String, since: u64| { spawned.borrow_mut().push((sid, since)); Arc::new(Ctl::new(since)) };
+        let mut relays = BTreeMap::new();
+        nudge_relay(&mut relays, sid.clone(), &fake);
+        assert_eq!(*spawned.borrow(), [(sid.clone(), u64::MAX)], "started at once, before any ack");
+        settle(&mut relays, &BTreeMap::new(), &fake);
+        assert!(relays.contains_key(&sid), "an ack built before the viewer arrived does not stop it");
+        // The first ack that lists it renews it without a second snapshot.
+        settle(&mut relays, &BTreeMap::from([(sid.clone(), 1_760_000_000)]), &fake);
+        assert!(!relays[&sid].snapshot.load(SeqCst));
+        assert_eq!(relays[&sid].since.load(SeqCst), 1_760_000_000);
+        *relays[&sid].keep.lock().unwrap() = Instant::now();
+        let ctl = relays[&sid].clone();
+        settle(&mut relays, &BTreeMap::new(), &fake);
+        assert!(!relays.contains_key(&sid) && ctl.stop.load(SeqCst), "after the grace the ack rules again");
+        assert_eq!(spawned.borrow().len(), 1);
+        // A nudge for a running relay asks it for a fresh screen instead of starting another.
+        let mut relays = BTreeMap::from([(sid.clone(), Arc::new(Ctl::new(5)))]);
+        nudge_relay(&mut relays, sid.clone(), &fake);
+        assert!(relays[&sid].snapshot.load(SeqCst) && relays[&sid].kept());
+        assert_eq!(spawned.borrow().len(), 1);
+    }
+
+    #[test]
+    fn a_nudge_streams_the_holders_snapshot_before_any_ack() {
+        let sid = "aaaabbbb-cccc-4ddd-8eee-ffff00001111".to_owned();
+        let (mac, mut holder) = UnixStream::pair().unwrap();
+        // A held session's holder: answers the watch HELLO, snapshots the new client unasked, exits.
+        let fake_holder = std::thread::spawn(move || {
+            let (kind, hello) = read_frame(&mut holder).unwrap();
+            assert_eq!((kind, hello.as_slice()), (HELLO, br#"{"role":"watch"}"#.as_slice()));
+            holder.write_all(&encode(HELLO, br#"{"cols":100,"rows":30}"#)).unwrap();
+            holder.write_all(&encode(SNAPSHOT, &with_offset(0, b"\x1b[Hscreen"))).unwrap();
+            holder.write_all(&encode(EXIT, b"{}")).unwrap();
+        });
+        let sent = Arc::new(Mutex::new(vec![]));
+        let out = sent.clone();
+        // `spawn` as `run` uses it, minus the holder lookup: the relay thread attaches at once.
+        let attach = |sid: String, since: u64| {
+            let ctl = Arc::new(Ctl::new(since));
+            let (theirs, out) = (ctl.clone(), out.clone());
+            let mut mac = mac.try_clone().unwrap();
+            std::thread::spawn(move || {
+                watch(&mut mac, &sid, "gen-1", &theirs, &|f| { out.lock().unwrap().push(f); true }).unwrap();
+            });
+            ctl
+        };
+        let mut relays = BTreeMap::new();
+        nudge_relay(&mut relays, sid.clone(), attach); // no `offer`, no ack
+        fake_holder.join().unwrap();
+        let started = Instant::now();
+        while sent.lock().unwrap().is_empty() && started.elapsed() < Duration::from_secs(2) {
+            std::thread::yield_now();
+        }
+        let first = sent.lock().unwrap().first().cloned().expect("a screen frame before any ack");
+        assert_eq!((first["type"].as_str(), first["kind"].as_str(), first["seq"].as_u64()),
+            (Some("local.session.screen"), Some("snapshot"), Some(0)));
+        assert_eq!((first["sessionId"].as_str(), first["cols"].as_u64()), (Some(sid.as_str()), Some(100)));
+        let _ = mac.shutdown(std::net::Shutdown::Both);
+    }
+
+    #[test]
+    fn a_session_maps_to_the_holder_that_is_its_parent_or_that_was_started_for_it() {
+        let holder = |id: &str, provider_pid: u32, argv: &[&str]| HolderInfo {
+            id: id.into(), socket: PathBuf::from(format!("/x/{id}.sock")), pid: 1, provider_pid,
+            argv: argv.iter().map(|s| s.to_string()).collect(), cwd: "/w".into(), watch: true, type_input: true };
+        let holders = [holder("aaaa0001", 500, &["/claude"]),
+            holder("aaaa0002", 600, &["/bin/sh", "-c", "x", "lightbulb-start", "start-9", "/scope", "/codex"])];
+        let claude = Process { pid: 500, birth_micros: 42, executable: "/claude".into() };
+        let alive = |pid: u32| Some(Process { pid, birth_micros: 42, executable: "/claude".into() });
+        let reused = |pid: u32| Some(Process { pid, birth_micros: 99, executable: "/claude".into() });
+        assert_eq!(matched(&holders, &claude, None, alive).unwrap().id, "aaaa0001");
+        assert!(matched(&holders, &claude, None, reused).is_none(), "a reused pid is not the session");
+        let daemon = Process { pid: 777, birth_micros: 1, executable: "/daemon".into() };
+        assert_eq!(matched(&holders, &daemon, Some("start-9"), alive).unwrap().id, "aaaa0002");
+        assert!(matched(&holders, &daemon, None, alive).is_none(), "a plain terminal session has no holder");
+    }
+}

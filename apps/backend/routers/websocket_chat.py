@@ -141,6 +141,13 @@ async def ws_message(
     from core.services.messaging import ApiProblem
 
     relay = get_local_session_relay()
+    if isinstance(body, dict) and body.get("type") == "local.session.screen":
+        # Never answered, not even with an error: see session_screen.forward.
+        if len(await request.body()) <= MAX_ENVELOPE_BYTES:
+            from core.services import session_screen
+
+            await session_screen.forward(relay, x_connection_id, body)
+        return Response(status_code=200)
     try:
         if len(await request.body()) > MAX_ENVELOPE_BYTES:
             raise ApiProblem("INVALID_REQUEST", "Local session envelope exceeds 16 KiB.")

@@ -187,3 +187,65 @@ fn holder_manager_refuses_a_planted_symlink_for_its_folder() {
     assert!(err.contains("not safe"), "{err}");
     assert!(!elsewhere.join("h").exists(), "nothing is created through the symlink");
 }
+
+#[test]
+fn holder_watch_client_gets_snapshots_and_sizes_and_can_never_type() {
+    let socket = start_cat(&temp_dir());
+    let mut w = UnixStream::connect(&socket).unwrap();
+    w.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+    w.write_all(&encode(HELLO, br#"{"role":"watch"}"#)).unwrap();
+    let (kind, hello) = read_frame(&mut w).unwrap();
+    assert_eq!(kind, HELLO);
+    assert_eq!(serde_json::from_slice::<serde_json::Value>(&hello).unwrap()["watch"], true);
+    assert_eq!(read_frame(&mut w).unwrap().0, SNAPSHOT, "a watcher starts from the screen");
+    assert!(manager::list_in(socket.parent().unwrap())[0].watch);
+
+    let mut c = attach(&socket, "interactive");
+    c.write_all(&encode(INPUT, b"watched\r")).unwrap();
+    read_until(&mut w, b"watched");
+    c.write_all(&encode(RESIZE, &[0, 90, 0, 30])).unwrap();
+    loop {
+        let (kind, payload) = read_frame(&mut w).unwrap();
+        if kind == RESIZE {
+            assert_eq!(payload, vec![0, 90, 0, 30]);
+            break;
+        }
+    }
+    w.write_all(&encode(SNAPSHOT, b"")).unwrap();
+    while read_frame(&mut w).unwrap().0 != SNAPSHOT {}
+
+    w.write_all(&encode(INPUT, b"from-watcher\r")).unwrap();
+    w.write_all(&encode(RESIZE, &[0, 20, 0, 5])).unwrap();
+    c.write_all(&encode(INPUT, b"from-owner\r")).unwrap();
+    let out = read_until(&mut c, b"from-owner");
+    assert!(!out.windows(12).any(|x| x == b"from-watcher"), "a watcher never types");
+}
+
+#[test]
+fn holder_type_client_types_but_never_resizes_and_gets_no_output() {
+    let socket = start_cat(&temp_dir());
+    let mut w = attach(&socket, "watch");
+    assert_eq!(read_frame(&mut w).unwrap().0, SNAPSHOT);
+    let mut t = UnixStream::connect(&socket).unwrap();
+    t.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+    t.write_all(&encode(HELLO, br#"{"role":"type"}"#)).unwrap();
+    let (kind, hello) = read_frame(&mut t).unwrap();
+    assert_eq!(kind, HELLO);
+    assert_eq!(serde_json::from_slice::<serde_json::Value>(&hello).unwrap()["type"], true);
+    assert!(manager::list_in(socket.parent().unwrap())[0].type_input);
+
+    t.write_all(&encode(INPUT, b"typed-remotely\r")).unwrap();
+    read_until(&mut w, b"typed-remotely");
+    t.write_all(&encode(RESIZE, &[0, 20, 0, 5])).unwrap();
+    t.write_all(&encode(INPUT, b"after-resize\r")).unwrap();
+    let mut seen = vec![];
+    while !seen.windows(12).any(|x| x == b"after-resize") {
+        let (kind, payload) = read_frame(&mut w).expect("output before timeout");
+        assert_ne!(kind, RESIZE, "a type client never resizes");
+        if kind == OUTPUT {
+            seen.extend_from_slice(split_offset(&payload).unwrap().1);
+        }
+    }
+    t.set_read_timeout(Some(Duration::from_millis(300))).unwrap();
+    assert!(read_frame(&mut t).is_err(), "a type client receives no output");
+}

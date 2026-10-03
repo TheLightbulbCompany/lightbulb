@@ -22,7 +22,8 @@ export interface SessionFocusTarget { sessionId: string | null; all?: boolean }
  * list has ever loaded) still opens with its real status. "No longer shared"
  * is reserved for a genuine 404.
  */
-export function SessionFocus({ focus, entries, loading, hintRevision, client, resolveSessionOwner, onAccessLost, onClose, participants, onMessageOwner }: {
+export function SessionFocus({ focus, entries, loading, hintRevision, client, resolveSessionOwner, onAccessLost, onClose, participants, onMessageOwner, onEvent }: {
+  onEvent?: SessionSource["onEvent"];
   focus: { sessionId: string }; entries: readonly SidebarSession[]; loading: boolean; hintRevision: number;
   client: SessionSource["client"]; resolveSessionOwner: (humanUserId: string) => { ownerName: string; own: boolean };
   onAccessLost: () => void; onClose: () => void;
@@ -56,7 +57,7 @@ export function SessionFocus({ focus, entries, loading, hintRevision, client, re
         <Button className="ml-auto" variant="ghost" size="icon-sm" aria-label="Close session" onClick={onClose}><X aria-hidden="true" /></Button>
       </header>
       {session && owner ? <LocalSessionPanel key={sessionViewKey(session)} session={session} ownerName={owner.ownerName} own={owner.own}
-        client={client} revision={hintRevision} onAccessLost={onAccessLost} participants={participants} onMessageOwner={messageOwner} nameOf={id => resolveSessionOwner(id).ownerName} />
+        client={client} revision={hintRevision} onAccessLost={onAccessLost} participants={participants} onMessageOwner={messageOwner} onEvent={onEvent} nameOf={id => resolveSessionOwner(id).ownerName} />
         : <p role="status" className="p-4 text-sm text-muted-foreground">{resolvedFallback?.notFound ? "This session is no longer shared." : "Loading session…"}</p>}
     </div>
   </section>;

@@ -217,6 +217,7 @@ def _meeting_view(room_id: str, meeting: dict) -> dict:
         "id": room_id,
         "title": meeting.get("title") or "Meeting",
         "organizer": meeting.get("organizer"),
+        "invited_by": meeting.get("invitedBy"),
         "status": meeting.get("status"),
         "start_at": meeting.get("startAt"),
         "end_at": meeting.get("endAt"),

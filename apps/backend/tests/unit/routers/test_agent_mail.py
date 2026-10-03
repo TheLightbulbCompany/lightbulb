@@ -329,6 +329,7 @@ _ROOMS = {
         "meeting": {
             "title": "Weekly sync",
             "organizer": "pat@acme.com",
+            "invitedBy": "member@acme.com",
             "status": "scheduled",
             "startAt": 200,
             "endAt": 260,
@@ -386,6 +387,7 @@ async def test_a_member_reads_meetings_and_mail_both_ways(async_client_org_membe
         "id": M1,
         "title": "Weekly sync",
         "organizer": "pat@acme.com",
+        "invited_by": "member@acme.com",
         "status": "scheduled",
         "start_at": 200,
         "end_at": 260,
@@ -393,6 +395,7 @@ async def test_a_member_reads_meetings_and_mail_both_ways(async_client_org_membe
         "transcripts": [{"start_at": 200}, {"start_at": 100}],
     }
     assert body["meetings"][0]["repeats"] is False and body["meetings"][0]["transcripts"] == []
+    assert body["meetings"][0]["invited_by"] is None
     out, inn = body["messages"]
     assert out == {
         "key": "k3",

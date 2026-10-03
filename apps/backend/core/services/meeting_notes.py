@@ -108,11 +108,16 @@ async def _notes(room_id: str, meta: dict) -> None:
     occurrence = meta["meeting"].get("startAt")
     this_occurrence = lambda m: m.get("startAt") == occurrence  # noqa: E731 -- never mark the next one
     # The worker's final transcript POST and Recall's call_ended race: give the transcript a moment.
+    # A read of another occurrence (the series was re-dated meanwhile) ends the wait; the last read
+    # of this occurrence stands.
     for _ in range(_WAIT_S // _POLL_S):
         if (meta.get("meeting") or {}).get("transcriptAttachedAt"):
             break
         await asyncio.sleep(_POLL_S)
-        meta = await messaging_repo.get_room(room_id) or meta
+        fresh = await messaging_repo.get_room(room_id) or meta
+        if not this_occurrence(fresh.get("meeting") or {}):
+            break
+        meta = fresh
     owner_id, meeting = meta["ownerId"], meta["meeting"]
     title = meeting.get("title") or "Meeting"
     target = await meeting_invites.output_room(owner_id, room_id)
@@ -123,7 +128,7 @@ async def _notes(room_id: str, meta: dict) -> None:
         message = await meeting_invites._post_line(
             owner_id,
             target,
-            f"meeting:{room_id}:{meeting.get('startAt')}:notes",
+            f"meeting:{room_id}:{occurrence}:notes",
             f"Write the meeting notes for {title}: decisions, open questions, action items as Paperclip "
             "tasks for their owners, two paragraphs max; "
             + (
@@ -159,7 +164,9 @@ async def _mail_organizer(owner_id: str, room_id: str, target: str, meeting: dic
     terminal webhook's retry sends again. With a default room the mail links to it; without one
     (``target`` is the hidden meeting room itself) nobody can open the room, so the transcript
     travels in the mail."""
-    organizer = meeting.get("organizer")
+    # The member whose invite made or last updated the meeting: the ICS ORGANIZER is sender-written
+    # and may be an outside host. Records from before ``invitedBy`` fall back to it.
+    organizer = meeting.get("invitedBy") or meeting.get("organizer")
     address = await agent_email.team_address(owner_id)
     if not address or not organizer:
         return True

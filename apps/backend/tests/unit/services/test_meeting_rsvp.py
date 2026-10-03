@@ -106,3 +106,12 @@ def test_control_characters_cannot_inject_lines():
     cal = meeting_rsvp.reply_ics(evil, ADDRESS + "\r", NOW)
     assert "\r" not in cal.replace("\r\n", "") and "\x0b" not in cal
     assert "SUMMARY:SyncMETHOD:CANCEL\r\n" in _unfold(cal) and "UID:abc@google.com\r\n" in _unfold(cal)
+
+
+@pytest.mark.parametrize("organizer", ["a@x.com,b@y.com", "a@x.com;b@y.com", "<a@x.com>", "a@x.com b@y.com", "nope"])
+async def test_an_organizer_that_is_not_one_bare_address_sends_nothing(send, monkeypatch, organizer):
+    monkeypatch.setattr(meeting_rsvp, "put_metric", put := Mock())
+    assert await meeting_rsvp.accept("org_1", replace(INVITE, organizer_email=organizer)) is False
+    send.assert_not_awaited()
+    meeting_rsvp.agent_mail_send.consume_cap.assert_not_awaited()
+    put.assert_called_once_with("meeting.rsvp", dimensions={"result": "bad_organizer"})

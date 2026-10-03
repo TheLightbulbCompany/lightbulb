@@ -234,7 +234,10 @@ async def handle_ses_inbound(body: SesInboundBody, request: Request):
                 continue
             row = await get_by_address(candidate)
             if row is None:
-                address, _reason = await ensure_team_address(team[0], await _owner_email(team[0]))
+                address, reason = await ensure_team_address(team[0], await _owner_email(team[0]))
+                if reason in ("mint_failed", "slug_allocation_failed"):
+                    # Transient: 503 + dedup rollback below, so SES redelivers this first mail.
+                    raise RuntimeError(f"team address not ready: {reason}")
                 row = await get_by_address(address) if address == candidate else None
             if row is not None:
                 break

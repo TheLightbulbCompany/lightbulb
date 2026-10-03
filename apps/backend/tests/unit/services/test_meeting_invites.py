@@ -205,6 +205,10 @@ def room(monkeypatch):
     monkeypatch.setattr(repo, "create_message", m.post)
     monkeypatch.setattr(repo, "ensure_user_stream", AsyncMock())
     monkeypatch.setattr(meeting_invites.clerk_admin, "list_organization_members", m.members)
+    m.claim = AsyncMock(return_value="tok")
+    m.release = AsyncMock()
+    monkeypatch.setattr(meeting_invites.container_repo, "try_claim_owner_lifecycle", m.claim)
+    monkeypatch.setattr(meeting_invites.container_repo, "release_owner_lifecycle_claim", m.release)
     monkeypatch.setattr(meeting_invites.meeting_rsvp, "accept", m.accept)
     company = SimpleNamespace(starter_agent_ids={"ceo": CEO, "engineering": ENG})
     monkeypatch.setattr(
@@ -448,3 +452,33 @@ async def test_a_clerk_failure_propagates(room):
     with pytest.raises(RuntimeError):
         await meeting_invites.handle_team_mail("org_1", _mail(GOOGLE), TEAM)
     assert room.members.await_args.kwargs == {"strict": True}
+
+
+async def test_a_delivery_while_the_meeting_lease_is_held_retries_then_sees_the_newer_sequence(room):
+    room.claim.return_value = None  # another delivery (the SEQUENCE:1 move) holds the lease
+    with pytest.raises(meeting_invites.MeetingBusy):  # the SES route 503s; SES redelivers
+        await meeting_invites.handle_team_mail("org_1", _mail(GOOGLE), TEAM)
+    room.get.assert_not_awaited()
+    room.release.assert_not_awaited()
+    # The holder committed sequence 1 and released; the redelivery of sequence 0 is stale.
+    room.state["meta"] = {"meeting": {"sequence": 1, "organizer": "prasiddha@acme.com", "status": "scheduled"}}
+    room.claim.return_value = "tok"
+    assert await meeting_invites.handle_team_mail("org_1", _mail(GOOGLE), TEAM) == "meeting_stale"
+    assert room.claim.await_args.kwargs == {"stale_s": 60}
+    room.release.assert_awaited_once_with(room.claim.await_args.args[0], token="tok")
+    room.post.assert_not_awaited()
+    room.patch.assert_not_awaited()
+    room.accept.assert_not_awaited()
+
+
+async def test_the_meeting_lease_is_released_when_the_handler_raises(room):
+    room.members.side_effect = None
+    room.post.side_effect = RuntimeError("ddb")
+    with pytest.raises(RuntimeError):
+        await meeting_invites.handle_team_mail("org_1", _mail(GOOGLE), TEAM)
+    room.release.assert_awaited_once()
+
+
+def test_a_multi_address_organizer_is_dropped():
+    cal = GOOGLE.replace("mailto:Prasiddha@acme.com", "mailto:a@x.com,b@y.com")
+    assert meeting_invites.parse(cal).organizer_email is None

@@ -107,6 +107,7 @@ pub fn list_in(dir: &Path) -> Vec<HolderInfo> {
             Some(info) => found.push((entry.metadata().and_then(|m| m.created()).unwrap_or(std::time::UNIX_EPOCH), info)),
             None if UnixStream::connect(&path).is_err() => {
                 let _ = std::fs::remove_file(&path);
+                let _ = std::fs::remove_file(path.with_extension("thread"));
             }
             None => {}
         }
@@ -133,4 +134,54 @@ pub fn hello(socket: &Path) -> Option<HolderInfo> {
         argv: serde_json::from_value(v["argv"].clone()).ok()?,
         cwd: PathBuf::from(v["cwd"].as_str()?),
     })
+}
+
+/// The Codex thread this holder's provider is on, as its own `SessionStart` hook recorded it
+/// (spec §5.4: a Codex rollout may be written by a shared app server, not the holder's child).
+pub fn thread(info: &HolderInfo) -> Option<String> {
+    let text = std::fs::read_to_string(info.socket.with_extension("thread")).ok()?;
+    let thread = text.trim();
+    uuid::Uuid::parse_str(thread).is_ok().then(|| thread.to_owned())
+}
+
+/// Record the thread a held Codex started. A later one (`/new`, a resume) replaces it.
+pub fn bind_thread(info: &HolderInfo, thread: &str) {
+    if uuid::Uuid::parse_str(thread).is_err() {
+        return;
+    }
+    let tmp = info.socket.with_extension("thread.tmp");
+    if std::fs::write(&tmp, thread).is_ok() {
+        let _ = std::fs::rename(&tmp, info.socket.with_extension("thread"));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn holder_binds_one_codex_thread_and_forgets_it_with_the_holder() {
+        let dir = tempfile::tempdir().unwrap();
+        let info = HolderInfo {
+            id: "ab12cd34".into(),
+            socket: dir.path().join("ab12cd34.sock"),
+            pid: 1,
+            provider_pid: 2,
+            argv: vec![],
+            cwd: "/".into(),
+        };
+        assert_eq!(thread(&info), None);
+        bind_thread(&info, "not a thread");
+        assert_eq!(thread(&info), None, "only a thread id is recorded");
+        bind_thread(&info, "11111111-1111-4111-8111-111111111111");
+        bind_thread(&info, "22222222-2222-4222-8222-222222222222");
+        assert_eq!(
+            thread(&info).as_deref(),
+            Some("22222222-2222-4222-8222-222222222222"),
+            "a new thread in the same Codex (/new) replaces the old one"
+        );
+        std::fs::write(&info.socket, b"").unwrap(); // a socket nobody listens on
+        assert!(list_in(dir.path()).is_empty());
+        assert_eq!(thread(&info), None, "a dead holder's binding goes with its socket");
+    }
 }

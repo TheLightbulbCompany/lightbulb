@@ -319,6 +319,7 @@ pub fn run_with_env(socket: &Path, argv: &[String], cwd: &Path, env: Vec<(String
                     std::thread::sleep(Duration::from_millis(10));
                 }
                 let _ = std::fs::remove_file(socket);
+                let _ = std::fs::remove_file(socket.with_extension("thread"));
                 return Ok(());
             }
         }

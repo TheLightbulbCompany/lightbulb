@@ -1,5 +1,6 @@
 import { describe, it, expect, vi } from "vitest";
 import { render } from "@testing-library/react";
+import { SWRConfig } from "swr";
 import { IssueDetailPage } from "@/components/teams/issues/IssueDetailPage";
 import type { Issue } from "@/components/teams/shared/types";
 
@@ -28,11 +29,28 @@ vi.mock("@/hooks/useTeamsApi", () => ({
 
 describe("IssueDetailPage opened by identifier", () => {
   it("reads comments and sub-issues by the issue's uuid", () => {
-    render(<IssueDetailPage issueId="INT-7" />);
+    // Children of the page use SWR directly; isolate it so nothing revalidates
+    // or retries after this test's environment is torn down.
+    const { unmount } = render(
+      <SWRConfig
+        value={{
+          provider: () => new Map(),
+          shouldRetryOnError: false,
+          revalidateOnFocus: false,
+          revalidateOnReconnect: false,
+          refreshInterval: 0,
+          isVisible: () => true,
+          isOnline: () => true,
+        }}
+      >
+        <IssueDetailPage issueId="INT-7" />
+      </SWRConfig>,
+    );
 
     expect(paths).toContain(`/issues/${UUID}/comments`);
     expect(paths).toContain(`/issues/${UUID}/children`);
     // Only the detail read itself may use the identifier.
     expect(paths.filter((p) => p.startsWith("/issues/INT-7")).every((p) => p === "/issues/INT-7")).toBe(true);
+    unmount();
   });
 });

@@ -66,6 +66,8 @@ export interface SecretNames {
   openaiApiKey: string;
   livekitApiKey: string;
   livekitApiSecret: string;
+  recallApiKey: string;
+  recallWebhookSecret: string;
   huddleWorkerSecret: string;
   /**
    * Symmetric secret used by the FastAPI Paperclip proxy router to sign
@@ -239,6 +241,8 @@ export interface ServiceStackProps extends cdk.StackProps {
    * Money surface is unaffected. Flip per env once a write succeeds.
    */
   stripeProvisioningEnabled?: boolean;
+  /** Google Meet (Recall) master switch. Off by default. */
+  meetingsEnabled?: boolean;
 }
 
 /**
@@ -1719,6 +1723,7 @@ export class ServiceStack extends cdk.Stack {
       // Provisioning rail master switch — see the stripeProvisioningEnabled
       // prop doc. Off in both envs until Stripe's write endpoints work.
       STRIPE_PROVISIONING_ENABLED: String(props.stripeProvisioningEnabled ?? false),
+      MEETINGS_ENABLED: String(props.meetingsEnabled ?? false),
       // Dev keeps timer heartbeats off (spend): arm_nightly_ceo leaves them alone.
       NIGHTLY_CEO_HEARTBEATS_ENABLED: env === "dev" ? "false" : "true",
       // PostHog server-side reads for the admin Activity tab.
@@ -1878,6 +1883,12 @@ export class ServiceStack extends cdk.Stack {
       ),
       LIVEKIT_API_SECRET: ecs.Secret.fromSecretsManager(
         secretsmanager.Secret.fromSecretNameV2(this, "ImportLivekitApiSecret", props.secretNames.livekitApiSecret),
+      ),
+      RECALL_API_KEY: ecs.Secret.fromSecretsManager(
+        secretsmanager.Secret.fromSecretNameV2(this, "ImportRecallApiKey", props.secretNames.recallApiKey),
+      ),
+      RECALL_WEBHOOK_SECRET: ecs.Secret.fromSecretsManager(
+        secretsmanager.Secret.fromSecretNameV2(this, "ImportRecallWebhookSecret", props.secretNames.recallWebhookSecret),
       ),
       HUDDLE_WORKER_SECRET: ecs.Secret.fromSecretsManager(
         secretsmanager.Secret.fromSecretNameV2(this, "ImportHuddleWorkerSecret", props.secretNames.huddleWorkerSecret),

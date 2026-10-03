@@ -63,6 +63,8 @@ function buildServiceStack(environment: "dev" | "prod"): Template {
       openaiApiKey: `lightbulb/${environment}/openai_api_key`,
       livekitApiKey: `lightbulb/${environment}/livekit_api_key`,
       livekitApiSecret: `lightbulb/${environment}/livekit_api_secret`,
+      recallApiKey: `lightbulb/${environment}/recall_api_key`,
+      recallWebhookSecret: `lightbulb/${environment}/recall_webhook_secret`,
       huddleWorkerSecret: `lightbulb/${environment}/huddle_worker_secret`,
       metronomeWebhookSecret: `isol8/${environment}/metronome_webhook_secret`,
       wsInternalSecret: `isol8/${environment}/ws_internal_secret`,
@@ -77,6 +79,7 @@ function buildServiceStack(environment: "dev" | "prod"): Template {
       ownerBedrockBoundary: container.ownerBedrockBoundary,
       workspaceMemoryId: container.workspaceMemory.attrMemoryId,
     },
+    meetingsEnabled: environment === "dev",
     managementApiUrl: "https://example.execute-api.us-east-1.amazonaws.com",
     webSocketUrl: "wss://example.execute-api.us-east-1.amazonaws.com",
     gatewayRelayUrl: "wss://bv-dev.thelightbulb.company/api/v1/gateway/ws",
@@ -204,6 +207,17 @@ describe("ServiceStack — clean handoff / rolling deploy", () => {
     expect(names).toEqual(expect.arrayContaining(["LIVEKIT_API_KEY", "LIVEKIT_API_SECRET", "HUDDLE_WORKER_SECRET"]));
     const env = Object.fromEntries(backend.Environment.map((e: any) => [e.Name, e.Value]));
     expect(env.LIVEKIT_URL).toBe("");
+  });
+
+  test.each([["dev", "true"], ["prod", "false"]] as const)("wires the Recall secrets and %s MEETINGS_ENABLED=%s", (envName, flag) => {
+    const t = envName === "dev" ? SERVICE_TEMPLATE_DEV : buildServiceStack("prod");
+    const backend = Object.values(t.findResources("AWS::ECS::TaskDefinition"))
+      .flatMap((td: any) => td.Properties.ContainerDefinitions)
+      .find((c: any) => c.Name === "backend");
+    const names = backend.Secrets.map((s: any) => s.Name);
+    expect(names).toEqual(expect.arrayContaining(["RECALL_API_KEY", "RECALL_WEBHOOK_SECRET"]));
+    const env = Object.fromEntries(backend.Environment.map((e: any) => [e.Name, e.Value]));
+    expect(env.MEETINGS_ENABLED).toBe(flag);
   });
 
   test("wires the voice key and the inference markup into the backend task", () => {

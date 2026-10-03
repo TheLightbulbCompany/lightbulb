@@ -80,6 +80,8 @@ function buildServiceStack(environment: "dev" | "prod"): Template {
       openaiApiKey: `lightbulb/${environment}/openai_api_key`,
       livekitApiKey: `lightbulb/${environment}/livekit_api_key`,
       livekitApiSecret: `lightbulb/${environment}/livekit_api_secret`,
+      recallApiKey: `lightbulb/${environment}/recall_api_key`,
+      recallWebhookSecret: `lightbulb/${environment}/recall_webhook_secret`,
       huddleWorkerSecret: `lightbulb/${environment}/huddle_worker_secret`,
       metronomeWebhookSecret: `isol8/${environment}/metronome_webhook_secret`,
       wsInternalSecret: `isol8/${environment}/ws_internal_secret`,

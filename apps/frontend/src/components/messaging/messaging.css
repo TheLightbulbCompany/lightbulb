@@ -150,7 +150,7 @@
 .local-session-composer { max-height: 45%; overflow: auto; }
 .local-session-scroll { position: relative; display: flex; flex-direction: column; flex: 1; min-height: 0; }
 /* The desktop app draws the live terminal over this box, in a webview of its own. */
-.local-session-terminal { flex: 1; min-height: 240px; background: #16161a; }
+.local-session-terminal { flex: 1; min-height: 240px; background: var(--terminal-bg); }
 .local-session-actions { display: flex; flex-wrap: wrap; gap: 8px; }
 /* Waiting on the owner's terminal: impossible to miss, but no remote approve. */
 .local-session-waiting { display: grid; gap: 4px; justify-items: start; margin: 8px 16px 0; padding: 10px 12px; border: 1px solid var(--warn); border-radius: 6px; background: color-mix(in srgb, var(--warn) 8%, var(--background)); color: var(--foreground); }
@@ -637,7 +637,7 @@ button.native-session-panel-row:hover .native-session-panel-activity { color: va
 .local-session-del { color: var(--err); margin-left: 4px; }
 .native-session-tool > .native-session-muted { white-space: nowrap; }
 
-.session-terminal-view { flex: 1; min-height: 0; overflow: hidden; background: #16161a; padding: 6px 8px; }
+.session-terminal-view { flex: 1; min-height: 0; overflow: hidden; background: var(--terminal-bg); padding: 6px 8px; }
 /* Laid out but unseen until its first snapshot, so xterm can measure itself. */
 .session-terminal-view[data-live="false"] { position: absolute; visibility: hidden; }
 /* Pending and queued follow-ups stay visible under the live terminal. */

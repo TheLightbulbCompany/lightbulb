@@ -287,6 +287,11 @@
 :root {
   --radius: 0.5rem;
 
+  /* The live session terminal: always dark, in both themes, matching the desktop app's own
+     terminal page (apps/desktop/src-tauri/terminal). */
+  --terminal-bg: #16161a;
+  --terminal-fg: #e6e6e9;
+
   /* Motion clocks. Utilities: `duration-(--dur-base)`; CSS: `var(--dur-base)`.
      fast = press feedback, tooltips, hover colour · base = popovers, dropdowns,
      list enter · slow = dialogs, drawers, panel swaps. UI never exceeds slow;

@@ -83,8 +83,10 @@ export function SessionTerminalView({ session, onEvent, watch, onLive, input, ad
     };
     void import("@xterm/xterm").then(({ Terminal }) => {
       if (!alive || !host.current) return;
+      // xterm takes colour strings, not var(): read the terminal tokens from globals.css.
+      const token = (name: string) => getComputedStyle(document.documentElement).getPropertyValue(name).trim() || undefined;
       term = new Terminal({ disableStdin: true, cursorBlink: false, scrollback: 0, fontSize: 13,
-        fontFamily: "Menlo, 'SF Mono', monospace", theme: { background: "#16161a", foreground: "#e6e6e9" } });
+        fontFamily: "Menlo, 'SF Mono', monospace", theme: { background: token("--terminal-bg"), foreground: token("--terminal-fg") } });
       term.open(host.current);
       termRef.current = term;
       term.options.disableStdin = !typing.current.canType;

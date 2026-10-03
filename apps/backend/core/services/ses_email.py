@@ -81,6 +81,7 @@ async def send_ses_email(
     headers: dict[str, str] | None = None,
     kind: str = "generic",
     tenant_name: str | None = None,
+    calendar: str | None = None,
 ) -> str | None:
     """Send one email via AWS SES (sesv2 send_email, raw MIME).
 
@@ -130,6 +131,8 @@ async def send_ses_email(
         # an empty message would leave a stray empty text/plain part.
         if body_text is not None:
             msg.set_content(body_text)
+            if calendar is not None:  # an RFC 5546 iMIP reply (meeting_rsvp)
+                msg.add_alternative(calendar, subtype="calendar", params={"method": "REPLY"})
             if body_html is not None:
                 msg.add_alternative(body_html, subtype="html")
         elif body_html is not None:

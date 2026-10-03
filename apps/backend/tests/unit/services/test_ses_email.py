@@ -240,3 +240,24 @@ async def test_a_display_name_from_sends_the_bare_envelope_address(monkeypatch):
     )
 
     assert fake_client.send_email.call_args.kwargs["FromEmailAddress"] == "agents@acme.isol8.co"
+
+
+@pytest.mark.asyncio
+async def test_calendar_reply_is_a_text_calendar_alternative(monkeypatch):
+    monkeypatch.setattr(settings, "AGENT_EMAIL_DOMAIN", "isol8.co")
+    fake_client = MagicMock()
+    fake_client.send_email.return_value = {"MessageId": "ses-789"}
+    monkeypatch.setattr(ses_email, "_client", lambda: fake_client)
+
+    ics = "BEGIN:VCALENDAR\r\nMETHOD:REPLY\r\nEND:VCALENDAR\r\n"
+    await ses_email.send_ses_email(
+        from_addr="agents@acme.isol8.co", to="o@x.com", subject="Accepted: x", body_text="ok", calendar=ics
+    )
+
+    parsed = message_from_bytes(
+        fake_client.send_email.call_args.kwargs["Content"]["Raw"]["Data"], policy=policy.default
+    )
+    assert parsed.get_content_type() == "multipart/alternative"
+    part = next(p for p in parsed.walk() if p.get_content_type() == "text/calendar")
+    assert part.get_param("method") == "REPLY" and part.get_content_charset() == "utf-8"
+    assert "METHOD:REPLY" in part.get_content()

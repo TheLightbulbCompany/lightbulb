@@ -190,6 +190,7 @@ def room(monkeypatch):
         create=AsyncMock(side_effect=create),
         patch=AsyncMock(side_effect=patch),
         post=AsyncMock(side_effect=post),
+        accept=AsyncMock(),
         members=AsyncMock(
             return_value=[
                 {"user_id": "user_p", "email": "Prasiddha@acme.com"},
@@ -204,6 +205,7 @@ def room(monkeypatch):
     monkeypatch.setattr(repo, "create_message", m.post)
     monkeypatch.setattr(repo, "ensure_user_stream", AsyncMock())
     monkeypatch.setattr(meeting_invites.clerk_admin, "list_organization_members", m.members)
+    monkeypatch.setattr(meeting_invites.meeting_rsvp, "accept", m.accept)
     company = SimpleNamespace(starter_agent_ids={"ceo": CEO, "engineering": ENG})
     monkeypatch.setattr(
         meeting_invites, "PaperclipRepo", lambda **_: SimpleNamespace(resolve_owner_row=AsyncMock(return_value=company))
@@ -357,3 +359,16 @@ async def test_a_reinvite_after_cancel_announces_itself_again(room):
     join = "Agents will join **Acme weekly sync** on Sat Oct 3, 3:00 PM EDT."
     assert _lines(room) == [join, "This meeting was cancelled.", join]
     assert room.state["meta"]["meeting"]["status"] == "scheduled"
+
+
+async def test_only_a_scheduled_meeting_is_accepted(room):
+    await meeting_invites.handle_team_mail("org_1", _mail(GOOGLE, sender="mallory@evil.example"), TEAM)
+    room.accept.assert_not_awaited()
+    assert await meeting_invites.handle_team_mail("org_1", _mail(GOOGLE), TEAM) == "meeting_scheduled"
+    room.accept.assert_awaited_once()
+    room_id, invite = room.accept.await_args.args[2], room.accept.await_args.args[1]
+    assert room_id == meeting_invites.messaging_repo.meeting_room_id("org_1", UID) and invite.uid == UID
+    cal = GOOGLE.replace("METHOD:REQUEST", "METHOD:CANCEL").replace("SEQUENCE:0", "SEQUENCE:1")
+    assert await meeting_invites.handle_team_mail("org_1", _mail(cal), TEAM) == "meeting_cancelled"
+    assert await meeting_invites.handle_team_mail("org_1", _mail(GOOGLE), TEAM) == "meeting_stale"
+    room.accept.assert_awaited_once()

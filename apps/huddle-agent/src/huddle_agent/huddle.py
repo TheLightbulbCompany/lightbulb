@@ -110,6 +110,10 @@ SPEAKER_TOPIC = "meet.speaker"  # {participantId, name, speaking, at}, relayed b
 # ponytail: fixed slack for Recall's event lag vs our STT final; tune from mislabelled lines
 SPEAKER_SLACK_S = 1.0
 SPEAKER_WINDOWS = 50
+# ponytail: an open speaking span (an `on` whose `off` never came) or an utterance start older than
+# this is stale; a longer unbroken monologue loses its label past it
+MEET_SPAN_MAX_S = 30
+TRANSCRIPT_CHUNK = 500  # TranscriptBody.lines max (backend huddles.py)
 
 
 def _retryable(e: BackendError) -> bool:
@@ -506,29 +510,34 @@ class Huddle:
         async with self._flush_lock:
             lines = self._transcript.after(self._sent_mark)
             self._sent_at = self._clock()
-            if not lines:
-                return
-            try:
-                await self._backend.transcript(
-                    self._huddle_id,
-                    [
-                        {
-                            "mark": x.mark,
-                            "kind": x.kind,
-                            "name": x.name,
-                            "text": x.text,
-                            "at": x.at,
-                            "to": x.to,
-                        }
-                        for x in lines
-                    ],
-                    final=self.setting == "meeting",
-                )
-                self._sent_mark = lines[-1].mark
-            except Exception:
-                logger.info(
-                    "huddle transcript post failed; retrying next tick", exc_info=True
-                )
+            # a meeting's single final post is chunked; only the last chunk says final
+            for i in range(0, len(lines), TRANSCRIPT_CHUNK):
+                part = lines[i : i + TRANSCRIPT_CHUNK]
+                try:
+                    await self._backend.transcript(
+                        self._huddle_id,
+                        [
+                            {
+                                "mark": x.mark,
+                                "kind": x.kind,
+                                "name": x.name,
+                                "text": x.text,
+                                "at": x.at,
+                                "to": x.to,
+                            }
+                            for x in part
+                        ],
+                        final=self.setting == "meeting"
+                        and i + TRANSCRIPT_CHUNK >= len(lines),
+                    )
+                except Exception:
+                    logger.info(
+                        "huddle transcript post failed; %d lines unsent",
+                        len(lines) - i,
+                        exc_info=True,
+                    )
+                    return
+                self._sent_mark = part[-1].mark
 
     async def clear_presence(self) -> None:
         """The job is shutting down: clear the room's Live marker before anything else, unless people are
@@ -566,9 +575,9 @@ class Huddle:
                 None  # someone spoke after the question: it was not left unclaimed
             )
             if identity.startswith("meet:"):
-                name = self._said_by[identity] = self._meet_label(
-                    now if began is None else began, now
-                )
+                if began is None or now - began > MEET_SPAN_MAX_S:
+                    began = now  # a stale start (an STT stream that never finalised)
+                name = self._said_by[identity] = self._meet_label(began, now)
                 mark = self._transcript.add_person(
                     identity, f"{name} (Meet)", text, at=now
                 )
@@ -861,7 +870,8 @@ class Huddle:
                 else "none"
             )
         except BackendError as e:
-            if humans is None or humans <= 1:  # spoken to the agents: say it failed
+            # spoken to the agents: say it failed (an unclaimed question asked nobody)
+            if not unclaimed and (humans is None or humans <= 1):
                 self._room.publish(
                     ERROR_TOPIC, {"code": e.code, "reason": e.reason}, [identity]
                 )
@@ -1054,6 +1064,7 @@ class Huddle:
         """`then`: the request's other named agents, queued behind this one. Any summon but a queue
         advance (path "switch") replaces a pending queue: a new name wins."""
         async with self._lock:
+            self._unclaimed = None  # an agent takes the floor: the open question is not left unclaimed
             self._released.discard(identity)  # only a release during THIS summon counts
             self._last_agent[identity] = agent_id
             if path != "switch":
@@ -1503,9 +1514,14 @@ class Huddle:
         try:
             p = json.loads(data)
             pid, name = str(p["participantId"]), str(p.get("name") or "Someone")
-            at = float(p.get("at") or self._clock())
         except (ValueError, KeyError, TypeError):
             return
+        # stamped on arrival: both sides of the overlap use the worker clock; the slack absorbs relay lag
+        at = self._clock()
+        logger.debug("huddle meet.speaker lag %s", p.get("at"))
+        self._meet_speaking = {
+            k: x for k, x in self._meet_speaking.items() if at - x[1] <= MEET_SPAN_MAX_S
+        }
         if p.get("speaking"):
             self._meet_speaking.setdefault(pid, (name, at))
         elif (was := self._meet_speaking.pop(pid, None)) is not None:
@@ -1517,10 +1533,15 @@ class Huddle:
         """Everyone whose speaking window overlaps [start, end]: "Priya", "Priya + Dan", else "Someone"."""
         start, end = start - SPEAKER_SLACK_S, end + SPEAKER_SLACK_S
         spans = self._meet_windows + [
-            (n, since, math.inf) for n, since in self._meet_speaking.values()
+            (n, since, since + MEET_SPAN_MAX_S)
+            for n, since in self._meet_speaking.values()
         ]
-        names = [n for n, s, e in spans if s <= end and e >= start]
+        names = [n for n, s, e in spans if s < end and e > start]
         return " + ".join(dict.fromkeys(names)) or "Someone"
+
+    def stt_stopped(self, identity: str) -> None:
+        """That person's STT stream ended (restart or unpublish): its utterance start goes with it."""
+        self._utter_from.pop(identity, None)
 
     def _voice_notice(self, p: dict) -> None:
         """C3 notices: tell the agent's open voice, then every person (C5)."""
@@ -1595,7 +1616,7 @@ class Huddle:
             and not self._flush_lock.locked()
         ):
             self._spawn(self._flush_transcript())
-        if (u := self._unclaimed) is not None and now >= u[0]:
+        if (u := self._unclaimed) is not None and now >= u[0] and self._voice is None:
             self._unclaimed = None  # one route, one summon
             _, identity, text, mark = u
             self._spawn(

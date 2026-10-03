@@ -417,6 +417,9 @@ async def entrypoint(ctx: JobContext) -> None:
                     stt_engine, e, started_with, vad_state
                 ):
                     raise
+                huddle.stt_stopped(
+                    p.identity
+                )  # the reopened stream starts a new utterance
             finally:
                 await utils.aio.cancel_and_wait(pusher)
                 await audio.aclose()
@@ -425,6 +428,7 @@ async def entrypoint(ctx: JobContext) -> None:
     stt_tasks: dict[str, asyncio.Task] = {}  # identity -> that person's transcription
 
     def stop_stt(identity: str) -> None:
+        huddle.stt_stopped(identity)
         if (t := stt_tasks.pop(identity, None)) is not None:
             t.cancel()
 

@@ -4,6 +4,7 @@ carries the mixed meeting audio. Speaker names arrive as `meet.speaker` packets 
 import json
 
 from huddle_agent import huddle as h_mod
+from huddle_agent.backend import BackendError
 from huddle_agent.transcript import is_question
 from test_huddle import make, settle
 
@@ -16,7 +17,7 @@ async def meeting():
     return h, room, backend, lives, clock, log
 
 
-def speaker(h, pid, name, speaking, at):
+def speaker(h, pid, name, speaking, at=0):  # Recall's `at` is logged, never used
     h.on_data(
         None,
         "meet.speaker",
@@ -87,19 +88,17 @@ async def test_a_named_agent_still_answers_at_once():
 
 async def test_meeting_lines_carry_meet_speaker_names():
     h, room, backend, lives, clock, log = await meeting()
-    t = clock.t
-    speaker(h, "p1", "Priya", True, t - 3)
-    speaker(h, "p1", "Priya", False, t - 0.5)
+    speaker(h, "p1", "Priya", True)
+    clock.t += 2.5
+    speaker(h, "p1", "Priya", False)
     await hear(h, "we shipped the importer")
-    speaker(h, "p1", "Priya", True, t)
-    speaker(h, "p2", "Dan", True, t)
+    speaker(h, "p1", "Priya", True)
+    speaker(h, "p2", "Dan", True)
     clock.t += 3
-    h.on_interim_transcript(
-        MEET, "Google Meet", "both"
-    )  # this utterance begins at t + 3
+    h.on_interim_transcript(MEET, "Google Meet", "both")  # the utterance begins now
     await hear(h, "both of us talking now")
-    speaker(h, "p1", "Priya", False, clock.t)
-    speaker(h, "p2", "Dan", False, clock.t)
+    speaker(h, "p1", "Priya", False)
+    speaker(h, "p2", "Dan", False)
     clock.t += 60
     await hear(h, "is anyone there?")
     names = [x.name for x in h._transcript.after(-1)]
@@ -108,6 +107,71 @@ async def test_meeting_lines_carry_meet_speaker_names():
     await h.tick()
     await settle(h)
     assert backend.routes[0][0] == "Someone"  # /route's speaker is the label
+
+
+async def test_an_on_without_an_off_stops_labelling_after_30_seconds():
+    h, room, backend, lives, clock, log = await meeting()
+    speaker(h, "p1", "Priya", True)  # its off never arrives
+    clock.t += 31
+    await hear(h, "we shipped the importer")
+    assert h._transcript.after(-1)[0].name == "Someone (Meet)"
+
+
+async def test_a_stale_utterance_start_is_ignored():
+    h, room, backend, lives, clock, log = await meeting()
+    speaker(h, "p1", "Priya", True)
+    h.on_interim_transcript(MEET, "Google Meet", "we")
+    clock.t += 1
+    speaker(h, "p1", "Priya", False)
+    clock.t += 40  # that stream never finalised: its start is not this line's
+    await hear(h, "we shipped the importer")
+    assert h._transcript.after(-1)[0].name == "Someone (Meet)"
+    h.on_interim_transcript(MEET, "Google Meet", "and")
+    h.stt_stopped(MEET)  # the STT stream restarted
+    assert MEET not in h._utter_from
+
+
+async def test_the_final_transcript_goes_in_chunks_of_500():
+    h, room, backend, lives, clock, log = await meeting()
+    for i in range(1200):
+        h._transcript.add_person(MEET, "Priya (Meet)", f"line {i}", at=clock.t)
+    await h._flush_transcript()
+    assert [len(x[1]) for x in backend.transcripts] == [500, 500, 200]
+    assert backend.finals == [False, False, True]
+
+
+async def test_two_questions_route_once_and_a_summon_disarms_the_timer():
+    h, room, backend, lives, clock, log = await meeting()
+    await hear(h, "what did we ship?")
+    clock.t += 2
+    await hear(h, "and who shipped it?")
+    for _ in range(3):
+        clock.t += 2
+        await h.tick()
+        await settle(h)
+    assert [r[1] for r in backend.routes] == ["and who shipped it?"]
+
+    h, room, backend, lives, clock, log = await meeting()
+    await hear(h, "what did we ship?")
+    await h.talk_start(MEET, '{"agentId": "forge"}')
+    clock.t += 5
+    await h.tick()
+    await settle(h)
+    assert backend.routes == [] and backend.sessions == ["forge"]
+
+
+async def test_a_failed_unclaimed_route_tells_nobody():
+    h, room, backend, lives, clock, log = await meeting()
+
+    async def refused(*a, **kw):
+        raise BackendError(503, "runtime_unavailable", None)
+
+    backend.route = refused
+    await hear(h, "what did we ship?")
+    clock.t += h_mod.UNCLAIMED_QUESTION_S
+    await h.tick()
+    await settle(h)
+    assert not [x for x in room.published if x[0] == "huddle.error"]
 
 
 async def test_meeting_idle_leaves_after_60_minutes_via_the_backend():

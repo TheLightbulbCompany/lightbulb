@@ -44,13 +44,15 @@ async def test_happy_path_returns_message_id_and_builds_raw_mime(monkeypatch):
         headers={"In-Reply-To": "<m@x>", "References": "<m@x>"},
     )
 
-    assert result == "ses-123"
     fake_client.send_email.assert_called_once()
     _, kwargs = fake_client.send_email.call_args
     raw_bytes = kwargs["Content"]["Raw"]["Data"]
     assert isinstance(raw_bytes, (bytes, bytearray))
 
     parsed = message_from_bytes(raw_bytes)
+    # The RFC Message-ID we minted, not the SES id: a reply's In-Reply-To names it.
+    assert result == parsed["Message-ID"]
+    assert result.startswith("<") and result.endswith("@isol8.co>")
     assert parsed["From"] == "friday@acme.isol8.co"
     assert parsed["To"] == "alice@x.com"
     assert parsed["Subject"] == "Re: Need help"
@@ -135,9 +137,9 @@ async def test_html_only_body_is_a_single_text_html_part(monkeypatch):
         kind="welcome",
     )
 
-    assert result == "ses-html"
     _, kwargs = fake_client.send_email.call_args
     parsed = message_from_bytes(kwargs["Content"]["Raw"]["Data"], policy=policy.default)
+    assert result == parsed["Message-ID"]
     assert not parsed.is_multipart()
     assert parsed.get_content_type() == "text/html"
     assert parsed.get_content().strip() == "<p>hi</p>"

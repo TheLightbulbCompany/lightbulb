@@ -3,7 +3,7 @@
 Everything the platform sends leaves through ``send_ses_email``:
 
 - agent replies, FROM a per-owner subdomain address
-  (``friday@{slug}.isol8.co``) — via the ``send_ses_reply`` wrapper
+  (``agents@{slug}.{domain}``) — via the ``send_ses_reply`` wrapper
 - the app's own welcome / support-ticket mail, FROM ``hello@isol8.co`` /
   ``tickets@isol8.co`` — via ``email_service.send_email``, which adds the
   app-mail concerns (``[ENV]`` subject tagging) on top of this transport
@@ -40,6 +40,7 @@ reaching the send. See ``routers/webhooks.py``.
 import logging
 from email import policy
 from email.message import EmailMessage
+from email.utils import make_msgid
 
 import anyio
 import boto3
@@ -85,8 +86,9 @@ async def send_ses_email(
 
     Builds an RFC-5322 message with stdlib email.message.EmailMessage so
     arbitrary headers (`In-Reply-To`/`References` threading, `Reply-To`) can
-    be set, then sends the raw bytes. Returns the SES MessageId on success,
-    or None on any failure (never raises — callers map None → "not_sent").
+    be set, then sends the raw bytes. Returns the message's own RFC 5322
+    ``Message-ID`` (which we mint, so a later reply's ``In-Reply-To`` can be
+    traced back to the sender) on success, or None on any failure (never raises — callers map None → "not_sent").
     boto3 is synchronous, so the send runs off the event loop with a timeout.
 
     Pass ``body_html`` alone for an HTML-only message, ``body_text`` alone for
@@ -117,6 +119,8 @@ async def send_ses_email(
         msg["From"] = from_addr
         msg["To"] = ", ".join(to) if isinstance(to, list) else to
         msg["Subject"] = subject
+        message_id = make_msgid(domain=settings.AGENT_EMAIL_DOMAIN.strip())
+        msg["Message-ID"] = message_id
         for key, val in (headers or {}).items():
             msg[key] = val
 
@@ -146,9 +150,9 @@ async def send_ses_email(
                 lambda: _client().send_email(**send_kwargs),
                 abandon_on_cancel=True,
             )
-        message_id = resp.get("MessageId") if isinstance(resp, dict) else None
+        ses_id = resp.get("MessageId") if isinstance(resp, dict) else None
         put_metric("email.send", dimensions={"result": "ok", "kind": kind})
-        logger.info("sent %s email to %s id=%s", kind, to, message_id)
+        logger.info("sent %s email to %s id=%s ses_id=%s", kind, to, message_id, ses_id)
         return message_id
     except Exception:
         put_metric("email.send", dimensions={"result": "error", "kind": kind})

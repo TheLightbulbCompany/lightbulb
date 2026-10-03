@@ -12,11 +12,9 @@ import hmac
 import time
 from datetime import datetime, timezone
 
-import boto3
 import httpx
 
 from core.config import settings
-from core.dynamodb import run_in_thread
 from core.services import livekit_huddles
 
 CONSENT_LINE = (
@@ -27,11 +25,17 @@ _REASONS = {
     "402": "the meeting-bot account is out of credit",
     "507": "no meeting bots are free right now",
     "timeout": "the meeting-bot service didn't answer",
+    "bad_response": "the meeting-bot service sent an unreadable answer",
 }
 _TICKET_GRACE_S = 4 * 3600  # the ticket outlives the scheduled end by this much, then dies
 _WEBHOOK_TOLERANCE_S = 300
+_SPEECH_EVENTS = [
+    "participant_events.speech_on",
+    "participant_events.speech_off",
+    "participant_events.join",
+    "participant_events.leave",
+]
 _transport: httpx.AsyncBaseTransport | None = None  # tests swap in httpx.MockTransport
-_secrets: dict[str, str] = {}
 
 
 class RecallError(Exception):
@@ -41,17 +45,8 @@ class RecallError(Exception):
         self.reason = _REASONS.get(code, f"the meeting-bot service answered {code}")
 
 
-async def _secret(name: str) -> str:
-    """``lightbulb/{env}/{name}``, read once per process."""
-    if name not in _secrets:
-        sm = boto3.client("secretsmanager", region_name=settings.AWS_REGION)
-        resp = await run_in_thread(sm.get_secret_value, SecretId=f"lightbulb/{settings.ENVIRONMENT}/{name}")
-        _secrets[name] = resp["SecretString"].strip()
-    return _secrets[name]
-
-
 async def _call(method: str, path: str, body: dict | None = None, idempotency_key: str | None = None) -> dict:
-    headers = {"Authorization": f"Token {await _secret('recall_api_key')}"}
+    headers = {"Authorization": f"Token {settings.RECALL_API_KEY}"}
     if idempotency_key:
         headers["Idempotency-Key"] = idempotency_key
     try:
@@ -63,7 +58,10 @@ async def _call(method: str, path: str, body: dict | None = None, idempotency_ke
         raise RecallError("network") from None
     if resp.status_code >= 400:
         raise RecallError(str(resp.status_code))
-    return resp.json() if resp.content else {}
+    try:
+        return resp.json() if resp.content else {}
+    except ValueError:
+        raise RecallError("bad_response") from None
 
 
 def _iso(epoch: int) -> str:
@@ -84,9 +82,17 @@ async def create(*, room_id: str, meeting: dict, company: str) -> str:
     body = {
         "meeting_url": meeting["meetingUrl"],
         "bot_name": f"{company} agents · Lightbulb",
-        # ponytail: audio_separate_raw + realtime_endpoints join recording_config once Recall enables
-        # per-participant audio for the workspace (Task 0).
-        "recording_config": {"retention": None},  # ZDR
+        # ZDR; mixed audio reaches the page, speaker events reach Task 7's route. No transcription.
+        "recording_config": {
+            "retention": None,
+            "realtime_endpoints": [
+                {
+                    "type": "webhook",
+                    "url": f"{settings.PUBLIC_API_BASE}/api/v1/webhooks/recall/realtime",
+                    "events": _SPEECH_EVENTS,
+                }
+            ],
+        },
         "output_media": _output_media(room_id, meeting),
         "variant": {"google_meet": "web_4_core"},
         "automatic_leave": {"waiting_room_timeout": 600, "noone_joined_timeout": 300},
@@ -95,7 +101,10 @@ async def create(*, room_id: str, meeting: dict, company: str) -> str:
     }
     if join_at > time.time():
         body["join_at"] = _iso(join_at)  # omitted when already past: Recall joins now
-    return (await _call("POST", "/api/v1/bot/", body, idempotency_key=meeting["ticketNonce"]))["id"]
+    bot = await _call("POST", "/api/v1/bot/", body, idempotency_key=meeting["ticketNonce"])
+    if not isinstance(bot, dict) or not bot.get("id"):
+        raise RecallError("bad_response")
+    return bot["id"]
 
 
 async def reschedule(bot_id: str, *, room_id: str, meeting: dict) -> None:
@@ -115,13 +124,18 @@ async def leave(bot_id: str) -> None:
         await _call("POST", f"/api/v1/bot/{bot_id}/leave_call/")
 
 
-async def verify_webhook(headers, body: bytes) -> bool:
+def verify_webhook(headers, body: bytes) -> bool:
     """Recall's Svix-style signature: ``v1,<b64 HMAC-SHA256(id.timestamp.body)>`` under the
     ``whsec_`` workspace secret, any of the space-separated signatures (rotation), 5-min skew."""
     msg_id, stamp, sigs = (headers.get(f"webhook-{k}") for k in ("id", "timestamp", "signature"))
-    if not (msg_id and stamp and sigs) or not stamp.isdigit() or abs(time.time() - int(stamp)) > _WEBHOOK_TOLERANCE_S:
+    secret = settings.RECALL_WEBHOOK_SECRET
+    if (
+        not (secret and msg_id and stamp and sigs)
+        or not stamp.isdigit()
+        or abs(time.time() - int(stamp)) > _WEBHOOK_TOLERANCE_S
+    ):
         return False
-    key = base64.b64decode((await _secret("recall_webhook_secret")).removeprefix("whsec_"))
+    key = base64.b64decode(secret.removeprefix("whsec_"))
     expected = base64.b64encode(hmac.new(key, f"{msg_id}.{stamp}.".encode() + body, hashlib.sha256).digest()).decode()
     return any(
         version == "v1" and hmac.compare_digest(sig, expected)

@@ -1263,3 +1263,15 @@ async def test_a_system_notice_needs_no_member_row_but_a_removed_human_is_still_
     assert notice["author"]["kind"] == "system" and notice["messageSeq"] == 1
     with pytest.raises(repo.MessageForbidden):
         await _post(room_id, "hi", [], "m-2", {"kind": "human", "id": "removed", "displayName": "Gone"})
+
+
+@pytest.mark.asyncio
+async def test_set_meeting_field_if_absent_has_one_winner(table):
+    room_id, meta = await _room()
+    assert not await repo.set_meeting_field_if_absent(room_id, "ticketNonce", "a")  # no meeting yet
+    await repo.patch_room_meta(room_id, {"meeting": {"uid": "u1", "status": "scheduled"}})
+    assert await repo.set_meeting_field_if_absent(room_id, "ticketNonce", "a")
+    assert not await repo.set_meeting_field_if_absent(room_id, "ticketNonce", "b")
+    stored = await repo.get_room(room_id)
+    assert stored["meeting"] == {"uid": "u1", "status": "scheduled", "ticketNonce": "a"}
+    assert stored["revision"] == meta["revision"] + 2

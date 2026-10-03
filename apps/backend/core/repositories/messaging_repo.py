@@ -1736,6 +1736,31 @@ async def patch_room_meta(room_id: str, updates: dict[str, Any]) -> dict:
     return {**{k: v for k, v in meta.items() if k not in removed}, **named, "revision": revision, "updatedAt": now}
 
 
+async def set_meeting_field_if_absent(room_id: str, field: str, value: Any) -> bool:
+    """Set ``meeting.<field>`` only if the meeting has none (bumping the revision). False = another
+    writer got there first: re-read META for theirs."""
+    try:
+        await _transact(
+            [
+                {
+                    "Update": {
+                        "TableName": _table().name,
+                        "Key": {"pk": room_pk(room_id), "sk": "META"},
+                        "UpdateExpression": "SET meeting.#f = :v, revision = revision + :one, updatedAt = :now",
+                        "ConditionExpression": "attribute_exists(meeting) AND attribute_not_exists(meeting.#f)",
+                        "ExpressionAttributeNames": {"#f": field},
+                        "ExpressionAttributeValues": {":v": _ddb_safe(value), ":one": 1, ":now": utc_now_iso()},
+                    }
+                }
+            ]
+        )
+        return True
+    except ClientError as exc:
+        if _is_cancelled(exc):
+            return False
+        raise
+
+
 MAX_PINNED_MESSAGES = 50
 
 

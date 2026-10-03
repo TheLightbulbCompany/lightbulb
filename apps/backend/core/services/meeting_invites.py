@@ -222,54 +222,114 @@ async def _patch_meeting(room_id: str, meeting: dict) -> None:
                 return
 
 
-def _unbooked(meeting: dict) -> dict:
-    return {k: v for k, v in meeting.items() if k not in ("recallBotId", "ticketNonce")}
+_BOT_KEYS = ("recallBotId", "ticketNonce", "botError")
 
 
-async def _sync_bot(owner_id: str, room_id: str, meeting: dict, moved: bool) -> dict:
-    """Books, moves or pulls the meeting's Recall bot and returns the META to write. Never raises
-    a Recall failure into the mail route: it becomes ``bot_failed`` and one line in the room."""
+async def _write_bot(room_id: str, fields: dict, drop: tuple = ()) -> dict:
+    """Bot state onto the CURRENT META's meeting: re-read and merge, three tries, then raise so SES
+    redelivers (a re-create replays the stored nonce's bot). A bot id is never logged-and-dropped."""
+    for attempt in (1, 2, 3):
+        meta = await messaging_repo.get_room(room_id) or {}
+        merged = {k: v for k, v in {**(meta.get("meeting") or {}), **fields}.items() if k not in drop}
+        try:
+            await messaging_repo.patch_room_meta(room_id, {"meeting": merged})
+            return merged
+        except ClientError as exc:
+            if not messaging_repo._is_cancelled(exc) or attempt == 3:
+                raise
+
+
+def _code(exc: Exception) -> str:
+    code = exc.code if isinstance(exc, meeting_bots.RecallError) else "error"
+    put_metric("meeting.bot_failed", dimensions={"code": code})
+    return code
+
+
+async def _bot_failed(owner_id: str, room_id: str, meeting: dict, exc: Exception, verb: str, keep: bool) -> dict:
+    """``bot_failed`` + one line + one metric. ``keep`` holds on to a bot that still exists."""
+    code = _code(exc)
+    logger.warning("meeting room %s: bot %s failed (%s)", room_id, verb, code)
+    reason = exc.reason if isinstance(exc, meeting_bots.RecallError) else "something went wrong"
+    await _post_line(
+        owner_id,
+        room_id,
+        f"meeting:{meeting['uid']}:{meeting['sequence']}:{meeting['startAt']}:{verb}_failed:{code}",
+        f"Couldn't {verb} a bot for this meeting: {reason}. Forward the invite again to retry.",
+    )
+    return await _write_bot(
+        room_id, {"status": "bot_failed", "botError": code}, drop=() if keep else ("recallBotId", "ticketNonce")
+    )
+
+
+async def _sync_bot(owner_id: str, room_id: str, meeting: dict, prior: dict | None) -> dict:
+    """Books, moves or pulls the meeting's Recall bot and returns the meeting as written. A Recall
+    failure never raises into the mail route; a lost META race past three tries does (SES retries)."""
     bot_id = meeting.get("recallBotId")
-    try:
-        if meeting["status"] == "cancelled":
-            if bot_id:
-                await meeting_bots.leave(bot_id)
-            return _unbooked(meeting)
-        if bot_id and meeting["status"] != "bot_failed":
-            if not moved:
-                return meeting
-            try:
-                await meeting_bots.reschedule(bot_id, room_id=room_id, meeting=meeting)
-                return meeting
-            except meeting_bots.RecallError:
-                await meeting_bots.leave(bot_id)  # under 10 minutes out Recall wants a fresh bot
-                meeting = {**_unbooked(meeting), "status": "scheduled"}
-        if not settings.MEETINGS_ENABLED:
-            logger.info("meeting room %s: MEETINGS_ENABLED off, no bot booked", room_id)
+    if meeting["status"] == "cancelled":
+        if not bot_id:
             return meeting
-        if not meeting.get("ticketNonce") or meeting["status"] == "bot_failed":
-            # Written before the POST: a retry after a lost response replays the same bot.
-            meeting = {**_unbooked(meeting), "ticketNonce": secrets.token_urlsafe(32)}
-            await _patch_meeting(room_id, meeting)
-        org = await clerk_admin.get_organization(owner_id) or {}
-        bot_id = await meeting_bots.create(room_id=room_id, meeting=meeting, company=org.get("name") or "Your team")
-        meeting = {**meeting, "status": "bot_created", "recallBotId": bot_id}
-        meeting.pop("botError", None)
+        try:
+            await meeting_bots.leave(bot_id)
+        except Exception as exc:  # noqa: BLE001 -- the id stays, so a later CANCEL retries
+            code = _code(exc)
+            logger.warning("meeting room %s: bot leave failed (%s)", room_id, code)
+            await _post_line(
+                owner_id,
+                room_id,
+                f"meeting:{meeting['uid']}:{meeting['sequence']}:leave_failed",
+                "Couldn't pull the bot out of this meeting.",
+            )
+            return await _write_bot(room_id, {"botError": code})
+        return await _write_bot(room_id, {}, drop=_BOT_KEYS)
+    if bot_id and meeting["status"] != "bot_failed" and prior and prior.get("meetingUrl") == meeting["meetingUrl"]:
+        if int(prior.get("startAt", 0)) == meeting["startAt"]:
+            return meeting
+        try:
+            await meeting_bots.reschedule(bot_id, room_id=room_id, meeting=meeting)
+            return meeting
+        except Exception as exc:  # noqa: BLE001
+            if not (isinstance(exc, meeting_bots.RecallError) and exc.code == "400"):
+                return await _bot_failed(owner_id, room_id, meeting, exc, "move", keep=True)
+            # 400: under 10 minutes out Recall wants a fresh bot -- replaced below
+    if not settings.MEETINGS_ENABLED:
+        logger.info("meeting room %s: MEETINGS_ENABLED off, no bot booked", room_id)
         return meeting
-    except Exception as exc:  # noqa: BLE001 -- the SES route must not 5xx for Recall; no detail logged
-        code = exc.code if isinstance(exc, meeting_bots.RecallError) else "error"
-        put_metric("meeting.bot_failed", dimensions={"code": code})
-        logger.warning("meeting room %s: bot call failed (%s)", room_id, code)
-        if meeting["status"] == "cancelled":
-            return {**meeting, "botError": code}
-        reason = exc.reason if isinstance(exc, meeting_bots.RecallError) else "something went wrong"
-        await _post_line(
-            owner_id,
-            room_id,
-            f"meeting:{meeting['uid']}:{meeting['sequence']}:{meeting['startAt']}:bot_failed:{code}",
-            f"Couldn't book a bot for this meeting: {reason}. Forward the invite again to retry.",
+    if not settings.RECALL_API_KEY:
+        logger.warning("meeting room %s: RECALL_API_KEY unset, no bot booked", room_id)
+        return await _write_bot(room_id, {"status": "bot_failed", "botError": "no_api_key"})
+    if bot_id:  # a new time, a new link, or a failed move: the old bot goes before a new one comes
+        try:
+            await meeting_bots.leave(bot_id)
+        except Exception as exc:  # noqa: BLE001 -- the old bot stands, so does its id
+            code = _code(exc)
+            logger.warning("meeting room %s: bot leave failed (%s)", room_id, code)
+            await _post_line(
+                owner_id,
+                room_id,
+                f"meeting:{meeting['uid']}:{meeting['sequence']}:{meeting['startAt']}:replace_failed",
+                "Couldn't move the bot; it will join at the old time.",
+            )
+            return await _write_bot(room_id, {"status": "bot_failed", "botError": code})
+        meeting = await _write_bot(room_id, {"status": "scheduled"}, drop=_BOT_KEYS)
+    # The nonce is claimed with a conditional write: a concurrent delivery reads the winner's and
+    # POSTs under the same Idempotency-Key, so Recall books one bot.
+    nonce = secrets.token_urlsafe(32)
+    if not await messaging_repo.set_meeting_field_if_absent(room_id, "ticketNonce", nonce):
+        nonce = ((await messaging_repo.get_room(room_id) or {}).get("meeting") or {}).get("ticketNonce") or nonce
+    org = await clerk_admin.get_organization(owner_id) or {}
+    try:
+        bot_id = await meeting_bots.create(
+            room_id=room_id, meeting={**meeting, "ticketNonce": nonce}, company=org.get("name") or "Your team"
         )
-        return {**_unbooked(meeting), "status": "bot_failed", "botError": code}
+    except meeting_bots.RecallError as exc:
+        if exc.code == "409":  # the same key is in flight from the other delivery: it writes the bot
+            return meeting
+        return await _bot_failed(owner_id, room_id, meeting, exc, "book", keep=False)
+    except Exception as exc:  # noqa: BLE001
+        return await _bot_failed(owner_id, room_id, meeting, exc, "book", keep=False)
+    return await _write_bot(
+        room_id, {"status": "bot_created", "recallBotId": bot_id, "ticketNonce": nonce}, drop=("botError",)
+    )
 
 
 async def handle_team_mail(owner_id: str, payload, team: dict) -> str | None:
@@ -307,7 +367,6 @@ async def handle_team_mail(owner_id: str, payload, team: dict) -> str | None:
         if not current or current.get("organizer") != invite.organizer_email:
             return "meeting_ignored"
         meeting = {**current, "status": "cancelled", "sequence": invite.sequence}
-        moved = False
         text = "This meeting was cancelled."
     else:
         meeting = {
@@ -321,7 +380,7 @@ async def handle_team_mail(owner_id: str, payload, team: dict) -> str | None:
             "organizer": invite.organizer_email,
             "status": "scheduled" if not current or current.get("status") == "cancelled" else current["status"],
         }
-        moved = bool(current) and current.get("status") != "cancelled" and int(current.get("startAt", 0)) != start_at
+        moved = current and current.get("status") != "cancelled" and int(current.get("startAt", 0)) != start_at
         text = (
             f"**{meeting['title']}** moved to {_when_text(invite.start)}."
             if moved
@@ -330,6 +389,7 @@ async def handle_team_mail(owner_id: str, payload, team: dict) -> str | None:
     # A new room counts as coming from "scheduled", so a retry after the create replays its line;
     # cancelled -> scheduled is a new key, so a same-sequence re-invite announces itself again.
     prev_status = (current or {}).get("status", "scheduled")
+    prior = current
     if current is None:
         await _create_room(owner_id, room_id, invite, creator, by_email, meeting)
         meta = await messaging_repo.get_room(room_id)
@@ -342,10 +402,7 @@ async def handle_team_mail(owner_id: str, payload, team: dict) -> str | None:
     )
     if meeting != current:
         await _patch_meeting(room_id, meeting)
-    booked = await _sync_bot(owner_id, room_id, meeting, moved)
-    if booked != meeting:
-        meeting = booked
-        await _patch_meeting(room_id, meeting)
+    meeting = await _sync_bot(owner_id, room_id, meeting, prior)
     logger.info("meeting room %s: %s", room_id, meeting["status"])
     if invite.method == "CANCEL":
         return "meeting_cancelled"

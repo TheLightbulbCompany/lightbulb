@@ -27,11 +27,9 @@ def recall(monkeypatch):
         return httpx.Response(status, json=body)
 
     monkeypatch.setattr(meeting_bots, "_transport", httpx.MockTransport(handler))
-    monkeypatch.setattr(
-        meeting_bots,
-        "_secrets",
-        {"recall_api_key": KEY, "recall_webhook_secret": "whsec_" + base64.b64encode(b"k" * 24).decode()},
-    )
+    monkeypatch.setattr(meeting_bots.settings, "RECALL_API_KEY", KEY)
+    monkeypatch.setattr(meeting_bots.settings, "RECALL_WEBHOOK_SECRET", "whsec_" + base64.b64encode(b"k" * 24).decode())
+    monkeypatch.setattr(meeting_bots.settings, "PUBLIC_API_BASE", "https://api.example")
     monkeypatch.setattr(meeting_bots.settings, "LIVEKIT_API_SECRET", "lk-secret")
     monkeypatch.setattr(meeting_bots.settings, "MEET_BOT_PAGE_URL", "https://app.example/meet-bot")
     return calls, responses
@@ -51,17 +49,42 @@ async def test_create_body(recall, caplog):
     assert req.headers["authorization"] == f"Token {KEY}" and req.headers["idempotency-key"] == "nonce-1"
     body = json.loads(req.content)
     assert body["meeting_url"] == URL and body["bot_name"] == "Acme agents · Lightbulb"
-    assert body["recording_config"] == {"retention": None}
+    assert body["recording_config"] == {
+        "retention": None,
+        "realtime_endpoints": [
+            {
+                "type": "webhook",
+                "url": "https://api.example/api/v1/webhooks/recall/realtime",
+                "events": [
+                    "participant_events.speech_on",
+                    "participant_events.speech_off",
+                    "participant_events.join",
+                    "participant_events.leave",
+                ],
+            }
+        ],
+    }
     assert body["metadata"] == {"roomId": "room-1"}
     assert body["variant"] == {"google_meet": "web_4_core"}
     assert body["automatic_leave"] == {"waiting_room_timeout": 600, "noone_joined_timeout": 300}
     chat = body["chat"]["on_bot_join"]
-    assert chat["send_to"] == "everyone" and chat["pin"] and len(chat["message"]) <= 500 and "Acme" in chat["message"]
+    assert (
+        chat["send_to"] == "everyone"
+        and chat["pin"]
+        and chat["message"]
+        == (
+            "Lightbulb agents are in this meeting for Acme. They listen for their names; notes and a "
+            "transcript go to Acme's Lightbulb workspace. Recall.ai relays the call and stores nothing."
+        )
+    )
+    assert len(chat["message"]) <= 500
     page = body["output_media"]["camera"]["config"]["url"]
     assert body["output_media"]["camera"]["kind"] == "webpage"
     assert page.startswith("https://app.example/meet-bot#t=")
     payload, sig = page.split("#t=")[1].split(".")
-    assert hmac.compare_digest(sig, hmac.new(b"lk-secret", payload.encode(), hashlib.sha256).hexdigest())
+    assert hmac.compare_digest(
+        sig, hmac.new(b"lk-secret", b"meet-ticket|" + payload.encode(), hashlib.sha256).hexdigest()
+    )
     room, nonce, _exp = base64.urlsafe_b64decode(payload + "==").decode().split("|")
     assert (room, nonce) == ("room-1", "nonce-1")
     assert "join_at" in body
@@ -115,13 +138,29 @@ def _signed(body, stamp, key=b"k" * 24):
     return {"webhook-id": "msg_1", "webhook-timestamp": str(stamp), "webhook-signature": f"v1,{sig}"}
 
 
-async def test_webhook_signature(recall):
+def test_webhook_signature(recall):
     body, now = b'{"event":"bot.done"}', int(time.time())
-    assert await meeting_bots.verify_webhook(_signed(body, now), body)
+    assert meeting_bots.verify_webhook(_signed(body, now), body)
     rotated = _signed(body, now)
     rotated["webhook-signature"] = "v1,AAAA " + rotated["webhook-signature"]
-    assert await meeting_bots.verify_webhook(rotated, body)
-    assert not await meeting_bots.verify_webhook(_signed(body, now), body + b" ")
-    assert not await meeting_bots.verify_webhook(_signed(body, now, key=b"x" * 24), body)
-    assert not await meeting_bots.verify_webhook(_signed(body, now - 600), body)
-    assert not await meeting_bots.verify_webhook({}, body)
+    assert meeting_bots.verify_webhook(rotated, body)
+    assert not meeting_bots.verify_webhook(_signed(body, now), body + b" ")
+    assert not meeting_bots.verify_webhook(_signed(body, now, key=b"x" * 24), body)
+    assert not meeting_bots.verify_webhook(_signed(body, now - 600), body)
+    assert not meeting_bots.verify_webhook({}, body)
+
+
+async def test_an_unreadable_create_answer_is_a_recall_error(recall, monkeypatch):
+    def garbage(request):
+        return httpx.Response(201, content=b"<html>oops</html>")
+
+    monkeypatch.setattr(meeting_bots, "_transport", httpx.MockTransport(garbage))
+    with pytest.raises(meeting_bots.RecallError) as err:
+        await meeting_bots.create(room_id="room-1", meeting=_meeting(60), company="Acme")
+    assert err.value.code == "bad_response"
+
+
+def test_no_webhook_secret_refuses_everything(recall, monkeypatch):
+    body, now = b"{}", int(time.time())
+    monkeypatch.setattr(meeting_bots.settings, "RECALL_WEBHOOK_SECRET", "")
+    assert not meeting_bots.verify_webhook(_signed(body, now), body)

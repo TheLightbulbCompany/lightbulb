@@ -40,7 +40,7 @@ def meet_ticket(room_id: str, nonce: str, exp_epoch: int) -> str:
     if not settings.LIVEKIT_API_SECRET:
         raise RuntimeError("LIVEKIT_API_SECRET unset: no meet ticket")
     body = base64.urlsafe_b64encode(f"{room_id}|{nonce}|{exp_epoch}".encode()).decode().rstrip("=")
-    return f"{body}.{hmac.new(settings.LIVEKIT_API_SECRET.encode(), body.encode(), hashlib.sha256).hexdigest()}"
+    return f"{body}.{hmac.new(settings.LIVEKIT_API_SECRET.encode(), b'meet-ticket|' + body.encode(), hashlib.sha256).hexdigest()}"
 
 
 def room_name(room_id: str) -> str:

@@ -63,8 +63,8 @@ the seed and the room message as the owner's own words.
   put on a business card — short, real, no punctuation beyond hyphens.
 
   Two things derive from the name at the moment they're first created, and
-  neither retroactively updates on a later rename: your **email address**
-  (`lightbulb-mail.sh address` mints `<you>@<company-slug>.thelightbulb.company` from the
+  neither retroactively updates on a later rename: the **team email address**
+  (`lightbulb-mail.sh address` mints `agents@<company-slug>.thelightbulb.company` from the
   name at that moment — see `references/email.md`) and the board's **task-key
   prefix** (`ACM-1`, `ACM-2`, …; a rename only re-derives it while the board
   is still empty — tasks created before the rename keep keys minted from the

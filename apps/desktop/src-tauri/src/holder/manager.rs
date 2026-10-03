@@ -19,6 +19,7 @@ pub struct HolderInfo {
     pub provider_pid: u32,
     pub argv: Vec<String>,
     pub cwd: PathBuf,
+    pub watch: bool,
 }
 
 /// `/private/tmp/lightbulb-sessions-<uid>/h`, beside the app's other local-session sockets.
@@ -132,5 +133,6 @@ pub fn hello(socket: &Path) -> Option<HolderInfo> {
         provider_pid: v["providerPid"].as_u64()? as u32,
         argv: serde_json::from_value(v["argv"].clone()).ok()?,
         cwd: PathBuf::from(v["cwd"].as_str()?),
+        watch: v["watch"].as_bool().unwrap_or(false),
     })
 }

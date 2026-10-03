@@ -187,3 +187,36 @@ fn holder_manager_refuses_a_planted_symlink_for_its_folder() {
     assert!(err.contains("not safe"), "{err}");
     assert!(!elsewhere.join("h").exists(), "nothing is created through the symlink");
 }
+
+#[test]
+fn holder_watch_client_gets_snapshots_and_sizes_and_can_never_type() {
+    let socket = start_cat(&temp_dir());
+    let mut w = UnixStream::connect(&socket).unwrap();
+    w.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+    w.write_all(&encode(HELLO, br#"{"role":"watch"}"#)).unwrap();
+    let (kind, hello) = read_frame(&mut w).unwrap();
+    assert_eq!(kind, HELLO);
+    assert_eq!(serde_json::from_slice::<serde_json::Value>(&hello).unwrap()["watch"], true);
+    assert_eq!(read_frame(&mut w).unwrap().0, SNAPSHOT, "a watcher starts from the screen");
+    assert!(manager::list_in(socket.parent().unwrap())[0].watch);
+
+    let mut c = attach(&socket, "interactive");
+    c.write_all(&encode(INPUT, b"watched\r")).unwrap();
+    read_until(&mut w, b"watched");
+    c.write_all(&encode(RESIZE, &[0, 90, 0, 30])).unwrap();
+    loop {
+        let (kind, payload) = read_frame(&mut w).unwrap();
+        if kind == RESIZE {
+            assert_eq!(payload, vec![0, 90, 0, 30]);
+            break;
+        }
+    }
+    w.write_all(&encode(SNAPSHOT, b"")).unwrap();
+    while read_frame(&mut w).unwrap().0 != SNAPSHOT {}
+
+    w.write_all(&encode(INPUT, b"from-watcher\r")).unwrap();
+    w.write_all(&encode(RESIZE, &[0, 20, 0, 5])).unwrap();
+    c.write_all(&encode(INPUT, b"from-owner\r")).unwrap();
+    let out = read_until(&mut c, b"from-owner");
+    assert!(!out.windows(12).any(|x| x == b"from-watcher"), "a watcher never types");
+}

@@ -4,7 +4,7 @@
 use super::model::{is_probe_reply, Model};
 use super::protocol::*;
 use portable_pty::{native_pty_system, CommandBuilder, PtySize};
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::io::{Result, Write};
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::{UnixListener, UnixStream};
@@ -210,6 +210,7 @@ pub fn run_with_env(socket: &Path, argv: &[String], cwd: &Path, env: Vec<(String
     let mut pending: HashMap<u64, UnixStream> = HashMap::new();
     let mut clients: HashMap<u64, Client> = HashMap::new();
     let mut interactive: Option<u64> = None;
+    let mut watchers: HashSet<u64> = HashSet::new();
     let mut exited: Option<(String, Instant)> = None;
 
     loop {
@@ -248,7 +249,8 @@ pub fn run_with_env(socket: &Path, argv: &[String], cwd: &Path, env: Vec<(String
                 let role = serde_json::from_slice::<serde_json::Value>(&payload).unwrap_or_default();
                 let (rows, cols) = model.size();
                 let facts = serde_json::json!({"protocol": 1, "pid": std::process::id(),
-                    "providerPid": provider_pid, "argv": argv, "cwd": cwd, "rows": rows, "cols": cols});
+                    "providerPid": provider_pid, "argv": argv, "cwd": cwd, "rows": rows, "cols": cols,
+                    "watch": true});
                 if !client.send(encode(HELLO, facts.to_string().as_bytes())) {
                     continue;
                 }
@@ -258,6 +260,7 @@ pub fn run_with_env(socket: &Path, argv: &[String], cwd: &Path, env: Vec<(String
                         let (cols, rows) = (cols.clamp(1, 1000) as u16, rows.clamp(1, 500) as u16);
                         let _ = pair.master.resize(PtySize { rows, cols, pixel_width: 0, pixel_height: 0 });
                         model.resize(rows, cols);
+                        tell(&clients, &watchers, &size_frame(cols, rows));
                     }
                     if let Some(previous) = interactive.replace(id).filter(|p| *p != id) {
                         if let Some(c) = clients.get(&previous) {
@@ -267,6 +270,13 @@ pub fn run_with_env(socket: &Path, argv: &[String], cwd: &Path, env: Vec<(String
                     if !client.send(encode(SNAPSHOT, &with_offset(total, &model.snapshot()))) {
                         continue;
                     }
+                } else if role["role"] == "watch" {
+                    // Output-only, plus the screen to start from, fresh ones on request and every
+                    // size change: what a live view needs. It never types and never resizes.
+                    if !client.send(encode(SNAPSHOT, &with_offset(total, &model.snapshot()))) {
+                        continue;
+                    }
+                    watchers.insert(id);
                 }
                 clients.insert(id, client);
             }
@@ -278,6 +288,12 @@ pub fn run_with_env(socket: &Path, argv: &[String], cwd: &Path, env: Vec<(String
                 let rows = u16::from_be_bytes([payload[2], payload[3]]).max(1);
                 let _ = pair.master.resize(PtySize { rows, cols, pixel_width: 0, pixel_height: 0 });
                 model.resize(rows, cols);
+                tell(&clients, &watchers, &size_frame(cols, rows));
+            }
+            Event::Frame(id, SNAPSHOT, _) if watchers.contains(&id) => {
+                if let Some(client) = clients.get(&id) {
+                    client.send(encode(SNAPSHOT, &with_offset(total, &model.snapshot())));
+                }
             }
             Event::Frame(id, REPLAY, payload) => {
                 let (Some((from, _)), Some(client)) = (split_offset(&payload), clients.get(&id)) else { continue };
@@ -295,6 +311,7 @@ pub fn run_with_env(socket: &Path, argv: &[String], cwd: &Path, env: Vec<(String
             Event::Gone(id) => {
                 pending.remove(&id);
                 clients.remove(&id);
+                watchers.remove(&id);
                 if interactive == Some(id) {
                     interactive = None;
                 }
@@ -321,6 +338,21 @@ pub fn run_with_env(socket: &Path, argv: &[String], cwd: &Path, env: Vec<(String
                 let _ = std::fs::remove_file(socket);
                 return Ok(());
             }
+        }
+    }
+}
+
+/// RESIZE as the holder tells watch clients: `u16 BE cols`, `u16 BE rows`.
+fn size_frame(cols: u16, rows: u16) -> Vec<u8> {
+    let mut payload = cols.to_be_bytes().to_vec();
+    payload.extend_from_slice(&rows.to_be_bytes());
+    encode(RESIZE, &payload)
+}
+
+fn tell(clients: &HashMap<u64, Client>, watchers: &HashSet<u64>, frame: &[u8]) {
+    for id in watchers {
+        if let Some(client) = clients.get(id) {
+            client.send(frame.to_vec());
         }
     }
 }

@@ -620,16 +620,20 @@ async def _reschedule_locked(owner_id: str, room_id: str, meeting: dict, *, now:
     holds ``meeting_lease``. Returns "series_over", "bot_failed" or "advanced"; a failure after
     the write is ``bot_failed`` with a line, never ``scheduled`` without a bot."""
     end = int(meeting.get("endAt") or meeting.get("startAt") or 0)
-    # bot_failed with no call and no bot status: the BOOKING failed. Its nonce (_BOT_KEYS) stays,
-    # so a create Recall did take is adopted, and its dates stay while that occurrence is ahead.
+    # bot_failed with no call and no bot status, its occurrence still ahead: the BOOKING failed. A
+    # plain retry of the same occurrence keeps its dates and its nonce (_BOT_KEYS), so a create
+    # Recall did take is adopted. Anything else is a new occurrence and a new booking: no old nonce,
+    # which would adopt (or replay from Recall's 1 h cache) the bot for a date that passed.
     booking = meeting.get("status") == "bot_failed" and not (meeting.get("inCallAt") or meeting.get("lastBotStatus"))
-    fields: dict = {}
-    if not (booking and end > now):
+    if booking and end > now:
+        fields, drop = {}, _CALL_KEYS
+    else:
         nxt = await asyncio.to_thread(next_occurrence, meeting["recurrence"], max(now, end))
         if nxt is None:
             return "series_over"
         fields = {"startAt": int(nxt[0].timestamp()), "endAt": int(nxt[1].timestamp()), "status": "scheduled"}
-    written = await _patch_meeting(room_id, fields, drop=_CALL_KEYS if booking else _OCCURRENCE_KEYS)
+        drop = _OCCURRENCE_KEYS
+    written = await _patch_meeting(room_id, fields, drop=drop)
     await _seat_new_agents(owner_id, room_id)
     try:
         result = await _sync_bot(owner_id, room_id, written, meeting)

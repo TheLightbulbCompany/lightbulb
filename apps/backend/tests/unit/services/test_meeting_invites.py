@@ -1104,7 +1104,8 @@ async def test_a_hidden_room_is_in_no_room_list_but_an_old_meeting_room_stays(ta
 # --- fix round 1 ---
 
 
-async def test_a_late_answer_in_a_hidden_room_lands_in_the_default_room_once(table, monkeypatch):  # noqa: F811
+async def test_the_bridges_late_answer_in_a_hidden_room_lands_in_the_default_room_once(table, monkeypatch):  # noqa: F811
+    """The exact body bridge/turn.py _post_late_call_answer POSTs to /internal/messaging/agent-messages."""
     repo, messaging = meeting_invites.messaging_repo, meeting_invites.messaging
     monkeypatch.setattr(messaging, "human_emails", AsyncMock(return_value={}))
     monkeypatch.setattr(messaging, "load_agent_roster", AsyncMock(return_value=[{"id": FRIDAY, "name": "Friday"}]))
@@ -1263,3 +1264,16 @@ async def test_advance_seats_an_agent_hired_since_the_room_was_made(room, now, m
     room.upsert.assert_awaited_once()
     member = room.upsert.await_args.kwargs["member"]
     assert (member["id"], member["listenMode"], member["role"]) == (HIRED, "mentions", "member")
+
+
+async def test_a_booking_failure_whose_occurrence_passed_is_a_new_booking(room, bots, now):
+    _series_meeting(room, "bot_failed")
+    for key in ("recallBotId", "lastBotStatus", "inCallAt", "transcriptAttachedAt", "notesRunId", "notesMailedAt"):
+        del room.state["meta"]["meeting"][key]
+    room.state["meta"]["meeting"].update(ticketNonce="nonce-1", botClaimAt=1, botError="507")
+    now["t"] = _epoch(2026, 11, 8, 12, 0)  # Saturday's slot went by unbooked
+    assert await meeting_invites.handle_team_mail("org_1", _mail(SERIES), TEAM) == "meeting_scheduled"
+    booked = bots.create.await_args.kwargs["meeting"]
+    assert booked["startAt"] == _epoch(2026, 11, 14, 15, 0) and booked["ticketNonce"] != "nonce-1"
+    meeting = room.state["meta"]["meeting"]
+    assert meeting["status"] == "bot_created" and "botError" not in meeting

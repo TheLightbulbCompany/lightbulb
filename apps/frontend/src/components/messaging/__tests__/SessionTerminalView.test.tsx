@@ -1,6 +1,6 @@
 import { act, render } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { LiveEvent } from "@lightbulb/shared";
+import { ApiError, type LiveEvent } from "@lightbulb/shared";
 import { SessionTerminalView } from "../SessionTerminalView";
 
 const writes: Uint8Array[] = [];
@@ -25,7 +25,7 @@ it("watches while on screen, draws the snapshot read-only, and ignores other ses
   const { unmount } = render(<SessionTerminalView session={{ sessionId: "s1", generation: "g1" }}
     onEvent={(h) => { emit = h; return () => {}; }} watch={watch} onLive={onLive} />);
   expect(watch).toHaveBeenCalledWith("s1");
-  await act(async () => { await vi.runOnlyPendingTimersAsync(); }); // xterm's dynamic import
+  await act(async () => { await vi.dynamicImportSettled(); }); // xterm's dynamic import
   act(() => { emit(screenEvent("other")); emit(screenEvent("s1")); });
   expect(writes.map((w) => Array.from(w))).toEqual([[0x1b, 0x5b, 0x48]]);
   expect(onLive).toHaveBeenCalledWith(true);
@@ -42,7 +42,7 @@ it("goes back to not-live when frames stop, and live again on the next snapshot"
   const onLive = vi.fn();
   render(<SessionTerminalView session={{ sessionId: "s1", generation: "g1" }}
     onEvent={(h) => { emit = h; return () => {}; }} watch={async () => undefined} onLive={onLive} />);
-  await act(async () => { await vi.runOnlyPendingTimersAsync(); });
+  await act(async () => { await vi.dynamicImportSettled(); });
   act(() => { emit(screenEvent("s1")); });
   expect(onLive).toHaveBeenLastCalledWith(true);
   await act(async () => { await vi.advanceTimersByTimeAsync(31_000); });
@@ -56,7 +56,7 @@ const mount = async (admitted: boolean, input: (d: Uint8Array, e: number) => Pro
   let emit: (e: LiveEvent) => void = () => {};
   const props = { onEvent: (h: (e: LiveEvent) => void) => { emit = h; return () => {}; }, watch: async () => undefined, onLive: () => {}, input };
   const view = render(<SessionTerminalView session={session} admitted={admitted} {...props} />);
-  await act(async () => { await vi.runOnlyPendingTimersAsync(); });
+  await act(async () => { await vi.dynamicImportSettled(); });
   act(() => { emit(screenEvent("s1")); });
   return { view, props, session, rerender: (a: boolean, s = session) => view.rerender(<SessionTerminalView session={s} admitted={a} {...props} />) };
 };
@@ -94,6 +94,18 @@ describe("typing into the live terminal", () => {
     m.rerender(false);
     await type("ls");
     expect(input).not.toHaveBeenCalled();
+  });
+  it("keeps typing after an offline Mac (a transient 409)", async () => {
+    const input = vi.fn(async () => { throw new ApiError(409, { code: "LOCAL_SESSION_OFFLINE" }); });
+    await mount(true, input);
+    await type("a"); await type("b");
+    expect(input).toHaveBeenCalledTimes(2);
+  });
+  it("stops typing after a Mac that cannot take it", async () => {
+    const input = vi.fn(async () => { throw new ApiError(409, { code: "LOCAL_SESSION_UNSUPPORTED" }); });
+    await mount(true, input);
+    await type("a"); await type("b");
+    expect(input).toHaveBeenCalledTimes(1);
   });
   it("never sends xterm's own probe replies", async () => {
     const input = vi.fn(async () => undefined);

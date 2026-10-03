@@ -10,13 +10,17 @@ import { chunkInput, dropProbeReplies, SHIFT_ENTER } from "./sessionInput";
 const WATCH_EVERY_MS = 15_000;
 /** Snapshots come every 10 s; this long with no frame at all and the picture is frozen, so the transcript takes over again. */
 const STALE_AFTER_MS = 30_000;
+/** Stops input: no access (403/404) or a Mac that cannot take typing. OFFLINE is another 409 and passes. */
+const refuses = (e: unknown) => e instanceof ApiError && (e.status === 403 || e.status === 404
+  || (e.status === 409 && (e.body as { code?: string } | null)?.code === "LOCAL_SESSION_UNSUPPORTED"));
 const decode = (data: string) => Uint8Array.from(atob(data), (c) => c.charCodeAt(0));
 
 /** A running session's real terminal, live (rulings 2026-10-03 §4): for teammates, and for its
  *  owner anywhere but at that Mac. Read-only unless `input` is given and the person is `admitted`
  *  (owner, allowed sender or team control, re-derived by the caller each render); then keystrokes
- *  go to the Mac with the screen epoch they were typed against. A 403/404/409 stops input until
- *  the `session` prop changes. The viewer never resizes the Mac's terminal. */
+ *  go to the Mac with the screen epoch they were typed against. A refusal (`refuses`) stops input
+ *  until the `session` prop changes; an offline Mac (409 LOCAL_SESSION_OFFLINE, transient)
+ *  loses only that batch. The viewer never resizes the Mac's terminal. */
 export function SessionTerminalView({ session, onEvent, watch, onLive, input, admitted = false }: {
   session: Pick<LocalSession, "sessionId" | "generation">;
   input?: (data: Uint8Array, epoch: number) => Promise<unknown>;
@@ -60,7 +64,7 @@ export function SessionTerminalView({ session, onEvent, watch, onLive, input, ad
       for (const part of chunkInput(new TextEncoder().encode(data))) {
         // One call at a time keeps keystrokes in order; a refusal drops what is queued behind it.
         sending = sending.then(() => typing.current.session.sessionId === sent.sessionId && typing.current.canType ? input(part, epoch) : undefined).catch((e) => {
-          if (e instanceof ApiError && [403, 404, 409].includes(e.status)) typing.current.refuse(sent);
+          if (refuses(e)) typing.current.refuse(sent);
         });
       }
     };

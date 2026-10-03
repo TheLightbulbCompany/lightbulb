@@ -24,24 +24,12 @@ import sys
 
 from core.dynamodb import run_in_thread
 from core.repositories import agent_email_repo
-from core.services.agent_email import ensure_team_address
+from core.services.agent_email import ensure_team_address, strictest
 from core.services.agent_mail_send import _owner_email
 
 
 def is_per_agent(row: dict) -> bool:
     return str(row.get("address", "")).partition("@")[0] != "agents"
-
-
-def strictest(rows: list[dict]) -> dict:
-    """``update_settings`` kwargs: the strictest of every row's owner-editable settings."""
-    settings = {
-        "send_to_anyone": all(bool(r.get("send_to_anyone")) for r in rows),
-        "verified_senders": sorted({s for r in rows for s in r.get("verified_senders") or []}),
-    }
-    paused = next((r["outbound_disabled"] for r in rows if r.get("outbound_disabled")), None)
-    if paused:
-        settings["outbound_disabled"] = paused
-    return settings
 
 
 async def main(argv: list[str] | None = None) -> int:

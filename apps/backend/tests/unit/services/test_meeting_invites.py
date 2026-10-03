@@ -804,3 +804,27 @@ async def test_a_write_is_bound_to_the_revision_it_read(room):
     written = await meeting_invites._patch_meeting("r", {"transcriptAttachedAt": 5})
     assert written == room.state["meta"]["meeting"] == {"status": "ended", "transcriptAttachedAt": 5}
     assert [c.kwargs["expected_revision"] for c in room.patch.await_args_list] == [1, 2]
+
+
+NO_START = "DTSTART;TZID=America/New_York:20261003T150000\r\n"
+
+
+def test_a_cancel_needs_no_dtstart_but_a_request_does():
+    assert meeting_invites.parse(GOOGLE.replace(NO_START, "")) is None
+    for cancel in ("METHOD:CANCEL", "METHOD:REQUEST\r\nX-NOTE:x"):
+        cal = (
+            GOOGLE.replace(NO_START, "")
+            .replace("METHOD:REQUEST", cancel)
+            .replace("STATUS:CONFIRMED", "STATUS:CANCELLED")
+        )
+        inv = meeting_invites.parse(cal)
+        assert inv.method == "CANCEL" and inv.start is None
+
+
+async def test_a_cancel_without_dtstart_cancels_the_stored_meeting(room):
+    await meeting_invites.handle_team_mail("org_1", _mail(GOOGLE), TEAM)
+    cal = GOOGLE.replace(NO_START, "").replace("METHOD:REQUEST", "METHOD:CANCEL").replace("SEQUENCE:0", "SEQUENCE:1")
+    assert await meeting_invites.handle_team_mail("org_1", _mail(cal), TEAM) == "meeting_cancelled"
+    meeting = room.state["meta"]["meeting"]
+    assert meeting["status"] == "cancelled" and meeting["startAt"]
+    assert _lines(room)[-1] == "This meeting was cancelled."

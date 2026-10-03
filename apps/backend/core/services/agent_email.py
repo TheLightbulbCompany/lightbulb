@@ -28,6 +28,19 @@ def _domain() -> str:
     return (settings.AGENT_EMAIL_DOMAIN or "").strip().lower()
 
 
+def strictest(rows: list[dict]) -> dict:
+    """The strictest of every row's owner-editable settings: closed if any row is closed, paused if
+    any is paused, verified senders unioned. No rows is the open default."""
+    settings = {
+        "send_to_anyone": all(bool(r.get("send_to_anyone")) for r in rows),
+        "verified_senders": sorted({s for r in rows for s in r.get("verified_senders") or []}),
+    }
+    paused = next((r["outbound_disabled"] for r in rows if r.get("outbound_disabled")), None)
+    if paused:
+        settings["outbound_disabled"] = paused
+    return settings
+
+
 async def team_address(owner_id: str) -> str | None:
     """``agents@{slug}.{domain}``, or None when there is no domain or slug."""
     row = await company_slug_repo.get_by_owner(owner_id)
@@ -42,8 +55,10 @@ async def ensure_team_address(owner_id: str, owner_email: str | None) -> tuple[s
     ``(None, reason)`` with reason ``disabled | slug_allocation_failed | mint_failed``.
 
     A new row lists the owner as a verified sender and is open
-    (``send_to_anyone``). An existing row is never rewritten, so the owner's
-    settings survive. Never raises.
+    (``send_to_anyone``) unless the owner still has legacy per-agent rows: then
+    it is born with the strictest of their settings, so closed email or a
+    complaint pause never reopens. An existing row is never rewritten, so the
+    owner's settings survive. Never raises.
     """
     try:
         if not _domain():
@@ -57,14 +72,16 @@ async def ensure_team_address(owner_id: str, owner_email: str | None) -> tuple[s
             if not slug:
                 return None, "slug_allocation_failed"
             address = f"agents@{slug}.{_domain()}"
-        row = (
-            await agent_email_repo.get_by_address(address)
-            or await agent_email_repo.put(
-                address=address, owner_id=owner_id, verified_senders=[owner_email] if owner_email else []
+        row = await agent_email_repo.get_by_address(address)
+        if not row:
+            seed = strictest(await agent_email_repo.query_by_owner(owner_id))
+            if owner_email:
+                seed["verified_senders"] = sorted({*seed["verified_senders"], owner_email})
+            row = (
+                await agent_email_repo.put(address=address, owner_id=owner_id, **seed)
+                # lost a create race: the winner's row
+                or await agent_email_repo.get_by_address(address)
             )
-            # lost a create race: the winner's row
-            or await agent_email_repo.get_by_address(address)
-        )
         if not row or row.get("owner_id") != owner_id:
             logger.error("agent_email: %s is not owner %s's row", address, owner_id)
             return None, "mint_failed"

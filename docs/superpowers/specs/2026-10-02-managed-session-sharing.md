@@ -219,6 +219,9 @@ generation = the provider process's pid + birth.
   chunks after it; scrolling back fetches earlier segments. An ended session is the same
   without live chunks. While the Mac is offline the last screen stays with an "Offline" note.
   Sessions recorded before this release fall back to the session view.
+- **Resume appends, never replaces.** A resumed session keeps its session id; its new run is
+  recorded under the next generation number and shown after the earlier run, separated by a
+  line "Resumed by <Name> · <time>". The earlier recording stays as it was.
 - **Bounds:** the backend caps each session at 2 MiB per minute and 200 MiB in total; above
   that it records one `gap` and drops the rest.
 - **Readers:** humans who can read the session. The `/viewing` and `/recording` routes refuse

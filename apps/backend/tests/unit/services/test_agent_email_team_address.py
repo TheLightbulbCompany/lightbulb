@@ -48,3 +48,25 @@ async def test_is_team_address_none_when_slug_has_no_owner(monkeypatch):
     monkeypatch.setattr(agent_email_repo.settings, "AGENT_EMAIL_DOMAIN", "thelightbulb.company")
     monkeypatch.setattr(agent_email_repo.company_slug_repo, "get_by_slug", AsyncMock(return_value=None))
     assert await agent_email_repo.is_team_address("agents@acme.thelightbulb.company") is None
+
+
+@pytest.mark.asyncio
+async def test_a_new_team_row_inherits_the_strictest_legacy_settings(monkeypatch):
+    monkeypatch.setattr(agent_email.settings, "AGENT_EMAIL_DOMAIN", "thelightbulb.company")
+    monkeypatch.setattr(agent_email.company_slug_repo, "get_by_owner", AsyncMock(return_value={"slug": "acme"}))
+    legacy = [
+        {"address": "friday@acme.thelightbulb.company", "send_to_anyone": True, "verified_senders": ["a@x.com"]},
+        {"address": "atlas@acme.thelightbulb.company", "send_to_anyone": False, "outbound_disabled": "complaint"},
+    ]
+    monkeypatch.setattr(agent_email_repo, "get_by_address", AsyncMock(return_value=None))
+    monkeypatch.setattr(agent_email_repo, "query_by_owner", AsyncMock(return_value=legacy))
+    put = AsyncMock(side_effect=lambda **kw: kw)
+    monkeypatch.setattr(agent_email_repo, "put", put)
+    assert await agent_email.ensure_team_address("org_1", "owner@x.com") == ("agents@acme.thelightbulb.company", "ok")
+    put.assert_awaited_once_with(
+        address="agents@acme.thelightbulb.company",
+        owner_id="org_1",
+        send_to_anyone=False,
+        verified_senders=["a@x.com", "owner@x.com"],
+        outbound_disabled="complaint",
+    )

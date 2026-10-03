@@ -113,10 +113,16 @@ async def test_ensure_team_address_reuses_the_existing_row(monkeypatch, team):
 @pytest.mark.asyncio
 async def test_ensure_team_address_creates_the_one_row(monkeypatch, team):
     monkeypatch.setattr(ae.agent_email_repo, "get_by_address", AsyncMock(return_value=None))
+    monkeypatch.setattr(ae.agent_email_repo, "query_by_owner", AsyncMock(return_value=[]))
     put = AsyncMock(return_value={"owner_id": "o"})
     monkeypatch.setattr(ae.agent_email_repo, "put", put)
     assert await ae.ensure_team_address("o", "o@x.y") == (TEAM, "ok")
-    assert put.await_args.kwargs == {"address": TEAM, "owner_id": "o", "verified_senders": ["o@x.y"]}
+    assert put.await_args.kwargs == {
+        "address": TEAM,
+        "owner_id": "o",
+        "verified_senders": ["o@x.y"],
+        "send_to_anyone": True,
+    }
 
 
 @pytest.mark.asyncio

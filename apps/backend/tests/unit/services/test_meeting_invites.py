@@ -490,3 +490,27 @@ async def test_the_meeting_lease_is_released_when_the_handler_raises(room):
 def test_a_multi_address_organizer_is_dropped():
     cal = GOOGLE.replace("mailto:Prasiddha@acme.com", "mailto:a@x.com,b@y.com")
     assert meeting_invites.parse(cal).organizer_email is None
+
+
+NO_START = "DTSTART;TZID=America/New_York:20261003T150000\r\n"
+
+
+def test_a_cancel_needs_no_dtstart_but_a_request_does():
+    assert meeting_invites.parse(GOOGLE.replace(NO_START, "")) is None
+    for cancel in ("METHOD:CANCEL", "METHOD:REQUEST\r\nX-NOTE:x"):
+        cal = (
+            GOOGLE.replace(NO_START, "")
+            .replace("METHOD:REQUEST", cancel)
+            .replace("STATUS:CONFIRMED", "STATUS:CANCELLED")
+        )
+        inv = meeting_invites.parse(cal)
+        assert inv.method == "CANCEL" and inv.start is None
+
+
+async def test_a_cancel_without_dtstart_cancels_the_stored_meeting(room):
+    await meeting_invites.handle_team_mail("org_1", _mail(GOOGLE), TEAM)
+    cal = GOOGLE.replace(NO_START, "").replace("METHOD:REQUEST", "METHOD:CANCEL").replace("SEQUENCE:0", "SEQUENCE:1")
+    assert await meeting_invites.handle_team_mail("org_1", _mail(cal), TEAM) == "meeting_cancelled"
+    meeting = room.state["meta"]["meeting"]
+    assert meeting["status"] == "cancelled" and meeting["startAt"]
+    assert _lines(room)[-1] == "This meeting was cancelled."

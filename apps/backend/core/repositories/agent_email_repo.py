@@ -23,23 +23,33 @@ def normalize(value: str) -> str:
     return value.strip().lower()
 
 
-async def put(*, address: str, owner_id: str, verified_senders: list[str]) -> dict | None:
+async def put(
+    *,
+    address: str,
+    owner_id: str,
+    verified_senders: list[str],
+    send_to_anyone: bool = True,
+    outbound_disabled: str | None = None,
+) -> dict | None:
     """Create the workspace's row — a CREATE, never an overwrite: conditional on
     ``attribute_not_exists(address)``, so a racing create can never reset the
     owner's settings. Returns the item, or None when a row already exists.
 
     New rows are OPEN (``send_to_anyone=True``, owner ruling 2026-09-24): any
     authenticated sender may wake the agents and they may email anyone. The
-    owner turns it off with ``update_settings``.
+    owner turns it off with ``update_settings``. The two keyword fences exist
+    for a row seeded from stricter legacy rows (``ensure_team_address``).
     """
     item = {
         "address": normalize(address),
         "owner_id": owner_id,
         "verified_senders": [normalize(s) for s in verified_senders],
-        "send_to_anyone": True,
+        "send_to_anyone": send_to_anyone,
         "status": "active",
         "created_at": utc_now_iso(),
     }
+    if outbound_disabled:
+        item["outbound_disabled"] = outbound_disabled
     try:
         await run_in_thread(_get_table().put_item, Item=item, ConditionExpression="attribute_not_exists(address)")
         return item

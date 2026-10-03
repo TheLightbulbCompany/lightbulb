@@ -37,7 +37,7 @@ class Invite:
     uid: str
     sequence: int
     method: str  # "REQUEST" | "CANCEL"
-    start: datetime
+    start: datetime | None  # None only on a CANCEL that carried no DTSTART (RFC 5546 §3.2.5)
     end: datetime | None
     summary: str
     description: str
@@ -108,15 +108,15 @@ def _parse(calendar_text: str) -> Invite | None:
     # ponytail: RRULE series get only the row the first invite wrote; per-instance handling when a recurring customer meeting appears.
     if method not in ("REQUEST", "CANCEL"):
         return None  # PUBLISH/COUNTER/REFRESH/REPLY are not invites
-    if not uid or len(uid) > 512 or "DTSTART" not in props or "RECURRENCE-ID" in props:
-        return None
-    start = _when(*props["DTSTART"])
-    end = _when(*props["DTEND"]) if "DTEND" in props else None
     get = lambda key: _text(props.get(key, ("", ""))[1])  # noqa: E731
+    cancelled = method == "CANCEL" or get("STATUS").strip().upper() == "CANCELLED"
+    if not uid or len(uid) > 512 or "RECURRENCE-ID" in props or not ("DTSTART" in props or cancelled):
+        return None
+    start = _when(*props["DTSTART"]) if "DTSTART" in props else None
+    end = _when(*props["DTEND"]) if "DTEND" in props else None
     conference = get("X-GOOGLE-CONFERENCE").strip()
     url = conference if _MEET_URL.fullmatch(conference) else None
     url = url or next((u.group(0) for u in (_MEET_URL.search(get(k)) for k in ("LOCATION", "DESCRIPTION")) if u), None)
-    cancelled = method == "CANCEL" or get("STATUS").strip().upper() == "CANCELLED"
     return Invite(
         uid=uid,
         sequence=int(get("SEQUENCE").strip() or 0),
@@ -285,13 +285,14 @@ async def _apply(owner_id: str, invite: Invite, room_id: str, creator: str, by_e
     current = room.get("meeting")
     if current and int(current.get("sequence", 0)) > invite.sequence:
         return "meeting_stale"
-    start_at = int(invite.start.timestamp())
     if invite.method == "CANCEL":
         if not current or current.get("organizer") != invite.organizer_email:
             return "meeting_ignored"
+        start_at = int(current.get("startAt", 0))  # a cancellation need not carry DTSTART
         meeting = {**current, "status": "cancelled", "sequence": invite.sequence}
         text = "This meeting was cancelled."
     else:
+        start_at = int(invite.start.timestamp())
         meeting = {
             **(current or {}),
             "uid": invite.uid,

@@ -26,7 +26,7 @@ import logging
 import re
 
 from core.config import settings
-from core.repositories import agent_email_repo
+from core.repositories import agent_email_repo, company_slug_repo
 from core.repositories.paperclip_repo import PaperclipRepo
 from core.services.company_identity import allocate_company_slug
 from core.services.paperclip_admin_client import shared_admin_client
@@ -36,6 +36,24 @@ logger = logging.getLogger(__name__)
 
 _SLUG_RE = re.compile(r"[^a-z0-9]+")
 EMAIL_ADDRESS_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+
+
+# Mailboxes no agent may take: `agents@{slug}` is the workspace's team address.
+RESERVED_LOCAL_PARTS = frozenset({"agents", "team", "lightbulb", "meetings"})
+
+
+async def slug_for_owner(owner_id: str) -> str | None:
+    row = await company_slug_repo.get_by_owner(owner_id)
+    return row.get("slug") if row else None
+
+
+async def team_address(owner_id: str) -> str | None:
+    """``agents@{slug}.{domain}``, or None when there is no domain or slug."""
+    domain = (settings.AGENT_EMAIL_DOMAIN or "").strip()
+    slug = await slug_for_owner(owner_id)
+    if not domain or not slug:
+        return None
+    return build_agent_email_address(slug=slug, agent_name="agents", domain=domain)
 
 
 def _agent_slug(agent_name: str) -> str:
@@ -93,6 +111,10 @@ async def mint_agent_email_address(
 
         if not slug or not slug.strip():
             logger.debug("agent_email.mint: no slug for owner %s; skipping", owner_id)
+            return None
+
+        if _agent_slug(agent_name) in RESERVED_LOCAL_PARTS:
+            logger.warning("agent_email.mint: %r is a reserved mailbox; refusing for owner %s", agent_name, owner_id)
             return None
 
         address = build_agent_email_address(slug=slug, agent_name=agent_name, domain=domain)
@@ -246,6 +268,8 @@ async def ensure_agent_address(*, owner_id: str, agent_id: str, owner_email: str
         agent_name = await resolve_agent_name(agent_id=agent_id, company_id=company_id)
         if not agent_name:
             return None, "agent_name_unavailable"
+        if _agent_slug(agent_name) in RESERVED_LOCAL_PARTS:
+            return None, "reserved"
         address = await mint_agent_email_address(
             owner_id=owner_id, agent_id=agent_id, agent_name=agent_name, owner_email=owner_email, slug=slug
         )

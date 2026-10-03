@@ -312,6 +312,28 @@ def _canonical_message(item: dict[str, Any]) -> dict[str, Any]:
     if clean_attachments:
         message["attachments"] = clean_attachments
 
+    # A session reference (owner ruling 2026-10-02: a chip is a link, never a wake): the
+    # ids plus the readable label snapshot. Load-bearing like attachments -- the live copy
+    # merges over the sender's POST response at the same revision, so leaving these out
+    # strips the sender's own card and shows recipients none. Omitted when there are none.
+    session_mentions = item.get("sessionMentions") or []
+    if not isinstance(session_mentions, list) or len(session_mentions) > 4:
+        raise ValueError("invalid canonical sessionMentions")
+    labels = item.get("sessionTargetLabels") or {}
+    if not isinstance(labels, dict):
+        raise ValueError("invalid canonical sessionTargetLabels")
+    if session_mentions:
+        clean_labels = {}
+        for session_id in session_mentions:
+            _require_uuid(session_id, "sessionMentions")
+            label = labels.get(session_id)
+            if label is not None and (not isinstance(label, str) or len(label) > 256):
+                raise ValueError("invalid canonical sessionTargetLabels")
+            if label:
+                clean_labels[session_id] = label
+        message["sessionMentions"] = list(session_mentions)
+        message["sessionTargetLabels"] = clean_labels
+
     for field in ("replyToMessageId", "threadRootMessageId"):
         if message[field] is not None:
             _require_uuid(message[field], field)

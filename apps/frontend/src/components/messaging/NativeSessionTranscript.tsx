@@ -220,16 +220,18 @@ export function NativeSessionTranscript({ provider, events, busy, ownerName, par
   const time = (ts?: string) => { const d = ts ? new Date(ts) : null; return d && !Number.isNaN(d.getTime()) ? d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : null; };
   const last = events.findLast(e => e.subagent === scope);
   const turnOpen = busy && last?.lifecycle !== "turn_end" && last?.lifecycle !== "turn_aborted";
-  // When the open turn began: its first event after the previous turn's end.
+  // When the open turn began: its latest prompt, else its first event after the previous end.
   const turnStart = useMemo(() => {
-    let ts: string | undefined;
+    let first: string | undefined;
     for (let i = events.length - 1; i >= 0; i--) {
       const e = events[i];
       if (e.subagent !== scope) continue;
       if (e.lifecycle === "turn_end" || e.lifecycle === "turn_aborted") break;
-      if (e.ts) ts = e.ts;
+      // The latest prompt starts the turn; a late background report after the last end must not.
+      if (e.kind === "text" && e.role === "user" && e.ts) return e.ts;
+      if (e.ts) first = e.ts;
     }
-    return ts;
+    return first;
   }, [events, scope]);
   const lastRow = rows.at(-1);
   const pendingRow = (item: { text: string; chip: SessionReceiptChip | null; onCancel?: () => void; onRetry?: () => void }, key: string) =>

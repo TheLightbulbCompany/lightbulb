@@ -392,7 +392,16 @@ pub async fn terminal_start(app: tauri::AppHandle, params: Value) -> Result<Valu
 /// Whether `folder` (canonical) is one of the approved folders or anywhere inside one: the
 /// person running `lightbulb` is at this Mac and already in that folder. A view or a remote
 /// start still names an approved folder exactly (`validate`).
-fn inside_approved(folder: &Path, approved: &[PathBuf]) -> bool {
+/// The approved folders as they are now, canonical: what a start from a terminal (and a resume)
+/// must be inside.
+pub(crate) fn approved_now() -> Vec<PathBuf> {
+    approved_folders()
+        .iter()
+        .filter_map(|a| crate::file_access::canonicalize(a).ok())
+        .collect()
+}
+
+pub(crate) fn inside_approved(folder: &Path, approved: &[PathBuf]) -> bool {
     approved.iter().any(|a| crate::file_access::is_inside(folder, a))
 }
 
@@ -451,10 +460,7 @@ pub(crate) fn cli_start(
             return Err(reason);
         }
     }
-    let approved: Vec<PathBuf> = approved_folders()
-        .iter()
-        .filter_map(|a| crate::file_access::canonicalize(a).ok())
-        .collect();
+    let approved = approved_now();
     let folder = crate::file_access::canonicalize(&start.folder)
         .ok()
         .filter(|f| f.is_dir() && inside_approved(f, &approved))

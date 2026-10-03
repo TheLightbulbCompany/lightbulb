@@ -34,6 +34,8 @@ describe("resumeStatus", () => {
       .toBe("Bob asked to resume this session. It starts on your Mac when that Mac is on, within 24 hours.");
     expect(resumeStatus(ended({ resume: { state: "failed", byUserId: "bob", requestedAt: "", reason: "ALREADY_RUNNING" } }), false, "Alice", nameOf, "bob"))
       .toBe("Not resumed: it is already running on Alice’s Mac.");
+    expect(resumeStatus(ended({ cwdName: "lightbulb", resume: { state: "failed", byUserId: "bob", requestedAt: "", reason: "FOLDER_NOT_APPROVED" } }), false, "Alice", nameOf, "bob"))
+      .toBe("Not resumed: lightbulb is no longer an approved folder on Alice’s Mac.");
     expect(resumeStatus(ended(), false, "Alice", nameOf, "bob")).toBeNull();
   });
 });

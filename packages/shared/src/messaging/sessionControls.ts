@@ -380,8 +380,9 @@ export function canResumeSession(session: LocalSession, own: boolean, userId?: s
     (own || (!!userId && (session.resumeAllowed ?? []).includes(userId)));
 }
 
-const RESUME_REFUSED: Record<string, (mac: string) => string> = {
+const RESUME_REFUSED: Record<string, (mac: string, folder: string) => string> = {
   ALREADY_RUNNING: mac => `it is already running on ${mac}`,
+  FOLDER_NOT_APPROVED: (mac, folder) => `${folder} is no longer an approved folder on ${mac}`,
   FOLDER_MISSING: mac => `its folder is no longer on ${mac}`,
   TOOL_UNAVAILABLE: mac => `its CLI is no longer installed on ${mac}`,
   SHARING_OFF: mac => `session sharing is off on ${mac}`,
@@ -392,7 +393,7 @@ export function resumeStatus(session: LocalSession, own: boolean, ownerName: str
   const resume = session.resume;
   if (!resume) return null;
   const mac = own ? "your Mac" : `${ownerName}’s Mac`;
-  if (resume.state === "failed") return `Not resumed: ${(RESUME_REFUSED[resume.reason ?? ""] ?? ((m: string) => `${m} could not start it`))(mac)}.`;
+  if (resume.state === "failed") return `Not resumed: ${(RESUME_REFUSED[resume.reason ?? ""] ?? ((m: string) => `${m} could not start it`))(mac, session.cwdName || "its folder")}.`;
   const who = resume.byUserId === userId ? "You" : nameOf(resume.byUserId);
   return `${who} asked to resume this session. It starts on ${mac} when that Mac is on, within 24 hours.`;
 }

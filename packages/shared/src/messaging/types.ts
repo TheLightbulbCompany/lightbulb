@@ -412,7 +412,7 @@ export interface LocalSessionResume {
   state: "pending" | "failed";
   byUserId: string;
   requestedAt: string;
-  /** Why the Mac refused: ALREADY_RUNNING, FOLDER_MISSING, TOOL_UNAVAILABLE, SHARING_OFF, LAUNCH_FAILED. */
+  /** Why the Mac refused: ALREADY_RUNNING, FOLDER_MISSING, FOLDER_NOT_APPROVED, TOOL_UNAVAILABLE, SHARING_OFF, LAUNCH_FAILED. */
   reason?: string;
 }
 

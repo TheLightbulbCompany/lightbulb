@@ -239,7 +239,18 @@ fn prepare(w: &Wanted, own: bool, home: &Path) -> std::result::Result<Option<(Pa
     let program = provider_program(home, &w.provider).ok_or("TOOL_UNAVAILABLE")?;
     let claude = std::env::var_os("CLAUDE_CONFIG_DIR").map(PathBuf::from).unwrap_or_else(|| home.join(".claude"));
     let folder = folder(home, &claude, w).ok_or("FOLDER_MISSING")?;
+    // The folder it last ran in must still be approved now, as for New session and the CLI: the
+    // owner may have removed it from File access after the session ended.
+    let folder = approved_folder(&folder, &crate::session_start::approved_now())?;
     Ok(Some((folder, argv(&program, w, own))))
+}
+
+fn approved_folder(folder: &Path, approved: &[PathBuf]) -> std::result::Result<PathBuf, &'static str> {
+    folder
+        .to_str()
+        .and_then(|f| crate::file_access::canonicalize(f).ok())
+        .filter(|f| crate::session_start::inside_approved(f, approved))
+        .ok_or("FOLDER_NOT_APPROVED")
 }
 
 async fn report(me: &Resumer, w: &Wanted, code: &str) -> Result<()> {
@@ -345,6 +356,18 @@ mod tests {
         assert_eq!(folder(home.path(), &claude, &wanted("codex", "plan")), Some(canonical));
         fs::remove_dir_all(&work).unwrap();
         assert_eq!(folder(home.path(), &claude, &wanted("claude", "plan")), None, "a folder that is gone refuses it");
+    }
+
+    #[test]
+    fn resume_runs_only_in_a_folder_that_is_approved_now() {
+        let approved = tempfile::tempdir().unwrap();
+        let inside = approved.path().join("repo");
+        std::fs::create_dir(&inside).unwrap();
+        let elsewhere = tempfile::tempdir().unwrap();
+        let list = vec![crate::file_access::canonicalize(approved.path().to_str().unwrap()).unwrap()];
+        assert_eq!(approved_folder(&inside, &list), Ok(crate::file_access::canonicalize(inside.to_str().unwrap()).unwrap()));
+        assert_eq!(approved_folder(elsewhere.path(), &list), Err("FOLDER_NOT_APPROVED"));
+        assert_eq!(approved_folder(&inside, &[]), Err("FOLDER_NOT_APPROVED"), "approval removed after the end");
     }
 
     #[test]

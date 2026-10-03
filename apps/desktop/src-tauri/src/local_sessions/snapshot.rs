@@ -217,7 +217,7 @@ fn config_dir() -> Option<PathBuf> {
         .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".claude")))
 }
 
-fn find_transcript(config: &Path, conversation: &str) -> Option<PathBuf> {
+pub(super) fn find_transcript(config: &Path, conversation: &str) -> Option<PathBuf> {
     fs::read_dir(config.join("projects"))
         .ok()?
         .flatten()
@@ -227,7 +227,7 @@ fn find_transcript(config: &Path, conversation: &str) -> Option<PathBuf> {
 }
 
 /// `cwd` and `version` from the newest rows that carry them.
-fn cwd_and_version(path: &Path) -> Result<(Option<PathBuf>, Option<String>)> {
+pub(super) fn cwd_and_version(path: &Path) -> Result<(Option<PathBuf>, Option<String>)> {
     let mut file = fs::File::open(path).map_err(|_| "transcript unreadable")?;
     let len = file.metadata().map_err(|_| "transcript unreadable")?.len();
     file.seek(SeekFrom::Start(len.saturating_sub(1024 * 1024)))

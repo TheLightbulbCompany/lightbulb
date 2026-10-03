@@ -14,7 +14,7 @@ export const canPickUp = (session: LocalSession) => session.pickup?.allowed === 
 /**
  * "Pick up": continue a teammate's conversation on this Mac, with the files it
  * changed. The dialog says what will happen before anything does, because it
- * writes into the person's own repository and opens their Terminal.
+ * writes into the person's own repository and opens it in Lightbulb on their Mac.
  */
 export function SessionPickup({ session, ownerName, own, client, variant = "default" }: {
   session: LocalSession; ownerName: string; own: boolean; client: PickupClient;
@@ -52,7 +52,7 @@ export function SessionPickup({ session, ownerName, own, client, variant = "defa
           <DialogDescription>{sessionTitle(session)}</DialogDescription>
         </DialogHeader>
 
-        {!here && <p>Open Lightbulb on your Mac to pick this up. The session continues in your own Terminal, so it can only start from the desktop app.</p>}
+        {!here && <p>Open Lightbulb on your Mac to pick this up. The session continues in Lightbulb on your Mac, so it can only start from the desktop app.</p>}
 
         {here && state.phase === "idle" && <>
           <p>Continue {whose} conversation on this Mac, from where it stands now.</p>
@@ -60,13 +60,13 @@ export function SessionPickup({ session, ownerName, own, client, variant = "defa
             <li>{source
               ? <>Adds a new branch and folder to your copy of <span className="session-fact-value">{source}</span>, holding everything the session changed. Your own work there is not touched.</>
               : <>This session has no repository, so only the conversation comes over. You choose the folder it continues in.</>}</li>
-            <li>Opens {tool} in Terminal, under your own account.</li>
+            <li>Opens {tool} in Lightbulb on your Mac, under your own account.</li>
             <li>{own ? "The original session" : `${ownerName}'s session`} carries on unchanged. Yours is a separate copy from this point.</li>
           </ul>
           <p className="text-muted-foreground">{pickupStatus(session.pickup, timeAgo)}</p>
         </>}
 
-        {state.phase === "working" && <p role="status">{state.step === "asking" ? "Asking for the snapshot…" : "Downloading it and opening Terminal…"}</p>}
+        {state.phase === "working" && <p role="status">{state.step === "asking" ? "Asking for the snapshot…" : "Downloading it and opening it in Lightbulb…"}</p>}
 
         {state.phase === "choose" && <fieldset className="grid gap-2">
           <legend className="mb-1">{state.why === "several" ? "This Mac has more than one copy of that repository. Which one should it continue in?" : "Which folder should the conversation continue in?"}</legend>
@@ -78,7 +78,7 @@ export function SessionPickup({ session, ownerName, own, client, variant = "defa
         </fieldset>}
 
         {state.phase === "done" && <div role="status" className="grid gap-2">
-          <p>{tool} is open in Terminal{state.conversationOnly ? "." : state.branch ? <>, on a new branch <span className="session-fact-value">{state.branch}</span>.</> : "."}</p>
+          <p>{tool} is open in Lightbulb on your Mac{state.conversationOnly ? "." : state.branch ? <>, on a new branch <span className="session-fact-value">{state.branch}</span>.</> : "."}</p>
           {state.worktree && <p className="session-fact-value room-wrap text-muted-foreground">{state.worktree}</p>}
           {/* The snapshot can carry a teammate's project settings, and those can run commands on start. */}
           {state.ownSettingsOnly && !state.conversationOnly && <p>It opened with your own Claude settings only. Settings files and hooks that came with the snapshot were not loaded; read them before you start Claude there yourself.</p>}

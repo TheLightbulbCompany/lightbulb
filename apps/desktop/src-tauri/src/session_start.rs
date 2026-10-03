@@ -4,21 +4,20 @@
 //! every field is re-validated against this Mac's own truth: the tool must be an
 //! installed fixed binary, the folder one of the approved folders (Settings → File
 //! access), model/mode from a closed list, and the prompt is passed after `--` so it
-//! can never become a flag. Then Terminal opens the session so the owner sees it;
-//! sharing must already be on so it mirrors.
+//! can never become a flag. Then a held session opens on this Mac so the owner sees it;
+//! sharing must already be on, and only held sessions are shared.
 //!
 //! No native approve-once window: `session.start.v1` is owner-only end to end. The
 //! backend resolves it only to the caller's OWN Mac (the ready row and the reciprocal
 //! pairing must both name the Clerk user asking, and the command is granted only to
 //! that pairing), so the requester is always the person at this Mac, starting a
 //! session he just typed. What reaches the CLI is a fixed installed binary in an
-//! approved folder, with no permission-bypass mode, opened visibly in Terminal where
+//! approved folder, with no permission-bypass mode, opened visibly on this Mac where
 //! the CLI's own approvals still apply. A second "are you sure?" for your own click
 //! added nothing. A teammate cannot start sessions here at all.
 use serde::Deserialize;
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
-use tauri::Manager;
 use tokio::sync::watch;
 
 const CLAUDE_MODELS: &[(&str, &str)] =
@@ -181,7 +180,7 @@ fn listed(options: &[Value], value: &Option<String>) -> bool {
         .map_or(true, |v| options.iter().any(|o| o["id"] == v))
 }
 
-/// The exact argv Terminal will run: fixed binary, closed flags, prompt after `--`.
+/// The exact argv the holder runs: fixed binary, closed flags, prompt after `--`.
 fn argv(program: &Path, start: &Start) -> Vec<String> {
     let mut argv = vec![program.to_string_lossy().into_owned()];
     if let Some(model) = &start.model {
@@ -289,114 +288,20 @@ fn validate(params: Value, home: &Path) -> Result<(Start, PathBuf, Vec<String>),
     Ok((start, folder, argv))
 }
 
-pub(crate) fn quote(s: &str) -> String {
-    format!("'{}'", s.replace('\'', r"'\''"))
-}
-
-/// A private one-shot `.command` script: Terminal runs it in a login shell the owner
-/// can see, it deletes itself, then execs the CLI. No shell ever parses request text
-/// unquoted.
-pub(crate) fn script(folder: &Path, path: &Path, argv: &[String]) -> String {
-    format!(
-        "#!/bin/zsh -l\nrm -f -- {}\ncd -- {} || exit 1\nexec {}\n",
-        quote(&path.to_string_lossy()),
-        quote(&folder.to_string_lossy()),
-        argv.iter().map(|a| quote(a)).collect::<Vec<_>>().join(" ")
-    )
-}
-
-fn script_with_link(folder: &Path, path: &Path, argv: &[String], start_id: &str, scope: &str) -> String {
-    format!(
-        "#!/bin/zsh -l\nrm -f -- {}\ncd -- {} || exit 1\nexec /usr/bin/env LIGHTBULB_SESSION_START_ID={} LIGHTBULB_SESSION_SCOPE={} LIGHTBULB_SESSION_LAUNCH_PID=$$ {}\n",
-        quote(&path.to_string_lossy()),
-        quote(&folder.to_string_lossy()),
-        quote(start_id),
-        quote(scope),
-        argv.iter().map(|a| quote(a)).collect::<Vec<_>>().join(" ")
-    )
-}
-
-pub(crate) fn launch(
-    dir: &Path,
-    folder: &Path,
-    argv: &[String],
-    start_id: &str,
-) -> Result<(), Failure> {
-    launch_inner(dir, folder, argv, start_id, None)
-}
-
-fn launch_with_link(
-    dir: &Path,
-    folder: &Path,
-    argv: &[String],
-    start_id: &str,
-    scope: &str,
-) -> Result<(), Failure> {
-    launch_inner(dir, folder, argv, start_id, Some(scope))
-}
-
-fn launch_inner(
-    dir: &Path,
-    folder: &Path,
-    argv: &[String],
-    start_id: &str,
-    scope: Option<&str>,
-) -> Result<(), Failure> {
-    use std::io::Write;
-    use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
-    let failed = |e: std::io::Error| ("LAUNCH_FAILED", format!("Terminal didn't open: {e}"));
-    std::fs::DirBuilder::new()
-        .recursive(true)
-        .mode(0o700)
-        .create(dir)
-        .map_err(failed)?;
-    let path = dir.join(format!("{start_id}.command"));
-    let mut file = std::fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .mode(0o700)
-        .open(&path)
-        .map_err(failed)?;
-    let command = scope.map_or_else(
-        || script(folder, &path, argv),
-        |scope| script_with_link(folder, &path, argv, start_id, scope),
-    );
-    file.write_all(command.as_bytes())
-        .map_err(failed)?;
-    drop(file);
-    let out = std::process::Command::new("/usr/bin/open")
-        .args(["-a", "Terminal"])
-        .arg(&path)
-        .output()
-        .map_err(failed)?;
-    if !out.status.success() {
-        let _ = std::fs::remove_file(&path);
-        let why = String::from_utf8_lossy(&out.stderr)
-            .trim()
-            .chars()
-            .take(200)
-            .collect::<String>();
-        return Err((
-            "LAUNCH_FAILED",
-            format!(
-                "Terminal didn't open: {}",
-                if why.is_empty() {
-                    out.status.to_string()
-                } else {
-                    why
-                }
-            ),
-        ));
-    }
-    Ok(())
-}
-
 pub async fn start(
     app: tauri::AppHandle,
     params: Value,
     cancel: watch::Receiver<bool>,
 ) -> Result<Value, Failure> {
-    let result = start_inner(&app, params, &cancel);
+    let result = async {
+        let (start, folder, argv, scope) = prepare(&app, params, &cancel)?;
+        let argv = held_argv(&argv, Some((start.start_id.as_str(), scope.as_str())));
+        start_held(folder, argv)
+            .await
+            .map_err(|e| ("LAUNCH_FAILED", format!("The session didn't start: {e}")))?;
+        Ok(json!({"started": true, "tool": start.tool}))
+    }
+    .await;
     match &result {
         Ok(v) => crate::log(&format!("[session-start] launched {}", v["tool"])),
         Err((code, message)) => crate::log(&format!("[session-start] failed {code}: {message}")),
@@ -404,47 +309,38 @@ pub async fn start(
     result
 }
 
-fn start_inner(
+fn prepare(
     app: &tauri::AppHandle,
     params: Value,
     cancel: &watch::Receiver<bool>,
-) -> Result<Value, Failure> {
+) -> Result<(Start, PathBuf, Vec<String>, String), Failure> {
     let (start, folder, argv) = validate(params, &home())?;
-    crate::log(&format!(
-        "[session-start] {} {} in {}",
-        start.start_id,
-        start.tool,
-        folder.display()
-    ));
+    crate::log(&format!("[session-start] {} {} in {}", start.start_id, start.tool, folder.display()));
     if !crate::local_sessions::enrollment::sharing_on(app) {
-        return Err((
-            "SHARING_OFF",
-            "Turn on session sharing in the Lightbulb app on this Mac first.".into(),
-        ));
+        return Err(("SHARING_OFF", "Turn on session sharing in the Lightbulb app on this Mac first.".into()));
     }
     if *cancel.borrow() {
         return Err(("CANCELLED", "The start was cancelled.".into()));
     }
-    let dir = app
-        .path()
-        .app_data_dir()
-        .map_err(|_| {
-            (
-                "LAUNCH_FAILED",
-                "Terminal didn't open: desktop storage unavailable.".to_string(),
-            )
-        })?
-        .join("session-launch");
-    let scope = crate::local_sessions::enrollment::launch_scope(app).map_err(|_| (
-        "SHARING_OFF", "Turn on session sharing in Lightbulb on this Mac first.".into()
-    ))?;
-    launch_with_link(&dir, &folder, &argv, &start.start_id, &scope)?;
-    Ok(json!({"started": true, "tool": start.tool}))
+    let scope = crate::local_sessions::enrollment::launch_scope(app)
+        .map_err(|_| ("SHARING_OFF", "Turn on session sharing in Lightbulb on this Mac first.".to_string()))?;
+    Ok((start, folder, argv, scope))
+}
+
+/// Start `argv` in a new holder in `folder`: the one launcher for the New session view, a remote
+/// start and a pick-up. It shows in the app's session panel when a person opens it. Only held sessions are shared (spec §5.4).
+pub(crate) async fn start_held(
+    folder: PathBuf,
+    argv: Vec<String>,
+) -> Result<crate::holder::manager::HolderInfo, String> {
+    // No window: the session panel attaches when a person opens the session (holder::panel).
+    tauri::async_runtime::spawn_blocking(move || crate::holder::manager::start(&folder, &argv))
+        .await
+        .map_err(|e| e.to_string())?
 }
 
 /// The argv a holder runs for a start. With a start link, `/bin/sh` exports the link with its own
-/// pid and then execs the provider in place, so the launch pid is the provider's pid, as the
-/// `.command` script does for Terminal.
+/// pid and then execs the provider in place, so the launch pid is the provider's pid.
 fn held_argv(argv: &[String], link: Option<(&str, &str)>) -> Vec<String> {
     let Some((start_id, scope)) = link else { return argv.to_vec() };
     let mut out: Vec<String> = vec![
@@ -475,9 +371,7 @@ pub async fn terminal_start(app: tauri::AppHandle, params: Value) -> Result<Valu
     let scope = crate::local_sessions::enrollment::launch_scope(&app)
         .map_err(|_| "Turn on session sharing in Lightbulb on this Mac first.".to_string())?;
     let argv = held_argv(&argv, Some((start.start_id.as_str(), scope.as_str())));
-    let info = tauri::async_runtime::spawn_blocking(move || crate::holder::manager::start(&folder, &argv))
-        .await
-        .map_err(|e| e.to_string())??;
+    let info = start_held(folder, argv).await?;
     crate::log(&format!("[session-start] held {} {}", start.start_id, start.tool));
     Ok(json!({"holderId": info.id, "tool": start.tool}))
 }
@@ -575,25 +469,6 @@ mod tests {
     }
 
     #[test]
-    fn session_start_script_quotes_every_argument() {
-        let s = script_with_link(
-            Path::new("/Users/a/it's"),
-            Path::new("/tmp/x.command"),
-            &[
-                "/bin/claude".into(),
-                "--".into(),
-                "$(rm -rf ~); echo 'hi'\nnext".into(),
-            ],
-            "11111111-1111-4111-8111-111111111111",
-            &"a".repeat(64),
-        );
-        assert!(s.contains("rm -f -- '/tmp/x.command'\ncd -- '/Users/a/it'\\''s' || exit 1"));
-        assert!(s.contains("LIGHTBULB_SESSION_START_ID='11111111-1111-4111-8111-111111111111'"));
-        assert!(s.contains("LIGHTBULB_SESSION_SCOPE='aaaaaaaa"));
-        assert!(s.contains("LIGHTBULB_SESSION_LAUNCH_PID=$$ '/bin/claude' '--' '$(rm -rf ~); echo '\\''hi'\\''\nnext'"));
-    }
-
-    #[test]
     fn session_start_rejects_unknown_fields_modes_and_unapproved_folders() {
         let home = tempfile::tempdir().unwrap();
         // No CLI installed under this home and no PATH hit is assumed for "bash".
@@ -642,35 +517,6 @@ mod tests {
         // approve-once window. Spelled in two halves so this test is not a match.
         let source = include_str!("session_start.rs");
         assert!(!source.contains(concat!("desktop_approval", "::prompt")));
-    }
-
-    #[test]
-    fn session_start_launch_failure_says_what_failed() {
-        let (code, message) = launch(
-            Path::new("/dev/null/session-launch"),
-            Path::new("/tmp"),
-            &["/bin/echo".into()],
-            "s-1",
-        )
-        .unwrap_err();
-        assert_eq!(code, "LAUNCH_FAILED");
-        assert!(message.starts_with("Terminal didn't open: "), "{message}");
-    }
-
-    #[test]
-    fn session_start_script_runs_in_the_folder_and_deletes_itself() {
-        // Dry run of what Terminal executes, with /bin/echo standing in for the CLI.
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("s-1.command");
-        let argv = ["/bin/echo".to_string(), "--".into(), "hi $(whoami)".into()];
-        std::fs::write(&path, script(dir.path(), &path, &argv)).unwrap();
-        let out = std::process::Command::new("/bin/zsh")
-            .arg(&path)
-            .output()
-            .unwrap();
-        assert!(out.status.success());
-        assert_eq!(String::from_utf8_lossy(&out.stdout), "-- hi $(whoami)\n");
-        assert!(!path.exists());
     }
 
     #[test]

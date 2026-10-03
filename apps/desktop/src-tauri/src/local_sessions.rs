@@ -18,6 +18,7 @@ pub use claude::{
     supported_version as supported_claude_version,
     verify_current_generation as verify_claude_runtime,
 };
+use crate::holder::manager::HolderInfo;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
@@ -967,10 +968,11 @@ struct NativeSession {
     active_turn: Option<String>,
     #[serde(default)]
     pub last_assistant_message: Option<String>,
-    /// A Claude Code background job. Mirrored like a terminal session; the relay keeps
-    /// it out of human listings. Mirrors persisted before it existed read as interactive.
+    /// The Lightbulb holder this session runs in (its 8-hex id). Discovery keeps only held
+    /// sessions (spec §5.4); a mirror persisted before explicit sharing reads None and the
+    /// relay refuses to register it.
     #[serde(default)]
-    background: bool,
+    holder: Option<String>,
 }
 
 async fn native_output(program: &Path, args: &[&str]) -> Result<String> {
@@ -1148,6 +1150,32 @@ fn reconcile_sessions(current: &mut Vec<NativeSession>, discovered: Vec<NativeSe
             current.push(session);
         }
     }
+}
+
+/// The Lightbulb holder whose provider is `pid`. A holder starts its provider itself (an `exec`
+/// keeps the pid), so the provider is the holder's direct child and the one process `hello`
+/// reports. Anything the provider starts in turn is a grandchild and stays private: this is the
+/// spec's first-claim rule (§5.4), with nothing left to claim.
+fn holder_of(pid: u32, holders: &[HolderInfo]) -> Option<&HolderInfo> {
+    let parent = native_tools::parent(pid).ok()?.pid;
+    holders.iter().find(|h| h.provider_pid == pid && h.pid == parent)
+}
+
+/// Shared iff held (spec §5.4): keeps only sessions running in a Lightbulb holder and names it.
+/// Claude by process; Codex by the thread its holder's start hook bound, because a Codex
+/// rollout may be written by a shared app server that is not the holder's child.
+fn keep_held(found: &mut Vec<NativeSession>, holders: &[HolderInfo]) {
+    found.retain_mut(|session| {
+        let holder = if session.provider == "codex" {
+            holders.iter().find(|h| {
+                crate::holder::manager::thread(h).as_deref() == Some(session.conversation.as_str())
+            })
+        } else {
+            holder_of(session.process.pid, holders)
+        };
+        session.holder = holder.map(|h| h.id.clone());
+        session.holder.is_some()
+    });
 }
 
 fn deadline_now(
@@ -1778,6 +1806,108 @@ fn ascii_wire_len(value: &Value) -> Result<usize> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn native_at(provider: &str, conversation: &str, pid: u32) -> NativeSession {
+        NativeSession {
+            provider: provider.into(),
+            conversation: conversation.into(),
+            profile: "p".into(),
+            process: process(pid).unwrap(),
+            transcript: None,
+            socket: None,
+            socket_inode: None,
+            version: "2.1.288".into(),
+            restriction: None,
+            status: "idle".into(),
+            title: None,
+            cwd_name: None,
+            active_turn: None,
+            last_assistant_message: None,
+            holder: None,
+        }
+    }
+
+    #[test]
+    fn local_sessions_only_a_holders_own_provider_is_mirrored() {
+        use std::time::{Duration, Instant};
+        // A real process tree, with this test process as the holder: `holder_of` reads only the
+        // holder's pid, its provider's pid and the provider's real parent. (An in-process pty
+        // holder made this test depend on openpty and socket timing on the CI runner.)
+        struct Tree(std::process::Child, Option<u32>);
+        impl Drop for Tree {
+            fn drop(&mut self) {
+                if let Some(pid) = self.1 {
+                    unsafe { libc::kill(pid as i32, libc::SIGKILL) };
+                }
+                let _ = self.0.kill();
+                let _ = self.0.wait();
+            }
+        }
+        let mut tree = Tree(
+            std::process::Command::new("/bin/sh").args(["-c", "/bin/sleep 30 & wait"]).spawn().expect("spawn the provider"),
+            None,
+        );
+        let provider = tree.0.id();
+        let deadline = Instant::now() + Duration::from_secs(20);
+        let grandchild: u32 = loop {
+            let out = std::process::Command::new("/usr/bin/pgrep").args(["-P", &provider.to_string()]).output().unwrap();
+            if let Some(pid) = String::from_utf8_lossy(&out.stdout).lines().next().and_then(|l| l.trim().parse().ok()) {
+                break pid;
+            }
+            if let Ok(Some(status)) = tree.0.try_wait() {
+                panic!("the provider exited before starting its child: {status}");
+            }
+            assert!(Instant::now() < deadline, "the provider started no child in 20 s");
+            std::thread::sleep(Duration::from_millis(20));
+        };
+        tree.1 = Some(grandchild);
+        let holders = [HolderInfo {
+            id: "ab12cd34".into(),
+            socket: "/nonexistent/ab12cd34.sock".into(),
+            pid: std::process::id(),
+            provider_pid: provider,
+            argv: vec![],
+            cwd: "/".into(),
+            watch: false,
+            type_input: false,
+        }];
+        let mut found = vec![
+            native_at("claude", "held", provider),
+            native_at("claude", "inside", grandchild),
+            // This test process is nobody's provider: a plain `claude` in a terminal.
+            native_at("claude", "plain", std::process::id()),
+        ];
+        keep_held(&mut found, &holders);
+        assert_eq!(
+            found.iter().map(|s| (s.conversation.as_str(), s.holder.as_deref())).collect::<Vec<_>>(),
+            [("held", Some("ab12cd34"))],
+            "the holder's own provider is shared; a claude it starts and a plain one are not"
+        );
+    }
+
+    #[test]
+    fn local_sessions_codex_is_mirrored_by_the_thread_its_holder_bound() {
+        let dir = tempfile::tempdir().unwrap();
+        let holder = HolderInfo {
+            id: "ab12cd34".into(),
+            socket: dir.path().join("ab12cd34.sock"),
+            pid: 1,
+            provider_pid: 2,
+            argv: vec![],
+            cwd: "/".into(),
+            watch: false,
+            type_input: false,
+        };
+        let thread = "11111111-1111-4111-8111-111111111111";
+        let codex = native_at("codex", thread, std::process::id());
+        let mut found = vec![codex.clone()];
+        keep_held(&mut found, std::slice::from_ref(&holder));
+        assert!(found.is_empty(), "an unbound thread (plain codex, the Codex app) stays private");
+        crate::holder::manager::bind_thread(&holder, thread);
+        let mut found = vec![codex];
+        keep_held(&mut found, std::slice::from_ref(&holder));
+        assert_eq!(found[0].holder.as_deref(), Some("ab12cd34"));
+    }
     use std::{
         io::Write,
         os::unix::fs::{symlink, PermissionsExt},
@@ -1848,7 +1978,7 @@ mod tests {
             cwd_name: None,
             active_turn: None,
             last_assistant_message: None,
-            background: false,
+            holder: None,
         };
         let mut workspace = workspace::State::default();
         workspace.observe(Ok((dir.path().into(), "before".into())), false);
@@ -2200,7 +2330,7 @@ mod tests {
             cwd_name: None,
             active_turn: None,
             last_assistant_message: None,
-            background: false,
+            holder: None,
         };
         let mut sessions = vec![];
         reconcile_sessions(&mut sessions, vec![native.clone(), native.clone()]);
@@ -2282,7 +2412,7 @@ mod tests {
                 cwd_name: None,
                 active_turn: None,
                 last_assistant_message: None,
-                background: false,
+                holder: None,
             },
             generation: "g".into(),
             previous_generation: None,
@@ -2366,7 +2496,7 @@ mod tests {
                 cwd_name: None,
                 active_turn: None,
                 last_assistant_message: None,
-                background: false,
+                holder: None,
             },
             generation: "g".into(),
             previous_generation: None,
@@ -2449,7 +2579,7 @@ mod tests {
                 cwd_name: None,
                 active_turn: None,
                 last_assistant_message: None,
-                background: false,
+                holder: None,
             },
             generation: "g".into(),
             previous_generation: None,
@@ -2547,7 +2677,7 @@ mod tests {
                 cwd_name: None,
                 active_turn: None,
                 last_assistant_message: None,
-                background: false,
+                holder: None,
             },
             generation: "g".into(),
             previous_generation: None,
@@ -2610,7 +2740,7 @@ mod tests {
                 cwd_name: None,
                 active_turn: None,
                 last_assistant_message: None,
-                background: false,
+                holder: None,
             },
             generation: "g".into(),
             previous_generation: None,

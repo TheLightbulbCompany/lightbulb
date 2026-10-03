@@ -34,6 +34,11 @@ logger = logging.getLogger(__name__)
 _ANALYTICS_NS = uuid.uuid5(uuid.NAMESPACE_URL, "lightbulb:local-session-lifecycle")
 
 
+#: The Lightbulb holder a session runs in (managed session sharing §5.4). Only held sessions
+#: are shared; a desktop that sends none is refused.
+HolderId = Annotated[str, Field(pattern=r"^[0-9a-f]{8}$")]
+
+
 class Descriptor(ContractModel):
     workspace: sessions.WorkspaceSummary = Field(default_factory=sessions.WorkspaceSummary)
     provider: Literal["claude", "codex"]
@@ -46,7 +51,7 @@ class Descriptor(ContractModel):
     control_unavailable_reason: sessions.ControlUnavailableReason | None = None
     title: Annotated[str, Field(max_length=120)] | None = None
     cwd_name: Annotated[str, Field(max_length=128)] | None = None
-    kind: Literal["interactive", "background"] = "interactive"
+    holder_id: HolderId
     start_id: sessions.OpaqueId | None = None
 
 
@@ -477,9 +482,7 @@ class LocalSessionRelay:
                             and previous["startId"] != descriptor.start_id
                         ):
                             raise _conflict("start identity changed", sid=sid, cid=cid)
-                    if descriptor.start_id and (
-                        descriptor.control_unavailable_reason is not None or descriptor.kind != "interactive"
-                    ):
+                    if descriptor.start_id and descriptor.control_unavailable_reason is not None:
                         raise _conflict("unverified start identity", sid=sid, cid=cid)
                     # The desktop is the only party that can verify the native runtime (live process,
                     # transcript rows, inbox socket) and it fails closed with a controlUnavailableReason.

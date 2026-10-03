@@ -206,7 +206,7 @@ it("names the Mac by its own name, never the pairing's user id", async () => {
   await userEvent.type(screen.getByPlaceholderText(PLACEHOLDER), "go{Enter}");
   expect(await screen.findByText("Starting on PP's MacBook Pro · ~/code…")).toBeInTheDocument();
   emit({ operationId: START_ID, state: "succeeded", updatedAt: "now", result: {}, error: null });
-  expect(await screen.findByText("Opened in Terminal on PP's MacBook Pro · ~/code. Waiting for the session…")).toBeInTheDocument();
+  expect(await screen.findByText("Opened on PP's MacBook Pro · ~/code. Waiting for the session…")).toBeInTheDocument();
 });
 
 it("blocks an over-long first message", async () => {

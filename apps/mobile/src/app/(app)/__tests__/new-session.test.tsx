@@ -142,7 +142,7 @@ it("keeps an uncertain POST result pending so a retry cannot launch a duplicate 
   expect(screen.getByLabelText("View sessions")).toBeTruthy();
 });
 
-it("keeps a retryable Mac outcome pending because Terminal may already have opened", async () => {
+it("keeps a retryable Mac outcome pending because the session may already have opened", async () => {
   await render(<NewSessionScreen />);
   await waitFor(() => expect(screen.getByLabelText("Session options")).toBeTruthy());
   await fireEvent.changeText(screen.getByLabelText("First message"), "Fix the build safely.");
@@ -182,7 +182,7 @@ it("accepts a Mac receipt that arrives before the start POST returns", async () 
   await fireEvent.changeText(screen.getByLabelText("First message"), "Fix the build safely.");
   await waitFor(() => expect(screen.getByLabelText("Start session").props.accessibilityState.disabled).toBe(false));
   await fireEvent.press(screen.getByLabelText("Start session"));
-  await waitFor(() => expect(screen.getByText(/Terminal opened on/)).toBeTruthy());
+  await waitFor(() => expect(screen.getByText(/The session opened on/)).toBeTruthy());
 });
 
 it("opens only the native session linked to this start, even when another session appears first", async () => {

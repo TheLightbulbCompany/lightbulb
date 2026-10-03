@@ -866,6 +866,11 @@ impl Host {
                         Err(error) => failures.push(error),
                     }
                 }
+                // Shared iff held (spec §5.4): an unheld session never gets a mirror.
+                let holders = tokio::task::spawn_blocking(crate::holder::manager::list)
+                    .await
+                    .unwrap_or_default();
+                keep_held(&mut found, &holders);
                 for error in &failures {
                     // A listing that failed is not evidence that anything stopped;
                     // say so once per distinct failure, not once a minute forever.
@@ -1043,7 +1048,7 @@ impl Host {
         // An end the relay has not been told about -- because it happened while the
         // socket was down, or in a previous run of this process -- is still owed to it.
         self.liveness_tick();
-        super::screen::index(&self.dir, &self.mirrors);
+        super::screen::index(&self.mirrors);
         let mut recovering_ended = ended_recovery_keys(&self.mirrors);
         let mut unreported: Vec<String> = self
             .mirrors
@@ -1205,7 +1210,7 @@ impl Host {
                         last_probe = Instant::now();
                         let moved = self.approval_tick();
                         self.heartbeat_dirty.extend(moved);
-                        super::screen::index(&self.dir, &self.mirrors);
+                        super::screen::index(&self.mirrors);
                     }
                     if reaped.elapsed() >= Duration::from_secs(60) {
                         reaped = Instant::now();
@@ -1465,7 +1470,7 @@ impl Host {
             claude::capture(
                 &self.home,
                 &program,
-                &json!({"kind":if native.background {"background"} else {"interactive"},"pid":native.process.pid,
+                &json!({"kind":"interactive","pid":native.process.pid,
                 "sessionId":native.conversation,"status":"unknown"}),
             )
             .await?
@@ -1930,12 +1935,8 @@ fn registration(mirror: &Mirror) -> Value {
     let mut body = json!({"type":"local.session.register", "session":{"provider":mirror.native.provider,
         "profileFingerprint":mirror.native.profile,"nativeConversationId":mirror.native.conversation,"generation":mirror.generation,
         "providerVersion":mirror.native.version,"status":mirror.native.status,"activeTurnId":mirror.native.active_turn,"controlUnavailableReason":mirror.native.restriction,
-        "title":mirror.native.title,"cwdName":mirror.native.cwd_name,
+        "title":mirror.native.title,"cwdName":mirror.native.cwd_name,"holderId":mirror.native.holder,
         "workspace":mirror.workspace.summary()}});
-    // Omitted for a terminal session, so a backend that predates background jobs keeps accepting it.
-    if mirror.native.background {
-        body["session"]["kind"] = json!("background");
-    }
     if let Some(previous) = &mirror.previous_generation {
         body["previousGeneration"] = json!(previous);
     }
@@ -2240,7 +2241,7 @@ mod tests {
             cwd_name: None,
             active_turn: None,
             last_assistant_message: None,
-            background: false,
+            holder: None,
         }
     }
 
@@ -2356,31 +2357,19 @@ mod tests {
     }
 
     #[test]
-    fn local_sessions_background_job_registers_its_kind_and_a_terminal_session_omits_it() {
+    fn local_sessions_registration_names_its_holder_and_never_a_kind() {
         let mut mirror = test_mirror(SID, "gen-1");
-        assert!(
-            registration(&mirror)["session"].get("kind").is_none(),
-            "a backend that predates background jobs rejects an unknown key"
-        );
+        mirror.native.holder = Some("ab12cd34".into());
+        let frame = registration(&mirror);
+        assert_eq!(frame["session"]["holderId"], "ab12cd34");
+        assert!(frame["session"].get("kind").is_none());
         let mut persisted = serde_json::to_value(&mirror.native).unwrap();
-        persisted.as_object_mut().unwrap().remove("background");
-        assert!(
-            !serde_json::from_value::<NativeSession>(persisted)
-                .unwrap()
-                .background
-        );
-        mirror.native.background = true;
-        assert_eq!(registration(&mirror)["session"]["kind"], "background");
-        mirror.session_id = Some(SID.into());
-        let frames = device_heartbeats(
-            &BTreeMap::from([(SID.to_string(), mirror)]),
-            &BTreeSet::from([SID.to_string()]),
-            false,
-        )
-        .unwrap();
-        assert!(
-            frames[0]["sessions"][0].get("kind").is_none(),
-            "the heartbeat entry never carries it"
+        persisted.as_object_mut().unwrap().remove("holder");
+        persisted["background"] = json!(true);
+        assert_eq!(
+            serde_json::from_value::<NativeSession>(persisted).unwrap().holder,
+            None,
+            "a mirror saved before explicit sharing has no holder; the relay refuses its registration"
         );
     }
 
@@ -3540,7 +3529,7 @@ mod tests {
             cwd_name: None,
             active_turn: None,
             last_assistant_message: None,
-            background: false,
+            holder: None,
         }
     }
     #[tokio::test]
@@ -3819,7 +3808,7 @@ mod tests {
             cwd_name: None,
             active_turn: None,
             last_assistant_message: None,
-            background: false,
+            holder: None,
         };
         let key = native_key(&native);
         let mirror = Mirror {
@@ -3939,7 +3928,7 @@ mod tests {
             cwd_name: None,
             active_turn: None,
             last_assistant_message: None,
-            background: false,
+            holder: None,
         };
         let mirror = Mirror {
             workspace: workspace::State::default(),

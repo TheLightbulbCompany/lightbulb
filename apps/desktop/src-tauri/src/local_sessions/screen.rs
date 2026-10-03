@@ -10,7 +10,7 @@
 //! screen in about a second, not at the next ack); the acks still keep it going and stop it.
 
 use super::transport::relay_log;
-use super::{process, Mirror, NativeSession, Process};
+use super::{Mirror, NativeSession};
 use crate::holder::manager::{self, HolderInfo};
 use crate::holder::protocol::{encode, read_frame, split_offset, EXIT, HELLO, OUTPUT, RESIZE, SNAPSHOT};
 use base64::Engine;
@@ -18,7 +18,6 @@ use serde_json::{json, Value};
 use std::collections::BTreeMap;
 use std::io::Write;
 use std::os::unix::net::UnixStream;
-use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering::SeqCst};
 use std::sync::mpsc::{Receiver, RecvTimeoutError};
 use std::sync::{Arc, Mutex};
@@ -48,7 +47,6 @@ struct Live {
 }
 
 static LIVE: Mutex<BTreeMap<String, Live>> = Mutex::new(BTreeMap::new());
-static DIR: Mutex<Option<PathBuf>> = Mutex::new(None);
 static OUT: Mutex<Option<mpsc::Sender<Value>>> = Mutex::new(None);
 static RELAYS: Mutex<BTreeMap<String, Arc<Ctl>>> = Mutex::new(BTreeMap::new());
 
@@ -107,7 +105,7 @@ fn send_out(frame: Value) -> bool {
 }
 
 /// The relay loop's live mirrors by session id, refreshed every second.
-pub(super) fn index(dir: &Path, mirrors: &BTreeMap<String, Mirror>) {
+pub(super) fn index(mirrors: &BTreeMap<String, Mirror>) {
     let live = mirrors
         .values()
         .filter(|m| m.ended_at.is_none())
@@ -116,29 +114,19 @@ pub(super) fn index(dir: &Path, mirrors: &BTreeMap<String, Mirror>) {
     if let Ok(mut slot) = LIVE.lock() {
         *slot = live;
     }
-    if let Ok(mut slot) = DIR.lock() {
-        *slot = Some(dir.to_path_buf());
-    }
 }
 
-/// The holder a shared session runs in, and its generation. `HELLO` carries the provider's pid
-/// but not its birth, so the birth is read here: the same pid and birth as the mirror's process
-/// is that process. Codex's mirror is its rollout writer (a shared daemon on 0.159), never the
-/// holder's child, so an app-started session is matched by its start link instead.
+/// The holder a shared session runs in, and its generation: the holder discovery named on the
+/// mirror (`keep_held`: Claude as the holder's own child, Codex by the thread its holder bound).
+/// A mirror with no holder is not shared and has no live terminal.
 pub(crate) fn holder_for_session(session_id: &str) -> Option<(HolderInfo, String)> {
     let live = LIVE.lock().ok()?.get(session_id).cloned()?;
-    let dir = DIR.lock().ok()?.clone()?;
-    let start = super::start_links::linked(&dir, &live.native, &live.generation);
-    let holder = matched(&manager::list(), &live.native.process, start.as_deref(), |pid| process(pid).ok())?;
+    let holder = matched(manager::list(), live.native.holder.as_deref()?)?;
     Some((holder, live.generation))
 }
 
-fn matched(holders: &[HolderInfo], provider: &Process, start: Option<&str>, identity: impl Fn(u32) -> Option<Process>) -> Option<HolderInfo> {
-    holders
-        .iter()
-        .find(|h| h.provider_pid == provider.pid && identity(h.provider_pid).as_ref() == Some(provider))
-        .or_else(|| start.and_then(|id| holders.iter().find(|h| h.start_id() == Some(id))))
-        .cloned()
+fn matched(holders: Vec<HolderInfo>, id: &str) -> Option<HolderInfo> {
+    holders.into_iter().find(|h| h.id == id)
 }
 
 fn parse(watching: &[Value]) -> BTreeMap<String, u64> {
@@ -623,19 +611,11 @@ mod tests {
     }
 
     #[test]
-    fn a_session_maps_to_the_holder_that_is_its_parent_or_that_was_started_for_it() {
-        let holder = |id: &str, provider_pid: u32, argv: &[&str]| HolderInfo {
-            id: id.into(), socket: PathBuf::from(format!("/x/{id}.sock")), pid: 1, provider_pid,
-            argv: argv.iter().map(|s| s.to_string()).collect(), cwd: "/w".into(), watch: true, type_input: true };
-        let holders = [holder("aaaa0001", 500, &["/claude"]),
-            holder("aaaa0002", 600, &["/bin/sh", "-c", "x", "lightbulb-start", "start-9", "/scope", "/codex"])];
-        let claude = Process { pid: 500, birth_micros: 42, executable: "/claude".into() };
-        let alive = |pid: u32| Some(Process { pid, birth_micros: 42, executable: "/claude".into() });
-        let reused = |pid: u32| Some(Process { pid, birth_micros: 99, executable: "/claude".into() });
-        assert_eq!(matched(&holders, &claude, None, alive).unwrap().id, "aaaa0001");
-        assert!(matched(&holders, &claude, None, reused).is_none(), "a reused pid is not the session");
-        let daemon = Process { pid: 777, birth_micros: 1, executable: "/daemon".into() };
-        assert_eq!(matched(&holders, &daemon, Some("start-9"), alive).unwrap().id, "aaaa0002");
-        assert!(matched(&holders, &daemon, None, alive).is_none(), "a plain terminal session has no holder");
+    fn a_session_maps_to_the_holder_discovery_named() {
+        let holder = |id: &str| HolderInfo {
+            id: id.into(), socket: std::path::PathBuf::from(format!("/x/{id}.sock")), pid: 1, provider_pid: 2,
+            argv: vec!["/claude".into()], cwd: "/w".into(), watch: true, type_input: true };
+        assert_eq!(matched(vec![holder("aaaa0001"), holder("aaaa0002")], "aaaa0002").unwrap().id, "aaaa0002");
+        assert!(matched(vec![holder("aaaa0001")], "aaaa0003").is_none(), "a gone holder has no terminal");
     }
 }

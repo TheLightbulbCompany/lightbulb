@@ -3,7 +3,7 @@
 This side proves WHO may ask (the caller is the member who paired that Mac, the
 workspace is on the desktop-execution allowlist) and WHICH of their own ready Macs
 answers. The Mac re-validates every field against its own approved folders and
-installed CLIs and launches only its fixed binary, visibly in Terminal. No path, flag
+installed CLIs and launches only its fixed binary, visibly on the Mac. No path, flag
 or command text here is ever executed as given.
 
 There is no native approve-once prompt (unlike shell): the requester is always the

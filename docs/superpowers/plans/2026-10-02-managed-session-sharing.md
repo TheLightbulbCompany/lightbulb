@@ -4,49 +4,46 @@
 
 **Goal:** Let the owner code in a real Claude Code / Codex terminal inside the Lightbulb desktop app, share exactly the sessions started through Lightbulb, show teammates the same real view (live and recorded), and let the owner or an admitted teammate resume an ended session from any device.
 
-**Architecture:** A tiny detached holder process per session owns a pty running the unmodified provider. The desktop app attaches to holders for its terminal panel and records their output to the existing local-session relay; the backend stores chunks beside the session's events and pushes them to watching teammates' user channels. The existing transcript mirror stays, restricted to held sessions, for the phone and agents.
+**Architecture:** A detached holder process per session owns a pty running the unmodified provider, keeps a terminal model (snapshot, modes, probe answers) and an offset-addressed output log. The desktop app attaches a local-assets terminal window and a recorder; live chunks go over the existing local-session relay to watching viewers, stored segments and keyframes go to S3. The existing transcript mirror stays, restricted to held sessions, for the phone and agents. Resume has its own rail through the device heartbeat, like pick-up.
 
-**Tech Stack:** Rust (Tauri 2 desktop, `apps/desktop/src-tauri`), TypeScript/React (Next.js web, `@lightbulb/shared`, Expo iOS), xterm.js, Python/FastAPI backend, DynamoDB, AppSync Events.
+**Tech Stack:** Rust (Tauri 2, `portable-pty`, a terminal emulator crate), TypeScript/React (Next.js web, `@lightbulb/shared`, Expo iOS), xterm.js, Python/FastAPI, DynamoDB, S3, AppSync Events.
 
-**Spec:** `docs/superpowers/specs/2026-10-02-managed-session-sharing.md`
+**Spec:** `docs/superpowers/specs/2026-10-02-managed-session-sharing.md` (revision 2)
 
 ## Scope and order
 
-The spec spans five subsystems, and the first two phases decide facts the rest depends on (which holder, whether xterm.js in WKWebView is good enough, how macOS attributes a held `claude`). So this plan details **Phase 0 and Phase 1 task by task**, and lists Phases 2-6 with their deliverables, files and acceptance. Each of Phases 2-6 gets its own detailed plan, written after Phase 1 reports, in this file's format.
+Five subsystems, and Phase 1 decides facts the rest depends on (which emulator crate, whether the holder can run from the bundle, how macOS treats a held `claude`). This plan details **Phase 0 and Phase 1** task by task and lists Phases 2-6 with deliverables and tests. Each of Phases 2-6 gets its own detailed plan after Phase 1 reports.
 
 | Phase | Ships | Depends on |
 |---|---|---|
 | 0 | #3614: the mirror keeps up | — |
-| 1 | Kill-test results written into the spec §12 | — |
-| 2 | Holder + terminal panel, local only (no sharing change) | 1 |
-| 3 | Explicit sharing: only held sessions are mirrored; migration notice | 2 |
+| 1a | Standalone kill tests (holder, emulator, probes, Codex, Esc, xterm.js in WebKit) | — |
+| 1b | Real-app kill tests (update survival, macOS identity, volume) | 1a, open question 4 |
+| 2 | Holder + local terminal window, local only | 1b |
+| 3 | Explicit sharing (held-only mirrors, hook filter, server refusal, migration) | 2 |
 | 4 | Recording + teammate terminal viewer | 3 |
 | 5 | Resume (desktop, backend, web, iPhone) | 3 |
-| 6 | `lightbulb` command for outside terminals | 2 |
+| 6 | `lightbulb` command | 2 |
 
 ## Global Constraints
 
-- Provider binaries run unmodified: no `-p`, no `--bare`, no stream-json, no Agent SDK, no `codex app-server` (spec §2.2).
-- Nothing remote writes into a pty. Remote text uses Claude's peer socket and `codex queue` with existing labels; prompts are answered only by the `PermissionRequest` hook (spec §6).
-- The holder never runs from inside `Lightbulb.app` (spec §5.1).
-- Shared iff the provider's pid + birth time is a held child; never an environment marker (spec §5.4).
-- Relay frames ≤ 16 KiB (`MAX_ENVELOPE_BYTES = 16 * 1024`, `core/services/local_sessions.py:50`).
-- No feature flags and no compatibility paths (owner ruling 2026-09-12). Exception to decide before Phase 2: see "Open decision" below.
-- Tests: write them with the code; CI runs them (`turbo run test`, backend pytest, `test-desktop` on the self-hosted Mac). Do not run full suites locally. Desktop behaviour is accepted on prod as the founder after promotion; there is no dev desktop acceptance.
-- Spike harnesses live under `scratch/managed-sessions/` on the spike branch and are never merged.
+- Provider binaries run unmodified and interactive: no `-p`, `--bare`, stream-json, Agent SDK or `codex app-server` (spec §2.2).
+- Nothing remote writes into a pty. Only the local terminal window's own webview and `lightbulb claude` send input (spec §5.2, §6).
+- Shared iff the provider descends from a holder (Claude: first claim; Codex: thread id via the hook). Never an environment marker (spec §5.4).
+- Relay frames ≤ 16 KiB including the envelope (`MAX_ENVELOPE_BYTES`, `core/services/local_sessions.py:50`); live chunks carry ≤ 11 KiB raw.
+- Screen traffic never writes the session META row (spec §5.5).
+- No feature flags and no compatibility paths (owner ruling 2026-09-12), unless the owner allows the founder-only first build (spec open question 4).
+- Tests are written with the code and run in CI (`turbo run test`, backend pytest, `test-desktop` on the self-hosted Mac). Do not run full suites locally. Desktop behaviour is accepted on prod as the founder after promotion.
+- Spike harnesses live under `scratch/managed-sessions/` on `spike/managed-sessions` and are never merged.
 - Never type config-changing slash commands (`/model`, `/effort`, `/config`, `/permissions`, `/login`) into a real session in a test: they save as the user's defaults.
-
-## Open decision (owner) before Phase 2
-
-Phase 2 puts a new terminal panel in front of every desktop user on promotion. Options: (a) ship to everyone and accept rough edges; (b) reuse the existing owner allowlist pattern (`DESKTOP_EXECUTION_OWNER_ALLOWLIST`, CDK-derived from GitHub variables) to show "New session" to the founder first. (b) is a gate, which the no-flags ruling forbids unless the owner allows it here.
 
 ## Review Focus
 
-1. **A wide paste or image drop into the panel** while Claude is busy: expect it to arrive whole, in order, exactly as in Terminal.app. (Phase 2 test: 200 KiB bracketed paste round-trips byte-for-byte through holder input.)
-2. **The app restarts mid-turn**: expect the session to keep working and the panel to come back at the right size with the current screen, not a blank or garbled one. (Phase 2 test: re-attach after killing the app process; replay then resize redraws.)
-3. **A `claude` started from inside a held session's shell tool**: expect it to stay private. (Phase 3 test: a grandchild provider pid is not shared.)
-4. **A teammate opens a long session**: expect the recorded view within a few seconds, not a hang. (Phase 4 test: replay of 5 MB of chunks renders in under 3 s in the viewer.)
-5. **Resume while the owner's Mac is asleep**: expect it to wait and run on wake, and the message to arrive once, not twice. (Phase 5 test: resume queued offline delivers exactly one send after the successor registers.)
+1. **Multi-line paste into a window attached after >1 MiB of output**: expect it to arrive as one paste, not submit early. (Task 1.2; Phase 2 test.)
+2. **A session started with no window attached** (remote start, Resume): expect it to start normally and draw correctly when a window attaches. (Task 1.1 Step 5; Phase 2 test.)
+3. **A `claude` started inside a held session's shell**: expect it to stay private. (Phase 3 test.)
+4. **A teammate opens a five-hour session**: expect the current screen within a few seconds, with history behind it. (Task 1.7; Phase 4 test.)
+5. **A teammate resumes while the owner's Mac is asleep**: expect it to wait, run on wake in `plan` mode, and the message to arrive at most once, with "unknown" shown if its outcome is lost. (Phase 5 test.)
 
 ---
 
@@ -54,13 +51,13 @@ Phase 2 puts a new terminal panel in front of every desktop user on promotion. O
 
 ### Task 0.1: Land #3614
 
-**Files:** already on branch `fix/session-mirror-freshness` (worktree `~/Desktop/lb-mirror-fresh.nosync`):
-- Modify: `apps/desktop/src-tauri/src/local_sessions/transport.rs` (per-session 500 ms spacing from the last ack)
-- Modify: `apps/desktop/src-tauri/src/local_sessions.rs` (main thread before subagents; 32-event subagent refill budget, round-robin)
-- Modify: `apps/frontend/src/components/messaging/NativeSessionTranscript.tsx`, `packages/shared/src/messaging/localSessionTranscript.ts` (`sessionClock`, turn-start spinner)
+**Files** (branch `fix/session-mirror-freshness`, worktree `~/Desktop/lb-mirror-fresh.nosync`):
+- Modify: `apps/desktop/src-tauri/src/local_sessions/transport.rs` (per-session spacing from the last ack)
+- Modify: `apps/desktop/src-tauri/src/local_sessions.rs` (main thread before subagents, 32-event round-robin budget)
+- Modify: `apps/frontend/src/components/messaging/NativeSessionTranscript.tsx`, `packages/shared/src/messaging/localSessionTranscript.ts`
 - Test: `local_sessions_own_thread_is_read_ahead_of_subagents_and_subagents_take_turns`
 
-- [ ] **Step 1:** Address the reviewer's note: add a comment above `*next = Some(id.clone());` in `read_subagents`:
+- [ ] **Step 1:** Add the reviewer's comment above `*next = Some(id.clone());` in `read_subagents`:
 
 ```rust
             // Advance even when this subagent has nothing new: the next refill must start
@@ -68,9 +65,10 @@ Phase 2 puts a new terminal panel in front of every desktop user on promotion. O
             *next = Some(id.clone());
 ```
 
-- [ ] **Step 2:** Rebase on `origin/main`, push, take the PR out of draft, and read Codex's review on all four surfaces (`reviews`, `pulls/<n>/comments`, `issues/<n>/comments`, `issues/<n>/reactions`).
-- [ ] **Step 3:** Merge when CI is green and Codex's findings are handled.
-- [ ] **Step 4:** After the next desktop release, confirm on the founder Mac that the state files' `cursor.offset` stays within a few seconds of the transcript size during a session with running subagents:
+- [ ] **Step 2:** Confirm the reap loop removes `last_upload` entries for reaped keys: `last_upload.remove(&key);` must sit beside `sent_batches.remove(&key);` there (reviewer note; already in the diff).
+- [ ] **Step 3:** Rebase on `origin/main`, push, take the PR out of draft, read Codex's review on all four surfaces (`reviews`, `pulls/<n>/comments`, `issues/<n>/comments`, `issues/<n>/reactions`).
+- [ ] **Step 4:** Merge when CI is green and Codex's findings are handled.
+- [ ] **Step 5:** After the next desktop release, on the founder Mac, every busy session's mirror is under 64 KB behind its transcript:
 
 ```bash
 python3 - <<'EOF'
@@ -83,139 +81,145 @@ for p in glob.glob(d + "/*/*.json"):
 EOF
 ```
 
-Expected: every busy session behind by under 64 KB.
-
 ---
 
-## Phase 1: kill tests
+## Phase 1a: standalone kill tests
 
-Branch: `spike/managed-sessions` from `origin/main`. Each task ends by writing its result (pass, fail, numbers, what surprised you) into spec §12 and committing that edit. A fail stops the plan for an owner decision.
+Branch `spike/managed-sessions` from `origin/main`. Each task ends by writing its result into spec §12 and committing that edit. A failure stops the plan for an owner decision.
 
-### Task 1.1: Holder survives the app going away
-
-**Files:**
-- Create: `scratch/managed-sessions/holder/` (standalone Rust crate: `Cargo.toml`, `src/main.rs`)
-- Modify: `docs/superpowers/specs/2026-10-02-managed-session-sharing.md` §12
-
-- [ ] **Step 1: Write the holder.** One binary, `holder <socket> <manifest> -- <argv...>`: `setsid`, `openpty` (crate `nix`), spawn argv in the pty, listen on the unix socket, keep a 256 KiB ring buffer, frames `[u8 type][u32 len][bytes]` with types `1 hello, 2 output, 3 input, 4 resize, 5 exit, 6 replay`, write the manifest JSON `{pid, childPid, startedAt}`, exit after the child exits.
-
-```rust
-// src/main.rs (core loop shape; complete the error handling as you write it)
-use nix::pty::{openpty, Winsize};
-use std::os::unix::net::UnixListener;
-const RING: usize = 256 * 1024;
-fn main() {
-    let args: Vec<String> = std::env::args().collect();
-    let (sock, manifest, argv) = (&args[1], &args[2], &args[4..]);
-    nix::unistd::setsid().ok();
-    let pty = openpty(Some(&Winsize { ws_row: 40, ws_col: 120, ws_xpixel: 0, ws_ypixel: 0 }), None).unwrap();
-    let child = std::process::Command::new(&argv[0]).args(&argv[1..])
-        .stdin(pty.slave.try_clone().unwrap()).stdout(pty.slave.try_clone().unwrap()).stderr(pty.slave)
-        .spawn().unwrap();
-    std::fs::write(manifest, format!("{{\"pid\":{},\"childPid\":{}}}", std::process::id(), child.id())).unwrap();
-    let listener = UnixListener::bind(sock).unwrap();
-    // poll(master, listener, clients): master output -> ring + every client; client input -> master;
-    // resize -> TIOCSWINSZ on master; on attach send `replay` with the ring; on child exit send `exit`.
-    let _ = (listener, RING);
-}
-```
-
-- [ ] **Step 2: Write the attach client** `scratch/managed-sessions/attach.py`: raw mode, relay stdin → `input`, `output`/`replay` → stdout, SIGWINCH → `resize`, restore the terminal on exit.
-- [ ] **Step 3: Run the test.** In Terminal.app: start `holder` detached with `claude` in a scratch repo, attach, start a turn ("Write the numbers 1 to 300, one per line"), then `kill -9` the attach client (stands in for the app dying). Reattach.
-
-Expected: `claude` is still running (`pgrep -f claude` shows the child pid from the manifest); the reattached screen shows the current state after replay plus one resize nudge (send `resize` with rows-1 then rows).
-
-- [ ] **Step 4: Bundle replacement.** Copy the holder binary to `~/Library/Application Support/company.thelightbulb.desktop/holder/spike/`, run it from there, then replace a copy of `Lightbulb.app` in a scratch folder with another version using `mv` (what the updater does). Expected: the holder is unaffected. Record whether macOS showed any prompt.
-- [ ] **Step 5:** Record results in spec §12; commit `docs(spec): holder survival results`.
-
-### Task 1.2: xterm.js in WKWebView as an all-day terminal
+### Task 1.1: Holder prototype with terminal model, offsets and probe answers
 
 **Files:**
-- Create: `scratch/managed-sessions/panel/` (a minimal Tauri 2 app: one window, xterm.js 5 + fit addon from cdnjs, Rust side attaches to the Task 1.1 holder and streams `output` over a Tauri `Channel`, `input` via `invoke`)
+- Create: `scratch/managed-sessions/holder/Cargo.toml`, `scratch/managed-sessions/holder/src/main.rs`
+- Create: `scratch/managed-sessions/attach.py`
 - Modify: spec §12
 
-- [ ] **Step 1:** Build the minimal app with `cargo tauri dev` (scratch only; not the Lightbulb app).
-- [ ] **Step 2:** Check each item and record pass/fail: Shift+Enter inserts a newline in Claude Code's prompt; Option+B/F word jumps; Cmd+C/Cmd+V; Cmd+K clear; pasting 200 lines arrives whole (bracketed paste); dragging a PNG into the prompt attaches an image as in Terminal.app; `/` command menu and arrow keys work; resize the window: Claude redraws without duplicated scrollback.
-- [ ] **Step 3:** Throughput: run `seq 1 200000` in a held shell; record time to finish and whether the window stays responsive.
-- [ ] **Step 4:** Memory: leave a session running a long Claude task for 8 hours; record the WebContent process RSS hourly (`ps -o rss= -p <pid>`).
-- [ ] **Step 5:** Record results; commit.
+**Interfaces (produced, reused by Phase 2):**
+- Frames: `[u8 type][u32 len][payload]`; types `1 hello(json)`, `2 output(u64 offset + bytes)`, `3 input(bytes)`, `4 resize(u16 cols, u16 rows)`, `5 exit(json)`, `6 replay(u64 fromOffset)`, `7 gap(u64 from, u64 to)`, `8 snapshot(bytes)`, `9 detached`.
+- `hello` JSON: `{"protocol":1,"pid":..,"pidBirth":..,"provider":"claude","cwd":"..","providerPid":..,"providerBirth":..}`.
 
-### Task 1.3: `claude` launched by Lightbulb behaves like a terminal's
+- [ ] **Step 1: Cargo.toml**
+
+```toml
+[package]
+name = "lb-holder-spike"
+version = "0.0.0"
+edition = "2021"
+
+[dependencies]
+portable-pty = "0.8"
+vt100 = "0.15"
+nix = { version = "0.29", features = ["process", "signal", "term"] }
+serde_json = "1"
+```
+
+- [ ] **Step 2: Holder.** Write `src/main.rs` with: double-fork + `setsid`; `portable-pty` `native_pty_system().openpty(PtySize{rows:40, cols:120, ..})`; spawn `$SHELL -l -i -c "exec <argv>"` with `TERM=xterm-256color`, `COLORTERM=truecolor`, `LANG` defaulting to `en_US.UTF-8`; a `vt100::Parser` fed every output byte; a 1 MiB `VecDeque<u8>` log plus a `u64` total-offset counter; a `UnixListener` at the path in `argv[1]` with a uid check (`nix::sys::socket::getsockopt(fd, PeerCredentials)` or `getpeereid`); one interactive client slot and any number of output-only clients (role in the client's first frame: `hello{"role":"interactive"|"recorder"}`); on interactive attach send `snapshot(parser.screen().contents_formatted())` followed by the mode restore bytes built from `parser.screen()` mode getters (alt screen, bracketed paste, application cursor, mouse); `replay{from}` answers from the log or `gap`; exit when `child.wait()` returns.
+
+- [ ] **Step 3: Probe answers.** Before forwarding output to clients, scan it for these queries and write the fixed answer to the pty master yourself; drop the same reply patterns arriving from clients:
+
+```rust
+const PROBES: &[(&[u8], &[u8])] = &[
+    (b"\x1b[c", b"\x1b[?62;22c"),                 // DA1
+    (b"\x1b[>0q", b"\x1bP>|xterm(lightbulb)\x1b\\"), // XTVERSION
+    (b"\x1b[?u", b""),                            // kitty keyboard query: no answer = unsupported
+    (b"\x1b]10;?\x1b\\", b"\x1b]10;rgb:e6e6/e6e6/e9e9\x1b\\"), // OSC 10 fg
+    (b"\x1b]11;?\x1b\\", b"\x1b]11;rgb:1616/1616/1a1a\x1b\\"), // OSC 11 bg
+];
+```
+
+Also match the `BEL`-terminated forms of OSC 10/11. Record any probe Claude Code or Codex sends that this table misses (log unknown `CSI ... c|q|n` and `OSC ...;?`).
+
+- [ ] **Step 4: attach.py.** Raw mode, `hello{"role":"interactive"}`, stdin → `input`, `snapshot`/`output` → stdout, SIGWINCH → `resize`, restore termios in `finally`.
+
+- [ ] **Step 5: Run.** (a) Start the holder with `claude` in a scratch repo with no client attached; wait 15 s; attach. Expected: Claude's welcome screen drawn correctly. (b) Start a turn ("Write the numbers 1 to 300, one per line, nothing else"); `kill -9` attach.py; reattach. Expected: current screen, `pgrep` shows the same provider pid. (c) Produce >1 MiB of output (`!seq 1 300000`), reattach, paste three lines from the clipboard. Expected: one paste, not three submits. (d) Log every `output` frame size and timestamp for the run.
+
+- [ ] **Step 6:** Record results (including unknown probes and output volume) in spec §12; commit `docs(spec): holder spike results`.
+
+### Task 1.2: xterm.js in WebKit
+
+**Files:**
+- Create: `scratch/managed-sessions/web/index.html` (xterm.js 5 + fit addon from cdnjs, pinned versions), `scratch/managed-sessions/web/bridge.py` (`websockets` server: one browser connection ↔ one holder client connection, binary frames passed through)
+- Modify: spec §12
+
+- [ ] **Step 1:** Write `bridge.py` (≈30 lines): accept a WebSocket on `localhost:8765`, open the holder socket as `interactive`, relay frames both ways.
+- [ ] **Step 2:** Open `index.html` in **Safari** (WebKit, the engine of Tauri's WKWebView) against a held `claude`.
+- [ ] **Step 3:** Check and record each: Shift+Enter inserts a newline in Claude's prompt; Option+B/F word jumps (xterm `macOptionIsMeta: true`); Cmd+C/Cmd+V; three-line paste after >1 MiB of output arrives as one paste; dragging a PNG attaches an image as in Terminal.app; `/` menu and arrows work; window resize redraws without duplicated scrollback.
+- [ ] **Step 4:** Record results; commit.
+
+### Task 1.3: Codex in a holder
 
 **Files:** Modify spec §12.
 
-This needs the real app identity, so it runs on the first Phase 2 build, as the founder, before any further Phase 2 work. Write it here so it is not skipped.
-
-- [ ] **Step 1:** In a held session started by the app, check: Claude shows "Claude Max" (Keychain login read); a repo under `~/Desktop` opens without a folder-access prompt, or the prompt names Lightbulb once; `which node git gh` matches a login shell; `git commit -S` signs; `ssh -T git@github.com` works.
-- [ ] **Step 2:** Record results; commit.
-
-### Task 1.4: Codex in a holder
-
-**Files:** Modify spec §12.
-
-- [ ] **Step 1:** Start `codex` in the Task 1.1 holder from a scratch repo; send one prompt ("Reply with exactly: HI").
-- [ ] **Step 2:** Check: the TUI renders; a rollout appears in `~/.codex/sessions/<date>/` with `source: "cli"`; the installed Lightbulb app creates a mirror for it (a state file in `local-sessions/<hash>/` containing the thread id); `codex queue --thread <id> --message "second"` is delivered.
+- [ ] **Step 1:** Start the holder with `codex` in a scratch repo; attach; send "Reply with exactly: HI".
+- [ ] **Step 2:** Check: TUI renders; the Codex `SessionStart` hook process's parent chain (`ps -o ppid= -p <pid>` repeatedly) reaches the holder pid; a rollout with `source: "cli"` appears; the installed Lightbulb app mirrors it (a state file in `local-sessions/<hash>/` containing the thread id); `codex queue --thread <id> --message "second"` is delivered.
 - [ ] **Step 3:** Record results; commit.
 
-### Task 1.5: Esc and hooks against a real terminal
+### Task 1.4: Esc against a real terminal
 
 **Files:** Modify spec §12.
 
-- [ ] **Step 1:** In Terminal.app attached through `attach.py`, start a long Claude turn; send `\x1b` through a second client connection. Expected: "Interrupted", session idle, transcript row `[Request interrupted by user]`.
-- [ ] **Step 2:** Repeat with a permission prompt open. Record what Esc does there (expected: rejects the prompt). This decides the state gate for the later remote Stop.
+- [ ] **Step 1:** In Terminal.app via attach.py, start a long Claude turn; send `\x1b` through a second, test-only client. Expected: "Interrupted", idle, transcript row containing `interrupted by user`.
+- [ ] **Step 2:** Repeat with a permission prompt open; record what happens.
 - [ ] **Step 3:** Record results; commit.
 
-### Task 1.6: Recording volume
+## Phase 1b: real-app kill tests
 
-**Files:** Modify spec §12.
+Needs the holder inside a real signed build, so it waits for the owner's answer to spec open question 4. Build the Task 1.1 holder into the app as a bundled, signed resource; the panel can be a bare local-assets window with xterm.js.
 
-- [ ] **Step 1:** Have the holder log every `output` frame's size and timestamp during one real working hour of Claude Code use.
-- [ ] **Step 2:** Record total bytes, peak bytes per second, and the time xterm.js takes to replay the whole log (feed it in one `write` call in the Task 1.2 app). Commit.
+### Task 1.5: Update survival
+
+- [ ] **Step 1:** Start a held `claude` from the app (holder running from inside the bundle); start a long turn.
+- [ ] **Step 2:** Trigger a real update through the app's updater (`download_and_install` → `app.restart()`, `lib.rs:1367-1382`).
+- [ ] **Step 3:** Expected: the provider pid is unchanged; the new app finds the holder and the window redraws from a snapshot; the turn finishes. If the holder died, repeat with the binary copied to Application Support and record which works.
+- [ ] **Step 4:** Record; commit.
+
+### Task 1.6: macOS identity
+
+- [ ] **Step 1:** In a held `claude` started by the app: the banner shows the subscription ("Claude Max"); `which node git gh`, `nvm current`, `locale` match Terminal.app; a Unicode-heavy file renders.
+- [ ] **Step 2:** Quit the app; then have the held session make its first read under `~/Desktop`. Record any prompt and whether the read succeeds. Repeat after Task 1.5's update.
+- [ ] **Step 3:** `git commit -S --allow-empty -m test` in a scratch repo and `ssh -T git@github.com` succeed.
+- [ ] **Step 4:** Record; commit.
+
+### Task 1.7: Volume and long-session open
+
+- [ ] **Step 1:** From Task 1.1's log and one real working hour in the app, record total bytes and peak bytes per second.
+- [ ] **Step 2:** Time showing a five-hour session from its last keyframe in Safari (Task 1.2 page fed the snapshot bytes). Target: under 3 s.
+- [ ] **Step 3:** Record; commit.
 
 ---
 
-## Phase 2: holder and terminal panel (local only)
+## Phase 2: holder and local terminal window
 
-Detailed plan to be written after Phase 1. Deliverables:
-
-- `apps/desktop/src-tauri/src/holder/` (new module): `protocol.rs` (frames v1), `manager.rs` (spawn from the copied binary, adopt from manifests, attach, list), `bin/lightbulb-holder.rs` (the Task 1.1 holder, productionized).
-- `apps/desktop/src-tauri/src/lib.rs`: Tauri commands `holder_start{cwd, provider}`, `holder_list`, `holder_attach{holderId}` (Channel of output), `holder_input`, `holder_resize`.
-- `apps/frontend/src/components/workspace/panelRegistry.ts`: `PanelKind` gains `"terminal"`; new `apps/frontend/src/components/workspace/panels/TerminalPanel.tsx` (xterm.js) and a "New session" sheet (approved folder, Claude Code or Codex).
-- `session_start.rs` and `session_pickup.rs` start held sessions in the panel instead of Terminal.app.
-- Tests: a 200 KiB bracketed paste round-trips byte-for-byte through holder `input`; after the app process is killed, re-attach gets `replay` and a resize redraw at the panel's size; a dead holder's manifest is removed on adoption.
-- Acceptance (prod, founder): Phase 1 checklist passes in the real app; an update with a session running leaves it running and redrawn.
+- `apps/desktop/src-tauri/src/holder/`: `protocol.rs` (Task 1.1 frames), `manager.rs` (start, find via sockets + `hello`, unlink dead, keep recorder attached), `bin/lightbulb-holder.rs` (productionized Task 1.1), bundled and signed in `tauri.conf.json` `resources`.
+- Terminal window: a separate Tauri webview loaded from bundled assets (xterm.js), with a new capability file granting it alone `holder_start`, `holder_list`, `holder_attach` (Channel), `holder_input`, `holder_resize`. The main webview gets only `terminal_open{holderId?}`.
+- New-session sheet (approved folder, Claude Code or Codex) reachable from the main app.
+- `session_start.rs` / `session_pickup.rs` launch through the holder manager, bring the window to the front, post a native notification; delete `start_links.rs` and the `LIGHTBULB_SESSION_*` environment.
+- Tests: frame codec round-trip; 200 KiB bracketed paste byte-for-byte through `input`; replay from an offset older than the log returns `gap`; a refused socket is unlinked; the main webview capability cannot invoke `holder_input`.
 
 ## Phase 3: explicit sharing
 
-Deliverables:
-
-- `apps/desktop/src-tauri/src/local_sessions/transport.rs` discovery path: create mirrors only for provider pids that are held children (from the holder manager); ignore hooks and listings for any other pid.
-- Existing mirrors of unheld sessions are ended on first run of the new build; a one-time notice: "Sessions are now shared only when you start them in Lightbulb or with `lightbulb claude`."
-- `docs/superpowers/plans/2026-10-01-native-session-parity.md` and `docs/superpowers/specs/2026-10-02-one-lightbulb-mcp.md` edited per spec §3.
-- Tests: a grandchild `claude` of a held session is not mirrored; a plain `claude` is not mirrored; a held one is.
+- Discovery filter at `transport.rs:849-858`: Claude by parent chain + first claim; Codex by `{holderId → threadId}` recorded by the hook.
+- Hook binary: walks its parent chain; no holder → exit 0 immediately, nothing sent to the app.
+- `local.session.register` carries `holderId`; backend refuses registrations without it and ends unheld sessions on deploy; delete the Claude `background` path (`claude.rs:25,165`).
+- One-time desktop notice; edit the parity plan and the one-MCP spec per spec §3.
+- Tests: plain `claude` not mirrored; held one mirrored; a grandchild `claude` not mirrored; a private session's `PermissionRequest` hook returns without waiting; register without `holderId` refused.
 
 ## Phase 4: recording and the teammate viewer
 
-Deliverables:
-
-- Desktop recorder: chunks (≤1 s or 12 KiB, with `cols`/`rows`, `gap` chunks) sent as `local.session.screen`, ack-gated, bounded queue 8 MiB per session.
-- Backend: `local.session.screen` handler in `core/services/local_session_relay.py` writing `SCREEN#{seq:020d}` rows under `local_sessions_repo.session_pk`; `POST /messaging/sessions/{id}/viewing`; `GET /messaging/sessions/{id}/screen?afterSeq=&limit=`; live publish to current viewers via `live_events.publish_user`.
-- Web: `apps/frontend/src/components/messaging/SessionTerminalView.tsx` (read-only xterm.js, scaled, seq-ordered, gap refetch, Offline and Ended states) as the default view of a held session; message box, Ask to join and Resume under it.
-- Tests: chunk ordering and gap refetch; viewer removed from the workspace stops receiving within one heartbeat; account wipe deletes `SCREEN#` rows.
+- Desktop recorder: live `local.session.screen` (≤ 11 KiB raw), 30 s / 256 KiB segments + keyframes uploaded by presigned PUT, `local.session.recording` commits, replay-from-offset after restart, flush before `Ended`.
+- Backend: screen handler (row checks, no META write, publish off the ack path, drop while `unshared`); `SEGMENT#<generationNo>#<segmentNo>` rows; `POST /viewing` (`VIEWER#<user>`, 45 s TTL); `GET /recording`; per-session 2 MiB/min and 200 MiB caps; deletion with session delete and both wipes; projector stream filter `MSG#`/`LIVE#` in `api-stack.ts:714-730`; new user live event type in `USER_LIVE_EVENT_TYPES` and the shared contract.
+- Web: `SessionTerminalView.tsx` (read-only xterm.js from keyframe + live chunks, scaled, Offline and Ended states, fallback to the session view for sessions without a recording); message box, Ask to join and Resume under it.
+- Tests: frame over 16 KiB rejected; chunks dropped while paused; ended or unenrolled stops the live push; agent, room-scoped and MCP callers refused on `/viewing` and `/recording`; wipe deletes the recording prefix; cap exceeded writes one `gap`.
 
 ## Phase 5: Resume
 
-Deliverables:
-
-- Backend: `kind: "resume"` in `core/services/local_sessions.py` (line 414 Literal); authorization owner or `may_control` / `allowedSenders`; `allowed_senders` keeps the list after `endedAt` (line 665); 24 h offline wait; owner notice event.
-- Desktop: resume handler starts `claude --resume <conversationId>` / `codex resume <threadId>` in a holder with the recorded cwd; delivers the first message after the successor generation registers.
-- Web and iPhone: "Resume and send" on ended sessions (`apps/mobile/src/app/(app)/session/`).
-- Tests: teammate without send rights is refused; offline resume delivers exactly once; agents cannot resume.
+- Backend: `_ended` copies `allowedSenders` to `resumeAllowed` (`local_session_relay.py:964-970`); owner can revoke it on an ended row; `POST /sessions/{id}/resume` writes `RESUME#` (conditional, 24 h) and `RESUMEWANT#<device>#<sid>` delivered in the device-heartbeat ack like `session_pickup.ack_with_pickup`; on the successor's register, seed the resumer into `allowedSenders` in the same transaction and admit the first message as a send.
+- Desktop: handle `RESUMEWANT` (dedupe by `resumeId`; refuse if a held session owns the conversation); start `claude --resume <id>` / `codex resume <threadId>` in a holder in `plan` mode for non-owners or the recorded mode capped at `default` for the owner; window to front; notification with a local Stop it.
+- Web and iPhone (`apps/mobile/src/app/(app)/session/`): "Resume and send" on ended sessions, with its own predicate beside `sessionControls.ts:32`.
+- Tests: teammate without send rights refused; agent refused; second resume while one is pending refused; offline resume runs on the next heartbeat; first message sent at most once, lost outcome surfaced as unknown; non-owner resume starts in `plan`.
 
 ## Phase 6: the `lightbulb` command
 
-Deliverables:
-
-- `apps/desktop/src-tauri/src/main.rs`: `cli` subcommand (`lightbulb claude|codex [args]`): ask the app to start a held session in `$PWD`, print the shared line, attach (raw mode, SIGWINCH, restore on exit), exit with the child's code.
-- "Install `lightbulb` command" action writing `/usr/local/bin/lightbulb` with an admin prompt.
-- Tests: terminal restored after the child exits and after Ctrl-C; app not running → message and exit 1.
+- `apps/desktop/src-tauri/src/main.rs`: `cli` subcommand; asks the app to start a held session in `$PWD`, prints the shared line, attaches as the interactive client, restores the terminal on exit, exits with the child's code.
+- Install: symlink `~/.local/bin/lightbulb`; show the PATH line if needed.
+- Tests: terminal restored after the child exits and after Ctrl-C; app not running → message and exit 1; attaching from the CLI detaches the window as the interactive client.

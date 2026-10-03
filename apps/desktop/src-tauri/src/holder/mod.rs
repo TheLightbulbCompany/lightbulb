@@ -6,3 +6,4 @@ pub mod manager;
 pub mod model;
 pub mod protocol;
 pub mod run;
+pub mod window;

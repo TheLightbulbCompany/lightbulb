@@ -1839,6 +1839,8 @@ end tell"#,
             desktop_permissions::desktop_permissions_set,
             agent_chrome::agent_chrome_status,
             agent_chrome::agent_chrome_raise,
+            holder::window::terminal_open,
+            holder::window::terminal_list,
         ])
         .setup(|app| {
             log("[setup] Lightbulb desktop app starting");

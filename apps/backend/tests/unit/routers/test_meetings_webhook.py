@@ -6,7 +6,9 @@ import hashlib
 import hmac
 import json
 import os
+import sys
 import time
+import types
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -19,6 +21,7 @@ from routers import meetings as mod  # noqa: E402
 ROOM = "11111111-1111-4111-8111-111111111111"
 SECRET = "whsec_" + base64.b64encode(b"k" * 24).decode()
 WORKER = "worker-secret"
+TEAM = [{"id": "agent-ceo-1", "name": "Ada"}]
 
 
 def _signed(payload: dict, secret: str = SECRET) -> tuple[bytes, dict]:
@@ -53,7 +56,11 @@ def env():
 
     publisher = MagicMock(publish_room=AsyncMock(return_value=True))
     lk = mod.livekit_huddles
+    notes = types.SimpleNamespace(on_ended=AsyncMock())
     with (
+        patch.dict(sys.modules, {"core.services.meeting_notes": notes}),
+        patch.object(mod.container_repo, "release_pass", AsyncMock()) as release,
+        patch.object(mod.voice_calls, "room_agents", AsyncMock(return_value=TEAM)),
         patch.object(mod.settings, "MEETINGS_ENABLED", True),
         patch.object(mod.meeting_bots.settings, "RECALL_WEBHOOK_SECRET", SECRET),
         patch.object(mod.settings, "HUDDLE_WORKER_SECRET", WORKER),
@@ -79,6 +86,8 @@ def env():
             "line": line,
             "publisher": publisher,
             "metric": metric,
+            "notes": notes.on_ended,
+            "release": release,
         }
 
 
@@ -99,7 +108,7 @@ def test_in_call_dispatches_the_worker_once_and_prewakes(env):
         "source": "meet",
         "company": "Acme",
     }
-    env["wake"].assert_called_once_with("org_a")
+    env["wake"].assert_called_once_with("org_a", team=TEAM)
     assert env["meta"]["meeting"]["status"] == "in_call"
     event = env["publisher"].publish_room.await_args.args[1]
     assert event["type"] == "room.meeting.changed" and event["payload"] == {"roomId": ROOM, "status": "in_call"}
@@ -118,6 +127,7 @@ def test_call_ended_closes_the_room_once(env):
     assert env["meta"]["meeting"]["status"] == "ended"
     env["close"].assert_awaited_once_with(ROOM, meet=True)
     env["metric"].assert_any_call("meeting.ended", dimensions={"sub_code": "call_ended_by_host"})
+    env["notes"].assert_called_once_with(ROOM)
 
 
 def test_fatal_knocking_disabled_posts_a_plain_line(env):
@@ -146,9 +156,10 @@ def test_unknown_or_mismatched_bot_is_a_noop(env, payload):
     assert env["meta"]["meeting"]["status"] == "bot_created"
 
 
-def test_meetings_off_is_a_noop(env):
+def test_meetings_off_is_a_noop_even_unsigned(env):
     with patch.object(mod.settings, "MEETINGS_ENABLED", False):
         assert _post(env["client"], _status("in_call_recording")).status_code == 200
+        assert env["client"].post("/api/v1/webhooks/recall", json=_status("done")).status_code == 200
     env["dispatch"].assert_not_awaited()
 
 
@@ -169,21 +180,72 @@ def test_realtime_speech_on_is_one_speaker_packet(env):
     )
 
 
-def test_worker_idle_leave_pulls_the_bot_and_ends(env):
-    with patch.object(mod.meeting_bots, "leave", AsyncMock()) as leave:
-        resp = env["client"].request(
-            "DELETE",
-            f"/api/v1/internal/meetings/{ROOM}",
-            json={"ownerId": "org_a", "roomToken": mod.livekit_huddles.room_token(ROOM, "org_a")},
-            headers={"X-Lightbulb-Huddle-Secret": WORKER},
-        )
-    assert resp.status_code == 200
+def _leave(client):
+    return client.request(
+        "DELETE",
+        f"/api/v1/internal/meetings/{ROOM}",
+        json={"ownerId": "org_a", "roomToken": mod.livekit_huddles.room_token(ROOM, "org_a")},
+        headers={"X-Lightbulb-Huddle-Secret": WORKER},
+    )
+
+
+def test_worker_idle_leave_ends_once_even_when_call_ended_lands_mid_leave(env):
+    env["meta"]["meeting"]["status"] = "in_call"
+
+    async def leave_provokes_call_ended(bot_id):
+        assert env["meta"]["meeting"]["status"] == "ended"  # written before the bot is pulled
+        assert _post(env["client"], _status("call_ended")).status_code == 200
+
+    with patch.object(mod.meeting_bots, "leave", AsyncMock(side_effect=leave_provokes_call_ended)) as leave:
+        assert _leave(env["client"]).status_code == 200
     leave.assert_awaited_once_with("bot-1")
     assert env["meta"]["meeting"]["status"] == "ended"
     env["close"].assert_awaited_once_with(ROOM, meet=True)
-    # The call_ended that follows the leave is a replay.
-    _post(env["client"], _status("call_ended"))
-    env["close"].assert_awaited_once()
+    env["notes"].assert_called_once_with(ROOM)
+
+
+def test_a_failed_leave_restores_the_meeting_and_releases_the_claim(env):
+    env["meta"]["meeting"]["status"] = "in_call"
+    with patch.object(mod.meeting_bots, "leave", AsyncMock(side_effect=mod.meeting_bots.RecallError("500"))):
+        with pytest.raises(mod.meeting_bots.RecallError):
+            _leave(env["client"])
+    assert env["meta"]["meeting"]["status"] == "in_call"
+    env["release"].assert_awaited_once_with(f"meet-ended:{ROOM}")
+    env["close"].assert_not_awaited()
+
+
+def test_fatal_mid_call_runs_the_notes(env):
+    env["meta"]["meeting"]["status"] = "in_call"
+    _post(env["client"], _status("fatal", sub_code="bot_kicked_from_call"))
+    assert env["meta"]["meeting"]["status"] == "bot_failed"
+    env["notes"].assert_called_once_with(ROOM)
+    env["metric"].assert_any_call("meeting.ended", dimensions={"sub_code": "bot_kicked_from_call"})
+    env["line"].assert_awaited_once()
+
+
+def test_a_failed_transition_is_5xx_and_releases_the_claim(env):
+    with patch.object(mod.meeting_invites, "_patch_meeting", AsyncMock(side_effect=RuntimeError("ddb"))):
+        assert _post(env["client"], _status("in_call_recording")).status_code == 500
+    env["release"].assert_awaited_once_with(f"meet-in_call:{ROOM}")
+    env["dispatch"].assert_not_awaited()
+
+
+def test_a_clerk_blip_still_dispatches(env):
+    with patch.object(mod.clerk_admin, "get_organization", AsyncMock(side_effect=RuntimeError("clerk"))):
+        assert _post(env["client"], _status("in_call_recording")).status_code == 200
+    assert env["dispatch"].await_args.args[1]["company"] == "Your team"
+
+
+def test_realtime_from_a_stale_bot_is_dropped(env):
+    payload = {
+        "event": "participant_events.speech_on",
+        "data": {
+            "data": {"participant": {"id": 7, "name": "Pat"}},
+            "bot": {"id": "bot-old", "metadata": {"roomId": ROOM}},
+        },
+    }
+    assert _post(env["client"], payload, "/api/v1/webhooks/recall/realtime").status_code == 200
+    env["speaker"].assert_not_awaited()
 
 
 def test_worker_leave_needs_the_room_token(env):

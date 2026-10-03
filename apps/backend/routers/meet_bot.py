@@ -20,10 +20,12 @@ class SessionBody(BaseModel):
 @router.post("/meet-bot/session")
 async def session(body: SessionBody):
     found = livekit_huddles.verify_meet_ticket(body.ticket)
-    meeting = ((await messaging_repo.get_room(found[0])) or {}).get("meeting") or {} if found else {}
-    if not (found and meeting.get("ticketNonce") == found[1] and meeting.get("status") in ("bot_created", "in_call")):
+    if not found:
         raise HTTPException(status_code=401, detail="invalid ticket")
-    room_id = found[0]
+    room_id, nonce = found
+    meeting = ((await messaging_repo.get_room(room_id)) or {}).get("meeting") or {}
+    if meeting.get("ticketNonce") != nonce or meeting.get("status") not in ("bot_created", "in_call"):
+        raise HTTPException(status_code=401, detail="invalid ticket")
     return {
         "serverUrl": settings.LIVEKIT_URL,
         "roomName": livekit_huddles.meet_room_name(room_id),

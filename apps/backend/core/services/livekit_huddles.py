@@ -206,6 +206,8 @@ async def send_frames(room_id: str, events: list[dict]) -> None:
 
 async def send_meet_speaker(room_id: str, event: dict) -> None:
     """One Recall speaker event to everyone in the meeting's room (the worker reads who is talking)."""
+    # ponytail: a LiveKitAPI per event, like every other call here (no long-lived client exists in
+    # this module); keep one per process, closed on shutdown, if speaker events show in latency.
     async with _api() as lk:
         await lk.room.send_data(
             api.SendDataRequest(

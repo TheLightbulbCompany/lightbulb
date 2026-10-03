@@ -1,7 +1,8 @@
 """Recall drives a meeting room's lifecycle: the bot's status webhook opens and closes the LiveKit
 room and dispatches the worker; the realtime endpoint relays who is speaking; the worker's idle
 leave pulls the bot. Both Recall routes are signed with the workspace verification secret, checked
-before the body is parsed, and answer 2xx at once -- Recall delivers realtime events serially.
+before the body is parsed. The status route works inline (Recall retries it only on a non-2xx);
+the realtime route answers 2xx at once -- Recall delivers those serially.
 """
 
 import json
@@ -36,12 +37,12 @@ _notes_missing_logged = False
 
 async def _verified(request: Request) -> dict | None:
     """The parsed body of a signed request (401 otherwise); None when meetings are off."""
+    if not settings.MEETINGS_ENABLED:  # before the signature: a 401 is retried for 24 h
+        logger.info("recall webhook: MEETINGS_ENABLED off, ignored")
+        return None
     body = await request.body()
     if not meeting_bots.verify_webhook(request.headers, body):
         raise HTTPException(status_code=401, detail="invalid signature")
-    if not settings.MEETINGS_ENABLED:
-        logger.info("recall webhook: MEETINGS_ENABLED off, ignored")
-        return None
     try:
         payload = json.loads(body)
     except ValueError:
@@ -82,13 +83,18 @@ def _notes(room_id: str) -> None:
     voice_calls._fire(meeting_notes.on_ended(room_id))
 
 
-async def _end(room_id: str, fields: dict, sub_code: str) -> None:
-    """The one end path: status, the LiveKit room closed, the metric, the notes run."""
-    await meeting_invites._patch_meeting(room_id, fields)
+def _claim_name(room_id: str, target: str) -> str:
+    # Every terminal path (call_ended, done, fatal, the idle leave) shares one claim.
+    return f"meet-{'in_call' if target == 'in_call' else 'ended'}:{room_id}"
+
+
+async def _finish(room_id: str, status: str, sub_code: str, notes: bool) -> None:
+    """The rest of the one end path, once ``status`` is written: the LiveKit room closed, the
+    metric, the live hint, the notes run."""
     await livekit_huddles.close_room(room_id, meet=True)
     put_metric("meeting.ended", dimensions={"sub_code": sub_code or "none"})
-    await _publish(room_id, fields["status"])
-    if fields["status"] == "ended":
+    await _publish(room_id, status)
+    if notes:
         _notes(room_id)
 
 
@@ -105,52 +111,63 @@ async def _on_status(bot_id: str, room_id: str, code: str, sub_code: str) -> Non
     ):
         return  # another bot's, a replay, or a step this meeting already took
     # Svix delivers in parallel and Meet sends in_call_not_recording then in_call_recording within
-    # a second: one transition per room and target, or the second dispatch evicts the first worker.
-    if not await container_repo.try_claim_pass(f"meet-{target}:{room_id}", interval_s=60):
+    # a second: one transition per room and kind, or the second dispatch evicts the first worker.
+    claim = _claim_name(room_id, target)
+    if not await container_repo.try_claim_pass(claim, interval_s=60):
         return
     owner_id = meta["ownerId"]
-    if target == "in_call":
-        await meeting_invites._patch_meeting(room_id, {"status": "in_call", "lastBotStatus": code})
-        org = await clerk_admin.get_organization(owner_id) or {}
-        metadata = {
-            "roomId": room_id,
-            "ownerId": owner_id,
-            "roomToken": livekit_huddles.room_token(room_id, owner_id),
-            "source": "meet",
-            "company": org.get("name") or "Your team",
-        }
-        try:
-            await livekit_huddles.dispatch_meet(room_id, metadata)
-        except Exception:  # noqa: BLE001 -- Twirp, aiohttp and timeouts alike
-            put_metric("huddle.livekit.error")
-            logger.warning("meeting room %s: worker dispatch failed", room_id, exc_info=True)
-        voice_calls.prewake_owner(owner_id)
-        await _publish(room_id, "in_call")
-    elif target == "ended":
-        await _end(room_id, {"status": "ended", "lastBotStatus": code}, sub_code)
-    else:
-        await _end(room_id, {"status": "bot_failed", "botError": sub_code, "lastBotStatus": code}, sub_code)
-        text = _FATAL_TEXT.get(sub_code) or f"The agents couldn't join this meeting ({sub_code or 'unknown'})."
-        await meeting_invites._post_line(owner_id, room_id, f"meeting:{bot_id}:fatal", text)
-
-
-async def _background(what: str, coro) -> None:
     try:
-        await coro
-    except Exception:  # noqa: BLE001 -- we already answered 2xx; Recall will not retry
-        put_metric("meeting.webhook.error")
-        logger.warning("recall %s handling failed", what, exc_info=True)
+        if target == "in_call":
+            await meeting_invites._patch_meeting(room_id, {"status": "in_call", "lastBotStatus": code})
+            try:
+                org = await clerk_admin.get_organization(owner_id) or {}
+            except Exception:  # noqa: BLE001 -- a Clerk blip must not cost the meeting its agents
+                org = {}
+            metadata = {
+                "roomId": room_id,
+                "ownerId": owner_id,
+                "roomToken": livekit_huddles.room_token(room_id, owner_id),
+                "source": "meet",
+                "company": org.get("name") or "Your team",
+            }
+            try:
+                await livekit_huddles.dispatch_meet(room_id, metadata)
+            except Exception:  # noqa: BLE001 -- Twirp, aiohttp and timeouts alike
+                put_metric("huddle.livekit.error")
+                logger.warning("meeting room %s: worker dispatch failed", room_id, exc_info=True)
+            voice_calls.prewake_owner(owner_id, team=await voice_calls.room_agents(room_id))
+            await _publish(room_id, "in_call")
+        elif target == "ended":
+            await meeting_invites._patch_meeting(room_id, {"status": "ended", "lastBotStatus": code})
+            await _finish(room_id, "ended", sub_code, notes=True)
+        else:
+            text = _FATAL_TEXT.get(sub_code) or f"The agents couldn't join this meeting ({sub_code or 'unknown'})."
+            await meeting_invites._post_line(owner_id, room_id, f"meeting:{bot_id}:fatal", text)
+            fields = {"status": "bot_failed", "botError": sub_code, "lastBotStatus": code}
+            await meeting_invites._patch_meeting(room_id, fields)
+            # A bot that dies mid-call still leaves a conversation worth its notes.
+            await _finish(room_id, "bot_failed", sub_code, notes=status == "in_call")
+    except Exception:
+        await container_repo.release_pass(claim)  # Recall's retry must find the door open
+        raise
 
 
 @router.post("/webhooks/recall")
-async def recall_status(request: Request, tasks: BackgroundTasks):
+async def recall_status(request: Request):
+    """Inline, not backgrounded: Recall retries a status webhook for 24 h only on a non-2xx, so a
+    failure must answer 5xx (the work fits Recall's 15 s budget)."""
     payload = await _verified(request)
     found = _bot(payload)
     if found:
         bot_id, room_id, data = found
         code = str(data.get("code") or payload.get("event") or "").removeprefix("bot.")
         if code in _TARGET:
-            tasks.add_task(_background, "status", _on_status(bot_id, room_id, code, str(data.get("sub_code") or "")))
+            try:
+                await _on_status(bot_id, room_id, code, str(data.get("sub_code") or ""))
+            except Exception:
+                put_metric("meeting.webhook.error")
+                logger.warning("recall status %s failed room=%s", code, room_id, exc_info=True)
+                raise HTTPException(status_code=500, detail="retry") from None
     return {"ok": True}
 
 
@@ -161,13 +178,24 @@ def _at(stamp: dict | None) -> float:
         return time.time()
 
 
+async def _speaker(bot_id: str, room_id: str, event: dict) -> None:
+    try:
+        meeting = ((await messaging_repo.get_room(room_id)) or {}).get("meeting") or {}
+        if meeting.get("recallBotId") != bot_id:
+            return  # a stale or rebooked bot pushes nothing into the room
+        await livekit_huddles.send_meet_speaker(room_id, event)
+    except Exception:  # noqa: BLE001 -- already answered 2xx; the next event carries on
+        put_metric("meeting.webhook.error")
+        logger.warning("recall realtime failed room=%s", room_id, exc_info=True)
+
+
 @router.post("/webhooks/recall/realtime")
 async def recall_realtime(request: Request, tasks: BackgroundTasks):
     payload = await _verified(request)
     found = _bot(payload)
     kind = str((payload or {}).get("event") or "").removeprefix("participant_events.")
     if found and kind in _SPEAKING:
-        _, room_id, data = found
+        bot_id, room_id, data = found
         who = data.get("participant") or {}
         event = {
             "participantId": str(who.get("id") or ""),
@@ -175,20 +203,33 @@ async def recall_realtime(request: Request, tasks: BackgroundTasks):
             "speaking": _SPEAKING[kind],
             "at": _at(data.get("timestamp")),
         }
-        tasks.add_task(_background, "realtime", livekit_huddles.send_meet_speaker(room_id, event))
+        tasks.add_task(_speaker, bot_id, room_id, event)
     return {"ok": True}
 
 
 @router.delete("/internal/meetings/{room_id}", dependencies=[_Worker])
 async def leave(room_id: str, body: RoomBody):
-    """The worker's idle leave: pull the bot and end the meeting (the later ``call_ended`` no-ops)."""
+    """The worker's idle leave: end the meeting, then pull the bot (its call_ended no-ops)."""
     room_id = _room_id(room_id)
     _require_room_token(body.roomToken, room_id, body.ownerId)
     meta = await messaging_repo.get_room(room_id)
     if not meta or meta.get("ownerId") != body.ownerId:
         raise _problem(404, "room_not_found")
     meeting = meta.get("meeting") or {}
-    if meeting.get("recallBotId") and meeting.get("status") not in _TERMINAL:
+    status = meeting.get("status")
+    if not meeting.get("recallBotId") or status in _TERMINAL:
+        return {"ok": True}
+    claim = _claim_name(room_id, "ended")
+    if not await container_repo.try_claim_pass(claim, interval_s=60):
+        return {"ok": True}  # a call_ended is already ending it
+    # Ended BEFORE the leave, so the call_ended the leave provokes finds the step taken.
+    await meeting_invites._patch_meeting(room_id, {"status": "ended", "lastBotStatus": "idle_leave"})
+    try:
         await meeting_bots.leave(meeting["recallBotId"])
-        await _end(room_id, {"status": "ended"}, "idle_leave")
+    except Exception:
+        # The bot is still in the call: undo, so the worker's retry (or Recall's end) can end it.
+        await meeting_invites._patch_meeting(room_id, {"status": status, "lastBotStatus": meeting.get("lastBotStatus")})
+        await container_repo.release_pass(claim)
+        raise
+    await _finish(room_id, "ended", "idle_leave", notes=True)
     return {"ok": True}

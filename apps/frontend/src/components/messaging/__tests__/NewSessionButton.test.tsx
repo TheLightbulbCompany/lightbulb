@@ -1,4 +1,4 @@
-import { act, render as rtlRender, screen, waitFor } from "@testing-library/react";
+import { act, render as rtlRender, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { ReactElement } from "react";
 import { SWRConfig } from "swr";
@@ -33,6 +33,7 @@ const view = (sessions: LocalSession[] = [], open = vi.fn()) =>
 
 beforeEach(() => {
   vi.clearAllMocks(); handlers = []; localStorage.clear();
+  delete (window as { __TAURI__?: unknown }).__TAURI__;
   auth.orgId = "org-a";
   vi.spyOn(crypto, "randomUUID").mockReturnValue(START_ID as `${string}-${string}-${string}-${string}-${string}`);
   mockTargets({ enabled: true, devices: [MAC] });
@@ -216,4 +217,23 @@ it("blocks an over-long first message", async () => {
   expect(screen.getByText("The first message is too long.")).toBeInTheDocument();
   await userEvent.keyboard("{Enter}");
   expect(m.post).not.toHaveBeenCalled();
+});
+
+it("inside the desktop app it offers a real terminal on this Mac, even without remote start", async () => {
+  mockTargets({ enabled: false, devices: [] });
+  const invoke = vi.fn(async (command: string) => (command === "terminal_list" ? [] : null));
+  (window as { __TAURI__?: unknown }).__TAURI__ = { core: { invoke } };
+  render(<NewSessionButton onOpen={vi.fn()} />);
+  expect(await screen.findByRole("button", { name: "New session" })).toBeInTheDocument();
+  render(view());
+  const group = await screen.findByRole("group", { name: "Open a terminal on this Mac" });
+  await userEvent.click(within(group).getByRole("button", { name: /Codex/ }));
+  expect(invoke).toHaveBeenCalledWith("terminal_open", { provider: "codex" });
+});
+
+it("an older desktop app without terminals shows no terminal buttons", async () => {
+  (window as { __TAURI__?: unknown }).__TAURI__ = { core: { invoke: vi.fn(async () => { throw new Error("unknown command"); }) } };
+  render(view());
+  await screen.findByRole("button", { name: "Claude Code", pressed: true });
+  expect(screen.queryByRole("group", { name: "Open a terminal on this Mac" })).not.toBeInTheDocument();
 });

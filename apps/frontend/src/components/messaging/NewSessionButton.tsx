@@ -10,6 +10,7 @@ import { Button } from "@/components/ui/button";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { useApi } from "@/lib/api";
 import { SessionToolIcon } from "./SessionToolIcon";
+import { openLocalTerminal, useLocalTerminals } from "./localTerminal";
 
 type Option = { id: string; label: string };
 type Tool = { id: "claude" | "codex"; label: string; modeLabel: string; models: Option[]; modes: Option[]; efforts?: Option[]; defaultMode?: string; defaultEffort?: string | null };
@@ -68,7 +69,8 @@ const shortPath = (path: string) => path.replace(/^\/Users\/[^/]+(?=\/|$)/, "~")
 /** The sidebar's New session button. Hidden unless desktop execution is on for this workspace. */
 export function NewSessionButton({ onOpen }: { onOpen: () => void }) {
   const { data: targets } = useTargets();
-  if (!targets?.enabled) return null;
+  const local = useLocalTerminals();
+  if (!targets?.enabled && !local) return null;
   return <Button variant="ghost" size="icon-sm" aria-label="New session" onClick={onOpen}><SquareTerminal aria-hidden="true" /></Button>;
 }
 
@@ -105,6 +107,8 @@ export function NewSessionView({ sessions, onEvent, onOpenSession, onClose }: {
     } catch { /* Browser storage may be disabled; the current view still holds the start. */ }
   }, [scope, pending]);
 
+  const local = useLocalTerminals();
+  const [localError, setLocalError] = useState<string | null>(null);
   const { data: targets, mutate: refreshTargets } = useTargets();
   useEffect(() => { void refreshTargets(); }, [refreshTargets]);
   const macs = targets?.enabled ? targets.devices : null;
@@ -203,6 +207,14 @@ export function NewSessionView({ sessions, onEvent, onOpenSession, onClose }: {
         <h3 className="font-semibold">New session</h3>
         <Button variant="ghost" size="icon-sm" className="ml-auto" aria-label="Close new session" onClick={onClose}><X aria-hidden="true" /></Button>
       </header>
+      {local && <div className="new-session-strip" role="group" aria-label="Open a terminal on this Mac">
+        <span className="text-sm text-muted-foreground">On this Mac</span>
+        {(["claude", "codex"] as const).map((id) => <Button key={id} variant="outline" size="sm"
+          onClick={() => { setLocalError(null); openLocalTerminal(id).catch((e) => setLocalError(e instanceof Error ? e.message : String(e))); }}>
+          <SessionToolIcon provider={id} className="size-3.5" />{id === "claude" ? "Claude Code" : "Codex"}
+        </Button>)}
+        {localError && <span role="alert" className="text-sm text-err">{localError}</span>}
+      </div>}
       <div className="new-session-body text-sm text-muted-foreground">
         {blocked === "sharing"
           ? <p role="status">Session sharing is off on {macName}. Turn it on in <Link className="underline underline-offset-4" href="/settings">Settings → Native terminal sessions</Link>.</p>

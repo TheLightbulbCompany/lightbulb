@@ -16,7 +16,7 @@ from botocore.exceptions import ClientError
 from core.constants import SYSTEM_ACTOR_ID
 from core.repositories import messaging_repo
 from core.repositories.paperclip_repo import PaperclipRepo
-from core.services import clerk_admin, meeting_rsvp, messaging  # meeting_rsvp imports us back
+from core.services import clerk_admin, meeting_rsvp, messaging
 from core.services.agent_mail_inbound import authenticated_sender, parse_from_address
 
 logger = logging.getLogger(__name__)
@@ -280,5 +280,6 @@ async def handle_team_mail(owner_id: str, payload, team: dict) -> str | None:
     logger.info("meeting room %s: %s", room_id, meeting["status"])
     if invite.method == "CANCEL":
         return "meeting_cancelled"
-    await meeting_rsvp.accept(owner_id, invite, room_id)
+    if meeting.get("rsvpSequence") != invite.sequence and await meeting_rsvp.accept(owner_id, invite):
+        await _patch_meeting(room_id, {**meeting, "rsvpSequence": invite.sequence})
     return "meeting_scheduled"

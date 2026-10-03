@@ -190,7 +190,7 @@ def room(monkeypatch):
         create=AsyncMock(side_effect=create),
         patch=AsyncMock(side_effect=patch),
         post=AsyncMock(side_effect=post),
-        accept=AsyncMock(),
+        accept=AsyncMock(return_value=False),
         members=AsyncMock(
             return_value=[
                 {"user_id": "user_p", "email": "Prasiddha@acme.com"},
@@ -366,9 +366,19 @@ async def test_only_a_scheduled_meeting_is_accepted(room):
     room.accept.assert_not_awaited()
     assert await meeting_invites.handle_team_mail("org_1", _mail(GOOGLE), TEAM) == "meeting_scheduled"
     room.accept.assert_awaited_once()
-    room_id, invite = room.accept.await_args.args[2], room.accept.await_args.args[1]
-    assert room_id == meeting_invites.messaging_repo.meeting_room_id("org_1", UID) and invite.uid == UID
+    assert room.accept.await_args.args[0] == "org_1" and room.accept.await_args.args[1].uid == UID
+    assert "rsvpSequence" not in room.state["meta"]["meeting"]  # a failed RSVP is not recorded
     cal = GOOGLE.replace("METHOD:REQUEST", "METHOD:CANCEL").replace("SEQUENCE:0", "SEQUENCE:1")
     assert await meeting_invites.handle_team_mail("org_1", _mail(cal), TEAM) == "meeting_cancelled"
     assert await meeting_invites.handle_team_mail("org_1", _mail(GOOGLE), TEAM) == "meeting_stale"
     room.accept.assert_awaited_once()
+
+
+async def test_an_rsvp_is_sent_once_per_sequence(room):
+    room.accept.return_value = True
+    await meeting_invites.handle_team_mail("org_1", _mail(GOOGLE), TEAM)
+    assert room.state["meta"]["meeting"]["rsvpSequence"] == 0
+    await meeting_invites.handle_team_mail("org_1", _mail(GOOGLE), TEAM)
+    room.accept.assert_awaited_once()
+    await meeting_invites.handle_team_mail("org_1", _mail(GOOGLE.replace("SEQUENCE:0", "SEQUENCE:1")), TEAM)
+    assert room.accept.await_count == 2 and room.state["meta"]["meeting"]["rsvpSequence"] == 1

@@ -39,7 +39,6 @@ def env(monkeypatch):
         row={"address": "agents@acme.thelightbulb.company"},
         sleep=AsyncMock(),
     )
-    monkeypatch.setattr(mod, "_buffers", {})
     monkeypatch.setattr(mod.messaging_repo, "get_room", AsyncMock(side_effect=lambda _r: meta))
     monkeypatch.setattr(mod.messaging_repo, "set_meeting_field_if_absent", AsyncMock(side_effect=set_if_absent))
     monkeypatch.setattr(mod.meeting_invites, "_patch_meeting", AsyncMock(side_effect=patch_meeting))
@@ -63,43 +62,24 @@ def _line(mark, name, text, at):
 
 
 async def test_a_final_transcript_attaches_once(env):
-    await mod.on_transcript(ROOM, "h1", [_line(0, "Pat", "Hi all", 1790972595.0)], False)
-    env.store.assert_not_called()
-    await mod.on_transcript(ROOM, "h1", [_line(1, "Ada", "Hello", 1790972655.0)], True)
+    await mod.on_transcript(ROOM, [_line(0, "Pat", "Hi all", 1790972595.0)], False)
+    env.store.assert_not_called()  # a rolling flush is only logged
+    whole = [_line(1, "Ada", "Hello", 1790972655.0), _line(0, "Pat", "Hi all", 1790972595.0)]
+    await mod.on_transcript(ROOM, whole, True)
     env.store.assert_called_once()
     owner, room, name, ctype, data = env.store.call_args.args
     assert (owner, room, name, ctype) == ("org_1", ROOM, "transcript.txt", "text/plain")
-    assert data.decode() == "[20:23] Pat: Hi all\n[20:24] Ada: Hello\n"  # UTC
+    assert data.decode() == "[20:23] Pat: Hi all\n[20:24] Ada: Hello\n"  # UTC, by mark
     env.line.assert_awaited_once()
     assert env.line.await_args.args[3] == "Transcript attached."
     assert env.line.await_args.kwargs["attachments"] == [{"id": "att-1", "fileName": "transcript.txt"}]
     assert env.meta["meeting"]["transcriptAttachedAt"]
-    await mod.on_transcript(ROOM, "h1", [_line(1, "Ada", "Hello", 1790972655.0)], True)  # a retried final
+    await mod.on_transcript(ROOM, whole, True)  # a retried final
     env.store.assert_called_once()
-    assert mod._buffers == {}
 
 
-async def test_a_second_huddles_chunks_do_not_merge_with_the_first(env):
-    await mod.on_transcript(ROOM, "h1", [_line(0, "Pat", "Live chatter", 1.0)], False)
-    await mod.on_transcript(ROOM, "h2", [_line(0, "Ada", "Meeting line", 60.0)], True)
-    assert env.store.call_args.args[4].decode() == "[00:01] Ada: Meeting line\n"
-
-
-async def test_the_buffer_keeps_only_the_newest_lines(env, monkeypatch):
-    monkeypatch.setattr(mod, "_BUFFER_MAX_LINES", 2)
-    await mod.on_transcript(ROOM, "h1", [_line(m, "Pat", str(m), 0.0) for m in range(3)], False)
-    assert sorted(mod._buffers[ROOM][2]) == [1, 2]
-
-
-async def test_a_concurrent_final_finds_the_buffer_gone_and_returns(env):
-    await mod.on_transcript(ROOM, "h1", [_line(0, "Pat", "Hi", 0.0)], False)
-
-    async def winner_cleared(_r):
-        mod._buffers.pop(ROOM, None)
-        return env.meta
-
-    mod.messaging_repo.get_room.side_effect = winner_cleared
-    await mod.on_transcript(ROOM, "h1", [], True)
+async def test_an_empty_final_attaches_nothing(env):
+    await mod.on_transcript(ROOM, [], True)
     env.store.assert_not_called()
 
 

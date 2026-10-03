@@ -364,10 +364,25 @@ def test_route_with_a_people_count_may_be_nobody_or_hold(client):
     assert live.await_args.kwargs["humans"] == 2 and live.await_args.kwargs["wake"] is False
     assert live.await_args.kwargs["floor"] == floor
     body = {**INTERNAL[6][1], "humans": 2, "setting": "meeting", "unclaimed": True}
-    with patch.object(vc, "route_live_line", AsyncMock(return_value={"agentId": None})) as live:
+    meeting_room = {"ownerId": "org_a", "meeting": {"status": "in_call"}}
+    with (
+        patch.object(mod.messaging_repo, "get_room", AsyncMock(return_value=meeting_room)),
+        patch.object(vc, "route_live_line", AsyncMock(return_value={"agentId": None})) as live,
+    ):
         client.post(INTERNAL[6][0], json=body, headers=W)
     assert live.await_args.kwargs["setting"] == "meeting" and live.await_args.kwargs["unclaimed"] is True
     assert client.post(INTERNAL[6][0], json={**body, "setting": "zoom"}, headers=W).status_code == 400
+
+
+def test_route_meeting_setting_outside_a_meeting_room_is_400(client):
+    body = {**INTERNAL[6][1], "humans": 2, "setting": "meeting"}
+    with (
+        patch.object(mod.messaging_repo, "get_room", AsyncMock(return_value={"ownerId": "org_a"})),
+        patch.object(vc, "route_live_line", AsyncMock()) as live,
+    ):
+        resp = client.post(INTERNAL[6][0], json=body, headers=W)
+    assert resp.status_code == 400 and resp.json()["detail"]["code"] == "not_a_meeting"
+    live.assert_not_awaited()
 
 
 def test_abort_passes_the_room(client):
@@ -697,7 +712,20 @@ def test_a_meeting_rooms_chunks_reach_the_notes_with_the_final_flag(client):
     ):
         assert client.post(TRANSCRIPT, json=body, headers=W).status_code == 200
         assert client.post(TRANSCRIPT, json={**body, "final": True}, headers=W).status_code == 200
-    assert [c.args for c in notes.await_args_list] == [(ROOM, "h1", [line], False), (ROOM, "h1", [line], True)]
+    assert [c.args for c in notes.await_args_list] == [(ROOM, [line], False), (ROOM, [line], True)]
+
+
+def test_only_a_final_transcript_may_carry_more_than_500_lines(client):
+    line = {"mark": 0, "kind": "person", "name": "Pat", "text": "x", "at": 1.0, "to": ""}
+    body = {"ownerId": "org_a", "roomToken": RT, "huddleId": "h1", "lines": [line] * 501}
+    with (
+        patch.object(mod.messaging_repo, "get_room", AsyncMock(return_value={"ownerId": "org_a"})),
+        patch.object(mod, "put_metric"),
+    ):
+        assert client.post(TRANSCRIPT, json=body, headers=W).status_code == 400
+        assert client.post(TRANSCRIPT, json={**body, "final": True}, headers=W).status_code == 200
+        too_many = {**body, "final": True, "lines": [line] * 5_001}
+        assert client.post(TRANSCRIPT, json=too_many, headers=W).status_code == 400
 
 
 def test_transcript_refuses_a_bad_room_token(client):

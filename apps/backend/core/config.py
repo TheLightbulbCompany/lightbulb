@@ -107,6 +107,11 @@ class Settings(BaseSettings):
         """Parse CORS_ORIGINS as comma-separated list."""
         return [origin.strip() for origin in self.CORS_ORIGINS.split(",") if origin.strip()]
 
+    def meetings_allowed(self, owner_id: str) -> bool:
+        """The meetings money gate: bot booking and the Recall webhooks act only for these owners."""
+        allow = {o.strip() for o in self.MEETINGS_OWNER_ALLOWLIST.split(",") if o.strip()}
+        return self.MEETINGS_ENABLED and (not allow or owner_id in allow)
+
     @property
     def clerk_authorized_parties_list(self) -> list[str]:
         """Parse CLERK_AUTHORIZED_PARTIES as comma-separated list."""
@@ -211,6 +216,8 @@ class Settings(BaseSettings):
     HUDDLE_WORKER_SECRET: str = ""
     # Meetings (Recall.ai bots). Off = an invite still opens the meeting room but books no bot (money gate).
     MEETINGS_ENABLED: bool = False
+    MEETINGS_OWNER_ALLOWLIST: str = ""
+    """Comma-separated owner ids allowed to book bots. Empty = every owner (when MEETINGS_ENABLED)."""
     RECALL_API_BASE: str = "https://us-east-1.recall.ai"
     RECALL_API_KEY: str = ""
     RECALL_WEBHOOK_SECRET: str = ""

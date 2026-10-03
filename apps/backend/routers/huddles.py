@@ -12,7 +12,7 @@ from typing import Annotated, Any, Literal
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from core.auth import AuthContext, get_current_user, resolve_owner_id
 from core.config import settings
@@ -126,8 +126,14 @@ class TranscriptBody(BaseModel):
     ownerId: _Id
     roomToken: _Id
     huddleId: _Id
-    lines: list[TranscriptLine] = Field(max_length=500)
-    final: bool = False  # a meeting's last chunk: the transcript is complete
+    lines: list[TranscriptLine] = Field(max_length=5_000)
+    final: bool = False  # a meeting's whole transcript, in one request
+
+    @model_validator(mode="after")
+    def _bounded(self):
+        if not self.final and len(self.lines) > 500:  # rolling flushes stay small; only `final` is whole
+            raise ValueError("a non-final transcript batch holds at most 500 lines")
+        return self
 
 
 class LateAnswerBody(BaseModel):
@@ -165,7 +171,7 @@ async def join(room_id: str, auth: Annotated[AuthContext, Depends(get_current_us
         # The worker takes ~20 s to join: a second click (or person) in that window must not dispatch
         # another, which would evict the first. The window is shorter than the web's 45 s give-up, so
         # its Retry re-dispatches.
-        if not await livekit_huddles.has_ceo(room_id) and await container_repo.try_claim_pass(
+        if not await livekit_huddles.has_ceo(room_id, live=True) and await container_repo.try_claim_pass(
             f"huddle-dispatch:{room_id}", interval_s=DISPATCH_DEDUPE_S
         ):
             await livekit_huddles.dispatch_ceo(
@@ -242,6 +248,8 @@ async def turn(call_id: str, body: TurnBody):
 async def route(room_id: str, body: RouteBody):
     room_id = _room_id(room_id)
     _require_room_token(body.roomToken, room_id, body.ownerId)
+    if body.setting == "meeting" and not ((await messaging_repo.get_room(room_id)) or {}).get("meeting"):
+        raise _problem(400, "not_a_meeting")  # the meeting floor never runs in a Live room
     args = {
         "owner_id": body.ownerId,
         "room_id": room_id,
@@ -283,13 +291,13 @@ async def end(call_id: str, body: EndBody):
 async def transcript(room_id: str, body: TranscriptBody):
     """The worker's rolling transcript, in batches: what people and agents said in a huddle, kept
     in the backend's CloudWatch log (search `live transcript huddle=<id>`) so a bad call can be
-    read back. A meeting's chunks become its room's ``transcript.txt`` once the final one lands;
-    nothing else is posted to the room."""
+    read back. A meeting's ``final`` request carries the whole transcript and becomes its room's
+    ``transcript.txt``; nothing else is posted to the room."""
     room_id = _room_id(room_id)
     _require_room_token(body.roomToken, room_id, body.ownerId)
     meta = await messaging_repo.get_room(room_id) or {}
     if meta.get("meeting") and meta.get("ownerId") == body.ownerId:
-        await meeting_notes.on_transcript(room_id, body.huddleId, [x.model_dump() for x in body.lines], body.final)
+        await meeting_notes.on_transcript(room_id, [x.model_dump() for x in body.lines], body.final)
     rendered = "\n".join(
         f"[{x.mark} @{int(x.at)}] {x.name}{' → ' + x.to if x.to else ''}: {x.text}" for x in body.lines
     )

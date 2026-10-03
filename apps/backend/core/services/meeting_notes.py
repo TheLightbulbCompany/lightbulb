@@ -18,14 +18,7 @@ from core.services.agent_mail_reply import AGENT_AUTHORED_HEADERS
 
 logger = logging.getLogger(__name__)
 
-_BUFFER_TTL_S = 3 * 3600
-_BUFFER_MAX_LINES = 4000
 _WAIT_S, _POLL_S = 20, 2
-# ponytail: one backend task holds a meeting's chunks in memory until the final one (room ->
-# (huddleId, first seen, {mark: line})), so a deploy mid-flush loses the buffer. Limits: a 3 h TTL
-# swept on access and 4,000 lines per room (oldest dropped) -- a Live huddle in a meeting room never
-# sends `final`. Upgrade: the worker re-sends every line on its final post and this goes away.
-_buffers: dict[str, tuple[str, float, dict[int, dict]]] = {}
 
 
 def _render(lines: list[dict]) -> str:
@@ -34,31 +27,16 @@ def _render(lines: list[dict]) -> str:
     )
 
 
-async def on_transcript(room_id: str, huddle_id: str, lines: list[dict], final: bool) -> None:
-    """Buffer one chunk of a meeting's transcript (by mark within one huddle, so a retried chunk
-    is not doubled; a new huddle in the room starts over); on the final chunk attach the whole
-    thing to the room, once."""
-    now = time.time()
-    for stale in [r for r, (_, at, _) in _buffers.items() if now - at > _BUFFER_TTL_S]:
-        del _buffers[stale]
-    if (_buffers.get(room_id) or ("",))[0] != huddle_id:
-        _buffers[room_id] = (huddle_id, now, {})
-    buffered = _buffers[room_id][2]
-    buffered.update((int(x["mark"]), x) for x in lines)
-    for mark in sorted(buffered)[: max(0, len(buffered) - _BUFFER_MAX_LINES)]:
-        del buffered[mark]
-    if not final:
+async def on_transcript(room_id: str, lines: list[dict], final: bool) -> None:
+    """Attach a meeting's whole transcript (its ``final`` request) to the room as
+    ``transcript.txt``, once. Rolling flushes are only logged by the route."""
+    if not final or not lines:
         return
     meta = await messaging_repo.get_room(room_id) or {}
-    meeting = meta.get("meeting") or {}
-    if meeting.get("transcriptAttachedAt") or not meta.get("ownerId"):
-        _buffers.pop(room_id, None)
+    if (meta.get("meeting") or {}).get("transcriptAttachedAt") or not meta.get("ownerId"):
         return
     owner_id = meta["ownerId"]
-    buffered = (_buffers.get(room_id) or ("", 0, {}))[2]
-    if not buffered:
-        return  # a concurrent final already attached it
-    data = _render([buffered[m] for m in sorted(buffered)]).encode()
+    data = _render(sorted(lines, key=lambda x: int(x["mark"]))).encode()
     # Upload, post, then mark: a crash in between retries into a replayed post (one message), at
     # worst leaving an orphaned S3 object -- never a meeting with no transcript.
     attachment = await run_in_thread(
@@ -72,7 +50,6 @@ async def on_transcript(room_id: str, huddle_id: str, lines: list[dict], final: 
         attachments=[attachment.model_dump(mode="json", by_alias=True)],
     )
     await meeting_invites._patch_meeting(room_id, {"transcriptAttachedAt": int(time.time())})
-    _buffers.pop(room_id, None)
 
 
 async def on_ended(room_id: str) -> None:

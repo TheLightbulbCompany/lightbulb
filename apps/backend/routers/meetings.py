@@ -43,7 +43,8 @@ _SPEAKING = {"speech_on": True, "speech_off": False, "join": False, "leave": Fal
 
 
 async def _verified(request: Request) -> dict | None:
-    """The parsed body of a signed request (401 otherwise); None when meetings are off."""
+    """The parsed body of a signed request (401 otherwise); None when meetings are off. The owner
+    allowlist is checked per room by each handler (the room names the owner)."""
     if not settings.MEETINGS_ENABLED:  # before the signature: a 401 is retried for 24 h
         logger.info("recall webhook: MEETINGS_ENABLED off, ignored")
         return None
@@ -112,7 +113,8 @@ async def _on_status(bot_id: str, room_id: str, code: str, sub_code: str) -> Non
     meeting = meta.get("meeting") or {}
     status = meeting.get("status")
     if (
-        meeting.get("recallBotId") != bot_id
+        not settings.meetings_allowed(meta.get("ownerId") or "")
+        or meeting.get("recallBotId") != bot_id
         or status in _TERMINAL
         or target == status
         or code == meeting.get("lastBotStatus")
@@ -192,8 +194,9 @@ def _at(stamp: dict | None) -> float:
 
 async def _speaker(bot_id: str, room_id: str, event: dict) -> None:
     try:
-        meeting = ((await messaging_repo.get_room(room_id)) or {}).get("meeting") or {}
-        if meeting.get("recallBotId") != bot_id:
+        meta = (await messaging_repo.get_room(room_id)) or {}
+        meeting = meta.get("meeting") or {}
+        if not settings.meetings_allowed(meta.get("ownerId") or "") or meeting.get("recallBotId") != bot_id:
             return  # a stale or rebooked bot pushes nothing into the room
         await livekit_huddles.send_meet_speaker(room_id, event)
     except Exception:  # noqa: BLE001 -- already answered 2xx; the next event carries on

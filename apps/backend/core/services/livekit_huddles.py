@@ -15,6 +15,7 @@ from livekit.protocol import models as lk_models
 
 from core.config import settings
 from core.observability.metrics import put_metric
+from core.repositories import messaging_repo
 
 logger = logging.getLogger(__name__)
 AGENT_IDENTITY = "agent-ceo"
@@ -72,6 +73,13 @@ def meet_room_name(room_id: str) -> str:
     return f"meet-{settings.ENVIRONMENT}-{room_id}"
 
 
+async def live_room_name(room_id: str) -> str:
+    """Where the room's voice worker is now: the meeting's room while a meeting is in call, else
+    the Live huddle's."""
+    meeting = ((await messaging_repo.get_room(room_id)) or {}).get("meeting") or {}
+    return meet_room_name(room_id) if meeting.get("status") == "in_call" else room_name(room_id)
+
+
 def _api() -> api.LiveKitAPI:
     return api.LiveKitAPI(settings.LIVEKIT_URL, settings.LIVEKIT_API_KEY, settings.LIVEKIT_API_SECRET)
 
@@ -104,10 +112,10 @@ def mint_meet_token(room_id: str) -> str:
     return _token(f"meet:{room_id}", "Meeting", meet_room_name(room_id), timedelta(hours=6), ["microphone"])
 
 
-async def _identities(room_id: str) -> list[str]:
+async def _identities(room: str) -> list[str]:
     async with _api() as lk:
         try:
-            res = await lk.room.list_participants(api.ListParticipantsRequest(room=room_name(room_id)))
+            res = await lk.room.list_participants(api.ListParticipantsRequest(room=room))
         except api.TwirpError as e:
             if e.code == api.TwirpErrorCode.NOT_FOUND:
                 return []
@@ -115,12 +123,14 @@ async def _identities(room_id: str) -> list[str]:
     return [p.identity for p in res.participants]
 
 
-async def has_ceo(room_id: str) -> bool:
-    return AGENT_IDENTITY in await _identities(room_id)
+async def has_ceo(room_id: str, *, live: bool = False) -> bool:
+    """Is the room's voice worker up -- wherever it is now, or (``live``) in the Live huddle."""
+    return AGENT_IDENTITY in await _identities(room_name(room_id) if live else await live_room_name(room_id))
 
 
 async def participants(room_id: str) -> list[str]:
-    return [i for i in await _identities(room_id) if i != AGENT_IDENTITY]
+    """The people in the room's Live huddle."""
+    return [i for i in await _identities(room_name(room_id)) if i != AGENT_IDENTITY]
 
 
 async def _dispatch(room: str, metadata: dict) -> None:
@@ -191,11 +201,12 @@ async def send_frames(room_id: str, events: list[dict]) -> None:
     packets = _packets(events)
     if not packets:
         return
+    room = await live_room_name(room_id)
     async with _api() as lk:
         for data in packets:  # in order: the worker's reorder window keys on frame seq, not arrival
             await lk.room.send_data(
                 api.SendDataRequest(
-                    room=room_name(room_id),
+                    room=room,
                     data=data,
                     destination_identities=[AGENT_IDENTITY],
                     topic=FRAME_TOPIC,

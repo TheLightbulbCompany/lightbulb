@@ -165,6 +165,9 @@ CEO, ENG = "11111111-1111-4111-8111-111111111111", "22222222-2222-4222-8222-2222
 WITH_DANA = GOOGLE.replace("SEQUENCE:0", "ATTENDEE;CN=Dana:mailto:dana@acme.com\r\nSEQUENCE:0")
 
 
+_SYNC_BOT = meeting_invites._sync_bot
+
+
 @pytest.fixture
 def room(monkeypatch):
     """A fake room store: create_room writes META with ``extra``, patch_room_meta merges into it."""
@@ -226,6 +229,10 @@ def room(monkeypatch):
     ]
     monkeypatch.setattr(meeting_invites.messaging, "load_agent_roster", AsyncMock(return_value=roster))
     monkeypatch.setattr(meeting_invites.messaging, "human_display_name", AsyncMock(side_effect=lambda u: u))
+    # Meetings allowed, Recall stubbed out: the `bots` fixture puts the real booking back.
+    monkeypatch.setattr(meeting_invites.settings, "MEETINGS_ENABLED", True)
+    monkeypatch.setattr(meeting_invites.settings, "MEETINGS_OWNER_ALLOWLIST", "")
+    monkeypatch.setattr(meeting_invites, "_sync_bot", AsyncMock(side_effect=lambda o, r, meeting, p: meeting))
     return m
 
 
@@ -462,14 +469,14 @@ async def test_a_clerk_failure_propagates(room):
 
 @pytest.fixture
 def bots(room, monkeypatch):
-    """Recall faked at the adapter; MEETINGS_ENABLED on."""
+    """Recall faked at the adapter; the real booking path."""
     b = SimpleNamespace(
         create=AsyncMock(return_value="bot-1"),
         reschedule=AsyncMock(),
         leave=AsyncMock(),
         metric=[],
     )
-    monkeypatch.setattr(meeting_invites.settings, "MEETINGS_ENABLED", True)
+    monkeypatch.setattr(meeting_invites, "_sync_bot", _SYNC_BOT)
     monkeypatch.setattr(meeting_invites.settings, "RECALL_API_KEY", "rk")
     monkeypatch.setattr(meeting_invites.meeting_bots, "create", b.create)
     monkeypatch.setattr(meeting_invites.meeting_bots, "reschedule", b.reschedule)
@@ -495,12 +502,22 @@ async def test_an_invite_books_one_bot(room, bots):
     bots.create.assert_awaited_once()
 
 
-async def test_meetings_disabled_books_nothing(room, bots, monkeypatch):
-    monkeypatch.setattr(meeting_invites.settings, "MEETINGS_ENABLED", False)
+@pytest.mark.parametrize("enabled,allowlist", [(False, ""), (True, "org_other, org_2")])
+async def test_meetings_not_allowed_keep_the_room_for_notes(room, bots, monkeypatch, enabled, allowlist):
+    monkeypatch.setattr(meeting_invites.settings, "MEETINGS_ENABLED", enabled)
+    monkeypatch.setattr(meeting_invites.settings, "MEETINGS_OWNER_ALLOWLIST", allowlist)
+    room.accept.return_value = True
     assert await meeting_invites.handle_team_mail("org_1", _mail(GOOGLE), TEAM) == "meeting_scheduled"
     bots.create.assert_not_awaited()
+    room.accept.assert_not_awaited()
     assert room.state["meta"]["meeting"]["status"] == "scheduled"
-    assert len(_lines(room)) == 1
+    assert _lines(room) == ["Meetings aren't enabled for this workspace yet — the room is here for notes."]
+
+
+async def test_an_allowlisted_owner_books(room, bots, monkeypatch):
+    monkeypatch.setattr(meeting_invites.settings, "MEETINGS_OWNER_ALLOWLIST", "org_other,org_1")
+    await meeting_invites.handle_team_mail("org_1", _mail(GOOGLE), TEAM)
+    bots.create.assert_awaited_once()
 
 
 async def test_a_full_bot_pool_is_bot_failed_not_a_raise(room, bots):

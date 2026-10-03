@@ -59,6 +59,7 @@ def env():
         patch.object(mod.container_repo, "release_pass", AsyncMock()) as release,
         patch.object(mod.voice_calls, "room_agents", AsyncMock(return_value=TEAM)),
         patch.object(mod.settings, "MEETINGS_ENABLED", True),
+        patch.object(mod.settings, "MEETINGS_OWNER_ALLOWLIST", ""),
         patch.object(mod.meeting_bots.settings, "RECALL_WEBHOOK_SECRET", SECRET),
         patch.object(mod.settings, "HUDDLE_WORKER_SECRET", WORKER),
         patch.object(mod.messaging_repo, "get_room", AsyncMock(side_effect=lambda _r: meta)),
@@ -158,6 +159,19 @@ def test_meetings_off_is_a_noop_even_unsigned(env):
         assert _post(env["client"], _status("in_call_recording")).status_code == 200
         assert env["client"].post("/api/v1/webhooks/recall", json=_status("done")).status_code == 200
     env["dispatch"].assert_not_awaited()
+
+
+def test_an_owner_off_the_allowlist_is_a_noop(env):
+    realtime = {
+        "event": "participant_events.speech_on",
+        "data": {"data": {"participant": {"id": 7}}, "bot": {"id": "bot-1", "metadata": {"roomId": ROOM}}},
+    }
+    with patch.object(mod.settings, "MEETINGS_OWNER_ALLOWLIST", "org_b"):
+        assert _post(env["client"], _status("in_call_recording")).status_code == 200
+        assert _post(env["client"], realtime, "/api/v1/webhooks/recall/realtime").status_code == 200
+    env["dispatch"].assert_not_awaited()
+    env["speaker"].assert_not_awaited()
+    assert env["meta"]["meeting"]["status"] == "bot_created"
 
 
 def test_realtime_speech_on_is_one_speaker_packet(env):

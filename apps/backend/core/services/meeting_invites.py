@@ -298,8 +298,8 @@ async def _sync_bot(owner_id: str, room_id: str, meeting: dict, prior: dict | No
             if not (isinstance(exc, meeting_bots.RecallError) and exc.code == "400"):
                 return await _bot_failed(owner_id, room_id, meeting, exc, "move", keep=True)
             # 400: under 10 minutes out Recall wants a fresh bot -- replaced below
-    if not settings.MEETINGS_ENABLED:
-        logger.info("meeting room %s: MEETINGS_ENABLED off, no bot booked", room_id)
+    if not settings.meetings_allowed(owner_id):
+        logger.info("meeting room %s: meetings not allowed for the owner, no bot booked", room_id)
         return meeting
     if not settings.RECALL_API_KEY:
         logger.warning("meeting room %s: RECALL_API_KEY unset, no bot booked", room_id)
@@ -386,6 +386,7 @@ async def handle_team_mail(owner_id: str, payload, team: dict) -> str | None:
     if current and int(current.get("sequence", 0)) > invite.sequence:
         return "meeting_stale"
     start_at = int(invite.start.timestamp())
+    allowed = settings.meetings_allowed(owner_id)
     if invite.method == "CANCEL":
         if not current or current.get("organizer") != invite.organizer_email:
             return "meeting_ignored"
@@ -408,6 +409,8 @@ async def handle_team_mail(owner_id: str, payload, team: dict) -> str | None:
             if moved
             else f"Agents will join **{fields['title']}** on {_when_text(invite.start)}."
         )
+        if not allowed:  # the room still keeps the meeting's notes; no bot books, no RSVP goes out
+            text = "Meetings aren't enabled for this workspace yet — the room is here for notes."
     # The line's key is the invite's own transition: a new room counts as coming from "scheduled",
     # so a retry after the create replays its line; cancelled -> scheduled is a new key, so a
     # same-sequence re-invite announces itself again.
@@ -436,7 +439,8 @@ async def handle_team_mail(owner_id: str, payload, team: dict) -> str | None:
     if invite.method == "CANCEL":
         return "meeting_cancelled"
     if (
-        not team.get("outbound_disabled")
+        allowed
+        and not team.get("outbound_disabled")
         and meeting.get("rsvpSequence") != invite.sequence
         and await meeting_rsvp.accept(owner_id, invite)
     ):

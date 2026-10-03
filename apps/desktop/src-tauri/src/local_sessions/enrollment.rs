@@ -492,7 +492,8 @@ fn silence(fd: std::os::unix::io::RawFd) {
     }
 }
 
-/// Hooks send the bounded lifecycle datagram built from their stdin JSON, or
+/// A hook of a session that does not run in a Lightbulb holder exits after reading stdin (spec 5.4).
+/// Held sessions' hooks send the bounded lifecycle datagram built from their stdin JSON, or
 /// a plain wake byte when stdin isn't a JSON object; never a credential or an
 /// authority. The one exception to "never a decision" is a Claude permission
 /// prompt the app holds for a remote answer (owner ruling 2026-09-25): that
@@ -504,19 +505,62 @@ pub fn hook(provider: &str) {
     silence(HOOK_DECISION_FD);
     let mut raw = Vec::new();
     let _ = std::io::Read::take(std::io::stdin(), 65536).read_to_end(&mut raw);
-    let mut json: serde_json::Value = serde_json::from_slice(&raw).unwrap_or(serde_json::Value::Null);
+    let json: serde_json::Value = serde_json::from_slice(&raw).unwrap_or(serde_json::Value::Null);
+    hook_input(
+        provider,
+        json,
+        std::os::unix::process::parent_id(),
+        &crate::holder::manager::list(),
+        answer,
+        &hook_path(),
+    );
+}
+
+/// One hook after its stdin is read; `parent` is the hook's parent process.
+fn hook_input(
+    provider: &str,
+    mut json: serde_json::Value,
+    parent: u32,
+    holders: &[HolderInfo],
+    answer: std::os::unix::io::RawFd,
+    wake: &Path,
+) {
+    // Shared iff the provider runs in a Lightbulb holder (spec 5.4). A private session's hook
+    // ends here: no prompt is held for a remote answer and nothing reaches the app.
+    let Some(holder) = hook_holder(parent, holders) else {
+        if answer >= 0 {
+            unsafe { libc::close(answer) };
+        }
+        return;
+    };
     super::native_mcp::canonical_hook(&mut json);
     if answer >= 0 && super::approval::holdable(provider, &json) {
-        super::approval::hold(&hook_path(), provider, &json, answer);
+        super::approval::hold(wake, provider, &json, answer);
         return;
     }
     if answer >= 0 {
         unsafe { libc::close(answer) };
     }
+    // Discovery recognises a held Codex by the thread its own start hook names here.
+    if provider == "codex" && json["hook_event_name"] == "SessionStart" {
+        if let Some(thread) = json["session_id"].as_str() {
+            crate::holder::manager::bind_thread(holder, thread);
+        }
+    }
     // This write precedes the optional datagram: Desktop may be closed when
     // the provider starts, but its exact native conversation still needs a link.
     let _ = super::start_links::record_from_hook(provider, &json);
-    send_hook_datagram(&hook_path(), provider, &json);
+    send_hook_datagram(wake, provider, &json);
+}
+
+/// The holder of the provider that ran this hook: the hook's parent, or the parent's parent
+/// when the provider ran it through a shell (`sh -c '<hook command>'`).
+fn hook_holder(parent: u32, holders: &[HolderInfo]) -> Option<&HolderInfo> {
+    let shell = process(parent).ok()?.executable.file_name().is_some_and(|name| {
+        matches!(name.to_str(), Some("sh" | "bash" | "zsh" | "dash"))
+    });
+    let provider = if shell { super::native_tools::parent(parent).ok()?.pid } else { parent };
+    holder_of(provider, holders)
 }
 
 /// Split out from [`hook`] so tests can point it at a temp socket instead of
@@ -1038,6 +1082,54 @@ async fn enroll_remote(token: &str, body: Value) -> Result<Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn local_sessions_a_private_sessions_permission_hook_returns_at_once_and_sends_nothing() {
+        use std::os::unix::{fs::PermissionsExt, io::IntoRawFd};
+        let dir = tempfile::tempdir().unwrap();
+        fs::set_permissions(dir.path(), fs::Permissions::from_mode(0o700)).unwrap();
+        let wake = dir.path().join("wake.sock");
+        let app = std::os::unix::net::UnixDatagram::bind(&wake).unwrap();
+        app.set_nonblocking(true).unwrap();
+        let answer = fs::OpenOptions::new().write(true).open("/dev/null").unwrap().into_raw_fd();
+        let prompt = json!({"hook_event_name":"PermissionRequest","tool_name":"Bash",
+            "tool_input":{"command":"ls"},"session_id":"s"});
+        let started = std::time::Instant::now();
+        // This test process is a plain terminal's `claude`: no holder anywhere.
+        hook_input("claude", prompt, std::process::id(), &[], answer, &wake);
+        assert!(
+            started.elapsed() < std::time::Duration::from_millis(500),
+            "no wait for the app's acknowledgement (ACK_WAIT is 2 s)"
+        );
+        assert!(app.recv(&mut [0u8; 4096]).is_err(), "nothing reached the app");
+    }
+
+    #[test]
+    fn local_sessions_a_held_codex_start_binds_its_thread_and_wakes_the_app() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        fs::set_permissions(dir.path(), fs::Permissions::from_mode(0o700)).unwrap();
+        let wake = dir.path().join("wake.sock");
+        let app = std::os::unix::net::UnixDatagram::bind(&wake).unwrap();
+        app.set_nonblocking(true).unwrap();
+        // This test process stands in for the holder; its direct child is the held Codex.
+        let mut codex = std::process::Command::new("/bin/sleep").arg("30").spawn().unwrap();
+        let holder = HolderInfo {
+            id: "ab12cd34".into(),
+            socket: dir.path().join("ab12cd34.sock"),
+            pid: std::process::id(),
+            provider_pid: codex.id(),
+            argv: vec![],
+            cwd: "/".into(),
+        };
+        let thread = "11111111-1111-4111-8111-111111111111";
+        hook_input("codex", json!({"hook_event_name":"SessionStart","session_id":thread}),
+            codex.id(), std::slice::from_ref(&holder), -1, &wake);
+        assert_eq!(crate::holder::manager::thread(&holder).as_deref(), Some(thread));
+        assert!(app.recv(&mut [0u8; 4096]).is_ok(), "the start hook still wakes discovery");
+        codex.kill().unwrap();
+        codex.wait().unwrap();
+    }
     fn candidate() -> Enrollment {
         Enrollment {
             owner_id: "org".into(),

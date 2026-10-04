@@ -205,4 +205,15 @@ it("pauses an admitted teammate's typing while the owner answers a join request"
   render(<LocalSessionPanel session={{ ...session, allowedSenders: ["alice"], inputPaused: true }} ownerName="Alice" own={false} client={client as never} revision={0} onAccessLost={() => {}} onEvent={() => () => {}} />);
   expect(await screen.findByText(/Paused while Alice answers a request to join/)).toBeTruthy();
   expect(screen.getByRole("region", { name: "Live terminal (view only)" })).toBeTruthy();
+  expect(screen.queryByRole("textbox")).toBeNull();
+  expect(screen.queryByRole("button", { name: "Ask to join" })).toBeNull();
+});
+
+it("shows no message box while paused even when the terminal refuses typing", async () => {
+  typing.canType = false;
+  try {
+    render(<LocalSessionPanel session={{ ...session, allowedSenders: ["alice"], inputPaused: true }} ownerName="Alice" own={false} client={client as never} revision={0} onAccessLost={() => {}} onEvent={() => () => {}} />);
+    expect(await screen.findByText(/Paused while Alice answers/)).toBeTruthy();
+    expect(screen.queryByRole("textbox")).toBeNull();
+  } finally { typing.canType = true; }
 });

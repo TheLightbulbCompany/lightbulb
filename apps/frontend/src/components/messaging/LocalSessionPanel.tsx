@@ -253,7 +253,7 @@ export function LocalSessionPanel({ session, ownerName, own, client, revision, o
     </div>}
     </>}
     <SubagentPanel provider={session.provider} events={history.events} status={session.status} onPick={id => revealSubagent(content.current, id)} />
-    {session.status === "ended" ? <SessionResume flow={resume} own={own} ownerName={ownerName} /> : terminalLive && control && (local === "local" || termCanType) ? null : control ? <form className="room-composer local-session-composer native-session-composer" onSubmit={event => { event.preventDefault(); atBottomRef.current = true; command.send(text); }}>
+    {session.status === "ended" ? <SessionResume flow={resume} own={own} ownerName={ownerName} /> : terminalLive && control && (local === "local" || termCanType || (!own && session.inputPaused)) ? null : control ? <form className="room-composer local-session-composer native-session-composer" onSubmit={event => { event.preventDefault(); atBottomRef.current = true; command.send(text); }}>
       <label htmlFor={id} className="sr-only">Send to {target}</label>
       <div className="native-session-prompt-row"><span className="native-session-glyph" aria-hidden="true">{glyph}</span>
         <textarea id={id} className="room-input" rows={2} value={text} disabled={!command.canSend || command.locked} onChange={event => setText(event.target.value)}

@@ -2133,11 +2133,11 @@ class Huddle:
                 try:
                     r = await self._backend.summon(speaker, self._said_by.get(speaker))
                 except BackendError as e:
-                    if e.code == "voice_limit":
-                        # Published for the tiles: in a Meet nobody sees the refusal, the agents are just silent
-                        # (10-04 prod Meet: the day's free voice minutes were used up).
-                        self._voice_limit = e.reason or "limit"
-                        self._sync_state()
+                    # Published for the tiles: in a Meet nobody sees the refusal, the agents are just silent
+                    # (10-04 prod Meet: the day's free voice minutes were used up). Another refusal is not the
+                    # limit: an earlier reason must not stay up.
+                    self._voice_limit = (e.reason or "limit") if e.code == "voice_limit" else ""
+                    self._sync_state()
                     raise
                 self._voice_limit = ""
                 self._window = _Window(r["callId"], float(r["deadline"]), float(r["budgetSeconds"]))

@@ -1,7 +1,7 @@
 # Code signing + notarization
 
-The desktop build (`.github/workflows/desktop-build.yml`) signs **both** dev
-and prod tracks with the same `Developer ID Application: Prasiddha
+The desktop build (`.github/workflows/desktop-build.yml`) builds prod only
+(there is no dev build since 2026-10-04) and signs it with the `Developer ID Application: Prasiddha
 Parthsarthy (WZX4U3C22Y)` certificate and notarizes via the Apple notary
 service. This is a one-time setup — once the five secrets below are in
 GitHub, the workflow builds signed + notarized DMGs. Qualifying pushes to
@@ -72,51 +72,8 @@ gh secret list --repo TheLightbulbCompany/lightbulb | grep -E "^APPLE_"
 
 ### 5. Cut a fresh signed build
 
-Merge reviewed desktop changes to `main` through normal CI. Changes to
-`apps/desktop/**`, `pnpm-lock.yaml`, or `.github/workflows/desktop-build.yml`
-trigger a dev build; the production job is skipped on push.
-
-After verifying that dev build, manually run **desktop-build** from GitHub
-Actions using the tested branch or tag. Dispatch builds production only; it
-does not build or wait for dev (decided 2026-10-04). Nothing in the run
-checks dev, so complete dev acceptance on the push build before dispatching.
-
-Each upload step tries three times: the notarization and asset uploads in
-`tauri-action`, the DMG notarization and stapling, the DMG upload, and the
-release publication. The Mac keeps the Rust build folder at
-`~/.cache/lightbulb-desktop/` between runs and uploads no caches to GitHub.
-
-The workflow sets the build version to `0.4.${{ github.run_number }}`;
-do not bump local version files or push release tags to trigger a build.
-A push creates `desktop-dev-v0.4.<run_number>` (dev prerelease); a manual
-dispatch creates `desktop-v0.4.<run_number>` (production release).
-
-Each job creates a draft release, uploads its signed/notarized DMG, then
-automatically publishes the release. No manual draft-publication step is
-required. The landing-page `/api/download/desktop` route picks up the
-published release automatically — no frontend redeploy needed.
-
-## What's in the secrets and why
-
-| Secret                       | Source                  | Used for                                                                              |
-| ---------------------------- | ----------------------- | ------------------------------------------------------------------------------------- |
-| `APPLE_CERTIFICATE`          | `.p12` → base64         | `tauri-action` imports into a temp keychain on the runner before `codesign` runs.     |
-| `APPLE_CERTIFICATE_PASSWORD` | `.p12` export password  | Decrypts the imported `.p12` so its private key is usable.                            |
-| `APPLE_ID`                   | Your Apple ID email     | Notary service authentication.                                                        |
-| `APPLE_PASSWORD`             | App-specific password   | Notary service authentication (Apple no longer accepts the real Apple ID password).   |
-| `APPLE_TEAM_ID`              | `WZX4U3C22Y`            | Disambiguates which team's notary queue to submit to (required for multi-team users). |
-
-## Rotating the cert
-
-Developer ID Application certs are valid for 5 years. When the cert
-expires (or you generate a fresh one), repeat steps 1, 2, and 4-secret-1.
-Steps 3, 4-secret-2 through 4-secret-5 don't change.
-
-## Reference
-
-- `tauri-action` codesign env vars:
-  <https://github.com/tauri-apps/tauri-action#code-signing>
-- Apple app-specific passwords:
-  <https://support.apple.com/en-us/102654>
-- Apple notarization workflow:
-  <https://developer.apple.com/documentation/security/notarizing_macos_software_before_distribution>
+Merge reviewed desktop changes to `main` through normal CI (pull requests run
+the Rust tests). Then manually run **desktop-build** from GitHub Actions
+(`gh workflow run desktop-build.yml --ref main`). It builds, signs, notarizes
+and publishes the prod app only. There is no dev build: test on prod, or build
+and run the app locally against the dev API.

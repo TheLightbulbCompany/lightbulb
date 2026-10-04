@@ -257,6 +257,11 @@ class LocalSession(ContractModel):
     start_id: OpaqueId | None = None
     # A Claude Code background job: agent knowledge, never a human listing.
     kind: Literal["interactive", "background"] = "interactive"
+    # Which live terminal a running session has: "held" (a Lightbulb holder runs it) or "attach"
+    # (a Claude background session the Mac attaches to). Absent: its transcript is all there is.
+    terminal: Literal["held", "attach"] | None = None
+    # The session this one continues: a Claude session moved to the background (<-) is a fork.
+    forked_from: OpaqueId | None = None
     # False while the owner has paused sharing this one session: only they can see it.
     shared: bool = True
     # Owner opt-in: workspace members may use this session's controls (off by default, cleared on end).
@@ -300,6 +305,8 @@ class LocalSession(ContractModel):
             (
                 "pending_approval",
                 "start_id",
+                "terminal",
+                "forked_from",
                 "model",
                 "display_title",
                 "permission_mode",
@@ -566,6 +573,21 @@ def _viewer(auth: Caller) -> str | None:
     return None if isinstance(auth, AgentInvocation) else auth.user_id
 
 
+def session_terminal(row: dict) -> Literal["held", "attach"] | None:
+    """The Mac's word for the session's live terminal; a desktop that predates `terminal` names only its holder."""
+    reported = row.get("terminal")
+    if reported in ("held", "attach"):
+        return reported
+    return "held" if reported is None and row.get("holderId") else None
+
+
+def _without_moved(found: list[LocalSession]) -> list[LocalSession]:
+    """An ended session that a later one of the same person continues (`forkedFrom`) is listed once:
+    as that later one. A running origin is never hidden: `claude --bg --resume` copies a running session."""
+    moved = {(s.human_user_id, s.forked_from) for s in found if s.forked_from}
+    return [s for s in found if not (s.status == "ended" and (s.human_user_id, s.session_id) in moved)]
+
+
 def _session_public(row: dict, viewer: str | None = None) -> LocalSession:
     """One projection for every listing: ended beats lease state, an unverified
     capability set reads as none."""
@@ -581,6 +603,7 @@ def _session_public(row: dict, viewer: str | None = None) -> LocalSession:
         public["status"] = "ended"
     elif row["onlineUntil"] <= int(time.time()):
         public["status"] = "offline"
+    public["terminal"] = None if public["status"] in ("ended", "offline") else session_terminal(row)
     if not row["capabilitiesVerified"]:
         public["capabilities"] = Capabilities().model_dump(by_alias=True)
     public["teamControl"] = team_control_on(row)
@@ -901,6 +924,7 @@ async def list_resources(auth: Caller, room_id: str, *, include_ended: bool = Fa
             except ApiProblem as exc:
                 if exc.error.code not in {"LOCAL_SESSION_FORBIDDEN", "LOCAL_SESSION_NOT_FOUND"}:
                     raise
+    sessions = _without_moved(sessions)
     live = sorted((s for s in sessions if s.status != "ended"), key=lambda s: s.last_event_at or "", reverse=True)
     if include_ended:
         recent = sorted(
@@ -972,11 +996,14 @@ async def list_workspace_sessions(auth: Caller, *, include_ended: bool = False) 
     since = int(time.time()) - RECENT_ENDED_SECONDS if include_ended else None
     # ponytail: one query per human per call; add an owner-keyed directory row when workspaces pass ~50 humans.
     viewer = _viewer(auth)
-    found = [
-        s
-        for s in await _live_public_sessions(owner, humans, include_offline=True, ended_since=since, viewer=viewer)
-        if s.kind == "interactive" and (s.shared or s.human_user_id == viewer)
-    ]
+    found = _without_moved(
+        [
+            s
+            for s in await _live_public_sessions(owner, humans, include_offline=True, ended_since=since, viewer=viewer)
+            # ponytail: legacy rows only; delete once no pre-2026-10-03 row is in the 7-day Recent window
+            if s.kind == "interactive" and (s.shared or s.human_user_id == viewer)
+        ]
+    )
     live = [s for s in found if s.status != "ended"][:WORKSPACE_SESSION_CAP]
     return WorkspaceSessions(sessions=live + [s for s in found if s.status == "ended"][:RECENT_ENDED_CAP])
 

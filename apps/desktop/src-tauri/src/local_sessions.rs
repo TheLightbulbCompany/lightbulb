@@ -874,6 +874,11 @@ impl Process {
     }
 }
 
+/// When `pid` started (microseconds), if it is one of this user's processes: its identity across pid reuse.
+pub(crate) fn process_birth(pid: u32) -> Option<u64> {
+    process(pid).ok().map(|p| p.birth_micros)
+}
+
 fn process(pid: u32) -> Result<Process> {
     #[cfg(target_os = "macos")]
     {
@@ -969,11 +974,29 @@ struct NativeSession {
     active_turn: Option<String>,
     #[serde(default)]
     pub last_assistant_message: Option<String>,
-    /// The Lightbulb holder this session runs in (its 8-hex id). Discovery keeps only held
-    /// sessions (spec §5.4); a mirror persisted before explicit sharing reads None and the
-    /// relay refuses to register it.
+    /// The Lightbulb holder this session runs in (8 hex), when Lightbulb hosts its terminal;
+    /// None for every other tracked session.
     #[serde(default)]
     holder: Option<String>,
+    /// A Claude background session's job id (`id` in `claude agents --json`, 8 hex): what
+    /// `claude attach` takes. None for every other session.
+    #[serde(default)]
+    job: Option<String>,
+    /// The conversation this background session was forked from (← in an interactive session).
+    #[serde(default)]
+    forked_from: Option<String>,
+}
+
+impl NativeSession {
+    /// The live terminal this Mac can show (rulings 2026-10-04): its holder's, a Claude background
+    /// session's through `claude attach`, or none (the transcript).
+    fn terminal(&self) -> &'static str {
+        match (&self.holder, &self.job) {
+            (Some(_), _) => "held",
+            (None, Some(_)) => "attach",
+            _ => "none",
+        }
+    }
 }
 
 async fn native_output(program: &Path, args: &[&str]) -> Result<String> {
@@ -1125,7 +1148,7 @@ async fn runtime_version(expected: &Process, installed: &Path, provider: &str) -
 
 /// Merges one listing into what is already known. A session the listing does not
 /// mention keeps everything it had: a listing is a sweep, not an obituary, and a
-/// session ends only when its hook or its pid says so.
+/// session ends only when its hook, its pid or a fork that replaced it says so.
 fn reconcile_sessions(current: &mut Vec<NativeSession>, discovered: Vec<NativeSession>) {
     let mut seen = std::collections::BTreeMap::new();
     for mut session in discovered {
@@ -1155,28 +1178,26 @@ fn reconcile_sessions(current: &mut Vec<NativeSession>, discovered: Vec<NativeSe
 
 /// The Lightbulb holder whose provider is `pid`. A holder starts its provider itself (an `exec`
 /// keeps the pid), so the provider is the holder's direct child and the one process `hello`
-/// reports. Anything the provider starts in turn is a grandchild and stays private: this is the
-/// spec's first-claim rule (§5.4), with nothing left to claim.
+/// reports. Anything the provider starts in turn is its own session, tracked without a holder.
 fn holder_of(pid: u32, holders: &[HolderInfo]) -> Option<&HolderInfo> {
     let parent = native_tools::parent(pid).ok()?.pid;
     holders.iter().find(|h| h.provider_pid == pid && h.pid == parent)
 }
 
-/// Shared iff held (spec §5.4): keeps only sessions running in a Lightbulb holder and names it.
-/// Claude by process; Codex by the thread its holder's start hook bound, because a Codex
-/// rollout may be written by a shared app server that is not the holder's child.
-fn keep_held(found: &mut Vec<NativeSession>, holders: &[HolderInfo]) {
-    found.retain_mut(|session| {
+/// Every session is tracked (rulings 2026-10-04). Names the holder a held one runs in: Claude as
+/// the holder's own child, Codex by the thread its holder's start hook bound (a Codex rollout may
+/// be written by a shared app server that is not the holder's child).
+fn track(found: &mut Vec<NativeSession>, holders: &[HolderInfo]) {
+    // Lightbulb's own `claude attach` clients are views of a background session, not sessions.
+    found.retain(|s| !holders.iter().any(|h| h.provider_pid == s.process.pid && crate::holder::manager::attach_job(h).is_some()));
+    for session in found.iter_mut() {
         let holder = if session.provider == "codex" {
-            holders.iter().find(|h| {
-                crate::holder::manager::thread(h).as_deref() == Some(session.conversation.as_str())
-            })
+            holders.iter().find(|h| crate::holder::manager::thread(h).as_deref() == Some(session.conversation.as_str()))
         } else {
             holder_of(session.process.pid, holders)
         };
         session.holder = holder.map(|h| h.id.clone());
-        session.holder.is_some()
-    });
+    }
 }
 
 fn deadline_now(
@@ -1825,11 +1846,13 @@ mod tests {
             active_turn: None,
             last_assistant_message: None,
             holder: None,
+            job: None,
+            forked_from: None,
         }
     }
 
     #[test]
-    fn local_sessions_only_a_holders_own_provider_is_mirrored() {
+    fn local_sessions_every_session_is_tracked_and_a_holder_only_labels_it() {
         use std::time::{Duration, Instant};
         // A real process tree, with this test process as the holder: `holder_of` reads only the
         // holder's pid, its provider's pid and the provider's real parent. (An in-process pty
@@ -1878,12 +1901,21 @@ mod tests {
             // This test process is nobody's provider: a plain `claude` in a terminal.
             native_at("claude", "plain", std::process::id()),
         ];
-        keep_held(&mut found, &holders);
+        track(&mut found, &holders);
         assert_eq!(
             found.iter().map(|s| (s.conversation.as_str(), s.holder.as_deref())).collect::<Vec<_>>(),
-            [("held", Some("ab12cd34"))],
-            "the holder's own provider is shared; a claude it starts and a plain one are not"
+            [("held", Some("ab12cd34")), ("inside", None), ("plain", None)],
+            "every session is tracked (rulings 2026-10-04); only the holder's own provider is held"
         );
+    }
+
+    #[test]
+    fn local_sessions_lightbulbs_own_attach_client_is_not_a_session() {
+        let client = HolderInfo { id: "cd34ef56".into(), socket: "/x/cd34ef56.sock".into(), pid: 1, provider_pid: std::process::id(),
+            argv: crate::holder::manager::attach_argv(Path::new("/c/claude"), "8ed71738"), cwd: "/".into(), watch: true, type_input: true };
+        let mut found = vec![native_at("claude", "client", std::process::id())];
+        track(&mut found, &[client]);
+        assert!(found.is_empty(), "a view of a background session, not a session");
     }
 
     #[test]
@@ -1902,11 +1934,12 @@ mod tests {
         let thread = "11111111-1111-4111-8111-111111111111";
         let codex = native_at("codex", thread, std::process::id());
         let mut found = vec![codex.clone()];
-        keep_held(&mut found, std::slice::from_ref(&holder));
-        assert!(found.is_empty(), "an unbound thread (plain codex, the Codex app) stays private");
+        track(&mut found, std::slice::from_ref(&holder));
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].holder, None, "an unbound thread (plain codex) is tracked, without a holder");
         crate::holder::manager::bind_thread(&holder, thread);
         let mut found = vec![codex];
-        keep_held(&mut found, std::slice::from_ref(&holder));
+        track(&mut found, std::slice::from_ref(&holder));
         assert_eq!(found[0].holder.as_deref(), Some("ab12cd34"));
     }
     use std::{
@@ -1980,6 +2013,8 @@ mod tests {
             active_turn: None,
             last_assistant_message: None,
             holder: None,
+            job: None,
+            forked_from: None,
         };
         let mut workspace = workspace::State::default();
         workspace.observe(Ok((dir.path().into(), "before".into())), false);
@@ -2332,6 +2367,8 @@ mod tests {
             active_turn: None,
             last_assistant_message: None,
             holder: None,
+            job: None,
+            forked_from: None,
         };
         let mut sessions = vec![];
         reconcile_sessions(&mut sessions, vec![native.clone(), native.clone()]);
@@ -2414,6 +2451,8 @@ mod tests {
                 active_turn: None,
                 last_assistant_message: None,
                 holder: None,
+                job: None,
+                forked_from: None,
             },
             generation: "g".into(),
             previous_generation: None,
@@ -2498,6 +2537,8 @@ mod tests {
                 active_turn: None,
                 last_assistant_message: None,
                 holder: None,
+                job: None,
+                forked_from: None,
             },
             generation: "g".into(),
             previous_generation: None,
@@ -2581,6 +2622,8 @@ mod tests {
                 active_turn: None,
                 last_assistant_message: None,
                 holder: None,
+                job: None,
+                forked_from: None,
             },
             generation: "g".into(),
             previous_generation: None,
@@ -2679,6 +2722,8 @@ mod tests {
                 active_turn: None,
                 last_assistant_message: None,
                 holder: None,
+                job: None,
+                forked_from: None,
             },
             generation: "g".into(),
             previous_generation: None,
@@ -2742,6 +2787,8 @@ mod tests {
                 active_turn: None,
                 last_assistant_message: None,
                 holder: None,
+                job: None,
+                forked_from: None,
             },
             generation: "g".into(),
             previous_generation: None,

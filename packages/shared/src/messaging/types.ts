@@ -364,6 +364,11 @@ export interface LocalSession {
   /** Canonical last ingested event; opens recent history without loading every page. */
   latestEventSeq: number;
   kind?: "interactive" | "background";
+  /** Which live terminal a running session has: "held" (Lightbulb runs it) or "attach" (a Claude
+   *  background session). Absent: its transcript is all there is. */
+  terminal?: "held" | "attach";
+  /** The session this one continues: a Claude session moved to the background (←) forks a new one. */
+  forkedFrom?: string;
   /** Harness-derived: Claude ai-title or listing name, Codex first prompt. */
   title?: string | null;
   /** Owner-chosen name shared by Lightbulb surfaces. Null uses the harness title. */

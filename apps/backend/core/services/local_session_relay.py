@@ -36,8 +36,8 @@ logger = logging.getLogger(__name__)
 _ANALYTICS_NS = uuid.uuid5(uuid.NAMESPACE_URL, "lightbulb:local-session-lifecycle")
 
 
-#: The Lightbulb holder a session runs in (managed session sharing §5.4). Only held sessions
-#: are shared; a desktop that sends none is refused.
+#: The Lightbulb holder a session runs in (8 hex). Optional: every session on a paired Mac is
+#: tracked (rulings 2026-10-04); a holder only marks one whose live terminal Lightbulb hosts.
 HolderId = Annotated[str, Field(pattern=r"^[0-9a-f]{8}$")]
 
 
@@ -53,7 +53,10 @@ class Descriptor(ContractModel):
     control_unavailable_reason: sessions.ControlUnavailableReason | None = None
     title: Annotated[str, Field(max_length=120)] | None = None
     cwd_name: Annotated[str, Field(max_length=128)] | None = None
-    holder_id: HolderId
+    holder_id: HolderId | None = None
+    # A Claude session moved to the background (<-) continues as a fork with a new conversation:
+    # this names the session it continues, so a listing shows one session, not two.
+    forked_from: sessions.OpaqueId | None = None
     start_id: sessions.OpaqueId | None = None
 
 
@@ -82,6 +85,10 @@ class HeartbeatSession(ContractModel):
     room_reply_request_id: bool | None = None
     # A newer desktop sends this only after the relay advertises support.
     capabilities: sessions.Capabilities | None = None
+    # Which live terminal this Mac can show for the session: "held" (its holder), "attach" (a
+    # Claude background session through `claude attach`), "none" (transcript only). Sent only
+    # once FEATURES lists sessionTerminal. Null is silence.
+    terminal: Literal["held", "attach", "none"] | None = None
 
 
 #: What this relay reads beyond the frozen frames; the desktop sends a field only once listed.
@@ -92,6 +99,7 @@ FEATURES = [
     "privateSendApproval",
     "liveTerminal",
     "remoteInput",
+    "sessionTerminal",
 ]
 
 
@@ -514,6 +522,12 @@ class LocalSessionRelay:
                         capabilitiesVerified=compatible,
                         lastEventAt=int(time.time()),
                     )
+                    # Absent, never a stored null.
+                    for key in ("holderId", "forkedFrom"):
+                        if row.get(key) is None:
+                            row.pop(key, None)
+                    # The hidden `background` kind is gone (Phase 3); a row that still has it is listed now.
+                    row.pop("kind", None)
                     if descriptor.start_id is None and previous and previous["generation"] == descriptor.generation:
                         row["startId"] = previous.get("startId")
                     elif descriptor.start_id is None:
@@ -538,6 +552,7 @@ class LocalSessionRelay:
                         # The end rewrites who may resume; a new run has nobody to resume it. The
                         # same generation re-registering to drain an ended mirror keeps them.
                         row.pop("resumeAllowed", None)
+                        row.pop("terminal", None)
                         row.pop("pendingApproval", None)
                         row.pop("privateSendApproval", None)
                         row.pop("teamControl", None)
@@ -700,6 +715,8 @@ class LocalSessionRelay:
                     deviceFeatures=message.device_features(),
                     **labels,
                 )
+                if item.terminal is not None:
+                    updated["terminal"] = item.terminal
                 if item.capabilities is not None and row["capabilitiesVerified"]:
                     caps = item.capabilities
                     if caps.send_mode != "queue" or (row["provider"] != "codex" and (caps.steer or caps.interrupt)):
@@ -733,6 +750,7 @@ class LocalSessionRelay:
                 )
                 scanned = row.get("workspace") != updated.get("workspace")
                 controls_changed = row.get("capabilities") != updated.get("capabilities")
+                terminal_changed = row.get("terminal") != updated.get("terminal")
                 if moved:
                     updated["lastEventAt"] = now
                 try:
@@ -751,7 +769,7 @@ class LocalSessionRelay:
                 # so it hints without stamping lastEventAt. A lapsed lease reads as
                 # offline, so recovery must reach the room even when nothing else moved;
                 # renewal makes that fire once.
-                if moved or scanned or controls_changed or row["onlineUntil"] <= now:
+                if moved or scanned or controls_changed or terminal_changed or row["onlineUntil"] <= now:
                     hint = True
                 # Reconcile after delivery: this heartbeat's own dispatch is part of what the journal must settle.
                 await self.dispatch_session(owner, item.session_id)

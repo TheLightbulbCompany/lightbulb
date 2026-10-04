@@ -290,3 +290,19 @@ async def test_a_removed_member_cannot_keep_a_watch_alive(transport):
         await session_screen.watch(BOB, sid)  # their Clerk JWT is still valid
     assert problem.value.error.code == "LOCAL_SESSION_FORBIDDEN"
     await session_screen.watch(ALICE, sid)  # the owner still watches
+
+
+@pytest.mark.asyncio
+async def test_a_session_without_a_live_terminal_is_neither_watched_nor_typed_into(transport):
+    sid = await start(transport)
+    await relay(transport).handle_message("conn-1", heartbeat(sid, terminal="none"))
+    with pytest.raises(ApiProblem) as refused:
+        await session_screen.watch(BOB, sid)
+    assert refused.value.error.code == "LOCAL_SESSION_UNSUPPORTED"
+    assert (await ack(transport, sid))["watching"] == [], "the Mac is never asked to stream it"
+    with pytest.raises(ApiProblem) as typed:
+        await session_screen.type_into(
+            ALICE, sid, session_screen.SessionInput.model_validate({"data": "YQ==", "epoch": 1})
+        )
+    assert typed.value.error.code == "LOCAL_SESSION_UNSUPPORTED"
+    assert not [b for _, b in transport[3] if b["type"] == "local.session.input"], "no keystroke reaches the Mac"

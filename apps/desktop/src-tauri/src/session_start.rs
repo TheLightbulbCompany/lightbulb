@@ -5,7 +5,8 @@
 //! installed fixed binary, the folder one of the approved folders (Settings → File
 //! access), model/mode from a closed list, and the prompt is passed after `--` so it
 //! can never become a flag. Then a held session opens on this Mac so the owner sees it;
-//! sharing must already be on, and only held sessions are shared.
+//! sharing must already be on. Every session is tracked; Lightbulb starts its own in a
+//! holder so they have a live terminal.
 //!
 //! No native approve-once window: `session.start.v1` is owner-only end to end. The
 //! backend resolves it only to the caller's OWN Mac (the ready row and the reciprocal
@@ -341,7 +342,7 @@ fn prepare(
 
 /// Start `argv` in a new holder in `folder`: the one launcher for the New session view, a remote
 /// start, a pick-up and a resume. It shows in the app's session panel when a person opens it.
-/// Only held sessions are shared (spec §5.4).
+/// Every session is tracked; one started here runs in a holder, so it has a live terminal.
 pub(crate) async fn start_held(
     folder: PathBuf,
     argv: Vec<String>,
@@ -448,7 +449,7 @@ fn unapproved_path_flag(tool: &str, args: &[String], cwd: &Path, approved: &[Pat
             .and_then(|p| crate::file_access::canonicalize(p).ok())
             .is_some_and(|p| inside_approved(&p, approved));
         (!ok).then(|| format!(
-            "{flag} {path} is not inside a folder you approved for Lightbulb. Add it in the Lightbulb app under Settings → File access, then run this again. Plain `{tool}` stays private."
+            "{flag} {path} is not inside a folder you approved for Lightbulb. Add it in the Lightbulb app under Settings → File access, then run this again."
         ))
     })
 }
@@ -540,7 +541,7 @@ mod tests {
         assert_eq!(unapproved_path_flag("codex", &args(&["--add-dir", root.to_str().unwrap()]), &root, &approved), None);
         // An unapproved -C, --add-dir=…, -C<path> and a second --add-dir are refused.
         let refused = unapproved_path_flag("codex", &args(&["-C", &outside]), &root, &approved).unwrap();
-        assert!(refused.contains(&outside) && refused.contains("Plain `codex` stays private"), "{refused}");
+        assert!(refused.contains(&outside), "{refused}");
         assert!(unapproved_path_flag("codex", &args(&[&format!("--add-dir={outside}")]), &root, &approved).is_some());
         assert!(unapproved_path_flag("codex", &args(&[&format!("-C{outside}")]), &root, &approved).is_some());
         assert!(unapproved_path_flag("claude", &args(&["--add-dir", "lib", &outside]), &root, &approved).is_some());

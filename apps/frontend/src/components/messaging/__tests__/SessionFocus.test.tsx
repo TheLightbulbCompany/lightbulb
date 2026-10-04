@@ -4,7 +4,7 @@ import { expect, it, vi } from "vitest";
 import { ApiError, type LocalSession, type SessionSource } from "@lightbulb/shared";
 import { SessionFocus } from "../SessionFocus";
 
-const session: LocalSession = { sessionId: "s1", deviceId: "mac", humanUserId: "alice", provider: "claude", providerVersion: "2.1.269", generation: "g", status: "busy", activeTurnId: null,
+const session: LocalSession = { sessionId: "s1", deviceId: "mac", humanUserId: "alice", provider: "claude", terminal: "held", providerVersion: "2.1.269", generation: "g", status: "busy", activeTurnId: null,
   capabilities: { sendMode: "queue", steer: false, interrupt: false }, capabilitiesVerified: true, controlUnavailableReason: null, latestEventSeq: 0, title: "Load test" };
 const resolveSessionOwner = () => ({ ownerName: "Alice", own: false });
 /** The pane's one-line status row: status, owner, then where it runs. */
@@ -198,4 +198,20 @@ it("gives a person the owner allowed the composer", async () => {
   focus({ session: { ...session, allowedSenders: ["user_test_123"] }, ownerName: "Alice", own: false });
   expect(await screen.findByRole("button", { name: "Send follow-up" })).toBeInTheDocument();
   expect(screen.queryByText("Only Alice can send to this session.")).not.toBeInTheDocument();
+});
+
+it("opens the session a Claude session moved to the background continues as", async () => {
+  focus({ session: { ...session, sessionId: "s2", forkedFrom: "s1", title: "Moved on" }, ownerName: "Alice", own: false });
+  expect(await screen.findByRole("heading", { name: "Claude Moved on" })).toBeInTheDocument();
+});
+
+it("opens a live origin, not a fork copied from it", async () => {
+  const client = { listWorkspaceSessions: vi.fn(), getLocalSession: vi.fn(), listLocalSessionEvents: vi.fn(async () => ({ events: [], nextAfterSeq: null })), submitLocalSessionCommand: vi.fn(), getLocalSessionCommand: vi.fn() } as unknown as SessionSource["client"];
+  const entries = [
+    { session: { ...session, sessionId: "s2", forkedFrom: "s1", title: "The fork" }, ownerName: "Alice", own: false },
+    { session, ownerName: "Alice", own: false },
+  ];
+  render(<SessionFocus focus={{ sessionId: "s1" }} entries={entries} loading={false} hintRevision={0} client={client}
+    resolveSessionOwner={resolveSessionOwner} onAccessLost={vi.fn()} onClose={vi.fn()} />);
+  expect(await screen.findByRole("heading", { name: "Claude Load test" })).toBeInTheDocument();
 });

@@ -755,7 +755,7 @@ it("keeps Sessions visible when nobody shares, with a Start a session guide", as
   const section = screen.getByRole("region", { name: "Sessions" });
   expect(within(section).getByText("No one is sharing a session.")).toBeInTheDocument();
   await userEvent.click(within(section).getByRole("button", { name: "Start a session" }));
-  const dialog = await screen.findByRole("dialog", { name: "Start a shared session" });
+  const dialog = await screen.findByRole("dialog", { name: "Share a session" });
   expect(within(dialog).getByRole("button", { name: "Copy lightbulb claude" })).toBeInTheDocument();
   expect(within(dialog).getByRole("button", { name: "Copy lightbulb codex" })).toBeInTheDocument();
   expect(within(dialog).getByRole("link", { name: /Native terminal sessions/ })).toHaveAttribute("href", "/settings");

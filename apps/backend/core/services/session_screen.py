@@ -66,6 +66,10 @@ async def watch(auth: sessions.Caller, session_id: str) -> None:
     now = int(_clock())
     if row.get("endedAt") is not None or row.get("unshared") or int(row.get("onlineUntil", 0)) <= now:
         raise sessions.ApiProblem("LOCAL_SESSION_OFFLINE", "This session is not running.")
+    if sessions.session_terminal(row) is None:
+        raise sessions.ApiProblem(
+            "LOCAL_SESSION_UNSUPPORTED", "This session has no live terminal. Its transcript is shown instead."
+        )
     key = _viewer_key(row, auth.user_id)
     viewer = await store._get(key["pk"], key["sk"])
     fresh = viewer is None or int(viewer.get("expiresAt", 0)) <= now
@@ -294,6 +298,10 @@ async def type_into(auth: AuthContext, session_id: str, body: SessionInput) -> N
     now = _clock()
     if row.get("endedAt") is not None or row.get("unshared") or int(row.get("onlineUntil", 0)) <= now:
         raise sessions.ApiProblem("LOCAL_SESSION_OFFLINE", "This session is not running.")
+    if sessions.session_terminal(row) is None:
+        raise sessions.ApiProblem(
+            "LOCAL_SESSION_UNSUPPORTED", "This session has no live terminal. Its transcript is shown instead."
+        )
     if "remoteInput" not in row.get("deviceFeatures", ()):
         raise sessions.ApiProblem("LOCAL_SESSION_UNSUPPORTED", "This Mac cannot take typing from elsewhere yet.")
     size = len(base64.b64decode(body.data))

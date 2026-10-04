@@ -377,6 +377,24 @@ mod tests {
     use super::*;
 
     #[test]
+    fn a_plain_sessions_own_mcp_call_resolves_it_as_the_source() {
+        use std::os::unix::fs::PermissionsExt;
+        let scope = tempfile::tempdir().unwrap();
+        fs::set_permissions(scope.path(), fs::Permissions::from_mode(0o700)).unwrap();
+        // This test process is the session; its child stands in for the session's MCP server.
+        let mut mirror = super::super::transport::tests::test_mirror("11111111-1111-4111-8111-111111111111", "gen-1");
+        mirror.native.provider = "claude".into();
+        mirror.session_id = Some("session-a".into());
+        assert!(mirror.native.holder.is_none() && mirror.native.restriction.is_none(), "a plain, verified terminal session");
+        mirror.persist(&scope.path().join(format!("{}.json", "a".repeat(64)))).unwrap();
+        let mut mcp = std::process::Command::new("/bin/sleep").arg("30").spawn().unwrap();
+        let source = resolve_source(scope.path(), mcp.id(), &json!({})).map(|s| s.session_id);
+        mcp.kill().unwrap();
+        mcp.wait().unwrap();
+        assert_eq!(source.unwrap(), "session-a", "no holder needed to be this session's MCP source");
+    }
+
+    #[test]
     fn find_sessions_marks_only_the_calling_session() {
         let mut data = json!({"sessions":[{"sessionId":"a"},{"sessionId":"b"}],"total":2});
         mark_own(&mut data, "b");

@@ -509,8 +509,7 @@ fn silence(fd: std::os::unix::io::RawFd) {
     }
 }
 
-/// A hook of a session that does not run in a Lightbulb holder exits after reading stdin (spec 5.4).
-/// Held sessions' hooks send the bounded lifecycle datagram built from their stdin JSON, or
+/// Every session's hook sends the bounded lifecycle datagram built from their stdin JSON, or
 /// a plain wake byte when stdin isn't a JSON object; never a credential or an
 /// authority. The one exception to "never a decision" is a Claude permission
 /// prompt the app holds for a remote answer (owner ruling 2026-09-25): that
@@ -523,14 +522,12 @@ pub fn hook(provider: &str) {
     let mut raw = Vec::new();
     let _ = std::io::Read::take(std::io::stdin(), 65536).read_to_end(&mut raw);
     let json: serde_json::Value = serde_json::from_slice(&raw).unwrap_or(serde_json::Value::Null);
-    hook_input(
-        provider,
-        json,
-        std::os::unix::process::parent_id(),
-        &crate::holder::manager::list(),
-        answer,
-        &hook_path(),
-    );
+    let holders = if provider == "codex" && json["hook_event_name"] == "SessionStart" {
+        crate::holder::manager::list()
+    } else {
+        vec![]
+    };
+    hook_input(provider, json, std::os::unix::process::parent_id(), &holders, answer, &hook_path());
 }
 
 /// One hook after its stdin is read; `parent` is the hook's parent process.
@@ -542,14 +539,6 @@ fn hook_input(
     answer: std::os::unix::io::RawFd,
     wake: &Path,
 ) {
-    // Shared iff the provider runs in a Lightbulb holder (spec 5.4). A private session's hook
-    // ends here: no prompt is held for a remote answer and nothing reaches the app.
-    let Some(holder) = hook_holder(parent, holders) else {
-        if answer >= 0 {
-            unsafe { libc::close(answer) };
-        }
-        return;
-    };
     super::native_mcp::canonical_hook(&mut json);
     if answer >= 0 && super::approval::holdable(provider, &json) {
         super::approval::hold(wake, provider, &json, answer);
@@ -558,9 +547,9 @@ fn hook_input(
     if answer >= 0 {
         unsafe { libc::close(answer) };
     }
-    // Discovery recognises a held Codex by the thread its own start hook names here.
+    // Discovery names a held Codex by the thread its own start hook records here.
     if provider == "codex" && json["hook_event_name"] == "SessionStart" {
-        if let Some(thread) = json["session_id"].as_str() {
+        if let (Some(holder), Some(thread)) = (hook_holder(parent, holders), json["session_id"].as_str()) {
             crate::holder::manager::bind_thread(holder, thread);
         }
     }
@@ -1147,24 +1136,16 @@ mod tests {
     }
 
     #[test]
-    fn local_sessions_a_private_sessions_permission_hook_returns_at_once_and_sends_nothing() {
-        use std::os::unix::{fs::PermissionsExt, io::IntoRawFd};
+    fn local_sessions_a_plain_sessions_hook_reaches_the_app() {
+        use std::os::unix::fs::PermissionsExt;
         let dir = tempfile::tempdir().unwrap();
         fs::set_permissions(dir.path(), fs::Permissions::from_mode(0o700)).unwrap();
         let wake = dir.path().join("wake.sock");
         let app = std::os::unix::net::UnixDatagram::bind(&wake).unwrap();
         app.set_nonblocking(true).unwrap();
-        let answer = fs::OpenOptions::new().write(true).open("/dev/null").unwrap().into_raw_fd();
-        let prompt = json!({"hook_event_name":"PermissionRequest","tool_name":"Bash",
-            "tool_input":{"command":"ls"},"session_id":"s"});
-        let started = std::time::Instant::now();
         // This test process is a plain terminal's `claude`: no holder anywhere.
-        hook_input("claude", prompt, std::process::id(), &[], answer, &wake);
-        assert!(
-            started.elapsed() < std::time::Duration::from_millis(500),
-            "no wait for the app's acknowledgement (ACK_WAIT is 2 s)"
-        );
-        assert!(app.recv(&mut [0u8; 4096]).is_err(), "nothing reached the app");
+        hook_input("claude", json!({"hook_event_name":"Stop","session_id":"s"}), std::process::id(), &[], -1, &wake);
+        assert!(app.recv(&mut [0u8; 4096]).is_ok(), "every session's hook reaches the app (rulings 2026-10-04)");
     }
 
     #[test]

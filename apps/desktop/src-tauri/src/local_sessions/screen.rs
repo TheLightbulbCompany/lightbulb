@@ -8,6 +8,8 @@
 //! sent to be dropped there, and a snapshot follows once the budget is back.
 //! A `local.session.watch` nudge from the backend starts a relay at once (a new viewer sees the
 //! screen in about a second, not at the next ack); the acks still keep it going and stop it.
+//! A Claude background session's terminal comes from an attach holder this module starts on demand
+//! and stops when nobody uses it, or when discovery no longer lists its job as running.
 
 use super::transport::relay_log;
 use super::{Mirror, NativeSession};
@@ -15,7 +17,7 @@ use crate::holder::manager::{self, HolderInfo};
 use crate::holder::protocol::{encode, read_frame, split_offset, EXIT, HELLO, OUTPUT, RESIZE, SNAPSHOT};
 use base64::Engine;
 use serde_json::{json, Value};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::io::Write;
 use std::os::unix::net::UnixStream;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering::SeqCst};
@@ -116,13 +118,124 @@ pub(super) fn index(mirrors: &BTreeMap<String, Mirror>) {
     }
 }
 
-/// The holder a shared session runs in, and its generation: the holder discovery named on the
-/// mirror (`keep_held`: Claude as the holder's own child, Codex by the thread its holder bound).
-/// A mirror with no holder is not shared and has no live terminal.
-pub(crate) fn holder_for_session(session_id: &str) -> Option<(HolderInfo, String)> {
+/// An attach holder unused this long (not in the panel, no relay) is closed.
+const IDLE: Duration = Duration::from_secs(60);
+/// At most one attach start per job this often: a client that exits at once is not restarted in a loop.
+const RESTART_GAP: Duration = Duration::from_secs(30);
+/// Attach holder id -> when it was last asked for.
+static WANTED: Mutex<BTreeMap<String, Instant>> = Mutex::new(BTreeMap::new());
+/// Job -> when an attach holder was last started for it. Held across list+start, so the panel and a
+/// relay asking together share one holder.
+static STARTED: Mutex<BTreeMap<String, Instant>> = Mutex::new(BTreeMap::new());
+
+/// The holder that shows a session's live terminal, and its generation. A held session's own
+/// holder (`track`: Claude as the holder's own child, Codex by the thread its holder bound); for a
+/// Claude background session, Lightbulb's attach holder, started on demand (rulings 2026-10-04).
+/// `panel`: the owner's own panel asks, the one caller that may size the job's terminal. None: no
+/// live terminal (the transcript).
+pub(crate) fn holder_for_session(session_id: &str, panel: bool) -> Option<(HolderInfo, String)> {
     let live = LIVE.lock().ok()?.get(session_id).cloned()?;
-    let holder = matched(manager::list(), live.native.holder.as_deref()?)?;
+    let holder = match (live.native.holder.as_deref(), live.native.job.as_deref()) {
+        (Some(id), _) => matched(manager::list(), id)?,
+        (None, Some(job)) => {
+            let pid = live.native.process.pid;
+            let holder = attach_holder(job, manager::list, |job| start_size(tty_size(pid), panel).map(|size| attach_start(job, size)))?;
+            if let Ok(mut wanted) = WANTED.lock() {
+                wanted.insert(holder.id.clone(), Instant::now());
+            }
+            holder
+        }
+        _ => return None,
+    };
     Some((holder, live.generation))
+}
+
+/// The running attach holder for `job`, or a new one. `start` answers None when this caller may
+/// not start one now (that spends no restart gap).
+fn attach_holder(job: &str, list: impl Fn() -> Vec<HolderInfo>, start: impl Fn(&str) -> Option<Result<HolderInfo, String>>) -> Option<HolderInfo> {
+    let mut started = STARTED.lock().ok()?;
+    if let Some(holder) = list().into_iter().find(|h| manager::attach_job(h) == Some(job)) {
+        return Some(holder);
+    }
+    if started.get(job).is_some_and(|at| at.elapsed() < RESTART_GAP) {
+        return None;
+    }
+    let attempt = start(job)?;
+    started.insert(job.to_owned(), Instant::now());
+    attempt.map_err(|e| relay_log(&format!("attach {job}: {e}"))).ok()
+}
+
+/// The size an attach holder starts at: the job's current size, so watching never resizes the
+/// owner's terminal (Task 0: the job draws at the latest attach size). Unknown: only the owner's
+/// panel may start one (it sizes it itself); a viewer or a typist gets None.
+fn start_size(job_size: Option<(u16, u16)>, panel: bool) -> Option<Option<(u16, u16)>> {
+    (job_size.is_some() || panel).then_some(job_size)
+}
+
+/// The size of the terminal process `pid` runs in: its controlling tty's window size.
+fn tty_size(pid: u32) -> Option<(u16, u16)> {
+    use std::os::unix::fs::OpenOptionsExt;
+    use std::os::unix::io::AsRawFd;
+    let out = std::process::Command::new("/bin/ps").args(["-o", "tty=", "-p", &pid.to_string()]).output().ok()?;
+    let name = String::from_utf8(out.stdout).ok()?.trim().to_owned();
+    // "??" is no terminal; anything but a plain device name is not read.
+    if !name.starts_with("tty") || !name.bytes().all(|b| b.is_ascii_alphanumeric()) {
+        return None;
+    }
+    let tty = std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOCTTY | libc::O_NONBLOCK)
+        .open(format!("/dev/{name}"))
+        .ok()?;
+    let mut size: libc::winsize = unsafe { std::mem::zeroed() };
+    if unsafe { libc::ioctl(tty.as_raw_fd(), libc::TIOCGWINSZ, &mut size) } != 0 || size.ws_col == 0 || size.ws_row == 0 {
+        return None;
+    }
+    Some((size.ws_col, size.ws_row))
+}
+
+fn attach_start(job: &str, size: Option<(u16, u16)>) -> Result<HolderInfo, String> {
+    let home = std::env::var_os("HOME").map(std::path::PathBuf::from).ok_or("no home folder")?;
+    let claude = super::provider_program(&home, "claude").ok_or("Claude Code is not installed")?;
+    manager::start_sized(&home, &manager::attach_argv(&claude, job), size)
+}
+
+/// The attach holders to stop: their job is no longer listed as running (`running`, None when the
+/// listing failed: no evidence), or nobody shows, watches or asked for them in `IDLE`. First sight
+/// counts as asked, so holders found after an app restart get a grace period.
+fn idle_attach(holders: &[HolderInfo], shown: Option<&str>, watched_jobs: &BTreeSet<String>, running: Option<&BTreeSet<String>>,
+               wanted: &mut BTreeMap<String, Instant>, now: Instant) -> Vec<HolderInfo> {
+    wanted.retain(|id, _| holders.iter().any(|h| &h.id == id));
+    holders
+        .iter()
+        .filter(|h| {
+            let Some(job) = manager::attach_job(h) else { return false };
+            // Shown or watched now counts as asked now: IDLE runs from the last use, not the last lookup.
+            let used = shown == Some(h.id.as_str()) || watched_jobs.contains(job);
+            let at = wanted.entry(h.id.clone()).or_insert(now);
+            if used {
+                *at = now;
+            }
+            let ended = running.is_some_and(|r| !r.contains(job));
+            ended || (!used && now.duration_since(*at) >= IDLE)
+        })
+        .cloned()
+        .collect()
+}
+
+/// Close attach holders nobody uses or whose job is no longer running. Ends only the `claude
+/// attach` client; the background session runs on under Claude's own daemon. Never `claude stop`.
+pub(super) fn reap_attach(holders: &[HolderInfo], running: Option<&BTreeSet<String>>) {
+    let shown = crate::holder::panel::shown_holder();
+    let live = LIVE.lock().map(|l| l.clone()).unwrap_or_default();
+    let watched: BTreeSet<String> = RELAYS
+        .lock()
+        .map(|r| r.iter().filter(|(_, c)| !c.stopped()).filter_map(|(sid, _)| live.get(sid)?.native.job.clone()).collect())
+        .unwrap_or_default();
+    let Ok(mut wanted) = WANTED.lock() else { return };
+    for holder in idle_attach(holders, shown.as_deref(), &watched, running, &mut wanted, Instant::now()) {
+        manager::stop_attach(&holder);
+    }
 }
 
 fn matched(holders: Vec<HolderInfo>, id: &str) -> Option<HolderInfo> {
@@ -242,7 +355,7 @@ fn spawn(sid: String, since: u64) -> Arc<Ctl> {
 }
 
 fn run(sid: &str, ctl: &Ctl) -> Result<(), String> {
-    let (holder, generation) = holder_for_session(sid).ok_or("not a held session")?;
+    let (holder, generation) = holder_for_session(sid, false).ok_or("not a held session")?;
     if !holder.watch {
         return Err("its holder predates live terminals; restart the session to share its screen".into());
     }
@@ -427,7 +540,6 @@ fn frames_for(ids: (&str, &str), epoch: u64, seq: &mut u64, size: (u16, u16), ki
 mod tests {
     use super::*;
     use crate::holder::protocol::with_offset;
-    use std::collections::BTreeSet;
 
     #[test]
     fn epochs_increase_in_one_millisecond_and_when_the_clock_steps_back() {
@@ -626,6 +738,100 @@ mod tests {
             (Some("local.session.screen"), Some("snapshot"), Some(0)));
         assert_eq!((first["sessionId"].as_str(), first["cols"].as_u64()), (Some(sid.as_str()), Some(100)));
         let _ = mac.shutdown(std::net::Shutdown::Both);
+    }
+
+    fn attach(id: &str, job: &str, pid: u32) -> HolderInfo {
+        HolderInfo { id: id.into(), socket: format!("/x/{id}.sock").into(), pid, provider_pid: pid + 1,
+            argv: manager::attach_argv(std::path::Path::new("/c/claude"), job), cwd: "/".into(), watch: true, type_input: true }
+    }
+
+    fn pids(holders: Vec<HolderInfo>) -> Vec<u32> {
+        holders.iter().map(|h| h.pid).collect()
+    }
+
+    #[test]
+    fn an_attach_terminal_nobody_uses_is_closed_and_only_then() {
+        let held = HolderInfo { argv: vec!["/c/claude".into()], ..attach("00000000", "00000000", 9) };
+        let holders = [attach("aaaaaaaa", "11111111", 10), attach("bbbbbbbb", "22222222", 20), attach("cccccccc", "33333333", 30), held];
+        let watched = BTreeSet::from(["22222222".to_owned()]);
+        let running = BTreeSet::from(["11111111".to_owned(), "22222222".to_owned(), "33333333".to_owned()]);
+        let mut wanted = BTreeMap::new();
+        let t0 = Instant::now();
+        assert!(idle_attach(&holders, Some("cccccccc"), &watched, Some(&running), &mut wanted, t0).is_empty(), "first sight is a fresh start");
+        assert_eq!(
+            pids(idle_attach(&holders, Some("cccccccc"), &watched, Some(&running), &mut wanted, t0 + IDLE)),
+            [10],
+            "not the panel's, not a watched one, never a held session's holder"
+        );
+    }
+
+    #[test]
+    fn an_attach_terminal_waits_idle_from_when_the_panel_stopped_showing_it() {
+        let holders = [attach("aaaaaaaa", "11111111", 10), attach("bbbbbbbb", "22222222", 20)];
+        let running = BTreeSet::from(["11111111".to_owned(), "22222222".to_owned()]);
+        let mut wanted = BTreeMap::new();
+        let t0 = Instant::now();
+        let none = BTreeSet::new();
+        assert!(idle_attach(&holders, Some("aaaaaaaa"), &none, Some(&running), &mut wanted, t0).is_empty());
+        let watched = BTreeSet::from(["22222222".to_owned()]);
+        let hide = t0 + IDLE * 5;
+        assert!(idle_attach(&holders, Some("aaaaaaaa"), &watched, Some(&running), &mut wanted, hide).is_empty(),
+            "shown and watched for minutes");
+        assert!(idle_attach(&holders, None, &none, Some(&running), &mut wanted, hide + IDLE / 2).is_empty(),
+            "the panel just closed and the relay just stopped: not reaped at once");
+        assert_eq!(pids(idle_attach(&holders, None, &none, Some(&running), &mut wanted, hide + IDLE)), [10, 20]);
+    }
+
+    #[test]
+    fn an_attach_terminal_whose_job_ended_is_closed_even_when_shown_or_watched() {
+        let holders = [attach("bbbbbbbb", "22222222", 20), attach("cccccccc", "33333333", 30)];
+        let watched = BTreeSet::from(["22222222".to_owned()]);
+        let mut wanted = BTreeMap::new();
+        let t0 = Instant::now();
+        let running = BTreeSet::from(["33333333".to_owned()]);
+        assert_eq!(pids(idle_attach(&holders, Some("cccccccc"), &watched, Some(&running), &mut wanted, t0)), [20],
+            "a watched one whose job is no longer listed goes at once");
+        assert_eq!(pids(idle_attach(&holders, Some("bbbbbbbb"), &watched, Some(&BTreeSet::new()), &mut wanted, t0)), [20, 30],
+            "the panel's too");
+        assert!(idle_attach(&holders, Some("cccccccc"), &watched, None, &mut wanted, t0).is_empty(),
+            "a failed listing is no evidence that a job ended");
+    }
+
+    #[test]
+    fn an_attach_terminal_stays_while_its_job_is_listed_even_when_its_capture_failed() {
+        // A row capture cannot use (no pid) still names its running job.
+        let rows = [serde_json::json!({"kind":"background","id":"22222222","sessionId":"x","status":"busy"})];
+        assert!(rows.iter().all(|r| r["pid"].is_null()), "this row fails capture");
+        let (_, running) = super::super::claude::listed(&rows);
+        let holders = [attach("bbbbbbbb", "22222222", 20)];
+        let watched = BTreeSet::from(["22222222".to_owned()]);
+        let mut wanted = BTreeMap::new();
+        assert!(idle_attach(&holders, None, &watched, Some(&running), &mut wanted, Instant::now()).is_empty(),
+            "a watched terminal whose job is listed is kept");
+    }
+
+    #[test]
+    fn an_attach_terminal_is_started_once_and_never_in_a_loop() {
+        let made = attach("dddddddd", "44444444", 40);
+        let calls = std::cell::Cell::new(0);
+        let start = |_: &str| { calls.set(calls.get() + 1); Some(Ok(made.clone())) };
+        assert_eq!(attach_holder("44444444", Vec::new, &start), Some(made.clone()));
+        assert_eq!(attach_holder("44444444", Vec::new, &start), None, "its client exited at once: wait, do not restart");
+        assert_eq!(attach_holder("44444444", || vec![made.clone()], &start), Some(made.clone()), "a running one is reused");
+        assert_eq!(calls.get(), 1);
+        // A caller that may not start one (a viewer, size unknown) spends no restart gap.
+        assert_eq!(attach_holder("55555555", Vec::new, |_| None), None);
+        assert!(attach_holder("55555555", Vec::new, |_| Some(Ok(made.clone()))).is_some(), "the panel starts it right after");
+    }
+
+    #[test]
+    fn an_attach_terminal_starts_at_the_jobs_size_and_only_the_panel_starts_one_blind() {
+        assert_eq!(start_size(Some((100, 30)), false), Some(Some((100, 30))), "a viewer attaches at the job's current size");
+        assert_eq!(start_size(Some((100, 30)), true), Some(Some((100, 30))));
+        assert_eq!(start_size(None, true), Some(None), "the panel sizes it itself");
+        assert_eq!(start_size(None, false), None, "a viewer never resizes the owner's terminal");
+        assert!(tty_size(std::process::id()).is_none_or(|(c, r)| c > 0 && r > 0));
+        assert_eq!(tty_size(u32::MAX), None, "no such process");
     }
 
     #[test]

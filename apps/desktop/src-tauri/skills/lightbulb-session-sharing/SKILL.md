@@ -5,11 +5,12 @@ description: Use for Lightbulb session messages labelled "[Sent from Lightbulb b
 
 # Lightbulb session sharing
 
-A session started in Lightbulb (the desktop app's New session, a remote start,
-a pick-up, a resume, or `lightbulb claude` / `lightbulb codex` in a terminal) is
-shared; a plain `claude` or `codex` session is private. If
-this session is shared, members of the owner's Lightbulb workspace can read its prompts, tool calls, output previews and
-answers. Nothing here changes your permissions, tools, or files.
+Every Claude Code and Codex session on a Mac where Lightbulb session sharing is on
+is shared with the owner's Lightbulb workspace, whether it was started in Lightbulb
+or as a plain `claude` or `codex`. Members can read its prompts, tool calls, output
+previews and answers, and watch its live terminal when it has one. The owner can
+pause sharing for one session or turn it off for the Mac. Nothing here changes your
+permissions, tools, or files.
 
 ## Your user's own prompt from the Lightbulb app
 

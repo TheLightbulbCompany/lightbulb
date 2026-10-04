@@ -81,6 +81,9 @@ impl Rpc {
 /// checks the envelope size before validating, so the byte budget bites first.
 const HEARTBEAT_SESSIONS_MAX: usize = 24;
 
+/// One discovery pass: the captured sessions, and every conversation the Claude listing named.
+type Discovered = (Vec<NativeSession>, BTreeSet<String>);
+
 pub(super) struct Host {
     workspace_at: Instant,
     workspace_key: Option<String>,
@@ -186,6 +189,7 @@ impl Host {
         status: Option<&str>,
         recovering_ended: bool,
     ) -> Result<Value> {
+        let origin = self.mirrors.get(key).and_then(|m| origin_session(&self.mirrors, &m.native));
         let mirror = self.mirrors.get_mut(key).ok_or("missing local session")?;
         let reset_end = recovering_ended && mirror.ended_sent;
         if recovering_ended {
@@ -198,6 +202,9 @@ impl Host {
             mirror.persist(&self.dir.join(format!("{key}.json")))?;
         }
         let mut frame = registration(mirror);
+        if let Some(origin) = origin {
+            frame["session"]["forkedFrom"] = json!(origin);
+        }
         if let Some(start_id) = start_links::linked(&self.dir, &mirror.native, &mirror.generation) {
             frame["session"]["startId"] = json!(start_id);
         }
@@ -208,7 +215,30 @@ impl Host {
         }
         Ok(frame)
     }
-    fn observe(&mut self, update: Vec<NativeSession>) -> Result<Vec<String>> {
+    /// `claude_listed`: every conversation the Claude listing named, captured or not.
+    fn observe(&mut self, update: Vec<NativeSession>, claude_listed: &BTreeSet<String>) -> Result<Vec<String>> {
+        // ← moves a Claude session to the background as a fork. The original is no longer listed
+        // while its process stays (it shows the agent view), so its pid check never ends it. A
+        // listed fork naming an unlisted original does; a listing gap alone never ends anything.
+        // "Unlisted" is the raw listing: a row whose capture failed is still there.
+        let moved: Vec<String> = update
+            .iter()
+            .filter_map(|fork| {
+                let origin = fork.forked_from.as_deref()?;
+                let same = |provider: &str, profile: &str, conversation: &str| {
+                    provider == fork.provider && profile == fork.profile && conversation == origin
+                };
+                if (fork.provider == "claude" && claude_listed.contains(origin))
+                    || update.iter().any(|s| same(&s.provider, &s.profile, &s.conversation))
+                {
+                    return None;
+                }
+                self.mirrors
+                    .iter()
+                    .find(|(_, m)| m.ended_at.is_none() && same(&m.native.provider, &m.native.profile, &m.native.conversation))
+                    .map(|(key, _)| key.clone())
+            })
+            .collect();
         let mut invalidated = vec![];
         let mut heartbeat = vec![];
         let mut reconciled = self
@@ -379,6 +409,10 @@ impl Host {
                 // A heartbeat can revoke control, but only registration restores it.
                 invalidate = true;
             }
+            if before.as_ref().is_some_and(|b| b["native"]["forked_from"] != after["native"]["forked_from"]) {
+                // Lineage found late (a failed `ps`): only registration carries `forkedFrom`.
+                invalidate = true;
+            }
             if before.as_ref() != Some(&after) || mirror.dirty {
                 if invalidate {
                     invalidated.push(key.clone());
@@ -391,6 +425,9 @@ impl Host {
             }
         }
         self.heartbeat_dirty.extend(heartbeat);
+        for key in moved {
+            self.end_session(&key, "exited")?;
+        }
         Ok(invalidated)
     }
 
@@ -561,7 +598,7 @@ impl Host {
         }
     }
 
-    /// The one end path: a `SessionEnd` hook, or a pid that is gone.
+    /// The one end path: a `SessionEnd` hook, a pid that is gone, or a fork that replaced it (←).
     fn end_session(&mut self, key: &str, reason: &str) -> Result<()> {
         let Some(mirror) = self.mirrors.get_mut(key) else {
             return Ok(());
@@ -760,14 +797,14 @@ impl Host {
     }
     async fn observing_wait<T>(
         &mut self,
-        updates: &mut tokio::sync::mpsc::Receiver<Vec<NativeSession>>,
+        updates: &mut tokio::sync::mpsc::Receiver<Discovered>,
         remote: impl std::future::Future<Output = Result<T>>,
     ) -> Result<T> {
         tokio::pin!(remote);
         loop {
             tokio::select! {
                 result=&mut remote=>return result,
-                update=updates.recv()=>{self.observe(update.ok_or("discovery stopped")?)?;}
+                update=updates.recv()=>{let (update, listed) = update.ok_or("discovery stopped")?; self.observe(update, &listed)?;}
             }
         }
     }
@@ -864,6 +901,13 @@ impl Host {
                 let (claude, codex) = tokio::join!(claude::discover(&home), codex::discover(&home));
                 // One provider's broken listing must not hide the other's sessions,
                 // so the pass is the union of whatever answered.
+                // Liveness reads the raw Claude listing, not the sessions that captured: a row
+                // whose capture failed is still running. A failed listing says nothing (None).
+                let (claude, listed) = match claude {
+                    Ok(d) => (Ok(d.sessions), Some((d.conversations, d.jobs))),
+                    Err(e) => (Err(e), None),
+                };
+                let claude_ok = listed.is_some();
                 let listings = [claude, codex];
                 let providers = listings.len();
                 let mut found = vec![];
@@ -874,11 +918,13 @@ impl Host {
                         Err(error) => failures.push(error),
                     }
                 }
-                // Shared iff held (spec §5.4): an unheld session never gets a mirror.
+                // Every session is tracked; this names the held ones (rulings 2026-10-04).
                 let holders = tokio::task::spawn_blocking(crate::holder::manager::list)
                     .await
                     .unwrap_or_default();
-                keep_held(&mut found, &holders);
+                track(&mut found, &holders);
+                let (conversations, running) = listed.unwrap_or_default();
+                super::screen::reap_attach(&holders, claude_ok.then_some(&running));
                 for error in &failures {
                     // A listing that failed is not evidence that anything stopped;
                     // say so once per distinct failure, not once a minute forever.
@@ -888,7 +934,7 @@ impl Host {
                 }
                 // Every provider failed: this pass proves nothing. Keep the state we
                 // have -- an empty listing would otherwise read as "all quiet".
-                if failures.len() < providers && tx.send(found).await.is_err() {
+                if failures.len() < providers && tx.send((found, conversations)).await.is_err() {
                     break;
                 }
                 last_failures = failures;
@@ -1022,7 +1068,7 @@ impl Host {
     async fn connection(
         &mut self,
         socket: &mut Socket,
-        updates: &mut tokio::sync::mpsc::Receiver<Vec<NativeSession>>,
+        updates: &mut tokio::sync::mpsc::Receiver<Discovered>,
         human: &str,
     ) -> Result<()> {
         // Feature negotiation is scoped to this socket. A reconnect must start
@@ -1054,6 +1100,7 @@ impl Host {
         let mut relay_reads_private_approval = false;
         let mut relay_reads_live_terminal = false;
         let mut relay_reads_remote_input = false;
+        let mut relay_reads_terminal = false;
         // An end the relay has not been told about -- because it happened while the
         // socket was down, or in a previous run of this process -- is still owed to it.
         self.liveness_tick();
@@ -1152,7 +1199,7 @@ impl Host {
                             last_early = Instant::now();
                         }
                         self.heartbeat_dirty.clear();
-                        heartbeat_frames = device_heartbeats_with_controls(&self.mirrors, &registered, relay_reads_stats, relay_reads_controls, relay_reads_live_terminal, relay_reads_remote_input)?.into();
+                        heartbeat_frames = device_heartbeats_with_controls(&self.mirrors, &registered, relay_reads_stats, relay_reads_controls, relay_reads_live_terminal, relay_reads_remote_input, relay_reads_terminal)?.into();
                         if heartbeat_frames.is_empty() && last_idle.elapsed() >= IDLE_HEARTBEAT {
                             last_idle = Instant::now();
                             heartbeat_frames.push_back(idle_heartbeat());
@@ -1257,8 +1304,8 @@ impl Host {
                 },
                 update = updates.recv() => {
                     arm = "discovery update";
-                    let Some(update) = update else {return Err("discovery stopped".into());};
-                    for key in self.observe(update)? {
+                    let Some((update, listed)) = update else {return Err("discovery stopped".into());};
+                    for key in self.observe(update, &listed)? {
                         registered.remove(&key);
                         recovering_ended.remove(&key);
                     }
@@ -1292,6 +1339,7 @@ impl Host {
                             relay_reads_private_approval = body["features"].as_array().is_some_and(|f| f.iter().any(|x| x == "privateSendApproval"));
                             relay_reads_live_terminal = body["features"].as_array().is_some_and(|f| f.iter().any(|x| x == "liveTerminal"));
                             relay_reads_remote_input = body["features"].as_array().is_some_and(|f| f.iter().any(|x| x == "remoteInput"));
+                            relay_reads_terminal = body["features"].as_array().is_some_and(|f| f.iter().any(|x| x == "sessionTerminal"));
                             let sid = body["sessionId"].as_str().filter(|s|uuid::Uuid::parse_str(s).is_ok()).ok_or("invalid session ID")?;
                             let after = body["afterSeq"].as_u64().ok_or("missing upload cursor")?;
                             let server = body["serverTime"].as_u64().ok_or("missing server time")?;
@@ -1324,8 +1372,9 @@ impl Host {
                             if !relay_reads_private_approval && mirror.pending.as_ref().is_some_and(|batch| batch.get("privateApproval").is_some()) {
                                 mirror.pending = None;
                             }
+                            let first_id = mirror.session_id.is_none();
                             mirror.session_id = Some(sid.into());
-                            mirror.subagents.relay = body["features"].as_array().is_some_and(|f| f.iter().any(|x| x == "sessionSubagents"));
+                            mirror.subagents.relay =body["features"].as_array().is_some_and(|f| f.iter().any(|x| x == "sessionSubagents"));
                             mirror.subagents.relay_known = true;
                             mirror.registered();
                             relay_log(&format!("{} registered as {} at cursor {after}", short(&key), short(sid)));
@@ -1342,6 +1391,13 @@ impl Host {
                                 registered.remove(&key);
                             } else {
                                 registered.insert(key.clone());
+                            }
+                            if first_id {
+                                // A fork registered before this id existed went out without
+                                // `forkedFrom`; register it once more so the relay links it.
+                                for fork in forks_of(&self.mirrors, &key) {
+                                    registered.remove(&fork);
+                                }
                             }
                             self.finish_deferred_end(&key)?;
                             if let Some(fresh) = ack_anchor(server, sent, wall) {anchor = Some(fresh);}
@@ -1484,8 +1540,8 @@ impl Host {
             claude::capture(
                 &self.home,
                 &program,
-                &json!({"kind":"interactive","pid":native.process.pid,
-                "sessionId":native.conversation,"status":"unknown"}),
+                &json!({"kind": if native.job.is_some() {"background"} else {"interactive"}, "id": native.job,
+                "pid":native.process.pid, "sessionId":native.conversation,"status":"unknown"}),
             )
             .await?
         } else {
@@ -2009,7 +2065,33 @@ fn device_heartbeats(
     registered: &BTreeSet<String>,
     with_stats: bool,
 ) -> Result<Vec<Value>> {
-    device_heartbeats_with_controls(mirrors, registered, with_stats, false, false, false)
+    device_heartbeats_with_controls(mirrors, registered, with_stats, false, false, false, false)
+}
+
+/// The mirrors forked from `origin_key`'s conversation (same provider and profile).
+fn forks_of(mirrors: &BTreeMap<String, Mirror>, origin_key: &str) -> Vec<String> {
+    let Some(origin) = mirrors.get(origin_key).map(|m| &m.native) else {
+        return vec![];
+    };
+    mirrors
+        .iter()
+        .filter(|(_, m)| {
+            m.native.forked_from.as_deref() == Some(origin.conversation.as_str())
+                && m.native.provider == origin.provider
+                && m.native.profile == origin.profile
+        })
+        .map(|(key, _)| key.clone())
+        .collect()
+}
+
+/// The Lightbulb id of the session a fork continues, when this Mac mirrors it.
+fn origin_session(mirrors: &BTreeMap<String, Mirror>, native: &NativeSession) -> Option<String> {
+    let origin = native.forked_from.as_deref()?;
+    mirrors
+        .values()
+        .find(|m| m.native.provider == native.provider && m.native.profile == native.profile && m.native.conversation == origin)?
+        .session_id
+        .clone()
 }
 
 fn device_heartbeats_with_controls(
@@ -2019,6 +2101,7 @@ fn device_heartbeats_with_controls(
     with_controls: bool,
     live_terminal: bool,
     remote_input: bool,
+    terminal: bool,
 ) -> Result<Vec<Value>> {
     // `liveTerminal`: this Mac takes `local.session.watch`; `remoteInput`: `local.session.input`.
     // Each only to a relay that lists it.
@@ -2054,6 +2137,9 @@ fn device_heartbeats_with_controls(
                 && m.native.socket.is_some() && m.native.socket_inode.is_some()
                 && m.native.restriction.is_none();
             entry["capabilities"] = json!({"sendMode":"queue","steer":live,"interrupt":live});
+        }
+        if terminal {
+            entry["terminal"] = json!(m.native.terminal());
         }
         if ascii_wire_len(&envelope(std::slice::from_ref(&entry)))? > 16384 {
             // One session too big to travel even alone would make every frame it
@@ -2233,7 +2319,7 @@ async fn send(socket: &mut Socket, body: &Value) -> Result<()> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(super) mod tests {
     use super::*;
 
     const SID: &str = "aaaabbbb-cccc-4ddd-8eee-ffff00001111";
@@ -2256,10 +2342,12 @@ mod tests {
             active_turn: None,
             last_assistant_message: None,
             holder: None,
+            job: None,
+            forked_from: None,
         }
     }
 
-    fn test_mirror(conversation: &str, generation: &str) -> Mirror {
+    pub(in crate::local_sessions) fn test_mirror(conversation: &str, generation: &str) -> Mirror {
         Mirror {
             workspace: workspace::State::default(),
             dirty: false,
@@ -2300,19 +2388,19 @@ mod tests {
         assert!(device_heartbeats(&mirrors, &registered, false).unwrap()[0]["sessions"][0].get("capabilities").is_none());
         assert!(device_heartbeats(&mirrors, &registered, false).unwrap()[0].get("liveTerminal").is_none(), "only to a relay that lists it");
         assert!(device_heartbeats(&mirrors, &registered, false).unwrap()[0].get("remoteInput").is_none(), "only to a relay that lists it");
-        let frames = device_heartbeats_with_controls(&mirrors, &registered, false, true, false, false).unwrap();
+        let frames = device_heartbeats_with_controls(&mirrors, &registered, false, true, false, false, false).unwrap();
         let entry = &frames[0]["sessions"][0];
         assert_eq!(entry["capabilities"], json!({"sendMode":"queue","steer":true,"interrupt":true}));
         mirror.native.socket = None;
         mirror.native.socket_inode = None;
         let key = native_key(&mirror.native);
-        let frames = device_heartbeats_with_controls(&BTreeMap::from([(key.clone(), mirror.clone())]), &BTreeSet::from([key]), false, true, false, false).unwrap();
+        let frames = device_heartbeats_with_controls(&BTreeMap::from([(key.clone(), mirror.clone())]), &BTreeSet::from([key]), false, true, false, false, false).unwrap();
         assert_eq!(frames[0]["sessions"][0]["capabilities"], json!({"sendMode":"queue","steer":false,"interrupt":false}));
         mirror.native.socket = Some(PathBuf::from("/private/tmp/codex-daemon-501/socket"));
         mirror.native.socket_inode = Some(7);
         mirror.native.provider = "claude".into();
         let key = native_key(&mirror.native);
-        let frames = device_heartbeats_with_controls(&BTreeMap::from([(key.clone(), mirror)]), &BTreeSet::from([key]), false, true, false, false).unwrap();
+        let frames = device_heartbeats_with_controls(&BTreeMap::from([(key.clone(), mirror)]), &BTreeSet::from([key]), false, true, false, false, false).unwrap();
         let entry = &frames[0]["sessions"][0];
         assert_eq!(entry["capabilities"], json!({"sendMode":"queue","steer":false,"interrupt":false}));
     }
@@ -2330,6 +2418,117 @@ mod tests {
             heartbeat_dirty: BTreeSet::new(),
             heartbeat_interval: Duration::from_secs(10),
         }
+    }
+
+    #[test]
+    fn local_sessions_heartbeat_names_the_terminal_only_to_a_relay_that_reads_it() {
+        let mut mirror = test_mirror("thread-1", "generation-1");
+        mirror.session_id = Some(SID.into());
+        let key = native_key(&mirror.native);
+        let registered = BTreeSet::from([key.clone()]);
+        let entry = |m: &Mirror, reads: bool| {
+            device_heartbeats_with_controls(&BTreeMap::from([(key.clone(), m.clone())]), &registered, false, false, false, false, reads)
+                .unwrap()[0]["sessions"][0].clone()
+        };
+        assert!(entry(&mirror, false).get("terminal").is_none(), "an older relay rejects the whole frame over it");
+        assert_eq!(entry(&mirror, true)["terminal"], "none");
+        mirror.native.job = Some("8ed71738".into());
+        assert_eq!(entry(&mirror, true)["terminal"], "attach");
+        mirror.native.holder = Some("ab12cd34".into());
+        assert_eq!(entry(&mirror, true)["terminal"], "held");
+    }
+
+    #[test]
+    fn local_sessions_a_fork_registers_with_the_session_it_continues() {
+        let mut origin = test_mirror("11111111-1111-4111-8111-111111111111", "gen-1");
+        origin.native.provider = "claude".into();
+        origin.session_id = Some(SID.into());
+        let mut fork = test_mirror("22222222-2222-4222-8222-222222222222", "gen-2");
+        fork.native.provider = "claude".into();
+        fork.native.forked_from = Some(origin.native.conversation.clone());
+        let mirrors = BTreeMap::from([(native_key(&origin.native), origin.clone()), (native_key(&fork.native), fork.clone())]);
+        assert_eq!(origin_session(&mirrors, &fork.native).as_deref(), Some(SID));
+        assert_eq!(origin_session(&mirrors, &origin.native), None);
+        fork.native.provider = "codex".into();
+        assert_eq!(origin_session(&mirrors, &fork.native), None, "only the same provider and profile");
+    }
+
+    #[test]
+    fn local_sessions_a_fork_registered_before_its_origin_id_registers_again_with_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut origin = test_mirror(SID, "gen-1");
+        origin.native.provider = "claude".into();
+        let mut fork = test_mirror(SID_B, "gen-2");
+        fork.native.provider = "claude".into();
+        fork.native.forked_from = Some(SID.into());
+        let (origin_key, fork_key) = (native_key(&origin.native), native_key(&fork.native));
+        let mut host = test_host(dir.path(), vec![(origin_key.as_str(), origin), (fork_key.as_str(), fork)]);
+        // The fork registers first: its origin has no Lightbulb id yet.
+        assert!(host.begin_registration(&fork_key).unwrap()["session"].get("forkedFrom").is_none());
+        // The origin's ACK arrives; the fork (and only the fork) is queued once more.
+        host.mirrors.get_mut(&origin_key).unwrap().session_id = Some("origin-session".into());
+        assert_eq!(forks_of(&host.mirrors, &origin_key), vec![fork_key.clone()]);
+        assert!(forks_of(&host.mirrors, &fork_key).is_empty());
+        assert_eq!(host.begin_registration(&fork_key).unwrap()["session"]["forkedFrom"], "origin-session");
+    }
+
+    #[test]
+    fn local_sessions_lineage_found_late_reregisters_the_fork() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut fork = test_mirror(SID_B, "gen-2");
+        fork.native.provider = "claude".into();
+        let key = native_key(&fork.native);
+        let mut host = test_host(dir.path(), vec![(key.as_str(), fork.clone())]);
+        let mut native = fork.native.clone();
+        native.forked_from = Some(SID.into());
+        assert_eq!(host.observe(vec![native], &BTreeSet::from([SID_B.to_owned()])).unwrap(), vec![key]);
+    }
+
+    #[test]
+    fn local_sessions_a_fork_keeps_an_origin_still_listed_whose_capture_failed() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut origin = test_mirror(SID, "gen-1");
+        origin.native.provider = "claude".into();
+        let key = native_key(&origin.native);
+        let mut host = test_host(dir.path(), vec![(key.as_str(), origin.clone())]);
+        let mut fork = test_native(SID_B);
+        fork.provider = "claude".into();
+        fork.forked_from = Some(SID.into());
+        // The listing names both; only the origin's capture failed, so only the fork came back.
+        host.observe(vec![fork], &BTreeSet::from([SID.to_owned(), SID_B.to_owned()])).unwrap();
+        assert!(host.mirrors[&key].ended_at.is_none(), "a listed origin is not ended by a failed capture");
+        assert!(host.ended_pending.is_empty());
+    }
+
+    #[test]
+    fn local_sessions_a_fork_ends_the_session_it_was_moved_out_of() {
+        let dir = tempfile::tempdir().unwrap();
+        // Its pid is this test process: alive, as the original's process stays after ←.
+        let mut origin = test_mirror(SID, "gen-1");
+        origin.native.provider = "claude".into();
+        origin.session_id = Some("origin-session".into());
+        let key = native_key(&origin.native);
+        let mut host = test_host(dir.path(), vec![(key.as_str(), origin.clone())]);
+        let mut fork = test_native(SID_B);
+        fork.provider = "claude".into();
+        fork.forked_from = Some(SID.into());
+        let both = BTreeSet::from([SID.to_owned(), SID_B.to_owned()]);
+        let fork_only = BTreeSet::from([SID_B.to_owned()]);
+        host.observe(vec![origin.native.clone(), fork.clone()], &both).unwrap();
+        assert!(host.mirrors[&key].ended_at.is_none(), "an original still listed beside its fork keeps running");
+        host.observe(vec![], &BTreeSet::new()).unwrap();
+        assert!(host.mirrors[&key].ended_at.is_none(), "a listing gap alone ends nothing");
+        host.observe(vec![fork.clone()], &fork_only).unwrap();
+        assert_eq!(host.mirrors[&key].ended_reason.as_deref(), Some("exited"), "a listed fork ends its unlisted original");
+        assert_eq!(host.ended_pending, vec![key.clone()]);
+        host.observe(vec![fork], &fork_only).unwrap();
+        assert_eq!(host.ended_pending, vec![key], "ended once");
+        let fork_key = native_key(&host.mirrors.values().find(|m| m.native.conversation == SID_B).unwrap().native);
+        assert_eq!(
+            host.begin_registration(&fork_key).unwrap()["session"]["forkedFrom"],
+            "origin-session",
+            "the fork still names the original it continues"
+        );
     }
 
     async fn next_frame(socket: &mut WebSocketStream<tokio::net::TcpStream>) -> Value {
@@ -2362,12 +2561,12 @@ mod tests {
         let mut host = test_host(dir.path(), vec![(key.as_str(), test_mirror(SID, "legacy"))]);
         let mut renamed = test_native(SID);
         renamed.process.executable = "/elsewhere/claude".into();
-        assert!(host.observe(vec![renamed.clone()]).unwrap().is_empty());
+        assert!(host.observe(vec![renamed.clone()], &BTreeSet::new()).unwrap().is_empty());
         assert_eq!(host.mirrors[&key].generation, "legacy");
         assert!(host.mirrors[&key].registration.successor.is_none());
         let mut restarted = renamed;
         restarted.process.birth_micros += 1;
-        assert_eq!(host.observe(vec![restarted]).unwrap(), vec![key.clone()]);
+        assert_eq!(host.observe(vec![restarted], &BTreeSet::new()).unwrap(), vec![key.clone()]);
     }
 
     #[test]
@@ -2383,7 +2582,7 @@ mod tests {
         assert_eq!(
             serde_json::from_value::<NativeSession>(persisted).unwrap().holder,
             None,
-            "a mirror saved before explicit sharing has no holder; the relay refuses its registration"
+            "a mirror saved before explicit sharing has no holder; it registers as a session without one"
         );
     }
 
@@ -2601,7 +2800,7 @@ mod tests {
         let mut host = test_host(dir.path(), vec![(&key, mirror)]);
         let mut rediscovered = host.mirrors[&key].native.clone();
         rediscovered.status = "busy".into();
-        host.observe(vec![rediscovered]).unwrap();
+        host.observe(vec![rediscovered], &BTreeSet::new()).unwrap();
         assert_eq!(host.mirrors[&key].native.status, "waiting-approval");
         let notification = lifecycle::HookEvent {
             notification_type: Some("idle_prompt".into()),
@@ -2671,7 +2870,7 @@ mod tests {
         let file = dir.path().join(format!("{key}.json"));
         assert!(file.exists());
         // A sweep that still lists the process must not resurrect an ended session.
-        host.observe(vec![native]).unwrap();
+        host.observe(vec![native], &BTreeSet::new()).unwrap();
         assert_eq!(host.mirrors[&key].native.status, "ended");
         host.mirrors.get_mut(&key).unwrap().ended_at = Some(0);
         assert_eq!(host.reap(&BTreeSet::new()), vec![key.clone()]);
@@ -2689,8 +2888,8 @@ mod tests {
         mirror.native.status = "ended".into();
         mirror.ended_at = Some(epoch_secs());
         let mut host = test_host(dir.path(), vec![(key.as_str(), mirror)]);
-        host.observe(vec![]).unwrap();
-        host.observe(vec![native]).unwrap();
+        host.observe(vec![], &BTreeSet::new()).unwrap();
+        host.observe(vec![native], &BTreeSet::new()).unwrap();
         assert!(host.mirrors[&key].ended_at.is_some());
         assert_eq!(
             registration_due(&host.mirrors, &BTreeSet::new(), &BTreeMap::new()),
@@ -2733,7 +2932,7 @@ mod tests {
                 let mut host = test_host(dir.path(), vec![(key.as_str(), mirror)]);
                 host.ended_pending.push(key.clone());
 
-                assert_eq!(host.observe(vec![native]).unwrap(), vec![key.clone()]);
+                assert_eq!(host.observe(vec![native], &BTreeSet::new()).unwrap(), vec![key.clone()]);
                 let resumed = &host.mirrors[&key];
                 assert!(resumed.ended_at.is_none());
                 assert!(resumed.ended_reason.is_none());
@@ -3066,7 +3265,7 @@ mod tests {
         assert_eq!(restored.mirrors[&key].native.restriction.as_deref(), Some("runtime-unverified"));
         let mut observed = mirror.native.clone();
         observed.restriction = None;
-        assert_eq!(restored.observe(vec![observed]).unwrap(), vec![key.clone()]);
+        assert_eq!(restored.observe(vec![observed], &BTreeSet::new()).unwrap(), vec![key.clone()]);
         assert!(restored.mirrors[&key].native.restriction.is_none());
 
         for (contents, offset, wrong_inode) in [
@@ -3100,7 +3299,7 @@ mod tests {
             Arc::new(AtomicBool::new(false)),
         )
         .unwrap();
-        host.observe(vec![a.clone()]).unwrap();
+        host.observe(vec![a.clone()], &BTreeSet::new()).unwrap();
         host.begin_registration(&key).unwrap();
         let mirror = host.mirrors.get_mut(&key).unwrap();
         mirror.session_id = Some(uuid::Uuid::new_v4().to_string());
@@ -3108,7 +3307,7 @@ mod tests {
         private_write(&scope.join(format!("{key}.json")), mirror).unwrap();
         let mut b = a;
         b.process.birth_micros += 1;
-        host.observe(vec![b.clone()]).unwrap();
+        host.observe(vec![b.clone()], &BTreeSet::new()).unwrap();
 
         // The real write fails before an envelope can leave begin_registration.
         host.dir = dir.path().join("unavailable");
@@ -3128,7 +3327,7 @@ mod tests {
             Host::restore(scope, dir.path().into(), Arc::new(AtomicBool::new(false))).unwrap();
         let mut c = b;
         c.process.birth_micros += 1;
-        restarted.observe(vec![c]).unwrap();
+        restarted.observe(vec![c], &BTreeSet::new()).unwrap();
         let replay = restarted.begin_registration(&key).unwrap();
         assert_eq!(
             replay["session"]["generation"], server_generation,
@@ -3381,7 +3580,7 @@ mod tests {
             )
             .unwrap();
             if known {
-                host.observe(vec![native.clone()]).unwrap();
+                host.observe(vec![native.clone()], &BTreeSet::new()).unwrap();
             }
             let mut listed = native;
             if known {
@@ -3389,9 +3588,9 @@ mod tests {
             }
             let update = vec![listed];
             host.dir = dir.path().join("unavailable");
-            assert!(host.observe(update.clone()).is_err());
+            assert!(host.observe(update.clone(), &BTreeSet::new()).is_err());
             host.dir = scope.clone();
-            host.observe(update).unwrap();
+            host.observe(update, &BTreeSet::new()).unwrap();
             let stored: Mirror = private_read(&scope.join(format!("{key}.json")))
                 .expect("identical observation must retry the failed write");
             assert_eq!(stored.native.status, if known { "busy" } else { "unknown" });
@@ -3412,7 +3611,7 @@ mod tests {
             Arc::new(AtomicBool::new(false)),
         )
         .unwrap();
-        host.observe(vec![native]).unwrap();
+        host.observe(vec![native], &BTreeSet::new()).unwrap();
         let mirror = host.mirrors.get_mut(&key).unwrap();
         mirror.session_id = Some(uuid::Uuid::new_v4().to_string());
         mirror.registered();
@@ -3468,12 +3667,12 @@ mod tests {
                 Arc::new(AtomicBool::new(false)),
             )
             .unwrap();
-            host.observe(vec![a.clone()]).unwrap();
+            host.observe(vec![a.clone()], &BTreeSet::new()).unwrap();
             let ag = host.mirrors[&key].generation.clone();
             host.mirrors.get_mut(&key).unwrap().session_id = Some(uuid::Uuid::new_v4().to_string());
             let mut b = a.clone();
             b.process.birth_micros += 1;
-            host.observe(vec![b.clone()]).unwrap();
+            host.observe(vec![b.clone()], &BTreeSet::new()).unwrap();
             let attempt = host.begin_registration(&key).unwrap();
             assert_eq!(attempt["previousGeneration"], ag);
             let mut server_generation = if committed {
@@ -3486,7 +3685,7 @@ mod tests {
             };
             let mut c = b;
             c.process.birth_micros += 1;
-            host.observe(vec![c.clone()]).unwrap();
+            host.observe(vec![c.clone()], &BTreeSet::new()).unwrap();
             drop(host);
             let mut restarted =
                 Host::restore(scope, dir.path().into(), Arc::new(AtomicBool::new(false))).unwrap();
@@ -3544,6 +3743,8 @@ mod tests {
             active_turn: None,
             last_assistant_message: None,
             holder: None,
+            job: None,
+            forked_from: None,
         }
     }
     #[tokio::test]
@@ -3561,10 +3762,10 @@ mod tests {
         let (tx, mut rx) = tokio::sync::mpsc::channel(1);
         let (recovered, offline) = tokio::sync::oneshot::channel();
         let producer = tokio::spawn(async move {
-            tx.send(vec![]).await.unwrap();
-            tx.send(vec![]).await.unwrap();
-            tx.send(vec![native]).await.unwrap();
-            tx.send(vec![]).await.unwrap();
+            tx.send((vec![], BTreeSet::new())).await.unwrap();
+            tx.send((vec![], BTreeSet::new())).await.unwrap();
+            tx.send((vec![native], BTreeSet::new())).await.unwrap();
+            tx.send((vec![], BTreeSet::new())).await.unwrap();
             // Wait until the exited-session pass is consumed, not just queued.
             let permit = tx.reserve().await.unwrap();
             drop(permit);
@@ -3610,15 +3811,15 @@ mod tests {
             Arc::new(AtomicBool::new(false)),
         )
         .unwrap();
-        host.observe(vec![native.clone()]).unwrap();
+        host.observe(vec![native.clone()], &BTreeSet::new()).unwrap();
         let path = scope.join(format!("{key}.json"));
         let inode = fs::metadata(&path).unwrap().ino();
         for _ in 0..10 {
-            host.observe(vec![native.clone()]).unwrap();
+            host.observe(vec![native.clone()], &BTreeSet::new()).unwrap();
         }
         assert_eq!(fs::metadata(&path).unwrap().ino(), inode);
         for _ in 0..10 {
-            host.observe(vec![]).unwrap();
+            host.observe(vec![], &BTreeSet::new()).unwrap();
         }
         assert_eq!(
             fs::metadata(&path).unwrap().ino(),
@@ -3627,11 +3828,11 @@ mod tests {
         );
         let mut busy = native;
         busy.status = "busy".into();
-        host.observe(vec![busy.clone()]).unwrap();
+        host.observe(vec![busy.clone()], &BTreeSet::new()).unwrap();
         let moved = fs::metadata(&path).unwrap().ino();
         assert_ne!(moved, inode, "the listing's status is durable");
         for _ in 0..10 {
-            host.observe(vec![busy.clone()]).unwrap();
+            host.observe(vec![busy.clone()], &BTreeSet::new()).unwrap();
         }
         assert_eq!(fs::metadata(path).unwrap().ino(), moved);
     }
@@ -3823,6 +4024,8 @@ mod tests {
             active_turn: None,
             last_assistant_message: None,
             holder: None,
+            job: None,
+            forked_from: None,
         };
         let key = native_key(&native);
         let mirror = Mirror {
@@ -3943,6 +4146,8 @@ mod tests {
             active_turn: None,
             last_assistant_message: None,
             holder: None,
+            job: None,
+            forked_from: None,
         };
         let mirror = Mirror {
             workspace: workspace::State::default(),
@@ -4023,7 +4228,7 @@ mod tests {
         let (tx, mut rx) = tokio::sync::mpsc::channel(1);
         // The same session under a new process: discovery parks it as a
         // successor while registration is frozen.
-        tx.send(vec![native]).await.unwrap();
+        tx.send((vec![native], BTreeSet::new())).await.unwrap();
         let (mut socket, _) = tokio_tungstenite::connect_async(format!("ws://{address}"))
             .await
             .unwrap();
@@ -4848,7 +5053,7 @@ mod tests {
             // is news the relay has not heard.
             let mut resumed = test_native(SID);
             resumed.process.pid = 2_147_483_000; // and this one is already gone
-            tx.send(vec![resumed]).await.unwrap();
+            tx.send((vec![resumed], BTreeSet::new())).await.unwrap();
             // It may register before the liveness tick finds that pid dead; either
             // order ends with the second end on the wire.
             let second = loop {
@@ -5101,7 +5306,7 @@ mod tests {
             // Still unacknowledged: resume the session and let its new process die.
             let mut resumed = test_native(SID);
             resumed.process.pid = 2_147_483_000;
-            tx.send(vec![resumed]).await.unwrap();
+            tx.send((vec![resumed], BTreeSet::new())).await.unwrap();
             let mut tick = tokio::time::interval(Duration::from_millis(20));
             tokio::time::timeout(Duration::from_secs(3), async {
                 loop {

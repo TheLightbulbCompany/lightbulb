@@ -55,6 +55,10 @@ term.onData((d) => send(INPUT, enc.encode(d)));
 term.onBinary((d) => send(INPUT, Uint8Array.from(d, (c) => c.charCodeAt(0))));
 ws.onopen = () => { resize(); };
 const end = document.getElementById("end");
+// A Claude background session shown through `claude attach`: Lightbulb never stops it, so no End here.
+// Closing the panel closes this terminal; the session keeps running.
+const attach = new URLSearchParams(location.search).get("attach") === "1";
+if (attach) end.hidden = true;
 let pending = new Uint8Array();
 ws.onmessage = (event) => {
   const data = new Uint8Array(event.data);
@@ -75,7 +79,7 @@ ws.onmessage = (event) => {
     } else if (kind === PROMOTED) { joined = false; resize(); }
     else if (kind === OUTPUT || kind === SNAPSHOT) term.write(payload.slice(8));
     else if (kind === DETACHED) note("This session is open in another terminal.");
-    else if (kind === EXIT) { note("This session has ended."); end.hidden = true; }
+    else if (kind === EXIT) { note(attach ? "This terminal closed." : "This session has ended."); end.hidden = true; }
   }
 };
 ws.onclose = () => { if (document.getElementById("note").style.display !== "block") note("Disconnected from this session. Open it again from Sessions."); };

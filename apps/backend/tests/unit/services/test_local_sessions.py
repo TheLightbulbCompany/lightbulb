@@ -1164,3 +1164,41 @@ async def test_agent_cannot_read_sessions_in_a_room_shared_with_another_org(db, 
         await service.list_resources(caller, ROOM)
     assert refused.value.error.code == "LOCAL_SESSION_FORBIDDEN"
     assert [s.session_id for s in (await service.list_resources(ALICE, ROOM)).sessions] == [sid]
+
+
+def test_session_terminal_trusts_the_mac_and_falls_back_to_its_holder():
+    assert service.session_terminal({"terminal": "attach"}) == "attach"
+    assert service.session_terminal({"terminal": "held"}) == "held"
+    assert service.session_terminal({"terminal": "none", "holderId": "ab12cd34"}) is None
+    assert service.session_terminal({"holderId": "ab12cd34"}) == "held", "a desktop that predates `terminal`"
+    assert service.session_terminal({}) is None
+
+
+def test_an_ended_origin_is_listed_once_as_its_successor():
+    def s(sid, status, forked=None, human="alice"):
+        return service.LocalSession.model_construct(
+            session_id=sid, human_user_id=human, status=status, forked_from=forked
+        )
+
+    found = [
+        s("new", "busy", "old"),
+        s("old", "ended"),
+        s("copy", "idle", "running"),
+        s("running", "idle"),
+        s("bobs", "ended", human="bob"),
+        s("not-bobs", "idle", "bobs", human="mallory"),
+    ]
+    assert [x.session_id for x in service._without_moved(found)] == ["new", "copy", "running", "bobs", "not-bobs"]
+
+
+@pytest.mark.asyncio
+async def test_list_resources_lists_an_ended_origin_once_as_its_fork(db):
+    origin, fork = await registered(conversation="origin"), await registered(conversation="fork")
+    enrollment = await repo.get_enrollment(OWNER, ALICE.user_id, MAC)
+    row, now = await repo.get_session(OWNER, origin), int(time.time())
+    await repo.put_session({**row, "endedAt": now, "lastEventAt": now}, row, enrollment)
+    # The Mac records the origin on the fork (`forkedFrom`, see the relay test of the same name).
+    row = await repo.get_session(OWNER, fork)
+    await repo.put_session({**row, "forkedFrom": origin}, row, enrollment)
+    resources = await service.list_resources(BOB, ROOM, include_ended=True)
+    assert [(s.session_id, s.forked_from) for s in resources.sessions] == [(fork, origin)]

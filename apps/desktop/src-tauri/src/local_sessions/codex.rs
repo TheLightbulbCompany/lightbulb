@@ -181,6 +181,8 @@ fn from_rollout(
         active_turn,
         last_assistant_message: None,
         holder: None,
+        job: None,
+        forked_from: None,
     })
 }
 

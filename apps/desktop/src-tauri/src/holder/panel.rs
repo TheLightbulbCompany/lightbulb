@@ -171,8 +171,11 @@ fn relay(stream: TcpStream) -> std::io::Result<()> {
             Said::Frame(kind, payload) => holder.write_all(&encode(kind, &payload))?,
             Said::End => {
                 // The panel's End control: the same as closing a terminal.
-                if let Some(info) = manager::hello(&socket) {
-                    manager::stop(info.pid);
+                // The page hides End for an attach terminal; one sent anyway ends only that client.
+                match manager::hello(&socket) {
+                    Some(info) if manager::attach_job(&info).is_some() => manager::stop_attach(&info),
+                    Some(info) => manager::stop(info.pid),
+                    None => {}
                 }
                 return Ok(());
             }
@@ -211,6 +214,11 @@ pub fn loopback_page(url: &Url, port: u16) -> bool {
 static LAST_AT: Mutex<f64> = Mutex::new(0.0);
 /// What the panel shows and its holder, so a moving panel is not looked up again.
 static SHOWN: Mutex<Option<(String, HolderInfo)>> = Mutex::new(None);
+
+/// The holder the panel's terminal shows now, if any (the attach reaper never closes it).
+pub fn shown_holder() -> Option<String> {
+    SHOWN.lock().ok()?.as_ref().map(|(_, h)| h.id.clone())
+}
 
 fn newest(at: f64) -> bool {
     LAST_AT.lock().is_ok_and(|last| *last == at)
@@ -274,7 +282,7 @@ async fn resolve(key: String) -> Option<HolderInfo> {
     }
     let lookup = key.clone();
     let holder = tauri::async_runtime::spawn_blocking(move || match lookup.split_once(':') {
-        Some(("s", sid)) => crate::local_sessions::screen::holder_for_session(sid).map(|(h, _)| h),
+        Some(("s", sid)) => crate::local_sessions::screen::holder_for_session(sid, true).map(|(h, _)| h),
         Some(("h", id)) if id.len() == 8 && id.bytes().all(|b| b.is_ascii_hexdigit()) => {
             manager::hello(&manager::socket_dir().join(format!("{id}.sock")))
         }
@@ -304,7 +312,9 @@ fn show(app: &AppHandle, window: &tauri::Window, holder: &HolderInfo, r: Rect) -
         keys.clear();
         keys.insert(key.clone(), holder.id.clone());
     }
-    let url: Url = format!("http://127.0.0.1:{}/?key={key}", server.port).parse().map_err(|e: url::ParseError| e.to_string())?;
+    // A Claude background session's attach terminal: the page shows no End (local panel only).
+    let attach = if manager::attach_job(holder).is_some() { "&attach=1" } else { "" };
+    let url: Url = format!("http://127.0.0.1:{}/?key={key}{attach}", server.port).parse().map_err(|e: url::ParseError| e.to_string())?;
     let port = server.port;
     let builder = tauri::webview::WebviewBuilder::new(label, WebviewUrl::External(url))
         .on_navigation(move |u| loopback_page(u, port))

@@ -1,8 +1,38 @@
 # Managed session sharing
 
-Status: shipped 2026-10-03 (PR #3655). This is revision 4: it describes what was built. Where an
+Status: shipped 2026-10-03 (PR #3655). This is revision 5 (2026-10-04); revisions 1-4 describe what was built. Where an
 earlier revision and the code differ, the code won. Mockups: "Session Sharing Screens",
 https://claude.ai/artifact/Jf4r2sd92ubE3pcgG9BnHZ (private to the owner).
+
+## Revision 5 (2026-10-04): every session is tracked
+
+Owner rulings 2026-10-04 reverse §2.1 and §5.4. Where this section and the rest differ, this wins.
+
+- Every Claude Code and Codex session on a Mac with sharing on is tracked and shared with the
+  workspace, whether or not Lightbulb started it. The same read, Ask to join and typing rules
+  apply. The per-Mac switch and pause stay. Plain `claude` / `codex` is no longer private.
+- Live terminal: a held session (§5.1) as before. A Claude background session through a holder
+  that runs `claude attach <id>`. It starts when the owner opens the session or someone watches,
+  and closes a minute after nobody does. Closing it ends only the attach client. Lightbulb never
+  stops a background session, so its panel has no End control.
+- Measured on Claude Code 2.1.289 (Task 0): an attach terminal starts at the job's current size
+  (watching never resizes the owner's terminal; only the owner's panel may). It is stopped by
+  ending the attach holder (never `claude stop`), and also when the job is no longer listed. An
+  origin left behind by ← ends when its fork is tracked (the origin's process stays alive in
+  Claude's agent view).
+- No terminal can be had: a plain interactive Claude session (its terminal owns it) and any plain
+  Codex session show the labelled transcript ("Transcript · <status>"). For Claude, the owner sees
+  "Press ← in its terminal to open it here". ← moves it to the background as a fork. The fork
+  names the session it continues (`forkedFrom`), and the listing shows only the fork.
+- Wire: `local.session.register` takes `holderId` as optional (it marks a held session) and
+  `forkedFrom`. The heartbeat carries `terminal` once the relay lists `sessionTerminal`. The
+  public session has `terminal: "held" | "attach"` (absent: transcript) and `forkedFrom`.
+  `/viewing` and terminal input refuse a session with no terminal.
+- Kept from Phase 3: `start_held` for every Lightbulb start, the Codex thread binding, the holder
+  socket published before the provider starts, and no `background` kind on the wire.
+- Plain sessions' hooks reach the app again, so their permission prompts get approval cards.
+- §7 "Old desktop build" and §8 Migration no longer apply: registrations without a holder are
+  accepted again. The manual repair is cancelled: never run it.
 
 ## Changes since revision 3
 

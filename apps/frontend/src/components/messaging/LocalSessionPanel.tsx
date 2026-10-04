@@ -54,16 +54,24 @@ export function LocalSessionPanel({ session, ownerName, own, client, revision, o
   const [tab, setTab] = useState<SessionDetailsTab>("about");
   const slot = useRef<HTMLDivElement>(null);
   // Running on this Mac: the real terminal replaces the session view (rulings 2026-10-03 §2).
-  const local = useLocalTerminal(session.status === "ended" ? null : { sessionId: session.sessionId }, slot, details === null);
-  // Not at that Mac: watch the same terminal live, read-only, while it runs (rulings §4, §6).
-  const watchRemote = local === "none" && session.status !== "ended" && session.status !== "offline" && !!onEvent && !!client.watchLocalSession;
+  // A live terminal only where the Mac has one (rulings 2026-10-04): held, or a Claude background
+  // session through `claude attach`. A plain interactive Claude and any plain Codex: the transcript.
+  const hasTerminal = !!session.terminal;
+  const running = session.status !== "ended" && session.status !== "offline";
+  // An offline session still probes this Mac's holder: "offline" is the relay's view (sharing off, a reconnect), not the Mac's.
+  const local = useLocalTerminal(session.status === "ended" || (running && !hasTerminal) ? null : { sessionId: session.sessionId }, slot, details === null);
+  const watchRemote = local === "none" && hasTerminal && running && !!onEvent && !!client.watchLocalSession;
   const [screenLive, setScreenLive] = useState(false);
   // False once the terminal is read-only for this viewer (the Mac refused input): the message box is the way to send then.
   const [termCanType, setTermCanType] = useState(true);
   const liveTerminal = watchRemote && screenLive;
   // Not running: this is the structured transcript, not a terminal. The Mac's own name is not in the public record, so the owner's name stands for it.
-  const transcriptLabel = local !== "none" || (session.status !== "ended" && session.status !== "offline") ? null
-    : session.status === "ended" ? "Transcript · Ended" : `Transcript · ${own ? "your" : `${ownerName}'s`} Mac is offline`;
+  const transcriptLabel = local !== "none" ? null
+    : session.status === "ended" ? "Transcript · Ended"
+    : session.status === "offline" ? `Transcript · ${own ? "your" : `${ownerName}'s`} Mac is offline`
+    : hasTerminal ? null : `Transcript · ${sessionStatus[session.status]}`;
+  // ← in a plain Claude session moves it to the background, where Lightbulb can attach to it.
+  const pressLeft = own && session.provider === "claude" && !hasTerminal && running;
   const id = useId();
   const people = useMemo(() => [{ kind: "human" as const, id: session.humanUserId, displayName: ownerName }, ...participants], [session.humanUserId, ownerName, participants]);
   const agentName = useCallback((agentId: string) => people.find(p => p.id === agentId)?.displayName ?? "Agent", [people]);
@@ -204,7 +212,8 @@ export function LocalSessionPanel({ session, ownerName, own, client, revision, o
       </div>
     </div>
     {own && !!session.pendingJoins?.length && <JoinRequests session={session} client={client} personName={personName} />}
-    {(session.shared === false || session.controlUnavailableReason || session.workspace?.changed) && <div className="session-notices">
+    {(pressLeft || session.shared === false || session.controlUnavailableReason || session.workspace?.changed) && <div className="session-notices">
+      {pressLeft && <p role="status">Press ← in its terminal to open it here.</p>}
       {session.shared === false && <p role="status">Sharing is paused. Only you can see this session, and nothing it does now is shared.</p>}
       {session.controlUnavailableReason && <p role="status" className="text-warn">{unavailableReason[session.controlUnavailableReason]}</p>}
       {session.workspace?.changed && <p role="status" className="text-warn">Files changed outside this session. It will re-read them before your next follow-up.</p>}

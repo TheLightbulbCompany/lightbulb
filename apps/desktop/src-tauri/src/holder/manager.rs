@@ -63,26 +63,45 @@ pub fn stop(pid: u32) {
     unsafe { libc::kill(-(pid as libc::pid_t), libc::SIGTERM) };
 }
 
-/// How Lightbulb runs `claude attach <job>` for a Claude background session (`local_sessions::screen`).
-/// The `lightbulb-attach` name marks the holder as ours: stopping it ends only this attach client.
+/// How Lightbulb shows a session that the provider's own daemon hosts: as one more client of it
+/// (`local_sessions::screen`). The `lightbulb-attach` name marks the holder as ours: stopping it
+/// ends only this client. `claude attach <job>` for a Claude background session.
 pub const ATTACH_SCRIPT: &str = r#"exec "$1" attach "$2""#;
+/// A plain Codex thread runs in Codex's shared app-server daemon, and `codex resume <thread>` is
+/// one more TUI on it (tested 2026-10-04: turns mirror both ways, each client draws at its own
+/// size, the thread runs on when a client leaves). `--remote unix://` keeps it on the daemon (no
+/// "run without daemon" second writer); without the `-c`, an update prompt hides the conversation.
+pub const CODEX_ATTACH_SCRIPT: &str = r#"exec "$1" resume "$2" -c check_for_update_on_startup=false --remote unix://"#;
 
-pub fn attach_argv(claude: &Path, job: &str) -> Vec<String> {
-    vec!["/bin/sh".into(), "-c".into(), ATTACH_SCRIPT.into(), "lightbulb-attach".into(), claude.to_string_lossy().into_owned(), job.into()]
-}
-
-/// The background job an attach holder shows; None for every other holder.
-pub fn attach_job(info: &HolderInfo) -> Option<&str> {
-    match info.argv.as_slice() {
-        [sh, c, script, name, _, job]
-            if sh == "/bin/sh" && c == "-c" && script == ATTACH_SCRIPT && name == "lightbulb-attach"
-                && job.len() == 8 && job.bytes().all(|b| b.is_ascii_hexdigit()) => Some(job),
+/// Whose job this is, by its shape: a Claude background job id (8 hex) or a Codex thread id (UUID).
+pub fn attach_provider(job: &str) -> Option<&'static str> {
+    let hex = |s: &str| s.bytes().all(|b| b.is_ascii_hexdigit());
+    match job.len() {
+        8 if hex(job) => Some("claude"),
+        36 if job.split('-').map(str::len).eq([8, 4, 4, 4, 12]) && job.split('-').all(hex) => Some("codex"),
         _ => None,
     }
 }
 
-/// Stop an attach holder. Its exit closes the pty, so the `claude attach` client gets SIGHUP; the
-/// background job runs on under Claude's own daemon (never `claude stop`). SIGTERM is not proven to
+/// `program`: the provider `attach_provider(job)` names.
+pub fn attach_argv(program: &Path, job: &str) -> Vec<String> {
+    let script = if attach_provider(job) == Some("codex") { CODEX_ATTACH_SCRIPT } else { ATTACH_SCRIPT };
+    vec!["/bin/sh".into(), "-c".into(), script.into(), "lightbulb-attach".into(), program.to_string_lossy().into_owned(), job.into()]
+}
+
+/// The job an attach holder shows; None for every other holder.
+pub fn attach_job(info: &HolderInfo) -> Option<&str> {
+    match info.argv.as_slice() {
+        [sh, c, script, name, _, job] if sh == "/bin/sh" && c == "-c" && name == "lightbulb-attach" => {
+            let provider = attach_provider(job)?;
+            (script == if provider == "codex" { CODEX_ATTACH_SCRIPT } else { ATTACH_SCRIPT }).then_some(job.as_str())
+        }
+        _ => None,
+    }
+}
+
+/// Stop an attach holder. Its exit closes the pty, so the attach client gets SIGHUP; the
+/// session runs on under its provider's own daemon (never `claude stop`). SIGTERM is not proven to
 /// end the client (Task 0), so whatever is still alive after `KILL_AFTER` is killed. Does not block.
 pub fn stop_attach(info: &HolderInfo) {
     const KILL_AFTER: Duration = Duration::from_secs(2);
@@ -276,6 +295,18 @@ mod tests {
         let mut forged = attach_argv(claude, "8ed71738");
         forged[5] = "../../x".into();
         assert_eq!(attach_job(&info(forged)), None);
+        // A Codex thread: `codex resume` on the shared daemon, never outside it.
+        let (codex, thread) = (Path::new("/opt/homebrew/bin/codex"), "01a10845-c8f1-7fa2-844b-13790e2db151");
+        let argv = attach_argv(codex, thread);
+        assert_eq!(argv[2], CODEX_ATTACH_SCRIPT);
+        assert!(CODEX_ATTACH_SCRIPT.contains("--remote unix://") && CODEX_ATTACH_SCRIPT.contains("check_for_update_on_startup=false"));
+        assert_eq!(attach_job(&info(argv.clone())), Some(thread));
+        assert_eq!((attach_provider("8ed71738"), attach_provider(thread), attach_provider("01a10845-c8f1")), (Some("claude"), Some("codex"), None));
+        // One provider's script with the other's job is not ours.
+        let mut crossed = argv;
+        crossed[2] = ATTACH_SCRIPT.into();
+        assert_eq!(attach_job(&info(crossed)), None);
+        assert_eq!(attach_job(&typed(&["/c/codex", "resume", thread])), None, "`lightbulb codex resume` is a held session, not ours");
     }
 
     #[test]

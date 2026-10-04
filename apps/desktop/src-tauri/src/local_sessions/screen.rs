@@ -139,7 +139,12 @@ pub(crate) fn holder_for_session(session_id: &str, panel: bool) -> Option<(Holde
         (Some(id), _) => matched(manager::list(), id)?,
         (None, Some(job)) => {
             let pid = live.native.process.pid;
-            let holder = attach_holder(job, manager::list, |job| start_size(tty_size(pid), panel).map(|size| attach_start(job, size)))?;
+            // A Codex client draws at its own size, so anyone may start one; a Claude job draws at
+            // the latest attach size, so only its own size or the owner's panel may.
+            let codex = manager::attach_provider(job) == Some("codex");
+            let holder = attach_holder(job, manager::list, |job| {
+                if codex { Some(attach_start(job, None)) } else { start_size(tty_size(pid), panel).map(|size| attach_start(job, size)) }
+            })?;
             if let Ok(mut wanted) = WANTED.lock() {
                 wanted.insert(holder.id.clone(), Instant::now());
             }
@@ -196,8 +201,9 @@ fn tty_size(pid: u32) -> Option<(u16, u16)> {
 
 fn attach_start(job: &str, size: Option<(u16, u16)>) -> Result<HolderInfo, String> {
     let home = std::env::var_os("HOME").map(std::path::PathBuf::from).ok_or("no home folder")?;
-    let claude = super::provider_program(&home, "claude").ok_or("Claude Code is not installed")?;
-    manager::start_sized(&home, &manager::attach_argv(&claude, job), size)
+    let provider = manager::attach_provider(job).ok_or("not an attachable session")?;
+    let program = super::provider_program(&home, provider).ok_or_else(|| format!("{provider} is not installed"))?;
+    manager::start_sized(&home, &manager::attach_argv(&program, job), size)
 }
 
 /// The attach holders to stop: their job is no longer listed as running (`running`, None when the
@@ -223,11 +229,22 @@ fn idle_attach(holders: &[HolderInfo], shown: Option<&str>, watched_jobs: &BTree
         .collect()
 }
 
-/// Close attach holders nobody uses or whose job is no longer running. Ends only the `claude
-/// attach` client; the background session runs on under Claude's own daemon. Never `claude stop`.
+/// Every job that still runs: Claude's own listing (`claude`, None when it failed: no evidence for
+/// anything) plus each Codex thread a live mirror names (discovery saw its daemon hold the rollout).
+/// `live`: each live mirror's (provider, job).
+fn running_jobs<'a>(claude: Option<&BTreeSet<String>>, live: impl Iterator<Item = (&'a str, Option<&'a str>)>) -> Option<BTreeSet<String>> {
+    let codex = live.filter(|(provider, _)| *provider == "codex").filter_map(|(_, job)| job.map(str::to_owned));
+    claude.map(|claude| claude.iter().cloned().chain(codex).collect())
+}
+
+/// Close attach holders nobody uses or whose job is no longer running. Ends only the attach
+/// client; the session runs on under its provider's own daemon. Never `claude stop`.
+/// `running`: the Claude background jobs still listed.
 pub(super) fn reap_attach(holders: &[HolderInfo], running: Option<&BTreeSet<String>>) {
     let shown = crate::holder::panel::shown_holder();
     let live = LIVE.lock().map(|l| l.clone()).unwrap_or_default();
+    let running = running_jobs(running, live.values().map(|l| (l.native.provider.as_str(), l.native.job.as_deref())));
+    let running = running.as_ref();
     let watched: BTreeSet<String> = RELAYS
         .lock()
         .map(|r| r.iter().filter(|(_, c)| !c.stopped()).filter_map(|(sid, _)| live.get(sid)?.native.job.clone()).collect())
@@ -763,6 +780,21 @@ mod tests {
             [10],
             "not the panel's, not a watched one, never a held session's holder"
         );
+    }
+
+    #[test]
+    fn a_codex_attach_terminal_lives_while_its_thread_is_live() {
+        const THREAD: &str = "01a10845-c8f1-7fa2-844b-13790e2db151";
+        let claude = BTreeSet::from(["11111111".to_owned()]);
+        let live = [("codex", Some(THREAD)), ("codex", None), ("claude", Some("99999999"))];
+        let running = running_jobs(Some(&claude), live.into_iter()).unwrap();
+        assert_eq!(running, BTreeSet::from(["11111111".to_owned(), THREAD.to_owned()]), "Claude's jobs come from its own listing only");
+        assert!(running_jobs(None, live.into_iter()).is_none(), "a failed Claude listing is no evidence for anything");
+        let holders = [attach("aaaaaaaa", THREAD, 10)];
+        let (mut wanted, none, t0) = (BTreeMap::new(), BTreeSet::new(), Instant::now());
+        assert!(idle_attach(&holders, Some("aaaaaaaa"), &none, Some(&running), &mut wanted, t0).is_empty());
+        // The thread's mirror ended (Codex's daemon let its rollout go): the client is closed even while shown.
+        assert_eq!(pids(idle_attach(&holders, Some("aaaaaaaa"), &none, Some(&claude), &mut wanted, t0)), [10]);
     }
 
     #[test]

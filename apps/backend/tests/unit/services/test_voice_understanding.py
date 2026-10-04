@@ -359,6 +359,13 @@ async def test_an_ask_already_being_worked_on_is_not_made_twice(decide):
     said = jev_says(kinds=["request", "request"], whos=["forge", "friday"])
     got = await route(decide, line, said, opened=working)
     assert tasks(got) == [("friday", "check Aden's email", "fit")]
+    # its answer is ready and not yet heard: still not made twice (Codex P2)
+    ready = [{**working[0], "status": "ready"}]
+    late = await route(decide, "what are the open PRs", jev_says(kinds=["request"], whos=["forge"]), opened=ready)
+    assert tasks(late) == []
+    # a word that can be the ask is never filler (Codex P2)
+    assert not vc._same_ask("like and share the launch post", "share the launch post")
+    assert vc._same_ask("um, so what are the open PRs please", "What are the open PRs?")
     # the same words after its answer was heard is a new request: people do ask again
     heard = [{**working[0], "status": "delivered"}]
     again = await route(decide, "what are the open PRs", jev_says(kinds=["request"], whos=["forge"]), opened=heard)

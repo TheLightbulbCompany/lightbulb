@@ -887,7 +887,8 @@ def _same_ask(a: str, b: str) -> bool:
     return bool(words(a)) and words(a) == words(b)
 
 
-_FILLER_WORDS = frozenset({"um", "uh", "and", "also", "then", "so", "ok", "okay", "please", "like"})
+# never a word that can be the ask itself ("like and share the launch post")
+_FILLER_WORDS = frozenset({"um", "uh", "and", "also", "then", "so", "ok", "okay", "please"})
 
 
 def _understood(
@@ -1190,8 +1191,9 @@ async def route_live_line(
         # already in the exchange), the fit only the part. Several asks keep their own best fit.
         u["requests"][0] |= {"agentId": None, "by": ""}
     # The worker lists what is already being worked on: a request that says the same thing again (a late
-    # final repeating what the voice already delegated) is not made twice, whichever path made it.
-    pending = [r["task"] for r in earlier if r["status"] in _OPEN_STATUS]
+    # final repeating what the voice already delegated) is not made twice, whichever path made it. An answer
+    # that is ready and not yet heard counts: the repeat would run it again beside it.
+    pending = [r["task"] for r in earlier if r["status"] in (*_OPEN_STATUS, "ready")]
     u["requests"] = [r for r in u["requests"] if not any(_same_ask(r["task"], t) for t in pending)]
     chief = None
     for r in u["requests"]:

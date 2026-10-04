@@ -402,6 +402,8 @@ async def test_a_member_reads_meetings_and_mail_both_ways(async_client_org_membe
         "end_at": 260,
         "repeats": True,
         "transcripts": [{"start_at": 200}, {"start_at": 100}],
+        "notes_room_id": "room-now",
+        "reason": None,
     }
     assert body["meetings"][0]["repeats"] is False and body["meetings"][0]["transcripts"] == []
     assert body["meetings"][0]["invited_by"] is None
@@ -551,3 +553,155 @@ async def test_the_team_inbox_shows_the_public_address_and_reads_the_routing_one
     assert body["address"] == PUBLIC
     out, inn = body["messages"]
     assert out["from"] == PUBLIC and inn["to"] == PUBLIC
+
+
+# ---- one mail in full, and the meeting's notes room + failure reason ----
+
+_FULL = {
+    "received_key": "2026-10-03T00:00:00Z#<a@b>",
+    "owner_id": "org_test_456",
+    "from_addr": "pat@acme.com",
+    "subject": "hi",
+    "received_at": "t1",
+    "agent_id": "a1",
+    "text": "y" * 5000,
+}
+
+
+async def test_a_member_reads_one_mail_in_full_from_the_public_address(async_client_org_member):
+    with (
+        patch.object(agent_mail, "team_address", AsyncMock(return_value=TEAM)),
+        patch.object(agent_mail, "public_for", AsyncMock(return_value=PUBLIC)),
+        patch.object(agent_mail, "get_message", AsyncMock(return_value=_FULL)) as got,
+    ):
+        r = await async_client_org_member.get("/api/v1/agent-mail/message", params={"key": _FULL["received_key"]})
+    assert r.status_code == 200
+    body = r.json()
+    assert got.await_args.args == (TEAM, _FULL["received_key"])  # the caller's own address, nobody else's
+    assert len(body["text"]) == 5000 and body["truncated"] is False
+    assert body["to"] == PUBLIC and body["from"] == "pat@acme.com" and body["key"] == _FULL["received_key"]
+
+
+async def test_a_mail_cut_at_the_storage_cap_says_so(async_client_org_member):
+    from core.repositories.agent_mail_inbox_repo import MAX_TEXT_CHARS
+
+    with (
+        patch.object(agent_mail, "team_address", AsyncMock(return_value=TEAM)),
+        patch.object(agent_mail, "public_for", AsyncMock(return_value=PUBLIC)),
+        patch.object(agent_mail, "get_message", AsyncMock(return_value={**_FULL, "text": "y" * MAX_TEXT_CHARS})),
+    ):
+        r = await async_client_org_member.get("/api/v1/agent-mail/message", params={"key": "k"})
+    assert r.json()["truncated"] is True
+
+
+@pytest.mark.parametrize(
+    ("address", "item"),
+    [(TEAM, None), (TEAM, {**_FULL, "owner_id": "org_other"}), (None, _FULL)],
+)
+async def test_a_key_outside_the_callers_mailbox_is_404(async_client_org_member, address, item):
+    with (
+        patch.object(agent_mail, "team_address", AsyncMock(return_value=address)),
+        patch.object(agent_mail, "public_for", AsyncMock(return_value=PUBLIC)),
+        patch.object(agent_mail, "get_message", AsyncMock(return_value=item)),
+    ):
+        r = await async_client_org_member.get("/api/v1/agent-mail/message", params={"key": "k"})
+    assert r.status_code == 404 and r.json()["detail"] == {"status": "not_found"}
+
+
+def test_an_overlong_message_key_is_rejected(client):
+    with patch.object(agent_mail, "get_message", AsyncMock(side_effect=AssertionError("no read"))):
+        assert client.get("/api/v1/agent-mail/message", params={"key": "k" * 513}).status_code == 422
+
+
+@pytest.mark.parametrize(
+    ("meeting", "default", "want"),
+    [
+        ({"status": "ended", "inCallAt": 1, "transcriptRoomId": "general"}, None, "general"),
+        ({"status": "ended", "inCallAt": 1}, "general", "general"),  # no stored room: the default one
+        ({"status": "ended", "inCallAt": 1}, M1, None),  # no default room: posted in its own hidden room
+        ({"status": "ended", "inCallAt": 1, "transcriptRoomId": M1}, None, None),
+        ({"status": "scheduled", "history": [{"transcriptRoomId": "general"}]}, None, "general"),
+        ({"status": "bot_failed"}, "general", None),  # never in the call: no notes
+    ],
+)
+def test_notes_room_is_the_default_room_never_the_hidden_one(meeting, default, want):
+    assert agent_mail._meeting_view(M1, meeting, default)["notes_room_id"] == want
+
+
+@pytest.mark.parametrize(
+    ("meeting", "want"),
+    [
+        ({"status": "bot_failed", "botError": "google_meet_knocking_disabled"}, "not_admitted"),
+        ({"status": "bot_failed", "botError": "timeout_exceeded_waiting_room"}, "not_admitted"),
+        ({"status": "bot_failed", "botError": "meeting_not_found"}, None),
+        ({"status": "bot_failed", "botError": "400"}, None),  # a booking failure
+        ({"status": "ended", "inCallAt": 1, "botError": "google_meet_knocking_disabled"}, None),
+    ],
+)
+def test_reason_says_only_whether_the_host_kept_the_agents_out(meeting, want):
+    assert agent_mail._meeting_view(M1, meeting)["reason"] == want
+
+
+async def test_the_inbox_reads_the_default_room_once_for_ended_calls(async_client_org_member):
+    rooms = {
+        M1: {"ownerId": "org_test_456", "meeting": {"status": "ended", "startAt": 2, "inCallAt": 2}},
+        M2: {"ownerId": "org_test_456", "meeting": {"status": "ended", "startAt": 1, "inCallAt": 1}},
+    }
+    a, b, c, d, e = _inbox()
+    with (
+        a,
+        b,
+        c,
+        d,
+        e,
+        patch.object(agent_mail.messaging_repo, "get_room", AsyncMock(side_effect=rooms.get)),
+        patch.object(agent_mail.meeting_invites, "output_room", AsyncMock(return_value="general")) as out,
+    ):
+        body = (await async_client_org_member.get("/api/v1/agent-mail/inbox")).json()
+    assert out.await_count == 1
+    assert [m["notes_room_id"] for m in body["meetings"]] == ["general", "general"]
+
+
+async def test_the_inbox_still_loads_when_the_default_room_read_fails(async_client_org_member):
+    rooms = {M1: {"ownerId": "org_test_456", "meeting": {"status": "ended", "startAt": 2, "inCallAt": 2}}}
+    a, b, c, d, e = _inbox()
+    with (
+        a,
+        b,
+        c,
+        d,
+        e,
+        patch.object(agent_mail.messaging_repo, "get_room", AsyncMock(side_effect=rooms.get)),
+        patch.object(agent_mail.meeting_invites, "output_room", AsyncMock(side_effect=RuntimeError("ddb"))),
+    ):
+        r = await async_client_org_member.get("/api/v1/agent-mail/inbox")
+    assert r.status_code == 200 and r.json()["meetings"][0]["notes_room_id"] is None
+
+
+async def test_a_sent_mail_shows_its_text_cut_to_the_preview(async_client_org_member):
+    sent = {**_ROWS[0], "text": "z" * 2500}
+    a, b, c, d, e = _inbox(rows=[sent], nxt=None)
+    with a, b, c, d, e:
+        out = (await async_client_org_member.get("/api/v1/agent-mail/inbox")).json()["messages"][0]
+    assert out["direction"] == "out" and len(out["text"]) == 2000 and out["truncated"] is True
+
+
+@pytest.mark.parametrize(
+    ("meeting", "status", "reason", "notes"),
+    [
+        # Left the lobby (timed out, refused, removed): never in the call, so no notes either.
+        ({"status": "ended", "history": [{"transcriptRoomId": "general"}]}, "bot_failed", "not_admitted", None),
+        ({"status": "ended", "inCallAt": 1}, "ended", None, "general"),
+        # A series already moved on to its next occurrence is untouched.
+        ({"status": "scheduled", "recurrence": {"rule": "FREQ=WEEKLY"}}, "scheduled", None, None),
+    ],
+)
+def test_an_ended_meeting_the_agents_never_entered_shows_as_not_admitted(meeting, status, reason, notes):
+    view = agent_mail._meeting_view(M1, meeting, "general")
+    assert (view["status"], view["reason"], view["notes_room_id"]) == (status, reason, notes)
+
+
+def test_the_junk_filter_still_reads_the_stored_status():
+    old = time.time() - 2 * 86400
+    assert agent_mail._junk({"status": "ended", "startAt": old}, time.time()) is True
+    assert agent_mail._junk({"status": "ended", "startAt": time.time() - 600}, time.time()) is False

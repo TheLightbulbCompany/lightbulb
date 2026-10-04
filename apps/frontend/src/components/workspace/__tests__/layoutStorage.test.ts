@@ -206,6 +206,15 @@ describe("layoutStorage", () => {
     expect(clean.panels.browser?.title).toBe("Browser");
   });
 
+  it("restores a persisted Mail panel, with its title re-derived", () => {
+    const dirty = minimalLayout({
+      mail: { id: "mail", contentComponent: "mail", title: "Inbox", params: { item: "mail:k1" } },
+    });
+    const clean = sanitizeLayout(dirty);
+    expect(clean.panels.mail?.contentComponent).toBe("mail");
+    expect(clean.panels.mail?.title).toBe("Mail");
+  });
+
   it("sanitizer strips persist-only params (initialTab) so a nav intent can't restore forever", () => {
     const dirty = minimalLayout({
       "agent-inspector": {

@@ -3,12 +3,13 @@
 import "./workspace.css";
 import { UserButton } from "@clerk/nextjs";
 import { Fragment } from "react";
-import { Bell, Chrome, FolderOpen, HelpCircle, Home, Images, ListTodo, MessageSquare, Plug, Search, Settings, UserPlus } from "lucide-react";
+import { Bell, Chrome, FolderOpen, HelpCircle, Home, Images, ListTodo, Mail, MessageSquare, Plug, Search, Settings, UserPlus } from "lucide-react";
 import Link from "next/link";
 import { useStatusLoaded } from "@lightbulb/shared";
 import { capture } from "@/lib/analytics";
 import { useActiveTeamRunCount } from "@/components/notifications/teamRunActivity";
 import { useActivity } from "@/hooks/useActivity";
+import { useNewMailCount } from "@/components/mail/useTeamMail";
 import { useSupport } from "@/components/support/SupportProvider";
 import { useCommandPalette } from "@/components/teams/command-palette/CommandPaletteProvider";
 import { useMarketplaceDrawer } from "@/components/marketplace/drawer/MarketplaceDrawerProvider";
@@ -20,6 +21,8 @@ const DESTINATIONS = [
   { panel: MESSAGES_PANEL_ID, label: "Messages", Icon: MessageSquare },
   { panel: "teams-dashboard", label: "Home", Icon: Home },
   { panel: "activity", label: "Activity", Icon: Bell },
+  // The workspace's shared agent mailbox. Not "Inbox": that is the company inbox tab.
+  { panel: "mail", label: "Mail", Icon: Mail },
   { panel: "teams-issues", label: "Tasks", Icon: ListTodo },
   // Every document and deliverable, one click away (stock Paperclip puts
   // Artifacts beside Tasks too). Chat's document cards are the usual way in.
@@ -38,6 +41,7 @@ export function WorkspaceHeader({ chatReady = true }: { chatReady?: boolean }): 
   const activeTeamRunCount = useActiveTeamRunCount();
   // Stock Paperclip's inbox badge: open approvals and failed runs always, the rest while unseen.
   const { attentionCount } = useActivity();
+  const newMail = useNewMailCount();
   // The Browser panel watches an AgentCore Browser session, so the rail offers
   // it only once a status body has landed for this workspace — `false` hides
   // it rather than offering a panel that can only render its empty state.
@@ -56,13 +60,15 @@ export function WorkspaceHeader({ chatReady = true }: { chatReady?: boolean }): 
         // Team runs are team work, so their count rides on Tasks; Activity badges what needs you.
         const runs = panel === "teams-issues" ? activeTeamRunCount : 0;
         const unseen = panel === "activity" ? attentionCount : 0;
-        const badge = runs || unseen;
+        const mail = panel === "mail" ? newMail : 0;
+        const badge = runs || unseen || mail;
         const accessibleLabel = runs
           ? `${label}, ${runs} active team ${runs === 1 ? "run" : "runs"}`
-          : unseen ? `${label}, ${unseen} need${unseen === 1 ? "s" : ""} you` : label;
+          : unseen ? `${label}, ${unseen} need${unseen === 1 ? "s" : ""} you`
+            : mail ? `${label}, ${mail} new` : label;
         // Messaging never needs the container; the other destinations do.
         return <Fragment key={panel}><button type="button" aria-label={accessibleLabel} title={accessibleLabel}
-          disabled={!chatReady && panel !== MESSAGES_PANEL_ID}
+          disabled={!chatReady && panel !== MESSAGES_PANEL_ID && panel !== "mail"}
           aria-current={activePanelId === panelId ? "page" : undefined}
           onClick={() => {
             if (panel === "file-viewer") capture("file_browser_opened");

@@ -64,6 +64,7 @@ async def test_threads_with_the_conversation(sent):
     assert sent[0]["from"] == '"Friday · Acme agents" <agents@acme.isol8.co>'
     kw = mod.agent_mail_inbox_repo.put_sent.await_args.kwargs
     assert (kw["address"], kw["message_id"], kw["agent_id"]) == ("agents@acme.isol8.co", "msg-1", "Friday")
+    assert kw["text"] == sent[0]["body"]
     assert sent[0]["to"] == "owner@example.com"
     assert sent[0]["headers"]["In-Reply-To"] == "<m1@mail>"
 

@@ -122,6 +122,7 @@ async def send_cap_autoreply(
                 agent_id=agent_id,
                 to=to,
                 subject=sent_subject,
+                text=body,
             )
         put_metric(
             "agent_email.autoreply",

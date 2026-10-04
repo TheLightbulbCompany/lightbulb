@@ -206,6 +206,7 @@ async def send_to_owner(
                 agent_id=resolved_agent_id,
                 to=owner_email,
                 subject=sent_subject,
+                text=body_text,
             )
 
         if is_first_contact:

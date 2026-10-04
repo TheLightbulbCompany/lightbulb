@@ -16,14 +16,26 @@ vi.mock("../SessionTerminalView", async () => {
 });
 
 const session: LocalSession = { sessionId: "s", deviceId: "mac", humanUserId: "alice", provider: "claude", generation: "g1", status: "idle", providerVersion: "test", activeTurnId: null, capabilities: { sendMode: "queue", steer: false, interrupt: false }, capabilitiesVerified: true, latestEventSeq: 0, controlUnavailableReason: null };
-const client = { listLocalSessionEvents: vi.fn(async () => ({ events: [], nextAfterSeq: null })), submitLocalSessionCommand: vi.fn(), getLocalSession: vi.fn(), listWorkspaceSessions: vi.fn(), setLocalSessionSharing: vi.fn(), watchLocalSession: vi.fn(async () => undefined) };
+const client = { listLocalSessionEvents: vi.fn(async () => ({ events: [], nextAfterSeq: null })), submitLocalSessionCommand: vi.fn(), getLocalSession: vi.fn(), listWorkspaceSessions: vi.fn(), setLocalSessionSharing: vi.fn(), watchLocalSession: vi.fn(async () => undefined), sendLocalSessionInput: vi.fn() };
+const noInput = { ...client, sendLocalSessionInput: undefined };
 const below = (a: HTMLElement, b: HTMLElement) => !!(a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING);
 
-it("keeps the message box under the live terminal, and drops the history region", async () => {
+it("drops the message box and the history region when the viewer can type in the live terminal", async () => {
   render(<LocalSessionPanel session={session} ownerName="Alice" own client={client as never} revision={0} onAccessLost={() => {}} onEvent={() => () => {}} />);
-  const terminal = await screen.findByRole("region", { name: "Live terminal (view only)" });
+  await screen.findByRole("region", { name: "Live terminal (view only)" });
   expect(screen.queryByRole("region", { name: "Native session history" })).toBeNull();
+  expect(screen.queryByRole("textbox", { name: /send to/i })).toBeNull();
+});
+
+it("keeps the message box under a live terminal the viewer cannot type into", async () => {
+  render(<LocalSessionPanel session={session} ownerName="Alice" own client={noInput as never} revision={0} onAccessLost={() => {}} onEvent={() => () => {}} />);
+  const terminal = await screen.findByRole("region", { name: "Live terminal (view only)" });
   expect(below(terminal, screen.getByRole("textbox", { name: /send to/i }))).toBe(true);
+});
+
+it("keeps the message box on a transcript", () => {
+  render(<LocalSessionPanel session={{ ...session, status: "offline" }} ownerName="Alice" own client={client as never} revision={0} onAccessLost={() => {}} />);
+  expect(screen.getByRole("textbox", { name: /send to/i })).toBeTruthy();
 });
 
 it("keeps Ask to join under the live terminal for a teammate who may not send", async () => {

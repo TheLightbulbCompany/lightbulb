@@ -36,6 +36,7 @@ class Request:
     run_id: str | None = None
     by: str = ""  # which routing rule chose the owner: name | fit | floor | chief
     acked: bool = False  # named aloud by an acknowledgement or a "next in line" note (understanding §4.6)
+    label: str = ""  # a meeting: the Meet speaker who asked; the voice that delivers it takes their follow-up
 
 
 class RequestList:
@@ -89,7 +90,7 @@ class RequestList:
         return dropped
 
     def settle(
-        self, turn: int, asker: str, routed: list[dict], now: float
+        self, turn: int, asker: str, routed: list[dict], now: float, label: str = ""
     ) -> list[Request]:
         """/route's requests, [{agentId, task, by?}] in order, replace the line's pending rows. An agent may
         have several rows from one line: it works on them one at a time (understanding §4.5)."""
@@ -106,6 +107,7 @@ class RequestList:
                 turn,
                 routed=True,
                 by=x.get("by") or "",
+                label=label,
             )
             for x in routed
             if not self.stopped(turn, x["agentId"])

@@ -1,6 +1,7 @@
 """Conversation engine §3.6: the spoken commands on the request list."""
 
 import asyncio
+import json
 
 from test_huddle import answer, metric_count, say, settle, summoned
 from test_request_engine import LINE, TASKS, five, pump, quiet, run_of, status, three
@@ -130,29 +131,123 @@ async def test_a_delegated_command_never_becomes_a_run():
     assert {r.status for r in h._requests.items} == {"cancelled"}
 
 
-async def test_a_stop_frees_its_slot_only_after_the_abort_lands():
-    h, room, backend, lives, clock, log = await five()
-    gate, real = asyncio.Event(), backend.abort
-
-    async def abort(run_id):
-        await gate.wait()
-        await real(run_id)
-
-    backend.abort = abort
-    await h.on_final_transcript("u1", "Prasiddha", "Alpha, stop")
-    await pump()
-    assert len(backend.turns) == 4  # Alpha's run may still be executing: Echo waits
-    gate.set()
+async def _one_ask_line_while_route_decides(command):
+    h, room, backend, lives, clock, log = await three()
+    backend.route_extra = {}  # /route answers one ask: today's dispatch of the line
+    backend.route_gate = asyncio.Event()
+    await h.on_final_transcript("u1", "Prasiddha", "Forge, what did Friday say?")
+    await h.on_final_transcript("u1", "Prasiddha", command)
+    backend.route_gate.set()
     await settle(h)
-    assert backend.turns[-1]["agentId"] == "echo"
+    return h, backend, lives
 
 
-async def test_a_failed_abort_still_frees_the_slot():
-    h, room, backend, lives, clock, log = await five()
+async def test_everyone_stop_while_route_decides_a_one_ask_line_summons_nobody():
+    h, backend, lives = await _one_ask_line_while_route_decides("everyone stop")
+    assert backend.turns == [] and lives == [] and backend.summons == []
 
-    async def abort(run_id):
-        raise RuntimeError("bridge down")
 
-    backend.abort = abort
-    await say(h, "u1", "Alpha, stop")
-    assert backend.turns[-1]["agentId"] == "echo"
+async def test_naming_the_agent_and_stop_while_route_decides_a_one_ask_line_summons_nobody():
+    h, backend, lives = await _one_ask_line_while_route_decides("Forge, stop")
+    assert backend.turns == [] and lives == [] and backend.summons == []
+
+
+async def _plain_answer_waiting_as_news():
+    h, room, backend, lives, clock, log = await summoned(drive=True)
+    run = backend.turns[0]["runId"]
+    await h.end_exchange()  # Forge leaves the floor: its answer is held as news
+    answer(h, run, "forge", "We shipped huddles")
+    assert [n[0] for n in h._news["forge"]] == [run]
+    return h, backend, run
+
+
+async def test_dont_post_that_naming_an_agent_reaches_its_answer_waiting_as_news(capsys):
+    h, backend, run = await _plain_answer_waiting_as_news()
+    capsys.readouterr()
+    await say(h, "u1", "Forge, don't post that")
+    assert backend.no_posts == [run] and metric_count(capsys, "live.request.no_post") == 1
+    await h.clear_presence()
+    assert backend.late_answers == []
+
+
+async def test_dont_post_that_unnamed_reaches_the_newest_answer_waiting_as_news():
+    h, backend, run = await _plain_answer_waiting_as_news()
+    await say(h, "u1", "don't post that")
+    assert backend.no_posts == [run]
+    await h.clear_presence()
+    assert backend.late_answers == []
+
+
+async def test_dont_post_that_with_nothing_to_mark_counts_nothing(capsys):
+    h, room, backend, lives, clock, log = await three()
+    capsys.readouterr()
+    await say(h, "u1", "don't post that")
+    assert backend.no_posts == [] and metric_count(capsys, "live.request.no_post") == 0
+
+
+async def test_a_line_with_two_mentions_and_no_wake_name_calls_route_once():
+    h, room, backend, lives, clock, log = await three()
+    backend.route_extra = {}
+    await say(h, "u1", "I think Forge and Friday both did good work, what shipped?")
+    assert len(backend.routes) == 1
+
+
+async def test_everyone_stop_while_the_acknowledging_voice_joins_closes_it_unsaid():
+    h, room, backend, lives, clock, log = await three()
+    h.gate["live"] = asyncio.Event()
+    await h.on_final_transcript("u1", "Prasiddha", LINE)
+    await pump()
+    assert len(backend.turns) == 3 and lives == []
+    await h.on_final_transcript("u1", "Prasiddha", "everyone stop")
+    h.gate["live"].set()
+    await settle(h)
+    assert ("nudge",) not in lives[0].calls and ("close",) in lives[0].calls
+    assert h._voice is None and h._window is None and len(backend.ends) == 1
+
+
+async def test_name_latency_includes_the_route_detour_of_a_one_ask_line(capsys):
+    h, room, backend, lives, clock, log = await three()
+    backend.route_extra = {}
+    backend.route_gate = asyncio.Event()
+    await h.on_final_transcript("u1", "Prasiddha", "Forge, what did Friday say?")
+    await pump()  # /route is in flight
+    clock.t += 2
+    backend.route_gate.set()
+    await settle(h)
+    capsys.readouterr()
+    h.on_agent_state("forge", "speaking")
+    (ms,) = [
+        json.loads(x)["live.latency.first_audio"]
+        for x in capsys.readouterr().out.splitlines()
+        if "live.latency.first_audio" in x
+    ]
+    assert ms >= 2000
+
+
+async def test_a_route_landing_during_shutdown_opens_no_window():
+    h, room, backend, lives, clock, log = await three()
+    backend.route_extra = {}
+    backend.route_gate = asyncio.Event()
+    await h.on_final_transcript("u1", "Prasiddha", "Forge, what did Friday say?")
+    await h.end_exchange(force=True)
+    backend.route_gate.set()
+    await settle(h)
+    assert backend.summons == [] and h._window is None
+
+
+async def test_hang_up_waits_for_a_no_post_mark_in_flight():
+    h, room, backend, lives, clock, log = await summoned(drive=True)
+    gate, real = asyncio.Event(), backend.no_post
+
+    async def no_post(run_id):
+        await gate.wait()
+        return await real(run_id)
+
+    backend.no_post = no_post
+    await h.on_final_transcript("u1", "Prasiddha", "don't post that")
+    closing = asyncio.create_task(h.clear_presence())
+    await pump()
+    assert not closing.done()
+    gate.set()
+    await closing
+    assert backend.no_posts == [backend.turns[0]["runId"]]

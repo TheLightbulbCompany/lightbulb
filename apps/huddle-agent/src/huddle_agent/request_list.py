@@ -110,6 +110,10 @@ class RequestList:
         self._move(rows, "cancelled")
         return rows
 
+    def stopped(self, turn: int, agent: str | None = None) -> bool:
+        """A stop said while /route split this turn's line: the whole turn, or this agent's ask in it."""
+        return turn in self._cancelled_turns or (turn, agent) in self._cancelled_asks
+
     def no_post(self, agent: str | None = None) -> Request | None:
         """ "don't post that": the named agent's newest open request, else the room's newest."""
         rows = [r for r in self.open() if r.routed]

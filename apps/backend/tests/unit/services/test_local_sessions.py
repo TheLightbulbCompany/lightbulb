@@ -1189,3 +1189,16 @@ def test_an_ended_origin_is_listed_once_as_its_successor():
         s("not-bobs", "idle", "bobs", human="mallory"),
     ]
     assert [x.session_id for x in service._without_moved(found)] == ["new", "copy", "running", "bobs", "not-bobs"]
+
+
+@pytest.mark.asyncio
+async def test_list_resources_lists_an_ended_origin_once_as_its_fork(db):
+    origin, fork = await registered(conversation="origin"), await registered(conversation="fork")
+    enrollment = await repo.get_enrollment(OWNER, ALICE.user_id, MAC)
+    row, now = await repo.get_session(OWNER, origin), int(time.time())
+    await repo.put_session({**row, "endedAt": now, "lastEventAt": now}, row, enrollment)
+    # The Mac records the origin on the fork (`forkedFrom`, see the relay test of the same name).
+    row = await repo.get_session(OWNER, fork)
+    await repo.put_session({**row, "forkedFrom": origin}, row, enrollment)
+    resources = await service.list_resources(BOB, ROOM, include_ended=True)
+    assert [(s.session_id, s.forked_from) for s in resources.sessions] == [(fork, origin)]

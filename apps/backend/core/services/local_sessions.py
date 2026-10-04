@@ -924,6 +924,7 @@ async def list_resources(auth: Caller, room_id: str, *, include_ended: bool = Fa
             except ApiProblem as exc:
                 if exc.error.code not in {"LOCAL_SESSION_FORBIDDEN", "LOCAL_SESSION_NOT_FOUND"}:
                     raise
+    sessions = _without_moved(sessions)
     live = sorted((s for s in sessions if s.status != "ended"), key=lambda s: s.last_event_at or "", reverse=True)
     if include_ended:
         recent = sorted(

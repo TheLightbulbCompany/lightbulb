@@ -23,7 +23,7 @@ from core.observability.metrics import put_metric
 from core.services import livekit_huddles, meeting_bots
 
 logger = logging.getLogger(__name__)
-MAX_SEATS = 16  # Recall separates at most 16 concurrent speakers on Meet
+MAX_SEATS = 16  # Recall separates the 16 loudest concurrent speakers on Meet
 _RATE, _CHANNELS = 16000, 1
 _NAME_MAX = 80
 _Seat = tuple["rtc.Room", "rtc.AudioSource"] | None  # None: the connect failed; the person stays unbridged
@@ -33,6 +33,8 @@ class MeetBridge:
     def __init__(self, room_id: str):
         self.room_id = room_id
         self._seats: dict[str, asyncio.Task[_Seat]] = {}
+        self._heard: dict[str, int] = {}  # pid -> the order of their latest audio
+        self._tick = 0
         self._seated = 0
         self._capped = False
         put_metric("meeting.bridge.connected")
@@ -61,6 +63,13 @@ class MeetBridge:
                 pcm = pcm[: len(pcm) // 2 * 2]
                 if not pcm:
                     return  # an unmuted silent person sends empty packets
+                self._tick += 1
+                self._heard[pid] = self._tick
+                if pid not in self._seats and len(self._seats) >= MAX_SEATS:
+                    # A full room seats who speaks, from whoever has been silent longest (a join alone
+                    # holds a seat only while there is room). ponytail: 17+ people talking in turn
+                    # reconnect a seat per switch; hold seats for a minimum time if that ever shows up.
+                    await self._unseat(min(self._seats, key=lambda p: self._heard.get(p, 0)))
                 task = self._seat(pid, name)
                 seat = await task if task else None
                 if seat:
@@ -104,6 +113,7 @@ class MeetBridge:
 
     async def _unseat(self, pid: str) -> None:
         task = self._seats.pop(pid, None)
+        self._heard.pop(pid, None)
         if task is None:
             return
         seat = await task

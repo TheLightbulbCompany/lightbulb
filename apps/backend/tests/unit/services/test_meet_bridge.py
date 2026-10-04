@@ -143,6 +143,21 @@ async def test_seventeenth_person_is_ignored_once(fake):
     assert ("meeting.bridge.participants", 16, {}) in fake.metrics
 
 
+async def test_a_full_room_seats_who_speaks_over_who_only_joined(fake):
+    """Recall's cap is 16 concurrent speakers, not the first 16 to join a large Meet."""
+    bridge = meet_bridge.MeetBridge(ROOM)
+    for pid in range(16):
+        await bridge.feed(_event("participant_events.join", pid, f"p{pid}"))
+    await bridge.feed(_audio(0, "p0", b"\x00\x00"))  # p0 has spoken: not the one to lose a seat
+    await bridge.feed(_audio(99, "late", b"\x00\x00"))
+    assert fake.disconnected == [f"meet:{ROOM}:1"]  # the longest-silent seat made room
+    assert fake.rooms[-1].name == "late" and len(fake.frames) == 2
+    await bridge.feed(_audio(1, "p1", b"\x00\x00"))  # the one who lost it speaks: p2 (never heard) makes room
+    assert fake.disconnected == [f"meet:{ROOM}:1", f"meet:{ROOM}:2"]
+    assert len(fake.frames) == 3
+    await bridge.close()
+
+
 async def test_one_failed_seat_leaves_the_others_working(fake):
     FakeRoom.fail_for = {"Broken"}
     bridge = meet_bridge.MeetBridge(ROOM)

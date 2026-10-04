@@ -359,6 +359,7 @@ def run_env():
         patch.object(vc.messaging_repo, "get_room", AsyncMock(return_value=ROOM_META)),
         patch.object(vc.messaging_repo, "list_members", AsyncMock(return_value=MEMBERS)),
         patch.object(vc.messaging_repo, "put_voice_run", AsyncMock()),
+        patch.object(vc.messaging_repo, "update_voice_run", AsyncMock(return_value=True)),
         patch.object(vc.messaging_repo, "get_voice_run", AsyncMock(return_value=None)),
         patch.object(vc.openclaw_work, "room_history", history),
         patch.object(vc.messaging, "human_display_name", AsyncMock(return_value="Bea")),
@@ -483,9 +484,10 @@ async def test_steer_lands_in_the_agents_live_voice_run(run_env):
     assert await _steer() == {"runId": "run-1", "agentId": "fin-1", "steered": True}
     assert run_env.await_args.args[1] == "/plugins/lightbulb-channel/runs/run-1/steer"
     assert run_env.await_args.kwargs["json_body"] == {"text": "Bea (voice): also X"}
-    vc.messaging_repo.put_voice_run.assert_awaited_once_with(
-        "org_a", "run-1", {**VOICERUN, "speakerUserId": "user_b", "speakerName": "Bea"}
+    vc.messaging_repo.update_voice_run.assert_awaited_once_with(
+        "org_a", "run-1", {"speakerUserId": "user_b", "speakerName": "Bea"}
     )
+    vc.messaging_repo.put_voice_run.assert_not_awaited()  # never a whole-row rewrite: it would drop noPost
 
 
 async def test_steer_into_a_finished_run_falls_back(run_env):
@@ -808,9 +810,21 @@ async def test_voice_run_reads_what_teammates_were_asked_in_the_same_breath(run_
 async def test_no_post_marks_this_rooms_voice_run_only(run_env):
     vc.messaging_repo.get_voice_run.return_value = {"runId": "run-1", "roomId": "room-1", "agentId": "fin-1"}
     assert await vc.mark_no_post("org_a", "room-1", "run-1") is True
-    vc.messaging_repo.put_voice_run.assert_awaited_once_with(
-        "org_a", "run-1", {"runId": "run-1", "roomId": "room-1", "agentId": "fin-1", "noPost": True}
-    )
+    vc.messaging_repo.update_voice_run.assert_awaited_once_with("org_a", "run-1", {"noPost": True})
+    vc.messaging_repo.put_voice_run.assert_not_awaited()
     assert await vc.mark_no_post("org_a", "room-2", "run-1") is False  # another room's run
+
+
+async def test_no_post_on_a_missing_or_expired_run_writes_nothing(run_env):
     vc.messaging_repo.get_voice_run.return_value = None
     assert await vc.mark_no_post("org_a", "room-1", "run-1") is False
+    vc.messaging_repo.get_voice_run.return_value = {"roomId": "room-1"}
+    vc.messaging_repo.update_voice_run.return_value = False  # expired between the read and the SET
+    assert await vc.mark_no_post("org_a", "room-1", "run-1") is False
+    vc.messaging_repo.put_voice_run.assert_not_awaited()
+
+
+async def test_a_turns_retry_for_a_marked_run_keeps_no_post(run_env):
+    vc.messaging_repo.get_voice_run.return_value = {"roomId": "room-1", "noPost": True}
+    await _dispatch()
+    assert vc.messaging_repo.put_voice_run.await_args.args[2]["noPost"] is True

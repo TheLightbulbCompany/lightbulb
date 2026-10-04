@@ -848,3 +848,4 @@ def test_turn_passes_the_turns_other_requests_to_a_new_run_only(client):
     assert "requests" not in steer.await_args.kwargs
     assert _turn(client, {**INTERNAL[1][1], "requests": ["x"] * 9})[0].status_code == 400
     assert _turn(client, {**INTERNAL[1][1], "requests": ["x" * 201]})[0].status_code == 400
+    assert _turn(client, {**INTERNAL[1][1], "requests": [""]})[0].status_code == 400

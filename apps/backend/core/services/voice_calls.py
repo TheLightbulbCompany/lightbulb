@@ -737,9 +737,11 @@ async def dispatch_voice_run(
     while history and messaging.json_body_size(body) > openclaw_work._INGRESS_MAX_BYTES:
         history.pop(0)
     # Before the POST: the voice-profile route (C8) resolves the speaker from this row.
-    await messaging_repo.put_voice_run(
-        owner_id, run_id, {"roomId": room_id, "agentId": agent_id, "speakerUserId": speaker_id, "speakerName": name}
-    )
+    fields = {"roomId": room_id, "agentId": agent_id, "speakerUserId": speaker_id, "speakerName": name}
+    prior = await messaging_repo.get_voice_run(owner_id, run_id)  # a /turns retry rewrites the row: keep the mark
+    if prior and prior.get("noPost"):
+        fields["noPost"] = True
+    await messaging_repo.put_voice_run(owner_id, run_id, fields)
     try:
         resp = await _runtime(owner_id, _BRIDGE_RUNS, body)
         ok = resp.status_code in (200, 202)  # 200 = replayed: a retry of a run the bridge already has
@@ -778,9 +780,8 @@ async def steer_voice_run(
     if await _run_control(call["ownerId"], run_id, "steer", {"text": f"{name} (voice): {utterance}"}) != 202:
         return None
     # The latest requester is who C8 checks: a guest's steer must not borrow the member's rights.
-    await messaging_repo.put_voice_run(
-        call["ownerId"], run_id, {**row, "speakerUserId": speaker_id, "speakerName": name}
-    )
+    # An atomic SET, not a whole-row put: a noPost mark landing after our read must survive.
+    await messaging_repo.update_voice_run(call["ownerId"], run_id, {"speakerUserId": speaker_id, "speakerName": name})
     return {"runId": run_id, "agentId": agent_id, "steered": True}
 
 
@@ -799,7 +800,8 @@ async def mark_no_post(owner_id: str, room_id: str, run_id: str) -> bool:
     row = await messaging_repo.get_voice_run(owner_id, run_id)
     if not row or row.get("roomId") != room_id:
         return False
-    await messaging_repo.put_voice_run(owner_id, run_id, {**row, "noPost": True})
+    if not await messaging_repo.update_voice_run(owner_id, run_id, {"noPost": True}):
+        return False
     put_metric("voice.huddle.no_post")
     return True
 

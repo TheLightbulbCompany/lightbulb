@@ -88,7 +88,7 @@ class TurnBody(BaseModel):
     steerRunId: uuid.UUID | None = None
     steerOnly: bool = False  # steer steerRunId or do nothing: lines said in the room never start a run (v2 §4.3)
     # The same spoken turn's other asks ("Forge is answering ..."), for a new run's input (engine §3.4).
-    requests: list[Annotated[str, Field(max_length=200)]] = Field(default_factory=list, max_length=8)
+    requests: list[Annotated[str, Field(min_length=1, max_length=200)]] = Field(default_factory=list, max_length=8)
 
 
 class RouteBody(BaseModel):

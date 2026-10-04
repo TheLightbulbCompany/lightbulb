@@ -2328,6 +2328,30 @@ async def put_voice_run(owner_id: str, run_id: str, fields: dict[str, Any]) -> N
     await run_in_thread(_table().put_item, Item=item)
 
 
+async def update_voice_run(owner_id: str, run_id: str, fields: dict[str, Any]) -> bool:
+    """Atomic SET of ``fields`` on an existing run row (no read-modify-write, so it cannot drop a
+    concurrent writer's fields, e.g. noPost). False when the row is missing or expired."""
+    names = {f"#f{i}": k for i, k in enumerate(fields)}
+    values = {f":v{i}": v for i, v in enumerate(fields.values())}
+    values[":exp"] = int(time.time()) + VOICE_RUN_TTL_S
+    values[":now"] = int(time.time())
+    sets = ", ".join(f"#f{i} = :v{i}" for i in range(len(fields))) + ", expiresAt = :exp"
+    try:
+        await run_in_thread(
+            _table().update_item,
+            Key={"pk": owner_pk(owner_id), "sk": voice_run_sk(run_id)},
+            UpdateExpression=f"SET {sets}",
+            ConditionExpression="attribute_exists(pk) AND expiresAt > :now",
+            ExpressionAttributeNames=names,
+            ExpressionAttributeValues=values,
+        )
+        return True
+    except ClientError as exc:
+        if exc.response["Error"]["Code"] == "ConditionalCheckFailedException":
+            return False
+        raise
+
+
 async def get_voice_run(owner_id: str, run_id: str) -> dict | None:
     row = await _get(owner_pk(owner_id), voice_run_sk(run_id))
     # DynamoDB TTL deletes lazily: an expired row must not authorize anything.

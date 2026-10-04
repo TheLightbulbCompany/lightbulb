@@ -71,6 +71,40 @@ export function DesktopPermissions() {
   </section>;
 }
 
+export const SHARE_LIVE_LABEL = "Share every session live";
+export const SHARE_LIVE_DESCRIPTION = "Plain claude and codex in your terminals start through Lightbulb, so their live terminal shows here too. Adds a marked block to ~/.zshrc and ~/.bashrc.";
+
+/** Settings: "Share every session live" — the `claude`/`codex` shell functions (the desktop's
+ *  shell_integration module). Hidden in a browser and on a desktop build without the command. */
+export function ShareEverySessionLive() {
+  const [on, setOn] = useState<boolean | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  useEffect(() => {
+    const invoke = bridge();
+    if (!invoke) return;
+    void invoke<boolean>("shell_integration_status").then(setOn).catch(() => setOn(null));
+  }, []);
+  if (on === null) return null;
+  const toggle = async () => {
+    const invoke = bridge();
+    if (!invoke) return;
+    setBusy(true); setError(null);
+    try { setOn(await invoke<boolean>("shell_integration_set", { enabled: !on })); }
+    catch (e) { setError(message(e)); }
+    finally { setBusy(false); }
+  };
+  return <section id="share-every-session-live" className="settings-panel space-y-2" aria-labelledby="share-live-heading">
+    <h2 id="share-live-heading" className="text-lg font-medium">{SHARE_LIVE_LABEL}</h2>
+    <label className="flex items-start gap-2">
+      <input type="checkbox" checked={on} disabled={busy} onChange={() => void toggle()} />
+      <span><span className="block">Typing <code>claude</code> or <code>codex</code> in a terminal starts it through Lightbulb, so its live terminal shows here too.</span>
+        <span className="block text-sm text-muted-foreground">Adds one marked block to ~/.zshrc and ~/.bashrc; turning this off removes exactly that block. Open a new terminal tab after changing it. A folder you have not approved asks first in the terminal, and anything Lightbulb cannot share (sharing off, the app closed, <code>claude -p</code>, scripts) runs as usual.</span></span>
+    </label>
+    {error ? <p role="alert">{error}</p> : null}
+  </section>;
+}
+
 export function useLocalSessions(waitForRemoteDisable = false) {
   const { userId, orgId, getToken } = useAuth();
   const [state, setState] = useState<State | null>(null);

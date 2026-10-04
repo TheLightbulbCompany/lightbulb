@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState, useSyncExternalStore } from "react";
-import { Check, Terminal, type LucideIcon } from "lucide-react";
+import { Check, Radio, Terminal, type LucideIcon } from "lucide-react";
 
 import { capture } from "@/lib/analytics";
 import {
@@ -13,7 +13,7 @@ import {
   desktopErrorMessage,
 } from "@/lib/desktopPermissions";
 import { subscribeDesktopPermissions } from "@/lib/desktopPermissionsSubscribe";
-import { DESKTOP_PERMISSION_ITEMS, useLocalSessions } from "./LocalSessions";
+import { DESKTOP_PERMISSION_ITEMS, SHARE_LIVE_DESCRIPTION, SHARE_LIVE_LABEL, useLocalSessions } from "./LocalSessions";
 import { AlertDialog, AlertDialogContent, AlertDialogTitle, AlertDialogDescription } from "@/components/ui/alert-dialog";
 
 type TauriBridge = {
@@ -48,6 +48,8 @@ export function DesktopPermissionsGate() {
     DEFAULT_DESKTOP_PERMISSIONS,
   );
   const [choice, setChoice] = useState<boolean | null>(null);
+  // Off by default: it edits ~/.zshrc and ~/.bashrc, so only on an explicit yes.
+  const [live, setLive] = useState(false);
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
   const operation = useRef(0);
@@ -109,14 +111,19 @@ export function DesktopPermissionsGate() {
           return;
         }
       }
+      if (enableSharing && live) {
+        // Best effort: the switch stays in Settings if this build or the rc files refuse.
+        await getTauri()?.core?.invoke("shell_integration_set", { enabled: true }).catch(() => {});
+      }
       if (operation.current === current) setDismissed(true);
     } catch (error) {
       if (operation.current === current) setSaveError(desktopErrorMessage(error));
     } finally { if (operation.current === current) setSaving(false); }
   };
-  const items: Array<{key:keyof DesktopPermissionSet | "sessions";label:string;description:string;Icon:LucideIcon}> = [
+  const items: Array<{key:keyof DesktopPermissionSet | "sessions" | "live";label:string;description:string;Icon:LucideIcon}> = [
     ...DESKTOP_PERMISSION_ITEMS,
     {key:"sessions",label:"Share Claude & Codex sessions",description:"Let people in your workspace conversations view and steer the Claude Code and Codex sessions on this Mac.",Icon:Terminal},
+    ...(sessionChoice ? [{key:"live" as const,label:SHARE_LIVE_LABEL,description:SHARE_LIVE_DESCRIPTION,Icon:Radio}] : []),
   ];
 
   return (
@@ -140,13 +147,13 @@ export function DesktopPermissionsGate() {
 
         <div className="grid gap-2">
           {items.map(({ key, label, description, Icon }) => {
-            const enabled = key === "sessions" ? sessionChoice : permissions[key];
+            const enabled = key === "sessions" ? sessionChoice : key === "live" ? live : permissions[key];
             return (
               <button
                 key={key}
                 type="button"
-                disabled={saving || (key !== "sessions" && !shouldShowGate)}
-                onClick={() => key === "sessions" ? setChoice(!sessionChoice) : toggle(key)}
+                disabled={saving || (key !== "sessions" && key !== "live" && !shouldShowGate)}
+                onClick={() => key === "sessions" ? setChoice(!sessionChoice) : key === "live" ? setLive(!live) : toggle(key)}
                 className={[
                   "flex w-full items-center gap-3 rounded-md border p-3 text-left transition",
                   enabled

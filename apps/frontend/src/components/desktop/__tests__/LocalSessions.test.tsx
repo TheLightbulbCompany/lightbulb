@@ -3,7 +3,7 @@ import React from "react";
 import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, expect, it, vi } from "vitest";
-import { DesktopPermissions, LocalSessions, providerSetupLine } from "../LocalSessions";
+import { DesktopPermissions, LocalSessions, ShareEverySessionLive, providerSetupLine } from "../LocalSessions";
 import { DesktopPermissionsGate } from "../DesktopPermissionsGate";
 import { DEFAULT_DESKTOP_PERMISSIONS, writeDesktopPermissionGrant } from "@/lib/desktopPermissions";
 vi.mock("@/lib/analytics", () => ({capture:vi.fn()}));
@@ -255,4 +255,22 @@ it("shows per-provider setup read from disk and retries setup without re-enrolli
   expect(invoke.mock.calls.some(([command]) => command === "local_sessions_set")).toBe(false);
   expect(providerSetupLine("Codex", {cli:true,mcp:"configured",hooks:"configured"})).toBe("Codex — Serving lightbulb for new sessions");
   expect(screen.getByText(/re-add the hosted server/)).toHaveTextContent("claude mcp add --transport http lightbulb https://api.thelightbulb.company/mcp");
+});
+it("turns Share every session live on and off through the desktop, off by default", async () => {
+  invoke.mockImplementation(async (command, args) => command === "shell_integration_set" ? args.enabled : false);
+  render(<ShareEverySessionLive />);
+  const box = await screen.findByRole("checkbox", {name:/Typing claude or codex/});
+  expect(box).not.toBeChecked();
+  await userEvent.click(box);
+  await waitFor(() => expect(box).toBeChecked());
+  expect(invoke).toHaveBeenCalledWith("shell_integration_set", {enabled:true});
+});
+it("offers Share every session live at pairing, off unless chosen", async () => {
+  invoke.mockImplementation(async (command) => command === "local_sessions_set" ? 1 : { enrollment:null, pairedWorkspaceId:"org", status:"paused" });
+  render(<DesktopPermissionsGate />);
+  const live = await screen.findByRole("button", {name:/Share every session live/});
+  expect(live).toHaveAttribute("aria-pressed", "false");
+  await userEvent.click(live);
+  await userEvent.click(screen.getByRole("button", {name:"Continue"}));
+  await waitFor(() => expect(invoke).toHaveBeenCalledWith("shell_integration_set", {enabled:true}));
 });

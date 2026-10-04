@@ -49,9 +49,22 @@ struct Cli {
 
 impl Cli {
     fn start(app: &Path) -> Cli {
+        Cli::start_args(app, &["claude"])
+    }
+
+    /// A HOME whose `claude` is a stand-in for the real one, found before any installed copy.
+    fn start_args(app: &Path, args: &[&str]) -> Cli {
+        let home = temp_dir();
+        std::fs::create_dir_all(home.join(".local/bin")).unwrap();
+        let real = home.join(".local/bin/claude");
+        std::fs::write(&real, "#!/bin/sh\necho \"real claude $*\"\nexit 7\n").unwrap();
+        std::fs::set_permissions(&real, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
         let pair = native_pty_system().openpty(PtySize { rows: 24, cols: 80, pixel_width: 0, pixel_height: 0 }).unwrap();
         let mut cmd = CommandBuilder::new(env!("CARGO_BIN_EXE_lightbulb-desktop"));
-        cmd.args(["cli", "claude"]);
+        cmd.arg("cli");
+        cmd.args(args);
+        cmd.env("HOME", &home);
+        cmd.env("LIGHTBULB_TEST_MARKER", "from-the-terminal");
         cmd.env("LIGHTBULB_TEST_APP_SOCKET", app);
         cmd.cwd("/private/tmp");
         let child = pair.slave.spawn_command(cmd).unwrap();
@@ -102,20 +115,72 @@ impl Cli {
 }
 
 #[test]
-fn cli_says_the_app_is_not_running_and_exits_1() {
-    let mut cli = Cli::start(&temp_dir().join("no-app.sock"));
-    assert_eq!(cli.exit_code(), 1);
-    cli.wait_for("Lightbulb is not running");
+fn cli_runs_the_real_tool_when_the_app_is_not_running() {
+    let mut cli = Cli::start_args(&temp_dir().join("no-app.sock"), &["claude", "--model", "opus"]);
+    assert_eq!(cli.exit_code(), 7, "the real tool's own exit code");
+    cli.wait_for("lightbulb: not shared (Lightbulb is not running), running claude normally");
+    cli.wait_for("real claude --model opus");
 }
 
 #[test]
-fn cli_prints_the_app_s_refusal_and_attaches_to_nothing() {
+fn cli_runs_the_real_tool_after_the_app_s_refusal() {
     let app = temp_dir().join("app.sock");
-    serve_at(&app, |_| Err("This folder is not inside a folder you approved for Lightbulb. Add it in the Lightbulb app under Settings → File access, then run this again.".into())).unwrap();
+    serve_at(&app, |_| Err("Session sharing is off in Lightbulb on this Mac. Turn it on in Settings.".into())).unwrap();
     let mut cli = Cli::start(&app);
-    assert_eq!(cli.exit_code(), 1);
-    cli.wait_for("not inside a folder you approved");
+    assert_eq!(cli.exit_code(), 7);
+    cli.wait_for("not shared (Session sharing is off in Lightbulb on this Mac)");
+    cli.wait_for("real claude");
     assert!(!cli.text().contains("Shared with"));
+}
+
+#[test]
+fn cli_runs_non_interactive_forms_as_the_real_tool_without_a_note() {
+    let mut cli = Cli::start_args(&temp_dir().join("no-app.sock"), &["claude", "-p", "hi"]);
+    assert_eq!(cli.exit_code(), 7);
+    cli.wait_for("real claude -p hi");
+    assert!(!cli.text().contains("not shared"));
+}
+
+/// A fake app that refuses the folder until the request carries the person's yes.
+fn app_asking_for_the_folder(holder: PathBuf, seen: Arc<Mutex<Vec<serde_json::Value>>>) -> PathBuf {
+    let app = temp_dir().join("app.sock");
+    serve_at(&app, move |request| {
+        seen.lock().unwrap().push(request.clone());
+        if request["approveFolder"] == true {
+            Ok(Started { socket: holder.clone(), workspace: Some("Acme".into()) })
+        } else {
+            Err(lightbulb_desktop::cli::FOLDER_NOT_APPROVED.into())
+        }
+    })
+    .unwrap();
+    app
+}
+
+#[test]
+fn cli_asks_to_share_an_unapproved_folder_and_starts_on_yes() {
+    let (_, holder) = app_with_holder(&["/bin/cat"]);
+    let seen = Arc::new(Mutex::new(vec![]));
+    let app = app_asking_for_the_folder(holder, seen.clone());
+    let mut cli = Cli::start(&app);
+    cli.wait_for("Share sessions from /private/tmp with your workspace?");
+    cli.keys.write_all(b"y\r").unwrap();
+    cli.wait_for("● Shared with Acme.");
+    let requests = seen.lock().unwrap().clone();
+    assert_eq!(requests.len(), 2);
+    assert_eq!(requests[1]["env"]["LIGHTBULB_TEST_MARKER"], "from-the-terminal", "the terminal's environment");
+    assert!(requests[1]["env"].get("PWD").is_none());
+}
+
+#[test]
+fn cli_runs_the_real_tool_when_the_folder_is_declined() {
+    let seen = Arc::new(Mutex::new(vec![]));
+    let app = app_asking_for_the_folder(temp_dir().join("never.sock"), seen.clone());
+    let mut cli = Cli::start(&app);
+    cli.wait_for("[y/N]");
+    cli.keys.write_all(b"\r").unwrap();
+    assert_eq!(cli.exit_code(), 7);
+    cli.wait_for("not shared (you did not share this folder)");
+    assert_eq!(seen.lock().unwrap().len(), 1, "no second request without a yes");
 }
 
 #[test]

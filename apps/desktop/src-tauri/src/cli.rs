@@ -4,8 +4,9 @@
 //!
 //! The app does the start (`session_start::cli_start`): the installed tool, the approved
 //! folders (this folder or one it is inside), and sharing must be on. The provider's arguments
-//! pass through unchanged (owner ruling 2026-10-03); only the forms with no terminal to share
-//! are refused. This process only turns words into that request and moves bytes.
+//! pass through unchanged (owner ruling 2026-10-03). It never blocks a person (owner ruling
+//! 2026-10-04): a form with no terminal to share, or a start the app cannot share, runs the real
+//! tool instead. This process only turns words into that request and moves bytes.
 
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -13,6 +14,7 @@ use std::io::{BufRead, BufReader, Read, Write};
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::io::AsRawFd;
 use std::os::unix::net::{UnixListener, UnixStream};
+use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -119,6 +121,12 @@ pub struct Started {
 type Reply = Result<Started, String>;
 
 const NOT_RUNNING: &str = "Lightbulb is not running. Open the Lightbulb app, then run this again.";
+/// The app may have started a session: never start the tool a second time after this one.
+const NO_ANSWER: &str = "Lightbulb did not answer. If a session started, it is in the Lightbulb app.";
+/// The app's refusal that the command answers with a question in the terminal.
+pub const FOLDER_NOT_APPROVED: &str = "This folder is not inside a folder you approved for Lightbulb. Add it in the Lightbulb app under Settings → File access, then run this again.";
+/// The calling terminal's environment, raw bytes: well over any real one, far under the line limit.
+const MAX_ENV: usize = 256 << 10;
 
 /// Where the app listens: beside the holders' folder, which only this Mac user can enter.
 pub fn app_socket() -> PathBuf {
@@ -161,8 +169,9 @@ fn answer(mut conn: UnixStream, start: &(dyn Fn(Value) -> Reply + Send + Sync)) 
     }
     conn.set_read_timeout(Some(Duration::from_secs(5)))?;
     let mut line = String::new();
-    // JSON escapes a byte to at most 6 (`\u00XX`), so 64 KiB of arguments serialize under 384 KiB plus the envelope.
-    BufReader::new((&conn).take(512 << 10)).read_line(&mut line)?;
+    // JSON escapes a byte to at most 6 (`\u00XX`), so 64 KiB of arguments and 256 KiB of
+    // environment serialize under 1920 KiB plus the envelope.
+    BufReader::new((&conn).take(2 << 20)).read_line(&mut line)?;
     let reply = serde_json::from_str::<Value>(&line).map_err(|_| "Malformed request.".to_string()).and_then(start);
     conn.write_all(format!("{}\n", serde_json::to_string(&reply)?).as_bytes())
 }
@@ -186,7 +195,9 @@ pub fn serve(app: tauri::AppHandle) -> Result<(), String> {
     serve_at(&app_socket(), move |request| {
         let side = |key: &str, default: u16| request[key].as_u64().and_then(|v| u16::try_from(v).ok()).unwrap_or(default);
         let size = (side("cols", 80), side("rows", 24));
-        let info = crate::session_start::cli_start(&app, request["start"].clone(), size)?;
+        let env = environment(&request["env"])?;
+        let approve = request["approveFolder"] == true;
+        let info = crate::session_start::cli_start(&app, request["start"].clone(), size, env, approve)?;
         let owner = crate::local_sessions::enrollment::enrolled_owner(&app);
         let workspace = shared_workspace(WORKSPACE.lock().unwrap().as_ref(), owner.as_deref());
         Ok(Started { socket: info.socket, workspace })
@@ -194,10 +205,35 @@ pub fn serve(app: tauri::AppHandle) -> Result<(), String> {
     .map_err(|e| e.to_string())
 }
 
+/// The request's terminal environment, if it has one: string values, no NUL, within `MAX_ENV`.
+pub fn environment(value: &Value) -> Result<Option<Vec<(String, String)>>, String> {
+    let Some(map) = value.as_object() else { return Ok(None) };
+    let mut total = 0;
+    let mut out = vec![];
+    for (k, v) in map {
+        let v = v.as_str().ok_or("Malformed request.")?;
+        total += k.len() + v.len();
+        if k.is_empty() || k.contains(['=', '\0']) || v.contains('\0') || total > MAX_ENV {
+            return Err("Malformed request.".into());
+        }
+        out.push((k.clone(), v.to_string()));
+    }
+    Ok(Some(out))
+}
+
+/// This terminal's environment for the session, minus what only describes this shell.
+pub fn terminal_environment() -> serde_json::Map<String, Value> {
+    std::env::vars_os()
+        .map(|(k, v)| (k.to_string_lossy().into_owned(), v.to_string_lossy().into_owned()))
+        .filter(|(k, _)| !matches!(k.as_str(), "PWD" | "OLDPWD" | "SHLVL" | "_"))
+        .map(|(k, v)| (k, Value::String(v)))
+        .collect()
+}
+
 /// The command's end: ask the running app to start the session.
 pub fn ask_app(path: &Path, request: &Value) -> Result<Started, String> {
     fn no_answer<E>(_: E) -> String {
-        "Lightbulb did not answer. If a session started, it is in the Lightbulb app.".into()
+        NO_ANSWER.into()
     }
     let mut conn = UnixStream::connect(path).map_err(|_| NOT_RUNNING.to_string())?;
     if !same_user(&conn) {
@@ -245,12 +281,66 @@ pub fn parse(args: &[String]) -> Result<Ask, String> {
     Ok(Ask { tool: tool.clone(), args: rest.to_vec() })
 }
 
-/// Exactly `session_start::cli_start`'s fields, plus this terminal's size.
-pub fn request(ask: &Ask, folder: &Path, (cols, rows): (u16, u16)) -> Value {
+/// Exactly `session_start::cli_start`'s fields, plus this terminal's size and environment.
+pub fn request(ask: &Ask, folder: &Path, (cols, rows): (u16, u16), env: serde_json::Map<String, Value>) -> Value {
     json!({
         "start": {"tool": ask.tool, "folder": folder.to_string_lossy(), "args": ask.args,
             "startId": uuid::Uuid::new_v4().to_string()},
-        "cols": cols, "rows": rows,
+        "cols": cols, "rows": rows, "env": env,
+    })
+}
+
+/// The app's refusal as the short reason in "not shared (…)": its first sentence.
+pub fn short_reason(message: &str) -> String {
+    message.split(". ").next().unwrap_or(message).trim_end_matches('.').to_string()
+}
+
+/// Ask a yes/no question on this terminal. Ctrl-C answers it the usual way (ends the command).
+fn confirm(question: &str, signals: &libc::sigset_t) -> bool {
+    eprint!("{question}");
+    let _ = std::io::stderr().flush();
+    unsafe { libc::pthread_sigmask(libc::SIG_UNBLOCK, signals, std::ptr::null_mut()) };
+    let mut line = String::new();
+    let read = std::io::stdin().read_line(&mut line);
+    unsafe { libc::pthread_sigmask(libc::SIG_BLOCK, signals, std::ptr::null_mut()) };
+    read.is_ok() && matches!(line.trim(), "y" | "Y" | "yes" | "Yes" | "YES")
+}
+
+/// Run the real tool in place of this process, with the same arguments, by absolute path (so
+/// never this command again). `reason` is why a session that could have been shared is not.
+fn run_real(tool: &str, args: &[String], reason: Option<&str>) -> i32 {
+    unsafe {
+        let mut none: libc::sigset_t = std::mem::zeroed();
+        libc::sigemptyset(&mut none);
+        libc::pthread_sigmask(libc::SIG_SETMASK, &none, std::ptr::null_mut());
+    }
+    let home = std::env::var_os("HOME").map(PathBuf::from).unwrap_or_default();
+    let own = std::env::current_exe().and_then(std::fs::canonicalize).ok();
+    // The one this shell would have run: its PATH order first (asdf/mise shims, a pinned version),
+    // then the app's known install places. Never this command again.
+    let Some(program) = on_path(tool, std::env::var_os("PATH").as_deref(), own.as_deref())
+        .or_else(|| crate::local_sessions::provider_program(&home, tool).filter(|p| Some(p) != own.as_ref()))
+    else {
+        eprintln!("lightbulb: {tool} is not installed.");
+        return 127;
+    };
+    if let Some(reason) = reason {
+        eprintln!("lightbulb: not shared ({reason}), running {tool} normally");
+    }
+    let err = std::process::Command::new(&program).arg0(tool).args(args).exec();
+    eprintln!("lightbulb: could not run {}: {err}", program.display());
+    126
+}
+
+/// The first executable `tool` on `path`, as the shell resolves a command, skipping `own` (this
+/// program, should a link named `tool` point back at it).
+fn on_path(tool: &str, path: Option<&std::ffi::OsStr>, own: Option<&Path>) -> Option<PathBuf> {
+    use std::os::unix::fs::PermissionsExt;
+    std::env::split_paths(path?).map(|dir| dir.join(tool)).find(|candidate| {
+        let real = std::fs::canonicalize(candidate).ok();
+        candidate.is_file()
+            && std::fs::metadata(candidate).is_ok_and(|m| m.permissions().mode() & 0o111 != 0)
+            && real.as_deref() != own
     })
 }
 
@@ -438,32 +528,51 @@ pub fn main(args: &[String]) -> i32 {
     // with the Decision 4 line in `attach`, instead of killing this silently with the session
     // started anyway. The early exits below just exit with it pending.
     let signals = block_signals();
+    // A form with no terminal to share (`-p`, `--version`, `codex exec`, …) runs the real tool,
+    // with no note: it was never going to be shared.
     let ask = match parse(args) {
         Ok(ask) => ask,
-        Err(message) => {
-            eprintln!("{message}");
-            return 2;
-        }
+        Err(message) => match args.first().filter(|t| *t == "claude" || *t == "codex") {
+            Some(tool) => return run_real(tool, &args[1..], None),
+            None => {
+                eprintln!("{message}");
+                return 2;
+            }
+        },
     };
-    // Before asking the app: never start a session nobody here can see.
+    // Never start a session nobody here can see; scripts and pipes get the real tool.
     if unsafe { libc::isatty(0) != 1 || libc::isatty(1) != 1 } {
-        eprintln!("lightbulb {} needs a terminal: run it in Terminal, VS Code or another terminal app.", ask.tool);
-        return 1;
+        return run_real(&ask.tool, &ask.args, None);
     }
     let Ok(folder) = std::env::current_dir() else {
-        eprintln!("lightbulb: this folder no longer exists.");
-        return 1;
+        return run_real(&ask.tool, &ask.args, Some("this folder no longer exists"));
     };
     let size = window_size();
-    match ask_app(&app_socket(), &request(&ask, &folder, size)) {
+    let socket = app_socket();
+    let mut request = request(&ask, &folder, size, terminal_environment());
+    let mut reply = ask_app(&socket, &request);
+    if matches!(&reply, Err(m) if m == FOLDER_NOT_APPROVED) {
+        let question = format!(
+            "Share sessions from {} with your workspace? This adds it to Lightbulb's approved folders (Settings → File access). [y/N] ",
+            folder.display()
+        );
+        if confirm(&question, &signals) {
+            request["approveFolder"] = json!(true);
+            reply = ask_app(&socket, &request);
+        } else {
+            reply = Err("you did not share this folder".into());
+        }
+    }
+    match reply {
         Ok(started) => {
             println!("{}", shared_line(started.workspace.as_deref()));
             attach(&started.socket, size, signals)
         }
-        Err(message) => {
+        Err(message) if message == NO_ANSWER => {
             eprintln!("{message}");
             1
         }
+        Err(message) => run_real(&ask.tool, &ask.args, Some(&short_reason(&message))),
     }
 }
 
@@ -592,6 +701,25 @@ mod tests {
     }
 
     #[test]
+    fn cli_fallback_follows_the_shells_path_and_skips_itself() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let (first, second) = (dir.path().join("a"), dir.path().join("b"));
+        std::fs::create_dir_all(&first).unwrap();
+        std::fs::create_dir_all(&second).unwrap();
+        for d in [&first, &second] {
+            let f = d.join("claude");
+            std::fs::write(&f, "#!/bin/sh\n").unwrap();
+            std::fs::set_permissions(&f, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        let path = std::env::join_paths([&first, &second]).unwrap();
+        assert_eq!(on_path("claude", Some(&path), None), Some(first.join("claude")), "PATH order");
+        let own = std::fs::canonicalize(first.join("claude")).unwrap();
+        assert_eq!(on_path("claude", Some(&path), Some(&own)), Some(second.join("claude")), "never itself");
+        assert_eq!(on_path("codex", Some(&path), None), None);
+    }
+
+    #[test]
     fn cli_socket_answers_one_line_with_the_app_s_result() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("cli.sock");
@@ -646,13 +774,33 @@ mod tests {
         for refused in [&["claude", "-p", "hi"][..], &["claude", "--print"], &["codex", "exec", "hi"], &["bash"], &[], &["--help"]] {
             assert!(parse(&words(refused)).is_err(), "{refused:?}");
         }
-        let request = request(&ask, Path::new("/Users/a/code/app"), (80, 24));
+        let mut env = serde_json::Map::new();
+        env.insert("FOO".into(), json!("bar"));
+        let request = request(&ask, Path::new("/Users/a/code/app"), (80, 24), env);
+        assert_eq!(request["env"]["FOO"], "bar", "the terminal's environment, beside start");
         assert_eq!(request["start"]["tool"], "claude");
         assert_eq!(request["start"]["folder"], "/Users/a/code/app");
         assert_eq!(request["start"]["args"], json!(["--resume", "abc", "--dangerously-skip-permissions", "fix it"]));
         assert_eq!((request["cols"].as_u64(), request["rows"].as_u64()), (Some(80), Some(24)));
         let keys: Vec<_> = request["start"].as_object().unwrap().keys().cloned().collect();
         assert_eq!(keys, ["tool", "folder", "args", "startId"], "exactly cli_start's fields");
+    }
+
+    #[test]
+    fn cli_environment_is_strings_only_and_bounded() {
+        assert_eq!(environment(&Value::Null), Ok(None), "app-started: the login environment");
+        assert_eq!(environment(&json!({"A": "1"})), Ok(Some(vec![("A".into(), "1".into())])));
+        for bad in [json!({"A": 1}), json!({"": "x"}), json!({"A=B": "x"}), json!({"A": "x\0"}), json!({"A": "x".repeat(MAX_ENV)})] {
+            assert!(environment(&bad).is_err(), "{bad}");
+        }
+        assert!(!terminal_environment().contains_key("PWD"));
+    }
+
+    #[test]
+    fn cli_short_reason_is_the_app_s_first_sentence() {
+        assert_eq!(short_reason(NOT_RUNNING), "Lightbulb is not running");
+        assert_eq!(short_reason(FOLDER_NOT_APPROVED), "This folder is not inside a folder you approved for Lightbulb");
+        assert_eq!(short_reason("claude is not installed on this Mac."), "claude is not installed on this Mac");
     }
 
     #[test]

@@ -91,10 +91,22 @@ it("shows a plain Claude session's transcript with its status, and tells its own
   const plain: LocalSession = { ...session, terminal: undefined, status: "busy" };
   render(<LocalSessionPanel session={plain} ownerName="Alice" own client={client as never} revision={0} onAccessLost={() => {}} onEvent={() => () => {}} />);
   expect(screen.getByText(`Transcript · ${sessionStatus.busy}`)).toBeTruthy();
-  expect(screen.getByText("Press ← in its terminal to open it here.")).toBeTruthy();
+  const hint = "Press ← in its terminal to share this one live, or turn on Share every session live in Settings to make every new session live.";
+  expect(screen.getByText((_, el) => el?.tagName === "P" && el.textContent === hint)).toBeTruthy();
+  expect(screen.queryByRole("link", { name: "Settings" })).toBeNull();
   expect(screen.queryByRole("region", { name: /Live terminal/ })).toBeNull();
   expect(client.watchLocalSession).not.toHaveBeenCalled();
   expect(screen.getByRole("textbox", { name: /send to/i })).toBeTruthy();
+});
+
+it("links the hint's Settings to the live-sessions switch in the desktop app", () => {
+  (window as { __TAURI__?: unknown }).__TAURI__ = { core: { invoke: vi.fn(async () => ({ live: false })) } };
+  try {
+    render(<LocalSessionPanel session={{ ...session, terminal: undefined, status: "busy" }} ownerName="Alice" own client={client as never} revision={0} onAccessLost={() => {}} onEvent={() => () => {}} />);
+    expect(screen.getByRole("link", { name: "Settings" }).getAttribute("href")).toBe("/settings?panel=desktop#share-every-session-live");
+  } finally {
+    delete (window as { __TAURI__?: unknown }).__TAURI__;
+  }
 });
 
 it("gives a plain Codex session and a teammate no ← hint", () => {

@@ -119,8 +119,20 @@ enum Event {
     Eof,
 }
 
+/// Set on a holder whose own environment is the provider's (a terminal's, from `lightbulb
+/// claude`): use it as it is, with no login-shell capture.
+pub const INHERIT_ENV: &str = "LIGHTBULB_HOLDER_INHERIT_ENV";
+
 pub fn run(socket: &Path, argv: &[String], cwd: &Path, size: Option<(u16, u16)>) -> Result<()> {
-    run_with_env(socket, argv, cwd, login_environment(), size)
+    let env = if std::env::var_os(INHERIT_ENV).is_some() {
+        std::env::vars_os()
+            .map(|(k, v)| (k.to_string_lossy().into_owned(), v.to_string_lossy().into_owned()))
+            .filter(|(k, _)| k != INHERIT_ENV)
+            .collect()
+    } else {
+        login_environment()
+    };
+    run_with_env(socket, argv, cwd, env, size)
 }
 
 /// Variables one Claude Code session sets for its own children. A held session that inherits

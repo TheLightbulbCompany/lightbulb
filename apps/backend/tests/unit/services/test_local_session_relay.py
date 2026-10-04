@@ -1352,18 +1352,49 @@ async def test_session_title_registers_updates_on_heartbeat_and_survives_silent_
 
 
 @pytest.mark.asyncio
-async def test_register_without_a_holder_is_refused_and_a_held_one_records_it(transport):
+async def test_every_session_registers_and_a_holder_only_labels_it(transport):
     await service.set_enrollment(ALICE, service.EnrollmentRequest(deviceId=MAC, cliDeviceId=CLI, enabled=True))
     connect(transport)
-    unheld = registration()
-    del unheld["session"]["holderId"]
-    # Shared iff held: an older desktop, a forged id and the deleted background kind are all refused.
-    for body in (unheld, registration(holderId=None), registration(holderId="../x"), registration(kind="background")):
+    plain = registration()
+    del plain["session"]["holderId"]
+    sid = (await relay(transport).handle_message("conn-1", plain))["sessionId"]
+    assert "holderId" not in await repo.get_session(OWNER, sid), (
+        "a plain terminal session is tracked (rulings 2026-10-04)"
+    )
+    await relay(transport).handle_message("conn-1", registration(holderId=None))
+    assert "holderId" not in await repo.get_session(OWNER, sid), "null is no holder, never a stored null"
+    await relay(transport).handle_message("conn-1", registration())
+    assert (await repo.get_session(OWNER, sid))["holderId"] == "ab12cd34"
+    rerun = {**registration(generation="generation-2"), "previousGeneration": "generation-1"}
+    del rerun["session"]["holderId"]
+    await relay(transport).handle_message("conn-1", rerun)
+    assert "holderId" not in await repo.get_session(OWNER, sid), "a new run outside a holder loses the label"
+    for body in (registration(holderId="../x"), registration(kind="background")):
         with pytest.raises(ApiProblem) as excinfo:
             await relay(transport).handle_message("conn-1", body)
         assert excinfo.value.error.code == "INVALID_REQUEST"
-    held = await relay(transport).handle_message("conn-1", registration())
-    assert (await repo.get_session(OWNER, held["sessionId"]))["holderId"] == "ab12cd34"
+
+
+@pytest.mark.asyncio
+async def test_a_legacy_background_row_is_an_ordinary_session_once_it_registers_again(transport, db):
+    sid = await start(transport)
+    db[0].update_item(
+        Key={"pk": repo.session_pk(OWNER, sid), "sk": "META"},
+        UpdateExpression="SET kind = :k",
+        ExpressionAttributeValues={":k": "background"},
+    )
+    await relay(transport).handle_message("conn-1", registration())
+    assert "kind" not in await repo.get_session(OWNER, sid)
+
+
+@pytest.mark.asyncio
+async def test_a_fork_records_the_session_it_continues(transport):
+    origin = await start(transport)
+    fork = await relay(transport).handle_message(
+        "conn-1", registration(nativeConversationId="thread-2", forkedFrom=origin)
+    )
+    assert (await repo.get_session(OWNER, fork["sessionId"]))["forkedFrom"] == origin
+    assert "forkedFrom" not in await repo.get_session(OWNER, origin)
 
 
 @pytest.mark.asyncio

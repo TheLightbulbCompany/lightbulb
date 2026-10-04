@@ -36,8 +36,8 @@ logger = logging.getLogger(__name__)
 _ANALYTICS_NS = uuid.uuid5(uuid.NAMESPACE_URL, "lightbulb:local-session-lifecycle")
 
 
-#: The Lightbulb holder a session runs in (managed session sharing §5.4). Only held sessions
-#: are shared; a desktop that sends none is refused.
+#: The Lightbulb holder a session runs in (8 hex). Optional: every session on a paired Mac is
+#: tracked (rulings 2026-10-04); a holder only marks one whose live terminal Lightbulb hosts.
 HolderId = Annotated[str, Field(pattern=r"^[0-9a-f]{8}$")]
 
 
@@ -53,7 +53,10 @@ class Descriptor(ContractModel):
     control_unavailable_reason: sessions.ControlUnavailableReason | None = None
     title: Annotated[str, Field(max_length=120)] | None = None
     cwd_name: Annotated[str, Field(max_length=128)] | None = None
-    holder_id: HolderId
+    holder_id: HolderId | None = None
+    # A Claude session moved to the background (<-) continues as a fork with a new conversation:
+    # this names the session it continues, so a listing shows one session, not two.
+    forked_from: sessions.OpaqueId | None = None
     start_id: sessions.OpaqueId | None = None
 
 
@@ -514,6 +517,12 @@ class LocalSessionRelay:
                         capabilitiesVerified=compatible,
                         lastEventAt=int(time.time()),
                     )
+                    # Absent, never a stored null.
+                    for key in ("holderId", "forkedFrom"):
+                        if row.get(key) is None:
+                            row.pop(key, None)
+                    # The hidden `background` kind is gone (Phase 3); a row that still has it is listed now.
+                    row.pop("kind", None)
                     if descriptor.start_id is None and previous and previous["generation"] == descriptor.generation:
                         row["startId"] = previous.get("startId")
                     elif descriptor.start_id is None:

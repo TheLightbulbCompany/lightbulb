@@ -708,7 +708,7 @@ git commit -m "feat(workspace): Back/Forward rail buttons and ⌘[ / ⌘]"
   2. ⌘[ / ⌘] do the same; with ⌘K open they do nothing.
   3. Fresh dev workspace cold load lands on #general, Back is disabled (Chrome has the Navigation API).
   4. A notification / in-chat message link scrolls to its message and stays there.
-  5. Opening a session, then "New session", then Back returns to the session.
+  5. Opening a session, then "New session", then Back returns to the view before the session (the composer is not a history entry).
   6. Hard reload on a `?panel=chat&room=…` URL opens that room.
   7. No visible Suspense flash or network RSC request on Back/Forward (DevTools Network).
   8. After the prod promotion: in the Tauri desktop app, Back/Forward and ⌘[ / ⌘] work, and note whether the buttons ever disable (tells us if WKWebView has `window.navigation`).

@@ -829,6 +829,44 @@ class PushTests(unittest.TestCase):
         _, urlopen = self.project(push_world(kind="dm"))
         self.assertNotIn("tok-alice", urlopen.call_args.args[0].data.decode())
 
+    def test_human_author_remains_accountable_when_actor_user_id_disagrees(self):
+        # actorUserId belongs to delegated system posts. It must never override
+        # the public author on a direct human message, even on a malformed row.
+        for actor_user_id in (BOB_ID, "", 123):
+            with self.subTest(actor_user_id=actor_user_id):
+                message = push_message()
+                message["actorUserId"] = actor_user_id
+                _, urlopen = self.project(push_world(kind="dm"), message)
+                self.assertNotIn("tok-alice", urlopen.call_args.args[0].data.decode())
+                self.assertNotIn(f"ACTIVITY#{OWNER_ID}#{USER_ID}", index._ddb_client.activity())
+
+    def test_accountable_human_behind_a_system_authored_post_is_not_notified(self):
+        # Native sessions and hosted MCP clients render as system authors, but
+        # actorUserId records the human who actually sent the message. Their own
+        # delegated post must not come back as Activity or a phone push.
+        world = push_world(kind="dm")
+        message = push_message()
+        message["author"] = {"kind": "system", "id": "native-session", "displayName": "Codex session"}
+        message["actorUserId"] = USER_ID
+        message["mentions"] = [
+            {"kind": "human", "id": USER_ID},
+            {"kind": "human", "id": BOB_ID},
+        ]
+
+        publish, urlopen = self.project(world, message)
+
+        self.assertNotIn("tok-alice", urlopen.call_args.args[0].data.decode())
+        self.assertNotIn(f"ACTIVITY#{OWNER_ID}#{USER_ID}", index._ddb_client.activity())
+        alice = next(
+            call.args[1]["payload"]
+            for call in publish.call_args_list
+            if call.args[0] == f"/ws/{WORKSPACE_ID}/users/{CHANNEL_KEY}"
+        )
+        self.assertFalse(alice["notify"])
+        self.assertNotIn("push", alice)
+        self.assertEqual(alice["mentionedUserIds"], [BOB_ID])
+        self.assertEqual(alice["accountableHumanId"], USER_ID)
+
     def test_empty_text_bodies_as_an_image_and_long_text_is_truncated(self):
         for blank in ("", "   "):
             _, urlopen = self.project(push_world(), push_message(blank))
@@ -1257,6 +1295,31 @@ class ActivityTests(unittest.TestCase):
             index._project_message(reply)
         bob_hint = next(c.args[1] for c in publish.call_args_list if c.args[0].endswith(BOB_KEY))
         self.assertTrue(bob_hint["payload"]["notify"])
+
+    def test_thread_reply_reaches_accountable_human_who_started_delegated_root(self):
+        root = message_item(message_id=EVENT_ID, sequence=1)
+        root["author"] = {"kind": "system", "id": "native-session", "displayName": "Codex session"}
+        root["actorUserId"] = CAROL_ID
+        items = activity_world()
+        items[(f"OWNER#{OWNER_ID}", f"USERSTREAM#{CAROL_ID}")] = {"active": True, "channelKey": CAROL_KEY}
+        items[(f"STREAM#{CAROL_KEY}", "META")] = {
+            "active": True, "ownerId": OWNER_ID, "userId": CAROL_ID, "workspaceId": WORKSPACE_ID,
+        }
+        items[(root["pk"], root["sk"])] = root
+        reply = message_item(sequence=3)
+        reply["threadRootMessageId"] = EVENT_ID
+        reply["threadRootSeq"] = 1
+        index._ddb_client = FakeDdb(items)
+
+        with patch.object(index, "_publish") as publish:
+            index._project_message(reply)
+
+        rows = index._ddb_client.activity()
+        self.assertEqual(list(rows), [f"ACTIVITY#{OWNER_ID}#{CAROL_ID}"])
+        self.assertEqual(rows[f"ACTIVITY#{OWNER_ID}#{CAROL_ID}"]["kind"], "thread_reply")
+        carol_hint = next(c.args[1] for c in publish.call_args_list if c.args[0].endswith(CAROL_KEY))
+        self.assertTrue(carol_hint["payload"]["notify"])
+        self.assertEqual(carol_hint["payload"]["accountableHumanId"], USER_ID)
 
     def test_replay_is_idempotent(self):
         items = activity_world("dm", (USER_ID, BOB_ID))

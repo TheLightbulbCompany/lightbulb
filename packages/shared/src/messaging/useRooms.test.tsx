@@ -660,7 +660,7 @@ describe("useRooms platform seams", () => {
     });
     const available = (
       messageSeq = 2, notify = true,
-      extra: { authorId?: string; threadRootMessageId?: string | null; mentionedUserIds?: string[] } = {},
+      extra: { authorId?: string; accountableHumanId?: string; threadRootMessageId?: string | null; mentionedUserIds?: string[] } = {},
     ): LiveEvent => ({
       schemaVersion: 1, eventId: "evt-avail", type: "room.message.available",
       occurredAt: "2026-09-15T00:00:01Z", roomId: older.roomId, messageSeq,
@@ -669,6 +669,7 @@ describe("useRooms platform seams", () => {
         threadRootMessageId: extra.threadRootMessageId ?? null,
         lastMessage: authored(extra.authorId ?? "user-b", messageSeq),
         mentionedUserIds: extra.mentionedUserIds ?? [],
+        ...(extra.accountableHumanId ? { accountableHumanId: extra.accountableHumanId } : {}),
       },
     } as LiveEvent);
 
@@ -751,6 +752,21 @@ describe("useRooms platform seams", () => {
       await waitFor(() => expect(result.current.rooms).toHaveLength(2));
 
       act(() => { for (const handler of handlers) handler(available(2, false, { authorId: "user-a" })); });
+
+      expect(result.current.rooms.find((r) => r.roomId === older.roomId))
+        .toMatchObject({ lastMessageSeq: 2, lastReadSeq: 2, unreadCount: 0, mentionCount: 0 });
+    });
+
+    it("never counts a delegated top-level post owned by the current human", async () => {
+      messaging.listRooms.mockResolvedValue({
+        rooms: [newer, { ...older, unreadCount: 3, mentionCount: 1 }], sections: [],
+      });
+      const { result } = renderHook(() => useRooms(platform(), { autoSelect: false }), { wrapper });
+      await waitFor(() => expect(result.current.rooms).toHaveLength(2));
+
+      act(() => { for (const handler of handlers) handler(available(2, false, {
+        authorId: "native-session", accountableHumanId: "user-a",
+      })); });
 
       expect(result.current.rooms.find((r) => r.roomId === older.roomId))
         .toMatchObject({ lastMessageSeq: 2, lastReadSeq: 2, unreadCount: 0, mentionCount: 0 });

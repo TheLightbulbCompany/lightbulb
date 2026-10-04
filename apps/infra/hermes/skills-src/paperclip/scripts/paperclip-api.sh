@@ -29,7 +29,11 @@ Environment (required for live requests; not needed for --dry-run):
   PAPERCLIP_AGENT_ID is additionally required for `checkout`.
   PAPERCLIP_RUN_ID is optional: it exists only on heartbeat-wake runs, and the
   X-Paperclip-Run-Id header is sent only when it is set. Webchat/interactive
-  sessions have no run id — the header is omitted; never invent one.
+  sessions have no run id — the header is omitted; never invent one. (In a
+  room turn the header also carries a Paperclip run the bridge attached to
+  this conversation for that issue.) A create/update/checkout from a room
+  turn records the issue as this conversation's: Paperclip's wakes for it
+  come back to this conversation.
 
 Subcommands (markdown / freeform text is read from stdin where noted):
 
@@ -46,9 +50,9 @@ Subcommands (markdown / freeform text is read from stdin where noted):
       stdin comment is required.
       STATUS: backlog|todo|in_progress|in_review|done|blocked|cancelled
       --blocked-by replaces the blocker set; pass --blocked-by "" to clear it.
-      --assignee + --status todo is the webchat way to START work: it
-      dispatches a heartbeat run for the assignee (see the skill's
-      "Webchat and interactive sessions" section).
+      --assignee + --status todo STARTS work: it dispatches a heartbeat run
+      for the assignee; for an issue a room conversation owns, that run joins
+      the conversation (see the skill's "Webchat and interactive sessions").
 
   monitor <issueId> --at ISO8601 [--service NAME] [--notes TEXT]
           [--timeout-at ISO8601] [--max-attempts N] [--recovery POLICY]
@@ -352,10 +356,14 @@ send() {
 
   # X-Paperclip-Run-Id attributes the write to the current heartbeat run. A
   # run id exists only on heartbeat-wake runs; webchat/interactive sessions
-  # have none, so the header is omitted entirely (never fabricate one).
+  # have none, so the header is omitted entirely (never fabricate one) --
+  # unless the Lightbulb bridge attached Paperclip's run for this issue to
+  # this conversation (attached_run_id).
+  local run_id="${PAPERCLIP_RUN_ID:-}"
+  [[ -n "$run_id" ]] || run_id="$(attached_run_id "$url")"
   local run_id_header=()
-  if [[ -n "${PAPERCLIP_RUN_ID:-}" ]]; then
-    run_id_header=(-H "X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID")
+  if [[ -n "$run_id" ]]; then
+    run_id_header=(-H "X-Paperclip-Run-Id: $run_id")
   fi
 
   local response_file status_code
@@ -386,9 +394,54 @@ send() {
     exit 1
   fi
 
+  [[ "$method" == "GET" ]] || record_issue_conversation "$method" "$url" "$response_file"
   cat "$response_file"
   printf '\n'
   rm -f "$response_file"
+}
+
+# The Lightbulb bridge runs both room turns and Paperclip's runs. When a room
+# conversation creates, updates or checks out an issue, this records that the
+# issue belongs to that conversation, and the bridge lands Paperclip's later
+# wakes for it there instead of in a fresh session that redoes the work. Only
+# a room conversation (HERMES_SESSION_KEY is a room key) records; an issue
+# that goes done/cancelled drops its record. Never fails the write.
+ROOM_SESSION_RE='^agent:[^:]+:lightbulb:channel:[0-9a-f-]{36}$'
+ISSUE_ID_RE='^[A-Za-z0-9-]{1,128}$'
+
+record_issue_conversation() {
+  local method="$1" url="$2" response_file="$3"
+  [[ -n "${HERMES_HOME:-}" && "${HERMES_SESSION_KEY:-}" =~ $ROOM_SESSION_RE ]] || return 0
+  # Issue creates, issue PATCHes and checkouts only -- each answers with the
+  # issue itself, so `.id` is its real id even when the URL used an identifier.
+  [[ ("$method" == "POST" && "$url" =~ /api/companies/[^/?]+/issues$)
+     || ("$method" == "PATCH" && "$url" =~ /api/issues/[^/?]+$)
+     || ("$method" == "POST" && "$url" =~ /api/issues/[^/?]+/checkout$) ]] || return 0
+  local id status dir
+  id="$(jq -r '.id // empty' <"$response_file" 2>/dev/null)" || return 0
+  status="$(jq -r '.status // empty' <"$response_file" 2>/dev/null)" || return 0
+  [[ "$id" =~ $ISSUE_ID_RE ]] || return 0
+  dir="$HERMES_HOME/lightbulb-issue-bindings"
+  if [[ "$status" == "done" || "$status" == "cancelled" ]]; then
+    rm -f "$dir/$id.json"
+  elif ! { mkdir -p "$dir" && jq -nc --arg key "$HERMES_SESSION_KEY" '{sessionKey: $key}' >"$dir/$id.json"; }; then
+    printf 'note: could not record this issue for this conversation\n' >&2
+  fi
+  return 0
+}
+
+# attached_run_id URL: the run id the bridge published for the issue this URL
+# addresses (/api/issues/<id>/...) while it holds Paperclip's run for that
+# issue in this agent's room conversation; empty otherwise.
+attached_run_id() {
+  local id="${1#*/api/issues/}" run=""
+  [[ -n "${HERMES_HOME:-}" && "$id" != "$1" ]] || return 0
+  id="${id%%/*}"
+  id="${id%%\?*}"
+  [[ "$id" =~ $ISSUE_ID_RE && -r "$HERMES_HOME/.lightbulb-turn/paperclip-run.$id" ]] || return 0
+  run="$(<"$HERMES_HOME/.lightbulb-turn/paperclip-run.$id")"
+  [[ "$run" =~ ^[A-Za-z0-9_-]{1,128}$ ]] && printf '%s' "$run"
+  return 0
 }
 
 # Read-only commands print their fully encoded URL in --dry-run mode. The

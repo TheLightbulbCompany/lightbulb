@@ -106,10 +106,12 @@ checked out (`401` — wait for it, or tell the user); the same calls on
 cross_issue_influence_run_context_required`) — file a new issue or `@mention`
 the assignee instead. Filing a new issue is always allowed. `checkout` and
 `release` are always rejected without a run id (`401 Agent run id required`).
-**To start work from webchat, assign — don't checkout**
-(`update <issueId> --assignee <agentId> --status todo`). Never surface run-id
-mechanics to the user, and never invent a run id.
-Full rules: `references/heartbeat.md`.
+**Work you take on in a room stays in that room's conversation:** an issue you
+create, update or check out from a room turn belongs to this conversation, and
+Paperclip's wakes for it come back here — no separate session redoes it. So
+when the user wants it done now, file it to yourself as `todo`/`in_progress`
+and keep working. Never surface run-id mechanics to the user, and never invent
+a run id. Full rules: `references/heartbeat.md`.
 
 ## Managing A User's Inbox
 

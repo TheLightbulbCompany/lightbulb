@@ -314,6 +314,16 @@ async def _create_room(owner_id: str, room_id: str, invite: Invite, creator: str
             raise
 
 
+async def adopted_audio(room_id: str, bot_id: str) -> str | None:
+    """An adopted bot may be older than per-person audio (a deploy between its create and now): the
+    record follows what the bot really sends. Unknown reads as the mixed stream, which the bridge refuses."""
+    try:
+        return await meeting_bots.audio_mode(bot_id)
+    except Exception:  # noqa: BLE001
+        logger.warning("meeting room %s: adopted bot's audio mode unknown, assuming mixed", room_id)
+        return None
+
+
 async def _patch_meeting(
     room_id: str, fields, drop: tuple = (), when=None, *, keep_transcript: bool = False
 ) -> dict | None:
@@ -490,15 +500,7 @@ async def _sync_bot(owner_id: str, room_id: str, meeting: dict, prior: dict | No
         return await _bot_failed(owner_id, room_id, meeting, exc, "book", keep=not _definitive(exc))
     except Exception as exc:  # noqa: BLE001
         return await _bot_failed(owner_id, room_id, meeting, exc, "book", keep=True)
-    audio = "separate"
-    if adopted:
-        # An adopted bot may be older than per-person audio (a deploy between its create and now): the
-        # record follows what the bot really sends. Unknown reads as the mixed stream, which the bridge refuses.
-        try:
-            audio = await meeting_bots.audio_mode(bot_id)
-        except Exception:  # noqa: BLE001
-            logger.warning("meeting room %s: adopted bot's audio mode unknown, assuming mixed", room_id)
-            audio = None
+    audio = await adopted_audio(room_id, bot_id) if adopted else "separate"
     booked = {"recallBotId": bot_id, "ticketNonce": nonce, **({"audio": audio} if audio else {})}
     stored = ((await messaging_repo.get_room(room_id)) or {}).get("meeting") or {}
     if stored.get("status") != "cancelled":

@@ -9,7 +9,9 @@ import {
   useHistorySource, useLocalSessionHistory, usePendingPrompt, useSessionAudit, useSessionCommand, useSessionJoinRequest, useSessionOutbox, withAuditNotices,
   type LocalSession, type SessionControlClient, type SessionSource,
 } from "@lightbulb/shared";
+import Link from "next/link";
 import { Button } from "@/components/ui/button";
+import { isDesktopApp } from "@/lib/desktopNotify";
 import { NativeSessionTranscript, ReceiptChip, SubagentPanel, revealSubagent, type Person } from "./NativeSessionTranscript";
 import { SessionApprovalCard } from "./SessionControls";
 import { SessionTerminalView } from "./SessionTerminalView";
@@ -214,7 +216,9 @@ export function LocalSessionPanel({ session, ownerName, own, client, revision, o
     </div>
     {own && !!session.pendingJoins?.length && <JoinRequests session={session} client={client} personName={personName} />}
     {(pressLeft || session.shared === false || session.controlUnavailableReason || session.workspace?.changed) && <div className="session-notices">
-      {pressLeft && <p role="status">Press ← in its terminal to open it here.</p>}
+      {pressLeft && <p role="status">Press ← in its terminal to share this one live, or turn on Share every session live in {isDesktopApp()
+        ? <Link className="underline underline-offset-4" href="/settings?panel=desktop#share-every-session-live">Settings</Link>
+        : "Settings"} to make every new session live.</p>}
       {session.shared === false && <p role="status">Sharing is paused. Only you can see this session, and nothing it does now is shared.</p>}
       {session.controlUnavailableReason && <p role="status" className="text-warn">{unavailableReason[session.controlUnavailableReason]}</p>}
       {session.workspace?.changed && <p role="status" className="text-warn">Files changed outside this session. It will re-read them before your next follow-up.</p>}

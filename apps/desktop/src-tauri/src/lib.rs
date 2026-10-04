@@ -21,6 +21,7 @@ pub mod proxy;
 pub mod screen;
 mod session_pickup;
 mod session_start;
+mod shell_integration;
 pub mod desktop_permissions;
 pub mod subprocess;
 mod tray;
@@ -1857,6 +1858,8 @@ end tell"#,
             agent_chrome::agent_chrome_raise,
             session_start::terminal_options,
             session_start::terminal_start,
+            shell_integration::shell_integration_status,
+            shell_integration::shell_integration_set,
             holder::panel::terminal_panel,
         ])
         .setup(|app| {

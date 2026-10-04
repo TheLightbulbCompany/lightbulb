@@ -335,6 +335,12 @@ function SessionBody({
           </Pressable>
         </View>
       )}
+      {own && session.provider === "claude" && !session.terminal && !ended && session.status !== "offline" && (
+        // A plain `claude` is a transcript only; ← in its terminal (or the desktop setting) makes it live.
+        <Text style={[styles.meta, styles.liveHint, { color: palette.fgMute }]} accessibilityLiveRegion="polite">
+          Press ← in its terminal to share this one live, or turn on Share every session live in Settings to make every new session live.
+        </Text>
+      )}
       {remoteApproval && <SessionApprovalCard key={session.pendingApproval?.approvalId} session={session} client={client} allowed={control} own={own} ownerName={ownerName} />}
       {own && <JoinRequests session={session} client={client} personName={personName} onAnswered={onAccessLost} />}
       <View style={styles.timeline}>
@@ -482,6 +488,7 @@ const styles = StyleSheet.create({
     justifyContent: "space-between",
     gap: spacing.sm,
   },
+  liveHint: { marginHorizontal: spacing.lg, marginTop: spacing.sm },
   waitingBannerText: { flex: 1, fontFamily: fonts.sansSemiBold, fontSize: 14, lineHeight: 18 },
   waitingBlock: { gap: 2, marginTop: spacing.xs },
   waitingTitle: { fontFamily: fonts.sansSemiBold, fontSize: 14, lineHeight: 18 },

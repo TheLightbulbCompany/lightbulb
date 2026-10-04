@@ -139,11 +139,22 @@ pub fn start(cwd: &Path, argv: &[String]) -> Result<HolderInfo, String> {
 /// Start a holder whose terminal begins at `size` (`cols`, `rows`): the size of the terminal
 /// that attaches to it first.
 pub fn start_sized(cwd: &Path, argv: &[String], size: Option<(u16, u16)>) -> Result<HolderInfo, String> {
+    start_sized_env(cwd, argv, size, None)
+}
+
+/// As `start_sized`, with `env` as the provider's whole environment instead of the login shell's
+/// (`lightbulb claude` passes its terminal's). It reaches the holder through the holder's own
+/// environment, never its argv, which `ps` shows.
+pub fn start_sized_env(cwd: &Path, argv: &[String], size: Option<(u16, u16)>, env: Option<Vec<(String, String)>>) -> Result<HolderInfo, String> {
     let exe = std::env::current_exe().map_err(|e| e.to_string())?;
-    start_with(&exe, &socket_dir(), cwd, argv, size)
+    start_with_env(&exe, &socket_dir(), cwd, argv, size, env)
 }
 
 pub fn start_with(exe: &Path, dir: &Path, cwd: &Path, argv: &[String], size: Option<(u16, u16)>) -> Result<HolderInfo, String> {
+    start_with_env(exe, dir, cwd, argv, size, None)
+}
+
+pub fn start_with_env(exe: &Path, dir: &Path, cwd: &Path, argv: &[String], size: Option<(u16, u16)>, env: Option<Vec<(String, String)>>) -> Result<HolderInfo, String> {
     ensure_dir(dir)?;
     // Eight hex characters keep the socket path well under the 104-byte limit.
     let id = uuid::Uuid::new_v4().simple().to_string()[..8].to_owned();
@@ -154,6 +165,9 @@ pub fn start_with(exe: &Path, dir: &Path, cwd: &Path, argv: &[String], size: Opt
         cmd.arg(format!("--size={cols}x{rows}"));
     }
     cmd.arg("--").args(argv).current_dir(cwd);
+    if let Some(env) = env {
+        cmd.env_clear().envs(env).env(super::run::INHERIT_ENV, "1");
+    }
     cmd.stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null());
     // Its own session: no controlling terminal, untouched by the app's process group.
     unsafe {

@@ -477,10 +477,15 @@ struct CliStart {
 /// `lightbulb claude|codex` in a terminal (`cli.rs`): the tool must be installed, the folder an
 /// approved folder or inside one, and sharing on. No window, because the terminal that asked
 /// attaches itself. Never starts a session that would not be shared.
+/// `env` is the calling terminal's environment (the provider gets it instead of the login
+/// shell's); `approve_folder` is the person's "yes" in that terminal to adding the folder to the
+/// approved folders.
 pub(crate) fn cli_start(
     app: &tauri::AppHandle,
     params: Value,
     size: (u16, u16),
+    env: Option<Vec<(String, String)>>,
+    approve_folder: bool,
 ) -> Result<crate::holder::manager::HolderInfo, String> {
     let start: CliStart = serde_json::from_value(params).map_err(|_| "Malformed request.".to_string())?;
     if let Some(reason) = crate::cli::refusal(&start.tool, &start.args) {
@@ -509,16 +514,20 @@ pub(crate) fn cli_start(
             return Err(reason);
         }
     }
+    if approve_folder && Path::new(&start.folder).is_dir() {
+        // The same store Settings → File access writes.
+        crate::file_access::add_path(&start.folder).map_err(|e| e.to_string())?;
+    }
     let approved = approved_now();
     let folder = crate::file_access::canonicalize(&start.folder)
         .ok()
         .filter(|f| f.is_dir() && inside_approved(f, &approved))
-        .ok_or("This folder is not inside a folder you approved for Lightbulb. Add it in the Lightbulb app under Settings → File access, then run this again.".to_string())?;
+        .ok_or(crate::cli::FOLDER_NOT_APPROVED.to_string())?;
     if let Some(reason) = unapproved_path_flag(&start.tool, &start.args, &folder, &approved) {
         return Err(reason);
     }
     let argv = held_argv(&cli_argv(&program, &start.tool, &start.args), Some((start.start_id.as_str(), scope.as_str())));
-    let info = crate::holder::manager::start_sized(&folder, &argv, Some(size))?;
+    let info = crate::holder::manager::start_sized_env(&folder, &argv, Some(size), env)?;
     crate::log(&format!("[session-start] terminal command {} {} in {}", start.start_id, start.tool, folder.display()));
     Ok(info)
 }

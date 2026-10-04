@@ -5,7 +5,8 @@
 //! installed fixed binary, the folder one of the approved folders (Settings → File
 //! access), model/mode from a closed list, and the prompt is passed after `--` so it
 //! can never become a flag. Then a held session opens on this Mac so the owner sees it;
-//! sharing must already be on, and only held sessions are shared.
+//! sharing must already be on. Every session is tracked; Lightbulb starts its own in a
+//! holder so they have a live terminal.
 //!
 //! No native approve-once window: `session.start.v1` is owner-only end to end. The
 //! backend resolves it only to the caller's OWN Mac (the ready row and the reciprocal
@@ -341,7 +342,7 @@ fn prepare(
 
 /// Start `argv` in a new holder in `folder`: the one launcher for the New session view, a remote
 /// start, a pick-up and a resume. It shows in the app's session panel when a person opens it.
-/// Only held sessions are shared (spec §5.4).
+/// Every session is tracked; one started here runs in a holder, so it has a live terminal.
 pub(crate) async fn start_held(
     folder: PathBuf,
     argv: Vec<String>,

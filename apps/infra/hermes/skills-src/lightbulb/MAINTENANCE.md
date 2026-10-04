@@ -141,8 +141,8 @@ MAINTENANCE (Lightbulb engineers): every claim in this skill is anchored to
                                  core/services/session_screen.py (type_into / watch: active-membership fence);
                                  apps/desktop/src-tauri/src/holder/{run,panel}.rs (the panel joins a `lightbulb claude` terminal).
   - Which sessions are shared references/surfaces.md ("Which sessions are shared" paragraph)
-                              <- apps/desktop/src-tauri/src/local_sessions.rs (keep_held: only a holder's own provider);
-                                 apps/desktop/src-tauri/src/local_sessions/enrollment.rs (a private session's hook exits);
+                              <- apps/desktop/src-tauri/src/local_sessions.rs (track: every session, named to its holder when it has one);
+                                 apps/desktop/src-tauri/src/local_sessions/enrollment.rs (every session's hook reaches the app);
                                  apps/desktop/src-tauri/src/session_start.rs (terminal_start / start / cli_start);
                                  apps/desktop/src-tauri/src/cli.rs (`lightbulb claude|codex`);
                                  apps/frontend/src/components/messaging/StartSessionDialog.tsx;

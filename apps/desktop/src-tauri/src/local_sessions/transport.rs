@@ -890,6 +890,8 @@ impl Host {
                 let (claude, codex) = tokio::join!(claude::discover(&home), codex::discover(&home));
                 // One provider's broken listing must not hide the other's sessions,
                 // so the pass is the union of whatever answered.
+                // Only a Claude listing that answered can say a background job stopped running.
+                let claude_listed = claude.is_ok();
                 let listings = [claude, codex];
                 let providers = listings.len();
                 let mut found = vec![];
@@ -905,6 +907,8 @@ impl Host {
                     .await
                     .unwrap_or_default();
                 track(&mut found, &holders);
+                let running: std::collections::BTreeSet<String> = found.iter().filter_map(|s| s.job.clone()).collect();
+                super::screen::reap_attach(&holders, claude_listed.then_some(&running));
                 for error in &failures {
                     // A listing that failed is not evidence that anything stopped;
                     // say so once per distinct failure, not once a minute forever.

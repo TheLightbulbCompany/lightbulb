@@ -88,7 +88,7 @@ fn write(sid: &str, generation: &str, ctl: &Ctl, inputs: &Receiver<Vec<u8>>) {
 
 /// A `type` client on the session's holder, only when its HELLO says it takes one.
 fn attach(sid: &str, generation: &str) -> Option<UnixStream> {
-    let (holder, current) = screen::holder_for_session(sid)?;
+    let (holder, current) = screen::holder_for_session(sid, false)?;
     if current != generation || !holder.type_input {
         return None;
     }

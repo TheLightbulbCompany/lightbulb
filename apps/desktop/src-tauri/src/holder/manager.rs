@@ -63,6 +63,50 @@ pub fn stop(pid: u32) {
     unsafe { libc::kill(-(pid as libc::pid_t), libc::SIGTERM) };
 }
 
+/// How Lightbulb runs `claude attach <job>` for a Claude background session (`local_sessions::screen`).
+/// The `lightbulb-attach` name marks the holder as ours: stopping it ends only this attach client.
+pub const ATTACH_SCRIPT: &str = r#"exec "$1" attach "$2""#;
+
+pub fn attach_argv(claude: &Path, job: &str) -> Vec<String> {
+    vec!["/bin/sh".into(), "-c".into(), ATTACH_SCRIPT.into(), "lightbulb-attach".into(), claude.to_string_lossy().into_owned(), job.into()]
+}
+
+/// The background job an attach holder shows; None for every other holder.
+pub fn attach_job(info: &HolderInfo) -> Option<&str> {
+    match info.argv.as_slice() {
+        [sh, c, script, name, _, job]
+            if sh == "/bin/sh" && c == "-c" && script == ATTACH_SCRIPT && name == "lightbulb-attach"
+                && job.len() == 8 && job.bytes().all(|b| b.is_ascii_hexdigit()) => Some(job),
+        _ => None,
+    }
+}
+
+/// Stop an attach holder. Its exit closes the pty, so the `claude attach` client gets SIGHUP; the
+/// background job runs on under Claude's own daemon (never `claude stop`). SIGTERM is not proven to
+/// end the client (Task 0), so whatever is still alive after `KILL_AFTER` is killed. Does not block.
+pub fn stop_attach(info: &HolderInfo) {
+    const KILL_AFTER: Duration = Duration::from_secs(2);
+    let (holder, client) = (info.pid as libc::pid_t, info.provider_pid as libc::pid_t);
+    if holder <= 1 {
+        return;
+    }
+    stop(info.pid);
+    std::thread::spawn(move || {
+        std::thread::sleep(KILL_AFTER);
+        // ponytail: a pid reused within 2 s would be killed too; a start-time check if that ever matters.
+        let alive = |pid: libc::pid_t| pid > 1 && unsafe { libc::kill(pid, 0) } == 0;
+        if alive(holder) || alive(client) {
+            unsafe {
+                libc::kill(-holder, libc::SIGKILL);
+                libc::kill(holder, libc::SIGKILL);
+                if client > 1 {
+                    libc::kill(client, libc::SIGKILL);
+                }
+            }
+        }
+    });
+}
+
 /// Start a holder from this app's own binary (`<exe> holder <socket> -- argv`).
 pub fn start(cwd: &Path, argv: &[String]) -> Result<HolderInfo, String> {
     start_sized(cwd, argv, None)
@@ -182,6 +226,42 @@ pub fn bind_thread(info: &HolderInfo, thread: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn holder_attach_is_recognised_only_by_lightbulbs_own_argv() {
+        let info = |argv: Vec<String>| HolderInfo { id: "ab12cd34".into(), socket: "/x/ab12cd34.sock".into(), pid: 1, provider_pid: 2,
+            argv, cwd: "/".into(), watch: true, type_input: true };
+        let claude = Path::new("/Users/a/.local/share/claude/versions/2.1.289");
+        assert_eq!(attach_job(&info(attach_argv(claude, "8ed71738"))), Some("8ed71738"));
+        let typed = |a: &[&str]| info(a.iter().map(|s| s.to_string()).collect());
+        assert_eq!(attach_job(&typed(&["/c/claude", "attach", "8ed71738"])), None, "`lightbulb claude attach` is a held session, not ours");
+        let mut forged = attach_argv(claude, "8ed71738");
+        forged[5] = "../../x".into();
+        assert_eq!(attach_job(&info(forged)), None);
+    }
+
+    #[test]
+    fn holder_attach_stop_kills_a_holder_and_client_that_ignore_sigterm() {
+        // A holder that ignores SIGTERM (ignored dispositions survive exec), leading its own group.
+        let mut holder = std::process::Command::new("/bin/sh");
+        holder.args(["-c", "trap '' TERM; exec /bin/sleep 30"]);
+        unsafe {
+            holder.pre_exec(|| {
+                libc::setsid();
+                Ok(())
+            });
+        }
+        let mut holder = holder.spawn().unwrap();
+        let mut client = std::process::Command::new("/bin/sh").args(["-c", "trap '' TERM HUP; exec /bin/sleep 30"]).spawn().unwrap();
+        std::thread::sleep(Duration::from_millis(200)); // let both reach `sleep` with the trap set
+        stop_attach(&HolderInfo { id: "ab12cd34".into(), socket: "/x/ab12cd34.sock".into(), pid: holder.id(),
+            provider_pid: client.id(), argv: vec![], cwd: "/".into(), watch: true, type_input: true });
+        let deadline = Instant::now() + Duration::from_secs(6);
+        while (holder.try_wait().unwrap().is_none() || client.try_wait().unwrap().is_none()) && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        assert!(holder.try_wait().unwrap().is_some() && client.try_wait().unwrap().is_some(), "both are gone after the fallback");
+    }
 
     #[test]
     fn holder_binds_one_codex_thread_and_forgets_it_with_the_holder() {

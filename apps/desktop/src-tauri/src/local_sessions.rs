@@ -1183,6 +1183,8 @@ fn holder_of(pid: u32, holders: &[HolderInfo]) -> Option<&HolderInfo> {
 /// the holder's own child, Codex by the thread its holder's start hook bound (a Codex rollout may
 /// be written by a shared app server that is not the holder's child).
 fn track(found: &mut Vec<NativeSession>, holders: &[HolderInfo]) {
+    // Lightbulb's own `claude attach` clients are views of a background session, not sessions.
+    found.retain(|s| !holders.iter().any(|h| h.provider_pid == s.process.pid && crate::holder::manager::attach_job(h).is_some()));
     for session in found.iter_mut() {
         let holder = if session.provider == "codex" {
             holders.iter().find(|h| crate::holder::manager::thread(h).as_deref() == Some(session.conversation.as_str()))
@@ -1900,6 +1902,15 @@ mod tests {
             [("held", Some("ab12cd34")), ("inside", None), ("plain", None)],
             "every session is tracked (rulings 2026-10-04); only the holder's own provider is held"
         );
+    }
+
+    #[test]
+    fn local_sessions_lightbulbs_own_attach_client_is_not_a_session() {
+        let client = HolderInfo { id: "cd34ef56".into(), socket: "/x/cd34ef56.sock".into(), pid: 1, provider_pid: std::process::id(),
+            argv: crate::holder::manager::attach_argv(Path::new("/c/claude"), "8ed71738"), cwd: "/".into(), watch: true, type_input: true };
+        let mut found = vec![native_at("claude", "client", std::process::id())];
+        track(&mut found, &[client]);
+        assert!(found.is_empty(), "a view of a background session, not a session");
     }
 
     #[test]

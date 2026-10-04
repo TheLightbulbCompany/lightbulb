@@ -106,9 +106,10 @@ async def _on_ended(room_id: str) -> bool:
     except Exception:
         await container_repo.release_owner_lifecycle_claim(lease, token=token)
         raise
+    mail: dict = {}  # shared by the attempts: the organizer mail is sent at most once per on_ended
     for attempt in range(_NOTES_TRIES):
         try:
-            await _notes(room_id, meta, occurrence)
+            await _notes(room_id, meta, occurrence, mail)
             return True
         except Exception:
             if attempt == _NOTES_TRIES - 1:
@@ -138,7 +139,7 @@ async def _wait_for_transcript(room_id: str, meta: dict) -> dict:
     return meta
 
 
-async def _notes(room_id: str, meta: dict, occurrence) -> None:
+async def _notes(room_id: str, meta: dict, occurrence, mail: dict) -> None:
     this_occurrence = lambda m: m.get("startAt") == occurrence  # noqa: E731 -- never mark the next one
     owner_id, meeting = meta["ownerId"], meta["meeting"]
     title = meeting.get("title") or "Meeting"
@@ -167,7 +168,11 @@ async def _notes(room_id: str, meta: dict, occurrence) -> None:
         if message:
             run_id = messaging_repo.run_id_for(ceo, message["messageId"])
             await meeting_invites._patch_meeting(room_id, {"notesRunId": run_id}, when=this_occurrence)
-    if not await _mail_organizer(owner_id, room_id, target, meeting, title):
+    # A send can time out after the mail went: once one was attempted here, a retry of the other
+    # steps never sends again (a lost mail beats a duplicate). A pre-send skip counts as done.
+    if not mail.get("attempted"):
+        mail["ok"] = await _mail_organizer(owner_id, room_id, target, meeting, title, mail)
+    if not mail.get("ok"):
         raise RuntimeError("the organizer mail was not sent")
     await meeting_invites._patch_meeting(room_id, {"notesMailedAt": int(time.time())}, when=this_occurrence)
 
@@ -184,7 +189,7 @@ async def _transcript_text(owner_id: str, room_id: str, meeting: dict) -> str | 
     return text if len(text) <= _MAIL_TRANSCRIPT_CHARS else text[:_MAIL_TRANSCRIPT_CHARS] + "… (truncated)"
 
 
-async def _mail_organizer(owner_id: str, room_id: str, target: str, meeting: dict, title: str) -> bool:
+async def _mail_organizer(owner_id: str, room_id: str, target: str, meeting: dict, title: str, mail: dict) -> bool:
     """True when the notes are done: mailed, or deliberately not (no address, no organizer, a paused
     row, the owner's daily mail cap spent). False is a failed send: the marker stays unset and the
     terminal webhook's retry sends again. With a default room the mail links to it; without one
@@ -212,6 +217,7 @@ async def _mail_organizer(owner_id: str, room_id: str, target: str, meeting: dic
         transcript = await _transcript_text(owner_id, target, meeting)
         subject = f"Transcript: {name}" if transcript else f"Ended: {name}"
         body = f"Your Lightbulb agents joined {name}.\n\n" + (transcript or "No transcript was captured.")
+    mail["attempted"] = True  # before the send: a raise or a timeout may still have delivered it
     sent = await ses_email.send_ses_email(
         from_addr=address,
         to=organizer,

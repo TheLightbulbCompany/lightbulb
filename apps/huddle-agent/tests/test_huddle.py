@@ -2543,7 +2543,7 @@ async def test_latency_route_session_and_first_audio_once(capsys):
     lines = [
         json.loads(x)
         for x in capsys.readouterr().out.splitlines()
-        if "live.latency" in x and "live.latency.jev" not in x  # the /route call's own (understanding §4.6)
+        if "live.latency" in x
     ]
     got = [
         (
@@ -2554,11 +2554,12 @@ async def test_latency_route_session_and_first_audio_once(capsys):
         for x in lines
     ]
     assert got == [
+        ("live.latency.jev", 0, "name"),  # the named line's /route call, beside its voice (understanding §4.6)
         ("live.latency.route", 0, "name"),
         ("live.latency.session_started", 1500, "name"),
         ("live.latency.first_audio", 2100, "name"),
     ]
-    assert lines[0]["_aws"]["CloudWatchMetrics"][0]["Dimensions"] == [["path"]]
+    assert lines[1]["_aws"]["CloudWatchMetrics"][0]["Dimensions"] == [["path"]]
 
 
 async def test_gptlive_seconds_sum_closed_and_open_voices():

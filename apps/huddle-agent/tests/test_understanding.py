@@ -1038,3 +1038,98 @@ async def test_a_named_line_after_the_wake_word_reaches_route_without_it():
     backend.route_extra = {}
     await say(h, "u1", "Lightbulb, Forge, check CI")
     assert backend.routes[-1][1] == "Forge, check CI" and backend.route_humans[-1] == 2
+
+
+# -- Task B4 review 1 --
+
+
+async def forge_for_aden(line="Forge, are you there"):
+    """Forge's voice is open for Aden (u2) on a whole-line driven run (its /route answered without ops)."""
+    h, room, backend, lives, clock, log = await three()
+    backend.route_extra = {}
+    await say(h, "u2", line)
+    return h, room, backend, lives, clock, log
+
+
+async def test_a_stop_while_a_repoint_waits_types_nothing_into_the_voice():
+    h, room, backend, lives, clock, log = await forge_for_aden()
+    backend.route_gate = asyncio.Event()
+    await h.on_final_transcript("u1", "Prasiddha", CI)
+    for _ in range(5):
+        await asyncio.sleep(0)
+    await h.on_final_transcript("u2", "Aden", "everyone stop")
+    backend.route_gate.set()
+    await settle(h)
+    assert not [c for c in lives[0].calls if c[0] == "reply_to"]
+
+
+async def test_a_repoint_releases_the_floor_lock_while_route_answers():
+    h, room, backend, lives, clock, log = await forge_for_aden()
+    h._runs.abort(backend.turns[0]["runId"])  # Forge is free for the new rows
+    backend.route_gate = asyncio.Event()
+    backend.route_extra = ops(requests=TWO)
+    await h.on_final_transcript("u1", "Prasiddha", CI)
+    for _ in range(5):
+        await asyncio.sleep(0)
+    assert h._voice.speaker == "u1" and not h._lock.locked()
+    backend.route_gate.set()
+    await settle(h)
+    assert [s for _, _, s in rows(h)] == ["working", "queued"]
+
+
+async def test_a_rowless_driven_run_keeps_its_agent_busy_and_its_delegation():
+    h, room, backend, lives, clock, log = await forge_for_aden(
+        "Forge, how is revenue looking"
+    )
+    aden_run = backend.turns[0]["runId"]
+    backend.route_extra = ops(requests=TWO)
+    await say(h, "u1", CI)
+    assert [t["runId"] for t in backend.turns] == [aden_run]  # one Forge run at a time
+    assert [s for _, _, s in rows(h)] == [
+        "queued",
+        "queued",
+    ] and h._voice.driven_run == aden_run
+    await h.on_delegation("forge", "deleg-1", "Forge, how is revenue looking")
+    await settle(h)
+    assert h._runs.get(aden_run).delegation_id == "deleg-1" and len(backend.turns) == 1
+    answer(h, aden_run, "forge", "Revenue is up.")
+    await settle(h)
+    assert [t["utterance"] for t in backend.turns[1:]] == ["check CI"]
+
+
+async def test_a_raise_in_the_repoint_leaves_no_understanding_pending(monkeypatch):
+    for where in ("_drive_request", "_apply"):  # after the record is made, and before
+        h, room, backend, lives, clock, log = await forge_for_aden()
+        h._runs.abort(backend.turns[0]["runId"])
+        backend.route_extra = ops(requests=TWO)
+
+        def boom(*a, **k):
+            raise RuntimeError("boom")
+
+        monkeypatch.setattr(h, where, boom)
+        await h.on_final_transcript("u1", "Prasiddha", CI)
+        while h._tasks:
+            await asyncio.gather(*list(h._tasks), return_exceptions=True)
+            await asyncio.sleep(0)
+        assert not h._understanding.get("u1") and not h._lock.locked(), where
+
+
+async def test_a_refused_voice_still_runs_every_understood_request():
+    h, room, backend, lives, clock, log = await three()
+    backend.route_extra = ops(
+        requests=[("forge", "check CI", "name"), ("friday", "the numbers", "fit")]
+    )
+
+    async def refused(agent_id):
+        raise BackendError(409, "agent_not_in_room", None)
+
+    backend.session = refused
+    await say(h, "u1", "Forge, check CI and get the numbers")
+    assert lives == [] and [
+        p["code"] for t, p, _ in room.published if t == h_mod.ERROR_TOPIC
+    ] == ["agent_not_in_room"]
+    assert sorted((t["agentId"], t["utterance"]) for t in backend.turns) == [
+        ("forge", "check CI"),
+        ("friday", "the numbers"),
+    ]
+    assert [s for _, _, s in rows(h)] == ["working", "working"]

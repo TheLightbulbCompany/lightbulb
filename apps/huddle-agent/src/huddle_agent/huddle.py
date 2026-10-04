@@ -402,10 +402,11 @@ class Huddle:
         # identity -> (when, transcript) of a delegation whose own transcript was understood (no final yet)
         self._unbound: dict[str, tuple[float, str]] = {}
 
-    def _spawn(self, coro) -> None:
+    def _spawn(self, coro) -> asyncio.Task:
         t = asyncio.create_task(coro)
         self._tasks.add(t)
         t.add_done_callback(self._done)
+        return t
 
     def _done(self, t: asyncio.Task) -> None:
         self._tasks.discard(t)
@@ -795,22 +796,21 @@ class Huddle:
             if heard_at is None:
                 fut = self._in_flight(identity)
                 # the wake word stripped, as for any Lightbulb line (B4 report)
-                route = self._understand(identity, strip_wake(text), humans=len(self._people), quiet=True)
-                understood = (asyncio.ensure_future(route), fut)
-            # a task: awaiting here would stall this person's STT loop for the whole summon
-            self._spawn(
-                self.summon(
-                    identity,
-                    a.agent_ids[0],
-                    request=text,
-                    mark=mark,
-                    path="name",
-                    then=a.agent_ids[1:],
-                    wake_dims=dims,
-                    heard_at=heard_at,
-                    understood=understood,
-                )
+                route = self._understand(identity, strip_wake(text), humans=len(self._people), quiet=True, path="name")
+                understood = (self._spawn(route), fut)
+            summon = self.summon(
+                identity,
+                a.agent_ids[0],
+                request=text,
+                mark=mark,
+                path="name",
+                then=a.agent_ids[1:],
+                wake_dims=dims,
+                heard_at=heard_at,
+                understood=understood,
             )
+            # a task: awaiting here would stall this person's STT loop for the whole summon
+            self._spawn(self._named_summon(identity, text, mark, summon, understood) if understood else summon)
             return
         if (
             len(a.agent_ids) > 1
@@ -1089,21 +1089,21 @@ class Huddle:
         return f'{self._name(identity)} said: "{text}". Small talk: reply yourself in one short sentence. Do not delegate it.'
 
     def _named_line(
-        self, identity: str, agent_id: str, text: str, mark: int, r: Any, fut: asyncio.Future
+        self, identity: str, agent_id: str, text: str, mark: int, r: Any, fut: asyncio.Future, voice: bool = True
     ) -> tuple[Request | None, list[Request] | None, str | None] | None:
         """A named line's /route answer `r`, under the floor lock (understanding §4.6). None: no `ops`, today's
-        whole-line run. Else (the row its voice drives, already started; the rows to acknowledge; a seed line)."""
+        whole-line run. Else (the row its voice drives, already started; the rows to acknowledge; a seed line).
+        `voice` False: no voice will drive a row; every row starts voicelessly."""
         o = r.get("ops") if isinstance(r, dict) else None
         if o is None:
             self._record(identity, fut, None, text)
             return None
         rows = self._apply(identity, mark, o)  # `hold` ignored: the person named the agent
         mine = [x for x in rows if x.agent == agent_id]
-        first = mine[0] if mine and mine[0] in self._requests.startable() else None
+        first = mine[0] if voice and mine and mine[0] in self._startable() else None
         if first is not None:
             self._requests.start(first)  # its voice drives it; _start_queued must not post it too
         self._start_queued()
-        self._queue = [q for q in self._queue if q[1:] != (identity, text)]  # the rows replace `then`
         self._record(identity, fut, (rows, o), text)
         ack = rows if len(rows) >= 2 or (rows and first is None) else None
         said = None
@@ -1115,12 +1115,59 @@ class Huddle:
             )
         return first, ack, said
 
+    async def _named_summon(self, identity: str, text: str, mark: int, summon, understood: tuple) -> None:
+        """A named line's summon (understanding §4.6). A re-point applies what the line asked once /route answers,
+        the floor lock not held while it waits. The speech's future resolves however this ends."""
+        try:
+            if (v := await summon) is None:
+                return
+            r = (await asyncio.gather(understood[0], return_exceptions=True))[0]
+            async with self._lock:
+                here = self._voice is v and v.speaker == identity and v.live is not None
+                took = self._named_line(identity, v.agent_id, text, mark, r, understood[1], voice=here)
+                if not here:
+                    return  # the floor moved meanwhile: the rows still run, without the voice
+                if took is None:  # no ops: today's typed line, unless a stop covers it
+                    if not (self._requests.stopped(mark) or self._requests.stopped(mark, v.agent_id)):
+                        self._live_call(v, "reply_to", text)
+                    return
+                first, ack, said = took
+                if first is not None:
+                    task = first.task or text
+                    self._drive_request(v, task, f'{self._name(identity)} asked: "{task}"', row=first)
+                if line := self._ack(ack, v.agent_id):
+                    self._live_call(v, "append_thinking", line)
+                if said:
+                    self._live_call(v, "append_thinking", said)
+                if first is not None or line or said:
+                    self._live_call(v, "nudge")
+        finally:
+            self._record(identity, understood[1], None, text)  # nothing understood: resolved all the same
+
+    def _startable(self) -> list[Request]:
+        """The rows that may start now, less the floor agent's while its voice's driven run has no row and still
+        runs: one run per agent at a time, and that driven run is never overwritten (understanding §4.5)."""
+        v = self._voice
+        busy = (
+            v.agent_id
+            if v and not self._requests.by_run(v.driven_run)
+            and any(x.run_id == v.driven_run for x in self._runs.running(v.agent_id))
+            else None
+        )
+        return [r for r in self._requests.startable() if r.agent != busy]
+
     @staticmethod
     def _outcome(r: dict) -> str:
         return "hold" if r.get("hold") else "agent" if r.get("agentIds") or r.get("agentId") else "none"
 
     async def _understand(
-        self, identity: str, text: str, humans: int | None, unclaimed: bool = False, quiet: bool = False
+        self,
+        identity: str,
+        text: str,
+        humans: int | None,
+        unclaimed: bool = False,
+        quiet: bool = False,
+        path: str = "jev",
     ) -> dict | None:
         """The line's /route call alone (understanding §4.4): who answers and, from a current backend, `ops`.
         None when it failed; a line spoken to the agents says so, unless `quiet` (its caller has a fallback)."""
@@ -1153,7 +1200,7 @@ class Huddle:
             return None
         finally:
             ms = round((self._clock() - heard_at) * 1000)
-            emit_metric("live.latency.jev", ms, "Milliseconds", {"path": "jev", "outcome": outcome})
+            emit_metric("live.latency.jev", ms, "Milliseconds", {"path": path, "outcome": outcome})
 
     def _apply(self, identity: str, mark: int, ops: dict) -> list[Request]:
         """`ops` onto the request list: one row per request (understanding §4.5). cancel/steer: Task B5."""
@@ -1190,7 +1237,7 @@ class Huddle:
             elif not social:
                 self._unrouted[identity] = self._clock()
             return rows
-        startable = self._requests.startable()
+        startable = self._startable()
         if v is not None and identity == v.speaker:
             mine = [r for r in rows if r.agent == v.agent_id]
             if mine and mine[0] in startable and v.live is not None:
@@ -1467,12 +1514,12 @@ class Huddle:
         row: Request | None = None,
         said: str | None = None,
         understood: tuple[asyncio.Future, asyncio.Future] | None = None,
-    ) -> None:
+    ) -> _Voice | None:
         """`then`: the request's other named agents, queued behind this one. Any summon but a queue
         advance (path "switch") replaces a pending queue: a new name wins. `ack`: the rows the voice
         acknowledges (the open ones when it speaks); `row`: the request row `request` is (its driven run binds
         to it); `said`: a seed line that is not a request (small talk). `understood`: a named line's /route call
-        in flight and its speech's record (understanding §4.6)."""
+        in flight and its speech's record (understanding §4.6). Returns the voice it re-pointed for `understood`."""
         async with self._lock:
             self._unclaimed = None  # an agent takes the floor: the open question is not left unclaimed
             self._released.discard(identity)  # only a release during THIS summon counts
@@ -1484,27 +1531,13 @@ class Huddle:
                 old is not None and old.agent_id == agent_id
             ):  # already holds the floor: re-point, no second session
                 if self._repoint(old, identity):
-                    took = None
-                    if understood:  # understanding §4.6: re-pointed first, then what the line asked
-                        r = (await asyncio.gather(understood[0], return_exceptions=True))[0]
-                        took = self._named_line(identity, agent_id, request, mark, r, understood[1])
-                    if took is not None:
-                        first, ack, said = took
-                        if first is not None:
-                            task = first.task or request
-                            self._drive_request(old, task, f'{self._name(identity)} asked: "{task}"', row=first)
-                        if line := self._ack(ack, agent_id):
-                            self._live_call(old, "append_thinking", line)
-                        if said:
-                            self._live_call(old, "append_thinking", said)
-                        if first is not None or line or said:
-                            self._live_call(old, "nudge")
-                    elif request and row is None:  # a row left unbound runs without a voice (_act)
+                    if understood:  # understanding §4.6: what the line asked is applied once /route answers
+                        self._sync_state()
+                        return old
+                    if request and row is None:  # a row left unbound runs without a voice (_act)
                         self._live_call(old, "reply_to", request)
                     elif (line := self._ack(ack, agent_id)) and self._live_call(old, "append_thinking", line):
                         self._live_call(old, "nudge")
-                if understood:  # never got to it: no record
-                    self._record(identity, understood[1], None, request or "")
                 self._sync_state()
                 return
             now = self._clock()
@@ -1536,8 +1569,6 @@ class Huddle:
                     e, BaseException
                 ):  # an open that raised must still end its window
                     logger.error("huddle summon failed agent=%s", agent_id, exc_info=e)
-            if understood:  # the voice never got to it: no record
-                self._record(identity, understood[1], None, request or "")
             if opened is not True:
                 await self._close_voice()
                 await self._end_window()
@@ -1579,6 +1610,8 @@ class Huddle:
                     self._room.publish(
                         ERROR_TOPIC, {"code": code, "reason": reason}, [identity]
                     )
+                if understood:  # understanding §4.6: what the line asked still runs, every row voicelessly
+                    self._named_line(identity, agent_id, request, mark, heard[0], understood[1], voice=False)
                 return False
         if understood:
             text = request
@@ -1736,7 +1769,7 @@ class Huddle:
         return ack_line(rows, self._agent_name, me=me) if rows else None
 
     def _start_queued(self) -> None:
-        for r in self._requests.startable():
+        for r in self._startable():
             self._requests.start(r)
             self._spawn(self._run_request(r))
 

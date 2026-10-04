@@ -1176,9 +1176,9 @@ def test_session_terminal_trusts_the_mac_and_falls_back_to_its_holder():
 
 
 def test_an_ended_origin_is_listed_once_as_its_successor():
-    def s(sid, status, forked=None, human="alice"):
+    def s(sid, status, forked=None, human="alice", seq=1):
         return service.LocalSession.model_construct(
-            session_id=sid, human_user_id=human, status=status, forked_from=forked
+            session_id=sid, human_user_id=human, status=status, forked_from=forked, latest_event_seq=seq
         )
 
     found = [
@@ -1200,6 +1200,16 @@ def test_an_ended_origin_is_listed_once_as_its_successor():
         "not-bobs",
         "lapsed-fork",
     ]
+
+    # A fork that ended before its first turn has no history and cannot be resumed: it is hidden,
+    # and its origin (which holds the history) stays. A running empty fork stays (it has a terminal).
+    found = [
+        s("empty-fork", "ended", "origin", seq=0),
+        s("origin", "ended"),
+        s("live-empty", "busy", "origin2", seq=0),
+        s("origin2", "ended"),
+    ]
+    assert [x.session_id for x in service._without_moved(found)] == ["origin", "live-empty"]
 
 
 @pytest.mark.asyncio

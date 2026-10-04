@@ -585,9 +585,28 @@ def _without_moved(found: list[LocalSession]) -> list[LocalSession]:
     """A stopped session that a later one of the same person continues (`forkedFrom`) is listed once:
     as that later one. Offline counts as stopped: a Mac still draining an ended origin re-registers it
     and then lets it lapse. A running origin is never hidden: `claude --bg --resume` copies a running
-    session."""
-    moved = {(s.human_user_id, s.forked_from) for s in found if s.forked_from}
-    return [s for s in found if not (s.status in ("ended", "offline") and (s.human_user_id, s.session_id) in moved)]
+    session.
+
+    A fork that ended before its first turn is the exception: Claude writes the copied history into
+    the fork's transcript only on that turn, so the fork has no events and `claude --resume` cannot
+    find it. It is hidden instead, and its origin (which holds the history) stays listed."""
+    ids = {(s.human_user_id, s.session_id) for s in found}
+    empty = {
+        (s.human_user_id, s.session_id)
+        for s in found
+        if s.forked_from and s.status == "ended" and s.latest_event_seq == 0 and (s.human_user_id, s.forked_from) in ids
+    }
+    moved = {
+        (s.human_user_id, s.forked_from)
+        for s in found
+        if s.forked_from and (s.human_user_id, s.session_id) not in empty
+    }
+    return [
+        s
+        for s in found
+        if (s.human_user_id, s.session_id) not in empty
+        and not (s.status in ("ended", "offline") and (s.human_user_id, s.session_id) in moved)
+    ]
 
 
 def _session_public(row: dict, viewer: str | None = None) -> LocalSession:

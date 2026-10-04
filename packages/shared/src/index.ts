@@ -214,7 +214,7 @@ export type {
 } from "./messaging/localSessionTranscript";
 export { sessionChanges, sessionPlan } from "./messaging/localSessionOverview";
 export type { FileChange, PlanStatus, PlanStep } from "./messaging/localSessionOverview";
-export { accessLost, useLocalSessionHistory } from "./messaging/useLocalSessionHistory";
+export { accessLost, useHistorySource, useLocalSessionHistory } from "./messaging/useLocalSessionHistory";
 export type { SessionSource } from "./messaging/useLocalSessionHistory";
 export { useWorkspaceSessions } from "./messaging/useWorkspaceSessions";
 export { canSendToSession, markSessionsSeen, sendBlockedReason, SESSION_ARCHIVE_AFTER_MS, SIDEBAR_SESSION_CAP, sessionArchived, sessionHistory, sessionLabel, sessionLive, sessionMatches, sessionStatus, sessionTitle, sessionToolName, sessionUnread, sessionViewKey, unavailableReason, workspaceSections } from "./messaging/localSessionLabels";

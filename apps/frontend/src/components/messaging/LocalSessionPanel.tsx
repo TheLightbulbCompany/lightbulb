@@ -6,7 +6,7 @@ import { capture } from "@/lib/analytics";
 import { Info, MessageSquare, Send } from "lucide-react";
 import {
   canControlSession, useSessionResume, mainEvents, pendingApproval, receiptChip, sendBlockedReason, sessionChanges, sessionFooter, sessionLabel, sessionPlan, sessionStatus, unavailableReason,
-  useLocalSessionHistory, usePendingPrompt, useSessionAudit, useSessionCommand, useSessionJoinRequest, useSessionOutbox, withAuditNotices,
+  useHistorySource, useLocalSessionHistory, usePendingPrompt, useSessionAudit, useSessionCommand, useSessionJoinRequest, useSessionOutbox, withAuditNotices,
   type LocalSession, type SessionControlClient, type SessionSource,
 } from "@lightbulb/shared";
 import { Button } from "@/components/ui/button";
@@ -48,7 +48,8 @@ export function LocalSessionPanel({ session, ownerName, own, client, revision, o
   // transcript hints (1/s per session, no trailing edge), so hints alone can
   // leave an open transcript behind during sustained output. Idle sessions
   // stay on hints plus the sessions safety poll. Quiet: no spinner, no focus steal.
-  const history = useLocalSessionHistory(client, session.sessionId, session.latestEventSeq, revision, onAccessLost, { pollMs: busy ? 5000 : 0 });
+  const source = useHistorySource(client, session, revision);
+  const history = useLocalSessionHistory(client, source.sessionId, source.latestEventSeq, revision, onAccessLost, { pollMs: busy ? 5000 : 0 });
   const [text, setText] = useState("");
   const [details, setDetails] = useState<SessionDetailsTab | null>(null);
   const [tab, setTab] = useState<SessionDetailsTab>("about");

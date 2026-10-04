@@ -4,7 +4,7 @@ import { ApiError } from "../api/error";
 import type { LiveEvent } from "../live/types";
 import type { createMessagingClient } from "./client";
 import { buildRows } from "./localSessionTranscript";
-import type { LocalSessionEvent } from "./types";
+import type { LocalSession, LocalSessionEvent } from "./types";
 
 export interface SessionSource {
   client: Pick<ReturnType<typeof createMessagingClient>, "listWorkspaceSessions" | "getLocalSession" | "listLocalSessionEvents" | "submitLocalSessionCommand" | "getLocalSessionCommand" | "setLocalSessionSharing"> &
@@ -19,6 +19,42 @@ const RETAINED = 2000;
 const EMPTY_FILL_PAGES = 10;
 
 export const accessLost = (error: unknown) => error instanceof ApiError && (error.status === 403 || error.status === 404);
+
+/**
+ * Whose history a session's transcript reads. A Claude session moved to the background
+ * (`forkedFrom`) has no events of its own until its next turn -- Claude writes the copied history
+ * into the new transcript only then -- so until that turn its history is its origin's.
+ *
+ * `revision` is the caller's hint revision. The directory's `latestEventSeq` trails a transcript
+ * hint by up to its 30 s poll, so the mount and each hint ask for the session itself: its first
+ * turn moves the transcript to its own events at once. The same hint retries an origin a failed request left
+ * unresolved; an origin this viewer cannot read (403/404) leaves the session's own, empty, history.
+ * ponytail: one step. A session moved twice with no turn between shows nothing until its next turn.
+ */
+export function useHistorySource(client: Pick<SessionSource["client"], "getLocalSession">, session: LocalSession, revision: number): LocalSession {
+  const { sessionId } = session;
+  const originId = session.latestEventSeq === 0 ? session.forkedFrom : undefined;
+  const [origin, setOrigin] = useState<LocalSession | null>(null);
+  const [own, setOwn] = useState<LocalSession | null>(null);
+  const resolved = origin?.sessionId === originId;
+  const denied = useRef<string | null>(null);
+  // On mount too: a session opened between its first-turn hint and the directory's next poll.
+  useEffect(() => {
+    if (!originId) return;
+    let alive = true;
+    void client.getLocalSession(sessionId).then(found => { if (alive && found.latestEventSeq > 0) setOwn(found); }, () => {});
+    return () => { alive = false; };
+  }, [client, sessionId, originId, revision]);
+  useEffect(() => {
+    if (!originId || resolved || denied.current === originId) return;
+    let alive = true;
+    void client.getLocalSession(originId).then(found => { if (alive) setOrigin(found); }, e => { if (accessLost(e)) denied.current = originId; });
+    return () => { alive = false; };
+  }, [client, originId, resolved, revision]);
+  if (!originId) return session;
+  if (own?.sessionId === sessionId) return own;
+  return resolved && origin ? origin : session;
+}
 
 /**
  * A recoverable window over canonical history, never an unbounded transcript cache.

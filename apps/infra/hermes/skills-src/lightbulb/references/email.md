@@ -39,9 +39,15 @@ will not answer it.
 
 **Meetings.** Put the team address on a Google Calendar event with a Meet link:
 one "<Company> agents · Lightbulb" participant joins each time it meets. No
-room opens; every agent is in the call and answers to its name. Transcript and
-notes post in the general channel (or mail the organizer if none); action
-items become tasks. You do not join by yourself and cannot be invited by chat.
+room opens; every agent is in the call. In the Meet an agent answers when
+someone says its name (or "Lightbulb") and takes that person's follow-up for a
+few seconds; it stays out of all other talk. Afterwards the transcript posts in
+the general channel and one agent there writes the notes; action items become
+tasks. If no agent is in that channel no notes are written and the organizer's
+mail says so; with no general channel the organizer is mailed the transcript.
+An answer nobody got to hear in the Meet is kept with the meeting: it is in the
+notes, in the organizer's mail and under the meeting in Mail. You do not join
+by yourself and cannot be invited by chat.
 
 **Sending — one command, three recipients:**
 

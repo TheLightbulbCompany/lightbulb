@@ -3,7 +3,9 @@
 import asyncio
 import json
 
-from test_huddle import answer, metric_count, say, settle, summoned
+from huddle_agent import huddle as h_mod
+from huddle_agent.backend import BackendError
+from test_huddle import FakeLive, answer, metric_count, say, settle, summoned
 from test_request_engine import LINE, TASKS, five, pump, quiet, run_of, status, three
 
 
@@ -195,6 +197,15 @@ async def test_a_line_with_two_mentions_and_no_wake_name_calls_route_once():
 async def test_everyone_stop_while_the_acknowledging_voice_joins_closes_it_unsaid():
     h, room, backend, lives, clock, log = await three()
     h.gate["live"] = asyncio.Event()
+    factory = h._live_factory
+
+    async def unbilled(**kw):  # a session closed right after joining reports no usage
+        live = await factory(**kw)
+        live.final_usage = 0.0
+        return live
+
+    h._live_factory = unbilled
+    t0 = clock.t
     await h.on_final_transcript("u1", "Prasiddha", LINE)
     await pump()
     assert len(backend.turns) == 3 and lives == []
@@ -203,6 +214,7 @@ async def test_everyone_stop_while_the_acknowledging_voice_joins_closes_it_unsai
     await settle(h)
     assert ("nudge",) not in lives[0].calls and ("close",) in lives[0].calls
     assert h._voice is None and h._window is None and len(backend.ends) == 1
+    assert backend.ends[0][1] <= clock.t - t0 + 1  # the voice's seconds, never the epoch
 
 
 async def test_name_latency_includes_the_route_detour_of_a_one_ask_line(capsys):
@@ -251,3 +263,81 @@ async def test_hang_up_waits_for_a_no_post_mark_in_flight():
     gate.set()
     await closing
     assert backend.no_posts == [backend.turns[0]["runId"]]
+
+
+async def test_a_voice_that_never_opened_bills_nothing():
+    h, room, backend, lives, clock, log = await three()
+    live = FakeLive([], "forge", "", "", "u1", [])
+    live.final_usage = 0.0
+    await h._close_live(h_mod._Voice("forge", live, 1, "u1", clock.t))  # opened stays 0.0
+    assert h._closed_seconds == 0.0
+
+
+TWO_MENTIONS = "I think Forge and Friday both did good work, what shipped?"
+
+
+async def test_a_failed_first_route_is_asked_again():
+    h, room, backend, lives, clock, log = await three()
+    backend.route_extra, backend.jev_to = {}, "forge"
+    real, calls = backend.route, []
+
+    async def route(*a, **k):
+        calls.append(1)
+        if len(calls) == 1:
+            raise BackendError(503, "huddles_upstream", None)
+        return await real(*a, **k)
+
+    backend.route = route
+    await say(h, "u1", TWO_MENTIONS)
+    assert len(calls) == 2 and [l.agent_id for l in lives] == ["forge"]
+
+
+async def test_two_failed_routes_tell_the_speaker_once():
+    h, room, backend, lives, clock, log = await three(people={"u1": "Prasiddha"})
+    backend.route_extra = {}
+    backend.route_error = BackendError(503, "huddles_upstream", None)
+    await say(h, "u1", TWO_MENTIONS)
+    assert len(backend.routes) == 2 and lives == []
+    assert [p for p in room.published if p[0] == h_mod.ERROR_TOPIC] == [
+        (h_mod.ERROR_TOPIC, {"code": "huddles_upstream", "reason": None}, ["u1"])
+    ]
+
+
+async def test_an_agent_stopped_while_route_decides_a_mentions_line_is_not_summoned():
+    h, room, backend, lives, clock, log = await three()
+    backend.route_extra, backend.jev_to = {}, "forge"
+    backend.route_gate = asyncio.Event()
+    await h.on_final_transcript("u1", "Prasiddha", TWO_MENTIONS)
+    await h.on_final_transcript("u1", "Prasiddha", "Forge, stop")
+    backend.route_gate.set()
+    await settle(h)
+    assert lives == [] and backend.turns == [] and backend.summons == []
+
+
+async def test_unnamed_dont_post_that_reaches_only_the_speakers_own_held_answer():
+    h, backend, run = await _plain_answer_waiting_as_news()  # Prasiddha (u1) asked Forge
+    await say(h, "u2", "don't post that")
+    assert backend.no_posts == [] and h._requests.postable(run)
+    await say(h, "u1", "don't post that")
+    assert backend.no_posts == [run]
+
+
+async def test_no_window_opens_once_hang_up_begins():
+    h, room, backend, lives, clock, log = await three()
+    backend.route_extra = {}
+    backend.route_gate = asyncio.Event()
+    await h.on_final_transcript("u1", "Prasiddha", "Forge, what did Friday say?")
+    closing = asyncio.create_task(h.clear_presence())
+    await pump()
+    backend.route_gate.set()
+    await closing
+    await settle(h)
+    assert backend.summons == [] and h._window is None
+
+
+async def test_a_stop_aborts_its_run_and_the_queued_request_starts():
+    h, room, backend, lives, clock, log = await five()
+    alpha = run_of(backend, "alpha")
+    await say(h, "u1", "Alpha, stop")
+    assert backend.aborts == [alpha] and status(h, "alpha") == ["cancelled"]
+    assert backend.turns[-1]["agentId"] == "echo" and status(h, "echo") == ["working"]

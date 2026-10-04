@@ -609,6 +609,7 @@ class Huddle:
         """The job is shutting down: clear the room's Live marker before anything else, unless people are
         still in the call (a worker restart), whose marker stays theirs. A missed one is healed by the
         clients' refetch and the backend's orphan sweep."""
+        self._closing = True  # first: a line routed during the awaits below opens no new window
         if self._marking:  # a "don't post that" said just before hang-up lands first
             await asyncio.wait(set(self._marking), timeout=5)
         await (
@@ -672,7 +673,7 @@ class Huddle:
             return
         no_post, target = no_post_command(text, self._team["agents"])
         if no_post:
-            self._no_post(target)  # engine §3.6; nothing is posted as a turn
+            self._no_post(target, identity)  # engine §3.6; nothing is posted as a turn
             return
         if stop_request(text):
             # "stop" / "never mind" to an agent aborts its runs (D §8): the agent it names, from anyone, else
@@ -747,6 +748,8 @@ class Huddle:
         `heard_at`/`routed`: set after a multi-name line's /route round trip (its start, and its answer)."""
         now = self._clock()
         rk = {} if routed is None else {"routed": routed}
+        if a.agent_ids and self._requests.stopped(mark, a.agent_ids[0]):
+            return  # stopped while this line's /route decided
         if a.agent_ids and not (
             v and identity == v.speaker and a.agent_ids[0] == v.agent_id
         ):
@@ -1023,12 +1026,14 @@ class Huddle:
             if len(reqs) < 2:  # one ask (or no router): today's handling of the line, whatever /route said
                 if self._requests.drop_pending(mark):
                     self._sync_state()
-                if self._requests.stopped(mark, a.agent_ids[0] if a.agent_ids else None):
+                named = list(dict.fromkeys(a.agent_ids + a.anywhere))
+                if self._requests.stopped(mark) or all(self._requests.stopped(mark, x) for x in named):
                     return  # "everyone stop" / "<agent>, stop" said while /route decided
                 cur = self._voice
                 barge = cur is not None and cur.live is not None and identity != cur.speaker
                 self._dispatch(
-                    identity, hname, text, mark, a, cur, cut if cur is hv else None, barge, heard_at, routed=r
+                    identity, hname, text, mark, a, cur, cut if cur is hv else None, barge, heard_at,
+                    routed=None if outcome == "error" else r,  # a failed /route is asked again
                 )
                 return
             # Never superseded: named asks stand whoever spoke meanwhile. A voice that opened after this line
@@ -1046,6 +1051,8 @@ class Huddle:
                 emit_metric("live.route.hold_stale", 1, "Count")
             return
         agent_ids = r.get("agentIds") or ([r["agentId"]] if r.get("agentId") else [])
+        if agent_ids and self._requests.stopped(mark, agent_ids[0]):
+            return  # that agent was stopped while this line's /route decided
         if not agent_ids:
             if outcome == "none":
                 self._unrouted[identity] = self._clock()
@@ -1350,7 +1357,7 @@ class Huddle:
             return False
         self._latency("session_started", v)
         if ack and not self._requests.open():
-            v.live = live  # "everyone stop" while it joined: closed unsaid (summon closes it)
+            v.live, v.opened = live, self._clock()  # "everyone stop" while it joined: closed unsaid
             return False
         if (
             news and not v.announce and v.path != "announce"
@@ -1618,7 +1625,7 @@ class Huddle:
             self._stop(agent_id)
         emit_metric("live.request.stop_all", 1, "Count")
 
-    def _no_post(self, agent_id: str | None) -> None:
+    def _no_post(self, agent_id: str | None, asker: str | None = None) -> None:
         """ "don't post that": the named agent's newest open request, else the room's newest; with no
         request, that agent's (unnamed: anyone's) newest running run. Neither late-answer door posts it, and
         the worker never does; it may still be spoken."""
@@ -1626,7 +1633,10 @@ class Huddle:
         run_id = r.run_id if r else None
         if r is None:
             runs = self._runs.running(agent_id)
-            news = [n for aid, ns in self._news.items() if agent_id in (None, aid) for n in ns]
+            # named: that agent's newest held answer; unnamed: only one the speaker asked for
+            news = [
+                n for aid, ns in self._news.items() for n in ns if (aid == agent_id if agent_id else n[4] == asker)
+            ]
             run_id = runs[-1].run_id if runs else max(news, key=lambda n: n[3])[0] if news else None
             if run_id is None:
                 return  # nothing of that agent's (or anyone's) is open: nothing is marked or counted
@@ -2271,10 +2281,10 @@ class Huddle:
             )  # after close: the final usage delta lands during it
         except Exception:
             logger.exception("huddle live session close failed")
-        usage = usage or max(
-            0.0,
-            min(self._clock(), self._window.deadline if self._window else math.inf)
-            - v.opened,
+        usage = usage or (  # a voice with no opened time bills nothing, never clock - 0
+            max(0.0, min(self._clock(), self._window.deadline if self._window else math.inf) - v.opened)
+            if v.opened
+            else 0.0
         )
         self._closed_seconds += usage
         if w := self._window:

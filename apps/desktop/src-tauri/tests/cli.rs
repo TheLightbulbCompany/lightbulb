@@ -121,7 +121,7 @@ impl Cli {
 fn cli_runs_the_real_tool_when_the_app_is_not_running() {
     let mut cli = Cli::start_args(&temp_dir().join("no-app.sock"), &["claude", "--model", "opus"]);
     assert_eq!(cli.exit_code(), 7, "the real tool's own exit code");
-    cli.wait_for("lightbulb: not shared (Lightbulb is not running), running claude normally");
+    cli.wait_for("lightbulb: no live terminal (Lightbulb is not running), running claude normally");
     cli.wait_for("real claude --model opus");
 }
 
@@ -131,7 +131,7 @@ fn cli_runs_the_real_tool_after_the_app_s_refusal() {
     serve_at(&app, |_| Err("Session sharing is off in Lightbulb on this Mac. Turn it on in Settings.".into())).unwrap();
     let mut cli = Cli::start(&app);
     assert_eq!(cli.exit_code(), 7);
-    cli.wait_for("not shared (Session sharing is off in Lightbulb on this Mac)");
+    cli.wait_for("no live terminal (Session sharing is off in Lightbulb on this Mac)");
     cli.wait_for("real claude");
     assert!(!cli.text().contains("Shared with"));
 }
@@ -182,7 +182,7 @@ fn cli_runs_the_real_tool_when_the_folder_is_declined() {
     cli.wait_for("[y/N]");
     cli.keys.write_all(b"\r").unwrap();
     assert_eq!(cli.exit_code(), 7);
-    cli.wait_for("not shared (you did not share this folder)");
+    cli.wait_for("no live terminal (you did not share this folder)");
     assert_eq!(seen.lock().unwrap().len(), 1, "no second request without a yes");
 }
 

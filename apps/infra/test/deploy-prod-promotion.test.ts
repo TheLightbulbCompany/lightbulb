@@ -123,15 +123,15 @@ describe("desktop-build.yml prod promotion gate", () => {
     expect(jobLevelIf(jobs.get("build-desktop-prod")!)).toBe(PROMOTE_IF);
   });
 
-  it("keeps development automatic on qualifying main pushes and available on dispatch", () => {
+  it("builds the development app on main pushes only", () => {
     const triggers = yaml.slice(yaml.indexOf("\n'on':\n"), yaml.indexOf("\npermissions:\n"));
     expect(triggers).toContain("push:");
     expect(triggers).toContain("- main");
     expect(triggers).toContain("workflow_dispatch:");
     expect(jobs.has("build-desktop-dev")).toBe(true);
-    // The only exclusion is the pull_request trigger, which exists for the
-    // Rust test job; main pushes and dispatches still build dev.
-    expect(jobLevelIf(jobs.get("build-desktop-dev")!)).toBe("if: github.event_name != 'pull_request'");
+    // Owner decision 2026-10-04: a dispatch builds prod only, so dev runs on
+    // pushes alone (not on dispatches, not on pull requests).
+    expect(jobLevelIf(jobs.get("build-desktop-dev")!)).toBe("if: github.event_name == 'push'");
   });
 
   it("runs the Rust tests on pull requests without building", () => {
@@ -145,8 +145,13 @@ describe("desktop-build.yml prod promotion gate", () => {
     expect(jobs.get("test-desktop")).toContain("permissions:\n      contents: read");
   });
 
-  it("requires the development job to succeed before production", () => {
-    expect(jobs.get("build-desktop-prod")).toMatch(/^ {4}needs:\n {4}- build-desktop-dev$/m);
+  it("builds the production app on dispatch with no dependency on the development job", () => {
+    // Owner decision 2026-10-04: skip dev when dispatching prod. Prod used to
+    // need dev only to inherit a warm Rust cache, which now lives on the Mac.
+    const prod = jobs.get("build-desktop-prod")!;
+    expect(jobLevelIf(prod)).toBe(PROMOTE_IF);
+    expect(prod).not.toMatch(/^ {4}needs:/m);
+    expect(prod).not.toContain("build-desktop-dev");
   });
 
   it("runs Infra CI for desktop-workflow-only pull requests", () => {

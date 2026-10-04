@@ -77,14 +77,19 @@ Merge reviewed desktop changes to `main` through normal CI. Changes to
 trigger a dev build; the production job is skipped on push.
 
 After verifying that dev build, manually run **desktop-build** from GitHub
-Actions using the tested branch or tag. Dispatch builds dev again, then
-production only if that dev job succeeds. There is no approval pause
-between these jobs, so complete dev acceptance before dispatching.
+Actions using the tested branch or tag. Dispatch builds production only; it
+does not build or wait for dev (decided 2026-10-04). Nothing in the run
+checks dev, so complete dev acceptance on the push build before dispatching.
+
+Each upload step tries three times: the notarization and asset uploads in
+`tauri-action`, the DMG notarization and stapling, the DMG upload, and the
+release publication. The Mac keeps the Rust build folder at
+`~/.cache/lightbulb-desktop/` between runs and uploads no caches to GitHub.
 
 The workflow sets the build version to `0.4.${{ github.run_number }}`;
 do not bump local version files or push release tags to trigger a build.
-It creates `desktop-dev-v0.4.<run_number>` (dev prerelease) and, on manual
-dispatch, `desktop-v0.4.<run_number>` (production release).
+A push creates `desktop-dev-v0.4.<run_number>` (dev prerelease); a manual
+dispatch creates `desktop-v0.4.<run_number>` (production release).
 
 Each job creates a draft release, uploads its signed/notarized DMG, then
 automatically publishes the release. No manual draft-publication step is

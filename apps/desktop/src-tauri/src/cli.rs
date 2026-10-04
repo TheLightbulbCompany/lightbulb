@@ -316,7 +316,11 @@ fn run_real(tool: &str, args: &[String], reason: Option<&str>) -> i32 {
     }
     let home = std::env::var_os("HOME").map(PathBuf::from).unwrap_or_default();
     let own = std::env::current_exe().and_then(std::fs::canonicalize).ok();
-    let Some(program) = crate::local_sessions::provider_program(&home, tool).filter(|p| Some(p) != own.as_ref()) else {
+    // The one this shell would have run: its PATH order first (asdf/mise shims, a pinned version),
+    // then the app's known install places. Never this command again.
+    let Some(program) = on_path(tool, std::env::var_os("PATH").as_deref(), own.as_deref())
+        .or_else(|| crate::local_sessions::provider_program(&home, tool).filter(|p| Some(p) != own.as_ref()))
+    else {
         eprintln!("lightbulb: {tool} is not installed.");
         return 127;
     };
@@ -326,6 +330,18 @@ fn run_real(tool: &str, args: &[String], reason: Option<&str>) -> i32 {
     let err = std::process::Command::new(&program).arg0(tool).args(args).exec();
     eprintln!("lightbulb: could not run {}: {err}", program.display());
     126
+}
+
+/// The first executable `tool` on `path`, as the shell resolves a command, skipping `own` (this
+/// program, should a link named `tool` point back at it).
+fn on_path(tool: &str, path: Option<&std::ffi::OsStr>, own: Option<&Path>) -> Option<PathBuf> {
+    use std::os::unix::fs::PermissionsExt;
+    std::env::split_paths(path?).map(|dir| dir.join(tool)).find(|candidate| {
+        let real = std::fs::canonicalize(candidate).ok();
+        candidate.is_file()
+            && std::fs::metadata(candidate).is_ok_and(|m| m.permissions().mode() & 0o111 != 0)
+            && real.as_deref() != own
+    })
 }
 
 /// The workspace name comes from the web page: never let it write escape sequences here.
@@ -682,6 +698,25 @@ mod tests {
             assert!(!got.iter().any(|c| c == word), "{word} in {got:?}");
         }
         assert!(help_commands("no commands here").is_empty());
+    }
+
+    #[test]
+    fn cli_fallback_follows_the_shells_path_and_skips_itself() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let (first, second) = (dir.path().join("a"), dir.path().join("b"));
+        std::fs::create_dir_all(&first).unwrap();
+        std::fs::create_dir_all(&second).unwrap();
+        for d in [&first, &second] {
+            let f = d.join("claude");
+            std::fs::write(&f, "#!/bin/sh\n").unwrap();
+            std::fs::set_permissions(&f, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        let path = std::env::join_paths([&first, &second]).unwrap();
+        assert_eq!(on_path("claude", Some(&path), None), Some(first.join("claude")), "PATH order");
+        let own = std::fs::canonicalize(first.join("claude")).unwrap();
+        assert_eq!(on_path("claude", Some(&path), Some(&own)), Some(second.join("claude")), "never itself");
+        assert_eq!(on_path("codex", Some(&path), None), None);
     }
 
     #[test]

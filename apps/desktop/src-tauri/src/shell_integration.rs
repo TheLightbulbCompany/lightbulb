@@ -11,11 +11,18 @@ const RC_FILES: &[&str] = &[".zshrc", ".bashrc"];
 /// there too. None is created: a new ~/.bash_profile would stop bash reading an existing ~/.profile.
 const BASH_LOGIN_FILES: &[&str] = &[".bash_profile", ".bash_login", ".profile"];
 
-/// Every startup file the block belongs in for this home: zsh, bash interactive, bash login.
+/// The startup files the block goes into when turned on: zsh, bash interactive, and the bash
+/// login file this home uses now.
 fn rc_files(home: &Path) -> Vec<&'static str> {
     let mut files = RC_FILES.to_vec();
     files.extend(BASH_LOGIN_FILES.iter().find(|f| home.join(f).exists()));
     files
+}
+
+/// Every file the block may be in: off and the status read all of them, since the bash login
+/// file in use can change after the block was written.
+fn all_rc_files() -> Vec<&'static str> {
+    RC_FILES.iter().chain(BASH_LOGIN_FILES).copied().collect()
 }
 
 /// The block. Interactive shells only (bash reads ~/.bashrc for some non-interactive ones), and
@@ -57,14 +64,14 @@ pub fn with_block(text: &str, on: bool) -> String {
 }
 
 pub fn is_on(home: &Path) -> bool {
-    rc_files(home)
+    all_rc_files()
         .iter()
         .any(|rc| std::fs::read_to_string(home.join(rc)).is_ok_and(|t| t.lines().any(|l| l.trim_end() == BEGIN)))
 }
 
 /// Add (creating a missing file) or remove the block in each rc file. Idempotent.
 pub fn set(home: &Path, on: bool) -> Result<(), String> {
-    for rc in rc_files(home) {
+    for rc in if on { rc_files(home) } else { all_rc_files() } {
         let path = home.join(rc);
         let old = match std::fs::read_to_string(&path) {
             Ok(text) => text,
@@ -146,8 +153,11 @@ mod tests {
         set(login.path(), true).unwrap();
         assert_eq!(std::fs::read_to_string(login.path().join(".profile")).unwrap(), format!("PATH=x\n{}", block()));
         assert!(!login.path().join(".bash_profile").exists());
+        // A ~/.bash_profile created later does not strand the block in ~/.profile.
+        std::fs::write(login.path().join(".bash_profile"), "").unwrap();
         set(login.path(), false).unwrap();
         assert_eq!(std::fs::read_to_string(login.path().join(".profile")).unwrap(), "PATH=x\n");
+        assert!(!is_on(login.path()));
 
         let empty = tempfile::tempdir().unwrap();
         set(empty.path(), false).unwrap();

@@ -363,6 +363,10 @@ async def test_an_ask_already_being_worked_on_is_not_made_twice(decide):
     ready = [{**working[0], "status": "ready"}]
     late = await route(decide, "what are the open PRs", jev_says(kinds=["request"], whos=["forge"]), opened=ready)
     assert tasks(late) == []
+    # asked by name of another agent, the same words are that agent's own request (Codex P2)
+    said = jev_says(kinds=["request"], names=["addressed"])
+    named = await route(decide, "Gauge, what are the open PRs", said, opened=working)
+    assert tasks(named) == [("gauge", "what are the open PRs", "name")]
     # a word that can be the ask is never filler (Codex P2)
     assert not vc._same_ask("like and share the launch post", "share the launch post")
     assert vc._same_ask("um, so what are the open PRs please", "What are the open PRs?")

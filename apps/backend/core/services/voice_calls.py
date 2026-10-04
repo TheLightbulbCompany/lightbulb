@@ -1193,8 +1193,14 @@ async def route_live_line(
     # The worker lists what is already being worked on: a request that says the same thing again (a late
     # final repeating what the voice already delegated) is not made twice, whichever path made it. An answer
     # that is ready and not yet heard counts: the repeat would run it again beside it.
-    pending = [r["task"] for r in earlier if r["status"] in (*_OPEN_STATUS, "ready")]
-    u["requests"] = [r for r in u["requests"] if not any(_same_ask(r["task"], t) for t in pending)]
+    # Asked by name of another agent than the one already on it ("Gauge, what are the open PRs" while Forge
+    # has that list) is a request of its own.
+    pending = [(r["agentId"], r["task"]) for r in earlier if r["status"] in (*_OPEN_STATUS, "ready")]
+    u["requests"] = [
+        r
+        for r in u["requests"]
+        if not any(_same_ask(r["task"], t) and not (r["by"] == "name" and r["agentId"] != a) for a, t in pending)
+    ]
     chief = None
     for r in u["requests"]:
         if r["agentId"] is None:

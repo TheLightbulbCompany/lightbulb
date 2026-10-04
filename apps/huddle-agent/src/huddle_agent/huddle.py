@@ -546,10 +546,10 @@ class Huddle:
             self._drop(v)
             return False
 
-    def _drop(self, v: _Voice) -> None:
+    def _drop(self, v: _Voice, keep_queue: bool = False) -> None:
         if self._voice is v and not v.dropping:
             v.dropping = True
-            self._spawn(self.end_exchange(only=v))
+            self._spawn(self.end_exchange(only=v, keep_queue=keep_queue))
 
     def on_live_closed(self, live: Any) -> None:
         """The GPT-Live session closed on its own (an unrecoverable realtime error)."""
@@ -2724,11 +2724,10 @@ class Huddle:
             k: x for k, x in self._meet_speaking.items() if at - x[1] <= MEET_SPAN_CAP_S
         }
         if kind == "speech_on":
-            # Meet sends `on` only on a change of speaker: everyone else stopped then. An `on` within the
-            # slack of another's is a real overlap (Zoom/Teams send their own `off` for it).
-            for k, (n, since) in list(self._meet_speaking.items()):
-                if k != pid and at - since > SPEAKER_SLACK_S:
-                    self._close_span(k, at)
+            # Meet sends `on` only on a change of speaker and no `off` for the one before: everyone else
+            # stopped then. Two people in one line still read "A + B": both spans overlap the line.
+            for k in [k for k in self._meet_speaking if k != pid]:
+                self._close_span(k, at)
             self._meet_speaking.setdefault(pid, (name, at))
         elif kind != "join":
             self._close_span(pid, at)
@@ -2854,6 +2853,10 @@ class Huddle:
                     await self._end_window()  # kept for open requests; ends after the last (spec §3.3)
             if self._people and now - self._last_heard >= idle:
                 await self._end_idle_room()
+            elif meeting and self._queue and not self._speaking and now - self._last_heard >= MEET_QUIET_S:
+                # the agents named with a meeting voice that has closed: the next one answers at a real pause
+                agent_id, speaker, request, label = self._queue.pop(0)
+                await self.summon(speaker, agent_id, request, path="switch", label=label)
             else:
                 await self._proactive(now)
             return
@@ -2942,7 +2945,7 @@ class Huddle:
             and (v.speaker not in self._speaking or now - v.followed_at >= 3 * MEET_FOLLOWUP_S)
         )
         if over or said or (now - v.last_activity >= IDLE_SECONDS and not busy):
-            await self.end_exchange(only=v)
+            await self.end_exchange(only=v, keep_queue=said and not over)
 
     def _talked_over(self, v: _Voice) -> None:
         """A meeting voice hears nobody, so the worker stops it for someone who keeps talking over it, as the
@@ -2957,7 +2960,7 @@ class Huddle:
             held = self._cut_off.get(v.agent_id, ([], "", 0.0))[0]
             self._cut_off[v.agent_id] = (held + [n], v.speaker, self._clock())
         v.saying = None
-        self._drop(v)  # closed: a run still working no longer speaks through it
+        self._drop(v, keep_queue=True)  # closed: a run still working no longer speaks through it
 
     def _apply_held(self, now: float) -> None:
         """understanding §4.4: a held line whose speaker said nothing more for HOLD_APPLY_S is applied as /route
@@ -3240,14 +3243,19 @@ class Huddle:
 
     # -- closing (never stops a run) --
 
-    async def end_exchange(self, only: _Voice | None = None, force: bool = False) -> None:
+    async def end_exchange(
+        self, only: _Voice | None = None, force: bool = False, keep_queue: bool = False
+    ) -> None:
         """Close the open voice and, with none left, end the window. `only`: close that voice, not
-        one a later summon opened. `force`: the worker is leaving; end the window even for open requests."""
+        one a later summon opened. `force`: the worker is leaving; end the window even for open requests.
+        `keep_queue`: a meeting voice closed with its piece said, or talked over: the agents named with it
+        still answer, at the next pause (tick)."""
         self._closing = self._closing or force
         async with self._lock:  # a summon in flight finishes first, then is closed here
             if only is not None and self._voice is not only:
                 return
-            self._queue = []  # nobody is left to answer to
+            if not keep_queue:
+                self._queue = []  # nobody is left to answer to
             await self._close_voice()
             await self._end_window(force)
 

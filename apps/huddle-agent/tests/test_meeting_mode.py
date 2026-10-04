@@ -94,9 +94,10 @@ async def test_meeting_lines_carry_meet_speaker_names():
     speaker(h, "p1", "Priya", False)
     await hear(h, "we shipped the importer")
     speaker(h, "p1", "Priya", True)
-    speaker(h, "p2", "Dan", True)
-    clock.t += 3
-    h.on_interim_transcript(MEET, "Google Meet", "both")  # the utterance begins now
+    h.on_interim_transcript(MEET, "Google Meet", "both")  # the utterance begins while Priya speaks...
+    clock.t += 2
+    speaker(h, "p2", "Dan", True)  # ...and Dan takes over before it ends (Meet sends no `off` for Priya)
+    clock.t += 1
     await hear(h, "both of us talking now")
     speaker(h, "p1", "Priya", False)
     speaker(h, "p2", "Dan", False)
@@ -761,3 +762,39 @@ async def test_a_queued_agent_of_a_two_name_line_keeps_the_askers_label_when_the
     await settle(h)
     assert h._voice is not None and h._voice.agent_id == "gauge" and h._voice.label == "Priya"
     assert "Priya asked" in str(lives[-1].seed) and "Dan asked" not in str(lives[-1].seed)
+
+
+async def test_the_second_named_agent_still_answers_after_the_first_ones_meeting_voice_closed():
+    # review: a meeting voice closing (its piece said, or talked over) cleared the queue behind it
+    for how in ("said", "talked over"):
+        h, room, backend, lives, clock, log = await meeting()
+        speaker(h, "p1", "Priya", True)
+        await hear(h, "Forge and Gauge, what shipped this week?")  # no `ops`: Forge opens, Gauge is queued
+        assert [q[0] for q in h._queue] == ["gauge"]
+        if how == "said":
+            clock.t += h_mod.MEET_FOLLOWUP_S  # Forge's run still works; its voice has said its piece
+        else:
+            h.on_agent_state("forge", "speaking")
+            talks(h, MEET, "Google Meet")
+            clock.t += h_mod.TALK_OVER_S
+        await h.tick()
+        await settle(h)
+        assert h._voice is None and [q[0] for q in h._queue] == ["gauge"], how
+        h.on_speech(MEET, False)
+        h.on_active_speakers(set())
+        clock.t += h_mod.MEET_QUIET_S
+        await h.tick()
+        await settle(h)
+        assert h._voice is not None and h._voice.agent_id == "gauge" and h._voice.label == "Priya", how
+        assert h._queue == []
+
+
+async def test_two_quick_speaker_changes_leave_one_speaker_not_a_stale_pair():
+    # review: an `on` within a second of another's was kept as an overlap, so Dan's lines read "Priya + Dan"
+    h, room, backend, lives, clock, log = await meeting()
+    speaker(h, "p1", "Priya", True)
+    clock.t += 0.5
+    speaker(h, "p2", "Dan", True)
+    clock.t += 5
+    await hear(h, "so the launch plan")
+    assert labels(h)[-1] == "Dan" and h._label(MEET) == "Dan"

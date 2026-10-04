@@ -1294,7 +1294,13 @@ class Huddle:
                 return
             r = (await asyncio.gather(understood[0], return_exceptions=True))[0]
             async with self._lock:
-                here = self._voice is v and v.speaker == identity and v.live is not None
+                # ...and, in a meeting, still with this line's speaker: someone else may have named the agent since
+                here = (
+                    self._voice is v
+                    and v.speaker == identity
+                    and v.live is not None
+                    and (self.setting != "meeting" or v.label == self._label(identity, mark))
+                )
                 took = self._named_line(identity, v.agent_id, text, mark, r, understood[1], voice=here)
                 if not here:
                     return  # the floor moved meanwhile: the rows still run, without the voice
@@ -2761,8 +2767,12 @@ class Huddle:
                 spoke[n] = spoke.get(n, 0.0) + o
         if spoke:
             most = max(spoke.values())
-            names = [n for n, o in spoke.items() if o == most or (o >= MEET_SHARE_S and o >= most / 3)]
-            return " + ".join(names)
+            names = [n for n, o in spoke.items() if o >= MEET_SHARE_S and o >= most / 3]
+            if names:
+                return " + ".join(names)
+            # A short line ("Forge, status?") across a change of speaker: the change event names who took over,
+            # though the one before still has the longer share of it (the event lags our transcriber).
+            return max((s, n) for n, s, e in spans if n in spoke and s < end and e > start)[1]
         near = [(s, n) for n, s, e in spans if s < end + SPEAKER_SLACK_S and e > start - SPEAKER_SLACK_S]
         if near:
             return max(near)[1]  # the one who began last
@@ -2882,7 +2892,7 @@ class Huddle:
             return
         if (
             meeting
-            and v.path != "announce"  # an announcement is cut at once, in `_talking_changed`
+            and not (v.announce or v.announcing)  # an announcement is cut at once, in `_talking_changed`
             and v.agent_state == "speaking"
             and v.speaker in self._speaking
             and now - self._talk_from >= TALK_OVER_S

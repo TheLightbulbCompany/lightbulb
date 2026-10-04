@@ -840,3 +840,70 @@ async def test_a_retried_turn_keeps_its_askers_name_when_the_voice_goes_to_someo
     await settle(h)
     tries = [t for t in backend.turns if t["runId"] == run]
     assert len(tries) == 2 and {t["speakerName"] for t in tries} == {"Priya"}
+
+
+async def test_a_short_line_across_a_speaker_change_is_the_new_speakers():
+    # review: Dan's 0.7 s "Forge, status?" began under Priya's span and was labelled Priya (the longer share)
+    h, room, backend, lives, clock, log = await meeting()
+    speaker(h, "p1", "Priya", True)
+    clock.t += 5
+    h.on_interim_transcript(MEET, "Google Meet", "Forge")
+    clock.t += 0.4
+    speaker(h, "p2", "Dan", True)  # Recall names Dan 0.4 s into his line
+    clock.t += 0.3
+    await hear(h, "Forge, status?")
+    assert labels(h)[-1] == "Dan" and h._voice.label == "Dan"
+
+
+async def test_a_named_line_understood_after_someone_else_named_the_agent_is_not_said_through_their_voice():
+    # review: both lines share the Meet's one identity, so Priya's request was driven through Dan's voice
+    h, room, backend, lives, clock, log = await meeting()
+    speaker(h, "p2", "Dan", True)
+    await hear(h, "Forge, what PRs are open?")  # Forge's voice opens, with Dan
+    answer(h, backend.turns[0]["runId"], "forge", "Six PRs are open.")  # answered: Forge is free again
+    h.on_agent_state("forge", "speaking")
+    clock.t += 2
+    h.on_agent_state("forge", "listening")
+    backend.route_gate = asyncio.Event()
+    backend.route_extra = ops([("forge", "list the closed PRs", "name")])
+    clock.t += 2
+    speaker(h, "p1", "Priya", True)
+    clock.t += 1
+    await h.on_final_transcript(MEET, "Google Meet", "Forge, and the closed ones?")  # Priya names it: at /route
+    for _ in range(40):
+        await asyncio.sleep(0)
+    assert h._voice.label == "Priya"
+    clock.t += 2
+    speaker(h, "p2", "Dan", True)
+    clock.t += 1
+    backend.route_extra = ops([("forge", "count the open issues", "name")])
+    await h.on_final_transcript(MEET, "Google Meet", "Forge, how many issues are open?")  # Dan names it again
+    for _ in range(40):
+        await asyncio.sleep(0)
+    assert h._voice.label == "Dan"
+    calls = len(lives[0].calls)
+    backend.route_gate.set()
+    await settle(h)
+    assert not any("Priya asked" in str(c) for c in lives[0].calls[calls:]), "not put to the voice now with Dan"
+    (closed,) = [r for r in h._requests.items if r.task == "list the closed PRs"]
+    assert closed.label == "Priya" and h._voice.driven_run != closed.run_id, "it still runs, as Priya's, voiceless"
+
+
+async def test_a_follow_up_answer_on_a_voice_opened_for_an_announcement_is_talked_over_like_any_other():
+    # review: the talk-over rule skipped every voice whose path was "announce", also after its announcement
+    h, backend = await unheard_answer()
+    clock = h._clock
+    clock.t += h_mod.MEET_QUIET_S + h_mod.gate.ANNOUNCE_QUIET
+    await h.tick()
+    await settle(h)
+    v = h._voice
+    assert v is not None and v.path == "announce"
+    h.on_agent_state("forge", "speaking")  # it says the answer...
+    h.on_agent_state("forge", "listening")  # ...to its end
+    assert not v.announce and not v.announcing
+    h.on_agent_state("forge", "speaking")  # later it speaks again (a follow-up's answer)
+    talks(h, MEET, "Google Meet")
+    clock.t += h_mod.TALK_OVER_S
+    await h.tick()
+    await settle(h)
+    assert h._voice is None, "talked over: it stops"

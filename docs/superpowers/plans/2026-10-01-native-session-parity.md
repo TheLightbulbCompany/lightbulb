@@ -4,7 +4,7 @@
 
 **Outcome:** A Claude Code or Codex session can be used from its native client, Lightbulb on Mac, web, or phone with clear identity, native controls where actually supported, correct replies and receipts, and explicit approval for a new outbound audience.
 
-**Architecture decision:** Superseded 2026-10-03 by managed session sharing (`docs/superpowers/specs/2026-10-02-managed-session-sharing.md`): only sessions started through Lightbulb (the desktop app or the `lightbulb` command) are shared and mirrored; Lightbulb holds the unmodified native client in a pty and never drives it headless. Plain `claude` / `codex` sessions are private. A standard remote Lightbulb MCP is a separate account-connected messaging surface; it must not claim to be a particular live coding session. The local Mac bridge remains necessary for exact session attribution, transcript discovery, approvals, and verified live control.
+**Architecture decision:** Every session on a Mac with sharing on is tracked and shared, whether or not Lightbulb started it (owner rulings 2026-10-04; see `docs/superpowers/specs/2026-10-02-managed-session-sharing.md`, revision 5). Discovery is the default path for independently started sessions; treat it as a companion mode, not full native-client parity. A standard remote Lightbulb MCP is a separate account-connected messaging surface; it must not claim to be a particular live coding session. The local Mac bridge remains necessary for exact session attribution, transcript discovery, approvals, and verified live control.
 
 ## Source of truth and release boundary
 
@@ -58,8 +58,6 @@ Replace the UUID-bearing visible mention token with a selected recipient chip la
 
 ### B4. Native-client parity decision and capability UX
 
-> Superseded 2026-10-03 for sessions started through Lightbulb: Lightbulb now hosts the native client (managed session sharing). It still never drives it headless.
-
 **Spike result 2026-10-02 (doc-only, decided).** Codex app-server has no second-client attach: `thread/resume` makes the caller the thread's new owner, `turn/steer` and `turn/interrupt` are per-turn, and the protocol is silent on concurrent clients. Claude Code's own multi-device path is its Remote Control feature (`claude rc`), not a third-party channel; `--resume` spawns a second writer on the same transcript. So no documented provider path lets Lightbulb adopt an independently started session as a live second client. Decision: companion mode stays, badges stay honest, and unsupported controls hand off to the native client ("run it in your Claude Code or Codex terminal"). No controlled mode is built.
 
 
@@ -112,6 +110,6 @@ Review the Mac, web, and production-connected iPhone screens as one journey: Cha
 
 ## Decisions to confirm during UX review
 
-- Default teammate control remains owner-only with Ask to join or explicit owner toggle; workspace reading is shared by default, for sessions started through Lightbulb only. Do not infer send authority from visibility.
+- Default teammate control remains owner-only with Ask to join or explicit owner toggle; workspace reading is shared by default. Do not infer send authority from visibility.
 - Decided 2026-10-02: remote account-MCP writes need the explicit, separately listed `lightbulb:messages:write` scope and Clerk's consent screen, and no per-send Lightbulb approval. Native-session sends likewise get no Lightbulb approval card (owner ruling 2026-10-02: "It's an MCP, so it's basically a tool"): they post immediately as the session, and Claude's or Codex's own permission prompt is the per-call gate. Revisit only with evidence of abuse.
-- Decided 2026-10-02: no opt-in controlled mode; companion mode with a clear native-client handoff is the product. Do not market companion mode as full parity. Superseded 2026-10-03: Lightbulb hosts the native client for sessions started through it (managed session sharing); it still never drives it headless.
+- Decided 2026-10-02: no opt-in controlled mode; companion mode with a clear native-client handoff is the product. Do not market companion mode as full parity.

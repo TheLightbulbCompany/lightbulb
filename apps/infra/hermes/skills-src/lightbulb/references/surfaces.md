@@ -90,13 +90,13 @@ board yourself. Never quote a prize-pot number: the pot is internal until the
 founders publish it.
 # Shared local-session workspace notices
 
-**Which sessions are shared**: only a Claude Code or Codex session started in
-Lightbulb is shared: the desktop app's **New session**, a remote start, a pick-up,
-a resume, or `lightbulb claude` / `lightbulb codex` in any terminal inside an
-approved folder. A plain `claude` or `codex` session (and a Codex app thread) is
-private: it never appears in Lightbulb, and you cannot read it. If a person asks
-why their session is missing, tell them to start it with `lightbulb claude` (or
-`lightbulb codex`) or from **New session**.
+**Which sessions are shared**: every Claude Code and Codex session on a Mac where its owner
+turned session sharing on, whether it was started in Lightbulb (**New session**, a remote
+start, a pick-up, a resume, `lightbulb claude` / `lightbulb codex`) or as a plain `claude` or
+`codex` in any terminal. The owner can pause one session or turn sharing off for the Mac. A
+running session shows its live terminal when Lightbulb started it or when it is a Claude Code
+background session. A plain interactive Claude Code session (its owner can press ← in its
+terminal to move it to the background) and a plain Codex session show the labelled transcript.
 
 **New session** (web and desktop): has no first message and no Start button. The person picks the
 approved folder, then presses **Claude Code** or **Codex**. The terminal opens on the

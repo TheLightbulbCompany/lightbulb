@@ -1231,20 +1231,41 @@ async def test_a_call_that_ends_while_the_second_saying_is_in_flight_puts_the_an
 
 
 async def test_a_long_answer_cut_in_a_later_sentence_is_still_kept():
-    """Review: the first sentence said to its end cleared the answer; the second was cut and nothing was left."""
-    first, second = "Three pull requests are open.", "The oldest is the Meta callbacks draft from August."
+    """Review: the first sentence said to its end cleared the answer; the second was cut and nothing was left.
+    Also when the first message is most of the answer and only a short tail is cut."""
+    first = "Three pull requests are open and the oldest is the Meta callbacks draft from August."
+    second = "Ask Leo."
     h, backend, lives, clock, text = await forge_answers_priya(f"{first} {second}")
     h.on_agent_state("forge", "speaking")
-    h.on_agent_said("forge", first)  # only the start of the answer
-    assert h._voice.answer is not None
-    h.on_agent_said("forge", "The oldest is", interrupted=True)
+    h.on_agent_said("forge", first)  # most of the answer, said to its end
+    assert h._voice.answer is not None, "a later part may still be cut"
+    h.on_agent_said("forge", "Ask", interrupted=True)
     h.on_agent_state("forge", "listening")
     await quiet_tick(h, clock, h_mod.CUT_HANDLED_S + h_mod.MEET_QUIET_S)
     assert [c[1] for c in resays(lives[0])] == [h_mod.RESAY.format(answer=text)]
     h.on_agent_state("forge", "speaking")
     h.on_agent_said("forge", first)
-    h.on_agent_said("forge", second)  # both parts to their end: heard
+    h.on_agent_said("forge", second)  # both parts to their end
     h.on_agent_state("forge", "listening")
-    assert h._voice.answer is None
     await quiet_tick(h, clock, h_mod.CUT_WAIT_S)
+    assert h._voice is None or h._voice.answer is None
     assert len(resays(lives[0])) == 1 and backend.late_answers == []
+
+
+async def test_a_follow_up_that_fails_before_a_word_still_replaces_the_cut_answer():
+    """Review: the stale answer was dropped only when the follow-up run spoke; one that failed first left it to
+    be said again once the failed run was gone."""
+    h, backend, lives, clock, text = await forge_answers_priya()
+    h.on_agent_state("forge", "speaking")
+    h.on_agent_said("forge", "Three pull requests", interrupted=True)
+    h.on_agent_state("forge", "listening")
+    backend.route_extra = ops([("forge", "the ones opened last month", "follow")])
+    await says(h, P1, "actually, only the ones from last month")
+    follow = h._requests.items[-1]
+    h.on_data(None, "call.frame", packet(frame(follow.run_id, "forge", {"type": "error", "seq": 1})))
+    await settle(h)
+    await quiet_tick(h, clock, h_mod.CUT_HANDLED_S + h_mod.MEET_QUIET_S)
+    await quiet_tick(h, clock, h_mod.CUT_WAIT_S)
+    await h.clear_presence()
+    assert resays(lives[0]) == []
+    assert text not in [a[3] for a in backend.late_answers]

@@ -107,7 +107,7 @@ Rooms' **Devices & sessions** panel lists human-shared Claude/Codex sessions;
 opening one from that list opens the session in that room's right column.
 Opening a session from the sidebar Sessions section or from a session link
 instead fills the middle with the sharer's DM beside it. A running session
-shows as a live terminal. Whoever can type in that terminal (the owner, or a teammate the owner admitted) gets no separate message box under it; a read-only viewer keeps it. A session that is not running (ended, or its Mac is
+shows as a live terminal. A live terminal has no Lightbulb message box under it: the terminal is the only input. A viewer who cannot type sees a "Watching · Ask to join" line instead. A session that is not running (ended, or its Mac is
 offline) shows as a transcript, labelled "Transcript" in its status line. The
 sidebar Sessions section lists live sessions; All sessions lists the rest. The
 transcript renders the native transcript with the harness's own grammar: prompts with the sender's name,

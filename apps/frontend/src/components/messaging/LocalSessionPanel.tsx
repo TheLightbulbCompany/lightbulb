@@ -89,8 +89,8 @@ export function LocalSessionPanel({ session, ownerName, own, client, revision, o
     capture("session_opened", { own, provider: session.provider, workspace_id: orgId, session_id: session.sessionId, origin: "web" });
   }, [session.sessionId, own, session.provider, orgId]);
   const control = canControlSession(session, own, userId);
-  // The viewer types in the terminal itself (Claude Code draws its own input box), so the message box below it would be a second one.
-  const typesInTerminal = control && session.shared !== false && (local === "local" || (liveTerminal && !!client.sendLocalSessionInput));
+  // A live terminal is the only input: no message box under it. A viewer who cannot type keeps the Ask to join line.
+  const terminalLive = local === "local" || liveTerminal;
   // "<Name> is typing": the owner sees who is typing into the live terminal for ~6 s after each event.
   const [typers, setTypers] = useState<Record<string, number>>({});
   useEffect(() => {
@@ -236,7 +236,7 @@ export function LocalSessionPanel({ session, ownerName, own, client, revision, o
     </div>}
     </>}
     <SubagentPanel provider={session.provider} events={history.events} status={session.status} onPick={id => revealSubagent(content.current, id)} />
-    {session.status === "ended" ? <SessionResume flow={resume} own={own} ownerName={ownerName} /> : typesInTerminal ? null : control ? <form className="room-composer local-session-composer native-session-composer" onSubmit={event => { event.preventDefault(); atBottomRef.current = true; command.send(text); }}>
+    {session.status === "ended" ? <SessionResume flow={resume} own={own} ownerName={ownerName} /> : terminalLive && control ? null : control && !terminalLive ? <form className="room-composer local-session-composer native-session-composer" onSubmit={event => { event.preventDefault(); atBottomRef.current = true; command.send(text); }}>
       <label htmlFor={id} className="sr-only">Send to {target}</label>
       <div className="native-session-prompt-row"><span className="native-session-glyph" aria-hidden="true">{glyph}</span>
         <textarea id={id} className="room-input" rows={2} value={text} disabled={!command.canSend || command.locked} onChange={event => setText(event.target.value)}
@@ -262,7 +262,7 @@ export function LocalSessionPanel({ session, ownerName, own, client, revision, o
       </div>}
     </form> : <div className="room-composer local-session-readonly">
       <div>
-        <p className="text-sm text-muted-foreground">{join.state === "declined" ? `${ownerName} declined your request.` : `Only ${ownerName} can send to this session.`}</p>
+        <p className="text-sm text-muted-foreground">{terminalLive && "Watching · "}{join.state === "declined" ? `${ownerName} declined your request.` : `Only ${ownerName} can send to this session.`}</p>
         <div className="local-session-actions">
           {join.supported && <Button type="button" variant="outline" size="sm" disabled={join.saving || join.state === "pending"}
             onClick={() => void join.ask()}>{join.state === "pending" ? "Requested" : "Ask to join"}</Button>}

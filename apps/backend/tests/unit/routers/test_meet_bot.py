@@ -69,3 +69,26 @@ def test_ticket_is_room_and_bot_bound(env):
     assert _exchange(client, "garbage").status_code == 401
     meeting["status"] = "ended"
     assert _exchange(client, good).status_code == 401
+
+
+def test_legacy_meeting_keeps_the_mixed_seat(env):
+    client, _ = env
+    out = _exchange(client, _ticket()).json()
+    assert out["mixedAudio"] is True
+    assert jwt.decode(out["token"], "s" * 32, algorithms=["HS256"])["sub"] == f"meet:{ROOM}"
+
+
+def test_separate_audio_gives_the_page_a_meetbot_seat(env):
+    client, meeting = env
+    meeting["audio"] = "separate"
+    out = _exchange(client, _ticket()).json()
+    assert out["mixedAudio"] is False
+    claims = jwt.decode(out["token"], "s" * 32, algorithms=["HS256"])
+    assert claims["sub"] == f"meetbot:{ROOM}" and claims["name"] == "Lightbulb"
+    assert claims["video"]["canSubscribe"] is True  # the page still plays the agents' voices
+
+
+def test_an_audio_ticket_opens_no_page_seat(env):
+    client, _ = env
+    exp = int(time.time()) + 3600
+    assert _exchange(client, lk.meet_ticket(ROOM, "nonce-1", exp, lk.AUDIO_TICKET)).status_code == 401

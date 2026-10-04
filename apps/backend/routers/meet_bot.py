@@ -26,9 +26,12 @@ async def session(body: SessionBody):
     meeting = ((await messaging_repo.get_room(room_id)) or {}).get("meeting") or {}
     if meeting.get("ticketNonce") != nonce or meeting.get("status") not in ("bot_created", "in_call"):
         raise HTTPException(status_code=401, detail="invalid ticket")
+    # "separate": Recall's audio socket seats each Meet person (meet_bridge), so the page's mic must stay off.
+    mixed = meeting.get("audio") != "separate"
     return {
         "serverUrl": settings.LIVEKIT_URL,
         "roomName": livekit_huddles.meet_room_name(room_id),
-        "token": livekit_huddles.mint_meet_token(room_id),
+        "token": livekit_huddles.mint_meet_token(room_id, mixed=mixed),
         "agents": await voice_calls.room_agents(room_id),
+        "mixedAudio": mixed,
     }

@@ -37,6 +37,7 @@ _SPEECH_EVENTS = [
     "participant_events.join",
     "participant_events.leave",
 ]
+_AUDIO_EVENTS = ["audio_separate_raw.data", "participant_events.join", "participant_events.leave"]
 _ENDED = {"call_ended", "done", "fatal", "recording_done", "media_expired", "analysis_done", "analysis_failed"}
 _transport: httpx.AsyncBaseTransport | None = None  # tests swap in httpx.MockTransport
 
@@ -71,11 +72,42 @@ def _iso(epoch: int) -> str:
     return datetime.fromtimestamp(epoch, timezone.utc).isoformat()
 
 
-def _output_media(room_id: str, meeting: dict) -> dict:
+def _ticket(room_id: str, meeting: dict, purpose: str) -> str:
     exp = int(meeting.get("endAt") or meeting["startAt"]) + _TICKET_GRACE_S
-    ticket = livekit_huddles.meet_ticket(room_id, meeting["ticketNonce"], exp)
+    return livekit_huddles.meet_ticket(room_id, meeting["ticketNonce"], exp, purpose)
+
+
+def _output_media(room_id: str, meeting: dict) -> dict:
+    ticket = _ticket(room_id, meeting, livekit_huddles.PAGE_TICKET)
     page = settings.MEET_BOT_PAGE_URL or f"{settings.FRONTEND_URL.rstrip('/')}/meet-bot"
     return {"camera": {"kind": "webpage", "config": {"url": f"{page}#t={ticket}"}}}
+
+
+def audio_url(room_id: str, ticket: str) -> str:
+    """Recall dials this socket for the call and pushes each person's audio. It rides the raw-WS
+    door (``/api/v1/gateway/*``); Recall 400s a URL with no ``/`` before the ``?``."""
+    base = settings.GATEWAY_RELAY_URL.rstrip("/").removesuffix("/ws")
+    return f"{base}/meet/?{urlencode({'room': room_id, 't': ticket})}"
+
+
+def _recording_config(room_id: str, meeting: dict) -> dict:
+    # ZDR; each person's audio reaches the bridge socket, speaker events reach the webhook. No transcription.
+    return {
+        "retention": None,
+        "audio_separate_raw": {},
+        "realtime_endpoints": [
+            {
+                "type": "webhook",
+                "url": f"{settings.PUBLIC_API_BASE}/api/v1/webhooks/recall/realtime",
+                "events": _SPEECH_EVENTS,
+            },
+            {
+                "type": "websocket",
+                "url": audio_url(room_id, _ticket(room_id, meeting, livekit_huddles.AUDIO_TICKET)),
+                "events": _AUDIO_EVENTS,
+            },
+        ],
+    }
 
 
 async def create(*, room_id: str, meeting: dict, company: str) -> str:
@@ -85,17 +117,7 @@ async def create(*, room_id: str, meeting: dict, company: str) -> str:
     body = {
         "meeting_url": meeting["meetingUrl"],
         "bot_name": company[: 100 - len(_BOT_SUFFIX)] + _BOT_SUFFIX,
-        # ZDR; mixed audio reaches the page, speaker events reach Task 7's route. No transcription.
-        "recording_config": {
-            "retention": None,
-            "realtime_endpoints": [
-                {
-                    "type": "webhook",
-                    "url": f"{settings.PUBLIC_API_BASE}/api/v1/webhooks/recall/realtime",
-                    "events": _SPEECH_EVENTS,
-                }
-            ],
-        },
+        "recording_config": _recording_config(room_id, meeting),
         "output_media": _output_media(room_id, meeting),
         "variant": {"google_meet": "web_4_core"},
         "automatic_leave": {"waiting_room_timeout": 180, "noone_joined_timeout": 1200},
@@ -123,9 +145,13 @@ async def find_for_room(room_id: str, nonce: str) -> str | None:
 
 
 async def reschedule(bot_id: str, *, room_id: str, meeting: dict) -> None:
-    """Moves a not-yet-joined bot; the page ticket is re-minted so it dies with the new end. Recall
+    """Moves a not-yet-joined bot; both tickets are re-minted so they die with the new end. Recall
     refuses a ``join_at`` under 10 minutes out (400): the caller then replaces the bot."""
-    body = {"join_at": _iso(int(meeting["startAt"]) - 120), "output_media": _output_media(room_id, meeting)}
+    body = {
+        "join_at": _iso(int(meeting["startAt"]) - 120),
+        "output_media": _output_media(room_id, meeting),
+        "recording_config": _recording_config(room_id, meeting),
+    }
     await _call("PATCH", f"/api/v1/bot/{bot_id}/", body)
 
 

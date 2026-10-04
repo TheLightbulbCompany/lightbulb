@@ -6,11 +6,12 @@ import hmac
 import json
 import logging
 import time
+from urllib.parse import parse_qs, urlsplit
 
 import httpx
 import pytest
 
-from core.services import meeting_bots
+from core.services import livekit_huddles, meeting_bots
 
 KEY = "rk_live_SECRET_KEY_VALUE"
 URL = "https://meet.google.com/abc-defg-hij"
@@ -32,6 +33,7 @@ def recall(monkeypatch):
     monkeypatch.setattr(meeting_bots.settings, "PUBLIC_API_BASE", "https://api.example")
     monkeypatch.setattr(meeting_bots.settings, "LIVEKIT_API_SECRET", "lk-secret")
     monkeypatch.setattr(meeting_bots.settings, "MEET_BOT_PAGE_URL", "https://app.example/meet-bot")
+    monkeypatch.setattr(meeting_bots.settings, "GATEWAY_RELAY_URL", "wss://bv.example/api/v1/gateway/ws")
     return calls, responses
 
 
@@ -49,8 +51,10 @@ async def test_create_body(recall, caplog):
     assert req.headers["authorization"] == f"Token {KEY}" and req.headers["idempotency-key"] == "nonce-1"
     body = json.loads(req.content)
     assert body["meeting_url"] == URL and body["bot_name"] == "Acme agents · Lightbulb"
+    audio = body["recording_config"]["realtime_endpoints"].pop()
     assert body["recording_config"] == {
         "retention": None,
+        "audio_separate_raw": {},
         "realtime_endpoints": [
             {
                 "type": "webhook",
@@ -64,6 +68,15 @@ async def test_create_body(recall, caplog):
             }
         ],
     }
+    # Each person's audio: the raw-WS door's /meet/ socket, trailing slash before the query.
+    assert audio["type"] == "websocket"
+    assert audio["events"] == ["audio_separate_raw.data", "participant_events.join", "participant_events.leave"]
+    url = urlsplit(audio["url"])
+    assert (url.scheme, url.netloc, url.path) == ("wss", "bv.example", "/api/v1/gateway/meet/")
+    query = parse_qs(url.query)
+    assert query["room"] == ["room-1"]
+    assert livekit_huddles.verify_meet_ticket(query["t"][0], livekit_huddles.AUDIO_TICKET) == ("room-1", "nonce-1")
+    assert livekit_huddles.verify_meet_ticket(query["t"][0]) is None  # not a page ticket
     assert body["metadata"] == {"roomId": "room-1", "nonce": "nonce-1"}
     assert body["variant"] == {"google_meet": "web_4_core"}
     assert body["automatic_leave"] == {"waiting_room_timeout": 180, "noone_joined_timeout": 1200}
@@ -118,7 +131,11 @@ async def test_reschedule_patches_join_at_and_reticket(recall):
     responses.append((200, {"id": "bot-1"}))
     await meeting_bots.reschedule("bot-1", room_id="room-1", meeting=_meeting(3600))
     assert calls[0].method == "PATCH" and calls[0].url.path == "/api/v1/bot/bot-1/"
-    assert set(json.loads(calls[0].content)) == {"join_at", "output_media"}
+    body = json.loads(calls[0].content)
+    assert set(body) == {"join_at", "output_media", "recording_config"}
+    # The audio ticket is re-minted too, so a later end does not leave Recall's socket refused.
+    url = body["recording_config"]["realtime_endpoints"][1]["url"]
+    assert livekit_huddles.verify_meet_ticket(parse_qs(urlsplit(url).query)["t"][0], livekit_huddles.AUDIO_TICKET)
 
 
 async def test_leave_deletes_then_falls_back_to_leave_call(recall):

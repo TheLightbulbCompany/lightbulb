@@ -753,6 +753,12 @@ async def test_the_rsvp_write_keeps_the_bot(room, bots):
     await meeting_invites.handle_team_mail("org_1", _mail(GOOGLE), TEAM)
     meeting = room.state["meta"]["meeting"]
     assert meeting["rsvpSequence"] == 0 and meeting["recallBotId"] == "bot-1" and meeting["ticketNonce"]
+    assert meeting["audio"] == "separate"  # the page asks for it: one LiveKit seat per Meet person
+
+
+def test_the_audio_mode_goes_with_the_bot():
+    # A new occurrence (or a replaced bot) is a new booking; its mode is written again with it.
+    assert "audio" in meeting_invites._BOT_KEYS and "audio" in meeting_invites._OCCURRENCE_KEYS
 
 
 async def test_a_winner_timing_out_after_the_other_delivery_booked_is_not_a_failure(room, bots):

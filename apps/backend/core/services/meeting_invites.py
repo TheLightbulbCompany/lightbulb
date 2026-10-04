@@ -356,7 +356,9 @@ async def _patch_meeting(
         return merged
 
 
-_BOT_KEYS = ("recallBotId", "ticketNonce", "botClaimAt", "botError")
+# ``audio`` is how the bot hands over sound ("separate": one LiveKit seat per Meet person, see
+# meet_bridge); it belongs to the bot, so it goes with it.
+_BOT_KEYS = ("recallBotId", "ticketNonce", "botClaimAt", "botError", "audio")
 _CLAIM_S = 30  # a claimed-but-unwritten booking younger than this may be another delivery's POST in flight
 
 
@@ -485,7 +487,7 @@ async def _sync_bot(owner_id: str, room_id: str, meeting: dict, prior: dict | No
         return await _bot_failed(owner_id, room_id, meeting, exc, "book", keep=not _definitive(exc))
     except Exception as exc:  # noqa: BLE001
         return await _bot_failed(owner_id, room_id, meeting, exc, "book", keep=True)
-    booked = {"recallBotId": bot_id, "ticketNonce": nonce}
+    booked = {"recallBotId": bot_id, "ticketNonce": nonce, "audio": "separate"}
     stored = ((await messaging_repo.get_room(room_id)) or {}).get("meeting") or {}
     if stored.get("status") != "cancelled":
         booked["status"] = "bot_created"

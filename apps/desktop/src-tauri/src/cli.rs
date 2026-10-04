@@ -509,14 +509,19 @@ pub fn path_line(shell: &str, path: &str, home: &Path) -> Option<String> {
     })
 }
 
+/// The path to link to, if `exe` is an installed app. macOS can report the running app as
+/// `/.nofollow/Applications/...` (and `canonicalize` keeps that), so the prefix is dropped first.
+fn installed_exe(exe: &Path, home: &Path) -> Option<PathBuf> {
+    let exe = exe.strip_prefix("/.nofollow").map(|p| Path::new("/").join(p)).unwrap_or_else(|_| exe.to_path_buf());
+    (exe.starts_with("/Applications") || exe.starts_with(home.join("Applications"))).then_some(exe)
+}
+
 /// At launch. Only an installed app links itself: a copy run from the disk image, a translocated
 /// path or a build folder moves away and would leave the link dangling.
 pub fn install_at_launch() {
     let Some(home) = std::env::var_os("HOME").map(PathBuf::from) else { return };
     let Ok(exe) = std::env::current_exe().and_then(std::fs::canonicalize) else { return };
-    if !(exe.starts_with("/Applications") || exe.starts_with(home.join("Applications"))) {
-        return;
-    }
+    let Some(exe) = installed_exe(&exe, &home) else { return };
     if let Err(e) = install(&exe, &home) {
         crate::log(&format!("[cli] {e}"));
         return;
@@ -737,5 +742,21 @@ mod tests {
         assert_eq!(path_line("/bin/zsh", "/usr/bin", home).unwrap(), r#"echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.zshrc"#);
         assert_eq!(path_line("/bin/bash", "/usr/bin", home).unwrap(), r#"echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.bash_profile"#);
         assert_eq!(path_line("/opt/homebrew/bin/fish", "/usr/bin", home).unwrap(), "fish_add_path ~/.local/bin");
+    }
+
+    #[test]
+    fn cli_installs_from_applications_with_or_without_nofollow() {
+        let home = Path::new("/Users/a");
+        let plain = Path::new("/Applications/Lightbulb.app/Contents/MacOS/lightbulb-desktop");
+        let nofollow = Path::new("/.nofollow/Applications/Lightbulb.app/Contents/MacOS/lightbulb-desktop");
+        assert_eq!(installed_exe(nofollow, home).as_deref(), Some(plain));
+        assert_eq!(installed_exe(plain, home).as_deref(), Some(plain));
+        let user = Path::new("/Users/a/Applications/Lightbulb.app/Contents/MacOS/lightbulb-desktop");
+        assert_eq!(installed_exe(user, home).as_deref(), Some(user));
+        for refused in ["/Users/a/src/lightbulb/target/release/lightbulb-desktop",
+            "/Volumes/Lightbulb/Lightbulb.app/Contents/MacOS/lightbulb-desktop",
+            "/.nofollow/Volumes/Lightbulb/Lightbulb.app/Contents/MacOS/lightbulb-desktop"] {
+            assert_eq!(installed_exe(Path::new(refused), home), None, "{refused}");
+        }
     }
 }

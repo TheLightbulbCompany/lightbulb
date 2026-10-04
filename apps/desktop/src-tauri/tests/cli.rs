@@ -122,7 +122,7 @@ fn cli_prints_the_app_s_refusal_and_attaches_to_nothing() {
 fn cli_restores_the_terminal_after_the_child_exits_and_exits_with_its_code() {
     let (app, _) = app_with_holder(&["/bin/sh", "-c", "read x; printf done; exit 3"]);
     let mut cli = Cli::start(&app);
-    cli.wait_for("● Shared with Acme. Run plain `claude` to keep a session private.");
+    cli.wait_for("● Shared with Acme.");
     cli.wait_raw();
     cli.keys.write_all(b"go\r").unwrap();
     assert_eq!(cli.exit_code(), 3);

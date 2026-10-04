@@ -448,7 +448,7 @@ fn unapproved_path_flag(tool: &str, args: &[String], cwd: &Path, approved: &[Pat
             .and_then(|p| crate::file_access::canonicalize(p).ok())
             .is_some_and(|p| inside_approved(&p, approved));
         (!ok).then(|| format!(
-            "{flag} {path} is not inside a folder you approved for Lightbulb. Add it in the Lightbulb app under Settings → File access, then run this again. Plain `{tool}` stays private."
+            "{flag} {path} is not inside a folder you approved for Lightbulb. Add it in the Lightbulb app under Settings → File access, then run this again."
         ))
     })
 }
@@ -540,7 +540,7 @@ mod tests {
         assert_eq!(unapproved_path_flag("codex", &args(&["--add-dir", root.to_str().unwrap()]), &root, &approved), None);
         // An unapproved -C, --add-dir=…, -C<path> and a second --add-dir are refused.
         let refused = unapproved_path_flag("codex", &args(&["-C", &outside]), &root, &approved).unwrap();
-        assert!(refused.contains(&outside) && refused.contains("Plain `codex` stays private"), "{refused}");
+        assert!(refused.contains(&outside), "{refused}");
         assert!(unapproved_path_flag("codex", &args(&[&format!("--add-dir={outside}")]), &root, &approved).is_some());
         assert!(unapproved_path_flag("codex", &args(&[&format!("-C{outside}")]), &root, &approved).is_some());
         assert!(unapproved_path_flag("claude", &args(&["--add-dir", "lib", &outside]), &root, &approved).is_some());

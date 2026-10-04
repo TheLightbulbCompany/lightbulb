@@ -233,7 +233,7 @@ pub struct Ask {
 }
 
 const USAGE: &str = "Usage: lightbulb claude|codex [any claude or codex arguments]\n\
-Starts a session shared with your Lightbulb workspace. Plain `claude` or `codex` stays private.";
+Starts a session in the Lightbulb app on this Mac, with its live terminal there too.";
 
 pub fn parse(args: &[String]) -> Result<Ask, String> {
     let Some((tool, rest)) = args.split_first().filter(|(t, _)| *t == "claude" || *t == "codex") else {
@@ -255,13 +255,13 @@ pub fn request(ask: &Ask, folder: &Path, (cols, rows): (u16, u16)) -> Value {
 }
 
 /// The workspace name comes from the web page: never let it write escape sequences here.
-pub fn shared_line(workspace: Option<&str>, tool: &str) -> String {
+pub fn shared_line(workspace: Option<&str>) -> String {
     let name: String = workspace.unwrap_or("").chars().filter(|c| !c.is_control()).take(80).collect();
     let name = match name.trim() {
         "" => "your Lightbulb workspace",
         name => name,
     };
-    format!("● Shared with {name}. Run plain `{tool}` to keep a session private.")
+    format!("● Shared with {name}.")
 }
 
 #[derive(Debug, PartialEq)]
@@ -457,7 +457,7 @@ pub fn main(args: &[String]) -> i32 {
     let size = window_size();
     match ask_app(&app_socket(), &request(&ask, &folder, size)) {
         Ok(started) => {
-            println!("{}", shared_line(started.workspace.as_deref(), &ask.tool));
+            println!("{}", shared_line(started.workspace.as_deref()));
             attach(&started.socket, size, signals)
         }
         Err(message) => {
@@ -657,9 +657,9 @@ mod tests {
 
     #[test]
     fn cli_shared_line_names_the_workspace_and_never_prints_its_control_bytes() {
-        assert_eq!(shared_line(Some("Acme"), "claude"), "● Shared with Acme. Run plain `claude` to keep a session private.");
-        assert_eq!(shared_line(Some("Ev\x1b]0;pwned\x07il"), "codex"), "● Shared with Ev]0;pwnedil. Run plain `codex` to keep a session private.");
-        assert_eq!(shared_line(None, "claude"), "● Shared with your Lightbulb workspace. Run plain `claude` to keep a session private.");
+        assert_eq!(shared_line(Some("Acme")), "● Shared with Acme.");
+        assert_eq!(shared_line(Some("Ev\x1b]0;pwned\x07il")), "● Shared with Ev]0;pwnedil.");
+        assert_eq!(shared_line(None), "● Shared with your Lightbulb workspace.");
     }
 
     #[test]

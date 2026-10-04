@@ -114,7 +114,8 @@ export function agentStateLine(status: AgentLiveStatus, x: AgentLineExtras = {})
     case "working": return x.working ? `Working: ${x.working}` : "Working";
     case "has_news":
       if (x.meeting) return `Hand up: ${x.hand || "has something for you"}`;
-      return x.hand ? `Has ${x.hand} — tap to hear` : "Has something — tap to hear";
+      // the topic is the task as it was asked ("what PRs are open"): "Has what PRs…" would not read
+      return x.hand ? `Ready: ${x.hand} — tap to hear` : "Has something — tap to hear";
     default: return x.queuePos != null ? "Next" : "";
   }
 }
@@ -124,7 +125,7 @@ const lowerFirst = (s: string) => s.charAt(0).toLowerCase() + s.slice(1);
 /** One line naming an agent and its state ("Gauge — speaking", "Gauge is joining…"). */
 export function agentLine(name: string, status: AgentLiveStatus, x: AgentLineExtras = {}): string {
   if (!x.naming && status === "joining") return `${name} is joining…`;
-  if (!x.naming && status === "has_news" && !x.meeting) return `${name} has ${x.hand || "something"} — tap to hear it`;
+  if (!x.naming && status === "has_news" && !x.meeting) return x.hand ? `${name} is ready: ${x.hand} — tap to hear it` : `${name} has something — tap to hear it`;
   const line = agentStateLine(status, x);
   return line ? `${name} — ${lowerFirst(line)}` : name;
 }

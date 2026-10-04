@@ -143,9 +143,9 @@ describe("per-agent Live readers", () => {
 describe("has_news wording", () => {
   it("Live bar keeps its tap wording, with the topic when there is one", () => {
     expect(agentStateLine("has_news")).toBe("Has something — tap to hear");
-    expect(agentStateLine("has_news", { hand: "the Q3 numbers" })).toBe("Has the Q3 numbers — tap to hear");
+    expect(agentStateLine("has_news", { hand: "what PRs are open" })).toBe("Ready: what PRs are open — tap to hear");
     expect(agentLine("Gauge", "has_news")).toBe("Gauge has something — tap to hear it");
-    expect(agentLine("Gauge", "has_news", { hand: "the Q3 numbers" })).toBe("Gauge has the Q3 numbers — tap to hear it");
+    expect(agentLine("Gauge", "has_news", { hand: "what PRs are open" })).toBe("Gauge is ready: what PRs are open — tap to hear it");
   });
   it("meeting wording never says tap", () => {
     expect(agentStateLine("has_news", { meeting: true })).toBe("Hand up: has something for you");

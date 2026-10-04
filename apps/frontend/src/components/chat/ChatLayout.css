@@ -908,8 +908,8 @@
   color: var(--ok);
   margin: 0;
 }
-/* Exact complement of useIsDesktop's (min-width: 860px) shell boundary. */
-@media (max-width: 859px) {
+/* Exact complement of useIsDesktop's (min-width: 600px) shell boundary. */
+@media (max-width: 599px) {
   .app-shell {
     grid-template-columns: 1fr;
     grid-template-areas: "main";

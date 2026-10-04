@@ -288,6 +288,23 @@ def address(text: str, agents: list[dict], people: list[dict]) -> Address:
     return out
 
 
+def clause_openers(text: str, agents: list[dict]) -> list[str]:
+    """Default-name agents ("Finance", "Customer Operations") whose exact name opens a clause: at the start,
+    after . ? ! ; or after ", " / "and " (the backend's `_opens_clause`). `address` keeps such names out of
+    `anywhere` (they are ordinary words), so without this "Finance, check burn? Engineering, check deploy"
+    would read as one name and never reach /route's split. In order of first appearance."""
+    found = []
+    for a in agents:
+        words = (a.get("name") or "").split()
+        if not a.get("defaultName") or not words:
+            continue
+        name = r"\s+".join(map(re.escape, words))
+        m = re.search(rf"(?:^\s*|[.?!;]\s+|,\s+|\band\s+)({name})(?![\w'])", text, re.I)
+        if m:
+            found.append((m.start(1), a["id"]))
+    return [aid for _, aid in sorted(found)]
+
+
 # Backchannels and fillers: never enough to cut Lightbulb off. Multi-word ones go first.
 _FILLER_PHRASES = re.compile(r"\b(?:got it|mm[\s-]?hmm|uh[\s-]?huh)\b")
 _FILLER = {

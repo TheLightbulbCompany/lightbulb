@@ -251,3 +251,54 @@ def test_address_names_anywhere_for_a_floor_switch():
         address("Finance looks fine", AGENTS, PEOPLE).anywhere == []
     )  # default names stay silent
     assert address("I bought a gage", AGENTS, PEOPLE).anywhere == []  # exact only
+
+
+from huddle_agent.transcript import ghost_line, no_post_command, stop_all  # noqa: E402
+
+PROMPT = stt_prompt(["Pulse", "Friday", "Forge"], ["Prasiddha"])
+
+
+@pytest.mark.parametrize(
+    "text",
+    [PROMPT, "A team voice call. Names: Pulse, Friday, Forge, …", "a team voice call", "Names: Pulse, Friday, Forge, Lightbulb"],
+)
+def test_ghost_lines_are_the_stt_prompt_coming_back(text):
+    assert ghost_line(text, PROMPT)
+
+
+@pytest.mark.parametrize(
+    "text", ["Pulse, Friday, Forge, check CI", "Forge", "Pulse and Friday", "what's the team voice plan", ""]
+)
+def test_real_lines_are_not_ghosts(text):
+    assert not ghost_line(text, PROMPT)
+
+
+def test_before_the_team_loads_only_the_prompts_opening_is_a_ghost():
+    assert ghost_line("A team voice call.", None) and not ghost_line("Forge, check CI", None)
+
+
+@pytest.mark.parametrize(
+    "text", ["everyone stop", "Everyone, stop.", "stop all", "OK everybody never mind", "stop everything", "cancel all"]
+)
+def test_stop_all(text):
+    assert stop_all(text)
+
+
+@pytest.mark.parametrize("text", ["stop", "Forge, stop", "don't stop all the deploys", "everyone stop by at 3"])
+def test_not_stop_all(text):
+    assert not stop_all(text)
+
+
+@pytest.mark.parametrize(
+    "text,expected",
+    [
+        ("don't post that", (True, None)),
+        ("Forge, don't post that.", (True, "forge")),
+        ("gauge do not post it in the room", (True, "gauge")),
+        ("we don't post that", (False, None)),  # a leading word that is no agent's name
+        ("don't post that yet, Forge", (False, None)),
+        ("post that", (False, None)),
+    ],
+)
+def test_no_post_command(text, expected):
+    assert no_post_command(text, AGENTS) == expected

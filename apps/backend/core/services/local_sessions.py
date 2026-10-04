@@ -295,6 +295,8 @@ class LocalSession(ContractModel):
     resume: ResumeStatus | None = None
     # Server-computed: ended, not background, and this workspace may start sessions on its Macs.
     resumable: bool = False
+    # A join request is pending and the owner's Mac has paused remote typing until it is answered.
+    input_paused: bool = False
 
     @model_serializer(mode="wrap")
     def wire(self, handler, info):
@@ -670,6 +672,13 @@ def _session_public(row: dict, viewer: str | None = None) -> LocalSession:
         if waiting:
             public["pendingJoins"] = sorted(waiting)
             public["pendingJoinIds"] = waiting
+    from core.services import session_presence  # lazy: it imports this module
+
+    public["inputPaused"] = bool(
+        session_presence.pending_joins(row)
+        and session_presence.FEATURE in row.get("deviceFeatures", ())
+        and public["terminal"] is not None
+    )
     stats = row.get("stats") or {}
     for key in ("model", "permissionMode"):
         if stats.get(key):
@@ -1133,6 +1142,7 @@ async def set_sharing(auth: AuthContext, session_id: str, shared: bool) -> Local
                     raise
                 continue
             row = updated
+            await _push_presence(row)
         return _session_public(row, auth.user_id)
     raise ApiProblem("LOCAL_SESSION_CONFLICT", "Session changed. Try again.")
 
@@ -1906,6 +1916,7 @@ async def request_join(auth: AuthContext, session_id: str) -> LocalSession:
     if audit is not None:
         _capture_growth(row, "session_join_requested", me)
         await _notify_join_request(row, me)
+        await _push_presence(row)
     return _session_public(row, me)
 
 
@@ -1942,6 +1953,7 @@ async def decide_join(
     if audit is not None:  # only a write that landed; a repeated answer is a no-op
         _capture_growth(row, "session_join_decided", auth.user_id, decision=decision)
         await _notify_join_answer(row, user_id, action, answered["requestId"])
+        await _push_presence(row)
     return _session_public(row, auth.user_id)
 
 
@@ -1999,6 +2011,12 @@ async def _notify_join_request(row: dict, requester: str) -> None:
     except Exception:
         logger.warning("Session join request activity row failed", exc_info=True)
     await _session_notice(owner, human, sid, "join_request", title, body, event_id)
+
+
+async def _push_presence(row: dict) -> None:
+    from core.services import session_presence  # imports this module
+
+    await session_presence.push(row)
 
 
 async def _session_notice(owner: str, user: str, sid: str, state: str, title: str, body: str, event_id: str) -> None:

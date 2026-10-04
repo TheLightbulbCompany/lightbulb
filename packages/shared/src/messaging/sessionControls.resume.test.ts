@@ -94,4 +94,27 @@ describe("useSessionResume", () => {
     await act(async () => { await vi.advanceTimersByTimeAsync(10000); });
     expect(getLocalSession).toHaveBeenCalledTimes(1); // no longer pending: polling stopped
   });
+
+  it("keeps asking while a resume waits, and shows a refusal that arrives minutes later", async () => {
+    const pending = ended({ sessionId: "s-late", resume: { state: "pending", byUserId: "bob", requestedAt: new Date().toISOString() } });
+    const refused = ended({ sessionId: "s-late", resume: { state: "failed", byUserId: "bob", requestedAt: "", reason: "SHARING_OFF" } });
+    let wake = false;
+    const getLocalSession = vi.fn(async () => (wake ? refused : pending));
+    const client = { submitLocalSessionCommand: vi.fn(), resumeLocalSession: vi.fn(async () => pending), getLocalSession };
+    vi.useFakeTimers();
+    try {
+      const { result, unmount } = renderHook(() => useSessionResume(client, pending, { ...opts, uuid: () => "r-1" }));
+      await act(async () => { await vi.advanceTimersByTimeAsync(119_000); });
+      const asked = getLocalSession.mock.calls.length;
+      expect(asked).toBeGreaterThan(15); // past the first 15 fast checks
+      expect(result.current.status).toContain("You asked to resume this session");
+      wake = true; // the Mac wakes after 2 minutes and refuses
+      await act(async () => { await vi.advanceTimersByTimeAsync(31_000); });
+      expect(result.current.status).toBe("Not resumed: session sharing is off on Alice’s Mac.");
+      const settled = getLocalSession.mock.calls.length;
+      await act(async () => { await vi.advanceTimersByTimeAsync(120_000); });
+      expect(getLocalSession.mock.calls.length).toBe(settled); // refused: polling stopped
+      unmount();
+    } finally { vi.useRealTimers(); }
+  });
 });

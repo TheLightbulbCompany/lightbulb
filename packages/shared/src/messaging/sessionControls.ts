@@ -380,6 +380,11 @@ export function canResumeSession(session: LocalSession, own: boolean, userId?: s
     (own || (!!userId && (session.resumeAllowed ?? []).includes(userId)));
 }
 
+/** How long a resume request waits for its Mac (the backend's 24 h), and how often a view asks. */
+const RESUME_LIFETIME_MS = 24 * 60 * 60 * 1000;
+const RESUME_FAST_MS = 30_000;
+const RESUME_SLOW_MS = 30_000;
+
 const RESUME_REFUSED: Record<string, (mac: string, folder: string) => string> = {
   ALREADY_RUNNING: mac => `it is already running on ${mac}`,
   FOLDER_NOT_APPROVED: (mac, folder) => `${folder} is no longer an approved folder on ${mac}`,
@@ -453,24 +458,32 @@ export function useSessionResume(client: SessionControlClient, prop: LocalSessio
     } finally { setSaving(false); }
   }, [client, session.sessionId, uuid]);
   const pending = session.status === "ended" && session.resume?.state === "pending";
+  const requestedAt = session.resume?.requestedAt;
   useEffect(() => {
     const read = client.getLocalSession;
     if (!pending || !read) return;
+    // A request waits up to 24 h for its Mac, which can refuse whenever it wakes: keep asking
+    // while it is live, every 2 s for the first 30 s and every 30 s after.
+    const expires = Date.parse(requestedAt ?? "") + RESUME_LIFETIME_MS; // NaN: unknown, poll until unmount
+    const started = Date.now();
     let alive = true;
-    let tries = 0;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const next = () => {
+      if (!alive || Date.now() >= expires) return;
+      timer = setTimeout(() => void tick(), Date.now() - started < RESUME_FAST_MS ? AUTO_CHECK_INTERVAL_MS : RESUME_SLOW_MS);
+    };
     const tick = async () => {
-      tries += 1;
       try {
         const latest = await read(session.sessionId);
         if (!alive) return;
         if (latest.status === "ended") setFresh(latest);
-        if (latest.status !== "ended" || latest.resume?.state !== "pending") clearInterval(timer);
+        if (latest.status !== "ended" || latest.resume?.state !== "pending") return; // resolved or refused
       } catch { /* the next tick asks again */ }
-      if (tries >= 15) clearInterval(timer);
+      next();
     };
-    const timer = setInterval(() => void tick(), AUTO_CHECK_INTERVAL_MS);
-    return () => { alive = false; clearInterval(timer); };
-  }, [client, session.sessionId, pending]);
+    next();
+    return () => { alive = false; clearTimeout(timer); };
+  }, [client, session.sessionId, pending, requestedAt]);
   useEffect(() => {
     const get = client.getLocalSessionCommand;
     if (!first || !running || !get) return;

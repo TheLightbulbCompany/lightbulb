@@ -1274,3 +1274,46 @@ async def test_patch_room_meta_bound_to_a_stale_revision_is_cancelled(table):
         await repo.patch_room_meta(room_id, {"topic": "stale"}, expected_revision=meta["revision"])
     assert repo._is_cancelled(lost.value)
     assert (await repo.get_room(room_id))["topic"] == "first"
+
+
+@pytest.mark.asyncio
+async def test_a_turns_retry_cannot_drop_a_no_post_mark(table):
+    """Codex #3663: put_voice_run was a whole-row put built from a stale read."""
+    await repo.put_voice_run(OWNER, "run-1", {"roomId": "r", "agentId": FRIDAY})
+    assert await repo.update_voice_run(OWNER, "run-1", {"noPost": True})
+    await repo.put_voice_run(OWNER, "run-1", {"roomId": "r", "agentId": FRIDAY})  # the /turns retry
+    row = await repo.get_voice_run(OWNER, "run-1")
+    assert row["noPost"] is True and row["runId"] == "run-1" and row["agentId"] == FRIDAY
+
+
+@pytest.mark.asyncio
+async def test_a_no_post_mark_refuses_the_late_answer_inside_its_own_transaction(table):
+    """Codex #3663: the mark may land after the caller's read. The condition rides the message's transaction."""
+    room_id, _ = await _room()
+    await repo.put_voice_run(OWNER, "run-1", {"roomId": room_id, "agentId": FRIDAY})
+
+    def late(run_id, client_id):
+        return repo.create_message(
+            room_id=room_id,
+            owner_id=OWNER,
+            idemp_pk=repo.owner_pk(OWNER),
+            idemp_sk=repo.agent_idemp_sk(f"live-late:{client_id}"),
+            req_hash=repo.request_hash("late answer"),
+            author={"kind": "agent", "id": FRIDAY, "displayName": "Friday"},
+            text="late answer",
+            mentions=[],
+            reply_to_message_id=None,
+            thread_root_message_id=None,
+            run_id=None,
+            dispatch_targets=[],
+            source_agent_id=FRIDAY,
+            client_message_id=None,
+            extra_conditions=[repo.voice_run_may_post(OWNER, run_id)],
+        )
+
+    message, replayed = await late("run-1", "a")  # not marked: it posts
+    assert message["text"] == "late answer" and not replayed
+    assert (await late("run-gone", "b"))[0]["text"] == "late answer"  # no row at all: it posts
+    assert await repo.update_voice_run(OWNER, "run-1", {"noPost": True})
+    with pytest.raises(repo.ExtraConditionFailed):
+        await late("run-1", "c")

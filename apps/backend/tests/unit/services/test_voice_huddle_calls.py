@@ -825,7 +825,8 @@ async def test_no_post_on_a_missing_or_expired_run_writes_nothing(run_env):
     vc.messaging_repo.put_voice_run.assert_not_awaited()
 
 
-async def test_a_turns_retry_for_a_marked_run_keeps_no_post(run_env):
-    vc.messaging_repo.get_voice_run.return_value = {"roomId": "room-1", "noPost": True}
+async def test_a_turns_retry_never_reads_or_rewrites_no_post(run_env):
+    """The row write is one atomic SET of the turn's own fields (the repo test pins that a mark survives it)."""
     await _dispatch()
-    assert vc.messaging_repo.put_voice_run.await_args.args[2]["noPost"] is True
+    assert "noPost" not in vc.messaging_repo.put_voice_run.await_args.args[2]
+    vc.messaging_repo.get_voice_run.assert_not_awaited()

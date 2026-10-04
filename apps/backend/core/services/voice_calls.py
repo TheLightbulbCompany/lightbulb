@@ -738,9 +738,7 @@ async def dispatch_voice_run(
         history.pop(0)
     # Before the POST: the voice-profile route (C8) resolves the speaker from this row.
     fields = {"roomId": room_id, "agentId": agent_id, "speakerUserId": speaker_id, "speakerName": name}
-    prior = await messaging_repo.get_voice_run(owner_id, run_id)  # a /turns retry rewrites the row: keep the mark
-    if prior and prior.get("noPost"):
-        fields["noPost"] = True
+    # An atomic SET of these fields: a /turns retry cannot drop a "don't post that" mark, whenever it lands.
     await messaging_repo.put_voice_run(owner_id, run_id, fields)
     try:
         resp = await _runtime(owner_id, _BRIDGE_RUNS, body)
@@ -796,7 +794,7 @@ async def abort_voice_run(owner_id: str, room_id: str, run_id: str) -> bool:
 async def mark_no_post(owner_id: str, room_id: str, run_id: str) -> bool:
     """ "Don't post that" (conversation engine §3.6): this room's voice run is never posted late, by the
     worker or the bridge (messaging.create_agent_message reads the flag). The worker re-sends it after a
-    /turns retry, whose put_voice_run rewrites the row."""
+    /turns retry: every writer of this row uses an atomic SET."""
     row = await messaging_repo.get_voice_run(owner_id, run_id)
     if not row or row.get("roomId") != room_id:
         return False

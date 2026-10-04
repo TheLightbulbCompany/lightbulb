@@ -2857,7 +2857,12 @@ def _part_choices(names: list[str]) -> dict[str, tuple[str, set[str]]]:
     ponytail: with 4+ names there are no subsets but "everyone"; add booleans per name if that is needed."""
     from itertools import combinations
 
-    key = lambda group: "_and_".join(re.sub(r"\W+", "_", n) for n in group)  # noqa: E731
+    # "Foo-Bar" and "Foo Bar" are two agents: a slug that is taken gets its position appended.
+    slug: dict[str, str] = {}
+    for i, n in enumerate(names):
+        s = re.sub(r"\W+", "_", n)
+        slug[n] = s if s not in slug.values() else f"{s}_{i}"
+    key = lambda group: "_and_".join(slug[n] for n in group)  # noqa: E731
     out = {f"only_{key([n])}": (f"Asked of {n.title()} only", {n}) for n in names}
     if len(names) == 3:
         out |= {
@@ -3875,10 +3880,13 @@ async def create_follow_up(owner_id: str, request: FollowUpRequest) -> FollowUpR
 
 
 async def create_agent_message(owner_id: str, request: AgentMessageRequest) -> AgentMessageReceiptResponse:
-    if request.event_id.startswith("live-late:"):
+    late_run = request.event_id.removeprefix("live-late:") if request.event_id.startswith("live-late:") else None
+    if late_run:
         # Conversation engine §3.6: "don't post that". Both late-answer doors (the worker's /late-answer
-        # and the bridge's undelivered-answer POST) arrive here with live-late:<runId>.
-        voice_run = await messaging_repo.get_voice_run(owner_id, request.event_id.removeprefix("live-late:"))
+        # and the bridge's undelivered-answer POST) arrive here with live-late:<runId>. This read refuses
+        # early; the same condition rides the message's transaction below, so a mark that lands while the
+        # checks and attachment work in between run is still honoured.
+        voice_run = await messaging_repo.get_voice_run(owner_id, late_run)
         if voice_run and voice_run.get("noPost"):
             put_metric("voice.huddle.late_answer_suppressed")
             raise ApiProblem("ACTION_UNAVAILABLE", "The Live call asked not to post this answer.")
@@ -4006,7 +4014,11 @@ async def create_agent_message(owner_id: str, request: AgentMessageRequest) -> A
             thread_root_seq=_root_seq(links, request.thread_root_message_id),
             agent_hop=hop,
             in_reply_to=(trigger or {}).get("messageId"),
+            extra_conditions=[messaging_repo.voice_run_may_post(owner_id, late_run)] if late_run else None,
         )
+    except messaging_repo.ExtraConditionFailed as exc:  # "don't post that" landed before the commit
+        put_metric("voice.huddle.late_answer_suppressed")
+        raise ApiProblem("ACTION_UNAVAILABLE", "The Live call asked not to post this answer.") from exc
     except messaging_repo.RoomArchived as exc:
         # Deliberate: a reply to a turn that began before the archive is refused too, so an
         # archived channel's history ends where the archive did. The bridge drops a 4xx.

@@ -121,9 +121,12 @@ def test_a_member_renames_by_voice(world):
 def test_a_guests_steer_makes_them_the_requester_c8_checks(world, monkeypatch):
     from core.services import voice_calls as vc
 
-    monkeypatch.setattr(
-        messaging_repo, "put_voice_run", AsyncMock(side_effect=lambda o, rid, row: world.runs.update({rid: row}))
-    )
+    # A steer SETs the speaker on the run's row (an atomic update, never a whole-row put).
+    def steer(owner, run_id, fields):
+        world.runs[run_id] = {**world.runs.get(run_id, {}), **fields}
+        return True
+
+    monkeypatch.setattr(messaging_repo, "update_voice_run", AsyncMock(side_effect=steer))
     monkeypatch.setattr(vc, "_run_control", AsyncMock(return_value=202))
     monkeypatch.setattr(vc, "_speaker_name", AsyncMock(return_value="Gus"))
     import asyncio

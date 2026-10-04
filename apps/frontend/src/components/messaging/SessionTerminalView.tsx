@@ -34,11 +34,13 @@ export function SessionTerminalView({ session, onEvent, watch, onLive, onCanType
   const host = useRef<HTMLDivElement>(null);
   const [live, setLive] = useState(false);
   const [scale, setScale] = useState(1);
-  const [refusedFor, setRefusedFor] = useState<unknown>(null);
-  const canType = !!input && admitted && refusedFor !== session;
+  const [refusedFor, setRefusedFor] = useState<string | null>(null);
+  // Keyed by id and generation, not the object: the session list swaps the object on every refresh.
+  const key = `${session.sessionId}:${session.generation}`;
+  const canType = !!input && admitted && refusedFor !== key;
   useEffect(() => { onCanType?.(canType); }, [canType, onCanType]);
-  const typing = useRef({ canType, input, session, refuse: (s: unknown) => setRefusedFor(s) });
-  typing.current = { canType, input, session, refuse: (s: unknown) => setRefusedFor(s) };
+  const typing = useRef({ canType, input, session, refuse: (k: string) => setRefusedFor(k) });
+  typing.current = { canType, input, session, refuse: (k: string) => setRefusedFor(k) };
   const termRef = useRef<Terminal | null>(null);
   useEffect(() => { if (termRef.current) termRef.current.options.disableStdin = !canType; }, [canType]);
   useEffect(() => {
@@ -67,7 +69,7 @@ export function SessionTerminalView({ session, onEvent, watch, onLive, onCanType
       for (const part of chunkInput(new TextEncoder().encode(data))) {
         // One call at a time keeps keystrokes in order; a refusal drops what is queued behind it.
         sending = sending.then(() => typing.current.session.sessionId === sent.sessionId && typing.current.canType ? input(part, epoch) : undefined).catch((e) => {
-          if (refuses(e)) typing.current.refuse(sent);
+          if (refuses(e)) typing.current.refuse(`${sent.sessionId}:${sent.generation}`);
         });
       }
     };

@@ -107,6 +107,17 @@ describe("typing into the live terminal", () => {
     await type("a"); await type("b");
     expect(input).toHaveBeenCalledTimes(1);
   });
+  it("keeps a refusal across a refreshed session object, and clears it for a new generation", async () => {
+    const input = vi.fn(async () => { throw new ApiError(409, { code: "LOCAL_SESSION_UNSUPPORTED" }); });
+    const { rerender } = await mount(true, input);
+    await type("a");
+    rerender(true, { sessionId: "s1", generation: "g1" } as never);
+    await type("b");
+    expect(input).toHaveBeenCalledTimes(1);
+    rerender(true, { sessionId: "s1", generation: "g2" } as never);
+    await type("c");
+    expect(input).toHaveBeenCalledTimes(2);
+  });
   it("never sends xterm's own probe replies", async () => {
     const input = vi.fn(async () => undefined);
     await mount(true, input);

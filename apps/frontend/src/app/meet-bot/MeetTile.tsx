@@ -66,6 +66,9 @@ export function MeetTile({ agents, attrs, notice }: { agents: Record<string, Til
   const maxRows = speaker ? 2 : 3;
   const rowSize = speaker ? { av: 52, name: 34, line: 34, gap: 12 } : { av: 80, name: 46, line: 38, gap: 20 };
   const limitText = limit ? meetVoiceLimitText(limit) : "";
+  // Even rows, six across at most: seven agents sit 4 + 3, never 5 + 2.
+  const heroCount = Math.min(roster.length, 10) + (roster.length > 10 ? 1 : 0);
+  const heroCols = Math.ceil(heroCount / Math.ceil(heroCount / 6)) || 1;
   const idleCaption = limit
     ? <p className="max-w-[980px] text-balance text-center" role="status" style={{ fontSize: 40, lineHeight: 1.2, color: "var(--alert)" }}>{limitText}</p>
     : <p className="text-center" style={{ fontSize: 36, lineHeight: 1.2, ...soft }}>{HINT}</p>;
@@ -86,7 +89,7 @@ export function MeetTile({ agents, attrs, notice }: { agents: Record<string, Til
         // Idle: the agents themselves are the hero; no bottom strip repeats them.
         <div className="flex min-h-0 flex-1 flex-col items-center justify-center px-16 py-8" style={{ gap: 32 }}>
           {roster.length > 0 && (
-            <ul data-roster className="flex flex-wrap justify-center" style={{ gap: 32, columnGap: 40, width: 5 * 150 + 4 * 40 }}>
+            <ul data-roster className="flex flex-wrap justify-center" style={{ gap: 32, columnGap: 40, width: heroCols * 150 + (heroCols - 1) * 40 }}>
               {roster.slice(0, 10).map((id) => (
                 <li key={id} className="flex flex-col items-center" style={{ width: 150, gap: 8 }}>
                   <Avatar id={id} name={nameOf(id)} url={agents[id]?.avatarUrl} size={96} />

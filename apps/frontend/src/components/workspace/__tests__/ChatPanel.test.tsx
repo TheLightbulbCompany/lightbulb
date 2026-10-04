@@ -22,7 +22,6 @@ vi.mock("@/components/messaging/MessagingWorkspaceContext", () => ({
 }));
 vi.mock("@/components/messaging/MessagingWorkspace", () => ({
   MessagingConversation: () => null,
-  MessagingWorkspace: () => null,
 }));
 
 import { ChatPanel } from "../panels/ChatPanel";

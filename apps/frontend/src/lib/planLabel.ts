@@ -32,8 +32,8 @@ export function planLabel(
 }
 
 /**
- * Shared `expired` computation for `planLabel`'s two chat-shell callers
- * (`WorkspaceSidebar.tsx`, `ChatLayout.tsx`) — without it, their footer
+ * Shared `expired` computation for `planLabel`'s sidebar caller
+ * (`WorkspaceSidebar.tsx`) — without it, its footer
  * `.plan-badge` said "Free tier" even after the window elapsed, while
  * `TrialBanner`/`OutOfCreditsBanner` on the very same screen already showed
  * the blocked/expired state. Same arithmetic as the pre-existing, separately

@@ -79,7 +79,7 @@ export function OrgChart({ agents, className }: OrgChartProps) {
         aria-label="Org chart (drag to pan, scroll to zoom)"
         // org-chart-viewport: inside a dock panel, workspace.css overrides
         // the viewport-height fallback below with a slot-relative height so
-        // the canvas fills the panel. The class is inert in the mobile shell.
+        // the canvas fills the panel. The class is inert outside a dock panel.
         className="org-chart-viewport editorial-card relative h-[calc(100dvh-16rem)] min-h-[420px] w-full overflow-hidden"
         style={{
           cursor: dragging ? "grabbing" : "grab",

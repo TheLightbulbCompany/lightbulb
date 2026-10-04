@@ -9,7 +9,6 @@
 import type { MouseEvent } from "react";
 import { MessageSquare, Plus, UserPlus, Package } from "lucide-react";
 import { useAgents } from "@/hooks/useAgents";
-import { useIsDesktop } from "@/hooks/useIsDesktop";
 import { openChatPanel } from "@/components/workspace/workspaceController";
 import { requestFocusComposer } from "@/lib/focusComposerRequest";
 import { useMarketplaceDrawer } from "@/components/marketplace/drawer/MarketplaceDrawerProvider";
@@ -39,14 +38,10 @@ export function HomeQuickActions({ stripeBound }: { stripeBound: boolean }) {
   const defaultAgent = agents.find((agent) => agent.id === defaultId);
   const ceoName = defaultAgent?.name || defaultAgent?.identity?.name;
   const askLabel = ceoName ? `Ask ${ceoName}` : isSettled ? null : "Ask CEO";
-  const isDesktop = useIsDesktop();
   const { open: openMarketplace } = useMarketplaceDrawer();
 
   // Mirrors WorkspaceShell's Get Started "chat" action: record the focus
-  // intent before opening. Desktop delivery waits for the selected room;
-  // mobile delivers through the event below.
-  // Mobile has no dock (`openChatPanel` no-ops on `!_api`), so it swaps the
-  // URL to the bare chat view instead; its composer is always mounted.
+  // intent before opening; delivery waits for the selected room.
   const askCeo = (e: MouseEvent<HTMLAnchorElement>) => {
     // Modifier / middle click: leave it alone, the href opens a real tab.
     if (!isPlainClick(e)) return;
@@ -58,18 +53,9 @@ export function HomeQuickActions({ stripeBound }: { stripeBound: boolean }) {
       e.preventDefault();
       return;
     }
-    if (isDesktop) {
-      e.preventDefault();
-      requestFocusComposer(defaultId);
-      openChatPanel(defaultId);
-    } else {
-      // The mobile chat shell keeps its own `selectedAgentId` (app/chat/page.tsx),
-      // which outranks `defaultId` once the owner has tapped any other agent —
-      // without this, the URL swap can land back on a stale agent's composer,
-      // which then ignores a focus event addressed to the CEO.
-      window.dispatchEvent(new CustomEvent("selectAgent", { detail: { agentId: defaultId, source: "notification" } }));
-      handleShellLinkClick(e, "/chat");
-    }
+    e.preventDefault();
+    requestFocusComposer(defaultId);
+    openChatPanel(defaultId);
     window.dispatchEvent(
       new CustomEvent("getstarted:focus-composer", { detail: { agentId: defaultId } }),
     );

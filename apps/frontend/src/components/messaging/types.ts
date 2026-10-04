@@ -1,4 +1,4 @@
-import type { RosterState } from "@/components/agents/AgentRoster";
+import type { RosterState } from "@/components/agents/rosterState";
 import type {
   CanonicalRoomMessage,
   ListenMode,

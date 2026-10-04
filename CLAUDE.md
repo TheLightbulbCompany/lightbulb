@@ -881,11 +881,13 @@ react-native, no DOM globals in that package.
 `find apps/frontend/src/app -name page.tsx` for the current routes. The two
 that will mislead you otherwise:
 
-- **`/chat`** is the whole app. Both branches mount `LiveEventsProvider` and
-  render the messaging workspace: desktop the **dockable workspace shell**
-  (`components/workspace/` — chat, teams, control and file-viewer panels, where
-  the `chat` panel is `panels/ChatPanel.tsx` → `MessagingConversation`);
-  mobile `ChatLayout` via `MobileChatShell`, wrapping `MessagingWorkspace`. Teams
+- **`/chat`** is the whole app. It mounts `LiveEventsProvider` and ONE shell at
+  every width: the **dockable workspace shell** (`components/workspace/` — chat,
+  teams, control and file-viewer panels, where the `chat` panel is
+  `panels/ChatPanel.tsx` → `MessagingConversation`). Below 600 px its rail and
+  sidebar become a drawer opened from a phone bar (`workspace.css`,
+  `WorkspaceShell`'s `navOpen`); there is no separate phone layout (the old
+  `ChatLayout` was deleted 2026-10-04). Teams
   and control are in-shell panels, **not routes** — the legacy `/teams/*` URL tree
   was removed and 404s. The AgentCore browser panel is `panels/BrowserDockPanel.tsx`: it
   gets a workspace-authorized signed URL from `/api/v1/browser/live-view` and connects
@@ -928,25 +930,25 @@ that will mislead you otherwise:
 Per-file tables drift too fast to keep here — run `ls` on the directory you're
 touching. The load-bearing structure:
 
-- `components/workspace/` — the dockable desktop shell: `panelRegistry.ts` /
+- `components/workspace/` — the dockable shell: `panelRegistry.ts` /
   `panelComponents.ts` map panel keys → components (`PanelKind = chat | teams |
   control | browser | file-viewer | missing`); `workspaceController.ts` +
   `layoutStorage.ts` own layout state. Start here for anything "where does X
-  render on desktop".
-- `components/messaging/` — **the live chat surface**: `MessagingWorkspace`
-  (+ `MessagingConversation`) over `RoomPanel` / `RoomComposer` / `RoomDirectory`
+  render".
+- `components/messaging/` — **the live chat surface**: `MessagingDirectory`
+  and `MessagingConversation` over `RoomPanel` / `RoomComposer` / `RoomDirectory`
   / `RoomTimeline`, with `MessagingWorkspaceContext` holding selection and draft
-  state. Mounted from `workspace/panels/ChatPanel.tsx` on desktop and from
-  `MobileChatShell` on mobile. Start here for anything room-shaped.
+  state. Mounted from `workspace/WorkspaceSidebar.tsx` and
+  `workspace/panels/ChatPanel.tsx`. Start here for anything room-shaped.
 - `components/chat/` — what the browser-gateway chat island left behind:
   `MessageList` (now a read-only transcript renderer, used by the Teams run
   detail), `ProvisioningStepper` and the
-  provider-setup steps. `ChatLayout.tsx` is the **mobile-only** shell.
+  provider-setup steps.
 - `components/teams/` — Teams Inbox (panels routed by `TeamsPanelRouter.tsx`
   via `PANEL_LOADERS`/`DETAIL_LOADERS`; shared types in `shared/types.ts`;
   ported-from-upstream-Paperclip modules carry a header saying so).
 - `components/control/` — control panels (`ControlPanelRouter.tsx` routes; the
-  live nav sets are `settings-nav-config.tsx` + `CompanyNav`'s `COMPANY_SECTIONS`).
+  live nav sets are `settings-nav-config.tsx` + `companySections.ts`'s `COMPANY_SECTIONS`).
 - the rest of `components/` (`admin`, `agents`, `blog`, `channels`, `desktop`,
   `getstarted`, `landing`, `legal`, `marketplace`, `notifications`,
   `onboarding`, `settings`, `support`, `ui`) — what their names say; `ui/` is

@@ -1,7 +1,6 @@
 "use client";
 
 // Desktop navigation shares canonical room state with the Messages dock panel.
-import "@/components/chat/ChatLayout.css";
 import "./workspace.css";
 
 import { useEffect, useState } from "react";
@@ -27,9 +26,11 @@ interface WorkspaceSidebarProps {
   onRecoveryReprovision: () => void;
   /** The dock is available once the runtime is ready or parked. */
   chatReady: boolean;
+  /** A destination was picked: the shell closes the phone drawer. */
+  onNavigate?: () => void;
 }
 
-export function WorkspaceSidebar({ onRecoveryReprovision, chatReady }: WorkspaceSidebarProps): React.ReactElement {
+export function WorkspaceSidebar({ onRecoveryReprovision, chatReady, onNavigate }: WorkspaceSidebarProps): React.ReactElement {
   const { user } = useUser();
   const { account, isSubscribed } = useBilling();
   const { activePanelId } = useWorkspaceState();
@@ -74,7 +75,7 @@ export function WorkspaceSidebar({ onRecoveryReprovision, chatReady }: Workspace
 
       <div className="sidebar-scroll">
         {/* Messaging never needs the container, so conversations never wait on it. */}
-        <MessagingDirectory onOpenRoom={() => activateMessagesPanel()} />
+        <MessagingDirectory onOpenRoom={() => { activateMessagesPanel(); onNavigate?.(); }} />
         <details className="workspace-more-nav">
           <summary>More</summary>
           <nav aria-label="More workspace destinations">
@@ -85,7 +86,7 @@ export function WorkspaceSidebar({ onRecoveryReprovision, chatReady }: Workspace
                 aria-current={activePanelId === panel ? "page" : undefined}
                 disabled={!chatReady}
                 title={chatReady ? undefined : "Available once your workspace is ready"}
-                onClick={() => openPanel(panel, {}, { pushUrl: true })}
+                onClick={() => { openPanel(panel, {}, { pushUrl: true }); onNavigate?.(); }}
               >
                 <Icon size={16} aria-hidden="true" />
                 <span>{label}</span>

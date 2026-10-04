@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { beforeEach, expect, it, vi } from "vitest";
-import { fireEvent, render, screen, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, within } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { WorkspaceShell } from "../WorkspaceShell";
 
@@ -30,6 +30,7 @@ vi.mock("../workspaceController", () => ({
     teamsPanelVisible: state.split?.teamsPanelVisible ?? state.activePanelId.startsWith("teams-"),
   }),
   refreshWorkspaceSnapshot: vi.fn(),
+  refitSplits: vi.fn(),
   getWorkspaceSnapshot: () => ({ ready: false }),
 }));
 vi.mock("@/components/messaging/MessagingWorkspaceContext", () => ({
@@ -38,11 +39,14 @@ vi.mock("@/components/messaging/MessagingWorkspaceContext", () => ({
   ),
 }));
 vi.mock("../WorkspaceSidebar", () => ({
-  WorkspaceSidebar: ({ onRecoveryReprovision, chatReady }: { onRecoveryReprovision: () => void; chatReady: boolean }) => (
-    <nav aria-label="Workspace"><button onClick={onRecoveryReprovision} data-ready={chatReady}>Recover</button></nav>
+  WorkspaceSidebar: ({ onRecoveryReprovision, chatReady, onNavigate }: { onRecoveryReprovision: () => void; chatReady: boolean; onNavigate: () => void }) => (
+    <nav aria-label="Workspace">
+      <button onClick={onRecoveryReprovision} data-ready={chatReady}>Recover</button>
+      <button onClick={onNavigate}>Open a room</button>
+    </nav>
   ),
 }));
-vi.mock("../WorkspaceHeader", () => ({ WorkspaceHeader: () => <header /> }));
+vi.mock("../WorkspaceHeader", () => ({ WorkspaceHeader: () => <nav className="workspace-rail"><button>Search</button></nav> }));
 vi.mock("dockview-react", () => ({
   themeLight: { name: "light", className: "dockview-theme-light" },
   DockviewReact: ({ disableDnd }: { disableDnd: boolean }) => <div aria-label="Dock" data-dnd-disabled={disableDnd} />,
@@ -137,4 +141,51 @@ it("keeps the room live and the dock headers shown while Tasks is split beside M
   state.split = null;
   view.rerender(<WorkspaceShell />);
   expect(view.container.querySelector(".workspace-shell")).toHaveAttribute("data-messages-active", "true");
+});
+
+it("opens the rail and sidebar as the phone drawer, and closes it on a pick, the backdrop or Escape", () => {
+  state.phase = "ready";
+  state.organization = { id: "org_1" };
+  const view = render(<WorkspaceShell />);
+  const shell = view.container.querySelector(".workspace-shell")!;
+  const menu = screen.getByRole("button", { name: "Open menu", hidden: true });
+  const main = view.container.querySelector(".workspace-main")!;
+  const open = () => fireEvent.click(menu);
+  expect(shell).toHaveAttribute("data-nav-open", "false");
+  expect(main).not.toHaveAttribute("inert");
+  open();
+  expect(shell).toHaveAttribute("data-nav-open", "true");
+  // Focus goes into the drawer and the covered pane is out of reach.
+  expect(screen.getByRole("button", { name: "Search" })).toHaveFocus();
+  expect(main).toHaveAttribute("inert");
+  fireEvent.click(screen.getByRole("button", { name: "Open a room" }));
+  expect(shell).toHaveAttribute("data-nav-open", "false");
+  expect(main).not.toHaveAttribute("inert");
+  expect(menu).toHaveFocus();
+  open();
+  fireEvent.click(view.container.querySelector(".workspace-nav-backdrop")!);
+  expect(shell).toHaveAttribute("data-nav-open", "false");
+  open();
+  fireEvent.keyDown(shell, { key: "Escape" });
+  expect(shell).toHaveAttribute("data-nav-open", "false");
+});
+
+it("closes the phone drawer when the window widens past the phone breakpoint", () => {
+  // Wider, the backdrop is hidden: an open drawer would leave the pane inert with no way out.
+  let onChange: (() => void) | undefined;
+  vi.stubGlobal("matchMedia", (query: string) => ({
+    matches: false, media: query,
+    addEventListener: (_: string, cb: () => void) => { onChange = cb; },
+    removeEventListener: () => {},
+  }));
+  state.phase = "ready";
+  state.organization = { id: "org_1" };
+  const view = render(<WorkspaceShell />);
+  fireEvent.click(screen.getByRole("button", { name: "Open menu" }));
+  const main = view.container.querySelector(".workspace-main")!;
+  expect(main).toHaveAttribute("inert");
+  act(() => onChange?.());
+  expect(view.container.querySelector(".workspace-shell")).toHaveAttribute("data-nav-open", "false");
+  expect(main).not.toHaveAttribute("inert");
+  vi.unstubAllGlobals();
 });

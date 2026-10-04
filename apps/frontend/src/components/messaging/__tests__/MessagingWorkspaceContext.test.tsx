@@ -41,7 +41,7 @@ vi.mock("../RoomPanel", () => ({ RoomPanel: (props: RoomPanelProps) => {
 } }));
 
 import { MessagingWorkspaceProvider, useMessagingWorkspace, type MessagingWorkspaceValue } from "../MessagingWorkspaceContext";
-import { MessagingConversation, MessagingDirectory, MessagingWorkspace } from "../MessagingWorkspace";
+import { MessagingConversation, MessagingDirectory } from "../MessagingWorkspace";
 
 let workspaceValue: MessagingWorkspaceValue;
 function CaptureContext() {
@@ -882,23 +882,6 @@ it("loads shared sessions on a cold start with Tasks focused", async () => {
   state.resourceSource.client.listWorkspaceSessions.mockResolvedValue({ sessions: [liveSession("mine", "owner")] });
   render(<MessagingWorkspaceProvider subscribeToRoom={false}><MessagingDirectory /></MessagingWorkspaceProvider>);
   await waitFor(() => expect(directory.sessions).toHaveLength(1));
-});
-
-it("consumes room links once, ahead of the default agent, and honors a new message target", () => {
-  const view = render(<MessagingWorkspace initialAgentId="agent-atlas" roomId={room.roomId} messageId="first" />);
-  expect(mocks.rooms.mock.lastCall?.[0]).toBeNull();
-  expect(state.selectRoom).toHaveBeenCalledWith(room.roomId);
-  expect(panel.targetMessageId).toBe("first");
-  state.selectRoom.mockClear();
-
-  view.rerender(<MessagingWorkspace initialAgentId="agent-atlas" roomId={room.roomId} messageId="first" />);
-  expect(state.selectRoom).not.toHaveBeenCalled();
-  view.rerender(<MessagingWorkspace initialAgentId="agent-atlas" roomId={room.roomId} messageId="second" />);
-  expect(panel.targetMessageId).toBe("second");
-  expect(state.selectRoom).toHaveBeenCalledWith(room.roomId);
-
-  view.rerender(<MessagingWorkspace initialAgentId="agent-atlas" />);
-  expect(mocks.rooms.mock.lastCall?.[0]).toBe("agent-atlas");
 });
 
 it("keeps history action inputs stable while the provider draft or live run changes", () => {

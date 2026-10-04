@@ -17,4 +17,12 @@ describe(".workspace-shell viewport", () => {
     expect(body).toMatch(/inset:\s*0/);
     expect(body).not.toMatch(/height:\s*100vh/);
   });
+
+  it("turns the rail and sidebar into a drawer at phone widths", () => {
+    // One shell at every width: without this block a 390 px phone gets a
+    // 56 + 220 px chrome and a sliver of conversation.
+    const phone = css.slice(css.indexOf("@media (max-width: 599px)"));
+    expect(phone).toMatch(/\.workspace-shell > :is\(\.workspace-rail, \.cream-sidebar\) \{\s*display:\s*none/);
+    expect(phone).toMatch(/\[data-nav-open="true"\] > :is\(\.workspace-rail, \.cream-sidebar\) \{ display: flex; \}/);
+  });
 });

@@ -43,6 +43,11 @@ export function parseCommand(search: string): WorkspaceCommand | null {
       const descriptor = describePanel("chat", { agent: all.agent });
       return descriptor ? { descriptor, oneShots } : null;
     }
+    // Bare ?room= (the meeting-notes mail links this way) = open that room.
+    if (all.room) {
+      const descriptor = describePanel("chat", { room: all.room, ...(all.message ? { message: all.message } : {}) });
+      return descriptor ? { descriptor, oneShots } : null;
+    }
     return null;
   }
 

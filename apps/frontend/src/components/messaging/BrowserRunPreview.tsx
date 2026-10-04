@@ -102,7 +102,7 @@ export function MacBrowserPreview({ agentName, runId, roomId, deviceId, deviceNa
   agentName: string; runId: string; roomId?: string; deviceId?: string; deviceName?: string; site?: string | null;
 }): React.ReactElement {
   const label = `${agentName} is browsing${site ? ` ${site}` : ""} on ${deviceName || "a Mac"}`;
-  // The mobile shell has no dock: the same frames, full screen.
+  // With no dock mounted: the same frames, full screen.
   const [fullScreen, setFullScreen] = useState(false);
   const open = () => { if (!showMacRunInBrowser(runId)) setFullScreen(true); };
   // The thumbnail's frames heartbeat runs only while someone can see it: the page is showing and

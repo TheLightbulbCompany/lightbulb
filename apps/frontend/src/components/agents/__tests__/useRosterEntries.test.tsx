@@ -1,9 +1,8 @@
 // @vitest-environment jsdom
 //
-// The hook both shells share. These assert the guarantees that must hold
-// REGARDLESS of which host mounts it — the mobile roster (ChatLayout) sits
-// outside TeamsEventsProvider, so anything this hook leans on an ancestor for
-// silently does not work on a phone.
+// These assert the guarantees that must hold REGARDLESS of which host mounts
+// the hook: anything it leans on an ancestor provider for silently stops
+// working wherever that provider is not an ancestor.
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { renderHook, act } from "@testing-library/react";
 
@@ -62,9 +61,9 @@ beforeEach(() => {
 
 describe("useRosterEntries", () => {
   it("owns its own liveness instead of relying on an ancestor provider", () => {
-    // ChatLayout's roster is NOT inside TeamsEventsProvider, and SwrProvider
-    // disables focus revalidation globally — so without these the mobile
-    // roster fetched `/teams/agents` once at mount and never again.
+    // SwrProvider disables focus revalidation globally — so without these a
+    // host outside TeamsEventsProvider fetched `/teams/agents` once at mount
+    // and never again.
     renderHook(() => useRosterEntries([agent("a", "Ada")]));
     expect(lastSwrOpts?.refreshInterval).toBeGreaterThan(0);
     expect(lastSwrOpts?.revalidateOnFocus).toBe(true);

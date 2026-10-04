@@ -8,7 +8,7 @@ import { recordRequestId } from "@/lib/requestIdLog";
 import { webVisibilityAdapter } from "@/lib/visibility";
 
 // Deliberately NOT `import { BACKEND_URL } from "@/lib/api"`: this hook is
-// mounted (transitively, via ChatLayout/OverviewPanel/useSystemHealth) by
+// mounted (transitively, via WorkspaceShell/OverviewPanel/useSystemHealth) by
 // ~20 existing test suites that `vi.mock("@/lib/api", () => ({ useApi: ...
 // }))` with a minimal factory carrying no `BACKEND_URL` export — Vitest's
 // mock-export guard throws on ANY read of a name the factory didn't return,

@@ -1,9 +1,7 @@
 "use client";
 
 // Assembles the roster's view of "what is each agent doing right now" from the
-// two signals that already reach the browser, and hands `AgentRoster` a plain
-// array. Kept out of the component file so the roster itself stays a pure
-// render of its props.
+// two signals that already reach the browser, as a plain array.
 //
 // Neither source is sufficient alone, which is why both are here:
 //
@@ -13,15 +11,11 @@
 //
 //     This hook owns that key's liveness ITSELF — see `ROSTER_SWR` below. It
 //     used to lean on `TeamsEventsProvider` revalidating `/teams/agents` off
-//     `teams.agent.status`, which is true on desktop (the provider wraps
-//     `WorkspaceShell`) and FALSE on mobile: the provider's only other mount
-//     is inside `InlineTeamsPanel`, a conditionally-rendered subtree that is
-//     not an ancestor of `ChatLayout`'s always-visible roster. With
-//     `SwrProvider` setting `revalidateOnFocus: false` globally, the mobile
-//     roster fetched once at mount and then never again — an agent flipping to
-//     error/paused/terminated was invisible on a phone until the shell
-//     remounted. A shared hook must not depend on where it happens to be
-//     mounted, so the guarantee lives here rather than in an ancestor.
+//     `teams.agent.status`, which held only where that provider was an
+//     ancestor; elsewhere, with `SwrProvider` setting `revalidateOnFocus:
+//     false` globally, the roster fetched once at mount and never again. A
+//     shared hook must not depend on where it happens to be mounted, so the
+//     guarantee lives here rather than in an ancestor.
 //   * The gateway's `run_active` frame is the LIVE state for exactly that
 //     case. The backend resolves it from OpenClaw's own `sessions.changed`
 //     (terminal status beats a stale `hasActiveRun` — see
@@ -39,7 +33,7 @@ import { useEffect, useMemo, useSyncExternalStore } from "react";
 import { useLiveEvents } from "@/hooks/useLiveEvents";
 import { useTeamsApi } from "@/hooks/useTeamsApi";
 import type { Agent } from "@/hooks/useAgents";
-import { rosterStateFor, type RosterEntry } from "@/components/agents/AgentRoster";
+import { rosterStateFor, type RosterEntry } from "@/components/agents/rosterState";
 
 /** The `/teams/agents` fields the roster reads. A narrow structural subset of
  *  `CompanyAgent` so this hook doesn't depend on the full Teams wire shape. */
@@ -189,8 +183,6 @@ function useLiveRunAgentIds(): ReadonlySet<string> {
  */
 export function useRosterEntries(agents: Agent[]): RosterEntry[] {
   const { read } = useTeamsApi();
-  // Same SWR key ChatLayout's pause/resume control already reads, so on the
-  // mobile shell this shares one cached response rather than adding a request.
   const { data } = read<{ agents?: RosterAgentRow[] }>("/agents", ROSTER_SWR);
   const liveRunAgentIds = useLiveRunAgentIds();
   const rows = data?.agents;

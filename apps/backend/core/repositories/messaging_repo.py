@@ -97,6 +97,10 @@ class MessageForbidden(MessagingRepoError):
     pass
 
 
+class ExtraConditionFailed(MessageForbidden):
+    """One of the caller's own ``extra_conditions`` did not hold when the message committed."""
+
+
 class MemberLimitExceeded(MessagingRepoError):
     pass
 
@@ -1091,7 +1095,7 @@ async def create_message(
                 len(reasons) > i and reasons[i].get("Code") == "ConditionalCheckFailed"
                 for i in range(source_condition_start, source_condition_start + len(extra_conditions or []))
             ):
-                raise MessageForbidden("Native session source is no longer authorized.") from exc
+                raise ExtraConditionFailed("Native session source is no longer authorized.") from exc
             if (
                 root_index is not None
                 and len(reasons) > root_index
@@ -2317,15 +2321,29 @@ VOICE_RUN_TTL_S = 2 * 3600
 
 
 async def put_voice_run(owner_id: str, run_id: str, fields: dict[str, Any]) -> None:
-    """Idempotent: a /turns retry with the same run id rewrites the same row."""
-    item = {
-        "pk": owner_pk(owner_id),
-        "sk": voice_run_sk(run_id),
-        "runId": run_id,
-        **fields,
-        "expiresAt": int(time.time()) + VOICE_RUN_TTL_S,
+    """Create the run row, or set ``fields`` on it. One atomic SET, never a whole-row put: a /turns retry
+    writes the same fields again and cannot drop what another writer set in between (``noPost``)."""
+    fields = {"runId": run_id, **fields, "expiresAt": int(time.time()) + VOICE_RUN_TTL_S}
+    await run_in_thread(
+        _table().update_item,
+        Key={"pk": owner_pk(owner_id), "sk": voice_run_sk(run_id)},
+        UpdateExpression="SET " + ", ".join(f"#f{i} = :v{i}" for i in range(len(fields))),
+        ExpressionAttributeNames={f"#f{i}": k for i, k in enumerate(fields)},
+        ExpressionAttributeValues={f":v{i}": v for i, v in enumerate(fields.values())},
+    )
+
+
+def voice_run_may_post(owner_id: str, run_id: str) -> dict:
+    """A transaction ``ConditionCheck``: the run was not told "don't post that". It rides the message's own
+    transaction, so a mark that lands any time before the commit refuses the post. A run with no row
+    (expired, or never a voice run) may post."""
+    return {
+        "ConditionCheck": {
+            "TableName": _table().name,
+            "Key": {"pk": owner_pk(owner_id), "sk": voice_run_sk(run_id)},
+            "ConditionExpression": "attribute_not_exists(noPost)",
+        }
     }
-    await run_in_thread(_table().put_item, Item=item)
 
 
 async def update_voice_run(owner_id: str, run_id: str, fields: dict[str, Any]) -> bool:

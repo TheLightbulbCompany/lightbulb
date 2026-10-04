@@ -170,32 +170,50 @@ async def test_on_ended_never_raises(env):
 
 async def test_a_crash_after_the_claim_is_finished_by_a_later_on_ended(env):
     env.meta["meeting"]["transcriptAttachedAt"] = 1
-    env.send.side_effect = [RuntimeError("ses")] * 3 + ["<id@ses>"]
-    await mod.on_ended(ROOM)  # the notes message went out, the mail did not (three tries)
+    env.cap.side_effect = [RuntimeError("ddb")] * 3 + [True]  # fails before the send: still owed
+    await mod.on_ended(ROOM)  # the notes message went out, the mail did not
     assert env.meta["meeting"]["notesRunId"] and "notesMailedAt" not in env.meta["meeting"]
     env.release.assert_awaited_once_with(f"meeting-notes#{ROOM}", token="tok")  # a caught failure frees the claim
     env.claim.return_value = None  # a crashed attempt released nothing: within 120 s its claim still stands
     await mod.on_ended(ROOM)
-    assert env.send.await_count == 3
+    env.send.assert_not_awaited()
     env.claim.return_value = "tok2"  # 121 s later it is stale
     await mod.on_ended(ROOM)
     assert env.claim.await_args.args == (f"meeting-notes#{ROOM}",) and env.claim.await_args.kwargs == {"stale_s": 120}
     env.line.assert_awaited_once()  # the notes run is not asked for twice
-    assert env.send.await_count == 4 and env.meta["meeting"]["notesMailedAt"]
+    assert env.send.await_count == 1 and env.meta["meeting"]["notesMailedAt"]
     await mod.on_ended(ROOM)  # done: nothing more
-    assert env.send.await_count == 4
+    assert env.send.await_count == 1
 
 
-async def test_a_failed_send_leaves_the_marker_unset_so_the_retry_mails(env):
+async def test_a_failed_or_ambiguous_send_is_never_retried_by_a_later_webhook(env):
     env.meta["meeting"]["transcriptAttachedAt"] = 1
-    env.send.return_value = None  # send_ses_email's non-raising failure
+    env.send.return_value = None  # send_ses_email's non-raising failure: it may still have gone
     await mod.on_ended(ROOM)
-    assert "notesMailedAt" not in env.meta["meeting"]
-    env.release.assert_awaited_once()  # freed at once: `done` arrives well inside the claim's 120 s
+    assert "notesMailedAt" not in env.meta["meeting"] and env.meta["meeting"]["notesMailAttemptedAt"]
+    assert not mod.owed(env.meta["meeting"])
     env.send.return_value = "<id@ses>"
-    await mod.on_ended(ROOM)  # the terminal webhook's redelivery
-    assert env.meta["meeting"]["notesMailedAt"] and env.send.await_count == 4  # three tries, then the redelivery
-    env.line.assert_awaited_once()  # the notes run is not repeated
+    await mod.on_ended(ROOM)  # the terminal webhook's redelivery: nothing more
+    await mod.on_ended(ROOM)
+    env.send.assert_awaited_once()
+    env.line.assert_awaited_once()
+
+
+async def test_two_end_paths_racing_send_once(env):
+    env.meta["meeting"]["transcriptAttachedAt"] = 1
+    stale = {**env.meta["meeting"]}  # the second path read the meeting before the first marked it
+    await mod.on_ended(ROOM)
+    env.send.assert_awaited_once()
+    assert await mod._mail_organizer("org_1", ROOM, DEFAULT, stale, "Weekly sync", stale["startAt"]) is None
+    env.send.assert_awaited_once()  # the guarded marker write refused it
+
+
+async def test_a_pre_send_skip_is_done_without_an_attempted_marker(env):
+    env.meta["meeting"]["transcriptAttachedAt"] = 1
+    env.row["outbound_disabled"] = "complaint"
+    await mod.on_ended(ROOM)
+    env.send.assert_not_awaited()
+    assert env.meta["meeting"]["notesMailedAt"] and "notesMailAttemptedAt" not in env.meta["meeting"]
 
 
 async def test_the_notes_mail_draws_the_owners_daily_cap(env):
@@ -252,7 +270,7 @@ async def test_a_ceo_outside_the_output_room_gets_no_notes_run_but_the_mail_goes
 
 async def test_on_ended_advances_after_the_attempt_either_way_but_not_beside_another(env):
     env.meta["meeting"]["transcriptAttachedAt"] = 1
-    env.send.side_effect = RuntimeError("ses")
+    env.line.side_effect = RuntimeError("ddb")  # fails before the mail: the notes stay owed
     await mod.on_ended(ROOM)  # failed
     env.advance.assert_awaited_once_with(ROOM)
     env.claim.return_value = None  # another end path holds the notes: it advances when done
@@ -347,12 +365,13 @@ async def test_the_after_meeting_mail_goes_to_the_inviting_member(env):
     assert env.send.await_args.kwargs["to"] == "member@acme.com"
 
 
-async def test_a_notes_attempt_that_fails_once_is_retried_before_the_advance(env):
+async def test_a_failed_notes_line_is_retried_and_the_mail_goes_once(env):
     env.meta["meeting"]["transcriptAttachedAt"] = 1
-    env.send.side_effect = [RuntimeError("ses"), "<id@ses>"]
+    env.line.side_effect = [RuntimeError("ddb"), {"messageId": "msg-1"}]
     await mod.on_ended(ROOM)
-    env.line.assert_awaited_once()  # one notes run
-    assert env.send.await_count == 2 and env.meta["meeting"]["notesMailedAt"]
+    assert env.line.await_count == 2 and env.meta["meeting"]["notesRunId"]
+    env.send.assert_awaited_once()  # on the attempt that reached it
+    assert env.meta["meeting"]["notesMailedAt"]
     env.sleep.assert_awaited_once_with(10)
     env.release.assert_not_awaited()
     env.advance.assert_awaited_once_with(ROOM)
@@ -360,9 +379,10 @@ async def test_a_notes_attempt_that_fails_once_is_retried_before_the_advance(env
 
 async def test_three_failed_notes_attempts_still_advance_the_series(env):
     env.meta["meeting"]["transcriptAttachedAt"] = 1
-    env.send.side_effect = RuntimeError("ses")
+    env.line.side_effect = RuntimeError("ddb")
     await mod.on_ended(ROOM)
-    assert env.send.await_count == 3 and "notesMailedAt" not in env.meta["meeting"]
+    assert env.line.await_count == 3 and "notesMailedAt" not in env.meta["meeting"]
+    env.send.assert_not_awaited()
     env.release.assert_awaited_once()
     env.advance.assert_awaited_once_with(ROOM)
 
@@ -375,7 +395,23 @@ async def test_with_no_transcript_the_mail_promises_no_notes(env):
 
 
 async def test_a_retry_does_not_wait_for_the_transcript_again(env):
-    env.send.side_effect = [RuntimeError("ses"), "<id@ses>"]
+    env.line.side_effect = [RuntimeError("ddb"), {"messageId": "msg-1"}]
     await mod.on_ended(ROOM)  # no transcript: the 60 s wait once, then one 10 s retry gap
     assert [c.args for c in env.sleep.await_args_list] == [(2,)] * 30 + [(10,)]
-    assert env.send.await_count == 2 and env.meta["meeting"]["notesMailedAt"]
+    assert env.send.await_count == 1 and env.meta["meeting"]["notesMailedAt"]
+
+
+async def test_an_ambiguous_send_is_never_repeated_in_one_end_path(env):
+    env.meta["meeting"]["transcriptAttachedAt"] = 1
+    env.send.return_value = None  # failed or timed out: it may have gone
+    await mod.on_ended(ROOM)
+    env.send.assert_awaited_once()  # across the three attempts
+    assert "notesMailedAt" not in env.meta["meeting"]
+    env.advance.assert_awaited_once_with(ROOM)
+
+
+async def test_the_organizer_mail_is_from_the_public_address(env):
+    env.meta["meeting"]["transcriptAttachedAt"] = 1
+    env.row["public_address"] = "agents@thelightbulb.company"
+    await mod.on_ended(ROOM)
+    assert env.send.await_args.kwargs["from_addr"] == "agents@thelightbulb.company"

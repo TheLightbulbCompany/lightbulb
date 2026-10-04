@@ -66,7 +66,7 @@ async def test_create_body(recall, caplog):
     }
     assert body["metadata"] == {"roomId": "room-1", "nonce": "nonce-1"}
     assert body["variant"] == {"google_meet": "web_4_core"}
-    assert body["automatic_leave"] == {"waiting_room_timeout": 600, "noone_joined_timeout": 1200}
+    assert body["automatic_leave"] == {"waiting_room_timeout": 180, "noone_joined_timeout": 1200}
     chat = body["chat"]["on_bot_join"]
     assert (
         chat["send_to"] == "everyone"

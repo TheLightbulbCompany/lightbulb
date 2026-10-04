@@ -6,6 +6,11 @@ inbound to it goes to the CEO unless it answers a thread another agent wrote
 (``routers/ses_inbound.py``). One row in ``agent-email-addresses`` holds the
 workspace's policy flags; it is created on first use (``ensure_team_address``),
 not at provisioning, so the slug derives from the company name the agent chose.
+
+That slug-form address is the ROUTING address: every key, inbound lookup and
+inbox row uses it. A row may also carry a ``public_address`` (set only by
+``scripts/set_team_mail_identity.py``), which is what the workspace SENDS as
+and SHOWS; mail to it is forwarded to the routing address outside SES.
 """
 
 import logging
@@ -31,6 +36,7 @@ def _domain() -> str:
 def strictest(rows: list[dict]) -> dict:
     """The strictest of every row's owner-editable settings: closed if any row is closed, paused if
     any is paused, verified senders unioned. No rows is the open default."""
+    rows = [r for r in rows if not r.get("alias_of")]  # an alias row carries no settings
     settings = {
         "send_to_anyone": all(bool(r.get("send_to_anyone")) for r in rows),
         "verified_senders": sorted({s for r in rows for s in r.get("verified_senders") or []}),
@@ -48,6 +54,23 @@ async def team_address(owner_id: str) -> str | None:
     if not _domain() or not slug:
         return None
     return f"agents@{slug.strip().lower()}.{_domain()}"
+
+
+async def public_for(address: str) -> str:
+    """What the routing ``address`` sends and shows as: its row's ``public_address``, else
+    itself. Never raises: a failed read sends from the routing address, which still delivers."""
+    try:
+        row = await agent_email_repo.get_by_address(address) or {}
+    except Exception:  # noqa: BLE001
+        logger.warning("agent_email: public address lookup failed for %s", address, exc_info=True)
+        return address
+    return row.get("public_address") or address
+
+
+async def public_address(owner_id: str) -> str | None:
+    """The workspace's public address (``public_for`` its team address), or None."""
+    address = await team_address(owner_id)
+    return await public_for(address) if address else None
 
 
 async def ensure_team_address(owner_id: str, owner_email: str | None) -> tuple[str | None, str]:
@@ -93,9 +116,11 @@ async def ensure_team_address(owner_id: str, owner_email: str | None) -> tuple[s
 
 async def from_header(owner_id: str, agent_id: str, address: str, agent_name: str | None = None) -> str:
     """``"Friday · Acme agents" <agents@acme.…>`` — the agent's own name on the
-    shared address (``agent_name`` when the caller already resolved it). Falls
-    back to the bare address when either name is unavailable; never raises,
-    never fails a send."""
+    shared address (``agent_name`` when the caller already resolved it). The
+    routing ``address`` is swapped for its public address (``public_for``), so
+    every agent send goes out as it. Falls back to the bare address when either
+    name is unavailable; never raises, never fails a send."""
+    address = await public_for(address)
     try:
         onboarding = await PaperclipRepo(table_name="paperclip-companies").get_onboarding_state(owner_id) or {}
         company_id = onboarding.get("company_id")

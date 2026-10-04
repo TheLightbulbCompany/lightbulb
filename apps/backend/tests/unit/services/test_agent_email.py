@@ -99,6 +99,7 @@ def team(monkeypatch):
     monkeypatch.setattr(ae.settings, "AGENT_EMAIL_DOMAIN", "thelightbulb.company")
     monkeypatch.setattr(ae.company_slug_repo, "get_by_owner", AsyncMock(return_value={"slug": "acme"}))
     monkeypatch.setattr(ae, "PaperclipRepo", _onboarding_repo())
+    monkeypatch.setattr(ae.agent_email_repo, "get_by_address", AsyncMock(return_value={"address": TEAM}))
 
 
 @pytest.mark.asyncio
@@ -166,3 +167,32 @@ async def test_from_header_falls_back_to_the_bare_address(monkeypatch, team):
     monkeypatch.setattr(ae, "resolve_company_name", AsyncMock(return_value="Acme"))
     monkeypatch.setattr(ae, "resolve_agent_name", AsyncMock(return_value=None))
     assert await ae.from_header("o", "agent_x", TEAM) == TEAM
+
+
+PUBLIC = "agents@thelightbulb.company"
+
+
+@pytest.mark.asyncio
+async def test_from_header_sends_as_the_public_address(monkeypatch, team):
+    monkeypatch.setattr(
+        ae.agent_email_repo, "get_by_address", AsyncMock(return_value={"address": TEAM, "public_address": PUBLIC})
+    )
+    monkeypatch.setattr(ae, "resolve_company_name", AsyncMock(return_value="Acme"))
+    monkeypatch.setattr(ae, "resolve_agent_name", AsyncMock(return_value="Friday"))
+    assert await ae.from_header("o", "agent_friday", TEAM) == formataddr(("Friday · Acme agents", PUBLIC))
+    monkeypatch.setattr(ae, "resolve_agent_name", AsyncMock(return_value=None))
+    assert await ae.from_header("o", "agent_x", TEAM) == PUBLIC
+
+
+@pytest.mark.asyncio
+async def test_public_address_is_the_team_address_without_one(monkeypatch, team):
+    assert await ae.public_address("o") == TEAM
+    monkeypatch.setattr(ae.agent_email_repo, "get_by_address", AsyncMock(side_effect=RuntimeError("ddb")))
+    assert await ae.public_for(TEAM) == TEAM  # a failed read still sends, from the routing address
+    monkeypatch.setattr(ae.agent_email_repo, "get_by_address", AsyncMock(return_value={"public_address": PUBLIC}))
+    assert await ae.public_address("o") == PUBLIC
+
+
+def test_strictest_ignores_alias_rows():
+    alias = {"address": PUBLIC, "alias_of": TEAM, "owner_id": "o"}
+    assert ae.strictest([{"send_to_anyone": True, "verified_senders": []}, alias])["send_to_anyone"] is True

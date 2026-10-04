@@ -15,6 +15,7 @@ durable fence is the per-owner daily cap enforced in ``agent_mail_send``.
 import asyncio
 import hmac
 import re
+import time
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
@@ -25,7 +26,7 @@ from core.dynamodb import run_in_thread
 from core.repositories import agent_email_repo, container_repo, messaging_repo
 from core.repositories.agent_mail_inbox_repo import list_messages, list_page, reply_key
 from core.services import meeting_invites, messaging
-from core.services.agent_email import EMAIL_ADDRESS_RE, ensure_team_address, team_address
+from core.services.agent_email import EMAIL_ADDRESS_RE, ensure_team_address, public_for, team_address
 from core.services.agent_mail_send import _owner_email, send
 from core.services.rate_bucket import RateBucket
 
@@ -96,7 +97,7 @@ async def mint_address(owner_id: str, body: AddressRequest, request: Request) ->
     """The workspace's team address — the same for every agent, which sends from it as itself."""
     await _require_hook_token(owner_id, request)
     address, reason = await ensure_team_address(owner_id, await _owner_email(owner_id))
-    return {"address": address, "reason": reason}
+    return {"address": await public_for(address) if address else None, "reason": reason}
 
 
 @router.get("/u/{owner_id}/inbox")
@@ -107,7 +108,7 @@ async def inbox(owner_id: str, agent_id: str, request: Request, since: str | Non
         return {"address": None, "messages": []}
     rows = await list_messages(address, since=since, limit=limit, agent_id=agent_id)
     return {
-        "address": address,
+        "address": await public_for(address),
         "messages": [
             {
                 "key": reply_key(address, r["received_key"]),
@@ -126,7 +127,7 @@ async def inbox(owner_id: str, agent_id: str, request: Request, since: str | Non
 
 def _project(row: dict) -> dict:
     return {
-        "address": row.get("address"),
+        "address": row.get("public_address") or row.get("address"),
         "verified_senders": row.get("verified_senders") or [],
         "send_to_anyone": bool(row.get("send_to_anyone")),
         "outbound_disabled": row.get("outbound_disabled"),
@@ -213,6 +214,18 @@ def _occurrences(meeting: dict) -> list[dict]:
     return [o for o in current + list(meeting.get("history") or []) if o.get("transcriptId")]
 
 
+def _junk(meeting: dict, now: float) -> bool:
+    """A meeting that never reached a call (never in the call, no transcript now or in its history)
+    and ended over a day ago is not worth a row."""
+    end = int(meeting.get("endAt") or meeting.get("startAt") or 0)
+    return (
+        meeting.get("status") in ("ended", "bot_failed", "cancelled")
+        and not meeting.get("inCallAt")
+        and not _occurrences(meeting)
+        and end < now - 86400
+    )
+
+
 def _meeting_view(room_id: str, meeting: dict) -> dict:
     return {
         "id": room_id,
@@ -238,6 +251,7 @@ def _mail_view(address: str, r: dict) -> dict:
         "at": r.get("received_at", ""),
         "agent_id": r.get("agent_id"),
         "text": (r.get("text") or "")[:_PREVIEW_CHARS],
+        "truncated": len(r.get("text") or "") > _PREVIEW_CHARS,
     }
 
 
@@ -271,12 +285,13 @@ async def team_inbox(
 
     records = await asyncio.gather(*(read(i) for i in ids))
     meetings = sorted(
-        (_meeting_view(i, m) for i, m in zip(ids, records, strict=True) if m),
+        (_meeting_view(i, m) for i, m in zip(ids, records, strict=True) if m and not _junk(m, time.time())),
         key=lambda m: int(m["start_at"] or 0),
         reverse=True,
     )[:_MEETINGS_MAX]
     rows, nxt = await list_page(address, before=before, limit=limit)
-    return {"address": address, "meetings": meetings, "messages": [_mail_view(address, r) for r in rows], "next": nxt}
+    shown = row.get("public_address") or address
+    return {"address": shown, "meetings": meetings, "messages": [_mail_view(shown, r) for r in rows], "next": nxt}
 
 
 @router.get("/meetings/{meeting_id}/transcript")

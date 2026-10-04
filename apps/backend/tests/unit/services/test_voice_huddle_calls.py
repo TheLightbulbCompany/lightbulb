@@ -582,14 +582,15 @@ async def test_live_every_addressed_or_relayed_agent_skips_jev_and_the_first_nam
 
 
 async def test_live_several_addressed_agents_come_back_as_one_request_each(live_env):
-    # live_env's Jev is down: the stage's fallback cuts the line at the names
-    got, decide = await _live("Finance, what's the burn. Ada, what's the plan", humans=2)
+    # live_env's Jev is down: nobody is cut, each agent's request is the whole line
+    line = "Finance, what's the burn. Ada, what's the plan"
+    got, decide = await _live(line, humans=2)
     assert got["agentIds"] == ["fin-1", "ceo-1"]
-    assert got["requests"] == [
-        {"agentId": "fin-1", "task": "what's the burn"},
-        {"agentId": "ceo-1", "task": "what's the plan"},
-    ]
+    assert got["requests"] == [{"agentId": "fin-1", "task": line}, {"agentId": "ceo-1", "task": line}]
     decide.assert_not_awaited()
+    cut = _addressed(agents=["fin-1", "ceo-1"]) | {"tasks": {"fin-1": "what's the burn"}}
+    got, _ = await _live(line, humans=2, address=cut)
+    assert got["requests"] == [{"agentId": "fin-1", "task": "what's the burn"}, {"agentId": "ceo-1", "task": line}]
     one, _ = await _live("Finance, what's the burn?", humans=2)
     assert "requests" not in one  # one agent: today's answer shape
 
@@ -824,7 +825,8 @@ async def test_no_post_on_a_missing_or_expired_run_writes_nothing(run_env):
     vc.messaging_repo.put_voice_run.assert_not_awaited()
 
 
-async def test_a_turns_retry_for_a_marked_run_keeps_no_post(run_env):
-    vc.messaging_repo.get_voice_run.return_value = {"roomId": "room-1", "noPost": True}
+async def test_a_turns_retry_never_reads_or_rewrites_no_post(run_env):
+    """The row write is one atomic SET of the turn's own fields (the repo test pins that a mark survives it)."""
     await _dispatch()
-    assert vc.messaging_repo.put_voice_run.await_args.args[2]["noPost"] is True
+    assert "noPost" not in vc.messaging_repo.put_voice_run.await_args.args[2]
+    vc.messaging_repo.get_voice_run.assert_not_awaited()

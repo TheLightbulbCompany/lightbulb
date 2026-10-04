@@ -21,19 +21,22 @@ const decode = (data: string) => Uint8Array.from(atob(data), (c) => c.charCodeAt
  *  go to the Mac with the screen epoch they were typed against. A refusal (`refuses`) stops input
  *  until the `session` prop changes; an offline Mac (409 LOCAL_SESSION_OFFLINE, transient)
  *  loses only that batch. The viewer never resizes the Mac's terminal. */
-export function SessionTerminalView({ session, onEvent, watch, onLive, input, admitted = false }: {
+export function SessionTerminalView({ session, onEvent, watch, onLive, onCanType, input, admitted = false }: {
   session: Pick<LocalSession, "sessionId" | "generation">;
   input?: (data: Uint8Array, epoch: number) => Promise<unknown>;
   admitted?: boolean;
   onEvent: (handler: (event: LiveEvent) => void) => () => void;
   watch: (sessionId: string) => Promise<unknown>;
   onLive: (live: boolean) => void;
+  /** Whether this viewer can type right now; false once the Mac refuses input. */
+  onCanType?: (canType: boolean) => void;
 }) {
   const host = useRef<HTMLDivElement>(null);
   const [live, setLive] = useState(false);
   const [scale, setScale] = useState(1);
   const [refusedFor, setRefusedFor] = useState<unknown>(null);
   const canType = !!input && admitted && refusedFor !== session;
+  useEffect(() => { onCanType?.(canType); }, [canType, onCanType]);
   const typing = useRef({ canType, input, session, refuse: (s: unknown) => setRefusedFor(s) });
   typing.current = { canType, input, session, refuse: (s: unknown) => setRefusedFor(s) };
   const termRef = useRef<Terminal | null>(null);

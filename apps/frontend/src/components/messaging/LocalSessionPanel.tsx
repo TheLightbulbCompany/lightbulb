@@ -58,6 +58,8 @@ export function LocalSessionPanel({ session, ownerName, own, client, revision, o
   // Not at that Mac: watch the same terminal live, read-only, while it runs (rulings §4, §6).
   const watchRemote = local === "none" && session.status !== "ended" && session.status !== "offline" && !!onEvent && !!client.watchLocalSession;
   const [screenLive, setScreenLive] = useState(false);
+  // False once the terminal is read-only for this viewer (the Mac refused input): the message box is the way to send then.
+  const [termCanType, setTermCanType] = useState(true);
   const liveTerminal = watchRemote && screenLive;
   // Not running: this is the structured transcript, not a terminal. The Mac's own name is not in the public record, so the owner's name stands for it.
   const transcriptLabel = local !== "none" || (session.status !== "ended" && session.status !== "offline") ? null
@@ -189,7 +191,7 @@ export function LocalSessionPanel({ session, ownerName, own, client, revision, o
       <p className="session-status-line">
         <span className={`native-session-dot native-session-dot-${session.status}`} aria-hidden="true" />
         <span>{transcriptLabel ?? sessionStatus[session.status]}</span>
-        <span>{own ? "You" : ownerName}</span>
+        {!(transcriptLabel && session.status === "offline") && <span>{own ? "You" : ownerName}</span>}
         {where && <span className="session-fact-value room-wrap">{where}</span>}
         {session.pickedUpFrom && <span>picked up from {personName(session.pickedUpFrom.humanUserId)}</span>}
         {changes.length > 0 && <button type="button" className="session-status-link" onClick={() => show("changes")}>
@@ -220,7 +222,7 @@ export function LocalSessionPanel({ session, ownerName, own, client, revision, o
     {local !== "none"
       ? <div ref={slot} className="local-session-terminal" role="region" aria-label="Session terminal" />
       : <>
-      {watchRemote && <SessionTerminalView session={session} onEvent={onEvent!} watch={client.watchLocalSession!} onLive={setScreenLive}
+      {watchRemote && <SessionTerminalView session={session} onEvent={onEvent!} watch={client.watchLocalSession!} onLive={setScreenLive} onCanType={setTermCanType}
         admitted={control && session.shared !== false}
         input={client.sendLocalSessionInput ? (bytes, epoch) => client.sendLocalSessionInput!(session.sessionId, toBase64(bytes), epoch) : undefined} />}
       {liveTerminal ? <div className="local-session-feedback">{transcript}</div> : <div className="local-session-scroll">
@@ -236,7 +238,7 @@ export function LocalSessionPanel({ session, ownerName, own, client, revision, o
     </div>}
     </>}
     <SubagentPanel provider={session.provider} events={history.events} status={session.status} onPick={id => revealSubagent(content.current, id)} />
-    {session.status === "ended" ? <SessionResume flow={resume} own={own} ownerName={ownerName} /> : terminalLive && control ? null : control && !terminalLive ? <form className="room-composer local-session-composer native-session-composer" onSubmit={event => { event.preventDefault(); atBottomRef.current = true; command.send(text); }}>
+    {session.status === "ended" ? <SessionResume flow={resume} own={own} ownerName={ownerName} /> : terminalLive && control && (local === "local" || termCanType) ? null : control ? <form className="room-composer local-session-composer native-session-composer" onSubmit={event => { event.preventDefault(); atBottomRef.current = true; command.send(text); }}>
       <label htmlFor={id} className="sr-only">Send to {target}</label>
       <div className="native-session-prompt-row"><span className="native-session-glyph" aria-hidden="true">{glyph}</span>
         <textarea id={id} className="room-input" rows={2} value={text} disabled={!command.canSend || command.locked} onChange={event => setText(event.target.value)}

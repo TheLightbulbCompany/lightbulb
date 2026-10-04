@@ -7,17 +7,17 @@ import { LocalSessionPanel } from "../LocalSessionPanel";
 vi.mock("@/lib/analytics", () => ({ capture: vi.fn() }));
 vi.mock("@clerk/nextjs", () => ({ useAuth: () => ({ userId: "alice", orgId: "org_1" }) }));
 // The terminal itself is tested in SessionTerminalView.test; here it just reports that it is live.
+const typing = vi.hoisted(() => ({ canType: true }));
 vi.mock("../SessionTerminalView", async () => {
   const { useEffect } = await import("react");
-  return { SessionTerminalView: ({ onLive }: { onLive: (live: boolean) => void }) => {
-    useEffect(() => { onLive(true); }, [onLive]);
+  return { SessionTerminalView: ({ onLive, onCanType }: { onLive: (live: boolean) => void; onCanType?: (c: boolean) => void }) => {
+    useEffect(() => { onLive(true); onCanType?.(typing.canType); }, [onLive, onCanType]);
     return <div role="region" aria-label="Live terminal (view only)" />;
   } };
 });
 
 const session: LocalSession = { sessionId: "s", deviceId: "mac", humanUserId: "alice", provider: "claude", generation: "g1", status: "idle", providerVersion: "test", activeTurnId: null, capabilities: { sendMode: "queue", steer: false, interrupt: false }, capabilitiesVerified: true, latestEventSeq: 0, controlUnavailableReason: null };
 const client = { listLocalSessionEvents: vi.fn(async () => ({ events: [], nextAfterSeq: null })), submitLocalSessionCommand: vi.fn(), getLocalSession: vi.fn(), listWorkspaceSessions: vi.fn(), setLocalSessionSharing: vi.fn(), watchLocalSession: vi.fn(async () => undefined), sendLocalSessionInput: vi.fn() };
-const noInput = { ...client, sendLocalSessionInput: undefined };
 const below = (a: HTMLElement, b: HTMLElement) => !!(a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING);
 
 it("drops the message box and the history region when the viewer can type in the live terminal", async () => {
@@ -27,10 +27,12 @@ it("drops the message box and the history region when the viewer can type in the
   expect(screen.queryByRole("textbox", { name: /send to/i })).toBeNull();
 });
 
-it("shows no text box under a live terminal even when sending is unavailable", async () => {
-  render(<LocalSessionPanel session={session} ownerName="Alice" own client={noInput as never} revision={0} onAccessLost={() => {}} onEvent={() => () => {}} />);
+it("brings the message box back when the Mac refuses typing in the terminal", async () => {
+  typing.canType = false;
+  render(<LocalSessionPanel session={session} ownerName="Alice" own client={client as never} revision={0} onAccessLost={() => {}} onEvent={() => () => {}} />);
   await screen.findByRole("region", { name: "Live terminal (view only)" });
-  expect(screen.queryByRole("textbox")).toBeNull();
+  expect(await screen.findByRole("textbox", { name: /send to/i })).toBeTruthy();
+  typing.canType = true;
 });
 
 it("keeps the message box on a transcript", () => {
@@ -65,6 +67,7 @@ it("labels a session that is not running as a transcript, and a live one not at 
   unmount();
   const offline = render(<LocalSessionPanel {...props} own={false} session={{ ...session, status: "offline" }} />);
   expect(screen.getByText("Transcript · Alice's Mac is offline")).toBeTruthy();
+  expect(document.querySelector(".session-status-line")!.textContent!.match(/Alice/g)).toHaveLength(1);
   offline.unmount();
   render(<LocalSessionPanel {...props} own={false} session={session} />);
   expect(screen.queryByText(/Transcript/)).toBeNull();

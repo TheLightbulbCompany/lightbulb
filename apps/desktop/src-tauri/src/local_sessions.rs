@@ -1091,44 +1091,86 @@ fn same_installed_file(executable: &Path, installed: &Path) -> Result<()> {
     Ok(())
 }
 
-async fn runtime_version(expected: &Process, installed: &Path, provider: &str) -> Result<String> {
-    // Never execute an arbitrary path obtained from a registration or process row.
-    // The mapped executable must be another name for the installed provider binary.
-    same_installed_file(&expected.executable, installed)?;
-    if process(expected.pid)? != *expected {
-        return Err("runtime-unverified".into());
-    }
-    let before = fs::metadata(installed).map_err(|_| "runtime-unverified")?;
-    let mapped = native_output(
+/// The release a session still runs after its provider auto-updated. Claude's updater writes
+/// each release to `<root>/versions/<v>` and repoints the launcher (and the bundle's hard link)
+/// at the new one, so a session started earlier keeps executing the older file. That file is
+/// accepted as the same install when it is one of the inodes the process maps, sits directly
+/// under `<root>/versions` without a symlink, and is this user's regular file nobody else can
+/// write. Its version is its own file name. Nothing here is executed.
+fn older_release(root: &Path, mapped: &[u64], dev: u64) -> Option<String> {
+    fs::read_dir(root.join("versions")).ok()?.flatten().find_map(|entry| {
+        let name = entry.file_name().into_string().ok()?;
+        if name.is_empty() || name.len() > 32 || !name.bytes().all(|b| b.is_ascii_digit() || b == b'.') {
+            return None;
+        }
+        let path = confined_path(root, &entry.path()).ok()?;
+        let meta = fs::symlink_metadata(path).ok()?;
+        (meta.is_file() && meta.dev() == dev && meta.mode() & 0o022 == 0 && mapped.contains(&meta.ino()))
+            .then_some(name)
+    })
+}
+
+/// The inodes `expected` maps as its executable under the install's names: the running
+/// path, the installed path, or any name inside the install root. The inode is the
+/// identity; lsof may report the install's other name for it.
+async fn mapped_inodes(expected: &Process, installed: &Path, root: &Path) -> Result<Vec<u64>> {
+    let listing = native_output(
         Path::new("/usr/sbin/lsof"),
-        &[
-            "-n",
-            "-a",
-            "-p",
-            &expected.pid.to_string(),
-            "-d",
-            "txt",
-            "-Fin",
-        ],
+        &["-n", "-a", "-p", &expected.pid.to_string(), "-d", "txt", "-Fin"],
     )
     .await?;
     let mut inode = None;
-    let mut matched = false;
-    for line in mapped.lines() {
+    let mut mapped = vec![];
+    for line in listing.lines() {
         if let Some(value) = line.strip_prefix('i') {
             inode = value.parse::<u64>().ok();
         }
         if let Some(value) = line.strip_prefix('n') {
-            // The inode is the identity; lsof may report the install's other name.
-            if (Path::new(value) == expected.executable || Path::new(value) == installed)
-                && inode == Some(before.ino())
-            {
-                matched = true;
+            let name = Path::new(value);
+            if name == expected.executable || name == installed || name.starts_with(root) {
+                mapped.extend(inode);
             }
         }
     }
-    if !matched {
+    Ok(mapped)
+}
+
+/// A release whose version its install layout names (Codex's managed daemon,
+/// `releases/<v>-<triple>/bin/codex`): verified as the file the process runs, never executed.
+async fn named_release_version(expected: &Process, file: &Path, version: &str) -> Result<String> {
+    let before = fs::metadata(file).map_err(|_| "runtime-unverified")?;
+    let mapped = mapped_inodes(expected, file, file).await?;
+    let after = fs::metadata(file).map_err(|_| "runtime-unverified")?;
+    if !mapped.contains(&before.ino()) || before.ino() != after.ino() || process(expected.pid)? != *expected {
         return Err("runtime-unverified".into());
+    }
+    Ok(version.into())
+}
+
+async fn runtime_version(expected: &Process, installed: &Path, provider: &str) -> Result<String> {
+    // Never execute an arbitrary path obtained from a registration or process row. Only
+    // `installed`, the PATH-resolved binary, is ever run; an older release of the same
+    // install is identified by its file, never by running it.
+    let root = installed
+        .parent()
+        .and_then(Path::parent)
+        .ok_or("runtime-unverified")?;
+    let current = same_installed_file(&expected.executable, installed).is_ok();
+    if !current {
+        confined_path(root, &expected.executable).map_err(|_| "runtime-unverified")?;
+    }
+    if process(expected.pid)? != *expected {
+        return Err("runtime-unverified".into());
+    }
+    let before = fs::metadata(installed).map_err(|_| "runtime-unverified")?;
+    let mapped = mapped_inodes(expected, installed, root).await?;
+    if !(current && mapped.contains(&before.ino())) {
+        // Not the installed file: an older release of this install, or nothing verified.
+        let version = older_release(root, &mapped, before.dev()).ok_or("runtime-unverified")?;
+        if process(expected.pid)? != *expected {
+            return Err("runtime-unverified".into());
+        }
+        return Ok(version);
     }
     let output = native_output(installed, &["--version"]).await?;
     let version = output
@@ -1150,25 +1192,34 @@ async fn runtime_version(expected: &Process, installed: &Path, provider: &str) -
 /// mention keeps everything it had: a listing is a sweep, not an obituary, and a
 /// session ends only when its hook, its pid or a fork that replaced it says so.
 fn reconcile_sessions(current: &mut Vec<NativeSession>, discovered: Vec<NativeSession>) {
-    let mut seen = std::collections::BTreeMap::new();
-    for mut session in discovered {
-        let identity = (
-            session.provider.clone(),
-            session.profile.clone(),
-            session.conversation.clone(),
-        );
-        let entry = seen
-            .entry(identity)
-            .or_insert((session.process.clone(), false));
-        entry.1 |= entry.0 != session.process;
-        if entry.1 {
-            session.restriction = Some("runtime-unverified".into());
+    // Two processes on one conversation (resumed in a second terminal while the first runs)
+    // are one Lightbulb session: mirror the newest process and ignore the other, so a send
+    // reaches exactly the one process this Mac verified and mirrors.
+    let mut newest: Vec<NativeSession> = vec![];
+    for session in discovered {
+        match newest.iter_mut().find(|s| {
+            s.provider == session.provider && s.profile == session.profile && s.conversation == session.conversation
+        }) {
+            Some(kept) if kept.process.birth_micros < session.process.birth_micros => *kept = session,
+            Some(_) => {}
+            None => newest.push(session),
         }
+    }
+    for mut session in newest {
         if let Some(existing) = current.iter_mut().find(|s| {
             s.provider == session.provider
                 && s.profile == session.profile
                 && s.conversation == session.conversation
         }) {
+            // A probe that failed this tick (lsof, `--version`) does not undo what an earlier
+            // tick verified about the same process; the next tick retries.
+            if existing.process == session.process
+                && session.restriction.as_deref() == Some("runtime-unverified")
+                && existing.restriction.as_deref() != Some("runtime-unverified")
+            {
+                session.version.clone_from(&existing.version);
+                session.restriction.clone_from(&existing.restriction);
+            }
             *existing = session;
         } else {
             current.push(session);
@@ -2346,6 +2397,44 @@ mod tests {
     }
 
     #[test]
+    fn local_sessions_older_release_of_the_install_is_verified_without_running_it() {
+        // An auto-update repointed the launcher at 2.1.289; a session still runs 2.1.288.
+        let dir = tempfile::tempdir().unwrap();
+        let root = fs::canonicalize(dir.path()).unwrap();
+        fs::create_dir_all(root.join("versions")).unwrap();
+        let marker = root.join("executed");
+        let script = format!("#!/bin/sh\ntouch {}\n", marker.display());
+        let old = root.join("versions/2.1.288");
+        fs::write(&old, &script).unwrap();
+        fs::set_permissions(&old, fs::Permissions::from_mode(0o755)).unwrap();
+        fs::write(root.join("versions/2.1.289"), &script).unwrap();
+        let meta = fs::metadata(&old).unwrap();
+        let (ino, dev) = (meta.ino(), meta.dev());
+
+        assert_eq!(older_release(&root, &[ino], dev).as_deref(), Some("2.1.288"));
+        assert!(!marker.exists(), "an older release is identified by its file, never executed");
+        // Not a file the process maps, or another filesystem: nothing.
+        assert_eq!(older_release(&root, &[ino + 1_000_000], dev), None);
+        assert_eq!(older_release(&root, &[ino], dev + 1), None);
+        // Group- or world-writable: refused.
+        fs::set_permissions(&old, fs::Permissions::from_mode(0o775)).unwrap();
+        assert_eq!(older_release(&root, &[ino], dev), None);
+        fs::set_permissions(&old, fs::Permissions::from_mode(0o755)).unwrap();
+        // A symlink under versions/ cannot smuggle an outside file in.
+        let away = tempfile::tempdir().unwrap();
+        let outside = fs::canonicalize(away.path()).unwrap().join("2.1.1");
+        fs::write(&outside, b"x").unwrap();
+        symlink(&outside, root.join("versions/2.1.1")).unwrap();
+        let outside_ino = fs::metadata(&outside).unwrap().ino();
+        assert_eq!(older_release(&root, &[outside_ino], dev), None);
+        // A name that is not a version is not a release.
+        let odd = root.join("versions/latest");
+        fs::hard_link(&old, &odd).unwrap();
+        fs::remove_file(&old).unwrap();
+        assert_eq!(older_release(&root, &[ino], dev), None);
+    }
+
+    #[test]
     fn local_sessions_discovery_deduplicates_running_sessions_and_replaces_pid_reuse() {
         let native = NativeSession {
             provider: "codex".into(),
@@ -2380,14 +2469,33 @@ mod tests {
         reconcile_sessions(&mut sessions, vec![restarted.clone()]);
         assert_eq!(sessions.len(), 1);
         assert_eq!(sessions[0].process.birth_micros, 200);
+        // Two processes on one conversation: the newest is mirrored, the other ignored,
+        // in either listing order, and nothing is restricted for it.
         let mut concurrent = restarted.clone();
         concurrent.process.pid = 43;
-        reconcile_sessions(&mut sessions, vec![restarted, concurrent]);
+        concurrent.process.birth_micros = 300;
+        reconcile_sessions(&mut sessions, vec![concurrent.clone(), restarted.clone()]);
+        assert_eq!(sessions.len(), 1);
+        assert_eq!((sessions[0].process.pid, sessions[0].restriction.as_deref()), (43, None));
+        reconcile_sessions(&mut sessions, vec![restarted.clone(), concurrent.clone()]);
+        assert_eq!((sessions[0].process.pid, sessions[0].restriction.as_deref()), (43, None));
+        // A probe that fails for the same process keeps the last good verification.
+        let mut flaky = concurrent.clone();
+        flaky.version = String::new();
+        flaky.restriction = Some("runtime-unverified".into());
+        flaky.status = "busy".into();
+        reconcile_sessions(&mut sessions, vec![flaky.clone()]);
         assert_eq!(
-            sessions[0].restriction.as_deref(),
-            Some("runtime-unverified"),
-            "two live runtimes for one native identity are ambiguous"
+            (sessions[0].version.as_str(), sessions[0].restriction.as_deref(), sessions[0].status.as_str()),
+            ("0.149.0", None, "busy"),
+            "a transient probe failure retries next tick instead of restricting"
         );
+        // A different process never inherits that verification.
+        flaky.process.pid = 44;
+        flaky.process.birth_micros = 400;
+        flaky.status = "unknown".into();
+        reconcile_sessions(&mut sessions, vec![flaky]);
+        assert_eq!(sessions[0].restriction.as_deref(), Some("runtime-unverified"));
         reconcile_sessions(&mut sessions, vec![]);
         assert_eq!(sessions.len(), 1);
         assert_eq!(

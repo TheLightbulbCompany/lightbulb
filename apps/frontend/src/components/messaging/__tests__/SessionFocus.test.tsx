@@ -4,7 +4,7 @@ import { expect, it, vi } from "vitest";
 import { ApiError, type LocalSession, type SessionSource } from "@lightbulb/shared";
 import { SessionFocus } from "../SessionFocus";
 
-const session: LocalSession = { sessionId: "s1", deviceId: "mac", humanUserId: "alice", provider: "claude", providerVersion: "2.1.269", generation: "g", status: "busy", activeTurnId: null,
+const session: LocalSession = { sessionId: "s1", deviceId: "mac", humanUserId: "alice", provider: "claude", terminal: "held", providerVersion: "2.1.269", generation: "g", status: "busy", activeTurnId: null,
   capabilities: { sendMode: "queue", steer: false, interrupt: false }, capabilitiesVerified: true, controlUnavailableReason: null, latestEventSeq: 0, title: "Load test" };
 const resolveSessionOwner = () => ({ ownerName: "Alice", own: false });
 /** The pane's one-line status row: status, owner, then where it runs. */
@@ -198,4 +198,9 @@ it("gives a person the owner allowed the composer", async () => {
   focus({ session: { ...session, allowedSenders: ["user_test_123"] }, ownerName: "Alice", own: false });
   expect(await screen.findByRole("button", { name: "Send follow-up" })).toBeInTheDocument();
   expect(screen.queryByText("Only Alice can send to this session.")).not.toBeInTheDocument();
+});
+
+it("opens the session a Claude session moved to the background continues as", async () => {
+  focus({ session: { ...session, sessionId: "s2", forkedFrom: "s1", title: "Moved on" }, ownerName: "Alice", own: false });
+  expect(await screen.findByRole("heading", { name: "Claude Moved on" })).toBeInTheDocument();
 });

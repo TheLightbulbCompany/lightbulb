@@ -1,7 +1,7 @@
 import { act, render, screen } from "@testing-library/react";
 import { expect, it, vi } from "vitest";
 import type { LiveEvent } from "@lightbulb/shared";
-import type { LocalSession } from "@lightbulb/shared";
+import { sessionStatus, type LocalSession } from "@lightbulb/shared";
 import { LocalSessionPanel } from "../LocalSessionPanel";
 
 vi.mock("@/lib/analytics", () => ({ capture: vi.fn() }));
@@ -16,7 +16,7 @@ vi.mock("../SessionTerminalView", async () => {
   } };
 });
 
-const session: LocalSession = { sessionId: "s", deviceId: "mac", humanUserId: "alice", provider: "claude", generation: "g1", status: "idle", providerVersion: "test", activeTurnId: null, capabilities: { sendMode: "queue", steer: false, interrupt: false }, capabilitiesVerified: true, latestEventSeq: 0, controlUnavailableReason: null };
+const session: LocalSession = { sessionId: "s", deviceId: "mac", humanUserId: "alice", provider: "claude", terminal: "held", generation: "g1", status: "idle", providerVersion: "test", activeTurnId: null, capabilities: { sendMode: "queue", steer: false, interrupt: false }, capabilitiesVerified: true, latestEventSeq: 0, controlUnavailableReason: null };
 const client = { listLocalSessionEvents: vi.fn(async () => ({ events: [], nextAfterSeq: null })), submitLocalSessionCommand: vi.fn(), getLocalSession: vi.fn(), listWorkspaceSessions: vi.fn(), setLocalSessionSharing: vi.fn(), watchLocalSession: vi.fn(async () => undefined), sendLocalSessionInput: vi.fn() };
 const below = (a: HTMLElement, b: HTMLElement) => !!(a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING);
 
@@ -84,4 +84,25 @@ it("says to answer in the live terminal only while the terminal accepts typing",
   expect(await screen.findByText(/this prompt can't be answered from here/)).toBeTruthy();
   expect(screen.queryByText("Answer it in the live terminal below.")).toBeNull();
   typing.canType = true;
+});
+
+it("shows a plain Claude session's transcript with its status, and tells its owner how to get the terminal", () => {
+  client.watchLocalSession.mockClear();
+  const plain: LocalSession = { ...session, terminal: undefined, status: "busy" };
+  render(<LocalSessionPanel session={plain} ownerName="Alice" own client={client as never} revision={0} onAccessLost={() => {}} onEvent={() => () => {}} />);
+  expect(screen.getByText(`Transcript · ${sessionStatus.busy}`)).toBeTruthy();
+  expect(screen.getByText("Press ← in its terminal to open it here.")).toBeTruthy();
+  expect(screen.queryByRole("region", { name: /Live terminal/ })).toBeNull();
+  expect(client.watchLocalSession).not.toHaveBeenCalled();
+  expect(screen.getByRole("textbox", { name: /send to/i })).toBeTruthy();
+});
+
+it("gives a plain Codex session and a teammate no ← hint", () => {
+  const props = { ownerName: "Alice", client: client as never, revision: 0, onAccessLost: () => {}, onEvent: () => () => {} };
+  const codex = render(<LocalSessionPanel {...props} own session={{ ...session, provider: "codex", terminal: undefined }} />);
+  expect(screen.queryByText(/Press ←/)).toBeNull();
+  codex.unmount();
+  render(<LocalSessionPanel {...props} own={false} session={{ ...session, terminal: undefined }} />);
+  expect(screen.queryByText(/Press ←/)).toBeNull();
+  expect(screen.getByText(`Transcript · ${sessionStatus.idle}`)).toBeTruthy();
 });

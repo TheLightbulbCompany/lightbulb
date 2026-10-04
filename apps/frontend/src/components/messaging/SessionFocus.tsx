@@ -32,7 +32,9 @@ export function SessionFocus({ focus, entries, loading, hintRevision, client, re
   /** Opens the DM with the session's owner (someone else's session only). */
   onMessageOwner?: (humanUserId: string, ownerName: string) => void;
 }) {
-  const entry = entries.find((candidate) => candidate.session.sessionId === focus.sessionId);
+  // A Claude session moved to the background continues as a fork (`forkedFrom`): show that one.
+  const entry = entries.find((candidate) => candidate.session.forkedFrom === focus.sessionId)
+    ?? entries.find((candidate) => candidate.session.sessionId === focus.sessionId);
   const coldLoading = loading && entries.length === 0;
   const fetchedFor = useRef<string | null>(null);
   const [fallback, setFallback] = useState<{ sessionId: string; session: LocalSession | null; notFound: boolean } | null>(null);

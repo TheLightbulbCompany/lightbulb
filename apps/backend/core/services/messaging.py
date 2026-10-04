@@ -4089,19 +4089,25 @@ async def _after_run_ended(owner_id: str, row: dict, outcome: str, usage: RunUsa
             logger.exception("run failure push failed")
 
 
+async def require_agent_in_live_room(owner_id: str, room_id: str, agent_id: str) -> None:
+    """The room is this owner's, not deleted or archived, and the agent is a current member --
+    what the bridge needs before running a turn in that room's conversation."""
+    meta = await messaging_repo.get_room(room_id)
+    if meta is None or meta.get("deletedAt") or meta.get("ownerId") != owner_id:
+        raise ApiProblem("ROOM_NOT_FOUND", "Room not found.")
+    if meta.get("archivedAt"):
+        raise ApiProblem("ROOM_ARCHIVED", ROOM_ARCHIVED_MESSAGE)
+    if await messaging_repo.get_member(room_id, "agent", agent_id) is None:
+        raise ApiProblem("MEMBER_NOT_FOUND", "Agent is not a current room member.")
+
+
 async def create_follow_up(owner_id: str, request: FollowUpRequest) -> FollowUpResponse:
     """Queue a follow-up turn for the agent whose delegation finished. The plan
     gate is the consumer's (``openclaw_work._dispatch_message``), not this door's."""
     room_id, agent_id = str(request.room_id), str(request.agent_id)
     follow_up_id = str(request.follow_up_id)
-    meta = await messaging_repo.get_room(room_id)
-    if meta is None or meta.get("deletedAt") or meta.get("ownerId") != owner_id:
-        raise ApiProblem("ROOM_NOT_FOUND", "Room not found.")
     # Read-then-write is enough: openclaw_work._room_follow_up re-reads the room and drops archived ones.
-    if meta.get("archivedAt"):
-        raise ApiProblem("ROOM_ARCHIVED", ROOM_ARCHIVED_MESSAGE)
-    if await messaging_repo.get_member(room_id, "agent", agent_id) is None:
-        raise ApiProblem("MEMBER_NOT_FOUND", "Agent is not a current room member.")
+    await require_agent_in_live_room(owner_id, room_id, agent_id)
     if await messaging_repo.get_message_by_id(room_id, str(request.trigger_message_id)) is None:
         raise ApiProblem("MESSAGE_NOT_FOUND", "Trigger message not found.")
     # Replay BEFORE the cap: a retry after a lost 202 counts its own row.

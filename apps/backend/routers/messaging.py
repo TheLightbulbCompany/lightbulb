@@ -999,6 +999,16 @@ async def post_follow_up(owner_id: str, body: FollowUpRequest, request: Request,
     return result
 
 
+@router.get("/internal/messaging/rooms/{owner_id}/{room_id}/agents/{agent_id}", status_code=204)
+async def get_agent_room_membership(owner_id: str, room_id: str, agent_id: str, request: Request):
+    """204 when the agent is a current member of a live (not archived, not deleted) room of this
+    owner, else the 404/409 problem. The bridge asks before it runs a Paperclip wake inside the
+    room conversation that owns the issue, and falls back to the issue's own session on a no."""
+    await _require_hook_token(owner_id, request)
+    await service.require_agent_in_live_room(owner_id, room_id, agent_id)
+    return Response(status_code=204)
+
+
 @router.post("/internal/messaging/runtime/{owner_id}/recycle", status_code=202)
 async def recycle_runtime_session(owner_id: str, request: Request):
     """The bridge asks to have its own session stopped: the 7 h recycle, ahead of AgentCore's

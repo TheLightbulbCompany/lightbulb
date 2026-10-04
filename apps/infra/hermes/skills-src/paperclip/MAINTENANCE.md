@@ -75,7 +75,8 @@ ISOL8-LOCAL EDITS (deliberate; re-apply on re-vendor).
      live chat surface daily. Added after a first-run Friday, asked in webchat
      to adjust tasks it had just created, tried to checkout, got "Agent run id
      required", and relayed that to the owner — instead of just PATCHing the
-     fields, or assigning + `todo` to start a real run.
+     fields. The "work you take on in a room stays in that room's
+     conversation" rule in it is edit 24's; keep the two together.
   8. Company-memory and governance primitives: the deployed fork includes
      company search/extraction, run-scoped decisions with server-applied
      effects, own-agent ruleKey stats, and decision queues/triage. Dedicated
@@ -287,4 +288,42 @@ ISOL8-LOCAL EDITS (deliberate; re-apply on re-vendor).
       window answers `reason: "backoff"`). There is NO create route: a test
       (apps/infra/test/paperclip-skill-primitives.test.ts) fails if the
       reference grows one. The snapshot never replaces the fresh-check rule.
+      Re-apply on re-vendor.
+  24. One conversation per piece of work (SKILL.md webchat summary +
+      references/heartbeat.md's "Work you take on in a room stays in that
+      room's conversation" bullet + the helper's usage text). Replaces the old
+      "assign + `todo` to start a separate run; keep planning in `backlog`"
+      advice, which produced ISOA-680 (2026-10-04): a room turn filed an issue
+      to itself, set it `in_progress`, and Paperclip's stranded-issue
+      reconciler (fork server/src/services/recovery/service.ts
+      `reconcileStrandedAssignedIssues`; `hasActiveExecutionPath` counts only
+      Paperclip's own heartbeat_runs) started a fresh issue session that redid
+      the fix and opened duplicate PR #3712. The mechanism, all of which must
+      move together:
+      - the helper (paperclip-api.sh `send`): a create / issue PATCH / checkout
+        from a room session (HERMES_SESSION_KEY a room key) writes
+        `$HERMES_HOME/lightbulb-issue-bindings/<issueId>.json`
+        `{sessionKey, boundAt}` (synced with the profile; the bridge ages it by
+        `boundAt`, never the mtime a restore resets); a response status of
+        done/cancelled deletes it. The binding exists BEFORE any request that
+        can wake the assignee, by construction, never by timing: an issue
+        PATCH/checkout binds first (an identifier is resolved by a GET) and
+        unbinds if the write fails; an assigned non-backlog create is sent as
+        `backlog` (fork issue-assignment-wakeup.ts skips backlog), bound from
+        the response id, then PATCHed to the asked-for status;
+      - the bridge's `_route_paperclip_run` (bridge/turn.py): a Paperclip run
+        whose issue has a binding is steered into that conversation's live room
+        run and held open until it ends (Paperclip sees a live execution path),
+        else run as a turn IN that conversation (its lock, transcript and
+        folder; nothing posted to the room), else the issue's own session as
+        before. Only the backend's `GET /internal/messaging/rooms/{owner}/
+        {room}/agents/{agent}` 404/409 deletes the binding; 401/403/5xx/network
+        use the issue session for that one wake and keep it;
+      - `attached_run_id` (helper) reads `.lightbulb-turn/paperclip-run.<issueId>`,
+        which the bridge writes for the life of such a run: Paperclip stamps a
+        started run as the issue's `executionRunId`, and the fork's
+        `hasLiveRunLock` (server/src/services/issues.ts, paperclip#26) refuses a
+        run-less write to an `in_progress` issue while it is set. Hence also the
+        heartbeat.md "retry a 401 once" sentence: the window before the run is
+        attached.
       Re-apply on re-vendor.

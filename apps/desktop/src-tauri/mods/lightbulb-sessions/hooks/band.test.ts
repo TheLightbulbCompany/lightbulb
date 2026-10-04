@@ -19,7 +19,7 @@ type Call = { url: string; method: string; body: unknown; socketPath: string | u
 
 // The world beneath the mod: the socket file, the app over the socket, the session, and the engine's own band.
 // A `$` call's bottom answers `{ value }` or `{ deny }`; a deny is what the mod's call rejects with.
-type Answer = (path: string, body: unknown) => { status: number; body: unknown } | 'refuse'
+type Answer = (path: string, body: unknown) => { status: number; body: unknown } | 'refuse' | 'hang'
 function world(on: On, answer: Answer, socketFile = true) {
   const calls: Call[] = []
   const clock = mock.clock(on)
@@ -33,6 +33,7 @@ function world(on: On, answer: Answer, socketFile = true) {
     calls.push({ url: e.url, method: e.init?.method ?? 'GET', body, socketPath: e.init?.socketPath })
     const a = answer(new URL(e.url).pathname, body)
     if (a === 'refuse') return { deny: 'connect ECONNREFUSED' }
+    if (a === 'hang') return new Promise<never>(() => {}) // accepts the connection, never answers
     const text = JSON.stringify(a.body)
     return { value: { status: a.status, ok: a.status >= 200 && a.status < 300, headers: {}, text } }
   })
@@ -64,6 +65,7 @@ test('band shows nothing when the app does not answer', async ($, on) => {
   let answer: Answer = () => 'refuse'
   const { calls, clock } = world(on, (path, body) => answer(path, body))
   await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
+  await clock.settle()
   expect(calls.length).toBeGreaterThan(0)
   expect(calls[0]).toMatchObject({ url: 'http://lightbulb/v1/state', method: 'GET', socketPath: SOCKET })
   for (const surface of SURFACES) {
@@ -83,9 +85,21 @@ test('band shows nothing when the app does not answer', async ($, on) => {
   }
 })
 
+test('session start does not wait for an app that never answers', async ($, on) => {
+  const { calls, clock } = world(on, () => 'hang')
+  const started = await Promise.race([
+    $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true }).then(() => true),
+    new Promise(resolve => setTimeout(() => resolve(false), 1000)),
+  ])
+  expect(started).toBe(true)
+  await clock.settle()
+  expect(calls).toHaveLength(1) // the first fetch did go out, after start
+})
+
 test('band shows nothing and calls nothing before the socket path is written', async ($, on) => {
-  const { calls } = world(on, () => ({ status: 200, body: base }), false)
+  const { calls, clock } = world(on, () => ({ status: 200, body: base }), false)
   await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
+  await clock.settle()
   expect(calls).toHaveLength(0)
   for (const surface of SURFACES) {
     const ui = await $.ui.mount({ ...BAND, surface })
@@ -95,8 +109,9 @@ test('band shows nothing and calls nothing before the socket path is written', a
 })
 
 test('band shows nothing when the session is not shared', async ($, on) => {
-  world(on, () => ({ status: 404, body: { error: 'not_shared' } }))
+  const { clock } = world(on, () => ({ status: 404, body: { error: 'not_shared' } }))
   await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
+  await clock.settle()
   for (const surface of SURFACES) {
     const ui = await $.ui.mount({ ...BAND, surface })
     expect(await ui.drawn()).toEqual({ type: 'Text', children: [ENGINE] })
@@ -108,8 +123,9 @@ test('band shows nothing when the session is not shared', async ($, on) => {
 const asking: SessionState = { ...base, joinRequests: [{ userId: 'u1', name: 'Aden Kim', requestId: 'r1' }] }
 
 test('Allow posts the decision and the request leaves the band', async ($, on) => {
-  const { calls } = world(on, path => ({ status: 200, body: path === '/v1/decide' ? base : asking }))
+  const { calls, clock } = world(on, path => ({ status: 200, body: path === '/v1/decide' ? base : asking }))
   await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
+  await clock.settle()
   for (const surface of SURFACES) {
     const ui = await $.ui.mount({ ...BAND, surface })
     expect((await ui.find({ type: 'Text', text: 'Aden Kim asked to join' }))).toBeDefined()
@@ -124,14 +140,16 @@ test('Allow posts the decision and the request leaves the band', async ($, on) =
     await ui.unmount()
     // the next surface starts from the request again
     await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
+    await clock.settle()
   }
 })
 
 test('a refused decision shows the error line and keeps the request', async ($, on) => {
-  world(on, path => path === '/v1/decide'
+  const { clock } = world(on, path => path === '/v1/decide'
     ? { status: 409, body: { error: 'not_pending', message: 'gone' } }
     : { status: 200, body: asking })
   await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
+  await clock.settle()
   for (const surface of SURFACES) {
     const ui = await $.ui.mount({ ...BAND, surface })
     await ui.press({ key: 'allow' })
@@ -142,8 +160,9 @@ test('a refused decision shows the error line and keeps the request', async ($, 
 })
 
 test('Pause posts pause, and a paused band offers Resume', async ($, on) => {
-  const { calls } = world(on, path => ({ status: 200, body: path === '/v1/decide' ? { ...base, paused: true } : base }))
+  const { calls, clock } = world(on, path => ({ status: 200, body: path === '/v1/decide' ? { ...base, paused: true } : base }))
   await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
+  await clock.settle()
   const ui = await $.ui.mount({ ...BAND, surface: 'desktop' })
   await ui.press({ key: 'pause' })
   expect(calls[calls.length - 1]?.body).toEqual({ decision: 'pause' })

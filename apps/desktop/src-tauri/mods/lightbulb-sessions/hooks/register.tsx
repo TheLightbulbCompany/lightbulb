@@ -94,7 +94,9 @@ export const register: Register = on => {
       const s = await fetchState($)
       await update($, sharing, () => s)
     }
-    await refresh()
+    // Never wait on the app: this runs in every Claude session on the Mac, and a stalled socket
+    // must not hold session start. The band appears when the first answer lands.
+    $.clock.after(0, refresh)
     $.clock.every(POLL_MS, refresh)
     return next(e)
   })

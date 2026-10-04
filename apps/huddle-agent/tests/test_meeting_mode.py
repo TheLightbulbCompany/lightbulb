@@ -798,3 +798,45 @@ async def test_two_quick_speaker_changes_leave_one_speaker_not_a_stale_pair():
     clock.t += 5
     await hear(h, "so the launch plan")
     assert labels(h)[-1] == "Dan" and h._label(MEET) == "Dan"
+
+
+async def test_the_speaker_before_is_not_named_on_the_next_persons_line():
+    # review: the previous speaker's span ran half a second into the next line, which read "Priya + Dan"
+    h, room, backend, lives, clock, log = await meeting()
+    speaker(h, "p1", "Priya", True)
+    clock.t += 5
+    h.on_interim_transcript(MEET, "Google Meet", "so")  # Dan's words reach our transcriber first...
+    clock.t += 0.4
+    speaker(h, "p2", "Dan", True)  # ...Recall's change event lags them
+    clock.t += 3
+    await hear(h, "so the launch plan is ready")
+    assert labels(h)[-1] == "Dan" and h._label(MEET) == "Dan"
+    speaker(h, "p1", "Priya", True)
+    clock.t += 0.5
+    h.on_interim_transcript(MEET, "Google Meet", "ok")  # a line that begins just after the change
+    clock.t += 2
+    await hear(h, "ok that works for me")
+    assert labels(h)[-1] == "Priya"
+
+
+async def test_a_retried_turn_keeps_its_askers_name_when_the_voice_goes_to_someone_else():
+    # review: each retry read the voice's label, so Priya's run was re-sent as Dan's after he named the agent
+    h, room, backend, lives, clock, log = await meeting()
+    backend.turn_gate = asyncio.Event()
+    backend.turn_results = [BackendError(503, "runtime_unavailable", None)]
+    speaker(h, "p1", "Priya", True)
+    await h.on_final_transcript(MEET, "Google Meet", "Forge, what PRs are open?")
+    for _ in range(40):
+        await asyncio.sleep(0)
+    run = backend.turns[0]["runId"]
+    clock.t += 2
+    speaker(h, "p2", "Dan", True)
+    clock.t += 1
+    await h.on_final_transcript(MEET, "Google Meet", "Forge, how many issues are open?")
+    for _ in range(40):
+        await asyncio.sleep(0)
+    assert h._voice.label == "Dan"
+    backend.turn_gate.set()
+    await settle(h)
+    tries = [t for t in backend.turns if t["runId"] == run]
+    assert len(tries) == 2 and {t["speakerName"] for t in tries} == {"Priya"}

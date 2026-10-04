@@ -144,6 +144,7 @@ MEET_SPAN_MAX_S = 30
 # Recall on Google Meet sends `on` only when the active speaker changes and no `off` for a lone speaker: an open
 # span lasts until someone else's `on` or its own `off`. This cap only stops a lost packet labelling forever.
 MEET_SPAN_CAP_S = 10 * 60
+MEET_SHARE_S = 1.0  # a second speaker is named on a line only when they spoke this long in it
 # a meeting voice takes a line with no agent name only from its own speaker, begun this soon after its last word
 MEET_FOLLOWUP_S = 10.0
 # a ready answer waits for a real pause in a meeting, not a breath between two sentences (Live: REQUEST_QUIET_S)
@@ -273,6 +274,7 @@ class _Driven:
 
     run_id: str  # minted once, resent on every retry (C1)
     bind_until: float = math.inf  # opened + BIND_SECONDS once the voice is up
+    speaker_name: str | None = None  # who asked, fixed here: the voice may be someone else's by a retry
     posted: bool = False  # /turns accepted it
     started_at: float = 0.0
     held: bool = False  # the HOLDING_LINE was said for it
@@ -576,12 +578,13 @@ class Huddle:
         """Who a voice is with: in a meeting the speaker who has its attention, never whoever spoke last."""
         return v.label or self._talker(v.speaker)
 
-    def _owner_name(self, v: _Voice) -> str | None:
-        """The speaker name a turn carries: a meeting voice's (or request row's) own speaker; None in a Live
-        call, where the identity is the person."""
+    def _owner_name(self, v: _Voice, row: Request | None = None, mark: int | None = None) -> str | None:
+        """The speaker name a turn carries: its request row's asker, else its line's speaker (`mark`), else its
+        meeting voice's own speaker; None in a Live call, where the identity is the person."""
         if not v.speaker.startswith("meet:"):
             return self._said_by.get(v.speaker)
-        return v.label or "Someone"
+        name = row.label if row is not None else self._label(v.speaker, mark) if mark is not None else v.label
+        return name or "Someone"
 
     def _label(self, identity: str, mark: int | None = None) -> str:
         """A meeting line's one known speaker (the line at `mark`, else the latest); "" outside a meeting, for
@@ -1186,7 +1189,9 @@ class Huddle:
         """Start `text` as the floor-holder's driven run; its own delegation of it binds instead of posting.
         `row`: the request row it answers, started and bound before /turns is posted (understanding §4.6)."""
         v.driven = d = _Driven(
-            str(uuid.uuid4()), bind_until=self._clock() + BIND_SECONDS
+            str(uuid.uuid4()),
+            bind_until=self._clock() + BIND_SECONDS,
+            speaker_name=self._owner_name(v, row),
         )
         v.driven_run = d.run_id
         if row is not None:
@@ -2020,7 +2025,7 @@ class Huddle:
         if request:
             # D §5: we start the turn ourselves, in parallel with the voice open. A task, not awaited:
             # a cold workspace retries for up to a minute and must not hold the floor lock.
-            v.driven = _Driven(str(uuid.uuid4()))
+            v.driven = _Driven(str(uuid.uuid4()), speaker_name=self._owner_name(v, row, mark))
             v.driven_run = v.driven.run_id
             # held now, not in the spawned _drive: a voice that fails before _drive runs still releases it
             self._runs.hold(v.driven_run, agent_id)
@@ -2413,7 +2418,7 @@ class Huddle:
             gen=v.gen,
         )
         lines = self._requests.lines(self._agent_name, skip_agent=v.agent_id) if row is not None else ()
-        if await self._post_turn(v, d.run_id, request, None, requests=lines) is not None:
+        if await self._post_turn(v, d.run_id, request, None, requests=lines, speaker_name=d.speaker_name) is not None:
             d.posted = True
             v.driven_ok = v.driven_ok or v.driven_run == d.run_id
             if d.pending is not None:
@@ -2530,9 +2535,12 @@ class Huddle:
         delegation_id: str | None,
         steer_run_id: str | None = None,
         requests: list[str] | tuple = (),
+        speaker_name: str | None = None,
     ) -> dict | None:
-        """POST /turns, retrying a waking workspace -> its response. None (and the run aborted) when it never started."""
+        """POST /turns, retrying a waking workspace -> its response. None (and the run aborted) when it never started.
+        `speaker_name`: who asked, as fixed when the run was made; read once here otherwise, never per retry."""
         agent_id = v.agent_id
+        speaker_name = speaker_name or self._owner_name(v)
         if (
             self._window is None
         ):  # the window ended before this task started: it never runs
@@ -2558,7 +2566,7 @@ class Huddle:
                             steer_run_id,
                             # The raw identity pins the audio; the Meet label is what the backend shows: the
                             # speaker this voice (or this request row) belongs to, not whoever spoke last.
-                            speaker_name=self._owner_name(v),
+                            speaker_name=speaker_name,
                             requests=list(requests),
                         )
                         or {}
@@ -2739,16 +2747,26 @@ class Huddle:
             ]
 
     def _meet_label(self, start: float, end: float) -> str:
-        """Everyone whose speaking window overlaps [start, end]: "Priya", "Priya + Dan"; else the one person in
-        the Meet's roster, else "Someone"."""
-        start, end = start - SPEAKER_SLACK_S, end + SPEAKER_SLACK_S
+        """Who said the line heard over [start, end]: whoever spoke for most of it, and beside them only someone
+        who spoke for a real share of it ("Priya + Dan"). The speaker before is not a second speaker for the half
+        second their span runs into the line (Recall's change event lags our transcriber). A line no span covers
+        takes the speaker nearest it within the slack; else the one person in the Meet's roster, else "Someone"."""
         spans = self._meet_windows + [
             (n, since, since + MEET_SPAN_CAP_S)
             for n, since in self._meet_speaking.values()
         ]
-        names = [n for n, s, e in spans if s < end and e > start]
-        alone = self._meet_roster if len(self._meet_roster) == 1 else ["Someone"]
-        return " + ".join(dict.fromkeys(names)) or alone[0]
+        spoke: dict[str, float] = {}
+        for n, s, e in spans:
+            if (o := min(e, end) - max(s, start)) > 0:
+                spoke[n] = spoke.get(n, 0.0) + o
+        if spoke:
+            most = max(spoke.values())
+            names = [n for n, o in spoke.items() if o == most or (o >= MEET_SHARE_S and o >= most / 3)]
+            return " + ".join(names)
+        near = [(s, n) for n, s, e in spans if s < end + SPEAKER_SLACK_S and e > start - SPEAKER_SLACK_S]
+        if near:
+            return max(near)[1]  # the one who began last
+        return self._meet_roster[0] if len(self._meet_roster) == 1 else "Someone"
 
     def stt_stopped(self, identity: str) -> None:
         """That person's STT stream ended (restart or unpublish): its utterance start goes with it."""

@@ -100,7 +100,6 @@ FEATURES = [
     "liveTerminal",
     "remoteInput",
     "sessionTerminal",
-    "sessionRename",
 ]
 
 
@@ -119,8 +118,6 @@ class DeviceHeartbeat(ContractModel):
     # on every listed session's META as `deviceFeatures` (session_screen reads it).
     live_terminal: bool = False
     remote_input: bool = False
-    # Takes `local.session.rename`: types Claude's own `/rename` into an idle live terminal.
-    session_rename: bool = False
 
     def device_features(self) -> list[str]:
         return sorted(k for k, on in self.model_dump(by_alias=True, exclude={"type", "sessions"}).items() if on)
@@ -569,9 +566,6 @@ class LocalSessionRelay:
                         origin = await repo.get_session(owner, descriptor.forked_from)
                         if origin and origin.get("displayTitle") and origin["humanUserId"] == human:
                             row["displayTitle"] = origin["displayTitle"]
-                            # Its reset pair too, so "Use original title" on the fork restores Claude's.
-                            if origin.get("renamedFromTitle"):
-                                row["renamedFromTitle"] = origin["renamedFromTitle"]
                     # After the join fields reset above: a resume's person is let into the new run.
                     extra = [self._connection_check(cid, connection), *await session_resume.on_register(previous, row)]
                     # pickupAllowed/pickupSnapshot ride along from `previous`: content sharing, not control.

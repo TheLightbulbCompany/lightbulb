@@ -1115,7 +1115,6 @@ impl Host {
         let mut relay_reads_live_terminal = false;
         let mut relay_reads_remote_input = false;
         let mut relay_reads_terminal = false;
-        let mut relay_reads_rename = false;
         // An end the relay has not been told about -- because it happened while the
         // socket was down, or in a previous run of this process -- is still owed to it.
         self.liveness_tick();
@@ -1214,13 +1213,7 @@ impl Host {
                             last_early = Instant::now();
                         }
                         self.heartbeat_dirty.clear();
-                        let mut frames = device_heartbeats_with_controls(&self.mirrors, &registered, relay_reads_stats, relay_reads_controls, relay_reads_live_terminal, relay_reads_remote_input, relay_reads_terminal)?;
-                        // `sessionRename`: this Mac takes `local.session.rename`, to a relay that lists it.
-                        if relay_reads_rename {
-                            for frame in &mut frames {
-                                frame["sessionRename"] = json!(true);
-                            }
-                        }
+                        let frames = device_heartbeats_with_controls(&self.mirrors, &registered, relay_reads_stats, relay_reads_controls, relay_reads_live_terminal, relay_reads_remote_input, relay_reads_terminal)?;
                         heartbeat_frames = frames.into();
                         if heartbeat_frames.is_empty() && last_idle.elapsed() >= IDLE_HEARTBEAT {
                             last_idle = Instant::now();
@@ -1362,7 +1355,6 @@ impl Host {
                             relay_reads_live_terminal = body["features"].as_array().is_some_and(|f| f.iter().any(|x| x == "liveTerminal"));
                             relay_reads_remote_input = body["features"].as_array().is_some_and(|f| f.iter().any(|x| x == "remoteInput"));
                             relay_reads_terminal = body["features"].as_array().is_some_and(|f| f.iter().any(|x| x == "sessionTerminal"));
-                            relay_reads_rename = body["features"].as_array().is_some_and(|f| f.iter().any(|x| x == "sessionRename"));
                             let sid = body["sessionId"].as_str().filter(|s|uuid::Uuid::parse_str(s).is_ok()).ok_or("invalid session ID")?;
                             let after = body["afterSeq"].as_u64().ok_or("missing upload cursor")?;
                             let server = body["serverTime"].as_u64().ok_or("missing server time")?;
@@ -1542,19 +1534,6 @@ impl Host {
                         Some("local.session.watch") => super::screen::nudge(&body),
                         // A teammate's keystrokes: queued for the holder, never answered.
                         Some("local.session.input") => super::remote_input::offer(&body),
-                        // A rename made in Lightbulb: Claude's own `/rename`, typed only into an idle
-                        // Claude session's live terminal. Never answered.
-                        Some("local.session.rename") => {
-                            let idle = self.mirrors.values().any(|m| {
-                                m.session_id.as_deref() == body["sessionId"].as_str()
-                                    && m.ended_at.is_none()
-                                    && m.native.provider == "claude"
-                                    && m.native.status == "idle"
-                            });
-                            if idle {
-                                super::remote_input::rename(&body);
-                            }
-                        },
                         _ => return Err("unsupported session frame".into()),
                     }
                 }

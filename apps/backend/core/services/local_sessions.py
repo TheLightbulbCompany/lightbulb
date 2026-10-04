@@ -1156,24 +1156,10 @@ async def set_display_title(auth: AuthContext, session_id: str, title: str | Non
         if row.get("displayTitle") == title:
             return _session_public(row, auth.user_id)
         updated = {**row, "revision": str(uuid.uuid4())}
-        native = _can_rename_native(row)
-        restore = None  # Claude's own title from before a Lightbulb rename changed it
         if title is None:
             updated.pop("displayTitle", None)
-            # Restore Claude's old name only while Claude still carries the name Lightbulb gave it:
-            # a later `/rename` in the terminal is the person's newer choice and stays.
-            original = row.get("renamedFromTitle") if row.get("title") == row.get("displayTitle") else None
-            updated.pop("renamedFromTitle", None)
-            if original and native:
-                restore = original
-            elif original:
-                # Claude cannot take its old name back right now: show it until it can.
-                updated["displayTitle"] = original
-                updated["renamedFromTitle"] = original
         else:
             updated["displayTitle"] = title
-            if native:
-                updated["renamedFromTitle"] = row.get("renamedFromTitle") or row.get("title")
         audit = audit_row(owner, session_id, auth, "display_title_changed")
         try:
             await repo.put_session(
@@ -1184,45 +1170,8 @@ async def set_display_title(auth: AuthContext, session_id: str, title: str | Non
                 raise
             continue
         await publish_resources_changed(owner, row["humanUserId"])
-        if native and (title or restore):
-            await _rename_native(updated, title or restore)
         return _session_public(updated, auth.user_id)
     raise ApiProblem("LOCAL_SESSION_CONFLICT", "Session changed. Try again.")
-
-
-def _can_rename_native(row: dict) -> bool:
-    """Claude takes a name only as a typed `/rename`: an idle, live Claude session with a terminal on
-    a Mac that advertises `sessionRename`."""
-    return (
-        row.get("provider") == "claude"
-        and row.get("status") == "idle"
-        and row.get("endedAt") is None
-        and int(row.get("onlineUntil", 0)) > int(time.time())
-        and session_terminal(row) is not None
-        and "sessionRename" in row.get("deviceFeatures", ())
-    )
-
-
-async def _rename_native(row: dict, title: str) -> None:
-    """Best effort: Claude Code's own name follows a Lightbulb rename where Claude can take one.
-
-    Claude has no external rename, so the Mac types its `/rename` into the session's live terminal,
-    and only while the session is idle, so it never lands in a running turn. A session without a
-    live terminal, or one that is not idle, keeps the Lightbulb name as its display name only."""
-    if not _can_rename_native(row):
-        return
-    from core.services.local_session_relay import get_local_session_relay  # imports this module
-
-    frame = {
-        "type": "local.session.rename",
-        "sessionId": row["sessionId"],
-        "generation": row["generation"],
-        "name": title,
-    }
-    try:
-        await get_local_session_relay().management.send_message_async(row["connectionId"], frame)
-    except Exception as exc:  # noqa: BLE001 -- the Lightbulb name is already saved
-        logger.info("native rename not delivered error=%s", type(exc).__name__)
 
 
 async def get_private_send_approval(auth: AuthContext, session_id: str) -> PrivateSendApproval:

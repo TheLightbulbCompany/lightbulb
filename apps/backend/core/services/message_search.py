@@ -153,6 +153,8 @@ async def search(auth: AuthContext, request: MessageSearchRequest) -> MessageSea
     hits = []
     for hit in response.json().get("hits", {}).get("hits", []):
         source = hit["_source"]
+        if source.get("roomId") not in rooms:
+            continue
         snippet = (hit.get("highlight", {}).get("text") or [source.get("text", "")[:160]])[0]
         hits.append(
             MessageSearchHit(
@@ -171,7 +173,7 @@ async def search(auth: AuthContext, request: MessageSearchRequest) -> MessageSea
 
 async def warm(auth: AuthContext) -> None:
     """Wake search capacity when someone opens a search box. Any request wakes a
-    scaled-to-zero collection, so this does not wait for the answer."""
+    scaled-to-zero collection; this waits at most 2 s."""
     if not settings.SEARCH_ENDPOINT:
         return
     try:

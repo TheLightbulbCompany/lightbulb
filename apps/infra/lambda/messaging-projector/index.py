@@ -869,6 +869,20 @@ def _publish(channel: str, event: dict[str, Any]) -> None:
         raise RuntimeError("AppSync Events rejected an event")
 
 
+def _enqueue_search_index_on_insert(item: dict[str, Any], meta: dict[str, Any]) -> None:
+    # A missed INSERT only leaves the message out of search, and
+    # scripts/reindex_messages.py repairs that; failing here would drop the push and
+    # stall the shard. Edits/deletes (_project_message_update) keep raising: a missed
+    # delete would leave deleted text searchable.
+    try:
+        _enqueue_search_index(item, meta)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "search index enqueue failed message_id=%s error_type=%s", item.get("messageId"), type(exc).__name__
+        )
+        _emit_metric("messaging.projector.search_enqueue.failed", 1, "Count", {})
+
+
 def _project_message_update(item: dict[str, Any]) -> None:
     room_id = _require_uuid(item.get("roomId"), "roomId")
     message_id = _require_uuid(item.get("messageId"), "messageId")
@@ -906,7 +920,7 @@ def _project_message(item: dict[str, Any]) -> None:
     delivery_key = _require_uuid(meta.get("deliveryKey"), "deliveryKey")
     workspace_id = _workspace_id_for_meta(f"ROOM#{message['roomId']}", "META", meta)
     if workspace_id is None:
-        _enqueue_search_index(item, meta)  # an unresolvable workspace still reaches the index
+        _enqueue_search_index_on_insert(item, meta)  # an unresolvable workspace still reaches the index
         return  # unresolvable; skip this record rather than poison the shard
     event = {
         "schemaVersion": 1,
@@ -934,7 +948,7 @@ def _project_message(item: dict[str, Any]) -> None:
         logger.warning("projector notify latency failed error_type=%s", type(exc).__name__)
     # Enqueue after the live publish (indexing never stalls delivery) but before
     # push, so a failed enqueue replays the record before anyone is notified.
-    _enqueue_search_index(item, meta)
+    _enqueue_search_index_on_insert(item, meta)
     # Push LAST: a raising publish replays the whole record, and Expo has no
     # eventId dedupe, so an earlier send would banner every member twice.
     # ponytail: immediate push; add a delayed READ re-check if double-notify annoys.

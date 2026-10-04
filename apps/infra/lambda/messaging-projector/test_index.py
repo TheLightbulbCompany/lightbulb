@@ -1430,6 +1430,25 @@ class SearchEnqueueTests(unittest.TestCase):
         self.assertEqual(self._body(), {"ownerId": "org_room_owner", "roomId": ROOM_ID, "sk": message_item()["sk"]})
         self.assertEqual(order, ["publish", "enqueue", "push"])
 
+    @patch("index._send_push")
+    @patch("index._notify_members", return_value=[])
+    @patch("index._publish")
+    def test_failed_insert_enqueue_still_pushes(self, publish, notify, push):
+        index._sqs_client.send_message.side_effect = RuntimeError("sqs down")
+        with patch("index._emit_metric") as metric:
+            index.process_record(stream_record(message_item()))
+        push.assert_called_once()
+        self.assertIn("messaging.projector.search_enqueue.failed", [c.args[0] for c in metric.call_args_list])
+
+    @patch("index._publish")
+    def test_failed_edit_enqueue_still_raises(self, publish):
+        index._sqs_client.send_message.side_effect = RuntimeError("sqs down")
+        item = {**message_item(), "messageRevision": 2, "editedText": "x", "editedAt": "2026-10-04T00:00:01Z"}
+        record = stream_record(item)
+        record["eventName"] = "MODIFY"
+        with self.assertRaises(RuntimeError):
+            index.process_record(record)
+
     @patch("index._publish")
     def test_edit_enqueues(self, publish):
         item = {**message_item(), "messageRevision": 2, "editedText": "new words", "editedAt": "2026-10-04T00:00:01Z"}

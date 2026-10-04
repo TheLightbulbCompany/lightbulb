@@ -10,18 +10,23 @@ from __future__ import annotations
 
 import argparse
 import json
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 
 import boto3
 from boto3.dynamodb.conditions import Attr
 
 
-def jobs_from_rows(rows: Iterable[dict]) -> list[dict]:
-    return [
-        {"ownerId": row["ownerId"], "roomId": row["roomId"], "sk": row["sk"]}
-        for row in rows
-        if str(row.get("sk", "")).startswith("MSG#") and row.get("ownerId") and row.get("roomId")
-    ]
+def jobs_from_rows(rows: Iterable[dict], owner_of: Callable[[str], str | None]) -> list[dict]:
+    """``owner_of`` resolves a room's CURRENT owner from its META row: the MSG row's
+    own ownerId is stale for rooms the #2627 migration moved."""
+    jobs = []
+    for row in rows:
+        if not str(row.get("sk", "")).startswith("MSG#") or not row.get("roomId"):
+            continue
+        owner = owner_of(row["roomId"])
+        if owner:
+            jobs.append({"ownerId": owner, "roomId": row["roomId"], "sk": row["sk"]})
+    return jobs
 
 
 def main() -> None:
@@ -34,14 +39,20 @@ def main() -> None:
     session = boto3.Session(profile_name=args.profile, region_name="us-east-1")
     table = session.resource("dynamodb").Table(f"lightbulb-{args.env}-messaging")
     sqs = session.client("sqs")
-    condition = Attr("sk").begins_with("MSG#")
-    if args.owner:
-        condition = condition & Attr("ownerId").eq(args.owner)
-    scan = {"FilterExpression": condition, "ProjectionExpression": "pk, sk, roomId, ownerId"}
+    owners: dict[str, str | None] = {}
+
+    def owner_of(room_id: str) -> str | None:
+        if room_id not in owners:
+            meta = table.get_item(Key={"pk": f"ROOM#{room_id}", "sk": "META"}).get("Item")
+            owner = meta.get("ownerId") if meta else None
+            owners[room_id] = owner if not args.owner or owner == args.owner else None
+        return owners[room_id]
+
+    scan = {"FilterExpression": Attr("sk").begins_with("MSG#"), "ProjectionExpression": "pk, sk, roomId"}
     sent = 0
     while True:
         page = table.scan(**scan)
-        jobs = jobs_from_rows(page["Items"])
+        jobs = jobs_from_rows(page["Items"], owner_of)
         for start in range(0, len(jobs), 10):  # SendMessageBatch takes at most 10
             batch = jobs[start : start + 10]
             response = sqs.send_message_batch(

@@ -84,6 +84,19 @@ async def test_search_queries_only_the_callers_rooms_in_their_owners_indexes():
     assert str(result.hits[0].room_id) == ROOM_B
 
 
+async def test_a_hit_from_a_room_outside_the_callers_set_is_dropped():
+    def src(room):
+        return {"_source": {"messageId": "m", "roomId": room, "messageSeq": 1, "createdAt": "t", "text": "x"}}
+
+    body = {"hits": {"hits": [src(ROOM_B), src(ROOM_A)]}}
+    with (
+        patch.object(message_search.messaging, "searchable_rooms", AsyncMock(return_value={ROOM_A: "org_me"})),
+        patch.object(message_search, "_request", AsyncMock(return_value=_response(200, body))),
+    ):
+        result = await message_search.search(_auth(), _req())
+    assert [str(h.room_id) for h in result.hits] == [ROOM_A]
+
+
 async def test_a_room_the_caller_cannot_read_is_not_searchable():
     with (
         patch.object(message_search.messaging, "searchable_rooms", AsyncMock(return_value={ROOM_A: "org_me"})),
@@ -152,15 +165,17 @@ async def test_searchable_rooms_uses_the_room_doors_membership_rule():
         {"meta": {"roomId": ROOM_B, "ownerId": "org_vendor"}},
         {"meta": {"roomId": "gone", "ownerId": "org_me", "deletedAt": "x"}},
         {"meta": {"roomId": "meet", "ownerId": "org_me", "hidden": True}},
+        {"meta": {"roomId": "wrong-org", "ownerId": "org_vendor"}},
     ]
-    members = {ROOM_A: None, ROOM_B: {"id": "user_a", "homeOwnerId": "org_me"}}
+    members = {
+        ROOM_A: None,
+        ROOM_B: {"id": "user_a", "homeOwnerId": "org_me"},
+        "wrong-org": {"id": "user_a", "homeOwnerId": "org_other"},
+    }
     with (
         patch.object(messaging.messaging_repo, "list_rooms_for_member", AsyncMock(return_value=discovered)),
         patch.object(
             messaging.messaging_repo, "get_member", AsyncMock(side_effect=lambda room, kind, user: members.get(room))
-        ),
-        patch.object(
-            messaging.messaging_repo, "member_home", side_effect=lambda member, owner: member.get("homeOwnerId", owner)
         ),
     ):
         assert await messaging.searchable_rooms("org_me", "user_a") == {ROOM_B: "org_vendor"}

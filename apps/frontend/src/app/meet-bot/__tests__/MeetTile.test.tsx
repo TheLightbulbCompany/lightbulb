@@ -82,3 +82,10 @@ it("keeps a long agent name on one line inside the tile", () => {
   expect(container.querySelector("[data-speaker-name]")?.className).toMatch(/truncate/);
   expect(container.querySelector("[data-row-name]")?.className).toMatch(/truncate/);
 });
+
+it("draws everything inside the middle of the canvas, where no Meet tile crops it", () => {
+  const { container } = tile(A("f", "idle"));
+  const safe = container.querySelector<HTMLElement>("[data-safe]");
+  expect(safe?.style.transform).toBe("scale(0.8)");
+  expect(safe?.textContent).toContain("Lightbulb"); // the label is inside it too
+});

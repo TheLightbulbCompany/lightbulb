@@ -20,6 +20,9 @@ export type TileNotice = "Connecting…" | "Reconnecting…" | "This link has ex
 
 const STATUS_RE = /^lightbulb\.agent\.(.+)\.status$/;
 const HINT = "Say an agent's name to ask";
+// The share of the canvas that holds content. Seen in a live Meet: a wide tile cut 5% off the top and bottom,
+// a tall one 3% off each side; a 4:3 grid tile cuts 12% off each side.
+const SAFE = 0.8;
 const cap = (w: string) => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase();
 // "Forge" -> "Fo"; "Gauge Prime" -> "GP", so two agents with the same first letter still differ.
 export const initialsOf = (name: string) => {
@@ -79,7 +82,11 @@ export function MeetTile({ agents, attrs, notice }: { agents: Record<string, Til
     : <p className="text-center" style={{ fontSize: 24, lineHeight: "32px", ...soft }}>{HINT}</p>;
 
   return (
-    <div className="relative flex flex-col overflow-hidden" style={{ width: 1280, height: 720, background: "var(--plane-pane)", color: "var(--fg)" }}>
+    <div className="relative overflow-hidden" style={{ width: 1280, height: 720, background: "var(--plane-pane)", color: "var(--fg)" }}>
+      {/* Meet crops the camera to its tile's shape (the sides in a tall tile, top and bottom in a wide one):
+          everything is laid out on the full canvas, then drawn at SAFE of it in the middle, so no label or
+          name sits in the part a tile cuts off. The background still fills the frame. */}
+      <div data-safe className="absolute inset-0 flex flex-col" style={{ transform: `scale(${SAFE})` }}>
       <style>{`.meet-ring{box-shadow:0 0 0 6px var(--plane-pane),0 0 0 12px var(--live)}
 @keyframes meet-pulse{0%,100%{box-shadow:0 0 0 6px var(--plane-pane),0 0 0 12px var(--live),0 0 0 12px color-mix(in srgb,var(--live) 35%,transparent)}
 50%{box-shadow:0 0 0 6px var(--plane-pane),0 0 0 12px var(--live),0 0 0 26px color-mix(in srgb,var(--live) 0%,transparent)}}
@@ -148,6 +155,7 @@ export function MeetTile({ agents, attrs, notice }: { agents: Record<string, Til
           </div>
         </>
       )}
+      </div>
     </div>
   );
 }

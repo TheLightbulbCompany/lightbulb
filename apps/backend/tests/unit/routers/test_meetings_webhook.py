@@ -7,6 +7,7 @@ import hmac
 import json
 import os
 import time
+from datetime import datetime, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -144,12 +145,26 @@ def test_call_ended_closes_the_room_once(env):
     env["notes"].assert_called_once_with(ROOM)
 
 
-def test_the_end_time_is_written_once(env):
+def _at_time(payload: dict, stamp) -> dict:
+    payload["data"]["data"]["updated_at"] = stamp
+    return payload
+
+
+def test_the_end_time_is_the_events_own_and_written_once(env):
+    """A late or retried delivery records when the call ended, not when the webhook landed."""
+    env["meta"]["meeting"].update(status="in_call", inCallAt=1)
+    hour_ago = int(time.time()) - 3600
+    stamp = datetime.fromtimestamp(hour_ago, timezone.utc).isoformat().replace("+00:00", "Z")
+    _post(env["client"], _at_time(_status("call_ended"), stamp))
+    _post(env["client"], _at_time(_status("done"), None))
+    assert env["meta"]["meeting"]["endedAt"] == hour_ago
+
+
+@pytest.mark.parametrize("stamp", [None, "not a time"])
+def test_an_end_without_a_readable_event_time_falls_back_to_now(env, stamp):
     env["meta"]["meeting"].update(status="in_call", inCallAt=1)
     with patch.object(mod.time, "time", return_value=1790990000.0):
-        _post(env["client"], _status("call_ended"))
-    with patch.object(mod.time, "time", return_value=1790990099.0):
-        _post(env["client"], _status("done"))
+        _post(env["client"], _at_time(_status("fatal", sub_code="meeting_not_found"), stamp))
     assert env["meta"]["meeting"]["endedAt"] == 1790990000
 
 

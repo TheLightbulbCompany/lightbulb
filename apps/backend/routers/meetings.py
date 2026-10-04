@@ -108,7 +108,9 @@ async def _finish(room_id: str, status: str, sub_code: str, notes: bool, in_call
             logger.warning("meeting room %s: end step %s failed", room_id, step, exc_info=True)
 
 
-async def _on_status(bot_id: str, room_id: str, code: str, sub_code: str, nonce: str = "") -> None:
+async def _on_status(
+    bot_id: str, room_id: str, code: str, sub_code: str, nonce: str = "", at: float | None = None
+) -> None:
     """One transition, under the meeting's lease and decided from a META read taken inside it, so
     an invite, another status (Meet sends two in-call codes within a second) or the idle leave
     cannot interleave. A busy lease raises: the route answers 5xx and Recall redelivers."""
@@ -170,8 +172,9 @@ async def _on_status(bot_id: str, room_id: str, code: str, sub_code: str, nonce:
             voice_calls.prewake_owner(owner_id, team=await voice_calls.room_agents(room_id))
             await _publish(room_id, "in_call")
         elif target == "ended":
-            # endedAt is written once: a terminal status returns above on every later webhook.
-            fields = {"status": "ended", "lastBotStatus": code, "endedAt": int(time.time())}
+            # endedAt is written once (a terminal status returns above on every later webhook), from
+            # the event's own time: a retried or late delivery is not when the call ended.
+            fields = {"status": "ended", "lastBotStatus": code, "endedAt": int(at or time.time())}
             await meeting_invites._patch_meeting(room_id, fields)
             await _finish(room_id, "ended", sub_code, notes=True, in_call_at=meeting.get("inCallAt"))
         else:
@@ -182,7 +185,12 @@ async def _on_status(bot_id: str, room_id: str, code: str, sub_code: str, nonce:
                 else f"The agents couldn't join **{title}** ({sub_code or 'unknown'})."
             )
             await meeting_invites._post_line(owner_id, room_id, f"meeting:{bot_id}:fatal", text)
-            fields = {"status": "bot_failed", "botError": sub_code, "lastBotStatus": code, "endedAt": int(time.time())}
+            fields = {
+                "status": "bot_failed",
+                "botError": sub_code,
+                "lastBotStatus": code,
+                "endedAt": int(at or time.time()),
+            }
             await meeting_invites._patch_meeting(room_id, fields)
             # A bot that dies mid-call still leaves a conversation worth its notes.
             await _finish(
@@ -202,7 +210,8 @@ async def recall_status(request: Request):
         if code in _TARGET:
             try:
                 nonce = str((payload["data"]["bot"].get("metadata") or {}).get("nonce") or "")
-                await _on_status(bot_id, room_id, code, str(data.get("sub_code") or ""), nonce)
+                at = _at({"absolute": data.get("updated_at")})  # arrival time when absent or unreadable
+                await _on_status(bot_id, room_id, code, str(data.get("sub_code") or ""), nonce, at)
             except meeting_invites.MeetingBusy:
                 raise HTTPException(status_code=503, detail="retry") from None
             except Exception:

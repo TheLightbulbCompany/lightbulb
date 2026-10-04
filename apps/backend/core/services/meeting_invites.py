@@ -695,14 +695,22 @@ _CALL_KEYS = (
 )
 _OCCURRENCE_KEYS = (*_BOT_KEYS, *_CALL_KEYS)
 _HISTORY_MAX = 30
+_HISTORY_UNSAID = 3  # unsaid is up to ~44 KB an occurrence: only the newest few keep it (META is 400 KB)
 
 
 def _kept_transcript(meeting: dict) -> dict:
-    """Before the occurrence keys are dropped: its transcript stays readable from the inbox."""
+    """Before the occurrence keys are dropped: its transcript, end time, notes state and unsaid
+    answers stay readable from the inbox."""
     if not meeting.get("transcriptId"):
         return {}
     past = {k: meeting.get(k) for k in ("startAt", "transcriptId", "transcriptRoomId")}
-    return {"history": [past, *(meeting.get("history") or [])][:_HISTORY_MAX]}
+    past |= {k: meeting[k] for k in ("endedAt", "notesRunId", "notesSkipped", "unsaid") if meeting.get(k)}
+    history = [past, *(meeting.get("history") or [])][:_HISTORY_MAX]
+    return {
+        "history": [
+            h if i < _HISTORY_UNSAID else {k: v for k, v in h.items() if k != "unsaid"} for i, h in enumerate(history)
+        ]
+    }
 
 
 async def _reschedule_locked(owner_id: str, room_id: str, meeting: dict, *, now: float) -> str:

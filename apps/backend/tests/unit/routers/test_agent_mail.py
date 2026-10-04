@@ -401,7 +401,10 @@ async def test_a_member_reads_meetings_and_mail_both_ways(async_client_org_membe
         "start_at": 200,
         "end_at": 260,
         "repeats": True,
-        "transcripts": [{"start_at": 200}, {"start_at": 100}],
+        "transcripts": [
+            {"start_at": 200, "ended_at": None, "notes": "pending", "unsaid": []},
+            {"start_at": 100, "ended_at": None, "notes": "pending", "unsaid": []},
+        ],
         "notes_room_id": "room-now",
         "reason": None,
         "ended_at": None,
@@ -767,3 +770,29 @@ def test_the_view_returns_the_unsaid_answers_in_snake_case():
     unsaid = [{"runId": "r1", "agentId": "a1", "agentName": "Forge", "request": "q", "answer": "a", "at": 5}]
     view = agent_mail._meeting_view(M1, {"status": "ended", "inCallAt": 1, "unsaid": unsaid})
     assert view["unsaid"] == [{"agent_id": "a1", "agent_name": "Forge", "request": "q", "answer": "a", "at": 5}]
+
+
+def test_each_transcript_row_reads_its_own_occurrence():
+    """Codex P2: a past occurrence's end, notes and unsaid come from its history entry, not the
+    current (next, empty) occurrence."""
+    unsaid = [{"runId": "r1", "agentId": "a1", "agentName": "Forge", "request": "q", "answer": "a", "at": 5}]
+    meeting = {
+        "status": "scheduled",
+        "history": [
+            {"startAt": 200, "transcriptId": "t2", "endedAt": 260, "notesRunId": "run-2", "unsaid": unsaid},
+            {"startAt": 100, "transcriptId": "t1", "endedAt": 160, "notesSkipped": "no_agent"},
+            {"startAt": 50, "transcriptId": "t0"},
+        ],
+    }
+    view = agent_mail._meeting_view(M1, meeting)
+    assert view["transcripts"] == [
+        {
+            "start_at": 200,
+            "ended_at": 260,
+            "notes": "posted",
+            "unsaid": [{"agent_id": "a1", "agent_name": "Forge", "request": "q", "answer": "a", "at": 5}],
+        },
+        {"start_at": 100, "ended_at": 160, "notes": "skipped", "unsaid": []},
+        {"start_at": 50, "ended_at": None, "notes": "pending", "unsaid": []},
+    ]
+    assert (view["ended_at"], view["notes"], view["unsaid"]) == (None, None, [])  # the current occurrence

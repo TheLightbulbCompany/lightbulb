@@ -1405,7 +1405,24 @@ async def test_a_re_dated_occurrence_keeps_its_transcript_in_history(room, now, 
         "startAt": _epoch(2026, 11, 7, 15, 0),
         "transcriptId": "t1",
         "transcriptRoomId": "default-room",
+        **{k: 1 for k in ("endedAt", "notesRunId", "notesSkipped", "unsaid")},  # _ended_series sets each to 1
     }
+
+
+async def test_history_keeps_each_occurrences_end_notes_and_unsaid_but_unsaid_only_for_the_newest(room, now, metrics):
+    """Codex P2: an advance dropped endedAt, the notes state and unsaid with the occurrence keys."""
+    unsaid = [{"runId": "r1", "agentId": "a1", "agentName": "Forge", "request": "q", "answer": "a", "at": 5}]
+    old = [{"startAt": i, "transcriptId": f"t{i}", "unsaid": unsaid} for i in range(5)]
+    _ended_series(
+        room, transcriptId="t9", endedAt=99, notesRunId="run-1", notesSkipped=None, unsaid=unsaid, history=old
+    )
+    now["t"] = _epoch(2026, 11, 7, 15, 40)
+    await meeting_invites.advance("r")
+    history = room.state["meta"]["meeting"]["history"]
+    assert history[0]["endedAt"] == 99 and history[0]["notesRunId"] == "run-1"
+    assert "notesSkipped" not in history[0]  # only the fields the occurrence has
+    assert [bool(h.get("unsaid")) for h in history] == [True, True, True, False, False, False]
+    assert "unsaid" not in room.state["meta"]["meeting"]  # the next occurrence starts clean
 
 
 async def test_an_occurrence_without_a_transcript_adds_no_history(room, now, metrics):
@@ -1473,7 +1490,14 @@ async def test_a_series_made_a_single_event_keeps_the_last_transcript(room, bots
     await meeting_invites.handle_team_mail("org_1", _mail(single), TEAM)
     meeting = room.state["meta"]["meeting"]
     assert "transcriptId" not in meeting
-    assert meeting["history"] == [{"startAt": started, "transcriptId": "t1", "transcriptRoomId": "default-room"}]
+    assert meeting["history"] == [
+        {
+            "startAt": started,
+            "transcriptId": "t1",
+            "transcriptRoomId": "default-room",
+            **{k: 1 for k in ("endedAt", "notesRunId", "notesSkipped", "unsaid")},  # _ended_series sets each to 1
+        }
+    ]
 
 
 async def test_a_transcript_written_after_the_callers_read_still_lands_in_history(room, now, metrics):

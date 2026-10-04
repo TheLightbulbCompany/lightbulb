@@ -281,6 +281,10 @@ _UNSAID_FIELDS = {
 }
 
 
+def _unsaid(occurrence: dict) -> list[dict]:
+    return [{k: u.get(c) for k, c in _UNSAID_FIELDS.items()} for u in occurrence.get("unsaid") or []]
+
+
 def _notes(meeting: dict) -> str | None:
     """The current occurrence's notes: posted (a run was asked for), skipped, pending once a call
     the bot was in is over, else None (no call, or not over yet)."""
@@ -303,12 +307,20 @@ def _meeting_view(room_id: str, meeting: dict, default_room: str | None = None) 
         "start_at": meeting.get("startAt"),
         "end_at": meeting.get("endAt"),
         "repeats": bool(meeting.get("recurrence")),
-        "transcripts": [{"start_at": o.get("startAt")} for o in _occurrences(meeting)[:_TRANSCRIPTS_MAX]],
+        "transcripts": [
+            {
+                "start_at": o.get("startAt"),
+                "ended_at": o.get("endedAt"),
+                "notes": "posted" if o.get("notesRunId") else "skipped" if o.get("notesSkipped") else "pending",
+                "unsaid": _unsaid(o),
+            }
+            for o in _occurrences(meeting)[:_TRANSCRIPTS_MAX]
+        ],
         "notes_room_id": _notes_room(room_id, meeting, default_room),
         "reason": _reason(meeting),
         "ended_at": meeting.get("endedAt"),
         "notes": _notes(meeting),
-        "unsaid": [{k: u.get(c) for k, c in _UNSAID_FIELDS.items()} for u in meeting.get("unsaid") or []],
+        "unsaid": _unsaid(meeting),
     }
 
 

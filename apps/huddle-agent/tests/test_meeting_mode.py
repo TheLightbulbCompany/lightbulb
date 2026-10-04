@@ -907,3 +907,41 @@ async def test_a_follow_up_answer_on_a_voice_opened_for_an_announcement_is_talke
     await h.tick()
     await settle(h)
     assert h._voice is None, "talked over: it stops"
+
+
+async def test_an_earlier_answer_handed_to_an_open_meeting_voice_is_not_lost_when_it_is_talked_over():
+    # review: the run of an earlier voice ended while a newer voice of its agent was open; its answer was
+    # handed over as commentary, the row marked delivered, and a talk-over then lost it
+    h, room, backend, lives, clock, log = await priya_asks_forge(rows=True)
+    (row,) = h._requests.items
+    clock.t += h_mod.MEET_FOLLOWUP_S
+    await h.tick()
+    await settle(h)
+    assert h._voice is None and row.status == "working"  # the first voice closed; its run works on
+    backend.route_extra = ops()
+    await hear(h, "Forge, are you there?")  # a new voice of the same agent opens
+    assert h._voice is not None and h._voice.agent_id == "forge"
+    answer(h, row.run_id, "forge", "Three PRs are open.")  # the earlier run ends: handed to the open voice
+    assert row.status == "delivered"
+    h.on_agent_state("forge", "thinking")
+    h.on_agent_state("forge", "speaking")
+    talks(h, MEET, "Google Meet")
+    clock.t += h_mod.TALK_OVER_S
+    await h.tick()
+    await settle(h)
+    assert h._voice is None
+    quiet_meet(h)
+    await hear(h, "sorry, about the budget")
+    clock.t += h_mod.CUT_HANDLED_S
+    await h.tick()
+    await settle(h)
+    assert [a[3] for a in backend.late_answers] == ["Three PRs are open."]
+
+
+async def test_a_long_presentation_keeps_its_speakers_name():
+    # review: an open span was cut at ten minutes, though Meet sends nothing until the speaker changes
+    h, room, backend, lives, clock, log = await meeting()
+    speaker(h, "p1", "Priya", True)
+    clock.t += 25 * 60
+    await hear(h, "and that is the roadmap")
+    assert labels(h)[-1] == "Priya"

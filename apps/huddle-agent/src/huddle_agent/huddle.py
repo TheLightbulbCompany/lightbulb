@@ -142,8 +142,7 @@ SPEAKER_WINDOWS = 50
 # ponytail: an utterance start older than this is stale (an STT stream that never finalised)
 MEET_SPAN_MAX_S = 30
 # Recall on Google Meet sends `on` only when the active speaker changes and no `off` for a lone speaker: an open
-# span lasts until someone else's `on` or its own `off`. This cap only stops a lost packet labelling forever.
-MEET_SPAN_CAP_S = 10 * 60
+# span lasts until someone else's `on`, its own `off` or its `leave`, however long that is (a presentation).
 MEET_SHARE_S = 1.0  # a second speaker is named on a line only when they spoke this long in it
 # a meeting voice takes a line with no agent name only from its own speaker, begun this soon after its last word
 MEET_FOLLOWUP_S = 10.0
@@ -1753,7 +1752,8 @@ class Huddle:
     def on_agent_state(self, agent_id: str, state: str) -> None:
         """GPT-Live's agent state. Speaking is activity: the idle clock restarts when it stops."""
         if v := self._floor_voice(agent_id):
-            if v.agent_state == "speaking" and state != "speaking":
+            was_speaking = v.agent_state == "speaking"
+            if was_speaking and state != "speaking":
                 v.followed_at = self._clock()  # its last word: a meeting follow-up window starts here
             v.agent_state = state
             v.last_activity = self._clock()
@@ -1768,7 +1768,11 @@ class Huddle:
                 v.announcing, v.announce = v.path == "announce", None
                 emit_metric("live.announce.spoken", 1, "Count")
             elif state != "speaking":
-                v.announcing, v.told = False, []  # said to the end: nothing to post
+                v.announcing = False
+                # said to the end: nothing to post. A meeting voice also keeps answers handed to it before it
+                # spoke (`ended`, tick): those are done only once it has spoken, not on "thinking".
+                if was_speaking or self.setting != "meeting":
+                    v.told = []
                 if (run := self._runs.get(v.saying or "")) is None or run.ended:
                     v.saying = None  # its answer was said to the end too
             self._sync_state()
@@ -2658,6 +2662,8 @@ class Huddle:
             if answer:
                 text = f"Your earlier task on {run.request[:80]} finished: {answer}"
                 self._live_call(v, "append_commentary", text, delegation_id=None)
+                if self.setting == "meeting":  # being said: kept until its audio ends (`_talked_over`, hang-up)
+                    v.told.append((run.run_id, run.request, answer, self._clock(), run.speaker))
             self._requests.delivered({run.run_id})
         elif (
             answer and self.setting == "meeting" and not asked
@@ -2734,9 +2740,6 @@ class Huddle:
             self._meet_roster = [str(x) for x in roster]
         # `kind` (speech_on | speech_off | join | leave) is newer than `speaking`; a join is not speech
         kind = p.get("kind") or ("speech_on" if p.get("speaking") else "speech_off")
-        self._meet_speaking = {
-            k: x for k, x in self._meet_speaking.items() if at - x[1] <= MEET_SPAN_CAP_S
-        }
         if kind == "speech_on":
             # Meet sends `on` only on a change of speaker and no `off` for the one before: everyone else
             # stopped then. Two people in one line still read "A + B": both spans overlap the line.
@@ -2758,7 +2761,7 @@ class Huddle:
         second their span runs into the line (Recall's change event lags our transcriber). A line no span covers
         takes the speaker nearest it within the slack; else the one person in the Meet's roster, else "Someone"."""
         spans = self._meet_windows + [
-            (n, since, since + MEET_SPAN_CAP_S)
+            (n, since, math.inf)
             for n, since in self._meet_speaking.values()
         ]
         spoke: dict[str, float] = {}
@@ -2930,6 +2933,8 @@ class Huddle:
             for n in self._news[v.agent_id]:
                 text = self._cant_reach_seed(n) or f"Your earlier task on {n[1][:80]} finished: {n[2]}"
                 self._live_call(v, "append_commentary", text, delegation_id=None)
+            if meeting:  # being said: kept until their audio ends (`_talked_over`, hang-up)
+                v.told += self._news[v.agent_id]
             self._consume_news(v.agent_id)
             self._sync_state()
             return
@@ -2982,12 +2987,14 @@ class Huddle:
         talker calls it off, as a cut announcement does (§4.8)."""
         emit_metric("live.meet.talked_over", 1, "Count")
         self._live_call(v, "interrupt")
+        unsaid = list(v.told)  # earlier answers handed to it and not yet said to their end
         run = self._runs.get(v.saying or "")
         if run is not None and run.ended and not (run.aborted or run.failed) and run.text.strip():
-            n = (run.run_id, run.request, run.text.strip(), self._clock(), run.speaker)
+            unsaid.append((run.run_id, run.request, run.text.strip(), self._clock(), run.speaker))
+        if unsaid:
             held = self._cut_off.get(v.agent_id, ([], "", 0.0))[0]
-            self._cut_off[v.agent_id] = (held + [n], v.speaker, self._clock())
-        v.saying = None
+            self._cut_off[v.agent_id] = (held + unsaid, v.speaker, self._clock())
+        v.saying, v.told = None, []
         self._drop(v, keep_queue=True)  # closed: a run still working no longer speaks through it
 
     def _apply_held(self, now: float) -> None:

@@ -694,6 +694,7 @@ class Huddle:
         for r in [r for r in self._requests.open() if r.routed and r.status == "queued"]:
             # understanding §4.5: its agent never got to it; no run will post it, so the room gets one line
             r.run_id = str(uuid.uuid4())
+            self._requests.fail(r)  # never done: the post is no delivery
             await self._late_answer(r.agent, (r.run_id, r.task, NOT_STARTED_POST, self._clock(), r.asker))
         open_rows = [r for r in self._requests.open() if r.routed]
         emit_metric("live.request.open_at_end", len(open_rows), "Count")  # understanding §5.3: 0
@@ -769,9 +770,9 @@ class Huddle:
                 self._stop(target, mark)
                 return
         held = self._held.pop(identity, None)
-        if (
-            held and now - held[1] <= HOLD_SECONDS
-        ):  # the rest of an unfinished line: the whole of it is the request
+        if held and now - held[1] <= HOLD_SECONDS and not _words_in(held[0], text, 1):
+            # the rest of an unfinished line: the whole of it is the request. A final that already holds the
+            # held words is the whole line (a delegation's transcript was held before its own final came).
             text = f"{held[0]} {text}"
         self._last_line[identity] = text
         a = address(text, self._team["agents"], self._team["people"])
@@ -1481,8 +1482,9 @@ class Huddle:
         if r.get(
             "hold"
         ):  # unfinished ("Friday, we're trying to"): the speaker's next final carries the rest
-            if self._final_mark.get(identity) == mark:
-                # understanding §4.4: kept with its answer; applied as it is if nothing more is said (tick)
+            if self._final_mark.get(identity, -1) <= mark:
+                # understanding §4.4: kept with its answer; applied as it is if nothing more is said (tick). A
+                # delegation's own transcript carries a later mark than its speaker's last final: held too.
                 kw = {"humans": humans, "switch": switch, "unclaimed": unclaimed, "heard": heard, "floor_line": floor_line}
                 self._held[identity] = (text, heard_at, mark, {**r, "hold": False}, kw)
             else:  # that final arrived while /route decided and routed on its own: nothing left to merge
@@ -2153,6 +2155,8 @@ class Huddle:
         mine = [r for r in fresh if r.agent == v.agent_id]
         if rows and all(r.status == "delivered" for r in rows):
             note = ALREADY_SAID
+        elif not fresh and (ops.get("steer") or ops.get("cancel")):
+            note = CHANGED  # a correction or a call-off, already applied
         elif rows and not live or not rows and ops.get("requests"):
             return  # stopped since (§4.5): swallowed, as a delegated stop is
         elif live and not fresh:
@@ -2164,8 +2168,6 @@ class Huddle:
         elif fresh:
             note = self._ack(fresh, v.agent_id, said=True)
             v.ack_rows = [r for r in v.ack_rows if r not in rows]
-        elif ops.get("steer") or ops.get("cancel"):
-            note = CHANGED
         elif ops.get("more"):
             note = 'They will list several requests. Say "go ahead" at most, then stay quiet until they finish.'
         else:

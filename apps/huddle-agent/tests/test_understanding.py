@@ -2001,7 +2001,9 @@ async def test_a_row_still_queued_at_hang_up_is_handed_to_the_room(capsys):
     assert [(a[0], a[2], a[3]) for a in backend.late_answers] == [
         ("forge", "what shipped", h_mod.NOT_STARTED_POST)
     ]
-    assert len(backend.turns) == 1
+    assert (
+        len(backend.turns) == 1 and rows(h)[1][2] == "failed"
+    )  # never done: not "delivered"
     assert metrics(capsys, "live.request.open_at_end") == [
         (1, {})
     ]  # the working row: its run posts its answer
@@ -2122,3 +2124,49 @@ def test_wire_limits_a_long_teammate_name_and_task():
     rl = RequestList()
     rl.settle(1, "u1", [{"agentId": "forge", "task": "x" * 300, "by": "fit"}], 0.0)
     assert all(len(line) <= 200 for line in rl.lines(lambda _a: "N" * 90))
+
+
+# -- last re-review: an unfinished delegation before its final runs once; a delegated call-off is told so --
+
+
+async def test_an_unfinished_delegation_before_its_final_runs_once():
+    h, room, backend, lives, clock, log = await floor_open()
+    await say(h, "u1", PRS)
+    answer(h, backend.turns[0]["runId"], "forge", "Two PRs are open.")
+    h.on_agent_said(
+        "forge", "Two PRs are open."
+    )  # a transcript line after the speaker's last final
+    backend.route_extra = {
+        **ops(requests=[("forge", "the deploy status", "fit")]),
+        "hold": True,
+    }
+    await h.on_delegation(
+        "forge", "d2", "and what is the deploy status of"
+    )  # its final is still to come
+    await settle(h)
+    assert len(backend.turns) == 1 and lives[0].calls[-1] == (
+        "commentary",
+        h_mod.UNFINISHED,
+        "d2",
+    )
+    backend.route_extra = ops(
+        requests=[("forge", "the deploy status of the backend", "fit")]
+    )
+    await say(h, "u1", "and what is the deploy status of the backend")
+    assert backend.routes[-1][1] == "and what is the deploy status of the backend", (
+        "the held words are in it"
+    )
+    assert [t["utterance"] for t in backend.turns[1:]] == [
+        "the deploy status of the backend"
+    ]
+
+
+async def test_a_delegated_call_off_is_told_it_was_made():
+    h, room, backend, lives, clock, log = await floor_open()
+    backend.route_extra = ops(requests=[("forge", "send the email to Aden", "fit")])
+    await say(h, "u1", "send the email to Aden")
+    backend.route_extra = ops(cancel=[h._requests.items[0].id])
+    await say(h, "u1", "no, do not send the email to Aden")
+    await h.on_delegation("forge", "d2", "no, do not send the email to Aden")
+    await settle(h)
+    assert lives[0].calls[-1] == ("commentary", h_mod.CHANGED, "d2")

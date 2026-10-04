@@ -796,5 +796,8 @@ def test_each_transcript_row_reads_its_own_occurrence():
         # archived before the notes state was kept: unknown, never "pending" for ever
         {"start_at": 50, "ended_at": None, "notes": None, "unsaid": []},
     ]
-    assert agent_mail._occurrence_notes({"endedAt": 9}) == "pending"  # ended, its notes still owed
+    # An archived occurrence is final: one whose notes failed every attempt has no marker either.
+    assert agent_mail._occurrence_notes(meeting, {"endedAt": 9}) is None
+    current = {"status": "ended", "inCallAt": 1, "endedAt": 9, "transcriptId": "t"}
+    assert agent_mail._meeting_view(M1, current)["transcripts"][0]["notes"] == "pending"  # still owed
     assert (view["ended_at"], view["notes"], view["unsaid"]) == (None, None, [])  # the current occurrence

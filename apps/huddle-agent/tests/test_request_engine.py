@@ -204,7 +204,7 @@ async def test_in_a_meeting_a_requested_answer_is_spoken_not_posted_at_once():
     await settle(h)
     answer(h, run_of(backend, "forge"), "forge", "Three PRs are open")
     assert backend.late_answers == []
-    await quiet(h, clock)
+    await quiet(h, clock, h_mod.MEET_QUIET_S)  # a real pause, not Live's breath
     assert lives[-1].agent_id == "forge"
 
 

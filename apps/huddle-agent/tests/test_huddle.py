@@ -1829,6 +1829,7 @@ def _fake_live_stack(monkeypatch, refuse=()):
                 append_commentary=None,
                 append_instructions=None,
                 mute_input=None,
+                on=lambda event, cb: None,
             )
 
     monkeypatch.setattr(agent_mod, "AgentSession", FakeSession)

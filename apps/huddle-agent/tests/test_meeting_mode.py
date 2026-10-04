@@ -1,6 +1,7 @@
 """Meeting mode: a Google Meet bridged in by a Recall bot, whose one `meet:<roomId>` participant
 carries the mixed meeting audio. Speaker names arrive as `meet.speaker` packets from the backend."""
 
+import asyncio
 import json
 
 from huddle_agent import huddle as h_mod
@@ -508,3 +509,94 @@ async def test_lightbulb_from_someone_else_closes_the_voice_and_routes_as_with_n
     await hear(h, "Lightbulb, what's on the board?")
     assert backend.route_bodies[-1]["floor"] is None  # routed with no voice open
     assert lives[0].calls[-1] == ("close",) and h._voice.agent_id == "gauge" and h._voice.label == "Dan"
+
+
+async def test_a_meeting_request_keeps_its_askers_name_when_someone_else_speaks_while_the_voice_opens():
+    # review: the label was read after the awaits, when it was already the latest speaker's ("Dan asked: ...")
+    h, room, backend, lives, clock, log = await meeting()
+    backend.route_extra = ops([("forge", "list the open PRs", "name")])
+    h.gate["live"] = asyncio.Event()
+    speaker(h, "p1", "Priya", True)
+    await h.on_final_transcript(MEET, "Google Meet", "Forge, what PRs are open?")
+    for _ in range(30):
+        await asyncio.sleep(0)
+    clock.t += 2
+    speaker(h, "p2", "Dan", True)
+    clock.t += 2
+    await h.on_final_transcript(MEET, "Google Meet", "anyway, lunch")  # the latest label is Dan's now
+    h.gate["live"].set()
+    await settle(h)
+    told = str(lives[0].seed) + str(lives[0].calls)
+    assert "Priya asked" in told and "Dan" not in told
+    assert h._voice.label == "Priya" and [r.label for r in h._requests.items] == ["Priya"]
+
+
+async def unheard_answer():
+    """Forge's voice closed while its run worked; the answer came and nobody has heard it yet."""
+    h, room, backend, lives, clock, log = await priya_asks_forge(rows=True)
+    (row,) = h._requests.items
+    clock.t += h_mod.MEET_FOLLOWUP_S
+    await h.tick()
+    await settle(h)
+    answer(h, row.run_id, "forge", "Three PRs are open.")
+    assert h._voice is None and row.status == "ready"
+    return h, backend
+
+
+async def test_a_meetings_unheard_answers_are_posted_before_its_transcript():
+    # the backend writes the notes and the mail when the transcript lands: the answers must be on the record first
+    h, backend = await unheard_answer()
+    backend.transcript_gate = asyncio.Event()
+    leaving = asyncio.ensure_future(h.clear_presence())
+    for _ in range(30):
+        await asyncio.sleep(0)
+    assert [a[3] for a in backend.late_answers] == ["Three PRs are open."] and backend.transcripts == []
+    backend.transcript_gate.set()
+    await leaving
+    assert backend.finals == [True]
+
+
+async def test_a_stuck_unheard_post_does_not_cost_the_meeting_its_transcript(monkeypatch):
+    h, backend = await unheard_answer()
+    monkeypatch.setattr(h_mod, "UNHEARD_BUDGET_S", 0.01)
+
+    async def stuck(*a):
+        await asyncio.Event().wait()
+
+    backend.late_answer = stuck
+    await h.clear_presence()
+    assert backend.finals == [True]
+
+
+async def test_a_meetings_ready_answer_waits_for_a_real_pause_and_its_hand_shows_what_it_is_about():
+    h, backend = await unheard_answer()
+    assert h._state()["lightbulb.agent.forge.status"] == "has_news"
+    assert h._state()["lightbulb.agent.forge.hand"] == "list the open PRs"
+    await hear(h, "ok so the roadmap")  # the meeting goes on
+    h._clock.t += 1  # a breath, not a pause: Live would deliver here
+    await h.tick()
+    await settle(h)
+    assert h._voice is None
+    h._clock.t += h_mod.MEET_QUIET_S
+    await h.tick()
+    await settle(h)
+    assert h._voice is not None and h._voice.path == "announce"
+    assert h._state()["lightbulb.agent.forge.hand"] == ""
+
+
+async def test_a_meeting_answer_dropped_by_talk_is_tried_again_at_each_pause_and_never_given_up():
+    h, backend = await unheard_answer()
+    for _ in range(h_mod.DELIVERY_TRIES + 2):
+        h._clock.t += h_mod.MEET_QUIET_S + h_mod.gate.ANNOUNCE_QUIET
+        await h.tick()
+        await settle(h)
+        assert h._voice is not None and h._voice.announce is not None, "its voice opens for it"
+        talks(h, MEET, "Google Meet")  # someone talks before its audio: dropped, the answer kept
+        await settle(h)
+        h.on_speech(MEET, False)
+        h.on_active_speakers(set())
+    h._clock.t += h_mod.MEET_QUIET_S + h_mod.gate.ANNOUNCE_QUIET
+    await h.tick()
+    await settle(h)
+    assert backend.late_answers == [], "a busy meeting does not push the answer off the call"
+    assert h._voice is not None and h._voice.announce is not None

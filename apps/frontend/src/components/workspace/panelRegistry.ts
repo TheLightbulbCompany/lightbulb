@@ -3,7 +3,7 @@
 // components map all derive from this file — nothing else may invent a
 // panel id or component name.
 
-export type PanelKind = "chat" | "teams" | "control" | "file-viewer" | "browser" | "activity" | "missing";
+export type PanelKind = "chat" | "teams" | "control" | "file-viewer" | "browser" | "activity" | "mail" | "missing";
 
 export interface PanelDescriptor {
   panelId: string;
@@ -188,6 +188,7 @@ export const PANEL_COMPONENT_KEYS: ReadonlySet<string> = new Set([
   "file-viewer",
   "browser",
   "activity",
+  "mail",
   "missing",
 ]);
 
@@ -273,6 +274,13 @@ export function describePanel(
     if (params.filter) p.filter = params.filter;
     if (params.focus) p.focus = params.focus;
     return { panelId: "activity", component: "activity", title: "Activity", params: p };
+  }
+
+  // The workspace's shared agent mailbox: mail in and out, meetings and their
+  // transcripts. Singleton; `item` is the open row (`mail:<key>` or
+  // `meeting:<id>:<start_at>`).
+  if (key === "mail") {
+    return { panelId: "mail", component: "mail", title: "Mail", params: params.item ? { item: params.item } : {} };
   }
 
   if (key === "agent-inspector") {
@@ -375,6 +383,7 @@ export function durableParamsFor(panelId: string): string[] {
   if (panelId === "teams-inbox") return ["panel", "section"];
   if (panelId === "teams-money") return ["panel", "day", "section"];
   if (panelId === "activity") return ["panel", "filter", "focus"];
+  if (panelId === "mail") return ["panel", "item"];
   if (/^teams-(issue|routine|project|goal|case|run)-detail:/.test(panelId)) return ["panel", "detailId"];
   return ["panel"];
 }
@@ -395,6 +404,7 @@ export function clearablePanelParamKeys(panelId: string): string[] {
   if (panelId === "teams-inbox") return ["section"];
   if (panelId === "teams-money") return ["day", "section"];
   if (panelId === "activity") return ["filter", "focus"];
+  if (panelId === "mail") return ["item"];
   if (panelId === "file-viewer") return ["path", "agent"];
   if (panelId === "agent-inspector" || panelId === "control:agents") {
     return ["agentId", "initialTab"];

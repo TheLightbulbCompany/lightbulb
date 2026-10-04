@@ -194,6 +194,7 @@ function canonicalPanelTitle(
     case "file-viewer":
     case "browser":
     case "activity":
+    case "mail":
       key = component;
       break;
     default:

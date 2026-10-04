@@ -129,6 +129,8 @@ function MobileChatShell() {
   const agentParam = searchParams.get("agent");
   const pathParam = searchParams.get("path");
   const dayParam = searchParams.get("day");
+  // Mail's open row (`mail:<key>` / `meeting:<id>:<start_at>`).
+  const itemParam = searchParams.get("item");
   // Same synthesis as `tab` above, for Money and Inbox: ?panel=teams-spend and
   // ?panel=teams-activity carry no &section=, because the section IS the key.
   // Every absorbed key aliases to the page that absorbed it, so reading the
@@ -222,6 +224,7 @@ function MobileChatShell() {
       params.delete("section");
       params.delete("groupBy");
       params.delete("view");
+      params.delete("item");
       pushSearchParams(params);
     },
     [searchParams],
@@ -395,6 +398,7 @@ function MobileChatShell() {
                   ...(agentParam ? { agentId: agentParam } : {}),
                   ...(oneShots.inspectorTab ? { initialTab: oneShots.inspectorTab } : {}),
                   ...(oneShots.action ? { action: oneShots.action } : {}),
+                  ...(itemParam ? { item: itemParam } : {}),
                 }}
                 onConsumeOneShot={stripParam}
               />

@@ -1,0 +1,116 @@
+"use client";
+
+import { useEffect, useSyncExternalStore } from "react";
+import useSWR from "swr";
+import useSWRInfinite from "swr/infinite";
+import { useOrganization } from "@clerk/nextjs";
+import { ApiError } from "@lightbulb/shared";
+
+import { useApi } from "@/lib/api";
+import { useLiveEvents } from "@/hooks/useLiveEvents";
+import { isNew, type MailPage } from "./mailModel";
+
+export const INBOX_URL = "/agent-mail/inbox";
+const REFRESH_DEBOUNCE_MS = 400;
+
+// The workspace is part of every cache key: switching workspaces never shows the last one's mail.
+// Page 0's key is the same one the rail badge reads with plain useSWR, so they share the cache.
+function inboxKey(orgId: string | undefined) {
+  return (index: number, prev: MailPage | null): [string, string] | null => {
+    if (!orgId) return null;
+    if (index === 0) return [INBOX_URL, orgId];
+    return prev?.next ? [`${INBOX_URL}?before=${encodeURIComponent(prev.next)}`, orgId] : null;
+  };
+}
+
+/** Refetches (debounced like Activity) when the backend says the mailbox changed. */
+function useMailInvalidation(revalidate: () => unknown): void {
+  const live = useLiveEvents();
+  useEffect(() => {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const off = live.onEvent((event) => {
+      if (event.type !== "runtime.resource.invalidated" || event.payload.resource !== "mail") return;
+      clearTimeout(timer);
+      timer = setTimeout(() => void revalidate(), REFRESH_DEBOUNCE_MS);
+    });
+    return () => {
+      off();
+      clearTimeout(timer);
+    };
+  }, [live, revalidate]);
+}
+
+export function useTeamMail() {
+  const api = useApi();
+  const orgId = useOrganization().organization?.id;
+  const inbox = useSWRInfinite<MailPage>(
+    inboxKey(orgId),
+    ([url]: [string, string]) => api.get(url) as Promise<MailPage>,
+    { revalidateOnFocus: true, shouldRetryOnError: false },
+  );
+  useMailInvalidation(inbox.mutate);
+  // No address yet: reading it creates the row; then the inbox answers.
+  const noAddress = inbox.error instanceof ApiError && inbox.error.status === 409;
+  const address = useSWR<{ address: string }>(
+    noAddress && orgId ? ["/agent-mail/address", orgId] : null,
+    ([url]: [string, string]) => api.get(url) as Promise<{ address: string }>,
+    { revalidateOnFocus: true, shouldRetryOnError: false, onSuccess: () => void inbox.mutate() },
+  );
+  return { orgId, inbox, noAddress, address };
+}
+
+// ---- "new": the newest received `at` this device has seen ---------------------
+
+// ponytail: per-device, not per-person (another browser shows the same mail as new);
+// upgrade = a server read cursor.
+const SEEN_EVENT = "lightbulb:mail-seen";
+const seenKey = (orgId: string) => `lightbulb.mail.seen.${orgId}`;
+
+/** Epoch ms of the newest received mail seen here; 0 when never; null when storage is unavailable. */
+export function readSeen(orgId: string | undefined): number | null {
+  if (!orgId) return null;
+  try {
+    const raw = window.localStorage.getItem(seenKey(orgId));
+    const at = raw ? Date.parse(raw) : 0;
+    return Number.isNaN(at) ? 0 : at;
+  } catch {
+    return null;
+  }
+}
+
+export function writeSeen(orgId: string, at: number): void {
+  try {
+    window.localStorage.setItem(seenKey(orgId), new Date(at).toISOString());
+    window.dispatchEvent(new Event(SEEN_EVENT));
+  } catch {
+    // Storage unavailable: nothing is new, nothing breaks.
+  }
+}
+
+function subscribeSeen(listener: () => void): () => void {
+  window.addEventListener(SEEN_EVENT, listener);
+  window.addEventListener("storage", listener);
+  return () => {
+    window.removeEventListener(SEEN_EVENT, listener);
+    window.removeEventListener("storage", listener);
+  };
+}
+
+export function useSeen(orgId: string | undefined): number | null {
+  return useSyncExternalStore(subscribeSeen, () => readSeen(orgId), () => null);
+}
+
+/** The rail badge: NEW received mail on the first page. Quiet without an org or an address. */
+export function useNewMailCount(): number {
+  const api = useApi();
+  const orgId = useOrganization().organization?.id;
+  const { data, mutate } = useSWR<MailPage>(
+    orgId ? [INBOX_URL, orgId] : null,
+    ([url]: [string, string]) => api.get(url) as Promise<MailPage>,
+    // Errors (the 409 before an address exists included) just leave the badge empty.
+    { revalidateOnFocus: true, shouldRetryOnError: false },
+  );
+  useMailInvalidation(mutate);
+  const seen = useSeen(orgId);
+  return (data?.messages ?? []).filter((m) => isNew(m, seen)).length;
+}

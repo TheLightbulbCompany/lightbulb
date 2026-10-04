@@ -13,6 +13,9 @@ vi.mock("../panels/UsagePanel", () => ({ UsagePanel: () => <div data-testid="usa
 vi.mock("../panels/AgentsPanel", () => ({ AgentsPanel: () => <div /> }));
 vi.mock("../panels/SkillsTab", () => ({ SkillsTab: () => <div data-testid="skills-store" /> }));
 vi.mock("../panels/IntegrationsPanel", () => ({ IntegrationsPanel: () => <div /> }));
+vi.mock("@/components/mail/MailPanel", () => ({
+  MailPanel: ({ item }: { item: string | null }) => <div data-testid="mail-panel">{item}</div>,
+}));
 vi.mock("../panels/AgentInspectorPanel", () => ({
   AgentInspectorPanel: () => <div data-testid="agent-inspector-panel" />,
 }));
@@ -45,6 +48,11 @@ describe("ControlPanelRouter routing", () => {
       expect(await screen.findByTestId("overview-panel")).toBeInTheDocument();
     },
   );
+
+  it("renders Mail for the mobile shell, with the open item", async () => {
+    render(<ControlPanelRouter panel="mail" panelParams={{ item: "mail:k1" }} />);
+    expect(await screen.findByTestId("mail-panel")).toHaveTextContent("mail:k1");
+  });
 
   it("does NOT call onPanelChange for a plain key", async () => {
     const onPanelChange = vi.fn();

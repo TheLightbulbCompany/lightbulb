@@ -47,6 +47,8 @@ vi.mock("@/components/marketplace/drawer/MarketplaceDrawerProvider", () => ({
 
 const activityState = { attentionCount: 0 };
 vi.mock("@/hooks/useActivity", () => ({ useActivity: () => activityState }));
+const mailState = { newCount: 0 };
+vi.mock("@/components/mail/useTeamMail", () => ({ useNewMailCount: () => mailState.newCount }));
 vi.mock("../workspaceController", () => ({ openPanel: (...args: unknown[]) => openPanel(...args), activateMessagesPanel: () => activateMessagesPanel(), useWorkspaceState: () => ({ activePanelId }) }));
 
 import { trackTeamRunActivity } from "@/components/notifications/teamRunActivity";
@@ -67,7 +69,25 @@ describe("WorkspaceHeader", () => {
     expect(openPanel).not.toHaveBeenCalled();
   });
 
-  it.each([["Home", "teams-dashboard"], ["Activity", "activity"], ["Tasks", "teams-issues"], ["Library", "teams-artifacts"]])("opens %s and marks the active destination", (label, panel) => {
+  it("puts Mail right after Activity", () => {
+    render(<WorkspaceHeader />);
+    const labels = within(screen.getByRole("navigation", { name: "Workspace" }))
+      .getAllByRole("button")
+      .map((b) => b.getAttribute("aria-label"));
+    expect(labels.indexOf("Mail")).toBe(labels.indexOf("Activity") + 1);
+  });
+
+  it("badges Mail with new received mail, capped at 9+", () => {
+    mailState.newCount = 12;
+    render(<WorkspaceHeader />);
+    const mail = screen.getByRole("button", { name: "Mail, 12 new" });
+    expect(within(mail).getByText("9+")).toBeInTheDocument();
+    fireEvent.click(mail);
+    expect(openPanel).toHaveBeenCalledWith("mail", {}, { pushUrl: true });
+    mailState.newCount = 0;
+  });
+
+  it.each([["Home", "teams-dashboard"], ["Activity", "activity"], ["Mail", "mail"], ["Tasks", "teams-issues"], ["Library", "teams-artifacts"]])("opens %s and marks the active destination", (label, panel) => {
     activePanelId = panel;
     render(<WorkspaceHeader />);
     const button = screen.getByRole("button", { name: label });

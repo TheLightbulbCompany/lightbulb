@@ -1,0 +1,209 @@
+"use client";
+
+import "@/components/messaging/messaging.css";
+import "./mail.css";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { ArrowLeft, Check, Copy, Mail, RefreshCw } from "lucide-react";
+import { agentDisplayName } from "@lightbulb/shared";
+
+import { Button } from "@/components/ui/button";
+import { useAgents } from "@/hooks/useAgents";
+import { navigateShell } from "@/lib/shellNav";
+import { buildPanelUrl } from "@/components/workspace/urlChannel";
+import { MailList } from "./MailList";
+import { MailDetail } from "./MailDetail";
+import { MeetingDetail } from "./MeetingDetail";
+import {
+  buildSections,
+  isNew,
+  MAIL_FILTERS,
+  newestReceived,
+  type MailEntry,
+  type MailFilter,
+} from "./mailModel";
+import { readSeen, useTeamMail, writeSeen } from "./useTeamMail";
+
+const WIDE_PX = 840;
+
+/** Opens an item (or the list) through the URL, so both shells and Back follow it. */
+function openMailItem(item: string | null): void {
+  navigateShell(buildPanelUrl("mail", item ? { item } : {}));
+}
+
+function useCopy(text: string | undefined) {
+  const [copied, setCopied] = useState(false);
+  const timer = useRef<ReturnType<typeof setTimeout>>(undefined);
+  useEffect(() => () => clearTimeout(timer.current), []);
+  const copy = async () => {
+    if (!text || !navigator.clipboard) return;
+    try {
+      await navigator.clipboard.writeText(text);
+    } catch {
+      return;
+    }
+    setCopied(true);
+    clearTimeout(timer.current);
+    timer.current = setTimeout(() => setCopied(false), 1500);
+  };
+  return { copied, copy };
+}
+
+function CopyButton({ text }: { text: string | undefined }) {
+  const { copied, copy } = useCopy(text);
+  return <Button type="button" variant="ghost" size="sm" aria-label="Copy address" onClick={() => void copy()}>
+    {copied ? <><Check size={14} aria-hidden="true" /> Copied</> : <Copy size={14} aria-hidden="true" />}
+  </Button>;
+}
+
+/** Wide when the panel itself is ≥ 840px: it docks, so the window size says nothing. */
+function useWide(ref: React.RefObject<HTMLElement | null>): boolean {
+  const [wide, setWide] = useState(false);
+  useLayoutEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    setWide(el.getBoundingClientRect().width >= WIDE_PX);
+    if (typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver(([entry]) => setWide(entry.contentRect.width >= WIDE_PX));
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [ref]);
+  return wide;
+}
+
+export function MailPanel({ item, visible = true }: { item: string | null; visible?: boolean }) {
+  const rootRef = useRef<HTMLDivElement>(null);
+  const wide = useWide(rootRef);
+  const { orgId, inbox, noAddress, address } = useTeamMail();
+  const { agents } = useAgents();
+  const [filter, setFilter] = useState<MailFilter>("all");
+  const [now] = useState(() => Date.now());
+
+  const pages = inbox.data;
+  const meetings = useMemo(() => pages?.[0]?.meetings ?? [], [pages]);
+  const messages = useMemo(() => (pages ?? []).flatMap((p) => p.messages ?? []), [pages]);
+  const hasMore = Boolean(pages?.[pages.length - 1]?.next);
+  const teamAddress = pages?.[0]?.address ?? address.data?.address;
+  const sections = useMemo(() => buildSections(meetings, messages, filter, now), [meetings, messages, filter, now]);
+  const entries = useMemo(() => sections.flatMap((s) => s.entries), [sections]);
+  const names = useMemo(() => new Map((agents ?? []).map((a) => [a.id, agentDisplayName(a)])), [agents]);
+  const agentName = useCallback((id: string) => names.get(id) ?? null, [names]);
+
+  // "New" is snapshotted when the panel opens, then the stored mark moves to the newest
+  // received mail: rows that were new keep their dot until the panel closes.
+  const [snapshot, setSnapshot] = useState<number | null | undefined>(undefined);
+  const newest = newestReceived(messages);
+  const ready = visible && pages !== undefined && Boolean(orgId);
+  if (!visible && snapshot !== undefined) setSnapshot(undefined);
+  if (ready && snapshot === undefined) setSnapshot(readSeen(orgId));
+  useEffect(() => {
+    if (!ready || !orgId || newest === null) return;
+    const seen = readSeen(orgId);
+    if (seen !== null && newest > seen) writeSeen(orgId, newest);
+  }, [ready, orgId, newest]);
+  const newKeys = useMemo(
+    () => new Set(entries.filter((e) => e.kind === "mail" && isNew(e.message, snapshot ?? null)).map((e) => e.key)),
+    [entries, snapshot],
+  );
+
+  // An unknown item (not loaded, or a stale link) falls back to no selection.
+  const requested = item ? entries.find((e) => e.key === item) ?? null : null;
+  const fallback = wide
+    ? sections.find((s) => s.key.startsWith("day-"))?.entries[0] ?? entries[0] ?? null
+    : null;
+  const selected: MailEntry | null = requested ?? fallback;
+
+  // Narrow: Back (button, Escape, or the browser) lands focus on the row that opened the detail.
+  const opener = useRef<string | null>(null);
+  const showingDetail = !wide && requested !== null;
+  useEffect(() => {
+    if (showingDetail || !opener.current) return;
+    const key = opener.current;
+    opener.current = null;
+    rootRef.current?.querySelector<HTMLElement>(`[data-mail-key="${CSS.escape(key)}"]`)?.focus();
+  }, [showingDetail]);
+  const open = (key: string) => {
+    opener.current = key;
+    openMailItem(key);
+  };
+  const back = () => openMailItem(null);
+
+  const header = <header className="mail-panel__header">
+    <h2>Mail</h2>
+    {teamAddress && <span className="mail-panel__address">
+      <span className="mail-panel__address-text">{teamAddress}</span>
+      <CopyButton text={teamAddress} />
+    </span>}
+    <span className="mail-panel__actions">
+      <button type="button" className="mail-link" onClick={() => navigateShell(buildPanelUrl("agents", {}))}>Settings</button>
+      <Button type="button" variant="ghost" size="sm" aria-label="Refresh mail" disabled={inbox.isValidating}
+        onClick={() => void inbox.mutate()}>
+        <RefreshCw size={14} aria-hidden="true" />
+      </Button>
+    </span>
+  </header>;
+
+  let body: React.ReactNode;
+  if (noAddress) {
+    body = address.data
+      ? <MailEmpty address={address.data.address} />
+      : <p role="status" className="mail-panel__message">Your workspace address is being set up…</p>;
+  } else if (inbox.error && !pages) {
+    body = <div role="alert" className="mail-panel__message">
+      <p>Couldn&apos;t load mail.</p>
+      <Button type="button" variant="outline" size="sm" onClick={() => void inbox.mutate()}>Retry</Button>
+    </div>;
+  } else if (!pages) {
+    body = <div className="mail-panel__skeleton" aria-busy="true" aria-label="Loading mail">
+      {Array.from({ length: 6 }, (_, i) => <div key={i} className="room-skeleton" aria-hidden="true"><span /><span /></div>)}
+    </div>;
+  } else if (meetings.length === 0 && messages.length === 0) {
+    body = <MailEmpty address={teamAddress} />;
+  } else {
+    const list = <div className="mail-list">
+      <div className="mail-chips" role="toolbar" aria-label="Filter mail">
+        {MAIL_FILTERS.map((chip) => <button key={chip.id} type="button" className="mail-chip"
+          aria-pressed={filter === chip.id} onClick={() => setFilter(chip.id)}>{chip.label}</button>)}
+      </div>
+      <div className="mail-list__scroll">
+        {sections.length === 0
+          ? <p className="mail-panel__message">{filter === "meetings" ? "No meetings yet." : "No mail yet."}</p>
+          : <MailList sections={sections} selectedKey={selected?.key ?? null} newKeys={newKeys}
+            agentName={agentName} onOpen={open} now={now} />}
+        {hasMore && filter !== "meetings" && <div className="mail-list__more">
+          <Button type="button" variant="ghost" size="sm" disabled={inbox.isValidating}
+            onClick={() => void inbox.setSize((s) => s + 1)}>Load more</Button>
+        </div>}
+      </div>
+    </div>;
+    const detail = selected && <div className="mail-detail-pane"
+      onKeyDown={(e) => { if (!wide && e.key === "Escape") { e.preventDefault(); back(); } }}>
+      {!wide && <button type="button" className="mail-back" onClick={back}><ArrowLeft size={16} aria-hidden="true" /> Mail</button>}
+      {selected.kind === "mail"
+        ? <MailDetail key={selected.key} message={selected.message} at={selected.at} orgId={orgId}
+          agentName={selected.message.agent_id ? agentName(selected.message.agent_id) : null} />
+        : <MeetingDetail key={selected.key} entry={selected} orgId={orgId} now={now} onOpen={open}
+          onOpenNotes={(room) => navigateShell(buildPanelUrl("chat", { room }))} />}
+    </div>;
+    body = wide
+      ? <div className="mail-panel__split">{list}{detail}</div>
+      : showingDetail ? detail : list;
+  }
+
+  return <section ref={rootRef} className="mail-panel" aria-label="Mail" data-wide={wide || undefined}>
+    {header}
+    {body}
+  </section>;
+}
+
+function MailEmpty({ address }: { address: string | undefined }) {
+  return <div className="mail-empty">
+    <Mail size={28} aria-hidden="true" className="mail-empty__icon" />
+    {address && <p className="mail-empty__address">
+      <span>{address}</span>
+      <CopyButton text={address} />
+    </p>}
+    <p className="mail-empty__text">
+      Mail to this address goes to your agents. Add it to a calendar event and they join the meeting.
+    </p>
+  </div>;
+}

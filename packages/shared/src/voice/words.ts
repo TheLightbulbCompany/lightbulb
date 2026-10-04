@@ -54,6 +54,7 @@ export const LIVE_NOTICE_TOPIC = "live.notice";
 export const SPEAKING_AGENT = "lightbulb.speaking_agent";
 export const QUEUE = "lightbulb.queue";
 export const LISTENING_TO = "lightbulb.listening_to";
+export const VOICE_LIMIT = "lightbulb.voice_limit";
 export const statusKey = (id: string) => `lightbulb.agent.${id}.status`;
 export const workingKey = (id: string) => `lightbulb.agent.${id}.working`;
 export const namingKey = (id: string) => `lightbulb.agent.${id}.naming`;
@@ -224,3 +225,13 @@ export const wakingText = (name: string) => `${name} is waking up — this can t
 export const voiceFailedText = (name: string) => `${name} couldn't join. Try again.`;
 export const renamedText = (from: string, to: string) => `${from} is now ${to}`;
 export const voiceNoteText = (name: string, text: string) => `${name} will remember: ${text}`;
+
+/** Why the backend refused to open agent voice (the worker's `lightbulb.voice_limit`), or null when voice is fine. */
+export const voiceLimit = (a: Attrs): string | null => attr(a, VOICE_LIMIT)?.trim() || null;
+
+/** The Meet tile's line for a refusal: nobody there can tap, and may not be the workspace's admin, so no "add credits". */
+export const meetVoiceLimitText = (reason: string): string =>
+  reason === "free_minutes_used" ? "Today's free voice minutes are used up. The agents can speak again tomorrow."
+    : reason === "credits_low" ? "Voice is paused: the workspace's credits are low."
+    : reason === "plan_inactive" ? "Voice is off: the workspace's plan is not active."
+    : "The agents cannot speak right now.";

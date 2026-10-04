@@ -116,7 +116,11 @@ pub(super) fn index(mirrors: &BTreeMap<String, Mirror>) {
     if let Ok(mut slot) = LIVE.lock() {
         *slot = live;
     }
+    INDEXED.store(true, SeqCst);
 }
+
+/// Whether `index` has run since this app started. Until then `LIVE` says nothing.
+static INDEXED: AtomicBool = AtomicBool::new(false);
 
 /// An attach holder unused this long (not in the panel, no relay) is closed.
 const IDLE: Duration = Duration::from_secs(60);
@@ -229,11 +233,20 @@ fn idle_attach(holders: &[HolderInfo], shown: Option<&str>, watched_jobs: &BTree
         .collect()
 }
 
+/// The Codex threads that still run: the ones a live mirror names (discovery saw Codex's daemon
+/// hold the rollout). Before the relay loop has published its mirrors once (`indexed`: an app
+/// relaunch with attach holders still open) there is no evidence, so each open holder's own
+/// thread counts.
+fn codex_running<'a>(indexed: bool, live: impl Iterator<Item = &'a str>, holders: &[HolderInfo]) -> BTreeSet<String> {
+    if indexed {
+        return live.map(str::to_owned).collect();
+    }
+    holders.iter().filter_map(manager::attach_job).filter(|job| manager::attach_provider(job) == Some("codex")).map(str::to_owned).collect()
+}
+
 /// Every job that still runs: Claude's own listing (`claude`, None when it failed: no evidence for
-/// anything) plus each Codex thread a live mirror names (discovery saw its daemon hold the rollout).
-/// `live`: each live mirror's (provider, job).
-fn running_jobs<'a>(claude: Option<&BTreeSet<String>>, live: impl Iterator<Item = (&'a str, Option<&'a str>)>) -> Option<BTreeSet<String>> {
-    let codex = live.filter(|(provider, _)| *provider == "codex").filter_map(|(_, job)| job.map(str::to_owned));
+/// anything) plus the Codex threads.
+fn running_jobs(claude: Option<&BTreeSet<String>>, codex: BTreeSet<String>) -> Option<BTreeSet<String>> {
     claude.map(|claude| claude.iter().cloned().chain(codex).collect())
 }
 
@@ -243,7 +256,8 @@ fn running_jobs<'a>(claude: Option<&BTreeSet<String>>, live: impl Iterator<Item 
 pub(super) fn reap_attach(holders: &[HolderInfo], running: Option<&BTreeSet<String>>) {
     let shown = crate::holder::panel::shown_holder();
     let live = LIVE.lock().map(|l| l.clone()).unwrap_or_default();
-    let running = running_jobs(running, live.values().map(|l| (l.native.provider.as_str(), l.native.job.as_deref())));
+    let codex = live.values().filter(|l| l.native.provider == "codex").filter_map(|l| l.native.job.as_deref());
+    let running = running_jobs(running, codex_running(INDEXED.load(SeqCst), codex, holders));
     let running = running.as_ref();
     let watched: BTreeSet<String> = RELAYS
         .lock()
@@ -786,15 +800,18 @@ mod tests {
     fn a_codex_attach_terminal_lives_while_its_thread_is_live() {
         const THREAD: &str = "01a10845-c8f1-7fa2-844b-13790e2db151";
         let claude = BTreeSet::from(["11111111".to_owned()]);
-        let live = [("codex", Some(THREAD)), ("codex", None), ("claude", Some("99999999"))];
-        let running = running_jobs(Some(&claude), live.into_iter()).unwrap();
-        assert_eq!(running, BTreeSet::from(["11111111".to_owned(), THREAD.to_owned()]), "Claude's jobs come from its own listing only");
-        assert!(running_jobs(None, live.into_iter()).is_none(), "a failed Claude listing is no evidence for anything");
-        let holders = [attach("aaaaaaaa", THREAD, 10)];
+        let holders = [attach("aaaaaaaa", THREAD, 10), attach("bbbbbbbb", "11111111", 20)];
+        let running = running_jobs(Some(&claude), codex_running(true, [THREAD].into_iter(), &holders)).unwrap();
+        assert_eq!(running, BTreeSet::from(["11111111".to_owned(), THREAD.to_owned()]));
+        assert!(running_jobs(None, codex_running(true, [THREAD].into_iter(), &holders)).is_none(), "a failed Claude listing is no evidence for anything");
         let (mut wanted, none, t0) = (BTreeMap::new(), BTreeSet::new(), Instant::now());
         assert!(idle_attach(&holders, Some("aaaaaaaa"), &none, Some(&running), &mut wanted, t0).is_empty());
         // The thread's mirror ended (Codex's daemon let its rollout go): the client is closed even while shown.
-        assert_eq!(pids(idle_attach(&holders, Some("aaaaaaaa"), &none, Some(&claude), &mut wanted, t0)), [10]);
+        let ended = running_jobs(Some(&claude), codex_running(true, std::iter::empty(), &holders)).unwrap();
+        assert_eq!(pids(idle_attach(&holders, Some("aaaaaaaa"), &none, Some(&ended), &mut wanted, t0)), [10]);
+        // An app relaunch: no mirror is published yet, so an open Codex holder is not judged ended.
+        let relaunch = running_jobs(Some(&claude), codex_running(false, std::iter::empty(), &holders)).unwrap();
+        assert!(idle_attach(&holders, None, &none, Some(&relaunch), &mut BTreeMap::new(), t0).is_empty());
     }
 
     #[test]

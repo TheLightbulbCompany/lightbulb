@@ -697,7 +697,8 @@ def _write_activity(user_id: str, member: dict[str, Any], owner_id: str, kind: s
 
 
 def _notify_members(
-    message: dict[str, Any], meta: dict[str, Any], thread_root_seq: Any = None, silent: bool = False
+    message: dict[str, Any], meta: dict[str, Any], thread_root_seq: Any = None,
+    silent: bool = False, actor_user_id: Any = None,
 ) -> list[tuple[str, bool]]:
     room_id, seq = message["roomId"], message["messageSeq"]
     owner_id = meta["ownerId"]
@@ -705,14 +706,22 @@ def _notify_members(
     participants = _thread_participants(room_id, root, thread_root_seq) if root else set()
     mentioned = {ref["id"] for ref in message["mentions"] if ref["kind"] == "human"}
     author = message["author"]
-    if author["kind"] == "human":
-        mentioned.discard(author["id"])  # a self-mention is not a mention (nor a MENTION# row)
+    accountable_human = (
+        author["id"]
+        if author["kind"] == "human"
+        else actor_user_id if isinstance(actor_user_id, str) and actor_user_id else None
+    )
+    if accountable_human:
+        # Native sessions and hosted MCP clients render as system authors, while
+        # actorUserId identifies the human who sent through them. That human is
+        # still the sender for self-mention, Activity and push purposes.
+        mentioned.discard(accountable_human)
     last_message = _last_message(message)
     mentioned_ids = sorted(mentioned)[:MAX_MENTIONED_USERS]
     # (token, was this token's owner @mentioned) — the push title is per reader.
     recipients: list[tuple[str, bool]] = []
     for user_id, member in _current_members(room_id, owner_id, after_seq=seq):
-        own = author["kind"] == "human" and author["id"] == user_id
+        own = accountable_human == user_id
         # Your own message is never Activity (nor a notify); you still get the hint's preview.
         # Neither is a silent (advisory) line, e.g. "paused after N replies" under a reply
         # that already notified.
@@ -871,7 +880,10 @@ def _project_message(item: dict[str, Any]) -> None:
         "roomRevision": message["roomRevision"],
         "payload": message,
     }
-    recipients = _notify_members(message, meta, item.get("threadRootSeq"), item.get("silent") is True)
+    recipients = _notify_members(
+        message, meta, item.get("threadRootSeq"), item.get("silent") is True,
+        item.get("actorUserId"),
+    )
     _publish(f"/ws/{workspace_id}/rooms/{message['roomId']}/{delivery_key}", event)
     try:
         _emit_metric(

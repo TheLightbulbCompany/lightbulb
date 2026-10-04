@@ -829,6 +829,43 @@ class PushTests(unittest.TestCase):
         _, urlopen = self.project(push_world(kind="dm"))
         self.assertNotIn("tok-alice", urlopen.call_args.args[0].data.decode())
 
+    def test_human_author_remains_accountable_when_actor_user_id_disagrees(self):
+        # actorUserId belongs to delegated system posts. It must never override
+        # the public author on a direct human message, even on a malformed row.
+        for actor_user_id in (BOB_ID, "", 123):
+            with self.subTest(actor_user_id=actor_user_id):
+                message = push_message()
+                message["actorUserId"] = actor_user_id
+                _, urlopen = self.project(push_world(kind="dm"), message)
+                self.assertNotIn("tok-alice", urlopen.call_args.args[0].data.decode())
+                self.assertNotIn(f"ACTIVITY#{OWNER_ID}#{USER_ID}", index._ddb_client.activity())
+
+    def test_accountable_human_behind_a_system_authored_post_is_not_notified(self):
+        # Native sessions and hosted MCP clients render as system authors, but
+        # actorUserId records the human who actually sent the message. Their own
+        # delegated post must not come back as Activity or a phone push.
+        world = push_world(kind="dm")
+        message = push_message()
+        message["author"] = {"kind": "system", "id": "native-session", "displayName": "Codex session"}
+        message["actorUserId"] = USER_ID
+        message["mentions"] = [
+            {"kind": "human", "id": USER_ID},
+            {"kind": "human", "id": BOB_ID},
+        ]
+
+        publish, urlopen = self.project(world, message)
+
+        self.assertNotIn("tok-alice", urlopen.call_args.args[0].data.decode())
+        self.assertNotIn(f"ACTIVITY#{OWNER_ID}#{USER_ID}", index._ddb_client.activity())
+        alice = next(
+            call.args[1]["payload"]
+            for call in publish.call_args_list
+            if call.args[0] == f"/ws/{WORKSPACE_ID}/users/{CHANNEL_KEY}"
+        )
+        self.assertFalse(alice["notify"])
+        self.assertNotIn("push", alice)
+        self.assertEqual(alice["mentionedUserIds"], [BOB_ID])
+
     def test_empty_text_bodies_as_an_image_and_long_text_is_truncated(self):
         for blank in ("", "   "):
             _, urlopen = self.project(push_world(), push_message(blank))

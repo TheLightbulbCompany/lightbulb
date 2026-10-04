@@ -1037,12 +1037,13 @@ async def create_message(
         # One tiny row per @mentioned human (members only, so <= MAX_ROOM_MEMBERS);
         # with the agent targets that is <= 32 + 4 fixed + 1 READ + 1 thread root, well under 100.
         mentioned = {m["id"] for m in mentions if m.get("kind") == "human"}
-        mentioned.discard(author["id"] if author["kind"] == "human" else None)
+        accountable_human_id = author["id"] if author["kind"] == "human" else acting_human_id
+        mentioned.discard(accountable_human_id)
         items.extend(
             {"Put": {"TableName": table_name, "Item": {"pk": room_pk(room_id), "sk": mention_sk(uid, seq)}}}
             for uid in sorted(mentioned)
         )
-        participants = mentioned | ({author["id"]} if author["kind"] == "human" else set())
+        participants = mentioned | ({accountable_human_id} if accountable_human_id else set())
         root_index = None
         if thread_root_message_id and thread_root_seq and participants:
             # The thread's humans (Activity ``thread_reply`` + notify recipients), kept on
@@ -1064,16 +1065,22 @@ async def create_message(
                     }
                 }
             )
-        if top and author["kind"] == "human":
-            # Posting marks the room read for its author (Slack's rule). Unconditional
-            # and still monotonic: nothing can point past the seq this commit creates.
+        if top and accountable_human_id:
+            # Posting marks the room read for its accountable human (Slack's rule).
+            # This includes authenticated delegated system posts. Unconditional and
+            # still monotonic: nothing can point past the seq this commit creates.
             items.append(
                 {
                     "Update": {
                         "TableName": table_name,
-                        "Key": {"pk": room_pk(room_id), "sk": read_sk(author["id"])},
+                        "Key": {"pk": room_pk(room_id), "sk": read_sk(accountable_human_id)},
                         "UpdateExpression": "SET lastReadSeq = :seq, topOrdinal = :top, userId = :u, updatedAt = :now",
-                        "ExpressionAttributeValues": {":seq": seq, ":top": ordinal, ":u": author["id"], ":now": now},
+                        "ExpressionAttributeValues": {
+                            ":seq": seq,
+                            ":top": ordinal,
+                            ":u": accountable_human_id,
+                            ":now": now,
+                        },
                     }
                 }
             )

@@ -107,12 +107,41 @@ async def test_adding_a_third_member_converts_a_dm_without_replacing_its_identit
     assert (await repo.get_message(room_id, int(original["messageSeq"])))["text"] == "history stays"
 
 
-async def _post(room_id, text="hi", targets=None, client_id="m-1", author=None, thread_root=None):
+async def _post(
+    room_id,
+    text="hi",
+    targets=None,
+    client_id="m-1",
+    author=None,
+    thread_root=None,
+    mentions=None,
+    acting_human_id=None,
+):
     """The message only — ``_post_write`` keeps the replay flag."""
-    return (await _post_write(room_id, text, targets, client_id, author, thread_root))[0]
+    return (
+        await _post_write(
+            room_id,
+            text,
+            targets,
+            client_id,
+            author,
+            thread_root,
+            mentions,
+            acting_human_id,
+        )
+    )[0]
 
 
-async def _post_write(room_id, text="hi", targets=None, client_id="m-1", author=None, thread_root=None):
+async def _post_write(
+    room_id,
+    text="hi",
+    targets=None,
+    client_id="m-1",
+    author=None,
+    thread_root=None,
+    mentions=None,
+    acting_human_id=None,
+):
     author = author or {"kind": "human", "id": USER_A, "displayName": "Ann"}
     return await repo.create_message(
         room_id=room_id,
@@ -122,13 +151,14 @@ async def _post_write(room_id, text="hi", targets=None, client_id="m-1", author=
         req_hash=repo.request_hash(text),
         author=author,
         text=text,
-        mentions=[],
+        mentions=mentions or [],
         reply_to_message_id=None,
         thread_root_message_id=thread_root,
         run_id=None,
         dispatch_targets=targets if targets is not None else [{"agentId": FRIDAY, "eventKind": "room_event"}],
         source_agent_id=None,
         client_message_id=client_id,
+        acting_human_id=acting_human_id,
     )
 
 
@@ -623,6 +653,30 @@ async def test_read_cursor_is_monotonic_and_bounded(table):
     assert await repo.set_read_cursor(room_id, USER_A, 9) == 2
     assert await repo.set_read_cursor(room_id, USER_A, 1) == 2
     assert await repo.get_read_cursor(room_id, USER_B) == 0
+
+
+@pytest.mark.asyncio
+async def test_delegated_system_post_marks_accountable_human_read_without_self_mention(table):
+    room_id, _ = await _room(
+        members=[
+            _member("human", USER_A, "owner"),
+            _member("human", USER_B),
+            _member("agent", FRIDAY, handle="friday"),
+        ]
+    )
+    message = await _post(
+        room_id,
+        author={"kind": "system", "id": "native-session", "displayName": "Codex session"},
+        mentions=[
+            {"kind": "human", "id": USER_A, "displayName": "Ann"},
+            {"kind": "human", "id": USER_B, "displayName": "Bob"},
+        ],
+        acting_human_id=USER_A,
+    )
+
+    assert await repo.get_read_cursor(room_id, USER_A) == message["messageSeq"]
+    assert await repo.mention_count(room_id, USER_A, 0) == 0
+    assert await repo.mention_count(room_id, USER_B, 0) == 1
 
 
 @pytest.mark.asyncio

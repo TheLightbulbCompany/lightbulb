@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
-import { useOrganization } from "@clerk/nextjs";
+import { useClerk, useOrganization } from "@clerk/nextjs";
 
 import { ApiError, useApi } from "@/lib/api";
 import { capture } from "@/lib/analytics";
@@ -19,6 +19,12 @@ import type { CompanyMember } from "@/components/teams/shared/types";
 // invitation with an admin/member role select was modelling a seat grant that
 // does not exist. What is here instead: the existing member roster, plus one
 // shareable join link per workspace.
+//
+// Roles and removal are NOT ours either: "Manage members" opens Clerk's own
+// organization screen on its Members tab (owner ruling 2026-10-04). That screen
+// also carries Clerk's email invitations and its leave/delete-workspace
+// buttons; the Clerk webhooks in routers/webhooks.py already handle all of
+// them.
 //
 // NOTHING below invents a membership model. The roster is `GET /teams/members`,
 // the same Clerk-enriched endpoint the chat workspace already renders its human
@@ -86,14 +92,8 @@ export function WorkspaceMembersSection() {
   // the session, so an unset `organization` during that window is "not known
   // yet", not "personal". Reading it as personal would flash the create-a-
   // workspace card at an org admin (the same race DeleteAccountCard documents).
-  //
-  // `memberships` is where each member's role comes from, and Clerk is also
-  // what changes it (`updateMember`), so no endpoint of ours sits in between.
-  // ponytail: one page of 100. A workspace is capped well below that today;
-  // page through when the cap moves, or members past it get no role button.
-  const { organization, membership, memberships, isLoaded } = useOrganization({
-    memberships: { pageSize: 100 },
-  });
+  const { organization, membership, isLoaded } = useOrganization();
+  const { openOrganizationProfile } = useClerk();
   const api = useApi();
   const teams = useTeamsApi();
 
@@ -117,8 +117,6 @@ export function WorkspaceMembersSection() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
-  const [roleBusy, setRoleBusy] = useState<string | null>(null);
-  const [roleError, setRoleError] = useState<string | null>(null);
 
   useEffect(() => {
     if (!orgId || !isAdmin) {
@@ -192,27 +190,6 @@ export function WorkspaceMembersSection() {
     }
   }, [linkUrl]);
 
-  const handleRole = useCallback(
-    async (userId: string, role: string) => {
-      if (!organization) return;
-      setRoleBusy(userId);
-      setRoleError(null);
-      try {
-        await organization.updateMember({ userId, role });
-        await memberships?.revalidate?.();
-      } catch (err) {
-        // Clerk's own sentence when it has one: Clerk is what refuses to
-        // demote the last admin, and it says so.
-        const clerkMessage = (err as { errors?: { longMessage?: string }[] } | undefined)?.errors?.[0]
-          ?.longMessage;
-        setRoleError(clerkMessage || "Couldn't change that role. Please try again.");
-      } finally {
-        setRoleBusy(null);
-      }
-    },
-    [organization, memberships],
-  );
-
   if (!isLoaded) {
     return (
       <div style={{ display: "flex", justifyContent: "center", padding: "60px 0" }}>
@@ -256,21 +233,14 @@ export function WorkspaceMembersSection() {
   }
 
   const members = roster?.members ?? [];
-  // userId -> role, for the members Clerk has told us about. A row Clerk has
-  // not listed gets no role control rather than a guessed one.
-  const roles = new Map<string | undefined, string>(
-    memberships?.data?.map((m) => [m.publicUserData?.userId, m.role]),
-  );
-  const isAdminMember = (userId: string) => roles.get(userId) === "org:admin";
-  const selfId = membership?.publicUserData?.userId;
 
   return (
     <>
       <div className="settings-card" data-testid="members-roster">
         <div className="settings-card-title">In this workspace</div>
         <div className="settings-card-desc">
-          Everyone here shares the same agents, rooms, and subscription. Admins also manage
-          billing, connections, and members.
+          Everyone here shares the same agents, rooms, and subscription. To make someone an
+          admin or remove them, use Manage members.
         </div>
 
         {rosterLoading && (
@@ -326,48 +296,23 @@ export function WorkspaceMembersSection() {
                     <span className="text-sm text-midnight-muted">{member.email}</span>
                   )}
                 </span>
-                {roles.has(member.userId) && (
-                  <span className="ml-auto flex items-center gap-3">
-                    {isAdminMember(member.userId) && (
-                      <span className="text-sm text-midnight-muted">Admin</span>
-                    )}
-                    {/* Not on your own row: demoting yourself here would lock
-                        you out of this panel mid-click. */}
-                    {member.userId !== selfId && (
-                      <button
-                        type="button"
-                        className="settings-btn-outline"
-                        disabled={roleBusy !== null}
-                        onClick={() =>
-                          handleRole(
-                            member.userId,
-                            isAdminMember(member.userId) ? "org:member" : "org:admin",
-                          )
-                        }
-                      >
-                        {roleBusy === member.userId
-                          ? "Working…"
-                          : isAdminMember(member.userId)
-                            ? "Remove admin"
-                            : "Make admin"}
-                      </button>
-                    )}
-                  </span>
-                )}
               </li>
             ))}
           </ul>
         )}
 
-        {roleError && (
-          <div
-            className="settings-alert settings-alert-error"
-            role="alert"
-            style={{ marginTop: 12, marginBottom: 0 }}
-          >
-            {roleError}
-          </div>
-        )}
+        {/* Outside the roster states on purpose: Clerk's screen does not depend
+            on our member list having loaded. */}
+        <button
+          type="button"
+          className="settings-btn-outline"
+          style={{ marginTop: 12 }}
+          onClick={() =>
+            openOrganizationProfile({ __experimental_startPath: "/organization-members" })
+          }
+        >
+          Manage members
+        </button>
       </div>
 
       <div className="settings-card" data-testid="members-join-link">

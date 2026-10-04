@@ -7,6 +7,7 @@ import pytest
 
 from core.services import jev
 from core.services import voice_calls as vc
+from tests.unit.services.voice_stubs import jev_says
 
 MEMBERS = [
     {"kind": "agent", "id": "ceo-1", "displayName": "Ada"},
@@ -26,48 +27,54 @@ def env():
         yield lookup
 
 
-async def _meet(text, decision, unclaimed=False):
-    decide = AsyncMock(return_value=decision)
-    with patch.object(vc.jev, "_decide_for_message", decide):
-        got = await vc.route_live_line(
-            owner_id="org_a",
-            room_id="room-1",
-            speaker_id="Priya + Dan",
-            utterance=text,
-            transcript="",
-            humans=1,
-            setting="meeting",
-            unclaimed=unclaimed,
-        )
-    return got, decide
+async def _meet(text, said, unclaimed=False):
+    decide = vc.jev.decide
+    decide.return_value = said
+    return await vc.route_live_line(
+        owner_id="org_a",
+        room_id="room-1",
+        speaker_id="Priya + Dan",
+        utterance=text,
+        transcript="",
+        humans=1,
+        setting="meeting",
+        unclaimed=unclaimed,
+    )
 
 
-NOBODY = {"agentId": None, "agentIds": []}
+def _nobody(got):
+    return (
+        got["agentId"] is None
+        and got["agentIds"] == []
+        and got["ops"]["requests"] == []
+        and got["ops"]["social"] is None
+    )
+
+
 _REAL_ROOM_TEAM = vc._room_team  # captured before the autouse fixture mocks it
 
 
 async def test_meeting_setting_disables_the_lone_speaker_fallback(env):
-    got, decide = await _meet("hmm, let me share my screen", {"who": "none"})
-    assert got == NOBODY  # in Live a lone speaker's "none" would wake the CEO
-    assert decide.await_args.kwargs["setting"] == "meeting"
-    assert (await _meet("hmm", {"fallback": True}))[0] == NOBODY  # Jev down: silence
-    assert (await _meet("what's our burn", {"who": "none", "forced": "question"}))[0] == NOBODY
+    """In Live a lone speaker's small talk or question wakes the CEO; in a meeting it wakes nobody."""
+    assert _nobody(await _meet("hmm, let me share my screen", jev_says(kinds=["social"])))
+    assert _nobody(await _meet("hmm", None))  # Jev down: silence
+    assert _nobody(await _meet("what's our burn", jev_says(kinds=["request"], whos=["fin-1"])))  # even a sure ask
     env.assert_not_awaited()  # a Meet speaker label is a name, never a Clerk lookup
 
 
 async def test_unclaimed_question_in_a_meeting_picks_at_most_one():
-    got, _ = await _meet("what's our burn?", {"who": "none"}, unclaimed=True)
-    assert got == {"agentId": "ceo-1", "agentIds": ["ceo-1"]}
-    got, _ = await _meet("what's our burn?", {"fallback": True}, unclaimed=True)
-    assert got == {"agentId": "ceo-1", "agentIds": ["ceo-1"]}
-    got, _ = await _meet("what's our burn?", {"who": "fin-1"}, unclaimed=True)
-    assert got == {"agentId": "fin-1", "agentIds": ["fin-1"]}
+    got = await _meet("what's our burn?", jev_says(kinds=["people"]), unclaimed=True)
+    assert got["agentIds"] == ["ceo-1"] and got["ops"]["requests"][0]["by"] == "chief"
+    got = await _meet("what's our burn?", None, unclaimed=True)
+    assert got["agentIds"] == ["ceo-1"]
+    got = await _meet("what's our burn?", jev_says(kinds=["request"], whos=["fin-1"]), unclaimed=True)
+    assert got["agentIds"] == ["fin-1"] and len(got["ops"]["requests"]) == 1
 
 
 async def test_a_name_anywhere_still_addresses():
-    got, decide = await _meet("so I think Finance should check the burn", {"who": "none"})
-    assert got == {"agentId": "fin-1", "agentIds": ["fin-1"]}
-    decide.assert_not_awaited()
+    said = jev_says(kinds=["request"], names=["addressed"])
+    got = await _meet("so I think Finance should check the burn", said)
+    assert got["agentIds"] == ["fin-1"] and got["ops"]["requests"][0]["by"] == "name"
 
 
 async def test_jev_is_told_it_is_a_meeting():
@@ -88,13 +95,12 @@ async def test_a_meeting_line_authorizes_as_the_inviting_owner_and_keeps_the_lab
     members = [*MEMBERS, {"kind": "human", "id": "user_inviter", "role": "owner"}]
     meta = {"roomId": room, "ownerId": "org_a", "kind": "channel", "name": "meet"}
     get_member = AsyncMock(return_value={"kind": "human", "id": "user_inviter", "role": "owner"})
-    decide = AsyncMock(return_value={"who": "none"})
+    vc.jev.decide.return_value = jev_says(kinds=["social"])
     with (
         patch.object(vc, "_room_team", _REAL_ROOM_TEAM),
         patch.object(vc.messaging_repo, "list_members", AsyncMock(return_value=members)),
         patch.object(vc.messaging.messaging_repo, "get_room", AsyncMock(return_value=meta)),
         patch.object(vc.messaging.messaging_repo, "get_member", get_member),
-        patch.object(vc.jev, "_decide_for_message", decide),
     ):
         got = await vc.route_live_line(
             owner_id="org_a",
@@ -105,6 +111,6 @@ async def test_a_meeting_line_authorizes_as_the_inviting_owner_and_keeps_the_lab
             humans=2,
             setting="meeting",
         )
-    assert got == NOBODY
+    assert _nobody(got)
     get_member.assert_awaited_once_with(room, "human", "user_inviter")
-    assert decide.await_args.args[1]["author"] == {"kind": "human", "id": "Priya + Dan", "displayName": "Priya + Dan"}
+    assert vc.jev.decide.await_args.args[0]["latest"]["author"] == "Priya + Dan"

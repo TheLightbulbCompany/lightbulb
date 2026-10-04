@@ -289,15 +289,17 @@ def _fire(coro) -> None:
 # provider caches a byte-identical prefix. Everything per-run rides in the input.
 # The script path is the image's (build-skills.sh maps /app/skills/ -> /opt/hermes-skills/); a
 # run's shell has PAPERCLIP_COMPANY_ID / PAPERCLIP_AGENT_ID from the profile .env.
-TURN_NOTE = """[Note: you are speaking in a Live voice call; your reply is spoken by you and nothing is posted to the room. A person is waiting to hear your answer, so speed matters more than completeness. The request is a voice transcript (it may contain mis-hearings, hesitations and later corrections; use the latest intent). The bracket before it is what was said on the call since you last spoke.
-You decide how to handle it; pick whatever fits the request:
-- Answer now: if you can answer from what you already know or with a couple of quick tool steps, do it and reply in two or three short spoken sentences.
-- Ask: if the request is ambiguous, ask one short clarifying question instead of guessing.
+TURN_NOTE = """[Note: you are speaking in a Live voice call; your reply is spoken by you and nothing is posted to the room. The request below is what a person asked of you, in their own words from a voice transcript (it may contain mis-hearings, hesitations and later corrections; use the latest intent). It is usually one thing; if it holds more than one, do each and give each result. The bracket before it is what was said on the call since you last spoke, for context only. Other requests from the same breath are with teammates or queued for you: answer only what is asked here.
+Anything that can change (email, pull requests, deploys, payments, dates, metrics, what shipped) must be checked with a tool in this turn before you answer. Your memory and earlier messages tell you where to look, never what the answer is. Say in a few words where the answer came from ("from GitHub just now"). If you cannot check it, say so plainly; never give an old value as current.
+Then pick whatever fits the request:
+- Answer: after checking, reply in two or three short spoken sentences, starting with what it is about.
+- Ask: if you cannot tell what is wanted, ask one short clarifying question instead of guessing.
 - Hand it off: if it is real work (research, several lookups, writing or building something) that cannot fit in this turn, say so in one sentence and make sure it gets done by creating a Paperclip task for yourself or for the teammate who owns it:
   printf '%s' "<what to do>" | /opt/hermes-skills/paperclip/scripts/paperclip-api.sh create "$PAPERCLIP_COMPANY_ID" --title "<short title>" --assignee "<your or the owner's agent id; yours is $PAPERCLIP_AGENT_ID>" --status todo
   Only promise to follow up if you actually created that task.
+- Cannot: if you lack the access or the tool, say which one, in one sentence.
 Your reply is spoken: no markdown, no lists, no code, no links, no ids. Never claim an action succeeded before it did.
-This turn has a hard limit of a few model steps; when it runs out you must answer with what you have.]"""
+This turn has a hard limit of a few model steps; when it runs out, say what you found and what is still unchecked.]"""
 
 
 async def post_late_answer(owner_id: str, room_id: str, agent_id: str, run_id: str, request: str, answer: str) -> None:
@@ -846,12 +848,14 @@ def _transcript_history(
 _WAKE_WORD = re.compile(r"^\s*(?:(?:hey|ok|okay)[\s,]+)?light[\s-]?bulb\b[\s,.!?]*", re.I)
 
 
-def _open_voice_lines(floor: dict | None, voice_runs: list[dict] | None, members: list[dict]) -> list[str]:
-    """Live's ``state.open``, from the worker's memory: the floor and the driven voice runs."""
+def _open_voice_lines(floor: dict | None, open_requests: list[dict], members: list[dict]) -> list[str]:
+    """Live's ``state.open`` for the room judge, from the worker's memory: the requests being worked on
+    and the floor."""
     names = {m["id"]: m.get("displayName") or m["id"] for m in members}
     lines = [
-        f'{names.get(r.get("agent"), r.get("agent"))} is answering "{str(r.get("request") or "")[:120]}" (voice)'
-        for r in voice_runs or []
+        f'{names.get(r.get("agentId"), r.get("agentId"))} is answering "{str(r.get("task") or "")[:120]}" (voice)'
+        for r in open_requests
+        if r.get("status") in _OPEN_STATUS
     ]
     if floor and floor.get("agent"):
         lines.append(f"{names.get(floor['agent'], floor['agent'])} has the floor, talking with {floor.get('speaker')}")
@@ -862,6 +866,128 @@ def _routed(*agent_ids: str) -> dict:
     """/route's answer: ``agentId`` (the first; what the shipped worker reads) and ``agentIds`` (every
     agent the line addressed or relayed to, in the order named, for a worker that queues them)."""
     return {"agentId": agent_ids[0] if agent_ids else None, "agentIds": list(agent_ids)}
+
+
+#: Conversation understanding §4.3: a part with no name goes to the teammate whose job it is only when the
+#: pick is this sure and this far ahead of the next; else to the floor agent or the chief of staff.
+#: Fitted on scripts/speak_gate_bench/understand.py.
+FIT_P = 0.35
+FIT_MARGIN = 0.0
+#: The latest message continues or calls off an earlier request at this probability.
+AMEND_P = 0.5
+_OPEN_STATUS = ("queued", "working")
+
+
+def _understood(
+    addressing: dict,
+    utterance: str,
+    *,
+    implied: bool,
+    open_requests: list[dict],
+    agents: set[str],
+) -> dict:
+    """The requests on a line (conversation understanding §4.2-§4.4), from what the one Jev call said about
+    each part. ``implied``: the line can only be for the agents (a lone speaker, the wake word, the floor
+    conversation, a named agent, a line among people the room judge picked an agent for). Not implied, an
+    unnamed part is no request. Owners marked ``None`` here are filled by the caller (the floor agent, the
+    judge's agent, the chief of staff).
+    Returns ``{requests: [{agentId|None, task, by}], talk, more, cancel, steer}``."""
+    parts, pieces = addressing["parts"], addressing["pieces"]
+    named = [(name, agent) for name, agent, _ in addressing["named"]]
+    by_name = dict(named)
+    # a person the line speaks to ends an agent's task like a named agent does ("what's our MRR, and Aden, ...")
+    asked_names = set(by_name) | set(addressing.get("called") or ())
+    rows = {r["id"]: r for r in open_requests}
+
+    def target(answer) -> dict | None:
+        choice, p, _ = answer or (None, 0.0, 0.0)
+        return rows.get(choice) if p >= AMEND_P else None
+
+    kind = {p["index"]: (p["kind"][0] or "request") for p in parts}
+    asks = [p for p in parts if kind[p["index"]] == "request"]
+    if not asks:
+        # Jev read every part as background, yet one opens the way a request does ("we just hired two
+        # engineers in Berlin, | set up their GitHub access"): that part is the request.
+        asks = [p for p in parts if kind[p["index"]] == "context" and p["cue"]]
+        kind |= {p["index"]: "request" for p in asks}
+    if not asks and named and not any(kind[p["index"]] in ("social", "people", "more", "cancel") for p in parts):
+        asks = [p for p in parts if kind[p["index"]] == "context"]  # "Forge, the deploy looks broken"
+        kind |= {p["index"]: "request" for p in asks}
+    # Words that run straight into a name and are asked of nobody ("Can you get | Forge, no actually Gauge,
+    # | to look at ...") are the start of the request beside them, never a request of their own.
+    lead = [p for p in asks if p["into"] and not any(n in by_name for n in p["asked"] or ())]
+    if len(lead) < len(asks):
+        kind |= {p["index"]: "context" for p in lead}
+        asks = [p for p in asks if p not in lead]
+    # a context part belongs to the request beside it: the one before, else the one after
+    mine: dict[int, set[int]] = {p["index"]: {p["index"]} for p in asks}
+    for p in parts:
+        if kind[p["index"]] == "context" and asks:
+            before = [a["index"] for a in asks if a["index"] < p["index"]]
+            mine[before[-1] if before else asks[0]["index"]].add(p["index"])
+
+    def task(indexes: set[int]) -> str:
+        return messaging._task(utterance, pieces, indexes, asked_names) or " ".join(
+            parts[i]["text"] for i in sorted(indexes)
+        )
+
+    where = {ref: start for k, start, _, ref, _ in pieces if k == "part"}
+    name_at = next((start for k, start, _, ref, _ in pieces if k == "name" and named and ref == named[0][0]), -1)
+    after_name = not any(where[p["index"]] > name_at for p in asks)  # nothing is asked after the name
+    requests: list[dict] = []
+    for p in asks:
+        text = task(mine[p["index"]])
+        owners = [by_name[n] for n in (p["asked"] or ()) if n in by_name]
+        if not owners and not messaging._ANYONE.search(p["text"]):
+            if len(named) == 1 and (after_name or where[p["index"]] > name_at):
+                # One agent is addressed: what follows its name is asked of it, and so is what comes before
+                # when nothing follows ("Can you check the deploy, Forge?"). In "check the API, and Ledger,
+                # what's our cash" the first ask is not Ledger's.
+                owners = [named[0][1]]
+            elif len(named) > 1 and p["asked"] is None:
+                # several named and nothing says whose part this is (a line too long to cut): each of
+                # them gets it, as before the cut existed
+                owners = [agent for _, agent in named]
+        if owners:
+            requests += [{"agentId": a, "task": text, "by": "name"} for a in owners]
+            continue
+        if not implied:
+            continue  # people talking among themselves, and the room judge picked nobody
+        who, prob, margin = p["who"]
+        fit = who in agents and prob >= FIT_P and margin >= FIT_MARGIN
+        requests.append({"agentId": who if fit else None, "task": text, "by": "fit" if fit else ""})
+    out = {
+        "requests": requests,
+        "talk": any(kind[p["index"]] in ("social", "more", "context") for p in parts) or not parts,
+        "people": bool(parts) and all(kind[p["index"]] == "people" for p in parts),
+        "more": any(kind[p["index"]] == "more" for p in parts),
+        "cancel": [],
+        "steer": [],
+    }
+    dropped = target(addressing.get("drops"))
+    if dropped and dropped["status"] != "delivered" and any(kind[p["index"]] == "cancel" for p in parts):
+        out["cancel"] = [dropped["id"]]
+    amended = target(addressing.get("amends"))
+    if amended and not out["cancel"] and (asks or any(k == "context" for k in kind.values())):
+        # The message continues an earlier request (Jev answers for the whole message): what it asks,
+        # unless asked of another agent by name, goes to that request. Still being worked on: its run is
+        # steered ("make it shorter and drop the emoji" is one correction). Already answered: its owner
+        # gets the follow-up.
+        theirs = [r for r in requests if r["by"] != "name" or r["agentId"] == amended["agentId"]]
+        about = {p["index"] for p in parts if kind[p["index"]] in ("request", "context")}
+        if len(requests) > 1 and any(r["by"] == "fit" and r["agentId"] != amended["agentId"] for r in theirs):
+            # Several asks and one is plainly another teammate's work: these are new requests that only
+            # touch the same subject (the founder's "check Aden's email ... what shipped ... what PRs are
+            # open" after asking about the same application), not a correction.
+            pass
+        elif amended["status"] in _OPEN_STATUS and (theirs or not requests):
+            said = ". ".join(r["task"] for r in theirs) or task(about)
+            out["requests"] = [r for r in requests if r not in theirs]
+            out["steer"] = [{"requestId": amended["id"], "text": said}]
+        elif amended["status"] not in _OPEN_STATUS:
+            for r in theirs:
+                r |= {"agentId": amended["agentId"], "by": "follow"}
+    return out
 
 
 async def route_live_line(
@@ -878,20 +1004,23 @@ async def route_live_line(
     at: list[int] | None = None,
     setting: str = "live",
     unclaimed: bool = False,
+    open_requests: list[dict] | None = None,
 ) -> dict:
-    """The one Live router (routing v2 §6), every line the worker's position-1 name did not settle,
-    routed exactly as if the speaker had typed it in the room: the shared addressing stage (a name
-    anywhere: addressed and relayed agents answer), chat's select_dispatch_targets, else Jev picks one
-    listener or nobody, else (Jev down) chat's single-responder fallback. Live ignores listen modes
-    (#3591), so every agent listens. Live's own rules: an unfinished line is marked ``hold`` (wait for
-    the speaker's next final) but still names the agent it routes to, for a worker that does not hold;
-    alone in the call, or after the wake word ``wake`` ("Lightbulb, ..."), Jev's "nobody" counts as Jev
-    down -- the speech can only be for the agents. ``setting="meeting"`` (a Google Meet): nobody is
-    implied -- Jev's "none" and a Jev outage both stand -- except an ``unclaimed`` question to the room
-    (the worker waited 3.5 s), which takes the question-to-the-room path and wakes at most one. So in a
-    meeting the wake word alone ("Lightbulb, ...") with nothing unclaimed wakes nobody on a "none":
-    a lone speaker never implies an answer there.
-    Returns ``_routed(...)``, plus ``"hold": True`` for an unfinished line."""
+    """The one Live router (conversation understanding §4.2-§4.4): every final line the worker hears.
+    One Jev call (``messaging.address``) cuts the line into parts and says what each is (a request,
+    context, small talk, talk between people, an announcement, a cancellation) and whose job a request is.
+    A request's owner is the agent the line names, else the teammate it fits, else the floor agent the
+    speaker is talking with, else the chief of staff. Live ignores listen modes (#3591).
+    Who is implied: a lone speaker, the wake word ``wake`` ("Lightbulb, ..."), the floor conversation
+    (``floor.mine``) and a line that names an agent can only be for the agents. With two or more people
+    and no name, chat's room judge (``jev._decide_for_message``: would a good teammate answer this?) says
+    whether an agent answers at all, as it did before understanding; when it picks one, the line is
+    understood like any other and that agent owns what fits nobody better. ``setting="meeting"`` (a Google
+    Meet): nobody is implied but the named, the wake word, the floor conversation and an ``unclaimed``
+    question to the room (the worker waited 3.5 s).
+    Jev down: the whole line is one request for the named agents, else (implied) one agent.
+    Returns ``{agentId, agentIds, requests?, hold?, ops}``: ``ops`` is ``{requests: [{agentId, task, by}],
+    social, more, cancel, steer}``; the other fields are what a worker before ``ops`` reads."""
     members = [
         {**m, "listenMode": "active"} if m.get("kind") == "agent" else m
         for m in await messaging_repo.list_members(room_id)
@@ -903,77 +1032,183 @@ async def route_live_line(
     name = label or await messaging.human_display_name(speaker_id)
     author = {"kind": "human", "id": speaker_id, "displayName": name}
     history = _transcript_history(transcript, members, utterance, at)
-    addressing = await messaging.address({"author": author, "text": utterance}, members, history=history, live=True)
-    if addressing["hold"]:
-        put_metric("voice.routing.jev", dimensions={"outcome": "hold", "setting": setting})
-
-    def done(*agent_ids: str) -> dict:
-        # An unfinished line still answers what it routes to today: the shipped worker reads only
-        # agentId (a null would drop the line); a worker that honours "hold" waits for the next final.
-        return {**_routed(*agent_ids), **({"hold": True} if addressing["hold"] else {})}
-
-    named_ids = addressing["agents"]
-    named = [{"kind": "agent", "id": a} for a in named_ids]
-    targets = messaging.select_dispatch_targets(members, named, None, room_kind=meta.get("kind"))
-    if addressed := [t["agentId"] for t in targets if t["eventKind"] == "user_request"]:
-        # In the order named: the worker drives one voice at a time and can queue the rest.
-        order = [*[a for a in addressing["agents"] if a in addressed], *sorted(set(addressed) - set(named_ids))]
-        routed = done(*order)
-        tasks = addressing.get("tasks")
-        if len(order) >= 2 and tasks != {}:  # {} = names and nothing else ("Forge and Friday?"): no request
-            # Conversation engine §3.2: one request per agent. Its task is its own part of the line, in the
-            # speaker's words; an agent the stage found no part for gets the whole line.
-            tasks = tasks or {}
-            routed["requests"] = [{"agentId": a, "task": tasks.get(a) or utterance} for a in order]
-        return routed
-    candidates = [t["agentId"] for t in targets]
-    if not candidates:
-        return done()
-    people = addressing["humans"]
-    # A relayed request ("Leo, Finance has those numbers") is not to people, nor a wake word.
-    to_people = bool(people) and not named and not addressing["anyone"] and not wake
-    message = {
-        "author": author,
-        "text": utterance,
-        "mentions": [{"kind": "human", "id": p} for p in people],
-        "dispatchTargets": targets,
-    }
+    team = {m["id"]: m.get("displayName") or m["id"] for m in members if m.get("kind") == "agent"}
+    floor_agent = (floor or {}).get("agent") if (floor or {}).get("agent") in team else None
+    mine = bool(floor_agent and (floor or {}).get("mine"))
+    earlier = [
+        {**r, "agent": team[r["agentId"]]}
+        for r in open_requests or []
+        if r.get("agentId") in team and r.get("id") and r.get("task")
+    ]
+    # A worker before ``open`` sends its running work as ``voiceRuns`` ({agent, request}, no ids): the room
+    # judge still sees it ("X is answering ..."); nothing can be steered or called off by id.
+    running = [
+        {"agentId": r.get("agent"), "task": r.get("request"), "status": "working"}
+        for r in voice_runs or []
+        if r.get("agent") in team
+    ]
     try:
-        decision = await asyncio.wait_for(
-            jev._decide_for_message(
-                meta,
-                message,
-                message,
-                members,
-                history,
-                to_people=to_people,
-                placement=False,
-                open_lines=_open_voice_lines(floor, voice_runs, members),
-                setting=setting,
-            ),
-            _ROUTING_TIMEOUT_S,
+        cards = dict(
+            zip(
+                team,
+                await asyncio.wait_for(
+                    asyncio.gather(*(jev.agent_card(owner_id, a, n) for a, n in team.items())), _ROUTING_TIMEOUT_S
+                ),
+            )
         )
-    except Exception:  # noqa: BLE001 -- a timeout or a card read: Jev is down for this line
-        put_metric("voice.routing.timeout")
-        decision = {"fallback": True}
-    who, forced = decision.get("who"), decision.get("forced")
-    if setting == "meeting":
-        # The Meet floor: no lone-speaker or re-ask forcing; only an unclaimed room question forces one.
-        forced = "question" if unclaimed and who not in candidates else None
-    if not forced and (who in candidates or setting == "meeting" or (who == "none" and humans > 1 and not wake)):
-        outcome = "routed" if who in candidates else "none" if who == "none" else "fallback"
-        put_metric("voice.routing.jev", dimensions={"outcome": outcome, "setting": setting})
-        return done(*([who] if who in candidates else []))
-    # Jev down or undecided, a "nobody" a lone speaker or the wake word can't mean, or a "none" the
-    # policy refused (a re-ask, a question to the room): openclaw_work's fallback for a human message.
-    put_metric("voice.routing.jev", dimensions={"outcome": "forced" if forced else "fallback", "setting": setting})
-    if forced:
-        put_metric("messaging.jev.forced", dimensions={"reason": forced})
-    if to_people:
-        return done()  # spoken to a person: silence is the default
-    if len(candidates) == 1:
-        return done(candidates[0])
-    return done(await openclaw_work._fallback_single(owner_id, candidates, message, history))
+    except Exception:  # noqa: BLE001 -- a card read never stops a line: names alone are thinner, not wrong
+        cards = dict(team)
+    floor_line = f"{team[floor_agent]} is talking with {floor.get('speaker')}" if floor_agent else None
+    message = {"author": author, "text": utterance}
+    meeting = setting == "meeting"
+    candidates = sorted(team)
+
+    async def someone() -> str | None:
+        """The agent already in this conversation, else the chief of staff (openclaw_work's fallback)."""
+        if not candidates:
+            return None
+        if len(candidates) == 1:
+            return candidates[0]
+        return await openclaw_work._fallback_single(owner_id, candidates, message, history)
+
+    # People talking among themselves (two or more, no wake word, not the floor conversation, no meeting
+    # rule): the room judge decides whether an agent answers. With no name on the line it runs beside the
+    # understanding call; a line that names someone waits for the addressing labels.
+    crowd = humans > 1 and not (wake or mine or unclaimed or meeting)
+    targets = messaging.select_dispatch_targets(members, [], None, room_kind=meta.get("kind"))
+
+    async def judge(people: list[str], to_people: bool, stage: dict | None = None) -> str | None:
+        """The one agent a good teammate would be here, or None (nobody). Jev down: chat's fallback.
+        ``stage``: what the addressing labels said (people named, something also asked of the room), as
+        chat stores it on a message, so "what's our MRR, and Sam where did you put the deck?" reads as both."""
+        asked = {**message, "mentions": [{"kind": "human", "id": p} for p in people], "dispatchTargets": targets}
+        if stage:
+            asked["addressing"] = stage
+        try:
+            decision = await asyncio.wait_for(
+                jev._decide_for_message(
+                    meta,
+                    asked,
+                    asked,
+                    members,
+                    history,
+                    to_people=to_people,
+                    placement=False,
+                    open_lines=_open_voice_lines(floor, earlier or running, members),
+                    setting=setting,
+                ),
+                _ROUTING_TIMEOUT_S,
+            )
+        except Exception:  # noqa: BLE001 -- a timeout or a card read: Jev is down for this line
+            put_metric("voice.routing.timeout")
+            decision = {"fallback": True}
+        who, forced = decision.get("who"), decision.get("forced")
+        if not forced and who in team:
+            return who
+        if not forced and who == "none":
+            return None
+        if forced:
+            put_metric("messaging.jev.forced", dimensions={"reason": forced})
+        return None if to_people else await someone()
+
+    unnamed = not any(c["agents"] or c["humans"] for c in messaging.address_candidates(utterance, members, live=True))
+    early = asyncio.ensure_future(judge([], False)) if crowd and unnamed and team else None
+    try:
+        addressing = await messaging.address(
+            message,
+            members,
+            history=history,
+            live=True,
+            understand={"cards": cards, "open": earlier, "floor": floor_line, "meeting": meeting},
+        )
+    except BaseException:
+        if early:
+            early.cancel()
+        raise
+    hold = {"hold": True} if addressing["hold"] else {}
+    if hold:
+        put_metric("voice.routing.jev", dimensions={"outcome": "hold", "setting": setting})
+    named = [agent for _, agent, _ in addressing["named"]]
+    to_people = bool(addressing["humans"]) and not named and not addressing["anyone"] and not wake
+    implied = bool(named) or wake or mine or unclaimed or (humans <= 1 and not meeting)
+    picked = None  # the room judge's agent for a line among people
+    if early and named:
+        early.cancel()  # a fuzzy name the candidates missed: the name rules decide
+    elif crowd and not named and team:
+        picked = await (early or judge(addressing["humans"], to_people, messaging._stored_addressing(addressing)))
+        implied, to_people = picked is not None, picked is None
+
+    if addressing["path"] == "fallback":
+        # Jev down: nothing was cut or typed. The whole line is one request, as before understanding.
+        u = {"requests": [], "talk": False, "people": False, "more": False, "cancel": [], "steer": []}
+        if named:
+            u["requests"] = [{"agentId": a, "task": utterance, "by": "name"} for a in named]
+        elif implied and not to_people and candidates:
+            u["requests"] = [{"agentId": None, "task": utterance, "by": ""}]
+    elif to_people:
+        u = {"requests": [], "talk": False, "people": True, "more": False, "cancel": [], "steer": []}
+    else:
+        u = _understood(
+            addressing,
+            utterance,
+            implied=implied and bool(candidates),
+            open_requests=earlier,
+            agents=set(team),
+        )
+        if ((unclaimed and not u["requests"]) or (wake and u["people"])) and candidates:
+            # a question to the room nobody took (the worker waited), or a wake-word line Jev heard as
+            # people talk ("Lightbulb, ..." is said to the agents): one agent answers it
+            u["requests"] = [{"agentId": None, "task": utterance, "by": ""}]
+    if picked and not u["requests"] and not u["cancel"] and not u["steer"]:
+        # the judge heard something to answer where the parts saw talk between people: the line is its request
+        u["requests"] = [{"agentId": None, "task": utterance, "by": ""}]
+    elif picked and len(u["requests"]) == 1 and u["requests"][0]["by"] == "fit":
+        # One ask among people: the judge read the whole conversation (a follow-up goes to the teammate
+        # already in the exchange), the fit only the part. Several asks keep their own best fit.
+        u["requests"][0] |= {"agentId": None, "by": ""}
+    chief = None
+    for r in u["requests"]:
+        if r["agentId"] is None:
+            if mine:
+                r |= {"agentId": floor_agent, "by": "floor"}
+            elif picked:
+                r |= {"agentId": picked, "by": "room"}
+            else:
+                chief = chief or await someone()
+                r |= {"agentId": chief, "by": "chief"}
+    requests = [r for r in u["requests"] if r["agentId"]]
+    social = None
+    if not requests and not u["cancel"] and not u["steer"] and u["talk"] and not u["people"]:
+        # Nothing was asked: one agent may say a sentence, when the speech can only be for the agents.
+        if named:
+            social = named[0]
+        elif mine:
+            social = floor_agent
+        elif implied and not meeting:
+            social = await someone()
+    ops = {
+        "requests": requests,
+        "social": social,
+        "more": u["more"],
+        "cancel": u["cancel"],
+        "steer": u["steer"],
+    }
+    # What a worker before ``ops`` reads. It hands the WHOLE line to every agent in ``agentIds`` unless
+    # ``requests`` splits it, and it reads ``requests`` only for a line that names two or more agents. So
+    # it is told what the router told it before understanding: the agents the line names, each with its
+    # part; else one agent (the first owner, the steered request's agent, or whoever replies to small talk).
+    by_name = list(dict.fromkeys(r["agentId"] for r in requests if r["by"] == "name"))
+    steered = [r["agentId"] for r in earlier if r["id"] in {s["requestId"] for s in u["steer"]}]
+    order = by_name or ([r["agentId"] for r in requests] or steered or ([social] if social else []))[:1]
+    outcome = "routed" if requests else "social" if social else "none"
+    put_metric("voice.routing.jev", dimensions={"outcome": outcome, "setting": setting})
+    routed = {**_routed(*order), **hold, "ops": ops}
+    if len(by_name) >= 2:
+        routed["requests"] = [
+            {"agentId": a, "task": ". ".join(r["task"] for r in requests if r["agentId"] == a and r["by"] == "name")}
+            for a in by_name
+        ]
+    return routed
 
 
 # ---- Option D: rename and voice notes (C3 notices, C8 voice-profile) -------------------------

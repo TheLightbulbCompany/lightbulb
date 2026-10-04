@@ -2699,6 +2699,51 @@ PART_INSTRUCTIONS = (
     "part 'check the deploy' is asked of both. A part that only gives background, greets, thanks someone, "
     "or is said to a person in the room is asked of nobody."
 )
+#: Conversation understanding §4.2: what one part of a spoken line is. The keys are the contract with
+#: voice_calls.route_live_line; the descriptions are tuned on scripts/speak_gate_bench/understand.py.
+KIND_INSTRUCTIONS = (
+    "The latest message was spoken on a voice call that people share with a team of AI teammates. It was "
+    "cut into parts. For the one part given, decide what it is, reading it in the whole message and the "
+    "conversation before it."
+)
+KINDS = {
+    "request": (
+        "Asks the AI team to find out, check, answer, do, make, send or change something, directly or "
+        "indirectly ('what is ...', 'I need to know ...', 'can someone ...', 'Leo needs the ... by Friday'), "
+        "or is a plain instruction ('set up their access', 'rerun it')"
+    ),
+    "context": (
+        "Background only: a fact or a detail for a request made in ANOTHER part of the message; it holds no "
+        "instruction and no question itself"
+    ),
+    "more": (
+        "Only says that requests or questions are coming, or how the speaker wants to go through them "
+        "('I have a few questions', 'let me say them all first', 'couple of things')"
+    ),
+    "social": (
+        "Greeting, thanks, acknowledgement, reaction, thinking aloud, a passing remark or complaint, or a "
+        "question about the call itself ('can you hear me'); nothing for the team to look up or do"
+    ),
+    "people": "Said to another person on the call, or people settling something among themselves; not for the AI team",
+    "cancel": "Calls off or pauses something the team was asked earlier ('forget the deck', 'hold off on that')",
+}
+WHO_PART_INSTRUCTIONS = (
+    "The latest message was spoken on a voice call with a team of AI teammates, and was cut into parts. For "
+    "the one part given, pick the teammate whose job it is: the one who owns this kind of work, judged by "
+    "what each teammate does and the tools they have. Do not pick by who spoke last or who is named "
+    "elsewhere in the message. Pick unsure when the part is not work for anyone, or no teammate clearly "
+    "owns it."
+)
+WHO_UNSURE = "No single teammate clearly owns this, or it is not work for anyone"
+AMENDS_INSTRUCTIONS = (
+    "Earlier requests on this call are listed. Does the latest message continue one of them: correct it, "
+    "narrow it, add detail to it, or ask a follow-up about its answer? Pick that request. Pick none when "
+    "the message asks for something new or is not about any of them."
+)
+DROPS_INSTRUCTIONS = (
+    "Earlier requests on this call are listed. Does the latest message call one of them off (forget it, "
+    "hold off, no longer needed, already handled)? Pick that request. Pick none when nothing is called off."
+)
 #: More parts than this and nobody is cut: each agent gets the whole line.
 MAX_PARTS = 8
 #: A Live line asks Jev a second time when the first answer is this late, and takes whichever comes first:
@@ -2788,11 +2833,85 @@ def _opens_with(text: str, name: str, *, strong: bool = False) -> bool:
 
 _EDGE = " \t\r\n.,;:?!\"'“”‘’-–—"
 #: Filler a speaker puts in front of a request ("ok so ...", "um ...").
-_HEAD = re.compile(r"^(?:and|then|also|plus|so|oh|um|uh|hey|hi|ok|okay|alright)(?:\s|,|$)", re.I)
+_HEAD = re.compile(
+    r"^(?:and|then|also|plus|but|so|oh|um|uh|hey|hi|ok|okay|alright|anyway|anyways|like|you\s+know|i\s+mean)"
+    r"(?:\s|,|$)",
+    re.I,
+)
 #: A connector left hanging where a part runs straight into a name ("check the deploy and | Friday ...").
 _TAIL = re.compile(r"(?:^|\s)(?:and|then|also|plus|hey|hi|ok|okay)$", re.I)
 #: A sentence ends at . ? ! ; followed by a space or the end: "v2.1" and "3.5 percent" are one sentence.
 _SENTENCE = re.compile(r".+?(?:[.?!;]+(?=\s|$)|$)", re.S)
+# Conversation understanding §4.2: a new request begins inside a sentence ("... and what PRs are open",
+# ", then tell me ...", "um first whats our burn", "good morning um can you check ..."). Speech-to-text
+# often gives no punctuation, so the cut reads words: after a comma, a joiner, a filler or an ordinal, the
+# next words must open a request (a question word, "I need / can you / someone", or an asking verb with
+# its object); "can you" and "I need" open one after anything.
+_ASK_STRONG = (
+    r"(?:(?:can|could|would)\s+(?:you|someone|somebody|one\s+of\s+you)|i\s+(?:also\s+)?(?:need|want)|"
+    r"i['’]d\s+(?:like|love)|i\s+would\s+like)\b"
+)
+_ASK_Q = (
+    r"(?:what|what['’]?s|when|when['’]s|where|where['’]s|who|who['’]s|whoever(?:['’]s)?|why|how|how['’]s|which|"
+    r"whether|is|are|was|were|did|does|do|has|have|can|could|would|will|should|"
+    r"i\s+(?:also\s+)?(?:need|want)|i['’]d\s+(?:like|love)|i\s+would\s+like|we\s+need|"
+    r"someone|somebody|anyone|anybody|one\s+of\s+you)\b"
+)
+# "send it to Dana" after "export the list and then" leans on what came before: it is the same request,
+# so a pronoun object (it, them, those) opens no new one.
+# An instruction after a joiner: an asking verb with its object, or ANY word followed by a determiner
+# ("and rotate the key", "plus send the email": no verb list covers what people say). A pronoun object
+# ("send it to Dana") leans on the step before, and "let me know ..." is a tail: neither opens a request.
+_NOT_A_VERB = (
+    r"(?:all|both|half|even|only|just|then|now|maybe|not|also|is|was|are|were|be|in|on|at|for|with|to|from|of|by|"
+    r"about|after|before|like|than|as|if|when|while|because|since|that|what|how|why|where|who|which|whether|it|"
+    r"they|we|he|she|you|i|there|this|these|those|the|a|an|and|or|but|so|then|me|us|them|him|her|"
+    r"um|uh|well|please|know|mean|okay|ok|alright|oh|anyway|anyways|actually|sorry|yeah|yes|no)"
+)
+_ASK_V = (
+    # verbs that are only ever an instruction here take any object ("and pull signups by country")
+    r"(?:(?:check|pull|send|draft|write|fix|find|get|give|tell|show|grab|fetch|remind|schedule|book|summarize|"
+    r"compare|merge|rerun|restart|deploy|translate|figure)\s+(?!(?:it|them|those|these|him|her)\b)[a-z0-9]"
+    # verbs that are also nouns need an object word after them ("and email the list", not "email open numbers")
+    r"|(?:see|make|build|create|look|run|list|update|move|close|ask|set|add|open|review|post|share|call|ping|"
+    r"cancel|confirm|verify|forward|file|track|bring|reply|email)"
+    r"\s+(?:the|a|an|my|our|your|their|his|her|its|me|us|this|that|if|whether|what|"
+    r"what['’]s|which|who|how|why|when|where|out|up|to|for|on|in|into|with|about|at|over|through|all|any|every|"
+    r"everyone|some)\b"
+    rf"|(?!{_NOT_A_VERB}\b)[a-z][a-z'’-]+\s+(?:the|a|an|my|our|your|their|this|that)\b)"
+)
+_JOINER = r"(?:and|then|also|plus|but|anyway|anyways|btw|by\s+the\s+way|okay|ok|alright|oh|so(?!\s+that\b))"
+_ORDINAL = (
+    r"(?:(?:the\s+)?(?:first|second|third|next|last|final)(?:\s+(?:one|thing|up|question))?(?:\s+is)?|"
+    r"lastly|finally|one\s+more(?:\s+thing)?)"
+)
+_FILL_WORD = r"(?:um|uh|like|please|also|then|well|just|you\s+know|i\s+mean|while\s+you['’]re\s+at\s+it)"
+_FILLER = rf"(?:{_FILL_WORD}[\s,]+)*"
+_CUE = re.compile(
+    rf"(?:\s*,\s*(?:{_JOINER}\s+)*|\s+(?:{_JOINER}\s+)+|\s+(?={_FILLER}{_ORDINAL}\b)|\s+(?={_FILL_WORD}[\s,])|"
+    rf"\s+(?={_ASK_STRONG}))"
+    rf"(?={_FILLER}(?:{_ORDINAL}\s*,?\s+)?{_FILLER}(?:{_ASK_Q}|{_ASK_V}))",
+    re.I,
+)
+#: Words that only open a request ("okay can you also | rerun the job"): never a part of their own.
+_OPENER_ONLY = re.compile(
+    r"^(?:(?:can|could|would|will)\s+(?:you|someone|somebody|we|one\s+of\s+you)|i\s+(?:also\s+)?(?:need|want)"
+    r"(?:\s+you)?(?:\s+to)?|i['’]d\s+(?:like|love)(?:\s+you)?(?:\s+to)?|please|let['’]?s)?"
+    r"(?:\s*(?:also|just|please|to))*$",
+    re.I,
+)
+#: A part that opens the way a request does (a question word, "can you", an instruction).
+_OPENS_ASK = re.compile(rf"^{_FILLER}(?:{_ASK_STRONG}|{_ASK_Q}|{_ASK_V})", re.I)
+#: "tell Priya", "remind the team that": what follows is what to tell them, not a new request.
+_REPORTING = re.compile(
+    r"\b(?:tell|ask|remind|message|email|text|ping|inform|let)\s+\S+(?:\s+\S+)?(?:\s+(?:that|know))?$", re.I
+)
+#: Words that only say who is asked, with no ask yet ("whoever handles billing", "someone on the team").
+_ADDRESSEE_ONLY = re.compile(
+    r"^(?:someone|somebody|anyone|anybody|whoever(?:['’]s)?|one\s+of\s+(?:you|the\s+agents))\b(?:\s+\S+){0,4}$", re.I
+)
+#: A part the speaker hands to nobody in particular ("... and someone check the queue"): never its named agent's.
+_ANYONE = re.compile(r"\b(?:someone|somebody|anyone|anybody|whoever(?:['’]s)?|one\s+of\s+(?:you|the\s+agents))\b", re.I)
 
 
 def _name_hits(text: str, cand: dict) -> list[re.Match]:
@@ -2827,13 +2946,39 @@ def _clean(seg: str, into_name: bool = False) -> str:
     return seg
 
 
-def _pieces(text: str, cands: list[dict]) -> list[tuple[str, int, int, str | int, bool]]:
+_CLAUSE_START = re.compile(r"(?:^\s*|[.?!;]\s+|,\s+|\b(?:and|hey|hi|ok|okay|so)\s+)$", re.I)
+
+
+def _cue_spans(seg: str) -> list[tuple[int, int]]:
+    """One sentence cut where a new request begins (understanding §4.2); a cut that would leave only filler
+    in front of it is not made."""
+    cuts = [0]
+    for m in _CUE.finditer(seg):
+        before = _clean(seg[cuts[-1] : m.start()])
+        # no part of its own: filler and "can you", or only who is asked ("whoever handles billing | can you ...")
+        if _OPENER_ONLY.match(before) or _ADDRESSEE_ONLY.match(before):
+            continue
+        # the words to pass on to someone are the same request ("tell Priya | I need the board deck")
+        if not m.group(0).strip() and _REPORTING.search(before):
+            continue
+        cuts.append(m.start())
+    return list(zip(cuts, [*cuts[1:], len(seg)]))
+
+
+def _pieces(text: str, cands: list[dict], cues: bool = False) -> list[tuple[str, int, int, str | int, bool]]:
     """A Live line in order (conversation engine §3.2): ``("name", start, end, candidate name, False)``
     where a name stands, and ``("part", start, end, index, into_name)`` for the words between names and
     sentence ends that are more than filler; ``into_name``: the words run straight into the next name.
-    One request is made of whole parts."""
+    One request is made of whole parts. ``cues``: a sentence is also cut where a new request begins."""
     names, last = [], 0
-    for start, end, name in sorted((start, end, c["name"]) for c in cands for start, end in _named_at(text, c)):
+    for start, end, name in sorted(
+        (start, end, c["name"])
+        for c in cands
+        for start, end in _named_at(text, c)
+        # A word only heard as a name ("last" for Atlas, "forget" for Forge) cuts the line only where a
+        # name would open a clause; inside one ("what our CAC was last month") it is a word.
+        if not cues or c["said"].lower() == c["name"] or _CLAUSE_START.search(text[:start])
+    ):
         if start >= last:  # two candidates on the same words: the first one
             names.append((start, end, name))
             last = end
@@ -2841,10 +2986,15 @@ def _pieces(text: str, cands: list[dict]) -> list[tuple[str, int, int, str | int
     cursor, parts = 0, 0
     for start, end, name in [*names, (len(text), len(text), "")]:
         for m in _SENTENCE.finditer(text[cursor:start]):
-            into_name = bool(name) and cursor + m.end() == start and not re.search(r"[.?!;]\s*$", m.group(0))
-            if _clean(m.group(0), into_name):
-                out.append(("part", cursor + m.start(), cursor + m.end(), parts, into_name))
-                parts += 1
+            spans = _cue_spans(m.group(0)) if cues else [(0, len(m.group(0)))]
+            for a, b in spans:
+                last_span = b == len(m.group(0))
+                into_name = (
+                    last_span and bool(name) and cursor + m.end() == start and not re.search(r"[.?!;]\s*$", m.group(0))
+                )
+                if _clean(m.group(0)[a:b], into_name):
+                    out.append(("part", cursor + m.start() + a, cursor + m.start() + b, parts, into_name))
+                    parts += 1
         if name:
             out.append(("name", start, end, name, False))
         cursor = end
@@ -2958,6 +3108,14 @@ async def _decide(state: dict, questions: dict, hedge: bool) -> Any:
             task.cancel()
 
 
+def _choice(answer: dict | None) -> tuple[str | None, float, float]:
+    """A Jev choice as ``(choice, its probability, its lead over the runner-up)``."""
+    answer = answer or {}
+    probs = sorted((float(p) for p in (answer.get("probabilities") or {}).values()), reverse=True)
+    top = float((answer.get("probabilities") or {}).get(answer.get("choice"), probs[0] if probs else 0.0))
+    return answer.get("choice"), top, top - (probs[1] if len(probs) > 1 else 0.0)
+
+
 async def _label(
     latest: dict,
     cands: list[dict],
@@ -2966,14 +3124,37 @@ async def _label(
     live: bool,
     parts: list[str] = (),
     askable: list[str] = (),
+    understand: dict | None = None,
+    spoken: list[str] = (),
 ) -> dict | None:
-    """The one Jev call: ``{labels: {name: label}, complete: p, anyone: p}``, or None on any failure."""
+    """The one Jev call: ``{labels: {name: label}, complete: p, anyone: p}``, or None on any failure.
+    ``understand`` (conversation understanding §4.2) adds, per spoken part, what it is and whose job it is,
+    and which earlier request the message continues or calls off: ``kinds``, ``whos``, ``amends``, ``drops``."""
     from core.services import jev
 
     questions = {
         "complete": {"type": "boolean", "instructions": COMPLETE_INSTRUCTIONS},
         "anyone": {"type": "boolean", "instructions": ANYONE_INSTRUCTIONS},
     }
+    earlier = (understand or {}).get("open") or []
+    if understand is not None:
+        cards = {**understand["cards"], "unsure": WHO_UNSURE}
+        for i, part in enumerate(spoken):
+            given = f" The part: {json.dumps(part)}."
+            questions[f"k{i}"] = {"type": "choice", "instructions": KIND_INSTRUCTIONS + given, "criteria": KINDS}
+            questions[f"w{i}"] = {"type": "choice", "instructions": WHO_PART_INSTRUCTIONS + given, "criteria": cards}
+        if earlier:
+            listed = {r["id"]: f'{r["agent"]}: "{r["task"][:160]}" ({r["status"]})' for r in earlier}
+            questions["amends"] = {
+                "type": "choice",
+                "instructions": AMENDS_INSTRUCTIONS,
+                "criteria": {**listed, "none": "Something new, or not about any of these"},
+            }
+            questions["drops"] = {
+                "type": "choice",
+                "instructions": DROPS_INSTRUCTIONS,
+                "criteria": {**listed, "none": "Nothing is called off"},
+            }
     for i, c in enumerate(cands):
         kind = (
             "both a person and an AI teammate here"
@@ -3003,9 +3184,16 @@ async def _label(
         "recent": [jev._line(m) for m in history[-6:]],
         "latest": jev._line(latest),
     }
+    if understand is not None:
+        if understand.get("floor"):
+            state["room"]["floor"] = understand["floor"]
+        if understand.get("meeting"):
+            state["room"]["setting"] = jev.MEETING_CONTEXT
+        if earlier:
+            state["earlierRequests"] = [f'{r["agent"]}: "{r["task"][:160]}" ({r["status"]})' for r in earlier]
     try:
         answers = await asyncio.wait_for(_decide(state, questions, hedge=live), ADDRESSING_TIMEOUT_S)
-        return {
+        out = {
             "labels": {c["name"]: answers[f"n{i}"]["choice"] for i, c in enumerate(cands)},
             "complete": float(answers["complete"]["probability"]),
             "anyone": float(answers["anyone"]["probability"]),
@@ -3014,6 +3202,11 @@ async def _label(
                 choices.get((answers.get(f"p{i}") or {}).get("choice"), ("", set()))[1] for i in range(len(parts))
             ],
         }
+        if understand is not None:
+            out["kinds"] = [_choice(answers.get(f"k{i}")) for i in range(len(spoken))]
+            out["whos"] = [_choice(answers.get(f"w{i}")) for i in range(len(spoken))]
+            out["amends"], out["drops"] = _choice(answers.get("amends")), _choice(answers.get("drops"))
+        return out
     except TimeoutError:
         # The stage's own limit cancelled the call, which jev.decide reports as "cancelled" (so a hedged
         # twin is no failure): count the timeout here, for the P26 error-rate alarm.
@@ -3023,26 +3216,34 @@ async def _label(
         return None
 
 
-async def address(latest: dict, members: list[dict], *, history: Any = (), live: bool = False) -> dict:
+async def address(
+    latest: dict, members: list[dict], *, history: Any = (), live: bool = False, understand: dict | None = None
+) -> dict:
     """Who a human's ``latest`` message speaks to. ``{agents, humans, hold, anyone, path}``:
     ``agents`` addressed or relayed (all of them respond, like several @mentions), ``humans``
     addressed, ``hold`` (Live waits for the speaker's next final), ``anyone`` (something is asked
     of the room beyond the named, so the to-people silence rule does not apply). ``history`` is the
-    rows before it, or an async loader called only when the Jev call happens."""
+    rows before it, or an async loader called only when the Jev call happens.
+    ``understand`` (Live; conversation understanding §4.2): ``{cards, open, floor}``. The line is also cut
+    where a new request begins, the same call says what each part is and whose job it is, and the answer
+    gains ``parts`` (``{index, text, kind, who, asked}``), ``pieces``, ``named``, ``amends`` and ``drops``."""
     text = str(latest.get("text") or "")
     out: dict = {"agents": [], "humans": [], "hold": False, "anyone": False, "path": "none"}
     cands = address_candidates(text, members, live=live)
     mentioned = {ref.get("id") for ref in latest.get("mentions") or [] if ref.get("kind") == "agent"}
-    if not cands or all(c["agents"] and set(c["agents"]) <= mentioned and not c["humans"] for c in cands):
-        # Nobody named, or only @mentioned agents (addressed anyway): today's path, no call.
-        return out
-    if (agent := _fast_path(text, cands, live)) is not None:
-        out |= {"agents": [agent], "path": "fast"}
-        put_metric("messaging.addressing.stage", dimensions={"path": "fast", "surface": "live" if live else "chat"})
-        return out
+    if understand is None:
+        if not cands or all(c["agents"] and set(c["agents"]) <= mentioned and not c["humans"] for c in cands):
+            # Nobody named, or only @mentioned agents (addressed anyway): today's path, no call.
+            return out
+        if (agent := _fast_path(text, cands, live)) is not None:
+            out |= {"agents": [agent], "path": "fast"}
+            put_metric("messaging.addressing.stage", dimensions={"path": "fast", "surface": "live" if live else "chat"})
+            return out
     # Conversation engine §3.2: a live line naming 2+ agents is cut into parts at the names, and this same
     # call says who each part is asked of.
-    pieces = _pieces(text, cands) if live else []
+    pieces = _pieces(text, cands, cues=understand is not None) if live else []
+    if understand is not None and sum(kind == "part" for kind, *_ in pieces) > MAX_PARTS:
+        pieces = [("part", 0, len(text), 0, False)]  # too many parts to ask about: the line is one part
     said = {ref for kind, _, _, ref, _ in pieces if kind == "name"}
     askable = [c["name"] for c in cands if len(c["agents"]) == 1 and c["name"] in said]
     parts = [_clean(text[start:end], into) for kind, start, end, _, into in pieces if kind == "part"]
@@ -3056,6 +3257,8 @@ async def address(latest: dict, members: list[dict], *, history: Any = (), live:
         live,
         parts if split else [],
         askable,
+        understand,
+        parts if understand is not None else [],
     )
     if result is None:
         # A safe fallback, not a substitute ([AX] (c): the common-word false-speaks come back). A weekday
@@ -3073,7 +3276,7 @@ async def address(latest: dict, members: list[dict], *, history: Any = (), live:
         out["path"] = "jev"
     out["hold"] = result["complete"] < HOLD_BELOW
     out["anyone"] = result["anyone"] >= 0.5
-    hits = []
+    hits, called = [], []  # agents asked; people spoken to (their names are no part of an agent's task)
     for c in cands:
         label = result["labels"][c["name"]]
         if c["name"] in WEEKDAYS and re.search(_DAY_USE.format(day=re.escape(c["said"])), text, re.I):
@@ -3093,6 +3296,7 @@ async def address(latest: dict, members: list[dict], *, history: Any = (), live:
             hits.append((c, agent, label))
         elif label == "addressed":
             out["humans"] += c["humans"]
+            called.append(c["name"])
     if live and len(hits) >= 2 and not parts:
         out["tasks"] = {}  # names and nothing else ("Forge and Friday?"): a summons, not a request for each
     elif len(hits) >= 2 and any(result["asked"]):
@@ -3108,6 +3312,38 @@ async def address(latest: dict, members: list[dict], *, history: Any = (), live:
             task = _task(text, pieces, mine, asked_names)
             if len(task.split()) >= fewest:
                 out["tasks"].setdefault(agent, task)
+    if understand is not None:
+        # Conversation understanding §4.2: what the one call said about each part; voice_calls assembles the requests.
+        asked = result["asked"] or [None] * len(parts)
+        if result["asked"] and hits:
+            asked = _with_relayers(pieces, result["asked"], {c["name"]: label for c, _, label in hits})
+        kinds, whos = result.get("kinds") or [], result.get("whos") or []
+        # "Can you get | Forge ..." and "@priya can you and | Analytics look at churn" run into the name;
+        # "check the API, and | Ledger, ..." is an ask of its own that ended before it.
+        into = [
+            into_name
+            and (
+                not re.search(r"(?:,|\b(?:and|then|also|plus|but))\s*$", text[start:end], re.I)
+                or bool(_OPENER_ONLY.match(re.sub(r"^@?[\w-]+[\s,]+(?=\S+\s+\S)", "", parts[i])))
+            )
+            for i, (kind, start, end, _, into_name) in enumerate(p for p in pieces if p[0] == "part")
+        ]
+        out["parts"] = [
+            {
+                "index": i,
+                "text": part,
+                "into": into[i],  # the words run straight into a name ("Can you get | Forge ...")
+                "cue": bool(_OPENS_ASK.match(part)),  # it opens the way a request does
+                "kind": kinds[i] if i < len(kinds) else (None, 0.0, 0.0),
+                "who": whos[i] if i < len(whos) else (None, 0.0, 0.0),
+                "asked": asked[i] if i < len(asked) else None,
+            }
+            for i, part in enumerate(parts)
+        ]
+        out["pieces"] = pieces
+        out["named"] = [(c["name"], agent, label) for c, agent, label in hits]
+        out["called"] = called
+        out["amends"], out["drops"] = result.get("amends"), result.get("drops")
     put_metric("messaging.addressing.stage", dimensions={"path": out["path"], "surface": "live" if live else "chat"})
     return out
 

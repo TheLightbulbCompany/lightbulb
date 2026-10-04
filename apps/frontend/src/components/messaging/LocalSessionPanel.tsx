@@ -58,7 +58,8 @@ export function LocalSessionPanel({ session, ownerName, own, client, revision, o
   // session through `claude attach`. A plain interactive Claude and any plain Codex: the transcript.
   const hasTerminal = !!session.terminal;
   const running = session.status !== "ended" && session.status !== "offline";
-  const local = useLocalTerminal(session.status === "ended" || !hasTerminal ? null : { sessionId: session.sessionId }, slot, details === null);
+  // An offline session still probes this Mac's holder: "offline" is the relay's view (sharing off, a reconnect), not the Mac's.
+  const local = useLocalTerminal(session.status === "ended" || (running && !hasTerminal) ? null : { sessionId: session.sessionId }, slot, details === null);
   const watchRemote = local === "none" && hasTerminal && running && !!onEvent && !!client.watchLocalSession;
   const [screenLive, setScreenLive] = useState(false);
   // False once the terminal is read-only for this viewer (the Mac refused input): the message box is the way to send then.

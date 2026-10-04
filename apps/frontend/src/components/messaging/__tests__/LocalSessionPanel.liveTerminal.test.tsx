@@ -106,3 +106,19 @@ it("gives a plain Codex session and a teammate no ← hint", () => {
   expect(screen.queryByText(/Press ←/)).toBeNull();
   expect(screen.getByText(`Transcript · ${sessionStatus.idle}`)).toBeTruthy();
 });
+
+it("still probes this Mac's holder for an offline session, and never for a running one with no terminal", () => {
+  const invoke = vi.fn(async () => ({ live: false }));
+  (window as { __TAURI__?: unknown }).__TAURI__ = { core: { invoke } };
+  try {
+    const props = { ownerName: "Alice", own: true, client: client as never, revision: 0, onAccessLost: () => {} };
+    const offline = render(<LocalSessionPanel {...props} session={{ ...session, status: "offline" }} />);
+    expect(invoke).toHaveBeenCalledWith("terminal_panel", expect.objectContaining({ sessionId: "s" }));
+    offline.unmount();
+    invoke.mockClear();
+    render(<LocalSessionPanel {...props} session={{ ...session, terminal: undefined, status: "busy" }} />);
+    expect(invoke).not.toHaveBeenCalled();
+  } finally {
+    delete (window as { __TAURI__?: unknown }).__TAURI__;
+  }
+});

@@ -204,3 +204,14 @@ it("opens the session a Claude session moved to the background continues as", as
   focus({ session: { ...session, sessionId: "s2", forkedFrom: "s1", title: "Moved on" }, ownerName: "Alice", own: false });
   expect(await screen.findByRole("heading", { name: "Claude Moved on" })).toBeInTheDocument();
 });
+
+it("opens a live origin, not a fork copied from it", async () => {
+  const client = { listWorkspaceSessions: vi.fn(), getLocalSession: vi.fn(), listLocalSessionEvents: vi.fn(async () => ({ events: [], nextAfterSeq: null })), submitLocalSessionCommand: vi.fn(), getLocalSessionCommand: vi.fn() } as unknown as SessionSource["client"];
+  const entries = [
+    { session: { ...session, sessionId: "s2", forkedFrom: "s1", title: "The fork" }, ownerName: "Alice", own: false },
+    { session, ownerName: "Alice", own: false },
+  ];
+  render(<SessionFocus focus={{ sessionId: "s1" }} entries={entries} loading={false} hintRevision={0} client={client}
+    resolveSessionOwner={resolveSessionOwner} onAccessLost={vi.fn()} onClose={vi.fn()} />);
+  expect(await screen.findByRole("heading", { name: "Claude Load test" })).toBeInTheDocument();
+});

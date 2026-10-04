@@ -365,6 +365,27 @@ async def test_an_ask_already_being_worked_on_is_not_made_twice(decide):
     assert tasks(again) == [("forge", "what are the open PRs", "fit")]
 
 
+async def test_a_correction_with_no_ask_of_its_own_still_drops_the_unheard_answer(decide):
+    """Codex P2: a correction typed as context ("actually last month, not last week") makes no request of its
+    own; the ready answer is stale all the same."""
+    ready = [{"id": "r1", "agentId": "gauge", "task": "how many signups came in last week", "status": "ready"}]
+    said = jev_says(kinds=["context"], amends="r1")
+    got = await route(decide, "Actually last month not last week.", said, opened=ready)
+    assert got["ops"]["cancel"] == ["r1"] and got["ops"]["steer"] == []
+    ((agent, task, by),) = tasks(got)
+    assert (agent, by) == ("gauge", "follow")
+    assert task.startswith("how many signups came in last week. ") and "last month" in task
+
+
+async def test_jev_down_a_repeat_of_a_working_ask_is_not_made_twice(decide):
+    """Codex P2: the fallback path makes the whole line one request; the same words as a working row are not."""
+    working = [{"id": "r1", "agentId": "forge", "task": "what are the open PRs", "status": "working"}]
+    got = await route(decide, "What are the open PRs?", None, floor="forge", opened=working)
+    assert tasks(got) == []
+    new = await route(decide, "What shipped this week?", None, floor="forge", opened=working)
+    assert tasks(new) == [("forge", "What shipped this week?", "floor")]
+
+
 async def test_calling_a_request_off_cancels_it(decide):
     # "Forget" is heard as a possible "Forge" (the worker's fuzzy match): Jev says it is not the name
     said = jev_says(kinds=["cancel"], names=["not_a_name"], drops="r1")

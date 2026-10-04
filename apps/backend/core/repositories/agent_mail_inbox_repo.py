@@ -28,7 +28,7 @@ from core.dynamodb import get_table, run_in_thread, utc_now_iso
 
 logger = logging.getLogger(__name__)
 
-_MAX_TEXT_CHARS = 64_000
+MAX_TEXT_CHARS = 64_000
 _TTL_SECONDS = 30 * 24 * 3600
 
 
@@ -92,7 +92,7 @@ async def put_message(
         "message_id": message_id,
         "from_addr": from_addr,
         "subject": subject,
-        "text": (text or "")[:_MAX_TEXT_CHARS],
+        "text": (text or "")[:MAX_TEXT_CHARS],
         # Only the threading headers — the full header dict is sender-controlled bulk.
         "headers": {
             k: v for k, v in (headers or {}).items() if k.lower() in ("message-id", "references", "in-reply-to")
@@ -129,7 +129,7 @@ async def put_sent(
             "ttl": int(time.time()) + _TTL_SECONDS,
         }
         if text:
-            item["text"] = text[:_MAX_TEXT_CHARS]
+            item["text"] = text[:MAX_TEXT_CHARS]
         await run_in_thread(_get_table().put_item, Item=item)
     except Exception:  # noqa: BLE001 — see docstring
         logger.warning("agent_mail_inbox: put_sent failed for %s", message_id, exc_info=True)

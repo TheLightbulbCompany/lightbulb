@@ -582,6 +582,18 @@ async def test_a_member_reads_one_mail_in_full_from_the_public_address(async_cli
     assert body["to"] == PUBLIC and body["from"] == "pat@acme.com" and body["key"] == _FULL["received_key"]
 
 
+async def test_a_mail_cut_at_the_storage_cap_says_so(async_client_org_member):
+    from core.repositories.agent_mail_inbox_repo import MAX_TEXT_CHARS
+
+    with (
+        patch.object(agent_mail, "team_address", AsyncMock(return_value=TEAM)),
+        patch.object(agent_mail, "public_for", AsyncMock(return_value=PUBLIC)),
+        patch.object(agent_mail, "get_message", AsyncMock(return_value={**_FULL, "text": "y" * MAX_TEXT_CHARS})),
+    ):
+        r = await async_client_org_member.get("/api/v1/agent-mail/message", params={"key": "k"})
+    assert r.json()["truncated"] is True
+
+
 @pytest.mark.parametrize(
     ("address", "item"),
     [(TEAM, None), (TEAM, {**_FULL, "owner_id": "org_other"}), (None, _FULL)],

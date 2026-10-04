@@ -90,7 +90,7 @@ async def test_put_sent_keeps_the_body_cut_and_nudges_the_mail_panel(monkeypatch
     await repo.put_sent(
         address="a@b.c", message_id="<x@d>", owner_id="o", agent_id="a", to="t@x.y", subject="s", text="z" * 70_000
     )
-    assert table.put_item.call_args.kwargs["Item"]["text"] == "z" * repo._MAX_TEXT_CHARS
+    assert table.put_item.call_args.kwargs["Item"]["text"] == "z" * repo.MAX_TEXT_CHARS
     agent_email.mail_changed.assert_awaited_once_with("o")
 
 

@@ -24,7 +24,7 @@ from pydantic import BaseModel
 from core.auth import AuthContext, get_current_user, resolve_owner_id
 from core.dynamodb import run_in_thread
 from core.repositories import agent_email_repo, container_repo, messaging_repo
-from core.repositories.agent_mail_inbox_repo import get_message, list_messages, list_page, reply_key
+from core.repositories.agent_mail_inbox_repo import MAX_TEXT_CHARS, get_message, list_messages, list_page, reply_key
 from core.services import meeting_invites, messaging
 from core.services.agent_email import EMAIL_ADDRESS_RE, ensure_team_address, public_for, team_address
 from core.services.agent_mail_send import _owner_email, send
@@ -356,7 +356,9 @@ async def team_message(
     if not item or item.get("owner_id") != owner_id:
         raise HTTPException(status_code=404, detail={"status": "not_found"})
     shown = await public_for(address)
-    return {**_mail_view(shown, item), "text": item.get("text") or "", "truncated": False}
+    text = item.get("text") or ""
+    # Storage keeps the first MAX_TEXT_CHARS; a body at the cap was (almost surely) cut there.
+    return {**_mail_view(shown, item), "text": text, "truncated": len(text) >= MAX_TEXT_CHARS}
 
 
 @router.get("/meetings/{meeting_id}/transcript")

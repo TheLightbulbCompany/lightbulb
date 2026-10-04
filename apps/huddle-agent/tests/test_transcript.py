@@ -251,3 +251,119 @@ def test_address_names_anywhere_for_a_floor_switch():
         address("Finance looks fine", AGENTS, PEOPLE).anywhere == []
     )  # default names stay silent
     assert address("I bought a gage", AGENTS, PEOPLE).anywhere == []  # exact only
+
+
+from huddle_agent.transcript import ghost_line, no_post_command, stop_all  # noqa: E402
+
+AGENTS_FG = [{"id": "forge", "name": "Forge"}, {"id": "friday", "name": "Friday"}]
+
+PROMPT = stt_prompt(["Pulse", "Friday", "Forge"], ["Prasiddha"])
+
+
+@pytest.mark.parametrize(
+    "text",
+    [PROMPT, "A team voice call. Names: Pulse, Friday, Forge, …", "a team voice call", "Names: Pulse, Friday, Forge, Lightbulb"],
+)
+def test_ghost_lines_are_the_stt_prompt_coming_back(text):
+    assert ghost_line(text, PROMPT)
+
+
+@pytest.mark.parametrize(
+    "text", ["Pulse, Friday, Forge, check CI", "Forge", "Pulse and Friday", "what's the team voice plan", ""]
+)
+def test_real_lines_are_not_ghosts(text):
+    assert not ghost_line(text, PROMPT)
+
+
+def test_before_the_team_loads_only_the_prompts_opening_is_a_ghost():
+    assert ghost_line("A team voice call.", None) and not ghost_line("Forge, check CI", None)
+
+
+@pytest.mark.parametrize(
+    "text", ["everyone stop", "Everyone, stop.", "stop all", "OK everybody never mind", "stop everything", "cancel all"]
+)
+def test_stop_all(text):
+    assert stop_all(text)
+
+
+@pytest.mark.parametrize("text", ["stop", "Forge, stop", "don't stop all the deploys", "everyone stop by at 3"])
+def test_not_stop_all(text):
+    assert not stop_all(text)
+
+
+@pytest.mark.parametrize(
+    "text,expected",
+    [
+        ("don't post that", (True, None)),
+        ("Forge, don't post that.", (True, "forge")),
+        ("gauge do not post it in the room", (True, "gauge")),
+        ("we don't post that", (False, None)),  # a leading word that is no agent's name
+        ("don't post that yet, Forge", (False, None)),
+        ("post that", (False, None)),
+    ],
+)
+def test_no_post_command(text, expected):
+    assert no_post_command(text, AGENTS) == expected
+
+
+@pytest.mark.parametrize(
+    "text", ["Friday, Forge", "Pulse, Friday", "Customer Operations", "A team voice call is what we need"]
+)
+def test_short_real_lines_that_echo_the_prompt_are_not_ghosts(text):
+    prompt = stt_prompt(["Pulse", "Friday", "Forge", "Customer Operations"], ["Prasiddha"])
+    assert not ghost_line(text, prompt)
+    assert ghost_line("Names: Pulse, Friday, Forge, Customer Operations", prompt)
+    assert ghost_line(prompt, prompt)
+
+
+@pytest.mark.parametrize("text", ["don\u2019t post that", "Don\u2019t post that.", "Forge, don\u2019t post that"])
+def test_curly_apostrophes(text):
+    assert no_post_command(text, AGENTS)[0]
+
+
+@pytest.mark.parametrize(
+    "text",
+    ["please stop all", "stop all please", "just stop everyone", "everyone, please stop", "everyone stop talking",
+     "stop everyone", "stop all of them", "stop all of you", "everyone just stop"],
+)  # fmt: skip
+def test_stop_all_phrasings(text):
+    assert stop_all(text)
+
+
+@pytest.mark.parametrize("text", ["we should stop all the ads", "everyone stop by at 3"])
+def test_stop_all_stays_anchored(text):
+    assert not stop_all(text)
+
+
+@pytest.mark.parametrize(
+    "text,expected",
+    [
+        ("please don't post that", (True, None)),
+        ("Forge, please don't post that", (True, "forge")),
+        ("don't post that please", (True, None)),
+        ("don't post that to Twitter yet, Friday \u2014 draft it first", (False, None)),
+    ],
+)
+def test_no_post_phrasings(text, expected):
+    assert no_post_command(text, AGENTS) == expected
+
+
+def test_no_post_names_with_digits_and_two_words():
+    agents = [{"id": "a2", "name": "Agent 2"}, {"id": "ops", "name": "Customer Operations"}]
+    assert no_post_command("Agent 2, don't post that", agents) == (True, "a2")
+    assert no_post_command("customer operations, don't post that", agents) == (True, "ops")
+
+
+@pytest.mark.parametrize("text", ["Forge, please stop", "Forge, just stop", "forge please just stop"])
+def test_a_named_stop_takes_please_and_just(text):
+    assert stop_request(text) and stop_target(text, AGENTS_FG) == "forge"
+
+
+@pytest.mark.parametrize("text", ["please stop", "just stop", "please just stop"])
+def test_an_unnamed_please_or_just_stop_is_a_plain_stop(text):
+    assert stop_request(text) and stop_target(text, AGENTS_FG) is None and not stop_all(text)
+
+
+@pytest.mark.parametrize("text", ["please stop the deploy", "just stop by later", "Forge, please stop it now"])
+def test_please_and_just_stop_stay_anchored(text):
+    assert not stop_request(text)

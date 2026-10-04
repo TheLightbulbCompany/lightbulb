@@ -339,12 +339,22 @@ def pause(text: str) -> bool:
 
 
 _STOP = re.compile(
-    r"^(?:(?:hey|ok|okay) )?(?:([a-z]+(?: [a-z]+)?) ?, ?|([a-z]+) )?(?:stop|never ?mind|cancel (?:that|it)|forget it)$"
+    r"^(?:(?:hey|ok|okay) )?(?:please )?(?:([a-z0-9]+(?: [a-z0-9]+)?) ?, ?|([a-z0-9]+) )??(?:please )?(?:just )?"
+    r"(?:stop|never ?mind|cancel (?:that|it)|forget it)$"
 )
 
 
+def _norm(text: str) -> str:
+    text = text.lower().replace("\u2019", "'").replace("\u2018", "'")
+    return " ".join(re.sub(r"[^\w\s,']", " ", text).split())
+
+
 def _stop_match(text: str) -> re.Match | None:
-    return _STOP.match(" ".join(re.sub(r"[^\w\s,']", " ", text.lower()).split()))
+    return _STOP.match(_norm(text))
+
+
+def _agent_named(said: str | None, agents: list[dict]) -> str | None:
+    return next((a["id"] for a in agents if said and " ".join(_tokens(a["name"])) == said), None)
 
 
 def stop_request(text: str) -> bool:
@@ -355,10 +365,54 @@ def stop_request(text: str) -> bool:
 def stop_target(text: str, agents: list[dict]) -> str | None:
     """The agent a stop names, by its exact name: naming is enough for a stop, default names included."""
     m = _stop_match(text)
-    said = m and (m.group(1) or m.group(2))
-    return next(
-        (a["id"] for a in agents if said and " ".join(_tokens(a["name"])) == said), None
-    )
+    return _agent_named(m and (m.group(1) or m.group(2)), agents)
+
+
+_STOP_ALL = re.compile(
+    r"^(?:(?:hey|ok|okay) )?(?:please )?(?:just )?"
+    r"(?:(?:everyone|everybody|all of you|you all) ?,? ?(?:please )?(?:just )?(?:stop(?: talking)?|never ?mind|cancel (?:that|it)|forget it)"
+    r"|(?:stop|cancel) (?:all(?: of (?:it|you|them))?|everyone|everybody|everything))(?: please)?$"
+)
+_NO_POST = re.compile(
+    r"^(?:(?:hey|ok|okay) )?(?:please )?(?:([a-z0-9]+(?: [a-z0-9]+)?) ?, ?|([a-z0-9]+) )?(?:please )?"
+    r"(?:don't|dont|do not) (?:post|share) (?:that|it|this)(?: (?:in|to) the (?:room|channel))?(?: please)?$"
+)
+
+
+def stop_all(text: str) -> bool:
+    """ "everyone stop" / "stop all" (conversation engine §3.6): every open request and run."""
+    return _STOP_ALL.match(_norm(text)) is not None
+
+
+def no_post_command(text: str, agents: list[dict]) -> tuple[bool, str | None]:
+    """ "don't post that" / "<agent>, don't post that" -> (True, agent id or None). A leading word that is
+    not an agent's name ("we don't post that") is not the command."""
+    m = _NO_POST.match(_norm(text))
+    if m is None:
+        return False, None
+    said = m.group(1) or m.group(2)
+    if not said:
+        return True, None
+    agent = _agent_named(said, agents)
+    return agent is not None, agent
+
+
+GHOST_PREFIX = "a team voice call"  # stt_prompt's opening, normalized
+
+
+def _letters(text: str) -> str:
+    return " ".join(re.sub(r"[^a-z ]", " ", text.lower()).split())
+
+
+def ghost_line(text: str, prompt: str | None) -> bool:
+    """The STT model repeating its own prompt on silence or noise (conversation engine §3.1): the
+    prompt itself, a piece of it (12+ characters, 4+ words), or its opening. Lower case, letters and spaces."""
+    said = _letters(text)
+    if not said:
+        return False
+    full = _letters(prompt or "")
+    opening = said == GHOST_PREFIX or said.startswith(GHOST_PREFIX + " names")
+    return opening or said == full or (len(said) >= 12 and len(said.split()) >= 4 and said in full)
 
 
 def addressed_by_name(said: str, people: dict[str, str]) -> str | None:

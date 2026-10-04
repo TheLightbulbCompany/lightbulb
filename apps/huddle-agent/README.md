@@ -31,7 +31,7 @@ The worker is one LiveKit participant (`agent-ceo`) whatever agent is speaking.
   - `lightbulb.speaking_agent`: the floor-holder, from the moment its voice starts opening until it
     closes; `""` when none.
   - `lightbulb.agent.<id>.status`: `joining | speaking | listening | working | has_news | idle`.
-  - `lightbulb.agent.<id>.working` (the running tool, <=60 chars) and `lightbulb.agent.<id>.naming`
+  - `lightbulb.agent.<id>.working` (the agent's open request's task, else its running tool, <=60 chars) and `lightbulb.agent.<id>.naming`
     (`"1"` while a first-time-naming question is open).
   - `lightbulb.queue`: agent ids of a pending multi-name request, floor-holder first; else `""`.
   - `lightbulb.listening_to`: the pinned speaker's display name.
@@ -45,7 +45,7 @@ The worker is one LiveKit participant (`agent-ceo`) whatever agent is speaking.
   switch two can coexist, so clients filter by name.
 
 The metering window (`/summon` .. `/end`) opens with the first voice and ends when no voice is open
-or joining; a switch inside it takes no new `/summon`. Closing a voice, the window or the worker never
+or joining and no request of the call's request list is open (or at its deadline); a switch inside it takes no new `/summon`. Closing a voice, the window or the worker never
 stops a run: a result that arrives while its agent is off the floor is held as `has_news`.
 
 ## Configuration

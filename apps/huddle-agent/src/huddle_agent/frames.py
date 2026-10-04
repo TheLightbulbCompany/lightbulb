@@ -110,6 +110,9 @@ class Runs:
         if run := self._runs.get(run_id):
             run.delegation_id, run.gen = delegation_id, gen
 
+    def get(self, run_id: str) -> Run | None:
+        return self._runs.get(run_id)
+
     def abort(self, run_id: str) -> None:
         """An aborted run is silent from here on; the entry stays so late frames don't recreate it."""
         run = self._runs.get(run_id)

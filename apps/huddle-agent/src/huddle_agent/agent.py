@@ -472,7 +472,7 @@ async def entrypoint(ctx: JobContext) -> None:
         await (
             huddle.clear_presence()
         )  # first: a stale "Live" marker outlives everything below
-        await huddle.end_exchange()
+        await huddle.end_exchange(force=True)  # a request still open must not hold the call's window
         flush_metrics()
         await backend.aclose()
 

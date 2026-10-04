@@ -200,115 +200,189 @@ LINE = (
 )
 
 
-def test_split_cuts_each_agents_own_part_after_its_name():
-    cands = messaging.address_candidates(LINE, CREW, live=True)
-    assert messaging.split_tasks(LINE, cands) == [
-        ("pulse", "an update on the go-to-market strategy"),
-        ("forge", "what our PRs look like"),
-        ("friday", "a summary of our rooms and the last conversation from the last day"),
-    ]
+def _parts(*choices):
+    """Jev's answer to the part questions p0, p1, ...: who each part is asked of."""
+    return {f"p{i}": {"type": "choice", "choice": c} for i, c in enumerate(choices) if c is not None}
 
 
-def test_split_gives_a_shared_ask_to_every_name_in_the_list():
-    text = "Forge and Friday, check the deploy"
-    cands = messaging.address_candidates(text, CREW, live=True)
-    assert messaging.split_tasks(text, cands) == [("forge", "check the deploy"), ("friday", "check the deploy")]
+def _asked_parts(decide):
+    questions = decide.await_args.args[1]
+    return [q["instructions"].rsplit("The part: ", 1)[1] for k, q in sorted(questions.items()) if k.startswith("p")]
 
 
-async def test_live_multi_name_line_gets_one_task_per_agent_from_the_same_call():
-    answers = _answers(["addressed", "addressed", "addressed"]) | {
-        "t0": {"type": "choice", "choice": "own"},
-        "t1": {"type": "choice", "choice": "own"},
-        "t2": {"type": "choice", "choice": "all"},
-    }
+async def test_live_multi_name_line_gets_each_agents_own_part_from_the_same_call():
+    answers = _answers(["addressed"] * 3) | _parts("only_pulse", "only_forge", "only_friday")
     out, decide = await _address(LINE, CREW, answers, live=True)
     assert out["agents"] == ["pul", "frg", "fri"]
     assert out["tasks"] == {
         "pul": "an update on the go-to-market strategy",
         "frg": "what our PRs look like",
-        "fri": LINE,
+        "fri": "a summary of our rooms and the last conversation from the last day",
     }
-    decide.assert_awaited_once()  # the split rides the existing addressing call
-    questions = decide.await_args.args[1]
-    assert questions["t1"]["type"] == "choice" and set(questions["t1"]["criteria"]) == {"own", "all"}
+    decide.assert_awaited_once()  # the parts ride the existing addressing call
+    assert _asked_parts(decide) == [
+        "'an update on the go-to-market strategy'.",
+        "'what our PRs look like'.",
+        "'a summary of our rooms and the last conversation from the last day'.",
+    ]
+    # three names: each alone, each pair, everyone, nobody
+    assert set(decide.await_args.args[1]["p0"]["criteria"]) == {
+        "only_pulse",
+        "only_forge",
+        "only_friday",
+        "pulse_and_forge",
+        "pulse_and_friday",
+        "forge_and_friday",
+        "everyone",
+        "nobody",
+    }
 
 
-async def test_live_multi_name_fallback_cuts_and_keeps_an_addressed_weekday():
-    out, _ = await _address(LINE, CREW, None, live=True)
-    assert out["path"] == "fallback" and out["agents"] == ["pul", "frg", "fri"]
-    assert out["tasks"]["fri"] == "a summary of our rooms and the last conversation from the last day"
-    out, _ = await _address("Forge, check CI. Friday, we ship the beta", CREW, None, live=True)
-    assert out["agents"] == ["frg"] and "tasks" not in out  # the day-use veto still stands: one agent, no split
+async def test_live_a_name_after_its_request_still_gets_that_request():
+    """The bench's worst miss of the old cut-after-the-name rule: each agent got the OTHER one's task."""
+    text = "Can you check the deploy, Forge? And Friday, can you draft the customer email?"
+    answers = _answers(["addressed", "addressed"]) | _parts("only_forge", "only_friday")
+    out, decide = await _address(text, CREW, answers, live=True)
+    assert out["tasks"] == {"frg": "Can you check the deploy", "fri": "can you draft the customer email"}
+    assert set(decide.await_args.args[1]["p0"]["criteria"]) == {"only_forge", "only_friday", "everyone", "nobody"}
 
 
-async def test_chat_and_one_name_lines_ask_no_split():
-    out, decide = await _address(LINE, CREW, _answers(["addressed"] * 3))  # chat
-    assert "tasks" not in out and not any(k.startswith("t") for k in decide.await_args.args[1])
-    out, _ = await _address("Forge, what our PRs look like", CREW, None, live=True)
-    assert out["path"] == "fast" and "tasks" not in out
+async def test_live_a_shared_ask_goes_to_everyone_and_an_own_ask_is_added_to_it():
+    out, decide = await _address(
+        "Forge and Friday, check the deploy", CREW, _answers(["addressed"] * 2) | _parts("everyone"), live=True
+    )
+    assert _asked_parts(decide) == ["'check the deploy'."]  # the "and" between the names is no part
+    assert out["tasks"] == {"frg": "check the deploy", "fri": "check the deploy"}
+    text = "Forge and Friday, take a look at the outage. Forge, I also want a postmortem doc."
+    out, _ = await _address(text, CREW, _answers(["addressed"] * 2) | _parts("everyone", "only_forge"), live=True)
+    assert out["tasks"] == {
+        "frg": "take a look at the outage. I also want a postmortem doc",
+        "fri": "take a look at the outage",
+    }
+
+
+async def test_live_sentences_of_one_agent_stay_together_in_the_speakers_words():
+    text = "Forge, check the deploy. Also look at the error logs from last night. Friday, draft the status update."
+    answers = _answers(["addressed"] * 2) | _parts("only_forge", "only_forge", "only_friday")
+    out, _ = await _address(text, CREW, answers, live=True)
+    assert out["tasks"] == {
+        "frg": "check the deploy. Also look at the error logs from last night",
+        "fri": "draft the status update",
+    }
+
+
+async def test_live_background_and_a_person_s_ask_are_nobodys_part():
+    text = "The deploy failed last night. Leo, can you call the customer? Forge, find out why. Friday, tell the team."
+    answers = _answers(["mentioned", "addressed", "addressed"]) | _parts(
+        "nobody", "nobody", "only_forge", "only_friday"
+    )
+    out, decide = await _address(text, CREW, answers, live=True)
+    assert out["tasks"] == {"frg": "find out why", "fri": "tell the team"}
+    assert _asked_parts(decide)[1] == "'can you call the customer'."  # cut at the person's name too
 
 
 GAUGE = {"kind": "agent", "id": "gau", "displayName": "Gauge", "mentionHandle": "gauge"}
 
 
-@pytest.mark.parametrize(
-    ("text", "tasks"),
-    [
-        (
-            "Forge, have the deploy done by Friday. Pulse, status",
-            {"frg": "have the deploy done by Friday", "pul": "status"},
-        ),
-        (
-            "Forge, move the review to Friday, Pulse, update",
-            {"frg": "move the review to Friday", "pul": "update"},
-        ),
-        ("Forge, status. Friday, a summary of rooms", {"frg": "status", "fri": "a summary of rooms"}),
-        ("Pulse, update the plan and Forge, check CI", {"pul": "update the plan", "frg": "check CI"}),
-        ("Pulse, update. Hey Forge, check", {"pul": "update", "frg": "check"}),
-        ("Check the deploy, Forge and Friday?", {"frg": "Check the deploy", "fri": "Check the deploy"}),
-        (
-            "Forge, check CI. Friday, summarize rooms. Forge, also check logs",
-            {"frg": "check CI also check logs", "fri": "summarize rooms"},
-        ),
-        ("Forge and Friday, check the deploy", {"frg": "check the deploy", "fri": "check the deploy"}),
-        ("Forge and Friday?", {}),
-    ],
-)
-async def test_live_split_cuts_only_at_addressed_names_when_the_model_is_down(text, tasks):
-    out, _ = await _address(text, CREW, None, live=True)
-    assert out["path"] == "fallback" and out["tasks"] == tasks
-
-
-async def test_live_a_merely_mentioned_agent_does_not_end_a_neighbours_part():
-    text = "Pulse, update. Forge, check the CI that Gauge broke"
-    answers = _answers(["addressed", "addressed", "mentioned"])
+async def test_live_a_name_that_is_only_talked_about_stays_inside_the_words_around_it():
+    text = "Pulse, update the deck. Forge, check the CI that Gauge broke"
+    answers = _answers(["addressed", "addressed", "mentioned"]) | _parts("only_pulse", "only_forge", "only_forge")
     out, _ = await _address(text, [*CREW, GAUGE], answers, live=True)
-    assert out["tasks"] == {"pul": "update", "frg": "check the CI that Gauge broke"}
+    assert out["tasks"] == {"pul": "update the deck", "frg": "check the CI that Gauge broke"}
 
 
-async def test_live_a_relayed_agent_is_no_cut_point_and_gets_the_whole_line():
+async def test_live_a_weekday_used_as_a_day_is_words_not_a_cut():
+    text = "Forge, can you get the release out by Friday? And Gauge, I need the retention chart."
+    answers = _answers(["addressed", "addressed", "addressed"]) | _parts("only_forge", "only_gauge")
+    out, decide = await _address(text, [*CREW, GAUGE], answers, live=True)
+    assert out["agents"] == ["frg", "gau"]  # the day-use veto: Friday is not addressed whatever the model said
+    assert out["tasks"] == {"frg": "can you get the release out by Friday", "gau": "I need the retention chart"}
+    assert set(decide.await_args.args[1]["p0"]["criteria"]) == {"only_forge", "only_gauge", "everyone", "nobody"}
+
+
+async def test_live_a_weekday_and_the_teammate_of_that_name_in_one_line():
+    text = "Gauge, pull last Friday's numbers. Friday, what's the plan for next week?"
+    answers = _answers(["addressed", "addressed"]) | _parts("only_gauge", "only_friday")
+    out, _ = await _address(text, [*CREW, GAUGE], answers, live=True)
+    assert out["agents"] == ["gau", "fri"]
+    assert out["tasks"] == {"gau": "pull last Friday's numbers", "fri": "what's the plan for next week"}
+
+
+async def test_live_a_relaying_agent_with_a_one_word_part_gets_the_whole_line():
     text = "Forge, ask Friday for the numbers"
+    answers = _answers(["addressed", "relayed"]) | _parts("only_forge", "only_friday")
+    out, _ = await _address(text, CREW, answers, live=True)
+    assert out["agents"] == ["frg", "fri"]
+    assert out["tasks"] == {"fri": "for the numbers"}  # Forge is absent: /route gives it the whole line
     out, _ = await _address(text, CREW, None, live=True)
     assert out["agents"] == ["frg"] and "tasks" not in out  # model down: Friday follows "ask", not a name
-    out, _ = await _address(text, CREW, _answers(["addressed", "relayed"]), live=True)
-    assert out["agents"] == ["frg", "fri"]
-    assert out["tasks"] == {"frg": "ask Friday for the numbers", "fri": text}
 
 
-async def test_live_two_addressed_and_a_relayed_third():
-    text = "Pulse, status. Forge, ask Gauge for the numbers"
-    out, _ = await _address(text, [*CREW, GAUGE], _answers(["addressed", "addressed", "relayed"]), live=True)
-    assert out["tasks"] == {"pul": "status", "frg": "ask Gauge for the numbers", "gau": text}
+async def test_live_a_one_word_ask_is_a_task():
+    answers = _answers(["addressed"] * 2) | _parts("only_pulse", "only_forge")
+    out, _ = await _address("Pulse, status. Forge, check CI", CREW, answers, live=True)
+    assert out["tasks"] == {"pul": "status", "frg": "check CI"}
 
 
-async def test_live_model_all_gives_the_whole_line_and_a_bad_answer_keeps_the_own_part():
-    answers = _answers(["addressed"] * 3) | {
-        "t0": {"type": "choice", "choice": "all"},
-        "t1": {"type": "choice", "choice": "p2"},  # not an option now
-    }
-    out, _ = await _address(LINE, CREW, answers, live=True)  # t2 missing
-    assert out["tasks"] == {
-        "pul": LINE,
-        "frg": "what our PRs look like",
-        "fri": "a summary of our rooms and the last conversation from the last day",
-    }
+@pytest.mark.parametrize(
+    "parts",
+    [
+        {},  # Jev answered the labels only
+        _parts("p9", None),  # an unknown choice, a missing answer
+        _parts("nobody", "nobody", "nobody"),
+    ],
+)
+async def test_live_with_no_usable_part_answer_nobody_is_cut(parts):
+    out, _ = await _address(LINE, CREW, _answers(["addressed"] * 3) | parts, live=True)
+    assert out["agents"] == ["pul", "frg", "fri"] and "tasks" not in out  # /route: the whole line each
+
+
+async def test_live_names_and_nothing_else_is_a_summons_not_a_request_each():
+    for answers in (None, _answers(["addressed"] * 2)):
+        out, _ = await _address("Forge and Friday?", CREW, answers, live=True)
+        assert out["agents"] == ["frg", "fri"] and out["tasks"] == {}  # {}: /route sends no requests
+
+
+async def test_live_multi_name_fallback_cuts_nothing_and_keeps_an_addressed_weekday():
+    out, _ = await _address(LINE, CREW, None, live=True)
+    assert out["path"] == "fallback" and out["agents"] == ["pul", "frg", "fri"] and "tasks" not in out
+    out, _ = await _address("Forge, check CI. Friday, we ship the beta", CREW, None, live=True)
+    assert out["agents"] == ["frg"]  # the day-use veto still stands
+
+
+async def test_chat_one_name_and_overlong_lines_ask_no_parts():
+    out, decide = await _address(LINE, CREW, _answers(["addressed"] * 3))  # chat
+    assert "tasks" not in out and not any(k.startswith("p") for k in decide.await_args.args[1])
+    out, _ = await _address("Forge, what our PRs look like", CREW, None, live=True)
+    assert out["path"] == "fast" and "tasks" not in out
+    long = "Forge, " + " ".join(f"item {i}." for i in range(messaging.MAX_PARTS)) + " Friday, one more."
+    out, decide = await _address(long, CREW, _answers(["addressed"] * 2), live=True)
+    assert "tasks" not in out and not any(k.startswith("p") for k in decide.await_args.args[1])
+
+
+async def test_a_slow_live_call_is_asked_twice_and_the_first_answer_wins(monkeypatch):
+    import asyncio
+
+    monkeypatch.setattr(messaging, "HEDGE_AFTER_S", 0.01)
+    answers = _answers(["addressed"] * 3) | _parts("only_pulse", "only_forge", "only_friday")
+    calls = []
+
+    async def decide(state, questions):
+        calls.append(len(calls))
+        if calls[-1] == 0:
+            await asyncio.sleep(30)  # the slow first call; cancelled once the second answers
+        return answers
+
+    with patch.object(jev, "decide", decide), patch.object(messaging, "put_metric"):
+        out = await messaging.address(_msg(LINE), CREW, history=[], live=True)
+    assert calls == [0, 1] and out["path"] == "jev" and out["tasks"]["frg"] == "what our PRs look like"
+    calls.clear()
+
+    async def quick(state, questions):
+        calls.append(len(calls))
+        return answers
+
+    with patch.object(jev, "decide", quick), patch.object(messaging, "put_metric"):
+        await messaging.address(_msg(LINE), CREW, history=[], live=True)
+        await messaging.address(_msg("Finance and Friday, where are we?"), MEMBERS, history=[])  # chat: never
+    assert calls == [0, 1]  # one call each

@@ -922,8 +922,9 @@ async def route_live_line(
         order = [*[a for a in addressing["agents"] if a in addressed], *sorted(set(addressed) - set(named_ids))]
         routed = done(*order)
         tasks = addressing.get("tasks")
-        if len(order) >= 2 and tasks != {}:  # {} = the stage found nothing to cut
-            # Conversation engine §3.2: one request per agent, each its own code-cut part of the line.
+        if len(order) >= 2 and tasks != {}:  # {} = names and nothing else ("Forge and Friday?"): no request
+            # Conversation engine §3.2: one request per agent. Its task is its own part of the line, in the
+            # speaker's words; an agent the stage found no part for gets the whole line.
             tasks = tasks or {}
             routed["requests"] = [{"agentId": a, "task": tasks.get(a) or utterance} for a in order]
         return routed

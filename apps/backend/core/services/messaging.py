@@ -2691,11 +2691,19 @@ ANYONE_INSTRUCTIONS = (
     "burn looking, and Ana, did you book the room?': yes; 'Ana, can you send me the contract?': no; "
     "'Ana, can you ask Gauge for the cohort numbers?': no)"
 )
-SPLIT_INSTRUCTIONS = (
-    "The latest message may ask several teammates for different things in one breath. For the one name "
-    "given: is the ask for that teammate only the part that follows its name ('own'), or does the whole "
-    "message ask them together with the others ('Forge and Friday, check the deploy': 'all')?"
+PART_INSTRUCTIONS = (
+    "The latest message was spoken in a call and may ask several AI teammates for different things in "
+    "one breath. It was cut into parts at the names. For the one part given, decide who the speaker wants "
+    "to act on it or answer it. A name can come before or after its request: 'Forge, check the deploy' "
+    "and 'Can you check the deploy, Forge?' both ask Forge. 'Forge and Friday, check the deploy': the "
+    "part 'check the deploy' is asked of both. A part that only gives background, greets, thanks someone, "
+    "or is said to a person in the room is asked of nobody."
 )
+#: More parts than this and nobody is cut: each agent gets the whole line.
+MAX_PARTS = 8
+#: A Live line asks Jev a second time when the first answer is this late, and takes whichever comes first:
+#: Jev's median is ~0.5 s but on a slow day one call in seven takes over 2 s (measured 2026-10-04).
+HEDGE_AFTER_S = 0.7
 
 
 def _soundex(word: str) -> str:
@@ -2779,8 +2787,9 @@ def _opens_with(text: str, name: str, *, strong: bool = False) -> bool:
 
 
 _EDGE = " \t\r\n.,;:?!\"'\u201c\u201d\u2018\u2019-\u2013\u2014"
-_TAIL = re.compile(r"(?:^|\s)(?:and|then|also|plus|hey|hi|ok|okay)$", re.I)
-_CONNECTORS = {"and", "&", "plus", "with", "then"}
+_FILLER = "and|then|also|plus|so|oh|um|uh|well|hey|hi|hello|ok|okay|alright|please"
+_TAIL = re.compile(rf"(?:^|\s)(?:{_FILLER})$", re.I)
+_HEAD = re.compile(rf"^(?:{_FILLER})(?:\s|,|$)", re.I)
 
 
 def _name_hits(text: str, cand: dict) -> list[re.Match]:
@@ -2789,42 +2798,86 @@ def _name_hits(text: str, cand: dict) -> list[re.Match]:
     return list(re.finditer(rf"(?<![\w-]){re.escape(cand['said'])}(?![\w-])", text, re.I))
 
 
+def _named_at(text: str, cand: dict) -> list[tuple[int, int]]:
+    """Where the candidate's name stands as a NAME: a weekday used as a day ("by Friday", "last Friday's
+    numbers") is words, not a name."""
+    days = (
+        [m.span() for m in re.finditer(_DAY_USE.format(day=re.escape(cand["said"])), text, re.I)]
+        if cand["name"] in WEEKDAYS
+        else []
+    )
+    return [h.span() for h in _name_hits(text, cand) if not any(s <= h.start() < e for s, e in days)]
+
+
 def _clean(seg: str) -> str:
+    """The words of a part: no edge punctuation, no filler ("and", "ok so", "um") at either end."""
     seg = seg.strip(_EDGE)
-    while (m := _TAIL.search(seg)) is not None:
-        seg = seg[: m.start()].strip(_EDGE)
+    while (m := _TAIL.search(seg)) is not None or (m := _HEAD.match(seg)) is not None:
+        seg = (seg[: m.start()] if m.re is _TAIL else seg[m.end() :]).strip(_EDGE)
     return seg
 
 
-def _empty(seg: str) -> bool:
-    return not [w for w in re.findall(r"\w+|&", seg) if w.lower() not in _CONNECTORS]
+def _pieces(text: str, cands: list[dict]) -> list[tuple[str, int, int, str | int]]:
+    """A Live line in order (conversation engine §3.2): ``("name", start, end, candidate name)`` where a
+    name stands (a weekday used as a day is words, not a name), and ``("part", start, end, index)`` for the
+    words between names and sentence ends that are more than filler. One request is made of whole parts."""
+    names, last = [], 0
+    for start, end, name in sorted((start, end, c["name"]) for c in cands for start, end in _named_at(text, c)):
+        if start >= last:  # two candidates on the same words: the first one
+            names.append((start, end, name))
+            last = end
+    out: list[tuple[str, int, int, str | int]] = []
+    cursor, parts = 0, 0
+    for start, end, name in [*names, (len(text), len(text), "")]:
+        for m in re.finditer(r"[^.?!;]+[.?!;]*", text[cursor:start]):
+            if _clean(m.group(0)):
+                out.append(("part", cursor + m.start(), cursor + m.end(), parts))
+                parts += 1
+        if name:
+            out.append(("name", start, end, name))
+        cursor = end
+    return out
 
 
-def split_tasks(text: str, cands: list[dict]) -> list[tuple[str, str]]:
-    """Each addressed agent's own part of a Live line, cut by code at ITS names (conversation engine
-    §3.2): the words after a name up to the next given name. ``cands`` are the cut points, so the caller
-    passes only the addressed or relayed ones. An empty part (the "and" of "Forge and Friday, check X")
-    takes the next part; a name said twice joins its parts. If every part is empty the words before the
-    first name are the shared ask; if there are none, ``[]`` (no split). ``[(name, part)]``, text order."""
-    spots = sorted((h.start(), h.end(), c["name"]) for c in cands for h in _name_hits(text, c))
-    if not spots:
-        return []
-    segs = [
-        _clean(text[end : spots[i + 1][0] if i + 1 < len(spots) else len(text)]) for i, (_, end, _) in enumerate(spots)
-    ]
-    segs = [("" if _empty(seg) else seg) for seg in segs]
-    if not any(segs):
-        lead = _clean(text[: spots[0][0]])
-        if _empty(lead):
-            return []
-        segs = [lead] * len(spots)
-    for i in range(len(segs) - 2, -1, -1):
-        segs[i] = segs[i] or segs[i + 1]
-    joined: dict[str, list[str]] = {}
-    for (_, _, name), seg in zip(spots, segs):
-        joined.setdefault(name, [])
-        joined[name] += [seg] if seg else []
-    return [(name, " ".join(parts)) for name, parts in joined.items()]
+def _part_choices(names: list[str]) -> dict[str, tuple[str, set[str]]]:
+    """Who one part can be asked of: ``{choice key: (description, names)}``. Each name alone, every pair
+    when three are named, all of them, or nobody.
+    ponytail: with 4+ names there are no subsets but "everyone"; add booleans per name if that is needed."""
+    from itertools import combinations
+
+    key = lambda group: "_and_".join(re.sub(r"\W+", "_", n) for n in group)  # noqa: E731
+    out = {f"only_{key([n])}": (f"Asked of {n.title()} only", {n}) for n in names}
+    if len(names) == 3:
+        out |= {
+            key(g): (f"Asked of {g[0].title()} and {g[1].title()} together", set(g)) for g in combinations(names, 2)
+        }
+    out["everyone"] = ("Asked of all of them together: " + ", ".join(n.title() for n in names), set(names))
+    out["nobody"] = ("Not a request to any of them: background, small talk, or said to a person", set())
+    return out
+
+
+def _task(text: str, pieces: list, mine: set[int], asked_names: set[str]) -> str:
+    """One agent's task in the speaker's own words: its parts, with a name that is only talked about kept
+    inside the words around it ("by Friday", "Gauge's dashboard"). Parts that are apart are joined."""
+    runs: list[str] = []
+    run: list[int] | None = None
+    lead: int | None = None  # a talked-about name with no part of mine before it yet
+    for kind, start, end, ref in pieces:
+        if kind == "part" and ref in mine:
+            run = [run[0] if run else (lead if lead is not None else start), end]
+        elif kind == "name" and ref not in asked_names:
+            if run:
+                run[1] = end
+            elif lead is None:
+                lead = start
+            continue
+        elif run:
+            runs.append(_clean(text[run[0] : run[1]]))
+            run = None
+        lead = None
+    if run:
+        runs.append(_clean(text[run[0] : run[1]]))
+    return ". ".join(r for r in runs if r)
 
 
 def _opens_clause(text: str, cand: dict) -> bool:
@@ -2841,13 +2894,38 @@ def _fast_path(text: str, cands: list[dict], live: bool) -> str | None:
     return cands[0]["agents"][0] if _opens_with(text, cands[0]["name"]) else None
 
 
+async def _decide(state: dict, questions: dict, hedge: bool) -> Any:
+    """``jev.decide``; with ``hedge``, asked again when the first call is slow, first usable answer wins."""
+    from core.services import jev
+
+    first = asyncio.ensure_future(jev.decide(state, questions))
+    if not hedge:
+        return await first
+    tasks = {first}
+    try:
+        done, _ = await asyncio.wait(tasks, timeout=HEDGE_AFTER_S)
+        if not done:
+            put_metric("messaging.addressing.hedged")
+            tasks.add(asyncio.ensure_future(jev.decide(state, questions)))
+        answers = None
+        for next_done in asyncio.as_completed(tasks):
+            answers = await next_done
+            if isinstance(answers, dict):
+                break
+        return answers
+    finally:
+        for task in tasks:
+            task.cancel()
+
+
 async def _label(
     latest: dict,
     cands: list[dict],
     members: list[dict],
     history: list[dict],
     live: bool,
-    split: list[str] = (),
+    parts: list[str] = (),
+    askable: list[str] = (),
 ) -> dict | None:
     """The one Jev call: ``{labels: {name: label}, complete: p, anyone: p}``, or None on any failure."""
     from core.services import jev
@@ -2869,11 +2947,12 @@ async def _label(
             "instructions": f"{ADDRESS_INSTRUCTIONS} The name: '{c['name']}' ({kind}).",
             "criteria": ADDRESS_LABELS,
         }
-    for i, name in enumerate(split):
-        questions[f"t{i}"] = {
+    choices = _part_choices(list(askable)) if parts else {}
+    for i, part in enumerate(parts):
+        questions[f"p{i}"] = {
             "type": "choice",
-            "instructions": f"{SPLIT_INSTRUCTIONS} The name: '{name}'.",
-            "criteria": {"own": "Only the part that follows its name", "all": "The whole message"},
+            "instructions": f"{PART_INSTRUCTIONS} The part: '{part}'.",
+            "criteria": {key: description for key, (description, _) in choices.items()},
         }
     state = {
         "room": {
@@ -2885,13 +2964,15 @@ async def _label(
         "latest": jev._line(latest),
     }
     try:
-        answers = await asyncio.wait_for(jev.decide(state, questions), ADDRESSING_TIMEOUT_S)
+        answers = await asyncio.wait_for(_decide(state, questions, hedge=live), ADDRESSING_TIMEOUT_S)
         return {
             "labels": {c["name"]: answers[f"n{i}"]["choice"] for i, c in enumerate(cands)},
             "complete": float(answers["complete"]["probability"]),
             "anyone": float(answers["anyone"]["probability"]),
-            # only "all" moves the text; anything else keeps the agent's own part
-            "whole": {name for i, name in enumerate(split) if (answers.get(f"t{i}") or {}).get("choice") == "all"},
+            # per part, the names it is asked of; an answer that is missing or unknown asks nobody
+            "asked": [
+                choices.get((answers.get(f"p{i}") or {}).get("choice"), ("", set()))[1] for i in range(len(parts))
+            ],
         }
     except Exception:  # noqa: BLE001 -- a timeout, a 429 string, a malformed answer: the fallback decides
         return None
@@ -2914,24 +2995,35 @@ async def address(latest: dict, members: list[dict], *, history: Any = (), live:
         out |= {"agents": [agent], "path": "fast"}
         put_metric("messaging.addressing.stage", dimensions={"path": "fast", "surface": "live" if live else "chat"})
         return out
-    # Conversation engine §3.2: a live line naming 2+ agents asks each, in this call, own part or all.
-    named = [c["name"] for c in cands if c["agents"]]
-    split = len(named) >= 2 and live
+    # Conversation engine §3.2: a live line naming 2+ agents is cut into parts at the names, and this same
+    # call says who each part is asked of.
+    pieces = _pieces(text, cands) if live else []
+    said = {ref for kind, _, _, ref in pieces if kind == "name"}
+    askable = [c["name"] for c in cands if len(c["agents"]) == 1 and c["name"] in said]
+    parts = [_clean(text[start:end]) for kind, start, end, _ in pieces if kind == "part"]
+    multi = len(askable) >= 2
+    split = multi and 0 < len(parts) <= MAX_PARTS
     result = await _label(
-        latest, cands, members, list(await history() if callable(history) else history), live, named if split else []
+        latest,
+        cands,
+        members,
+        list(await history() if callable(history) else history),
+        live,
+        parts if split else [],
+        askable,
     )
     if result is None:
         # A safe fallback, not a substitute ([AX] (c): the common-word false-speaks come back). A weekday
         # that opens a clause of a multi-name live line ("..., Friday, a summary") is that teammate.
         labels = {
             c["name"]: "not_a_name"
-            if c["name"] in WEEKDAYS and not (split and _opens_clause(text, c))
+            if c["name"] in WEEKDAYS and not (multi and _opens_clause(text, c))
             else "addressed"
             if c["agents"]
             else "mentioned"
             for c in cands
         }
-        result, out["path"] = {"labels": labels, "complete": 1.0, "anyone": 0.0, "whole": set()}, "fallback"
+        result, out["path"] = {"labels": labels, "complete": 1.0, "anyone": 0.0, "asked": []}, "fallback"
     else:
         out["path"] = "jev"
     out["hold"] = result["complete"] < HOLD_BELOW
@@ -2940,7 +3032,9 @@ async def address(latest: dict, members: list[dict], *, history: Any = (), live:
     for c in cands:
         label = result["labels"][c["name"]]
         if c["name"] in WEEKDAYS and re.search(_DAY_USE.format(day=re.escape(c["said"])), text, re.I):
-            label = "not_a_name"  # domain knowledge, not a model call: our names are weekdays
+            # domain knowledge, not a model call: our names are weekdays. "Pull last Friday's numbers.
+            # Friday, what's the plan?" still names the teammate the second time.
+            label = label if _named_at(text, c) else "not_a_name"
         if label not in ("addressed", "relayed"):
             continue
         # A name several agents share addresses none of them (Jev picks among the listeners); a unique
@@ -2951,14 +3045,20 @@ async def address(latest: dict, members: list[dict], *, history: Any = (), live:
             hits.append((c, agent, label))
         elif label == "addressed":
             out["humans"] += c["humans"]
-    if split and len(hits) >= 2:
-        # Each addressed agent's part runs from its name to the next ADDRESSED name, cut only now the labels
-        # exist. A relayed agent is no cut point and gets the whole line (it needs who asked what).
-        segs = dict(split_tasks(text, [c for c, _, label in hits if label == "addressed"]))
-        out["tasks"] = {}  # stays {} when nothing can be cut: /route then sends no per-agent requests
-        for c, agent, label in hits if segs else []:
-            whole = label == "relayed" or c["name"] in result["whole"]
-            out["tasks"].setdefault(agent, text if whole else segs.get(c["name"]) or text)
+    if live and len(hits) >= 2 and not parts:
+        out["tasks"] = {}  # names and nothing else ("Forge and Friday?"): a summons, not a request for each
+    elif len(hits) >= 2 and any(result["asked"]):
+        # Each agent's task is its own parts, in the speaker's words. An agent with no part of its own
+        # (or one word) is missing from ``tasks``: /route then gives it the whole line.
+        asked_names = {c["name"] for c, _, _ in hits}
+        # "Friday, ask Forge for the numbers": Friday's own part is "ask", so it needs the whole line.
+        fewest = 2 if any(label == "relayed" for _, _, label in hits) else 1
+        out["tasks"] = {}
+        for c, agent, _ in hits:
+            mine = {i for i, names in enumerate(result["asked"]) if c["name"] in names}
+            task = _task(text, pieces, mine, asked_names)
+            if len(task.split()) >= fewest:
+                out["tasks"].setdefault(agent, task)
     put_metric("messaging.addressing.stage", dimensions={"path": out["path"], "surface": "live" if live else "chat"})
     return out
 

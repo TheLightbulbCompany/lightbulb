@@ -194,7 +194,7 @@ export default function NewSessionScreen() {
       : options.tools.some((item) => !item.defaultMode || !Array.isArray(item.efforts))
         ? `Update Lightbulb on ${macName} to choose safe session settings.`
       : options.tools.length === 0 ? `Install Claude Code or Codex on ${macName} first.`
-      : options.folders.length === 0 ? "Approve a folder in the desktop app: Settings → File access."
+      : options.folders.length === 0 ? "Approve a folder in the desktop app: Settings → Desktop → Approved folders."
       : null);
   const ready = !!userId && !!mac && !!options && !!selected && !!folderPath && !blocked;
   const canStart = ready && !busy && !!prompt.trim() && !promptTooLong && !unsafeClaudePrompt;

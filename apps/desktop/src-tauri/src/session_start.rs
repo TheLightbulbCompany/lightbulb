@@ -2,8 +2,8 @@
 //!
 //! The backend only proves the request is from the human who paired this Mac. Here
 //! every field is re-validated against this Mac's own truth: the tool must be an
-//! installed fixed binary, the folder one of the approved folders (Settings → File
-//! access), model/mode from a closed list, and the prompt is passed after `--` so it
+//! installed fixed binary, the folder one of the approved folders (Settings → Desktop →
+//! Approved folders), model/mode from a closed list, and the prompt is passed after `--` so it
 //! can never become a flag. Then a held session opens on this Mac so the owner sees it;
 //! sharing must already be on. Every session is tracked; Lightbulb starts its own in a
 //! holder so they have a live terminal.
@@ -449,7 +449,7 @@ fn unapproved_path_flag(tool: &str, args: &[String], cwd: &Path, approved: &[Pat
             .and_then(|p| crate::file_access::canonicalize(p).ok())
             .is_some_and(|p| inside_approved(&p, approved));
         (!ok).then(|| format!(
-            "{flag} {path} is not inside a folder you approved for Lightbulb. Add it in the Lightbulb app under Settings → File access, then run this again."
+            "{flag} {path} is not inside a folder you approved for Lightbulb. Add it in the Lightbulb app under Settings → Desktop → Approved folders, then run this again."
         ))
     })
 }
@@ -498,7 +498,7 @@ pub(crate) fn cli_start(
         return Err("Malformed request.".into());
     }
     let scope = crate::local_sessions::enrollment::launch_scope(app).map_err(|_| {
-        "Session sharing is off in Lightbulb on this Mac. Turn it on in Settings → Native terminal sessions, then run this again.".to_string()
+        "Session sharing is off in Lightbulb on this Mac. Turn it on in Settings → Desktop → Session sharing, then run this again.".to_string()
     })?;
     let home = home();
     let program = tools(&home)
@@ -515,7 +515,7 @@ pub(crate) fn cli_start(
         }
     }
     if approve_folder && Path::new(&start.folder).is_dir() {
-        // The same store Settings → File access writes.
+        // The same store Settings → Desktop → Approved folders writes.
         crate::file_access::add_path(&start.folder).map_err(|e| e.to_string())?;
     }
     let approved = approved_now();

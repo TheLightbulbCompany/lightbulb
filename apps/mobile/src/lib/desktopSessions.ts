@@ -46,7 +46,7 @@ export function sessionStartError(error: unknown): string {
 export function sessionOutcomeError(error: { code?: string; message?: string } | null | undefined): string {
   if (error?.code === "DENIED") return "Update the Lightbulb app on your Mac, then try again.";
   if (error?.code === "SHARING_OFF") return "Turn on session sharing in the Lightbulb desktop app on that Mac.";
-  if (error?.code === "FOLDER_NOT_APPROVED") return "Approve that folder in the desktop app: Settings → File access.";
+  if (error?.code === "FOLDER_NOT_APPROVED") return "Approve that folder in the desktop app: Settings → Desktop → Approved folders.";
   if (error?.code === "TOOL_UNAVAILABLE") return "That CLI is no longer installed on the Mac. Choose another tool.";
   if (error?.code === "desktop_timeout" || error?.code === "desktop_request_timeout")
     return "The Mac did not answer in time. Check Lightbulb on it, then try again.";

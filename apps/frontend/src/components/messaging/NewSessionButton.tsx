@@ -170,7 +170,7 @@ export function NewSessionView({ sessions, onEvent, onOpenSession, onClose }: {
   const busy = pending !== null && pending.phase !== "failed";
   const blocked = localMac
     ? (localMac.tools.length === 0 ? `Install Claude Code or Codex on ${macName} first.`
-      : folders.length === 0 ? "Approve a folder in the desktop app first: Settings → File access." : null)
+      : folders.length === 0 ? "Approve a folder in the desktop app first: Settings → Desktop → Approved folders." : null)
     : !targets ? null
     : !macs ? "Starting sessions from Lightbulb is not on for this workspace."
     : !mac ? "No Mac is ready. Open the Lightbulb desktop app on your Mac and sign in."
@@ -179,7 +179,7 @@ export function NewSessionView({ sessions, onEvent, onOpenSession, onClose }: {
     : !options.sharing ? "sharing"
     : options.tools.some((t) => !t.defaultMode || !Array.isArray(t.efforts)) ? `Update Lightbulb on ${macName} to choose safe session settings.`
     : options.tools.length === 0 ? `Install Claude Code or Codex on ${macName} first.`
-    : folders.length === 0 ? "Approve a folder in the desktop app first: Settings → File access."
+    : folders.length === 0 ? "Approve a folder in the desktop app first: Settings → Desktop → Approved folders."
     : null;
   const ready = !!options && !!selected && !blocked;
   const canStart = !!scope && (!!localMac || (!!mac && !!options?.sharing)) && !!selected && !!folderPath && !blocked && !busy;

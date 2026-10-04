@@ -124,7 +124,7 @@ const NOT_RUNNING: &str = "Lightbulb is not running. Open the Lightbulb app, the
 /// The app may have started a session: never start the tool a second time after this one.
 const NO_ANSWER: &str = "Lightbulb did not answer. If a session started, it is in the Lightbulb app.";
 /// The app's refusal that the command answers with a question in the terminal.
-pub const FOLDER_NOT_APPROVED: &str = "This folder is not inside a folder you approved for Lightbulb. Add it in the Lightbulb app under Settings → File access, then run this again.";
+pub const FOLDER_NOT_APPROVED: &str = "This folder is not inside a folder you approved for Lightbulb. Add it in the Lightbulb app under Settings → Desktop → Approved folders, then run this again.";
 /// The calling terminal's environment, raw bytes: well over any real one, far under the line limit.
 const MAX_ENV: usize = 256 << 10;
 
@@ -290,7 +290,7 @@ pub fn request(ask: &Ask, folder: &Path, (cols, rows): (u16, u16), env: serde_js
     })
 }
 
-/// The app's refusal as the short reason in "not shared (…)": its first sentence.
+/// The app's refusal as the short reason in "no live terminal (…)": its first sentence.
 pub fn short_reason(message: &str) -> String {
     message.split(". ").next().unwrap_or(message).trim_end_matches('.').to_string()
 }
@@ -325,7 +325,7 @@ fn run_real(tool: &str, args: &[String], reason: Option<&str>) -> i32 {
         return 127;
     };
     if let Some(reason) = reason {
-        eprintln!("lightbulb: not shared ({reason}), running {tool} normally");
+        eprintln!("lightbulb: no live terminal ({reason}), running {tool} normally");
     }
     let err = std::process::Command::new(&program).arg0(tool).args(args).exec();
     eprintln!("lightbulb: could not run {}: {err}", program.display());
@@ -553,7 +553,7 @@ pub fn main(args: &[String]) -> i32 {
     let mut reply = ask_app(&socket, &request);
     if matches!(&reply, Err(m) if m == FOLDER_NOT_APPROVED) {
         let question = format!(
-            "Share sessions from {} with your workspace? This adds it to Lightbulb's approved folders (Settings → File access). [y/N] ",
+            "Share sessions from {} with your workspace? This adds it to Lightbulb's approved folders (Settings → Desktop → Approved folders). [y/N] ",
             folder.display()
         );
         if confirm(&question, &signals) {

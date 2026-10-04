@@ -47,7 +47,7 @@ impl std::fmt::Display for FileAccessError {
             Self::InvalidPath(s) => write!(f, "invalid path: {}", s),
             Self::OutsideAllowlist { canonical } => write!(
                 f,
-                "path {} is outside the allowed folders; add it in Settings → File access",
+                "path {} is outside the allowed folders; add it in Settings → Desktop → Approved folders",
                 canonical.display()
             ),
             Self::InvalidJson(e) => write!(f, "json: {}", e),

@@ -64,6 +64,9 @@ impl Cli {
         cmd.arg("cli");
         cmd.args(args);
         cmd.env("HOME", &home);
+        // The stand-in must also be the first `claude` on PATH: the command runs the one this shell
+        // would have run, and a machine with Claude Code installed would start the real one.
+        cmd.env("PATH", format!("{}:/usr/bin:/bin", home.join(".local/bin").display()));
         cmd.env("LIGHTBULB_TEST_MARKER", "from-the-terminal");
         cmd.env("LIGHTBULB_TEST_APP_SOCKET", app);
         cmd.cwd("/private/tmp");

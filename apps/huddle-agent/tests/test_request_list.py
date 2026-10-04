@@ -51,8 +51,9 @@ def test_at_most_four_work_at_once_and_a_freed_slot_starts_the_next():
 
 def test_rows_sharing_a_steered_run_take_one_slot_and_move_together():
     rl = RequestList()
-    rows = rl.settle(1, "u1", [{"agentId": "forge", "task": "x"}, {"agentId": "forge", "task": "y"}]
-                     + [{"agentId": f"a{i}", "task": "z"} for i in range(4)], 0.0)  # fmt: skip
+    rows = rl.settle(1, "u1", [{"agentId": "forge", "task": "x"}], 0.0)
+    rows += rl.settle(2, "u1", [{"agentId": "forge", "task": "y"}]
+                      + [{"agentId": f"a{i}", "task": "z"} for i in range(4)], 0.0)  # fmt: skip
     for r in rows[:2]:
         rl.start(r)
         rl.bind(r, "run1")
@@ -151,3 +152,19 @@ def test_a_line_with_no_task_omits_the_quotes():
     rl.pending(1, "u1", ["pulse"], 0.0)
     rl.items[0].routed = True
     assert rl.lines(NAMES) == ["Pulse is queued for"]
+
+
+def test_a_repeated_agent_in_one_split_keeps_its_first_ask():
+    rl = RequestList()
+    rows = rl.settle(1, "u1", [{"agentId": "forge", "task": "x"}, {"agentId": "pulse", "task": "p"},
+                               {"agentId": "forge", "task": "y"}], 0.0)  # fmt: skip
+    assert [(r.agent, r.task) for r in rows] == [("forge", "x"), ("pulse", "p")]
+    assert ack_line(rows, NAMES).count("Forge") == 0 and ack_line(rows, NAMES).count("Pulse") == 1
+
+
+def test_one_agents_stop_while_route_decides_drops_only_its_row():
+    rl = RequestList()
+    rl.pending(1, "u", ["forge", "friday"], 0.0)
+    rl.cancel("forge")
+    rows = rl.settle(1, "u", [{"agentId": "forge", "task": "a"}, {"agentId": "friday", "task": "b"}], 1.0)
+    assert [r.agent for r in rows] == ["friday"] and [r.agent for r in rl.items] == ["friday"]

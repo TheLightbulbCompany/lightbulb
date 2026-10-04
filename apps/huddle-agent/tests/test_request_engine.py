@@ -119,12 +119,12 @@ async def test_with_no_router_a_multi_name_line_takes_todays_opening_name_path()
     assert h._requests.items == [] and not [p for p in room.published if p[0] == "huddle.error"]
 
 
-async def test_an_old_backend_without_requests_keeps_todays_queue():
+async def test_an_old_backend_without_requests_takes_todays_opening_name_path():
     h, room, backend, lives, clock, log = await three()
     backend.route_extra = {"agentIds": list(TASKS)}
     await say(h, "u1", LINE)
-    assert [l.agent_id for l in lives] == ["pulse"] and [q[0] for q in h._queue] == ["forge", "friday"]
-    assert h._requests.items == []
+    assert [l.agent_id for l in lives] == ["pulse"] and h._voice.path == "name"
+    assert h._queue == [] and h._requests.items == []  # today: only the opening name is summoned
 
 
 async def test_the_requests_still_run_when_the_acknowledging_voice_fails():
@@ -216,3 +216,143 @@ async def test_the_floor_voice_hears_the_list_when_it_moves_at_most_every_three_
     clock.t += 1
     await h.tick()
     assert sum(1 for c in lives[0].calls if c[0] == "thinking" and c[1].startswith("Requests on this call")) == 1
+
+
+# -- fix round 1 --
+
+from huddle_agent.frames import STALE_TURN_SECONDS  # noqa: E402
+
+
+async def pump():
+    for _ in range(30):
+        await asyncio.sleep(0)
+
+
+async def five():
+    h, room, backend, lives, clock, log = make()
+    names = ["Alpha", "Bravo", "Charlie", "Delta", "Echo"]
+    agents = [{"id": n.lower(), "name": n, "listenMode": "active", "defaultName": False} for n in names]
+    backend.team_data = {**copy.deepcopy(TEAM), "agents": agents}
+    backend.route_extra = {"requests": [{"agentId": n.lower(), "task": f"task {i}"} for i, n in enumerate(names)]}
+    await h.on_participants({"u1": "Prasiddha", "u2": "Aden"})
+    await say(h, "u1", "Alpha, task 0. Bravo, task 1. Charlie, task 2. Delta, task 3. Echo, task 4")
+    return h, room, backend, lives, clock, log
+
+
+def status(h, agent):
+    return [r.status for r in h._requests.items if r.agent == agent]
+
+
+async def test_an_error_frame_fails_the_request_and_frees_its_slot():
+    h, room, backend, lives, clock, log = await five()
+    h.on_data(None, "call.frame", packet(frame(run_of(backend, "bravo"), "bravo", {"type": "error", "seq": 1})))
+    await settle(h)
+    assert status(h, "bravo") == ["failed"] and backend.turns[-1]["agentId"] == "echo"
+
+
+async def test_a_stop_cancels_a_working_request():
+    h, room, backend, lives, clock, log = await three()
+    await say(h, "u1", LINE)
+    await say(h, "u2", "Forge, stop")
+    assert status(h, "forge") == ["cancelled"] and run_of(backend, "forge") in backend.aborts
+    assert room.written()["lightbulb.agent.forge.status"] == "idle"
+
+
+async def test_a_stop_while_turns_is_in_flight_leaves_the_request_cancelled():
+    h, room, backend, lives, clock, log = await three()
+    backend.turn_gate = asyncio.Event()
+    await h.on_final_transcript("u1", "Prasiddha", LINE)
+    await pump()
+    assert len(backend.turns) == 3
+    await h.on_final_transcript("u2", "Aden", "Forge, stop")
+    backend.turn_gate.set()
+    await settle(h)
+    assert status(h, "forge") == ["cancelled"] and run_of(backend, "forge") in backend.aborts
+
+
+async def test_a_stop_while_route_decides_drops_only_that_agents_request():
+    h, room, backend, lives, clock, log = await three()
+    backend.route_gate = asyncio.Event()
+    await h.on_final_transcript("u1", "Prasiddha", LINE)
+    await h.on_final_transcript("u2", "Aden", "Forge, stop")
+    backend.route_gate.set()
+    await settle(h)
+    assert sorted(t["agentId"] for t in backend.turns) == ["friday", "pulse"] and status(h, "forge") == []
+
+
+async def test_one_addressed_agent_and_one_mentioned_is_todays_name_summon():
+    h, room, backend, lives, clock, log = await three()
+    backend.route_extra = {}
+    await say(h, "u1", "Forge, what did Friday say?")
+    assert len(backend.routes) == 1  # the round trip happened
+    assert [l.agent_id for l in lives] == ["forge"] and h._voice.path == "name" and h._queue == []
+    assert room.written()["lightbulb.agent.friday.status"] == "idle" and h._requests.items == []
+
+
+async def test_the_floor_holders_own_speaker_mentioning_another_agent_gets_no_second_answer():
+    h, room, backend, lives, clock, log = await three()
+    backend.route_extra = {}
+    await say(h, "u1", "Forge, what our PRs look like")
+    turns = len(backend.turns)
+    backend.jev_to = "forge"  # /route picks the one addressed agent, Forge itself
+    await say(h, "u1", "Forge, what did Friday say?")
+    assert [l.agent_id for l in lives] == ["forge"] and h._queue == [] and len(backend.turns) == turns
+
+
+async def test_a_name_with_a_mention_takes_the_floor_from_another_agent_as_today():
+    h, room, backend, lives, clock, log = await three()
+    backend.route_extra = {}
+    await say(h, "u1", "Pulse, an update on the go-to-market strategy")
+    await say(h, "u1", "Forge, what did Friday say?")
+    assert [l.agent_id for l in lives] == ["pulse", "forge"] and h._voice.agent_id == "forge" and h._queue == []
+
+
+async def test_a_non_speaker_mentioning_two_agents_over_a_speaking_voice_gets_todays_barge():
+    h, room, backend, lives, clock, log = await three()
+    backend.route_extra = {}
+    await say(h, "u1", "Pulse, an update on the go-to-market strategy")
+    h.on_agent_state("pulse", "speaking")
+    line = "yeah Forge and Friday both did that"
+    await say(h, "u2", line)
+    assert ("interrupt",) in lives[0].calls and h._voice.speaker == "u2"
+    assert backend.turns[-1]["agentId"] == "pulse" and backend.turns[-1]["utterance"] == line
+
+
+async def test_shutdown_with_a_working_request_posts_end_once():
+    h, room, backend, lives, clock, log = await three()
+    await say(h, "u1", LINE)
+    await h.end_exchange(force=True)
+    await h.tick()
+    assert len(backend.ends) == 1 and h._window is None
+
+
+async def test_a_stale_run_fails_its_request():
+    h, room, backend, lives, clock, log = await three()
+    await say(h, "u1", LINE)
+    clock.t += STALE_TURN_SECONDS + 1
+    await h.tick()
+    assert status(h, "forge") == ["failed"]
+
+
+async def test_another_persons_line_during_route_does_not_drop_a_named_ask():
+    h, room, backend, lives, clock, log = await three()
+    backend.route_extra = {"requests": backend.route_extra["requests"]}
+    backend.route_gate = asyncio.Event()
+    await h.on_final_transcript("u1", "Prasiddha", LINE)
+    await h.on_final_transcript("u2", "Aden", "yeah sounds good")
+    backend.route_gate.set()
+    await settle(h)
+    assert sorted(t["agentId"] for t in backend.turns) == sorted(TASKS) and lives[0].agent_id == "pulse"
+
+
+async def test_an_older_lines_acknowledgement_does_not_take_a_newer_voices_floor():
+    h, room, backend, lives, clock, log = await three()
+    backend.route_gate = asyncio.Event()
+    await h.on_final_transcript("u1", "Prasiddha", LINE)
+    await h.on_final_transcript("u1", "Prasiddha", "Forge, what our PRs look like")
+    await pump()
+    assert h._voice.agent_id == "forge"
+    backend.route_gate.set()
+    await settle(h)
+    assert [l.agent_id for l in lives] == ["forge"] and h._voice.agent_id == "forge"
+    assert sorted(r.agent for r in h._requests.items) == sorted(TASKS)

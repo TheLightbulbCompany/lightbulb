@@ -255,6 +255,8 @@ def test_address_names_anywhere_for_a_floor_switch():
 
 from huddle_agent.transcript import ghost_line, no_post_command, stop_all  # noqa: E402
 
+AGENTS_FG = [{"id": "forge", "name": "Forge"}, {"id": "friday", "name": "Friday"}]
+
 PROMPT = stt_prompt(["Pulse", "Friday", "Forge"], ["Prasiddha"])
 
 
@@ -350,3 +352,18 @@ def test_no_post_names_with_digits_and_two_words():
     agents = [{"id": "a2", "name": "Agent 2"}, {"id": "ops", "name": "Customer Operations"}]
     assert no_post_command("Agent 2, don't post that", agents) == (True, "a2")
     assert no_post_command("customer operations, don't post that", agents) == (True, "ops")
+
+
+@pytest.mark.parametrize("text", ["Forge, please stop", "Forge, just stop", "forge please just stop"])
+def test_a_named_stop_takes_please_and_just(text):
+    assert stop_request(text) and stop_target(text, AGENTS_FG) == "forge"
+
+
+@pytest.mark.parametrize("text", ["please stop", "just stop", "please just stop"])
+def test_an_unnamed_please_or_just_stop_is_a_plain_stop(text):
+    assert stop_request(text) and stop_target(text, AGENTS_FG) is None and not stop_all(text)
+
+
+@pytest.mark.parametrize("text", ["please stop the deploy", "just stop by later", "Forge, please stop it now"])
+def test_please_and_just_stop_stay_anchored(text):
+    assert not stop_request(text)

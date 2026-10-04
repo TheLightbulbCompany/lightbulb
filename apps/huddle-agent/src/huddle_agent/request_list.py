@@ -32,7 +32,8 @@ class RequestList:
     def __init__(self) -> None:
         self.items: list[Request] = []
         self.version = 0  # bumped on every change: the floor voice hears the list when it moves
-        self._cancelled_turns: set[int] = set()  # turns whose pending rows were cancelled before /route settled
+        self._cancelled_turns: set[int] = set()  # turns whose pending rows were ALL cancelled before /route settled
+        self._cancelled_asks: set[tuple[int, str]] = set()  # (turn, agent) pending rows one agent's stop cancelled
         self._suppressed: set[str] = set()  # runs with no row that "don't post that" named
 
     def _bump(self) -> None:
@@ -63,7 +64,12 @@ class RequestList:
         self.drop_pending(turn)
         if turn in self._cancelled_turns:
             return []
-        rows = [Request(x["agentId"], asker, str(x.get("task") or ""), now, turn, routed=True) for x in routed]
+        first = {x["agentId"]: x for x in reversed(routed)}  # one row per agent: the first ask wins
+        rows = [
+            Request(x["agentId"], asker, str(x.get("task") or ""), now, turn, routed=True)
+            for x in routed
+            if first[x["agentId"]] is x and (turn, x["agentId"]) not in self._cancelled_asks
+        ]
         self.items += rows
         self._bump()
         return rows
@@ -96,7 +102,11 @@ class RequestList:
 
     def cancel(self, agent: str | None = None) -> list[Request]:
         rows = [r for r in self.open() if agent in (None, r.agent)]
-        self._cancelled_turns |= {r.turn for r in rows if not r.routed}
+        pending = {(r.turn, r.agent) for r in rows if not r.routed}
+        if agent is None:
+            self._cancelled_turns |= {t for t, _ in pending}
+        else:
+            self._cancelled_asks |= pending
         self._move(rows, "cancelled")
         return rows
 

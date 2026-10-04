@@ -339,7 +339,8 @@ def pause(text: str) -> bool:
 
 
 _STOP = re.compile(
-    r"^(?:(?:hey|ok|okay) )?(?:([a-z0-9]+(?: [a-z0-9]+)?) ?, ?|([a-z0-9]+) )?(?:stop|never ?mind|cancel (?:that|it)|forget it)$"
+    r"^(?:(?:hey|ok|okay) )?(?:please )?(?:([a-z0-9]+(?: [a-z0-9]+)?) ?, ?|([a-z0-9]+) )??(?:please )?(?:just )?"
+    r"(?:stop|never ?mind|cancel (?:that|it)|forget it)$"
 )
 
 

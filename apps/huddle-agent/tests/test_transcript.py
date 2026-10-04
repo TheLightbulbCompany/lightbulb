@@ -6,6 +6,7 @@ from huddle_agent.transcript import (
     STT_PROMPT_CHARS,
     Transcript,
     address,
+    clause_openers,
     halt,
     real_speech,
     soundex,
@@ -367,3 +368,28 @@ def test_an_unnamed_please_or_just_stop_is_a_plain_stop(text):
 @pytest.mark.parametrize("text", ["please stop the deploy", "just stop by later", "Forge, please stop it now"])
 def test_please_and_just_stop_stay_anchored(text):
     assert not stop_request(text)
+
+
+ROSTER = [
+    {"id": a.lower().replace(" ", "_"), "name": a, "defaultName": True}
+    for a in ("CEO", "Engineering", "Finance", "Growth", "Analytics", "Customer Operations")
+] + [{"id": "forge", "name": "Forge", "defaultName": False}]
+
+
+@pytest.mark.parametrize(
+    "text,ids",
+    [
+        ("Finance, can you check burn? Engineering, can you check deploy?", ["finance", "engineering"]),
+        ("CEO, what should I focus on, and Growth, how did the campaign do?", ["ceo", "growth"]),
+        (
+            "Can you pull signups, Analytics? And Customer Operations, how many tickets are open?",
+            ["analytics", "customer_operations"],
+        ),
+        ("Finance, how is growth looking?", ["finance"]),  # "growth" after "how is" opens no clause
+        ("our growth is slowing, Engineering what can we ship", ["engineering"]),
+        ("Finance, can you check burn?", ["finance"]),
+        ("Forge, check CI. Engineering, check deploy", ["engineering"]),  # only default names
+    ],
+)
+def test_clause_openers_counts_default_names_that_open_a_clause(text, ids):
+    assert clause_openers(text, ROSTER) == ids

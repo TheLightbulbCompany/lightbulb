@@ -36,6 +36,7 @@ from huddle_agent.transcript import (
     Transcript,
     address,
     addressed_by_name,
+    clause_openers,
     ghost_line,
     is_question,
     no_post_command,
@@ -711,7 +712,7 @@ class Huddle:
         ):
             self._cut(v, identity)  # no interim got there first: cut on the final
             cut = self._cut_by.pop(identity, None)
-        named = list(dict.fromkeys(a.agent_ids + a.anywhere))
+        named = self._named(text, a)
         if len(named) >= 2:
             # Conversation engine §3.2: one request per named agent; /route's one Jev call splits the line.
             # Every named agent shows as working while it decides (§3.5: the strip within 1 s). A split of
@@ -730,6 +731,10 @@ class Huddle:
             )
             return
         self._dispatch(identity, name, text, mark, a, v, cut, barge)
+
+    def _named(self, text: str, a: Any) -> list[str]:
+        """Every agent a line names for the split: wake names, exact mentions, and role names that open a clause."""
+        return list(dict.fromkeys(a.agent_ids + a.anywhere + clause_openers(text, self._team["agents"])))
 
     def _dispatch(
         self,
@@ -1026,7 +1031,7 @@ class Huddle:
             if len(reqs) < 2:  # one ask (or no router): today's handling of the line, whatever /route said
                 if self._requests.drop_pending(mark):
                     self._sync_state()
-                named = list(dict.fromkeys(a.agent_ids + a.anywhere))
+                named = self._named(text, a)
                 if self._requests.stopped(mark) or all(self._requests.stopped(mark, x) for x in named):
                     return  # "everyone stop" / "<agent>, stop" said while /route decided
                 cur = self._voice
@@ -1310,7 +1315,9 @@ class Huddle:
         seed = self._transcript.seed(
             agent_id, before_mark=math.inf if mark is None else mark
         )
-        news = self._news.get(agent_id, [])
+        # An acknowledgement says only who is on what ("then wait"): its agent's ready answers stay news, and
+        # tick() hands them over once the acknowledgement has been said.
+        news = [] if ack else self._news.get(agent_id, [])
         seed += [
             (
                 "developer",
@@ -1996,6 +2003,20 @@ class Huddle:
                 self._live_call(v, "append_thinking", "Requests on this call:\n" + "\n".join(lines))
         if v.handoff and now >= v.handoff[1]:
             self._end_handoff(v)
+        if (
+            v.path == "ack"
+            and v.heard_at is None  # its acknowledgement's audio is out
+            and v.agent_state not in ("speaking", "thinking")
+            and self._settled(v, now)
+            and self._news.get(v.agent_id)
+        ):
+            # Its own answers that came in while it opened: handed over as ended() does for the floor-holder.
+            for n in self._news[v.agent_id]:
+                text = self._cant_reach_seed(n) or f"Your earlier task on {n[1][:80]} finished: {n[2]}"
+                self._live_call(v, "append_commentary", text, delegation_id=None)
+            self._consume_news(v.agent_id)
+            self._sync_state()
+            return
         if (
             v.agent_state not in ("speaking", "thinking")
             and self._settled(v, now)

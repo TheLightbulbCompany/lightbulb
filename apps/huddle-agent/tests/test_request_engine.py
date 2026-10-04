@@ -3,6 +3,8 @@
 import asyncio
 import copy
 
+import pytest
+
 from huddle_agent.backend import BackendError
 from test_huddle import TEAM, answer, make, say, settle
 
@@ -519,3 +521,40 @@ async def test_two_answers_ready_in_the_same_tick_go_in_request_order():
     h.on_agent_state("forge", "listening")
     await quiet(h, clock)
     assert [l.agent_id for l in lives] == ["pulse", "forge", "friday"]
+
+
+async def test_a_second_role_named_agent_reaches_the_splitter():
+    h, room, backend, lives, clock, log = make()
+    roster = [{"id": a.lower(), "name": a, "listenMode": "active", "defaultName": True} for a in ("Finance", "Engineering")]
+    backend.team_data = {**copy.deepcopy(TEAM), "agents": roster}
+    backend.route_extra = {
+        "requests": [{"agentId": "finance", "task": "check burn"}, {"agentId": "engineering", "task": "check deploy"}]
+    }
+    await h.on_participants({"u1": "Prasiddha", "u2": "Aden"})
+    await say(h, "u1", "Finance, can you check burn? Engineering, can you check deploy?")
+    assert len(backend.routes) == 1
+    assert {t["agentId"]: t["utterance"] for t in backend.turns} == {"finance": "check burn", "engineering": "check deploy"}
+
+
+@pytest.mark.parametrize("opening", ["session", "live"])  # before its seed is built, and after
+async def test_an_answer_ready_while_the_ack_voice_opens_waits_for_the_ack(opening):
+    h, room, backend, lives, clock, log = await three()
+    gate = asyncio.Event()
+    if opening == "session":
+        backend.session_gate = gate
+    else:
+        h.gate["live"] = gate
+    await h.on_final_transcript("u1", "Prasiddha", LINE)
+    await pump()
+    pulse = run_of(backend, "pulse")
+    answer(h, pulse, "pulse", "GTM is on track")
+    gate.set()
+    await settle(h)
+    seed = lives[0].seed
+    assert seed[-1][1].startswith("You are on") and not any("GTM is on track" in x[1] for x in seed)
+    assert status(h, "pulse") == ["ready"] and [n[0] for n in h._news["pulse"]] == [pulse]
+    h.on_agent_state("pulse", "speaking")  # the acknowledgement
+    h.on_agent_state("pulse", "listening")
+    await quiet(h, clock)
+    said = [c for c in lives[0].calls if c[0] == "commentary" and "GTM is on track" in c[1]]
+    assert len(said) == 1 and status(h, "pulse") == ["delivered"] and "pulse" not in h._news

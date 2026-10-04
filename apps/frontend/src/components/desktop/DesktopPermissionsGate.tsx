@@ -116,7 +116,7 @@ export function DesktopPermissionsGate() {
   };
   const items: Array<{key:keyof DesktopPermissionSet | "sessions";label:string;description:string;Icon:LucideIcon}> = [
     ...DESKTOP_PERMISSION_ITEMS,
-    {key:"sessions",label:"Share Claude & Codex sessions",description:"Let people in your workspace conversations view and steer the terminal sessions you start in Lightbulb.",Icon:Terminal},
+    {key:"sessions",label:"Share Claude & Codex sessions",description:"Let people in your workspace conversations view and steer the Claude Code and Codex sessions on this Mac.",Icon:Terminal},
   ];
 
   return (

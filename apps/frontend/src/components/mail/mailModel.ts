@@ -13,7 +13,24 @@ export interface MailMessage {
   truncated?: boolean;
 }
 
-export interface MailMeeting {
+export type MeetingNotes = "posted" | "skipped" | "pending";
+
+export interface UnsaidAnswer {
+  agent_id: string;
+  agent_name: string;
+  request: string;
+  answer: string;
+  at: number;
+}
+
+/** What one occurrence ended with. Every field is absent from an older backend. */
+export interface MeetingOutcome {
+  ended_at?: number | null;
+  notes?: MeetingNotes | null;
+  unsaid?: UnsaidAnswer[];
+}
+
+export interface MailMeeting extends MeetingOutcome {
   id: string;
   title: string;
   organizer: string | null;
@@ -22,7 +39,7 @@ export interface MailMeeting {
   start_at: number | null;
   end_at: number | null;
   repeats: boolean;
-  transcripts: { start_at: number }[];
+  transcripts: ({ start_at: number } & MeetingOutcome)[];
   notes_room_id?: string | null;
   reason?: string | null;
 }
@@ -125,6 +142,20 @@ function occurrence(meeting: MailMeeting, startAt: number | null, status: string
     endAt,
     status,
     hasTranscript: startAt !== null && meeting.transcripts.some((t) => t.start_at === startAt),
+  };
+}
+
+/**
+ * The outcome of the occurrence at `startAt`: its transcripts entry's value when that entry
+ * carries one, else the meeting's own when `startAt` is the current occurrence.
+ */
+export function occurrenceOutcome(meeting: MailMeeting, startAt: number | null): Required<MeetingOutcome> {
+  const entry = startAt === null ? undefined : meeting.transcripts.find((t) => t.start_at === startAt);
+  const current = startAt === meeting.start_at ? meeting : undefined;
+  return {
+    ended_at: entry?.ended_at ?? current?.ended_at ?? null,
+    notes: entry?.notes ?? current?.notes ?? null,
+    unsaid: entry?.unsaid ?? current?.unsaid ?? [],
   };
 }
 

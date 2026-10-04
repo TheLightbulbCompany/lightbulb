@@ -134,19 +134,23 @@ deployed yet, derived from the new result. The new worker reads `ops`:
 ```
 
 - `requests`: in spoken order. Several for one agent are allowed.
-- `social`: nothing was asked and one agent may reply in a sentence (a lone speaker's greeting).
-  Null when people are talking to each other, or in a meeting.
+- `social`: nothing was asked and one agent may reply in a sentence (a lone speaker's greeting, or
+  "go ahead" to an announced list). Null when people are talking to each other, or in a meeting.
 - `more`: the speaker announced a list.
 - `cancel`: a `cancel` part with a `drops` target.
 - `steer`: a single request part whose `amends` target is still working. The text goes into that
   run. If the target is already answered, it is a new request for the same owner instead.
 
-The worker sends its open and last three answered requests (`id`, `agentId`, `task`, `status`) with
-each `/route` call.
+The worker sends its open and last three answered requests (`open`: `id`, `agentId`, `task`,
+`status`) with each `/route` call, and `floor.mine: true` when the speaker is the person the floor
+agent is talking with.
 
 In a **meeting** (Google Meet) nobody is implied: `ops` holds requests only for a line that names an
 agent, says the wake word, or is an unclaimed question, exactly as today. With **two or more people**
 in a Live call, an unnamed part is a request only at high confidence; the default is silence.
+One exception covers both: when `floor.mine` is true the speaker is already in a conversation with
+the team, so their request parts need no name (today the voice model hears these lines and treats
+them the same way). A `people` part stays silent there too.
 
 ### 4.5 The ledger (worker, code owns it)
 

@@ -11,6 +11,7 @@ import hashlib
 import hmac
 import time
 from datetime import datetime, timezone
+from urllib.parse import urlencode
 
 import httpx
 
@@ -36,6 +37,7 @@ _SPEECH_EVENTS = [
     "participant_events.join",
     "participant_events.leave",
 ]
+_ENDED = {"call_ended", "done", "fatal", "recording_done", "media_expired", "analysis_done", "analysis_failed"}
 _transport: httpx.AsyncBaseTransport | None = None  # tests swap in httpx.MockTransport
 
 
@@ -77,8 +79,8 @@ def _output_media(room_id: str, meeting: dict) -> dict:
 
 
 async def create(*, room_id: str, meeting: dict, company: str) -> str:
-    """Books the bot; returns its id. ``meeting.ticketNonce`` is both the page ticket's binding and
-    the Idempotency-Key, so a retry after a lost response gets the same bot back (Recall: 1 h)."""
+    """Books the bot; returns its id. Recall does not deduplicate a create, so callers run
+    ``find_for_room`` first: ``meeting.ticketNonce`` rides in the metadata as the booking's id."""
     join_at = int(meeting["startAt"]) - 120
     body = {
         "meeting_url": meeting["meetingUrl"],
@@ -98,7 +100,7 @@ async def create(*, room_id: str, meeting: dict, company: str) -> str:
         "variant": {"google_meet": "web_4_core"},
         "automatic_leave": {"waiting_room_timeout": 600, "noone_joined_timeout": 1200},
         "chat": {"on_bot_join": {"send_to": "everyone", "message": CONSENT_LINE.format(company=company), "pin": True}},
-        "metadata": {"roomId": room_id},
+        "metadata": {"roomId": room_id, "nonce": meeting["ticketNonce"]},
     }
     if join_at > time.time():
         body["join_at"] = _iso(join_at)  # omitted when already past: Recall joins now
@@ -106,6 +108,18 @@ async def create(*, room_id: str, meeting: dict, company: str) -> str:
     if not isinstance(bot, dict) or not bot.get("id"):
         raise RecallError("bad_response")
     return bot["id"]
+
+
+async def find_for_room(room_id: str, nonce: str) -> str | None:
+    """The live bot an earlier create booked for this booking (room + nonce), whose answer was lost
+    or whose process died before the id was written; None when there is none to adopt."""
+    query = urlencode({"metadata__roomId": room_id, "metadata__nonce": nonce})
+    page = await _call("GET", f"/api/v1/bot/?{query}")
+    for bot in page.get("results") or []:
+        changes = bot.get("status_changes") or [{}]
+        if bot.get("id") and changes[-1].get("code") not in _ENDED:
+            return str(bot["id"])
+    return None
 
 
 async def reschedule(bot_id: str, *, room_id: str, meeting: dict) -> None:

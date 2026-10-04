@@ -15,7 +15,7 @@ import { navigateShell } from "@/lib/shellNav";
 import { useIsWorkspaceAdmin } from "@/hooks/useIsWorkspaceAdmin";
 import {
   LISTENING_TO, agentA11yName, agentLine, agentLiveStatus, agentNaming, agentWorking, floorChange, floorHolder, liveAgents, liveErrorText,
-  liveHappening, liveHint, nameCollides, orderAgentSlots, queuePosition, voiceFailedText, wakingText, type RoomMember,
+  AGENTS_JOINING, liveHappening, liveHint, nameCollides, orderAgentSlots, queuePosition, voiceFailedText, wakingText, type RoomMember,
 } from "@lightbulb/shared";
 import { CEO_IDENTITY, useHuddle } from "./HuddleProvider";
 
@@ -299,6 +299,7 @@ function Strip({ here, members }: { here: boolean; members: readonly RoomMember[
             {ceo
               ? <AgentGroupLive worker={ceo} tiles={tiles} slots={slots} onTalk={tap} edge={edge} />
               : <AgentGroup tiles={tiles} attrs={undefined} tracks={[]} slots={slots} onTalk={tap} ready={false} edge={edge} />}
+            {!ceo && !gaveUp && <span className="live-chip" role="status">{AGENTS_JOINING}</span>}
             {chipName && <span className="live-chip" role="status">Meant {chipName} the agent? Say &quot;hey {chipName}&quot; or tap</span>}
           </>}
           {ceo && edge.failed && notice && <ClearWhenActive key={notice.at} worker={ceo} failed={edge.failed} onClear={clearNotice} />}

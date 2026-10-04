@@ -194,7 +194,7 @@ describe("Live", () => {
     await screen.findByLabelText("Leave Live");
     expect(screen.queryByText("Agents")).toBeNull();
     expect(screen.queryByText(/Say an agent's name|tap Gauge/)).toBeNull();
-    expect(screen.queryByText("Joining…")).toBeNull();
+    expect(screen.queryByText("Agents are joining…")).toBeNull();
   });
 
   it("idle_ended from the worker ends Live and says why", async () => {

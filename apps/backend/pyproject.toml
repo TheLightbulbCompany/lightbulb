@@ -33,6 +33,8 @@ dependencies = [
     "pillow>=12.3.0",
     "livekit-api>=1.2.1",
     "mcp>=2,<3",
+    # core/services/meeting_invites.py: recurring calendar series (RRULE/EXDATE).
+    "python-dateutil>=2.9.0",
 ]
 
 [project.optional-dependencies]

@@ -212,6 +212,8 @@ export function parseLiveNotice(raw: string): LiveNotice | null {
   }
 }
 
+/** Shown from the join until the voice worker is in the room: nobody hears an agent request yet. */
+export const AGENTS_JOINING = "Agents are joining…";
 export const wakingText = (name: string) => `${name} is waking up — this can take a minute the first time.`;
 export const voiceFailedText = (name: string) => `${name} couldn't join. Try again.`;
 export const renamedText = (from: string, to: string) => `${from} is now ${to}`;

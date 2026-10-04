@@ -55,7 +55,9 @@ def reply_ics(invite: Invite, address: str, now: datetime) -> str:
         "VERSION:2.0",
         "METHOD:REPLY",
         "BEGIN:VEVENT",
-        f"UID:{_clean(invite.uid)}",
+        # One occurrence of a series: Google matches the series UID plus that RECURRENCE-ID.
+        f"UID:{_clean(invite.instance_of or invite.uid)}",
+        *([_clean(invite.recurrence_id_line)] if invite.recurrence_id_line else []),
         f"SEQUENCE:{invite.sequence}",
         f"DTSTAMP:{_utc(now)}",
         f"ORGANIZER:mailto:{_clean(invite.organizer_email)}",

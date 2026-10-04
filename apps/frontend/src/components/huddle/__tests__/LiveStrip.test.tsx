@@ -104,6 +104,7 @@ it("renders without the worker, tiles inert", () => {
   lk.participants = [{ identity: "u1", name: "Ana", isLocal: true }];
   render(view());
   expect(screen.getByRole("button", { name: /^Gauge/ })).toBeDisabled();
+  expect(screen.getByText("Agents are joining…")).toBeInTheDocument();
 });
 
 it("no listening agent in the room, no agent group", () => {
@@ -299,6 +300,7 @@ it("45 s without the worker shows agents-absent with Retry, which re-joins", () 
     lk.participants = [{ identity: "u1", name: "Ana", isLocal: true }];
     render(view());
     act(() => { vi.advanceTimersByTime(45_000); });
+    expect(screen.queryByText("Agents are joining…")).toBeNull();
     fireEvent.click(within(screen.getByRole("alert")).getByText("Retry"));
     expect(lk.huddle.join).toHaveBeenCalledWith("r1", "#general");
   } finally { vi.useRealTimers(); }

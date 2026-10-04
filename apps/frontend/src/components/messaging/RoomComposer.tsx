@@ -9,6 +9,7 @@ import { consumeFocusComposerRequest } from "@/lib/focusComposerRequest";
 import { formatBytes } from "@/lib/utils";
 import { EmojiPicker, recordRecentEmoji } from "./EmojiPicker";
 import { ParticipantAvatar } from "./ParticipantAvatar";
+import { SessionToolIcon } from "./SessionToolIcon";
 import type { RoomParticipant } from "./types";
 import "./messaging.css";
 
@@ -544,7 +545,7 @@ function ComposerAttempt({
         <span className="min-w-0 flex-1 text-left"><span className="block truncate" title={entry.member.displayName}>{entry.member.displayName}</span>
           <span className="text-muted-foreground text-sm">{entry.member.mentionHandle ? `@${entry.member.mentionHandle}` : "Person"}</span></span>
       </> : <>
-        <span className="flex size-8 items-center justify-center rounded-md bg-muted text-xs font-semibold" aria-hidden="true">{entry.option.candidate.session.provider === "claude" ? "CC" : "CX"}</span>
+        <span className="flex size-8 items-center justify-center rounded-md bg-muted" aria-hidden="true"><SessionToolIcon provider={entry.option.candidate.session.provider} /></span>
         <span className="min-w-0 flex-1 text-left"><span className="block truncate" title={sessionTitle(entry.option.candidate.session)}>{entry.option.candidate.session.provider === "claude" ? "Claude Code" : "Codex"} · {sessionTitle(entry.option.candidate.session)}</span>
           <span className="block truncate text-muted-foreground text-sm">{entry.option.ownerName}{entry.option.candidate.collided ? ` · ${entry.option.candidate.session.cwdName ? `${entry.option.candidate.session.cwdName} · ` : ""}${entry.option.candidate.session.sessionId.slice(0, 8)}` : ""}</span></span>
       </>} />}

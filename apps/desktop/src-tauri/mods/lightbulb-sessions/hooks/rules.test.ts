@@ -65,9 +65,10 @@ test('row body drops the labels and the framing', () => {
 
 const ENGINE = '(the engine draws its own row)'
 
-// The engine beneath the mod: tools run, turns end, rows draw.
+// The engine beneath the mod: prompts enter, tools run, turns end, rows draw.
 function world(on: On) {
   const ran: string[] = []
+  on('prompt.submit', ($, e) => ({ text: e.text, origin: e.origin }))
   on('tool.call', ($, e) => {
     ran.push(String(e.tool))
     return { result: 'ok', text: 'ok' }
@@ -80,27 +81,15 @@ function world(on: On) {
   return ran
 }
 
-let n = 0
-const deliver = (text: string) => ({
-  message: { type: 'user' as const, role: 'user' as const, isMeta: true as const, content: [{ type: 'text' as const, text: PEER_PREFIX + text + PEER_SUFFIX }] },
-  door: 'prompt' as const,
-  origin: { kind: 'peer' as const },
-  uuid: `u${++n}`,
-})
-// The kit has no store beneath session.append and a test hook cannot answer it (one that answers
-// without next is skipped), so the chain runs the mod's hook and then reports no implementation.
-// That report, and only that, is the row being kept.
-async function append($: { session: { append: (i: ReturnType<typeof deliver>) => Promise<unknown> } }, text: string) {
-  try { await $.session.append(deliver(text)) } catch (err) {
-    if (!String(err).includes('no implementation for session.append')) throw err
-  }
-}
+// A peer's message as prompt.submit raises it: a turn of its own, or folded into a running one.
+const submit = ($: { prompt: { submit: (i: { text: string; wait: boolean; origin: { kind: 'peer' }; turnId?: string }) => Promise<unknown> } }, text: string, turnId?: string) =>
+  $.prompt.submit({ text: PEER_PREFIX + text + PEER_SUFFIX, wait: false, origin: { kind: 'peer' }, ...(turnId ? { turnId } : {}) })
 const done = { answer: '', durationMs: 1, isAborted: false, turnId: 't', reason: 'answer' as const }
 const denied = (r: unknown) => JSON.stringify(r).includes("a teammate's request cannot change")
 
 test("a teammate's turn cannot edit config; the owner's can; the guard ends with the turn", async ($, on) => {
   const ran = world(on)
-  await append($, person)
+  await submit($, person)
   expect(denied(await $.tool.call({ tool: 'Edit', file_path: '/r/CLAUDE.md', old_string: 'a', new_string: 'b' }))).toBe(true)
   expect(denied(await $.tool.call({ tool: 'Write', file_path: '/r/.claude/settings.json', content: '{}' }))).toBe(true)
   expect(denied(await $.tool.call({ tool: 'Bash', command: 'echo x >> AGENTS.md' }))).toBe(true)
@@ -112,10 +101,10 @@ test("a teammate's turn cannot edit config; the owner's can; the guard ends with
   await $.turn.complete(done)
   expect(denied(await $.tool.call({ tool: 'Edit', file_path: '/r/CLAUDE.md', old_string: 'a', new_string: 'b' }))).toBe(false)
   // the owner's own Lightbulb message starts no guarded turn
-  await append($, OWNER)
+  await submit($, OWNER)
   expect(denied(await $.tool.call({ tool: 'Write', file_path: '/r/CLAUDE.md', content: 'x' }))).toBe(false)
-  // a plain peer (not Lightbulb) is guarded too
-  await append($, 'hello from another claude')
+  // a plain peer (not Lightbulb), folded into a running turn, is guarded too
+  await submit($, 'hello from another claude', 't')
   expect(denied(await $.tool.call({ tool: 'NotebookEdit', notebook_path: '/r/.codex/n.ipynb', new_source: 'x' }))).toBe(true)
   await $.turn.complete(done)
 })

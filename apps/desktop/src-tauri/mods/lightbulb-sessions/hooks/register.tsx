@@ -52,11 +52,11 @@ let teammateTurn = false
 const refuse = (what: string) => ({ deny: `Lightbulb: a teammate's request cannot change ${what}. Ask your user to make this change.` })
 
 export const register: Register = on => {
-  on('session.append', async ($, e, next) => {
-    if (e.origin.kind === 'peer' && e.message.role === 'user' && !e.agentId) {
-      const text = e.message.content.flatMap(b => (b.type === 'text' ? [b.text] : [])).join('\n')
-      if (classify(text).kind !== 'owner') teammateTurn = true
-    }
+  // prompt.submit sees a peer's message both as a turn of its own and folded into a running turn
+  // (PromptOrigin 'peer'; PromptSubmitInput.turnId). session.append does not: a folded delivery is
+  // appended as an engine attachment row.
+  on('prompt.submit', async ($, e, next) => {
+    if (e.origin.kind === 'peer' && classify(e.text).kind !== 'owner') teammateTurn = true
     return next(e)
   })
 

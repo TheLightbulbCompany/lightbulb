@@ -391,6 +391,13 @@ async def _bot_failed(owner_id: str, room_id: str, meeting: dict, exc: Exception
     )
 
 
+def _over(start_at: float | None, end_at: float | None, now: float) -> bool:
+    """An occurrence that has ended: its end has passed, or (no end) it started over an hour ago."""
+    if end_at:
+        return end_at <= now
+    return start_at is not None and start_at < now - 3600
+
+
 async def _sync_bot(owner_id: str, room_id: str, meeting: dict, prior: dict | None) -> dict:
     """Books, moves or pulls the meeting's Recall bot and returns the meeting as written. A Recall
     failure never raises into the mail route; a lost META race past three tries does (SES retries)."""
@@ -411,6 +418,10 @@ async def _sync_bot(owner_id: str, room_id: str, meeting: dict, prior: dict | No
             )
             return await _patch_meeting(room_id, {"botError": code})
         return await _patch_meeting(room_id, {}, drop=_BOT_KEYS)
+    if _over(meeting.get("startAt"), meeting.get("endAt"), time.time()):
+        # Never a bot into a slot that is over: Recall would send it into the Meet at once.
+        logger.warning("meeting room %s: its time has passed, no bot booked or moved", room_id)
+        return meeting
     if bot_id and meeting["status"] != "bot_failed" and prior and prior.get("meetingUrl") == meeting["meetingUrl"]:
         if int(prior.get("startAt", 0)) == meeting["startAt"]:
             return meeting
@@ -506,6 +517,13 @@ async def handle_team_mail(owner_id: str, payload, team: dict) -> str | None:
     invite = await asyncio.to_thread(parse, payload.calendar)  # the rule walk is CPU work
     if invite is None or (invite.method == "REQUEST" and not invite.meeting_url):
         return None  # not a Meet invite we can join: the CEO reads it as mail
+    if invite.method == "REQUEST" and _over(
+        invite.start.timestamp(), invite.end.timestamp() if invite.end else None, time.time()
+    ):
+        # Something already over is never a meeting: an old occurrence Google sends along with a
+        # series ("All events"), or a move into the past. No record, no line, no bot, no RSVP.
+        put_metric("meeting.invite.stale")
+        return "meeting_ignored"
     series_room = messaging_repo.meeting_room_id(owner_id, invite.instance_of) if invite.instance_of else None
     if series_room and ((await messaging_repo.get_room(series_room)) or {}).get("meeting"):
         # ponytail: a move or cancel of one occurrence of a series we follow is not followed; the

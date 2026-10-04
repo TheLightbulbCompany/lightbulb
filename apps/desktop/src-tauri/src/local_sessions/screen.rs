@@ -210,9 +210,14 @@ fn idle_attach(holders: &[HolderInfo], shown: Option<&str>, watched_jobs: &BTree
         .iter()
         .filter(|h| {
             let Some(job) = manager::attach_job(h) else { return false };
-            let at = *wanted.entry(h.id.clone()).or_insert(now);
+            // Shown or watched now counts as asked now: IDLE runs from the last use, not the last lookup.
+            let used = shown == Some(h.id.as_str()) || watched_jobs.contains(job);
+            let at = wanted.entry(h.id.clone()).or_insert(now);
+            if used {
+                *at = now;
+            }
             let ended = running.is_some_and(|r| !r.contains(job));
-            ended || (shown != Some(h.id.as_str()) && !watched_jobs.contains(job) && now.duration_since(at) >= IDLE)
+            ended || (!used && now.duration_since(*at) >= IDLE)
         })
         .cloned()
         .collect()
@@ -758,6 +763,23 @@ mod tests {
             [10],
             "not the panel's, not a watched one, never a held session's holder"
         );
+    }
+
+    #[test]
+    fn an_attach_terminal_waits_idle_from_when_the_panel_stopped_showing_it() {
+        let holders = [attach("aaaaaaaa", "11111111", 10), attach("bbbbbbbb", "22222222", 20)];
+        let running = BTreeSet::from(["11111111".to_owned(), "22222222".to_owned()]);
+        let mut wanted = BTreeMap::new();
+        let t0 = Instant::now();
+        let none = BTreeSet::new();
+        assert!(idle_attach(&holders, Some("aaaaaaaa"), &none, Some(&running), &mut wanted, t0).is_empty());
+        let watched = BTreeSet::from(["22222222".to_owned()]);
+        let hide = t0 + IDLE * 5;
+        assert!(idle_attach(&holders, Some("aaaaaaaa"), &watched, Some(&running), &mut wanted, hide).is_empty(),
+            "shown and watched for minutes");
+        assert!(idle_attach(&holders, None, &none, Some(&running), &mut wanted, hide + IDLE / 2).is_empty(),
+            "the panel just closed and the relay just stopped: not reaped at once");
+        assert_eq!(pids(idle_attach(&holders, None, &none, Some(&running), &mut wanted, hide + IDLE)), [10, 20]);
     }
 
     #[test]

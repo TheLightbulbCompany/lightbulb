@@ -87,12 +87,17 @@ pub fn attach_job(info: &HolderInfo) -> Option<&str> {
 pub fn stop_attach(info: &HolderInfo) {
     const KILL_AFTER: Duration = Duration::from_secs(2);
     let (holder, client) = (info.pid as libc::pid_t, info.provider_pid as libc::pid_t);
-    if holder <= 1 {
+    // Discovery may ask again every second: one kill thread per holder.
+    static STOPPING: std::sync::Mutex<Vec<libc::pid_t>> = std::sync::Mutex::new(Vec::new());
+    if holder <= 1 || STOPPING.lock().map_or(true, |mut s| s.contains(&holder) || { s.push(holder); false }) {
         return;
     }
     stop(info.pid);
     std::thread::spawn(move || {
         std::thread::sleep(KILL_AFTER);
+        if let Ok(mut s) = STOPPING.lock() {
+            s.retain(|p| *p != holder);
+        }
         // ponytail: a pid reused within 2 s would be killed too; a start-time check if that ever matters.
         let alive = |pid: libc::pid_t| pid > 1 && unsafe { libc::kill(pid, 0) } == 0;
         if alive(holder) || alive(client) {

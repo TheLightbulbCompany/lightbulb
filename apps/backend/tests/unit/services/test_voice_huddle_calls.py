@@ -792,3 +792,25 @@ def test_meeting_actor_maps_only_non_members_of_a_meeting():
 async def test_live_two_names_with_nothing_to_cut_send_no_requests(live_env):
     got, _ = await _live("Finance and Ada?", humans=2)
     assert got["agentIds"] == ["fin-1", "ceo-1"] and "requests" not in got
+
+
+async def test_voice_run_reads_what_teammates_were_asked_in_the_same_breath(run_env):
+    await vc.dispatch_voice_run(
+        call=WINDOW, run_id="run-1", agent_id="fin-1", speaker_id="user_b", utterance="the burn",
+        transcript="", requests=['Ada is answering "the plan"'],
+    )  # fmt: skip
+    text = run_env.await_args.kwargs["json_body"]["request"]["input"]
+    assert text.endswith(
+        '[Asked in the same breath; teammates are on these:\nAda is answering "the plan"]\n\nBea (voice): the burn'
+    )
+
+
+async def test_no_post_marks_this_rooms_voice_run_only(run_env):
+    vc.messaging_repo.get_voice_run.return_value = {"runId": "run-1", "roomId": "room-1", "agentId": "fin-1"}
+    assert await vc.mark_no_post("org_a", "room-1", "run-1") is True
+    vc.messaging_repo.put_voice_run.assert_awaited_once_with(
+        "org_a", "run-1", {"runId": "run-1", "roomId": "room-1", "agentId": "fin-1", "noPost": True}
+    )
+    assert await vc.mark_no_post("org_a", "room-2", "run-1") is False  # another room's run
+    vc.messaging_repo.get_voice_run.return_value = None
+    assert await vc.mark_no_post("org_a", "room-1", "run-1") is False

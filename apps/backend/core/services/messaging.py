@@ -3736,6 +3736,13 @@ async def create_follow_up(owner_id: str, request: FollowUpRequest) -> FollowUpR
 
 
 async def create_agent_message(owner_id: str, request: AgentMessageRequest) -> AgentMessageReceiptResponse:
+    if request.event_id.startswith("live-late:"):
+        # Conversation engine §3.6: "don't post that". Both late-answer doors (the worker's /late-answer
+        # and the bridge's undelivered-answer POST) arrive here with live-late:<runId>.
+        voice_run = await messaging_repo.get_voice_run(owner_id, request.event_id.removeprefix("live-late:"))
+        if voice_run and voice_run.get("noPost"):
+            put_metric("voice.huddle.late_answer_suppressed")
+            raise ApiProblem("ACTION_UNAVAILABLE", "The Live call asked not to post this answer.")
     room_id = str(request.room_id)
     agent_id = str(request.agent_id)
     meta = await messaging_repo.get_room(room_id)

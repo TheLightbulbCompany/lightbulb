@@ -688,6 +688,7 @@ async def dispatch_voice_run(
     utterance: str,
     transcript: str,
     speaker_name: str | None = None,
+    requests: list[str] | None = None,
 ) -> dict:
     """One voice request = one ordinary run on agent:{agent}:lightbulb:channel:{room}. run_id is the
     worker's, reused on every retry, so a delivered-but-timed-out invoke is replayed, never re-run."""
@@ -701,6 +702,9 @@ async def dispatch_voice_run(
     )
     spoken = transcript[-_TRANSCRIPT_CHARS:].strip()
     session_id = f"agent:{agent_id}:lightbulb:channel:{room_id}"  # == the bridge's turn.lightbulb_session_key
+    # Conversation engine §3.4: the other asks of the same spoken turn, so this agent answers only its own.
+    also = "\n".join((requests or [])[:8])
+    asked = f"[Asked in the same breath; teammates are on these:\n{also}]\n\n" if also else ""
     body = {
         "identity": {
             "runId": run_id,
@@ -712,7 +716,7 @@ async def dispatch_voice_run(
         },
         "request": {
             "input": f"[Live voice in #{meta.get('name') or 'this room'}. Spoken since you last spoke, newest last:\n"
-            f"{spoken}]\n\n{name} (voice): {utterance}",
+            f"{spoken}]\n\n{asked}{name} (voice): {utterance}",
             "instructions": TURN_NOTE,
             "session_id": session_id,
             "frames": {
@@ -786,6 +790,18 @@ async def abort_voice_run(owner_id: str, room_id: str, run_id: str) -> bool:
     if not row or row.get("roomId") != room_id:
         return False
     return await _run_control(owner_id, run_id, "abort", {}) == 202
+
+
+async def mark_no_post(owner_id: str, room_id: str, run_id: str) -> bool:
+    """ "Don't post that" (conversation engine §3.6): this room's voice run is never posted late, by the
+    worker or the bridge (messaging.create_agent_message reads the flag). The worker re-sends it after a
+    /turns retry, whose put_voice_run rewrites the row."""
+    row = await messaging_repo.get_voice_run(owner_id, run_id)
+    if not row or row.get("roomId") != room_id:
+        return False
+    await messaging_repo.put_voice_run(owner_id, run_id, {**row, "noPost": True})
+    put_metric("voice.huddle.no_post")
+    return True
 
 
 def _transcript_history(

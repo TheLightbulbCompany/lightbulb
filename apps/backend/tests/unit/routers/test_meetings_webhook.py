@@ -48,7 +48,9 @@ def env():
         "meeting": {"uid": "u1", "title": "Sync", "status": "bot_created", "recallBotId": "bot-1", "ticketNonce": "n"},
     }
 
-    async def patch_meeting(room_id, fields, drop=()):
+    async def patch_meeting(room_id, fields, drop=(), when=None):
+        if when is not None and not when(meta["meeting"]):
+            return None
         fields = fields(meta["meeting"]) if callable(fields) else fields
         meta["meeting"] = {**meta["meeting"], **fields}
         return meta["meeting"]
@@ -240,6 +242,16 @@ def test_realtime_relays_the_kind_and_keeps_the_roster_on_the_meeting(env):
     assert env["meta"]["meeting"]["roster"] == {"2": "Dan"}
     got = _realtime(env, "speech_on", 2, "Dan")
     assert got["kind"] == "speech_on" and got["roster"] == ["Dan"]
+
+
+def test_a_roster_write_refused_for_a_moved_occurrence_relays_nothing(env):
+    """The bot id is re-checked inside the write: a series that advanced between the read and the
+    write never takes an old bot's join into its next occurrence's roster."""
+    with patch.object(mod.meeting_invites, "_patch_meeting", AsyncMock(return_value=None)) as patched:
+        assert _post(env["client"], _event("join", 1, "Pat"), "/api/v1/webhooks/recall/realtime").status_code == 200
+    env["speaker"].assert_not_awaited()
+    when = patched.await_args.kwargs["when"]
+    assert when({"recallBotId": "bot-1"}) and not when({"recallBotId": "bot-2"})
 
 
 def test_realtime_still_relays_when_the_roster_write_fails(env):

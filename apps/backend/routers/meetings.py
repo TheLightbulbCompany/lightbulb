@@ -242,9 +242,14 @@ async def _speaker(bot_id: str, room_id: str, event: dict) -> None:
         if kind in ("join", "leave"):
             try:
                 written = await meeting_invites._patch_meeting(
-                    room_id, lambda m: {"roster": _rostered(m.get("roster"), kind, pid, name)}
+                    room_id,
+                    lambda m: {"roster": _rostered(m.get("roster"), kind, pid, name)},
+                    # re-checked on every attempt: an old bot's late join never lands on the next occurrence
+                    when=lambda m: m.get("recallBotId") == bot_id,
                 )
-                roster = (written or {}).get("roster", roster)
+                if written is None:
+                    return  # the occurrence moved on under this event: a stale bot pushes nothing
+                roster = written.get("roster", roster)
             except Exception:  # noqa: BLE001 -- best effort: this event still relays its own roster
                 put_metric("meeting.roster.write_failed")
                 logger.warning("recall realtime room=%s: roster write failed", room_id, exc_info=True)

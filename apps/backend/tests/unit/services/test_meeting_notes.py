@@ -342,6 +342,14 @@ async def test_without_a_default_room_the_mail_carries_the_transcript_and_no_lin
     legacy.load.assert_called_once_with("org_1", ROOM, "att-1")
 
 
+async def test_the_mail_that_carries_the_transcript_also_says_when_no_notes_were_written(legacy):
+    legacy.members.return_value = [{"kind": "human", "id": "user_1"}]
+    await mod.on_ended(ROOM)
+    kw = legacy.send.await_args.kwargs
+    assert kw["subject"] == "Transcript: Weekly sync"
+    assert kw["body_text"].endswith("\n\nNo notes were written: no agent in the room could write them.")
+
+
 async def test_a_long_transcript_is_cut_and_says_so(legacy):
     legacy.load.return_value = (None, b"x" * 300_000)
     await mod.on_ended(ROOM)

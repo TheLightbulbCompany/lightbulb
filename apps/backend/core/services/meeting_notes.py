@@ -244,7 +244,8 @@ async def _mail_organizer(
         return True
     name = " ".join(title.split())
     link = f"{settings.FRONTEND_URL.rstrip('/')}/chat?room={target}"
-    if target != room_id and meeting.get("notesSkipped") == "no_agent":
+    no_notes = meeting.get("notesSkipped") == "no_agent"
+    if target != room_id and no_notes:
         subject = f"Transcript: {name}"
         body = f"The transcript is in your Lightbulb room: {link}\n\n{_NO_NOTES}"
     elif target != room_id and meeting.get("transcriptAttachedAt"):
@@ -257,6 +258,8 @@ async def _mail_organizer(
         transcript = await _transcript_text(owner_id, target, meeting)
         subject = f"Transcript: {name}" if transcript else f"Ended: {name}"
         body = f"Your Lightbulb agents joined {name}.\n\n" + (transcript or "No transcript was captured.")
+        if no_notes:
+            body += f"\n\n{_NO_NOTES}"
     body += _unsaid_text(meeting)
     # Durable and before the send: a raise or a timeout may still have delivered it. The guard
     # refuses a moved occurrence and a marker another end path wrote first, so only one sends.

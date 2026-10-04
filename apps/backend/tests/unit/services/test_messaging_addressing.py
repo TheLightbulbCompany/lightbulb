@@ -189,3 +189,60 @@ async def test_a_name_several_agents_share_is_no_hard_address():
     assert out["agents"] == [] and out["humans"] == []
     out, _ = await _address("@max-2 can you check the logs", members, _answers(["addressed"]))
     assert out["agents"] == ["max-2"]
+
+
+PULSE = {"kind": "agent", "id": "pul", "displayName": "Pulse", "mentionHandle": "pulse"}
+FORGE = {"kind": "agent", "id": "frg", "displayName": "Forge", "mentionHandle": "forge"}
+CREW = [PULSE, FORGE, FRIDAY, LEO]
+LINE = (
+    "Pulse, an update on the go-to-market strategy. Forge, what our PRs look like. "
+    "Friday, a summary of our rooms and the last conversation from the last day"
+)
+
+
+def test_split_cuts_each_agents_own_part_after_its_name():
+    cands = messaging.address_candidates(LINE, CREW, live=True)
+    assert messaging.split_tasks(LINE, cands) == [
+        ("pulse", "an update on the go-to-market strategy"),
+        ("forge", "what our PRs look like"),
+        ("friday", "a summary of our rooms and the last conversation from the last day"),
+    ]
+
+
+def test_split_gives_a_shared_ask_to_every_name_in_the_list():
+    text = "Forge and Friday, check the deploy"
+    cands = messaging.address_candidates(text, CREW, live=True)
+    assert messaging.split_tasks(text, cands) == [("forge", "check the deploy"), ("friday", "check the deploy")]
+
+
+async def test_live_multi_name_line_gets_one_task_per_agent_from_the_same_call():
+    answers = _answers(["addressed", "addressed", "addressed"]) | {
+        "t0": {"type": "choice", "choice": "p0"},
+        "t1": {"type": "choice", "choice": "p1"},
+        "t2": {"type": "choice", "choice": "all"},
+    }
+    out, decide = await _address(LINE, CREW, answers, live=True)
+    assert out["agents"] == ["pul", "frg", "fri"]
+    assert out["tasks"] == {
+        "pul": "an update on the go-to-market strategy",
+        "frg": "what our PRs look like",
+        "fri": LINE,
+    }
+    decide.assert_awaited_once()  # the split rides the existing addressing call
+    questions = decide.await_args.args[1]
+    assert questions["t1"]["type"] == "choice" and set(questions["t1"]["criteria"]) == {"p0", "p1", "p2", "all"}
+
+
+async def test_live_multi_name_fallback_cuts_and_keeps_an_addressed_weekday():
+    out, _ = await _address(LINE, CREW, None, live=True)
+    assert out["path"] == "fallback" and out["agents"] == ["pul", "frg", "fri"]
+    assert out["tasks"]["fri"] == "a summary of our rooms and the last conversation from the last day"
+    out, _ = await _address("Forge, check CI. Friday, we ship the beta", CREW, None, live=True)
+    assert out["agents"] == ["frg"]  # the day-use veto still stands
+
+
+async def test_chat_and_one_name_lines_ask_no_split():
+    out, decide = await _address(LINE, CREW, _answers(["addressed"] * 3))  # chat
+    assert "tasks" not in out and not any(k.startswith("t") for k in decide.await_args.args[1])
+    out, _ = await _address("Forge, what our PRs look like", CREW, None, live=True)
+    assert out["path"] == "fast" and "tasks" not in out

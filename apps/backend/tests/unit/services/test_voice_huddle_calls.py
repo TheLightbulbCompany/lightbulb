@@ -571,8 +571,25 @@ async def test_live_an_opening_name_is_the_fast_path_and_skips_jev(live_env):
 
 async def test_live_every_addressed_or_relayed_agent_skips_jev_and_the_first_named_speaks(live_env):
     got, decide = await _live("x", address=_addressed(agents=["fin-1", "ceo-1"]))
-    assert got == {"agentId": "fin-1", "agentIds": ["fin-1", "ceo-1"]}  # in the order named, for the queue
+    assert got == {
+        "agentId": "fin-1",
+        "agentIds": ["fin-1", "ceo-1"],  # in the order named
+        "requests": [{"agentId": "fin-1", "task": "x"}, {"agentId": "ceo-1", "task": "x"}],  # no tasks: the whole line
+    }
     decide.assert_not_awaited()
+
+
+async def test_live_several_addressed_agents_come_back_as_one_request_each(live_env):
+    # live_env's Jev is down: the stage's fallback cuts the line at the names
+    got, decide = await _live("Finance, what's the burn. Ada, what's the plan", humans=2)
+    assert got["agentIds"] == ["fin-1", "ceo-1"]
+    assert got["requests"] == [
+        {"agentId": "fin-1", "task": "what's the burn"},
+        {"agentId": "ceo-1", "task": "what's the plan"},
+    ]
+    decide.assert_not_awaited()
+    one, _ = await _live("Finance, what's the burn?", humans=2)
+    assert "requests" not in one  # one agent: today's answer shape
 
 
 async def test_live_an_unfinished_line_is_held_but_still_routed(live_env):

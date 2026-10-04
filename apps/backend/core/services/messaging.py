@@ -2691,6 +2691,11 @@ ANYONE_INSTRUCTIONS = (
     "burn looking, and Ana, did you book the room?': yes; 'Ana, can you send me the contract?': no; "
     "'Ana, can you ask Gauge for the cohort numbers?': no)"
 )
+SPLIT_INSTRUCTIONS = (
+    "The latest message asks several teammates for different things in one breath. For the one name "
+    "given, which part of the message is the ask for that teammate? Pick that part, or 'all' when the "
+    "whole message asks them together with the others ('Forge and Friday, check the deploy')."
+)
 
 
 def _soundex(word: str) -> str:
@@ -2773,6 +2778,33 @@ def _opens_with(text: str, name: str, *, strong: bool = False) -> bool:
     return re.match(rf"{lead}{re.escape(name)}{follow}", text, re.I) is not None
 
 
+def _name_at(text: str, cand: dict) -> re.Match | None:
+    """Where the candidate's name stands in ``text``, as said: a live fuzzy candidate's ``pos`` is a
+    token index (x1000), not a character offset."""
+    return re.search(rf"(?<![\w-]){re.escape(cand['said'])}(?![\w-])", text, re.I)
+
+
+def split_tasks(text: str, cands: list[dict]) -> list[tuple[str, str]]:
+    """Each named agent's own part of a Live line, cut by code at the names (conversation engine §3.2):
+    the words after its name up to the next agent's name. A part under two words (the "and" of "Forge
+    and Friday, check X") takes the next part. ``[(name, part)]`` in text order; no model writes text."""
+    spots = sorted((hit.start(), hit.end(), c["name"]) for c in cands if c["agents"] and (hit := _name_at(text, c)))
+    parts = [
+        [name, text[end : spots[i + 1][0] if i + 1 < len(spots) else len(text)].strip(" ,;:.-–—")]
+        for i, (_, end, name) in enumerate(spots)
+    ]
+    for i in range(len(parts) - 2, -1, -1):
+        if len(parts[i][1].split()) < 2:
+            parts[i][1] = parts[i + 1][1]
+    return [(name, part) for name, part in parts]
+
+
+def _opens_at(text: str, cand: dict) -> bool:
+    """The name opens a clause with the address grammar (", Friday, a summary of ...")."""
+    hit = _name_at(text, cand)
+    return hit is not None and _opens_with(text[hit.start() :], cand["said"])
+
+
 def _fast_path(text: str, cands: list[dict], live: bool) -> str | None:
     """One agent named, at the opening, in a finished message of 4+ words: addressed with no call."""
     if len(cands) != 1 or len(cands[0]["agents"]) != 1 or cands[0]["humans"] or cands[0]["name"] in WEEKDAYS:
@@ -2782,7 +2814,14 @@ def _fast_path(text: str, cands: list[dict], live: bool) -> str | None:
     return cands[0]["agents"][0] if _opens_with(text, cands[0]["name"]) else None
 
 
-async def _label(latest: dict, cands: list[dict], members: list[dict], history: list[dict], live: bool) -> dict | None:
+async def _label(
+    latest: dict,
+    cands: list[dict],
+    members: list[dict],
+    history: list[dict],
+    live: bool,
+    parts: list[tuple[str, str]] = (),
+) -> dict | None:
     """The one Jev call: ``{labels: {name: label}, complete: p, anyone: p}``, or None on any failure."""
     from core.services import jev
 
@@ -2803,6 +2842,13 @@ async def _label(latest: dict, cands: list[dict], members: list[dict], history: 
             "instructions": f"{ADDRESS_INSTRUCTIONS} The name: '{c['name']}' ({kind}).",
             "criteria": ADDRESS_LABELS,
         }
+    options = {f"p{j}": part for j, (_, part) in enumerate(parts)}
+    for i, (name, _) in enumerate(parts):
+        questions[f"t{i}"] = {
+            "type": "choice",
+            "instructions": f"{SPLIT_INSTRUCTIONS} The name: '{name}'.",
+            "criteria": {**{key: f"'{part}'" for key, part in options.items()}, "all": "The whole message"},
+        }
     state = {
         "room": {
             "kind": "call" if live else "chat",
@@ -2814,10 +2860,15 @@ async def _label(latest: dict, cands: list[dict], members: list[dict], history: 
     }
     try:
         answers = await asyncio.wait_for(jev.decide(state, questions), ADDRESSING_TIMEOUT_S)
+        whole = {**options, "all": str(latest.get("text") or "")}
         return {
             "labels": {c["name"]: answers[f"n{i}"]["choice"] for i, c in enumerate(cands)},
             "complete": float(answers["complete"]["probability"]),
             "anyone": float(answers["anyone"]["probability"]),
+            # a missing or unknown pick keeps the agent's own code-cut part
+            "tasks": {
+                name: whole.get((answers.get(f"t{i}") or {}).get("choice"), own) for i, (name, own) in enumerate(parts)
+            },
         }
     except Exception:  # noqa: BLE001 -- a timeout, a 429 string, a malformed answer: the fallback decides
         return None
@@ -2840,18 +2891,27 @@ async def address(latest: dict, members: list[dict], *, history: Any = (), live:
         out |= {"agents": [agent], "path": "fast"}
         put_metric("messaging.addressing.stage", dimensions={"path": "fast", "surface": "live" if live else "chat"})
         return out
-    result = await _label(latest, cands, members, list(await history() if callable(history) else history), live)
+    # Conversation engine §3.2: a live line naming 2+ agents asks each its own code-cut part, in this call.
+    parts = split_tasks(text, cands) if live and sum(bool(c["agents"]) for c in cands) >= 2 else []
+    result = await _label(latest, cands, members, list(await history() if callable(history) else history), live, parts)
     if result is None:
-        # A safe fallback, not a substitute ([AX] (c): the common-word false-speaks come back).
+        # A safe fallback, not a substitute ([AX] (c): the common-word false-speaks come back). A weekday
+        # that opens a clause of a multi-name live line ("..., Friday, a summary") is that teammate.
         labels = {
-            c["name"]: "not_a_name" if c["name"] in WEEKDAYS else "addressed" if c["agents"] else "mentioned"
+            c["name"]: "not_a_name"
+            if c["name"] in WEEKDAYS and not (parts and _opens_at(text, c))
+            else "addressed"
+            if c["agents"]
+            else "mentioned"
             for c in cands
         }
-        result, out["path"] = {"labels": labels, "complete": 1.0, "anyone": 0.0}, "fallback"
+        result, out["path"] = {"labels": labels, "complete": 1.0, "anyone": 0.0, "tasks": dict(parts)}, "fallback"
     else:
         out["path"] = "jev"
     out["hold"] = result["complete"] < HOLD_BELOW
     out["anyone"] = result["anyone"] >= 0.5
+    if parts:
+        out["tasks"] = {}
     for c in cands:
         label = result["labels"][c["name"]]
         if c["name"] in WEEKDAYS and re.search(_DAY_USE.format(day=re.escape(c["said"])), text, re.I):
@@ -2863,6 +2923,8 @@ async def address(latest: dict, members: list[dict], *, history: Any = (), live:
         agent = c["agents"][0] if len(c["agents"]) == 1 else None
         if agent and (not c["humans"] or (label == "addressed" and _opens_with(text, c["name"], strong=True))):
             out["agents"] += [agent] if agent not in out["agents"] else []
+            if parts:
+                out["tasks"][agent] = result["tasks"].get(c["name"]) or text
         elif label == "addressed":
             out["humans"] += c["humans"]
     put_metric("messaging.addressing.stage", dimensions={"path": out["path"], "surface": "live" if live else "chat"})

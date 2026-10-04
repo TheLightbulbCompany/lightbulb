@@ -38,6 +38,7 @@ from .multiparty import PRESETS, ROOMS, _handle, _stub_card, stub_room  # noqa: 
 
 HERE = Path(__file__).parent
 SCENES: dict[str, dict] = {}  # scene id (its room and owner id) -> built scene
+KINDS_SEEN: dict[str, list] = {}  # line -> [(part, kind, p)] as Jev read it, for fitting REQUEST_P
 
 
 def _norm(text: str) -> str:
@@ -191,13 +192,14 @@ async def one(case: dict) -> dict:
         answer = {"error": f"{type(exc).__name__}: {exc}"}
     ms = (time.perf_counter() - started) * 1000
     ops = produced(answer, case["line"])
+    kinds = KINDS_SEEN.get(case["line"], [])
     out = grade(case, ops, scene["names"])
     if "error" in answer:
         out["ok"], out["why"] = False, [answer["error"]]
     got = [
         f"{scene['names'].get(r['agentId'], r['agentId'])} ({r.get('by', '-')}): {r['task']}" for r in ops["requests"]
     ]
-    return {"id": case["id"], "cat": case["cat"], "ms": ms, "got": got, "ops": ops, **out}
+    return {"id": case["id"], "cat": case["cat"], "ms": ms, "got": got, "ops": ops, "kinds": kinds, **out}
 
 
 async def run(cases: list[dict], runs: int, concurrency: int) -> list[list[dict]]:
@@ -207,6 +209,15 @@ async def run(cases: list[dict], runs: int, concurrency: int) -> list[list[dict]
     for mod in (messaging, jev, voice_calls):
         mod.put_metric = lambda *a, **k: None  # no EMF noise in a bench
     sem = asyncio.Semaphore(concurrency)
+    address = messaging.address
+
+    async def seen(latest, *a, **k):
+        out = await address(latest, *a, **k)
+        parts = [(p["text"], p["kind"][0], round(p["kind"][1], 2)) for p in out.get("parts") or []]
+        KINDS_SEEN[latest.get("text")] = parts
+        return out
+
+    messaging.address = seen
 
     async def guarded(case):
         async with sem:
@@ -251,6 +262,7 @@ def report(all_runs: list[list[dict]], tag: str) -> str:
         if bad:
             out.append(f"  {cid}: {len(rs) - len(bad)}/{len(rs)}  {bad[0]['why']}")
             out += [f"      {g[:150]}" for g in bad[0]["got"]]
+            out += [f"      kind {k} {p}: {t[:100]}" for t, k, p in bad[0].get("kinds") or []]
     return "\n".join(out)
 
 
@@ -261,6 +273,7 @@ def main(argv=None) -> None:
     ap.add_argument("--concurrency", type=int, default=4)
     ap.add_argument("--tag", default="run")
     ap.add_argument("--check", action="store_true", help="validate the dataset and exit")
+    ap.add_argument("--request-p", type=float, default=None, help="override voice_calls.REQUEST_P for this run")
     ap.add_argument(
         "--file", default="understand.jsonl", help="understand_holdout.jsonl: written blind, never tuned on"
     )
@@ -272,6 +285,8 @@ def main(argv=None) -> None:
         print(f"{len(cases)} scenes ok")
         return
     cases = [c for c in cases if re.search(args.only, c["id"]) or re.search(args.only, c["cat"])]
+    if args.request_p is not None:
+        voice_calls.REQUEST_P = args.request_p
     for c in cases:
         SCENES[c["id"]] = build(c)
         ROOMS[c["id"]] = SCENES[c["id"]]["members"]
@@ -279,6 +294,7 @@ def main(argv=None) -> None:
     raw = HERE / "results" / "raw"
     raw.mkdir(parents=True, exist_ok=True)
     (raw / f"understand-{args.tag}.json").write_text(json.dumps(all_runs, indent=1))
+    print(f"REQUEST_P {voice_calls.REQUEST_P}")
     print(report(all_runs, args.tag))
 
 

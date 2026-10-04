@@ -391,9 +391,9 @@ async def test_a_correction_with_no_ask_of_its_own_still_drops_the_unheard_answe
 async def test_jev_down_a_repeat_of_a_working_ask_is_not_made_twice(decide):
     """Codex P2: the fallback path makes the whole line one request; the same words as a working row are not."""
     working = [{"id": "r1", "agentId": "forge", "task": "what are the open PRs", "status": "working"}]
-    got = await route(decide, "What are the open PRs?", None, floor="forge", opened=working)
+    got = await route(decide, "What are the open PRs?", None, floor="forge", opened=working, wake=True)
     assert tasks(got) == []
-    new = await route(decide, "What shipped this week?", None, floor="forge", opened=working)
+    new = await route(decide, "What shipped this week?", None, floor="forge", opened=working, wake=True)
     assert tasks(new) == [("forge", "What shipped this week?", "floor")]
 
 
@@ -479,14 +479,48 @@ async def test_a_meeting_implies_nobody_but_the_named_the_wake_word_and_the_floo
 # ---- failure and limits ----
 
 
-async def test_jev_down_is_one_request_for_the_named_or_the_implied(decide):
+async def test_jev_down_is_one_request_only_for_a_line_said_to_the_agents(decide):
     named = await route(decide, "Forge, check CI, then tell me what shipped.", None)
     assert tasks(named) == [("forge", "Forge, check CI, then tell me what shipped.", "name")]
+    woken = await route(decide, "what's our burn and what shipped", None, wake=True)
+    assert tasks(woken) == [("friday", "what's our burn and what shipped", "chief")]
+    asked = await route(decide, "what's our burn?", None, humans=3, setting="meeting", unclaimed=True)
+    assert tasks(asked) == [("friday", "what's our burn?", "chief")]
+    # 10-04 prod: side talk with a voice open became runs. Implied only by the floor or a lone speaker: no
+    # request; the floor voice answers it itself (and may still delegate it).
+    floor = await route(decide, "Ubera business, right", None, floor="pulse")
+    assert tasks(floor) == [] and floor["ops"]["social"] == "pulse"
     alone = await route(decide, "what's our burn and what shipped", None)
-    assert tasks(alone) == [("friday", "what's our burn and what shipped", "chief")]
-    floor = await route(decide, "what's our burn", None, humans=2, floor="pulse")
-    assert tasks(floor) == [("pulse", "what's our burn", "floor")]
+    assert tasks(alone) == [] and alone["ops"]["social"] is None
     assert tasks(await route(decide, "what's our burn", None, humans=2)) == []  # two people: silence
+
+
+async def test_a_weak_or_missing_request_read_is_small_talk(decide):
+    """10-04 prod: "Ubera business, right" (side talk) and "Can you not talk on me" became Pulse's requests."""
+    weak = await route(
+        decide, "Ubera business, right", jev_says(kinds=["request"], p=vc.REQUEST_P - 0.1), floor="pulse"
+    )
+    assert tasks(weak) == [] and weak["ops"]["social"] == "pulse"
+    sure = await route(decide, "Ubera business, right", jev_says(kinds=["request"], p=vc.REQUEST_P), floor="pulse")
+    assert tasks(sure) == [("pulse", "Ubera business, right", "floor")]
+    unread = jev_says(kinds=["request"])
+    del unread["k0"]  # Jev answered the call but not this part's kind
+    missing = await route(decide, "Can you not talk on me", unread, floor="pulse")
+    assert tasks(missing) == [] and missing["ops"]["social"] == "pulse"
+    aside = await route(decide, "Ubera business, right", jev_says(kinds=["people"]), floor="pulse")
+    assert tasks(aside) == [] and aside["ops"]["social"] is None  # said to someone off the call: no reply
+
+
+async def test_a_short_follow_up_still_amends_when_requests_must_be_sure(decide):
+    """REQUEST_P reads only the request kind: a context part still steers, a sure follow-up still follows."""
+    working = [{"id": "r2", "agentId": "forge", "task": "what PRs are open", "status": "working"}]
+    said = jev_says(kinds=["context"], amends="r2")
+    steered = await route(decide, "and the closed ones", said, floor="forge", opened=working)
+    assert steered["ops"]["steer"] == [{"requestId": "r2", "text": "the closed ones"}] and tasks(steered) == []
+    delivered = [{**working[0], "status": "delivered"}]
+    said = jev_says(kinds=["request"], amends="r2")
+    followed = await route(decide, "and the closed ones", said, floor="forge", opened=delivered)
+    assert tasks(followed) == [("forge", "the closed ones", "follow")]
 
 
 async def test_an_unfinished_line_is_held(decide):

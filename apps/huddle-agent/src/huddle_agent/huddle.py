@@ -89,6 +89,8 @@ HOLDING_LINE = (
 STILL_WAKING = "Your backend is still waking up; say briefly that you're on it and it'll take a moment."
 CANT_REACH = "Sorry, I couldn't reach my backend for that."
 FAILED_POST = "I could not finish this on the call. Ask me again here."  # understanding §4.8: a failure nobody heard
+NOT_STARTED_POST = "I did not get to this on the call. Ask me again here."  # §4.5: still queued when the call ended
+LATE_REQUEST_CHARS = 2_000  # LateAnswerBody.request max (backend huddles.py)
 REQUEST_QUIET_S = 1  # engine §3.5: a requested answer waits for no human speech this long (no rate limit)
 DELIVERY_TRIES = 3  # a requested answer whose voice failed to open this often goes to the room
 ASKER_GONE_S = 60  # engine §3.5: its asker left and no pause came this long: the room gets it
@@ -96,10 +98,12 @@ ASKER_GONE_S = 60  # engine §3.5: its asker left and no pause came this long: t
 BIND_SECONDS = 10
 # understanding §4.6: a delegation waits this long for the final of a speech still being transcribed
 DELEGATION_WAIT_S = 2.0
-SAME_SPEECH = 0.6  # this share of one transcript's words in another's: the same speech (understanding §4.6)
+SAME_SPEECH = 0.6  # this share of one transcript's content words in another's: the same speech (§4.6)
 RECORDS_KEPT = 4  # understood speeches kept per speaker for delegations to match
 ALREADY_SAID = "You already gave that answer. Do not repeat it."
 IN_HAND = "That is already in hand. Wait for the result."
+UNFINISHED = 'They have not finished the sentence. Say "go on" at most, then wait.'  # §4.4: its line is held
+CHANGED = "That change is made. Say so in a few words."  # a correction or a call-off, already applied (§4.4)
 HANDOFF_SECONDS = (
     8  # the floor-holder asked someone by name: they may answer without naming it
 )
@@ -146,7 +150,7 @@ TRANSCRIPT_FINAL_MAX = 5_000
 FUNCTION_WORDS = frozenset(
     "a an the and or but so then also of to in on at for from with about by as is are was were be been am do does "
     "did have has had can could would will should may might i you we they he she it me my our your us them this "
-    "that these those there here what what's whats when where who which why how if whether not no yes ok okay um "
+    "that these those there here what what's whats when where who which why how if whether yes ok okay um "
     "uh like just please hey hi any some all up out now".split()
 )
 
@@ -164,15 +168,15 @@ def _words_in(a: str, b: str, share: float = SAME_SPEECH) -> bool:
     (ca, fa), (cb, fb) = _words(a), _words(b)
     if not ca:
         return bool(fa) and not cb and fa == fb
-    sounds = {x for w in cb if len(w) > 2 and (x := soundex(w))} if share < 1 else ()
-    return sum(w in cb or len(w) > 2 and soundex(w) in sounds for w in ca) / len(ca) >= share
+    sounds = {soundex(w) for w in cb if len(w) > 2 and w.isascii()} - {""} if share < 1 else ()
+    return sum(w in cb or len(w) > 2 and w.isascii() and soundex(w) in sounds for w in ca) / len(ca) >= share
 
 
-def _same_speech(said: str, record: str, share: float = SAME_SPEECH) -> bool:
+def _same_speech(said: str, record: str) -> bool:
     """A delegation's transcript and an understood speech's text are one speech: the delegation may be cut short
     of its final, or cover more than one final. A record of fewer than 2 content words is never the part
     contained ("and what" is in every question)."""
-    return _words_in(said, record, share) or (len(_words(record)[0]) >= 2 and _words_in(record, said, share))
+    return _words_in(said, record) or (len(_words(record)[0]) >= 2 and _words_in(record, said))
 
 
 def _retryable(e: BackendError) -> bool:
@@ -681,9 +685,16 @@ class Huddle:
         )  # last chance for what was said since the previous batch
         held = [(a, n) for a, (items, _, _) in self._cut_off.items() for n in items]  # cut off mid-announcement
         self._cut_off.clear()
+        if (v := self._voice) and v.told:  # being said as the call ends: not said to its end (§4.5)
+            held += [(v.agent_id, n) for n in v.told]
+            v.told = []
         for agent_id, n in held + [(a, n) for a, news in self._news.items() for n in news]:
             await self._late_answer(agent_id, n)  # unheard here: the room gets it
         self._news.clear()
+        for r in [r for r in self._requests.open() if r.routed and r.status == "queued"]:
+            # understanding §4.5: its agent never got to it; no run will post it, so the room gets one line
+            r.run_id = str(uuid.uuid4())
+            await self._late_answer(r.agent, (r.run_id, r.task, NOT_STARTED_POST, self._clock(), r.asker))
         open_rows = [r for r in self._requests.open() if r.routed]
         emit_metric("live.request.open_at_end", len(open_rows), "Count")  # understanding §5.3: 0
         await self._flush_transcript()  # the row changes the sweep made
@@ -917,7 +928,7 @@ class Huddle:
             u = self._unbound.pop(identity, None)
             # its delegation came first and was understood from its own transcript: transcript only (§4.6). A final
             # that adds an ask has words of its own and is understood.
-            late = u is not None and _words_in(text, u[1], 1)
+            late = u is not None and self._clock() - u[0] <= HOLD_SECONDS and _words_in(text, u[1], 1)
             if routed is None and not switch and not late and real_speech(text) and not pause(text):
                 # understanding §4.1: the worker's own STT final is the request, not the voice's delegation
                 self._understand_floor(identity, text, mark, humans=len(self._people), floor_line=True)
@@ -1985,14 +1996,22 @@ class Huddle:
             return
         v.used = True
         speaker, asked = v.speaker, self._clock()
+        if (held := self._held.get(speaker)) and _words_in(pending_transcript, held[0], 1):
+            # understanding §4.4: its line is held for more words and the voice heard nothing the line lacks. The
+            # held line makes the run when it is applied; a run here would be a second one.
+            self._live_call(v, "append_commentary", UNFINISHED, delegation_id=delegation_id)
+            return
         if (
             self._bindable(v, asked)
             and not self._recorded(v.driven)
             and not self._understanding.get(speaker)
-            and not ((m := self._matching(speaker, pending_transcript)) and m[1] is not None)
+            and not any(
+                x[1] is not None and x[3] >= v.driven.started_at and _same_speech(pending_transcript, x[2])
+                for x in self._understood.get(speaker, ())
+            )
         ):
             # a driven run no understood speech made (a named summons' whole line): this delegation's, at once,
-            # unless a newer line of theirs was understood, or is at /route, and is what it carries
+            # unless a line of theirs understood since the run began, or still at /route, is what it carries
             heard = None
         else:
             heard = await self._this_speech(v, speaker, pending_transcript)
@@ -2013,6 +2032,11 @@ class Huddle:
                 speaker, pending_transcript, mark, humans=len(self._people), floor_line=True
             )
             if self._floor_voice(agent_id) is not v:
+                return
+            if heard is None and speaker in self._held:
+                # /route held it for more words (§4.4): not understood yet, so a late final is not "late"
+                self._unbound.pop(speaker, None)
+                self._live_call(v, "append_commentary", UNFINISHED, delegation_id=delegation_id)
                 return
         d = v.driven
         # a driven run is this speech's when its understanding made it, or when it has no record of another speech
@@ -2082,13 +2106,14 @@ class Huddle:
             r.run_id == d.run_id for recs in self._understood.values() for rec in recs for r in rec[0]
         )
 
-    def _matching(self, speaker: str, said: str, share: float = SAME_SPEECH) -> tuple | None:
+    def _matching(self, speaker: str, said: str, exact: bool = False) -> tuple | None:
         """The speaker's understood speeches that are the delegation's (understanding §4.6), matched by text: their
-        rows in order and the newest one's ops. An empty transcript (a typed request) is the newest speech when it
-        was understood within BIND_SECONDS."""
+        rows in order and the newest one's ops. `exact`: every content word of the delegation is in the speech,
+        spelled the same. An empty transcript (a typed request) is the newest speech when it was understood within
+        BIND_SECONDS."""
         recs = list(self._understood.get(speaker, ()))
         if said.strip():
-            recs = [x for x in recs if _same_speech(said, x[2], share)]
+            recs = [x for x in recs if (_words_in(said, x[2], 1) if exact else _same_speech(said, x[2]))]
         else:
             recs = [x for x in recs[-1:] if self._clock() - x[3] <= BIND_SECONDS]
         if not recs:
@@ -2097,8 +2122,8 @@ class Huddle:
 
     async def _this_speech(self, v: _Voice, speaker: str, said: str) -> tuple | None:
         """(rows, ops) of the speech a delegation carries (understanding §4.6): an understood speech matching its
-        text, else one a final or a /route call in flight (bounded by /route's own timeout) brings within
-        DELEGATION_WAIT_S. None: there is none."""
+        text, else one a final brings within DELEGATION_WAIT_S or an understanding in flight (a /route call, and
+        the summon it may start) brings. None: there is none."""
         deadline = self._clock() + DELEGATION_WAIT_S
         while True:
             heard = self._matching(speaker, said)
@@ -2110,8 +2135,9 @@ class Huddle:
                 await flying[0]
                 continue
             if self._clock() >= deadline or self._floor_voice(v.agent_id) is not v:
-                # an answer already given is only the very same words: an ask one word away is a new ask
-                return self._matching(speaker, said, 1) if answered else heard
+                # an answer already given holds every word of the delegation: an ask one word away, or one
+                # with more in it, is a new ask
+                return self._matching(speaker, said, exact=True) if answered else heard
             heard = self._final_heard.setdefault(speaker, asyncio.Event())
             waits = [asyncio.ensure_future(heard.wait()), asyncio.ensure_future(self._sleep(deadline - self._clock()))]
             try:
@@ -2138,6 +2164,8 @@ class Huddle:
         elif fresh:
             note = self._ack(fresh, v.agent_id, said=True)
             v.ack_rows = [r for r in v.ack_rows if r not in rows]
+        elif ops.get("steer") or ops.get("cancel"):
+            note = CHANGED
         elif ops.get("more"):
             note = 'They will list several requests. Say "go ahead" at most, then stay quiet until they finish.'
         else:
@@ -2648,7 +2676,7 @@ class Huddle:
             if now - self._final_at.get(identity, at) < HOLD_APPLY_S:
                 continue
             del self._held[identity]
-            if (u := self._unbound.get(identity)) and u[0] >= at and _same_speech(u[1], text, 1):
+            if (u := self._unbound.get(identity)) and u[0] >= at and _words_in(text, u[1], 1):
                 continue  # its voice delegated it since, and that transcript was understood (§4.6)
             emit_metric("live.hold.applied", 1, "Count")
             if kw["floor_line"]:  # a delegation of it matches its record
@@ -2792,7 +2820,9 @@ class Huddle:
             emit_metric("live.request.post_skipped", 1, "Count")  # "don't post that", or a cancelled request
             return
         try:  # a CANT_REACH line nobody heard is posted as one line (understanding §4.8)
-            await self._backend.late_answer(agent_id, n[0], n[1], FAILED_POST if n[2] == CANT_REACH else n[2])
+            await self._backend.late_answer(
+                agent_id, n[0], n[1][:LATE_REQUEST_CHARS], FAILED_POST if n[2] == CANT_REACH else n[2]
+            )
             emit_metric("live.news.posted", 1, "Count")
         except Exception:
             logger.info(

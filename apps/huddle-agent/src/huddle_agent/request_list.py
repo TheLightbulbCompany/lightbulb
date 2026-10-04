@@ -243,8 +243,10 @@ class RequestList:
         self, name: Callable[[str], str], skip_agent: str | None = None
     ) -> list[str]:
         out = [
-            f"{name(r.agent)} {_VERB[r.status]}"
-            + (f' "{r.task[:LINE_CHARS]}"' if r.task else "")
+            (
+                f"{name(r.agent)[:60]} {_VERB[r.status]}"
+                + (f' "{r.task[:LINE_CHARS]}"' if r.task else "")
+            )[:200]  # TurnBody.requests item max (backend huddles.py)
             for r in self.open()
             if r.routed and r.agent != skip_agent
         ]

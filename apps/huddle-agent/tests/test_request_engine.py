@@ -176,6 +176,7 @@ async def test_a_failed_request_says_cant_reach_in_its_turn_and_is_never_posted(
         f'You could not do "{TASKS["forge"]}". Say exactly this, then stop: {h_mod.CANT_REACH}',
     )
     h.on_agent_state("forge", "speaking")  # said: understanding §4.8 posts only a failure nobody heard
+    h.on_agent_state("forge", "listening")  # to its end: one still being said at hang-up is posted (§4.5)
     await h.clear_presence()
     assert backend.late_answers == []
 

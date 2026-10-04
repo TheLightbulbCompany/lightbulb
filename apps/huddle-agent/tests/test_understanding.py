@@ -1980,3 +1980,145 @@ async def test_a_newer_lines_delegation_never_binds_an_older_summons_run():
             for c in lives[-1].calls
             if c[0] == "commentary" and c[2] == "deleg-2" and "next in line" in c[1]
         ], gated
+
+
+# -- whole-branch review: nothing queued is lost at hang-up; a held line runs once; an old delegation never
+# eats a new line --
+
+
+async def test_a_row_still_queued_at_hang_up_is_handed_to_the_room(capsys):
+    h, room, backend, lives, clock, log = await floor_open()
+    backend.route_extra = ops(
+        requests=[("forge", "the open PRs", "fit"), ("forge", "what shipped", "fit")]
+    )
+    await say(h, "u1", "what are the open PRs and what shipped")
+    assert rows(h) == [
+        ("forge", "the open PRs", "working"),
+        ("forge", "what shipped", "queued"),
+    ]
+    capsys.readouterr()
+    await h.clear_presence()
+    assert [(a[0], a[2], a[3]) for a in backend.late_answers] == [
+        ("forge", "what shipped", h_mod.NOT_STARTED_POST)
+    ]
+    assert len(backend.turns) == 1
+    assert metrics(capsys, "live.request.open_at_end") == [
+        (1, {})
+    ]  # the working row: its run posts its answer
+
+
+async def test_an_answer_being_said_at_hang_up_is_posted():
+    h, room, backend, lives, clock, run = await announced()
+    h.on_agent_state("forge", "speaking")
+    await h.clear_presence()
+    assert backend.late_answers == [
+        ("forge", run, TASKS["forge"], "Three PRs are open")
+    ]
+
+
+async def test_a_held_line_its_voice_delegates_runs_once():
+    h, room, backend, lives, clock, log = await floor_open()
+    backend.route_extra = HELD
+    await say(h, "u1", "what are the open PRs and")
+    await h.on_delegation("forge", "d1", "what are the open PRs and")
+    await settle(h)
+    assert backend.turns == [] and lives[0].calls[-1] == (
+        "commentary",
+        h_mod.UNFINISHED,
+        "d1",
+    )
+    await quiet(h, clock, 5)
+    assert [t["utterance"] for t in backend.turns] == ["the open PRs"]
+
+
+async def test_a_held_line_a_longer_understood_delegation_covers_is_not_applied_again():
+    h, room, backend, lives, clock, log = await floor_open()
+    backend.route_extra = HELD
+    await say(h, "u1", "what are the open PRs and")
+    backend.route_extra = ops(
+        requests=[("forge", "the open PRs", "fit"), ("forge", "what shipped", "fit")]
+    )
+    await h.on_delegation(
+        "forge", "d1", "what are the open PRs and what shipped"
+    )  # no final for the rest
+    await settle(h)
+    await quiet(h, clock, 5)
+    assert [r[:2] for r in rows(h)] == [
+        ("forge", "the open PRs"),
+        ("forge", "what shipped"),
+    ]
+
+
+async def test_an_old_unbound_delegation_never_makes_a_new_final_late():
+    h, room, backend, lives, clock, log = await floor_open()
+    await h.on_delegation("forge", "d1", PRS)  # no final ever comes for it
+    await settle(h)
+    answer(h, backend.turns[0]["runId"], "forge", "Two PRs are open.")
+    clock.t += 300
+    await say(h, "u1", PRS)
+    assert len(backend.routes) == 2 and len(backend.turns) == 2
+
+
+async def test_a_final_that_negates_the_delegated_ask_is_understood():
+    h, room, backend, lives, clock, log = await floor_open()
+    backend.route_extra = ops(requests=[("forge", "send the email to Aden", "fit")])
+    await h.on_delegation("forge", "d1", "send the email to Aden")
+    await settle(h)
+    backend.route_extra = ops(cancel=[h._requests.items[0].id])
+    await say(h, "u1", "no, do not send the email to Aden")
+    assert len(backend.routes) == 2 and rows(h)[0][2] == "cancelled"
+
+
+async def test_a_longer_ask_holding_an_answered_one_is_not_already_said():
+    h, room, backend, lives, clock, log = await floor_open()
+    await say(h, "u1", PRS)
+    answer(h, backend.turns[0]["runId"], "forge", "Two PRs are open.")
+    clock.t += 60
+    backend.route_extra = ops(requests=[("forge", "the closed issues", "fit")])
+    await h.on_delegation(
+        "forge", "d2", "what are the open PRs and the closed issues"
+    )  # no final comes
+    await settle(h)
+    assert not said_already(lives) and (
+        "forge",
+        "the closed issues",
+        "working",
+    ) in rows(h)
+
+
+async def test_a_summons_run_binds_its_delegation_whatever_older_record_matches():
+    h, room, backend, lives, clock, log = await floor_open()
+    await say(h, "u1", PRS)
+    answer(h, backend.turns[0]["runId"], "forge", "Two PRs are open.")
+    await quiet(h, clock, 120)
+    assert h._voice is None
+    backend.route_error = BackendError(503, "huddles_upstream", None)
+    await say(
+        h, "u1", "Forge, what are the open PRs"
+    )  # /route is down: the whole line, a run with no row
+    run_id = h._voice.driven.run_id
+    await h.on_delegation("forge", "d2", PRS)
+    await settle(h)
+    assert h._runs.get(run_id).delegation_id == "d2" and not [
+        c for c in lives[-1].calls if c[:2] == ALREADY
+    ]
+
+
+async def test_a_correction_the_voice_delegates_is_told_it_was_made():
+    h, room, backend, lives, clock, log = await floor_open()
+    await say(h, "u1", PRS)
+    backend.route_extra = ops(
+        steer=[(h._requests.items[0].id, "only the backend repo")]
+    )
+    await say(h, "u1", "only the backend repo")
+    await h.on_delegation("forge", "d2", "only the backend repo")
+    await settle(h)
+    assert lives[0].calls[-1] == ("commentary", h_mod.CHANGED, "d2")
+
+
+def test_wire_limits_a_long_teammate_name_and_task():
+    from huddle_agent.request_list import RequestList
+
+    rl = RequestList()
+    rl.settle(1, "u1", [{"agentId": "forge", "task": "x" * 300, "by": "fit"}], 0.0)
+    assert all(len(line) <= 200 for line in rl.lines(lambda _a: "N" * 90))

@@ -50,3 +50,19 @@ def test_a_muted_voice_is_muted_again_after_a_reconnect():
     live.mute()
     handlers["session_reconnected"](None)
     assert duplex.mute_input.call_count == 2
+
+
+async def test_a_meeting_voice_is_muted_as_its_session_starts():
+    # review: the huddle's mute came after session.start returned; the Meet could reach the model while it opened
+    from unittest.mock import MagicMock
+
+    session = MagicMock(spec=agent.GPTLiveSession)
+    for muted, calls in ((True, 1), (False, 0)):
+        session.reset_mock()
+        voice = agent._Voice("forge", "persona", MagicMock(), [], muted=muted)
+        type(voice).duplex_session = property(lambda self: session)
+        try:
+            await voice.on_enter()
+        finally:
+            del type(voice).duplex_session
+        assert session.mute_input.call_count == calls

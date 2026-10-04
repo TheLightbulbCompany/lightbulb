@@ -398,6 +398,7 @@ class Huddle:
         self._rate = gate.RateLimit()
         # run id -> (attempts, last at): a requested delivery whose voice did not open (engine §3.5)
         self._delivery_tries: dict[str, tuple[int, float]] = {}
+        self._rowless: set[str] = set()  # a meeting's ready answers that have no request row (delivered like one)
         self._level: set[str] = set()  # humans in the SFU's active speakers: sound, maybe not speech
         self._voiced: set[str] = set()  # humans the transcriber's speech detector hears speaking
         self._speaking: set[str] = set()  # humans talking now: both of the above
@@ -2666,8 +2667,8 @@ class Huddle:
                     v.told.append((run.run_id, run.request, answer, self._clock(), run.speaker))
             self._requests.delivered({run.run_id})
         elif (
-            answer and self.setting == "meeting" and not asked
-        ):  # nobody announces in a meeting: the room gets it now
+            answer and self.setting == "meeting" and not asked and not (run.bound and run.speaker in self._people)
+        ):  # nobody announces in a meeting, and nobody here asked for it: the room gets it now
             self._spawn(
                 self._late_answer(run.agent_id, (run.run_id, run.request, answer))
             )
@@ -2675,6 +2676,10 @@ class Huddle:
             news = self._news.setdefault(run.agent_id, [])
             news.append((run.run_id, run.request, answer, self._clock(), run.speaker))
             self._requests.ready(run.run_id)
+            if not asked and self.setting == "meeting":
+                # A meeting run with no row (/route gave no `ops`) whose voice has closed: someone asked for it,
+                # so it is said at the next pause like a requested answer, not sent to the record unsaid.
+                self._rowless.add(run.run_id)
             while len(news) > NEWS_PER_AGENT:
                 self._post_news(run.agent_id, news.pop(0))
         elif asked:
@@ -3103,6 +3108,7 @@ class Huddle:
         """Its agent said (or was handed) all its news: requested ones are delivered."""
         ids = {n[0] for n in self._news.pop(agent_id, None) or []}
         self._requests.delivered(ids)
+        self._rowless -= ids
         for run_id in ids:
             self._delivery_tries.pop(run_id, None)
 
@@ -3131,7 +3137,7 @@ class Huddle:
             for aid, news in self._news.items()
             if aid != skip_agent and self._agent(aid)
             for n in news
-            if any(r.status in ("ready", "failed") for r in self._requests.by_run(n[0]))
+            if (n[0] in self._rowless or any(r.status in ("ready", "failed") for r in self._requests.by_run(n[0])))
             and now - self._delivery_tries.get(n[0], (0, -math.inf))[1] >= gate.ANNOUNCE_QUIET
         ]
         return min(items, key=lambda x: (x[0][3], self._requests.order(x[0][0])), default=None)
@@ -3140,7 +3146,7 @@ class Huddle:
         """Its own agent says it, pinned to who asked (else the last speaker, else anyone here). Each
         attempt is counted: a refused open waits gate.ANNOUNCE_QUIET, and after DELIVERY_TRIES the room
         gets it (_expire_news), so a backend outage cannot open a session every tick."""
-        if self._requests.by_run(item[0]):  # unrequested news is paced by the rate limit instead
+        if self._requests.by_run(item[0]) or item[0] in self._rowless:  # unrequested news is paced by the rate limit
             tries = self._delivery_tries.get(item[0], (0, 0.0))[0]
             self._delivery_tries[item[0]] = (tries + 1, self._clock())
         speaker = next((p for p in (item[4], self._last_speaker) if p in self._people), None) or min(self._people)

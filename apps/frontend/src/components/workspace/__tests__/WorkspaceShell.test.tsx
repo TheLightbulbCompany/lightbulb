@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { beforeEach, expect, it, vi } from "vitest";
-import { fireEvent, render, screen, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, within } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { WorkspaceShell } from "../WorkspaceShell";
 
@@ -168,4 +168,24 @@ it("opens the rail and sidebar as the phone drawer, and closes it on a pick, the
   open();
   fireEvent.keyDown(shell, { key: "Escape" });
   expect(shell).toHaveAttribute("data-nav-open", "false");
+});
+
+it("closes the phone drawer when the window widens past the phone breakpoint", () => {
+  // Wider, the backdrop is hidden: an open drawer would leave the pane inert with no way out.
+  let onChange: (() => void) | undefined;
+  vi.stubGlobal("matchMedia", (query: string) => ({
+    matches: false, media: query,
+    addEventListener: (_: string, cb: () => void) => { onChange = cb; },
+    removeEventListener: () => {},
+  }));
+  state.phase = "ready";
+  state.organization = { id: "org_1" };
+  const view = render(<WorkspaceShell />);
+  fireEvent.click(screen.getByRole("button", { name: "Open menu" }));
+  const main = view.container.querySelector(".workspace-main")!;
+  expect(main).toHaveAttribute("inert");
+  act(() => onChange?.());
+  expect(view.container.querySelector(".workspace-shell")).toHaveAttribute("data-nav-open", "false");
+  expect(main).not.toHaveAttribute("inert");
+  vi.unstubAllGlobals();
 });

@@ -1421,13 +1421,14 @@ class SearchEnqueueTests(unittest.TestCase):
     @patch("index._send_push")
     @patch("index._notify_members", return_value=[])
     @patch("index._publish")
-    def test_new_message_enqueues_with_the_room_owner_before_push(self, publish, notify, push):
+    def test_new_message_enqueues_after_publish_before_push(self, publish, notify, push):
         order = []
+        publish.side_effect = lambda *a, **k: order.append("publish")
         index._sqs_client.send_message.side_effect = lambda **_: order.append("enqueue")
         push.side_effect = lambda *a, **k: order.append("push")
         index.process_record(stream_record(message_item()))
         self.assertEqual(self._body(), {"ownerId": "org_room_owner", "roomId": ROOM_ID, "sk": message_item()["sk"]})
-        self.assertEqual(order, ["enqueue", "push"])
+        self.assertEqual(order, ["publish", "enqueue", "push"])
 
     @patch("index._publish")
     def test_edit_enqueues(self, publish):
@@ -1460,6 +1461,13 @@ class SearchEnqueueTests(unittest.TestCase):
     @patch("index._publish")
     def test_reaction_modify_enqueues_nothing(self, publish):
         record = stream_record({**message_item(), "reactionRevision": 1})
+        record["eventName"] = "MODIFY"
+        index.process_record(record)
+        index._sqs_client.send_message.assert_not_called()
+
+    @patch("index._publish")
+    def test_thread_touch_only_modify_enqueues_nothing(self, publish):
+        record = stream_record({**message_item(), "messageRevision": 1, "threadTouchedAt": "2026-10-04T00:00:00Z"})
         record["eventName"] = "MODIFY"
         index.process_record(record)
         index._sqs_client.send_message.assert_not_called()

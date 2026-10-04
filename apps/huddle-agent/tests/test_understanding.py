@@ -319,3 +319,244 @@ async def test_two_answers_for_one_agent_are_said_in_asked_order():
         (True, False),
         (False, True),
     ]
+
+
+# -- Task B3: the floor speaker's lines are understood; a delegation binds (understanding §4.6) --
+
+PRS = "what are the open PRs"
+
+
+async def floor_open():
+    """Forge's voice is open for Prasiddha; its named summon's driven run is retired (test_huddle `summoned`)."""
+    h, room, backend, lives, clock, log = await three()
+    await say(h, "u1", "Forge, are you there")
+    h._runs.abort(backend.turns[0]["runId"])
+    h._voice.driven = None
+    backend.turns.clear()
+    backend.routes.clear()
+    backend.route_extra = ops(requests=[("forge", "the open PRs", "fit")])
+    return h, room, backend, lives, clock, log
+
+
+def bound_and_spoken(h, backend, lives):
+    assert [(t["agentId"], t["utterance"]) for t in backend.turns] == [
+        ("forge", "the open PRs")
+    ]
+    run = h._runs.get(backend.turns[0]["runId"])
+    assert run.delegation_id == "deleg-1" and rows(h) == [
+        ("forge", "the open PRs", "working")
+    ]
+    answer(h, run.run_id, "forge", "Two PRs are open.")
+    assert ("commentary", "Two PRs are open.", "deleg-1") in lives[0].calls
+
+
+async def test_a_delegation_binds_to_the_floor_speakers_row_whenever_it_arrives(capsys):
+    # (c) after the final
+    h, room, backend, lives, clock, log = await floor_open()
+    await say(h, "u1", PRS)
+    await h.on_delegation("forge", "deleg-1", PRS)
+    await settle(h)
+    bound_and_spoken(h, backend, lives)
+    assert metric_count(capsys, "live.driven.bound") == 1
+    # (b) while /route is in flight
+    h, room, backend, lives, clock, log = await floor_open()
+    backend.route_gate = asyncio.Event()
+    await h.on_final_transcript("u1", "Prasiddha", PRS)
+    await asyncio.sleep(0)
+    deleg = asyncio.create_task(h.on_delegation("forge", "deleg-1", PRS))
+    for _ in range(3):
+        await asyncio.sleep(0)
+    assert not deleg.done() and backend.turns == []
+    backend.route_gate.set()
+    await settle(h)
+    await deleg
+    await settle(h)
+    bound_and_spoken(h, backend, lives)
+    # (a) before the final
+    h, room, backend, lives, clock, log = await floor_open()
+    deleg = asyncio.create_task(h.on_delegation("forge", "deleg-1", PRS))
+    for _ in range(3):
+        await asyncio.sleep(0)
+    assert not deleg.done()
+    await say(h, "u1", PRS)
+    await deleg
+    await settle(h)
+    bound_and_spoken(h, backend, lives)
+    assert (
+        len(backend.routes) == 1
+        and metric_count(capsys, "live.delegation.unbound") == 0
+    )
+
+
+async def test_three_asks_from_the_floor_speaker_one_driven_run_and_the_delegation_binds():
+    h, room, backend, lives, clock, log = await floor_open()
+    backend.route_extra = ops(
+        requests=[
+            ("forge", "the open PRs", "fit"),
+            ("friday", "Aden's email", "fit"),
+            ("friday", "what shipped", "fit"),
+        ]
+    )
+    await say(h, "u1", SAID)
+    await h.on_delegation("forge", "deleg-1", SAID)
+    await settle(h)
+    assert sorted((t["agentId"], t["utterance"]) for t in backend.turns) == [
+        ("forge", "the open PRs"),
+        ("friday", "Aden's email"),
+    ]
+    assert [s for _, _, s in rows(h)] == ["working", "working", "queued"]
+    assert h._runs.get(h._requests.items[0].run_id).delegation_id == "deleg-1"
+    assert h._requests.items[0].run_id == h._voice.driven_run
+
+
+async def test_a_second_ask_while_the_first_runs_waits_and_the_delegation_is_told_so():
+    h, room, backend, lives, clock, log = await floor_open()
+    await say(h, "u1", PRS)
+    await h.on_delegation("forge", "deleg-1", PRS)
+    backend.route_extra = ops(requests=[("forge", "what shipped", "fit")])
+    await say(h, "u1", "and what shipped")
+    await h.on_delegation("forge", "deleg-2", "and what shipped")
+    await settle(h)
+    assert len(backend.turns) == 1 and [s for _, _, s in rows(h)] == [
+        "working",
+        "queued",
+    ]
+    note = '"what shipped" is next in line for you. Say so in a few words.'
+    assert lives[0].calls[-1] == ("commentary", note, "deleg-2")
+    answer(h, backend.turns[0]["runId"], "forge", "Two PRs are open.")
+    await settle(h)
+    assert [s for _, _, s in rows(h)] == ["delivered", "working"]
+    assert backend.turns[-1]["utterance"] == "what shipped"
+    answer(h, backend.turns[-1]["runId"], "forge", "Huddles shipped.")
+    spoken = "Your earlier task on what shipped finished: Huddles shipped."
+    assert ("commentary", spoken, None) in lives[0].calls
+
+
+async def test_asks_only_for_other_agents_are_acknowledged_with_no_floor_run():
+    h, room, backend, lives, clock, log = await floor_open()
+    backend.route_extra = ops(requests=[("friday", "Aden's email", "fit")])
+    await say(h, "u1", "check Aden's email")
+    await h.on_delegation("forge", "deleg-1", "check Aden's email")
+    await settle(h)
+    assert [t["agentId"] for t in backend.turns] == ["friday"]
+    ack = "Friday is on Aden's email. Say that in one short sentence, then wait."
+    assert lives[0].calls[-1] == ("commentary", ack, "deleg-1")
+
+
+async def test_small_talk_from_the_floor_speaker_is_answered_by_the_voice():
+    h, room, backend, lives, clock, log = await floor_open()
+    backend.route_extra = ops(social="forge")
+    await say(h, "u1", "haha that's great")
+    await h.on_delegation("forge", "deleg-1", "haha that's great")
+    await settle(h)
+    note = "Nothing to look up for that. Reply yourself in one short sentence."
+    assert backend.turns == [] and lives[0].calls[-1] == ("commentary", note, "deleg-1")
+    backend.route_extra = ops(social="forge", more=True)
+    await say(h, "u1", "I got a couple questions")
+    await h.on_delegation("forge", "deleg-2", "I got a couple questions")
+    wait = 'They will list several requests. Say "go ahead" at most, then stay quiet until they finish.'
+    assert backend.turns == [] and lives[0].calls[-1] == ("commentary", wait, "deleg-2")
+
+
+async def test_with_no_final_the_delegations_own_transcript_is_understood_once(capsys):
+    h, room, backend, lives, clock, log = await floor_open()
+    t0 = clock.t
+    await h.on_delegation("forge", "deleg-1", PRS)
+    await settle(h)
+    assert clock.t - t0 >= h_mod.DELEGATION_WAIT_S
+    assert [r[1] for r in backend.routes] == [PRS]
+    bound_and_spoken(h, backend, lives)
+    assert metric_count(capsys, "live.delegation.unbound") == 1
+    h._utter_from["u1"] = t0 - 1  # the late final's speech began before the delegation
+    await say(h, "u1", PRS)
+    assert len(backend.routes) == 1 and len(h._requests.items) == 1
+    assert h._transcript.text().endswith(PRS)
+
+
+async def test_with_no_delegation_the_row_still_runs_and_its_answer_is_spoken():
+    h, room, backend, lives, clock, log = await floor_open()
+    await say(h, "u1", PRS)
+    assert [t["utterance"] for t in backend.turns] == ["the open PRs"]
+    answer(h, backend.turns[0]["runId"], "forge", "Two PRs are open.")
+    assert ("commentary", "Two PRs are open.", None) in lives[0].calls
+    assert [s for _, _, s in rows(h)] == ["delivered"]
+
+
+async def test_a_failed_route_for_a_floor_line_leaves_todays_single_run():
+    for failure in ("error", "no ops"):
+        h, room, backend, lives, clock, log = await floor_open()
+        if failure == "error":
+            backend.route_error = BackendError(503, "huddles_upstream", None)
+        else:
+            backend.route_extra = {}
+        await say(h, "u1", PRS)
+        assert (
+            h._requests.items == [] and backend.turns == [] and len(backend.routes) == 1
+        )
+        assert not [p for topic, p, _ in room.published if topic == h_mod.ERROR_TOPIC]
+        await h.on_delegation("forge", "deleg-1", PRS)
+        assert [(t["utterance"], t["steerRunId"]) for t in backend.turns] == [
+            (PRS, None)
+        ]
+        assert h._runs.get(backend.turns[0]["runId"]).delegation_id == "deleg-1"
+
+
+async def test_a_barge_is_understood_after_the_repoint():
+    h, room, backend, lives, clock, log = await floor_open()
+    backend.route_extra = ops(
+        requests=[("forge", "the open PRs", "fit"), ("friday", "Aden's email", "fit")]
+    )
+    h.on_agent_state("forge", "speaking")
+    await say(h, "u2", "the open PRs and Aden's email")
+    assert h._voice.speaker == "u2" and ("set_participant", "u2") in lives[0].calls
+    assert sorted(t["utterance"] for t in backend.turns) == [
+        "Aden's email",
+        "the open PRs",
+    ]
+    assert [s for _, _, s in rows(h)] == ["working", "working"]
+    assert h._requests.items[0].run_id == h._voice.driven_run
+    assert lives[0].calls[-1] == ("nudge",)
+    # /route down: today's whole-line driven run
+    h, room, backend, lives, clock, log = await floor_open()
+    backend.route_error = BackendError(503, "huddles_upstream", None)
+    h.on_agent_state("forge", "speaking")
+    await say(h, "u2", "the open PRs and Aden's email")
+    assert [t["utterance"] for t in backend.turns] == ["the open PRs and Aden's email"]
+    assert h._requests.items == [] and lives[0].calls[-1] == ("nudge",)
+
+
+async def test_everyone_stop_between_the_final_and_the_delegation_runs_nothing():
+    h, room, backend, lives, clock, log = await floor_open()
+    backend.turn_gate = asyncio.Event()
+    await h.on_final_transcript("u1", "Prasiddha", PRS)
+    for _ in range(5):
+        await asyncio.sleep(0)
+    await h.on_final_transcript("u1", "Prasiddha", "everyone stop")
+    await h.on_delegation("forge", "deleg-1", PRS)
+    backend.turn_gate.set()
+    await settle(h)
+    assert [s for _, _, s in rows(h)] == ["cancelled"]
+    assert len(backend.turns) == 1 and set(backend.aborts) == {
+        backend.turns[0]["runId"]
+    }
+    assert not [c for c in lives[0].calls if c[0] == "commentary"]
+
+
+async def test_a_bare_lightbulb_repoint_is_understood_not_typed():
+    h, room, backend, lives, clock, log = await floor_open()
+    backend.route_extra = ops(requests=[("friday", "Aden's email", "fit")])
+    await say(h, "u2", "Lightbulb, check Aden's email")
+    assert h._voice.speaker == "u2" and [t["agentId"] for t in backend.turns] == [
+        "friday"
+    ]
+    ack = "Friday is on Aden's email. Say that in one short sentence, then wait."
+    assert lives[0].calls[-2:] == [("thinking", ack, None), ("nudge",)]
+    assert not [c for c in lives[0].calls if c[0] == "reply_to"]
+    # /route down: today's typed user turn
+    h, room, backend, lives, clock, log = await floor_open()
+    backend.route_error = BackendError(503, "huddles_upstream", None)
+    await say(h, "u2", "Lightbulb, check Aden's email")
+    assert (
+        lives[0].calls[-1] == ("reply_to", "Lightbulb, check Aden's email")
+        and backend.turns == []
+    )

@@ -496,11 +496,13 @@ async def test_a_name_at_the_start_skips_jev():
     await h.end_exchange()
 
 
-async def test_the_floor_holder_keeps_follow_ups_without_jev():
+async def test_the_floor_holder_keeps_follow_ups():
+    # understanding §4.1: the follow-up is understood too; without `ops` nothing else happens to it
     h, room, backend, lives, clock, log = await summoned("Forge")
-    routed = len(backend.routes)
+    backend.jev_to = "gauge"
     await say(h, "u1", "and what about last week")
-    assert len(backend.routes) == routed and h._voice.agent_id == "forge"
+    assert backend.routes[-1][1] == "and what about last week" and backend.route_bodies[-1]["floor"]["mine"]
+    assert h._voice.agent_id == "forge" and h._queue == [] and backend.turns == []
 
 
 async def test_lightbulb_without_a_name_routes_with_a_name_does_not():
@@ -779,7 +781,8 @@ async def test_a_retried_turn_resends_the_same_run_id():
     ]
     await h.on_delegation("forge", "d1", "check the board")
     assert len({t["runId"] for t in backend.turns}) == 1 and len(backend.turns) == 3
-    assert [e for e in log if e.startswith("sleep")] == ["sleep 2", "sleep 4"]
+    # (the 0.1 s sleeps: the delegation waiting for a final that never comes, understanding §4.6)
+    assert [e for e in log if e.startswith("sleep") and e != "sleep 0.1"] == ["sleep 2", "sleep 4"]
     assert [c for c in lives[0].calls if c[1:2] == (h_mod.STILL_WAKING,)] == [
         ("thinking", h_mod.STILL_WAKING, "d1")
     ]
@@ -1144,7 +1147,7 @@ async def test_a_stop_while_turns_is_in_flight_aborts_again_once_it_lands():
     h, room, backend, lives, clock, log = await summoned()
     backend.turn_gate = asyncio.Event()
     deleg = asyncio.create_task(h.on_delegation("forge", "d1", "check the deploy"))
-    for _ in range(5):
+    for _ in range(40):  # past the delegation's wait for a final (understanding §4.6)
         await asyncio.sleep(0)
     run_id = backend.turns[0]["runId"]
     await say(h, "u1", "never mind")
@@ -2488,7 +2491,8 @@ async def test_a_switch_during_a_cold_start_still_delivers_the_request_as_news()
         seconds,
     ):  # the floor moves to Gauge while Forge's turn waits out the cold start
         clock.t += seconds
-        await h.talk_start("u1", json.dumps({"agentId": "gauge"}))
+        if seconds != h_mod.DELEGATION_POLL_S:  # not the delegation's wait for a final (understanding §4.6)
+            await h.talk_start("u1", json.dumps({"agentId": "gauge"}))
 
     h._sleep = sleep
     await h.on_delegation("forge", "d1", "check the board")
@@ -2827,8 +2831,8 @@ async def test_a_mid_sentence_mention_keeps_the_floor():
     assert [x.agent_id for x in lives] == ["forge"]
     await say(
         h, "u1", "Finance looks fine to me"
-    )  # a default name mid-sentence never goes to /route
-    assert backend.routes[-1][1] == "let's ask Gauge later"
+    )  # a default name mid-sentence is no switch (the line is still understood, understanding §4.1)
+    assert [x.agent_id for x in lives] == ["forge"] and h._voice.agent_id == "forge"
 
 
 async def test_news_nobody_hears_is_posted_to_the_room_not_dropped():

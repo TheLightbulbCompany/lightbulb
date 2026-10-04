@@ -2291,19 +2291,75 @@ async def test_noise_never_drops_an_announcement_and_real_words_do(capsys):
     assert h._news.get("forge"), "kept: said later"
 
 
-async def test_a_person_is_talking_until_their_line_is_heard_and_never_after():
+async def test_who_is_talking_follows_the_speech_detector():
     h, room, backend, lives, clock, log = await three()
-    talks(h, "u2", "Aden")
-    assert h._speaking == {"u2"}
-    await h.on_final_transcript("u2", "Aden", "nothing for the agents")
+    h.on_active_speakers({"u2"})
+    h.on_interim_transcript("u2", "Aden", "words on their own")
     assert h._speaking == set(), (
-        "the final ends it even when the detector never said so"
+        "an interim alone is not talking: the detector says who talks"
     )
+    h.on_speech("u2", True)
+    assert h._speaking == {"u2"}
+    h.on_speech("u2", False)
+    assert h._speaking == set(), "the detector's stop ends it"
     talks(h, "u2", "Aden")
     h.stt_stopped("u2")
     assert h._speaking == set(), "a transcriber that stopped holds nobody as talking"
     h.on_speech("u9", True)
     assert h._voiced == set(), "only people in the call"
+    talks(h, "u2", "Aden")
+    await h.on_participants({"u1": "Prasiddha"})
+    assert h._speaking == set() and h._voiced == set(), "nobody who left is talking"
+
+
+async def test_a_second_sentence_keeps_its_speaker_talking_past_the_first_ones_final():
+    # review: the final of sentence A arrives while B is being said; nothing may start over B
+    h, room, backend, lives, clock, log = await three()
+    await say(h, "u1", LINE)
+    answer(h, run_of(backend, "forge"), "forge", "Three PRs are open")
+    talks(h, "u2", "Aden")  # sentence A
+    h.on_speech("u2", False)
+    h.on_speech("u2", True)  # sentence B begins
+    await h.on_final_transcript("u2", "Aden", "that was sentence A")
+    assert h._speaking == {"u2"}
+    await quiet(h, clock, 3)
+    assert len(lives) == 1, "Forge's answer waits: Aden is still talking"
+    h.on_speech("u2", False)
+    await quiet(h, clock, 3)
+    assert lives[-1].agent_id == "forge" and h._voice.path == "announce"
+
+
+async def test_the_floor_is_free_again_when_a_narrating_run_goes_back_to_a_tool():
+    h, room, backend, lives, clock, log = await floor_open()
+    backend.route_extra = ops(
+        requests=[
+            ("forge", "Aden's email", "floor"),
+            ("pulse", "the GTM update", "fit"),
+        ]
+    )
+    await say(h, "u1", "check Aden's email, and what is the GTM update")
+    forge_run = run_of(backend, "forge")
+    h.on_data(
+        None,
+        "call.frame",
+        packet(
+            frame(
+                forge_run,
+                "forge",
+                {"type": "chunk", "content": "Let me look. ", "seq": 1},
+            )
+        ),
+    )
+    h.on_data(
+        None,
+        "call.frame",
+        packet(
+            frame(forge_run, "forge", {"type": "tool_start", "tool": "mail", "seq": 2})
+        ),
+    )
+    answer(h, run_of(backend, "pulse"), "pulse", "GTM is on track.")
+    await quiet(h, clock, 3)
+    assert lives[-1].agent_id == "pulse" and h._voice.path == "announce"
 
 
 async def test_the_floor_never_moves_in_the_middle_of_a_streamed_answer():

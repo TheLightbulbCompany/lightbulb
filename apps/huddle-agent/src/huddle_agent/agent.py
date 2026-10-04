@@ -421,13 +421,12 @@ async def entrypoint(ctx: JobContext) -> None:
                         logger.exception("huddle transcript handling failed")
                 return
             except Exception as e:
+                # no transcriber now: nobody is held as talking, and a reopened stream starts a new utterance
+                huddle.stt_stopped(p.identity)
                 if not retry_without_semantic_vad(
                     stt_engine, e, started_with, vad_state
                 ):
                     raise
-                huddle.stt_stopped(
-                    p.identity
-                )  # the reopened stream starts a new utterance
             finally:
                 await utils.aio.cancel_and_wait(pusher)
                 await audio.aclose()

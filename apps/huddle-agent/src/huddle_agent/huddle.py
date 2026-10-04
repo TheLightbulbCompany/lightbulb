@@ -561,6 +561,9 @@ class Huddle:
         for gone in set(self._people) - set(people):  # their speeches can no longer be delegated (§4.6)
             for d in (self._understood, self._unbound, self._final_heard, self._held, self._final_at):
                 d.pop(gone, None)
+            self._voiced.discard(gone)  # nobody who left is talking; a rejoin starts clean
+            self._level.discard(gone)
+        self._talking_changed()
         self._people = dict(people)
         if people:
             self._seen_human = True
@@ -718,8 +721,9 @@ class Huddle:
             # Conversation engine §3.1: the STT model repeated its prompt on silence; nobody said it.
             emit_metric("live.stt.ghost_dropped", 1, "Count")
             text = ""
+        # Talking is not ended here: the detector's stop comes before its sentence's final, and by then the
+        # person may be saying the next sentence.
         began = self._utter_from.pop(identity, None)
-        self.on_speech(identity, False)  # the utterance is over, whatever the detector last said
         if heard := self._final_heard.pop(identity, None):
             heard.set()  # a delegation waiting for this final looks again (understanding §4.6)
         cut = self._cut_by.pop(identity, None)
@@ -2719,7 +2723,8 @@ class Huddle:
             # and its answer is said in its turn.
             and self._quiet(v, now)
             # never in the middle of an answer the floor voice is saying sentence by sentence: the rest would
-            # be announced later with the part already said (`spoken` is reset when the run goes back to a tool)
+            # be announced later with the part already said (`spoken` is reset when the run goes back to a
+            # tool; a run whose end never comes blocks until it is stale, as `_settled` always did)
             and not any(r.run_id == v.driven_run and r.spoken for r in self._runs.running(v.agent_id))
             and not v.posting
             and v.announce is None

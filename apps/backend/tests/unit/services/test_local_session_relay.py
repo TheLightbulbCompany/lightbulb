@@ -1398,6 +1398,42 @@ async def test_a_fork_records_the_session_it_continues(transport):
 
 
 @pytest.mark.asyncio
+async def test_heartbeat_reports_the_terminal_and_only_a_running_session_shows_one(transport, db):
+    sid = await start(transport)
+    row = await repo.get_session(OWNER, sid)
+    assert service._session_public(row, ALICE.user_id).terminal == "held", "held by its holderId until the Mac says"
+    await relay(transport).handle_message("conn-1", heartbeat(sid, terminal="attach"))
+    assert service._session_public(await repo.get_session(OWNER, sid), ALICE.user_id).terminal == "attach"
+    await relay(transport).handle_message("conn-1", heartbeat(sid, terminal="none"))
+    public = service._session_public(await repo.get_session(OWNER, sid), ALICE.user_id)
+    assert public.terminal is None and "terminal" not in public.model_dump(by_alias=True)
+    await relay(transport).handle_message("conn-1", heartbeat(sid, terminal="attach"))
+    db[0].update_item(
+        Key={"pk": repo.session_pk(OWNER, sid), "sk": "META"},
+        UpdateExpression="SET endedAt = :t",
+        ExpressionAttributeValues={":t": 1},
+    )
+    assert service._session_public(await repo.get_session(OWNER, sid), ALICE.user_id).terminal is None
+
+
+@pytest.mark.asyncio
+async def test_a_new_run_forgets_the_old_runs_terminal(transport):
+    sid = await start(transport)
+    await relay(transport).handle_message("conn-1", heartbeat(sid, terminal="attach"))
+    rerun = {**registration(generation="generation-2"), "previousGeneration": "generation-1"}
+    del rerun["session"]["holderId"]
+    await relay(transport).handle_message("conn-1", rerun)
+    assert "terminal" not in await repo.get_session(OWNER, sid)
+
+
+@pytest.mark.asyncio
+async def test_the_relay_advertises_session_terminal(transport):
+    await service.set_enrollment(ALICE, service.EnrollmentRequest(deviceId=MAC, cliDeviceId=CLI, enabled=True))
+    connect(transport)
+    assert "sessionTerminal" in (await relay(transport).handle_message("conn-1", registration()))["features"]
+
+
+@pytest.mark.asyncio
 async def test_http_dispatch_failure_returns_durable_receipt_without_logging_text(transport, caplog):
     from core.auth import get_current_user
     from routers.messaging import router

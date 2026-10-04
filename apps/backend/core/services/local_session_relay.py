@@ -85,6 +85,10 @@ class HeartbeatSession(ContractModel):
     room_reply_request_id: bool | None = None
     # A newer desktop sends this only after the relay advertises support.
     capabilities: sessions.Capabilities | None = None
+    # Which live terminal this Mac can show for the session: "held" (its holder), "attach" (a
+    # Claude background session through `claude attach`), "none" (transcript only). Sent only
+    # once FEATURES lists sessionTerminal. Null is silence.
+    terminal: Literal["held", "attach", "none"] | None = None
 
 
 #: What this relay reads beyond the frozen frames; the desktop sends a field only once listed.
@@ -95,6 +99,7 @@ FEATURES = [
     "privateSendApproval",
     "liveTerminal",
     "remoteInput",
+    "sessionTerminal",
 ]
 
 
@@ -547,6 +552,7 @@ class LocalSessionRelay:
                         # The end rewrites who may resume; a new run has nobody to resume it. The
                         # same generation re-registering to drain an ended mirror keeps them.
                         row.pop("resumeAllowed", None)
+                        row.pop("terminal", None)
                         row.pop("pendingApproval", None)
                         row.pop("privateSendApproval", None)
                         row.pop("teamControl", None)
@@ -709,6 +715,8 @@ class LocalSessionRelay:
                     deviceFeatures=message.device_features(),
                     **labels,
                 )
+                if item.terminal is not None:
+                    updated["terminal"] = item.terminal
                 if item.capabilities is not None and row["capabilitiesVerified"]:
                     caps = item.capabilities
                     if caps.send_mode != "queue" or (row["provider"] != "codex" and (caps.steer or caps.interrupt)):
@@ -742,6 +750,7 @@ class LocalSessionRelay:
                 )
                 scanned = row.get("workspace") != updated.get("workspace")
                 controls_changed = row.get("capabilities") != updated.get("capabilities")
+                terminal_changed = row.get("terminal") != updated.get("terminal")
                 if moved:
                     updated["lastEventAt"] = now
                 try:
@@ -760,7 +769,7 @@ class LocalSessionRelay:
                 # so it hints without stamping lastEventAt. A lapsed lease reads as
                 # offline, so recovery must reach the room even when nothing else moved;
                 # renewal makes that fire once.
-                if moved or scanned or controls_changed or row["onlineUntil"] <= now:
+                if moved or scanned or controls_changed or terminal_changed or row["onlineUntil"] <= now:
                     hint = True
                 # Reconcile after delivery: this heartbeat's own dispatch is part of what the journal must settle.
                 await self.dispatch_session(owner, item.session_id)

@@ -94,7 +94,7 @@ export function MailPanel({ item, visible = true }: { item: string | null; visib
   const ready = visible && pages !== undefined && Boolean(orgId);
   if (!visible && snapshot !== undefined) setSnapshot(undefined);
   // A first visit (no mark) snapshots the newest mail: nothing old is new, later arrivals are.
-  if (ready && snapshot === undefined) setSnapshot(readSeen(orgId) ?? newest ?? 0);
+  if (ready && snapshot === undefined) setSnapshot(readSeen(orgId) ?? newest ?? now);
   useEffect(() => {
     if (!ready || !orgId) return;
     advanceSeen(orgId, newest);
@@ -120,7 +120,7 @@ export function MailPanel({ item, visible = true }: { item: string | null; visib
     if (!unknownItem || !visible) return;
     const next = clearDurableParamFromUrl(window.location.search, "mail", "item");
     if (next !== null) replaceSearchParams(new URLSearchParams(next));
-  }, [unknownItem, visible]);
+  }, [unknownItem, visible, item]);
   // Wide with no item: the newest dated row, kept while it exists so a live refresh does not
   // swap what is being read.
   const [autoKey, setAutoKey] = useState<string | null>(null);

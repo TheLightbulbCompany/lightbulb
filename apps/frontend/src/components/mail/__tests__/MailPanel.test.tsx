@@ -234,6 +234,28 @@ describe("MailPanel", () => {
     expect(row("mail:k2")).not.toHaveAttribute("data-new");
   });
 
+  it("on a first visit with only sent mail, older received mail loaded later is not new", async () => {
+    const older = { ...received, key: "k0", subject: "Older mail", at: hoursAgo(30), truncated: false };
+    mockGet.mockImplementation((url: string) => Promise.resolve(url.includes("before=")
+      ? { address: ADDR, meetings: [], messages: [older], next: null }
+      : { ...page, messages: [sent], next: "cursor" }));
+    renderMail();
+    fireEvent.click(await screen.findByRole("button", { name: "Load more" }));
+    expect(await screen.findByText("Older mail")).toBeInTheDocument();
+    expect(row("mail:k0")).not.toHaveAttribute("data-new");
+    expect(Date.parse(window.localStorage.getItem("lightbulb.mail.seen.org_1")!)).toBeGreaterThan(Date.parse(older.at));
+  });
+
+  it("drops each unknown item from the URL, one after another", async () => {
+    mockGet.mockResolvedValue(page);
+    window.history.replaceState(null, "", "/chat?panel=mail&item=mail%3Agone-1");
+    renderMail("mail:gone-1");
+    await waitFor(() => expect(window.location.search).toBe("?panel=mail"));
+    window.history.replaceState(null, "", "/chat?panel=mail&item=mail%3Agone-2");
+    act(() => nav.setItem("mail:gone-2"));
+    await waitFor(() => expect(window.location.search).toBe("?panel=mail"));
+  });
+
   it("shows the address and how to use it when nothing has arrived", async () => {
     mockGet.mockResolvedValue({ address: ADDR, meetings: [], messages: [], next: null });
     renderMail();

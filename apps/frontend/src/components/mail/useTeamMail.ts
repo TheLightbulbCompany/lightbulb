@@ -83,7 +83,8 @@ export function readSeen(orgId: string | undefined): number | null {
 /** Moves the mark to `newest`. A first load (no mark yet) stores it too, so a new device starts with nothing new. */
 export function advanceSeen(orgId: string, newest: number | null): void {
   const seen = readSeen(orgId);
-  if (seen === null) writeSeen(orgId, newest ?? 0);
+  // No received mail yet: the visit time, so older pages loaded later are not new either.
+  if (seen === null) writeSeen(orgId, newest ?? Date.now());
   else if (newest !== null && newest > seen) writeSeen(orgId, newest);
 }
 

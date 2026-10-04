@@ -56,6 +56,24 @@ class FakeRoom:
         return out
 
 
+def ops(requests=(), social=None, more=False, cancel=(), steer=()):
+    """A `/route` answer with `ops` (understanding §4.4); agentIds are the distinct owners in order."""
+    owners = list(dict.fromkeys(a for a, _, _ in requests)) or (
+        [social] if social else []
+    )
+    return {
+        "agentId": owners[0] if owners else None,
+        "agentIds": owners,
+        "ops": {
+            "requests": [{"agentId": a, "task": t, "by": by} for a, t, by in requests],
+            "social": social,
+            "more": more,
+            "cancel": list(cancel),
+            "steer": [{"requestId": i, "text": t} for i, t in steer],
+        },
+    }
+
+
 class FakeBackend:
     def __init__(self, log):
         self.log = log
@@ -109,6 +127,7 @@ class FakeBackend:
         at=(),
         setting="live",
         unclaimed=False,
+        open=(),
     ):
         self.routes.append((speaker, utterance, transcript))
         self.route_humans.append(humans)
@@ -119,6 +138,7 @@ class FakeBackend:
                 "at": list(at),
                 "setting": setting,
                 "unclaimed": unclaimed,
+                "open": list(open),
             }
         )
         if self.route_error:
@@ -2049,6 +2069,7 @@ async def test_backend_client_option_d_routes(monkeypatch):
                 "at": [],
                 "setting": "live",
                 "unclaimed": False,
+                "open": [],
                 **base,
             },
         ),
@@ -2857,7 +2878,9 @@ async def test_a_ghost_final_reaches_neither_transcript_nor_router(capsys):
     await say(h, "u1", "A team voice call. Names: Ada, Forge")
     assert backend.routes == [] and h._transcript.text() == "" and lives == []
     assert metric_count(capsys, "live.stt.ghost_dropped") == 2
-    await say(h, "u2", "Forge, what did we ship")  # real speech after a ghost still summons
+    await say(
+        h, "u2", "Forge, what did we ship"
+    )  # real speech after a ghost still summons
     assert [l.agent_id for l in lives] == ["forge"]
 
 
@@ -2865,7 +2888,9 @@ def test_the_holding_line_promises_no_room_post():
     assert "room" not in h_mod.HOLDING_LINE and "taking a moment" in h_mod.HOLDING_LINE
 
 
-async def test_backend_turn_carries_the_turns_requests_and_no_post_marks_a_run(monkeypatch):
+async def test_backend_turn_carries_the_turns_requests_and_no_post_marks_a_run(
+    monkeypatch,
+):
     import httpx
 
     seen = []
@@ -2875,8 +2900,22 @@ async def test_backend_turn_carries_the_turns_requests_and_no_post_marks_a_run(m
         return httpx.Response(200, json={"ok": True})
 
     b = _backend(monkeypatch, handler)
-    await b.turn("c1", "u1", "forge", "r1", "the PRs", "", requests=['Friday is answering "the rooms"'])
+    await b.turn(
+        "c1",
+        "u1",
+        "forge",
+        "r1",
+        "the PRs",
+        "",
+        requests=['Friday is answering "the rooms"'],
+    )
     await b.turn("c1", "u1", "forge", "r2", "hi", "")
     await b.no_post("r1")
-    assert seen[0][1]["requests"] == ['Friday is answering "the rooms"'] and "requests" not in seen[1][1]
-    assert seen[2] == ("/api/v1/internal/huddles/r1/runs/r1/no-post", {"ownerId": "org_1", "roomToken": "tok"})
+    assert (
+        seen[0][1]["requests"] == ['Friday is answering "the rooms"']
+        and "requests" not in seen[1][1]
+    )
+    assert seen[2] == (
+        "/api/v1/internal/huddles/r1/runs/r1/no-post",
+        {"ownerId": "org_1", "roomToken": "tok"},
+    )

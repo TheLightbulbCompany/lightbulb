@@ -97,20 +97,16 @@ async def test_at_most_four_requests_work_at_once_and_the_fifth_starts_when_a_sl
     assert backend.turns[-1]["agentId"] == "echo" and backend.turns[-1]["utterance"] == "task 4"
 
 
-async def test_a_second_request_to_a_working_agent_steers_its_run():
+async def test_a_second_request_to_a_working_agent_waits_for_its_run():
+    # understanding §4.5: a new request never steers a run; the agent's next row starts when the run ends
     h, room, backend, lives, clock, log = await three()
     await say(h, "u1", LINE)
-    first = {a: run_of(backend, a) for a in TASKS}
-    backend.steer = True
     backend.route_extra = {
         "requests": [{"agentId": "forge", "task": "and the CI"}, {"agentId": "friday", "task": "and the board"}]
     }
     await say(h, "u1", "Forge, and the CI. Friday, and the board")
-    assert [(t["agentId"], t["utterance"], t["steerRunId"]) for t in backend.turns[3:]] == [
-        ("forge", "and the CI", first["forge"]),
-        ("friday", "and the board", first["friday"]),
-    ]
-    assert [r.run_id for r in h._requests.items if r.agent == "forge"] == [first["forge"]] * 2
+    assert len(backend.turns) == 3
+    assert [(r.agent, r.status) for r in h._requests.items[3:]] == [("forge", "queued"), ("friday", "queued")]
 
 
 async def test_with_no_router_a_multi_name_line_takes_todays_opening_name_path():

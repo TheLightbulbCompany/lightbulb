@@ -86,11 +86,13 @@ class Backend:
         at: list[int] = (),
         setting: str = "live",
         unclaimed: bool = False,
+        open: list[dict] = (),
     ) -> dict:
         """{agentId, agentIds, hold?}: agentIds empty is nobody; `hold` is an unfinished line. `humans` (people
         in the call) lets Jev pick nobody when 2+ are talking; None is the wake word. `floor`/`voiceRuns` are
         Live's open requests; `at` is when each of the transcript's last lines was said (epoch s, oldest first).
-        `setting` is "live" or "meeting"; `unclaimed`: a meeting question nobody took within UNCLAIMED_QUESTION_S."""
+        `setting` is "live" or "meeting"; `unclaimed`: a meeting question nobody took within UNCLAIMED_QUESTION_S.
+        `open`: the call's request rows (RequestList.for_route); `floor` may carry `mine` (understanding §4.4)."""
         body = {
             "speakerUserId": speaker,
             "utterance": utterance,
@@ -101,6 +103,7 @@ class Backend:
             "at": list(at),
             "setting": setting,
             "unclaimed": unclaimed,
+            "open": list(open),
         }
         return await self._post(f"/internal/huddles/{self._room_id}/route", body)
 

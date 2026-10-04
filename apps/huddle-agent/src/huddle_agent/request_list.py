@@ -11,12 +11,17 @@ MAX_WORKING = 4  # the bridge runs at most 4 turns at once per microVM (turn.py 
 TASK_CHARS = 60  # lightbulb.agent.<id>.working (C4)
 LINE_CHARS = 120
 MAX_LINES = 8  # TurnBody.requests
-_VERB = {"queued": "is queued for", "working": "is answering", "ready": "has an answer ready on"}
+_VERB = {
+    "queued": "is queued for",
+    "working": "is answering",
+    "ready": "has an answer ready on",
+}
 OPEN = frozenset({"queued", "working", "ready"})
 
 
 @dataclass(eq=False)
 class Request:
+    id: str  # "r1", "r2", ... never reused: the room names a row by it (understanding §4.5)
     agent: str
     asker: str
     task: str
@@ -24,20 +29,36 @@ class Request:
     turn: int  # the transcript mark of the line that asked
     status: str = "queued"  # queued | working | ready | delivered | cancelled | failed
     no_post: bool = False
-    routed: bool = False  # False: on the strip while /route splits the line; never started
+    routed: bool = (
+        False  # False: on the strip while /route splits the line; never started
+    )
     run_id: str | None = None
+    by: str = ""  # which routing rule chose the owner: name | fit | floor | chief
 
 
 class RequestList:
     def __init__(self) -> None:
         self.items: list[Request] = []
-        self.version = 0  # bumped on every change: the floor voice hears the list when it moves
-        self._cancelled_turns: set[int] = set()  # turns whose pending rows were ALL cancelled before /route settled
-        self._cancelled_asks: set[tuple[int, str]] = set()  # (turn, agent) pending rows one agent's stop cancelled
-        self._suppressed: set[str] = set()  # runs with no row that "don't post that" named
+        self._ids = 0
+        self.version = (
+            0  # bumped on every change: the floor voice hears the list when it moves
+        )
+        self._cancelled_turns: set[int] = (
+            set()
+        )  # turns whose pending rows were ALL cancelled before /route settled
+        self._cancelled_asks: set[tuple[int, str]] = (
+            set()
+        )  # (turn, agent) pending rows one agent's stop cancelled
+        self._suppressed: set[str] = (
+            set()
+        )  # runs with no row that "don't post that" named
 
     def _bump(self) -> None:
         self.version += 1
+
+    def _id(self) -> str:
+        self._ids += 1
+        return f"r{self._ids}"
 
     def _move(self, rows: list[Request], to: str, came_from=OPEN) -> None:
         moved = [r for r in rows if r.status in came_from]
@@ -48,7 +69,9 @@ class RequestList:
 
     def pending(self, turn: int, asker: str, agents: list[str], now: float) -> None:
         """Every agent a line names shows as working within the final's tick, before /route splits it."""
-        self.items += [Request(a, asker, "", now, turn) for a in dict.fromkeys(agents)]
+        self.items += [
+            Request(self._id(), a, asker, "", now, turn) for a in dict.fromkeys(agents)
+        ]
         self._bump()
 
     def drop_pending(self, turn: int) -> bool:
@@ -59,25 +82,55 @@ class RequestList:
             self._bump()
         return dropped
 
-    def settle(self, turn: int, asker: str, routed: list[dict], now: float) -> list[Request]:
-        """/route's split, [{agentId, task}] in order, replaces the line's pending rows."""
+    def settle(
+        self, turn: int, asker: str, routed: list[dict], now: float
+    ) -> list[Request]:
+        """/route's requests, [{agentId, task, by?}] in order, replace the line's pending rows. An agent may
+        have several rows from one line: it works on them one at a time (understanding §4.5)."""
         self.drop_pending(turn)
         if turn in self._cancelled_turns:
             return []
-        first = {x["agentId"]: x for x in reversed(routed)}  # one row per agent: the first ask wins
         rows = [
-            Request(x["agentId"], asker, str(x.get("task") or ""), now, turn, routed=True)
+            Request(
+                self._id(),
+                x["agentId"],
+                asker,
+                str(x.get("task") or ""),
+                now,
+                turn,
+                routed=True,
+                by=x.get("by") or "",
+            )
             for x in routed
-            if first[x["agentId"]] is x and (turn, x["agentId"]) not in self._cancelled_asks
+            if (turn, x["agentId"]) not in self._cancelled_asks
         ]
         self.items += rows
         self._bump()
         return rows
 
     def startable(self) -> list[Request]:
-        """Queued rows that may start now, oldest first; rows that steered one run hold one slot."""
-        busy = {r.run_id or id(r) for r in self.items if r.status == "working"}
-        return [r for r in self.items if r.status == "queued" and r.routed][: max(MAX_WORKING - len(busy), 0)]
+        """Queued rows that may start now, oldest first: one per agent, never an agent already working; rows
+        that steered one run hold one slot."""
+        working = [r for r in self.items if r.status == "working"]
+        taken = {r.agent for r in working}
+        out: list[Request] = []
+        for r in self.items:
+            if r.status == "queued" and r.routed and r.agent not in taken:
+                taken.add(r.agent)
+                out.append(r)
+        return out[: max(MAX_WORKING - len({r.run_id or id(r) for r in working}), 0)]
+
+    def get(self, request_id: str) -> Request | None:
+        return next((r for r in self.items if r.id == request_id), None)
+
+    def for_route(self) -> list[dict]:
+        """What /route is told (understanding §4.4): every open routed row, then the newest delivered three."""
+        done = [r for r in self.items if r.status == "delivered" and r.routed][-3:]
+        rows = [r for r in self.items if r.status in OPEN and r.routed] + done
+        return [
+            {"id": r.id, "agentId": r.agent, "task": r.task[:200], "status": r.status}
+            for r in rows[:12]
+        ]
 
     def start(self, r: Request) -> None:
         self._move([r], "working", {"queued"})
@@ -89,7 +142,9 @@ class RequestList:
         return [r for r in self.items if run_id and r.run_id == run_id]
 
     def order(self, run_id: str) -> int:
-        return next((i for i, r in enumerate(self.items) if r.run_id == run_id), len(self.items))
+        return next(
+            (i for i, r in enumerate(self.items) if r.run_id == run_id), len(self.items)
+        )
 
     def ready(self, run_id: str) -> None:
         self._move(self.by_run(run_id), "ready", {"working"})
@@ -117,7 +172,9 @@ class RequestList:
     def no_post(self, agent: str | None = None) -> Request | None:
         """ "don't post that": the named agent's newest open request, else the room's newest."""
         rows = [r for r in self.open() if r.routed]
-        r = ([x for x in rows if x.agent == agent] if agent else rows or [None])[-1:] or [None]
+        r = ([x for x in rows if x.agent == agent] if agent else rows or [None])[
+            -1:
+        ] or [None]
         r = r[0]
         if r is not None:
             r.no_post = True
@@ -128,12 +185,15 @@ class RequestList:
         self._suppressed.add(run_id)
 
     def no_posted(self, run_id: str) -> bool:
-        """"don't post that" named this run (a request row's, or a plain run's)."""
+        """ "don't post that" named this run (a request row's, or a plain run's)."""
         return run_id in self._suppressed or any(r.no_post for r in self.by_run(run_id))
 
     def postable(self, run_id: str) -> bool:
         """False for "don't post that", and for a failed request (its CANT_REACH line is said, never posted)."""
-        bad = any(r.no_post or r.status in ("failed", "cancelled") for r in self.by_run(run_id))
+        bad = any(
+            r.no_post or r.status in ("failed", "cancelled")
+            for r in self.by_run(run_id)
+        )
         return run_id not in self._suppressed and not bad
 
     def open(self) -> list[Request]:
@@ -143,26 +203,49 @@ class RequestList:
         return [r for r in self.items if r.status == "queued"]
 
     def working(self, agent: str) -> bool:
-        return any(r.agent == agent and r.status in ("queued", "working") for r in self.items)
+        return any(
+            r.agent == agent and r.status in ("queued", "working") for r in self.items
+        )
 
     def task(self, agent: str) -> str:
-        rows = [r for r in self.items if r.agent == agent and r.status in ("queued", "working") and r.task]
+        rows = [
+            r
+            for r in self.items
+            if r.agent == agent and r.status in ("queued", "working") and r.task
+        ]
         return rows[-1].task[:TASK_CHARS] if rows else ""
 
-    def lines(self, name: Callable[[str], str], skip_agent: str | None = None) -> list[str]:
+    def lines(
+        self, name: Callable[[str], str], skip_agent: str | None = None
+    ) -> list[str]:
         out = [
-            f"{name(r.agent)} {_VERB[r.status]}" + (f' "{r.task[:LINE_CHARS]}"' if r.task else "")
+            f"{name(r.agent)} {_VERB[r.status]}"
+            + (f' "{r.task[:LINE_CHARS]}"' if r.task else "")
             for r in self.open()
             if r.routed and r.agent != skip_agent
         ]
         return out[-MAX_LINES:]
 
 
-def ack_line(rows: list[Request], name: Callable[[str], str]) -> str:
-    """The one acknowledgement of a multi-name turn (spec §3.5), said by the first row's agent."""
-
-    def on(r: Request) -> str:
-        return r.task.strip().rstrip(".?!") or "what was asked"
-
-    others = "".join(f" {name(r.agent)} is on {on(r)}." for r in rows[1:])
-    return f"You are on {on(rows[0])}.{others} Say that in one short sentence, then wait."
+def ack_line(
+    rows: list[Request], name: Callable[[str], str], me: str | None = None
+) -> str:
+    """The one acknowledgement of a turn that made 2+ rows (spec §3.5), said by `me` (default: the first row's
+    agent). Its own rows first, then each other agent once; three requests are named, the rest counted."""
+    me = me or rows[0].agent
+    tasks: dict[str, list[str]] = {me: []}
+    for r in rows:
+        tasks.setdefault(r.agent, []).append(
+            r.task.strip().rstrip(".?!") or "what was asked"
+        )
+    left, parts = 3, []
+    for agent, ts in tasks.items():
+        if ts and left:
+            shown = ts[:left]
+            left -= len(shown)
+            parts.append(
+                f"{'You are' if agent == me else name(agent) + ' is'} on {' and on '.join(shown)}."
+            )
+    more = len(rows) - (3 - left)
+    tail = f" And {more} more, shown in the room." if more else ""
+    return " ".join(parts) + f"{tail} Say that in one short sentence, then wait."

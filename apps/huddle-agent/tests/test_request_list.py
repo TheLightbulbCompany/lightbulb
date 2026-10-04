@@ -24,7 +24,9 @@ def test_pending_rows_show_on_the_strip_until_route_settles_them():
     rl = RequestList()
     rl.pending(7, "u1", ["pulse", "forge", "forge"], 1.0)
     assert [r.agent for r in rl.items] == ["pulse", "forge"]
-    assert rl.working("forge") and rl.task("forge") == "" and rl.startable() == []  # never started
+    assert (
+        rl.working("forge") and rl.task("forge") == "" and rl.startable() == []
+    )  # never started
     assert rl.drop_pending(7) and rl.items == [] and not rl.drop_pending(7)
 
 
@@ -76,7 +78,9 @@ def test_lifecycle_order_and_postable():
     rl.delivered({"rr"})  # a failed row stays failed
     assert fr.status == "failed" and not rl.postable("rr")
     assert rl.postable("rp")
-    assert rl.no_post("forge") is None and not p.no_post  # a named agent with nothing open flags nothing
+    assert (
+        rl.no_post("forge") is None and not p.no_post
+    )  # a named agent with nothing open flags nothing
     assert rl.no_post() is p  # nobody named: the room's newest open row
     assert p.no_post and not rl.postable("rp")
     rl.suppress("other")
@@ -154,17 +158,127 @@ def test_a_line_with_no_task_omits_the_quotes():
     assert rl.lines(NAMES) == ["Pulse is queued for"]
 
 
-def test_a_repeated_agent_in_one_split_keeps_its_first_ask():
+def test_a_repeated_agent_in_one_split_keeps_every_ask_with_its_own_id():
     rl = RequestList()
     rows = rl.settle(1, "u1", [{"agentId": "forge", "task": "x"}, {"agentId": "pulse", "task": "p"},
-                               {"agentId": "forge", "task": "y"}], 0.0)  # fmt: skip
-    assert [(r.agent, r.task) for r in rows] == [("forge", "x"), ("pulse", "p")]
-    assert ack_line(rows, NAMES).count("Forge") == 0 and ack_line(rows, NAMES).count("Pulse") == 1
+                               {"agentId": "forge", "task": "y", "by": "fit"}], 0.0)  # fmt: skip
+    assert [(r.agent, r.task, r.by) for r in rows] == [
+        ("forge", "x", ""),
+        ("pulse", "p", ""),
+        ("forge", "y", "fit"),
+    ]
+    assert (
+        len({r.id for r in rows}) == 3
+        and rl.get(rows[2].id) is rows[2]
+        and rl.get("nope") is None
+    )
+    assert rl.startable() == rows[:2]  # forge works one row at a time
+    rl.start(rows[0])
+    rl.bind(rows[0], "r")
+    assert rl.startable() == [rows[1]]
+    rl.fail(rows[0])
+    assert rl.startable() == [rows[1], rows[2]]
+
+
+def test_ids_are_never_reused_and_pending_rows_have_one():
+    rl = RequestList()
+    rl.pending(1, "u", ["a"], 0.0)
+    pid = rl.items[0].id
+    (r,) = rl.settle(1, "u", [{"agentId": "a", "task": "t"}], 0.0)
+    assert pid and r.id and r.id != pid
+
+
+def test_five_agents_start_four_and_two_agents_start_together():
+    rl = RequestList()
+    rl.settle(1, "u", [{"agentId": f"a{i}", "task": "t"} for i in range(5)], 0.0)
+    assert len(rl.startable()) == 4
+    rl2 = RequestList()
+    rl2.settle(
+        1, "u", [{"agentId": "a", "task": "1"}, {"agentId": "b", "task": "2"}], 0.0
+    )
+    assert [r.agent for r in rl2.startable()] == ["a", "b"]
+
+
+def test_for_route_lists_open_rows_then_three_newest_delivered_capped_at_twelve():
+    rl = RequestList()
+    rows = rl.settle(1, "u", [{"agentId": "a", "task": f"t{i}"} for i in range(5)], 0.0)
+    for i, r in enumerate(rows[:4]):
+        rl.start(r)
+        rl.bind(r, f"run{i}")
+    rl.delivered({"run0", "run1", "run2", "run3"})
+    rl.items[4].task = "x" * 300
+    out = rl.for_route()
+    assert [o["task"][:2] for o in out] == ["xx", "t1", "t2", "t3"] and len(
+        out[0]["task"]
+    ) == 200
+    assert out[0] == {
+        "id": rows[4].id,
+        "agentId": "a",
+        "task": "x" * 200,
+        "status": "queued",
+    }
+    big = RequestList()
+    big.settle(1, "u", [{"agentId": f"a{i}", "task": "t"} for i in range(15)], 0.0)
+    assert len(big.for_route()) == 12
+
+
+def rows_for(*pairs):
+    return RequestList().settle(
+        1, "u", [{"agentId": a, "task": t} for a, t in pairs], 0.0
+    )
+
+
+def test_ack_line_one_row_mine():
+    rows = rows_for(("pulse", "the update"))
+    assert (
+        ack_line(rows, NAMES, "pulse")
+        == "You are on the update. Say that in one short sentence, then wait."
+    )
+
+
+def test_ack_line_two_mine():
+    rows = rows_for(("pulse", "A"), ("pulse", "B"))
+    assert (
+        ack_line(rows, NAMES)
+        == "You are on A and on B. Say that in one short sentence, then wait."
+    )
+
+
+def test_ack_line_mine_and_another_agents_two():
+    rows = rows_for(("pulse", "A"), ("forge", "C"), ("forge", "D"))
+    assert ack_line(rows, NAMES, "pulse") == (
+        "You are on A. Forge is on C and on D. Say that in one short sentence, then wait."
+    )
+
+
+def test_ack_line_none_mine():
+    rows = rows_for(("forge", "C"))
+    assert (
+        ack_line(rows, NAMES, "pulse")
+        == "Forge is on C. Say that in one short sentence, then wait."
+    )
+
+
+def test_ack_line_names_three_and_counts_the_rest():
+    rows = rows_for(
+        ("pulse", "A"), ("forge", "B"), ("friday", "C"), ("pulse", "D"), ("forge", "E")
+    )
+    assert ack_line(rows, NAMES) == (
+        "You are on A and on D. Forge is on B. And 2 more, shown in the room. "
+        "Say that in one short sentence, then wait."
+    )
 
 
 def test_one_agents_stop_while_route_decides_drops_only_its_row():
     rl = RequestList()
     rl.pending(1, "u", ["forge", "friday"], 0.0)
     rl.cancel("forge")
-    rows = rl.settle(1, "u", [{"agentId": "forge", "task": "a"}, {"agentId": "friday", "task": "b"}], 1.0)
-    assert [r.agent for r in rows] == ["friday"] and [r.agent for r in rl.items] == ["friday"]
+    rows = rl.settle(
+        1,
+        "u",
+        [{"agentId": "forge", "task": "a"}, {"agentId": "friday", "task": "b"}],
+        1.0,
+    )
+    assert [r.agent for r in rows] == ["friday"] and [r.agent for r in rl.items] == [
+        "friday"
+    ]

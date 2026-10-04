@@ -7,7 +7,7 @@ import json
 from huddle_agent import huddle as h_mod
 from huddle_agent.backend import BackendError
 from huddle_agent.transcript import is_question
-from test_huddle import answer, make, ops, say, settle, talks
+from test_huddle import answer, frame, make, ops, packet, say, settle, talks
 
 MEET = "meet:room-1"
 
@@ -600,3 +600,96 @@ async def test_a_meeting_answer_dropped_by_talk_is_tried_again_at_each_pause_and
     await settle(h)
     assert backend.late_answers == [], "a busy meeting does not push the answer off the call"
     assert h._voice is not None and h._voice.announce is not None
+
+
+# -- review: a muted voice must still yield to a person; a follow-up must not land on someone else's voice; the
+# idle exit posts the unheard work before the transcript --
+
+
+def quiet_meet(h):
+    h.on_speech(MEET, False)
+    h.on_active_speakers(set())
+
+
+async def test_a_meeting_voice_stops_for_someone_who_keeps_talking_over_it_and_its_answer_goes_on_the_record():
+    h, room, backend, lives, clock, log = await priya_asks_forge(rows=True)
+    (row,) = h._requests.items
+    answer(h, row.run_id, "forge", "Three PRs are open.")  # handed to its open voice, which says it
+    h.on_agent_state("forge", "speaking")
+    talks(h, MEET, "Google Meet")  # "mm-hm": shorter than TALK_OVER_S
+    clock.t += h_mod.TALK_OVER_S / 2
+    await h.tick()
+    await settle(h)
+    assert ("interrupt",) not in lives[0].calls and h._voice is not None, "a backchannel does not stop it"
+    quiet_meet(h)
+    talks(h, MEET, "Google Meet")  # someone starts a sentence over it and keeps going
+    clock.t += h_mod.TALK_OVER_S
+    await h.tick()
+    await settle(h)
+    assert ("interrupt",) in lives[0].calls and h._voice is None
+    quiet_meet(h)
+    await hear(h, "sorry, one thing about the budget")  # the talker's words: nothing about the answer
+    clock.t += h_mod.CUT_HANDLED_S
+    await h.tick()
+    await settle(h)
+    assert [a[3] for a in backend.late_answers] == ["Three PRs are open."], "not said to its end: on the record"
+
+
+async def test_a_meeting_answer_still_coming_when_its_voice_is_talked_over_is_said_whole_at_the_next_pause():
+    h, room, backend, lives, clock, log = await priya_asks_forge(rows=True)
+    (row,) = h._requests.items
+    first = {"type": "chunk", "content": "Three PRs are open. ", "append": True, "seq": 1}
+    h.on_data(None, "call.frame", packet(frame(row.run_id, "forge", first)))
+    h.on_agent_state("forge", "speaking")
+    talks(h, MEET, "Google Meet")
+    clock.t += h_mod.TALK_OVER_S
+    await h.tick()
+    await settle(h)
+    assert h._voice is None and row.status == "working"
+    rest = {"type": "chunk", "content": "The oldest is two days old.", "append": True, "seq": 2}
+    h.on_data(
+        None,
+        "call.frame",
+        packet(frame(row.run_id, "forge", rest), frame(row.run_id, "forge", {"type": "run_ended", "seq": 3})),
+    )
+    assert row.status == "ready"
+    quiet_meet(h)
+    clock.t += h_mod.MEET_QUIET_S + h_mod.gate.ANNOUNCE_QUIET
+    await h.tick()
+    await settle(h)
+    assert h._voice is not None and h._voice.path == "announce"
+    assert "Three PRs are open. The oldest is two days old." in str(lives[-1].seed)
+    assert backend.late_answers == []
+
+
+async def test_a_follow_up_understood_after_its_voice_went_to_someone_else_is_not_said_to_them():
+    h, room, backend, lives, clock, log = await priya_asks_forge()
+    backend.route_gate = asyncio.Event()
+    clock.t += 3
+    await h.on_final_transcript(MEET, "Google Meet", "and the closed ones")  # Priya's follow-up, at /route
+    for _ in range(30):
+        await asyncio.sleep(0)
+    assert h._voice.label == "Priya"
+    await dan_starts(h, clock)
+    await h.on_final_transcript(MEET, "Google Meet", "Forge, how many issues are open?")  # Dan names the agent
+    for _ in range(30):
+        await asyncio.sleep(0)
+    assert h._voice.label == "Dan"
+    calls, turns = len(lives[0].calls), len(backend.turns)
+    backend.route_gate.set()
+    await settle(h)
+    said = [c for c in lives[0].calls[calls:] if "closed ones" in str(c)]
+    assert said == [], "Priya's line is not put to the voice that is now with Dan"
+    assert not any(t["utterance"] == "and the closed ones" for t in backend.turns[turns:])
+
+
+async def test_a_meeting_that_idles_out_posts_its_unheard_answers_before_its_transcript():
+    h, backend = await unheard_answer()
+    backend.transcript_gate = asyncio.Event()
+    leaving = asyncio.ensure_future(h._end_idle_room())
+    for _ in range(30):
+        await asyncio.sleep(0)
+    assert [a[3] for a in backend.late_answers] == ["Three PRs are open."] and backend.transcripts == []
+    backend.transcript_gate.set()
+    await leaving
+    assert backend.finals == [True]

@@ -148,6 +148,9 @@ MEET_SPAN_CAP_S = 10 * 60
 MEET_FOLLOWUP_S = 10.0
 # a ready answer waits for a real pause in a meeting, not a breath between two sentences (Live: REQUEST_QUIET_S)
 MEET_QUIET_S = 3.0
+# A meeting voice is muted, so the worker stops it for someone who keeps talking over it this long. Shorter is a
+# backchannel ("mm-hm", a cough): the agent carries on.
+TALK_OVER_S = 1.0
 # The final POST's backoff and its whole budget. The budget stays under the job's shutdown window
 # (agent.py SHUTDOWN_S): the flush usually runs from the shutdown callback.
 FINAL_TRANSCRIPT_RETRY_S = (1, 2, 4, 8, 16)
@@ -322,6 +325,7 @@ class _Voice:
     # window last restarted (it opened, stopped speaking, or took a follow-up)
     label: str = ""
     followed_at: float = 0.0
+    saying: str | None = None  # a meeting: the run whose answer it is saying now (`_talked_over`)
 
 
 class Huddle:
@@ -393,6 +397,7 @@ class Huddle:
         self._level: set[str] = set()  # humans in the SFU's active speakers: sound, maybe not speech
         self._voiced: set[str] = set()  # humans the transcriber's speech detector hears speaking
         self._speaking: set[str] = set()  # humans talking now: both of the above
+        self._talk_from = 0.0  # when the talking now going on began (a meeting's talk-over, `_talked_over`)
         self._last_speaker: str | None = None
         self._last_agent: dict[
             str, str
@@ -741,18 +746,9 @@ class Huddle:
         self._closing = True  # first: a line routed during the awaits below opens no new window
         if self._marking:  # a "don't post that" said just before hang-up lands first
             await asyncio.wait(set(self._marking), timeout=5)
-        meeting = self.setting == "meeting"
-        if not meeting:
+        if self.setting != "meeting":
             await self._flush_transcript()  # last chance for what was said since the previous batch
-        try:
-            # A meeting's notes and mail are written when its one transcript lands: the answers nobody heard
-            # must be on the record first. Bounded, so the transcript keeps its budget inside the shutdown window.
-            await asyncio.wait_for(self._post_unheard(), UNHEARD_BUDGET_S if meeting else None)
-        except asyncio.TimeoutError:
-            logger.warning("huddle unheard answers not all posted within %ss", UNHEARD_BUDGET_S)
-        open_rows = [r for r in self._requests.open() if r.routed]
-        emit_metric("live.request.open_at_end", len(open_rows), "Count")  # understanding §5.3: 0
-        await self._flush_transcript()  # the row changes the sweep made; a meeting's one transcript
+        await self._last_posts()
         if self._people and not self._idle_ended:
             return
         try:
@@ -760,8 +756,20 @@ class Huddle:
         except Exception:
             logger.exception("huddle shutdown presence clear failed")
 
+    async def _last_posts(self) -> None:
+        """The call is over: the answers nobody heard, then the transcript. A meeting's notes and mail are
+        written when its one transcript lands, so the answers must be on the record first; they are bounded, so
+        the transcript keeps its budget inside the shutdown window."""
+        try:
+            await asyncio.wait_for(self._post_unheard(), UNHEARD_BUDGET_S if self.setting == "meeting" else None)
+        except asyncio.TimeoutError:
+            logger.warning("huddle unheard answers not all posted within %ss", UNHEARD_BUDGET_S)
+        open_rows = [r for r in self._requests.open() if r.routed]
+        emit_metric("live.request.open_at_end", len(open_rows), "Count")  # understanding §5.3: 0
+        await self._flush_transcript()  # the row changes the sweep made; a meeting's one transcript
+
     async def _post_unheard(self) -> None:
-        """The job is ending: every answer nobody heard, and every request never started, goes to the room."""
+        """The call is ending: every answer nobody heard, and every request never started, goes to the room."""
         held = [(a, n) for a, (items, _, _) in self._cut_off.items() for n in items]  # cut off mid-announcement
         self._cut_off.clear()
         if (v := self._voice) and v.told:  # being said as the call ends: not said to its end (§4.5)
@@ -1128,7 +1136,10 @@ class Huddle:
     async def _answer_heard(self, v: _Voice, identity: str, text: str, heard: asyncio.Future, said: str) -> None:
         """A line the voice did not hear itself (a barge, or any line to a muted meeting voice): once understood,
         it hears what came of it."""
+        label = v.label
         rec = await heard
+        if v.label != label:
+            return  # a meeting: someone else named the agent meanwhile; this line's rows run without its voice
         if rec is not None and rec[1] is not None:
             self._heard(v, identity, text, rec[0])
         # /route down: D §5, their whole line is the request, started by us like a summon's
@@ -1510,7 +1521,12 @@ class Huddle:
         reqs, social = list(ops.get("requests") or []), ops.get("social")
         v, superseded = self._voice, False
         # the floor speaker's line; in a meeting (one participant for everyone) only a line taken as its follow-up
-        own = v is not None and identity == v.speaker and (floor_line or self.setting != "meeting")
+        own = (
+            v is not None
+            and identity == v.speaker
+            # ...and the voice is still with that speaker: someone else may have named the agent while /route decided
+            and (self.setting != "meeting" or (floor_line and v.label == self._label(identity, mark)))
+        )
         # Routing v2 §4.2: someone else spoke since; their line routes itself, seeing this one. A named ask stands.
         # The floor speaker's line stands too: its voice heard it and may delegate it (§4.6). Cancel and steer
         # name earlier rows: they stand either way.
@@ -1730,6 +1746,8 @@ class Huddle:
                 emit_metric("live.announce.spoken", 1, "Count")
             elif state != "speaking":
                 v.announcing, v.told = False, []  # said to the end: nothing to post
+                if (run := self._runs.get(v.saying or "")) is None or run.ended:
+                    v.saying = None  # its answer was said to the end too
             self._sync_state()
 
     def on_active_speakers(self, identities: set[str]) -> None:
@@ -1755,6 +1773,8 @@ class Huddle:
         humans = self._level & self._voiced
         if humans or self._speaking:
             self._last_heard = self._clock()
+        if humans and not self._speaking:
+            self._talk_from = self._clock()
         started, self._speaking = humans - self._speaking, humans
         if started and self.setting == "meeting":
             self._unclaimed = None  # someone talks after the question: a person took it
@@ -2582,6 +2602,7 @@ class Huddle:
 
     def say(self, run: Run, text: str, final: bool) -> None:
         if v := self._same_session(run):
+            v.saying = run.run_id
             self._live_call(
                 v, "append_commentary", text, delegation_id=run.delegation_id
             )
@@ -2818,6 +2839,15 @@ class Huddle:
             return
         if v.live is None:
             return
+        if (
+            meeting
+            and v.path != "announce"  # an announcement is cut at once, in `_talking_changed`
+            and v.agent_state == "speaking"
+            and v.speaker in self._speaking
+            and now - self._talk_from >= TALK_OVER_S
+        ):
+            self._talked_over(v)
+            return
         self._flush_lines(v)
         self._acknowledge(v, now)
         d = v.driven
@@ -2892,6 +2922,21 @@ class Huddle:
         )
         if over or said or (now - v.last_activity >= IDLE_SECONDS and not busy):
             await self.end_exchange(only=v)
+
+    def _talked_over(self, v: _Voice) -> None:
+        """A meeting voice hears nobody, so the worker stops it for someone who keeps talking over it, as the
+        model's own ear does in a Live call. What it was saying is not lost: a run still working ends as a ready
+        answer, said whole at the next pause; an answer already handed to it goes on the record unless the
+        talker calls it off, as a cut announcement does (§4.8)."""
+        emit_metric("live.meet.talked_over", 1, "Count")
+        self._live_call(v, "interrupt")
+        run = self._runs.get(v.saying or "")
+        if run is not None and run.ended and not (run.aborted or run.failed) and run.text.strip():
+            n = (run.run_id, run.request, run.text.strip(), self._clock(), run.speaker)
+            held = self._cut_off.get(v.agent_id, ([], "", 0.0))[0]
+            self._cut_off[v.agent_id] = (held + [n], v.speaker, self._clock())
+        v.saying = None
+        self._drop(v)  # closed: a run still working no longer speaks through it
 
     def _apply_held(self, now: float) -> None:
         """understanding §4.4: a held line whose speaker said nothing more for HOLD_APPLY_S is applied as /route
@@ -3162,7 +3207,7 @@ class Huddle:
         )
         self._idle_ended = True
         if self.setting == "meeting":
-            await self._flush_transcript()
+            await self._last_posts()  # as at hang-up: the unheard answers, then the transcript
             try:
                 await self._backend.leave_meeting()
             except Exception:

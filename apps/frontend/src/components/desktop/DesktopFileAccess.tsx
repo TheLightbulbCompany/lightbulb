@@ -5,16 +5,13 @@ import { useCallback, useEffect, useState } from "react";
 import { capture } from "@/lib/analytics";
 import { desktopErrorMessage } from "@/lib/desktopPermissions";
 
-// Settings → Desktop → File access panel.
+// Settings → Desktop → "Approved folders" card.
 //
-// Shows the list of folders the cloud agent is allowed to read/write
-// through file.fetch/write + dir.list/fetch + dir.fetch (and screen
-// captures for screen.snapshot). The list is the user-managed safety
-// boundary — the Rust node-host enforces it before every operation.
-//
-// In a regular browser this panel renders an informational message and
-// nothing actionable, since the allowlist lives on the user's Mac. Only
-// the Tauri webview can call the file_access_* IPC commands.
+// The folders the agent may read/write through file.fetch/write + dir.list/fetch
+// + dir.fetch (and screen captures for screen.snapshot). The list is the
+// user-managed safety boundary — the Rust node-host enforces it before every
+// operation. Renders nothing outside the desktop app: only the Tauri webview can
+// call the file_access_* IPC commands (DesktopSettings shows the download card).
 
 type TauriBridge = {
   core?: {
@@ -38,7 +35,6 @@ function getTauri(): TauriBridge | null {
 export function DesktopFileAccess() {
   const [tauri, setTauri] = useState<TauriBridge | null>(null);
   const [paths, setPaths] = useState<string[]>([]);
-  const [defaultPath, setDefaultPath] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -52,12 +48,8 @@ export function DesktopFileAccess() {
   const refresh = useCallback(async () => {
     if (!tauri?.core) return;
     try {
-      const [list, def] = await Promise.all([
-        tauri.core.invoke<string[]>("file_access_list_paths"),
-        tauri.core.invoke<string>("file_access_default_path"),
-      ]);
+      const list = await tauri.core.invoke<string[]>("file_access_list_paths");
       setPaths(list ?? []);
-      setDefaultPath(def ?? null);
       setError(null);
     } catch (e) {
       setError(desktopErrorMessage(e));
@@ -110,120 +102,38 @@ export function DesktopFileAccess() {
     [tauri, refresh],
   );
 
-  if (!tauri) {
-    return (
-      <div className="settings-panel" id="panel-desktop">
-        <h1 className="settings-page-title">Desktop file access</h1>
-        <p className="settings-page-desc">
-          This setting lives on your Mac — open the Lightbulb desktop app to
-          manage which folders your agent can read or write.
-        </p>
-        <div className="settings-card">
-          <div className="settings-card-header">
-            <div>
-              <div className="settings-card-title">Desktop app</div>
-              <div className="settings-card-desc">
-                Lightbulb for Mac — Apple Silicon
-              </div>
-            </div>
-            {/* Plain <a>: an API route (302 to the signed DMG), not a Next page. */}
-            {/* eslint-disable-next-line @next/next/no-html-link-for-pages */}
-            <a
-              href="/api/download/desktop"
-              className="settings-btn-outline"
-              title="macOS · Apple Silicon"
-            >
-              Download
-            </a>
+  if (!tauri) return null;
+
+  return (
+    <section className="settings-card" aria-labelledby="approved-folders-heading">
+      <div className="settings-card-header settings-card-header--rows">
+        <div>
+          <h2 className="settings-card-title" id="approved-folders-heading">Approved folders</h2>
+          <div className="settings-card-desc">
+            Agents read and write files only inside these folders. Sessions you start from Lightbulb also run in them.
           </div>
         </div>
       </div>
-    );
-  }
-
-  return (
-    <div className="settings-panel" id="panel-desktop">
-      <h1 className="settings-page-title">Desktop file access</h1>
-      <p className="settings-page-desc">
-        Folders below are the ONLY places your agent can read or write
-        files through <code>file.fetch</code>/<code>file.write</code>/
-        <code>dir.list</code>. Everything else returns{" "}
-        <code>PERMISSION_DENIED</code>.
-      </p>
-
-      {defaultPath && (
-        <p style={{ fontSize: 13, color: "var(--midnight-muted)", marginBottom: 12 }}>
-          Default folder: <code>{defaultPath}</code> — created automatically
-          on first launch so the agent always has somewhere to drop files.
-        </p>
-      )}
-
-      <div style={{ display: "flex", flexDirection: "column", gap: 8, marginBottom: 16 }}>
-        {paths.length === 0 ? (
-          <p style={{ fontSize: 13, color: "var(--midnight-muted)" }}>(no folders configured)</p>
-        ) : (
-          paths.map((p) => (
-            <div
-              key={p}
-              style={{
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "space-between",
-                padding: "8px 12px",
-                border: "1px solid var(--edge)",
-                borderRadius: 6,
-                fontFamily: "monospace",
-                fontSize: 13,
-                gap: 8,
-              }}
-            >
-              <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                {p}
-              </span>
-              <button
-                type="button"
-                onClick={() => removeFolder(p)}
-                disabled={busy}
-                style={{
-                  border: "1px solid var(--err)",
-                  background: "transparent",
-                  color: "var(--err)",
-                  padding: "4px 10px",
-                  borderRadius: 4,
-                  cursor: busy ? "not-allowed" : "pointer",
-                  fontSize: 12,
-                  flexShrink: 0,
-                }}
-              >
+      {paths.length === 0 ? (
+        <p className="settings-toggle-desc">No folders yet.</p>
+      ) : (
+        <ul className="settings-folder-list">
+          {paths.map((p) => (
+            <li key={p} className="settings-folder">
+              <span className="settings-folder-path" title={p}>{p}</span>
+              <button type="button" className="settings-btn-text" onClick={() => removeFolder(p)} disabled={busy} aria-label={`Remove ${p}`}>
                 Remove
               </button>
-            </div>
-          ))
-        )}
-      </div>
-
-      <button
-        type="button"
-        onClick={addFolder}
-        disabled={busy}
-        style={{
-          background: "var(--midnight)",
-          border: "none",
-          padding: "8px 16px",
-          color: "var(--cream)",
-          borderRadius: 6,
-          cursor: busy ? "not-allowed" : "pointer",
-          fontSize: 14,
-        }}
-      >
-        {busy ? "Working…" : "+ Add folder"}
-      </button>
-
-      {error && (
-        <p style={{ marginTop: 12, color: "var(--err)", fontSize: 13 }}>
-          Error: {error}
-        </p>
+            </li>
+          ))}
+        </ul>
       )}
-    </div>
+      <div className="settings-row-actions">
+        <button type="button" className="settings-btn-outline" onClick={addFolder} disabled={busy}>
+          {busy ? "Working…" : "Add folder"}
+        </button>
+      </div>
+      {error ? <p className="settings-row-error" role="alert">{error}</p> : null}
+    </section>
   );
 }

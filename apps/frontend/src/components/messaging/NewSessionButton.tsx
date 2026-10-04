@@ -227,7 +227,7 @@ export function NewSessionView({ sessions, onEvent, onOpenSession, onClose }: {
       </header>
       <div className="new-session-body text-sm text-muted-foreground">
         {blocked === "sharing"
-          ? <p role="status">Session sharing is off on {macName}. Turn it on in <Link className="underline underline-offset-4" href="/settings">Settings → Native terminal sessions</Link>.</p>
+          ? <p role="status">Session sharing is off on {macName}. Turn it on in <Link className="underline underline-offset-4" href="/settings?panel=desktop">Settings → Desktop → Session sharing</Link>.</p>
           : blocked && <p role="status">{blocked}</p>}
         {pending?.phase === "unknown" && <Button variant="link" size="sm" className="h-auto p-0"
           onClick={() => { try { if (scope) localStorage.removeItem(pendingKey(scope)); } catch { /* storage off */ } setPending(null); }}>

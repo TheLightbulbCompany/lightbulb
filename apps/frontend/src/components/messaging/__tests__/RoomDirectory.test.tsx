@@ -758,7 +758,7 @@ it("keeps Sessions visible when nobody shares, with a Start a session guide", as
   const dialog = await screen.findByRole("dialog", { name: "Share a session" });
   expect(within(dialog).getByRole("button", { name: "Copy lightbulb claude" })).toBeInTheDocument();
   expect(within(dialog).getByRole("button", { name: "Copy lightbulb codex" })).toBeInTheDocument();
-  expect(within(dialog).getByRole("link", { name: /Native terminal sessions/ })).toHaveAttribute("href", "/settings");
+  expect(within(dialog).getByRole("link", { name: /Session sharing/ })).toHaveAttribute("href", "/settings?panel=desktop");
 });
 
 const makeSession = (sessionId: string, title: string, status: "busy" | "idle" | "offline" | "ended") => ({ sessionId, deviceId: "d", humanUserId: "alice", provider: "claude" as const, providerVersion: "2", generation: "g",

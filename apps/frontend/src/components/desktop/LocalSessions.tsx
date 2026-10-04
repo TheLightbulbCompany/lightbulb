@@ -1,9 +1,9 @@
 "use client";
-import { useAuth } from "@clerk/nextjs";
+import { useAuth, useOrganization } from "@clerk/nextjs";
 import { useEffect, useRef, useState } from "react";
 import { Bot, FolderOpen, Globe2, Monitor, Terminal, type LucideIcon } from "lucide-react";
-import { Button } from "@/components/ui/button";
 import { LocalBrowserSetup } from "@/components/desktop/LocalBrowserSetup";
+import { SettingRow } from "@/components/desktop/SettingRow";
 import {
   type DesktopPermissionSet,
   desktopErrorMessage,
@@ -22,7 +22,7 @@ export function providerSetupLine(name: string, p: ProviderSetup): string {
     p.mcp === "collision" ? "another lightbulb MCP server is configured" : p.mcp === "missing" ? "MCP server missing" : null,
     p.hooks === "disabled" ? "Claude hooks are disabled in settings.json" : p.hooks === "missing" ? "hooks missing" : null,
   ].filter(Boolean);
-  return reasons.length ? `${name} — Needs attention: ${reasons.join("; ")}` : `${name} — Serving lightbulb for new sessions`;
+  return reasons.length ? `${name} — Needs attention: ${reasons.join("; ")}` : `${name} — Ready for new sessions`;
 }
 type Invoke = <T = unknown>(command: string, args?: Record<string, unknown>) => Promise<T>;
 function bridge(): Invoke | undefined {
@@ -57,16 +57,17 @@ export function DesktopPermissions() {
     setPermissions(next);
     writeDesktopPermissionGrant(next);
   };
-  return <section className="settings-panel space-y-3" aria-labelledby="desktop-permissions-heading">
-    <h2 id="desktop-permissions-heading" className="text-lg font-medium">What agents can do on this Mac</h2>
-    {DESKTOP_PERMISSION_ITEMS.map(({ key, label, description }) => (
-      <div key={key} className="space-y-2">
-        <label className="flex items-start gap-2">
-          <input type="checkbox" checked={permissions[key]} onChange={() => toggle(key)} />
-          <span><span className="block font-medium">{label}</span><span className="block text-sm text-muted-foreground">{description}</span></span>
-        </label>
-        {key === "browser" && permissions.browser && <LocalBrowserSetup />}
+  return <section className="settings-card" aria-labelledby="desktop-permissions-heading">
+    <div className="settings-card-header settings-card-header--rows">
+      <div>
+        <h2 id="desktop-permissions-heading" className="settings-card-title">Agents on this Mac</h2>
+        <div className="settings-card-desc">What your agents may do here. They work within these switches and do not ask each time.</div>
       </div>
+    </div>
+    {DESKTOP_PERMISSION_ITEMS.map(({ key, label, description }) => (
+      <SettingRow key={key} title={label} description={description} toggle={{ checked: permissions[key], onChange: () => toggle(key) }}>
+        {key === "browser" && permissions.browser && <LocalBrowserSetup />}
+      </SettingRow>
     ))}
   </section>;
 }
@@ -74,7 +75,7 @@ export function DesktopPermissions() {
 export const SHARE_LIVE_LABEL = "Share every session live";
 export const SHARE_LIVE_DESCRIPTION = "Plain claude and codex in your terminals start through Lightbulb, so their live terminal shows here too. Adds a marked block to ~/.zshrc and ~/.bashrc.";
 
-/** Settings: "Share every session live" — the `claude`/`codex` shell functions (the desktop's
+/** Settings row: "Share every session live" — the `claude`/`codex` shell functions (the desktop's
  *  shell_integration module). Hidden in a browser and on a desktop build without the command. */
 export function ShareEverySessionLive() {
   const [on, setOn] = useState<boolean | null>(null);
@@ -94,15 +95,15 @@ export function ShareEverySessionLive() {
     catch (e) { setError(message(e)); }
     finally { setBusy(false); }
   };
-  return <section id="share-every-session-live" className="settings-panel space-y-2" aria-labelledby="share-live-heading">
-    <h2 id="share-live-heading" className="text-lg font-medium">{SHARE_LIVE_LABEL}</h2>
-    <label className="flex items-start gap-2">
-      <input type="checkbox" checked={on} disabled={busy} onChange={() => void toggle()} />
-      <span><span className="block">Typing <code>claude</code> or <code>codex</code> in a terminal starts it through Lightbulb, so its live terminal shows here too.</span>
-        <span className="block text-sm text-muted-foreground">Adds one marked block to ~/.zshrc and ~/.bashrc; turning this off removes exactly that block. Open a new terminal tab after changing it. A folder you have not approved asks first in the terminal, and anything Lightbulb cannot share (sharing off, the app closed, <code>claude -p</code>, scripts) runs as usual.</span></span>
-    </label>
-    {error ? <p role="alert">{error}</p> : null}
-  </section>;
+  return <SettingRow
+    id="share-every-session-live"
+    title={SHARE_LIVE_LABEL}
+    description={<>Typing <code>claude</code> or <code>codex</code> in a terminal starts it through Lightbulb, so its live terminal shows here too.</>}
+    toggle={{ checked: on, disabled: busy, onChange: () => void toggle() }}
+  >
+    <p className="settings-row-note">Adds a marked block to ~/.zshrc and ~/.bashrc, and removes it when you turn this off. Open a new terminal tab after you change it.</p>
+    {error ? <p className="settings-row-error" role="alert">{error}</p> : null}
+  </SettingRow>;
 }
 
 export function useLocalSessions(waitForRemoteDisable = false) {
@@ -186,35 +187,63 @@ export function useLocalSessions(waitForRemoteDisable = false) {
   return {state,desktop,consent,setConsent,busy,error,setError,enabled,recoveryPending,canRecover,sameWorkspace,userId,orgId,setEnabled,refresh,operation};
 }
 
+
+/** Settings card: "Session sharing" — every Claude Code and Codex session on this Mac,
+ *  plus the "Share every session live" row and the details of what sharing changes. */
 export function LocalSessions() {
   const {state,desktop,consent,setConsent,busy,error,setError,enabled,recoveryPending,canRecover,sameWorkspace,userId,setEnabled,refresh,operation} = useLocalSessions();
-  return <section className="settings-panel space-y-4" aria-labelledby="local-sessions-heading">
-    <h2 id="local-sessions-heading" className="text-lg font-medium">Native terminal sessions</h2>
-    <p>Share every Claude Code and Codex session on this Mac, including plain <code>claude</code> and <code>codex</code>, and its conversation transcript, with the current human members of every conversation you belong to in the enrolled workspace. Sessions you start in Lightbulb (New session, or <code>lightbulb claude</code> / <code>lightbulb codex</code>) and Claude Code background sessions also show their live terminal.</p>
-    <p>Contributions can be visible across conversations: someone in one conversation may see input from another. Adding a member grants eligible history, not only future output. Personal memory files and unrelated historical sessions are not synced.</p>
-    <p className="text-sm text-muted-foreground">Coverage: ordinary local macOS terminals using default profiles; Claude Code 2.1.145 or newer on the 2.1 line (follow-ups from 2.1.224; verified on 2.1.268 and 2.1.269) and Codex 0.149.0. No SSH, containers, IDE runtimes or custom data directories. Codex appears after its first prompt creates a rollout. Prompts, tool calls, output previews, file changes and answers are shared as the harness shows them, block by block, not token by token; a credential-pattern filter runs on the Mac but is not a guarantee. Busy input queues; approvals remain in your terminal. Claude attachment needs its native socket and a verified current-generation transcript; sessions are never restarted to enable control. Enabling installs a lightbulb-session-sharing skill for Claude Code and Codex; disabling removes it.</p>
-    <p className="text-sm text-muted-foreground">Enabling makes this Mac serve the <code>lightbulb</code> MCP server for Claude Code and Codex, replacing a hosted <code>lightbulb</code> entry if you had one; messages post as the session. Disabling removes it and restores nothing. To use Lightbulb without the app, re-add the hosted server: <code>claude mcp add --transport http lightbulb https://api.thelightbulb.company/mcp</code></p>
-    <p className="text-sm text-muted-foreground">Keep Lightbulb running, including in the menu bar. Changing the selected workspace does not move sharing. Disable sharing to uninstall its Claude wake hook; native sessions and provider history remain untouched. Setup preserves a recoverable Claude settings backup and changes no Codex launch configuration.</p>
-    {!desktop ? <p>Open the Lightbulb desktop app to set up local-session sharing.</p> : <>
-      {!state && !error ? <p role="status">Checking desktop status…</p> : null}
-      {state && !state.pairedWorkspaceId ? <p>Connect this Mac first using the existing desktop setup.</p> : null}
-      {state?.pairedWorkspaceId && !sameWorkspace ? <p>Select the workspace connected to this Mac before enabling sharing (this Mac is connected in {state.pairedWorkspaceId}).</p> : null}
-      {state?.enrollment ? <p>Enrolled workspace: {state.enrollment.ownerId}. Local sharing {enabled ? (state.enrollment.paused ? "paused until the enrolled person signs in" : state.status || "connecting") : "stopped"}.</p> : null}
-      {state?.enrollment && state.providers ? <div className="space-y-1">
-        <p>{providerSetupLine("Claude Code", state.providers.claude)}</p>
-        <p>{providerSetupLine("Codex", state.providers.codex)}</p>
-        <p className="text-sm text-muted-foreground">Start a new Claude Code or Codex session after setup; sessions already running won&apos;t pick this up.</p>
-        {enabled ? <Button variant="outline" disabled={busy} onClick={() => { const invoke=bridge(); const current=operation.current; if(invoke) void invoke("local_sessions_repair").then(()=>refresh(invoke,current)).catch(e=>{if(operation.current===current)setError(message(e));}); }}>Retry setup</Button> : null}
+  const { organization } = useOrganization();
+  if (!desktop) return null;
+  const enrollment = state?.enrollment;
+  const paused = enabled && Boolean(enrollment?.paused);
+  const workspace = enrollment && organization && enrollment.ownerId === organization.id ? organization.name : "another workspace";
+  const status = !state ? (error ? null : <span role="status">Checking this Mac…</span>)
+    : enabled ? (paused ? "Paused until you sign in." : `On · ${workspace}`)
+    : !state.pairedWorkspaceId ? "Connect this Mac first."
+    : !sameWorkspace ? "This Mac is connected to another workspace. Switch to that workspace to turn sharing on."
+    : "Off";
+  const checkAgain = () => { const invoke=bridge(); const current=operation.current; if(invoke) void refresh(invoke,current).catch(e=>{if(operation.current===current)setError(message(e));}); };
+  const retrySetup = () => { const invoke=bridge(); const current=operation.current; if(invoke) void invoke("local_sessions_repair").then(()=>refresh(invoke,current)).catch(e=>{if(operation.current===current)setError(message(e));}); };
+  return <section className="settings-card" aria-labelledby="session-sharing-heading">
+    <div className="settings-card-header settings-card-header--rows">
+      <div>
+        <h2 id="session-sharing-heading" className="settings-card-title">Session sharing</h2>
+        <div className="settings-card-desc">People in your conversations can see your Claude Code and Codex sessions from this Mac.</div>
+      </div>
+    </div>
+    <SettingRow title="Share sessions from this Mac" description={status}>
+      {/* "connected" is the healthy state: "On" already says it. Anything else is a sentence worth showing. */}
+      {enabled && !paused && state?.status && state.status !== "connected" ? <p className="settings-row-note">{state.status}</p> : null}
+      {!enabled && state?.status.startsWith("Local sharing stopped;") ? <p className="settings-row-note" role="status">{state.status}</p> : null}
+      {recoveryPending ? <p className="settings-row-note">Earlier history may still be shared. Sign in as the person who turned sharing on, in that workspace, and finish turning it off.</p> : null}
+      {enrollment?.remoteDisabled ? <p className="settings-row-note">Earlier history is no longer shared.</p> : null}
+      {enrollment && state?.providers ? <div className="settings-row-group">
+        <p className="settings-row-body">{providerSetupLine("Claude Code", state.providers.claude)}</p>
+        <p className="settings-row-body">{providerSetupLine("Codex", state.providers.codex)}</p>
+        <p className="settings-row-note">Sessions that are already running do not pick this up. Start a new one.</p>
       </div> : null}
-      {recoveryPending ? <p>Retained server history may still be shared. Remote-history revocation is unconfirmed. Sign in as the enrolled person in the enrolled workspace and retry disable before enabling again.</p> : null}
-      {state?.enrollment?.remoteDisabled ? <p>Remote-history sharing is confirmed disabled.</p> : null}
-      {!enabled && state?.status.startsWith("Local sharing stopped;") ? <p role="status">{state.status}</p> : null}
-      {!enabled && !recoveryPending ? <label className="flex gap-2"><input type="checkbox" checked={consent} onChange={e => setConsent(e.target.checked)} />I understand this sharing audience and want to enroll this workspace.</label> : null}
-      <Button disabled={busy || !state || (recoveryPending ? !canRecover : !enabled && (!consent || !sameWorkspace || !userId))} onClick={() => void setEnabled(!enabled && !recoveryPending)}>
-        {busy ? "Saving…" : enabled ? "Disable local-session sharing" : recoveryPending ? "Retry remote-history disable" : "Enable local-session sharing"}
-      </Button>
-      <Button variant="ghost" disabled={busy} onClick={() => { const invoke=bridge(); const current=operation.current; if(invoke) void refresh(invoke,current).catch(e=>{if(operation.current===current)setError(message(e));}); }}>Refresh status</Button>
-    </>}
-    {error ? <p role="alert">{error}</p> : null}
+      {!enabled && !recoveryPending ? <div className="settings-row-group">
+        <p className="settings-row-body">Who can see them: the people in every conversation you are in, in this workspace. Something typed in one conversation can be visible in another. Someone you add later also sees earlier history.</p>
+        <label className="settings-consent"><input type="checkbox" checked={consent} onChange={e => setConsent(e.target.checked)} />I understand who can see my sessions.</label>
+      </div> : null}
+      <div className="settings-row-actions">
+        <button type="button" className={enabled ? "settings-btn-outline" : "settings-btn-save"} disabled={busy || !state || (recoveryPending ? !canRecover : !enabled && (!consent || !sameWorkspace || !userId))} onClick={() => void setEnabled(!enabled && !recoveryPending)}>
+          {busy ? "Saving…" : enabled ? "Turn off sharing" : recoveryPending ? "Finish turning off" : "Turn on sharing"}
+        </button>
+        {enabled && enrollment && state?.providers ? <button type="button" className="settings-btn-outline" disabled={busy} onClick={retrySetup}>Retry setup</button> : null}
+        <button type="button" className="settings-btn-text" disabled={busy} onClick={checkAgain}>Check again</button>
+      </div>
+      {error ? <p className="settings-row-error" role="alert">{error}</p> : null}
+    </SettingRow>
+    <ShareEverySessionLive />
+    <details className="settings-details">
+      <summary>What is shared, and what this changes on your Mac</summary>
+      <div className="settings-details-body">
+        <p><strong>Who sees it.</strong> The current human members of every conversation you belong to in the workspace where sharing is on. What you add in one conversation can be visible in another, and someone added to a conversation also gets its eligible earlier history. Personal memory files and unrelated old sessions are not synced.</p>
+        <p><strong>What is shared.</strong> Every Claude Code and Codex session on this Mac, including plain <code>claude</code> and <code>codex</code>: prompts, tool calls, output previews, file changes and answers, block by block as the tool shows them. Sessions started in Lightbulb (New session, <code>lightbulb claude</code>, <code>lightbulb codex</code>), Claude Code background sessions and plain Codex sessions also show a live terminal. A credential filter runs on this Mac, but it is not a guarantee.</p>
+        <p><strong>Where it works.</strong> Claude Code and Codex in ordinary local macOS terminals with default profiles, not over SSH, in containers, in IDE runtimes or with custom data folders. A Codex session appears after its first prompt. For a session shown as a transcript, approvals stay in your terminal.</p>
+        <p><strong>What it changes on this Mac.</strong> Sharing installs a <code>lightbulb-session-sharing</code> skill and a Claude wake hook, and this Mac serves the <code>lightbulb</code> MCP server to Claude Code and Codex in place of a hosted <code>lightbulb</code> entry. Setup keeps a recoverable backup of your Claude settings and changes no Codex launch configuration. Turning sharing off removes them and restores nothing. To use Lightbulb without the app, re-add the hosted server: <code>claude mcp add --transport http lightbulb https://api.thelightbulb.company/mcp</code>. Keep Lightbulb running (the menu bar counts). Changing the selected workspace does not move sharing. A folder you have not approved asks first in the terminal, and anything Lightbulb cannot share (sharing off, the app closed, <code>claude -p</code>, scripts) runs as usual.</p>
+      </div>
+    </details>
   </section>;
 }

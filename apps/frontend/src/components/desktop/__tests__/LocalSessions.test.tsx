@@ -9,7 +9,8 @@ import { DEFAULT_DESKTOP_PERMISSIONS, writeDesktopPermissionGrant } from "@/lib/
 vi.mock("@/lib/analytics", () => ({capture:vi.fn()}));
 
 const auth = vi.hoisted(()=>({userId:"alice",orgId:"org",getToken:vi.fn()}));
-vi.mock("@clerk/nextjs", () => ({ useAuth: () => auth }));
+const org = vi.hoisted(()=>({organization:{id:"org",name:"Acme"} as {id:string;name:string}|null}));
+vi.mock("@clerk/nextjs", () => ({ useAuth: () => auth, useOrganization: () => org }));
 const invoke = vi.fn();
 it("lets Basic only proceed even while initial sharing status is pending", async () => {
   invoke.mockImplementationOnce(() => new Promise(() => {})).mockResolvedValue({enrollment:null,pairedWorkspaceId:"org",status:"paused"});
@@ -95,26 +96,28 @@ it.each([true, false])("does not re-prompt or change saved enrollment on relaunc
   expect(screen.queryByRole("button", {name:"Continue"})).toBeNull();
   expect(invoke.mock.calls.some(([command]) => String(command).startsWith("local_sessions_") && command !== "local_sessions_status")).toBe(false);
 });
-beforeEach(() => { invoke.mockReset();auth.getToken.mockReset().mockResolvedValue("jwt"); auth.userId="alice";auth.orgId="org";Object.assign(window,{__TAURI__:{core:{invoke}}}); });
+beforeEach(() => { invoke.mockReset();auth.getToken.mockReset().mockResolvedValue("jwt"); auth.userId="alice";auth.orgId="org";org.organization={id:"org",name:"Acme"};Object.assign(window,{__TAURI__:{core:{invoke}}}); });
 it("explains the full audience and requires an already connected Mac", async () => {
   invoke.mockResolvedValue({enrollment:null,pairedWorkspaceId:null,status:""});
   render(<LocalSessions />);
-  await waitFor(()=>expect(screen.getByText(/Connect this Mac first/)).toBeTruthy());
-  expect(screen.getByText(/Contributions can be visible across conversations/)).toBeTruthy();
-  expect(screen.getByText(/Coverage:/)).toHaveTextContent("Claude Code 2.1.145 or newer on the 2.1 line (follow-ups from 2.1.224; verified on 2.1.268 and 2.1.269) and Codex 0.149.0");
-  expect(screen.getByRole("button",{name:"Enable local-session sharing"}).hasAttribute("disabled")).toBe(true);
+  await waitFor(()=>expect(screen.getByText("Connect this Mac first.")).toBeTruthy());
+  expect(screen.getByText(/Something typed in one conversation can be visible in another/)).toBeTruthy();
+  expect(screen.getByText(/can be visible in another, and someone added/)).toBeTruthy();
+  expect(screen.getByText("claude mcp add --transport http lightbulb https://api.thelightbulb.company/mcp")).toBeInTheDocument();
+  expect(document.body.textContent).not.toMatch(/org_/);
+  expect(screen.getByRole("button",{name:"Turn on sharing"}).hasAttribute("disabled")).toBe(true);
 });
 it("shows checking status until the native status resolves", async()=>{
   let resolveStatus!: (state: { enrollment: null; pairedWorkspaceId: string; status: string }) => void;
-  invoke.mockImplementationOnce(()=>new Promise(resolve=>{resolveStatus=resolve;}));
+  invoke.mockImplementation(async cmd=>cmd==="local_sessions_status" ? new Promise(resolve=>{resolveStatus=resolve;}) : false);
   render(<LocalSessions />);
-  expect(await screen.findByRole("status")).toHaveTextContent("Checking desktop status…");
-  expect(screen.getByRole("button",{name:"Enable local-session sharing"})).toBeDisabled();
+  expect(await screen.findByRole("status")).toHaveTextContent("Checking this Mac…");
+  expect(screen.getByRole("button",{name:"Turn on sharing"})).toBeDisabled();
   await act(async()=>resolveStatus({enrollment:null,pairedWorkspaceId:"org",status:""}));
   await waitFor(()=>expect(screen.queryByRole("status")).toBeNull());
 });
 it("shows the status error instead of indefinite loading when native status rejects", async()=>{
-  invoke.mockRejectedValueOnce(new Error("Bridge unavailable"));
+  invoke.mockImplementation(async cmd=>{ if(cmd==="local_sessions_status") throw new Error("Bridge unavailable"); return false; });
   render(<LocalSessions />);
   expect(await screen.findByRole("alert")).toHaveTextContent("Bridge unavailable");
   expect(screen.queryByRole("status")).toBeNull();
@@ -123,16 +126,16 @@ it("stops locally even when token refresh never resolves", async()=>{
   auth.getToken.mockReturnValue(new Promise(()=>{}));
   invoke.mockResolvedValue({enrollment:{ownerId:"org",humanUserId:"alice",enabled:true,paused:false},pairedWorkspaceId:"org",status:"connected"});
   render(<LocalSessions />);
-  await userEvent.click(await screen.findByRole("button",{name:"Disable local-session sharing"}));
+  await userEvent.click(await screen.findByRole("button",{name:"Turn off sharing"}));
   await waitFor(()=>expect(invoke).toHaveBeenCalledWith("local_sessions_set",{enabled:false,token:null,humanUserId:"alice",workspaceId:"org"}));
 });
 it("only explicit consent enrolls the current workspace and uses the human token", async () => {
   invoke.mockResolvedValue({enrollment:null,pairedWorkspaceId:"org",status:""});
   render(<LocalSessions />);
-  await waitFor(()=>expect(screen.getByRole("button",{name:"Enable local-session sharing"})).toBeTruthy());
-  expect(invoke.mock.calls.every(([cmd])=>cmd === "local_sessions_status")).toBe(true);
+  await waitFor(()=>expect(screen.getByRole("button",{name:"Turn on sharing"})).toBeTruthy());
+  expect(invoke.mock.calls.every(([cmd])=>cmd === "local_sessions_status" || cmd === "shell_integration_status")).toBe(true);
   await userEvent.click(screen.getByRole("checkbox"));
-  await userEvent.click(screen.getByRole("button",{name:"Enable local-session sharing"}));
+  await userEvent.click(screen.getByRole("button",{name:"Turn on sharing"}));
   await waitFor(()=>expect(invoke).toHaveBeenCalledWith("local_sessions_set",{enabled:true,token:"jwt",humanUserId:"alice",workspaceId:"org"}));
 });
 
@@ -145,11 +148,11 @@ it.each(["enable", "user", "workspace"])("drops delayed-token cleanup after a ne
     return {enrollment:{ownerId:"org",humanUserId:"alice",enabled,paused:false},pairedWorkspaceId:"org",status:"connected"};
   });
   const view=render(<LocalSessions />);
-  await userEvent.click(await screen.findByRole("button",{name:"Disable local-session sharing"}));
-  await screen.findByRole("button",{name:"Enable local-session sharing"});
+  await userEvent.click(await screen.findByRole("button",{name:"Turn off sharing"}));
+  await screen.findByRole("button",{name:"Turn on sharing"});
   if(change==="enable") {
     await userEvent.click(screen.getByRole("checkbox"));
-    await userEvent.click(screen.getByRole("button",{name:"Enable local-session sharing"}));
+    await userEvent.click(screen.getByRole("button",{name:"Turn on sharing"}));
     await waitFor(()=>expect(invoke).toHaveBeenCalledWith("local_sessions_set",{enabled:true,token:"new-jwt",humanUserId:"alice",workspaceId:"org"}));
   } else {
     if(change==="user") auth.userId="bob";else auth.orgId="other";
@@ -162,7 +165,7 @@ it.each(["enable", "user", "workspace"])("drops delayed-token cleanup after a ne
 it("passes the native disable revision to optional remote cleanup",async()=>{
   invoke.mockImplementation(async(command)=>command==="local_sessions_set" ? 19 : {enrollment:{ownerId:"org",humanUserId:"alice",enabled:true,paused:false},pairedWorkspaceId:"org",status:"connected"});
   render(<LocalSessions />);
-  await userEvent.click(await screen.findByRole("button",{name:"Disable local-session sharing"}));
+  await userEvent.click(await screen.findByRole("button",{name:"Turn off sharing"}));
   await waitFor(()=>expect(invoke).toHaveBeenCalledWith("local_sessions_revoke",{revision:19,token:"jwt",humanUserId:"alice",workspaceId:"org"}));
 });
 
@@ -173,13 +176,13 @@ it("keeps failed setup recoverable and reports remote cleanup failure without of
     return {enrollment:{ownerId:"org",humanUserId:"alice",enabled:false,paused:true,recoveryPending:true,remoteDisabled:false},pairedWorkspaceId:"org",status:"paused"};
   });
   render(<LocalSessions />);
-  const retry = await screen.findByRole("button",{name:"Retry remote-history disable"});
-  expect(screen.getByText(/retained server history may still be shared/i)).toBeTruthy();
-  expect(screen.queryByRole("button",{name:"Enable local-session sharing"})).toBeNull();
+  const retry = await screen.findByRole("button",{name:"Finish turning off"});
+  expect(screen.getByText(/Earlier history may still be shared/)).toBeTruthy();
+  expect(screen.queryByRole("button",{name:"Turn on sharing"})).toBeNull();
   await userEvent.click(retry);
   await waitFor(()=>expect(invoke).toHaveBeenCalledWith("local_sessions_revoke",{revision:21,token:"jwt",humanUserId:"alice",workspaceId:"org"}));
   expect(await screen.findByRole("alert")).toHaveTextContent("Remote cleanup unavailable");
-  expect(screen.getByRole("button",{name:"Retry remote-history disable"})).not.toBeDisabled();
+  expect(screen.getByRole("button",{name:"Finish turning off"})).not.toBeDisabled();
 });
 
 it("only offers a new enable after confirmed remote disable and never cleans up another identity", async()=>{
@@ -191,19 +194,19 @@ it("only offers a new enable after confirmed remote disable and never cleans up 
   });
   auth.userId="bob";
   const view=render(<LocalSessions />);
-  expect(await screen.findByRole("button",{name:"Retry remote-history disable"})).toBeDisabled();
+  expect(await screen.findByRole("button",{name:"Finish turning off"})).toBeDisabled();
   auth.userId="alice";
   view.rerender(<LocalSessions />);
-  await userEvent.click(await screen.findByRole("button",{name:"Retry remote-history disable"}));
-  expect(await screen.findByRole("button",{name:"Enable local-session sharing"})).toBeDisabled();
-  expect(screen.queryByText(/retained server history may still be shared/i)).toBeNull();
+  await userEvent.click(await screen.findByRole("button",{name:"Finish turning off"}));
+  expect(await screen.findByRole("button",{name:"Turn on sharing"})).toBeDisabled();
+  expect(screen.queryByText(/Earlier history may still be shared/)).toBeNull();
 });
 
 it("re-reports desktop auth before enabling to heal the sign-in race", async () => {
   invoke.mockResolvedValue({enrollment:null,pairedWorkspaceId:"org",status:""});
   render(<LocalSessions />);
   await userEvent.click(await screen.findByRole("checkbox"));
-  await userEvent.click(screen.getByRole("button",{name:"Enable local-session sharing"}));
+  await userEvent.click(screen.getByRole("button",{name:"Turn on sharing"}));
   await waitFor(()=>expect(invoke).toHaveBeenCalledWith("local_sessions_auth",{humanUserId:"alice"}));
   await waitFor(()=>expect(invoke).toHaveBeenCalledWith("local_sessions_set",{enabled:true,token:"jwt",humanUserId:"alice",workspaceId:"org"}));
   const calls = invoke.mock.calls.map(([command])=>command);
@@ -214,7 +217,7 @@ it("reports a token failure instead of a misleading sign-in error", async () => 
   invoke.mockResolvedValue({enrollment:null,pairedWorkspaceId:"org",status:""});
   render(<LocalSessions />);
   await userEvent.click(await screen.findByRole("checkbox"));
-  await userEvent.click(screen.getByRole("button",{name:"Enable local-session sharing"}));
+  await userEvent.click(screen.getByRole("button",{name:"Turn on sharing"}));
   expect(await screen.findByRole("alert")).toHaveTextContent("Could not get a sign-in token");
   expect(invoke.mock.calls.some(([command])=>command==="local_sessions_set")).toBe(false);
 });
@@ -226,19 +229,19 @@ it("refreshes a failed enable into stopped recovery instead of losing its Disabl
   });
   render(<LocalSessions />);
   await userEvent.click(await screen.findByRole("checkbox"));
-  await userEvent.click(screen.getByRole("button",{name:"Enable local-session sharing"}));
-  expect(await screen.findByRole("button",{name:"Retry remote-history disable"})).not.toBeDisabled();
+  await userEvent.click(screen.getByRole("button",{name:"Turn on sharing"}));
+  expect(await screen.findByRole("button",{name:"Finish turning off"})).not.toBeDisabled();
   expect(screen.getByRole("alert")).toHaveTextContent("Claude hook setup failed");
-  expect(screen.queryByRole("button",{name:"Enable local-session sharing"})).toBeNull();
+  expect(screen.queryByRole("button",{name:"Turn on sharing"})).toBeNull();
 });
 it("Settings switches read the Mac's stored consent and write each change through", async () => {
   invoke.mockImplementation(async (command) => command === "desktop_permissions_get"
     ? {consented:true,shell:true,browser:true,files:false,screen:false,paperclip:true,updatedAt:"1"}
     : undefined);
   render(<DesktopPermissions />);
-  const paperclip = await screen.findByRole("checkbox", {name:/Paperclip actions/});
+  const paperclip = await screen.findByRole("switch", {name:"Paperclip actions"});
   expect(paperclip).toBeChecked();
-  expect(screen.getByRole("checkbox", {name:/Files/})).not.toBeChecked();
+  expect(screen.getByRole("switch", {name:"Files"})).not.toBeChecked();
   await userEvent.click(paperclip);
   expect(invoke).toHaveBeenCalledWith("desktop_permissions_set", {permissions:{shell:true,browser:true,files:false,screen:false,paperclip:false}});
 });
@@ -253,13 +256,13 @@ it("shows per-provider setup read from disk and retries setup without re-enrolli
   await userEvent.click(screen.getByRole("button", {name:"Retry setup"}));
   await waitFor(() => expect(invoke).toHaveBeenCalledWith("local_sessions_repair"));
   expect(invoke.mock.calls.some(([command]) => command === "local_sessions_set")).toBe(false);
-  expect(providerSetupLine("Codex", {cli:true,mcp:"configured",hooks:"configured"})).toBe("Codex — Serving lightbulb for new sessions");
-  expect(screen.getByText(/re-add the hosted server/)).toHaveTextContent("claude mcp add --transport http lightbulb https://api.thelightbulb.company/mcp");
+  expect(providerSetupLine("Codex", {cli:true,mcp:"configured",hooks:"configured"})).toBe("Codex — Ready for new sessions");
+  expect(screen.getByText("claude mcp add --transport http lightbulb https://api.thelightbulb.company/mcp")).toBeInTheDocument();
 });
 it("turns Share every session live on and off through the desktop, off by default", async () => {
   invoke.mockImplementation(async (command, args) => command === "shell_integration_set" ? args.enabled : false);
   render(<ShareEverySessionLive />);
-  const box = await screen.findByRole("checkbox", {name:/Typing claude or codex/});
+  const box = await screen.findByRole("switch", {name:"Share every session live"});
   expect(box).not.toBeChecked();
   await userEvent.click(box);
   await waitFor(() => expect(box).toBeChecked());
@@ -273,4 +276,31 @@ it("offers Share every session live at pairing, off unless chosen", async () => 
   await userEvent.click(live);
   await userEvent.click(screen.getByRole("button", {name:"Continue"}));
   await waitFor(() => expect(invoke).toHaveBeenCalledWith("shell_integration_set", {enabled:true}));
+});
+it("names the workspace sharing is on in, never its raw id, and shows the desktop status as its own note", async () => {
+  const on = (status: string) => ({enrollment:{ownerId:"org",humanUserId:"alice",enabled:true,paused:false},pairedWorkspaceId:"org",status});
+  invoke.mockResolvedValue(on("Setup retried; Claude Code and Codex are configured for new sessions."));
+  const view = render(<LocalSessions />);
+  expect(await screen.findByText("On · Acme")).toBeInTheDocument();
+  expect(screen.getByText("Setup retried; Claude Code and Codex are configured for new sessions.")).toBeInTheDocument();
+  // The healthy state is the single word "connected": "On" already says it.
+  invoke.mockResolvedValue(on("connected"));
+  await userEvent.click(screen.getByRole("button", {name:"Check again"}));
+  await waitFor(() => expect(screen.queryByText(/Setup retried/)).toBeNull());
+  expect(screen.queryByText("connected")).toBeNull();
+  expect(screen.queryByRole("checkbox")).toBeNull();
+  org.organization = {id:"org_3H3vi",name:"Other"};
+  view.rerender(<LocalSessions />);
+  expect(screen.getByText("On · another workspace")).toBeInTheDocument();
+  expect(document.body.textContent).not.toMatch(/org_/);
+});
+it("says paused and other-workspace states in plain words", async () => {
+  invoke.mockResolvedValue({enrollment:{ownerId:"org",humanUserId:"alice",enabled:true,paused:true},pairedWorkspaceId:"org",status:"paused"});
+  const view = render(<LocalSessions />);
+  expect(await screen.findByText("Paused until you sign in.")).toBeInTheDocument();
+  view.unmount();
+  invoke.mockResolvedValue({enrollment:null,pairedWorkspaceId:"org_elsewhere",status:""});
+  render(<LocalSessions />);
+  expect(await screen.findByText(/This Mac is connected to another workspace/)).toBeInTheDocument();
+  expect(document.body.textContent).not.toMatch(/org_/);
 });

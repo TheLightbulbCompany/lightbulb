@@ -363,6 +363,136 @@
   color: var(--midnight-muted);
   line-height: 1.4;
 }
+
+/* Rows inside a card (components/desktop/SettingRow.tsx): 16px apart with a
+   hairline between them, none above the first or below the last. */
+.settings-card-header:last-child { margin-bottom: 0; }
+.settings-card-header--rows { margin-bottom: 16px; }
+.settings-row + .settings-row {
+  margin-top: 16px;
+  padding-top: 16px;
+  border-top: 1px solid var(--edge-soft);
+}
+.settings-row-main {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+.settings-row-text { min-width: 0; }
+.settings-row-main > [data-slot="switch"] { margin-top: 2px; }
+.settings-row-note,
+.settings-row-error {
+  font-size: var(--text-ui);
+  line-height: 1.4;
+  margin-top: 6px;
+}
+.settings-row-note { color: var(--midnight-muted); }
+.settings-row-error { color: var(--err); }
+.settings-row-body {
+  font-size: var(--text-sm);
+  color: var(--midnight-soft);
+  line-height: 1.5;
+}
+.settings-row-group {
+  display: grid;
+  gap: 6px;
+  margin-top: 12px;
+  max-width: 70ch;
+}
+.settings-row-group > .settings-row-note { margin-top: 0; }
+.settings-row-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-top: 16px;
+}
+.settings-consent {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  font-size: var(--text-sm);
+  color: var(--midnight);
+  cursor: pointer;
+}
+.settings-consent input { margin-top: 3px; flex-shrink: 0; }
+
+/* A folder path with a quiet Remove beside it. */
+.settings-folder-list { list-style: none; margin: 0; padding: 0; }
+.settings-folder {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 6px 0;
+}
+.settings-folder + .settings-folder { border-top: 1px solid var(--edge-soft); }
+.settings-folder-path {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--font-mono);
+  font-size: var(--text-ui);
+  color: var(--midnight);
+}
+
+/* Quiet text button: a secondary action that should not compete with the row. */
+.settings-btn-text {
+  flex-shrink: 0;
+  padding: 6px 10px;
+  min-height: 32px;
+  font-size: var(--text-ui);
+  font-weight: 500;
+  font-family: inherit;
+  color: var(--midnight-soft);
+  background: transparent;
+  border: none;
+  border-radius: var(--radius-md);
+  cursor: pointer;
+  transition: color var(--dur-fast) var(--ease-out), background var(--dur-fast) var(--ease-out);
+}
+.settings-btn-text:hover { color: var(--midnight); background: color-mix(in srgb, var(--midnight) 5%, transparent); }
+.settings-btn-text:disabled { opacity: 0.5; cursor: not-allowed; }
+
+.settings-btn-outline:focus-visible,
+.settings-btn-save:focus-visible,
+.settings-btn-text:focus-visible,
+.settings-consent input:focus-visible,
+.settings-details > summary:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 2px;
+}
+
+/* The long print behind a disclosure, at the bottom of a card. */
+.settings-details {
+  margin-top: 16px;
+  padding-top: 16px;
+  border-top: 1px solid var(--edge-soft);
+}
+.settings-details > summary {
+  cursor: pointer;
+  width: fit-content;
+  font-size: var(--text-sm);
+  font-weight: 500;
+  color: var(--midnight-soft);
+  border-radius: var(--radius-md);
+}
+.settings-details > summary:hover { color: var(--midnight); }
+.settings-details-body {
+  display: grid;
+  gap: 12px;
+  max-width: 70ch;
+  margin-top: 12px;
+  font-size: var(--text-ui);
+  line-height: 1.5;
+  color: var(--midnight-soft);
+}
+.settings-details-body strong { font-weight: 600; color: var(--midnight); }
+.settings-details-body code,
+.settings-toggle-desc code { font-family: var(--font-mono); overflow-wrap: anywhere; }
+
 .settings-toggle-switch {
   position: relative;
   width: 48px;

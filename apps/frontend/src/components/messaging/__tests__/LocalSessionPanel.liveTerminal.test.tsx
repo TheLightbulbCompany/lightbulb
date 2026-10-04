@@ -72,3 +72,16 @@ it("labels a session that is not running as a transcript, and a live one not at 
   render(<LocalSessionPanel {...props} own={false} session={session} />);
   expect(screen.queryByText(/Transcript/)).toBeNull();
 });
+
+it("says to answer in the live terminal only while the terminal accepts typing", async () => {
+  const waiting = { ...session, status: "waiting-approval" as const };
+  const props = { ownerName: "Alice", own: true, client: client as never, revision: 0, onAccessLost: () => {}, onEvent: () => () => {} };
+  const { unmount } = render(<LocalSessionPanel {...props} session={waiting} />);
+  expect(await screen.findByText("Answer it in the live terminal below.")).toBeTruthy();
+  unmount();
+  typing.canType = false;
+  render(<LocalSessionPanel {...props} session={waiting} />);
+  expect(await screen.findByText(/this prompt can't be answered from here/)).toBeTruthy();
+  expect(screen.queryByText("Answer it in the live terminal below.")).toBeNull();
+  typing.canType = true;
+});

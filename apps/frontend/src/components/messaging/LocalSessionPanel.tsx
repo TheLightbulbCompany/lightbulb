@@ -214,7 +214,7 @@ export function LocalSessionPanel({ session, ownerName, own, client, revision, o
     {waitingOn !== null && !session.pendingApproval && <div role="status" className="local-session-waiting">
       <p className="font-semibold">{own ? "Waiting on you in your terminal" : `Waiting on ${ownerName} in their terminal`}</p>
       {waitingOn && <p className="local-session-waiting-reason">{waitingOn}</p>}
-      {liveTerminal && control && session.shared !== false && client.sendLocalSessionInput
+      {liveTerminal && termCanType && control && session.shared !== false && client.sendLocalSessionInput
         ? <p className="text-sm">Answer it in the live terminal below.</p>
         : own ? <p className="text-sm">Answer it in your terminal; this prompt can&apos;t be answered from here.</p> : messageOwner}
     </div>}

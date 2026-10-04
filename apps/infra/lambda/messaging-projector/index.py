@@ -641,8 +641,15 @@ def _thread_participants(room_id: str, root_id: str, root_seq: Any) -> set[str]:
         return set()
     people = set(root.get("threadParticipants") or ())
     author = root.get("author") or {}
-    if author.get("kind") == "human" and isinstance(author.get("id"), str):
-        people.add(author["id"])
+    accountable_human = (
+        author.get("id")
+        if author.get("kind") == "human" and isinstance(author.get("id"), str)
+        else root.get("actorUserId")
+        if isinstance(root.get("actorUserId"), str) and root.get("actorUserId")
+        else None
+    )
+    if accountable_human:
+        people.add(accountable_human)
     people.update(
         ref["id"] for ref in root.get("mentions") or ()
         if isinstance(ref, dict) and ref.get("kind") == "human" and isinstance(ref.get("id"), str)

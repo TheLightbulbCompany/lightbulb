@@ -1295,6 +1295,30 @@ class ActivityTests(unittest.TestCase):
         bob_hint = next(c.args[1] for c in publish.call_args_list if c.args[0].endswith(BOB_KEY))
         self.assertTrue(bob_hint["payload"]["notify"])
 
+    def test_thread_reply_reaches_accountable_human_who_started_delegated_root(self):
+        root = message_item(message_id=EVENT_ID, sequence=1)
+        root["author"] = {"kind": "system", "id": "native-session", "displayName": "Codex session"}
+        root["actorUserId"] = CAROL_ID
+        items = activity_world()
+        items[(f"OWNER#{OWNER_ID}", f"USERSTREAM#{CAROL_ID}")] = {"active": True, "channelKey": CAROL_KEY}
+        items[(f"STREAM#{CAROL_KEY}", "META")] = {
+            "active": True, "ownerId": OWNER_ID, "userId": CAROL_ID, "workspaceId": WORKSPACE_ID,
+        }
+        items[(root["pk"], root["sk"])] = root
+        reply = message_item(sequence=3)
+        reply["threadRootMessageId"] = EVENT_ID
+        reply["threadRootSeq"] = 1
+        index._ddb_client = FakeDdb(items)
+
+        with patch.object(index, "_publish") as publish:
+            index._project_message(reply)
+
+        rows = index._ddb_client.activity()
+        self.assertEqual(list(rows), [f"ACTIVITY#{OWNER_ID}#{CAROL_ID}"])
+        self.assertEqual(rows[f"ACTIVITY#{OWNER_ID}#{CAROL_ID}"]["kind"], "thread_reply")
+        carol_hint = next(c.args[1] for c in publish.call_args_list if c.args[0].endswith(CAROL_KEY))
+        self.assertTrue(carol_hint["payload"]["notify"])
+
     def test_replay_is_idempotent(self):
         items = activity_world("dm", (USER_ID, BOB_ID))
         message = message_item(sequence=2)

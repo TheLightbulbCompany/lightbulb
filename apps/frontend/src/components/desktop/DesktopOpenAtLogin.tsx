@@ -2,6 +2,8 @@
 
 import { useEffect, useState } from "react";
 
+import { SettingRow } from "./SettingRow";
+
 // Settings → Desktop → "Open at login". The desktop app turns it on once per
 // install (so messages reach you after a restart); from then on this toggle is
 // the only thing that changes it. Renders nothing outside the desktop app, or
@@ -35,7 +37,7 @@ export function DesktopOpenAtLogin() {
       await invoke(next ? "plugin:autostart|enable" : "plugin:autostart|disable");
       setEnabled(next);
     } catch {
-      // Unchanged on failure; the checkbox keeps showing the real state.
+      // Unchanged on failure; the switch keeps showing the real state.
     } finally {
       setBusy(false);
     }
@@ -43,20 +45,11 @@ export function DesktopOpenAtLogin() {
 
   return (
     <div className="settings-card">
-      <label className="settings-card-header" style={{ cursor: "pointer" }}>
-        <div>
-          <div className="settings-card-title">Open at login</div>
-          <div className="settings-card-desc">
-            Start Lightbulb when you log in to your Mac, so notifications keep arriving.
-          </div>
-        </div>
-        <input
-          type="checkbox"
-          checked={enabled}
-          disabled={busy}
-          onChange={(event) => void toggle(event.target.checked)}
-        />
-      </label>
+      <SettingRow
+        title="Open at login"
+        description="Start Lightbulb when you log in, so notifications keep arriving."
+        toggle={{ checked: enabled, disabled: busy, onChange: (next) => void toggle(next) }}
+      />
     </div>
   );
 }

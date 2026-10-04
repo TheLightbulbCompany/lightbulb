@@ -17,7 +17,7 @@ it("shows the real state and toggles it through the autostart plugin", async () 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   (window as any).__TAURI__ = { core: { invoke } };
   render(<DesktopOpenAtLogin />);
-  const box = await screen.findByRole("checkbox");
+  const box = await screen.findByRole("switch", { name: "Open at login" });
   expect(box).toBeChecked();
   await act(async () => { fireEvent.click(box); });
   expect(invoke).toHaveBeenCalledWith("plugin:autostart|disable");

@@ -25,5 +25,5 @@ export function LocalBrowserSetup() {
   }, []);
   const line = state ? LINES[state] : undefined;
   if (!line) return null;
-  return <p className="ml-6 text-sm text-muted-foreground" role="status">{line}</p>;
+  return <p className="settings-row-note" role="status">{line}</p>;
 }

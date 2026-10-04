@@ -340,6 +340,22 @@ def test_summon_passes_through_voice_busy(client):
     assert resp.status_code == 409 and resp.json()["detail"] == {"code": "voice_busy"}
 
 
+def test_summon_tells_a_meet_about_a_voice_limit_and_nothing_else(client):
+    said = MagicMock(return_value=None)
+    with (
+        patch.object(mod.meeting_invites, "say_voice_limit", said),
+        patch.object(vc, "_fire") as fire,
+        patch.object(vc, "open_voice_window", AsyncMock()) as start,
+    ):
+        start.side_effect = vc._problem(402, code="voice_limit", reason="free_minutes_used")
+        assert client.post(INTERNAL[0][0], json=INTERNAL[0][1], headers=W).status_code == 402
+        said.assert_called_once_with(ROOM, "free_minutes_used")
+        fire.assert_called_once()
+        start.side_effect = vc._problem(409, code="voice_busy")
+        assert client.post(INTERNAL[0][0], json=INTERNAL[0][1], headers=W).status_code == 409
+        said.assert_called_once()
+
+
 def test_summon_returns_the_call(client):
     with patch.object(vc, "open_voice_window", AsyncMock(return_value={"callId": "c1"})) as start:
         resp = client.post(INTERNAL[0][0], json=INTERNAL[0][1], headers=W)

@@ -339,12 +339,13 @@ def pause(text: str) -> bool:
 
 
 _STOP = re.compile(
-    r"^(?:(?:hey|ok|okay) )?(?:([a-z]+(?: [a-z]+)?) ?, ?|([a-z]+) )?(?:stop|never ?mind|cancel (?:that|it)|forget it)$"
+    r"^(?:(?:hey|ok|okay) )?(?:([a-z0-9]+(?: [a-z0-9]+)?) ?, ?|([a-z0-9]+) )?(?:stop|never ?mind|cancel (?:that|it)|forget it)$"
 )
 
 
 def _norm(text: str) -> str:
-    return " ".join(re.sub(r"[^\w\s,']", " ", text.lower()).split())
+    text = text.lower().replace("\u2019", "'").replace("\u2018", "'")
+    return " ".join(re.sub(r"[^\w\s,']", " ", text).split())
 
 
 def _stop_match(text: str) -> re.Match | None:
@@ -367,12 +368,13 @@ def stop_target(text: str, agents: list[dict]) -> str | None:
 
 
 _STOP_ALL = re.compile(
-    r"^(?:(?:hey|ok|okay) )?(?:(?:everyone|everybody|all of you|you all) ?,? ?(?:stop|never ?mind|cancel (?:that|it)|forget it)"
-    r"|(?:stop|cancel) (?:all|everyone|everybody|everything)(?: of (?:it|you))?)$"
+    r"^(?:(?:hey|ok|okay) )?(?:please )?(?:just )?"
+    r"(?:(?:everyone|everybody|all of you|you all) ?,? ?(?:please )?(?:just )?(?:stop(?: talking)?|never ?mind|cancel (?:that|it)|forget it)"
+    r"|(?:stop|cancel) (?:all(?: of (?:it|you|them))?|everyone|everybody|everything))(?: please)?$"
 )
 _NO_POST = re.compile(
-    r"^(?:(?:hey|ok|okay) )?(?:([a-z]+(?: [a-z]+)?) ?, ?|([a-z]+) )?"
-    r"(?:don't|dont|do not) (?:post|share) (?:that|it|this)(?: (?:in|to) the (?:room|channel))?$"
+    r"^(?:(?:hey|ok|okay) )?(?:please )?(?:([a-z0-9]+(?: [a-z0-9]+)?) ?, ?|([a-z0-9]+) )?(?:please )?"
+    r"(?:don't|dont|do not) (?:post|share) (?:that|it|this)(?: (?:in|to) the (?:room|channel))?(?: please)?$"
 )
 
 
@@ -403,12 +405,13 @@ def _letters(text: str) -> str:
 
 def ghost_line(text: str, prompt: str | None) -> bool:
     """The STT model repeating its own prompt on silence or noise (conversation engine §3.1): the
-    prompt itself, a 12+ character piece of it, or its opening. Lower case, letters and spaces."""
+    prompt itself, a piece of it (12+ characters, 4+ words), or its opening. Lower case, letters and spaces."""
     said = _letters(text)
     if not said:
         return False
     full = _letters(prompt or "")
-    return said.startswith(GHOST_PREFIX) or said == full or (len(said) >= 12 and said in full)
+    opening = said == GHOST_PREFIX or said.startswith(GHOST_PREFIX + " names")
+    return opening or said == full or (len(said) >= 12 and len(said.split()) >= 4 and said in full)
 
 
 def addressed_by_name(said: str, people: dict[str, str]) -> str | None:

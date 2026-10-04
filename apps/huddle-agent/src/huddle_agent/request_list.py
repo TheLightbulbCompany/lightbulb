@@ -11,6 +11,7 @@ MAX_WORKING = 4  # the bridge runs at most 4 turns at once per microVM (turn.py 
 TASK_CHARS = 60  # lightbulb.agent.<id>.working (C4)
 LINE_CHARS = 120
 MAX_LINES = 8  # TurnBody.requests
+_VERB = {"queued": "is queued for", "working": "is answering", "ready": "has an answer ready on"}
 OPEN = frozenset({"queued", "working", "ready"})
 
 
@@ -31,6 +32,7 @@ class RequestList:
     def __init__(self) -> None:
         self.items: list[Request] = []
         self.version = 0  # bumped on every change: the floor voice hears the list when it moves
+        self._cancelled_turns: set[int] = set()  # turns whose pending rows were cancelled before /route settled
         self._suppressed: set[str] = set()  # runs with no row that "don't post that" named
 
     def _bump(self) -> None:
@@ -59,6 +61,8 @@ class RequestList:
     def settle(self, turn: int, asker: str, routed: list[dict], now: float) -> list[Request]:
         """/route's split, [{agentId, task}] in order, replaces the line's pending rows."""
         self.drop_pending(turn)
+        if turn in self._cancelled_turns:
+            return []
         rows = [Request(x["agentId"], asker, str(x.get("task") or ""), now, turn, routed=True) for x in routed]
         self.items += rows
         self._bump()
@@ -92,13 +96,15 @@ class RequestList:
 
     def cancel(self, agent: str | None = None) -> list[Request]:
         rows = [r for r in self.open() if agent in (None, r.agent)]
+        self._cancelled_turns |= {r.turn for r in rows if not r.routed}
         self._move(rows, "cancelled")
         return rows
 
     def no_post(self, agent: str | None = None) -> Request | None:
         """ "don't post that": the named agent's newest open request, else the room's newest."""
         rows = [r for r in self.open() if r.routed]
-        r = ([x for x in rows if x.agent == agent] or rows or [None])[-1]
+        r = ([x for x in rows if x.agent == agent] if agent else rows or [None])[-1:] or [None]
+        r = r[0]
         if r is not None:
             r.no_post = True
             self._bump()
@@ -109,7 +115,8 @@ class RequestList:
 
     def postable(self, run_id: str) -> bool:
         """False for "don't post that", and for a failed request (its CANT_REACH line is said, never posted)."""
-        return run_id not in self._suppressed and not any(r.no_post or r.status == "failed" for r in self.by_run(run_id))
+        bad = any(r.no_post or r.status in ("failed", "cancelled") for r in self.by_run(run_id))
+        return run_id not in self._suppressed and not bad
 
     def open(self) -> list[Request]:
         return [r for r in self.items if r.status in OPEN]
@@ -126,7 +133,7 @@ class RequestList:
 
     def lines(self, name: Callable[[str], str], skip_agent: str | None = None) -> list[str]:
         out = [
-            f'{name(r.agent)} {"has an answer ready on" if r.status == "ready" else "is answering"} "{r.task[:LINE_CHARS]}"'
+            f"{name(r.agent)} {_VERB[r.status]}" + (f' "{r.task[:LINE_CHARS]}"' if r.task else "")
             for r in self.open()
             if r.routed and r.agent != skip_agent
         ]

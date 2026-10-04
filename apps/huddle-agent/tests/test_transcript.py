@@ -302,3 +302,51 @@ def test_not_stop_all(text):
 )
 def test_no_post_command(text, expected):
     assert no_post_command(text, AGENTS) == expected
+
+
+@pytest.mark.parametrize(
+    "text", ["Friday, Forge", "Pulse, Friday", "Customer Operations", "A team voice call is what we need"]
+)
+def test_short_real_lines_that_echo_the_prompt_are_not_ghosts(text):
+    prompt = stt_prompt(["Pulse", "Friday", "Forge", "Customer Operations"], ["Prasiddha"])
+    assert not ghost_line(text, prompt)
+    assert ghost_line("Names: Pulse, Friday, Forge, Customer Operations", prompt)
+    assert ghost_line(prompt, prompt)
+
+
+@pytest.mark.parametrize("text", ["don\u2019t post that", "Don\u2019t post that.", "Forge, don\u2019t post that"])
+def test_curly_apostrophes(text):
+    assert no_post_command(text, AGENTS)[0]
+
+
+@pytest.mark.parametrize(
+    "text",
+    ["please stop all", "stop all please", "just stop everyone", "everyone, please stop", "everyone stop talking",
+     "stop everyone", "stop all of them", "stop all of you", "everyone just stop"],
+)  # fmt: skip
+def test_stop_all_phrasings(text):
+    assert stop_all(text)
+
+
+@pytest.mark.parametrize("text", ["we should stop all the ads", "everyone stop by at 3"])
+def test_stop_all_stays_anchored(text):
+    assert not stop_all(text)
+
+
+@pytest.mark.parametrize(
+    "text,expected",
+    [
+        ("please don't post that", (True, None)),
+        ("Forge, please don't post that", (True, "forge")),
+        ("don't post that please", (True, None)),
+        ("don't post that to Twitter yet, Friday \u2014 draft it first", (False, None)),
+    ],
+)
+def test_no_post_phrasings(text, expected):
+    assert no_post_command(text, AGENTS) == expected
+
+
+def test_no_post_names_with_digits_and_two_words():
+    agents = [{"id": "a2", "name": "Agent 2"}, {"id": "ops", "name": "Customer Operations"}]
+    assert no_post_command("Agent 2, don't post that", agents) == (True, "a2")
+    assert no_post_command("customer operations, don't post that", agents) == (True, "ops")

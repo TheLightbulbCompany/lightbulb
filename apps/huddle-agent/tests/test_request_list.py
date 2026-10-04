@@ -75,7 +75,8 @@ def test_lifecycle_order_and_postable():
     rl.delivered({"rr"})  # a failed row stays failed
     assert fr.status == "failed" and not rl.postable("rr")
     assert rl.postable("rp")
-    assert rl.no_post("forge") is p  # forge has nothing open: the room's newest open row
+    assert rl.no_post("forge") is None and not p.no_post  # a named agent with nothing open flags nothing
+    assert rl.no_post() is p  # nobody named: the room's newest open row
     assert p.no_post and not rl.postable("rp")
     rl.suppress("other")
     assert not rl.postable("other") and rl.postable("unknown")
@@ -94,9 +95,11 @@ def test_lines_say_what_teammates_are_on():
     rl.ready("rf")
     assert rl.lines(NAMES, skip_agent="pulse") == [
         'Forge has an answer ready on "what our PRs look like"',
-        'Friday is answering "a summary of our rooms"',
+        'Friday is queued for "a summary of our rooms"',
     ]
     assert rl.queued() == [p, fr]
+    rl.start(fr)
+    assert rl.lines(NAMES)[-1] == 'Friday is answering "a summary of our rooms"'
 
 
 def test_version_moves_on_every_change():
@@ -123,3 +126,28 @@ def test_the_acknowledgement_names_every_task_once():
         "You are on an update on the go-to-market strategy. Forge is on what our PRs look like. "
         "Friday is on a summary of our rooms. Say that in one short sentence, then wait."
     )
+
+
+def test_a_cancelled_row_is_never_postable():
+    rl = RequestList()
+    (r,) = rl.settle(1, "u1", [{"agentId": "a", "task": "t"}], 0.0)
+    rl.start(r)
+    rl.bind(r, "x")
+    rl.cancel()
+    rl.ready("x")
+    assert r.status == "cancelled" and not rl.postable("x")
+
+
+def test_settle_after_everyone_stop_adds_nothing():
+    rl = RequestList()
+    rl.pending(1, "u1", ["a", "b"], 0.0)
+    rl.cancel()
+    assert rl.settle(1, "u1", [{"agentId": "a", "task": "t"}], 1.0) == []
+    assert rl.startable() == [] and rl.items == []
+
+
+def test_a_line_with_no_task_omits_the_quotes():
+    rl = RequestList()
+    rl.pending(1, "u1", ["pulse"], 0.0)
+    rl.items[0].routed = True
+    assert rl.lines(NAMES) == ["Pulse is queued for"]

@@ -25,6 +25,30 @@ logger.setLevel(logging.INFO)
 
 MESSAGING_TABLE = os.environ.get("MESSAGING_TABLE", "")
 USERS_TABLE = os.environ.get("USERS_TABLE", "")
+SEARCH_INDEX_QUEUE_URL = os.environ.get("SEARCH_INDEX_QUEUE_URL", "")
+_sqs_client = None
+
+
+def _sqs():
+    global _sqs_client
+    if _sqs_client is None:
+        _sqs_client = boto3.client("sqs")
+    return _sqs_client
+
+
+def _enqueue_search_index(item: dict[str, Any], meta: dict[str, Any]) -> None:
+    """Point the search indexer at this row. The indexer re-reads the row, so
+    duplicates and reordering are harmless. Keyed on the ROOM owner (META), whose
+    index holds the room -- a shared room's foreign members search it there."""
+    if not SEARCH_INDEX_QUEUE_URL:
+        return
+    owner_id = meta.get("ownerId")
+    if not isinstance(owner_id, str) or not owner_id:
+        raise ValueError("room metadata has no owner")
+    _sqs().send_message(
+        QueueUrl=SEARCH_INDEX_QUEUE_URL,
+        MessageBody=json.dumps({"ownerId": owner_id, "roomId": item["roomId"], "sk": item["sk"]}, separators=(",", ":")),
+    )
 EXPO_PUSH_URL = "https://exp.host/--/api/v2/push/send"
 MAX_PUSH_TOKENS = 100
 PUSH_BODY_CHARS = 180
@@ -851,6 +875,7 @@ def _project_message_update(item: dict[str, Any]) -> None:
     meta = _get_item(f"ROOM#{room_id}", "META")
     if not meta:
         raise ValueError("room metadata is missing")
+    _enqueue_search_index(item, meta)
     delivery_key = _require_uuid(meta.get("deliveryKey"), "deliveryKey")
     workspace_id = _workspace_id_for_meta(f"ROOM#{room_id}", "META", meta)
     if workspace_id is None:
@@ -875,6 +900,7 @@ def _project_message(item: dict[str, Any]) -> None:
     meta = _get_item(f"ROOM#{message['roomId']}", "META")
     if not meta:
         raise ValueError("room metadata is missing")
+    _enqueue_search_index(item, meta)
     delivery_key = _require_uuid(meta.get("deliveryKey"), "deliveryKey")
     workspace_id = _workspace_id_for_meta(f"ROOM#{message['roomId']}", "META", meta)
     if workspace_id is None:

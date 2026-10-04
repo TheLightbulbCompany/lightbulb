@@ -83,6 +83,7 @@ HOLDING_LINE = (
 STILL_WAKING = "Your backend is still waking up; say briefly that you're on it and it'll take a moment."
 CANT_REACH = "Sorry, I couldn't reach my backend for that."
 REQUEST_QUIET_S = 1  # engine §3.5: a requested answer waits for no human speech this long (no rate limit)
+DELIVERY_TRIES = 3  # a requested answer whose voice failed to open this often goes to the room
 ASKER_GONE_S = 60  # engine §3.5: its asker left and no pause came this long: the room gets it
 # ponytail: inferred (D §5); a delegation the new voice makes this soon after opening is the driven request
 BIND_SECONDS = 10
@@ -309,6 +310,8 @@ class Huddle:
         # agent -> [(run_id, request, answer, at, speaker)]
         self._news: dict[str, list[tuple[str, str, str, float, str | None]]] = {}
         self._rate = gate.RateLimit()
+        # run id -> (attempts, last at): a requested delivery whose voice did not open (engine §3.5)
+        self._delivery_tries: dict[str, tuple[int, float]] = {}
         self._speaking: set[str] = set()  # humans in the SFU's active speakers
         self._last_speaker: str | None = None
         self._last_agent: dict[
@@ -981,7 +984,7 @@ class Huddle:
                 "Milliseconds",
                 {"path": "jev", "outcome": outcome},
             )
-        if heard is not None:
+        if heard is not None and not r.get("hold"):  # a held line waits for the rest, as below
             # `heard`: (name, address, voice, cut) of a line that named 2+ agents, as on_final_transcript saw it
             hname, a, hv, cut = heard
             reqs = r.get("requests") or []
@@ -1268,7 +1271,8 @@ class Huddle:
         seed += [
             (
                 "developer",
-                f"You finished {n[1][:80]}. Your answer: {n[2]} Deliver it now, briefly and completely, before anything else.",
+                self._cant_reach_seed(n)
+                or f"You finished {n[1][:80]}. Your answer: {n[2]} Deliver it now, briefly and completely, before anything else.",
             )
             for n in news
             if n is not v.announce
@@ -1277,7 +1281,8 @@ class Huddle:
             seed.append(
                 (
                     "developer",
-                    f"You finished {v.announce[1]}: {v.announce[2]}. Tell the room now.",
+                    self._cant_reach_seed(v.announce)
+                    or f"You finished {v.announce[1]}: {v.announce[2]}. Tell the room now.",
                 )
             )
         if request:
@@ -1544,7 +1549,11 @@ class Huddle:
             )  # silent from here on, whatever the backend says
             self._stopped.add(run.run_id)
             self._spawn(self._abort(run.run_id))
-        self._requests.cancel(agent_id)  # no run_ended follows an abort: its requests close here
+        cancelled = {r.run_id for r in self._requests.cancel(agent_id)}  # no run_ended follows an abort
+        if news := [n for n in self._news.get(agent_id, []) if n[0] not in cancelled]:
+            self._news[agent_id] = news
+        else:
+            self._news.pop(agent_id, None)  # a stopped request's answer is neither spoken nor posted
         self._start_queued()
         self._sync_state()
 
@@ -1882,10 +1891,11 @@ class Huddle:
         if v.handoff and now >= v.handoff[1]:
             self._end_handoff(v)
         if (
-            v.agent_state != "speaking"
+            v.agent_state not in ("speaking", "thinking")
+            and self._settled(v, now)
             and not v.posting
             and v.announce is None
-            and now - v.last_activity >= QUEUE_SETTLE
+            and not self._lock.locked()
             and (ready := self._ready_delivery(now, skip_agent=v.agent_id))
         ):
             await self._deliver(*ready)  # engine §3.5: the oldest ready answer takes the floor
@@ -1921,6 +1931,7 @@ class Huddle:
             for aid, news in self._news.items()
             if self._agent(aid)
             for n in news
+            if not self._requests.by_run(n[0])  # a requested answer goes through _ready_delivery only
         ]
         if not items:
             return
@@ -1938,7 +1949,11 @@ class Huddle:
 
     def _expire_news(self, now: float) -> None:
         for agent_id, news in list(self._news.items()):
-            kept = [n for n in news if now - n[3] < NEWS_TTL and not self._asker_gone(n, now)]
+            kept = [
+                n
+                for n in news
+                if now - n[3] < NEWS_TTL and not self._asker_gone(n, now) and not self._tried_out(n, now)
+            ]
             for n in news:
                 if n not in kept:
                     self._post_news(agent_id, n)
@@ -1956,7 +1971,25 @@ class Huddle:
 
     def _consume_news(self, agent_id: str) -> None:
         """Its agent said (or was handed) all its news: requested ones are delivered."""
-        self._requests.delivered({n[0] for n in self._news.pop(agent_id, None) or []})
+        ids = {n[0] for n in self._news.pop(agent_id, None) or []}
+        self._requests.delivered(ids)
+        for run_id in ids:
+            self._delivery_tries.pop(run_id, None)
+
+    def _tried_out(self, n: tuple, now: float) -> bool:
+        """A requested delivery whose voice failed to open DELIVERY_TRIES times goes to the room instead."""
+        tries, at = self._delivery_tries.get(n[0], (0, 0.0))
+        v = self._voice
+        return (
+            tries >= DELIVERY_TRIES
+            and now - at >= gate.ANNOUNCE_QUIET
+            and not (v and v.announce is n)  # its voice is open and about to say it
+        )
+
+    def _cant_reach_seed(self, n: tuple) -> str | None:
+        if not any(r.status == "failed" for r in self._requests.by_run(n[0])):
+            return None
+        return f'You could not do "{n[1][:80]}". Say exactly this, then stop: {n[2]}'
 
     def _ready_delivery(self, now: float, skip_agent: str | None = None) -> tuple[tuple, str] | None:
         """The oldest ready answer someone asked for (ties: request order) and its agent, once no human is
@@ -1968,12 +2001,18 @@ class Huddle:
             for aid, news in self._news.items()
             if aid != skip_agent and self._agent(aid)
             for n in news
-            if self._requests.by_run(n[0])
+            if any(r.status in ("ready", "failed") for r in self._requests.by_run(n[0]))
+            and now - self._delivery_tries.get(n[0], (0, -math.inf))[1] >= gate.ANNOUNCE_QUIET
         ]
         return min(items, key=lambda x: (x[0][3], self._requests.order(x[0][0])), default=None)
 
     async def _deliver(self, item: tuple, agent_id: str) -> None:
-        """Its own agent says it, pinned to who asked (else the last speaker, else anyone here)."""
+        """Its own agent says it, pinned to who asked (else the last speaker, else anyone here). Each
+        attempt is counted: a refused open waits gate.ANNOUNCE_QUIET, and after DELIVERY_TRIES the room
+        gets it (_expire_news), so a backend outage cannot open a session every tick."""
+        if self._requests.by_run(item[0]):  # unrequested news is paced by the rate limit instead
+            tries = self._delivery_tries.get(item[0], (0, 0.0))[0]
+            self._delivery_tries[item[0]] = (tries + 1, self._clock())
         speaker = next((p for p in (item[4], self._last_speaker) if p in self._people), None) or min(self._people)
         await self.summon(speaker, agent_id, request=None, path="announce", announce=item)
 
@@ -1981,13 +2020,15 @@ class Huddle:
         return bool(self._requests.by_run(n[0])) and n[4] not in self._people and now - n[3] >= ASKER_GONE_S
 
     async def _late_answer(self, agent_id: str, n: tuple) -> None:
+        # every caller already took it out of _news: its row closes here, posted or not (failed stays failed)
+        self._requests.delivered({n[0]})
+        self._delivery_tries.pop(n[0], None)
         if not self._requests.postable(n[0]):
             emit_metric("live.request.post_skipped", 1, "Count")  # "don't post that", or a CANT_REACH line
             return
         try:
             await self._backend.late_answer(agent_id, n[0], n[1], n[2])
             emit_metric("live.news.posted", 1, "Count")
-            self._requests.delivered({n[0]})
         except Exception:
             logger.info(
                 "huddle late answer post failed agent=%s run=%s",

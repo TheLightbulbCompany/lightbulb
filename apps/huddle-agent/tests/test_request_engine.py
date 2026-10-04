@@ -172,7 +172,10 @@ async def test_a_failed_request_says_cant_reach_in_its_turn_and_is_never_posted(
     h.on_data(None, "call.frame", packet(frame(run_of(backend, "forge"), "forge", {"type": "error", "seq": 1})))
     assert [r.status for r in h._requests.items if r.agent == "forge"] == ["failed"]
     await quiet(h, clock)
-    assert lives[-1].agent_id == "forge" and h_mod.CANT_REACH in lives[-1].seed[-1][1]
+    assert lives[-1].agent_id == "forge" and lives[-1].seed[-1] == (
+        "developer",
+        f'You could not do "{TASKS["forge"]}". Say exactly this, then stop: {h_mod.CANT_REACH}',
+    )
     await h.clear_presence()
     assert backend.late_answers == []
 
@@ -356,3 +359,163 @@ async def test_an_older_lines_acknowledgement_does_not_take_a_newer_voices_floor
     await settle(h)
     assert [l.agent_id for l in lives] == ["forge"] and h._voice.agent_id == "forge"
     assert sorted(r.agent for r in h._requests.items) == sorted(TASKS)
+
+
+from huddle_agent import gate  # noqa: E402
+
+
+async def test_a_refused_delivery_is_not_retried_on_the_next_tick():
+    h, room, backend, lives, clock, log = await three()
+    await say(h, "u1", LINE)
+    h.fail.add("forge")
+    answer(h, run_of(backend, "forge"), "forge", "Three PRs are open")
+    await quiet(h, clock)
+    assert backend.sessions.count("forge") == 1
+    await quiet(h, clock, 1)
+    assert backend.sessions.count("forge") == 1  # no retry every tick
+    await quiet(h, clock, gate.ANNOUNCE_QUIET)
+    assert backend.sessions.count("forge") == 2
+
+
+async def test_after_three_refused_deliveries_an_answer_is_posted_and_its_row_closes():
+    h, room, backend, lives, clock, log = await three()
+    await say(h, "u1", LINE)
+    h.fail.add("forge")
+    answer(h, run_of(backend, "forge"), "forge", "Three PRs are open")
+    for _ in range(4):
+        await quiet(h, clock, gate.ANNOUNCE_QUIET)
+    assert backend.sessions.count("forge") == h_mod.DELIVERY_TRIES
+    assert [a[0] for a in backend.late_answers] == ["forge"] and "forge" not in h._news
+    assert [r.status for r in h._requests.items if r.agent == "forge"] == ["delivered"]
+
+
+async def test_after_three_refused_deliveries_a_cant_reach_line_is_dropped_not_posted():
+    h, room, backend, lives, clock, log = await three()
+    await say(h, "u1", LINE)
+    h.fail.add("forge")
+    h.on_data(None, "call.frame", packet(frame(run_of(backend, "forge"), "forge", {"type": "error", "seq": 1})))
+    for _ in range(4):
+        await quiet(h, clock, gate.ANNOUNCE_QUIET)
+    assert backend.sessions.count("forge") == h_mod.DELIVERY_TRIES
+    assert backend.late_answers == [] and "forge" not in h._news
+    assert [r.status for r in h._requests.items if r.agent == "forge"] == ["failed"]
+
+
+async def _asker_gone(h, clock):
+    await h.on_participants({"u2": "Aden"})
+    await settle(h)
+    h.on_active_speakers({"u2"})
+
+
+async def _window_ends(h, backend):
+    for r in h._requests.items:
+        if r.agent != "forge":
+            h._requests.delivered({r.run_id})
+    await h.end_exchange()
+    await h.tick()
+    assert backend.ends and h._window is None
+
+
+async def test_a_no_post_answer_whose_asker_left_closes_its_row_and_the_window_can_end():
+    h, room, backend, lives, clock, log = await three()
+    await say(h, "u1", LINE)
+    answer(h, run_of(backend, "forge"), "forge", "Three PRs are open")
+    h._requests.no_post("forge")
+    await _asker_gone(h, clock)
+    clock.t += h_mod.ASKER_GONE_S
+    await h.tick()
+    await settle(h)
+    assert backend.late_answers == [] and "forge" not in h._news
+    assert not [r for r in h._requests.open() if r.agent == "forge"]
+    await _window_ends(h, backend)
+
+
+async def test_an_answer_whose_post_fails_closes_its_row_and_the_window_can_end():
+    h, room, backend, lives, clock, log = await three()
+
+    async def down(*a):
+        raise RuntimeError("backend down")
+
+    backend.late_answer = down
+    await say(h, "u1", LINE)
+    answer(h, run_of(backend, "forge"), "forge", "Three PRs are open")
+    await _asker_gone(h, clock)
+    clock.t += h_mod.ASKER_GONE_S
+    await h.tick()
+    await settle(h)
+    assert "forge" not in h._news and not [r for r in h._requests.open() if r.agent == "forge"]
+    await _window_ends(h, backend)
+
+
+async def test_a_thinking_floor_voice_is_not_preempted_by_a_ready_answer():
+    h, room, backend, lives, clock, log = await three()
+    await say(h, "u1", LINE)
+    h.on_agent_state("pulse", "thinking")
+    answer(h, run_of(backend, "forge"), "forge", "Three PRs are open")
+    await quiet(h, clock, 5)
+    assert len(lives) == 1
+    h.on_agent_state("pulse", "listening")
+    await quiet(h, clock)
+    assert [l.agent_id for l in lives] == ["pulse", "forge"]
+
+
+async def test_a_floor_voice_waiting_on_its_driven_run_is_not_preempted():
+    h, room, backend, lives, clock, log = await three()
+    await say(h, "u1", LINE)
+    h._voice.driven_run = run_of(backend, "pulse")  # the floor voice's own run is still working
+    answer(h, run_of(backend, "forge"), "forge", "Three PRs are open")
+    await quiet(h, clock, 5)
+    assert len(lives) == 1
+    answer(h, run_of(backend, "pulse"), "pulse", "Go-to-market is on track")
+    await quiet(h, clock)
+    assert [l.agent_id for l in lives] == ["pulse", "forge"]
+
+
+async def test_a_delivery_waits_for_the_floor_lock():
+    h, room, backend, lives, clock, log = await three()
+    await say(h, "u1", LINE)
+    answer(h, run_of(backend, "forge"), "forge", "Three PRs are open")
+    await h._lock.acquire()  # a tap is opening a voice
+    try:
+        await asyncio.wait_for(quiet(h, clock), 1)
+    finally:
+        h._lock.release()
+    assert len(lives) == 1
+    await quiet(h, clock)
+    assert [l.agent_id for l in lives] == ["pulse", "forge"]
+
+
+async def test_a_stop_after_the_answer_is_ready_means_it_is_neither_spoken_nor_posted():
+    h, room, backend, lives, clock, log = await three()
+    await say(h, "u1", LINE)
+    answer(h, run_of(backend, "forge"), "forge", "Three PRs are open")
+    await say(h, "u1", "Forge, never mind")
+    await quiet(h, clock, 5)
+    assert "forge" not in [l.agent_id for l in lives] and "forge" not in h._news
+    await h.clear_presence()
+    assert backend.late_answers == []
+
+
+async def test_a_two_name_line_that_route_holds_waits_and_merges_with_the_next_line():
+    h, room, backend, lives, clock, log = await three()
+    split = backend.route_extra
+    backend.route_extra = {"hold": True}
+    await say(h, "u1", "Pulse, Forge, we are trying to")
+    assert lives == [] and backend.turns == [] and backend.summons == []
+    backend.route_extra = split
+    await say(h, "u1", "find the launch checklist")
+    assert backend.routes[-1][1] == "Pulse, Forge, we are trying to find the launch checklist"
+    assert len(backend.turns) == 3 and [l.agent_id for l in lives] == ["pulse"]
+
+
+async def test_two_answers_ready_in_the_same_tick_go_in_request_order():
+    h, room, backend, lives, clock, log = await three()
+    await say(h, "u1", LINE)
+    answer(h, run_of(backend, "friday"), "friday", "Two rooms were busy")
+    answer(h, run_of(backend, "forge"), "forge", "Three PRs are open")
+    await quiet(h, clock)
+    assert [l.agent_id for l in lives] == ["pulse", "forge"]  # Forge was asked before Friday
+    h.on_agent_state("forge", "speaking")
+    h.on_agent_state("forge", "listening")
+    await quiet(h, clock)
+    assert [l.agent_id for l in lives] == ["pulse", "forge", "friday"]

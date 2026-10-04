@@ -30,6 +30,7 @@ async def test_answers_come_one_voice_at_a_time_in_the_order_they_are_ready():
     assert room.written()["lightbulb.agent.friday.status"] == "has_news"
     await quiet(h, clock)
     assert [l.agent_id for l in lives] == ["pulse", "friday"]  # the floor moves once the room is quiet
+    assert ("close",) in lives[0].calls  # one voice at a time: Pulse's session closed as Friday's opened
     assert lives[1].seed[-1] == ("developer", f"You finished {TASKS['friday']}: Two rooms were busy. Tell the room now.")
     h.on_agent_state("friday", "speaking")
     answer(h, run_of(backend, "forge"), "forge", "Three PRs are open")
@@ -38,6 +39,7 @@ async def test_answers_come_one_voice_at_a_time_in_the_order_they_are_ready():
     h.on_agent_state("friday", "listening")
     await quiet(h, clock)
     assert [l.agent_id for l in lives] == ["pulse", "friday", "forge"]
+    assert ("close",) in lives[1].calls
     h.on_agent_state("forge", "speaking")
     h.on_agent_state("forge", "listening")
     answer(h, run_of(backend, "pulse"), "pulse", "Go-to-market is on track")

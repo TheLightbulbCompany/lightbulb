@@ -1179,7 +1179,12 @@ def test_session_terminal_trusts_the_mac_and_falls_back_to_its_holder():
 def test_an_ended_origin_is_listed_once_as_its_successor():
     def s(sid, status, forked=None, human="alice", seq=1):
         return service.LocalSession.model_construct(
-            session_id=sid, human_user_id=human, status=status, forked_from=forked, latest_event_seq=seq
+            session_id=sid,
+            human_user_id=human,
+            provider="claude",
+            status=status,
+            forked_from=forked,
+            latest_event_seq=seq,
         )
 
     found = [
@@ -1227,10 +1232,11 @@ async def test_list_resources_lists_an_ended_origin_once_as_its_fork(db):
 
 
 def test_a_session_that_ended_before_its_first_message_is_not_listed():
-    def s(sid, status, seq, reason=None):
+    def s(sid, status, seq, reason=None, provider="claude"):
         return service.LocalSession.model_construct(
             session_id=sid,
             human_user_id="alice",
+            provider=provider,
             status=status,
             latest_event_seq=seq,
             control_unavailable_reason=reason,
@@ -1242,8 +1248,10 @@ def test_a_session_that_ended_before_its_first_message_is_not_listed():
         s("used", "ended", 3),
         # The Mac could not read its history: it may hold a real conversation.
         s("unread", "ended", 0, "history-gap"),
+        # Codex keeps the thread in its rollout before any event is public: `codex resume` finds it.
+        s("codex", "ended", 0, provider="codex"),
     ]
-    assert [x.session_id for x in service._without_moved(found)] == ["starting", "used", "unread"]
+    assert [x.session_id for x in service._without_moved(found)] == ["starting", "used", "unread", "codex"]
 
 
 @pytest.mark.asyncio
@@ -1251,10 +1259,13 @@ async def test_an_empty_ended_session_is_not_resumable_but_stays_readable(db, mo
     from core.services import session_resume
 
     monkeypatch.setattr(session_resume, "submissions_enabled", lambda owner: True)
-    empty, used = await registered(conversation="empty"), await registered(conversation="used")
+    empty = await registered(conversation="empty", provider="claude")
+    used = await registered(conversation="used", provider="claude")
+    # Codex keeps the thread in its rollout before any event is public: still resumable and listed.
+    codex = await registered(conversation="codex-empty")
     enrollment = await repo.get_enrollment(OWNER, ALICE.user_id, MAC)
     now = int(time.time())
-    for sid, seq in ((empty, 0), (used, 2)):
+    for sid, seq in ((empty, 0), (used, 2), (codex, 0)):
         row = await repo.get_session(OWNER, sid)
         await repo.put_session(
             {**row, "endedAt": now, "lastEventAt": now, "eventSeq": seq, "resumeAllowed": [BOB.user_id]},
@@ -1266,5 +1277,6 @@ async def test_an_empty_ended_session_is_not_resumable_but_stays_readable(db, mo
     public = service._session_public(await repo.get_session(OWNER, used), ALICE.user_id)
     assert public.resumable is True and public.resume_allowed == [BOB.user_id]
     resources = await service.list_resources(BOB, ROOM, include_ended=True)
-    assert [x.session_id for x in resources.sessions] == [used]
+    assert sorted(x.session_id for x in resources.sessions) == sorted([used, codex])
+    assert service._session_public(await repo.get_session(OWNER, codex), ALICE.user_id).resumable is True
     assert (await service.get_session(BOB, empty)).session_id == empty

@@ -581,11 +581,13 @@ def session_terminal(row: dict) -> Literal["held", "attach"] | None:
     return "held" if reported is None and row.get("holderId") else None
 
 
-def ended_empty(status: str, event_seq: int, control_unavailable_reason: str | None) -> bool:
-    """Ended before its first message: Claude writes a transcript only on that message, so there is
-    nothing to show or resume (`claude --resume` answers "No conversation found"). A row whose
-    history the Mac could not read (`controlUnavailableReason`) may hold a real conversation: not empty."""
-    return status == "ended" and event_seq == 0 and control_unavailable_reason is None
+def ended_empty(provider: str, status: str, event_seq: int, control_unavailable_reason: str | None) -> bool:
+    """A Claude Code session that ended before its first message: Claude writes a transcript only
+    on that message, so there is nothing to show or resume (`claude --resume` answers "No
+    conversation found"). Not Codex: its rollout holds the thread before any event is public, so
+    `codex resume` can still find it. A row whose history the Mac could not read
+    (`controlUnavailableReason`) may hold a real conversation: not empty."""
+    return provider == "claude" and status == "ended" and event_seq == 0 and control_unavailable_reason is None
 
 
 def _without_moved(found: list[LocalSession]) -> list[LocalSession]:
@@ -615,7 +617,7 @@ def _without_moved(found: list[LocalSession]) -> list[LocalSession]:
         s
         for s in found
         if (s.human_user_id, s.session_id) not in empty
-        and not ended_empty(s.status, s.latest_event_seq, s.control_unavailable_reason)
+        and not ended_empty(s.provider, s.status, s.latest_event_seq, s.control_unavailable_reason)
         and not (s.status in ("ended", "offline") and (s.human_user_id, s.session_id) in moved)
     ]
 
@@ -641,7 +643,7 @@ def _session_public(row: dict, viewer: str | None = None) -> LocalSession:
     public["teamControl"] = team_control_on(row)
     public["allowedSenders"] = allowed_senders(row)
     ended = row.get("endedAt") is not None
-    empty = ended_empty(public["status"], row.get("eventSeq", 0), row.get("controlUnavailableReason"))
+    empty = ended_empty(row["provider"], public["status"], row.get("eventSeq", 0), row.get("controlUnavailableReason"))
     public["resumeAllowed"] = list(row.get("resumeAllowed") or []) if ended and not empty else []
     from core.services import session_resume  # lazy: it imports this module
 

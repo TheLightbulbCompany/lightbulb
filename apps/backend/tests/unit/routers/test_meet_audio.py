@@ -50,14 +50,14 @@ def _ticket(purpose=lk.AUDIO_TICKET, nonce="nonce-1", exp_in=3600):
 
 def _refused(client, ticket, room=ROOM):
     with pytest.raises(WebSocketDisconnect) as exc:
-        with client.websocket_connect(f"/api/v1/gateway/meet/?room={room}&t={ticket}") as ws:
+        with client.websocket_connect(f"/api/v1/gateway/meet/?room={room}&token={ticket}") as ws:
             ws.receive_text()
     return exc.value.code
 
 
 def test_a_good_ticket_feeds_the_bridge_and_closes_it(env):
     client, _ = env
-    with client.websocket_connect(f"/api/v1/gateway/meet/?room={ROOM}&t={_ticket()}") as ws:
+    with client.websocket_connect(f"/api/v1/gateway/meet/?room={ROOM}&token={_ticket()}") as ws:
         ws.send_text('{"event": "audio_separate_raw.data"}')
         ws.send_text("not json")  # the bridge drops it; the socket stays up
         ws.send_bytes(b'{"event": "participant_events.join"}')
@@ -68,7 +68,7 @@ def test_a_good_ticket_feeds_the_bridge_and_closes_it(env):
 
 def test_the_path_without_a_slash_also_opens(env):
     client, _ = env
-    with client.websocket_connect(f"/api/v1/gateway/meet?room={ROOM}&t={_ticket()}") as ws:
+    with client.websocket_connect(f"/api/v1/gateway/meet?room={ROOM}&token={_ticket()}") as ws:
         ws.send_text("{}")
     assert FakeBridge.built[0].frames == ["{}"]
 

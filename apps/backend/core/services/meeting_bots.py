@@ -85,9 +85,11 @@ def _output_media(room_id: str, meeting: dict) -> dict:
 
 def audio_url(room_id: str, ticket: str) -> str:
     """Recall dials this socket for the call and pushes each person's audio. It rides the raw-WS
-    door (``/api/v1/gateway/*``); Recall 400s a URL with no ``/`` before the ``?``."""
+    door (``/api/v1/gateway/*``); Recall 400s a URL with no ``/`` before the ``?``. The ticket is
+    named ``token`` because uvicorn logs the handshake's whole URL and ``RedactTokenFilter`` strips
+    that name alone."""
     base = settings.GATEWAY_RELAY_URL.rstrip("/").removesuffix("/ws")
-    return f"{base}/meet/?{urlencode({'room': room_id, 't': ticket})}"
+    return f"{base}/meet/?{urlencode({'room': room_id, 'token': ticket})}"
 
 
 def _recording_config(room_id: str, meeting: dict) -> dict:

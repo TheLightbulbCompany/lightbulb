@@ -75,8 +75,8 @@ async def test_create_body(recall, caplog):
     assert (url.scheme, url.netloc, url.path) == ("wss", "bv.example", "/api/v1/gateway/meet/")
     query = parse_qs(url.query)
     assert query["room"] == ["room-1"]
-    assert livekit_huddles.verify_meet_ticket(query["t"][0], livekit_huddles.AUDIO_TICKET) == ("room-1", "nonce-1")
-    assert livekit_huddles.verify_meet_ticket(query["t"][0]) is None  # not a page ticket
+    assert livekit_huddles.verify_meet_ticket(query["token"][0], livekit_huddles.AUDIO_TICKET) == ("room-1", "nonce-1")
+    assert livekit_huddles.verify_meet_ticket(query["token"][0]) is None  # not a page ticket
     assert body["metadata"] == {"roomId": "room-1", "nonce": "nonce-1"}
     assert body["variant"] == {"google_meet": "web_4_core"}
     assert body["automatic_leave"] == {"waiting_room_timeout": 180, "noone_joined_timeout": 1200}
@@ -135,7 +135,7 @@ async def test_reschedule_patches_join_at_and_reticket(recall):
     assert set(body) == {"join_at", "output_media", "recording_config"}
     # The audio ticket is re-minted too, so a later end does not leave Recall's socket refused.
     url = body["recording_config"]["realtime_endpoints"][1]["url"]
-    assert livekit_huddles.verify_meet_ticket(parse_qs(urlsplit(url).query)["t"][0], livekit_huddles.AUDIO_TICKET)
+    assert livekit_huddles.verify_meet_ticket(parse_qs(urlsplit(url).query)["token"][0], livekit_huddles.AUDIO_TICKET)
 
 
 async def test_leave_deletes_then_falls_back_to_leave_call(recall):
@@ -216,3 +216,17 @@ async def test_audio_mode_reads_what_the_bot_was_booked_with(recall):
     assert await meeting_bots.audio_mode("bot-0") is None
     assert await meeting_bots.audio_mode("bot-2") is None
     assert calls[0].method == "GET" and calls[0].url.path == "/api/v1/bot/bot-1/"
+
+
+def test_the_audio_ticket_is_redacted_from_the_handshake_log():
+    """Uvicorn logs the WebSocket request line; a live ticket in CloudWatch could be replayed."""
+    import logging
+
+    from core.observability.logging import RedactTokenFilter
+
+    url = meeting_bots.audio_url("room-1", "abc.def")
+    record = logging.LogRecord(
+        "uvicorn.error", logging.INFO, "", 0, '%s - "WebSocket %s" [accepted]', ("1.2.3.4", url), None
+    )
+    RedactTokenFilter().filter(record)
+    assert "abc.def" not in record.getMessage() and "token=REDACTED" in record.getMessage()

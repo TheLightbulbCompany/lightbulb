@@ -40,7 +40,7 @@ async def _authorized(room: str, ticket: str) -> bool:
 async def meet_audio_ws(websocket: WebSocket) -> None:
     room = websocket.query_params.get("room", "")
     try:
-        ok = await _authorized(room, websocket.query_params.get("t", ""))
+        ok = await _authorized(room, websocket.query_params.get("token", ""))
     except Exception:  # noqa: BLE001 -- a DynamoDB blip: Recall retries the connect
         put_metric("meeting.bridge.error", dimensions={"why": "auth"})
         logger.warning("meet audio auth failed room=%s", room, exc_info=True)

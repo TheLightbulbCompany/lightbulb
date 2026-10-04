@@ -413,9 +413,10 @@ async def test_a_member_reads_meetings_and_mail_both_ways(async_client_org_membe
         "at": "t3",
         "agent_id": "a1",
         "text": "",
+        "truncated": False,
     }
     assert inn["direction"] == "in" and inn["from"] == "pat@acme.com" and inn["to"] == TEAM
-    assert len(inn["text"]) == 2000
+    assert len(inn["text"]) == 2000 and inn["truncated"] is True
 
 
 def test_inbox_limit_is_capped(client):

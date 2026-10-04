@@ -679,6 +679,7 @@ _CALL_KEYS = (
     "transcriptRoomId",
     "notesRunId",
     "notesMailedAt",
+    "notesMailAttemptedAt",
 )
 _OCCURRENCE_KEYS = (*_BOT_KEYS, *_CALL_KEYS)
 _HISTORY_MAX = 30

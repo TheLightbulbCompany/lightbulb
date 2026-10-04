@@ -17,7 +17,6 @@ type Tool = { id: "claude" | "codex"; label: string; modeLabel: string; models: 
 type Mac = { deviceId: string; generation: string; name: string };
 type MacOptions = { name?: string | null; sharing: boolean; folders: string[]; tools: Tool[] };
 type Targets = { enabled: boolean; devices: Mac[] };
-const MAX_PROMPT_BYTES = 4096; // the backend's byte cap
 const PENDING_MS = 150_000; // longer than the backend's wait for the Mac
 type Pending = { startId: string; scope: string; startedAt: number; phase: "starting" | "opened" | "unknown" | "failed"; error?: string; holderId?: string };
 
@@ -96,7 +95,6 @@ export function NewSessionView({ sessions, onEvent, onOpenSession, onClose }: {
   const [model, setModel] = useState("");
   const [mode, setMode] = useState("");
   const [effort, setEffort] = useState("");
-  const [prompt, setPrompt] = useState("");
   const [pendingState, setPending] = useState<Pending | null>(() => scope ? readPending(scope) : null);
   const pending = pendingState?.scope === scope ? pendingState : null;
   useEffect(() => {
@@ -170,7 +168,6 @@ export function NewSessionView({ sessions, onEvent, onOpenSession, onClose }: {
   }, [sessions, pending, userId, scope, onOpenSession]);
 
   const busy = pending !== null && pending.phase !== "failed";
-  const tooLong = new TextEncoder().encode(prompt).length > MAX_PROMPT_BYTES;
   const blocked = localMac
     ? (localMac.tools.length === 0 ? `Install Claude Code or Codex on ${macName} first.`
       : folders.length === 0 ? "Approve a folder in the desktop app first: Settings → File access." : null)
@@ -185,7 +182,7 @@ export function NewSessionView({ sessions, onEvent, onOpenSession, onClose }: {
     : folders.length === 0 ? "Approve a folder in the desktop app first: Settings → File access."
     : null;
   const ready = !!options && !!selected && !blocked;
-  const canStart = !!scope && (!!localMac || (!!mac && !!options?.sharing)) && !!selected && !!folderPath && !blocked && !busy && !tooLong;
+  const canStart = !!scope && (!!localMac || (!!mac && !!options?.sharing)) && !!selected && !!folderPath && !blocked && !busy;
 
   async function start() {
     if (!canStart || !scope || !selected || (!localMac && !mac)) return;
@@ -197,7 +194,7 @@ export function NewSessionView({ sessions, onEvent, onOpenSession, onClose }: {
     if (localMac) {
       try {
         const { holderId } = await startLocalTerminal({ startId, tool: selected.id, folder: folderPath,
-          model: modelId || null, mode: modeId || null, effort: effortId || null, prompt });
+          model: modelId || null, mode: modeId || null, effort: effortId || null, prompt: "" });
         // It shows here at once; once it reports in, this view becomes the session.
         setPending({ ...start, phase: "opened", holderId });
       } catch (error) {
@@ -209,7 +206,7 @@ export function NewSessionView({ sessions, onEvent, onOpenSession, onClose }: {
     try {
       await api.post("/desktop-sessions/start?source=web", {
         startId, deviceId: mac.deviceId, generation: mac.generation, tool: selected.id, folder: folderPath,
-        model: modelId || null, mode: modeId || null, effort: effortId || null, prompt,
+        model: modelId || null, mode: modeId || null, effort: effortId || null, prompt: "",
       });
     } catch (error) {
       setPending(error instanceof ApiError && error.status < 500
@@ -235,7 +232,6 @@ export function NewSessionView({ sessions, onEvent, onOpenSession, onClose }: {
         {busy && <p role="status">{pending?.phase === "unknown" ? pending.error
           : pending?.phase === "opened" ? (localMac ? "Running on this Mac. It moves to Sessions when it reports in." : `Opened on ${where}. Waiting for the session…`) : `Starting on ${where}…`}</p>}
         {pending?.phase === "failed" && <p role="alert" className="text-err">{pending.error}</p>}
-        {tooLong && <p role="alert" className="text-err">The first message is too long.</p>}
         {localMac?.cli && !busy && <p>Or in any terminal, inside an approved folder: <code>lightbulb claude</code> or <code>lightbulb codex</code>.</p>}
         {localMac?.cli?.pathLine && !busy && <p>First add it to your PATH, then open a new terminal: <code className="select-all">{localMac.cli.pathLine}</code></p>}
       </div>
@@ -281,11 +277,7 @@ export function NewSessionView({ sessions, onEvent, onOpenSession, onClose }: {
         </>}
       </div>}
       <form className="room-composer" aria-label="New session composer" onSubmit={(e) => { e.preventDefault(); void start(); }}>
-        <label className="sr-only" htmlFor="new-session-prompt">First message</label>
-        <textarea id="new-session-prompt" rows={2} autoFocus placeholder="First message (optional)" value={prompt}
-          disabled={busy || (!!blocked)} onChange={(e) => setPrompt(e.target.value)}
-          onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing && event.keyCode !== 229) { event.preventDefault(); event.currentTarget.form?.requestSubmit(); } }} />
-        <Button type="submit" size="sm" disabled={!canStart}>Start</Button>
+        <Button type="submit" size="sm" disabled={!canStart || !!blocked}>Start</Button>
       </form>
     </div>
   </section>;

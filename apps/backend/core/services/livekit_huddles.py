@@ -36,23 +36,28 @@ def room_token(room_id: str, owner_id: str) -> str:
     return hmac.new(key, f"{room_id}:{owner_id}".encode(), hashlib.sha256).hexdigest()
 
 
-def meet_ticket(room_id: str, nonce: str, exp_epoch: int) -> str:
-    """The Recall bot page's credential: ``base64url(room|nonce|exp).hmac``. The nonce (stored on
+PAGE_TICKET = "meet-ticket"  # the bot's page trades it for a LiveKit seat
+AUDIO_TICKET = "meet-audio"  # Recall's per-participant audio socket; signed apart, so neither opens the other
+
+
+def meet_ticket(room_id: str, nonce: str, exp_epoch: int, purpose: str = PAGE_TICKET) -> str:
+    """A Recall bot's credential: ``base64url(room|nonce|exp).hmac``. The nonce (stored on
     the room META as ``meeting.ticketNonce``) binds it to one booked bot, since Recall assigns
-    the bot id only after the page URL is already fixed. Task 8 verifies it."""
+    the bot id only after the page URL is already fixed. ``purpose`` is in the HMAC domain."""
     if not settings.LIVEKIT_API_SECRET:
         raise RuntimeError("LIVEKIT_API_SECRET unset: no meet ticket")
     body = base64.urlsafe_b64encode(f"{room_id}|{nonce}|{exp_epoch}".encode()).decode().rstrip("=")
-    return f"{body}.{hmac.new(settings.LIVEKIT_API_SECRET.encode(), b'meet-ticket|' + body.encode(), hashlib.sha256).hexdigest()}"
+    return f"{body}.{hmac.new(settings.LIVEKIT_API_SECRET.encode(), f'{purpose}|{body}'.encode(), hashlib.sha256).hexdigest()}"
 
 
-def verify_meet_ticket(ticket: str) -> tuple[str, str] | None:
-    """``(room_id, nonce)`` from a ``meet_ticket`` whose signature holds and whose ``exp`` is ahead."""
+def verify_meet_ticket(ticket: str, purpose: str = PAGE_TICKET) -> tuple[str, str] | None:
+    """``(room_id, nonce)`` from a ``meet_ticket`` of this ``purpose`` whose signature holds and
+    whose ``exp`` is ahead."""
     body, _, sig = (ticket or "").partition(".")
     secret = settings.LIVEKIT_API_SECRET
     if not (secret and body and sig):
         return None
-    expected = hmac.new(secret.encode(), b"meet-ticket|" + body.encode(), hashlib.sha256).hexdigest()
+    expected = hmac.new(secret.encode(), f"{purpose}|{body}".encode(), hashlib.sha256).hexdigest()
     if not hmac.compare_digest(sig.encode(), expected.encode()):
         return None
     try:
@@ -84,13 +89,15 @@ def _api() -> api.LiveKitAPI:
     return api.LiveKitAPI(settings.LIVEKIT_URL, settings.LIVEKIT_API_KEY, settings.LIVEKIT_API_SECRET)
 
 
-def _token(identity: str, name: str, room: str, ttl: timedelta, sources: list[str] | None = None) -> str:
+def _token(
+    identity: str, name: str, room: str, ttl: timedelta, sources: list[str] | None = None, *, listen: bool = True
+) -> str:
     grants = api.VideoGrants(
         room_join=True,
         room=room,
         can_publish=True,
-        can_subscribe=True,
-        can_publish_data=True,
+        can_subscribe=listen,
+        can_publish_data=listen,
         can_publish_sources=sources,
     )
     return (
@@ -107,9 +114,24 @@ def mint_token(*, room_id: str, user_id: str, name: str) -> str:
     return _token(user_id, name, room_name(room_id), timedelta(minutes=15))
 
 
-def mint_meet_token(room_id: str) -> str:
-    """The Recall bot page's LiveKit seat: its mic (the meeting's mixed audio) and data, for 6 h."""
-    return _token(f"meet:{room_id}", "Meeting", meet_room_name(room_id), timedelta(hours=6), ["microphone"])
+def mint_meet_token(room_id: str, *, mixed: bool = True) -> str:
+    """The Recall bot page's LiveKit seat for 6 h: it plays the agents' voices. With ``mixed`` its
+    mic is the meeting's mixed audio (``meet:``); else each Meet person has their own seat and the
+    page is ``meetbot:``, which the worker does not listen to."""
+    identity, name = (f"meet:{room_id}", "Meeting") if mixed else (f"meetbot:{room_id}", "Lightbulb")
+    return _token(identity, name, meet_room_name(room_id), timedelta(hours=6), ["microphone"])
+
+
+def mint_meet_participant_token(room_id: str, participant_id: str, name: str) -> str:
+    """One Meet person's seat, bridged from Recall's separate audio: publish their mic, hear nothing."""
+    return _token(
+        f"meet:{room_id}:{participant_id}",
+        name,
+        meet_room_name(room_id),
+        timedelta(hours=6),
+        ["microphone"],
+        listen=False,
+    )
 
 
 async def _identities(room: str) -> list[str]:

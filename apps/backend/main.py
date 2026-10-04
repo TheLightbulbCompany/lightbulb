@@ -55,6 +55,7 @@ from routers import (
     integrations,
     launch,
     mac_cdp,
+    meet_audio,
     meet_bot,
     meetings,
     messaging,
@@ -849,6 +850,8 @@ app.include_router(runtime_rpc.router, prefix="/api/v1/runtime", tags=["messagin
 # operators) — a direct browser-facing WS door on the ALB, not the API Gateway
 # WebSocket path.
 app.include_router(gateway_relay.router, prefix="/api/v1/gateway", tags=["gateway-relay"])
+# Recall's per-person Meet audio: the same door, since it is the only raw-WS path the bv- edge forwards.
+app.include_router(meet_audio.router, prefix="/api/v1/gateway", tags=["meetings"])
 app.include_router(desktop_execution.router, prefix="/api/v1/desktop-execution", tags=["desktop"])
 app.include_router(desktop_sessions.router, prefix="/api/v1", tags=["desktop"])
 app.include_router(desktop_session_pickup.router, prefix="/api/v1", tags=["desktop"])

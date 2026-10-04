@@ -53,7 +53,7 @@ def env():
         if when is not None and not when(meta["meeting"]):
             return None
         fields = fields(meta["meeting"]) if callable(fields) else fields
-        meta["meeting"] = {**meta["meeting"], **fields}
+        meta["meeting"] = {k: v for k, v in {**meta["meeting"], **fields}.items() if k not in drop}
         return meta["meeting"]
 
     async def noop():
@@ -64,6 +64,7 @@ def env():
         return noop()
 
     publisher = MagicMock(publish_room=AsyncMock(return_value=True))
+    bot_leave, audio_mode = AsyncMock(), AsyncMock(return_value="separate")
     repo = mod.meeting_invites.container_repo
     lk = mod.livekit_huddles
     with (
@@ -81,7 +82,7 @@ def env():
         patch.object(mod.meeting_invites, "_post_line", AsyncMock()) as line,
         patch.object(mod.clerk_admin, "get_organization", AsyncMock(return_value={"name": "Acme"})),
         patch.object(lk, "dispatch_meet", AsyncMock()) as dispatch,
-        patch.object(mod.meeting_bots, "leave", AsyncMock()) as bot_leave,
+        patch.multiple(mod.meeting_bots, leave=bot_leave, audio_mode=audio_mode),
         patch.object(lk, "close_room", AsyncMock()) as close,
         patch.object(lk, "send_meet_speaker", AsyncMock()) as speaker,
         patch.object(mod.voice_calls, "prewake_owner", MagicMock()) as wake,
@@ -103,6 +104,7 @@ def env():
             "claim": claim,
             "advance": advance,
             "bot_leave": bot_leave,
+            "audio_mode": audio_mode,
         }
 
 
@@ -488,6 +490,23 @@ def test_an_untracked_bot_of_this_booking_is_adopted_then_processed(env):
     assert meeting["recallBotId"] == "bot-2" and meeting["status"] == "in_call"
     env["dispatch"].assert_awaited_once()
     env["bot_leave"].assert_not_awaited()
+
+
+@pytest.mark.parametrize(
+    "mode, stored",
+    [("separate", "separate"), (None, None), (RuntimeError("recall down"), None)],
+    ids=["per-person", "older-mixed-bot", "unknown"],
+)
+def test_an_adopted_bot_records_how_it_sends_audio(env, mode, stored):
+    """The audio socket and the page both read ``meeting.audio``: an adoption that left it out sent a
+    per-person bot back to the mixed stream, and a stale value would open the socket for a mixed bot."""
+    meeting = env["meta"]["meeting"]
+    meeting.update(status="bot_failed", audio="separate")  # the failed bot's value must not survive
+    env["audio_mode"].side_effect = [mode]
+    assert _post(env["client"], _status("in_call_recording", bot_id="bot-2")).status_code == 200
+    env["audio_mode"].assert_awaited_once_with("bot-2")
+    assert env["meta"]["meeting"]["recallBotId"] == "bot-2"
+    assert env["meta"]["meeting"].get("audio") == stored
 
 
 def test_an_extra_bot_is_told_to_leave(env):

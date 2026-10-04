@@ -797,6 +797,11 @@ def test_meeting_actor_maps_only_non_members_of_a_meeting():
     assert vc._meeting_actor(members[1:], "Priya", True) == ("Priya", "Priya")  # no owner member: 403s as before
 
 
+def test_a_bridged_meet_person_acts_as_the_owner_under_their_own_name():
+    members = [{"kind": "human", "id": "user_owner", "role": "owner"}]
+    assert vc._meeting_actor(members, "meet:room-1:100", True, "Priya") == ("user_owner", "Priya")
+
+
 async def test_live_two_names_with_nothing_asked_get_one_voice_and_no_requests(live_env):
     """ "Finance and Ada?" asks nothing: no run for either, and one voice (the first named) says a line."""
     got = await _live(live_env, "Finance and Ada?", jev_says(names=["addressed", "addressed"]), humans=2)

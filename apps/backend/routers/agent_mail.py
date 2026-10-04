@@ -297,6 +297,16 @@ def _notes(meeting: dict) -> str | None:
     return None
 
 
+def _occurrence_notes(occurrence: dict) -> str | None:
+    """One past occurrence's notes. A row archived before the notes state was kept has no marker
+    at all (not even ``endedAt``): its state is unknown, never "pending" for ever."""
+    if occurrence.get("notesRunId"):
+        return "posted"
+    if occurrence.get("notesSkipped"):
+        return "skipped"
+    return "pending" if occurrence.get("endedAt") else None
+
+
 def _meeting_view(room_id: str, meeting: dict, default_room: str | None = None) -> dict:
     return {
         "id": room_id,
@@ -311,7 +321,7 @@ def _meeting_view(room_id: str, meeting: dict, default_room: str | None = None) 
             {
                 "start_at": o.get("startAt"),
                 "ended_at": o.get("endedAt"),
-                "notes": "posted" if o.get("notesRunId") else "skipped" if o.get("notesSkipped") else "pending",
+                "notes": _occurrence_notes(o),
                 "unsaid": _unsaid(o),
             }
             for o in _occurrences(meeting)[:_TRANSCRIPTS_MAX]

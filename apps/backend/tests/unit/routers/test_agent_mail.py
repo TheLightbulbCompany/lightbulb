@@ -402,8 +402,8 @@ async def test_a_member_reads_meetings_and_mail_both_ways(async_client_org_membe
         "end_at": 260,
         "repeats": True,
         "transcripts": [
-            {"start_at": 200, "ended_at": None, "notes": "pending", "unsaid": []},
-            {"start_at": 100, "ended_at": None, "notes": "pending", "unsaid": []},
+            {"start_at": 200, "ended_at": None, "notes": None, "unsaid": []},
+            {"start_at": 100, "ended_at": None, "notes": None, "unsaid": []},
         ],
         "notes_room_id": "room-now",
         "reason": None,
@@ -793,6 +793,8 @@ def test_each_transcript_row_reads_its_own_occurrence():
             "unsaid": [{"agent_id": "a1", "agent_name": "Forge", "request": "q", "answer": "a", "at": 5}],
         },
         {"start_at": 100, "ended_at": 160, "notes": "skipped", "unsaid": []},
-        {"start_at": 50, "ended_at": None, "notes": "pending", "unsaid": []},
+        # archived before the notes state was kept: unknown, never "pending" for ever
+        {"start_at": 50, "ended_at": None, "notes": None, "unsaid": []},
     ]
+    assert agent_mail._occurrence_notes({"endedAt": 9}) == "pending"  # ended, its notes still owed
     assert (view["ended_at"], view["notes"], view["unsaid"]) == (None, None, [])  # the current occurrence

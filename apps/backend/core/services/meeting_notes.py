@@ -213,7 +213,7 @@ async def _mail_organizer(owner_id: str, room_id: str, target: str, meeting: dic
         subject = f"Transcript: {name}" if transcript else f"Ended: {name}"
         body = f"Your Lightbulb agents joined {name}.\n\n" + (transcript or "No transcript was captured.")
     sent = await ses_email.send_ses_email(
-        from_addr=address,
+        from_addr=await agent_email.public_for(address),
         to=organizer,
         subject=subject,
         body_text=body,

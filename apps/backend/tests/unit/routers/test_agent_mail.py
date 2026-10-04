@@ -146,6 +146,7 @@ def test_inbox_lists_with_keys_and_truncates(client):
     with (
         patch.object(agent_mail.container_repo, "get_by_owner_id", AsyncMock(return_value=_container())),
         patch.object(agent_mail, "team_address", AsyncMock(return_value="agents@acme.isol8.co")),
+        patch.object(agent_mail, "public_for", AsyncMock(side_effect=lambda a: a)),
         patch.object(
             agent_mail,
             "list_messages",
@@ -185,6 +186,7 @@ def test_address_is_the_team_address_for_any_agent(client, agent):
         patch.object(agent_mail.container_repo, "get_by_owner_id", AsyncMock(return_value=_container())),
         patch.object(agent_mail, "_owner_email", AsyncMock(return_value="o@x.y")),
         patch.object(agent_mail, "ensure_team_address", AsyncMock(return_value=("agents@acme.isol8.co", "ok"))) as e,
+        patch.object(agent_mail, "public_for", AsyncMock(side_effect=lambda a: a)),
     ):
         r = client.post(f"/api/v1/agent-mail/u/{OWNER}/address", json={"agent_id": agent}, headers=H)
     assert r.json() == {"address": "agents@acme.isol8.co", "reason": "ok"}
@@ -480,3 +482,39 @@ def test_transcript_404s(client, path):
     assert r.status_code == 404
     if path.startswith("not-a-uuid"):
         get_room.assert_not_awaited()
+
+
+PUBLIC = "agents@thelightbulb.company"
+
+
+def test_the_agents_see_the_public_address_but_reply_keys_stay_on_the_routing_one(client):
+    with (
+        patch.object(agent_mail.container_repo, "get_by_owner_id", AsyncMock(return_value=_container())),
+        patch.object(agent_mail, "_owner_email", AsyncMock(return_value="o@x.y")),
+        patch.object(agent_mail, "ensure_team_address", AsyncMock(return_value=(TEAM, "ok"))),
+        patch.object(agent_mail, "team_address", AsyncMock(return_value=TEAM)),
+        patch.object(agent_mail, "public_for", AsyncMock(return_value=PUBLIC)),
+        patch.object(agent_mail, "list_messages", AsyncMock(return_value=[{"received_key": "k1"}])) as listed,
+    ):
+        minted = client.post(f"/api/v1/agent-mail/u/{OWNER}/address", json={}, headers=H).json()
+        inbox = client.get(f"/api/v1/agent-mail/u/{OWNER}/inbox?agent_id={AGENT}", headers=H).json()
+    assert minted == {"address": PUBLIC, "reason": "ok"}
+    assert listed.await_args.args == (TEAM,)
+    assert inbox["address"] == PUBLIC and inbox["messages"][0]["key"] == f"{TEAM}/k1"
+
+
+def test_the_card_shows_the_public_address(client):
+    a, b, c = _mailbox({"address": TEAM, "public_address": PUBLIC})
+    with a, b, c:
+        assert client.get("/api/v1/agent-mail/address").json()["address"] == PUBLIC
+
+
+async def test_the_team_inbox_shows_the_public_address_and_reads_the_routing_one(async_client_org_member):
+    a, b, c, d, e = _inbox()
+    row = {"address": TEAM, "public_address": PUBLIC}
+    with a, patch.object(agent_mail.agent_email_repo, "get_by_address", AsyncMock(return_value=row)), c, d, e as page:
+        body = (await async_client_org_member.get("/api/v1/agent-mail/inbox")).json()
+    assert page.await_args.args == (TEAM,)
+    assert body["address"] == PUBLIC
+    out, inn = body["messages"]
+    assert out["from"] == PUBLIC and inn["to"] == PUBLIC

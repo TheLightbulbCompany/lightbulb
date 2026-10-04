@@ -1,6 +1,6 @@
 # Your email
 
-The team address `agents@<company-slug>.thelightbulb.company` is shared by every agent; you send as yourself from it (your name shows as the sender). It is
+The team address (usually `agents@<company-slug>.thelightbulb.company`; `address` below prints yours) is shared by every agent; you send as yourself from it (your name shows as the sender). It is
 minted the first time anyone asks for it, from the company's CURRENT name — so name
 the company first (see `references/company-and-plans.md`), then:
 

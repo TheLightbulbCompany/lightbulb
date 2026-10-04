@@ -28,6 +28,7 @@ NOW = datetime(2026, 10, 1, tzinfo=timezone.utc)
 def send(monkeypatch):
     send = AsyncMock(return_value="<m@x>")
     monkeypatch.setattr(meeting_rsvp.agent_email, "team_address", AsyncMock(return_value=ADDRESS))
+    monkeypatch.setattr(meeting_rsvp.agent_email, "public_for", AsyncMock(side_effect=lambda a: a))
     monkeypatch.setattr(meeting_rsvp.agent_mail_tenant, "ensure_tenant", AsyncMock(return_value="tenant-1"))
     monkeypatch.setattr(meeting_rsvp.ses_email, "send_ses_email", send)
     monkeypatch.setattr(meeting_rsvp.agent_mail_send, "consume_cap", AsyncMock(return_value=True))
@@ -115,3 +116,22 @@ async def test_an_organizer_that_is_not_one_bare_address_sends_nothing(send, mon
     send.assert_not_awaited()
     meeting_rsvp.agent_mail_send.consume_cap.assert_not_awaited()
     put.assert_called_once_with("meeting.rsvp", dimensions={"result": "bad_organizer"})
+
+
+PUBLIC = "agents@thelightbulb.company"
+
+
+@pytest.mark.parametrize(
+    ("listed", "answer"),
+    [([PUBLIC], PUBLIC), ([ADDRESS], ADDRESS), ([ADDRESS, PUBLIC], PUBLIC), (["x@y.com"], None)],
+)
+async def test_a_public_address_workspace_answers_as_the_listed_address(send, monkeypatch, listed, answer):
+    monkeypatch.setattr(meeting_rsvp.agent_email, "public_for", AsyncMock(return_value=PUBLIC))
+    ok = await meeting_rsvp.accept("org_1", replace(INVITE, attendee_emails=["prasiddha@acme.com", *listed]))
+    if answer is None:
+        assert ok is False
+        send.assert_not_awaited()
+        return
+    kw = send.await_args.kwargs
+    assert kw["from_addr"] == answer
+    assert f"ATTENDEE;PARTSTAT=ACCEPTED;CN=Lightbulb agents:mailto:{answer}\r\n" in _unfold(kw["calendar"])

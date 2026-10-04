@@ -379,3 +379,10 @@ async def test_a_retry_does_not_wait_for_the_transcript_again(env):
     await mod.on_ended(ROOM)  # no transcript: the 60 s wait once, then one 10 s retry gap
     assert [c.args for c in env.sleep.await_args_list] == [(2,)] * 30 + [(10,)]
     assert env.send.await_count == 2 and env.meta["meeting"]["notesMailedAt"]
+
+
+async def test_the_organizer_mail_is_from_the_public_address(env):
+    env.meta["meeting"]["transcriptAttachedAt"] = 1
+    env.row["public_address"] = "agents@thelightbulb.company"
+    await mod.on_ended(ROOM)
+    assert env.send.await_args.kwargs["from_addr"] == "agents@thelightbulb.company"

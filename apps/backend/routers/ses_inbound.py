@@ -72,6 +72,7 @@ from core.repositories.agent_email_repo import (
     is_team_address,
     normalize,
     owner_for_host,
+    resolve,
     update_settings,
 )
 from core.repositories.agent_mail_inbox_repo import find_by_message_id, put_message, reply_key
@@ -470,7 +471,8 @@ async def handle_ses_events(request: Request):
         return {"status": "ignored"}
     # A From with a display name ("Friday · Acme agents" <agents@…>) reaches us as-is.
     candidate = normalize(parseaddr(source)[1]) if source else ""
-    row = await get_by_address(candidate) if candidate else None
+    # ``resolve``: mail sent as a workspace's public address names its alias row.
+    row = await resolve(candidate) if candidate else None
     # A retired per-agent address has no row any more; its host still names the workspace.
     resolved = (row["owner_id"], None) if row else (await owner_for_host(candidate) if candidate else None)
     if resolved and not row and not await _slug_held_since(resolved[1], mail.get("timestamp")):

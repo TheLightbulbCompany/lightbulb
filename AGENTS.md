@@ -900,7 +900,10 @@ that will mislead you otherwise:
   start at its 8 h max and OUR sweeper saves-then-stops one after 30 min with no run, no
   human input and nobody watching (the open panel's `/browser/viewing` heartbeat — a watching
   person keeps it alive). A dead session restarts (restoring the save) on the next agent
-  acquire, human Start, or open panel (start on view). A cold start outlasts API Gateway's
+  acquire, human Start, or open panel (start on view: the panel says "Starting" and shows no
+  button, and a Start on top of a start in flight is the same start, never a 409). A person's
+  Stop is the exception: it stands until Start or an agent acquire, whatever panels are open
+  (`endedReason: "stopped"`). A cold start outlasts API Gateway's
   30 s, so no request waits for one: it runs in the background and callers poll `starting`.
   **Extensions:** any member can install Chrome extensions (Web Store link or ZIP, or from our
   in-browser helper, `apps/backend/browser_helper/`); an agent can only *ask*

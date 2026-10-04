@@ -513,7 +513,7 @@ describe("BrowserDockPanel", () => {
     setPageVisibility("visible");
     render(<Panel />);
     await flush();
-    expect(screen.getByTestId("browser-stopped")).toBeInTheDocument();
+    expect(screen.getByTestId("browser-starting")).toBeInTheDocument();
 
     const getCallsBefore = get.mock.calls.length;
     await flush(VIEW_HEARTBEAT_MS); // next heartbeat tick lands active
@@ -530,7 +530,89 @@ describe("BrowserDockPanel", () => {
     const before = get.mock.calls.length;
     await flush(10_000);
     expect(get.mock.calls.length).toBeGreaterThanOrEqual(before + 2);
-    expect(screen.getByText("Starting…")).toBeTruthy();
+    expect(screen.getByText("Starting the browser…")).toBeTruthy();
+  });
+
+  it("says Starting at once and offers nothing to click while the open panel starts the browser", async () => {
+    // The heartbeat is already starting it. A Start button here invited a second start that
+    // could only collide with the first ("Browser is changing. Try again shortly.", prod 2026-10-04).
+    get.mockResolvedValue({ active: false, mode: "idle", savedAt: "2026-09-26T16:41:00", endedReason: "idle", idleStopSeconds: 1800 });
+    post.mockReturnValue(new Promise(() => undefined)); // the heartbeat's start is still in flight
+    setPageVisibility("visible");
+    render(<Panel />);
+    await flush();
+    expect(screen.getByTestId("browser-starting")).toHaveTextContent(/Starting the browser….*Browser stopped after 30 min idle · state saved 4:41\sPM/);
+    expect(screen.queryByRole("button", { name: /start browser/i })).toBeNull();
+    expect(post).toHaveBeenCalledTimes(1);
+    expect(post).toHaveBeenCalledWith("/browser/viewing", {});
+  });
+
+  it("leaves a browser a person stopped alone until someone presses Start", async () => {
+    const stopped = { active: false, mode: "idle", savedAt: "2026-09-26T16:41:00", endedReason: "stopped" };
+    get.mockResolvedValue(stopped);
+    post.mockResolvedValue(stopped); // the heartbeat: watching does not restart it
+    setPageVisibility("visible");
+    render(<Panel />);
+    await flush();
+    expect(screen.getByTestId("browser-stopped")).toHaveTextContent(/Browser stopped · state saved 4:41\sPM/);
+    const starting = { ...stopped, mode: "transition", operation: "start", generation: "g2" };
+    post.mockResolvedValue(starting);
+    get.mockResolvedValue(starting);
+    await act(async () => { screen.getByRole("button", { name: /start browser/i }).click(); });
+    expect(post).toHaveBeenCalledWith("/browser/start", {});
+    expect(screen.getByTestId("browser-starting")).toBeInTheDocument();
+  });
+
+  it("says why and offers Start when the panel's own start fails, until one lands", async () => {
+    get.mockResolvedValue({ active: false, mode: "idle" });
+    post.mockRejectedValue(new Error("Browser is temporarily unavailable. Try again."));
+    setPageVisibility("visible");
+    render(<Panel />);
+    await flush();
+    expect(screen.getByRole("alert")).toHaveTextContent("Browser is temporarily unavailable. Try again.");
+    expect(screen.getByRole("button", { name: /start browser/i })).toBeInTheDocument();
+    const starting = { active: false, mode: "transition", operation: "start", generation: "g2" };
+    post.mockResolvedValue(starting);
+    get.mockResolvedValue(starting);
+    await flush(VIEW_HEARTBEAT_MS);
+    expect(screen.getByTestId("browser-starting")).toBeInTheDocument();
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
+
+  it("finishes a Start even when the poll re-arms while it is in flight", async () => {
+    // A run starting (or a heartbeat, or an extension change) re-arms the poll. That used to
+    // drop the click's answer and leave the panel pending for good.
+    get.mockResolvedValue({ active: false, mode: "idle", endedReason: "stopped" });
+    const panel = render(<Panel />);
+    await flush();
+    let answer: (value: unknown) => void = () => undefined;
+    post.mockReturnValue(new Promise((resolve) => { answer = resolve; }));
+    await act(async () => { screen.getByRole("button", { name: /start browser/i }).click(); });
+    expect(screen.getByTestId("browser-starting")).toBeInTheDocument();
+    state.runs = RUNNING;
+    panel.rerender(<Panel />);
+    await flush();
+    const live = { active: true, url: "https://signed", sessionId: "s1", generation: "g1", mode: "idle" };
+    get.mockResolvedValue(live);
+    await act(async () => { answer(live); });
+    await flush();
+    expect(screen.getByRole("button", { name: /^stop$/i })).toBeEnabled();
+  });
+
+  it("drops a failed click's error once the browser has moved on", async () => {
+    get.mockResolvedValue({ active: false, mode: "idle", endedReason: "stopped" });
+    const panel = render(<Panel />);
+    await flush();
+    post.mockRejectedValueOnce(new Error("Browser is temporarily unavailable. Try again."));
+    await act(async () => { screen.getByRole("button", { name: /start browser/i }).click(); });
+    expect(screen.getByRole("alert")).toHaveTextContent(/temporarily unavailable/);
+    // An agent run started it meanwhile: the bar must not carry the old click's error.
+    get.mockResolvedValue({ active: true, url: "https://signed", sessionId: "s1", generation: "g1", mode: "agent" });
+    state.runs = RUNNING;
+    panel.rerender(<Panel />);
+    await flush();
+    expect(screen.getByTestId("browser-bar")).toBeInTheDocument();
+    expect(screen.queryByRole("alert")).toBeNull();
   });
 
   it("shows a Mac run's tab live and interactive, starts no cloud browser, and falls back to the cloud when the run ends", async () => {
@@ -565,7 +647,9 @@ describe("BrowserDockPanel", () => {
     await flush();
     expect(screen.queryByTestId("mac-frames")).toBeNull();
     expect(screen.queryByRole("tablist")).toBeNull();
-    expect(screen.getByText(/no shared browser session is running/i)).toBeInTheDocument();
+    // Back on the cloud browser with someone watching: the panel starts it.
+    expect(screen.getByTestId("browser-starting")).toBeInTheDocument();
+    expect(viewingCalls()).toBeGreaterThan(0);
   });
 
   it("mounts the Mac view only while the dock shows the panel, so no cast runs behind another tab", async () => {

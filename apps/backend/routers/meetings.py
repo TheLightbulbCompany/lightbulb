@@ -217,13 +217,36 @@ def _at(stamp: dict | None) -> float:
         return time.time()
 
 
+def _rostered(roster: dict | None, kind: str, pid: str, name: str) -> dict:
+    """The Meet's people after one event: a join adds, a leave removes. The bot is never one."""
+    roster = dict(roster or {})
+    if kind == "join" and pid and name and not name.endswith(meeting_bots._BOT_SUFFIX):
+        roster[pid] = name
+    elif kind == "leave":
+        roster.pop(pid, None)
+    return roster
+
+
 async def _speaker(bot_id: str, room_id: str, event: dict) -> None:
+    """Relays one event with the roster. The roster lives on META because Meet sends a join once,
+    often before the worker is in the room; every event carries it so a late worker catches up."""
     try:
         meta = (await messaging_repo.get_room(room_id)) or {}
         meeting = meta.get("meeting") or {}
         if meeting.get("recallBotId") != bot_id:
             return  # a stale or rebooked bot pushes nothing into the room
-        await livekit_huddles.send_meet_speaker(room_id, event)
+        kind, pid, name = event["kind"], event["participantId"], event["name"]
+        roster = _rostered(meeting.get("roster"), kind, pid, name)
+        if kind in ("join", "leave"):
+            try:
+                written = await meeting_invites._patch_meeting(
+                    room_id, lambda m: {"roster": _rostered(m.get("roster"), kind, pid, name)}
+                )
+                roster = (written or {}).get("roster", roster)
+            except Exception:  # noqa: BLE001 -- best effort: this event still relays its own roster
+                put_metric("meeting.roster.write_failed")
+                logger.warning("recall realtime room=%s: roster write failed", room_id, exc_info=True)
+        await livekit_huddles.send_meet_speaker(room_id, {**event, "roster": sorted(roster.values())})
     except Exception:  # noqa: BLE001 -- already answered 2xx; the next event carries on
         put_metric("meeting.webhook.error")
         logger.warning("recall realtime failed room=%s", room_id, exc_info=True)
@@ -238,11 +261,13 @@ async def recall_realtime(request: Request, tasks: BackgroundTasks):
         bot_id, room_id, data = found
         who = data.get("participant") or {}
         event = {
+            "kind": kind,
             "participantId": str(who.get("id") or ""),
             "name": str(who.get("name") or ""),
-            "speaking": _SPEAKING[kind],
+            "speaking": _SPEAKING[kind],  # what a worker before ``kind`` reads
             "at": _at(data.get("timestamp")),
         }
+        logger.info("recall realtime room=%s kind=%s participant=%s", room_id, kind, event["participantId"])
         tasks.add_task(_speaker, bot_id, room_id, event)
     return {"ok": True}
 

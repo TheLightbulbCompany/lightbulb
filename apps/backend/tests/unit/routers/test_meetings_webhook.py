@@ -49,6 +49,7 @@ def env():
     }
 
     async def patch_meeting(room_id, fields, drop=()):
+        fields = fields(meta["meeting"]) if callable(fields) else fields
         meta["meeting"] = {**meta["meeting"], **fields}
         return meta["meeting"]
 
@@ -191,8 +192,44 @@ def test_realtime_speech_on_is_one_speaker_packet(env):
     }
     assert _post(env["client"], payload, "/api/v1/webhooks/recall/realtime").status_code == 200
     env["speaker"].assert_awaited_once_with(
-        ROOM, {"participantId": "7", "name": "Pat", "speaking": True, "at": 1790985601.0}
+        ROOM,
+        {"kind": "speech_on", "participantId": "7", "name": "Pat", "speaking": True, "at": 1790985601.0, "roster": []},
     )
+
+
+def _event(kind: str, pid, name: str) -> dict:
+    return {
+        "event": f"participant_events.{kind}",
+        "data": {
+            "data": {"participant": {"id": pid, "name": name}},
+            "bot": {"id": "bot-1", "metadata": {"roomId": ROOM}},
+        },
+    }
+
+
+def _realtime(env, kind, pid, name):
+    assert _post(env["client"], _event(kind, pid, name), "/api/v1/webhooks/recall/realtime").status_code == 200
+    return env["speaker"].await_args.args[1]
+
+
+def test_realtime_relays_the_kind_and_keeps_the_roster_on_the_meeting(env):
+    assert _realtime(env, "join", 1, "Pat")["roster"] == ["Pat"]
+    assert _realtime(env, "join", 2, "Dan")["roster"] == ["Dan", "Pat"]
+    # The bot's own join (Meet lists it as a participant) is never a person.
+    assert _realtime(env, "join", 3, "Acme" + mod.meeting_bots._BOT_SUFFIX)["roster"] == ["Dan", "Pat"]
+    got = _realtime(env, "leave", 1, "Pat")
+    assert got["kind"] == "leave" and got["speaking"] is False and got["roster"] == ["Dan"]
+    # Kept on META, so a worker that came in after the joins hears the roster on any later event.
+    assert env["meta"]["meeting"]["roster"] == {"2": "Dan"}
+    got = _realtime(env, "speech_on", 2, "Dan")
+    assert got["kind"] == "speech_on" and got["roster"] == ["Dan"]
+
+
+def test_realtime_still_relays_when_the_roster_write_fails(env):
+    """Best effort: the event goes out with the roster it would have written; the next join retries."""
+    with patch.object(mod.meeting_invites, "_patch_meeting", AsyncMock(side_effect=RuntimeError("ddb"))):
+        assert _realtime(env, "join", 1, "Pat")["roster"] == ["Pat"]
+    env["metric"].assert_any_call("meeting.roster.write_failed")
 
 
 def _leave(client):

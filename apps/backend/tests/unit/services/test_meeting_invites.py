@@ -844,6 +844,23 @@ async def test_a_write_is_bound_to_the_revision_it_read(room):
     assert [c.kwargs["expected_revision"] for c in room.patch.await_args_list] == [1, 2]
 
 
+async def test_a_function_of_the_map_is_redone_over_the_racing_write(room):
+    """A read-modify-write (the roster) applied over the lost race's state, not the first read."""
+    room.state["meta"] = {"roomId": "r", "revision": 1, "meeting": {"roster": {"1": "Pat"}}}
+    reads = iter([dict(room.state["meta"])])
+
+    def get(room_id):
+        stale = next(reads, None)
+        if stale is not None:
+            room.state["meta"] = {"roomId": "r", "revision": 2, "meeting": {"roster": {"1": "Pat", "2": "Dan"}}}
+            return stale
+        return room.state["meta"]
+
+    room.get.side_effect = get
+    written = await meeting_invites._patch_meeting("r", lambda m: {"roster": {**m["roster"], "3": "Lee"}})
+    assert written["roster"] == {"1": "Pat", "2": "Dan", "3": "Lee"}
+
+
 async def test_a_new_meeting_and_every_written_change_nudge_the_mail_panel(room):
     nudge = meeting_invites.agent_email.mail_changed
     order: list[str] = []

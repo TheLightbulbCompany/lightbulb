@@ -112,6 +112,17 @@ def _room_receipt_events_off():
         yield
 
 
+@pytest.fixture(autouse=True)
+def _mail_changed_off():
+    """Storing a mail or changing a meeting nudges the Mail panel over AppSync, which would reach
+    for DynamoDB. Stubbed by default; tests asserting on it re-patch
+    ``core.services.agent_email.mail_changed`` (the helper's own test binds the real one at import)."""
+    from core.services import agent_email
+
+    with patch.object(agent_email, "mail_changed", AsyncMock()):
+        yield
+
+
 def parse_sse_events(response_text: str) -> list[dict]:
     """Parse SSE events from response text into list of event dicts."""
     lines = [line for line in response_text.split("\n") if line.startswith("data:")]

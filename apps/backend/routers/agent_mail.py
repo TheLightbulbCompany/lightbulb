@@ -24,7 +24,7 @@ from pydantic import BaseModel
 from core.auth import AuthContext, get_current_user, resolve_owner_id
 from core.dynamodb import run_in_thread
 from core.repositories import agent_email_repo, container_repo, messaging_repo
-from core.repositories.agent_mail_inbox_repo import list_messages, list_page, reply_key
+from core.repositories.agent_mail_inbox_repo import get_message, list_messages, list_page, reply_key
 from core.services import meeting_invites, messaging
 from core.services.agent_email import EMAIL_ADDRESS_RE, ensure_team_address, public_for, team_address
 from core.services.agent_mail_send import _owner_email, send
@@ -226,7 +226,29 @@ def _junk(meeting: dict, now: float) -> bool:
     )
 
 
-def _meeting_view(room_id: str, meeting: dict) -> dict:
+# Recall sub-codes (stored as ``botError`` by the status webhook) that mean the host kept the bot
+# out: knocking off, blocked, or left in / removed from the waiting room.
+_NOT_ADMITTED = {
+    "google_meet_knocking_disabled",
+    "google_meet_bot_blocked",
+    "timeout_exceeded_waiting_room",
+    "bot_kicked_from_waiting_room",
+    "call_ended_by_platform_waiting_room_timeout",
+}
+
+
+def _notes_room(room_id: str, meeting: dict, default_room: str | None) -> str | None:
+    """Where the current/last occurrence's transcript and notes were posted, only when that is not
+    the meeting's own hidden room: the stored room, else (an ended call) the default room."""
+    room = meeting.get("transcriptRoomId")
+    if not room and meeting.get("status") == "ended" and meeting.get("inCallAt"):
+        room = default_room
+    if not room and not meeting.get("inCallAt"):  # the current occurrence has none yet: the last one
+        room = next(iter(meeting.get("history") or []), {}).get("transcriptRoomId")
+    return room if room and room != room_id else None
+
+
+def _meeting_view(room_id: str, meeting: dict, default_room: str | None = None) -> dict:
     return {
         "id": room_id,
         "title": meeting.get("title") or "Meeting",
@@ -237,6 +259,10 @@ def _meeting_view(room_id: str, meeting: dict) -> dict:
         "end_at": meeting.get("endAt"),
         "repeats": bool(meeting.get("recurrence")),
         "transcripts": [{"start_at": o.get("startAt")} for o in _occurrences(meeting)[:_TRANSCRIPTS_MAX]],
+        "notes_room_id": _notes_room(room_id, meeting, default_room),
+        "reason": "not_admitted"
+        if meeting.get("status") == "bot_failed" and meeting.get("botError") in _NOT_ADMITTED
+        else None,
     }
 
 
@@ -284,14 +310,39 @@ async def team_inbox(
             return await _meeting(owner_id, i)
 
     records = await asyncio.gather(*(read(i) for i in ids))
+    default_room = None
+    if any(m and m.get("status") == "ended" and m.get("inCallAt") for m in records):
+        try:  # one read for the whole inbox; output_room answers its 2nd argument when no default stands
+            default_room = await meeting_invites.output_room(owner_id, "") or None
+        except Exception:  # noqa: BLE001 -- a link is a nicety; the inbox must still load
+            default_room = None
     meetings = sorted(
-        (_meeting_view(i, m) for i, m in zip(ids, records, strict=True) if m and not _junk(m, time.time())),
+        (
+            _meeting_view(i, m, default_room)
+            for i, m in zip(ids, records, strict=True)
+            if m and not _junk(m, time.time())
+        ),
         key=lambda m: int(m["start_at"] or 0),
         reverse=True,
     )[:_MEETINGS_MAX]
     rows, nxt = await list_page(address, before=before, limit=limit)
     shown = row.get("public_address") or address
     return {"address": shown, "meetings": meetings, "messages": [_mail_view(shown, r) for r in rows], "next": nxt}
+
+
+@router.get("/message")
+async def team_message(
+    key: str = Query(..., min_length=1, max_length=512), auth: AuthContext = Depends(get_current_user)
+) -> dict:
+    """One team-inbox mail with its full text. Read at the caller's own team address only, so a
+    key can never reach another workspace's row."""
+    owner_id = resolve_owner_id(auth)
+    address = await team_address(owner_id)
+    item = await get_message(address, key) if address else None
+    if not item or item.get("owner_id") != owner_id:
+        raise HTTPException(status_code=404, detail={"status": "not_found"})
+    shown = await public_for(address)
+    return {**_mail_view(shown, item), "text": item.get("text") or "", "truncated": False}
 
 
 @router.get("/meetings/{meeting_id}/transcript")

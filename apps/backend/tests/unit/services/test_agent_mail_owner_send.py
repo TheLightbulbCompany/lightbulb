@@ -142,7 +142,7 @@ async def test_happy_path_sends_and_settles_sent(wired):
     assert wired.settled == "sent"
     assert wired.sent_from == '"Agent · Acme agents" <agents@acme-robotics.isol8.co>'
     kw = wired.put_sent.await_args.kwargs
-    assert (kw["address"], kw["message_id"]) == ("agents@acme-robotics.isol8.co", "msg-1")
+    assert (kw["address"], kw["message_id"], kw["text"]) == ("agents@acme-robotics.isol8.co", "msg-1", "body")
     assert wired.sent_to == "owner@example.com"
     assert wired.sent_headers == {"Auto-Submitted": "auto-generated"}
 

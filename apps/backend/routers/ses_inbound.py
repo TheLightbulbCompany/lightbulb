@@ -78,7 +78,7 @@ from core.repositories.agent_email_repo import (
 from core.repositories.agent_mail_inbox_repo import find_by_message_id, put_message, reply_key
 from core.repositories.container_repo import try_claim_daily_system_notice, try_consume_stranger_wake
 from core.repositories.paperclip_repo import PaperclipRepo
-from core.services import meeting_invites
+from core.services import agent_email, meeting_invites
 from core.services.agent_email import ensure_team_address, sender_allowed
 from core.services.agent_mail_autoreply import send_cap_autoreply
 from core.services.agent_mail_thread import thread_session_key
@@ -313,6 +313,7 @@ async def handle_ses_inbound(body: SesInboundBody, request: Request):
             headers=body.headers or {},
             attachments=body.attachments or [],
         )
+        await agent_email.mail_changed(row["owner_id"])
         # Waking takes BOTH: the sender is permitted — listed by the owner, or
         # the address is open (`send_to_anyone`, the default since the
         # 2026-09-24 owner ruling) — AND the `From` is actually authenticated.

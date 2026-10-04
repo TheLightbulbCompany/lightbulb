@@ -105,29 +105,36 @@ async def put_message(
     return item
 
 
-async def put_sent(*, address: str, message_id: str, owner_id: str, agent_id: str, to: str, subject: str) -> None:
-    """Record one agent-sent message under its RFC ``Message-ID``. Best-effort:
-    the mail has already left, so a failed write only costs the thread's routing
-    (a reply then goes to the CEO) and must never turn a sent mail into an error."""
+async def put_sent(
+    *, address: str, message_id: str, owner_id: str, agent_id: str, to: str, subject: str, text: str = ""
+) -> None:
+    """Record one agent-sent message (and its plain-text body) under its RFC ``Message-ID``, then
+    nudge the workspace's open Mail panels. Best-effort: the mail has already left, so a failed
+    write only costs the thread's routing (a reply then goes to the CEO) and must never turn a
+    sent mail into an error."""
+    from core.services import agent_email  # lazy: a repo reaching up to a service
+
     try:
         now = utc_now_iso()
-        await run_in_thread(
-            _get_table().put_item,
-            Item={
-                "address": _normalize(address),
-                "received_key": f"{now}#{message_id}",
-                "direction": "out",
-                "owner_id": owner_id,
-                "agent_id": agent_id,
-                "message_id": message_id,
-                "to": to,
-                "subject": subject,
-                "received_at": now,
-                "ttl": int(time.time()) + _TTL_SECONDS,
-            },
-        )
+        item = {
+            "address": _normalize(address),
+            "received_key": f"{now}#{message_id}",
+            "direction": "out",
+            "owner_id": owner_id,
+            "agent_id": agent_id,
+            "message_id": message_id,
+            "to": to,
+            "subject": subject,
+            "received_at": now,
+            "ttl": int(time.time()) + _TTL_SECONDS,
+        }
+        if text:
+            item["text"] = text[:_MAX_TEXT_CHARS]
+        await run_in_thread(_get_table().put_item, Item=item)
     except Exception:  # noqa: BLE001 — see docstring
         logger.warning("agent_mail_inbox: put_sent failed for %s", message_id, exc_info=True)
+        return
+    await agent_email.mail_changed(owner_id)
 
 
 async def list_messages(

@@ -844,6 +844,19 @@ async def test_a_write_is_bound_to_the_revision_it_read(room):
     assert [c.kwargs["expected_revision"] for c in room.patch.await_args_list] == [1, 2]
 
 
+async def test_a_new_meeting_and_every_written_change_nudge_the_mail_panel(room):
+    nudge = meeting_invites.agent_email.mail_changed
+    await meeting_invites.handle_team_mail("org_1", _mail(GOOGLE), TEAM)
+    nudge.assert_awaited_with("org_1")  # the record's creation
+    nudge.reset_mock()
+    room.state["meta"]["ownerId"] = "org_1"
+    await meeting_invites._patch_meeting(room.state["meta"]["roomId"], {"status": "in_call"})
+    nudge.assert_awaited_once_with("org_1")
+    nudge.reset_mock()
+    await meeting_invites._patch_meeting(room.state["meta"]["roomId"], {"status": "in_call"})  # nothing changes
+    nudge.assert_not_awaited()
+
+
 NO_START = "DTSTART;TZID=America/New_York:20261003T150000\r\n"
 
 

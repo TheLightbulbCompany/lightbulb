@@ -67,6 +67,18 @@ async def public_for(address: str) -> str:
     return row.get("public_address") or address
 
 
+async def mail_changed(owner_id: str) -> None:
+    """Tell the workspace's open Mail panels to re-read: a mail was stored or a meeting changed.
+    Best-effort and never raises -- the panel also re-reads on focus."""
+    from core.services.live_events import publish_owner_users
+    from core.services.messaging import make_live_event
+
+    try:
+        await publish_owner_users(owner_id, make_live_event("runtime.resource.invalidated", {"resource": "mail"}))
+    except Exception:  # noqa: BLE001
+        logger.warning("agent_email: mail live event failed owner=%s", owner_id, exc_info=True)
+
+
 async def public_address(owner_id: str) -> str | None:
     """The workspace's public address (``public_for`` its team address), or None."""
     address = await team_address(owner_id)

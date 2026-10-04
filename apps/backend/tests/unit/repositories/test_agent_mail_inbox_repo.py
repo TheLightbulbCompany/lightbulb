@@ -78,6 +78,20 @@ async def test_put_sent_records_the_writer_under_the_rfc_message_id(monkeypatch)
     assert item["address"] == "agents@acme.isol8.co"
     assert (item["direction"], item["message_id"], item["agent_id"]) == ("out", "<x@d>", "friday")
     assert item["received_key"].endswith("#<x@d>") and item["ttl"] > 0
+    assert "text" not in item  # no body: no attribute, like the rows written before it was kept
+
+
+@pytest.mark.asyncio
+async def test_put_sent_keeps_the_body_cut_and_nudges_the_mail_panel(monkeypatch):
+    from core.services import agent_email
+
+    table = MagicMock()
+    monkeypatch.setattr(repo, "_get_table", lambda: table)
+    await repo.put_sent(
+        address="a@b.c", message_id="<x@d>", owner_id="o", agent_id="a", to="t@x.y", subject="s", text="z" * 70_000
+    )
+    assert table.put_item.call_args.kwargs["Item"]["text"] == "z" * repo._MAX_TEXT_CHARS
+    agent_email.mail_changed.assert_awaited_once_with("o")
 
 
 @pytest.mark.asyncio
@@ -86,6 +100,9 @@ async def test_put_sent_never_raises(monkeypatch):
     table.put_item.side_effect = RuntimeError("ddb down")
     monkeypatch.setattr(repo, "_get_table", lambda: table)
     await repo.put_sent(address="a@b.c", message_id="<x@d>", owner_id="o", agent_id="a", to="t@x.y", subject="s")
+    from core.services import agent_email
+
+    agent_email.mail_changed.assert_not_awaited()  # nothing stored, nothing to show
 
 
 @pytest.mark.asyncio

@@ -342,3 +342,4 @@ async def test_send_reply_is_the_agent_on_the_team_address_and_records_the_send(
     agent_mail_reply.from_header.assert_awaited_once_with("o", "friday", "agents@acme.isol8.co")
     kw = agent_mail_reply.agent_mail_inbox_repo.put_sent.await_args.kwargs
     assert (kw["address"], kw["message_id"], kw["agent_id"]) == ("agents@acme.isol8.co", "<r1@isol8.co>", "friday")
+    assert kw["text"] == "thanks"

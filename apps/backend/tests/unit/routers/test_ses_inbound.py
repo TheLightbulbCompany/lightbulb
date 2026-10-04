@@ -238,6 +238,7 @@ def test_unlisted_sender_is_stored_not_woken(client, monkeypatch):
     assert r.status_code == 200 and r.json()["status"] == "stored_not_woken"
     ses_inbound.put_message.assert_awaited_once()
     deliver.assert_not_awaited()
+    ses_inbound.agent_email.mail_changed.assert_awaited_once_with(_row()["owner_id"])  # the Mail panel re-reads
 
 
 def test_domain_allowlist_entry_wakes(client, monkeypatch):
@@ -259,6 +260,7 @@ def test_spam_is_dropped_before_store(client, monkeypatch):
     r = _post(client, _body(verdicts={"spam": "FAIL"}))
     assert r.json()["status"] == "dropped_spam_or_virus"
     ses_inbound.put_message.assert_not_awaited()
+    ses_inbound.agent_email.mail_changed.assert_not_awaited()
 
 
 def test_over_cap_reports_capped_notified_when_autoreply_succeeds(client, monkeypatch):

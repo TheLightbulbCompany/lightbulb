@@ -69,3 +69,9 @@ it("uses the idle layout for a voice limit, with the limit text in place of the 
   expect(screen.getAllByRole("status")).toHaveLength(1);
   expect(screen.queryByText("Say an agent's name to ask")).not.toBeInTheDocument();
 });
+
+it("keeps Connecting until the worker's agents show up, so nobody is told to ask an empty room", () => {
+  tile({});
+  expect(screen.getByRole("status").textContent).toBe("Connecting…");
+  expect(screen.queryByText("Say an agent's name to ask")).toBeNull();
+});

@@ -66,6 +66,8 @@ export function MeetTile({ agents, attrs, notice }: { agents: Record<string, Til
   const maxRows = speaker ? 2 : 3;
   const rowSize = speaker ? { av: 52, name: 34, line: 34, gap: 12 } : { av: 80, name: 46, line: 38, gap: 20 };
   const limitText = limit ? meetVoiceLimitText(limit) : "";
+  // The page can be in the room before the worker is: until an agent shows up, nobody is listening yet.
+  const shown = notice ?? (roster.length === 0 && !limit ? "Connecting…" : null);
   // Even rows, six across at most: seven agents sit 4 + 3, never 5 + 2.
   const heroCount = Math.min(roster.length, 10) + (roster.length > 10 ? 1 : 0);
   const heroCols = Math.ceil(heroCount / Math.ceil(heroCount / 6)) || 1;
@@ -83,8 +85,8 @@ export function MeetTile({ agents, attrs, notice }: { agents: Record<string, Til
 50%{box-shadow:0 0 0 6px var(--plane-pane),0 0 0 12px var(--live),0 0 0 26px color-mix(in srgb,var(--live) 0%,transparent)}}
 .meet-ring{animation:meet-pulse 2.2s ease-in-out infinite}@media (prefers-reduced-motion:reduce){.meet-ring{animation:none}}`}</style>
       <span className="absolute left-10 top-5 text-2xl" style={{ color: "var(--fg-mute)" }}>Lightbulb</span>
-      {notice ? (
-        <p className="flex flex-1 items-center justify-center text-5xl" role="status">{notice}</p>
+      {shown ? (
+        <p className="flex flex-1 items-center justify-center text-5xl" role="status">{shown}</p>
       ) : !stageBusy ? (
         // Idle: the agents themselves are the hero; no bottom strip repeats them.
         <div className="flex min-h-0 flex-1 flex-col items-center justify-center px-16 py-8" style={{ gap: 32 }}>

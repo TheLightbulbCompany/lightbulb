@@ -89,7 +89,8 @@ it("keeps the normal footer when the limit attribute is empty", async () => {
   expect(screen.queryByText(/cannot speak|voice/i)).not.toBeInTheDocument();
 });
 
-const published = async () => { render(<MeetBotPage />); await waitFor(() => expect(screen.queryByText("Connecting…")).not.toBeInTheDocument()); };
+// Connected AND the worker is in the room: the tile stays on "Connecting…" until an agent shows up.
+const published = async () => { lk.remote = [...lk.remote, { attributes: A("w", "idle") }]; render(<MeetBotPage />); await waitFor(() => expect(screen.queryByText("Connecting…")).not.toBeInTheDocument()); };
 
 it("publishes the mixed audio when mixedAudio is true or absent", async () => {
   global.fetch = reply(200, [], { mixedAudio: true }) as never;

@@ -209,6 +209,7 @@ mod tests {
 
     #[test]
     fn remote_input_is_dropped_unless_watched_at_this_generation_and_the_current_epoch() {
+        let _g = super::super::presence::TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let ctl = Arc::new(Ctl::new(0));
         ctl.epoch.store(7, SeqCst);
         let live = BTreeMap::from([(SID.to_owned(), "gen-1".to_owned())]);
@@ -236,7 +237,8 @@ mod tests {
 
     #[test]
     fn remote_input_is_dropped_while_a_join_request_waits() {
-        use super::super::presence::{set, Entry, JoinRequest};
+        use super::super::presence::{set, Entry, JoinRequest, TEST_LOCK};
+        let _g = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let sid = "cccc1111-2222-4333-8444-555566667777";
         let ctl = Arc::new(Ctl::new(0));
         ctl.epoch.store(7, SeqCst);

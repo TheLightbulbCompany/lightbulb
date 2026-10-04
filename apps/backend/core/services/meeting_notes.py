@@ -13,8 +13,15 @@ from core.config import settings
 from core.dynamodb import run_in_thread
 from core.observability.metrics import put_metric
 from core.repositories import agent_email_repo, container_repo, messaging_repo
-from core.repositories.paperclip_repo import PaperclipRepo
-from core.services import agent_email, agent_mail_send, agent_mail_tenant, meeting_invites, messaging, ses_email
+from core.services import (
+    agent_email,
+    agent_mail_send,
+    agent_mail_tenant,
+    meeting_invites,
+    messaging,
+    openclaw_work,
+    ses_email,
+)
 from core.services.agent_mail_reply import AGENT_AUTHORED_HEADERS
 
 logger = logging.getLogger(__name__)
@@ -145,8 +152,6 @@ async def _notes(room_id: str, meta: dict, occurrence) -> None:
     owner_id, meeting = meta["ownerId"], meta["meeting"]
     title = meeting.get("title") or "Meeting"
     target = await meeting_invites.output_room(owner_id, room_id)
-    company = await PaperclipRepo(table_name="paperclip-companies").resolve_owner_row(owner_id)
-    ceo = (getattr(company, "starter_agent_ids", None) or {}).get("ceo")
     if not meeting.get("transcriptAttachedAt"):
         # No notes run: the output room is the workspace's default room, whose history is not the
         # meeting's, so notes written from it would be invented.
@@ -156,19 +161,27 @@ async def _notes(room_id: str, meta: dict, occurrence) -> None:
             f"meeting:{room_id}:{occurrence}:no-transcript",
             f"**{title}** ended. No transcript was captured, so there are no notes.",
         )
-    # The run is dispatched in the output room, so the CEO must sit there.
-    elif ceo and not meeting.get("notesRunId") and await messaging_repo.get_member(target, "agent", ceo):
-        message = await meeting_invites._post_line(
-            owner_id,
-            target,
-            f"meeting:{room_id}:{occurrence}:notes",
-            f"Write the meeting notes for {title}: decisions, open questions, action items as Paperclip "
-            "tasks for their owners, two paragraphs max; the transcript is attached",
-            dispatch_targets=[{"agentId": ceo, "eventKind": "user_request"}],
-        )
-        if message:
-            run_id = messaging_repo.run_id_for(ceo, message["messageId"])
-            await meeting_invites._patch_meeting(room_id, {"notesRunId": run_id}, when=this_occurrence)
+        await meeting_invites._patch_meeting(room_id, {"notesSkipped": "no_transcript"}, when=this_occurrence)
+    elif not meeting.get("notesRunId") and not meeting.get("notesSkipped"):
+        writer = await _notes_writer(owner_id, target)
+        if writer is None:
+            put_metric("meeting.notes.skipped", dimensions={"why": "no_agent"})
+            logger.warning("meeting room %s: no agent in output room %s to write the notes", room_id, target)
+            meeting = await meeting_invites._patch_meeting(
+                room_id, {"notesSkipped": "no_agent"}, when=this_occurrence
+            ) or {**meeting, "notesSkipped": "no_agent"}
+        else:
+            message = await meeting_invites._post_line(
+                owner_id,
+                target,
+                f"meeting:{room_id}:{occurrence}:notes",
+                f"Write the meeting notes for {title}: decisions, open questions, action items as Paperclip "
+                "tasks for their owners, two paragraphs max; the transcript is attached",
+                dispatch_targets=[{"agentId": writer, "eventKind": "user_request"}],
+            )
+            if message:
+                run_id = messaging_repo.run_id_for(writer, message["messageId"])
+                await meeting_invites._patch_meeting(room_id, {"notesRunId": run_id}, when=this_occurrence)
     mailed = await _mail_organizer(owner_id, room_id, target, meeting, title, occurrence)
     if mailed is None:
         return  # already attempted (here or by another end path), or the occurrence moved on
@@ -177,7 +190,16 @@ async def _notes(room_id: str, meta: dict, occurrence) -> None:
     await meeting_invites._patch_meeting(room_id, {"notesMailedAt": int(time.time())}, when=this_occurrence)
 
 
+async def _notes_writer(owner_id: str, room_id: str) -> str | None:
+    """The agent that writes the notes. The run is dispatched in ``room_id``, so only its agent
+    members qualify: the CEO when it sits there, else the one openclaw_work's fallback picks (a
+    founder roster has no starter ids). None when the room has no agent."""
+    agents = sorted(m["id"] for m in await messaging_repo.list_members(room_id) if m.get("kind") == "agent")
+    return await openclaw_work._fallback_single(owner_id, agents, {}, []) if agents else None
+
+
 _MAIL_TRANSCRIPT_CHARS = 200_000
+_NO_NOTES = "No notes were written: no agent in the room could write them."
 
 
 async def _transcript_text(owner_id: str, room_id: str, meeting: dict) -> str | None:
@@ -212,9 +234,13 @@ async def _mail_organizer(
         logger.info("meeting room %s: daily mail cap spent, notes mail not sent", room_id)
         return True
     name = " ".join(title.split())
-    if target != room_id and meeting.get("transcriptAttachedAt"):
+    link = f"{settings.FRONTEND_URL.rstrip('/')}/chat?room={target}"
+    if target != room_id and meeting.get("notesSkipped") == "no_agent":
+        subject = f"Transcript: {name}"
+        body = f"The transcript is in your Lightbulb room: {link}\n\n{_NO_NOTES}"
+    elif target != room_id and meeting.get("transcriptAttachedAt"):
         subject = f"Notes: {name}"
-        body = f"The notes and transcript are in your Lightbulb room: {settings.FRONTEND_URL.rstrip('/')}/chat?room={target}"
+        body = f"The notes and transcript are in your Lightbulb room: {link}"
     elif target != room_id:  # nothing to point at: no transcript, so no notes
         subject = f"Ended: {name}"
         body = f"{name} ended. No transcript was captured, so there are no notes."

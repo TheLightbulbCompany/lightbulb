@@ -2876,7 +2876,8 @@ def _part_choices(names: list[str]) -> dict[str, tuple[str, set[str]]]:
 def _task(text: str, pieces: list, mine: set[int], asked_names: set[str]) -> str:
     """One agent's task in the speaker's own words. Its parts that follow one another, with only names
     between them, are one stretch of the line, names included ("get Gauge to pull the numbers"). Another
-    agent's part ends the stretch; a name after its last part is not in it ("fix the build. | Leo, ...").
+    agent's part ends the stretch; a name after its last part is not in it ("fix the build. | Leo, ...")
+    unless the words run straight into a talked-about name ("review the proposal with Gauge").
     A name that is only talked about and stands right before its first part is ("Gauge broke CI, fix it").
     Stretches that are apart are joined."""
     runs: list[str] = []
@@ -2886,6 +2887,10 @@ def _task(text: str, pieces: list, mine: set[int], asked_names: set[str]) -> str
         if kind == "name":
             if run is None:
                 lead = (start if lead is None else lead) if ref not in asked_names else None
+            elif ref not in asked_names and re.search(r"\w\s*$", text[run[0] : start]) and run[1] >= start - 1:
+                # the words run straight into a talked-about name, no comma: it is their object
+                # ("review the proposal with Gauge."), not a person being called (", Leo, ...")
+                run[1], run[2] = end, False
             continue
         if ref in mine:
             run = [run[0] if run else (lead if lead is not None else start), end, into_name]

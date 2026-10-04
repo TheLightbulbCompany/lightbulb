@@ -507,3 +507,16 @@ async def test_a_name_that_is_only_ever_a_possessive_is_talked_about_not_spoken_
     relayed = _answers(["addressed", "relayed", "addressed"]) | _parts("only_forge", "only_pulse")
     out, _ = await _address(text, CREW, relayed, live=True)
     assert out["agents"] == ["frg", "pul"]  # the bench's poss-02: Jev called Friday relayed
+
+
+async def test_live_a_talked_about_name_that_ends_a_part_stays_in_the_task():
+    """Codex #3663: "review the proposal with Gauge." lost its object."""
+    text = "Forge, review the proposal with Gauge. Friday, summarize the decision."
+    answers = _answers(["addressed", "mentioned", "addressed"]) | _parts("only_forge", "only_friday")
+    out, _ = await _address(text, [*CREW, GAUGE], answers, live=True)
+    assert out["tasks"] == {"frg": "review the proposal with Gauge", "fri": "summarize the decision"}
+    # a person being called after a comma is still not part of the task before it
+    text = "Forge, check CI, Leo, you call the customer, Friday, tell the team"
+    answers = _answers(["addressed", "addressed", "addressed"]) | _parts("only_forge", "nobody", "only_friday")
+    out, _ = await _address(text, CREW, answers, live=True)
+    assert out["tasks"] == {"frg": "check CI", "fri": "tell the team"}

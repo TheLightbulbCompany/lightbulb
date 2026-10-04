@@ -237,9 +237,25 @@ _NOT_ADMITTED = {
 }
 
 
+def _never_admitted(meeting: dict) -> bool:
+    """Stored ``ended`` without ``inCallAt``: the bot left the lobby (timed out, refused, or removed
+    before admission). Recall reports that as ``call_ended``; the view shows it as a failed join."""
+    return meeting.get("status") == "ended" and not meeting.get("inCallAt")
+
+
+def _reason(meeting: dict) -> str | None:
+    if _never_admitted(meeting):
+        return "not_admitted"
+    if meeting.get("status") == "bot_failed" and meeting.get("botError") in _NOT_ADMITTED:
+        return "not_admitted"
+    return None
+
+
 def _notes_room(room_id: str, meeting: dict, default_room: str | None) -> str | None:
     """Where the current/last occurrence's transcript and notes were posted, only when that is not
     the meeting's own hidden room: the stored room, else (an ended call) the default room."""
+    if _never_admitted(meeting):
+        return None  # no call happened
     room = meeting.get("transcriptRoomId")
     if not room and meeting.get("status") == "ended" and meeting.get("inCallAt"):
         room = default_room
@@ -254,15 +270,13 @@ def _meeting_view(room_id: str, meeting: dict, default_room: str | None = None) 
         "title": meeting.get("title") or "Meeting",
         "organizer": meeting.get("organizer"),
         "invited_by": meeting.get("invitedBy"),
-        "status": meeting.get("status"),
+        "status": "bot_failed" if _never_admitted(meeting) else meeting.get("status"),
         "start_at": meeting.get("startAt"),
         "end_at": meeting.get("endAt"),
         "repeats": bool(meeting.get("recurrence")),
         "transcripts": [{"start_at": o.get("startAt")} for o in _occurrences(meeting)[:_TRANSCRIPTS_MAX]],
         "notes_room_id": _notes_room(room_id, meeting, default_room),
-        "reason": "not_admitted"
-        if meeting.get("status") == "bot_failed" and meeting.get("botError") in _NOT_ADMITTED
-        else None,
+        "reason": _reason(meeting),
     }
 
 

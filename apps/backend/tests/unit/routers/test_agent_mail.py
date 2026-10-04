@@ -623,7 +623,7 @@ def test_notes_room_is_the_default_room_never_the_hidden_one(meeting, default, w
         ({"status": "bot_failed", "botError": "timeout_exceeded_waiting_room"}, "not_admitted"),
         ({"status": "bot_failed", "botError": "meeting_not_found"}, None),
         ({"status": "bot_failed", "botError": "400"}, None),  # a booking failure
-        ({"status": "ended", "botError": "google_meet_knocking_disabled"}, None),
+        ({"status": "ended", "inCallAt": 1, "botError": "google_meet_knocking_disabled"}, None),
     ],
 )
 def test_reason_says_only_whether_the_host_kept_the_agents_out(meeting, want):
@@ -672,3 +672,24 @@ async def test_a_sent_mail_shows_its_text_cut_to_the_preview(async_client_org_me
     with a, b, c, d, e:
         out = (await async_client_org_member.get("/api/v1/agent-mail/inbox")).json()["messages"][0]
     assert out["direction"] == "out" and len(out["text"]) == 2000 and out["truncated"] is True
+
+
+@pytest.mark.parametrize(
+    ("meeting", "status", "reason", "notes"),
+    [
+        # Left the lobby (timed out, refused, removed): never in the call, so no notes either.
+        ({"status": "ended", "history": [{"transcriptRoomId": "general"}]}, "bot_failed", "not_admitted", None),
+        ({"status": "ended", "inCallAt": 1}, "ended", None, "general"),
+        # A series already moved on to its next occurrence is untouched.
+        ({"status": "scheduled", "recurrence": {"rule": "FREQ=WEEKLY"}}, "scheduled", None, None),
+    ],
+)
+def test_an_ended_meeting_the_agents_never_entered_shows_as_not_admitted(meeting, status, reason, notes):
+    view = agent_mail._meeting_view(M1, meeting, "general")
+    assert (view["status"], view["reason"], view["notes_room_id"]) == (status, reason, notes)
+
+
+def test_the_junk_filter_still_reads_the_stored_status():
+    old = time.time() - 2 * 86400
+    assert agent_mail._junk({"status": "ended", "startAt": old}, time.time()) is True
+    assert agent_mail._junk({"status": "ended", "startAt": time.time() - 600}, time.time()) is False

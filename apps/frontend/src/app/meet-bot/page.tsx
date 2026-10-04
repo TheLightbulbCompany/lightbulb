@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { Room, RoomEvent, Track } from "livekit-client";
-import { agentHand, agentLiveStatus, agentStateLine, agentWorking, floorHolder, orderAgentSlots } from "@lightbulb/shared";
+import { agentHand, agentLiveStatus, agentStateLine, agentWorking, floorHolder, meetVoiceLimitText, orderAgentSlots, voiceLimit } from "@lightbulb/shared";
 import { Identity } from "@/components/teams/shared/components/Identity";
 import { agentTint } from "@/lib/agentTint";
 
@@ -87,6 +87,7 @@ export default function MeetBotPage() {
   const ids = Object.keys(attrs).map((k) => STATUS_RE.exec(k)?.[1]).filter((id): id is string => !!id);
   const nameOf = (id: string) => agentNames[id]?.name ?? (attrs[`lightbulb.agent.${id}.name`] || id);
   const ordered = orderAgentSlots(ids, attrs);
+  const limit = voiceLimit(attrs);
   const floor = floorHolder(attrs);
   const speaker = ordered.find((id) => agentLiveStatus(attrs, id) === "speaking" && (!floor || floor === id)) ?? ordered.find((id) => agentLiveStatus(attrs, id) === "speaking");
   const chips = speaker ? [speaker, ...ordered.filter((id) => id !== speaker)] : ordered;
@@ -121,7 +122,11 @@ export default function MeetBotPage() {
             })}
             {chips.length > MAX_CHIPS && <li className="text-3xl" style={{ color: "var(--fg-soft)" }}>+{chips.length - MAX_CHIPS} more</li>}
           </ul>
-          <p className="text-2xl" style={{ color: "var(--fg-soft)" }}>Say an agent&apos;s name to ask</p>
+          {limit ? (
+            <p className="text-2xl" role="status" style={{ color: "var(--alert)" }}>{meetVoiceLimitText(limit)}</p>
+          ) : (
+            <p className="text-2xl" style={{ color: "var(--fg-soft)" }}>Say an agent&apos;s name to ask</p>
+          )}
         </div>
       ) : null}
     </div>

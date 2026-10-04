@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   agentA11yName, agentLine, agentLiveStatus, agentNaming, agentWorking, errorText, floorChange, floorHolder,
   liveAgents, liveErrorText, liveHappening, liveHint, liveJoinErrorCode, liveMarker, liveQueue,
-  agentHand, agentStateLine, handKey, nameCollides, orderAgentSlots, parseLiveNotice, queuePosition, renamedText, voiceFailedText, voiceNoteText, wakingText,
+  agentHand, agentStateLine, handKey, meetVoiceLimitText, voiceLimit, nameCollides, orderAgentSlots, parseLiveNotice, queuePosition, renamedText, voiceFailedText, voiceNoteText, wakingText,
 } from "./words";
 
 describe("voice words", () => {
@@ -38,6 +38,21 @@ describe("voice words", () => {
 const st = (id: string) => `lightbulb.agent.${id}.status`;
 const names: Record<string, string> = { g: "Gauge", f: "Forge", n: "Nova", gauge: "Gauge", forge: "Forge" };
 const nameOf = (id: string) => names[id] ?? id;
+
+describe("Meet voice limit", () => {
+  it("reads the attribute, trimmed; empty or absent is null", () => {
+    expect(voiceLimit({ "lightbulb.voice_limit": " credits_low " })).toBe("credits_low");
+    expect(voiceLimit({ "lightbulb.voice_limit": "" })).toBeNull();
+    expect(voiceLimit({})).toBeNull();
+    expect(voiceLimit(undefined)).toBeNull();
+  });
+  it("words each reason for people who cannot tap", () => {
+    expect(meetVoiceLimitText("free_minutes_used")).toBe("Today's free voice minutes are used up. The agents can speak again tomorrow.");
+    expect(meetVoiceLimitText("credits_low")).toBe("Voice is paused: the workspace's credits are low.");
+    expect(meetVoiceLimitText("plan_inactive")).toBe("Voice is off: the workspace's plan is not active.");
+    expect(meetVoiceLimitText("whatever")).toBe("The agents cannot speak right now.");
+  });
+});
 
 describe("per-agent Live readers", () => {
   it("reads status and the floor-holder", () => {

@@ -85,3 +85,27 @@ it("shows the expired state when the URL has no ticket", async () => {
   expect(await screen.findByText("This link has expired.")).toBeInTheDocument();
   expect(global.fetch).not.toHaveBeenCalled();
 });
+
+it.each([
+  ["free_minutes_used", "Today's free voice minutes are used up. The agents can speak again tomorrow."],
+  ["credits_low", "Voice is paused: the workspace's credits are low."],
+  ["plan_inactive", "Voice is off: the workspace's plan is not active."],
+  ["something_new", "The agents cannot speak right now."],
+])("says why the agents are silent: %s", async (reason, text) => {
+  lk.remote = [{ attributes: { ...A("Forge", "listening"), "lightbulb.voice_limit": reason } }];
+  global.fetch = reply(200) as never;
+  render(<MeetBotPage />);
+  const line = await screen.findByText(text);
+  expect(line).toHaveAttribute("role", "status");
+  expect(line.style.color).toBe("var(--alert)");
+  expect(screen.getByText("Forge")).toBeInTheDocument();
+  expect(screen.queryByText("Say an agent's name to ask")).not.toBeInTheDocument();
+});
+
+it("keeps the normal footer when the limit attribute is empty", async () => {
+  lk.remote = [{ attributes: { ...A("Forge", "listening"), "lightbulb.voice_limit": "" } }];
+  global.fetch = reply(200) as never;
+  render(<MeetBotPage />);
+  await screen.findByText("Say an agent's name to ask");
+  expect(screen.queryByText(/cannot speak|voice/i)).not.toBeInTheDocument();
+});

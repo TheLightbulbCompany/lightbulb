@@ -405,6 +405,54 @@ pub(crate) fn inside_approved(folder: &Path, approved: &[PathBuf]) -> bool {
     approved.iter().any(|a| crate::file_access::is_inside(folder, a))
 }
 
+/// The provider flags that point it at another folder: Codex `-C`/`--cd` (its working root) and
+/// `--add-dir` (writable folders), Claude `--add-dir` (folders it may use; it takes several).
+fn path_flags(tool: &str) -> &'static [&'static str] {
+    if tool == "codex" { &["-C", "--cd", "--add-dir"] } else { &["--add-dir"] }
+}
+
+/// The refusal when a path-bearing flag names a folder outside every approved folder. Each path
+/// is taken relative to `cwd`, made canonical and held to the same rule as the folder the command
+/// runs in. Both `--flag value` and `--flag=value` (and `-Cvalue`), repeated or not; Claude's
+/// `--add-dir` takes every following word up to the next flag. After `--` is prompt text.
+fn unapproved_path_flag(tool: &str, args: &[String], cwd: &Path, approved: &[PathBuf]) -> Option<String> {
+    let flags = path_flags(tool);
+    let mut paths: Vec<(&str, &str)> = vec![];
+    let mut i = 0;
+    while i < args.len() && args[i] != "--" {
+        let arg = args[i].as_str();
+        if let Some(flag) = flags.iter().find(|f| arg == **f) {
+            if tool == "claude" {
+                while i + 1 < args.len() && !args[i + 1].starts_with('-') {
+                    paths.push((flag, &args[i + 1]));
+                    i += 1;
+                }
+            } else if let Some(value) = args.get(i + 1) {
+                paths.push((flag, value));
+                i += 1;
+            }
+        } else if let Some((flag, value)) = flags.iter().find_map(|f| {
+            arg.strip_prefix(&format!("{f}="))
+                .or_else(|| (f.len() == 2).then(|| arg.strip_prefix(*f)).flatten())
+                .filter(|v| !v.is_empty())
+                .map(|v| (*f, v))
+        }) {
+            paths.push((flag, value));
+        }
+        i += 1;
+    }
+    paths.into_iter().find_map(|(flag, path)| {
+        let ok = cwd
+            .join(path)
+            .to_str()
+            .and_then(|p| crate::file_access::canonicalize(p).ok())
+            .is_some_and(|p| inside_approved(&p, approved));
+        (!ok).then(|| format!(
+            "{flag} {path} is not inside a folder you approved for Lightbulb. Add it in the Lightbulb app under Settings → File access, then run this again. Plain `{tool}` stays private."
+        ))
+    })
+}
+
 /// The `lightbulb` command's argv: the person's own arguments, unchanged. Codex also gets
 /// `--no-daemon`, which keeps it a dedicated writer so its start hook links to this start.
 fn cli_argv(program: &Path, tool: &str, args: &[String]) -> Vec<String> {
@@ -465,6 +513,9 @@ pub(crate) fn cli_start(
         .ok()
         .filter(|f| f.is_dir() && inside_approved(f, &approved))
         .ok_or("This folder is not inside a folder you approved for Lightbulb. Add it in the Lightbulb app under Settings → File access, then run this again.".to_string())?;
+    if let Some(reason) = unapproved_path_flag(&start.tool, &start.args, &folder, &approved) {
+        return Err(reason);
+    }
     let argv = held_argv(&cli_argv(&program, &start.tool, &start.args), Some((start.start_id.as_str(), scope.as_str())));
     let info = crate::holder::manager::start_sized(&folder, &argv, Some(size))?;
     crate::log(&format!("[session-start] terminal command {} {} in {}", start.start_id, start.tool, folder.display()));
@@ -474,6 +525,33 @@ pub(crate) fn cli_start(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cli_path_flags_must_name_approved_folders() {
+        let approved_dir = tempfile::tempdir().unwrap();
+        let root = crate::file_access::canonicalize(approved_dir.path().to_str().unwrap()).unwrap();
+        std::fs::create_dir(root.join("lib")).unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let outside = outside.path().to_str().unwrap().to_owned();
+        let approved = vec![root.clone()];
+        let args = |a: &[&str]| a.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        // An approved --add-dir passes, also relative to the folder the command runs in.
+        assert_eq!(unapproved_path_flag("claude", &args(&["--add-dir", "lib"]), &root, &approved), None);
+        assert_eq!(unapproved_path_flag("codex", &args(&["--add-dir", root.to_str().unwrap()]), &root, &approved), None);
+        // An unapproved -C, --add-dir=…, -C<path> and a second --add-dir are refused.
+        let refused = unapproved_path_flag("codex", &args(&["-C", &outside]), &root, &approved).unwrap();
+        assert!(refused.contains(&outside) && refused.contains("Plain `codex` stays private"), "{refused}");
+        assert!(unapproved_path_flag("codex", &args(&[&format!("--add-dir={outside}")]), &root, &approved).is_some());
+        assert!(unapproved_path_flag("codex", &args(&[&format!("-C{outside}")]), &root, &approved).is_some());
+        assert!(unapproved_path_flag("claude", &args(&["--add-dir", "lib", &outside]), &root, &approved).is_some());
+        assert!(unapproved_path_flag("claude", &args(&["--add-dir", "lib", "--add-dir", &outside]), &root, &approved).is_some());
+        assert!(unapproved_path_flag("codex", &args(&["--cd", "../.."]), &root, &approved).is_some());
+        // After `--` it is prompt text, never checked; other flags are not paths.
+        assert_eq!(unapproved_path_flag("codex", &args(&["--", "-C", &outside]), &root, &approved), None);
+        assert_eq!(unapproved_path_flag("claude", &args(&["--model", "opus", "--", "--add-dir", &outside]), &root, &approved), None);
+        // Claude has no -C flag of its own.
+        assert_eq!(unapproved_path_flag("claude", &args(&["-C", &outside]), &root, &approved), None);
+    }
 
     fn start(tool: &str, model: Option<&str>, mode: Option<&str>, prompt: &str) -> Start {
         Start {

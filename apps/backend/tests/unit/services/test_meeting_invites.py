@@ -846,8 +846,13 @@ async def test_a_write_is_bound_to_the_revision_it_read(room):
 
 async def test_a_new_meeting_and_every_written_change_nudge_the_mail_panel(room):
     nudge = meeting_invites.agent_email.mail_changed
+    order: list[str] = []
+    room.add_meeting.side_effect = lambda *_: order.append("listed")
+    nudge.side_effect = lambda *_: order.append("nudged")
     await meeting_invites.handle_team_mail("org_1", _mail(GOOGLE), TEAM)
     nudge.assert_awaited_with("org_1")  # the record's creation
+    assert order[-1] == "nudged" and "listed" in order  # the last nudge follows the listing write
+    nudge.side_effect = None
     nudge.reset_mock()
     room.state["meta"]["ownerId"] = "org_1"
     await meeting_invites._patch_meeting(room.state["meta"]["roomId"], {"status": "in_call"})

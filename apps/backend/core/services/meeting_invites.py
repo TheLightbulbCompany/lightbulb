@@ -306,7 +306,6 @@ async def _create_room(owner_id: str, room_id: str, invite: Invite, creator: str
             req_hash=messaging_repo.request_hash(name, "channel", normalized),
             extra={"meeting": meeting, "hidden": True},
         )
-        await agent_email.mail_changed(owner_id)
     except messaging_repo.MessagingRepoError:
         # A replay with a different body, or a second member's forward racing this one (its META
         # Put cancels with no receipt of ours): the room is someone's, so update it. A cancel that
@@ -637,6 +636,8 @@ async def _apply(owner_id: str, invite: Invite, room_id: str, creator: str, team
         await agent_email_repo.add_meeting(team.get("address") or "", room_id)
     except Exception:  # noqa: BLE001
         logger.warning("meeting room %s: recording it on the team row failed", room_id, exc_info=True)
+    # After the listing write, so a panel's refetch on this nudge finds a new meeting.
+    await agent_email.mail_changed(owner_id)
     if over and allowed:
         # A re-forward restarts a parked series: the next occurrence, then its line.
         if await _reschedule_locked(owner_id, room_id, meeting, now=now) == "series_over":

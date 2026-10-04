@@ -245,11 +245,16 @@ impl Host {
             .mirrors
             .values()
             .map(|m| {
-                m.registration
-                    .successor
-                    .as_ref()
-                    .unwrap_or(&m.native)
-                    .clone()
+                let mut native = m.registration.successor.as_ref().unwrap_or(&m.native).clone();
+                // A Codex app server keeps running after it lets a thread's rollout go, so
+                // discovery stops naming the thread while its pid lives on. The rollout still
+                // says whether a turn runs; a hook's waiting prompt is left alone.
+                if native.provider == "codex" && m.ended_at.is_none() && native.status != "waiting-approval" {
+                    if let Some(path) = native.transcript.as_deref() {
+                        native.status = codex::turn_status(path).into();
+                    }
+                }
+                native
             })
             .collect();
         reconcile_sessions(&mut reconciled, update);
@@ -329,6 +334,12 @@ impl Host {
                 }
                 if mirror.native.restriction.as_deref() == Some("history-gap") {
                     native.restriction = Some("history-gap".into());
+                }
+                // A process's lineage never changes: one failed `ps` (or a spare-claimed job
+                // whose origin terminal has since closed) must not drop it, or the relay loses
+                // `forkedFrom` on the next registration and lists the origin beside its fork.
+                if native.forked_from.is_none() && mirror.native.process == native.process {
+                    native.forked_from.clone_from(&mirror.native.forked_from);
                 }
                 // Discovery cannot read the last assistant message; only a Stop hook
                 // carries it, so a listing must not blank it.
@@ -714,10 +725,10 @@ impl Host {
         Ok(None)
     }
 
-    /// A held prompt nobody holds any more was answered in the terminal (Claude
-    /// kills the hook when the human answers there) -- or the hold simply ended.
-    /// Which one is unknowable here, so the prompt stays "waiting" but stops being
-    /// answerable from Lightbulb; the next status hook moves the session on.
+    /// A held prompt nobody holds any more was answered in the terminal: Claude
+    /// kills the hook when the human answers there. A hook that lets go says so
+    /// (`PermissionRelease`), so a vanished channel is not a prompt still open, and
+    /// the session is back at work until discovery or the next hook says otherwise.
     /// Probed each tick with an empty datagram the hook ignores.
     fn approval_tick(&mut self) -> Vec<String> {
         let mut moved = vec![];
@@ -739,6 +750,9 @@ impl Host {
             unheld.private_send = None;
             mirror.queue.push(approval_row("", &unheld));
             mirror.waiting = Some(unheld);
+            if mirror.native.status == "waiting-approval" {
+                mirror.native.status = "busy".into();
+            }
             if persist_changed(&self.dir, key, mirror, &before).is_ok() {
                 moved.push(key.clone());
             }
@@ -1199,7 +1213,8 @@ impl Host {
                             last_early = Instant::now();
                         }
                         self.heartbeat_dirty.clear();
-                        heartbeat_frames = device_heartbeats_with_controls(&self.mirrors, &registered, relay_reads_stats, relay_reads_controls, relay_reads_live_terminal, relay_reads_remote_input, relay_reads_terminal)?.into();
+                        let frames = device_heartbeats_with_controls(&self.mirrors, &registered, relay_reads_stats, relay_reads_controls, relay_reads_live_terminal, relay_reads_remote_input, relay_reads_terminal)?;
+                        heartbeat_frames = frames.into();
                         if heartbeat_frames.is_empty() && last_idle.elapsed() >= IDLE_HEARTBEAT {
                             last_idle = Instant::now();
                             heartbeat_frames.push_back(idle_heartbeat());
@@ -2501,6 +2516,38 @@ pub(super) mod tests {
     }
 
     #[test]
+    fn local_sessions_a_codex_thread_discovery_stopped_naming_reads_its_rollout() {
+        let dir = tempfile::tempdir().unwrap();
+        let rollout = dir.path().join("rollout.jsonl");
+        fs::write(&rollout, "{\"type\":\"event_msg\",\"payload\":{\"type\":\"task_started\",\"turn_id\":\"t1\"}}\n{\"type\":\"event_msg\",\"payload\":{\"type\":\"task_complete\",\"turn_id\":\"t1\"}}\n").unwrap();
+        let mut mirror = test_mirror(SID, "gen-1");
+        mirror.native.transcript = Some(rollout);
+        let key = native_key(&mirror.native);
+        let mut host = test_host(dir.path(), vec![(key.as_str(), mirror)]);
+        // Its app server (this test's pid) lives on but no longer holds the thread open.
+        host.observe(vec![], &BTreeSet::new()).unwrap();
+        assert_eq!(host.mirrors[&key].native.status, "idle");
+        assert!(host.heartbeat_dirty.contains(&key), "the relay hears it on the next heartbeat");
+        host.mirrors.get_mut(&key).unwrap().native.status = "waiting-approval".into();
+        host.observe(vec![], &BTreeSet::new()).unwrap();
+        assert_eq!(host.mirrors[&key].native.status, "waiting-approval", "a hook's open prompt is kept");
+    }
+
+    #[test]
+    fn local_sessions_a_fork_keeps_its_lineage_through_a_failed_ps() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut fork = test_mirror(SID_B, "gen-1");
+        fork.native.provider = "claude".into();
+        fork.native.forked_from = Some(SID.into());
+        let key = native_key(&fork.native);
+        let mut host = test_host(dir.path(), vec![(key.as_str(), fork.clone())]);
+        let mut again = fork.native.clone();
+        again.forked_from = None;
+        host.observe(vec![again], &BTreeSet::from([SID_B.to_owned()])).unwrap();
+        assert_eq!(host.mirrors[&key].native.forked_from.as_deref(), Some(SID));
+    }
+
+    #[test]
     fn local_sessions_a_fork_ends_the_session_it_was_moved_out_of() {
         let dir = tempfile::tempdir().unwrap();
         // Its pid is this test process: alive, as the original's process stays after ←.
@@ -3436,12 +3483,12 @@ pub(super) mod tests {
         // Still held: the probe changes nothing.
         assert!(host.approval_tick().is_empty());
         assert_eq!(host.mirrors[&key].native.status, "waiting-approval");
-        // Answered in the terminal (Claude kills the hook) or let go: the channel is
-        // gone. Still waiting as far as we know, but no longer answerable here.
+        // Answered in the terminal (Claude kills the hook): the channel is gone with no
+        // release, so no prompt is open and the session is back at work.
         drop(hook_side);
         let _ = fs::remove_file(&reply);
         assert_eq!(host.approval_tick(), vec![key.clone()]);
-        assert_eq!(host.mirrors[&key].native.status, "waiting-approval");
+        assert_eq!(host.mirrors[&key].native.status, "busy", "no prompt is open any more");
         assert!(host.mirrors[&key].waiting.as_ref().unwrap().held.is_none());
         assert!(host.mirrors[&key].queue[1].get("itemId").is_none());
         assert!(host.approval_tick().is_empty(), "once, not every tick");

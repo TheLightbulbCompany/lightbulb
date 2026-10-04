@@ -490,6 +490,11 @@ fn latest_turn(path: &Path) -> Result<(&'static str, Option<String>, Option<Stri
     Ok((scan.status.unwrap_or("unknown"), scan.turn.clone(), scan.started_at.clone(), scan.turn_cwd.clone()))
 }
 
+/// `busy`, `idle` or `unknown` from the rollout's turn events alone.
+pub(super) fn turn_status(path: &Path) -> &'static str {
+    latest_turn(path).map_or("unknown", |(status, ..)| status)
+}
+
 pub(super) fn turn_finished(path: &Path, turn: &str) -> bool {
     latest_turn(path).is_ok_and(|(status, active, _, _)|
         status == "idle" || (status == "busy" && active.as_deref().is_some_and(|id| id != turn)))

@@ -558,6 +558,14 @@ class LocalSessionRelay:
                         row.pop("teamControl", None)
                         for key in sessions.JOIN_FIELDS:
                             row.pop(key, None)
+                    # A fork continues its origin's conversation: the name its person gave it there
+                    # carries over, since the listing shows the fork in the origin's place.
+                    # Also on a late re-register: a fork that registered before its origin had an id
+                    # registers again with `forkedFrom` once the origin is known.
+                    if descriptor.forked_from and not row.get("displayTitle"):
+                        origin = await repo.get_session(owner, descriptor.forked_from)
+                        if origin and origin.get("displayTitle") and origin["humanUserId"] == human:
+                            row["displayTitle"] = origin["displayTitle"]
                     # After the join fields reset above: a resume's person is let into the new run.
                     extra = [self._connection_check(cid, connection), *await session_resume.on_register(previous, row)]
                     # pickupAllowed/pickupSnapshot ride along from `previous`: content sharing, not control.

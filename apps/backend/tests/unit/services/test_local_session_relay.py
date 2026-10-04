@@ -1398,6 +1398,21 @@ async def test_a_fork_records_the_session_it_continues(transport):
 
 
 @pytest.mark.asyncio
+async def test_a_fork_keeps_the_name_its_person_gave_the_origin(transport):
+    origin = await start(transport)
+    row = await repo.get_session(OWNER, origin)
+    await repo.put_session(
+        {**row, "displayTitle": "Release train"},
+        row,
+        await repo.get_enrollment(OWNER, row["humanUserId"], row["deviceId"]),
+    )
+    fork = await relay(transport).handle_message(
+        "conn-1", registration(nativeConversationId="thread-2", forkedFrom=origin)
+    )
+    assert (await repo.get_session(OWNER, fork["sessionId"]))["displayTitle"] == "Release train"
+
+
+@pytest.mark.asyncio
 async def test_heartbeat_reports_the_terminal_and_only_a_running_session_shows_one(transport, db):
     sid = await start(transport)
     row = await repo.get_session(OWNER, sid)

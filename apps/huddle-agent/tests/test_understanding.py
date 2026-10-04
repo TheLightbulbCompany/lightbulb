@@ -2639,3 +2639,20 @@ async def test_an_answer_held_for_a_voice_that_dies_as_it_opens_is_news_not_spok
     ]
     await h.clear_presence()
     assert [a[3] for a in backend.late_answers] == ["Six PRs are open."]
+
+
+async def test_a_cut_answer_waits_while_its_cutters_line_is_held_unfinished():
+    # review: the cutter's first final was held (unfinished); the answer was posted before "never mind" came
+    h, room, backend, lives, clock, run = await announced()
+    h.on_agent_state("forge", "speaking")
+    talks(h, "u2", "Aden")
+    h.on_speech("u2", False)
+    backend.route_extra = {**ops(), "hold": True}
+    await say(h, "u2", "actually wait and")
+    await quiet(h, clock, h_mod.CUT_HANDLED_S + 1)
+    assert backend.late_answers == [], "their line is unfinished: not handled yet"
+    backend.route_extra = ops()
+    await say(h, "u2", "Forge, never mind")
+    await quiet(h, clock, h_mod.CUT_WAIT_S + 5)
+    await h.clear_presence()
+    assert backend.late_answers == []

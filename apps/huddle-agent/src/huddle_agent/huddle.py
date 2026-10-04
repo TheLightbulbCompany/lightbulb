@@ -2853,7 +2853,8 @@ class Huddle:
                 continue
             heard = self._final_at.get(who, -math.inf)
             handled = heard >= at and now - heard >= CUT_HANDLED_S  # its /route answered and was applied
-            if (handled or now - at >= CUT_WAIT_S) and not self._understanding.get(who):
+            # a line of theirs held as unfinished is not handled yet: its continuation may call the answer off
+            if (handled or now - at >= CUT_WAIT_S) and not self._understanding.get(who) and who not in self._held:
                 del self._cut_off[agent_id]
                 for n in items:
                     self._spawn(self._late_answer(agent_id, n))

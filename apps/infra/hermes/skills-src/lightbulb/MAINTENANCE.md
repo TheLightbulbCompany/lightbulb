@@ -123,6 +123,8 @@ MAINTENANCE (Lightbulb engineers): every claim in this skill is anchored to
                                  buttons); SessionDetails.tsx (About/Changes/Access/Linked work tabs, the Access switches,
                                  footer Copy link / Message owner / Pick up); SessionShareLinks.tsx (Share snapshot…);
                                  LocalSessionWork.tsx (Link existing work).
+  - Session live vs transcript  references/surfaces.md (running = live terminal; not running = "Transcript"; sidebar lists live, All sessions the rest)
+                              <- apps/frontend/src/components/messaging/{LocalSessionPanel,RoomDirectory}.tsx.
   - Session ask to join ..... references/surfaces.md ("Ask to join" paragraph)
                               <- apps/backend/core/services/local_sessions.py (request_join / decide_join / remove_sender,
                                  allowedSenders + joinRequests, may_control); core/services/activity.py (join_request item,

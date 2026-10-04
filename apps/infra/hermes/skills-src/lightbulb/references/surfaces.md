@@ -105,8 +105,11 @@ tool's own start screen, where they can type anything, including `/resume`.
 Rooms' **Devices & sessions** panel lists human-shared Claude/Codex sessions;
 opening one from that list opens the session in that room's right column.
 Opening a session from the sidebar Sessions section or from a session link
-instead fills the middle with the sharer's DM beside it. Either way the view
-renders the native transcript with the harness's own grammar: prompts with the sender's name,
+instead fills the middle with the sharer's DM beside it. A running session
+shows as a live terminal. A session that is not running (ended, or its Mac is
+offline) shows as a transcript, labelled "Transcript" in its status line. The
+sidebar Sessions section lists live sessions; All sessions lists the rest. The
+transcript renders the native transcript with the harness's own grammar: prompts with the sender's name,
 tool calls with collapsed output previews, thinking markers, turn boundaries
 and a working line. Codex sessions read as `• Ran …` / `└ output`; Claude
 sessions as `⏺ Bash(…)` / `⎿ output`. Updates arrive block by block, not token

@@ -254,9 +254,18 @@ def test_realtime_relays_the_kind_and_keeps_the_roster_on_the_meeting(env):
     got = _realtime(env, "leave", 1, "Pat")
     assert got["kind"] == "leave" and got["speaking"] is False and got["roster"] == ["Dan"]
     # Kept on META, so a worker that came in after the joins hears the roster on any later event.
-    assert env["meta"]["meeting"]["roster"] == {"2": "Dan"}
+    assert mod._names(env["meta"]["meeting"]["roster"]) == ["Dan"]
     got = _realtime(env, "speech_on", 2, "Dan")
     assert got["kind"] == "speech_on" and got["roster"] == ["Dan"]
+
+
+def test_an_older_join_that_lands_after_a_newer_leave_does_not_bring_the_person_back():
+    """Realtime events are background tasks: a join's write can commit after the leave that followed it."""
+    left = mod._rostered({}, "leave", "1", "Pat", 2000)
+    assert mod._names(mod._rostered(left, "join", "1", "Pat", 1000)) == []
+    assert mod._names(mod._rostered(left, "join", "1", "Pat", 3000)) == ["Pat"]
+    joined = mod._rostered({}, "join", "1", "Pat", 2000)
+    assert mod._names(mod._rostered(joined, "leave", "1", "Pat", 1000)) == ["Pat"]
 
 
 def test_a_roster_write_refused_for_a_moved_occurrence_relays_nothing(env):

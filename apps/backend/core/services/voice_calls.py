@@ -303,8 +303,13 @@ Your reply is spoken: no markdown, no lists, no code, no links, no ids. Never cl
 This turn has a hard limit of a few model steps; when it runs out, say what you found and what is still unchecked.]"""
 
 
-# A meeting's unsaid answers ride on its META item (400 KB): 20 x (160 + 2000) chars stays far under.
-_UNSAID_MAX, _UNSAID_REQUEST_CHARS, _UNSAID_ANSWER_CHARS = 20, 160, 2000
+# A meeting's unsaid answers ride on its META item (400 KB), for this occurrence and the newest
+# three in its history: cut by UTF-8 BYTES (a CJK answer is 3 bytes a character), 4 x 20 x 2.5 KB.
+_UNSAID_MAX, _UNSAID_REQUEST_BYTES, _UNSAID_ANSWER_BYTES = 20, 480, 2000
+
+
+def _cut_bytes(text: str, limit: int) -> str:
+    return text.encode()[:limit].decode(errors="ignore")
 
 
 async def post_late_answer(owner_id: str, room_id: str, agent_id: str, run_id: str, request: str, answer: str) -> None:
@@ -338,8 +343,8 @@ async def _keep_unsaid(room_id: str, agent_id: str, run_id: str, request: str, a
         "runId": run_id,
         "agentId": agent_id,
         "agentName": member.get("displayName") or agent_id,
-        "request": request.strip()[:_UNSAID_REQUEST_CHARS],
-        "answer": answer.strip()[:_UNSAID_ANSWER_CHARS],
+        "request": _cut_bytes(request.strip(), _UNSAID_REQUEST_BYTES),
+        "answer": _cut_bytes(answer.strip(), _UNSAID_ANSWER_BYTES),
         "at": int(time.time()),
     }
 

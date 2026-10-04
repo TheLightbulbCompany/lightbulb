@@ -744,6 +744,10 @@ async def test_a_meetings_late_answer_is_kept_on_the_record_once_not_posted(monk
     [kept] = meeting["unsaid"]
     assert kept["runId"] == "run-9" and kept["agentId"] == "a1" and kept["agentName"] == "Forge"
     assert kept["request"] == "open PRs?" and kept["answer"] == "x" * 2000 and kept["at"]
+    # Cut by UTF-8 bytes, never mid-character: the record's item has a byte limit, not a character one.
+    await vc.post_late_answer("org_a", "room-1", "a1", "run-cjk", "q", "\u6f22" * 3000)
+    cjk = meeting["unsaid"][-1]["answer"]
+    assert cjk == "\u6f22" * 666 and len(cjk.encode()) <= 2000
     for i in range(30):
         await vc.post_late_answer("org_a", "room-1", "a1", f"run-{i}", "q", "a")
     assert len(meeting["unsaid"]) == 20

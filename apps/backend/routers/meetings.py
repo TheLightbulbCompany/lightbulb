@@ -228,14 +228,23 @@ def _at(stamp: dict | None) -> float:
         return time.time()
 
 
-def _rostered(roster: dict | None, kind: str, pid: str, name: str) -> dict:
-    """The Meet's people after one event: a join adds, a leave removes. The bot is never one."""
+def _rostered(roster: dict | None, kind: str, pid: str, name: str, at: int) -> dict:
+    """The Meet's people after one event: a join adds, a leave removes. The bot is never one.
+    Each entry keeps its event time (ms): realtime events run as overlapping background tasks, so
+    an older join that commits after a newer leave must not bring the person back."""
     roster = dict(roster or {})
-    if kind == "join" and pid and name and not name.endswith(meeting_bots._BOT_SUFFIX):
-        roster[pid] = name
-    elif kind == "leave":
-        roster.pop(pid, None)
+    seen = roster.get(pid) or {}
+    if kind not in ("join", "leave") or not pid or at < seen.get("at", 0):
+        return roster
+    if kind == "leave":
+        roster[pid] = {**seen, "at": at, "in": False}
+    elif name and not name.endswith(meeting_bots._BOT_SUFFIX):
+        roster[pid] = {"name": name, "at": at, "in": True}
     return roster
+
+
+def _names(roster: dict) -> list[str]:
+    return sorted(p["name"] for p in roster.values() if p.get("in") and p.get("name"))
 
 
 async def _speaker(bot_id: str, room_id: str, event: dict) -> None:
@@ -246,13 +255,13 @@ async def _speaker(bot_id: str, room_id: str, event: dict) -> None:
         meeting = meta.get("meeting") or {}
         if meeting.get("recallBotId") != bot_id:
             return  # a stale or rebooked bot pushes nothing into the room
-        kind, pid, name = event["kind"], event["participantId"], event["name"]
-        roster = _rostered(meeting.get("roster"), kind, pid, name)
+        kind, pid, name, at = event["kind"], event["participantId"], event["name"], int(event["at"] * 1000)
+        roster = _rostered(meeting.get("roster"), kind, pid, name, at)
         if kind in ("join", "leave"):
             try:
                 written = await meeting_invites._patch_meeting(
                     room_id,
-                    lambda m: {"roster": _rostered(m.get("roster"), kind, pid, name)},
+                    lambda m: {"roster": _rostered(m.get("roster"), kind, pid, name, at)},
                     # re-checked on every attempt: an old bot's late join never lands on the next occurrence
                     when=lambda m: m.get("recallBotId") == bot_id,
                 )
@@ -262,7 +271,7 @@ async def _speaker(bot_id: str, room_id: str, event: dict) -> None:
             except Exception:  # noqa: BLE001 -- best effort: this event still relays its own roster
                 put_metric("meeting.roster.write_failed")
                 logger.warning("recall realtime room=%s: roster write failed", room_id, exc_info=True)
-        await livekit_huddles.send_meet_speaker(room_id, {**event, "roster": sorted(roster.values())})
+        await livekit_huddles.send_meet_speaker(room_id, {**event, "roster": _names(roster)})
     except Exception:  # noqa: BLE001 -- already answered 2xx; the next event carries on
         put_metric("meeting.webhook.error")
         logger.warning("recall realtime failed room=%s", room_id, exc_info=True)

@@ -200,3 +200,9 @@ it("says an empty ended session never started, and offers Resume only for one th
   render(<LocalSessionPanel {...props} session={{ ...session, status: "ended", latestEventSeq: 4, resumable: true }} />);
   expect(await screen.findByRole("button", { name: "Resume" })).toBeTruthy();
 });
+
+it("pauses an admitted teammate's typing while the owner answers a join request", async () => {
+  render(<LocalSessionPanel session={{ ...session, allowedSenders: ["alice"], inputPaused: true }} ownerName="Alice" own={false} client={client as never} revision={0} onAccessLost={() => {}} onEvent={() => () => {}} />);
+  expect(await screen.findByText(/Paused while Alice answers a request to join/)).toBeTruthy();
+  expect(screen.getByRole("region", { name: "Live terminal (view only)" })).toBeTruthy();
+});

@@ -237,8 +237,9 @@ export function LocalSessionPanel({ session, ownerName, own, client, revision, o
       ? <div ref={slot} className="local-session-terminal" role="region" aria-label="Session terminal" />
       : <>
       {watchRemote && <SessionTerminalView session={session} onEvent={onEvent!} watch={client.watchLocalSession!} onLive={setScreenLive} onCanType={setTermCanType}
-        admitted={control && session.shared !== false}
+        admitted={control && session.shared !== false && !(session.inputPaused && !own)}
         input={client.sendLocalSessionInput ? (bytes, epoch) => client.sendLocalSessionInput!(session.sessionId, toBase64(bytes), epoch) : undefined} />}
+      {terminalLive && control && !own && session.inputPaused && <p className="text-sm text-muted-foreground">Paused while {ownerName} answers a request to join.</p>}
       {liveTerminal ? <div className="local-session-feedback">{transcript}</div> : <div className="local-session-scroll">
       <div ref={scroller} className="room-context-body local-session-history" role="region" aria-label="Native session history" tabIndex={0} onScroll={onScroll}>
         <div ref={content}>

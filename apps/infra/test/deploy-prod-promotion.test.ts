@@ -123,15 +123,14 @@ describe("desktop-build.yml prod promotion gate", () => {
     expect(jobLevelIf(jobs.get("build-desktop-prod")!)).toBe(PROMOTE_IF);
   });
 
-  it("builds the development app on main pushes only", () => {
+  it("builds nothing on a push: there is no development app", () => {
+    // Owner decision 2026-10-04 (#3692): no dev desktop builds. A pull request
+    // runs the tests, a manual dispatch builds prod, a push to main does neither.
     const triggers = yaml.slice(yaml.indexOf("\n'on':\n"), yaml.indexOf("\npermissions:\n"));
-    expect(triggers).toContain("push:");
-    expect(triggers).toContain("- main");
+    expect(triggers).not.toContain("push:");
+    expect(triggers).toContain("pull_request:");
     expect(triggers).toContain("workflow_dispatch:");
-    expect(jobs.has("build-desktop-dev")).toBe(true);
-    // Owner decision 2026-10-04: a dispatch builds prod only, so dev runs on
-    // pushes alone (not on dispatches, not on pull requests).
-    expect(jobLevelIf(jobs.get("build-desktop-dev")!)).toBe("if: github.event_name == 'push'");
+    expect(jobs.has("build-desktop-dev")).toBe(false);
   });
 
   it("runs the Rust tests on pull requests without building", () => {
@@ -146,8 +145,8 @@ describe("desktop-build.yml prod promotion gate", () => {
   });
 
   it("builds the production app on dispatch with no dependency on the development job", () => {
-    // Owner decision 2026-10-04: skip dev when dispatching prod. Prod used to
-    // need dev only to inherit a warm Rust cache, which now lives on the Mac.
+    // Prod used to need the dev job only to inherit a warm Rust cache, which
+    // now lives on the Mac. The dev job is gone (#3692).
     const prod = jobs.get("build-desktop-prod")!;
     expect(jobLevelIf(prod)).toBe(PROMOTE_IF);
     expect(prod).not.toMatch(/^ {4}needs:/m);

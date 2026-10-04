@@ -51,21 +51,6 @@ def test_at_most_four_work_at_once_and_a_freed_slot_starts_the_next():
     assert [r.agent for r in rl.startable()] == ["a4"]
 
 
-def test_rows_sharing_a_steered_run_take_one_slot_and_move_together():
-    rl = RequestList()
-    rows = rl.settle(1, "u1", [{"agentId": "forge", "task": "x"}], 0.0)
-    rows += rl.settle(2, "u1", [{"agentId": "forge", "task": "y"}]
-                      + [{"agentId": f"a{i}", "task": "z"} for i in range(4)], 0.0)  # fmt: skip
-    for r in rows[:2]:
-        rl.start(r)
-        rl.bind(r, "run1")
-    assert len(rl.startable()) == 3  # the two forge rows hold one slot
-    rl.ready("run1")
-    assert [r.status for r in rows[:2]] == ["ready", "ready"]
-    rl.delivered({"run1"})
-    assert [r.status for r in rows[:2]] == ["delivered", "delivered"]
-
-
 def test_lifecycle_order_and_postable():
     rl, (p, f, fr) = routed()
     started(rl, (p, f, fr))
@@ -146,7 +131,7 @@ def test_a_cancelled_row_is_never_postable():
 def test_settle_after_everyone_stop_adds_nothing():
     rl = RequestList()
     rl.pending(1, "u1", ["a", "b"], 0.0)
-    rl.cancel()
+    rl.cancel(mark=1)
     assert rl.settle(1, "u1", [{"agentId": "a", "task": "t"}], 1.0) == []
     assert rl.startable() == [] and rl.items == []
 
@@ -279,7 +264,7 @@ def test_ack_line_names_three_and_counts_the_rest():
 def test_one_agents_stop_while_route_decides_drops_only_its_row():
     rl = RequestList()
     rl.pending(1, "u", ["forge", "friday"], 0.0)
-    rl.cancel("forge")
+    rl.cancel("forge", mark=1)
     rows = rl.settle(
         1,
         "u",

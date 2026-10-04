@@ -59,6 +59,11 @@ class Transcript:
     ) -> int:
         return self._add("agent", agent_id, name, text, at, to)
 
+    @property
+    def last_mark(self) -> int:
+        """The newest line's mark (-1 before any)."""
+        return self._next - 1
+
     def text(self, lines: list[Line] | None = None) -> str:
         """ "Name: text", or "Agent → Person: text" for a voice's answer (the backend parses the arrow)."""
         return "\n".join(

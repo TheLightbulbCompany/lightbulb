@@ -43,12 +43,10 @@ class RequestList:
         self.version = (
             0  # bumped on every change: the floor voice hears the list when it moves
         )
-        self._cancelled_turns: set[int] = (
-            set()
-        )  # turns whose pending rows were ALL cancelled before /route settled
-        self._cancelled_asks: set[tuple[int, str]] = (
-            set()
-        )  # (turn, agent) pending rows one agent's stop cancelled
+        # Transcript marks of the latest stops: a line said at or before one starts nothing, even one still at
+        # /route when the stop was said (understanding §4.5)
+        self._stop_all = -1
+        self._stop_at: dict[str, int] = {}
         self._suppressed: set[str] = (
             set()
         )  # runs with no row that "don't post that" named
@@ -88,7 +86,7 @@ class RequestList:
         """/route's requests, [{agentId, task, by?}] in order, replace the line's pending rows. An agent may
         have several rows from one line: it works on them one at a time (understanding §4.5)."""
         self.drop_pending(turn)
-        if turn in self._cancelled_turns:
+        if self.stopped(turn):
             return []
         rows = [
             Request(
@@ -102,15 +100,15 @@ class RequestList:
                 by=x.get("by") or "",
             )
             for x in routed
-            if (turn, x["agentId"]) not in self._cancelled_asks
+            if not self.stopped(turn, x["agentId"])
         ]
         self.items += rows
         self._bump()
         return rows
 
     def startable(self) -> list[Request]:
-        """Queued rows that may start now, oldest first: one per agent, never an agent already working; rows
-        that steered one run hold one slot."""
+        """Queued rows that may start now, oldest first: one per agent, never an agent already working, at most
+        MAX_WORKING working in all."""
         working = [r for r in self.items if r.status == "working"]
         taken = {r.agent for r in working}
         out: list[Request] = []
@@ -118,7 +116,7 @@ class RequestList:
             if r.status == "queued" and r.routed and r.agent not in taken:
                 taken.add(r.agent)
                 out.append(r)
-        return out[: max(MAX_WORKING - len({r.run_id or id(r) for r in working}), 0)]
+        return out[: max(MAX_WORKING - len(working), 0)]
 
     def get(self, request_id: str) -> Request | None:
         return next((r for r in self.items if r.id == request_id), None)
@@ -162,19 +160,21 @@ class RequestList:
     def fail(self, r: Request) -> None:
         self._move([r], "failed")
 
-    def cancel(self, agent: str | None = None) -> list[Request]:
+    def cancel(self, agent: str | None = None, mark: int = -1) -> list[Request]:
+        """Every open row (of `agent`), and every line said at or before `mark` (the stop's own line)."""
         rows = [r for r in self.open() if agent in (None, r.agent)]
-        pending = {(r.turn, r.agent) for r in rows if not r.routed}
         if agent is None:
-            self._cancelled_turns |= {t for t, _ in pending}
+            self._stop_all = max(self._stop_all, mark)
         else:
-            self._cancelled_asks |= pending
+            self._stop_at[agent] = max(self._stop_at.get(agent, -1), mark)
         self._move(rows, "cancelled")
         return rows
 
     def stopped(self, turn: int, agent: str | None = None) -> bool:
-        """A stop said while /route split this turn's line: the whole turn, or this agent's ask in it."""
-        return turn in self._cancelled_turns or (turn, agent) in self._cancelled_asks
+        """A stop said at or after this turn's line: to everyone, or to this agent."""
+        return turn <= self._stop_all or (
+            agent is not None and turn <= self._stop_at.get(agent, -1)
+        )
 
     def no_post(self, agent: str | None = None) -> Request | None:
         """ "don't post that": the named agent's newest open request, else the room's newest."""

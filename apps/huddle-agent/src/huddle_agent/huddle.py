@@ -670,7 +670,7 @@ class Huddle:
             # Engine §3.6: "everyone stop" / "stop all": every open request and every run, the floor cut.
             if v:
                 self._unwanted(v, identity)
-            self._stop_all()
+            self._stop_all(mark)
             return
         no_post, target = no_post_command(text, self._team["agents"])
         if no_post:
@@ -685,7 +685,7 @@ class Huddle:
             if target:
                 if v and target == v.agent_id:
                     self._unwanted(v, identity)
-                self._stop(target)
+                self._stop(target, mark)
                 return
         held = self._held.pop(identity, None)
         if (
@@ -946,13 +946,17 @@ class Huddle:
         if self._drive_request(v, text, f'{name} cut in: "{text}"'):
             self._live_call(v, "nudge")
 
-    def _drive_request(self, v: _Voice, text: str, said: str) -> bool:
-        """Start `text` as the floor-holder's driven run; its own delegation of it binds instead of posting."""
+    def _drive_request(self, v: _Voice, text: str, said: str, row: Request | None = None) -> bool:
+        """Start `text` as the floor-holder's driven run; its own delegation of it binds instead of posting.
+        `row`: the request row it answers, started and bound before /turns is posted (understanding §4.6)."""
         v.driven = d = _Driven(
             str(uuid.uuid4()), bind_until=self._clock() + BIND_SECONDS
         )
         v.driven_run = d.run_id
-        self._spawn(self._drive(v, d, text))
+        if row is not None:
+            self._requests.start(row)
+            self._requests.bind(row, d.run_id)
+        self._spawn(self._drive(v, d, text, row))
         return self._live_call(
             v,
             "append_thinking",
@@ -973,7 +977,7 @@ class Huddle:
         return "hold" if r.get("hold") else "agent" if r.get("agentIds") or r.get("agentId") else "none"
 
     async def _understand(
-        self, identity: str, text: str, mark: int, humans: int | None, unclaimed: bool = False, quiet: bool = False
+        self, identity: str, text: str, humans: int | None, unclaimed: bool = False, quiet: bool = False
     ) -> dict | None:
         """The line's /route call alone (understanding §4.4): who answers and, from a current backend, `ops`.
         None when it failed; a line spoken to the agents says so, unless `quiet` (its caller has a fallback)."""
@@ -1031,10 +1035,6 @@ class Huddle:
                 return
             reqs, social = named, None
         v = self._voice
-        floor_own = v is not None and identity == v.speaker and any(x["agentId"] == v.agent_id for x in reqs)
-        if v is not None and identity == v.speaker:
-            # The floor speaker (a switch, or a line naming 2+ agents): the floor voice heard its own asks itself
-            reqs = [x for x in reqs if x["agentId"] != v.agent_id]
         rows = self._apply(identity, mark, {**ops, "requests": reqs})
         if not rows:
             if social and v is None:
@@ -1046,27 +1046,39 @@ class Huddle:
                     "Do not delegate it."
                 )
                 await self.summon(identity, social, request=None, mark=mark, path="jev", heard_at=heard_at, said=said)
-            elif not social and not floor_own:
+            elif not social:
                 self._unrouted[identity] = self._clock()
             return
-        if v is not None and (identity != v.speaker or floor_own):
+        startable = self._requests.startable()
+        if v is not None and identity == v.speaker:
+            mine = [r for r in rows if r.agent == v.agent_id]
+            if mine and mine[0] in startable and v.live is not None:
+                # §4.6: the floor speaker's ask is its voice's driven run; its own delegation of it binds
+                task = mine[0].task or text
+                self._drive_request(v, task, f'{self._name(identity)} asked: "{task}"', row=mine[0])
+            if mine or not switch:
+                self._start_queued()
+                return
+        elif v is not None:
             self._start_queued()  # §4.6: they start now; answers reach the room as ready deliveries
             return
-        if v is not None:
+        if v is not None:  # a switch: the floor speaker addressed only other agents
             emit_metric("live.route.switch", 1, "Count")
         first = rows[0]
-        path = "switch" if switch and v is not None else "name" if first.by == "name" else "jev"
-        self._requests.start(first)  # its voice drives it (below); _start_queued must not post it too
+        drive = first in startable  # an agent works on one row at a time (§4.5): else it waits in line
+        path = "switch" if v is not None else "name" if first.by == "name" else "jev"
+        if drive:
+            self._requests.start(first)  # its voice drives it (below); _start_queued must not post it too
         self._start_queued()
         await self.summon(
             identity,
             first.agent,
-            request=first.task or text,
+            request=(first.task or text) if drive else None,
             mark=mark,
             path=path,
             heard_at=heard_at,
-            ack=ack_line(rows, self._agent_name, me=first.agent) if len(rows) >= 2 else None,
-            row=first,
+            ack=ack_line(rows, self._agent_name, me=first.agent) if len(rows) >= 2 or not drive else None,
+            row=first if drive else None,
         )
         if first.status == "working" and first.run_id is None:  # its voice never opened: it runs without one
             self._requests.unstart(first)
@@ -1088,7 +1100,7 @@ class Huddle:
         already fetched by its multi-name round trip: never asked twice."""
         heard_at = self._clock()
         r = routed if routed is not None else await self._understand(
-            identity, text, mark, humans, unclaimed, quiet=heard is not None
+            identity, text, humans, unclaimed, quiet=heard is not None
         )
         outcome = "error" if r is None else self._outcome(r)
         r = r or {}
@@ -1419,13 +1431,14 @@ class Huddle:
                     or f"You finished {v.announce[1]}: {v.announce[2]}. Tell the room now.",
                 )
             )
+        if row is not None and row.status != "working":
+            request = None  # stopped while the voice opened (understanding §4.5): the voice opens, nothing runs
         if request:
             # D §5: we start the turn ourselves, in parallel with the voice open. A task, not awaited:
             # a cold workspace retries for up to a minute and must not hold the floor lock.
             v.driven = _Driven(str(uuid.uuid4()))
             v.driven_run = v.driven.run_id
-            if row is not None:  # understanding §4.6: the row is this run, bound before /turns is posted
-                self._requests.start(row)
+            if row is not None:  # understanding §4.6: the row (started by the caller) is this run
                 self._requests.bind(row, v.driven.run_id)
             self._spawn(self._drive(v, v.driven, request, row))
             seed.append(
@@ -1668,13 +1681,16 @@ class Huddle:
             return
         if v.driven is d:
             v.driven = None
-        said = self._voice is v and v.live is not None and d.run_id not in self._stopped
-        if said:
+        voiced = self._voice is v and v.live is not None and d.run_id not in self._stopped
+        if voiced:
             self._live_call(v, "append_commentary", CANT_REACH, delegation_id=d.pending)
-        if row is not None and said:
+        if row is not None and voiced:
             self._requests.fail(row)  # its voice just said CANT_REACH: no news item says it again
         elif row is not None and d.run_id not in self._stopped:
             self._request_failed([row], d.run_id)
+        if row is not None:
+            self._start_queued()  # the agent's next row
+            self._sync_state()
 
     def _bind_driven(self, v: _Voice, d: _Driven, delegation_id: str) -> None:
         self._runs.bind(d.run_id, delegation_id, v.gen)
@@ -1682,9 +1698,10 @@ class Huddle:
             v.driven = None
         emit_metric("live.driven.bound", 1, "Count")
 
-    def _stop(self, agent_id: str) -> None:
+    def _stop(self, agent_id: str, mark: int | None = None) -> None:
         """The only door that stops a voice run: an explicit stop to that agent. Interrupts its voice if it
-        holds the floor and aborts every running run of that agent (and no one else's)."""
+        holds the floor and aborts every running run of that agent (and no one else's). `mark`: the stop's line
+        (default: the newest); a line said at or before it, even one still at /route, starts nothing for it."""
         if v := self._floor_voice(agent_id):
             v.driven = None
             v.last_activity = self._clock()
@@ -1693,7 +1710,8 @@ class Huddle:
         for run_id in aborted:
             self._runs.abort(run_id)  # silent from here on, whatever the backend says
             self._stopped.add(run_id)
-        self._requests.cancel(agent_id)  # no run_ended follows an abort
+        mark = self._transcript.last_mark if mark is None else mark
+        self._requests.cancel(agent_id, mark)  # no run_ended follows an abort
         cancelled = {r.run_id for r in self._requests.items if r.agent == agent_id and r.status == "cancelled"}
         if news := [n for n in self._news.get(agent_id, []) if n[0] not in cancelled]:
             self._news[agent_id] = news
@@ -1704,16 +1722,17 @@ class Huddle:
         self._start_queued()  # the bridge's own semaphore makes a fifth /turns wait for the aborted run
         self._sync_state()
 
-    def _stop_all(self) -> None:
+    def _stop_all(self, mark: int | None = None) -> None:
         """ "everyone stop" / "stop all" (engine §3.6): every open request cancelled (a line /route is still
         splitting starts nothing), every run aborted, the floor cut, and nothing left queued to answer."""
-        rows = self._requests.cancel()
+        mark = self._transcript.last_mark if mark is None else mark
+        rows = self._requests.cancel(mark=mark)
         agents = {r.agent for r in rows} | {r.agent_id for r in self._runs.running()}
         if self._voice:
             agents.add(self._voice.agent_id)
         self._queue = []
         for agent_id in sorted(agents):
-            self._stop(agent_id)
+            self._stop(agent_id, mark)
         emit_metric("live.request.stop_all", 1, "Count")
 
     def _no_post(self, agent_id: str | None, asker: str | None = None) -> None:

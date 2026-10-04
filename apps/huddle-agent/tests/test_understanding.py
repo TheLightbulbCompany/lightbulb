@@ -81,6 +81,7 @@ async def test_three_requests_with_no_voice_open_one_row_one_run_each(capsys):
 async def test_three_requests_with_a_voice_open_for_another_speaker_start_at_once():
     h, room, backend, lives, clock, log = await three()
     await say(h, "u2", "Pulse, how are we doing")
+    pulse_run = backend.turns[0]["runId"]
     backend.turns.clear()
     backend.route_extra = ops(requests=ASKS)
     await say(h, "u1", SAID)
@@ -97,6 +98,100 @@ async def test_three_requests_with_a_voice_open_for_another_speaker_start_at_onc
         "speaker": "Aden",
         "mine": False,
     }
+    answer(h, pulse_run, "pulse", "We're fine.")
+    for row in (
+        h._requests.items
+    ):  # each run ends; Forge's second row starts when its first ends
+        await settle(h)
+        answer(h, row.run_id, row.agent, f"{row.task} done.")
+    await settle(h)
+    spoken = []
+    for _ in range(10):  # each answer is said by its own voice, one voice at a time
+        clock.t += 30
+        await h.tick()
+        await settle(h)
+        v = h._voice
+        if v is not None and v.path == "announce" and v.live is not None:
+            spoken.append(v.agent_id)
+            h.on_agent_state(v.agent_id, "speaking")
+            h.on_agent_state(v.agent_id, "listening")
+    assert spoken == ["forge", "friday"]  # Forge says both its answers in its one turn
+    assert [r.status for r in h._requests.items] == ["delivered"] * 3
+
+
+async def test_two_lines_racing_for_one_agent_both_run_in_order():
+    # review B2-1: a voice that opened after the line was said never heard it; every request is a row
+    h, room, backend, lives, clock, log = await three()
+    backend.route_gate = asyncio.Event()
+    backend.route_extra = ops(requests=[("forge", "the open PRs", "fit")])
+    await h.on_final_transcript("u1", "Prasiddha", "what are the open PRs")
+    await asyncio.sleep(0)
+    backend.route_extra = ops(requests=[("forge", "what shipped", "fit")])
+    await h.on_final_transcript("u1", "Prasiddha", "and what shipped")
+    await asyncio.sleep(0)
+    backend.route_gate.set()
+    await settle(h)
+    assert rows(h) == [
+        ("forge", "the open PRs", "working"),
+        ("forge", "what shipped", "queued"),
+    ]
+    answer(h, h._requests.items[0].run_id, "forge", "Two are open.")
+    await settle(h)
+    assert [t["utterance"] for t in backend.turns] == ["the open PRs", "what shipped"]
+
+
+async def test_a_stop_said_while_route_decides_starts_nothing():
+    # review B2-2: the same speaker stops a line that is still at /route
+    for stop in ("everyone stop", "Forge, stop"):
+        h, room, backend, lives, clock, log = await three()
+        backend.route_gate = asyncio.Event()
+        backend.route_extra = ops(requests=[("forge", "the open PRs", "fit")])
+        await h.on_final_transcript("u1", "Prasiddha", "what are the open PRs")
+        await asyncio.sleep(0)
+        await h.on_final_transcript("u1", "Prasiddha", stop)
+        backend.route_gate.set()
+        await settle(h)
+        assert backend.turns == [] and lives == [] and h._requests.items == []
+
+
+async def test_a_stop_while_the_voice_opens_runs_nothing():
+    # review B2-3: the row was cancelled before its driven run was made
+    h, room, backend, lives, clock, log = await three()
+    backend.session_gate = asyncio.Event()
+    backend.route_extra = ops(requests=[("forge", "the open PRs", "fit")])
+    await h.on_final_transcript("u1", "Prasiddha", "what are the open PRs")
+    for _ in range(20):
+        await asyncio.sleep(0)
+    assert backend.sessions == ["forge"]
+    await h.on_final_transcript("u1", "Prasiddha", "Forge, stop")
+    backend.session_gate.set()
+    await settle(h)
+    assert backend.turns == [] and rows(h) == [("forge", "the open PRs", "cancelled")]
+    assert not [
+        c for c in lives[0].calls if c[0] in ("nudge", "commentary", "reply_to")
+    ]
+    assert not any("already handed" in text for _, text in lives[0].seed)
+
+
+async def test_a_second_request_to_an_agent_working_voicelessly_waits_in_line():
+    # review B2-4: one agent works on one row at a time, however its voice opens
+    h, room, backend, lives, clock, log = await three()
+    h.fail.add(
+        "forge"
+    )  # the first voice fails to open: its driven row runs without one
+    backend.route_extra = ops(requests=[("forge", "the open PRs", "fit")])
+    await say(h, "u1", "what are the open PRs")
+    h.fail.discard("forge")
+    backend.route_extra = ops(requests=[("forge", "what shipped", "fit")])
+    await say(h, "u2", "what shipped this week")
+    assert [s for _, _, s in rows(h)] == ["working", "queued"] and len(
+        backend.turns
+    ) == 1
+    assert [x.agent_id for x in lives] == ["forge"] and h._voice.driven is None
+    assert lives[0].seed[-1] == (
+        "developer",
+        "You are on what shipped. Say that in one short sentence, then wait.",
+    )
 
 
 async def test_a_superseded_unnamed_line_starts_nothing_a_named_one_still_starts(
@@ -143,10 +238,18 @@ async def test_without_ops_todays_handling_stands():
 
 async def test_a_driven_row_whose_turn_fails_is_failed_and_cant_reach_is_said_once():
     h, room, backend, lives, clock, log = await three()
-    backend.route_extra = ops(requests=[("forge", "the open PRs", "fit")])
-    backend.turn_results = [BackendError(400, "bad_request", None)]
-    await say(h, "u1", "what are the open PRs")
-    assert rows(h) == [("forge", "the open PRs", "failed")]
+    backend.route_extra = ops(
+        requests=[("forge", "the open PRs", "fit"), ("forge", "what shipped", "fit")]
+    )
+    # every retry of a waking workspace, until the clock passes TURN_RETRY_BUDGET
+    backend.turn_results = [BackendError(503, "runtime_unavailable", None)] * 11
+    await say(h, "u1", "what are the open PRs and what shipped")
+    # one more wait would pass the budget: the run never started
+    assert clock.t - 1_000 + h_mod.TURN_RETRY_MAX_DELAY > h_mod.TURN_RETRY_BUDGET
+    assert [s for _, _, s in rows(h)] == ["failed", "working"]
+    assert (
+        backend.turns[-1]["utterance"] == "what shipped"
+    )  # the next row starts at once
     assert (
         sum(c[:2] == ("commentary", h_mod.CANT_REACH) for c in lives[0].calls) == 1
         and h._news == {}

@@ -38,8 +38,10 @@ from huddle_agent.transcript import (
     addressed_by_name,
     ghost_line,
     is_question,
+    no_post_command,
     pause,
     real_speech,
+    stop_all,
     stop_request,
     stop_target,
     strip_wake,
@@ -658,6 +660,16 @@ class Huddle:
             v and identity == v.speaker
         ):  # a line that routes itself (§4.2)
             self._spoke[identity] = mark
+        if stop_all(text):
+            # Engine §3.6: "everyone stop" / "stop all": every open request and every run, the floor cut.
+            if v:
+                self._unwanted(v, identity)
+            self._stop_all()
+            return
+        no_post, target = no_post_command(text, self._team["agents"])
+        if no_post:
+            self._no_post(target)  # engine §3.6; nothing is posted as a turn
+            return
         if stop_request(text):
             # "stop" / "never mind" to an agent aborts its runs (D §8): the agent it names, from anyone, else
             # the floor-holder when its pinned speaker says it. Nothing is posted as a turn.
@@ -1432,6 +1444,8 @@ class Huddle:
         if steer and resp.get("steered"):
             self._runs.abort(run_id)  # never runs: the steered run answers this request too
             self._requests.bind(r, steer.run_id)
+            if r.no_post:  # "don't post that" covers the run that answers it
+                self._spawn(self._mark_no_post(steer.run_id))
             self._start_queued()  # it shares the steered run's slot: one more queued request may start
 
     def _request_failed(self, rows: list[Request], run_id: str) -> None:
@@ -1453,6 +1467,11 @@ class Huddle:
         v = self._floor_voice(agent_id)
         if v is None or self._window is None:
             return
+        if stop_all(pending_transcript):
+            self._stop_all()
+            return
+        if no_post_command(pending_transcript, self._team["agents"])[0]:
+            return  # the final already marked it (engine §3.6); never a run
         if stop_request(
             pending_transcript
         ):  # the voice delegated the "stop" it heard: swallow it the same way
@@ -1543,19 +1562,57 @@ class Huddle:
             v.driven = None
             v.last_activity = self._clock()
             self._live_call(v, "interrupt")
-        for run in self._runs.running(agent_id):
-            self._runs.abort(
-                run.run_id
-            )  # silent from here on, whatever the backend says
-            self._stopped.add(run.run_id)
-            self._spawn(self._abort(run.run_id))
-        cancelled = {r.run_id for r in self._requests.cancel(agent_id)}  # no run_ended follows an abort
+        aborted = [run.run_id for run in self._runs.running(agent_id)]
+        for run_id in aborted:
+            self._runs.abort(run_id)  # silent from here on, whatever the backend says
+            self._stopped.add(run_id)
+        self._requests.cancel(agent_id)  # no run_ended follows an abort
+        cancelled = {r.run_id for r in self._requests.items if r.agent == agent_id and r.status == "cancelled"}
         if news := [n for n in self._news.get(agent_id, []) if n[0] not in cancelled]:
             self._news[agent_id] = news
         else:
             self._news.pop(agent_id, None)  # a stopped request's answer is neither spoken nor posted
-        self._start_queued()
+        self._spawn(self._free_slots(aborted))
         self._sync_state()
+
+    async def _free_slots(self, run_ids: list[str]) -> None:
+        """A stopped run may still be executing on the bridge (cap MAX_WORKING): a queued request starts only
+        once its abort has answered (or failed, bounded by the abort call's own timeout)."""
+        await asyncio.gather(*(self._abort(r) for r in run_ids))
+        self._start_queued()
+
+    def _stop_all(self) -> None:
+        """ "everyone stop" / "stop all" (engine §3.6): every open request cancelled (a line /route is still
+        splitting starts nothing), every run aborted, the floor cut, and nothing left queued to answer."""
+        rows = self._requests.cancel()
+        agents = {r.agent for r in rows} | {r.agent_id for r in self._runs.running()}
+        if self._voice:
+            agents.add(self._voice.agent_id)
+        self._queue = []
+        for agent_id in sorted(agents):
+            self._stop(agent_id)
+        emit_metric("live.request.stop_all", 1, "Count")
+
+    def _no_post(self, agent_id: str | None) -> None:
+        """ "don't post that": the named agent's newest open request, else the room's newest; with no
+        request, that agent's (unnamed: anyone's) newest running run. Neither late-answer door posts it, and
+        the worker never does; it may still be spoken."""
+        r = self._requests.no_post(agent_id)
+        run_id = r.run_id if r else None
+        if r is None:
+            runs = self._runs.running(agent_id)
+            run_id = runs[-1].run_id if runs else None
+            if run_id:
+                self._requests.suppress(run_id)
+        emit_metric("live.request.no_post", 1, "Count")
+        if run_id:  # a request not started yet is marked when its /turns lands (_post_turn)
+            self._spawn(self._mark_no_post(run_id))
+
+    async def _mark_no_post(self, run_id: str) -> None:
+        try:
+            await self._backend.no_post(run_id)
+        except Exception:
+            logger.info("huddle no-post mark failed run=%s", run_id, exc_info=True)
 
     async def _abort(self, run_id: str) -> None:
         try:
@@ -1607,6 +1664,10 @@ class Huddle:
                         run_id in self._stopped
                     ):  # stopped while /turns was in flight: its abort may have missed
                         self._spawn(self._abort(run_id))
+                    if self._requests.no_posted(run_id):
+                        # "don't post that" said before this /turns landed: a retry rewrites the VOICERUN
+                        # row and can lose a mark that landed in its read-then-put window, so mark it again
+                        self._spawn(self._mark_no_post(run_id))
                     return r
                 except BackendError as e:
                     delay = min(2 ** (attempt + 1), TURN_RETRY_MAX_DELAY)

@@ -123,6 +123,10 @@ class RequestList:
     def suppress(self, run_id: str) -> None:
         self._suppressed.add(run_id)
 
+    def no_posted(self, run_id: str) -> bool:
+        """"don't post that" named this run (a request row's, or a plain run's)."""
+        return run_id in self._suppressed or any(r.no_post for r in self.by_run(run_id))
+
     def postable(self, run_id: str) -> bool:
         """False for "don't post that", and for a failed request (its CANT_REACH line is said, never posted)."""
         bad = any(r.no_post or r.status in ("failed", "cancelled") for r in self.by_run(run_id))

@@ -2113,8 +2113,9 @@ async def test_current_speaker_does_not_cross_cut():
 async def test_no_interrupt_when_the_floor_holder_is_not_speaking():
     h, room, backend, lives, clock, log = await summoned()
     h.on_agent_state("forge", "thinking")
-    h.on_interim_transcript("u2", "Aden", "stop everything please")
-    await say(h, "u2", "stop everything please")
+    # not "stop everything please": that is now "everyone stop" (engine §3.6), which cuts the floor
+    h.on_interim_transcript("u2", "Aden", "wait, check the other branch please")
+    await say(h, "u2", "wait, check the other branch please")
     assert "interrupt" not in kinds(lives[0]) and "set_participant" not in kinds(
         lives[0]
     )

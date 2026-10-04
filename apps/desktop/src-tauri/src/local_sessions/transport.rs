@@ -409,6 +409,10 @@ impl Host {
                 // A heartbeat can revoke control, but only registration restores it.
                 invalidate = true;
             }
+            if before.as_ref().is_some_and(|b| b["native"]["forked_from"] != after["native"]["forked_from"]) {
+                // Lineage found late (a failed `ps`): only registration carries `forkedFrom`.
+                invalidate = true;
+            }
             if before.as_ref() != Some(&after) || mirror.dirty {
                 if invalidate {
                     invalidated.push(key.clone());
@@ -1368,8 +1372,9 @@ impl Host {
                             if !relay_reads_private_approval && mirror.pending.as_ref().is_some_and(|batch| batch.get("privateApproval").is_some()) {
                                 mirror.pending = None;
                             }
+                            let first_id = mirror.session_id.is_none();
                             mirror.session_id = Some(sid.into());
-                            mirror.subagents.relay = body["features"].as_array().is_some_and(|f| f.iter().any(|x| x == "sessionSubagents"));
+                            mirror.subagents.relay =body["features"].as_array().is_some_and(|f| f.iter().any(|x| x == "sessionSubagents"));
                             mirror.subagents.relay_known = true;
                             mirror.registered();
                             relay_log(&format!("{} registered as {} at cursor {after}", short(&key), short(sid)));
@@ -1386,6 +1391,13 @@ impl Host {
                                 registered.remove(&key);
                             } else {
                                 registered.insert(key.clone());
+                            }
+                            if first_id {
+                                // A fork registered before this id existed went out without
+                                // `forkedFrom`; register it once more so the relay links it.
+                                for fork in forks_of(&self.mirrors, &key) {
+                                    registered.remove(&fork);
+                                }
                             }
                             self.finish_deferred_end(&key)?;
                             if let Some(fresh) = ack_anchor(server, sent, wall) {anchor = Some(fresh);}
@@ -2056,6 +2068,22 @@ fn device_heartbeats(
     device_heartbeats_with_controls(mirrors, registered, with_stats, false, false, false, false)
 }
 
+/// The mirrors forked from `origin_key`'s conversation (same provider and profile).
+fn forks_of(mirrors: &BTreeMap<String, Mirror>, origin_key: &str) -> Vec<String> {
+    let Some(origin) = mirrors.get(origin_key).map(|m| &m.native) else {
+        return vec![];
+    };
+    mirrors
+        .iter()
+        .filter(|(_, m)| {
+            m.native.forked_from.as_deref() == Some(origin.conversation.as_str())
+                && m.native.provider == origin.provider
+                && m.native.profile == origin.profile
+        })
+        .map(|(key, _)| key.clone())
+        .collect()
+}
+
 /// The Lightbulb id of the session a fork continues, when this Mac mirrors it.
 fn origin_session(mirrors: &BTreeMap<String, Mirror>, native: &NativeSession) -> Option<String> {
     let origin = native.forked_from.as_deref()?;
@@ -2423,6 +2451,37 @@ pub(super) mod tests {
         assert_eq!(origin_session(&mirrors, &origin.native), None);
         fork.native.provider = "codex".into();
         assert_eq!(origin_session(&mirrors, &fork.native), None, "only the same provider and profile");
+    }
+
+    #[test]
+    fn local_sessions_a_fork_registered_before_its_origin_id_registers_again_with_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut origin = test_mirror(SID, "gen-1");
+        origin.native.provider = "claude".into();
+        let mut fork = test_mirror(SID_B, "gen-2");
+        fork.native.provider = "claude".into();
+        fork.native.forked_from = Some(SID.into());
+        let (origin_key, fork_key) = (native_key(&origin.native), native_key(&fork.native));
+        let mut host = test_host(dir.path(), vec![(origin_key.as_str(), origin), (fork_key.as_str(), fork)]);
+        // The fork registers first: its origin has no Lightbulb id yet.
+        assert!(host.begin_registration(&fork_key).unwrap()["session"].get("forkedFrom").is_none());
+        // The origin's ACK arrives; the fork (and only the fork) is queued once more.
+        host.mirrors.get_mut(&origin_key).unwrap().session_id = Some("origin-session".into());
+        assert_eq!(forks_of(&host.mirrors, &origin_key), vec![fork_key.clone()]);
+        assert!(forks_of(&host.mirrors, &fork_key).is_empty());
+        assert_eq!(host.begin_registration(&fork_key).unwrap()["session"]["forkedFrom"], "origin-session");
+    }
+
+    #[test]
+    fn local_sessions_lineage_found_late_reregisters_the_fork() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut fork = test_mirror(SID_B, "gen-2");
+        fork.native.provider = "claude".into();
+        let key = native_key(&fork.native);
+        let mut host = test_host(dir.path(), vec![(key.as_str(), fork.clone())]);
+        let mut native = fork.native.clone();
+        native.forked_from = Some(SID.into());
+        assert_eq!(host.observe(vec![native], &BTreeSet::from([SID_B.to_owned()])).unwrap(), vec![key]);
     }
 
     #[test]

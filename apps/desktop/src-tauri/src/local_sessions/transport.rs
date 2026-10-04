@@ -186,6 +186,7 @@ impl Host {
         status: Option<&str>,
         recovering_ended: bool,
     ) -> Result<Value> {
+        let origin = self.mirrors.get(key).and_then(|m| origin_session(&self.mirrors, &m.native));
         let mirror = self.mirrors.get_mut(key).ok_or("missing local session")?;
         let reset_end = recovering_ended && mirror.ended_sent;
         if recovering_ended {
@@ -198,6 +199,9 @@ impl Host {
             mirror.persist(&self.dir.join(format!("{key}.json")))?;
         }
         let mut frame = registration(mirror);
+        if let Some(origin) = origin {
+            frame["session"]["forkedFrom"] = json!(origin);
+        }
         if let Some(start_id) = start_links::linked(&self.dir, &mirror.native, &mirror.generation) {
             frame["session"]["startId"] = json!(start_id);
         }
@@ -209,6 +213,25 @@ impl Host {
         Ok(frame)
     }
     fn observe(&mut self, update: Vec<NativeSession>) -> Result<Vec<String>> {
+        // ← moves a Claude session to the background as a fork. The original is no longer listed
+        // while its process stays (it shows the agent view), so its pid check never ends it. A
+        // listed fork naming an unlisted original does; a listing gap alone never ends anything.
+        let moved: Vec<String> = update
+            .iter()
+            .filter_map(|fork| {
+                let origin = fork.forked_from.as_deref()?;
+                let same = |provider: &str, profile: &str, conversation: &str| {
+                    provider == fork.provider && profile == fork.profile && conversation == origin
+                };
+                if update.iter().any(|s| same(&s.provider, &s.profile, &s.conversation)) {
+                    return None;
+                }
+                self.mirrors
+                    .iter()
+                    .find(|(_, m)| m.ended_at.is_none() && same(&m.native.provider, &m.native.profile, &m.native.conversation))
+                    .map(|(key, _)| key.clone())
+            })
+            .collect();
         let mut invalidated = vec![];
         let mut heartbeat = vec![];
         let mut reconciled = self
@@ -391,6 +414,9 @@ impl Host {
             }
         }
         self.heartbeat_dirty.extend(heartbeat);
+        for key in moved {
+            self.end_session(&key, "exited")?;
+        }
         Ok(invalidated)
     }
 
@@ -561,7 +587,7 @@ impl Host {
         }
     }
 
-    /// The one end path: a `SessionEnd` hook, or a pid that is gone.
+    /// The one end path: a `SessionEnd` hook, a pid that is gone, or a fork that replaced it (←).
     fn end_session(&mut self, key: &str, reason: &str) -> Result<()> {
         let Some(mirror) = self.mirrors.get_mut(key) else {
             return Ok(());
@@ -1054,6 +1080,7 @@ impl Host {
         let mut relay_reads_private_approval = false;
         let mut relay_reads_live_terminal = false;
         let mut relay_reads_remote_input = false;
+        let mut relay_reads_terminal = false;
         // An end the relay has not been told about -- because it happened while the
         // socket was down, or in a previous run of this process -- is still owed to it.
         self.liveness_tick();
@@ -1152,7 +1179,7 @@ impl Host {
                             last_early = Instant::now();
                         }
                         self.heartbeat_dirty.clear();
-                        heartbeat_frames = device_heartbeats_with_controls(&self.mirrors, &registered, relay_reads_stats, relay_reads_controls, relay_reads_live_terminal, relay_reads_remote_input)?.into();
+                        heartbeat_frames = device_heartbeats_with_controls(&self.mirrors, &registered, relay_reads_stats, relay_reads_controls, relay_reads_live_terminal, relay_reads_remote_input, relay_reads_terminal)?.into();
                         if heartbeat_frames.is_empty() && last_idle.elapsed() >= IDLE_HEARTBEAT {
                             last_idle = Instant::now();
                             heartbeat_frames.push_back(idle_heartbeat());
@@ -1292,6 +1319,7 @@ impl Host {
                             relay_reads_private_approval = body["features"].as_array().is_some_and(|f| f.iter().any(|x| x == "privateSendApproval"));
                             relay_reads_live_terminal = body["features"].as_array().is_some_and(|f| f.iter().any(|x| x == "liveTerminal"));
                             relay_reads_remote_input = body["features"].as_array().is_some_and(|f| f.iter().any(|x| x == "remoteInput"));
+                            relay_reads_terminal = body["features"].as_array().is_some_and(|f| f.iter().any(|x| x == "sessionTerminal"));
                             let sid = body["sessionId"].as_str().filter(|s|uuid::Uuid::parse_str(s).is_ok()).ok_or("invalid session ID")?;
                             let after = body["afterSeq"].as_u64().ok_or("missing upload cursor")?;
                             let server = body["serverTime"].as_u64().ok_or("missing server time")?;
@@ -1484,8 +1512,8 @@ impl Host {
             claude::capture(
                 &self.home,
                 &program,
-                &json!({"kind":"interactive","pid":native.process.pid,
-                "sessionId":native.conversation,"status":"unknown"}),
+                &json!({"kind": if native.job.is_some() {"background"} else {"interactive"}, "id": native.job,
+                "pid":native.process.pid, "sessionId":native.conversation,"status":"unknown"}),
             )
             .await?
         } else {
@@ -2009,7 +2037,17 @@ fn device_heartbeats(
     registered: &BTreeSet<String>,
     with_stats: bool,
 ) -> Result<Vec<Value>> {
-    device_heartbeats_with_controls(mirrors, registered, with_stats, false, false, false)
+    device_heartbeats_with_controls(mirrors, registered, with_stats, false, false, false, false)
+}
+
+/// The Lightbulb id of the session a fork continues, when this Mac mirrors it.
+fn origin_session(mirrors: &BTreeMap<String, Mirror>, native: &NativeSession) -> Option<String> {
+    let origin = native.forked_from.as_deref()?;
+    mirrors
+        .values()
+        .find(|m| m.native.provider == native.provider && m.native.profile == native.profile && m.native.conversation == origin)?
+        .session_id
+        .clone()
 }
 
 fn device_heartbeats_with_controls(
@@ -2019,6 +2057,7 @@ fn device_heartbeats_with_controls(
     with_controls: bool,
     live_terminal: bool,
     remote_input: bool,
+    terminal: bool,
 ) -> Result<Vec<Value>> {
     // `liveTerminal`: this Mac takes `local.session.watch`; `remoteInput`: `local.session.input`.
     // Each only to a relay that lists it.
@@ -2054,6 +2093,9 @@ fn device_heartbeats_with_controls(
                 && m.native.socket.is_some() && m.native.socket_inode.is_some()
                 && m.native.restriction.is_none();
             entry["capabilities"] = json!({"sendMode":"queue","steer":live,"interrupt":live});
+        }
+        if terminal {
+            entry["terminal"] = json!(m.native.terminal());
         }
         if ascii_wire_len(&envelope(std::slice::from_ref(&entry)))? > 16384 {
             // One session too big to travel even alone would make every frame it
@@ -2302,19 +2344,19 @@ pub(super) mod tests {
         assert!(device_heartbeats(&mirrors, &registered, false).unwrap()[0]["sessions"][0].get("capabilities").is_none());
         assert!(device_heartbeats(&mirrors, &registered, false).unwrap()[0].get("liveTerminal").is_none(), "only to a relay that lists it");
         assert!(device_heartbeats(&mirrors, &registered, false).unwrap()[0].get("remoteInput").is_none(), "only to a relay that lists it");
-        let frames = device_heartbeats_with_controls(&mirrors, &registered, false, true, false, false).unwrap();
+        let frames = device_heartbeats_with_controls(&mirrors, &registered, false, true, false, false, false).unwrap();
         let entry = &frames[0]["sessions"][0];
         assert_eq!(entry["capabilities"], json!({"sendMode":"queue","steer":true,"interrupt":true}));
         mirror.native.socket = None;
         mirror.native.socket_inode = None;
         let key = native_key(&mirror.native);
-        let frames = device_heartbeats_with_controls(&BTreeMap::from([(key.clone(), mirror.clone())]), &BTreeSet::from([key]), false, true, false, false).unwrap();
+        let frames = device_heartbeats_with_controls(&BTreeMap::from([(key.clone(), mirror.clone())]), &BTreeSet::from([key]), false, true, false, false, false).unwrap();
         assert_eq!(frames[0]["sessions"][0]["capabilities"], json!({"sendMode":"queue","steer":false,"interrupt":false}));
         mirror.native.socket = Some(PathBuf::from("/private/tmp/codex-daemon-501/socket"));
         mirror.native.socket_inode = Some(7);
         mirror.native.provider = "claude".into();
         let key = native_key(&mirror.native);
-        let frames = device_heartbeats_with_controls(&BTreeMap::from([(key.clone(), mirror)]), &BTreeSet::from([key]), false, true, false, false).unwrap();
+        let frames = device_heartbeats_with_controls(&BTreeMap::from([(key.clone(), mirror)]), &BTreeSet::from([key]), false, true, false, false, false).unwrap();
         let entry = &frames[0]["sessions"][0];
         assert_eq!(entry["capabilities"], json!({"sendMode":"queue","steer":false,"interrupt":false}));
     }
@@ -2332,6 +2374,68 @@ pub(super) mod tests {
             heartbeat_dirty: BTreeSet::new(),
             heartbeat_interval: Duration::from_secs(10),
         }
+    }
+
+    #[test]
+    fn local_sessions_heartbeat_names_the_terminal_only_to_a_relay_that_reads_it() {
+        let mut mirror = test_mirror("thread-1", "generation-1");
+        mirror.session_id = Some(SID.into());
+        let key = native_key(&mirror.native);
+        let registered = BTreeSet::from([key.clone()]);
+        let entry = |m: &Mirror, reads: bool| {
+            device_heartbeats_with_controls(&BTreeMap::from([(key.clone(), m.clone())]), &registered, false, false, false, false, reads)
+                .unwrap()[0]["sessions"][0].clone()
+        };
+        assert!(entry(&mirror, false).get("terminal").is_none(), "an older relay rejects the whole frame over it");
+        assert_eq!(entry(&mirror, true)["terminal"], "none");
+        mirror.native.job = Some("8ed71738".into());
+        assert_eq!(entry(&mirror, true)["terminal"], "attach");
+        mirror.native.holder = Some("ab12cd34".into());
+        assert_eq!(entry(&mirror, true)["terminal"], "held");
+    }
+
+    #[test]
+    fn local_sessions_a_fork_registers_with_the_session_it_continues() {
+        let mut origin = test_mirror("11111111-1111-4111-8111-111111111111", "gen-1");
+        origin.native.provider = "claude".into();
+        origin.session_id = Some(SID.into());
+        let mut fork = test_mirror("22222222-2222-4222-8222-222222222222", "gen-2");
+        fork.native.provider = "claude".into();
+        fork.native.forked_from = Some(origin.native.conversation.clone());
+        let mirrors = BTreeMap::from([(native_key(&origin.native), origin.clone()), (native_key(&fork.native), fork.clone())]);
+        assert_eq!(origin_session(&mirrors, &fork.native).as_deref(), Some(SID));
+        assert_eq!(origin_session(&mirrors, &origin.native), None);
+        fork.native.provider = "codex".into();
+        assert_eq!(origin_session(&mirrors, &fork.native), None, "only the same provider and profile");
+    }
+
+    #[test]
+    fn local_sessions_a_fork_ends_the_session_it_was_moved_out_of() {
+        let dir = tempfile::tempdir().unwrap();
+        // Its pid is this test process: alive, as the original's process stays after ←.
+        let mut origin = test_mirror(SID, "gen-1");
+        origin.native.provider = "claude".into();
+        origin.session_id = Some("origin-session".into());
+        let key = native_key(&origin.native);
+        let mut host = test_host(dir.path(), vec![(key.as_str(), origin.clone())]);
+        let mut fork = test_native(SID_B);
+        fork.provider = "claude".into();
+        fork.forked_from = Some(SID.into());
+        host.observe(vec![origin.native.clone(), fork.clone()]).unwrap();
+        assert!(host.mirrors[&key].ended_at.is_none(), "an original still listed beside its fork keeps running");
+        host.observe(vec![]).unwrap();
+        assert!(host.mirrors[&key].ended_at.is_none(), "a listing gap alone ends nothing");
+        host.observe(vec![fork.clone()]).unwrap();
+        assert_eq!(host.mirrors[&key].ended_reason.as_deref(), Some("exited"), "a listed fork ends its unlisted original");
+        assert_eq!(host.ended_pending, vec![key.clone()]);
+        host.observe(vec![fork]).unwrap();
+        assert_eq!(host.ended_pending, vec![key], "ended once");
+        let fork_key = native_key(&host.mirrors.values().find(|m| m.native.conversation == SID_B).unwrap().native);
+        assert_eq!(
+            host.begin_registration(&fork_key).unwrap()["session"]["forkedFrom"],
+            "origin-session",
+            "the fork still names the original it continues"
+        );
     }
 
     async fn next_frame(socket: &mut WebSocketStream<tokio::net::TcpStream>) -> Value {
@@ -2385,7 +2489,7 @@ pub(super) mod tests {
         assert_eq!(
             serde_json::from_value::<NativeSession>(persisted).unwrap().holder,
             None,
-            "a mirror saved before explicit sharing has no holder; the relay refuses its registration"
+            "a mirror saved before explicit sharing has no holder; it registers as a session without one"
         );
     }
 

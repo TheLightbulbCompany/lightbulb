@@ -982,6 +982,18 @@ struct NativeSession {
     forked_from: Option<String>,
 }
 
+impl NativeSession {
+    /// The live terminal this Mac can show (rulings 2026-10-04): its holder's, a Claude background
+    /// session's through `claude attach`, or none (the transcript).
+    fn terminal(&self) -> &'static str {
+        match (&self.holder, &self.job) {
+            (Some(_), _) => "held",
+            (None, Some(_)) => "attach",
+            _ => "none",
+        }
+    }
+}
+
 async fn native_output(program: &Path, args: &[&str]) -> Result<String> {
     let output = tokio::time::timeout(
         std::time::Duration::from_secs(5),
@@ -1131,7 +1143,7 @@ async fn runtime_version(expected: &Process, installed: &Path, provider: &str) -
 
 /// Merges one listing into what is already known. A session the listing does not
 /// mention keeps everything it had: a listing is a sweep, not an obituary, and a
-/// session ends only when its hook or its pid says so.
+/// session ends only when its hook, its pid or a fork that replaced it says so.
 fn reconcile_sessions(current: &mut Vec<NativeSession>, discovered: Vec<NativeSession>) {
     let mut seen = std::collections::BTreeMap::new();
     for mut session in discovered {

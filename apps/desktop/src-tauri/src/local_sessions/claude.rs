@@ -22,9 +22,16 @@ pub fn send_supported_version(version: &str) -> bool {
 
 pub(super) async fn capture(home: &Path, program: &Path, row: &Value) -> Result<NativeSession> {
     use std::os::unix::fs::FileTypeExt;
-    if row["kind"] != "interactive" {
-        return Err("not an ordinary terminal session".into());
+    let background = row["kind"] == "background";
+    if row["kind"] != "interactive" && !background {
+        return Err("not a Claude Code session".into());
     }
+    // What `claude attach` takes; only a background session has one.
+    let job = background
+        .then(|| row["id"].as_str())
+        .flatten()
+        .filter(|id| id.len() == 8 && id.bytes().all(|b| b.is_ascii_hexdigit()))
+        .map(str::to_owned);
     let pid = row["pid"]
         .as_u64()
         .and_then(|p| u32::try_from(p).ok())
@@ -152,6 +159,15 @@ pub(super) async fn capture(home: &Path, program: &Path, row: &Value) -> Result<
     if socket_inode.is_none() {
         restriction = Some("endpoint-unavailable".into());
     }
+    // A session moved to the background with ← is a fork; its command line names the original.
+    let forked_from = if background {
+        native_output(Path::new("/bin/ps"), &["-ww", "-o", "command=", "-p", &pid.to_string()])
+            .await
+            .ok()
+            .and_then(|command| fork_origin(&command))
+    } else {
+        None
+    };
     if process(pid)? != execution {
         return Err("process changed during discovery".into());
     }
@@ -173,9 +189,21 @@ pub(super) async fn capture(home: &Path, program: &Path, row: &Value) -> Result<
         active_turn: None,
         last_assistant_message: None,
         holder: None,
-        job: None,
-        forked_from: None,
+        job,
+        forked_from,
     })
+}
+
+/// The conversation a background session was forked from. Claude starts a session moved to the
+/// background (← in its terminal) as `… --fork-session --resume <dir>/<origin>.jsonl …` (2.1.289).
+pub(super) fn fork_origin(command: &str) -> Option<String> {
+    if !command.contains(" --fork-session") {
+        return None;
+    }
+    let arg = command.split_once(" --resume ")?.1.split(" --").next()?.trim();
+    let stem = arg.strip_suffix(".jsonl").unwrap_or(arg);
+    let id = stem.get(stem.len().checked_sub(36)?..)?;
+    uuid::Uuid::parse_str(id).is_ok().then(|| id.to_owned())
 }
 
 /// `verify_current_generation` found nothing this process wrote -- distinct from a
@@ -1160,6 +1188,17 @@ pub(super) fn configure_hooks(path: &Path, executable: &Path, enabled: bool) -> 
 mod tests {
     use super::*;
     #[test]
+    fn local_sessions_claude_a_fork_names_the_session_it_continues() {
+        let origin = "4c028a82-f41e-4c14-bfbe-a3ecfef152e4";
+        // As Claude 2.1.289 starts a session moved to the background with ← (a path with a space too).
+        let moved = format!("/Users/a/.local/share/claude/versions/2.1.289 --session-id 8ed71738-8083-493a-96e0-e963fc33e794 --fork-session --resume /Users/a b/.claude/projects/-Users-a/{origin}.jsonl --allowed-tools x");
+        assert_eq!(fork_origin(&moved).as_deref(), Some(origin));
+        assert_eq!(fork_origin(&format!("claude --fork-session --resume {origin}")).as_deref(), Some(origin));
+        assert_eq!(fork_origin(&format!("claude --resume {origin}")), None, "a plain resume continues the same session");
+        assert_eq!(fork_origin("claude --fork-session --resume not-a-session"), None);
+    }
+
+    #[test]
     fn local_sessions_claude_runtime_is_one_current_generation_version() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("history.jsonl");
@@ -1435,11 +1474,18 @@ mod tests {
             ("2.1.272", None),
             "a session outlives the CLI version it started on and stays sendable"
         );
-        let job = json!({"kind":"background","pid":pid,"sessionId":conversation,"status":"busy","cwd":"/tmp/work"});
-        assert!(
-            capture(home.path(), missing, &job).await.is_err(),
-            "a Claude Code background job is never mirrored (it cannot run in a holder)"
+        assert_eq!(session.job, None, "an interactive session has no job id");
+        let job = json!({"kind":"background","id":"8ed71738","pid":pid,"sessionId":conversation,"status":"busy","cwd":"/tmp/work"});
+        let job = capture(home.path(), missing, &job).await.unwrap();
+        assert_eq!(
+            (job.job.as_deref(), job.restriction.as_deref()),
+            (Some("8ed71738"), None),
+            "a background session is tracked, with the id `claude attach` takes"
         );
+        let forged = json!({"kind":"background","id":"../../x","pid":pid,"sessionId":conversation,"status":"busy"});
+        assert_eq!(capture(home.path(), missing, &forged).await.unwrap().job, None, "no attach for an id that is not 8 hex");
+        let other = json!({"kind":"cron","pid":pid,"sessionId":conversation,"status":"busy"});
+        assert!(capture(home.path(), missing, &other).await.is_err());
 
         // Below the send floor is what a version restriction is actually for.
         write("2.1.200");

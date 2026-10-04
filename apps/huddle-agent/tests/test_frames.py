@@ -1,3 +1,4 @@
+from huddle_agent import frames as frames_mod
 from huddle_agent.frames import Runs, take_sentences
 
 
@@ -136,7 +137,7 @@ def test_runs_stale_run_stops_running():
     now = [0.0]
     runs = Runs(RunSink(), clock=lambda: now[0])
     runs.started("r1", "fin", speaker="u", request="a", delegation_id="d1", gen=1)
-    now[0] = 121.0
+    now[0] = frames_mod.STALE_TURN_SECONDS + 1
     assert runs.running() == []
 
 

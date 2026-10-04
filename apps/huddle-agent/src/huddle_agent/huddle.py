@@ -102,6 +102,8 @@ SAME_SPEECH = 0.6  # this share of one transcript's content words in another's: 
 RECORDS_KEPT = 4  # understood speeches kept per speaker for delegations to match
 ALREADY_SAID = "You already gave that answer. Do not repeat it."
 IN_HAND = "That is already in hand. Wait for the result."
+# for the voice to know, never to read out: "Forge has those results" told the person nothing (10-04 prod test)
+REQUESTS_NOTE = "Requests on this call (for you to know; say none of it unless someone asks):\n"
 UNFINISHED = 'They have not finished the sentence. Say "go on" at most, then wait.'  # §4.4: its line is held
 CHANGED = "That change is made. Say so in a few words."  # a correction or a call-off, already applied (§4.4)
 HANDOFF_SECONDS = (
@@ -371,7 +373,9 @@ class Huddle:
         self._rate = gate.RateLimit()
         # run id -> (attempts, last at): a requested delivery whose voice did not open (engine §3.5)
         self._delivery_tries: dict[str, tuple[int, float]] = {}
-        self._speaking: set[str] = set()  # humans in the SFU's active speakers
+        self._level: set[str] = set()  # humans in the SFU's active speakers: sound, maybe not speech
+        self._voiced: set[str] = set()  # humans the transcriber's speech detector hears speaking
+        self._speaking: set[str] = set()  # humans talking now: both of the above
         self._last_speaker: str | None = None
         self._last_agent: dict[
             str, str
@@ -557,6 +561,9 @@ class Huddle:
         for gone in set(self._people) - set(people):  # their speeches can no longer be delegated (§4.6)
             for d in (self._understood, self._unbound, self._final_heard, self._held, self._final_at):
                 d.pop(gone, None)
+            self._voiced.discard(gone)  # nobody who left is talking; a rejoin starts clean
+            self._level.discard(gone)
+        self._talking_changed()
         self._people = dict(people)
         if people:
             self._seen_human = True
@@ -714,6 +721,8 @@ class Huddle:
             # Conversation engine §3.1: the STT model repeated its prompt on silence; nobody said it.
             emit_metric("live.stt.ghost_dropped", 1, "Count")
             text = ""
+        # Talking is not ended here: the detector's stop comes before its sentence's final, and by then the
+        # person may be saying the next sentence.
         began = self._utter_from.pop(identity, None)
         if heard := self._final_heard.pop(identity, None):
             heard.set()  # a delegation waiting for this final looks again (understanding §4.6)
@@ -1321,6 +1330,12 @@ class Huddle:
         self._sync_state()
         return rows
 
+    def _note(self, text: str) -> None:
+        """A line for the call's log only, never read to a model: how a delivery went, so a call reads back
+        (the worker's own metrics are not in our logs). A meeting's transcript becomes a file people read: none."""
+        if self.setting != "meeting":
+            self._transcript.add_note(text, at=self._clock())
+
     def _row_changed(self, r: Request, was: str | None) -> None:
         """understanding §5.3: a row's end is counted once (RequestList moves only open rows); every change of a
         routed row is a transcript line, so a call reads back with its requests. A meeting's transcript becomes
@@ -1620,9 +1635,26 @@ class Huddle:
             self._sync_state()
 
     def on_active_speakers(self, identities: set[str]) -> None:
-        """The SFU's speaking set. A person speaking over a proactive announcement: before its audio, it is
-        dropped and the news kept; during it, it is cut and the news stays consumed."""
-        humans = {i for i in identities if i in self._people}
+        """The SFU's speaking set: who makes sound. Who talks is decided in `_talking_changed`."""
+        self._level = {i for i in identities if i in self._people}
+        self._talking_changed()
+
+    def on_speech(self, identity: str, started: bool) -> None:
+        """The transcriber's speech detector: `identity` began or stopped speaking. It fires before the first
+        word is transcribed, so nobody is talked over while their sentence is still being heard."""
+        if started and identity in self._people:
+            self._voiced.add(identity)
+        else:
+            self._voiced.discard(identity)
+        self._talking_changed()
+
+    def _talking_changed(self) -> None:
+        """Who is talking: the SFU hears sound from them and the transcriber's speech detector hears speech
+        (`on_speech`). Sound alone (typing, a fan, an open laptop microphone) is nobody talking: it neither
+        holds an answer back nor drops one (10-04 prod test: three announcements dropped by noise).
+        A person talking over a proactive announcement: before its audio, it is dropped and the news kept;
+        during it, it is cut and the news stays consumed."""
+        humans = self._level & self._voiced
         if humans or self._speaking:
             self._last_heard = self._clock()
         started, self._speaking = humans - self._speaking, humans
@@ -1632,12 +1664,14 @@ class Huddle:
         if v.announce:
             v.announce = None
             emit_metric("live.announce.aborted", 1, "Count")
+            self._note(f"[announce {self._agent_name(v.agent_id)} dropped before its audio: someone talked]")
             if v.live is not None:
                 self._live_call(v, "interrupt")
             self._drop(v)
         elif v.announcing:
             v.announcing = False
             emit_metric("live.announce.cut", 1, "Count")
+            self._note(f"[announce {self._agent_name(v.agent_id)} cut off: someone talked]")
             self._live_call(v, "interrupt")
             if v.told:  # understanding §4.8: cut off before its end; the room gets it unless the cutter forbids it
                 held = self._cut_off.get(v.agent_id, ([], "", 0.0))[0]
@@ -2544,6 +2578,7 @@ class Huddle:
     def stt_stopped(self, identity: str) -> None:
         """That person's STT stream ended (restart or unpublish): its utterance start goes with it."""
         self._utter_from.pop(identity, None)
+        self.on_speech(identity, False)
 
     def _voice_notice(self, p: dict) -> None:
         """C3 notices: tell the agent's open voice, then every person (C5)."""
@@ -2664,7 +2699,7 @@ class Huddle:
             v.list_version = self._requests.version
             if lines := self._requests.lines(self._agent_name, skip_agent=v.agent_id):
                 v.last_thinking = now
-                self._live_call(v, "append_thinking", "Requests on this call:\n" + "\n".join(lines))
+                self._live_call(v, "append_thinking", REQUESTS_NOTE + "\n".join(lines))
         if v.handoff and now >= v.handoff[1]:
             self._end_handoff(v)
         if (
@@ -2683,7 +2718,14 @@ class Huddle:
             return
         if (
             v.agent_state not in ("speaking", "thinking")
-            and self._settled(v, now)
+            # quiet, not settled: a teammate's ready answer does not wait for the floor agent's own run to end
+            # (10-04 prod test: two answers sat unheard for two minutes). That run goes on without its voice
+            # and its answer is said in its turn.
+            and self._quiet(v, now)
+            # never in the middle of an answer the floor voice is saying sentence by sentence: the rest would
+            # be announced later with the part already said (`spoken` is reset when the run goes back to a
+            # tool; a run whose end never comes blocks until it is stale, as `_settled` always did)
+            and not any(r.run_id == v.driven_run and r.spoken for r in self._runs.running(v.agent_id))
             and not v.posting
             and v.announce is None
             and not self._lock.locked()
@@ -2760,11 +2802,13 @@ class Huddle:
         )  # on the attempt: a refused summon does not retry every tick
         await self._deliver(item, agent_id)
 
+    def _quiet(self, v: _Voice, now: float) -> bool:
+        """The floor-holder is not speaking and QUEUE_SETTLE has passed since it last did anything."""
+        return v.agent_state != "speaking" and now - v.last_activity >= QUEUE_SETTLE
+
     def _settled(self, v: _Voice, now: float) -> bool:
-        """The floor-holder answered: its driven run ended, it is not speaking, QUEUE_SETTLE has passed."""
-        if v.agent_state == "speaking" or now - v.last_activity < QUEUE_SETTLE:
-            return False
-        return not any(r.run_id == v.driven_run for r in self._runs.running(v.agent_id))
+        """The floor-holder answered: it is quiet and its driven run ended."""
+        return self._quiet(v, now) and not any(r.run_id == v.driven_run for r in self._runs.running(v.agent_id))
 
     def _expire_news(self, now: float) -> None:
         for agent_id, news in list(self._news.items()):
@@ -2843,6 +2887,7 @@ class Huddle:
             tries = self._delivery_tries.get(item[0], (0, 0.0))[0]
             self._delivery_tries[item[0]] = (tries + 1, self._clock())
         speaker = next((p for p in (item[4], self._last_speaker) if p in self._people), None) or min(self._people)
+        self._note(f"[announce {self._agent_name(agent_id)} opens its voice for: {item[1][:80]}]")
         await self.summon(speaker, agent_id, request=None, path="announce", announce=item)
 
     def _asker_gone(self, n: tuple, now: float) -> bool:

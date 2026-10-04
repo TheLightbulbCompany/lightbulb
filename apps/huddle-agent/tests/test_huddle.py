@@ -56,6 +56,13 @@ class FakeRoom:
         return out
 
 
+def talks(h, who, name="Someone", words="hang on a second"):
+    """A person starts talking: the SFU hears sound and the transcriber's speech detector hears speech,
+    before any word is transcribed. Sound alone (typing, a fan) is nobody talking."""
+    h.on_active_speakers({who})
+    h.on_speech(who, True)
+
+
 def ops(requests=(), social=None, more=False, cancel=(), steer=()):
     """A `/route` answer with `ops` (understanding §4.4); agentIds are the distinct owners in order."""
     owners = list(dict.fromkeys(a for a, _, _ in requests)) or (

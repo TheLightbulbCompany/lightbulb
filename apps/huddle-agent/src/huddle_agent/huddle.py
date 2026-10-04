@@ -781,6 +781,13 @@ class Huddle:
             if v:
                 self._unwanted(v, identity)
             dims = self._wake_fired(identity, a.agent_ids[0], a.matches[a.agent_ids[0]])
+            # understanding §4.6: the line is understood while its voice opens (a fallback line was already asked)
+            understood = None
+            if heard_at is None:
+                fut = self._understanding[identity] = asyncio.get_running_loop().create_future()
+                self._understood.pop(identity, None)
+                route = self._understand(identity, text, humans=len(self._people), quiet=True)
+                understood = (asyncio.ensure_future(route), fut)
             # a task: awaiting here would stall this person's STT loop for the whole summon
             self._spawn(
                 self.summon(
@@ -792,6 +799,7 @@ class Huddle:
                     then=a.agent_ids[1:],
                     wake_dims=dims,
                     heard_at=heard_at,
+                    understood=understood,
                 )
             )
             return
@@ -1038,15 +1046,57 @@ class Huddle:
             rec = None
             try:
                 rec = await self._route_and_summon(identity, text, mark, **kw)
-                if rec is not None:
-                    self._understood[identity] = rec
             finally:
-                fut.set_result(rec)
-                if self._understanding.get(identity) is fut:
-                    del self._understanding[identity]
+                self._record(identity, fut, rec)
 
         self._spawn(run())
         return fut
+
+    def _record(self, identity: str, fut: asyncio.Future, rec: tuple | None) -> None:
+        """A speech's understanding is known: `fut` resolves, and `rec` is the speaker's record (§4.6)."""
+        if fut.done():
+            return
+        if rec is not None:
+            self._understood[identity] = rec
+        fut.set_result(rec)
+        if self._understanding.get(identity) is fut:
+            del self._understanding[identity]
+
+    def _small_talk(self, identity: str, text: str, more: bool) -> str:
+        """The seed line of a line that asked nothing (understanding §4.6)."""
+        if more:
+            return (
+                f'{self._name(identity)} will list several requests. Say "go ahead" at most, then stay quiet '
+                "until they finish."
+            )
+        return f'{self._name(identity)} said: "{text}". Small talk: reply yourself in one short sentence. Do not delegate it.'
+
+    def _named_line(
+        self, identity: str, agent_id: str, text: str, mark: int, r: Any, fut: asyncio.Future
+    ) -> tuple[Request | None, list[Request] | None, str | None] | None:
+        """A named line's /route answer `r`, under the floor lock (understanding §4.6). None: no `ops`, today's
+        whole-line run. Else (the row its voice drives, already started; the rows to acknowledge; a seed line)."""
+        o = r.get("ops") if isinstance(r, dict) else None
+        if o is None:
+            self._record(identity, fut, None)
+            return None
+        rows = self._apply(identity, mark, o)  # `hold` ignored: the person named the agent
+        mine = [x for x in rows if x.agent == agent_id]
+        first = mine[0] if mine and mine[0] in self._requests.startable() else None
+        if first is not None:
+            self._requests.start(first)  # its voice drives it; _start_queued must not post it too
+        self._start_queued()
+        self._queue = [q for q in self._queue if q[1:] != (identity, text)]  # the rows replace `then`
+        self._record(identity, fut, (rows, o))
+        ack = rows if len(rows) >= 2 or (rows and first is None) else None
+        said = None
+        if not o.get("requests"):  # asked nothing (rows dropped by a stop say nothing)
+            said = (
+                self._small_talk(identity, text, bool(o.get("more")))
+                if o.get("social") or o.get("more")
+                else f'{self._name(identity)} said: "{text}"'
+            )
+        return first, ack, said
 
     @staticmethod
     def _outcome(r: dict) -> str:
@@ -1118,13 +1168,7 @@ class Huddle:
         rows = self._apply(identity, mark, {**ops, "requests": reqs})
         if not rows:
             if social and v is None:
-                said = (
-                    f'{self._name(identity)} will list several requests. Say "go ahead" at most, then stay quiet '
-                    "until they finish."
-                    if ops.get("more")
-                    else f'{self._name(identity)} said: "{text}". Small talk: reply yourself in one short sentence. '
-                    "Do not delegate it."
-                )
+                said = self._small_talk(identity, text, bool(ops.get("more")))
                 await self.summon(identity, social, request=None, mark=mark, path="jev", heard_at=heard_at, said=said)
             elif not social:
                 self._unrouted[identity] = self._clock()
@@ -1405,11 +1449,13 @@ class Huddle:
         ack: list[Request] | None = None,
         row: Request | None = None,
         said: str | None = None,
+        understood: tuple[asyncio.Future, asyncio.Future] | None = None,
     ) -> None:
         """`then`: the request's other named agents, queued behind this one. Any summon but a queue
         advance (path "switch") replaces a pending queue: a new name wins. `ack`: the rows the voice
         acknowledges (the open ones when it speaks); `row`: the request row `request` is (its driven run binds
-        to it); `said`: a seed line that is not a request (small talk)."""
+        to it); `said`: a seed line that is not a request (small talk). `understood`: a named line's /route call
+        in flight and its speech's record (understanding §4.6)."""
         async with self._lock:
             self._unclaimed = None  # an agent takes the floor: the open question is not left unclaimed
             self._released.discard(identity)  # only a release during THIS summon counts
@@ -1421,10 +1467,27 @@ class Huddle:
                 old is not None and old.agent_id == agent_id
             ):  # already holds the floor: re-point, no second session
                 if self._repoint(old, identity):
-                    if request and row is None:  # a row left unbound runs without a voice (_act)
+                    took = None
+                    if understood:  # understanding §4.6: re-pointed first, then what the line asked
+                        r = (await asyncio.gather(understood[0], return_exceptions=True))[0]
+                        took = self._named_line(identity, agent_id, request, mark, r, understood[1])
+                    if took is not None:
+                        first, ack, said = took
+                        if first is not None:
+                            task = first.task or request
+                            self._drive_request(old, task, f'{self._name(identity)} asked: "{task}"', row=first)
+                        if line := self._ack(ack, agent_id):
+                            self._live_call(old, "append_thinking", line)
+                        if said:
+                            self._live_call(old, "append_thinking", said)
+                        if first is not None or line or said:
+                            self._live_call(old, "nudge")
+                    elif request and row is None:  # a row left unbound runs without a voice (_act)
                         self._live_call(old, "reply_to", request)
                     elif (line := self._ack(ack, agent_id)) and self._live_call(old, "append_thinking", line):
                         self._live_call(old, "nudge")
+                if understood:  # never got to it: no record
+                    self._record(identity, understood[1], None)
                 self._sync_state()
                 return
             now = self._clock()
@@ -1447,7 +1510,7 @@ class Huddle:
             # D §9: a switch opens the new voice while the old one closes (same window, no new /summon).
             # Both sessions' seconds land in the window, so the overlap is counted twice (D §4).
             opened, closed = await asyncio.gather(
-                self._open(v, identity, request, mark, ack, row=row, said=said),
+                self._open(v, identity, request, mark, ack, row=row, said=said, understood=understood),
                 self._close_live(old),
                 return_exceptions=True,
             )
@@ -1456,6 +1519,8 @@ class Huddle:
                     e, BaseException
                 ):  # an open that raised must still end its window
                     logger.error("huddle summon failed agent=%s", agent_id, exc_info=e)
+            if understood:  # the voice never got to it: no record
+                self._record(identity, understood[1], None)
             if opened is not True:
                 await self._close_voice()
                 await self._end_window()
@@ -1469,12 +1534,15 @@ class Huddle:
         ack: list[Request] | None = None,
         row: Request | None = None,
         said: str | None = None,
+        understood: tuple[asyncio.Future, asyncio.Future] | None = None,
     ) -> bool:
         """Caller holds the lock and has made `v` the floor. False when it could not open."""
         agent_id = v.agent_id
-        window, session = await asyncio.gather(
+        # understanding §4.6: a named line's /route answer is awaited beside the window and session, never before
+        window, session, *heard = await asyncio.gather(
             self._ensure_window(identity),
             self._backend.session(agent_id),
+            *([understood[0]] if understood else []),
             return_exceptions=True,
         )
         self._latency("route", v)
@@ -1495,6 +1563,14 @@ class Huddle:
                         ERROR_TOPIC, {"code": code, "reason": reason}, [identity]
                     )
                 return False
+        if understood:
+            text = request
+            took = self._named_line(identity, agent_id, text, mark, heard[0], understood[1])
+            if took is not None:
+                row, ack, said = took
+                request = (row.task or text) if row is not None else None
+            elif self._requests.stopped(mark) or self._requests.stopped(mark, agent_id):
+                request = None  # a stop covers the line (understanding §4.5): the voice opens, nothing runs
         seed = self._transcript.seed(
             agent_id, before_mark=math.inf if mark is None else mark
         )

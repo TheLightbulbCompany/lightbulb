@@ -44,7 +44,8 @@ async def quiet(h, clock, seconds=2):
 async def test_one_name_keeps_the_fast_path_and_makes_no_request():
     h, room, backend, lives, clock, log = await three()
     await say(h, "u1", "Forge, what our PRs look like")
-    assert backend.routes == [] and h._requests.items == [] and [l.agent_id for l in lives] == ["forge"]
+    # understood beside the voice (understanding §4.6); an answer without `ops` keeps the whole line
+    assert len(backend.routes) == 1 and h._requests.items == [] and [l.agent_id for l in lives] == ["forge"]
     assert backend.turns[0]["utterance"] == "Forge, what our PRs look like" and backend.turns[0]["requests"] == []
 
 

@@ -721,3 +721,168 @@ async def test_route_has_its_own_short_timeout_and_turns_keep_the_clients(monkey
     await b.route("u1", "hi", "")
     await b.turn("call", "u1", "forge", "run", "hi", "")
     assert seen == {"route": ROUTE_TIMEOUT_S, "turns": 100}
+
+
+# -- Task B4: a named line is understood while its voice opens (understanding §4.6) --
+
+CI = "Forge, check CI, then tell me what shipped"
+TWO = [("forge", "check CI", "name"), ("forge", "tell me what shipped", "name")]
+
+
+def seeded(live):
+    return [text for _, text in live.seed]
+
+
+async def test_a_named_line_with_two_asks_drives_the_first_and_queues_the_second():
+    h, room, backend, lives, clock, log = await three()
+    backend.route_extra = ops(requests=TWO)
+    await say(h, "u1", CI)
+    assert [r[1] for r in backend.routes] == [CI] and [x.agent_id for x in lives] == [
+        "forge"
+    ]
+    assert [t["utterance"] for t in backend.turns] == [
+        "check CI"
+    ] and h._voice.path == "name"
+    assert rows(h) == [
+        ("forge", "check CI", "working"),
+        ("forge", "tell me what shipped", "queued"),
+    ]
+    first = h._requests.items[0]
+    assert (
+        first.run_id == h._voice.driven_run == backend.turns[0]["runId"]
+        and h._queue == []
+    )
+    seed = seeded(lives[0])
+    assert (
+        "Prasiddha asked: check CI — already handed to your backend self; don't delegate it again"
+        in seed
+    )
+    assert "next in line" in seed[-1].lower() and lives[0].calls[-1] == ("nudge",)
+    # the voice delegates the line it just heard described: it binds, never a second /turns
+    await h.on_delegation("forge", "deleg-1", CI)
+    await settle(h)
+    assert (
+        len(backend.turns) == 1 and h._runs.get(first.run_id).delegation_id == "deleg-1"
+    )
+    answer(h, first.run_id, "forge", "CI is green.")
+    await settle(h)
+    assert [t["utterance"] for t in backend.turns] == [
+        "check CI",
+        "tell me what shipped",
+    ]
+    assert [s for _, _, s in rows(h)] == ["delivered", "working"]
+
+
+async def test_a_named_greeting_starts_no_run():
+    h, room, backend, lives, clock, log = await three()
+    backend.route_extra = ops(social="forge")
+    await say(h, "u1", "Forge, how's it going?")
+    small = 'Prasiddha said: "Forge, how\'s it going?". Small talk: reply yourself in one short sentence. '
+    assert ("developer", small + "Do not delegate it.") in lives[0].seed
+    assert (
+        backend.turns == []
+        and h._requests.items == []
+        and lives[0].calls[-1] == ("nudge",)
+    )
+    await h.on_delegation("forge", "deleg-1", "Forge, how's it going?")
+    note = "Nothing to look up for that. Reply yourself in one short sentence."
+    assert backend.turns == [] and lives[0].calls[-1] == ("commentary", note, "deleg-1")
+
+
+async def test_a_bare_summons_opens_the_voice_with_the_line():
+    h, room, backend, lives, clock, log = await three()
+    backend.route_extra = ops()
+    await say(h, "u1", "Forge?")
+    assert lives[0].seed[-1] == ("developer", 'Prasiddha said: "Forge?"')
+    assert backend.turns == [] and lives[0].calls[-1] == ("nudge",)
+
+
+async def test_a_named_line_with_an_ask_for_another_agent_starts_it_voicelessly():
+    h, room, backend, lives, clock, log = await three()
+    backend.route_extra = ops(
+        requests=[
+            ("friday", "the numbers from finance", "fit"),
+            ("forge", "check CI", "name"),
+        ]
+    )
+    await say(h, "u1", "Forge, get the numbers from finance and check CI")
+    assert sorted((t["agentId"], t["utterance"]) for t in backend.turns) == [
+        ("forge", "check CI"),
+        ("friday", "the numbers from finance"),
+    ]
+    assert [x.agent_id for x in lives] == ["forge"]
+    assert h._requests.items[1].run_id == h._voice.driven_run
+    ack = seeded(lives[0])[-1]
+    assert "check CI" in ack and "Friday is on the numbers from finance" in ack
+
+
+async def test_a_slow_route_holds_the_voice_until_it_answers():
+    h, room, backend, lives, clock, log = await three()
+    backend.route_gate = asyncio.Event()
+    backend.route_extra = ops(requests=TWO)
+    await h.on_final_transcript("u1", "Prasiddha", CI)
+    for _ in range(20):
+        await asyncio.sleep(0)
+    assert backend.sessions == ["forge"] and backend.summons == [
+        "u1"
+    ]  # fetched beside /route
+    assert lives == [] and backend.turns == []
+    backend.route_gate.set()
+    await settle(h)
+    assert [t["utterance"] for t in backend.turns] == ["check CI"] and len(lives) == 1
+
+
+async def test_a_named_line_route_down_or_without_ops_is_todays_whole_line_run():
+    for failure in ("error", "no ops"):
+        h, room, backend, lives, clock, log = await three()
+        if failure == "error":
+            backend.route_error = BackendError(503, "huddles_upstream", None)
+        await say(h, "u1", CI)
+        assert [t["utterance"] for t in backend.turns] == [
+            CI
+        ] and h._requests.items == []
+        assert not [p for topic, p, _ in room.published if topic == h_mod.ERROR_TOPIC]
+        await h.on_delegation("forge", "deleg-1", CI)
+        await settle(h)
+        assert len(backend.turns) == 1
+        assert h._runs.get(backend.turns[0]["runId"]).delegation_id == "deleg-1"
+
+
+async def test_a_stop_from_another_speaker_while_the_summon_waits_runs_nothing():
+    for stop in ("Forge, stop", "everyone stop"):
+        for answer_ in (ops(requests=TWO), {}):
+            h, room, backend, lives, clock, log = await three()
+            backend.route_gate = asyncio.Event()
+            backend.route_extra = answer_
+            await h.on_final_transcript("u1", "Prasiddha", CI)
+            for _ in range(5):
+                await asyncio.sleep(0)
+            await h.on_final_transcript("u2", "Aden", stop)
+            backend.route_gate.set()
+            await settle(h)
+            assert backend.turns == [] and h._requests.items == [], (stop, answer_)
+            assert [x.agent_id for x in lives] == ["forge"]
+            assert not any("already handed" in text for text in seeded(lives[0]))
+
+
+async def test_a_named_line_to_the_agent_holding_the_floor_for_another_speaker():
+    h, room, backend, lives, clock, log = await three()
+    await say(h, "u2", "Forge, are you there")
+    h._runs.abort(backend.turns[0]["runId"])
+    h._voice.driven = None
+    backend.turns.clear()
+    backend.route_extra = ops(requests=TWO)
+    await say(h, "u1", CI)
+    assert len(lives) == 1 and h._voice.speaker == "u1"
+    assert [t["utterance"] for t in backend.turns] == ["check CI"]
+    assert [s for _, _, s in rows(h)] == ["working", "queued"]
+    assert h._requests.items[0].run_id == h._voice.driven_run
+    assert not [c for c in lives[0].calls if c[0] == "reply_to"] and lives[0].calls[
+        -1
+    ] == ("nudge",)
+    # without ops: today's typed line
+    h, room, backend, lives, clock, log = await three()
+    await say(h, "u2", "Forge, are you there")
+    backend.turns.clear()
+    await say(h, "u1", CI)
+    assert lives[0].calls[-1] == ("reply_to", CI) and h._requests.items == []

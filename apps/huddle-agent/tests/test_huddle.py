@@ -404,11 +404,11 @@ def answer(h, run_id, agent_id, text):
 
 async def test_summon_by_name_opens_that_agents_own_voice():
     h, room, backend, lives, clock, log = await summoned("Gauge")
-    # Aden's plain line went to Jev (nobody); the line that starts with a name skipped it
+    # Aden's plain line went to Jev (nobody); the line that starts with a name is understood while it opens (§4.6)
     assert (
         backend.summons == ["u1"]
         and backend.sessions == ["gauge"]
-        and backend.route_humans == [2]
+        and backend.route_humans == [2, 2]
     )
     live = lives[0]
     assert (live.agent_id, live.voice, live.persona, live.speaker) == (
@@ -488,11 +488,12 @@ def test_opening_name_parity_with_chat():
         assert address(text, agents, TEAM["people"]).agent_ids == expected, text
 
 
-async def test_a_name_at_the_start_skips_jev():
+async def test_a_name_at_the_start_opens_that_voice():
+    # understanding §4.6: /route only understands the line; it never picks the voice
     h, room, backend, lives, clock, log = make()
     await h.on_participants({"u1": "Prasiddha"})
     await say(h, "u1", "Gauge, what's revenue?")
-    assert backend.routes == [] and lives[0].agent_id == "gauge"
+    assert [r[1] for r in backend.routes] == ["Gauge, what's revenue?"] and lives[0].agent_id == "gauge"
     await h.end_exchange()
 
 
@@ -520,8 +521,8 @@ async def test_lightbulb_without_a_name_routes_with_a_name_does_not():
     await h.end_exchange()
     await say(h, "u1", "hey Lightbulb, Gauge, revenue please")
     assert (
-        len(backend.routes) == 1 and lives[1].agent_id == "gauge"
-    )  # an opening name after the wake word: 0 ms
+        len(backend.routes) == 2 and lives[1].agent_id == "gauge"
+    )  # an opening name after the wake word: its voice opens, the line understood beside it (§4.6)
     await h.end_exchange()
     await say(
         h, "u1", "Lightbulb, ask Gauge about revenue"
@@ -2540,7 +2541,7 @@ async def test_latency_route_session_and_first_audio_once(capsys):
     lines = [
         json.loads(x)
         for x in capsys.readouterr().out.splitlines()
-        if "live.latency" in x
+        if "live.latency" in x and "live.latency.jev" not in x  # the /route call's own (understanding §4.6)
     ]
     got = [
         (

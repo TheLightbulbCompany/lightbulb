@@ -439,6 +439,7 @@ class Settings(BaseSettings):
     # docs/superpowers/specs/2026-09-09-native-multiplayer-messaging-architecture.md).
     # The env names are the frozen cross-packet contract — do not rename.
     MESSAGING_TABLE: str = ""
+    SEARCH_ENDPOINT: str = ""  # OpenSearch Serverless collection endpoint; empty disables message search
     """Canonical room/message table (``lightbulb-{env}-messaging``). Empty is
     only legal outside a deployed task; ``_validate_deployed_security`` fails
     boot without it because every room command would 500 at first use."""

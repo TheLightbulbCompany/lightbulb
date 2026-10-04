@@ -116,7 +116,7 @@ from core.repositories import (
     user_repo,
 )
 from core.repositories.paperclip_repo import PaperclipIdentity, PaperclipRepo
-from core.services import clerk_admin, company_stripe
+from core.services import clerk_admin, company_stripe, message_search
 from core.services.billing_service import delete_stripe_customer
 from core.services.paperclip_api_key import (
     delete_owner_agent_key_secrets,
@@ -662,6 +662,14 @@ async def preview_wipe(owner_id: str) -> WipeReport:
             detail=(f"{len(room_ids)} owned room partition(s), then owner catalog and private user-stream mappings"),
         )
     )
+    steps.append(
+        WipeStep(
+            system="search",
+            action="drop_owner_index",
+            status="would_delete",
+            detail="the owner's message search index",
+        )
+    )
 
     paperclip_rows = [
         label
@@ -1009,6 +1017,11 @@ async def wipe_account(owner_id: str, *, actor_admin_id: str, account_emails: li
         action="delete_owner_rooms_and_streams",
         fn=_s9a2,
     )
+
+    async def _s9a3() -> str:
+        return await message_search.delete_owner_index(owner_id)
+
+    await _step(steps, system="search", action="drop_owner_index", fn=_s9a3)
 
     # Both of this owner's items in paperclip-companies, not just the company
     # row: the funnel answer lives in the SAME table under the prefixed key

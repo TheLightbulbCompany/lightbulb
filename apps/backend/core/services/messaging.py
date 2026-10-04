@@ -158,6 +158,7 @@ API_ERROR_STATUS = {
     "RUN_NOT_ACTIVE": 409,
     "RATE_LIMITED": 429,
     "RUNTIME_UNAVAILABLE": 503,
+    "SEARCH_UNAVAILABLE": 503,
     "INTERNAL_ERROR": 500,
 }
 
@@ -1654,6 +1655,33 @@ async def _user_sections(owner_id: str, user_id: str) -> list[RoomSection]:
 _SUMMARY_CONCURRENCY = 8
 
 
+async def _visible_room_metas(owner_id: str, user_id: str) -> list[dict]:
+    """Rooms the GSI says the caller belongs to, minus tombstoned rooms and Meet
+    rooms. Discovery only: every caller still rechecks the strong ``MEMBER#`` row."""
+    return [
+        row["meta"]
+        for row in await messaging_repo.list_rooms_for_member(owner_id, "human", user_id)
+        # ``hidden``: a Google Meet's room -- the meeting's record, never a place people go.
+        if not row["meta"].get("deletedAt") and not row["meta"].get("hidden")
+    ]
+
+
+async def searchable_rooms(owner_id: str, user_id: str) -> dict[str, str]:
+    """Room id -> the room's OWNER (whose search index holds it), for every room
+    the caller can read right now -- the same membership rule as ``require_room_member``."""
+    limit = asyncio.Semaphore(_SUMMARY_CONCURRENCY)
+
+    async def check(meta: dict) -> dict | None:
+        async with limit:
+            member = await messaging_repo.get_member(meta["roomId"], "human", user_id)
+        if member is not None and messaging_repo.member_home(member, meta["ownerId"]) == owner_id:
+            return meta
+        return None
+
+    checked = await asyncio.gather(*(check(meta) for meta in await _visible_room_metas(owner_id, user_id)))
+    return {meta["roomId"]: meta["ownerId"] for meta in checked if meta}
+
+
 async def _room_summaries(owner_id: str, user_id: str) -> list[RoomSummary]:
     """Every room the caller can see, with the members each row needs to name
     itself.
@@ -1665,16 +1693,10 @@ async def _room_summaries(owner_id: str, user_id: str) -> list[RoomSummary]:
     removed a moment ago can still be discovered by it, and ``get_member`` is
     the strongly-consistent read that keeps them out of the response.
     """
-    discovered = [
-        row
-        for row in await messaging_repo.list_rooms_for_member(owner_id, "human", user_id)
-        # ``hidden``: a Google Meet's room -- the meeting's record, never a place people go.
-        if not row["meta"].get("deletedAt") and not row["meta"].get("hidden")
-    ]
+    discovered = await _visible_room_metas(owner_id, user_id)
     limit = asyncio.Semaphore(_SUMMARY_CONCURRENCY)
 
-    async def summarise(row: dict) -> RoomSummary | None:
-        meta = row["meta"]
+    async def summarise(meta: dict) -> RoomSummary | None:
         room_id = meta["roomId"]
         async with limit:
             member, read, members = await asyncio.gather(
@@ -1690,7 +1712,7 @@ async def _room_summaries(owner_id: str, user_id: str) -> list[RoomSummary]:
             members=[_room_member(item) for item in with_human_handles(members, emails)],
         )
 
-    settled = await asyncio.gather(*(summarise(row) for row in discovered))
+    settled = await asyncio.gather(*(summarise(meta) for meta in discovered))
     summaries = [summary for summary in settled if summary is not None]
     summaries.sort(key=lambda room: str(room.room_id))
     summaries.sort(key=lambda room: room.last_message_at or room.updated_at, reverse=True)

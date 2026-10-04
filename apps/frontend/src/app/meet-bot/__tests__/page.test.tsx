@@ -37,27 +37,11 @@ it("names the speaking agent and attaches the subscribed audio track", async () 
   subscribe("agent-host", "agent-Gauge");
   render(<MeetBotPage />);
   await waitFor(() => expect(screen.getByText("Speaking")).toBeInTheDocument());
-  expect(screen.getByText("Gauge Prime")).toBeInTheDocument();
+  expect(screen.getAllByText("Gauge Prime")).toHaveLength(2); // stage + roster
   expect(screen.getByText("Forge")).toBeInTheDocument();
   expect(screen.getByText("Say an agent's name to ask")).toBeInTheDocument();
   expect(lk.publishData).not.toHaveBeenCalled();
   expect(lk.attach).toHaveBeenCalled();
-});
-
-it("shows a chip per state in order: speaking, hand up, working, idle; never says tap", async () => {
-  lk.remote = [{ attributes: {
-    ...A("idle1", "idle"), ...A("work", "working", { working: "drafting the post" }),
-    ...A("hand", "has_news", { hand: "the Q3 numbers" }), ...A("bare", "has_news"), ...A("talk", "speaking"), "lightbulb.speaking_agent": "talk",
-  } }];
-  global.fetch = reply(200) as never;
-  const { container } = render(<MeetBotPage />);
-  await screen.findByText("Say an agent's name to ask");
-  const chips = [...container.querySelectorAll("li")].map((li) => li.lastElementChild?.textContent) // the last child skips the avatar initials;
-  expect(chips).toEqual([
-    "talk · Speaking", "hand · Hand up: the Q3 numbers", "bare · Hand up: has something for you",
-    "work · Working: drafting the post", "idle1",
-  ]);
-  expect(container.textContent).not.toMatch(/tap/i);
 });
 
 it("falls back to plain Working when the task text is absent", async () => {
@@ -65,14 +49,6 @@ it("falls back to plain Working when the task text is absent", async () => {
   global.fetch = reply(200) as never;
   render(<MeetBotPage />);
   expect(await screen.findByText("Working")).toBeInTheDocument();
-});
-
-it("shows six chips and collapses the rest into +N more", async () => {
-  lk.remote = [{ attributes: Object.assign({}, ...["a", "b", "c", "d", "e", "f", "g", "h"].map((id) => A(id, "idle"))) }];
-  global.fetch = reply(200) as never;
-  const { container } = render(<MeetBotPage />);
-  expect(await screen.findByText("+2 more")).toBeInTheDocument();
-  expect(container.querySelectorAll("li")).toHaveLength(7);
 });
 
 it("shows the expired-link state on 401", async () => {

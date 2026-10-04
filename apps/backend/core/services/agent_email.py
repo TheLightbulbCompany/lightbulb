@@ -13,6 +13,7 @@ inbox row uses it. A row may also carry a ``public_address`` (set only by
 and SHOWS; mail to it is forwarded to the routing address outside SES.
 """
 
+import asyncio
 import logging
 import re
 from email.utils import formataddr
@@ -65,6 +66,32 @@ async def public_for(address: str) -> str:
         logger.warning("agent_email: public address lookup failed for %s", address, exc_info=True)
         return address
     return row.get("public_address") or address
+
+
+_MAIL_CHANGED_TIMEOUT_S = 3.0
+_nudges: set[asyncio.Task] = set()
+
+
+async def mail_changed(owner_id: str) -> None:
+    """Tell the workspace's open Mail panels to re-read: a mail was stored or a meeting changed.
+    Fire-and-forget: the publish runs off the caller's path (SES inbound, the meeting lease), is
+    bounded, and never raises. The panel debounces repeats and also re-reads on focus."""
+    task = asyncio.create_task(_publish_mail_changed(owner_id))
+    _nudges.add(task)
+    task.add_done_callback(_nudges.discard)
+
+
+async def _publish_mail_changed(owner_id: str) -> None:
+    from core.services.live_events import publish_owner_users
+    from core.services.messaging import make_live_event
+
+    try:
+        await asyncio.wait_for(
+            publish_owner_users(owner_id, make_live_event("runtime.resource.invalidated", {"resource": "mail"})),
+            _MAIL_CHANGED_TIMEOUT_S,
+        )
+    except Exception:  # noqa: BLE001
+        logger.warning("agent_email: mail live event failed owner=%s", owner_id, exc_info=True)
 
 
 async def public_address(owner_id: str) -> str | None:

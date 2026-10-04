@@ -22,7 +22,7 @@ from core.config import settings
 from core.constants import SYSTEM_ACTOR_ID
 from core.observability.metrics import put_metric
 from core.repositories import agent_email_repo, container_repo, messaging_repo
-from core.services import clerk_admin, meeting_bots, meeting_rsvp, messaging
+from core.services import agent_email, clerk_admin, meeting_bots, meeting_rsvp, messaging
 from core.services.agent_mail_inbound import authenticated_sender, parse_from_address
 
 logger = logging.getLogger(__name__)
@@ -344,10 +344,13 @@ async def _patch_meeting(
             await messaging_repo.patch_room_meta(
                 room_id, {"meeting": merged}, expected_revision=int(meta.get("revision", 0))
             )
-            return merged
         except ClientError as exc:
             if not messaging_repo._is_cancelled(exc) or attempt == 3:
                 raise  # a throttle, access error, or a third lost race: SES retries the whole mail
+            continue
+        if meta.get("ownerId"):
+            await agent_email.mail_changed(meta["ownerId"])
+        return merged
 
 
 _BOT_KEYS = ("recallBotId", "ticketNonce", "botClaimAt", "botError")
@@ -633,6 +636,8 @@ async def _apply(owner_id: str, invite: Invite, room_id: str, creator: str, team
         await agent_email_repo.add_meeting(team.get("address") or "", room_id)
     except Exception:  # noqa: BLE001
         logger.warning("meeting room %s: recording it on the team row failed", room_id, exc_info=True)
+    # After the listing write, so a panel's refetch on this nudge finds a new meeting.
+    await agent_email.mail_changed(owner_id)
     if over and allowed:
         # A re-forward restarts a parked series: the next occurrence, then its line.
         if await _reschedule_locked(owner_id, room_id, meeting, now=now) == "series_over":

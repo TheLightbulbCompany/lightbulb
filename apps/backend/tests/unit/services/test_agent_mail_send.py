@@ -134,6 +134,7 @@ async def test_free_send_records_the_writer_under_the_returned_message_id(wired)
     assert await _send(to="vendor@x.y") == "sent"
     kw = wired.put_sent.await_args.kwargs
     assert (kw["address"], kw["message_id"], kw["agent_id"], kw["owner_id"]) == (TEAM, "<sent1@isol8.co>", AGENT, OWNER)
+    assert kw["text"] == "b"  # the sent body is kept for the Mail panel
 
 
 @pytest.mark.asyncio

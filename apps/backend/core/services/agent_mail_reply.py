@@ -127,6 +127,7 @@ async def send_reply(*, ctx: dict, body_text: str, body_html: str | None = None,
             agent_id=ctx["agent_id"],
             to=ctx["reply_to"],
             subject=subject,
+            text=body_text,
         )
         return "sent"
     except Exception:

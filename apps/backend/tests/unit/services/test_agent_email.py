@@ -196,3 +196,36 @@ async def test_public_address_is_the_team_address_without_one(monkeypatch, team)
 def test_strictest_ignores_alias_rows():
     alias = {"address": PUBLIC, "alias_of": TEAM, "owner_id": "o"}
     assert ae.strictest([{"send_to_anyone": True, "verified_senders": []}, alias])["send_to_anyone"] is True
+
+
+# ---- mail_changed: the Mail panel's live nudge ----
+
+import asyncio  # noqa: E402
+from unittest.mock import patch  # noqa: E402
+
+from core.services.agent_email import mail_changed as real_mail_changed  # noqa: E402  (conftest stubs the attribute)
+
+
+async def test_mail_changed_tells_the_workspace_people_to_reread_mail():
+    with patch("core.services.live_events.publish_owner_users", AsyncMock()) as pub:
+        await real_mail_changed("org_1")
+        await asyncio.gather(*ae._nudges)
+    owner, event = pub.await_args.args
+    assert owner == "org_1"
+    assert event["type"] == "runtime.resource.invalidated" and event["payload"] == {"resource": "mail"}
+
+
+async def test_mail_changed_swallows_a_failed_publish():
+    with patch("core.services.live_events.publish_owner_users", AsyncMock(side_effect=RuntimeError("appsync"))):
+        await real_mail_changed("org_1")
+        await asyncio.gather(*ae._nudges)  # the background publish never raises
+
+
+async def test_mail_changed_never_waits_on_the_publish_and_bounds_it(monkeypatch):
+    async def stall(*_):
+        await asyncio.sleep(60)
+
+    monkeypatch.setattr(ae, "_MAIL_CHANGED_TIMEOUT_S", 0.01)
+    with patch("core.services.live_events.publish_owner_users", stall):
+        await asyncio.wait_for(real_mail_changed("org_1"), 0.005)  # returns before any publish work
+        await asyncio.wait_for(asyncio.gather(*ae._nudges), 1)  # and the publish gives up

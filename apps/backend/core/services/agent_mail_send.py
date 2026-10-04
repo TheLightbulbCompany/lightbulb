@@ -201,6 +201,7 @@ async def send(
             agent_id=agent_id,
             to=to_addr,
             subject=sent_subject,
+            text=body_text,
         )
         return _done(path, "sent")
     except Exception:

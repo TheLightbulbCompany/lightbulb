@@ -92,24 +92,43 @@ pub fn stop_attach(info: &HolderInfo) {
     if holder <= 1 || STOPPING.lock().map_or(true, |mut s| s.contains(&holder) || { s.push(holder); false }) {
         return;
     }
+    // Who they are now: a pid that exits during the grace period can be reused by an unrelated process.
+    let was = (birth(holder), birth(client));
     stop(info.pid);
     std::thread::spawn(move || {
         std::thread::sleep(KILL_AFTER);
         if let Ok(mut s) = STOPPING.lock() {
             s.retain(|p| *p != holder);
         }
-        // ponytail: a pid reused within 2 s would be killed too; a start-time check if that ever matters.
-        let alive = |pid: libc::pid_t| pid > 1 && unsafe { libc::kill(pid, 0) } == 0;
-        if alive(holder) || alive(client) {
-            unsafe {
-                libc::kill(-holder, libc::SIGKILL);
-                libc::kill(holder, libc::SIGKILL);
-                if client > 1 {
-                    libc::kill(client, libc::SIGKILL);
-                }
-            }
-        }
+        kill_if_same(holder, client, was);
     });
+}
+
+fn birth(pid: libc::pid_t) -> Option<u64> {
+    (pid > 1).then(|| crate::local_sessions::process_birth(pid as u32)).flatten()
+}
+
+/// SIGKILL each pid that is still the process it was when `was` was read; skip any that changed.
+fn kill_if_same(holder: libc::pid_t, client: libc::pid_t, was: (Option<u64>, Option<u64>)) {
+    let same = |pid, was: Option<u64>| was.is_some() && birth(pid) == was;
+    let holder_same = same(holder, was.0);
+    // The holder's group id is its pid. A free pid is never handed out while a group still uses it, so
+    // once the holder is gone (ESRCH) a group with that id is its leftovers.
+    // ponytail: unless the pid was reused, made a group leader and exited within the 2 s; a group start-time check if that ever matters.
+    let holder_gone = holder > 1
+        && unsafe { libc::kill(holder, 0) } != 0
+        && std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH);
+    unsafe {
+        if holder_same || holder_gone {
+            libc::kill(-holder, libc::SIGKILL);
+        }
+        if holder_same {
+            libc::kill(holder, libc::SIGKILL);
+        }
+        if same(client, was.1) {
+            libc::kill(client, libc::SIGKILL);
+        }
+    }
 }
 
 /// Start a holder from this app's own binary (`<exe> holder <socket> -- argv`).
@@ -266,6 +285,31 @@ mod tests {
             std::thread::sleep(Duration::from_millis(50));
         }
         assert!(holder.try_wait().unwrap().is_some() && client.try_wait().unwrap().is_some(), "both are gone after the fallback");
+    }
+
+    #[test]
+    fn holder_attach_stop_spares_a_pid_that_is_now_another_process() {
+        let mut holder = std::process::Command::new("/bin/sh");
+        holder.args(["-c", "trap '' TERM; exec /bin/sleep 30"]);
+        unsafe {
+            holder.pre_exec(|| {
+                libc::setsid();
+                Ok(())
+            });
+        }
+        let mut holder = holder.spawn().unwrap();
+        let mut client = std::process::Command::new("/bin/sleep").arg("30").spawn().unwrap();
+        let (h, c) = (holder.id() as libc::pid_t, client.id() as libc::pid_t);
+        // Start times read at stop time that no longer match: both pids now belong to other processes.
+        kill_if_same(h, c, (birth(h).map(|b| b + 1), birth(c).map(|b| b + 1)));
+        std::thread::sleep(Duration::from_millis(200));
+        assert!(holder.try_wait().unwrap().is_none() && client.try_wait().unwrap().is_none(), "a reused pid is never killed");
+        kill_if_same(h, c, (birth(h), birth(c)));
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while (holder.try_wait().unwrap().is_none() || client.try_wait().unwrap().is_none()) && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        assert!(holder.try_wait().unwrap().is_some() && client.try_wait().unwrap().is_some(), "the same processes are killed");
     }
 
     #[test]

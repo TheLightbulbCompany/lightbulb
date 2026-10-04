@@ -874,6 +874,11 @@ impl Process {
     }
 }
 
+/// When `pid` started (microseconds), if it is one of this user's processes: its identity across pid reuse.
+pub(crate) fn process_birth(pid: u32) -> Option<u64> {
+    process(pid).ok().map(|p| p.birth_micros)
+}
+
 fn process(pid: u32) -> Result<Process> {
     #[cfg(target_os = "macos")]
     {

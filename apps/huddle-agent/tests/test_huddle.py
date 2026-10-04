@@ -2622,6 +2622,7 @@ async def test_a_second_speaker_is_routed_into_the_queue(capsys):
     assert backend.route_bodies[-1]["floor"] == {
         "agent": "forge",
         "speaker": "Prasiddha",
+        "mine": False,  # understanding §4.4: Aden is not the person Forge is talking with
     }
     assert ("thinking", "Aden: can someone check the invoices", None) in lives[
         0

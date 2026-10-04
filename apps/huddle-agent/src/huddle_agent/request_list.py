@@ -124,16 +124,23 @@ class RequestList:
         return next((r for r in self.items if r.id == request_id), None)
 
     def for_route(self) -> list[dict]:
-        """What /route is told (understanding §4.4): every open routed row, then the newest delivered three."""
+        """What /route is told (understanding §4.4): the open routed rows, then the newest delivered three; past
+        12 the oldest open rows go first (the newest are the ones a line can amend)."""
         done = [r for r in self.items if r.status == "delivered" and r.routed][-3:]
-        rows = [r for r in self.items if r.status in OPEN and r.routed] + done
+        rows = [r for r in self.items if r.status in OPEN and r.routed][
+            -(12 - len(done)) :
+        ] + done
         return [
             {"id": r.id, "agentId": r.agent, "task": r.task[:200], "status": r.status}
-            for r in rows[:12]
+            for r in rows
         ]
 
     def start(self, r: Request) -> None:
         self._move([r], "working", {"queued"})
+
+    def unstart(self, r: Request) -> None:
+        """A row started for a voice that never opened: back in line, it runs without one."""
+        self._move([r], "queued", {"working"})
 
     def bind(self, r: Request, run_id: str) -> None:
         r.run_id = run_id

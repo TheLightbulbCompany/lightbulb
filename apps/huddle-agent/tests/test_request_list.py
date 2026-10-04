@@ -219,7 +219,14 @@ def test_for_route_lists_open_rows_then_three_newest_delivered_capped_at_twelve(
     }
     big = RequestList()
     big.settle(1, "u", [{"agentId": f"a{i}", "task": "t"} for i in range(15)], 0.0)
-    assert len(big.for_route()) == 12
+    assert [o["agentId"] for o in big.for_route()] == [f"a{i}" for i in range(3, 15)]  # the newest stay
+    for i, r in enumerate(big.items[:3]):
+        big.start(r)
+        big.bind(r, f"d{i}")
+    big.delivered({"d0", "d1", "d2"})
+    big.settle(2, "u", [{"agentId": "z", "task": "t"}], 0.0)
+    out = [o["agentId"] for o in big.for_route()]
+    assert out == [f"a{i}" for i in range(7, 15)] + ["z", "a0", "a1", "a2"]
 
 
 def rows_for(*pairs):

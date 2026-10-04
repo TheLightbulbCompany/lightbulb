@@ -8,9 +8,10 @@ import { ApiError } from "@lightbulb/shared";
 
 import { useApi } from "@/lib/api";
 import { useLiveEvents } from "@/hooks/useLiveEvents";
-import { isNew, newestReceived, type MailPage } from "./mailModel";
+import { type MailPage } from "./mailModel";
 
 export const INBOX_URL = "/agent-mail/inbox";
+const NEW_URL = "/agent-mail/inbox/new";
 const REFRESH_DEBOUNCE_MS = 400;
 
 // The workspace is part of every cache key: switching workspaces never shows the last one's mail.
@@ -110,21 +111,23 @@ export function useSeen(orgId: string | undefined): number | null {
   return useSyncExternalStore(subscribeSeen, () => readSeen(orgId), () => null);
 }
 
-/** The rail badge: NEW received mail on the first page. Quiet without an org or an address. */
+/**
+ * The rail badge: received mail after this device's mark, counted by the server (capped at 10,
+ * shown as "9+"), so it never reads meetings and never misses mail behind a page of sent mail.
+ * No mark yet (a first visit): no request and nothing new; opening Mail sets the mark.
+ */
 export function useNewMailCount(): number {
   const api = useApi();
   const orgId = useOrganization().organization?.id;
-  const { data, mutate } = useSWR<MailPage>(
-    orgId ? [INBOX_URL, orgId] : null,
-    ([url]: [string, string]) => api.get(url) as Promise<MailPage>,
-    // Errors (the 409 before an address exists included) just leave the badge empty.
+  const seen = useSeen(orgId);
+  const since = seen === null ? null : new Date(seen).toISOString();
+  const { data, mutate } = useSWR<{ count: number }>(
+    orgId && since ? [NEW_URL, orgId, since] : null,
+    ([url, , mark]: [string, string, string]) =>
+      api.get(`${url}?since=${encodeURIComponent(mark)}`) as Promise<{ count: number }>,
+    // Errors just leave the badge empty.
     { revalidateOnFocus: true, shouldRetryOnError: false },
   );
   useMailInvalidation(mutate);
-  const newest = data ? newestReceived(data.messages ?? []) : undefined;
-  useEffect(() => {
-    if (orgId && newest !== undefined && readSeen(orgId) === null) advanceSeen(orgId, newest);
-  }, [orgId, newest]);
-  const seen = useSeen(orgId);
-  return (data?.messages ?? []).filter((m) => isNew(m, seen)).length;
+  return since ? data?.count ?? 0 : 0;
 }

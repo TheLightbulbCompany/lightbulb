@@ -17,6 +17,7 @@ import hmac
 import re
 import time
 import uuid
+from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from pydantic import BaseModel
@@ -24,7 +25,14 @@ from pydantic import BaseModel
 from core.auth import AuthContext, get_current_user, resolve_owner_id
 from core.dynamodb import run_in_thread
 from core.repositories import agent_email_repo, container_repo, messaging_repo
-from core.repositories.agent_mail_inbox_repo import MAX_TEXT_CHARS, get_message, list_messages, list_page, reply_key
+from core.repositories.agent_mail_inbox_repo import (
+    MAX_TEXT_CHARS,
+    count_received_after,
+    get_message,
+    list_messages,
+    list_page,
+    reply_key,
+)
 from core.services import meeting_invites, messaging
 from core.services.agent_email import EMAIL_ADDRESS_RE, ensure_team_address, public_for, team_address
 from core.services.agent_mail_send import _owner_email, send
@@ -342,6 +350,29 @@ async def team_inbox(
     rows, nxt = await list_page(address, before=before, limit=limit)
     shown = row.get("public_address") or address
     return {"address": shown, "meetings": meetings, "messages": [_mail_view(shown, r) for r in rows], "next": nxt}
+
+
+_NEW_CAP = 10  # the rail badge shows "9+"
+
+
+@router.get("/inbox/new")
+async def team_inbox_new(since: str | None = None, auth: AuthContext = Depends(get_current_user)) -> dict:
+    """The rail badge: received mail after ``since`` (an ISO time), capped. One inbox query, no
+    meeting reads. A missing or unparsable ``since``, or no team address yet, counts 0."""
+    owner_id = resolve_owner_id(auth)
+    try:
+        mark = datetime.fromisoformat(since or "")
+    except ValueError:
+        return {"count": 0}
+    if mark.tzinfo is None:
+        mark = mark.replace(tzinfo=timezone.utc)
+    # The browser's mark has millisecond precision; stored keys have microseconds. Past the whole
+    # millisecond, so the mail that set the mark does not count as new.
+    bound = (mark.astimezone(timezone.utc) + timedelta(microseconds=999)).isoformat()
+    address = await team_address(owner_id)
+    if not address:
+        return {"count": 0}
+    return {"count": await count_received_after(address, bound, cap=_NEW_CAP)}
 
 
 @router.get("/message")

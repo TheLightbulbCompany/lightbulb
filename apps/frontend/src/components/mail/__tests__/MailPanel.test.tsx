@@ -304,19 +304,26 @@ describe("MailPanel", () => {
     expect(await screen.findByText("pat@acme.com")).toBeInTheDocument();
   });
 
-  it("keeps the rail badge empty on a device's first load, then counts mail past the mark", async () => {
-    mockGet.mockResolvedValue(page);
+  it("rail badge: no request and nothing new without a mark", async () => {
+    mockGet.mockResolvedValue({ count: 4 });
     const wrapper = ({ children }: { children: React.ReactNode }) =>
       <SWRConfig value={{ provider: () => new Map() }}>{children}</SWRConfig>;
-    const first = renderHook(() => useNewMailCount(), { wrapper });
-    await waitFor(() => expect(window.localStorage.getItem("lightbulb.mail.seen.org_1")).toBe(received.at));
-    expect(first.result.current).toBe(0);
-    first.unmount();
+    const { result } = renderHook(() => useNewMailCount(), { wrapper });
+    await act(async () => {});
+    expect(result.current).toBe(0);
+    expect(mockGet).not.toHaveBeenCalled();
+    expect(window.localStorage.getItem("lightbulb.mail.seen.org_1")).toBeNull(); // only the panel sets it
+  });
 
-    const mark = hoursAgo(5);
+  it("rail badge: asks the count endpoint with the stored mark, never the inbox", async () => {
+    const mark = "2026-10-03T12:00:00.123Z";
     window.localStorage.setItem("lightbulb.mail.seen.org_1", mark);
-    const later = renderHook(() => useNewMailCount(), { wrapper });
-    await waitFor(() => expect(later.result.current).toBe(1));
-    expect(window.localStorage.getItem("lightbulb.mail.seen.org_1")).toBe(mark); // only the panel moves it
+    mockGet.mockResolvedValue({ count: 10 });
+    const wrapper = ({ children }: { children: React.ReactNode }) =>
+      <SWRConfig value={{ provider: () => new Map() }}>{children}</SWRConfig>;
+    const { result } = renderHook(() => useNewMailCount(), { wrapper });
+    await waitFor(() => expect(result.current).toBe(10));
+    expect(mockGet).toHaveBeenCalledWith(`/agent-mail/inbox/new?since=${encodeURIComponent(mark)}`);
+    expect(mockGet).not.toHaveBeenCalledWith("/agent-mail/inbox");
   });
 });

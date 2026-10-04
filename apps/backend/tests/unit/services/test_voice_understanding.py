@@ -343,6 +343,28 @@ async def test_the_wake_word_is_said_to_the_agents_whatever_jev_hears(decide):
     assert decide.await_args.args[0]["room"]["setting"] == vc.jev.MEETING_CONTEXT and meet["agentIds"] == []
 
 
+async def test_a_correction_to_an_unheard_answer_drops_it_and_asks_again(decide):
+    """Codex P2: the answer is ready but not yet spoken; "actually, last month" must not be followed by the stale one."""
+    ready = [{"id": "r1", "agentId": "gauge", "task": "how many signups came in last week", "status": "ready"}]
+    line = "Actually make that last month."
+    got = await route(decide, line, jev_says(kinds=["request"], whos=["pulse"], amends="r1"), opened=ready)
+    assert got["ops"]["cancel"] == ["r1"] and got["ops"]["steer"] == []
+    assert tasks(got) == [("gauge", "how many signups came in last week. Actually make that last month", "follow")]
+
+
+async def test_an_ask_already_being_worked_on_is_not_made_twice(decide):
+    """A late final repeats what the voice already delegated, and adds a new ask."""
+    working = [{"id": "r1", "agentId": "forge", "task": "What are the open PRs", "status": "working"}]
+    line = "what are the open PRs and also check Aden's email"
+    said = jev_says(kinds=["request", "request"], whos=["forge", "friday"])
+    got = await route(decide, line, said, opened=working)
+    assert tasks(got) == [("friday", "check Aden's email", "fit")]
+    # the same words after its answer was heard is a new request: people do ask again
+    heard = [{**working[0], "status": "delivered"}]
+    again = await route(decide, "what are the open PRs", jev_says(kinds=["request"], whos=["forge"]), opened=heard)
+    assert tasks(again) == [("forge", "what are the open PRs", "fit")]
+
+
 async def test_calling_a_request_off_cancels_it(decide):
     # "Forget" is heard as a possible "Forge" (the worker's fuzzy match): Jev says it is not the name
     said = jev_says(kinds=["cancel"], names=["not_a_name"], drops="r1")

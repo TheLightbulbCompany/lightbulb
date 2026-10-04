@@ -878,6 +878,18 @@ AMEND_P = 0.5
 _OPEN_STATUS = ("queued", "working")
 
 
+def _same_ask(a: str, b: str) -> bool:
+    """The same request said again, word for word but for case, punctuation and filler."""
+
+    def words(text: str) -> list[str]:
+        return [w for w in re.findall(r"[a-z0-9']+", text.lower()) if w not in _FILLER_WORDS]
+
+    return bool(words(a)) and words(a) == words(b)
+
+
+_FILLER_WORDS = frozenset({"um", "uh", "and", "also", "then", "so", "ok", "okay", "please", "like"})
+
+
 def _understood(
     addressing: dict,
     utterance: str,
@@ -984,9 +996,20 @@ def _understood(
             said = ". ".join(r["task"] for r in theirs) or task(about)
             out["requests"] = [r for r in requests if r not in theirs]
             out["steer"] = [{"requestId": amended["id"], "text": said}]
+        elif amended["status"] == "ready" and theirs:
+            # Its answer is ready and nobody has heard it: the message cannot be about that answer, so it
+            # corrects the request. The stale answer is dropped unsaid and the request is asked again
+            # with the correction ("what are signups last week" ... "actually, last month").
+            out["cancel"] = [amended["id"]]
+            for r in theirs:
+                r |= {"agentId": amended["agentId"], "task": f"{amended['task']}. {r['task']}", "by": "follow"}
         elif amended["status"] not in _OPEN_STATUS:
             for r in theirs:
                 r |= {"agentId": amended["agentId"], "by": "follow"}
+    # The worker lists what is already being worked on: a request that says the same thing again (a late
+    # final repeating what the voice already delegated) is not made twice.
+    pending = [r["task"] for r in open_requests if r["status"] in _OPEN_STATUS]
+    out["requests"] = [r for r in out["requests"] if not any(_same_ask(r["task"], task) for task in pending)]
     return out
 
 

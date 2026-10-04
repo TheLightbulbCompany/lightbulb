@@ -199,6 +199,8 @@ mod tests {
             active_turn: None,
             last_assistant_message: None,
             holder: None,
+            job: None,
+            forked_from: None,
         };
         let record = Link {
             start_id: "11111111-1111-4111-8111-111111111111".into(),

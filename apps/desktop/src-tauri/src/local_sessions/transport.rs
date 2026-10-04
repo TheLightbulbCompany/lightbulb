@@ -874,11 +874,11 @@ impl Host {
                         Err(error) => failures.push(error),
                     }
                 }
-                // Shared iff held (spec §5.4): an unheld session never gets a mirror.
+                // Every session is tracked; this names the held ones (rulings 2026-10-04).
                 let holders = tokio::task::spawn_blocking(crate::holder::manager::list)
                     .await
                     .unwrap_or_default();
-                keep_held(&mut found, &holders);
+                track(&mut found, &holders);
                 for error in &failures {
                     // A listing that failed is not evidence that anything stopped;
                     // say so once per distinct failure, not once a minute forever.
@@ -2233,7 +2233,7 @@ async fn send(socket: &mut Socket, body: &Value) -> Result<()> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(super) mod tests {
     use super::*;
 
     const SID: &str = "aaaabbbb-cccc-4ddd-8eee-ffff00001111";
@@ -2256,10 +2256,12 @@ mod tests {
             active_turn: None,
             last_assistant_message: None,
             holder: None,
+            job: None,
+            forked_from: None,
         }
     }
 
-    fn test_mirror(conversation: &str, generation: &str) -> Mirror {
+    pub(in crate::local_sessions) fn test_mirror(conversation: &str, generation: &str) -> Mirror {
         Mirror {
             workspace: workspace::State::default(),
             dirty: false,
@@ -3544,6 +3546,8 @@ mod tests {
             active_turn: None,
             last_assistant_message: None,
             holder: None,
+            job: None,
+            forked_from: None,
         }
     }
     #[tokio::test]
@@ -3823,6 +3827,8 @@ mod tests {
             active_turn: None,
             last_assistant_message: None,
             holder: None,
+            job: None,
+            forked_from: None,
         };
         let key = native_key(&native);
         let mirror = Mirror {
@@ -3943,6 +3949,8 @@ mod tests {
             active_turn: None,
             last_assistant_message: None,
             holder: None,
+            job: None,
+            forked_from: None,
         };
         let mirror = Mirror {
             workspace: workspace::State::default(),

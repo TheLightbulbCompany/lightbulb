@@ -116,9 +116,9 @@ pub(super) fn index(mirrors: &BTreeMap<String, Mirror>) {
     }
 }
 
-/// The holder a shared session runs in, and its generation: the holder discovery named on the
-/// mirror (`keep_held`: Claude as the holder's own child, Codex by the thread its holder bound).
-/// A mirror with no holder is not shared and has no live terminal.
+/// The holder a session runs in, and its generation: the holder discovery named on the mirror
+/// (`track`: Claude as the holder's own child, Codex by the thread its holder bound). A mirror
+/// with no holder has no Lightbulb-hosted terminal.
 pub(crate) fn holder_for_session(session_id: &str) -> Option<(HolderInfo, String)> {
     let live = LIVE.lock().ok()?.get(session_id).cloned()?;
     let holder = matched(manager::list(), live.native.holder.as_deref()?)?;

@@ -173,6 +173,8 @@ pub(super) async fn capture(home: &Path, program: &Path, row: &Value) -> Result<
         active_turn: None,
         last_assistant_message: None,
         holder: None,
+        job: None,
+        forked_from: None,
     })
 }
 
@@ -1529,6 +1531,8 @@ mod tests {
             active_turn: None,
             last_assistant_message: None,
             holder: None,
+            job: None,
+            forked_from: None,
         };
         let ingress = Ingress {
             workspace_revision: None,

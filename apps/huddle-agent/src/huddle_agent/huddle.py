@@ -130,6 +130,7 @@ CUT_HANDLED_S = 2.0  # a cut answer is posted this long after its cutter's final
 CUT_WAIT_S = 10.0  # ...or this long after the cut when no final ever comes
 # A Live voice's own speaker cut its answer and it made no reply to them: said once more, in these words.
 RESAY = "Your answer was cut off before it was heard, by talk that was not for you. Say it again now: {answer}"
+HEARD_SHARE = 0.8  # ...and it was heard once this much of it was said to the end, in one message or several
 MISSED_SECONDS = 10  # live.route.missed: nobody answered, then the same person names an agent or Lightbulb
 UNWANTED_SECONDS = 5  # live.route.unwanted: a Jev-routed voice the asker stops or switches away from this soon
 LATE_LINES = "Said in the room since you were asked (may or may not concern you):\n"
@@ -347,6 +348,7 @@ class _Voice:
     # speech was interrupted, or their sound came before a word of it; `replied`: it then answered them (they
     # were talking to it); `resaid`: it was said again once; `spoke`: its messages since the answer was handed over.
     answer: tuple | None = None
+    said: str = ""  # the parts of the run's answer it has said to their end (sentences come as several messages)
     unheard: bool = False
     replied: bool = False
     resaid: bool = False
@@ -2697,6 +2699,7 @@ class Huddle:
                     v.answer = None
                 self._settle_answer(v)  # the answer before this one: on the record if it was cut
                 v.unheard = v.replied = v.resaid = False
+                v.said = ""
             v.saying = run.run_id
             self._live_call(
                 v, "append_commentary", text, delegation_id=run.delegation_id
@@ -2714,7 +2717,8 @@ class Huddle:
                     "That request finished without a spoken result.",
                     delegation_id=run.delegation_id,
                 )
-            elif answer and not mixed_meet(v.speaker):
+            elif answer and not mixed_meet(v.speaker) and not _words_in(answer, v.said, HEARD_SHARE):
+                # not all said yet (its sentences were streamed while it ran): pending until it is
                 v.answer, v.spoke = (run.run_id, run.request, answer, self._clock(), run.speaker), 0
             self._requests.delivered({run.run_id})
         elif v := self._floor_voice(run.agent_id):
@@ -3056,7 +3060,11 @@ class Huddle:
         if interrupted:
             v.unheard = True
         elif ref and _words_in(text, ref, 0.5):
-            v.unheard, v.answer = False, None  # the answer, said to its end
+            # A part of the answer, said to its end. A long answer comes as several messages, so the first is
+            # only its start: it is heard once the parts together cover it (a later part may still be cut).
+            v.said += " " + text
+            if v.answer and _words_in(v.answer[2], v.said, HEARD_SHARE):
+                v.unheard, v.answer = False, None
         elif v.unheard:
             v.replied = True  # it answered who cut it: they were talking to it
 
@@ -3103,7 +3111,7 @@ class Huddle:
             now - n[3] >= CUT_HANDLED_S
             and now - self._last_heard >= (MEET_QUIET_S if self.setting == "meeting" else REQUEST_QUIET_S)
         ):
-            v.resaid, v.unheard, v.spoke = True, False, 0
+            v.resaid, v.unheard, v.spoke, v.said = True, False, 0, ""
             v.answer = (*n[:3], now, n[4])
             emit_metric("live.answer.resaid", 1, "Count")
             self._note(f"[{self._agent_name(v.agent_id)} says its cut answer again]")

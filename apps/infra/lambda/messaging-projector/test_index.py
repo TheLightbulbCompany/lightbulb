@@ -829,6 +829,23 @@ class PushTests(unittest.TestCase):
         _, urlopen = self.project(push_world(kind="dm"))
         self.assertNotIn("tok-alice", urlopen.call_args.args[0].data.decode())
 
+    def test_accountable_human_token_is_not_collected_for_a_system_authored_message(self):
+        # Native-session messages can be system-authored while still carrying
+        # the human who caused them. That human must not receive their own push.
+        message = push_message(mentions=())
+        message["author"] = {"kind": "system", "id": "native-session", "displayName": "System"}
+        message["actorUserId"] = USER_ID
+        _, urlopen = self.project(push_world(kind="dm"), message)
+        self.assertNotIn("tok-alice", urlopen.call_args.args[0].data.decode())
+
+    def test_agent_run_completion_still_notifies_the_requesting_human(self):
+        # Agent replies remain actionable and have no accountable human actor.
+        message = push_message(mentions=())
+        message["author"] = {"kind": "agent", "id": "friday", "displayName": "Friday"}
+        message["runId"] = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
+        _, urlopen = self.project(push_world(kind="dm"), message)
+        self.assertIn("tok-alice", urlopen.call_args.args[0].data.decode())
+
     def test_empty_text_bodies_as_an_image_and_long_text_is_truncated(self):
         for blank in ("", "   "):
             _, urlopen = self.project(push_world(), push_message(blank))

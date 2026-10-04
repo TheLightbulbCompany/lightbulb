@@ -252,6 +252,11 @@ def _canonical_message(item: dict[str, Any]) -> dict[str, Any]:
         "id": author["id"],
         "displayName": author["displayName"],
     }
+    actor_user_id = item.get("actorUserId")
+    if actor_user_id is not None:
+        if not isinstance(actor_user_id, str) or not actor_user_id:
+            raise ValueError("actorUserId must be a non-empty string or null")
+        message["actorUserId"] = actor_user_id
 
     text = message["text"]
     if not isinstance(text, str) or len(text.encode("utf-8")) > MAX_MESSAGE_BYTES:
@@ -705,14 +710,18 @@ def _notify_members(
     participants = _thread_participants(room_id, root, thread_root_seq) if root else set()
     mentioned = {ref["id"] for ref in message["mentions"] if ref["kind"] == "human"}
     author = message["author"]
+    accountable_human_id = message.get("actorUserId")
+    if not isinstance(accountable_human_id, str):
+        accountable_human_id = None
     if author["kind"] == "human":
+        accountable_human_id = author["id"]
         mentioned.discard(author["id"])  # a self-mention is not a mention (nor a MENTION# row)
     last_message = _last_message(message)
     mentioned_ids = sorted(mentioned)[:MAX_MENTIONED_USERS]
     # (token, was this token's owner @mentioned) — the push title is per reader.
     recipients: list[tuple[str, bool]] = []
     for user_id, member in _current_members(room_id, owner_id, after_seq=seq):
-        own = author["kind"] == "human" and author["id"] == user_id
+        own = accountable_human_id == user_id
         # Your own message is never Activity (nor a notify); you still get the hint's preview.
         # Neither is a silent (advisory) line, e.g. "paused after N replies" under a reply
         # that already notified.

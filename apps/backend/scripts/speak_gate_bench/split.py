@@ -28,10 +28,21 @@ os.environ.setdefault("CLERK_ISSUER", "https://bench.clerk.accounts.dev")  # Set
 from core.services import jev, messaging  # noqa: E402
 
 HERE = Path(__file__).parent
-AGENTS = [
-    {"kind": "agent", "id": n.lower(), "displayName": n, "mentionHandle": n.lower()}
-    for n in ("Forge", "Friday", "Pulse", "Gauge")
-]
+
+
+def _agents(names) -> list[dict]:
+    return [
+        {
+            "kind": "agent",
+            "id": n.lower().replace(" ", "-"),
+            "displayName": n,
+            "mentionHandle": n.lower().replace(" ", "-"),
+        }
+        for n in names
+    ]
+
+
+AGENTS = _agents(("Forge", "Friday", "Pulse", "Gauge"))
 PEOPLE = [
     {"kind": "human", "id": "u-pras", "displayName": "Prasiddha Parthsarthy"},
     {"kind": "human", "id": "u-leo", "displayName": "Leo Park"},
@@ -46,7 +57,9 @@ def _norm(text: str) -> str:
 async def one(case: dict) -> dict:
     latest = {"author": PEOPLE[0], "text": case["line"], "mentions": []}
     started = time.perf_counter()
-    out = await messaging.address(latest, MEMBERS, history=[], live=True)
+    # ``agents``: a row's own roster (the starter roster's role names, a renamed agent), else the default four.
+    members = _agents(case["agents"]) + PEOPLE if case.get("agents") else MEMBERS
+    out = await messaging.address(latest, members, history=[], live=True)
     ms = (time.perf_counter() - started) * 1000
     order, tasks = out["agents"], out.get("tasks")
     # route_live_line: with 2+ agents each gets its task, else the whole line.

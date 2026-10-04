@@ -101,7 +101,7 @@ class RouteBody(BaseModel):
     # Live's open requests for Jev (routing v2 §5): {agent, speaker} holding the floor, [{agent, request}].
     # ``mine``: the speaker is the person the floor agent is talking with (understanding §4.4).
     floor: dict[str, str | bool] | None = None
-    voiceRuns: list[dict[str, str]] = Field(default_factory=list, max_length=16)  # read before ``open``; ignored
+    voiceRuns: list[dict[str, str]] = Field(default_factory=list, max_length=16)  # a worker before ``open``
     # The worker's request list (understanding §4.4): open rows and the newest answered ones.
     open: list[dict[str, str]] = Field(default_factory=list, max_length=12)
     # Epoch seconds the transcript's last lines were said, oldest first, aligned to its end (Live reask rule).
@@ -302,6 +302,7 @@ async def route(room_id: str, body: RouteBody):
         humans=body.humans or 0,
         wake=body.humans is None,
         floor=body.floor,
+        voice_runs=body.voiceRuns,
         at=body.at,
         setting=body.setting,
         unclaimed=body.unclaimed,

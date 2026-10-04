@@ -1000,6 +1000,7 @@ async def route_live_line(
     humans: int,
     wake: bool = False,
     floor: dict | None = None,
+    voice_runs: list[dict] | None = None,
     at: list[int] | None = None,
     setting: str = "live",
     unclaimed: bool = False,
@@ -1038,6 +1039,13 @@ async def route_live_line(
         {**r, "agent": team[r["agentId"]]}
         for r in open_requests or []
         if r.get("agentId") in team and r.get("id") and r.get("task")
+    ]
+    # A worker before ``open`` sends its running work as ``voiceRuns`` ({agent, request}, no ids): the room
+    # judge still sees it ("X is answering ..."); nothing can be steered or called off by id.
+    running = [
+        {"agentId": r.get("agent"), "task": r.get("request"), "status": "working"}
+        for r in voice_runs or []
+        if r.get("agent") in team
     ]
     try:
         cards = dict(
@@ -1086,7 +1094,7 @@ async def route_live_line(
                     history,
                     to_people=to_people,
                     placement=False,
-                    open_lines=_open_voice_lines(floor, earlier, members),
+                    open_lines=_open_voice_lines(floor, earlier or running, members),
                     setting=setting,
                 ),
                 _ROUTING_TIMEOUT_S,

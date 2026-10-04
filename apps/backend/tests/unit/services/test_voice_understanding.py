@@ -380,6 +380,16 @@ async def test_among_several_people_the_room_judge_says_whether_an_agent_answers
     decide.judge.assert_not_awaited()  # the floor conversation needs no judge
 
 
+async def test_a_worker_before_open_still_shows_the_judge_its_running_work(decide):
+    """The deployed worker sends ``voiceRuns``, not ``open``: the judge must still see what is being answered."""
+    runs = [{"agent": "gauge", "request": "how many signups came in last week"}]
+    await route(decide, "and what about churn", jev_says(kinds=["request"]), humans=2, voice_runs=runs)
+    assert decide.judge.await_args.kwargs["open_lines"] == [
+        'Gauge is answering "how many signups came in last week" (voice)'
+    ]
+    assert "amends" not in decide.await_args.args[1]  # no ids to steer or call off
+
+
 async def test_the_room_judge_down_falls_back_like_chat(decide):
     decide.judge.return_value = {"fallback": True}
     got = await route(decide, "what's our burn", jev_says(kinds=["request"]), humans=2)

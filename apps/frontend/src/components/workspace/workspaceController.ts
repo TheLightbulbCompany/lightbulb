@@ -157,7 +157,7 @@ export function attachDockviewApi(
     api.onDidLayoutChange(() => recomputeSnapshot()),
   ];
   // After the dock has laid itself out at the new size, not before.
-  const onResize = () => requestAnimationFrame(refitBrowserSplit);
+  const onResize = () => requestAnimationFrame(refitSplits);
   window.addEventListener("resize", onResize);
   recomputeSnapshot();
   return () => {
@@ -330,6 +330,34 @@ export function refitBrowserSplit(): void {
   if (width < MIN_BROWSER_WIDTH || messages.group.api.width < MIN_ROOM_WIDTH) {
     browser.group.api.setSize({ width: browserSplitWidth(_api.width) });
   }
+}
+
+/**
+ * A dock too narrow for Tasks beside the conversation folds Tasks into the conversation's
+ * group as a tab, whichever of the two was in front staying in front. The stored placement
+ * is not touched: the next open on a wide dock still splits.
+ */
+function refitTasksSplit(): void {
+  const tasks = _api?.getPanel(TASKS_PANEL_ID);
+  const messages = _api?.getPanel(MESSAGES_PANEL_ID);
+  if (!_api || !tasks || !messages || tasks.group === messages.group || canSplitBesideMessages()) return;
+  const tasksInFront = _api.activePanel?.id === TASKS_PANEL_ID;
+  _shellOpDepth += 1;
+  try {
+    tasks.api.moveTo({ group: messages.group, position: "center" });
+  } finally {
+    _shellOpDepth -= 1;
+  }
+  if (!tasksInFront) messages.api.setActive();
+  recomputeSnapshot();
+}
+
+/** Refit both splits to the dock's width: on a window resize, and once after a layout restore. */
+export function refitSplits(): void {
+  // Not laid out yet: folding at width 0 would undo a split the dock has room for.
+  if (!_api?.width) return;
+  refitBrowserSplit();
+  refitTasksSplit();
 }
 
 // Expand (split → tab) / Show beside chat (tab → split). Remembers the choice

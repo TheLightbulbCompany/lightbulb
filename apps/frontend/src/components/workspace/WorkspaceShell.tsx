@@ -53,6 +53,7 @@ import {
   openMessagePanel,
   openSessionPanel,
   closeSubjectDeleted,
+  refitSplits,
   isShellOperationInProgress,
   useWorkspaceState,
   getWorkspaceSnapshot,
@@ -171,6 +172,23 @@ function AuthenticatedWorkspace({ scopeId, workspaceName }: { scopeId: string; w
   // Phone widths only: the rail + sidebar drawer. Wider, the CSS ignores it.
   const [navOpen, setNavOpen] = useState(false);
   const closeNav = useCallback(() => setNavOpen(false), []);
+  const shellRef = useRef<HTMLDivElement>(null);
+  const menuButtonRef = useRef<HTMLButtonElement>(null);
+  useEffect(() => {
+    if (!navOpen) return;
+    // Keyboard and switch users land in the drawer, not behind its backdrop
+    // (the pane is `inert` while it is open), and return to the menu button.
+    shellRef.current?.querySelector<HTMLElement>(".workspace-rail button")?.focus();
+    const menuButton = menuButtonRef.current;
+    // Widening past the phone breakpoint hides the drawer's backdrop, so
+    // close it there rather than leave the pane inert with no way out.
+    const wide = window.matchMedia?.("(min-width: 600px)");
+    wide?.addEventListener("change", closeNav);
+    return () => {
+      wide?.removeEventListener("change", closeNav);
+      menuButton?.focus();
+    };
+  }, [navOpen, closeNav]);
 
   useUserSyncOnce(true);
   useChatThemeAccountSync(true);
@@ -280,6 +298,9 @@ function AuthenticatedWorkspace({ scopeId, workspaceName }: { scopeId: string; w
       } else {
         buildMissionControlLayout(api);
       }
+      // A split saved on a wide window must not come back on a narrow one.
+      // Next frame: the dock has no width until it has laid out.
+      requestAnimationFrame(refitSplits);
 
       // Floor every group's height so none can be crushed to its tab bar —
       // both the ones we just restored/built and any added later. See
@@ -452,7 +473,7 @@ function AuthenticatedWorkspace({ scopeId, workspaceName }: { scopeId: string; w
         <DesktopMessagingProvider>
           <CommandPaletteProvider>
             <DesktopPermissionsGate />
-            <div className="workspace-shell" data-nav-open={navOpen}
+            <div className="workspace-shell" ref={shellRef} data-nav-open={navOpen}
               onKeyDown={navOpen ? (e) => { if (e.key === "Escape") closeNav(); } : undefined}
               data-messages-active={
               // Messages hides the dock tab bars only when it is alone on
@@ -468,9 +489,9 @@ function AuthenticatedWorkspace({ scopeId, workspaceName }: { scopeId: string; w
                 onRecoveryReprovision={() => setRecoveryTriggered(true)}
                 onNavigate={closeNav}
               />
-              <div className="workspace-main">
+              <div className="workspace-main" inert={navOpen}>
                 <div className="workspace-phone-bar">
-                  <button type="button" aria-label="Open menu" aria-expanded={navOpen} onClick={() => setNavOpen(true)}>
+                  <button type="button" ref={menuButtonRef} aria-label="Open menu" aria-expanded={navOpen} onClick={() => setNavOpen(true)}>
                     <Menu size={20} aria-hidden="true" />
                   </button>
                   <span className="workspace-name">{workspaceName}</span>

@@ -30,6 +30,7 @@ vi.mock("../workspaceController", () => ({
     teamsPanelVisible: state.split?.teamsPanelVisible ?? state.activePanelId.startsWith("teams-"),
   }),
   refreshWorkspaceSnapshot: vi.fn(),
+  refitSplits: vi.fn(),
   getWorkspaceSnapshot: () => ({ ready: false }),
 }));
 vi.mock("@/components/messaging/MessagingWorkspaceContext", () => ({
@@ -45,7 +46,7 @@ vi.mock("../WorkspaceSidebar", () => ({
     </nav>
   ),
 }));
-vi.mock("../WorkspaceHeader", () => ({ WorkspaceHeader: () => <header /> }));
+vi.mock("../WorkspaceHeader", () => ({ WorkspaceHeader: () => <nav className="workspace-rail"><button>Search</button></nav> }));
 vi.mock("dockview-react", () => ({
   themeLight: { name: "light", className: "dockview-theme-light" },
   DockviewReact: ({ disableDnd }: { disableDnd: boolean }) => <div aria-label="Dock" data-dnd-disabled={disableDnd} />,
@@ -147,12 +148,20 @@ it("opens the rail and sidebar as the phone drawer, and closes it on a pick, the
   state.organization = { id: "org_1" };
   const view = render(<WorkspaceShell />);
   const shell = view.container.querySelector(".workspace-shell")!;
-  const open = () => fireEvent.click(screen.getByRole("button", { name: "Open menu" }));
+  const menu = screen.getByRole("button", { name: "Open menu", hidden: true });
+  const main = view.container.querySelector(".workspace-main")!;
+  const open = () => fireEvent.click(menu);
   expect(shell).toHaveAttribute("data-nav-open", "false");
+  expect(main).not.toHaveAttribute("inert");
   open();
   expect(shell).toHaveAttribute("data-nav-open", "true");
+  // Focus goes into the drawer and the covered pane is out of reach.
+  expect(screen.getByRole("button", { name: "Search" })).toHaveFocus();
+  expect(main).toHaveAttribute("inert");
   fireEvent.click(screen.getByRole("button", { name: "Open a room" }));
   expect(shell).toHaveAttribute("data-nav-open", "false");
+  expect(main).not.toHaveAttribute("inert");
+  expect(menu).toHaveFocus();
   open();
   fireEvent.click(view.container.querySelector(".workspace-nav-backdrop")!);
   expect(shell).toHaveAttribute("data-nav-open", "false");

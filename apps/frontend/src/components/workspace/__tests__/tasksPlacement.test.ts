@@ -8,6 +8,7 @@ import {
   showBrowserBesideChat,
   browserSplitWidth,
   refitBrowserSplit,
+  refitSplits,
   setBrowserThreadHost,
   useBrowserThreadHost,
   _resetControllerForTests,
@@ -124,6 +125,24 @@ describe("Tasks placement", () => {
     expect(window.localStorage.getItem(TASKS_PLACEMENT_KEY)).toBe("tab");
     setTasksPlacement("split");
     expect(tasks.api.moveTo).toHaveBeenLastCalledWith({ group: main, position: "right" });
+    expect(readTasksPlacement()).toBe("split");
+  });
+
+  it("folds a Tasks split into a tab when the dock is too narrow for both, keeping the stored choice", () => {
+    const { api, main } = makeApi();
+    attachDockviewApi(api, () => "a1");
+    openPanel("teams-issues");
+    const tasks = api.getPanel("teams-issues") as unknown as FakePanel;
+    expect(tasks.group).not.toBe(main);
+    // Not laid out yet: leave the split alone.
+    (api as unknown as { width: number }).width = 0;
+    refitSplits();
+    expect(tasks.api.moveTo).not.toHaveBeenCalled();
+    // A phone-width dock (a wide window's saved layout, restored or resized).
+    (api as unknown as { width: number }).width = 390;
+    refitSplits();
+    expect(tasks.api.moveTo).toHaveBeenCalledWith({ group: main, position: "center" });
+    expect(tasks.group).toBe(main);
     expect(readTasksPlacement()).toBe("split");
   });
 

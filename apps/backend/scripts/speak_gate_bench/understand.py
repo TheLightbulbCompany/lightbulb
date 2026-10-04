@@ -256,10 +256,13 @@ def main(argv=None) -> None:
     ap.add_argument("--concurrency", type=int, default=4)
     ap.add_argument("--tag", default="run")
     ap.add_argument("--check", action="store_true", help="validate the dataset and exit")
+    ap.add_argument(
+        "--file", default="understand.jsonl", help="understand_holdout.jsonl: written blind, never tuned on"
+    )
     args = ap.parse_args(argv)
-    cases = [json.loads(line) for line in (HERE / "understand.jsonl").read_text().splitlines() if line.strip()]
+    cases = [json.loads(line) for line in (HERE / args.file).read_text().splitlines() if line.strip()]
     if bad := check(cases):
-        raise SystemExit("understand.jsonl:\n  " + "\n  ".join(bad))
+        raise SystemExit(f"{args.file}:\n  " + "\n  ".join(bad))
     if args.check:
         print(f"{len(cases)} scenes ok")
         return

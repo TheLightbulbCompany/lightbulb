@@ -1529,10 +1529,12 @@ async def test_an_announcement_cut_after_its_audio_began_is_posted_once():
     h.on_agent_state("forge", "speaking")
     h.on_active_speakers({"u2"})
     await settle(h)
+    assert backend.late_answers == [], "held until the words that cut it are handled"
+    h.on_active_speakers(set())
+    await quiet(h, clock, h_mod.ACK_QUIET_S)  # quiet, no final: the room gets it
     assert backend.late_answers == [
         ("forge", run, TASKS["forge"], "Three PRs are open")
     ]
-    h.on_active_speakers(set())
     h.on_active_speakers({"u2"})
     await h.clear_presence()
     assert len(backend.late_answers) == 1, "a cut announcement is posted once"
@@ -1801,3 +1803,110 @@ async def test_a_superseded_lines_steer_of_an_unknown_row_makes_no_row():
     gate.set()
     await settle(h)
     assert h._requests.items == [] and backend.turns == []
+
+
+# -- Task B6 review 1 --
+
+
+async def test_a_cut_announcement_is_posted_once_its_cutters_line_is_handled():
+    h, room, backend, lives, clock, run = await announced()
+    h.on_agent_state("forge", "speaking")
+    h.on_active_speakers({"u2"})
+    h.on_active_speakers(set())
+    await say(h, "u2", "sorry, go on")
+    await h.tick()
+    await settle(h)
+    assert [a[3] for a in backend.late_answers] == ["Three PRs are open"]
+    await h.clear_presence()
+    assert len(backend.late_answers) == 1
+
+
+async def test_dont_post_that_said_over_the_cut_posts_nothing():
+    for line in ("Forge, don't post that", "don't post that"):
+        h, room, backend, lives, clock, run = await announced()
+        h.on_agent_state("forge", "speaking")
+        h.on_active_speakers({"u1"})
+        await say(h, "u1", line)
+        h.on_active_speakers(set())
+        await quiet(h, clock, 5)
+        await h.clear_presence()
+        assert backend.late_answers == [], line
+        assert h._cut_off == {}, "dropped, never held to hang-up"
+
+
+async def test_a_stop_said_over_the_cut_posts_nothing():
+    for line in ("Forge, stop", "everyone stop"):
+        h, room, backend, lives, clock, run = await announced()
+        h.on_agent_state("forge", "speaking")
+        h.on_active_speakers({"u1"})
+        await say(h, "u1", line)
+        h.on_active_speakers(set())
+        await quiet(h, clock, 5)
+        await h.clear_presence()
+        assert backend.late_answers == [], line
+
+
+async def test_a_cut_held_at_hang_up_is_posted_then():
+    h, room, backend, lives, clock, run = await announced()
+    h.on_agent_state("forge", "speaking")
+    h.on_active_speakers({"u2"})
+    await h.clear_presence()
+    assert [a[3] for a in backend.late_answers] == [
+        "Three PRs are open"
+    ] and h._cut_off == {}
+
+
+async def test_a_stop_then_its_voices_delegation_starts_nothing():
+    h, room, backend, lives, clock, log = await floor_open()
+    await say(h, "u1", PRS)
+    await say(h, "u1", "Forge, stop")
+    n = len(backend.turns)
+    backend.route_extra = ops(requests=[("forge", "check the CI", "fit")])
+    await h.on_delegation("forge", "d9", "check the CI status for me")
+    await settle(h)
+    assert len(backend.turns) == n, "a row-change note never moves the stop's mark"
+    assert not [r for r in h._requests.items if r.status in ("queued", "working")]
+
+
+async def test_a_failed_row_whose_run_then_answers_posts_the_answer_once():
+    h, room, backend, lives, clock, log = await three()
+    await say(h, "u1", LINE)
+    run = run_of(backend, "forge")
+    h._request_failed(h._requests.by_run(run), run)
+    h.on_active_speakers({"u2"})
+    answer(h, run, "forge", "Three PRs are open")
+    await h.clear_presence()
+    assert [a for a in backend.late_answers if a[1] == run] == [
+        ("forge", run, TASKS["forge"], "Three PRs are open")
+    ]
+
+
+async def test_an_unrouted_row_never_counts_as_ended(capsys):
+    h, room, backend, lives, clock, log = await three()
+    backend.route_gate = asyncio.Event()
+    await h.on_final_transcript("u1", "Prasiddha", LINE)
+    await h.on_final_transcript("u1", "Prasiddha", "everyone stop")
+    backend.route_gate.set()
+    await settle(h)
+    await h.clear_presence()
+    out = capsys.readouterr().out
+    assert "live.request.ended" not in out and "live.request.created" not in out
+
+
+async def test_a_superseded_line_counts_what_it_was_understood_as(capsys):
+    for answer_, kind in (
+        (ops(requests=[("forge", "x", "fit")]), "request"),
+        (ops(social="pulse"), "social"),
+    ):
+        h, room, backend, lives, clock, log = await three()
+        backend.route_extra = answer_
+        backend.route_gate = asyncio.Event()
+        await h.on_final_transcript("u1", "Prasiddha", "what are the open PRs")
+        await h.on_final_transcript("u2", "Aden", "hang on a second, let me think")
+        backend.route_gate.set()
+        await settle(h)
+        kinds = [d["kind"] for _, d in metrics(capsys, "live.understand.ops")]
+        assert kinds[0] == kind, kind
+        assert not [t for t in backend.turns if t["speaker"] == "u1"], (
+            "the first line was superseded"
+        )

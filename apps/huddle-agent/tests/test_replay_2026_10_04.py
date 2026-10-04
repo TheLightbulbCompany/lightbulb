@@ -122,6 +122,16 @@ async def test_the_2026_10_04_call(capsys):
     )
     answer(h, run_for(backend, L8), "forge", "Checked just now: two PRs are open.")
     await settle(h)
+    assert len(lives) == 4, "no extra voice"
+    for _ in range(3):
+        await quiet(h, clock)
+    assert len(lives) == 4 and len(backend.turns) == 5, (
+        "quiet ticks open nothing and run nothing"
+    )
+    every = [
+        n for n in notes(lives) if "Say that in one short sentence, then wait." in n
+    ]
+    assert len(every) == 1, "one acknowledgement in the whole call"
 
     assert len(backend.turns) == 5 and not [
         t for t in backend.turns if L0 in t["utterance"]

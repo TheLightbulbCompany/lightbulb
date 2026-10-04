@@ -356,6 +356,9 @@ class Huddle:
         self._runs = Runs(self, clock)
         # agent -> [(run_id, request, answer, at, speaker)]
         self._news: dict[str, list[tuple[str, str, str, float, str | None]]] = {}
+        # understanding §4.8: agent -> (news a person cut off mid-announcement, who cut it, when); posted once their
+        # words are handled, dropped by a "don't post that" or a stop said over it
+        self._cut_off: dict[str, tuple[list, str, float]] = {}
         self._rate = gate.RateLimit()
         # run id -> (attempts, last at): a requested delivery whose voice did not open (engine §3.5)
         self._delivery_tries: dict[str, tuple[int, float]] = {}
@@ -672,11 +675,13 @@ class Huddle:
         await (
             self._flush_transcript()
         )  # last chance for what was said since the previous batch
-        for agent_id, news in list(self._news.items()):
-            for n in news:
-                await self._late_answer(agent_id, n)  # unheard here: the room gets it
+        held = [(a, n) for a, (items, _, _) in self._cut_off.items() for n in items]  # cut off mid-announcement
+        self._cut_off.clear()
+        for agent_id, n in held + [(a, n) for a, news in self._news.items() for n in news]:
+            await self._late_answer(agent_id, n)  # unheard here: the room gets it
         self._news.clear()
-        emit_metric("live.request.open_at_end", len(self._requests.open()), "Count")  # understanding §5.3: 0
+        open_rows = [r for r in self._requests.open() if r.routed]
+        emit_metric("live.request.open_at_end", len(open_rows), "Count")  # understanding §5.3: 0
         await self._flush_transcript()  # the row changes the sweep made
         if self._people and not self._idle_ended:
             return
@@ -1232,7 +1237,7 @@ class Huddle:
             ms = round((self._clock() - heard_at) * 1000)
             emit_metric("live.latency.jev", ms, "Milliseconds", {"path": path, "outcome": outcome})
 
-    def _apply(self, identity: str, mark: int, ops: dict, later: bool = False) -> list[Request]:
+    def _apply(self, identity: str, mark: int, ops: dict, later: bool = False, heard: dict | None = None) -> list[Request]:
         """`ops` onto the request list (understanding §4.4, §4.5): earlier rows cancelled and steered first, then
         one row per request. A steer of a row nobody has, while a voice is open, is a new ask of the floor agent.
         `later`: someone else spoke since; a steer that would become a new ask is dropped like an unnamed request."""
@@ -1260,7 +1265,8 @@ class Huddle:
         rows = self._requests.settle(mark, identity, list(ops.get("requests") or []) + extra, self._clock())
         for r in rows:
             emit_metric("live.request.created", 1, "Count", {"by": r.by or "none"})
-        kind = next((k for k in ("requests", "steer", "cancel", "social", "more") if ops.get(k)), "none")
+        heard = ops if heard is None else heard  # the line as /route understood it, before supersede (§5.3)
+        kind = next((k for k in ("requests", "steer", "cancel", "social", "more") if heard.get(k)), "none")
         emit_metric("live.understand.ops", 1, "Count", {"kind": kind.rstrip("s")})  # §5.3: once per understood line
         self._sync_state()
         return rows
@@ -1269,7 +1275,7 @@ class Huddle:
         """understanding §5.3: a row's end is counted once (RequestList moves only open rows); every change of a
         routed row is a transcript line, so a call reads back with its requests. A meeting's transcript becomes
         its room's transcript.txt: no lines there."""
-        if r.status in ENDED:
+        if r.status in ENDED and r.routed:  # an unrouted strip row was never created (live.request.created)
             emit_metric("live.request.ended", 1, "Count", {"status": r.status})
         if r.routed and self.setting != "meeting":
             line = f"[request {r.id} {self._agent_name(r.agent)} {r.status}] {r.task[:LINE_CHARS]}"
@@ -1357,7 +1363,7 @@ class Huddle:
             if social or len(named) < len(reqs):
                 emit_metric("live.route.superseded", 1, "Count")
             reqs, social, superseded = named, None, not named
-        rows = self._apply(identity, mark, {**ops, "requests": reqs}, later=later)
+        rows = self._apply(identity, mark, {**ops, "requests": reqs}, later=later, heard=ops)
         if not rows:
             if social and v is None:
                 said = self._small_talk(identity, text, bool(ops.get("more")))
@@ -1582,8 +1588,9 @@ class Huddle:
             v.announcing = False
             emit_metric("live.announce.cut", 1, "Count")
             self._live_call(v, "interrupt")
-            for n in v.told:  # understanding §4.8: cut off before its end, so the room gets the full text
-                self._spawn(self._late_answer(v.agent_id, n))
+            if v.told:  # understanding §4.8: cut off before its end; the room gets it unless the cutter forbids it
+                held = self._cut_off.get(v.agent_id, ([], "", 0.0))[0]
+                self._cut_off[v.agent_id] = (held + v.told, min(started), self._clock())
             v.told = []
 
     async def talk_start(self, identity: str, payload: str = "") -> None:
@@ -2178,6 +2185,7 @@ class Huddle:
             self._stopped.add(run_id)
         mark = self._transcript.last_mark if mark is None else mark
         self._requests.cancel(agent_id, mark)  # no run_ended follows an abort
+        self._cut_off.pop(agent_id, None)  # a stop said over its cut announcement: not posted (§4.8)
         cancelled = {r.run_id for r in self._requests.items if r.agent == agent_id and r.status == "cancelled"}
         if news := [n for n in self._news.get(agent_id, []) if n[0] not in cancelled]:
             self._news[agent_id] = news
@@ -2204,7 +2212,13 @@ class Huddle:
     def _no_post(self, agent_id: str | None, asker: str | None = None) -> None:
         """ "don't post that": the named agent's newest open request, else the room's newest; with no
         request, that agent's (unnamed: anyone's) newest running run. Neither late-answer door posts it, and
-        the worker never does; it may still be spoken."""
+        the worker never does; it may still be spoken. Said over a cut announcement (§4.8), it covers that."""
+        cut = [a for a, (_, who, _) in self._cut_off.items() if a == agent_id or agent_id is None and who == asker]
+        for a in cut:
+            del self._cut_off[a]
+        if cut:
+            emit_metric("live.request.no_post", 1, "Count")
+            return
         r = self._requests.no_post(agent_id)
         run_id = r.run_id if r else None
         if r is None:
@@ -2345,6 +2359,8 @@ class Huddle:
 
     def ended(self, run: Run, answer: str) -> None:
         asked = self._requests.by_run(run.run_id)  # a request-list run (engine §3.5)
+        if answer and (news := self._news.get(run.agent_id)):  # §4.8: the real answer replaces its failure line
+            news[:] = [n for n in news if n[0] != run.run_id or n[2] != CANT_REACH]
         if v := self._same_session(run):
             if not run.spoken.strip():
                 self._live_call(
@@ -2519,6 +2535,7 @@ class Huddle:
         if self._people and now - self._team_at >= TEAM_REFRESH_S:
             self._spawn(self._refresh_team())
         self._expire_news(now)
+        self._post_cut(now)
         for r in self._requests.items:
             # a run that lost its run_ended (Runs.running() dropped it as stale): its request failed
             run = self._runs.get(r.run_id) if r.status == "working" and r.run_id else None
@@ -2688,6 +2705,16 @@ class Huddle:
                 self._news[agent_id] = kept
             else:
                 del self._news[agent_id]
+
+    def _post_cut(self, now: float) -> None:
+        """Cut announcements (§4.8), once the cutter's line was handled or they were quiet ACK_QUIET_S."""
+        for agent_id, (items, who, at) in list(self._cut_off.items()):
+            handled = self._final_at.get(who, -math.inf) >= at
+            quiet = who not in self._speaking and now - self._last_heard >= ACK_QUIET_S
+            if (handled or quiet) and not self._understanding.get(who):
+                del self._cut_off[agent_id]
+                for n in items:
+                    self._spawn(self._late_answer(agent_id, n))
 
     def _post_news(self, agent_id: str, n: tuple) -> None:
         """News nobody will hear here (expired, pushed out, or the huddle is ending) goes to the room as

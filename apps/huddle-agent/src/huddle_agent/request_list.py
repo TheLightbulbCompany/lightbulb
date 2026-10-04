@@ -215,8 +215,8 @@ class RequestList:
         return run_id in self._suppressed or any(r.no_post for r in self.by_run(run_id))
 
     def postable(self, run_id: str) -> bool:
-        """False for "don't post that" and a cancelled request. A failed one posts only a failure line nobody
-        heard (understanding §4.8): huddle.py calls this only for news never said."""
+        """False for "don't post that" and a cancelled request. A failed one is postable: huddle.py posts news
+        nobody heard to its end (never said, or cut off mid-announcement), a failure as one line (§4.8)."""
         bad = any(r.no_post or r.status == "cancelled" for r in self.by_run(run_id))
         return run_id not in self._suppressed and not bad
 

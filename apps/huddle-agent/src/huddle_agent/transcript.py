@@ -65,8 +65,8 @@ class Transcript:
 
     @property
     def last_mark(self) -> int:
-        """The newest line's mark (-1 before any)."""
-        return self._next - 1
+        """The newest said line's mark (-1 before any): a note never moves it, so a stop still covers what follows."""
+        return next((x.mark for x in reversed(self._lines) if x.kind != "note"), -1)
 
     def text(self, lines: list[Line] | None = None) -> str:
         """ "Name: text", or "Agent → Person: text" for a voice's answer (the backend parses the arrow)."""

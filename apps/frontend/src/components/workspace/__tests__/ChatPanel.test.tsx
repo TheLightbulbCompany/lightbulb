@@ -14,11 +14,13 @@ let selectAgentDm = vi.fn<(id: string, explicit?: boolean) => Promise<void>>();
 const openSession = vi.fn();
 const openMessage = vi.fn();
 let freshLanding: boolean | null = false;
+let activeRoomId: string | null = null;
+let sessionFocus: { sessionId: string | null } | null = null;
 vi.mock("@/hooks/useAgents", () => ({
   useAgents: () => ({ agents: [], defaultId }),
 }));
 vi.mock("@/components/messaging/MessagingWorkspaceContext", () => ({
-  useMessagingWorkspace: () => ({ selectAgentDm, openSession, openMessage, freshLanding }),
+  useMessagingWorkspace: () => ({ selectAgentDm, openSession, openMessage, freshLanding, activeRoomId, sessionFocus }),
 }));
 vi.mock("@/components/messaging/MessagingWorkspace", () => ({
   MessagingConversation: () => null,
@@ -46,10 +48,24 @@ beforeEach(() => {
   _resetFocusComposerRequestForTests();
   defaultId = undefined;
   freshLanding = false;
+  activeRoomId = null;
+  sessionFocus = null;
   selectAgentDm = vi.fn().mockResolvedValue(undefined);
 });
 
 describe("ChatPanel", () => {
+  it("does not re-open the room that is already open (the replay of its own URL)", () => {
+    activeRoomId = "r1";
+    const props = makeProps();
+    props.params = { roomId: "r1" };
+    render(<ChatPanel {...props} />);
+    expect(openMessage).not.toHaveBeenCalled();
+    act(() => props.api.updateParameters({ roomId: "r1", messageId: "m1" } as never));
+    expect(openMessage).toHaveBeenLastCalledWith("r1", "m1");
+    act(() => props.api.updateParameters({ roomId: "r2", messageId: undefined } as never));
+    expect(openMessage).toHaveBeenLastCalledWith("r2", null);
+  });
+
   it("consumes session intents including explicit repeats without falling into agent selection", () => {
     const props = makeProps();
     props.params = { sessionId: "s1", sessionIntent: "1" };

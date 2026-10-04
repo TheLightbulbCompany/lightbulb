@@ -13,6 +13,7 @@ import { useNewMailCount } from "@/components/mail/useTeamMail";
 import { useSupport } from "@/components/support/SupportProvider";
 import { useCommandPalette } from "@/components/teams/command-palette/CommandPaletteProvider";
 import { useMarketplaceDrawer } from "@/components/marketplace/drawer/MarketplaceDrawerProvider";
+import { recordMessagesNavigation } from "./chatHistory";
 import { activateMessagesPanel, openPanel, useWorkspaceState } from "./workspaceController";
 import { describePanel, MESSAGES_PANEL_ID } from "./panelRegistry";
 import { ThemeToggles } from "@/components/chat/ThemeToggles";
@@ -77,7 +78,7 @@ export function WorkspaceHeader({ chatReady = true, onNavigate }: {
           onClick={() => {
             if (panel === "file-viewer") capture("file_browser_opened");
             if (panel === "browser") capture("browser_view_opened");
-            if (panel === MESSAGES_PANEL_ID) activateMessagesPanel();
+            if (panel === MESSAGES_PANEL_ID) { activateMessagesPanel(); recordMessagesNavigation(); }
             else openPanel(panel, {}, { pushUrl: true });
             onNavigate?.();
           }}>

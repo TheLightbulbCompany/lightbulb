@@ -46,6 +46,7 @@ export interface MessagingWorkspaceValue {
   scope: string;
   /** Latched at the room list's first load per workspace; null until then. */
   freshLanding: boolean | null;
+  explicitPicks: React.MutableRefObject<number>;
 }
 
 /** Nothing but #general and the vendor shared room: a new workspace, whose home is #general. */
@@ -249,7 +250,13 @@ export function MessagingWorkspaceProvider({
   // Both refs hold the scope they apply to, so switching workspaces re-arms.
   const explicitChoiceScope = useRef<string | null>(null);
   const autoOpenedScope = useRef<string | null>(null);
-  const markExplicitChoice = useCallback(() => { explicitChoiceScope.current = scope; }, [scope]);
+  // Counts every explicit choice. The desktop shell's history (ChatHistorySync)
+  // records a view change only when this moved, so automatic picks stay out of it.
+  const explicitPicks = useRef(0);
+  const markExplicitChoice = useCallback(() => {
+    explicitChoiceScope.current = scope;
+    explicitPicks.current += 1;
+  }, [scope]);
   const { activeRoomId: autoOpenActive, rooms: autoOpenRooms, selectRoom: hookSelectRoom } = rooms;
   /** Every selection a person (or a link/notification they followed) makes. */
   const chooseRoom = useCallback((roomId: string) => {
@@ -862,6 +869,7 @@ export function MessagingWorkspaceProvider({
     workspaceSessions,
     scope,
     freshLanding,
+    explicitPicks,
   }}><MessageNotifications activeRoomId={rooms.activeRoomId} threadId={threadId} roomVisible={roomVisible} rooms={rooms.rooms}
     onOpen={openNotificationTarget} activeSessionId={sessionFocus?.sessionId ?? null}
     onOpenSession={(sessionId) => { openSession(sessionId); activateMessagesPanel(); }} /><ShortcutSheet open={shortcutsOpen} onOpenChange={setShortcutsOpen} /><UnreadTitleBadge unread={unreadTotal} />{children}

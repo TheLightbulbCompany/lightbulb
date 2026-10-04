@@ -26,7 +26,7 @@ interface ChatPanelParams {
 export function ChatPanel(props: IDockviewPanelProps<ChatPanelParams>): React.ReactElement {
   const params = useDockPanelParams(props);
   const { defaultId } = useAgents();
-  const { selectAgentDm, roomProps, openMessage, openSession, freshLanding } = useMessagingWorkspace();
+  const { selectAgentDm, roomProps, openMessage, openSession, freshLanding, activeRoomId, sessionFocus } = useMessagingWorkspace();
   const lastRequested = useRef<string | null>(null);
   const navigationRequest = useRef(0);
   const [focusDestination, setFocusDestination] = useState<{ agentId: string; roomId: string } | null>(null);
@@ -73,8 +73,12 @@ export function ChatPanel(props: IDockviewPanelProps<ChatPanelParams>): React.Re
     lastOpenedRoom.current = key;
     ++navigationRequest.current; // A pending agent-DM focus must not supersede a room intent.
     if (params.sessionId) openSession(params.sessionId);
-    else if (params.roomId) openMessage(params.roomId, params.messageId ?? null);
-  }, [params.roomId, params.messageId, params.sessionId, params.sessionIntent, openMessage, openSession]);
+    // The replay of a room the person just picked (ChatHistorySync wrote its URL)
+    // must not re-open it: that would clear a scroll target and close a session view.
+    else if (params.roomId && (params.messageId || params.roomId !== activeRoomId || sessionFocus)) {
+      openMessage(params.roomId, params.messageId ?? null);
+    }
+  }, [params.roomId, params.messageId, params.sessionId, params.sessionIntent, openMessage, openSession, activeRoomId, sessionFocus]);
 
   const roomId = roomProps?.roomId;
   const roomAgentId = roomProps?.composer.focusAgentId;

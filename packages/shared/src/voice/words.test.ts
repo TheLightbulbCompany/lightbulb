@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   agentA11yName, agentLine, agentLiveStatus, agentNaming, agentWorking, errorText, floorChange, floorHolder,
   liveAgents, liveErrorText, liveHappening, liveHint, liveJoinErrorCode, liveMarker, liveQueue,
-  nameCollides, orderAgentSlots, parseLiveNotice, queuePosition, renamedText, voiceFailedText, voiceNoteText, wakingText,
+  agentHand, agentStateLine, handKey, nameCollides, orderAgentSlots, parseLiveNotice, queuePosition, renamedText, voiceFailedText, voiceNoteText, wakingText,
 } from "./words";
 
 describe("voice words", () => {
@@ -137,5 +137,24 @@ describe("per-agent Live readers", () => {
     expect(voiceFailedText("Nova")).toBe("Nova couldn't join. Try again.");
     expect(renamedText("CEO", "Nova")).toBe("CEO is now Nova");
     expect(voiceNoteText("Nova", "be more blunt")).toBe("Nova will remember: be more blunt");
+  });
+});
+
+describe("has_news wording", () => {
+  it("Live bar keeps its tap wording, with the topic when there is one", () => {
+    expect(agentStateLine("has_news")).toBe("Has something — tap to hear");
+    expect(agentStateLine("has_news", { hand: "what PRs are open" })).toBe("Ready: what PRs are open — tap to hear");
+    expect(agentLine("Gauge", "has_news")).toBe("Gauge has something — tap to hear it");
+    expect(agentLine("Gauge", "has_news", { hand: "what PRs are open" })).toBe("Gauge is ready: what PRs are open — tap to hear it");
+  });
+  it("meeting wording never says tap", () => {
+    expect(agentStateLine("has_news", { meeting: true })).toBe("Hand up: has something for you");
+    expect(agentStateLine("has_news", { meeting: true, hand: "the Q3 numbers" })).toBe("Hand up: the Q3 numbers");
+    expect(agentLine("Gauge", "has_news", { meeting: true, hand: "x" })).toBe("Gauge — hand up: x");
+  });
+  it("agentHand trims, caps at 60 and reads absent as empty", () => {
+    expect(agentHand({ [handKey("a")]: "  hi  " }, "a")).toBe("hi");
+    expect(agentHand({ [handKey("a")]: "x".repeat(80) }, "a")).toHaveLength(60);
+    expect(agentHand({}, "a")).toBe("");
   });
 });

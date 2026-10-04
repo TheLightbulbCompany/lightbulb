@@ -284,8 +284,13 @@ impl Host {
                                 codex::active_turn_started_after(path, ended_at, mirror.ended_at_ms)
                             })
                         });
+                    // A person who went to the agent view (or `/resume`d away) and came back runs
+                    // the conversation again on the same pid; Claude's registry says so.
+                    let returned_claude = native.provider == "claude"
+                        && native.job.is_none()
+                        && claude::still_registered(&self.home, native.process.pid, &native.conversation);
                     if mirror.native.process == native.process {
-                        if !resumed_codex_activity {
+                        if !resumed_codex_activity && !returned_claude {
                             continue;
                         }
                         let next_generation = uuid::Uuid::new_v4().to_string();
@@ -762,18 +767,24 @@ impl Host {
 
     /// Every live mirror, every tick: a process that is gone ends its session.
     fn liveness_tick(&mut self) {
+        // An interactive Claude conversation also ends when its pid moves on to the agent
+        // view or another conversation. A background job is the daemon's, not the registry's.
+        let home = &self.home;
+        let runs = |native: &NativeSession| {
+            still_running(&native.process)
+                && (native.provider != "claude"
+                    || native.job.is_some()
+                    || claude::still_registered(home, native.process.pid, &native.conversation))
+        };
         let gone: Vec<String> = self
             .mirrors
             .iter()
             .filter(|(_, m)| {
                 m.ended_at.is_none()
-                    && !still_running(&m.native.process)
+                    && !runs(&m.native)
                     // While a successor waits for `advance`, `native` is the dead
                     // predecessor and the successor is the session that is running.
-                    && m.registration
-                        .successor
-                        .as_ref()
-                        .is_none_or(|next| !still_running(&next.process))
+                    && m.registration.successor.as_ref().is_none_or(|next| !runs(next))
             })
             .map(|(key, _)| key.clone())
             .collect();
@@ -3201,6 +3212,24 @@ pub(super) mod tests {
     }
 
     #[test]
+    fn local_sessions_liveness_ends_a_claude_conversation_its_pid_left() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut mirror = test_mirror(SID, "gen-1");
+        mirror.native.provider = "claude".into();
+        let pid = mirror.native.process.pid;
+        let mut host = test_host(dir.path(), vec![(SID, mirror)]);
+        let sessions = dir.path().join(".claude/sessions");
+        fs::create_dir_all(&sessions).unwrap();
+        fs::write(sessions.join(format!("{pid}.json")), format!("{{\"pid\":{pid},\"sessionId\":\"{SID}\"}}")).unwrap();
+        host.liveness_tick();
+        assert!(host.mirrors[SID].ended_at.is_none(), "the registry still names it");
+        // The agent view (or `/clear`) leaves the pid running and drops the conversation.
+        fs::remove_file(sessions.join(format!("{pid}.json"))).unwrap();
+        host.liveness_tick();
+        assert_eq!(host.mirrors[SID].native.status, "ended");
+    }
+
+    #[test]
     fn local_sessions_liveness_ends_a_session_whose_pid_was_reused() {
         let dir = tempfile::tempdir().unwrap();
         let mut mirror = test_mirror(SID, "gen-1");
@@ -5136,6 +5165,11 @@ pub(super) mod tests {
         let acked = persisted.clone();
         let mut mirror = test_mirror("s", "gen-1");
         mirror.native = observed_fixture(dir.path());
+        // A running Claude conversation is in Claude's own per-pid registry.
+        let sessions = dir.path().join(".claude/sessions");
+        fs::create_dir_all(&sessions).unwrap();
+        fs::write(sessions.join(format!("{}.json", mirror.native.process.pid)),
+            format!("{{\"sessionId\":\"{}\"}}", mirror.native.conversation)).unwrap();
         // Nothing to read yet: the bytes arrive only once the session is registered,
         // so no upload pass can have carried them away before it ends.
         let transcript = mirror.native.transcript.clone().unwrap();

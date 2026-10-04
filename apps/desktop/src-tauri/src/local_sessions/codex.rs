@@ -235,13 +235,12 @@ async fn open_write_files(pid: u32) -> Result<Vec<PathBuf>> {
 }
 
 /// The thread to join for a live terminal: one whose rollout Codex's shared app-server daemon
-/// holds. `codex resume <thread>` is then one more client of it (`holder::manager::attach_argv`).
-/// Any daemon release: joining sends no control RPC. Not the desktop app's own app server, and
-/// not a `--no-daemon` TUI (a held session): neither is on the shared daemon.
+/// holds (`daemon_release`). `codex resume <thread>` is then one more client of it
+/// (`holder::manager::attach_argv`). Not the desktop app's own app server, and not a `--no-daemon`
+/// TUI (a held session): neither is on the shared daemon.
 fn attach_thread(home: &Path, execution: &Process, conversation: &str) -> Option<String> {
-    (execution.executable.starts_with(home.join(".codex/packages/app-server-daemon/releases"))
-        && crate::holder::manager::attach_provider(conversation) == Some("codex"))
-    .then(|| conversation.to_owned())
+    (daemon_release(home, execution).is_some() && crate::holder::manager::attach_provider(conversation) == Some("codex"))
+        .then(|| conversation.to_owned())
 }
 
 /// A single Codex process can host more than one thread at once (the ChatGPT
@@ -1691,12 +1690,11 @@ mod tests {
         let process = Process {pid: 1, birth_micros: 1, executable: binary.clone()};
         assert_eq!(daemon_program(&home, &process), Some(binary));
         assert!(daemon_program(&home, &Process {executable: home.join("other/codex"), ..process.clone()}).is_none());
-        // Only a thread on the shared daemon gets a live terminal, whatever the daemon's release.
+        // Only a thread on the shared daemon gets a live terminal.
         const THREAD: &str = "01a10845-c8f1-7fa2-844b-13790e2db151";
-        let newer = Process {executable: home.join(".codex/packages/app-server-daemon/releases/0.160.0-aarch64-apple-darwin/bin/codex"), ..process.clone()};
-        assert_eq!(attach_thread(&home, &newer, THREAD).as_deref(), Some(THREAD));
+        assert_eq!(attach_thread(&home, &process, THREAD).as_deref(), Some(THREAD));
         assert_eq!(attach_thread(&home, &Process {executable: home.join("other/codex"), ..process.clone()}, THREAD), None, "a --no-daemon TUI or the desktop app");
-        assert_eq!(attach_thread(&home, &newer, "not-a-thread-id"), None);
+        assert_eq!(attach_thread(&home, &process, "not-a-thread-id"), None);
         let root = home.join(".codex/sessions");
         fs::create_dir_all(&root).unwrap();
         let rollout = root.join("rollout-phone.jsonl");

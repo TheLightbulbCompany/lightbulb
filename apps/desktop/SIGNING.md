@@ -1,12 +1,11 @@
 # Code signing + notarization
 
-The desktop build (`.github/workflows/desktop-build.yml`) signs **both** dev
-and prod tracks with the same `Developer ID Application: Prasiddha
+The desktop build (`.github/workflows/desktop-build.yml`) builds prod only
+(there is no dev build since 2026-10-04) and signs it with the `Developer ID Application: Prasiddha
 Parthsarthy (WZX4U3C22Y)` certificate and notarizes via the Apple notary
 service. This is a one-time setup — once the five secrets below are in
-GitHub, the workflow builds signed + notarized DMGs. Qualifying pushes to
-`main` publish dev only; production requires a manual workflow dispatch
-after dev verification. Release tags are workflow outputs, not build
+GitHub, the workflow builds signed + notarized DMGs. Only a manual workflow
+dispatch builds. Release tags are workflow outputs, not build
 triggers. The `isol8-notarize` app-specific-password label is NOT renamed.
 
 ## One-time setup (run from the Mac that holds the Developer ID cert)
@@ -72,29 +71,11 @@ gh secret list --repo TheLightbulbCompany/lightbulb | grep -E "^APPLE_"
 
 ### 5. Cut a fresh signed build
 
-Merge reviewed desktop changes to `main` through normal CI. Changes to
-`apps/desktop/**`, `pnpm-lock.yaml`, or `.github/workflows/desktop-build.yml`
-trigger a dev build; the production job is skipped on push.
-
-After verifying that dev build, manually run **desktop-build** from GitHub
-Actions using the tested branch or tag. Dispatch builds production only; it
-does not build or wait for dev (decided 2026-10-04). Nothing in the run
-checks dev, so complete dev acceptance on the push build before dispatching.
-
-Each upload step tries three times: the notarization and asset uploads in
-`tauri-action`, the DMG notarization and stapling, the DMG upload, and the
-release publication. The Mac keeps the Rust build folder at
-`~/.cache/lightbulb-desktop/` between runs and uploads no caches to GitHub.
-
-The workflow sets the build version to `0.4.${{ github.run_number }}`;
-do not bump local version files or push release tags to trigger a build.
-A push creates `desktop-dev-v0.4.<run_number>` (dev prerelease); a manual
-dispatch creates `desktop-v0.4.<run_number>` (production release).
-
-Each job creates a draft release, uploads its signed/notarized DMG, then
-automatically publishes the release. No manual draft-publication step is
-required. The landing-page `/api/download/desktop` route picks up the
-published release automatically — no frontend redeploy needed.
+Merge reviewed desktop changes to `main` through normal CI (pull requests run
+the Rust tests). Then manually run **desktop-build** from GitHub Actions
+(`gh workflow run desktop-build.yml --ref main`). It builds, signs, notarizes
+and publishes the prod app only. There is no dev build: test on prod, or build
+and run the app locally against the dev API.
 
 ## What's in the secrets and why
 

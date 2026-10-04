@@ -27,7 +27,7 @@ def env():
         yield lookup
 
 
-async def _meet(text, said, unclaimed=False):
+async def _meet(text, said, unclaimed=False, floor=None):
     decide = vc.jev.decide
     decide.return_value = said
     return await vc.route_live_line(
@@ -39,6 +39,7 @@ async def _meet(text, said, unclaimed=False):
         humans=1,
         setting="meeting",
         unclaimed=unclaimed,
+        floor=floor,
     )
 
 
@@ -60,6 +61,15 @@ async def test_meeting_setting_disables_the_lone_speaker_fallback(env):
     assert _nobody(await _meet("hmm", None))  # Jev down: silence
     assert _nobody(await _meet("what's our burn", jev_says(kinds=["request"], whos=["fin-1"])))  # even a sure ask
     env.assert_not_awaited()  # a Meet speaker label is a name, never a Clerk lookup
+
+
+async def test_holding_the_floor_in_a_meeting_answers_requests_not_small_talk():
+    """The Meet's one mixed voice keeps ``floor.mine`` true between people: their chatter is not
+    for the floor agent, an unnamed request still is."""
+    floor = {"agent": "fin-1", "mine": True, "speaker": "Priya + Dan"}
+    assert _nobody(await _meet("ha, nice one", jev_says(kinds=["social"]), floor=floor))
+    got = await _meet("what's our burn", jev_says(kinds=["request"]), floor=floor)
+    assert got["agentIds"] == ["fin-1"] and got["ops"]["requests"][0]["by"] == "floor"
 
 
 async def test_unclaimed_question_in_a_meeting_picks_at_most_one():

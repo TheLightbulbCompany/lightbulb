@@ -1217,7 +1217,7 @@ async def route_live_line(
         # Nothing was asked: one agent may say a sentence, when the speech can only be for the agents.
         if named:
             social = named[0]
-        elif mine:
+        elif mine and not meeting:  # a Meet is one mixed voice: the floor stays "mine" while people chat
             social = floor_agent
         elif implied and not meeting:
             social = await someone()

@@ -75,3 +75,10 @@ it("keeps Connecting until the worker's agents show up, so nobody is told to ask
   expect(screen.getByRole("status").textContent).toBe("Connecting…");
   expect(screen.queryByText("Say an agent's name to ask")).toBeNull();
 });
+
+it("keeps a long agent name on one line inside the tile", () => {
+  const long = "Bartholomew the Extraordinarily Long-Named Engineering Agent";
+  const { container } = tile({ ...A("f", "speaking"), "lightbulb.speaking_agent": "f", ...A("g", "working", { working: "x" }) }, { f: { id: "f", name: long }, g: { id: "g", name: long } });
+  expect(container.querySelector("[data-speaker-name]")?.className).toMatch(/truncate/);
+  expect(container.querySelector("[data-row-name]")?.className).toMatch(/truncate/);
+});

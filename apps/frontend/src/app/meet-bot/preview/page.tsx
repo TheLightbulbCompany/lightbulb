@@ -9,7 +9,7 @@ const A = (id: string, status: string, extra: Record<string, string> = {}) =>
   Object.fromEntries([[`lightbulb.agent.${id}.status`, status], ...Object.entries(extra).map(([k, v]) => [`lightbulb.agent.${id}.${k}`, v])]);
 const idle = (skip: string[] = []) => Object.assign({}, ...NAMES.filter((n) => !skip.includes(n)).map((n) => A(n, "idle")));
 
-const STATES: Record<string, { attrs: Record<string, string>; notice?: TileNotice }> = {
+const STATES: Record<string, { attrs: Record<string, string>; notice?: TileNotice; names?: Record<string, string> }> = {
   idle: { attrs: idle() },
   speaking: { attrs: { ...idle(["Forge", "Pulse", "Friday"]), ...A("Forge", "speaking"), "lightbulb.speaking_agent": "Forge",
     ...A("Pulse", "working", { working: "signups and activity this week" }), ...A("Friday", "has_news", { hand: "what is on my calendar today" }) } },
@@ -18,13 +18,16 @@ const STATES: Record<string, { attrs: Record<string, string>; notice?: TileNotic
     ...A("Gauge", "has_news", { hand: "churn looks odd" }), ...A("Atlas", "working", { working: "the Q3 plan" }) } },
   limit: { attrs: { ...idle(), "lightbulb.voice_limit": "free_minutes_used" } },
   connecting: { attrs: {}, notice: "Connecting…" },
+  long: { attrs: { ...idle(["Forge", "Pulse"]), ...A("Forge", "speaking"), "lightbulb.speaking_agent": "Forge", ...A("Pulse", "working", { working: "a long task" }) },
+    names: { Forge: "Bartholomew the Extraordinarily Long-Named Engineering Agent of the North", Pulse: "Supercalifragilisticexpialidocious Analytics" } },
 };
 
 export default async function Page({ searchParams }: { searchParams: Promise<{ state?: string }> }) {
   if (process.env.NODE_ENV === "production") notFound();
   const { state = "idle" } = await searchParams;
   const s = STATES[state] ?? STATES.idle;
-  const tile = <MeetTile agents={agents} attrs={s.attrs} notice={s.notice ?? null} />;
+  const named = Object.fromEntries(Object.entries(agents).map(([id, a]) => [id, { ...a, name: s.names?.[id] ?? a.name }]));
+  const tile = <MeetTile agents={named} attrs={s.attrs} notice={s.notice ?? null} />;
   return (
     <div style={{ background: "var(--plane-rail)", minHeight: "100vh", padding: 16, display: "flex", gap: 24, alignItems: "flex-start" }}>
       <PreviewScaler width={1280} height={720} fit>{tile}</PreviewScaler>

@@ -109,7 +109,7 @@ export function MeetTile({ agents, attrs, notice }: { agents: Record<string, Til
             {speaker && (
               <div className="flex flex-col items-center">
                 <span className="meet-ring rounded-full"><Avatar id={speaker} name={nameOf(speaker)} url={agents[speaker]?.avatarUrl} size={200} /></span>
-                <p data-speaker-name className="font-semibold" style={{ fontSize: 72, lineHeight: "76px", marginTop: 20 }}>{nameOf(speaker)}</p>
+                <p data-speaker-name className="max-w-[1100px] truncate font-semibold" style={{ fontSize: 72, lineHeight: "76px", marginTop: 20 }}>{nameOf(speaker)}</p>
                 <p style={{ fontSize: 34, lineHeight: "40px", ...soft }}>{agentStateLine("speaking")}</p>
               </div>
             )}
@@ -119,7 +119,7 @@ export function MeetTile({ agents, attrs, notice }: { agents: Record<string, Til
                   {activity.slice(0, maxRows).map((id) => (
                     <li key={id} className="contents">
                       <Avatar id={id} name={nameOf(id)} url={agents[id]?.avatarUrl} size={rowSize.av} />
-                      <span className="whitespace-nowrap font-semibold" style={{ fontSize: rowSize.name, lineHeight: 1.1 }}>{nameOf(id)}</span>
+                      <span data-row-name className="max-w-[420px] truncate font-semibold" style={{ fontSize: rowSize.name, lineHeight: 1.1 }}>{nameOf(id)}</span>
                       <span className="min-w-0 truncate" style={{ fontSize: rowSize.line, lineHeight: 1.2, ...soft }}>{rowLine(id)}</span>
                     </li>
                   ))}

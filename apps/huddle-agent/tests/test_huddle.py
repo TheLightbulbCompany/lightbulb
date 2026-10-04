@@ -578,72 +578,6 @@ async def test_a_switch_opens_the_new_voice_before_the_old_one_finishes_closing(
     ]  # both sessions' seconds, the overlap counted twice
 
 
-async def two_names(text="Forge and Gauge, what shipped?"):
-    h, room, backend, lives, clock, log = make()
-    await h.on_participants({"u1": "Prasiddha", "u2": "Aden"})
-    await say(h, "u1", text)
-    return h, room, backend, lives, clock, log
-
-
-async def test_several_names_open_the_first_and_queue_the_rest():
-    h, room, backend, lives, clock, log = await two_names()
-    assert [l.agent_id for l in lives] == ["forge"]
-    assert room.written()["lightbulb.queue"] == "forge,gauge"
-    assert h._queue == [("gauge", "u1", "Forge and Gauge, what shipped?")]
-
-
-async def test_the_queue_advances_after_the_run_ends_and_speech_stops(monkeypatch):
-    h, room, backend, lives, clock, log = await two_names()
-    run_id = backend.turns[0]["runId"]
-    h.on_agent_state("forge", "speaking")
-    clock.t += 5
-    await h.tick()
-    assert len(lives) == 1  # the driven run is still running
-    answer(h, run_id, "forge", "We shipped huddles.")
-    h.on_agent_said("forge", "We shipped huddles.")
-    clock.t += 5
-    await h.tick()
-    assert len(lives) == 1  # still speaking
-    h.on_agent_state("forge", "listening")
-    await h.tick()
-    assert len(lives) == 1  # QUEUE_SETTLE has not passed
-    clock.t += h_mod.QUEUE_SETTLE
-    await h.tick()
-    await settle(h)
-    assert [l.agent_id for l in lives] == [
-        "forge",
-        "gauge",
-    ] and h._voice.path == "switch"
-    assert ("assistant", "We shipped huddles.") not in lives[1].seed
-    assert ("developer", "[Forge (agent) said]: We shipped huddles.") in lives[
-        1
-    ].seed  # the previous answer
-    assert backend.turns[-1]["agentId"] == "gauge"  # its own driven turn
-    assert h._queue == [] and room.written()["lightbulb.queue"] == ""
-    assert backend.summons == ["u1"]
-
-
-async def test_a_new_name_replaces_the_queue():
-    h, room, backend, lives, clock, log = await two_names()
-    await say(h, "u2", "Ada, quick one")
-    assert lives[-1].agent_id == "ceo" and h._queue == []
-    assert room.written()["lightbulb.queue"] == ""
-
-
-async def test_a_queued_agent_that_leaves_is_dropped():
-    h, room, backend, lives, clock, log = await two_names(
-        "Forge, Gauge and Ada, what shipped?"
-    )
-    assert room.written()["lightbulb.queue"] == "forge,gauge,ceo"
-    backend.team_data["agents"] = [
-        a for a in backend.team_data["agents"] if a["id"] != "gauge"
-    ]
-    await h._refresh_team()
-    assert [q[0] for q in h._queue] == ["ceo"] and room.written()[
-        "lightbulb.queue"
-    ] == "forge,ceo"
-
-
 async def test_held_news_seeds_its_own_agent_and_is_consumed():
     h, room, backend, lives, clock, log = make()
     await h.on_participants({"u1": "Prasiddha"})
@@ -2476,27 +2410,6 @@ async def test_a_switch_during_a_cold_start_still_delivers_the_request_as_news()
     answer(h, run_id, "forge", "Board is green.")
     assert h._news["forge"][0][2] == "Board is green."
     assert not [c for c in lives[0].calls if c[0] == "commentary"]
-
-
-async def test_names_said_to_the_floor_holder_wait_for_its_driven_answer():
-    h, room, backend, lives, clock, log = await summoned()
-    await say(h, "u1", "Forge and Gauge, what shipped?")
-    (t,) = backend.turns
-    assert t["agentId"] == "forge" and h._voice.driven_run == t["runId"]
-    assert room.written()["lightbulb.queue"] == "forge,gauge"
-    assert any(c[0] == "thinking" and "already handed" in c[1] for c in lives[0].calls)
-    await h.on_delegation(
-        "forge", "d1", "what shipped"
-    )  # GPT-Live's own delegation binds, no second POST
-    assert len(backend.turns) == 1
-    clock.t += 5
-    await h.tick()
-    assert len(lives) == 1  # Forge's answer is still running
-    answer(h, t["runId"], "forge", "Huddles.")
-    clock.t += h_mod.QUEUE_SETTLE
-    await h.tick()
-    await settle(h)
-    assert [l.agent_id for l in lives] == ["forge", "gauge"]
 
 
 async def test_latency_route_session_and_first_audio_once(capsys):

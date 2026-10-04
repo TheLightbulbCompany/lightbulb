@@ -31,6 +31,7 @@ from typing import Any, Awaitable, Callable, Protocol
 from huddle_agent import gate
 from huddle_agent.backend import BackendError
 from huddle_agent.frames import Run, Runs
+from huddle_agent.request_list import Request, RequestList, ack_line
 from huddle_agent.transcript import (
     Transcript,
     address,
@@ -361,6 +362,8 @@ class Huddle:
         self._flush_lock = (
             asyncio.Lock()
         )  # shutdown waits for a batch in flight, then sends the rest
+        self._requests = RequestList()  # conversation engine §3.4: this call's asks, memory only
+        self._window_lock = asyncio.Lock()  # one /summon however many requests start at once
 
     def _spawn(self, coro) -> None:
         t = asyncio.create_task(coro)
@@ -685,6 +688,25 @@ class Huddle:
         ):
             self._cut(v, identity)  # no interim got there first: cut on the final
             cut = self._cut_by.pop(identity, None)
+        named = list(dict.fromkeys(a.agent_ids + a.anywhere))
+        if len(named) >= 2:
+            # Conversation engine §3.2: one request per named agent; /route's one Jev call splits the line.
+            # Every named agent shows as working while it decides (§3.5: the strip within 1 s).
+            if v:
+                self._unwanted(v, identity)
+            self._requests.pending(mark, identity, named, now)
+            self._sync_state()
+            emit_metric("live.ack.strip_ms", round((self._clock() - now) * 1000), "Milliseconds")
+            self._spawn(
+                self._route_and_summon(
+                    identity,
+                    text,
+                    mark,
+                    humans=None if a.lightbulb else len(self._people),
+                    fallback=a.agent_ids,
+                )
+            )
+            return
         if a.agent_ids and not (
             v and identity == v.speaker and a.agent_ids[0] == v.agent_id
         ):
@@ -704,15 +726,6 @@ class Huddle:
                 )
             )
             return
-        if (
-            len(a.agent_ids) > 1
-        ):  # "Forge and Gauge" to Forge, who holds the floor: Gauge answers next
-            self._queue = [(aid, identity, text) for aid in a.agent_ids[1:]]
-            if (
-                v.live is not None
-            ):  # Forge's answer is a driven run, so the queue waits for it (D §5)
-                self._drive_request(v, text, f'{name} asked: "{text}"')
-            self._sync_state()
         if (
             barge and cut == v.agent_id and not a.lightbulb
         ):  # a bare Lightbulb takes the floor below
@@ -888,7 +901,16 @@ class Huddle:
             f"{said} — already handed to your backend self; don't delegate it again",
         )
 
-    async def _route_and_summon(
+    async def _route_and_summon(self, identity: str, text: str, mark: int, **kw) -> None:
+        """Route the line (`_route`). A multi-name line's strip rows that did not become requests are
+        dropped however the routing ends (hold, nobody, error, superseded)."""
+        try:
+            await self._route(identity, text, mark, **kw)
+        finally:
+            if self._requests.drop_pending(mark):
+                self._sync_state()
+
+    async def _route(
         self,
         identity: str,
         text: str,
@@ -896,6 +918,7 @@ class Huddle:
         humans: int | None = None,
         switch: bool = False,
         unclaimed: bool = False,
+        fallback: list[str] | tuple = (),
     ) -> None:
         """`humans`: people in the call, for a line with no name (None: the Lightbulb wake word, stripped
         so "Lightbulb, Forge, check CI" reaches /route opening with Forge)."""
@@ -911,10 +934,10 @@ class Huddle:
                 floor={"agent": v.agent_id, "speaker": self._name(v.speaker)}
                 if v
                 else None,
-                voice_runs=[
-                    {"agent": x.agent_id, "request": x.request[:200]}
-                    for x in self._runs.running()
-                ][-16:],
+                voice_runs=(
+                    [{"agent": x.agent_id, "request": x.request[:200]} for x in self._runs.running()]
+                    + [{"agent": r.agent, "request": r.task[:200]} for r in self._requests.queued() if r.routed]
+                )[-16:],
                 at=self._transcript.times(ROUTE_LINES),
                 setting=self.setting,
                 unclaimed=unclaimed,
@@ -928,7 +951,7 @@ class Huddle:
             )
         except BackendError as e:
             # spoken to the agents: say it failed (an unclaimed question asked nobody)
-            if not unclaimed and (humans is None or humans <= 1):
+            if not unclaimed and not fallback and (humans is None or humans <= 1):
                 self._room.publish(
                     ERROR_TOPIC, {"code": e.code, "reason": e.reason}, [identity]
                 )
@@ -940,6 +963,12 @@ class Huddle:
                 "Milliseconds",
                 {"path": "jev", "outcome": outcome},
             )
+        if outcome == "error" and fallback:
+            # No router for a multi-name line: today's opening-name fast path (spec §3.2 keeps it).
+            await self.summon(
+                identity, fallback[0], request=text, mark=mark, path="name", then=fallback[1:], heard_at=heard_at
+            )
+            return
         if r.get(
             "hold"
         ):  # unfinished ("Friday, we're trying to"): the speaker's next final carries the rest
@@ -947,6 +976,13 @@ class Huddle:
                 self._held[identity] = (text, heard_at)
             else:  # that final arrived while /route decided and routed on its own: nothing left to merge
                 emit_metric("live.route.hold_stale", 1, "Count")
+            return
+        multi = any(x.turn == mark and not x.routed for x in self._requests.items)  # a line that named 2+
+        if multi and len(reqs := r.get("requests") or []) >= 2:
+            if any(m > mark for who, m in self._spoke.items() if who != identity):
+                emit_metric("live.route.superseded", 1, "Count")
+                return
+            await self._start_requests(identity, mark, reqs, heard_at)
             return
         agent_ids = r.get("agentIds") or ([r["agentId"]] if r.get("agentId") else [])
         if not agent_ids:
@@ -1117,6 +1153,7 @@ class Huddle:
         announce: tuple | None = None,
         wake_dims: dict[str, str] | None = None,
         heard_at: float | None = None,
+        ack: str | None = None,
     ) -> None:
         """`then`: the request's other named agents, queued behind this one. Any summon but a queue
         advance (path "switch") replaces a pending queue: a new name wins."""
@@ -1130,8 +1167,11 @@ class Huddle:
             if (
                 old is not None and old.agent_id == agent_id
             ):  # already holds the floor: re-point, no second session
-                if self._repoint(old, identity) and request:
-                    self._live_call(old, "reply_to", request)
+                if self._repoint(old, identity):
+                    if request:
+                        self._live_call(old, "reply_to", request)
+                    elif ack and self._live_call(old, "append_thinking", ack):
+                        self._live_call(old, "nudge")
                 self._sync_state()
                 return
             now = self._clock()
@@ -1153,7 +1193,7 @@ class Huddle:
             # D §9: a switch opens the new voice while the old one closes (same window, no new /summon).
             # Both sessions' seconds land in the window, so the overlap is counted twice (D §4).
             opened, closed = await asyncio.gather(
-                self._open(v, identity, request, mark),
+                self._open(v, identity, request, mark, ack),
                 self._close_live(old),
                 return_exceptions=True,
             )
@@ -1167,7 +1207,7 @@ class Huddle:
                 await self._end_window()
 
     async def _open(
-        self, v: _Voice, identity: str, request: str | None, mark: int | None
+        self, v: _Voice, identity: str, request: str | None, mark: int | None, ack: str | None = None
     ) -> bool:
         """Caller holds the lock and has made `v` the floor. False when it could not open."""
         agent_id = v.agent_id
@@ -1225,6 +1265,8 @@ class Huddle:
                     f"{self._name(identity)} asked: {request} — already handed to your backend self; don't delegate it again",
                 )
             )
+        if ack:  # conversation engine §3.5: the one acknowledgement of a multi-name turn
+            seed.append(("developer", ack))
         try:
             live = await self._live_factory(
                 agent_id=agent_id,
@@ -1252,7 +1294,7 @@ class Huddle:
         elif v.path != "announce" and self._live_call(
             v, "append_thinking", f"{self._name(identity)} is talking to you"
         ):
-            if request or identity in self._released:
+            if request or ack or identity in self._released:
                 # the request is already running (driven): the model acknowledges it, no typed user turn
                 self._live_call(v, "nudge")
         self._released.discard(identity)
@@ -1278,12 +1320,11 @@ class Huddle:
             )
 
     async def _ensure_window(self, speaker: str) -> _Window:
-        if self._window is None:
-            r = await self._backend.summon(speaker, self._said_by.get(speaker))
-            self._window = _Window(
-                r["callId"], float(r["deadline"]), float(r["budgetSeconds"])
-            )
-        return self._window
+        async with self._window_lock:
+            if self._window is None:
+                r = await self._backend.summon(speaker, self._said_by.get(speaker))
+                self._window = _Window(r["callId"], float(r["deadline"]), float(r["budgetSeconds"]))
+            return self._window
 
     def _repoint(self, v: _Voice, identity: str) -> bool:
         """False when the live session died on the way (the voice is closing)."""
@@ -1295,6 +1336,76 @@ class Huddle:
         return self._live_call(v, "set_participant", identity) and self._live_call(
             v, "append_thinking", f"{self._name(identity)} is talking to you"
         )
+
+    # -- requests (conversation engine §3.3-§3.5) --
+
+    async def _start_requests(self, identity: str, mark: int, routed: list[dict], heard_at: float) -> None:
+        """/route split the line: every request starts now (cap MAX_WORKING), and the first request's agent
+        opens its voice to say, once, who is on what. Its seed holds the list, not the line."""
+        rows = self._requests.settle(mark, identity, routed, self._clock())
+        self._sync_state()
+        if not rows:
+            return  # "everyone stop" while /route decided: nothing to start, nothing to say
+        self._start_queued()
+        await self.summon(
+            identity,
+            rows[0].agent,
+            request=None,
+            mark=mark,
+            path="ack",
+            heard_at=heard_at,
+            ack=ack_line(rows, self._agent_name),
+        )
+
+    def _start_queued(self) -> None:
+        for r in self._requests.startable():
+            self._requests.start(r)
+            self._spawn(self._run_request(r))
+
+    async def _run_request(self, r: Request) -> None:
+        """One request's /turns, posted without waiting for a voice. An agent still working on an earlier
+        request is steered, as a follow-up is today."""
+        run_id = str(uuid.uuid4())
+        self._requests.bind(r, run_id)
+        try:
+            await self._ensure_window(r.asker)
+        except Exception:
+            logger.info("huddle request could not open the window agent=%s", r.agent, exc_info=True)
+            self._request_failed([r], run_id)
+            return
+        if r.status != "working":
+            return  # stopped while the window opened
+        steer = (self._runs.running(r.agent) or [None])[-1]
+        self._runs.started(run_id, r.agent, speaker=r.asker, request=r.task, delegation_id=None, gen=None)
+        # ponytail: a voiceless _Voice carries _post_turn's speaker/posting fields; gen 0 is never a session
+        carrier = _Voice(r.agent, None, 0, r.asker, self._clock())
+        resp = await self._post_turn(
+            carrier,
+            run_id,
+            r.task or self._last_line.get(r.asker, ""),
+            None,
+            steer.run_id if steer else None,
+            requests=self._requests.lines(self._agent_name, skip_agent=r.agent),
+        )
+        if resp is None:
+            if run_id not in self._stopped:
+                self._request_failed([r], run_id)
+            return
+        if steer and resp.get("steered"):
+            self._runs.abort(run_id)  # never runs: the steered run answers this request too
+            self._requests.bind(r, steer.run_id)
+            self._start_queued()  # it shares the steered run's slot: one more queued request may start
+
+    def _request_failed(self, rows: list[Request], run_id: str) -> None:
+        """Spec §3.5: the request is failed; in its turn its agent says CANT_REACH (never posted)."""
+        rows = [r for r in rows if r.status in ("queued", "working")]
+        if not rows:
+            return
+        for r in rows:
+            self._requests.fail(r)
+        r = rows[-1]
+        self._news.setdefault(r.agent, []).append((run_id, r.task, CANT_REACH, self._clock(), r.asker))
+        self._sync_state()
 
     # -- runs --
 
@@ -1507,6 +1618,7 @@ class Huddle:
             )
 
     def ended(self, run: Run, answer: str) -> None:
+        self._requests.ready(run.run_id)  # its MAX_WORKING slot frees for a queued request
         if v := self._same_session(run):
             if not run.spoken.strip():
                 self._live_call(
@@ -1669,6 +1781,7 @@ class Huddle:
         if self._people and now - self._team_at >= TEAM_REFRESH_S:
             self._spawn(self._refresh_team())
         self._expire_news(now)
+        self._start_queued()
         self._sync_state()
         meeting = self.setting == "meeting"
         if (
@@ -1688,6 +1801,9 @@ class Huddle:
         v, w = self._voice, self._window
         idle = MEETING_IDLE_SECONDS if meeting else ROOM_IDLE_SECONDS
         if v is None:
+            if self._window is not None and not self._lock.locked():
+                async with self._lock:
+                    await self._end_window()  # kept for open requests; ends after the last (spec §3.3)
             if self._people and now - self._last_heard >= idle:
                 await self._end_idle_room()
             else:
@@ -1812,14 +1928,14 @@ class Huddle:
                     if v.agent_state == "speaking"
                     else "listening"  # C4: the floor-holder is never "working"; QUEUED_BEHIND says it aloud
                 )
-            elif self._runs.running(aid):
+            elif self._runs.running(aid) or self._requests.working(aid):
                 status = "working"
             elif self._news.get(aid):
                 status = "has_news"
             else:
                 status = "idle"
             state[f"lightbulb.agent.{aid}.status"] = status
-            state[f"lightbulb.agent.{aid}.working"] = self._runs.working(aid)
+            state[f"lightbulb.agent.{aid}.working"] = self._requests.task(aid) or self._runs.working(aid)
             state[f"lightbulb.agent.{aid}.naming"] = (
                 "1" if v and v.agent_id == aid and v.naming else ""
             )
@@ -1940,6 +2056,8 @@ class Huddle:
         w = self._window
         if w is None or self._voice is not None:
             return
+        if self._requests.open() and self._clock() < w.deadline:
+            return  # an open request still needs /turns (spec §3.3); tick() ends it after the last
         self._window = None
         try:
             await self._backend.end(w.call_id, max(0, round(w.used_seconds)))

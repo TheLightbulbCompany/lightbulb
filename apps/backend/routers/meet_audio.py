@@ -27,7 +27,11 @@ async def _authorized(room: str, ticket: str) -> bool:
         return False
     meeting = ((await messaging_repo.get_room(room)) or {}).get("meeting") or {}
     return (
-        bool(meeting.get("recallBotId")) and meeting.get("ticketNonce") == found[1] and meeting.get("status") in _LIVE
+        bool(meeting.get("recallBotId"))
+        and meeting.get("ticketNonce") == found[1]
+        and meeting.get("status") in _LIVE
+        # never beside a page that publishes the mixed stream: the worker would hear everyone twice
+        and meeting.get("audio") == "separate"
     )
 
 

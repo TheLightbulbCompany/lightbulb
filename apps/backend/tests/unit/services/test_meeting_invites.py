@@ -504,6 +504,7 @@ def bots(room, monkeypatch):
     b = SimpleNamespace(
         create=AsyncMock(return_value="bot-1"),
         find=AsyncMock(return_value=None),
+        audio=AsyncMock(return_value="separate"),
         reschedule=AsyncMock(),
         leave=AsyncMock(),
         metric=[],
@@ -512,6 +513,7 @@ def bots(room, monkeypatch):
     monkeypatch.setattr(meeting_invites.settings, "RECALL_API_KEY", "rk")
     monkeypatch.setattr(meeting_invites.meeting_bots, "create", b.create)
     monkeypatch.setattr(meeting_invites.meeting_bots, "find_for_room", b.find)
+    monkeypatch.setattr(meeting_invites.meeting_bots, "audio_mode", b.audio)
     monkeypatch.setattr(meeting_invites.meeting_bots, "reschedule", b.reschedule)
     monkeypatch.setattr(meeting_invites.meeting_bots, "leave", b.leave)
     monkeypatch.setattr(meeting_invites.clerk_admin, "get_organization", AsyncMock(return_value={"name": "Acme"}))
@@ -573,9 +575,11 @@ async def test_a_resend_on_bot_failed_retries_create(room, bots):
 
 async def test_a_move_reschedules_the_bot_once(room, bots):
     await meeting_invites.handle_team_mail("org_1", _mail(GOOGLE), TEAM)
+    room.state["meta"]["meeting"].pop("audio")  # a bot booked before per-person audio
     await meeting_invites.handle_team_mail("org_1", _mail(MOVED), TEAM)
     bots.create.assert_awaited_once()
     bots.reschedule.assert_awaited_once()
+    assert room.state["meta"]["meeting"]["audio"] == "separate"  # the move re-sent the recording config
     assert bots.reschedule.await_args.args == ("bot-1",)
     assert bots.reschedule.await_args.kwargs["meeting"]["startAt"] == int(
         datetime(2026, 10, 3, 20, 0, tzinfo=timezone.utc).timestamp()
@@ -1346,6 +1350,22 @@ async def test_a_lost_create_answer_is_adopted_not_booked_twice(room, bots):
     assert bots.find.await_args.args == (room.state["meta"]["roomId"], nonce)
     meeting = room.state["meta"]["meeting"]
     assert meeting["recallBotId"] == "bot-1" and meeting["status"] == "bot_created" and "botError" not in meeting
+    bots.audio.assert_awaited_once_with("bot-1")
+    assert meeting["audio"] == "separate"  # what the adopted bot really sends
+
+
+@pytest.mark.parametrize("unknown", [False, True])
+async def test_an_adopted_bot_older_than_per_person_audio_is_recorded_as_mixed(room, bots, unknown):
+    """A deploy between its create and now: the page must keep publishing the mixed stream, and the
+    bridge refuses its socket. A mode Recall cannot tell us reads the same way."""
+    bots.create.side_effect = meeting_invites.meeting_bots.RecallError("timeout")
+    await meeting_invites.handle_team_mail("org_1", _mail(GOOGLE), TEAM)
+    bots.find.return_value = "bot-1"
+    bots.audio.return_value = None
+    bots.audio.side_effect = RuntimeError("recall down") if unknown else None
+    await meeting_invites.handle_team_mail("org_1", _mail(GOOGLE), TEAM)
+    meeting = room.state["meta"]["meeting"]
+    assert meeting["recallBotId"] == "bot-1" and "audio" not in meeting
 
 
 async def test_an_abandoned_claim_is_taken_over_once_past_30s(room, bots):

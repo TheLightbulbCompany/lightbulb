@@ -435,7 +435,9 @@ async def _sync_bot(owner_id: str, room_id: str, meeting: dict, prior: dict | No
             return meeting
         try:
             await meeting_bots.reschedule(bot_id, room_id=room_id, meeting=meeting)
-            return meeting
+            # The move re-sent the recording config, so a bot booked before per-person audio has it now:
+            # the record must say so, or the page would publish the mixed stream beside the bridge.
+            return await _patch_meeting(room_id, {"audio": "separate"}) or meeting
         except Exception as exc:  # noqa: BLE001
             if not (isinstance(exc, meeting_bots.RecallError) and exc.code == "400"):
                 return await _bot_failed(owner_id, room_id, meeting, exc, "move", keep=True)
@@ -474,6 +476,7 @@ async def _sync_bot(owner_id: str, room_id: str, meeting: dict, prior: dict | No
             return await _bot_failed(owner_id, room_id, meeting, exc, "book", keep=True)
         if not bot_id and stored.get("status") != "bot_failed" and now - int(stored.get("botClaimAt", 0)) < _CLAIM_S:
             return stored  # a claim this young may be another delivery's POST; past it, the lease says it died
+    adopted = bot_id
     org = {} if bot_id else await clerk_admin.get_organization(owner_id) or {}
     try:
         bot_id = bot_id or await meeting_bots.create(
@@ -487,7 +490,16 @@ async def _sync_bot(owner_id: str, room_id: str, meeting: dict, prior: dict | No
         return await _bot_failed(owner_id, room_id, meeting, exc, "book", keep=not _definitive(exc))
     except Exception as exc:  # noqa: BLE001
         return await _bot_failed(owner_id, room_id, meeting, exc, "book", keep=True)
-    booked = {"recallBotId": bot_id, "ticketNonce": nonce, "audio": "separate"}
+    audio = "separate"
+    if adopted:
+        # An adopted bot may be older than per-person audio (a deploy between its create and now): the
+        # record follows what the bot really sends. Unknown reads as the mixed stream, which the bridge refuses.
+        try:
+            audio = await meeting_bots.audio_mode(bot_id)
+        except Exception:  # noqa: BLE001
+            logger.warning("meeting room %s: adopted bot's audio mode unknown, assuming mixed", room_id)
+            audio = None
+    booked = {"recallBotId": bot_id, "ticketNonce": nonce, **({"audio": audio} if audio else {})}
     stored = ((await messaging_repo.get_room(room_id)) or {}).get("meeting") or {}
     if stored.get("status") != "cancelled":
         booked["status"] = "bot_created"

@@ -144,6 +144,13 @@ async def find_for_room(room_id: str, nonce: str) -> str | None:
     return None
 
 
+async def audio_mode(bot_id: str) -> str | None:
+    """How a booked bot hands over sound: "separate" when it was created (or moved) with per-person
+    audio, None for a bot older than that (the page then publishes the mixed stream)."""
+    bot = await _call("GET", f"/api/v1/bot/{bot_id}/")
+    return "separate" if "audio_separate_raw" in (bot.get("recording_config") or {}) else None
+
+
 async def reschedule(bot_id: str, *, room_id: str, meeting: dict) -> None:
     """Moves a not-yet-joined bot; both tickets are re-minted so they die with the new end. Recall
     refuses a ``join_at`` under 10 minutes out (400): the caller then replaces the bot."""

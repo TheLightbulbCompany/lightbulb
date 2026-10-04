@@ -84,4 +84,7 @@ def test_bad_tickets_are_refused_before_a_bridge(env):
     assert _refused(client, _ticket()) == 1008
     meeting["status"], meeting["recallBotId"] = "bot_created", None
     assert _refused(client, _ticket()) == 1008
+    meeting["recallBotId"] = "bot-1"
+    del meeting["audio"]  # the page publishes the mixed stream: never the bridge beside it
+    assert _refused(client, _ticket()) == 1008
     assert FakeBridge.built == []

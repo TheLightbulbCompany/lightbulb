@@ -198,3 +198,11 @@ async def test_find_for_room_adopts_only_a_live_bot_of_this_booking(recall):
     assert await meeting_bots.find_for_room("room-1", "nonce-1") is None
     assert calls[0].method == "GET" and calls[0].url.path == "/api/v1/bot/"
     assert dict(calls[0].url.params) == {"metadata__roomId": "room-1", "metadata__nonce": "nonce-1"}
+
+
+async def test_audio_mode_reads_what_the_bot_was_booked_with(recall):
+    calls, responses = recall
+    responses.extend([(200, {"id": "bot-1", "recording_config": {"audio_separate_raw": {}}}), (200, {"id": "bot-0"})])
+    assert await meeting_bots.audio_mode("bot-1") == "separate"
+    assert await meeting_bots.audio_mode("bot-0") is None
+    assert calls[0].method == "GET" and calls[0].url.path == "/api/v1/bot/bot-1/"

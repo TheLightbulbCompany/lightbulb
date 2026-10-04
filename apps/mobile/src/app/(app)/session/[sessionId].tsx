@@ -413,7 +413,7 @@ function SessionBody({
             <View style={styles.emptyUpright}>
               {history.loading ? <TimelineSkeleton /> : history.error ? null : (
                 <Text style={[styles.meta, { color: palette.fgMute }]}>
-                  {ended ? "This session ended before anything was sent." : "No shared output yet."}
+                  {ended && !session.controlUnavailableReason ? "This session ended before anything was sent." : "No shared output yet."}
                 </Text>
               )}
             </View>

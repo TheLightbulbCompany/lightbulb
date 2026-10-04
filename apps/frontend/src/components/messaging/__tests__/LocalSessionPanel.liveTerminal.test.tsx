@@ -192,6 +192,11 @@ it("says an empty ended session never started, and offers Resume only for one th
   expect(await screen.findByText("This session ended before anything was sent.")).toBeTruthy();
   expect(screen.queryByRole("button", { name: /^Resume/ })).toBeNull();
   empty.unmount();
+  // History the Mac could not read may hold a real conversation: no "nothing was sent" claim beside its Resume.
+  const unread = render(<LocalSessionPanel {...props} session={{ ...session, status: "ended", latestEventSeq: 0, controlUnavailableReason: "history-gap", resumable: true }} />);
+  expect(await screen.findByText("No shared output yet.")).toBeTruthy();
+  expect(screen.queryByText("This session ended before anything was sent.")).toBeNull();
+  unread.unmount();
   render(<LocalSessionPanel {...props} session={{ ...session, status: "ended", latestEventSeq: 4, resumable: true }} />);
   expect(await screen.findByRole("button", { name: "Resume" })).toBeTruthy();
 });

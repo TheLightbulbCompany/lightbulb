@@ -798,6 +798,19 @@ mod tests {
     }
 
     #[test]
+    fn an_attach_terminal_stays_while_its_job_is_listed_even_when_its_capture_failed() {
+        // A row capture cannot use (no pid) still names its running job.
+        let rows = [serde_json::json!({"kind":"background","id":"22222222","sessionId":"x","status":"busy"})];
+        assert!(rows.iter().all(|r| r["pid"].is_null()), "this row fails capture");
+        let (_, running) = super::super::claude::listed(&rows);
+        let holders = [attach("bbbbbbbb", "22222222", 20)];
+        let watched = BTreeSet::from(["22222222".to_owned()]);
+        let mut wanted = BTreeMap::new();
+        assert!(idle_attach(&holders, None, &watched, Some(&running), &mut wanted, Instant::now()).is_empty(),
+            "a watched terminal whose job is listed is kept");
+    }
+
+    #[test]
     fn an_attach_terminal_is_started_once_and_never_in_a_loop() {
         let made = attach("dddddddd", "44444444", 40);
         let calls = std::cell::Cell::new(0);

@@ -215,11 +215,12 @@ def _occurrences(meeting: dict) -> list[dict]:
 
 
 def _junk(meeting: dict, now: float) -> bool:
-    """A meeting that never reached a call (no transcript, now or in its history) and ended over a
-    day ago is not worth a row."""
+    """A meeting that never reached a call (never in the call, no transcript now or in its history)
+    and ended over a day ago is not worth a row."""
     end = int(meeting.get("endAt") or meeting.get("startAt") or 0)
     return (
         meeting.get("status") in ("ended", "bot_failed", "cancelled")
+        and not meeting.get("inCallAt")
         and not _occurrences(meeting)
         and end < now - 86400
     )

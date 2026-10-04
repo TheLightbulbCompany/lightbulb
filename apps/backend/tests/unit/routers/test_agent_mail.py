@@ -489,7 +489,7 @@ def test_transcript_404s(client, path):
 
 async def test_a_meeting_that_never_reached_a_call_drops_off_after_a_day(async_client_org_member):
     """A stale invite's record (never joined, over two days ago) is not listed; one with a
-    transcript always is, however old."""
+    transcript, or a call that happened with no transcript captured, always is, however old."""
     old = int(time.time()) - 2 * 86400
     rooms = {
         M1: {"ownerId": "org_test_456", "meeting": {"title": "Junk", "status": "bot_failed", "startAt": old}},
@@ -503,8 +503,12 @@ async def test_a_meeting_that_never_reached_a_call_drops_off_after_a_day(async_c
                 "history": [{"startAt": old - 86400, "transcriptId": "t", "transcriptRoomId": "r"}],
             },
         },
+        FOREIGN: {
+            "ownerId": "org_test_456",
+            "meeting": {"title": "Held", "status": "ended", "startAt": old - 10, "inCallAt": old},
+        },
     }
     a, b, c, d, e = _inbox()
     with a, b, c, d, e, patch.object(agent_mail.messaging_repo, "get_room", AsyncMock(side_effect=rooms.get)):
         r = await async_client_org_member.get("/api/v1/agent-mail/inbox")
-    assert [m["title"] for m in r.json()["meetings"]] == ["Kept"]
+    assert [m["title"] for m in r.json()["meetings"]] == ["Kept", "Held"]

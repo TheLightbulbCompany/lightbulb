@@ -98,9 +98,10 @@ private: it never appears in Lightbulb, and you cannot read it. If a person asks
 why their session is missing, tell them to start it with `lightbulb claude` (or
 `lightbulb codex`) or from **New session**.
 
-**New session**: has no first message and no Start button. The person picks the
+**New session** (web and desktop): has no first message and no Start button. The person picks the
 approved folder, then presses **Claude Code** or **Codex**. The terminal opens on the
-tool's own start screen, where they can type anything, including `/resume`.
+tool's own start screen, where they can type anything, including `/resume`. The iPhone app still asks for a first message
+("First message", "Send to Mac").
 
 Rooms' **Devices & sessions** panel lists human-shared Claude/Codex sessions;
 opening one from that list opens the session in that room's right column.

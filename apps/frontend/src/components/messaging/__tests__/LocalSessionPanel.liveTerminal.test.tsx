@@ -184,3 +184,19 @@ it("retries a moved session's origin on the next hint after a failed request", a
   view.rerender(<LocalSessionPanel {...props} revision={1} />);
   await waitFor(() => expect(listLocalSessionEvents).toHaveBeenCalledWith("origin", 70, 50));
 });
+
+it("says an empty ended session never started, and offers Resume only for one that has history", async () => {
+  // The server answers `resumable`: false for a session that ended before its first message.
+  const props = { ownerName: "Alice", own: true, client: { ...client, resumeLocalSession: vi.fn() } as never, revision: 0, onAccessLost: () => {} };
+  const empty = render(<LocalSessionPanel {...props} session={{ ...session, status: "ended", latestEventSeq: 0, resumable: false }} />);
+  expect(await screen.findByText("This session ended before anything was sent.")).toBeTruthy();
+  expect(screen.queryByRole("button", { name: /^Resume/ })).toBeNull();
+  empty.unmount();
+  // History the Mac could not read may hold a real conversation: no "nothing was sent" claim beside its Resume.
+  const unread = render(<LocalSessionPanel {...props} session={{ ...session, status: "ended", latestEventSeq: 0, controlUnavailableReason: "history-gap", resumable: true }} />);
+  expect(await screen.findByText("No shared output yet.")).toBeTruthy();
+  expect(screen.queryByText("This session ended before anything was sent.")).toBeNull();
+  unread.unmount();
+  render(<LocalSessionPanel {...props} session={{ ...session, status: "ended", latestEventSeq: 4, resumable: true }} />);
+  expect(await screen.findByRole("button", { name: "Resume" })).toBeTruthy();
+});

@@ -245,7 +245,7 @@ export function LocalSessionPanel({ session, ownerName, own, client, revision, o
           {history.loading && <div className="native-session-shimmer" role="status" aria-label="Loading session history" />}
           {transcript}
           {history.error && <div role="alert"><p>{history.error}</p><Button variant="outline" onClick={() => void history.retry()}>Retry history</Button></div>}
-          {!history.loading && !history.error && history.events.length === 0 && !pendingText && <p>No shared output yet.</p>}
+          {!history.loading && !history.error && history.events.length === 0 && !pendingText && <p>{session.provider === "claude" && session.status === "ended" && !session.controlUnavailableReason ? "This session ended before anything was sent." : "No shared output yet."}</p>}
 
         </div>
       </div>

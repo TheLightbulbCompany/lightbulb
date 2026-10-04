@@ -104,6 +104,11 @@ async def request_resume(
             )
         if row.get("kind") == "background":
             raise ApiProblem("LOCAL_SESSION_UNSUPPORTED", "Background sessions cannot be resumed.")
+        if sessions.ended_empty(row["provider"], "ended", row.get("eventSeq", 0), row.get("controlUnavailableReason")):
+            raise ApiProblem(
+                "LOCAL_SESSION_UNSUPPORTED",
+                "This session ended before its first message, so there is nothing to resume. Start a new session.",
+            )
         if live(waiting):
             raise ApiProblem("LOCAL_SESSION_CONFLICT", "Someone already asked to resume this session.")
         if not own:

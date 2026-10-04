@@ -193,7 +193,9 @@ It starts again on the owner's Mac, in the same folder (which must still be an
 approved folder), with the same conversation, once that Mac is on (within 24
 hours). A teammate's resume runs in plan mode. The owner can take a teammate's
 resume permission back. If the Mac refuses, the session reads "Not resumed:
-<reason>". You cannot resume a session; tell the person to press Resume.
+<reason>". You cannot resume a session; tell the person to press Resume. A session
+that ended before its first message has nothing to resume: it shows "This
+session ended before anything was sent." and is not listed.
 
 **Pick up** continues someone's Claude Code session on your own Mac, as a new
 shared session in your Lightbulb app's panel, with the files it changed on a new branch and folder; the

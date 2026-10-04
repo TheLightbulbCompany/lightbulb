@@ -398,6 +398,7 @@ class Huddle:
         self._rate = gate.RateLimit()
         # run id -> (attempts, last at): a requested delivery whose voice did not open (engine §3.5)
         self._delivery_tries: dict[str, tuple[int, float]] = {}
+        self._voice_limit = ""  # why the backend refuses to open a voice (its /summon reason); "" when it does not
         self._rowless: set[str] = set()  # a meeting's ready answers that have no request row (delivered like one)
         self._level: set[str] = set()  # humans in the SFU's active speakers: sound, maybe not speech
         self._voiced: set[str] = set()  # humans the transcriber's speech detector hears speaking
@@ -2129,7 +2130,16 @@ class Huddle:
             if self._window is None:
                 if self._closing:
                     raise RuntimeError("huddle closing: no new window")
-                r = await self._backend.summon(speaker, self._said_by.get(speaker))
+                try:
+                    r = await self._backend.summon(speaker, self._said_by.get(speaker))
+                except BackendError as e:
+                    # Published for the tiles: in a Meet nobody sees the refusal, the agents are just silent
+                    # (10-04 prod Meet: the day's free voice minutes were used up). Another refusal is not the
+                    # limit: an earlier reason must not stay up.
+                    self._voice_limit = (e.reason or "limit") if e.code == "voice_limit" else ""
+                    self._sync_state()
+                    raise
+                self._voice_limit = ""
                 self._window = _Window(r["callId"], float(r["deadline"]), float(r["budgetSeconds"]))
             return self._window
 
@@ -3185,6 +3195,7 @@ class Huddle:
         state = {
             "lightbulb.speaking_agent": v.agent_id if v else "",
             "lightbulb.listening_to": self._with(v) if v else "",
+            "lightbulb.voice_limit": self._voice_limit,
             # C4: answer order with the floor-holder at the head, while a multi-name request is pending
             "lightbulb.queue": ",".join(
                 ([v.agent_id] if v else []) + [q[0] for q in self._queue]

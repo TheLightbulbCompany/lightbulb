@@ -964,3 +964,24 @@ async def test_a_meeting_answer_with_no_request_row_is_said_at_the_next_pause_no
     assert h._voice is not None and h._voice.path == "announce" and "Six PRs are open." in str(lives[-1].seed)
     h.on_agent_state("forge", "speaking")
     assert h._rowless == set() and backend.late_answers == []
+
+
+async def test_a_refused_voice_is_published_for_the_tile_and_cleared_when_voice_works_again():
+    # 10-04 prod Meet: the day's free voice minutes were used up; /summon answered 402 and nobody was told
+    h, room, backend, lives, clock, log = await meeting()
+    backend.summon_error = BackendError(402, "voice_limit", "free_minutes_used")
+    await hear(h, "Forge, what PRs are open?")
+    assert lives == [] and h._state()["lightbulb.voice_limit"] == "free_minutes_used"
+    assert any(a.get("lightbulb.voice_limit") == "free_minutes_used" for a in room.attrs), "set on the room"
+    backend.summon_error = BackendError(503, "huddles_upstream", None)  # refused again, but not by the limit
+    clock.t += 30
+    await hear(h, "Forge, are you there?")
+    assert h._state()["lightbulb.voice_limit"] == "", "an earlier limit must not stay up"
+    backend.summon_error = BackendError(402, "voice_limit", "credits_low")
+    clock.t += 30
+    await hear(h, "Forge, are you there?")
+    assert h._state()["lightbulb.voice_limit"] == "credits_low"
+    backend.summon_error = None
+    clock.t += 30
+    await hear(h, "Forge, are you there?")
+    assert lives and h._state()["lightbulb.voice_limit"] == ""

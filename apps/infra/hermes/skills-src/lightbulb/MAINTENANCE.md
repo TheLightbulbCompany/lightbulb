@@ -157,6 +157,10 @@ MAINTENANCE (Lightbulb engineers): every claim in this skill is anchored to
                               <- apps/frontend/src/components/workspace/WorkspaceHeader.tsx (workspace-rail Library item);
                                  apps/frontend/src/components/workspace/panelRegistry.ts (teams-artifacts panel title);
                                  apps/frontend/src/components/teams/panels/ArtifactsPanel.tsx (Library surface)
+  - Mail ..................... references/surfaces.md
+                              <- apps/frontend/src/components/workspace/WorkspaceHeader.tsx (Mail rail item + badge);
+                                 apps/frontend/src/components/mail/ (MailPanel sections, chips, meeting detail, "new");
+                                 apps/backend/routers/agent_mail.py (_meeting_view status/reason/notes_room_id)
   - Message actions ......... references/surfaces.md
                               <- apps/frontend/src/components/messaging/{RoomMessageItem,RoomMessageContent}.tsx (reactions,
                                  reply-in-thread, edit/delete, the menuExtras-gated "more" menu open to every member);

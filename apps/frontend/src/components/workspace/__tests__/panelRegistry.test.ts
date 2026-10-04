@@ -182,6 +182,15 @@ describe("panelRegistry", () => {
     expect(clearablePanelParamKeys("activity")).toEqual(["filter", "focus"]);
   });
 
+  it("describes Mail as a singleton carrying the open item", () => {
+    expect(describePanel("mail", {})).toEqual({ panelId: "mail", component: "mail", title: "Mail", params: {} });
+    expect(describePanel("mail", { item: "meeting:m1:1790553600" })).toEqual({
+      panelId: "mail", component: "mail", title: "Mail", params: { item: "meeting:m1:1790553600" },
+    });
+    expect(durableParamsFor("mail")).toEqual(["panel", "item"]);
+    expect(clearablePanelParamKeys("mail")).toEqual(["item"]);
+  });
+
   it("describes the money panel with a durable ?day deep link", () => {
     expect(describePanel("teams-money", { day: "2026-09-05" })).toEqual({
       panelId: "teams-money", component: "teams", title: "Money", params: { teamsKey: "money", day: "2026-09-05" },
@@ -295,7 +304,7 @@ describe("panelRegistry", () => {
 
   it("registers exactly the component keys the shell's components map will have", () => {
     expect([...PANEL_COMPONENT_KEYS].sort()).toEqual(
-      ["activity", "browser", "chat", "control", "file-viewer", "missing", "teams"].sort(),
+      ["activity", "browser", "chat", "control", "file-viewer", "mail", "missing", "teams"].sort(),
     );
   });
 

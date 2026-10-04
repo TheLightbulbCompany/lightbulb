@@ -38,7 +38,7 @@ export function WorkspaceSidebar({ onRecoveryReprovision, chatReady }: Workspace
     { panel: "teams-agents", label: "Agents", Icon: UsersRound },
     ...visibleCompanySections({ provisioningEnabled: Boolean(stripeStatus?.provisioning_enabled) })
       .flatMap((section) => section.items)
-      .filter(({ panel }) => !["teams-dashboard", "teams-search", "teams-inbox", "teams-issues", "teams-artifacts"].includes(panel)),
+      .filter(({ panel }) => !["teams-dashboard", "teams-search", "teams-inbox", "mail", "teams-issues", "teams-artifacts"].includes(panel)),
   ];
 
   // Captured once so the footer's expiry check is stable across re-renders.

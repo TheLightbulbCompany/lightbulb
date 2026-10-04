@@ -21,11 +21,13 @@ import { resolvePanelAlias, describePanel } from "../../workspace/panelRegistry"
 // panel and Brain came off the rail — Search stays, overriding the spec
 // (owner ruling 2026-09-08). Goals and Projects (owner ruling 2026-09-24)
 // lifted the alias that hid them behind Tasks, bringing it to ELEVEN; Cases
-// (ported from stock Paperclip, replacing the Support placeholder) makes TWELVE.
+// (ported from stock Paperclip, replacing the Support placeholder) makes TWELVE;
+// Mail (the agents' shared mailbox, its own panel) makes THIRTEEN.
 const ALL_LABELS = [
   "Home",
   "Search",
   "Inbox",
+  "Mail",
   "Money",
   "Tasks",
   "Projects",
@@ -151,16 +153,16 @@ describe("CompanyNav", () => {
     fireEvent.click(screen.getByText("Library"));
     expect(onPanelChange).toHaveBeenCalledWith("teams-artifacts");
   });
-  it("offers exactly twelve items, in the consolidated order", () => {
+  it("offers exactly thirteen items, in the consolidated order", () => {
     // The rail cut's whole point (spec §3), so it is asserted as an ordered
     // list, not a count: 22 items became 9, then 11 once Goals/Projects were
-    // lifted off Tasks' alias, then 12 with Cases. Provisioning off, since Domain & Site is a
+    // lifted off Tasks' alias, then 12 with Cases, 13 with Mail. Provisioning off, since Domain & Site is a
     // capability question rather than an IA one.
     const labels = visibleCompanySections({ provisioningEnabled: false }).flatMap((s) =>
       s.items.map((i) => i.label),
     );
     expect(labels).toEqual(ALL_LABELS);
-    expect(labels).toHaveLength(12);
+    expect(labels).toHaveLength(13);
   });
 
   it("stops offering Brain, whose key is gone entirely", () => {
@@ -197,6 +199,12 @@ describe("CompanyNav", () => {
         ).not.toBeNull();
       }
     }
+  });
+  it("emits Mail's own panel key, which the mobile shell renders", () => {
+    const onPanelChange = vi.fn();
+    render(<CompanyNav onPanelChange={onPanelChange} />);
+    fireEvent.click(screen.getByText("Mail"));
+    expect(onPanelChange).toHaveBeenCalledWith("mail");
   });
   it("emits the teams- panel key on click", () => {
     const onPanelChange = vi.fn();

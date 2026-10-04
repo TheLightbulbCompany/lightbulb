@@ -20,7 +20,7 @@ interface ControlPanelRouterProps {
   panel: string;
   onPanelChange?: (panel: string) => void;
   // Params the shell feeds the panels, read from its own channel (URL on
-  // mobile, dockview params on desktop): { agentId?, initialTab?, action? }.
+  // mobile, dockview params on desktop): { agentId?, initialTab?, action?, item? }.
   // Legacy keys (e.g. credits→llm) are resolved by the shell/registry before
   // reaching here.
   panelParams?: Record<string, string>;
@@ -62,6 +62,11 @@ const AgentInspectorPanel = dynamic(
   () => import("./panels/AgentInspectorPanel").then((m) => m.AgentInspectorPanel),
   { loading: PanelSkeleton },
 );
+// The mobile shell's Mail: the same component the desktop dock mounts, narrow by width.
+const MailPanel = dynamic(
+  () => import("@/components/mail/MailPanel").then((m) => m.MailPanel),
+  { loading: PanelSkeleton },
+);
 const LLMPanel = dynamic(
   () => import("./panels/LLMPanel").then((m) => m.LLMPanel),
   { loading: PanelSkeleton },
@@ -90,6 +95,9 @@ export function ControlPanelRouter({
         initialTab={panelParams?.initialTab ?? null}
       />
     );
+  }
+  if (panel === "mail") {
+    return <MailPanel item={panelParams?.item ?? null} />;
   }
   if (panel === "llm") {
     return (

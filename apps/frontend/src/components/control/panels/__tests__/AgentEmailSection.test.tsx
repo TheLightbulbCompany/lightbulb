@@ -5,13 +5,11 @@ import { ApiError } from "@lightbulb/shared";
 
 const mockGet = vi.fn();
 const mockPatch = vi.fn();
-// The team inbox inside the card has its own tests (TeamInbox.test.tsx): answer it empty here.
-const inboxGet = (url: string) =>
-  url.startsWith("/agent-mail/inbox") ? Promise.resolve({ meetings: [], messages: [], next: null }) : mockGet(url);
 vi.mock("@/lib/api", () => ({
-  useApi: () => ({ get: inboxGet, patch: mockPatch }),
+  useApi: () => ({ get: mockGet, patch: mockPatch }),
 }));
-vi.mock("@clerk/nextjs", () => ({ useOrganization: () => ({ organization: { id: "org_1" } }) }));
+const navigateShell = vi.fn();
+vi.mock("@/lib/shellNav", () => ({ navigateShell: (url: string) => navigateShell(url) }));
 
 import { AgentEmailSection } from "../AgentEmailSection";
 
@@ -48,6 +46,16 @@ describe("AgentEmailSection", () => {
     expect(await screen.findByText(ADDR)).toBeInTheDocument();
     expect(mockGet).toHaveBeenCalledWith("/agent-mail/address");
     expect((screen.getByRole("textbox") as HTMLTextAreaElement).value).toBe("o@x.y");
+  });
+
+  it("opens the Mail panel instead of listing mail inline", async () => {
+    mockGet.mockResolvedValue(baseAddress);
+    renderSection();
+
+    await screen.findByText(ADDR);
+    expect(mockGet).not.toHaveBeenCalledWith(expect.stringContaining("/agent-mail/inbox"));
+    fireEvent.click(screen.getByRole("button", { name: "Open Mail" }));
+    expect(navigateShell).toHaveBeenCalledWith("/chat?panel=mail");
   });
 
   it("copies the address and shows Copied", async () => {

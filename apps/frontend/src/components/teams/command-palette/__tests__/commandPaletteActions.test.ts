@@ -22,7 +22,7 @@ describe("NAV_ACTIONS derives from the sidebar IA", () => {
         const action = byId[`go-${key}`];
         expect(action, `missing palette action for ${item.panel}`).toBeDefined();
         expect(action?.label).toBe(item.label);
-        expect(action?.path).toBe(`/chat?panel=teams-${key}`);
+        expect(action?.path).toBe(item.panel.startsWith("teams-") ? `/chat?panel=teams-${key}` : `/chat?panel=${item.panel}`);
       }
     }
   });
@@ -31,6 +31,11 @@ describe("NAV_ACTIONS derives from the sidebar IA", () => {
     expect(byId["go-dashboard"]?.label).toBe("Home");
     expect(byId["go-artifacts"]?.label).toBe("Library");
     expect(byId["go-issues"]?.label).toBe("Tasks");
+  });
+
+  test("Mail opens its own panel, not a teams-* one", () => {
+    expect(byId["go-mail"]?.path).toBe("/chat?panel=mail");
+    expect(filterNavActions("meetings").map((a) => a.id)).toContain("go-mail");
   });
 
   test("the two non-sidebar extras survive: roster + settings", () => {

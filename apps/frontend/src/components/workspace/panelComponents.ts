@@ -10,6 +10,7 @@ import { ControlDockPanel } from "./panels/ControlDockPanel";
 import { FileViewerDockPanel } from "./panels/FileViewerDockPanel";
 import { BrowserDockPanel } from "./panels/BrowserDockPanel";
 import { ActivityDockPanel } from "./panels/ActivityDockPanel";
+import { MailDockPanel } from "./panels/MailDockPanel";
 import { MissingPanel } from "./panels/MissingPanel";
 
 export const PANEL_COMPONENTS: Record<string, React.FunctionComponent<IDockviewPanelProps>> = {
@@ -19,6 +20,7 @@ export const PANEL_COMPONENTS: Record<string, React.FunctionComponent<IDockviewP
   "file-viewer": FileViewerDockPanel as React.FunctionComponent<IDockviewPanelProps>,
   browser: BrowserDockPanel as React.FunctionComponent<IDockviewPanelProps>,
   activity: ActivityDockPanel as React.FunctionComponent<IDockviewPanelProps>,
+  mail: MailDockPanel as React.FunctionComponent<IDockviewPanelProps>,
   missing: MissingPanel as React.FunctionComponent<IDockviewPanelProps>,
   unknown: MissingPanel as React.FunctionComponent<IDockviewPanelProps>, // deserializer default key
 };

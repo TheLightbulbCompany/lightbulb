@@ -91,6 +91,7 @@ describe("WorkspaceSidebar", () => {
     expect(details).not.toHaveAttribute("open");
     fireEvent.click(screen.getByText("More"));
     expect(details).toHaveAttribute("open");
+    // Mail is on the rail, like Tasks, so More does not repeat it.
     expect(within(details).getAllByRole("button").map((button) => button.textContent)).toEqual(["Agents", "Money", "Projects", "Automations", "Goals", "Cases", "Leads", "Accounts"]);
     fireEvent.click(within(details).getByRole("button", { name: "Agents" }));
     expect(openPanel).toHaveBeenCalledWith("teams-agents", {}, { pushUrl: true });

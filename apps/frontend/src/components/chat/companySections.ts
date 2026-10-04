@@ -10,6 +10,7 @@ import {
   LayoutDashboard,
   Inbox,
   ListTodo,
+  Mail,
   FolderOpen,
   Target,
   Repeat,
@@ -71,6 +72,9 @@ export const COMPANY_SECTIONS: { label: string | null; items: CompanySectionItem
       { panel: "teams-dashboard", label: "Home", Icon: LayoutDashboard },
       { panel: "teams-search", label: "Search", Icon: Search },
       { panel: "teams-inbox", label: "Inbox", Icon: Inbox },
+      // The agents' shared mailbox. Not a teams-* key: its own panel, on the
+      // desktop rail (so the desktop "More" list skips it, like Tasks).
+      { panel: "mail", label: "Mail", Icon: Mail },
     ],
   },
   {

@@ -27,6 +27,7 @@ const KEYWORDS: Record<string, string[]> = {
   routines: ["cron", "schedule", "routines"],
   artifacts: ["artifacts"],
   activity: ["events", "log"],
+  mail: ["email", "meetings", "transcripts"],
   // Money absorbed Payments/Products/Customers/Spend as sections of one
   // page — their old search words, plus "usage" (the label the same numbers
   // carry under /settings, ?panel=usage), still need to find it.
@@ -42,7 +43,9 @@ export function navActions(opts: { provisioningEnabled: boolean }): CommandPalet
     ...visibleCompanySections(opts).flatMap((section) =>
       section.items.map(({ panel, label, Icon }) => {
         const key = panel.replace(/^teams-/, "");
-        return { id: `go-${key}`, label, path: teamsPanelUrl(key), Icon, keywords: KEYWORDS[key] };
+        // Mail is its own panel, not a teams-* one.
+        const path = panel.startsWith("teams-") ? teamsPanelUrl(key) : `/chat?panel=${panel}`;
+        return { id: `go-${key}`, label, path, Icon, keywords: KEYWORDS[key] };
       }),
     ),
     // The two non-sidebar surfaces: the agent roster and the Settings home.

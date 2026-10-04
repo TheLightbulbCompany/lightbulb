@@ -20,7 +20,7 @@ import logging
 
 from core.config import settings
 from core.repositories import billing_repo
-from core.services.agent_email import team_address
+from core.services.agent_email import public_address
 from core.dynamodb import run_in_thread, utc_now_iso
 
 logger = logging.getLogger(__name__)
@@ -131,11 +131,11 @@ def build_owner_facts(
 
 
 async def _lookup_email_address(owner_id: str) -> str | None:
-    """The workspace's team address (every agent sends from it), or None.
+    """The workspace's public team address (every agent sends from it), or None.
     Never raises: the address is a nicety and must not stop the rest of the
     facts from being written."""
     try:
-        return await team_address(owner_id)
+        return await public_address(owner_id)
     except Exception as e:  # noqa: BLE001 — facts must never block callers
         logger.warning("owner_facts: team-address lookup failed for %s: %s", owner_id, e)
         return None

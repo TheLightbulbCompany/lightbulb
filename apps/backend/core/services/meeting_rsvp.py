@@ -82,12 +82,14 @@ async def accept(owner_id: str, invite: Invite) -> bool:
 
 
 async def _accept(owner_id: str, invite: Invite) -> str:
-    address = await agent_email.team_address(owner_id)
-    if not address or not invite.organizer_email:
+    routing = await agent_email.team_address(owner_id)
+    if not routing or not invite.organizer_email:
         return "no_address"
     # Google applies a REPLY only from an address on the event; a forwarded invite gets the room
-    # and the bot, not an RSVP.
-    if address.lower() not in {e.lower() for e in invite.attendee_emails}:
+    # and the bot, not an RSVP. The team answers as whichever of its addresses the event lists.
+    listed = {e.lower() for e in invite.attendee_emails}
+    address = next((a for a in (await agent_email.public_for(routing), routing) if a.lower() in listed), None)
+    if not address:
         return "not_invited"
     if not agent_email.EMAIL_ADDRESS_RE.match(invite.organizer_email) or re.search(r"[,;<>\s]", invite.organizer_email):
         return "bad_organizer"  # exactly one bare address: a list would be many sends for one cap unit

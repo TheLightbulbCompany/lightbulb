@@ -29,6 +29,7 @@ interface InboxMessage {
   at: string;
   agent_id: string | null;
   text: string;
+  truncated?: boolean;
 }
 
 interface InboxPage {
@@ -250,6 +251,9 @@ export function TeamInbox({ agents }: { agents?: Agent[] }) {
                   )}
                   {inbound && open && (
                     <p className="whitespace-pre-wrap px-2 pb-2 text-[var(--midnight-muted)]">{msg.text || "(no text)"}</p>
+                  )}
+                  {inbound && open && msg.truncated && (
+                    <p className="px-2 pb-2 text-[var(--midnight-muted)]">Showing the first 2,000 characters.</p>
                   )}
                 </li>
               );

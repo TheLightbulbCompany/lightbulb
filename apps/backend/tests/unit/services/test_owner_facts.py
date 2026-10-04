@@ -149,7 +149,7 @@ def _facts_env(monkeypatch, owner_facts, address, written):
         written["content"] = facts_json
 
     monkeypatch.setattr(owner_facts.billing_repo, "get_by_owner_id", fake_billing)
-    monkeypatch.setattr(owner_facts, "team_address", fake_team_address)
+    monkeypatch.setattr(owner_facts, "public_address", fake_team_address)
     monkeypatch.setattr("core.services.messaging.load_agent_roster", fake_roster)
     monkeypatch.setattr(hermes_profiles, "write_facts_to_profiles", fake_write_facts)
 

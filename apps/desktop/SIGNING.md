@@ -4,9 +4,8 @@ The desktop build (`.github/workflows/desktop-build.yml`) builds prod only
 (there is no dev build since 2026-10-04) and signs it with the `Developer ID Application: Prasiddha
 Parthsarthy (WZX4U3C22Y)` certificate and notarizes via the Apple notary
 service. This is a one-time setup — once the five secrets below are in
-GitHub, the workflow builds signed + notarized DMGs. Qualifying pushes to
-`main` publish dev only; production requires a manual workflow dispatch
-after dev verification. Release tags are workflow outputs, not build
+GitHub, the workflow builds signed + notarized DMGs. Only a manual workflow
+dispatch builds. Release tags are workflow outputs, not build
 triggers. The `isol8-notarize` app-specific-password label is NOT renamed.
 
 ## One-time setup (run from the Mac that holds the Developer ID cert)
@@ -77,3 +76,28 @@ the Rust tests). Then manually run **desktop-build** from GitHub Actions
 (`gh workflow run desktop-build.yml --ref main`). It builds, signs, notarizes
 and publishes the prod app only. There is no dev build: test on prod, or build
 and run the app locally against the dev API.
+
+## What's in the secrets and why
+
+| Secret                       | Source                  | Used for                                                                              |
+| ---------------------------- | ----------------------- | ------------------------------------------------------------------------------------- |
+| `APPLE_CERTIFICATE`          | `.p12` → base64         | `tauri-action` imports into a temp keychain on the runner before `codesign` runs.     |
+| `APPLE_CERTIFICATE_PASSWORD` | `.p12` export password  | Decrypts the imported `.p12` so its private key is usable.                            |
+| `APPLE_ID`                   | Your Apple ID email     | Notary service authentication.                                                        |
+| `APPLE_PASSWORD`             | App-specific password   | Notary service authentication (Apple no longer accepts the real Apple ID password).   |
+| `APPLE_TEAM_ID`              | `WZX4U3C22Y`            | Disambiguates which team's notary queue to submit to (required for multi-team users). |
+
+## Rotating the cert
+
+Developer ID Application certs are valid for 5 years. When the cert
+expires (or you generate a fresh one), repeat steps 1, 2, and 4-secret-1.
+Steps 3, 4-secret-2 through 4-secret-5 don't change.
+
+## Reference
+
+- `tauri-action` codesign env vars:
+  <https://github.com/tauri-apps/tauri-action#code-signing>
+- Apple app-specific passwords:
+  <https://support.apple.com/en-us/102654>
+- Apple notarization workflow:
+  <https://developer.apple.com/documentation/security/notarizing_macos_software_before_distribution>

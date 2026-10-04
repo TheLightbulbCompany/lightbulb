@@ -19,6 +19,7 @@ State:
 from __future__ import annotations
 
 import asyncio
+import collections
 import json
 import logging
 import math
@@ -93,7 +94,8 @@ ASKER_GONE_S = 60  # engine §3.5: its asker left and no pause came this long: t
 BIND_SECONDS = 10
 # understanding §4.6: a delegation waits this long for the final of a speech still being transcribed
 DELEGATION_WAIT_S = 2.0
-SAME_SPEECH = 0.6  # a final with no interim is a delegated speech arriving late at this word overlap
+SAME_SPEECH = 0.6  # this share of one transcript's words in another's: the same speech (understanding §4.6)
+RECORDS_KEPT = 4  # understood speeches kept per speaker for delegations to match
 ALREADY_SAID = "You already gave that answer. Do not repeat it."
 HANDOFF_SECONDS = (
     8  # the floor-holder asked someone by name: they may answer without naming it
@@ -135,11 +137,15 @@ TRANSCRIPT_CHUNK = 500
 TRANSCRIPT_FINAL_MAX = 5_000
 
 
-def _same_speech(a: str, b: str) -> bool:
-    """Two transcripts of one speech (understanding §4.6): most words of either are in the other."""
+def _words_in(a: str, b: str) -> bool:
+    """Most of `a`'s words (letters and digits, any case) are in `b` (understanding §4.6)."""
     wa, wb = ({w for w in re.findall(r"[^\W_]+", x.lower())} for x in (a, b))
-    both = len(wa & wb)
-    return bool(wa and wb) and max(both / len(wa), both / len(wb)) >= SAME_SPEECH
+    return bool(wa) and len(wa & wb) / len(wa) >= SAME_SPEECH
+
+
+def _same_speech(a: str, b: str) -> bool:
+    """Two transcripts of one speech: a delegation may cover two finals, or be cut shorter than its final."""
+    return _words_in(a, b) or _words_in(b, a)
 
 
 def _retryable(e: BackendError) -> bool:
@@ -387,11 +393,11 @@ class Huddle:
         self._window_lock = asyncio.Lock()  # one /summon however many requests start at once
         self._marking: set[asyncio.Task] = set()  # "don't post that" marks in flight
         self._closing = False  # the worker is leaving: no new window
-        # understanding §4.6, floor-speaker lines only: identity -> its /route call in flight, and the
-        # understanding of its latest speech, (rows, ops or None when /route failed or answered without ops),
-        # kept until its next speech begins. A delegation binds to these instead of posting a run.
-        self._understanding: dict[str, asyncio.Future] = {}
-        self._understood: dict[str, tuple[list[Request], dict | None]] = {}
+        # understanding §4.6: identity -> their /route calls in flight, and their last understood speeches,
+        # (rows, ops or None when /route failed or answered without ops, text, at), newest last. A delegation is
+        # matched to these by its text, and binds or is answered instead of posting a run.
+        self._understanding: dict[str, list[asyncio.Future]] = {}
+        self._understood: dict[str, collections.deque] = {}
         self._final_heard: dict[str, asyncio.Event] = {}  # identity -> set by their next final
         # identity -> (when, transcript) of a delegation whose own transcript was understood (no final yet)
         self._unbound: dict[str, tuple[float, str]] = {}
@@ -508,6 +514,9 @@ class Huddle:
             self._last_heard = (
                 self._clock()
             )  # someone just arrived: the room isn't idle
+        for gone in set(self._people) - set(people):  # their speeches can no longer be delegated (§4.6)
+            for d in (self._understood, self._unbound, self._final_heard):
+                d.pop(gone, None)
         self._people = dict(people)
         if people:
             self._seen_human = True
@@ -784,9 +793,9 @@ class Huddle:
             # understanding §4.6: the line is understood while its voice opens (a fallback line was already asked)
             understood = None
             if heard_at is None:
-                fut = self._understanding[identity] = asyncio.get_running_loop().create_future()
-                self._understood.pop(identity, None)
-                route = self._understand(identity, text, humans=len(self._people), quiet=True)
+                fut = self._in_flight(identity)
+                # the wake word stripped, as for any Lightbulb line (B4 report)
+                route = self._understand(identity, strip_wake(text), humans=len(self._people), quiet=True)
                 understood = (asyncio.ensure_future(route), fut)
             # a task: awaiting here would stall this person's STT loop for the whole summon
             self._spawn(
@@ -868,8 +877,9 @@ class Huddle:
             v.used = True
             v.handoff = None  # the person the agent asked answered: they keep the floor
             u = self._unbound.pop(identity, None)
-            # its delegation came first and was understood from its own transcript: transcript only (§4.6)
-            late = u is not None and (began < u[0] if began is not None else _same_speech(text, u[1]))
+            # its delegation came first and was understood from its own transcript: transcript only (§4.6). A final
+            # that adds an ask has words of its own and is understood.
+            late = u is not None and _words_in(text, u[1])
             if routed is None and not switch and not late and real_speech(text) and not pause(text):
                 # understanding §4.1: the worker's own STT final is the request, not the voice's delegation
                 self._understand_floor(identity, text, mark, humans=len(self._people), floor_line=True)
@@ -913,9 +923,8 @@ class Huddle:
         (GPT-Live hears them and handles their barge-in itself) who says a name, Lightbulb, a halt or
         real speech over it. Once per utterance; the final decides what happens next."""
         v, text = self._voice, text.strip()
-        if text and identity not in self._utter_from:
-            self._utter_from[identity] = self._clock()
-            self._understood.pop(identity, None)  # a new speech: the last one's understanding is not its (§4.6)
+        if text:
+            self._utter_from.setdefault(identity, self._clock())
         if v and text and identity == v.speaker:
             v.handoff = None  # the person the agent asked is answering
         if (
@@ -1039,28 +1048,36 @@ class Huddle:
     def _understand_floor(self, identity: str, text: str, mark: int, **kw) -> asyncio.Future:
         """Understand a floor-speaker line now (understanding §4.6). The future, in flight from this call on,
         is the speech's understanding (`_route`'s result); it replaces the last speech's for any delegation."""
-        fut = self._understanding[identity] = asyncio.get_running_loop().create_future()
-        self._understood.pop(identity, None)
+        fut = self._in_flight(identity)
 
         async def run() -> None:
             rec = None
             try:
                 rec = await self._route_and_summon(identity, text, mark, **kw)
             finally:
-                self._record(identity, fut, rec)
+                self._record(identity, fut, rec, text)
 
         self._spawn(run())
         return fut
 
-    def _record(self, identity: str, fut: asyncio.Future, rec: tuple | None) -> None:
-        """A speech's understanding is known: `fut` resolves, and `rec` is the speaker's record (§4.6)."""
+    def _in_flight(self, identity: str) -> asyncio.Future:
+        """A speech of `identity` is being understood (§4.6): `_record` resolves it."""
+        fut = asyncio.get_running_loop().create_future()
+        self._understanding.setdefault(identity, []).append(fut)
+        return fut
+
+    def _record(self, identity: str, fut: asyncio.Future, rec: tuple | None, text: str) -> None:
+        """A speech's understanding is known: `fut` resolves to the speaker's record of `text`, appended in arrival
+        order (rec (rows, ops); None: a hold, or nothing was understood) (§4.6)."""
         if fut.done():
             return
         if rec is not None:
-            self._understood[identity] = rec
+            rec = (*rec, text, self._clock())
+            self._understood.setdefault(identity, collections.deque(maxlen=RECORDS_KEPT)).append(rec)
         fut.set_result(rec)
-        if self._understanding.get(identity) is fut:
-            del self._understanding[identity]
+        flying = self._understanding.get(identity, [])
+        if fut in flying:
+            flying.remove(fut)
 
     def _small_talk(self, identity: str, text: str, more: bool) -> str:
         """The seed line of a line that asked nothing (understanding §4.6)."""
@@ -1078,7 +1095,7 @@ class Huddle:
         whole-line run. Else (the row its voice drives, already started; the rows to acknowledge; a seed line)."""
         o = r.get("ops") if isinstance(r, dict) else None
         if o is None:
-            self._record(identity, fut, None)
+            self._record(identity, fut, None, text)
             return None
         rows = self._apply(identity, mark, o)  # `hold` ignored: the person named the agent
         mine = [x for x in rows if x.agent == agent_id]
@@ -1087,7 +1104,7 @@ class Huddle:
             self._requests.start(first)  # its voice drives it; _start_queued must not post it too
         self._start_queued()
         self._queue = [q for q in self._queue if q[1:] != (identity, text)]  # the rows replace `then`
-        self._record(identity, fut, (rows, o))
+        self._record(identity, fut, (rows, o), text)
         ack = rows if len(rows) >= 2 or (rows and first is None) else None
         said = None
         if not o.get("requests"):  # asked nothing (rows dropped by a stop say nothing)
@@ -1487,7 +1504,7 @@ class Huddle:
                     elif (line := self._ack(ack, agent_id)) and self._live_call(old, "append_thinking", line):
                         self._live_call(old, "nudge")
                 if understood:  # never got to it: no record
-                    self._record(identity, understood[1], None)
+                    self._record(identity, understood[1], None, request or "")
                 self._sync_state()
                 return
             now = self._clock()
@@ -1520,7 +1537,7 @@ class Huddle:
                 ):  # an open that raised must still end its window
                     logger.error("huddle summon failed agent=%s", agent_id, exc_info=e)
             if understood:  # the voice never got to it: no record
-                self._record(identity, understood[1], None)
+                self._record(identity, understood[1], None, request or "")
             if opened is not True:
                 await self._close_voice()
                 await self._end_window()
@@ -1782,12 +1799,16 @@ class Huddle:
             return
         v.used = True
         speaker, asked = v.speaker, self._clock()
-        heard = await self._this_speech(v, speaker)
+        heard = await self._this_speech(v, speaker, pending_transcript)
         if self._floor_voice(agent_id) is not v:
             return  # another voice took the floor while it waited
-        if heard is None and (speaker in self._utter_from or not self._bindable(v)):
-            # understanding §4.6: no final came for this speech (one still being transcribed is newer than any
-            # driven run); its own transcript is understood, once
+        d = v.driven
+        recorded = d is not None and any(
+            r.run_id == d.run_id for recs in self._understood.values() for rec in recs for r in rec[0]
+        )
+        if heard is None and (recorded or not self._bindable(v, asked)):
+            # understanding §4.6: no understood speech matches it, and no driven run without a record (a named
+            # summons' whole line) can be it: its own transcript is understood, once
             mark = self._transcript.last_mark
             if mark >= 0 and self._requests.stopped(mark, agent_id):
                 return  # a stop said since covers it (§4.5): swallowed
@@ -1799,9 +1820,9 @@ class Huddle:
             if self._floor_voice(agent_id) is not v:
                 return
         d = v.driven
-        # a driven run is this speech's only when its understanding made it (else: no understanding, or a failed one)
-        own = heard is None or heard[1] is None or (d is not None and any(r.run_id == d.run_id for r in heard[0]))
-        if own and self._bindable(v):
+        # a driven run is this speech's when its understanding made it, or when it has no record of another speech
+        own = d is not None and any(r.run_id == d.run_id for r in heard[0]) if heard else False
+        if (own or ((heard is None or heard[1] is None) and not recorded)) and self._bindable(v, asked):
             # the new voice delegated the request we already started: bind, never a second POST (D §5)
             if d.posted:
                 self._bind_driven(v, d, delegation_id)
@@ -1810,7 +1831,7 @@ class Huddle:
             v.last_activity = self._clock()
             return
         if heard is not None and heard[1] is not None:
-            self._answer_delegation(v, delegation_id, *heard)  # never a run of its own (§4.6)
+            self._answer_delegation(v, delegation_id, heard[0], heard[1])  # never a run of its own (§4.6)
             return
         # A typed request (wake word) leaves GPT-Live's own audio transcript empty: fall back to the
         # speaker's own latest line, never whoever spoke last.
@@ -1852,25 +1873,40 @@ class Huddle:
             if old and self._voice is v:
                 self._live_call(v, "append_thinking", FOLDED, delegation_id=old)
 
-    def _bindable(self, v: _Voice) -> bool:
+    def _bindable(self, v: _Voice, at: float | None = None) -> bool:
+        """`at`: when the delegation came (default now); a wait for its speech does not run the bind window out."""
         d = v.driven
         run = self._runs.get(d.run_id) if d else None
         # a run that already ended was said with no delegation: nothing is left to bind
-        return bool(d and self._clock() <= d.bind_until and d.pending is None and not (run and run.ended))
+        at = self._clock() if at is None else at
+        return bool(d and at <= d.bind_until and d.pending is None and not (run and run.ended))
 
-    async def _this_speech(self, v: _Voice, speaker: str) -> tuple | None:
-        """The understanding of the speech a delegation carries (understanding §4.6): the speaker's /route call in
-        flight (/route's own timeout bounds it), else, while their speech is still being transcribed, the one
-        its final starts within DELEGATION_WAIT_S, else their latest speech's. None: there is none."""
+    def _matching(self, speaker: str, said: str) -> tuple | None:
+        """The speaker's understood speeches that are the delegation's (understanding §4.6), matched by text: their
+        rows in order and the newest one's ops. An empty transcript (a typed request) is the newest speech when it
+        was understood within BIND_SECONDS."""
+        recs = list(self._understood.get(speaker, ()))
+        if said.strip():
+            recs = [x for x in recs if _same_speech(said, x[2])]
+        else:
+            recs = [x for x in recs[-1:] if self._clock() - x[3] <= BIND_SECONDS]
+        if not recs:
+            return None
+        return [r for x in recs for r in x[0]], recs[-1][1]
+
+    async def _this_speech(self, v: _Voice, speaker: str, said: str) -> tuple | None:
+        """(rows, ops) of the speech a delegation carries (understanding §4.6): an understood speech matching its
+        text, else one a final or a /route call in flight (bounded by /route's own timeout) brings within
+        DELEGATION_WAIT_S. None: there is none."""
         deadline = self._clock() + DELEGATION_WAIT_S
         while True:
-            if (fut := self._understanding.get(speaker)) is not None:
-                await fut
+            if (heard := self._matching(speaker, said)) is not None:
+                return heard
+            if flying := self._understanding.get(speaker):
+                await flying[0]
                 continue
-            if speaker not in self._utter_from:
-                return self._understood.get(speaker)
             if self._clock() >= deadline or self._floor_voice(v.agent_id) is not v:
-                return None  # a newer speech's final never came: never the older speech's record
+                return None
             heard = self._final_heard.setdefault(speaker, asyncio.Event())
             waits = [asyncio.ensure_future(heard.wait()), asyncio.ensure_future(self._sleep(deadline - self._clock()))]
             try:

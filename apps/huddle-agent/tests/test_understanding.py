@@ -886,3 +886,155 @@ async def test_a_named_line_to_the_agent_holding_the_floor_for_another_speaker()
     backend.turns.clear()
     await say(h, "u1", CI)
     assert lives[0].calls[-1] == ("reply_to", CI) and h._requests.items == []
+
+
+# -- review round 2: a delegation is matched to its speech by text --
+
+
+async def test_two_delegations_with_no_final_and_an_interim_open_make_one_run():
+    h, room, backend, lives, clock, log = await floor_open()
+    h.on_interim_transcript("u1", "Prasiddha", "what are")
+    await h.on_delegation("forge", "deleg-1", PRS)
+    await settle(h)
+    clock.t += 1
+    await h.on_delegation("forge", "deleg-2", PRS)
+    await settle(h)
+    assert (
+        len(backend.routes) == 1
+        and len(h._requests.items) == 1
+        and len(backend.turns) == 1
+    )
+    assert h._runs.get(backend.turns[0]["runId"]).delegation_id == "deleg-1"
+    assert lives[0].calls[-1] == ("commentary", ACK, "deleg-2")
+
+
+async def test_a_late_final_that_adds_an_ask_is_understood():
+    h, room, backend, lives, clock, log = await floor_open()
+    await h.on_delegation("forge", "deleg-1", PRS)
+    await settle(h)
+    clock.t += 3
+    backend.route_extra = ops(
+        requests=[("forge", "the open PRs", "fit"), ("friday", "Aden's email", "fit")]
+    )
+    await say(h, "u1", "what are the open PRs and also check Aden's email")
+    assert len(backend.routes) == 2 and ("friday", "Aden's email") in [
+        (a, t) for a, t, _ in rows(h)
+    ]
+    # documents item 5: a backend that lists the delegated ask again makes it a second row (queued behind the first)
+    assert [s for a, t, s in rows(h) if t == "the open PRs"] == ["working", "queued"]
+
+
+async def test_a_delegation_before_a_final_with_no_interim_never_binds_the_older_line():
+    h, room, backend, lives, clock, log = await floor_open()
+    await say(h, "u1", PRS)  # never delegated
+    clock.t += 5
+    h._sleep = forever
+    deleg = asyncio.create_task(h.on_delegation("forge", "deleg-2", "and what shipped"))
+    for _ in range(3):
+        await asyncio.sleep(0)
+    assert not deleg.done()
+    backend.route_extra = ops(requests=[("forge", "what shipped", "fit")])
+    await say(h, "u1", "and what shipped")
+    await deleg
+    await settle(h)
+    assert (
+        len(backend.turns) == 1
+        and h._runs.get(backend.turns[0]["runId"]).delegation_id is None
+    )
+    note = '"what shipped" is next in line for you. Say so in a few words.'
+    assert lives[0].calls[-1] == ("commentary", note, "deleg-2")
+    # no line-2 final at all: after the wait, its own transcript makes its row
+    h, room, backend, lives, clock, log = await floor_open()
+    await say(h, "u1", PRS)
+    clock.t += 5
+    backend.route_extra = ops(requests=[("forge", "what shipped", "fit")])
+    await h.on_delegation("forge", "deleg-2", "and what shipped")
+    await settle(h)
+    assert [r[1] for r in backend.routes] == [PRS, "and what shipped"]
+    assert [s for _, _, s in rows(h)] == ["working", "queued"]
+    assert h._runs.get(backend.turns[0]["runId"]).delegation_id is None
+    assert lives[0].calls[-1] == ("commentary", note, "deleg-2")
+
+
+async def test_a_delegation_of_an_older_speech_while_a_newer_one_is_said_runs_nothing_twice():
+    # N2
+    h, room, backend, lives, clock, log = await floor_open()
+    await say(h, "u1", PRS)
+    h.on_interim_transcript("u1", "Prasiddha", "and what")
+    await h.on_delegation("forge", "deleg-1", PRS)
+    await settle(h)
+    clock.t += 3
+    backend.route_extra = ops(requests=[("forge", "what shipped", "fit")])
+    await say(h, "u1", "and what shipped")
+    assert [r[1] for r in backend.routes] == [PRS, "and what shipped"] and len(
+        backend.turns
+    ) == 1
+    assert [(t, s) for _, t, s in rows(h)] == [
+        ("the open PRs", "working"),
+        ("what shipped", "queued"),
+    ]
+    assert h._runs.get(backend.turns[0]["runId"]).delegation_id == "deleg-1"
+
+
+async def test_an_older_route_finishing_last_does_not_hide_the_newer_line():
+    # N3
+    h, room, backend, lives, clock, log = await floor_open()
+    older = backend.route_gate = asyncio.Event()
+    await h.on_final_transcript("u1", "Prasiddha", PRS)
+    await asyncio.sleep(0)
+    backend.route_gate = None
+    backend.route_extra = ops(requests=[("forge", "what shipped", "fit")])
+    await h.on_final_transcript("u1", "Prasiddha", "and what shipped")
+    await asyncio.sleep(0)
+    older.set()
+    await settle(h)
+    assert [(t, s) for _, t, s in rows(h)] == [
+        ("what shipped", "working"),
+        ("the open PRs", "queued"),
+    ]
+    await h.on_delegation("forge", "deleg-2", "and what shipped")
+    await h.on_delegation("forge", "deleg-1", PRS)
+    await settle(h)
+    assert (
+        len(backend.turns) == 1
+        and h._runs.get(backend.turns[0]["runId"]).delegation_id == "deleg-2"
+    )
+    note = '"the open PRs" is next in line for you. Say so in a few words.'
+    assert lives[0].calls[-1] == ("commentary", note, "deleg-1")
+
+
+async def test_a_named_summons_delegation_binds_its_own_run_not_the_old_voices_record():
+    # N1
+    for with_ops in (True, False):
+        h, room, backend, lives, clock, log = await floor_open()
+        await say(h, "u1", PRS)
+        backend.route_extra = (
+            ops(requests=[("friday", "summarize my rooms", "name")]) if with_ops else {}
+        )
+        await say(h, "u1", "Friday, summarize my rooms")
+        assert h._voice.agent_id == "friday"
+        run_id = h._voice.driven.run_id
+        await h.on_delegation("friday", "deleg-f", "Friday, summarize my rooms")
+        await settle(h)
+        assert h._runs.get(run_id).delegation_id == "deleg-f", with_ops
+        assert not [c for c in lives[-1].calls if c[0] == "commentary"]
+
+
+async def test_a_participant_who_leaves_takes_their_records():
+    h, room, backend, lives, clock, log = await floor_open()
+    await h.on_delegation("forge", "deleg-1", PRS)
+    await settle(h)
+    assert h._understood.get("u1") and "u1" in h._unbound
+    await h.on_participants({"u2": "Aden"})
+    assert (
+        "u1" not in h._understood
+        and "u1" not in h._unbound
+        and "u1" not in h._final_heard
+    )
+
+
+async def test_a_named_line_after_the_wake_word_reaches_route_without_it():
+    h, room, backend, lives, clock, log = await three()
+    backend.route_extra = {}
+    await say(h, "u1", "Lightbulb, Forge, check CI")
+    assert backend.routes[-1][1] == "Forge, check CI" and backend.route_humans[-1] == 2

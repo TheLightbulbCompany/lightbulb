@@ -82,7 +82,7 @@ async def test_a_line_that_is_not_a_question_wakes_nobody():
 async def test_a_named_agent_still_answers_at_once():
     h, room, backend, lives, clock, log = await meeting()
     await hear(h, "hey Forge what did we ship")
-    assert backend.routes == [] and backend.sessions == ["forge"]
+    assert len(backend.routes) == 1 and backend.sessions == ["forge"]  # understood beside its voice (§4.6)
     assert lives[0].speaker == MEET
 
 

@@ -19,9 +19,11 @@ State:
 from __future__ import annotations
 
 import asyncio
+import collections
 import json
 import logging
 import math
+import re
 import sys
 import time
 import uuid
@@ -31,7 +33,7 @@ from typing import Any, Awaitable, Callable, Protocol
 from huddle_agent import gate
 from huddle_agent.backend import BackendError
 from huddle_agent.frames import Run, Runs
-from huddle_agent.request_list import Request, RequestList, ack_line
+from huddle_agent.request_list import ENDED, LINE_CHARS, OPEN, Request, RequestList, ack_line
 from huddle_agent.transcript import (
     Transcript,
     address,
@@ -42,6 +44,7 @@ from huddle_agent.transcript import (
     no_post_command,
     pause,
     real_speech,
+    soundex,
     stop_all,
     stop_request,
     stop_target,
@@ -85,11 +88,22 @@ HOLDING_LINE = (
 )
 STILL_WAKING = "Your backend is still waking up; say briefly that you're on it and it'll take a moment."
 CANT_REACH = "Sorry, I couldn't reach my backend for that."
+FAILED_POST = "I could not finish this on the call. Ask me again here."  # understanding §4.8: a failure nobody heard
+NOT_STARTED_POST = "I did not get to this on the call. Ask me again here."  # §4.5: still queued when the call ended
+LATE_REQUEST_CHARS = 2_000  # LateAnswerBody.request max (backend huddles.py)
 REQUEST_QUIET_S = 1  # engine §3.5: a requested answer waits for no human speech this long (no rate limit)
 DELIVERY_TRIES = 3  # a requested answer whose voice failed to open this often goes to the room
 ASKER_GONE_S = 60  # engine §3.5: its asker left and no pause came this long: the room gets it
 # ponytail: inferred (D §5); a delegation the new voice makes this soon after opening is the driven request
 BIND_SECONDS = 10
+# understanding §4.6: a delegation waits this long for the final of a speech still being transcribed
+DELEGATION_WAIT_S = 2.0
+SAME_SPEECH = 0.6  # this share of one transcript's content words in another's: the same speech (§4.6)
+RECORDS_KEPT = 4  # understood speeches kept per speaker for delegations to match
+ALREADY_SAID = "You already gave that answer. Do not repeat it."
+IN_HAND = "That is already in hand. Wait for the result."
+UNFINISHED = 'They have not finished the sentence. Say "go on" at most, then wait.'  # §4.4: its line is held
+CHANGED = "That change is made. Say so in a few words."  # a correction or a call-off, already applied (§4.4)
 HANDOFF_SECONDS = (
     8  # the floor-holder asked someone by name: they may answer without naming it
 )
@@ -107,6 +121,9 @@ PRESENCE_TIMEOUT = (
 )
 # ponytail: inferred; an unfinished line (/route "hold") merges with the same speaker's next final this soon
 HOLD_SECONDS = 15
+HOLD_APPLY_S = 4.0  # understanding §4.4: a held line its speaker said nothing more after is applied as it is
+ACK_QUIET_S = 1.0  # understanding §4.6: the open voice says who is on what once its speaker is this quiet
+SAID_ORDER_WAIT_S = 10.0  # a line waits this long at most for its speaker's earlier line to be applied
 MISSED_SECONDS = 10  # live.route.missed: nobody answered, then the same person names an agent or Lightbulb
 UNWANTED_SECONDS = 5  # live.route.unwanted: a Jev-routed voice the asker stops or switches away from this soon
 LATE_LINES = "Said in the room since you were asked (may or may not concern you):\n"
@@ -128,6 +145,39 @@ FINAL_TRANSCRIPT_BUDGET_S = 45
 # TranscriptBody.lines max (backend huddles.py): a rolling flush, and a meeting's one final request
 TRANSCRIPT_CHUNK = 500
 TRANSCRIPT_FINAL_MAX = 5_000
+
+
+# understanding §4.6: words two different asks share ("what are the open PRs" / "what are the open issues")
+FUNCTION_WORDS = frozenset(
+    "a an the and or but so then also of to in on at for from with about by as is are was were be been am do does "
+    "did have has had can could would will should may might i you we they he she it me my our your us them this "
+    "that these those there here what what's whats when where who which why how if whether yes ok okay um "
+    "uh like just please hey hi any some all up out now".split()
+)
+
+
+def _words(text: str) -> tuple[set[str], list[str]]:
+    """(content words, all words): lowercase, letters and digits, an apostrophe joins its word."""
+    words = re.findall(r"[^\W_]+", text.lower().replace("'", "").replace("\u2019", ""))
+    return {w for w in words if w not in FUNCTION_WORDS}, words
+
+
+def _words_in(a: str, b: str, share: float = SAME_SPEECH) -> bool:
+    """Most of `a`'s content words are in `b` (understanding §4.6); a word the other transcriber misheard counts
+    when it sounds the same ("peers" for "PRs"). `share` 1: every one, spelled the same, for a match that makes
+    the worker do nothing ("the closed PRs" is not "the open PRs"). With none, only the very same words match."""
+    (ca, fa), (cb, fb) = _words(a), _words(b)
+    if not ca:
+        return bool(fa) and not cb and fa == fb
+    sounds = {soundex(w) for w in cb if len(w) > 2 and w.isascii()} - {""} if share < 1 else ()
+    return sum(w in cb or len(w) > 2 and w.isascii() and soundex(w) in sounds for w in ca) / len(ca) >= share
+
+
+def _same_speech(said: str, record: str) -> bool:
+    """A delegation's transcript and an understood speech's text are one speech: the delegation may be cut short
+    of its final, or cover more than one final. A record of fewer than 2 content words is never the part
+    contained ("and what" is in every question)."""
+    return _words_in(said, record) or (len(_words(record)[0]) >= 2 and _words_in(record, said))
 
 
 def _retryable(e: BackendError) -> bool:
@@ -243,6 +293,7 @@ class _Voice:
         None  # the news item it opened to announce, until its audio starts
     )
     announcing: bool = False  # a proactive announcement's audio is playing
+    told: list = field(default_factory=list)  # the news its announcement says: posted if a person cuts it (§4.8)
     wake_dims: dict[str, str] | None = (
         None  # live.wake.fired's dimensions, for a voice a name woke
     )
@@ -254,6 +305,8 @@ class _Voice:
         None  # live.latency.*: when the waking line was heard; None once first_audio is out
     )
     list_version: int = 0  # the request list version this voice last heard
+    # understanding §4.6: rows its speaker's lines made, acknowledged once they are quiet (tick)
+    ack_rows: list = field(default_factory=list)
 
 
 class Huddle:
@@ -312,6 +365,9 @@ class Huddle:
         self._runs = Runs(self, clock)
         # agent -> [(run_id, request, answer, at, speaker)]
         self._news: dict[str, list[tuple[str, str, str, float, str | None]]] = {}
+        # understanding §4.8: agent -> (news a person cut off mid-announcement, who cut it, when); posted once their
+        # words are handled, dropped by a "don't post that" or a stop said over it
+        self._cut_off: dict[str, tuple[list, str, float]] = {}
         self._rate = gate.RateLimit()
         # run id -> (attempts, last at): a requested delivery whose voice did not open (engine §3.5)
         self._delivery_tries: dict[str, tuple[int, float]] = {}
@@ -323,12 +379,12 @@ class Huddle:
         self._queue: list[
             tuple[str, str, str]
         ] = []  # (agent_id, speaker, request) still to answer
-        self._held: dict[
-            str, tuple[str, float]
-        ] = {}  # identity -> (line, at): unfinished, /route said hold
+        # identity -> (line, at, mark, its /route answer, _route's arguments): unfinished, /route said hold
+        self._held: dict[str, tuple[str, float, int, dict, dict]] = {}
         self._final_mark: dict[
             str, int
         ] = {}  # identity -> mark of their latest final: a hold older than it is stale
+        self._final_at: dict[str, float] = {}  # identity -> when their latest final was heard
         self._spoke: dict[
             str, int
         ] = {}  # identity -> the mark of their latest real-speech final
@@ -371,15 +427,25 @@ class Huddle:
         self._flush_lock = (
             asyncio.Lock()
         )  # shutdown waits for a batch in flight, then sends the rest
-        self._requests = RequestList()  # conversation engine §3.4: this call's asks, memory only
+        self._requests = RequestList(self._row_changed)  # conversation engine §3.4: this call's asks, memory only
         self._window_lock = asyncio.Lock()  # one /summon however many requests start at once
         self._marking: set[asyncio.Task] = set()  # "don't post that" marks in flight
         self._closing = False  # the worker is leaving: no new window
+        # understanding §4.6: identity -> their /route calls in flight, and their last understood speeches,
+        # (rows, ops or None when /route failed or answered without ops, text, at), newest last. A delegation is
+        # matched to these by its text, and binds or is answered instead of posting a run.
+        self._understanding: dict[str, list[asyncio.Future]] = {}
+        self._understood: dict[str, collections.deque] = {}
+        self._final_heard: dict[str, asyncio.Event] = {}  # identity -> set by their next final
+        # identity -> (when, transcript) of a delegation whose own transcript was understood (no final yet)
+        self._unbound: dict[str, tuple[float, str]] = {}
+        self._routing: dict[str, list[asyncio.Future]] = {}  # identity -> their lines at /route, in said order
 
-    def _spawn(self, coro) -> None:
+    def _spawn(self, coro) -> asyncio.Task:
         t = asyncio.create_task(coro)
         self._tasks.add(t)
         t.add_done_callback(self._done)
+        return t
 
     def _done(self, t: asyncio.Task) -> None:
         self._tasks.discard(t)
@@ -488,6 +554,9 @@ class Huddle:
             self._last_heard = (
                 self._clock()
             )  # someone just arrived: the room isn't idle
+        for gone in set(self._people) - set(people):  # their speeches can no longer be delegated (§4.6)
+            for d in (self._understood, self._unbound, self._final_heard, self._held, self._final_at):
+                d.pop(gone, None)
         self._people = dict(people)
         if people:
             self._seen_human = True
@@ -616,10 +685,22 @@ class Huddle:
         await (
             self._flush_transcript()
         )  # last chance for what was said since the previous batch
-        for agent_id, news in list(self._news.items()):
-            for n in news:
-                await self._late_answer(agent_id, n)  # unheard here: the room gets it
+        held = [(a, n) for a, (items, _, _) in self._cut_off.items() for n in items]  # cut off mid-announcement
+        self._cut_off.clear()
+        if (v := self._voice) and v.told:  # being said as the call ends: not said to its end (§4.5)
+            held += [(v.agent_id, n) for n in v.told]
+            v.told = []
+        for agent_id, n in held + [(a, n) for a, news in self._news.items() for n in news]:
+            await self._late_answer(agent_id, n)  # unheard here: the room gets it
         self._news.clear()
+        for r in [r for r in self._requests.open() if r.routed and r.status == "queued"]:
+            # understanding §4.5: its agent never got to it; no run will post it, so the room gets one line
+            r.run_id = str(uuid.uuid4())
+            self._requests.fail(r)  # never done: the post is no delivery
+            await self._late_answer(r.agent, (r.run_id, r.task, NOT_STARTED_POST, self._clock(), r.asker))
+        open_rows = [r for r in self._requests.open() if r.routed]
+        emit_metric("live.request.open_at_end", len(open_rows), "Count")  # understanding §5.3: 0
+        await self._flush_transcript()  # the row changes the sweep made
         if self._people and not self._idle_ended:
             return
         try:
@@ -634,6 +715,8 @@ class Huddle:
             emit_metric("live.stt.ghost_dropped", 1, "Count")
             text = ""
         began = self._utter_from.pop(identity, None)
+        if heard := self._final_heard.pop(identity, None):
+            heard.set()  # a delegation waiting for this final looks again (understanding §4.6)
         cut = self._cut_by.pop(identity, None)
         v = self._voice
         if not text:
@@ -660,6 +743,7 @@ class Huddle:
         else:
             mark = self._transcript.add_person(identity, name, text, at=now)
         self._final_mark[identity] = mark
+        self._final_at[identity] = now
         self._last_speaker = identity
         self._last_heard = now
         if real_speech(text) and not (
@@ -670,7 +754,7 @@ class Huddle:
             # Engine §3.6: "everyone stop" / "stop all": every open request and every run, the floor cut.
             if v:
                 self._unwanted(v, identity)
-            self._stop_all()
+            self._stop_all(mark)
             return
         no_post, target = no_post_command(text, self._team["agents"])
         if no_post:
@@ -685,12 +769,12 @@ class Huddle:
             if target:
                 if v and target == v.agent_id:
                     self._unwanted(v, identity)
-                self._stop(target)
+                self._stop(target, mark)
                 return
         held = self._held.pop(identity, None)
-        if (
-            held and now - held[1] <= HOLD_SECONDS
-        ):  # the rest of an unfinished line: the whole of it is the request
+        if held and now - held[1] <= HOLD_SECONDS and not _words_in(held[0], text, 1):
+            # the rest of an unfinished line: the whole of it is the request. A final that already holds the
+            # held words is the whole line (a delegation's transcript was held before its own final came).
             text = f"{held[0]} {text}"
         self._last_line[identity] = text
         a = address(text, self._team["agents"], self._team["people"])
@@ -720,17 +804,13 @@ class Huddle:
             self._requests.pending(mark, identity, named, now)
             self._sync_state()
             emit_metric("live.ack.strip_ms", round((self._clock() - now) * 1000), "Milliseconds")
-            self._spawn(
-                self._route_and_summon(
-                    identity,
-                    text,
-                    mark,
-                    humans=None if a.lightbulb else len(self._people),
-                    heard=(name, a, v, cut),
-                )
-            )
+            kw = {"humans": None if a.lightbulb else len(self._people), "heard": (name, a, v, cut)}
+            if v and identity == v.speaker:
+                self._understand_floor(identity, text, mark, **kw)  # its voice may delegate it (§4.6)
+            else:
+                self._spawn(self._route_and_summon(identity, text, mark, **kw))
             return
-        self._dispatch(identity, name, text, mark, a, v, cut, barge)
+        self._dispatch(identity, name, text, mark, a, v, cut, barge, began=began)
 
     def _named(self, text: str, a: Any) -> list[str]:
         """Every agent a line names for the split: wake names, exact mentions, and role names that open a clause."""
@@ -748,9 +828,11 @@ class Huddle:
         barge: bool,
         heard_at: float | None = None,
         routed: dict | None = None,
+        began: float | None = None,
     ) -> None:
         """Today's handling of an addressed line: a name summons, a barge re-points, the rest routes.
-        `heard_at`/`routed`: set after a multi-name line's /route round trip (its start, and its answer)."""
+        `heard_at`/`routed`: set after a multi-name line's /route round trip (its start, and its answer).
+        `began`: when the line's utterance began (on_final_transcript)."""
         now = self._clock()
         rk = {} if routed is None else {"routed": routed}
         if a.agent_ids and self._requests.stopped(mark, a.agent_ids[0]):
@@ -761,19 +843,28 @@ class Huddle:
             if v:
                 self._unwanted(v, identity)
             dims = self._wake_fired(identity, a.agent_ids[0], a.matches[a.agent_ids[0]])
-            # a task: awaiting here would stall this person's STT loop for the whole summon
-            self._spawn(
-                self.summon(
-                    identity,
-                    a.agent_ids[0],
-                    request=text,
-                    mark=mark,
-                    path="name",
-                    then=a.agent_ids[1:],
-                    wake_dims=dims,
-                    heard_at=heard_at,
+            # understanding §4.6: the line is understood while its voice opens (a fallback line was already asked)
+            understood = None
+            if heard_at is None:
+                fut = self._in_flight(identity)
+                # the wake word stripped, as for any Lightbulb line (B4 report)
+                route = self._understand(
+                    identity, strip_wake(text), humans=len(self._people), quiet=True, path="name", until=fut
                 )
+                understood = (self._spawn(route), fut)
+            summon = self.summon(
+                identity,
+                a.agent_ids[0],
+                request=text,
+                mark=mark,
+                path="name",
+                then=a.agent_ids[1:],
+                wake_dims=dims,
+                heard_at=heard_at,
+                understood=understood,
             )
+            # a task: awaiting here would stall this person's STT loop for the whole summon
+            self._spawn(self._named_summon(identity, text, mark, summon, understood) if understood else summon)
             return
         if (
             len(a.agent_ids) > 1
@@ -787,11 +878,11 @@ class Huddle:
         if (
             barge and cut == v.agent_id and not a.lightbulb
         ):  # a bare Lightbulb takes the floor below
-            self._barged(v, identity, name, text)
+            self._barged(v, identity, name, text, mark)
             return
         if v and identity != v.speaker and a.lightbulb:
             # a bare Lightbulb while a voice is open: this person takes that floor, their line is the request
-            self._spawn(self.summon(identity, v.agent_id, request=text, mark=mark))
+            self._spawn(self._repoint_and_understand(identity, v.agent_id, text, mark))
             return
         if a.lightbulb and v is None:
             self._spawn(self._route_and_summon(identity, text, mark, **rk))
@@ -822,11 +913,12 @@ class Huddle:
                 self._route_and_summon(identity, text, mark, humans=len(self._people), **rk)
             )
             return
-        if (
+        switch = bool(
             identity == v.speaker
             and v.live is not None
             and [x for x in a.anywhere if x != v.agent_id]
-        ):
+        )
+        if switch:
             # "Cool, and Friday, what about you?" while Forge holds the floor (10-02: it went to Forge).
             # The backend's addressing stage decides addressed vs mentioned; addressed switches the floor.
             self._spawn(
@@ -838,6 +930,13 @@ class Huddle:
             v.last_activity = self._clock()
             v.used = True
             v.handoff = None  # the person the agent asked answered: they keep the floor
+            u = self._unbound.pop(identity, None)
+            # its delegation came first and was understood from its own transcript: transcript only (§4.6). A final
+            # that adds an ask has words of its own and is understood.
+            late = u is not None and self._clock() - u[0] <= HOLD_SECONDS and _words_in(text, u[1], 1)
+            if routed is None and not switch and not late and real_speech(text) and not pause(text):
+                # understanding §4.1: the worker's own STT final is the request, not the voice's delegation
+                self._understand_floor(identity, text, mark, humans=len(self._people), floor_line=True)
         elif v.handoff and real_speech(
             text
         ):  # someone else spoke first: back to who had the floor
@@ -926,7 +1025,7 @@ class Huddle:
             emit_metric("live.bargein.cut", 1, "Count")
         self._sync_state()
 
-    def _barged(self, v: _Voice, identity: str, name: str, text: str) -> None:
+    def _barged(self, v: _Voice, identity: str, name: str, text: str, mark: int) -> None:
         """The final line of someone who cut the floor-holder off and named no agent."""
         if not real_speech(
             text
@@ -942,31 +1041,422 @@ class Huddle:
         ):  # "hold on": they have the floor, there is nothing to answer yet
             self._live_call(v, "append_thinking", f'{name} cut in: "{text}"')
             return
-        # D §5: their line is the request, started by us like a summon's, never typed in as a user turn
-        if self._drive_request(v, text, f'{name} cut in: "{text}"'):
+        # understanding §4.6: understood like the floor speaker's line, never typed in as a user turn
+        heard = self._understand_floor(identity, text, mark, humans=len(self._people), floor_line=True)
+
+        async def whole() -> None:
+            rec = await heard
+            if rec is not None and rec[1] is not None:
+                self._heard(v, identity, text, rec[0])
+            # /route down: D §5, their whole line is the request, started by us like a summon's
+            elif rec is not None and self._floor_voice(v.agent_id) is v:
+                if self._drive_request(v, text, f'{name} cut in: "{text}"'):
+                    self._live_call(v, "nudge")
+
+        self._spawn(whole())
+
+    async def _repoint_and_understand(self, identity: str, agent_id: str, text: str, mark: int) -> None:
+        """A bare Lightbulb onto the open voice: the floor first, then the line is understood (§4.6)."""
+        await self.summon(identity, agent_id, request=None, mark=mark)
+        rec = await self._understand_floor(identity, text, mark, floor_line=True)
+        if rec is not None and rec[1] is not None:
+            self._heard(self._floor_voice(agent_id), identity, text, rec[0])
+        elif rec is not None and (v := self._floor_voice(agent_id)) and v.speaker == identity:
+            self._live_call(v, "reply_to", text)  # /route down: today's typed user turn
+
+    def _heard(self, v: _Voice | None, identity: str, text: str, rows: list[Request]) -> None:
+        """The voice was pinned away while `identity` said `text`: it hears what came of it (understanding §4.6)."""
+        if v is None or self._voice is not v or v.speaker != identity:
+            return
+        v.ack_rows = [r for r in v.ack_rows if r not in rows]  # acknowledged here, not again in tick()
+        if not rows:  # small talk: the voice answers it itself
+            self._live_call(v, "reply_to", text)
+        elif (line := self._ack(rows, v.agent_id, said=True)) and self._live_call(v, "append_thinking", line):
             self._live_call(v, "nudge")
 
-    def _drive_request(self, v: _Voice, text: str, said: str) -> bool:
-        """Start `text` as the floor-holder's driven run; its own delegation of it binds instead of posting."""
+    def _drive_request(self, v: _Voice, text: str, said: str, row: Request | None = None) -> bool:
+        """Start `text` as the floor-holder's driven run; its own delegation of it binds instead of posting.
+        `row`: the request row it answers, started and bound before /turns is posted (understanding §4.6)."""
         v.driven = d = _Driven(
             str(uuid.uuid4()), bind_until=self._clock() + BIND_SECONDS
         )
         v.driven_run = d.run_id
-        self._spawn(self._drive(v, d, text))
+        if row is not None:
+            self._requests.start(row)
+            self._requests.bind(row, d.run_id)
+        self._spawn(self._drive(v, d, text, row))
         return self._live_call(
             v,
             "append_thinking",
             f"{said} — already handed to your backend self; don't delegate it again",
         )
 
-    async def _route_and_summon(self, identity: str, text: str, mark: int, **kw) -> None:
-        """Route the line (`_route`). A multi-name line's strip rows that did not become requests are
-        dropped however the routing ends (hold, nobody, error, superseded)."""
+    async def _route_and_summon(self, identity: str, text: str, mark: int, **kw) -> tuple | None:
+        """Route the line (`_route`, whose result it returns). A multi-name line's strip rows that did not become
+        requests are dropped however the routing ends (hold, nobody, error, superseded)."""
         try:
-            await self._route(identity, text, mark, **kw)
+            return await self._route(identity, text, mark, **kw)
         finally:
             if self._requests.drop_pending(mark):
                 self._sync_state()
+
+    def _understand_floor(self, identity: str, text: str, mark: int, **kw) -> asyncio.Future:
+        """Understand a floor-speaker line now (understanding §4.6). The future, in flight from this call on,
+        is the speech's understanding (`_route`'s result); it replaces the last speech's for any delegation."""
+        fut = self._in_flight(identity)
+
+        async def run() -> None:
+            rec = None
+            try:
+                rec = await self._route_and_summon(identity, text, mark, **kw)
+            finally:
+                self._record(identity, fut, rec, text)
+
+        self._spawn(run())
+        return fut
+
+    def _in_flight(self, identity: str) -> asyncio.Future:
+        """A speech of `identity` is being understood (§4.6): `_record` resolves it."""
+        fut = asyncio.get_running_loop().create_future()
+        self._understanding.setdefault(identity, []).append(fut)
+        return fut
+
+    def _record(self, identity: str, fut: asyncio.Future, rec: tuple | None, text: str) -> None:
+        """A speech's understanding is known: `fut` resolves to the speaker's record of `text`, appended in arrival
+        order (rec (rows, ops); None: a hold, or nothing was understood) (§4.6)."""
+        if fut.done():
+            return
+        if rec is not None:
+            rec = (*rec, text, self._clock())
+            self._understood.setdefault(identity, collections.deque(maxlen=RECORDS_KEPT)).append(rec)
+        fut.set_result(rec)
+        flying = self._understanding.get(identity, [])
+        if fut in flying:
+            flying.remove(fut)
+
+    def _small_talk(self, identity: str, text: str, more: bool) -> str:
+        """The seed line of a line that asked nothing (understanding §4.6)."""
+        if more:
+            return (
+                f'{self._name(identity)} will list several requests. Say "go ahead" at most, then stay quiet '
+                "until they finish."
+            )
+        return f'{self._name(identity)} said: "{text}". Small talk: reply yourself in one short sentence. Do not delegate it.'
+
+    def _named_line(
+        self, identity: str, agent_id: str, text: str, mark: int, r: Any, fut: asyncio.Future, voice: bool = True
+    ) -> tuple[Request | None, list[Request] | None, str | None] | None:
+        """A named line's /route answer `r`, under the floor lock (understanding §4.6). None: no `ops`, today's
+        whole-line run. Else (the row its voice drives, already started; the rows to acknowledge; a seed line).
+        `voice` False: no voice will drive a row; every row starts voicelessly."""
+        o = r.get("ops") if isinstance(r, dict) else None
+        if o is None:
+            self._record(identity, fut, None, text)
+            return None
+        rows = self._apply(identity, mark, o)  # `hold` ignored: the person named the agent
+        mine = [x for x in rows if x.agent == agent_id]
+        first = mine[0] if voice and mine and mine[0] in self._startable() else None
+        if first is not None:
+            self._requests.start(first)  # its voice drives it; _start_queued must not post it too
+        self._start_queued()
+        self._record(identity, fut, (rows, o), text)
+        ack = rows if len(rows) >= 2 or (rows and first is None) else None
+        said = None
+        if not o.get("requests"):  # asked nothing (rows dropped by a stop say nothing)
+            said = (
+                self._small_talk(identity, text, bool(o.get("more")))
+                if o.get("social") or o.get("more")
+                else f'{self._name(identity)} said: "{text}"'
+            )
+        return first, ack, said
+
+    async def _named_summon(self, identity: str, text: str, mark: int, summon, understood: tuple) -> None:
+        """A named line's summon (understanding §4.6). A re-point applies what the line asked once /route answers,
+        the floor lock not held while it waits. The speech's future resolves however this ends."""
+        try:
+            if (v := await summon) is None:
+                return
+            r = (await asyncio.gather(understood[0], return_exceptions=True))[0]
+            async with self._lock:
+                here = self._voice is v and v.speaker == identity and v.live is not None
+                took = self._named_line(identity, v.agent_id, text, mark, r, understood[1], voice=here)
+                if not here:
+                    return  # the floor moved meanwhile: the rows still run, without the voice
+                if took is None:  # no ops: today's typed line, unless a stop covers it
+                    if not (self._requests.stopped(mark) or self._requests.stopped(mark, v.agent_id)):
+                        self._live_call(v, "reply_to", text)
+                    return
+                first, ack, said = took
+                if first is not None:
+                    task = first.task or text
+                    self._drive_request(v, task, f'{self._name(identity)} asked: "{task}"', row=first)
+                if line := self._ack(ack, v.agent_id, said=True):
+                    self._live_call(v, "append_thinking", line)
+                if said:
+                    self._live_call(v, "append_thinking", said)
+                if first is not None or line or said:
+                    self._live_call(v, "nudge")
+        finally:
+            self._record(identity, understood[1], None, text)  # nothing understood: resolved all the same
+
+    def _startable(self) -> list[Request]:
+        """The rows that may start now, less the floor agent's while its voice's driven run has no row and still
+        runs: one run per agent at a time, and that driven run is never overwritten (understanding §4.5)."""
+        v = self._voice
+        busy = (
+            v.agent_id
+            if v and not self._requests.by_run(v.driven_run)
+            and any(x.run_id == v.driven_run for x in self._runs.running(v.agent_id))
+            else None
+        )
+        return [r for r in self._requests.startable() if r.agent != busy]
+
+    @staticmethod
+    def _outcome(r: dict) -> str:
+        return "hold" if r.get("hold") else "agent" if r.get("agentIds") or r.get("agentId") else "none"
+
+    async def _understand(self, identity: str, *args, until: asyncio.Future | None = None, **kw) -> dict | None:
+        """`_route_call`, answered in the order the speaker's lines were said, whichever call finished first:
+        each caller applies its answer before it next waits, so one speaker's requests start in said order
+        ("draft the email", then "send it"). `until`: the caller applies it later (a named line, once its voice
+        has opened): the lines after it wait for that future. No line waits longer than SAID_ORDER_WAIT_S."""
+        mine = asyncio.get_running_loop().create_future()
+        lines = self._routing.setdefault(identity, [])
+        ahead = list(lines)
+        lines.append(mine)
+
+        def applied(_=None) -> None:
+            if not mine.done():
+                mine.set_result(None)
+            if mine in lines:
+                lines.remove(mine)
+
+        try:
+            r = await self._route_call(identity, *args, **kw)
+            if ahead:
+                _, stuck = await asyncio.wait(ahead, timeout=SAID_ORDER_WAIT_S)
+                for f in stuck:  # never applied: the lines after it stop waiting for it
+                    if f in lines:
+                        lines.remove(f)
+            return r
+        finally:
+            if until is None or until.done():
+                applied()
+            else:
+                until.add_done_callback(applied)
+
+    async def _route_call(
+        self,
+        identity: str,
+        text: str,
+        humans: int | None,
+        unclaimed: bool = False,
+        quiet: bool = False,
+        path: str = "jev",
+    ) -> dict | None:
+        """The line's /route call alone (understanding §4.4): who answers and, from a current backend, `ops`.
+        None when it failed; a line spoken to the agents says so, unless `quiet` (its caller has a fallback)."""
+        heard_at, outcome, v = self._clock(), "error", self._voice
+        try:
+            r = await self._backend.route(
+                self._said_by.get(identity, identity),
+                (text if humans is not None else strip_wake(text))[:MAX_UTTERANCE],
+                self._transcript.text()[-MAX_TRANSCRIPT:],
+                humans,
+                # `mine`: the speaker is already talking with the floor agent; their asks need no name (§4.4)
+                floor={"agent": v.agent_id, "speaker": self._name(v.speaker), "mine": identity == v.speaker}
+                if v
+                else None,
+                voice_runs=(
+                    [{"agent": x.agent_id, "request": x.request[:200]} for x in self._runs.running()]
+                    + [{"agent": r.agent, "request": r.task[:200]} for r in self._requests.queued() if r.routed]
+                )[-16:],
+                at=self._transcript.times(ROUTE_LINES),
+                setting=self.setting,
+                unclaimed=unclaimed,
+                open=self._requests.for_route(),
+            )
+            outcome = self._outcome(r)
+            return r
+        except BackendError as e:
+            # spoken to the agents: say it failed (an unclaimed question asked nobody)
+            if not quiet and not unclaimed and (humans is None or humans <= 1):
+                self._room.publish(ERROR_TOPIC, {"code": e.code, "reason": e.reason}, [identity])
+            return None
+        finally:
+            ms = round((self._clock() - heard_at) * 1000)
+            emit_metric("live.latency.jev", ms, "Milliseconds", {"path": path, "outcome": outcome})
+
+    def _apply(self, identity: str, mark: int, ops: dict, later: bool = False, heard: dict | None = None) -> list[Request]:
+        """`ops` onto the request list (understanding §4.4, §4.5): earlier rows cancelled and steered first, then
+        one row per request. A steer of a row nobody has, while a voice is open, is a new ask of the floor agent.
+        `later`: someone else spoke since; a steer that would become a new ask is dropped like an unnamed request."""
+        v, extra = self._voice, []
+        for rid in ops.get("cancel") or []:
+            if (r := self._requests.get(str(rid))) is not None and r.status in OPEN:
+                self._cancel(r)
+        for s in ops.get("steer") or []:
+            text, r = str(s.get("text") or "").strip(), self._requests.get(str(s.get("requestId") or ""))
+            if not text or (r is not None and r.status == "cancelled"):
+                continue
+            # a working row whose run is not bound yet will run its task as it is then (review B5-7)
+            if r is not None and (r.status == "queued" or r.status == "working" and r.run_id is None):
+                said = f'Added to "{r.task}": {text}'
+                self._requests.amend(r, text)
+                emit_metric("live.request.steered", 1, "Count", {"how": "queued"})
+                if v is not None and v.live is not None:
+                    self._live_call(v, "append_thinking", said)
+            elif r is not None and r.status == "working":
+                self._spawn(self._steer_row(r, identity, mark, text))
+            elif (r is not None or v is not None) and not (later and (r is None or r.by != "name")):
+                # answered already, or unknown: a new ask of its owner (superseded like any unnamed ask, §4.2)
+                extra.append({"agentId": r.agent if r else v.agent_id, "task": text, "by": r.by if r else "floor"})
+                emit_metric("live.request.steered", 1, "Count", {"how": "new"})
+        rows = self._requests.settle(mark, identity, list(ops.get("requests") or []) + extra, self._clock())
+        for r in rows:
+            emit_metric("live.request.created", 1, "Count", {"by": r.by or "none"})
+        heard = ops if heard is None else heard  # the line as /route understood it, before supersede (§5.3)
+        kind = next((k for k in ("requests", "steer", "cancel", "social", "more") if heard.get(k)), "none")
+        emit_metric("live.understand.ops", 1, "Count", {"kind": kind.rstrip("s")})  # §5.3: once per understood line
+        self._sync_state()
+        return rows
+
+    def _row_changed(self, r: Request, was: str | None) -> None:
+        """understanding §5.3: a row's end is counted once (RequestList moves only open rows); every change of a
+        routed row is a transcript line, so a call reads back with its requests. A meeting's transcript becomes
+        its room's transcript.txt: no lines there."""
+        if r.status in ENDED and r.routed:  # an unrouted strip row was never created (live.request.created)
+            emit_metric("live.request.ended", 1, "Count", {"status": r.status})
+        if r.routed and self.setting != "meeting":
+            line = f"[request {r.id} {self._agent_name(r.agent)} {r.status}] {r.task[:LINE_CHARS]}"
+            self._transcript.add_note(line, at=self._clock())
+
+    def _cancel(self, r: Request) -> None:
+        """`ops.cancel` (understanding §4.4): its run aborted the way _stop aborts one; its answer never said or posted."""
+        v = self._voice
+        run = self._runs.get(r.run_id) if r.run_id else None
+        # its voice is saying it, or about to (review B5-1): cut it, as a stop does
+        saying = bool(v and v.agent_id == r.agent and r.run_id) and (
+            r.run_id == v.driven_run
+            or (run is not None and run.gen == v.gen)
+            or (v.announce is not None and v.announce[0] == r.run_id)
+        )
+        if r.status == "working" and r.run_id:
+            self._runs.abort(r.run_id)  # a run_ended that comes later says nothing
+            self._stopped.add(r.run_id)
+            self._spawn(self._abort(r.run_id))
+        self._requests.drop(r)
+        if r.run_id and (news := self._news.get(r.agent)):
+            if kept := [n for n in news if n[0] != r.run_id]:
+                self._news[r.agent] = kept
+            else:
+                self._news.pop(r.agent)
+        emit_metric("live.request.cancelled", 1, "Count")
+        if saying:
+            self._live_call(v, "interrupt")
+            if v.announce is not None and v.announce[0] == r.run_id:
+                v.announce = None
+        if v is not None and v.live is not None and self._live_call(
+            v, "append_thinking", f'{self._agent_name(r.agent)} dropped: "{r.task}".'
+        ):
+            self._live_call(v, "nudge")
+        self._start_queued()  # the agent's next row
+
+    async def _steer_row(self, r: Request, speaker: str, mark: int, text: str) -> None:
+        """`ops.steer` of a working row (understanding §4.4): into its run, steer-only. A run that just ended (or a
+        steer that failed) makes a new row for the same agent instead: the words are never lost."""
+        steered = False
+        if self._window is not None and r.run_id:
+            try:
+                resp = await self._backend.turn(
+                    self._window.call_id,
+                    speaker,
+                    r.agent,
+                    str(uuid.uuid4()),
+                    text[:MAX_UTTERANCE],
+                    "",
+                    steer_run_id=r.run_id,
+                    steer_only=True,
+                    speaker_name=self._said_by.get(speaker),
+                )
+                steered = bool((resp or {}).get("steered"))
+            except BackendError as e:
+                logger.info("huddle request steer failed: %s", e.code)
+        if r.status == "cancelled":
+            return  # cancelled while the steer was in flight (review B5-2): nothing more of it
+        emit_metric("live.request.steered", 1, "Count", {"how": "run" if steered else "new"})
+        v = self._voice
+        if steered:
+            if v is not None and v.live is not None:
+                self._live_call(v, "append_thinking", f'Added to "{r.task}": {text}')
+            return
+        for x in self._requests.settle(mark, speaker, [{"agentId": r.agent, "task": text, "by": r.by}], self._clock()):
+            emit_metric("live.request.created", 1, "Count", {"by": x.by or "none"})
+        self._start_queued()
+        self._sync_state()
+
+    async def _act(
+        self, identity: str, text: str, mark: int, ops: dict, heard_at: float, switch: bool, stands: bool = False
+    ) -> list[Request]:
+        """A line /route understood (understanding §4.6): each request its own row and run, small talk no run.
+        `stands`: a held line applied after its quiet (§4.4), never superseded. Returns the rows it made."""
+        reqs, social = list(ops.get("requests") or []), ops.get("social")
+        v, superseded = self._voice, False
+        # Routing v2 §4.2: someone else spoke since; their line routes itself, seeing this one. A named ask stands.
+        # The floor speaker's line stands too: its voice heard it and may delegate it (§4.6). Cancel and steer
+        # name earlier rows: they stand either way.
+        later = not stands and not (v and identity == v.speaker) and any(
+            m > mark for who, m in self._spoke.items() if who != identity
+        )
+        if later and (reqs or social):
+            named = [x for x in reqs if x.get("by") == "name"]
+            if social or len(named) < len(reqs):
+                emit_metric("live.route.superseded", 1, "Count")
+            reqs, social, superseded = named, None, not named
+        rows = self._apply(identity, mark, {**ops, "requests": reqs}, later=later, heard=ops)
+        if not rows:
+            if social and v is None:
+                said = self._small_talk(identity, text, bool(ops.get("more")))
+                await self.summon(identity, social, request=None, mark=mark, path="jev", heard_at=heard_at, said=said)
+            elif not (social or superseded or ops.get("cancel") or ops.get("steer")):
+                self._unrouted[identity] = self._clock()
+            return rows
+        startable = self._startable()
+        if v is not None and identity == v.speaker:
+            mine = [r for r in rows if r.agent == v.agent_id]
+            if mine and mine[0] in startable and v.live is not None:
+                # §4.6: the floor speaker's ask is its voice's driven run; its own delegation of it binds
+                task = mine[0].task or text
+                self._drive_request(v, task, f'{self._name(identity)} asked: "{task}"', row=mine[0])
+            if mine or not switch:
+                v.ack_rows += rows  # §4.6: acknowledged once its speaker is quiet (tick)
+                self._start_queued()
+                return rows
+        elif v is not None:
+            self._start_queued()  # §4.6: they start now; answers reach the room as ready deliveries
+            return rows
+        if v is not None:  # a switch: the floor speaker addressed only other agents
+            emit_metric("live.route.switch", 1, "Count")
+        first = rows[0]
+        drive = first in startable  # an agent works on one row at a time (§4.5): else it waits in line
+        path = "switch" if v is not None else "name" if first.by == "name" else "jev"
+        if drive:
+            self._requests.start(first)  # its voice drives it (below); _start_queued must not post it too
+        self._start_queued()
+        await self.summon(
+            identity,
+            first.agent,
+            request=(first.task or text) if drive else None,
+            mark=mark,
+            path=path,
+            heard_at=heard_at,
+            ack=rows if len(rows) >= 2 or not drive else None,
+            row=first if drive else None,
+        )
+        if first.status == "working" and first.run_id is None:  # its voice never opened: it runs without one
+            self._requests.unstart(first)
+            self._start_queued()
+        return rows
 
     async def _route(
         self,
@@ -978,52 +1468,28 @@ class Huddle:
         unclaimed: bool = False,
         heard: tuple | None = None,
         routed: dict | None = None,
-    ) -> None:
+        floor_line: bool = False,
+        stands: bool = False,
+    ) -> tuple[list[Request], dict | None] | None:
         """`humans`: people in the call, for a line with no name (None: the Lightbulb wake word, stripped
         so "Lightbulb, Forge, check CI" reaches /route opening with Forge). `routed`: this line's /route answer,
-        already fetched by its multi-name round trip: never asked twice."""
+        already fetched by its multi-name round trip: never asked twice. `floor_line`: the floor speaker's own
+        line (understanding §4.6): its /route error is not published, and with no `ops` nothing else happens here
+        (its caller, or the voice's delegation, falls back). Returns (rows, ops) once `ops` were acted on,
+        ([], None) for a floor line /route failed or answered without `ops`, else None (a hold, today's routing)."""
         heard_at = self._clock()
-        r, outcome = {}, "error"
-        v = self._voice
-        try:
-            r = routed if routed is not None else await self._backend.route(
-                self._said_by.get(identity, identity),
-                (text if humans is not None else strip_wake(text))[:MAX_UTTERANCE],
-                self._transcript.text()[-MAX_TRANSCRIPT:],
-                humans,
-                floor={"agent": v.agent_id, "speaker": self._name(v.speaker)}
-                if v
-                else None,
-                voice_runs=(
-                    [{"agent": x.agent_id, "request": x.request[:200]} for x in self._runs.running()]
-                    + [{"agent": r.agent, "request": r.task[:200]} for r in self._requests.queued() if r.routed]
-                )[-16:],
-                at=self._transcript.times(ROUTE_LINES),
-                setting=self.setting,
-                unclaimed=unclaimed,
-            )
-            outcome = (
-                "hold"
-                if r.get("hold")
-                else "agent"
-                if r.get("agentIds") or r.get("agentId")
-                else "none"
-            )
-        except BackendError as e:
-            # spoken to the agents: say it failed (an unclaimed question asked nobody)
-            if not unclaimed and heard is None and (humans is None or humans <= 1):
-                self._room.publish(
-                    ERROR_TOPIC, {"code": e.code, "reason": e.reason}, [identity]
-                )
-        finally:
-            if routed is None:
-                ms = round((self._clock() - heard_at) * 1000)
-                emit_metric(
-                    "live.latency.jev",
-                    ms,
-                    "Milliseconds",
-                    {"path": "jev", "outcome": outcome},
-                )
+        r = routed if routed is not None else await self._understand(
+            identity, text, humans, unclaimed, quiet=heard is not None or floor_line
+        )
+        outcome = "error" if r is None else self._outcome(r)
+        r = r or {}
+        if r.get("ops") is not None and not r.get("hold"):
+            # understanding §4.4: the backend listed the line's requests; they replace today's whole-line routing
+            if heard is not None and heard[2]:
+                self._unwanted(heard[2], identity)
+            return await self._act(identity, text, mark, r["ops"], heard_at, switch, stands), r["ops"]
+        if floor_line and not r.get("hold"):
+            return [], None
         if heard is not None and not r.get("hold"):  # a held line waits for the rest, as below
             # `heard`: (name, address, voice, cut) of a line that named 2+ agents, as on_final_transcript saw it
             hname, a, hv, cut = heard
@@ -1050,8 +1516,11 @@ class Huddle:
         if r.get(
             "hold"
         ):  # unfinished ("Friday, we're trying to"): the speaker's next final carries the rest
-            if self._final_mark.get(identity) == mark:
-                self._held[identity] = (text, heard_at)
+            if self._final_mark.get(identity, -1) <= mark:
+                # understanding §4.4: kept with its answer; applied as it is if nothing more is said (tick). A
+                # delegation's own transcript carries a later mark than its speaker's last final: held too.
+                kw = {"humans": humans, "switch": switch, "unclaimed": unclaimed, "heard": heard, "floor_line": floor_line}
+                self._held[identity] = (text, heard_at, mark, {**r, "hold": False}, kw)
             else:  # that final arrived while /route decided and routed on its own: nothing left to merge
                 emit_metric("live.route.hold_stale", 1, "Count")
             return
@@ -1063,7 +1532,8 @@ class Huddle:
                 self._unrouted[identity] = self._clock()
             return
         # Routing v2 §4.2: someone else spoke since. Their line routes itself, seeing this one; Jev decides on that.
-        if any(m > mark for who, m in self._spoke.items() if who != identity):
+        # A held line applied after its quiet stands (§4.4).
+        if not stands and any(m > mark for who, m in self._spoke.items() if who != identity):
             emit_metric("live.route.superseded", 1, "Count")
             return
         if switch and self._voice is not None and set(agent_ids) == {self._voice.agent_id}:
@@ -1141,11 +1611,12 @@ class Huddle:
             if state == "speaking" and self._speaking and v.path == "announce":
                 emit_metric("live.floor.overlap", 1, "Count")  # a delivery's audio began over a person
             if state == "speaking" and v.announce:  # the first audio consumes the news
+                v.told = list(self._news.get(agent_id, []))
                 self._consume_news(agent_id)  # all of it was in the seed
                 v.announcing, v.announce = v.path == "announce", None
                 emit_metric("live.announce.spoken", 1, "Count")
             elif state != "speaking":
-                v.announcing = False
+                v.announcing, v.told = False, []  # said to the end: nothing to post
             self._sync_state()
 
     def on_active_speakers(self, identities: set[str]) -> None:
@@ -1168,6 +1639,10 @@ class Huddle:
             v.announcing = False
             emit_metric("live.announce.cut", 1, "Count")
             self._live_call(v, "interrupt")
+            if v.told:  # understanding §4.8: cut off before its end; the room gets it unless the cutter forbids it
+                held = self._cut_off.get(v.agent_id, ([], "", 0.0))[0]
+                self._cut_off[v.agent_id] = (held + v.told, min(started), self._clock())
+            v.told = []
 
     async def talk_start(self, identity: str, payload: str = "") -> None:
         """C6: `{agentId}`, or "" for the last agent this caller summoned, else the CEO."""
@@ -1230,10 +1705,16 @@ class Huddle:
         announce: tuple | None = None,
         wake_dims: dict[str, str] | None = None,
         heard_at: float | None = None,
-        ack: str | None = None,
-    ) -> None:
+        ack: list[Request] | None = None,
+        row: Request | None = None,
+        said: str | None = None,
+        understood: tuple[asyncio.Future, asyncio.Future] | None = None,
+    ) -> _Voice | None:
         """`then`: the request's other named agents, queued behind this one. Any summon but a queue
-        advance (path "switch") replaces a pending queue: a new name wins."""
+        advance (path "switch") replaces a pending queue: a new name wins. `ack`: the rows the voice
+        acknowledges (the open ones when it speaks); `row`: the request row `request` is (its driven run binds
+        to it); `said`: a seed line that is not a request (small talk). `understood`: a named line's /route call
+        in flight and its speech's record (understanding §4.6). Returns the voice it re-pointed for `understood`."""
         async with self._lock:
             self._unclaimed = None  # an agent takes the floor: the open question is not left unclaimed
             self._released.discard(identity)  # only a release during THIS summon counts
@@ -1245,9 +1726,12 @@ class Huddle:
                 old is not None and old.agent_id == agent_id
             ):  # already holds the floor: re-point, no second session
                 if self._repoint(old, identity):
-                    if request:
+                    if understood:  # understanding §4.6: what the line asked is applied once /route answers
+                        self._sync_state()
+                        return old
+                    if request and row is None:  # a row left unbound runs without a voice (_act)
                         self._live_call(old, "reply_to", request)
-                    elif ack and self._live_call(old, "append_thinking", ack):
+                    elif (line := self._ack(ack, agent_id, said=True)) and self._live_call(old, "append_thinking", line):
                         self._live_call(old, "nudge")
                 self._sync_state()
                 return
@@ -1271,7 +1755,7 @@ class Huddle:
             # D §9: a switch opens the new voice while the old one closes (same window, no new /summon).
             # Both sessions' seconds land in the window, so the overlap is counted twice (D §4).
             opened, closed = await asyncio.gather(
-                self._open(v, identity, request, mark, ack),
+                self._open(v, identity, request, mark, ack, row=row, said=said, understood=understood),
                 self._close_live(old),
                 return_exceptions=True,
             )
@@ -1285,13 +1769,23 @@ class Huddle:
                 await self._end_window()
 
     async def _open(
-        self, v: _Voice, identity: str, request: str | None, mark: int | None, ack: str | None = None
+        self,
+        v: _Voice,
+        identity: str,
+        request: str | None,
+        mark: int | None,
+        ack: list[Request] | None = None,
+        row: Request | None = None,
+        said: str | None = None,
+        understood: tuple[asyncio.Future, asyncio.Future] | None = None,
     ) -> bool:
         """Caller holds the lock and has made `v` the floor. False when it could not open."""
         agent_id = v.agent_id
-        window, session = await asyncio.gather(
+        # understanding §4.6: a named line's /route answer is awaited beside the window and session, never before
+        window, session, *heard = await asyncio.gather(
             self._ensure_window(identity),
             self._backend.session(agent_id),
+            *([understood[0]] if understood else []),
             return_exceptions=True,
         )
         self._latency("route", v)
@@ -1311,44 +1805,62 @@ class Huddle:
                     self._room.publish(
                         ERROR_TOPIC, {"code": code, "reason": reason}, [identity]
                     )
+                if understood:  # understanding §4.6: what the line asked still runs, every row voicelessly
+                    self._named_line(identity, agent_id, request, mark, heard[0], understood[1], voice=False)
                 return False
+        if understood:
+            text = request
+            took = self._named_line(identity, agent_id, text, mark, heard[0], understood[1])
+            if took is not None:
+                row, ack, said = took
+                request = (row.task or text) if row is not None else None
+            elif self._requests.stopped(mark) or self._requests.stopped(mark, agent_id):
+                request = None  # a stop covers the line (understanding §4.5): the voice opens, nothing runs
         seed = self._transcript.seed(
             agent_id, before_mark=math.inf if mark is None else mark
         )
         # An acknowledgement says only who is on what ("then wait"): its agent's ready answers stay news, and
         # tick() hands them over once the acknowledgement has been said.
-        news = [] if ack else self._news.get(agent_id, [])
+        news = [] if ack is not None else self._news.get(agent_id, [])
+        # One turn says them all, in the order they were asked (re-review N5); the announced item in its place
+        told = [n for n in news if n is not v.announce] + ([v.announce] if v.announce else [])
         seed += [
             (
                 "developer",
                 self._cant_reach_seed(n)
-                or f"You finished {n[1][:80]}. Your answer: {n[2]} Deliver it now, briefly and completely, before anything else.",
+                or (
+                    f"You finished {n[1]}: {n[2]}. Tell the room now."
+                    if n is v.announce
+                    else f"You finished {n[1][:80]}. Your answer: {n[2]} Deliver it now, briefly and completely, "
+                    "before anything else."
+                ),
             )
-            for n in news
-            if n is not v.announce
+            for n in sorted(told, key=lambda n: (self._requests.order(n[0]), n[3]))
         ]
-        if v.announce:
-            seed.append(
-                (
-                    "developer",
-                    self._cant_reach_seed(v.announce)
-                    or f"You finished {v.announce[1]}: {v.announce[2]}. Tell the room now.",
-                )
-            )
+        if row is not None and row.status != "working":
+            request = None  # stopped while the voice opened (understanding §4.5): the voice opens, nothing runs
+        elif row is not None:
+            request = row.task or request  # a steer may have added to it while the voice opened (review B5-7)
         if request:
             # D §5: we start the turn ourselves, in parallel with the voice open. A task, not awaited:
             # a cold workspace retries for up to a minute and must not hold the floor lock.
             v.driven = _Driven(str(uuid.uuid4()))
             v.driven_run = v.driven.run_id
-            self._spawn(self._drive(v, v.driven, request))
+            if row is not None:  # understanding §4.6: the row (started by the caller) is this run
+                self._requests.bind(row, v.driven.run_id)
+            self._spawn(self._drive(v, v.driven, request, row))
             seed.append(
                 (
                     "developer",
                     f"{self._name(identity)} asked: {request} — already handed to your backend self; don't delegate it again",
                 )
             )
-        if ack:  # conversation engine §3.5: the one acknowledgement of a multi-name turn
-            seed.append(("developer", ack))
+        # conversation engine §3.5: the one acknowledgement, of the rows still open after the awaits above
+        ack_said = self._ack(ack, agent_id, said=True)
+        if ack_said:
+            seed.append(("developer", ack_said))
+        if said:  # understanding §4.6: small talk, answered by the voice itself
+            seed.append(("developer", said))
         try:
             live = await self._live_factory(
                 agent_id=agent_id,
@@ -1363,8 +1875,8 @@ class Huddle:
             self._failed_at[(identity, agent_id)] = self._clock()
             return False
         self._latency("session_started", v)
-        if ack and not self._requests.open():
-            v.live, v.opened = live, self._clock()  # "everyone stop" while it joined: closed unsaid
+        if ack is not None and not self._ack(ack, agent_id) and not said and not (row is not None and row.status in OPEN):
+            v.live, v.opened = live, self._clock()  # its rows stopped while it joined: closed unsaid
             return False
         if (
             news and not v.announce and v.path != "announce"
@@ -1379,7 +1891,7 @@ class Huddle:
         elif v.path != "announce" and self._live_call(
             v, "append_thinking", f"{self._name(identity)} is talking to you"
         ):
-            if request or ack or identity in self._released:
+            if request or ack_said or said or identity in self._released:
                 # the request is already running (driven): the model acknowledges it, no typed user turn
                 self._live_call(v, "nudge")
         self._released.discard(identity)
@@ -1419,7 +1931,7 @@ class Huddle:
         v.handoff = None
         if identity == v.speaker:
             return True
-        v.speaker = identity
+        v.speaker, v.ack_rows = identity, []
         return self._live_call(v, "set_participant", identity) and self._live_call(
             v, "append_thinking", f"{self._name(identity)} is talking to you"
         )
@@ -1445,17 +1957,25 @@ class Huddle:
             mark=mark,
             path="ack",
             heard_at=heard_at,
-            ack=ack_line(rows, self._agent_name),
+            ack=rows,
         )
 
+    def _ack(self, rows: list[Request] | None, me: str, said: bool = False) -> str | None:
+        """The acknowledgement of `rows` said by `me`: only those still open (re-review N1); None for none.
+        `said`: it is said now, so those rows are acknowledged (understanding §4.6)."""
+        rows = [r for r in rows or [] if r.status in OPEN]
+        for r in rows if said else ():
+            r.acked = True
+        return ack_line(rows, self._agent_name, me=me) if rows else None
+
     def _start_queued(self) -> None:
-        for r in self._requests.startable():
+        for r in self._startable():
             self._requests.start(r)
             self._spawn(self._run_request(r))
 
     async def _run_request(self, r: Request) -> None:
-        """One request's /turns, posted without waiting for a voice. An agent still working on an earlier
-        request is steered, as a follow-up is today."""
+        """One request's /turns, posted without waiting for a voice. It never steers another run: an agent's
+        rows run one at a time (understanding §4.5)."""
         run_id = str(uuid.uuid4())
         self._requests.bind(r, run_id)
         try:
@@ -1466,7 +1986,6 @@ class Huddle:
             return
         if r.status != "working":
             return  # stopped while the window opened
-        steer = (self._runs.running(r.agent) or [None])[-1]
         self._runs.started(run_id, r.agent, speaker=r.asker, request=r.task, delegation_id=None, gen=None)
         # ponytail: a voiceless _Voice carries _post_turn's speaker/posting fields; gen 0 is never a session
         carrier = _Voice(r.agent, None, 0, r.asker, self._clock())
@@ -1475,21 +1994,10 @@ class Huddle:
             run_id,
             r.task or self._last_line.get(r.asker, ""),
             None,
-            steer.run_id if steer else None,
             requests=self._requests.lines(self._agent_name, skip_agent=r.agent),
         )
-        if resp is None:
-            if run_id not in self._stopped:
-                self._request_failed([r], run_id)
-            return
-        if r.status == "cancelled":
-            return  # stopped while /turns was in flight: _post_turn aborted the run
-        if steer and resp.get("steered"):
-            self._runs.abort(run_id)  # never runs: the steered run answers this request too
-            self._requests.bind(r, steer.run_id)
-            if r.no_post:  # "don't post that" covers the run that answers it
-                self._spawn_mark(steer.run_id)
-            self._start_queued()  # it shares the steered run's slot: one more queued request may start
+        if resp is None and run_id not in self._stopped:
+            self._request_failed([r], run_id)
 
     def _request_failed(self, rows: list[Request], run_id: str) -> None:
         """Spec §3.5: the request is failed; in its turn its agent says CANT_REACH (never posted)."""
@@ -1510,25 +2018,75 @@ class Huddle:
         v = self._floor_voice(agent_id)
         if v is None or self._window is None:
             return
+        # a delegated stop covers its own speaker's lines, never another person's still at /route (re-review N2)
+        mark = self._final_mark.get(v.speaker)
         if stop_all(pending_transcript):
-            self._stop_all()
+            self._stop_all(mark)
             return
         if no_post_command(pending_transcript, self._team["agents"])[0]:
             return  # the final already marked it (engine §3.6); never a run
         if stop_request(
             pending_transcript
         ):  # the voice delegated the "stop" it heard: swallow it the same way
-            self._stop(agent_id)
+            self._stop(agent_id, mark)
             return
         v.used = True
+        speaker, asked = v.speaker, self._clock()
+        if (held := self._held.get(speaker)) and _words_in(pending_transcript, held[0], 1):
+            # understanding §4.4: its line is held for more words and the voice heard nothing the line lacks. The
+            # held line makes the run when it is applied; a run here would be a second one.
+            self._live_call(v, "append_commentary", UNFINISHED, delegation_id=delegation_id)
+            return
+        if (
+            self._bindable(v, asked)
+            and not self._recorded(v.driven)
+            and not self._understanding.get(speaker)
+            and not any(
+                x[1] is not None and x[3] >= v.driven.started_at and _same_speech(pending_transcript, x[2])
+                for x in self._understood.get(speaker, ())
+            )
+        ):
+            # a driven run no understood speech made (a named summons' whole line): this delegation's, at once,
+            # unless a line of theirs understood since the run began, or still at /route, is what it carries
+            heard = None
+        else:
+            heard = await self._this_speech(v, speaker, pending_transcript)
+        if self._floor_voice(agent_id) is not v:
+            return  # another voice took the floor while it waited
         d = v.driven
-        if d and self._clock() <= d.bind_until and d.pending is None:
+        recorded = self._recorded(d)
+        # an empty transcript (a typed request) is never understood: today's run (understanding §4.6)
+        if heard is None and pending_transcript.strip() and (recorded or not self._bindable(v, asked)):
+            # understanding §4.6: no understood speech matches it, and no driven run without a record (a named
+            # summons' whole line) can be it: its own transcript is understood, once
+            mark = self._transcript.last_mark
+            if mark >= 0 and self._requests.stopped(mark, agent_id):
+                return  # a stop said since covers it (§4.5): swallowed
+            emit_metric("live.delegation.unbound", 1, "Count")
+            self._unbound[speaker] = (asked, pending_transcript)
+            heard = await self._understand_floor(
+                speaker, pending_transcript, mark, humans=len(self._people), floor_line=True
+            )
+            if self._floor_voice(agent_id) is not v:
+                return
+            if heard is None and speaker in self._held:
+                # /route held it for more words (§4.4): not understood yet, so a late final is not "late"
+                self._unbound.pop(speaker, None)
+                self._live_call(v, "append_commentary", UNFINISHED, delegation_id=delegation_id)
+                return
+        d = v.driven
+        # a driven run is this speech's when its understanding made it, or when it has no record of another speech
+        own = d is not None and any(r.run_id == d.run_id for r in heard[0]) if heard else False
+        if (own or ((heard is None or heard[1] is None) and not recorded)) and self._bindable(v, asked):
             # the new voice delegated the request we already started: bind, never a second POST (D §5)
             if d.posted:
                 self._bind_driven(v, d, delegation_id)
             else:
                 d.pending = delegation_id  # bound when /turns answers
             v.last_activity = self._clock()
+            return
+        if heard is not None and heard[1] is not None:
+            self._answer_delegation(v, delegation_id, heard[0], heard[1])  # never a run of its own (§4.6)
             return
         # A typed request (wake word) leaves GPT-Live's own audio transcript empty: fall back to the
         # speaker's own latest line, never whoever spoke last.
@@ -1570,8 +2128,89 @@ class Huddle:
             if old and self._voice is v:
                 self._live_call(v, "append_thinking", FOLDED, delegation_id=old)
 
-    async def _drive(self, v: _Voice, d: _Driven, request: str) -> None:
-        """The driven turn: frames go in with delegation null until a delegation binds to it."""
+    def _bindable(self, v: _Voice, at: float | None = None) -> bool:
+        """`at`: when the delegation came (default now); a wait for its speech does not run the bind window out."""
+        d = v.driven
+        run = self._runs.get(d.run_id) if d else None
+        # a run that already ended was said with no delegation: nothing is left to bind
+        at = self._clock() if at is None else at
+        return bool(d and at <= d.bind_until and d.pending is None and not (run and run.ended))
+
+    def _recorded(self, d: _Driven | None) -> bool:
+        """`d` is the run of a row some understood speech made (understanding §4.6)."""
+        return d is not None and any(
+            r.run_id == d.run_id for recs in self._understood.values() for rec in recs for r in rec[0]
+        )
+
+    def _matching(self, speaker: str, said: str, exact: bool = False) -> tuple | None:
+        """The speaker's understood speeches that are the delegation's (understanding §4.6), matched by text: their
+        rows in order and the newest one's ops. `exact`: every content word of the delegation is in the speech,
+        spelled the same. An empty transcript (a typed request) is the newest speech when it was understood within
+        BIND_SECONDS."""
+        recs = list(self._understood.get(speaker, ()))
+        if said.strip():
+            recs = [x for x in recs if (_words_in(said, x[2], 1) if exact else _same_speech(said, x[2]))]
+        else:
+            recs = [x for x in recs[-1:] if self._clock() - x[3] <= BIND_SECONDS]
+        if not recs:
+            return None
+        return [r for x in recs for r in x[0]], recs[-1][1]
+
+    async def _this_speech(self, v: _Voice, speaker: str, said: str) -> tuple | None:
+        """(rows, ops) of the speech a delegation carries (understanding §4.6): an understood speech matching its
+        text, else one a final brings within DELEGATION_WAIT_S or an understanding in flight (a /route call, and
+        the summon it may start) brings. None: there is none."""
+        deadline = self._clock() + DELEGATION_WAIT_S
+        while True:
+            heard = self._matching(speaker, said)
+            # only answered rows: the person may be asking again, and its own final makes a new row
+            answered = heard is not None and heard[0] and all(r.status == "delivered" for r in heard[0])
+            if heard is not None and not answered or not said.strip():
+                return heard
+            if flying := self._understanding.get(speaker):
+                await flying[0]
+                continue
+            if self._clock() >= deadline or self._floor_voice(v.agent_id) is not v:
+                # an answer already given holds every word of the delegation: an ask one word away, or one
+                # with more in it, is a new ask
+                return self._matching(speaker, said, exact=True) if answered else heard
+            heard = self._final_heard.setdefault(speaker, asyncio.Event())
+            waits = [asyncio.ensure_future(heard.wait()), asyncio.ensure_future(self._sleep(deadline - self._clock()))]
+            try:
+                await asyncio.wait(waits, return_when=asyncio.FIRST_COMPLETED)
+            finally:
+                for w in waits:
+                    w.cancel()
+
+    def _answer_delegation(self, v: _Voice, delegation_id: str, rows: list[Request], ops: dict) -> None:
+        """A delegation of speech the worker already understood, with no driven run to bind (understanding §4.6)."""
+        live = [r for r in rows if r.status in OPEN]
+        fresh = [r for r in live if not r.acked]  # rows no acknowledgement has named yet (§4.6)
+        mine = [r for r in fresh if r.agent == v.agent_id]
+        if rows and all(r.status == "delivered" for r in rows):
+            note = ALREADY_SAID
+        elif not fresh and (ops.get("steer") or ops.get("cancel")):
+            note = CHANGED  # a correction or a call-off, already applied
+        elif rows and not live or not rows and ops.get("requests"):
+            return  # stopped since (§4.5): swallowed, as a delegated stop is
+        elif live and not fresh:
+            note = IN_HAND
+        elif mine and fresh == mine[:1] and mine[0].status == "queued":  # else ack_line names every fresh row
+            note = f'"{mine[0].task}" is next in line for you. Say so in a few words.'
+            mine[0].acked = True
+            v.ack_rows = [r for r in v.ack_rows if r not in rows]  # said: tick() does not say it again (§4.6)
+        elif fresh:
+            note = self._ack(fresh, v.agent_id, said=True)
+            v.ack_rows = [r for r in v.ack_rows if r not in rows]
+        elif ops.get("more"):
+            note = 'They will list several requests. Say "go ahead" at most, then stay quiet until they finish.'
+        else:
+            note = "Nothing to look up for that. Reply yourself in one short sentence."
+        self._live_call(v, "append_commentary", note, delegation_id=delegation_id)
+
+    async def _drive(self, v: _Voice, d: _Driven, request: str, row: Request | None = None) -> None:
+        """The driven turn: frames go in with delegation null until a delegation binds to it. `row`: the
+        request row it answers (understanding §4.6)."""
         d.started_at = self._clock()
         self._runs.started(
             d.run_id,
@@ -1581,7 +2220,8 @@ class Huddle:
             delegation_id=None,
             gen=v.gen,
         )
-        if await self._post_turn(v, d.run_id, request, None) is not None:
+        lines = self._requests.lines(self._agent_name, skip_agent=v.agent_id) if row is not None else ()
+        if await self._post_turn(v, d.run_id, request, None, requests=lines) is not None:
             d.posted = True
             v.driven_ok = v.driven_ok or v.driven_run == d.run_id
             if d.pending is not None:
@@ -1589,8 +2229,16 @@ class Huddle:
             return
         if v.driven is d:
             v.driven = None
-        if self._voice is v and v.live is not None and d.run_id not in self._stopped:
+        voiced = self._voice is v and v.live is not None and d.run_id not in self._stopped
+        if voiced:
             self._live_call(v, "append_commentary", CANT_REACH, delegation_id=d.pending)
+        if row is not None and voiced:
+            self._requests.fail(row)  # its voice just said CANT_REACH: no news item says it again
+        elif row is not None and d.run_id not in self._stopped:
+            self._request_failed([row], d.run_id)
+        if row is not None:
+            self._start_queued()  # the agent's next row
+            self._sync_state()
 
     def _bind_driven(self, v: _Voice, d: _Driven, delegation_id: str) -> None:
         self._runs.bind(d.run_id, delegation_id, v.gen)
@@ -1598,9 +2246,10 @@ class Huddle:
             v.driven = None
         emit_metric("live.driven.bound", 1, "Count")
 
-    def _stop(self, agent_id: str) -> None:
+    def _stop(self, agent_id: str, mark: int | None = None) -> None:
         """The only door that stops a voice run: an explicit stop to that agent. Interrupts its voice if it
-        holds the floor and aborts every running run of that agent (and no one else's)."""
+        holds the floor and aborts every running run of that agent (and no one else's). `mark`: the stop's line
+        (default: the newest); a line said at or before it, even one still at /route, starts nothing for it."""
         if v := self._floor_voice(agent_id):
             v.driven = None
             v.last_activity = self._clock()
@@ -1609,7 +2258,9 @@ class Huddle:
         for run_id in aborted:
             self._runs.abort(run_id)  # silent from here on, whatever the backend says
             self._stopped.add(run_id)
-        self._requests.cancel(agent_id)  # no run_ended follows an abort
+        mark = self._transcript.last_mark if mark is None else mark
+        self._requests.cancel(agent_id, mark)  # no run_ended follows an abort
+        self._cut_off.pop(agent_id, None)  # a stop said over its cut announcement: not posted (§4.8)
         cancelled = {r.run_id for r in self._requests.items if r.agent == agent_id and r.status == "cancelled"}
         if news := [n for n in self._news.get(agent_id, []) if n[0] not in cancelled]:
             self._news[agent_id] = news
@@ -1620,22 +2271,29 @@ class Huddle:
         self._start_queued()  # the bridge's own semaphore makes a fifth /turns wait for the aborted run
         self._sync_state()
 
-    def _stop_all(self) -> None:
+    def _stop_all(self, mark: int | None = None) -> None:
         """ "everyone stop" / "stop all" (engine §3.6): every open request cancelled (a line /route is still
         splitting starts nothing), every run aborted, the floor cut, and nothing left queued to answer."""
-        rows = self._requests.cancel()
+        mark = self._transcript.last_mark if mark is None else mark
+        rows = self._requests.cancel(mark=mark)
         agents = {r.agent for r in rows} | {r.agent_id for r in self._runs.running()}
         if self._voice:
             agents.add(self._voice.agent_id)
         self._queue = []
         for agent_id in sorted(agents):
-            self._stop(agent_id)
+            self._stop(agent_id, mark)
         emit_metric("live.request.stop_all", 1, "Count")
 
     def _no_post(self, agent_id: str | None, asker: str | None = None) -> None:
         """ "don't post that": the named agent's newest open request, else the room's newest; with no
         request, that agent's (unnamed: anyone's) newest running run. Neither late-answer door posts it, and
-        the worker never does; it may still be spoken."""
+        the worker never does; it may still be spoken. Said over a cut announcement (§4.8), it covers that."""
+        cut = [a for a, (_, who, _) in self._cut_off.items() if a == agent_id or agent_id is None and who == asker]
+        for a in cut:
+            del self._cut_off[a]
+        if cut:
+            emit_metric("live.request.no_post", 1, "Count")
+            return
         r = self._requests.no_post(agent_id)
         run_id = r.run_id if r else None
         if r is None:
@@ -1776,6 +2434,8 @@ class Huddle:
 
     def ended(self, run: Run, answer: str) -> None:
         asked = self._requests.by_run(run.run_id)  # a request-list run (engine §3.5)
+        if answer and (news := self._news.get(run.agent_id)):  # §4.8: the real answer replaces its failure line
+            news[:] = [n for n in news if n[0] != run.run_id or n[2] != CANT_REACH]
         if v := self._same_session(run):
             if not run.spoken.strip():
                 self._live_call(
@@ -1804,6 +2464,7 @@ class Huddle:
                 self._post_news(run.agent_id, news.pop(0))
         elif asked:
             self._requests.delivered({run.run_id})  # finished with nothing to say
+        self._start_queued()  # understanding §4.5: the agent's next row starts now, not on the next tick
         self._sync_state()
 
     def failed(self, run: Run) -> None:
@@ -1949,6 +2610,7 @@ class Huddle:
         if self._people and now - self._team_at >= TEAM_REFRESH_S:
             self._spawn(self._refresh_team())
         self._expire_news(now)
+        self._post_cut(now)
         for r in self._requests.items:
             # a run that lost its run_ended (Runs.running() dropped it as stale): its request failed
             run = self._runs.get(r.run_id) if r.status == "working" and r.run_id else None
@@ -1956,6 +2618,7 @@ class Huddle:
                 self._request_failed([r], r.run_id)
         self._start_queued()
         self._sync_state()
+        self._apply_held(now)
         meeting = self.setting == "meeting"
         if (
             not meeting  # a meeting's transcript is posted once, as the worker leaves
@@ -1985,6 +2648,7 @@ class Huddle:
         if v.live is None:
             return
         self._flush_lines(v)
+        self._acknowledge(v, now)
         d = v.driven
         if (
             d is not None
@@ -2041,6 +2705,34 @@ class Huddle:
         if over or (now - v.last_activity >= IDLE_SECONDS and not busy):
             await self.end_exchange(only=v)
 
+    def _apply_held(self, now: float) -> None:
+        """understanding §4.4: a held line whose speaker said nothing more for HOLD_APPLY_S is applied as /route
+        answered it (never thrown away), once: a later final routes on its own."""
+        for identity, (text, at, mark, r, kw) in list(self._held.items()):
+            if now - self._final_at.get(identity, at) < HOLD_APPLY_S:
+                continue
+            del self._held[identity]
+            if (u := self._unbound.get(identity)) and u[0] >= at and _words_in(text, u[1], 1):
+                continue  # its voice delegated it since, and that transcript was understood (§4.6)
+            emit_metric("live.hold.applied", 1, "Count")
+            if kw["floor_line"]:  # a delegation of it matches its record
+                self._understand_floor(identity, text, mark, routed=r, stands=True, **kw)
+            else:  # it stands whoever spoke since (review B5-3): nobody else's line re-makes its asks
+                self._spawn(self._route_and_summon(identity, text, mark, routed=r, stands=True, **kw))
+
+    def _acknowledge(self, v: _Voice, now: float) -> None:
+        """understanding §4.6: once per turn of speech, after ACK_QUIET_S of quiet from the speaker and with nothing
+        of theirs still at /route, who is on what. A lone working row of the floor agent needs none ("On it")."""
+        sp = v.speaker
+        if not v.ack_rows or sp in self._speaking or self._understanding.get(sp):
+            return
+        if now - self._final_at.get(sp, -math.inf) < ACK_QUIET_S:
+            return
+        rows, v.ack_rows = [r for r in v.ack_rows if r.status in OPEN and not r.acked], []
+        if len(rows) >= 2 or any(r.agent != v.agent_id or r.status == "queued" for r in rows):
+            if self._live_call(v, "append_thinking", self._ack(rows, v.agent_id, said=True)):
+                self._live_call(v, "nudge")
+
     async def _proactive(self, now: float) -> None:
         """No voice is open: an answer someone asked for goes first once the room is quiet (engine §3.5);
         otherwise the oldest news is announced by its own agent once the room is quiet (D §8)."""
@@ -2088,6 +2780,16 @@ class Huddle:
                 self._news[agent_id] = kept
             else:
                 del self._news[agent_id]
+
+    def _post_cut(self, now: float) -> None:
+        """Cut announcements (§4.8), once the cutter's line was handled or they were quiet ACK_QUIET_S."""
+        for agent_id, (items, who, at) in list(self._cut_off.items()):
+            handled = self._final_at.get(who, -math.inf) >= at
+            quiet = who not in self._speaking and now - self._last_heard >= ACK_QUIET_S
+            if (handled or quiet) and not self._understanding.get(who):
+                del self._cut_off[agent_id]
+                for n in items:
+                    self._spawn(self._late_answer(agent_id, n))
 
     def _post_news(self, agent_id: str, n: tuple) -> None:
         """News nobody will hear here (expired, pushed out, or the huddle is ending) goes to the room as
@@ -2151,10 +2853,12 @@ class Huddle:
         self._requests.delivered({n[0]})
         self._delivery_tries.pop(n[0], None)
         if not self._requests.postable(n[0]):
-            emit_metric("live.request.post_skipped", 1, "Count")  # "don't post that", or a CANT_REACH line
+            emit_metric("live.request.post_skipped", 1, "Count")  # "don't post that", or a cancelled request
             return
-        try:
-            await self._backend.late_answer(agent_id, n[0], n[1], n[2])
+        try:  # a CANT_REACH line nobody heard is posted as one line (understanding §4.8)
+            await self._backend.late_answer(
+                agent_id, n[0], n[1][:LATE_REQUEST_CHARS], FAILED_POST if n[2] == CANT_REACH else n[2]
+            )
             emit_metric("live.news.posted", 1, "Count")
         except Exception:
             logger.info(

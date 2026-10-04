@@ -56,6 +56,24 @@ class FakeRoom:
         return out
 
 
+def ops(requests=(), social=None, more=False, cancel=(), steer=()):
+    """A `/route` answer with `ops` (understanding §4.4); agentIds are the distinct owners in order."""
+    owners = list(dict.fromkeys(a for a, _, _ in requests)) or (
+        [social] if social else []
+    )
+    return {
+        "agentId": owners[0] if owners else None,
+        "agentIds": owners,
+        "ops": {
+            "requests": [{"agentId": a, "task": t, "by": by} for a, t, by in requests],
+            "social": social,
+            "more": more,
+            "cancel": list(cancel),
+            "steer": [{"requestId": i, "text": t} for i, t in steer],
+        },
+    }
+
+
 class FakeBackend:
     def __init__(self, log):
         self.log = log
@@ -109,6 +127,7 @@ class FakeBackend:
         at=(),
         setting="live",
         unclaimed=False,
+        open=(),
     ):
         self.routes.append((speaker, utterance, transcript))
         self.route_humans.append(humans)
@@ -119,6 +138,7 @@ class FakeBackend:
                 "at": list(at),
                 "setting": setting,
                 "unclaimed": unclaimed,
+                "open": list(open),
             }
         )
         if self.route_error:
@@ -384,11 +404,11 @@ def answer(h, run_id, agent_id, text):
 
 async def test_summon_by_name_opens_that_agents_own_voice():
     h, room, backend, lives, clock, log = await summoned("Gauge")
-    # Aden's plain line went to Jev (nobody); the line that starts with a name skipped it
+    # Aden's plain line went to Jev (nobody); the line that starts with a name is understood while it opens (§4.6)
     assert (
         backend.summons == ["u1"]
         and backend.sessions == ["gauge"]
-        and backend.route_humans == [2]
+        and backend.route_humans == [2, 2]
     )
     live = lives[0]
     assert (live.agent_id, live.voice, live.persona, live.speaker) == (
@@ -468,19 +488,22 @@ def test_opening_name_parity_with_chat():
         assert address(text, agents, TEAM["people"]).agent_ids == expected, text
 
 
-async def test_a_name_at_the_start_skips_jev():
+async def test_a_name_at_the_start_opens_that_voice():
+    # understanding §4.6: /route only understands the line; it never picks the voice
     h, room, backend, lives, clock, log = make()
     await h.on_participants({"u1": "Prasiddha"})
     await say(h, "u1", "Gauge, what's revenue?")
-    assert backend.routes == [] and lives[0].agent_id == "gauge"
+    assert [r[1] for r in backend.routes] == ["Gauge, what's revenue?"] and lives[0].agent_id == "gauge"
     await h.end_exchange()
 
 
-async def test_the_floor_holder_keeps_follow_ups_without_jev():
+async def test_the_floor_holder_keeps_follow_ups():
+    # understanding §4.1: the follow-up is understood too; without `ops` nothing else happens to it
     h, room, backend, lives, clock, log = await summoned("Forge")
-    routed = len(backend.routes)
+    backend.jev_to = "gauge"
     await say(h, "u1", "and what about last week")
-    assert len(backend.routes) == routed and h._voice.agent_id == "forge"
+    assert backend.routes[-1][1] == "and what about last week" and backend.route_bodies[-1]["floor"]["mine"]
+    assert h._voice.agent_id == "forge" and h._queue == [] and backend.turns == []
 
 
 async def test_lightbulb_without_a_name_routes_with_a_name_does_not():
@@ -498,8 +521,8 @@ async def test_lightbulb_without_a_name_routes_with_a_name_does_not():
     await h.end_exchange()
     await say(h, "u1", "hey Lightbulb, Gauge, revenue please")
     assert (
-        len(backend.routes) == 1 and lives[1].agent_id == "gauge"
-    )  # an opening name after the wake word: 0 ms
+        len(backend.routes) == 2 and lives[1].agent_id == "gauge"
+    )  # an opening name after the wake word: its voice opens, the line understood beside it (§4.6)
     await h.end_exchange()
     await say(
         h, "u1", "Lightbulb, ask Gauge about revenue"
@@ -759,7 +782,8 @@ async def test_a_retried_turn_resends_the_same_run_id():
     ]
     await h.on_delegation("forge", "d1", "check the board")
     assert len({t["runId"] for t in backend.turns}) == 1 and len(backend.turns) == 3
-    assert [e for e in log if e.startswith("sleep")] == ["sleep 2", "sleep 4"]
+    # the delegation first waits for a final that never comes (understanding §4.6)
+    assert [e for e in log if e.startswith("sleep")] == [f"sleep {h_mod.DELEGATION_WAIT_S}", "sleep 2", "sleep 4"]
     assert [c for c in lives[0].calls if c[1:2] == (h_mod.STILL_WAKING,)] == [
         ("thinking", h_mod.STILL_WAKING, "d1")
     ]
@@ -1124,7 +1148,7 @@ async def test_a_stop_while_turns_is_in_flight_aborts_again_once_it_lands():
     h, room, backend, lives, clock, log = await summoned()
     backend.turn_gate = asyncio.Event()
     deleg = asyncio.create_task(h.on_delegation("forge", "d1", "check the deploy"))
-    for _ in range(5):
+    for _ in range(10):  # past the delegation's wait for a final (understanding §4.6)
         await asyncio.sleep(0)
     run_id = backend.turns[0]["runId"]
     await say(h, "u1", "never mind")
@@ -2049,6 +2073,7 @@ async def test_backend_client_option_d_routes(monkeypatch):
                 "at": [],
                 "setting": "live",
                 "unclaimed": False,
+                "open": [],
                 **base,
             },
         ),
@@ -2467,7 +2492,8 @@ async def test_a_switch_during_a_cold_start_still_delivers_the_request_as_news()
         seconds,
     ):  # the floor moves to Gauge while Forge's turn waits out the cold start
         clock.t += seconds
-        await h.talk_start("u1", json.dumps({"agentId": "gauge"}))
+        if backend.turns:  # the turn's retry, not the delegation's wait for a final (understanding §4.6)
+            await h.talk_start("u1", json.dumps({"agentId": "gauge"}))
 
     h._sleep = sleep
     await h.on_delegation("forge", "d1", "check the board")
@@ -2528,11 +2554,12 @@ async def test_latency_route_session_and_first_audio_once(capsys):
         for x in lines
     ]
     assert got == [
+        ("live.latency.jev", 0, "name"),  # the named line's /route call, beside its voice (understanding §4.6)
         ("live.latency.route", 0, "name"),
         ("live.latency.session_started", 1500, "name"),
         ("live.latency.first_audio", 2100, "name"),
     ]
-    assert lines[0]["_aws"]["CloudWatchMetrics"][0]["Dimensions"] == [["path"]]
+    assert lines[1]["_aws"]["CloudWatchMetrics"][0]["Dimensions"] == [["path"]]
 
 
 async def test_gptlive_seconds_sum_closed_and_open_voices():
@@ -2601,6 +2628,7 @@ async def test_a_second_speaker_is_routed_into_the_queue(capsys):
     assert backend.route_bodies[-1]["floor"] == {
         "agent": "forge",
         "speaker": "Prasiddha",
+        "mine": False,  # understanding §4.4: Aden is not the person Forge is talking with
     }
     assert ("thinking", "Aden: can someone check the invoices", None) in lives[
         0
@@ -2798,15 +2826,19 @@ async def test_a_mid_sentence_name_switches_the_floor_when_the_backend_says_it_w
     assert metric_count(capsys, "live.route.switch") == 1
 
 
-async def test_a_mid_sentence_mention_keeps_the_floor():
+async def test_a_mid_sentence_mention_keeps_the_floor(capsys):
     h, room, backend, lives, clock, log = await summoned("Forge")
     backend.jev_to = None  # /route: a mention, not a summons
     await say(h, "u1", "let's ask Gauge later")
     assert [x.agent_id for x in lives] == ["forge"]
     await say(
         h, "u1", "Finance looks fine to me"
-    )  # a default name mid-sentence never goes to /route
-    assert backend.routes[-1][1] == "let's ask Gauge later"
+    )  # a default name mid-sentence is no switch (the line is still understood, understanding §4.1)
+    assert [x.agent_id for x in lives] == ["forge"] and h._voice.agent_id == "forge"
+    assert backend.routes[-1][1] == "Finance looks fine to me" and backend.route_bodies[-1]["floor"]["mine"]
+    assert metric_count(capsys, "live.route.switch") == 0
+    # only a plain floor line is recorded for delegations; the switch route never is (understanding §4.6)
+    assert [x[2] for x in h._understood["u1"]] == ["Finance looks fine to me"]
 
 
 async def test_news_nobody_hears_is_posted_to_the_room_not_dropped():
@@ -2857,7 +2889,9 @@ async def test_a_ghost_final_reaches_neither_transcript_nor_router(capsys):
     await say(h, "u1", "A team voice call. Names: Ada, Forge")
     assert backend.routes == [] and h._transcript.text() == "" and lives == []
     assert metric_count(capsys, "live.stt.ghost_dropped") == 2
-    await say(h, "u2", "Forge, what did we ship")  # real speech after a ghost still summons
+    await say(
+        h, "u2", "Forge, what did we ship"
+    )  # real speech after a ghost still summons
     assert [l.agent_id for l in lives] == ["forge"]
 
 
@@ -2865,7 +2899,9 @@ def test_the_holding_line_promises_no_room_post():
     assert "room" not in h_mod.HOLDING_LINE and "taking a moment" in h_mod.HOLDING_LINE
 
 
-async def test_backend_turn_carries_the_turns_requests_and_no_post_marks_a_run(monkeypatch):
+async def test_backend_turn_carries_the_turns_requests_and_no_post_marks_a_run(
+    monkeypatch,
+):
     import httpx
 
     seen = []
@@ -2875,8 +2911,22 @@ async def test_backend_turn_carries_the_turns_requests_and_no_post_marks_a_run(m
         return httpx.Response(200, json={"ok": True})
 
     b = _backend(monkeypatch, handler)
-    await b.turn("c1", "u1", "forge", "r1", "the PRs", "", requests=['Friday is answering "the rooms"'])
+    await b.turn(
+        "c1",
+        "u1",
+        "forge",
+        "r1",
+        "the PRs",
+        "",
+        requests=['Friday is answering "the rooms"'],
+    )
     await b.turn("c1", "u1", "forge", "r2", "hi", "")
     await b.no_post("r1")
-    assert seen[0][1]["requests"] == ['Friday is answering "the rooms"'] and "requests" not in seen[1][1]
-    assert seen[2] == ("/api/v1/internal/huddles/r1/runs/r1/no-post", {"ownerId": "org_1", "roomToken": "tok"})
+    assert (
+        seen[0][1]["requests"] == ['Friday is answering "the rooms"']
+        and "requests" not in seen[1][1]
+    )
+    assert seen[2] == (
+        "/api/v1/internal/huddles/r1/runs/r1/no-post",
+        {"ownerId": "org_1", "roomToken": "tok"},
+    )

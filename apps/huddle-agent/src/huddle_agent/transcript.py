@@ -19,7 +19,7 @@ SINCE_AGENT_CHARS = 12000
 
 @dataclass(frozen=True)
 class Line:
-    kind: str  # "person" | "agent"
+    kind: str  # "person" | "agent" | "note" (a request row's change: flushed to the log, never read as speech)
     who: str  # a person's identity or an agent id
     name: str
     text: str
@@ -59,11 +59,21 @@ class Transcript:
     ) -> int:
         return self._add("agent", agent_id, name, text, at, to)
 
+    def add_note(self, text: str, at: float = 0.0) -> int:
+        """A request row's change (understanding §5.3): only the backend's transcript log sees it."""
+        return self._add("note", "", "", text, at)
+
+    @property
+    def last_mark(self) -> int:
+        """The newest said line's mark (-1 before any): a note never moves it, so a stop still covers what follows."""
+        return next((x.mark for x in reversed(self._lines) if x.kind != "note"), -1)
+
     def text(self, lines: list[Line] | None = None) -> str:
         """ "Name: text", or "Agent → Person: text" for a voice's answer (the backend parses the arrow)."""
         return "\n".join(
             f"{x.name}{f' → {x.to}' if x.to else ''}: {x.text}"
             for x in (self._lines if lines is None else lines)
+            if x.kind != "note"  # /route and /turns read this: a row change is not speech
         )
 
     def after(self, mark: int) -> list[Line]:
@@ -72,7 +82,7 @@ class Transcript:
 
     def times(self, n: int) -> list[int]:
         """When each of the newest `n` lines was said (epoch seconds), oldest first: /route's `at`."""
-        return [round(x.at) for x in self._lines[-n:]]
+        return [round(x.at) for x in [x for x in self._lines if x.kind != "note"][-n:]]
 
     def since_agent(self, agent_id: str) -> str:
         """Everything said after this agent last spoke (all of it if it never has), newest kept."""
@@ -93,6 +103,8 @@ class Transcript:
         for x in self._lines:
             if x.mark >= before_mark:
                 break
+            if x.kind == "note":
+                continue
             if x.kind == "person":
                 items.append(("user", f"{x.name}: {x.text}"))
             elif x.who == agent_id:

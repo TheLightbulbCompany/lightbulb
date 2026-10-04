@@ -44,7 +44,8 @@ async def quiet(h, clock, seconds=2):
 async def test_one_name_keeps_the_fast_path_and_makes_no_request():
     h, room, backend, lives, clock, log = await three()
     await say(h, "u1", "Forge, what our PRs look like")
-    assert backend.routes == [] and h._requests.items == [] and [l.agent_id for l in lives] == ["forge"]
+    # understood beside the voice (understanding §4.6); an answer without `ops` keeps the whole line
+    assert len(backend.routes) == 1 and h._requests.items == [] and [l.agent_id for l in lives] == ["forge"]
     assert backend.turns[0]["utterance"] == "Forge, what our PRs look like" and backend.turns[0]["requests"] == []
 
 
@@ -97,20 +98,16 @@ async def test_at_most_four_requests_work_at_once_and_the_fifth_starts_when_a_sl
     assert backend.turns[-1]["agentId"] == "echo" and backend.turns[-1]["utterance"] == "task 4"
 
 
-async def test_a_second_request_to_a_working_agent_steers_its_run():
+async def test_a_second_request_to_a_working_agent_waits_for_its_run():
+    # understanding §4.5: a new request never steers a run; the agent's next row starts when the run ends
     h, room, backend, lives, clock, log = await three()
     await say(h, "u1", LINE)
-    first = {a: run_of(backend, a) for a in TASKS}
-    backend.steer = True
     backend.route_extra = {
         "requests": [{"agentId": "forge", "task": "and the CI"}, {"agentId": "friday", "task": "and the board"}]
     }
     await say(h, "u1", "Forge, and the CI. Friday, and the board")
-    assert [(t["agentId"], t["utterance"], t["steerRunId"]) for t in backend.turns[3:]] == [
-        ("forge", "and the CI", first["forge"]),
-        ("friday", "and the board", first["friday"]),
-    ]
-    assert [r.run_id for r in h._requests.items if r.agent == "forge"] == [first["forge"]] * 2
+    assert len(backend.turns) == 3
+    assert [(r.agent, r.status) for r in h._requests.items[3:]] == [("forge", "queued"), ("friday", "queued")]
 
 
 async def test_with_no_router_a_multi_name_line_takes_todays_opening_name_path():
@@ -178,6 +175,8 @@ async def test_a_failed_request_says_cant_reach_in_its_turn_and_is_never_posted(
         "developer",
         f'You could not do "{TASKS["forge"]}". Say exactly this, then stop: {h_mod.CANT_REACH}',
     )
+    h.on_agent_state("forge", "speaking")  # said: understanding §4.8 posts only a failure nobody heard
+    h.on_agent_state("forge", "listening")  # to its end: one still being said at hang-up is posted (§4.5)
     await h.clear_presence()
     assert backend.late_answers == []
 
@@ -391,7 +390,7 @@ async def test_after_three_refused_deliveries_an_answer_is_posted_and_its_row_cl
     assert [r.status for r in h._requests.items if r.agent == "forge"] == ["delivered"]
 
 
-async def test_after_three_refused_deliveries_a_cant_reach_line_is_dropped_not_posted():
+async def test_after_three_refused_deliveries_a_cant_reach_line_is_posted_as_one_line():
     h, room, backend, lives, clock, log = await three()
     await say(h, "u1", LINE)
     h.fail.add("forge")
@@ -399,7 +398,9 @@ async def test_after_three_refused_deliveries_a_cant_reach_line_is_dropped_not_p
     for _ in range(4):
         await quiet(h, clock, gate.ANNOUNCE_QUIET)
     assert backend.sessions.count("forge") == h_mod.DELIVERY_TRIES
-    assert backend.late_answers == [] and "forge" not in h._news
+    # understanding §4.8: never said, so the room gets one line
+    assert backend.late_answers == [("forge", run_of(backend, "forge"), TASKS["forge"], h_mod.FAILED_POST)]
+    assert "forge" not in h._news
     assert [r.status for r in h._requests.items if r.agent == "forge"] == ["failed"]
 
 

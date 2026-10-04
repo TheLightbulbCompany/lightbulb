@@ -718,6 +718,9 @@ pub async fn local_sessions_set(
         // Skill removal is tracked separately from hook cleanup so a failure in
         // one is never misattributed to the other in the status message.
         let skill_removed = home().and_then(|h| remove_skill(&dir, &h)).is_ok();
+        if let Ok(h) = home() {
+            super::plugin::remove(&dir, &h);
+        }
         let mut parts = Vec::new();
         if !cleaned {
             parts.push("Local sharing stopped; Claude wake-hook removal failed. Retry disable after repairing Claude settings.".to_owned());
@@ -1022,7 +1025,13 @@ fn reassert(state_dir: &Path) -> Vec<String> {
         Err(reason) => return vec![reason],
     };
     match std::env::current_exe() {
-        Ok(executable) => reassert_at(state_dir, &home, &executable),
+        Ok(executable) => {
+            let mut notes = reassert_at(state_dir, &home, &executable);
+            if let Err(reason) = super::plugin::install(state_dir, &home) {
+                notes.push(format!("the lightbulb-sessions Claude plugin was not installed ({reason})"));
+            }
+            notes
+        }
         Err(_) => vec!["the desktop executable is unavailable".into()],
     }
 }

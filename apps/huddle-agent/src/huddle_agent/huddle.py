@@ -44,6 +44,7 @@ from huddle_agent.transcript import (
     no_post_command,
     pause,
     real_speech,
+    soundex,
     stop_all,
     stop_request,
     stop_target,
@@ -156,19 +157,22 @@ def _words(text: str) -> tuple[set[str], list[str]]:
     return {w for w in words if w not in FUNCTION_WORDS}, words
 
 
-def _words_in(a: str, b: str) -> bool:
-    """Most of `a`'s content words are in `b` (understanding §4.6). With none, only the very same words match."""
+def _words_in(a: str, b: str, share: float = SAME_SPEECH) -> bool:
+    """Most of `a`'s content words are in `b` (understanding §4.6); a word the other transcriber misheard counts
+    when it sounds the same ("peers" for "PRs"). `share` 1: every one, spelled the same, for a match that makes
+    the worker do nothing ("the closed PRs" is not "the open PRs"). With none, only the very same words match."""
     (ca, fa), (cb, fb) = _words(a), _words(b)
     if not ca:
         return bool(fa) and not cb and fa == fb
-    return len(ca & cb) / len(ca) >= SAME_SPEECH
+    sounds = {x for w in cb if len(w) > 2 and (x := soundex(w))} if share < 1 else ()
+    return sum(w in cb or len(w) > 2 and soundex(w) in sounds for w in ca) / len(ca) >= share
 
 
-def _same_speech(said: str, record: str) -> bool:
+def _same_speech(said: str, record: str, share: float = SAME_SPEECH) -> bool:
     """A delegation's transcript and an understood speech's text are one speech: the delegation may be cut short
     of its final, or cover more than one final. A record of fewer than 2 content words is never the part
     contained ("and what" is in every question)."""
-    return _words_in(said, record) or (len(_words(record)[0]) >= 2 and _words_in(record, said))
+    return _words_in(said, record, share) or (len(_words(record)[0]) >= 2 and _words_in(record, said, share))
 
 
 def _retryable(e: BackendError) -> bool:
@@ -913,7 +917,7 @@ class Huddle:
             u = self._unbound.pop(identity, None)
             # its delegation came first and was understood from its own transcript: transcript only (§4.6). A final
             # that adds an ask has words of its own and is understood.
-            late = u is not None and _words_in(text, u[1])
+            late = u is not None and _words_in(text, u[1], 1)
             if routed is None and not switch and not late and real_speech(text) and not pause(text):
                 # understanding §4.1: the worker's own STT final is the request, not the voice's delegation
                 self._understand_floor(identity, text, mark, humans=len(self._people), floor_line=True)
@@ -1981,8 +1985,14 @@ class Huddle:
             return
         v.used = True
         speaker, asked = v.speaker, self._clock()
-        if self._bindable(v, asked) and not self._recorded(v.driven):
-            # a driven run no understood speech made (a named summons' whole line): this delegation's, at once
+        if (
+            self._bindable(v, asked)
+            and not self._recorded(v.driven)
+            and not self._understanding.get(speaker)
+            and not ((m := self._matching(speaker, pending_transcript)) and m[1] is not None)
+        ):
+            # a driven run no understood speech made (a named summons' whole line): this delegation's, at once,
+            # unless a newer line of theirs was understood, or is at /route, and is what it carries
             heard = None
         else:
             heard = await self._this_speech(v, speaker, pending_transcript)
@@ -2072,13 +2082,13 @@ class Huddle:
             r.run_id == d.run_id for recs in self._understood.values() for rec in recs for r in rec[0]
         )
 
-    def _matching(self, speaker: str, said: str) -> tuple | None:
+    def _matching(self, speaker: str, said: str, share: float = SAME_SPEECH) -> tuple | None:
         """The speaker's understood speeches that are the delegation's (understanding §4.6), matched by text: their
         rows in order and the newest one's ops. An empty transcript (a typed request) is the newest speech when it
         was understood within BIND_SECONDS."""
         recs = list(self._understood.get(speaker, ()))
         if said.strip():
-            recs = [x for x in recs if _same_speech(said, x[2])]
+            recs = [x for x in recs if _same_speech(said, x[2], share)]
         else:
             recs = [x for x in recs[-1:] if self._clock() - x[3] <= BIND_SECONDS]
         if not recs:
@@ -2100,7 +2110,8 @@ class Huddle:
                 await flying[0]
                 continue
             if self._clock() >= deadline or self._floor_voice(v.agent_id) is not v:
-                return heard
+                # an answer already given is only the very same words: an ask one word away is a new ask
+                return self._matching(speaker, said, 1) if answered else heard
             heard = self._final_heard.setdefault(speaker, asyncio.Event())
             waits = [asyncio.ensure_future(heard.wait()), asyncio.ensure_future(self._sleep(deadline - self._clock()))]
             try:
@@ -2637,7 +2648,7 @@ class Huddle:
             if now - self._final_at.get(identity, at) < HOLD_APPLY_S:
                 continue
             del self._held[identity]
-            if (u := self._unbound.get(identity)) and u[0] >= at and _same_speech(u[1], text):
+            if (u := self._unbound.get(identity)) and u[0] >= at and _same_speech(u[1], text, 1):
                 continue  # its voice delegated it since, and that transcript was understood (§4.6)
             emit_metric("live.hold.applied", 1, "Count")
             if kw["floor_line"]:  # a delegation of it matches its record

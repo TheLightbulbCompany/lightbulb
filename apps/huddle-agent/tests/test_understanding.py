@@ -1910,3 +1910,73 @@ async def test_a_superseded_line_counts_what_it_was_understood_as(capsys):
         assert not [t for t in backend.turns if t["speaker"] == "u1"], (
             "the first line was superseded"
         )
+
+
+# -- re-review 4: a match that makes the worker do nothing is exact; bind-at-once never takes a newer line --
+
+OPEN_PRS, CLOSED_PRS = "check the open PRs", "check the closed PRs"
+
+
+async def test_an_ask_one_word_from_an_answered_one_is_not_already_said():
+    h, room, backend, lives, clock, log = await floor_open()
+    await say(h, "u1", OPEN_PRS)
+    answer(h, backend.turns[0]["runId"], "forge", "Two PRs are open.")
+    clock.t += 5
+    backend.route_extra = ops(requests=[("forge", "the closed PRs", "fit")])
+    await h.on_delegation("forge", "deleg-2", CLOSED_PRS)  # no final comes
+    await settle(h)
+    assert not said_already(lives) and len(backend.routes) == 2
+    assert ("forge", "the closed PRs", "working") in rows(h)
+
+
+async def test_a_late_final_one_word_from_the_delegated_ask_is_understood():
+    h, room, backend, lives, clock, log = await floor_open()
+    await h.on_delegation(
+        "forge", "deleg-1", OPEN_PRS
+    )  # no final: its own transcript is understood
+    await settle(h)
+    clock.t += 3
+    backend.route_extra = ops(requests=[("forge", "the closed PRs", "fit")])
+    await say(h, "u1", CLOSED_PRS)
+    assert len(backend.routes) == 2 and ("forge", "the closed PRs", "queued") in rows(h)
+
+
+async def test_a_misheard_word_still_binds_the_delegation_to_its_open_row():
+    h, room, backend, lives, clock, log = await floor_open()
+    await say(h, "u1", PRS)
+    await h.on_delegation("forge", "deleg-1", "what are the open peers")
+    await settle(h)
+    assert len(backend.routes) == 1 and len(backend.turns) == 1
+    assert h._runs.get(backend.turns[0]["runId"]).delegation_id == "deleg-1"
+
+
+async def test_a_newer_lines_delegation_never_binds_an_older_summons_run():
+    for gated in (False, True):
+        h, room, backend, lives, clock, log = await three()
+        backend.route_extra = {}
+        await say(
+            h, "u1", "Forge, check CI"
+        )  # no ops: the whole line is the driven run, no record
+        run_id = h._voice.driven.run_id
+        clock.t += 2
+        backend.route_extra = ops(requests=[("forge", "the open PRs", "fit")])
+        if gated:  # the newer line is still at /route when the voice delegates it
+            backend.route_gate = asyncio.Event()
+            await h.on_final_transcript("u1", "Prasiddha", "also what are the open PRs")
+            await asyncio.sleep(0)
+            deleg = asyncio.create_task(
+                h.on_delegation("forge", "deleg-2", "also what are the open PRs")
+            )
+            await asyncio.sleep(0)
+            backend.route_gate.set()
+            await deleg
+        else:
+            await say(h, "u1", "also what are the open PRs")
+            await h.on_delegation("forge", "deleg-2", "also what are the open PRs")
+        await settle(h)
+        assert h._runs.get(run_id).delegation_id is None, gated
+        assert [
+            c
+            for c in lives[-1].calls
+            if c[0] == "commentary" and c[2] == "deleg-2" and "next in line" in c[1]
+        ], gated

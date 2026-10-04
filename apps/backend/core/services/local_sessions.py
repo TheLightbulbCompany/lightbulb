@@ -1160,13 +1160,16 @@ async def set_display_title(auth: AuthContext, session_id: str, title: str | Non
         restore = None  # Claude's own title from before a Lightbulb rename changed it
         if title is None:
             updated.pop("displayTitle", None)
-            original = row.get("renamedFromTitle")
+            # Restore Claude's old name only while Claude still carries the name Lightbulb gave it:
+            # a later `/rename` in the terminal is the person's newer choice and stays.
+            original = row.get("renamedFromTitle") if row.get("title") == row.get("displayTitle") else None
+            updated.pop("renamedFromTitle", None)
             if original and native:
-                updated.pop("renamedFromTitle", None)
                 restore = original
             elif original:
                 # Claude cannot take its old name back right now: show it until it can.
                 updated["displayTitle"] = original
+                updated["renamedFromTitle"] = original
         else:
             updated["displayTitle"] = title
             if native:

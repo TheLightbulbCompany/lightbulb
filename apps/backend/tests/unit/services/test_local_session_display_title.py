@@ -110,3 +110,50 @@ async def test_reset_after_a_native_rename_brings_back_claudes_original_title(mo
     row.update(status="busy", title="Second name")
     result = await local_sessions.set_display_title(owner, "session_test", None)
     assert result["displayTitle"] == "Native title"
+
+
+@pytest.mark.asyncio
+async def test_reset_keeps_a_newer_rename_typed_in_the_terminal(monkeypatch):
+    import time
+
+    row = {
+        "ownerId": "org_test",
+        "humanUserId": "user_owner",
+        "sessionId": "session_test",
+        "provider": "claude",
+        "status": "idle",
+        "onlineUntil": int(time.time()) + 60,
+        "terminal": "attach",
+        "deviceFeatures": ["sessionRename"],
+        "title": "Typed later",
+        "displayTitle": "Lightbulb name",
+        "renamedFromTitle": "Native title",
+        "revision": "before",
+    }
+    renames = []
+
+    async def authorize(*_args, **_kwargs):
+        return row, {"revision": "enrollment"}
+
+    async def put_session(updated, *_args, **_kwargs):
+        row.clear()
+        row.update(updated)
+
+    async def noop(*_args):
+        return None
+
+    async def rename(_row, name):
+        renames.append(name)
+
+    monkeypatch.setattr(local_sessions, "authorize_session", authorize)
+    monkeypatch.setattr(local_sessions, "_session_public", lambda stored, _viewer: dict(stored))
+    monkeypatch.setattr(local_sessions, "session_terminal", lambda stored: stored.get("terminal"))
+    monkeypatch.setattr(local_sessions.repo, "put_session", put_session)
+    monkeypatch.setattr(local_sessions.messaging_repo, "_table", lambda: SimpleNamespace(name="sessions"))
+    monkeypatch.setattr(local_session_relay, "publish_resources_changed", noop)
+    monkeypatch.setattr(local_sessions, "_rename_native", rename)
+
+    result = await local_sessions.set_display_title(
+        AuthContext(user_id="user_owner", org_id="org_test"), "session_test", None
+    )
+    assert renames == [] and "displayTitle" not in result and "renamedFromTitle" not in result

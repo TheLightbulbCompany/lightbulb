@@ -1,27 +1,29 @@
 import { render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, expect, it, vi } from "vitest";
 
-const lk = vi.hoisted(() => ({ publishData: vi.fn(), attach: vi.fn(), handlers: {} as Record<string, (...a: unknown[]) => void>, remote: [] as { attributes: Record<string, string> }[] }));
+const lk = vi.hoisted(() => ({ publishData: vi.fn(), publishTrack: vi.fn(), attach: vi.fn(() => document.createElement("audio")), onConnect: undefined as (() => void) | undefined, handlers: {} as Record<string, (...a: unknown[]) => void>, remote: [] as { attributes: Record<string, string>; identity?: string; trackPublications?: Map<string, unknown> }[] }));
 vi.mock("livekit-client", () => {
   class Room {
-    remoteParticipants = { values: () => lk.remote };
-    localParticipant = { publishTrack: vi.fn(), publishData: lk.publishData };
+    remoteParticipants = { values: () => lk.remote.map((p) => ({ trackPublications: new Map(), ...p })) };
+    localParticipant = { publishTrack: lk.publishTrack, publishData: lk.publishData };
     startAudio = vi.fn(async () => {});
     on(ev: string, fn: (...a: unknown[]) => void) { lk.handlers[ev] = fn; return this; }
-    connect = vi.fn(async () => { lk.handlers.trackSubscribed?.({ kind: "audio", attach: lk.attach }); });
+    connect = vi.fn(async () => { lk.onConnect?.(); });
     disconnect = vi.fn();
   }
   return {
     Room, Track: { Kind: { Audio: "audio" }, Source: { Microphone: "microphone" } },
-    RoomEvent: { TrackUnsubscribed: "trackUnsubscribed", Disconnected: "disconnected", TrackSubscribed: "trackSubscribed", ParticipantAttributesChanged: "attrs", ParticipantConnected: "joined" },
+    RoomEvent: { TrackUnsubscribed: "trackUnsubscribed", Disconnected: "disconnected", TrackSubscribed: "trackSubscribed", ParticipantAttributesChanged: "attrs", ParticipantConnected: "joined", TrackPublished: "trackPublished" },
   };
 });
 import MeetBotPage from "../page";
 
-const reply = (status: number, agents: unknown[] = []) => vi.fn(async () => ({ status, ok: status < 400, json: async () => ({ serverUrl: "wss://x", roomName: "r", token: "t", agents }) }));
+const reply = (status: number, agents: unknown[] = [], extra: Record<string, unknown> = {}) => vi.fn(async () => ({ status, ok: status < 400, json: async () => ({ serverUrl: "wss://x", roomName: "r", token: "t", agents, ...extra }) }));
+const track = { kind: "audio", attach: lk.attach, detach: vi.fn(() => [] as HTMLElement[]) };
+const subscribe = (identity: string, trackName: string) => { lk.onConnect = () => lk.handlers.trackSubscribed?.(track, { kind: "audio", trackName }, { identity }); };
 
 beforeEach(() => {
-  vi.clearAllMocks(); lk.handlers = {};
+  vi.clearAllMocks(); lk.handlers = {}; lk.onConnect = undefined; lk.remote = [];
   window.location.hash = "#t=abc";
   Object.defineProperty(navigator, "mediaDevices", { configurable: true, value: { getUserMedia: vi.fn(async () => ({ getAudioTracks: () => [{}] })) } });
 });
@@ -32,6 +34,7 @@ const A = (id: string, status: string, extra: Record<string, string> = {}) =>
 it("names the speaking agent and attaches the subscribed audio track", async () => {
   lk.remote = [{ attributes: { ...A("Gauge", "speaking"), "lightbulb.speaking_agent": "Gauge", ...A("Forge", "listening") } }];
   global.fetch = reply(200, [{ id: "Gauge", name: "Gauge Prime" }]) as never;
+  subscribe("agent-host", "agent-Gauge");
   render(<MeetBotPage />);
   await waitFor(() => expect(screen.getByText("Speaking")).toBeInTheDocument());
   expect(screen.getByText("Gauge Prime")).toBeInTheDocument();
@@ -108,4 +111,59 @@ it("keeps the normal footer when the limit attribute is empty", async () => {
   render(<MeetBotPage />);
   await screen.findByText("Say an agent's name to ask");
   expect(screen.queryByText(/cannot speak|voice/i)).not.toBeInTheDocument();
+});
+
+const published = async () => { render(<MeetBotPage />); await waitFor(() => expect(screen.queryByText("Connecting…")).not.toBeInTheDocument()); };
+
+it("publishes the mixed audio when mixedAudio is true or absent", async () => {
+  global.fetch = reply(200, [], { mixedAudio: true }) as never;
+  await published();
+  expect(navigator.mediaDevices.getUserMedia).toHaveBeenCalledTimes(1);
+  expect(lk.publishTrack).toHaveBeenCalledTimes(1);
+});
+
+it("publishes the mixed audio from an older backend that sends no mixedAudio", async () => {
+  global.fetch = reply(200) as never;
+  await published();
+  expect(lk.publishTrack).toHaveBeenCalledTimes(1);
+});
+
+it("opens no microphone and publishes nothing when mixedAudio is false", async () => {
+  global.fetch = reply(200, [], { mixedAudio: false }) as never;
+  await published();
+  expect(navigator.mediaDevices.getUserMedia).not.toHaveBeenCalled();
+  expect(lk.publishTrack).not.toHaveBeenCalled();
+});
+
+it("never plays a Meet person's audio back into the Meet", async () => {
+  global.fetch = reply(200) as never;
+  subscribe("meet:room:p1", "agent-forge");
+  await published();
+  expect(lk.attach).not.toHaveBeenCalled();
+});
+
+it("plays a track named agent-*", async () => {
+  global.fetch = reply(200) as never;
+  subscribe("agent-host", "agent-forge");
+  await published();
+  expect(lk.attach).toHaveBeenCalledTimes(1);
+});
+
+it("ignores a track with another name from a non-meet participant", async () => {
+  global.fetch = reply(200) as never;
+  subscribe("someone", "microphone");
+  await published();
+  expect(lk.attach).not.toHaveBeenCalled();
+});
+
+it("subscribes only to agent-* publications, present at connect or published later", async () => {
+  const setSubscribed = vi.fn();
+  const pub = (trackName: string) => ({ kind: "audio", trackName, setSubscribed });
+  lk.remote = [{ attributes: {}, identity: "agent-host", trackPublications: new Map([["a", pub("agent-forge")], ["b", pub("other")]]) }];
+  global.fetch = reply(200) as never;
+  await published();
+  expect(setSubscribed).toHaveBeenCalledTimes(1);
+  lk.handlers.trackPublished(pub("agent-gauge"), { identity: "agent-host" });
+  lk.handlers.trackPublished(pub("microphone"), { identity: "meet:room:p1" });
+  expect(setSubscribed).toHaveBeenCalledTimes(2);
 });

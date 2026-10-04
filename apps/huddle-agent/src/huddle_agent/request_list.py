@@ -17,6 +17,7 @@ _VERB = {
     "ready": "has an answer ready on",
 }
 OPEN = frozenset({"queued", "working", "ready"})
+ENDED = frozenset({"delivered", "cancelled", "failed"})
 
 
 @dataclass(eq=False)
@@ -38,7 +39,12 @@ class Request:
 
 
 class RequestList:
-    def __init__(self) -> None:
+    def __init__(
+        self, on_change: Callable[[Request, str | None], None] | None = None
+    ) -> None:
+        # (row, its status before; None for a new row) after every status change: huddle.py's metrics and
+        # transcript lines (understanding §5.3)
+        self._on_change = on_change or (lambda r, was: None)
         self.items: list[Request] = []
         self._ids = 0
         self.version = (
@@ -62,7 +68,8 @@ class RequestList:
     def _move(self, rows: list[Request], to: str, came_from=OPEN) -> None:
         moved = [r for r in rows if r.status in came_from]
         for r in moved:
-            r.status = to
+            was, r.status = r.status, to
+            self._on_change(r, was)
         if moved:
             self._bump()
 
@@ -104,6 +111,8 @@ class RequestList:
             if not self.stopped(turn, x["agentId"])
         ]
         self.items += rows
+        for r in rows:
+            self._on_change(r, None)
         self._bump()
         return rows
 
@@ -206,11 +215,9 @@ class RequestList:
         return run_id in self._suppressed or any(r.no_post for r in self.by_run(run_id))
 
     def postable(self, run_id: str) -> bool:
-        """False for "don't post that", and for a failed request (its CANT_REACH line is said, never posted)."""
-        bad = any(
-            r.no_post or r.status in ("failed", "cancelled")
-            for r in self.by_run(run_id)
-        )
+        """False for "don't post that" and a cancelled request. A failed one posts only a failure line nobody
+        heard (understanding §4.8): huddle.py calls this only for news never said."""
+        bad = any(r.no_post or r.status == "cancelled" for r in self.by_run(run_id))
         return run_id not in self._suppressed and not bad
 
     def open(self) -> list[Request]:

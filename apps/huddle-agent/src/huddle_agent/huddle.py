@@ -33,7 +33,7 @@ from typing import Any, Awaitable, Callable, Protocol
 from huddle_agent import gate
 from huddle_agent.backend import BackendError
 from huddle_agent.frames import Run, Runs
-from huddle_agent.request_list import OPEN, Request, RequestList, ack_line
+from huddle_agent.request_list import ENDED, LINE_CHARS, OPEN, Request, RequestList, ack_line
 from huddle_agent.transcript import (
     Transcript,
     address,
@@ -87,6 +87,7 @@ HOLDING_LINE = (
 )
 STILL_WAKING = "Your backend is still waking up; say briefly that you're on it and it'll take a moment."
 CANT_REACH = "Sorry, I couldn't reach my backend for that."
+FAILED_POST = "I could not finish this on the call. Ask me again here."  # understanding §4.8: a failure nobody heard
 REQUEST_QUIET_S = 1  # engine §3.5: a requested answer waits for no human speech this long (no rate limit)
 DELIVERY_TRIES = 3  # a requested answer whose voice failed to open this often goes to the room
 ASKER_GONE_S = 60  # engine §3.5: its asker left and no pause came this long: the room gets it
@@ -283,6 +284,7 @@ class _Voice:
         None  # the news item it opened to announce, until its audio starts
     )
     announcing: bool = False  # a proactive announcement's audio is playing
+    told: list = field(default_factory=list)  # the news its announcement says: posted if a person cuts it (§4.8)
     wake_dims: dict[str, str] | None = (
         None  # live.wake.fired's dimensions, for a voice a name woke
     )
@@ -413,7 +415,7 @@ class Huddle:
         self._flush_lock = (
             asyncio.Lock()
         )  # shutdown waits for a batch in flight, then sends the rest
-        self._requests = RequestList()  # conversation engine §3.4: this call's asks, memory only
+        self._requests = RequestList(self._row_changed)  # conversation engine §3.4: this call's asks, memory only
         self._window_lock = asyncio.Lock()  # one /summon however many requests start at once
         self._marking: set[asyncio.Task] = set()  # "don't post that" marks in flight
         self._closing = False  # the worker is leaving: no new window
@@ -674,6 +676,8 @@ class Huddle:
             for n in news:
                 await self._late_answer(agent_id, n)  # unheard here: the room gets it
         self._news.clear()
+        emit_metric("live.request.open_at_end", len(self._requests.open()), "Count")  # understanding §5.3: 0
+        await self._flush_transcript()  # the row changes the sweep made
         if self._people and not self._idle_ended:
             return
         try:
@@ -1253,8 +1257,20 @@ class Huddle:
         rows = self._requests.settle(mark, identity, list(ops.get("requests") or []) + extra, self._clock())
         for r in rows:
             emit_metric("live.request.created", 1, "Count", {"by": r.by or "none"})
+        kind = next((k for k in ("requests", "steer", "cancel", "social", "more") if ops.get(k)), "none")
+        emit_metric("live.understand.ops", 1, "Count", {"kind": kind.rstrip("s")})  # §5.3: once per understood line
         self._sync_state()
         return rows
+
+    def _row_changed(self, r: Request, was: str | None) -> None:
+        """understanding §5.3: a row's end is counted once (RequestList moves only open rows); every change of a
+        routed row is a transcript line, so a call reads back with its requests. A meeting's transcript becomes
+        its room's transcript.txt: no lines there."""
+        if r.status in ENDED:
+            emit_metric("live.request.ended", 1, "Count", {"status": r.status})
+        if r.routed and self.setting != "meeting":
+            line = f"[request {r.id} {self._agent_name(r.agent)} {r.status}] {r.task[:LINE_CHARS]}"
+            self._transcript.add_note(line, at=self._clock())
 
     def _cancel(self, r: Request) -> None:
         """`ops.cancel` (understanding §4.4): its run aborted the way _stop aborts one; its answer never said or posted."""
@@ -1520,11 +1536,12 @@ class Huddle:
             if state == "speaking" and self._speaking and v.path == "announce":
                 emit_metric("live.floor.overlap", 1, "Count")  # a delivery's audio began over a person
             if state == "speaking" and v.announce:  # the first audio consumes the news
+                v.told = list(self._news.get(agent_id, []))
                 self._consume_news(agent_id)  # all of it was in the seed
                 v.announcing, v.announce = v.path == "announce", None
                 emit_metric("live.announce.spoken", 1, "Count")
             elif state != "speaking":
-                v.announcing = False
+                v.announcing, v.told = False, []  # said to the end: nothing to post
             self._sync_state()
 
     def on_active_speakers(self, identities: set[str]) -> None:
@@ -1547,6 +1564,9 @@ class Huddle:
             v.announcing = False
             emit_metric("live.announce.cut", 1, "Count")
             self._live_call(v, "interrupt")
+            for n in v.told:  # understanding §4.8: cut off before its end, so the room gets the full text
+                self._spawn(self._late_answer(v.agent_id, n))
+            v.told = []
 
     async def talk_start(self, identity: str, payload: str = "") -> None:
         """C6: `{agentId}`, or "" for the last agent this caller summoned, else the CEO."""
@@ -2711,10 +2731,10 @@ class Huddle:
         self._requests.delivered({n[0]})
         self._delivery_tries.pop(n[0], None)
         if not self._requests.postable(n[0]):
-            emit_metric("live.request.post_skipped", 1, "Count")  # "don't post that", or a CANT_REACH line
+            emit_metric("live.request.post_skipped", 1, "Count")  # "don't post that", or a cancelled request
             return
-        try:
-            await self._backend.late_answer(agent_id, n[0], n[1], n[2])
+        try:  # a CANT_REACH line nobody heard is posted as one line (understanding §4.8)
+            await self._backend.late_answer(agent_id, n[0], n[1], FAILED_POST if n[2] == CANT_REACH else n[2])
             emit_metric("live.news.posted", 1, "Count")
         except Exception:
             logger.info(

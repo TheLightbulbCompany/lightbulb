@@ -175,6 +175,7 @@ async def test_a_failed_request_says_cant_reach_in_its_turn_and_is_never_posted(
         "developer",
         f'You could not do "{TASKS["forge"]}". Say exactly this, then stop: {h_mod.CANT_REACH}',
     )
+    h.on_agent_state("forge", "speaking")  # said: understanding §4.8 posts only a failure nobody heard
     await h.clear_presence()
     assert backend.late_answers == []
 
@@ -388,7 +389,7 @@ async def test_after_three_refused_deliveries_an_answer_is_posted_and_its_row_cl
     assert [r.status for r in h._requests.items if r.agent == "forge"] == ["delivered"]
 
 
-async def test_after_three_refused_deliveries_a_cant_reach_line_is_dropped_not_posted():
+async def test_after_three_refused_deliveries_a_cant_reach_line_is_posted_as_one_line():
     h, room, backend, lives, clock, log = await three()
     await say(h, "u1", LINE)
     h.fail.add("forge")
@@ -396,7 +397,9 @@ async def test_after_three_refused_deliveries_a_cant_reach_line_is_dropped_not_p
     for _ in range(4):
         await quiet(h, clock, gate.ANNOUNCE_QUIET)
     assert backend.sessions.count("forge") == h_mod.DELIVERY_TRIES
-    assert backend.late_answers == [] and "forge" not in h._news
+    # understanding §4.8: never said, so the room gets one line
+    assert backend.late_answers == [("forge", run_of(backend, "forge"), TASKS["forge"], h_mod.FAILED_POST)]
+    assert "forge" not in h._news
     assert [r.status for r in h._requests.items if r.agent == "forge"] == ["failed"]
 
 

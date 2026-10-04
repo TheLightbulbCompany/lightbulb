@@ -1,11 +1,12 @@
 """Understanding §4.4-§4.6 (Task B2): /route's `ops` turn a line into rows; small talk starts no run."""
 
 import asyncio
+import json
 
 from huddle_agent import huddle as h_mod
 from huddle_agent.backend import BackendError
-from test_huddle import answer, metric_count, ops, say, settle
-from test_request_engine import LINE, TASKS, quiet, three
+from test_huddle import answer, frame, metric_count, ops, packet, say, settle
+from test_request_engine import LINE, TASKS, quiet, run_of, three
 
 ASKS = [
     ("forge", "the open PRs", "fit"),
@@ -1488,4 +1489,175 @@ async def test_the_acknowledgement_is_said_once_when_the_voice_delegates_after_i
         "commentary",
         "That is already in hand. Wait for the result.",
         "deleg-1",
+    )
+
+
+# -- Task B6: every request ends where the person can see it (understanding §4.5, §4.8, §5.3) --
+
+FAILED = "I could not finish this on the call. Ask me again here."
+
+
+def metrics(capsys, name):
+    """(value, dimensions) of every `name` metric printed so far."""
+    out = []
+    for line in capsys.readouterr().out.splitlines():
+        if line.startswith("{") and name in (m := json.loads(line)):
+            out.append(
+                (m[name], {k: v for k, v in m.items() if k not in ("_aws", name)})
+            )
+    return out
+
+
+async def announced(text="Three PRs are open"):
+    """Forge's answer to the three-name line, announced by Forge's own voice once the room is quiet."""
+    h, room, backend, lives, clock, log = await three()
+    await say(h, "u1", LINE)
+    run = run_of(backend, "forge")
+    answer(h, run, "forge", text)
+    await quiet(h, clock)
+    assert lives[-1].agent_id == "forge" and h._voice.path == "announce"
+    return h, room, backend, lives, clock, run
+
+
+async def test_an_announcement_cut_after_its_audio_began_is_posted_once():
+    h, room, backend, lives, clock, run = await announced()
+    h.on_agent_state("forge", "speaking")
+    h.on_active_speakers({"u2"})
+    await settle(h)
+    assert backend.late_answers == [
+        ("forge", run, TASKS["forge"], "Three PRs are open")
+    ]
+    h.on_active_speakers(set())
+    h.on_active_speakers({"u2"})
+    await h.clear_presence()
+    assert len(backend.late_answers) == 1, "a cut announcement is posted once"
+
+
+async def test_an_announcement_that_finishes_uncut_is_not_posted():
+    h, room, backend, lives, clock, run = await announced()
+    h.on_agent_state("forge", "speaking")
+    h.on_agent_state("forge", "listening")
+    h.on_active_speakers({"u2"})
+    await h.clear_presence()
+    assert backend.late_answers == []
+
+
+async def test_a_cut_announcement_dont_post_that_covers_is_not_posted():
+    h, room, backend, lives, clock, run = await announced()
+    h._requests.no_post("forge")
+    h.on_agent_state("forge", "speaking")
+    h.on_active_speakers({"u2"})
+    await h.clear_presence()
+    assert backend.late_answers == []
+
+
+async def failed_forge():
+    h, room, backend, lives, clock, log = await three()
+    await say(h, "u1", LINE)
+    run = run_of(backend, "forge")
+    h.on_data(
+        None, "call.frame", packet(frame(run, "forge", {"type": "error", "seq": 1}))
+    )
+    h.on_active_speakers({"u2"})  # someone talks on: its CANT_REACH line waits, unsaid
+    return h, backend, clock, run
+
+
+async def test_a_failure_never_said_is_posted_in_one_line_when_its_news_expires():
+    h, backend, clock, run = await failed_forge()
+    clock.t += h_mod.NEWS_TTL
+    await h.tick()
+    await settle(h)
+    assert backend.late_answers == [("forge", run, TASKS["forge"], FAILED)]
+    assert h._requests.by_run(run)[0].status == "failed"
+    await (
+        h.clear_presence()
+    )  # the other two runs went stale meanwhile: their failures are posted now
+    assert [a[1] for a in backend.late_answers].count(run) == 1, (
+        "a failure is posted once"
+    )
+
+
+async def test_a_failure_never_said_is_posted_when_the_call_ends():
+    h, backend, clock, run = await failed_forge()
+    await h.clear_presence()
+    assert backend.late_answers == [("forge", run, TASKS["forge"], FAILED)]
+
+
+async def test_a_refused_failure_post_is_logged_not_raised():
+    h, backend, clock, run = await failed_forge()
+
+    async def refuse(*_a):
+        raise BackendError(404, "run_not_found", None)
+
+    backend.late_answer = refuse
+    await h.clear_presence()  # never raises
+
+
+async def test_each_row_ends_once_and_nothing_is_open_at_the_end(capsys):
+    h, backend, clock, run = await failed_forge()
+    answer(h, run_of(backend, "pulse"), "pulse", "On track")
+    backend.route_extra = ops(cancel=[h._requests.items[2].id])  # Friday's
+    await say(h, "u1", "never mind the rooms")
+    await h.clear_presence()  # Forge's failure and Pulse's answer go to the room
+    ended = sorted(d["status"] for _, d in metrics(capsys, "live.request.ended"))
+    assert ended == ["cancelled", "delivered", "failed"], (
+        "each row ends once, a posted failure stays failed"
+    )
+    capsys.readouterr()
+
+
+async def test_open_at_end_counts_the_rows_still_open_after_the_sweep(capsys):
+    h, room, backend, lives, clock, log = await three()
+    await say(h, "u1", LINE)
+    answer(h, run_of(backend, "pulse"), "pulse", "On track")
+    await h.clear_presence()
+    assert metrics(capsys, "live.request.open_at_end") == [(2, {})]
+
+
+async def test_every_understood_line_counts_one_ops_kind(capsys):
+    cases = [
+        (ops(social="pulse"), "social"),
+        (ops(requests=[("forge", "x", "fit")]), "request"),
+        (ops(more=True), "more"),
+        (ops(), "none"),
+    ]
+    for answer_, kind in cases:
+        h, room, backend, lives, clock, log = await three()
+        backend.route_extra = answer_
+        await say(h, "u1", "a line")
+        assert [d["kind"] for _, d in metrics(capsys, "live.understand.ops")] == [kind]
+    h, room, backend, lives, clock, log = await floor_open()
+    await say(h, "u1", PRS)
+    backend.route_extra = ops(requests=[("forge", "what shipped", "fit")])
+    await say(h, "u1", "and what shipped")
+    backend.route_extra = ops(steer=[("r2", "only this week")])
+    await say(h, "u1", "only this week")
+    backend.route_extra = ops(cancel=["r2"])
+    await say(h, "u1", "skip the shipped one")
+    kinds = [d["kind"] for _, d in metrics(capsys, "live.understand.ops")]
+    assert kinds[-3:] == ["request", "steer", "cancel"]
+
+
+async def test_each_row_change_is_one_transcript_line_never_read_back_as_speech():
+    h, room, backend, lives, clock, log = await three()
+    long = "the open PRs " + "x" * 200
+    backend.route_extra = ops(requests=[("forge", long, "fit")])
+    await say(h, "u1", "what are the open PRs")
+    backend.route_extra = ops(social="forge")
+    await say(h, "u1", "thanks")
+    await h._flush_transcript()
+    notes = [
+        x["text"]
+        for _, lines in backend.transcripts
+        for x in lines
+        if x["kind"] == "note"
+    ]
+    assert notes[:2] == [
+        f"[request r1 Forge queued] {long[:120]}",
+        f"[request r1 Forge working] {long[:120]}",
+    ]
+    spoken = [r[2] for r in backend.routes] + [t["transcript"] for t in backend.turns]
+    spoken += [text for live in lives for _, text in live.seed]
+    assert not [s for s in spoken if "[request r" in s], (
+        "a row change is never read to a model as speech"
     )

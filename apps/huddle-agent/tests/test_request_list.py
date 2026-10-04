@@ -61,7 +61,7 @@ def test_lifecycle_order_and_postable():
     assert f.status == "delivered"
     rl.fail(fr)
     rl.delivered({"rr"})  # a failed row stays failed
-    assert fr.status == "failed" and not rl.postable("rr")
+    assert fr.status == "failed" and rl.postable("rr")  # a failure nobody heard is posted (understanding §4.8)
     assert rl.postable("rp")
     assert (
         rl.no_post("forge") is None and not p.no_post

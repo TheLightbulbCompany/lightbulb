@@ -212,7 +212,8 @@ export function LocalSessions() {
       </div>
     </div>
     <SettingRow title="Share sessions from this Mac" description={status}>
-      {enabled && !paused && state?.status ? <p className="settings-row-note">{state.status}</p> : null}
+      {/* "connected" is the healthy state: "On" already says it. Anything else is a sentence worth showing. */}
+      {enabled && !paused && state?.status && state.status !== "connected" ? <p className="settings-row-note">{state.status}</p> : null}
       {!enabled && state?.status.startsWith("Local sharing stopped;") ? <p className="settings-row-note" role="status">{state.status}</p> : null}
       {recoveryPending ? <p className="settings-row-note">Earlier history may still be shared. Sign in as the person who turned sharing on, in that workspace, and finish turning it off.</p> : null}
       {enrollment?.remoteDisabled ? <p className="settings-row-note">Earlier history is no longer shared.</p> : null}

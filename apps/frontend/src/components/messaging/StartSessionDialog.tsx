@@ -23,7 +23,7 @@ export function StartSessionDialog() {
         <DialogDescription>Every Claude Code and Codex session on a Mac with sharing on is shared with this workspace. Start one in Lightbulb to get its live terminal here too.</DialogDescription>
       </DialogHeader>
       <ol className="list-decimal space-y-3 pl-5 text-sm">
-        <li>In the Lightbulb desktop app on your Mac, turn on sharing in <Link className="underline underline-offset-4" href="/settings">Settings → Native terminal sessions</Link>. You only do this once.</li>
+        <li>In the Lightbulb desktop app on your Mac, turn on sharing in <Link className="underline underline-offset-4" href="/settings?panel=desktop">Settings → Desktop → Session sharing</Link>. You only do this once.</li>
         <li>Use New session in the desktop app, run one of these in a terminal inside an approved folder, or just run <code>claude</code> or <code>codex</code>:
           <ul className="mt-2 space-y-2">{COMMANDS.map(({ tool, command }) => <li key={command} className="flex items-center gap-2">
             <code className="rounded bg-muted px-2 py-1 font-mono">{command}</code>

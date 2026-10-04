@@ -171,7 +171,7 @@ it("sharing off: one line pointing at the switch, composer disabled", async () =
   mockTargets({ enabled: true, devices: [MAC] }, { ...OPTIONS, sharing: false });
   render(view());
   expect(await screen.findByText(/Session sharing is off on Alice's MacBook/)).toBeInTheDocument();
-  expect(screen.getByRole("link", { name: "Settings → Native terminal sessions" })).toHaveAttribute("href", "/settings");
+  expect(screen.getByRole("link", { name: "Settings → Desktop → Session sharing" })).toHaveAttribute("href", "/settings?panel=desktop");
   expect(screen.queryByRole("button", { name: "Claude Code" })).not.toBeInTheDocument(); // no chips when blocked
 });
 

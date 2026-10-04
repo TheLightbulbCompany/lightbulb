@@ -278,10 +278,16 @@ it("offers Share every session live at pairing, off unless chosen", async () => 
   await waitFor(() => expect(invoke).toHaveBeenCalledWith("shell_integration_set", {enabled:true}));
 });
 it("names the workspace sharing is on in, never its raw id, and shows the desktop status as its own note", async () => {
-  invoke.mockResolvedValue({enrollment:{ownerId:"org",humanUserId:"alice",enabled:true,paused:false},pairedWorkspaceId:"org",status:"connected"});
+  const on = (status: string) => ({enrollment:{ownerId:"org",humanUserId:"alice",enabled:true,paused:false},pairedWorkspaceId:"org",status});
+  invoke.mockResolvedValue(on("Setup retried; Claude Code and Codex are configured for new sessions."));
   const view = render(<LocalSessions />);
   expect(await screen.findByText("On · Acme")).toBeInTheDocument();
-  expect(screen.getByText("connected")).toBeInTheDocument();
+  expect(screen.getByText("Setup retried; Claude Code and Codex are configured for new sessions.")).toBeInTheDocument();
+  // The healthy state is the single word "connected": "On" already says it.
+  invoke.mockResolvedValue(on("connected"));
+  await userEvent.click(screen.getByRole("button", {name:"Check again"}));
+  await waitFor(() => expect(screen.queryByText(/Setup retried/)).toBeNull());
+  expect(screen.queryByText("connected")).toBeNull();
   expect(screen.queryByRole("checkbox")).toBeNull();
   org.organization = {id:"org_3H3vi",name:"Other"};
   view.rerender(<LocalSessions />);

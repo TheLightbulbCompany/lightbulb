@@ -59,6 +59,9 @@ export function LocalSessionPanel({ session, ownerName, own, client, revision, o
   const watchRemote = local === "none" && session.status !== "ended" && session.status !== "offline" && !!onEvent && !!client.watchLocalSession;
   const [screenLive, setScreenLive] = useState(false);
   const liveTerminal = watchRemote && screenLive;
+  // Not running: this is the structured transcript, not a terminal. The Mac's own name is not in the public record, so the owner's name stands for it.
+  const transcriptLabel = local !== "none" || (session.status !== "ended" && session.status !== "offline") ? null
+    : session.status === "ended" ? "Transcript · Ended" : `Transcript · ${own ? "your" : `${ownerName}'s`} Mac is offline`;
   const id = useId();
   const people = useMemo(() => [{ kind: "human" as const, id: session.humanUserId, displayName: ownerName }, ...participants], [session.humanUserId, ownerName, participants]);
   const agentName = useCallback((agentId: string) => people.find(p => p.id === agentId)?.displayName ?? "Agent", [people]);
@@ -183,7 +186,7 @@ export function LocalSessionPanel({ session, ownerName, own, client, revision, o
     <div className="session-status">
       <p className="session-status-line">
         <span className={`native-session-dot native-session-dot-${session.status}`} aria-hidden="true" />
-        <span>{sessionStatus[session.status]}</span>
+        <span>{transcriptLabel ?? sessionStatus[session.status]}</span>
         <span>{own ? "You" : ownerName}</span>
         {where && <span className="session-fact-value room-wrap">{where}</span>}
         {session.pickedUpFrom && <span>picked up from {personName(session.pickedUpFrom.humanUserId)}</span>}

@@ -43,3 +43,15 @@ it("shows who is typing into the owner's session for 6 s after the last event", 
   expect(screen.queryByText("Bob is typing")).toBeNull();
   vi.useRealTimers();
 });
+
+it("labels a session that is not running as a transcript, and a live one not at all", () => {
+  const props = { ownerName: "Alice", client: client as never, revision: 0, onAccessLost: () => {} };
+  const { unmount } = render(<LocalSessionPanel {...props} own={false} session={{ ...session, status: "ended" }} />);
+  expect(screen.getByText("Transcript · Ended")).toBeTruthy();
+  unmount();
+  const offline = render(<LocalSessionPanel {...props} own={false} session={{ ...session, status: "offline" }} />);
+  expect(screen.getByText("Transcript · Alice's Mac is offline")).toBeTruthy();
+  offline.unmount();
+  render(<LocalSessionPanel {...props} own={false} session={session} />);
+  expect(screen.queryByText(/Transcript/)).toBeNull();
+});

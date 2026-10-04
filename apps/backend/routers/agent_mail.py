@@ -272,6 +272,40 @@ def _notes_room(room_id: str, meeting: dict, default_room: str | None) -> str | 
     return room if room and room != room_id else None
 
 
+_UNSAID_FIELDS = {
+    "agent_id": "agentId",
+    "agent_name": "agentName",
+    "request": "request",
+    "answer": "answer",
+    "at": "at",
+}
+
+
+def _unsaid(occurrence: dict) -> list[dict]:
+    return [{k: u.get(c) for k, c in _UNSAID_FIELDS.items()} for u in occurrence.get("unsaid") or []]
+
+
+def _notes(meeting: dict) -> str | None:
+    """The current occurrence's notes: posted (a run was asked for), skipped, pending once a call
+    the bot was in is over, else None (no call, or not over yet)."""
+    if meeting.get("notesRunId"):
+        return "posted"
+    if meeting.get("notesSkipped"):
+        return "skipped"
+    if meeting.get("status") in ("ended", "bot_failed") and meeting.get("inCallAt"):
+        return "pending"
+    return None
+
+
+def _occurrence_notes(meeting: dict, occurrence: dict) -> str | None:
+    """One occurrence's notes. The current one may still be pending. An archived one is final:
+    with no marker (archived before the state was kept, or its notes failed every attempt and the
+    series advanced) its state is unknown, never "pending" for ever."""
+    if occurrence is meeting:
+        return _notes(meeting)
+    return "posted" if occurrence.get("notesRunId") else "skipped" if occurrence.get("notesSkipped") else None
+
+
 def _meeting_view(room_id: str, meeting: dict, default_room: str | None = None) -> dict:
     return {
         "id": room_id,
@@ -282,9 +316,20 @@ def _meeting_view(room_id: str, meeting: dict, default_room: str | None = None) 
         "start_at": meeting.get("startAt"),
         "end_at": meeting.get("endAt"),
         "repeats": bool(meeting.get("recurrence")),
-        "transcripts": [{"start_at": o.get("startAt")} for o in _occurrences(meeting)[:_TRANSCRIPTS_MAX]],
+        "transcripts": [
+            {
+                "start_at": o.get("startAt"),
+                "ended_at": o.get("endedAt"),
+                "notes": _occurrence_notes(meeting, o),
+                "unsaid": _unsaid(o),
+            }
+            for o in _occurrences(meeting)[:_TRANSCRIPTS_MAX]
+        ],
         "notes_room_id": _notes_room(room_id, meeting, default_room),
         "reason": _reason(meeting),
+        "ended_at": meeting.get("endedAt"),
+        "notes": _notes(meeting),
+        "unsaid": _unsaid(meeting),
     }
 
 

@@ -315,7 +315,7 @@ async def _create_room(owner_id: str, room_id: str, invite: Invite, creator: str
 
 
 async def _patch_meeting(
-    room_id: str, fields: dict, drop: tuple = (), when=None, *, keep_transcript: bool = False
+    room_id: str, fields, drop: tuple = (), when=None, *, keep_transcript: bool = False
 ) -> dict | None:
     """THE one writer of the room META's ``meeting`` map: re-read it, lay only the caller's own
     fields over it (dropping ``drop``), and write under the revision CAS -- so the invite path, the
@@ -327,17 +327,20 @@ async def _patch_meeting(
     returns None (a marker meant for one occurrence never lands on the next).
     ``keep_transcript`` moves the stored occurrence's transcript into ``history`` before ``drop``,
     from the map read on each attempt (a transcript written after the caller's read is kept).
+    ``fields`` may be a function of the stored map, called on every attempt: a read-modify-write
+    (the roster, the unsaid answers) that a racing writer cannot undo.
     Three lost races raise, so SES redelivers. Returns the map as written."""
     for attempt in (1, 2, 3):
         meta = (await messaging_repo.get_room(room_id)) or {}
         stored = meta.get("meeting") or {}
         if when is not None and not when(stored):
             return None
-        if "sequence" in fields and int(stored.get("sequence", 0)) > int(fields["sequence"]):
+        own = fields(stored) if callable(fields) else fields
+        if "sequence" in own and int(stored.get("sequence", 0)) > int(own["sequence"]):
             logger.info("meeting room %s: a newer invite (sequence %s) won the race", room_id, stored["sequence"])
             return None
         kept = _kept_transcript(stored) if keep_transcript else {}
-        merged = {k: v for k, v in {**stored, **fields, **kept}.items() if k not in drop}
+        merged = {k: v for k, v in {**stored, **own, **kept}.items() if k not in drop}
         if merged == stored:
             return stored
         try:
@@ -685,17 +688,29 @@ _CALL_KEYS = (
     "notesRunId",
     "notesMailedAt",
     "notesMailAttemptedAt",
+    "roster",
+    "endedAt",
+    "notesSkipped",
+    "unsaid",
 )
 _OCCURRENCE_KEYS = (*_BOT_KEYS, *_CALL_KEYS)
 _HISTORY_MAX = 30
+_HISTORY_UNSAID = 3  # unsaid is up to ~44 KB an occurrence: only the newest few keep it (META is 400 KB)
 
 
 def _kept_transcript(meeting: dict) -> dict:
-    """Before the occurrence keys are dropped: its transcript stays readable from the inbox."""
+    """Before the occurrence keys are dropped: its transcript, end time, notes state and unsaid
+    answers stay readable from the inbox."""
     if not meeting.get("transcriptId"):
         return {}
     past = {k: meeting.get(k) for k in ("startAt", "transcriptId", "transcriptRoomId")}
-    return {"history": [past, *(meeting.get("history") or [])][:_HISTORY_MAX]}
+    past |= {k: meeting[k] for k in ("endedAt", "notesRunId", "notesSkipped", "unsaid") if meeting.get(k)}
+    history = [past, *(meeting.get("history") or [])][:_HISTORY_MAX]
+    return {
+        "history": [
+            h if i < _HISTORY_UNSAID else {k: v for k, v in h.items() if k != "unsaid"} for i, h in enumerate(history)
+        ]
+    }
 
 
 async def _reschedule_locked(owner_id: str, room_id: str, meeting: dict, *, now: float) -> str:

@@ -712,6 +712,7 @@ async def test_prewake_warms_every_room_agents_profile_after_the_health_wake(mon
 async def test_post_late_answer_is_the_agents_own_message_once_per_run(monkeypatch):
     create = AsyncMock()
     monkeypatch.setattr(vc.messaging, "create_agent_message", create)
+    monkeypatch.setattr(vc.messaging_repo, "get_room", AsyncMock(return_value={"ownerId": "org_a"}))
     room, agent = "11111111-1111-4111-8111-111111111111", "22222222-2222-4222-8222-222222222222"
     await vc.post_late_answer("org_a", room, agent, "run-9", "what's on my board?", "Three tasks open; two due today.")
     req = create.await_args.args[1]
@@ -719,6 +720,42 @@ async def test_post_late_answer_is_the_agents_own_message_once_per_run(monkeypat
     assert (req.event_id, str(req.room_id), str(req.agent_id)) == ("live-late:run-9", room, agent)
     assert req.text == 'From the Live call "what\'s on my board?":\n\nThree tasks open; two due today.'
     assert req.run_id is None  # a voice run is not a ledger run
+
+
+@pytest.mark.asyncio
+async def test_a_meetings_late_answer_is_kept_on_the_record_once_not_posted(monkeypatch):
+    """A Meet's record room is hidden: an unheard answer goes to the notes and the mail instead."""
+    meeting = {"status": "ended", "inCallAt": 1}
+
+    async def patch_meeting(room_id, fields, drop=(), when=None):
+        if when is not None and not when(meeting):
+            return None
+        meeting.update(fields(meeting))
+        return meeting
+
+    create = AsyncMock()
+    monkeypatch.setattr(vc.messaging, "create_agent_message", create)
+    monkeypatch.setattr(vc.messaging_repo, "get_room", AsyncMock(return_value={"meeting": meeting}))
+    monkeypatch.setattr(vc.messaging_repo, "get_member", AsyncMock(return_value={"displayName": "Forge"}))
+    monkeypatch.setattr(vc.meeting_invites, "_patch_meeting", AsyncMock(side_effect=patch_meeting))
+    await vc.post_late_answer("org_a", "room-1", "a1", "run-9", "  open PRs?  ", "x" * 30_000)
+    await vc.post_late_answer("org_a", "room-1", "a1", "run-9", "open PRs?", "again")  # the worker's retry
+    create.assert_not_awaited()
+    [kept] = meeting["unsaid"]
+    assert kept["runId"] == "run-9" and kept["agentId"] == "a1" and kept["agentName"] == "Forge"
+    assert kept["request"] == "open PRs?" and kept["answer"] == "x" * 2000 and kept["at"]
+    # Cut by UTF-8 bytes, never mid-character: the record's item has a byte limit, not a character one.
+    await vc.post_late_answer("org_a", "room-1", "a1", "run-cjk", "q", "\u6f22" * 3000)
+    cjk = meeting["unsaid"][-1]["answer"]
+    assert cjk == "\u6f22" * 666 and len(cjk.encode()) <= 2000
+    for i in range(30):
+        await vc.post_late_answer("org_a", "room-1", "a1", f"run-{i}", "q", "a")
+    assert len(meeting["unsaid"]) == 20
+    # After a series moved on (no call on the record), nothing lands on the next occurrence.
+    meeting.clear()
+    meeting["status"] = "scheduled"
+    await vc.post_late_answer("org_a", "room-1", "a1", "run-late", "q", "a")
+    assert "unsaid" not in meeting
 
 
 async def test_a_meeting_summon_is_authorized_as_the_owner_and_a_live_stranger_is_still_403(start_env):

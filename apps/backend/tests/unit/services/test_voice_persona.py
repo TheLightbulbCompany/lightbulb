@@ -62,6 +62,19 @@ def test_agent_persona_is_the_mouth_not_the_source():
     assert "several things to ask" in p
 
 
+def test_agent_persona_keeps_quiet_between_results():
+    """Prod Meet test 2026-10-04: "On it." after every delegation, notes read aloud, and greetings
+    after a question was already asked."""
+    p = _persona()
+    assert "On it." not in p
+    assert "When you delegate, say nothing; a note tells you what to say." in p
+    assert "When a note tells you who is on what, say it once in one short sentence, then wait." in p
+    assert "If someone asks about a result that has not come yet, say you are still checking." in p
+    assert "Otherwise wait in silence." in p
+    assert "Notes are for you. Never read them out or describe them." in p
+    assert "Never greet or ask what someone wants after they have asked something." in p
+
+
 def test_agent_persona_caps_soul_and_notes_and_fits_the_instruction_limit():
     p = _persona(
         soul_excerpt="s" * 20_000,

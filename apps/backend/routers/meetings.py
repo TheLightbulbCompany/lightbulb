@@ -108,7 +108,9 @@ async def _finish(room_id: str, status: str, sub_code: str, notes: bool, in_call
             logger.warning("meeting room %s: end step %s failed", room_id, step, exc_info=True)
 
 
-async def _on_status(bot_id: str, room_id: str, code: str, sub_code: str, nonce: str = "") -> None:
+async def _on_status(
+    bot_id: str, room_id: str, code: str, sub_code: str, nonce: str = "", at: float | None = None
+) -> None:
     """One transition, under the meeting's lease and decided from a META read taken inside it, so
     an invite, another status (Meet sends two in-call codes within a second) or the idle leave
     cannot interleave. A busy lease raises: the route answers 5xx and Recall redelivers."""
@@ -170,7 +172,10 @@ async def _on_status(bot_id: str, room_id: str, code: str, sub_code: str, nonce:
             voice_calls.prewake_owner(owner_id, team=await voice_calls.room_agents(room_id))
             await _publish(room_id, "in_call")
         elif target == "ended":
-            await meeting_invites._patch_meeting(room_id, {"status": "ended", "lastBotStatus": code})
+            # endedAt is written once (a terminal status returns above on every later webhook), from
+            # the event's own time: a retried or late delivery is not when the call ended.
+            fields = {"status": "ended", "lastBotStatus": code, "endedAt": int(at or time.time())}
+            await meeting_invites._patch_meeting(room_id, fields)
             await _finish(room_id, "ended", sub_code, notes=True, in_call_at=meeting.get("inCallAt"))
         else:
             title = meeting.get("title") or "Meeting"
@@ -180,7 +185,12 @@ async def _on_status(bot_id: str, room_id: str, code: str, sub_code: str, nonce:
                 else f"The agents couldn't join **{title}** ({sub_code or 'unknown'})."
             )
             await meeting_invites._post_line(owner_id, room_id, f"meeting:{bot_id}:fatal", text)
-            fields = {"status": "bot_failed", "botError": sub_code, "lastBotStatus": code}
+            fields = {
+                "status": "bot_failed",
+                "botError": sub_code,
+                "lastBotStatus": code,
+                "endedAt": int(at or time.time()),
+            }
             await meeting_invites._patch_meeting(room_id, fields)
             # A bot that dies mid-call still leaves a conversation worth its notes.
             await _finish(
@@ -200,7 +210,8 @@ async def recall_status(request: Request):
         if code in _TARGET:
             try:
                 nonce = str((payload["data"]["bot"].get("metadata") or {}).get("nonce") or "")
-                await _on_status(bot_id, room_id, code, str(data.get("sub_code") or ""), nonce)
+                at = _at({"absolute": data.get("updated_at")})  # arrival time when absent or unreadable
+                await _on_status(bot_id, room_id, code, str(data.get("sub_code") or ""), nonce, at)
             except meeting_invites.MeetingBusy:
                 raise HTTPException(status_code=503, detail="retry") from None
             except Exception:
@@ -217,13 +228,61 @@ def _at(stamp: dict | None) -> float:
         return time.time()
 
 
+def _rostered(roster: dict | None, kind: str, pid: str, name: str, at: int) -> dict:
+    """The Meet's people after one event: a join adds, a leave removes. The bot is never one.
+    Each entry keeps its event time (ms): realtime events run as overlapping background tasks, so
+    an older join that commits after a newer leave must not bring the person back."""
+    roster = dict(roster or {})
+    seen = roster.get(pid) or {}
+    if kind not in ("join", "leave") or not pid or at < seen.get("at", 0):
+        return roster
+    if kind == "leave":
+        roster[pid] = {**seen, "at": at, "in": False}
+    elif name and not name.endswith(meeting_bots._BOT_SUFFIX):
+        roster[pid] = {"name": name[:_ROSTER_NAME_CHARS], "at": at, "in": True}
+    # Bounded: it rides on the room's META item. The oldest leavers go first (enough recent ones
+    # stay to refuse a reordered event), then the oldest people present.
+    by_age = sorted(roster, key=lambda k: (bool(roster[k].get("in")), roster[k].get("at", 0)))
+    for k in by_age[: max(0, len(roster) - _ROSTER_ENTRIES)]:
+        del roster[k]
+    return roster
+
+
+_ROSTER_NAMES, _ROSTER_NAME_CHARS, _ROSTER_ENTRIES = 50, 80, 200
+
+
+def _names(roster: dict) -> list[str]:
+    """The names every speaker packet carries, bounded: LiveKit drops a data packet over ~15 KB
+    (livekit_huddles.MAX_PACKET_BYTES), and the worker only needs to know when one person is there."""
+    names = sorted(p["name"][:_ROSTER_NAME_CHARS] for p in roster.values() if p.get("in") and p.get("name"))
+    return names[:_ROSTER_NAMES]
+
+
 async def _speaker(bot_id: str, room_id: str, event: dict) -> None:
+    """Relays one event with the roster. The roster lives on META because Meet sends a join once,
+    often before the worker is in the room; every event carries it so a late worker catches up."""
     try:
         meta = (await messaging_repo.get_room(room_id)) or {}
         meeting = meta.get("meeting") or {}
         if meeting.get("recallBotId") != bot_id:
             return  # a stale or rebooked bot pushes nothing into the room
-        await livekit_huddles.send_meet_speaker(room_id, event)
+        kind, pid, name, at = event["kind"], event["participantId"], event["name"], int(event["at"] * 1000)
+        roster = _rostered(meeting.get("roster"), kind, pid, name, at)
+        if kind in ("join", "leave"):
+            try:
+                written = await meeting_invites._patch_meeting(
+                    room_id,
+                    lambda m: {"roster": _rostered(m.get("roster"), kind, pid, name, at)},
+                    # re-checked on every attempt: an old bot's late join never lands on the next occurrence
+                    when=lambda m: m.get("recallBotId") == bot_id,
+                )
+                if written is None:
+                    return  # the occurrence moved on under this event: a stale bot pushes nothing
+                roster = written.get("roster", roster)
+            except Exception:  # noqa: BLE001 -- best effort: this event still relays its own roster
+                put_metric("meeting.roster.write_failed")
+                logger.warning("recall realtime room=%s: roster write failed", room_id, exc_info=True)
+        await livekit_huddles.send_meet_speaker(room_id, {**event, "roster": _names(roster)})
     except Exception:  # noqa: BLE001 -- already answered 2xx; the next event carries on
         put_metric("meeting.webhook.error")
         logger.warning("recall realtime failed room=%s", room_id, exc_info=True)
@@ -238,11 +297,13 @@ async def recall_realtime(request: Request, tasks: BackgroundTasks):
         bot_id, room_id, data = found
         who = data.get("participant") or {}
         event = {
+            "kind": kind,
             "participantId": str(who.get("id") or ""),
             "name": str(who.get("name") or ""),
-            "speaking": _SPEAKING[kind],
+            "speaking": _SPEAKING[kind],  # what a worker before ``kind`` reads
             "at": _at(data.get("timestamp")),
         }
+        logger.info("recall realtime room=%s kind=%s participant=%s", room_id, kind, event["participantId"])
         tasks.add_task(_speaker, bot_id, room_id, event)
     return {"ok": True}
 
@@ -261,7 +322,8 @@ async def leave(room_id: str, body: RoomBody):
             if not meeting.get("recallBotId") or meeting.get("status") in _TERMINAL:
                 return {"ok": True}
             # Ended BEFORE the leave, so the call_ended the leave provokes finds the step taken.
-            await meeting_invites._patch_meeting(room_id, {"status": "ended", "lastBotStatus": "idle_leave"})
+            fields = {"status": "ended", "lastBotStatus": "idle_leave", "endedAt": int(time.time())}
+            await meeting_invites._patch_meeting(room_id, fields)
     except meeting_invites.MeetingBusy:
         raise _problem(503, "meeting_busy") from None
     for attempt in range(1, _LEAVE_TRIES + 1):

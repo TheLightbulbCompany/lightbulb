@@ -30,6 +30,7 @@ from core.services import (
     hermes_profiles,
     jev,
     livekit_huddles,
+    meeting_invites,
     messaging,
     openclaw_work,
     runtime_transport,
@@ -302,9 +303,22 @@ Your reply is spoken: no markdown, no lists, no code, no links, no ids. Never cl
 This turn has a hard limit of a few model steps; when it runs out, say what you found and what is still unchecked.]"""
 
 
+# A meeting's unsaid answers ride on its META item (400 KB), for this occurrence and the newest
+# three in its history: cut by UTF-8 BYTES (a CJK answer is 3 bytes a character), 4 x 20 x 2.5 KB.
+_UNSAID_MAX, _UNSAID_REQUEST_BYTES, _UNSAID_ANSWER_BYTES = 20, 480, 2000
+
+
+def _cut_bytes(text: str, limit: int) -> str:
+    return text.encode()[:limit].decode(errors="ignore")
+
+
 async def post_late_answer(owner_id: str, room_id: str, agent_id: str, run_id: str, request: str, answer: str) -> None:
     """The room gets what the call did not: the agent's own message, once per run (the event id
-    is the run), carrying the question it answers so it reads on its own."""
+    is the run), carrying the question it answers so it reads on its own. A meeting's room is
+    hidden, so there the answer is kept on the meeting record for the notes and the mail."""
+    if ((await messaging_repo.get_room(room_id)) or {}).get("meeting"):
+        await _keep_unsaid(room_id, agent_id, run_id, request, answer)
+        return
     asked = f' "{request.strip()[:160]}"' if request.strip() else ""
     text = f"From the Live call{asked}:\n\n{answer.strip()}"
     await messaging.create_agent_message(
@@ -319,6 +333,31 @@ async def post_late_answer(owner_id: str, room_id: str, agent_id: str, run_id: s
         ),
     )
     put_metric("voice.huddle.late_answer")
+
+
+async def _keep_unsaid(room_id: str, agent_id: str, run_id: str, request: str, answer: str) -> None:
+    """Once per run (a retried post adds nothing), the first ``_UNSAID_MAX`` only, and only while
+    the record holds this occurrence's call: never onto a series' next one."""
+    member = await messaging_repo.get_member(room_id, "agent", agent_id) or {}
+    entry = {
+        "runId": run_id,
+        "agentId": agent_id,
+        "agentName": member.get("displayName") or agent_id,
+        "request": _cut_bytes(request.strip(), _UNSAID_REQUEST_BYTES),
+        "answer": _cut_bytes(answer.strip(), _UNSAID_ANSWER_BYTES),
+        "at": int(time.time()),
+    }
+
+    def add(meeting: dict) -> dict:
+        unsaid = meeting.get("unsaid") or []
+        if len(unsaid) >= _UNSAID_MAX or any(u.get("runId") == run_id for u in unsaid):
+            return {}
+        return {"unsaid": [*unsaid, entry]}
+
+    if await meeting_invites._patch_meeting(room_id, add, when=lambda m: m.get("inCallAt")) is None:
+        logger.info("meeting room %s: late answer of run %s came after the call's record moved on", room_id, run_id)
+        return
+    put_metric("meeting.unsaid")
 
 
 def _voice_history(history: list[dict]) -> list[dict]:
@@ -1217,7 +1256,7 @@ async def route_live_line(
         # Nothing was asked: one agent may say a sentence, when the speech can only be for the agents.
         if named:
             social = named[0]
-        elif mine:
+        elif mine and not meeting:  # a Meet is one mixed voice: the floor stays "mine" while people chat
             social = floor_agent
         elif implied and not meeting:
             social = await someone()

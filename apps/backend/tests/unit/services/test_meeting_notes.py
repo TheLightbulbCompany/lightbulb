@@ -45,11 +45,13 @@ def env(monkeypatch):
         claim=AsyncMock(return_value="tok"),
         release=AsyncMock(),
         cap=AsyncMock(return_value=True),
-        member=AsyncMock(return_value={"id": CEO}),
+        members=AsyncMock(return_value=[{"kind": "human", "id": "user_1"}, {"kind": "agent", "id": CEO}]),
+        ceo=AsyncMock(return_value=CEO),
         advance=AsyncMock(),
         metric=MagicMock(),
     )
-    monkeypatch.setattr(mod.messaging_repo, "get_member", m.member)
+    monkeypatch.setattr(mod.messaging_repo, "list_members", m.members)
+    monkeypatch.setattr(mod.openclaw_work, "_fallback_ceo_id", m.ceo)
     monkeypatch.setattr(mod.meeting_invites, "advance", m.advance)
     monkeypatch.setattr(mod, "put_metric", m.metric)
     monkeypatch.setattr(mod.container_repo, "release_owner_lifecycle_claim", m.release)
@@ -59,10 +61,6 @@ def env(monkeypatch):
     monkeypatch.setattr(mod.meeting_invites, "_patch_meeting", AsyncMock(side_effect=patch_meeting))
     monkeypatch.setattr(mod.meeting_invites, "_post_line", m.line)
     monkeypatch.setattr(mod.messaging, "store_attachment", m.store)
-    company = SimpleNamespace(starter_agent_ids={"ceo": CEO})
-    monkeypatch.setattr(
-        mod, "PaperclipRepo", lambda **_: SimpleNamespace(resolve_owner_row=AsyncMock(return_value=company))
-    )
     monkeypatch.setattr(mod.agent_email, "team_address", AsyncMock(return_value="agents@acme.thelightbulb.company"))
     monkeypatch.setattr(mod.agent_email_repo, "get_by_address", AsyncMock(side_effect=lambda _a: m.row))
     monkeypatch.setattr(mod.agent_mail_tenant, "ensure_tenant", AsyncMock(return_value="tenant-1"))
@@ -110,7 +108,7 @@ async def test_on_ended_dispatches_exactly_one_notes_run(env):
     env.line.assert_awaited_once()
     args, kwargs = env.line.await_args.args, env.line.await_args.kwargs
     assert args[1:3] == (DEFAULT, f"meeting:{ROOM}:1790972400:notes")
-    env.member.assert_awaited_with(DEFAULT, "agent", CEO)
+    env.members.assert_awaited_with(DEFAULT)
     assert args[3].startswith("Write the meeting notes for Weekly sync: decisions, open questions")
     assert args[3].endswith("the transcript is attached")
     assert kwargs["dispatch_targets"] == [{"agentId": CEO, "eventKind": "user_request"}]
@@ -141,6 +139,7 @@ async def test_on_ended_proceeds_without_a_transcript_after_sixty_seconds(env):
         "**Weekly sync** ended. No transcript was captured, so there are no notes.",
     )
     assert "dispatch_targets" not in env.line.await_args.kwargs and "notesRunId" not in env.meta["meeting"]
+    assert env.meta["meeting"]["notesSkipped"] == "no_transcript"
     env.send.assert_awaited_once()
 
 
@@ -260,12 +259,35 @@ async def test_no_notes_or_mail_for_a_call_nobody_admitted_the_bot_to(env):
     env.advance.assert_awaited_once_with(ROOM)  # a series still moves on
 
 
-async def test_a_ceo_outside_the_output_room_gets_no_notes_run_but_the_mail_goes(env):
+async def test_a_ceo_outside_the_output_room_hands_the_notes_to_an_agent_that_is_in_it(env):
     env.meta["meeting"]["transcriptAttachedAt"] = 1
-    env.member.return_value = None
+    env.members.return_value = [{"kind": "agent", "id": "b-agent"}, {"kind": "agent", "id": "a-agent"}]
+    await mod.on_ended(ROOM)
+    assert env.line.await_args.kwargs["dispatch_targets"] == [{"agentId": "a-agent", "eventKind": "user_request"}]
+    env.send.assert_awaited_once()
+
+
+async def test_a_founder_roster_without_starter_ids_still_gets_its_notes(env):
+    """Prod 2026-10-04: a company row with no ``starter_agent_ids`` skipped the notes silently."""
+    env.meta["meeting"]["transcriptAttachedAt"] = 1
+    env.ceo.return_value = None
+    env.members.return_value = [{"kind": "agent", "id": "forge"}]
+    await mod.on_ended(ROOM)
+    assert env.line.await_args.kwargs["dispatch_targets"] == [{"agentId": "forge", "eventKind": "user_request"}]
+    assert env.meta["meeting"]["notesRunId"] == mod.messaging_repo.run_id_for("forge", "msg-1")
+    assert env.send.await_args.kwargs["subject"] == "Notes: Weekly sync"
+
+
+async def test_no_agent_to_write_the_notes_is_counted_marked_and_said_in_the_mail(env):
+    env.meta["meeting"]["transcriptAttachedAt"] = 1
+    env.members.return_value = [{"kind": "human", "id": "user_1"}]
     await mod.on_ended(ROOM)
     env.line.assert_not_awaited()
-    env.send.assert_awaited_once()
+    env.metric.assert_any_call("meeting.notes.skipped", dimensions={"why": "no_agent"})
+    assert env.meta["meeting"]["notesSkipped"] == "no_agent" and "notesRunId" not in env.meta["meeting"]
+    kw = env.send.await_args.kwargs
+    assert kw["subject"] == "Transcript: Weekly sync"
+    assert kw["body_text"].endswith("No notes were written: no agent in the room could write them.")
 
 
 async def test_on_ended_advances_after_the_attempt_either_way_but_not_beside_another(env):
@@ -318,6 +340,14 @@ async def test_without_a_default_room_the_mail_carries_the_transcript_and_no_lin
     assert kw["body_text"] == "Your Lightbulb agents joined Weekly sync.\n\n[20:23] Pat: Hi all\n"
     assert "/chat?room=" not in kw["body_text"]
     legacy.load.assert_called_once_with("org_1", ROOM, "att-1")
+
+
+async def test_the_mail_that_carries_the_transcript_also_says_when_no_notes_were_written(legacy):
+    legacy.members.return_value = [{"kind": "human", "id": "user_1"}]
+    await mod.on_ended(ROOM)
+    kw = legacy.send.await_args.kwargs
+    assert kw["subject"] == "Transcript: Weekly sync"
+    assert kw["body_text"].endswith("\n\nNo notes were written: no agent in the room could write them.")
 
 
 async def test_a_long_transcript_is_cut_and_says_so(legacy):
@@ -415,3 +445,26 @@ async def test_the_organizer_mail_is_from_the_public_address(env):
     env.row["public_address"] = "agents@thelightbulb.company"
     await mod.on_ended(ROOM)
     assert env.send.await_args.kwargs["from_addr"] == "agents@thelightbulb.company"
+
+
+UNSAID = [
+    {"runId": "r1", "agentId": "a1", "agentName": "Forge", "request": "open PRs?", "answer": "Three.", "at": 5},
+    {"runId": "r2", "agentId": "a2", "agentName": "Ledger", "request": "", "answer": "Burn is flat.", "at": 6},
+]
+_SAID = (
+    "Answers the team had ready and did not get to say:\n\nForge: open PRs?\nThree.\n\n"
+    "Ledger: (no request)\nBurn is flat."
+)
+
+
+async def test_unsaid_answers_reach_the_notes_run_and_the_mail(env):
+    env.meta["meeting"].update(transcriptAttachedAt=1, unsaid=UNSAID)
+    await mod.on_ended(ROOM)
+    assert env.line.await_args.args[3].endswith(_SAID)
+    assert env.send.await_args.kwargs["body_text"].endswith(_SAID)
+
+
+async def test_unsaid_answers_reach_the_mail_that_carries_the_transcript(legacy):
+    legacy.meta["meeting"]["unsaid"] = UNSAID
+    await mod.on_ended(ROOM)
+    assert legacy.send.await_args.kwargs["body_text"].endswith(_SAID)

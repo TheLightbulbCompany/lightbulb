@@ -401,9 +401,15 @@ async def test_a_member_reads_meetings_and_mail_both_ways(async_client_org_membe
         "start_at": 200,
         "end_at": 260,
         "repeats": True,
-        "transcripts": [{"start_at": 200}, {"start_at": 100}],
+        "transcripts": [
+            {"start_at": 200, "ended_at": None, "notes": None, "unsaid": []},
+            {"start_at": 100, "ended_at": None, "notes": None, "unsaid": []},
+        ],
         "notes_room_id": "room-now",
         "reason": None,
+        "ended_at": None,
+        "notes": None,
+        "unsaid": [],
     }
     assert body["meetings"][0]["repeats"] is False and body["meetings"][0]["transcripts"] == []
     assert body["meetings"][0]["invited_by"] is None
@@ -701,6 +707,22 @@ def test_an_ended_meeting_the_agents_never_entered_shows_as_not_admitted(meeting
     assert (view["status"], view["reason"], view["notes_room_id"]) == (status, reason, notes)
 
 
+@pytest.mark.parametrize(
+    ("meeting", "want"),
+    [
+        ({"status": "in_call", "inCallAt": 1}, None),  # not over yet
+        ({"status": "ended", "inCallAt": 1, "endedAt": 9}, "pending"),
+        ({"status": "bot_failed", "inCallAt": 1, "endedAt": 9}, "pending"),  # died mid-call: notes still owed
+        ({"status": "ended", "inCallAt": 1, "endedAt": 9, "notesRunId": "run-1"}, "posted"),
+        ({"status": "ended", "inCallAt": 1, "endedAt": 9, "notesSkipped": "no_agent"}, "skipped"),
+        ({"status": "ended", "endedAt": 9}, None),  # never admitted: no call, no notes
+    ],
+)
+def test_the_view_says_whether_notes_exist_and_when_the_call_ended(meeting, want):
+    view = agent_mail._meeting_view(M1, meeting)
+    assert view["notes"] == want and view["ended_at"] == meeting.get("endedAt")
+
+
 def test_the_junk_filter_still_reads_the_stored_status():
     old = time.time() - 2 * 86400
     assert agent_mail._junk({"status": "ended", "startAt": old}, time.time()) is True
@@ -742,3 +764,40 @@ async def test_the_badge_is_zero_before_the_workspace_has_an_address(async_clien
     ):
         r = await async_client_org_member.get("/api/v1/agent-mail/inbox/new", params={"since": "2026-10-03T12:00:00Z"})
     assert r.status_code == 200 and r.json() == {"count": 0}
+
+
+def test_the_view_returns_the_unsaid_answers_in_snake_case():
+    unsaid = [{"runId": "r1", "agentId": "a1", "agentName": "Forge", "request": "q", "answer": "a", "at": 5}]
+    view = agent_mail._meeting_view(M1, {"status": "ended", "inCallAt": 1, "unsaid": unsaid})
+    assert view["unsaid"] == [{"agent_id": "a1", "agent_name": "Forge", "request": "q", "answer": "a", "at": 5}]
+
+
+def test_each_transcript_row_reads_its_own_occurrence():
+    """Codex P2: a past occurrence's end, notes and unsaid come from its history entry, not the
+    current (next, empty) occurrence."""
+    unsaid = [{"runId": "r1", "agentId": "a1", "agentName": "Forge", "request": "q", "answer": "a", "at": 5}]
+    meeting = {
+        "status": "scheduled",
+        "history": [
+            {"startAt": 200, "transcriptId": "t2", "endedAt": 260, "notesRunId": "run-2", "unsaid": unsaid},
+            {"startAt": 100, "transcriptId": "t1", "endedAt": 160, "notesSkipped": "no_agent"},
+            {"startAt": 50, "transcriptId": "t0"},
+        ],
+    }
+    view = agent_mail._meeting_view(M1, meeting)
+    assert view["transcripts"] == [
+        {
+            "start_at": 200,
+            "ended_at": 260,
+            "notes": "posted",
+            "unsaid": [{"agent_id": "a1", "agent_name": "Forge", "request": "q", "answer": "a", "at": 5}],
+        },
+        {"start_at": 100, "ended_at": 160, "notes": "skipped", "unsaid": []},
+        # archived before the notes state was kept: unknown, never "pending" for ever
+        {"start_at": 50, "ended_at": None, "notes": None, "unsaid": []},
+    ]
+    # An archived occurrence is final: one whose notes failed every attempt has no marker either.
+    assert agent_mail._occurrence_notes(meeting, {"endedAt": 9}) is None
+    current = {"status": "ended", "inCallAt": 1, "endedAt": 9, "transcriptId": "t"}
+    assert agent_mail._meeting_view(M1, current)["transcripts"][0]["notes"] == "pending"  # still owed
+    assert (view["ended_at"], view["notes"], view["unsaid"]) == (None, None, [])  # the current occurrence

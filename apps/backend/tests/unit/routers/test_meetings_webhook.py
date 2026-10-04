@@ -7,6 +7,7 @@ import hmac
 import json
 import os
 import time
+from datetime import datetime, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -48,7 +49,10 @@ def env():
         "meeting": {"uid": "u1", "title": "Sync", "status": "bot_created", "recallBotId": "bot-1", "ticketNonce": "n"},
     }
 
-    async def patch_meeting(room_id, fields, drop=()):
+    async def patch_meeting(room_id, fields, drop=(), when=None):
+        if when is not None and not when(meta["meeting"]):
+            return None
+        fields = fields(meta["meeting"]) if callable(fields) else fields
         meta["meeting"] = {**meta["meeting"], **fields}
         return meta["meeting"]
 
@@ -141,6 +145,37 @@ def test_call_ended_closes_the_room_once(env):
     env["notes"].assert_called_once_with(ROOM)
 
 
+def _at_time(payload: dict, stamp) -> dict:
+    payload["data"]["data"]["updated_at"] = stamp
+    return payload
+
+
+def test_the_end_time_is_the_events_own_and_written_once(env):
+    """A late or retried delivery records when the call ended, not when the webhook landed."""
+    env["meta"]["meeting"].update(status="in_call", inCallAt=1)
+    hour_ago = int(time.time()) - 3600
+    stamp = datetime.fromtimestamp(hour_ago, timezone.utc).isoformat().replace("+00:00", "Z")
+    _post(env["client"], _at_time(_status("call_ended"), stamp))
+    _post(env["client"], _at_time(_status("done"), None))
+    assert env["meta"]["meeting"]["endedAt"] == hour_ago
+
+
+@pytest.mark.parametrize("stamp", [None, "not a time"])
+def test_an_end_without_a_readable_event_time_falls_back_to_now(env, stamp):
+    env["meta"]["meeting"].update(status="in_call", inCallAt=1)
+    with patch.object(mod.time, "time", return_value=1790990000.0):
+        _post(env["client"], _at_time(_status("fatal", sub_code="meeting_not_found"), stamp))
+    assert env["meta"]["meeting"]["endedAt"] == 1790990000
+
+
+def test_a_fatal_and_an_idle_leave_record_the_end_time_too(env):
+    _post(env["client"], _status("fatal", sub_code="meeting_not_found"))
+    assert env["meta"]["meeting"]["endedAt"]
+    env["meta"]["meeting"] = {"status": "in_call", "inCallAt": 1, "recallBotId": "bot-1"}
+    assert _leave(env["client"]).status_code == 200
+    assert env["meta"]["meeting"]["status"] == "ended" and env["meta"]["meeting"]["endedAt"]
+
+
 def test_fatal_knocking_disabled_posts_a_plain_line(env):
     _post(env["client"], _status("fatal", sub_code="google_meet_knocking_disabled"))
     meeting = env["meta"]["meeting"]
@@ -191,8 +226,82 @@ def test_realtime_speech_on_is_one_speaker_packet(env):
     }
     assert _post(env["client"], payload, "/api/v1/webhooks/recall/realtime").status_code == 200
     env["speaker"].assert_awaited_once_with(
-        ROOM, {"participantId": "7", "name": "Pat", "speaking": True, "at": 1790985601.0}
+        ROOM,
+        {"kind": "speech_on", "participantId": "7", "name": "Pat", "speaking": True, "at": 1790985601.0, "roster": []},
     )
+
+
+def _event(kind: str, pid, name: str) -> dict:
+    return {
+        "event": f"participant_events.{kind}",
+        "data": {
+            "data": {"participant": {"id": pid, "name": name}},
+            "bot": {"id": "bot-1", "metadata": {"roomId": ROOM}},
+        },
+    }
+
+
+def _realtime(env, kind, pid, name):
+    assert _post(env["client"], _event(kind, pid, name), "/api/v1/webhooks/recall/realtime").status_code == 200
+    return env["speaker"].await_args.args[1]
+
+
+def test_realtime_relays_the_kind_and_keeps_the_roster_on_the_meeting(env):
+    assert _realtime(env, "join", 1, "Pat")["roster"] == ["Pat"]
+    assert _realtime(env, "join", 2, "Dan")["roster"] == ["Dan", "Pat"]
+    # The bot's own join (Meet lists it as a participant) is never a person.
+    assert _realtime(env, "join", 3, "Acme" + mod.meeting_bots._BOT_SUFFIX)["roster"] == ["Dan", "Pat"]
+    got = _realtime(env, "leave", 1, "Pat")
+    assert got["kind"] == "leave" and got["speaking"] is False and got["roster"] == ["Dan"]
+    # Kept on META, so a worker that came in after the joins hears the roster on any later event.
+    assert mod._names(env["meta"]["meeting"]["roster"]) == ["Dan"]
+    got = _realtime(env, "speech_on", 2, "Dan")
+    assert got["kind"] == "speech_on" and got["roster"] == ["Dan"]
+
+
+def test_an_older_join_that_lands_after_a_newer_leave_does_not_bring_the_person_back():
+    """Realtime events are background tasks: a join's write can commit after the leave that followed it."""
+    left = mod._rostered({}, "leave", "1", "Pat", 2000)
+    assert mod._names(mod._rostered(left, "join", "1", "Pat", 1000)) == []
+    assert mod._names(mod._rostered(left, "join", "1", "Pat", 3000)) == ["Pat"]
+    joined = mod._rostered({}, "join", "1", "Pat", 2000)
+    assert mod._names(mod._rostered(joined, "leave", "1", "Pat", 1000)) == ["Pat"]
+
+
+def test_the_roster_in_a_packet_is_bounded():
+    """A 300-person Meet with long names must not push the speaker packet past LiveKit's size limit."""
+    roster = {str(i): {"name": f"{i:03d} " + "x" * 200, "at": 1, "in": True} for i in range(300)}
+    names = mod._names(roster)
+    assert len(names) == 50 and max(map(len, names)) == 80 and len(json.dumps(names)) < 8_000
+
+
+def test_the_roster_kept_on_the_meeting_is_bounded():
+    """A long, large Meet: names are cut and the oldest leavers are dropped before anyone present."""
+    roster = {}
+    for i in range(150):
+        roster = mod._rostered(roster, "join", str(i), "x" * 300, i)
+        roster = mod._rostered(roster, "leave", str(i), "", 1000 + i)
+    for i in range(150, 300):
+        roster = mod._rostered(roster, "join", str(i), f"p{i}", 2000 + i)
+    assert len(roster) == 200 and all(len(p.get("name", "")) <= 80 for p in roster.values())
+    assert sum(1 for p in roster.values() if p["in"]) == 150 and "0" not in roster and "149" in roster
+
+
+def test_a_roster_write_refused_for_a_moved_occurrence_relays_nothing(env):
+    """The bot id is re-checked inside the write: a series that advanced between the read and the
+    write never takes an old bot's join into its next occurrence's roster."""
+    with patch.object(mod.meeting_invites, "_patch_meeting", AsyncMock(return_value=None)) as patched:
+        assert _post(env["client"], _event("join", 1, "Pat"), "/api/v1/webhooks/recall/realtime").status_code == 200
+    env["speaker"].assert_not_awaited()
+    when = patched.await_args.kwargs["when"]
+    assert when({"recallBotId": "bot-1"}) and not when({"recallBotId": "bot-2"})
+
+
+def test_realtime_still_relays_when_the_roster_write_fails(env):
+    """Best effort: the event goes out with the roster it would have written; the next join retries."""
+    with patch.object(mod.meeting_invites, "_patch_meeting", AsyncMock(side_effect=RuntimeError("ddb"))):
+        assert _realtime(env, "join", 1, "Pat")["roster"] == ["Pat"]
+    env["metric"].assert_any_call("meeting.roster.write_failed")
 
 
 def _leave(client):

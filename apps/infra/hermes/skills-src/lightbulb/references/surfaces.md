@@ -98,15 +98,19 @@ private: it never appears in Lightbulb, and you cannot read it. If a person asks
 why their session is missing, tell them to start it with `lightbulb claude` (or
 `lightbulb codex`) or from **New session**.
 
-**New session**: has no first message and no Start button. The person picks the
+**New session** (web and desktop): has no first message and no Start button. The person picks the
 approved folder, then presses **Claude Code** or **Codex**. The terminal opens on the
-tool's own start screen, where they can type anything, including `/resume`.
+tool's own start screen, where they can type anything, including `/resume`. The iPhone app still asks for a first message
+("First message", "Send to Mac").
 
 Rooms' **Devices & sessions** panel lists human-shared Claude/Codex sessions;
 opening one from that list opens the session in that room's right column.
 Opening a session from the sidebar Sessions section or from a session link
-instead fills the middle with the sharer's DM beside it. Either way the view
-renders the native transcript with the harness's own grammar: prompts with the sender's name,
+instead fills the middle with the sharer's DM beside it. A running session
+shows as a live terminal. A live terminal has no Lightbulb message box under it: the terminal is the only input (the box returns only if the Mac refuses remote typing). A viewer who cannot type sees a "Watching · Ask to join" line instead. A session that is not running (ended, or its Mac is
+offline) shows as a transcript, labelled "Transcript" in its status line. The
+sidebar Sessions section lists live sessions; All sessions lists every session. The
+transcript renders the native transcript with the harness's own grammar: prompts with the sender's name,
 tool calls with collapsed output previews, thinking markers, turn boundaries
 and a working line. Codex sessions read as `• Ran …` / `└ output`; Claude
 sessions as `⏺ Bash(…)` / `⎿ output`. Updates arrive block by block, not token
@@ -173,8 +177,8 @@ read the session, and the owner on another device, watch the same terminal live;
 it falls back to the transcript when the session is not running or has no
 frames. The owner, anyone accepted through **Ask to join**, or everyone when
 **Let teammates control this session** is on can type straight into it,
-including answering the tool's own prompts; others watch read-only. The message
-box stays under the terminal. Pausing sharing or removing someone cuts their
+including answering the tool's own prompts; others watch read-only and see a "Watching · Ask to join" line. There is no message
+box under a live terminal. Pausing sharing or removing someone cuts their
 input at once, and so does leaving the workspace; the owner sees "<name> is
 typing". You never get the screen or keyboard: you cannot watch or type into a
 person's terminal. You read the session's structured record with

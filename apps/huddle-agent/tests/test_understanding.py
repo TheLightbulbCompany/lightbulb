@@ -5,7 +5,7 @@ import asyncio
 from huddle_agent import huddle as h_mod
 from huddle_agent.backend import BackendError
 from test_huddle import answer, metric_count, ops, say, settle
-from test_request_engine import LINE, TASKS, three
+from test_request_engine import LINE, TASKS, quiet, three
 
 ASKS = [
     ("forge", "the open PRs", "fit"),
@@ -1133,3 +1133,215 @@ async def test_a_refused_voice_still_runs_every_understood_request():
         ("friday", "the numbers"),
     ]
     assert [s for _, _, s in rows(h)] == ["working", "working"]
+
+
+# -- Task B5: one acknowledgement per turn; cancel and steer; a held line is never lost (understanding §4.4-§4.6) --
+
+WAIT = "Say that in one short sentence, then wait."
+
+
+def acks(live):
+    return [c[1] for c in live.calls if c[0] == "thinking" and c[1].endswith(WAIT)]
+
+
+async def test_two_finals_get_one_acknowledgement_after_the_quiet_second_of_open_rows_only():
+    h, room, backend, lives, clock, log = await floor_open()
+    backend.route_extra = ops(
+        requests=[("forge", "the open PRs", "fit"), ("friday", "Aden's email", "fit")]
+    )
+    await say(h, "u1", "what are the open PRs and check Aden's email")
+    clock.t += 0.5
+    await h.tick()
+    backend.route_extra = ops(requests=[("forge", "what shipped", "fit")])
+    await say(h, "u1", "and what shipped")
+    assert [s for _, _, s in rows(h)] == ["working", "working", "queued"]
+    await quiet(h, clock, 0.5)
+    assert acks(lives[0]) == []  # still within the quiet second of the second final
+    answer(
+        h, h._requests.items[0].run_id, "forge", "Two PRs are open."
+    )  # said: no longer open
+    await settle(h)
+    await quiet(h, clock, 0.5)
+    assert acks(lives[0]) == [
+        "You are on what shipped. Friday is on Aden's email. " + WAIT
+    ]
+    i = next(
+        i
+        for i, c in enumerate(lives[0].calls)
+        if c[0] == "thinking" and c[1].endswith(WAIT)
+    )
+    assert lives[0].calls[i + 1] == ("nudge",)
+    await quiet(h, clock, 2)
+    assert len(acks(lives[0])) == 1
+
+
+async def test_a_single_own_working_row_gets_no_acknowledgement():
+    h, room, backend, lives, clock, log = await floor_open()
+    await say(h, "u1", PRS)
+    await quiet(h, clock, 2)
+    assert acks(lives[0]) == [] and [s for _, _, s in rows(h)] == ["working"]
+
+
+async def test_a_row_queued_behind_the_floor_agents_first_is_next_in_line_once():
+    h, room, backend, lives, clock, log = await floor_open()
+    await say(h, "u1", PRS)
+    await quiet(h, clock, 2)
+    backend.route_extra = ops(requests=[("forge", "what shipped", "fit")])
+    await say(h, "u1", "and what shipped")
+    await quiet(h, clock, 2)
+    await quiet(h, clock, 2)
+    assert acks(lives[0]) == ["What shipped is next in line for you. " + WAIT]
+
+
+async def test_a_delegation_answered_with_the_acknowledgement_is_not_acknowledged_again():
+    h, room, backend, lives, clock, log = await floor_open()
+    backend.route_extra = ops(requests=[("friday", "Aden's email", "fit")])
+    await say(h, "u1", "check Aden's email")
+    await h.on_delegation("forge", "deleg-1", "check Aden's email")
+    await quiet(h, clock, 2)
+    assert acks(lives[0]) == [] and lives[0].calls[-1][0] == "commentary"
+
+
+async def test_cancel_of_a_working_row_aborts_it_and_its_answer_is_never_said_or_posted(
+    capsys,
+):
+    h, room, backend, lives, clock, log = await floor_open()
+    await say(h, "u1", PRS)
+    run_id = backend.turns[0]["runId"]
+    backend.route_extra = ops(cancel=["r1"])
+    await say(h, "u1", "forget the PRs")
+    assert backend.aborts == [run_id] and rows(h) == [
+        ("forge", "the open PRs", "cancelled")
+    ]
+    assert lives[0].calls[-2:] == [
+        ("thinking", 'Forge dropped: "the open PRs".', None),
+        ("nudge",),
+    ]
+    n = len(lives[0].calls)
+    answer(h, run_id, "forge", "Two PRs are open.")
+    await settle(h)
+    await quiet(h, clock, 2)
+    assert not [c for c in lives[0].calls[n:] if c[0] == "commentary"]
+    await h.clear_presence()
+    assert backend.late_answers == [] and len(backend.turns) == 1
+    assert metric_count(capsys, "live.request.cancelled") == 1
+
+
+async def test_cancel_of_a_queued_row_never_runs_it_and_drops_its_ready_answer():
+    h, room, backend, lives, clock, log = await floor_open()
+    await say(h, "u1", PRS)
+    backend.route_extra = ops(requests=[("forge", "what shipped", "fit")])
+    await say(h, "u1", "and what shipped")
+    backend.route_extra = ops(cancel=["r2", "r9"])  # an unknown id is ignored
+    await say(h, "u1", "skip the shipped one")
+    answer(h, backend.turns[0]["runId"], "forge", "Two PRs are open.")
+    await settle(h)
+    assert [s for _, _, s in rows(h)] == ["delivered", "cancelled"] and len(
+        backend.turns
+    ) == 1
+    # a ready answer someone cancels is dropped too: never spoken, never posted
+    backend.route_extra = ops(requests=[("friday", "Aden's email", "fit")])
+    await say(h, "u1", "and check Aden's email")
+    friday = h._requests.items[-1]
+    answer(h, friday.run_id, "friday", "One new email.")
+    await settle(h)
+    assert friday.status == "ready" and "friday" in h._news
+    backend.route_extra = ops(cancel=[friday.id])
+    await say(h, "u1", "never mind the email")
+    assert friday.status == "cancelled" and "friday" not in h._news
+    await h.clear_presence()
+    assert backend.late_answers == []
+
+
+async def test_steer_of_a_working_row_goes_into_its_run(capsys):
+    h, room, backend, lives, clock, log = await floor_open()
+    await say(h, "u1", PRS)
+    run_id = backend.turns[0]["runId"]
+    backend.steer = True
+    backend.route_extra = ops(steer=[("r1", "make that last month")])
+    await say(h, "u1", "make that last month")
+    assert [
+        (s["steerRunId"], s["utterance"], s["agentId"]) for s in backend.late_steers
+    ] == [(run_id, "make that last month", "forge")]
+    assert len(h._requests.items) == 1 and len(backend.turns) == 1
+    assert ("thinking", 'Added to "the open PRs": make that last month', None) in lives[
+        0
+    ].calls
+    assert metric_count(capsys, "live.request.steered") == 1
+
+
+async def test_a_refused_steer_becomes_a_new_row_for_the_same_agent():
+    h, room, backend, lives, clock, log = await floor_open()
+    await say(h, "u1", PRS)
+    backend.route_extra = ops(steer=[("r1", "make that last month")])
+    await say(h, "u1", "make that last month")
+    assert len(backend.late_steers) == 1
+    assert rows(h) == [
+        ("forge", "the open PRs", "working"),
+        ("forge", "make that last month", "queued"),
+    ]
+    answer(h, backend.turns[0]["runId"], "forge", "Two PRs are open.")
+    await settle(h)
+    assert backend.turns[-1]["utterance"] == "make that last month"
+
+
+async def test_steer_of_a_queued_row_adds_to_its_task():
+    h, room, backend, lives, clock, log = await floor_open()
+    await say(h, "u1", PRS)
+    backend.route_extra = ops(requests=[("forge", "what shipped", "fit")])
+    await say(h, "u1", "and what shipped")
+    backend.route_extra = ops(steer=[("r2", "only for the web app")])
+    await say(h, "u1", "only for the web app")
+    assert backend.late_steers == [] and len(h._requests.items) == 2
+    answer(h, backend.turns[0]["runId"], "forge", "Two PRs are open.")
+    await settle(h)
+    assert backend.turns[-1]["utterance"] == "what shipped. only for the web app"
+
+
+async def test_steer_of_an_unknown_row_is_a_new_row_for_the_floor_agent_or_ignored():
+    h, room, backend, lives, clock, log = await floor_open()
+    backend.route_extra = ops(steer=[("r7", "the web app too")])
+    await say(h, "u1", "the web app too")
+    assert rows(h) == [("forge", "the web app too", "working")]
+    h, room, backend, lives, clock, log = await three()
+    backend.route_extra = ops(steer=[("r7", "the web app too")])
+    await say(h, "u1", "the web app too")
+    assert h._requests.items == [] and backend.turns == [] and lives == []
+
+
+async def test_a_held_line_is_applied_after_four_quiet_seconds(capsys):
+    h, room, backend, lives, clock, log = await three()
+    backend.route_extra = {
+        **ops(requests=[("forge", "the open PRs", "fit")]),
+        "hold": True,
+    }
+    await say(h, "u1", "what are the open PRs and")
+    assert backend.turns == [] and "u1" in h._held
+    await quiet(h, clock, 3.5)
+    assert backend.turns == []
+    await quiet(h, clock, 0.5)
+    assert [t["utterance"] for t in backend.turns] == ["the open PRs"] and len(
+        backend.routes
+    ) == 1
+    assert h._held == {} and metric_count(capsys, "live.hold.applied") == 1
+    await quiet(h, clock, 5)
+    assert len(backend.turns) == 1
+
+
+async def test_a_held_line_the_speaker_continues_is_merged_not_applied():
+    h, room, backend, lives, clock, log = await three()
+    backend.route_extra = {
+        **ops(requests=[("forge", "the open PRs", "fit")]),
+        "hold": True,
+    }
+    await say(h, "u1", "what are the open PRs and")
+    await quiet(h, clock, 1)
+    backend.route_extra = ops(
+        requests=[("forge", "the open PRs and the closed ones", "fit")]
+    )
+    await say(h, "u1", "the closed ones")
+    assert backend.routes[-1][1] == "what are the open PRs and the closed ones"
+    await quiet(h, clock, 5)
+    assert [t["utterance"] for t in backend.turns] == [
+        "the open PRs and the closed ones"
+    ]

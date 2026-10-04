@@ -160,6 +160,15 @@ class RequestList:
     def fail(self, r: Request) -> None:
         self._move([r], "failed")
 
+    def drop(self, r: Request) -> None:
+        """One row called off by what it was about (understanding §4.4 `cancel`)."""
+        self._move([r], "cancelled")
+
+    def amend(self, r: Request, text: str) -> None:
+        """A queued row's correction (§4.4 `steer`): the speaker's words, added to the task it will run."""
+        r.task = f"{r.task}. {text}" if r.task else text
+        self._bump()
+
     def cancel(self, agent: str | None = None, mark: int = -1) -> list[Request]:
         """Every open row (of `agent`), and every line said at or before `mark` (the stop's own line)."""
         rows = [r for r in self.open() if agent in (None, r.agent)]

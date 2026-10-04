@@ -177,6 +177,7 @@ fn from_rollout(
         .as_str()
         .ok_or("missing runtime version")?;
     let (status, active_turn, title) = tail_state(&path);
+    let title = root.parent().and_then(|codex| thread_name(&codex.join("session_index.jsonl"), conversation)).or(title);
     Ok(NativeSession {
         provider: "codex".into(),
         conversation: conversation.into(),
@@ -554,6 +555,23 @@ fn title_in_window(file: &mut fs::File, offset: u64) -> Option<String> {
         }
     }
     None
+}
+
+/// The name Codex gave the thread (or the person, with `/rename`): Codex appends one
+/// `session_index.jsonl` row per naming, so the newest row for the thread wins. Only the
+/// file's last MiB is read; a thread named before that falls back to its first prompt.
+fn thread_name(index: &Path, thread: &str) -> Option<String> {
+    let mut file = secure_file(index).ok()?;
+    let len = file.metadata().ok()?.len();
+    file.seek(SeekFrom::Start(len.saturating_sub(1024 * 1024))).ok()?;
+    let mut text = String::new();
+    file.read_to_string(&mut text).ok()?;
+    text.lines().rev().find_map(|line| {
+        let row: Value = serde_json::from_str(line).ok()?;
+        (row["id"] == thread).then(|| row["thread_name"].as_str().map(|n| n.trim().to_owned())).flatten()
+    })
+    .filter(|name| !name.is_empty())
+    .map(|name| redact(&name).chars().take(60).collect())
 }
 
 /// Prefer the first prompt so the title survives a long turn and stays stable;
@@ -1947,4 +1965,20 @@ mod tests {
         assert_eq!((start["text"].as_str(), start["subagent"].as_str()), (Some("Poincare"), Some("child-1")));
         assert_eq!(start["tool"]["input"]["subagentType"], "explorer");
     }
+    #[test]
+    fn local_sessions_codex_thread_name_is_the_newest_index_row() {
+        let dir = tempfile::tempdir().unwrap();
+        let index = dir.path().join("session_index.jsonl");
+        assert_eq!(thread_name(&index, "t1"), None, "no index: the first prompt stays the title");
+        fs::write(&index, concat!(
+            "{\"id\":\"t1\",\"thread_name\":\"First name\"}\n",
+            "{\"id\":\"t2\",\"thread_name\":\"Other thread\"}\n",
+            "not json\n",
+            "{\"id\":\"t1\",\"thread_name\":\"Renamed\"}\n",
+        )).unwrap();
+        assert_eq!(thread_name(&index, "t1").as_deref(), Some("Renamed"));
+        assert_eq!(thread_name(&index, "t2").as_deref(), Some("Other thread"));
+        assert_eq!(thread_name(&index, "t3"), None);
+    }
+
 }

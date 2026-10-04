@@ -3,6 +3,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { ApiError } from "../api/error";
 import type {
   LocalSession,
+  LocalSessionCommandReceipt,
   LocalSessionPickup,
   LocalSessionApprovalMode,
   LocalSessionAuditEntry,
@@ -10,11 +11,13 @@ import type {
   PrivateSendApproval,
 } from "./types";
 import type { createMessagingClient } from "./client";
+import { AUTO_CHECK_INTERVAL_MS, receiptChip, type SessionCommandAttempt, type SessionReceiptChip } from "./useSessionCommand";
 
 type Client = Pick<ReturnType<typeof createMessagingClient>,
   "submitLocalSessionCommand" | "cancelLocalSessionCommand" | "listLocalSessionOutbox" | "getPrivateSendApproval"
   | "setLocalSessionTeamControl" | "listLocalSessionAudit" | "setLocalSessionUsageSharing"
-  | "setLocalSessionPickup" | "setLocalSessionSharing" | "requestLocalSessionJoin" | "removeLocalSessionSender">;
+  | "setLocalSessionPickup" | "setLocalSessionSharing" | "requestLocalSessionJoin" | "removeLocalSessionSender"
+  | "resumeLocalSession" | "revokeLocalSessionResume" | "getLocalSessionCommand" | "getLocalSession">;
 
 /** A session client that may predate the control routes (test doubles, older callers). */
 export type SessionControlClient = Pick<Client, "submitLocalSessionCommand"> & Partial<Omit<Client, "submitLocalSessionCommand">>;
@@ -141,6 +144,8 @@ const ACTION_LINE: Record<LocalSessionAuditEntry["action"], string> = {
   join_allowed: "",
   join_declined: "",
   sender_removed: "",
+  resume_requested: "asked to resume this session",
+  resume_revoked: "",
 };
 
 /** Owner decisions about one person, by the person they were about. */
@@ -148,6 +153,7 @@ const SUBJECT_LINE: Partial<Record<LocalSessionAuditEntry["action"], (subject: s
   join_allowed: subject => `let ${subject} send to this session`,
   join_declined: subject => `declined ${subject}'s request to join`,
   sender_removed: subject => `removed ${subject} from this session`,
+  resume_revoked: subject => `stopped ${subject} from resuming this session`,
 };
 
 /** "Aden approved a permission prompt from Lightbulb" -- the transcript's audit line. */
@@ -158,7 +164,7 @@ export function auditLine(entry: LocalSessionAuditEntry, nameOf: (userId: string
   const failed = entry.state === "rejected" ? " (not delivered)" : entry.state === "unknown" ? " (delivery unknown)" : "";
   const subjectLine = SUBJECT_LINE[entry.action];
   if (subjectLine) return `${who} ${subjectLine(entry.subjectUserId ? nameOf(entry.subjectUserId) : "a teammate")}`;
-  const where = /^(team_control|share_link|pickup|picked_up|join_)/.test(entry.action) ? "" : " from Lightbulb";
+  const where = /^(team_control|share_link|pickup|picked_up|join_|resume_)/.test(entry.action) ? "" : " from Lightbulb";
   return `${who} ${ACTION_LINE[entry.action]}${where}${failed}`;
 }
 
@@ -358,3 +364,143 @@ const UNAVAILABLE: Record<string, string> = {
   "too-large": "This session is too large to snapshot.",
   "unsupported-version": "The owner's Claude Code is too old to be picked up from.",
 };
+
+/** An ApiProblem body's own `message`, when it carries one. */
+function problemMessage(body: unknown): string | null {
+  const m = (body as { message?: unknown } | null)?.message;
+  return typeof m === "string" && m ? m : null;
+}
+
+/**
+ * "Resume and send" (spec §5.7): an ended session, for its owner and for the people who could send
+ * to it when it ended, while no other resume waits. The backend enforces the same rule.
+ */
+export function canResumeSession(session: LocalSession, own: boolean, userId?: string | null): boolean {
+  return session.resumable === true && session.status === "ended" && session.kind !== "background" && session.resume?.state !== "pending" &&
+    (own || (!!userId && (session.resumeAllowed ?? []).includes(userId)));
+}
+
+const RESUME_REFUSED: Record<string, (mac: string, folder: string) => string> = {
+  ALREADY_RUNNING: mac => `it is already running on ${mac}`,
+  FOLDER_NOT_APPROVED: (mac, folder) => `${folder} is no longer an approved folder on ${mac}`,
+  FOLDER_MISSING: mac => `its folder is no longer on ${mac}`,
+  TOOL_UNAVAILABLE: mac => `its CLI is no longer installed on ${mac}`,
+  SHARING_OFF: mac => `session sharing is off on ${mac}`,
+};
+
+/** One line about a resume already asked for (waiting, or refused by the Mac), or null. */
+export function resumeStatus(session: LocalSession, own: boolean, ownerName: string, nameOf: (userId: string) => string, userId?: string | null): string | null {
+  const resume = session.resume;
+  if (!resume) return null;
+  const mac = own ? "your Mac" : `${ownerName}’s Mac`;
+  if (resume.state === "failed") return `Not resumed: ${(RESUME_REFUSED[resume.reason ?? ""] ?? ((m: string) => `${m} could not start it`))(mac, session.cwdName || "its folder")}.`;
+  const who = resume.byUserId === userId ? "You" : nameOf(resume.byUserId);
+  return `${who} asked to resume this session. It starts on ${mac} when that Mac is on, within 24 hours.`;
+}
+
+export type SessionResumeFlow = {
+  available: boolean; status: string | null; saving: boolean; error: string | null;
+  resume: (message: string) => Promise<boolean>;
+  /** Where the first message stands once the session runs again; null before, and once it landed. */
+  chip: SessionReceiptChip | null;
+};
+
+/** The first message of each resume this page asked for, by session: the view that shows its
+ * delivery may remount when the session starts running again. */
+const firstMessages = new Map<string, { requestId: string; text: string }>();
+
+export function useSessionResume(client: SessionControlClient, prop: LocalSession, opts: {
+  own: boolean; userId?: string | null; ownerName: string; nameOf: (userId: string) => string; uuid: () => string;
+}): SessionResumeFlow {
+  const { own, userId, ownerName, nameOf, uuid } = opts;
+  // Ended sessions are absent from workspace listings, so the page's copy goes stale once a resume
+  // is asked or refused: keep the newer read while this is still the same ended run.
+  const [fresh, setFresh] = useState<LocalSession | null>(null);
+  const session = fresh && fresh.sessionId === prop.sessionId && fresh.generation === prop.generation && prop.status === "ended" ? fresh : prop;
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [first, setFirst] = useState(() => firstMessages.get(session.sessionId) ?? null);
+  const [receipt, setReceipt] = useState<LocalSessionCommandReceipt | null>(null);
+  const [check, setCheck] = useState<"waiting" | "missing" | "uncertain">("waiting");
+  // One id per attempt: a retry after a lost reply is the same request, never a second resume.
+  const attemptId = useRef<string | null>(null);
+  const running = session.status !== "ended";
+  const resume = useCallback(async (message: string) => {
+    if (!client.resumeLocalSession) return false;
+    const resumeId = attemptId.current ?? uuid();
+    attemptId.current = resumeId;
+    const text = message.trim();
+    setSaving(true); setError(null);
+    try {
+      const updated = await client.resumeLocalSession(session.sessionId, { resumeId, ...(text ? { message: text } : {}) });
+      attemptId.current = null;
+      if (updated?.status === "ended") setFresh(updated);
+      if (text) {
+        const sent = { requestId: resumeId, text };
+        firstMessages.set(session.sessionId, sent);
+        setFirst(sent); setReceipt(null); setCheck("waiting");
+      }
+      return true;
+    } catch (e) {
+      // A refusal is final for this id; only an unanswered request is retried as itself.
+      if (e instanceof ApiError && e.status < 500) attemptId.current = null;
+      setError(!(e instanceof ApiError) ? "Could not reach Lightbulb. Try again."
+        : e.status === 409 ? problemMessage(e.body) ?? "Someone already asked to resume this session, or it is running again."
+          : e.status === 403 ? "You can no longer resume this session."
+            : e.status === 400 || e.status === 422 ? "That message is too long."
+              : "Could not resume this session. Try again.");
+      return false;
+    } finally { setSaving(false); }
+  }, [client, session.sessionId, uuid]);
+  const pending = session.status === "ended" && session.resume?.state === "pending";
+  useEffect(() => {
+    const read = client.getLocalSession;
+    if (!pending || !read) return;
+    let alive = true;
+    let tries = 0;
+    const tick = async () => {
+      tries += 1;
+      try {
+        const latest = await read(session.sessionId);
+        if (!alive) return;
+        if (latest.status === "ended") setFresh(latest);
+        if (latest.status !== "ended" || latest.resume?.state !== "pending") clearInterval(timer);
+      } catch { /* the next tick asks again */ }
+      if (tries >= 15) clearInterval(timer);
+    };
+    const timer = setInterval(() => void tick(), AUTO_CHECK_INTERVAL_MS);
+    return () => { alive = false; clearInterval(timer); };
+  }, [client, session.sessionId, pending]);
+  useEffect(() => {
+    const get = client.getLocalSessionCommand;
+    if (!first || !running || !get) return;
+    let alive = true;
+    let tries = 0;
+    const tick = async () => {
+      tries += 1;
+      try {
+        const latest = await get(session.sessionId, first.requestId);
+        if (!alive) return;
+        setReceipt(latest); setCheck("waiting");
+        if (latest.state !== "pending" && latest.state !== "dispatched") { clearInterval(timer); firstMessages.delete(session.sessionId); }
+      } catch (e) {
+        if (alive) setCheck(e instanceof ApiError && e.status === 404 ? "missing" : "uncertain");
+      }
+      if (tries >= 15) clearInterval(timer);
+    };
+    const timer = setInterval(() => void tick(), AUTO_CHECK_INTERVAL_MS);
+    void tick();
+    return () => { alive = false; clearInterval(timer); };
+  }, [client, session.sessionId, running, first]);
+  const attempt: SessionCommandAttempt | null = first && running ? {
+    request: { requestId: first.requestId, expectedGeneration: session.generation, kind: "send", text: first.text },
+    state: receipt ? "received" : check === "missing" ? "rejected" : check === "uncertain" ? "uncertain" : "sending",
+    ...(receipt ? { receipt } : {}),
+    ...(check === "missing" && !receipt ? { error: "The session started again without it." } : {}),
+  } : null;
+  return {
+    available: !!client.resumeLocalSession && canResumeSession(session, own, userId),
+    status: resumeStatus(session, own, ownerName, nameOf, userId),
+    saving, error, resume, chip: receiptChip(attempt),
+  };
+}

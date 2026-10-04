@@ -131,6 +131,7 @@ def registration(**changes):
         providerVersion="0.149.0",
         status="busy",
         activeTurnId="turn-1",
+        holderId="ab12cd34",
     )
     session.update(changes)
     return {"type": "local.session.register", "session": session}
@@ -1351,16 +1352,18 @@ async def test_session_title_registers_updates_on_heartbeat_and_survives_silent_
 
 
 @pytest.mark.asyncio
-async def test_background_job_registration_persists_its_kind_and_omitted_reads_interactive(transport):
+async def test_register_without_a_holder_is_refused_and_a_held_one_records_it(transport):
     await service.set_enrollment(ALICE, service.EnrollmentRequest(deviceId=MAC, cliDeviceId=CLI, enabled=True))
     connect(transport)
-    job = await relay(transport).handle_message("conn-1", registration(kind="background"))
-    assert (await repo.get_session(OWNER, job["sessionId"]))["kind"] == "background"
-    # A desktop that predates background jobs sends no kind at all.
-    terminal = await relay(transport).handle_message("conn-1", registration(nativeConversationId="thread-2"))
-    assert (await repo.get_session(OWNER, terminal["sessionId"]))["kind"] == "interactive"
-    with pytest.raises(ApiProblem):
-        await relay(transport).handle_message("conn-1", registration(nativeConversationId="thread-3", kind="cron"))
+    unheld = registration()
+    del unheld["session"]["holderId"]
+    # Shared iff held: an older desktop, a forged id and the deleted background kind are all refused.
+    for body in (unheld, registration(holderId=None), registration(holderId="../x"), registration(kind="background")):
+        with pytest.raises(ApiProblem) as excinfo:
+            await relay(transport).handle_message("conn-1", body)
+        assert excinfo.value.error.code == "INVALID_REQUEST"
+    held = await relay(transport).handle_message("conn-1", registration())
+    assert (await repo.get_session(OWNER, held["sessionId"]))["holderId"] == "ab12cd34"
 
 
 @pytest.mark.asyncio
@@ -1596,6 +1599,35 @@ async def test_device_heartbeat_renews_listed_sessions_and_rejects_foreign_or_en
     assert response["rejected"] == ["not-mine"]
     assert response["serverTime"] == 10010
     assert set(response) == set(fixture("device-heartbeat-ack"))
+
+
+@pytest.mark.asyncio
+async def test_device_heartbeat_retries_only_the_row_that_lost_its_revision_race(transport):
+    module = importlib.import_module("core.services.local_session_relay")
+    sids = [await start(transport)]
+    for thread in ("thread-2", "thread-3"):
+        registered = await relay(transport).handle_message("conn-1", registration(nativeConversationId=thread))
+        sids.append(registered["sessionId"])
+    frame = heartbeat(sids[0], status="idle")
+    frame["sessions"] += [{**frame["sessions"][0], "sessionId": sid} for sid in sids[1:]]
+    contested, real, puts = sids[1], repo.put_session, {sid: 0 for sid in sids}
+
+    async def upload_wins_once(row, previous, enrollment, **kwargs):
+        puts[row["sessionId"]] += 1
+        if row["sessionId"] == contested and puts[contested] == 1:
+            # An upload writes the same row between the heartbeat's read and its fenced write.
+            await real(module._revised(previous), previous, enrollment)
+        await real(row, previous, enrollment, **kwargs)
+
+    with patch.object(repo, "put_session", side_effect=upload_wins_once):
+        response = await relay(transport).handle_message("conn-1", frame)
+
+    assert response["type"] == "local.device.heartbeat.ack" and response["rejected"] == []
+    # The contested row is re-read and written again; the others are written once, so the
+    # frame itself ran once.
+    assert puts == {sids[0]: 1, contested: 2, sids[2]: 1}
+    rows = [await repo.get_session(OWNER, sid) for sid in sids]
+    assert [row["status"] for row in rows] == ["idle"] * 3
 
 
 @pytest.mark.asyncio

@@ -21,7 +21,7 @@ from core.dynamodb import utc_now_iso
 from core.observability.product_analytics import capture_product_event
 from core.observability.session_analytics import capture_session_event
 from core.repositories import local_sessions_repo as repo, messaging_repo as store
-from core.services import local_sessions as sessions, session_pickup
+from core.services import local_sessions as sessions, session_pickup, session_resume, session_screen
 from core.services.connection_service import ConnectionService
 from core.services.management_api_client import ManagementApiClient
 from core.services.messaging import ApiProblem, ContractModel, make_live_event
@@ -36,6 +36,11 @@ logger = logging.getLogger(__name__)
 _ANALYTICS_NS = uuid.uuid5(uuid.NAMESPACE_URL, "lightbulb:local-session-lifecycle")
 
 
+#: The Lightbulb holder a session runs in (managed session sharing §5.4). Only held sessions
+#: are shared; a desktop that sends none is refused.
+HolderId = Annotated[str, Field(pattern=r"^[0-9a-f]{8}$")]
+
+
 class Descriptor(ContractModel):
     workspace: sessions.WorkspaceSummary = Field(default_factory=sessions.WorkspaceSummary)
     provider: Literal["claude", "codex"]
@@ -48,7 +53,7 @@ class Descriptor(ContractModel):
     control_unavailable_reason: sessions.ControlUnavailableReason | None = None
     title: Annotated[str, Field(max_length=120)] | None = None
     cwd_name: Annotated[str, Field(max_length=128)] | None = None
-    kind: Literal["interactive", "background"] = "interactive"
+    holder_id: HolderId
     start_id: sessions.OpaqueId | None = None
 
 
@@ -85,6 +90,8 @@ FEATURES = [
     "sessionSubagents",
     "nativeControlCapabilities",
     "privateSendApproval",
+    "liveTerminal",
+    "remoteInput",
 ]
 
 
@@ -99,6 +106,13 @@ class DeviceHeartbeat(ContractModel):
 
     type: Literal["local.device.heartbeat"]
     sessions: Annotated[list[HeartbeatSession], Field(max_length=24)]
+    # What this Mac can do. Each is one boolean, sent only once FEATURES lists it, and lands
+    # on every listed session's META as `deviceFeatures` (session_screen reads it).
+    live_terminal: bool = False
+    remote_input: bool = False
+
+    def device_features(self) -> list[str]:
+        return sorted(k for k, on in self.model_dump(by_alias=True, exclude={"type", "sessions"}).items() if on)
 
 
 class Ended(ContractModel):
@@ -461,6 +475,10 @@ class LocalSessionRelay:
                         if (
                             previous["generation"] != descriptor.generation
                             and message.previous_generation != previous["generation"]
+                            # An ended run has nothing left to fence. A resume is the next run even
+                            # when its Mac forgot the old generation (mirrors are reaped a day after
+                            # the end).
+                            and previous.get("endedAt") is None
                         ):
                             raise _conflict("generation chain", sid=sid, cid=cid)
                         if (
@@ -470,9 +488,7 @@ class LocalSessionRelay:
                             and previous["startId"] != descriptor.start_id
                         ):
                             raise _conflict("start identity changed", sid=sid, cid=cid)
-                    if descriptor.start_id and (
-                        descriptor.control_unavailable_reason is not None or descriptor.kind != "interactive"
-                    ):
+                    if descriptor.start_id and descriptor.control_unavailable_reason is not None:
                         raise _conflict("unverified start identity", sid=sid, cid=cid)
                     # The desktop is the only party that can verify the native runtime (live process,
                     # transcript rows, inbox socket) and it fails closed with a controlUnavailableReason.
@@ -515,13 +531,20 @@ class LocalSessionRelay:
                     # So does teammate control, and so do the people the owner let in: a restarted
                     # process is a new run the owner has not opted into, even when no Ended frame
                     # arrived for the old one. A relay reconnect keeps the generation, and all three.
+                    # A new connection may be an older desktop: it re-advertises on its first heartbeat.
+                    if (previous or {}).get("connectionId") != cid:
+                        row.pop("deviceFeatures", None)
                     if previous is None or previous["generation"] != descriptor.generation:
+                        # The end rewrites who may resume; a new run has nobody to resume it. The
+                        # same generation re-registering to drain an ended mirror keeps them.
+                        row.pop("resumeAllowed", None)
                         row.pop("pendingApproval", None)
                         row.pop("privateSendApproval", None)
                         row.pop("teamControl", None)
                         for key in sessions.JOIN_FIELDS:
                             row.pop(key, None)
-                    extra = [self._connection_check(cid, connection)]
+                    # After the join fields reset above: a resume's person is let into the new run.
+                    extra = [self._connection_check(cid, connection), *await session_resume.on_register(previous, row)]
                     # pickupAllowed/pickupSnapshot ride along from `previous`: content sharing, not control.
                     if previous is None:
                         picked_up_from = await session_pickup.lineage(owner, sid)
@@ -557,8 +580,23 @@ class LocalSessionRelay:
                     response["serverTime"] = int(time.time())
                     response["features"] = FEATURES
                 elif isinstance(message, DeviceHeartbeat):
-                    response = await session_pickup.ack_with_pickup(
-                        await self._device_heartbeat(cid, connection, enrollment, message), owner, human, device
+                    # Resume first, then pick-up: each trims its own list to what is left of the
+                    # envelope. Watching last: an empty list read there stops every relay.
+                    response = await session_screen.ack_with_watching(
+                        await session_pickup.ack_with_pickup(
+                            await session_resume.ack_with_resume(
+                                await self._device_heartbeat(cid, connection, enrollment, message),
+                                owner,
+                                human,
+                                device,
+                            ),
+                            owner,
+                            human,
+                            device,
+                        ),
+                        owner,
+                        human,
+                        device,
                     )
                     notify_resources = False
                 elif isinstance(message, Ended):
@@ -623,8 +661,13 @@ class LocalSessionRelay:
         # It still fires when the frame fails part-way, because the retry finds those rows already
         # matching and would not hint again.
         hint = False
+        # A row that loses its revision race (an upload or a dispatch wrote it meanwhile) goes
+        # back on the end of this list to be re-read and re-applied alone, twice at most: one
+        # conflict must not rerun every other row. Past that, handle_message reruns the frame.
+        items = list(message.sessions)
+        retries: dict[str, int] = {}
         try:
-            for item in message.sessions:
+            for item in items:
                 row = await repo.get_session(owner, item.session_id)
                 if (
                     row is None
@@ -652,6 +695,9 @@ class LocalSessionRelay:
                     controlUnavailableReason=item.control_unavailable_reason,
                     onlineUntil=now + LIVENESS_SECONDS,
                     workspace=item.workspace.model_dump(by_alias=True),
+                    # Rides the write every heartbeat makes anyway: no extra write, and /viewing
+                    # already holds this row.
+                    deviceFeatures=message.device_features(),
                     **labels,
                 )
                 if item.capabilities is not None and row["capabilitiesVerified"]:
@@ -689,7 +735,14 @@ class LocalSessionRelay:
                 controls_changed = row.get("capabilities") != updated.get("capabilities")
                 if moved:
                     updated["lastEventAt"] = now
-                await repo.put_session(updated, row, enrollment, extra=[self._connection_check(cid, connection)])
+                try:
+                    await repo.put_session(updated, row, enrollment, extra=[self._connection_check(cid, connection)])
+                except ClientError as exc:
+                    if not store._is_cancelled(exc) or retries.get(item.session_id, 0) >= 2:
+                        raise
+                    retries[item.session_id] = retries.get(item.session_id, 0) + 1
+                    items.append(item)
+                    continue
                 if attention:
                     # The write above is revision-fenced, so exactly one frame wins a transition:
                     # one state change is one notification, retries included.
@@ -738,6 +791,11 @@ class LocalSessionRelay:
         if updated.pop("teamControl", False):
             audit = sessions.audit_row(owner, row["sessionId"], None, "team_control_ended")
             extra.append({"Put": {"TableName": store._table().name, "Item": audit}})
+        # Who may resume it (spec §5.7): the people who could send when it ended. Team control is a
+        # switch on the run, not a person the owner let in, so it lets nobody resume.
+        resumers = sessions.allowed_senders(row)
+        if resumers:
+            updated["resumeAllowed"] = resumers
         # So do the people the owner let in, and every open ask to join.
         for key in sessions.JOIN_FIELDS:
             updated.pop(key, None)

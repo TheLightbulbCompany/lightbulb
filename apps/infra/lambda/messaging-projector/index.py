@@ -108,6 +108,8 @@ LIVE_EVENT_TYPES = frozenset(
         "runtime.resource.invalidated",
         "workspace.sessions.changed",
         "workspace.session.attention",
+        "workspace.session.screen",
+        "workspace.session.typing",
         "digest.ready",
     }
 )

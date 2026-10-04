@@ -8,7 +8,7 @@ const auth = {
   orgId: "org-a" as string | null,
   getToken: vi.fn(async () => "session-token" as string | null),
 };
-const user = { id: "user-a", fullName: "Alice Example", firstName: "Alice" };
+const user = { id: "user-a", fullName: "Alice Example", firstName: "Alice", organizationMemberships: [{ organization: { id: "org-a", name: "Acme" } }] };
 vi.mock("@clerk/nextjs", () => ({
   useAuth: () => ({ userId: auth.userId, orgId: auth.orgId, isLoaded: true, isSignedIn: !!auth.userId, getToken: auth.getToken }),
   useUser: () => ({ user }),
@@ -174,6 +174,8 @@ describe("LiveEventsProvider", () => {
       token: "session-token",
       userId: "user-a",
       displayName: "Alice Example",
+      workspaceId: "org-a",
+      workspaceName: "Acme",
     })));
     expect(shared.liveConnected).toBe(false);
     expect(listen).toHaveBeenCalledWith("node:status", expect.any(Function));

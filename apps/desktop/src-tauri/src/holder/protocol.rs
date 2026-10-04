@@ -2,24 +2,34 @@
 
 use std::io::{Error, ErrorKind, Read, Result};
 
-/// Client → holder: `{"role":"interactive"|"recorder"}`. Holder → client: session facts.
+/// Client → holder: `{"role":"interactive"|"watch"|"type"|"recorder", "cols"?, "rows"?, "replayFrom"?, "join"?}`.
+/// Holder → client: session facts (`"watch": true` when it serves watch clients, `"type": true`
+/// when it takes `type` ones, `"joined": true` when a `join` client found an interactive one).
+/// An interactive `join` client never takes the keyboard from another: while one is attached it
+/// watches and types at that client's size (its RESIZE is ignored), and gets PROMOTED when that
+/// client leaves. Without one it is the interactive client.
 pub const HELLO: u8 = 1;
 /// Holder → client: `u64 BE offset` of the first byte, then provider output.
 pub const OUTPUT: u8 = 2;
-/// Interactive client → holder: bytes for the pty.
+/// Interactive or `type` client → holder: bytes for the pty.
 pub const INPUT: u8 = 3;
-/// Interactive client → holder: `u16 BE cols`, `u16 BE rows`.
+/// Interactive client → holder (a `type` client's is ignored), and holder → watch clients after a size change:
+/// `u16 BE cols`, `u16 BE rows`.
 pub const RESIZE: u8 = 4;
-/// Holder → client: the provider exited, `{"status":"…"}`.
+/// Holder → client: the provider exited, `{"status":"…","code":N}`.
 pub const EXIT: u8 = 5;
 /// Client → holder: `u64 BE from`; answered with OUTPUT from there (and GAP first if it is gone).
 pub const REPLAY: u8 = 6;
 /// Holder → client: `u64 BE from`, `u64 BE to`; output in that range is no longer held.
 pub const GAP: u8 = 7;
-/// Holder → interactive client on attach: `u64 BE offset`, then the screen and its modes.
+/// Holder → interactive and watch clients on attach, and → a watch client that sends an empty
+/// SNAPSHOT: `u64 BE offset`, then the screen and its modes.
 pub const SNAPSHOT: u8 = 8;
 /// Holder → the interactive client another client replaced.
 pub const DETACHED: u8 = 9;
+/// Holder → a joined client: the interactive client left and this one is it now (empty payload).
+/// It sends its own RESIZE next.
+pub const PROMOTED: u8 = 10;
 
 /// No frame is larger than this; a longer declared length is refused before allocating it.
 pub const MAX_PAYLOAD: usize = 8 << 20;

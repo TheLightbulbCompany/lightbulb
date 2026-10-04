@@ -51,7 +51,7 @@ export type { ApiCallOptions, ApiMethods } from "./api/client";
 export { accumulateStreamText } from "./live/streamText";
 export { framesChannelFor } from "./live/appsyncEvents";
 export { useLiveEvents } from "./live/useLiveEvents";
-export type { CallTurnFrame, ChatIncomingMessage, LiveEvent, LiveEventOf, MessagePush, RoomActivityChanged, RoomBrowserFrame, SessionAttention } from "./live/types";
+export type { CallTurnFrame, ChatIncomingMessage, LiveEvent, LiveEventOf, MessagePush, RoomActivityChanged, RoomBrowserFrame, SessionAttention, SessionScreen, SessionTyping } from "./live/types";
 export { applyRoomActivity, pruneRoomActivity, roomLiveLine, typingLine } from "./messaging/roomActivity";
 export type { RoomActivity } from "./messaging/roomActivity";
 export { createMessagingClient } from "./messaging/client";
@@ -224,8 +224,8 @@ export type { AvatarRing, ChatEntry, MergeChatsOptions } from "./messaging/chatL
 export { lastOwnMessageId, readState, readStateLabel, UNPROMPTED_LABEL, unpromptedLabel } from "./messaging/readState";
 export type { ReadState } from "./messaging/readState";
 export { AUTO_CHECK_INTERVAL_MS, COMMAND_MAX_BYTES, pendingPrompt, receiptChip, useSessionCommand, usePendingPrompt, useSessionOutbox, type SessionReceiptChip } from "./messaging/useSessionCommand";
-export { APPROVAL_MODE_LABEL, auditLine, COMMIT_AND_PR_INSTRUCTION, canControlSession, pickupSource, pickupStatus, sessionFacts, sessionFooter, usageLine, useSessionApproval, useSessionAudit, useSessionJoinRequest, useSessionPickupPermission, useSessionSharing, useTeamControl, useUsageSharing, withAuditNotices } from "./messaging/sessionControls";
-export type { ApprovalAnswer, PrivateSendApproval, SessionControlClient } from "./messaging/sessionControls";
+export { APPROVAL_MODE_LABEL, auditLine, COMMIT_AND_PR_INSTRUCTION, canControlSession, canResumeSession, pickupSource, pickupStatus, resumeStatus, sessionFacts, sessionFooter, usageLine, useSessionApproval, useSessionAudit, useSessionJoinRequest, useSessionPickupPermission, useSessionResume, useSessionSharing, useTeamControl, useUsageSharing, withAuditNotices } from "./messaging/sessionControls";
+export type { ApprovalAnswer, PrivateSendApproval, SessionControlClient, SessionResumeFlow } from "./messaging/sessionControls";
 export type { SessionCommandAttempt } from "./messaging/useSessionCommand";
 export type {
   LocalSession,
@@ -237,6 +237,7 @@ export type {
   LocalSessionPickupOutcome,
   LocalSessionPickupPart,
   LocalSessionPickupTicket,
+  LocalSessionResume,
   SharedLocalSession,
   LocalSessionCommand,
   LocalSessionCommandReceipt,

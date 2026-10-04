@@ -19,10 +19,14 @@ fn start_cat(dir: &Path) -> PathBuf {
 }
 
 fn start(dir: &Path, argv: &[&str]) -> PathBuf {
+    start_sized(dir, argv, None)
+}
+
+fn start_sized(dir: &Path, argv: &[&str], size: Option<(u16, u16)>) -> PathBuf {
     let socket = dir.join("held.sock");
     let (s, d) = (socket.clone(), dir.to_path_buf());
     let argv: Vec<String> = argv.iter().map(|a| a.to_string()).collect();
-    std::thread::spawn(move || run::run_with_env(&s, &argv, &d, vec![("PATH".into(), "/usr/bin:/bin".into())]));
+    std::thread::spawn(move || run::run_with_env(&s, &argv, &d, vec![("PATH".into(), "/usr/bin:/bin".into())], size));
     let deadline = Instant::now() + Duration::from_secs(5);
     while !socket.exists() && Instant::now() < deadline {
         std::thread::sleep(Duration::from_millis(20));
@@ -145,8 +149,8 @@ fn holder_answers_hello_before_any_output() {
 }
 
 #[test]
-fn holder_delivers_a_provider_s_last_words_before_exit() {
-    let socket = start(&temp_dir(), &["/bin/sh", "-c", "read x; printf final-words; exit 0"]);
+fn holder_delivers_a_provider_s_last_words_and_exit_code_before_exit() {
+    let socket = start(&temp_dir(), &["/bin/sh", "-c", "read x; printf final-words; exit 3"]);
     let mut c = attach(&socket, "interactive");
     c.write_all(&encode(INPUT, b"go\r")).unwrap();
     let mut seen = vec![];
@@ -154,11 +158,51 @@ fn holder_delivers_a_provider_s_last_words_before_exit() {
         let (kind, payload) = read_frame(&mut c).expect("frames before timeout");
         match kind {
             OUTPUT => seen.extend_from_slice(split_offset(&payload).unwrap().1),
-            EXIT => break,
+            EXIT => {
+                let exit: serde_json::Value = serde_json::from_slice(&payload).unwrap();
+                assert_eq!(exit["code"], 3, "the command exits with this");
+                break;
+            }
             _ => {}
         }
     }
     assert!(seen.windows(11).any(|w| w == b"final-words"));
+}
+
+#[test]
+fn holder_replays_a_new_terminal_from_the_start_instead_of_a_snapshot() {
+    let socket = start_cat(&temp_dir());
+    let mut first = attach(&socket, "interactive");
+    first.write_all(&encode(INPUT, b"early-output\r")).unwrap();
+    read_until(&mut first, b"early-output");
+
+    let mut c = UnixStream::connect(&socket).unwrap();
+    c.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+    c.write_all(&encode(HELLO, br#"{"role":"interactive","replayFrom":0}"#)).unwrap();
+    assert_eq!(read_frame(&mut c).unwrap().0, HELLO);
+    let (kind, payload) = read_frame(&mut c).unwrap();
+    assert_eq!(kind, OUTPUT, "all output from offset 0, not a screen-clearing snapshot");
+    let (offset, bytes) = split_offset(&payload).unwrap();
+    assert_eq!(offset, 0);
+    assert!(bytes.windows(12).any(|w| w == b"early-output"));
+
+    // An offset the holder does not have: the snapshot, as before.
+    let mut late = UnixStream::connect(&socket).unwrap();
+    late.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+    late.write_all(&encode(HELLO, br#"{"role":"interactive","replayFrom":99999999}"#)).unwrap();
+    assert_eq!(read_frame(&mut late).unwrap().0, HELLO);
+    assert_eq!(read_frame(&mut late).unwrap().0, SNAPSHOT);
+}
+
+#[test]
+fn holder_starts_at_the_size_it_was_given() {
+    let socket = start_sized(&temp_dir(), &["/bin/cat"], Some((50, 10)));
+    let mut r = UnixStream::connect(&socket).unwrap();
+    r.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+    r.write_all(&encode(HELLO, br#"{"role":"recorder"}"#)).unwrap();
+    let (_, facts) = read_frame(&mut r).unwrap();
+    let facts: serde_json::Value = serde_json::from_slice(&facts).unwrap();
+    assert_eq!((facts["cols"].as_u64(), facts["rows"].as_u64()), (Some(50), Some(10)));
 }
 
 #[test]
@@ -183,7 +227,137 @@ fn holder_manager_refuses_a_planted_symlink_for_its_folder() {
     let elsewhere = base.with_extension("target");
     std::fs::create_dir_all(&elsewhere).unwrap();
     std::os::unix::fs::symlink(&elsewhere, &base).unwrap();
-    let err = manager::start_with(Path::new("/bin/false"), &base.join("h"), Path::new("/"), &["/bin/cat".into()]).unwrap_err();
+    let err = manager::start_with(Path::new("/bin/false"), &base.join("h"), Path::new("/"), &["/bin/cat".into()], None).unwrap_err();
     assert!(err.contains("not safe"), "{err}");
     assert!(!elsewhere.join("h").exists(), "nothing is created through the symlink");
+}
+
+#[test]
+fn holder_watch_client_gets_snapshots_and_sizes_and_can_never_type() {
+    let socket = start_cat(&temp_dir());
+    let mut w = UnixStream::connect(&socket).unwrap();
+    w.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+    w.write_all(&encode(HELLO, br#"{"role":"watch"}"#)).unwrap();
+    let (kind, hello) = read_frame(&mut w).unwrap();
+    assert_eq!(kind, HELLO);
+    assert_eq!(serde_json::from_slice::<serde_json::Value>(&hello).unwrap()["watch"], true);
+    assert_eq!(read_frame(&mut w).unwrap().0, SNAPSHOT, "a watcher starts from the screen");
+    assert!(manager::list_in(socket.parent().unwrap())[0].watch);
+
+    let mut c = attach(&socket, "interactive");
+    c.write_all(&encode(INPUT, b"watched\r")).unwrap();
+    read_until(&mut w, b"watched");
+    c.write_all(&encode(RESIZE, &[0, 90, 0, 30])).unwrap();
+    loop {
+        let (kind, payload) = read_frame(&mut w).unwrap();
+        if kind == RESIZE {
+            assert_eq!(payload, vec![0, 90, 0, 30]);
+            break;
+        }
+    }
+    w.write_all(&encode(SNAPSHOT, b"")).unwrap();
+    while read_frame(&mut w).unwrap().0 != SNAPSHOT {}
+
+    w.write_all(&encode(INPUT, b"from-watcher\r")).unwrap();
+    w.write_all(&encode(RESIZE, &[0, 20, 0, 5])).unwrap();
+    c.write_all(&encode(INPUT, b"from-owner\r")).unwrap();
+    let out = read_until(&mut c, b"from-owner");
+    assert!(!out.windows(12).any(|x| x == b"from-watcher"), "a watcher never types");
+}
+
+#[test]
+fn holder_type_client_types_but_never_resizes_and_gets_no_output() {
+    let socket = start_cat(&temp_dir());
+    let mut w = attach(&socket, "watch");
+    assert_eq!(read_frame(&mut w).unwrap().0, SNAPSHOT);
+    let mut t = UnixStream::connect(&socket).unwrap();
+    t.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+    t.write_all(&encode(HELLO, br#"{"role":"type"}"#)).unwrap();
+    let (kind, hello) = read_frame(&mut t).unwrap();
+    assert_eq!(kind, HELLO);
+    assert_eq!(serde_json::from_slice::<serde_json::Value>(&hello).unwrap()["type"], true);
+    assert!(manager::list_in(socket.parent().unwrap())[0].type_input);
+
+    t.write_all(&encode(INPUT, b"typed-remotely\r")).unwrap();
+    read_until(&mut w, b"typed-remotely");
+    t.write_all(&encode(RESIZE, &[0, 20, 0, 5])).unwrap();
+    t.write_all(&encode(INPUT, b"after-resize\r")).unwrap();
+    let mut seen = vec![];
+    while !seen.windows(12).any(|x| x == b"after-resize") {
+        let (kind, payload) = read_frame(&mut w).expect("output before timeout");
+        assert_ne!(kind, RESIZE, "a type client never resizes");
+        if kind == OUTPUT {
+            seen.extend_from_slice(split_offset(&payload).unwrap().1);
+        }
+    }
+    t.set_read_timeout(Some(Duration::from_millis(300))).unwrap();
+    assert!(read_frame(&mut t).is_err(), "a type client receives no output");
+}
+
+/// The size a `recorder` reads in the holder's HELLO: what the pty is now.
+fn size_of(socket: &Path) -> (u64, u64) {
+    let mut r = UnixStream::connect(socket).unwrap();
+    r.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+    r.write_all(&encode(HELLO, br#"{"role":"recorder"}"#)).unwrap();
+    let (_, facts) = read_frame(&mut r).unwrap();
+    let facts: serde_json::Value = serde_json::from_slice(&facts).unwrap();
+    (facts["cols"].as_u64().unwrap(), facts["rows"].as_u64().unwrap())
+}
+
+#[test]
+fn holder_join_client_shares_a_terminal_and_takes_it_only_when_that_terminal_leaves() {
+    let socket = start_cat(&temp_dir());
+    // `lightbulb claude`: the interactive client, at its terminal's size.
+    let mut cli = UnixStream::connect(&socket).unwrap();
+    cli.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+    cli.write_all(&encode(HELLO, br#"{"role":"interactive","cols":50,"rows":10}"#)).unwrap();
+    assert_eq!(read_frame(&mut cli).unwrap().0, HELLO);
+    assert_eq!(read_frame(&mut cli).unwrap().0, SNAPSHOT);
+
+    // The app's panel joins: it is told so, at the terminal's size, and starts from the screen.
+    let mut panel = UnixStream::connect(&socket).unwrap();
+    panel.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+    panel.write_all(&encode(HELLO, br#"{"role":"interactive","join":true,"cols":90,"rows":30}"#)).unwrap();
+    let (kind, hello) = read_frame(&mut panel).unwrap();
+    assert_eq!(kind, HELLO);
+    let facts: serde_json::Value = serde_json::from_slice(&hello).unwrap();
+    assert_eq!((facts["joined"].as_bool(), facts["cols"].as_u64(), facts["rows"].as_u64()), (Some(true), Some(50), Some(10)));
+    assert_eq!(read_frame(&mut panel).unwrap().0, SNAPSHOT);
+
+    // Both type; the joiner's RESIZE is ignored; the terminal is never detached.
+    cli.write_all(&encode(INPUT, b"from-cli\r")).unwrap();
+    read_until(&mut panel, b"from-cli");
+    panel.write_all(&encode(RESIZE, &[0, 90, 0, 30])).unwrap();
+    panel.write_all(&encode(INPUT, b"from-panel\r")).unwrap();
+    let mut seen = vec![];
+    while !seen.windows(10).any(|w| w == b"from-panel") {
+        let (kind, payload) = read_frame(&mut cli).expect("output before timeout");
+        assert_ne!(kind, DETACHED, "a joining client never takes the terminal's keyboard");
+        if kind == OUTPUT {
+            seen.extend_from_slice(split_offset(&payload).unwrap().1);
+        }
+    }
+    assert_eq!(size_of(&socket), (50, 10), "the terminal keeps the size");
+
+    // The terminal leaves: the joiner is promoted, and its RESIZE now applies.
+    drop(cli);
+    while read_frame(&mut panel).expect("PROMOTED before the timeout").0 != PROMOTED {}
+    panel.write_all(&encode(RESIZE, &[0, 90, 0, 30])).unwrap();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while size_of(&socket) != (90, 30) {
+        assert!(Instant::now() < deadline, "the promoted client's RESIZE applies");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+#[test]
+fn holder_join_client_with_nobody_attached_is_the_interactive_client() {
+    let socket = start_cat(&temp_dir());
+    let mut panel = UnixStream::connect(&socket).unwrap();
+    panel.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+    panel.write_all(&encode(HELLO, br#"{"role":"interactive","join":true,"cols":70,"rows":20}"#)).unwrap();
+    let (_, hello) = read_frame(&mut panel).unwrap();
+    assert_eq!(serde_json::from_slice::<serde_json::Value>(&hello).unwrap()["joined"], false);
+    assert_eq!(read_frame(&mut panel).unwrap().0, SNAPSHOT);
+    assert_eq!(size_of(&socket), (70, 20));
 }

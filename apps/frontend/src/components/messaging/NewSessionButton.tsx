@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import useSWR from "swr";
 import { useAuth } from "@clerk/nextjs";
@@ -10,7 +10,7 @@ import { Button } from "@/components/ui/button";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { useApi } from "@/lib/api";
 import { SessionToolIcon } from "./SessionToolIcon";
-import { startLocalTerminal, useLocalMac } from "./localTerminal";
+import { startLocalTerminal, useLocalMac, useLocalTerminal } from "./localTerminal";
 
 type Option = { id: string; label: string };
 type Tool = { id: "claude" | "codex"; label: string; modeLabel: string; models: Option[]; modes: Option[]; efforts?: Option[]; defaultMode?: string; defaultEffort?: string | null };
@@ -19,7 +19,7 @@ type MacOptions = { name?: string | null; sharing: boolean; folders: string[]; t
 type Targets = { enabled: boolean; devices: Mac[] };
 const MAX_PROMPT_BYTES = 4096; // the backend's byte cap
 const PENDING_MS = 150_000; // longer than the backend's wait for the Mac
-type Pending = { startId: string; scope: string; startedAt: number; phase: "starting" | "opened" | "unknown" | "failed"; error?: string };
+type Pending = { startId: string; scope: string; startedAt: number; phase: "starting" | "opened" | "unknown" | "failed"; error?: string; holderId?: string };
 
 const TARGETS_KEY = "desktop-session-targets";
 const pendingKey = (scope: string) => `lightbulb.newSession.pending.${scope}`;
@@ -31,7 +31,7 @@ function readPending(scope: string): Pending | null {
     return item.scope === scope && typeof item.startId === "string" && typeof item.startedAt === "number"
       && Date.now() >= item.startedAt && Date.now() - item.startedAt < 6 * 60 * 60 * 1000
       ? { startId: item.startId, scope, startedAt: item.startedAt, phase: "unknown",
-        error: "Could not confirm whether your Mac started this session. Check Terminal and Sessions before trying again." } : null;
+        error: "Could not confirm whether your Mac started this session. Check the Lightbulb app and Sessions before trying again." } : null;
   } catch { return null; }
 }
 /** The viewer's own paired Macs (id, generation, name). `enabled` false: no request. */
@@ -77,7 +77,7 @@ export function NewSessionButton({ onOpen }: { onOpen: () => void }) {
 /**
  * An empty session you just type into, the way Claude Code and Codex start one.
  * Every choice is among what the caller's OWN Mac reported (installed CLIs, approved
- * folders), pre-filled from last use; the Mac re-validates and opens Terminal (no
+ * folders), pre-filled from last use; the Mac re-validates and opens the session there (no
  * prompt there: only the person the Mac is paired to can start sessions on it). The view becomes the live session once it reports in under Sessions.
  */
 export function NewSessionView({ sessions, onEvent, onOpenSession, onClose }: {
@@ -107,8 +107,10 @@ export function NewSessionView({ sessions, onEvent, onOpenSession, onClose }: {
     } catch { /* Browser storage may be disabled; the current view still holds the start. */ }
   }, [scope, pending]);
 
-  // Inside the desktop app this Mac answers for itself and the session opens in its own window.
+  // Inside the desktop app this Mac answers for itself and the session opens in this panel.
   const localMac = useLocalMac();
+  const slot = useRef<HTMLDivElement>(null);
+  const local = useLocalTerminal(pending?.phase === "opened" && pending.holderId ? { holderId: pending.holderId } : null, slot, true);
   const { data: targets, mutate: refreshTargets } = useTargets();
   useEffect(() => { void refreshTargets(); }, [refreshTargets]);
   const macs = !localMac && targets?.enabled ? targets.devices : null;
@@ -136,8 +138,8 @@ export function NewSessionView({ sessions, onEvent, onOpenSession, onClose }: {
     if (!pending || pending.phase === "failed" || pending.phase === "unknown") return;
     const timer = setTimeout(() => setPending((p) => p && p.startId === pending.startId
       ? { ...p, phase: "unknown", error: p.phase === "opened"
-        ? "Terminal opened on your Mac, but the session never reported in. Check Terminal there."
-        : "Could not confirm whether your Mac started this session. Check Terminal and Sessions before trying again." } : p), PENDING_MS);
+        ? "The session opened on your Mac, but it never reported in. Check the Lightbulb app there."
+        : "Could not confirm whether your Mac started this session. Check the Lightbulb app and Sessions before trying again." } : p), PENDING_MS);
     return () => clearTimeout(timer);
   }, [pending]);
 
@@ -151,7 +153,7 @@ export function NewSessionView({ sessions, onEvent, onOpenSession, onClose }: {
           ? event.payload.error?.retryable === false
             || ["desktop_generation_lost", "desktop_busy", "desktop_forward_loop"].includes(event.payload.error?.code ?? "")
             ? { ...p, phase: "failed", error: failure(event.payload.error) }
-            : { ...p, phase: "unknown", error: "Could not confirm whether your Mac started this session. Check Terminal and Sessions before trying again." }
+            : { ...p, phase: "unknown", error: "Could not confirm whether your Mac started this session. Check the Lightbulb app and Sessions before trying again." }
           : event.payload.state === "succeeded" ? { ...p, phase: "opened" } : p
         : p);
     });
@@ -194,12 +196,10 @@ export function NewSessionView({ sessions, onEvent, onOpenSession, onClose }: {
     setPending({ ...start, phase: "starting" });
     if (localMac) {
       try {
-        const { linked } = await startLocalTerminal({ startId, tool: selected.id, folder: folderPath,
+        const { holderId } = await startLocalTerminal({ startId, tool: selected.id, folder: folderPath,
           model: modelId || null, mode: modeId || null, effort: effortId || null, prompt });
-        // Linked: wait here until it reports in, then become it. Not linked (sharing off): it
-        // lives only in its window.
-        if (linked) setPending({ ...start, phase: "opened" });
-        else { setPending(null); onClose(); }
+        // It shows here at once; once it reports in, this view becomes the session.
+        setPending({ ...start, phase: "opened", holderId });
       } catch (error) {
         setPending({ ...start, phase: "failed", error: error instanceof Error ? error.message : String(error) });
       }
@@ -214,7 +214,7 @@ export function NewSessionView({ sessions, onEvent, onOpenSession, onClose }: {
     } catch (error) {
       setPending(error instanceof ApiError && error.status < 500
         ? { ...start, phase: "failed", error: error.message }
-        : { ...start, phase: "unknown", error: "Could not confirm whether your Mac started this session. Check Terminal and Sessions before trying again." });
+        : { ...start, phase: "unknown", error: "Could not confirm whether your Mac started this session. Check the Lightbulb app and Sessions before trying again." });
     }
   }
 
@@ -233,10 +233,13 @@ export function NewSessionView({ sessions, onEvent, onOpenSession, onClose }: {
           onClick={() => { try { if (scope) localStorage.removeItem(pendingKey(scope)); } catch { /* storage off */ } setPending(null); }}>
           Dismiss and start another</Button>}
         {busy && <p role="status">{pending?.phase === "unknown" ? pending.error
-          : pending?.phase === "opened" ? (localMac ? "Opened in its own window. Waiting for the session…" : `Opened in Terminal on ${where}. Waiting for the session…`) : `Starting on ${where}…`}</p>}
+          : pending?.phase === "opened" ? (localMac ? "Running on this Mac. It moves to Sessions when it reports in." : `Opened on ${where}. Waiting for the session…`) : `Starting on ${where}…`}</p>}
         {pending?.phase === "failed" && <p role="alert" className="text-err">{pending.error}</p>}
         {tooLong && <p role="alert" className="text-err">The first message is too long.</p>}
+        {localMac?.cli && !busy && <p>Or in any terminal, inside an approved folder: <code>lightbulb claude</code> or <code>lightbulb codex</code>.</p>}
+        {localMac?.cli?.pathLine && !busy && <p>First add it to your PATH, then open a new terminal: <code className="select-all">{localMac.cli.pathLine}</code></p>}
       </div>
+      {local !== "none" && <div ref={slot} className="local-session-terminal" role="region" aria-label="Session terminal" />}
       {(ready || (macs && macs.length > 1)) && <div className="new-session-strip">
         {/* The Mac chip stays even when this Mac is blocked: another one may not be. */}
         {macs && macs.length > 1 && <select aria-label="Mac" className="new-session-chip" value={mac?.deviceId} disabled={busy}

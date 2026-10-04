@@ -126,6 +126,23 @@ MAINTENANCE (Lightbulb engineers): every claim in this skill is anchored to
                                  Allow / Decline); core/services/local_session_relay.py (cleared on Ended and on a new
                                  generation); apps/frontend/src/components/messaging/LocalSessionPanel.tsx (Ask to join /
                                  Requested / declined line); SessionDetails.tsx (People you let in, Remove).
+  - Session live terminal ... references/surfaces.md ("Live terminal" paragraph)
+                              <- apps/frontend/src/components/messaging/{LocalSessionPanel,SessionTerminalView}.tsx
+                                 (terminal in the panel, transcript fallback, "<name> is typing", read-only for
+                                 non-admitted); core/services/local_sessions.py (may_control / allowedSenders gate on input);
+                                 core/services/session_screen.py (type_into / watch: active-membership fence);
+                                 apps/desktop/src-tauri/src/holder/{run,panel}.rs (the panel joins a `lightbulb claude` terminal).
+  - Which sessions are shared references/surfaces.md ("Which sessions are shared" paragraph)
+                              <- apps/desktop/src-tauri/src/local_sessions.rs (keep_held: only a holder's own provider);
+                                 apps/desktop/src-tauri/src/local_sessions/enrollment.rs (a private session's hook exits);
+                                 apps/desktop/src-tauri/src/session_start.rs (terminal_start / start / cli_start);
+                                 apps/desktop/src-tauri/src/cli.rs (`lightbulb claude|codex`);
+                                 apps/frontend/src/components/messaging/StartSessionDialog.tsx;
+                                 apps/desktop/src-tauri/skills/lightbulb-session-sharing/SKILL.md.
+  - Session resume .......... references/surfaces.md ("Resume" paragraph)
+                              <- apps/backend/core/services/session_resume.py (who may resume, plan mode, 24 h, revoke);
+                                 apps/desktop/src-tauri/src/local_sessions/resume.rs (same folder, approved now; refusal codes);
+                                 packages/shared/src/messaging/sessionControls.ts (RESUME_REFUSED, "Not resumed: …").
   - Session pick-up ......... references/surfaces.md ("Pick up" paragraph)
                               <- apps/frontend/src/components/messaging/SessionPickup.tsx (canPickUp: allowed + snapshot ready;
                                  desktop-only, browser copy); SessionDetails.tsx (the pick-up switch: needs sharing on,

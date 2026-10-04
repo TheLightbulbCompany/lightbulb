@@ -126,7 +126,7 @@ it("asks for a folder first when the session has no repository", async () => {
   expect(c.requestLocalSessionPickup).not.toHaveBeenCalled();
   await userEvent.click(within(dialog).getByRole("radio", { name: "/Users/bob/notes" }));
   await userEvent.click(within(dialog).getByRole("button", { name: "Pick up here" }));
-  expect(await within(dialog).findByText(/is open in Terminal\.$/)).toBeInTheDocument();
+  expect(await within(dialog).findByText(/is open in Lightbulb on your Mac\.$/)).toBeInTheDocument();
   expect(invoke).toHaveBeenLastCalledWith("session_pickup", { ticket, folder: "/Users/bob/notes" });
 });
 

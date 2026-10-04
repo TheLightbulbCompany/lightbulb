@@ -22,7 +22,7 @@ pub fn send_supported_version(version: &str) -> bool {
 
 pub(super) async fn capture(home: &Path, program: &Path, row: &Value) -> Result<NativeSession> {
     use std::os::unix::fs::FileTypeExt;
-    if row["kind"] != "interactive" && row["kind"] != "background" {
+    if row["kind"] != "interactive" {
         return Err("not an ordinary terminal session".into());
     }
     let pid = row["pid"]
@@ -78,10 +78,23 @@ pub(super) async fn capture(home: &Path, program: &Path, row: &Value) -> Result<
         ],
     )
     .await?;
-    let observed = match transcript
-        .as_ref()
-        .map(|path| verify_current_generation(path, conversation, since.trim()))
-    {
+    // Up to 2 MiB of synchronous reads each, for the generation check and the title:
+    // off the async runtime's threads.
+    let (generation, title) = match transcript.clone() {
+        Some(path) => {
+            let (session, since) = (conversation.to_owned(), since.trim().to_owned());
+            tokio::task::spawn_blocking(move || {
+                (
+                    Some(verify_current_generation(&path, &session, &since)),
+                    latest_title(&path),
+                )
+            })
+            .await
+            .map_err(|_| "transcript unavailable")?
+        }
+        None => (None, None),
+    };
+    let observed = match generation {
         Some(Ok(runtime)) => Ok(runtime),
         Some(Err(reason)) if reason == "unsupported-version" => Err(reason),
         // The transcript cannot say: none yet (a fresh or /clear'ed session writes it
@@ -142,10 +155,7 @@ pub(super) async fn capture(home: &Path, program: &Path, row: &Value) -> Result<
     if process(pid)? != execution {
         return Err("process changed during discovery".into());
     }
-    let title = transcript
-        .as_ref()
-        .and_then(|path| latest_title(path))
-        .or_else(|| row["name"].as_str().map(|n| n.chars().take(120).collect()));
+    let title = title.or_else(|| row["name"].as_str().map(|n| n.chars().take(120).collect()));
     let cwd_name = basename(row["cwd"].as_str());
     Ok(NativeSession {
         provider: "claude".into(),
@@ -162,7 +172,7 @@ pub(super) async fn capture(home: &Path, program: &Path, row: &Value) -> Result<
         cwd_name,
         active_turn: None,
         last_assistant_message: None,
-        background: row["kind"] == "background",
+        holder: None,
     })
 }
 
@@ -250,6 +260,18 @@ pub fn verify_current_generation(path: &Path, session: &str, since: &str) -> Res
         version = Some(runtime.into());
     }
     version.ok_or_else(|| UNSTARTED.into())
+}
+
+/// Every conversation a running Claude process has, held or private, straight from
+/// `claude agents --json` before any sharing filter. Only the ids: nothing else is kept.
+pub(super) async fn running_conversations(home: &Path) -> Result<Vec<String>> {
+    let Some(program) = provider_program(home, "claude") else {
+        return Ok(vec![]);
+    };
+    let rows: Vec<Value> =
+        serde_json::from_str(&native_output(&program, &["agents", "--json"]).await?)
+            .map_err(|_| "native Claude listing unavailable")?;
+    Ok(rows.iter().filter_map(|r| r["sessionId"].as_str().map(str::to_owned)).collect())
 }
 
 pub(super) async fn discover(home: &Path) -> Result<Vec<NativeSession>> {
@@ -1411,12 +1433,10 @@ mod tests {
             ("2.1.272", None),
             "a session outlives the CLI version it started on and stays sendable"
         );
-        assert!(!session.background);
         let job = json!({"kind":"background","pid":pid,"sessionId":conversation,"status":"busy","cwd":"/tmp/work"});
-        let job = capture(home.path(), missing, &job).await.unwrap();
         assert!(
-            job.background && job.restriction.is_none(),
-            "a background job mirrors like a terminal session"
+            capture(home.path(), missing, &job).await.is_err(),
+            "a Claude Code background job is never mirrored (it cannot run in a holder)"
         );
 
         // Below the send floor is what a version restriction is actually for.
@@ -1508,7 +1528,7 @@ mod tests {
             cwd_name: None,
             active_turn: None,
             last_assistant_message: None,
-            background: false,
+            holder: None,
         };
         let ingress = Ingress {
             workspace_revision: None,

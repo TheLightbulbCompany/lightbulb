@@ -19,6 +19,18 @@ pub struct HolderInfo {
     pub provider_pid: u32,
     pub argv: Vec<String>,
     pub cwd: PathBuf,
+    pub watch: bool,
+    /// It takes input-only `type` clients (remote typing).
+    pub type_input: bool,
+}
+
+impl HolderInfo {
+    /// The start id a linked start hands its `/bin/sh` wrapper (`session_start::held_argv`).
+    pub fn start_id(&self) -> Option<&str> {
+        let linked = self.argv.first().is_some_and(|a| a == "/bin/sh")
+            && self.argv.get(3).is_some_and(|a| a == "lightbulb-start");
+        linked.then(|| self.argv.get(4).map(String::as_str)).flatten()
+    }
 }
 
 /// `/private/tmp/lightbulb-sessions-<uid>/h`, beside the app's other local-session sockets.
@@ -28,7 +40,7 @@ pub fn socket_dir() -> PathBuf {
 
 /// Create (or accept) the socket directory and its parent: real directories owned by this user,
 /// never through a symlink another account planted at the predictable /tmp path.
-fn ensure_dir(dir: &Path) -> Result<(), String> {
+pub(crate) fn ensure_dir(dir: &Path) -> Result<(), String> {
     use std::os::unix::fs::{DirBuilderExt, MetadataExt};
     let uid = unsafe { libc::getuid() };
     for d in [dir.parent().unwrap_or(dir), dir] {
@@ -53,17 +65,27 @@ pub fn stop(pid: u32) {
 
 /// Start a holder from this app's own binary (`<exe> holder <socket> -- argv`).
 pub fn start(cwd: &Path, argv: &[String]) -> Result<HolderInfo, String> {
-    let exe = std::env::current_exe().map_err(|e| e.to_string())?;
-    start_with(&exe, &socket_dir(), cwd, argv)
+    start_sized(cwd, argv, None)
 }
 
-pub fn start_with(exe: &Path, dir: &Path, cwd: &Path, argv: &[String]) -> Result<HolderInfo, String> {
+/// Start a holder whose terminal begins at `size` (`cols`, `rows`): the size of the terminal
+/// that attaches to it first.
+pub fn start_sized(cwd: &Path, argv: &[String], size: Option<(u16, u16)>) -> Result<HolderInfo, String> {
+    let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+    start_with(&exe, &socket_dir(), cwd, argv, size)
+}
+
+pub fn start_with(exe: &Path, dir: &Path, cwd: &Path, argv: &[String], size: Option<(u16, u16)>) -> Result<HolderInfo, String> {
     ensure_dir(dir)?;
     // Eight hex characters keep the socket path well under the 104-byte limit.
     let id = uuid::Uuid::new_v4().simple().to_string()[..8].to_owned();
     let socket = dir.join(format!("{id}.sock"));
     let mut cmd = std::process::Command::new(exe);
-    cmd.arg("holder").arg(&socket).arg("--").args(argv).current_dir(cwd);
+    cmd.arg("holder").arg(&socket);
+    if let Some((cols, rows)) = size {
+        cmd.arg(format!("--size={cols}x{rows}"));
+    }
+    cmd.arg("--").args(argv).current_dir(cwd);
     cmd.stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null());
     // Its own session: no controlling terminal, untouched by the app's process group.
     unsafe {
@@ -107,6 +129,7 @@ pub fn list_in(dir: &Path) -> Vec<HolderInfo> {
             Some(info) => found.push((entry.metadata().and_then(|m| m.created()).unwrap_or(std::time::UNIX_EPOCH), info)),
             None if UnixStream::connect(&path).is_err() => {
                 let _ = std::fs::remove_file(&path);
+                let _ = std::fs::remove_file(path.with_extension("thread"));
             }
             None => {}
         }
@@ -132,5 +155,59 @@ pub fn hello(socket: &Path) -> Option<HolderInfo> {
         provider_pid: v["providerPid"].as_u64()? as u32,
         argv: serde_json::from_value(v["argv"].clone()).ok()?,
         cwd: PathBuf::from(v["cwd"].as_str()?),
+        watch: v["watch"].as_bool().unwrap_or(false),
+        type_input: v["type"].as_bool().unwrap_or(false),
     })
+}
+
+/// The Codex thread this holder's provider is on, as its own `SessionStart` hook recorded it
+/// (spec §5.4: a Codex rollout may be written by a shared app server, not the holder's child).
+pub fn thread(info: &HolderInfo) -> Option<String> {
+    let text = std::fs::read_to_string(info.socket.with_extension("thread")).ok()?;
+    let thread = text.trim();
+    uuid::Uuid::parse_str(thread).is_ok().then(|| thread.to_owned())
+}
+
+/// Record the thread a held Codex started. A later one (`/new`, a resume) replaces it.
+pub fn bind_thread(info: &HolderInfo, thread: &str) {
+    if uuid::Uuid::parse_str(thread).is_err() {
+        return;
+    }
+    let tmp = info.socket.with_extension("thread.tmp");
+    if std::fs::write(&tmp, thread).is_ok() {
+        let _ = std::fs::rename(&tmp, info.socket.with_extension("thread"));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn holder_binds_one_codex_thread_and_forgets_it_with_the_holder() {
+        let dir = tempfile::tempdir().unwrap();
+        let info = HolderInfo {
+            id: "ab12cd34".into(),
+            socket: dir.path().join("ab12cd34.sock"),
+            pid: 1,
+            provider_pid: 2,
+            argv: vec![],
+            cwd: "/".into(),
+            watch: false,
+            type_input: false,
+        };
+        assert_eq!(thread(&info), None);
+        bind_thread(&info, "not a thread");
+        assert_eq!(thread(&info), None, "only a thread id is recorded");
+        bind_thread(&info, "11111111-1111-4111-8111-111111111111");
+        bind_thread(&info, "22222222-2222-4222-8222-222222222222");
+        assert_eq!(
+            thread(&info).as_deref(),
+            Some("22222222-2222-4222-8222-222222222222"),
+            "a new thread in the same Codex (/new) replaces the old one"
+        );
+        std::fs::write(&info.socket, b"").unwrap(); // a socket nobody listens on
+        assert!(list_in(dir.path()).is_empty());
+        assert_eq!(thread(&info), None, "a dead holder's binding goes with its socket");
+    }
 }

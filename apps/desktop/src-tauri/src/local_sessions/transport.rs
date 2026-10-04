@@ -105,6 +105,14 @@ pub(super) struct Host {
 /// bounds it and lets a session that has since been repaired re-register on the same socket.
 const QUARANTINE: Duration = Duration::from_secs(300);
 
+/// A Mac with nothing running still checks in this often. Resume requests ride the heartbeat
+/// acknowledgement, and an idle (or just-woken) Mac is the usual one to resume on.
+const IDLE_HEARTBEAT: Duration = Duration::from_secs(30);
+
+fn idle_heartbeat() -> Value {
+    json!({"type":"local.device.heartbeat","sessions":[]})
+}
+
 /// A connection that lived long enough was healthy: start over at one second. A short-lived one
 /// (connect-then-die, the 2026-09-12 loop) doubles the wait, capped at 30 s.
 fn reconnect_delay(previous: u64, lived: Duration) -> u64 {
@@ -134,10 +142,17 @@ impl Host {
             .ok_or("missing local session")?
             .native
             .clone();
-        let observed = match workspace::session_root(&native, &self.home).await {
-            Ok(cwd) => workspace::scan(&cwd, &self.home).await,
-            Err(error) => Err(error),
-        };
+        // lsof, git and bounded file reads: its own task, so they never hold the runtime
+        // thread the connection loop and discovery share.
+        let home = self.home.clone();
+        let observed = tokio::spawn(async move {
+            match workspace::session_root(&native, &home).await {
+                Ok(cwd) => workspace::scan(&cwd, &home).await,
+                Err(error) => Err(error),
+            }
+        })
+        .await
+        .map_err(|_| "workspace scan stopped")?;
         let root = observed.as_ref().ok().map(|(root, _)| root.clone());
         let keys: Vec<_> = self
             .mirrors
@@ -859,6 +874,11 @@ impl Host {
                         Err(error) => failures.push(error),
                     }
                 }
+                // Shared iff held (spec §5.4): an unheld session never gets a mirror.
+                let holders = tokio::task::spawn_blocking(crate::holder::manager::list)
+                    .await
+                    .unwrap_or_default();
+                keep_held(&mut found, &holders);
                 for error in &failures {
                     // A listing that failed is not evidence that anything stopped;
                     // say so once per distinct failure, not once a minute forever.
@@ -961,7 +981,11 @@ impl Host {
                 delay = reconnect_delay(delay, lived);
             }
         };
-        tokio::select! {_ = discovery=>{},_ = network=>{}}
+        // Its own task: a slow pass (transcript reads, lsof) must never hold up the
+        // connection loop that reads the relay's answers.
+        let mut discovery = tokio::spawn(discovery);
+        tokio::select! {_ = &mut discovery=>{},_ = network=>{}}
+        discovery.abort();
     }
 
     pub(super) async fn supervise(
@@ -1016,8 +1040,11 @@ impl Host {
         let mut last_upload = BTreeMap::<String, Instant>::new();
         let mut heartbeat_frames = std::collections::VecDeque::<Value>::new();
         let mut last_heartbeat = Instant::now();
+        let mut last_idle = Instant::now();
         let mut last_early = Instant::now() - Duration::from_secs(1);
         let mut tick = tokio::time::interval(Duration::from_millis(100));
+        // This connection carries the live terminal frames of every watched held session.
+        let mut screens = super::screen::channel();
         let mut reaped = Instant::now();
         let mut last_recovery_scan = Instant::now();
         let mut last_probe = Instant::now();
@@ -1025,9 +1052,12 @@ impl Host {
         let mut relay_reads_stats = false;
         let mut relay_reads_controls = false;
         let mut relay_reads_private_approval = false;
+        let mut relay_reads_live_terminal = false;
+        let mut relay_reads_remote_input = false;
         // An end the relay has not been told about -- because it happened while the
         // socket was down, or in a previous run of this process -- is still owed to it.
         self.liveness_tick();
+        super::screen::index(&self.mirrors);
         let mut recovering_ended = ended_recovery_keys(&self.mirrors);
         let mut unreported: Vec<String> = self
             .mirrors
@@ -1043,7 +1073,10 @@ impl Host {
             }
         }
         self.ended_pending.extend(unreported);
+        let mut laps = Laps::new();
+        let mut arm = "start";
         loop {
+            laps.next(arm);
             if self.stop.load(Ordering::SeqCst) {
                 return Ok(());
             }
@@ -1065,12 +1098,7 @@ impl Host {
                     self.workspace_key = Some(key.clone());
                 }
             }
-            if pending_rpc
-                .as_ref()
-                .is_some_and(|rpc| rpc.sent().elapsed() > Duration::from_secs(10))
-            {
-                return Err("session acknowledgment timed out".into());
-            }
+            laps.lap("workspace scan");
             if anchor.as_ref().is_some_and(|a| a.now().is_none()) {
                 anchor = None;
             }
@@ -1089,6 +1117,7 @@ impl Host {
                     .await?;
                 }
             }
+            laps.lap("deferred command");
             if pending_rpc.is_none() {
                 if let Some(key) = registration_due_with_recovery(
                     &self.mirrors,
@@ -1123,7 +1152,11 @@ impl Host {
                             last_early = Instant::now();
                         }
                         self.heartbeat_dirty.clear();
-                        heartbeat_frames = device_heartbeats_with_controls(&self.mirrors, &registered, relay_reads_stats, relay_reads_controls)?.into();
+                        heartbeat_frames = device_heartbeats_with_controls(&self.mirrors, &registered, relay_reads_stats, relay_reads_controls, relay_reads_live_terminal, relay_reads_remote_input)?.into();
+                        if heartbeat_frames.is_empty() && last_idle.elapsed() >= IDLE_HEARTBEAT {
+                            last_idle = Instant::now();
+                            heartbeat_frames.push_back(idle_heartbeat());
+                        }
                     }
                     if let Some((reported, frame)) = self.ended_frame(&mut recovering_ended)? {
                         send(socket, &frame).await?;
@@ -1136,6 +1169,7 @@ impl Host {
                     }
                 }
             }
+            laps.lap("registration or heartbeat");
             {
                 let keys: Vec<_> = self.mirrors.keys().cloned().collect();
                 for key in &keys {
@@ -1175,8 +1209,11 @@ impl Host {
                     }
                 }
             }
+            laps.lap("uploads");
+            let deadline = pending_rpc.as_ref().map(|rpc| rpc.sent() + Duration::from_secs(10));
             tokio::select! {
                 _ = tick.tick() => {
+                    arm = "tick";
                     self.liveness_tick();
                     if last_recovery_scan.elapsed() >= Duration::from_secs(1) {
                         last_recovery_scan = Instant::now();
@@ -1186,6 +1223,7 @@ impl Host {
                         last_probe = Instant::now();
                         let moved = self.approval_tick();
                         self.heartbeat_dirty.extend(moved);
+                        super::screen::index(&self.mirrors);
                     }
                     if reaped.elapsed() >= Duration::from_secs(60) {
                         reaped = Instant::now();
@@ -1205,6 +1243,7 @@ impl Host {
                         None => std::future::pending().await,
                     }
                 } => {
+                    arm = "hook";
                     match event {
                         Some(event) => {
                             if let Some(key) = self.apply_hook(&event)? {
@@ -1217,14 +1256,21 @@ impl Host {
                     }
                 },
                 update = updates.recv() => {
+                    arm = "discovery update";
                     let Some(update) = update else {return Err("discovery stopped".into());};
                     for key in self.observe(update)? {
                         registered.remove(&key);
                         recovering_ended.remove(&key);
                     }
                 },
-                incoming = socket.next() => {
-                    let message = incoming.ok_or("session socket closed")?.map_err(|_| "session socket failed")?;
+                Some(frame) = screens.recv() => {
+                    arm = "screen frame";
+                    // Fire and forget: the relay never answers a screen frame.
+                    send(socket, &frame).await?;
+                },
+                incoming = next_or_deadline(socket, deadline) => {
+                    arm = "relay frame";
+                    let message = incoming?.ok_or("session socket closed")?.map_err(|_| "session socket failed")?;
                     let Message::Text(text) = message else {
                         if matches!(message, Message::Close(_)) {return Err("session socket closed".into());}
                         if let Message::Ping(bytes) = message {socket.send(Message::Pong(bytes)).await.map_err(|_| "session socket failed")?;}
@@ -1244,6 +1290,8 @@ impl Host {
                             relay_reads_stats = body["features"].as_array().is_some_and(|f| f.iter().any(|x| x == "sessionStats"));
                             relay_reads_controls = body["features"].as_array().is_some_and(|f| f.iter().any(|x| x == "nativeControlCapabilities"));
                             relay_reads_private_approval = body["features"].as_array().is_some_and(|f| f.iter().any(|x| x == "privateSendApproval"));
+                            relay_reads_live_terminal = body["features"].as_array().is_some_and(|f| f.iter().any(|x| x == "liveTerminal"));
+                            relay_reads_remote_input = body["features"].as_array().is_some_and(|f| f.iter().any(|x| x == "remoteInput"));
                             let sid = body["sessionId"].as_str().filter(|s|uuid::Uuid::parse_str(s).is_ok()).ok_or("invalid session ID")?;
                             let after = body["afterSeq"].as_u64().ok_or("missing upload cursor")?;
                             let server = body["serverTime"].as_u64().ok_or("missing server time")?;
@@ -1296,10 +1344,7 @@ impl Host {
                                 registered.insert(key.clone());
                             }
                             self.finish_deferred_end(&key)?;
-                            let rtt = sent.elapsed().as_secs_f64();
-                            deadline_now(server,0.0,rtt,SystemTime::now().duration_since(wall).ok().map(|d|d.as_secs_f64()))
-                                .filter(|_|rtt <= 10.0).ok_or("stale time acknowledgment")?;
-                            anchor = Some(ClockAnchor {server,round_trip:rtt,at:Instant::now(),wall:SystemTime::now()});
+                            if let Some(fresh) = ack_anchor(server, sent, wall) {anchor = Some(fresh);}
                             if !body["reconcile"].is_null() {
                                 let request = body["reconcile"]["requestId"].as_str().ok_or("invalid reconciliation")?;
                                 let generation = body["reconcile"]["generation"].as_str().ok_or("invalid reconciliation")?;
@@ -1311,11 +1356,10 @@ impl Host {
                             let rpc = pending_rpc.take().ok_or("unsolicited session acknowledgment")?;
                             let Rpc::Heartbeat{sent,wall} = rpc else {return Err("mismatched session acknowledgment".into());};
                             super::snapshot::offer(&body["pickup"], &self.mirrors);
+                            super::screen::offer(&body["watching"]);
+                            super::resume::offer(&body["resume"], &self.mirrors);
                             let server = body["serverTime"].as_u64().ok_or("missing server time")?;
-                            let rtt = sent.elapsed().as_secs_f64();
-                            deadline_now(server,0.0,rtt,SystemTime::now().duration_since(wall).ok().map(|d|d.as_secs_f64()))
-                                .filter(|_|rtt <= 10.0).ok_or("stale time acknowledgment")?;
-                            anchor = Some(ClockAnchor {server,round_trip:rtt,at:Instant::now(),wall:SystemTime::now()});
+                            if let Some(fresh) = ack_anchor(server, sent, wall) {anchor = Some(fresh);}
                             // A session the relay does not hold is one this Mac has to
                             // register again; it is never heartbeated back into existence.
                             for rejected in body["rejected"].as_array().into_iter().flatten() {
@@ -1375,6 +1419,14 @@ impl Host {
                         },
                         Some("local.session.error") => {
                             let code = body["code"].as_str().unwrap_or("?").to_owned();
+                            if code == "INTERNAL" {
+                                // The relay failed, not this frame. It answers only the in-flight
+                                // request (register, heartbeat or end): free the slot so that frame
+                                // goes again on its own cadence. Never a quarantine.
+                                relay_log("relay failed a request on its side; retrying");
+                                pending_rpc = None;
+                                continue;
+                            }
                             let named = body["sessionId"].as_str().and_then(|sid| {
                                 self.mirrors.iter().find(|(_, m)| m.session_id.as_deref() == Some(sid)).map(|(k, _)| k.clone())
                             });
@@ -1407,6 +1459,10 @@ impl Host {
                             deferred.push_back(command);
                         },
                         Some("local.session.receipt.ack") => {},
+                        // Someone just started watching: stream now. Never answered.
+                        Some("local.session.watch") => super::screen::nudge(&body),
+                        // A teammate's keystrokes: queued for the holder, never answered.
+                        Some("local.session.input") => super::remote_input::offer(&body),
                         _ => return Err("unsupported session frame".into()),
                     }
                 }
@@ -1428,7 +1484,7 @@ impl Host {
             claude::capture(
                 &self.home,
                 &program,
-                &json!({"kind":if native.background {"background"} else {"interactive"},"pid":native.process.pid,
+                &json!({"kind":"interactive","pid":native.process.pid,
                 "sessionId":native.conversation,"status":"unknown"}),
             )
             .await?
@@ -1893,12 +1949,8 @@ fn registration(mirror: &Mirror) -> Value {
     let mut body = json!({"type":"local.session.register", "session":{"provider":mirror.native.provider,
         "profileFingerprint":mirror.native.profile,"nativeConversationId":mirror.native.conversation,"generation":mirror.generation,
         "providerVersion":mirror.native.version,"status":mirror.native.status,"activeTurnId":mirror.native.active_turn,"controlUnavailableReason":mirror.native.restriction,
-        "title":mirror.native.title,"cwdName":mirror.native.cwd_name,
+        "title":mirror.native.title,"cwdName":mirror.native.cwd_name,"holderId":mirror.native.holder,
         "workspace":mirror.workspace.summary()}});
-    // Omitted for a terminal session, so a backend that predates background jobs keeps accepting it.
-    if mirror.native.background {
-        body["session"]["kind"] = json!("background");
-    }
     if let Some(previous) = &mirror.previous_generation {
         body["previousGeneration"] = json!(previous);
     }
@@ -1957,7 +2009,7 @@ fn device_heartbeats(
     registered: &BTreeSet<String>,
     with_stats: bool,
 ) -> Result<Vec<Value>> {
-    device_heartbeats_with_controls(mirrors, registered, with_stats, false)
+    device_heartbeats_with_controls(mirrors, registered, with_stats, false, false, false)
 }
 
 fn device_heartbeats_with_controls(
@@ -1965,8 +2017,21 @@ fn device_heartbeats_with_controls(
     registered: &BTreeSet<String>,
     with_stats: bool,
     with_controls: bool,
+    live_terminal: bool,
+    remote_input: bool,
 ) -> Result<Vec<Value>> {
-    let envelope = |sessions: &[Value]| json!({"type":"local.device.heartbeat","sessions":sessions});
+    // `liveTerminal`: this Mac takes `local.session.watch`; `remoteInput`: `local.session.input`.
+    // Each only to a relay that lists it.
+    let envelope = |sessions: &[Value]| {
+        let mut frame = json!({"type":"local.device.heartbeat","sessions":sessions});
+        if live_terminal {
+            frame["liveTerminal"] = json!(true);
+        }
+        if remote_input {
+            frame["remoteInput"] = json!(true);
+        }
+        frame
+    };
     let mut frames = vec![];
     let mut sessions: Vec<Value> = vec![];
     for (key, m) in mirrors.iter().filter(|(key, m)| {
@@ -2091,6 +2156,69 @@ fn quarantine(
     sent_batches.remove(key);
 }
 
+/// The next relay frame, or the in-flight request's ten seconds running out. Biased: a loop
+/// that overslept the deadline still reads an answer already in the socket buffer first.
+async fn next_or_deadline<S: futures_util::Stream + Unpin>(
+    socket: &mut S,
+    deadline: Option<Instant>,
+) -> Result<Option<S::Item>> {
+    tokio::select! {
+        biased;
+        incoming = socket.next() => Ok(incoming),
+        _ = tokio::time::sleep_until(deadline.unwrap_or_else(Instant::now).into()), if deadline.is_some() => {
+            Err("session acknowledgment timed out".into())
+        }
+    }
+}
+
+/// The clock anchor an acknowledgment proves. A round trip over ten seconds (a stalled loop
+/// read it late) or clocks that disagree prove nothing: the ACK still counts, and the
+/// previous anchor stays.
+fn ack_anchor(server: u64, sent: Instant, wall: SystemTime) -> Option<ClockAnchor> {
+    let rtt = sent.elapsed().as_secs_f64();
+    let wall_elapsed = SystemTime::now().duration_since(wall).ok().map(|d| d.as_secs_f64());
+    if deadline_now(server, 0.0, rtt, wall_elapsed).filter(|_| rtt <= 10.0).is_none() {
+        relay_log(&format!("stale time acknowledgment after {rtt:.1}s; clock anchor kept"));
+        return None;
+    }
+    Some(ClockAnchor { server, round_trip: rtt, at: Instant::now(), wall: SystemTime::now() })
+}
+
+/// Times one connection-loop iteration. The loop reads the socket only in its `select!`,
+/// so an iteration over a second delays every answer by as much; the log names its slowest step.
+struct Laps {
+    iteration: Instant,
+    lap: Instant,
+    slowest: (&'static str, Duration),
+}
+impl Laps {
+    fn new() -> Self {
+        let now = Instant::now();
+        Self { iteration: now, lap: now, slowest: ("", Duration::ZERO) }
+    }
+    fn lap(&mut self, step: &'static str) {
+        let took = self.lap.elapsed();
+        if took > self.slowest.1 {
+            self.slowest = (step, took);
+        }
+        self.lap = Instant::now();
+    }
+    /// Closes the iteration whose `select!` ran `arm`, then starts the next one.
+    fn next(&mut self, arm: &'static str) {
+        self.lap(arm);
+        let took = self.iteration.elapsed();
+        if took > Duration::from_secs(1) {
+            relay_log(&format!(
+                "connection loop iteration took {:.1}s; slowest step: {} ({:.1}s)",
+                took.as_secs_f64(),
+                self.slowest.0,
+                self.slowest.1.as_secs_f64()
+            ));
+        }
+        *self = Self::new();
+    }
+}
+
 async fn send(socket: &mut Socket, body: &Value) -> Result<()> {
     if ascii_wire_len(body)? > 16384 {
         return Err("session frame exceeds limit".into());
@@ -2127,7 +2255,7 @@ mod tests {
             cwd_name: None,
             active_turn: None,
             last_assistant_message: None,
-            background: false,
+            holder: None,
         }
     }
 
@@ -2170,19 +2298,21 @@ mod tests {
         let mirrors = BTreeMap::from([(key.clone(), mirror.clone())]);
         let registered = BTreeSet::from([key]);
         assert!(device_heartbeats(&mirrors, &registered, false).unwrap()[0]["sessions"][0].get("capabilities").is_none());
-        let frames = device_heartbeats_with_controls(&mirrors, &registered, false, true).unwrap();
+        assert!(device_heartbeats(&mirrors, &registered, false).unwrap()[0].get("liveTerminal").is_none(), "only to a relay that lists it");
+        assert!(device_heartbeats(&mirrors, &registered, false).unwrap()[0].get("remoteInput").is_none(), "only to a relay that lists it");
+        let frames = device_heartbeats_with_controls(&mirrors, &registered, false, true, false, false).unwrap();
         let entry = &frames[0]["sessions"][0];
         assert_eq!(entry["capabilities"], json!({"sendMode":"queue","steer":true,"interrupt":true}));
         mirror.native.socket = None;
         mirror.native.socket_inode = None;
         let key = native_key(&mirror.native);
-        let frames = device_heartbeats_with_controls(&BTreeMap::from([(key.clone(), mirror.clone())]), &BTreeSet::from([key]), false, true).unwrap();
+        let frames = device_heartbeats_with_controls(&BTreeMap::from([(key.clone(), mirror.clone())]), &BTreeSet::from([key]), false, true, false, false).unwrap();
         assert_eq!(frames[0]["sessions"][0]["capabilities"], json!({"sendMode":"queue","steer":false,"interrupt":false}));
         mirror.native.socket = Some(PathBuf::from("/private/tmp/codex-daemon-501/socket"));
         mirror.native.socket_inode = Some(7);
         mirror.native.provider = "claude".into();
         let key = native_key(&mirror.native);
-        let frames = device_heartbeats_with_controls(&BTreeMap::from([(key.clone(), mirror)]), &BTreeSet::from([key]), false, true).unwrap();
+        let frames = device_heartbeats_with_controls(&BTreeMap::from([(key.clone(), mirror)]), &BTreeSet::from([key]), false, true, false, false).unwrap();
         let entry = &frames[0]["sessions"][0];
         assert_eq!(entry["capabilities"], json!({"sendMode":"queue","steer":false,"interrupt":false}));
     }
@@ -2241,31 +2371,19 @@ mod tests {
     }
 
     #[test]
-    fn local_sessions_background_job_registers_its_kind_and_a_terminal_session_omits_it() {
+    fn local_sessions_registration_names_its_holder_and_never_a_kind() {
         let mut mirror = test_mirror(SID, "gen-1");
-        assert!(
-            registration(&mirror)["session"].get("kind").is_none(),
-            "a backend that predates background jobs rejects an unknown key"
-        );
+        mirror.native.holder = Some("ab12cd34".into());
+        let frame = registration(&mirror);
+        assert_eq!(frame["session"]["holderId"], "ab12cd34");
+        assert!(frame["session"].get("kind").is_none());
         let mut persisted = serde_json::to_value(&mirror.native).unwrap();
-        persisted.as_object_mut().unwrap().remove("background");
-        assert!(
-            !serde_json::from_value::<NativeSession>(persisted)
-                .unwrap()
-                .background
-        );
-        mirror.native.background = true;
-        assert_eq!(registration(&mirror)["session"]["kind"], "background");
-        mirror.session_id = Some(SID.into());
-        let frames = device_heartbeats(
-            &BTreeMap::from([(SID.to_string(), mirror)]),
-            &BTreeSet::from([SID.to_string()]),
-            false,
-        )
-        .unwrap();
-        assert!(
-            frames[0]["sessions"][0].get("kind").is_none(),
-            "the heartbeat entry never carries it"
+        persisted.as_object_mut().unwrap().remove("holder");
+        persisted["background"] = json!(true);
+        assert_eq!(
+            serde_json::from_value::<NativeSession>(persisted).unwrap().holder,
+            None,
+            "a mirror saved before explicit sharing has no holder; the relay refuses its registration"
         );
     }
 
@@ -3425,7 +3543,7 @@ mod tests {
             cwd_name: None,
             active_turn: None,
             last_assistant_message: None,
-            background: false,
+            holder: None,
         }
     }
     #[tokio::test]
@@ -3704,7 +3822,7 @@ mod tests {
             cwd_name: None,
             active_turn: None,
             last_assistant_message: None,
-            background: false,
+            holder: None,
         };
         let key = native_key(&native);
         let mirror = Mirror {
@@ -3824,7 +3942,7 @@ mod tests {
             cwd_name: None,
             active_turn: None,
             last_assistant_message: None,
-            background: false,
+            holder: None,
         };
         let mirror = Mirror {
             workspace: workspace::State::default(),
@@ -4073,6 +4191,31 @@ mod tests {
         assert_eq!(b.session_id.as_deref(), Some(SID_B));
     }
     #[tokio::test]
+    async fn local_sessions_internal_relay_error_retries_the_inflight_registration_without_quarantine() {
+        let dir = tempfile::tempdir().unwrap();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (tcp, _) = listener.accept().await.unwrap();
+            let mut socket = tokio_tungstenite::accept_async(tcp).await.unwrap();
+            let first = next_frame(&mut socket).await;
+            assert_eq!(first["session"]["generation"], "g-a");
+            reply(&mut socket, json!({"type":"local.session.error","code":"INTERNAL"})).await;
+            let retry = next_frame(&mut socket).await;
+            assert_eq!(retry["session"]["generation"], "g-a", "the same session retries at once");
+            reply(&mut socket, json!({"type":"local.session.registered","sessionId":SID,"generation":"g-a",
+                "afterSeq":0,"serverTime":100,"reconcile":null})).await;
+            socket.close(None).await.unwrap();
+        });
+        let mut host = test_host(dir.path(), vec![("a-session", test_mirror("native-a", "g-a"))]);
+        let (_tx, mut rx) = tokio::sync::mpsc::channel(1);
+        let (mut socket, _) = tokio_tungstenite::connect_async(format!("ws://{address}")).await.unwrap();
+        let _ = host.connection(&mut socket, &mut rx, "alice").await;
+        server.await.unwrap();
+        let a: Mirror = private_read(&dir.path().join("a-session.json")).unwrap();
+        assert_eq!(a.session_id.as_deref(), Some(SID));
+    }
+    #[tokio::test]
     async fn local_sessions_rejected_batch_keeps_the_connection_and_the_pending_batch() {
         let dir = tempfile::tempdir().unwrap();
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -4275,6 +4418,30 @@ mod tests {
             assert!(!quarantine_active(&quarantined, "stale"));
         }
     }
+    #[tokio::test]
+    async fn local_sessions_an_answer_already_buffered_wins_over_an_overslept_deadline() {
+        // The loop was busy past the deadline; the answer arrived before it.
+        let overslept = Some(Instant::now() - Duration::from_secs(1));
+        let mut answered = futures_util::stream::iter(["ack"]);
+        assert_eq!(next_or_deadline(&mut answered, overslept).await, Ok(Some("ack")));
+        let mut silent = futures_util::stream::pending::<&str>();
+        assert!(next_or_deadline(&mut silent, overslept).await.is_err());
+        // Nothing in flight: no deadline at all.
+        let idle = tokio::time::timeout(Duration::from_millis(50), next_or_deadline(&mut silent, None));
+        assert!(idle.await.is_err());
+    }
+    #[test]
+    fn local_sessions_a_late_acknowledgment_counts_but_keeps_the_previous_clock_anchor() {
+        let server = epoch_secs();
+        let late = ack_anchor(
+            server,
+            Instant::now() - Duration::from_secs(11),
+            SystemTime::now() - Duration::from_secs(11),
+        );
+        assert!(late.is_none(), "a late ACK must not move the anchor");
+        let prompt = ack_anchor(server, Instant::now(), SystemTime::now()).expect("a prompt ACK anchors");
+        assert_eq!(prompt.server, server);
+    }
     #[test]
     fn local_sessions_reconnect_delay_backs_off_unless_the_connection_lived() {
         assert_eq!(reconnect_delay(1, Duration::from_secs(0)), 2);
@@ -4415,6 +4582,17 @@ mod tests {
         "../../../../../packages/shared/fixtures/local-session-frames/session-ended-ack.json"
     );
 
+    #[test]
+    fn local_sessions_idle_heartbeat_is_the_golden_frame_with_no_sessions() {
+        let golden: Value = serde_json::from_str(GOLDEN_HEARTBEAT).unwrap();
+        let idle = idle_heartbeat();
+        // The golden frame also carries the live-terminal features; an idle Mac has nothing to
+        // watch, and its relay features are unknown until a registration ACK.
+        assert!(frame_keys(&idle).is_subset(&frame_keys(&golden)));
+        assert_eq!(frame_keys(&idle), BTreeSet::from(["type", "sessions"]));
+        assert_eq!(idle["sessions"], json!([]));
+    }
+
     fn frame_keys(value: &Value) -> BTreeSet<&str> {
         value
             .as_object()
@@ -4463,10 +4641,21 @@ mod tests {
                 assert_eq!(frame["type"], "local.session.register");
                 assert_eq!(frame["session"]["generation"], generation, "keys register in order");
                 reply(&mut socket, json!({"type":"local.session.registered","sessionId":sid,
-                    "generation":generation,"afterSeq":0,"serverTime":1000,"reconcile":null})).await;
+                    "generation":generation,"afterSeq":0,"serverTime":1000,"reconcile":null,
+                    "features":["liveTerminal","remoteInput"]})).await;
             }
+            // A nudge for a session this Mac does not hold is ignored: no reply, no error.
+            reply(&mut socket, json!({"type":"local.session.watch",
+                "sessionId":"ccccdddd-eeee-4fff-8aaa-bbbb00001111","generation":"gen-1"})).await;
+            // So is input for a session nobody watches, or that is malformed: the connection
+            // stays up and the next frame is still the heartbeat.
+            reply(&mut socket, json!({"type":"local.session.input","sessionId":SID,
+                "generation":"gen-1","epoch":3,"data":"bHMgLWxhDQ=="})).await;
+            reply(&mut socket, json!({"type":"local.session.input","sessionId":"../x"})).await;
             // One frame for the device, not one per session.
             let hb = next_frame(&mut socket).await;
+            assert_eq!(hb["liveTerminal"], true, "advertised to a relay that lists liveTerminal");
+            assert_eq!(hb["remoteInput"], true, "advertised to a relay that lists remoteInput");
             let golden: Value = serde_json::from_str(GOLDEN_HEARTBEAT).unwrap();
             assert_eq!(hb["type"], "local.device.heartbeat");
             assert_eq!(frame_keys(&hb), frame_keys(&golden));
@@ -4483,7 +4672,7 @@ mod tests {
                 "the relay rejects the whole frame over one unknown status word"
             );
             let ack = json!({"type":"local.device.heartbeat.ack","rejected":[SID_B],
-                "reconcile":[],"serverTime":1010});
+                "reconcile":[],"serverTime":1010,"watching":[]});
             let golden_ack: Value = serde_json::from_str(GOLDEN_HEARTBEAT_ACK).unwrap();
             assert_eq!(frame_keys(&ack), frame_keys(&golden_ack));
             reply(&mut socket, ack).await;

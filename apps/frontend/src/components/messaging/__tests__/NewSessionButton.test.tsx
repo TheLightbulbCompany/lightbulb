@@ -206,7 +206,7 @@ it("names the Mac by its own name, never the pairing's user id", async () => {
   await userEvent.type(screen.getByPlaceholderText(PLACEHOLDER), "go{Enter}");
   expect(await screen.findByText("Starting on PP's MacBook Pro · ~/code…")).toBeInTheDocument();
   emit({ operationId: START_ID, state: "succeeded", updatedAt: "now", result: {}, error: null });
-  expect(await screen.findByText("Opened in Terminal on PP's MacBook Pro · ~/code. Waiting for the session…")).toBeInTheDocument();
+  expect(await screen.findByText("Opened on PP's MacBook Pro · ~/code. Waiting for the session…")).toBeInTheDocument();
 });
 
 it("blocks an over-long first message", async () => {
@@ -226,7 +226,8 @@ const desktop = (invoke: (command: string, args?: unknown) => Promise<unknown>) 
 
 it("inside the desktop app it starts a real terminal on this Mac with the chosen tool and folder", async () => {
   mockTargets({ enabled: false, devices: [] });
-  const invoke = desktop(async (command) => command === "terminal_options" ? { ...OPTIONS, name: "This Mac" } : { linked: true, holderId: "ab12cd34" });
+  const invoke = desktop(async (command) => command === "terminal_options" ? { ...OPTIONS, name: "This Mac" }
+    : command === "terminal_panel" ? { live: true } : { holderId: "ab12cd34", tool: "codex" });
   render(<NewSessionButton onOpen={vi.fn()} />);
   expect(await screen.findByRole("button", { name: "New session" })).toBeInTheDocument();
   render(view());
@@ -236,7 +237,8 @@ it("inside the desktop app it starts a real terminal on this Mac with the chosen
     startId: START_ID, tool: "codex", folder: "/Users/alice/code", model: null, mode: "codex-default", effort: null, prompt: "fix the build",
   } });
   expect(m.post).not.toHaveBeenCalled();
-  expect(await screen.findByText("Opened in its own window. Waiting for the session…")).toBeInTheDocument();
+  expect(await screen.findByText("Running on this Mac. It moves to Sessions when it reports in.")).toBeInTheDocument();
+  await waitFor(() => expect(invoke).toHaveBeenCalledWith("terminal_panel", expect.objectContaining({ holderId: "ab12cd34" })));
 });
 
 it("a local start that fails shows why", async () => {
@@ -261,4 +263,19 @@ it("a start nobody could confirm can be dismissed, so the view is not locked for
   await userEvent.click(screen.getByRole("button", { name: "Dismiss and start another" }));
   await waitFor(() => expect(screen.getByPlaceholderText(PLACEHOLDER)).toBeEnabled());
   expect(localStorage.getItem("lightbulb.newSession.pending.alice:org-a")).toBeNull();
+});
+
+it("inside the desktop app it shows the terminal command and the PATH line it needs", async () => {
+  const line = `echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.zshrc`;
+  desktop(async (command) => command === "terminal_options" ? { ...OPTIONS, cli: { pathLine: line } } : { linked: true });
+  render(view());
+  expect(await screen.findByText("lightbulb claude")).toBeInTheDocument();
+  expect(screen.getByText(line)).toBeInTheDocument();
+});
+
+it("a desktop app without the command shows no terminal hint", async () => {
+  desktop(async (command) => command === "terminal_options" ? OPTIONS : { linked: true });
+  render(view());
+  expect(await screen.findByRole("combobox", { name: "Folder" })).toBeInTheDocument();
+  expect(screen.queryByText("lightbulb claude")).toBeNull();
 });

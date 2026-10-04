@@ -620,7 +620,7 @@ async fn reusable(repo: &Path, worktree: &Path, reference: &str, snapshot: &str)
     }
 }
 
-/// The exact argv Terminal runs: a fixed binary, fixed flags, values as their own elements.
+/// The exact argv the holder runs: a fixed binary, fixed flags, values as their own elements.
 fn argv(claude: &Path, transcript: &Path, session: &str) -> Vec<String> {
     vec![
         claude.to_string_lossy().into_owned(),
@@ -804,8 +804,18 @@ async fn pick_up(ticket: Value, folder: Option<String>, env: &Env) -> Result<Val
     };
     let session = uuid::Uuid::new_v4().to_string();
     let argv = argv(&claude, &transcript, &session);
-    crate::session_start::launch(&env.data.join("session-launch"), &cwd, &argv, &session)
-        .map_err(|(code, message)| fail(code, &message))?;
+    crate::session_start::start_held(cwd, argv)
+        .await
+        .map_err(|e| fail("LAUNCH_FAILED", &format!("The session didn't start: {e}")))?;
+    // Started with no window: tell the owner at this Mac (spec §5.2).
+    let _ = crate::notify::native_notify(
+        format!("Picked up {}", ticket.session.title.as_deref().filter(|t| !t.is_empty()).unwrap_or("a session")),
+        Some("End it from its panel in Lightbulb.".into()),
+        Some(format!("pickup-{session}")),
+        None,
+        None,
+    )
+    .await;
     let (branch, worktree) = code.unzip();
     Ok(json!({
         "ok": true,
@@ -1275,9 +1285,6 @@ mod tests {
                 "user"
             ]
         );
-        let script =
-            crate::session_start::script(Path::new("/w"), Path::new("/t/x.command"), &argv);
-        assert!(script.contains("exec '/bin/claude' '--resume' '/d/it'\\''s.jsonl' '--fork-session' '--session-id' 'u-1' '--setting-sources' 'user'\n"));
     }
 
     #[test]

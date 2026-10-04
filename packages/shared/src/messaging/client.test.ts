@@ -57,6 +57,14 @@ describe("messaging HTTP client", () => {
     expect(methods.post).toHaveBeenCalledWith("/messaging/sessions/session%2Fb/commands/request%2Fc/cancel", {});
   });
 
+  it("addresses resume and its revocation", async () => {
+    const { client, methods } = setup();
+    await client.resumeLocalSession("s/1", { resumeId: "r-1", message: "go on" });
+    await client.revokeLocalSessionResume("s/1", "user/bob");
+    expect(methods.post).toHaveBeenCalledWith("/messaging/sessions/s%2F1/resume", { resumeId: "r-1", message: "go on" });
+    expect(methods.del).toHaveBeenCalledWith("/messaging/sessions/s%2F1/resume-allowed/user%2Fbob");
+  });
+
   it("uses the frozen read endpoints and sequence query", async () => {
     const { client, methods } = setup();
     await client.getLiveConfig();
@@ -241,4 +249,18 @@ it("cancels history immediately and skips an already-cancelled read", async () =
   await expect(read).rejects.toThrow("cancelled");
   await expect(client.listMessages(roomId, 0, 100, { signal: controller.signal })).rejects.toThrow("cancelled");
   expect(get).toHaveBeenCalledTimes(1);
+});
+
+it("keeps a running session's live terminal coming by posting /viewing", async () => {
+  const post = vi.fn(async () => undefined);
+  const client = createMessagingClient({ post } as unknown as ApiMethods);
+  await client.watchLocalSession("s 1");
+  expect(post).toHaveBeenCalledWith("/messaging/sessions/s%201/viewing", {});
+});
+
+it("posts an admitted viewer's keystrokes with the screen epoch to /input", async () => {
+  const post = vi.fn(async () => undefined);
+  const client = createMessagingClient({ post } as unknown as ApiMethods);
+  await client.sendLocalSessionInput("s 1", "aGk=", 3);
+  expect(post).toHaveBeenCalledWith("/messaging/sessions/s%201/input", { data: "aGk=", epoch: 3 });
 });

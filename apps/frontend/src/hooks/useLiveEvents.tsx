@@ -171,6 +171,8 @@ export function LiveEventsProvider({ children }: { children: ReactNode }) {
     };
   }, []);
 
+  // For the desktop's `lightbulb claude` line: "Shared with <workspace>".
+  const workspaceName = user?.organizationMemberships?.find((m) => m.organization.id === orgId)?.organization.name ?? null;
   useEffect(() => {
     if (typeof window === "undefined" || !user?.id) return;
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -186,6 +188,9 @@ export function LiveEventsProvider({ children }: { children: ReactNode }) {
         displayName: user.fullName || user.firstName || "User",
         userId: user.id,
         permissions: grant.permissions,
+        // The id lets the app name this workspace only when it is the one this Mac shares to.
+        workspaceId: orgId ?? null,
+        workspaceName,
       }).catch(() => {});
     };
     void sendAuth();
@@ -194,7 +199,7 @@ export function LiveEventsProvider({ children }: { children: ReactNode }) {
       cancelled = true;
       window.clearInterval(refresh);
     };
-  }, [user?.id, user?.fullName, user?.firstName, getToken, desktopPermissionRevision, nodeStatus]);
+  }, [user?.id, user?.fullName, user?.firstName, orgId, workspaceName, getToken, desktopPermissionRevision, nodeStatus]);
 
   const value = useMemo<LiveEventsContextValue>(() => ({
     httpReady,

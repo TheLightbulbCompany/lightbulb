@@ -180,7 +180,7 @@ fn from_rollout(
             .map(|n| n.to_string_lossy().chars().take(128).collect()),
         active_turn,
         last_assistant_message: None,
-        background: false,
+        holder: None,
     })
 }
 

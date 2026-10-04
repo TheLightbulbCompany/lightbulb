@@ -20,13 +20,22 @@ from pydantic import Field
 from core.observability.metrics import put_metric
 from core.observability.session_analytics import capture_session_event
 from core.dynamodb import run_in_thread
-from core.auth import AuthContext, get_current_user, resolve_owner_id
+from core.auth import AuthContext, get_current_user, get_human_session, resolve_owner_id
 from core.config import settings
 from core.repositories import container_repo, messaging_repo
 from core.repositories.paperclip_repo import PaperclipRepo
 from core.services import activity, chat_gate
 from core.services import messaging as service
-from core.services import hook_grants, hosted_mcp, link_preview, local_sessions, native_session_tools, session_pickup
+from core.services import (
+    hook_grants,
+    hosted_mcp,
+    link_preview,
+    local_sessions,
+    native_session_tools,
+    session_pickup,
+    session_resume,
+    session_screen,
+)
 from core.services import local_session_grants
 from core.services import container_rpc, runtime_transport, voice_calls
 from core.services.live_events import get_live_event_publisher, publish_room_activity
@@ -222,6 +231,20 @@ async def record_local_session_open(
     )
 
 
+@router.post("/messaging/sessions/{session_id}/viewing", status_code=204)
+async def watch_local_session(session_id: str, auth: AuthContext = Depends(get_human_session)):
+    """A person keeps a running session's live terminal coming: every 15 s while it is on screen."""
+    await session_screen.watch(auth, session_id)
+
+
+@router.post("/messaging/sessions/{session_id}/input", status_code=204)
+async def type_into_local_session(
+    session_id: str, body: session_screen.SessionInput, auth: AuthContext = Depends(get_human_session)
+):
+    """An admitted person types into a running session's live terminal (owner ruling 2026-10-03)."""
+    await session_screen.type_into(auth, session_id, body)
+
+
 @router.patch("/messaging/sessions/{session_id}/display-title", response_model=local_sessions.LocalSession)
 async def set_local_session_display_title(
     session_id: str,
@@ -298,6 +321,21 @@ async def report_local_session_pickup(
     session_id: str, pickup_id: str, body: session_pickup.PickupOutcome, auth: AuthContext = Depends(get_current_user)
 ):
     await session_pickup.report_outcome(auth, session_id, pickup_id, body)
+
+
+@router.post("/messaging/sessions/{session_id}/resume", response_model=local_sessions.LocalSession)
+async def resume_local_session(
+    session_id: str, body: session_resume.ResumeRequest, auth: AuthContext = Depends(get_human_session)
+):
+    """Resume and send: the owner, or someone who could send to it when it ended. It starts on the
+    owner's Mac at that Mac's next heartbeat, within 24 hours."""
+    return await session_resume.request_resume(auth, session_id, body)
+
+
+@router.delete("/messaging/sessions/{session_id}/resume-allowed/{user_id}", response_model=local_sessions.LocalSession)
+async def revoke_local_session_resume(session_id: str, user_id: str, auth: AuthContext = Depends(get_current_user)):
+    """The owner takes one person's resume back."""
+    return await session_resume.revoke_resume(auth, session_id, user_id)
 
 
 @router.post("/messaging/sessions/{session_id}/share-links", response_model=local_sessions.ShareLink, status_code=201)

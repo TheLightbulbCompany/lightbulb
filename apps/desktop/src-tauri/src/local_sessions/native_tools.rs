@@ -68,7 +68,7 @@ fn peer_pid(socket: &UnixStream) -> Result<u32> {
     Ok(pid as u32)
 }
 
-fn parent(pid: u32) -> Result<Process> {
+pub(super) fn parent(pid: u32) -> Result<Process> {
     let mut info: libc::proc_bsdinfo = unsafe { std::mem::zeroed() };
     let size = std::mem::size_of_val(&info) as i32;
     if unsafe {

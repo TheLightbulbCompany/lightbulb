@@ -6,6 +6,8 @@ pub mod device_token;
 pub mod file_access;
 #[cfg(unix)]
 pub mod holder;
+#[cfg(unix)]
+pub mod cli;
 pub mod keychain;
 pub mod local_mcp;
 pub mod local_sessions;
@@ -221,9 +223,14 @@ fn send_auth_token(
     display_name: String,
     user_id: String,
     permissions: Option<DesktopPermissions>,
+    workspace_id: Option<String>,
+    workspace_name: Option<String>,
     state: State<'_, AuthState>,
     app: tauri::AppHandle,
 ) -> Result<(), String> {
+    // Only for the `lightbulb` command's "Shared with <workspace>" line.
+    #[cfg(unix)]
+    cli::set_workspace(workspace_id.zip(workspace_name));
     {
         // Cache the latest token for telemetry / diagnostic dumps. We do
         // NOT use this as the "did bootstrap already happen" sentinel
@@ -1380,9 +1387,6 @@ async fn apply_update_manifest(
         log(&format!("[updater] safe restart unavailable: {e}"));
         format!("restart safely: {e}")
     })?;
-    // Only now is the restart certain: from here a closing window is not a person's close.
-    #[cfg(unix)]
-    holder::window::app_exiting();
     log("[updater] install complete, restarting");
     app.restart();
 }
@@ -1549,7 +1553,10 @@ pub fn focus_or_recreate_main_window(app: &tauri::AppHandle) {
     #[cfg(target_os = "macos")]
     let _ = app.show();
 
-    let existing = app.get_webview_window("main");
+    // The window, not the webview window: while the session panel's terminal is attached the
+    // main window holds two webviews and `get_webview_window` finds none, which would send a
+    // live window down the recreate path (and its build fails on the taken label).
+    let existing = app.get_window("main");
     if decide_window_recovery(existing.is_some()) == WindowRecovery::ShowExisting {
         if let Some(window) = existing {
             let _ = window.unminimize();
@@ -1596,7 +1603,7 @@ fn handle_deep_link_url(app: &tauri::AppHandle, url_str: &str) {
                 .find(|(k, _)| k == "ticket")
                 .map(|(_, v)| v.to_string())
             {
-                if let Some(window) = app.get_webview_window("main") {
+                if let Some(window) = app.get_window("main") {
                     let _ = window.emit("auth:sign-in-ticket", &ticket);
                     log("[deep-link] emitted auth:sign-in-ticket");
                 }
@@ -1712,13 +1719,16 @@ pub fn run() {
                     let _ = window.hide();
                     log("[window] main close requested; hiding to tray");
                 }
-                // Closing a terminal window ends its session, like closing a terminal.
-                #[cfg(unix)]
-                holder::window::window_closed(window.label());
             }
         })
         .on_page_load(|webview, payload| {
-            if matches!(payload.event(), tauri::webview::PageLoadEvent::Finished) {
+            // The site is (re)loading: the panel it placed is gone, and so is its terminal.
+            #[cfg(unix)]
+            if webview.label() == "main" && matches!(payload.event(), tauri::webview::PageLoadEvent::Started) {
+                holder::panel::close(webview.app_handle());
+            }
+            // Only the site: the panel terminal's loopback page must never reach `shell|open`.
+            if webview.label() == "main" && matches!(payload.event(), tauri::webview::PageLoadEvent::Finished) {
                 log("[page-load] injecting window.open override");
                 let _ = webview.eval(&window_open_override_script());
             }
@@ -1847,6 +1857,7 @@ end tell"#,
             agent_chrome::agent_chrome_raise,
             session_start::terminal_options,
             session_start::terminal_start,
+            holder::panel::terminal_panel,
         ])
         .setup(|app| {
             log("[setup] Lightbulb desktop app starting");
@@ -1917,6 +1928,7 @@ end tell"#,
             // Click/foreground delegate only. Permission is asked by the webview
             // once someone signs in (`notify::notification_permission`).
             notify::install(app.handle());
+            local_sessions::resume::install(app.handle());
 
             // Native sharing is an independent consented service. A missing
             // OpenClaw sidecar/gateway cannot prevent a retained pair restoring it.
@@ -1957,11 +1969,13 @@ end tell"#,
                 }
             });
 
-            // Sessions that kept running while the app was away get their windows back.
+            // The `lightbulb` command: its request socket, and its link in ~/.local/bin.
             #[cfg(unix)]
             {
-                let handle = app.handle().clone();
-                tauri::async_runtime::spawn_blocking(move || holder::window::restore_windows(&handle));
+                if let Err(e) = cli::serve(app.handle().clone()) {
+                    log(&format!("[cli] the lightbulb command is unavailable: {e}"));
+                }
+                tauri::async_runtime::spawn_blocking(cli::install_at_launch);
             }
 
             Ok(())
@@ -1969,11 +1983,6 @@ end tell"#,
         .build(context)
         .expect("error while running tauri application")
         .run(|_app, _event| {
-            // Quitting or restarting closes windows without ending their sessions.
-            #[cfg(unix)]
-            if matches!(_event, tauri::RunEvent::ExitRequested { .. } | tauri::RunEvent::Exit) {
-                holder::window::app_exiting();
-            }
             // Dock-icon click on an already-running app: macOS delivers
             // applicationShouldHandleReopen instead of spawning a second
             // process, so single_instance never fires for this path.

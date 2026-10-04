@@ -291,10 +291,10 @@ export default function NewSessionScreen() {
         {busy ? <Text accessibilityLiveRegion="polite" style={{ color: palette.fgSoft }}>
           {pending?.phase === "starting" ? `Starting on ${macName}…`
             : pending?.phase === "unknown"
-              ? `Could not confirm whether ${macName} started the session. Check Terminal and Chats before trying again.`
+              ? `Could not confirm whether ${macName} started the session. Check the Lightbulb app and Chats before trying again.`
             : pending?.phase === "delayed"
-              ? `Terminal opened on ${macName}. If your session is not in Chats yet, check Terminal on that Mac.`
-              : `Terminal opened on ${macName}. Your session will appear in Chats when it is shared.`}
+              ? `The session opened on ${macName}. If it is not in Chats yet, check the Lightbulb app on that Mac.`
+              : `The session opened on ${macName}. Your session will appear in Chats when it is shared.`}
         </Text> : null}
         {(pending?.phase === "opened" || pending?.phase === "delayed" || pending?.phase === "unknown") ? (
           <Pressable accessibilityRole="button" accessibilityLabel="View sessions" onPress={() => {

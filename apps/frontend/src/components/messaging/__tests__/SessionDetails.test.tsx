@@ -178,3 +178,12 @@ it("tells a person the owner let in that they may send", () => {
   expect(screen.getByText("Alice let you send follow-ups and answer its prompts. Anyone in the workspace can read it.")).toBeInTheDocument();
   expect(screen.queryByText(/^Only Alice can send/)).not.toBeInTheDocument();
 });
+
+it("lists who may resume an ended session, each with Remove", async () => {
+  const c = { ...client(), revokeLocalSessionResume: vi.fn(async () => session({ status: "ended", resumeAllowed: [] })) };
+  render(<SessionDetails open onOpenChange={() => {}} tab="access" onTab={() => {}} session={session({ status: "ended", resumeAllowed: ["bob"] })}
+    ownerName="Alice" own client={c} events={[]} nameOf={id => (id === "bob" ? "Bob" : "Someone")} />);
+  expect(screen.getByText("Who can resume it")).toBeInTheDocument();
+  await userEvent.click(screen.getByRole("button", { name: "Remove Bob" }));
+  expect(c.revokeLocalSessionResume).toHaveBeenCalledWith("s1", "bob");
+});

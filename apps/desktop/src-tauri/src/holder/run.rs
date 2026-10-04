@@ -1,10 +1,11 @@
 //! The holder process: one pty, one provider, a terminal model, an offset-addressed output log,
-//! and a unix socket. One interactive client at a time; any number of output-only clients.
+//! and a unix socket. One interactive client at a time; any number of output-only clients, and
+//! input-only `type` clients (a remote, admitted teammate's keystrokes relayed by the app).
 
 use super::model::{is_probe_reply, Model};
 use super::protocol::*;
 use portable_pty::{native_pty_system, CommandBuilder, PtySize};
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::io::{Result, Write};
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::{UnixListener, UnixStream};
@@ -23,6 +24,12 @@ const CLIENT_QUEUE: usize = 1024;
 const OUTPUT_BACKLOG: usize = 8 << 20;
 /// How long to keep reading output after the provider exits.
 const EXIT_DRAIN: Duration = Duration::from_secs(1);
+
+/// `--size=<cols>x<rows>`: the size of the terminal that asked for this session.
+pub fn parse_size(arg: &str) -> Option<(u16, u16)> {
+    let (cols, rows) = arg.strip_prefix("--size=")?.split_once('x')?;
+    Some((cols.parse().ok()?, rows.parse().ok()?))
+}
 
 /// The user's login-shell environment, read once (as VS Code does). The provider is started
 /// directly with it: running it *through* an interactive shell runs the user's rc prompts
@@ -79,6 +86,14 @@ mod tests {
     use super::*;
 
     #[test]
+    fn holder_size_argument_parses_and_refuses_anything_else() {
+        assert_eq!(parse_size("--size=120x40"), Some((120, 40)));
+        assert_eq!(parse_size("--"), None);
+        assert_eq!(parse_size("--size=x"), None);
+        assert_eq!(parse_size("--size=80"), None);
+    }
+
+    #[test]
     fn holder_environment_parses_and_refuses_an_empty_capture() {
         let wrap = |json: &str| format!("Welcome back!\n{ENV_BEGIN}{json}{ENV_END}\nbye\n").into_bytes();
         let env = parse_environment(&wrap(r#"{"HOME":"/Users/a","PATH":"/usr/bin","SHLVL":"2","MULTI":"a\nb"}"#)).unwrap();
@@ -99,13 +114,13 @@ enum Event {
     Connect(u64, UnixStream),
     Frame(u64, u8, Vec<u8>),
     Gone(u64),
-    Exit(String),
+    Exit(String, u32),
     /// The pty reader stopped: no more output.
     Eof,
 }
 
-pub fn run(socket: &Path, argv: &[String], cwd: &Path) -> Result<()> {
-    run_with_env(socket, argv, cwd, login_environment())
+pub fn run(socket: &Path, argv: &[String], cwd: &Path, size: Option<(u16, u16)>) -> Result<()> {
+    run_with_env(socket, argv, cwd, login_environment(), size)
 }
 
 /// Variables one Claude Code session sets for its own children. A held session that inherits
@@ -122,11 +137,14 @@ pub fn provider_environment(env: Vec<(String, String)>) -> Vec<(String, String)>
     env.into_iter().filter(|(k, _)| !SESSION_MARKERS.contains(&k.as_str())).collect()
 }
 
-pub fn run_with_env(socket: &Path, argv: &[String], cwd: &Path, env: Vec<(String, String)>) -> Result<()> {
+pub fn run_with_env(socket: &Path, argv: &[String], cwd: &Path, env: Vec<(String, String)>, size: Option<(u16, u16)>) -> Result<()> {
+    // The terminal that asked for this session, if one did: its first screen is drawn at that
+    // size, so a replay of it fits that terminal.
+    let (cols, rows) = size.map_or((COLS, ROWS), |(c, r)| (c.clamp(1, 1000), r.clamp(1, 500)));
     let env = provider_environment(env);
     let program = argv.first().ok_or_else(|| std::io::Error::other("no program"))?;
     let pair = native_pty_system()
-        .openpty(PtySize { rows: ROWS, cols: COLS, pixel_width: 0, pixel_height: 0 })
+        .openpty(PtySize { rows, cols, pixel_width: 0, pixel_height: 0 })
         .map_err(std::io::Error::other)?;
     let mut cmd = CommandBuilder::new(program);
     cmd.args(&argv[1..]);
@@ -141,15 +159,31 @@ pub fn run_with_env(socket: &Path, argv: &[String], cwd: &Path, env: Vec<(String
         cmd.env("LANG", "en_US.UTF-8");
     }
     cmd.cwd(cwd);
-    let mut child = pair.slave.spawn_command(cmd).map_err(std::io::Error::other)?;
+    // Bind under another name and rename into place: `list` deletes a `.sock` that refuses a
+    // connection, so the socket must never appear under its real name before it is listening.
+    // It is published before the provider starts, so the provider's first hook finds the holder
+    // (an early `hello` waits in the listen backlog until the event loop answers it).
+    let binding = socket.with_extension("bind");
+    let _ = std::fs::remove_file(&binding);
+    let listener = UnixListener::bind(&binding)?;
+    std::fs::set_permissions(&binding, std::fs::Permissions::from_mode(0o600))?;
+    std::fs::rename(&binding, socket)?;
+
+    let started = (|| {
+        let child = pair.slave.spawn_command(cmd).map_err(std::io::Error::other)?;
+        let reader = pair.master.try_clone_reader().map_err(std::io::Error::other)?;
+        let pty = pair.master.take_writer().map_err(std::io::Error::other)?;
+        Ok::<_, std::io::Error>((child, reader, pty))
+    })();
+    let (mut child, mut reader, mut pty) = match started {
+        Ok(parts) => parts,
+        Err(e) => {
+            let _ = std::fs::remove_file(socket);
+            return Err(e);
+        }
+    };
     drop(pair.slave);
     let provider_pid = child.process_id().unwrap_or(0);
-    let mut reader = pair.master.try_clone_reader().map_err(std::io::Error::other)?;
-    let mut pty = pair.master.take_writer().map_err(std::io::Error::other)?;
-
-    let _ = std::fs::remove_file(socket);
-    let listener = UnixListener::bind(socket)?;
-    std::fs::set_permissions(socket, std::fs::Permissions::from_mode(0o600))?;
 
     let (tx, rx) = channel::<Event>();
     // Output read but not yet handled. Past OUTPUT_BACKLOG the reader waits, so a provider
@@ -176,8 +210,11 @@ pub fn run_with_env(socket: &Path, argv: &[String], cwd: &Path, env: Vec<(String
     });
     let exit_tx = tx.clone();
     std::thread::spawn(move || {
-        let status = child.wait().map(|s| format!("{s:?}")).unwrap_or_else(|e| e.to_string());
-        let _ = exit_tx.send(Event::Exit(status));
+        let (status, code) = match child.wait() {
+            Ok(s) => (format!("{s:?}"), s.exit_code()),
+            Err(e) => (e.to_string(), 1),
+        };
+        let _ = exit_tx.send(Event::Exit(status, code));
     });
     std::thread::spawn(move || {
         for (id, conn) in (1u64..).zip(listener.incoming()) {
@@ -203,20 +240,24 @@ pub fn run_with_env(socket: &Path, argv: &[String], cwd: &Path, env: Vec<(String
         }
     });
 
-    let mut model = Model::new(ROWS, COLS);
+    let mut model = Model::new(rows, cols);
     let mut log: VecDeque<u8> = VecDeque::new();
     let mut total: u64 = 0;
     // Connected but not yet introduced: they get nothing until their HELLO is answered.
     let mut pending: HashMap<u64, UnixStream> = HashMap::new();
     let mut clients: HashMap<u64, Client> = HashMap::new();
     let mut interactive: Option<u64> = None;
-    let mut exited: Option<(String, Instant)> = None;
+    let mut watchers: HashSet<u64> = HashSet::new();
+    let mut typists: HashSet<u64> = HashSet::new();
+    // Interactive `join` clients waiting for the keyboard, oldest first (also watchers and typists).
+    let mut joined: Vec<u64> = vec![];
+    let mut exited: Option<(String, u32, Instant)> = None;
 
     loop {
         let event = match &exited {
             // The provider is gone: finish once its last output is read (or after a moment,
             // when a leftover child still holds the terminal open).
-            Some((_, at)) => match rx.recv_timeout(EXIT_DRAIN.saturating_sub(at.elapsed())) {
+            Some((_, _, at)) => match rx.recv_timeout(EXIT_DRAIN.saturating_sub(at.elapsed())) {
                 Ok(event) => event,
                 Err(_) => Event::Eof,
             },
@@ -246,31 +287,68 @@ pub fn run_with_env(socket: &Path, argv: &[String], cwd: &Path, env: Vec<(String
                 let Some(conn) = pending.remove(&id) else { continue };
                 let Some(client) = Client::start(conn) else { continue };
                 let role = serde_json::from_slice::<serde_json::Value>(&payload).unwrap_or_default();
+                // The app's panel joins a session a terminal (`lightbulb claude`) already has: it
+                // never takes that terminal's keyboard or size.
+                let joining = role["role"] == "interactive" && role["join"] == true && interactive.is_some();
                 let (rows, cols) = model.size();
                 let facts = serde_json::json!({"protocol": 1, "pid": std::process::id(),
-                    "providerPid": provider_pid, "argv": argv, "cwd": cwd, "rows": rows, "cols": cols});
+                    "providerPid": provider_pid, "argv": argv, "cwd": cwd, "rows": rows, "cols": cols,
+                    "watch": true, "type": true, "joined": joining});
                 if !client.send(encode(HELLO, facts.to_string().as_bytes())) {
                     continue;
                 }
-                if role["role"] == "interactive" {
+                if joining {
+                    if !client.send(encode(SNAPSHOT, &with_offset(total, &model.snapshot()))) {
+                        continue;
+                    }
+                    watchers.insert(id);
+                    typists.insert(id);
+                    joined.push(id);
+                } else if role["role"] == "interactive" {
                     // Take the window's size first, so its snapshot is drawn at that size.
                     if let (Some(cols), Some(rows)) = (role["cols"].as_u64(), role["rows"].as_u64()) {
                         let (cols, rows) = (cols.clamp(1, 1000) as u16, rows.clamp(1, 500) as u16);
                         let _ = pair.master.resize(PtySize { rows, cols, pixel_width: 0, pixel_height: 0 });
                         model.resize(rows, cols);
+                        tell(&clients, &watchers, &size_frame(cols, rows));
                     }
                     if let Some(previous) = interactive.replace(id).filter(|p| *p != id) {
                         if let Some(c) = clients.get(&previous) {
                             c.send(encode(DETACHED, b""));
                         }
                     }
+                    // A terminal that just started this session asks for all its output instead
+                    // of a snapshot (which clears the screen): it then draws under what that
+                    // terminal already shows, as the provider run directly would.
+                    let oldest = total - log.len() as u64;
+                    let first = match role["replayFrom"].as_u64().filter(|from| (oldest..=total).contains(from)) {
+                        Some(from) => {
+                            let bytes: Vec<u8> = log.iter().skip((from - oldest) as usize).copied().collect();
+                            encode(OUTPUT, &with_offset(from, &bytes))
+                        }
+                        None => encode(SNAPSHOT, &with_offset(total, &model.snapshot())),
+                    };
+                    if !client.send(first) {
+                        continue;
+                    }
+                } else if role["role"] == "watch" {
+                    // Output-only, plus the screen to start from, fresh ones on request and every
+                    // size change: what a live view needs. It never types and never resizes.
                     if !client.send(encode(SNAPSHOT, &with_offset(total, &model.snapshot()))) {
                         continue;
                     }
+                    watchers.insert(id);
+                } else if role["role"] == "type" {
+                    // Input only: it gets no output and never resizes (the window or CLI owns the
+                    // size). Dropping its Client still delivers the queued HELLO.
+                    typists.insert(id);
+                    continue;
                 }
                 clients.insert(id, client);
             }
-            Event::Frame(id, INPUT, payload) if interactive == Some(id) && !is_probe_reply(&payload) => {
+            Event::Frame(id, INPUT, payload)
+                if (interactive == Some(id) || typists.contains(&id)) && !is_probe_reply(&payload) =>
+            {
                 let _ = pty.write_all(&payload);
             }
             Event::Frame(id, RESIZE, payload) if interactive == Some(id) && payload.len() == 4 => {
@@ -278,6 +356,12 @@ pub fn run_with_env(socket: &Path, argv: &[String], cwd: &Path, env: Vec<(String
                 let rows = u16::from_be_bytes([payload[2], payload[3]]).max(1);
                 let _ = pair.master.resize(PtySize { rows, cols, pixel_width: 0, pixel_height: 0 });
                 model.resize(rows, cols);
+                tell(&clients, &watchers, &size_frame(cols, rows));
+            }
+            Event::Frame(id, SNAPSHOT, _) if watchers.contains(&id) => {
+                if let Some(client) = clients.get(&id) {
+                    client.send(encode(SNAPSHOT, &with_offset(total, &model.snapshot())));
+                }
             }
             Event::Frame(id, REPLAY, payload) => {
                 let (Some((from, _)), Some(client)) = (split_offset(&payload), clients.get(&id)) else { continue };
@@ -295,20 +379,33 @@ pub fn run_with_env(socket: &Path, argv: &[String], cwd: &Path, env: Vec<(String
             Event::Gone(id) => {
                 pending.remove(&id);
                 clients.remove(&id);
+                watchers.remove(&id);
+                typists.remove(&id);
+                joined.retain(|j| *j != id);
                 if interactive == Some(id) {
                     interactive = None;
+                    // The oldest joined client takes the keyboard and then sends its own size.
+                    while !joined.is_empty() {
+                        let next = joined.remove(0);
+                        watchers.remove(&next);
+                        typists.remove(&next);
+                        if clients.get(&next).is_some_and(|c| c.send(encode(PROMOTED, b""))) {
+                            interactive = Some(next);
+                            break;
+                        }
+                    }
                 }
             }
-            Event::Exit(status) => {
-                exited = Some((status, Instant::now()));
+            Event::Exit(status, code) => {
+                exited = Some((status, code, Instant::now()));
             }
             Event::Eof => {
                 if exited.is_none() {
                     // The terminal closed first; the exit status follows from the wait thread.
                     continue;
                 }
-                let status = exited.take().map(|(status, _)| status).unwrap_or_default();
-                let frame = encode(EXIT, serde_json::json!({ "status": status }).to_string().as_bytes());
+                let (status, code) = exited.take().map(|(s, c, _)| (s, c)).unwrap_or_default();
+                let frame = encode(EXIT, serde_json::json!({ "status": status, "code": code }).to_string().as_bytes());
                 for client in clients.values() {
                     client.send(frame.clone());
                 }
@@ -319,8 +416,24 @@ pub fn run_with_env(socket: &Path, argv: &[String], cwd: &Path, env: Vec<(String
                     std::thread::sleep(Duration::from_millis(10));
                 }
                 let _ = std::fs::remove_file(socket);
+                let _ = std::fs::remove_file(socket.with_extension("thread"));
                 return Ok(());
             }
+        }
+    }
+}
+
+/// RESIZE as the holder tells watch clients: `u16 BE cols`, `u16 BE rows`.
+fn size_frame(cols: u16, rows: u16) -> Vec<u8> {
+    let mut payload = cols.to_be_bytes().to_vec();
+    payload.extend_from_slice(&rows.to_be_bytes());
+    encode(RESIZE, &payload)
+}
+
+fn tell(clients: &HashMap<u64, Client>, watchers: &HashSet<u64>, frame: &[u8]) {
+    for id in watchers {
+        if let Some(client) = clients.get(id) {
+            client.send(frame.to_vec());
         }
     }
 }

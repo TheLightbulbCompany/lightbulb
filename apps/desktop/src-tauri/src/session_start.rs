@@ -4,21 +4,20 @@
 //! every field is re-validated against this Mac's own truth: the tool must be an
 //! installed fixed binary, the folder one of the approved folders (Settings → File
 //! access), model/mode from a closed list, and the prompt is passed after `--` so it
-//! can never become a flag. Then Terminal opens the session so the owner sees it;
-//! sharing must already be on so it mirrors.
+//! can never become a flag. Then a held session opens on this Mac so the owner sees it;
+//! sharing must already be on, and only held sessions are shared.
 //!
 //! No native approve-once window: `session.start.v1` is owner-only end to end. The
 //! backend resolves it only to the caller's OWN Mac (the ready row and the reciprocal
 //! pairing must both name the Clerk user asking, and the command is granted only to
 //! that pairing), so the requester is always the person at this Mac, starting a
 //! session he just typed. What reaches the CLI is a fixed installed binary in an
-//! approved folder, with no permission-bypass mode, opened visibly in Terminal where
+//! approved folder, with no permission-bypass mode, opened visibly on this Mac where
 //! the CLI's own approvals still apply. A second "are you sure?" for your own click
 //! added nothing. A teammate cannot start sessions here at all.
 use serde::Deserialize;
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
-use tauri::Manager;
 use tokio::sync::watch;
 
 const CLAUDE_MODELS: &[(&str, &str)] =
@@ -124,7 +123,7 @@ fn valid_model(s: &str) -> bool {
             .all(|b| b.is_ascii_alphanumeric() || b"._:-".contains(&b))
 }
 
-fn tools(home: &Path) -> Vec<Value> {
+pub(crate) fn tools(home: &Path) -> Vec<Value> {
     let mut out = vec![];
     if crate::local_sessions::provider_program(home, "claude").is_some() {
         out.push(
@@ -172,6 +171,7 @@ pub fn options(app: &tauri::AppHandle) -> Value {
         "sharing": crate::local_sessions::enrollment::sharing_on(app),
         "folders": approved_folders(),
         "tools": tools(&home()),
+        "cli": crate::cli::status(),
     })
 }
 
@@ -181,7 +181,7 @@ fn listed(options: &[Value], value: &Option<String>) -> bool {
         .map_or(true, |v| options.iter().any(|o| o["id"] == v))
 }
 
-/// The exact argv Terminal will run: fixed binary, closed flags, prompt after `--`.
+/// The exact argv the holder runs: fixed binary, closed flags, prompt after `--`.
 fn argv(program: &Path, start: &Start) -> Vec<String> {
     let mut argv = vec![program.to_string_lossy().into_owned()];
     if let Some(model) = &start.model {
@@ -289,114 +289,31 @@ fn validate(params: Value, home: &Path) -> Result<(Start, PathBuf, Vec<String>),
     Ok((start, folder, argv))
 }
 
-pub(crate) fn quote(s: &str) -> String {
-    format!("'{}'", s.replace('\'', r"'\''"))
-}
-
-/// A private one-shot `.command` script: Terminal runs it in a login shell the owner
-/// can see, it deletes itself, then execs the CLI. No shell ever parses request text
-/// unquoted.
-pub(crate) fn script(folder: &Path, path: &Path, argv: &[String]) -> String {
-    format!(
-        "#!/bin/zsh -l\nrm -f -- {}\ncd -- {} || exit 1\nexec {}\n",
-        quote(&path.to_string_lossy()),
-        quote(&folder.to_string_lossy()),
-        argv.iter().map(|a| quote(a)).collect::<Vec<_>>().join(" ")
-    )
-}
-
-fn script_with_link(folder: &Path, path: &Path, argv: &[String], start_id: &str, scope: &str) -> String {
-    format!(
-        "#!/bin/zsh -l\nrm -f -- {}\ncd -- {} || exit 1\nexec /usr/bin/env LIGHTBULB_SESSION_START_ID={} LIGHTBULB_SESSION_SCOPE={} LIGHTBULB_SESSION_LAUNCH_PID=$$ {}\n",
-        quote(&path.to_string_lossy()),
-        quote(&folder.to_string_lossy()),
-        quote(start_id),
-        quote(scope),
-        argv.iter().map(|a| quote(a)).collect::<Vec<_>>().join(" ")
-    )
-}
-
-pub(crate) fn launch(
-    dir: &Path,
-    folder: &Path,
-    argv: &[String],
-    start_id: &str,
-) -> Result<(), Failure> {
-    launch_inner(dir, folder, argv, start_id, None)
-}
-
-fn launch_with_link(
-    dir: &Path,
-    folder: &Path,
-    argv: &[String],
-    start_id: &str,
-    scope: &str,
-) -> Result<(), Failure> {
-    launch_inner(dir, folder, argv, start_id, Some(scope))
-}
-
-fn launch_inner(
-    dir: &Path,
-    folder: &Path,
-    argv: &[String],
-    start_id: &str,
-    scope: Option<&str>,
-) -> Result<(), Failure> {
-    use std::io::Write;
-    use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
-    let failed = |e: std::io::Error| ("LAUNCH_FAILED", format!("Terminal didn't open: {e}"));
-    std::fs::DirBuilder::new()
-        .recursive(true)
-        .mode(0o700)
-        .create(dir)
-        .map_err(failed)?;
-    let path = dir.join(format!("{start_id}.command"));
-    let mut file = std::fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .mode(0o700)
-        .open(&path)
-        .map_err(failed)?;
-    let command = scope.map_or_else(
-        || script(folder, &path, argv),
-        |scope| script_with_link(folder, &path, argv, start_id, scope),
-    );
-    file.write_all(command.as_bytes())
-        .map_err(failed)?;
-    drop(file);
-    let out = std::process::Command::new("/usr/bin/open")
-        .args(["-a", "Terminal"])
-        .arg(&path)
-        .output()
-        .map_err(failed)?;
-    if !out.status.success() {
-        let _ = std::fs::remove_file(&path);
-        let why = String::from_utf8_lossy(&out.stderr)
-            .trim()
-            .chars()
-            .take(200)
-            .collect::<String>();
-        return Err((
-            "LAUNCH_FAILED",
-            format!(
-                "Terminal didn't open: {}",
-                if why.is_empty() {
-                    out.status.to_string()
-                } else {
-                    why
-                }
-            ),
-        ));
-    }
-    Ok(())
-}
-
 pub async fn start(
     app: tauri::AppHandle,
     params: Value,
     cancel: watch::Receiver<bool>,
 ) -> Result<Value, Failure> {
-    let result = start_inner(&app, params, &cancel);
+    let result = async {
+        let (start, folder, argv, scope) = prepare(&app, params, &cancel)?;
+        let argv = held_argv(&argv, Some((start.start_id.as_str(), scope.as_str())));
+        let place = folder.file_name().map_or_else(|| folder.display().to_string(), |n| n.to_string_lossy().into_owned());
+        start_held(folder, argv)
+            .await
+            .map_err(|e| ("LAUNCH_FAILED", format!("The session didn't start: {e}")))?;
+        // Started from elsewhere with no window: tell the owner at this Mac (spec §5.2).
+        let tool = if start.tool == "codex" { "Codex" } else { "Claude Code" };
+        let _ = crate::notify::native_notify(
+            format!("{tool} started in {place}"),
+            Some("End it from its panel in Lightbulb.".into()),
+            Some(format!("start-{}", start.start_id)),
+            None,
+            None,
+        )
+        .await;
+        Ok(json!({"started": true, "tool": start.tool}))
+    }
+    .await;
     match &result {
         Ok(v) => crate::log(&format!("[session-start] launched {}", v["tool"])),
         Err((code, message)) => crate::log(&format!("[session-start] failed {code}: {message}")),
@@ -404,47 +321,39 @@ pub async fn start(
     result
 }
 
-fn start_inner(
+fn prepare(
     app: &tauri::AppHandle,
     params: Value,
     cancel: &watch::Receiver<bool>,
-) -> Result<Value, Failure> {
+) -> Result<(Start, PathBuf, Vec<String>, String), Failure> {
     let (start, folder, argv) = validate(params, &home())?;
-    crate::log(&format!(
-        "[session-start] {} {} in {}",
-        start.start_id,
-        start.tool,
-        folder.display()
-    ));
+    crate::log(&format!("[session-start] {} {} in {}", start.start_id, start.tool, folder.display()));
     if !crate::local_sessions::enrollment::sharing_on(app) {
-        return Err((
-            "SHARING_OFF",
-            "Turn on session sharing in the Lightbulb app on this Mac first.".into(),
-        ));
+        return Err(("SHARING_OFF", "Turn on session sharing in the Lightbulb app on this Mac first.".into()));
     }
     if *cancel.borrow() {
         return Err(("CANCELLED", "The start was cancelled.".into()));
     }
-    let dir = app
-        .path()
-        .app_data_dir()
-        .map_err(|_| {
-            (
-                "LAUNCH_FAILED",
-                "Terminal didn't open: desktop storage unavailable.".to_string(),
-            )
-        })?
-        .join("session-launch");
-    let scope = crate::local_sessions::enrollment::launch_scope(app).map_err(|_| (
-        "SHARING_OFF", "Turn on session sharing in Lightbulb on this Mac first.".into()
-    ))?;
-    launch_with_link(&dir, &folder, &argv, &start.start_id, &scope)?;
-    Ok(json!({"started": true, "tool": start.tool}))
+    let scope = crate::local_sessions::enrollment::launch_scope(app)
+        .map_err(|_| ("SHARING_OFF", "Turn on session sharing in Lightbulb on this Mac first.".to_string()))?;
+    Ok((start, folder, argv, scope))
+}
+
+/// Start `argv` in a new holder in `folder`: the one launcher for the New session view, a remote
+/// start, a pick-up and a resume. It shows in the app's session panel when a person opens it.
+/// Only held sessions are shared (spec §5.4).
+pub(crate) async fn start_held(
+    folder: PathBuf,
+    argv: Vec<String>,
+) -> Result<crate::holder::manager::HolderInfo, String> {
+    // No window: the session panel attaches when a person opens the session (holder::panel).
+    tauri::async_runtime::spawn_blocking(move || crate::holder::manager::start(&folder, &argv))
+        .await
+        .map_err(|e| e.to_string())?
 }
 
 /// The argv a holder runs for a start. With a start link, `/bin/sh` exports the link with its own
-/// pid and then execs the provider in place, so the launch pid is the provider's pid, as the
-/// `.command` script does for Terminal.
+/// pid and then execs the provider in place, so the launch pid is the provider's pid.
 fn held_argv(argv: &[String], link: Option<(&str, &str)>) -> Vec<String> {
     let Some((start_id, scope)) = link else { return argv.to_vec() };
     let mut out: Vec<String> = vec![
@@ -466,24 +375,100 @@ pub fn terminal_options(app: tauri::AppHandle) -> Value {
 }
 
 /// From the desktop app's own New session view: the same checks as a remote start (installed
-/// tool, approved folder, closed model and mode lists, prompt after `--`), then a held session
-/// in a terminal window instead of Terminal.app.
+/// tool, approved folder, closed model and mode lists, prompt after `--`), then a held, linked
+/// session. The page shows it in its panel at once (by holder id) and as a session once it reports.
 #[tauri::command]
 pub async fn terminal_start(app: tauri::AppHandle, params: Value) -> Result<Value, String> {
     let (start, folder, argv) = validate(params, &home()).map_err(|(_, message)| message)?;
-    // With sharing on, link the start so the view that asked becomes the session once it reports.
-    let scope = crate::local_sessions::enrollment::launch_scope(&app).ok();
-    let argv = held_argv(&argv, scope.as_deref().map(|s| (start.start_id.as_str(), s)));
-    let info = tauri::async_runtime::spawn_blocking(move || crate::holder::manager::start(&folder, &argv))
-        .await
-        .map_err(|e| e.to_string())??;
-    if let Err(e) = crate::holder::window::open_window(&app, &info) {
-        // Nobody can see it, and a retry would start a second one: stop it.
-        crate::holder::manager::stop(info.pid);
-        return Err(e);
-    }
+    // Sessions started here are shared (ruling 8): without sharing there is nowhere to show it.
+    let scope = crate::local_sessions::enrollment::launch_scope(&app)
+        .map_err(|_| "Turn on session sharing in Lightbulb on this Mac first.".to_string())?;
+    let argv = held_argv(&argv, Some((start.start_id.as_str(), scope.as_str())));
+    let info = start_held(folder, argv).await?;
     crate::log(&format!("[session-start] held {} {}", start.start_id, start.tool));
-    Ok(json!({"holderId": info.id, "tool": start.tool, "linked": scope.is_some()}))
+    Ok(json!({"holderId": info.id, "tool": start.tool}))
+}
+
+/// Whether `folder` (canonical) is one of the approved folders or anywhere inside one: the
+/// person running `lightbulb` is at this Mac and already in that folder. A view or a remote
+/// start still names an approved folder exactly (`validate`).
+/// The approved folders as they are now, canonical: what a start from a terminal (and a resume)
+/// must be inside.
+pub(crate) fn approved_now() -> Vec<PathBuf> {
+    approved_folders()
+        .iter()
+        .filter_map(|a| crate::file_access::canonicalize(a).ok())
+        .collect()
+}
+
+pub(crate) fn inside_approved(folder: &Path, approved: &[PathBuf]) -> bool {
+    approved.iter().any(|a| crate::file_access::is_inside(folder, a))
+}
+
+/// The `lightbulb` command's argv: the person's own arguments, unchanged. Codex also gets
+/// `--no-daemon`, which keeps it a dedicated writer so its start hook links to this start.
+fn cli_argv(program: &Path, tool: &str, args: &[String]) -> Vec<String> {
+    let mut argv = vec![program.to_string_lossy().into_owned()];
+    if tool == "codex" {
+        argv.push("--no-daemon".into());
+    }
+    argv.extend(args.iter().cloned());
+    argv
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+struct CliStart {
+    tool: String,
+    folder: String,
+    args: Vec<String>,
+    start_id: String,
+}
+
+/// `lightbulb claude|codex` in a terminal (`cli.rs`): the tool must be installed, the folder an
+/// approved folder or inside one, and sharing on. No window, because the terminal that asked
+/// attaches itself. Never starts a session that would not be shared.
+pub(crate) fn cli_start(
+    app: &tauri::AppHandle,
+    params: Value,
+    size: (u16, u16),
+) -> Result<crate::holder::manager::HolderInfo, String> {
+    let start: CliStart = serde_json::from_value(params).map_err(|_| "Malformed request.".to_string())?;
+    if let Some(reason) = crate::cli::refusal(&start.tool, &start.args) {
+        return Err(reason);
+    }
+    if start.args.iter().any(|a| a.contains('\0')) || start.args.iter().map(String::len).sum::<usize>() > 64 << 10
+        || start.start_id.is_empty() || start.start_id.len() > 64
+        || !start.start_id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
+    {
+        return Err("Malformed request.".into());
+    }
+    let scope = crate::local_sessions::enrollment::launch_scope(app).map_err(|_| {
+        "Session sharing is off in Lightbulb on this Mac. Turn it on in Settings → Native terminal sessions, then run this again.".to_string()
+    })?;
+    let home = home();
+    let program = tools(&home)
+        .iter()
+        .any(|t| t["id"] == start.tool.as_str())
+        .then(|| crate::local_sessions::provider_program(&home, &start.tool))
+        .flatten()
+        .ok_or(format!("{} is not installed on this Mac.", start.tool))?;
+    if start.tool == "codex" {
+        // The installed Codex's own command list: a subcommand added after this build still refuses.
+        let installed = crate::cli::help_commands(&codex_help(&program));
+        if let Some(reason) = crate::cli::codex_refusal(&start.args, &installed) {
+            return Err(reason);
+        }
+    }
+    let approved = approved_now();
+    let folder = crate::file_access::canonicalize(&start.folder)
+        .ok()
+        .filter(|f| f.is_dir() && inside_approved(f, &approved))
+        .ok_or("This folder is not inside a folder you approved for Lightbulb. Add it in the Lightbulb app under Settings → File access, then run this again.".to_string())?;
+    let argv = held_argv(&cli_argv(&program, &start.tool, &start.args), Some((start.start_id.as_str(), scope.as_str())));
+    let info = crate::holder::manager::start_sized(&folder, &argv, Some(size))?;
+    crate::log(&format!("[session-start] terminal command {} {} in {}", start.start_id, start.tool, folder.display()));
+    Ok(info)
 }
 
 #[cfg(test)]
@@ -579,25 +564,6 @@ mod tests {
     }
 
     #[test]
-    fn session_start_script_quotes_every_argument() {
-        let s = script_with_link(
-            Path::new("/Users/a/it's"),
-            Path::new("/tmp/x.command"),
-            &[
-                "/bin/claude".into(),
-                "--".into(),
-                "$(rm -rf ~); echo 'hi'\nnext".into(),
-            ],
-            "11111111-1111-4111-8111-111111111111",
-            &"a".repeat(64),
-        );
-        assert!(s.contains("rm -f -- '/tmp/x.command'\ncd -- '/Users/a/it'\\''s' || exit 1"));
-        assert!(s.contains("LIGHTBULB_SESSION_START_ID='11111111-1111-4111-8111-111111111111'"));
-        assert!(s.contains("LIGHTBULB_SESSION_SCOPE='aaaaaaaa"));
-        assert!(s.contains("LIGHTBULB_SESSION_LAUNCH_PID=$$ '/bin/claude' '--' '$(rm -rf ~); echo '\\''hi'\\''\nnext'"));
-    }
-
-    #[test]
     fn session_start_rejects_unknown_fields_modes_and_unapproved_folders() {
         let home = tempfile::tempdir().unwrap();
         // No CLI installed under this home and no PATH hit is assumed for "bash".
@@ -649,35 +615,6 @@ mod tests {
     }
 
     #[test]
-    fn session_start_launch_failure_says_what_failed() {
-        let (code, message) = launch(
-            Path::new("/dev/null/session-launch"),
-            Path::new("/tmp"),
-            &["/bin/echo".into()],
-            "s-1",
-        )
-        .unwrap_err();
-        assert_eq!(code, "LAUNCH_FAILED");
-        assert!(message.starts_with("Terminal didn't open: "), "{message}");
-    }
-
-    #[test]
-    fn session_start_script_runs_in_the_folder_and_deletes_itself() {
-        // Dry run of what Terminal executes, with /bin/echo standing in for the CLI.
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("s-1.command");
-        let argv = ["/bin/echo".to_string(), "--".into(), "hi $(whoami)".into()];
-        std::fs::write(&path, script(dir.path(), &path, &argv)).unwrap();
-        let out = std::process::Command::new("/bin/zsh")
-            .arg(&path)
-            .output()
-            .unwrap();
-        assert!(out.status.success());
-        assert_eq!(String::from_utf8_lossy(&out.stdout), "-- hi $(whoami)\n");
-        assert!(!path.exists());
-    }
-
-    #[test]
     fn held_start_runs_the_provider_in_place_with_its_start_link() {
         let argv = vec!["/opt/claude".to_string(), "--permission-mode".into(), "manual".into(), "--".into(), "fix it".into()];
         assert_eq!(held_argv(&argv, None), argv);
@@ -686,5 +623,22 @@ mod tests {
         assert!(held[2].contains("LAUNCH_PID=$$") && held[2].ends_with(r#"exec "$@""#));
         assert_eq!(&held[3..6], &["lightbulb-start", "start-1", "/scope"]);
         assert_eq!(&held[6..], &argv[..]);
+    }
+
+    #[test]
+    fn session_start_terminal_command_folder_is_an_approved_folder_or_inside_one() {
+        let approved = [PathBuf::from("/Users/a/code")];
+        assert!(inside_approved(Path::new("/Users/a/code"), &approved));
+        assert!(inside_approved(Path::new("/Users/a/code/app"), &approved));
+        assert!(!inside_approved(Path::new("/Users/a/codex"), &approved), "by component, not by prefix");
+        assert!(!inside_approved(Path::new("/Users/a"), &approved), "never above an approved folder");
+    }
+
+    #[test]
+    fn session_start_terminal_command_passes_the_person_s_arguments_unchanged() {
+        let args: Vec<String> = ["--resume", "abc", "--dangerously-skip-permissions"].iter().map(|s| s.to_string()).collect();
+        assert_eq!(cli_argv(Path::new("/bin/claude"), "claude", &args), ["/bin/claude", "--resume", "abc", "--dangerously-skip-permissions"]);
+        // Codex: only the plumbing the start link needs, then the person's words.
+        assert_eq!(cli_argv(Path::new("/bin/codex"), "codex", &args[..2]), ["/bin/codex", "--no-daemon", "--resume", "abc"]);
     }
 }

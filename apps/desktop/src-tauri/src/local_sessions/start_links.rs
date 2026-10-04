@@ -198,7 +198,7 @@ mod tests {
             cwd_name: None,
             active_turn: None,
             last_assistant_message: None,
-            background: false,
+            holder: None,
         };
         let record = Link {
             start_id: "11111111-1111-4111-8111-111111111111".into(),

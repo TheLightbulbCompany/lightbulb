@@ -287,6 +287,8 @@ export type LiveEvent =
       lastMessage?: RoomLastMessage | null;
       /** Humans @mentioned in this message, at most 32. */
       mentionedUserIds?: string[];
+      /** Authenticated human accountable for a delegated/system-authored message. */
+      accountableHumanId?: string;
       /** An edit/delete of the room's current preview: update the preview, leave counts alone. */
       previewOnly?: true;
       /** The phone's banner for this reader, present only when it notifies an unmuted reader. */

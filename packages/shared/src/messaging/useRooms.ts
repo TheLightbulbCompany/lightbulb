@@ -823,7 +823,9 @@ export function useRooms(platform: RoomsPlatform, options: UseRoomsOptions = {})
       // A thread reply never moves the room or its preview (the server's order ignores
       // replies too), and `previewOnly` -- an edit/delete of the current preview -- only
       // swaps the preview.
-      const { roomId, messageSeq, threadRootMessageId, lastMessage, mentionedUserIds, previewOnly } = event.payload;
+      const {
+        roomId, messageSeq, threadRootMessageId, lastMessage, mentionedUserIds, accountableHumanId, previewOnly,
+      } = event.payload;
       void mutateRooms((current) => {
         if (!current) return current;
         let changed = false;
@@ -836,7 +838,8 @@ export function useRooms(platform: RoomsPlatform, options: UseRoomsOptions = {})
           if (messageSeq <= room.lastMessageSeq) return room;
           changed = true;
           const top = !threadRootMessageId;
-          const mine = lastMessage?.authorKind === "human" && lastMessage.authorId === userId;
+          const mine = accountableHumanId === userId
+            || (lastMessage?.authorKind === "human" && lastMessage.authorId === userId);
           const counts = mine && top
             ? { lastReadSeq: messageSeq, unreadCount: 0, mentionCount: 0 }
             : (roomId === activeRoomId && isVisible()) || messageSeq <= room.lastReadSeq ? {} : {

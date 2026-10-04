@@ -746,6 +746,8 @@ def _notify_members(
         payload = {"roomId": room_id, "messageId": message["messageId"],
                    "messageSeq": seq, "threadRootMessageId": root, "notify": notify,
                    "lastMessage": last_message, "mentionedUserIds": mentioned_ids}
+        if accountable_human:
+            payload["accountableHumanId"] = accountable_human
         if notify:
             if member.get("muted") is True:
                 _emit_metric("messaging.projector.push", 1, "Count", {"outcome": "muted"})

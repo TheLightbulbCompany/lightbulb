@@ -865,6 +865,7 @@ class PushTests(unittest.TestCase):
         self.assertFalse(alice["notify"])
         self.assertNotIn("push", alice)
         self.assertEqual(alice["mentionedUserIds"], [BOB_ID])
+        self.assertEqual(alice["accountableHumanId"], USER_ID)
 
     def test_empty_text_bodies_as_an_image_and_long_text_is_truncated(self):
         for blank in ("", "   "):
@@ -1318,6 +1319,7 @@ class ActivityTests(unittest.TestCase):
         self.assertEqual(rows[f"ACTIVITY#{OWNER_ID}#{CAROL_ID}"]["kind"], "thread_reply")
         carol_hint = next(c.args[1] for c in publish.call_args_list if c.args[0].endswith(CAROL_KEY))
         self.assertTrue(carol_hint["payload"]["notify"])
+        self.assertEqual(carol_hint["payload"]["accountableHumanId"], USER_ID)
 
     def test_replay_is_idempotent(self):
         items = activity_world("dm", (USER_ID, BOB_ID))

@@ -358,7 +358,6 @@
 .room-run-line { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 4px 0 4px 48px; font-size: .875rem; }
 /* The run line wraps; its tool trace takes a full row of its own. */
 .room-run-line .room-run-trace { flex-basis: 100%; }
-.messaging-workspace { display: grid; grid-template-columns: 264px minmax(0, 1fr); height: 100%; min-height: 0; }
 
 @media (min-width: 1180px) {
   .room-details-toggle { display: inline-flex; }
@@ -378,9 +377,6 @@
 }
 
 @media (max-width: 859px) {
-  .messaging-workspace { display: flex; flex-direction: column; overflow: hidden; }
-  .messaging-workspace > .room-directory { height: auto; max-height: 36%; flex: 0 0 auto; border-right: 0; border-bottom: 1px solid var(--border); }
-  .messaging-workspace > .room-panel { flex: 1 1 auto; }
   .room-header { padding: 12px; gap: 8px; }
   .room-history { --room-gutter: 12px; padding: 8px var(--room-gutter); }
   .room-typing { padding: 0 12px; }

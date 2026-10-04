@@ -1,10 +1,10 @@
 "use client";
 
 // One "Ask CEO" action for every surface that hands the owner's question to
-// the default/root CEO with the composer pre-filled. Desktop: the dock opens its
-// chat with the draft. Mobile (no dock; `openChatPanelWithDraft` returns
-// false): record the draft, name the agent the mobile shell should select,
-// swap the URL to /chat, then fire the event for the already-mounted composer.
+// the default/root CEO with the composer pre-filled. The dock opens its chat
+// with the draft. With no dock mounted (`openChatPanelWithDraft` returns
+// false): record the draft, name the agent the shell should select, swap the
+// URL to /chat, then fire the event for an already-mounted composer.
 // BrainPanel and the Home strip both call this.
 
 import { useCallback } from "react";

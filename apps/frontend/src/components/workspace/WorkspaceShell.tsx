@@ -1,10 +1,11 @@
 "use client";
 
-// The desktop dockable-workspace shell: dock host + URL reconciler + layout
-// persistence + chrome (sidebar, header, banners, stepper, Get Started).
-// Mounted by page.tsx inside MarketplaceDrawerProvider > GatewayProvider >
-// ExecApprovalsProvider (Task 13); mobile keeps ChatLayout.
+// The dockable-workspace shell, at every width: dock host + URL reconciler +
+// layout persistence + chrome (rail, sidebar, banners, stepper). Below 600 px
+// the rail and the sidebar become one drawer (workspace.css), opened from the
+// phone bar. Mounted by page.tsx inside MarketplaceDrawerProvider.
 import "dockview-react/dist/styles/dockview.css";
+import { Menu } from "lucide-react";
 import { LogoMark } from "@/components/Logo";
 import "./workspace.css";
 import { constrainGroupHeight } from "./groupConstraints";
@@ -130,10 +131,10 @@ export function WorkspaceShell(): React.ReactElement {
     );
   }
   const scopeId = organization.id;
-  return <AuthenticatedWorkspace key={`${userId}:${scopeId}`} scopeId={scopeId} />;
+  return <AuthenticatedWorkspace key={`${userId}:${scopeId}`} scopeId={scopeId} workspaceName={organization.name || "Lightbulb"} />;
 }
 
-function AuthenticatedWorkspace({ scopeId }: { scopeId: string }): React.ReactElement {
+function AuthenticatedWorkspace({ scopeId, workspaceName }: { scopeId: string; workspaceName: string }): React.ReactElement {
   const { activePanelId, teamsPanelVisible } = useWorkspaceState();
   const { agents, defaultId, isSettled: agentsSettled } = useAgents();
   const defaultIdRef = useRef<string | undefined>(defaultId);
@@ -167,6 +168,9 @@ function AuthenticatedWorkspace({ scopeId }: { scopeId: string }): React.ReactEl
   const searchParams = useSearchParams();
   const lastAppliedRef = useRef<string | null>(null);
   const [recoveryTriggered, setRecoveryTriggered] = useState(false);
+  // Phone widths only: the rail + sidebar drawer. Wider, the CSS ignores it.
+  const [navOpen, setNavOpen] = useState(false);
+  const closeNav = useCallback(() => setNavOpen(false), []);
 
   useUserSyncOnce(true);
   useChatThemeAccountSync(true);
@@ -448,18 +452,29 @@ function AuthenticatedWorkspace({ scopeId }: { scopeId: string }): React.ReactEl
         <DesktopMessagingProvider>
           <CommandPaletteProvider>
             <DesktopPermissionsGate />
-            <div className="workspace-shell" data-messages-active={
+            <div className="workspace-shell" data-nav-open={navOpen}
+              onKeyDown={navOpen ? (e) => { if (e.key === "Escape") closeNav(); } : undefined}
+              data-messages-active={
               // Messages hides the dock tab bars only when it is alone on
               // screen. With Tasks split beside it, both groups keep their
               // headers so Tasks' close and Expand controls stay reachable.
               activePanelId === MESSAGES_PANEL_ID && !teamsPanelVisible
             }>
-              <WorkspaceHeader chatReady={chatReady} />
+              {/* Before the drawer in the DOM, so the drawer paints over it. */}
+              <div className="workspace-nav-backdrop" onClick={closeNav} />
+              <WorkspaceHeader chatReady={chatReady} onNavigate={closeNav} />
               <WorkspaceSidebar
                 chatReady={chatReady}
                 onRecoveryReprovision={() => setRecoveryTriggered(true)}
+                onNavigate={closeNav}
               />
               <div className="workspace-main">
+                <div className="workspace-phone-bar">
+                  <button type="button" aria-label="Open menu" aria-expanded={navOpen} onClick={() => setNavOpen(true)}>
+                    <Menu size={20} aria-hidden="true" />
+                  </button>
+                  <span className="workspace-name">{workspaceName}</span>
+                </div>
                 <div className="workspace-content">
                   <TrialBanner />
                   <OutOfCreditsBanner />

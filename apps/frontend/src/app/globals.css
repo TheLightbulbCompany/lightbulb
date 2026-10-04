@@ -55,7 +55,7 @@
   --color-card: var(--card);
 }
 
-/* Scales the plain-CSS files also need (landing.css, ChatLayout.css, …).
+/* Scales the plain-CSS files also need (landing.css, workspace.css, …).
    `static` emits every variable to :root even when no utility uses it;
    `inline` still bakes the value into the utilities. */
 @theme static inline {
@@ -227,8 +227,8 @@
 
 /*
  * The legacy brand-token names are kept as a view onto the ladder, so the
- * ~15 shadcn primitives in components/ui/ and every rule in ChatLayout.css /
- * messaging.css / workspace.css that already reads --cream-deep, --edge,
+ * ~15 shadcn primitives in components/ui/ and every rule in messaging.css /
+ * workspace.css that already reads --cream-deep, --edge,
  * --midnight-muted &c. picks up the theme with no edit. New code should name
  * the --plane-* / --fg-* tokens directly.
  */

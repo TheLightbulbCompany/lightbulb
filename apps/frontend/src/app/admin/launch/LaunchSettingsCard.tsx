@@ -102,7 +102,7 @@ export function LaunchSettingsCard({ settings }: LaunchSettingsCardProps) {
   // of "now" changes what every signed-in user's next poll sees — gate those
   // behind the typed-launch confirm, not the ones that just tweak pot math.
   // Captured once (not read directly in render — Date.now() is impure), same
-  // pattern as settings/page.tsx / ChatLayout.tsx / WorkspaceSidebar.tsx.
+  // pattern as settings/page.tsx / WorkspaceSidebar.tsx.
   const [now] = React.useState(() => Date.now());
   const oldCloseMs = settings.sheet_closes_at ? Date.parse(settings.sheet_closes_at) : null;
   const newCloseIso = closesAtLocal ? fromEasternLocal(closesAtLocal) : null;

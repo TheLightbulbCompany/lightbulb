@@ -1,6 +1,5 @@
 // @vitest-environment jsdom
-import { act, render, screen } from "@testing-library/react";
-import userEvent from "@testing-library/user-event";
+import { act, render } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 type TestLiveEvent = { type: string; payload: { eventName: string; payload: Record<string, unknown> } };
@@ -71,35 +70,14 @@ afterEach(() => {
   vi.clearAllMocks();
 });
 
-describe("RunNotifications inline team-run status", () => {
-  it("renders in-flow on mobile, is keyboard actionable, and avoids the loading toast", async () => {
-    const user = userEvent.setup();
-    render(<RunNotifications mode="mobile" selectedAgentId={null} activeView="chat" activePanel="chat" />);
-
-    act(() => emit("teams.heartbeat.run.queued", { runId: "run-42", agentId: "agent-1" }));
-
-    const indicator = screen.getByRole("button", { name: "Team is working. View activity" });
-    expect(indicator).toHaveClass("team-run-mobile-indicator");
-    expect(live.notifyLoading).not.toHaveBeenCalled();
-
-    await user.tab();
-    expect(indicator).toHaveFocus();
-    await user.keyboard("{Enter}");
-    const params = live.pushSearchParams.mock.calls[0]?.[0] as URLSearchParams;
-    expect(params.get("panel")).toBe("teams-inbox");
-    expect(params.get("section")).toBe("recently");
-
-    // Resolve the run so it doesn't leak into the next test's activity count.
-    act(() => emit("teams.heartbeat.run.status", { runId: "run-42", agentId: "agent-1", status: "succeeded" }));
-  });
-
-  it("removes the inline status and keeps completion feedback", async () => {
-    render(<RunNotifications mode="mobile" selectedAgentId={null} activeView="chat" activePanel="chat" />);
+describe("RunNotifications team run completion", () => {
+  it("keeps completion feedback and no working toast", async () => {
+    render(<RunNotifications />);
     act(() => emit("teams.heartbeat.run.queued", { runId: "run-42", agentId: "agent-1" }));
     // The toast is the fallback once the native answer resolves; flush it.
     await act(async () => emit("teams.heartbeat.run.status", { runId: "run-42", agentId: "agent-1", status: "succeeded" }));
 
-    expect(screen.queryByRole("button", { name: /Team is working/ })).not.toBeInTheDocument();
+    expect(live.notifyLoading).not.toHaveBeenCalled();
     expect(live.notifySuccess).toHaveBeenCalledWith(
       "Pulse",
       expect.objectContaining({ dedupeKey: "teams:run-42", description: "Finished a run" }),
@@ -108,7 +86,7 @@ describe("RunNotifications inline team-run status", () => {
 
   it("uses the native notification instead of the completion toast, clearing any working toast", async () => {
     live.nativeNotify.mockResolvedValue(true);
-    render(<RunNotifications mode="mobile" selectedAgentId={null} activeView="chat" activePanel="chat" />);
+    render(<RunNotifications />);
     act(() => emit("teams.heartbeat.run.queued", { runId: "run-7", agentId: "agent-1" }));
     await act(async () => emit("teams.heartbeat.run.status", { runId: "run-7", agentId: "agent-1", status: "succeeded", issueId: "iss-400" }));
 
@@ -123,7 +101,7 @@ describe("RunNotifications inline team-run status", () => {
 
 describe("RunNotifications live chat run", () => {
   it("never raises a persistent working toast over the composer", async () => {
-    render(<RunNotifications mode="desktop" />);
+    render(<RunNotifications />);
     await act(async () => live.chatHandler?.({ type: "chunk", content: "hi", runId: "run-3" },
       { payload: { runId: "run-3", agentId: "agent-1", roomId: "room-7" } }));
     expect(live.notifyLoading).not.toHaveBeenCalled();
@@ -132,7 +110,7 @@ describe("RunNotifications live chat run", () => {
   it("says who, where and the reply's first line when a channel run finishes off screen", async () => {
     const rooms = new Map([["room-gtm", { kind: "channel" as const, name: "GTM Strategy" }]]);
     act(() => setRoomView({ visibleRoomId: null, rooms }));
-    render(<RunNotifications mode="desktop" />);
+    render(<RunNotifications />);
     const identity = { payload: { runId: "run-1", agentId: "agent-1", roomId: "room-gtm" } };
     act(() => live.chatHandler?.({ type: "chunk", content: "## Drafted 5 launch posts\nmore", runId: "run-1" }, identity));
     await act(async () => live.chatHandler?.({ type: "run_ended", runId: "run-1", outcome: "done" }, identity));
@@ -145,7 +123,7 @@ describe("RunNotifications live chat run", () => {
     const rooms = new Map([["room-gtm", { kind: "channel" as const, name: "GTM Strategy" }]]);
     act(() => setRoomView({ visibleRoomId: null, rooms }));
     expect(claimRunNotice("run-8")).toBe(true); // MessageNotifications got there first
-    render(<RunNotifications mode="desktop" />);
+    render(<RunNotifications />);
     const identity = { payload: { runId: "run-8", agentId: "agent-1", roomId: "room-gtm" } };
     act(() => live.chatHandler?.({ type: "chunk", content: "hi", runId: "run-8" }, identity));
     await act(async () => live.chatHandler?.({ type: "run_ended", runId: "run-8", outcome: "done" }, identity));
@@ -156,7 +134,7 @@ describe("RunNotifications live chat run", () => {
 
   it("stays quiet for a run in the room on screen", async () => {
     act(() => setRoomView({ visibleRoomId: "room-gtm", rooms: new Map() }));
-    render(<RunNotifications mode="desktop" />);
+    render(<RunNotifications />);
     const identity = { payload: { runId: "run-4", agentId: "agent-1", roomId: "room-gtm" } };
     act(() => live.chatHandler?.({ type: "chunk", content: "hi", runId: "run-4" }, identity));
     await act(async () => live.chatHandler?.({ type: "run_ended", runId: "run-4", outcome: "done" }, identity));
@@ -170,7 +148,7 @@ describe("RunNotifications in a DM", () => {
   it("lets the reply's own banner speak instead of stacking a second one", async () => {
     const rooms = new Map([["room-dm", { kind: "dm" as const, name: null }]]);
     act(() => setRoomView({ visibleRoomId: null, rooms }));
-    render(<RunNotifications mode="desktop" />);
+    render(<RunNotifications />);
     const identity = { payload: { runId: "run-2", agentId: "agent-1", roomId: "room-dm" } };
     act(() => live.chatHandler?.({ type: "chunk", content: "Done", runId: "run-2" }, identity));
     await act(async () => live.chatHandler?.({ type: "run_ended", runId: "run-2", outcome: "done" }, identity));
@@ -182,7 +160,7 @@ describe("RunNotifications in a DM", () => {
 
 describe("RunNotifications failed team run", () => {
   it("says who, which task and why, and opens the run itself (not the Inbox)", async () => {
-    render(<RunNotifications mode="desktop" />);
+    render(<RunNotifications />);
     act(() => emit("teams.heartbeat.run.queued", { runId: "run-5", agentId: "agent-1" }));
     await act(async () => emit("teams.heartbeat.run.status", {
       runId: "run-5", agentId: "agent-1", status: "failed", issueId: "iss-400", errorCode: "process_lost", error: "Process lost",
@@ -203,7 +181,7 @@ describe("RunNotifications failed chat run", () => {
   }
 
   it("opens the room the run failed in, not the agent's DM", async () => {
-    render(<RunNotifications mode="desktop" />);
+    render(<RunNotifications />);
     await act(async () => fail({ runId: "run-9", agentId: "agent-1", roomId: "room-7" }));
     const opened = vi.fn();
     const selected = vi.fn();
@@ -220,7 +198,7 @@ describe("RunNotifications failed chat run", () => {
   });
 
   it("falls back to the agent's DM when the frame names no room", async () => {
-    render(<RunNotifications mode="desktop" />);
+    render(<RunNotifications />);
     await act(async () => fail({ runId: "run-10", agentId: "agent-1" }));
     const selected = vi.fn();
     window.addEventListener("selectAgent", selected);
@@ -242,7 +220,7 @@ describe("RunNotifications approvals", () => {
   it("names the agent and the ask, and opens Activity focused on the approval", async () => {
     live.refreshActivity.mockResolvedValue([approvalItem]);
     live.nativeNotify.mockResolvedValue(true);
-    render(<RunNotifications mode="desktop" />);
+    render(<RunNotifications />);
     await act(async () => emit("teams.activity.logged", {
       action: "approval.created", entityId: "ap-9", agentId: "pa-1", details: { type: "request_board_approval" },
     }));
@@ -254,7 +232,7 @@ describe("RunNotifications approvals", () => {
   });
 
   it("falls back to a toast with the generic line when the feed cannot say more", async () => {
-    render(<RunNotifications mode="desktop" />);
+    render(<RunNotifications />);
     await act(async () => emit("teams.activity.logged", { action: "approval.created", entityId: "ap-9" }));
     expect(live.notifyAttention).toHaveBeenCalledWith("An agent needs your approval", expect.objectContaining({ dedupeKey: "approval:ap-9" }));
   });
@@ -272,7 +250,7 @@ describe("RunNotifications agent questions", () => {
   it("names the agent and the task, and opens Activity focused on the question", async () => {
     live.refreshActivity.mockResolvedValue([askItem]);
     live.nativeNotify.mockResolvedValue(true);
-    render(<RunNotifications mode="desktop" />);
+    render(<RunNotifications />);
     await act(async () => emit("teams.activity.logged", {
       action: "issue.thread_interaction_created", entityId: "iss-4",
       details: { interactionId: "int-1", interactionKind: "request_confirmation" },

@@ -5,14 +5,12 @@ import { render, screen, fireEvent } from "@testing-library/react";
 const openChatPanel = vi.fn();
 const requestFocusComposer = vi.fn();
 const openMarketplace = vi.fn();
-let desktop = true;
 let defaultId: string | undefined = "agent_1";
 let agents = [{ id: "agent_1", name: "Nova" }];
 let isSettled = true;
 vi.mock("@/hooks/useAgents", () => ({
   useAgents: () => ({ defaultId, agents, isSettled }),
 }));
-vi.mock("@/hooks/useIsDesktop", () => ({ useIsDesktop: () => desktop }));
 vi.mock("@/components/workspace/workspaceController", () => ({
   openChatPanel: (id: string) => openChatPanel(id),
 }));
@@ -27,7 +25,6 @@ import { HomeQuickActions } from "../HomeQuickActions";
 
 beforeEach(() => {
   vi.clearAllMocks();
-  desktop = true;
   defaultId = "agent_1";
   agents = [{ id: "agent_1", name: "Nova" }];
   isSettled = true;
@@ -35,7 +32,7 @@ beforeEach(() => {
 });
 
 describe("HomeQuickActions — every verb resolves to something real", () => {
-  it("names the current default CEO and focuses its composer on desktop without touching the URL", () => {
+  it("names the current default CEO and focuses its composer without touching the URL", () => {
     const spy = vi.fn();
     window.addEventListener("getstarted:focus-composer", spy);
     render(<HomeQuickActions stripeBound />);
@@ -44,34 +41,6 @@ describe("HomeQuickActions — every verb resolves to something real", () => {
     expect(openChatPanel).toHaveBeenCalledWith("agent_1");
     expect(spy).toHaveBeenCalled();
     expect(window.location.search).toBe("?panel=teams-dashboard");
-  });
-
-  it("the CEO action swaps to the chat view on mobile, where the dock is not mounted", () => {
-    desktop = false;
-    const order: Array<{ type: string; agentId: string; source?: string }> = [];
-    const onSelectAgent = (e: Event) => {
-      const d = (e as CustomEvent).detail;
-      order.push({ type: "selectAgent", agentId: d.agentId, source: d.source });
-    };
-    const onFocusComposer = (e: Event) =>
-      order.push({ type: "getstarted:focus-composer", agentId: (e as CustomEvent).detail.agentId });
-    window.addEventListener("selectAgent", onSelectAgent);
-    window.addEventListener("getstarted:focus-composer", onFocusComposer);
-    render(<HomeQuickActions stripeBound />);
-    fireEvent.click(screen.getByRole("link", { name: "Ask Nova" }));
-    expect(openChatPanel).not.toHaveBeenCalled();
-    expect(window.location.pathname + window.location.search).toBe("/chat");
-    // The mobile shell keeps its own selectedAgentId, which would otherwise
-    // outrank defaultId and strand the focus event on the wrong agent — so
-    // selectAgent must fire, and fire before the focus event.
-    expect(order).toEqual([
-      // `source: "notification"` is the contract ChatLayout's own listener
-      // requires; without it the header's agent actions stay on the old agent.
-      { type: "selectAgent", agentId: "agent_1", source: "notification" },
-      { type: "getstarted:focus-composer", agentId: "agent_1" },
-    ]);
-    window.removeEventListener("selectAgent", onSelectAgent);
-    window.removeEventListener("getstarted:focus-composer", onFocusComposer);
   });
 
   it("falls back to Ask CEO and does nothing on a plain click before the roster resolves", () => {

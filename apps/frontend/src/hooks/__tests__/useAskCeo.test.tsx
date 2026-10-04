@@ -28,7 +28,7 @@ describe("useAskCeo", () => {
     expect(navigateShell).not.toHaveBeenCalled();
   });
 
-  it("falls back to the mobile shell: records the draft, selects the agent, swaps the URL", () => {
+  it("falls back when no dock is mounted: records the draft, selects the agent, swaps the URL", () => {
     vi.mocked(openChatPanelWithDraft).mockReturnValue(false);
     const dispatched: string[] = [];
     const spy = vi.spyOn(window, "dispatchEvent").mockImplementation((e) => { dispatched.push(e.type); return true; });

@@ -4,23 +4,20 @@ import { Moon, Sun } from "lucide-react";
 import { useChatTheme } from "@/hooks/useChatTheme";
 
 /**
- * The chat light/dark toggle, shared verbatim by both shells: the desktop
- * rail (WorkspaceHeader, bottom slot above Help/Settings/avatar) and the
- * mobile sidebar footer (ChatLayout). One component so the two can never
- * drift into offering different options.
+ * The chat light/dark toggle, on the workspace rail (WorkspaceHeader, bottom
+ * slot above Help/Settings/avatar).
  *
  * There used to be a second control here (an "accent"/focus toggle between a
  * cream and a neutral chrome); it was removed 2026-09-25 in favour of always
  * using the neutral look, so this is down to the one theme toggle.
  */
-export function ThemeToggles({ className }: { className?: string }): React.ReactElement {
+export function ThemeToggles(): React.ReactElement {
   const { theme, toggleTheme } = useChatTheme();
   const nextTheme = theme === "dark" ? "light" : "dark";
 
   return (
     <button
       type="button"
-      className={className}
       onClick={toggleTheme}
       aria-pressed={theme === "dark"}
       // The label names what the click DOES, not the state it reports —

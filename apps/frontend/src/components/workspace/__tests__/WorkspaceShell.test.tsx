@@ -38,8 +38,11 @@ vi.mock("@/components/messaging/MessagingWorkspaceContext", () => ({
   ),
 }));
 vi.mock("../WorkspaceSidebar", () => ({
-  WorkspaceSidebar: ({ onRecoveryReprovision, chatReady }: { onRecoveryReprovision: () => void; chatReady: boolean }) => (
-    <nav aria-label="Workspace"><button onClick={onRecoveryReprovision} data-ready={chatReady}>Recover</button></nav>
+  WorkspaceSidebar: ({ onRecoveryReprovision, chatReady, onNavigate }: { onRecoveryReprovision: () => void; chatReady: boolean; onNavigate: () => void }) => (
+    <nav aria-label="Workspace">
+      <button onClick={onRecoveryReprovision} data-ready={chatReady}>Recover</button>
+      <button onClick={onNavigate}>Open a room</button>
+    </nav>
   ),
 }));
 vi.mock("../WorkspaceHeader", () => ({ WorkspaceHeader: () => <header /> }));
@@ -137,4 +140,23 @@ it("keeps the room live and the dock headers shown while Tasks is split beside M
   state.split = null;
   view.rerender(<WorkspaceShell />);
   expect(view.container.querySelector(".workspace-shell")).toHaveAttribute("data-messages-active", "true");
+});
+
+it("opens the rail and sidebar as the phone drawer, and closes it on a pick, the backdrop or Escape", () => {
+  state.phase = "ready";
+  state.organization = { id: "org_1" };
+  const view = render(<WorkspaceShell />);
+  const shell = view.container.querySelector(".workspace-shell")!;
+  const open = () => fireEvent.click(screen.getByRole("button", { name: "Open menu" }));
+  expect(shell).toHaveAttribute("data-nav-open", "false");
+  open();
+  expect(shell).toHaveAttribute("data-nav-open", "true");
+  fireEvent.click(screen.getByRole("button", { name: "Open a room" }));
+  expect(shell).toHaveAttribute("data-nav-open", "false");
+  open();
+  fireEvent.click(view.container.querySelector(".workspace-nav-backdrop")!);
+  expect(shell).toHaveAttribute("data-nav-open", "false");
+  open();
+  fireEvent.keyDown(shell, { key: "Escape" });
+  expect(shell).toHaveAttribute("data-nav-open", "false");
 });

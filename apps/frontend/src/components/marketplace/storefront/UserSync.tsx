@@ -9,7 +9,7 @@ const SESSION_KEY = "isol8.users.synced";
 /**
  * Invisible client component that calls POST /users/sync once per browser
  * session after Clerk auth resolves. The main app at thelightbulb.company does this
- * via its own ChatLayout mount; the marketplace storefront is a separate
+ * via its own chat shell mount; the marketplace storefront is a separate
  * Next.js app, so without this users have no `users` DDB row, which breaks
  * downstream lookups (billing tier, /my-agents, etc).
  *

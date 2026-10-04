@@ -516,7 +516,7 @@ export function selectBrowserMacRun(runId: string | null): void {
   _macListeners.forEach((l) => l());
 }
 
-/** Show a run's Mac tab (read-only frames) in the Browser panel. False: no dock (the mobile shell). */
+/** Show a run's Mac tab (read-only frames) in the Browser panel. False: no dock mounted. */
 export function showMacRunInBrowser(runId: string): boolean {
   selectBrowserMacRun(runId);
   return showBrowserBesideChat({ focus: true, asTabWhenNarrow: true });

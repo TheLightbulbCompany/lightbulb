@@ -1,7 +1,6 @@
 "use client";
 
 import { useEffect, useRef, useSyncExternalStore } from "react";
-import { LoaderCircle } from "lucide-react";
 import { useLiveEvents } from "@/hooks/useLiveEvents";
 import {
   approvalActivityId,
@@ -34,9 +33,8 @@ import {
   type RunToastAction,
   type RunToastContext,
 } from "./runToastReducer";
-import { trackTeamRunActivity, useActiveTeamRunCount } from "./teamRunActivity";
+import { trackTeamRunActivity } from "./teamRunActivity";
 import { claimRunNotice, getRoomView, subscribeRoomView } from "./roomView";
-import "./run-notifications.css";
 
 /**
  * Global bottom-right run notifications. Renders nothing; consumes the
@@ -45,27 +43,11 @@ import "./run-notifications.css";
  *
  * Every handler is wrapped so a notification bug can never break chat.
  */
-// Mobile (single-pane page.tsx) threads the selected agent + current view/panel
-// and derives a per-session watched key. Desktop (the dockview shell) derives
-// the watched key set from the live workspace snapshot — every visible chat
-// panel — so it needs no props. The two are a discriminated union so each mode
-// only carries the fields it can actually supply.
-export type RunNotificationsProps =
-  | {
-      mode: "mobile";
-      selectedAgentId: string | null;
-      activeView: "chat" | "control";
-      activePanel: string;
-    }
-  | { mode: "desktop" };
-
+// The watched key set comes from the live workspace snapshot (every visible
+// chat panel), so the component takes no props.
 function agentName(agentId: string, agents: Agent[]): string {
   const agent = agents.find((a) => a.id === agentId);
   return agent ? agentDisplayName(agent) : "Agent";
-}
-
-function buildDesktopWatchedKeys(visibleChatAgentIds: string[]): Set<string> {
-  return new Set(visibleChatAgentIds);
 }
 
 function viewAgentAction(agentId: string, roomId?: string): { label: string; onClick: () => void } {
@@ -79,9 +61,7 @@ function viewAgentAction(agentId: string, roomId?: string): { label: string; onC
         window.dispatchEvent(new CustomEvent("openRoom", { detail: { roomId, threadId: null } }));
         return;
       }
-      // ChatLayout owns selection (sidebar, session store, ?panel cleanup); it
-      // listens for externally-sourced selectAgent events and routes them
-      // through its own handleSelectAgent.
+      // WorkspaceShell listens for selectAgent and opens that agent's chat.
       window.dispatchEvent(
         new CustomEvent("selectAgent", {
           detail: { agentId, source: "notification" },
@@ -113,9 +93,8 @@ function viewTeamsAction(section: "needs-you" | "recently"): {
   };
 }
 
-// Opens the blocked task directly. `?panel=teams-<detail-key>&detailId=` is the
-// shared grammar both shells already speak (dockview's describePanel and the
-// mobile page's openDetail), so one action works on desktop and mobile.
+// Opens the blocked task directly, through the URL grammar the dock's
+// describePanel reads (`?panel=teams-<detail-key>&detailId=`).
 function viewIssueAction(issueId: string): { label: string; onClick: () => void } {
   return {
     label: "View",
@@ -144,15 +123,12 @@ function viewRunAction(runId: string): { label: string; onClick: () => void } {
   };
 }
 
-// Desktop opens Activity on the approval or the agent's question itself (pinned
-// under "Needs you", decided inline). The mobile-web shell has no Activity panel,
-// so it keeps the Teams inbox band (an approval) or the paused task (a question).
+// Opens Activity on the approval or the agent's question itself (pinned under
+// "Needs you", decided inline).
 function viewNeedsYouAction(
   action: Extract<RunToastAction, { kind: "attention" }>,
   focusId: string,
-  mode: RunNotificationsProps["mode"],
 ): { label: string; onClick: () => void } {
-  if (mode !== "desktop") return action.issueId ? viewIssueAction(action.issueId) : viewTeamsAction("needs-you");
   return {
     label: "Review",
     onClick: () => {
@@ -183,7 +159,6 @@ async function needsYouCopy(
 }
 
 export interface ExecuteContext {
-  mode: RunNotificationsProps["mode"];
   refreshActivity: () => Promise<ActivityItem[]>;
   /** A GET on the backend API (`useApi().get`), for a team run's agent + task names. */
   apiGet: (path: string) => Promise<unknown>;
@@ -214,7 +189,7 @@ function executeAction(action: RunToastAction, agents: Agent[], ctx: ExecuteCont
       : action.interactionId && action.issueId ? interactionActivityId(action.issueId, action.interactionId) : null;
   if (action.kind === "attention" && focusId) {
     capture("run_notification_shown", { source: action.approvalId ? "approval" : "interaction", kind: action.kind });
-    const view = viewNeedsYouAction(action, focusId, ctx.mode);
+    const view = viewNeedsYouAction(action, focusId);
     void needsYouCopy(action, focusId, agents, ctx.refreshActivity).then(({ title, body }) =>
       nativeNotify(title, body, { onClick: view.onClick, tag: action.key }).then((shown) => {
         if (!shown) notifyAttention(title, { dedupeKey: action.key, description: body, action: view });
@@ -281,13 +256,12 @@ function executeAction(action: RunToastAction, agents: Agent[], ctx: ExecuteCont
   });
 }
 
-export function RunNotifications(props: RunNotificationsProps) {
+export function RunNotifications() {
   const { onEvent, onChatMessage } = useLiveEvents();
   const { agents } = useAgents();
   const workspace = useWorkspaceState();
 
   const stateRef = useRef(createRunToastState());
-  const activeTeamRunCount = useActiveTeamRunCount();
   const ctxRef = useRef<RunToastContext>({
     watchedChatKeys: new Set(),
     teamsPanelActive: false,
@@ -295,38 +269,27 @@ export function RunNotifications(props: RunNotificationsProps) {
   const agentsRef = useRef<Agent[]>([]);
   const { refresh: refreshActivity } = useActivity();
   const api = useApi();
-  const execRef = useRef<ExecuteContext>({ mode: props.mode, refreshActivity, apiGet: api.get });
+  const execRef = useRef<ExecuteContext>({ refreshActivity, apiGet: api.get });
   const roomView = useSyncExternalStore(subscribeRoomView, getRoomView, getRoomView);
 
-  // Keep the latest props/agents available to the async live-event callbacks
+  // Keep the latest snapshot/agents available to the async live-event callbacks
   // below without making them effect dependencies (that would tear down and
   // resubscribe the chat/event listeners on every keystroke-adjacent
   // re-render). Writing refs during render is disallowed (react-hooks/refs),
   // so the sync happens in an unconditional effect instead — it still lands
   // before any queued live-event callback runs.
   useEffect(() => {
-    ctxRef.current =
-      props.mode === "mobile"
-        ? {
-            watchedChatKeys:
-              props.activeView === "chat" && props.selectedAgentId
-                ? new Set([props.selectedAgentId])
-                : new Set(),
-            teamsPanelActive:
-              props.activeView === "control" && props.activePanel.startsWith("teams-"),
-          }
-        : {
-            // Desktop: every visible chat panel contributes a bare (agent-level)
-            // key plus the compound key for the session it is showing.
-            watchedChatKeys: buildDesktopWatchedKeys(workspace.visibleChatAgentIds),
-            // A teams panel counts as active only while it is the ACTIVE tab
-            // of some dockview group — open-but-background tabs don't
-            // suppress. See the teamsPanelVisible note in workspaceController.
-            teamsPanelActive: workspace.teamsPanelVisible,
-          };
-    ctxRef.current = { ...ctxRef.current, visibleRoomId: roomView.visibleRoomId };
+    ctxRef.current = {
+      // Every visible chat panel contributes its agent's key.
+      watchedChatKeys: new Set(workspace.visibleChatAgentIds),
+      // A teams panel counts as active only while it is the ACTIVE tab
+      // of some dockview group — open-but-background tabs don't
+      // suppress. See the teamsPanelVisible note in workspaceController.
+      teamsPanelActive: workspace.teamsPanelVisible,
+      visibleRoomId: roomView.visibleRoomId,
+    };
     agentsRef.current = agents;
-    execRef.current = { mode: props.mode, refreshActivity, apiGet: api.get };
+    execRef.current = { refreshActivity, apiGet: api.get };
   });
 
   useEffect(() => {
@@ -374,12 +337,5 @@ export function RunNotifications(props: RunNotificationsProps) {
     };
   }, [onChatMessage, onEvent]);
 
-  if (props.mode !== "mobile" || activeTeamRunCount === 0) return null;
-  const label = activeTeamRunCount === 1 ? "Team is working" : `${activeTeamRunCount} team runs active`;
-  return <button type="button" className="team-run-mobile-indicator" onClick={viewTeamsAction("recently").onClick}
-    aria-label={`${label}. View activity`}>
-    <LoaderCircle size={14} aria-hidden="true" />
-    <span>{label}</span>
-    <span className="team-run-mobile-indicator__view" aria-hidden="true">View</span>
-  </button>;
+  return null;
 }

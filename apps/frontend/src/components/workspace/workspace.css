@@ -16,6 +16,127 @@
   overflow: clip;
 }
 
+
+/* Sidebar chrome: the directory column's frame, header and account footer
+   (and the checkout banner above the dock). */
+.cream-sidebar {
+  background: var(--plane-sidebar);
+  border-right: 1px solid var(--edge);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.sidebar-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 16px 20px;
+  border-bottom: 1px solid var(--edge);
+}
+/* The sidebar's one scroll region: the directory and More share it. */
+.sidebar-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+}
+.sidebar-footer {
+  border-top: 1px solid var(--edge);
+  padding: 12px 16px;
+}
+.user-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.user-avatar {
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  background: var(--cream-deeper);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: var(--text-xs);
+  font-weight: 600;
+  color: var(--midnight-soft);
+  flex-shrink: 0;
+}
+.user-info {
+  flex: 1;
+  min-width: 0;
+}
+.user-name {
+  font-size: var(--text-ui);
+  font-weight: 500;
+  color: var(--midnight);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.plan-badge {
+  font-size: var(--text-2xs);
+  line-height: 1.4;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: var(--tracking-caps);
+  padding: 1px 6px;
+  border-radius: var(--radius-sm);
+  background: var(--cream);
+  color: var(--midnight-label);
+}
+/* The free-tier countdown, on its own line under the user row so it gets the
+   full footer width. The .plan-badge above shares a narrow row with a name that
+   already ellipsizes, so a longer label there would squeeze the name away. */
+.free-tier-note {
+  margin-top: 8px;
+  font-size: var(--text-2xs);
+  line-height: 1.4;
+  color: var(--midnight-muted);
+}
+.free-tier-note a {
+  color: var(--midnight-label);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.free-tier-note a:hover {
+  color: var(--midnight);
+}
+.free-tier-note--urgent,
+.free-tier-note--urgent a,
+.free-tier-note--urgent a:hover {
+  color: var(--warn);
+  font-weight: 600;
+}
+.version-text {
+  text-align: center;
+  font-size: var(--text-2xs);
+  line-height: 1.4;
+  color: var(--midnight-muted);
+  font-family: var(--font-mono), ui-monospace, monospace;
+  letter-spacing: var(--tracking-caps);
+  text-transform: uppercase;
+  padding-top: 8px;
+}
+.subscription-banner {
+  margin: 8px 16px;
+  padding: 12px;
+  background: var(--cream);
+  border: 1px solid var(--ok);
+  border-radius: var(--radius-md);
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.subscription-banner svg {
+  color: var(--ok);
+  flex-shrink: 0;
+}
+.subscription-banner p {
+  font-size: var(--text-sm);
+  color: var(--ok);
+  margin: 0;
+}
+
 .workspace-shell > .cream-sidebar {
   grid-area: sidebar;
   min-width: 0;
@@ -146,12 +267,11 @@
   font: inherit;
 }
 
-/* …but that rule and the sidebar header's own `border-bottom` (ChatLayout.css,
- * shared with the mobile shell) sat at different heights — 56px here vs
- * ~57px there — so the two hairlines met the sidebar's `border-right` as a
- * pair of T-junctions a couple of pixels apart. Pinning the sidebar header to
- * the same 56px inside THIS shell only (mobile's ChatLayout is untouched)
- * collapses them into one continuous rule crossing one vertical rule. */
+/* …but that rule and the sidebar header's own `border-bottom` sat at
+ * different heights — 56px here vs ~57px there — so the two hairlines met the
+ * sidebar's `border-right` as a pair of T-junctions a couple of pixels apart.
+ * Pinning the sidebar header to the same 56px collapses them into one
+ * continuous rule crossing one vertical rule. */
 .workspace-shell > .cream-sidebar > .sidebar-header {
   height: 56px;
   padding-top: 0;
@@ -189,7 +309,7 @@
  *
  * Scoped by a class the dock hosts add THEMSELVES (not by `.workspace-dock`
  * ancestry), so the rules hold regardless of where dockview mounts panel
- * content and stay inert in the mobile shell, which shares these panels.
+ * content and stay inert outside a dock panel.
  */
 .workspace-panel-page.editorial-page {
   /* h-full wins: the wrapper is exactly the dock slot, and its
@@ -223,8 +343,8 @@
 }
 
 /* Viewport-height regions → slot-height. Fallback heights (Tailwind
- * `h-[calc(100vh-18rem)]` / `h-[calc(100dvh-16rem)]`) still apply in the
- * mobile shell; the offsets here are those old-shell tunings minus the
+ * `h-[calc(100vh-18rem)]` / `h-[calc(100dvh-16rem)]`) still apply outside
+ * a dock panel; the offsets here are those old-shell tunings minus the
  * 3.5rem app header that no longer sits above a dock panel. The Tailwind
  * min-height floors (24rem / 420px) stay active — a too-short slot lets
  * the page grow and the wrapper scroll instead of crushing the region. */
@@ -417,4 +537,47 @@
 .workspace-shell .workspace-dock-action:focus-visible { outline: 2px solid var(--midnight); outline-offset: 1px; }
 @media (max-width: 1000px) {
   .workspace-shell { grid-template-columns: 56px 220px minmax(0, 1fr); }
+}
+/* Phone widths: one column. The rail and the sidebar leave the grid and open
+   together as a drawer from .workspace-phone-bar (WorkspaceShell's navOpen). */
+.workspace-phone-bar,
+.workspace-nav-backdrop { display: none; }
+@media (max-width: 599px) {
+  .workspace-shell { grid-template-columns: minmax(0, 1fr); grid-template-areas: "main"; }
+  .workspace-shell > :is(.workspace-rail, .cream-sidebar) {
+    display: none;
+    position: fixed;
+    top: 0;
+    bottom: 0;
+    z-index: var(--z-overlay);
+  }
+  .workspace-shell > .workspace-rail { left: 0; width: 56px; }
+  /* 104 = the rail plus 48 px of backdrop left to tap. */
+  .workspace-shell > .cream-sidebar { left: 56px; width: min(264px, calc(100vw - 104px)); box-shadow: var(--shadow-lift); }
+  .workspace-shell[data-nav-open="true"] > :is(.workspace-rail, .cream-sidebar) { display: flex; }
+  .workspace-shell[data-nav-open="true"] > .workspace-nav-backdrop {
+    display: block;
+    position: fixed;
+    inset: 0;
+    z-index: var(--z-overlay);
+    background: color-mix(in srgb, var(--midnight) 30%, transparent);
+  }
+  .workspace-phone-bar {
+    flex: none;
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    height: 48px;
+    padding: 0 4px;
+    border-bottom: 1px solid var(--edge);
+  }
+  .workspace-phone-bar button {
+    display: grid;
+    place-items: center;
+    width: 44px;
+    height: 44px;
+    border-radius: 7px;
+    color: var(--midnight-soft);
+  }
+  .workspace-phone-bar button:focus-visible { outline: 2px solid var(--midnight); outline-offset: -2px; }
 }

@@ -54,7 +54,7 @@ export interface KanbanBoardProps {
  *
  * Deriving the extras from the data rather than widening the constant means the
  * next enum drift surfaces as a visible column on day one instead of silently
- * hiding rows — the same call `AgentRoster` makes for an unrecognised agent
+ * hiding rows — the same call `rosterStateFor` makes for an unrecognised agent
  * status. The canonical seven still render when empty, because an empty
  * workflow stage is information and a valid drop target.
  */

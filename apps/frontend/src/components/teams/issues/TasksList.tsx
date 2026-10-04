@@ -1168,7 +1168,7 @@ export function TasksList({
         // tasks-board-region: inside a dock panel, workspace.css overrides
         // the viewport-height fallback below with a slot-relative height so
         // the board fills the panel (columns scroll vertically, the board
-        // scrolls horizontally). The class is inert in the mobile shell.
+        // scrolls horizontally). The class is inert outside a dock panel.
         <div className="tasks-board-region h-[calc(100vh-18rem)] min-h-[24rem]">
           <KanbanBoard
             issues={sorted}

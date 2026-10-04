@@ -4,8 +4,7 @@
 
 import { describe, test, expect } from "vitest";
 import { NAV_ACTIONS, filterNavActions } from "../commandPaletteActions";
-import { COMPANY_SECTIONS } from "@/components/chat/CompanyNav";
-import { visibleCompanySections } from "@/components/chat/companySections";
+import { COMPANY_SECTIONS, visibleCompanySections } from "@/components/chat/companySections";
 
 // NAV_ACTIONS is built from `visibleCompanySections`, so the palette offers
 // exactly what the rail offers — a shell hidden from one is hidden from both,

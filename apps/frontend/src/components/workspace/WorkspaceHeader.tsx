@@ -33,7 +33,11 @@ const DESTINATIONS = [
 ] as const;
 
 /** The global rail stays available when Messages hides the dock tabs. */
-export function WorkspaceHeader({ chatReady = true }: { chatReady?: boolean }): React.ReactElement {
+export function WorkspaceHeader({ chatReady = true, onNavigate }: {
+  chatReady?: boolean;
+  /** A destination was picked: the shell closes the phone drawer. */
+  onNavigate?: () => void;
+}): React.ReactElement {
   const { openSupport } = useSupport();
   const { setOpen } = useCommandPalette();
   const { open: openMarketplace } = useMarketplaceDrawer();
@@ -49,7 +53,7 @@ export function WorkspaceHeader({ chatReady = true }: { chatReady?: boolean }): 
   const destinations = browserShown ? DESTINATIONS : DESTINATIONS.filter((d) => d.panel !== "browser");
   return (
     <nav className="workspace-rail" aria-label="Workspace">
-      <button type="button" className="workspace-rail__search" aria-label="Search agents, issues, and projects" title="Search (⌘/Ctrl K)" onClick={() => setOpen(true)}>
+      <button type="button" className="workspace-rail__search" aria-label="Search agents, issues, and projects" title="Search (⌘/Ctrl K)" onClick={() => { setOpen(true); onNavigate?.(); }}>
         <Search size={20} aria-hidden="true" />
       </button>
       {destinations.map(({ panel, label, Icon }) => {
@@ -75,6 +79,7 @@ export function WorkspaceHeader({ chatReady = true }: { chatReady?: boolean }): 
             if (panel === "browser") capture("browser_view_opened");
             if (panel === MESSAGES_PANEL_ID) activateMessagesPanel();
             else openPanel(panel, {}, { pushUrl: true });
+            onNavigate?.();
           }}>
           <span className="workspace-rail__icon"><Icon size={20} aria-hidden="true" />
             {badge > 0 && <span className="workspace-rail__activity-badge" aria-hidden="true">{badge > 9 ? "9+" : badge}</span>}
@@ -85,7 +90,7 @@ export function WorkspaceHeader({ chatReady = true }: { chatReady?: boolean }): 
             dock panel, and it needs no container, so it is never disabled. */}
         {panel === "teams-issues" && (
           <button type="button" aria-label="Hire an agent" title="Hire an agent"
-            onClick={() => openMarketplace({ view: "browse" })}>
+            onClick={() => { openMarketplace({ view: "browse" }); onNavigate?.(); }}>
             <span className="workspace-rail__icon"><UserPlus size={20} aria-hidden="true" /></span>
             <span>Hire</span>
           </button>
@@ -97,7 +102,7 @@ export function WorkspaceHeader({ chatReady = true }: { chatReady?: boolean }): 
           of the bottom controls and takes the position furthest from the
           account button. */}
       <ThemeToggles />
-      <button type="button" onClick={() => openSupport()} aria-label="Get help" title="Get help"><HelpCircle size={20} aria-hidden="true" /></button>
+      <button type="button" onClick={() => { openSupport(); onNavigate?.(); }} aria-label="Get help" title="Get help"><HelpCircle size={20} aria-hidden="true" /></button>
       <Link href="/settings" aria-label="Settings" title="Settings"><Settings size={20} aria-hidden="true" /></Link>
       <UserButton appearance={{ elements: { avatarBox: "h-8 w-8" } }} />
     </nav>

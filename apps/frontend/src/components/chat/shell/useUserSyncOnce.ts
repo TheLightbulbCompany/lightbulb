@@ -11,7 +11,7 @@ import { useApi } from "@/lib/api";
 //
 // Synchronous in-flight latch (`syncStartedRef`): this effect depends on
 // `api`, which `useApi()` returns as a fresh object every render, so it
-// re-runs on every re-render — and ChatLayout re-renders frequently while
+// re-runs on every re-render — and the shell re-renders frequently while
 // data hooks settle (e.g. `useProvisioningState` polling `/container/status`).
 // The sessionStorage guard below is only written *after* the async
 // `syncUser()` resolves, so during that in-flight window the re-render
@@ -31,7 +31,7 @@ export function useUserSyncOnce(enabled: boolean): void {
     if (!enabled) return;
     if (syncStartedRef.current) return;
     // Once per browser session: sync is an idempotent Clerk→DDB upsert and
-    // ChatLayout remounts on every view switch / page load — re-firing it
+    // the shell remounts on every page load — re-firing it
     // each time is pure backend load.
     const syncedKey = "isol8:user-synced";
     try {

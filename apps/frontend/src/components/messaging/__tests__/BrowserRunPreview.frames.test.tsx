@@ -92,7 +92,7 @@ it("clicking the Mac preview (label or picture) shows that run in the Browser pa
   expect(screen.queryByRole("dialog")).toBeNull();
 });
 
-it("with no dock (the mobile shell) the click shows the same tab full screen, live and interactive", async () => {
+it("with no dock mounted the click shows the same tab full screen, live and interactive", async () => {
   controller.showMacRunInBrowser.mockReturnValueOnce(false);
   const { MacBrowserPreview } = await import("../BrowserRunPreview");
   render(<MacBrowserPreview agentName="Forge" runId="run-7" deviceId="mac-1" />);

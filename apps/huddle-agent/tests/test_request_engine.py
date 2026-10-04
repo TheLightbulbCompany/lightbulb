@@ -6,7 +6,7 @@ import copy
 import pytest
 
 from huddle_agent.backend import BackendError
-from test_huddle import TEAM, answer, make, say, settle
+from test_huddle import TEAM, answer, make, say, settle, talks
 
 LINE = (
     "Pulse, an update on the go-to-market strategy. Forge, what our PRs look like. "
@@ -155,7 +155,7 @@ async def test_a_ready_answer_never_starts_over_a_person():
     h, room, backend, lives, clock, log = await three()
     await say(h, "u1", LINE)
     answer(h, run_of(backend, "forge"), "forge", "Three PRs are open")
-    h.on_active_speakers({"u2"})
+    talks(h, "u2", "Aden")
     await quiet(h, clock, 5)
     assert len(lives) == 1
     h.on_active_speakers(set())
@@ -186,7 +186,7 @@ async def test_an_answer_whose_asker_left_goes_to_the_room_when_no_pause_comes()
     await say(h, "u1", LINE)
     await h.on_participants({"u2": "Aden"})
     await settle(h)
-    h.on_active_speakers({"u2"})
+    talks(h, "u2", "Aden")
     answer(h, run_of(backend, "forge"), "forge", "Three PRs are open")
     clock.t += h_mod.ASKER_GONE_S - 1
     await h.tick()
@@ -215,7 +215,7 @@ async def test_the_floor_voice_hears_the_list_when_it_moves_at_most_every_three_
     clock.t += THINKING_EVERY
     await h.tick()
     said = [c[1] for c in lives[0].calls if c[0] == "thinking" and c[1].startswith("Requests on this call")]
-    assert said == [f'Requests on this call:\nForge is answering "{TASKS["forge"]}"']
+    assert said == [f'{h_mod.REQUESTS_NOTE}Forge is answering "{TASKS["forge"]}"']
     h._requests.cancel("forge")
     clock.t += 1
     await h.tick()
@@ -407,7 +407,7 @@ async def test_after_three_refused_deliveries_a_cant_reach_line_is_posted_as_one
 async def _asker_gone(h, clock):
     await h.on_participants({"u2": "Aden"})
     await settle(h)
-    h.on_active_speakers({"u2"})
+    talks(h, "u2", "Aden")
 
 
 async def _window_ends(h, backend):
@@ -462,16 +462,23 @@ async def test_a_thinking_floor_voice_is_not_preempted_by_a_ready_answer():
     assert [l.agent_id for l in lives] == ["pulse", "forge"]
 
 
-async def test_a_floor_voice_waiting_on_its_driven_run_is_not_preempted():
+async def test_a_floor_voice_waiting_on_its_driven_run_gives_the_floor_to_a_ready_answer():
+    # 10-04 prod test: a teammate's answer sat unheard for two minutes behind the floor agent's own run
     h, room, backend, lives, clock, log = await three()
     await say(h, "u1", LINE)
     h._voice.driven_run = run_of(backend, "pulse")  # the floor voice's own run is still working
     answer(h, run_of(backend, "forge"), "forge", "Three PRs are open")
+    h.on_agent_state("pulse", "thinking")
     await quiet(h, clock, 5)
-    assert len(lives) == 1
-    answer(h, run_of(backend, "pulse"), "pulse", "Go-to-market is on track")
+    assert len(lives) == 1, "never while the floor voice is about to speak"
+    h.on_agent_state("pulse", "listening")
     await quiet(h, clock)
     assert [l.agent_id for l in lives] == ["pulse", "forge"]
+    h.on_agent_state("forge", "speaking")
+    h.on_agent_state("forge", "listening")
+    answer(h, run_of(backend, "pulse"), "pulse", "Go-to-market is on track")
+    await quiet(h, clock)
+    assert [l.agent_id for l in lives] == ["pulse", "forge", "pulse"], "its own answer in its turn"
 
 
 async def test_a_delivery_waits_for_the_floor_lock():

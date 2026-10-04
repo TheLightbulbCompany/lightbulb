@@ -15,7 +15,9 @@ APPEND_CHARS = 1400  # OpenAI caps each append at 500 tokens
 # ponytail: the bridge publishes deltas in batches of 5 (FRAME_BATCH, hermes bridge turn.py) and AppSync can swap whole
 # publishes, so deltas are held 10 back (2 batches). Reordering beyond that applies as it arrives; raise this with FRAME_BATCH.
 REORDER_WINDOW = 10
-STALE_TURN_SECONDS = 120  # a run silent this long lost its run_ended (bridge crash): not running
+# a run silent this long lost its run_ended (bridge crash): not running. A cold workspace start and four model
+# steps were silent for 135 s and then answered (10-04 prod test), so the limit sits well above that.
+STALE_TURN_SECONDS = 300
 QUEUED_TURN_SECONDS = 1_800  # a run_queued run waits on the room lock behind a chat run (the chat run budget)
 
 _SENTENCES = re.compile(r".*[.!?](?=\s)", re.DOTALL)

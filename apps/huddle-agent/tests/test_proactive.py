@@ -4,7 +4,7 @@ from huddle_agent import gate
 from huddle_agent import huddle as h_mod
 from huddle_agent.backend import BackendError
 from huddle_agent.huddle import ANNOUNCE_NOW, NEWS_TTL, NEWS_PER_AGENT
-from test_huddle import answer, make, say, settle
+from test_huddle import answer, make, say, settle, talks
 
 
 @pytest.fixture
@@ -44,7 +44,7 @@ async def test_announced_by_its_own_agent_after_quiet(emitted):
 
 async def test_no_announce_while_someone_speaks_or_a_voice_is_open(emitted):
     h, room, backend, lives, clock, log = await with_news("forge")
-    h.on_active_speakers({"u1"})
+    talks(h, "u1", "Prasiddha")
     await quiet_tick(h, clock, 10)
     assert lives == []
     h.on_active_speakers(set())
@@ -64,7 +64,7 @@ async def test_oldest_first_across_agents(emitted):
 async def test_speech_before_audio_keeps_the_news(emitted):
     h, room, backend, lives, clock, log = await with_news("forge")
     await quiet_tick(h, clock)
-    h.on_active_speakers({"u1"})
+    talks(h, "u1", "Prasiddha")
     await settle(h)
     assert ("interrupt",) in lives[0].calls and h._voice is None and "close" in log
     assert h._news["forge"] and "live.announce.aborted" in emitted
@@ -74,7 +74,7 @@ async def test_speech_during_audio_cuts_and_consumes(emitted):
     h, room, backend, lives, clock, log = await with_news("forge")
     await quiet_tick(h, clock)
     h.on_agent_state("forge", "speaking")
-    h.on_active_speakers({"u1"})
+    talks(h, "u1", "Prasiddha")
     assert lives[0].calls[-1] == ("interrupt",) and "live.announce.cut" in emitted
     assert "forge" not in h._news and h._voice is not None  # it listens on, like any voice
 
@@ -116,7 +116,7 @@ async def test_news_ttl_and_per_agent_cap(emitted):
     for i in range(NEWS_PER_AGENT + 1):
         answer(h, f"r{i}", "gauge", f"Answer {i}.")
     assert len(h._news["gauge"]) == NEWS_PER_AGENT
-    h.on_active_speakers({"u1"})  # someone talks the whole time: nothing announces
+    talks(h, "u1", "Prasiddha")  # someone talks the whole time: nothing announces
     clock.t += NEWS_TTL
     await h.tick()
     assert "gauge" not in h._news and lives == []

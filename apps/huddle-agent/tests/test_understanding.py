@@ -5,7 +5,7 @@ import json
 
 from huddle_agent import huddle as h_mod
 from huddle_agent.backend import BackendError
-from test_huddle import answer, frame, metric_count, ops, packet, say, settle
+from test_huddle import answer, frame, metric_count, ops, packet, say, settle, talks
 from test_request_engine import LINE, TASKS, quiet, run_of, three
 
 ASKS = [
@@ -1527,7 +1527,7 @@ async def announced(text="Three PRs are open"):
 async def test_an_announcement_cut_after_its_audio_began_is_posted_once():
     h, room, backend, lives, clock, run = await announced()
     h.on_agent_state("forge", "speaking")
-    h.on_active_speakers({"u2"})
+    talks(h, "u2", "Aden")
     await settle(h)
     assert backend.late_answers == [], "held until the words that cut it are handled"
     h.on_active_speakers(set())
@@ -1535,7 +1535,7 @@ async def test_an_announcement_cut_after_its_audio_began_is_posted_once():
     assert backend.late_answers == [
         ("forge", run, TASKS["forge"], "Three PRs are open")
     ]
-    h.on_active_speakers({"u2"})
+    talks(h, "u2", "Aden")
     await h.clear_presence()
     assert len(backend.late_answers) == 1, "a cut announcement is posted once"
 
@@ -1544,7 +1544,7 @@ async def test_an_announcement_that_finishes_uncut_is_not_posted():
     h, room, backend, lives, clock, run = await announced()
     h.on_agent_state("forge", "speaking")
     h.on_agent_state("forge", "listening")
-    h.on_active_speakers({"u2"})
+    talks(h, "u2", "Aden")
     await h.clear_presence()
     assert backend.late_answers == []
 
@@ -1553,7 +1553,7 @@ async def test_a_cut_announcement_dont_post_that_covers_is_not_posted():
     h, room, backend, lives, clock, run = await announced()
     h._requests.no_post("forge")
     h.on_agent_state("forge", "speaking")
-    h.on_active_speakers({"u2"})
+    talks(h, "u2", "Aden")
     await h.clear_presence()
     assert backend.late_answers == []
 
@@ -1565,7 +1565,7 @@ async def failed_forge():
     h.on_data(
         None, "call.frame", packet(frame(run, "forge", {"type": "error", "seq": 1}))
     )
-    h.on_active_speakers({"u2"})  # someone talks on: its CANT_REACH line waits, unsaid
+    talks(h, "u2", "Aden")  # someone talks on: its CANT_REACH line waits, unsaid
     return h, backend, clock, run
 
 
@@ -1811,7 +1811,7 @@ async def test_a_superseded_lines_steer_of_an_unknown_row_makes_no_row():
 async def test_a_cut_announcement_is_posted_once_its_cutters_line_is_handled():
     h, room, backend, lives, clock, run = await announced()
     h.on_agent_state("forge", "speaking")
-    h.on_active_speakers({"u2"})
+    talks(h, "u2", "Aden")
     h.on_active_speakers(set())
     await say(h, "u2", "sorry, go on")
     await h.tick()
@@ -1825,7 +1825,7 @@ async def test_dont_post_that_said_over_the_cut_posts_nothing():
     for line in ("Forge, don't post that", "don't post that"):
         h, room, backend, lives, clock, run = await announced()
         h.on_agent_state("forge", "speaking")
-        h.on_active_speakers({"u1"})
+        talks(h, "u1", "Prasiddha")
         await say(h, "u1", line)
         h.on_active_speakers(set())
         await quiet(h, clock, 5)
@@ -1838,7 +1838,7 @@ async def test_a_stop_said_over_the_cut_posts_nothing():
     for line in ("Forge, stop", "everyone stop"):
         h, room, backend, lives, clock, run = await announced()
         h.on_agent_state("forge", "speaking")
-        h.on_active_speakers({"u1"})
+        talks(h, "u1", "Prasiddha")
         await say(h, "u1", line)
         h.on_active_speakers(set())
         await quiet(h, clock, 5)
@@ -1849,7 +1849,7 @@ async def test_a_stop_said_over_the_cut_posts_nothing():
 async def test_a_cut_held_at_hang_up_is_posted_then():
     h, room, backend, lives, clock, run = await announced()
     h.on_agent_state("forge", "speaking")
-    h.on_active_speakers({"u2"})
+    talks(h, "u2", "Aden")
     await h.clear_presence()
     assert [a[3] for a in backend.late_answers] == [
         "Three PRs are open"
@@ -1873,7 +1873,7 @@ async def test_a_failed_row_whose_run_then_answers_posts_the_answer_once():
     await say(h, "u1", LINE)
     run = run_of(backend, "forge")
     h._request_failed(h._requests.by_run(run), run)
-    h.on_active_speakers({"u2"})
+    talks(h, "u2", "Aden")
     answer(h, run, "forge", "Three PRs are open")
     await h.clear_presence()
     assert [a for a in backend.late_answers if a[1] == run] == [
@@ -2227,3 +2227,65 @@ async def test_a_line_never_waits_past_the_route_timeout_for_an_earlier_one(
     backend.route_extra = ops(requests=[("forge", "the open PRs", "fit")])
     await say(h, "u1", "what are the open PRs")
     assert rows(h) == [("forge", "the open PRs", "working")] and h._routing["u1"] == []
+
+
+# -- 10-04 prod voice test: a ready answer is said while the floor agent still works; noise is nobody talking --
+
+
+async def test_a_ready_answer_is_said_while_the_floor_agent_still_works():
+    (
+        h,
+        room,
+        backend,
+        lives,
+        clock,
+        log,
+    ) = await floor_open()  # Forge's voice is open for Prasiddha
+    backend.route_extra = ops(
+        requests=[
+            ("forge", "Aden's email", "floor"),
+            ("pulse", "the GTM update", "fit"),
+        ]
+    )
+    await say(h, "u1", "check Aden's email, and what is the GTM update")
+    assert rows(h) == [
+        ("forge", "Aden's email", "working"),
+        ("pulse", "the GTM update", "working"),
+    ]
+    answer(h, run_of(backend, "pulse"), "pulse", "GTM is on track.")
+    await quiet(h, clock, 3)
+    assert lives[-1].agent_id == "pulse" and h._voice.path == "announce", (
+        "Pulse says it; Forge's run goes on"
+    )
+    h.on_agent_state("pulse", "speaking")
+    h.on_agent_state("pulse", "listening")
+    assert rows(h)[1][2] == "delivered" and rows(h)[0][2] == "working"
+    answer(h, run_of(backend, "forge"), "forge", "No new mail.")
+    await quiet(h, clock, 3)
+    assert lives[-1].agent_id == "forge" and h._voice.path == "announce", (
+        "the floor agent's answer in its turn"
+    )
+    h.on_agent_state("forge", "speaking")
+    h.on_agent_state("forge", "listening")
+    assert [r[2] for r in rows(h)] == ["delivered", "delivered"]
+    await h.clear_presence()
+    assert backend.late_answers == []
+
+
+async def test_noise_never_holds_a_ready_answer_back():
+    h, room, backend, lives, clock, log = await three()
+    await say(h, "u1", LINE)
+    h.on_active_speakers({"u1"})  # an open laptop microphone: typing, a fan. No words.
+    answer(h, run_of(backend, "forge"), "forge", "Three PRs are open")
+    await quiet(h, clock)
+    assert lives[-1].agent_id == "forge" and h._voice.path == "announce"
+
+
+async def test_noise_never_drops_an_announcement_and_real_words_do(capsys):
+    h, room, backend, lives, clock, run = await announced()
+    h.on_active_speakers({"u2"})  # sound without words
+    assert h._voice is not None and h._voice.announce is not None
+    assert metric_count(capsys, "live.announce.aborted") == 0
+    h.on_interim_transcript("u2", "Aden", "hang on a second")
+    assert metric_count(capsys, "live.announce.aborted") == 1
+    assert h._news.get("forge"), "kept: said later"

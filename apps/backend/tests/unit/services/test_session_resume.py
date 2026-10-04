@@ -60,8 +60,8 @@ def successor(previous="generation-1"):
     return {**frame, "previousGeneration": previous} if previous else frame
 
 
-async def ended_session(transport, *senders, team_control=False) -> str:
-    """Alice's Claude session, with ``senders`` let in, ended by her Mac."""
+async def ended_session(transport, *senders, team_control=False, events=1) -> str:
+    """Alice's Claude session, with ``senders`` let in, ended by her Mac after ``events`` events."""
     await service.set_enrollment(ALICE, service.EnrollmentRequest(deviceId=MAC, cliDeviceId=CLI, enabled=True))
     connect(transport)
     sid = (await relay(transport).handle_message("conn-1", descriptor()))["sessionId"]
@@ -69,8 +69,8 @@ async def ended_session(transport, *senders, team_control=False) -> str:
         await messaging_repo.ensure_user_stream(OWNER, person.user_id)
     messaging_repo._table().update_item(
         Key={"pk": repo.session_pk(OWNER, sid), "sk": "META"},
-        UpdateExpression="SET allowedSenders = :senders, teamControl = :team",
-        ExpressionAttributeValues={":senders": [p.user_id for p in senders], ":team": team_control},
+        UpdateExpression="SET allowedSenders = :senders, teamControl = :team, eventSeq = :seq",
+        ExpressionAttributeValues={":senders": [p.user_id for p in senders], ":team": team_control, ":seq": events},
     )
     ended = {**fixture("session-ended"), "sessionId": sid, "generation": "generation-1", "endedAt": int(time.time())}
     await relay(transport).handle_message("conn-1", ended)
@@ -458,3 +458,14 @@ async def test_an_unresolved_name_reads_a_teammate(transport, monkeypatch):
     sid = await ended_session(transport, BOB)
     await ask(BOB, sid)
     assert (await want(sid))["byName"] == "A teammate"
+
+
+@pytest.mark.asyncio
+async def test_a_session_that_ended_before_its_first_message_cannot_be_resumed(transport):
+    # Claude writes no transcript until the first message: `claude --resume` would find nothing.
+    sid = await ended_session(transport, BOB, events=0)
+    with pytest.raises(ApiProblem, match="ended before its first message") as excinfo:
+        await ask(ALICE, sid)
+    assert excinfo.value.error.code == "LOCAL_SESSION_UNSUPPORTED"
+    assert (await service.get_session(ALICE, sid)).resumable is False
+    assert await want(sid) is None

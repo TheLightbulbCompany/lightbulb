@@ -1726,7 +1726,8 @@ async def test_ended_frame_marks_row_ended_idempotently_and_hints(transport):
     assert row["endedAt"] == 10005 and row["status"] == "ended" and row["lastEventAt"] == 10005
     assert first == second == {**fixture("session-ended-ack"), "sessionId": sid}
     assert hinted and len(transport[4]) == hinted
-    assert (await service.list_resources(BOB, ROOM, include_ended=True)).sessions[0].status == "ended"
+    # Ended before any event: unlisted (nothing to show or resume), still readable by id.
+    assert (await service.get_session(BOB, sid)).status == "ended"
     # A device heartbeat that still lists the ended session gets it back as rejected,
     # and must not renew the lease of a session the desktop has stopped owning.
     with patch("time.time", return_value=10007):

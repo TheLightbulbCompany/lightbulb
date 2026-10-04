@@ -581,6 +581,13 @@ def session_terminal(row: dict) -> Literal["held", "attach"] | None:
     return "held" if reported is None and row.get("holderId") else None
 
 
+def ended_empty(status: str, event_seq: int, control_unavailable_reason: str | None) -> bool:
+    """Ended before its first message: Claude writes a transcript only on that message, so there is
+    nothing to show or resume (`claude --resume` answers "No conversation found"). A row whose
+    history the Mac could not read (`controlUnavailableReason`) may hold a real conversation: not empty."""
+    return status == "ended" and event_seq == 0 and control_unavailable_reason is None
+
+
 def _without_moved(found: list[LocalSession]) -> list[LocalSession]:
     """A stopped session that a later one of the same person continues (`forkedFrom`) is listed once:
     as that later one. Offline counts as stopped: a Mac still draining an ended origin re-registers it
@@ -589,7 +596,10 @@ def _without_moved(found: list[LocalSession]) -> list[LocalSession]:
 
     A fork that ended before its first turn is the exception: Claude writes the copied history into
     the fork's transcript only on that turn, so the fork has no events and `claude --resume` cannot
-    find it. It is hidden instead, and its origin (which holds the history) stays listed."""
+    find it. It is hidden instead, and its origin (which holds the history) stays listed.
+
+    Any other session that ended before its first message (`ended_empty`) is not listed either; it
+    stays readable by id, for a panel that is open on it."""
     ids = {(s.human_user_id, s.session_id) for s in found}
     empty = {
         (s.human_user_id, s.session_id)
@@ -605,6 +615,7 @@ def _without_moved(found: list[LocalSession]) -> list[LocalSession]:
         s
         for s in found
         if (s.human_user_id, s.session_id) not in empty
+        and not ended_empty(s.status, s.latest_event_seq, s.control_unavailable_reason)
         and not (s.status in ("ended", "offline") and (s.human_user_id, s.session_id) in moved)
     ]
 
@@ -630,11 +641,12 @@ def _session_public(row: dict, viewer: str | None = None) -> LocalSession:
     public["teamControl"] = team_control_on(row)
     public["allowedSenders"] = allowed_senders(row)
     ended = row.get("endedAt") is not None
-    public["resumeAllowed"] = list(row.get("resumeAllowed") or []) if ended else []
+    empty = ended_empty(public["status"], row.get("eventSeq", 0), row.get("controlUnavailableReason"))
+    public["resumeAllowed"] = list(row.get("resumeAllowed") or []) if ended and not empty else []
     from core.services import session_resume  # lazy: it imports this module
 
     public["resumable"] = (
-        ended and row.get("kind") != "background" and session_resume.submissions_enabled(row["ownerId"])
+        ended and not empty and row.get("kind") != "background" and session_resume.submissions_enabled(row["ownerId"])
     )
     # The stored request carries the message; only its state, author and time are public.
     waiting = public.pop("resume", None)

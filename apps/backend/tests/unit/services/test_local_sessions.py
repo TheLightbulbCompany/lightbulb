@@ -848,7 +848,9 @@ async def test_ended_row_reads_ended_even_while_lease_is_live(db):
         sid = await registered()
     row = await repo.get_session(OWNER, sid)
     await repo.put_session(
-        {**row, "endedAt": 10005, "lastEventAt": 10005}, row, await repo.get_enrollment(OWNER, ALICE.user_id, MAC)
+        {**row, "endedAt": 10005, "lastEventAt": 10005, "eventSeq": 1},
+        row,
+        await repo.get_enrollment(OWNER, ALICE.user_id, MAC),
     )
     with patch("time.time", return_value=10010):
         resources = await service.list_resources(BOB, ROOM, include_ended=True)
@@ -880,13 +882,13 @@ async def test_list_resources_sorts_by_activity_hides_ended_and_caps_recent(db):
     # end the middle one, and 21 more ended rows to prove the cap. Each `registered()`
     # call re-enrolls (fresh revision), so fetch the enrollment fresh right before use.
     enrollment = await repo.get_enrollment(OWNER, ALICE.user_id, MAC)
-    await repo.put_session({**rows[1], "endedAt": 10150, "lastEventAt": 10150}, rows[1], enrollment)
+    await repo.put_session({**rows[1], "endedAt": 10150, "lastEventAt": 10150, "eventSeq": 1}, rows[1], enrollment)
     for i in range(21):
         with patch("time.time", return_value=20000 + i):
             s = await registered(conversation=f"ended-{i}")
         r = await repo.get_session(OWNER, s)
         enrollment = await repo.get_enrollment(OWNER, ALICE.user_id, MAC)
-        await repo.put_session({**r, "endedAt": 20000 + i, "lastEventAt": 20000 + i}, r, enrollment)
+        await repo.put_session({**r, "endedAt": 20000 + i, "lastEventAt": 20000 + i, "eventSeq": 1}, r, enrollment)
     with patch("time.time", return_value=30000):
         live = await service.list_resources(BOB, ROOM)
         with_ended = await service.list_resources(BOB, ROOM, include_ended=True)
@@ -935,7 +937,7 @@ async def test_list_workspace_sessions_include_ended_appends_the_last_seven_days
     enrollment = await repo.get_enrollment(OWNER, ALICE.user_id, MAC)
     for sid, ended in ((recent, now - 3600), (old, now - 8 * 24 * 3600)):
         row = await repo.get_session(OWNER, sid)
-        await repo.put_session({**row, "endedAt": ended, "lastEventAt": ended}, row, enrollment)
+        await repo.put_session({**row, "endedAt": ended, "lastEventAt": ended, "eventSeq": 1}, row, enrollment)
     with patch("time.time", return_value=now):
         assert [s.session_id for s in (await service.list_workspace_sessions(BOB)).sessions] == [live]
         listed = await service.list_workspace_sessions(BOB, include_ended=True)
@@ -1222,3 +1224,47 @@ async def test_list_resources_lists_an_ended_origin_once_as_its_fork(db):
     await repo.put_session({**row, "forkedFrom": origin}, row, enrollment)
     resources = await service.list_resources(BOB, ROOM, include_ended=True)
     assert [(s.session_id, s.forked_from) for s in resources.sessions] == [(fork, origin)]
+
+
+def test_a_session_that_ended_before_its_first_message_is_not_listed():
+    def s(sid, status, seq, reason=None):
+        return service.LocalSession.model_construct(
+            session_id=sid,
+            human_user_id="alice",
+            status=status,
+            latest_event_seq=seq,
+            control_unavailable_reason=reason,
+        )
+
+    found = [
+        s("empty", "ended", 0),
+        s("starting", "idle", 0),
+        s("used", "ended", 3),
+        # The Mac could not read its history: it may hold a real conversation.
+        s("unread", "ended", 0, "history-gap"),
+    ]
+    assert [x.session_id for x in service._without_moved(found)] == ["starting", "used", "unread"]
+
+
+@pytest.mark.asyncio
+async def test_an_empty_ended_session_is_not_resumable_but_stays_readable(db, monkeypatch):
+    from core.services import session_resume
+
+    monkeypatch.setattr(session_resume, "submissions_enabled", lambda owner: True)
+    empty, used = await registered(conversation="empty"), await registered(conversation="used")
+    enrollment = await repo.get_enrollment(OWNER, ALICE.user_id, MAC)
+    now = int(time.time())
+    for sid, seq in ((empty, 0), (used, 2)):
+        row = await repo.get_session(OWNER, sid)
+        await repo.put_session(
+            {**row, "endedAt": now, "lastEventAt": now, "eventSeq": seq, "resumeAllowed": [BOB.user_id]},
+            row,
+            enrollment,
+        )
+    public = service._session_public(await repo.get_session(OWNER, empty), ALICE.user_id)
+    assert public.resumable is False and public.resume_allowed == []
+    public = service._session_public(await repo.get_session(OWNER, used), ALICE.user_id)
+    assert public.resumable is True and public.resume_allowed == [BOB.user_id]
+    resources = await service.list_resources(BOB, ROOM, include_ended=True)
+    assert [x.session_id for x in resources.sessions] == [used]
+    assert (await service.get_session(BOB, empty)).session_id == empty

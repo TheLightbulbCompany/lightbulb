@@ -19,7 +19,7 @@ const tool = (id: "claude" | "codex", label: string) => ({ id, label, modeLabel:
 const OPTIONS = { sharing: true, folders: ["/Users/alice/code", "/Users/alice/site"], tools: [tool("claude", "Claude Code"), tool("codex", "Codex")] };
 const session = (sessionId: string, humanUserId = "alice"): LocalSession => ({ sessionId, deviceId: "d", humanUserId, provider: "claude", generation: "g", status: "idle", providerVersion: "2", activeTurnId: null, capabilities: { sendMode: "queue", steer: false, interrupt: false }, capabilitiesVerified: true, latestEventSeq: 0, controlUnavailableReason: null });
 const START_ID = "start-1-0000-0000-0000-000000000000";
-const PLACEHOLDER = "What do you want to do?";
+const PLACEHOLDER = "First message (optional)";
 
 const wrap = (ui: ReactElement) => <SWRConfig value={{ provider: () => new Map(), dedupingInterval: 0 }}>{ui}</SWRConfig>;
 const render = (ui: ReactElement) => { const view = rtlRender(wrap(ui)); return { ...view, rerender: (next: ReactElement) => view.rerender(wrap(next)) }; };
@@ -75,6 +75,14 @@ it("Enter on the first message starts with the defaults, then becomes the new se
   expect(open).not.toHaveBeenCalled();
   ui.rerender(view([session("old"), { ...session("new"), startId: START_ID }], open));
   expect(open).toHaveBeenCalledWith("new");
+});
+
+it("Start with an empty first message opens the tool's own screen", async () => {
+  render(view([session("old")], vi.fn()));
+  const start = await screen.findByRole("button", { name: "Start" });
+  await waitFor(() => expect(start).toBeEnabled());
+  await userEvent.click(start);
+  expect(m.post).toHaveBeenCalledWith("/desktop-sessions/start?source=web", expect.objectContaining({ prompt: "" }));
 });
 
 it("keeps an uncertain launch pending so a second click cannot duplicate it", async () => {

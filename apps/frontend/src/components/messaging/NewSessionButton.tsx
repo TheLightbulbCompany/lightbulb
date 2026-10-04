@@ -185,7 +185,7 @@ export function NewSessionView({ sessions, onEvent, onOpenSession, onClose }: {
     : folders.length === 0 ? "Approve a folder in the desktop app first: Settings → File access."
     : null;
   const ready = !!options && !!selected && !blocked;
-  const canStart = !!scope && (!!localMac || (!!mac && !!options?.sharing)) && !!selected && !!folderPath && !blocked && !busy && !tooLong && !!prompt.trim();
+  const canStart = !!scope && (!!localMac || (!!mac && !!options?.sharing)) && !!selected && !!folderPath && !blocked && !busy && !tooLong;
 
   async function start() {
     if (!canStart || !scope || !selected || (!localMac && !mac)) return;
@@ -282,9 +282,10 @@ export function NewSessionView({ sessions, onEvent, onOpenSession, onClose }: {
       </div>}
       <form className="room-composer" aria-label="New session composer" onSubmit={(e) => { e.preventDefault(); void start(); }}>
         <label className="sr-only" htmlFor="new-session-prompt">First message</label>
-        <textarea id="new-session-prompt" rows={2} autoFocus placeholder="What do you want to do?" value={prompt}
+        <textarea id="new-session-prompt" rows={2} autoFocus placeholder="First message (optional)" value={prompt}
           disabled={busy || (!!blocked)} onChange={(e) => setPrompt(e.target.value)}
           onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing && event.keyCode !== 229) { event.preventDefault(); event.currentTarget.form?.requestSubmit(); } }} />
+        <Button type="submit" size="sm" disabled={!canStart}>Start</Button>
       </form>
     </div>
   </section>;

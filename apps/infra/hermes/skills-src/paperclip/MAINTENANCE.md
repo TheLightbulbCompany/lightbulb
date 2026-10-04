@@ -300,18 +300,25 @@ ISOL8-LOCAL EDITS (deliberate; re-apply on re-vendor).
       Paperclip's own heartbeat_runs) started a fresh issue session that redid
       the fix and opened duplicate PR #3712. The mechanism, all of which must
       move together:
-      - the helper's `record_issue_conversation` (paperclip-api.sh `send`): a
-        create / issue PATCH / checkout from a room session (HERMES_SESSION_KEY
-        a room key) writes `$HERMES_HOME/lightbulb-issue-bindings/<issueId>.json`
-        `{sessionKey}` (synced with the profile); a response status of
-        done/cancelled deletes it;
+      - the helper (paperclip-api.sh `send`): a create / issue PATCH / checkout
+        from a room session (HERMES_SESSION_KEY a room key) writes
+        `$HERMES_HOME/lightbulb-issue-bindings/<issueId>.json`
+        `{sessionKey, boundAt}` (synced with the profile; the bridge ages it by
+        `boundAt`, never the mtime a restore resets); a response status of
+        done/cancelled deletes it. The binding exists BEFORE any request that
+        can wake the assignee, by construction, never by timing: an issue
+        PATCH/checkout binds first (an identifier is resolved by a GET) and
+        unbinds if the write fails; an assigned non-backlog create is sent as
+        `backlog` (fork issue-assignment-wakeup.ts skips backlog), bound from
+        the response id, then PATCHed to the asked-for status;
       - the bridge's `_route_paperclip_run` (bridge/turn.py): a Paperclip run
         whose issue has a binding is steered into that conversation's live room
         run and held open until it ends (Paperclip sees a live execution path),
         else run as a turn IN that conversation (its lock, transcript and
-        folder; nothing posted to the room), else -- agent no longer in the
-        room per the backend's `GET /internal/messaging/rooms/{owner}/{room}/
-        agents/{agent}` -- the issue's own session as before;
+        folder; nothing posted to the room), else the issue's own session as
+        before. Only the backend's `GET /internal/messaging/rooms/{owner}/
+        {room}/agents/{agent}` 404/409 deletes the binding; 401/403/5xx/network
+        use the issue session for that one wake and keep it;
       - `attached_run_id` (helper) reads `.lightbulb-turn/paperclip-run.<issueId>`,
         which the bridge writes for the life of such a run: Paperclip stamps a
         started run as the issue's `executionRunId`, and the fork's

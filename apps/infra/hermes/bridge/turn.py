@@ -3007,7 +3007,7 @@ def _await_post_turn_writes(agent, ceiling: float = POST_TURN_CEILING_S) -> None
 # updates or checks out an issue (`<profile>/lightbulb-issue-bindings/<issueId>.json`, synced with
 # the profile), and Paperclip's run for that issue lands in that conversation instead.
 ISSUE_BINDINGS_DIR = "lightbulb-issue-bindings"
-#: A binding nobody refreshed for this long is ignored and removed. The helper removes one itself
+#: A binding whose boundAt (refreshed by every helper write) is older than this is ignored and removed. The helper removes one itself
 #: when the issue goes done/cancelled; this catches an issue closed some other way.
 ISSUE_BINDING_TTL_S = 14 * 86400
 _ISSUE_ID_RE = re.compile(r"^[A-Za-z0-9-]{1,128}$")
@@ -3035,11 +3035,16 @@ def issue_conversation(agent_id: str, issue_id: str | None) -> str | None:
         return None
     path = _issue_binding_path(agent_id, issue_id)
     try:
-        if time.time() - path.stat().st_mtime > ISSUE_BINDING_TTL_S:
-            path.unlink(missing_ok=True)
-            return None
-        key = json.loads(path.read_text(encoding="utf-8")).get("sessionKey")
+        binding = json.loads(path.read_text(encoding="utf-8"))
+        key = binding.get("sessionKey")
+        # Aged by the boundAt the helper writes, never the file mtime: a profile restore resets that.
+        expired = time.time() - float(binding.get("boundAt")) > ISSUE_BINDING_TTL_S
     except (OSError, ValueError, AttributeError):
+        return None
+    except TypeError:  # no boundAt: not a binding the helper wrote
+        expired = True
+    if expired:
+        path.unlink(missing_ok=True)
         return None
     # The agent's own shell can write this file: only its own room conversations are accepted.
     if not isinstance(key, str) or not ROOM_SESSION_RE.match(key) or not key.startswith(f"agent:{agent_id}:"):
@@ -3058,13 +3063,14 @@ def _live_room_run(session_key: str) -> str | None:
 
 def _room_member(session_key: str) -> bool | None:
     """True when the agent is a current member of the bound room and the room takes posts; False
-    on a definite no (removed, archived, deleted); None when the backend cannot say."""
+    only on the endpoint's own definite no -- 404 (room gone, agent removed) or 409 (archived);
+    None for anything else (401/403 from a rotated hook token, 5xx, network): cannot tell."""
     agent_id, room_id = session_key.split(":")[1], session_key.rsplit(":", 1)[-1]
     try:
         sync._get_backend_bytes(f"rooms/{OWNER}/{room_id}/agents/{agent_id}")
         return True
     except urllib.error.HTTPError as exc:
-        return False if exc.code < 500 else None
+        return False if exc.code in (404, 409) else None
     except Exception:  # noqa: BLE001
         log.warning("room membership check failed for %s", session_key, exc_info=True)
         return None

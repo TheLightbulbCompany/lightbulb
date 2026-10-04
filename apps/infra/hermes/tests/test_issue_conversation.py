@@ -29,59 +29,120 @@ REQUEST = {"input": "Wake: issue assigned", "instructions": "Follow the wake.", 
 SCRIPT = pathlib.Path(__file__).resolve().parents[1] / "skills-src/paperclip/scripts/paperclip-api.sh"
 
 
-def _bind(key=ROOM_KEY, issue=ISSUE):
+def _bind(key=ROOM_KEY, issue=ISSUE, bound_at=None):
     path = turn._issue_binding_path(AGENT, issue)
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps({"sessionKey": key}))
+    path.write_text(json.dumps({"sessionKey": key, "boundAt": time.time() if bound_at is None else bound_at}))
     return path
 
 
 # ---- the helper records the binding and carries the attached run id ---------------------------
-def _helper(tmp_path, args, *, session_key=ROOM_KEY, response=None, run_id=None, stdin=""):
-    calls = tmp_path / "calls.jsonl"
+def _helper(tmp_path, args, *, session_key=ROOM_KEY, responses=None, run_id=None, stdin="", ok=True):
+    """Run paperclip-api.sh against a fake curl. `responses` is one [status, body] per request, in
+    order (the last repeats). Each recorded call says whether ISSUE's binding existed WHEN that
+    request was sent -- the property that keeps a wake from overtaking the binding."""
+    calls, count = tmp_path / "calls.jsonl", tmp_path / "count"
+    count.write_text("0")
     fake = tmp_path / "bin" / "curl"
     fake.parent.mkdir(exist_ok=True)
     fake.write_text(
         "#!/usr/bin/env bash\n"
-        'out=""; headers=(); while [[ $# -gt 0 ]]; do case "$1" in -o) out="$2"; shift 2;; -H) headers+=("$2"); shift 2;;'
-        ' -X|-w|--data-binary) shift 2;; -sS) shift;; *) url="$1"; shift;; esac; done\n'
-        'jq -nc --arg url "$url" --args \'{url: $url, headers: $ARGS.positional}\' "${headers[@]}" >> "$CALLS"\n'
-        'printf "%s" "$RESPONSE" > "$out"; printf 200\n'
+        'out=""; method=""; body=""; headers=(); while [[ $# -gt 0 ]]; do case "$1" in -o) out="$2"; shift 2;;'
+        ' -H) headers+=("$2"); shift 2;; -X) method="$2"; shift 2;; --data-binary) body="$2"; shift 2;;'
+        ' -w) shift 2;; -sS) shift;; *) url="$1"; shift;; esac; done\n'
+        'n=$(<"$COUNT"); echo $((n + 1)) > "$COUNT"\n'
+        'bound=false; [[ -e "$BINDING" ]] && bound=true\n'
+        'jq -nc --arg m "$method" --arg url "$url" --arg body "$body" --argjson bound "$bound" --args'
+        ' \'{method: $m, url: $url, body: $body, bound: $bound, headers: $ARGS.positional}\' "${headers[@]}" >> "$CALLS"\n'
+        'jq -c --argjson n "$n" \'.[if $n < length then $n else length - 1 end]\' <<<"$RESPONSES" > "$out.pair"\n'
+        'jq -c ".[1]" "$out.pair" > "$out"; jq -r ".[0]" "$out.pair"; rm -f "$out.pair"\n'
     )
     fake.chmod(0o755)
-    env = {**os.environ, "PATH": f"{fake.parent}:{os.environ['PATH']}", "CALLS": str(calls),
+    env = {**os.environ, "PATH": f"{fake.parent}:{os.environ['PATH']}", "CALLS": str(calls), "COUNT": str(count),
+           "BINDING": str(tmp_path / "profile" / "lightbulb-issue-bindings" / f"{ISSUE}.json"),
            "PAPERCLIP_API_URL": "http://pc", "PAPERCLIP_API_KEY": "k", "PAPERCLIP_AGENT_ID": AGENT,
            "HERMES_HOME": str(tmp_path / "profile"), "HERMES_SESSION_KEY": session_key,
-           "RESPONSE": json.dumps(response or {"id": ISSUE, "status": "in_progress"})}
+           "RESPONSES": json.dumps(responses or [[200, {"id": ISSUE, "status": "in_progress"}]])}
     env.pop("PAPERCLIP_RUN_ID", None)
     if run_id:
         env["PAPERCLIP_RUN_ID"] = run_id
+    if calls.exists():
+        calls.unlink()
     proc = subprocess.run(["bash", str(SCRIPT), *args], input=stdin, env=env, capture_output=True, text=True)
-    assert proc.returncode == 0, proc.stderr
-    return [json.loads(line) for line in calls.read_text().splitlines()]
+    assert (proc.returncode == 0) is ok, proc.stderr
+    return [json.loads(line) for line in calls.read_text().splitlines()] if calls.exists() else []
 
 
 helper = pytest.mark.skipif(not shutil.which("jq"), reason="the helper needs jq")
 
 
-@helper
-def test_a_room_conversation_records_the_issues_it_files_and_updates(tmp_path):
-    binding = tmp_path / "profile" / "lightbulb-issue-bindings" / f"{ISSUE}.json"
-    _helper(tmp_path, ["create", "company-1", "--title", "Fix it", "--assignee", AGENT, "--status", "todo"])
-    assert json.loads(binding.read_text()) == {"sessionKey": ROOM_KEY}
-    binding.unlink()
-    _helper(tmp_path, ["update", "ISOA-680", "--status", "in_progress"])  # recorded by the RESPONSE's id
-    assert binding.exists()
-    _helper(tmp_path, ["update", ISSUE, "--status", "done"], response={"id": ISSUE, "status": "done"})
-    assert not binding.exists()
+def _binding(tmp_path):
+    return tmp_path / "profile" / "lightbulb-issue-bindings" / f"{ISSUE}.json"
 
 
 @helper
-def test_only_a_room_conversation_records_and_a_comment_never_does(tmp_path):
-    bindings = tmp_path / "profile" / "lightbulb-issue-bindings"
-    _helper(tmp_path, ["update", ISSUE, "--status", "in_progress"], session_key=f"agent:{AGENT}:{SESSION}")
-    with_comment = _helper(tmp_path, ["comment", ISSUE], response={"id": "comment-1"}, stdin="on it")
-    assert not bindings.exists() and with_comment
+def test_an_assigned_active_create_is_filed_as_backlog_bound_and_only_then_started(tmp_path):
+    calls = _helper(tmp_path, ["create", "company-1", "--title", "Fix it", "--assignee", AGENT, "--status", "todo"],
+                    responses=[[201, {"id": ISSUE, "status": "backlog"}], [200, {"id": ISSUE, "status": "todo"}]])
+    create, start = calls
+    assert create["method"] == "POST" and json.loads(create["body"])["status"] == "backlog"  # backlog never wakes
+    assert start == {**start, "method": "PATCH", "url": f"http://pc/api/issues/{ISSUE}", "bound": True}
+    assert json.loads(start["body"]) == {"status": "todo"}
+    binding = json.loads(_binding(tmp_path).read_text())
+    assert binding["sessionKey"] == ROOM_KEY and abs(binding["boundAt"] - time.time()) < 60
+
+
+@helper
+def test_a_create_that_cannot_wake_anyone_is_sent_as_asked(tmp_path):
+    calls = _helper(tmp_path, ["create", "company-1", "--title", "Later", "--assignee", AGENT, "--status", "backlog"],
+                    responses=[[201, {"id": ISSUE, "status": "backlog"}]])
+    assert [c["method"] for c in calls] == ["POST"] and _binding(tmp_path).exists()
+
+
+@helper
+def test_a_failed_start_after_the_backlog_create_removes_the_binding(tmp_path):
+    _helper(tmp_path, ["create", "company-1", "--title", "Fix it", "--assignee", AGENT, "--status", "in_progress"],
+            responses=[[201, {"id": ISSUE, "status": "backlog"}], [422, {"error": "no"}]], ok=False)
+    assert not _binding(tmp_path).exists()
+
+
+@helper
+def test_an_update_binds_before_it_is_sent_and_unbinds_if_it_fails(tmp_path):
+    calls = _helper(tmp_path, ["update", ISSUE, "--status", "in_progress"])
+    assert calls[0]["method"] == "PATCH" and calls[0]["bound"] is True
+    _binding(tmp_path).unlink()
+    _helper(tmp_path, ["update", ISSUE, "--status", "in_progress"], responses=[[409, {"error": "locked"}]], ok=False)
+    assert not _binding(tmp_path).exists()
+    _bind_file = _binding(tmp_path)
+    _bind_file.parent.mkdir(parents=True, exist_ok=True)
+    _bind_file.write_text(json.dumps({"sessionKey": ROOM_KEY, "boundAt": 1}))
+    _helper(tmp_path, ["update", ISSUE, "--title", "x"], responses=[[409, {"error": "locked"}]], ok=False)
+    assert _bind_file.exists()  # a binding that predates the failed write stays
+
+
+@helper
+def test_an_update_by_identifier_resolves_the_id_with_a_read_first(tmp_path):
+    calls = _helper(tmp_path, ["update", "ISOA-680", "--assignee", AGENT],
+                    responses=[[200, {"id": ISSUE, "status": "todo"}]])
+    read, write = calls
+    assert (read["method"], read["url"]) == ("GET", "http://pc/api/issues/ISOA-680")
+    assert write["method"] == "PATCH" and write["bound"] is True
+
+
+@helper
+def test_a_checkout_binds_before_it_is_sent(tmp_path):
+    calls = _helper(tmp_path, ["checkout", ISSUE])
+    assert calls[0]["url"].endswith("/checkout") and calls[0]["bound"] is True
+
+
+@helper
+def test_done_unbinds_and_only_a_room_conversation_binds_and_a_comment_never_does(tmp_path):
+    _helper(tmp_path, ["update", ISSUE, "--status", "done"], responses=[[200, {"id": ISSUE, "status": "done"}]])
+    assert not _binding(tmp_path).exists()
+    calls = _helper(tmp_path, ["update", ISSUE, "--status", "in_progress"], session_key=f"agent:{AGENT}:{SESSION}")
+    assert calls[0]["bound"] is False and not _binding(tmp_path).exists()
+    calls = _helper(tmp_path, ["comment", ISSUE], responses=[[201, {"id": "comment-1"}]], stdin="on it")
+    assert calls and not _binding(tmp_path).exists()
 
 
 @helper
@@ -92,7 +153,7 @@ def test_writes_to_an_issue_carry_the_run_the_bridge_attached_and_no_other(tmp_p
     calls = _helper(tmp_path, ["update", ISSUE, "--status", "in_progress"])
     assert f"X-Paperclip-Run-Id: {RUN}" in calls[-1]["headers"]
     other = "44444444-4444-4444-8444-444444444444"
-    calls = _helper(tmp_path, ["update", other, "--status", "in_progress"], response={"id": other, "status": "todo"})
+    calls = _helper(tmp_path, ["update", other, "--status", "in_progress"], responses=[[200, {"id": other, "status": "todo"}]])
     assert not any(h.startswith("X-Paperclip-Run-Id") for h in calls[-1]["headers"])
     calls = _helper(tmp_path, ["update", ISSUE, "--title", "x"], run_id="own-run")  # a real run keeps its own
     assert "X-Paperclip-Run-Id: own-run" in calls[-1]["headers"]
@@ -107,11 +168,16 @@ def test_a_binding_must_name_this_agents_own_room_conversation_and_be_fresh():
     assert turn.issue_conversation(AGENT, ISSUE) is None
     _bind(key=SESSION)
     assert turn.issue_conversation(AGENT, ISSUE) is None
-    _bind()
-    old = time.time() - turn.ISSUE_BINDING_TTL_S - 60
-    os.utime(path, (old, old))
-    assert turn.issue_conversation(AGENT, ISSUE) is None and not path.exists()
     assert turn.issue_conversation(AGENT, "../x") is None
+
+
+def test_a_binding_ages_by_its_bound_at_not_the_file_mtime_a_restore_resets():
+    path = _bind(bound_at=time.time() - turn.ISSUE_BINDING_TTL_S - 60)
+    os.utime(path, None)  # a fresh restore: brand-new mtime
+    assert turn.issue_conversation(AGENT, ISSUE) is None and not path.exists()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({"sessionKey": ROOM_KEY}))  # no boundAt: not the helper's
+    assert turn.issue_conversation(AGENT, ISSUE) is None and not path.exists()
 
 
 # ---- the bridge routes Paperclip's run ---------------------------------------------------------
@@ -152,7 +218,9 @@ def test_a_room_the_agent_left_drops_the_binding_and_an_unknown_answer_keeps_it(
     assert routed["conversation"] is None and not path.exists()
 
 
-def test_room_membership_reads_the_backend(monkeypatch):
+@pytest.mark.parametrize(("status", "answer"), [(404, False), (409, False), (401, None), (403, None),
+                                                 (400, None), (500, None), (503, None)])
+def test_only_the_endpoints_own_no_is_definite(monkeypatch, status, answer):
     asked = []
 
     def get(path):
@@ -160,13 +228,23 @@ def test_room_membership_reads_the_backend(monkeypatch):
         raise urllib.error.HTTPError(path, status, "x", {}, None)
 
     monkeypatch.setattr(turn.sync, "_get_backend_bytes", get)
-    status = 404
-    assert turn._room_member(ROOM_KEY) is False
-    status = 503
-    assert turn._room_member(ROOM_KEY) is None
-    assert asked[0] == f"rooms/{turn.OWNER}/{ROOM}/agents/{AGENT}"
+    assert turn._room_member(ROOM_KEY) is answer
+    assert asked == [f"rooms/{turn.OWNER}/{ROOM}/agents/{AGENT}"]
+
+
+def test_room_membership_yes_and_network_failure(monkeypatch):
     monkeypatch.setattr(turn.sync, "_get_backend_bytes", lambda path: b"")
     assert turn._room_member(ROOM_KEY) is True
+    monkeypatch.setattr(turn.sync, "_get_backend_bytes", lambda path: (_ for _ in ()).throw(OSError("down")))
+    assert turn._room_member(ROOM_KEY) is None
+
+
+def test_a_rejected_hook_token_keeps_the_binding_and_uses_the_issue_session(routed, monkeypatch):
+    path = _bind()
+    monkeypatch.setattr(turn.sync, "_get_backend_bytes",
+                        lambda p: (_ for _ in ()).throw(urllib.error.HTTPError(p, 401, "x", {}, None)))
+    turn._route_paperclip_run(IDENTITY, REQUEST)
+    assert routed == {"conversation": None, "attached": False} and path.exists()
 
 
 def _live_room_turn():

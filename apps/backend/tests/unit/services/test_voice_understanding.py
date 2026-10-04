@@ -343,6 +343,60 @@ async def test_the_wake_word_is_said_to_the_agents_whatever_jev_hears(decide):
     assert decide.await_args.args[0]["room"]["setting"] == vc.jev.MEETING_CONTEXT and meet["agentIds"] == []
 
 
+async def test_a_correction_to_an_unheard_answer_drops_it_and_asks_again(decide):
+    """Codex P2: the answer is ready but not yet spoken; "actually, last month" must not be followed by the stale one."""
+    ready = [{"id": "r1", "agentId": "gauge", "task": "how many signups came in last week", "status": "ready"}]
+    line = "Actually make that last month."
+    got = await route(decide, line, jev_says(kinds=["request"], whos=["pulse"], amends="r1"), opened=ready)
+    assert got["ops"]["cancel"] == ["r1"] and got["ops"]["steer"] == []
+    assert tasks(got) == [("gauge", "how many signups came in last week. Actually make that last month", "follow")]
+
+
+async def test_an_ask_already_being_worked_on_is_not_made_twice(decide):
+    """A late final repeats what the voice already delegated, and adds a new ask."""
+    working = [{"id": "r1", "agentId": "forge", "task": "What are the open PRs", "status": "working"}]
+    line = "what are the open PRs and also check Aden's email"
+    said = jev_says(kinds=["request", "request"], whos=["forge", "friday"])
+    got = await route(decide, line, said, opened=working)
+    assert tasks(got) == [("friday", "check Aden's email", "fit")]
+    # its answer is ready and not yet heard: still not made twice (Codex P2)
+    ready = [{**working[0], "status": "ready"}]
+    late = await route(decide, "what are the open PRs", jev_says(kinds=["request"], whos=["forge"]), opened=ready)
+    assert tasks(late) == []
+    # asked by name of another agent, the same words are that agent's own request (Codex P2)
+    said = jev_says(kinds=["request"], names=["addressed"])
+    named = await route(decide, "Gauge, what are the open PRs", said, opened=working)
+    assert tasks(named) == [("gauge", "what are the open PRs", "name")]
+    # a word that can be the ask is never filler (Codex P2)
+    assert not vc._same_ask("like and share the launch post", "share the launch post")
+    assert vc._same_ask("um, so what are the open PRs please", "What are the open PRs?")
+    # the same words after its answer was heard is a new request: people do ask again
+    heard = [{**working[0], "status": "delivered"}]
+    again = await route(decide, "what are the open PRs", jev_says(kinds=["request"], whos=["forge"]), opened=heard)
+    assert tasks(again) == [("forge", "what are the open PRs", "fit")]
+
+
+async def test_a_correction_with_no_ask_of_its_own_still_drops_the_unheard_answer(decide):
+    """Codex P2: a correction typed as context ("actually last month, not last week") makes no request of its
+    own; the ready answer is stale all the same."""
+    ready = [{"id": "r1", "agentId": "gauge", "task": "how many signups came in last week", "status": "ready"}]
+    said = jev_says(kinds=["context"], amends="r1")
+    got = await route(decide, "Actually last month not last week.", said, opened=ready)
+    assert got["ops"]["cancel"] == ["r1"] and got["ops"]["steer"] == []
+    ((agent, task, by),) = tasks(got)
+    assert (agent, by) == ("gauge", "follow")
+    assert task.startswith("how many signups came in last week. ") and "last month" in task
+
+
+async def test_jev_down_a_repeat_of_a_working_ask_is_not_made_twice(decide):
+    """Codex P2: the fallback path makes the whole line one request; the same words as a working row are not."""
+    working = [{"id": "r1", "agentId": "forge", "task": "what are the open PRs", "status": "working"}]
+    got = await route(decide, "What are the open PRs?", None, floor="forge", opened=working)
+    assert tasks(got) == []
+    new = await route(decide, "What shipped this week?", None, floor="forge", opened=working)
+    assert tasks(new) == [("forge", "What shipped this week?", "floor")]
+
+
 async def test_calling_a_request_off_cancels_it(decide):
     # "Forget" is heard as a possible "Forge" (the worker's fuzzy match): Jev says it is not the name
     said = jev_says(kinds=["cancel"], names=["not_a_name"], drops="r1")

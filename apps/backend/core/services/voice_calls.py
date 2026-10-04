@@ -878,6 +878,19 @@ AMEND_P = 0.5
 _OPEN_STATUS = ("queued", "working")
 
 
+def _same_ask(a: str, b: str) -> bool:
+    """The same request said again, word for word but for case, punctuation and filler."""
+
+    def words(text: str) -> list[str]:
+        return [w for w in re.findall(r"[a-z0-9']+", text.lower()) if w not in _FILLER_WORDS]
+
+    return bool(words(a)) and words(a) == words(b)
+
+
+# never a word that can be the ask itself ("like and share the launch post")
+_FILLER_WORDS = frozenset({"um", "uh", "and", "also", "then", "so", "ok", "okay", "please"})
+
+
 def _understood(
     addressing: dict,
     utterance: str,
@@ -984,6 +997,17 @@ def _understood(
             said = ". ".join(r["task"] for r in theirs) or task(about)
             out["requests"] = [r for r in requests if r not in theirs]
             out["steer"] = [{"requestId": amended["id"], "text": said}]
+        elif amended["status"] == "ready" and (theirs or not requests):
+            # Its answer is ready and nobody has heard it: the message cannot be about that answer, so it
+            # corrects the request. The stale answer is dropped unsaid and the request is asked again
+            # with the correction ("what are signups last week" ... "actually, last month"), also when the
+            # correction asks nothing of its own ("actually last month, not last week").
+            out["cancel"] = [amended["id"]]
+            if not theirs:
+                theirs = [{"task": task(about)}]
+                requests += theirs
+            for r in theirs:
+                r |= {"agentId": amended["agentId"], "task": f"{amended['task']}. {r['task']}", "by": "follow"}
         elif amended["status"] not in _OPEN_STATUS:
             for r in theirs:
                 r |= {"agentId": amended["agentId"], "by": "follow"}
@@ -1166,6 +1190,17 @@ async def route_live_line(
         # One ask among people: the judge read the whole conversation (a follow-up goes to the teammate
         # already in the exchange), the fit only the part. Several asks keep their own best fit.
         u["requests"][0] |= {"agentId": None, "by": ""}
+    # The worker lists what is already being worked on: a request that says the same thing again (a late
+    # final repeating what the voice already delegated) is not made twice, whichever path made it. An answer
+    # that is ready and not yet heard counts: the repeat would run it again beside it.
+    # Asked by name of another agent than the one already on it ("Gauge, what are the open PRs" while Forge
+    # has that list) is a request of its own.
+    pending = [(r["agentId"], r["task"]) for r in earlier if r["status"] in (*_OPEN_STATUS, "ready")]
+    u["requests"] = [
+        r
+        for r in u["requests"]
+        if not any(_same_ask(r["task"], t) and not (r["by"] == "name" and r["agentId"] != a) for a, t in pending)
+    ]
     chief = None
     for r in u["requests"]:
         if r["agentId"] is None:

@@ -66,3 +66,16 @@ async def test_a_meeting_voice_is_muted_as_its_session_starts():
         finally:
             del type(voice).duplex_session
         assert session.mute_input.call_count == calls
+
+
+def test_the_meet_bots_page_is_never_a_person():
+    from types import SimpleNamespace
+
+    from livekit import rtc
+
+    standard, ingress = rtc.ParticipantKind.PARTICIPANT_KIND_STANDARD, rtc.ParticipantKind.PARTICIPANT_KIND_INGRESS
+    assert not agent.person(SimpleNamespace(identity="meetbot:room-1", kind=standard))
+    for identity in ("meet:room-1", "meet:room-1:p1"):  # a mixed Meet, and one person of it
+        assert agent.person(SimpleNamespace(identity=identity, kind=ingress))
+    assert agent.person(SimpleNamespace(identity="u1", kind=standard))
+    assert not agent.person(SimpleNamespace(identity="agent-x", kind=rtc.ParticipantKind.PARTICIPANT_KIND_AGENT))

@@ -197,6 +197,13 @@ def _same_speech(said: str, record: str) -> bool:
     return _words_in(said, record) or (len(_words(record)[0]) >= 2 and _words_in(record, said))
 
 
+def mixed_meet(identity: str) -> bool:
+    """The whole Meet as one participant, `meet:<roomId>` (a Recall bot booked before per-person audio). A person
+    of the Meet is `meet:<roomId>:<participantId>`: their own microphone, so a person like any in a Live call.
+    Only the mixed participant needs the meeting voice rules (a muted voice, labels, a follow-up window)."""
+    return identity.startswith("meet:") and identity.count(":") == 1
+
+
 def _retryable(e: BackendError) -> bool:
     """A cold workspace (503 runtime_unavailable), the API gateway's own 503/504, or no answer at all."""
     return e.status in (0, 503, 504)
@@ -569,8 +576,8 @@ class Huddle:
     def _talker(self, identity: str, mark: int | None = None) -> str:
         """Who said a line. A meeting arrives as one participant named "Meeting": the labelled speaker of the
         line at `mark` (else of the latest line), else "Someone in the meeting" (10-04 prod Meet: "Meeting is
-        talking to me right now")."""
-        if identity.startswith("meet:"):
+        talking to me right now"). A person of a per-person Meet is named like anyone in a Live call."""
+        if mixed_meet(identity):
             name = self._said_at.get(mark) or self._said_by.get(identity) or ""
             return name if name and not name.startswith("Someone") else "Someone in the meeting"
         return self._name(identity)
@@ -581,16 +588,16 @@ class Huddle:
 
     def _owner_name(self, v: _Voice, row: Request | None = None, mark: int | None = None) -> str | None:
         """The speaker name a turn carries: its request row's asker, else its line's speaker (`mark`), else its
-        meeting voice's own speaker; None in a Live call, where the identity is the person."""
-        if not v.speaker.startswith("meet:"):
+        meeting voice's own speaker; else the person's name a meeting line set (None in a Live call)."""
+        if not mixed_meet(v.speaker):
             return self._said_by.get(v.speaker)
         name = row.label if row is not None else self._label(v.speaker, mark) if mark is not None else v.label
         return name or "Someone"
 
     def _label(self, identity: str, mark: int | None = None) -> str:
-        """A meeting line's one known speaker (the line at `mark`, else the latest); "" outside a meeting, for
-        "Someone" and for "A + B"."""
-        n = (self._said_at.get(mark) or self._said_by.get(identity, "")) if self.setting == "meeting" else ""
+        """A mixed meeting line's one known speaker (the line at `mark`, else the latest); "" for anyone else (the
+        identity is the person), for "Someone" and for "A + B"."""
+        n = (self._said_at.get(mark) or self._said_by.get(identity, "")) if mixed_meet(identity) else ""
         return "" if n.startswith("Someone") or " + " in n else n
 
     def _mine(
@@ -601,7 +608,7 @@ class Huddle:
         its last word (10-04 prod Meet: a pinned voice took the whole meeting's talk as its speaker's)."""
         if identity != v.speaker:
             return False
-        if self.setting != "meeting":
+        if not mixed_meet(identity):
             return True
         label = self._label(identity, mark)
         t = now if began is None else began
@@ -823,7 +830,11 @@ class Huddle:
             self._unclaimed = (
                 None  # someone spoke after the question: it was not left unclaimed
             )
-            if identity.startswith("meet:"):
+            if identity.startswith("meet:") and not mixed_meet(identity):
+                # one person of the Meet: their own name; the record still shows they were in the Meet
+                self._said_by[identity] = name
+                mark = self._transcript.add_person(identity, f"{name} (Meet)", text, at=now)
+            elif identity.startswith("meet:"):
                 if began is None or now - began > MEET_SPAN_MAX_S:
                     began = now  # a stale start (an STT stream that never finalised)
                 name = self._said_by[identity] = self._meet_label(began, now)
@@ -856,9 +867,9 @@ class Huddle:
             return
         if stop_request(text):
             # "stop" / "never mind" to an agent aborts its runs (D §8): the agent it names, from anyone, else
-            # the floor-holder when its pinned speaker says it. In a meeting, also a stop said over it talking:
-            # "never mind" between two people must not abort a working run.
-            over = self.setting == "meeting" and v is not None and v.agent_state == "speaking"
+            # the floor-holder when its pinned speaker says it. In a mixed meeting, also a stop said over it
+            # talking: "never mind" between two people must not abort a working run.
+            over = mixed_meet(identity) and v is not None and v.agent_state == "speaking"
             target = stop_target(text, self._team["agents"]) or (
                 v.agent_id if mine or over else None
             )
@@ -961,8 +972,9 @@ class Huddle:
             # a task: awaiting here would stall this person's STT loop for the whole summon
             self._spawn(self._named_summon(identity, text, mark, summon, understood) if understood else summon)
             return
-        if self.setting == "meeting" and v is not None and not own:
-            # Not the voice's line and naming no agent: transcript only. A question may still go unclaimed.
+        if mixed_meet(identity) and v is not None and not own:
+            # A mixed meeting's line that is not the voice's and names no agent: transcript only. A question may
+            # still go unclaimed. (A person of a per-person Meet is anyone else in a Live call: `_other_line`.)
             if a.lightbulb:
                 self._spawn(self._lightbulb_over(v, identity, text, mark))
             elif real_speech(text) and not pause(text) and not stop_request(text) and is_question(text):
@@ -1227,7 +1239,7 @@ class Huddle:
                 self._record(identity, fut, rec, text)
 
         self._spawn(run())
-        if kw.get("floor_line") and self.setting == "meeting" and (v := self._voice) is not None:
+        if kw.get("floor_line") and mixed_meet(identity) and (v := self._voice) is not None:
             # a muted meeting voice heard none of it (its follow-up, or a held one applied): told what came of it
             self._spawn(self._answer_heard(v, identity, text, fut, f'{self._talker(identity)} asked: "{text}"'))
         return fut
@@ -1300,7 +1312,7 @@ class Huddle:
                     self._voice is v
                     and v.speaker == identity
                     and v.live is not None
-                    and (self.setting != "meeting" or v.label == self._label(identity, mark))
+                    and (not mixed_meet(identity) or v.label == self._label(identity, mark))
                 )
                 took = self._named_line(identity, v.agent_id, text, mark, r, understood[1], voice=here)
                 if not here:
@@ -1544,12 +1556,12 @@ class Huddle:
         `stands`: a held line applied after its quiet (§4.4), never superseded. Returns the rows it made."""
         reqs, social = list(ops.get("requests") or []), ops.get("social")
         v, superseded = self._voice, False
-        # the floor speaker's line; in a meeting (one participant for everyone) only a line taken as its follow-up
+        # the floor speaker's line; in a mixed meeting (one participant for everyone) only a line taken as its follow-up
         own = (
             v is not None
             and identity == v.speaker
             # ...and the voice is still with that speaker: someone else may have named the agent while /route decided
-            and (self.setting != "meeting" or (floor_line and v.label == self._label(identity, mark)))
+            and (not mixed_meet(identity) or (floor_line and v.label == self._label(identity, mark)))
         )
         # Routing v2 §4.2: someone else spoke since; their line routes itself, seeing this one. A named ask stands.
         # The floor speaker's line stands too: its voice heard it and may delegate it (§4.6). Cancel and steer
@@ -1773,7 +1785,7 @@ class Huddle:
                 v.announcing = False
                 # said to the end: nothing to post. A meeting voice also keeps answers handed to it before it
                 # spoke (`ended`, tick): those are done only once it has spoken, not on "thinking".
-                if was_speaking or self.setting != "meeting":
+                if was_speaking or not mixed_meet(v.speaker):
                     v.told = []
                 if (run := self._runs.get(v.saying or "")) is None or run.ended:
                     v.saying = None  # its answer was said to the end too
@@ -2049,7 +2061,7 @@ class Huddle:
                     "developer",
                     # the voice's own speaker: a queued or delivered voice has no line of its own to read a label from
                     f"{v.label or self._talker(identity, mark)} asked: {request} — already handed to your backend self; don't delegate it again"
-                    + (f".{MEET_ACK}" if self.setting == "meeting" else ""),
+                    + (f".{MEET_ACK}" if mixed_meet(identity) else ""),
                 )
             )
         # conversation engine §3.5: the one acknowledgement, of the rows still open after the awaits above
@@ -2083,9 +2095,10 @@ class Huddle:
             self._consume_news(agent_id)  # handed to its own agent: consumed
         v.live, v.opened, v.naming = live, self._clock(), bool(session.get("askName"))
         v.followed_at = v.opened
-        if self.setting == "meeting":
+        if mixed_meet(identity):
             # A mouth, not an ear: it hears the whole Meet as one speaker and would answer talk not meant for it
             # (10-04 prod Meet). What the meeting says reaches it through the worker's transcript finals only.
+            # A person of a per-person Meet is heard like anyone in a Live call.
             self._live_call(v, "mute")
         if v.driven:
             v.driven.bind_until = v.opened + BIND_SECONDS
@@ -2094,9 +2107,9 @@ class Huddle:
                 self._live_call(v, "nudge")
         elif v.path != "announce":
             told = bool(request or ack_said or said)
-            # A meeting: the seed already says who said what and what to say about it. The "is talking to you"
-            # note was read out there ("Meeting is talking to me right now. Go ahead.", 10-04 prod Meet).
-            if (self.setting == "meeting" and told) or self._live_call(
+            # A mixed meeting: the seed already says who said what and what to say about it. The "is talking to
+            # you" note was read out there ("Meeting is talking to me right now. Go ahead.", 10-04 prod Meet).
+            if (mixed_meet(identity) and told) or self._live_call(
                 v, "append_thinking", f"{v.label or self._talker(identity, mark)} is talking to you"
             ):
                 if told or identity in self._released:
@@ -2639,8 +2652,8 @@ class Huddle:
         return v if v and run.gen == v.gen else None
 
     def progress(self, run: Run, text: str) -> None:
-        # not in a meeting: the model said each one aloud ("I'm still checking", 10-04 prod Meet); the tile shows it
-        if (v := self._same_session(run)) and self.setting != "meeting":
+        # not to a muted meeting voice: it said each one aloud ("I'm still checking", 10-04 prod Meet); the tile shows it
+        if (v := self._same_session(run)) and not mixed_meet(v.speaker):
             self._live_call(
                 v,
                 "append_thinking",
@@ -2673,7 +2686,7 @@ class Huddle:
             if answer:
                 text = f"Your earlier task on {run.request[:80]} finished: {answer}"
                 self._live_call(v, "append_commentary", text, delegation_id=None)
-                if self.setting == "meeting":  # being said: kept until its audio ends (`_talked_over`, hang-up)
+                if mixed_meet(v.speaker):  # being said: kept until its audio ends (`_talked_over`, hang-up)
                     v.told.append((run.run_id, run.request, answer, self._clock(), run.speaker))
             self._requests.delivered({run.run_id})
         elif (
@@ -2908,8 +2921,10 @@ class Huddle:
             return
         if v.live is None:
             return
+        # the muted voice of a mixed meeting; a per-person Meet's voice hears its speaker and follows Live's rules
+        mixed = mixed_meet(v.speaker)
         if (
-            meeting
+            mixed
             and not (v.announce or v.announcing)  # an announcement is cut at once, in `_talking_changed`
             and v.agent_state == "speaking"
             and v.speaker in self._speaking
@@ -2948,7 +2963,7 @@ class Huddle:
             for n in self._news[v.agent_id]:
                 text = self._cant_reach_seed(n) or f"Your earlier task on {n[1][:80]} finished: {n[2]}"
                 self._live_call(v, "append_commentary", text, delegation_id=None)
-            if meeting:  # being said: kept until their audio ends (`_talked_over`, hang-up)
+            if mixed:  # being said: kept until their audio ends (`_talked_over`, hang-up)
                 v.told += self._news[v.agent_id]
             self._consume_news(v.agent_id)
             self._sync_state()
@@ -2982,10 +2997,10 @@ class Huddle:
         over = w is not None and (
             now >= w.deadline or w.used_seconds + v.live.usage_seconds() >= w.budget
         )
-        # A meeting voice closes once it has said its piece: a working run does not hold it (its answer is a
-        # ready row, said by a voice opened for it), a follow-up being said does, up to 3 windows.
+        # A mixed meeting's voice closes once it has said its piece: a working run does not hold it (its answer is
+        # a ready row, said by a voice opened for it), a follow-up being said does, up to 3 windows.
         said = (
-            meeting
+            mixed
             and v.agent_state not in ("speaking", "thinking")
             and not v.posting
             and v.announce is None

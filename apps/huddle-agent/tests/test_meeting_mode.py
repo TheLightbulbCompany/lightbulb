@@ -704,13 +704,16 @@ async def test_a_meeting_voice_is_told_what_to_say_and_gets_no_note_it_could_rea
     await hear(h, "Forge, what PRs are open?")
     notes = [c for c in lives[0].calls if c[0] == "thinking"]
     assert not any("is talking to you" in str(c) for c in notes)
-    assert h_mod.MEET_ACK in str(lives[0].seed) and ("nudge",) in lives[0].calls
+    # ...and "On it. The caller asked what's open." once its seed asked for an acknowledgement: the words are
+    # the worker's now, and the seed asks for none
+    assert ("ack", h_mod.ON_IT) in lives[0].calls and ("nudge",) not in lives[0].calls
+    assert "acknowledgement" not in str(lives[0].seed)
 
     h, room, backend, lives, clock, log = make()  # a Live call keeps its note
     await h.on_participants({"u1": "Prasiddha"})
     await say(h, "u1", "hey Forge what did we ship")
     assert ("thinking", "Prasiddha is talking to you", None) in lives[0].calls
-    assert h_mod.MEET_ACK not in str(lives[0].seed)
+    assert lives[0].calls[-1] == ("ack", h_mod.ON_IT)  # 10-04 per-person Meet: "I'm here, what's on your mind"
 
 
 async def test_a_meeting_voice_gets_no_working_note_for_each_tool_its_run_uses():
@@ -1014,7 +1017,7 @@ async def test_a_per_person_meet_voice_hears_its_speaker_like_a_live_call():
     await says(h, P1, "hey Forge what did we ship")
     assert lives[0].speaker == P1 and ("mute",) not in lives[0].calls
     assert ("thinking", "Priya is talking to you", None) in lives[0].calls
-    assert h_mod.MEET_ACK not in str(lives[0].seed)
+    assert ("ack", h_mod.ON_IT) in lives[0].calls
 
 
 async def test_a_per_person_line_carries_its_persons_identity_and_name():

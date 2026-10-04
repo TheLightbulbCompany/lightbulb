@@ -35,8 +35,9 @@ vi.mock("@/hooks/useTeamsApi", () => ({
 
 const clerk = vi.hoisted(() => ({
   isLoaded: true,
-  organization: null as { id: string; name: string } | null,
-  membership: null as { role: string } | null,
+  organization: null as { id: string; name: string; updateMember?: unknown } | null,
+  membership: null as { role: string; publicUserData?: { userId: string } } | null,
+  memberships: null as { data: unknown[]; revalidate: () => Promise<void> } | null,
 }));
 
 vi.mock("@clerk/nextjs", () => ({
@@ -44,6 +45,7 @@ vi.mock("@clerk/nextjs", () => ({
   useOrganization: () => ({
     organization: clerk.organization,
     membership: clerk.membership,
+    memberships: clerk.memberships,
     isLoaded: clerk.isLoaded,
   }),
 }));
@@ -87,6 +89,7 @@ describe("WorkspaceMembersSection", () => {
     clerk.isLoaded = true;
     clerk.organization = null;
     clerk.membership = null;
+    clerk.memberships = null;
   });
 
   // --- The member list ----------------------------------------------------
@@ -108,6 +111,37 @@ describe("WorkspaceMembersSection", () => {
 
     // It must be THAT endpoint — this component does not get its own.
     expect(teams.read).toHaveBeenCalledWith("/members");
+  });
+
+  it("makes a member an admin through Clerk, and offers nothing on your own row", async () => {
+    asAdmin();
+    const updateMember = vi.fn().mockResolvedValue({});
+    const revalidate = vi.fn().mockResolvedValue(undefined);
+    clerk.organization = { id: "org_1", name: "Acme", updateMember };
+    clerk.membership = { role: "org:admin", publicUserData: { userId: "user_1" } };
+    clerk.memberships = {
+      data: [
+        { role: "org:admin", publicUserData: { userId: "user_1" } },
+        { role: "org:member", publicUserData: { userId: "user_2" } },
+      ],
+      revalidate,
+    };
+    withMembers([
+      { userId: "user_1", name: "Ada Lovelace", email: "ada@example.com" },
+      { userId: "user_2", name: "Grace Hopper", email: "grace@example.com" },
+    ]);
+    const user = userEvent.setup();
+    render(<WorkspaceMembersSection />);
+
+    const roster = await screen.findByTestId("members-roster");
+    // Ada is the caller and an admin: labelled, but with no button to demote herself.
+    expect(within(roster).getByText("Admin")).toBeInTheDocument();
+    expect(within(roster).queryByRole("button", { name: /remove admin/i })).not.toBeInTheDocument();
+
+    await user.click(within(roster).getByRole("button", { name: /make admin/i }));
+
+    expect(updateMember).toHaveBeenCalledWith({ userId: "user_2", role: "org:admin" });
+    await waitFor(() => expect(revalidate).toHaveBeenCalled());
   });
 
   it("says so plainly when the roster is empty", async () => {

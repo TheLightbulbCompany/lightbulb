@@ -2,30 +2,27 @@
 
 import { useEffect, useState } from "react";
 import { Room, RoomEvent, Track, type RemoteParticipant, type RemoteTrackPublication } from "livekit-client";
-import { agentHand, agentLiveStatus, agentStateLine, agentWorking, floorHolder, meetVoiceLimitText, orderAgentSlots, voiceLimit } from "@lightbulb/shared";
-import { Identity } from "@/components/teams/shared/components/Identity";
-import { agentTint } from "@/lib/agentTint";
+import { MeetTile, useDarkTheme, type TileAgent, type TileNotice } from "./MeetTile";
 
 // Recall's Output Media page: a public, Clerk-free LiveKit client. The ticket rides the fragment.
 const API = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000/api/v1";
 const BACKOFF_MS = [1000, 2000, 4000, 8000];
 const MAX_ATTEMPTS = 10;
-const STATUS_RE = /^lightbulb\.agent\.(.+)\.status$/;
-const MAX_CHIPS = 6; // the tile is video in a small Meet cell: past this the type would shrink
 // Only the agents' voices go back into the Meet: the voice worker names their tracks `agent-<id>`, and a Meet
 // person's own audio (identity `meet:…`) played back would be an echo.
 const isAgentVoice = (pub: RemoteTrackPublication, p: RemoteParticipant) =>
   pub.kind === Track.Kind.Audio && !p.identity.startsWith("meet:") && pub.trackName.startsWith("agent-");
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
-type Agent = { id: string; name: string; avatarUrl?: string | null };
+type Agent = TileAgent;
 type Attrs = Record<string, string>;
-type Notice = "Connecting…" | "Reconnecting…" | "This link has expired." | "Couldn't reach the agents." | null;
+type Notice = TileNotice;
 
 export default function MeetBotPage() {
   const [attrs, setAttrs] = useState<Attrs>({});
   const [agentNames, setAgentNames] = useState<Record<string, Agent>>({});
   const [notice, setNotice] = useState<Notice>("Connecting…");
+  useDarkTheme();
 
   useEffect(() => {
     let stop = false;
@@ -94,50 +91,5 @@ export default function MeetBotPage() {
     return () => { stop = true; void room?.disconnect(); };
   }, []);
 
-  const ids = Object.keys(attrs).map((k) => STATUS_RE.exec(k)?.[1]).filter((id): id is string => !!id);
-  const nameOf = (id: string) => agentNames[id]?.name ?? (attrs[`lightbulb.agent.${id}.name`] || id);
-  const ordered = orderAgentSlots(ids, attrs);
-  const limit = voiceLimit(attrs);
-  const floor = floorHolder(attrs);
-  const speaker = ordered.find((id) => agentLiveStatus(attrs, id) === "speaking" && (!floor || floor === id)) ?? ordered.find((id) => agentLiveStatus(attrs, id) === "speaking");
-  const chips = speaker ? [speaker, ...ordered.filter((id) => id !== speaker)] : ordered;
-  // Only these states say more than the name; nobody can tap in a Meet, so the words are the meeting ones.
-  const chipLine = (id: string) => {
-    const status = agentLiveStatus(attrs, id);
-    return status === "speaking" || status === "working" || status === "has_news"
-      ? agentStateLine(status, { working: agentWorking(attrs, id), hand: agentHand(attrs, id), meeting: true })
-      : "";
-  };
-
-  return (
-    <div data-chat-theme="dark" className="relative flex flex-col items-center justify-center overflow-hidden"
-      style={{ width: 1280, height: 720, background: "var(--plane-pane)", color: "var(--fg)" }}>
-      <span className="absolute left-6 top-4 text-sm" style={{ color: "var(--fg-mute)" }}>Lightbulb</span>
-      {notice ? (
-        <p className="text-4xl" role="status">{notice}</p>
-      ) : chips.length > 0 ? (
-        <div className="flex flex-col items-center gap-8 px-16">
-          <ul className="flex flex-wrap items-center justify-center gap-5">
-            {chips.slice(0, MAX_CHIPS).map((id) => {
-              const line = chipLine(id);
-              const live = id === speaker;
-              return (
-                <li key={id} className={`flex items-center gap-4 rounded-full px-6 py-3 ${live ? "text-5xl font-semibold" : "text-3xl"}`}
-                  style={{ background: "var(--plane-raised)", border: `3px solid ${live ? "var(--live)" : "var(--plane-edge)"}`, color: "var(--fg)" }}>
-                  <Identity name={nameOf(id)} avatarUrl={agentNames[id]?.avatarUrl} avatarOnly tint={agentTint(id)} className={live ? "[&>span]:!size-20 [&>span]:!text-3xl" : "[&>span]:!size-12 [&>span]:!text-xl"} />
-                  <span>{nameOf(id)}{line && <span style={{ color: "var(--fg-soft)" }} className="font-normal">{" · "}<span>{line}</span></span>}</span>
-                </li>
-              );
-            })}
-            {chips.length > MAX_CHIPS && <li className="text-3xl" style={{ color: "var(--fg-soft)" }}>+{chips.length - MAX_CHIPS} more</li>}
-          </ul>
-          {limit ? (
-            <p className="text-2xl" role="status" style={{ color: "var(--alert)" }}>{meetVoiceLimitText(limit)}</p>
-          ) : (
-            <p className="text-2xl" style={{ color: "var(--fg-soft)" }}>Say an agent&apos;s name to ask</p>
-          )}
-        </div>
-      ) : null}
-    </div>
-  );
+  return <MeetTile agents={agentNames} attrs={attrs} notice={notice} />;
 }

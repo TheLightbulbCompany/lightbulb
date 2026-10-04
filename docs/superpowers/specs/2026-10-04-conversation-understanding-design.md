@@ -80,9 +80,13 @@ handle the worker binds to a request row that the final line produced (§4.6).
 `route_live_line` gains an understanding step built on the phase-1 split (`messaging.address`).
 
 1. **Cut.** The line is cut into parts at agent names and sentence ends (as phase 1), and now also
-   at request cues inside a sentence: `and`/`also`/`then`/`plus` followed by a question word, a
-   request verb, or "I need / I want / can you / could you". "what features we've shipped | and what
-   PRs are currently open" is two parts. "check the Stripe dashboard and the Mercury balance" is one.
+   where a new request begins inside a sentence. Speech-to-text often gives no punctuation, so the
+   cut reads words: after a comma, a joiner (`and`, `also`, `then`, `plus`, `but`, `anyway`), a
+   filler (`um`, `uh`, `like`, `I mean`) or an ordinal (`first`, `next`, `one more`), the next words
+   must open a request: a question word, an asking verb with its object, or "I need / can you".
+   "what features we've shipped | and what PRs are currently open" is two parts. "check the Stripe
+   dashboard and the Mercury balance" is one. A step that leans on the one before ("export the list
+   and then send it to Dana") is not cut. "can you" alone is never a part.
    At most 8 parts; a line that cuts into more is not split (one request, whole line).
 2. **One Jev call** asks, beside today's `complete`, `anyone` and per-name labels:
    - per part, `kind`: one of
@@ -115,8 +119,19 @@ In order:
 3. **Floor.** Else the agent holding the floor, when the speaker is the one it is talking with.
 4. **Chief of staff.** Else the CEO agent.
 
-A request that `amends` an earlier one goes to that request's owner whatever `who` says. Each
-request records which rule chose its owner (`by: name | fit | floor | chief`).
+A request that `amends` an earlier one goes to that request's owner whatever `who` says (`follow`).
+
+**Several people, no name.** When two or more people are on a Live call and the line names nobody,
+says no wake word and is not the floor conversation, the question "should an agent answer at all?"
+is not the part typing's to answer. Chat's room judge (`jev._decide_for_message`: "would a good
+teammate answer this?", tuned on the multiparty benchmark) answers it, as it did before this design.
+It runs beside the understanding call. When it picks nobody, the line makes no request. When it
+picks an agent, the line is understood like any other; a single request goes to the judge's agent
+(it read the whole conversation, so a follow-up stays with the teammate already in the exchange),
+several requests keep their own fit, and a line with no request part becomes one request for the
+judge's agent (`room`).
+
+Each request records which rule chose its owner (`by: name | fit | floor | room | chief | follow`).
 
 ### 4.4 The answer of `/route`
 
@@ -147,10 +162,14 @@ agent is talking with.
 
 In a **meeting** (Google Meet) nobody is implied: `ops` holds requests only for a line that names an
 agent, says the wake word, or is an unclaimed question, exactly as today. With **two or more people**
-in a Live call, an unnamed part is a request only at high confidence; the default is silence.
+in a Live call the room judge decides (§4.3); the default is silence.
 One exception covers both: when `floor.mine` is true the speaker is already in a conversation with
 the team, so their request parts need no name (today the voice model hears these lines and treats
-them the same way). A `people` part stays silent there too.
+them the same way). A line that speaks to a person by name stays silent there too.
+
+`hold: true` (an unfinished line) keeps today's meaning: the worker waits for the speaker's next
+final and merges. A held line is never thrown away: if the speaker says nothing more for 4 s, the
+worker applies the held line's `ops` as they are.
 
 ### 4.5 The ledger (worker, code owns it)
 

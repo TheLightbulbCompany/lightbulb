@@ -25,8 +25,10 @@ def decide():
         patch.object(vc.messaging, "human_display_name", AsyncMock(side_effect=lambda u: PEOPLE.get(u, u))),
         patch.object(vc.openclaw_work, "_fallback_ceo_id", AsyncMock(return_value="friday")),
         patch.object(vc.jev, "agent_card", card),
+        patch.object(vc.jev, "_decide_for_message", AsyncMock(return_value={"who": "none"})) as judge,
         patch.object(vc.jev, "decide", AsyncMock(return_value=None)) as decide,
     ):
+        decide.judge = judge  # the room judge: who answers a line among several people ("none": nobody)
         yield decide
 
 
@@ -81,6 +83,29 @@ def parts(line):
             ["im gonna rattle off a bunch of stuff and you guys sort it out after", "first whats our burn"],
         ),
         ("Oh, one more thing, can you check the cert?", ["one more thing", "can you check the cert"]),
+        # speech-to-text with no punctuation: a filler, "but", "anyway" or "can you" opens the next part
+        (
+            "good morning everyone um can you check if the nightly backup ran",
+            ["good morning everyone", "can you check if the nightly backup ran"],
+        ),
+        (
+            "the tweet's good but can you make a LinkedIn version too",
+            ["the tweet's good", "can you make a LinkedIn version too"],
+        ),
+        (
+            "sorry my dog is barking lol anyway how many tickets came in overnight",
+            ["sorry my dog is barking lol", "anyway how many tickets came in overnight"],
+        ),
+        (
+            "whats our burn uh how many active users do we have and is the api down",
+            ["whats our burn", "how many active users do we have", "is the api down"],
+        ),
+        ("nice and what about week over week retention", ["nice", "what about week over week retention"]),
+        (
+            "I'll just rattle them off first one is can you find the Acme NDA",
+            ["I'll just rattle them off", "first one is", "can you find the Acme NDA"],
+        ),
+        ("Anyway, how many trials started yesterday?", ["Anyway", "how many trials started yesterday"]),
     ],
 )
 def test_a_sentence_is_cut_where_a_new_request_begins(line, want):
@@ -96,8 +121,11 @@ def test_a_sentence_is_cut_where_a_new_request_begins(line, want):
         "What did we pay for Figma, Notion, Linear and Slack last year?",
         "Pull the signups for, uh, July, sorry, I mean August.",
         "I'm just gonna say them all, and then we'll figure out kind of how to answer them.",
-        "Hey guys, how's it going?",  # one word before the comma is a lead-in
-        "Anyway, how many trials started yesterday?",
+        "okay can you also rerun the flaky e2e job on the mobile branch",  # "can you" alone is no part
+        "export the list of trial users and then send it to Dana",  # "send it" leans on the export: one task
+        "check the build and test results",
+        "find the customer who emailed us and asked for a refund",
+        "what's the open rate on the um the last two newsletters actually just the last one",
     ],
 )
 def test_one_ask_with_several_objects_is_not_cut(line):
@@ -137,10 +165,11 @@ async def test_three_asks_in_one_breath_are_three_requests_with_their_owners(dec
 
 async def test_a_greeting_is_no_request(decide):
     """Prod started a backend run for "Hey guys, how's it going?" and greeted twice."""
-    got = await route(decide, "Hey guys, how's it going?", jev_says(kinds=["social"]))
+    hello = jev_says(kinds=["social", "social"])  # "Hey guys," | "how's it going"
+    got = await route(decide, "Hey guys, how's it going?", hello)
     assert got["ops"] == {"requests": [], "social": "friday", "more": False, "cancel": [], "steer": []}
     assert got["agentIds"] == ["friday"] and "requests" not in got
-    two = await route(decide, "Hey guys, how's it going?", jev_says(kinds=["social"]), humans=2)
+    two = await route(decide, "Hey guys, how's it going?", hello, humans=2)
     assert two["ops"]["social"] is None and two["agentIds"] == []  # people greeting each other
     open_voice = await route(decide, "Thanks, that's helpful.", jev_says(kinds=["social"]), humans=2, floor="gauge")
     assert open_voice["ops"]["social"] == "gauge"  # the floor conversation
@@ -262,14 +291,36 @@ async def test_calling_a_request_off_cancels_it(decide):
 # ---- who is implied (§4.4) ----
 
 
-async def test_two_people_need_a_sure_request_or_a_name(decide):
+async def test_among_several_people_the_room_judge_says_whether_an_agent_answers(decide):
     line = "Can we get the churn numbers for September?"
-    weak = await route(decide, line, jev_says(kinds=["request"], whos=["gauge"], p=0.6), humans=2)
-    assert tasks(weak) == [] and weak["agentIds"] == []
-    sure = await route(decide, line, jev_says(kinds=["request"], whos=["gauge"], p=0.9), humans=2)
-    assert tasks(sure) == [("gauge", "Can we get the churn numbers for September", "fit")]
-    mine = await route(decide, line, jev_says(kinds=["request"], p=0.6), humans=2, floor="pulse")
+    said = jev_says(kinds=["request"], whos=["gauge"])
+    quiet = await route(decide, line, said, humans=2)
+    assert tasks(quiet) == [] and quiet["agentIds"] == []  # the judge: people talking, nobody answers
+    assert decide.judge.await_args.kwargs["to_people"] is False
+    decide.judge.return_value = {"who": "forge"}
+    one = await route(decide, line, said, humans=2)
+    # one ask: the judge read the conversation, so its teammate owns it, whatever fits the part
+    assert tasks(one) == [("forge", "Can we get the churn numbers for September", "room")]
+    two = "can one of you pull churn for September and also check why the deploy failed"
+    both = await route(decide, two, jev_says(kinds=["request"] * 2, whos=["gauge", None]), humans=2)
+    assert tasks(both) == [
+        ("gauge", "can one of you pull churn for September", "fit"),
+        ("forge", "check why the deploy failed", "room"),
+    ]
+    chime = await route(decide, "I have no idea what our runway is", jev_says(kinds=["people"]), humans=2)
+    assert tasks(chime) == [("forge", "I have no idea what our runway is", "room")]  # the judge heard a gap to fill
+    decide.judge.reset_mock()
+    mine = await route(decide, line, jev_says(kinds=["request"]), humans=2, floor="pulse")
     assert tasks(mine) == [("pulse", "Can we get the churn numbers for September", "floor")]
+    decide.judge.assert_not_awaited()  # the floor conversation needs no judge
+
+
+async def test_the_room_judge_down_falls_back_like_chat(decide):
+    decide.judge.return_value = {"fallback": True}
+    got = await route(decide, "what's our burn", jev_says(kinds=["request"]), humans=2)
+    assert tasks(got) == [("friday", "what's our burn", "room")]
+    decide.judge.return_value = {"who": "none", "forced": "question"}
+    assert tasks(await route(decide, "what's our burn", jev_says(kinds=["request"]), humans=2))[0][0] == "friday"
 
 
 async def test_said_to_a_person_is_for_nobody(decide):
@@ -319,3 +370,16 @@ async def test_a_line_with_too_many_parts_is_one_request(decide):
     got = await route(decide, line, jev_says(kinds=["request"], whos=["forge"]))
     assert tasks(got) == [("forge", line, "fit")]
     assert "k1" not in decide.await_args.args[1]
+    # two agents named on such a line: each gets the whole line (nothing says whose part is whose)
+    named = f"Forge and Gauge, {line}"
+    both = await route(decide, named, jev_says(kinds=["request"], names=["addressed", "addressed"]))
+    assert [(a, by) for a, _, by in tasks(both)] == [("forge", "name"), ("gauge", "name")]
+
+
+async def test_who_is_asked_is_not_a_request_of_its_own(decide):
+    line = "Pulse, schedule the promo, and whoever handles billing can you check why Hooli got charged twice"
+    said = jev_says(kinds=["request", "request"], whos=["pulse", "forge"], names=["addressed"])
+    assert tasks(await route(decide, line, said)) == [
+        ("pulse", "schedule the promo", "name"),
+        ("forge", "whoever handles billing can you check why Hooli got charged twice", "fit"),
+    ]

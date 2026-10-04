@@ -2829,35 +2829,59 @@ def _opens_with(text: str, name: str, *, strong: bool = False) -> bool:
 
 _EDGE = " \t\r\n.,;:?!\"'“”‘’-–—"
 #: Filler a speaker puts in front of a request ("ok so ...", "um ...").
-_HEAD = re.compile(r"^(?:and|then|also|plus|so|oh|um|uh|hey|hi|ok|okay|alright)(?:\s|,|$)", re.I)
+_HEAD = re.compile(r"^(?:and|then|also|plus|but|so|oh|um|uh|hey|hi|ok|okay|alright)(?:\s|,|$)", re.I)
 #: A connector left hanging where a part runs straight into a name ("check the deploy and | Friday ...").
 _TAIL = re.compile(r"(?:^|\s)(?:and|then|also|plus|hey|hi|ok|okay)$", re.I)
 #: A sentence ends at . ? ! ; followed by a space or the end: "v2.1" and "3.5 percent" are one sentence.
 _SENTENCE = re.compile(r".+?(?:[.?!;]+(?=\s|$)|$)", re.S)
 # Conversation understanding §4.2: a new request begins inside a sentence ("... and what PRs are open",
-# ", then tell me ...", "um first whats our burn"). After a comma, a joiner or an ordinal, the next words
-# must open a request: a question word, "I need / can you / someone", or an asking verb with its object.
+# ", then tell me ...", "um first whats our burn", "good morning um can you check ..."). Speech-to-text
+# often gives no punctuation, so the cut reads words: after a comma, a joiner, a filler or an ordinal, the
+# next words must open a request (a question word, "I need / can you / someone", or an asking verb with
+# its object); "can you" and "I need" open one after anything.
+_ASK_STRONG = (
+    r"(?:(?:can|could|would)\s+(?:you|someone|somebody|one\s+of\s+you)|i\s+(?:also\s+)?(?:need|want)|"
+    r"i['’]d\s+(?:like|love)|i\s+would\s+like)\b"
+)
 _ASK_Q = (
     r"(?:what|what['’]?s|when|when['’]s|where|where['’]s|who|who['’]s|whoever(?:['’]s)?|why|how|how['’]s|which|"
     r"whether|is|are|was|were|did|does|do|has|have|can|could|would|will|should|"
     r"i\s+(?:also\s+)?(?:need|want)|i['’]d\s+(?:like|love)|i\s+would\s+like|we\s+need|"
     r"someone|somebody|anyone|anybody|one\s+of\s+you)\b"
 )
+# "send it to Dana" after "export the list and then" leans on what came before: it is the same request,
+# so a pronoun object (it, them, those) opens no new one.
 _ASK_V = (
     r"(?:check|see|find|figure|tell|get|give|pull|send|draft|write|book|schedule|reply|email|remind|make|build|"
     r"create|look|run|rerun|show|list|compare|update|fix|move|close|ask|set|add|open|review|summarize|post|"
     r"share|call|ping|let|grab|fetch|cancel|confirm|verify|forward|file|track|bring)"
-    r"\s+(?:the|a|an|my|our|your|their|his|her|its|me|us|him|them|it|this|that|these|those|if|whether|what|"
+    r"\s+(?:the|a|an|my|our|your|their|his|her|its|me|us|this|that|if|whether|what|"
     r"what['’]s|which|who|how|why|when|where|out|up|to|for|on|in|into|with|about|at|over|through|all|any|every|"
     r"everyone|some)\b"
 )
-_JOINER = r"(?:and|then|also|plus)"
-_ORDINAL = r"(?:first|second|third|next|lastly|finally)"
-_FILLER = r"(?:(?:um|uh|like|please|also|then|you\s+know|while\s+you['’]re\s+at\s+it)[\s,]+)*"
+_JOINER = r"(?:and|then|also|plus|but|anyway|anyways|btw|by\s+the\s+way)"
+_ORDINAL = (
+    r"(?:(?:the\s+)?(?:first|second|third|next|last|final)(?:\s+(?:one|thing|up|question))?(?:\s+is)?|"
+    r"lastly|finally|one\s+more(?:\s+thing)?)"
+)
+_FILL_WORD = r"(?:um|uh|like|please|also|then|well|just|you\s+know|i\s+mean|while\s+you['’]re\s+at\s+it)"
+_FILLER = rf"(?:{_FILL_WORD}[\s,]+)*"
 _CUE = re.compile(
-    rf"(?:\s*,\s*(?:{_JOINER}\s+)*|\s+(?:{_JOINER}\s+)+|\s+(?={_FILLER}{_ORDINAL}\b))"
+    rf"(?:\s*,\s*(?:{_JOINER}\s+)*|\s+(?:{_JOINER}\s+)+|\s+(?={_FILLER}{_ORDINAL}\b)|\s+(?={_FILL_WORD}[\s,])|"
+    rf"\s+(?={_ASK_STRONG}))"
     rf"(?={_FILLER}(?:{_ORDINAL}\s*,?\s+)?{_FILLER}(?:{_ASK_Q}|{_ASK_V}))",
     re.I,
+)
+#: Words that only open a request ("okay can you also | rerun the job"): never a part of their own.
+_OPENER_ONLY = re.compile(
+    r"^(?:(?:can|could|would|will)\s+(?:you|someone|somebody|we|one\s+of\s+you)|i\s+(?:also\s+)?(?:need|want)"
+    r"(?:\s+you)?(?:\s+to)?|i['’]d\s+(?:like|love)(?:\s+you)?(?:\s+to)?|please|let['’]?s)?"
+    r"(?:\s*(?:also|just|please|to))*$",
+    re.I,
+)
+#: Words that only say who is asked, with no ask yet ("whoever handles billing", "someone on the team").
+_ADDRESSEE_ONLY = re.compile(
+    r"^(?:someone|somebody|anyone|anybody|whoever(?:['’]s)?|one\s+of\s+(?:you|the\s+agents))\b(?:\s+\S+){0,4}$", re.I
 )
 #: A part the speaker hands to nobody in particular ("... and someone check the queue"): never its named agent's.
 _ANYONE = re.compile(r"\b(?:someone|somebody|anyone|anybody|whoever(?:['’]s)?|one\s+of\s+(?:you|the\s+agents))\b", re.I)
@@ -2900,8 +2924,9 @@ def _cue_spans(seg: str) -> list[tuple[int, int]]:
     in front of it is not made."""
     cuts = [0]
     for m in _CUE.finditer(seg):
-        # one word before a comma is a lead-in, not a part ("Hey guys, how's it going", "Anyway, how many ...")
-        if len(_clean(seg[cuts[-1] : m.start()]).split()) >= 2:
+        before = _clean(seg[cuts[-1] : m.start()])
+        # no part of its own: filler and "can you", or only who is asked ("whoever handles billing | can you ...")
+        if not _OPENER_ONLY.match(before) and not _ADDRESSEE_ONLY.match(before):
             cuts.append(m.start())
     return list(zip(cuts, [*cuts[1:], len(seg)]))
 
@@ -3210,7 +3235,7 @@ async def address(
         out["path"] = "jev"
     out["hold"] = result["complete"] < HOLD_BELOW
     out["anyone"] = result["anyone"] >= 0.5
-    hits = []
+    hits, called = [], []  # agents asked; people spoken to (their names are no part of an agent's task)
     for c in cands:
         label = result["labels"][c["name"]]
         if c["name"] in WEEKDAYS and re.search(_DAY_USE.format(day=re.escape(c["said"])), text, re.I):
@@ -3230,6 +3255,7 @@ async def address(
             hits.append((c, agent, label))
         elif label == "addressed":
             out["humans"] += c["humans"]
+            called.append(c["name"])
     if live and len(hits) >= 2 and not parts:
         out["tasks"] = {}  # names and nothing else ("Forge and Friday?"): a summons, not a request for each
     elif len(hits) >= 2 and any(result["asked"]):
@@ -3265,6 +3291,7 @@ async def address(
         ]
         out["pieces"] = pieces
         out["named"] = [(c["name"], agent, label) for c, agent, label in hits]
+        out["called"] = called
         out["amends"], out["drops"] = result.get("amends"), result.get("drops")
     put_metric("messaging.addressing.stage", dimensions={"path": out["path"], "surface": "live" if live else "chat"})
     return out

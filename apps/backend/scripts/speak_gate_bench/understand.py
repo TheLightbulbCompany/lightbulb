@@ -136,9 +136,10 @@ def grade(case: dict, ops: dict, names: dict) -> dict:
         why.append("nobody replies to small talk")
     if e.get("silent") and replied:
         why.append("an agent replies to people talk")
-    # ``more`` beside a request changes nothing the speaker hears: graded only where the row says, or
-    # where nothing was asked (a greeting answered with "go ahead" is wrong).
-    if ("more" in e or not want) and bool(e.get("more")) != bool(ops["more"]):
+    # ``more`` beside a request changes nothing the speaker hears: a missed announcement is graded, and a
+    # ``more`` where nothing was asked (a greeting answered with "go ahead" is wrong); never an extra one
+    # beside a request ("One more, has the patch merged?").
+    if (e.get("more") or not want) and bool(e.get("more")) != bool(ops["more"]):
         why.append(f"more={bool(ops['more'])}")
     steered = [s["requestId"] for s in ops["steer"]]
     for key, have in (("cancel", ops["cancel"]), ("steer", steered)):

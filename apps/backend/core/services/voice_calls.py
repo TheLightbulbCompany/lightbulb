@@ -848,6 +848,20 @@ def _transcript_history(
 _WAKE_WORD = re.compile(r"^\s*(?:(?:hey|ok|okay)[\s,]+)?light[\s-]?bulb\b[\s,.!?]*", re.I)
 
 
+def _open_voice_lines(floor: dict | None, open_requests: list[dict], members: list[dict]) -> list[str]:
+    """Live's ``state.open`` for the room judge, from the worker's memory: the requests being worked on
+    and the floor."""
+    names = {m["id"]: m.get("displayName") or m["id"] for m in members}
+    lines = [
+        f'{names.get(r.get("agentId"), r.get("agentId"))} is answering "{str(r.get("task") or "")[:120]}" (voice)'
+        for r in open_requests
+        if r.get("status") in _OPEN_STATUS
+    ]
+    if floor and floor.get("agent"):
+        lines.append(f"{names.get(floor['agent'], floor['agent'])} has the floor, talking with {floor.get('speaker')}")
+    return lines[:5]
+
+
 def _routed(*agent_ids: str) -> dict:
     """/route's answer: ``agentId`` (the first; what the shipped worker reads) and ``agentIds`` (every
     agent the line addressed or relayed to, in the order named, for a worker that queues them)."""
@@ -869,20 +883,20 @@ def _understood(
     utterance: str,
     *,
     implied: bool,
-    sure: bool,
     open_requests: list[dict],
     agents: set[str],
 ) -> dict:
     """The requests on a line (conversation understanding §4.2-§4.4), from what the one Jev call said about
     each part. ``implied``: the line can only be for the agents (a lone speaker, the wake word, the floor
-    conversation, a named agent). Not implied, an unnamed part is a request only when ``sure`` allows it
-    (two or more people in a Live call) and Jev says so at ``jev.CONFIDENT_P``; in a meeting it never is.
-    Owners marked ``None`` here are filled by the caller (floor agent, chief of staff).
+    conversation, a named agent, a line among people the room judge picked an agent for). Not implied, an
+    unnamed part is no request. Owners marked ``None`` here are filled by the caller (the floor agent, the
+    judge's agent, the chief of staff).
     Returns ``{requests: [{agentId|None, task, by}], talk, more, cancel, steer}``."""
     parts, pieces = addressing["parts"], addressing["pieces"]
     named = [(name, agent) for name, agent, _ in addressing["named"]]
     by_name = dict(named)
-    asked_names = set(by_name)
+    # a person the line speaks to ends an agent's task like a named agent does ("what's our MRR, and Aden, ...")
+    asked_names = set(by_name) | set(addressing.get("called") or ())
     rows = {r["id"]: r for r in open_requests}
 
     def target(answer) -> dict | None:
@@ -916,13 +930,18 @@ def _understood(
     for p in asks:
         text = task(mine[p["index"]])
         owners = [by_name[n] for n in (p["asked"] or ()) if n in by_name]
-        if not owners and len(named) == 1 and not messaging._ANYONE.search(p["text"]):
-            owners = [named[0][1]]  # one agent is addressed: what is asked on the line is asked of it
+        if not owners and not messaging._ANYONE.search(p["text"]):
+            if len(named) == 1:
+                owners = [named[0][1]]  # one agent is addressed: what is asked on the line is asked of it
+            elif p["asked"] is None:
+                # several named and nothing says whose part this is (a line too long to cut): each of
+                # them gets it, as before the cut existed
+                owners = [agent for _, agent in named]
         if owners:
             requests += [{"agentId": a, "task": text, "by": "name"} for a in owners]
             continue
-        if not implied and not (sure and p["kind"][1] >= jev.CONFIDENT_P):
-            continue  # people talking among themselves: silence is the default
+        if not implied:
+            continue  # people talking among themselves, and the room judge picked nobody
         who, prob, margin = p["who"]
         fit = who in agents and prob >= FIT_P and margin >= FIT_MARGIN
         requests.append({"agentId": who if fit else None, "task": text, "by": "fit" if fit else ""})
@@ -970,9 +989,12 @@ async def route_live_line(
     A request's owner is the agent the line names, else the teammate it fits, else the floor agent the
     speaker is talking with, else the chief of staff. Live ignores listen modes (#3591).
     Who is implied: a lone speaker, the wake word ``wake`` ("Lightbulb, ..."), the floor conversation
-    (``floor.mine``) and a line that names an agent can only be for the agents. With two or more people an
-    unnamed part must be a request at ``jev.CONFIDENT_P``. ``setting="meeting"`` (a Google Meet): nobody is
-    implied but those, and an ``unclaimed`` question to the room (the worker waited 3.5 s).
+    (``floor.mine``) and a line that names an agent can only be for the agents. With two or more people
+    and no name, chat's room judge (``jev._decide_for_message``: would a good teammate answer this?) says
+    whether an agent answers at all, as it did before understanding; when it picks one, the line is
+    understood like any other and that agent owns what fits nobody better. ``setting="meeting"`` (a Google
+    Meet): nobody is implied but the named, the wake word, the floor conversation and an ``unclaimed``
+    question to the room (the worker waited 3.5 s).
     Jev down: the whole line is one request for the named agents, else (implied) one agent.
     Returns ``{agentId, agentIds, requests?, hold?, ops}``: ``ops`` is ``{requests: [{agentId, task, by}],
     social, more, cancel, steer}``; the other fields are what a worker before ``ops`` reads."""
@@ -981,7 +1003,7 @@ async def route_live_line(
         for m in await messaging_repo.list_members(room_id)
     ]
     caller, label = _meeting_actor(members, speaker_id, setting == "meeting")
-    await _room_team(owner_id, caller, room_id)
+    meta, _ = await _room_team(owner_id, caller, room_id)
     if wake:
         utterance = _WAKE_WORD.sub("", utterance, count=1) or utterance
     name = label or await messaging.human_display_name(speaker_id)
@@ -1008,20 +1030,7 @@ async def route_live_line(
         cards = dict(team)
     floor_line = f"{team[floor_agent]} is talking with {floor.get('speaker')}" if floor_agent else None
     message = {"author": author, "text": utterance}
-    addressing = await messaging.address(
-        message,
-        members,
-        history=history,
-        live=True,
-        understand={"cards": cards, "open": earlier, "floor": floor_line, "meeting": setting == "meeting"},
-    )
-    hold = {"hold": True} if addressing["hold"] else {}
-    if hold:
-        put_metric("voice.routing.jev", dimensions={"outcome": "hold", "setting": setting})
-    named = [agent for _, agent, _ in addressing["named"]]
-    to_people = bool(addressing["humans"]) and not named and not addressing["anyone"] and not wake
     meeting = setting == "meeting"
-    implied = bool(named) or wake or mine or unclaimed or (humans <= 1 and not meeting)
     candidates = sorted(team)
 
     async def someone() -> str | None:
@@ -1031,6 +1040,73 @@ async def route_live_line(
         if len(candidates) == 1:
             return candidates[0]
         return await openclaw_work._fallback_single(owner_id, candidates, message, history)
+
+    # People talking among themselves (two or more, no wake word, not the floor conversation, no meeting
+    # rule): the room judge decides whether an agent answers. With no name on the line it runs beside the
+    # understanding call; a line that names someone waits for the addressing labels.
+    crowd = humans > 1 and not (wake or mine or unclaimed or meeting)
+    targets = messaging.select_dispatch_targets(members, [], None, room_kind=meta.get("kind"))
+
+    async def judge(people: list[str], to_people: bool, stage: dict | None = None) -> str | None:
+        """The one agent a good teammate would be here, or None (nobody). Jev down: chat's fallback.
+        ``stage``: what the addressing labels said (people named, something also asked of the room), as
+        chat stores it on a message, so "what's our MRR, and Sam where did you put the deck?" reads as both."""
+        asked = {**message, "mentions": [{"kind": "human", "id": p} for p in people], "dispatchTargets": targets}
+        if stage:
+            asked["addressing"] = stage
+        try:
+            decision = await asyncio.wait_for(
+                jev._decide_for_message(
+                    meta,
+                    asked,
+                    asked,
+                    members,
+                    history,
+                    to_people=to_people,
+                    placement=False,
+                    open_lines=_open_voice_lines(floor, earlier, members),
+                    setting=setting,
+                ),
+                _ROUTING_TIMEOUT_S,
+            )
+        except Exception:  # noqa: BLE001 -- a timeout or a card read: Jev is down for this line
+            put_metric("voice.routing.timeout")
+            decision = {"fallback": True}
+        who, forced = decision.get("who"), decision.get("forced")
+        if not forced and who in team:
+            return who
+        if not forced and who == "none":
+            return None
+        if forced:
+            put_metric("messaging.jev.forced", dimensions={"reason": forced})
+        return None if to_people else await someone()
+
+    unnamed = not any(c["agents"] or c["humans"] for c in messaging.address_candidates(utterance, members, live=True))
+    early = asyncio.ensure_future(judge([], False)) if crowd and unnamed and team else None
+    try:
+        addressing = await messaging.address(
+            message,
+            members,
+            history=history,
+            live=True,
+            understand={"cards": cards, "open": earlier, "floor": floor_line, "meeting": meeting},
+        )
+    except BaseException:
+        if early:
+            early.cancel()
+        raise
+    hold = {"hold": True} if addressing["hold"] else {}
+    if hold:
+        put_metric("voice.routing.jev", dimensions={"outcome": "hold", "setting": setting})
+    named = [agent for _, agent, _ in addressing["named"]]
+    to_people = bool(addressing["humans"]) and not named and not addressing["anyone"] and not wake
+    implied = bool(named) or wake or mine or unclaimed or (humans <= 1 and not meeting)
+    picked = None  # the room judge's agent for a line among people
+    if early and named:
+        early.cancel()  # a fuzzy name the candidates missed: the name rules decide
+    elif crowd and not named and team:
+        picked = await (early or judge(addressing["humans"], to_people, messaging._stored_addressing(addressing)))
+        implied, to_people = picked is not None, picked is None
 
     if addressing["path"] == "fallback":
         # Jev down: nothing was cut or typed. The whole line is one request, as before understanding.
@@ -1046,7 +1122,6 @@ async def route_live_line(
             addressing,
             utterance,
             implied=implied and bool(candidates),
-            sure=not meeting and bool(candidates),
             open_requests=earlier,
             agents=set(team),
         )
@@ -1054,11 +1129,20 @@ async def route_live_line(
             # a question to the room nobody took (the worker waited), or a wake-word line Jev heard as
             # people talk ("Lightbulb, ..." is said to the agents): one agent answers it
             u["requests"] = [{"agentId": None, "task": utterance, "by": ""}]
+    if picked and not u["requests"] and not u["cancel"] and not u["steer"]:
+        # the judge heard something to answer where the parts saw talk between people: the line is its request
+        u["requests"] = [{"agentId": None, "task": utterance, "by": ""}]
+    elif picked and len(u["requests"]) == 1 and u["requests"][0]["by"] == "fit":
+        # One ask among people: the judge read the whole conversation (a follow-up goes to the teammate
+        # already in the exchange), the fit only the part. Several asks keep their own best fit.
+        u["requests"][0] |= {"agentId": None, "by": ""}
     chief = None
     for r in u["requests"]:
         if r["agentId"] is None:
             if mine:
                 r |= {"agentId": floor_agent, "by": "floor"}
+            elif picked:
+                r |= {"agentId": picked, "by": "room"}
             else:
                 chief = chief or await someone()
                 r |= {"agentId": chief, "by": "chief"}

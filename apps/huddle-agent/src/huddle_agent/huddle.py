@@ -35,6 +35,7 @@ from huddle_agent.transcript import (
     Transcript,
     address,
     addressed_by_name,
+    ghost_line,
     is_question,
     pause,
     real_speech,
@@ -72,11 +73,11 @@ TEAM_REFRESH_S = 60
 NEWS_PER_AGENT = 5
 NEWS_TTL = 10 * 60
 # A driven run still working this long after the summon: the voice says so once (Skantze: people
-# talk over a silent system that is about to answer), and promises the room if it takes longer.
+# talk over a silent system that is about to answer).
 HOLDING_LINE_S = 12
 HOLDING_LINE = (
     "Your backend self is still working on that request. Say in one short sentence that it is taking a "
-    "moment and that you will post the answer in the room if it takes longer; then keep listening."
+    "moment; then keep listening."
 )
 STILL_WAKING = "Your backend is still waking up; say briefly that you're on it and it'll take a moment."
 CANT_REACH = "Sorry, I couldn't reach my backend for that."
@@ -611,6 +612,10 @@ class Huddle:
 
     async def on_final_transcript(self, identity: str, name: str, text: str) -> None:
         text = text.strip()
+        if text and ghost_line(text, self._vocabulary):
+            # Conversation engine §3.1: the STT model repeated its prompt on silence; nobody said it.
+            emit_metric("live.stt.ghost_dropped", 1, "Count")
+            text = ""
         began = self._utter_from.pop(identity, None)
         cut = self._cut_by.pop(identity, None)
         v = self._voice
@@ -1410,6 +1415,7 @@ class Huddle:
         utterance: str,
         delegation_id: str | None,
         steer_run_id: str | None = None,
+        requests: list[str] | tuple = (),
     ) -> dict | None:
         """POST /turns, retrying a waking workspace -> its response. None (and the run aborted) when it never started."""
         agent_id = v.agent_id
@@ -1438,6 +1444,7 @@ class Huddle:
                             steer_run_id,
                             # The raw identity pins the audio; the Meet label is what the backend shows.
                             speaker_name=self._said_by.get(v.speaker),
+                            requests=list(requests),
                         )
                         or {}
                     )

@@ -131,6 +131,7 @@ class Backend:
         steer_run_id: str | None = None,
         steer_only: bool = False,
         speaker_name: str | None = None,
+        requests: list[str] | tuple = (),
     ) -> dict:
         """steer_only: steer `steer_run_id` or do nothing (never dispatch a new run)."""
         body = {
@@ -142,6 +143,7 @@ class Backend:
             "transcript": transcript,
             "steerRunId": steer_run_id,
             **({"steerOnly": True} if steer_only else {}),
+            **({"requests": list(requests)} if requests else {}),
         }
         return await self._post(f"/internal/huddles/calls/{call_id}/turns", body)
 
@@ -149,6 +151,10 @@ class Backend:
         return await self._post(
             f"/internal/huddles/{self._room_id}/runs/{run_id}/abort", {}
         )
+
+    async def no_post(self, run_id: str) -> dict:
+        """"Don't post that": the backend never posts this run's answer late (either door)."""
+        return await self._post(f"/internal/huddles/{self._room_id}/runs/{run_id}/no-post", {})
 
     async def end(self, call_id: str, usage_seconds: int) -> None:
         # An unsent /end leaves the call's hold or free claim open: retry transport failures (status 0) and

@@ -74,6 +74,8 @@ class FakeBackend:
         )
         self.route_extra: dict = {}  # e.g. {"hold": True}, {"agentIds": [...]}
         self.route_bodies: list[dict] = []
+        self.no_posts: list[str] = []
+        self.route_error: BackendError | None = None
         self.route_gate: asyncio.Event | None = None
         self.turns: list[dict] = []
         self.turn_results: list = []  # BackendErrors raised in order, then success
@@ -119,6 +121,8 @@ class FakeBackend:
                 "unclaimed": unclaimed,
             }
         )
+        if self.route_error:
+            raise self.route_error
         extra, gate = (
             self.route_extra,
             self.route_gate,
@@ -127,6 +131,10 @@ class FakeBackend:
             await gate.wait()
         agent = self.route_to if humans is None else self.jev_to
         return {"agentId": agent, "agentIds": [agent] if agent else [], **extra}
+
+    async def no_post(self, run_id):
+        self.no_posts.append(run_id)
+        return {"noPost": True}
 
     async def summon(self, speaker, speaker_name=None):
         self.summons.append(speaker)
@@ -161,6 +169,7 @@ class FakeBackend:
         steer_run_id=None,
         steer_only=False,
         speaker_name=None,
+        requests=(),
     ):
         if (
             steer_only
@@ -179,6 +188,7 @@ class FakeBackend:
                 "callId": call_id,
                 "speaker": speaker,
                 "speakerName": speaker_name,
+                "requests": list(requests),
                 "agentId": agent_id,
                 "runId": run_id,
                 "utterance": utterance,
@@ -2837,3 +2847,35 @@ async def test_a_slow_driven_run_gets_one_holding_line(capsys):
         lives[0].calls.count(("thinking", h_mod.HOLDING_LINE, None)) == 1
     )  # once per run
     assert metric_count(capsys, "live.holding_line") == 1
+
+
+async def test_a_ghost_final_reaches_neither_transcript_nor_router(capsys):
+    h, room, backend, lives, clock, log = make()
+    await h.on_participants({"u1": "Prasiddha", "u2": "Aden"})
+    await say(h, "u1", h._vocabulary)
+    await say(h, "u1", "A team voice call. Names: Ada, Forge")
+    assert backend.routes == [] and h._transcript.text() == "" and lives == []
+    assert metric_count(capsys, "live.stt.ghost_dropped") == 2
+    await say(h, "u2", "Forge, what did we ship")  # real speech after a ghost still summons
+    assert [l.agent_id for l in lives] == ["forge"]
+
+
+def test_the_holding_line_promises_no_room_post():
+    assert "room" not in h_mod.HOLDING_LINE and "taking a moment" in h_mod.HOLDING_LINE
+
+
+async def test_backend_turn_carries_the_turns_requests_and_no_post_marks_a_run(monkeypatch):
+    import httpx
+
+    seen = []
+
+    def handler(req):
+        seen.append((req.url.path, json.loads(req.content)))
+        return httpx.Response(200, json={"ok": True})
+
+    b = _backend(monkeypatch, handler)
+    await b.turn("c1", "u1", "forge", "r1", "the PRs", "", requests=['Friday is answering "the rooms"'])
+    await b.turn("c1", "u1", "forge", "r2", "hi", "")
+    await b.no_post("r1")
+    assert seen[0][1]["requests"] == ['Friday is answering "the rooms"'] and "requests" not in seen[1][1]
+    assert seen[2] == ("/api/v1/internal/huddles/r1/runs/r1/no-post", {"ownerId": "org_1", "roomToken": "tok"})

@@ -34,6 +34,7 @@ class Request:
     )
     run_id: str | None = None
     by: str = ""  # which routing rule chose the owner: name | fit | floor | chief
+    acked: bool = False  # named aloud by an acknowledgement or a "next in line" note (understanding §4.6)
 
 
 class RequestList:

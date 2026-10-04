@@ -97,6 +97,7 @@ DELEGATION_WAIT_S = 2.0
 SAME_SPEECH = 0.6  # this share of one transcript's words in another's: the same speech (understanding §4.6)
 RECORDS_KEPT = 4  # understood speeches kept per speaker for delegations to match
 ALREADY_SAID = "You already gave that answer. Do not repeat it."
+IN_HAND = "That is already in hand. Wait for the result."
 HANDOFF_SECONDS = (
     8  # the floor-holder asked someone by name: they may answer without naming it
 )
@@ -139,15 +140,34 @@ TRANSCRIPT_CHUNK = 500
 TRANSCRIPT_FINAL_MAX = 5_000
 
 
+# understanding §4.6: words two different asks share ("what are the open PRs" / "what are the open issues")
+FUNCTION_WORDS = frozenset(
+    "a an the and or but so then also of to in on at for from with about by as is are was were be been am do does "
+    "did have has had can could would will should may might i you we they he she it me my our your us them this "
+    "that these those there here what what's whats when where who which why how if whether not no yes ok okay um "
+    "uh like just please hey hi any some all up out now".split()
+)
+
+
+def _words(text: str) -> tuple[set[str], list[str]]:
+    """(content words, all words): lowercase, letters and digits, an apostrophe joins its word."""
+    words = re.findall(r"[^\W_]+", text.lower().replace("'", "").replace("\u2019", ""))
+    return {w for w in words if w not in FUNCTION_WORDS}, words
+
+
 def _words_in(a: str, b: str) -> bool:
-    """Most of `a`'s words (letters and digits, any case) are in `b` (understanding §4.6)."""
-    wa, wb = ({w for w in re.findall(r"[^\W_]+", x.lower())} for x in (a, b))
-    return bool(wa) and len(wa & wb) / len(wa) >= SAME_SPEECH
+    """Most of `a`'s content words are in `b` (understanding §4.6). With none, only the very same words match."""
+    (ca, fa), (cb, fb) = _words(a), _words(b)
+    if not ca:
+        return bool(fa) and not cb and fa == fb
+    return len(ca & cb) / len(ca) >= SAME_SPEECH
 
 
-def _same_speech(a: str, b: str) -> bool:
-    """Two transcripts of one speech: a delegation may cover two finals, or be cut shorter than its final."""
-    return _words_in(a, b) or _words_in(b, a)
+def _same_speech(said: str, record: str) -> bool:
+    """A delegation's transcript and an understood speech's text are one speech: the delegation may be cut short
+    of its final, or cover more than one final. A record of fewer than 2 content words is never the part
+    contained ("and what" is in every question)."""
+    return _words_in(said, record) or (len(_words(record)[0]) >= 2 and _words_in(record, said))
 
 
 def _retryable(e: BackendError) -> bool:
@@ -1022,7 +1042,7 @@ class Huddle:
         v.ack_rows = [r for r in v.ack_rows if r not in rows]  # acknowledged here, not again in tick()
         if not rows:  # small talk: the voice answers it itself
             self._live_call(v, "reply_to", text)
-        elif (line := self._ack(rows, v.agent_id)) and self._live_call(v, "append_thinking", line):
+        elif (line := self._ack(rows, v.agent_id, said=True)) and self._live_call(v, "append_thinking", line):
             self._live_call(v, "nudge")
 
     def _drive_request(self, v: _Voice, text: str, said: str, row: Request | None = None) -> bool:
@@ -1141,7 +1161,7 @@ class Huddle:
                 if first is not None:
                     task = first.task or text
                     self._drive_request(v, task, f'{self._name(identity)} asked: "{task}"', row=first)
-                if line := self._ack(ack, v.agent_id):
+                if line := self._ack(ack, v.agent_id, said=True):
                     self._live_call(v, "append_thinking", line)
                 if said:
                     self._live_call(v, "append_thinking", said)
@@ -1615,7 +1635,7 @@ class Huddle:
                         return old
                     if request and row is None:  # a row left unbound runs without a voice (_act)
                         self._live_call(old, "reply_to", request)
-                    elif (line := self._ack(ack, agent_id)) and self._live_call(old, "append_thinking", line):
+                    elif (line := self._ack(ack, agent_id, said=True)) and self._live_call(old, "append_thinking", line):
                         self._live_call(old, "nudge")
                 self._sync_state()
                 return
@@ -1738,7 +1758,7 @@ class Huddle:
                 )
             )
         # conversation engine §3.5: the one acknowledgement, of the rows still open after the awaits above
-        ack_said = self._ack(ack, agent_id)
+        ack_said = self._ack(ack, agent_id, said=True)
         if ack_said:
             seed.append(("developer", ack_said))
         if said:  # understanding §4.6: small talk, answered by the voice itself
@@ -1842,9 +1862,12 @@ class Huddle:
             ack=rows,
         )
 
-    def _ack(self, rows: list[Request] | None, me: str) -> str | None:
-        """The acknowledgement of `rows` said by `me`: only those still open (re-review N1); None for none."""
+    def _ack(self, rows: list[Request] | None, me: str, said: bool = False) -> str | None:
+        """The acknowledgement of `rows` said by `me`: only those still open (re-review N1); None for none.
+        `said`: it is said now, so those rows are acknowledged (understanding §4.6)."""
         rows = [r for r in rows or [] if r.status in OPEN]
+        for r in rows if said else ():
+            r.acked = True
         return ack_line(rows, self._agent_name, me=me) if rows else None
 
     def _start_queued(self) -> None:
@@ -1911,14 +1934,17 @@ class Huddle:
             return
         v.used = True
         speaker, asked = v.speaker, self._clock()
-        heard = await self._this_speech(v, speaker, pending_transcript)
+        if self._bindable(v, asked) and not self._recorded(v.driven):
+            # a driven run no understood speech made (a named summons' whole line): this delegation's, at once
+            heard = None
+        else:
+            heard = await self._this_speech(v, speaker, pending_transcript)
         if self._floor_voice(agent_id) is not v:
             return  # another voice took the floor while it waited
         d = v.driven
-        recorded = d is not None and any(
-            r.run_id == d.run_id for recs in self._understood.values() for rec in recs for r in rec[0]
-        )
-        if heard is None and (recorded or not self._bindable(v, asked)):
+        recorded = self._recorded(d)
+        # an empty transcript (a typed request) is never understood: today's run (understanding §4.6)
+        if heard is None and pending_transcript.strip() and (recorded or not self._bindable(v, asked)):
             # understanding §4.6: no understood speech matches it, and no driven run without a record (a named
             # summons' whole line) can be it: its own transcript is understood, once
             mark = self._transcript.last_mark
@@ -1993,6 +2019,12 @@ class Huddle:
         at = self._clock() if at is None else at
         return bool(d and at <= d.bind_until and d.pending is None and not (run and run.ended))
 
+    def _recorded(self, d: _Driven | None) -> bool:
+        """`d` is the run of a row some understood speech made (understanding §4.6)."""
+        return d is not None and any(
+            r.run_id == d.run_id for recs in self._understood.values() for rec in recs for r in rec[0]
+        )
+
     def _matching(self, speaker: str, said: str) -> tuple | None:
         """The speaker's understood speeches that are the delegation's (understanding §4.6), matched by text: their
         rows in order and the newest one's ops. An empty transcript (a typed request) is the newest speech when it
@@ -2012,13 +2044,16 @@ class Huddle:
         DELEGATION_WAIT_S. None: there is none."""
         deadline = self._clock() + DELEGATION_WAIT_S
         while True:
-            if (heard := self._matching(speaker, said)) is not None:
+            heard = self._matching(speaker, said)
+            # only answered rows: the person may be asking again, and its own final makes a new row
+            answered = heard is not None and heard[0] and all(r.status == "delivered" for r in heard[0])
+            if heard is not None and not answered or not said.strip():
                 return heard
             if flying := self._understanding.get(speaker):
                 await flying[0]
                 continue
             if self._clock() >= deadline or self._floor_voice(v.agent_id) is not v:
-                return None
+                return heard
             heard = self._final_heard.setdefault(speaker, asyncio.Event())
             waits = [asyncio.ensure_future(heard.wait()), asyncio.ensure_future(self._sleep(deadline - self._clock()))]
             try:
@@ -2030,16 +2065,20 @@ class Huddle:
     def _answer_delegation(self, v: _Voice, delegation_id: str, rows: list[Request], ops: dict) -> None:
         """A delegation of speech the worker already understood, with no driven run to bind (understanding §4.6)."""
         live = [r for r in rows if r.status in OPEN]
-        mine = [r for r in live if r.agent == v.agent_id]
+        fresh = [r for r in live if not r.acked]  # rows no acknowledgement has named yet (§4.6)
+        mine = [r for r in fresh if r.agent == v.agent_id]
         if rows and all(r.status == "delivered" for r in rows):
             note = ALREADY_SAID
         elif rows and not live or not rows and ops.get("requests"):
             return  # stopped since (§4.5): swallowed, as a delegated stop is
+        elif live and not fresh:
+            note = IN_HAND
         elif mine and mine[0].status == "queued":
             note = f'"{mine[0].task}" is next in line for you. Say so in a few words.'
+            mine[0].acked = True
             v.ack_rows = [r for r in v.ack_rows if r not in rows]  # said: tick() does not say it again (§4.6)
-        elif live:
-            note = ack_line(live, self._agent_name, me=v.agent_id)
+        elif fresh:
+            note = self._ack(fresh, v.agent_id, said=True)
             v.ack_rows = [r for r in v.ack_rows if r not in rows]
         elif ops.get("more"):
             note = 'They will list several requests. Say "go ahead" at most, then stay quiet until they finish.'
@@ -2557,9 +2596,9 @@ class Huddle:
             return
         if now - self._final_at.get(sp, -math.inf) < ACK_QUIET_S:
             return
-        rows, v.ack_rows = [r for r in v.ack_rows if r.status in OPEN], []
+        rows, v.ack_rows = [r for r in v.ack_rows if r.status in OPEN and not r.acked], []
         if len(rows) >= 2 or any(r.agent != v.agent_id or r.status == "queued" for r in rows):
-            if self._live_call(v, "append_thinking", self._ack(rows, v.agent_id)):
+            if self._live_call(v, "append_thinking", self._ack(rows, v.agent_id, said=True)):
                 self._live_call(v, "nudge")
 
     async def _proactive(self, now: float) -> None:

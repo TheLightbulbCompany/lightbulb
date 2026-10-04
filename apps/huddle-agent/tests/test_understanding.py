@@ -1345,3 +1345,147 @@ async def test_a_held_line_the_speaker_continues_is_merged_not_applied():
     assert [t["utterance"] for t in backend.turns] == [
         "the open PRs and the closed ones"
     ]
+
+
+# -- review round 3: content words; a named line's delegation binds at once; an acknowledgement is said once --
+
+ALREADY = ("commentary", h_mod.ALREADY_SAID)
+
+
+def said_already(lives):
+    return [c for c in lives[0].calls if c[:2] == ALREADY]
+
+
+async def test_a_short_record_of_function_words_never_takes_a_longer_delegation():
+    h, room, backend, lives, clock, log = await floor_open()
+    backend.route_extra = ops(requests=[("forge", "and what", "fit")])
+    await say(h, "u1", "and what")
+    first = backend.turns[0]["runId"]
+    backend.route_extra = ops(requests=[("forge", "the newsletter open rate", "fit")])
+    await h.on_delegation("forge", "deleg-1", "and what about the newsletter open rate")
+    await settle(h)
+    assert h._runs.get(first).delegation_id is None and len(backend.routes) == 2
+    assert ("forge", "the newsletter open rate", "queued") in rows(h)
+
+
+async def test_a_new_ask_sharing_function_words_with_an_answered_one_is_not_already_said():
+    for old, new, task in (
+        ("what about the PRs", "what about the newsletter", "the newsletter"),
+        (PRS, "what are the open issues", "the open issues"),
+    ):
+        h, room, backend, lives, clock, log = await floor_open()
+        await say(h, "u1", old)
+        answer(h, backend.turns[0]["runId"], "forge", "Done.")
+        clock.t += 5
+        backend.route_extra = ops(requests=[("forge", task, "fit")])
+        await h.on_delegation("forge", "deleg-2", new)  # no final comes
+        await settle(h)
+        assert not said_already(lives) and len(backend.routes) == 2, new
+        assert ("forge", task, "working") in rows(h)
+
+
+async def test_a_late_final_with_a_different_ask_is_understood():
+    h, room, backend, lives, clock, log = await floor_open()
+    await h.on_delegation("forge", "deleg-1", PRS)
+    await settle(h)
+    clock.t += 3
+    backend.route_extra = ops(requests=[("forge", "the open issues", "fit")])
+    await say(h, "u1", "what are the open issues")
+    assert len(backend.routes) == 2 and ("forge", "the open issues", "queued") in rows(
+        h
+    )
+
+
+async def test_a_named_summons_without_ops_binds_at_once_and_never_runs_twice():
+    h, room, backend, lives, clock, log = await floor_open()
+    await say(h, "u1", PRS)
+    backend.route_extra = {}
+    await say(h, "u1", "Friday, what are the open issues")
+    run_id = h._voice.driven.run_id
+    log.clear()
+    await h.on_delegation("friday", "deleg-f", "Friday, what are the open issues")
+    assert h._runs.get(run_id).delegation_id == "deleg-f" and not [
+        e for e in log if e.startswith("sleep")
+    ]
+    answer(h, run_id, "friday", "Two issues.")
+    await settle(h)
+    assert [t["agentId"] for t in backend.turns] == ["forge", "friday"]
+    assert not [
+        c
+        for c in lives[-1].calls
+        if c[0] == "commentary" and c[2] == "deleg-f" and c[1] != "Two issues."
+    ]
+
+
+async def test_matching_still_takes_two_finals_a_repeat_and_wording_drift():
+    h, room, backend, lives, clock, log = await floor_open()
+    await say(h, "u1", PRS)
+    backend.route_extra = ops(requests=[("friday", "Aden's email", "fit")])
+    await say(h, "u1", "and check Aden's email")
+    await h.on_delegation(
+        "forge", "deleg-1", "what are the open PRs and check Aden's email"
+    )
+    await settle(h)
+    assert (
+        len(backend.routes) == 2
+        and h._runs.get(backend.turns[0]["runId"]).delegation_id == "deleg-1"
+    )
+    h, room, backend, lives, clock, log = await floor_open()
+    await say(h, "u1", "What are the open PRs right now?")
+    await h.on_delegation("forge", "deleg-1", "what're the open p r's right now")
+    await settle(h)
+    assert (
+        len(backend.routes) == 1
+        and h._runs.get(backend.turns[0]["runId"]).delegation_id == "deleg-1"
+    )
+
+
+async def test_a_repeated_question_delegated_before_its_final_runs_again():
+    h, room, backend, lives, clock, log = await floor_open()
+    await say(h, "u1", PRS)
+    answer(h, backend.turns[0]["runId"], "forge", "Two PRs are open.")
+    clock.t += 60
+    h._sleep = forever
+    deleg = asyncio.create_task(h.on_delegation("forge", "deleg-2", PRS))
+    for _ in range(3):
+        await asyncio.sleep(0)
+    assert not deleg.done()
+    await say(h, "u1", PRS)
+    await deleg
+    await settle(h)
+    assert (
+        len(backend.turns) == 2
+        and h._runs.get(backend.turns[1]["runId"]).delegation_id == "deleg-2"
+    )
+    assert not said_already(lives)
+
+
+async def test_an_empty_delegation_with_nothing_to_match_is_todays_run_at_once():
+    h, room, backend, lives, clock, log = await floor_open()
+    clock.t += 30
+    log.clear()
+    await h.on_delegation("forge", "deleg-1", "")
+    await settle(h)
+    assert backend.routes == [] and not h._understood.get("u1")
+    assert not [e for e in log if e.startswith("sleep")]
+    assert [t["utterance"] for t in backend.turns] == ["Forge, are you there"]
+
+
+async def test_the_acknowledgement_is_said_once_when_the_voice_delegates_after_it():
+    h, room, backend, lives, clock, log = await floor_open()
+    backend.route_extra = ops(
+        requests=[("friday", "Aden's email", "fit"), ("pulse", "the newsletter", "fit")]
+    )
+    await say(h, "u1", "check Aden's email and the newsletter")
+    clock.t += 2
+    await h.tick()
+    await settle(h)
+    ack = "Friday is on Aden's email. Pulse is on the newsletter. Say that in one short sentence, then wait."
+    assert [c for c in lives[0].calls if c[1:2] == (ack,)] == [("thinking", ack, None)]
+    await h.on_delegation("forge", "deleg-1", "check Aden's email and the newsletter")
+    await settle(h)
+    assert lives[0].calls[-1] == (
+        "commentary",
+        "That is already in hand. Wait for the result.",
+        "deleg-1",
+    )

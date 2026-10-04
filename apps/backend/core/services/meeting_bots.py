@@ -98,7 +98,7 @@ async def create(*, room_id: str, meeting: dict, company: str) -> str:
         },
         "output_media": _output_media(room_id, meeting),
         "variant": {"google_meet": "web_4_core"},
-        "automatic_leave": {"waiting_room_timeout": 600, "noone_joined_timeout": 1200},
+        "automatic_leave": {"waiting_room_timeout": 180, "noone_joined_timeout": 1200},
         "chat": {"on_bot_join": {"send_to": "everyone", "message": CONSENT_LINE.format(company=company), "pin": True}},
         "metadata": {"roomId": room_id, "nonce": meeting["ticketNonce"]},
     }

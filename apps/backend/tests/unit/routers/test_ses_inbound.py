@@ -1076,7 +1076,7 @@ INVITE = "\r\n".join(
         "METHOD:REQUEST",
         "BEGIN:VEVENT",
         "UID:evt-1@google.com",
-        "DTSTART:20261003T190000Z",
+        "DTSTART:20361003T190000Z",
         "ORGANIZER;CN=Stranger:mailto:stranger@elsewhere.com",
         f"ATTENDEE;CN=agents:mailto:{TEAM_ADDRESS}",
         "X-GOOGLE-CONFERENCE:https://meet.google.com/abc-defg-hij",
@@ -1139,7 +1139,7 @@ def test_a_members_invite_to_the_team_address_is_a_meeting(client, monkeypatch):
 
 @pytest.mark.parametrize(
     "bad",
-    [("UID:evt-1", "SEQUENCE:abc\r\nUID:evt-1"), ("DTSTART:20261003T190000Z", "DTSTART;TZID=America:20261003T190000")],
+    [("UID:evt-1", "SEQUENCE:abc\r\nUID:evt-1"), ("DTSTART:20361003T190000Z", "DTSTART;TZID=America:20361003T190000")],
 )
 def test_a_members_malformed_invite_is_ceo_mail_not_5xx(client, monkeypatch, bad):
     _enable(monkeypatch)

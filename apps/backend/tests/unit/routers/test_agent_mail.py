@@ -1,4 +1,5 @@
 import asyncio
+import time
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -342,7 +343,11 @@ _ROOMS = {
             "history": [{"startAt": 100, "transcriptId": "t-past", "transcriptRoomId": "room-past"}],
         },
     },
-    M2: {"ownerId": "org_test_456", "meeting": {"title": "One-off", "status": "ended", "startAt": 300}},
+    # Ended a moment ago with no transcript: listed (only one a day old is hidden).
+    M2: {
+        "ownerId": "org_test_456",
+        "meeting": {"title": "One-off", "status": "ended", "startAt": int(time.time()) - 600},
+    },
     FOREIGN: {"ownerId": "org_other", "meeting": {"title": "Theirs", "status": "scheduled", "startAt": 400}},
 }
 _ROWS = [
@@ -483,6 +488,33 @@ def test_transcript_404s(client, path):
     assert r.status_code == 404
     if path.startswith("not-a-uuid"):
         get_room.assert_not_awaited()
+
+
+async def test_a_meeting_that_never_reached_a_call_drops_off_after_a_day(async_client_org_member):
+    """A stale invite's record (never joined, over two days ago) is not listed; one with a
+    transcript, or a call that happened with no transcript captured, always is, however old."""
+    old = int(time.time()) - 2 * 86400
+    rooms = {
+        M1: {"ownerId": "org_test_456", "meeting": {"title": "Junk", "status": "bot_failed", "startAt": old}},
+        M2: {
+            "ownerId": "org_test_456",
+            "meeting": {
+                "title": "Kept",
+                "status": "ended",
+                "startAt": old,
+                "endAt": old + 900,
+                "history": [{"startAt": old - 86400, "transcriptId": "t", "transcriptRoomId": "r"}],
+            },
+        },
+        FOREIGN: {
+            "ownerId": "org_test_456",
+            "meeting": {"title": "Held", "status": "ended", "startAt": old - 10, "inCallAt": old},
+        },
+    }
+    a, b, c, d, e = _inbox()
+    with a, b, c, d, e, patch.object(agent_mail.messaging_repo, "get_room", AsyncMock(side_effect=rooms.get)):
+        r = await async_client_org_member.get("/api/v1/agent-mail/inbox")
+    assert [m["title"] for m in r.json()["meetings"]] == ["Kept", "Held"]
 
 
 PUBLIC = "agents@thelightbulb.company"

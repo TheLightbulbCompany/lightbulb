@@ -15,6 +15,7 @@ durable fence is the per-owner daily cap enforced in ``agent_mail_send``.
 import asyncio
 import hmac
 import re
+import time
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
@@ -213,6 +214,18 @@ def _occurrences(meeting: dict) -> list[dict]:
     return [o for o in current + list(meeting.get("history") or []) if o.get("transcriptId")]
 
 
+def _junk(meeting: dict, now: float) -> bool:
+    """A meeting that never reached a call (never in the call, no transcript now or in its history)
+    and ended over a day ago is not worth a row."""
+    end = int(meeting.get("endAt") or meeting.get("startAt") or 0)
+    return (
+        meeting.get("status") in ("ended", "bot_failed", "cancelled")
+        and not meeting.get("inCallAt")
+        and not _occurrences(meeting)
+        and end < now - 86400
+    )
+
+
 def _meeting_view(room_id: str, meeting: dict) -> dict:
     return {
         "id": room_id,
@@ -272,7 +285,7 @@ async def team_inbox(
 
     records = await asyncio.gather(*(read(i) for i in ids))
     meetings = sorted(
-        (_meeting_view(i, m) for i, m in zip(ids, records, strict=True) if m),
+        (_meeting_view(i, m) for i, m in zip(ids, records, strict=True) if m and not _junk(m, time.time())),
         key=lambda m: int(m["start_at"] or 0),
         reverse=True,
     )[:_MEETINGS_MAX]

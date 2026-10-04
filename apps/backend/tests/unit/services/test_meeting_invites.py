@@ -171,6 +171,13 @@ WITH_DANA = GOOGLE.replace("SEQUENCE:0", "ATTENDEE;CN=Dana:mailto:dana@acme.com\
 
 
 _SYNC_BOT = meeting_invites._sync_bot
+BEFORE_THE_INVITES = int(datetime(2026, 10, 1, 12, 0, tzinfo=timezone.utc).timestamp())
+
+
+@pytest.fixture(autouse=True)
+def _clock(monkeypatch):
+    """The invites above are dated Oct 3-5 2026: the clock reads before them unless a test moves it."""
+    monkeypatch.setattr(meeting_invites.time, "time", lambda: BEFORE_THE_INVITES)
 
 
 @pytest.fixture
@@ -973,7 +980,8 @@ async def test_a_series_invite_stores_its_rule_and_says_so(room, now):
     assert meeting["startAt"] == _epoch(2026, 11, 7, 15, 0) and meeting["endAt"] == _epoch(2026, 11, 7, 15, 30)
     assert _lines(room) == ["Agents will join **Acme weekly sync** each time it meets. Next: Sat Nov 7, 3:00 PM EST."]
     # The organizer turns the series into a one-off: the rule goes.
-    await meeting_invites.handle_team_mail("org_1", _mail(GOOGLE.replace("SEQUENCE:0", "SEQUENCE:1")), TEAM)
+    single = GOOGLE.replace("20261003T", "20261120T").replace("SEQUENCE:0", "SEQUENCE:1")
+    await meeting_invites.handle_team_mail("org_1", _mail(single), TEAM)
     assert "recurrence" not in room.state["meta"]["meeting"]
 
 
@@ -1487,3 +1495,63 @@ async def test_a_late_answer_from_an_agent_outside_the_default_room_is_surfaced_
     line = await repo.get_message_by_id(default, str(first.message_id))
     assert line["author"]["kind"] == "system"
     assert line["text"] == "**Friday**, after **Weekly sync**:\n\nThree tasks open."
+
+
+# --- stale invites (prod 2026-10-04: two bots sent into a Meet for August occurrences) ---
+
+OLD_OCCURRENCE = (
+    GOOGLE.replace("UID:7kukuqrfedlm2f9t0vr42q2gjv@google.com", "UID:old_R20260826T000000@google.com")
+    .replace("20261003T150000", "20260826T160000")
+    .replace("20261003T153000", "20260826T163000")
+    .replace("SEQUENCE:0", "RECURRENCE-ID;TZID=America/New_York:20260826T160000\r\nSEQUENCE:0")
+)
+
+
+@pytest.mark.parametrize(
+    "now_ny", [(2026, 9, 30, 12, 0), (2026, 10, 3, 16, 30)], ids=["five-weeks-old", "ended-an-hour-ago"]
+)
+async def test_an_invite_for_something_already_over_is_ignored(room, bots, monkeypatch, now_ny):
+    cal = OLD_OCCURRENCE if now_ny[1] == 9 else GOOGLE
+    monkeypatch.setattr(meeting_invites.time, "time", lambda: _epoch(*now_ny))
+    room.accept.return_value = True
+    assert await meeting_invites.handle_team_mail("org_1", _mail(cal), TEAM) == "meeting_ignored"
+    room.create.assert_not_awaited()
+    room.post.assert_not_awaited()
+    bots.create.assert_not_awaited()
+    room.accept.assert_not_awaited()
+    assert ("meeting.invite.stale", {}) in bots.metric
+
+
+async def test_a_meeting_in_progress_still_books_and_joins(room, bots, monkeypatch):
+    monkeypatch.setattr(meeting_invites.time, "time", lambda: _epoch(2026, 10, 3, 15, 5))
+    assert await meeting_invites.handle_team_mail("org_1", _mail(GOOGLE), TEAM) == "meeting_scheduled"
+    room.create.assert_awaited_once()
+    bots.create.assert_awaited_once()
+
+
+async def test_a_move_into_the_past_leaves_the_record_and_its_bot(room, bots, monkeypatch):
+    await meeting_invites.handle_team_mail("org_1", _mail(GOOGLE), TEAM)
+    before = dict(room.state["meta"]["meeting"])
+    monkeypatch.setattr(meeting_invites.time, "time", lambda: _epoch(2026, 10, 3, 12, 0))
+    past = GOOGLE.replace("20261003T15", "20261002T15").replace("SEQUENCE:0", "SEQUENCE:1")
+    assert await meeting_invites.handle_team_mail("org_1", _mail(past), TEAM) == "meeting_ignored"
+    assert room.state["meta"]["meeting"] == before
+    bots.reschedule.assert_not_awaited()
+    bots.leave.assert_not_awaited()
+    assert bots.create.await_count == 1
+
+
+async def test_sync_bot_books_nothing_into_a_slot_that_is_over(room, bots):
+    room.state["meta"] = {"roomId": "r", "ownerId": "org_1", "revision": 0, "meeting": {}}
+    meeting = {
+        "uid": UID,
+        "sequence": 0,
+        "status": "scheduled",
+        "startAt": BEFORE_THE_INVITES - 7200,
+        "endAt": BEFORE_THE_INVITES - 5400,
+        "meetingUrl": "https://meet.google.com/abc-defg-hij",
+    }
+    room.state["meta"]["meeting"] = dict(meeting)
+    assert await meeting_invites._sync_bot("org_1", "r", meeting, None) == meeting
+    bots.create.assert_not_awaited()
+    assert room.state["meta"]["meeting"] == meeting

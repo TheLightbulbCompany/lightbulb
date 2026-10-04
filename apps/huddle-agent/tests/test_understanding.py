@@ -244,7 +244,7 @@ async def test_without_ops_todays_handling_stands():
     backend.jev_to = "friday"
     clock.t += h_mod.THINKING_EVERY
     await say(h, "u2", "and the board too")
-    assert h._queue == [("friday", "u2", "and the board too")]
+    assert h._queue == [("friday", "u2", "and the board too", "")]
 
 
 async def test_a_driven_row_whose_turn_fails_is_failed_and_cant_reach_is_said_once():

@@ -739,3 +739,25 @@ async def test_a_meeting_line_is_routed_and_run_under_its_own_speaker_not_the_la
     await settle(h)
     turn = next(t for t in backend.turns if t["utterance"] == "list the closed PRs")
     assert turn["speakerName"] == "Priya", "its asker's, though Dan spoke last"
+
+
+async def test_a_queued_agent_of_a_two_name_line_keeps_the_askers_label_when_the_meeting_talks_on():
+    # review: the queue kept (agent, identity, text); its later summon read the latest speaker's label
+    h, room, backend, lives, clock, log = await meeting()
+    speaker(h, "p1", "Priya", True)
+    await hear(h, "Forge and Gauge, what shipped this week?")  # no `ops`: Forge opens, Gauge is queued
+    assert h._queue == [("gauge", MEET, "Forge and Gauge, what shipped this week?", "Priya")]
+    clock.t += 2
+    speaker(h, "p2", "Dan", True)
+    clock.t += 1
+    await hear(h, "we should order lunch")  # Dan's line: the latest label is his
+    answer(h, backend.turns[0]["runId"], "forge", "Huddles shipped.")
+    h.on_agent_state("forge", "speaking")
+    h.on_agent_state("forge", "listening")
+    h.on_speech(MEET, False)
+    h.on_active_speakers(set())
+    clock.t += 2
+    await h.tick()
+    await settle(h)
+    assert h._voice is not None and h._voice.agent_id == "gauge" and h._voice.label == "Priya"
+    assert "Priya asked" in str(lives[-1].seed) and "Dan asked" not in str(lives[-1].seed)

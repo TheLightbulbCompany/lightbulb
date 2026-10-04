@@ -406,8 +406,8 @@ class Huddle:
             str, str
         ] = {}  # identity -> the agent they last summoned
         self._queue: list[
-            tuple[str, str, str]
-        ] = []  # (agent_id, speaker, request) still to answer
+            tuple[str, str, str, str]
+        ] = []  # (agent_id, speaker, request, the asker's meeting label) still to answer
         # identity -> (line, at, mark, its /route answer, _route's arguments): unfinished, /route said hold
         self._held: dict[str, tuple[str, float, int, dict, dict]] = {}
         self._final_mark: dict[
@@ -967,7 +967,7 @@ class Huddle:
         if (
             len(a.agent_ids) > 1
         ):  # "Forge and Gauge" to Forge, who holds the floor: Gauge answers next
-            self._queue = [(aid, identity, text) for aid in a.agent_ids[1:]]
+            self._queue = [(aid, identity, text, self._label(identity, mark)) for aid in a.agent_ids[1:]]
             if (
                 v.live is not None
             ):  # Forge's answer is a driven run, so the queue waits for it (D §5)
@@ -1692,7 +1692,7 @@ class Huddle:
         if humans is not None and self._voice is not None:
             # A voice is open (it was, or one opened while Jev decided): the picked agents answer this person
             # when the floor settles, in order (§6, decision 2). The floor-holder itself is a re-point then.
-            self._queue += [(agent_id, identity, text) for agent_id in agent_ids]
+            self._queue += [(agent_id, identity, text, self._label(identity, mark)) for agent_id in agent_ids]
             emit_metric("live.route.queued", len(agent_ids), "Count")
             self._sync_state()
             return
@@ -1893,7 +1893,7 @@ class Huddle:
             self._released.discard(identity)  # only a release during THIS summon counts
             self._last_agent[identity] = agent_id
             if path not in ("switch", "announce"):
-                self._queue = [(aid, identity, request or "") for aid in then]
+                self._queue = [(aid, identity, request or "", label) for aid in then]
             old = self._voice
             if (
                 old is not None and old.agent_id == agent_id
@@ -2030,7 +2030,8 @@ class Huddle:
             seed.append(
                 (
                     "developer",
-                    f"{self._talker(identity, mark)} asked: {request} — already handed to your backend self; don't delegate it again"
+                    # the voice's own speaker: a queued or delivered voice has no line of its own to read a label from
+                    f"{v.label or self._talker(identity, mark)} asked: {request} — already handed to your backend self; don't delegate it again"
                     + (f".{MEET_ACK}" if self.setting == "meeting" else ""),
                 )
             )
@@ -2079,7 +2080,7 @@ class Huddle:
             # A meeting: the seed already says who said what and what to say about it. The "is talking to you"
             # note was read out there ("Meeting is talking to me right now. Go ahead.", 10-04 prod Meet).
             if (self.setting == "meeting" and told) or self._live_call(
-                v, "append_thinking", f"{self._talker(identity, mark)} is talking to you"
+                v, "append_thinking", f"{v.label or self._talker(identity, mark)} is talking to you"
             ):
                 if told or identity in self._released:
                     # the request is already running (driven): the model acknowledges it, no typed user turn
@@ -2919,8 +2920,9 @@ class Huddle:
             await self._deliver(*ready)  # engine §3.5: the oldest ready answer takes the floor
             return
         if self._queue and self._settled(v, now):
-            agent_id, speaker, request = self._queue.pop(0)
-            await self.summon(speaker, agent_id, request, path="switch")
+            agent_id, speaker, request, label = self._queue.pop(0)
+            # its asker's label, not the latest speaker's: the meeting has talked on since the line was said
+            await self.summon(speaker, agent_id, request, path="switch", label=label)
             return
         busy = (
             v.posting or self._runs.running(v.agent_id) or v.agent_state == "speaking"

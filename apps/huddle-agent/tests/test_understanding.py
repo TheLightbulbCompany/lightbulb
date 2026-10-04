@@ -1214,7 +1214,10 @@ async def test_cancel_of_a_working_row_aborts_it_and_its_answer_is_never_said_or
     assert backend.aborts == [run_id] and rows(h) == [
         ("forge", "the open PRs", "cancelled")
     ]
-    assert lives[0].calls[-2:] == [
+    assert lives[0].calls[
+        -3:
+    ] == [  # its voice was saying it: cut, as a stop cuts it (review B5-1)
+        ("interrupt",),
         ("thinking", 'Forge dropped: "the open PRs".', None),
         ("nudge",),
     ]
@@ -1271,11 +1274,13 @@ async def test_steer_of_a_working_row_goes_into_its_run(capsys):
     assert metric_count(capsys, "live.request.steered") == 1
 
 
-async def test_a_refused_steer_becomes_a_new_row_for_the_same_agent():
+async def test_a_refused_steer_becomes_a_new_row_for_the_same_agent(capsys):
     h, room, backend, lives, clock, log = await floor_open()
     await say(h, "u1", PRS)
+    capsys.readouterr()
     backend.route_extra = ops(steer=[("r1", "make that last month")])
     await say(h, "u1", "make that last month")
+    assert metric_count(capsys, "live.request.created") == 1  # review B5-8
     assert len(backend.late_steers) == 1
     assert rows(h) == [
         ("forge", "the open PRs", "working"),
@@ -1661,3 +1666,138 @@ async def test_each_row_change_is_one_transcript_line_never_read_back_as_speech(
     assert not [s for s in spoken if "[request r" in s], (
         "a row change is never read to a model as speech"
     )
+
+
+# -- Task B5 review 1 --
+
+
+async def test_a_cancel_during_an_announcement_cuts_the_voice():
+    h, room, backend, lives, clock, log = await floor_open()
+    backend.route_extra = ops(requests=[("friday", "Aden's email", "fit")])
+    await say(h, "u1", "check Aden's email")
+    friday = h._requests.items[-1]
+    answer(h, friday.run_id, "friday", "One new email.")
+    await settle(h)
+    await quiet(h, clock, 3)
+    v = h._voice
+    assert v.agent_id == "friday" and v.announce is not None and v.speaker == "u1"
+    backend.route_extra = ops(cancel=[friday.id])
+    await say(h, "u1", "never mind the email")
+    assert friday.status == "cancelled" and v.announce is None
+    assert lives[-1].calls[-3:] == [
+        ("interrupt",),
+        ("thinking", 'Friday dropped: "Aden\'s email".', None),
+        ("nudge",),
+    ]
+    await h.clear_presence()
+    assert backend.late_answers == []
+
+
+async def test_a_steer_in_flight_while_its_row_is_cancelled_does_nothing():
+    for steered in (False, True):
+        h, room, backend, lives, clock, log = await floor_open()
+        await say(h, "u1", PRS)
+        gate, turn = asyncio.Event(), backend.turn
+
+        async def held(*a, steer_only=False, **k):
+            if steer_only:
+                await gate.wait()
+            return await turn(*a, steer_only=steer_only, **k)
+
+        backend.turn, backend.steer = held, steered
+        backend.route_extra = ops(steer=[("r1", "make that last month")])
+        await h.on_final_transcript("u1", "Prasiddha", "make that last month")
+        for _ in range(10):
+            await asyncio.sleep(0)
+        backend.route_extra = ops(cancel=["r1"])
+        await h.on_final_transcript("u1", "Prasiddha", "forget the PRs")
+        for _ in range(10):
+            await asyncio.sleep(0)
+        assert rows(h) == [("forge", "the open PRs", "cancelled")]
+        gate.set()
+        await settle(h)
+        assert (
+            rows(h) == [("forge", "the open PRs", "cancelled")]
+            and len(backend.turns) == 1
+        )
+        assert not [
+            c
+            for c in lives[0].calls
+            if c[0] == "thinking" and c[1].startswith("Added to")
+        ]
+
+
+HELD = {**ops(requests=[("forge", "the open PRs", "fit")]), "hold": True}
+
+
+async def test_a_held_line_stands_when_another_person_speaks():
+    h, room, backend, lives, clock, log = await three()
+    backend.route_extra = HELD
+    await say(h, "u1", "what are the open PRs and")
+    backend.route_extra = ops()
+    await say(h, "u2", "yeah I was wondering that too")
+    await quiet(h, clock, 4)
+    assert [t["utterance"] for t in backend.turns] == ["the open PRs"]
+
+
+async def test_a_held_line_of_someone_who_left_is_not_applied(capsys):
+    h, room, backend, lives, clock, log = await three()
+    backend.route_extra = HELD
+    await say(h, "u1", "what are the open PRs and")
+    await h.on_participants({"u2": "Aden"})
+    await quiet(h, clock, 5)
+    assert backend.turns == [] and h._held == {} and "u1" not in h._final_at
+    assert metric_count(capsys, "live.hold.applied") == 0
+
+
+async def test_an_unrelated_delegation_does_not_drop_a_held_line():
+    h, room, backend, lives, clock, log = await floor_open()
+    backend.route_extra = {
+        **ops(requests=[("friday", "Aden's email", "fit")]),
+        "hold": True,
+    }
+    await say(h, "u1", "check Aden's email and")
+    backend.route_extra = ops(requests=[("pulse", "the GTM", "fit")])
+    await h.on_delegation("forge", "d1", "what about the GTM plan")
+    await settle(h)
+    await quiet(h, clock, 4)
+    assert sorted(t["utterance"] for t in backend.turns) == ["Aden's email", "the GTM"]
+
+
+async def test_a_steer_before_the_run_id_is_bound_amends_the_row():
+    h, room, backend, lives, clock, log = await three()
+    backend.session_gate = asyncio.Event()
+    backend.route_extra = ops(requests=[("forge", "the open PRs", "fit")])
+    await h.on_final_transcript("u1", "Prasiddha", PRS)
+    for _ in range(20):
+        await asyncio.sleep(0)
+    assert backend.sessions == ["forge"] and h._requests.items[0].run_id is None
+    backend.route_extra = ops(steer=[("r1", "only the web app")])
+    await h.on_final_transcript("u1", "Prasiddha", "only the web app")
+    for _ in range(20):
+        await asyncio.sleep(0)
+    backend.session_gate.set()
+    await settle(h)
+    assert len(h._requests.items) == 1 and backend.late_steers == []
+    assert [t["utterance"] for t in backend.turns] == ["the open PRs. only the web app"]
+
+
+async def test_a_superseded_lines_steer_of_an_unknown_row_makes_no_row():
+    h, room, backend, lives, clock, log = await three(
+        people={"u1": "Prasiddha", "u2": "Aden", "u3": "Leo"}
+    )
+    await say(h, "u2", "Pulse, are you there")
+    h._runs.abort(backend.turns[0]["runId"])
+    backend.turns.clear()
+    backend.route_gate = asyncio.Event()
+    backend.route_extra = ops(steer=[("r9", "the web app too")])
+    await h.on_final_transcript("u1", "Prasiddha", "the web app too")
+    await asyncio.sleep(0)
+    backend.route_gate, gate = None, backend.route_gate
+    backend.route_extra = ops()
+    await h.on_final_transcript(
+        "u3", "Leo", "I think we should look at the numbers first"
+    )
+    gate.set()
+    await settle(h)
+    assert h._requests.items == [] and backend.turns == []

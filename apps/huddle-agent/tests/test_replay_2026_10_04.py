@@ -78,12 +78,13 @@ async def test_the_2026_10_04_call(capsys):
     assert [t["utterance"] for t in backend.turns] == [MONEY, FEATURES], (
         "Pulse's and Forge's second rows wait"
     )
-    await quiet(h, clock)  # the speaker is quiet: one acknowledgement
-    await h.on_delegation("pulse", "d5", L5)
+    await h.on_delegation("pulse", "d5", L5)  # before the quiet second, as on the call
     await settle(h)
+    await quiet(h, clock)
     assert len(backend.turns) == 2, "the delegation d5 causes no extra /turns"
     acks = [n for n in notes(lives) if "Forge is on" in n]
     assert len(acks) == 1, "one acknowledgement note naming Forge"
+    assert FEATURES in acks[0] and PRS in acks[0], "it names both of Forge's rows"
 
     # Pulse's first answer, said by its open voice; then its second row starts.
     answer(h, run_for(backend, MONEY), "pulse", "The application update lands Friday.")

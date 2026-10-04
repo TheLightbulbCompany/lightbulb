@@ -275,6 +275,18 @@ def test_the_roster_in_a_packet_is_bounded():
     assert len(names) == 50 and max(map(len, names)) == 80 and len(json.dumps(names)) < 8_000
 
 
+def test_the_roster_kept_on_the_meeting_is_bounded():
+    """A long, large Meet: names are cut and the oldest leavers are dropped before anyone present."""
+    roster = {}
+    for i in range(150):
+        roster = mod._rostered(roster, "join", str(i), "x" * 300, i)
+        roster = mod._rostered(roster, "leave", str(i), "", 1000 + i)
+    for i in range(150, 300):
+        roster = mod._rostered(roster, "join", str(i), f"p{i}", 2000 + i)
+    assert len(roster) == 200 and all(len(p.get("name", "")) <= 80 for p in roster.values())
+    assert sum(1 for p in roster.values() if p["in"]) == 150 and "0" not in roster and "149" in roster
+
+
 def test_a_roster_write_refused_for_a_moved_occurrence_relays_nothing(env):
     """The bot id is re-checked inside the write: a series that advanced between the read and the
     write never takes an old bot's join into its next occurrence's roster."""

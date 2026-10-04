@@ -945,3 +945,22 @@ async def test_a_long_presentation_keeps_its_speakers_name():
     clock.t += 25 * 60
     await hear(h, "and that is the roadmap")
     assert labels(h)[-1] == "Priya"
+
+
+async def test_a_meeting_answer_with_no_request_row_is_said_at_the_next_pause_not_sent_to_the_record():
+    # review: /route gave no `ops`, so the named request ran with no row; its voice closed after ten seconds
+    # and the answer was posted as a late answer at once, never said
+    h, room, backend, lives, clock, log = await priya_asks_forge()  # no rows: the whole line is the run
+    assert h._requests.items == []
+    clock.t += h_mod.MEET_FOLLOWUP_S
+    await h.tick()
+    await settle(h)
+    assert h._voice is None
+    answer(h, backend.turns[0]["runId"], "forge", "Six PRs are open.")
+    assert backend.late_answers == [] and h._state()["lightbulb.agent.forge.status"] == "has_news"
+    clock.t += h_mod.MEET_QUIET_S
+    await h.tick()
+    await settle(h)
+    assert h._voice is not None and h._voice.path == "announce" and "Six PRs are open." in str(lives[-1].seed)
+    h.on_agent_state("forge", "speaking")
+    assert h._rowless == set() and backend.late_answers == []

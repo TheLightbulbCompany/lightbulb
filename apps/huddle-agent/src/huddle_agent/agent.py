@@ -54,7 +54,7 @@ class _Voice(Agent):
     """One agent's voice. The seed is the huddle so far, as this agent saw it (Transcript.seed)."""
 
     def __init__(
-        self, agent_id: str, persona: str, huddle: Huddle, seed: list[tuple[str, str]]
+        self, agent_id: str, persona: str, huddle: Huddle, seed: list[tuple[str, str]], muted: bool = False
     ) -> None:
         ctx = llm.ChatContext.empty()
         for role, text in seed:
@@ -62,13 +62,17 @@ class _Voice(Agent):
         super().__init__(
             instructions=persona, chat_ctx=ctx
         )  # no tools: client delegation raises on any
-        self._agent_id, self._huddle = agent_id, huddle
+        self._agent_id, self._huddle, self._muted = agent_id, huddle, muted
         self._tasks: set[asyncio.Task[None]] = set()
 
     async def on_enter(self) -> None:
         session = self.duplex_session
         assert isinstance(session, GPTLiveSession)
         session.on("delegation_created", self._on_delegation_created)
+        if self._muted:
+            # A meeting voice must never hear the Meet. Muted here, as the session starts: the mute the huddle
+            # sends comes after session.start returns, and people may be talking while the session opens.
+            session.mute_input()
 
     async def on_exit(self) -> None:
         await utils.aio.cancel_and_wait(*self._tasks)
@@ -165,6 +169,7 @@ class _Live:
         session: AgentSession,
         duplex: GPTLiveSession,
         room: rtc.Room,
+        muted: bool = False,
     ) -> None:
         self.agent_id, self.track_name = agent_id, f"agent-{agent_id}"
         self._session, self._room = session, room
@@ -174,7 +179,7 @@ class _Live:
             duplex.append_commentary,
         )
         self.append_instructions = duplex.append_instructions
-        self._duplex, self._muted = duplex, False
+        self._duplex, self._muted = duplex, muted  # muted from its start: a meeting voice (see _Voice.on_enter)
         # A reconnect is a new GPT-Live session, and a new session hears: a muted voice (a meeting's, which
         # must never hear the Meet) is muted again on each one.
         duplex.on("session_reconnected", self._on_reconnected)
@@ -222,7 +227,8 @@ def room_options(agent_id: str, speaker: str) -> room_io.RoomOptions:
 async def _start(
     room, huddle: Huddle, vad, agent_id, persona, voice, speaker, seed
 ) -> _Live:
-    agent = _Voice(agent_id, persona, huddle, seed)
+    muted = huddle.setting == "meeting"
+    agent = _Voice(agent_id, persona, huddle, seed, muted=muted)
     session = AgentSession(
         llm=_TrimmedGPTLiveModel(voice=voice, delegation="client"), vad=vad
     )
@@ -257,7 +263,7 @@ async def _start(
             await session.aclose()
             await _unpublish(room, f"agent-{agent_id}")
         raise
-    live = _Live(agent_id, session, agent.duplex_session, room)  # type: ignore[arg-type]
+    live = _Live(agent_id, session, agent.duplex_session, room, muted=muted)  # type: ignore[arg-type]
     # An unrecoverable realtime error closes the session under us: end the exchange then, not on the next call.
     session.on("close", lambda _ev: huddle.on_live_closed(live))
     return live

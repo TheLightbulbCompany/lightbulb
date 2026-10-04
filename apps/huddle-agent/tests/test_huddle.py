@@ -1823,7 +1823,7 @@ def _fake_live_stack(monkeypatch, refuse=()):
             self.closed = True
 
     class FakeVoice:
-        def __init__(self, agent_id, persona, huddle, seed):
+        def __init__(self, agent_id, persona, huddle, seed, muted=False):
             self.duplex_session = types_ns(
                 append_thinking=None,
                 append_commentary=None,

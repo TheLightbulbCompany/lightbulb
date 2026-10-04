@@ -3071,8 +3071,8 @@ async def address(latest: dict, members: list[dict], *, history: Any = (), live:
             # Friday, what's the plan?" still calls the teammate the second time; "the Friday release
             # slipped, we ship by Friday" does not.
             label = label if _opens_clause(text, c) else "not_a_name"
-        if label == "addressed" and _name_hits(text, c) and not _named_at(text, c):
-            label = "mentioned"  # only ever a possessive ("grab Friday's notes"): talked about, not spoken to
+        if label in ("addressed", "relayed") and _name_hits(text, c) and not _named_at(text, c):
+            label = "mentioned"  # only ever a possessive ("grab Friday's notes"): talked about, not asked
         if label not in ("addressed", "relayed"):
             continue
         # A name several agents share addresses none of them (Jev picks among the listeners); a unique

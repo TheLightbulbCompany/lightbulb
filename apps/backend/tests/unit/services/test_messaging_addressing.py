@@ -504,3 +504,6 @@ async def test_a_name_that_is_only_ever_a_possessive_is_talked_about_not_spoken_
     assert out["tasks"] == {"frg": "grab Friday's standup notes", "pul": "update the launch deck"}
     out, _ = await _address("Is Finance's forecast ready? Friday?", MEMBERS, _answers(["addressed", "addressed"]))
     assert out["agents"] == ["fri"]  # chat too
+    relayed = _answers(["addressed", "relayed", "addressed"]) | _parts("only_forge", "only_pulse")
+    out, _ = await _address(text, CREW, relayed, live=True)
+    assert out["agents"] == ["frg", "pul"]  # the bench's poss-02: Jev called Friday relayed

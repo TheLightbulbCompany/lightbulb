@@ -58,7 +58,12 @@ export function LocalSessionPanel({ session, ownerName, own, client, revision, o
   // Not at that Mac: watch the same terminal live, read-only, while it runs (rulings §4, §6).
   const watchRemote = local === "none" && session.status !== "ended" && session.status !== "offline" && !!onEvent && !!client.watchLocalSession;
   const [screenLive, setScreenLive] = useState(false);
+  // False once the terminal is read-only for this viewer (the Mac refused input): the message box is the way to send then.
+  const [termCanType, setTermCanType] = useState(true);
   const liveTerminal = watchRemote && screenLive;
+  // Not running: this is the structured transcript, not a terminal. The Mac's own name is not in the public record, so the owner's name stands for it.
+  const transcriptLabel = local !== "none" || (session.status !== "ended" && session.status !== "offline") ? null
+    : session.status === "ended" ? "Transcript · Ended" : `Transcript · ${own ? "your" : `${ownerName}'s`} Mac is offline`;
   const id = useId();
   const people = useMemo(() => [{ kind: "human" as const, id: session.humanUserId, displayName: ownerName }, ...participants], [session.humanUserId, ownerName, participants]);
   const agentName = useCallback((agentId: string) => people.find(p => p.id === agentId)?.displayName ?? "Agent", [people]);
@@ -86,6 +91,8 @@ export function LocalSessionPanel({ session, ownerName, own, client, revision, o
     capture("session_opened", { own, provider: session.provider, workspace_id: orgId, session_id: session.sessionId, origin: "web" });
   }, [session.sessionId, own, session.provider, orgId]);
   const control = canControlSession(session, own, userId);
+  // A live terminal is the only input: no message box under it. A viewer who cannot type keeps the Ask to join line.
+  const terminalLive = local === "local" || liveTerminal;
   // "<Name> is typing": the owner sees who is typing into the live terminal for ~6 s after each event.
   const [typers, setTypers] = useState<Record<string, number>>({});
   useEffect(() => {
@@ -183,8 +190,8 @@ export function LocalSessionPanel({ session, ownerName, own, client, revision, o
     <div className="session-status">
       <p className="session-status-line">
         <span className={`native-session-dot native-session-dot-${session.status}`} aria-hidden="true" />
-        <span>{sessionStatus[session.status]}</span>
-        <span>{own ? "You" : ownerName}</span>
+        <span>{transcriptLabel ?? sessionStatus[session.status]}</span>
+        {!(transcriptLabel && session.status === "offline") && <span>{own ? "You" : ownerName}</span>}
         {where && <span className="session-fact-value room-wrap">{where}</span>}
         {session.pickedUpFrom && <span>picked up from {personName(session.pickedUpFrom.humanUserId)}</span>}
         {changes.length > 0 && <button type="button" className="session-status-link" onClick={() => show("changes")}>
@@ -207,7 +214,7 @@ export function LocalSessionPanel({ session, ownerName, own, client, revision, o
     {waitingOn !== null && !session.pendingApproval && <div role="status" className="local-session-waiting">
       <p className="font-semibold">{own ? "Waiting on you in your terminal" : `Waiting on ${ownerName} in their terminal`}</p>
       {waitingOn && <p className="local-session-waiting-reason">{waitingOn}</p>}
-      {liveTerminal && control && session.shared !== false && client.sendLocalSessionInput
+      {liveTerminal && termCanType && control && session.shared !== false && client.sendLocalSessionInput
         ? <p className="text-sm">Answer it in the live terminal below.</p>
         : own ? <p className="text-sm">Answer it in your terminal; this prompt can&apos;t be answered from here.</p> : messageOwner}
     </div>}
@@ -215,7 +222,7 @@ export function LocalSessionPanel({ session, ownerName, own, client, revision, o
     {local !== "none"
       ? <div ref={slot} className="local-session-terminal" role="region" aria-label="Session terminal" />
       : <>
-      {watchRemote && <SessionTerminalView session={session} onEvent={onEvent!} watch={client.watchLocalSession!} onLive={setScreenLive}
+      {watchRemote && <SessionTerminalView session={session} onEvent={onEvent!} watch={client.watchLocalSession!} onLive={setScreenLive} onCanType={setTermCanType}
         admitted={control && session.shared !== false}
         input={client.sendLocalSessionInput ? (bytes, epoch) => client.sendLocalSessionInput!(session.sessionId, toBase64(bytes), epoch) : undefined} />}
       {liveTerminal ? <div className="local-session-feedback">{transcript}</div> : <div className="local-session-scroll">
@@ -231,7 +238,7 @@ export function LocalSessionPanel({ session, ownerName, own, client, revision, o
     </div>}
     </>}
     <SubagentPanel provider={session.provider} events={history.events} status={session.status} onPick={id => revealSubagent(content.current, id)} />
-    {session.status === "ended" ? <SessionResume flow={resume} own={own} ownerName={ownerName} /> : control ? <form className="room-composer local-session-composer native-session-composer" onSubmit={event => { event.preventDefault(); atBottomRef.current = true; command.send(text); }}>
+    {session.status === "ended" ? <SessionResume flow={resume} own={own} ownerName={ownerName} /> : terminalLive && control && (local === "local" || termCanType) ? null : control ? <form className="room-composer local-session-composer native-session-composer" onSubmit={event => { event.preventDefault(); atBottomRef.current = true; command.send(text); }}>
       <label htmlFor={id} className="sr-only">Send to {target}</label>
       <div className="native-session-prompt-row"><span className="native-session-glyph" aria-hidden="true">{glyph}</span>
         <textarea id={id} className="room-input" rows={2} value={text} disabled={!command.canSend || command.locked} onChange={event => setText(event.target.value)}
@@ -257,7 +264,7 @@ export function LocalSessionPanel({ session, ownerName, own, client, revision, o
       </div>}
     </form> : <div className="room-composer local-session-readonly">
       <div>
-        <p className="text-sm text-muted-foreground">{join.state === "declined" ? `${ownerName} declined your request.` : `Only ${ownerName} can send to this session.`}</p>
+        <p className="text-sm text-muted-foreground">{terminalLive && "Watching · "}{join.state === "declined" ? `${ownerName} declined your request.` : `Only ${ownerName} can send to this session.`}</p>
         <div className="local-session-actions">
           {join.supported && <Button type="button" variant="outline" size="sm" disabled={join.saving || join.state === "pending"}
             onClick={() => void join.ask()}>{join.state === "pending" ? "Requested" : "Ask to join"}</Button>}

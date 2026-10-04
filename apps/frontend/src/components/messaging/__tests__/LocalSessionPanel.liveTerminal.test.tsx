@@ -131,3 +131,32 @@ it("reads the origin's history for a moved session that has had no turn of its o
   // The newest page of the ORIGIN's 120 events, not the moved session's empty history.
   await waitFor(() => expect(listLocalSessionEvents).toHaveBeenCalledWith("origin", 70, 50));
 });
+
+it("moves a moved session's transcript to its own events on the first hint after its first turn", async () => {
+  const listLocalSessionEvents = vi.fn(async () => ({ events: [], nextAfterSeq: null }));
+  const moved = { ...session, status: "offline" as const, forkedFrom: "origin" };
+  // The directory row still says 0 events (it trails transcript hints); the session itself has 40.
+  const getLocalSession = vi.fn(async (id: string) => id === "origin" ? { ...session, sessionId: "origin", latestEventSeq: 120 } : { ...moved, latestEventSeq: 40 });
+  const props = { session: moved, ownerName: "Alice", own: true, client: { ...client, listLocalSessionEvents, getLocalSession } as never, onAccessLost: () => {} };
+  const view = render(<LocalSessionPanel {...props} revision={0} />);
+  await waitFor(() => expect(listLocalSessionEvents).toHaveBeenCalledWith("origin", 70, 50));
+  view.rerender(<LocalSessionPanel {...props} revision={1} />);
+  await waitFor(() => expect(listLocalSessionEvents).toHaveBeenCalledWith("s", 0, 50));
+});
+
+it("retries a moved session's origin on the next hint after a failed request", async () => {
+  const listLocalSessionEvents = vi.fn(async () => ({ events: [], nextAfterSeq: null }));
+  const moved = { ...session, status: "offline" as const, forkedFrom: "origin" };
+  let failing = true;
+  const getLocalSession = vi.fn(async (id: string) => {
+    if (id !== "origin") return moved;
+    if (failing) throw new Error("network");
+    return { ...session, sessionId: "origin", latestEventSeq: 120 };
+  });
+  const props = { session: moved, ownerName: "Alice", own: true, client: { ...client, listLocalSessionEvents, getLocalSession } as never, onAccessLost: () => {} };
+  const view = render(<LocalSessionPanel {...props} revision={0} />);
+  await waitFor(() => expect(getLocalSession).toHaveBeenCalledWith("origin"));
+  failing = false;
+  view.rerender(<LocalSessionPanel {...props} revision={1} />);
+  await waitFor(() => expect(listLocalSessionEvents).toHaveBeenCalledWith("origin", 70, 50));
+});

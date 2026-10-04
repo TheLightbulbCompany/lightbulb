@@ -48,7 +48,7 @@ export function LocalSessionPanel({ session, ownerName, own, client, revision, o
   // transcript hints (1/s per session, no trailing edge), so hints alone can
   // leave an open transcript behind during sustained output. Idle sessions
   // stay on hints plus the sessions safety poll. Quiet: no spinner, no focus steal.
-  const source = useHistorySource(client, session);
+  const source = useHistorySource(client, session, revision);
   const history = useLocalSessionHistory(client, source.sessionId, source.latestEventSeq, revision, onAccessLost, { pollMs: busy ? 5000 : 0 });
   const [text, setText] = useState("");
   const [details, setDetails] = useState<SessionDetailsTab | null>(null);

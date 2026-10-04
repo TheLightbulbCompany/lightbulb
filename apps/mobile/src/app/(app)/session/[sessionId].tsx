@@ -264,7 +264,7 @@ function SessionBody({
   const insets = useSafeAreaInsets();
   const busy = session.status === "busy";
   const ended = session.status === "ended";
-  const source = useHistorySource(client, session);
+  const source = useHistorySource(client, session, revision);
   const history = useLocalSessionHistory(client, source.sessionId, source.latestEventSeq, revision, onAccessLost, { pollMs });
   const [text, setText] = useState("");
   const command = useSessionCommand(client, session, { uuid: randomUUID, onAccessLost, onSent: () => setText(""), agentName: name, allowInterrupt: own || !!session.teamControl, allowOffline: true });

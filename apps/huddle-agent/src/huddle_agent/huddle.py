@@ -1616,8 +1616,10 @@ class Huddle:
         return back in self._people and self._repoint(v, back)
 
     def _floor_voice(self, agent_id: str | None) -> _Voice | None:
+        """The open voice of `agent_id`. One whose session died (`dropping`, its close on the way) says nothing:
+        an answer that lands meanwhile is news, not "spoken" into a dead session."""
         v = self._voice
-        return v if v and v.live is not None and v.agent_id == agent_id else None
+        return v if v and v.live is not None and not v.dropping and v.agent_id == agent_id else None
 
     def on_speaker_activity(self, agent_id: str) -> None:
         """The live session heard the speaker (it hears no one else)."""
@@ -2843,12 +2845,14 @@ class Huddle:
     def _post_cut(self, now: float) -> None:
         """Cut announcements (§4.8), once the words that cut them were handled. Only speech cuts one, so those
         words are coming: a final lands seconds after the speech ends ("never mind the calendar" was posted over
-        1 s after it was said, 10-04 prod test). No words after CUT_WAIT_S: posted all the same."""
+        1 s after it was said, 10-04 prod test). No words CUT_WAIT_S after they stopped talking: posted all the same."""
         for agent_id, (items, who, at) in list(self._cut_off.items()):
+            if who in self._speaking:
+                # still talking: a call-off may be in the words to come, and their final lands after the speech ends
+                self._cut_off[agent_id] = (items, who, now)
+                continue
             heard = self._final_at.get(who, -math.inf)
             handled = heard >= at and now - heard >= CUT_HANDLED_S  # its /route answered and was applied
-            if who in self._speaking:
-                continue  # still talking: a call-off may be in the words to come
             if (handled or now - at >= CUT_WAIT_S) and not self._understanding.get(who):
                 del self._cut_off[agent_id]
                 for n in items:

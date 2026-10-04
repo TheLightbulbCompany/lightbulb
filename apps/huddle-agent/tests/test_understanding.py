@@ -2588,4 +2588,54 @@ async def test_a_cut_answer_is_never_posted_while_its_cutter_still_talks():
     assert backend.late_answers == [], "a call-off may be in the words to come"
     h.on_speech("u2", False)
     await quiet(h, clock, 1)
+    assert backend.late_answers == [], "their final lands after the speech ends: the wait starts there"
+    await quiet(h, clock, h_mod.CUT_WAIT_S)
     assert [a[3] for a in backend.late_answers] == ["Three PRs are open"]
+
+
+async def test_a_long_sentence_that_ends_in_a_call_off_never_posts_the_cut_answer():
+    h, room, backend, lives, clock, run = await announced()
+    h.on_agent_state("forge", "speaking")
+    talks(h, "u2", "Aden")
+    await quiet(h, clock, h_mod.CUT_WAIT_S + 5)  # talks for longer than the wait
+    h.on_speech("u2", False)
+    await quiet(h, clock, 1)  # the final has not landed yet
+    await say(h, "u2", "Forge, never mind")
+    await quiet(h, clock, h_mod.CUT_WAIT_S + 5)
+    await h.clear_presence()
+    assert backend.late_answers == []
+
+
+async def test_an_answer_held_for_a_voice_that_dies_as_it_opens_is_news_not_spoken_into_it():
+    # review: the opening note raised (dead session), and the held answer was replayed into that session
+    h, room, backend, lives, clock, log = await three()
+    backend.route_extra = ops(
+        requests=[("forge", "what PRs are open right now", "name")]
+    )
+    opened = h._live_factory
+
+    async def dead_on_arrival(**kw):
+        live = await opened(**kw)
+
+        def dead(*a, **k):
+            raise RuntimeError("AgentSession isn't running")
+
+        live.append_thinking = dead
+        return live
+
+    h._live_factory = dead_on_arrival
+    h.gate["live"] = asyncio.Event()
+    await h.on_final_transcript(
+        "u1", "Prasiddha", "Forge, what PRs are open right now?"
+    )
+    for _ in range(30):
+        await asyncio.sleep(0)
+    answer(h, backend.turns[0]["runId"], "forge", "Six PRs are open.")
+    h.gate["live"].set()
+    await settle(h)
+    assert not any(c[0] == "commentary" for c in lives[0].calls)
+    assert held(h) == [] and rows(h) == [
+        ("forge", "what PRs are open right now", "ready")
+    ]
+    await h.clear_presence()
+    assert [a[3] for a in backend.late_answers] == ["Six PRs are open."]

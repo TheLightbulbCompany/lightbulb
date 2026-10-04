@@ -142,6 +142,23 @@ def test_call_ended_closes_the_room_once(env):
     env["notes"].assert_called_once_with(ROOM)
 
 
+def test_the_end_time_is_written_once(env):
+    env["meta"]["meeting"].update(status="in_call", inCallAt=1)
+    with patch.object(mod.time, "time", return_value=1790990000.0):
+        _post(env["client"], _status("call_ended"))
+    with patch.object(mod.time, "time", return_value=1790990099.0):
+        _post(env["client"], _status("done"))
+    assert env["meta"]["meeting"]["endedAt"] == 1790990000
+
+
+def test_a_fatal_and_an_idle_leave_record_the_end_time_too(env):
+    _post(env["client"], _status("fatal", sub_code="meeting_not_found"))
+    assert env["meta"]["meeting"]["endedAt"]
+    env["meta"]["meeting"] = {"status": "in_call", "inCallAt": 1, "recallBotId": "bot-1"}
+    assert _leave(env["client"]).status_code == 200
+    assert env["meta"]["meeting"]["status"] == "ended" and env["meta"]["meeting"]["endedAt"]
+
+
 def test_fatal_knocking_disabled_posts_a_plain_line(env):
     _post(env["client"], _status("fatal", sub_code="google_meet_knocking_disabled"))
     meeting = env["meta"]["meeting"]

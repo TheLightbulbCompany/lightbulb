@@ -170,7 +170,9 @@ async def _on_status(bot_id: str, room_id: str, code: str, sub_code: str, nonce:
             voice_calls.prewake_owner(owner_id, team=await voice_calls.room_agents(room_id))
             await _publish(room_id, "in_call")
         elif target == "ended":
-            await meeting_invites._patch_meeting(room_id, {"status": "ended", "lastBotStatus": code})
+            # endedAt is written once: a terminal status returns above on every later webhook.
+            fields = {"status": "ended", "lastBotStatus": code, "endedAt": int(time.time())}
+            await meeting_invites._patch_meeting(room_id, fields)
             await _finish(room_id, "ended", sub_code, notes=True, in_call_at=meeting.get("inCallAt"))
         else:
             title = meeting.get("title") or "Meeting"
@@ -180,7 +182,7 @@ async def _on_status(bot_id: str, room_id: str, code: str, sub_code: str, nonce:
                 else f"The agents couldn't join **{title}** ({sub_code or 'unknown'})."
             )
             await meeting_invites._post_line(owner_id, room_id, f"meeting:{bot_id}:fatal", text)
-            fields = {"status": "bot_failed", "botError": sub_code, "lastBotStatus": code}
+            fields = {"status": "bot_failed", "botError": sub_code, "lastBotStatus": code, "endedAt": int(time.time())}
             await meeting_invites._patch_meeting(room_id, fields)
             # A bot that dies mid-call still leaves a conversation worth its notes.
             await _finish(
@@ -286,7 +288,8 @@ async def leave(room_id: str, body: RoomBody):
             if not meeting.get("recallBotId") or meeting.get("status") in _TERMINAL:
                 return {"ok": True}
             # Ended BEFORE the leave, so the call_ended the leave provokes finds the step taken.
-            await meeting_invites._patch_meeting(room_id, {"status": "ended", "lastBotStatus": "idle_leave"})
+            fields = {"status": "ended", "lastBotStatus": "idle_leave", "endedAt": int(time.time())}
+            await meeting_invites._patch_meeting(room_id, fields)
     except meeting_invites.MeetingBusy:
         raise _problem(503, "meeting_busy") from None
     for attempt in range(1, _LEAVE_TRIES + 1):

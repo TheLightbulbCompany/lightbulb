@@ -404,6 +404,8 @@ async def test_a_member_reads_meetings_and_mail_both_ways(async_client_org_membe
         "transcripts": [{"start_at": 200}, {"start_at": 100}],
         "notes_room_id": "room-now",
         "reason": None,
+        "ended_at": None,
+        "notes": None,
     }
     assert body["meetings"][0]["repeats"] is False and body["meetings"][0]["transcripts"] == []
     assert body["meetings"][0]["invited_by"] is None
@@ -699,6 +701,22 @@ async def test_a_sent_mail_shows_its_text_cut_to_the_preview(async_client_org_me
 def test_an_ended_meeting_the_agents_never_entered_shows_as_not_admitted(meeting, status, reason, notes):
     view = agent_mail._meeting_view(M1, meeting, "general")
     assert (view["status"], view["reason"], view["notes_room_id"]) == (status, reason, notes)
+
+
+@pytest.mark.parametrize(
+    ("meeting", "want"),
+    [
+        ({"status": "in_call", "inCallAt": 1}, None),  # not over yet
+        ({"status": "ended", "inCallAt": 1, "endedAt": 9}, "pending"),
+        ({"status": "bot_failed", "inCallAt": 1, "endedAt": 9}, "pending"),  # died mid-call: notes still owed
+        ({"status": "ended", "inCallAt": 1, "endedAt": 9, "notesRunId": "run-1"}, "posted"),
+        ({"status": "ended", "inCallAt": 1, "endedAt": 9, "notesSkipped": "no_agent"}, "skipped"),
+        ({"status": "ended", "endedAt": 9}, None),  # never admitted: no call, no notes
+    ],
+)
+def test_the_view_says_whether_notes_exist_and_when_the_call_ended(meeting, want):
+    view = agent_mail._meeting_view(M1, meeting)
+    assert view["notes"] == want and view["ended_at"] == meeting.get("endedAt")
 
 
 def test_the_junk_filter_still_reads_the_stored_status():

@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { Room, RoomEvent, Track } from "livekit-client";
-import { agentLiveStatus, floorHolder, orderAgentSlots } from "@lightbulb/shared";
+import { agentHand, agentLiveStatus, agentStateLine, agentWorking, floorHolder, orderAgentSlots } from "@lightbulb/shared";
 import { Identity } from "@/components/teams/shared/components/Identity";
 import { agentTint } from "@/lib/agentTint";
 
@@ -11,6 +11,7 @@ const API = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000/api/v1";
 const BACKOFF_MS = [1000, 2000, 4000, 8000];
 const MAX_ATTEMPTS = 10;
 const STATUS_RE = /^lightbulb\.agent\.(.+)\.status$/;
+const MAX_CHIPS = 6; // the tile is video in a small Meet cell: past this the type would shrink
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 type Agent = { id: string; name: string; avatarUrl?: string | null };
@@ -88,8 +89,14 @@ export default function MeetBotPage() {
   const ordered = orderAgentSlots(ids, attrs);
   const floor = floorHolder(attrs);
   const speaker = ordered.find((id) => agentLiveStatus(attrs, id) === "speaking" && (!floor || floor === id)) ?? ordered.find((id) => agentLiveStatus(attrs, id) === "speaking");
-  const thinking = ordered.find((id) => agentLiveStatus(attrs, id) === "working");
-  const others = ordered.filter((id) => id !== speaker);
+  const chips = speaker ? [speaker, ...ordered.filter((id) => id !== speaker)] : ordered;
+  // Only these states say more than the name; nobody can tap in a Meet, so the words are the meeting ones.
+  const chipLine = (id: string) => {
+    const status = agentLiveStatus(attrs, id);
+    return status === "speaking" || status === "working" || status === "has_news"
+      ? agentStateLine(status, { working: agentWorking(attrs, id), hand: agentHand(attrs, id), meeting: true })
+      : "";
+  };
 
   return (
     <div data-chat-theme="dark" className="relative flex flex-col items-center justify-center overflow-hidden"
@@ -98,17 +105,25 @@ export default function MeetBotPage() {
       <span className="absolute left-6 top-4 text-sm" style={{ color: "var(--fg-mute)" }}>Lightbulb</span>
       {notice ? (
         <p className="text-4xl" role="status">{notice}</p>
-      ) : speaker ? (
-        <div className="flex flex-col items-center gap-6">
-          <Identity name={nameOf(speaker)} avatarUrl={agentNames[speaker]?.avatarUrl} avatarOnly tint={agentTint(speaker)} className="[&>span]:!size-48 [&>span]:!text-6xl" />
-          <p className="text-5xl font-semibold">{nameOf(speaker)} <span style={{ color: "var(--fg-soft)" }} className="font-normal">is speaking</span></p>
+      ) : chips.length > 0 ? (
+        <div className="flex flex-col items-center gap-8 px-16">
+          <ul className="flex flex-wrap items-center justify-center gap-5">
+            {chips.slice(0, MAX_CHIPS).map((id) => {
+              const line = chipLine(id);
+              const live = id === speaker;
+              return (
+                <li key={id} className={`flex items-center gap-4 rounded-full px-6 py-3 ${live ? "text-5xl font-semibold" : "text-3xl"}`}
+                  style={{ background: "var(--plane-raised)", border: `3px solid ${live ? "var(--live)" : "var(--plane-edge)"}`, color: "var(--fg)" }}>
+                  <Identity name={nameOf(id)} avatarUrl={agentNames[id]?.avatarUrl} avatarOnly tint={agentTint(id)} className={live ? "[&>span]:!size-20 [&>span]:!text-3xl" : "[&>span]:!size-12 [&>span]:!text-xl"} />
+                  <span>{nameOf(id)}{line && <span style={{ color: "var(--fg-soft)" }} className="font-normal">{" · "}<span>{line}</span></span>}</span>
+                </li>
+              );
+            })}
+            {chips.length > MAX_CHIPS && <li className="text-3xl" style={{ color: "var(--fg-soft)" }}>+{chips.length - MAX_CHIPS} more</li>}
+          </ul>
+          <p className="text-2xl" style={{ color: "var(--fg-soft)" }}>Say an agent&apos;s name to ask</p>
         </div>
-      ) : thinking ? (
-        <p className="text-2xl" style={{ color: "var(--fg-soft)" }}>{nameOf(thinking)} is thinking…</p>
       ) : null}
-      {!notice && others.length > 0 && (
-        <p className="absolute bottom-6 text-xl" style={{ color: "var(--fg-mute)" }}>Listening · {others.map(nameOf).join(" · ")}</p>
-      )}
     </div>
   );
 }

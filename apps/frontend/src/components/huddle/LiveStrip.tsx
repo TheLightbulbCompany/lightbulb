@@ -14,7 +14,7 @@ import { agentTint } from "@/lib/agentTint";
 import { navigateShell } from "@/lib/shellNav";
 import { useIsWorkspaceAdmin } from "@/hooks/useIsWorkspaceAdmin";
 import {
-  LISTENING_TO, agentA11yName, agentLine, agentLiveStatus, agentNaming, agentWorking, floorChange, floorHolder, liveAgents, liveErrorText,
+  LISTENING_TO, agentA11yName, agentHand, agentLine, agentLiveStatus, agentNaming, agentWorking, floorChange, floorHolder, liveAgents, liveErrorText,
   AGENTS_JOINING, liveHappening, liveHint, nameCollides, orderAgentSlots, queuePosition, voiceFailedText, wakingText, type RoomMember,
 } from "@lightbulb/shared";
 import { CEO_IDENTITY, useHuddle } from "./HuddleProvider";
@@ -80,7 +80,7 @@ function AgentGroup({ tiles, attrs, tracks, slots, onTalk, ready, edge = NO_EDGE
       {ordered.slice(0, slots).map((id) => {
         const name = byId.get(id)!.name;
         const status = agentLiveStatus(attrs, id);
-        const extras = { working: agentWorking(attrs, id), listeningTo: attrs?.[LISTENING_TO], queuePos: queuePosition(attrs, id), naming: agentNaming(attrs, id) };
+        const extras = { working: agentWorking(attrs, id), hand: agentHand(attrs, id), listeningTo: attrs?.[LISTENING_TO], queuePos: queuePosition(attrs, id), naming: agentNaming(attrs, id) };
         const track = reduced ? undefined : tracks.find((t) => t.publication?.trackName === `agent-${id}`);
         const pos = extras.queuePos;
         return (
@@ -135,7 +135,7 @@ function AgentRows({ tiles, attrs, onTalk, hint, edge = NO_EDGE }: {
         <ul className="live-agent-rows" aria-label="Agents in Live">
           {orderAgentSlots(tiles.map((t) => t.id), attrs).map((id) => {
             const status = agentLiveStatus(attrs, id);
-            const extras = { working: agentWorking(attrs, id), listeningTo: attrs?.[LISTENING_TO], queuePos: queuePosition(attrs, id), naming: agentNaming(attrs, id) };
+            const extras = { working: agentWorking(attrs, id), hand: agentHand(attrs, id), listeningTo: attrs?.[LISTENING_TO], queuePos: queuePosition(attrs, id), naming: agentNaming(attrs, id) };
             return (
               <li key={id}>
                 <button type="button" className="live-row live-agent-row" disabled={!attrs} data-status={status} aria-label={agentA11yName(names.get(id)!, status, extras)}

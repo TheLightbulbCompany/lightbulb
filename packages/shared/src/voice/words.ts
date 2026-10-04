@@ -57,6 +57,7 @@ export const LISTENING_TO = "lightbulb.listening_to";
 export const statusKey = (id: string) => `lightbulb.agent.${id}.status`;
 export const workingKey = (id: string) => `lightbulb.agent.${id}.working`;
 export const namingKey = (id: string) => `lightbulb.agent.${id}.naming`;
+export const handKey = (id: string) => `lightbulb.agent.${id}.hand`;
 
 const STATUSES = ["joining", "speaking", "listening", "working", "has_news", "idle"] as const;
 export type AgentLiveStatus = (typeof STATUSES)[number];
@@ -70,6 +71,8 @@ export function agentLiveStatus(attrs: Attrs, id: string): AgentLiveStatus {
 /** The agent holding the floor (C4 `speaking_agent`), or null. */
 export const floorHolder = (attrs: Attrs): string | null => attr(attrs, SPEAKING_AGENT) || null;
 export const agentWorking = (attrs: Attrs, id: string) => (attr(attrs, workingKey(id)) ?? "").trim().slice(0, 60);
+/** What a raised hand is about (set with `has_news`); "" while the worker does not publish it. */
+export const agentHand = (attrs: Attrs, id: string) => (attr(attrs, handKey(id)) ?? "").trim().slice(0, 60);
 export const agentNaming = (attrs: Attrs, id: string) => attr(attrs, namingKey(id)) === "1";
 
 /** The pending multi-name request's agents in answer order, the floor-holder first. */
@@ -99,9 +102,9 @@ export function orderAgentSlots(ids: readonly string[], attrs: Attrs): string[] 
   return [...ids].sort((a, b) => rank(a) - rank(b));
 }
 
-export type AgentLineExtras = { working?: string; listeningTo?: string; queuePos?: number | null; naming?: boolean };
+export type AgentLineExtras = { working?: string; listeningTo?: string; queuePos?: number | null; naming?: boolean; hand?: string; meeting?: boolean };
 
-/** The tile's state line. */
+/** The tile's state line. `meeting` words it for a Meet tile, where nobody can tap. */
 export function agentStateLine(status: AgentLiveStatus, x: AgentLineExtras = {}): string {
   if (x.naming) return "Asking for a name";
   switch (status) {
@@ -109,7 +112,9 @@ export function agentStateLine(status: AgentLiveStatus, x: AgentLineExtras = {})
     case "joining": return "Joining…";
     case "listening": return x.listeningTo ? `Listening to ${x.listeningTo}` : "Listening";
     case "working": return x.working ? `Working: ${x.working}` : "Working";
-    case "has_news": return "Has something — tap to hear";
+    case "has_news":
+      if (x.meeting) return `Hand up: ${x.hand || "has something for you"}`;
+      return x.hand ? `Has ${x.hand} — tap to hear` : "Has something — tap to hear";
     default: return x.queuePos != null ? "Next" : "";
   }
 }
@@ -119,7 +124,7 @@ const lowerFirst = (s: string) => s.charAt(0).toLowerCase() + s.slice(1);
 /** One line naming an agent and its state ("Gauge — speaking", "Gauge is joining…"). */
 export function agentLine(name: string, status: AgentLiveStatus, x: AgentLineExtras = {}): string {
   if (!x.naming && status === "joining") return `${name} is joining…`;
-  if (!x.naming && status === "has_news") return `${name} has something — tap to hear it`;
+  if (!x.naming && status === "has_news" && !x.meeting) return `${name} has ${x.hand || "something"} — tap to hear it`;
   const line = agentStateLine(status, x);
   return line ? `${name} — ${lowerFirst(line)}` : name;
 }

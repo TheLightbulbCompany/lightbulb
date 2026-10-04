@@ -13,6 +13,7 @@ inbox row uses it. A row may also carry a ``public_address`` (set only by
 and SHOWS; mail to it is forwarded to the routing address outside SES.
 """
 
+import asyncio
 import logging
 import re
 from email.utils import formataddr
@@ -67,14 +68,21 @@ async def public_for(address: str) -> str:
     return row.get("public_address") or address
 
 
+_MAIL_CHANGED_TIMEOUT_S = 3.0
+
+
 async def mail_changed(owner_id: str) -> None:
     """Tell the workspace's open Mail panels to re-read: a mail was stored or a meeting changed.
-    Best-effort and never raises -- the panel also re-reads on focus."""
+    Best-effort, bounded, and never raises -- callers sit on SES inbound and under the meeting
+    lease, and the panel also re-reads on focus."""
     from core.services.live_events import publish_owner_users
     from core.services.messaging import make_live_event
 
     try:
-        await publish_owner_users(owner_id, make_live_event("runtime.resource.invalidated", {"resource": "mail"}))
+        await asyncio.wait_for(
+            publish_owner_users(owner_id, make_live_event("runtime.resource.invalidated", {"resource": "mail"})),
+            _MAIL_CHANGED_TIMEOUT_S,
+        )
     except Exception:  # noqa: BLE001
         logger.warning("agent_email: mail live event failed owner=%s", owner_id, exc_info=True)
 

@@ -812,6 +812,7 @@ def test_retry_with_same_message_id_reuses_stored_row(client, monkeypatch):
     assert resp.json()["status"] == "delivered"
     ses_inbound.put_message.assert_not_awaited()
     assert f"Reply-Key: {RECIPIENT}/2026#m" in deliver_mock.call_args.kwargs["message"]
+    ses_inbound.agent_email.mail_changed.assert_not_awaited()  # the first attempt already nudged
 
 
 def test_unexpected_seam_error_returns_503_for_retry(client, monkeypatch):

@@ -216,3 +216,14 @@ async def test_mail_changed_tells_the_workspace_people_to_reread_mail():
 async def test_mail_changed_swallows_a_failed_publish():
     with patch("core.services.live_events.publish_owner_users", AsyncMock(side_effect=RuntimeError("appsync"))):
         await real_mail_changed("org_1")  # never raises
+
+
+async def test_mail_changed_gives_up_on_a_stalled_publish(monkeypatch):
+    import asyncio
+
+    async def stall(*_):
+        await asyncio.sleep(60)
+
+    monkeypatch.setattr(ae, "_MAIL_CHANGED_TIMEOUT_S", 0.01)
+    with patch("core.services.live_events.publish_owner_users", stall):
+        await asyncio.wait_for(real_mail_changed("org_1"), 1)  # bounded, never raises

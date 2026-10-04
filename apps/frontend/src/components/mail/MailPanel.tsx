@@ -8,8 +8,8 @@ import { agentDisplayName, ApiError } from "@lightbulb/shared";
 
 import { Button } from "@/components/ui/button";
 import { useAgents } from "@/hooks/useAgents";
-import { navigateShell } from "@/lib/shellNav";
-import { buildPanelUrl } from "@/components/workspace/urlChannel";
+import { navigateShell, replaceSearchParams } from "@/lib/shellNav";
+import { buildPanelUrl, clearDurableParamFromUrl } from "@/components/workspace/urlChannel";
 import { MailList } from "./MailList";
 import { MailDetail } from "./MailDetail";
 import { MeetingDetail } from "./MeetingDetail";
@@ -93,7 +93,8 @@ export function MailPanel({ item, visible = true }: { item: string | null; visib
   const newest = newestReceived(messages);
   const ready = visible && pages !== undefined && Boolean(orgId);
   if (!visible && snapshot !== undefined) setSnapshot(undefined);
-  if (ready && snapshot === undefined) setSnapshot(readSeen(orgId));
+  // A first visit (no mark) snapshots the newest mail: nothing old is new, later arrivals are.
+  if (ready && snapshot === undefined) setSnapshot(readSeen(orgId) ?? newest ?? 0);
   useEffect(() => {
     if (!ready || !orgId) return;
     advanceSeen(orgId, newest);
@@ -108,12 +109,16 @@ export function MailPanel({ item, visible = true }: { item: string | null; visib
     () => (filter === "all" ? entries : buildSections(meetings, messages, "all", now).flatMap((s) => s.entries)),
     [filter, entries, meetings, messages, now],
   );
-  const requested = item ? allEntries.find((e) => e.key === item) ?? null : null;
-  // An unknown item (not in the loaded pages, or a stale link) is dropped from the URL, so the
-  // URL always names what is shown and a later "Load more" does not pop a detail open.
+  // An unknown item (not in the loaded pages, or a stale link) is dropped for good, so a later
+  // "Load more" does not pop a detail open; when the URL names Mail, the item leaves it too.
+  const [dropped, setDropped] = useState<string | null>(null);
+  const requested = item && item !== dropped ? allEntries.find((e) => e.key === item) ?? null : null;
   const unknownItem = Boolean(item) && pages !== undefined && requested === null;
+  if (unknownItem && item !== dropped) setDropped(item);
   useEffect(() => {
-    if (unknownItem && visible) window.history.replaceState(null, "", buildPanelUrl("mail", {}));
+    if (!unknownItem || !visible) return;
+    const next = clearDurableParamFromUrl(window.location.search, "mail", "item");
+    if (next !== null) replaceSearchParams(new URLSearchParams(next));
   }, [unknownItem, visible]);
   // Wide with no item: the newest dated row, kept while it exists so a live refresh does not
   // swap what is being read.
@@ -141,7 +146,7 @@ export function MailPanel({ item, visible = true }: { item: string | null; visib
     rootRef.current?.querySelector<HTMLElement>(`[data-mail-key="${CSS.escape(key)}"]`)?.focus();
   }, [showingDetail]);
   const open = (key: string) => {
-    opener.current = key;
+    if (!wide) opener.current = key;
     openMailItem(key);
   };
   const back = () => openMailItem(null);

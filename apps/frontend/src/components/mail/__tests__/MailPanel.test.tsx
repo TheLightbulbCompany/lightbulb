@@ -13,6 +13,7 @@ vi.mock("@/hooks/useLiveEvents", () => ({ useLiveEvents: () => live }));
 vi.mock("@/hooks/useAgents", () => ({ useAgents: () => ({ agents: [{ id: "a1", name: "Finance" }] }) }));
 const nav = vi.hoisted(() => ({ urls: [] as string[], setItem: (() => {}) as (item: string | null) => void }));
 vi.mock("@/lib/shellNav", () => ({
+  replaceSearchParams: (params: URLSearchParams) => window.history.replaceState(null, "", `/chat?${params}`),
   navigateShell: (url: string) => {
     nav.urls.push(url);
     const params = new URL(url, "http://x").searchParams;
@@ -133,10 +134,16 @@ describe("MailPanel", () => {
 
   it("drops an item that is not in the loaded pages from the URL", async () => {
     mockGet.mockResolvedValue(page);
-    const replace = vi.spyOn(window.history, "replaceState");
+    window.history.replaceState(null, "", "/chat?panel=mail&item=mail%3Anot-loaded&agent=a1");
     renderMail("mail:not-loaded");
     await screen.findByText("Quarterly numbers");
-    await waitFor(() => expect(replace).toHaveBeenCalledWith(null, "", "/chat?panel=mail"));
+    await waitFor(() => expect(window.location.search).toBe("?panel=mail&agent=a1"));
+
+    // A URL naming another panel is left alone.
+    window.history.replaceState(null, "", "/chat?panel=teams-issues");
+    renderMail("mail:also-not-loaded");
+    await waitFor(() => expect(screen.getAllByText("Quarterly numbers").length).toBe(2));
+    expect(window.location.search).toBe("?panel=teams-issues");
   });
 
   it("keeps a meeting selected when the Mail chip hides it", async () => {

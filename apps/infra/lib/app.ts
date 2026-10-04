@@ -27,6 +27,20 @@ const vercelEnv = {
   VERCEL_PROJECT_ID: "${{ secrets.VERCEL_PROJECT_ID }}",
 };
 
+// A Vercel project domain with no git branch is a PRODUCTION domain, and every
+// `vercel deploy --prod` re-points all of those at the new prod build. The dev
+// hosts were registered that way in the 2026-10 domain move, so after each
+// promotion dev.<root> and admin.dev.<root> served the PROD bundle (prod Clerk,
+// prod API) until the next dev deploy re-aliased them. `vercel domains add`
+// cannot set the branch, so this binds it over the REST API on every dev
+// deploy: a branch-bound domain is a preview domain, which prod deploys leave
+// alone. dev.flickmeon.ai was bound this way by hand and never had the problem.
+const bindDevHostToPreview = (host: string) => ({
+  name: `Keep ${host} off production deploys`,
+  run: `curl -fsS -o /dev/null -X PATCH "https://api.vercel.com/v9/projects/$VERCEL_PROJECT_ID/domains/${host}?teamId=$VERCEL_ORG_ID" -H "Authorization: Bearer $VERCEL_TOKEN" -H "Content-Type: application/json" -d '{"gitBranch":"main"}'`,
+  env: vercelEnv,
+});
+
 // Every job on the self-hosted box runs as the same user with the same $HOME,
 // and pnpm/action-setup's default `dest` is ~/setup-pnpm, which it deletes with
 // a recursive rm at the start of every run (install-pnpm/run.ts). Two jobs
@@ -250,11 +264,13 @@ pipeline.addStageWithGitHubOptions(devStage, {
           run: `vercel domains add dev.${DEV_ROOT_DOMAIN} frontend --force --token="$VERCEL_TOKEN"`,
           env: vercelEnv,
         },
+        bindDevHostToPreview(`dev.${DEV_ROOT_DOMAIN}`),
         {
           name: `Register admin.dev.${DEV_ROOT_DOMAIN} project domain`,
           run: `vercel domains add admin.dev.${DEV_ROOT_DOMAIN} frontend --force --token="$VERCEL_TOKEN"`,
           env: vercelEnv,
         },
+        bindDevHostToPreview(`admin.dev.${DEV_ROOT_DOMAIN}`),
         {
           name: `Alias to dev.${DEV_ROOT_DOMAIN}`,
           run: `vercel alias \${{ steps.vercel-deploy-dev.outputs.DEPLOY_URL }} dev.${DEV_ROOT_DOMAIN} --token=$VERCEL_TOKEN`,

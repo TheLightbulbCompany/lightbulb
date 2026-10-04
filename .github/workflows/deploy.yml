@@ -1882,9 +1882,29 @@ jobs:
           VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
           VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
           VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+      - name: Keep dev.thelightbulb.company off production deploys
+        run: "curl -fsS -o /dev/null -X PATCH
+          \"https://api.vercel.com/v9/projects/$VERCEL_PROJECT_ID/domains/dev.t\
+          helightbulb.company?teamId=$VERCEL_ORG_ID\" -H \"Authorization: Bearer
+          $VERCEL_TOKEN\" -H \"Content-Type: application/json\" -d
+          '{\"gitBranch\":\"main\"}'"
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
       - name: Register admin.dev.thelightbulb.company project domain
         run: vercel domains add admin.dev.thelightbulb.company frontend --force
           --token="$VERCEL_TOKEN"
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+      - name: Keep admin.dev.thelightbulb.company off production deploys
+        run: "curl -fsS -o /dev/null -X PATCH
+          \"https://api.vercel.com/v9/projects/$VERCEL_PROJECT_ID/domains/admin\
+          .dev.thelightbulb.company?teamId=$VERCEL_ORG_ID\" -H \"Authorization:
+          Bearer $VERCEL_TOKEN\" -H \"Content-Type: application/json\" -d
+          '{\"gitBranch\":\"main\"}'"
         env:
           VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
           VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}

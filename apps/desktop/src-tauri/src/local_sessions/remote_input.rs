@@ -57,6 +57,31 @@ fn admit(body: &Value, relay_of: impl Fn(&Value) -> Option<(String, Arc<Ctl>)>) 
     (!keys.is_empty()).then_some((sid, generation, ctl, keys))
 }
 
+/// A rename made in Lightbulb, typed as Claude's own `/rename <name>` into the session's live
+/// terminal (Claude 2.1.289 has no other way to rename a running session). The caller checked it
+/// is an idle Claude session. The Enter goes separately, so the TUI does not take one burst for a
+/// paste. Best effort: no live terminal, no rename, and the Lightbulb name stays the display name.
+pub(super) fn rename(body: &Value) {
+    let (Some(sid), Some(generation)) = (body["sessionId"].as_str(), body["generation"].as_str()) else { return };
+    let Some(line) = body["name"].as_str().and_then(rename_line) else { return };
+    let (sid, generation) = (sid.to_owned(), generation.to_owned());
+    std::thread::spawn(move || {
+        let Some(mut conn) = attach(&sid, &generation) else { return };
+        if conn.write_all(&encode(INPUT, line.as_bytes())).is_ok() {
+            std::thread::sleep(Duration::from_millis(150));
+            let _ = conn.write_all(&encode(INPUT, b"\r"));
+        }
+        let _ = conn.shutdown(std::net::Shutdown::Both);
+    });
+}
+
+/// `/rename <name>` for one plain line of at most 120 characters; nothing else is typed.
+fn rename_line(name: &str) -> Option<String> {
+    let name = name.trim();
+    (!name.is_empty() && name.chars().count() <= 120 && !name.chars().any(char::is_control))
+        .then(|| format!("/rename {name}"))
+}
+
 /// The relay's writer: one `type` client, reattached after an error, closed when the relay stops.
 fn write(sid: &str, generation: &str, ctl: &Ctl, inputs: &Receiver<Vec<u8>>) {
     let mut conn: Option<UnixStream> = None;
@@ -162,6 +187,15 @@ mod tests {
     use super::*;
     use serde_json::json;
     use std::collections::BTreeMap;
+
+    #[test]
+    fn local_sessions_rename_types_one_plain_line() {
+        assert_eq!(rename_line("  Release train ").as_deref(), Some("/rename Release train"));
+        assert_eq!(rename_line("two\nlines"), None);
+        assert_eq!(rename_line("esc\u{1b}[A"), None);
+        assert_eq!(rename_line("   "), None);
+        assert_eq!(rename_line(&"x".repeat(121)), None);
+    }
 
     #[test]
     fn remote_input_strips_terminal_probe_replies_and_keeps_typing() {

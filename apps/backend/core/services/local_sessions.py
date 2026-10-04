@@ -582,10 +582,12 @@ def session_terminal(row: dict) -> Literal["held", "attach"] | None:
 
 
 def _without_moved(found: list[LocalSession]) -> list[LocalSession]:
-    """An ended session that a later one of the same person continues (`forkedFrom`) is listed once:
-    as that later one. A running origin is never hidden: `claude --bg --resume` copies a running session."""
+    """A stopped session that a later one of the same person continues (`forkedFrom`) is listed once:
+    as that later one. Offline counts as stopped: a Mac still draining an ended origin re-registers it
+    and then lets it lapse. A running origin is never hidden: `claude --bg --resume` copies a running
+    session."""
     moved = {(s.human_user_id, s.forked_from) for s in found if s.forked_from}
-    return [s for s in found if not (s.status == "ended" and (s.human_user_id, s.session_id) in moved)]
+    return [s for s in found if not (s.status in ("ended", "offline") and (s.human_user_id, s.session_id) in moved)]
 
 
 def _session_public(row: dict, viewer: str | None = None) -> LocalSession:
@@ -1149,8 +1151,39 @@ async def set_display_title(auth: AuthContext, session_id: str, title: str | Non
                 raise
             continue
         await publish_resources_changed(owner, row["humanUserId"])
+        if title is not None:
+            await _rename_native(updated, title)
         return _session_public(updated, auth.user_id)
     raise ApiProblem("LOCAL_SESSION_CONFLICT", "Session changed. Try again.")
+
+
+async def _rename_native(row: dict, title: str) -> None:
+    """Best effort: Claude Code's own name follows a Lightbulb rename where Claude can take one.
+
+    Claude has no external rename, so the Mac types its `/rename` into the session's live terminal,
+    and only while the session is idle, so it never lands in a running turn. A session without a
+    live terminal, or one that is not idle, keeps the Lightbulb name as its display name only."""
+    if (
+        row["provider"] != "claude"
+        or row.get("status") != "idle"
+        or row.get("endedAt") is not None
+        or int(row.get("onlineUntil", 0)) <= int(time.time())
+        or session_terminal(row) is None
+        or "sessionRename" not in row.get("deviceFeatures", ())
+    ):
+        return
+    from core.services.local_session_relay import get_local_session_relay  # imports this module
+
+    frame = {
+        "type": "local.session.rename",
+        "sessionId": row["sessionId"],
+        "generation": row["generation"],
+        "name": title,
+    }
+    try:
+        await get_local_session_relay().management.send_message_async(row["connectionId"], frame)
+    except Exception as exc:  # noqa: BLE001 -- the Lightbulb name is already saved
+        logger.info("native rename not delivered error=%s", type(exc).__name__)
 
 
 async def get_private_send_approval(auth: AuthContext, session_id: str) -> PrivateSendApproval:

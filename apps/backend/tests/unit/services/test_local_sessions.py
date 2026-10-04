@@ -2,6 +2,7 @@
 
 import asyncio
 import time
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 import boto3
@@ -1187,8 +1188,55 @@ def test_an_ended_origin_is_listed_once_as_its_successor():
         s("running", "idle"),
         s("bobs", "ended", human="bob"),
         s("not-bobs", "idle", "bobs", human="mallory"),
+        # A Mac draining an ended origin re-registers it, then lets it lapse: offline, not a second row.
+        s("lapsed", "offline"),
+        s("lapsed-fork", "busy", "lapsed"),
     ]
-    assert [x.session_id for x in service._without_moved(found)] == ["new", "copy", "running", "bobs", "not-bobs"]
+    assert [x.session_id for x in service._without_moved(found)] == [
+        "new",
+        "copy",
+        "running",
+        "bobs",
+        "not-bobs",
+        "lapsed-fork",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_a_lightbulb_rename_types_claudes_own_rename_only_into_an_idle_live_terminal(monkeypatch):
+    from core.services import local_session_relay
+
+    sent = AsyncMock(return_value=True)
+    monkeypatch.setattr(
+        local_session_relay,
+        "get_local_session_relay",
+        lambda: SimpleNamespace(management=SimpleNamespace(send_message_async=sent)),
+    )
+    row = {
+        "provider": "claude",
+        "status": "idle",
+        "onlineUntil": int(time.time()) + 30,
+        "terminal": "held",
+        "deviceFeatures": ["remoteInput", "sessionRename"],
+        "sessionId": "s1",
+        "generation": "g1",
+        "connectionId": "conn-1",
+    }
+    await service._rename_native(row, "Release train")
+    sent.assert_awaited_once_with(
+        "conn-1", {"type": "local.session.rename", "sessionId": "s1", "generation": "g1", "name": "Release train"}
+    )
+    for change in (
+        {"status": "busy"},
+        {"provider": "codex"},
+        {"terminal": None},
+        {"deviceFeatures": ["remoteInput"]},
+        {"onlineUntil": 0},
+        {"endedAt": 1},
+    ):
+        sent.reset_mock()
+        await service._rename_native({**row, **change}, "Release train")
+        sent.assert_not_awaited()
 
 
 @pytest.mark.asyncio

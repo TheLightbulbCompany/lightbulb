@@ -157,11 +157,14 @@ pub(super) async fn capture(home: &Path, program: &Path, row: &Value) -> Result<
         restriction = Some("endpoint-unavailable".into());
     }
     // A session moved to the background with ← is a fork; its command line names the original.
+    // A job that claimed a pre-started spare (`claude bg-spare`) has no such command line: the
+    // terminal it left records the job as `parkedJobId` instead.
     let forked_from = if background {
         native_output(Path::new("/bin/ps"), &["-ww", "-o", "command=", "-p", &pid.to_string()])
             .await
             .ok()
             .and_then(|command| fork_origin(&command))
+            .or_else(|| job.as_deref().and_then(|job| parked_origin(home, job)))
     } else {
         None
     };
@@ -201,6 +204,27 @@ pub(super) fn fork_origin(command: &str) -> Option<String> {
     let stem = arg.strip_suffix(".jsonl").unwrap_or(arg);
     let id = stem.get(stem.len().checked_sub(36)?..)?;
     uuid::Uuid::parse_str(id).is_ok().then(|| id.to_owned())
+}
+
+/// The conversation whose terminal moved into background job `job`: Claude writes `parkedJobId`
+/// into that process's `~/.claude/sessions/<pid>.json` (2.1.289).
+pub(super) fn parked_origin(home: &Path, job: &str) -> Option<String> {
+    let dir = confined_path(home, &home.join(".claude/sessions")).ok()?;
+    fs::read_dir(&dir).ok()?.flatten().find_map(|entry| {
+        let path = entry.path();
+        if path.extension()? != "json" {
+            return None;
+        }
+        let mut text = String::new();
+        secure_file(&path).ok()?.take(64 * 1024).read_to_string(&mut text).ok()?;
+        // Claude rewrites the file in place without truncating: only the leading value counts.
+        let row: Value = serde_json::Deserializer::from_str(&text).into_iter().next()?.ok()?;
+        (row["parkedJobId"] == job)
+            .then(|| row["sessionId"].as_str())
+            .flatten()
+            .filter(|id| uuid::Uuid::parse_str(id).is_ok())
+            .map(str::to_owned)
+    })
 }
 
 /// `verify_current_generation` found nothing this process wrote -- distinct from a
@@ -367,7 +391,15 @@ pub(super) fn sender_handle(own: bool, handle: Option<&str>) -> String {
     }
 }
 
+/// Claude's own word for the session. `state` (2.1.289, background rows) is the sharper one:
+/// `blocked` is waiting on its person. A prompt Lightbulb holds open is layered on by the
+/// transport, never inferred here.
 pub(super) fn listing_status(row: &Value) -> &'static str {
+    match row["state"].as_str() {
+        Some("working") => return "busy",
+        Some("blocked") => return "waiting-approval",
+        _ => {}
+    }
     match row["status"].as_str() {
         Some("idle") => "idle",
         Some("busy") => "busy",
@@ -378,7 +410,9 @@ pub(super) fn listing_status(row: &Value) -> &'static str {
     }
 }
 
-/// Last `ai-title` row in the transcript's final 2 MiB.
+/// The conversation's name from the transcript's final 2 MiB: the last name its person gave it
+/// (`/rename` writes `custom-title`), else the last title Claude generated (`ai-title`). The
+/// listing's own `name` (`<folder>-<hex>` until a title exists) is the caller's last fallback.
 pub(super) fn latest_title(path: &Path) -> Option<String> {
     let mut file = secure_file(path).ok()?;
     let len = file.metadata().ok()?.len();
@@ -389,17 +423,20 @@ pub(super) fn latest_title(path: &Path) -> Option<String> {
         let mut partial = String::new();
         reader.read_line(&mut partial).ok()?;
     }
-    let mut title = None;
+    let (mut custom, mut generated) = (None, None);
     for line in reader.lines().map_while(|l| l.ok()) {
         if let Ok(row) = serde_json::from_str::<Value>(&line) {
-            if row["type"] == "ai-title" {
-                if let Some(t) = row["aiTitle"].as_str().filter(|t| !t.trim().is_empty()) {
-                    title = Some(t.chars().take(120).collect());
-                }
+            let (slot, field) = match row["type"].as_str() {
+                Some("custom-title") => (&mut custom, "customTitle"),
+                Some("ai-title") => (&mut generated, "aiTitle"),
+                _ => continue,
+            };
+            if let Some(t) = row[field].as_str().filter(|t| !t.trim().is_empty()) {
+                *slot = Some(t.chars().take(120).collect());
             }
         }
     }
-    title
+    custom.or(generated)
 }
 
 fn basename(path: Option<&str>) -> Option<String> {
@@ -1819,6 +1856,10 @@ mod tests {
         assert_eq!(listing_status(&json!({"status":"waiting"})), "waiting-approval");
         assert_eq!(listing_status(&json!({"status":"busy"})), "busy");
         assert_eq!(listing_status(&json!({})), "unknown");
+        // 2.1.289 background rows: `state` is Claude's sharper word.
+        assert_eq!(listing_status(&json!({"status":"idle","state":"blocked"})), "waiting-approval");
+        assert_eq!(listing_status(&json!({"status":"busy","state":"working"})), "busy");
+        assert_eq!(listing_status(&json!({"status":"idle","state":"done"})), "idle");
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("t.jsonl");
         fs::write(&path, "{\"type\":\"ai-title\",\"aiTitle\":\"First\"}\n{\"type\":\"user\"}\n{\"type\":\"ai-title\",\"aiTitle\":\"Desktop and mobile notifications\"}\n").unwrap();
@@ -1826,6 +1867,25 @@ mod tests {
             latest_title(&path).as_deref(),
             Some("Desktop and mobile notifications")
         );
+        // A name the person gave it wins over any later generated title.
+        let mut file = fs::OpenOptions::new().append(true).open(&path).unwrap();
+        writeln!(file, "{{\"type\":\"custom-title\",\"customTitle\":\"Release train\"}}").unwrap();
+        writeln!(file, "{{\"type\":\"ai-title\",\"aiTitle\":\"Something newer\"}}").unwrap();
+        assert_eq!(latest_title(&path).as_deref(), Some("Release train"));
+    }
+
+    #[test]
+    fn local_sessions_claude_a_spare_claimed_fork_names_the_terminal_it_left() {
+        let home = tempfile::tempdir().unwrap();
+        let sessions = home.path().join(".claude/sessions");
+        fs::create_dir_all(&sessions).unwrap();
+        let origin = "e3e7ff3f-8f93-403f-afd2-a6d9a72d2632";
+        // As 2.1.289 leaves it: rewritten in place, so trailing bytes may follow the value.
+        fs::write(sessions.join("55214.json"), format!("{{\"pid\":55214,\"sessionId\":\"{origin}\",\"kind\":\"interactive\",\"parkedJobId\":\"dc368e89\"}}xx")).unwrap();
+        fs::write(sessions.join("65036.json"), "{\"pid\":65036,\"sessionId\":\"dc368e89-65fd-4c96-b0e6-46d1eeb43dbb\",\"kind\":\"bg\",\"jobId\":\"dc368e89\"}").unwrap();
+        fs::write(sessions.join("55214.abc.key"), "dc368e89").unwrap();
+        assert_eq!(parked_origin(home.path(), "dc368e89").as_deref(), Some(origin));
+        assert_eq!(parked_origin(home.path(), "2662f0a6"), None);
     }
 
     #[test]

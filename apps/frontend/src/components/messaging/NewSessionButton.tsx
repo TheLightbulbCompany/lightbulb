@@ -17,7 +17,6 @@ type Tool = { id: "claude" | "codex"; label: string; modeLabel: string; models: 
 type Mac = { deviceId: string; generation: string; name: string };
 type MacOptions = { name?: string | null; sharing: boolean; folders: string[]; tools: Tool[] };
 type Targets = { enabled: boolean; devices: Mac[] };
-const MAX_PROMPT_BYTES = 4096; // the backend's byte cap
 const PENDING_MS = 150_000; // longer than the backend's wait for the Mac
 type Pending = { startId: string; scope: string; startedAt: number; phase: "starting" | "opened" | "unknown" | "failed"; error?: string; holderId?: string };
 
@@ -91,12 +90,11 @@ export function NewSessionView({ sessions, onEvent, onOpenSession, onClose }: {
   const scope = userId ? `${userId}:${orgId ?? userId}` : null;
   const [last] = useState(() => readLastUsed(userId));
   const [deviceId, setDeviceId] = useState(last.deviceId ?? "");
-  const [tool, setTool] = useState(last.tool ?? "");
+  const tool = last.tool ?? ""; // the last-used tool stays marked
   const [folder, setFolder] = useState("");
   const [model, setModel] = useState("");
   const [mode, setMode] = useState("");
   const [effort, setEffort] = useState("");
-  const [prompt, setPrompt] = useState("");
   const [pendingState, setPending] = useState<Pending | null>(() => scope ? readPending(scope) : null);
   const pending = pendingState?.scope === scope ? pendingState : null;
   useEffect(() => {
@@ -170,7 +168,6 @@ export function NewSessionView({ sessions, onEvent, onOpenSession, onClose }: {
   }, [sessions, pending, userId, scope, onOpenSession]);
 
   const busy = pending !== null && pending.phase !== "failed";
-  const tooLong = new TextEncoder().encode(prompt).length > MAX_PROMPT_BYTES;
   const blocked = localMac
     ? (localMac.tools.length === 0 ? `Install Claude Code or Codex on ${macName} first.`
       : folders.length === 0 ? "Approve a folder in the desktop app first: Settings → File access." : null)
@@ -185,19 +182,22 @@ export function NewSessionView({ sessions, onEvent, onOpenSession, onClose }: {
     : folders.length === 0 ? "Approve a folder in the desktop app first: Settings → File access."
     : null;
   const ready = !!options && !!selected && !blocked;
-  const canStart = !!scope && (!!localMac || (!!mac && !!options?.sharing)) && !!selected && !!folderPath && !blocked && !busy && !tooLong && !!prompt.trim();
+  const canStart = !!scope && (!!localMac || (!!mac && !!options?.sharing)) && !!selected && !!folderPath && !blocked && !busy;
 
-  async function start() {
-    if (!canStart || !scope || !selected || (!localMac && !mac)) return;
-    writeLastUsed(userId, { deviceId: mac?.deviceId, tool: selected.id, folders: [folderPath, ...recent.filter((f) => f !== folderPath)].slice(0, 20) });
+  async function start(chosen: Tool) {
+    if (!canStart || !scope || (!localMac && !mac)) return;
+    // Settings picked for one tool only apply if the tool you press offers them; else its defaults.
+    const pick = (list: Option[] | undefined, v: string, dflt: string | null | undefined) => (list?.some((o) => o.id === v) ? v : dflt) || null;
+    const choice = { model: pick(chosen.models, model, null), mode: pick(chosen.modes, mode, chosen.defaultMode), effort: pick(chosen.efforts, effort, chosen.defaultEffort) };
+    writeLastUsed(userId, { deviceId: mac?.deviceId, tool: chosen.id, folders: [folderPath, ...recent.filter((f) => f !== folderPath)].slice(0, 20) });
     // Minted here so the Mac's answer can never arrive before we know what to listen for.
     const startId = crypto.randomUUID();
     const start = { startId, scope, startedAt: Date.now() };
     setPending({ ...start, phase: "starting" });
     if (localMac) {
       try {
-        const { holderId } = await startLocalTerminal({ startId, tool: selected.id, folder: folderPath,
-          model: modelId || null, mode: modeId || null, effort: effortId || null, prompt });
+        const { holderId } = await startLocalTerminal({ startId, tool: chosen.id, folder: folderPath,
+          ...choice, prompt: "" });
         // It shows here at once; once it reports in, this view becomes the session.
         setPending({ ...start, phase: "opened", holderId });
       } catch (error) {
@@ -208,8 +208,8 @@ export function NewSessionView({ sessions, onEvent, onOpenSession, onClose }: {
     if (!mac) return;
     try {
       await api.post("/desktop-sessions/start?source=web", {
-        startId, deviceId: mac.deviceId, generation: mac.generation, tool: selected.id, folder: folderPath,
-        model: modelId || null, mode: modeId || null, effort: effortId || null, prompt,
+        startId, deviceId: mac.deviceId, generation: mac.generation, tool: chosen.id, folder: folderPath,
+        ...choice, prompt: "",
       });
     } catch (error) {
       setPending(error instanceof ApiError && error.status < 500
@@ -235,7 +235,6 @@ export function NewSessionView({ sessions, onEvent, onOpenSession, onClose }: {
         {busy && <p role="status">{pending?.phase === "unknown" ? pending.error
           : pending?.phase === "opened" ? (localMac ? "Running on this Mac. It moves to Sessions when it reports in." : `Opened on ${where}. Waiting for the session…`) : `Starting on ${where}…`}</p>}
         {pending?.phase === "failed" && <p role="alert" className="text-err">{pending.error}</p>}
-        {tooLong && <p role="alert" className="text-err">The first message is too long.</p>}
         {localMac?.cli && !busy && <p>Or in any terminal, inside an approved folder: <code>lightbulb claude</code> or <code>lightbulb codex</code>.</p>}
         {localMac?.cli?.pathLine && !busy && <p>First add it to your PATH, then open a new terminal: <code className="select-all">{localMac.cli.pathLine}</code></p>}
       </div>
@@ -248,7 +247,7 @@ export function NewSessionView({ sessions, onEvent, onOpenSession, onClose }: {
         </select>}
         {ready && selected && <>
         <div role="group" aria-label="Tool" className="new-session-toggle">
-          {options.tools.map((t) => <button key={t.id} type="button" aria-pressed={t.id === selected.id} disabled={busy} onClick={() => setTool(t.id)}>
+          {options.tools.map((t) => <button key={t.id} type="button" aria-pressed={t.id === selected.id} disabled={busy} onClick={() => void start(t)}>
             <span aria-hidden="true"><SessionToolIcon provider={t.id} className="size-3.5" /></span>{t.label}
           </button>)}
         </div>
@@ -280,12 +279,6 @@ export function NewSessionView({ sessions, onEvent, onOpenSession, onClose }: {
         </Popover>
         </>}
       </div>}
-      <form className="room-composer" aria-label="New session composer" onSubmit={(e) => { e.preventDefault(); void start(); }}>
-        <label className="sr-only" htmlFor="new-session-prompt">First message</label>
-        <textarea id="new-session-prompt" rows={2} autoFocus placeholder="What do you want to do?" value={prompt}
-          disabled={busy || (!!blocked)} onChange={(e) => setPrompt(e.target.value)}
-          onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing && event.keyCode !== 229) { event.preventDefault(); event.currentTarget.form?.requestSubmit(); } }} />
-      </form>
     </div>
   </section>;
 }

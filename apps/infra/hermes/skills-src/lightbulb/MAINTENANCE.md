@@ -66,6 +66,9 @@ MAINTENANCE (Lightbulb engineers): every claim in this skill is anchored to
                                  AWS connection, each run its own tab, the run's tabs closed at its end).
                                  The shared-screen facts (no take-control/Done, autosave, fresh snapshot after a
                                  person's input, sign-in by the person or the vault) must match both.
+  - New session (no first message) ... references/surfaces.md ("New session" paragraph)
+                              <- apps/frontend/src/components/messaging/NewSessionButton.tsx;
+                                 apps/desktop/src-tauri/src/session_start.rs
   - Browser tool choice ..... SKILL.md ("references/surfaces.md § Browser" row) + references/surfaces.md
                               (Browser row: "Which tool", extensions, recording, downloads) +
                               references/platform-primitives.md (pointer)

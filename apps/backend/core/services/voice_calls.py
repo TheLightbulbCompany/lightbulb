@@ -914,6 +914,16 @@ FIT_P = 0.35
 FIT_MARGIN = 0.0
 #: The latest message continues or calls off an earlier request at this probability.
 AMEND_P = 0.5
+#: A part is a request only when Jev reads it as one at least this surely; a weaker read, or none, is small
+#: talk the voice answers itself (no run). 10-04 prod calls: side talk to someone off the call ("Ubera
+#: business, right"), a complaint at the voice ("Can you not talk on me") and nervous fragments each became
+#: a run. Fitted on scripts/speak_gate_bench/understand.py: the weakest true request reads 0.54 (the two-word
+#: follow-up "and last month?"), so 0.6 loses it; the new KINDS wording is what clears the side talk.
+REQUEST_P = 0.5
+#: A part is background for a request ("context") only when Jev reads it so at least this surely: a weaker
+#: read is not for the agents. "Ubera business, right" read 0.42-0.47 and was added to a working request
+#: as a correction; the weakest true correction reads 0.75 ("only the ones on the main branch").
+CONTEXT_P = 0.6
 _OPEN_STATUS = ("queued", "working")
 
 
@@ -955,11 +965,21 @@ def _understood(
         choice, p, _ = answer or (None, 0.0, 0.0)
         return rows.get(choice) if p >= AMEND_P else None
 
-    kind = {p["index"]: (p["kind"][0] or "request") for p in parts}
+    def kind_of(part: dict) -> str:
+        # a weak or missing read is no request (REQUEST_P): an unsure classifier never starts a run
+        choice, p, _ = part["kind"]
+        if not choice or (choice == "request" and p < REQUEST_P):
+            return "social"
+        if choice == "context" and p < CONTEXT_P:
+            return "people"  # an unsure "about the work" read: not for the agents, so it steers nothing
+        return choice
+
+    kind = {p["index"]: kind_of(p) for p in parts}
     asks = [p for p in parts if kind[p["index"]] == "request"]
     if not asks:
         # Jev read every part as background, yet one opens the way a request does ("we just hired two
-        # engineers in Berlin, | set up their GitHub access"): that part is the request.
+        # engineers in Berlin, | set up their GitHub access"): that part is the request. Only a part Jev
+        # called context: a weak request is social by now, and stays so.
         asks = [p for p in parts if kind[p["index"]] == "context" and p["cue"]]
         kind |= {p["index"]: "request" for p in asks}
     if not asks and named and not any(kind[p["index"]] in ("social", "people", "more", "cancel") for p in parts):
@@ -1081,7 +1101,8 @@ async def route_live_line(
     understood like any other and that agent owns what fits nobody better. ``setting="meeting"`` (a Google
     Meet): nobody is implied but the named, the wake word, the floor conversation and an ``unclaimed``
     question to the room (the worker waited 3.5 s).
-    Jev down: the whole line is one request for the named agents, else (implied) one agent.
+    Jev down: the whole line is one request for the named agents, else (wake word, unclaimed) one agent;
+    a line only the floor or a lone speaker implies is no request.
     Returns ``{agentId, agentIds, requests?, hold?, ops}``: ``ops`` is ``{requests: [{agentId, task, by}],
     social, more, cancel, steer}``; the other fields are what a worker before ``ops`` reads."""
     members = [
@@ -1202,11 +1223,14 @@ async def route_live_line(
         implied, to_people = picked is not None, picked is None
 
     if addressing["path"] == "fallback":
-        # Jev down: nothing was cut or typed. The whole line is one request, as before understanding.
-        u = {"requests": [], "talk": False, "people": False, "more": False, "cancel": [], "steer": []}
+        # Jev down: nothing was cut or typed. A line said to the agents (a name, the wake word, a question to
+        # the room nobody took) is one whole-line request, as before understanding. A line only the floor or a
+        # lone speaker implies is not (10-04 prod: side talk became runs): the floor voice answers it itself,
+        # and may still delegate it.
+        u = {"requests": [], "talk": mine, "people": False, "more": False, "cancel": [], "steer": []}
         if named:
             u["requests"] = [{"agentId": a, "task": utterance, "by": "name"} for a in named]
-        elif implied and not to_people and candidates:
+        elif (wake or unclaimed) and not to_people and candidates:
             u["requests"] = [{"agentId": None, "task": utterance, "by": ""}]
     elif to_people:
         u = {"requests": [], "talk": False, "people": True, "more": False, "cancel": [], "steer": []}
@@ -1218,9 +1242,9 @@ async def route_live_line(
             open_requests=earlier,
             agents=set(team),
         )
-        if ((unclaimed and not u["requests"]) or (wake and u["people"])) and candidates:
-            # a question to the room nobody took (the worker waited), or a wake-word line Jev heard as
-            # people talk ("Lightbulb, ..." is said to the agents): one agent answers it
+        if (unclaimed or wake) and u["people"] and not u["requests"] and candidates:
+            # a question to the room nobody took (the worker waited), or a wake-word line, that Jev heard as
+            # people talk: it was said to the agents, so one agent answers it. Small talk stays small talk.
             u["requests"] = [{"agentId": None, "task": utterance, "by": ""}]
     if picked and not u["requests"] and not u["cancel"] and not u["steer"]:
         # the judge heard something to answer where the parts saw talk between people: the line is its request

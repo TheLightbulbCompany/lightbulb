@@ -606,8 +606,8 @@ async def test_live_alone_nobody_counts_as_jev_down(live_env):
     got = await _live(live_env, "Hey guys.", greeting, transcript="Finance: burn is flat\nPrasiddha: Hey guys.")
     assert got["agentIds"] == ["fin-1"] and got["ops"]["social"] == "fin-1" and got["ops"]["requests"] == []
     assert (await _live(live_env, "Hey guys.", greeting))["agentIds"] == ["ceo-1"]
-    down = await _live(live_env, "Hey guys.", None)  # Jev down: the whole line is one request for the CEO
-    assert down["agentIds"] == ["ceo-1"] and _asked(down) == [("ceo-1", "chief")]
+    down = await _live(live_env, "Hey guys.", None)  # Jev down: a lone speaker's unnamed line is no request
+    assert down["agentIds"] == [] and down["ops"]["requests"] == []
 
 
 async def test_live_two_people_jev_may_pick_nobody(live_env):
@@ -666,7 +666,7 @@ async def test_live_jev_timeout_falls_back(live_env):
     with patch.object(vc.messaging, "ADDRESSING_TIMEOUT_S", 0.01):
         alone = await _live(live_env, "hm what now", humans=1)
         two = await _live(live_env, "hm what now", humans=2)
-    assert alone["agentIds"] == ["ceo-1"]  # one speaker: the line is one request for the CEO
+    assert alone["agentIds"] == [] and alone["ops"]["requests"] == []  # one speaker, no name: no request
     assert two["agentIds"] == [] and two["ops"] == NOBODY  # two people: the judge said nobody
 
 

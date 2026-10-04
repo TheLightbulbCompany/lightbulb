@@ -2721,10 +2721,16 @@ KINDS = {
         "('I have a few questions', 'let me say them all first', 'couple of things')"
     ),
     "social": (
-        "Greeting, thanks, acknowledgement, reaction, thinking aloud, a passing remark or complaint, or a "
-        "question about the call itself ('can you hear me'); nothing for the team to look up or do"
+        "Greeting, thanks, acknowledgement, reaction, thinking aloud, a passing remark or complaint, a "
+        "question about the call itself ('can you hear me'), a complaint about the call or about how a "
+        "teammate is talking ('can you not talk over me'), or a fragment or false start with no clear ask "
+        "('sorry, um, do'); nothing for the team to look up or do"
     ),
-    "people": "Said to another person on the call, or people settling something among themselves; not for the AI team",
+    "people": (
+        "Said to another person on the call, or to someone in the speaker's own room who is not on the call "
+        "('Uber is a business, right?' to a colleague beside them), or people settling something among "
+        "themselves; not for the AI team"
+    ),
     "cancel": "Calls off or pauses something the team was asked earlier ('forget the deck', 'hold off on that')",
 }
 WHO_PART_INSTRUCTIONS = (

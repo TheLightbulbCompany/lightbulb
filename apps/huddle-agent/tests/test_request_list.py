@@ -111,7 +111,8 @@ def test_the_strip_task_is_cut_to_sixty():
 
 
 def test_the_acknowledgement_names_every_task_once():
-    _, rows = routed()
+    rl, rows = routed()
+    started(rl, rows)  # every request starts before its acknowledgement
     assert ack_line(rows, NAMES) == (
         "You are on an update on the go-to-market strategy. Forge is on what our PRs look like. "
         "Friday is on a summary of our rooms. Say that in one short sentence, then wait."
@@ -204,7 +205,9 @@ def test_for_route_lists_open_rows_then_three_newest_delivered_capped_at_twelve(
     }
     big = RequestList()
     big.settle(1, "u", [{"agentId": f"a{i}", "task": "t"} for i in range(15)], 0.0)
-    assert [o["agentId"] for o in big.for_route()] == [f"a{i}" for i in range(3, 15)]  # the newest stay
+    assert [o["agentId"] for o in big.for_route()] == [
+        f"a{i}" for i in range(3, 15)
+    ]  # the newest stay
     for i, r in enumerate(big.items[:3]):
         big.start(r)
         big.bind(r, f"d{i}")
@@ -215,9 +218,13 @@ def test_for_route_lists_open_rows_then_three_newest_delivered_capped_at_twelve(
 
 
 def rows_for(*pairs):
-    return RequestList().settle(
+    """Working rows: the acknowledgement of work that has started."""
+    rows = RequestList().settle(
         1, "u", [{"agentId": a, "task": t} for a, t in pairs], 0.0
     )
+    for r in rows:
+        r.status = "working"
+    return rows
 
 
 def test_ack_line_one_row_mine():
@@ -274,3 +281,14 @@ def test_one_agents_stop_while_route_decides_drops_only_its_row():
     assert [r.agent for r in rows] == ["friday"] and [r.agent for r in rl.items] == [
         "friday"
     ]
+
+
+def test_ack_line_says_queued_rows_of_me_are_next_in_line():
+    rows = rows_for(("pulse", "A"), ("pulse", "B"), ("forge", "C"))
+    rows[1].status = rows[2].status = "queued"  # Forge's queued row still reads "is on"
+    assert ack_line([rows[1]], NAMES, "pulse") == (
+        "B is next in line for you. Say that in one short sentence, then wait."
+    )
+    assert ack_line(rows, NAMES, "pulse") == (
+        "You are on A. B is next in line for you. Forge is on C. Say that in one short sentence, then wait."
+    )

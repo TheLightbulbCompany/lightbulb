@@ -66,7 +66,7 @@ async def test_three_requests_with_no_voice_open_one_row_one_run_each(capsys):
         in seed
     )
     assert seed[-1].startswith(
-        "You are on the open PRs and on what shipped. Friday is on Aden's email."
+        "You are on the open PRs. What shipped is next in line for you. Friday is on Aden's email."
     )
     assert metric_count(capsys, "live.request.created") == 3
     answer(h, first.run_id, "forge", "Two PRs are open.")
@@ -190,7 +190,7 @@ async def test_a_second_request_to_an_agent_working_voicelessly_waits_in_line():
     assert [x.agent_id for x in lives] == ["forge"] and h._voice.driven is None
     assert lives[0].seed[-1] == (
         "developer",
-        "You are on what shipped. Say that in one short sentence, then wait.",
+        "What shipped is next in line for you. Say that in one short sentence, then wait.",
     )
 
 
@@ -254,3 +254,68 @@ async def test_a_driven_row_whose_turn_fails_is_failed_and_cant_reach_is_said_on
         sum(c[:2] == ("commentary", h_mod.CANT_REACH) for c in lives[0].calls) == 1
         and h._news == {}
     )
+
+
+async def test_a_stop_while_the_voice_opens_leaves_only_open_rows_in_the_acknowledgement():
+    # re-review N1: the acknowledgement is built after the voice's awaits, from the rows still open
+    h, room, backend, lives, clock, log = await three()
+    backend.session_gate = asyncio.Event()
+    backend.route_extra = ops(
+        requests=[("forge", "the open PRs", "fit"), ("friday", "Aden's email", "fit")]
+    )
+    await h.on_final_transcript("u1", "Prasiddha", "the open PRs and Aden's email")
+    for _ in range(20):
+        await asyncio.sleep(0)
+    await h.on_final_transcript("u1", "Prasiddha", "Forge, stop")
+    backend.session_gate.set()
+    await settle(h)
+    assert [s for _, _, s in rows(h)] == ["cancelled", "working"]
+    assert [t["agentId"] for t in backend.turns] == ["friday"]
+    seed = [text for _, text in lives[0].seed]
+    assert not any("open PRs" in text for text in seed)
+    assert (
+        seed[-1]
+        == "Friday is on Aden's email. Say that in one short sentence, then wait."
+    )
+
+
+async def test_a_stop_delegated_by_the_floor_voice_spares_another_persons_line():
+    # re-review N2: a delegated "stop" covers only its speaker's lines
+    h, room, backend, lives, clock, log = await three()
+    await say(h, "u1", "Forge, what shipped")
+    backend.route_gate = asyncio.Event()
+    backend.route_extra = ops(requests=[("forge", "the open PRs", "fit")])
+    await h.on_final_transcript("u2", "Aden", "what are the open PRs")
+    await asyncio.sleep(0)
+    await h.on_delegation("forge", "d1", "stop")
+    backend.route_gate.set()
+    await settle(h)
+    assert rows(h) == [("forge", "the open PRs", "working")]
+    assert backend.turns[-1]["utterance"] == "the open PRs"
+
+
+async def test_two_answers_for_one_agent_are_said_in_asked_order():
+    # re-review N5: the announce seed lists an agent's answers in request order
+    h, room, backend, lives, clock, log = await three()
+    await say(h, "u2", "Pulse, how are we doing")
+    answer(h, backend.turns[0]["runId"], "pulse", "We're fine.")
+    backend.route_extra = ops(
+        requests=[("forge", "the open PRs", "fit"), ("forge", "what shipped", "fit")]
+    )
+    await say(h, "u1", "the open PRs and what shipped")
+    for row in h._requests.items:
+        await settle(h)
+        clock.t += 1
+        answer(h, row.run_id, "forge", f"{row.task} done.")
+    await settle(h)
+    for _ in range(5):
+        clock.t += 30
+        await h.tick()
+        await settle(h)
+        if h._voice and h._voice.agent_id == "forge":
+            break
+    seed = [text for _, text in lives[-1].seed if text.startswith("You finished")]
+    assert [("open PRs" in t, "what shipped" in t) for t in seed] == [
+        (True, False),
+        (False, True),
+    ]

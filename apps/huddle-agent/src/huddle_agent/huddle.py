@@ -31,7 +31,7 @@ from typing import Any, Awaitable, Callable, Protocol
 from huddle_agent import gate
 from huddle_agent.backend import BackendError
 from huddle_agent.frames import Run, Runs
-from huddle_agent.request_list import Request, RequestList, ack_line
+from huddle_agent.request_list import OPEN, Request, RequestList, ack_line
 from huddle_agent.transcript import (
     Transcript,
     address,
@@ -1077,7 +1077,7 @@ class Huddle:
             mark=mark,
             path=path,
             heard_at=heard_at,
-            ack=ack_line(rows, self._agent_name, me=first.agent) if len(rows) >= 2 or not drive else None,
+            ack=rows if len(rows) >= 2 or not drive else None,
             row=first if drive else None,
         )
         if first.status == "working" and first.run_id is None:  # its voice never opened: it runs without one
@@ -1316,13 +1316,14 @@ class Huddle:
         announce: tuple | None = None,
         wake_dims: dict[str, str] | None = None,
         heard_at: float | None = None,
-        ack: str | None = None,
+        ack: list[Request] | None = None,
         row: Request | None = None,
         said: str | None = None,
     ) -> None:
         """`then`: the request's other named agents, queued behind this one. Any summon but a queue
-        advance (path "switch") replaces a pending queue: a new name wins. `row`: the request row `request`
-        is (its driven run binds to it); `said`: a seed line that is not a request (small talk)."""
+        advance (path "switch") replaces a pending queue: a new name wins. `ack`: the rows the voice
+        acknowledges (the open ones when it speaks); `row`: the request row `request` is (its driven run binds
+        to it); `said`: a seed line that is not a request (small talk)."""
         async with self._lock:
             self._unclaimed = None  # an agent takes the floor: the open question is not left unclaimed
             self._released.discard(identity)  # only a release during THIS summon counts
@@ -1336,7 +1337,7 @@ class Huddle:
                 if self._repoint(old, identity):
                     if request and row is None:  # a row left unbound runs without a voice (_act)
                         self._live_call(old, "reply_to", request)
-                    elif ack and self._live_call(old, "append_thinking", ack):
+                    elif (line := self._ack(ack, agent_id)) and self._live_call(old, "append_thinking", line):
                         self._live_call(old, "nudge")
                 self._sync_state()
                 return
@@ -1379,7 +1380,7 @@ class Huddle:
         identity: str,
         request: str | None,
         mark: int | None,
-        ack: str | None = None,
+        ack: list[Request] | None = None,
         row: Request | None = None,
         said: str | None = None,
     ) -> bool:
@@ -1413,24 +1414,22 @@ class Huddle:
         )
         # An acknowledgement says only who is on what ("then wait"): its agent's ready answers stay news, and
         # tick() hands them over once the acknowledgement has been said.
-        news = [] if ack else self._news.get(agent_id, [])
+        news = [] if ack is not None else self._news.get(agent_id, [])
+        # One turn says them all, in the order they were asked (re-review N5); the announced item in its place
+        told = [n for n in news if n is not v.announce] + ([v.announce] if v.announce else [])
         seed += [
             (
                 "developer",
                 self._cant_reach_seed(n)
-                or f"You finished {n[1][:80]}. Your answer: {n[2]} Deliver it now, briefly and completely, before anything else.",
+                or (
+                    f"You finished {n[1]}: {n[2]}. Tell the room now."
+                    if n is v.announce
+                    else f"You finished {n[1][:80]}. Your answer: {n[2]} Deliver it now, briefly and completely, "
+                    "before anything else."
+                ),
             )
-            for n in news
-            if n is not v.announce
+            for n in sorted(told, key=lambda n: (self._requests.order(n[0]), n[3]))
         ]
-        if v.announce:
-            seed.append(
-                (
-                    "developer",
-                    self._cant_reach_seed(v.announce)
-                    or f"You finished {v.announce[1]}: {v.announce[2]}. Tell the room now.",
-                )
-            )
         if row is not None and row.status != "working":
             request = None  # stopped while the voice opened (understanding §4.5): the voice opens, nothing runs
         if request:
@@ -1447,8 +1446,10 @@ class Huddle:
                     f"{self._name(identity)} asked: {request} — already handed to your backend self; don't delegate it again",
                 )
             )
-        if ack:  # conversation engine §3.5: the one acknowledgement of a multi-name turn
-            seed.append(("developer", ack))
+        # conversation engine §3.5: the one acknowledgement, of the rows still open after the awaits above
+        ack_said = self._ack(ack, agent_id)
+        if ack_said:
+            seed.append(("developer", ack_said))
         if said:  # understanding §4.6: small talk, answered by the voice itself
             seed.append(("developer", said))
         try:
@@ -1465,7 +1466,7 @@ class Huddle:
             self._failed_at[(identity, agent_id)] = self._clock()
             return False
         self._latency("session_started", v)
-        if ack and not self._requests.open():
+        if ack is not None and not self._requests.open():
             v.live, v.opened = live, self._clock()  # "everyone stop" while it joined: closed unsaid
             return False
         if (
@@ -1481,7 +1482,7 @@ class Huddle:
         elif v.path != "announce" and self._live_call(
             v, "append_thinking", f"{self._name(identity)} is talking to you"
         ):
-            if request or ack or said or identity in self._released:
+            if request or ack_said or said or identity in self._released:
                 # the request is already running (driven): the model acknowledges it, no typed user turn
                 self._live_call(v, "nudge")
         self._released.discard(identity)
@@ -1547,8 +1548,13 @@ class Huddle:
             mark=mark,
             path="ack",
             heard_at=heard_at,
-            ack=ack_line(rows, self._agent_name),
+            ack=rows,
         )
+
+    def _ack(self, rows: list[Request] | None, me: str) -> str | None:
+        """The acknowledgement of `rows` said by `me`: only those still open (re-review N1); None for none."""
+        rows = [r for r in rows or [] if r.status in OPEN]
+        return ack_line(rows, self._agent_name, me=me) if rows else None
 
     def _start_queued(self) -> None:
         for r in self._requests.startable():
@@ -1600,15 +1606,17 @@ class Huddle:
         v = self._floor_voice(agent_id)
         if v is None or self._window is None:
             return
+        # a delegated stop covers its own speaker's lines, never another person's still at /route (re-review N2)
+        mark = self._final_mark.get(v.speaker)
         if stop_all(pending_transcript):
-            self._stop_all()
+            self._stop_all(mark)
             return
         if no_post_command(pending_transcript, self._team["agents"])[0]:
             return  # the final already marked it (engine §3.6); never a run
         if stop_request(
             pending_transcript
         ):  # the voice delegated the "stop" it heard: swallow it the same way
-            self._stop(agent_id)
+            self._stop(agent_id, mark)
             return
         v.used = True
         d = v.driven

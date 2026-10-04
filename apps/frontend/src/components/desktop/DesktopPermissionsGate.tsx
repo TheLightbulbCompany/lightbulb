@@ -14,6 +14,7 @@ import {
 } from "@/lib/desktopPermissions";
 import { subscribeDesktopPermissions } from "@/lib/desktopPermissionsSubscribe";
 import { DESKTOP_PERMISSION_ITEMS, SHARE_LIVE_DESCRIPTION, SHARE_LIVE_LABEL, useLocalSessions } from "./LocalSessions";
+import { LIVE_SHARING_OFFER_KEY } from "./ExplicitSharingNotice";
 import { AlertDialog, AlertDialogContent, AlertDialogTitle, AlertDialogDescription } from "@/components/ui/alert-dialog";
 
 type TauriBridge = {
@@ -115,6 +116,9 @@ export function DesktopPermissionsGate() {
         // Best effort: the switch stays in Settings if this build or the rc files refuse.
         await getTauri()?.core?.invoke("shell_integration_set", { enabled: true }).catch(() => {});
       }
+      // This dialog made the offer, whatever the answer: the notice for Macs paired before the
+      // switch existed (LiveSharingOffer) must not ask again.
+      try { localStorage.setItem(LIVE_SHARING_OFFER_KEY, "1"); } catch { /* storage off */ }
       if (operation.current === current) setDismissed(true);
     } catch (error) {
       if (operation.current === current) setSaveError(desktopErrorMessage(error));

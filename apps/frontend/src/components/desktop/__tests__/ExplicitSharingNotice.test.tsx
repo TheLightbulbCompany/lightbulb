@@ -5,7 +5,7 @@ import { beforeEach, expect, it, vi } from "vitest";
 
 const toast = vi.hoisted(() => vi.fn());
 vi.mock("sonner", () => ({ toast }));
-import { EXPLICIT_SHARING_SEEN_KEY, ExplicitSharingNotice } from "../ExplicitSharingNotice";
+import { EXPLICIT_SHARING_SEEN_KEY, ExplicitSharingNotice, LIVE_SHARING_OFFER_KEY, LiveSharingOffer } from "../ExplicitSharingNotice";
 
 const invoke = vi.fn();
 beforeEach(() => {
@@ -35,4 +35,43 @@ it("says nothing where sharing is off or outside the desktop app", async () => {
   await Promise.resolve();
   expect(toast).not.toHaveBeenCalled();
   expect(localStorage.getItem(EXPLICIT_SHARING_SEEN_KEY)).toBeNull();
+});
+
+const bridge = (sharing: boolean, liveOn: boolean | Error) => invoke.mockImplementation(async (command: string) => {
+  if (command === "local_sessions_status") return { enrollment: sharing ? { enabled: true } : null };
+  if (command === "shell_integration_status") { if (liveOn instanceof Error) throw liveOn; return liveOn; }
+  if (command === "shell_integration_set") return true;
+  return null;
+});
+
+it("offers Share every session live once to a paired Mac that shares sessions, and turns it on from the offer", async () => {
+  bridge(true, false);
+  const first = render(<LiveSharingOffer />);
+  await waitFor(() => expect(toast).toHaveBeenCalledTimes(1));
+  const [title, options] = toast.mock.calls[0];
+  expect(title).toBe("Share every session live");
+  expect(options.duration).toBe(Infinity);
+  expect(options.cancel.label).toBe("Not now");
+  expect(localStorage.getItem(LIVE_SHARING_OFFER_KEY)).toBe("1");
+  options.action.onClick();
+  await waitFor(() => expect(invoke).toHaveBeenCalledWith("shell_integration_set", { enabled: true }));
+  await waitFor(() => expect(toast).toHaveBeenCalledTimes(2));
+  first.unmount();
+  render(<LiveSharingOffer />);
+  await Promise.resolve();
+  expect(toast).toHaveBeenCalledTimes(2);
+});
+
+it("makes no offer where it is already on, where sharing is off, or on an app without the switch", async () => {
+  for (const [sharing, liveOn] of [[true, true], [false, false], [true, new Error("unknown command")]] as const) {
+    localStorage.clear();
+    bridge(sharing, liveOn);
+    const view = render(<LiveSharingOffer />);
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith("shell_integration_status"));
+    await Promise.resolve();
+    view.unmount();
+    invoke.mockClear();
+  }
+  expect(toast).not.toHaveBeenCalled();
+  expect(localStorage.getItem(LIVE_SHARING_OFFER_KEY)).toBeNull();
 });

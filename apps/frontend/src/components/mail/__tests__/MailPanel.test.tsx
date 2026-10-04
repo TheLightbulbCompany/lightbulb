@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
-import { useState } from "react";
+import { act, fireEvent, render, renderHook, screen, waitFor, within } from "@testing-library/react";
+import { useEffect, useState } from "react";
 import { SWRConfig } from "swr";
 import { ApiError } from "@lightbulb/shared";
 
@@ -11,7 +11,7 @@ vi.mock("@clerk/nextjs", () => ({ useOrganization: () => ({ organization: { id: 
 const live = { onEvent: vi.fn(() => () => {}) };
 vi.mock("@/hooks/useLiveEvents", () => ({ useLiveEvents: () => live }));
 vi.mock("@/hooks/useAgents", () => ({ useAgents: () => ({ agents: [{ id: "a1", name: "Finance" }] }) }));
-const nav = vi.hoisted(() => ({ urls: [] as string[], setItem: (_: string | null) => {} }));
+const nav = vi.hoisted(() => ({ urls: [] as string[], setItem: (() => {}) as (item: string | null) => void }));
 vi.mock("@/lib/shellNav", () => ({
   navigateShell: (url: string) => {
     nav.urls.push(url);
@@ -21,6 +21,7 @@ vi.mock("@/lib/shellNav", () => ({
 }));
 
 import { MailPanel } from "../MailPanel";
+import { useNewMailCount } from "../useTeamMail";
 
 const ADDR = "agents@acme.thelightbulb.company";
 const MEETING = "11111111-1111-4111-8111-111111111111";
@@ -43,7 +44,7 @@ const page = { address: ADDR, meetings: [meeting], messages: [received, sent], n
 
 function Harness({ initial = null }: { initial?: string | null }) {
   const [item, setItem] = useState<string | null>(initial);
-  nav.setItem = setItem;
+  useEffect(() => { nav.setItem = setItem; }, []);
   return <MailPanel item={item} />;
 }
 
@@ -165,6 +166,15 @@ describe("MailPanel", () => {
     expect(row("mail:k2")).toHaveAttribute("data-new", "true"); // the dot stays while open
   });
 
+  it("shows nothing as new on a device's first visit, and stores the newest received time", async () => {
+    mockGet.mockResolvedValue(page);
+    renderMail();
+    await screen.findByText("pat@acme.com");
+    expect(row("mail:k2")).not.toHaveAttribute("data-new");
+    await waitFor(() => expect(window.localStorage.getItem("lightbulb.mail.seen.org_1")).toBe(received.at));
+    expect(row("mail:k2")).not.toHaveAttribute("data-new");
+  });
+
   it("shows the address and how to use it when nothing has arrived", async () => {
     mockGet.mockResolvedValue({ address: ADDR, meetings: [], messages: [], next: null });
     renderMail();
@@ -211,5 +221,21 @@ describe("MailPanel", () => {
     mockGet.mockResolvedValue(page);
     fireEvent.click(within(alert).getByRole("button", { name: "Retry" }));
     expect(await screen.findByText("pat@acme.com")).toBeInTheDocument();
+  });
+
+  it("keeps the rail badge empty on a device's first load, then counts mail past the mark", async () => {
+    mockGet.mockResolvedValue(page);
+    const wrapper = ({ children }: { children: React.ReactNode }) =>
+      <SWRConfig value={{ provider: () => new Map() }}>{children}</SWRConfig>;
+    const first = renderHook(() => useNewMailCount(), { wrapper });
+    await waitFor(() => expect(window.localStorage.getItem("lightbulb.mail.seen.org_1")).toBe(received.at));
+    expect(first.result.current).toBe(0);
+    first.unmount();
+
+    const mark = hoursAgo(5);
+    window.localStorage.setItem("lightbulb.mail.seen.org_1", mark);
+    const later = renderHook(() => useNewMailCount(), { wrapper });
+    await waitFor(() => expect(later.result.current).toBe(1));
+    expect(window.localStorage.getItem("lightbulb.mail.seen.org_1")).toBe(mark); // only the panel moves it
   });
 });

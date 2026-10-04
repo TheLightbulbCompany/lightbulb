@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useSyncExternalStore } from "react";
+import { useEffect, useState, useSyncExternalStore } from "react";
 import useSWR from "swr";
 import useSWRInfinite from "swr/infinite";
 import { useOrganization } from "@clerk/nextjs";
@@ -8,7 +8,7 @@ import { ApiError } from "@lightbulb/shared";
 
 import { useApi } from "@/lib/api";
 import { useLiveEvents } from "@/hooks/useLiveEvents";
-import { isNew, type MailPage } from "./mailModel";
+import { isNew, newestReceived, type MailPage } from "./mailModel";
 
 export const INBOX_URL = "/agent-mail/inbox";
 const REFRESH_DEBOUNCE_MS = 400;
@@ -43,10 +43,12 @@ function useMailInvalidation(revalidate: () => unknown): void {
 export function useTeamMail() {
   const api = useApi();
   const orgId = useOrganization().organization?.id;
+  // "Now" for Today/Yesterday moves with each load, so a panel left open past midnight relabels on refresh.
+  const [loadedAt, setLoadedAt] = useState(() => Date.now());
   const inbox = useSWRInfinite<MailPage>(
     inboxKey(orgId),
     ([url]: [string, string]) => api.get(url) as Promise<MailPage>,
-    { revalidateOnFocus: true, shouldRetryOnError: false },
+    { revalidateOnFocus: true, shouldRetryOnError: false, onSuccess: () => setLoadedAt(Date.now()) },
   );
   useMailInvalidation(inbox.mutate);
   // No address yet: reading it creates the row; then the inbox answers.
@@ -56,7 +58,7 @@ export function useTeamMail() {
     ([url]: [string, string]) => api.get(url) as Promise<{ address: string }>,
     { revalidateOnFocus: true, shouldRetryOnError: false, onSuccess: () => void inbox.mutate() },
   );
-  return { orgId, inbox, noAddress, address };
+  return { orgId, inbox, noAddress, address, loadedAt };
 }
 
 // ---- "new": the newest received `at` this device has seen ---------------------
@@ -66,16 +68,22 @@ export function useTeamMail() {
 const SEEN_EVENT = "lightbulb:mail-seen";
 const seenKey = (orgId: string) => `lightbulb.mail.seen.${orgId}`;
 
-/** Epoch ms of the newest received mail seen here; 0 when never; null when storage is unavailable. */
+/** Epoch ms of the newest received mail seen here; null when never seen (or storage is unavailable): nothing is new. */
 export function readSeen(orgId: string | undefined): number | null {
   if (!orgId) return null;
   try {
-    const raw = window.localStorage.getItem(seenKey(orgId));
-    const at = raw ? Date.parse(raw) : 0;
-    return Number.isNaN(at) ? 0 : at;
+    const at = Date.parse(window.localStorage.getItem(seenKey(orgId)) ?? "");
+    return Number.isNaN(at) ? null : at;
   } catch {
     return null;
   }
+}
+
+/** Moves the mark to `newest`. A first load (no mark yet) stores it too, so a new device starts with nothing new. */
+export function advanceSeen(orgId: string, newest: number | null): void {
+  const seen = readSeen(orgId);
+  if (seen === null) writeSeen(orgId, newest ?? 0);
+  else if (newest !== null && newest > seen) writeSeen(orgId, newest);
 }
 
 export function writeSeen(orgId: string, at: number): void {
@@ -111,6 +119,10 @@ export function useNewMailCount(): number {
     { revalidateOnFocus: true, shouldRetryOnError: false },
   );
   useMailInvalidation(mutate);
+  const newest = data ? newestReceived(data.messages ?? []) : undefined;
+  useEffect(() => {
+    if (orgId && newest !== undefined && readSeen(orgId) === null) advanceSeen(orgId, newest);
+  }, [orgId, newest]);
   const seen = useSeen(orgId);
   return (data?.messages ?? []).filter((m) => isNew(m, seen)).length;
 }

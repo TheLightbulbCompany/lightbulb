@@ -21,7 +21,7 @@ import {
   type MailEntry,
   type MailFilter,
 } from "./mailModel";
-import { readSeen, useTeamMail, writeSeen } from "./useTeamMail";
+import { advanceSeen, readSeen, useTeamMail } from "./useTeamMail";
 
 const WIDE_PX = 840;
 
@@ -73,10 +73,9 @@ function useWide(ref: React.RefObject<HTMLElement | null>): boolean {
 export function MailPanel({ item, visible = true }: { item: string | null; visible?: boolean }) {
   const rootRef = useRef<HTMLDivElement>(null);
   const wide = useWide(rootRef);
-  const { orgId, inbox, noAddress, address } = useTeamMail();
+  const { orgId, inbox, noAddress, address, loadedAt: now } = useTeamMail();
   const { agents } = useAgents();
   const [filter, setFilter] = useState<MailFilter>("all");
-  const [now] = useState(() => Date.now());
 
   const pages = inbox.data;
   const meetings = useMemo(() => pages?.[0]?.meetings ?? [], [pages]);
@@ -96,9 +95,8 @@ export function MailPanel({ item, visible = true }: { item: string | null; visib
   if (!visible && snapshot !== undefined) setSnapshot(undefined);
   if (ready && snapshot === undefined) setSnapshot(readSeen(orgId));
   useEffect(() => {
-    if (!ready || !orgId || newest === null) return;
-    const seen = readSeen(orgId);
-    if (seen !== null && newest > seen) writeSeen(orgId, newest);
+    if (!ready || !orgId) return;
+    advanceSeen(orgId, newest);
   }, [ready, orgId, newest]);
   const newKeys = useMemo(
     () => new Set(entries.filter((e) => e.kind === "mail" && isNew(e.message, snapshot ?? null)).map((e) => e.key)),

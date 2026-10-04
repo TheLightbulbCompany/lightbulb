@@ -126,9 +126,19 @@ async def test_dispatch_meet_is_one_worker_per_room(monkeypatch):
     f = fake(monkeypatch)
     await lh.dispatch_meet("r1", {"a": 1})
     assert f.calls[0][1].room == "meet-dev-r1"
-    f.dispatched = [object()]  # a retried in_call finds the first dispatch
+    f.dispatched = [SimpleNamespace(agent_name="lightbulb-huddle")]  # a retried in_call finds the first dispatch
     await lh.dispatch_meet("r1", {"a": 1})
     assert len(f.calls) == 1
+
+
+async def test_dispatch_meet_ignores_the_default_dispatch_of_an_existing_room(monkeypatch):
+    """LiveKit lists one dispatch with no agent name for every room that exists. The bot's page
+    creates the meeting's room before in_call arrives, so that entry must not count as ours
+    (prod 2026-10-03: the worker was never sent and no agent joined the Meet)."""
+    f = fake(monkeypatch)
+    f.dispatched = [SimpleNamespace(agent_name="")]
+    await lh.dispatch_meet("r1", {"a": 1})
+    assert [c[0] for c in f.calls] == ["dispatch"] and f.calls[0][1].agent_name == "lightbulb-huddle"
 
 
 async def test_send_frames(monkeypatch):

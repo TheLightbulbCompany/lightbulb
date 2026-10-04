@@ -145,11 +145,13 @@ async def dispatch_ceo(room_id: str, metadata: dict) -> None:
 
 
 async def dispatch_meet(room_id: str, metadata: dict) -> None:
-    """One worker per meeting room: a retried in_call finds the first dispatch and adds none."""
+    """One worker per meeting room: a retried in_call finds the first dispatch and adds none.
+    LiveKit lists a default dispatch with no agent name for every room that exists, and the bot's
+    page creates the room before in_call arrives -- so only a dispatch of OUR agent counts."""
     room = meet_room_name(room_id)
     async with _api() as lk:
         try:
-            if await lk.agent_dispatch.list_dispatch(room):
+            if any(d.agent_name == AGENT_NAME for d in await lk.agent_dispatch.list_dispatch(room)):
                 return
         except api.TwirpError as e:
             if e.code != api.TwirpErrorCode.NOT_FOUND:  # no room yet: nothing dispatched

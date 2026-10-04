@@ -148,7 +148,8 @@ async def audio_mode(bot_id: str) -> str | None:
     """How a booked bot hands over sound: "separate" when it was created (or moved) with per-person
     audio, None for a bot older than that (the page then publishes the mixed stream)."""
     bot = await _call("GET", f"/api/v1/bot/{bot_id}/")
-    return "separate" if "audio_separate_raw" in (bot.get("recording_config") or {}) else None
+    # Recall echoes the key as null on a bot booked without it: only a value counts.
+    return "separate" if (bot.get("recording_config") or {}).get("audio_separate_raw") is not None else None
 
 
 async def reschedule(bot_id: str, *, room_id: str, meeting: dict) -> None:

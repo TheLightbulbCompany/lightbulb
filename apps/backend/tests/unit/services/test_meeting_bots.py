@@ -202,7 +202,17 @@ async def test_find_for_room_adopts_only_a_live_bot_of_this_booking(recall):
 
 async def test_audio_mode_reads_what_the_bot_was_booked_with(recall):
     calls, responses = recall
-    responses.extend([(200, {"id": "bot-1", "recording_config": {"audio_separate_raw": {}}}), (200, {"id": "bot-0"})])
+    responses.extend(
+        [
+            (200, {"id": "bot-1", "recording_config": {"audio_separate_raw": {}}}),
+            (200, {"id": "bot-0"}),
+            (
+                200,
+                {"id": "bot-2", "recording_config": {"audio_separate_raw": None}},
+            ),  # Recall's default for an older bot
+        ]
+    )
     assert await meeting_bots.audio_mode("bot-1") == "separate"
     assert await meeting_bots.audio_mode("bot-0") is None
+    assert await meeting_bots.audio_mode("bot-2") is None
     assert calls[0].method == "GET" and calls[0].url.path == "/api/v1/bot/bot-1/"

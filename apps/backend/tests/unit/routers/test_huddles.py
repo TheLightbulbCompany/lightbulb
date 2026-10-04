@@ -311,6 +311,7 @@ INTERNAL = [
         {"ownerId": "org_a", "speakerUserId": "user_a", "utterance": "hi", "roomToken": RT},
     ),
     (f"/api/v1/internal/huddles/{ROOM}/runs/{RUN}/abort", {"ownerId": "org_a", "roomToken": RT}),
+    (f"/api/v1/internal/huddles/{ROOM}/runs/{RUN}/no-post", {"ownerId": "org_a", "roomToken": RT}),
 ]
 
 
@@ -831,3 +832,20 @@ def test_a_late_answer_is_posted_into_the_room_by_its_agent(client):
 def test_a_late_answer_refuses_a_bad_room_token(client):
     body = {"ownerId": "org_a", "roomToken": "nope", "agentId": "agent-fin", "runId": "run-9", "answer": "x"}
     assert client.post(LATE, json=body, headers=W).status_code == 401
+
+
+def test_no_post_marks_the_rooms_run(client):
+    with patch.object(vc, "mark_no_post", AsyncMock(return_value=True)) as mark:
+        resp = client.post(INTERNAL[-1][0], json=INTERNAL[-1][1], headers=W)
+    assert resp.json() == {"noPost": True}
+    mark.assert_awaited_once_with("org_a", ROOM, RUN)
+
+
+def test_turn_passes_the_turns_other_requests_to_a_new_run_only(client):
+    lines = ['Ada is answering "the plan"']
+    resp, steer, dispatch = _turn(client, {**INTERNAL[1][1], "requests": lines, "steerRunId": RUN}, steered=None)
+    assert dispatch.await_args.kwargs["requests"] == lines
+    assert "requests" not in steer.await_args.kwargs
+    assert _turn(client, {**INTERNAL[1][1], "requests": ["x"] * 9})[0].status_code == 400
+    assert _turn(client, {**INTERNAL[1][1], "requests": ["x" * 201]})[0].status_code == 400
+    assert _turn(client, {**INTERNAL[1][1], "requests": [""]})[0].status_code == 400

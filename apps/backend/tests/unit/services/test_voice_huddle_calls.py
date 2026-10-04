@@ -359,6 +359,7 @@ def run_env():
         patch.object(vc.messaging_repo, "get_room", AsyncMock(return_value=ROOM_META)),
         patch.object(vc.messaging_repo, "list_members", AsyncMock(return_value=MEMBERS)),
         patch.object(vc.messaging_repo, "put_voice_run", AsyncMock()),
+        patch.object(vc.messaging_repo, "update_voice_run", AsyncMock(return_value=True)),
         patch.object(vc.messaging_repo, "get_voice_run", AsyncMock(return_value=None)),
         patch.object(vc.openclaw_work, "room_history", history),
         patch.object(vc.messaging, "human_display_name", AsyncMock(return_value="Bea")),
@@ -483,9 +484,10 @@ async def test_steer_lands_in_the_agents_live_voice_run(run_env):
     assert await _steer() == {"runId": "run-1", "agentId": "fin-1", "steered": True}
     assert run_env.await_args.args[1] == "/plugins/lightbulb-channel/runs/run-1/steer"
     assert run_env.await_args.kwargs["json_body"] == {"text": "Bea (voice): also X"}
-    vc.messaging_repo.put_voice_run.assert_awaited_once_with(
-        "org_a", "run-1", {**VOICERUN, "speakerUserId": "user_b", "speakerName": "Bea"}
+    vc.messaging_repo.update_voice_run.assert_awaited_once_with(
+        "org_a", "run-1", {"speakerUserId": "user_b", "speakerName": "Bea"}
     )
+    vc.messaging_repo.put_voice_run.assert_not_awaited()  # never a whole-row rewrite: it would drop noPost
 
 
 async def test_steer_into_a_finished_run_falls_back(run_env):
@@ -571,8 +573,26 @@ async def test_live_an_opening_name_is_the_fast_path_and_skips_jev(live_env):
 
 async def test_live_every_addressed_or_relayed_agent_skips_jev_and_the_first_named_speaks(live_env):
     got, decide = await _live("x", address=_addressed(agents=["fin-1", "ceo-1"]))
-    assert got == {"agentId": "fin-1", "agentIds": ["fin-1", "ceo-1"]}  # in the order named, for the queue
+    assert got == {
+        "agentId": "fin-1",
+        "agentIds": ["fin-1", "ceo-1"],  # in the order named
+        "requests": [{"agentId": "fin-1", "task": "x"}, {"agentId": "ceo-1", "task": "x"}],  # no tasks: the whole line
+    }
     decide.assert_not_awaited()
+
+
+async def test_live_several_addressed_agents_come_back_as_one_request_each(live_env):
+    # live_env's Jev is down: nobody is cut, each agent's request is the whole line
+    line = "Finance, what's the burn. Ada, what's the plan"
+    got, decide = await _live(line, humans=2)
+    assert got["agentIds"] == ["fin-1", "ceo-1"]
+    assert got["requests"] == [{"agentId": "fin-1", "task": line}, {"agentId": "ceo-1", "task": line}]
+    decide.assert_not_awaited()
+    cut = _addressed(agents=["fin-1", "ceo-1"]) | {"tasks": {"fin-1": "what's the burn"}}
+    got, _ = await _live(line, humans=2, address=cut)
+    assert got["requests"] == [{"agentId": "fin-1", "task": "what's the burn"}, {"agentId": "ceo-1", "task": line}]
+    one, _ = await _live("Finance, what's the burn?", humans=2)
+    assert "requests" not in one  # one agent: today's answer shape
 
 
 async def test_live_an_unfinished_line_is_held_but_still_routed(live_env):
@@ -770,3 +790,43 @@ def test_meeting_actor_maps_only_non_members_of_a_meeting():
     assert vc._meeting_actor(members, "meet:r", False, "Priya") == ("meet:r", None)
     assert vc._meeting_actor(members, "user_m", True, "Priya") == ("user_m", None)
     assert vc._meeting_actor(members[1:], "Priya", True) == ("Priya", "Priya")  # no owner member: 403s as before
+
+
+async def test_live_two_names_with_nothing_to_cut_send_no_requests(live_env):
+    got, _ = await _live("Finance and Ada?", humans=2)
+    assert got["agentIds"] == ["fin-1", "ceo-1"] and "requests" not in got
+
+
+async def test_voice_run_reads_what_teammates_were_asked_in_the_same_breath(run_env):
+    await vc.dispatch_voice_run(
+        call=WINDOW, run_id="run-1", agent_id="fin-1", speaker_id="user_b", utterance="the burn",
+        transcript="", requests=['Ada is answering "the plan"'],
+    )  # fmt: skip
+    text = run_env.await_args.kwargs["json_body"]["request"]["input"]
+    assert text.endswith(
+        '[Asked in the same breath; teammates are on these:\nAda is answering "the plan"]\n\nBea (voice): the burn'
+    )
+
+
+async def test_no_post_marks_this_rooms_voice_run_only(run_env):
+    vc.messaging_repo.get_voice_run.return_value = {"runId": "run-1", "roomId": "room-1", "agentId": "fin-1"}
+    assert await vc.mark_no_post("org_a", "room-1", "run-1") is True
+    vc.messaging_repo.update_voice_run.assert_awaited_once_with("org_a", "run-1", {"noPost": True})
+    vc.messaging_repo.put_voice_run.assert_not_awaited()
+    assert await vc.mark_no_post("org_a", "room-2", "run-1") is False  # another room's run
+
+
+async def test_no_post_on_a_missing_or_expired_run_writes_nothing(run_env):
+    vc.messaging_repo.get_voice_run.return_value = None
+    assert await vc.mark_no_post("org_a", "room-1", "run-1") is False
+    vc.messaging_repo.get_voice_run.return_value = {"roomId": "room-1"}
+    vc.messaging_repo.update_voice_run.return_value = False  # expired between the read and the SET
+    assert await vc.mark_no_post("org_a", "room-1", "run-1") is False
+    vc.messaging_repo.put_voice_run.assert_not_awaited()
+
+
+async def test_a_turns_retry_never_reads_or_rewrites_no_post(run_env):
+    """The row write is one atomic SET of the turn's own fields (the repo test pins that a mark survives it)."""
+    await _dispatch()
+    assert "noPost" not in vc.messaging_repo.put_voice_run.await_args.args[2]
+    vc.messaging_repo.get_voice_run.assert_not_awaited()

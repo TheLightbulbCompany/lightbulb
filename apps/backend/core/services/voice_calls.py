@@ -688,6 +688,7 @@ async def dispatch_voice_run(
     utterance: str,
     transcript: str,
     speaker_name: str | None = None,
+    requests: list[str] | None = None,
 ) -> dict:
     """One voice request = one ordinary run on agent:{agent}:lightbulb:channel:{room}. run_id is the
     worker's, reused on every retry, so a delivered-but-timed-out invoke is replayed, never re-run."""
@@ -701,6 +702,9 @@ async def dispatch_voice_run(
     )
     spoken = transcript[-_TRANSCRIPT_CHARS:].strip()
     session_id = f"agent:{agent_id}:lightbulb:channel:{room_id}"  # == the bridge's turn.lightbulb_session_key
+    # Conversation engine §3.4: the other asks of the same spoken turn, so this agent answers only its own.
+    also = "\n".join((requests or [])[:8])
+    asked = f"[Asked in the same breath; teammates are on these:\n{also}]\n\n" if also else ""
     body = {
         "identity": {
             "runId": run_id,
@@ -712,7 +716,7 @@ async def dispatch_voice_run(
         },
         "request": {
             "input": f"[Live voice in #{meta.get('name') or 'this room'}. Spoken since you last spoke, newest last:\n"
-            f"{spoken}]\n\n{name} (voice): {utterance}",
+            f"{spoken}]\n\n{asked}{name} (voice): {utterance}",
             "instructions": TURN_NOTE,
             "session_id": session_id,
             "frames": {
@@ -733,9 +737,9 @@ async def dispatch_voice_run(
     while history and messaging.json_body_size(body) > openclaw_work._INGRESS_MAX_BYTES:
         history.pop(0)
     # Before the POST: the voice-profile route (C8) resolves the speaker from this row.
-    await messaging_repo.put_voice_run(
-        owner_id, run_id, {"roomId": room_id, "agentId": agent_id, "speakerUserId": speaker_id, "speakerName": name}
-    )
+    fields = {"roomId": room_id, "agentId": agent_id, "speakerUserId": speaker_id, "speakerName": name}
+    # An atomic SET of these fields: a /turns retry cannot drop a "don't post that" mark, whenever it lands.
+    await messaging_repo.put_voice_run(owner_id, run_id, fields)
     try:
         resp = await _runtime(owner_id, _BRIDGE_RUNS, body)
         ok = resp.status_code in (200, 202)  # 200 = replayed: a retry of a run the bridge already has
@@ -774,9 +778,8 @@ async def steer_voice_run(
     if await _run_control(call["ownerId"], run_id, "steer", {"text": f"{name} (voice): {utterance}"}) != 202:
         return None
     # The latest requester is who C8 checks: a guest's steer must not borrow the member's rights.
-    await messaging_repo.put_voice_run(
-        call["ownerId"], run_id, {**row, "speakerUserId": speaker_id, "speakerName": name}
-    )
+    # An atomic SET, not a whole-row put: a noPost mark landing after our read must survive.
+    await messaging_repo.update_voice_run(call["ownerId"], run_id, {"speakerUserId": speaker_id, "speakerName": name})
     return {"runId": run_id, "agentId": agent_id, "steered": True}
 
 
@@ -786,6 +789,19 @@ async def abort_voice_run(owner_id: str, room_id: str, run_id: str) -> bool:
     if not row or row.get("roomId") != room_id:
         return False
     return await _run_control(owner_id, run_id, "abort", {}) == 202
+
+
+async def mark_no_post(owner_id: str, room_id: str, run_id: str) -> bool:
+    """ "Don't post that" (conversation engine §3.6): this room's voice run is never posted late, by the
+    worker or the bridge (messaging.create_agent_message reads the flag). The worker re-sends it after a
+    /turns retry: every writer of this row uses an atomic SET."""
+    row = await messaging_repo.get_voice_run(owner_id, run_id)
+    if not row or row.get("roomId") != room_id:
+        return False
+    if not await messaging_repo.update_voice_run(owner_id, run_id, {"noPost": True}):
+        return False
+    put_metric("voice.huddle.no_post")
+    return True
 
 
 def _transcript_history(
@@ -901,7 +917,15 @@ async def route_live_line(
     targets = messaging.select_dispatch_targets(members, named, None, room_kind=meta.get("kind"))
     if addressed := [t["agentId"] for t in targets if t["eventKind"] == "user_request"]:
         # In the order named: the worker drives one voice at a time and can queue the rest.
-        return done(*[a for a in addressing["agents"] if a in addressed], *sorted(set(addressed) - set(named_ids)))
+        order = [*[a for a in addressing["agents"] if a in addressed], *sorted(set(addressed) - set(named_ids))]
+        routed = done(*order)
+        tasks = addressing.get("tasks")
+        if len(order) >= 2 and tasks != {}:  # {} = names and nothing else ("Forge and Friday?"): no request
+            # Conversation engine §3.2: one request per agent. Its task is its own part of the line, in the
+            # speaker's words; an agent the stage found no part for gets the whole line.
+            tasks = tasks or {}
+            routed["requests"] = [{"agentId": a, "task": tasks.get(a) or utterance} for a in order]
+        return routed
     candidates = [t["agentId"] for t in targets]
     if not candidates:
         return done()

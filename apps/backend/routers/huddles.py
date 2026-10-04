@@ -87,6 +87,8 @@ class TurnBody(BaseModel):
     transcript: str = Field(default="", max_length=12_000)
     steerRunId: uuid.UUID | None = None
     steerOnly: bool = False  # steer steerRunId or do nothing: lines said in the room never start a run (v2 §4.3)
+    # The same spoken turn's other asks ("Forge is answering ..."), for a new run's input (engine §3.4).
+    requests: list[Annotated[str, Field(min_length=1, max_length=200)]] = Field(default_factory=list, max_length=8)
 
 
 class RouteBody(BaseModel):
@@ -271,7 +273,9 @@ async def turn(call_id: str, body: TurnBody):
             return steered
     if body.steerOnly:
         return {"runId": str(body.steerRunId), "agentId": body.agentId, "steered": False}
-    return await voice_calls.dispatch_voice_run(run_id=str(body.runId), transcript=body.transcript, **args)
+    return await voice_calls.dispatch_voice_run(
+        run_id=str(body.runId), transcript=body.transcript, requests=body.requests, **args
+    )
 
 
 @router.post("/internal/huddles/{room_id}/route", dependencies=[_Worker])
@@ -307,6 +311,14 @@ async def abort(room_id: str, run_id: str, body: RoomBody):
     room_id = _room_id(room_id)
     _require_room_token(body.roomToken, room_id, body.ownerId)
     return {"aborted": await voice_calls.abort_voice_run(body.ownerId, room_id, run_id)}
+
+
+@router.post("/internal/huddles/{room_id}/runs/{run_id}/no-post", dependencies=[_Worker])
+async def no_post(room_id: str, run_id: str, body: RoomBody):
+    """ "Don't post that": the run's answer never reaches the room late, by either door."""
+    room_id = _room_id(room_id)
+    _require_room_token(body.roomToken, room_id, body.ownerId)
+    return {"noPost": await voice_calls.mark_no_post(body.ownerId, room_id, run_id)}
 
 
 @router.post("/internal/huddles/calls/{call_id}/end", dependencies=[_Worker])

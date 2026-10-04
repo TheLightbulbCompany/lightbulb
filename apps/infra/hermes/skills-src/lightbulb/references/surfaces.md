@@ -98,9 +98,9 @@ private: it never appears in Lightbulb, and you cannot read it. If a person asks
 why their session is missing, tell them to start it with `lightbulb claude` (or
 `lightbulb codex`) or from **New session**.
 
-**New session first message**: it is optional. With none, the app starts the tool
-(Claude Code or Codex) in the chosen approved folder and shows the tool's own start
-screen in the session panel. The person can then type anything, including `/resume`.
+**New session**: has no first message. The person picks the tool (Claude Code or
+Codex) and the approved folder, then presses Start. The panel shows the tool's own
+start screen, where they can type anything, including `/resume`.
 
 Rooms' **Devices & sessions** panel lists human-shared Claude/Codex sessions;
 opening one from that list opens the session in that room's right column.

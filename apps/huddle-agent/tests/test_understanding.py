@@ -2286,6 +2286,66 @@ async def test_noise_never_drops_an_announcement_and_real_words_do(capsys):
     h.on_active_speakers({"u2"})  # sound without words
     assert h._voice is not None and h._voice.announce is not None
     assert metric_count(capsys, "live.announce.aborted") == 0
-    h.on_interim_transcript("u2", "Aden", "hang on a second")
+    h.on_speech("u2", True)  # the transcriber's speech detector, before any word
     assert metric_count(capsys, "live.announce.aborted") == 1
     assert h._news.get("forge"), "kept: said later"
+
+
+async def test_a_person_is_talking_until_their_line_is_heard_and_never_after():
+    h, room, backend, lives, clock, log = await three()
+    talks(h, "u2", "Aden")
+    assert h._speaking == {"u2"}
+    await h.on_final_transcript("u2", "Aden", "nothing for the agents")
+    assert h._speaking == set(), (
+        "the final ends it even when the detector never said so"
+    )
+    talks(h, "u2", "Aden")
+    h.stt_stopped("u2")
+    assert h._speaking == set(), "a transcriber that stopped holds nobody as talking"
+    h.on_speech("u9", True)
+    assert h._voiced == set(), "only people in the call"
+
+
+async def test_the_floor_never_moves_in_the_middle_of_a_streamed_answer():
+    # review: the rest would be announced later together with the sentences already said
+    h, room, backend, lives, clock, log = await floor_open()
+    backend.route_extra = ops(
+        requests=[
+            ("forge", "Aden's email", "floor"),
+            ("pulse", "the GTM update", "fit"),
+        ]
+    )
+    await say(h, "u1", "check Aden's email, and what is the GTM update")
+    forge_run = run_of(backend, "forge")
+    h.on_data(
+        None,
+        "call.frame",
+        packet(
+            frame(
+                forge_run,
+                "forge",
+                {"type": "chunk", "content": "Mail one is in. ", "seq": 1},
+            )
+        ),
+    )
+    answer(h, run_of(backend, "pulse"), "pulse", "GTM is on track.")
+    await quiet(h, clock, 3)
+    assert lives[-1].agent_id == "forge" and h._voice.path != "announce", (
+        "Forge is mid-answer: Pulse waits"
+    )
+    h.on_data(
+        None,
+        "call.frame",
+        packet(frame(forge_run, "forge", {"type": "run_ended", "seq": 2})),
+    )
+    await quiet(h, clock, 3)
+    assert lives[-1].agent_id == "pulse" and h._voice.path == "announce"
+
+
+def test_the_status_list_is_not_for_reading_out_and_a_slow_run_is_not_lost():
+    from huddle_agent import frames
+
+    assert "say none of it" in h_mod.REQUESTS_NOTE
+    assert frames.STALE_TURN_SECONDS >= 300, (
+        "a run silent for 135 s then answered (10-04 prod test)"
+    )

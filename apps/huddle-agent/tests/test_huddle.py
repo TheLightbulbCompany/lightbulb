@@ -57,10 +57,10 @@ class FakeRoom:
 
 
 def talks(h, who, name="Someone", words="hang on a second"):
-    """A person starts talking: the SFU hears sound and the transcriber hears words. Sound alone (typing, a
-    fan) is nobody talking."""
+    """A person starts talking: the SFU hears sound and the transcriber's speech detector hears speech,
+    before any word is transcribed. Sound alone (typing, a fan) is nobody talking."""
     h.on_active_speakers({who})
-    h.on_interim_transcript(who, name, words)
+    h.on_speech(who, True)
 
 
 def ops(requests=(), social=None, more=False, cancel=(), steer=()):

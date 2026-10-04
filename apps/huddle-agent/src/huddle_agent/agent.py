@@ -392,9 +392,15 @@ async def entrypoint(ctx: JobContext) -> None:
             pusher = asyncio.create_task(push())
             try:
                 async for ev in stream:
-                    if not ev.alternatives:
-                        continue
                     try:
+                        # the transcriber's own speech detector: it answers to speech, not to sound, and it
+                        # fires before any word is transcribed (who is talking, for the floor)
+                        if ev.type == stt.SpeechEventType.START_OF_SPEECH:
+                            huddle.on_speech(p.identity, True)
+                        elif ev.type == stt.SpeechEventType.END_OF_SPEECH:
+                            huddle.on_speech(p.identity, False)
+                        if not ev.alternatives:
+                            continue
                         if ev.type == stt.SpeechEventType.FINAL_TRANSCRIPT:
                             await huddle.on_final_transcript(
                                 p.identity,

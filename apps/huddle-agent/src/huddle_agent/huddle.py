@@ -374,8 +374,8 @@ class Huddle:
         # run id -> (attempts, last at): a requested delivery whose voice did not open (engine §3.5)
         self._delivery_tries: dict[str, tuple[int, float]] = {}
         self._level: set[str] = set()  # humans in the SFU's active speakers: sound, maybe not speech
-        # humans talking now: the SFU hears them AND the transcriber has words of theirs in flight
-        self._speaking: set[str] = set()
+        self._voiced: set[str] = set()  # humans the transcriber's speech detector hears speaking
+        self._speaking: set[str] = set()  # humans talking now: both of the above
         self._last_speaker: str | None = None
         self._last_agent: dict[
             str, str
@@ -719,7 +719,7 @@ class Huddle:
             emit_metric("live.stt.ghost_dropped", 1, "Count")
             text = ""
         began = self._utter_from.pop(identity, None)
-        self._talking_changed()  # the utterance is over
+        self.on_speech(identity, False)  # the utterance is over, whatever the detector last said
         if heard := self._final_heard.pop(identity, None):
             heard.set()  # a delegation waiting for this final looks again (understanding §4.6)
         cut = self._cut_by.pop(identity, None)
@@ -982,10 +982,8 @@ class Huddle:
         (GPT-Live hears them and handles their barge-in itself) who says a name, Lightbulb, a halt or
         real speech over it. Once per utterance; the final decides what happens next."""
         v, text = self._voice, text.strip()
-        if text and identity not in self._utter_from:
-            self._utter_from[identity] = self._clock()
-            self._talking_changed()  # their first words: they talk (may drop or cut an announcement)
-            v = self._voice
+        if text:
+            self._utter_from.setdefault(identity, self._clock())
         if v and text and identity == v.speaker:
             v.handoff = None  # the person the agent asked is answering
         if (
@@ -1637,13 +1635,22 @@ class Huddle:
         self._level = {i for i in identities if i in self._people}
         self._talking_changed()
 
+    def on_speech(self, identity: str, started: bool) -> None:
+        """The transcriber's speech detector: `identity` began or stopped speaking. It fires before the first
+        word is transcribed, so nobody is talked over while their sentence is still being heard."""
+        if started and identity in self._people:
+            self._voiced.add(identity)
+        else:
+            self._voiced.discard(identity)
+        self._talking_changed()
+
     def _talking_changed(self) -> None:
-        """Who is talking: the SFU hears sound from them and the transcriber has words of theirs in flight
-        (an interim, no final yet). Sound alone (typing, a fan, an open laptop microphone) is nobody talking:
-        it neither holds an answer back nor drops one (10-04 prod test: three announcements dropped by noise).
+        """Who is talking: the SFU hears sound from them and the transcriber's speech detector hears speech
+        (`on_speech`). Sound alone (typing, a fan, an open laptop microphone) is nobody talking: it neither
+        holds an answer back nor drops one (10-04 prod test: three announcements dropped by noise).
         A person talking over a proactive announcement: before its audio, it is dropped and the news kept;
         during it, it is cut and the news stays consumed."""
-        humans = {i for i in self._level if i in self._utter_from}
+        humans = self._level & self._voiced
         if humans or self._speaking:
             self._last_heard = self._clock()
         started, self._speaking = humans - self._speaking, humans
@@ -2567,6 +2574,7 @@ class Huddle:
     def stt_stopped(self, identity: str) -> None:
         """That person's STT stream ended (restart or unpublish): its utterance start goes with it."""
         self._utter_from.pop(identity, None)
+        self.on_speech(identity, False)
 
     def _voice_notice(self, p: dict) -> None:
         """C3 notices: tell the agent's open voice, then every person (C5)."""
@@ -2710,6 +2718,9 @@ class Huddle:
             # (10-04 prod test: two answers sat unheard for two minutes). That run goes on without its voice
             # and its answer is said in its turn.
             and self._quiet(v, now)
+            # never in the middle of an answer the floor voice is saying sentence by sentence: the rest would
+            # be announced later with the part already said (`spoken` is reset when the run goes back to a tool)
+            and not any(r.run_id == v.driven_run and r.spoken for r in self._runs.running(v.agent_id))
             and not v.posting
             and v.announce is None
             and not self._lock.locked()

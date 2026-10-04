@@ -128,6 +128,9 @@ ACK_QUIET_S = 1.0  # understanding §4.6: the open voice says who is on what onc
 SAID_ORDER_WAIT_S = 10.0  # a line waits this long at most for its speaker's earlier line to be applied
 CUT_HANDLED_S = 2.0  # a cut answer is posted this long after its cutter's final: /route answered, a call-off applied
 CUT_WAIT_S = 10.0  # ...or this long after the cut when no final ever comes
+# A Live voice's own speaker cut its answer and it made no reply to them: said once more, in these words.
+RESAY = "Your answer was cut off before it was heard, by talk that was not for you. Say it again now: {answer}"
+HEARD_SHARE = 0.8  # ...and it was heard once this much of it was said to the end, in one message or several
 MISSED_SECONDS = 10  # live.route.missed: nobody answered, then the same person names an agent or Lightbulb
 UNWANTED_SECONDS = 5  # live.route.unwanted: a Jev-routed voice the asker stops or switches away from this soon
 LATE_LINES = "Said in the room since you were asked (may or may not concern you):\n"
@@ -340,6 +343,16 @@ class _Voice:
     label: str = ""
     followed_at: float = 0.0
     saying: str | None = None  # a meeting: the run whose answer it is saying now (`_talked_over`)
+    # Live's model stops for its own speaker's sound, so they can cut its answer and the worker never cut it:
+    # `answer` is the ended run's (run_id, request, text, at, speaker) until it is known heard; `unheard`: its
+    # speech was interrupted, or their sound came before a word of it; `replied`: it then answered them (they
+    # were talking to it); `resaid`: it was said again once; `spoke`: its messages since the answer was handed over.
+    answer: tuple | None = None
+    said: str = ""  # the parts of the run's answer it has said to their end (sentences come as several messages)
+    unheard: bool = False
+    replied: bool = False
+    resaid: bool = False
+    spoke: int = 0
 
 
 class Huddle:
@@ -799,6 +812,9 @@ class Huddle:
         if (v := self._voice) and v.told:  # being said as the call ends: not said to its end (§4.5)
             held += [(v.agent_id, n) for n in v.told]
             v.told = []
+        if v and v.answer and (v.unheard or v.resaid):  # cut by its own speaker; a second saying not yet heard
+            held.append((v.agent_id, v.answer))
+            v.answer = None
         for agent_id, n in held + [(a, n) for a, news in self._news.items() for n in news]:
             await self._late_answer(agent_id, n)  # unheard here: the room gets it
         self._news.clear()
@@ -821,6 +837,9 @@ class Huddle:
             heard.set()  # a delegation waiting for this final looks again (understanding §4.6)
         cut = self._cut_by.pop(identity, None)
         v = self._voice
+        if v and v.answer and identity == v.speaker and not v.spoke and v.agent_state != "speaking":
+            # their sound came before a word of its answer: Live's model drops its reply for it (`_cut_answer`)
+            v.unheard = True
         if not text:
             if (
                 v and cut == v.agent_id and v.live is not None
@@ -1733,10 +1752,13 @@ class Huddle:
             heard_at=heard_at,
         )
 
-    def on_agent_said(self, agent_id: str, text: str) -> None:
+    def on_agent_said(self, agent_id: str, text: str, interrupted: bool = False) -> None:
         """What a voice said, as GPT-Live heard itself say it: every later seed and since_agent hears it,
-        tagged with the person it was talking to ("Forge → Leo: ...", routing v2 §5)."""
+        tagged with the person it was talking to ("Forge → Leo: ...", routing v2 §5). `interrupted`: its
+        speaker's sound stopped it before the end (the SDK's mark on the message)."""
         v = self._floor_voice(agent_id)
+        if v and not mixed_meet(v.speaker):
+            self._answer_message(v, text, interrupted)
         to = self._with(v) if v else ""
         self._transcript.add_agent(
             agent_id, self._agent_name(agent_id), text, at=self._clock(), to=to
@@ -2488,6 +2510,7 @@ class Huddle:
         (default: the newest); a line said at or before it, even one still at /route, starts nothing for it."""
         if v := self._floor_voice(agent_id):
             v.driven = None
+            v.answer = None  # a stop said over its answer: neither said again nor posted (§4.8)
             v.last_activity = self._clock()
             self._live_call(v, "interrupt")
         aborted = [run.run_id for run in self._runs.running(agent_id)]
@@ -2669,6 +2692,14 @@ class Huddle:
 
     def say(self, run: Run, text: str, final: bool) -> None:
         if v := self._same_session(run):
+            if v.saying != run.run_id and (v.answer is None or v.answer[0] != run.run_id):
+                if any(r.by == "follow" for r in self._requests.by_run(run.run_id)):
+                    # What cut the answer went on from its request (a correction, a follow-up): this run's
+                    # answer replaces it. Posting the stale one beside it would be two answers to one question.
+                    v.answer = None
+                self._settle_answer(v)  # the answer before this one: on the record if it was cut
+                v.unheard = v.replied = v.resaid = False
+                v.said = ""
             v.saying = run.run_id
             self._live_call(
                 v, "append_commentary", text, delegation_id=run.delegation_id
@@ -2686,6 +2717,9 @@ class Huddle:
                     "That request finished without a spoken result.",
                     delegation_id=run.delegation_id,
                 )
+            elif answer and not mixed_meet(v.speaker) and not _words_in(answer, v.said, HEARD_SHARE):
+                # not all said yet (its sentences were streamed while it ran): pending until it is
+                v.answer, v.spoke = (run.run_id, run.request, answer, self._clock(), run.speaker), 0
             self._requests.delivered({run.run_id})
         elif v := self._floor_voice(run.agent_id):
             if answer:
@@ -2937,6 +2971,8 @@ class Huddle:
         ):
             self._talked_over(v)
             return
+        if not mixed:
+            self._cut_answer(v, now)
         self._flush_lines(v)
         self._acknowledge(v, now)
         d = v.driven
@@ -3014,6 +3050,72 @@ class Huddle:
         )
         if over or said or (now - v.last_activity >= IDLE_SECONDS and not busy):
             await self.end_exchange(only=v, keep_queue=said and not over)
+
+    def _answer_message(self, v: _Voice, text: str, interrupted: bool) -> None:
+        """A Live voice's message while it says (or has just been handed) a run's answer."""
+        run = self._runs.get(v.saying or "")
+        ref = v.answer[2] if v.answer else run.text if run else ""
+        if v.answer:
+            v.spoke += 1
+        if interrupted:
+            v.unheard = True
+        elif ref and _words_in(text, ref, 0.5):
+            # A part of the answer, said to its end. A long answer comes as several messages, so the first is
+            # only its start: it is heard once the parts together cover it (a later part may still be cut).
+            v.said += " " + text
+            if v.answer and _words_in(v.answer[2], v.said, HEARD_SHARE):
+                v.unheard, v.answer = False, None
+        elif v.unheard:
+            v.replied = True  # it answered who cut it: they were talking to it
+
+    def _keep_answer(self, v: _Voice) -> None:
+        """Its cut answer goes on the record like a cut announcement (§4.8): the room gets it, a meeting keeps
+        it unsaid, unless its cutter calls it off."""
+        emit_metric("live.answer.cut", 1, "Count")
+        held = self._cut_off.get(v.agent_id, ([], "", 0.0))[0]
+        self._cut_off[v.agent_id] = (held + [v.answer], v.speaker, self._clock())
+        v.answer = None
+
+    def _settle_answer(self, v: _Voice) -> None:
+        """Its voice moves on (a new answer, a close): a cut answer is kept, a heard one forgotten. Said again
+        and not yet known heard counts as cut: the second saying may never have reached anyone."""
+        if v.answer and (v.unheard or v.resaid):
+            self._keep_answer(v)
+        v.answer = None
+
+    def _cut_answer(self, v: _Voice, now: float) -> None:
+        """A Live voice's answer that its own speaker's sound cut. The model stops for them by itself, so the
+        worker never cut it and nothing kept it (10-04 prod Meet: a noisy microphone's junk lines landed as
+        Forge began, and the answer was gone). Once they are quiet and their words are handled: it made no reply,
+        so the sound was not for it and it says the answer once more; it replied, or was cut a second time, and
+        the answer goes on the record. Never lost, never said a third time."""
+        n = v.answer
+        if n is None or v.agent_state in ("speaking", "thinking") or not self._quiet(v, now):
+            return
+        if not v.unheard:
+            if now - n[3] >= CUT_WAIT_S:
+                v.answer = None  # nothing cut it: said, maybe in its own words
+            return
+        who = v.speaker
+        if (
+            who in self._speaking
+            or now - self._final_at.get(who, -math.inf) < CUT_HANDLED_S
+            or self._understanding.get(who)
+            or who in self._held
+            or self._runs.running(v.agent_id)
+        ):
+            return  # their words are still coming, at /route, or already its next request: a stop may be in them
+        if v.replied or v.resaid:
+            self._keep_answer(v)
+        elif (
+            now - n[3] >= CUT_HANDLED_S
+            and now - self._last_heard >= (MEET_QUIET_S if self.setting == "meeting" else REQUEST_QUIET_S)
+        ):
+            v.resaid, v.unheard, v.spoke, v.said = True, False, 0, ""
+            v.answer = (*n[:3], now, n[4])
+            emit_metric("live.answer.resaid", 1, "Count")
+            self._note(f"[{self._agent_name(v.agent_id)} says its cut answer again]")
+            self._live_call(v, "append_commentary", RESAY.format(answer=n[2]), delegation_id=None)
 
     def _talked_over(self, v: _Voice) -> None:
         """A meeting voice hears nobody, so the worker stops it for someone who keeps talking over it, as the
@@ -3339,6 +3441,8 @@ class Huddle:
 
     async def _close_live(self, v: _Voice | None) -> None:
         """Close a voice that no longer holds the floor; its GPT-Live seconds go to the window."""
+        if v is not None:
+            self._settle_answer(v)  # cut and never said again: on the record
         if v is None or v.live is None:
             return
         if (

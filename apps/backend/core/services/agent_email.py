@@ -69,12 +69,19 @@ async def public_for(address: str) -> str:
 
 
 _MAIL_CHANGED_TIMEOUT_S = 3.0
+_nudges: set[asyncio.Task] = set()
 
 
 async def mail_changed(owner_id: str) -> None:
     """Tell the workspace's open Mail panels to re-read: a mail was stored or a meeting changed.
-    Best-effort, bounded, and never raises -- callers sit on SES inbound and under the meeting
-    lease, and the panel also re-reads on focus."""
+    Fire-and-forget: the publish runs off the caller's path (SES inbound, the meeting lease), is
+    bounded, and never raises. The panel debounces repeats and also re-reads on focus."""
+    task = asyncio.create_task(_publish_mail_changed(owner_id))
+    _nudges.add(task)
+    task.add_done_callback(_nudges.discard)
+
+
+async def _publish_mail_changed(owner_id: str) -> None:
     from core.services.live_events import publish_owner_users
     from core.services.messaging import make_live_event
 

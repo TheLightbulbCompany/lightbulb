@@ -206,8 +206,14 @@ def _parts(*choices):
 
 
 def _asked_parts(decide):
+    import json
+
     questions = decide.await_args.args[1]
-    return [q["instructions"].rsplit("The part: ", 1)[1] for k, q in sorted(questions.items()) if k.startswith("p")]
+    return [
+        json.loads(q["instructions"].rsplit("The part: ", 1)[1].removesuffix("."))
+        for k, q in sorted(questions.items())
+        if k.startswith("p")
+    ]
 
 
 async def test_live_multi_name_line_gets_each_agents_own_part_from_the_same_call():
@@ -221,9 +227,9 @@ async def test_live_multi_name_line_gets_each_agents_own_part_from_the_same_call
     }
     decide.assert_awaited_once()  # the parts ride the existing addressing call
     assert _asked_parts(decide) == [
-        "'an update on the go-to-market strategy'.",
-        "'what our PRs look like'.",
-        "'a summary of our rooms and the last conversation from the last day'.",
+        "an update on the go-to-market strategy",
+        "what our PRs look like",
+        "a summary of our rooms and the last conversation from the last day",
     ]
     # three names: each alone, each pair, everyone, nobody
     assert set(decide.await_args.args[1]["p0"]["criteria"]) == {
@@ -251,12 +257,12 @@ async def test_live_a_shared_ask_goes_to_everyone_and_an_own_ask_is_added_to_it(
     out, decide = await _address(
         "Forge and Friday, check the deploy", CREW, _answers(["addressed"] * 2) | _parts("everyone"), live=True
     )
-    assert _asked_parts(decide) == ["'check the deploy'."]  # the "and" between the names is no part
+    assert _asked_parts(decide) == ["check the deploy"]  # the "and" between the names is no part
     assert out["tasks"] == {"frg": "check the deploy", "fri": "check the deploy"}
     text = "Forge and Friday, take a look at the outage. Forge, I also want a postmortem doc."
     out, _ = await _address(text, CREW, _answers(["addressed"] * 2) | _parts("everyone", "only_forge"), live=True)
-    assert out["tasks"] == {
-        "frg": "take a look at the outage. I also want a postmortem doc",
+    assert out["tasks"] == {  # Forge's two parts follow one another: one stretch, its own name included
+        "frg": "take a look at the outage. Forge, I also want a postmortem doc",
         "fri": "take a look at the outage",
     }
 
@@ -278,7 +284,7 @@ async def test_live_background_and_a_person_s_ask_are_nobodys_part():
     )
     out, decide = await _address(text, CREW, answers, live=True)
     assert out["tasks"] == {"frg": "find out why", "fri": "tell the team"}
-    assert _asked_parts(decide)[1] == "'can you call the customer'."  # cut at the person's name too
+    assert _asked_parts(decide)[1] == "can you call the customer"  # cut at the person's name too
 
 
 GAUGE = {"kind": "agent", "id": "gau", "displayName": "Gauge", "mentionHandle": "gauge"}
@@ -313,7 +319,10 @@ async def test_live_a_relaying_agent_with_a_one_word_part_gets_the_whole_line():
     answers = _answers(["addressed", "relayed"]) | _parts("only_forge", "only_friday")
     out, _ = await _address(text, CREW, answers, live=True)
     assert out["agents"] == ["frg", "fri"]
-    assert out["tasks"] == {"fri": "for the numbers"}  # Forge is absent: /route gives it the whole line
+    # the relayed part is the relayer's too, with the name it relays to
+    assert out["tasks"] == {"frg": "ask Friday for the numbers", "fri": "for the numbers"}
+    out, _ = await _address(text, CREW, _answers(["addressed", "relayed"]) | _parts("only_forge", "nobody"), live=True)
+    assert out["tasks"] == {}  # Forge's own part is the one word "ask": /route gives both the whole line
     out, _ = await _address(text, CREW, None, live=True)
     assert out["agents"] == ["frg"] and "tasks" not in out  # model down: Friday follows "ask", not a name
 
@@ -386,3 +395,112 @@ async def test_a_slow_live_call_is_asked_twice_and_the_first_answer_wins(monkeyp
         await messaging.address(_msg(LINE), CREW, history=[], live=True)
         await messaging.address(_msg("Finance and Friday, where are we?"), MEMBERS, history=[])  # chat: never
     assert calls == [0, 1]  # one call each
+
+
+async def test_live_a_possessive_name_is_words_not_a_cut():
+    """Review 2026-10-04: "Forge's PR" cut the line at Forge and asked Jev about "s PR"."""
+    text = "Friday, review Forge's PR. Forge, fix the tests"
+    answers = _answers(["addressed", "addressed"]) | _parts("only_friday", "only_forge")
+    out, decide = await _address(text, CREW, answers, live=True)
+    assert _asked_parts(decide) == ["review Forge's PR", "fix the tests"]
+    assert out["tasks"] == {"fri": "review Forge's PR", "frg": "fix the tests"}
+    curly = "Pulse, update. Friday, review Forge’s PR"
+    out, decide = await _address(
+        curly, CREW, _answers(["addressed"] * 3) | _parts("only_pulse", "only_friday"), live=True
+    )
+    assert _asked_parts(decide) == ["update", "review Forge’s PR"]
+
+
+async def test_live_a_period_inside_a_word_or_number_ends_no_sentence():
+    text = "Forge, ship v2.1 to staging. Pulse, churn is 3.5 percent, e.g. last week, write it up"
+    answers = _answers(["addressed", "addressed"]) | _parts("only_forge", "only_pulse", "only_pulse")
+    out, decide = await _address(text, CREW, answers, live=True)
+    assert _asked_parts(decide) == ["ship v2.1 to staging", "churn is 3.5 percent, e.g", "last week, write it up"]
+    assert out["tasks"] == {"frg": "ship v2.1 to staging", "pul": "churn is 3.5 percent, e.g. last week, write it up"}
+
+
+async def test_live_a_name_after_an_agents_last_part_is_not_in_its_task():
+    text = "Forge, fix the build. Leo can you call the customer. Pulse, update"
+    answers = _answers(["addressed", "mentioned", "addressed"]) | _parts("only_forge", "nobody", "only_pulse")
+    out, _ = await _address(text, CREW, answers, live=True)
+    assert out["tasks"] == {"frg": "fix the build", "pul": "update"}
+
+
+async def test_live_a_relaying_agent_keeps_the_name_it_relays_to():
+    text = "Pulse, get Gauge to pull the retention numbers"
+    answers = _answers(["addressed", "relayed"]) | _parts("only_pulse", "only_pulse")
+    out, _ = await _address(text, [*CREW, GAUGE], answers, live=True)
+    assert out["tasks"] == {"pul": "get Gauge to pull the retention numbers"}  # Gauge: the whole line
+
+
+@pytest.mark.parametrize(
+    ("text", "part"),
+    [
+        ("Forge, check CI. Pulse, say hello", "say hello"),
+        ("Forge, check CI. Pulse, is the deploy ok", "is the deploy ok"),
+        ("Forge, check CI. Pulse, revenue is up 2 million plus", "revenue is up 2 million plus"),
+        ("Forge, check CI. Pulse, please advise", "please advise"),
+        ("Forge, check CI and then Pulse, update", "check CI"),  # a connector hanging before a name goes
+        ("Um Forge, ok so check CI. Pulse, update", "check CI"),  # filler in front goes
+    ],
+)
+async def test_live_only_filler_in_front_and_a_hanging_connector_are_trimmed(text, part):
+    _, decide = await _address(text, CREW, _answers(["addressed"] * 2), live=True)
+    assert part in _asked_parts(decide)
+
+
+async def test_a_weekday_keeps_the_models_label_only_where_it_is_called():
+    answers = _answers(["addressed", "addressed"])
+    out, _ = await _address("The Friday release slipped, we ship by Friday now. Forge?", CREW, answers)
+    assert out["agents"] == ["frg"]  # "the Friday release": a day, whatever the model said
+    out, _ = await _address("Forge, we ship by Friday. What's the plan, Friday?", CREW, answers)
+    assert out["agents"] == ["frg", "fri"]  # called at the end of a clause
+
+
+async def test_the_stage_s_own_timeout_counts_as_a_jev_timeout_and_cancels_both_calls(monkeypatch):
+    import asyncio
+
+    monkeypatch.setattr(messaging, "HEDGE_AFTER_S", 0.01)
+    monkeypatch.setattr(messaging, "ADDRESSING_TIMEOUT_S", 0.05)
+    cancelled = []
+
+    async def never(state, questions):
+        try:
+            await asyncio.sleep(30)
+        except asyncio.CancelledError:
+            cancelled.append(1)
+            raise
+
+    with patch.object(jev, "decide", never), patch.object(messaging, "put_metric") as metric:
+        out = await messaging.address(_msg(LINE), CREW, history=[], live=True)
+        await asyncio.sleep(0)  # the cancelled calls get their turn
+    assert out["path"] == "fallback" and cancelled == [1, 1]
+    assert any(c.kwargs.get("dimensions") == {"outcome": "timeout"} for c in metric.call_args_list)
+
+
+async def test_a_quick_failure_is_not_asked_twice():
+    decide = AsyncMock(return_value=None)
+    with patch.object(jev, "decide", decide), patch.object(messaging, "put_metric"):
+        out = await messaging.address(_msg(LINE), CREW, history=[], live=True)
+    assert out["path"] == "fallback" and decide.await_count == 1
+
+
+async def test_live_a_relayed_part_is_also_the_relayers_and_nobody_elses():
+    text = "Pulse, get Gauge to pull the retention numbers. Forge, check the deploy."
+    answers = _answers(["addressed", "relayed", "addressed"]) | _parts("only_pulse", "only_gauge", "only_forge")
+    out, _ = await _address(text, [*CREW, GAUGE], answers, live=True)
+    assert out["tasks"] == {
+        "pul": "get Gauge to pull the retention numbers",
+        "gau": "to pull the retention numbers",
+        "frg": "check the deploy",
+    }
+
+
+async def test_a_name_that_is_only_ever_a_possessive_is_talked_about_not_spoken_to():
+    text = "Forge, grab Friday's standup notes. Pulse, update the launch deck."
+    answers = _answers(["addressed", "addressed", "addressed"]) | _parts("only_forge", "only_pulse")
+    out, _ = await _address(text, CREW, answers, live=True)
+    assert out["agents"] == ["frg", "pul"]  # whatever the model said of Friday
+    assert out["tasks"] == {"frg": "grab Friday's standup notes", "pul": "update the launch deck"}
+    out, _ = await _address("Is Finance's forecast ready? Friday?", MEMBERS, _answers(["addressed", "addressed"]))
+    assert out["agents"] == ["fri"]  # chat too

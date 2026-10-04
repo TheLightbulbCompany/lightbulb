@@ -177,6 +177,9 @@ async def decide(state: dict, questions: dict) -> dict | str | None:
     except httpx.TimeoutException:
         outcome = "timeout"
         return None
+    except asyncio.CancelledError:
+        outcome = "cancelled"  # the caller gave up (a hedged twin answered first): not a Jev failure
+        raise
     except Exception as exc:  # noqa: BLE001 -- a decision failure must never reach dispatch
         logger.warning("Jev call failed: %s", type(exc).__name__)
         return None

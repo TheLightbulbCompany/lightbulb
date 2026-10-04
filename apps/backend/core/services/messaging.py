@@ -2786,10 +2786,13 @@ def _opens_with(text: str, name: str, *, strong: bool = False) -> bool:
     return re.match(rf"{lead}{re.escape(name)}{follow}", text, re.I) is not None
 
 
-_EDGE = " \t\r\n.,;:?!\"'\u201c\u201d\u2018\u2019-\u2013\u2014"
-_FILLER = "and|then|also|plus|so|oh|um|uh|well|hey|hi|hello|ok|okay|alright|please"
-_TAIL = re.compile(rf"(?:^|\s)(?:{_FILLER})$", re.I)
-_HEAD = re.compile(rf"^(?:{_FILLER})(?:\s|,|$)", re.I)
+_EDGE = " \t\r\n.,;:?!\"'“”‘’-–—"
+#: Filler a speaker puts in front of a request ("ok so ...", "um ...").
+_HEAD = re.compile(r"^(?:and|then|also|plus|so|oh|um|uh|hey|hi|ok|okay|alright)(?:\s|,|$)", re.I)
+#: A connector left hanging where a part runs straight into a name ("check the deploy and | Friday ...").
+_TAIL = re.compile(r"(?:^|\s)(?:and|then|also|plus|hey|hi|ok|okay)$", re.I)
+#: A sentence ends at . ? ! ; followed by a space or the end: "v2.1" and "3.5 percent" are one sentence.
+_SENTENCE = re.compile(r".+?(?:[.?!;]+(?=\s|$)|$)", re.S)
 
 
 def _name_hits(text: str, cand: dict) -> list[re.Match]:
@@ -2799,42 +2802,51 @@ def _name_hits(text: str, cand: dict) -> list[re.Match]:
 
 
 def _named_at(text: str, cand: dict) -> list[tuple[int, int]]:
-    """Where the candidate's name stands as a NAME: a weekday used as a day ("by Friday", "last Friday's
-    numbers") is words, not a name."""
+    """Where the candidate's name stands as a NAME. A possessive ("Forge's PR") and a weekday used as a day
+    ("by Friday", "last Friday's numbers") are words, not a name."""
     days = (
         [m.span() for m in re.finditer(_DAY_USE.format(day=re.escape(cand["said"])), text, re.I)]
         if cand["name"] in WEEKDAYS
         else []
     )
-    return [h.span() for h in _name_hits(text, cand) if not any(s <= h.start() < e for s, e in days)]
+    return [
+        h.span()
+        for h in _name_hits(text, cand)
+        if not any(s <= h.start() < e for s, e in days) and not re.match(r"['’]s\b", text[h.end() :], re.I)
+    ]
 
 
-def _clean(seg: str) -> str:
-    """The words of a part: no edge punctuation, no filler ("and", "ok so", "um") at either end."""
+def _clean(seg: str, into_name: bool = False) -> str:
+    """The words of a part: no edge punctuation, no filler in front ("ok so", "um"), and no connector left
+    hanging where the part ran straight ``into_name`` ("check the deploy and")."""
     seg = seg.strip(_EDGE)
-    while (m := _TAIL.search(seg)) is not None or (m := _HEAD.match(seg)) is not None:
-        seg = (seg[: m.start()] if m.re is _TAIL else seg[m.end() :]).strip(_EDGE)
+    while (m := _HEAD.match(seg)) is not None:
+        seg = seg[m.end() :].strip(_EDGE)
+    while into_name and (m := _TAIL.search(seg)) is not None:
+        seg = seg[: m.start()].strip(_EDGE)
     return seg
 
 
-def _pieces(text: str, cands: list[dict]) -> list[tuple[str, int, int, str | int]]:
-    """A Live line in order (conversation engine §3.2): ``("name", start, end, candidate name)`` where a
-    name stands (a weekday used as a day is words, not a name), and ``("part", start, end, index)`` for the
-    words between names and sentence ends that are more than filler. One request is made of whole parts."""
+def _pieces(text: str, cands: list[dict]) -> list[tuple[str, int, int, str | int, bool]]:
+    """A Live line in order (conversation engine §3.2): ``("name", start, end, candidate name, False)``
+    where a name stands, and ``("part", start, end, index, into_name)`` for the words between names and
+    sentence ends that are more than filler; ``into_name``: the words run straight into the next name.
+    One request is made of whole parts."""
     names, last = [], 0
     for start, end, name in sorted((start, end, c["name"]) for c in cands for start, end in _named_at(text, c)):
         if start >= last:  # two candidates on the same words: the first one
             names.append((start, end, name))
             last = end
-    out: list[tuple[str, int, int, str | int]] = []
+    out: list[tuple[str, int, int, str | int, bool]] = []
     cursor, parts = 0, 0
     for start, end, name in [*names, (len(text), len(text), "")]:
-        for m in re.finditer(r"[^.?!;]+[.?!;]*", text[cursor:start]):
-            if _clean(m.group(0)):
-                out.append(("part", cursor + m.start(), cursor + m.end(), parts))
+        for m in _SENTENCE.finditer(text[cursor:start]):
+            into_name = bool(name) and cursor + m.end() == start and not re.search(r"[.?!;]\s*$", m.group(0))
+            if _clean(m.group(0), into_name):
+                out.append(("part", cursor + m.start(), cursor + m.end(), parts, into_name))
                 parts += 1
         if name:
-            out.append(("name", start, end, name))
+            out.append(("name", start, end, name, False))
         cursor = end
     return out
 
@@ -2857,32 +2869,48 @@ def _part_choices(names: list[str]) -> dict[str, tuple[str, set[str]]]:
 
 
 def _task(text: str, pieces: list, mine: set[int], asked_names: set[str]) -> str:
-    """One agent's task in the speaker's own words: its parts, with a name that is only talked about kept
-    inside the words around it ("by Friday", "Gauge's dashboard"). Parts that are apart are joined."""
+    """One agent's task in the speaker's own words. Its parts that follow one another, with only names
+    between them, are one stretch of the line, names included ("get Gauge to pull the numbers"). Another
+    agent's part ends the stretch; a name after its last part is not in it ("fix the build. | Leo, ...").
+    A name that is only talked about and stands right before its first part is ("Gauge broke CI, fix it").
+    Stretches that are apart are joined."""
     runs: list[str] = []
-    run: list[int] | None = None
+    run: list | None = None  # [start, end, last part ran into a name]
     lead: int | None = None  # a talked-about name with no part of mine before it yet
-    for kind, start, end, ref in pieces:
-        if kind == "part" and ref in mine:
-            run = [run[0] if run else (lead if lead is not None else start), end]
-        elif kind == "name" and ref not in asked_names:
-            if run:
-                run[1] = end
-            elif lead is None:
-                lead = start
+    for kind, start, end, ref, into_name in pieces:
+        if kind == "name":
+            if run is None:
+                lead = (start if lead is None else lead) if ref not in asked_names else None
             continue
+        if ref in mine:
+            run = [run[0] if run else (lead if lead is not None else start), end, into_name]
         elif run:
-            runs.append(_clean(text[run[0] : run[1]]))
+            runs.append(_clean(text[run[0] : run[1]], run[2]))
             run = None
         lead = None
     if run:
-        runs.append(_clean(text[run[0] : run[1]]))
+        runs.append(_clean(text[run[0] : run[1]], run[2]))
     return ". ".join(r for r in runs if r)
 
 
+def _with_relayers(pieces: list, asked: list[set[str]], labels: dict[str, str]) -> list[set[str]]:
+    """A part asked only of relayed agents is also the relayer's: the addressed agent named last before it.
+    "Pulse, get Gauge to pull the numbers": "to pull the numbers" is Gauge's, and Pulse must hear it too."""
+    out, relayer = [set(names) for names in asked], None
+    for kind, _, _, ref, _ in pieces:
+        if kind == "name":
+            relayer = ref if labels.get(ref) == "addressed" else relayer
+        elif relayer and ref < len(out) and out[ref] and all(labels.get(n) == "relayed" for n in out[ref]):
+            out[ref].add(relayer)
+    return out
+
+
 def _opens_clause(text: str, cand: dict) -> bool:
-    """The name opens a clause: at the start of the line, after . ? ! ; or after ", " / "and "."""
-    return re.search(rf"(?:^\s*|[.?!;]\s+|,\s+|\band\s+){re.escape(cand['said'])}(?![\w-])", text, re.I) is not None
+    """The name, standing as a name, opens a clause: at the start of the line, after . ? ! ; or after
+    ", " / "and ". ("..., Friday, a summary" and "What's the plan, Friday?" do; "the Friday release" does not.)"""
+    return any(
+        re.search(r"(?:^\s*|[.?!;]\s+|,\s+|\band\s+)$", text[:start], re.I) for start, _ in _named_at(text, cand)
+    )
 
 
 def _fast_path(text: str, cands: list[dict], live: bool) -> str | None:
@@ -2895,7 +2923,9 @@ def _fast_path(text: str, cands: list[dict], live: bool) -> str | None:
 
 
 async def _decide(state: dict, questions: dict, hedge: bool) -> Any:
-    """``jev.decide``; with ``hedge``, asked again when the first call is slow, first usable answer wins."""
+    """``jev.decide``; with ``hedge``, asked again when the first call is slow, first usable answer wins.
+    A slow hour therefore doubles this stage's Jev calls, on the quota room routing shares; a 429 is an
+    answer here (the fallback decides), never a retry."""
     from core.services import jev
 
     first = asyncio.ensure_future(jev.decide(state, questions))
@@ -2951,7 +2981,7 @@ async def _label(
     for i, part in enumerate(parts):
         questions[f"p{i}"] = {
             "type": "choice",
-            "instructions": f"{PART_INSTRUCTIONS} The part: '{part}'.",
+            "instructions": f"{PART_INSTRUCTIONS} The part: {json.dumps(part)}.",
             "criteria": {key: description for key, (description, _) in choices.items()},
         }
     state = {
@@ -2974,7 +3004,12 @@ async def _label(
                 choices.get((answers.get(f"p{i}") or {}).get("choice"), ("", set()))[1] for i in range(len(parts))
             ],
         }
-    except Exception:  # noqa: BLE001 -- a timeout, a 429 string, a malformed answer: the fallback decides
+    except TimeoutError:
+        # The stage's own limit cancelled the call, which jev.decide reports as "cancelled" (so a hedged
+        # twin is no failure): count the timeout here, for the P26 error-rate alarm.
+        put_metric("messaging.jev.decision", dimensions={"outcome": "timeout"})
+        return None
+    except Exception:  # noqa: BLE001 -- a 429 string, a malformed answer: the fallback decides
         return None
 
 
@@ -2998,9 +3033,9 @@ async def address(latest: dict, members: list[dict], *, history: Any = (), live:
     # Conversation engine §3.2: a live line naming 2+ agents is cut into parts at the names, and this same
     # call says who each part is asked of.
     pieces = _pieces(text, cands) if live else []
-    said = {ref for kind, _, _, ref in pieces if kind == "name"}
+    said = {ref for kind, _, _, ref, _ in pieces if kind == "name"}
     askable = [c["name"] for c in cands if len(c["agents"]) == 1 and c["name"] in said]
-    parts = [_clean(text[start:end]) for kind, start, end, _ in pieces if kind == "part"]
+    parts = [_clean(text[start:end], into) for kind, start, end, _, into in pieces if kind == "part"]
     multi = len(askable) >= 2
     split = multi and 0 < len(parts) <= MAX_PARTS
     result = await _label(
@@ -3033,8 +3068,11 @@ async def address(latest: dict, members: list[dict], *, history: Any = (), live:
         label = result["labels"][c["name"]]
         if c["name"] in WEEKDAYS and re.search(_DAY_USE.format(day=re.escape(c["said"])), text, re.I):
             # domain knowledge, not a model call: our names are weekdays. "Pull last Friday's numbers.
-            # Friday, what's the plan?" still names the teammate the second time.
-            label = label if _named_at(text, c) else "not_a_name"
+            # Friday, what's the plan?" still calls the teammate the second time; "the Friday release
+            # slipped, we ship by Friday" does not.
+            label = label if _opens_clause(text, c) else "not_a_name"
+        if label == "addressed" and _name_hits(text, c) and not _named_at(text, c):
+            label = "mentioned"  # only ever a possessive ("grab Friday's notes"): talked about, not spoken to
         if label not in ("addressed", "relayed"):
             continue
         # A name several agents share addresses none of them (Jev picks among the listeners); a unique
@@ -3053,9 +3091,10 @@ async def address(latest: dict, members: list[dict], *, history: Any = (), live:
         asked_names = {c["name"] for c, _, _ in hits}
         # "Friday, ask Forge for the numbers": Friday's own part is "ask", so it needs the whole line.
         fewest = 2 if any(label == "relayed" for _, _, label in hits) else 1
+        asked = _with_relayers(pieces, result["asked"], {c["name"]: label for c, _, label in hits})
         out["tasks"] = {}
         for c, agent, _ in hits:
-            mine = {i for i, names in enumerate(result["asked"]) if c["name"] in names}
+            mine = {i for i, names in enumerate(asked) if c["name"] in names}
             task = _task(text, pieces, mine, asked_names)
             if len(task.split()) >= fewest:
                 out["tasks"].setdefault(agent, task)

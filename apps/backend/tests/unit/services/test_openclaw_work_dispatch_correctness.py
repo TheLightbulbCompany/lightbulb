@@ -188,7 +188,13 @@ async def test_chat_never_steers_into_a_voice_run(monkeypatch):
 
     rows = []
     table = MagicMock()
-    table.put_item.side_effect = lambda Item: rows.append(Item)
+
+    def upsert(Key, ExpressionAttributeNames, ExpressionAttributeValues, **_):
+        # put_voice_run is one atomic SET (UpdateItem), so a retry cannot drop another writer's fields
+        fields = {name: ExpressionAttributeValues[f":v{key[2:]}"] for key, name in ExpressionAttributeNames.items()}
+        rows.append({**Key, **fields})
+
+    table.update_item.side_effect = upsert
     monkeypatch.setattr(work.messaging_repo, "_table", lambda: table)
     await work.messaging_repo.put_voice_run(
         "owner_test", "run-v", {"roomId": ROOM, "agentId": AGENT, "speakerUserId": "u", "speakerName": "Bea"}

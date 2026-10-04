@@ -177,6 +177,28 @@ async def list_page(address: str, *, before: str | None = None, limit: int = 30)
     return items, (items[-1]["received_key"] if items and resp.get("LastEvaluatedKey") else None)
 
 
+async def count_received_after(address: str, after: str, *, cap: int) -> int:
+    """Received (not sent) mail at ``address`` whose ``received_key`` sorts after ``after``,
+    counting no further than ``cap``. Newest first, so the query stops as soon as the cap is met."""
+    kwargs: dict = {
+        "KeyConditionExpression": Key("address").eq(_normalize(address)) & Key("received_key").gt(after),
+        "ScanIndexForward": False,
+        "ProjectionExpression": "#d",
+        "ExpressionAttributeNames": {"#d": "direction"},
+        "Limit": 50,
+    }
+    count = 0
+    # ponytail: at most 10 pages (500 rows) of mostly sent mail; the 30-day TTL bounds the rest.
+    for _ in range(10):
+        resp = await run_in_thread(_get_table().query, **kwargs)
+        count += sum(1 for i in resp.get("Items", []) if i.get("direction") != "out")
+        last = resp.get("LastEvaluatedKey")
+        if count >= cap or not last:
+            break
+        kwargs["ExclusiveStartKey"] = last
+    return min(count, cap)
+
+
 async def get_message(address: str, received_key: str) -> dict | None:
     resp = await run_in_thread(
         _get_table().get_item, Key={"address": _normalize(address), "received_key": received_key}

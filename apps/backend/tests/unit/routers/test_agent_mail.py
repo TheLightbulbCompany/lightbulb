@@ -705,3 +705,40 @@ def test_the_junk_filter_still_reads_the_stored_status():
     old = time.time() - 2 * 86400
     assert agent_mail._junk({"status": "ended", "startAt": old}, time.time()) is True
     assert agent_mail._junk({"status": "ended", "startAt": time.time() - 600}, time.time()) is False
+
+
+# ---- GET /agent-mail/inbox/new: the rail badge ----
+
+
+async def test_the_badge_counts_the_callers_own_mail_after_the_mark(async_client_org_member):
+    with (
+        patch.object(agent_mail, "team_address", AsyncMock(return_value=TEAM)),
+        patch.object(agent_mail, "count_received_after", AsyncMock(return_value=3)) as count,
+        patch.object(agent_mail, "_meeting", AsyncMock(side_effect=AssertionError("no meeting reads"))),
+    ):
+        r = await async_client_org_member.get(
+            "/api/v1/agent-mail/inbox/new", params={"since": "2026-10-03T12:00:00.123Z"}
+        )
+    assert r.status_code == 200 and r.json() == {"count": 3}
+    # The caller's own team address only; past the mark's whole millisecond (stored keys carry microseconds).
+    assert count.await_args.args == (TEAM, "2026-10-03T12:00:00.123999+00:00")
+    assert count.await_args.kwargs == {"cap": 10}
+
+
+@pytest.mark.parametrize("params", [{}, {"since": "yesterday"}, {"since": ""}])
+async def test_the_badge_is_zero_without_a_usable_mark(async_client_org_member, params):
+    with (
+        patch.object(agent_mail, "team_address", AsyncMock(return_value=TEAM)),
+        patch.object(agent_mail, "count_received_after", AsyncMock(side_effect=AssertionError("no read"))),
+    ):
+        r = await async_client_org_member.get("/api/v1/agent-mail/inbox/new", params=params)
+    assert r.status_code == 200 and r.json() == {"count": 0}
+
+
+async def test_the_badge_is_zero_before_the_workspace_has_an_address(async_client_org_member):
+    with (
+        patch.object(agent_mail, "team_address", AsyncMock(return_value=None)),
+        patch.object(agent_mail, "count_received_after", AsyncMock(side_effect=AssertionError("no read"))),
+    ):
+        r = await async_client_org_member.get("/api/v1/agent-mail/inbox/new", params={"since": "2026-10-03T12:00:00Z"})
+    assert r.status_code == 200 and r.json() == {"count": 0}

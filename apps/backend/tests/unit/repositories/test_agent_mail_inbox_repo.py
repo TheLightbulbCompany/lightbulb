@@ -166,3 +166,29 @@ async def test_list_page_returns_both_directions_and_a_cursor(monkeypatch):
     assert kw["ScanIndexForward"] is False and kw["Limit"] == 2
     table.query.return_value = {"Items": [{"received_key": "a"}]}
     assert (await repo.list_page("agents@acme.isol8.co", before="b"))[1] is None
+
+
+@pytest.mark.asyncio
+async def test_count_received_after_counts_inbound_only_on_this_address_after_the_mark(monkeypatch):
+    table = MagicMock()
+    table.query.side_effect = [
+        {"Items": [{"direction": "out"}] * 30 + [{}], "LastEvaluatedKey": {"k": 1}},  # one inbound under 30 sent
+        {"Items": [{}, {"direction": "out"}]},
+    ]
+    monkeypatch.setattr(repo, "_get_table", lambda: table)
+    assert await repo.count_received_after("Agents@Acme.isol8.co", "2026-10-03T12:00:00+00:00", cap=10) == 2
+    kw = table.query.call_args_list[0].kwargs
+    address_cond, key_cond = kw["KeyConditionExpression"].get_expression()["values"]
+    assert address_cond.get_expression()["values"][1] == "agents@acme.isol8.co"
+    assert key_cond.get_expression()["operator"] == ">"
+    assert key_cond.get_expression()["values"][1] == "2026-10-03T12:00:00+00:00"
+    assert table.query.call_args_list[1].kwargs["ExclusiveStartKey"] == {"k": 1}
+
+
+@pytest.mark.asyncio
+async def test_count_received_after_stops_paging_at_the_cap(monkeypatch):
+    table = MagicMock()
+    table.query.return_value = {"Items": [{}] * 50, "LastEvaluatedKey": {"k": 1}}
+    monkeypatch.setattr(repo, "_get_table", lambda: table)
+    assert await repo.count_received_after("agents@acme.isol8.co", "t", cap=10) == 10
+    assert table.query.call_count == 1

@@ -268,6 +268,13 @@ def test_an_older_join_that_lands_after_a_newer_leave_does_not_bring_the_person_
     assert mod._names(mod._rostered(joined, "leave", "1", "Pat", 1000)) == ["Pat"]
 
 
+def test_the_roster_in_a_packet_is_bounded():
+    """A 300-person Meet with long names must not push the speaker packet past LiveKit's size limit."""
+    roster = {str(i): {"name": f"{i:03d} " + "x" * 200, "at": 1, "in": True} for i in range(300)}
+    names = mod._names(roster)
+    assert len(names) == 50 and max(map(len, names)) == 80 and len(json.dumps(names)) < 8_000
+
+
 def test_a_roster_write_refused_for_a_moved_occurrence_relays_nothing(env):
     """The bot id is re-checked inside the write: a series that advanced between the read and the
     write never takes an old bot's join into its next occurrence's roster."""

@@ -243,8 +243,14 @@ def _rostered(roster: dict | None, kind: str, pid: str, name: str, at: int) -> d
     return roster
 
 
+_ROSTER_NAMES, _ROSTER_NAME_CHARS = 50, 80
+
+
 def _names(roster: dict) -> list[str]:
-    return sorted(p["name"] for p in roster.values() if p.get("in") and p.get("name"))
+    """The names every speaker packet carries, bounded: LiveKit drops a data packet over ~15 KB
+    (livekit_huddles.MAX_PACKET_BYTES), and the worker only needs to know when one person is there."""
+    names = sorted(p["name"][:_ROSTER_NAME_CHARS] for p in roster.values() if p.get("in") and p.get("name"))
+    return names[:_ROSTER_NAMES]
 
 
 async def _speaker(bot_id: str, room_id: str, event: dict) -> None:

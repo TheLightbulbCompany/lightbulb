@@ -23,9 +23,10 @@ function params(search: string): URLSearchParams {
 
 function urlShows(search: string, view: ChatView): boolean {
   const p = params(search);
-  if (p.get("panel") !== "chat") return false;
-  if (view.sessionId) return p.get("session") === view.sessionId;
-  return !p.get("session") && p.get("room") === view.roomId;
+  const panel = p.get("panel");
+  // ?panel=session&session= is the session link's own form of the same view.
+  if (view.sessionId) return (panel === "chat" || panel === "session") && p.get("session") === view.sessionId;
+  return panel === "chat" && !p.get("session") && p.get("room") === view.roomId;
 }
 
 const sameView = (a: ChatView, b: ChatView) => a.roomId === b.roomId && a.sessionId === b.sessionId;
@@ -66,7 +67,13 @@ export function recordChatView(next: ChatView, explicit: boolean): void {
   if (!chatViewSearch(next)) return;
   const prev = current;
   current = next;
-  if (!explicit) return;
+  if (!explicit) {
+    // A closed session must not reopen on reload: the URL becomes the room it left.
+    if (prev?.sessionId && !next.sessionId && urlShows(window.location.search, prev)) {
+      replaceSearchParams(new URLSearchParams(chatViewSearch(next)!));
+    }
+    return;
+  }
   const write = planChatHistoryWrite(prev, next, window.location.search);
   if (write) apply(write);
 }
@@ -74,6 +81,11 @@ export function recordChatView(next: ChatView, explicit: boolean): void {
 /** The rail's Messages button is a navigation to the chat already open. */
 export function recordMessagesNavigation(): void {
   if (!current) return;
+  // A bare /chat already shows this chat: name it in place rather than stack a duplicate.
+  if (parseCommand(window.location.search) === null) {
+    replaceSearchParams(new URLSearchParams(chatViewSearch(current)!));
+    return;
+  }
   const write = planChatHistoryWrite(current, current, window.location.search);
   if (write) apply(write);
 }

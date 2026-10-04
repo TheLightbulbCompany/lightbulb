@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   chatViewSearch,
   planChatHistoryWrite,
@@ -50,6 +50,10 @@ describe("planChatHistoryWrite", () => {
       .toEqual({ push: "panel=chat&room=r1" });
   });
 
+  it("treats a ?panel=session URL as already showing that session (cold load)", () => {
+    expect(planChatHistoryWrite(null, { roomId: "r1", sessionId: "s1" }, "?panel=session&session=s1")).toBeNull();
+  });
+
   it("never replaces with the same view it pushes", () => {
     expect(planChatHistoryWrite(room("r1"), room("r1"), "")).toEqual({ push: "panel=chat&room=r1" });
   });
@@ -73,10 +77,63 @@ describe("recordChatView", () => {
     expect(window.history.length).toBe(before + 1);
   });
 
+  it("records an opened session view", () => {
+    recordChatView(room("r1"), false);
+    window.history.pushState(null, "", "/chat?panel=chat&room=r1");
+    const before = window.history.length;
+    recordChatView({ roomId: "r1", sessionId: "s1" }, true);
+    expect(window.location.search).toBe("?panel=chat&session=s1");
+    expect(window.history.length).toBe(before + 1);
+  });
+
+  it("pushes an explicit room change away from a session view", () => {
+    window.history.pushState(null, "", "/chat?panel=chat&session=s1");
+    recordChatView({ roomId: "r1", sessionId: "s1" }, true);
+    const before = window.history.length;
+    recordChatView(room("r2"), true);
+    expect(window.location.search).toBe("?panel=chat&room=r2");
+    expect(window.history.length).toBe(before + 1);
+  });
+
+  it("replaces a bare URL with the session view it was showing", () => {
+    recordChatView({ roomId: "r1", sessionId: "s1" }, false);
+    const replace = vi.spyOn(window.history, "replaceState");
+    const before = window.history.length;
+    recordChatView(room("r2"), true);
+    expect(replace).toHaveBeenCalledExactlyOnceWith(null, "", "/chat?panel=chat&session=s1");
+    expect(window.history.length).toBe(before + 1);
+    expect(window.location.search).toBe("?panel=chat&room=r2");
+    replace.mockRestore();
+  });
+
+  it("rewrites the URL in place when the session on it is closed", () => {
+    window.history.pushState(null, "", "/chat?panel=chat&session=s1");
+    recordChatView({ roomId: "r1", sessionId: "s1" }, true);
+    const before = window.history.length;
+    recordChatView(room("r1"), false);
+    expect(window.location.search).toBe("?panel=chat&room=r1");
+    expect(window.history.length).toBe(before);
+  });
+
+  it("does not rewrite a URL that no longer shows the closed session", () => {
+    window.history.pushState(null, "", "/chat?panel=teams-issues");
+    recordChatView({ roomId: "r1", sessionId: "s1" }, false);
+    recordChatView(room("r1"), false);
+    expect(window.location.search).toBe("?panel=teams-issues");
+  });
+
   it("re-records the open view for the rail's Messages button", () => {
     recordChatView(room("r1"), false);
     window.history.pushState(null, "", "/chat?panel=teams-issues");
     recordMessagesNavigation();
     expect(window.location.search).toBe("?panel=chat&room=r1");
+  });
+
+  it("replaces, not pushes, a bare /chat entry for the rail's Messages button", () => {
+    recordChatView(room("r1"), false);
+    const before = window.history.length;
+    recordMessagesNavigation();
+    expect(window.location.search).toBe("?panel=chat&room=r1");
+    expect(window.history.length).toBe(before);
   });
 });

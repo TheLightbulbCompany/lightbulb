@@ -82,6 +82,8 @@ HOLDING_LINE = (
 )
 STILL_WAKING = "Your backend is still waking up; say briefly that you're on it and it'll take a moment."
 CANT_REACH = "Sorry, I couldn't reach my backend for that."
+REQUEST_QUIET_S = 1  # engine §3.5: a requested answer waits for no human speech this long (no rate limit)
+ASKER_GONE_S = 60  # engine §3.5: its asker left and no pause came this long: the room gets it
 # ponytail: inferred (D §5); a delegation the new voice makes this soon after opening is the driven request
 BIND_SECONDS = 10
 HANDOFF_SECONDS = (
@@ -247,6 +249,7 @@ class _Voice:
     heard_at: float | None = (
         None  # live.latency.*: when the waking line was heard; None once first_audio is out
     )
+    list_version: int = 0  # the request list version this voice last heard
 
 
 class Huddle:
@@ -1063,8 +1066,10 @@ class Huddle:
             if state == "speaking" and v.heard_at is not None:
                 self._latency("first_audio", v)
                 v.heard_at = None  # once per voice
+            if state == "speaking" and self._speaking and v.path == "announce":
+                emit_metric("live.floor.overlap", 1, "Count")  # a delivery's audio began over a person
             if state == "speaking" and v.announce:  # the first audio consumes the news
-                self._news.pop(agent_id, None)  # all of it was in the seed
+                self._consume_news(agent_id)  # all of it was in the seed
                 v.announcing, v.announce = v.path == "announce", None
                 emit_metric("live.announce.spoken", 1, "Count")
             elif state != "speaking":
@@ -1161,7 +1166,7 @@ class Huddle:
             self._unclaimed = None  # an agent takes the floor: the open question is not left unclaimed
             self._released.discard(identity)  # only a release during THIS summon counts
             self._last_agent[identity] = agent_id
-            if path != "switch":
+            if path not in ("switch", "announce"):
                 self._queue = [(aid, identity, request or "") for aid in then]
             old = self._voice
             if (
@@ -1188,6 +1193,7 @@ class Huddle:
                 announce=announce,
                 wake_dims=wake_dims,
                 heard_at=now if heard_at is None else heard_at,
+                list_version=self._requests.version,
             )
             self._sync_state()
             # D §9: a switch opens the new voice while the old one closes (same window, no new /summon).
@@ -1284,7 +1290,7 @@ class Huddle:
         if (
             news and not v.announce and v.path != "announce"
         ):  # an announcement dropped before its audio keeps it
-            self._news.pop(agent_id, None)  # handed to its own agent: consumed
+            self._consume_news(agent_id)  # handed to its own agent: consumed
         v.live, v.opened, v.naming = live, self._clock(), bool(session.get("askName"))
         if v.driven:
             v.driven.bind_until = v.opened + BIND_SECONDS
@@ -1618,7 +1624,7 @@ class Huddle:
             )
 
     def ended(self, run: Run, answer: str) -> None:
-        self._requests.ready(run.run_id)  # its MAX_WORKING slot frees for a queued request
+        asked = self._requests.by_run(run.run_id)  # a request-list run (engine §3.5)
         if v := self._same_session(run):
             if not run.spoken.strip():
                 self._live_call(
@@ -1627,12 +1633,14 @@ class Huddle:
                     "That request finished without a spoken result.",
                     delegation_id=run.delegation_id,
                 )
+            self._requests.delivered({run.run_id})
         elif v := self._floor_voice(run.agent_id):
             if answer:
                 text = f"Your earlier task on {run.request[:80]} finished: {answer}"
                 self._live_call(v, "append_commentary", text, delegation_id=None)
+            self._requests.delivered({run.run_id})
         elif (
-            answer and self.setting == "meeting"
+            answer and self.setting == "meeting" and not asked
         ):  # nobody announces in a meeting: the room gets it now
             self._spawn(
                 self._late_answer(run.agent_id, (run.run_id, run.request, answer))
@@ -1640,8 +1648,11 @@ class Huddle:
         elif answer:
             news = self._news.setdefault(run.agent_id, [])
             news.append((run.run_id, run.request, answer, self._clock(), run.speaker))
+            self._requests.ready(run.run_id)
             while len(news) > NEWS_PER_AGENT:
                 self._post_news(run.agent_id, news.pop(0))
+        elif asked:
+            self._requests.delivered({run.run_id})  # finished with nothing to say
         self._sync_state()
 
     def failed(self, run: Run) -> None:
@@ -1649,6 +1660,8 @@ class Huddle:
             self._live_call(
                 v, "append_commentary", CANT_REACH, delegation_id=run.delegation_id
             )
+        elif rows := self._requests.by_run(run.run_id):
+            self._request_failed(rows, run.run_id)
         self._sync_state()
 
     def on_data(self, sender: object | None, topic: str | None, data: bytes) -> None:
@@ -1823,8 +1836,22 @@ class Huddle:
             d.held = True
             emit_metric("live.holding_line", 1, "Count")
             self._live_call(v, "append_thinking", HOLDING_LINE, delegation_id=None)
+        if self._requests.version != v.list_version and now - v.last_thinking >= THINKING_EVERY:
+            v.list_version = self._requests.version
+            if lines := self._requests.lines(self._agent_name, skip_agent=v.agent_id):
+                v.last_thinking = now
+                self._live_call(v, "append_thinking", "Requests on this call:\n" + "\n".join(lines))
         if v.handoff and now >= v.handoff[1]:
             self._end_handoff(v)
+        if (
+            v.agent_state != "speaking"
+            and not v.posting
+            and v.announce is None
+            and now - v.last_activity >= QUEUE_SETTLE
+            and (ready := self._ready_delivery(now, skip_agent=v.agent_id))
+        ):
+            await self._deliver(*ready)  # engine §3.5: the oldest ready answer takes the floor
+            return
         if self._queue and self._settled(v, now):
             agent_id, speaker, request = self._queue.pop(0)
             await self.summon(speaker, agent_id, request, path="switch")
@@ -1840,13 +1867,14 @@ class Huddle:
             await self.end_exchange(only=v)
 
     async def _proactive(self, now: float) -> None:
-        """No voice is open: the oldest news is announced by its own agent once the room is quiet (D §8)."""
-        if (
-            not self._people
-            or self._speaking
-            or self._lock.locked()
-            or self.setting == "meeting"
-        ):
+        """No voice is open: an answer someone asked for goes first once the room is quiet (engine §3.5);
+        otherwise the oldest news is announced by its own agent once the room is quiet (D §8)."""
+        if not self._people or self._speaking or self._lock.locked():
+            return
+        if ready := self._ready_delivery(now):
+            await self._deliver(*ready)
+            return
+        if self.setting == "meeting":
             return
         if now - self._last_heard < gate.ANNOUNCE_QUIET or not self._rate.ok(now):
             return
@@ -1859,15 +1887,10 @@ class Huddle:
         if not items:
             return
         item, agent_id = min(items, key=lambda x: x[0][3])
-        speaker = next(
-            (p for p in (item[4], self._last_speaker) if p in self._people), None
-        ) or min(self._people)
         self._rate.record(
             now
         )  # on the attempt: a refused summon does not retry every tick
-        await self.summon(
-            speaker, agent_id, request=None, path="announce", announce=item
-        )
+        await self._deliver(item, agent_id)
 
     def _settled(self, v: _Voice, now: float) -> bool:
         """The floor-holder answered: its driven run ended, it is not speaking, QUEUE_SETTLE has passed."""
@@ -1877,7 +1900,7 @@ class Huddle:
 
     def _expire_news(self, now: float) -> None:
         for agent_id, news in list(self._news.items()):
-            kept = [n for n in news if now - n[3] < NEWS_TTL]
+            kept = [n for n in news if now - n[3] < NEWS_TTL and not self._asker_gone(n, now)]
             for n in news:
                 if n not in kept:
                     self._post_news(agent_id, n)
@@ -1893,10 +1916,40 @@ class Huddle:
         emit_metric("live.announce.expired", 1, "Count")
         self._spawn(self._late_answer(agent_id, n))
 
+    def _consume_news(self, agent_id: str) -> None:
+        """Its agent said (or was handed) all its news: requested ones are delivered."""
+        self._requests.delivered({n[0] for n in self._news.pop(agent_id, None) or []})
+
+    def _ready_delivery(self, now: float, skip_agent: str | None = None) -> tuple[tuple, str] | None:
+        """The oldest ready answer someone asked for (ties: request order) and its agent, once no human is
+        speaking and none has spoken for REQUEST_QUIET_S. A requested answer is not news: no rate limit."""
+        if self._speaking or now - self._last_heard < REQUEST_QUIET_S:
+            return None
+        items = [
+            (n, aid)
+            for aid, news in self._news.items()
+            if aid != skip_agent and self._agent(aid)
+            for n in news
+            if self._requests.by_run(n[0])
+        ]
+        return min(items, key=lambda x: (x[0][3], self._requests.order(x[0][0])), default=None)
+
+    async def _deliver(self, item: tuple, agent_id: str) -> None:
+        """Its own agent says it, pinned to who asked (else the last speaker, else anyone here)."""
+        speaker = next((p for p in (item[4], self._last_speaker) if p in self._people), None) or min(self._people)
+        await self.summon(speaker, agent_id, request=None, path="announce", announce=item)
+
+    def _asker_gone(self, n: tuple, now: float) -> bool:
+        return bool(self._requests.by_run(n[0])) and n[4] not in self._people and now - n[3] >= ASKER_GONE_S
+
     async def _late_answer(self, agent_id: str, n: tuple) -> None:
+        if not self._requests.postable(n[0]):
+            emit_metric("live.request.post_skipped", 1, "Count")  # "don't post that", or a CANT_REACH line
+            return
         try:
             await self._backend.late_answer(agent_id, n[0], n[1], n[2])
             emit_metric("live.news.posted", 1, "Count")
+            self._requests.delivered({n[0]})
         except Exception:
             logger.info(
                 "huddle late answer post failed agent=%s run=%s",

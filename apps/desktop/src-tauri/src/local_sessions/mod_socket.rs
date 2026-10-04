@@ -72,6 +72,16 @@ pub(super) fn decision_body(sid: &str, generation: &str, body: &Value) -> Result
     Ok(out)
 }
 
+/// An Allow or Decline whose request is no longer pending here: refused, so every accepted
+/// press is one made while remote typing was frozen.
+pub(super) fn stale(sid: &str, payload: &Value) -> bool {
+    match (payload["decision"].as_str(), payload["userId"].as_str(), payload["requestId"].as_str()) {
+        (Some("allow" | "decline"), Some(user), Some(request)) => !presence::pending(sid, user, request),
+        (Some("allow" | "decline"), ..) => true,
+        _ => false,
+    }
+}
+
 pub(super) fn parse_request(raw: &[u8]) -> Option<(String, String, Value)> {
     let text = std::str::from_utf8(raw).ok()?;
     let (head, body) = text.split_once("\r\n\r\n")?;
@@ -131,6 +141,9 @@ async fn answer(mut socket: UnixStream, scope: PathBuf, enrollment: Enrollment, 
             let Ok(payload) = decision_body(&caller.session_id, &caller.generation, &body) else {
                 return reply(&mut socket, "400 Bad Request", &json!({"error":"invalid_decision"})).await;
             };
+            if stale(&caller.session_id, &payload) {
+                return reply(&mut socket, "409 Conflict", &json!({"error":"stale","message":"That request is no longer waiting."})).await;
+            }
             let Ok(token) = crate::device_token::mint_device_token(&identity.private_key_pem, &enrollment.device_id, &enrollment.owner_id, 90) else {
                 return reply(&mut socket, "409 Conflict", &json!({"error":"unavailable","message":"Device authentication unavailable."})).await;
             };
@@ -144,7 +157,8 @@ async fn answer(mut socket: UnixStream, scope: PathBuf, enrollment: Enrollment, 
                 // `ApiProblem.body()`: a flat `{code, message, retryable, …}`.
                 return reply(&mut socket, "409 Conflict", &json!({"error": data["code"], "message": data["message"]})).await;
             }
-            // The backend pushes fresh presence after every decision; the mod polls in 2 s anyway.
+            // The backend pushes fresh presence after every decision; until it lands, apply this one.
+            presence::decided(&caller.session_id, &payload, &data);
             reply(&mut socket, "200 OK", &state(&caller)).await
         }
         _ => reply(&mut socket, "404 Not Found", &json!({"error":"not_found"})).await,
@@ -221,5 +235,19 @@ mod tests {
         mirror.native.restriction = Some("restricted".into());
         mirror.persist(&path).unwrap();
         assert!(resolve(scope.path(), std::process::id()).is_none(), "a restricted session gets no door");
+    }
+
+    #[test]
+    fn mod_socket_refuses_an_answer_to_a_request_that_is_not_pending() {
+        let _g = presence::TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let sid = "44444444-4444-4444-8444-444444444444";
+        let allow = decision_body(sid, "g1", &json!({"decision":"allow","userId":"u2","requestId":"r2"})).unwrap();
+        assert!(stale(sid, &allow), "no presence: nothing is frozen, so no answer is taken");
+        presence::offer_frame(&json!({"sessionId":sid,"generation":"g1","paused":false,"viewers":[],
+            "joinRequests":[{"userId":"u2","name":"Mira","requestId":"r2"}]}));
+        assert!(!stale(sid, &allow));
+        let other = decision_body(sid, "g1", &json!({"decision":"decline","userId":"u2","requestId":"r9"})).unwrap();
+        assert!(stale(sid, &other), "an older request id is stale");
+        assert!(!stale(sid, &decision_body(sid, "g1", &json!({"decision":"pause"})).unwrap()));
     }
 }

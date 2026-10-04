@@ -277,6 +277,18 @@ it("offers Share every session live at pairing, off unless chosen", async () => 
   await userEvent.click(screen.getByRole("button", {name:"Continue"}));
   await waitFor(() => expect(invoke).toHaveBeenCalledWith("shell_integration_set", {enabled:true}));
 });
+it("records that pairing made the Share every session live offer, also when it was left off", async () => {
+  localStorage.removeItem("lightbulb.desktop.liveSharingOffer");
+  invoke.mockImplementation(async (command) => command === "local_sessions_set" ? 1 : { enrollment:null, pairedWorkspaceId:"org", status:"paused" });
+  render(<DesktopPermissionsGate />);
+  await screen.findByRole("button", {name:/Share every session live/});
+  await userEvent.click(screen.getByRole("button", {name:"Continue"}));
+  await waitFor(() => expect(screen.queryByRole("alertdialog")).toBeNull());
+  expect(invoke.mock.calls.some(([command]) => command === "shell_integration_set")).toBe(false);
+  // The once-per-Mac notice for Macs paired before the switch existed must not ask again.
+  expect(localStorage.getItem("lightbulb.desktop.liveSharingOffer")).toBe("1");
+});
+
 it("names the workspace sharing is on in, never its raw id, and shows the desktop status as its own note", async () => {
   const on = (status: string) => ({enrollment:{ownerId:"org",humanUserId:"alice",enabled:true,paused:false},pairedWorkspaceId:"org",status});
   invoke.mockResolvedValue(on("Setup retried; Claude Code and Codex are configured for new sessions."));

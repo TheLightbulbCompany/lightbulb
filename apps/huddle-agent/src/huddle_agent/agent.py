@@ -184,6 +184,7 @@ class _Live:
         # must never hear the Meet) is muted again on each one.
         duplex.on("session_reconnected", self._on_reconnected)
         self.nudge = lambda: session.generate_reply()  # a request the model may decline
+        self.acknowledge = lambda text: duplex.append_commentary(text)  # words to say once, not a note to read
         self.reply_to = lambda text: session.generate_reply(
             user_input=text
         )  # a typed user turn

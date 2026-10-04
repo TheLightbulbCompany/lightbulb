@@ -787,3 +787,8 @@ def test_meeting_actor_maps_only_non_members_of_a_meeting():
     assert vc._meeting_actor(members, "meet:r", False, "Priya") == ("meet:r", None)
     assert vc._meeting_actor(members, "user_m", True, "Priya") == ("user_m", None)
     assert vc._meeting_actor(members[1:], "Priya", True) == ("Priya", "Priya")  # no owner member: 403s as before
+
+
+async def test_live_two_names_with_nothing_to_cut_send_no_requests(live_env):
+    got, _ = await _live("Finance and Ada?", humans=2)
+    assert got["agentIds"] == ["fin-1", "ceo-1"] and "requests" not in got

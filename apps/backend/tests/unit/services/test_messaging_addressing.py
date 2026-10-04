@@ -217,8 +217,8 @@ def test_split_gives_a_shared_ask_to_every_name_in_the_list():
 
 async def test_live_multi_name_line_gets_one_task_per_agent_from_the_same_call():
     answers = _answers(["addressed", "addressed", "addressed"]) | {
-        "t0": {"type": "choice", "choice": "p0"},
-        "t1": {"type": "choice", "choice": "p1"},
+        "t0": {"type": "choice", "choice": "own"},
+        "t1": {"type": "choice", "choice": "own"},
         "t2": {"type": "choice", "choice": "all"},
     }
     out, decide = await _address(LINE, CREW, answers, live=True)
@@ -230,7 +230,7 @@ async def test_live_multi_name_line_gets_one_task_per_agent_from_the_same_call()
     }
     decide.assert_awaited_once()  # the split rides the existing addressing call
     questions = decide.await_args.args[1]
-    assert questions["t1"]["type"] == "choice" and set(questions["t1"]["criteria"]) == {"p0", "p1", "p2", "all"}
+    assert questions["t1"]["type"] == "choice" and set(questions["t1"]["criteria"]) == {"own", "all"}
 
 
 async def test_live_multi_name_fallback_cuts_and_keeps_an_addressed_weekday():
@@ -238,7 +238,7 @@ async def test_live_multi_name_fallback_cuts_and_keeps_an_addressed_weekday():
     assert out["path"] == "fallback" and out["agents"] == ["pul", "frg", "fri"]
     assert out["tasks"]["fri"] == "a summary of our rooms and the last conversation from the last day"
     out, _ = await _address("Forge, check CI. Friday, we ship the beta", CREW, None, live=True)
-    assert out["agents"] == ["frg"]  # the day-use veto still stands
+    assert out["agents"] == ["frg"] and "tasks" not in out  # the day-use veto still stands: one agent, no split
 
 
 async def test_chat_and_one_name_lines_ask_no_split():
@@ -246,3 +246,64 @@ async def test_chat_and_one_name_lines_ask_no_split():
     assert "tasks" not in out and not any(k.startswith("t") for k in decide.await_args.args[1])
     out, _ = await _address("Forge, what our PRs look like", CREW, None, live=True)
     assert out["path"] == "fast" and "tasks" not in out
+
+
+GAUGE = {"kind": "agent", "id": "gau", "displayName": "Gauge", "mentionHandle": "gauge"}
+
+
+@pytest.mark.parametrize(
+    ("text", "tasks"),
+    [
+        (
+            "Forge, have the deploy done by Friday. Pulse, status",
+            {"frg": "have the deploy done by Friday", "pul": "status"},
+        ),
+        (
+            "Forge, move the review to Friday, Pulse, update",
+            {"frg": "move the review to Friday", "pul": "update"},
+        ),
+        ("Forge, status. Friday, a summary of rooms", {"frg": "status", "fri": "a summary of rooms"}),
+        ("Pulse, update the plan and Forge, check CI", {"pul": "update the plan", "frg": "check CI"}),
+        ("Pulse, update. Hey Forge, check", {"pul": "update", "frg": "check"}),
+        ("Check the deploy, Forge and Friday?", {"frg": "Check the deploy", "fri": "Check the deploy"}),
+        (
+            "Forge, check CI. Friday, summarize rooms. Forge, also check logs",
+            {"frg": "check CI also check logs", "fri": "summarize rooms"},
+        ),
+        ("Forge and Friday, check the deploy", {"frg": "check the deploy", "fri": "check the deploy"}),
+        ("Forge and Friday?", {}),
+    ],
+)
+async def test_live_split_cuts_only_at_addressed_names_when_the_model_is_down(text, tasks):
+    out, _ = await _address(text, CREW, None, live=True)
+    assert out["path"] == "fallback" and out["tasks"] == tasks
+
+
+async def test_live_a_merely_mentioned_agent_does_not_end_a_neighbours_part():
+    text = "Pulse, update. Forge, check the CI that Gauge broke"
+    answers = _answers(["addressed", "addressed", "mentioned"])
+    out, _ = await _address(text, [*CREW, GAUGE], answers, live=True)
+    assert out["tasks"] == {"pul": "update", "frg": "check the CI that Gauge broke"}
+
+
+async def test_live_a_relayed_agent_is_a_cut_point_as_the_labels_dictate():
+    text = "Forge, ask Friday for the numbers"
+    out, _ = await _address(text, CREW, None, live=True)
+    assert out["agents"] == ["frg"] and "tasks" not in out  # model down: Friday follows "ask", not a name
+    answers = _answers(["addressed", "relayed"])
+    out, _ = await _address(text, CREW, answers, live=True)
+    assert out["agents"] == ["frg", "fri"]
+    assert out["tasks"] == {"frg": "ask", "fri": "for the numbers"}  # relayed counts as addressed
+
+
+async def test_live_model_all_gives_the_whole_line_and_a_bad_answer_keeps_the_own_part():
+    answers = _answers(["addressed"] * 3) | {
+        "t0": {"type": "choice", "choice": "all"},
+        "t1": {"type": "choice", "choice": "p2"},  # not an option now
+    }
+    out, _ = await _address(LINE, CREW, answers, live=True)  # t2 missing
+    assert out["tasks"] == {
+        "pul": LINE,
+        "frg": "what our PRs look like",
+        "fri": "a summary of our rooms and the last conversation from the last day",
+    }

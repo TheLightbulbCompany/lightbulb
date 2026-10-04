@@ -903,9 +903,10 @@ async def route_live_line(
         # In the order named: the worker drives one voice at a time and can queue the rest.
         order = [*[a for a in addressing["agents"] if a in addressed], *sorted(set(addressed) - set(named_ids))]
         routed = done(*order)
-        if len(order) >= 2:
+        tasks = addressing.get("tasks")
+        if len(order) >= 2 and tasks != {}:  # {} = the stage found nothing to cut
             # Conversation engine §3.2: one request per agent, each its own code-cut part of the line.
-            tasks = addressing.get("tasks") or {}
+            tasks = tasks or {}
             routed["requests"] = [{"agentId": a, "task": tasks.get(a) or utterance} for a in order]
         return routed
     candidates = [t["agentId"] for t in targets]

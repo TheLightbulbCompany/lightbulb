@@ -76,11 +76,19 @@ async def ack_with_presence(ack: dict, owner: str, session_ids: list[str]) -> di
     except Exception:  # noqa: BLE001
         logger.warning("Session presence unavailable")
         return ack
-    while True:
-        candidate = {**ack, "presence": out}
-        if len(json.dumps(candidate, separators=(",", ":")).encode()) <= sessions.MAX_ENVELOPE_BYTES or not out:
-            return candidate
-        out = out[:-1]
+    # A listed session the ack leaves out loses its presence on the Mac, so an entry holding a
+    # join request (an input freeze) is never trimmed: drop quiet entries, then viewer lists,
+    # and if requests alone overflow, send no presence at all (the Mac keeps what it has).
+    out.sort(key=lambda e: not e["joinRequests"])
+
+    def fits(p: list) -> bool:
+        return len(json.dumps({**ack, "presence": p}, separators=(",", ":")).encode()) <= sessions.MAX_ENVELOPE_BYTES
+
+    while out and not out[-1]["joinRequests"] and not fits(out):
+        out.pop()
+    if not fits(out):
+        out = [{**e, "viewers": []} for e in out]
+    return {**ack, "presence": out} if fits(out) else ack
 
 
 async def push(row: dict) -> None:

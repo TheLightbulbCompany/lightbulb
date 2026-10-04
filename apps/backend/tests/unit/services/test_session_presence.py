@@ -82,6 +82,38 @@ async def test_ack_lists_only_sessions_with_something_to_show_and_stays_in_the_e
 
 
 @pytest.mark.asyncio
+async def test_ack_never_trims_an_entry_that_holds_a_join_request(monkeypatch):
+    big = {f"user_v{i}": None for i in range(30)}
+    rows = {f"q{i}": _row(sessionId=f"q{i}", generation="g" * 100) for i in range(20)}
+    rows |= {
+        f"r{i}": _row(sessionId=f"r{i}", joinRequests={"user_zoe": {"state": "pending", "requestId": f"req{i}"}})
+        for i in range(4)
+    }
+    monkeypatch.setattr(presence.repo, "get_session", AsyncMock(side_effect=lambda owner, sid: rows[sid]))
+    monkeypatch.setattr(presence.human_display_name, "side_effect", lambda u: "N" * 120)
+    monkeypatch.setattr(presence.store, "_query", _rows(viewers=list(big)))
+    ack = await presence.ack_with_presence({"type": "local.device.heartbeat.ack"}, "org_a", list(rows))
+    listed = [e["sessionId"] for e in ack["presence"]]
+    assert {f"r{i}" for i in range(4)} <= set(listed)
+    assert len(json.dumps(ack, separators=(",", ":")).encode()) <= sessions.MAX_ENVELOPE_BYTES
+
+
+@pytest.mark.asyncio
+async def test_ack_drops_viewers_then_presence_rather_than_a_join_request(monkeypatch):
+    one = {"user_zoe": {"state": "pending", "requestId": "req"}}
+    many = {f"user_p{i}": {"state": "pending", "requestId": f"req{i}"} for i in range(8)}
+    rows = {f"r{i}": _row(sessionId=f"r{i}", joinRequests=one) for i in range(24)}
+    monkeypatch.setattr(presence.repo, "get_session", AsyncMock(side_effect=lambda owner, sid: rows[sid]))
+    monkeypatch.setattr(presence.human_display_name, "side_effect", lambda u: "N" * 120)
+    monkeypatch.setattr(presence.store, "_query", _rows(viewers=[f"user_v{i}" for i in range(30)]))
+    ack = await presence.ack_with_presence({"type": "local.device.heartbeat.ack"}, "org_a", list(rows))
+    assert len(ack["presence"]) == 24 and all(e["viewers"] == [] and e["joinRequests"] for e in ack["presence"])
+    rows = {f"r{i}": _row(sessionId=f"r{i}", joinRequests=many) for i in range(24)}
+    ack = await presence.ack_with_presence({"type": "local.device.heartbeat.ack"}, "org_a", list(rows))
+    assert "presence" not in ack, "requests alone overflow: send none, so the Mac keeps every freeze"
+
+
+@pytest.mark.asyncio
 async def test_ack_survives_a_read_failure(monkeypatch):
     monkeypatch.setattr(presence.repo, "get_session", AsyncMock(side_effect=RuntimeError("ddb")))
     ack = {"type": "local.device.heartbeat.ack"}

@@ -905,6 +905,11 @@ def _understood(
 
     kind = {p["index"]: (p["kind"][0] or "request") for p in parts}
     asks = [p for p in parts if kind[p["index"]] == "request"]
+    if not asks:
+        # Jev read every part as background, yet one opens the way a request does ("we just hired two
+        # engineers in Berlin, | set up their GitHub access"): that part is the request.
+        asks = [p for p in parts if kind[p["index"]] == "context" and p["cue"]]
+        kind |= {p["index"]: "request" for p in asks}
     if not asks and named and not any(kind[p["index"]] in ("social", "people", "more", "cancel") for p in parts):
         asks = [p for p in parts if kind[p["index"]] == "context"]  # "Forge, the deploy looks broken"
         kind |= {p["index"]: "request" for p in asks}
@@ -957,14 +962,20 @@ def _understood(
     if dropped and dropped["status"] != "delivered" and any(kind[p["index"]] == "cancel" for p in parts):
         out["cancel"] = [dropped["id"]]
     amended = target(addressing.get("amends"))
-    if amended and not out["cancel"] and len(requests) <= 1 and (asks or any(k == "context" for k in kind.values())):
+    if amended and not out["cancel"] and (asks or any(k == "context" for k in kind.values())):
+        # The message continues an earlier request (Jev answers for the whole message): what it asks,
+        # unless asked of another agent by name, goes to that request. Still being worked on: its run is
+        # steered ("make it shorter and drop the emoji" is one correction). Already answered: its owner
+        # gets the follow-up.
+        theirs = [r for r in requests if r["by"] != "name" or r["agentId"] == amended["agentId"]]
         about = {p["index"] for p in parts if kind[p["index"]] in ("request", "context")}
-        said = requests[0]["task"] if requests else task(about)
-        if not requests or requests[0]["by"] != "name" or requests[0]["agentId"] == amended["agentId"]:
-            if amended["status"] in _OPEN_STATUS:
-                out["requests"], out["steer"] = [], [{"requestId": amended["id"], "text": said}]
-            elif requests:
-                requests[0] |= {"agentId": amended["agentId"], "by": "follow"}
+        if amended["status"] in _OPEN_STATUS and (theirs or not requests):
+            said = ". ".join(r["task"] for r in theirs) or task(about)
+            out["requests"] = [r for r in requests if r not in theirs]
+            out["steer"] = [{"requestId": amended["id"], "text": said}]
+        elif amended["status"] not in _OPEN_STATUS:
+            for r in theirs:
+                r |= {"agentId": amended["agentId"], "by": "follow"}
     return out
 
 

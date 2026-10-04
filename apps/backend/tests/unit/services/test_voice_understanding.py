@@ -94,7 +94,7 @@ def parts(line):
         ),
         (
             "sorry my dog is barking lol anyway how many tickets came in overnight",
-            ["sorry my dog is barking lol", "anyway how many tickets came in overnight"],
+            ["sorry my dog is barking lol", "how many tickets came in overnight"],
         ),
         (
             "whats our burn uh how many active users do we have and is the api down",
@@ -105,7 +105,13 @@ def parts(line):
             "I'll just rattle them off first one is can you find the Acme NDA",
             ["I'll just rattle them off", "first one is", "can you find the Acme NDA"],
         ),
-        ("Anyway, how many trials started yesterday?", ["Anyway", "how many trials started yesterday"]),
+        ("Anyway, how many trials started yesterday?", ["how many trials started yesterday"]),
+        # any word with its object after a joiner is an instruction: no verb list covers what people say
+        (
+            "how many active users did we have yesterday oh and um like rotate the stripe api key on staging",
+            ["how many active users did we have yesterday", "rotate the stripe api key on staging"],
+        ),
+        ("ugh mondays okay pull the weekly revenue report", ["ugh mondays", "pull the weekly revenue report"]),
     ],
 )
 def test_a_sentence_is_cut_where_a_new_request_begins(line, want):
@@ -126,6 +132,9 @@ def test_a_sentence_is_cut_where_a_new_request_begins(line, want):
         "check the build and test results",
         "find the customer who emailed us and asked for a refund",
         "what's the open rate on the um the last two newsletters actually just the last one",
+        "tell Priya I need the board deck by Thursday",  # the words to pass on are the same request
+        "if the nightly build failed rerun it and let me know",  # "let me know" alone is a tail
+        "look up um the invoices and receipts from Figma and Notion",
     ],
 )
 def test_one_ask_with_several_objects_is_not_cut(line):
@@ -258,6 +267,21 @@ async def test_a_correction_steers_the_working_request(decide):
     assert detail["ops"]["steer"] == [{"requestId": "r1", "text": "only the ones on main"}]
 
 
+async def test_a_correction_in_two_clauses_is_one_steer(decide):
+    line = "make the tweet shorter and drop the emoji"
+    said = jev_says(kinds=["request", "request"], whos=["pulse", "forge"], amends="r1")
+    got = await route(decide, line, said, opened=OPEN)
+    assert got["ops"]["steer"] == [{"requestId": "r1", "text": "make the tweet shorter. drop the emoji"}]
+    assert tasks(got) == []
+
+
+async def test_an_instruction_after_background_is_the_request(decide):
+    """Jev reads both halves as background; the half that opens like a request is one."""
+    line = "we just hired two engineers in Berlin, set up their GitHub access"
+    got = await route(decide, line, jev_says(kinds=["context", "context"], whos=[None, "forge"]))
+    assert tasks(got) == [("forge", line, "fit")]  # the background stays with its request
+
+
 async def test_a_follow_up_to_an_answer_goes_to_who_answered(decide):
     line = "Are you sure that's accurate, or is that old information?"
     got = await route(decide, line, jev_says(kinds=["request"], whos=["gauge"], amends="r2"), opened=OPEN)
@@ -374,6 +398,19 @@ async def test_a_line_with_too_many_parts_is_one_request(decide):
     named = f"Forge and Gauge, {line}"
     both = await route(decide, named, jev_says(kinds=["request"], names=["addressed", "addressed"]))
     assert [(a, by) for a, _, by in tasks(both)] == [("forge", "name"), ("gauge", "name")]
+
+
+async def test_a_word_only_heard_as_a_name_does_not_cut_the_line(decide):
+    """ "last" sounds like Atlas to the worker's fuzzy match; inside a clause it is a word."""
+    atlas = [*MEMBERS, {"kind": "agent", "id": "atlas", "displayName": "Atlas"}]
+    line = "find out what our CAC was last month plus send the onboarding email to the new customers"
+    said = jev_says(kinds=["request", "request"], whos=["gauge", "atlas"], names=["not_a_name"])
+    with patch.object(vc.messaging_repo, "list_members", AsyncMock(return_value=atlas)):
+        got = await route(decide, line, said)
+    assert tasks(got) == [
+        ("gauge", "find out what our CAC was last month", "fit"),
+        ("atlas", "send the onboarding email to the new customers", "fit"),
+    ]
 
 
 async def test_who_is_asked_is_not_a_request_of_its_own(decide):

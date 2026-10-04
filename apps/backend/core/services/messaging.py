@@ -2709,9 +2709,13 @@ KIND_INSTRUCTIONS = (
 KINDS = {
     "request": (
         "Asks the AI team to find out, check, answer, do, make, send or change something, directly or "
-        "indirectly ('what is ...', 'I need to know ...', 'can someone ...', 'Leo needs the ... by Friday')"
+        "indirectly ('what is ...', 'I need to know ...', 'can someone ...', 'Leo needs the ... by Friday'), "
+        "or is a plain instruction ('set up their access', 'rerun it')"
     ),
-    "context": "Background or added detail for the request next to it; by itself it asks nothing",
+    "context": (
+        "Background only: a fact or a detail for a request made in ANOTHER part of the message; it holds no "
+        "instruction and no question itself"
+    ),
     "more": (
         "Only says that requests or questions are coming, or how the speaker wants to go through them "
         "('I have a few questions', 'let me say them all first', 'couple of things')"
@@ -2829,7 +2833,11 @@ def _opens_with(text: str, name: str, *, strong: bool = False) -> bool:
 
 _EDGE = " \t\r\n.,;:?!\"'“”‘’-–—"
 #: Filler a speaker puts in front of a request ("ok so ...", "um ...").
-_HEAD = re.compile(r"^(?:and|then|also|plus|but|so|oh|um|uh|hey|hi|ok|okay|alright)(?:\s|,|$)", re.I)
+_HEAD = re.compile(
+    r"^(?:and|then|also|plus|but|so|oh|um|uh|hey|hi|ok|okay|alright|anyway|anyways|like|you\s+know|i\s+mean)"
+    r"(?:\s|,|$)",
+    re.I,
+)
 #: A connector left hanging where a part runs straight into a name ("check the deploy and | Friday ...").
 _TAIL = re.compile(r"(?:^|\s)(?:and|then|also|plus|hey|hi|ok|okay)$", re.I)
 #: A sentence ends at . ? ! ; followed by a space or the end: "v2.1" and "3.5 percent" are one sentence.
@@ -2851,15 +2859,26 @@ _ASK_Q = (
 )
 # "send it to Dana" after "export the list and then" leans on what came before: it is the same request,
 # so a pronoun object (it, them, those) opens no new one.
+# An instruction after a joiner: an asking verb with its object, or ANY word followed by a determiner
+# ("and rotate the key", "plus send the email": no verb list covers what people say). A pronoun object
+# ("send it to Dana") leans on the step before, and "let me know" alone is a tail: neither opens a request.
+_NOT_A_VERB = (
+    r"(?:all|both|half|even|only|just|then|now|maybe|not|also|is|was|are|were|be|in|on|at|for|with|to|from|of|by|"
+    r"about|after|before|like|than|as|if|when|while|because|since|that|what|how|why|where|who|which|whether|it|"
+    r"they|we|he|she|you|i|there|this|these|those|the|a|an|and|or|but|so|then|me|us|them|him|her|"
+    r"um|uh|well|please|know|mean|okay|ok|alright|oh|anyway|anyways|actually|sorry|yeah|yes|no)"
+)
 _ASK_V = (
-    r"(?:check|see|find|figure|tell|get|give|pull|send|draft|write|book|schedule|reply|email|remind|make|build|"
+    r"(?:(?:check|see|find|figure|tell|get|give|pull|send|draft|write|book|schedule|reply|email|remind|make|build|"
     r"create|look|run|rerun|show|list|compare|update|fix|move|close|ask|set|add|open|review|summarize|post|"
-    r"share|call|ping|let|grab|fetch|cancel|confirm|verify|forward|file|track|bring)"
+    r"share|call|ping|grab|fetch|cancel|confirm|verify|forward|file|track|bring)"
     r"\s+(?:the|a|an|my|our|your|their|his|her|its|me|us|this|that|if|whether|what|"
     r"what['’]s|which|who|how|why|when|where|out|up|to|for|on|in|into|with|about|at|over|through|all|any|every|"
     r"everyone|some)\b"
+    r"|let\s+(?:me|us)\s+know\s+(?:if|whether|what|when|how|which|who|why)\b"
+    rf"|(?!{_NOT_A_VERB}\b)[a-z][a-z'’-]+\s+(?:the|a|an|my|our|your|their|this|that)\b)"
 )
-_JOINER = r"(?:and|then|also|plus|but|anyway|anyways|btw|by\s+the\s+way)"
+_JOINER = r"(?:and|then|also|plus|but|anyway|anyways|btw|by\s+the\s+way|okay|ok|alright|oh|so(?!\s+that\b))"
 _ORDINAL = (
     r"(?:(?:the\s+)?(?:first|second|third|next|last|final)(?:\s+(?:one|thing|up|question))?(?:\s+is)?|"
     r"lastly|finally|one\s+more(?:\s+thing)?)"
@@ -2878,6 +2897,12 @@ _OPENER_ONLY = re.compile(
     r"(?:\s+you)?(?:\s+to)?|i['’]d\s+(?:like|love)(?:\s+you)?(?:\s+to)?|please|let['’]?s)?"
     r"(?:\s*(?:also|just|please|to))*$",
     re.I,
+)
+#: A part that opens the way a request does (a question word, "can you", an instruction).
+_OPENS_ASK = re.compile(rf"^{_FILLER}(?:{_ASK_STRONG}|{_ASK_Q}|{_ASK_V})", re.I)
+#: "tell Priya", "remind the team that": what follows is what to tell them, not a new request.
+_REPORTING = re.compile(
+    r"\b(?:tell|ask|remind|message|email|text|ping|inform|let)\s+\S+(?:\s+\S+)?(?:\s+(?:that|know))?$", re.I
 )
 #: Words that only say who is asked, with no ask yet ("whoever handles billing", "someone on the team").
 _ADDRESSEE_ONLY = re.compile(
@@ -2919,6 +2944,9 @@ def _clean(seg: str, into_name: bool = False) -> str:
     return seg
 
 
+_CLAUSE_START = re.compile(r"(?:^\s*|[.?!;]\s+|,\s+|\b(?:and|hey|hi|ok|okay|so)\s+)$", re.I)
+
+
 def _cue_spans(seg: str) -> list[tuple[int, int]]:
     """One sentence cut where a new request begins (understanding §4.2); a cut that would leave only filler
     in front of it is not made."""
@@ -2926,8 +2954,12 @@ def _cue_spans(seg: str) -> list[tuple[int, int]]:
     for m in _CUE.finditer(seg):
         before = _clean(seg[cuts[-1] : m.start()])
         # no part of its own: filler and "can you", or only who is asked ("whoever handles billing | can you ...")
-        if not _OPENER_ONLY.match(before) and not _ADDRESSEE_ONLY.match(before):
-            cuts.append(m.start())
+        if _OPENER_ONLY.match(before) or _ADDRESSEE_ONLY.match(before):
+            continue
+        # the words to pass on to someone are the same request ("tell Priya | I need the board deck")
+        if not m.group(0).strip() and _REPORTING.search(before):
+            continue
+        cuts.append(m.start())
     return list(zip(cuts, [*cuts[1:], len(seg)]))
 
 
@@ -2937,7 +2969,14 @@ def _pieces(text: str, cands: list[dict], cues: bool = False) -> list[tuple[str,
     sentence ends that are more than filler; ``into_name``: the words run straight into the next name.
     One request is made of whole parts. ``cues``: a sentence is also cut where a new request begins."""
     names, last = [], 0
-    for start, end, name in sorted((start, end, c["name"]) for c in cands for start, end in _named_at(text, c)):
+    for start, end, name in sorted(
+        (start, end, c["name"])
+        for c in cands
+        for start, end in _named_at(text, c)
+        # A word only heard as a name ("last" for Atlas, "forget" for Forge) cuts the line only where a
+        # name would open a clause; inside one ("what our CAC was last month") it is a word.
+        if not cues or c["said"].lower() == c["name"] or _CLAUSE_START.search(text[:start])
+    ):
         if start >= last:  # two candidates on the same words: the first one
             names.append((start, end, name))
             last = end
@@ -3283,6 +3322,7 @@ async def address(
                 "index": i,
                 "text": part,
                 "into": into[i],  # the words run straight into a name ("Can you get | Forge ...")
+                "cue": bool(_OPENS_ASK.match(part)),  # it opens the way a request does
                 "kind": kinds[i] if i < len(kinds) else (None, 0.0, 0.0),
                 "who": whos[i] if i < len(whos) else (None, 0.0, 0.0),
                 "asked": asked[i] if i < len(asked) else None,

@@ -781,8 +781,7 @@ async def test_a_retried_turn_resends_the_same_run_id():
     ]
     await h.on_delegation("forge", "d1", "check the board")
     assert len({t["runId"] for t in backend.turns}) == 1 and len(backend.turns) == 3
-    # (the 0.1 s sleeps: the delegation waiting for a final that never comes, understanding §4.6)
-    assert [e for e in log if e.startswith("sleep") and e != "sleep 0.1"] == ["sleep 2", "sleep 4"]
+    assert [e for e in log if e.startswith("sleep")] == ["sleep 2", "sleep 4"]
     assert [c for c in lives[0].calls if c[1:2] == (h_mod.STILL_WAKING,)] == [
         ("thinking", h_mod.STILL_WAKING, "d1")
     ]
@@ -1147,7 +1146,7 @@ async def test_a_stop_while_turns_is_in_flight_aborts_again_once_it_lands():
     h, room, backend, lives, clock, log = await summoned()
     backend.turn_gate = asyncio.Event()
     deleg = asyncio.create_task(h.on_delegation("forge", "d1", "check the deploy"))
-    for _ in range(40):  # past the delegation's wait for a final (understanding §4.6)
+    for _ in range(5):
         await asyncio.sleep(0)
     run_id = backend.turns[0]["runId"]
     await say(h, "u1", "never mind")
@@ -2491,8 +2490,7 @@ async def test_a_switch_during_a_cold_start_still_delivers_the_request_as_news()
         seconds,
     ):  # the floor moves to Gauge while Forge's turn waits out the cold start
         clock.t += seconds
-        if seconds != h_mod.DELEGATION_POLL_S:  # not the delegation's wait for a final (understanding §4.6)
-            await h.talk_start("u1", json.dumps({"agentId": "gauge"}))
+        await h.talk_start("u1", json.dumps({"agentId": "gauge"}))
 
     h._sleep = sleep
     await h.on_delegation("forge", "d1", "check the board")
@@ -2824,7 +2822,7 @@ async def test_a_mid_sentence_name_switches_the_floor_when_the_backend_says_it_w
     assert metric_count(capsys, "live.route.switch") == 1
 
 
-async def test_a_mid_sentence_mention_keeps_the_floor():
+async def test_a_mid_sentence_mention_keeps_the_floor(capsys):
     h, room, backend, lives, clock, log = await summoned("Forge")
     backend.jev_to = None  # /route: a mention, not a summons
     await say(h, "u1", "let's ask Gauge later")
@@ -2833,6 +2831,8 @@ async def test_a_mid_sentence_mention_keeps_the_floor():
         h, "u1", "Finance looks fine to me"
     )  # a default name mid-sentence is no switch (the line is still understood, understanding §4.1)
     assert [x.agent_id for x in lives] == ["forge"] and h._voice.agent_id == "forge"
+    assert backend.routes[-1][1] == "Finance looks fine to me" and backend.route_bodies[-1]["floor"]["mine"]
+    assert metric_count(capsys, "live.route.switch") == 0
 
 
 async def test_news_nobody_hears_is_posted_to_the_room_not_dropped():

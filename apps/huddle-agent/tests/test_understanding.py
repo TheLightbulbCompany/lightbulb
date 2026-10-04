@@ -326,6 +326,10 @@ async def test_two_answers_for_one_agent_are_said_in_asked_order():
 PRS = "what are the open PRs"
 
 
+async def forever(_seconds):
+    await asyncio.Event().wait()
+
+
 async def floor_open():
     """Forge's voice is open for Prasiddha; its named summon's driven run is retired (test_huddle `summoned`)."""
     h, room, backend, lives, clock, log = await three()
@@ -372,8 +376,10 @@ async def test_a_delegation_binds_to_the_floor_speakers_row_whenever_it_arrives(
     await deleg
     await settle(h)
     bound_and_spoken(h, backend, lives)
-    # (a) before the final
+    # (a) before the final, while the speech is still being transcribed
     h, room, backend, lives, clock, log = await floor_open()
+    h.on_interim_transcript("u1", "Prasiddha", "what are")
+    h._sleep = forever  # the wait for the final ends only when the final comes
     deleg = asyncio.create_task(h.on_delegation("forge", "deleg-1", PRS))
     for _ in range(3):
         await asyncio.sleep(0)
@@ -460,14 +466,19 @@ async def test_small_talk_from_the_floor_speaker_is_answered_by_the_voice():
 
 async def test_with_no_final_the_delegations_own_transcript_is_understood_once(capsys):
     h, room, backend, lives, clock, log = await floor_open()
+    h.on_interim_transcript(
+        "u1", "Prasiddha", "what are"
+    )  # its speech began before the delegation
+    clock.t += 0.5
     t0 = clock.t
     await h.on_delegation("forge", "deleg-1", PRS)
     await settle(h)
-    assert clock.t - t0 >= h_mod.DELEGATION_WAIT_S
+    assert (
+        clock.t - t0 >= h_mod.DELEGATION_WAIT_S
+    )  # it waited for the final on the injected clock
     assert [r[1] for r in backend.routes] == [PRS]
     bound_and_spoken(h, backend, lives)
     assert metric_count(capsys, "live.delegation.unbound") == 1
-    h._utter_from["u1"] = t0 - 1  # the late final's speech began before the delegation
     await say(h, "u1", PRS)
     assert len(backend.routes) == 1 and len(h._requests.items) == 1
     assert h._transcript.text().endswith(PRS)
@@ -560,3 +571,153 @@ async def test_a_bare_lightbulb_repoint_is_understood_not_typed():
         lives[0].calls[-1] == ("reply_to", "Lightbulb, check Aden's email")
         and backend.turns == []
     )
+
+
+# -- review round 1: an understanding belongs to its speech --
+
+ACK = "You are on the open PRs. Say that in one short sentence, then wait."
+
+
+async def test_two_delegations_of_one_speech_make_one_run_and_the_second_gets_a_note():
+    h, room, backend, lives, clock, log = await floor_open()
+    await say(h, "u1", PRS)
+    await h.on_delegation("forge", "deleg-1", PRS)
+    clock.t += 1
+    await h.on_delegation("forge", "deleg-2", PRS)
+    await settle(h)
+    assert (
+        len(backend.routes) == 1
+        and len(h._requests.items) == 1
+        and len(backend.turns) == 1
+    )
+    assert lives[0].calls[-1] == ("commentary", ACK, "deleg-2")
+    answer(h, backend.turns[0]["runId"], "forge", "Two PRs are open.")
+    assert [
+        c for c in lives[0].calls if c[:2] == ("commentary", "Two PRs are open.")
+    ] == [("commentary", "Two PRs are open.", "deleg-1")]
+
+
+async def test_a_delegation_long_after_the_answer_is_told_not_to_repeat_it():
+    h, room, backend, lives, clock, log = await floor_open()
+    await say(h, "u1", PRS)
+    run_id = backend.turns[0]["runId"]
+    answer(h, run_id, "forge", "Two PRs are open.")  # said before any delegation came
+    clock.t += 30
+    await h.on_delegation("forge", "deleg-1", PRS)
+    await settle(h)
+    assert (
+        len(backend.routes) == 1
+        and len(h._requests.items) == 1
+        and len(backend.turns) == 1
+    )
+    assert h._runs.get(run_id).delegation_id is None
+    assert lives[0].calls[-1] == (
+        "commentary",
+        "You already gave that answer. Do not repeat it.",
+        "deleg-1",
+    )
+
+
+async def test_a_final_with_no_interim_after_an_unbound_delegation_is_new_speech_unless_it_matches():
+    h, room, backend, lives, clock, log = await floor_open()
+    await h.on_delegation("forge", "deleg-1", PRS)
+    await settle(h)
+    clock.t += 3
+    backend.route_extra = ops(requests=[("friday", "Aden's email", "fit")])
+    await say(h, "u1", "check Aden's email")
+    assert [r[1] for r in backend.routes] == [PRS, "check Aden's email"]
+    assert [(a, t) for a, t, _ in rows(h)] == [
+        ("forge", "the open PRs"),
+        ("friday", "Aden's email"),
+    ]
+    # the same words: that speech's final, arriving late
+    h, room, backend, lives, clock, log = await floor_open()
+    await h.on_delegation("forge", "deleg-1", PRS)
+    await settle(h)
+    clock.t += 3
+    await say(h, "u1", "What are the open PRs?")
+    assert len(backend.routes) == 1 and len(h._requests.items) == 1
+
+
+async def test_a_stop_before_the_delegations_answer_says_nothing():
+    # the stop lands while the speech's /route is in flight
+    h, room, backend, lives, clock, log = await floor_open()
+    backend.route_gate = asyncio.Event()
+    await h.on_final_transcript("u1", "Prasiddha", PRS)
+    await asyncio.sleep(0)
+    deleg = asyncio.create_task(h.on_delegation("forge", "deleg-1", PRS))
+    await asyncio.sleep(0)
+    await h.on_final_transcript("u1", "Prasiddha", "everyone stop")
+    backend.route_gate.set()
+    await settle(h)
+    await deleg
+    assert len(backend.routes) == 1 and backend.turns == [] and h._requests.items == []
+    assert not [c for c in lives[0].calls if c[0] == "commentary"]
+    # the stop is a new speech (an interim came): no record, and no case-f /route for the stopped speech
+    h, room, backend, lives, clock, log = await floor_open()
+    await say(h, "u1", PRS)
+    h.on_interim_transcript("u1", "Prasiddha", "everyone")
+    await say(h, "u1", "everyone stop")
+    await h.on_delegation("forge", "deleg-1", PRS)
+    await settle(h)
+    assert len(backend.routes) == 1 and len(backend.turns) == 1
+    assert not [c for c in lives[0].calls if c[0] == "commentary"]
+
+
+async def test_a_delegation_for_a_newer_speech_never_takes_the_older_record():
+    h, room, backend, lives, clock, log = await floor_open()
+    await say(h, "u1", PRS)  # never delegated
+    clock.t += 5
+    h.on_interim_transcript("u1", "Prasiddha", "and what")
+    h._sleep = forever
+    deleg = asyncio.create_task(h.on_delegation("forge", "deleg-2", "and what shipped"))
+    for _ in range(3):
+        await asyncio.sleep(0)
+    assert not deleg.done()
+    backend.route_extra = ops(requests=[("forge", "what shipped", "fit")])
+    await say(h, "u1", "and what shipped")
+    await deleg
+    await settle(h)
+    first = backend.turns[0]["runId"]
+    assert h._runs.get(first).delegation_id is None and len(backend.turns) == 1
+    note = '"what shipped" is next in line for you. Say so in a few words.'
+    assert lives[0].calls[-1] == ("commentary", note, "deleg-2")
+    answer(h, first, "forge", "Two PRs are open.")
+    assert ("commentary", "Two PRs are open.", None) in lives[0].calls
+    # no line-2 final at all: after the wait, the delegation's own transcript is understood
+    h, room, backend, lives, clock, log = await floor_open()
+    await say(h, "u1", PRS)
+    clock.t += 5
+    h.on_interim_transcript("u1", "Prasiddha", "and what")
+    backend.route_extra = ops(requests=[("forge", "what shipped", "fit")])
+    await h.on_delegation("forge", "deleg-2", "and what shipped")
+    await settle(h)
+    assert [r[1] for r in backend.routes] == [PRS, "and what shipped"]
+    assert [s for _, _, s in rows(h)] == ["working", "queued"]
+    assert h._runs.get(backend.turns[0]["runId"]).delegation_id is None
+    assert lives[0].calls[-1] == ("commentary", note, "deleg-2")
+
+
+async def test_route_has_its_own_short_timeout_and_turns_keep_the_clients(monkeypatch):
+    import httpx
+
+    from huddle_agent.backend import ROUTE_TIMEOUT_S, Backend
+
+    monkeypatch.setenv("LIGHTBULB_API_URL", "http://backend")
+    seen = {}
+
+    def handle(request):
+        seen[request.url.path.rsplit("/", 1)[-1]] = request.extensions["timeout"][
+            "read"
+        ]
+        return httpx.Response(200, json={})
+
+    client = httpx.AsyncClient(
+        base_url="http://backend/api/v1",
+        transport=httpx.MockTransport(handle),
+        timeout=100,
+    )
+    b = Backend("room", "owner", "token", client=client)
+    await b.route("u1", "hi", "")
+    await b.turn("call", "u1", "forge", "run", "hi", "")
+    assert seen == {"route": ROUTE_TIMEOUT_S, "turns": 100}

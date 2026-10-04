@@ -7,6 +7,8 @@ import os
 
 import httpx
 
+ROUTE_TIMEOUT_S = 10  # /route is one Jev call; /turns keeps the client's long timeout
+
 
 class BackendError(Exception):
     def __init__(self, status: int, code: str, reason: str | None):
@@ -41,12 +43,14 @@ class Backend:
             )
         )
 
-    async def _post(self, path: str, body: dict, method: str = "POST") -> dict:
+    async def _post(self, path: str, body: dict, method: str = "POST", timeout: float | None = None) -> dict:
+        """`timeout`: this request's own, in place of the client's (sized for /turns)."""
         try:
             r = await self._http.request(
                 method,
                 path,
                 json={**body, "ownerId": self._owner_id, "roomToken": self._room_token},
+                **({"timeout": timeout} if timeout else {}),
             )
         except httpx.HTTPError as e:
             raise BackendError(0, "huddles_upstream", type(e).__name__) from e
@@ -105,7 +109,8 @@ class Backend:
             "unclaimed": unclaimed,
             "open": list(open),
         }
-        return await self._post(f"/internal/huddles/{self._room_id}/route", body)
+        # understanding §4.6: a delegation may wait on this answer; a slow one is a failure like any other
+        return await self._post(f"/internal/huddles/{self._room_id}/route", body, timeout=ROUTE_TIMEOUT_S)
 
     @staticmethod
     def _label(speaker_name: str | None) -> dict:

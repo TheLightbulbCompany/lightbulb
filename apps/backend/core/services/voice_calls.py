@@ -875,11 +875,16 @@ FIT_P = 0.35
 FIT_MARGIN = 0.0
 #: The latest message continues or calls off an earlier request at this probability.
 AMEND_P = 0.5
-#: A part is a request only when Jev reads it as one this surely; a weaker read, or none, is small talk the
-#: voice answers itself (no run). 10-04 prod calls: side talk to someone off the call ("Ubera business,
-#: right"), a complaint at the voice ("Can you not talk on me") and nervous fragments each became a run.
-#: Fit on scripts/speak_gate_bench/understand.py (``--only sidetalk --request-p``).
-REQUEST_P = 0.6
+#: A part is a request only when Jev reads it as one at least this surely; a weaker read, or none, is small
+#: talk the voice answers itself (no run). 10-04 prod calls: side talk to someone off the call ("Ubera
+#: business, right"), a complaint at the voice ("Can you not talk on me") and nervous fragments each became
+#: a run. Fitted on scripts/speak_gate_bench/understand.py: the weakest true request reads 0.54 (the two-word
+#: follow-up "and last month?"), so 0.6 loses it; the new KINDS wording is what clears the side talk.
+REQUEST_P = 0.5
+#: A part is background for a request ("context") only when Jev reads it so at least this surely: a weaker
+#: read is not for the agents. "Ubera business, right" read 0.42-0.47 and was added to a working request
+#: as a correction; the weakest true correction reads 0.75 ("only the ones on the main branch").
+CONTEXT_P = 0.6
 _OPEN_STATUS = ("queued", "working")
 
 
@@ -924,7 +929,11 @@ def _understood(
     def kind_of(part: dict) -> str:
         # a weak or missing read is no request (REQUEST_P): an unsure classifier never starts a run
         choice, p, _ = part["kind"]
-        return "social" if not choice or (choice == "request" and p < REQUEST_P) else choice
+        if not choice or (choice == "request" and p < REQUEST_P):
+            return "social"
+        if choice == "context" and p < CONTEXT_P:
+            return "people"  # an unsure "about the work" read: not for the agents, so it steers nothing
+        return choice
 
     kind = {p["index"]: kind_of(p) for p in parts}
     asks = [p for p in parts if kind[p["index"]] == "request"]

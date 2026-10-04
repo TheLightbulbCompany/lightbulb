@@ -80,3 +80,40 @@ row's thread id to the judge; a voice call has no threads, and the bench now cal
 - **Jev judges every possible cut** ("does something new start here?", words only propose cuts).
   Recall 0.88-0.92 on the three sets against 0.92-0.99 with the word rules. Jev types a part well and
   judges a cut poorly ("send the invoice and check if Brightway paid" read as one thing).
+
+## Side talk, fragments and complaints (2026-10-04, after two prod calls)
+
+A lone caller's microphone also hears what they say to someone beside them. With a voice open (`mine`)
+or one person in the call, every line is "implied" to be for the agents, and these became runs:
+"Ubera business, right" (added to Pulse's working request as a correction), "Can you not talk on me",
+"Sorry, I get nervous around, but um, do", "do".
+
+20 `sidetalk` scenes (11 that must make no request, 9 real asks that are easy to confuse with them),
+3 runs each:
+
+| | Extra rows | Work started for nothing | Scenes passing all 3 runs |
+|---|---|---|---|
+| `main` before the change | 12/39 = 0.31 | 12/33 = 0.36 | 15/20 |
+| after | 3/30 = 0.10 (one scene) | 3/33 = 0.09 (one scene) | 19/20 |
+
+Whole file after the change (132 scenes): request recall 339/339, extra rows 3/342 = 0.01, work started
+for nothing 3/135 = 0.02, scenes passing all runs 130/132. `understand_holdout3.jsonl` is unchanged
+(0.99 / 0.98 / 0.03 / 0.00 / 0.98 / 0.97).
+
+What moved the numbers:
+
+- The kind criteria (`messaging.KINDS`): `people` also covers someone in the speaker's own room who is
+  not on the call; `social` also covers a fragment or false start and a complaint about the call. This
+  alone clears every prod line but one.
+- `CONTEXT_P = 0.6`: a part read as background below this is not for the agents. "Ubera business,
+  right" read `context` at 0.42-0.47 and was steered into a working request; the weakest true
+  correction reads 0.75.
+- `REQUEST_P = 0.5`: a request read weaker than that, or no read, starts no run. It changes nothing on
+  these sets; 0.6 already loses the two-word follow-up "and last month?" (0.54-0.62).
+- With the classifier down, a line that is implied only by `mine` or by a lone caller is no longer one
+  whole-line request (a named agent, the wake word and an unclaimed question still are).
+
+One scene was moved out of the file as a known limit: "These are the agents, and Aiden and Leo are in
+there as well. How many agents do you have", said to a person beside the caller. Its second sentence is
+a well-formed question to "you" and reads `request` at 0.98. Words alone cannot tell who it was said to;
+that needs to know who is speaking to whom (voice identity, or gaze in a room).

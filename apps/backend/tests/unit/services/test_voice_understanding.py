@@ -523,6 +523,18 @@ async def test_a_short_follow_up_still_amends_when_requests_must_be_sure(decide)
     assert tasks(followed) == [("forge", "the closed ones", "follow")]
 
 
+async def test_an_unsure_background_read_is_not_added_to_a_working_request(decide):
+    """10-04 prod: "Ubera business, right" (said to someone off the call) read as context at 0.46 and was
+    steered into Pulse's working request. A sure one ("only the ones on main", 0.75+) still steers."""
+    working = [{"id": "r2", "agentId": "forge", "task": "what PRs are open", "status": "working"}]
+    said = jev_says(kinds=["context"], amends="r2", p=vc.CONTEXT_P - 0.1)
+    unsure = await route(decide, "Ubera business, right", said, floor="forge", opened=working)
+    assert unsure["ops"]["steer"] == [] and tasks(unsure) == [] and unsure["ops"]["social"] is None
+    said = jev_says(kinds=["context"], amends="r2", p=vc.CONTEXT_P + 0.1)
+    sure = await route(decide, "only the ones on main", said, floor="forge", opened=working)
+    assert sure["ops"]["steer"] == [{"requestId": "r2", "text": "only the ones on main"}]
+
+
 async def test_an_unfinished_line_is_held(decide):
     got = await route(decide, "Forge, we're trying to", jev_says(kinds=["request"], names=["addressed"], complete=0.2))
     assert got["hold"] is True and got["agentId"] == "forge"

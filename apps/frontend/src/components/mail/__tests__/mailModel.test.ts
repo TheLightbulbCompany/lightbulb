@@ -7,6 +7,7 @@ import {
   mailItemKey,
   meetingItemKey,
   meetingWhen,
+  occurrenceOutcome,
   parseItemKey,
   parseTranscript,
   type MailMeeting,
@@ -131,5 +132,26 @@ describe("isNew", () => {
     expect(isNew(m, Date.parse(m.at))).toBe(false);
     expect(isNew(m, null)).toBe(false);
     expect(isNew({ ...m, direction: "out" }, 0)).toBe(false);
+  });
+});
+
+describe("occurrenceOutcome", () => {
+  const T = sec(2026, 9, 4, 20);
+  const PAST = sec(2026, 8, 26, 9);
+  const top = { ended_at: T + 60, notes: "posted" as const, unsaid: [{ agent_id: "a", agent_name: "A", request: "", answer: "x", at: T }] };
+
+  it("is empty when the backend sends nothing", () => {
+    expect(occurrenceOutcome(meeting({ transcripts: [{ start_at: T }] }), T)).toEqual({ ended_at: null, notes: null, unsaid: [] });
+  });
+
+  it("reads the top level for the current occurrence, its own entry for a past one", () => {
+    const m = meeting({ ...top, transcripts: [{ start_at: T }, { start_at: PAST, ended_at: PAST + 5, notes: "skipped" }] });
+    expect(occurrenceOutcome(m, T)).toEqual({ ended_at: T + 60, notes: "posted", unsaid: top.unsaid });
+    expect(occurrenceOutcome(m, PAST)).toEqual({ ended_at: PAST + 5, notes: "skipped", unsaid: [] });
+  });
+
+  it("prefers the transcripts entry of the current occurrence", () => {
+    const m = meeting({ ...top, transcripts: [{ start_at: T, notes: "pending" }] });
+    expect(occurrenceOutcome(m, T).notes).toBe("pending");
   });
 });

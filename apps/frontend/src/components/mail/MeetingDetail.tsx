@@ -13,11 +13,18 @@ import {
   highlight,
   meetingItemKey,
   meetingWhen,
+  occurrenceOutcome,
   parseTranscript,
   shortDay,
   UPCOMING,
   type MailEntry,
 } from "./mailModel";
+
+const NOTES_TEXT = {
+  posted: "Notes are in",
+  pending: "Notes are being written",
+  skipped: "No notes were written",
+} as const;
 
 export function MeetingDetail({ entry, orgId, now, onOpen, onOpenNotes }: {
   entry: MailEntry & { kind: "meeting" };
@@ -29,12 +36,14 @@ export function MeetingDetail({ entry, orgId, now, onOpen, onOpenNotes }: {
   const m = entry.meeting;
   const when = meetingWhen(entry.startAt, entry.endAt, now);
   const notes = m.notes_room_id;
+  const { ended_at: endedAt, notes: notesState, unsaid } = occurrenceOutcome(m, entry.startAt);
   const occurrences = [...m.transcripts].sort((a, b) => b.start_at - a.start_at).slice(0, 10);
 
   return <article className="mail-detail" aria-labelledby="mail-detail-title">
     <h3 id="mail-detail-title" className="mail-detail__title">{m.title}</h3>
     <p className="mail-detail__meta">
       {when && <span>{when}</span>}
+      {endedAt != null && <span>Ended {clockTime(endedAt * 1000)}</span>}
       <MeetingStatus status={entry.status} hasTranscript={entry.hasTranscript} />
       {m.repeats && <span className="mail-detail__repeats"><Repeat size={13} aria-hidden="true" /> Repeats</span>}
     </p>
@@ -51,9 +60,18 @@ export function MeetingDetail({ entry, orgId, now, onOpen, onOpenNotes }: {
         {shortDay(t.start_at)}
       </button>)}
     </div>}
+    {notesState && <p className="mail-detail__note">{NOTES_TEXT[notesState]}</p>}
     {notes && <p>
       <button type="button" className="mail-link" onClick={() => onOpenNotes(notes)}>Open notes in chat</button>
     </p>}
+    {unsaid.length > 0 && <section className="mail-unsaid" aria-labelledby="mail-unsaid-title">
+      <h4 id="mail-unsaid-title" className="mail-unsaid__title">Answers the team did not get to say</h4>
+      {unsaid.map((u, i) => <div key={i} className="mail-unsaid__item">
+        <p className="mail-turn__speaker">{u.agent_name}</p>
+        {u.request && <p className="mail-detail__note">{u.request}</p>}
+        <p className="mail-turn__text">{u.answer}</p>
+      </div>)}
+    </section>}
     {entry.hasTranscript && entry.startAt !== null
       ? <Transcript meetingId={m.id} startAt={entry.startAt} orgId={orgId} />
       : <p className="mail-detail__note">

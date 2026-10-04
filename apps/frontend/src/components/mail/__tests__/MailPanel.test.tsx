@@ -326,4 +326,55 @@ describe("MailPanel", () => {
     expect(mockGet).toHaveBeenCalledWith(`/agent-mail/inbox/new?since=${encodeURIComponent(mark)}`);
     expect(mockGet).not.toHaveBeenCalledWith("/agent-mail/inbox");
   });
+
+  describe("meeting outcome", () => {
+    const T0 = T1 - 7 * 86_400;
+    const ended = (over: object = {}, transcripts: object[] = [{ start_at: T1 }]) => {
+      mockGet.mockResolvedValue({ ...page, meetings: [{ ...meeting, notes_room_id: null, ...over, transcripts }], messages: [] });
+      mockDownload.mockResolvedValue({ text: async () => "" });
+      renderMail(`meeting:${MEETING}:${T1}`);
+    };
+    const NEW = /Ended \d|Notes are|No notes were|did not get to say/;
+
+    it("renders nothing new when the fields are absent", async () => {
+      ended();
+      await screen.findByRole("heading", { name: "Weekly sync" });
+      expect(screen.queryByText(NEW)).toBeNull();
+    });
+
+    it.each([
+      ["posted", "Notes are in"],
+      ["pending", "Notes are being written"],
+      ["skipped", "No notes were written"],
+    ])("shows the %s notes state", async (notes, text) => {
+      ended({ notes });
+      expect(await screen.findByText(text)).toBeInTheDocument();
+    });
+
+    it("shows the end time", async () => {
+      ended({ ended_at: T1 + 1500 });
+      expect(await screen.findByText(/^Ended \d/)).toBeInTheDocument();
+    });
+
+    it("lists unsaid answers, with and without a request", async () => {
+      ended({ unsaid: [
+        { agent_id: "a1", agent_name: "Finance", request: "Send the deck", answer: "Sent it.\nTwo slides.", at: T1 },
+        { agent_id: "a2", agent_name: "Growth", request: "", answer: "No plan yet.", at: T1 },
+      ] });
+      expect(await screen.findByRole("heading", { name: "Answers the team did not get to say" })).toBeInTheDocument();
+      expect(screen.getByText("Send the deck")).toBeInTheDocument();
+      expect(screen.getByText(/Sent it\.\s*Two slides\./)).toBeInTheDocument();
+      expect(screen.getByText("No plan yet.")).toBeInTheDocument();
+      expect(screen.getByText("Growth").parentElement!.querySelectorAll("p")).toHaveLength(2);
+    });
+
+    it("a past occurrence reads its own entry, not the top level", async () => {
+      mockGet.mockResolvedValue({ ...page, messages: [], meetings: [{ ...meeting, notes: "posted", ended_at: T1 + 60,
+        transcripts: [{ start_at: T1 }, { start_at: T0, notes: "skipped", ended_at: T0 + 90 }] }] });
+      mockDownload.mockResolvedValue({ text: async () => "" });
+      renderMail(`meeting:${MEETING}:${T0}`);
+      expect(await screen.findByText("No notes were written")).toBeInTheDocument();
+      expect(screen.queryByText("Notes are in")).toBeNull();
+    });
+  });
 });

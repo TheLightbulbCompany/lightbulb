@@ -23,6 +23,7 @@ vi.mock("@/lib/shellNav", () => ({
 
 import { MailPanel } from "../MailPanel";
 import { useNewMailCount } from "../useTeamMail";
+import { dayTitle } from "../mailModel";
 
 const ADDR = "agents@acme.thelightbulb.company";
 const MEETING = "11111111-1111-4111-8111-111111111111";
@@ -74,7 +75,8 @@ describe("MailPanel", () => {
     expect(screen.getByRole("img", { name: "Sent" })).toBeInTheDocument();
     expect(screen.getByText("Weekly sync")).toBeInTheDocument();
     expect(screen.getByText("Ended · Transcript")).toBeInTheDocument();
-    expect(screen.getByRole("heading", { name: "Today" })).toBeInTheDocument();
+    // Today, or Yesterday when the suite runs just after midnight.
+    expect(screen.getByRole("heading", { name: dayTitle(Date.parse(received.at), Date.now()) })).toBeInTheDocument();
   });
 
   it("fetches the full text only for a cut mail, and keeps the cut text when that fails", async () => {
@@ -144,6 +146,19 @@ describe("MailPanel", () => {
     renderMail("mail:also-not-loaded");
     await waitFor(() => expect(screen.getAllByText("Quarterly numbers").length).toBe(2));
     expect(window.location.search).toBe("?panel=teams-issues");
+  });
+
+  it("does not pop a dropped item open after Load more, but opens it on a click", async () => {
+    const older = { ...received, key: "k0", subject: "Older mail", truncated: false };
+    mockGet.mockImplementation((url: string) => Promise.resolve(url.includes("before=")
+      ? { address: ADDR, meetings: [], messages: [older], next: null }
+      : { ...page, messages: [{ ...received, truncated: false }, sent], next: "cursor" }));
+    renderMail("mail:k0"); // the harness keeps the item, like a dock param the URL never named
+    fireEvent.click(await screen.findByRole("button", { name: "Load more" }));
+    expect(await screen.findByText("Older mail")).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "Older mail" })).toBeNull(); // still the list
+    fireEvent.click(row("mail:k0"));
+    expect(await screen.findByRole("heading", { name: "Older mail" })).toBeInTheDocument();
   });
 
   it("keeps a meeting selected when the Mail chip hides it", async () => {

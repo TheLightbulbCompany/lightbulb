@@ -68,7 +68,7 @@ export function WorkspaceHeader({ chatReady = true }: { chatReady?: boolean }): 
             : mail ? `${label}, ${mail} new` : label;
         // Messaging never needs the container; the other destinations do.
         return <Fragment key={panel}><button type="button" aria-label={accessibleLabel} title={accessibleLabel}
-          disabled={!chatReady && panel !== MESSAGES_PANEL_ID}
+          disabled={!chatReady && panel !== MESSAGES_PANEL_ID && panel !== "mail"}
           aria-current={activePanelId === panelId ? "page" : undefined}
           onClick={() => {
             if (panel === "file-viewer") capture("file_browser_opened");

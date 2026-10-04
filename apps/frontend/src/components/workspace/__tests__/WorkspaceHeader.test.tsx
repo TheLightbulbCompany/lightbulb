@@ -63,6 +63,7 @@ describe("WorkspaceHeader", () => {
     expect(labels.indexOf("Hire an agent")).toBe(labels.indexOf("Tasks") + 1);
     const hire = screen.getByRole("button", { name: "Hire an agent" });
     expect(hire).not.toBeDisabled();
+    expect(screen.getByRole("button", { name: "Mail" })).not.toBeDisabled(); // the mailbox needs no runtime
     openPanel.mockClear();
     fireEvent.click(hire);
     expect(openMarketplace).toHaveBeenCalledWith({ view: "browse" });

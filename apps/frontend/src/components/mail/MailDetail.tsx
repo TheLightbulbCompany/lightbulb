@@ -34,5 +34,6 @@ export function MailDetail({ message, at, agentName, orgId }: {
       ? <p className="mail-detail__note">The text of this mail was not kept.</p>
       : <div className="mail-detail__body">{text}</div>}
     {message.truncated && full.error && <p className="mail-detail__note">Showing the first 2,000 characters.</p>}
+    {full.data?.truncated && <p className="mail-detail__note">Only the first 64,000 characters were kept.</p>}
   </article>;
 }

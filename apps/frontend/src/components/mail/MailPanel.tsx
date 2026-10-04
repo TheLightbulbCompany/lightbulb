@@ -115,6 +115,7 @@ export function MailPanel({ item, visible = true }: { item: string | null; visib
   const requested = item && item !== dropped ? allEntries.find((e) => e.key === item) ?? null : null;
   const unknownItem = Boolean(item) && pages !== undefined && requested === null;
   if (unknownItem && item !== dropped) setDropped(item);
+  else if (dropped !== null && item !== dropped) setDropped(null); // the URL let go of it
   useEffect(() => {
     if (!unknownItem || !visible) return;
     const next = clearDurableParamFromUrl(window.location.search, "mail", "item");
@@ -146,6 +147,7 @@ export function MailPanel({ item, visible = true }: { item: string | null; visib
     rootRef.current?.querySelector<HTMLElement>(`[data-mail-key="${CSS.escape(key)}"]`)?.focus();
   }, [showingDetail]);
   const open = (key: string) => {
+    if (key === dropped) setDropped(null); // opening it on purpose (e.g. after "Load more") works
     if (!wide) opener.current = key;
     openMailItem(key);
   };

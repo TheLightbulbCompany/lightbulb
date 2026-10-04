@@ -1,11 +1,14 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { setCurrentEntryNamer } from "@/lib/shellNav";
 import {
   chatViewSearch,
+  currentChatViewSearch,
   planChatHistoryWrite,
   recordChatView,
   recordMessagesNavigation,
   resetChatView,
+  setUnrecordedView,
 } from "../chatHistory";
 
 const room = (roomId: string) => ({ roomId, sessionId: null });
@@ -54,8 +57,8 @@ describe("planChatHistoryWrite", () => {
     expect(planChatHistoryWrite(null, { roomId: "r1", sessionId: "s1" }, "?panel=session&session=s1")).toBeNull();
   });
 
-  it("never replaces with the same view it pushes", () => {
-    expect(planChatHistoryWrite(room("r1"), room("r1"), "")).toEqual({ push: "panel=chat&room=r1" });
+  it("names a bare entry in place rather than stacking the same view on it", () => {
+    expect(planChatHistoryWrite(room("r1"), room("r1"), "")).toEqual({ replace: "panel=chat&room=r1" });
   });
 });
 
@@ -127,6 +130,25 @@ describe("recordChatView", () => {
     window.history.pushState(null, "", "/chat?panel=teams-issues");
     recordMessagesNavigation();
     expect(window.location.search).toBe("?panel=chat&room=r1");
+  });
+
+  it("writes nothing for the rail's Messages button while an unrecorded view is open", () => {
+    recordChatView(room("r1"), false);
+    window.history.pushState(null, "", "/chat?panel=teams-issues");
+    setUnrecordedView(true);
+    recordMessagesNavigation();
+    expect(window.location.search).toBe("?panel=teams-issues");
+    expect(currentChatViewSearch()).toBeNull();
+  });
+
+  it("does not name a bare entry after the view it is about to push", () => {
+    setCurrentEntryNamer(currentChatViewSearch);
+    const replace = vi.spyOn(window.history, "replaceState");
+    recordChatView(room("r1"), true);
+    expect(replace).not.toHaveBeenCalled();
+    expect(window.location.search).toBe("?panel=chat&room=r1");
+    replace.mockRestore();
+    setCurrentEntryNamer(null);
   });
 
   it("replaces, not pushes, a bare /chat entry for the rail's Messages button", () => {

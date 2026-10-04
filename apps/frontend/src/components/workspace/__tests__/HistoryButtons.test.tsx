@@ -56,6 +56,16 @@ describe("HistoryButtons", () => {
     expect(forward).toHaveBeenCalledTimes(1);
   });
 
+  it("swallows ⌘[ without leaving the app when Back is unavailable", () => {
+    fakeNavigation(["/sign-in", "/chat"], 1);
+    const back = vi.spyOn(window.history, "back").mockImplementation(() => {});
+    render(<HistoryButtons />);
+    const event = new KeyboardEvent("keydown", { code: "BracketLeft", key: "[", metaKey: true, cancelable: true });
+    window.dispatchEvent(event);
+    expect(event.defaultPrevented).toBe(true);
+    expect(back).not.toHaveBeenCalled();
+  });
+
   it("ignores ⌘[ while a dialog or menu is open", () => {
     const back = vi.spyOn(window.history, "back").mockImplementation(() => {});
     render(<HistoryButtons />);

@@ -17,8 +17,23 @@ function currentUrlWith(params: URLSearchParams): string {
   return qs ? `${window.location.pathname}?${qs}` : window.location.pathname;
 }
 
+// A bare /chat entry carries no command, so Back onto it could not restore what
+// it showed. The desktop shell registers a namer (ChatHistorySync) that gives
+// the entry its view before any push leaves it.
+let nameCurrentEntry: (() => string | null) | null = null;
+export function setCurrentEntryNamer(namer: (() => string | null) | null): void {
+  nameCurrentEntry = namer;
+}
+
+function pushUrl(url: string): void {
+  const p = new URLSearchParams(window.location.search);
+  const name = !p.has("panel") && !p.has("agent") && !p.has("room") ? nameCurrentEntry?.() : null;
+  if (name) replaceSearchParams(new URLSearchParams(name));
+  window.history.pushState(null, "", url);
+}
+
 export function pushSearchParams(params: URLSearchParams): void {
-  window.history.pushState(null, "", currentUrlWith(params));
+  pushUrl(currentUrlWith(params));
 }
 
 export function replaceSearchParams(params: URLSearchParams): void {
@@ -88,7 +103,7 @@ export function shellUrlFromPaperclipPath(href?: string | null): string | null {
 // whole client-side swap; handleShellLinkClick is this plus the
 // modified-click bail-out.
 export function navigateShell(url: string): void {
-  window.history.pushState(null, "", url);
+  pushUrl(url);
 }
 
 // Anchor onClick companion for the URL builders above: plain left-clicks

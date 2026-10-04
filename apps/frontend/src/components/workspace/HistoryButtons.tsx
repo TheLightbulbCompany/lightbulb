@@ -39,9 +39,11 @@ export function HistoryButtons(): React.ReactElement {
       if (!(event.metaKey || event.ctrlKey)) return;
       if (event.code !== "BracketLeft" && event.code !== "BracketRight") return;
       if (hasBlockingShortcutDialog() || document.querySelector("[role='menu']")) return;
+      // Swallowed even when unavailable, so the browser's own ⌘[ cannot leave the app.
       event.preventDefault();
-      if (event.code === "BracketLeft") window.history.back();
-      else window.history.forward();
+      const { back, forward } = historyAvailability();
+      if (event.code === "BracketLeft") { if (back) window.history.back(); }
+      else if (forward) window.history.forward();
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);

@@ -804,6 +804,20 @@ it("holds a permalink until the workspace session list lands, then opens it in f
   expect(screen.getByRole("region", { name: "Shared session" })).toBeInTheDocument();
 });
 
+it("counts a person's session open as a pick, but not a held link's later replay", async () => {
+  const landList = holdSessionList();
+  mocks.rooms.mockReturnValue(state);
+  render(<MessagingWorkspaceProvider><CaptureContext /><MessagingConversation /></MessagingWorkspaceProvider>);
+  const before = workspaceValue.explicitPickCount;
+  act(() => workspaceValue.openSession("s1"));
+  await landList([liveSession("s1", "colleague")]);
+  expect(workspaceValue.sessionFocus).toEqual({ sessionId: "s1" });
+  expect(workspaceValue.explicitPickCount).toBe(before);
+  act(() => workspaceValue.openSession("s2"));
+  expect(workspaceValue.sessionFocus).toEqual({ sessionId: "s2" });
+  expect(workspaceValue.explicitPickCount).toBe(before + 1);
+});
+
 it("says a linked session that the settled list lacks is no longer shared", async () => {
   const landList = holdSessionList();
   mocks.rooms.mockReturnValue(state);

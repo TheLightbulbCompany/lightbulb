@@ -2524,3 +2524,68 @@ async def test_a_meetings_speaker_is_named_or_someone_never_meeting():
     )
     assert "Meeting is talking" not in said and "Meeting asked" not in said
     assert "Someone in the meeting" in said
+
+
+def held(h):
+    return [r.run_id for r in h._runs._runs.values() if r.held]
+
+
+async def test_a_voice_that_fails_at_once_never_leaves_its_run_held():
+    # review: the voice failed before the spawned drive ran; the run was held afterwards and never released
+    h, room, backend, lives, clock, log = await three()
+    backend.route_extra = ops(
+        requests=[("forge", "what PRs are open right now", "name")]
+    )
+    h.fail.add("forge")
+    await say(h, "u1", "Forge, what PRs are open right now?")
+    assert held(h) == []
+    answer(h, backend.turns[0]["runId"], "forge", "Six PRs are open.")
+    await settle(h)
+    await h.clear_presence()
+    assert [a[3] for a in backend.late_answers] == ["Six PRs are open."]
+
+
+async def test_a_held_answer_is_said_after_the_opening_note_and_a_stop_leaves_nothing_held():
+    h, room, backend, lives, clock, log = await three()
+    backend.route_extra = ops(
+        requests=[("forge", "what PRs are open right now", "name")]
+    )
+    h.gate["live"] = asyncio.Event()
+    await h.on_final_transcript(
+        "u1", "Prasiddha", "Forge, what PRs are open right now?"
+    )
+    for _ in range(30):
+        await asyncio.sleep(0)
+    answer(h, backend.turns[0]["runId"], "forge", "Six PRs are open.")
+    h.gate["live"].set()
+    await settle(h)
+    kinds = [c[0] for c in lives[0].calls]
+    assert kinds.index("commentary") > kinds.index("nudge"), (
+        "as on the path that was never held"
+    )
+    assert held(h) == []
+    h2, room, backend2, lives2, clock2, log2 = await three()
+    backend2.route_extra = ops(
+        requests=[("forge", "what PRs are open right now", "name")]
+    )
+    h2.gate["live"] = asyncio.Event()
+    await h2.on_final_transcript(
+        "u1", "Prasiddha", "Forge, what PRs are open right now?"
+    )
+    for _ in range(30):
+        await asyncio.sleep(0)
+    await h2.on_final_transcript("u1", "Prasiddha", "Forge, stop")
+    h2.gate["live"].set()
+    await settle(h2)
+    assert held(h2) == [] and backend2.late_answers == []
+
+
+async def test_a_cut_answer_is_never_posted_while_its_cutter_still_talks():
+    h, room, backend, lives, clock, run = await announced()
+    h.on_agent_state("forge", "speaking")
+    talks(h, "u2", "Aden")  # and keeps talking
+    await quiet(h, clock, h_mod.CUT_WAIT_S + 5)
+    assert backend.late_answers == [], "a call-off may be in the words to come"
+    h.on_speech("u2", False)
+    await quiet(h, clock, 1)
+    assert [a[3] for a in backend.late_answers] == ["Three PRs are open"]

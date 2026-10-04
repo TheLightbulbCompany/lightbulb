@@ -1157,10 +1157,10 @@ class Huddle:
         """The seed line of a line that asked nothing (understanding §4.6)."""
         if more:
             return (
-                f'{self._name(identity)} will list several requests. Say "go ahead" at most, then stay quiet '
+                f'{self._talker(identity)} will list several requests. Say "go ahead" at most, then stay quiet '
                 "until they finish."
             )
-        return f'{self._name(identity)} said: "{text}". Small talk: reply yourself in one short sentence. Do not delegate it.'
+        return f'{self._talker(identity)} said: "{text}". Small talk: reply yourself in one short sentence. Do not delegate it.'
 
     def _named_line(
         self, identity: str, agent_id: str, text: str, mark: int, r: Any, fut: asyncio.Future, voice: bool = True
@@ -1185,7 +1185,7 @@ class Huddle:
             said = (
                 self._small_talk(identity, text, bool(o.get("more")))
                 if o.get("social") or o.get("more")
-                else f'{self._name(identity)} said: "{text}"'
+                else f'{self._talker(identity)} said: "{text}"'
             )
         return first, ack, said
 
@@ -1208,7 +1208,7 @@ class Huddle:
                 first, ack, said = took
                 if first is not None:
                     task = first.task or text
-                    self._drive_request(v, task, f'{self._name(identity)} asked: "{task}"', row=first)
+                    self._drive_request(v, task, f'{self._talker(identity)} asked: "{task}"', row=first)
                 if line := self._ack(ack, v.agent_id, said=True):
                     self._live_call(v, "append_thinking", line)
                 if said:
@@ -1283,7 +1283,7 @@ class Huddle:
                 self._transcript.text()[-MAX_TRANSCRIPT:],
                 humans,
                 # `mine`: the speaker is already talking with the floor agent; their asks need no name (§4.4)
-                floor={"agent": v.agent_id, "speaker": self._name(v.speaker), "mine": identity == v.speaker}
+                floor={"agent": v.agent_id, "speaker": self._talker(v.speaker), "mine": identity == v.speaker}
                 if v
                 else None,
                 voice_runs=(
@@ -1452,7 +1452,7 @@ class Huddle:
             if mine and mine[0] in startable and v.live is not None:
                 # §4.6: the floor speaker's ask is its voice's driven run; its own delegation of it binds
                 task = mine[0].task or text
-                self._drive_request(v, task, f'{self._name(identity)} asked: "{task}"', row=mine[0])
+                self._drive_request(v, task, f'{self._talker(identity)} asked: "{task}"', row=mine[0])
             if mine or not switch:
                 v.ack_rows += rows  # §4.6: acknowledged once its speaker is quiet (tick)
                 self._start_queued()
@@ -1598,7 +1598,7 @@ class Huddle:
         """What a voice said, as GPT-Live heard itself say it: every later seed and since_agent hears it,
         tagged with the person it was talking to ("Forge → Leo: ...", routing v2 §5)."""
         v = self._floor_voice(agent_id)
-        to = self._name(v.speaker) if v else ""
+        to = self._talker(v.speaker) if v else ""
         self._transcript.add_agent(
             agent_id, self._agent_name(agent_id), text, at=self._clock(), to=to
         )
@@ -1890,6 +1890,8 @@ class Huddle:
             # a cold workspace retries for up to a minute and must not hold the floor lock.
             v.driven = _Driven(str(uuid.uuid4()))
             v.driven_run = v.driven.run_id
+            # held now, not in the spawned _drive: a voice that fails before _drive runs still releases it
+            self._runs.hold(v.driven_run, agent_id)
             if row is not None:  # understanding §4.6: the row (started by the caller) is this run
                 self._requests.bind(row, v.driven.run_id)
             self._spawn(self._drive(v, v.driven, request, row))
@@ -1931,7 +1933,6 @@ class Huddle:
         v.live, v.opened, v.naming = live, self._clock(), bool(session.get("askName"))
         if v.driven:
             v.driven.bind_until = v.opened + BIND_SECONDS
-        self._runs.release(v.driven_run)  # sentences that came while it opened are said now, none dropped
         if v.announce:  # consumed when its audio starts (on_agent_state)
             if self._live_call(v, "append_instructions", ANNOUNCE_NOW):
                 self._live_call(v, "nudge")
@@ -1942,6 +1943,7 @@ class Huddle:
                 # the request is already running (driven): the model acknowledges it, no typed user turn
                 self._live_call(v, "nudge")
         self._released.discard(identity)
+        self._runs.release(v.driven_run)  # sentences that came while it opened are said now, none dropped
         self._sync_state()
         return True
 
@@ -2267,8 +2269,6 @@ class Huddle:
             delegation_id=None,
             gen=v.gen,
         )
-        if v.live is None:
-            self._runs.hold(d.run_id)  # its voice is still opening: _open releases it
         lines = self._requests.lines(self._agent_name, skip_agent=v.agent_id) if row is not None else ()
         if await self._post_turn(v, d.run_id, request, None, requests=lines) is not None:
             d.posted = True
@@ -2847,6 +2847,8 @@ class Huddle:
         for agent_id, (items, who, at) in list(self._cut_off.items()):
             heard = self._final_at.get(who, -math.inf)
             handled = heard >= at and now - heard >= CUT_HANDLED_S  # its /route answered and was applied
+            if who in self._speaking:
+                continue  # still talking: a call-off may be in the words to come
             if (handled or now - at >= CUT_WAIT_S) and not self._understanding.get(who):
                 del self._cut_off[agent_id]
                 for n in items:

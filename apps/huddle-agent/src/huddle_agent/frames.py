@@ -105,7 +105,8 @@ class Runs:
         run.agent_id, run.speaker, run.request = agent_id, speaker, request
         run.delegation_id, run.gen, run.bound, run.seen = delegation_id, gen, True, self._clock()
         self._runs[run_id] = run
-        self._replay(run)
+        if not run.held:
+            self._replay(run)
         return run
 
     def bind(self, run_id: str, delegation_id: str | None, gen: int | None) -> None:
@@ -116,11 +117,11 @@ class Runs:
     def get(self, run_id: str) -> Run | None:
         return self._runs.get(run_id)
 
-    def hold(self, run_id: str) -> None:
+    def hold(self, run_id: str, agent_id: str) -> None:
         """Its voice is still opening: every frame waits, so no sentence is dropped (and counted as spoken)
-        before a voice can say it (10-04 prod Meet: a question got a greeting and no answer)."""
-        if run := self._runs.get(run_id):
-            run.held = True
+        before a voice can say it (10-04 prod Meet: a question got a greeting and no answer). Called before
+        the run is started, so the entry is made here: a voice that fails at once still finds it to release."""
+        self._runs.setdefault(run_id, Run(run_id=run_id, agent_id=agent_id)).held = True
 
     def release(self, run_id: str | None) -> None:
         """The voice is live, or will never be: the frames that waited go where the run's output goes now."""

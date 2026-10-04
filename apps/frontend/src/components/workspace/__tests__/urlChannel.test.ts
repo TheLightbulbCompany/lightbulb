@@ -40,6 +40,14 @@ describe("parseCommand", () => {
     expect(c?.descriptor.component).toBe("chat");
   });
 
+  it("defines /chat?room= as that room, with or without the panel key (meeting-notes mail link)", () => {
+    const bare = parseCommand("?room=room-1");
+    expect(bare?.descriptor.panelId).toBe(MESSAGES_PANEL_ID);
+    expect(bare?.descriptor.params).toEqual({ roomId: "room-1" });
+    expect(parseCommand("?room=room-1&message=m-2")?.descriptor.params).toEqual({ roomId: "room-1", messageId: "m-2" });
+    expect(parseCommand("?panel=chat&room=room-1")?.descriptor.params).toEqual(bare?.descriptor.params);
+  });
+
   it("returns null for bare /chat, billing returns, and unknown panels", () => {
     expect(parseCommand("")).toBeNull();
     expect(parseCommand("?checkout=success")).toBeNull();

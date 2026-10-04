@@ -32,10 +32,9 @@ from pathlib import Path
 
 os.environ.setdefault("CLERK_ISSUER", "https://bench.clerk.accounts.dev")  # Settings() refuses to load without it
 
-from core.repositories import messaging_repo  # noqa: E402
-from core.services import jev, messaging, openclaw_work, voice_calls  # noqa: E402
+from core.services import jev, messaging, voice_calls  # noqa: E402
 
-from .multiparty import PRESETS, _handle, _stub_card  # noqa: E402
+from .multiparty import PRESETS, ROOMS, _handle, _stub_card, stub_room  # noqa: E402
 
 HERE = Path(__file__).parent
 SCENES: dict[str, dict] = {}  # scene id (its room and owner id) -> built scene
@@ -177,9 +176,6 @@ async def one(case: dict) -> dict:
         humans=len(case["people"]),
         wake=bool(case.get("wake")),
         floor=floor,
-        voice_runs=[
-            {"agent": o["agentId"], "request": o["task"]} for o in opened if o["status"] in ("working", "queued")
-        ],
         setting=case.get("setting", "live"),
     )
     if "open_requests" in inspect.signature(voice_calls.route_live_line).parameters:
@@ -200,30 +196,10 @@ async def one(case: dict) -> dict:
     return {"id": case["id"], "cat": case["cat"], "ms": ms, "got": got, "ops": ops, **out}
 
 
-async def _members(room_id: str) -> list[dict]:
-    return SCENES[room_id]["members"]
-
-
-async def _team(owner_id: str, user_id: str, room_id: str, **_) -> tuple[dict, list]:
-    return {"roomId": room_id, "ownerId": owner_id, "kind": "channel", "name": "general"}, []
-
-
-async def _name(user_id: str) -> str:
-    return next((s["names"][user_id] for s in SCENES.values() if user_id in s["names"]), user_id)
-
-
-async def _ceo(owner_id: str) -> str | None:
-    members = SCENES[owner_id]["members"]
-    return next((m["id"] for m in members if m.get("role") == "ceo"), None)
-
-
 async def run(cases: list[dict], runs: int, concurrency: int) -> list[list[dict]]:
     jev._key, jev._key_checked_at, jev._KEY_TTL_S = os.environ["AI_GATEWAY_API_KEY"], time.monotonic(), 10**9
     jev.agent_card = _stub_card
-    messaging_repo.list_members = _members
-    voice_calls._room_team = _team
-    messaging.human_display_name = _name
-    openclaw_work._fallback_ceo_id = _ceo
+    stub_room()
     for mod in (messaging, jev, voice_calls):
         mod.put_metric = lambda *a, **k: None  # no EMF noise in a bench
     sem = asyncio.Semaphore(concurrency)
@@ -290,6 +266,7 @@ def main(argv=None) -> None:
     cases = [c for c in cases if re.search(args.only, c["id"]) or re.search(args.only, c["cat"])]
     for c in cases:
         SCENES[c["id"]] = build(c)
+        ROOMS[c["id"]] = SCENES[c["id"]]["members"]
     all_runs = asyncio.run(run(cases, args.runs, args.concurrency))
     raw = HERE / "results" / "raw"
     raw.mkdir(parents=True, exist_ok=True)

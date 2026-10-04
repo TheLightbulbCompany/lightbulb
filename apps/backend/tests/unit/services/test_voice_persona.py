@@ -51,6 +51,17 @@ def test_agent_persona_has_name_notes_rules_and_roster():
     assert "don't have a name yet" in _persona(ask_name=True)
 
 
+def test_agent_persona_is_the_mouth_not_the_source():
+    """Conversation understanding §4.6 (prod 2026-10-04: "[sigh]", "Forge found ..." from nothing, two
+    holding lines in a row)."""
+    p = _persona()
+    assert "Say only what a note gives you" in p
+    assert "Name a teammate as the source only when the note names them" in p
+    assert "no sighs, laughs or hums" in p and "Never say the same sentence twice" in p
+    assert "start with what it is about" in p and "One result at a time" in p
+    assert "several things to ask" in p
+
+
 def test_agent_persona_caps_soul_and_notes_and_fits_the_instruction_limit():
     p = _persona(
         soul_excerpt="s" * 20_000,

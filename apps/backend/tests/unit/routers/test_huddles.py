@@ -431,7 +431,8 @@ def test_route_a_wake_word_line_is_the_one_router_with_wake(client):
     assert resp.json() == routed  # agentId (the first) still there for the shipped worker
     assert route.await_args.kwargs == {
         "owner_id": "org_a", "room_id": ROOM, "speaker_id": "user_a", "utterance": "hi", "transcript": "",
-        "humans": 0, "wake": True, "floor": None, "voice_runs": [], "at": [], "setting": "live", "unclaimed": False,
+        "humans": 0, "wake": True, "floor": None, "at": [], "setting": "live", "unclaimed": False,
+        "open_requests": [],
     }  # fmt: skip
 
 

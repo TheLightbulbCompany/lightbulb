@@ -230,3 +230,11 @@ def test_the_audio_ticket_is_redacted_from_the_handshake_log():
     )
     RedactTokenFilter().filter(record)
     assert "abc.def" not in record.getMessage() and "token=REDACTED" in record.getMessage()
+
+
+async def test_say_posts_one_chat_line_to_everyone(recall):
+    calls, responses = recall
+    responses.append((200, {"id": "bot-1"}))
+    await meeting_bots.say("bot-1", "x" * 600)
+    assert calls[0].method == "POST" and calls[0].url.path == "/api/v1/bot/bot-1/send_chat_message/"
+    assert json.loads(calls[0].content) == {"to": "everyone", "message": "x" * 500}

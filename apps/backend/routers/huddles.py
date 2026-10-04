@@ -239,9 +239,15 @@ async def summon(room_id: str, body: SummonBody):
     room_id = _room_id(room_id)
     _require_room_token(body.roomToken, room_id, body.ownerId)
     # open_voice_window's _room_team 404s unless body.ownerId owns the room and the speaker is a member.
-    return await voice_calls.open_voice_window(
-        owner_id=body.ownerId, room_id=room_id, speaker_user_id=body.speakerUserId
-    )
+    try:
+        return await voice_calls.open_voice_window(
+            owner_id=body.ownerId, room_id=room_id, speaker_user_id=body.speakerUserId
+        )
+    except HTTPException as exc:
+        detail = exc.detail if isinstance(exc.detail, dict) else {}
+        if detail.get("code") == "voice_limit":  # a Meet's people learn it in the meeting's chat
+            voice_calls._fire(meeting_invites.say_voice_limit(room_id, detail.get("reason")))
+        raise
 
 
 @router.post("/internal/huddles/{room_id}/team", dependencies=[_Worker])

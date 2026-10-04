@@ -175,6 +175,11 @@ async def leave(bot_id: str) -> None:
         await _call("POST", f"/api/v1/bot/{bot_id}/leave_call/")
 
 
+async def say(bot_id: str, text: str) -> None:
+    """One line in the meeting's chat, to everyone (Meet takes 500 characters)."""
+    await _call("POST", f"/api/v1/bot/{bot_id}/send_chat_message/", {"to": "everyone", "message": text[:500]})
+
+
 def verify_webhook(headers, body: bytes) -> bool:
     """Recall's Svix-style signature: ``v1,<b64 HMAC-SHA256(id.timestamp.body)>`` under the
     ``whsec_`` workspace secret, any of the space-separated signatures (rotation), 5-min skew."""

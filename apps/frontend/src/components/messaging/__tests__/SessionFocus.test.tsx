@@ -64,11 +64,11 @@ it("shows 'Loading session…' while the workspace list has not yet settled, wit
   expect(getLocalSession).not.toHaveBeenCalled();
 });
 
-it("falls back to a direct fetch and renders an ended session with its real status and no composer", async () => {
+it("falls back to a direct fetch and renders an ended session as a transcript, with Resume and no follow-up box", async () => {
   const ended: LocalSession = { ...session, status: "ended" };
   focus(null, { getLocalSession: vi.fn(async () => ended) });
   await screen.findByRole("region", { name: "Native session history" });
-  expect(within(statusLine()).getByText("Ended")).toBeInTheDocument();
+  expect(within(statusLine()).getByText("Transcript · Ended")).toBeInTheDocument();
   expect(within(statusLine()).getByText("Alice")).toBeInTheDocument();
   expect(screen.queryByRole("button", { name: "Send follow-up" })).not.toBeInTheDocument();
   expect(screen.queryByText("Only Alice can send to this session.")).not.toBeInTheDocument();

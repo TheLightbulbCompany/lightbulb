@@ -128,6 +128,8 @@ def grade(case: dict, ops: dict, names: dict) -> dict:
             owners.append(owner in w["owner"])
             if not owners[-1]:
                 why.append(f"owner {owner} not in {w['owner']} for {w.get('has')}")
+    # an ask that reached some agent, even inside a row with another ask (a missed cut, not a dropped ask)
+    reached = sum(any(all(_norm(p) in _norm(g["task"]) for p in w.get("has", [])) for g in got) for w in want)
     extra = len(got) - len(used)
     if extra:
         why.append(f"{extra} extra request(s)")
@@ -150,6 +152,7 @@ def grade(case: dict, ops: dict, names: dict) -> dict:
         "why": why,
         "want": len(want),
         "matched": len(used),
+        "reached": reached,
         "rows": len(got),
         "extra": extra,
         "owners": owners,
@@ -230,7 +233,8 @@ def report(all_runs: list[list[dict]], tag: str) -> str:
     ms = sorted(r["ms"] for r in rows)
     out = [
         f"== {tag}: {len(all_runs)} run(s) of {len(by_id)} scenes",
-        f"  request recall          {rate(matched, want)}   (gate 0.95)",
+        f"  asks that reach an agent {rate(sum(r['reached'] for r in rows), want)}   (a miss is a dropped ask)",
+        f"  request recall          {rate(matched, want)}   (gate 0.95; each ask in a row of its own)",
         f"  extra rows              {rate(extra, made)}   (gate <= 0.03)",
         f"  work started for nothing {rate(sum(1 for r in idle if r['rows']), len(idle))}   (gate <= 0.02)",
         f"  owner allowed           {rate(sum(owners), len(owners))}   (gate 0.90)",

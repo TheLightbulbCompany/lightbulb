@@ -289,7 +289,7 @@ def _fire(coro) -> None:
 # provider caches a byte-identical prefix. Everything per-run rides in the input.
 # The script path is the image's (build-skills.sh maps /app/skills/ -> /opt/hermes-skills/); a
 # run's shell has PAPERCLIP_COMPANY_ID / PAPERCLIP_AGENT_ID from the profile .env.
-TURN_NOTE = """[Note: you are speaking in a Live voice call; your reply is spoken by you and nothing is posted to the room. The request below is ONE thing a person asked for, in their own words from a voice transcript (it may contain mis-hearings, hesitations and later corrections; use the latest intent). The bracket before it is what was said on the call since you last spoke, for context only. Other requests from the same breath are with teammates or queued for you: answer only this one.
+TURN_NOTE = """[Note: you are speaking in a Live voice call; your reply is spoken by you and nothing is posted to the room. The request below is what a person asked of you, in their own words from a voice transcript (it may contain mis-hearings, hesitations and later corrections; use the latest intent). It is usually one thing; if it holds more than one, do each and give each result. The bracket before it is what was said on the call since you last spoke, for context only. Other requests from the same breath are with teammates or queued for you: answer only what is asked here.
 Anything that can change (email, pull requests, deploys, payments, dates, metrics, what shipped) must be checked with a tool in this turn before you answer. Your memory and earlier messages tell you where to look, never what the answer is. Say in a few words where the answer came from ("from GitHub just now"). If you cannot check it, say so plainly; never give an old value as current.
 Then pick whatever fits the request:
 - Answer: after checking, reply in two or three short spoken sentences, starting with what it is about.
@@ -931,14 +931,20 @@ def _understood(
             parts[i]["text"] for i in sorted(indexes)
         )
 
+    where = {ref: start for k, start, _, ref, _ in pieces if k == "part"}
+    name_at = next((start for k, start, _, ref, _ in pieces if k == "name" and named and ref == named[0][0]), -1)
+    after_name = not any(where[p["index"]] > name_at for p in asks)  # nothing is asked after the name
     requests: list[dict] = []
     for p in asks:
         text = task(mine[p["index"]])
         owners = [by_name[n] for n in (p["asked"] or ()) if n in by_name]
         if not owners and not messaging._ANYONE.search(p["text"]):
-            if len(named) == 1:
-                owners = [named[0][1]]  # one agent is addressed: what is asked on the line is asked of it
-            elif p["asked"] is None:
+            if len(named) == 1 and (after_name or where[p["index"]] > name_at):
+                # One agent is addressed: what follows its name is asked of it, and so is what comes before
+                # when nothing follows ("Can you check the deploy, Forge?"). In "check the API, and Ledger,
+                # what's our cash" the first ask is not Ledger's.
+                owners = [named[0][1]]
+            elif len(named) > 1 and p["asked"] is None:
                 # several named and nothing says whose part this is (a line too long to cut): each of
                 # them gets it, as before the cut existed
                 owners = [agent for _, agent in named]
@@ -969,7 +975,12 @@ def _understood(
         # gets the follow-up.
         theirs = [r for r in requests if r["by"] != "name" or r["agentId"] == amended["agentId"]]
         about = {p["index"] for p in parts if kind[p["index"]] in ("request", "context")}
-        if amended["status"] in _OPEN_STATUS and (theirs or not requests):
+        if len(requests) > 1 and any(r["by"] == "fit" and r["agentId"] != amended["agentId"] for r in theirs):
+            # Several asks and one is plainly another teammate's work: these are new requests that only
+            # touch the same subject (the founder's "check Aden's email ... what shipped ... what PRs are
+            # open" after asking about the same application), not a correction.
+            pass
+        elif amended["status"] in _OPEN_STATUS and (theirs or not requests):
             said = ". ".join(r["task"] for r in theirs) or task(about)
             out["requests"] = [r for r in requests if r not in theirs]
             out["steer"] = [{"requestId": amended["id"], "text": said}]
@@ -1174,15 +1185,20 @@ async def route_live_line(
         "cancel": u["cancel"],
         "steer": u["steer"],
     }
+    # What a worker before ``ops`` reads. It hands the WHOLE line to every agent in ``agentIds`` unless
+    # ``requests`` splits it, and it reads ``requests`` only for a line that names two or more agents. So
+    # it is told what the router told it before understanding: the agents the line names, each with its
+    # part; else one agent (the first owner, the steered request's agent, or whoever replies to small talk).
+    by_name = list(dict.fromkeys(r["agentId"] for r in requests if r["by"] == "name"))
     steered = [r["agentId"] for r in earlier if r["id"] in {s["requestId"] for s in u["steer"]}]
-    order = list(dict.fromkeys([r["agentId"] for r in requests] or steered or ([social] if social else [])))
+    order = by_name or ([r["agentId"] for r in requests] or steered or ([social] if social else []))[:1]
     outcome = "routed" if requests else "social" if social else "none"
     put_metric("voice.routing.jev", dimensions={"outcome": outcome, "setting": setting})
     routed = {**_routed(*order), **hold, "ops": ops}
-    if len({r["agentId"] for r in requests}) >= 2:
-        # What a worker before ``ops`` splits on (conversation engine §3.2): one request per agent.
+    if len(by_name) >= 2:
         routed["requests"] = [
-            {"agentId": a, "task": ". ".join(r["task"] for r in requests if r["agentId"] == a)} for a in order
+            {"agentId": a, "task": ". ".join(r["task"] for r in requests if r["agentId"] == a and r["by"] == "name")}
+            for a in by_name
         ]
     return routed
 

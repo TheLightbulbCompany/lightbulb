@@ -285,7 +285,9 @@ async def live(case: dict, state: dict, rec: dict) -> dict:
     names = {a["id"]: a["displayName"] for a in state["agents"]}
     ops = r["ops"]
     rec["how"] = "hold" if r.get("hold") else "requests" if ops["requests"] else "social" if ops["social"] else "none"
-    rec["responders"] = [] if r.get("hold") else sorted(names[a] for a in r["agentIds"])
+    # who answers, as the worker that reads ``ops`` runs it: every request's owner, else the small-talk reply
+    owners = dict.fromkeys(x["agentId"] for x in ops["requests"]) or ([ops["social"]] if ops["social"] else [])
+    rec["responders"] = [] if r.get("hold") else sorted(names[a] for a in owners)
     rec["stage"], rec["whoP"] = None, None
     return rec
 

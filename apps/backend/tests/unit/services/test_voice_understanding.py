@@ -112,6 +112,10 @@ def parts(line):
             ["how many active users did we have yesterday", "rotate the stripe api key on staging"],
         ),
         ("ugh mondays okay pull the weekly revenue report", ["ugh mondays", "pull the weekly revenue report"]),
+        (
+            "merge the dark mode pr if checks are green you know and pull signups by country",
+            ["merge the dark mode pr if checks are green you know", "pull signups by country"],
+        ),
     ],
 )
 def test_a_sentence_is_cut_where_a_new_request_begins(line, want):
@@ -133,7 +137,8 @@ def test_a_sentence_is_cut_where_a_new_request_begins(line, want):
         "find the customer who emailed us and asked for a refund",
         "what's the open rate on the um the last two newsletters actually just the last one",
         "tell Priya I need the board deck by Thursday",  # the words to pass on are the same request
-        "if the nightly build failed rerun it and let me know",  # "let me know" alone is a tail
+        "if the nightly build failed rerun it and let me know",  # "let me know" is a tail
+        "Draft the one-pager for Corvid and let me know when it's ready",
         "look up um the invoices and receipts from Figma and Notion",
     ],
 )
@@ -162,10 +167,9 @@ async def test_three_asks_in_one_breath_are_three_requests_with_their_owners(dec
         ("forge", "I also want to know what features we've shipped", "fit"),
         ("forge", "what PRs are currently open", "fit"),
     ]
-    assert got["agentIds"] == ["pulse", "forge"] and got["ops"]["social"] is None
-    # what a worker before ``ops`` splits on: one request per agent
-    assert [r["agentId"] for r in got["requests"]] == ["pulse", "forge"]
-    assert got["requests"][1]["task"].endswith("what PRs are currently open")
+    assert got["ops"]["social"] is None
+    # a worker before ``ops`` hands the whole line to every agent it is given: an unnamed line names one
+    assert got["agentIds"] == ["pulse"] and "requests" not in got
     questions = decide.await_args.args[1]
     assert {"k0", "k1", "k2", "w0", "w1", "w2"} <= set(questions) and "amends" not in questions
     assert set(questions["w0"]["criteria"]) == {*AGENTS, "unsure"}
@@ -202,6 +206,22 @@ async def test_a_named_agent_owns_every_ask_on_its_line(decide):
     ]
 
 
+async def test_an_ask_before_a_name_is_not_the_named_agents(decide):
+    line = "Check the error rate on the API, and Friday, what's our cash balance"
+    said = jev_says(kinds=["request", "request"], whos=["forge", "gauge"], names=["addressed"])
+    assert tasks(await route(decide, line, said)) == [
+        ("forge", "Check the error rate on the API", "fit"),
+        ("friday", "what's our cash balance", "name"),
+    ]
+    # "can you and" is no ask of its own: it runs into the name ([AX] C07)
+    both = "Leo can you and Forge look at churn?"
+    said = jev_says(kinds=["request", "request"], whos=["friday", "gauge"], names=["addressed", "addressed"])
+    assert tasks(await route(decide, both, said, humans=2)) == [("forge", "can you and Forge look at churn", "name")]
+    last = "Can you check the deploy, Forge?"  # nothing after the name: the ask before it is Forge's
+    got = await route(decide, last, jev_says(kinds=["request"], whos=["gauge"], names=["addressed"]))
+    assert tasks(got) == [("forge", "Can you check the deploy", "name")]
+
+
 async def test_a_part_handed_to_someone_goes_by_fit_not_to_the_named_agent(decide):
     line = "Gauge, how many people used export? And somebody find out why the widget stopped loading."
     said = jev_says(kinds=["request", "request"], whos=["gauge", "forge"], names=["addressed"])
@@ -219,7 +239,14 @@ async def test_two_named_agents_keep_their_own_parts(decide):
         names=["addressed", "addressed"],
         asked=["only_forge", "only_friday"],
     )
-    assert tasks(await route(decide, line, said)) == [
+    got = await route(decide, line, said)
+    # what a worker before ``ops`` splits on: the named agents, one request each
+    assert got["agentIds"] == ["forge", "friday"]
+    assert got["requests"] == [
+        {"agentId": "forge", "task": "check the deploy"},
+        {"agentId": "friday", "task": "summarize yesterday's standup"},
+    ]
+    assert tasks(got) == [
         ("forge", "check the deploy", "name"),
         ("friday", "summarize yesterday's standup", "name"),
     ]
@@ -269,10 +296,24 @@ async def test_a_correction_steers_the_working_request(decide):
 
 async def test_a_correction_in_two_clauses_is_one_steer(decide):
     line = "make the tweet shorter and drop the emoji"
-    said = jev_says(kinds=["request", "request"], whos=["pulse", "forge"], amends="r1")
+    said = jev_says(kinds=["request", "request"], whos=["gauge", None], amends="r1")  # r1 is Gauge's
     got = await route(decide, line, said, opened=OPEN)
     assert got["ops"]["steer"] == [{"requestId": "r1", "text": "make the tweet shorter. drop the emoji"}]
     assert tasks(got) == []
+
+
+async def test_several_new_asks_on_the_same_subject_are_not_a_correction(decide):
+    """The founder's call: line 5 touches the application line 3 asked about, and asks three new things."""
+    earlier = [
+        {"id": "r1", "agentId": "pulse", "task": "when the update from the application is in", "status": "working"}
+    ]
+    said = jev_says(kinds=["request"] * 3, whos=[None, "forge", "forge"], amends="r1")
+    got = await route(decide, LINE_5, said, floor="pulse", opened=earlier)
+    assert got["ops"]["steer"] == [] and [(a, by) for a, _, by in tasks(got)] == [
+        ("pulse", "floor"),
+        ("forge", "fit"),
+        ("forge", "fit"),
+    ]
 
 
 async def test_an_instruction_after_background_is_the_request(decide):

@@ -2861,7 +2861,7 @@ _ASK_Q = (
 # so a pronoun object (it, them, those) opens no new one.
 # An instruction after a joiner: an asking verb with its object, or ANY word followed by a determiner
 # ("and rotate the key", "plus send the email": no verb list covers what people say). A pronoun object
-# ("send it to Dana") leans on the step before, and "let me know" alone is a tail: neither opens a request.
+# ("send it to Dana") leans on the step before, and "let me know ..." is a tail: neither opens a request.
 _NOT_A_VERB = (
     r"(?:all|both|half|even|only|just|then|now|maybe|not|also|is|was|are|were|be|in|on|at|for|with|to|from|of|by|"
     r"about|after|before|like|than|as|if|when|while|because|since|that|what|how|why|where|who|which|whether|it|"
@@ -2869,13 +2869,15 @@ _NOT_A_VERB = (
     r"um|uh|well|please|know|mean|okay|ok|alright|oh|anyway|anyways|actually|sorry|yeah|yes|no)"
 )
 _ASK_V = (
-    r"(?:(?:check|see|find|figure|tell|get|give|pull|send|draft|write|book|schedule|reply|email|remind|make|build|"
-    r"create|look|run|rerun|show|list|compare|update|fix|move|close|ask|set|add|open|review|summarize|post|"
-    r"share|call|ping|grab|fetch|cancel|confirm|verify|forward|file|track|bring)"
+    # verbs that are only ever an instruction here take any object ("and pull signups by country")
+    r"(?:(?:check|pull|send|draft|write|fix|find|get|give|tell|show|grab|fetch|remind|schedule|book|summarize|"
+    r"compare|merge|rerun|restart|deploy|translate|figure)\s+(?!(?:it|them|those|these|him|her)\b)[a-z0-9]"
+    # verbs that are also nouns need an object word after them ("and email the list", not "email open numbers")
+    r"|(?:see|make|build|create|look|run|list|update|move|close|ask|set|add|open|review|post|share|call|ping|"
+    r"cancel|confirm|verify|forward|file|track|bring|reply|email)"
     r"\s+(?:the|a|an|my|our|your|their|his|her|its|me|us|this|that|if|whether|what|"
     r"what['’]s|which|who|how|why|when|where|out|up|to|for|on|in|into|with|about|at|over|through|all|any|every|"
     r"everyone|some)\b"
-    r"|let\s+(?:me|us)\s+know\s+(?:if|whether|what|when|how|which|who|why)\b"
     rf"|(?!{_NOT_A_VERB}\b)[a-z][a-z'’-]+\s+(?:the|a|an|my|our|your|their|this|that)\b)"
 )
 _JOINER = r"(?:and|then|also|plus|but|anyway|anyways|btw|by\s+the\s+way|okay|ok|alright|oh|so(?!\s+that\b))"
@@ -3316,7 +3318,16 @@ async def address(
         if result["asked"] and hits:
             asked = _with_relayers(pieces, result["asked"], {c["name"]: label for c, _, label in hits})
         kinds, whos = result.get("kinds") or [], result.get("whos") or []
-        into = [into_name for kind, _, _, _, into_name in pieces if kind == "part"]
+        # "Can you get | Forge ..." and "@priya can you and | Analytics look at churn" run into the name;
+        # "check the API, and | Ledger, ..." is an ask of its own that ended before it.
+        into = [
+            into_name
+            and (
+                not re.search(r"(?:,|\b(?:and|then|also|plus|but))\s*$", text[start:end], re.I)
+                or bool(_OPENER_ONLY.match(re.sub(r"^@?[\w-]+[\s,]+(?=\S+\s+\S)", "", parts[i])))
+            )
+            for i, (kind, start, end, _, into_name) in enumerate(p for p in pieces if p[0] == "part")
+        ]
         out["parts"] = [
             {
                 "index": i,

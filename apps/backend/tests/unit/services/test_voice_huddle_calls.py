@@ -808,7 +808,8 @@ def test_turn_note_checks_now_and_answers_one_request():
     note = vc.TURN_NOTE
     assert "must be checked with a tool in this turn before you answer" in note
     assert "never what the answer is" in note and "never give an old value as current" in note
-    assert "ONE thing a person asked" in note and "answer only this one" in note
+    assert "answer only what is asked here" in note
+    assert "if it holds more than one, do each and give each result" in note  # a missed cut is still worked
     assert "speed matters more than completeness" not in note
     assert "from what you already know" not in note
     for way in ("- Answer:", "- Ask:", "- Hand it off:", "- Cannot:"):

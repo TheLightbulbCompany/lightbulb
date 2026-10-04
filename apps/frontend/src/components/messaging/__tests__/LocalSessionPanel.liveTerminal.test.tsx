@@ -135,13 +135,25 @@ it("reads the origin's history for a moved session that has had no turn of its o
 it("moves a moved session's transcript to its own events on the first hint after its first turn", async () => {
   const listLocalSessionEvents = vi.fn(async () => ({ events: [], nextAfterSeq: null }));
   const moved = { ...session, status: "offline" as const, forkedFrom: "origin" };
-  // The directory row still says 0 events (it trails transcript hints); the session itself has 40.
-  const getLocalSession = vi.fn(async (id: string) => id === "origin" ? { ...session, sessionId: "origin", latestEventSeq: 120 } : { ...moved, latestEventSeq: 40 });
+  // The directory row still says 0 events (it trails transcript hints); after the turn the session itself has 40.
+  let turned = false;
+  const getLocalSession = vi.fn(async (id: string) => id === "origin" ? { ...session, sessionId: "origin", latestEventSeq: 120 } : { ...moved, latestEventSeq: turned ? 40 : 0 });
   const props = { session: moved, ownerName: "Alice", own: true, client: { ...client, listLocalSessionEvents, getLocalSession } as never, onAccessLost: () => {} };
   const view = render(<LocalSessionPanel {...props} revision={0} />);
   await waitFor(() => expect(listLocalSessionEvents).toHaveBeenCalledWith("origin", 70, 50));
+  // The first read, before the origin resolved, was the session's own (empty) history: start the count here.
+  listLocalSessionEvents.mockClear();
+  turned = true;
   view.rerender(<LocalSessionPanel {...props} revision={1} />);
   await waitFor(() => expect(listLocalSessionEvents).toHaveBeenCalledWith("s", 0, 50));
+});
+
+it("reads a moved session's own events when it is opened after its first turn but before the directory catches up", async () => {
+  const listLocalSessionEvents = vi.fn(async () => ({ events: [], nextAfterSeq: null }));
+  const moved = { ...session, status: "offline" as const, forkedFrom: "origin" };
+  const getLocalSession = vi.fn(async (id: string) => id === "origin" ? { ...session, sessionId: "origin", latestEventSeq: 120 } : { ...moved, latestEventSeq: 40 });
+  render(<LocalSessionPanel session={moved} ownerName="Alice" own client={{ ...client, listLocalSessionEvents, getLocalSession } as never} revision={7} onAccessLost={() => {}} />);
+  await waitFor(() => expect(listLocalSessionEvents).toHaveBeenLastCalledWith("s", 0, 50));
 });
 
 it("retries a moved session's origin on the next hint after a failed request", async () => {

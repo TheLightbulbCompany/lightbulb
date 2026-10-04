@@ -26,8 +26,8 @@ export const accessLost = (error: unknown) => error instanceof ApiError && (erro
  * into the new transcript only then -- so until that turn its history is its origin's.
  *
  * `revision` is the caller's hint revision. The directory's `latestEventSeq` trails a transcript
- * hint by up to its 30 s poll, so each hint asks for the session itself: its first turn moves the
- * transcript to its own events at once. The same hint retries an origin a failed request left
+ * hint by up to its 30 s poll, so the mount and each hint ask for the session itself: its first
+ * turn moves the transcript to its own events at once. The same hint retries an origin a failed request left
  * unresolved; an origin this viewer cannot read (403/404) leaves the session's own, empty, history.
  * ponytail: one step. A session moved twice with no turn between shows nothing until its next turn.
  */
@@ -38,18 +38,19 @@ export function useHistorySource(client: Pick<SessionSource["client"], "getLocal
   const [own, setOwn] = useState<LocalSession | null>(null);
   const resolved = origin?.sessionId === originId;
   const denied = useRef<string | null>(null);
-  const mounted = useRef(revision);
+  // On mount too: a session opened between its first-turn hint and the directory's next poll.
   useEffect(() => {
     if (!originId) return;
     let alive = true;
-    if (revision !== mounted.current) {
-      void client.getLocalSession(sessionId).then(found => { if (alive && found.latestEventSeq > 0) setOwn(found); }, () => {});
-    }
-    if (!resolved && denied.current !== originId) {
-      void client.getLocalSession(originId).then(found => { if (alive) setOrigin(found); }, e => { if (accessLost(e)) denied.current = originId; });
-    }
+    void client.getLocalSession(sessionId).then(found => { if (alive && found.latestEventSeq > 0) setOwn(found); }, () => {});
     return () => { alive = false; };
-  }, [client, sessionId, originId, resolved, revision]);
+  }, [client, sessionId, originId, revision]);
+  useEffect(() => {
+    if (!originId || resolved || denied.current === originId) return;
+    let alive = true;
+    void client.getLocalSession(originId).then(found => { if (alive) setOrigin(found); }, e => { if (accessLost(e)) denied.current = originId; });
+    return () => { alive = false; };
+  }, [client, originId, resolved, revision]);
   if (!originId) return session;
   if (own?.sessionId === sessionId) return own;
   return resolved && origin ? origin : session;

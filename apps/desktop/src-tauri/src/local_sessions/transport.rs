@@ -94,6 +94,8 @@ pub(super) struct Host {
     /// Set by `supervise`, drained by `connection`. `None` in tests that never
     /// drive `connection` through `supervise`.
     hooks: Option<tokio::sync::mpsc::Receiver<super::lifecycle::HookEvent>>,
+    /// The discovery wake `run_once` was given: a hook naming a session not yet mirrored runs it.
+    rediscover: Option<Arc<tokio::sync::Notify>>,
     /// Sessions that have ended and whose end the relay has not been told about.
     ended_pending: Vec<String>,
     /// Sessions whose heartbeat fields moved between heartbeats: one goes out
@@ -776,7 +778,7 @@ impl Host {
                     || native.job.is_some()
                     || claude::still_registered(home, native.process.pid, &native.conversation))
         };
-        let gone: Vec<String> = self
+        let gone: Vec<(String, &str)> = self
             .mirrors
             .iter()
             .filter(|(_, m)| {
@@ -786,10 +788,12 @@ impl Host {
                     // predecessor and the successor is the session that is running.
                     && m.registration.successor.as_ref().is_none_or(|next| !runs(next))
             })
-            .map(|(key, _)| key.clone())
+            // A process still running left the conversation on purpose; only a vanished
+            // process with no end event of its own is an unexpected end.
+            .map(|(key, m)| (key.clone(), if still_running(&m.native.process) { "exited" } else { "process-exited" }))
             .collect();
-        for key in gone {
-            if let Err(error) = self.end_session(&key, "process-exited") {
+        for (key, reason) in gone {
+            if let Err(error) = self.end_session(&key, reason) {
                 relay_log(&format!("{} end not recorded: {error}", short(&key)));
             }
         }
@@ -891,6 +895,7 @@ impl Host {
             mirrors,
             stop,
             hooks: None,
+            rediscover: None,
             ended_pending: vec![],
             heartbeat_dirty: BTreeSet::new(),
             heartbeat_interval: Duration::from_secs(10),
@@ -912,6 +917,7 @@ impl Host {
     ) {
         let (tx, mut rx) = tokio::sync::mpsc::channel(1);
         let home = self.home.clone();
+        self.rediscover = Some(wake.clone());
         let discovery = async move {
             // A 60s backstop, not the status source: hooks and the pid check drive
             // status now. A wake (a start hook, an enrollment change) runs it sooner,
@@ -1319,6 +1325,12 @@ impl Host {
                     arm = "hook";
                     match event {
                         Some(event) => {
+                            // A turn can start and finish before discovery first sees its
+                            // session (a Codex rollout appears only with the first prompt), so
+                            // its events would land on nothing until the 60s sweep. Look now.
+                            if !self.mirrors.values().any(|m| m.ended_at.is_none() && m.native.conversation == event.session_id) {
+                                if let Some(wake) = &self.rediscover { wake.notify_one(); }
+                            }
                             if let Some(key) = self.apply_hook(&event)? {
                                 if event.event == "SessionStart" { registered.remove(&key); }
                                 else { self.heartbeat_dirty.insert(key); }
@@ -2440,6 +2452,7 @@ pub(super) mod tests {
             mirrors: mirrors.into_iter().map(|(k, m)| (k.to_string(), m)).collect(),
             stop: Arc::new(AtomicBool::new(false)),
             hooks: None,
+            rediscover: None,
             ended_pending: vec![],
             heartbeat_dirty: BTreeSet::new(),
             heartbeat_interval: Duration::from_secs(10),
@@ -3227,6 +3240,7 @@ pub(super) mod tests {
         fs::remove_file(sessions.join(format!("{pid}.json"))).unwrap();
         host.liveness_tick();
         assert_eq!(host.mirrors[SID].native.status, "ended");
+        assert_eq!(host.mirrors[SID].ended_reason.as_deref(), Some("exited"), "it left; nothing crashed");
     }
 
     #[test]
@@ -4068,6 +4082,7 @@ pub(super) mod tests {
             mirrors: BTreeMap::from([("owned".into(), mirror)]),
             stop: Arc::new(AtomicBool::new(false)),
             hooks: None,
+            rediscover: None,
             ended_pending: vec![],
             heartbeat_dirty: BTreeSet::new(),
             heartbeat_interval: Duration::from_secs(10),
@@ -4258,6 +4273,7 @@ pub(super) mod tests {
             mirrors: BTreeMap::from([("local".into(), mirror)]),
             stop: Arc::new(AtomicBool::new(false)),
             hooks: None,
+            rediscover: None,
             ended_pending: vec![],
             heartbeat_dirty: BTreeSet::new(),
             heartbeat_interval: Duration::from_secs(10),
@@ -4754,6 +4770,7 @@ pub(super) mod tests {
             mirrors: BTreeMap::from([("native".to_string(), test_mirror("native", "g1"))]),
             stop: stop.clone(),
             hooks: None,
+            rediscover: None,
             ended_pending: vec![],
             heartbeat_dirty: BTreeSet::new(),
             heartbeat_interval: Duration::from_secs(10),

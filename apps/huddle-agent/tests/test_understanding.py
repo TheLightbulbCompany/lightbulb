@@ -1249,6 +1249,7 @@ async def test_cancel_of_a_queued_row_never_runs_it_and_drops_its_ready_answer()
     backend.route_extra = ops(cancel=["r2", "r9"])  # an unknown id is ignored
     await say(h, "u1", "skip the shipped one")
     answer(h, backend.turns[0]["runId"], "forge", "Two PRs are open.")
+    h.on_agent_said("forge", "Two PRs are open.")  # its voice said it: nothing of it is left to post
     await settle(h)
     assert [s for _, _, s in rows(h)] == ["delivered", "cancelled"] and len(
         backend.turns

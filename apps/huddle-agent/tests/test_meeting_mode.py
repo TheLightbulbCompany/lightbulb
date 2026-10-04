@@ -1089,3 +1089,101 @@ async def test_with_no_voice_a_per_person_statement_wakes_nobody_and_a_question_
     assert len(backend.routes) == 1 and backend.route_bodies[0]["unclaimed"] is True
     assert [x.name for x in h._transcript.after(-1)] == ["Priya (Meet)", "Dan (Meet)"]
     assert backend.presences == []
+
+
+# -- a Live voice's answer cut by its own speaker's sound (10-04 prod Meet: a noisy microphone's junk lines landed
+# as Forge began its answer; the model stopped for them and the answer was gone) --
+
+
+async def forge_answers_priya(text="Three pull requests are open, the oldest is the Meta callbacks draft."):
+    h, room, backend, lives, clock, log = await per_person()
+    backend.route_extra = ops([("forge", "list the open PRs", "name")])
+    await says(h, P1, "Forge, what PRs are open?")
+    (row,) = h._requests.items
+    backend.route_extra = ops([])  # what Priya's microphone picks up next asks nothing
+    answer(h, row.run_id, "forge", text)  # handed to its open voice, which says it
+    return h, backend, lives, clock, text
+
+
+async def quiet_tick(h, clock, seconds):
+    clock.t += seconds
+    await h.tick()
+    await settle(h)
+
+
+def resays(live):
+    return [c for c in live.calls if c[0] == "commentary" and "Say it again now" in c[1]]
+
+
+async def test_an_answer_cut_by_sound_that_was_not_for_the_agent_is_said_once_more():
+    h, backend, lives, clock, text = await forge_answers_priya()
+    await says(h, P1, "Keep us.")  # before a word of the answer: Live's model dropped its reply for this
+    await says(h, P1, "Hello, guys.")
+    await quiet_tick(h, clock, h_mod.CUT_HANDLED_S / 2)
+    assert resays(lives[0]) == [], "her words are not handled yet: a stop may be in them"
+    await quiet_tick(h, clock, h_mod.MEET_QUIET_S)
+    assert [c[1] for c in resays(lives[0])] == [h_mod.RESAY.format(answer=text)]
+    h.on_agent_state("forge", "speaking")
+    h.on_agent_said("forge", text)  # said to its end this time
+    h.on_agent_state("forge", "listening")
+    await quiet_tick(h, clock, h_mod.CUT_WAIT_S)
+    assert len(resays(lives[0])) == 1 and backend.late_answers == [] and h._voice.answer is None
+
+
+async def test_an_answer_interrupted_mid_speech_twice_goes_on_the_record_not_a_third_time():
+    h, backend, lives, clock, text = await forge_answers_priya()
+    h.on_agent_state("forge", "speaking")
+    h.on_agent_said("forge", "Three pull requests", interrupted=True)
+    h.on_agent_state("forge", "listening")
+    await quiet_tick(h, clock, h_mod.CUT_HANDLED_S + h_mod.MEET_QUIET_S)
+    assert len(resays(lives[0])) == 1
+    h.on_agent_state("forge", "speaking")
+    h.on_agent_said("forge", "Three pull", interrupted=True)  # cut again
+    h.on_agent_state("forge", "listening")
+    await quiet_tick(h, clock, h_mod.CUT_HANDLED_S + h_mod.MEET_QUIET_S)
+    await quiet_tick(h, clock, h_mod.CUT_WAIT_S)  # nobody says a word about it: posted all the same
+    assert len(resays(lives[0])) == 1
+    assert [a[3] for a in backend.late_answers] == [text], "never lost: the meeting's record keeps it"
+
+
+async def test_an_agent_that_replied_to_who_cut_it_does_not_repeat_its_answer():
+    h, backend, lives, clock, text = await forge_answers_priya()
+    h.on_agent_state("forge", "speaking")
+    h.on_agent_said("forge", "Three pull requests", interrupted=True)
+    h.on_agent_state("forge", "listening")
+    await says(h, P1, "that is enough, thank you")
+    h.on_agent_state("forge", "speaking")
+    h.on_agent_said("forge", "Sure.")  # she was talking to it
+    h.on_agent_state("forge", "listening")
+    await quiet_tick(h, clock, h_mod.CUT_HANDLED_S + h_mod.MEET_QUIET_S)
+    await quiet_tick(h, clock, h_mod.CUT_WAIT_S)
+    assert resays(lives[0]) == []
+    assert [a[3] for a in backend.late_answers] == [text]
+
+
+async def test_an_answer_said_to_its_end_is_never_said_again():
+    h, backend, lives, clock, text = await forge_answers_priya()
+    h.on_agent_state("forge", "speaking")
+    h.on_agent_said("forge", text)
+    h.on_agent_state("forge", "listening")
+    await says(h, P1, "great, thanks")  # after the answer: nothing was cut
+    await quiet_tick(h, clock, h_mod.CUT_HANDLED_S + h_mod.MEET_QUIET_S + h_mod.CUT_WAIT_S)
+    assert resays(lives[0]) == [] and backend.late_answers == []
+
+
+async def test_a_stop_said_over_a_cut_answer_neither_repeats_nor_posts_it():
+    h, backend, lives, clock, text = await forge_answers_priya()
+    h.on_agent_state("forge", "speaking")
+    h.on_agent_said("forge", "Three pull requests", interrupted=True)
+    h.on_agent_state("forge", "listening")
+    await says(h, P1, "Forge, stop")
+    await quiet_tick(h, clock, h_mod.CUT_HANDLED_S + h_mod.MEET_QUIET_S)
+    await quiet_tick(h, clock, h_mod.CUT_WAIT_S)
+    assert resays(lives[0]) == [] and backend.late_answers == []
+
+
+async def test_a_call_that_ends_on_a_cut_answer_puts_it_on_the_record():
+    h, backend, lives, clock, text = await forge_answers_priya()
+    await says(h, P1, "Keep us.")
+    await h.clear_presence()
+    assert [a[3] for a in backend.late_answers] == [text]

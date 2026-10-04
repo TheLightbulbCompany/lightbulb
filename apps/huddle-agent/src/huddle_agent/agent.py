@@ -256,7 +256,7 @@ async def _start(
             and ev.item.role == "assistant"
             and (text := ev.item.text_content)
         ):
-            huddle.on_agent_said(agent_id, text)
+            huddle.on_agent_said(agent_id, text, bool(getattr(ev.item, "interrupted", False)))
 
     session.on("conversation_item_added", said)
     try:

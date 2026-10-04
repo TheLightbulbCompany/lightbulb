@@ -1898,11 +1898,15 @@ async def test_session_events_carry_the_agent_id(monkeypatch):
     ev["conversation_item_added"](
         types_ns(item=ChatMessage(role="user", content=["what shipped"]))
     )
+    ev["conversation_item_added"](  # its speaker's sound stopped it: the SDK marks the message
+        types_ns(item=ChatMessage(role="assistant", content=["Three PRs"], interrupted=True))
+    )
     ev["agent_state_changed"](types_ns(new_state="speaking"))
     ev["user_state_changed"](types_ns(new_state="speaking"))
     ev["close"](None)
     assert huddle.calls == [
-        ("on_agent_said", "forge", "shipped it"),
+        ("on_agent_said", "forge", "shipped it", False),
+        ("on_agent_said", "forge", "Three PRs", True),
         ("on_agent_state", "forge", "speaking"),
         ("on_speaker_activity", "forge"),
         ("on_live_closed", live),

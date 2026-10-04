@@ -39,7 +39,7 @@ from livekit.plugins.openai.realtime import (
 from livekit.plugins.openai.realtime.gpt_live_model import _render_item
 
 from huddle_agent.backend import Backend
-from huddle_agent.huddle import Huddle, emit_metric
+from huddle_agent.huddle import Huddle, emit_metric, mixed_meet
 from huddle_agent.transcript import trim_items
 
 logger = logging.getLogger("huddle")
@@ -227,7 +227,7 @@ def room_options(agent_id: str, speaker: str) -> room_io.RoomOptions:
 async def _start(
     room, huddle: Huddle, vad, agent_id, persona, voice, speaker, seed
 ) -> _Live:
-    muted = huddle.setting == "meeting"
+    muted = mixed_meet(speaker)  # the whole Meet as one participant; a person of a per-person Meet is heard
     agent = _Voice(agent_id, persona, huddle, seed, muted=muted)
     session = AgentSession(
         llm=_TrimmedGPTLiveModel(voice=voice, delegation="client"), vad=vad
@@ -288,6 +288,14 @@ async def start_live(
         return await _start(
             room, huddle, vad, agent_id, persona, FALLBACK_VOICE, speaker, seed
         )
+
+
+def person(p: rtc.Participant) -> bool:
+    """A human of the call. A Meet person (`meet:<roomId>:<participantId>`) or a mixed Meet (`meet:<roomId>`, an
+    older Recall bot) counts; the bot's own page (`meetbot:<roomId>`) publishes no audio and is nobody."""
+    if p.identity.startswith("meetbot:"):
+        return False
+    return p.kind == rtc.ParticipantKind.PARTICIPANT_KIND_STANDARD or p.identity.startswith("meet:")
 
 
 class _Room:
@@ -381,13 +389,6 @@ async def entrypoint(ctx: JobContext) -> None:
         tasks.add(t)
         t.add_done_callback(_done)
         return t
-
-    def person(p: rtc.Participant) -> bool:
-        # the Recall bot's `meet:<roomId>` participant is the whole meeting: it counts as a person
-        return (
-            p.kind == rtc.ParticipantKind.PARTICIPANT_KIND_STANDARD
-            or p.identity.startswith("meet:")
-        )
 
     def humans() -> dict[str, str]:
         return {

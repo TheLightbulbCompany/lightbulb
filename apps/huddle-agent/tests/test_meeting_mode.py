@@ -985,3 +985,104 @@ async def test_a_refused_voice_is_published_for_the_tile_and_cleared_when_voice_
     clock.t += 30
     await hear(h, "Forge, are you there?")
     assert lives and h._state()["lightbulb.voice_limit"] == ""
+
+
+# -- per-person Meet audio: each person of the Meet is their own `meet:<roomId>:<participantId>` participant and
+# runs on the Live path; the meeting policies (no presence, one transcript, unclaimed questions) stay --
+
+P1, P2 = "meet:room-1:p1", "meet:room-1:p2"
+MEET_PEOPLE = {P1: "Priya", P2: "Dan"}
+
+
+async def per_person():
+    h, room, backend, lives, clock, log = make(setting="meeting")
+    await h.on_participants(dict(MEET_PEOPLE))
+    return h, room, backend, lives, clock, log
+
+
+async def says(h, who, text):
+    await h.on_final_transcript(who, MEET_PEOPLE[who], text)
+    await settle(h)
+
+
+def test_only_the_one_colon_meet_participant_is_the_mixed_meeting():
+    assert h_mod.mixed_meet(MEET) and not h_mod.mixed_meet(P1) and not h_mod.mixed_meet("u1")
+
+
+async def test_a_per_person_meet_voice_hears_its_speaker_like_a_live_call():
+    h, room, backend, lives, clock, log = await per_person()
+    await says(h, P1, "hey Forge what did we ship")
+    assert lives[0].speaker == P1 and ("mute",) not in lives[0].calls
+    assert ("thinking", "Priya is talking to you", None) in lives[0].calls
+    assert h_mod.MEET_ACK not in str(lives[0].seed)
+
+
+async def test_a_per_person_line_carries_its_persons_identity_and_name():
+    h, room, backend, lives, clock, log = await per_person()
+    await says(h, P1, "Forge, check the board")
+    assert (backend.summons, backend.summon_names) == ([P1], ["Priya"])
+    assert backend.routes[0][0] == "Priya"  # /route's speaker is the name, as a mixed meeting's label is
+    turn = backend.turns[0]
+    assert (turn["speaker"], turn["speakerName"]) == (P1, "Priya")
+    assert [x.name for x in h._transcript.after(-1)] == ["Priya (Meet)"]
+
+
+async def test_a_per_person_follow_up_needs_no_name_and_has_no_window():
+    h, room, backend, lives, clock, log = await per_person()
+    await says(h, P1, "Forge, what PRs are open?")
+    h.on_agent_state("forge", "speaking")
+    clock.t += 2
+    h.on_agent_state("forge", "listening")
+    clock.t += 30  # long past a mixed meeting's MEET_FOLLOWUP_S
+    await says(h, P1, "and the closed ones")
+    assert backend.route_bodies[-1]["floor"] == {"agent": "forge", "speaker": "Priya", "mine": True}
+
+
+async def test_another_persons_unnamed_line_goes_the_live_way():
+    h, room, backend, lives, clock, log = await per_person()
+    await says(h, P1, "Forge, what PRs are open?")
+    routes = len(backend.routes)
+    clock.t += h_mod.THINKING_EVERY
+    await says(h, P2, "should we ship Friday?")
+    assert len(backend.routes) == routes + 1, "routed like any line, not transcript only"
+    assert backend.route_humans[-1] == 2  # the room judge may pick nobody between two people
+    assert backend.route_bodies[-1]["floor"] == {"agent": "forge", "speaker": "Priya", "mine": False}
+    assert ("thinking", "Dan: should we ship Friday?", None) in lives[0].calls  # the floor-holder's context
+    assert h._unclaimed is None and h._voice.speaker == P1
+
+
+async def test_a_per_person_voice_follows_the_live_idle_rule_and_is_never_talked_over():
+    h, room, backend, lives, clock, log = await per_person()
+    backend.route_extra = ops([("forge", "list the open PRs", "name")])
+    await says(h, P1, "Forge, what PRs are open?")
+    h.on_agent_state("forge", "speaking")
+    clock.t += 2
+    h.on_agent_state("forge", "listening")
+    clock.t += h_mod.MEET_FOLLOWUP_S + 1
+    await h.tick()
+    await settle(h)
+    assert h._voice is not None, "its piece said, its run working: a Live voice stays open"
+    h.on_agent_state("forge", "speaking")
+    talks(h, P1)
+    clock.t += 3 * h_mod.TALK_OVER_S
+    await h.tick()
+    await settle(h)
+    assert ("interrupt",) not in lives[0].calls and h._voice is not None, "the model's own ear handles a barge"
+
+
+async def test_with_no_voice_a_per_person_statement_wakes_nobody_and_a_question_waits_unclaimed():
+    h, room, backend, lives, clock, log = await per_person()
+    backend.jev_to = "forge"
+    await says(h, P1, "we shipped the importer")
+    clock.t += 10
+    await h.tick()
+    await settle(h)
+    assert backend.routes == [] and backend.sessions == []
+    await says(h, P2, "what did we ship last week?")
+    assert backend.routes == [] and h._unclaimed is not None and h._unclaimed[1] == P2
+    clock.t += h_mod.UNCLAIMED_QUESTION_S
+    await h.tick()
+    await settle(h)
+    assert len(backend.routes) == 1 and backend.route_bodies[0]["unclaimed"] is True
+    assert [x.name for x in h._transcript.after(-1)] == ["Priya (Meet)", "Dan (Meet)"]
+    assert backend.presences == []

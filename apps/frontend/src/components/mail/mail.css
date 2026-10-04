@@ -203,6 +203,11 @@
 .mail-turn__time { font-size: 0.75rem; color: var(--fg-mute); font-variant-numeric: tabular-nums; }
 .mail-turn__text { font-size: 0.875rem; line-height: 1.5; white-space: pre-wrap; overflow-wrap: anywhere; color: var(--fg); }
 
+/* ---- answers nobody heard in the meeting -------------------------------- */
+.mail-unsaid { max-width: 70ch; margin-top: 1rem; }
+.mail-unsaid__title { font-size: 0.8125rem; font-weight: 600; color: var(--fg-soft); }
+.mail-unsaid__item { margin-top: 0.75rem; }
+
 /* ---- empty -------------------------------------------------------------- */
 .mail-empty {
   display: flex;

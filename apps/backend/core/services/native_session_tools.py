@@ -86,7 +86,12 @@ async def decide(device: MachineIdentity, body: NativeDecisionRequest) -> local_
         raise ApiProblem("LOCAL_SESSION_FORBIDDEN", "This Mac is not connected.")
     auth = _human(device)
     if body.decision in ("pause", "unpause"):
-        return await local_sessions.set_sharing(auth, sid, body.decision == "unpause")
+        session = await local_sessions.set_sharing(auth, sid, body.decision == "unpause")
+        from core.services.local_session_relay import publish_resources_changed
+
+        # Same notice the web sharing route sends, so other clients' session views refresh.
+        await publish_resources_changed(device.owner_id, device.user_id)
+        return session
     return await local_sessions.decide_join(auth, sid, body.user_id, body.decision, request_id=body.request_id)
 
 

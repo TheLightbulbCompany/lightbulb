@@ -470,6 +470,10 @@ async def test_allow_and_pause_run_as_the_owner(monkeypatch):
     set_sharing = AsyncMock(return_value="paused")
     monkeypatch.setattr(tools.local_sessions, "decide_join", decide_join)
     monkeypatch.setattr(tools.local_sessions, "set_sharing", set_sharing)
+    from core.services import local_session_relay
+
+    publish = AsyncMock()
+    monkeypatch.setattr(local_session_relay, "publish_resources_changed", publish)
     allow = tools.NativeDecisionRequest(
         session_id=_SID, generation="g1", decision="allow", user_id="user_z", request_id="r1"
     )
@@ -481,6 +485,7 @@ async def test_allow_and_pause_run_as_the_owner(monkeypatch):
     pause = tools.NativeDecisionRequest(session_id=_SID, generation="g1", decision="pause")
     assert await tools.decide(_decision_device(), pause) == "paused"
     assert set_sharing.await_args.args[1:] == (str(_SID), False)
+    publish.assert_awaited_once_with("org_a", "user_a")
 
 
 @pytest.mark.parametrize(

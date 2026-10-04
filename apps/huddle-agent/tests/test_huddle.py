@@ -1857,6 +1857,7 @@ async def test_room_options_per_agent_track_no_text_no_preconnect():
     o = room_options("forge", "u1")
     assert o.text_input is False
     assert o.audio_input.pre_connect_audio is False
+    assert o.audio_input.noise_cancellation is not None  # a noisy room is not speech
     assert o.audio_output.track_name == "agent-forge"
     assert o.participant_identity == "u1" and o.close_on_disconnect is False
 

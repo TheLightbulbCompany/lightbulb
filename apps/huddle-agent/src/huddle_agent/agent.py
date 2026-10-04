@@ -30,7 +30,7 @@ from livekit.agents import (
     utils,
 )
 from livekit.agents.metrics import LLMModelUsage
-from livekit.plugins import openai, silero
+from livekit.plugins import noise_cancellation, openai, silero
 from livekit.plugins.openai.realtime import (
     GPTLiveDelegation,
     GPTLiveModel,
@@ -211,6 +211,14 @@ class _Live:
         await _unpublish(self._room, self.track_name)
 
 
+def noise_filter():
+    """LiveKit Cloud's background noise model (Krisp NC, no extra cost), on everything a person's microphone
+    sends before the transcriber and the voice hear it: music, a fan or a street is not speech, and the
+    transcriber invents words for it (10-04 prod Meet: "Hello, guys." from a room with a TV on). It keeps
+    all speech, a second person's too; removing other voices is the paid voice-isolation model."""
+    return noise_cancellation.NC()
+
+
 def room_options(agent_id: str, speaker: str) -> room_io.RoomOptions:
     # Pinned to the speaker, so it never hears whoever RoomIO would auto-link first. No text input
     # (people type into the room, not to the voice) and no pre-connect buffer (the worker is not a
@@ -219,7 +227,7 @@ def room_options(agent_id: str, speaker: str) -> room_io.RoomOptions:
         participant_identity=speaker,
         close_on_disconnect=False,
         text_input=False,
-        audio_input=room_io.AudioInputOptions(pre_connect_audio=False),
+        audio_input=room_io.AudioInputOptions(pre_connect_audio=False, noise_cancellation=noise_filter()),
         audio_output=room_io.AudioOutputOptions(track_name=f"agent-{agent_id}"),
     )
 
@@ -400,7 +408,8 @@ async def entrypoint(ctx: JobContext) -> None:
     async def transcribe(track: rtc.Track, p: rtc.RemoteParticipant) -> None:
         while True:
             started_with = vad_state["vad"]
-            stream, audio = stt_engine.stream(), rtc.AudioStream(track)
+            stream = stt_engine.stream()
+            audio = rtc.AudioStream.from_track(track=track, noise_cancellation=noise_filter())
 
             async def push() -> None:
                 async for ev in audio:

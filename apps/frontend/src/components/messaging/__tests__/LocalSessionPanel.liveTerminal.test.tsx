@@ -1,4 +1,4 @@
-import { act, render, screen } from "@testing-library/react";
+import { act, render, screen, waitFor } from "@testing-library/react";
 import { expect, it, vi } from "vitest";
 import type { LiveEvent } from "@lightbulb/shared";
 import { sessionStatus, type LocalSession } from "@lightbulb/shared";
@@ -121,4 +121,13 @@ it("still probes this Mac's holder for an offline session, and never for a runni
   } finally {
     delete (window as { __TAURI__?: unknown }).__TAURI__;
   }
+});
+
+it("reads the origin's history for a moved session that has had no turn of its own", async () => {
+  const listLocalSessionEvents = vi.fn(async () => ({ events: [], nextAfterSeq: null }));
+  const getLocalSession = vi.fn(async () => ({ ...session, sessionId: "origin", status: "ended", latestEventSeq: 120 }));
+  render(<LocalSessionPanel session={{ ...session, status: "offline", forkedFrom: "origin" }} ownerName="Alice" own
+    client={{ ...client, listLocalSessionEvents, getLocalSession } as never} revision={0} onAccessLost={() => {}} />);
+  // The newest page of the ORIGIN's 120 events, not the moved session's empty history.
+  await waitFor(() => expect(listLocalSessionEvents).toHaveBeenCalledWith("origin", 70, 50));
 });

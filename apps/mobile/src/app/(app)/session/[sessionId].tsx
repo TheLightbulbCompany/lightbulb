@@ -1,7 +1,7 @@
 import { useAuth } from "@clerk/clerk-expo";
 import { SymbolView } from "expo-symbols";
 import {
-  ApiError, buildRows, canControlSession, groupRows, mainEvents, pendingApproval, receiptChip, sessionLabel, sessionRingState, sessionStatus, sessionTitle, sessionViewKey, unavailableReason, useLocalSessionHistory, usePendingPrompt, useSessionCommand, useSessionOutbox, useSessionResume, useWorkspaceSessions,
+  ApiError, buildRows, canControlSession, groupRows, mainEvents, pendingApproval, receiptChip, sessionLabel, sessionRingState, sessionStatus, sessionTitle, sessionViewKey, unavailableReason, useHistorySource, useLocalSessionHistory, usePendingPrompt, useSessionCommand, useSessionOutbox, useSessionResume, useWorkspaceSessions,
   type LocalSession, type SessionControlClient, type SessionSource, type TranscriptItem,
 } from "@lightbulb/shared";
 import { randomUUID } from "expo-crypto";
@@ -264,7 +264,8 @@ function SessionBody({
   const insets = useSafeAreaInsets();
   const busy = session.status === "busy";
   const ended = session.status === "ended";
-  const history = useLocalSessionHistory(client, session.sessionId, session.latestEventSeq, revision, onAccessLost, { pollMs });
+  const source = useHistorySource(client, session);
+  const history = useLocalSessionHistory(client, source.sessionId, source.latestEventSeq, revision, onAccessLost, { pollMs });
   const [text, setText] = useState("");
   const command = useSessionCommand(client, session, { uuid: randomUUID, onAccessLost, onSent: () => setText(""), agentName: name, allowInterrupt: own || !!session.teamControl, allowOffline: true });
   const { userId } = useAuth();

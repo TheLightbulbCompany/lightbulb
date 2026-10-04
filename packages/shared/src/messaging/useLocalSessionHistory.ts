@@ -4,7 +4,7 @@ import { ApiError } from "../api/error";
 import type { LiveEvent } from "../live/types";
 import type { createMessagingClient } from "./client";
 import { buildRows } from "./localSessionTranscript";
-import type { LocalSessionEvent } from "./types";
+import type { LocalSession, LocalSessionEvent } from "./types";
 
 export interface SessionSource {
   client: Pick<ReturnType<typeof createMessagingClient>, "listWorkspaceSessions" | "getLocalSession" | "listLocalSessionEvents" | "submitLocalSessionCommand" | "getLocalSessionCommand" | "setLocalSessionSharing"> &
@@ -19,6 +19,25 @@ const RETAINED = 2000;
 const EMPTY_FILL_PAGES = 10;
 
 export const accessLost = (error: unknown) => error instanceof ApiError && (error.status === 403 || error.status === 404);
+
+/**
+ * Whose history a session's transcript reads. A Claude session moved to the background
+ * (`forkedFrom`) has no events of its own until its next turn -- Claude writes the copied history
+ * into the new transcript only then -- so until that turn its history is its origin's.
+ * ponytail: one step. A session moved twice with no turn between shows nothing until its next turn.
+ */
+export function useHistorySource(client: Pick<SessionSource["client"], "getLocalSession">, session: LocalSession): LocalSession {
+  const originId = session.latestEventSeq === 0 ? session.forkedFrom : undefined;
+  const [origin, setOrigin] = useState<LocalSession | null>(null);
+  useEffect(() => {
+    if (!originId) return;
+    let alive = true;
+    // An origin this viewer cannot read leaves the session's own (empty) history.
+    void client.getLocalSession(originId).then(found => { if (alive) setOrigin(found); }, () => {});
+    return () => { alive = false; };
+  }, [client, originId]);
+  return originId && origin?.sessionId === originId ? origin : session;
+}
 
 /**
  * A recoverable window over canonical history, never an unbounded transcript cache.

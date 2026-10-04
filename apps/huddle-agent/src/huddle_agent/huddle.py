@@ -438,6 +438,7 @@ class Huddle:
         self._final_heard: dict[str, asyncio.Event] = {}  # identity -> set by their next final
         # identity -> (when, transcript) of a delegation whose own transcript was understood (no final yet)
         self._unbound: dict[str, tuple[float, str]] = {}
+        self._routing: dict[str, list[asyncio.Future]] = {}  # identity -> their lines at /route, in said order
 
     def _spawn(self, coro) -> asyncio.Task:
         t = asyncio.create_task(coro)
@@ -1211,7 +1212,24 @@ class Huddle:
     def _outcome(r: dict) -> str:
         return "hold" if r.get("hold") else "agent" if r.get("agentIds") or r.get("agentId") else "none"
 
-    async def _understand(
+    async def _understand(self, identity: str, *args, **kw) -> dict | None:
+        """`_route_call`, answered in the order the speaker's lines were said, whichever call finished first:
+        each caller applies its answer before it next waits, so one speaker's requests start in said order
+        ("draft the email", then "send it"). A slow call holds the later ones at most ROUTE_TIMEOUT_S."""
+        mine = asyncio.get_running_loop().create_future()
+        lines = self._routing.setdefault(identity, [])
+        ahead = list(lines)
+        lines.append(mine)
+        try:
+            r = await self._route_call(identity, *args, **kw)
+            if ahead:
+                await asyncio.wait(ahead)
+            return r
+        finally:
+            mine.set_result(None)
+            lines.remove(mine)
+
+    async def _route_call(
         self,
         identity: str,
         text: str,

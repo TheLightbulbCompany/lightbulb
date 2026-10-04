@@ -978,7 +978,7 @@ async def test_a_delegation_of_an_older_speech_while_a_newer_one_is_said_runs_no
 
 
 async def test_an_older_route_finishing_last_does_not_hide_the_newer_line():
-    # N3
+    # N3. The older line is applied first all the same: one speaker's lines start in said order (Codex P1).
     h, room, backend, lives, clock, log = await floor_open()
     older = backend.route_gate = asyncio.Event()
     await h.on_final_transcript("u1", "Prasiddha", PRS)
@@ -990,18 +990,18 @@ async def test_an_older_route_finishing_last_does_not_hide_the_newer_line():
     older.set()
     await settle(h)
     assert [(t, s) for _, t, s in rows(h)] == [
-        ("what shipped", "working"),
-        ("the open PRs", "queued"),
+        ("the open PRs", "working"),
+        ("what shipped", "queued"),
     ]
     await h.on_delegation("forge", "deleg-2", "and what shipped")
     await h.on_delegation("forge", "deleg-1", PRS)
     await settle(h)
     assert (
         len(backend.turns) == 1
-        and h._runs.get(backend.turns[0]["runId"]).delegation_id == "deleg-2"
+        and h._runs.get(backend.turns[0]["runId"]).delegation_id == "deleg-1"
     )
-    note = '"the open PRs" is next in line for you. Say so in a few words.'
-    assert lives[0].calls[-1] == ("commentary", note, "deleg-1")
+    note = '"what shipped" is next in line for you. Say so in a few words.'
+    assert ("commentary", note, "deleg-2") in lives[0].calls
 
 
 async def test_a_named_summons_delegation_binds_its_own_run_not_the_old_voices_record():
@@ -2170,3 +2170,24 @@ async def test_a_delegated_call_off_is_told_it_was_made():
     await h.on_delegation("forge", "d2", "no, do not send the email to Aden")
     await settle(h)
     assert lives[0].calls[-1] == ("commentary", h_mod.CHANGED, "d2")
+
+
+async def test_one_speakers_lines_start_in_the_order_they_were_said():
+    # Codex P1: each final has its own /route call; the second answering first must not run first
+    h, room, backend, lives, clock, log = await three()
+    older = backend.route_gate = asyncio.Event()
+    backend.route_extra = ops(requests=[("forge", "draft the email", "fit")])
+    await h.on_final_transcript("u1", "Prasiddha", "draft the email to Aden")
+    await asyncio.sleep(0)
+    backend.route_gate = None
+    backend.route_extra = ops(requests=[("forge", "send it", "fit")])
+    await h.on_final_transcript("u1", "Prasiddha", "then send it")
+    for _ in range(5):
+        await asyncio.sleep(0)
+    assert rows(h) == [], "the later line waits for the earlier one's answer"
+    older.set()
+    await settle(h)
+    assert rows(h) == [
+        ("forge", "draft the email", "working"),
+        ("forge", "send it", "queued"),
+    ]

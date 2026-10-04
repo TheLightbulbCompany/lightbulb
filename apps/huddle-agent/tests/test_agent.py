@@ -36,3 +36,17 @@ def test_connection_errors_are_not_a_vad_refusal():
     assert not retry_without_semantic_vad(engine, APIConnectionError("down"), "semantic", state)
     assert not retry_without_semantic_vad(engine, RuntimeError("boom"), "semantic", state)
     assert state == {"vad": "semantic"} and engine.updates == []
+
+
+def test_a_muted_voice_is_muted_again_after_a_reconnect():
+    # a reconnect is a new GPT-Live session, which hears: a meeting voice must not start hearing the Meet
+    from unittest.mock import MagicMock
+
+    duplex, handlers = MagicMock(), {}
+    duplex.on.side_effect = lambda event, cb: handlers.__setitem__(event, cb)
+    live = agent._Live("forge", MagicMock(), duplex, MagicMock())
+    handlers["session_reconnected"](None)
+    assert duplex.mute_input.call_count == 0, "a Live voice hears its speaker: never muted by a reconnect"
+    live.mute()
+    handlers["session_reconnected"](None)
+    assert duplex.mute_input.call_count == 2

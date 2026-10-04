@@ -174,11 +174,22 @@ class _Live:
             duplex.append_commentary,
         )
         self.append_instructions = duplex.append_instructions
-        self.mute = duplex.mute_input
+        self._duplex, self._muted = duplex, False
+        # A reconnect is a new GPT-Live session, and a new session hears: a muted voice (a meeting's, which
+        # must never hear the Meet) is muted again on each one.
+        duplex.on("session_reconnected", self._on_reconnected)
         self.nudge = lambda: session.generate_reply()  # a request the model may decline
         self.reply_to = lambda text: session.generate_reply(
             user_input=text
         )  # a typed user turn
+
+    def mute(self) -> None:
+        self._muted = True
+        self._duplex.mute_input()
+
+    def _on_reconnected(self, _ev=None) -> None:
+        if self._muted:
+            self._duplex.mute_input()
 
     def interrupt(self):
         return self._session.interrupt(force=True)

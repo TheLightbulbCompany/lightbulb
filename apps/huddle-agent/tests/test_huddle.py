@@ -619,7 +619,7 @@ async def test_several_names_open_the_first_and_queue_the_rest():
     h, room, backend, lives, clock, log = await two_names()
     assert [l.agent_id for l in lives] == ["forge"]
     assert room.written()["lightbulb.queue"] == "forge,gauge"
-    assert h._queue == [("gauge", "u1", "Forge and Gauge, what shipped?")]
+    assert h._queue == [("gauge", "u1", "Forge and Gauge, what shipped?", "")]
 
 
 async def test_the_queue_advances_after_the_run_ends_and_speech_stops(monkeypatch):
@@ -1829,6 +1829,7 @@ def _fake_live_stack(monkeypatch, refuse=()):
                 append_commentary=None,
                 append_instructions=None,
                 mute_input=None,
+                on=lambda event, cb: None,
             )
 
     monkeypatch.setattr(agent_mod, "AgentSession", FakeSession)
@@ -2631,7 +2632,7 @@ async def test_a_second_speaker_is_routed_into_the_queue(capsys):
     backend.jev_to = "gauge"
     clock.t += THINKING_EVERY
     await say(h, "u2", "can someone check the invoices")
-    assert h._queue == [("gauge", "u2", "can someone check the invoices")]
+    assert h._queue == [("gauge", "u2", "can someone check the invoices", "")]
     assert backend.route_bodies[-1]["floor"] == {
         "agent": "forge",
         "speaker": "Prasiddha",
@@ -2706,7 +2707,7 @@ async def test_every_addressed_agent_is_queued_in_order():
     backend.route_extra = {"agentIds": ["forge", "gauge"]}
     await say(h, "u1", "Lightbulb, have Forge and Gauge check CI")
     assert lives[0].agent_id == "forge"
-    assert h._queue == [("gauge", "u1", "Lightbulb, have Forge and Gauge check CI")]
+    assert h._queue == [("gauge", "u1", "Lightbulb, have Forge and Gauge check CI", "")]
     await h.end_exchange()
 
 

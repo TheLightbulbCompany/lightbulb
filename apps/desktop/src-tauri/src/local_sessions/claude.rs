@@ -227,6 +227,27 @@ pub(super) fn parked_origin(home: &Path, job: &str) -> Option<String> {
     })
 }
 
+/// Whether pid `pid` still runs `conversation`, by Claude's own per-pid registry. Leaving a
+/// conversation for the agent view drops the file, and `/resume` or `/clear` rewrites it, while
+/// the pid lives on, so a pid check alone never ends that conversation. Only a missing file or
+/// another `sessionId` answers no: a file that cannot be read or parsed is not evidence.
+pub(super) fn still_registered(home: &Path, pid: u32, conversation: &str) -> bool {
+    let path = home.join(format!(".claude/sessions/{pid}.json"));
+    if matches!(fs::symlink_metadata(&path), Err(e) if e.kind() == std::io::ErrorKind::NotFound) {
+        return false;
+    }
+    let mut text = String::new();
+    let Some(row) = confined_path(home, &path)
+        .and_then(|path| secure_file(&path))
+        .ok()
+        .and_then(|file| file.take(64 * 1024).read_to_string(&mut text).ok())
+        .and_then(|_| serde_json::Deserializer::from_str(&text).into_iter::<Value>().next()?.ok())
+    else {
+        return true;
+    };
+    row["sessionId"].as_str().is_none_or(|id| id == conversation)
+}
+
 /// `verify_current_generation` found nothing this process wrote -- distinct from a
 /// transcript that is unreadable or contradicts itself, which is a refusal. Internal:
 /// `capture` resolves it and it never travels as a restriction.
@@ -2127,4 +2148,18 @@ mod tests {
         assert_eq!(report[0]["tool"]["result"]["content"], "All done: 3 files.");
         assert!(user(&format!("{PEER_PREFIX}<cross-session-message from=\"x\" from-name=\"other\">hi</cross-session-message>"), true).is_empty());
     }
+    #[test]
+    fn still_registered_reads_the_pid_registry() {
+        let home = tempfile::tempdir().unwrap();
+        let sessions = home.path().join(".claude/sessions");
+        fs::create_dir_all(&sessions).unwrap();
+        let a = "11111111-1111-4111-8111-111111111111";
+        assert!(!still_registered(home.path(), 4242, a), "no file: the conversation left this pid");
+        fs::write(sessions.join("4242.json"), format!("{{\"pid\":4242,\"sessionId\":\"{a}\"}}xx")).unwrap();
+        assert!(still_registered(home.path(), 4242, a));
+        assert!(!still_registered(home.path(), 4242, "22222222-2222-4222-8222-222222222222"));
+        fs::write(sessions.join("4242.json"), "not json").unwrap();
+        assert!(still_registered(home.path(), 4242, a), "an unreadable file is not evidence");
+    }
+
 }

@@ -112,6 +112,16 @@ def test_the_strip_task_is_cut_to_sixty():
     assert rl.task("a") == "x" * 60 and rl.working("a")
 
 
+def test_the_strip_shows_the_row_being_worked_on_not_the_last_queued():
+    rl = RequestList()
+    first, second = rl.settle(
+        1, "u1", [{"agentId": "a", "task": "one"}, {"agentId": "a", "task": "two"}], 0.0
+    )
+    assert rl.task("a") == "one"  # nothing started: the oldest queued
+    rl.start(first)
+    assert rl.task("a") == "one"  # the row it works on, not the one behind it
+
+
 def test_the_acknowledgement_names_every_task_once():
     rl, rows = routed()
     started(rl, rows)  # every request starts before its acknowledgement

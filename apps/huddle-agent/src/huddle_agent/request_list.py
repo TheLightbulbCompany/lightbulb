@@ -232,12 +232,15 @@ class RequestList:
         )
 
     def task(self, agent: str) -> str:
+        """What the agent's tile shows: the row it works on, else its oldest queued one (one at a time, §4.5)."""
         rows = [
             r
             for r in self.items
             if r.agent == agent and r.status in ("queued", "working") and r.task
         ]
-        return rows[-1].task[:TASK_CHARS] if rows else ""
+        # stable: the working row first, then asked order
+        rows.sort(key=lambda r: r.status != "working")
+        return rows[0].task[:TASK_CHARS] if rows else ""
 
     def lines(
         self, name: Callable[[str], str], skip_agent: str | None = None

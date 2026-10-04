@@ -426,6 +426,10 @@ async def _claim(owner: str, run_id: str | None, *, start_only: bool = False, ag
     # An errored browser recovers on the next agent action too, not only a person's Restart:
     # a dead session must never be a dead end for the agent.
     if mode == "transition":
+        if start_only:
+            # A start (the open panel's heartbeat, another person's click) or a save is already
+            # in flight: this Start has nothing to add, and the view says which it is.
+            return old
         raise BrowserError("Browser is changing. Try again shortly.")
     if mode == "agent" and run_id and old.get("controller_id") != run_id:
         raise BrowserError("Another agent run is using the browser. Try again shortly.")
@@ -550,8 +554,10 @@ FRAMES_RPC_TIMEOUT_S = 5
 
 async def watch(owner: str, user: str, frames: bool = False) -> dict:
     """The open, visible panel's heartbeat: someone is looking, so keep the browser running,
-    and start it (exactly like Start) when none is. Stamped with server time, never the
-    client's, so a late or replayed heartbeat cannot backdate or extend anything.
+    and start it (exactly like Start) when none is -- unless a person stopped it: their Stop
+    stands, however many panels are still open, until someone presses Start or an agent needs
+    the browser. Stamped with server time, never the client's, so a late or replayed heartbeat
+    cannot backdate or extend anything.
 
     ``frames``: this viewer does not have the live view (someone else holds its one slot), so
     the bridge casts the browsing runs' tabs to their rooms while it keeps asking."""
@@ -568,7 +574,7 @@ async def watch(owner: str, user: str, frames: bool = False) -> dict:
             )
         except Exception as exc:  # the next agent acquire carries framesAt anyway
             logger.info("browser frames ask failed for %s: %s", owner, type(exc).__name__)
-    if out["active"] or out["mode"] == "transition":
+    if out["active"] or out["mode"] == "transition" or out.get("endedReason") == "stopped":
         return out
     return await start(owner, user)
 
@@ -813,7 +819,7 @@ async def stop(owner: str, user: str, generation: str | None = None) -> dict:
         raise BrowserError("The browser is not running.")
     if not await _owned(owner, row, old):
         raise BrowserError("The browser session expired. Its last completed save is available on restart.")
-    await _save(owner, old, stop=True)
+    await _save(owner, old, stop=True, reason="stopped")
     return await view(owner, user)
 
 
@@ -976,7 +982,8 @@ async def view(owner: str, user: str) -> dict:
         "agentId": state.get("agent_id") if mode == "agent" else None,
         "savedAt": state.get("saved_at"),
         "error": state.get("error"),
-        # Why the browser is not running: "idle" (our stop) or "expired" (it ended at AWS).
+        # Why the browser is not running: "stopped" (a person's Stop), "idle" (our stop),
+        # "restart" (a new extension) or "expired" (it ended at AWS).
         "endedReason": state.get("ended_reason"),
         "idleStopSeconds": IDLE_STOP_SECONDS,
         "operation": state.get("operation") if mode == "transition" else None,

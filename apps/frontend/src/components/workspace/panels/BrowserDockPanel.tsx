@@ -22,6 +22,9 @@
 // Watching starts it: while this panel is visible (its dock tab shown and the page not
 // hidden) it posts a viewer heartbeat, which starts the browser when none is running and
 // keeps it from idle-stopping. Hidden, the heartbeat stops and the 30-min idle clock runs.
+// So a stopped browser someone is looking at reads "Starting" with nothing to click. Start
+// is offered only where watching does not start it: a person pressed Stop (that stands until
+// Start or an agent needs the browser), or the start failed.
 
 import { useEffect, useRef, useState } from "react";
 import { useAuth } from "@clerk/nextjs";
@@ -56,8 +59,8 @@ interface LiveViewResponse {
   agentId?: string | null;
   savedAt?: string | null;
   error?: string | null;
-  /** Why no session is running: our idle stop, or it ended at AWS (8 h ceiling, error). */
-  endedReason?: "idle" | "expired" | "restart" | null;
+  /** Why no session is running: a person's Stop, our idle stop, or it ended at AWS (8 h ceiling, error). */
+  endedReason?: "stopped" | "idle" | "expired" | "restart" | null;
   idleStopSeconds?: number;
   /** While `mode` is "transition": starting a session or saving one. */
   operation?: "start" | "save" | null;
@@ -103,7 +106,8 @@ export function stoppedMessage(view: LiveViewResponse): string {
   const saved = savedTime(view.savedAt);
   const why = view.endedReason === "idle"
     ? `Browser stopped after ${Math.round((view.idleStopSeconds ?? 1800) / 60)} min idle`
-    : view.endedReason === "expired" ? "Browser session ended" : "No shared browser session is running";
+    : view.endedReason === "expired" ? "Browser session ended"
+    : view.endedReason === "stopped" ? "Browser stopped" : "No shared browser session is running";
   return saved ? `${why} \u00b7 state saved ${saved}` : `${why}.`;
 }
 
@@ -143,6 +147,8 @@ export function BrowserDockPanel({ api: panelApi }: Partial<IDockviewPanelProps>
   const [view, setView] = useState<LiveViewResponse | null>(null);
   const [pending, setPending] = useState(false);
   const [controlError, setControlError] = useState<string | null>(null);
+  // Why the heartbeat's own start failed; until one lands the panel offers Start, not "Starting".
+  const [startError, setStartError] = useState<string | null>(null);
   const [pollNonce, setPollNonce] = useState(0);
   const [menuHost, setMenuHost] = useState<HTMLSpanElement | null>(null);
   const viewEpoch = useRef(0);
@@ -164,6 +170,9 @@ export function BrowserDockPanel({ api: panelApi }: Partial<IDockviewPanelProps>
   }, [savingGeneration]);
 
   const knownSession = useRef(false);
+  const running = !!view?.active && !!view.url;
+  // An error is about the state it happened in: once the session changes, it is stale.
+  useEffect(() => setControlError(null), [running, view?.sessionId]);
 
   // The panel is always mounted (renderer "always"), so "visible" is dockview's, not React's.
   const [panelVisible, setPanelVisible] = useState(panelApi?.isVisible ?? true);
@@ -176,6 +185,8 @@ export function BrowserDockPanel({ api: panelApi }: Partial<IDockviewPanelProps>
   // Dockview still calls a panel visible when the whole page is backgrounded or minimized.
   const pageVisible = usePageVisible();
 
+  // Re-runs (beating at once) when the session comes or goes, so "Starting" is true the moment
+  // a watched browser ends, not up to VIEW_HEARTBEAT_MS later.
   useEffect(() => {
     if (!ready || !panelVisible || showingMac) return;
     let cancelled = false;
@@ -184,6 +195,7 @@ export function BrowserDockPanel({ api: panelApi }: Partial<IDockviewPanelProps>
       try {
         const next = await api.post("/browser/viewing", {}) as LiveViewResponse | undefined;
         if (cancelled || !next) return;
+        setStartError(null);
         // The heartbeat's own response is authoritative: a cold start it kicked off may
         // already be live (or a session may have just stopped) by the time it lands, so
         // apply that straight away rather than waiting on the next poll tick to notice.
@@ -195,7 +207,13 @@ export function BrowserDockPanel({ api: panelApi }: Partial<IDockviewPanelProps>
         });
         // It may have just started one: poll until the live view is up.
         if (!next.active) setPollNonce((value) => value + 1);
-      } catch { /* a missed heartbeat only lets the idle clock run */ }
+      } catch (error) {
+        // A missed heartbeat only lets the idle clock run, unless it was also this panel's
+        // start: then say why and offer Start, and look again (another start may have won).
+        if (cancelled) return;
+        setStartError(error instanceof Error ? error.message : "The browser could not start");
+        setPollNonce((value) => value + 1);
+      }
     };
     const onVisibility = () => { if (document.visibilityState === "visible") void beat(); };
     void beat();
@@ -206,18 +224,25 @@ export function BrowserDockPanel({ api: panelApi }: Partial<IDockviewPanelProps>
       clearInterval(timer);
       document.removeEventListener("visibilitychange", onVisibility);
     };
-  }, [ready, panelVisible, showingMac, api, scope]);
+  }, [ready, panelVisible, showingMac, api, scope, running]);
 
   useEffect(() => {
     setView(null);
     setPending(false);
     setControlError(null);
+    setStartError(null);
     knownSession.current = false;
+    mutationSeq.current += 1; // a click made in the previous workspace must not land in this one
   }, [api, ready, scope]);
+  useEffect(() => {
+    alive.current = true;
+    return () => { alive.current = false; };
+  }, []);
 
+  // Re-arming this poll (a heartbeat, a run starting or ending, an extension change) never
+  // drops a Start or Stop in flight: that left the panel pending for good.
   useEffect(() => {
     if (!ready) return;
-    alive.current = true;
     let cancelled = false;
     let timer: ReturnType<typeof setTimeout>;
     let timeout: ReturnType<typeof setTimeout>;
@@ -264,9 +289,7 @@ export function BrowserDockPanel({ api: panelApi }: Partial<IDockviewPanelProps>
     void load();
     return () => {
       cancelled = true;
-      alive.current = false;
       viewEpoch.current += 1;
-      mutationSeq.current += 1;
       clearTimeout(timer);
       clearTimeout(timeout);
       request?.abort();
@@ -376,19 +399,29 @@ export function BrowserDockPanel({ api: panelApi }: Partial<IDockviewPanelProps>
       );
     }
     if (!view.active || !view.url) {
-      const starting = pending || view.mode === "transition";
       if (restarting(view)) {
         return docked(<Notice>Restarting the browser to load its extensions…</Notice>);
       }
-      // Any click here starts a fresh session that restores the saved state: never a dead end.
+      // Someone looking at it is already starting it (the heartbeat above): say so at once and
+      // offer nothing to click, because a click could only collide with that start.
+      const watching = panelVisible && pageVisible;
+      if (pending || view.mode === "transition" || (watching && view.endedReason !== "stopped" && !startError)) {
+        return docked(
+          <div data-testid="browser-starting" className="flex h-full flex-col items-center justify-center gap-2 p-6 text-center text-sm text-[var(--midnight-muted)]">
+            <p>Starting the browser…</p>
+            {(view.endedReason === "idle" || view.endedReason === "expired") && <p className="max-w-sm text-xs">{stoppedMessage(view)}</p>}
+          </div>
+        );
+      }
+      // A person stopped it, or the start failed. Any click here starts a fresh session that
+      // restores the saved state: never a dead end.
+      const error = controlError || startError || view.error;
       return docked(
-        <div onClick={() => { if (!starting) void mutate("/browser/start"); }} data-testid="browser-stopped" className="flex h-full cursor-pointer flex-col items-center justify-center gap-3 p-6 text-center text-sm text-[var(--midnight-muted)]">
+        <div onClick={() => void mutate("/browser/start")} data-testid="browser-stopped" className="flex h-full cursor-pointer flex-col items-center justify-center gap-3 p-6 text-center text-sm text-[var(--midnight-muted)]">
           <p>{stoppedMessage(view)}</p>
           <p className="max-w-sm text-xs">One browser for the whole workspace. Sign in once and it is saved for everyone, agents included. Click to start it again; the saved state comes back.</p>
-          <button type="button" disabled={starting} className="rounded-md bg-midnight px-3 py-2 text-xs font-medium text-cream disabled:opacity-50">
-            {starting ? "Starting…" : "Start browser"}
-          </button>
-          {(controlError || view.error) && <p role="alert" className="text-xs text-err">{controlError || view.error}</p>}
+          <button type="button" className="rounded-md bg-midnight px-3 py-2 text-xs font-medium text-cream">Start browser</button>
+          {error && <p role="alert" className="text-xs text-err">{error}</p>}
         </div>
       );
     }

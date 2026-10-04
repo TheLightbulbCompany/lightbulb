@@ -682,6 +682,45 @@ async def test_watching_starts_the_browser_once_under_concurrent_heartbeats(work
 
 
 @pytest.mark.asyncio
+async def test_start_on_top_of_a_start_in_flight_answers_starting(workspace, agent_tools, monkeypatch):
+    # The open panel's heartbeat is already starting it when a person clicks Start (or a second
+    # panel opens): the same outcome, never "Browser is changing. Try again shortly."
+    restored = asyncio.Event()
+    client = _slow_start(workspace, monkeypatch, restored)
+    assert (await control.watch("org_browser", "user"))["mode"] == "transition"
+    out = await control.start("org_browser", "user")
+    assert out["mode"] == "transition" and out["operation"] == "start"
+    restored.set()
+    await asyncio.gather(*control._background)
+    client.start_browser_session.assert_called_once()
+    state = workspace["browser_state"]
+    assert state["mode"] == "idle" and state["session_id"] == "fresh"
+    # An agent run is still told to wait, not handed a browser mid-start.
+    workspace["browser_state"] = {**state, "mode": "transition", "operation_at": int(time.time())}
+    with pytest.raises(control.BrowserError, match="Browser is changing"):
+        await control._claim("org_browser", "run")
+
+
+@pytest.mark.asyncio
+async def test_a_persons_stop_stands_until_start(workspace, agent_tools, monkeypatch):
+    # However many panels are still open: their heartbeats restart a browser that idled out or
+    # expired, never one a person just stopped.
+    _record_order(monkeypatch, "stop")
+    client = MagicMock()
+    client.start_browser_session.return_value = {"sessionId": "fresh"}
+    monkeypatch.setattr(control.browser_sessions, "_data_client", lambda: client)
+    monkeypatch.setattr(control, "_restore", AsyncMock(return_value=None))
+    out = await control.stop("org_browser", "teammate")
+    assert out["active"] is False and out["endedReason"] == "stopped"
+    assert (await control.watch("org_browser", "user"))["endedReason"] == "stopped"
+    client.start_browser_session.assert_not_called()
+    await control.start("org_browser", "user")
+    client.start_browser_session.assert_called_once()
+    state = workspace["browser_state"]
+    assert state["session_id"] == "fresh" and state.get("ended_reason") is None
+
+
+@pytest.mark.asyncio
 async def test_a_watched_browser_never_idle_stops(workspace, agent_tools, running, monkeypatch):
     retire = AsyncMock()
     monkeypatch.setattr(control, "_retire", retire)

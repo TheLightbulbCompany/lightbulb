@@ -720,3 +720,22 @@ async def test_a_meeting_voice_gets_no_working_note_for_each_tool_its_run_uses()
     h.on_data(None, "call.frame", packet(frame(row.run_id, "forge", tool)))
     assert lives[0].calls[calls:] == []
     assert h._state()["lightbulb.agent.forge.working"]  # the tile still shows it
+
+
+async def test_a_meeting_line_is_routed_and_run_under_its_own_speaker_not_the_latest():
+    # review: /route and /turns read the latest label, so Priya's follow-up went out as Dan's
+    h, room, backend, lives, clock, log = await priya_asks_forge()
+    backend.route_extra = ops([("forge", "list the closed PRs", "floor")])
+    clock.t += 3
+    await h.on_final_transcript(MEET, "Google Meet", "and the closed ones")  # Priya's follow-up
+    clock.t += 1
+    speaker(h, "p2", "Dan", True)
+    clock.t += 1
+    await h.on_final_transcript(MEET, "Google Meet", "ok, lunch")  # Dan, before Priya's route call has run
+    await settle(h)
+    route = next(i for i, r in enumerate(backend.routes) if r[1] == "and the closed ones")
+    assert backend.routes[route][0] == "Priya" and backend.route_bodies[route]["floor"]["mine"] is True
+    answer(h, backend.turns[0]["runId"], "forge", "Six PRs are open.")  # Forge's first run ends: the row starts
+    await settle(h)
+    turn = next(t for t in backend.turns if t["utterance"] == "list the closed PRs")
+    assert turn["speakerName"] == "Priya", "its asker's, though Dan spoke last"

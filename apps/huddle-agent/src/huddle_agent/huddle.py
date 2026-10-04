@@ -576,6 +576,13 @@ class Huddle:
         """Who a voice is with: in a meeting the speaker who has its attention, never whoever spoke last."""
         return v.label or self._talker(v.speaker)
 
+    def _owner_name(self, v: _Voice) -> str | None:
+        """The speaker name a turn carries: a meeting voice's (or request row's) own speaker; None in a Live
+        call, where the identity is the person."""
+        if not v.speaker.startswith("meet:"):
+            return self._said_by.get(v.speaker)
+        return v.label or "Someone"
+
     def _label(self, identity: str, mark: int | None = None) -> str:
         """A meeting line's one known speaker (the line at `mark`, else the latest); "" outside a meeting, for
         "Someone" and for "A + B"."""
@@ -933,7 +940,7 @@ class Huddle:
                 fut = self._in_flight(identity)
                 # the wake word stripped, as for any Lightbulb line (B4 report)
                 route = self._understand(
-                    identity, strip_wake(text), humans=len(self._people), quiet=True, path="name", until=fut
+                    identity, strip_wake(text), humans=len(self._people), quiet=True, path="name", until=fut, mark=mark
                 )
                 understood = (self._spawn(route), fut)
             summon = self.summon(
@@ -1357,18 +1364,20 @@ class Huddle:
         unclaimed: bool = False,
         quiet: bool = False,
         path: str = "jev",
+        mark: int | None = None,
     ) -> dict | None:
         """The line's /route call alone (understanding §4.4): who answers and, from a current backend, `ops`.
-        None when it failed; a line spoken to the agents says so, unless `quiet` (its caller has a fallback)."""
+        None when it failed; a line spoken to the agents says so, unless `quiet` (its caller has a fallback).
+        `mark`: the line's, so a meeting line is sent with its own speaker and not the latest one's."""
         heard_at, outcome, v = self._clock(), "error", self._voice
         try:
             r = await self._backend.route(
-                self._said_by.get(identity, identity),
+                self._said_at.get(mark) or self._said_by.get(identity, identity),
                 (text if humans is not None else strip_wake(text))[:MAX_UTTERANCE],
                 self._transcript.text()[-MAX_TRANSCRIPT:],
                 humans,
                 # `mine`: the speaker is already talking with the floor agent; their asks need no name (§4.4)
-                floor={"agent": v.agent_id, "speaker": self._with(v), "mine": self._mine(v, identity, heard_at)}
+                floor={"agent": v.agent_id, "speaker": self._with(v), "mine": self._mine(v, identity, heard_at, mark=mark)}
                 if v
                 else None,
                 voice_runs=(
@@ -1489,7 +1498,7 @@ class Huddle:
                     "",
                     steer_run_id=r.run_id,
                     steer_only=True,
-                    speaker_name=self._said_by.get(speaker),
+                    speaker_name=self._said_at.get(mark) or self._said_by.get(speaker),
                 )
                 steered = bool((resp or {}).get("steered"))
             except BackendError as e:
@@ -1607,7 +1616,7 @@ class Huddle:
         ([], None) for a floor line /route failed or answered without `ops`, else None (a hold, today's routing)."""
         heard_at = self._clock()
         r = routed if routed is not None else await self._understand(
-            identity, text, humans, unclaimed, quiet=heard is not None or floor_line
+            identity, text, humans, unclaimed, quiet=heard is not None or floor_line, mark=mark
         )
         outcome = "error" if r is None else self._outcome(r)
         r = r or {}
@@ -2170,7 +2179,7 @@ class Huddle:
             return  # stopped while the window opened
         self._runs.started(run_id, r.agent, speaker=r.asker, request=r.task, delegation_id=None, gen=None)
         # ponytail: a voiceless _Voice carries _post_turn's speaker/posting fields; gen 0 is never a session
-        carrier = _Voice(r.agent, None, 0, r.asker, self._clock())
+        carrier = _Voice(r.agent, None, 0, r.asker, self._clock(), label=r.label)
         resp = await self._post_turn(
             carrier,
             run_id,
@@ -2546,8 +2555,9 @@ class Huddle:
                             utterance[:MAX_UTTERANCE],
                             transcript,
                             steer_run_id,
-                            # The raw identity pins the audio; the Meet label is what the backend shows.
-                            speaker_name=self._said_by.get(v.speaker),
+                            # The raw identity pins the audio; the Meet label is what the backend shows: the
+                            # speaker this voice (or this request row) belongs to, not whoever spoke last.
+                            speaker_name=self._owner_name(v),
                             requests=list(requests),
                         )
                         or {}

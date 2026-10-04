@@ -27,7 +27,9 @@ _NOTES_TRIES, _NOTES_RETRY_S = 3, 10
 def owed(meeting: dict) -> bool:
     """A call that happened (the bot was in it) and is over, whose notes have not finished."""
     held = meeting.get("status") in ("ended", "bot_failed") and meeting.get("inCallAt")
-    return bool(held) and not meeting.get("notesMailedAt")
+    # An attempted mail is done: a send that failed or timed out may have delivered, and a
+    # duplicate is worse than a lost mail.
+    return bool(held) and not (meeting.get("notesMailedAt") or meeting.get("notesMailAttemptedAt"))
 
 
 def _render(lines: list[dict]) -> str:
@@ -167,7 +169,10 @@ async def _notes(room_id: str, meta: dict, occurrence) -> None:
         if message:
             run_id = messaging_repo.run_id_for(ceo, message["messageId"])
             await meeting_invites._patch_meeting(room_id, {"notesRunId": run_id}, when=this_occurrence)
-    if not await _mail_organizer(owner_id, room_id, target, meeting, title):
+    mailed = await _mail_organizer(owner_id, room_id, target, meeting, title, occurrence)
+    if mailed is None:
+        return  # already attempted (here or by another end path), or the occurrence moved on
+    if not mailed:
         raise RuntimeError("the organizer mail was not sent")
     await meeting_invites._patch_meeting(room_id, {"notesMailedAt": int(time.time())}, when=this_occurrence)
 
@@ -184,15 +189,20 @@ async def _transcript_text(owner_id: str, room_id: str, meeting: dict) -> str | 
     return text if len(text) <= _MAIL_TRANSCRIPT_CHARS else text[:_MAIL_TRANSCRIPT_CHARS] + "… (truncated)"
 
 
-async def _mail_organizer(owner_id: str, room_id: str, target: str, meeting: dict, title: str) -> bool:
+async def _mail_organizer(
+    owner_id: str, room_id: str, target: str, meeting: dict, title: str, occurrence
+) -> bool | None:
     """True when the notes are done: mailed, or deliberately not (no address, no organizer, a paused
-    row, the owner's daily mail cap spent). False is a failed send: the marker stays unset and the
-    terminal webhook's retry sends again. With a default room the mail links to it; without one
+    row, the owner's daily mail cap spent). False is a failed or ambiguous send and None a send
+    that is not ours to make; neither is ever retried, because ``notesMailAttemptedAt`` is written
+    before the send (at most once per occurrence: a lost mail beats a duplicate). With a default room the mail links to it; without one
     (``target`` is the hidden meeting room itself) nobody can open the room, so the transcript
     travels in the mail."""
     # The member whose invite made or last updated the meeting: the ICS ORGANIZER is sender-written
     # and may be an outside host. Records from before ``invitedBy`` fall back to it.
     organizer = meeting.get("invitedBy") or meeting.get("organizer")
+    if meeting.get("notesMailAttemptedAt"):
+        return None
     address = await agent_email.team_address(owner_id)
     if not address or not organizer:
         return True
@@ -212,6 +222,15 @@ async def _mail_organizer(owner_id: str, room_id: str, target: str, meeting: dic
         transcript = await _transcript_text(owner_id, target, meeting)
         subject = f"Transcript: {name}" if transcript else f"Ended: {name}"
         body = f"Your Lightbulb agents joined {name}.\n\n" + (transcript or "No transcript was captured.")
+    # Durable and before the send: a raise or a timeout may still have delivered it. The guard
+    # refuses a moved occurrence and a marker another end path wrote first, so only one sends.
+    marked = await meeting_invites._patch_meeting(
+        room_id,
+        {"notesMailAttemptedAt": int(time.time())},
+        when=lambda m: m.get("startAt") == occurrence and not m.get("notesMailAttemptedAt"),
+    )
+    if marked is None:
+        return None
     sent = await ses_email.send_ses_email(
         from_addr=await agent_email.public_for(address),
         to=organizer,

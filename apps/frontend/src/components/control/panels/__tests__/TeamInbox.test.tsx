@@ -84,6 +84,7 @@ describe("TeamInbox", () => {
     expect(screen.queryByText("Here are the numbers.")).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: /quarterly numbers/i }));
     expect(screen.getByText("Here are the numbers.")).toBeInTheDocument();
+    expect(screen.queryByText("Showing the first 2,000 characters.")).toBeNull(); // not truncated
 
     // Load more asks for the page before the cursor.
     mockGet.mockImplementation((url: string) =>
@@ -163,5 +164,13 @@ describe("TeamInbox", () => {
     expect(screen.getAllByText(/^Repeats/)).toHaveLength(1); // the other two show their plain date
     expect(screen.getByText(/ · Cancelled$/)).toBeInTheDocument();
     expect(screen.getByText(/ · Agents will join$/)).toBeInTheDocument();
+  });
+
+  it("says when an expanded message is cut short", async () => {
+    mockGet.mockResolvedValue({ ...page, messages: [{ ...page.messages[0], truncated: true }], next: null });
+    renderInbox();
+
+    fireEvent.click(await screen.findByRole("button", { name: /quarterly numbers/i }));
+    expect(screen.getByText("Showing the first 2,000 characters.")).toBeInTheDocument();
   });
 });

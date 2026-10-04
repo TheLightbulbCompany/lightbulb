@@ -563,7 +563,9 @@ class LocalSessionRelay:
                             row.pop(key, None)
                     # A fork continues its origin's conversation: the name its person gave it there
                     # carries over, since the listing shows the fork in the origin's place.
-                    if previous is None and descriptor.forked_from:
+                    # Also on a late re-register: a fork that registered before its origin had an id
+                    # registers again with `forkedFrom` once the origin is known.
+                    if descriptor.forked_from and not row.get("displayTitle"):
                         origin = await repo.get_session(owner, descriptor.forked_from)
                         if origin and origin.get("displayTitle") and origin["humanUserId"] == human:
                             row["displayTitle"] = origin["displayTitle"]

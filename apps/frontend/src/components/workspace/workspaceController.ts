@@ -333,22 +333,27 @@ export function refitBrowserSplit(): void {
 }
 
 /**
- * A dock too narrow for Tasks beside the conversation folds Tasks into the conversation's
- * group as a tab, whichever of the two was in front staying in front. The stored placement
- * is not touched: the next open on a wide dock still splits.
+ * Keep Tasks where the dock's width allows. Too narrow for Tasks beside the conversation:
+ * fold it into the conversation's group as a tab. Wide again, and the stored placement
+ * still says split: put it back beside (the fold is persisted with the layout, so nothing
+ * else would). Whichever of the two was in front stays in front, and the stored placement
+ * is never written here: a person's own Expand keeps Tasks a tab at any width.
  */
 function refitTasksSplit(): void {
   const tasks = _api?.getPanel(TASKS_PANEL_ID);
   const messages = _api?.getPanel(MESSAGES_PANEL_ID);
-  if (!_api || !tasks || !messages || tasks.group === messages.group || canSplitBesideMessages()) return;
+  if (!_api || !tasks || !messages) return;
+  const folded = tasks.group === messages.group;
+  const fits = canSplitBesideMessages();
+  if (folded ? !(fits && readTasksPlacement() === "split") : fits) return;
   const tasksInFront = _api.activePanel?.id === TASKS_PANEL_ID;
   _shellOpDepth += 1;
   try {
-    tasks.api.moveTo({ group: messages.group, position: "center" });
+    tasks.api.moveTo({ group: messages.group, position: folded ? "right" : "center" });
   } finally {
     _shellOpDepth -= 1;
   }
-  if (!tasksInFront) messages.api.setActive();
+  (tasksInFront ? tasks : messages).api.setActive();
   recomputeSnapshot();
 }
 

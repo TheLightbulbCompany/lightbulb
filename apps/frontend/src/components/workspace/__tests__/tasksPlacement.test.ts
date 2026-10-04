@@ -144,6 +144,26 @@ describe("Tasks placement", () => {
     expect(tasks.api.moveTo).toHaveBeenCalledWith({ group: main, position: "center" });
     expect(tasks.group).toBe(main);
     expect(readTasksPlacement()).toBe("split");
+    // Wide again: the stored choice is still split, so Tasks goes back beside.
+    (api as unknown as { width: number }).width = 1400;
+    refitSplits();
+    expect(tasks.api.moveTo).toHaveBeenLastCalledWith({ group: main, position: "right" });
+    expect(tasks.group).not.toBe(main);
+    // Settled: another resize moves nothing.
+    refitSplits();
+    expect(tasks.api.moveTo).toHaveBeenCalledTimes(2);
+  });
+
+  it("leaves Tasks a tab on a wide dock when the person chose Expand", () => {
+    const { api, main } = makeApi();
+    attachDockviewApi(api, () => "a1");
+    openPanel("teams-issues");
+    setTasksPlacement("tab");
+    const tasks = api.getPanel("teams-issues") as unknown as FakePanel;
+    tasks.api.moveTo.mockClear();
+    refitSplits();
+    expect(tasks.api.moveTo).not.toHaveBeenCalled();
+    expect(tasks.group).toBe(main);
   });
 
   it("honours a persisted tab choice on the next open", () => {

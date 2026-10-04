@@ -1132,6 +1132,7 @@ impl Host {
         let mut relay_reads_live_terminal = false;
         let mut relay_reads_remote_input = false;
         let mut relay_reads_terminal = false;
+        let mut relay_reads_presence = false;
         // An end the relay has not been told about -- because it happened while the
         // socket was down, or in a previous run of this process -- is still owed to it.
         self.liveness_tick();
@@ -1230,7 +1231,7 @@ impl Host {
                             last_early = Instant::now();
                         }
                         self.heartbeat_dirty.clear();
-                        let frames = device_heartbeats_with_controls(&self.mirrors, &registered, relay_reads_stats, relay_reads_controls, relay_reads_live_terminal, relay_reads_remote_input, relay_reads_terminal)?;
+                        let frames = device_heartbeats_with_controls(&self.mirrors, &registered, relay_reads_stats, relay_reads_controls, relay_reads_live_terminal, relay_reads_remote_input, relay_reads_terminal, relay_reads_presence)?;
                         heartbeat_frames = frames.into();
                         if heartbeat_frames.is_empty() && last_idle.elapsed() >= IDLE_HEARTBEAT {
                             last_idle = Instant::now();
@@ -1378,6 +1379,7 @@ impl Host {
                             relay_reads_live_terminal = body["features"].as_array().is_some_and(|f| f.iter().any(|x| x == "liveTerminal"));
                             relay_reads_remote_input = body["features"].as_array().is_some_and(|f| f.iter().any(|x| x == "remoteInput"));
                             relay_reads_terminal = body["features"].as_array().is_some_and(|f| f.iter().any(|x| x == "sessionTerminal"));
+                            relay_reads_presence = body["features"].as_array().is_some_and(|f| f.iter().any(|x| x == "sessionPresence"));
                             let sid = body["sessionId"].as_str().filter(|s|uuid::Uuid::parse_str(s).is_ok()).ok_or("invalid session ID")?;
                             let after = body["afterSeq"].as_u64().ok_or("missing upload cursor")?;
                             let server = body["serverTime"].as_u64().ok_or("missing server time")?;
@@ -1451,6 +1453,7 @@ impl Host {
                             let Rpc::Heartbeat{sent,wall} = rpc else {return Err("mismatched session acknowledgment".into());};
                             super::snapshot::offer(&body["pickup"], &self.mirrors);
                             super::screen::offer(&body["watching"]);
+                            super::presence::offer_ack(&body["presence"]);
                             super::resume::offer(&body["resume"], &self.mirrors);
                             let server = body["serverTime"].as_u64().ok_or("missing server time")?;
                             if let Some(fresh) = ack_anchor(server, sent, wall) {anchor = Some(fresh);}
@@ -1557,6 +1560,8 @@ impl Host {
                         Some("local.session.watch") => super::screen::nudge(&body),
                         // A teammate's keystrokes: queued for the holder, never answered.
                         Some("local.session.input") => super::remote_input::offer(&body),
+                        // Who watches, who may type, join requests, pause. Never answered.
+                        Some("local.session.presence") => super::presence::offer_frame(&body),
                         _ => return Err("unsupported session frame".into()),
                     }
                 }
@@ -2103,7 +2108,7 @@ fn device_heartbeats(
     registered: &BTreeSet<String>,
     with_stats: bool,
 ) -> Result<Vec<Value>> {
-    device_heartbeats_with_controls(mirrors, registered, with_stats, false, false, false, false)
+    device_heartbeats_with_controls(mirrors, registered, with_stats, false, false, false, false, false)
 }
 
 /// The mirrors forked from `origin_key`'s conversation (same provider and profile).
@@ -2140,6 +2145,7 @@ fn device_heartbeats_with_controls(
     live_terminal: bool,
     remote_input: bool,
     terminal: bool,
+    presence: bool,
 ) -> Result<Vec<Value>> {
     // `liveTerminal`: this Mac takes `local.session.watch`; `remoteInput`: `local.session.input`.
     // Each only to a relay that lists it.
@@ -2150,6 +2156,9 @@ fn device_heartbeats_with_controls(
         }
         if remote_input {
             frame["remoteInput"] = json!(true);
+        }
+        if presence {
+            frame["sessionPresence"] = json!(true);
         }
         frame
     };
@@ -2426,19 +2435,19 @@ pub(super) mod tests {
         assert!(device_heartbeats(&mirrors, &registered, false).unwrap()[0]["sessions"][0].get("capabilities").is_none());
         assert!(device_heartbeats(&mirrors, &registered, false).unwrap()[0].get("liveTerminal").is_none(), "only to a relay that lists it");
         assert!(device_heartbeats(&mirrors, &registered, false).unwrap()[0].get("remoteInput").is_none(), "only to a relay that lists it");
-        let frames = device_heartbeats_with_controls(&mirrors, &registered, false, true, false, false, false).unwrap();
+        let frames = device_heartbeats_with_controls(&mirrors, &registered, false, true, false, false, false, false).unwrap();
         let entry = &frames[0]["sessions"][0];
         assert_eq!(entry["capabilities"], json!({"sendMode":"queue","steer":true,"interrupt":true}));
         mirror.native.socket = None;
         mirror.native.socket_inode = None;
         let key = native_key(&mirror.native);
-        let frames = device_heartbeats_with_controls(&BTreeMap::from([(key.clone(), mirror.clone())]), &BTreeSet::from([key]), false, true, false, false, false).unwrap();
+        let frames = device_heartbeats_with_controls(&BTreeMap::from([(key.clone(), mirror.clone())]), &BTreeSet::from([key]), false, true, false, false, false, false).unwrap();
         assert_eq!(frames[0]["sessions"][0]["capabilities"], json!({"sendMode":"queue","steer":false,"interrupt":false}));
         mirror.native.socket = Some(PathBuf::from("/private/tmp/codex-daemon-501/socket"));
         mirror.native.socket_inode = Some(7);
         mirror.native.provider = "claude".into();
         let key = native_key(&mirror.native);
-        let frames = device_heartbeats_with_controls(&BTreeMap::from([(key.clone(), mirror)]), &BTreeSet::from([key]), false, true, false, false, false).unwrap();
+        let frames = device_heartbeats_with_controls(&BTreeMap::from([(key.clone(), mirror)]), &BTreeSet::from([key]), false, true, false, false, false, false).unwrap();
         let entry = &frames[0]["sessions"][0];
         assert_eq!(entry["capabilities"], json!({"sendMode":"queue","steer":false,"interrupt":false}));
     }
@@ -2466,7 +2475,7 @@ pub(super) mod tests {
         let key = native_key(&mirror.native);
         let registered = BTreeSet::from([key.clone()]);
         let entry = |m: &Mirror, reads: bool| {
-            device_heartbeats_with_controls(&BTreeMap::from([(key.clone(), m.clone())]), &registered, false, false, false, false, reads)
+            device_heartbeats_with_controls(&BTreeMap::from([(key.clone(), m.clone())]), &registered, false, false, false, false, reads, false)
                 .unwrap()[0]["sessions"][0].clone()
         };
         assert!(entry(&mirror, false).get("terminal").is_none(), "an older relay rejects the whole frame over it");

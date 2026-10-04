@@ -83,6 +83,7 @@ class Run:
     aborted: bool = False
     failed: bool = False
     buffered: list[dict] = field(default_factory=list)  # frames held until started() (or run_ended)
+    held: bool = False  # its voice is still opening: frames wait for release()
     pending: list[tuple[int, dict]] = field(default_factory=list)
     reset_seq: float = -1
     auto: int = 0
@@ -115,6 +116,18 @@ class Runs:
     def get(self, run_id: str) -> Run | None:
         return self._runs.get(run_id)
 
+    def hold(self, run_id: str) -> None:
+        """Its voice is still opening: every frame waits, so no sentence is dropped (and counted as spoken)
+        before a voice can say it (10-04 prod Meet: a question got a greeting and no answer)."""
+        if run := self._runs.get(run_id):
+            run.held = True
+
+    def release(self, run_id: str | None) -> None:
+        """The voice is live, or will never be: the frames that waited go where the run's output goes now."""
+        if (run := self._runs.get(run_id)) and run.held:
+            run.held = False
+            self._replay(run)
+
     def abort(self, run_id: str) -> None:
         """An aborted run is silent from here on; the entry stays so late frames don't recreate it."""
         run = self._runs.get(run_id)
@@ -139,6 +152,9 @@ class Runs:
         if run.aborted or run.failed:
             return
         run.seen = self._clock()
+        if run.held:
+            run.buffered.append(frame)
+            return
         if not run.bound:
             # ponytail: an unbound run (worker restarted, or frames beat started()) holds every frame until
             # started() or its run_ended; a long run's frames sit in memory meanwhile.

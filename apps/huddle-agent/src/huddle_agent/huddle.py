@@ -126,6 +126,8 @@ HOLD_SECONDS = 15
 HOLD_APPLY_S = 4.0  # understanding §4.4: a held line its speaker said nothing more after is applied as it is
 ACK_QUIET_S = 1.0  # understanding §4.6: the open voice says who is on what once its speaker is this quiet
 SAID_ORDER_WAIT_S = 10.0  # a line waits this long at most for its speaker's earlier line to be applied
+CUT_HANDLED_S = 2.0  # a cut answer is posted this long after its cutter's final: /route answered, a call-off applied
+CUT_WAIT_S = 10.0  # ...or this long after the cut when no final ever comes
 MISSED_SECONDS = 10  # live.route.missed: nobody answered, then the same person names an agent or Lightbulb
 UNWANTED_SECONDS = 5  # live.route.unwanted: a Jev-routed voice the asker stops or switches away from this soon
 LATE_LINES = "Said in the room since you were asked (may or may not concern you):\n"
@@ -537,6 +539,14 @@ class Huddle:
 
     def _name(self, identity: str) -> str:
         return self._people.get(identity) or "Someone"
+
+    def _talker(self, identity: str) -> str:
+        """Who a voice is told it speaks with. A meeting arrives as one participant named "Meeting": the last
+        labelled speaker, else "Someone in the meeting" (10-04 prod Meet: "Meeting is talking to me right now")."""
+        if identity.startswith("meet:"):
+            name = self._said_by.get(identity) or ""
+            return name.removesuffix(" (Meet)") if name and not name.startswith("Someone") else "Someone in the meeting"
+        return self._name(identity)
 
     def _member_name(self, user_id: str | None) -> str:
         """A workspace member who may not be in the call (a voice note saved from settings)."""
@@ -1886,7 +1896,7 @@ class Huddle:
             seed.append(
                 (
                     "developer",
-                    f"{self._name(identity)} asked: {request} — already handed to your backend self; don't delegate it again",
+                    f"{self._talker(identity)} asked: {request} — already handed to your backend self; don't delegate it again",
                 )
             )
         # conversation engine §3.5: the one acknowledgement, of the rows still open after the awaits above
@@ -1907,10 +1917,12 @@ class Huddle:
             logger.exception("huddle live session failed to start agent=%s", agent_id)
             self._notice({"kind": "voice_failed", "agentId": agent_id})
             self._failed_at[(identity, agent_id)] = self._clock()
+            self._runs.release(v.driven_run)  # no voice will say it: its answer is news
             return False
         self._latency("session_started", v)
         if ack is not None and not self._ack(ack, agent_id) and not said and not (row is not None and row.status in OPEN):
             v.live, v.opened = live, self._clock()  # its rows stopped while it joined: closed unsaid
+            self._runs.release(v.driven_run)
             return False
         if (
             news and not v.announce and v.path != "announce"
@@ -1919,11 +1931,12 @@ class Huddle:
         v.live, v.opened, v.naming = live, self._clock(), bool(session.get("askName"))
         if v.driven:
             v.driven.bind_until = v.opened + BIND_SECONDS
+        self._runs.release(v.driven_run)  # sentences that came while it opened are said now, none dropped
         if v.announce:  # consumed when its audio starts (on_agent_state)
             if self._live_call(v, "append_instructions", ANNOUNCE_NOW):
                 self._live_call(v, "nudge")
         elif v.path != "announce" and self._live_call(
-            v, "append_thinking", f"{self._name(identity)} is talking to you"
+            v, "append_thinking", f"{self._talker(identity)} is talking to you"
         ):
             if request or ack_said or said or identity in self._released:
                 # the request is already running (driven): the model acknowledges it, no typed user turn
@@ -1967,7 +1980,7 @@ class Huddle:
             return True
         v.speaker, v.ack_rows = identity, []
         return self._live_call(v, "set_participant", identity) and self._live_call(
-            v, "append_thinking", f"{self._name(identity)} is talking to you"
+            v, "append_thinking", f"{self._talker(identity)} is talking to you"
         )
 
     # -- requests (conversation engine §3.3-§3.5) --
@@ -2254,6 +2267,8 @@ class Huddle:
             delegation_id=None,
             gen=v.gen,
         )
+        if v.live is None:
+            self._runs.hold(d.run_id)  # its voice is still opening: _open releases it
         lines = self._requests.lines(self._agent_name, skip_agent=v.agent_id) if row is not None else ()
         if await self._post_turn(v, d.run_id, request, None, requests=lines) is not None:
             d.posted = True
@@ -2826,11 +2841,13 @@ class Huddle:
                 del self._news[agent_id]
 
     def _post_cut(self, now: float) -> None:
-        """Cut announcements (§4.8), once the cutter's line was handled or they were quiet ACK_QUIET_S."""
+        """Cut announcements (§4.8), once the words that cut them were handled. Only speech cuts one, so those
+        words are coming: a final lands seconds after the speech ends ("never mind the calendar" was posted over
+        1 s after it was said, 10-04 prod test). No words after CUT_WAIT_S: posted all the same."""
         for agent_id, (items, who, at) in list(self._cut_off.items()):
-            handled = self._final_at.get(who, -math.inf) >= at
-            quiet = who not in self._speaking and now - self._last_heard >= ACK_QUIET_S
-            if (handled or quiet) and not self._understanding.get(who):
+            heard = self._final_at.get(who, -math.inf)
+            handled = heard >= at and now - heard >= CUT_HANDLED_S  # its /route answered and was applied
+            if (handled or now - at >= CUT_WAIT_S) and not self._understanding.get(who):
                 del self._cut_off[agent_id]
                 for n in items:
                     self._spawn(self._late_answer(agent_id, n))

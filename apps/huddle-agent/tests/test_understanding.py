@@ -5,7 +5,17 @@ import json
 
 from huddle_agent import huddle as h_mod
 from huddle_agent.backend import BackendError
-from test_huddle import answer, frame, metric_count, ops, packet, say, settle, talks
+from test_huddle import (
+    answer,
+    frame,
+    make,
+    metric_count,
+    ops,
+    packet,
+    say,
+    settle,
+    talks,
+)
 from test_request_engine import LINE, TASKS, quiet, run_of, three
 
 ASKS = [
@@ -1531,7 +1541,9 @@ async def test_an_announcement_cut_after_its_audio_began_is_posted_once():
     await settle(h)
     assert backend.late_answers == [], "held until the words that cut it are handled"
     h.on_active_speakers(set())
-    await quiet(h, clock, h_mod.ACK_QUIET_S)  # quiet, no final: the room gets it
+    await quiet(h, clock, h_mod.ACK_QUIET_S)
+    assert backend.late_answers == [], "its cutter's words are still to come"
+    await quiet(h, clock, h_mod.CUT_WAIT_S)  # no words ever came: the room gets it
     assert backend.late_answers == [
         ("forge", run, TASKS["forge"], "Three PRs are open")
     ]
@@ -1816,6 +1828,10 @@ async def test_a_cut_announcement_is_posted_once_its_cutters_line_is_handled():
     await say(h, "u2", "sorry, go on")
     await h.tick()
     await settle(h)
+    assert backend.late_answers == [], (
+        "a call-off in those words needs a moment to be applied"
+    )
+    await quiet(h, clock, h_mod.CUT_HANDLED_S)
     assert [a[3] for a in backend.late_answers] == ["Three PRs are open"]
     await h.clear_presence()
     assert len(backend.late_answers) == 1
@@ -2405,3 +2421,106 @@ def test_the_status_list_is_not_for_reading_out_and_a_slow_run_is_not_lost():
     assert frames.STALE_TURN_SECONDS >= 300, (
         "a run silent for 135 s then answered (10-04 prod test)"
     )
+
+
+# -- 10-04 prod Meet + Live run 3: an answer that beats its voice is still said; a called-off cut answer is not
+# posted; a meeting's speaker is not called "Meeting" --
+
+
+async def test_an_answer_that_arrives_while_its_voice_opens_is_said_when_it_is_live():
+    # the first Meet question got a greeting and no answer: sentences that beat the voice were dropped as "spoken"
+    h, room, backend, lives, clock, log = await three()
+    backend.route_extra = ops(
+        requests=[("forge", "what PRs are open right now", "name")]
+    )
+    h.gate["live"] = asyncio.Event()
+    await h.on_final_transcript(
+        "u1", "Prasiddha", "Forge, what PRs are open right now?"
+    )
+    for _ in range(30):
+        await asyncio.sleep(0)
+    assert lives == [] and [t["utterance"] for t in backend.turns] == [
+        "what PRs are open right now"
+    ]
+    answer(
+        h, backend.turns[0]["runId"], "forge", "Six PRs are open."
+    )  # the whole answer, before the voice is live
+    h.gate["live"].set()
+    await settle(h)
+    assert ("commentary", "Six PRs are open.", None) in lives[0].calls, (
+        "said by the voice once it is live"
+    )
+    assert rows(h) == [("forge", "what PRs are open right now", "delivered")]
+    await h.clear_presence()
+    assert backend.late_answers == [], "said, so not posted"
+
+
+async def test_an_answer_whose_voice_never_opens_is_not_lost():
+    h, room, backend, lives, clock, log = await three()
+    backend.route_extra = ops(
+        requests=[("forge", "what PRs are open right now", "name")]
+    )
+    h.gate["live"] = asyncio.Event()
+    h.fail.add("forge")
+    await h.on_final_transcript(
+        "u1", "Prasiddha", "Forge, what PRs are open right now?"
+    )
+    for _ in range(30):
+        await asyncio.sleep(0)
+    answer(h, backend.turns[0]["runId"], "forge", "Six PRs are open.")
+    h.gate["live"].set()
+    await settle(h)
+    await h.clear_presence()
+    assert [a[3] for a in backend.late_answers] == ["Six PRs are open."], (
+        "its voice failed: the room gets it"
+    )
+
+
+async def test_a_called_off_answer_that_was_cut_is_not_posted():
+    # Live run 3: "Never mind the calendar" cut Friday as it began, and the answer was posted 1 s later,
+    # before those words were transcribed
+    h, room, backend, lives, clock, run = await announced()
+    h.on_agent_state("forge", "speaking")
+    talks(h, "u2", "Aden")
+    h.on_speech("u2", False)
+    await quiet(h, clock, h_mod.ACK_QUIET_S + 1)
+    assert backend.late_answers == [], "it waits for the words that cut it"
+    await say(h, "u2", "Forge, never mind")
+    await quiet(h, clock, 10)
+    assert backend.late_answers == []
+    await h.clear_presence()
+    assert backend.late_answers == []
+
+
+async def test_a_cut_answer_is_posted_once_its_cutters_words_are_handled_or_never_come():
+    h, room, backend, lives, clock, run = await announced()
+    h.on_agent_state("forge", "speaking")
+    talks(h, "u2", "Aden")
+    h.on_speech("u2", False)
+    await say(h, "u2", "sorry, go on")  # the cutter's words: nothing about the answer
+    await quiet(h, clock, h_mod.CUT_HANDLED_S)
+    assert [a[3] for a in backend.late_answers] == ["Three PRs are open"]
+    h2, room, backend2, lives, clock2, run = await announced()
+    h2.on_agent_state("forge", "speaking")
+    talks(h2, "u2", "Aden")
+    h2.on_speech("u2", False)
+    await quiet(h2, clock2, h_mod.CUT_WAIT_S - 1)
+    assert backend2.late_answers == []
+    await quiet(h2, clock2, 2)
+    assert [a[3] for a in backend2.late_answers] == ["Three PRs are open"], (
+        "no words ever came: posted after the wait"
+    )
+
+
+async def test_a_meetings_speaker_is_named_or_someone_never_meeting():
+    h, room, backend, lives, clock, log = make(setting="meeting")
+    await h.on_participants({"meet:r1": "Meeting"})
+    backend.route_extra = ops(
+        requests=[("forge", "what PRs are open right now", "name")]
+    )
+    await say(h, "meet:r1", "Forge, what PRs are open right now?")
+    said = " ".join(str(c) for c in lives[0].calls) + " ".join(
+        str(s) for s in lives[0].seed
+    )
+    assert "Meeting is talking" not in said and "Meeting asked" not in said
+    assert "Someone in the meeting" in said

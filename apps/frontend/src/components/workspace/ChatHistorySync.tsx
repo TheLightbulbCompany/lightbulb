@@ -11,10 +11,16 @@ export function ChatHistorySync(): null {
   const { activeRoomId, sessionFocus, explicitPicks } = useMessagingWorkspace();
   const seenPicks = useRef(explicitPicks.current);
   const sessionId = sessionFocus?.sessionId ?? null;
+  const prevView = useRef({ roomId: activeRoomId, sessionId });
   // The new-session composer and the all-sessions list are not places to go back to.
   const composing = !!sessionFocus && !sessionFocus.sessionId;
   useEffect(() => {
     if (composing) return;
+    const was = prevView.current;
+    prevView.current = { roomId: activeRoomId, sessionId };
+    // This child effect runs before the provider's, which clears the session when
+    // the room moves. Wait for that commit; the pick stays unseen until then.
+    if (sessionId && sessionId === was.sessionId && was.roomId && activeRoomId !== was.roomId) return;
     const explicit = explicitPicks.current !== seenPicks.current || !!sessionId;
     seenPicks.current = explicitPicks.current;
     recordChatView({ roomId: activeRoomId, sessionId }, explicit);

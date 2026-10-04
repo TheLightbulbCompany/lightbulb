@@ -57,6 +57,21 @@ describe("ChatHistorySync", () => {
     shell.unmount();
   });
 
+  it("records a room change from a session view once the session closes", () => {
+    window.history.replaceState(null, "", "/chat?panel=chat&session=s1");
+    view("r1", { sessionId: "s1" });
+    const shell = render(<ChatHistorySync />);
+    const before = window.history.length;
+    view("r2", { sessionId: "s1" }, true); // the pick lands before the provider clears the session
+    shell.rerender(<ChatHistorySync />);
+    expect(window.location.search).toBe("?panel=chat&session=s1");
+    view("r2", null);
+    shell.rerender(<ChatHistorySync />);
+    expect(window.location.search).toBe("?panel=chat&room=r2");
+    expect(window.history.length).toBe(before + 1);
+    shell.unmount();
+  });
+
   it("shows Messages when Back lands on a bare URL", () => {
     const shell = render(<ChatHistorySync />);
     act(() => { window.dispatchEvent(new PopStateEvent("popstate")); });

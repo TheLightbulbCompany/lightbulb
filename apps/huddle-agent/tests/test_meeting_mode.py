@@ -1187,3 +1187,47 @@ async def test_a_call_that_ends_on_a_cut_answer_puts_it_on_the_record():
     await says(h, P1, "Keep us.")
     await h.clear_presence()
     assert [a[3] for a in backend.late_answers] == [text]
+
+
+async def test_a_follow_up_that_cut_the_answer_replaces_it_and_the_stale_one_is_not_posted():
+    """Review: "actually, last month" over a cut answer made a follow-up run; the stale answer was posted beside
+    the corrected one."""
+    h, backend, lives, clock, text = await forge_answers_priya()
+    h.on_agent_state("forge", "speaking")
+    h.on_agent_said("forge", "Three pull requests", interrupted=True)
+    h.on_agent_state("forge", "listening")
+    backend.route_extra = ops([("forge", "the ones opened last month", "follow")])
+    await says(h, P1, "actually, only the ones from last month")
+    follow = h._requests.items[-1]
+    answer(h, follow.run_id, "forge", "One was opened last month.")
+    h.on_agent_said("forge", "One was opened last month.")
+    await quiet_tick(h, clock, h_mod.CUT_HANDLED_S + h_mod.MEET_QUIET_S)
+    await quiet_tick(h, clock, h_mod.CUT_WAIT_S)
+    await h.clear_presence()
+    assert resays(lives[0]) == [] and backend.late_answers == []
+
+
+async def test_another_request_that_cut_the_answer_leaves_it_on_the_record():
+    h, backend, lives, clock, text = await forge_answers_priya()
+    h.on_agent_state("forge", "speaking")
+    h.on_agent_said("forge", "Three pull requests", interrupted=True)
+    h.on_agent_state("forge", "listening")
+    backend.route_extra = ops([("forge", "what shipped last week", "floor")])
+    await says(h, P1, "wait, what shipped last week")
+    other = h._requests.items[-1]
+    answer(h, other.run_id, "forge", "The importer shipped.")
+    h.on_agent_said("forge", "The importer shipped.")
+    await quiet_tick(h, clock, h_mod.CUT_HANDLED_S + h_mod.MEET_QUIET_S)
+    await quiet_tick(h, clock, h_mod.CUT_WAIT_S)
+    assert resays(lives[0]) == []
+    assert [a[3] for a in backend.late_answers] == [text], "a different request: the cut answer is not lost"
+
+
+async def test_a_call_that_ends_while_the_second_saying_is_in_flight_puts_the_answer_on_the_record():
+    """Review: the retry cleared `unheard`, so a hang-up before its audio lost the answer again."""
+    h, backend, lives, clock, text = await forge_answers_priya()
+    await says(h, P1, "Keep us.")
+    await quiet_tick(h, clock, h_mod.CUT_HANDLED_S + h_mod.MEET_QUIET_S)
+    assert len(resays(lives[0])) == 1
+    await h.clear_presence()  # everyone left before the second saying was heard
+    assert [a[3] for a in backend.late_answers] == [text]

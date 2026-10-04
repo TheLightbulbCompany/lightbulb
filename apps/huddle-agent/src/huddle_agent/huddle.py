@@ -810,7 +810,7 @@ class Huddle:
         if (v := self._voice) and v.told:  # being said as the call ends: not said to its end (§4.5)
             held += [(v.agent_id, n) for n in v.told]
             v.told = []
-        if v and v.answer and v.unheard:  # cut by its own speaker and never said again
+        if v and v.answer and (v.unheard or v.resaid):  # cut by its own speaker; a second saying not yet heard
             held.append((v.agent_id, v.answer))
             v.answer = None
         for agent_id, n in held + [(a, n) for a, news in self._news.items() for n in news]:
@@ -2691,6 +2691,10 @@ class Huddle:
     def say(self, run: Run, text: str, final: bool) -> None:
         if v := self._same_session(run):
             if v.saying != run.run_id and (v.answer is None or v.answer[0] != run.run_id):
+                if any(r.by == "follow" for r in self._requests.by_run(run.run_id)):
+                    # What cut the answer went on from its request (a correction, a follow-up): this run's
+                    # answer replaces it. Posting the stale one beside it would be two answers to one question.
+                    v.answer = None
                 self._settle_answer(v)  # the answer before this one: on the record if it was cut
                 v.unheard = v.replied = v.resaid = False
             v.saying = run.run_id
@@ -3065,8 +3069,9 @@ class Huddle:
         v.answer = None
 
     def _settle_answer(self, v: _Voice) -> None:
-        """Its voice moves on (a new answer, a close): a cut answer is kept, a heard one forgotten."""
-        if v.answer and v.unheard:
+        """Its voice moves on (a new answer, a close): a cut answer is kept, a heard one forgotten. Said again
+        and not yet known heard counts as cut: the second saying may never have reached anyone."""
+        if v.answer and (v.unheard or v.resaid):
             self._keep_answer(v)
         v.answer = None
 

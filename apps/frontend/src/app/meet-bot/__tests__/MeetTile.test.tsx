@@ -1,12 +1,12 @@
 import { render, screen } from "@testing-library/react";
 import { expect, it } from "vitest";
-import { MeetTile } from "../MeetTile";
+import { MeetTile, initialsOf } from "../MeetTile";
 
 const A = (id: string, status: string, extra: Record<string, string> = {}) =>
   Object.fromEntries([[`lightbulb.agent.${id}.status`, status], ...Object.entries(extra).map(([k, v]) => [`lightbulb.agent.${id}.${k}`, v])]);
 const tile = (attrs: Record<string, string>, agents: Record<string, { id: string; name: string }> = {}) =>
   render(<MeetTile agents={agents} attrs={attrs} notice={null} />);
-const rosterNames = (c: HTMLElement) => [...[...c.querySelectorAll("ul")].at(-1)!.querySelectorAll("span.truncate")].map((e) => e.textContent).join("");
+const rosterNames = (c: HTMLElement) => [...c.querySelectorAll("[data-roster] [data-name]")].map((e) => e.textContent).join("");
 
 it("keeps the roster order fixed, whatever the attribute order or who is active", () => {
   const ids = ["vera", "Atlas", "forge", "Bo"];
@@ -19,13 +19,12 @@ it("keeps the roster order fixed, whatever the attribute order or who is active"
 it("puts the speaker on the stage with Speaking", () => {
   const { container } = tile({ ...A("f", "speaking"), "lightbulb.speaking_agent": "f" }, { f: { id: "f", name: "Forge" } });
   expect(screen.getByText("Speaking")).toBeInTheDocument();
-  expect(container.querySelector("p.text-6xl")?.textContent).toBe("Forge");
+  expect(container.querySelector("[data-speaker-name]")?.textContent).toBe("Forge");
 });
 
 it("shows Working: <task> for an agent that holds the floor as listening", () => {
   tile(A("f", "listening", { working: "open pull requests" }));
   expect(screen.getByText("Working: open pull requests")).toBeInTheDocument();
-  expect(screen.queryByText("Say an agent's name to ask", { selector: "p.text-4xl" })).not.toBeInTheDocument();
 });
 
 it("lists hand-ups before working agents", () => {
@@ -45,7 +44,28 @@ it("shows the calm line when nothing is going on, and never says tap", () => {
   expect(container.textContent).not.toMatch(/tap/i);
 });
 
-it("caps the roster at eight with +N", () => {
-  tile(Object.assign({}, ...["a", "b", "c", "d", "e", "f", "g", "h", "i", "j"].map((id) => A(id, "idle"))));
+const many = (n: number, status: string) => Object.assign({}, ...Array.from({ length: n }, (_, i) => A(`a${String(i).padStart(2, "0")}`, status)));
+
+it("shows up to ten agents in the idle hero, then +N, with no bottom strip", () => {
+  const { container } = tile(many(12, "idle"));
   expect(screen.getByText("+2")).toBeInTheDocument();
+  expect(container.querySelectorAll("[data-roster]")).toHaveLength(1);
+  expect(container.querySelectorAll("[data-roster] li")).toHaveLength(11);
+});
+
+it("caps the bottom strip at eight with +N when something is on stage", () => {
+  tile({ ...many(10, "idle"), ...A("a00", "working", { working: "x" }) });
+  expect(screen.getByText("+2")).toBeInTheDocument();
+});
+
+it("uses two-letter initials", () => {
+  expect(initialsOf("Forge")).toBe("Fo");
+  expect(initialsOf("friday")).toBe("Fr");
+  expect(initialsOf("Gauge Prime")).toBe("GP");
+});
+
+it("uses the idle layout for a voice limit, with the limit text in place of the hint", () => {
+  tile({ ...A("a", "idle"), "lightbulb.voice_limit": "credits_low" });
+  expect(screen.getAllByRole("status")).toHaveLength(1);
+  expect(screen.queryByText("Say an agent's name to ask")).not.toBeInTheDocument();
 });

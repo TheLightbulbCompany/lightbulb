@@ -19,15 +19,18 @@ export type TileAgent = { id: string; name: string; avatarUrl?: string | null };
 export type TileNotice = "Connecting…" | "Reconnecting…" | "This link has expired." | "Couldn't reach the agents." | null;
 
 const STATUS_RE = /^lightbulb\.agent\.(.+)\.status$/;
-const MAX_ROWS = 3;
-const MAX_ROSTER = 8;
 const HINT = "Say an agent's name to ask";
-const initialsOf = (name: string) => name.trim().split(/\s+/).slice(0, 2).map((w) => w[0] ?? "").join("").toUpperCase();
+const cap = (w: string) => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase();
+// "Forge" -> "Fo"; "Gauge Prime" -> "GP", so two agents with the same first letter still differ.
+export const initialsOf = (name: string) => {
+  const w = name.trim().split(/\s+/).filter(Boolean);
+  return w.length > 1 ? (w[0][0] + w[1][0]).toUpperCase() : cap(w[0] ?? "").slice(0, 2);
+};
 
 function Avatar({ id, name, url, size }: { id: string; name: string; url?: string | null; size: number }) {
   return (
     <span className="inline-flex shrink-0 select-none items-center justify-center overflow-hidden rounded-full font-semibold"
-      style={{ width: size, height: size, fontSize: size * 0.4, background: agentTint(id), color: "var(--on-agent-tint)" }}>
+      style={{ width: size, height: size, fontSize: size * 0.38, background: agentTint(id), color: "var(--on-agent-tint)" }}>
       {url ? (
         // eslint-disable-next-line @next/next/no-img-element
         <img src={url} alt="" className="size-full object-cover" />
@@ -35,6 +38,8 @@ function Avatar({ id, name, url, size }: { id: string; name: string; url?: strin
     </span>
   );
 }
+
+const soft = { color: "var(--fg-soft)" } as const;
 
 export function MeetTile({ agents, attrs, notice }: { agents: Record<string, TileAgent>; attrs: Record<string, string>; notice: TileNotice }) {
   const nameOf = (id: string) => agents[id]?.name ?? (attrs[`lightbulb.agent.${id}.name`] || id);
@@ -57,66 +62,85 @@ export function MeetTile({ agents, attrs, notice }: { agents: Record<string, Til
     ? agentStateLine("has_news", { hand: agentHand(attrs, id), meeting: true })
     : agentStateLine("working", { working: agentWorking(attrs, id) });
   const onStage = (id: string) => id === speaker || activity.includes(id);
-  const hint = limit
-    ? <p className="text-2xl" role="status" style={{ color: "var(--alert)" }}>{meetVoiceLimitText(limit)}</p>
-    : <p className="text-2xl" style={{ color: "var(--fg-soft)" }}>{HINT}</p>;
   const stageBusy = !!speaker || activity.length > 0;
+  const maxRows = speaker ? 2 : 3;
+  const rowSize = speaker ? { av: 52, name: 34, line: 34, gap: 12 } : { av: 80, name: 46, line: 38, gap: 20 };
+  const limitText = limit ? meetVoiceLimitText(limit) : "";
+  const idleCaption = limit
+    ? <p className="max-w-[980px] text-balance text-center" role="status" style={{ fontSize: 40, lineHeight: 1.2, color: "var(--alert)" }}>{limitText}</p>
+    : <p className="text-center" style={{ fontSize: 36, lineHeight: 1.2, ...soft }}>{HINT}</p>;
+  const stripHint = limit
+    ? <p className="max-w-[980px] text-balance text-center" role="status" style={{ fontSize: 28, lineHeight: 1.2, color: "var(--alert)" }}>{limitText}</p>
+    : <p className="text-center" style={{ fontSize: 24, lineHeight: "32px", ...soft }}>{HINT}</p>;
 
   return (
     <div className="relative flex flex-col overflow-hidden" style={{ width: 1280, height: 720, background: "var(--plane-pane)", color: "var(--fg)" }}>
-      <style>{`@keyframes meet-ring{0%,100%{box-shadow:0 0 0 6px var(--live)}50%{box-shadow:0 0 0 18px transparent}}
-.meet-ring{animation:meet-ring 2s ease-in-out infinite}@media (prefers-reduced-motion:reduce){.meet-ring{animation:none}}`}</style>
-      <div className="flex shrink-0 items-center px-10" style={{ height: 64 }}>
-        <span className="text-2xl" style={{ color: "var(--fg-mute)" }}>Lightbulb</span>
-      </div>
+      <style>{`.meet-ring{box-shadow:0 0 0 6px var(--plane-pane),0 0 0 12px var(--live)}
+@keyframes meet-pulse{0%,100%{box-shadow:0 0 0 6px var(--plane-pane),0 0 0 12px var(--live),0 0 0 12px color-mix(in srgb,var(--live) 35%,transparent)}
+50%{box-shadow:0 0 0 6px var(--plane-pane),0 0 0 12px var(--live),0 0 0 26px color-mix(in srgb,var(--live) 0%,transparent)}}
+.meet-ring{animation:meet-pulse 2.2s ease-in-out infinite}@media (prefers-reduced-motion:reduce){.meet-ring{animation:none}}`}</style>
+      <span className="absolute left-10 top-5 text-2xl" style={{ color: "var(--fg-mute)" }}>Lightbulb</span>
       {notice ? (
         <p className="flex flex-1 items-center justify-center text-5xl" role="status">{notice}</p>
+      ) : !stageBusy ? (
+        // Idle: the agents themselves are the hero; no bottom strip repeats them.
+        <div className="flex min-h-0 flex-1 flex-col items-center justify-center px-16 py-8" style={{ gap: 32 }}>
+          {roster.length > 0 && (
+            <ul data-roster className="flex flex-wrap justify-center" style={{ gap: 32, columnGap: 40, width: 5 * 150 + 4 * 40 }}>
+              {roster.slice(0, 10).map((id) => (
+                <li key={id} className="flex flex-col items-center" style={{ width: 150, gap: 8 }}>
+                  <Avatar id={id} name={nameOf(id)} url={agents[id]?.avatarUrl} size={96} />
+                  <span data-name className="w-full truncate text-center" style={{ fontSize: 28, lineHeight: "34px" }}>{nameOf(id)}</span>
+                </li>
+              ))}
+              {roster.length > 10 && <li className="self-center" style={{ fontSize: 28, ...soft }}>+{roster.length - 10}</li>}
+            </ul>
+          )}
+          {idleCaption}
+        </div>
       ) : (
         <>
-          <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-8 px-16">
+          <div className="flex min-h-0 flex-1 flex-col items-center justify-center px-16 py-8" style={{ gap: 16 }}>
             {speaker && (
-              <div className="flex flex-col items-center gap-3">
-                <span className="meet-ring rounded-full"><Avatar id={speaker} name={nameOf(speaker)} url={agents[speaker]?.avatarUrl} size={168} /></span>
-                <p className="mt-4 text-6xl font-semibold">{nameOf(speaker)}</p>
-                <p className="text-3xl" style={{ color: "var(--fg-soft)" }}>{agentStateLine("speaking")}</p>
+              <div className="flex flex-col items-center">
+                <span className="meet-ring rounded-full"><Avatar id={speaker} name={nameOf(speaker)} url={agents[speaker]?.avatarUrl} size={200} /></span>
+                <p data-speaker-name className="font-semibold" style={{ fontSize: 72, lineHeight: "76px", marginTop: 20 }}>{nameOf(speaker)}</p>
+                <p style={{ fontSize: 34, lineHeight: "40px", ...soft }}>{agentStateLine("speaking")}</p>
               </div>
             )}
             {activity.length > 0 && (
-              <ul className="flex w-full max-w-4xl flex-col gap-4">
-                {activity.slice(0, MAX_ROWS).map((id) => (
-                  <li key={id} className="flex items-center gap-5">
-                    <Avatar id={id} name={nameOf(id)} url={agents[id]?.avatarUrl} size={48} />
-                    <span className="shrink-0 text-3xl font-semibold">{nameOf(id)}</span>
-                    <span className="min-w-0 truncate text-3xl" style={{ color: "var(--fg-soft)" }}>{rowLine(id)}</span>
-                  </li>
-                ))}
-                {activity.length > MAX_ROWS && <li className="text-3xl" style={{ color: "var(--fg-soft)" }}>+{activity.length - MAX_ROWS} more</li>}
-              </ul>
-            )}
-            {!stageBusy && (limit
-              ? <p className="text-4xl" role="status" style={{ color: "var(--alert)" }}>{meetVoiceLimitText(limit)}</p>
-              : <p className="text-4xl" style={{ color: "var(--fg-soft)" }}>{HINT}</p>)}
-          </div>
-          {roster.length > 0 && (
-            <div className="flex shrink-0 flex-col items-center gap-3 pb-6">
-              {stageBusy && hint}
-              <ul className="flex items-start justify-center gap-6" style={{ height: 84 }}>
-                {roster.slice(0, MAX_ROSTER).map((id) => {
-                  const live = id === speaker;
-                  const on = onStage(id);
-                  return (
-                    <li key={id} className="flex w-24 flex-col items-center gap-1" style={{ opacity: on ? 1 : 0.55 }}>
-                      <span className="rounded-full" style={{ boxShadow: `0 0 0 3px ${live ? "var(--live)" : on ? "var(--plane-edge)" : "transparent"}` }}>
-                        <Avatar id={id} name={nameOf(id)} url={agents[id]?.avatarUrl} size={44} />
-                      </span>
-                      <span className="w-full truncate text-center text-xl" style={{ color: on ? "var(--fg)" : "var(--fg-mute)" }}>{nameOf(id)}</span>
+              <div className="mx-auto w-fit max-w-[1000px]">
+                <ul className="grid items-center" style={{ gridTemplateColumns: "auto auto minmax(0, 1fr)", columnGap: 24, rowGap: rowSize.gap }}>
+                  {activity.slice(0, maxRows).map((id) => (
+                    <li key={id} className="contents">
+                      <Avatar id={id} name={nameOf(id)} url={agents[id]?.avatarUrl} size={rowSize.av} />
+                      <span className="whitespace-nowrap font-semibold" style={{ fontSize: rowSize.name, lineHeight: 1.1 }}>{nameOf(id)}</span>
+                      <span className="min-w-0 truncate" style={{ fontSize: rowSize.line, lineHeight: 1.2, ...soft }}>{rowLine(id)}</span>
                     </li>
-                  );
-                })}
-                {roster.length > MAX_ROSTER && <li className="self-center text-2xl" style={{ color: "var(--fg-soft)" }}>+{roster.length - MAX_ROSTER}</li>}
-              </ul>
-            </div>
-          )}
+                  ))}
+                </ul>
+                {activity.length > maxRows && <p style={{ fontSize: 32, lineHeight: 1.2, marginTop: rowSize.gap, ...soft }}>+{activity.length - maxRows} more</p>}
+              </div>
+            )}
+          </div>
+          <div className="flex shrink-0 flex-col items-center pb-4" style={{ gap: 8 }}>
+            {stripHint}
+            <ul data-roster className="flex items-start justify-center" style={{ gap: 24 }}>
+              {roster.slice(0, 8).map((id) => {
+                const live = id === speaker;
+                const on = onStage(id);
+                return (
+                  <li key={id} className="flex flex-col items-center" style={{ width: 96, gap: 4, opacity: on ? 1 : 0.55 }}>
+                    <span className="rounded-full" style={{ boxShadow: `0 0 0 3px ${live ? "var(--live)" : on ? "var(--plane-edge)" : "transparent"}` }}>
+                      <Avatar id={id} name={nameOf(id)} url={agents[id]?.avatarUrl} size={52} />
+                    </span>
+                    <span data-name className="w-full truncate text-center" style={{ fontSize: 22, lineHeight: "26px", color: on ? "var(--fg)" : "var(--fg-mute)" }}>{nameOf(id)}</span>
+                  </li>
+                );
+              })}
+              {roster.length > 8 && <li className="self-center" style={{ fontSize: 24, ...soft }}>+{roster.length - 8}</li>}
+            </ul>
+          </div>
         </>
       )}
     </div>

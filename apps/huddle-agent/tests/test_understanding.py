@@ -2191,3 +2191,39 @@ async def test_one_speakers_lines_start_in_the_order_they_were_said():
         ("forge", "draft the email", "working"),
         ("forge", "send it", "queued"),
     ]
+
+
+async def test_a_named_lines_requests_settle_before_a_later_line_of_its_speaker():
+    # Codex P1: the named line's rows are made when its voice has opened; a later line must not start first
+    h, room, backend, lives, clock, log = await three()
+    backend.session_gate = asyncio.Event()
+    backend.route_extra = ops(requests=[("forge", "draft the email", "name")])
+    await h.on_final_transcript("u1", "Prasiddha", "Forge, draft the email to Aden")
+    for _ in range(10):
+        await asyncio.sleep(0)
+    backend.route_extra = ops(requests=[("forge", "send it", "fit")])
+    await h.on_final_transcript("u1", "Prasiddha", "then send it")
+    for _ in range(10):
+        await asyncio.sleep(0)
+    assert rows(h) == [], "the later line waits for the named line's rows"
+    backend.session_gate.set()
+    await settle(h)
+    assert [r[:2] for r in rows(h)] == [
+        ("forge", "draft the email"),
+        ("forge", "send it"),
+    ]
+    assert [t["utterance"] for t in backend.turns] == ["draft the email"]
+
+
+async def test_a_line_never_waits_past_the_route_timeout_for_an_earlier_one(
+    monkeypatch,
+):
+    h, room, backend, lives, clock, log = await three()
+    monkeypatch.setattr(h_mod, "SAID_ORDER_WAIT_S", 0.01)
+    stuck = (
+        asyncio.get_running_loop().create_future()
+    )  # an earlier line that never resolves
+    h._routing["u1"] = [stuck]
+    backend.route_extra = ops(requests=[("forge", "the open PRs", "fit")])
+    await say(h, "u1", "what are the open PRs")
+    assert rows(h) == [("forge", "the open PRs", "working")] and h._routing["u1"] == []

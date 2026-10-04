@@ -123,6 +123,7 @@ PRESENCE_TIMEOUT = (
 HOLD_SECONDS = 15
 HOLD_APPLY_S = 4.0  # understanding §4.4: a held line its speaker said nothing more after is applied as it is
 ACK_QUIET_S = 1.0  # understanding §4.6: the open voice says who is on what once its speaker is this quiet
+SAID_ORDER_WAIT_S = 10.0  # a line waits this long at most for its speaker's earlier line to be applied
 MISSED_SECONDS = 10  # live.route.missed: nobody answered, then the same person names an agent or Lightbulb
 UNWANTED_SECONDS = 5  # live.route.unwanted: a Jev-routed voice the asker stops or switches away from this soon
 LATE_LINES = "Said in the room since you were asked (may or may not concern you):\n"
@@ -847,7 +848,9 @@ class Huddle:
             if heard_at is None:
                 fut = self._in_flight(identity)
                 # the wake word stripped, as for any Lightbulb line (B4 report)
-                route = self._understand(identity, strip_wake(text), humans=len(self._people), quiet=True, path="name")
+                route = self._understand(
+                    identity, strip_wake(text), humans=len(self._people), quiet=True, path="name", until=fut
+                )
                 understood = (self._spawn(route), fut)
             summon = self.summon(
                 identity,
@@ -1212,22 +1215,35 @@ class Huddle:
     def _outcome(r: dict) -> str:
         return "hold" if r.get("hold") else "agent" if r.get("agentIds") or r.get("agentId") else "none"
 
-    async def _understand(self, identity: str, *args, **kw) -> dict | None:
+    async def _understand(self, identity: str, *args, until: asyncio.Future | None = None, **kw) -> dict | None:
         """`_route_call`, answered in the order the speaker's lines were said, whichever call finished first:
         each caller applies its answer before it next waits, so one speaker's requests start in said order
-        ("draft the email", then "send it"). A slow call holds the later ones at most ROUTE_TIMEOUT_S."""
+        ("draft the email", then "send it"). `until`: the caller applies it later (a named line, once its voice
+        has opened): the lines after it wait for that future. No line waits longer than SAID_ORDER_WAIT_S."""
         mine = asyncio.get_running_loop().create_future()
         lines = self._routing.setdefault(identity, [])
         ahead = list(lines)
         lines.append(mine)
+
+        def applied(_=None) -> None:
+            if not mine.done():
+                mine.set_result(None)
+            if mine in lines:
+                lines.remove(mine)
+
         try:
             r = await self._route_call(identity, *args, **kw)
             if ahead:
-                await asyncio.wait(ahead)
+                _, stuck = await asyncio.wait(ahead, timeout=SAID_ORDER_WAIT_S)
+                for f in stuck:  # never applied: the lines after it stop waiting for it
+                    if f in lines:
+                        lines.remove(f)
             return r
         finally:
-            mine.set_result(None)
-            lines.remove(mine)
+            if until is None or until.done():
+                applied()
+            else:
+                until.add_done_callback(applied)
 
     async def _route_call(
         self,

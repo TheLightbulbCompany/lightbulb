@@ -128,7 +128,7 @@ export function AgentsPanel({ initialAgentId = null }: AgentsPanelProps = {}) {
       </div>
 
       <div className="border-b border-[var(--edge)]">
-        <AgentEmailSection />
+        <AgentEmailSection agents={rosterAgents} />
       </div>
 
       {createStep === "choose" && (

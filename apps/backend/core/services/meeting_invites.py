@@ -21,7 +21,7 @@ from dateutil.rrule import DAILY, rruleset, rrulestr
 from core.config import settings
 from core.constants import SYSTEM_ACTOR_ID
 from core.observability.metrics import put_metric
-from core.repositories import container_repo, messaging_repo
+from core.repositories import agent_email_repo, container_repo, messaging_repo
 from core.services import clerk_admin, meeting_bots, meeting_rsvp, messaging
 from core.services.agent_mail_inbound import authenticated_sender, parse_from_address
 
@@ -268,6 +268,7 @@ async def _create_room(owner_id: str, room_id: str, invite: Invite, creator: str
     """The meeting's room: hidden from every room list, owned by the inviting member (the one human,
     whom the Meet bot's speech acts as), with every agent of the workspace listening on ``mentions``.
     A replay or a conflicting create returns quietly; the caller's update path takes it from there."""
+    # ponytail: the room member cap bounds a meeting to the first N agents; read the roster directly in voice_calls.room_agents when a workspace outgrows it.
     roster = (await messaging.load_agent_roster(owner_id))[: messaging_repo.MAX_ROOM_MEMBERS - 1]
     handles = messaging.mention_handles(roster)
     members = [
@@ -313,7 +314,9 @@ async def _create_room(owner_id: str, room_id: str, invite: Invite, creator: str
             raise
 
 
-async def _patch_meeting(room_id: str, fields: dict, drop: tuple = (), when=None) -> dict | None:
+async def _patch_meeting(
+    room_id: str, fields: dict, drop: tuple = (), when=None, *, keep_transcript: bool = False
+) -> dict | None:
     """THE one writer of the room META's ``meeting`` map: re-read it, lay only the caller's own
     fields over it (dropping ``drop``), and write under the revision CAS -- so the invite path, the
     bot path and the RSVP never erase each other's keys. A write carrying an older ``sequence`` than
@@ -322,6 +325,8 @@ async def _patch_meeting(room_id: str, fields: dict, drop: tuple = (), when=None
     under a transcript write) cancels it and the merge is redone over the new state.
     ``when`` is a predicate on the stored map, checked on every attempt: False writes nothing and
     returns None (a marker meant for one occurrence never lands on the next).
+    ``keep_transcript`` moves the stored occurrence's transcript into ``history`` before ``drop``,
+    from the map read on each attempt (a transcript written after the caller's read is kept).
     Three lost races raise, so SES redelivers. Returns the map as written."""
     for attempt in (1, 2, 3):
         meta = (await messaging_repo.get_room(room_id)) or {}
@@ -331,7 +336,8 @@ async def _patch_meeting(room_id: str, fields: dict, drop: tuple = (), when=None
         if "sequence" in fields and int(stored.get("sequence", 0)) > int(fields["sequence"]):
             logger.info("meeting room %s: a newer invite (sequence %s) won the race", room_id, stored["sequence"])
             return None
-        merged = {k: v for k, v in {**stored, **fields}.items() if k not in drop}
+        kept = _kept_transcript(stored) if keep_transcript else {}
+        merged = {k: v for k, v in {**stored, **fields, **kept}.items() if k not in drop}
         if merged == stored:
             return stored
         try:
@@ -600,9 +606,15 @@ async def _apply(owner_id: str, invite: Invite, room_id: str, creator: str, team
     drop = ("recurrence",) if invite.method == "REQUEST" and not invite.recurrence else ()
     if revive:
         fields["status"], drop = "scheduled", (*drop, *_OCCURRENCE_KEYS)
-    meeting = await _patch_meeting(room_id, fields, drop=drop)
+    meeting = await _patch_meeting(room_id, fields, drop=drop, keep_transcript=revive)
     if meeting is None:
         return "meeting_stale"  # a newer invite landed meanwhile: it owns the line, the bot and the RSVP
+    # Every delivery that leaves a record standing, so a swallowed first failure heals. The inbox
+    # listing must never fail team mail.
+    try:
+        await agent_email_repo.add_meeting(team.get("address") or "", room_id)
+    except Exception:  # noqa: BLE001
+        logger.warning("meeting room %s: recording it on the team row failed", room_id, exc_info=True)
     if over and allowed:
         # A re-forward restarts a parked series: the next occurrence, then its line.
         if await _reschedule_locked(owner_id, room_id, meeting, now=now) == "series_over":
@@ -641,8 +653,25 @@ async def _apply(owner_id: str, invite: Invite, room_id: str, creator: str, team
     return "meeting_scheduled"
 
 
-_CALL_KEYS = ("inCallAt", "lastBotStatus", "transcriptAttachedAt", "transcriptId", "notesRunId", "notesMailedAt")
+_CALL_KEYS = (
+    "inCallAt",
+    "lastBotStatus",
+    "transcriptAttachedAt",
+    "transcriptId",
+    "transcriptRoomId",
+    "notesRunId",
+    "notesMailedAt",
+)
 _OCCURRENCE_KEYS = (*_BOT_KEYS, *_CALL_KEYS)
+_HISTORY_MAX = 30
+
+
+def _kept_transcript(meeting: dict) -> dict:
+    """Before the occurrence keys are dropped: its transcript stays readable from the inbox."""
+    if not meeting.get("transcriptId"):
+        return {}
+    past = {k: meeting.get(k) for k in ("startAt", "transcriptId", "transcriptRoomId")}
+    return {"history": [past, *(meeting.get("history") or [])][:_HISTORY_MAX]}
 
 
 async def _reschedule_locked(owner_id: str, room_id: str, meeting: dict, *, now: float) -> str:
@@ -663,7 +692,7 @@ async def _reschedule_locked(owner_id: str, room_id: str, meeting: dict, *, now:
             return "series_over"
         fields = {"startAt": int(nxt[0].timestamp()), "endAt": int(nxt[1].timestamp()), "status": "scheduled"}
         drop = _OCCURRENCE_KEYS
-    written = await _patch_meeting(room_id, fields, drop=drop)
+    written = await _patch_meeting(room_id, fields, drop=drop, keep_transcript=True)
     await _seat_new_agents(owner_id, room_id)
     try:
         result = await _sync_bot(owner_id, room_id, written, meeting)

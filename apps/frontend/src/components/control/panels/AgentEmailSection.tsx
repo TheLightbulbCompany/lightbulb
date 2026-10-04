@@ -3,10 +3,12 @@
 import { useEffect, useRef, useState } from "react";
 import useSWR from "swr";
 import { Check, Copy, Mail } from "lucide-react";
-import { ApiError } from "@lightbulb/shared";
+import { ApiError, type Agent } from "@lightbulb/shared";
 
 import { Button } from "@/components/ui/button";
 import { useApi } from "@/lib/api";
+
+import { TeamInbox } from "./TeamInbox";
 
 interface AddressRow {
   address: string;
@@ -35,7 +37,7 @@ function describeSaveError(e: unknown): string {
   return e instanceof Error ? e.message : "Save failed";
 }
 
-export function AgentEmailSection() {
+export function AgentEmailSection({ agents }: { agents?: Agent[] } = {}) {
   const api = useApi();
   const { data: row, error, isLoading, mutate } = useSWR<AddressRow>(
     "/agent-mail/address",
@@ -121,6 +123,7 @@ export function AgentEmailSection() {
           </div>
           <p className="mt-1 text-xs text-[var(--midnight-muted)]">Add this address to a calendar event to bring the team into the meeting. Mail to it goes to your CEO agent; replies go back to whichever agent wrote first.</p>
         </div>
+        <TeamInbox agents={agents} />
         {row.outbound_disabled && (
           <div role="alert" className="rounded-lg border border-warn bg-cream px-3 py-2 text-ui">
             Outbound email is paused: a recipient reported a message as spam.

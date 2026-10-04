@@ -5,9 +5,13 @@ import { ApiError } from "@lightbulb/shared";
 
 const mockGet = vi.fn();
 const mockPatch = vi.fn();
+// The team inbox inside the card has its own tests (TeamInbox.test.tsx): answer it empty here.
+const inboxGet = (url: string) =>
+  url.startsWith("/agent-mail/inbox") ? Promise.resolve({ meetings: [], messages: [], next: null }) : mockGet(url);
 vi.mock("@/lib/api", () => ({
-  useApi: () => ({ get: mockGet, patch: mockPatch }),
+  useApi: () => ({ get: inboxGet, patch: mockPatch }),
 }));
+vi.mock("@clerk/nextjs", () => ({ useOrganization: () => ({ organization: { id: "org_1" } }) }));
 
 import { AgentEmailSection } from "../AgentEmailSection";
 

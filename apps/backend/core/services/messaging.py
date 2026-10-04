@@ -3651,11 +3651,26 @@ async def create_agent_message(owner_id: str, request: AgentMessageRequest) -> A
         # goes to the meeting's output room when it sits there. Every door resolves the same room,
         # so a replay hashes the same and stays idempotent. A post bound to the hidden room (a run,
         # a reply, a thread, a runtime-uploaded attachment) stays there: those are checked against it.
-        from core.services.meeting_invites import output_room
+        from core.services.meeting_invites import _post_line, output_room
 
         target = await output_room(owner_id, room_id)
         if target != room_id and await messaging_repo.get_member(target, "agent", agent_id):
             room_id, meta = target, await messaging_repo.get_room(target)
+        elif target != room_id and await messaging_repo.get_member(room_id, "agent", agent_id):
+            # Not seated in the output room: the answer goes there as a system line naming the agent,
+            # keyed by the event id so a replay returns the same line. A gone room falls through.
+            agent = next((a for a in await load_agent_roster(owner_id) if a["id"] == agent_id), None)
+            title = (meta.get("meeting") or {}).get("title") or "Meeting"
+            line = agent and await _post_line(
+                owner_id,
+                room_id,
+                f"meeting-answer:{request.event_id}",
+                f"**{agent['name']}**, after **{title}**:\n\n{request.text}",
+            )
+            if line:
+                return AgentMessageReceiptResponse(
+                    message_id=line["messageId"], room_id=line["roomId"], created_at=line["createdAt"]
+                )
     member = await messaging_repo.get_member(room_id, "agent", agent_id)
     if member is None:
         raise ApiProblem("MEMBER_NOT_FOUND", "Agent is not a current room member.")

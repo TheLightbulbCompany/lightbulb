@@ -246,6 +246,8 @@ def room(monkeypatch):
     booked = {"recallBotId": "bot-1", "status": "bot_created"}  # returned, not stored: META keeps the invite's status
     m.sync = AsyncMock(side_effect=lambda o, r, meeting, p: {**meeting, **booked})
     monkeypatch.setattr(meeting_invites, "_sync_bot", m.sync)
+    m.add_meeting = AsyncMock()
+    monkeypatch.setattr(meeting_invites.agent_email_repo, "add_meeting", m.add_meeting)
     return m
 
 
@@ -1334,6 +1336,43 @@ async def test_a_same_occurrence_booking_retry_adopts_the_bot_its_kept_nonce_boo
     assert meeting["startAt"] == _epoch(2026, 11, 7, 15, 0) and "botError" not in meeting
 
 
+async def test_every_standing_delivery_records_the_meeting_on_the_team_row(room):
+    await meeting_invites.handle_team_mail("org_1", _mail(GOOGLE), TEAM)
+    moved = GOOGLE.replace("SEQUENCE:0", "SEQUENCE:1").replace("T150000", "T160000")
+    await meeting_invites.handle_team_mail("org_1", _mail(moved), TEAM)
+    room_id = meeting_invites.messaging_repo.meeting_room_id("org_1", UID)
+    assert room.add_meeting.await_args_list == [((TEAM["address"], room_id),)] * 2  # an idempotent ADD
+    assert await meeting_invites.handle_team_mail("org_1", _mail(GOOGLE), TEAM) == "meeting_stale"
+    assert room.add_meeting.await_count == 2  # a stale delivery records nothing
+
+
+async def test_a_failing_team_row_write_never_fails_the_invite(room):
+    room.add_meeting.side_effect = RuntimeError("dynamodb down")
+    assert await meeting_invites.handle_team_mail("org_1", _mail(GOOGLE), TEAM) == "meeting_scheduled"
+
+
+async def test_a_re_dated_occurrence_keeps_its_transcript_in_history(room, now, metrics):
+    old = [{"startAt": 1, "transcriptId": "t0", "transcriptRoomId": "d"}] * 30
+    _ended_series(room, transcriptId="t1", transcriptRoomId="default-room", history=old)
+    now["t"] = _epoch(2026, 11, 7, 15, 40)
+    await meeting_invites.advance("r")
+    history = room.state["meta"]["meeting"]["history"]
+    assert len(history) == 30
+    assert history[0] == {
+        "startAt": _epoch(2026, 11, 7, 15, 0),
+        "transcriptId": "t1",
+        "transcriptRoomId": "default-room",
+    }
+
+
+async def test_an_occurrence_without_a_transcript_adds_no_history(room, now, metrics):
+    _ended_series(room)
+    room.state["meta"]["meeting"].pop("transcriptId")
+    now["t"] = _epoch(2026, 11, 7, 15, 40)
+    await meeting_invites.advance("r")
+    assert "history" not in room.state["meta"]["meeting"]
+
+
 # --- fix round 2 ---
 
 
@@ -1382,3 +1421,69 @@ async def test_the_inviting_member_is_recorded_for_the_after_meeting_mail(room):
     await meeting_invites.handle_team_mail("org_1", _mail(cal), TEAM)
     meeting = room.state["meta"]["meeting"]
     assert meeting["invitedBy"] == "prasiddha@acme.com" and meeting["organizer"] == "host@outside.example"
+
+
+async def test_a_series_made_a_single_event_keeps_the_last_transcript(room, bots, now):
+    _series_meeting(room, "ended", inCallAt=1, transcriptId="t1", transcriptRoomId="default-room")
+    started = room.state["meta"]["meeting"]["startAt"]
+    single = GOOGLE.replace("20261003T", "20261120T").replace("SEQUENCE:0", "SEQUENCE:1")
+    await meeting_invites.handle_team_mail("org_1", _mail(single), TEAM)
+    meeting = room.state["meta"]["meeting"]
+    assert "transcriptId" not in meeting
+    assert meeting["history"] == [{"startAt": started, "transcriptId": "t1", "transcriptRoomId": "default-room"}]
+
+
+async def test_a_transcript_written_after_the_callers_read_still_lands_in_history(room, now, metrics):
+    _ended_series(room)
+    stored = room.state["meta"]["meeting"]
+    stale = {k: v for k, v in stored.items() if k not in ("transcriptId", "transcriptRoomId")}
+    stored.update(transcriptId="t-late", transcriptRoomId="default-room")  # after the caller read
+    now["t"] = _epoch(2026, 11, 7, 15, 40)
+    assert await meeting_invites._reschedule_locked("org_1", "r", stale, now=now["t"]) == "advanced"
+    meeting = room.state["meta"]["meeting"]
+    assert meeting["history"][0]["transcriptId"] == "t-late" and "transcriptId" not in meeting
+
+
+async def test_a_late_answer_from_an_agent_outside_the_default_room_is_surfaced_there(table, monkeypatch):  # noqa: F811
+    repo, messaging = meeting_invites.messaging_repo, meeting_invites.messaging
+    monkeypatch.setattr(messaging, "human_emails", AsyncMock(return_value={}))
+    monkeypatch.setattr(messaging, "load_agent_roster", AsyncMock(return_value=[{"id": FRIDAY, "name": "Friday"}]))
+    human = [_member("human", USER_A, "owner")]
+    default, hidden = messaging.default_room_id(OWNER), repo.deterministic_room_id(OWNER, USER_A, "meet")
+    rooms = (
+        (default, human, {}),
+        (
+            hidden,
+            human + [_member("agent", FRIDAY, listen="mentions", handle="friday")],
+            {"meeting": {"uid": "a", "title": "Weekly sync"}, "hidden": True},
+        ),
+    )
+    for room_id, members, extra in rooms:
+        await repo.create_room(
+            owner_id=OWNER,
+            room_id=room_id,
+            client_room_id=room_id,
+            creator_user_id=USER_A,
+            name="r",
+            kind="channel",
+            members=members,
+            req_hash=repo.request_hash(room_id),
+            extra=extra,
+        )
+    request = messaging.AgentMessageRequest.model_validate(
+        {
+            "eventId": "live-late:run-9",
+            "roomId": hidden,
+            "agentId": FRIDAY,
+            "text": "Three tasks open.",
+            "replyToMessageId": None,
+            "threadRootMessageId": None,
+        }
+    )
+    first = await messaging.create_agent_message(OWNER, request)
+    again = await messaging.create_agent_message(OWNER, request)  # a replay posts nothing new
+    assert str(first.room_id) == default and again.message_id == first.message_id
+    assert (await repo.get_room(default))["lastSeq"] == 1 and (await repo.get_room(hidden))["lastSeq"] == 0
+    line = await repo.get_message_by_id(default, str(first.message_id))
+    assert line["author"]["kind"] == "system"
+    assert line["text"] == "**Friday**, after **Weekly sync**:\n\nThree tasks open."

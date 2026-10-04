@@ -21,6 +21,7 @@ logger = logging.getLogger(__name__)
 
 _WAIT_S, _POLL_S = 60, 2  # outlasts the worker's 45 s final-transcript retry budget
 _CLAIM_S = 120  # a notes attempt younger than this is still running; older, it died and is retried
+_NOTES_TRIES, _NOTES_RETRY_S = 3, 10
 
 
 def owed(meeting: dict) -> bool:
@@ -62,7 +63,7 @@ async def on_transcript(room_id: str, lines: list[dict], final: bool) -> None:
     )
     await meeting_invites._patch_meeting(
         room_id,
-        {"transcriptAttachedAt": int(time.time()), "transcriptId": str(attachment.id)},
+        {"transcriptAttachedAt": int(time.time()), "transcriptId": str(attachment.id), "transcriptRoomId": target},
         when=lambda m: m.get("startAt") == occurrence,
     )
 
@@ -80,6 +81,7 @@ async def on_ended(room_id: str) -> None:
         attempted = True
         put_metric("meeting.notes.failed")
         logger.warning("meeting room %s: notes failed", room_id, exc_info=True)
+    # Not gated on the notes succeeding: a parked series is worse than one occurrence's lost notes.
     if attempted:  # not while another end path is on the notes: it advances when it is done
         await meeting_invites.advance(room_id)
 
@@ -95,18 +97,33 @@ async def _on_ended(room_id: str) -> bool:
     token = await container_repo.try_claim_owner_lifecycle(lease, stale_s=_CLAIM_S)
     if not token:
         return False  # another end path is on the notes
+    # Two more tries under the same claim before the series advances past this occurrence; each
+    # step of _notes is idempotent on its own marker and key. The transcript wait runs once: a
+    # retry reuses what it found, so three attempts stay well inside the claim's _CLAIM_S.
+    occurrence = meta["meeting"].get("startAt")  # fixed before the wait: never mark the next one
     try:
-        await _notes(room_id, meta)
+        meta = await _wait_for_transcript(room_id, meta)
     except Exception:
-        # A failed attempt frees the claim at once, so the next terminal webhook retries it.
         await container_repo.release_owner_lifecycle_claim(lease, token=token)
         raise
+    for attempt in range(_NOTES_TRIES):
+        try:
+            await _notes(room_id, meta, occurrence)
+            return True
+        except Exception:
+            if attempt == _NOTES_TRIES - 1:
+                # A failed attempt frees the claim at once, so the next terminal webhook retries it.
+                await container_repo.release_owner_lifecycle_claim(lease, token=token)
+                raise
+            logger.warning("meeting room %s: notes attempt %d failed", room_id, attempt + 1, exc_info=True)
+            await asyncio.sleep(_NOTES_RETRY_S)
     return True
 
 
-async def _notes(room_id: str, meta: dict) -> None:
+async def _wait_for_transcript(room_id: str, meta: dict) -> dict:
+    """The META to write the notes from: once its transcript is attached, or after the wait."""
     occurrence = meta["meeting"].get("startAt")
-    this_occurrence = lambda m: m.get("startAt") == occurrence  # noqa: E731 -- never mark the next one
+    this_occurrence = lambda m: m.get("startAt") == occurrence  # noqa: E731
     # The worker's final transcript POST and Recall's call_ended race: give the transcript a moment.
     # A read of another occurrence (the series was re-dated meanwhile) ends the wait; the last read
     # of this occurrence stands.
@@ -118,24 +135,33 @@ async def _notes(room_id: str, meta: dict) -> None:
         if not this_occurrence(fresh.get("meeting") or {}):
             break
         meta = fresh
+    return meta
+
+
+async def _notes(room_id: str, meta: dict, occurrence) -> None:
+    this_occurrence = lambda m: m.get("startAt") == occurrence  # noqa: E731 -- never mark the next one
     owner_id, meeting = meta["ownerId"], meta["meeting"]
     title = meeting.get("title") or "Meeting"
     target = await meeting_invites.output_room(owner_id, room_id)
     company = await PaperclipRepo(table_name="paperclip-companies").resolve_owner_row(owner_id)
     ceo = (getattr(company, "starter_agent_ids", None) or {}).get("ceo")
+    if not meeting.get("transcriptAttachedAt"):
+        # No notes run: the output room is the workspace's default room, whose history is not the
+        # meeting's, so notes written from it would be invented.
+        await meeting_invites._post_line(
+            owner_id,
+            target,
+            f"meeting:{room_id}:{occurrence}:no-transcript",
+            f"**{title}** ended. No transcript was captured, so there are no notes.",
+        )
     # The run is dispatched in the output room, so the CEO must sit there.
-    if ceo and not meeting.get("notesRunId") and await messaging_repo.get_member(target, "agent", ceo):
+    elif ceo and not meeting.get("notesRunId") and await messaging_repo.get_member(target, "agent", ceo):
         message = await meeting_invites._post_line(
             owner_id,
             target,
             f"meeting:{room_id}:{occurrence}:notes",
             f"Write the meeting notes for {title}: decisions, open questions, action items as Paperclip "
-            "tasks for their owners, two paragraphs max; "
-            + (
-                "the transcript is attached"
-                if meeting.get("transcriptAttachedAt")
-                else "no transcript was captured; write notes from the room history"
-            ),
+            "tasks for their owners, two paragraphs max; the transcript is attached",
             dispatch_targets=[{"agentId": ceo, "eventKind": "user_request"}],
         )
         if message:
@@ -152,6 +178,7 @@ _MAIL_TRANSCRIPT_CHARS = 200_000
 async def _transcript_text(owner_id: str, room_id: str, meeting: dict) -> str | None:
     if not meeting.get("transcriptId"):
         return None
+    room_id = meeting.get("transcriptRoomId") or room_id  # the room it was stored for
     _, data = await run_in_thread(messaging.load_attachment, owner_id, room_id, meeting["transcriptId"])
     text = data.decode("utf-8", "replace")
     return text if len(text) <= _MAIL_TRANSCRIPT_CHARS else text[:_MAIL_TRANSCRIPT_CHARS] + "… (truncated)"
@@ -175,12 +202,15 @@ async def _mail_organizer(owner_id: str, room_id: str, target: str, meeting: dic
         logger.info("meeting room %s: daily mail cap spent, notes mail not sent", room_id)
         return True
     name = " ".join(title.split())
-    if target != room_id:
+    if target != room_id and meeting.get("transcriptAttachedAt"):
         subject = f"Notes: {name}"
         body = f"The notes and transcript are in your Lightbulb room: {settings.FRONTEND_URL.rstrip('/')}/chat?room={target}"
+    elif target != room_id:  # nothing to point at: no transcript, so no notes
+        subject = f"Ended: {name}"
+        body = f"{name} ended. No transcript was captured, so there are no notes."
     else:
         transcript = await _transcript_text(owner_id, target, meeting)
-        subject = f"Transcript: {name}"
+        subject = f"Transcript: {name}" if transcript else f"Ended: {name}"
         body = f"Your Lightbulb agents joined {name}.\n\n" + (transcript or "No transcript was captured.")
     sent = await ses_email.send_ses_email(
         from_addr=address,

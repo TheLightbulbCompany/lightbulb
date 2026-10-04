@@ -133,3 +133,19 @@ async def test_list_messages_stops_after_five_pages(monkeypatch):
     monkeypatch.setattr(repo, "_get_table", lambda: table)
     assert await repo.list_messages("agents@acme.isol8.co") == []
     assert table.query.call_count == 5
+
+
+@pytest.mark.asyncio
+async def test_list_page_returns_both_directions_and_a_cursor(monkeypatch):
+    table = MagicMock()
+    table.query.return_value = {
+        "Items": [{"received_key": "c", "direction": "out"}, {"received_key": "b"}],
+        "LastEvaluatedKey": {"received_key": "b"},
+    }
+    monkeypatch.setattr(repo, "_get_table", lambda: table)
+    rows, nxt = await repo.list_page("agents@acme.isol8.co", before="d", limit=2)
+    assert [r["received_key"] for r in rows] == ["c", "b"] and nxt == "b"
+    kw = table.query.call_args.kwargs
+    assert kw["ScanIndexForward"] is False and kw["Limit"] == 2
+    table.query.return_value = {"Items": [{"received_key": "a"}]}
+    assert (await repo.list_page("agents@acme.isol8.co", before="b"))[1] is None

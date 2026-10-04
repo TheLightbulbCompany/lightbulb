@@ -355,7 +355,8 @@ async def transcript(room_id: str, body: TranscriptBody):
 @router.post("/internal/huddles/{room_id}/late-answer", dependencies=[_Worker])
 async def late_answer(room_id: str, body: LateAnswerBody):
     """A voice run's answer nobody heard -- it finished after the asker moved on, the news
-    expired, or the call ended -- is posted into the room by its agent instead of dropped."""
+    expired, or the call ended -- is posted into the room by its agent instead of dropped (a
+    meeting keeps it on its record for the notes and the mail)."""
     room_id = _room_id(room_id)
     _require_room_token(body.roomToken, room_id, body.ownerId)
     await voice_calls.post_late_answer(body.ownerId, room_id, body.agentId, body.runId, body.request, body.answer)

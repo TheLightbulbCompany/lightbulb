@@ -176,7 +176,7 @@ async def _notes(room_id: str, meta: dict, occurrence) -> None:
                 target,
                 f"meeting:{room_id}:{occurrence}:notes",
                 f"Write the meeting notes for {title}: decisions, open questions, action items as Paperclip "
-                "tasks for their owners, two paragraphs max; the transcript is attached",
+                "tasks for their owners, two paragraphs max; the transcript is attached" + _unsaid_text(meeting),
                 dispatch_targets=[{"agentId": writer, "eventKind": "user_request"}],
             )
             if message:
@@ -196,6 +196,15 @@ async def _notes_writer(owner_id: str, room_id: str) -> str | None:
     founder roster has no starter ids). None when the room has no agent."""
     agents = sorted(m["id"] for m in await messaging_repo.list_members(room_id) if m.get("kind") == "agent")
     return await openclaw_work._fallback_single(owner_id, agents, {}, []) if agents else None
+
+
+def _unsaid_text(meeting: dict) -> str:
+    """The answers agents had ready when the call moved on (voice_calls._keep_unsaid), or ""."""
+    unsaid = meeting.get("unsaid") or []
+    if not unsaid:
+        return ""
+    items = "\n\n".join(f"{u['agentName']}: {u['request'] or '(no request)'}\n{u['answer']}" for u in unsaid)
+    return f"\n\nAnswers the team had ready and did not get to say:\n\n{items}"
 
 
 _MAIL_TRANSCRIPT_CHARS = 200_000
@@ -248,6 +257,7 @@ async def _mail_organizer(
         transcript = await _transcript_text(owner_id, target, meeting)
         subject = f"Transcript: {name}" if transcript else f"Ended: {name}"
         body = f"Your Lightbulb agents joined {name}.\n\n" + (transcript or "No transcript was captured.")
+    body += _unsaid_text(meeting)
     # Durable and before the send: a raise or a timeout may still have delivered it. The guard
     # refuses a moved occurrence and a marker another end path wrote first, so only one sends.
     marked = await meeting_invites._patch_meeting(

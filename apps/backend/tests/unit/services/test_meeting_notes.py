@@ -437,3 +437,26 @@ async def test_the_organizer_mail_is_from_the_public_address(env):
     env.row["public_address"] = "agents@thelightbulb.company"
     await mod.on_ended(ROOM)
     assert env.send.await_args.kwargs["from_addr"] == "agents@thelightbulb.company"
+
+
+UNSAID = [
+    {"runId": "r1", "agentId": "a1", "agentName": "Forge", "request": "open PRs?", "answer": "Three.", "at": 5},
+    {"runId": "r2", "agentId": "a2", "agentName": "Ledger", "request": "", "answer": "Burn is flat.", "at": 6},
+]
+_SAID = (
+    "Answers the team had ready and did not get to say:\n\nForge: open PRs?\nThree.\n\n"
+    "Ledger: (no request)\nBurn is flat."
+)
+
+
+async def test_unsaid_answers_reach_the_notes_run_and_the_mail(env):
+    env.meta["meeting"].update(transcriptAttachedAt=1, unsaid=UNSAID)
+    await mod.on_ended(ROOM)
+    assert env.line.await_args.args[3].endswith(_SAID)
+    assert env.send.await_args.kwargs["body_text"].endswith(_SAID)
+
+
+async def test_unsaid_answers_reach_the_mail_that_carries_the_transcript(legacy):
+    legacy.meta["meeting"]["unsaid"] = UNSAID
+    await mod.on_ended(ROOM)
+    assert legacy.send.await_args.kwargs["body_text"].endswith(_SAID)

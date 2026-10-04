@@ -406,6 +406,7 @@ async def test_a_member_reads_meetings_and_mail_both_ways(async_client_org_membe
         "reason": None,
         "ended_at": None,
         "notes": None,
+        "unsaid": [],
     }
     assert body["meetings"][0]["repeats"] is False and body["meetings"][0]["transcripts"] == []
     assert body["meetings"][0]["invited_by"] is None
@@ -760,3 +761,9 @@ async def test_the_badge_is_zero_before_the_workspace_has_an_address(async_clien
     ):
         r = await async_client_org_member.get("/api/v1/agent-mail/inbox/new", params={"since": "2026-10-03T12:00:00Z"})
     assert r.status_code == 200 and r.json() == {"count": 0}
+
+
+def test_the_view_returns_the_unsaid_answers_in_snake_case():
+    unsaid = [{"runId": "r1", "agentId": "a1", "agentName": "Forge", "request": "q", "answer": "a", "at": 5}]
+    view = agent_mail._meeting_view(M1, {"status": "ended", "inCallAt": 1, "unsaid": unsaid})
+    assert view["unsaid"] == [{"agent_id": "a1", "agent_name": "Forge", "request": "q", "answer": "a", "at": 5}]

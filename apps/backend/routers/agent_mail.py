@@ -272,6 +272,15 @@ def _notes_room(room_id: str, meeting: dict, default_room: str | None) -> str | 
     return room if room and room != room_id else None
 
 
+_UNSAID_FIELDS = {
+    "agent_id": "agentId",
+    "agent_name": "agentName",
+    "request": "request",
+    "answer": "answer",
+    "at": "at",
+}
+
+
 def _notes(meeting: dict) -> str | None:
     """The current occurrence's notes: posted (a run was asked for), skipped, pending once a call
     the bot was in is over, else None (no call, or not over yet)."""
@@ -299,6 +308,7 @@ def _meeting_view(room_id: str, meeting: dict, default_room: str | None = None) 
         "reason": _reason(meeting),
         "ended_at": meeting.get("endedAt"),
         "notes": _notes(meeting),
+        "unsaid": [{k: u.get(c) for k, c in _UNSAID_FIELDS.items()} for u in meeting.get("unsaid") or []],
     }
 
 

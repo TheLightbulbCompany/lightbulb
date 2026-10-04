@@ -121,6 +121,18 @@ async def test_leave_disconnects(fake):
     assert fake.disconnected == [f"meet:{ROOM}:100"]  # already gone: not twice
 
 
+async def test_a_packet_behind_its_senders_leave_seats_nobody(fake):
+    bridge = meet_bridge.MeetBridge(ROOM)
+    await bridge.feed(_audio(100, "Priya", b"\x00\x00"))
+    await bridge.feed(_event("participant_events.leave", 100, "Priya"))
+    await bridge.feed(_audio(100, "Priya", b"\x00\x00"))  # still on the wire when she left
+    await bridge.drain()
+    assert len(fake.rooms) == 1 and len(fake.frames) == 1
+    await bridge.feed(_event("participant_events.join", 100, "Priya"))  # back in the Meet: heard again
+    await bridge.feed(_audio(100, "Priya", b"\x00\x00"))
+    assert len(fake.rooms) == 2 and len(fake.frames) == 2
+
+
 async def test_the_bot_is_never_seated(fake):
     bridge = meet_bridge.MeetBridge(ROOM)
     await bridge.feed(_event("participant_events.join", 1, BOT))

@@ -34,6 +34,7 @@ class MeetBridge:
         self.room_id = room_id
         self._seats: dict[str, asyncio.Task[_Seat]] = {}
         self._heard: dict[str, int] = {}  # pid -> the order of their latest audio
+        self._left: set[str] = set()  # gone from the Meet: their last packets may still be on the wire
         self._tick = 0
         self._seated = 0
         self._capped = False
@@ -55,14 +56,18 @@ class MeetBridge:
             return  # the bot's own seat is the page (meetbot:), never a person
         try:
             if event == "participant_events.leave":
+                self._left.add(pid)
                 await self._unseat(pid)
             elif event == "participant_events.join":
+                self._left.discard(pid)
                 self._seat(pid, name)  # seated muted too; the connect runs beside the socket
             elif event == "audio_separate_raw.data":
                 pcm = base64.b64decode(data.get("buffer") or "", validate=True)
                 pcm = pcm[: len(pcm) // 2 * 2]
-                if not pcm:
-                    return  # an unmuted silent person sends empty packets
+                if not pcm or pid in self._left:
+                    # an unmuted silent person sends empty packets; a packet behind its sender's leave would
+                    # seat them again as someone nobody can remove (10-04 prod Meet: one person, two seats)
+                    return
                 self._tick += 1
                 self._heard[pid] = self._tick
                 if pid not in self._seats and len(self._seats) >= MAX_SEATS:

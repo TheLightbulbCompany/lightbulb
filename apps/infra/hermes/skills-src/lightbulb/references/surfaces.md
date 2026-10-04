@@ -128,7 +128,7 @@ When a participant's session is live, every room message you receive carries a
 `sessions` list inside the **Lightbulb room** structured context: `sessionId`,
 who owns it (`humanUserId`, `displayName`), `provider`, `cwdName`, `title`,
 `status` (`busy`, `idle`, `waiting-approval`, `unknown`), `latestEventSeq` and
-`lastEventAt`. Before you plan or edit code in that repository, call
+`lastEventAt`. `waiting-approval` means the session waits for its person (a permission prompt or a question), so do not send it work. `title` is the name the person gave the session, else the conversation's own title. One conversation is one `sessionId`: a resumed conversation keeps it. Before you plan or edit code in that repository, call
 `lightbulb_local_sessions` with `action: "read"`, that `sessionId`, and
 `afterSeq: max(0, latestEventSeq - 40)` to see what the human's terminal is
 doing; do not duplicate its work, and say which session (its title or folder)

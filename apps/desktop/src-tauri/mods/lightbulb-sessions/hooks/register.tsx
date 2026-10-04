@@ -2,6 +2,7 @@ import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 import type { SessionState } from '../types'
 import { bandLine, type Decision } from './state'
+import { bashTouchesProtected, classify, protectedPath, rowBody, rowLabel } from './rules'
 
 export const sharing = atom({ plugin: 'lightbulb-sessions', key: 'state' } as const, null as SessionState | null)
 const problem = atom({ plugin: 'lightbulb-sessions', key: 'error' } as const, null as string | null)
@@ -44,7 +45,50 @@ export async function decide($: EngineInterface, body: Decision): Promise<Sessio
   return call($, '/v1/decide', body)
 }
 
+// A turn a teammate's message started (or joined) may not change config; cleared when the main
+// turn ends. A module variable on purpose: a reload mid-turn clears it (fail-open for one turn,
+// accepted; the skill still applies). Any peer but the owner's own Lightbulb message sets it.
+let teammateTurn = false
+const refuse = (what: string) => ({ deny: `Lightbulb: a teammate's request cannot change ${what}. Ask your user to make this change.` })
+
 export const register: Register = on => {
+  on('session.append', async ($, e, next) => {
+    if (e.origin.kind === 'peer' && e.message.role === 'user' && !e.agentId) {
+      const text = e.message.content.flatMap(b => (b.type === 'text' ? [b.text] : [])).join('\n')
+      if (classify(text).kind !== 'owner') teammateTurn = true
+    }
+    return next(e)
+  })
+
+  on('turn.complete', async ($, e, next) => {
+    if (!e.agentId) teammateTurn = false // a subagent's run ending is not the teammate's turn ending
+    return next(e)
+  })
+
+  on('tool.call', { tool: 'Edit' }, ($, e, next) =>
+    teammateTurn && protectedPath(e.file_path) ? refuse(e.file_path) : next(e))
+  on('tool.call', { tool: 'Write' }, ($, e, next) =>
+    teammateTurn && protectedPath(e.file_path) ? refuse(e.file_path) : next(e))
+  on('tool.call', { tool: 'NotebookEdit' }, ($, e, next) =>
+    teammateTurn && protectedPath(e.notebook_path) ? refuse(e.notebook_path) : next(e))
+  on('tool.call', { tool: 'Bash' }, ($, e, next) =>
+    teammateTurn && bashTouchesProtected(e.command) ? refuse('that file') : next(e))
+
+  // Redrawn for the person only: the model still reads the labelled text.
+  on('ui.render', { component: 'UserMessage', props: { origin: { kind: 'peer' } } }, async ($, e, next) => {
+    if (e.props.isExpanded) return next(e)
+    const label = rowLabel(classify(e.props.text))
+    if (!label) return next(e)
+    const body = rowBody(e.props.text)
+    const { Box, Text } = $.ui.resolve(e)
+    return (
+      <Box>
+        <Text bold>{label}</Text>
+        <Text>  {body.length > 200 ? body.slice(0, 199) + '…' : body}</Text>
+      </Box>
+    )
+  })
+
   on('session.start', async ($, e, next) => {
     const refresh = async () => {
       const s = await fetchState($)

@@ -408,3 +408,10 @@ async def test_an_ambiguous_send_is_never_repeated_in_one_end_path(env):
     env.send.assert_awaited_once()  # across the three attempts
     assert "notesMailedAt" not in env.meta["meeting"]
     env.advance.assert_awaited_once_with(ROOM)
+
+
+async def test_the_organizer_mail_is_from_the_public_address(env):
+    env.meta["meeting"]["transcriptAttachedAt"] = 1
+    env.row["public_address"] = "agents@thelightbulb.company"
+    await mod.on_ended(ROOM)
+    assert env.send.await_args.kwargs["from_addr"] == "agents@thelightbulb.company"

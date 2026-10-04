@@ -232,7 +232,7 @@ async def _mail_organizer(
     if marked is None:
         return None
     sent = await ses_email.send_ses_email(
-        from_addr=address,
+        from_addr=await agent_email.public_for(address),
         to=organizer,
         subject=subject,
         body_text=body,

@@ -933,7 +933,7 @@ def _complaint(source=RECIPIENT, event_type="Complaint"):
 def test_ses_events_complaint_disables_the_one_mailbox(client, monkeypatch):
     _enable(monkeypatch)
     _claim_notice(monkeypatch)
-    monkeypatch.setattr(ses_inbound, "get_by_address", AsyncMock(return_value=_row()))
+    monkeypatch.setattr(ses_inbound, "resolve", AsyncMock(return_value=_row()))
     upd = AsyncMock(return_value={})
     monkeypatch.setattr(ses_inbound, "update_settings", upd)
     notify = AsyncMock(return_value="sent")
@@ -1005,7 +1005,7 @@ def test_ses_events_disable_failure_returns_503_no_notify(client, monkeypatch):
     it demonstrably isn't yet."""
     _enable(monkeypatch)
     _claim_notice(monkeypatch)
-    monkeypatch.setattr(ses_inbound, "get_by_address", AsyncMock(return_value=_row()))
+    monkeypatch.setattr(ses_inbound, "resolve", AsyncMock(return_value=_row()))
     monkeypatch.setattr(ses_inbound, "update_settings", AsyncMock(side_effect=RuntimeError("ddb blip")))
     notify = AsyncMock(return_value="sent")
     monkeypatch.setattr(ses_inbound, "send_to_owner", notify)
@@ -1028,7 +1028,7 @@ def test_ses_events_disable_failure_returns_503_no_notify(client, monkeypatch):
 def test_ses_events_retired_address_never_crosses_a_reused_slug(client, monkeypatch, sent_at, status):
     _enable(monkeypatch)
     _claim_notice(monkeypatch)
-    monkeypatch.setattr(ses_inbound, "get_by_address", AsyncMock(return_value=None))
+    monkeypatch.setattr(ses_inbound, "resolve", AsyncMock(return_value=None))
     monkeypatch.setattr(ses_inbound, "owner_for_host", AsyncMock(return_value=(OWNER_ID, "acme-robotics")))
     reserved = {"owner_id": OWNER_ID, "created_at": "2026-10-01T00:00:00+00:00"}
     monkeypatch.setattr(ses_inbound.company_slug_repo, "get_by_slug", AsyncMock(return_value=reserved))
@@ -1049,7 +1049,7 @@ def test_ses_events_notice_is_once_per_owner_per_day(client, monkeypatch):
     durable claim is the only bound. The rows are still disabled on the
     suppressed event."""
     _enable(monkeypatch)
-    monkeypatch.setattr(ses_inbound, "get_by_address", AsyncMock(return_value=_row()))
+    monkeypatch.setattr(ses_inbound, "resolve", AsyncMock(return_value=_row()))
     upd = AsyncMock(return_value={})
     monkeypatch.setattr(ses_inbound, "update_settings", upd)
     notify = AsyncMock(return_value="sent")
@@ -1287,7 +1287,7 @@ def test_a_complaint_whose_source_carries_a_display_name_pauses_the_mailbox(clie
     _enable(monkeypatch)
     _claim_notice(monkeypatch)
     get = AsyncMock(return_value=_row())
-    monkeypatch.setattr(ses_inbound, "get_by_address", get)
+    monkeypatch.setattr(ses_inbound, "resolve", get)
     monkeypatch.setattr(ses_inbound, "ensure_team_address", AsyncMock(return_value=(RECIPIENT, "ok")))
     upd = AsyncMock(return_value={})
     monkeypatch.setattr(ses_inbound, "update_settings", upd)
@@ -1306,9 +1306,7 @@ def test_a_complaint_whose_source_carries_a_display_name_pauses_the_mailbox(clie
 def test_a_complaint_on_a_retired_per_agent_address_pauses_the_team_mailbox(client, monkeypatch):
     _enable(monkeypatch)
     _claim_notice(monkeypatch)
-    monkeypatch.setattr(
-        ses_inbound, "get_by_address", AsyncMock(return_value=_row(address="friday@acme.agents.isol8.co"))
-    )
+    monkeypatch.setattr(ses_inbound, "resolve", AsyncMock(return_value=_row(address="friday@acme.agents.isol8.co")))
     ensure = AsyncMock(return_value=(TEAM_ADDRESS, "ok"))
     monkeypatch.setattr(ses_inbound, "ensure_team_address", ensure)
     upd = AsyncMock(return_value={})
@@ -1332,7 +1330,7 @@ def test_a_late_complaint_on_a_deleted_per_agent_address_pauses_the_team_mailbox
 
     _enable(monkeypatch)
     _claim_notice(monkeypatch)
-    monkeypatch.setattr(ses_inbound, "get_by_address", AsyncMock(return_value=None))
+    monkeypatch.setattr(ses_inbound, "resolve", AsyncMock(return_value=None))
     monkeypatch.setattr(
         agent_email_repo.company_slug_repo,
         "get_by_slug",
@@ -1355,7 +1353,7 @@ def test_a_late_complaint_on_a_deleted_per_agent_address_pauses_the_team_mailbox
 
 def test_a_complaint_from_an_unknown_domain_is_unknown_source(client, monkeypatch):
     _enable(monkeypatch)
-    monkeypatch.setattr(ses_inbound, "get_by_address", AsyncMock(return_value=None))
+    monkeypatch.setattr(ses_inbound, "resolve", AsyncMock(return_value=None))
     upd = AsyncMock()
     monkeypatch.setattr(ses_inbound, "update_settings", upd)
 

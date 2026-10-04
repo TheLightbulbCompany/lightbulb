@@ -26,7 +26,7 @@ from core.dynamodb import run_in_thread
 from core.repositories import agent_email_repo, container_repo, messaging_repo
 from core.repositories.agent_mail_inbox_repo import list_messages, list_page, reply_key
 from core.services import meeting_invites, messaging
-from core.services.agent_email import EMAIL_ADDRESS_RE, ensure_team_address, team_address
+from core.services.agent_email import EMAIL_ADDRESS_RE, ensure_team_address, public_for, team_address
 from core.services.agent_mail_send import _owner_email, send
 from core.services.rate_bucket import RateBucket
 
@@ -97,7 +97,7 @@ async def mint_address(owner_id: str, body: AddressRequest, request: Request) ->
     """The workspace's team address — the same for every agent, which sends from it as itself."""
     await _require_hook_token(owner_id, request)
     address, reason = await ensure_team_address(owner_id, await _owner_email(owner_id))
-    return {"address": address, "reason": reason}
+    return {"address": await public_for(address) if address else None, "reason": reason}
 
 
 @router.get("/u/{owner_id}/inbox")
@@ -108,7 +108,7 @@ async def inbox(owner_id: str, agent_id: str, request: Request, since: str | Non
         return {"address": None, "messages": []}
     rows = await list_messages(address, since=since, limit=limit, agent_id=agent_id)
     return {
-        "address": address,
+        "address": await public_for(address),
         "messages": [
             {
                 "key": reply_key(address, r["received_key"]),
@@ -127,7 +127,7 @@ async def inbox(owner_id: str, agent_id: str, request: Request, since: str | Non
 
 def _project(row: dict) -> dict:
     return {
-        "address": row.get("address"),
+        "address": row.get("public_address") or row.get("address"),
         "verified_senders": row.get("verified_senders") or [],
         "send_to_anyone": bool(row.get("send_to_anyone")),
         "outbound_disabled": row.get("outbound_disabled"),
@@ -290,7 +290,8 @@ async def team_inbox(
         reverse=True,
     )[:_MEETINGS_MAX]
     rows, nxt = await list_page(address, before=before, limit=limit)
-    return {"address": address, "meetings": meetings, "messages": [_mail_view(address, r) for r in rows], "next": nxt}
+    shown = row.get("public_address") or address
+    return {"address": shown, "meetings": meetings, "messages": [_mail_view(shown, r) for r in rows], "next": nxt}
 
 
 @router.get("/meetings/{meeting_id}/transcript")

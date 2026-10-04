@@ -2,6 +2,11 @@
 address ``agents@{slug}.{domain}`` (inbound mail is routed by recipient); a
 ``by-owner`` GSI finds it, and both wipes delete through it.
 
+A workspace with a ``public_address`` (``scripts/set_team_mail_identity.py``)
+also has an ALIAS row keyed by it: ``{address: <public>, alias_of: <routing>,
+owner_id}``. It holds no settings; ``resolve`` follows it, the wipes delete it
+with the owner's other rows, and ``agent_email.strictest`` skips it.
+
 Prefix-convention table (``core.dynamodb.get_table``), matching
 ``channel_link_repo``.
 """
@@ -69,6 +74,14 @@ async def get_by_address(address: str) -> dict | None:
     table = _get_table()
     response = await run_in_thread(table.get_item, Key={"address": normalize(address)}, ConsistentRead=True)
     return response.get("Item")
+
+
+async def resolve(address: str) -> dict | None:
+    """The mailbox row for ``address``, following an alias row's ``alias_of`` once."""
+    row = await get_by_address(address)
+    if row and row.get("alias_of"):
+        return await get_by_address(row["alias_of"])
+    return row
 
 
 async def is_team_address(address: str) -> tuple[str, str] | None:

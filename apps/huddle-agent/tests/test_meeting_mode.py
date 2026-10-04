@@ -693,3 +693,30 @@ async def test_a_meeting_that_idles_out_posts_its_unheard_answers_before_its_tra
     backend.transcript_gate.set()
     await leaving
     assert backend.finals == [True]
+
+
+async def test_a_meeting_voice_is_told_what_to_say_and_gets_no_note_it_could_read_out():
+    # 10-04 prod Meet: "Yes, I'm here. What's up?" to a question, then "Meeting is talking to me right now"
+    h, room, backend, lives, clock, log = await meeting()
+    backend.route_extra = ops([("forge", "list the open PRs", "name")])
+    speaker(h, "p1", "Priya", True)
+    await hear(h, "Forge, what PRs are open?")
+    notes = [c for c in lives[0].calls if c[0] == "thinking"]
+    assert not any("is talking to you" in str(c) for c in notes)
+    assert h_mod.MEET_ACK in str(lives[0].seed) and ("nudge",) in lives[0].calls
+
+    h, room, backend, lives, clock, log = make()  # a Live call keeps its note
+    await h.on_participants({"u1": "Prasiddha"})
+    await say(h, "u1", "hey Forge what did we ship")
+    assert ("thinking", "Prasiddha is talking to you", None) in lives[0].calls
+    assert h_mod.MEET_ACK not in str(lives[0].seed)
+
+
+async def test_a_meeting_voice_gets_no_working_note_for_each_tool_its_run_uses():
+    h, room, backend, lives, clock, log = await priya_asks_forge(rows=True)
+    (row,) = h._requests.items
+    calls = len(lives[0].calls)
+    tool = {"type": "tool_start", "tool": "github", "seq": 1}
+    h.on_data(None, "call.frame", packet(frame(row.run_id, "forge", tool)))
+    assert lives[0].calls[calls:] == []
+    assert h._state()["lightbulb.agent.forge.working"]  # the tile still shows it

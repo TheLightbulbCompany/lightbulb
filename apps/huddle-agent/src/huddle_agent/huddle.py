@@ -151,6 +151,9 @@ MEET_QUIET_S = 3.0
 # A meeting voice is muted, so the worker stops it for someone who keeps talking over it this long. Shorter is a
 # backchannel ("mm-hm", a cough): the agent carries on.
 TALK_OVER_S = 1.0
+# A meeting voice never hears the question (it is muted), so its seed says what to say once the run is started:
+# without it the model greeted ("Yes, I'm here. What's up?", 10-04 prod Meet).
+MEET_ACK = ' Say a short acknowledgement now, two or three words like "On it.", then wait for the result.'
 # The final POST's backoff and its whole budget. The budget stays under the job's shutdown window
 # (agent.py SHUTDOWN_S): the flush usually runs from the shutdown callback.
 FINAL_TRANSCRIPT_RETRY_S = (1, 2, 4, 8, 16)
@@ -2018,7 +2021,8 @@ class Huddle:
             seed.append(
                 (
                     "developer",
-                    f"{self._talker(identity, mark)} asked: {request} — already handed to your backend self; don't delegate it again",
+                    f"{self._talker(identity, mark)} asked: {request} — already handed to your backend self; don't delegate it again"
+                    + (f".{MEET_ACK}" if self.setting == "meeting" else ""),
                 )
             )
         # conversation engine §3.5: the one acknowledgement, of the rows still open after the awaits above
@@ -2061,12 +2065,16 @@ class Huddle:
         if v.announce:  # consumed when its audio starts (on_agent_state)
             if self._live_call(v, "append_instructions", ANNOUNCE_NOW):
                 self._live_call(v, "nudge")
-        elif v.path != "announce" and self._live_call(
-            v, "append_thinking", f"{self._talker(identity, mark)} is talking to you"
-        ):
-            if request or ack_said or said or identity in self._released:
-                # the request is already running (driven): the model acknowledges it, no typed user turn
-                self._live_call(v, "nudge")
+        elif v.path != "announce":
+            told = bool(request or ack_said or said)
+            # A meeting: the seed already says who said what and what to say about it. The "is talking to you"
+            # note was read out there ("Meeting is talking to me right now. Go ahead.", 10-04 prod Meet).
+            if (self.setting == "meeting" and told) or self._live_call(
+                v, "append_thinking", f"{self._talker(identity, mark)} is talking to you"
+            ):
+                if told or identity in self._released:
+                    # the request is already running (driven): the model acknowledges it, no typed user turn
+                    self._live_call(v, "nudge")
         self._released.discard(identity)
         self._runs.release(v.driven_run)  # sentences that came while it opened are said now, none dropped
         self._sync_state()
@@ -2591,7 +2599,8 @@ class Huddle:
         return v if v and run.gen == v.gen else None
 
     def progress(self, run: Run, text: str) -> None:
-        if v := self._same_session(run):
+        # not in a meeting: the model said each one aloud ("I'm still checking", 10-04 prod Meet); the tile shows it
+        if (v := self._same_session(run)) and self.setting != "meeting":
             self._live_call(
                 v,
                 "append_thinking",

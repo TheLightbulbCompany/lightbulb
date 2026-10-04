@@ -286,14 +286,19 @@ async def test_live_a_merely_mentioned_agent_does_not_end_a_neighbours_part():
     assert out["tasks"] == {"pul": "update", "frg": "check the CI that Gauge broke"}
 
 
-async def test_live_a_relayed_agent_is_a_cut_point_as_the_labels_dictate():
+async def test_live_a_relayed_agent_is_no_cut_point_and_gets_the_whole_line():
     text = "Forge, ask Friday for the numbers"
     out, _ = await _address(text, CREW, None, live=True)
     assert out["agents"] == ["frg"] and "tasks" not in out  # model down: Friday follows "ask", not a name
-    answers = _answers(["addressed", "relayed"])
-    out, _ = await _address(text, CREW, answers, live=True)
+    out, _ = await _address(text, CREW, _answers(["addressed", "relayed"]), live=True)
     assert out["agents"] == ["frg", "fri"]
-    assert out["tasks"] == {"frg": "ask", "fri": "for the numbers"}  # relayed counts as addressed
+    assert out["tasks"] == {"frg": "ask Friday for the numbers", "fri": text}
+
+
+async def test_live_two_addressed_and_a_relayed_third():
+    text = "Pulse, status. Forge, ask Gauge for the numbers"
+    out, _ = await _address(text, [*CREW, GAUGE], _answers(["addressed", "addressed", "relayed"]), live=True)
+    assert out["tasks"] == {"pul": "status", "frg": "ask Gauge for the numbers", "gau": text}
 
 
 async def test_live_model_all_gives_the_whole_line_and_a_bad_answer_keeps_the_own_part():

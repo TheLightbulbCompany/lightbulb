@@ -2948,15 +2948,17 @@ async def address(latest: dict, members: list[dict], *, history: Any = (), live:
         agent = c["agents"][0] if len(c["agents"]) == 1 else None
         if agent and (not c["humans"] or (label == "addressed" and _opens_with(text, c["name"], strong=True))):
             out["agents"] += [agent] if agent not in out["agents"] else []
-            hits.append((c, agent))
+            hits.append((c, agent, label))
         elif label == "addressed":
             out["humans"] += c["humans"]
     if split and len(hits) >= 2:
-        # Each agent's part runs from its name to the next addressed name, cut only now the labels exist.
-        segs = dict(split_tasks(text, [c for c, _ in hits]))
+        # Each addressed agent's part runs from its name to the next ADDRESSED name, cut only now the labels
+        # exist. A relayed agent is no cut point and gets the whole line (it needs who asked what).
+        segs = dict(split_tasks(text, [c for c, _, label in hits if label == "addressed"]))
         out["tasks"] = {}  # stays {} when nothing can be cut: /route then sends no per-agent requests
-        for c, agent in hits if segs else []:
-            out["tasks"].setdefault(agent, text if c["name"] in result["whole"] else segs.get(c["name"]) or text)
+        for c, agent, label in hits if segs else []:
+            whole = label == "relayed" or c["name"] in result["whole"]
+            out["tasks"].setdefault(agent, text if whole else segs.get(c["name"]) or text)
     put_metric("messaging.addressing.stage", dimensions={"path": out["path"], "surface": "live" if live else "chat"})
     return out
 

@@ -1226,7 +1226,7 @@ def _require_control(row: dict, request: LocalSessionCommand, *, allow_offline_s
         raise ApiProblem("LOCAL_SESSION_OFFLINE", "The desktop session is offline.")
     caps = row["capabilities"]
     if not row["capabilitiesVerified"]:
-        raise ApiProblem("LOCAL_SESSION_UNSUPPORTED", "Provider compatibility has not been verified.")
+        raise ApiProblem("LOCAL_SESSION_UNSUPPORTED", "Sending is unavailable for this session.")
     if request.kind == "approve":
         _require_pending_approval(row, request)
         return

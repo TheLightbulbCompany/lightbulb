@@ -148,3 +148,10 @@ describe("session archive", () => {
     expect(sessionUnread(s("offline", at(SESSION_ARCHIVE_AFTER_MS), 5), seen, now)).toBeNull();
   });
 });
+
+describe("sendBlockedReason wording", () => {
+  it("never tells a person their own session is not verified (owner ruling 2026-10-04)", () => {
+    const blocked = { ...base, controlUnavailableReason: "runtime-unverified" } as LocalSession;
+    expect(sendBlockedReason(blocked)).toBe("Sending is unavailable for this session.");
+  });
+});

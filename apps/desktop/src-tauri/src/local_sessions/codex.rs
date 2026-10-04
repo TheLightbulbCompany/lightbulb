@@ -27,7 +27,14 @@ const CONTROL_DAEMON_VERSION: &str = "0.159.3";
 const DESKTOP_CODEX: &str = "/Applications/ChatGPT.app/Contents/Resources/codex";
 
 fn accepted_version(version: &str) -> bool {
-    ACCEPTED_VERSIONS.contains(&version)
+    ACCEPTED_VERSIONS.contains(&version) || at_least(version, [0, 159, 2])
+}
+
+/// A stable `a.b.c` release at or above `floor`. Codex's managed daemon updates itself
+/// (0.160.0 while the CLI is 0.159.3); the 0.159 grammar is the floor, not the only build.
+fn at_least(version: &str, floor: [u32; 3]) -> bool {
+    let parts: Vec<u32> = version.split('.').map_while(|p| p.parse().ok()).collect();
+    parts.len() == 3 && version.split('.').count() == 3 && parts.as_slice() >= floor.as_slice()
 }
 
 /// `vscode` rollouts must name the Desktop app or the verified 0.157.1 TUI;
@@ -39,7 +46,7 @@ fn accepted_app_source(source: &str, payload: &Value) -> bool {
     let originator = payload["originator"].as_str().unwrap_or("");
     ACCEPTED_APP_ORIGINATORS.contains(&originator)
         || (originator == "codex-tui"
-            && matches!(payload["cli_version"].as_str(), Some("0.157.1" | "0.159.2" | "0.159.3")))
+            && payload["cli_version"].as_str().is_some_and(|v| v == "0.157.1" || at_least(v, [0, 159, 2])))
 }
 
 fn desktop_program() -> Option<PathBuf> {
@@ -47,17 +54,27 @@ fn desktop_program() -> Option<PathBuf> {
     fs::symlink_metadata(&path).ok()?.is_file().then_some(path)
 }
 
-/// Recent TUIs delegate rollout writing to a separately installed app server.
-/// Accept only the observed release layout, then verify the mapped binary.
-pub(super) fn daemon_program(home: &Path, execution: &Process) -> Option<PathBuf> {
+/// Recent TUIs delegate rollout writing to a separately installed app server, which updates
+/// itself. Any release under the managed daemon's releases directory counts: one of this user's
+/// regular files, nobody else can write it, reached without a symlink. Returns its path and the
+/// version its release directory names, so it is never executed to learn it.
+pub(super) fn daemon_release(home: &Path, execution: &Process) -> Option<(PathBuf, String)> {
     let root = home.join(".codex/packages/app-server-daemon/releases");
     let release = execution.executable.strip_prefix(&root).ok()?;
     let triple = if cfg!(target_arch = "aarch64") { "aarch64" } else { "x86_64" };
-    (["0.159.2", CONTROL_DAEMON_VERSION]
-        .iter()
-        .any(|version| release == Path::new(&format!("{version}-{triple}-apple-darwin/bin/codex"))))
-        .then(|| confined_path(home, &execution.executable).ok())
-        .flatten()
+    let mut parts = release.components();
+    let dir = parts.next()?.as_os_str().to_str()?;
+    let version = dir.strip_suffix(&format!("-{triple}-apple-darwin"))?;
+    if parts.as_path() != Path::new("bin/codex") || !at_least(version, [0, 159, 2]) {
+        return None;
+    }
+    let path = confined_path(home, &execution.executable).ok()?;
+    let meta = fs::symlink_metadata(&path).ok()?;
+    (meta.is_file() && meta.mode() & 0o022 == 0).then(|| (path, version.to_owned()))
+}
+
+pub(super) fn daemon_program(home: &Path, execution: &Process) -> Option<PathBuf> {
+    daemon_release(home, execution).map(|(path, _)| path)
 }
 
 /// Only the observed managed daemon protocol, never a global Codex socket or
@@ -245,12 +262,16 @@ pub(super) async fn capture(home: &Path, program: &Path, pid: u32) -> Result<Vec
     // yield one session.
     paths.sort();
     paths.dedup();
-    let installed = daemon_program(home, &execution)
-        .or_else(|| desktop_program().filter(|path| path == &execution.executable))
-        .unwrap_or_else(|| program.to_path_buf());
-    let version = runtime_version(&execution, &installed, "codex")
-        .await
-        .unwrap_or_default();
+    let version = match daemon_release(home, &execution) {
+        Some((path, version)) => named_release_version(&execution, &path, &version).await,
+        None => {
+            let installed = desktop_program()
+                .filter(|path| path == &execution.executable)
+                .unwrap_or_else(|| program.to_path_buf());
+            runtime_version(&execution, &installed, "codex").await
+        }
+    }
+    .unwrap_or_default();
     let control = control_socket(home, &execution).await;
     let mut found = Vec::with_capacity(paths.len());
     let mut refusal = None;
@@ -1605,6 +1626,49 @@ mod tests {
         assert!(socket_from_lsof(&listing, &root, uid + 1).is_none());
         assert!(socket_from_lsof(&listing, Path::new("/unrelated"), uid).is_none());
     }
+    #[test]
+    fn local_sessions_codex_accepts_a_newer_self_updated_daemon() {
+        use std::os::unix::fs::PermissionsExt;
+        let home = tempfile::tempdir().unwrap();
+        let home = fs::canonicalize(home.path()).unwrap();
+        let triple = if cfg!(target_arch = "aarch64") { "aarch64" } else { "x86_64" };
+        let releases = home.join(".codex/packages/app-server-daemon/releases");
+        let binary = releases.join(format!("0.160.0-{triple}-apple-darwin/bin/codex"));
+        fs::create_dir_all(binary.parent().unwrap()).unwrap();
+        fs::write(&binary, "").unwrap();
+        fs::set_permissions(&binary, fs::Permissions::from_mode(0o755)).unwrap();
+        let process = Process {pid: 1, birth_micros: 1, executable: binary.clone()};
+        assert_eq!(daemon_release(&home, &process), Some((binary.clone(), "0.160.0".into())));
+        assert!(accepted_version("0.160.0") && accepted_version("0.161.12") && accepted_version("1.0.0"));
+        assert!(!accepted_version("0.159.1") && !accepted_version("0.160.0-alpha.1") && !accepted_version("0.160"));
+        assert!(accepted_app_source("vscode", &json!({"originator":"codex-tui","cli_version":"0.160.0"})));
+        // Writable by others, an older release, a prerelease or a symlink escape: not the daemon.
+        fs::set_permissions(&binary, fs::Permissions::from_mode(0o775)).unwrap();
+        assert!(daemon_release(&home, &process).is_none());
+        fs::set_permissions(&binary, fs::Permissions::from_mode(0o755)).unwrap();
+        for version in ["0.158.0", "0.160.0-alpha.1"] {
+            let other = releases.join(format!("{version}-{triple}-apple-darwin/bin/codex"));
+            fs::create_dir_all(other.parent().unwrap()).unwrap();
+            fs::write(&other, "").unwrap();
+            assert!(daemon_release(&home, &Process {executable: other, ..process.clone()}).is_none());
+        }
+        let away = tempfile::tempdir().unwrap();
+        let outside = fs::canonicalize(away.path()).unwrap();
+        fs::create_dir_all(outside.join("bin")).unwrap();
+        fs::write(outside.join("bin/codex"), "").unwrap();
+        let linked = releases.join(format!("0.161.0-{triple}-apple-darwin"));
+        std::os::unix::fs::symlink(&outside, &linked).unwrap();
+        assert!(daemon_release(&home, &Process {executable: linked.join("bin/codex"), ..process.clone()}).is_none());
+        // Its rollout, reported and verified as 0.160.0, is mirrored unrestricted.
+        let root = home.join(".codex/sessions");
+        fs::create_dir_all(&root).unwrap();
+        let rollout = root.join("rollout-new.jsonl");
+        fs::write(&rollout, format!("{}\n", json!({"type":"session_meta","payload":{"id":"new","source":"vscode",
+            "originator":"codex-tui","history_mode":"paginated","cli_version":"0.160.0","cwd":"/tmp"}}))).unwrap();
+        let session = from_rollout(&root, process, &rollout, "0.160.0").unwrap();
+        assert_eq!((session.version.as_str(), session.restriction), ("0.160.0", None));
+    }
+
     #[test]
     fn local_sessions_codex_accepts_managed_daemon_rollout() {
         let home = tempfile::tempdir().unwrap();

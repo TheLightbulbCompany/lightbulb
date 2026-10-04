@@ -47,6 +47,8 @@ enum Rpc {
     Heartbeat {
         sent: Instant,
         wall: SystemTime,
+        /// The sessions this frame carried: its ack's `presence` speaks for these alone.
+        sids: Vec<String>,
     },
     Ended {
         key: String,
@@ -1232,6 +1234,7 @@ impl Host {
                         }
                         self.heartbeat_dirty.clear();
                         let frames = device_heartbeats_with_controls(&self.mirrors, &registered, relay_reads_stats, relay_reads_controls, relay_reads_live_terminal, relay_reads_remote_input, relay_reads_terminal, relay_reads_presence)?;
+                        super::presence::retain(&frames.iter().flat_map(super::presence::frame_sids).collect::<Vec<_>>());
                         heartbeat_frames = frames.into();
                         if heartbeat_frames.is_empty() && last_idle.elapsed() >= IDLE_HEARTBEAT {
                             last_idle = Instant::now();
@@ -1245,7 +1248,7 @@ impl Host {
                         let sent = Instant::now();
                         let wall = SystemTime::now();
                         send(socket, &frame).await?;
-                        pending_rpc = Some(Rpc::Heartbeat { sent, wall });
+                        pending_rpc = Some(Rpc::Heartbeat { sent, wall, sids: super::presence::frame_sids(&frame) });
                     }
                 }
             }
@@ -1450,10 +1453,10 @@ impl Host {
                         },
                         Some("local.device.heartbeat.ack") => {
                             let rpc = pending_rpc.take().ok_or("unsolicited session acknowledgment")?;
-                            let Rpc::Heartbeat{sent,wall} = rpc else {return Err("mismatched session acknowledgment".into());};
+                            let Rpc::Heartbeat{sent,wall,sids} = rpc else {return Err("mismatched session acknowledgment".into());};
                             super::snapshot::offer(&body["pickup"], &self.mirrors);
                             super::screen::offer(&body["watching"]);
-                            super::presence::offer_ack(&body["presence"], sent);
+                            super::presence::offer_ack(&body["presence"], sent, &sids);
                             super::resume::offer(&body["resume"], &self.mirrors);
                             let server = body["serverTime"].as_u64().ok_or("missing server time")?;
                             if let Some(fresh) = ack_anchor(server, sent, wall) {anchor = Some(fresh);}

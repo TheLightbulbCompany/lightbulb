@@ -88,6 +88,7 @@ pub(super) fn offer_frame(body: &Value) {
     }
 }
 
+#[cfg(test)]
 pub(super) fn set(sid: &str, entry: Entry) {
     if let Ok(mut map) = PRESENCE.lock() {
         map.insert(sid.to_owned(), (entry, None));

@@ -6,6 +6,7 @@ pub mod enrollment;
 pub(crate) mod lifecycle;
 mod native_mcp;
 mod native_tools;
+mod mod_socket;
 mod presence;
 pub use native_mcp::serve_mcp;
 pub(crate) mod snapshot;

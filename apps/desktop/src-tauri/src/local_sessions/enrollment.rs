@@ -272,6 +272,7 @@ impl Controller {
                     scope,
                 } = prepared;
                 let native_tools = super::native_tools::serve(scope.clone(), enrollment.clone(), identity.clone());
+                let mod_socket = super::mod_socket::serve(scope.clone(), enrollment.clone(), identity.clone());
                 // Pick-up snapshots run on their OWN task: sharing one `select!` with the
                 // relay would stall every relay frame while a snapshot does its work.
                 let snapshots = super::snapshot::run(
@@ -307,6 +308,7 @@ impl Controller {
                     let _snapshots = AbortOnDrop(tauri::async_runtime::spawn(snapshots));
                     let _resumes = AbortOnDrop(tauri::async_runtime::spawn(resumes));
                     let _native_tools = AbortOnDrop(tauri::async_runtime::spawn(native_tools));
+                    let _mod_socket = AbortOnDrop(tauri::async_runtime::spawn(mod_socket));
                     let hooks = async move {
                         let mut bytes = [0u8; 2048];
                         loop {

@@ -39,8 +39,11 @@ const clerk = vi.hoisted(() => ({
   membership: null as { role: string } | null,
 }));
 
+const openOrganizationProfile = vi.hoisted(() => vi.fn());
+
 vi.mock("@clerk/nextjs", () => ({
   useAuth: () => ({ getToken: () => Promise.resolve("jwt"), isLoaded: true }),
+  useClerk: () => ({ openOrganizationProfile }),
   useOrganization: () => ({
     organization: clerk.organization,
     membership: clerk.membership,
@@ -108,6 +111,20 @@ describe("WorkspaceMembersSection", () => {
 
     // It must be THAT endpoint — this component does not get its own.
     expect(teams.read).toHaveBeenCalledWith("/members");
+  });
+
+  it("opens Clerk's own members screen for roles and removal", async () => {
+    asAdmin();
+    openOrganizationProfile.mockReset();
+    const user = userEvent.setup();
+    render(<WorkspaceMembersSection />);
+
+    const roster = await screen.findByTestId("members-roster");
+    await user.click(within(roster).getByRole("button", { name: /manage members/i }));
+
+    expect(openOrganizationProfile).toHaveBeenCalledWith({
+      __experimental_startPath: "/organization-members",
+    });
   });
 
   it("says so plainly when the roster is empty", async () => {

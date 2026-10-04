@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
-import { useOrganization } from "@clerk/nextjs";
+import { useClerk, useOrganization } from "@clerk/nextjs";
 
 import { ApiError, useApi } from "@/lib/api";
 import { capture } from "@/lib/analytics";
@@ -19,6 +19,12 @@ import type { CompanyMember } from "@/components/teams/shared/types";
 // invitation with an admin/member role select was modelling a seat grant that
 // does not exist. What is here instead: the existing member roster, plus one
 // shareable join link per workspace.
+//
+// Roles and removal are NOT ours either: "Manage members" opens Clerk's own
+// organization screen on its Members tab (owner ruling 2026-10-04). That screen
+// also carries Clerk's email invitations and its leave/delete-workspace
+// buttons; the Clerk webhooks in routers/webhooks.py already handle all of
+// them.
 //
 // NOTHING below invents a membership model. The roster is `GET /teams/members`,
 // the same Clerk-enriched endpoint the chat workspace already renders its human
@@ -87,6 +93,7 @@ export function WorkspaceMembersSection() {
   // yet", not "personal". Reading it as personal would flash the create-a-
   // workspace card at an org admin (the same race DeleteAccountCard documents).
   const { organization, membership, isLoaded } = useOrganization();
+  const { openOrganizationProfile } = useClerk();
   const api = useApi();
   const teams = useTeamsApi();
 
@@ -232,7 +239,8 @@ export function WorkspaceMembersSection() {
       <div className="settings-card" data-testid="members-roster">
         <div className="settings-card-title">In this workspace</div>
         <div className="settings-card-desc">
-          Everyone here shares the same agents, rooms, and subscription.
+          Everyone here shares the same agents, rooms, and subscription. To make someone an
+          admin or remove them, use Manage members.
         </div>
 
         {rosterLoading && (
@@ -292,6 +300,19 @@ export function WorkspaceMembersSection() {
             ))}
           </ul>
         )}
+
+        {/* Outside the roster states on purpose: Clerk's screen does not depend
+            on our member list having loaded. */}
+        <button
+          type="button"
+          className="settings-btn-outline"
+          style={{ marginTop: 12 }}
+          onClick={() =>
+            openOrganizationProfile({ __experimental_startPath: "/organization-members" })
+          }
+        >
+          Manage members
+        </button>
       </div>
 
       <div className="settings-card" data-testid="members-join-link">

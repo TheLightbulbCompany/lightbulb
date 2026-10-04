@@ -4,7 +4,7 @@ import "@/components/messaging/messaging.css";
 import "./mail.css";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { ArrowLeft, Check, Copy, Mail, RefreshCw } from "lucide-react";
-import { agentDisplayName } from "@lightbulb/shared";
+import { agentDisplayName, ApiError } from "@lightbulb/shared";
 
 import { Button } from "@/components/ui/button";
 import { useAgents } from "@/hooks/useAgents";
@@ -50,7 +50,7 @@ function useCopy(text: string | undefined) {
 
 function CopyButton({ text }: { text: string | undefined }) {
   const { copied, copy } = useCopy(text);
-  return <Button type="button" variant="ghost" size="sm" aria-label="Copy address" onClick={() => void copy()}>
+  return <Button type="button" variant="ghost" size="sm" aria-label={copied ? "Copied" : "Copy address"} onClick={() => void copy()}>
     {copied ? <><Check size={14} aria-hidden="true" /> Copied</> : <Copy size={14} aria-hidden="true" />}
   </Button>;
 }
@@ -103,18 +103,39 @@ export function MailPanel({ item, visible = true }: { item: string | null; visib
     [entries, snapshot],
   );
 
-  // An unknown item (not loaded, or a stale link) falls back to no selection.
-  const requested = item ? entries.find((e) => e.key === item) ?? null : null;
-  const fallback = wide
-    ? sections.find((s) => s.key.startsWith("day-"))?.entries[0] ?? entries[0] ?? null
+  // The item is looked up across every loaded entry, so a filter chip never drops the selection.
+  const allEntries = useMemo(
+    () => (filter === "all" ? entries : buildSections(meetings, messages, "all", now).flatMap((s) => s.entries)),
+    [filter, entries, meetings, messages, now],
+  );
+  const requested = item ? allEntries.find((e) => e.key === item) ?? null : null;
+  // An unknown item (not in the loaded pages, or a stale link) is dropped from the URL, so the
+  // URL always names what is shown and a later "Load more" does not pop a detail open.
+  const unknownItem = Boolean(item) && pages !== undefined && requested === null;
+  useEffect(() => {
+    if (unknownItem && visible) window.history.replaceState(null, "", buildPanelUrl("mail", {}));
+  }, [unknownItem, visible]);
+  // Wide with no item: the newest dated row, kept while it exists so a live refresh does not
+  // swap what is being read.
+  const [autoKey, setAutoKey] = useState<string | null>(null);
+  const kept = autoKey ? entries.find((e) => e.key === autoKey) ?? null : null;
+  const fallback = wide && !requested
+    ? kept ?? sections.find((s) => s.key.startsWith("day-"))?.entries[0] ?? entries[0] ?? null
     : null;
+  if (fallback && fallback !== kept && fallback.key !== autoKey) setAutoKey(fallback.key);
   const selected: MailEntry | null = requested ?? fallback;
 
-  // Narrow: Back (button, Escape, or the browser) lands focus on the row that opened the detail.
+  // Narrow: opening a row moves focus to Back (the row unmounts, and Escape needs focus inside
+  // the detail); Back (button, Escape, or the browser) lands focus on the row that opened it.
   const opener = useRef<string | null>(null);
+  const backRef = useRef<HTMLButtonElement>(null);
   const showingDetail = !wide && requested !== null;
   useEffect(() => {
-    if (showingDetail || !opener.current) return;
+    if (!opener.current) return;
+    if (showingDetail) {
+      backRef.current?.focus();
+      return;
+    }
     const key = opener.current;
     opener.current = null;
     rootRef.current?.querySelector<HTMLElement>(`[data-mail-key="${CSS.escape(key)}"]`)?.focus();
@@ -141,14 +162,16 @@ export function MailPanel({ item, visible = true }: { item: string | null; visib
   </header>;
 
   let body: React.ReactNode;
-  if (noAddress) {
+  const addressFailed = address.error && !(address.error instanceof ApiError && address.error.status === 409);
+  if (noAddress && !addressFailed) {
     body = address.data
       ? <MailEmpty address={address.data.address} />
       : <p role="status" className="mail-panel__message">Your workspace address is being set up…</p>;
-  } else if (inbox.error && !pages) {
+  } else if ((inbox.error && !pages) || addressFailed) {
     body = <div role="alert" className="mail-panel__message">
       <p>Couldn&apos;t load mail.</p>
-      <Button type="button" variant="outline" size="sm" onClick={() => void inbox.mutate()}>Retry</Button>
+      <Button type="button" variant="outline" size="sm"
+        onClick={() => void (addressFailed ? address.mutate() : inbox.mutate())}>Retry</Button>
     </div>;
   } else if (!pages) {
     body = <div className="mail-panel__skeleton" aria-busy="true" aria-label="Loading mail">
@@ -174,8 +197,14 @@ export function MailPanel({ item, visible = true }: { item: string | null; visib
       </div>
     </div>;
     const detail = selected && <div className="mail-detail-pane"
-      onKeyDown={(e) => { if (!wide && e.key === "Escape") { e.preventDefault(); back(); } }}>
-      {!wide && <button type="button" className="mail-back" onClick={back}><ArrowLeft size={16} aria-hidden="true" /> Mail</button>}
+      onKeyDown={(e) => {
+        if (wide || e.key !== "Escape") return;
+        // Escape in a filled Find field clears the search (the browser's own behaviour), not the detail.
+        if (e.target instanceof HTMLInputElement && e.target.value) return;
+        e.preventDefault();
+        back();
+      }}>
+      {!wide && <button ref={backRef} type="button" className="mail-back" onClick={back}><ArrowLeft size={16} aria-hidden="true" /> Mail</button>}
       {selected.kind === "mail"
         ? <MailDetail key={selected.key} message={selected.message} at={selected.at} orgId={orgId}
           agentName={selected.message.agent_id ? agentName(selected.message.agent_id) : null} />

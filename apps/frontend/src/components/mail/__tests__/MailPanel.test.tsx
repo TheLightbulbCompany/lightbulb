@@ -100,7 +100,9 @@ describe("MailPanel", () => {
     expect(nav.urls.at(-1)).toBe("/chat?panel=mail&item=mail%3Ak2");
     expect(await screen.findByRole("heading", { name: "Quarterly numbers" })).toBeInTheDocument();
     expect(screen.queryByText("vendor@x.y")).toBeNull();
-    fireEvent.keyDown(screen.getByRole("button", { name: "Mail" }), { key: "Escape" });
+    const backButton = screen.getByRole("button", { name: "Mail" });
+    await waitFor(() => expect(backButton).toHaveFocus()); // the opening row unmounted
+    fireEvent.keyDown(document.activeElement!, { key: "Escape" });
     await waitFor(() => expect(row("mail:k2")).toHaveFocus());
     expect(nav.urls.at(-1)).toBe("/chat?panel=mail");
   });
@@ -113,6 +115,41 @@ describe("MailPanel", () => {
     expect(row("mail:k2")).toHaveAttribute("aria-current", "true");
     expect(screen.getByText("vendor@x.y")).toBeInTheDocument(); // the list stays beside it
     expect(nav.urls).toEqual([]);
+  });
+
+  it("wide: a live refresh does not swap the auto-selected mail", async () => {
+    vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockReturnValue({ width: 1000 } as DOMRect);
+    mockGet.mockResolvedValue({ ...page, messages: [{ ...received, truncated: false }, sent] });
+    const view = renderMail();
+    expect(await screen.findByRole("heading", { name: "Quarterly numbers" })).toBeInTheDocument();
+    const newer = { ...received, key: "k3", subject: "Newer mail", at: new Date().toISOString(), truncated: false };
+    mockGet.mockResolvedValue({ ...page, messages: [newer, { ...received, truncated: false }, sent] });
+    fireEvent.click(screen.getByRole("button", { name: "Refresh mail" }));
+    expect(await screen.findByText("Newer mail")).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Quarterly numbers" })).toBeInTheDocument();
+    expect(row("mail:k2")).toHaveAttribute("aria-current", "true");
+    view.unmount();
+  });
+
+  it("drops an item that is not in the loaded pages from the URL", async () => {
+    mockGet.mockResolvedValue(page);
+    const replace = vi.spyOn(window.history, "replaceState");
+    renderMail("mail:not-loaded");
+    await screen.findByText("Quarterly numbers");
+    await waitFor(() => expect(replace).toHaveBeenCalledWith(null, "", "/chat?panel=mail"));
+  });
+
+  it("keeps a meeting selected when the Mail chip hides it", async () => {
+    mockGet.mockResolvedValue(page);
+    mockDownload.mockResolvedValue({ text: async () => "[20:00] Pat: hi" });
+    vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockReturnValue({ width: 1000 } as DOMRect);
+    const replace = vi.spyOn(window.history, "replaceState");
+    renderMail(`meeting:${MEETING}:${T1}`);
+    await screen.findByRole("searchbox", { name: "Find in transcript" });
+    fireEvent.click(within(screen.getByRole("toolbar", { name: "Filter mail" })).getByRole("button", { name: "Mail" }));
+    expect(document.querySelector(`[data-mail-key="meeting:${MEETING}:${T1}"]`)).toBeNull(); // row filtered out
+    expect(screen.getByRole("heading", { name: "Weekly sync" })).toBeInTheDocument();
+    expect(replace).not.toHaveBeenCalled();
   });
 
   it("roves focus with arrows, j and End, and opens only on Enter", async () => {
@@ -137,7 +174,7 @@ describe("MailPanel", () => {
     expect(nav.urls.at(-1)).toContain(`item=${encodeURIComponent(keys[2])}`);
   });
 
-  it("finds in the transcript, counts matches, and ignores j/k in the field", async () => {
+  it("finds in the transcript, counts matches, and Escape in a filled Find stays put", async () => {
     mockGet.mockResolvedValue(page);
     mockDownload.mockResolvedValue({ text: async () => "[20:00] Pat: Budget first\n[20:01] Sam: no budget talk\n[20:02] Pat: ok" });
     renderMail(`meeting:${MEETING}:${T1}`);
@@ -149,8 +186,8 @@ describe("MailPanel", () => {
     expect(document.querySelectorAll("mark")).toHaveLength(2);
     expect(screen.queryByText("ok")).toBeNull();
     find.focus();
-    fireEvent.keyDown(find, { key: "j" });
-    expect(find).toHaveFocus();
+    fireEvent.keyDown(find, { key: "Escape" }); // a filled Find: Escape clears the search, not the detail
+    expect(nav.urls).toEqual([]);
     fireEvent.change(find, { target: { value: "" } });
     expect(screen.getByText("ok")).toBeInTheDocument();
   });

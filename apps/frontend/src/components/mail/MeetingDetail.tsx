@@ -15,10 +15,9 @@ import {
   meetingWhen,
   parseTranscript,
   shortDay,
+  UPCOMING,
   type MailEntry,
 } from "./mailModel";
-
-const UPCOMING = new Set(["scheduled", "bot_created"]);
 
 export function MeetingDetail({ entry, orgId, now, onOpen, onOpenNotes }: {
   entry: MailEntry & { kind: "meeting" };
@@ -71,7 +70,7 @@ function Transcript({ meetingId, startAt, orgId }: { meetingId: string; startAt:
   // Fetched only while this occurrence is open; cached per workspace + meeting + occurrence.
   const { data, error, mutate, isValidating } = useSWR<string>(
     orgId ? ["mail-transcript", orgId, meetingId, startAt] : null,
-    async () => (await api.downloadBlob(`/agent-mail/meetings/${meetingId}/transcript?start_at=${startAt}`)).text(),
+    async () => (await api.downloadBlob(`/agent-mail/meetings/${encodeURIComponent(meetingId)}/transcript?start_at=${startAt}`)).text(),
     { revalidateOnFocus: false, shouldRetryOnError: false },
   );
   const parts = useMemo(() => (data === undefined ? [] : parseTranscript(data, startAt)), [data, startAt]);

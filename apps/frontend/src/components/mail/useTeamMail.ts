@@ -56,7 +56,8 @@ export function useTeamMail() {
   const address = useSWR<{ address: string }>(
     noAddress && orgId ? ["/agent-mail/address", orgId] : null,
     ([url]: [string, string]) => api.get(url) as Promise<{ address: string }>,
-    { revalidateOnFocus: true, shouldRetryOnError: false, onSuccess: () => void inbox.mutate() },
+    // A 409 here means the address is still being created: retry a few times (SWR's backoff).
+    { revalidateOnFocus: true, errorRetryCount: 5, onSuccess: () => void inbox.mutate() },
   );
   return { orgId, inbox, noAddress, address, loadedAt };
 }

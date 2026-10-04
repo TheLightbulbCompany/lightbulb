@@ -91,7 +91,7 @@ export function parseItemKey(item: string | null | undefined): ParsedItemKey | n
 // ---- statuses --------------------------------------------------------------
 
 const LIVE = new Set(["in_call"]);
-const UPCOMING = new Set(["scheduled", "bot_created"]);
+export const UPCOMING: ReadonlySet<string> = new Set(["scheduled", "bot_created"]);
 const PAST = new Set(["ended", "cancelled", "bot_failed"]);
 
 export const STATUS_WORD: Record<string, string> = {
@@ -102,10 +102,6 @@ export const STATUS_WORD: Record<string, string> = {
   cancelled: "Cancelled",
   bot_failed: "Couldn't join",
 };
-
-export function isUpcomingStatus(status: string | null): boolean {
-  return UPCOMING.has(status ?? "") || LIVE.has(status ?? "");
-}
 
 // ---- sections --------------------------------------------------------------
 

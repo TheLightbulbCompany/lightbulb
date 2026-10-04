@@ -133,8 +133,8 @@ who owns it (`humanUserId`, `displayName`), `provider`, `cwdName`, `title`,
 `afterSeq: max(0, latestEventSeq - 40)` to see what the human's terminal is
 doing; do not duplicate its work, and say which session (its title or folder)
 you looked at when you report. `resources` lists the same sessions on demand.
-An older entry may carry `kind: background` (a Claude Code background job from
-before explicit sharing); read it the same way. New background jobs are not shared.
+A Claude Code background job is a session like any other and is in the list (an
+old entry may still carry `kind: background`; read it the same way).
 A session missing from the list is not live. The list is omitted in
 conversations that include people from outside the workspace.
 

@@ -405,6 +405,7 @@ async def test_a_login_ask_carries_a_hint_when_the_sites_connector_is_connected(
         ("t.co", True),
         ("someone.github.io", True),
         ("10.0.0.7", True),
+        ("intranet.corp.madeuptld", True),  # no suffix the list knows: the exact host is the site
         ("com.ph", False),  # public suffixes: would cover every site under them
         ("co.uk", False),
         ("github.io", False),

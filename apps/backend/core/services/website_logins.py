@@ -128,7 +128,10 @@ def is_site(site: str) -> bool:
         ipaddress.ip_address(site)
         return True  # an IP address is its own site
     except ValueError:
-        return _PSL(site).top_domain_under_public_suffix == site
+        parts = _PSL(site)
+        # No suffix the list knows (an intranet name, a suffix newer than the snapshot): the
+        # host is its own site, and a sign-out of it matches that exact host only.
+        return parts.top_domain_under_public_suffix == site or not parts.suffix
 
 
 async def connector_hint(owner_id: str, origin: str) -> str | None:

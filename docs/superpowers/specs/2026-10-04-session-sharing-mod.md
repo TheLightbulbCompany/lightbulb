@@ -42,7 +42,9 @@ step, and call HTTP over a Unix socket (`$.http.fetch(url, { socketPath })`).
    owner typing in the Lightbulb app (web, desktop, phone) passes untouched; a frame without
    it (an older backend) is stripped. The owner's own terminal does not come through here. An
    escape a teammate's frame leaves unfinished is held for the next frame, so a band key split
-   across frames never reaches the pty. There is no paused concept: remote input is never
+   across frames never reaches the pty. A focused band would still take a teammate's plain
+   `a`/`d`/`p`, so `mod.sock` refuses a decision (409, "A teammate just typed here. Press again
+   to confirm.") within 2 s of a teammate's bytes reaching that session. There is no paused concept: remote input is never
    frozen while a request waits. An older desktop does freeze it; it lacks the `bandOwnerOnly`
    device feature, and only for such a Mac the public session carries `inputPaused` and the
    web says "Paused while <owner> answers a request to join".

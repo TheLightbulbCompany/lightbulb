@@ -19,7 +19,8 @@ use std::io::Write;
 use std::os::unix::net::UnixStream;
 use std::sync::atomic::Ordering::SeqCst;
 use std::sync::mpsc::{sync_channel, Receiver, RecvTimeoutError, TrySendError};
-use std::sync::Arc;
+use std::collections::BTreeMap;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 /// The backend's per-call bound on raw bytes.
@@ -29,6 +30,30 @@ const QUEUE: usize = 64;
 const TICK: Duration = Duration::from_millis(50);
 /// After a failed attach, inputs are dropped this long before trying again.
 const RETRY: Duration = Duration::from_secs(1);
+
+/// A band decision is refused this long after a teammate's bytes reached the session: the band
+/// may already be focused by the owner, and `a`/`d`/`p` are its hotkeys (spec §2.4).
+pub(super) const TEAMMATE_QUIET: Duration = Duration::from_secs(2);
+/// When a teammate's bytes last reached each session's holder.
+static TEAMMATE_TYPED: Mutex<BTreeMap<String, Instant>> = Mutex::new(BTreeMap::new());
+
+/// Records a write that reached the holder; only a teammate's counts.
+fn wrote(sid: &str, from_owner: bool, now: Instant) {
+    if from_owner {
+        return;
+    }
+    if let Ok(mut map) = TEAMMATE_TYPED.lock() {
+        map.retain(|_, at| now.saturating_duration_since(*at) < TEAMMATE_QUIET);
+        map.insert(sid.to_owned(), now);
+    }
+}
+
+/// Whether a teammate's bytes reached `sid` within `TEAMMATE_QUIET` of `now`.
+// ponytail: an owner keypress inside a teammate's 2 s typing burst needs a second press; a
+// per-key origin through the holder would lift that.
+pub(super) fn teammate_typed_recently(sid: &str, now: Instant) -> bool {
+    TEAMMATE_TYPED.lock().ok().and_then(|m| m.get(sid).copied()).is_some_and(|at| now.saturating_duration_since(at) < TEAMMATE_QUIET)
+}
 
 /// Keys for the holder, and whether the session's owner typed them.
 pub(super) type Typed = (Vec<u8>, bool);
@@ -73,8 +98,8 @@ fn write(sid: &str, generation: &str, ctl: &Ctl, inputs: &Receiver<Typed>) {
     let mut tried: Option<Instant> = None;
     let mut carry = Carry::default();
     while !ctl.stopped() {
-        let keys = match inputs.recv_timeout(TICK) {
-            Ok((keys, from_owner)) => carry.feed(&keys, from_owner),
+        let (keys, from_owner) = match inputs.recv_timeout(TICK) {
+            Ok((keys, from_owner)) => (carry.feed(&keys, from_owner), from_owner),
             Err(RecvTimeoutError::Timeout) => continue,
             Err(RecvTimeoutError::Disconnected) => break,
         };
@@ -88,6 +113,7 @@ fn write(sid: &str, generation: &str, ctl: &Ctl, inputs: &Receiver<Typed>) {
             }
             let Some(c) = conn.as_mut() else { break };
             if c.write_all(&encode(INPUT, &keys)).is_ok() {
+                wrote(sid, from_owner, Instant::now());
                 break;
             }
             // The holder went away or restarted: reattach once, now.
@@ -302,6 +328,19 @@ mod tests {
     use super::*;
     use serde_json::json;
     use std::collections::BTreeMap;
+
+    #[test]
+    fn remote_input_a_teammate_write_holds_band_decisions_for_two_seconds() {
+        let (sid, owner_sid) = ("55555555-5555-4555-8555-555555555555", "66666666-6666-4666-8666-666666666666");
+        let now = Instant::now();
+        assert!(!teammate_typed_recently(sid, now));
+        wrote(sid, false, now);
+        assert!(teammate_typed_recently(sid, now), "a decide right after a teammate's write is refused");
+        assert!(teammate_typed_recently(sid, now + TEAMMATE_QUIET - Duration::from_millis(1)));
+        assert!(!teammate_typed_recently(sid, now + TEAMMATE_QUIET), "allowed once the window passes");
+        wrote(owner_sid, true, now);
+        assert!(!teammate_typed_recently(owner_sid, now), "the owner's frames never hold a decision");
+    }
 
     #[test]
     fn remote_input_strips_terminal_probe_replies_and_keeps_typing() {

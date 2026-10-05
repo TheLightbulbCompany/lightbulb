@@ -141,6 +141,9 @@ async fn answer(mut socket: UnixStream, scope: PathBuf, enrollment: Enrollment, 
             let Ok(payload) = decision_body(&caller.session_id, &caller.generation, &body) else {
                 return reply(&mut socket, "400 Bad Request", &json!({"error":"invalid_decision"})).await;
             };
+            if super::remote_input::teammate_typed_recently(&caller.session_id, std::time::Instant::now()) {
+                return reply(&mut socket, "409 Conflict", &json!({"error":"teammate_typing","message":"A teammate just typed here. Press again to confirm."})).await;
+            }
             if stale(&caller.session_id, &payload) {
                 return reply(&mut socket, "409 Conflict", &json!({"error":"stale","message":"That request is no longer waiting."})).await;
             }

@@ -6,7 +6,7 @@ use crate::session_pickup::{self as pickup, git, git_run, normalize_remote, Down
 use serde::Deserialize;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
-use std::io::{BufRead, BufReader, Read, Write};
+use std::io::{BufRead, BufReader, Write};
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -321,6 +321,7 @@ pub fn main(link: &str) -> i32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::Read;
 
     const API: &str = "https://api-dev.thelightbulb.company";
     const TOKEN: &str = "abcdefghijklmnopqrstuvwxyz0123456789ABCDEFG";

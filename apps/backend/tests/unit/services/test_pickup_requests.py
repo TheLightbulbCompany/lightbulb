@@ -66,7 +66,10 @@ async def test_a_teammate_asks_once_and_only_the_owner_hears(transport):
     assert [(n["user"], n["state"], n["title"]) for n in log["notices"]] == [
         (ALICE.user_id, "join_request", f"Bob wants to pick up {sid[:8]}")
     ]
-    assert log["notices"][0]["body"] == "Allow lets everyone in the workspace pick up this session on their Mac."
+    assert log["notices"][0]["body"] == (
+        "Allow lets everyone in the workspace pick up this session on their Mac. It uploads the whole "
+        "conversation and your uncommitted changes as they are. Nothing is redacted."
+    )
     [row] = log["activity"]
     assert row["subtype"] == "join_request" and row["request"] == "pickup"
     assert row["requesterId"] == BOB.user_id and row["requestId"] == first["requestId"]

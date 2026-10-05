@@ -2064,6 +2064,14 @@ async def decide_pickup_request(
     return _session_public(row, auth.user_id)
 
 
+#: What Allow on a pick-up request shares, in the substance of the owner's own pick-up switch
+#: warning (SessionDetails.tsx). Activity and the push both say it.
+PICKUP_ALLOW_COPY = (
+    "Allow lets everyone in the workspace pick up this session on their Mac. It uploads the whole "
+    "conversation and your uncommitted changes as they are. Nothing is redacted."
+)
+
+
 def pickup_request_title(name: str, row: dict) -> str:
     from core.services import notification_copy as copy
 
@@ -2094,7 +2102,7 @@ async def _notify_join_request(row: dict, requester: str, *, kind: str = "join")
         name = "A teammate"
     if pickup:
         title = pickup_request_title(name, row)
-        body = "Allow lets everyone in the workspace pick up this session on their Mac."
+        body = PICKUP_ALLOW_COPY
     else:
         title = join_request_title(name, row)
         body = "Allow them to send follow-ups and answer prompts in this session."

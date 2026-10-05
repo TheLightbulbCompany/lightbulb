@@ -841,7 +841,10 @@ async def test_a_pick_up_request_shows_and_is_answered_in_activity(transport):
     [item] = joins(await feed(ALICE))
     assert item.id == f"pickup:{sid}:{BOB.user_id}:{rid}" and item.state == "open"
     assert item.summary.title == f"Bob wants to pick up {sid[:8]}"
-    assert item.summary.reason == "Allow lets everyone in the workspace pick up this session on their Mac."
+    assert item.summary.reason == (
+        "Allow lets everyone in the workspace pick up this session on their Mac. It uploads the whole "
+        "conversation and your uncommitted changes as they are. Nothing is redacted."
+    )
     assert [a.id for a in item.actions] == ["allow", "decline"]
     decide = service.decide_pickup_request
     calls = []

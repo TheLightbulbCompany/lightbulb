@@ -35,6 +35,11 @@ export function canControlSession(session: LocalSession, own: boolean, userId?: 
     (own || session.teamControl === true || (!!userId && (session.allowedSenders ?? []).includes(userId)));
 }
 
+/** The owner's row for a pick-up request, web and phone alike. It says what Allow shares,
+ * in the substance of the owner's own pick-up switch warning. */
+export const pickupRequestLine = (name: string) =>
+  `${name} wants to pick up this session. Allow lets everyone in the workspace pick it up, and uploads the whole conversation and your uncommitted changes as they are. Nothing is redacted.`;
+
 /**
  * A teammate's "Ask to join": `state` is the server's answer (none, pending, declined),
  * held as pending the moment they tap. Asking again while pending is a no-op server-side.

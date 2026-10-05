@@ -251,7 +251,7 @@ it("offers no Ask to pick up on a Codex session", async () => {
 it("lets the owner answer a pick-up request in the session itself", async () => {
   const decidePickup = vi.fn(async () => session);
   focus({ session: { ...session, status: "idle", pendingPickups: ["bob"], pendingPickupIds: { bob: "req-9" } }, ownerName: "You", own: true }, { decidePickup });
-  expect(await screen.findByText("Alice wants to pick up this session.")).toBeInTheDocument();
+  expect(await screen.findByText("Alice wants to pick up this session. Allow lets everyone in the workspace pick it up, and uploads the whole conversation and your uncommitted changes as they are. Nothing is redacted.")).toBeInTheDocument();
   await userEvent.click(screen.getByRole("button", { name: "Allow" }));
   expect(decidePickup).toHaveBeenCalledWith("s1", "bob", "allow", "req-9");
 });

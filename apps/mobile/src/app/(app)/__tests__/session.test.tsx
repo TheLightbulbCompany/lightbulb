@@ -383,11 +383,11 @@ describe("session screen", () => {
   it("lets the owner allow a teammate who asked to pick up", async () => {
     mockSession = { ...base, pendingPickups: ["user-b"], pendingPickupIds: { "user-b": "pick-1" } };
     await render(<SessionScreen />);
-    expect(await screen.findByText("Bob wants to pick up this session.")).toBeTruthy();
+    expect(await screen.findByText("Bob wants to pick up this session. Allow lets everyone in the workspace pick it up, and uploads the whole conversation and your uncommitted changes as they are. Nothing is redacted.")).toBeTruthy();
     await fireEvent.press(screen.getByLabelText("Allow Bob"));
     expect(mockDecidePickup).toHaveBeenCalledWith("sess-1", "user-b", "allow", "pick-1");
     expect(mockDecideJoin).not.toHaveBeenCalled();
-    await waitFor(() => expect(screen.queryByText("Bob wants to pick up this session.")).toBeNull());
+    await waitFor(() => expect(screen.queryByText("Bob wants to pick up this session. Allow lets everyone in the workspace pick it up, and uploads the whole conversation and your uncommitted changes as they are. Nothing is redacted.")).toBeNull());
   });
 
   it("keeps the request and says so when the answer did not go through", async () => {

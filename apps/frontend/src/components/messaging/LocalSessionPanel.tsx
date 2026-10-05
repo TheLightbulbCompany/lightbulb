@@ -6,7 +6,7 @@ import { capture } from "@/lib/analytics";
 import { Info, MessageSquare, Send } from "lucide-react";
 import {
   canControlSession, useSessionResume, mainEvents, pendingApproval, receiptChip, sendBlockedReason, sessionChanges, sessionFooter, sessionLabel, sessionPlan, sessionStatus, unavailableReason,
-  pickupStatus, useHistorySource, useLocalSessionHistory, usePendingPrompt, useSessionAudit, useSessionCommand, useSessionJoinRequest, useSessionOutbox, withAuditNotices,
+  pickupRequestLine, pickupStatus, useHistorySource, useLocalSessionHistory, usePendingPrompt, useSessionAudit, useSessionCommand, useSessionJoinRequest, useSessionOutbox, withAuditNotices,
   type LocalSession, type SessionControlClient, type SessionSource,
 } from "@lightbulb/shared";
 import Link from "next/link";
@@ -228,7 +228,7 @@ export function LocalSessionPanel({ session, ownerName, own, client, revision, o
       line={name => `${name} wants to join this session.`} decide={(who, d, id) => client.decideLocalSessionJoin!(session.sessionId, who, d, id)}
       enabled={!!client.decideLocalSessionJoin} personName={personName} />}
     {own && !!session.pendingPickups?.length && <JoinRequests waiting={session.pendingPickups} ids={session.pendingPickupIds}
-      line={name => `${name} wants to pick up this session.`} decide={(who, d, id) => client.decideLocalSessionPickup!(session.sessionId, who, d, id)}
+      line={pickupRequestLine} decide={(who, d, id) => client.decideLocalSessionPickup!(session.sessionId, who, d, id)}
       enabled={!!client.decideLocalSessionPickup} personName={personName} />}
     {(pressLeft || session.shared === false || session.controlUnavailableReason || session.workspace?.changed) && <div className="session-notices">
       {pressLeft && <p role="status">Press ← in its terminal to share this one live, or turn on Share every session live in {isDesktopApp()

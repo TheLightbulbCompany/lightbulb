@@ -1,4 +1,4 @@
-import { useSessionJoinRequest, type LocalSession, type SessionControlClient } from "@lightbulb/shared";
+import { pickupRequestLine, useSessionJoinRequest, type LocalSession, type SessionControlClient } from "@lightbulb/shared";
 import { useState } from "react";
 import { Pressable, StyleSheet, Text, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
@@ -72,7 +72,7 @@ export function JoinRequests({ session, client, personName, onAnswered }: {
         sessionId={session.sessionId}
         waiting={session.pendingPickups}
         ids={session.pendingPickupIds}
-        line={(name) => `${name} wants to pick up this session.`}
+        line={pickupRequestLine}
         decide={client.decideLocalSessionPickup}
         personName={personName}
         onAnswered={onAnswered}

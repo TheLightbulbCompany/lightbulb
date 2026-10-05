@@ -1,15 +1,17 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { useEffect } from "react";
+import { act, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { ApiError } from "@lightbulb/shared";
 
 const createSessionCopy = vi.hoisted(() => vi.fn());
 vi.mock("@/lib/api", async (orig) => ({ ...(await orig<typeof import("@/lib/api")>()), BACKEND_URL: "https://api.test/api/v1", useApi: () => ({}) }));
 vi.mock("@lightbulb/shared", async (orig) => ({ ...(await orig<typeof import("@lightbulb/shared")>()), createMessagingClient: () => ({ createSessionCopy }) }));
-const clerk = vi.hoisted(() => ({ isLoaded: true, isSignedIn: false, orgId: null as string | null }));
+const clerk = vi.hoisted(() => ({ isLoaded: true, isSignedIn: false, orgId: null as string | null, getToken: async () => null as string | null }));
 vi.mock("@clerk/nextjs", () => ({
-  useAuth: () => ({ isLoaded: clerk.isLoaded, isSignedIn: clerk.isSignedIn, orgId: clerk.orgId, getToken: async () => (clerk.isSignedIn ? "jwt" : null) }),
+  useAuth: () => ({ isLoaded: clerk.isLoaded, isSignedIn: clerk.isSignedIn, orgId: clerk.orgId, getToken: clerk.getToken }),
   SignUpButton: ({ children }: { children: React.ReactNode }) => children,
+  SignInButton: ({ children, forceRedirectUrl }: { children: React.ReactNode; forceRedirectUrl: string }) => <div data-redirect={forceRedirectUrl}>{children}</div>,
 }));
 const push = vi.hoisted(() => vi.fn());
 vi.mock("next/navigation", () => ({ useRouter: () => ({ push }) }));
@@ -33,7 +35,7 @@ describe("/s", () => {
   beforeEach(() => {
     vi.stubGlobal("fetch", fetchMock);
     fetchMock.mockReset(); createSessionCopy.mockReset(); push.mockReset();
-    Object.assign(clerk, { isSignedIn: false, orgId: null });
+    Object.assign(clerk, { isSignedIn: false, orgId: null, getToken: async () => (clerk.isSignedIn ? "jwt" : null) });
     window.sessionStorage.clear();
     window.history.replaceState(null, "", `/s#${TOKEN}`);
   });
@@ -102,6 +104,39 @@ describe("/s", () => {
     expect(parseConfirm(`?port=53123&challenge=${"c".repeat(43)}`)).toEqual({ port: 53123, challenge: "c".repeat(43) });
     for (const bad of ["?port=80&challenge=" + "c".repeat(43), "?port=99999&challenge=" + "c".repeat(43), "?port=5000&challenge=short", "?port=5000.5&challenge=" + "c".repeat(43)]) {
       expect(parseConfirm(bad)).toBeNull();
+    }
+  });
+
+  it("takes the fragment out of the URL before an earlier sibling's effect (PostHog init) reads it", async () => {
+    answer();
+    const seen: string[] = [];
+    function Probe() { useEffect(() => { seen.push(window.location.href); }, []); return null; }
+    render(<><Probe /><LinkPage /></>);
+    expect(await screen.findByText("Fix login")).toBeInTheDocument();
+    expect(seen).toHaveLength(1);
+    expect(seen[0]).not.toContain(TOKEN);
+  });
+
+  it("a signed-out visitor refused by a workspace link is offered sign-in back to /s", async () => {
+    fetchMock.mockResolvedValue({ ok: false, status: 404, json: async () => ({ code: "LOCAL_SESSION_NOT_FOUND", message: "This link was turned off or is not for you." }) });
+    render(<LinkPage />);
+    const button = await screen.findByRole("button", { name: "Sign in to open this session" });
+    expect(button.parentElement).toHaveAttribute("data-redirect", "/s");
+  });
+
+  it("a live page polls with a fresh Clerk token each time", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      let n = 0;
+      Object.assign(clerk, { isSignedIn: true, orgId: "org_new", getToken: async () => `jwt-${++n}` });
+      answer({ ...PAGE, state: "live", me: { signedIn: true, member: true } });
+      render(<LinkPage />);
+      expect(await screen.findByText("Fix login")).toBeInTheDocument();
+      await act(async () => { await vi.advanceTimersByTimeAsync(5000); });
+      const bearers = fetchMock.mock.calls.map(c => c[1].headers.Authorization);
+      expect(new Set(bearers).size).toBeGreaterThanOrEqual(3); // open, first pull, one poll
+    } finally {
+      vi.useRealTimers();
     }
   });
 

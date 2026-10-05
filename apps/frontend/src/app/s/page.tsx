@@ -1,8 +1,8 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { useRouter } from "next/navigation";
-import { SignUpButton, useAuth } from "@clerk/nextjs";
+import { SignInButton, SignUpButton, useAuth } from "@clerk/nextjs";
 import { createMessagingClient, type LocalSessionEvent, type SessionLinkCode, type SessionLinkPage } from "@lightbulb/shared";
 import { ApiError, BACKEND_URL, useApi } from "@/lib/api";
 import { Button } from "@/components/ui/button";
@@ -70,17 +70,24 @@ export default function SessionLinkPageRoute() {
   const tokenOf = useRef(getToken);
   useEffect(() => { tokenOf.current = getToken; });
 
-  useEffect(() => {
-    if (!raw || !window.location.hash) return;
-    try { window.sessionStorage.setItem(KEY, raw); } catch { /* storage blocked: this visit only */ }
+  // A layout effect, so the fragment leaves the URL before PostHogInit's passive effect reads
+  // location.href (the analytics before_send and private-route rules are the second line).
+  useLayoutEffect(() => {
+    if (!window.location.hash) return;
+    const now = readStash();
+    try { window.sessionStorage.setItem(KEY, now); } catch { /* storage blocked: this visit only */ }
     window.history.replaceState(null, "", "/s");
-  }, [raw]);
+  }, []);
 
   useEffect(() => {
     if (!stash || !isLoaded) return;
     let alive = true;
     let after = 0;
-    const pull = async (bearer: string | null) => {
+    // A fresh Clerk token on each poll: they live about a minute, and the poll runs for as long as
+    // the session is live.
+    const bearerNow = async () => (isSignedIn ? await tokenOf.current() : null);
+    const pull = async () => {
+      const bearer = await bearerNow();
       for (let n = 0; n < MAX_PAGES; n += 1) {
         const next: { events: LocalSessionEvent[]; nextAfterSeq: number | null } = await publicPost("/public/session-links/events", { token: stash.token, afterSeq: after, limit: 100 }, bearer);
         if (!alive) return;
@@ -92,14 +99,14 @@ export default function SessionLinkPageRoute() {
     let timer: ReturnType<typeof setInterval> | undefined;
     (async () => {
       try {
-        const bearer = isSignedIn ? await tokenOf.current() : null;
-        const opened = await publicPost<SessionLinkPage>("/public/session-links/open", { token: stash.token }, bearer);
+        const opened = await publicPost<SessionLinkPage>("/public/session-links/open", { token: stash.token }, await bearerNow());
         if (!alive) return;
+        setError(null); // a sign-in reopens a link that was refused while signed out
         setPage(opened);
         setEvents([]); // a sign-in reopens the page: start the transcript again rather than append to it
-        await pull(bearer);
+        await pull();
         // Phase 1 has no public live view: a live session's page follows the transcript (spec §2.2).
-        if (opened.state === "live") timer = setInterval(() => { void pull(bearer).catch(() => {}); }, POLL_MS);
+        if (opened.state === "live") timer = setInterval(() => { void pull().catch(() => {}); }, POLL_MS);
       } catch (e) {
         if (alive) setError(e instanceof Error ? e.message : "Could not open this link. Try again.");
       }
@@ -122,7 +129,14 @@ export default function SessionLinkPageRoute() {
   };
 
   if (raw === "") return <main className="mx-auto max-w-3xl p-4"><p role="alert">This link is incomplete. Ask for it again.</p></main>;
-  if (error) return <main className="mx-auto max-w-3xl p-4"><p role="alert">{error}</p></main>;
+  // A workspace link refuses a signed-out visitor exactly like a turned-off one: offer sign-in.
+  if (error) return <main className="mx-auto max-w-3xl p-4">
+    <p role="alert">{error}</p>
+    {isLoaded && !isSignedIn && stash && <div className="mt-4 flex flex-col items-start gap-2">
+      <p>If this session is in your workspace, sign in to open it.</p>
+      <SignInButton mode="modal" forceRedirectUrl="/s"><Button type="button">Sign in to open this session</Button></SignInButton>
+    </div>}
+  </main>;
   if (!page || !stash) return <main className="mx-auto max-w-3xl p-4"><p role="status">Opening…</p></main>;
   const command = `lightbulb continue '${window.location.origin}/s#${stash.token}'`;
   const canContinue = page.provider === "claude" && page.continuable;

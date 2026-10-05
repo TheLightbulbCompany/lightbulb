@@ -2,7 +2,7 @@
 
 import { useEffect, useId, useState } from "react";
 import { Link2 } from "lucide-react";
-import type { createMessagingClient, LocalSession, SessionLink, SessionLinkAudience } from "@lightbulb/shared";
+import { ApiError, type createMessagingClient, type LocalSession, type SessionLink, type SessionLinkAudience } from "@lightbulb/shared";
 import { Button } from "@/components/ui/button";
 import { copyText } from "./messageLinks";
 
@@ -15,24 +15,30 @@ type Client = Partial<Pick<ReturnType<typeof createMessagingClient>, "getLocalSe
  */
 export function SessionShareLink({ session, client }: { session: LocalSession; client: Client }) {
   const [link, setLink] = useState<SessionLink | null>(null);
+  // Share never sends an audience, so a read still in flight or one that failed cannot narrow an
+  // "anyone" link; a failed read still says so.
+  const [readFailed, setReadFailed] = useState(false);
   const [status, setStatus] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const audienceId = useId();
   useEffect(() => {
     let alive = true;
     // A 404 is "no link yet": Share makes one.
-    client.getLocalSessionLink?.(session.sessionId).then(l => { if (alive) setLink(l); }, () => {});
+    client.getLocalSessionLink?.(session.sessionId).then(
+      l => { if (alive) setLink(l); },
+      e => { if (alive && !(e instanceof ApiError && e.status === 404)) setReadFailed(true); },
+    );
     return () => { alive = false; };
   }, [client, session.sessionId]);
   if (!client.putLocalSessionLink) return null;
-  const save = async (audience: SessionLinkAudience) => {
+  const save = async (audience?: SessionLinkAudience) => {
     setBusy(true); setStatus(null);
-    try { const next = await client.putLocalSessionLink!(session.sessionId, audience); setLink(next); return next; }
+    try { const next = await client.putLocalSessionLink!(session.sessionId, audience); setLink(next); setReadFailed(false); return next; }
     catch { setStatus("Could not change the link. Try again."); return null; }
     finally { setBusy(false); }
   };
   const share = async () => {
-    const next = link ?? await save("workspace");
+    const next = link ?? await save();
     if (next?.url) setStatus(await copyText(next.url) ? "Link copied." : "Copy the link below.");
   };
   const off = async () => {
@@ -57,6 +63,7 @@ export function SessionShareLink({ session, client }: { session: LocalSession; c
       {link.url && <input aria-label="Session link" readOnly className="room-input font-mono text-xs" value={link.url} onFocus={e => e.currentTarget.select()} />}
       <Button type="button" variant="ghost" size="sm" disabled={busy} onClick={() => void off()}>Turn off link</Button>
     </>}
+    {readFailed && !link && <p role="alert">Could not load this session&apos;s link. Share still works.</p>}
     {status && <p role="status">{status}</p>}
   </div>;
 }

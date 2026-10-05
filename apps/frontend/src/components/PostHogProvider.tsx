@@ -11,6 +11,7 @@ import {
   client as posthogClient,
   identify,
   init as initAnalytics,
+  isPrivateRoute,
   pageview,
   register,
   reset,
@@ -101,7 +102,7 @@ function PostHogInit() {
   useEffect(() => {
     if (initializedRef.current || !POSTHOG_KEY) return;
     initializedRef.current = true;
-    const privateRoute = window.location.pathname === "/chat";
+    const privateRoute = isPrivateRoute(window.location.pathname);
     document.body.classList.toggle("ph-no-capture", privateRoute);
     initAnalytics(POSTHOG_KEY, {
       api_host: POSTHOG_API_HOST,
@@ -109,7 +110,7 @@ function PostHogInit() {
       person_profiles: "identified_only",
       capture_pageview: false,
       capture_pageleave: true,
-      // ON everywhere EXCEPT /chat.
+      // ON everywhere EXCEPT /chat and /s (a session link's transcript).
       //
       // The hand-instrumented events in @/lib/analytics cover the funnel we
       // knew to measure. Launch is the case they cannot cover: you cannot
@@ -134,7 +135,7 @@ function PostHogInit() {
       //
       // Heatmaps are a separate subsystem (`capture_heatmaps`), unaffected.
       autocapture: {
-        url_ignorelist: [/\/chat/],
+        url_ignorelist: [/\/chat/, /^[a-z]+:\/\/[^/]+\/s(?:[?#]|$)/],
       },
       // CEO observability: keep session replay, but sample it instead of
       // recording every session. rrweb installs a document-wide
@@ -177,7 +178,7 @@ function PostHogInit() {
         if (!event) return null;
         // stopSessionRecording flushes its buffered frames. Discard that flush
         // on /chat in case it saw a body portal before the route effect stopped it.
-        if (event.event === "$snapshot" && window.location.pathname === "/chat") return null;
+        if (event.event === "$snapshot" && isPrivateRoute(window.location.pathname)) return null;
         // The SDK adds entry URLs to event props and initial URLs to person
         // props ($set_once, including on $identify). Cover both wire shapes.
         for (const candidate of [event.properties, event.$set, event.$set_once,
@@ -281,12 +282,12 @@ function PostHogPageview() {
   // The chat route can portal customer content to document.body, outside its
   // data-private layout wrapper. Block the body before rrweb observes the new DOM.
   useLayoutEffect(() => {
-    document.body.classList.toggle("ph-no-capture", pathname === "/chat");
+    document.body.classList.toggle("ph-no-capture", isPrivateRoute(pathname));
   }, [pathname]);
 
   useEffect(() => {
     if (!POSTHOG_KEY) return;
-    if (pathname === "/chat") posthogClient.stopSessionRecording();
+    if (isPrivateRoute(pathname)) posthogClient.stopSessionRecording();
     else posthogClient.startSessionRecording(); // no override: keeps the sampleRate gate
   }, [pathname]);
   // The URL whose per-URL events were last SENT. Set only after a real send

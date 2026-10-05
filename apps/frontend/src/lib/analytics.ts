@@ -273,12 +273,19 @@ function externalReferrer(): { referrer: string | null; domain: string | null } 
   }
 }
 
-// /chat deep links can carry file paths in `?path=`. The route is enough for
-// analytics; keep its query string out of pageviews, replay URLs and SDK defaults.
+/** Routes whose DOM is a customer's conversation: never recorded, never autocaptured. */
+export function isPrivateRoute(pathname: string | null | undefined): boolean {
+  return pathname === "/chat" || pathname === "/s";
+}
+
+// /chat deep links can carry file paths in `?path=`, and /s carries a session
+// link's token in its fragment (a read credential) and the CLI's loopback port.
+// The route is enough for analytics; keep the query string and fragment out of
+// pageviews, replay URLs and SDK defaults.
 export function withoutChatQuery(value: string): string {
   try {
     const url = new URL(value, "https://thelightbulb.company");
-    return url.pathname === "/chat" ? value.split(/[?#]/, 1)[0] : value;
+    return isPrivateRoute(url.pathname) ? value.split(/[?#]/, 1)[0] : value;
   } catch {
     return value;
   }

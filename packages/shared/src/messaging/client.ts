@@ -110,7 +110,8 @@ export interface MessagingClient {
   listLocalSessionAudit(sessionId: string): Promise<{ entries: LocalSessionAuditEntry[] }>;
   /** Owner-only: the session's one link (404 when it has none). */
   getLocalSessionLink(sessionId: string): Promise<SessionLink>;
-  putLocalSessionLink(sessionId: string, audience: SessionLinkAudience): Promise<SessionLink>;
+  /** No audience is Share: create a workspace link if there is none, otherwise keep the link's audience. */
+  putLocalSessionLink(sessionId: string, audience?: SessionLinkAudience): Promise<SessionLink>;
   deleteLocalSessionLink(sessionId: string): Promise<void>;
   /** Continue: the moment a copy is made. The challenge is the CLI's; the token rides in the body. */
   createSessionCopy(token: string, challenge: string): Promise<SessionCopyCode>;

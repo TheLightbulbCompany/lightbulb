@@ -201,6 +201,33 @@ describe("PostHogProvider", () => {
       .toBeNull();
   });
 
+  it("treats a session link page like /chat and strips its token from every URL", async () => {
+    process.env.NEXT_PUBLIC_POSTHOG_KEY = "phc_test_key_123";
+    mockRouterState.pathname = "/s";
+    window.history.replaceState({}, "", "/s?port=53123#secret-token");
+    const mod = await import("../PostHogProvider");
+    render(<mod.PostHogProvider><div>transcript</div></mod.PostHogProvider>);
+
+    const options = mockInit.mock.calls[0][1] as Record<string, unknown>;
+    expect(options.disable_session_recording).toBe(true);
+    expect(document.body.classList.contains("ph-no-capture")).toBe(true);
+    expect(mockStopRecording).toHaveBeenCalled();
+    const ignore = (options.autocapture as { url_ignorelist: RegExp[] }).url_ignorelist;
+    expect(ignore.some(r => r.test("https://thelightbulb.company/s#secret-token"))).toBe(true);
+    expect(ignore.some(r => r.test("https://thelightbulb.company/settings"))).toBe(false);
+    const beforeSend = options.before_send as (
+      event: { event: string; properties: Record<string, unknown>; $set_once?: Record<string, unknown> },
+    ) => { properties: Record<string, unknown>; $set_once?: Record<string, unknown> } | null;
+    expect(beforeSend({ event: "$snapshot", properties: { $snapshot_data: [] } })).toBeNull();
+    const sent = beforeSend({
+      event: "$identify",
+      properties: { $current_url: "https://thelightbulb.company/s#secret-token" },
+      $set_once: { $initial_current_url: "https://thelightbulb.company/s?port=53123#secret-token" },
+    });
+    expect(JSON.stringify(sent)).not.toContain("secret-token");
+    expect(JSON.stringify(sent)).not.toContain("53123");
+  });
+
   it("stops replay when navigation enters chat from onboarding", async () => {
     process.env.NEXT_PUBLIC_POSTHOG_KEY = "phc_test_key_123";
     mockRouterState.pathname = "/onboarding";

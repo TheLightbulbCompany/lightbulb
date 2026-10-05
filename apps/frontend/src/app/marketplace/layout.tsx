@@ -2,6 +2,7 @@ import { SignedIn, SignedOut, SignInButton, UserButton } from "@clerk/nextjs";
 import Link from "next/link";
 import type { Metadata } from "next";
 
+import { ThemeStamp } from "@/components/ThemeStamp";
 import { Navbar } from "@/components/landing/Navbar";
 import { UserSync } from "@/components/marketplace/storefront/UserSync";
 
@@ -13,6 +14,7 @@ export const metadata: Metadata = {
 export default function MarketplaceLayout({ children }: { children: React.ReactNode }) {
   return (
     <div className="editorial-page flex min-h-screen flex-col pt-[65px]">
+      <ThemeStamp />
       <UserSync />
       <Navbar />
       <div className="marketplace-subnav sticky top-[65px] z-10 border-b border-[var(--edge)] bg-[var(--cream)]/92 backdrop-blur-xl">

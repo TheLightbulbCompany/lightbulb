@@ -3,18 +3,15 @@ import type { ComponentProps } from "react";
 import type { ClerkProvider } from "@clerk/nextjs";
 
 /**
- * Brand Identity Manual v1.0 §05/§06, applied to Clerk's hosted form.
+ * The neutral palette (globals.css `:root[data-chat-theme]`), applied to Clerk's forms.
  *
  * ONE appearance for every Clerk surface (SignIn, SignUp, UserButton,
  * OrganizationSwitcher), passed on <ClerkProvider> in app/layout.tsx, so the
  * form matches the page shell around it instead of shipping Clerk's defaults.
  *
- * This is the ONLY file outside the token layer (globals.css / landing.css)
- * allowed to hold a colour literal, and it is on the brand-token scanner's skip
- * list for that reason: Clerk's `variables` are read by its own runtime and
- * cannot resolve CSS custom properties. Keep it the only such file — anything
- * Tailwind can reach belongs in `elements` as a utility class, below.
- * `__tests__/clerkAppearance.test.ts` is the scanner's stand-in here.
+ * It holds no colour literal: `variables` use `var()` tokens, `elements` use
+ * Tailwind utilities. Pages must stamp data-chat-theme (components/ThemeStamp)
+ * or the tokens are undefined. `__tests__/clerkAppearance.test.ts` guards that.
  *
  * @clerk/types is a transitive dependency under pnpm and does not resolve from
  * this package, and @clerk/nextjs does not re-export `Appearance` — so take the
@@ -62,17 +59,18 @@ export const clerkLocalization: Localization = {
 };
 
 export const clerkAppearance: Appearance = {
+  // Clerk resolves `var()` in variables, so the card follows the neutral
+  // ladder (and its dark variant) that app/globals.css stamps on <html>.
   variables: {
-    colorPrimary: "#0F1A2B", // --midnight
-    colorBackground: "#F5EFE2", // --cream
-    colorText: "#0F1A2B", // --midnight
-    // --midnight-muted: color-mix(in srgb, #0F1A2B 64%, #F5EFE2)
-    colorTextSecondary: "#62676D",
-    colorInputBackground: "#EFE8D9", // --cream-deep
-    colorInputText: "#0F1A2B", // --midnight
-    colorDanger: "#96382B", // --err
-    colorSuccess: "#3A6B45", // --ok
-    colorWarning: "#96501A", // --warn
+    colorPrimary: "var(--fg)",
+    colorBackground: "var(--plane-pane)",
+    colorText: "var(--fg)",
+    colorTextSecondary: "var(--fg-mute)",
+    colorInputBackground: "var(--plane-sidebar)",
+    colorInputText: "var(--fg)",
+    colorDanger: "var(--alert)",
+    colorSuccess: "var(--live)",
+    colorWarning: "var(--alert)",
     borderRadius: "8px", // --radius
     fontFamily: "var(--font-sans), 'Source Sans 3', system-ui, sans-serif",
     fontFamilyButtons: "var(--font-sans), 'Source Sans 3', system-ui, sans-serif",

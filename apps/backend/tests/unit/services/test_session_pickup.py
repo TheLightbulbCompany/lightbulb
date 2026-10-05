@@ -44,6 +44,14 @@ def token(device=MAC, owner=OWNER, key=None) -> str:
     return jwt.encode(claims, key or KEYS[device], algorithm="EdDSA")
 
 
+@pytest.fixture(autouse=True)
+async def _bob_is_a_member(request):
+    """Bob is in the workspace (an active user stream) unless a test removes him."""
+    if "transport" in request.fixturenames:
+        request.getfixturevalue("transport")
+        await messaging_repo.ensure_user_stream(OWNER, BOB.user_id)
+
+
 @pytest.fixture
 def s3(transport, db):
     db[1].update_item(
@@ -507,6 +515,21 @@ async def test_ticket_permission_idempotency_and_expiry(transport, s3):
     assert (await service.get_session(BOB, sid)).model_dump(by_alias=True)["pickup"]["expiresAt"] == service.iso(
         ended_at + 7 * 24 * 3600
     )
+
+
+@pytest.mark.asyncio
+async def test_a_removed_member_gets_no_ticket(transport, s3):
+    sid = await claude_session(transport)
+    await pickup.set_pickup(ALICE, sid, True)
+    await upload_and_commit(s3, sid, chunks=(b"one\n",), code_blob=b"bundle")
+    assert (await pickup.request_pickup(BOB, sid, str(uuid.uuid4()))).session.session_id == sid
+    await messaging_repo.deactivate_user_stream(OWNER, BOB.user_id)
+    with pytest.raises(ApiProblem) as problem:
+        await pickup.request_pickup(BOB, sid, str(uuid.uuid4()))  # their Clerk JWT is still valid
+    assert problem.value.error.code == "LOCAL_SESSION_FORBIDDEN"
+    assert (
+        await pickup.request_pickup(ALICE, sid, str(uuid.uuid4()))
+    ).session.session_id == sid  # the author still can
 
 
 @pytest.mark.asyncio

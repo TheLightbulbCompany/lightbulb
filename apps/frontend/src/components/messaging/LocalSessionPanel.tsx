@@ -6,7 +6,7 @@ import { capture } from "@/lib/analytics";
 import { Info, MessageSquare, Send } from "lucide-react";
 import {
   canControlSession, useSessionResume, mainEvents, pendingApproval, receiptChip, sendBlockedReason, sessionChanges, sessionFooter, sessionLabel, sessionPlan, sessionStatus, unavailableReason,
-  useHistorySource, useLocalSessionHistory, usePendingPrompt, useSessionAudit, useSessionCommand, useSessionJoinRequest, useSessionOutbox, withAuditNotices,
+  pickupStatus, useHistorySource, useLocalSessionHistory, usePendingPrompt, useSessionAudit, useSessionCommand, useSessionJoinRequest, useSessionOutbox, withAuditNotices,
   type LocalSession, type SessionControlClient, type SessionSource,
 } from "@lightbulb/shared";
 import Link from "next/link";
@@ -19,6 +19,7 @@ import { useLocalTerminal } from "./localTerminal";
 import { toBase64 } from "./sessionInput";
 import { SessionDetails, type SessionDetailsTab } from "./SessionDetails";
 import { canPickUp, SessionPickup } from "./SessionPickup";
+import { timeAgo } from "@/components/teams/shared/lib/timeAgo";
 import type { PickupClient } from "./useSessionPickup";
 import { ResumeDelivery, SessionResume } from "./SessionResume";
 
@@ -214,6 +215,9 @@ export function LocalSessionPanel({ session, ownerName, own, client, revision, o
       </p>
       <div className="session-status-actions">
         {!own && canPickUp(session) && <SessionPickup session={session} ownerName={ownerName} own={false} client={client} />}
+        {!own && !canPickUp(session) && session.provider === "claude" && session.pickup?.allowed === true && (session.pickup.state === "unavailable"
+          ? <span role="status" className="text-sm text-muted-foreground">{pickupStatus(session.pickup, timeAgo)}</span>
+          : <Button type="button" variant="outline" size="sm" disabled>Preparing…</Button>)}
         {!own && !canPickUp(session) && session.provider === "claude" && session.status !== "ended" && !session.pickup?.allowed && askPickup.supported &&
           <Button type="button" variant="outline" size="sm" disabled={askPickup.saving || askPickup.state === "pending"} onClick={() => void askPickup.ask()}>
             {askPickup.state === "pending" ? "Requested" : askPickup.state === "declined" ? `${ownerName} declined. Ask again` : "Ask to pick up"}</Button>}

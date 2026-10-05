@@ -255,3 +255,14 @@ it("lets the owner answer a pick-up request in the session itself", async () => 
   await userEvent.click(screen.getByRole("button", { name: "Allow" }));
   expect(decidePickup).toHaveBeenCalledWith("s1", "bob", "allow", "req-9");
 });
+
+it("reads Preparing… (disabled) while pick-up is allowed but the snapshot is not ready", async () => {
+  focus({ session: { ...session, pickup: { allowed: true, state: "preparing" } }, ownerName: "Alice", own: false }, { askPickup: vi.fn() });
+  expect(await screen.findByRole("button", { name: "Preparing…" })).toBeDisabled();
+  expect(screen.queryByRole("button", { name: "Ask to pick up" })).not.toBeInTheDocument();
+});
+
+it("says why when the snapshot is unavailable", async () => {
+  focus({ session: { ...session, pickup: { allowed: true, state: "unavailable", reason: "too-large" } }, ownerName: "Alice", own: false }, { askPickup: vi.fn() });
+  expect(await screen.findByText("This session is too large to snapshot.")).toBeInTheDocument();
+});

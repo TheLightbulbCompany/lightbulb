@@ -145,7 +145,7 @@ async def test_redeem_needs_the_verifier_and_the_window(transport, s3, started):
     code = (await links.create_copy(BOB, token, links.challenge_of(VERIFIER))).code
     with pytest.raises(ApiProblem) as wrong:
         await links.redeem(code, "w" * 43)
-    assert wrong.value.status_code == 404
+    assert wrong.value.status_code == 403  # its own code: another program answered
     with patch("time.time", return_value=time.time() + links.CODE_WINDOW_S + 1):
         with pytest.raises(ApiProblem):
             await links.redeem(code, VERIFIER)
@@ -341,8 +341,9 @@ async def test_redeem_reruns_the_link_checks(transport, s3, started):
     await service.put_link(ALICE, sid, "anyone")
     assert (await links.redeem(code, VERIFIER)).state == "ready"
     await service.set_sharing(ALICE, sid, False)  # paused
-    with pytest.raises(ApiProblem):
+    with pytest.raises(ApiProblem) as paused:
         await links.redeem(code, VERIFIER)
+    assert paused.value.error.code == "LOCAL_SESSION_CONFLICT" and "paused" in paused.value.error.message
 
 
 @pytest.mark.asyncio
@@ -354,3 +355,21 @@ async def test_a_member_removed_after_continue_cannot_redeem(transport, s3, star
     await messaging_repo.deactivate_user_stream(OWNER, BOB.user_id)
     with pytest.raises(ApiProblem):
         await links.redeem(code, VERIFIER)
+
+
+@pytest.mark.asyncio
+async def test_redeem_says_why_it_refuses(transport, s3, started):
+    sid, token = await shared(transport, s3)
+    code = (await links.create_copy(STRANGER, token, links.challenge_of(VERIFIER))).code
+    await links._prepare(started[0])
+    with pytest.raises(ApiProblem) as other:
+        await links.redeem(code, "w" * 43)  # another program's verifier
+    assert other.value.error.code == "LOCAL_SESSION_FORBIDDEN"
+    refusal = ApiProblem("LOCAL_SESSION_FORBIDDEN", "Local session sharing is disabled.")
+    with patch.object(service, "_enrolled", AsyncMock(side_effect=refusal)), pytest.raises(ApiProblem) as stopped:
+        await links.redeem(code, VERIFIER)
+    assert stopped.value.error.code == "LOCAL_SESSION_OFFLINE"
+    await service.delete_link(ALICE, sid)
+    with pytest.raises(ApiProblem) as off:
+        await links.redeem(code, VERIFIER)
+    assert off.value.error.code == "LOCAL_SESSION_NOT_FOUND" and "turned this link off" in off.value.error.message

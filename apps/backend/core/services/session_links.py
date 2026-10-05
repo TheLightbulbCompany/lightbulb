@@ -65,20 +65,27 @@ async def _member(auth: AuthContext | None, row: dict) -> bool:
     return True
 
 
+def _turned_off() -> ApiProblem:
+    return ApiProblem("LOCAL_SESSION_NOT_FOUND", "The owner turned this link off.")
+
+
 async def _live(row: dict | None, digest: str) -> dict:
     """The link's shareLink when this session still shares it: not paused, hash matches META, the
-    Mac still enrolled, inside the snapshot retention. Every refusal reads the same."""
+    Mac still enrolled, inside the snapshot retention. Each refusal has its own code and message
+    for redeem (the taker's CLI, past PKCE); resolve turns every one into the same GONE."""
     link = (row or {}).get("shareLink") or {}
     # Plain !=: the lookup row was found by this hash, so the comparison reveals nothing new.
-    if row is None or row.get("unshared") or link.get("tokenHash") != digest:
-        raise _gone()
+    if row is None or link.get("tokenHash") != digest:
+        raise _turned_off()
+    if row.get("unshared"):
+        raise ApiProblem("LOCAL_SESSION_CONFLICT", "The owner paused this session.")
     try:
         await sessions._enrolled(row["ownerId"], row["humanUserId"], row["deviceId"])
     except ApiProblem as exc:
-        raise _gone() from exc
+        raise ApiProblem("LOCAL_SESSION_OFFLINE", "The owner's Mac stopped sharing sessions.") from exc
     stopped = sessions.pickup_stopped_at(row)
     if stopped is not None and int(time.time()) >= stopped + PICKUP_RETENTION_SECONDS:
-        raise _gone()
+        raise ApiProblem("LOCAL_SESSION_NOT_FOUND", "This session's snapshot expired.")
     return link
 
 
@@ -89,7 +96,10 @@ async def resolve(auth: AuthContext | None, token: str) -> tuple[dict, dict, boo
     digest = sessions._token_hash(token)
     lookup = await store._get(sessions._share_pk(digest), "META")
     row = await repo.get_session(lookup["ownerId"], lookup["sessionId"]) if lookup else None
-    link = await _live(row, digest)
+    try:
+        link = await _live(row, digest)
+    except ApiProblem as exc:
+        raise _gone() from exc
     member = await _member(auth, row)
     if link["audience"] != "anyone" and not member:
         raise _gone()
@@ -613,22 +623,24 @@ async def redeem(code: str, verifier: str) -> CopyTicket | Preparing:
     if (
         item is None
         or now >= int(item["expiresAt"])
-        or not hmac.compare_digest(item["challenge"], challenge_of(verifier))
         or now >= max(int(item["createdAt"]), int(item.get("readyAt", 0))) + CODE_WINDOW_S
     ):
         raise gone
+    if not hmac.compare_digest(item["challenge"], challenge_of(verifier)):
+        # Its own code: the CLI reads it as "another program answered the confirm page first".
+        raise ApiProblem("LOCAL_SESSION_FORBIDDEN", "This continue code was confirmed for another program.")
     row = await repo.get_session(item["ownerId"], item["sessionId"])
+    link = await _live(row, item["linkHash"])  # turned off, paused, Mac stopped: each says so
+    if row.get("pickupEpoch") != item["epoch"]:
+        raise _turned_off()  # the snapshot was retired (and maybe allowed again): this copy is gone
     try:
-        link = await _live(row, item["linkHash"])
-        if row.get("pickupEpoch") != item["epoch"]:
-            raise gone
         # The same door Continue went through: a workspace link opens only for a current member.
         if item["member"]:
             await _still_a_member(row, item["userId"])
         elif link["audience"] != "anyone":
-            raise gone
+            raise _gone()
     except ApiProblem as exc:
-        raise gone from exc
+        raise _gone() from exc
     if item["state"] == "failed":
         raise ApiProblem("LOCAL_SESSION_CONFLICT", "This copy could not be prepared. Press Continue again.")
     if item["state"] == "preparing":

@@ -349,6 +349,10 @@ async def set_pickup(auth: AuthContext, session_id: str, enabled: bool) -> sessi
             "pickupSnapshot": {"state": "preparing"},
             "pickupEpoch": uuid.uuid4().hex,
             "revision": str(uuid.uuid4()),
+            # Everyone may pick it up now, so every pending ask is answered (spec 2026-10-05-ask-to-pick-up).
+            "pickupRequests": {
+                u: r for u, r in (row.get("pickupRequests") or {}).items() if r.get("state") != "pending"
+            },
         }
         extra = [_audit(owner, sid, auth, "pickup_on"), _want_put(row)]
         try:
@@ -358,6 +362,8 @@ async def set_pickup(auth: AuthContext, session_id: str, enabled: bool) -> sessi
                 raise
             continue
         await publish_resources_changed(owner, row["humanUserId"])
+        if sessions.pending_pickups(row):
+            await sessions._push_presence(updated)  # a pending ask froze the owner's Mac; lift it now
         return sessions._session_public(updated, auth.user_id)
     raise ApiProblem("LOCAL_SESSION_CONFLICT", "Session changed. Try again.")
 

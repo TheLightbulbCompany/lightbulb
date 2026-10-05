@@ -15,17 +15,25 @@
 - Phase 1 only. No anonymous live watching (no AppSync API key, no `pub` namespace, no `LINKVIEWER#`/`PUBWATCH#`), no guest steering, no `guests`, no join-request changes.
 - One link per session. Audience is exactly `"workspace" | "anyone"`. Default `"workspace"`.
 - Link token: `secrets.token_urlsafe(32)`. It goes only in the URL fragment and in POST bodies. It is never logged. Every failure to open reads the same: `"This link was turned off or is not for you."`
-- The link URL is `settings.FRONTEND_URL.rstrip('/') + "/s#" + token`. The product domain is `thelightbulb.company` (`apps/infra/lib/domains.ts:19`). `flickmeon.ai` is now the launch-competition host, which redirects (`middleware.ts:132-145`). Do not hard-code `flickmeon.ai`.
 - `META.shareLink.tokenHash` is the truth. An open whose hash does not match it is refused, whatever lookup row was found.
 - An outsider never receives an owner id, user id, workspace id, Lightbulb session id, cwd or absolute path. A member's page model may carry `sessionId` (their in-app paths need it).
 - Private repos stay private. An outsider never receives the remote, repo name or branch of a repo whose `repoInfo.public` is false.
+
+**Controller rulings (2026-10-05), binding:**
+
+- **Domain.** Links and copy use `settings.FRONTEND_URL` (`https://thelightbulb.company`, dev `https://dev.thelightbulb.company`), never `flickmeon.ai`. The link URL is `settings.FRONTEND_URL.rstrip('/') + "/s#" + token`; the mod's band says `thelightbulb.company`. No literal domain in backend code.
+- **Private repo, "Anyone".** For an outsider, a session whose `repoInfo.public` is false has its working-folder name (`repoInfo.folder`, the repo's top-level folder) replaced by `<project>` wherever it is a path component: each transcript line's `cwd`, paths in events, the title. This applies to the copy and to the page. Code that Claude read inside the transcript is shared by the owner's choice; only metadata (remote, name, branch, folder) is withheld. When the sharer picks "Anyone" for such a session, the warning line reads: "This conversation includes code Claude read from your private repository."
+- **Deploy order.** The backend that accepts `CommitRequest.repo` ships to **prod** before a desktop build that sends `repo`. `ContractModel` is `extra="forbid"` (`messaging.py:205`), so an older backend answers 400 to the new field and the Mac's snapshot fails.
+- **`cli.rs`.** No open PR touches it (checked 2026-10-05). Task 7 edits it directly.
+- **Probe.** The public probe runs with `GIT_CONFIG_GLOBAL=/dev/null` and `GIT_CONFIG_NOSYSTEM=1` (Task 5), so a global `url.<ssh>.insteadOf` cannot turn it into an authenticated call.
+
+**Other constraints:**
+
 - Pick up and member copies are not redacted. Outsider copies and outsider event pages are redacted.
 - Copies: row TTL 1 h (`COPY_TTL_S = 3600`). A code can be redeemed for 10 min after it was created or became ready, whichever is later (`CODE_WINDOW_S = 600`). A `preparing` copy older than 5 min is restarted (`RESTART_AFTER_S = 300`). At most one redaction runs per backend task (`asyncio.Semaphore(1)`).
 - Copy objects go under `session-pickup/<owner>/<sid>/<epoch>/copies/<copyId>/`, never under `<owner>/`.
 - Codex sessions get Read only. Their link never calls `set_pickup`, and Continue refuses them.
-- Deploy order: the backend that accepts `CommitRequest.repo` must be in **prod** before a desktop build that sends `repo` ships. `ContractModel` is `extra="forbid"` (`messaging.py:205`), so an older backend answers 400 to the new field and the Mac's snapshot fails.
 - Any change under `apps/infra/lib/` requires `cd apps/infra && npx cdk synth`, and a changed `.github/workflows/deploy.yml` is committed in the same PR.
-- `cli.rs` may be owned by another in-flight stream. Task 7 must be coordinated before anyone edits it.
 - Tests: CI is the gate. Each task runs only its own targeted tests. Do not run `sleep` or `tail` in bash.
 - Commits end with the two attribution lines from the session's system reminder.
 
@@ -36,6 +44,7 @@
 3. **An event near the 16 KiB envelope can grow when it is redacted.** For example, `://a:b@` becomes `://[redacted]@`. That can fail `LocalSessionEvent` validation and turn the whole page into a 500. Such an event falls back to one `[redacted]` line. This is pinned in Task 3.
 4. **A transcript line can span two parts.** The Mac cuts at `CHUNK` when a single line is longer than a chunk (`snapshot.rs:306-309`). Per-part redaction must carry the partial line into the next part. This is pinned in Task 4.
 5. **The owner can turn the link off after a continue code was issued but before the CLI redeems it.** Redeem must then refuse, because "no new copy can be made". This is pinned in Task 4.
+6. **Before the Mac's first snapshot the server does not know whether the repo is private.** An outsider's event page for a Claude session therefore stays empty until the first commit (`pickupSnapshot.at`), or the private folder name would leak in that window. This is pinned in Task 3.
 
 ---
 
@@ -43,19 +52,20 @@
 
 | File | Change |
 |---|---|
-| `apps/backend/core/services/session_redact.py` | Create: `redact`, `redact_value` |
-| `apps/backend/core/services/local_sessions.py` | Replace the share-link section (`:2227-2440`) with `put_link`/`get_link`/`delete_link`; `AUDIT_ACTIONS` += `share_link_audience`, `session_copied`; `decide_pickup_request` Allow also calls `put_link(…, None)` |
-| `apps/backend/core/services/session_pickup.py` | `retire` also clears `shareLink` + lookup row; `RepoInfo`, `CommitRequest.repo`, manifest `repoInfo`; `ready_manifest` helper shared by `request_pickup` and copies |
+| `apps/backend/core/services/session_redact.py` | Create: `redact`, `redact_value` (both take an optional private `project` folder) |
+| `apps/backend/core/services/local_sessions.py` | Replace the share-link section (`:2227-2440`) with `put_link`/`get_link`/`delete_link`; `AUDIT_ACTIONS` += `share_link_audience`, `session_copied`; `decide_pickup_request` Allow also calls `put_link(…, None)`; `PickupStatus.private_repo` |
+| `apps/backend/core/services/session_pickup.py` | `retire` also clears `shareLink` + lookup row; `RepoInfo`, `CommitRequest.repo`, manifest `repoInfo`, `pickupSnapshot.privateFolder`; `ready_manifest` and `downloads` helpers shared by `request_pickup` and copies |
 | `apps/backend/core/services/session_links.py` | Create: `resolve`, `open_page`, `list_events`, `create_copy`, `redeem`, the redaction worker |
+| `apps/backend/tests/unit/services/test_local_session_controls.py` | Drop the old share-link tests; re-point the private-send and growth tests at the one link |
 | `apps/backend/routers/messaging.py` | Remove `share-links`, `shared-sessions`, `PUT …/pickup`; add `/link`, `/public/session-links/*`, `/session-links/copies`, `/public/session-copies/redeem` |
 | `apps/infra/lib/stacks/api-stack.ts` | `ANY /api/v1/public/{proxy+}` route with its own throttle |
 | `apps/desktop/src-tauri/src/local_sessions/snapshot.rs` | `repo_info` + anonymous probe; `repo` in the commit body |
 | `apps/desktop/src-tauri/src/session_pickup.rs` | Make `Download`/`Downloads`/helpers `pub(crate)`; extract `downloads_ok`, `fetch_downloads`, `exclude_worktrees` |
 | `apps/desktop/src-tauri/src/local_sessions/plugin.rs`, `local_sessions.rs` | `install_now`; `pub(crate) mod plugin` |
 | `apps/desktop/src-tauri/src/session_continue.rs` | Create: the `continue` flow |
-| `apps/desktop/src-tauri/src/cli.rs`, `lib.rs` | `continue` subcommand (**coordinate first**); `mod session_continue` |
+| `apps/desktop/src-tauri/src/cli.rs`, `lib.rs` | `continue` subcommand; `mod session_continue` |
 | `apps/desktop/src-tauri/mods/lightbulb-sessions/hooks/{register.tsx,state.ts,band.test.ts}`, `types/index.d.ts` | "Continued from" band |
-| `packages/shared/src/messaging/{types.ts,client.ts,sessionControls.ts}`, `index.ts` | Link client, audit lines; drop the share-link and pick-up switch APIs |
+| `packages/shared/src/messaging/{types.ts,client.ts,sessionControls.ts}`, `index.ts` | Link client, audit lines, `LocalSessionPickup.privateRepo`; drop the share-link and pick-up switch APIs |
 | `apps/frontend/src/components/messaging/SessionShareLink.tsx` (+test) | Create; delete `SessionShareLinks.tsx` (+test) |
 | `apps/frontend/src/components/messaging/SessionDetails.tsx` (+test) | Access: Share control, copies list, no pick-up switch |
 | `apps/frontend/src/app/s/page.tsx` (+test), `src/lib/returnTo.ts` (+test), `src/app/onboarding/page.tsx` | Public link page, CLI confirm, onboarding `returnTo`; delete `src/app/chat/shared/page.tsx` |
@@ -70,7 +80,7 @@
 
 **Interfaces:**
 - Consumes: `marketplace_safety._PATTERNS` (`marketplace_safety.py:44`; the bytes regexes named `hardcoded-secret`, `aws-secret-key`, `provider-token` at `:80-115`).
-- Produces: `MARK = "[redacted]"`; `redact(text: str) -> str`; `redact_value(value: Any) -> Any` (recursive over `dict` values, `list`, `str`; dict keys and non-strings unchanged).
+- Produces: `MARK = "[redacted]"`; `PROJECT = "<project>"`; `redact(text: str, project: str | None = None) -> str`; `redact_value(value: Any, project: str | None = None) -> Any` (recursive over `dict` values, `list`, `str`; dict keys and non-strings unchanged). `project` is a private repo's top-level folder name: as a path component it becomes `<project>` (controller ruling, Global Constraints).
 
 - [ ] **Step 1: Write the failing test**
 
@@ -79,7 +89,7 @@
 
 import pytest
 
-from core.services.session_redact import MARK, redact, redact_value
+from core.services.session_redact import MARK, PROJECT, redact, redact_value
 
 
 @pytest.mark.parametrize(
@@ -121,6 +131,17 @@ def test_plain_text_is_untouched():
 def test_redact_value_walks_nested_structures_but_not_keys():
     value = {"cwd": "/Users/alice/app", "tool": {"input": ["ghp_abcdefghijklmnopqrstuvwx", 3, None]}, "n": 1}
     assert redact_value(value) == {"cwd": "~/app", "tool": {"input": [MARK, 3, None]}, "n": 1}
+
+
+def test_a_private_projects_folder_name_is_hidden_only_as_a_path_component():
+    line = {"cwd": "/Users/alice/code/acme-api/src", "text": "Read ./acme-api/README.md and acme-api.rs; acme-api is fine"}
+    assert redact_value(line, "acme-api") == {
+        "cwd": f"~/code/{PROJECT}/src",
+        "text": f"Read ./{PROJECT}/README.md and acme-api.rs; acme-api is fine",
+    }
+    assert redact("/home/bob/acme-api", "acme-api") == f"~/{PROJECT}"
+    assert redact("/srv/acme-api.v2/x", "acme-api.v2") == f"/srv/{PROJECT}/x"  # the name is literal, not a regex
+    assert redact("/Users/alice/acme-api") == "~/acme-api"  # no project: unchanged
 ```
 
 - [ ] **Step 2: Run test to verify it fails**
@@ -147,6 +168,7 @@ from typing import Any
 from core.services.marketplace_safety import _PATTERNS
 
 MARK = "[redacted]"
+PROJECT = "<project>"
 
 # The marketplace's bytes regexes, as str. Their flags are inline ((?ix)), so decoding keeps them.
 _REUSED = ("hardcoded-secret", "aws-secret-key", "provider-token")
@@ -165,26 +187,29 @@ _RULES: list[tuple[re.Pattern[str], str]] = [
 ]
 
 
-def redact(text: str) -> str:
+def redact(text: str, project: str | None = None) -> str:
     for pattern, replacement in _RULES:
         text = pattern.sub(replacement, text)
+    if project:
+        # A private repo's folder name, only where it is a whole path component (after a slash).
+        text = re.sub(rf"(?<=/){re.escape(project)}(?=/|$|[\s\"'`:,;)\]])", PROJECT, text)
     return text
 
 
-def redact_value(value: Any) -> Any:
+def redact_value(value: Any, project: str | None = None) -> Any:
     if isinstance(value, str):
-        return redact(value)
+        return redact(value, project)
     if isinstance(value, list):
-        return [redact_value(v) for v in value]
+        return [redact_value(v, project) for v in value]
     if isinstance(value, dict):
-        return {k: redact_value(v) for k, v in value.items()}
+        return {k: redact_value(v, project) for k, v in value.items()}
     return value
 ```
 
 - [ ] **Step 4: Run test to verify it passes**
 
 Run: `cd apps/backend && uv run pytest tests/unit/services/test_session_redact.py -v`
-Expected: PASS. If the `.env` case `export DATABASE_PASSWORD=` keeps `export `, the group is correct.
+Expected: PASS
 
 - [ ] **Step 5: Commit**
 
@@ -201,11 +226,11 @@ git commit -m "feat(sessions): server-side redactor for outsider copies and even
 - Modify: `apps/backend/core/services/local_sessions.py:1721-1750` (AUDIT_ACTIONS), `:2043-2062` (decide_pickup_request), `:2227-2440` (replace the share-link section)
 - Modify: `apps/backend/core/services/session_pickup.py:856-895` (`retire`)
 - Modify: `apps/backend/routers/messaging.py:332-338, 369-397`
-- Modify: `apps/backend/tests/unit/services/test_local_session_controls.py` (delete the three share-link tests at `:365-445` and the three lines at `:213-216`)
+- Modify: `apps/backend/tests/unit/services/test_local_session_controls.py` (delete the four share-link tests at `:366-455` and the three lines at `:213-216`; re-point the growth test at `:798`)
 - Test: `apps/backend/tests/unit/services/test_session_links_owner.py`
 
 **Interfaces:**
-- Consumes: `authorize_session`, `_owned_session` (kept, `:2289`), `audit_row`, `repo.put_session(row, previous, enrollment, extra=)`, `session_pickup.set_pickup`, `session_pickup.retire(owner, sid, row, auth=, action=)`, `encryption.encrypt/decrypt`.
+- Consumes: `authorize_session`, `_owned_session` (kept, shrunk to its no-enrollment read, `:2289`), `audit_row`, `repo.put_session(row, previous, enrollment, extra=)`, `session_pickup.set_pickup`, `session_pickup.retire(owner, sid, row, auth=, action=)`, `encryption.encrypt/decrypt`.
 - Produces:
   - `local_sessions.AUDIENCES = Literal["workspace", "anyone"]`
   - `local_sessions._share_pk(token_hash) -> str`, `_token_hash(token) -> str` (kept)
@@ -376,21 +401,18 @@ def _link_public(link: dict) -> SessionLink:
 
     try:
         url = link_url(encryption.decrypt(link["tokenEnc"]))
-    except (ValueError, RuntimeError):
+    except ValueError:  # encryption.decrypt's only failure
         logger.warning("session link undecryptable")
         url = None
     return SessionLink(url=url, audience=link["audience"])
 
 
-async def _owned_session(auth: AuthContext, session_id: str, *, sharing: bool = True) -> dict:
+async def _owned_session(auth: AuthContext, session_id: str) -> dict:
     """The owner's own session. Reading and turning off skip the enrollment check on purpose: an
     owner who turned sharing off must still be able to find and kill their link."""
-    if sharing:
-        row, _ = await authorize_session(auth, None, session_id)
-    else:
-        row = await repo.get_session(resolve_owner_id(auth), validate_uuid(session_id, label="local session ID"))
-        if row is None:
-            raise ApiProblem("LOCAL_SESSION_NOT_FOUND", "Local session not found.")
+    row = await repo.get_session(resolve_owner_id(auth), validate_uuid(session_id, label="local session ID"))
+    if row is None:
+        raise ApiProblem("LOCAL_SESSION_NOT_FOUND", "Local session not found.")
     if auth.user_id != row["humanUserId"]:
         raise ApiProblem("LOCAL_SESSION_FORBIDDEN", "Only the session's owner can share it.")
     return row
@@ -469,7 +491,7 @@ async def put_link(auth: AuthContext, session_id: str, audience: str | None) -> 
 
 
 async def get_link(auth: AuthContext, session_id: str) -> SessionLink:
-    row = await _owned_session(auth, session_id, sharing=False)
+    row = await _owned_session(auth, session_id)
     if not row.get("shareLink"):
         raise ApiProblem("LOCAL_SESSION_NOT_FOUND", "This session has no link.")
     return _link_public(row["shareLink"])
@@ -483,7 +505,7 @@ async def delete_link(auth: AuthContext, session_id: str) -> None:
 
     table = messaging_repo._table().name
     for _ in range(6):
-        row = await _owned_session(auth, session_id, sharing=False)
+        row = await _owned_session(auth, session_id)
         link = row.get("shareLink")
         if not link:
             return
@@ -557,7 +579,10 @@ async def delete_local_session_link(session_id: str, auth: AuthContext = Depends
     await local_sessions.delete_link(auth, session_id)
 ```
 
-3f. `test_local_session_controls.py`: delete `test_a_share_link_is_the_owners_to_make_a_frozen_snapshot_and_workspace_only`, `test_a_share_link_dies_at_its_expiry` and `test_turning_sharing_off_closes_links_but_the_owner_can_still_revoke_them`. In the private-send test, delete the three `create_share_link`/`list_shared_events` lines at `:213-216` (Task 3 re-pins the same property on the public events).
+3f. `test_local_session_controls.py`:
+- Delete `test_a_share_link_is_the_owners_to_make_a_frozen_snapshot_and_workspace_only`, `test_a_share_link_dies_at_its_expiry`, `test_turning_sharing_off_closes_links_but_the_owner_can_still_revoke_them` and `test_pausing_a_session_closes_its_links_too` (Task 3's `test_every_closed_door_reads_the_same` covers pausing).
+- In the private-send test, delete the three `create_share_link`/`list_shared_events` lines at `:213-216`. Task 3 puts them back on the public events.
+- In `test_sharing_and_join_events_land_on_the_person_who_acted` (`:798`): replace the three share-link lines with `link = await service.put_link(ALICE, sid, "anyone")`, delete the `("share_link_opened", BOB.user_id)` row from the expected list, and change the `expires_in_days == 7` assertion to `capture.call_args_list[0].kwargs["properties"]["audience"] == "anyone"`. Task 3 puts the open back. ("anyone", because Bob has no user stream in this file's harness, so a workspace link reads as gone to him.)
 
 - [ ] **Step 4: Run tests to verify they pass**
 
@@ -577,17 +602,21 @@ git commit -m "feat(sessions): one link per session, with an audience, as the pi
 
 **Files:**
 - Create: `apps/backend/core/services/session_links.py`
-- Modify: `apps/backend/core/services/session_pickup.py:196-212` (`CommitRequest`), `:762-778` (manifest)
+- Modify: `apps/backend/core/services/session_pickup.py:196-212` (`CommitRequest`), `:713-745` (manifest, `pickupSnapshot`)
+- Modify: `apps/backend/core/services/local_sessions.py:192-212, 719-735` (`PickupStatus.private_repo`)
 - Modify: `apps/backend/routers/messaging.py` (two public routes)
+- Modify: `apps/backend/tests/unit/services/test_local_session_controls.py` (put back the private-send and growth checks Task 2 removed)
 - Modify: `apps/infra/lib/stacks/api-stack.ts:124-132, 380-407`; `apps/infra/test/api-stack.test.ts:219-238`
 - Test: `apps/backend/tests/unit/services/test_session_links_public.py`
 
 **Interfaces:**
 - Consumes: Task 1 `redact`, `redact_value`, `MARK`; Task 2 `_share_pk`, `_token_hash`, `put_link`, `delete_link`; `sessions._enrolled`, `sessions.pickup_stopped_at`, `PICKUP_RETENTION_SECONDS`, `session_screen._still_a_member`, `repo.list_events`.
 - Produces:
-  - `session_pickup.RepoInfo {remote, branch, head, pushed, public}`; `CommitRequest.repo: RepoInfo | None`; manifest key `repoInfo`
+  - `session_pickup.RepoInfo {remote, branch, head, pushed, public, folder}`; `CommitRequest.repo: RepoInfo | None`; manifest key `repoInfo`; `pickupSnapshot.privateFolder` (set only when `public` is false)
+  - `local_sessions.PickupStatus.private_repo: bool | None` (wire `privateRepo`; the owner's Share control reads it)
   - `session_links.GONE`, `session_links.LinkTokenRequest {token}`, `LinkEventsRequest {token, afterSeq, limit}`
   - `async session_links.resolve(auth: AuthContext | None, token: str) -> tuple[dict, dict, bool]` (row, shareLink, member)
+  - `session_links._project(row) -> str | None` (the private folder to hide); `_known(row) -> bool` (a Claude session's first snapshot has landed)
   - `session_links.LinkCode {visibility: "public"|"private"|"none"|"workspace", remote?, branch?, commit?}`, `LinkMe {signedIn, member}`, `LinkPage {title, ownerFirstName, provider, state, code, continuable, me, sessionId?}`
   - `async open_page(auth, token) -> LinkPage`; `async list_events(auth, token, after_seq, limit) -> LocalSessionEventPage`
   - `async _name(user_id, *, first: bool) -> str` (never a user id)
@@ -621,7 +650,7 @@ claude_session = pickup_tests.claude_session
 upload_and_commit = pickup_tests.upload_and_commit
 
 STRANGER = AuthContext(user_id="user_elsewhere", org_id="org_other")
-PUBLIC = {"remote": "github.com/acme/app", "branch": "main", "head": "a" * 40, "pushed": True, "public": True}
+PUBLIC = {"remote": "github.com/acme/app", "branch": "main", "head": "a" * 40, "pushed": True, "public": True, "folder": "app"}
 
 
 @pytest.fixture(autouse=True)
@@ -677,7 +706,8 @@ async def test_unpushed_or_unknown_code_is_not_shared(transport, s3):
 async def test_a_member_gets_the_session_and_the_workspace_repo_line(transport, s3):
     sid, token = await link_for(transport, s3, audience="workspace", repo_info={**PUBLIC, "public": False})
     page = await links.open_page(BOB, token)
-    assert page.me.member and page.session_id == sid and page.code.visibility in ("workspace", "none")
+    # No bundle was committed, so a member sees "Code not shared" too; the flag is for outsiders.
+    assert page.me.member and page.session_id == sid and page.code.visibility == "none"
 
 
 @pytest.mark.asyncio
@@ -728,6 +758,26 @@ async def test_outsider_events_are_redacted_and_carry_no_actor(transport, s3):
 
 
 @pytest.mark.asyncio
+async def test_a_private_repos_folder_is_hidden_from_outsiders_only(transport, s3):
+    sid, token = await link_for(transport, s3, repo_info={**PUBLIC, "public": False})
+    await say(transport, sid, ["edited /Users/alice/app/src/a.py"])
+    assert [e.text for e in (await links.list_events(STRANGER, token, 0, 50)).events] == ["edited ~/<project>/src/a.py"]
+    assert (await links.list_events(ALICE, token, 0, 50)).events[0].text == "edited /Users/alice/app/src/a.py"
+    assert (await repo.get_session(OWNER, sid))["pickupSnapshot"]["privateFolder"] == "app"
+    assert (await service.get_session(ALICE, sid)).pickup.private_repo is True
+
+
+@pytest.mark.asyncio
+async def test_outsiders_see_no_events_before_the_first_snapshot(transport, s3):
+    # Until the Mac commits, nobody knows whether the folder name is private.
+    sid = await claude_session(transport)
+    token = (await service.put_link(ALICE, sid, "anyone")).url.split("#", 1)[1]
+    await say(transport, sid, ["in /Users/alice/app"])
+    assert (await links.list_events(STRANGER, token, 0, 50)).events == []
+    assert len((await links.list_events(ALICE, token, 0, 50)).events) == 1
+
+
+@pytest.mark.asyncio
 async def test_an_event_that_grows_past_the_envelope_falls_back_to_one_line(transport, s3):
     sid, token = await link_for(transport, s3)
     row = {"pk": repo.session_pk(OWNER, sid), "sk": f"EVENT#{99:020d}", "seq": 99, "kind": "text", "role": "assistant",
@@ -753,6 +803,10 @@ async def test_the_commit_stores_repo_info_on_the_manifest(transport, s3):
 
 `messaging_repo.deactivate_user_stream` (`messaging_repo.py:2086`) is the removal path that `_still_a_member` reads.
 
+In `test_local_session_controls.py`, put back what Task 2 took out (import `session_links` from `core.services`):
+- Private-send test, where the three lines were: `token = (await service.put_link(ALICE, sid, "workspace")).url.split("#", 1)[1]` and `assert "Private\nbody" not in json.dumps((await session_links.list_events(ALICE, token, 0, 100)).model_dump(by_alias=True))`.
+- Growth test, after `put_link`: `token = link.url.split("#", 1)[1]`, `await session_links.open_page(BOB, token)`, `await session_links.list_events(BOB, token, 0, 50)  # paging is not another open`; restore `("share_link_opened", BOB.user_id)` as the second expected row.
+
 - [ ] **Step 2: Run test to verify it fails**
 
 Run: `cd apps/backend && uv run pytest tests/unit/services/test_session_links_public.py -v`
@@ -772,9 +826,21 @@ class RepoInfo(ContractModel):
     head: GitSha
     pushed: bool
     public: bool
+    # The repository's top-level folder name: hidden from outsiders when the repo is private.
+    # Null only for a repository at `/`.
+    folder: Annotated[str, Field(min_length=1, max_length=255)] | None = None
 ```
 
-In `CommitRequest`, add `repo: RepoInfo | None = None` (last field). In `commit()`'s `manifest = {...}`, add `"repoInfo": request.repo.model_dump(by_alias=True) if request.repo else None,`.
+In `CommitRequest`, add `repo: RepoInfo | None = None` (last field). In `commit()`'s `manifest = {...}`, add `"repoInfo": request.repo.model_dump(by_alias=True) if request.repo else None,`. After `snapshot = {"at": now, ...}` add:
+
+```python
+        if request.repo and not request.repo.public:
+            snapshot["privateFolder"] = request.repo.folder or ""  # read by session_links without a manifest read
+```
+
+`local_sessions.py`: in `PickupStatus` add `private_repo: bool | None = None` and `"private_repo"` to its `_drop_none` names; in `_pickup_public` add `"privateRepo": True if "privateFolder" in snapshot else None,`. The folder name itself stays server-side.
+
+ponytail: an older Mac sends no `repo`, so its private folder names are not hidden; the deploy order (Global Constraints) keeps that window short.
 
 3b. Create `session_links.py`:
 
@@ -788,7 +854,6 @@ owner, user, workspace or session id, or a path, to someone outside the session'
 
 from __future__ import annotations
 
-import hmac
 import logging
 import time
 from typing import Annotated, Literal
@@ -797,7 +862,7 @@ from pydantic import Field, model_serializer
 
 from core.auth import AuthContext
 from core.repositories import local_sessions_repo as repo, messaging_repo as store
-from core.services import local_sessions as sessions
+from core.services import local_sessions as sessions, session_pickup as pickup
 from core.services.local_sessions import PICKUP_RETENTION_SECONDS, _drop_none
 from core.services.messaging import ApiProblem, ContractModel
 from core.services.session_redact import MARK, redact, redact_value
@@ -837,14 +902,13 @@ async def _member(auth: AuthContext | None, row: dict) -> bool:
 async def resolve(auth: AuthContext | None, token: str) -> tuple[dict, dict, bool]:
     """(META row, its shareLink, whether the caller is a current member). Every refusal reads the
     same: no row, a hash META does not hold, paused, the Mac no longer shares, past the snapshot
-    retention, or a workspace link for someone outside it."""
-    if not 16 <= len(token) <= 128:
-        raise _gone()
+    retention, or a workspace link for someone outside it. The route bounds the token's length."""
     digest = sessions._token_hash(token)
     lookup = await store._get(sessions._share_pk(digest), "META")
     row = await repo.get_session(lookup["ownerId"], lookup["sessionId"]) if lookup else None
     link = (row or {}).get("shareLink") or {}
-    if row is None or row.get("unshared") or not hmac.compare_digest(link.get("tokenHash", ""), digest):
+    # Plain !=: the lookup row was found by this hash, so the comparison reveals nothing new.
+    if row is None or row.get("unshared") or link.get("tokenHash") != digest:
         raise _gone()
     try:
         await sessions._enrolled(row["ownerId"], row["humanUserId"], row["deviceId"])
@@ -925,21 +989,31 @@ def _state(row: dict) -> str:
     return "live" if int(row["onlineUntil"]) > int(time.time()) else "offline"
 
 
+def _known(row: dict) -> bool:
+    """A Claude session's first snapshot has landed, so its repo's privacy is known (Codex has none)."""
+    return row["provider"] != "claude" or (row.get("pickupSnapshot") or {}).get("state") == "ready"
+
+
+def _project(row: dict) -> str | None:
+    """The private repo's folder name, hidden from outsiders (controller ruling 2026-10-05)."""
+    return (row.get("pickupSnapshot") or {}).get("privateFolder") or None
+
+
 def _title(row: dict, member: bool) -> str | None:
     title = row.get("displayTitle") or row.get("title")
-    return title if member or title is None else redact(title)
+    if member or title is None:
+        return title
+    return redact(title, _project(row)) if _known(row) else None
 
 
 async def open_page(auth: AuthContext | None, token: str) -> LinkPage:
-    from core.services import session_pickup
-
     row, _, member = await resolve(auth, token)
     manifest = await store._get(row["pk"], "PICKUP") if row.get("pickupAllowed") else None
     continuable = (
         row["provider"] == "claude"
         and manifest is not None
         and (row.get("pickupSnapshot") or {}).get("state") == "ready"
-        and not session_pickup._expired(row)
+        and not pickup._expired(row)
     )
     if auth is not None:
         sessions._capture_growth(row, "share_link_opened", auth.user_id, member=member)
@@ -955,13 +1029,13 @@ async def open_page(auth: AuthContext | None, token: str) -> LinkPage:
     )
 
 
-def _event(stored: dict, member: bool) -> sessions.LocalSessionEvent:
+def _event(stored: dict, member: bool, project: str | None) -> sessions.LocalSessionEvent:
     if member:
         return sessions._public(sessions.LocalSessionEvent, stored)
     data = {k: v for k, v in stored.items() if k not in ("actor", "originRequestId")}
     for key in ("text", "tool"):
         if key in data:
-            data[key] = redact_value(data[key])
+            data[key] = redact_value(data[key], project)
     try:
         return sessions._public(sessions.LocalSessionEvent, data)
     except ValueError:  # redaction grew it past the 16 KiB envelope: one line in its place
@@ -970,8 +1044,11 @@ def _event(stored: dict, member: bool) -> sessions.LocalSessionEvent:
 
 async def list_events(auth: AuthContext | None, token: str, after_seq: int, limit: int) -> sessions.LocalSessionEventPage:
     row, _, member = await resolve(auth, token)
+    if not member and not _known(row):
+        return sessions.LocalSessionEventPage(events=[], next_after_seq=None)  # Review Focus 6
     rows, next_seq = await repo.list_events(row["ownerId"], row["sessionId"], after_seq, limit)
-    return sessions.LocalSessionEventPage(events=[_event(r, member) for r in rows], next_after_seq=next_seq)
+    project = None if member else _project(row)
+    return sessions.LocalSessionEventPage(events=[_event(r, member, project) for r in rows], next_after_seq=next_seq)
 ```
 
 3c. `routers/messaging.py`: import `get_optional_user` from `core.auth` and `session_links` from `core.services`, then add:
@@ -1041,7 +1118,7 @@ describe("ApiStack — public session-link routes have their own throttle bucket
 
 - [ ] **Step 4: Run tests to verify they pass**
 
-Run: `cd apps/backend && uv run pytest tests/unit/services/test_session_links_public.py tests/unit/services/test_session_pickup.py -v`
+Run: `cd apps/backend && uv run pytest tests/unit/services/test_session_links_public.py tests/unit/services/test_session_pickup.py tests/unit/services/test_local_session_controls.py -v`
 Expected: PASS
 Run: `cd apps/infra && npx jest test/api-stack.test.ts -t "public session-link"`
 Expected: PASS
@@ -1051,7 +1128,7 @@ Expected: synth exits 0. If `deploy.yml` changed, stage it with this task.
 - [ ] **Step 5: Commit**
 
 ```bash
-git add apps/backend/core/services/session_links.py apps/backend/core/services/session_pickup.py apps/backend/routers/messaging.py apps/backend/tests/unit/services/test_session_links_public.py apps/infra/lib/stacks/api-stack.ts apps/infra/test/api-stack.test.ts
+git add apps/backend/core/services/session_links.py apps/backend/core/services/session_pickup.py apps/backend/core/services/local_sessions.py apps/backend/routers/messaging.py apps/backend/tests/unit/services/test_session_links_public.py apps/backend/tests/unit/services/test_local_session_controls.py apps/infra/lib/stacks/api-stack.ts apps/infra/test/api-stack.test.ts
 git add .github/workflows/deploy.yml 2>/dev/null || true
 git commit -m "feat(sessions): open a session link and read its events, redacted for outsiders"
 ```
@@ -1062,7 +1139,7 @@ git commit -m "feat(sessions): open a session link and read its events, redacted
 
 **Files:**
 - Modify: `apps/backend/core/services/session_links.py`
-- Modify: `apps/backend/core/services/session_pickup.py:406-424` (extract `ready_manifest`)
+- Modify: `apps/backend/core/services/session_pickup.py:406-424` (extract `ready_manifest`), `:459-488` (extract `downloads`)
 - Modify: `apps/backend/routers/messaging.py`
 - Test: `apps/backend/tests/unit/services/test_session_copies.py`
 
@@ -1070,6 +1147,7 @@ git commit -m "feat(sessions): open a session link and read its events, redacted
 - Consumes: Task 3 `resolve`, `_name`, `_title`; `session_pickup._s3`, `_bucket`, `session_prefix`, `_part_key`, `_key`, `_expired`, `Download`, `TranscriptDownload`, `Downloads`, `URL_SECONDS`; Task 1 `redact`, `redact_value`.
 - Produces:
   - `session_pickup.ready_manifest(row) -> dict` (async; the checks `request_pickup` made inline)
+  - `session_pickup.downloads(row, manifest) -> Downloads` (sync; the presigned URLs `_ticket` built inline)
   - `session_links.CopyRequest {token, challenge}`, `CopyCode {code}`, `RedeemRequest {code, verifier}`
   - `session_links.CopyCodeMode {mode: "clone"|"bundle"|"none", remote?, commit?, snapshot?, sessionId?}`
   - `session_links.CopyTicket {state: "ready", title, from, conversationId, claudeVersion, cwdRelative, downloads: Downloads, code: CopyCodeMode}`; `Preparing {state: "preparing"}`
@@ -1111,7 +1189,7 @@ BUCKET = pickup_tests.BUCKET
 
 STRANGER = AuthContext(user_id="user_elsewhere", org_id="org_other")
 VERIFIER = "v" * 43
-PUBLIC = {"remote": "github.com/acme/app", "branch": "main", "head": "a" * 40, "pushed": True, "public": True}
+PUBLIC = {"remote": "github.com/acme/app", "branch": "main", "head": "a" * 40, "pushed": True, "public": True, "folder": "app"}
 SECRET_LINE = b'{"cwd":"/Users/alice/app","message":"token ghp_abcdefghijklmnopqrstuvwx"}\n'
 
 
@@ -1179,6 +1257,8 @@ async def test_a_private_repo_copy_is_conversation_only_and_names_nothing(transp
     ticket = (await links.redeem(code, VERIFIER)).model_dump(by_alias=True)
     assert ticket["code"] == {"mode": "none"} and ticket["cwdRelative"] == ""
     assert "acme" not in json.dumps(ticket) and "main" not in json.dumps(ticket["code"])
+    body = gzip.decompress(fetch(s3, ticket["downloads"]["transcript"][0]["url"]))
+    assert json.loads(body)["cwd"] == "~/<project>"  # the private folder name stays on the Mac's side
 
 
 @pytest.mark.asyncio
@@ -1234,7 +1314,7 @@ async def test_a_stalled_preparation_restarts(transport, s3, started):
 
 
 @pytest.mark.asyncio
-async def test_continue_needs_a_workspace_and_a_claude_session(transport, s3):
+async def test_continue_needs_the_takers_own_workspace(transport, s3):
     _, token = await shared(transport, s3)
     with pytest.raises(HTTPException) as no_org:
         await links.create_copy(AuthContext(user_id="user_new", org_id=None), token, links.challenge_of(VERIFIER))
@@ -1267,7 +1347,9 @@ async def ready_manifest(row: dict) -> dict:
 
 `request_pickup` then calls `manifest = await ready_manifest(row)` in place of those lines. Its error messages stay the same.
 
-3b. Append to `session_links.py` (add `import asyncio, base64, gzip, hashlib, io, json, secrets, tarfile, tempfile, uuid` and `from core.auth import resolve_owner_id`, `from core.dynamodb import run_in_thread`, `from core.observability.product_analytics import capture_product_event`):
+Extract the `Downloads(...)` expression of `_ticket` into `def downloads(row: dict, manifest: dict) -> Downloads` (it builds its own `url()` signer from `_s3()`/`_bucket()`); `_ticket` passes `downloads=downloads(row, manifest)`. A member's copy reuses it below.
+
+3b. Append to `session_links.py` (add `import asyncio, base64, gzip, hashlib, hmac, io, json, secrets, tarfile, tempfile, uuid` and `from core.auth import resolve_owner_id`, `from core.dynamodb import run_in_thread`):
 
 ```python
 # --- Copies (spec §3.5) ------------------------------------------------------------------------
@@ -1316,7 +1398,7 @@ class CopyTicket(ContractModel):
     conversation_id: str
     claude_version: str
     cwd_relative: str
-    downloads: session_pickup.Downloads
+    downloads: pickup.Downloads
     code: CopyCodeMode
 
 
@@ -1340,13 +1422,11 @@ def _code_mode(manifest: dict, member: bool) -> str:
 
 
 async def create_copy(auth: AuthContext, token: str, challenge: str) -> CopyCode:
-    from core.services import session_pickup
-
     resolve_owner_id(auth)  # the taker's own workspace: the free one sign-up gives (409 without)
     row, link, member = await resolve(auth, token)
     if row["provider"] != "claude":
         raise ApiProblem("LOCAL_SESSION_UNSUPPORTED", "Only Claude Code sessions can be continued.")
-    manifest = await session_pickup.ready_manifest(row)
+    manifest = await pickup.ready_manifest(row)
     code, now = secrets.token_urlsafe(32), int(time.time())
     item = {
         "pk": _copy_pk(code),
@@ -1373,10 +1453,7 @@ async def create_copy(auth: AuthContext, token: str, challenge: str) -> CopyCode
     await store._transact([{"Put": {"TableName": table, "Item": item}}, {"Put": {"TableName": table, "Item": audit}}])
     if not member:
         _start(item)
-    capture_product_event(
-        distinct_id=auth.user_id, event="session_copied",
-        properties={"workspace_id": row["ownerId"], "session_id": row["sessionId"], "member": member},
-    )
+    sessions._capture_growth(row, "session_copied", auth.user_id, member=member)
     return CopyCode(code=code)
 
 
@@ -1406,7 +1483,9 @@ async def _prepare(item: dict) -> None:
             manifest = await store._get(row["pk"], "PICKUP") if row else None
             if not row or not manifest or row.get("pickupEpoch") != item["epoch"]:
                 raise RuntimeError("snapshot gone")
-            out = await run_in_thread(_redact_copy, row, manifest, item["copyId"])
+            info = manifest.get("repoInfo") or {}
+            project = info.get("folder") if info and not info.get("public") else None
+            out = await run_in_thread(_redact_copy, row, manifest, item["copyId"], project)
             out.update(
                 state="ready",
                 readyAt=int(time.time()),
@@ -1424,13 +1503,13 @@ async def _prepare(item: dict) -> None:
                 pass  # a newer run owns it, or the row expired
 
 
-def _redact_line(line: bytes) -> bytes:
+def _redact_line(line: bytes, project: str | None) -> bytes:
     end = b"\n" if line.endswith(b"\n") else b""
     text = line[: len(line) - len(end)].decode("utf-8", errors="replace")
     try:
-        body = json.dumps(redact_value(json.loads(text)), ensure_ascii=False, separators=(",", ":"))
+        body = json.dumps(redact_value(json.loads(text), project), ensure_ascii=False, separators=(",", ":"))
     except ValueError:
-        body = redact(text)
+        body = redact(text, project)
     return body.encode("utf-8") + end
 
 
@@ -1444,13 +1523,11 @@ def _measure(file) -> tuple[int, str]:
     return size, digest.hexdigest()
 
 
-def _redact_copy(row: dict, manifest: dict, copy_id: str) -> dict:
+def _redact_copy(row: dict, manifest: dict, copy_id: str, project: str | None) -> dict:
     """Stream every transcript part through the redactor, one part at a time (parts are up to
     64 MiB, the snapshot up to 1 GiB): gunzip, redact each JSONL line, gzip, upload. A line the Mac
     split across parts (one longer than its chunk) is carried whole into the next part. Sync:
     call through run_in_thread."""
-    from core.services import session_pickup as pickup
-
     client, bucket = pickup._s3(), pickup._bucket()
     base = f"{pickup.session_prefix(row['ownerId'], row['sessionId'])}{row['pickupEpoch']}/copies/{copy_id}/"
     parts, carry, last = [], b"", len(manifest["parts"]) - 1
@@ -1463,7 +1540,7 @@ def _redact_copy(row: dict, manifest: dict, copy_id: str) -> dict:
                     if not line.endswith(b"\n") and n != last:
                         carry = line
                         continue
-                    gz.write(_redact_line(line))
+                    gz.write(_redact_line(line, project))
             size, digest = _measure(out)
             key = f"{base}t-{part['index']:06d}.gz"
             client.upload_fileobj(out, bucket, key)
@@ -1485,7 +1562,7 @@ def _redact_copy(row: dict, manifest: dict, copy_id: str) -> dict:
                         data.decode("utf-8")
                     except UnicodeDecodeError:
                         continue  # binary entries are dropped, never shown unredacted
-                    body = b"".join(_redact_line(line) for line in data.splitlines(keepends=True))
+                    body = b"".join(_redact_line(line, project) for line in data.splitlines(keepends=True))
                     info = tarfile.TarInfo(member.name)
                     info.size, info.mode, info.mtime = len(body), member.mode, member.mtime
                     tout.addfile(info, io.BytesIO(body))
@@ -1532,23 +1609,17 @@ async def redeem(code: str, verifier: str) -> CopyTicket | Preparing:
 
 
 def _copy_ticket(row: dict, item: dict, manifest: dict | None, owner: str) -> CopyTicket:
-    from core.services import session_pickup as pickup
-
-    client, bucket = pickup._s3(), pickup._bucket()
-
-    def url(key: str) -> str:
-        return client.generate_presigned_url("get_object", Params={"Bucket": bucket, "Key": key}, ExpiresIn=pickup.URL_SECONDS)
-
     if manifest is not None:  # a member: the snapshot as it is, Pick up's behaviour
-        series, code = manifest["series"], manifest.get("code")
-        downloads = pickup.Downloads(
-            transcript=[pickup.TranscriptDownload(index=p["index"], url=url(pickup._part_key(row, series, p)), bytes=p["bytes"], sha256=p["sha256"]) for p in manifest["parts"]],
-            code=pickup.Download(url=url(pickup._key(row, series, "code", sha=code["sha256"])), bytes=code["bytes"], sha256=code["sha256"]) if code else None,
-            sidecars=pickup.Download(url=url(pickup._key(row, series, "sidecars", sha=manifest["sidecars"]["sha256"])), bytes=manifest["sidecars"]["bytes"], sha256=manifest["sidecars"]["sha256"]) if manifest.get("sidecars") else None,
-        )
+        code = manifest.get("code")
+        downloads = pickup.downloads(row, manifest)
         mode = CopyCodeMode(mode="bundle", remote=code["remote"], snapshot=code["snapshot"], session_id=row["sessionId"]) if code else CopyCodeMode(mode="none")
         meta = (manifest["conversationId"], manifest["claudeVersion"], manifest["cwdRelative"] if code else "")
     else:
+        client, bucket = pickup._s3(), pickup._bucket()
+
+        def url(key: str) -> str:
+            return client.generate_presigned_url("get_object", Params={"Bucket": bucket, "Key": key}, ExpiresIn=pickup.URL_SECONDS)
+
         side = item.get("sidecars")
         downloads = pickup.Downloads(
             transcript=[pickup.TranscriptDownload(index=p["index"], url=url(p["key"]), bytes=p["bytes"], sha256=p["sha256"]) for p in item["parts"]],
@@ -1564,7 +1635,7 @@ def _copy_ticket(row: dict, item: dict, manifest: dict | None, owner: str) -> Co
     )
 ```
 
-Import `session_pickup` at the top of `session_links.py` (`from core.services import session_pickup`). `session_pickup` imports `local_sessions` and `session_screen` but never `session_links`, so there is no cycle. The function-level `from core.services import session_pickup` lines above then become redundant; delete them. Check with `uv run python -c "import core.services.session_links"`.
+`session_links.py` imports `session_pickup as pickup` at the top (Task 3). `session_pickup` imports `local_sessions` and `session_screen` but never `session_links`, so there is no cycle.
 
 3c. `routers/messaging.py`:
 
@@ -1603,7 +1674,7 @@ git commit -m "feat(sessions): Continue copies, redacted for outsiders, redeemed
 
 **Interfaces:**
 - Consumes: `session_pickup::{git, normalize_remote}`.
-- Produces: `snapshot::repo_info(top: &Path) -> Value` (async; `Null` with no `origin` or no commit); `snapshot::probe_command(remote: &str) -> tokio::process::Command`; commit body key `"repo"`.
+- Produces: `snapshot::repo_info(top: &Path) -> Value` (async; `{remote, branch, head, pushed, public, folder}`, `Null` with no `origin` or no commit); `snapshot::probe_command(remote: &str) -> tokio::process::Command`; commit body key `"repo"`.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -1624,6 +1695,7 @@ Add to `snapshot.rs`'s `mod tests` (beside the test that builds a repo with `rem
         assert_eq!(info["branch"], "main");
         assert_eq!(info["pushed"], false);
         assert_eq!(info["public"], true);
+        assert_eq!(info["folder"], top.file_name().unwrap().to_string_lossy().as_ref());
         g(&["update-ref", "refs/remotes/origin/main", "HEAD"]);
         assert_eq!(repo_info(top).await["pushed"], true);
     }
@@ -1661,16 +1733,16 @@ After `capture_code` in `snapshot.rs`:
 
 ```rust
 /// Anonymous `ls-remote` answers, per normalized remote, for an hour (spec §3.3).
-static PUBLIC: std::sync::Mutex<Option<std::collections::HashMap<String, (Instant, bool)>>> = std::sync::Mutex::new(None);
+static PUBLIC: std::sync::LazyLock<std::sync::Mutex<HashMap<String, (Instant, bool)>>> = std::sync::LazyLock::new(Default::default);
 const PUBLIC_FOR: Duration = Duration::from_secs(3600);
 
 fn remember_public(remote: &str, public: bool) {
-    PUBLIC.lock().unwrap_or_else(|e| e.into_inner()).get_or_insert_with(Default::default).insert(remote.to_string(), (Instant::now(), public));
+    PUBLIC.lock().unwrap_or_else(|e| e.into_inner()).insert(remote.to_string(), (Instant::now(), public));
 }
 
 fn known_public(remote: &str) -> Option<bool> {
     let cache = PUBLIC.lock().unwrap_or_else(|e| e.into_inner());
-    cache.as_ref()?.get(remote).filter(|(at, _)| at.elapsed() < PUBLIC_FOR).map(|(_, public)| *public)
+    cache.get(remote).filter(|(at, _)| at.elapsed() < PUBLIC_FOR).map(|(_, public)| *public)
 }
 
 /// The anonymous probe. Not `git_run`: that keeps the user's global config on purpose, and a
@@ -1704,8 +1776,9 @@ async fn public(remote: &str) -> bool {
     answer
 }
 
-/// `{remote, branch, head, pushed, public}` for the commit body, or null when this is not a work
-/// tree with an `origin` and a commit. Sent on every commit, bundle or not (spec §3.3).
+/// `{remote, branch, head, pushed, public, folder}` for the commit body, or null when this is not
+/// a work tree with an `origin` and a commit. Sent on every commit, bundle or not (spec §3.3).
+/// `folder` is the top-level folder's name: the server hides it from outsiders when `public` is false.
 pub(crate) async fn repo_info(top: &Path) -> Value {
     let Some(remote) = git(top, &["remote", "get-url", "origin"], None).await.ok().and_then(|o| normalize_remote(&o)) else {
         return Value::Null;
@@ -1717,13 +1790,14 @@ pub(crate) async fn repo_info(top: &Path) -> Value {
         .await
         .is_ok_and(|out| !out.is_empty());
     let branch = git(top, &["symbolic-ref", "--short", "-q", "HEAD"], None).await.ok();
-    json!({"remote": remote, "branch": branch, "head": head, "pushed": pushed, "public": public(&remote).await})
+    let folder = top.file_name().map(|n| n.to_string_lossy().into_owned());
+    json!({"remote": remote, "branch": branch, "head": head, "pushed": pushed, "public": public(&remote).await, "folder": folder})
 }
 ```
 
-(Add `use std::time::Instant;` and `serde_json::json` if the module does not already import them.)
+`snapshot.rs` already imports `HashMap`, `Duration` and `Instant` (`:10-11`) and uses `json!`.
 
-In the commit body (`:776`), before `let mut body = json!({`:
+In the commit body (`:789`), before `let mut body = json!({`:
 
 ```rust
     let repo_info = match top {
@@ -1757,25 +1831,15 @@ git commit -m "feat(desktop): report repo, branch, head, pushed and public with 
 - Create: `apps/desktop/src-tauri/src/session_continue.rs`
 
 **Interfaces:**
-- Consumes: Task 4's ticket shape (`downloads` = pick-up `Downloads`; `code = {mode, remote?, commit?, snapshot?, sessionId?}`; redeem body `{code, verifier}`, error body `{code, message}`); `crate::LIGHTBULB_API_BASE` (`lib.rs:43`); `session_pickup::{allowed_url, argv, workdir, import_code, normalize_remote, slug, older, version, claude_version, prune, git, git_run}`; `crate::local_sessions::provider_program`.
+- Consumes: Task 4's ticket shape (`downloads` = pick-up `Downloads`; `code = {mode, remote?, commit?, snapshot?, sessionId?}`; redeem body `{code, verifier}`, error body `{code, message}`); `crate::LIGHTBULB_API_BASE` (`lib.rs:43`); `crate::KEYCHAIN_SERVICE` (`lib.rs:39`, the bundle id; `start_links.rs:39` already builds the app's state dir from it); `session_pickup::{allowed_url, argv, workdir, import_code, normalize_remote, slug, older, hex_sha, claude_version, prune, git, git_run}`; `crate::local_sessions::provider_program`.
+- Claude Code flags: Pick up's `argv` (`session_pickup.rs:624-638`) already ships `--resume <file> --fork-session --session-id <uuid> --setting-sources user`, so the fork lands under the id the CLI chose and the marker can be named before Claude starts. No separate check.
 - Produces:
   - `session_pickup::{Download, Downloads}` and their fields `pub(crate)`; `pub(crate) fn downloads_ok(d: &Downloads) -> bool`; `pub(crate) async fn fetch_downloads(d: &Downloads, conversation: &str, dir: &Path) -> Result<PathBuf, Failure>`; `pub(crate) fn exclude_worktrees(repo: &Path) -> Result<(), String>` (async)
   - `plugin::install_now(state_dir: &Path, home: &Path) -> Result<()>`
   - `session_continue::main(link: &str) -> i32` (used by Task 7)
-  - `session_continue::{parse_link, Link, verifier_and_challenge, wait_for_code, parse_copy, CopyTicket, clone_of, APP_ID}`
+  - `session_continue::{parse_link, Link, verifier_and_challenge, wait_for_code, parse_copy, CopyTicket, clone_of, write_marker}`
 
-- [ ] **Step 1: Verify the Claude Code flag combination on the pinned version**
-
-Run:
-```bash
-claude --version
-SRC=$(ls -t ~/.claude/projects/*/*.jsonl | head -1); SID=$(uuidgen | tr 'A-Z' 'a-z')
-cd "$(mktemp -d)" && claude --resume "$SRC" --fork-session --session-id "$SID" --setting-sources user -p "Reply with the single word ok."
-ls ~/.claude/projects/*/"$SID".jsonl
-```
-Expected: `2.1.289 (Claude Code)`, then the reply `ok`, then one path ending in `$SID.jsonl`. The fork is written under the id the CLI chose, so the marker can be named before Claude starts. Pick up's `argv` already passes this combination (`session_pickup.rs:624-638`). If the `ls` finds nothing, stop and report: Task 8's marker then has to be keyed differently, and the spec needs a ruling.
-
-- [ ] **Step 2: Write the failing tests**
+- [ ] **Step 1: Write the failing tests**
 
 At the end of the new `session_continue.rs` (start the file with only `#[cfg(test)] mod tests {…}` and the `use` lines, so it compiles to a test failure):
 
@@ -1862,12 +1926,6 @@ mod tests {
     }
 
     #[test]
-    fn the_app_id_matches_the_bundle() {
-        let conf: Value = serde_json::from_str(include_str!("../tauri.conf.json")).unwrap();
-        assert_eq!(conf["identifier"], APP_ID);
-    }
-
-    #[test]
     fn the_marker_names_the_fork() {
         let home = tempfile::tempdir().unwrap();
         write_marker(home.path(), "fork-1", "Alice\u{1b}[31m", Some("Fix login")).unwrap();
@@ -1877,15 +1935,15 @@ mod tests {
 }
 ```
 
-- [ ] **Step 3: Run tests to verify they fail**
+- [ ] **Step 2: Run tests to verify they fail**
 
 Run: `cd apps/desktop/src-tauri && cargo test --lib session_continue`
 Expected: FAIL to compile with `cannot find function 'parse_link'`
 
-- [ ] **Step 4: Refactor `session_pickup.rs` for reuse (no behaviour change)**
+- [ ] **Step 3: Refactor `session_pickup.rs` for reuse (no behaviour change)**
 
 - `Download`/`Downloads`: `pub(crate) struct`, every field `pub(crate)`.
-- Make these `pub(crate)`: `slug`, `older`, `version`, `hex_sha`, `argv`, `workdir`, `claude_version`, `prune`, `Failure`, `fail`.
+- Make these `pub(crate)`: `slug`, `older`, `hex_sha`, `argv`, `workdir`, `claude_version`, `prune` and the `Failure` type alias.
 - Extract from `parse_ticket` the download checks:
 
 ```rust
@@ -1910,7 +1968,7 @@ pub(crate) fn downloads_ok(d: &Downloads) -> bool {
 
 Run `cargo test --lib session_pickup`. Expected: PASS, with the same tests as before.
 
-- [ ] **Step 5: Add `plugin::install_now`**
+- [ ] **Step 4: Add `plugin::install_now`**
 
 In `local_sessions.rs:10` change `mod plugin;` to `pub(crate) mod plugin;`. In `plugin.rs`:
 
@@ -1924,7 +1982,7 @@ pub(crate) fn install_now(state_dir: &Path, home: &Path) -> Result<()> {
 }
 ```
 
-- [ ] **Step 6: Write the implementation**
+- [ ] **Step 5: Write the implementation**
 
 `session_continue.rs` (above the tests):
 
@@ -1942,8 +2000,6 @@ use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-/// The bundle identifier: the app's state lives under it, and with it the mod's marketplace.
-pub(crate) const APP_ID: &str = "company.thelightbulb.desktop";
 const ID: &str = "lightbulb-sessions@lightbulb";
 
 pub(crate) struct Link {
@@ -2115,7 +2171,7 @@ fn ensure_mod(claude: &Path, home: &Path) {
     if listed.is_ok_and(|o| String::from_utf8_lossy(&o.stdout).contains(ID)) {
         return;
     }
-    let state = home.join("Library/Application Support").join(APP_ID).join("local-sessions");
+    let state = home.join("Library/Application Support").join(crate::KEYCHAIN_SERVICE).join("local-sessions");
     if let Err(e) = crate::local_sessions::plugin::install_now(&state, home) {
         eprintln!("lightbulb: the Lightbulb mod was not installed ({e}).");
     }
@@ -2203,12 +2259,12 @@ pub fn main(link: &str) -> i32 {
 
 In `lib.rs`, next to `mod session_pickup;`, add `mod session_continue;`. `cli` is in the same crate, so it reaches `crate::session_continue::main` even though the module is private.
 
-- [ ] **Step 7: Run tests to verify they pass**
+- [ ] **Step 6: Run tests to verify they pass**
 
 Run: `cd apps/desktop/src-tauri && cargo test --lib session_continue session_pickup plugin`
 Expected: PASS
 
-- [ ] **Step 8: Commit**
+- [ ] **Step 7: Commit**
 
 ```bash
 git add apps/desktop/src-tauri/src/session_continue.rs apps/desktop/src-tauri/src/session_pickup.rs apps/desktop/src-tauri/src/local_sessions/plugin.rs apps/desktop/src-tauri/src/local_sessions.rs apps/desktop/src-tauri/src/lib.rs
@@ -2217,9 +2273,9 @@ git commit -m "feat(desktop): continue a shared session from its link, reusing p
 
 ---
 
-### Task 7: `lightbulb continue` in the desktop CLI — **coordinate before editing**
+### Task 7: `lightbulb continue` in the desktop CLI
 
-> `cli.rs` may be owned by another in-flight stream. Before you touch it, run `git fetch origin && git log --oneline origin/main -5 -- apps/desktop/src-tauri/src/cli.rs` and `gh pr list --repo TheLightbulbCompany/lightbulb --search "cli.rs in:files" --state open`. Ask the coordinator who owns `cli.rs`. Make this change only after they agree, and rebase onto their branch's merged state if it has landed. Keep the diff to the lines below.
+No open PR touches `cli.rs` (checked 2026-10-05). Keep the diff to the lines below.
 
 **Files:**
 - Modify: `apps/desktop/src-tauri/src/cli.rs:271-272` (USAGE), `:526-535` (`main`), `mod tests`
@@ -2239,7 +2295,6 @@ In `cli.rs`'s `mod tests`:
         assert_eq!(continue_link(&words(&["continue"])), Some(Err(())));
         assert_eq!(continue_link(&words(&["continue", "a", "b"])), Some(Err(())));
         assert_eq!(continue_link(&words(&["claude", "continue"])), None);
-        assert!(USAGE.contains("lightbulb continue '<link>'"));
     }
 ```
 
@@ -2433,6 +2488,7 @@ git commit -m "feat(mod): Continued from <name>'s session band"
   - `SessionLinkPage`, `SessionLinkCode` (Task 3's `LinkPage` in camelCase); `SessionCopyCode { code: string }`
   - client: `getLocalSessionLink(sessionId)`, `putLocalSessionLink(sessionId, audience)`, `deleteLocalSessionLink(sessionId)`, `createSessionCopy(token, challenge)`
   - audit actions `share_link_audience`, `session_copied`
+  - `LocalSessionPickup.privateRepo?: boolean` (Task 3's `PickupStatus.private_repo`)
   - Removed: `LocalSessionShareLink`, `SharedLocalSession`, `create/list/revokeLocalSessionShareLink`, `getSharedLocalSession`, `listSharedLocalSessionEvents`, `setLocalSessionPickup`, `useSessionPickupPermission`.
 
 - [ ] **Step 1: Write the failing tests**
@@ -2480,6 +2536,12 @@ it("Share makes the one link and copies it; the audience switch warns; Turn off 
   expect(await screen.findByRole("button", { name: "Share" })).toBeInTheDocument();
 });
 
+it("warns that a private repository's code is in the conversation", async () => {
+  const client = { getLocalSessionLink: vi.fn(async () => ({ url, audience: "anyone" as const })), putLocalSessionLink: vi.fn(), deleteLocalSessionLink: vi.fn() };
+  render(<SessionShareLink session={{ ...session, pickup: { allowed: true, privateRepo: true } }} client={client} />);
+  expect(await screen.findByText("This conversation includes code Claude read from your private repository.")).toBeInTheDocument();
+});
+
 it("shows an existing link's audience without creating one", async () => {
   const client = { getLocalSessionLink: vi.fn(async () => ({ url, audience: "anyone" as const })), putLocalSessionLink: vi.fn(), deleteLocalSessionLink: vi.fn() };
   render(<SessionShareLink session={session} client={client} />);
@@ -2516,7 +2578,7 @@ Expected: FAIL (`session_copied` renders `undefined`; `Cannot find module '../Se
 
 - [ ] **Step 3: Write minimal implementation**
 
-`types.ts`: in `LocalSessionAuditEntry.action` add `| "share_link_audience" | "session_copied"`. Replace `LocalSessionShareLink` and `SharedLocalSession` with:
+`types.ts`: in `LocalSessionAuditEntry.action` add `| "share_link_audience" | "session_copied"`. In `LocalSessionPickup` add `/** The repository is private: its folder name is hidden from outsiders. */ privateRepo?: boolean;`. Replace `LocalSessionShareLink` and `SharedLocalSession` with:
 
 ```ts
 export type SessionLinkAudience = "workspace" | "anyone";
@@ -2608,6 +2670,7 @@ export function SessionShareLink({ session, client }: { session: LocalSession; c
       {link.audience === "anyone" && <p role="note" className="session-setting-warning">
         Anyone with the link can read this conversation and continue it in their Claude Code. Likely secrets are redacted for them; anything else in it is not.
       </p>}
+      {link.audience === "anyone" && session.pickup?.privateRepo && <p className="session-setting-warning">This conversation includes code Claude read from your private repository.</p>}
       {session.provider === "claude" && <p className="session-setting-about">Teammates with the link can pick it up with your uncommitted changes, unredacted. Files your repository ignores are never uploaded. Kept until 7 days after the session ends.</p>}
       {link.url && <input aria-label="Session link" readOnly className="room-input font-mono text-xs" value={link.url} onFocus={e => e.currentTarget.select()} />}
       <Button type="button" variant="ghost" size="sm" disabled={busy} onClick={() => void off()}>Turn off link</Button>

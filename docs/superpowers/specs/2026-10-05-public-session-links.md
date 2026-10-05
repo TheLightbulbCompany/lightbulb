@@ -41,10 +41,15 @@ and Ask to pick up (`2026-10-05-ask-to-pick-up.md`).
 
 ### 2.1 Sharer
 
-1. In the session panel (web/desktop `LocalSessionPanel`), **Share**. The first press creates the
-   session's one link and copies it. Audience defaults to **Workspace only**.
-2. Optionally switch to **Anyone with the link**. One line appears: "Anyone with the link can
-   watch your live terminal. A live screen can't be redacted."
+1. In the session's details, Access tab (`SessionDetails.tsx`, which renders the new
+   `SessionShareLink.tsx` in place of `SessionShareLinks.tsx`), **Share**. The first press creates
+   the session's one link and copies it. Audience defaults to **Workspace only**.
+2. Optionally switch to **Anyone with the link**. In Phase 1 one line appears: "Anyone with the
+   link can read this conversation and continue it in their Claude Code. Likely secrets are
+   redacted for them; anything else in it is not." When the session's repo is private, a second
+   line reads: "This conversation includes code Claude read from your private repository."
+   (Phase 2, which adds the live terminal, replaces the first line with "Anyone with the link can
+   watch your live terminal. A live screen can't be redacted.")
 3. Send the link anywhere.
 4. The panel's Access section lists who took a copy and when. (Phase 2 adds the watcher count to
    the band; Phase 3 adds guest asks, §4, §5.)
@@ -53,7 +58,8 @@ and Ask to pick up (`2026-10-05-ask-to-pick-up.md`).
 
 ### 2.2 Receiver
 
-1. Opens `https://flickmeon.ai/s#<token>`. No sign-in. The page shows title, the sharer's first
+1. Opens `<FRONTEND_URL>/s#<token>` (`https://thelightbulb.company/s#<token>`; never
+   `flickmeon.ai`, controller ruling 2026-10-05). No sign-in. The page shows title, the sharer's first
    name, provider, state, and the code line (§3.3).
 2. **Live:** the terminal plays (Phase 2; until then the page polls the events, §3.2).
    **Ended:** the transcript, redacted for anyone outside the workspace.
@@ -136,14 +142,20 @@ Today the Mac sends `code {remote, branch, head, snapshot}` only when it capture
 commit body (`CommitRequest`, `session_pickup.py:196`), optional:
 
 ```
-repo: {remote, branch|null, head, pushed: bool, public: bool} | null
+repo: {remote, branch|null, head, pushed: bool, public: bool, folder|null} | null
 ```
 
 - `remote`: `normalize_remote` of `origin` (`session_pickup.rs:85`), e.g. `github.com/o/r`.
 - `pushed`: `git for-each-ref --count=1 --contains <head> refs/remotes/origin` is non-empty.
 - `public`: an anonymous probe, `git -c credential.helper= ls-remote https://<remote>.git HEAD`
-  with `GIT_TERMINAL_PROMPT=0` and `GIT_ASKPASS=/usr/bin/false`; exit 0 = public. Cached per
-  remote for one hour. Runs through `git_run` (`session_pickup.rs:40`, no shell).
+  with `GIT_CONFIG_GLOBAL=/dev/null`, `GIT_CONFIG_NOSYSTEM=1`, `GIT_TERMINAL_PROMPT=0` and
+  `GIT_ASKPASS=/usr/bin/false`; exit 0 = public. Cached per remote for one hour. Its own
+  `Command` (no shell), not `git_run` (`session_pickup.rs:40`): `git_run` keeps the user's global
+  config, and a global `url.<ssh>.insteadOf https://` would make the probe an SSH call with their
+  keys, so a private repo would read as public (controller ruling 2026-10-05).
+- `folder`: the repository's top-level folder name. The server hides it from outsiders when
+  `public` is false (§3.4); it is stored as `pickupSnapshot.privateFolder` and the owner's session
+  reads `pickup.privateRepo: true`, which drives the warning line in §2.1.
 - Sent on every commit, also when the bundle is unchanged, too large or skipped. Stored on the
   `PICKUP` manifest only, as `repoInfo` (`pickupSnapshot.repo` is already the remote string,
   `session_pickup.py:742`; the open reads the manifest). An older Mac sends nothing → null.
@@ -157,7 +169,8 @@ What the page and the copy show, for someone **outside** the workspace:
 | `!public && pushed` | "Code is in a private repository" | `{mode: "none"}`; no remote, name or branch in the ticket |
 | not pushed, null, or older Mac | "Code not shared" | `{mode: "none"}` |
 
-The private row carries nothing from `repoInfo` but the flag. Inside the workspace: the page
+The private row carries nothing from `repoInfo` but the flag, and outsiders see its folder name
+as `<project>` (§3.4). Inside the workspace: the page
 shows today's repo line (`LocalSessionPanel.tsx:137-138`) and the
 copy's code is `{mode: "bundle"}` with the existing bundle URL plus `remote` (Pick up's
 behaviour, uncommitted work included).
@@ -171,7 +184,13 @@ with `[redacted]`. Patterns: str versions of the three secret patterns in
 `.env`-shaped lines (`NAME=value` where NAME contains KEY, SECRET, TOKEN or PASSWORD); Stripe
 `(sk|rk|pk)_(live|test)_…`; JWTs (`eyJ….….…`); `Authorization: Bearer …`; Google `AIza…`;
 credentials in URLs (`://user:pass@`). Home-directory prefixes (`/Users/<name>/`,
-`/home/<name>/`) become `~/`. It is applied:
+`/home/<name>/`) become `~/`. For a private repo (`repoInfo.public` false) the redactor also
+takes the repo's folder name and replaces it with `<project>` wherever it is a whole path
+component: each transcript line's `cwd`, paths in events, the title (controller ruling
+2026-10-05). Code Claude read inside the transcript stays: sharing it is the owner's choice; only
+metadata (remote, name, branch, folder) is withheld. An outsider's event page for a Claude session
+stays empty until the Mac's first snapshot, because until then the server does not know whether
+the repo is private. It is applied:
 
 - to every outsider copy, streamed one transcript part at a time (gunzip → per JSONL line: parse,
   redact every string, re-serialize → gzip → upload), never the whole snapshot in memory
@@ -212,10 +231,20 @@ Routes:
 - `POST /public/session-copies/redeem {code, verifier}` (no auth; the code plus the CLI's
   verifier is the credential: `sha256(verifier)` must equal the stored `challenge`, so a code
   left in browser history is useless) → `{state: "preparing"}` or a **copy ticket**:
-  `{title, from: <owner first name>, transcript: [Download], sidecars, cwdRelative,
-  claudeVersion, code}` with `code` per §3.3 (a private repo's is `{mode: "none"}`). Not a `PickupTicket` (`session_pickup.py:163`):
-  that carries `session_id`, `human_user_id`, `conversation_id` and `cwd_name`. A `preparing`
-  copy older than five minutes is restarted.
+
+  ```
+  {state: "ready", title, from: <owner first name>, conversationId, claudeVersion, cwdRelative,
+   downloads: {transcript: [{index, url, bytes, sha256}], code: Download|null, sidecars: Download|null},
+   code: {mode: "clone", remote, commit} | {mode: "bundle", remote, snapshot, sessionId} | {mode: "none"}}
+  ```
+
+  `downloads` is pick-up's own `Downloads` shape, so the CLI checks it with pick-up's code.
+  `cwdRelative` is `""` unless the code comes along. `bundle` (with `downloads.code`) is for
+  workspace members only; `clone` only for a public, pushed repo; a private repo's is
+  `{mode: "none"}`. `conversationId` is the Claude conversation id the transcript is saved under
+  (the CLI needs it to name the file); the Lightbulb session id appears only in a member's
+  `bundle` code. Not a `PickupTicket` (`session_pickup.py:163`): that carries `session_id`,
+  `human_user_id` and `cwd_name`. A `preparing` copy older than five minutes is restarted.
 
 ### 3.6 The CLI
 
@@ -227,13 +256,14 @@ which matches the link name or `lightbulb-desktop cli …`) then `cli::main` (`c
 `parse` (`cli.rs:274`) today accepts only `claude|codex`. Add `continue` there and a Rust
 module beside `session_pickup.rs` that reuses its code directly: `argv` (`:624`), `workdir`
 (`:641`), `import_code` (`:433`), `allowed_url` (`:111`) and the part download checks. Nothing is
-ported. **`cli.rs` may be owned by another in-flight stream: coordinate before editing.** A
-receiver without the app has no command; the page says "Get Lightbulb for Mac" first (§2.2).
+ported. No open PR touches `cli.rs` (checked 2026-10-05). A receiver without the app has no
+command; the page says "Get Lightbulb for Mac" first (§2.2).
 
 - `continue <link>`:
   1. Parse the fragment token locally. Make a random `verifier`. Start a loopback listener on
      `127.0.0.1:<random>` and open
-     `https://flickmeon.ai/s?port=…&challenge=<sha256(verifier)>#<token>`. In that mode the `/s`
+     `<site>/s?port=…&challenge=<sha256(verifier)>#<token>`, where `<site>` is the build's own
+     frontend (`thelightbulb.company`, or `dev.` for a dev build) and the link must be on it. In that mode the `/s`
      page (signed in; else sign-up/onboarding first) shows one confirm button, calls
      `POST /session-links/copies`, and redirects to `http://127.0.0.1:<port>/done?code=…`. The
      page accepts only an integer port 1024-65535 and only the host `127.0.0.1`.
@@ -257,10 +287,10 @@ receiver without the app has no command; the page says "Get Lightbulb for Mac" f
 - Mod change: on `session.start` (`register.tsx:129`) read
   `~/.lightbulb/continued/<session id>.json` with `$.fs.read`; while the session is not itself
   shared, the `AbovePrompt` band (`register.tsx:147`) shows
-  `Continued from <from>'s session · Share yours (flickmeon.ai/desktop)`. The session id is
+  `Continued from <from>'s session · Share yours (thelightbulb.company)`. The session id is
   `$.session.id()` (verified in the 2.1.289 mod API). The CLI picks the fork's id itself and passes
   `--session-id <uuid>` with `--resume … --fork-session`, so it can name the marker file before
-  Claude starts; check that flag combination on the pinned Claude Code before building. Whether
+  Claude starts; Pick up's `argv` already ships that exact flag combination. Whether
   `$.fs.read` may read under `~` is unverified; if not, put the marker in the plugin's own
   directory (`$.plugin.root`).
 
@@ -272,8 +302,9 @@ receiver without the app has no command; the page says "Get Lightbulb for Mac" f
   confirm when `port` and `challenge` are present.
 - Onboarding honours a same-origin `returnTo` instead of its fixed `router.replace("/chat")`
   (`onboarding/page.tsx:147`).
-- `LocalSessionPanel`: Share popover (copy, audience, warning line, Turn off), Access lists copies.
-  The pick-up switch goes.
+- `SessionDetails.tsx` Access tab: the new `SessionShareLink.tsx` (Share/Copy link, audience,
+  warning lines, Turn off) replaces `SessionShareLinks.tsx`, and a "Copies taken" list reads the
+  `session_copied` audit entries. The pick-up switch goes. `/chat/shared/page.tsx` is deleted.
 
 ## 4. Phase 2: public Watch
 
@@ -379,6 +410,14 @@ them); from Phase 3, ask to steer, and type once allowed.
 5. The separate "Allow pick up" switch goes: the link is the permission (§3.1).
 6. A no-browser (device-code) confirm for headless receivers is deferred.
 7. Codex sessions get Watch and Read only (pick-up is Claude-only).
+8. Links and copy use `FRONTEND_URL` (`thelightbulb.company`), never `flickmeon.ai`.
+9. A private-repo session shared with "Anyone": the copy and the page show its folder name as
+   `<project>` (§3.4), and the sharer sees "This conversation includes code Claude read from your
+   private repository." The code Claude read stays in the transcript by the owner's choice; only
+   metadata (remote, name, branch, folder) is withheld.
+10. Deploy order: the backend ships to prod before a desktop build that sends `repo`, because
+    `ContractModel` is `extra="forbid"` and an older backend would refuse the commit.
+11. The public probe runs with `GIT_CONFIG_GLOBAL=/dev/null` (§3.3).
 
 ## 9. Deferred (owner: "we will do that as we get user feedback")
 

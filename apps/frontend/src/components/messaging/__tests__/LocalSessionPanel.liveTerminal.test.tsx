@@ -202,23 +202,27 @@ it("says an empty ended session never started, and offers Resume only for one th
   expect(await screen.findByRole("button", { name: "Resume" })).toBeTruthy();
 });
 
-// Owner ruling 2026-10-05: no paused concept. A pending request (and a stale server's
-// `inputPaused`) never takes typing away from an admitted teammate.
-it("never pauses an admitted teammate's typing while the owner answers a request", async () => {
-  const stale = { ...session, allowedSenders: ["alice"], inputPaused: true };
-  render(<LocalSessionPanel session={stale} ownerName="Alice" own={false} client={client as never} revision={0} onAccessLost={() => {}} onEvent={() => () => {}} />);
-  await screen.findByRole("region", { name: "Live terminal (view only)" });
-  expect(typing.admitted).toBe(true);
-  expect(screen.queryByText(/Paused while/)).toBeNull();
+it("pauses an admitted teammate's typing while the owner answers a join request", async () => {
+  render(<LocalSessionPanel session={{ ...session, allowedSenders: ["alice"], inputPaused: true }} ownerName="Alice" own={false} client={client as never} revision={0} onAccessLost={() => {}} onEvent={() => () => {}} />);
+  expect(await screen.findByText(/Paused while Alice answers a request to join/)).toBeTruthy();
+  expect(screen.getByRole("region", { name: "Live terminal (view only)" })).toBeTruthy();
+  expect(screen.queryByRole("textbox")).toBeNull();
   expect(screen.queryByRole("button", { name: "Ask to join" })).toBeNull();
 });
 
-it("keeps the message box for an admitted teammate when the terminal refuses typing", async () => {
+// A newer Mac (bandOwnerOnly) keeps typing open while a request waits: the server sends no inputPaused.
+it("keeps an admitted teammate typing when the owner's Mac does not pause", async () => {
+  render(<LocalSessionPanel session={{ ...session, allowedSenders: ["alice"], inputPaused: false }} ownerName="Alice" own={false} client={client as never} revision={0} onAccessLost={() => {}} onEvent={() => () => {}} />);
+  await screen.findByRole("region", { name: "Live terminal (view only)" });
+  expect(typing.admitted).toBe(true);
+  expect(screen.queryByText(/Paused while/)).toBeNull();
+});
+
+it("shows no message box while paused even when the terminal refuses typing", async () => {
   typing.canType = false;
   try {
-    const stale = { ...session, allowedSenders: ["alice"], inputPaused: true };
-    render(<LocalSessionPanel session={stale} ownerName="Alice" own={false} client={client as never} revision={0} onAccessLost={() => {}} onEvent={() => () => {}} />);
-    expect(await screen.findByRole("textbox", { name: /send to/i })).toBeTruthy();
-    expect(screen.queryByText(/Paused while/)).toBeNull();
+    render(<LocalSessionPanel session={{ ...session, allowedSenders: ["alice"], inputPaused: true }} ownerName="Alice" own={false} client={client as never} revision={0} onAccessLost={() => {}} onEvent={() => () => {}} />);
+    expect(await screen.findByText(/Paused while Alice answers/)).toBeTruthy();
+    expect(screen.queryByRole("textbox")).toBeNull();
   } finally { typing.canType = true; }
 });

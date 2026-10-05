@@ -177,25 +177,31 @@ async def test_push_skips_a_mac_without_the_feature(monkeypatch):
     send.assert_not_awaited()
 
 
-def test_a_pending_request_never_pauses_input_in_the_public_session(monkeypatch):
-    """Owner ruling 2026-10-05: no paused concept. A pending request changes nobody's access."""
+def test_input_paused_only_for_a_presence_mac_without_band_owner_only(monkeypatch):
+    """An older presence Mac drops remote typing while a request waits; one that advertises
+    bandOwnerOnly strips band keys from remote input instead and never pauses."""
     monkeypatch.setattr(sessions, "session_terminal", lambda row: "held")
-    row = _row(
+    base = _row(
         onlineUntil=9_999_999_999,
         capabilitiesVerified=True,
         provider="claude",
         status="idle",
-        eventSeq=1,
+        lastEventAt=1,
         providerVersion="1",
         activeTurnId=None,
         capabilities={},
-        deviceFeatures=["pickupRequests", "sessionPresence"],
-        joinRequests={"user_zoe": {"state": "pending", "requestId": "r1"}},
-        pickupRequests={"user_zoe": {"state": "pending", "requestId": "p1"}},
     )
-    public = sessions._session_public(row, "user_aden")
-    assert "inputPaused" not in public.model_dump(by_alias=True)
-    assert not hasattr(public, "input_paused")
+    pending = {"joinRequests": {"user_zoe": {"state": "pending", "requestId": "r1"}}}
+    assert sessions._session_public({**base, **pending}, "user_aden").input_paused is True
+    assert sessions._session_public(base, "user_aden").input_paused is False
+    assert sessions._session_public({**base, **pending, "deviceFeatures": []}, "user_aden").input_paused is False
+    pickup = {"pickupRequests": {"user_zoe": {"state": "pending", "requestId": "p1"}}}
+    # An older Mac never shows the pick-up request, so nothing freezes there for it.
+    assert sessions._session_public({**base, **pickup}, "user_aden").input_paused is False
+    older = {"deviceFeatures": ["pickupRequests", "sessionPresence"]}
+    assert sessions._session_public({**base, **pickup, **older}, "user_aden").input_paused is True
+    newer = {"deviceFeatures": ["bandOwnerOnly", "pickupRequests", "sessionPresence"]}
+    assert sessions._session_public({**base, **pending, **pickup, **newer}, "user_aden").input_paused is False
 
 
 @pytest.mark.asyncio
@@ -221,3 +227,6 @@ def test_a_mac_that_advertises_pickup_requests_lands_the_feature():
     assert DeviceHeartbeat.model_validate(frame).device_features() == ["sessionPresence"]
     newer = DeviceHeartbeat.model_validate({**frame, "pickupRequests": True})
     assert newer.device_features() == ["pickupRequests", "sessionPresence"]
+    assert presence.BAND_OWNER_ONLY_FEATURE in FEATURES
+    newest = DeviceHeartbeat.model_validate({**frame, "pickupRequests": True, "bandOwnerOnly": True})
+    assert newest.device_features() == ["bandOwnerOnly", "pickupRequests", "sessionPresence"]

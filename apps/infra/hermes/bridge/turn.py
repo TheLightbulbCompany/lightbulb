@@ -275,13 +275,13 @@ def register_call_run(identity: dict) -> bool:
     return True
 
 
-# A spoken turn has people waiting, so it runs lighter than a chat turn. Both are AIAgent's own
-# per-instance knobs (run_agent.py AIAgent.__init__): reasoning_config is honoured per provider
-# (Codex clamps to the model's wire set, chat completions sends `reasoning`, Anthropic maps it to
-# thinking) and replaces the transport default of "medium"; max_iterations caps API calls, and on
-# exhaustion Hermes asks for one tool-free summary (chat_completion_helpers.handle_max_iterations),
-# so the caller still hears an answer. Longer work goes to a task (backend TURN_NOTE).
-CALL_RUN_LIMITS = {"reasoning_config": {"enabled": True, "effort": "low"}, "max_iterations": 4}
+# A spoken turn has people waiting, so each step thinks lighter than a chat turn: reasoning_config is
+# AIAgent's own per-instance knob (run_agent.py AIAgent.__init__), honoured per provider (Codex clamps to
+# the model's wire set, chat completions sends `reasoning`, Anthropic maps it to thinking) and replacing
+# the transport default of "medium". The number of steps is not capped (owner ruling 2026-10-05): the run
+# takes as many as the request needs and speaks short updates as it goes (backend TURN_NOTE). A
+# 4-step cap cut real lookups short (a PostHog query answered half-done, 10-04 prod Meet).
+CALL_RUN_LIMITS = {"reasoning_config": {"enabled": True, "effort": "low"}}
 
 
 def _voice_body(identity: dict, request: dict) -> dict:

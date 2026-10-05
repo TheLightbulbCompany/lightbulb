@@ -857,3 +857,6 @@ def test_turn_note_checks_now_and_answers_one_request():
     for way in ("- Answer:", "- Ask:", "- Hand it off:", "- Cannot:"):
         assert way in note
     assert "{" not in note.replace("${", "")  # no per-run placeholder
+    # no step cap (owner ruling 2026-10-05): the run takes the steps it needs and speaks updates as it goes
+    assert "hard limit" not in note and "Take as many steps as the request needs" in note
+    assert "what you found so far or what you are checking next" in note

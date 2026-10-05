@@ -197,7 +197,7 @@ def test_a_voice_run_gets_the_dm_environment_on_the_room_key(env, home, monkeypa
     assert turn._run_call(IDENTITY, REQUEST, _frames())[0::2] == ("completed", "It landed.")
     assert env["overlay"] is None and env["family"] == "call"
     assert env["session"] == SESSION
-    assert env["limits"] == {"reasoning_config": {"enabled": True, "effort": "low"}, "max_iterations": 4}
+    assert env["limits"] == {"reasoning_config": {"enabled": True, "effort": "low"}}  # no step cap
     assert env["body"]["room"] == {"id": ROOM, "kind": "channel"} and env["body"]["sender"] == SPEAKER
     assert env["keys"] == [SESSION, ("reset", "tok")]  # compression keeps async delegations attached
     assert env["desktop"] == [(SESSION, "run-1")]
@@ -297,7 +297,7 @@ def test_construct_agent_forwards_call_limits_to_aiagent(monkeypatch):
     _fake_hermes(monkeypatch, built)
     turn._construct_agent("agent-1", {}, None, SESSION, **turn.CALL_RUN_LIMITS)
     turn._construct_agent("agent-1", {}, None, SESSION)
-    assert built[0]["reasoning_config"] == {"enabled": True, "effort": "low"} and built[0]["max_iterations"] == 4
+    assert built[0]["reasoning_config"] == {"enabled": True, "effort": "low"} and "max_iterations" not in built[0]
     assert "reasoning_config" not in built[1] and "max_iterations" not in built[1]
 
 

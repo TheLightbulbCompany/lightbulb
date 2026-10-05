@@ -214,6 +214,17 @@ export function runView(run: LiveRoomRun): RoomRunView {
   return { ...run, tools: settled, ...(steeredMessageIds.length ? { steeredMessageIds } : {}) };
 }
 
+/** What an ambient turn answers when the message needs nothing from it (the bridge posts no reply). */
+const SILENT_MARKER = "[SILENT]";
+/** A finished run that declined to reply: it leaves no card. */
+export const declinedRun = (run: Pick<LiveRoomRun, "state" | "text">) =>
+  run.state === "completed" && run.text.trim() === SILENT_MARKER;
+/** The streamed text a run card shows: nothing while it is, or may still become, the marker. */
+export const shownRunText = (text: string) => {
+  const said = text.trim();
+  return said && SILENT_MARKER.startsWith(said) ? "" : text;
+};
+
 /**
  * One "working" indicator per agent per room. An agent runs one turn at a time, so when it
  * holds several running runs (a follow-up that could not be steered queued a turn of its own,

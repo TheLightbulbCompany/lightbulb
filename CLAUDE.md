@@ -1108,7 +1108,8 @@ two cases** (`jev.CONFIDENT_P` = 0.7): a human's message that OPENS with a
 person's @mention ("@prasiddha …", `jev.addressed_to_people`) and any agent's
 message. There an agent speaks only when Jev picks it at 0.7 or more, a weak
 "none" is never turned into a reply, and a Jev outage wakes nobody. Everywhere
-else Jev's call stands as is, "none" included: the old overrule of a "none" less
+else Jev's call stands as is, "none" included, except that a pick no likelier than "none"
+(a tie) is "none" (prod 2026-10-05: 0.5/0.5 ran Friday for 3 minutes to answer [SILENT]): the old overrule of a "none" less
 than 0.4 clear of the top agent was removed after it fired 7 times in 85 prod
 decisions and never helped. **Agent chains are capped**
 (`messaging.AGENT_REPLY_CAP` = 2): a human message is hop 0, a room turn's reply

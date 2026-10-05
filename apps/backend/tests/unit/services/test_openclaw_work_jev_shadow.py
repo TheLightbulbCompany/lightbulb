@@ -404,6 +404,8 @@ def _jev_says(who, probabilities):
         ("none", {PULSE: 0.27, "none": 0.66}, "none"),
         ("none", {PULSE: 0.49, "none": 0.51}, "none"),
         (PULSE, {PULSE: 0.51, "none": 0.49}, PULSE),  # a human's message: Jev's pick needs no bar
+        # Prod 2026-10-05 23:36Z: "Agents will be in the call too" -- a tie ran Friday to say [SILENT].
+        (PULSE, {PULSE: 0.5, "none": 0.5}, "none"),
     ],
 )
 async def test_jevs_call_on_a_humans_message_stands(monkeypatch, store, metrics, who, probabilities, expected):

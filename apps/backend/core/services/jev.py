@@ -594,6 +594,16 @@ async def _decide_for_message(
         if final != "none" and float(probabilities.get(final) or 0) < CONFIDENT_P:
             final = "none"
             put_metric("messaging.jev.unconfident_quiet")
+    elif (
+        final != "none"
+        and "none" in probabilities
+        and float(probabilities.get(final) or 0) <= float(probabilities["none"] or 0)
+    ):
+        # A pick no likelier than silence is not a pick (prod 2026-10-05: 0.5/0.5 on "Agents will be
+        # in the call too" ran Friday for 3 minutes to answer [SILENT]). A question or re-ask still
+        # gets its answer through ``forced`` below.
+        final = "none"
+        put_metric("messaging.jev.tie_quiet")
     decision = {"who": final, "whoP": probabilities, "placement": where.get("choice") if placement else None}
     if final == "none" and human and not to_people:
 

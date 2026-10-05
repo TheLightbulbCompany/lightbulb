@@ -8,6 +8,8 @@ import {
   roomDisplayName,
   runView,
   collapseRuns,
+  declinedRun,
+  shownRunText,
   placeRuns,
   type LiveRoomRun,
 } from "./timeline";
@@ -274,5 +276,16 @@ describe("placeRuns", () => {
     const { tail, after } = placeRuns([live, stopped, latest], messages);
     expect(tail).toEqual([live, latest]);
     expect(after.get("m2")).toEqual([stopped]);
+  });
+});
+
+describe("a run that declines to reply", () => {
+  it("leaves no card once it ends, and never shows the marker while it streams", () => {
+    expect(declinedRun({ state: "completed", text: " [SILENT]\n" })).toBe(true);
+    expect(declinedRun({ state: "running", text: "[SILENT]" })).toBe(false);
+    expect(declinedRun({ state: "completed", text: "[SILENT] but actually" })).toBe(false);
+    expect(["[", "[SIL", "[SILENT]"].map(shownRunText)).toEqual(["", "", ""]);
+    expect(shownRunText("[SILENT] is the marker")).toBe("[SILENT] is the marker");
+    expect(shownRunText("On it.")).toBe("On it.");
   });
 });

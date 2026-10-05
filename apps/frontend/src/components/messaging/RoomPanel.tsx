@@ -696,9 +696,9 @@ function RoomContent({
             // details panel happens to be open, closing it here must not steal
             // focus back to the Details tab once RoomTimeline focuses this result.
             contextWasOpen.current = false;
+            onSelectThread?.(root);
             setContextCollapsed(true);
             if (root) {
-              onSelectThread?.(root);
               setSelection({ kind: "thread", id: root });
               setSearchTarget({ messageId: hit.messageId, threadRootMessageId: root, token: ++searchTargetToken.current });
             } else {

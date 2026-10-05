@@ -82,6 +82,36 @@ impl Drop for AbortOnDrop {
     }
 }
 
+/// The mod and tool sockets get a runtime of their own. On the app's shared runtime they
+/// went unanswered whenever blocking work elsewhere held every worker (prod, 2026-10-05:
+/// all ten workers inside `read`, both sockets silent, the connection loop's 1 s scan taking
+/// 69 s). Dropping this stops the servers, so it lives inside the relay task like the rest.
+struct SocketsRuntime(Option<tokio::runtime::Runtime>);
+impl Drop for SocketsRuntime {
+    fn drop(&mut self) {
+        // `Runtime`'s own drop blocks, which panics inside the async task that owns this.
+        if let Some(runtime) = self.0.take() {
+            runtime.shutdown_background();
+        }
+    }
+}
+
+fn serve_sockets(
+    servers: Vec<std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>>>,
+) -> Option<SocketsRuntime> {
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .thread_name("lightbulb-sockets")
+        .enable_all()
+        .build()
+        .map_err(|e| crate::log(&format!("[local-sessions] socket runtime unavailable: {e}")))
+        .ok()?;
+    for server in servers {
+        runtime.spawn(server);
+    }
+    Some(SocketsRuntime(Some(runtime)))
+}
+
 struct Running {
     stop: Arc<AtomicBool>,
     task: tauri::async_runtime::JoinHandle<()>,
@@ -307,8 +337,7 @@ impl Controller {
                     // ends only itself.
                     let _snapshots = AbortOnDrop(tauri::async_runtime::spawn(snapshots));
                     let _resumes = AbortOnDrop(tauri::async_runtime::spawn(resumes));
-                    let _native_tools = AbortOnDrop(tauri::async_runtime::spawn(native_tools));
-                    let _mod_socket = AbortOnDrop(tauri::async_runtime::spawn(mod_socket));
+                    let _sockets = serve_sockets(vec![Box::pin(native_tools), Box::pin(mod_socket)]);
                     let hooks = async move {
                         let mut bytes = [0u8; 2048];
                         loop {
@@ -1104,6 +1133,36 @@ async fn enroll_remote(token: &str, body: Value) -> Result<Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn mod_socket_and_native_tools_serve_while_every_shared_worker_is_blocked() {
+        use std::sync::atomic::AtomicUsize;
+        use std::time::{Duration, Instant};
+        // Fill every worker of the shared runtime with blocking work, as the prod sample showed.
+        let workers = std::thread::available_parallelism().map_or(1, |n| n.get());
+        let parked = Arc::new(AtomicUsize::new(0));
+        let release = Arc::new(std::sync::Mutex::new(()));
+        let held = release.lock().unwrap();
+        for _ in 0..workers {
+            let (parked, release) = (parked.clone(), release.clone());
+            tauri::async_runtime::spawn(async move {
+                parked.fetch_add(1, Ordering::SeqCst);
+                drop(release.lock());
+            });
+        }
+        let started = Instant::now();
+        while parked.load(Ordering::SeqCst) < workers && started.elapsed() < Duration::from_secs(10) {
+            std::thread::yield_now();
+        }
+        assert_eq!(parked.load(Ordering::SeqCst), workers, "shared runtime was not filled");
+        let (tx, rx) = std::sync::mpsc::channel();
+        let _sockets = serve_sockets(vec![Box::pin(async move {
+            let _ = tx.send(());
+        })]);
+        let served = rx.recv_timeout(Duration::from_secs(5)).is_ok();
+        drop(held);
+        assert!(served, "a socket server waited on the shared runtime");
+    }
 
     #[test]
     fn local_sessions_hook_holder_resolves_through_the_hooks_shell() {

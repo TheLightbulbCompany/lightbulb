@@ -22,8 +22,10 @@ type Call = { url: string; method: string; body: unknown; socketPath: string | u
 type Answer = (path: string, body: unknown) => { status: number; body: unknown } | 'refuse' | 'hang'
 function world(on: On, answer: Answer, socketFile = true) {
   const calls: Call[] = []
+  const socket = { live: true } // whether the app's socket file is there
   const clock = mock.clock(on)
   on('session.start', ($, e) => ({ cwd: e.cwd }))
+  on('fs.exists', ($, e) => ({ value: e.path === SOCKET && socket.live }))
   on('fs.read', ($, e) => {
     if (socketFile && e.path.endsWith('/lightbulb-sessions/socket')) return { value: `${SOCKET}\n` }
     return { deny: `no file ${e.path}` }
@@ -41,7 +43,7 @@ function world(on: On, answer: Answer, socketFile = true) {
     const { Text } = $.ui.resolve(e)
     return Text({ children: ENGINE })
   })
-  return { calls, clock }
+  return { calls, clock, socket }
 }
 
 test('band says live and nobody watching', () => {
@@ -168,4 +170,74 @@ test('Pause posts pause, and a paused band offers Resume', async ($, on) => {
   expect(calls[calls.length - 1]?.body).toEqual({ decision: 'pause' })
   expect(await ui.find({ text: '○ Sharing paused' })).toBeDefined()
   expect(await ui.find({ key: 'resume' })).toBeDefined()
+})
+
+test('a missed poll keeps the last band for a minute, then hides it', async ($, on) => {
+  let answer: Answer = () => ({ status: 200, body: base })
+  const { clock } = world(on, (path, body) => answer(path, body))
+  await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
+  await clock.settle()
+  const shown = async () => {
+    const ui = await $.ui.mount({ ...BAND, surface: 'terminal' })
+    const found = await ui.find({ type: 'Text', text: '● Live in Lightbulb' })
+    await ui.unmount()
+    return found !== undefined
+  }
+  expect(await shown()).toBe(true)
+  answer = () => 'hang' // the app accepts and never answers, as a starved socket did
+  await clock.advance(2000)
+  answer = () => 'refuse'
+  await clock.advance(54000)
+  expect(await shown()).toBe(true)
+  answer = () => ({ status: 500, body: {} })
+  await clock.advance(6000)
+  expect(await shown()).toBe(false)
+})
+
+test('a not-shared answer hides the band at once', async ($, on) => {
+  let answer: Answer = () => ({ status: 200, body: base })
+  const { clock } = world(on, (path, body) => answer(path, body))
+  await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
+  await clock.settle()
+  answer = () => ({ status: 404, body: { error: 'not_shared' } })
+  await clock.advance(2000)
+  const ui = await $.ui.mount({ ...BAND, surface: 'terminal' })
+  expect(await ui.drawn()).toEqual({ type: 'Text', children: [ENGINE] })
+})
+
+test('every band Button has its own hotkey', async ($, on) => {
+  let state: SessionState = asking
+  const { clock } = world(on, () => ({ status: 200, body: state }))
+  await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
+  await clock.settle()
+  const hotkeys = async () => {
+    const ui = await $.ui.mount({ ...BAND, surface: 'terminal' })
+    const keys = Object.fromEntries((await ui.findAll({ type: 'Button' })).map(b => [b.key, b.props.hotkey]))
+    await ui.unmount()
+    return keys
+  }
+  expect(await hotkeys()).toEqual({ pause: 'p', allow: 'a', decline: 'd' })
+  state = { ...base, paused: true }
+  await clock.advance(2000)
+  expect(await hotkeys()).toEqual({ resume: 'p' })
+})
+
+test('a removed socket hides the band at once; a failing fetch on a live socket keeps it', async ($, on) => {
+  let answer: Answer = () => ({ status: 200, body: asking })
+  const { clock, socket } = world(on, (path, body) => answer(path, body))
+  await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
+  await clock.settle()
+  const buttons = async () => {
+    const ui = await $.ui.mount({ ...BAND, surface: 'terminal' })
+    const n = (await ui.findAll({ type: 'Button' })).length
+    await ui.unmount()
+    return n
+  }
+  expect(await buttons()).toBe(3)
+  answer = () => 'refuse' // socket file still there: the app is busy
+  await clock.advance(2000)
+  expect(await buttons()).toBe(3)
+  socket.live = false // sharing stopped: the app removed its socket
+  await clock.advance(2000)
+  expect(await buttons()).toBe(0)
 })

@@ -830,7 +830,16 @@ fn private_read<T: serde::de::DeserializeOwned>(path: &Path) -> Result<T> {
     if file.metadata().map_err(|e| e.to_string())?.mode() & 0o077 != 0 {
         return Err("local state is not private".into());
     }
-    serde_json::from_reader(file.take(16 * 1024 * 1024)).map_err(|e| e.to_string())
+    read_json(file, 16 * 1024 * 1024)
+}
+
+/// Bounded JSON from a reader, read in buffer-sized chunks. `serde_json::from_reader` on a bare
+/// `File` makes one `read` syscall per byte: the mod socket parsed every mirror that way on
+/// every 2 s poll and kept the shared runtime's workers inside `read` (prod, 2026-10-05).
+fn read_json<T: serde::de::DeserializeOwned>(reader: impl std::io::Read, limit: u64) -> Result<T> {
+    let mut bytes = Vec::new();
+    reader.take(limit).read_to_end(&mut bytes).map_err(|e| e.to_string())?;
+    serde_json::from_slice(&bytes).map_err(|e| e.to_string())
 }
 
 fn fingerprint(value: &str) -> String {
@@ -1882,6 +1891,27 @@ fn ascii_wire_len(value: &Value) -> Result<usize> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn local_sessions_json_reads_are_not_one_syscall_per_byte() {
+        // Counts `read` calls the way the kernel would see them on a bare `File`.
+        struct Counting<'a>(&'a [u8], usize);
+        impl std::io::Read for Counting<'_> {
+            fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+                self.1 += 1;
+                let n = buf.len().min(self.0.len());
+                buf[..n].copy_from_slice(&self.0[..n]);
+                self.0 = &self.0[n..];
+                Ok(n)
+            }
+        }
+        let text = serde_json::to_vec(&json!({"padding": "x".repeat(64 * 1024)})).unwrap();
+        let mut reader = Counting(&text, 0);
+        let value: Value = read_json(&mut reader, 1024 * 1024).unwrap();
+        assert_eq!(value["padding"].as_str().map(str::len), Some(64 * 1024));
+        assert!(reader.1 < 64, "a 64 KiB mirror took {} reads", reader.1);
+        assert!(read_json::<Value>(&text[..], 16).is_err(), "the bound still truncates");
+    }
 
     fn native_at(provider: &str, conversation: &str, pid: u32) -> NativeSession {
         NativeSession {

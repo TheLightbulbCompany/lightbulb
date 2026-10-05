@@ -8,6 +8,7 @@ export const sharing = atom({ plugin: 'lightbulb-sessions', key: 'state' } as co
 const problem = atom({ plugin: 'lightbulb-sessions', key: 'error' } as const, null as string | null)
 
 const POLL_MS = 2000
+const GRACE_MS = 60_000 // a missed poll keeps the last good band this long: the app may just be busy
 const APP = 'http://lightbulb'
 
 // These take `$`, so they live here: the engine follows `$` only into functions this module declares.
@@ -20,9 +21,12 @@ async function socketPath($: EngineInterface): Promise<string | null> {
   }
 }
 
-async function call($: EngineInterface, path: string, body?: Decision): Promise<SessionState | null> {
+// null: nothing to show (no socket yet, or the app says this session is not shared).
+// undefined: no answer (the app is not running, busy, or refused the call).
+async function call($: EngineInterface, path: string, body?: Decision): Promise<SessionState | null | undefined> {
   const socket = await socketPath($)
-  if (!socket) return null
+  // The app removes the socket when sharing stops or it quits: hide at once, not after the grace.
+  if (!socket || !(await $.fs.exists(socket))) return null
   try {
     const res = await $.http.fetch(`${APP}${path}`, {
       method: body ? 'POST' : 'GET',
@@ -30,18 +34,19 @@ async function call($: EngineInterface, path: string, body?: Decision): Promise<
       body: body ? JSON.stringify(body) : undefined,
       socketPath: socket,
     })
-    if (res.status !== 200) return null
+    if (res.status === 404) return null
+    if (res.status !== 200) return undefined
     return JSON.parse(res.text) as SessionState
   } catch {
-    return null // the app is not running: show nothing
+    return undefined
   }
 }
 
-export async function fetchState($: EngineInterface): Promise<SessionState | null> {
+export async function fetchState($: EngineInterface): Promise<SessionState | null | undefined> {
   return call($, '/v1/state')
 }
 
-export async function decide($: EngineInterface, body: Decision): Promise<SessionState | null> {
+export async function decide($: EngineInterface, body: Decision): Promise<SessionState | null | undefined> {
   return call($, '/v1/decide', body)
 }
 
@@ -90,9 +95,13 @@ export const register: Register = on => {
   })
 
   on('session.start', async ($, e, next) => {
+    let goodAt = -Infinity
     const refresh = async () => {
       const s = await fetchState($)
-      await update($, sharing, () => s)
+      const now = await $.clock.now()
+      if (s) goodAt = now
+      else if (s === undefined && now - goodAt < GRACE_MS) return
+      await update($, sharing, () => s ?? null)
     }
     // Never wait on the app: this runs in every Claude session on the Mac, and a stalled socket
     // must not hold session start. The band appears when the first answer lands.
@@ -117,14 +126,14 @@ export const register: Register = on => {
         <Box>
           <Text dimColor>{bandLine(s)} </Text>
           {s.paused
-            ? <Button key="resume" label="Resume sharing" onPress={act({ decision: 'unpause' })} />
-            : <Button key="pause" label="Pause" onPress={act({ decision: 'pause' })} />}
+            ? <Button key="resume" hotkey="p" label="Resume sharing" onPress={act({ decision: 'unpause' })} />
+            : <Button key="pause" hotkey="p" label="Pause" onPress={act({ decision: 'pause' })} />}
         </Box>
         {ask && (
           <Box>
             <Text>{ask.name} asked to join{s.joinRequests.length > 1 ? ` (+${s.joinRequests.length - 1} more)` : ''} </Text>
-            <Button key="allow" variant="primary" label="Allow" onPress={act({ decision: 'allow', userId: ask.userId, requestId: ask.requestId })} />
-            <Button key="decline" label="Decline" onPress={act({ decision: 'decline', userId: ask.userId, requestId: ask.requestId })} />
+            <Button key="allow" hotkey="a" variant="primary" label="Allow" onPress={act({ decision: 'allow', userId: ask.userId, requestId: ask.requestId })} />
+            <Button key="decline" hotkey="d" label="Decline" onPress={act({ decision: 'decline', userId: ask.userId, requestId: ask.requestId })} />
           </Box>
         )}
         {s.approvalWaiting && <Text dimColor>Waiting on you here or in Lightbulb</Text>}

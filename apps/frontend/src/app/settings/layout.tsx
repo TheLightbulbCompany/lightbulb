@@ -1,3 +1,4 @@
+import { ThemeStamp } from "@/components/ThemeStamp";
 import { SettingsGatewayGate } from "@/components/settings/SettingsGatewayGate";
 
 export const metadata = {
@@ -13,5 +14,10 @@ export default function SettingsLayout({
   // This file is a server component, so the client-side LiveEventsProvider
   // wrap lives in SettingsGatewayGate ("use client"). Runtime panels share its
   // canonical HTTP client and private AppSync invalidation channel.
-  return <SettingsGatewayGate>{children}</SettingsGatewayGate>;
+  return (
+    <>
+      <ThemeStamp />
+      <SettingsGatewayGate>{children}</SettingsGatewayGate>
+    </>
+  );
 }

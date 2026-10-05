@@ -1,4 +1,4 @@
-import { THEME_BOOTSTRAP_SCRIPT } from "@/hooks/useChatTheme";
+import { ThemeStamp } from "@/components/ThemeStamp";
 
 export const dynamic = "force-dynamic";
 
@@ -14,18 +14,8 @@ export default function ChatLayout({
 }) {
   return (
     <>
-      {/*
-        Stamps data-chat-theme on <html> BEFORE first paint.
-        This route is force-dynamic and the server has no way to know the
-        preference, so it renders the light default — without this script a
-        dark-mode user gets a full white frame on every single load.
-
-        It has to be inline and synchronous for that reason: a <Script> with
-        any strategy, or anything deferred, runs after the first paint and the
-        flash is back. dangerouslySetInnerHTML is the only way to emit a bare
-        inline script here; the content is a module constant, never user input.
-      */}
-      <script dangerouslySetInnerHTML={{ __html: THEME_BOOTSTRAP_SCRIPT }} />
+      {/* Stamps data-chat-theme before first paint (inline script) and on client navigation (effect). */}
+      <ThemeStamp />
       <div data-private className="contents ph-no-capture">{children}</div>
     </>
   );

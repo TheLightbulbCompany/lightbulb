@@ -297,6 +297,22 @@ export interface MessagePage {
   nextBeforeSeq?: number | null;
 }
 
+export interface MessageSearchHit {
+  messageId: string;
+  roomId: string;
+  messageSeq: number;
+  threadRootMessageId: string | null;
+  authorName: string;
+  authorKind: string;
+  createdAt: string;
+  /** Matches are wrapped in \u0001...\u0002. */
+  snippet: string;
+}
+
+export interface MessageSearchResponse {
+  hits: MessageSearchHit[];
+}
+
 export interface ReadCursorRequest {
   lastReadSeq: number;
 }

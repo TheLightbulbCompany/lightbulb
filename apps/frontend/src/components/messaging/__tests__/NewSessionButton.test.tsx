@@ -286,7 +286,9 @@ it("a held start whose holder is gone clears itself and the form returns", async
   expect(await screen.findByText(/It joins Sessions after your first prompt/)).toBeInTheDocument();
   first.unmount();
   live = false; // Codex quit before its first prompt
+  vi.useFakeTimers({ shouldAdvanceTime: true });
   render(view());
+  for (let i = 0; i < 12; i++) await act(async () => { vi.advanceTimersByTime(1_000); });
   expect(await screen.findByRole("dialog", { name: "New session" })).toBeInTheDocument();
   expect(await screen.findByRole("button", { name: "Start Codex" })).toBeEnabled();
   expect(screen.queryByText(/Could not confirm/)).not.toBeInTheDocument();
@@ -300,6 +302,28 @@ it("reopening restores a held start as opened and probes its holder", async () =
   expect(await screen.findByText(/It joins Sessions after your first prompt/)).toBeInTheDocument();
   await waitFor(() => expect(invoke).toHaveBeenCalledWith("terminal_panel", expect.objectContaining({ holderId: "h9" })));
   expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+});
+
+it("one missed probe does not clear a held start: the holder must stay gone", async () => {
+  vi.useFakeTimers({ shouldAdvanceTime: true });
+  localStorage.setItem(PENDING_KEY, JSON.stringify({ startId: "old", scope: "alice:org-a", startedAt: Date.now() - 60_000, phase: "opened", holderId: "h9", tool: "codex" }));
+  let live = false;
+  desktop(async (command) => command === "terminal_options" ? OPTIONS : { live });
+  render(view());
+  for (let i = 0; i < 3; i++) await act(async () => { vi.advanceTimersByTime(1_000); });
+  live = true; // the next re-ask finds it
+  for (let i = 0; i < 12; i++) await act(async () => { vi.advanceTimersByTime(1_000); });
+  expect(screen.getByText(/It joins Sessions after your first prompt/)).toBeInTheDocument();
+  expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+  expect(JSON.parse(localStorage.getItem(PENDING_KEY)!)).toMatchObject({ holderId: "h9" });
+});
+
+it("a held start older than six hours is still restored: the holder decides, not its age", async () => {
+  localStorage.setItem(PENDING_KEY, JSON.stringify({ startId: "old", scope: "alice:org-a", startedAt: Date.now() - 7 * 60 * 60 * 1000, phase: "opened", holderId: "h9", tool: "codex" }));
+  const invoke = desktop(async (command) => command === "terminal_options" ? OPTIONS : { live: true });
+  render(view());
+  expect(await screen.findByText(/It joins Sessions after your first prompt/)).toBeInTheDocument();
+  await waitFor(() => expect(invoke).toHaveBeenCalledWith("terminal_panel", expect.objectContaining({ holderId: "h9" })));
 });
 
 it("a start nobody could confirm can be dismissed, so the view is not locked for hours", async () => {

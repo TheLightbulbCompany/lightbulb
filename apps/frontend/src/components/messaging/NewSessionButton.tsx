@@ -18,6 +18,7 @@ type Mac = { deviceId: string; generation: string; name: string };
 type MacOptions = { name?: string | null; sharing: boolean; folders: string[]; tools: Tool[] };
 type Targets = { enabled: boolean; devices: Mac[] };
 const PENDING_MS = 150_000; // longer than the backend's wait for the Mac
+const HOLDER_GONE_MS = 10_000; // five of the terminal probe's 2 s re-asks
 type Pending = { startId: string; scope: string; startedAt: number; phase: "starting" | "opened" | "unknown" | "failed"; error?: string; holderId?: string; tool?: Tool["id"] };
 
 const TARGETS_KEY = "desktop-session-targets";
@@ -28,11 +29,12 @@ function readPending(scope: string): Pending | null {
     if (!value || typeof value !== "object") return null;
     const item = value as Partial<Pending>;
     if (item.scope !== scope || typeof item.startId !== "string" || typeof item.startedAt !== "number"
-      || Date.now() < item.startedAt || Date.now() - item.startedAt >= 6 * 60 * 60 * 1000) return null;
+      || Date.now() < item.startedAt) return null;
     const base = { startId: item.startId, scope, startedAt: item.startedAt };
-    // A start this Mac holds: the Mac itself says whether it still runs (the holder probe).
+    // A start this Mac holds: the Mac itself says whether it still runs (the holder probe), at any age.
     if (item.phase === "opened" && typeof item.holderId === "string")
       return { ...base, phase: "opened", holderId: item.holderId, tool: item.tool === "claude" || item.tool === "codex" ? item.tool : undefined };
+    if (Date.now() - item.startedAt >= 6 * 60 * 60 * 1000) return null;
     return { ...base, phase: "unknown",
       error: "Could not confirm whether your Mac started this session. Check the Lightbulb app and Sessions before trying again." };
   } catch { return null; }
@@ -171,10 +173,14 @@ export function NewSessionView({ sessions, onEvent, onOpenSession, onClose }: {
   }, [sessions, pending, userId, scope, onOpenSession]);
 
   // The holder is gone before the session reported in (quit before a first prompt): nothing to show.
+  // One missed probe is not proof (the hook keeps asking), so it must stay gone for HOLDER_GONE_MS.
   useEffect(() => {
     if (pending?.phase !== "opened" || !pending.holderId || local !== "none") return;
-    try { if (scope) localStorage.removeItem(pendingKey(scope)); } catch { /* storage off */ }
-    setPending(null);
+    const timer = setTimeout(() => {
+      try { if (scope) localStorage.removeItem(pendingKey(scope)); } catch { /* storage off */ }
+      setPending(null);
+    }, HOLDER_GONE_MS);
+    return () => clearTimeout(timer);
   }, [pending, local, scope]);
 
   const busy = pending !== null && pending.phase !== "failed";

@@ -218,7 +218,7 @@ export function LocalSessionPanel({ session, ownerName, own, client, revision, o
         {!own && !canPickUp(session) && session.provider === "claude" && session.pickup?.allowed === true && (session.pickup.state === "unavailable"
           ? <span role="status" className="text-sm text-muted-foreground">{pickupStatus(session.pickup, timeAgo)}</span>
           : <Button type="button" variant="outline" size="sm" disabled>Preparing…</Button>)}
-        {!own && !canPickUp(session) && session.provider === "claude" && session.status !== "ended" && !session.pickup?.allowed && askPickup.supported &&
+        {!own && !canPickUp(session) && session.provider === "claude" && !session.pickup?.allowed && askPickup.supported &&
           <Button type="button" variant="outline" size="sm" disabled={askPickup.saving || askPickup.state === "pending"} onClick={() => void askPickup.ask()}>
             {askPickup.state === "pending" ? "Requested" : askPickup.state === "declined" ? `${ownerName} declined. Ask again` : "Ask to pick up"}</Button>}
         <Button type="button" variant="ghost" size="sm" onClick={() => show(tab)}><Info aria-hidden="true" />Details</Button>

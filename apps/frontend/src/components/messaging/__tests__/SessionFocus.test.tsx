@@ -242,6 +242,11 @@ it("shows Pick up, not Ask to pick up, once pick-up is allowed and ready", async
   expect(screen.queryByRole("button", { name: "Ask to pick up" })).not.toBeInTheDocument();
 });
 
+it("offers Ask to pick up on an ended Claude session, whose snapshot is kept", async () => {
+  focus({ session: { ...session, status: "ended" }, ownerName: "Alice", own: false }, { askPickup: vi.fn() });
+  expect(await screen.findByRole("button", { name: "Ask to pick up" })).toBeEnabled();
+});
+
 it("offers no Ask to pick up on a Codex session", async () => {
   focus({ session: { ...session, provider: "codex" }, ownerName: "Alice", own: false }, { askPickup: vi.fn() });
   expect(await screen.findByRole("heading", { name: /Load test/ })).toBeInTheDocument();

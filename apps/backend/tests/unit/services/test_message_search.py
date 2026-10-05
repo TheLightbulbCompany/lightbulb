@@ -36,6 +36,7 @@ def _on(monkeypatch):
     # Default canonical rows: every hit the tests build matches its indexed text.
     _rows(monkeypatch, {(r, s): {"text": t} for r in (ROOM_A, ROOM_B) for s, t in ((1, "x"), (4, "x"))})
     monkeypatch.setattr(message_search.settings, "SEARCH_ENDPOINT", "https://c.us-east-1.aoss.amazonaws.com")
+    monkeypatch.setattr(message_search.messaging, "still_reads_room", AsyncMock(return_value=True))
     monkeypatch.setattr(message_search, "resolve_owner_id", lambda auth: "org_me")
 
 
@@ -189,8 +190,10 @@ async def test_delete_owner_index_accepts_404_and_is_a_noop_when_off(monkeypatch
     request.assert_not_awaited()
 
 
-async def test_searchable_rooms_uses_the_room_doors_membership_rule():
+async def test_searchable_rooms_uses_the_room_doors_membership_rule(monkeypatch):
     from core.services import messaging
+
+    monkeypatch.undo()  # the autouse stub of still_reads_room would hide the real rule
 
     discovered = [
         {"meta": {"roomId": ROOM_A, "ownerId": "org_me"}},
@@ -211,3 +214,32 @@ async def test_searchable_rooms_uses_the_room_doors_membership_rule():
         ),
     ):
         assert await messaging.searchable_rooms("org_me", "user_a") == {ROOM_B: "org_vendor"}
+
+
+async def test_membership_revoked_during_the_search_drops_only_that_rooms_hits(monkeypatch):
+    def src(room):
+        return {"_source": {"messageId": "m", "roomId": room, "messageSeq": 1, "createdAt": "t", "text": "x"}}
+
+    recheck = AsyncMock(side_effect=lambda owner, user, room, room_owner: room == ROOM_A)
+    monkeypatch.setattr(message_search.messaging, "still_reads_room", recheck)
+    rooms = {ROOM_A: "org_me", ROOM_B: "org_me"}
+    body = {"hits": {"hits": [src(ROOM_A), src(ROOM_B)]}}
+    with (
+        patch.object(message_search.messaging, "searchable_rooms", AsyncMock(return_value=rooms)),
+        patch.object(message_search, "_request", AsyncMock(return_value=_response(200, body))),
+    ):
+        result = await message_search.search(_auth(), _req())
+    assert [str(h.room_id) for h in result.hits] == [ROOM_A]
+
+
+async def test_the_recheck_only_queries_rooms_that_have_hits(monkeypatch):
+    src = {"_source": {"messageId": "m", "roomId": ROOM_A, "messageSeq": 1, "createdAt": "t", "text": "x"}}
+    recheck = AsyncMock(return_value=True)
+    monkeypatch.setattr(message_search.messaging, "still_reads_room", recheck)
+    rooms = {ROOM_A: "org_me", ROOM_B: "org_me"}
+    with (
+        patch.object(message_search.messaging, "searchable_rooms", AsyncMock(return_value=rooms)),
+        patch.object(message_search, "_request", AsyncMock(return_value=_response(200, {"hits": {"hits": [src]}}))),
+    ):
+        await message_search.search(_auth(), _req())
+    assert [c.args[2] for c in recheck.await_args_list] == [ROOM_A]

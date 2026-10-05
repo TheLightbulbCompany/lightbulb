@@ -6,6 +6,7 @@ decides who sees what. The query travels in a POST body and is never logged."""
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import logging
@@ -157,11 +158,21 @@ async def search(auth: AuthContext, request: MessageSearchRequest) -> MessageSea
     rows = await messaging_repo.get_messages_by_keys(
         [(h["_source"]["roomId"], h["_source"]["messageSeq"]) for h in candidates]
     )
+    # The search call can outlast a membership removal: re-read membership (strongly)
+    # for exactly the rooms that have hits, so removed members never see their text.
+    owner_id, limit = resolve_owner_id(auth), asyncio.Semaphore(messaging._SUMMARY_CONCURRENCY)
+
+    async def reads(room_id: str) -> bool:
+        async with limit:
+            return await messaging.still_reads_room(owner_id, auth.user_id, room_id, rooms[room_id])
+
+    room_ids = sorted({h["_source"]["roomId"] for h in candidates})
+    readable = {r for r, ok in zip(room_ids, await asyncio.gather(*(reads(r) for r in room_ids))) if ok}
     hits = []
     for hit in candidates:
         source = hit["_source"]
         row = rows.get((source["roomId"], source["messageSeq"]))
-        if row is None or row.get("deletedAt"):
+        if source["roomId"] not in readable or row is None or row.get("deletedAt"):
             continue
         if (row["editedText"] if "editedText" in row else row.get("text") or "") != source.get("text", ""):
             continue

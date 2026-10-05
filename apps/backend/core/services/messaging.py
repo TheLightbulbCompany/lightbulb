@@ -1666,6 +1666,12 @@ async def _visible_room_metas(owner_id: str, user_id: str) -> list[dict]:
     ]
 
 
+async def still_reads_room(owner_id: str, user_id: str, room_id: str, room_owner: str) -> bool:
+    """The room door's membership rule, strongly read: a current human member whose home is ``owner_id``."""
+    member = await messaging_repo.get_member(room_id, "human", user_id)
+    return member is not None and messaging_repo.member_home(member, room_owner) == owner_id
+
+
 async def searchable_rooms(owner_id: str, user_id: str) -> dict[str, str]:
     """Room id -> the room's OWNER (whose search index holds it), for every room
     the caller can read right now -- the same membership rule as ``require_room_member``."""
@@ -1673,10 +1679,8 @@ async def searchable_rooms(owner_id: str, user_id: str) -> dict[str, str]:
 
     async def check(meta: dict) -> dict | None:
         async with limit:
-            member = await messaging_repo.get_member(meta["roomId"], "human", user_id)
-        if member is not None and messaging_repo.member_home(member, meta["ownerId"]) == owner_id:
-            return meta
-        return None
+            ok = await still_reads_room(owner_id, user_id, meta["roomId"], meta["ownerId"])
+        return meta if ok else None
 
     checked = await asyncio.gather(*(check(meta) for meta in await _visible_room_metas(owner_id, user_id)))
     return {meta["roomId"]: meta["ownerId"] for meta in checked if meta}

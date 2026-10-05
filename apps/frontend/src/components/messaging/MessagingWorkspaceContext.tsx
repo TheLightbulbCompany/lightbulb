@@ -9,7 +9,7 @@ import { useAgents } from "@/hooks/useAgents";
 import { useRosterEntries } from "@/components/agents/useRosterEntries";
 import { useTeamsApi } from "@/hooks/useTeamsApi";
 import type { CompanyAgent, CompanyMember } from "@/components/teams/shared/types";
-import { activateMessagesPanel, openPanel } from "@/components/workspace/workspaceController";
+import { activateMessagesPanel, getWorkspaceSnapshot, openPanel } from "@/components/workspace/workspaceController";
 import { MessageNotifications } from "@/components/notifications/MessageNotifications";
 import { UnreadTitleBadge } from "@/components/notifications/UnreadTitleBadge";
 import { hasBlockingShortcutDialog } from "@/components/teams/shared/lib/keyboardShortcuts";
@@ -46,7 +46,19 @@ export interface MessagingWorkspaceValue {
   scope: string;
   /** Latched at the room list's first load per workspace; null until then. */
   freshLanding: boolean | null;
+  /** Counts a person's picks; the desktop shell records a view in history only when it moved. */
+  explicitPickCount: number;
 }
+
+// A pick is "current" while neither the URL nor the focused dock tab moved:
+// tab focus is URL-silent, so href alone misses a click on an open tab.
+export interface PickToken { href: string; activePanelId: string | null | undefined }
+export const pickToken = (): PickToken => ({
+  href: window.location.href,
+  activePanelId: getWorkspaceSnapshot()?.activePanelId,
+});
+export const pickTokenUnchanged = (a: PickToken, b: PickToken) =>
+  a.href === b.href && a.activePanelId === b.activePanelId;
 
 /** Nothing but #general and the vendor shared room: a new workspace, whose home is #general. */
 export function isFreshWorkspace(rooms: readonly RoomSummary[]): boolean {
@@ -249,7 +261,23 @@ export function MessagingWorkspaceProvider({
   // Both refs hold the scope they apply to, so switching workspaces re-arms.
   const explicitChoiceScope = useRef<string | null>(null);
   const autoOpenedScope = useRef<string | null>(null);
-  const markExplicitChoice = useCallback(() => { explicitChoiceScope.current = scope; }, [scope]);
+  // Counts every explicit choice. The desktop shell's history (ChatHistorySync)
+  // records a view only when this moved, so automatic picks stay out of it. An
+  // async pick bumps it when its room lands, not before: an early bump would be
+  // recorded against the view being left.
+  const [explicitPickCount, setExplicitPickCount] = useState(0);
+  const bumpPick = useCallback(() => setExplicitPickCount((n) => n + 1), []);
+  // An async pick that finishes after the person navigated elsewhere (another
+  // panel) must not bump: ChatHistorySync would push the DM URL over theirs.
+  // Read-only on the URL.
+  const bumpPickIfCurrent = useCallback((start: PickToken) => {
+    if (pickTokenUnchanged(start, pickToken())) bumpPick();
+  }, [bumpPick]);
+  const markExplicitScope = useCallback(() => { explicitChoiceScope.current = scope; }, [scope]);
+  const markExplicitChoice = useCallback(() => {
+    markExplicitScope();
+    bumpPick();
+  }, [markExplicitScope, bumpPick]);
   const { activeRoomId: autoOpenActive, rooms: autoOpenRooms, selectRoom: hookSelectRoom } = rooms;
   /** Every selection a person (or a link/notification they followed) makes. */
   const chooseRoom = useCallback((roomId: string) => {
@@ -581,8 +609,10 @@ export function MessagingWorkspaceProvider({
     setCreationBusy(true);
     setCreationError(undefined);
     try {
-      markExplicitChoice();
+      markExplicitScope();
+      const startToken = pickToken();
       await rooms.createRoom({ clientRoomId: crypto.randomUUID(), ...creation });
+      bumpPickIfCurrent(startToken);
       return true;
     } catch (error) {
       setCreationError(error instanceof Error ? error.message : "Conversation could not be created.");
@@ -599,8 +629,9 @@ export function MessagingWorkspaceProvider({
     setOpeningParticipant(`${participant.kind}:${participant.id}`);
     setCreationError(undefined);
     try {
-      markExplicitChoice();
-      await rooms.selectDm(participant);
+      markExplicitScope();
+      const startToken = pickToken();
+      if (await rooms.selectDm(participant)) bumpPickIfCurrent(startToken);
     } catch (error) {
       setCreationError(error instanceof Error ? error.message : "Conversation could not be opened.");
     } finally {
@@ -634,16 +665,23 @@ export function MessagingWorkspaceProvider({
   // so it waits here and is replayed once the list settles.
   const heldLink = useRef<string | null>(null);
   const closeSession = useCallback(() => { heldLink.current = null; setSessionFocus(null); }, []);
-  const openSession = useCallback((sessionId: string) => {
+  /** Returns false when the link is held for the session list. */
+  const applySession = useCallback((sessionId: string) => {
     heldLink.current = null; // the latest intent wins
     if (workspaceSessions.loading && !workspaceSessions.sessions.some((candidate) => candidate.sessionId === sessionId)) {
       heldLink.current = sessionId;
-      return;
+      return false;
     }
     setThreadId(null);
     setTarget(null);
     setSessionFocus({ sessionId });
+    return true;
   }, [workspaceSessions.sessions, workspaceSessions.loading]);
+  // A person's open is a pick; a held link's later replay (applySession) is not —
+  // they may have moved on by the time the list lands.
+  const openSession = useCallback((sessionId: string) => {
+    if (applySession(sessionId)) bumpPick();
+  }, [applySession, bumpPick]);
   const openNewSession = useCallback(() => {
     heldLink.current = null;
     setThreadId(null);
@@ -659,8 +697,8 @@ export function MessagingWorkspaceProvider({
   useEffect(() => {
     const link = heldLink.current;
     if (!link || workspaceSessions.loading) return;
-    openSession(link);
-  }, [workspaceSessions.loading, openSession]);
+    applySession(link);
+  }, [workspaceSessions.loading, applySession]);
   const openMessage = useCallback((roomId: string, messageId: string | null) => {
     closeSession();
     selectRoom(roomId);
@@ -748,14 +786,20 @@ export function MessagingWorkspaceProvider({
     allSessionsOpen: !!sessionFocus?.all,
   };
   const selectMessageParticipant = useCallback(async (participant: RoomParticipant) => {
-    markExplicitChoice();
-    await selectDm(participant);
-  }, [markExplicitChoice, selectDm]);
+    markExplicitScope();
+    const startToken = pickToken();
+    if (await selectDm(participant)) bumpPickIfCurrent(startToken);
+  }, [markExplicitScope, bumpPickIfCurrent, selectDm]);
   const { selectAgentDm: hookSelectAgentDm } = rooms;
   const selectAgentDm = useCallback((agentId: string, explicit = true) => {
-    if (explicit) markExplicitChoice();
-    return hookSelectAgentDm(agentId);
-  }, [markExplicitChoice, hookSelectAgentDm]);
+    if (!explicit) return hookSelectAgentDm(agentId);
+    markExplicitScope();
+    const startToken = pickToken();
+    return hookSelectAgentDm(agentId).then((roomId) => {
+      if (roomId) bumpPickIfCurrent(startToken);
+      return roomId;
+    });
+  }, [markExplicitScope, bumpPickIfCurrent, hookSelectAgentDm]);
   const { activeRoomId: unreadRoomId, markUnread: markRoomUnread } = rooms;
   const markUnreadFrom = useCallback(async (fromSeq: number) => {
     if (unreadRoomId) await markRoomUnread(unreadRoomId, fromSeq);
@@ -862,6 +906,7 @@ export function MessagingWorkspaceProvider({
     workspaceSessions,
     scope,
     freshLanding,
+    explicitPickCount,
   }}><MessageNotifications activeRoomId={rooms.activeRoomId} threadId={threadId} roomVisible={roomVisible} rooms={rooms.rooms}
     onOpen={openNotificationTarget} activeSessionId={sessionFocus?.sessionId ?? null}
     onOpenSession={(sessionId) => { openSession(sessionId); activateMessagesPanel(); }} /><ShortcutSheet open={shortcutsOpen} onOpenChange={setShortcutsOpen} /><UnreadTitleBadge unread={unreadTotal} />{children}

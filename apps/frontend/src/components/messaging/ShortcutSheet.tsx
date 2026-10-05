@@ -8,6 +8,8 @@ const GROUPS: { name: string; rows: [string, string][] }[] = [
     name: "Move around",
     rows: [
       ["⌘K", "Jump to a conversation, person or agent"],
+      ["⌘[", "Back"],
+      ["⌘]", "Forward"],
       ["⌥↑", "Previous conversation"],
       ["⌥↓", "Next conversation"],
       ["⌥⇧↑", "Previous unread conversation"],

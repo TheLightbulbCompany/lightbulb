@@ -13,6 +13,8 @@ import { useNewMailCount } from "@/components/mail/useTeamMail";
 import { useSupport } from "@/components/support/SupportProvider";
 import { useCommandPalette } from "@/components/teams/command-palette/CommandPaletteProvider";
 import { useMarketplaceDrawer } from "@/components/marketplace/drawer/MarketplaceDrawerProvider";
+import { recordMessagesNavigation } from "./chatHistory";
+import { HistoryButtons } from "./HistoryButtons";
 import { activateMessagesPanel, openPanel, useWorkspaceState } from "./workspaceController";
 import { describePanel, MESSAGES_PANEL_ID } from "./panelRegistry";
 import { ThemeToggles } from "@/components/chat/ThemeToggles";
@@ -53,6 +55,7 @@ export function WorkspaceHeader({ chatReady = true, onNavigate }: {
   const destinations = browserShown ? DESTINATIONS : DESTINATIONS.filter((d) => d.panel !== "browser");
   return (
     <nav className="workspace-rail" aria-label="Workspace">
+      <HistoryButtons />
       <button type="button" className="workspace-rail__search" aria-label="Search agents, issues, and projects" title="Search (⌘/Ctrl K)" onClick={() => { setOpen(true); onNavigate?.(); }}>
         <Search size={20} aria-hidden="true" />
       </button>
@@ -77,7 +80,7 @@ export function WorkspaceHeader({ chatReady = true, onNavigate }: {
           onClick={() => {
             if (panel === "file-viewer") capture("file_browser_opened");
             if (panel === "browser") capture("browser_view_opened");
-            if (panel === MESSAGES_PANEL_ID) activateMessagesPanel();
+            if (panel === MESSAGES_PANEL_ID) { activateMessagesPanel(); recordMessagesNavigation(); }
             else openPanel(panel, {}, { pushUrl: true });
             onNavigate?.();
           }}>

@@ -33,6 +33,7 @@ import { MessagingWorkspaceProvider } from "@/components/messaging/MessagingWork
 import { CommandPaletteProvider } from "@/components/teams/command-palette/CommandPaletteProvider";
 import { preloadTeamsPanels } from "@/components/teams/TeamsPanelRouter";
 import { DesktopPermissionsGate } from "@/components/desktop/DesktopPermissionsGate";
+import { ChatHistorySync } from "./ChatHistorySync";
 import { useUserSyncOnce } from "@/components/chat/shell/useUserSyncOnce";
 import { useChatThemeAccountSync } from "@/components/chat/shell/useChatThemeAccountSync";
 import { useCheckoutReturn } from "@/components/chat/shell/useCheckoutReturn";
@@ -473,6 +474,7 @@ function AuthenticatedWorkspace({ scopeId, workspaceName }: { scopeId: string; w
         <DesktopMessagingProvider>
           <CommandPaletteProvider>
             <DesktopPermissionsGate />
+            <ChatHistorySync />
             <div className="workspace-shell" ref={shellRef} data-nav-open={navOpen}
               onKeyDown={navOpen ? (e) => { if (e.key === "Escape") closeNav(); } : undefined}
               data-messages-active={

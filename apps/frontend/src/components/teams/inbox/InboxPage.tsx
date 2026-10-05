@@ -17,7 +17,7 @@ import { InboxNeedsYou } from "@/components/teams/inbox/InboxNeedsYou";
 import { InboxRecently } from "@/components/teams/inbox/InboxRecently";
 import { PanelMasthead } from "@/components/teams/shell";
 import { useInlineTeamsNav } from "@/components/chat/InlineTeamsNav";
-import { teamsDetailUrl } from "@/lib/shellNav";
+import { navigateShell, teamsDetailUrl } from "@/lib/shellNav";
 import type { InboxSectionId } from "@/components/workspace/panelRegistry";
 import type { CompanyAgent } from "@/components/teams/shared/types";
 
@@ -50,7 +50,7 @@ export function InboxPage({
         inlineNav.openDetail("issue-detail", issueId);
         return;
       }
-      window.history.pushState(null, "", teamsDetailUrl("issue", issueId));
+      navigateShell(teamsDetailUrl("issue", issueId));
     },
     [inlineNav],
   );

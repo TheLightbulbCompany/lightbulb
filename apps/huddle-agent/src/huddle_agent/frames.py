@@ -89,6 +89,7 @@ class Run:
     auto: int = 0
     text: str = ""
     spoken: str = ""
+    box: int = 0  # which text box `text` is: narration before a tool is one, the answer after it another
     label: str | None = None
     seen: float = 0.0
 
@@ -199,6 +200,7 @@ class Runs:
         kind = frame.get("type")
         if kind == "tool_start" and isinstance(frame.get("tool"), str):
             run.text = run.spoken = ""  # narration so far was already said; the next text box is a new answer
+            run.box += 1
             if frame["tool"] != run.label:
                 run.label = frame["tool"]
                 self._sink.progress(run, run.label)

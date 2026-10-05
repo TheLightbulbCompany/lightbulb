@@ -22,8 +22,10 @@ type Call = { url: string; method: string; body: unknown; socketPath: string | u
 type Answer = (path: string, body: unknown) => { status: number; body: unknown } | 'refuse' | 'hang'
 function world(on: On, answer: Answer, socketFile = true) {
   const calls: Call[] = []
+  const socket = { live: true } // whether the app's socket file is there
   const clock = mock.clock(on)
   on('session.start', ($, e) => ({ cwd: e.cwd }))
+  on('fs.exists', ($, e) => ({ value: e.path === SOCKET && socket.live }))
   on('fs.read', ($, e) => {
     if (socketFile && e.path.endsWith('/lightbulb-sessions/socket')) return { value: `${SOCKET}\n` }
     return { deny: `no file ${e.path}` }
@@ -41,7 +43,7 @@ function world(on: On, answer: Answer, socketFile = true) {
     const { Text } = $.ui.resolve(e)
     return Text({ children: ENGINE })
   })
-  return { calls, clock }
+  return { calls, clock, socket }
 }
 
 test('band says live and nobody watching', () => {
@@ -218,4 +220,24 @@ test('every band Button has its own hotkey', async ($, on) => {
   state = { ...base, paused: true }
   await clock.advance(2000)
   expect(await hotkeys()).toEqual({ resume: 'p' })
+})
+
+test('a removed socket hides the band at once; a failing fetch on a live socket keeps it', async ($, on) => {
+  let answer: Answer = () => ({ status: 200, body: asking })
+  const { clock, socket } = world(on, (path, body) => answer(path, body))
+  await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
+  await clock.settle()
+  const buttons = async () => {
+    const ui = await $.ui.mount({ ...BAND, surface: 'terminal' })
+    const n = (await ui.findAll({ type: 'Button' })).length
+    await ui.unmount()
+    return n
+  }
+  expect(await buttons()).toBe(3)
+  answer = () => 'refuse' // socket file still there: the app is busy
+  await clock.advance(2000)
+  expect(await buttons()).toBe(3)
+  socket.live = false // sharing stopped: the app removed its socket
+  await clock.advance(2000)
+  expect(await buttons()).toBe(0)
 })

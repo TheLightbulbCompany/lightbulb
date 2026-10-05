@@ -25,7 +25,8 @@ async function socketPath($: EngineInterface): Promise<string | null> {
 // undefined: no answer (the app is not running, busy, or refused the call).
 async function call($: EngineInterface, path: string, body?: Decision): Promise<SessionState | null | undefined> {
   const socket = await socketPath($)
-  if (!socket) return null
+  // The app removes the socket when sharing stops or it quits: hide at once, not after the grace.
+  if (!socket || !(await $.fs.exists(socket))) return null
   try {
     const res = await $.http.fetch(`${APP}${path}`, {
       method: body ? 'POST' : 'GET',

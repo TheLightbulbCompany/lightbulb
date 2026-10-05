@@ -63,6 +63,8 @@ const WRITES = [
   String.raw`\b(?:rm|truncate|mv)\s${SEG}${PATH}`, // mv moves a protected file away, too
   String.raw`\b(?:cp|ln)\s${SEG}\s${PATH}\s*(?:$|[;|&\n])`, // the destination is the last argument
   String.raw`\bgit\s+(?:checkout|restore)\b${SEG}\s${PATH}`,
+  String.raw`\bdd\b${SEG}\bof=${PATH}`, // dd of=CLAUDE.md
+  String.raw`\b(?:install|rsync|ditto|patch)\s${SEG}${PATH}`, // direct writers that name the destination
 ].map(r => new RegExp(r, 'i'))
 export const bashTouchesProtected = (command: string) => WRITES.some(r => r.test(command))
 

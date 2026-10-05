@@ -47,7 +47,7 @@ test('protected paths', () => {
 
 test('the Bash guard refuses writes to protected files, not reads or mentions', () => {
   for (const c of ['echo x >> CLAUDE.md', 'echo x > ./CLAUDE.md', 'tee -a AGENTS.md', 'echo x | tee -a sub/AGENTS.md',
-    "sed -i '' s/a/b/ .claude/settings.json", "perl -pi -e 's/a/b/' CLAUDE.md", 'rm CLAUDE.md', 'rm -f "AGENTS.md"',
+    "sed -i '' s/a/b/ .claude/settings.json", "perl -pi -e 's/a/b/' CLAUDE.md", 'rm CLAUDE.md', 'rm -f "AGENTS.md"', 'dd if=/tmp/p of=CLAUDE.md', 'install /tmp/p AGENTS.md', 'rsync /tmp/p .claude/settings.json',
     'truncate -s 0 CLAUDE.md', 'mv CLAUDE.md /tmp/x', 'cp /tmp/x CLAUDE.md', 'ln -sf /tmp/x .codex/config.toml',
     'git checkout -- CLAUDE.md', 'git restore AGENTS.md', 'cat x > ~/.claude/hooks/a.sh'])
     expect(bashTouchesProtected(c)).toBe(true)

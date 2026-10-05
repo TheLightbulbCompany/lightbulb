@@ -52,8 +52,10 @@ export async function decide($: EngineInterface, body: Decision): Promise<Sessio
 
 // A turn a teammate's message started (or joined) may not change config; cleared when the main
 // turn ends. A module variable on purpose: a reload mid-turn clears it (fail-open for one turn,
-// accepted; the skill still applies). Any peer but the owner's own Lightbulb message sets it.
+// accepted; the skill still applies). Only a Lightbulb teammate contribution (a person, an agent or a
+// shared session) sets it: a plain peer (another Claude session, a subagent's hand-back) is the owner's own.
 let teammateTurn = false
+const TEAMMATE_KINDS = new Set(['person', 'agent', 'session'])
 const refuse = (what: string) => ({ deny: `Lightbulb: a teammate's request cannot change ${what}. Ask your user to make this change.` })
 
 export const register: Register = on => {
@@ -61,7 +63,7 @@ export const register: Register = on => {
   // (PromptOrigin 'peer'; PromptSubmitInput.turnId). session.append does not: a folded delivery is
   // appended as an engine attachment row.
   on('prompt.submit', async ($, e, next) => {
-    if (e.origin.kind === 'peer' && classify(e.text).kind !== 'owner') teammateTurn = true
+    if (e.origin.kind === 'peer' && TEAMMATE_KINDS.has(classify(e.text).kind)) teammateTurn = true
     return next(e)
   })
 

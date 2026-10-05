@@ -43,9 +43,18 @@ test('protected paths', () => {
     '/r/claude.md'])
     expect(protectedPath(p)).toBe(true)
   for (const p of ['/r/src/settings.ts', '/r/README.md', '/r/docs/claude.md.txt']) expect(protectedPath(p)).toBe(false)
-  expect(bashTouchesProtected('echo x >> CLAUDE.md')).toBe(true)
-  expect(bashTouchesProtected("sed -i '' s/a/b/ .claude/settings.json")).toBe(true)
-  expect(bashTouchesProtected('npm test')).toBe(false)
+})
+
+test('the Bash guard refuses writes to protected files, not reads or mentions', () => {
+  for (const c of ['echo x >> CLAUDE.md', 'echo x > ./CLAUDE.md', 'tee -a AGENTS.md', 'echo x | tee -a sub/AGENTS.md',
+    "sed -i '' s/a/b/ .claude/settings.json", "perl -pi -e 's/a/b/' CLAUDE.md", 'rm CLAUDE.md', 'rm -f "AGENTS.md"',
+    'truncate -s 0 CLAUDE.md', 'mv CLAUDE.md /tmp/x', 'cp /tmp/x CLAUDE.md', 'ln -sf /tmp/x .codex/config.toml',
+    'git checkout -- CLAUDE.md', 'git restore AGENTS.md', 'cat x > ~/.claude/hooks/a.sh'])
+    expect(bashTouchesProtected(c)).toBe(true)
+  for (const c of ['cat CLAUDE.md', 'grep x CLAUDE.md', 'echo "read CLAUDE.md first"', 'npm test', 'sed -n 1,5p CLAUDE.md',
+    'cp CLAUDE.md /tmp/x', 'cat CLAUDE.md > /tmp/out', 'git diff CLAUDE.md', 'cat <<EOF\nsee CLAUDE.md and .codex/\nEOF',
+    'rm CLAUDE.md.bak', 'echo x > notes.txt; cat AGENTS.md'])
+    expect(bashTouchesProtected(c)).toBe(false)
 })
 
 test('row labels', () => {
@@ -114,10 +123,18 @@ test("a teammate's turn cannot edit config; the owner's can; the guard ends with
   // the owner's own Lightbulb message starts no guarded turn
   await submit($, OWNER)
   expect(denied(await $.tool.call({ tool: 'Write', file_path: '/r/CLAUDE.md', content: 'x' }))).toBe(false)
-  // a plain peer (not Lightbulb), folded into a running turn, is guarded too
+  // a plain peer (another Claude session, a subagent's hand-back) is the owner's own: no guard
   await submit($, 'hello from another claude', 't')
-  expect(denied(await $.tool.call({ tool: 'NotebookEdit', notebook_path: '/r/.codex/n.ipynb', new_source: 'x' }))).toBe(true)
-  await $.turn.complete(done)
+  await submit($, '<task-notification>\n<status>completed</status>\n<result>done</result>\n</task-notification>', 't')
+  expect(denied(await $.tool.call({ tool: 'NotebookEdit', notebook_path: '/r/.codex/n.ipynb', new_source: 'x' }))).toBe(false)
+  expect(denied(await $.tool.call({ tool: 'Bash', command: 'echo x >> CLAUDE.md' }))).toBe(false)
+  // an agent or a shared session through Lightbulb, folded into a running turn, is guarded
+  for (const who of [agent, session]) {
+    await submit($, who, 't')
+    expect(denied(await $.tool.call({ tool: 'NotebookEdit', notebook_path: '/r/.codex/n.ipynb', new_source: 'x' }))).toBe(true)
+    expect(denied(await $.tool.call({ tool: 'Bash', command: 'cat CLAUDE.md' }))).toBe(false)
+    await $.turn.complete(done)
+  }
 })
 
 const ROW = (text: string, isExpanded: boolean, surface: 'terminal' | 'desktop') => ({

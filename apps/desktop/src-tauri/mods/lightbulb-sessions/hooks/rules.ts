@@ -49,10 +49,22 @@ const PROTECTED = [
 ]
 export const protectedPath = (path: string) => PROTECTED.some(r => r.test(path))
 
-// ponytail: a word match on the command text, not a shell parser; a teammate can still ask for
-// an indirect write (a script that edits CLAUDE.md). The skill and the owner's prompts stay the fence for that.
-const BASH = /(\.claude\/settings[\w.-]*\.json|\.claude\/hooks\/|CLAUDE\.md|AGENTS\.md|\.codex\/)/i
-export const bashTouchesProtected = (command: string) => BASH.test(command)
+// ponytail: a text match on WRITES in the command (redirection, tee, sed/perl -i, mv/cp/rm/truncate/ln,
+// git checkout/restore), not a shell parser. Reads (`cat CLAUDE.md`) pass; a teammate can still ask for
+// an indirect write (a script that edits CLAUDE.md, a heredoc that writes elsewhere then moves).
+// The skill and the owner's prompts stay the fence for that.
+const NAME = String.raw`(?:\.claude\/settings[\w.-]*\.json|\.claude\/hooks\/[^\s;|&'"]*|CLAUDE\.md|AGENTS\.md|\.codex\/[^\s;|&'"]*)`
+const PATH = String.raw`['"]?(?:[^\s;|&<>'"]*\/)?${NAME}['"]?(?=\s|$|[;|&)])`
+const SEG = String.raw`[^;|&\n]*`
+const WRITES = [
+  String.raw`>\|?\s*${PATH}`, // > file, >> file, >| file, &> file
+  String.raw`\btee\b${SEG}\s${PATH}`,
+  String.raw`\b(?:sed|perl)\s${SEG}-\w*i${SEG}\s${PATH}`,
+  String.raw`\b(?:rm|truncate|mv)\s${SEG}${PATH}`, // mv moves a protected file away, too
+  String.raw`\b(?:cp|ln)\s${SEG}\s${PATH}\s*(?:$|[;|&\n])`, // the destination is the last argument
+  String.raw`\bgit\s+(?:checkout|restore)\b${SEG}\s${PATH}`,
+].map(r => new RegExp(r, 'i'))
+export const bashTouchesProtected = (command: string) => WRITES.some(r => r.test(command))
 
 export function rowLabel(s: Sender): string | null {
   switch (s.kind) {

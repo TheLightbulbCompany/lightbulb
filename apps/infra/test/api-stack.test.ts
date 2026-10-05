@@ -297,6 +297,7 @@ describe("ApiStack — canonical messaging storage and work delivery", () => {
     );
     expect(Object.keys(byName).sort()).toEqual([
       "lightbulb-dev-message-search-index",
+      "lightbulb-dev-message-search-index-batch",
       "lightbulb-dev-message-search-index-dlq",
       "lightbulb-dev-openclaw-work-dlq.fifo",
       "lightbulb-dev-openclaw-work-pipe-failures",
@@ -706,6 +707,8 @@ describe("ApiStack — messaging projector permissions and alarms", () => {
           USERS_TABLE: "lightbulb-dev-users",
           APPSYNC_EVENTS_HTTP_ENDPOINT: Match.anyValue(),
           APPSYNC_EVENTS_REGION: "us-east-1",
+          SEARCH_INDEX_QUEUE_URL: Match.anyValue(),
+          SEARCH_INDEX_BATCH_QUEUE_URL: Match.anyValue(),
         }),
       },
     });
@@ -732,6 +735,7 @@ describe("ApiStack — messaging projector permissions and alarms", () => {
       statements.filter((st) => actions(st).some((a) => a.startsWith("sqs:"))).map((st) => st.Resource),
     );
     expect(sqsResources).toContain("MessageSearchIndexQueue");
+    expect(sqsResources).toContain("MessageSearchBatchQueue");
     expect(sqsResources).not.toContain("OpenClawWork");
     const publishResources = statements
       .filter((statement) => actions(statement).includes("appsync:EventPublish"))
@@ -957,6 +961,31 @@ describe("ApiStack — message search (OpenSearch Serverless)", () => {
     });
   });
 
+  test("new messages batch: a 39-minute schedule drains the batch queue; edits stay on the immediate queue", () => {
+    const rules = Object.values(dev.findResources("AWS::Events::Rule")).filter(
+      (r: any) => r.Properties.ScheduleExpression === "rate(39 minutes)",
+    ) as any[];
+    expect(rules).toHaveLength(1);
+    expect(rules[0].Properties.Targets).toHaveLength(1);
+    expect(rules[0].Properties.Targets[0].Input).toBe('{"drain":true}');
+    expect(JSON.stringify(rules[0].Properties.Targets[0].Arn)).toContain("MessageSearchIndexer");
+    const queues = Object.values(dev.findResources("AWS::SQS::Queue")) as any[];
+    const batch = queues.find((q) => q.Properties.QueueName === "lightbulb-dev-message-search-index-batch");
+    expect(batch.Properties.VisibilityTimeout).toBe(1800);
+    expect(JSON.stringify(batch.Properties.RedrivePolicy)).toContain("MessageSearchIndexDlq");
+    expect(batch.Properties.RedrivePolicy.maxReceiveCount).toBe(5);
+    const sqsMappings = Object.values(dev.findResources("AWS::Lambda::EventSourceMapping")).filter((m: any) =>
+      JSON.stringify(m.Properties.EventSourceArn).includes("MessageSearch"),
+    ) as any[];
+    expect(sqsMappings).toHaveLength(1);
+    expect(JSON.stringify(sqsMappings[0].Properties.EventSourceArn)).toContain("MessageSearchIndexQueue");
+    dev.hasResourceProperties("AWS::Lambda::Function", {
+      FunctionName: Match.stringLikeRegexp("message-search-indexer"),
+      Timeout: 300,
+      Environment: { Variables: Match.objectLike({ SEARCH_INDEX_BATCH_QUEUE_URL: Match.anyValue() }) },
+    });
+  });
+
   test("a stuck index job pages", () => {
     dev.hasResourceProperties("AWS::CloudWatch::Alarm", {
       AlarmName: "lightbulb-dev-message-search-index-dlq-visible",
@@ -966,5 +995,7 @@ describe("ApiStack — message search (OpenSearch Serverless)", () => {
   test("prod has the same search resources", () => {
     const prod = synthApiStack("prod");
     prod.hasResourceProperties("AWS::OpenSearchServerless::Collection", { Name: "lightbulb-prod-messages", Type: "SEARCH" });
+    prod.hasResourceProperties("AWS::Events::Rule", { ScheduleExpression: "rate(39 minutes)" });
+    prod.hasResourceProperties("AWS::SQS::Queue", { QueueName: "lightbulb-prod-message-search-index-batch" });
   });
 });

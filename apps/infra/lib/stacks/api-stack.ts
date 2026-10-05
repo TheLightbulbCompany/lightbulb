@@ -744,6 +744,9 @@ export class ApiStack extends cdk.Stack {
     // REPLACEMENT: a new stage-wide tag (lightbulb-stage.ts applies cdk.Tags)
     // replaces the collection, blocks on the export, and empties the index.
     // Plan such a change as: drop the import, deploy, change, re-import, reindex.
+    // Owner-chosen: the indexing OCU sleeps between drains; new messages are searchable within
+    // this many minutes; edits/deletes stay immediate.
+    const MESSAGE_SEARCH_BATCH_MINUTES = 39;
     const collectionName = `lightbulb-${env}-messages`;
     const group = new aoss.CfnCollectionGroup(this, "MessageSearchGroup", {
       name: `lightbulb-${env}-search`,
@@ -799,10 +802,18 @@ export class ApiStack extends cdk.Stack {
       retentionPeriod: cdk.Duration.days(14),
       encryption: sqs.QueueEncryption.SQS_MANAGED,
     });
+    // Immediate queue: edits and deletes, so removed or pre-edit text never lingers.
     const indexQueue = new sqs.Queue(this, "MessageSearchIndexQueue", {
       queueName: `${resourcePrefix(env)}message-search-index`,
-      // AWS guidance: visibility >= 6x the consumer's timeout (120 s).
-      visibilityTimeout: cdk.Duration.minutes(15),
+      // AWS guidance: visibility >= 6x the consumer's timeout (300 s).
+      visibilityTimeout: cdk.Duration.minutes(30),
+      encryption: sqs.QueueEncryption.SQS_MANAGED,
+      deadLetterQueue: { queue: indexDlq, maxReceiveCount: 5 },
+    });
+    // Batch queue: new messages. No event source; MessageSearchBatchDrain empties it.
+    const batchQueue = new sqs.Queue(this, "MessageSearchBatchQueue", {
+      queueName: `${resourcePrefix(env)}message-search-index-batch`,
+      visibilityTimeout: cdk.Duration.minutes(30),
       encryption: sqs.QueueEncryption.SQS_MANAGED,
       deadLetterQueue: { queue: indexDlq, maxReceiveCount: 5 },
     });
@@ -812,14 +823,15 @@ export class ApiStack extends cdk.Stack {
       runtime: lambda.Runtime.PYTHON_3_13,
       handler: "index.handler",
       code: lambda.Code.fromAsset(path.join(__dirname, "..", "..", "lambda", "messaging-search-indexer")),
-      // One job per invocation: a cold start (<=30 s) plus a write/verify loop fits.
-      timeout: cdk.Duration.seconds(120),
+      // An immediate job (cold start <=30 s plus a write/verify loop) fits; a drain can run longer.
+      timeout: cdk.Duration.seconds(300),
       memorySize: 256,
       vpc: props.vpc,
       vpcSubnets: { subnetType: ec2.SubnetType.PRIVATE_WITH_EGRESS },
       environment: {
         MESSAGING_TABLE: messagingTable.tableName,
         SEARCH_ENDPOINT: collection.attrCollectionEndpoint,
+        SEARCH_INDEX_BATCH_QUEUE_URL: batchQueue.queueUrl,
       },
       logGroup: new logs.LogGroup(this, "MessageSearchIndexerLogs", {
         logGroupName: logGroupPath(env, "message-search-indexer"),
@@ -834,8 +846,15 @@ export class ApiStack extends cdk.Stack {
       reportBatchItemFailures: true,
       maxConcurrency: 5, // a backfill must not fan out past the OCU cap
     }));
+    batchQueue.grantConsumeMessages(indexer);
+    new events.Rule(this, "MessageSearchBatchDrain", {
+      schedule: events.Schedule.rate(cdk.Duration.minutes(MESSAGE_SEARCH_BATCH_MINUTES)),
+      targets: [new eventTargets.LambdaFunction(indexer, { event: events.RuleTargetInput.fromObject({ drain: true }) })],
+    });
     indexQueue.grantSendMessages(projectorFn);
+    batchQueue.grantSendMessages(projectorFn);
     projectorFn.addEnvironment("SEARCH_INDEX_QUEUE_URL", indexQueue.queueUrl);
+    projectorFn.addEnvironment("SEARCH_INDEX_BATCH_QUEUE_URL", batchQueue.queueUrl);
 
     // MUST match service-stack's `roleName: lightbulb-${env}-backend-task`. The
     // provisioner Lambda runs as this role too, so wipes reach DeleteIndex.

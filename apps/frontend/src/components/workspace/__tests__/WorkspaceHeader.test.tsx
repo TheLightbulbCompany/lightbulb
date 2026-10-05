@@ -176,10 +176,10 @@ describe("WorkspaceHeader", () => {
   it("opens the existing command palette from a visible search control", () => {
     render(<WorkspaceHeader />);
 
-    fireEvent.click(screen.getByRole("button", { name: /Search agents, issues, and projects/ }));
+    fireEvent.click(screen.getByRole("button", { name: /Search messages, agents, issues, and projects/ }));
 
     expect(setPaletteOpen).toHaveBeenCalledWith(true);
-    expect(screen.getByRole("button", { name: /Search agents/ })).toHaveAttribute("title", "Search (⌘/Ctrl K)");
+    expect(screen.getByRole("button", { name: /Search messages/ })).toHaveAttribute("title", "Search (⌘/Ctrl K)");
     expect(screen.getByRole("button", { name: "Browse workspace files" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Get help" })).toBeInTheDocument();
     expect(screen.getByLabelText("Profile")).toBeInTheDocument();

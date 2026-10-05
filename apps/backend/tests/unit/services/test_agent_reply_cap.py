@@ -153,6 +153,20 @@ async def test_a_progress_line_wakes_nobody_and_is_never_the_capped_reply(room, 
 
 
 @pytest.mark.asyncio
+async def test_a_progress_line_stores_no_mentions(room, created, monkeypatch):  # noqa: F811
+    """create_message writes one MENTION# row per human in `mentions` (their mention badge) and
+    the projector's mentionedUserIds reads the same list: a progress line passes none."""
+    human = {"kind": "human", "id": "user_1", "displayName": "Aden", "mentionHandle": "aden"}
+    monkeypatch.setattr(messaging.messaging_repo, "list_members", AsyncMock(return_value=[*MEMBERS, human]))
+    monkeypatch.setattr(messaging, "with_human_handles", lambda members, _emails: members)
+    room(HUMAN)
+    await messaging.create_agent_message(OWNER, _request("@aden invoices are in.", runId=RUN))
+    assert created.await_args.kwargs["mentions"] == [{"kind": "human", "id": "user_1"}]  # the control
+    await messaging.create_agent_message(OWNER, _request("@aden invoices pulled.", runId=RUN, progress=True))
+    assert created.await_args.kwargs["mentions"] == []
+
+
+@pytest.mark.asyncio
 async def test_the_reply_after_progress_lines_hops_and_dispatches_as_before(room, created):  # noqa: F811
     room(HUMAN)
     await messaging.create_agent_message(OWNER, _request("Pulled the invoices.", runId=RUN, progress=True))

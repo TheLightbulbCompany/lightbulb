@@ -4223,6 +4223,10 @@ async def create_agent_message(owner_id: str, request: AgentMessageRequest) -> A
     room_members = await messaging_repo.list_members(room_id)
     members = with_human_handles(room_members, await human_emails(room_members))
     mentions, unresolved = parse_agent_mentions(request.text, members)
+    if request.progress:
+        # Progress notifies nobody: a stored mention would write a MENTION# row (the person's
+        # mention badge) and ride mentionedUserIds. The @name stays in the text as plain words.
+        mentions, unresolved = [], []
     # A progress line is not a turn in the conversation: no targets means no WORK rows, no Jev
     # decision, and nothing for the reply cap below to cut or announce.
     targets = (

@@ -1293,7 +1293,7 @@ export function useRooms(platform: RoomsPlatform, options: UseRoomsOptions = {})
    * the persisted reply's runId doesn't match the run's — the same agent
    * posting identical trimmed text) is done double-duty; drop it so the
    * completed run card doesn't render again below the real message. A progress
-   * line carries its run's id but is not the reply, so it never retires the card.
+   * line is not the reply: neither its run id nor its text ever retires the card.
    *
    * Memoised: this is O(runs x messages) with a `trim()` per comparison, and it
    * was re-running on every render of the surface, including every keystroke in
@@ -1301,8 +1301,8 @@ export function useRooms(platform: RoomsPlatform, options: UseRoomsOptions = {})
    */
   const messagesById = useMemo(() => new Map(messages.map(message => [message.messageId, message])), [messages]);
   const visibleRuns = useMemo(() => [...runs.values()].flatMap((run) => {
-    const persisted = messages.some(message => (message.runId === run.runId && !message.progress) ||
-      (run.text.trim() && message.author.kind === "agent" && message.author.id === run.agentId && message.text.trim() === run.text.trim()));
+    const persisted = messages.some(message => !message.progress && (message.runId === run.runId ||
+      (run.text.trim() && message.author.kind === "agent" && message.author.id === run.agentId && message.text.trim() === run.text.trim())));
     if (persisted && run.state !== "running") return [];
     // Keep activity/controls after an interim reply without painting that reply twice.
     const trigger = run.triggerMessageId ? messagesById.get(run.triggerMessageId) : undefined;

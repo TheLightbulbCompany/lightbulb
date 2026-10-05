@@ -45,28 +45,25 @@ and Ask to pick up (`2026-10-05-ask-to-pick-up.md`).
 2. Optionally switch to **Anyone with the link**. One line appears: "Anyone with the link can
    watch your live terminal. A live screen can't be redacted."
 3. Send the link anywhere.
-4. While shared: the terminal band shows `● Live · Aden, Mira + 3 watching`. A guest's ask shows
-   as `Sam Lee (outside your workspace) asked to steer [Allow] [Decline]`; only the owner's keys
-   work. The panel's Access section lists who took a copy and when.
-5. **Turn off link**: every link page reads "This link was turned off", watchers stop receiving
-   frames at once, guests lose typing. Pause (existing) has the same effect while paused.
+4. The panel's Access section lists who took a copy and when. (Phase 2 adds the watcher count to
+   the band; Phase 3 adds guest asks, §4, §5.)
+5. **Turn off link**: every link page reads "This link was turned off" and no new copy can be
+   made. Pause (existing) has the same effect while paused.
 
 ### 2.2 Receiver
 
 1. Opens `https://flickmeon.ai/s#<token>`. No sign-in. The page shows title, the sharer's first
    name, provider, state, and the code line (§3.3).
-2. **Live:** the terminal plays (Phase 2). **Ended:** the transcript, redacted for anyone outside
-   the workspace.
-3. **Continue in my Claude Code:** if signed out, Clerk sign-up, then the existing onboarding
-   creates their workspace (provisioning starts as for any new workspace), then back to the page.
-   The page shows `npx lightbulb continue '<link>'` with a copy button.
+2. **Live:** the terminal plays (Phase 2; until then the page polls the events, §3.2).
+   **Ended:** the transcript, redacted for anyone outside the workspace.
+3. **Continue in my Claude Code** (Claude sessions only): if signed out, Clerk sign-up, then the
+   existing onboarding creates their workspace (provisioning starts as for any new workspace),
+   then back to the page. The page shows `npx lightbulb continue '<link>'` with a copy button.
 4. They run it in their own terminal. The CLI opens the browser on a one-click confirm ("Continue
    <title> in Claude Code on this computer?"), which is the moment the copy is made. The CLI
    downloads the redacted copy, gets the code (§3.3), installs the Lightbulb mod if absent, and
    execs `claude --resume … --fork-session`. The band reads "Continued from Prasiddha's session ·
    Share yours".
-5. **Ask to steer** (live, signed in, Phase 3): the button becomes "Requested", then a terminal
-   input once allowed, or "<Owner> declined" (they may ask again).
 
 A workspace member opening the link gets today's in-app paths (watch, type if allowed, Pick up)
 plus Continue; nothing new is offered to them except the CLI.
@@ -79,21 +76,26 @@ Replaces the many-links share model (`local_sessions.py:2233-2440`: `SHARE#<link
 rows, `SHARELINK#<hash>` lookup rows, per-link expiry and a `snapshotSeq` cap).
 
 - **Session META** gains `shareLink: {tokenHash, tokenEnc, audience: "workspace"|"anyone",
-  createdAt, createdBy, pickupByLink}`. `tokenEnc` is a Fernet ciphertext under `ENCRYPTION_KEY`
-  so the owner can copy the same link again, exactly as join links do
-  (`workspace_join.py:25-35`). Written through `repo.put_session` like every META change.
+  createdAt, createdBy}`. `tokenEnc` is a Fernet ciphertext under `ENCRYPTION_KEY` so the owner
+  can copy the same link again, exactly as join links do (`workspace_join.py:25-35`). Written
+  through `repo.put_session` like every META change. **`META.shareLink.tokenHash` is the truth**:
+  an open whose hash does not match it is refused, whatever lookup row it found.
 - **Lookup row** `SHARELINK#<tokenHash>` / `META` → `{ownerId, sessionId}` (same pk scheme as
   `_share_pk`, `local_sessions.py:2237`). No `expiresAt`: a link lives until it is turned off or
-  the session's snapshot retention ends (§3.6).
+  the session's snapshot retention ends (§3.2).
 - **Token:** `secrets.token_urlsafe(32)`, in the URL **fragment**, sent only in POST bodies, never
   logged; every failure reads the same (`workspace_join.py:73-85`, `local_sessions.py:2384-2386`).
-- **Pick-up:** creating a link turns pick-up on through `session_pickup.set_pickup`
-  (`session_pickup.py:328`) if it was off, and records `pickupByLink: true`; turning the link off
-  calls `retire` (`session_pickup.py:853`) only when the link turned it on. This keeps the
-  author's Mac snapshotting (the `PICKUPWANT` row, `session_pickup.py:300`) so a copy can be made
-  after the Mac goes away.
-- Existing `SHARE#`/`SHARELINK#` rows (≤30 days old, workspace-only) are deleted by a one-off
-  script at cutover; old links read as turned off. `/chat/shared` is replaced by `/s`.
+- **The link is the pick-up permission** (Claude sessions). `PUT /link` on a Claude session calls
+  `session_pickup.set_pickup(auth, sid, True)` (`session_pickup.py:328`), which starts the
+  author's Mac snapshotting (`PICKUPWANT`, `session_pickup.py:300`); `DELETE /link` calls
+  `set_pickup(…, False)`, which `retire`s the snapshot (`session_pickup.py:853`). The separate
+  pick-up switch (`PUT /messaging/sessions/{id}/pickup`, `routers/messaging.py:332`) is removed;
+  Ask to pick up's Allow creates the link with audience `workspace`. `retire` (also the sweeper's
+  expiry path) deletes `shareLink` and the lookup row in its transaction. A Codex session's link
+  never calls `set_pickup` (it refuses non-Claude, `session_pickup.py:352`): Watch and Read only.
+- Old `SHARE#`/`SHARELINK#` rows carry `expiresAt`, the table's TTL (`local_sessions.py:2341`), so
+  they disappear by themselves within 30 days; until then the `tokenHash` check above makes them
+  read as turned off. No cutover script. `/chat/shared` is replaced by `/s`.
 
 Owner routes (Clerk, owner only, `_owned_session` rules, `local_sessions.py:2289`):
 
@@ -101,7 +103,7 @@ Owner routes (Clerk, owner only, `_owned_session` rules, `local_sessions.py:2289
 |---|---|
 | `PUT /messaging/sessions/{id}/link {audience}` | create if absent (audit `share_link_created`) or change audience; returns `{url, audience}` |
 | `GET /messaging/sessions/{id}/link` | `{url, audience}` or 404 |
-| `DELETE /messaging/sessions/{id}/link` | delete lookup row and `shareLink`, link watcher leases (§4), guests (§5); audit `share_link_revoked` |
+| `DELETE /messaging/sessions/{id}/link` | delete lookup row and `shareLink`, retire pick-up; audit `share_link_revoked` |
 
 These replace the three `share-links` routes (`routers/messaging.py:369-384`).
 
@@ -109,22 +111,26 @@ These replace the three `share-links` routes (`routers/messaging.py:369-384`).
 
 `POST /public/session-links/open {token}` with `get_optional_user` (`auth.py:279`):
 
-1. GetItem the lookup row by hash; load META. Gone, off, `unshared`, or audience `workspace` and
-   the caller is not a current member (`_still_a_member`, `session_screen.py:52`) → the one
-   "turned off or not for you" answer.
-2. Returns `{title, ownerFirstName, provider, state: live|ended|offline, code, watchers, me}`;
-   `me` is `{signedIn, member, joinState, canType}`. No owner id, workspace id, session id, cwd or
-   path.
+1. GetItem the lookup row by hash; load META. Refused with the one "turned off or not for you"
+   answer when: no row; `META.shareLink.tokenHash` differs; `unshared`; the owner's Mac no longer
+   shares (`_enrolled`, as `_open_share` does today); the session stopped more than
+   `PICKUP_RETENTION_SECONDS` ago (`pickup_stopped_at`, `local_sessions.py:739`); or audience
+   `workspace` and the caller is anonymous or not a current member (`_still_a_member`,
+   `session_screen.py:52`).
+2. Returns `{title, ownerFirstName, provider, state: live|ended|offline, code, me: {signedIn,
+   member}}`. No owner id, user id, workspace id, session id, cwd or path. (Phase 2 adds
+   `watchers`; Phase 3 adds `joinState`, `canType`.)
 3. `POST /public/session-links/events {token, afterSeq, limit}` reads events as
-   `list_shared_events` does (`local_sessions.py:2426`) without the `snapshotSeq` cap; for a
-   non-member every string field is passed through the redactor (§3.4).
+   `list_shared_events` does (`local_sessions.py:2426`) without the `snapshotSeq` cap. For a
+   non-member each event drops `actor` and `originRequestId` (`local_sessions.py:398-411`), and
+   every string, recursively through `tool.input`/`tool.result`, goes through the redactor (§3.4).
 
 ### 3.3 Repo, branch, commit, visibility (desktop)
 
 Today the Mac sends `code {remote, branch, head, snapshot}` only when it captured a bundle
 (`snapshot.rs:435-556`, sent at `snapshot.rs:804`), and the bundle is `--not --remotes=origin`
 (`snapshot.rs:513-517`), so it is useless to anyone without origin. New, beside it in the
-commit body (`CommitRequest`, `session_pickup.py:196`):
+commit body (`CommitRequest`, `session_pickup.py:196`), optional:
 
 ```
 repo: {remote, branch|null, head, pushed: bool, public: bool} | null
@@ -136,13 +142,13 @@ repo: {remote, branch|null, head, pushed: bool, public: bool} | null
   with `GIT_TERMINAL_PROMPT=0` and `GIT_ASKPASS=/usr/bin/false`; exit 0 = public. Cached per
   remote for one hour. Runs through `git_run` (`session_pickup.rs:40`, no shell).
 - Sent on every commit, also when the bundle is unchanged, too large or skipped. Stored on the
-  `PICKUP` manifest and copied to `pickupSnapshot.repo` (beside `snapshot.rs`'s current `repo`
-  field, `session_pickup.py:742`). A Mac without the new `repoVisibility` feature sends nothing.
+  `PICKUP` manifest only, as `repoInfo` (`pickupSnapshot.repo` is already the remote string,
+  `session_pickup.py:742`; the open reads the manifest). An older Mac sends nothing → null.
 - The Mac is the owner's own device, so a wrong answer only mis-describes the owner's own repo.
 
 What the page and the copy show, for someone **outside** the workspace:
 
-| `repo` | Page | Copy's `code` |
+| `repoInfo` | Page | Copy's `code` |
 |---|---|---|
 | `public && pushed` | `github.com/o/r · main · a1b2c3d` | `{mode: "clone", remote, commit: head}` |
 | `!public && pushed` | "Private repository" | `{mode: "clone", remote, commit: head}` |
@@ -155,59 +161,72 @@ behaviour, uncommitted work included).
 ### 3.4 Redaction
 
 New `core/services/session_redact.py`, one function `redact(text) -> text`, replacing each match
-with `[redacted]`. Patterns: the three secret patterns already in
+with `[redacted]`. Patterns: str versions of the three secret patterns in
 `marketplace_safety._PATTERNS` (`hardcoded-secret`, `aws-secret-key`, `provider-token`,
-`marketplace_safety.py:80-115`) applied to text, plus PEM private-key blocks and `.env`-shaped
-lines (`NAME=value` where NAME contains KEY, SECRET, TOKEN or PASSWORD). It is applied:
+`marketplace_safety.py:80-115`; those are bytes regexes), plus: PEM private-key blocks;
+`.env`-shaped lines (`NAME=value` where NAME contains KEY, SECRET, TOKEN or PASSWORD); Stripe
+`(sk|rk|pk)_(live|test)_…`; JWTs (`eyJ….….…`); `Authorization: Bearer …`; Google `AIza…`;
+credentials in URLs (`://user:pass@`). Home-directory prefixes (`/Users/<name>/`,
+`/home/<name>/`) become `~/`. It is applied:
 
-- to every copy: each transcript JSONL line is parsed, every string value redacted, re-serialized
-  (the file stays valid JSONL); each sidecar text file the same way, binary sidecars dropped;
+- to every outsider copy, streamed one transcript part at a time (gunzip → per JSONL line: parse,
+  redact every string, re-serialize → gzip → upload), never the whole snapshot in memory
+  (parts are up to 64 MiB, the snapshot up to 1 GiB, `session_pickup.py:52-53`). The sidecars
+  are a tar.gz (`snapshot.rs:319`): text entries are redacted, binary entries dropped, re-tarred;
 - to public event pages (§3.2) for non-members.
 
-The code bundle (members only) is not redacted: it is the workspace's own code, as Pick up hands
-it today. Live screen frames are never redacted (ruling 3).
+Member copies are not redacted (ruling below): Pick up and in-workspace Continue hand teammates
+the snapshot as it is today, code bundle included. Live screen frames are never redacted
+(ruling 3).
 
 ### 3.5 Copies
 
-Rows in the session partition:
+One row per copy, found by the hash of its continue code:
 
-- `COPY#<copyId>`: `{userId, member: bool, state: preparing|ready|failed, codeMode, createdAt,
-  expiresAt}` (TTL one hour).
-- `CONTINUECODE#<codeHash>` / `META` → `{ownerId, sessionId, copyId, userId, expiresAt}`
-  (ten minutes).
-- Audit `session_copied` with `subjectUserId` (added to `AUDIT_ACTIONS`,
-  `local_sessions.py:1721`). The owner's Access section lists these entries (`list_audit`,
+- `SESSIONCOPY#<codeHash>` / `META` → `{ownerId, sessionId, copyId, userId, member: bool,
+  challenge, state: preparing|ready|failed, codeMode, createdAt, expiresAt}` (TTL one hour; the
+  code is redeemable for its first ten minutes).
+- Audit `session_copied` with `subjectUserId` and `detail` = the taker's display name (an
+  outsider is not in the member list the panel resolves names from); added to `AUDIT_ACTIONS`
+  (`local_sessions.py:1721`). The owner's Access section lists these entries (`list_audit`,
   `local_sessions.py:1816`); that is "the sharer sees who took a copy".
 
-Objects: `session-pickup/<owner>/<sid>/<epoch>/copies/<copyId>/` (`transcript.jsonl.gz`,
-`sidecars.json.gz`). Under the pick-up prefix on purpose: it stays out of `<owner>/*`, which the
-workspace's agent runtime role can read (`session_pickup.py:12-14`), and `retire`/`sweep_once`
-(`session_pickup.py:823-903`) already delete everything under a retired epoch. The sweeper also
-deletes `copies/` objects older than one hour.
+Objects: `session-pickup/<owner>/<sid>/<epoch>/copies/<copyId>/` (`transcript.jsonl.gz` parts,
+`sidecars.tar.gz`). Under the pick-up prefix on purpose: it stays out of `<owner>/*`, which the
+workspace's agent runtime role can read (`session_pickup.py:12-14`). No new cleanup code:
+`sweep_once` already deletes every object the manifest does not name once it is older than
+`ABANDONED_UPLOAD_S` (one hour, `session_pickup.py:66, 836-840`), and `retire` deletes the epoch.
 
 Routes:
 
-- `POST /session-links/copies {token, state}` (`get_human_session`, `auth.py:255`; requires an
+- `POST /session-links/copies {token, challenge}` (`get_human_session`, `auth.py:255`; requires an
   org, i.e. the free workspace). Checks as `request_pickup` (`session_pickup.py:406-424`):
-  link on, snapshot `ready`, not expired, epoch current. Writes `COPY` + `CONTINUECODE` + audit,
-  starts the redaction in a background task (`run_in_thread`), returns `{code}`. Limits: 5 copies
-  per person per session per hour, one redaction per backend task at a time (others queue).
-- `POST /public/session-copies/redeem {code}` (no auth; the code is the credential) →
-  `{state: "preparing"}` or the ticket: `PickupTicket` (`session_pickup.py:163`) with the copy's
-  URLs and a `code` object per §3.3. A `preparing` copy older than five minutes is restarted.
+  link on, Claude session, snapshot `ready`, not expired, epoch current. Writes the copy row +
+  audit; a member's copy is `ready` at once, an outsider's starts the redaction in a background
+  task (`run_in_thread`, at most one per backend task, behind an `asyncio.Semaphore(1)`). Returns
+  `{code}`.
+- `POST /public/session-copies/redeem {code, verifier}` (no auth; the code plus the CLI's
+  verifier is the credential: `sha256(verifier)` must equal the stored `challenge`, so a code
+  left in browser history is useless) → `{state: "preparing"}` or a **copy ticket**:
+  `{title, from: <owner first name>, transcript: [Download], sidecars, cwdRelative,
+  claudeVersion, code}` with `code` per §3.3. Not a `PickupTicket` (`session_pickup.py:163`):
+  that carries `session_id`, `human_user_id`, `conversation_id` and `cwd_name`. A `preparing`
+  copy older than five minutes is restarted.
 
 ### 3.6 The CLI
 
 - Lives at `apps/cli/` (`@lightbulb/cli` in the pnpm workspace), Node ≥18, no dependencies
-  (built-in `fetch`, `zlib`, `child_process`). Its `prepack` copies
+  (built-in `fetch`, `zlib`, `crypto`, `child_process`). Its `prepack` copies
   `apps/desktop/src-tauri/mods/` into the package so there is one source of the mod. Published to
   npm by a new `cli-release.yml` on `cli-v*` tags (Linux runner). **The npm name `lightbulb` is
   taken** (see report); the command needs a name we own.
 - `continue <link>`:
-  1. Parse the fragment token locally. Start a loopback listener on `127.0.0.1:<random>` and open
-     `https://flickmeon.ai/s/continue?port=…&state=…#<token>`. That page (signed in; else
-     sign-up/onboarding first) shows one confirm button, calls `POST /session-links/copies`, and
-     redirects to `http://127.0.0.1:<port>/done?state=…&code=…`.
+  1. Parse the fragment token locally. Make a random `verifier`. Start a loopback listener on
+     `127.0.0.1:<random>` and open
+     `https://flickmeon.ai/s?port=…&challenge=<sha256(verifier)>#<token>`. In that mode the `/s`
+     page (signed in; else sign-up/onboarding first) shows one confirm button, calls
+     `POST /session-links/copies`, and redirects to `http://127.0.0.1:<port>/done?code=…`. The
+     page accepts only an integer port 1024-65535 and only the host `127.0.0.1`.
   2. Poll redeem every 2 s until ready. Download and verify every part (size + sha256), as the
      desktop does (`session_pickup.rs:300-356, 836-902`), refusing URLs outside the bucket's
      `/session-pickup/` path (`session_pickup.rs:111`).
@@ -226,18 +245,22 @@ Routes:
      writes the fork into `~/.claude/projects/` itself; that is how the conversation lands there.
      The original session and its Mac are never contacted.
 - Mod change: on `session.start` (`register.tsx:129`) read
-  `$HOME/.lightbulb/continued/<$.session.id()>.json` (`$.env.get`, `$.fs.read`); while the
-  session is not itself shared, the `AbovePrompt` band (`register.tsx:147`) shows
-  `Continued from <from>'s session · Share yours (flickmeon.ai/desktop)`.
+  `~/.lightbulb/continued/<session id>.json` with `$.fs.read`; while the session is not itself
+  shared, the `AbovePrompt` band (`register.tsx:147`) shows
+  `Continued from <from>'s session · Share yours (flickmeon.ai/desktop)`. The mod reads no session
+  id or home directory today (it uses only `$.fs`, `$.clock`, `$.http`, `$.ui`, `$.plugin.root`):
+  confirm the hook API exposes both before building.
 
 ### 3.7 Web
 
 - `/s` (public; not in `middleware.ts:13`'s protected list): lifts the fragment out of the URL
   before analytics reads it (as `/chat/shared` does today), keeps it in `sessionStorage` across
-  sign-up, renders §2.2. `/s/continue` is the CLI confirm.
-- Onboarding (`onboarding/page.tsx:60`) honours a same-origin `returnTo` after it creates the
-  workspace.
+  sign-up (Clerk's modal on the same page, as `/join/[orgId]` does), renders §2.2, and is the CLI
+  confirm when `port` and `challenge` are present.
+- Onboarding honours a same-origin `returnTo` instead of its fixed `router.replace("/chat")`
+  (`onboarding/page.tsx:147`).
 - `LocalSessionPanel`: Share popover (copy, audience, warning line, Turn off), Access lists copies.
+  The pick-up switch goes.
 
 ## 4. Phase 2: public Watch
 
@@ -260,18 +283,21 @@ watcher has no user channel in the owner's workspace, and AppSync accepts only C
   does, so the Mac streams (`ack_with_watching`, `session_screen.py:126`). Response:
   `{watchers, me}`, which is also how a guest learns their join answer (no new channel).
 - **Fan-out:** `forward` also reads `LINKVIEWER#` rows and publishes to `/pub/<watchKey>` for each
-  live one; same 2 MiB/min per-session budget.
-- **Presence:** `session_presence.entry` (`:53`) adds signed-in link watchers to `viewers` (by
+  live one; same 2 MiB/min per-session budget; at most 20 link watchers per session.
+- **Presence:** `session_presence.entry` (`:54`) adds signed-in link watchers to `viewers` (by
   `human_display_name`) and a new `anonymousViewers: n`; the mod's `bandRuns` (`state.ts:12`)
-  appends `+ n`. The page shows the count only, never names.
-- Live session without a terminal (transcript sharing): the page polls §3.2's events.
+  appends `+ n` (`● Live · Aden, Mira + 3 watching`). The page shows the count only, never names.
+- **Turn off link** also deletes the link's `PUBWATCH#`/`LINKVIEWER#` leases, so watchers stop
+  receiving frames at once.
 
 ## 5. Phase 3: guest Steer
 
 - **Ask:** `POST /session-links/join-requests {token}` (`get_human_session`). Link on, audience
   `anyone`, session live. Same write as `request_join` (`local_sessions.py:1934`) with the entry
   marked `guest: true`. Notifies the owner (`_notify_join_request`) and pushes presence; the band
-  labels it "(outside your workspace) asked to steer". Members keep the existing route.
+  reads `Sam Lee (outside your workspace) asked to steer [Allow] [Decline]`. Members keep the
+  existing route. The receiver's button becomes "Requested", then a terminal input once allowed,
+  or "<Owner> declined" (they may ask again).
 - **Allow:** the existing `decide_join` (`:1956`), from the band through
   `native-session-decisions` or from the app. For a `guest` entry it also adds the user to
   `guests: [userId]` on META.
@@ -289,33 +315,35 @@ watcher has no user channel in the owner's workspace, and AppSync accepts only C
 ## 6. Security
 
 **An anonymous holder of an "Anyone" link can:** read the page model (§3.2); read redacted events;
-receive the live terminal frames, unredacted, while holding a lease.
-**Cannot:** learn the owner id, workspace id, session id or folder path; take a copy; ask to steer;
-type; subscribe to anything under `ws`; reach any other session.
+from Phase 2, receive the live terminal frames, unredacted, while holding a lease.
+**Cannot:** learn the owner id, workspace id, session id or the page-model folder path (event
+text is redacted best-effort, §3.4); take a copy; ask to steer; type; subscribe to anything under
+`ws`; reach any other session.
 **A signed-in outsider additionally can:** take a redacted copy (and with it the repo remote for a
-private repo, see report), ask to steer, and type once allowed.
+private repo, see report); from Phase 3, ask to steer, and type once allowed.
 
 - **Tokens:** 256-bit link token in the fragment; 128-bit-plus watch keys and continue codes,
-  hash-stored where they are credentials, short TTLs (45 s lease, 10 min code, 1 h copy).
-- **Revocation:** turning the link off deletes the lookup row, the leases and the guests.
-  `forward` publishes only to live leases, so open subscriptions go silent at once, the same
-  property room delivery-key rotation relies on. Copies already taken stay with their takers.
+  hash-stored where they are credentials, short TTLs (45 s lease, 10 min code, 1 h copy). A
+  continue code is redeemable only with the CLI's verifier.
+- **Revocation:** turning the link off clears `META.shareLink`, deletes the lookup row and retires
+  the snapshot (and, from Phase 2/3, the leases and guests). `forward` publishes only to live
+  leases, so open subscriptions go silent at once, the same property room delivery-key rotation
+  relies on. Copies already taken stay with their takers.
 - **Abuse limits:** an API Gateway route `ANY /api/v1/public/{proxy+}` with its own throttle,
-  as the Slack route has (`api-stack.ts:128`, `:382-407`); at most 20 link watchers per session;
-  at most 30 new leases per link per minute (in-process, like `_spent`, `session_screen.py:154`);
-  the copy limits in §3.5.
+  as the Slack route has (`api-stack.ts:128`, `:382-407`); one redaction at a time per backend
+  task (§3.5); 20 link watchers per session (§4).
 
 ## 7. Reused vs new
 
 | Reused | New |
 |---|---|
-| Pick-up snapshot stream, manifest, presigned tickets, retire/sweeper | one-link fields, `/link` routes, `/s` page |
+| Pick-up snapshot stream, manifest, presigned URLs, retire/sweeper (also cleans copies) | one-link fields, `/link` routes, `/s` page |
 | Desktop `argv`, `workdir`, `import_code`, download checks (ported to Node) | `apps/cli`, `cli-release.yml` |
 | Join requests, `decide_join`, `remove_sender`, band, `native-session-decisions` | `guest` flag, `guests`, link-scoped join/input routes |
 | `watch`/`forward`/`ack_with_watching`, presence | `pub` namespace + API key, `LINKVIEWER`/`PUBWATCH` leases, `anonymousViewers` |
-| `marketplace_safety` patterns, join-link token handling | `session_redact.py`, `COPY`/`CONTINUECODE` rows |
+| `marketplace_safety` patterns, join-link token handling | `session_redact.py`, `SESSIONCOPY` row, copy ticket |
 | Sign-up, onboarding, `provision_new_workspace` | `returnTo` on onboarding |
-| Mod and its install commands | `repo` metadata from the Mac, "Continued from" band |
+| Mod and its install commands | `repoInfo` from the Mac, "Continued from" band |
 
 ## 8. Open questions
 
@@ -323,15 +351,20 @@ private repo, see report), ask to steer, and type once allowed.
    `npx @thelightbulbcompany/cli continue` / `npx lightbulb-cli continue`?
 2. Private repos: is it acceptable that a signed-in receiver's CLI receives the repo remote (and
    so its name) in order to clone (see report)?
-3. Should Pick up (the desktop button) also hand out a redacted copy, or only Continue?
-4. Does a link to an ended session expire with the 7-day snapshot retention
-   (`PICKUP_RETENTION_SECONDS`, `local_sessions.py:189`) or need its own limit?
-5. Should the separate "Allow pick up" switch go, now that the link implies pick-up?
-6. Headless receivers (SSH, no browser): add a paste-the-code fallback to the confirm page?
-7. Codex sessions: Watch and Read only (pick-up is Claude-only); confirm.
+
+**Ruled (controller, 2026-10-05):**
+
+3. Pick up stays unredacted: it serves workspace teammates. Only outsider copies and outsider
+   event pages are redacted.
+4. A link to an ended session lives as long as its snapshot: 7 days (`PICKUP_RETENTION_SECONDS`,
+   `local_sessions.py:189`). No separate limit.
+5. The separate "Allow pick up" switch goes: the link is the permission (§3.1).
+6. A no-browser (device-code) confirm for headless receivers is deferred.
+7. Codex sessions get Watch and Read only (pick-up is Claude-only).
 
 ## 9. Deferred (owner: "we will do that as we get user feedback")
 
 - Per-prompt injection checks on continued or steered sessions.
 - Screening guest messages and keystrokes.
 - A safety floor for permission modes (e.g. refusing to resume a copy in bypass mode).
+- A paste-the-code confirm for receivers without a browser (ruled above).

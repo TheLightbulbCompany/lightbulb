@@ -73,7 +73,7 @@ export const clerkAppearance: Appearance = {
     colorInputText: "var(--fg, var(--midnight))",
     colorDanger: "var(--alert, var(--err))",
     colorSuccess: "var(--live, var(--ok))",
-    colorWarning: "var(--alert, var(--err))",
+    colorWarning: "var(--warn)", // defined on every surface: brand on the ladder, orange on bare :root
     borderRadius: "8px", // --radius
     fontFamily: "var(--font-sans), 'Source Sans 3', system-ui, sans-serif",
     fontFamilyButtons: "var(--font-sans), 'Source Sans 3', system-ui, sans-serif",

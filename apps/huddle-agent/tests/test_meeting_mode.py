@@ -1329,3 +1329,22 @@ async def test_a_follow_up_that_cut_a_streamed_answer_before_its_end_replaces_it
     await h.clear_presence()
     assert resays(lives[0]) == []
     assert not [a for a in backend.late_answers if "Three pull requests" in a[3]]
+
+
+async def test_narration_said_before_a_tool_is_not_a_word_of_the_answer_that_follows():
+    """Review: "Let me check GitHub." had been said, so sound before the real answer's first word did not count
+    as a cut, and the answer was dropped unsaid."""
+    h, backend, lives, clock, row = await forge_streams_to_priya()
+    streams(h, row.run_id, "Let me check GitHub. ")
+    h.on_agent_state("forge", "speaking")
+    h.on_agent_said("forge", "Let me check GitHub.")
+    h.on_agent_state("forge", "listening")
+    run = h._runs.get(row.run_id)
+    run.text = run.spoken = ""  # a tool starts: frames.Runs opens a new text box
+    run.box += 1
+    text = "Three pull requests are open."
+    streams(h, row.run_id, text)
+    ends(h, row.run_id, 1)
+    await says(h, P1, "Keep us.")  # before a word of the answer
+    await quiet_tick(h, clock, h_mod.CUT_HANDLED_S + h_mod.MEET_QUIET_S)
+    assert [c[1] for c in resays(lives[0])] == [h_mod.RESAY.format(answer=text)]

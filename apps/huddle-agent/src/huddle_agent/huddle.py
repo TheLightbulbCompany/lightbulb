@@ -343,9 +343,11 @@ class _Voice:
     # `answer` is the ended run's (run_id, request, text, at, speaker) until it is known heard; `unheard`: its
     # speech was interrupted, or their sound came before a word of it; `replied`: it then answered them (they
     # were talking to it); `resaid`: it was said again once; `spoke`: its messages since it began to say that
-    # run (its sentences are streamed before the run ends); `began`: when it began to.
+    # run's text box `box` (its sentences are streamed before the run ends; narration before a tool is another
+    # box, and its words are not the answer's); `began`: when it began to say the run.
     answer: tuple | None = None
     began: float = 0.0
+    box: tuple | None = None
     unheard: bool = False
     replied: bool = False
     resaid: bool = False
@@ -2692,7 +2694,9 @@ class Huddle:
             if v.saying != run.run_id and (v.answer is None or v.answer[0] != run.run_id):
                 self._settle_answer(v)  # the answer before this one: on the record if it was cut (`_followed`)
                 v.unheard = v.replied = v.resaid = False
-                v.spoke, v.began = 0, self._clock()
+                v.began = self._clock()
+            if v.box != (run.run_id, run.box):
+                v.box, v.spoke = (run.run_id, run.box), 0
             v.saying = run.run_id
             self._live_call(
                 v, "append_commentary", text, delegation_id=run.delegation_id

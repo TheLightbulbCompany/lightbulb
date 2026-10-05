@@ -963,8 +963,8 @@ describe("ApiStack — message search (OpenSearch Serverless)", () => {
     });
   });
 
-  test("prod has no search resources until the cost gate (plan Task 7)", () => {
+  test("prod has the same search resources", () => {
     const prod = synthApiStack("prod");
-    prod.resourceCountIs("AWS::OpenSearchServerless::Collection", 0);
+    prod.hasResourceProperties("AWS::OpenSearchServerless::Collection", { Name: "lightbulb-prod-messages", Type: "SEARCH" });
   });
 });

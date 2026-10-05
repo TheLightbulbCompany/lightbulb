@@ -364,6 +364,10 @@ def _canonical_message(item: dict[str, Any]) -> dict[str, Any]:
         message["sessionMentions"] = list(session_mentions)
         message["sessionTargetLabels"] = clean_labels
 
+    # A mid-run progress line (core.services.messaging's canonical_message). Omitted otherwise.
+    if item.get("progress") is True:
+        message["progress"] = True
+
     for field in ("replyToMessageId", "threadRootMessageId"):
         if message[field] is not None:
             _require_uuid(message[field], field)

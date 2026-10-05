@@ -1207,6 +1207,52 @@ def _post_reply(agent_id: str, body: dict, reply: str) -> None:
                       {**body, "text": f"{text}\n_(Couldn't attach {names}: the room refused the files.)_".strip()})
 
 
+# ponytail: one fixed gap per run is the whole flood bound. The clock starts with the run, so a
+# turn shorter than the gap posts nothing. Knobs: PROGRESS_MIN_INTERVAL_S / PROGRESS_MIN_CHARS;
+# make them per-room settings if a room ever wants a different pace.
+PROGRESS_MIN_INTERVAL_S = 60.0
+PROGRESS_MIN_CHARS = 12
+
+
+def _progress_poster(agent_id: str, body: dict):
+    """Hermes's `interim_assistant_callback` for an addressed room turn, or None.
+
+    Hermes fires it after each assistant message that carries visible text beside tool calls
+    (agent/turn_tool_round.py, de-duplicated in agent/stream_delivery.py), which is how its own
+    gateways post mid-turn commentary. Each line goes where the final reply will go, through the
+    same POST, marked `progress` so the backend wakes nobody, pushes nothing and keeps the run
+    card. Only a `user_request` turn posts: an ambient `room_event` turn may still end [SILENT],
+    and a run that stands down must leave nothing in the room. Mail has no room, a voice turn is
+    spoken, and a native Paperclip run answers Paperclip, so none of them gets one. Never raises
+    into Hermes, and posts nothing once the run is stopped."""
+    run_id = (body.get("run") or {}).get("runId")
+    if not run_id or body.get("eventKind") != "user_request":
+        return None
+    posted = {"at": time.monotonic(), "count": 0}
+
+    def post(text, **_kw) -> None:  # Hermes passes already_streamed=; the card streams regardless
+        try:
+            text = (text or "").strip()
+            at = time.monotonic()
+            if (len(text) < PROGRESS_MIN_CHARS or at - posted["at"] < PROGRESS_MIN_INTERVAL_S
+                    or _is_silence(text) or run_aborted(run_id)):
+                return
+            posted["at"], posted["count"] = at, posted["count"] + 1
+            _post_reply(agent_id, {
+                "eventId": f"{body.get('eventId')}:{agent_id}:progress:{posted['count']}",
+                "roomId": (body.get("room") or {}).get("id"),
+                "agentId": agent_id,
+                "replyToMessageId": (body.get("message") or {}).get("messageId"),
+                "threadRootMessageId": turn_thread_root(body),
+                "runId": run_id,
+                "progress": True,
+            }, text)
+        except Exception:  # noqa: BLE001 -- a lost progress line never costs the turn
+            log.warning("progress post failed run=%s", run_id, exc_info=True)
+
+    return post
+
+
 # ---- AppSync run frames (spec §4.2, §5 "Run lifecycle") --------------------------------------
 Credentials = namedtuple("Credentials", "access_key secret_key token")
 FRAME_TIMEOUT_S = 5.0
@@ -1631,7 +1677,12 @@ def system_prompt(body: dict, agent_id: str, media: list[str] | None = None) -> 
             f"outside your profile folder is lost when the workspace restarts.\n"
             f"Your shell starts in this conversation's own folder "
             f"({conversation_dir(agent_id, _resolve_session_key(agent_id, body))}); repos and files "
-            f"from earlier work are in your profile folder ({_profile_dir(agent_id)})."
+            f"from earlier work are in your profile folder ({_profile_dir(agent_id)}).\n"
+            # What you write beside tool calls is posted to the room (_progress_poster).
+            "On a long job, write one short line of real progress beside your tool calls, about "
+            "every 8 tool calls or every 2 minutes: what is done and what is next. It is posted "
+            "to this chat as you work, so give real content, never filler like \"still working\", "
+            "and no @mentions. On a short turn, write none."
         )
     return (
         f"{identity}\n"
@@ -2822,6 +2873,9 @@ def _run_turn_in(agent_id: str, body: dict, frames, base: Path) -> tuple[str, st
                 current_media = [] if body.get("followUp") else _current_message_media(body, media, base)
                 agent = _construct_agent(agent_id, body, frames, session_key)
                 queued_steers = attach_agent(run_id, agent)
+                if progress := _progress_poster(agent_id, body):
+                    # Set on the agent as Hermes's own gateway does (gateway/run_turn_runner.py).
+                    agent.interim_assistant_callback = progress
                 if run_aborted(run_id):  # stopped while the profile/MCP/agent were set up
                     return "aborted", None, "", ZERO_USAGE
                 turn_text = _turn_input(body, current_media)

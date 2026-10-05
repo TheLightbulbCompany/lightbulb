@@ -180,6 +180,8 @@ export interface CanonicalRoomMessage {
   createdAt: string;
   runId: string | null;
   via?: "lightbulb_mcp";
+  /** A mid-run progress line, not the run's reply: the run card stays. Absent otherwise. */
+  progress?: boolean;
   /** The agents this message addresses -- an @mention, a name-addressed open
    *  ("Hey Friday, ..."), or a DM. Excludes an `active` listener Jev was merely
    *  eligible to route: Jev picks at most one of them (or none), so listing

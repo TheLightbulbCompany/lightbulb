@@ -134,3 +134,61 @@ async def test_an_ambient_reply_after_a_human_answer_is_counted(
     assert hit is counted
     if event_kind == "room_event":
         listed.assert_awaited_once_with(ROOM, 1, 1)  # strictly between trigger (seq 0) and reply (seq 2)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("trigger", [HUMAN, HOP1])
+async def test_a_progress_line_wakes_nobody_and_is_never_the_capped_reply(room, created, trigger):  # noqa: F811
+    """A mid-run progress line: stored with its run, but no dispatch targets (so no WORK rows and
+    no Jev), no push (silent), no chain-paused notice even at the cap, and no reply telemetry."""
+    room(trigger)
+    await messaging.create_agent_message(
+        OWNER, _request("Pulled the invoices; @finance totals next.", runId=RUN, progress=True)
+    )
+    message, notice = _writes(created)
+    assert message["dispatch_targets"] == [] and notice is None
+    assert message["silent"] is True and message["progress"] is True
+    assert message["run_id"] == RUN
+    messaging._emit_reply_telemetry.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_a_progress_line_stores_no_mentions(room, created, monkeypatch):  # noqa: F811
+    """create_message writes one MENTION# row per human in `mentions` (their mention badge) and
+    the projector's mentionedUserIds reads the same list: a progress line passes none."""
+    human = {"kind": "human", "id": "user_1", "displayName": "Aden", "mentionHandle": "aden"}
+    monkeypatch.setattr(messaging.messaging_repo, "list_members", AsyncMock(return_value=[*MEMBERS, human]))
+    monkeypatch.setattr(messaging, "with_human_handles", lambda members, _emails: members)
+    room(HUMAN)
+    await messaging.create_agent_message(OWNER, _request("@aden invoices are in.", runId=RUN))
+    assert created.await_args.kwargs["mentions"] == [{"kind": "human", "id": "user_1"}]  # the control
+    await messaging.create_agent_message(OWNER, _request("@aden invoices pulled.", runId=RUN, progress=True))
+    assert created.await_args.kwargs["mentions"] == []
+
+
+@pytest.mark.asyncio
+async def test_the_reply_after_progress_lines_hops_and_dispatches_as_before(room, created):  # noqa: F811
+    room(HUMAN)
+    await messaging.create_agent_message(OWNER, _request("Pulled the invoices.", runId=RUN, progress=True))
+    await messaging.create_agent_message(OWNER, _request("numbers look fine", runId=RUN))
+    reply = created.await_args_list[-1].kwargs
+    assert reply["agent_hop"] == 1 and reply["silent"] is False and reply["progress"] is False
+    assert reply["dispatch_targets"] == [{"agentId": OTHER, "eventKind": "room_event"}]
+
+
+def test_the_public_message_says_progress_only_when_it_is_one():
+    row = {
+        "messageId": str(uuid.uuid4()),
+        "roomId": ROOM,
+        "messageSeq": 2,
+        "roomRevision": 1,
+        "author": {"kind": "agent", "id": AGENT, "displayName": "Friday"},
+        "text": "Pulled the invoices.",
+        "replyToMessageId": None,
+        "threadRootMessageId": None,
+        "createdAt": messaging.utc_now().isoformat(),
+        "runId": RUN,
+    }
+    wire = messaging.canonical_message({**row, "progress": True}).model_dump(mode="json", by_alias=True)
+    assert wire["progress"] is True
+    assert "progress" not in messaging.canonical_message(row).model_dump(mode="json", by_alias=True)

@@ -924,6 +924,34 @@ describe("runs already in progress when the room opens", () => {
     expect(result.current.runs).toHaveLength(0);
   });
 
+  it("never retires the run card for a progress line", async () => {
+    messaging.getRoom.mockResolvedValue(withRun());
+    messaging.listMessages.mockResolvedValue({ messages: [message, { ...message, messageId: "progress", messageSeq: 2, runId: RUN, progress: true,
+      author: { kind: "agent", id: AGENT, displayName: "Forge" }, text: "Pulled the invoices; totals next." }], nextAfterSeq: null });
+    const { result } = renderHook(() => useRooms(platform()), { wrapper });
+    act(() => result.current.selectRoom(room.roomId));
+    await waitFor(() => expect(result.current.messages).toHaveLength(2));
+    await waitFor(() => expect(result.current.runs).toHaveLength(1));
+    act(() => { for (const handler of handlers) handler(frame({ type: "chunk", runId: RUN, content: "Totals match." })); });
+    expect(result.current.runs[0].text).toBe("Totals match.");
+    act(() => { for (const handler of handlers) handler(frame({ type: "run_ended", outcome: "done" })); });
+    expect(result.current.runs).toHaveLength(1);
+  });
+
+  it("keeps a stopped run's card when its last streamed text equals a progress line", async () => {
+    messaging.getRoom.mockResolvedValue(withRun());
+    messaging.listMessages.mockResolvedValue({ messages: [message, { ...message, messageId: "progress", messageSeq: 2, runId: RUN, progress: true,
+      author: { kind: "agent", id: AGENT, displayName: "Forge" }, text: "Pulled the invoices; totals next." }], nextAfterSeq: null });
+    const { result } = renderHook(() => useRooms(platform()), { wrapper });
+    act(() => result.current.selectRoom(room.roomId));
+    await waitFor(() => expect(result.current.messages).toHaveLength(2));
+    await waitFor(() => expect(result.current.runs).toHaveLength(1));
+    act(() => { for (const handler of handlers) handler(frame({ type: "chunk", runId: RUN, content: "Pulled the invoices; totals next." })); });
+    act(() => { for (const handler of handlers) handler(frame({ type: "run_ended", outcome: "aborted" })); });
+    expect(result.current.runs).toHaveLength(1);
+    expect(result.current.runs[0].state).not.toBe("running");
+  });
+
   it("merges a frame that arrives after the seed instead of dropping it", async () => {
     messaging.getRoom.mockResolvedValue(withRun());
     const { result } = renderHook(() => useRooms(platform()), { wrapper });

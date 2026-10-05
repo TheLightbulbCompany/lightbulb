@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import unittest
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import index
 
@@ -88,9 +88,81 @@ class IndexerTests(unittest.TestCase):
         event = {"Records": [{"messageId": "b", "body": json.dumps(job())}]}
         self.assertEqual(index.handler(event, None), {"batchItemFailures": [{"itemIdentifier": "b"}]})
 
+    @patch("index.process")
+    def test_sqs_records_path_ignores_drain_absent(self, process):
+        event = {"Records": [{"messageId": "a", "body": json.dumps(job())}]}
+        self.assertEqual(index.handler(event, None), {"batchItemFailures": []})
+        process.assert_called_once_with(job())
+
     def test_rejects_non_message_rows(self):
         with self.assertRaises(ValueError):
             index.process({"ownerId": "org_owner", "roomId": ROOM, "sk": "META"})
+
+
+BATCH_URL = "https://sqs.us-east-1.amazonaws.com/1/search-batch"
+
+
+def sqs_msg(n):
+    return {"MessageId": f"m{n}", "ReceiptHandle": f"r{n}", "Body": json.dumps({**job(), "n": n})}
+
+
+class FakeContext:
+    def __init__(self, *remaining):
+        self.remaining = list(remaining)
+
+    def get_remaining_time_in_millis(self):
+        return self.remaining.pop(0) if len(self.remaining) > 1 else self.remaining[0]
+
+
+class DrainTests(unittest.TestCase):
+    def setUp(self):
+        self.saved = (index.SEARCH_INDEX_BATCH_QUEUE_URL, index._sqs_client)
+        index.SEARCH_INDEX_BATCH_QUEUE_URL = BATCH_URL
+        index._sqs_client = MagicMock()
+
+    def tearDown(self):
+        index.SEARCH_INDEX_BATCH_QUEUE_URL, index._sqs_client = self.saved
+
+    def deleted(self):
+        return [e["Id"] for c in index._sqs_client.delete_message_batch.call_args_list for e in c.kwargs["Entries"]]
+
+    @patch("index.process")
+    def test_drains_across_receives_and_deletes_successes(self, process):
+        index._sqs_client.receive_message.side_effect = [
+            {"Messages": [sqs_msg(i) for i in range(10)]}, {"Messages": [sqs_msg(10)]}, {}]
+        result = index.handler({"drain": True}, FakeContext(300_000))
+        self.assertEqual(result, {"drained": 11, "failed": 0})
+        self.assertEqual(process.call_count, 11)
+        self.assertEqual(len(self.deleted()), 11)
+        for c in index._sqs_client.delete_message_batch.call_args_list:
+            self.assertLessEqual(len(c.kwargs["Entries"]), 10)
+        self.assertEqual(index._sqs_client.receive_message.call_args.kwargs["QueueUrl"], BATCH_URL)
+
+    @patch("index.process", side_effect=[None, RuntimeError("boom"), None])
+    def test_a_failing_job_is_not_deleted(self, process):
+        index._sqs_client.receive_message.side_effect = [{"Messages": [sqs_msg(i) for i in range(3)]}, {}]
+        result = index.drain(FakeContext(300_000))
+        self.assertEqual(result, {"drained": 2, "failed": 1})
+        self.assertEqual(sorted(self.deleted()), ["m0", "m2"])
+
+    @patch("index.process")
+    def test_stops_on_an_empty_receive(self, process):
+        index._sqs_client.receive_message.return_value = {}
+        self.assertEqual(index.drain(FakeContext(300_000)), {"drained": 0, "failed": 0})
+        index._sqs_client.receive_message.assert_called_once()
+        index._sqs_client.delete_message_batch.assert_not_called()
+
+    @patch("index.process")
+    def test_stops_when_time_is_low(self, process):
+        index._sqs_client.receive_message.return_value = {"Messages": [sqs_msg(1)]}
+        result = index.drain(FakeContext(300_000, 59_999))
+        self.assertEqual(result, {"drained": 1, "failed": 0})
+        index._sqs_client.receive_message.assert_called_once()
+
+    def test_empty_batch_url_receives_nothing(self):
+        index.SEARCH_INDEX_BATCH_QUEUE_URL = ""
+        self.assertEqual(index.handler({"drain": True}, FakeContext(300_000)), {"drained": 0, "failed": 0})
+        index._sqs_client.receive_message.assert_not_called()
 
 
 if __name__ == "__main__":

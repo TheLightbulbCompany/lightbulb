@@ -14,7 +14,7 @@ const BAND = {
   props: { hasSurvey: false, isWorking: false, maxRows: 10, bodyColumns: 80, scroll: { offset: 0, bodyRows: 9 }, view: {} },
 }
 
-const base: SessionState = { sessionId: 's', paused: false, terminal: 'held', viewers: [], joinRequests: [], approvalWaiting: false, writerConnected: false }
+const base: SessionState = { sessionId: 's', paused: false, terminal: 'held', viewers: [], joinRequests: [], approvalWaiting: false }
 
 type Call = { url: string; method: string; body: unknown; socketPath: string | undefined }
 
@@ -170,14 +170,14 @@ test('Allow posts the decision and the request leaves the band', async ($, on) =
 
 test("a refused decision shows the app's message and keeps the request", async ($, on) => {
   const { clock } = world(on, path => path === '/v1/decide'
-    ? { status: 409, body: { error: 'cancelled', message: 'Someone who can type is connected. Answer in the Lightbulb session view.' } }
+    ? { status: 409, body: { error: 'stale', message: 'That request is no longer waiting.' } }
     : { status: 200, body: asking })
   await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
   await clock.settle()
   for (const surface of SURFACES) {
     const ui = await $.ui.mount({ ...BAND, surface })
     await ui.press({ key: 'allow' })
-    expect(await ui.find({ type: 'Text', text: 'Someone who can type is connected. Answer in the Lightbulb session view.' })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: 'That request is no longer waiting.' })).toBeDefined()
     expect(await ui.find({ type: 'Text', text: 'Lightbulb did not take that. Try again in the app.' })).toBeUndefined()
     expect(await ui.find({ key: 'allow' })).toBeDefined()
     await ui.unmount()
@@ -210,30 +210,30 @@ test('an Allow out blocks a second press', async ($, on) => {
   expect(sent).toBe(1)
 })
 
-test('with a writer connected the request has no Allow or Decline, and says to answer in Lightbulb', async ($, on) => {
-  const { clock } = world(on, () => ({ status: 200, body: { ...asking, writerConnected: true } }))
+test('a poll that resolves a refused decision clears its error line', async ($, on) => {
+  let state: SessionState = asking
+  const { clock } = world(on, path => path === '/v1/decide'
+    ? { status: 409, body: { error: 'unavailable', message: 'Lightbulb is unreachable.' } }
+    : { status: 200, body: state })
   await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
   await clock.settle()
-  for (const surface of SURFACES) {
-    const ui = await $.ui.mount({ ...BAND, surface })
-    expect(await ui.find({ type: 'Text', text: '· answer in the Lightbulb session view' })).toBeDefined()
-    expect(await ui.find({ key: 'allow' })).toBeUndefined()
-    expect(await ui.find({ key: 'decline' })).toBeUndefined()
-    expect(await ui.find({ key: 'pause' })).toBeDefined()
-    await ui.unmount()
-  }
-})
-
-test('paused with a writer connected says resume in the Lightbulb session view and has no Resume button', async ($, on) => {
-  const { clock } = world(on, () => ({ status: 200, body: { ...base, paused: true, writerConnected: true } }))
-  await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
-  await clock.settle()
-  for (const surface of SURFACES) {
-    const ui = await $.ui.mount({ ...BAND, surface })
-    expect(await ui.find({ text: '○ Sharing paused · resume in the Lightbulb session view' })).toBeDefined()
-    expect(await ui.find({ key: 'resume' })).toBeUndefined()
-    await ui.unmount()
-  }
+  const ui = await $.ui.mount({ ...BAND, surface: 'terminal' })
+  await ui.press({ key: 'allow' })
+  expect(await ui.find({ type: 'Text', text: 'Lightbulb is unreachable.' })).toBeDefined()
+  await clock.advance(2000)
+  expect(await ui.find({ type: 'Text', text: 'Lightbulb is unreachable.' })).toBeDefined() // still about the request shown
+  state = { ...asking, joinRequests: [{ userId: 'u2', name: 'Mira Shah', requestId: 'r2', kind: 'join' }] }
+  await clock.advance(2000)
+  expect(await ui.find({ type: 'Text', text: 'Lightbulb is unreachable.' })).toBeUndefined() // that request was answered elsewhere
+  await ui.press({ key: 'pause' })
+  expect(await ui.find({ type: 'Text', text: 'Lightbulb is unreachable.' })).toBeDefined()
+  state = { ...base, paused: true }
+  await clock.advance(2000)
+  expect(await ui.find({ type: 'Text', text: 'Lightbulb is unreachable.' })).toBeUndefined() // paused after all
+  state = base
+  await clock.advance(2000)
+  expect(await ui.find({ type: 'Text', text: 'Lightbulb is unreachable.' })).toBeUndefined() // cleared, not hidden
+  await ui.unmount()
 })
 
 test('Pause posts pause, and a paused band offers Resume', async ($, on) => {

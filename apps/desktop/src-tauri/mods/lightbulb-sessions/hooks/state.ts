@@ -10,7 +10,7 @@ export type Decision = { decision: 'allow' | 'decline' | 'pause' | 'unpause'; us
 export type Run = { text: string; color?: string }
 
 export function bandRuns(s: SessionState): Run[] {
-  if (s.paused) return [{ text: s.writerConnected ? '○ Sharing paused · resume in the Lightbulb session view' : '○ Sharing paused' }]
+  if (s.paused) return [{ text: '○ Sharing paused' }]
   if (s.terminal === null) return [{ text: '● Shared as a transcript' }]
   if (s.viewers.length === 0) return [{ text: '● Live in Lightbulb' }]
   const names = (vs: SessionState['viewers']) =>

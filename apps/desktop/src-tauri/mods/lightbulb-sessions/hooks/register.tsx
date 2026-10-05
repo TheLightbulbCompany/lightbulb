@@ -5,7 +5,10 @@ import { bandRuns, requestLine, type Decision } from './state'
 import { bashTouchesProtected, classify, colorFor, protectedPath, rowBody, rowLabel, senderColor } from './rules'
 
 export const sharing = atom({ plugin: 'lightbulb-sessions', key: 'state' } as const, null as SessionState | null)
-const problem = atom({ plugin: 'lightbulb-sessions', key: 'error' } as const, null as string | null)
+// A refused decision's message, and the decision it was about: it stays only while that decision
+// still applies (the request is still first, or sharing is still in the state it would change).
+type Problem = { text: string; about: Decision }
+const problem = atom({ plugin: 'lightbulb-sessions', key: 'error' } as const, null as Problem | null)
 // One decision at a time: a second press while one is out would send the same answer twice.
 // A module variable on purpose: it is set and tested in one synchronous step.
 let deciding = false
@@ -27,7 +30,7 @@ async function socketPath($: EngineInterface): Promise<string | null> {
 
 // state null: nothing to show (no socket yet, or the app says this session is not shared).
 // state undefined: no answer (the app is not running, busy, or refused the call); `message` is
-// what the app said when it refused, if it said anything (e.g. "Someone who can type is connected. Answer in the Lightbulb session view.").
+// what the app said when it refused, if it said anything (e.g. "That request is no longer waiting.").
 type Reply = { state: SessionState | null | undefined; message?: string }
 
 // No timeout to set: HttpInit has none, and a hook's budget stops while a `$` call is in flight,
@@ -66,6 +69,13 @@ export async function fetchState($: EngineInterface): Promise<SessionState | nul
 
 export async function decide($: EngineInterface, body: Decision): Promise<Reply> {
   return call($, '/v1/decide', body)
+}
+
+function applies(about: Decision, s: SessionState | null): boolean {
+  if (!s) return false
+  if (about.decision === 'pause') return !s.paused
+  if (about.decision === 'unpause') return s.paused
+  return s.joinRequests[0]?.requestId === about.requestId
 }
 
 // A turn a teammate's message started (or joined) may not change config; cleared when the main
@@ -124,6 +134,8 @@ export const register: Register = on => {
       if (s) goodAt = now
       else if (s === undefined && now - goodAt < GRACE_MS) return
       await update($, sharing, () => s ?? null)
+      // A poll that resolves what a refusal was about clears its line.
+      await update($, problem, p => (p && applies(p.about, s ?? null) ? p : null))
     }
     // Never wait on the app: this runs in every Claude session on the Mac, and a stalled socket
     // must not hold session start. The band appears when the first answer lands.
@@ -142,30 +154,27 @@ export const register: Register = on => {
       try {
         const { state: after, message } = await decide($, body)
         if (after) await update($, sharing, () => after) // never write back the draw-time `s`: the poll may be newer
-        await update($, problem, () => (after ? null : message ?? REFUSED))
+        await update($, problem, () => (after ? null : { text: message ?? REFUSED, about: body }))
       } finally {
         deciding = false
       }
     }
     const ask = s.joinRequests[0]
-    const err = await read($, problem)
+    const p = await read($, problem)
+    const err = p && applies(p.about, s) ? p.text : null
     return (
       <Box flexDirection="column">
         <Box>
           <Text dimColor>{bandRuns(s).map(r => r.color ? <Text color={r.color}>{r.text}</Text> : r.text)} </Text>
           {s.paused
-            ? s.writerConnected ? null : <Button key="resume" hotkey="p" label="Resume sharing" onPress={act({ decision: 'unpause' })} />
+ ? <Button key="resume" hotkey="p" label="Resume sharing" onPress={act({ decision: 'unpause' })} />
             : <Button key="pause" hotkey="p" label="Pause" onPress={act({ decision: 'pause' })} />}
         </Box>
         {ask && (
           <Box>
             <Text><Text color={colorFor(ask.userId)}>{ask.name}</Text>{requestLine(ask, s.joinRequests.length).slice(ask.name.length)} </Text>
-            {s.writerConnected
-              ? <Text dimColor>· answer in the Lightbulb session view</Text>
-              : <>
-                  <Button key="allow" hotkey="a" variant="primary" label="Allow" onPress={act({ decision: 'allow', userId: ask.userId, requestId: ask.requestId })} />
-                  <Button key="decline" hotkey="d" label="Decline" onPress={act({ decision: 'decline', userId: ask.userId, requestId: ask.requestId })} />
-                </>}
+            <Button key="allow" hotkey="a" variant="primary" label="Allow" onPress={act({ decision: 'allow', userId: ask.userId, requestId: ask.requestId })} />
+            <Button key="decline" hotkey="d" label="Decline" onPress={act({ decision: 'decline', userId: ask.userId, requestId: ask.requestId })} />
           </Box>
         )}
         {s.approvalWaiting && <Text dimColor>Waiting on you here or in Lightbulb</Text>}

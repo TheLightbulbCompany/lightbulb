@@ -7,8 +7,6 @@ export type SessionState = {
   viewers: Viewer[]
   joinRequests: JoinRequest[]
   approvalWaiting: boolean
-  // Someone who can type is connected: Allow, Decline and Resume are answered in Lightbulb.
-  writerConnected: boolean
 }
 
 declare module 'claude-code' {

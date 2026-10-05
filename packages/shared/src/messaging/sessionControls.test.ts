@@ -35,6 +35,14 @@ describe("auditLine for asking to join", () => {
     expect(auditLine({ at: "", action: "sender_removed", actorUserId: "user_owner", subjectUserId: "user_aden" }, nameOf))
       .toBe("Prasiddha removed Aden from this session");
   });
+
+  it("says you, not You, when the subject is the viewer", () => {
+    const viewer = (id: string) => (id === "user_aden" ? "You" : nameOf(id));
+    expect(auditLine({ at: "", action: "join_allowed", actorUserId: "user_owner", subjectUserId: "user_aden" }, viewer))
+      .toBe("Prasiddha let you send to this session");
+    expect(auditLine({ at: "", action: "join_declined", actorUserId: "user_owner", subjectUserId: "user_aden" }, viewer))
+      .toBe("Prasiddha declined your request to join");
+  });
 });
 
 describe("auditLine for asking to pick up", () => {

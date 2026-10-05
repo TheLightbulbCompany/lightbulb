@@ -158,10 +158,11 @@ const ACTION_LINE: Record<LocalSessionAuditEntry["action"], string> = {
 };
 
 /** Owner decisions about one person, by the person they were about. */
+const possessive = (subject: string) => (subject === "you" ? "your" : `${subject}'s`);
 const SUBJECT_LINE: Partial<Record<LocalSessionAuditEntry["action"], (subject: string) => string>> = {
   join_allowed: subject => `let ${subject} send to this session`,
-  pickup_request_declined: subject => `declined ${subject}'s request to pick up this session`,
-  join_declined: subject => `declined ${subject}'s request to join`,
+  pickup_request_declined: subject => `declined ${possessive(subject)} request to pick up this session`,
+  join_declined: subject => `declined ${possessive(subject)} request to join`,
   sender_removed: subject => `removed ${subject} from this session`,
   resume_revoked: subject => `stopped ${subject} from resuming this session`,
 };
@@ -173,7 +174,9 @@ export function auditLine(entry: LocalSessionAuditEntry, nameOf: (userId: string
   const who = entry.actorUserId ? nameOf(entry.actorUserId) : entry.actorAgentId ? "An agent" : "Lightbulb";
   const failed = entry.state === "rejected" ? " (not delivered)" : entry.state === "unknown" ? " (delivery unknown)" : "";
   const subjectLine = SUBJECT_LINE[entry.action];
-  if (subjectLine) return `${who} ${subjectLine(entry.subjectUserId ? nameOf(entry.subjectUserId) : "a teammate")}`;
+  // nameOf says "You" for the viewer; mid-sentence that is "you".
+  const subject = entry.subjectUserId ? nameOf(entry.subjectUserId) : "a teammate";
+  if (subjectLine) return `${who} ${subjectLine(subject === "You" ? "you" : subject)}`;
   const where = /^(team_control|share_link|pickup|picked_up|join_|resume_)/.test(entry.action) ? "" : " from Lightbulb";
   return `${who} ${ACTION_LINE[entry.action]}${where}${failed}`;
 }

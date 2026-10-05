@@ -462,9 +462,15 @@ def render_join_request(row: dict, session: dict, *, seen: str | None) -> Activi
 
     sid, requester = session["sessionId"], row["requesterId"]
     pickup = row.get("request") == "pickup"
+    from core.services import session_pickup  # lazy: it imports this module
+
     current = (session.get("pickupRequests" if pickup else "joinRequests") or {}).get(requester) or {}
     open_ = (
-        (not session.get("pickupAllowed") if pickup else session.get("endedAt") is None)
+        (
+            not session.get("pickupAllowed") and not session_pickup._expired(session)
+            if pickup
+            else session.get("endedAt") is None
+        )
         and current.get("state") == "pending"
         and current.get("requestId") == row["requestId"]
     )

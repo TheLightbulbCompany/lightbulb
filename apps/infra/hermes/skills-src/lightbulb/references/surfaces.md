@@ -202,11 +202,15 @@ session that ended that way stays listed and can be resumed.
 **Pick up** continues someone's Claude Code session on your own Mac, as a new
 shared session in your Lightbulb app's panel, with the files it changed on a new branch and folder; the
 original carries on unchanged. It needs the desktop app: in a browser it says
-to open Lightbulb on your Mac. The button appears only after the owner turns
-on **Let teammates pick up this session** (only while the session is shared)
-and a first snapshot is ready. Turning it on uploads the whole
-conversation and uncommitted changes, unredacted except git-ignored files,
-kept until 7 days after the session ends. Codex sessions cannot be picked up
+to open Lightbulb on your Mac. A teammate reading a Claude Code session
+sees **Ask to pick up**, then **Requested**, or "<Owner> declined. Ask again". The owner
+answers from a notification, Activity, the session view on web or phone, or the Claude
+terminal band. **Allow** turns pick-up on for the whole session (every member may pick it
+up) and shares the whole conversation and uncommitted changes with the workspace,
+unredacted except git-ignored files, kept until 7 days after the session ends. After Allow
+the button reads **Preparing…** until the snapshot is ready, then **Pick up**. The owner can
+also turn it on with **Let teammates pick up this session** (only while the session is
+shared). Codex sessions cannot be picked up
 yet.
 
 **Linked work** is optional: in that tab, **Link existing work** links an

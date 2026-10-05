@@ -254,3 +254,20 @@ async def test_pickup_request_routes(transport):
             assert (await client.post(decide, json={"decision": "maybe"})).status_code == 422
             allowed = await client.post(decide, json={"decision": "allow"})
             assert allowed.status_code == 200 and allowed.json()["pickup"]["allowed"] is True
+
+
+@pytest.mark.asyncio
+async def test_nothing_to_ask_or_allow_once_the_snapshot_expired(transport):
+    sid = await claude_session(transport)
+    with recorded():
+        await service.request_pickup_access(BOB, sid)
+        with patch.object(pickup, "_expired", lambda row, now=None: True):
+            with pytest.raises(ApiProblem) as asked:
+                await service.request_pickup_access(CAROL, sid)
+            assert asked.value.error.code == "LOCAL_SESSION_NOT_FOUND"
+            with pytest.raises(ApiProblem) as allowed:
+                await service.decide_pickup_request(ALICE, sid, BOB.user_id, "allow")
+            assert allowed.value.error.code == "LOCAL_SESSION_NOT_FOUND"
+            row = await stored(sid)
+            assert service._session_public(row, BOB.user_id).pickup_request is None
+            assert not service._session_public(row, ALICE.user_id).model_dump().get("pending_pickups")

@@ -155,7 +155,7 @@ MAINTENANCE (Lightbulb engineers): every claim in this skill is anchored to
                                  apps/desktop/src-tauri/src/local_sessions/resume.rs (same folder, approved now; refusal codes);
                                  packages/shared/src/messaging/sessionControls.ts (RESUME_REFUSED, "Not resumed: …").
   - Session pick-up ......... references/surfaces.md ("Pick up" paragraph)
-                              <- apps/frontend/src/components/messaging/SessionPickup.tsx (canPickUp: allowed + snapshot ready;
+                              <- apps/frontend/src/components/messaging/SessionPickup.tsx (Ask to pick up / Requested / declined / Preparing… / Pick up;
                                  desktop-only, browser copy); SessionDetails.tsx (the pick-up switch: needs sharing on,
                                  upload warning, 7-day retention, Codex not yet).
   - Workspace search ........ references/surfaces.md

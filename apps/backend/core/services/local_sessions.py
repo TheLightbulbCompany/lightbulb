@@ -680,10 +680,13 @@ def _session_public(row: dict, viewer: str | None = None) -> LocalSession:
         if waiting:
             public["pendingJoins"] = sorted(waiting)
             public["pendingJoinIds"] = waiting
+    from core.services import session_pickup  # lazy: it imports this module
+
+    lapsed = session_pickup._expired(row)  # an expired snapshot leaves nothing to ask for or allow
     pick = (row.get("pickupRequests") or {}).get(viewer) if viewer else None
-    if pick and not row.get("pickupAllowed"):
+    if pick and not row.get("pickupAllowed") and not lapsed:
         public["pickupRequest"] = pick["state"]
-    if viewer and viewer == row["humanUserId"]:
+    if viewer and viewer == row["humanUserId"] and not lapsed:
         waiting = pending_pickups(row)
         if waiting:
             public["pendingPickups"] = sorted(waiting)
@@ -2009,6 +2012,8 @@ async def request_pickup_access(auth: AuthContext, session_id: str) -> LocalSess
     """A teammate asks the owner to allow pick-up (spec 2026-10-05-ask-to-pick-up). Claude only;
     an ended session may be asked for (its snapshot outlives it). Asking while pending or while
     pick-up is on changes nothing; a declined person may ask again."""
+    from core.services import session_pickup  # lazy: it imports this module
+
     me = auth.user_id
 
     def change(row: dict) -> dict | None:
@@ -2016,6 +2021,8 @@ async def request_pickup_access(auth: AuthContext, session_id: str) -> LocalSess
             raise ApiProblem("LOCAL_SESSION_FORBIDDEN", "This is your own session.")
         if row["provider"] != "claude":
             raise ApiProblem("LOCAL_SESSION_UNSUPPORTED", "Only Claude Code sessions can be picked up.")
+        if session_pickup._expired(row):
+            raise ApiProblem("LOCAL_SESSION_NOT_FOUND", "This session's snapshot has expired.")
         requests = dict(row.get("pickupRequests") or {})
         if row.get("pickupAllowed") or (requests.get(me) or {}).get("state") == "pending":
             return None
@@ -2044,6 +2051,8 @@ async def decide_pickup_request(
     if current.get("state") != "pending" or (request_id is not None and current.get("requestId") != request_id):
         raise ApiProblem("LOCAL_SESSION_CONFLICT", "That request was already answered.")
     if decision == "allow":
+        if session_pickup._expired(row):
+            raise ApiProblem("LOCAL_SESSION_NOT_FOUND", "This session's snapshot has expired.")
         # Raises (e.g. a paused session) before any write: the request stays pending.
         public = await session_pickup.set_pickup(auth, session_id, True, expect_request=(user_id, current["requestId"]))
         await _notify_join_answer(row, user_id, "join_allowed", current["requestId"], kind="pickup")

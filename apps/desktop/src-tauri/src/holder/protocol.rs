@@ -2,9 +2,12 @@
 
 use std::io::{Error, ErrorKind, Read, Result};
 
-/// Client → holder: `{"role":"interactive"|"watch"|"type"|"recorder", "cols"?, "rows"?, "replayFrom"?, "join"?}`.
+/// Client → holder: `{"role":"interactive"|"watch"|"type"|"recorder"|"origin", "cols"?, "rows"?, "replayFrom"?, "join"?}`.
 /// Holder → client: session facts (`"watch": true` when it serves watch clients, `"type": true`
-/// when it takes `type` ones, `"joined": true` when a `join` client found an interactive one).
+/// when it takes `type` ones, `"joined": true` when a `join` client found an interactive one,
+/// `"origin": true` when it takes OWNER_INPUT and reports `"lastInput"`: who wrote the last bytes
+/// to the pty, `"owner"`, `"teammate"` (a `type` client's plain INPUT) or null). An `origin`
+/// client gets the facts and nothing else: it is how the app asks for `lastInput`.
 /// An interactive `join` client never takes the keyboard from another: while one is attached it
 /// watches and types at that client's size (its RESIZE is ignored), and gets PROMOTED when that
 /// client leaves. Without one it is the interactive client.
@@ -30,6 +33,9 @@ pub const DETACHED: u8 = 9;
 /// Holder → a joined client: the interactive client left and this one is it now (empty payload).
 /// It sends its own RESIZE next.
 pub const PROMOTED: u8 = 10;
+/// `type` client → holder: INPUT that the session's owner typed (in the Lightbulb app). Sent only
+/// to a holder whose HELLO says `"origin": true`; an older holder ignores this kind.
+pub const OWNER_INPUT: u8 = 11;
 
 /// No frame is larger than this; a longer declared length is refused before allocating it.
 pub const MAX_PAYLOAD: usize = 8 << 20;
@@ -72,7 +78,7 @@ mod tests {
 
     #[test]
     fn holder_frames_round_trip_every_kind() {
-        for kind in [HELLO, OUTPUT, INPUT, RESIZE, EXIT, REPLAY, GAP, SNAPSHOT, DETACHED] {
+        for kind in [HELLO, OUTPUT, INPUT, RESIZE, EXIT, REPLAY, GAP, SNAPSHOT, DETACHED, PROMOTED, OWNER_INPUT] {
             let bytes = encode(kind, b"payload\x00\xff");
             assert_eq!(read_frame(&mut bytes.as_slice()).unwrap(), (kind, b"payload\x00\xff".to_vec()));
         }

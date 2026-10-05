@@ -44,7 +44,10 @@ step, and call HTTP over a Unix socket (`$.http.fetch(url, { socketPath })`).
    escape a teammate's frame leaves unfinished is held for the next frame, so a band key split
    across frames never reaches the pty. A focused band would still take a teammate's plain
    `a`/`d`/`p`, so `mod.sock` refuses a decision (409, "A teammate just typed here. Press again
-   to confirm.") within 2 s of a teammate's bytes reaching that session. There is no paused concept: remote input is never
+   to confirm.") when the session's holder says the last input it wrote was a teammate's
+   (`lastInput` in its HELLO; the owner's Lightbulb-app keys go as `OWNER_INPUT`), and also
+   within 2 s of a teammate's bytes reaching it (the only check for an older holder or a
+   background job's attach holder). There is no paused concept: remote input is never
    frozen while a request waits. An older desktop does freeze it; it lacks the `bandOwnerOnly`
    device feature, and only for such a Mac the public session carries `inputPaused` and the
    web says "Paused while <owner> answers a request to join".

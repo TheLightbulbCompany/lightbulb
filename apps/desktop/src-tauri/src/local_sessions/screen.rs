@@ -159,6 +159,14 @@ pub(crate) fn holder_for_session(session_id: &str, panel: bool) -> Option<(Holde
     Some((holder, live.generation))
 }
 
+/// The holder that hosts the session's terminal, whose interactive client is the owner's: every
+/// key the owner types goes through it. Never a background job's attach holder (the owner's own
+/// `claude attach` bypasses that one) and never starts one.
+pub(crate) fn hosting_holder(session_id: &str) -> Option<HolderInfo> {
+    let id = LIVE.lock().ok()?.get(session_id)?.native.holder.clone()?;
+    matched(manager::list(), &id)
+}
+
 /// The running attach holder for `job`, or a new one. `start` answers None when this caller may
 /// not start one now (that spends no restart gap).
 fn attach_holder(job: &str, list: impl Fn() -> Vec<HolderInfo>, start: impl Fn(&str) -> Option<Result<HolderInfo, String>>) -> Option<HolderInfo> {

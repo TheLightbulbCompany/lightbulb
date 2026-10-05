@@ -12,11 +12,12 @@
 //! writer thread, which closes its `type` client when the relay stops.
 
 use super::screen::{self, Ctl};
-use crate::holder::protocol::{encode, read_frame, HELLO, INPUT};
+use crate::holder::protocol::{encode, read_frame, HELLO, INPUT, OWNER_INPUT};
 use base64::Engine;
 use serde_json::Value;
 use std::io::Write;
 use std::os::unix::net::UnixStream;
+use std::path::Path;
 use std::sync::atomic::Ordering::SeqCst;
 use std::sync::mpsc::{sync_channel, Receiver, RecvTimeoutError, TrySendError};
 use std::collections::BTreeMap;
@@ -32,7 +33,9 @@ const TICK: Duration = Duration::from_millis(50);
 const RETRY: Duration = Duration::from_secs(1);
 
 /// A band decision is refused this long after a teammate's bytes reached the session: the band
-/// may already be focused by the owner, and `a`/`d`/`p` are its hotkeys (spec §2.4).
+/// may already be focused by the owner, and `a`/`d`/`p` are its hotkeys (spec §2.4). The holder's
+/// `lastInput` is the main check (`teammate_holds_decision`); this window is the second one, and
+/// the only one for a holder too old to report `lastInput`.
 pub(super) const TEAMMATE_QUIET: Duration = Duration::from_secs(2);
 /// When a teammate's bytes last reached each session's holder.
 static TEAMMATE_TYPED: Mutex<BTreeMap<String, Instant>> = Mutex::new(BTreeMap::new());
@@ -49,10 +52,35 @@ fn wrote(sid: &str, from_owner: bool, now: Instant) {
 }
 
 /// Whether a teammate's bytes reached `sid` within `TEAMMATE_QUIET` of `now`.
-// ponytail: an owner keypress inside a teammate's 2 s typing burst needs a second press; a
-// per-key origin through the holder would lift that.
 pub(super) fn teammate_typed_recently(sid: &str, now: Instant) -> bool {
     TEAMMATE_TYPED.lock().ok().and_then(|m| m.get(sid).copied()).is_some_and(|at| now.saturating_duration_since(at) < TEAMMATE_QUIET)
+}
+
+/// Whether a band decision for `sid` is refused until the owner presses again: the holder says a
+/// teammate wrote the last input (`last_input`, from `holder_last_input`), or a teammate's bytes
+/// reached it within `TEAMMATE_QUIET`.
+// ponytail: a teammate's `a` reaches the pty, Claude stalls, and the owner types another key
+// before Claude reads the `a`: `lastInput` is then the owner's and the decision is the owner's.
+// Closing that needs Claude to say which key it acted on.
+pub(super) fn teammate_holds_decision(sid: &str, now: Instant, last_input: Option<&str>) -> bool {
+    last_input == Some("teammate") || teammate_typed_recently(sid, now)
+}
+
+/// Who wrote the last input to the holder hosting `sid`'s terminal: `"owner"` or `"teammate"`.
+/// None when no holder hosts it (a transcript, or a background job: the window decides), nothing
+/// was typed yet, or the holder is too old to say. Blocking (≤ 2 s).
+pub(super) fn holder_last_input(sid: &str) -> Option<String> {
+    last_input_of(&screen::hosting_holder(sid)?.socket)
+}
+
+fn last_input_of(socket: &Path) -> Option<String> {
+    let mut conn = UnixStream::connect(socket).ok()?;
+    conn.set_read_timeout(Some(Duration::from_secs(2))).ok()?;
+    conn.set_write_timeout(Some(Duration::from_secs(2))).ok()?;
+    conn.write_all(&encode(HELLO, br#"{"role":"origin"}"#)).ok()?;
+    let (kind, facts) = read_frame(&mut conn).ok()?;
+    let facts: Value = serde_json::from_slice(&facts).ok()?;
+    (kind == HELLO).then(|| facts["lastInput"].as_str().map(str::to_owned)).flatten()
 }
 
 /// Keys for the holder, and whether the session's owner typed them.
@@ -94,7 +122,8 @@ fn admit(body: &Value, relay_of: impl Fn(&Value) -> Option<(String, Arc<Ctl>)>) 
 
 /// The relay's writer: one `type` client, reattached after an error, closed when the relay stops.
 fn write(sid: &str, generation: &str, ctl: &Ctl, inputs: &Receiver<Typed>) {
-    let mut conn: Option<UnixStream> = None;
+    // The `type` client, and whether its holder takes OWNER_INPUT.
+    let mut conn: Option<(UnixStream, bool)> = None;
     let mut tried: Option<Instant> = None;
     let mut carry = Carry::default();
     while !ctl.stopped() {
@@ -111,9 +140,12 @@ fn write(sid: &str, generation: &str, ctl: &Ctl, inputs: &Receiver<Typed>) {
                 tried = Some(Instant::now());
                 conn = attach(sid, generation);
             }
-            let Some(c) = conn.as_mut() else { break };
-            if c.write_all(&encode(INPUT, &keys)).is_ok() {
-                wrote(sid, from_owner, Instant::now());
+            let Some((c, origin)) = conn.as_mut() else { break };
+            // Recorded first: a decide that reads it between the write and the record is refused.
+            wrote(sid, from_owner, Instant::now());
+            // An older holder takes only INPUT, and reports no origin to mark.
+            let kind = if from_owner && *origin { OWNER_INPUT } else { INPUT };
+            if c.write_all(&encode(kind, &keys)).is_ok() {
                 break;
             }
             // The holder went away or restarted: reattach once, now.
@@ -121,13 +153,14 @@ fn write(sid: &str, generation: &str, ctl: &Ctl, inputs: &Receiver<Typed>) {
             tried = None;
         }
     }
-    if let Some(c) = conn {
+    if let Some((c, _)) = conn {
         let _ = c.shutdown(std::net::Shutdown::Both);
     }
 }
 
-/// A `type` client on the session's holder, only when its HELLO says it takes one.
-fn attach(sid: &str, generation: &str) -> Option<UnixStream> {
+/// A `type` client on the session's holder, only when its HELLO says it takes one, and whether
+/// it takes OWNER_INPUT.
+fn attach(sid: &str, generation: &str) -> Option<(UnixStream, bool)> {
     let (holder, current) = screen::holder_for_session(sid, false)?;
     if current != generation || !holder.type_input {
         return None;
@@ -138,7 +171,7 @@ fn attach(sid: &str, generation: &str) -> Option<UnixStream> {
     conn.write_all(&encode(HELLO, br#"{"role":"type"}"#)).ok()?;
     let (kind, facts) = read_frame(&mut conn).ok()?;
     let facts: Value = serde_json::from_slice(&facts).ok()?;
-    (kind == HELLO && facts["type"] == true).then_some(conn)
+    (kind == HELLO && facts["type"] == true).then_some((conn, facts["origin"] == true))
 }
 
 /// Remote bytes minus probe replies and, with `band`, band keys, until nothing more goes:
@@ -282,7 +315,8 @@ fn csi_reply(rest: &[u8]) -> Option<usize> {
 /// `120:88;5:1u`, also `X` and code 24) or modifyOtherKeys (`27;5;120~`). None otherwise.
 fn band_csi(rest: &[u8]) -> Option<usize> {
     if rest.first() == Some(&b'M') {
-        return Some(rest.len().min(4));
+        // Unfinished until its 3 bytes are here: `Carry` holds it, and strips it whole.
+        return (rest.len() >= 4).then_some(4);
     }
     let params = rest.iter().take_while(|b| (0x30..=0x3f).contains(*b)).count();
     let inter = rest[params..].iter().take_while(|b| (0x20..=0x2f).contains(*b)).count();
@@ -340,6 +374,44 @@ mod tests {
         assert!(!teammate_typed_recently(sid, now + TEAMMATE_QUIET), "allowed once the window passes");
         wrote(owner_sid, true, now);
         assert!(!teammate_typed_recently(owner_sid, now), "the owner's frames never hold a decision");
+    }
+
+    #[test]
+    fn remote_input_a_decision_waits_when_the_holder_says_a_teammate_typed_last() {
+        let sid = "77777777-7777-4777-8777-777777777777";
+        let now = Instant::now();
+        assert!(teammate_holds_decision(sid, now, Some("teammate")), "however long ago: origin, not time");
+        assert!(!teammate_holds_decision(sid, now, Some("owner")));
+        assert!(!teammate_holds_decision(sid, now, None), "no holder, or nothing typed: allowed");
+        wrote(sid, false, now);
+        assert!(teammate_holds_decision(sid, now, Some("owner")), "the 2 s window is the second check");
+        assert!(teammate_holds_decision(sid, now, None), "an older holder: the window alone");
+        assert!(!teammate_holds_decision(sid, now + TEAMMATE_QUIET, None));
+    }
+
+    #[test]
+    fn remote_input_reads_last_input_from_a_holder_and_nothing_from_an_older_one() {
+        use std::os::unix::net::UnixListener;
+        let dir = tempfile::tempdir().unwrap();
+        // A holder that answers any HELLO with `facts`.
+        let holder = |name: &str, facts: Value| {
+            let path = dir.path().join(name);
+            let listener = UnixListener::bind(&path).unwrap();
+            std::thread::spawn(move || {
+                let (mut c, _) = listener.accept().unwrap();
+                let (kind, hello) = read_frame(&mut c).unwrap();
+                assert_eq!((kind, serde_json::from_slice::<Value>(&hello).unwrap()["role"].clone()), (HELLO, json!("origin")));
+                c.write_all(&encode(HELLO, facts.to_string().as_bytes())).unwrap();
+            });
+            path
+        };
+        let new = holder("new.sock", json!({"type": true, "origin": true, "lastInput": "teammate"}));
+        assert_eq!(last_input_of(&new).as_deref(), Some("teammate"));
+        let fresh = holder("fresh.sock", json!({"type": true, "origin": true, "lastInput": null}));
+        assert_eq!(last_input_of(&fresh), None, "nothing typed yet");
+        let old = holder("old.sock", json!({"type": true}));
+        assert_eq!(last_input_of(&old), None, "an older holder says nothing: the window decides");
+        assert_eq!(last_input_of(&dir.path().join("gone.sock")), None);
     }
 
     #[test]
@@ -436,6 +508,28 @@ mod tests {
             assert!(strip_remote(&pty, true).len() == pty.len() && !pty.contains(&0x18), "{frames:?} wrote {pty:?}");
             assert!(pty.iter().all(|b| *b == 0x1b || *b == b'a'), "{frames:?} wrote {pty:?}");
         }
+        // As `admit` sends them: each frame stripped on its own first, then carried.
+        let admitted = |frames: &[&[u8]]| {
+            let mut carry = Carry::default();
+            frames.iter().flat_map(|f| carry.feed(&strip_remote(f, true), false)).collect::<Vec<u8>>()
+        };
+        for frames in [
+            &[&b"\x1b[M"[..], b" !!"][..],
+            &[b"\x1b[M ", b"!!"],
+            &[b"\x1b[M !", b"!"],
+            &[b"ab\x1b[M", b" !!cd"],
+            &[b"\x1b[", b"M !!"],
+            &[b"\x1b", b"[M !!"],
+            &[b"\x1b[<0;1", b";1M"],
+            &[b"\x1b[120;5", b"u"],
+            &[b"\x1b[27;5;1", b"20~"],
+        ] {
+            let pty = admitted(frames);
+            assert!(!pty.windows(2).any(|w| w == b" !") && strip_remote(&pty, true) == pty && !pty.contains(&0x18), "{frames:?} wrote {pty:?}");
+            assert!(pty.iter().all(|b| b"\x1babcd".contains(b)), "{frames:?} wrote {pty:?}");
+        }
+        assert_eq!(admitted(&[b"ab\x1b[M", b" !!cd"]), b"abcd", "a split X10 report goes whole; the typing around it stays");
+        assert_eq!(strip_remote(b"\x1b[M !", true), b"\x1b[M !", "an unfinished X10 report is left for Carry");
         assert_eq!(run(&[b"\x1b", b"[A"]), b"\x1b[A", "Escape, then an arrow");
         assert_eq!(run(&[b"\x1b[20", b"0~hi\x1b[201~"]), b"\x1b[200~hi\x1b[201~", "a paste cut mid-sequence");
         assert_eq!(run(&[b"\x1b"]), b"\x1b", "Escape goes out at once");

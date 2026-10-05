@@ -141,7 +141,11 @@ async fn answer(mut socket: UnixStream, scope: PathBuf, enrollment: Enrollment, 
             let Ok(payload) = decision_body(&caller.session_id, &caller.generation, &body) else {
                 return reply(&mut socket, "400 Bad Request", &json!({"error":"invalid_decision"})).await;
             };
-            if super::remote_input::teammate_typed_recently(&caller.session_id, std::time::Instant::now()) {
+            // Only the owner operates the band (spec §2.4): a teammate's `a`/`d`/`p` reaches Claude
+            // as typing, so the holder says whose input came last.
+            let sid = caller.session_id.clone();
+            let last_input = tokio::task::spawn_blocking(move || super::remote_input::holder_last_input(&sid)).await.ok().flatten();
+            if super::remote_input::teammate_holds_decision(&caller.session_id, std::time::Instant::now(), last_input.as_deref()) {
                 return reply(&mut socket, "409 Conflict", &json!({"error":"teammate_typing","message":"A teammate just typed here. Press again to confirm."})).await;
             }
             if stale(&caller.session_id, &payload) {

@@ -4,10 +4,10 @@ import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import useSWR from "swr";
 import { useAuth } from "@clerk/nextjs";
-import { Ellipsis, SquareTerminal, X } from "lucide-react";
+import { SquareTerminal, X } from "lucide-react";
 import { ApiError, type LiveEvent, type LocalSession } from "@lightbulb/shared";
 import { Button } from "@/components/ui/button";
-import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { useApi } from "@/lib/api";
 import { SessionToolIcon } from "./SessionToolIcon";
 import { startLocalTerminal, useLocalMac, useLocalTerminal } from "./localTerminal";
@@ -18,7 +18,7 @@ type Mac = { deviceId: string; generation: string; name: string };
 type MacOptions = { name?: string | null; sharing: boolean; folders: string[]; tools: Tool[] };
 type Targets = { enabled: boolean; devices: Mac[] };
 const PENDING_MS = 150_000; // longer than the backend's wait for the Mac
-type Pending = { startId: string; scope: string; startedAt: number; phase: "starting" | "opened" | "unknown" | "failed"; error?: string; holderId?: string };
+type Pending = { startId: string; scope: string; startedAt: number; phase: "starting" | "opened" | "unknown" | "failed"; error?: string; holderId?: string; tool?: Tool["id"] };
 
 const TARGETS_KEY = "desktop-session-targets";
 const pendingKey = (scope: string) => `lightbulb.newSession.pending.${scope}`;
@@ -27,10 +27,14 @@ function readPending(scope: string): Pending | null {
     const value: unknown = JSON.parse(localStorage.getItem(pendingKey(scope)) ?? "null");
     if (!value || typeof value !== "object") return null;
     const item = value as Partial<Pending>;
-    return item.scope === scope && typeof item.startId === "string" && typeof item.startedAt === "number"
-      && Date.now() >= item.startedAt && Date.now() - item.startedAt < 6 * 60 * 60 * 1000
-      ? { startId: item.startId, scope, startedAt: item.startedAt, phase: "unknown",
-        error: "Could not confirm whether your Mac started this session. Check the Lightbulb app and Sessions before trying again." } : null;
+    if (item.scope !== scope || typeof item.startId !== "string" || typeof item.startedAt !== "number"
+      || Date.now() < item.startedAt || Date.now() - item.startedAt >= 6 * 60 * 60 * 1000) return null;
+    const base = { startId: item.startId, scope, startedAt: item.startedAt };
+    // A start this Mac holds: the Mac itself says whether it still runs (the holder probe).
+    if (item.phase === "opened" && typeof item.holderId === "string")
+      return { ...base, phase: "opened", holderId: item.holderId, tool: item.tool === "claude" || item.tool === "codex" ? item.tool : undefined };
+    return { ...base, phase: "unknown",
+      error: "Could not confirm whether your Mac started this session. Check the Lightbulb app and Sessions before trying again." };
   } catch { return null; }
 }
 /** The viewer's own paired Macs (id, generation, name). `enabled` false: no request. */
@@ -90,7 +94,7 @@ export function NewSessionView({ sessions, onEvent, onOpenSession, onClose }: {
   const scope = userId ? `${userId}:${orgId ?? userId}` : null;
   const [last] = useState(() => readLastUsed(userId));
   const [deviceId, setDeviceId] = useState(last.deviceId ?? "");
-  const tool = last.tool ?? ""; // the last-used tool stays marked
+  const [tool, setTool] = useState(last.tool ?? ""); // preselects the last-used tool
   const [folder, setFolder] = useState("");
   const [model, setModel] = useState("");
   const [mode, setMode] = useState("");
@@ -125,15 +129,14 @@ export function NewSessionView({ sessions, onEvent, onOpenSession, onClose }: {
   const folders = options ? [...options.folders].sort((a, b) => rank(a) - rank(b)) : [];
   const folderPath = folders.includes(folder) ? folder : folders[0] ?? "";
   const modelId = selected?.models.some((o) => o.id === model) ? model : "";
-  const modeId = selected?.modes.some((o) => o.id === mode) ? mode : selected?.defaultMode ?? "";
-  const effortId = selected?.efforts?.some((o) => o.id === effort) ? effort : selected?.defaultEffort ?? "";
   const modeChoice = selected?.modes.some((o) => o.id === mode) ? mode : "";
   const effortChoice = selected?.efforts?.some((o) => o.id === effort) ? effort : "";
 
   // A lost event, a restarted backend task or a session that never reports in must not
   // leave the view stuck.
   useEffect(() => {
-    if (!pending || pending.phase === "failed" || pending.phase === "unknown") return;
+    // A start this Mac holds has no deadline: Codex only reports in after its first prompt.
+    if (!pending || pending.phase === "failed" || pending.phase === "unknown" || (pending.phase === "opened" && pending.holderId)) return;
     const timer = setTimeout(() => setPending((p) => p && p.startId === pending.startId
       ? { ...p, phase: "unknown", error: p.phase === "opened"
         ? "The session opened on your Mac, but it never reported in. Check the Lightbulb app there."
@@ -167,6 +170,13 @@ export function NewSessionView({ sessions, onEvent, onOpenSession, onClose }: {
     }
   }, [sessions, pending, userId, scope, onOpenSession]);
 
+  // The holder is gone before the session reported in (quit before a first prompt): nothing to show.
+  useEffect(() => {
+    if (pending?.phase !== "opened" || !pending.holderId || local !== "none") return;
+    try { if (scope) localStorage.removeItem(pendingKey(scope)); } catch { /* storage off */ }
+    setPending(null);
+  }, [pending, local, scope]);
+
   const busy = pending !== null && pending.phase !== "failed";
   const blocked = localMac
     ? (localMac.tools.length === 0 ? `Install Claude Code or Codex on ${macName} first.`
@@ -192,7 +202,7 @@ export function NewSessionView({ sessions, onEvent, onOpenSession, onClose }: {
     writeLastUsed(userId, { deviceId: mac?.deviceId, tool: chosen.id, folders: [folderPath, ...recent.filter((f) => f !== folderPath)].slice(0, 20) });
     // Minted here so the Mac's answer can never arrive before we know what to listen for.
     const startId = crypto.randomUUID();
-    const start = { startId, scope, startedAt: Date.now() };
+    const start = { startId, scope, startedAt: Date.now(), tool: chosen.id };
     setPending({ ...start, phase: "starting" });
     if (localMac) {
       try {
@@ -219,66 +229,84 @@ export function NewSessionView({ sessions, onEvent, onOpenSession, onClose }: {
   }
 
   const where = mac || localMac ? `${macName}${folderPath ? ` · ${shortPath(folderPath)}` : ""}` : "";
+  const dismiss = () => { try { if (scope) localStorage.removeItem(pendingKey(scope)); } catch { /* storage off */ } setPending(null); };
+  const held = pending?.phase === "opened" && !!pending.holderId;
   return <section className="room-panel room-session-focus" aria-label="New session">
     <div className="room-session-main">
       <header className="room-context-header">
         <h3 className="font-semibold">New session</h3>
         <Button variant="ghost" size="icon-sm" className="ml-auto" aria-label="Close new session" onClick={onClose}><X aria-hidden="true" /></Button>
       </header>
-      <div className="new-session-body text-sm text-muted-foreground">
-        {blocked === "sharing"
-          ? <p role="status">Session sharing is off on {macName}. Turn it on in <Link className="underline underline-offset-4" href="/settings?panel=desktop">Settings → Desktop → Session sharing</Link>.</p>
-          : blocked && <p role="status">{blocked}</p>}
-        {pending?.phase === "unknown" && <Button variant="link" size="sm" className="h-auto p-0"
-          onClick={() => { try { if (scope) localStorage.removeItem(pendingKey(scope)); } catch { /* storage off */ } setPending(null); }}>
-          Dismiss and start another</Button>}
-        {busy && <p role="status">{pending?.phase === "unknown" ? pending.error
-          : pending?.phase === "opened" ? (localMac ? "Running on this Mac. It moves to Sessions when it reports in." : `Opened on ${where}. Waiting for the session…`) : `Starting on ${where}…`}</p>}
-        {pending?.phase === "failed" && <p role="alert" className="text-err">{pending.error}</p>}
-        {localMac?.cli && !busy && <p>Or in any terminal, inside an approved folder: <code>lightbulb claude</code> or <code>lightbulb codex</code>.</p>}
-        {localMac?.cli?.pathLine && !busy && <p>First add it to your PATH, then open a new terminal: <code className="select-all">{localMac.cli.pathLine}</code></p>}
-      </div>
+      {held ? <p role="status" className="new-session-status text-sm text-muted-foreground">{pending?.tool === "codex"
+        ? "Running on this Mac. It joins Sessions after your first prompt. Quit Codex to start a different session."
+        : "Running on this Mac. It moves to Sessions when it reports in."}</p>
+        : busy && <div className="new-session-body text-sm text-muted-foreground">
+          <p role="status">{pending?.phase === "unknown" ? pending.error
+            : pending?.phase === "opened" ? `Opened on ${where}. Waiting for the session…` : `Starting on ${where}…`}</p>
+          {pending?.phase === "unknown" && <Button variant="outline" size="sm" onClick={dismiss}>Dismiss and start another</Button>}
+        </div>}
       {local !== "none" && <div ref={slot} className="local-session-terminal" role="region" aria-label="Session terminal" />}
-      {(ready || (macs && macs.length > 1)) && <div className="new-session-strip">
-        {/* The Mac chip stays even when this Mac is blocked: another one may not be. */}
-        {macs && macs.length > 1 && <select aria-label="Mac" className="new-session-chip" value={mac?.deviceId} disabled={busy}
-          onChange={(e) => { setDeviceId(e.target.value); setFolder(""); }}>
-          {macs.map((m) => <option key={m.deviceId} value={m.deviceId}>{m.name}</option>)}
-        </select>}
-        {ready && selected && <>
-        <div role="group" aria-label="Tool" className="new-session-toggle">
-          {options.tools.map((t) => <button key={t.id} type="button" aria-pressed={t.id === selected.id} disabled={busy} onClick={() => void start(t)}>
-            <span aria-hidden="true"><SessionToolIcon provider={t.id} className="size-3.5" /></span>{t.label}
-          </button>)}
-        </div>
-        <select aria-label="Folder" className="new-session-chip" value={folderPath} title={folderPath} disabled={busy} onChange={(e) => setFolder(e.target.value)}>
-          {folders.map((f) => <option key={f} value={f}>{shortPath(f)}</option>)}
-        </select>
-        <Popover>
-          <PopoverTrigger asChild><Button variant="ghost" size="icon-sm" aria-label="Session settings" disabled={busy}><Ellipsis aria-hidden="true" /></Button></PopoverTrigger>
-          <PopoverContent align="start" className="grid w-64 gap-2 text-sm">
-            <label className="grid gap-1">Model
-              <select className="room-input" value={modelId} onChange={(e) => setModel(e.target.value)}>
-                <option value="">Default</option>
-                {selected.models.map((o) => <option key={o.id} value={o.id}>{o.label}</option>)}
-              </select>
-            </label>
-            <label className="grid gap-1">{selected.modeLabel}
-              <select className="room-input" value={modeChoice} onChange={(e) => setMode(e.target.value)}>
-                <option value="">Default</option>
-                {selected.modes.map((o) => <option key={o.id} value={o.id}>{o.label}</option>)}
-              </select>
-            </label>
-            <label className="grid gap-1">Reasoning effort
-              <select className="room-input" value={effortChoice} onChange={(e) => setEffort(e.target.value)}>
-                <option value="">Default</option>
-                {selected.efforts?.map((o) => <option key={o.id} value={o.id}>{o.label}</option>)}
-              </select>
-            </label>
-          </PopoverContent>
-        </Popover>
-        </>}
-      </div>}
     </div>
+    <Dialog open={!busy} onOpenChange={(open) => { if (!open) onClose(); }}>
+      <DialogContent showCloseButton className="w-[calc(100%_-_2rem)] max-w-md max-h-[calc(100dvh_-_2rem)] gap-3 overflow-y-auto shadow-none">
+        <DialogHeader>
+          <DialogTitle>New session</DialogTitle>
+          <DialogDescription>{`Opens a live terminal on ${macName} that your workspace can watch.`}</DialogDescription>
+        </DialogHeader>
+        <div className="grid gap-3 text-sm">
+          {/* The Mac picker stays even when this Mac is blocked: another one may not be. */}
+          {macs && macs.length > 1 && <label className="grid gap-1">Mac
+            <select className="room-input" value={mac?.deviceId} onChange={(e) => { setDeviceId(e.target.value); setFolder(""); }}>
+              {macs.map((m) => <option key={m.deviceId} value={m.deviceId}>{m.name}</option>)}
+            </select>
+          </label>}
+          {blocked === "sharing"
+            ? <p role="status" className="text-muted-foreground">Session sharing is off on {macName}. Turn it on in <Link className="underline underline-offset-4" href="/settings?panel=desktop">Settings → Desktop → Session sharing</Link>.</p>
+            : blocked ? <p role="status" className="text-muted-foreground">{blocked}</p>
+            : !ready && <p className="text-muted-foreground">Checking your Mac…</p>}
+          {ready && selected && <>
+            <div role="group" aria-label="Tool" className="new-session-tools">
+              {options.tools.map((t) => <button key={t.id} type="button" aria-pressed={t.id === selected.id} onClick={() => setTool(t.id)}>
+                <span aria-hidden="true"><SessionToolIcon provider={t.id} className="size-6" /></span>{t.label}
+              </button>)}
+            </div>
+            <label className="grid gap-1">Folder
+              <select className="room-input" value={folderPath} title={folderPath} onChange={(e) => setFolder(e.target.value)}>
+                {folders.map((f) => <option key={f} value={f}>{shortPath(f)}</option>)}
+              </select>
+            </label>
+            <details className="new-session-more">
+              <summary>Model and mode</summary>
+              <div className="grid gap-3 pt-2">
+                <label className="grid gap-1">Model
+                  <select className="room-input" value={modelId} onChange={(e) => setModel(e.target.value)}>
+                    <option value="">Default</option>
+                    {selected.models.map((o) => <option key={o.id} value={o.id}>{o.label}</option>)}
+                  </select>
+                </label>
+                <label className="grid gap-1">{selected.modeLabel}
+                  <select className="room-input" value={modeChoice} onChange={(e) => setMode(e.target.value)}>
+                    <option value="">Default</option>
+                    {selected.modes.map((o) => <option key={o.id} value={o.id}>{o.label}</option>)}
+                  </select>
+                </label>
+                {!!selected.efforts?.length && <label className="grid gap-1">Reasoning effort
+                  <select className="room-input" value={effortChoice} onChange={(e) => setEffort(e.target.value)}>
+                    <option value="">Default</option>
+                    {selected.efforts.map((o) => <option key={o.id} value={o.id}>{o.label}</option>)}
+                  </select>
+                </label>}
+              </div>
+            </details>
+            {pending?.phase === "failed" && <p role="alert" className="text-err">{pending.error}</p>}
+            <div className="flex justify-end">
+              <Button disabled={!canStart} onClick={() => void start(selected)}>{`Start ${selected.label}`}</Button>
+            </div>
+          </>}
+          {localMac?.cli && <p className="text-xs text-muted-foreground">Or in any terminal, inside an approved folder: <code>lightbulb claude</code> or <code>lightbulb codex</code>.</p>}
+          {localMac?.cli?.pathLine && <p className="text-xs text-muted-foreground">First add it to your PATH, then open a new terminal: <code className="select-all">{localMac.cli.pathLine}</code></p>}
+        </div>
+      </DialogContent>
+    </Dialog>
   </section>;
 }

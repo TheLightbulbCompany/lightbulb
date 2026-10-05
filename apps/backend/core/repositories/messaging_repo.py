@@ -907,6 +907,7 @@ async def create_message(
     session_target_labels: dict[str, str] | None = None,
     addressing: dict | None = None,
     in_reply_to: str | None = None,
+    progress: bool = False,
 ) -> tuple[dict, bool]:
     """Strong-read ``META.lastSeq`` then conditionally transact: bump META, put
     the immutable ``MSG``, put the ``IDEMP`` receipt, put one ``WORK#MESSAGE``
@@ -982,6 +983,9 @@ async def create_message(
         if silent:
             # An advisory line: the projector files no Activity and sends no push for it.
             message["silent"] = True
+        if progress:
+            # A mid-run progress line: clients keep the run card running under it.
+            message["progress"] = True
         if agent_hop is not None:
             # The agent-reply cap reads the trigger's hop (messaging.create_agent_message).
             message["agentHop"] = agent_hop

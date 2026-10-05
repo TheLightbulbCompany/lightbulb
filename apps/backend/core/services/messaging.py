@@ -461,6 +461,8 @@ class CanonicalMessage(ContractModel):
     via: Literal["lightbulb_mcp"] | None = None
     # An agent reply's trigger message (the `to` edge Jev reads on agent lines); absent otherwise.
     in_reply_to: str | None = None
+    # A mid-run progress line, not the run's reply (clients keep the run card); absent otherwise.
+    progress: bool = False
     # The agents this message addresses -- a `user_request` dispatch target
     # (an @mention, a name-addressed open, or a DM), not a `room_event` ambient
     # candidate: those are merely eligible for Jev to route, and Jev picks at
@@ -488,6 +490,8 @@ class CanonicalMessage(ContractModel):
         if self.in_reply_to is None:
             result.pop("inReplyTo", None)
             result.pop("in_reply_to", None)
+        if not self.progress:
+            result.pop("progress", None)
         if not self.session_mentions:
             for key in ("sessionMentions", "session_mentions", "sessionTargetLabels", "session_target_labels"):
                 result.pop(key, None)
@@ -598,6 +602,9 @@ class AgentMessageRequest(ContractModel):
     reply_to_message_id: uuid.UUID | None
     thread_root_message_id: uuid.UUID | None
     run_id: uuid.UUID | None = None
+    # A mid-run progress line (the bridge's interim commentary): stored and shown like any agent
+    # message, but it wakes nobody, notifies nobody and is not the run's reply.
+    progress: bool = False
     attachments: list[InlineAttachment] = Field(default_factory=list, max_length=ATTACHMENT_MAX_COUNT)
     uploaded_attachments: list[UploadedAttachment] = Field(default_factory=list, max_length=ATTACHMENT_MAX_COUNT)
 
@@ -1134,6 +1141,7 @@ def canonical_message(item: dict[str, Any], *, original_request: bool = False) -
         run_id=item.get("runId"),
         via=item.get("via"),
         in_reply_to=item.get("inReplyTo"),
+        progress=item.get("progress") is True,
         addressed_agent_ids=[
             t["agentId"]
             for t in item.get("dispatchTargets") or []
@@ -4215,7 +4223,11 @@ async def create_agent_message(owner_id: str, request: AgentMessageRequest) -> A
     room_members = await messaging_repo.list_members(room_id)
     members = with_human_handles(room_members, await human_emails(room_members))
     mentions, unresolved = parse_agent_mentions(request.text, members)
-    targets = select_dispatch_targets(members, mentions, agent_id, room_kind=meta.get("kind"))
+    # A progress line is not a turn in the conversation: no targets means no WORK rows, no Jev
+    # decision, and nothing for the reply cap below to cut or announce.
+    targets = (
+        [] if request.progress else select_dispatch_targets(members, mentions, agent_id, room_kind=meta.get("kind"))
+    )
     room_kind = _room_kind(meta)
     # Stamp the producing run when the container names it: clients retire the
     # run card on an exact runId match instead of showing card + message side
@@ -4294,6 +4306,10 @@ async def create_agent_message(owner_id: str, request: AgentMessageRequest) -> A
             agent_hop=hop,
             in_reply_to=(trigger or {}).get("messageId"),
             extra_conditions=[messaging_repo.voice_run_may_post(owner_id, late_run)] if late_run else None,
+            # The projector files no Activity and sends no push for a silent row: the reply
+            # that ends the run is the one that notifies.
+            silent=request.progress,
+            progress=request.progress,
         )
     except messaging_repo.ExtraConditionFailed as exc:  # "don't post that" landed before the commit
         put_metric("voice.huddle.late_answer_suppressed")
@@ -4337,7 +4353,8 @@ async def create_agent_message(owner_id: str, request: AgentMessageRequest) -> A
                 owner_id=owner_id,
                 props={"reason": "unresolved_mention", "room_kind": room_kind},
             )
-        await _emit_reply_telemetry(owner_id, room_id, agent_id, item, links, room_kind)
+        if not request.progress:  # time-to-reply is the real reply's, not the first progress line's
+            await _emit_reply_telemetry(owner_id, room_id, agent_id, item, links, room_kind)
         if trigger and (run or {}).get("eventKind") == "room_event":
             await _emit_reply_after_human_answer(room_id, meta, trigger, item, room_kind)
         if capped:

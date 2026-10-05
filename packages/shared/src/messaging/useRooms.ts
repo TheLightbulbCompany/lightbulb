@@ -1292,7 +1292,8 @@ export function useRooms(platform: RoomsPlatform, options: UseRoomsOptions = {})
    * A run whose text was already persisted as a message (same runId, or — when
    * the persisted reply's runId doesn't match the run's — the same agent
    * posting identical trimmed text) is done double-duty; drop it so the
-   * completed run card doesn't render again below the real message.
+   * completed run card doesn't render again below the real message. A progress
+   * line carries its run's id but is not the reply, so it never retires the card.
    *
    * Memoised: this is O(runs x messages) with a `trim()` per comparison, and it
    * was re-running on every render of the surface, including every keystroke in
@@ -1300,7 +1301,7 @@ export function useRooms(platform: RoomsPlatform, options: UseRoomsOptions = {})
    */
   const messagesById = useMemo(() => new Map(messages.map(message => [message.messageId, message])), [messages]);
   const visibleRuns = useMemo(() => [...runs.values()].flatMap((run) => {
-    const persisted = messages.some(message => message.runId === run.runId ||
+    const persisted = messages.some(message => (message.runId === run.runId && !message.progress) ||
       (run.text.trim() && message.author.kind === "agent" && message.author.id === run.agentId && message.text.trim() === run.text.trim()));
     if (persisted && run.state !== "running") return [];
     // Keep activity/controls after an interim reply without painting that reply twice.

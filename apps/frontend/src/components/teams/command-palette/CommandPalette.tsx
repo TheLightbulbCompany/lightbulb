@@ -90,7 +90,7 @@ function CommandPaletteContent({ open, onOpenChange }: CommandPaletteProps) {
     return {
       id: `message:${hit.messageId}`,
       label: plainSnippet(hit.snippet),
-      sublabel: room ? `${hit.authorName} · ${roomDisplayName(room, room.participants)}` : hit.authorName,
+      sublabel: room ? `${hit.authorName || "Unknown author"} · ${roomDisplayName(room, room.participants)}` : hit.authorName || "Unknown author",
       run: () => workspace?.openNotificationTarget(hit.roomId, hit.threadRootMessageId, hit.messageId),
     };
   }), [messageSearch.hits, workspace]);

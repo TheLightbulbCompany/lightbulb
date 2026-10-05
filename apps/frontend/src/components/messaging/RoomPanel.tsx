@@ -79,7 +79,7 @@ export interface RoomPanelProps {
    *  referenced session resolves here, never from the composer's sendable targets. */
   sessions?: readonly LocalSession[];
   onSelectThread?: (parentMessageId: string | null) => void;
-  onJumpToMessage?: (messageId: string) => void;
+  onJumpToMessage?: (roomId: string, messageId: string) => void;
   selectedThreadId?: string | null;
   onSelectParticipant?: (participant: RoomParticipant) => void | Promise<void>;
   onRetry?: () => void;
@@ -704,7 +704,9 @@ function RoomContent({
             } else {
               setSelection(null);
               // Server hits may not be loaded yet: the permalink target pages history until it is.
-              onJumpToMessage?.(hit.messageId);
+              // A fresh token makes picking an already-targeted message scroll again.
+              setSearchTarget({ messageId: hit.messageId, threadRootMessageId: null, token: ++searchTargetToken.current });
+              onJumpToMessage?.(roomId, hit.messageId);
             }
           }} />}
         onOpenDetails={(tab) => { closeDetail(); if (tab) setDetailsTab(tab); setContextCollapsed(false); }}
@@ -742,7 +744,7 @@ function RoomContent({
         <RoomTimeline roomId={roomId} messages={mainMessages} readSeq={sentSinceOpen ? null : newLineSeq} ownLastSentSeq={ownLastSentSeq} sendToken={sendToken}
           historyComplete={historyComplete} historyLoading={historyLoading} historyError={historyErrorMessage} onLoadOlder={onLoadOlder}
           targetMessageId={targetMessageId ?? (activeSearchTarget ? activeSearchTarget.messageId : null)}
-          targetToken={targetMessageId ? undefined : activeSearchTarget?.token}
+          targetToken={activeSearchTarget && activeSearchTarget.messageId === (targetMessageId ?? activeSearchTarget.messageId) ? activeSearchTarget.token : undefined}
           renderMessage={renderMainMessage}
           leading={historyComplete ? <>
             <RoomIntro room={visibleRoom} roomName={roomName} participants={participants} />

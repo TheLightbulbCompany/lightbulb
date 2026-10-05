@@ -93,7 +93,7 @@ it("opens a thread-reply hit in its thread and jumps to a main-list hit", async 
   await userEvent.type(screen.getByRole("searchbox"), "hello");
   await userEvent.click(within(screen.getByRole("list", { name: "Search results" })).getByRole("button"));
   await waitFor(() => expect(onSelectThread).toHaveBeenLastCalledWith(null));
-  expect(onJumpToMessage).toHaveBeenCalledWith(message.messageId);
+  expect(onJumpToMessage).toHaveBeenCalledWith("room", message.messageId);
 });
 
 it("loads missing replies when a thread opens from a bounded history page", () => {
@@ -119,8 +119,21 @@ it("does not leave focus on a stale thread trigger when a search result jumps to
   await userEvent.type(screen.getByRole("searchbox"), "hello");
   await userEvent.click(within(screen.getByRole("list", { name: "Search results" })).getByRole("button"));
   await waitFor(() => expect(screen.queryByRole("complementary", { name: "Thread" })).not.toBeInTheDocument());
-  expect(onJumpToMessage).toHaveBeenCalledWith(message.messageId);
+  expect(onJumpToMessage).toHaveBeenCalledWith("room", message.messageId);
   expect(replyTrigger).not.toHaveFocus();
+});
+
+it("scrolls to a main-list hit again when the same hit is picked twice", async () => {
+  const scroll = vi.fn();
+  HTMLElement.prototype.scrollIntoView = scroll;
+  searchHits.byQuery = { hello: [hitFor(message)] };
+  render(<RoomPanel {...props} onJumpToMessage={vi.fn()} />);
+  for (const n of [1, 2]) {
+    await userEvent.click(screen.getByRole("button", { name: "Search this conversation" }));
+    await userEvent.type(screen.getByRole("searchbox"), "hello");
+    await userEvent.click(within(screen.getByRole("list", { name: "Search results" })).getByRole("button"));
+    await waitFor(() => expect(scroll).toHaveBeenCalledTimes(n));
+  }
 });
 
 it("names a DM for its counterpart and uses canonical author and member activity", () => {

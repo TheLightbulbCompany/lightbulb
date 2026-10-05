@@ -34,6 +34,12 @@ checker only looks for a separate profile-local `google_token.json`, which
 Lightbulb's managed `gog` connection does not create. A missing file there therefore
 says nothing about the managed connection and must not be reported as disconnected.
 
+When a `gog` command fails because an API is not enabled or permission is denied
+(for example "Google Docs API has not been used in project ... or it is disabled"),
+quote the error and tell the owner exactly what to enable and where (here: the
+Google Docs API in their Google Cloud project) BEFORE you try any other route. A
+browser workaround is still allowed after that; it does not replace telling them.
+
 ## Microsoft 365 (Microsoft Graph)
 
 The owner connects Microsoft 365 from Connections with their work/school

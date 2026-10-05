@@ -3,18 +3,15 @@ import type { ComponentProps } from "react";
 import type { ClerkProvider } from "@clerk/nextjs";
 
 /**
- * Brand Identity Manual v1.0 §05/§06, applied to Clerk's hosted form.
+ * The neutral palette (globals.css `:root[data-chat-theme]`), applied to Clerk's forms.
  *
  * ONE appearance for every Clerk surface (SignIn, SignUp, UserButton,
  * OrganizationSwitcher), passed on <ClerkProvider> in app/layout.tsx, so the
  * form matches the page shell around it instead of shipping Clerk's defaults.
  *
- * This is the ONLY file outside the token layer (globals.css / landing.css)
- * allowed to hold a colour literal, and it is on the brand-token scanner's skip
- * list for that reason: Clerk's `variables` are read by its own runtime and
- * cannot resolve CSS custom properties. Keep it the only such file — anything
- * Tailwind can reach belongs in `elements` as a utility class, below.
- * `__tests__/clerkAppearance.test.ts` is the scanner's stand-in here.
+ * It holds no colour literal: `variables` use `var()` tokens, `elements` use
+ * Tailwind utilities. Pages must stamp data-chat-theme (components/ThemeStamp)
+ * or the tokens are undefined. `__tests__/clerkAppearance.test.ts` guards that.
  *
  * @clerk/types is a transitive dependency under pnpm and does not resolve from
  * this package, and @clerk/nextjs does not re-export `Appearance` — so take the
@@ -62,17 +59,21 @@ export const clerkLocalization: Localization = {
 };
 
 export const clerkAppearance: Appearance = {
+  // Clerk resolves `var()` in variables, so the card follows the neutral
+  // ladder (and its dark variant) that app/globals.css stamps on <html>.
+  // Unstamped (marketing) pages fall back to the brand tokens they always had.
   variables: {
-    colorPrimary: "#0F1A2B", // --midnight
-    colorBackground: "#F5EFE2", // --cream
-    colorText: "#0F1A2B", // --midnight
-    // --midnight-muted: color-mix(in srgb, #0F1A2B 64%, #F5EFE2)
-    colorTextSecondary: "#62676D",
-    colorInputBackground: "#EFE8D9", // --cream-deep
-    colorInputText: "#0F1A2B", // --midnight
-    colorDanger: "#96382B", // --err
-    colorSuccess: "#3A6B45", // --ok
-    colorWarning: "#96501A", // --warn
+    colorPrimary: "var(--fg, var(--midnight))",
+    // Clerk's default is white, which vanishes on the light primary of the dark ladder.
+    colorTextOnPrimaryBackground: "var(--plane-pane, var(--cream))",
+    colorBackground: "var(--plane-pane, var(--cream))",
+    colorText: "var(--fg, var(--midnight))",
+    colorTextSecondary: "var(--fg-mute, var(--midnight-muted))",
+    colorInputBackground: "var(--plane-sidebar, var(--cream-deep))",
+    colorInputText: "var(--fg, var(--midnight))",
+    colorDanger: "var(--alert, var(--err))",
+    colorSuccess: "var(--live, var(--ok))",
+    colorWarning: "var(--warn)", // defined on every surface: brand on the ladder, orange on bare :root
     borderRadius: "8px", // --radius
     fontFamily: "var(--font-sans), 'Source Sans 3', system-ui, sans-serif",
     fontFamilyButtons: "var(--font-sans), 'Source Sans 3', system-ui, sans-serif",
@@ -84,6 +85,9 @@ export const clerkAppearance: Appearance = {
     formButtonPrimary: "bg-midnight text-cream hover:bg-midnight-soft",
     footerActionLink: "text-midnight underline",
     formFieldInput: "bg-cream-deep border-edge text-midnight",
+    // Apple's and GitHub's marks are solid black: invert them on the dark ladder.
+    providerIcon__apple: "[[data-chat-theme=dark]_&]:invert",
+    providerIcon__github: "[[data-chat-theme=dark]_&]:invert",
     headerTitle: "font-serif", // §05: Lora for the one heading the user reads
     socialButtonsBlockButton: "border-edge bg-cream text-midnight hover:bg-cream-deep",
   },

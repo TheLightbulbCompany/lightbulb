@@ -855,15 +855,20 @@ light and `#1E1E21` dark), three text steps (`--fg`, `--fg-soft`, `--fg-mute`) a
 `--link`, `--alert`, `--live`, `--brand`. New code names those.
 **`--cream`, `--midnight` and their steps are legacy NAMES, kept as aliases onto
 that ladder** (`--cream` is `--plane-pane`): reading one makes nothing cream. The
-Brand Identity Manual's own palette (cream `#F5EFE2`, midnight `#0F1A2B`, `.dark`
-reversing it) is only what a page OUTSIDE `/chat` gets from the bare `:root`
-block. `src/__tests__/chatThemeContrast.test.ts` recomputes the ladder's contrast
+Every product route outside `/chat` (sign-in/up, onboarding, join, settings,
+session-tasks, oauth, auth, checkout_redirect, marketplace) mounts
+`components/ThemeStamp` from its layout and gets the same ladder and light/dark
+preference; Clerk's `clerkAppearance` uses `var()` tokens and follows it. The
+Brand Identity Manual's palette (cream `#F5EFE2`, midnight `#0F1A2B`) is now only
+what marketing/legal/blog/docs/landing pages and `/admin` (a forced `.dark`
+tree) get from the bare `:root` block.
+`src/__tests__/chatThemeContrast.test.ts` recomputes the ladder's contrast
 pairs. The phone mirrors the ladder in `apps/mobile/src/config/theme.ts`
 (`chatPalette`, light and dark). Read `globals.css` before describing a colour;
 this paragraph said "cream" for two weeks after it stopped being true. No
 colour literal anywhere else except the six deliberate exemptions the scanner
 skips — `landing.css`, `landing-v2.css`, and `components/landing/**` (marketing,
-its own palette), `lib/clerkAppearance.ts` (Clerk takes hex, not `var()`),
+its own palette), `lib/clerkAppearance.ts` (`var()` tokens with brand fallbacks, no hex),
 `*Brand.ts` vendor marks, and tests (`__tests__/`, `*.test.*`, which hold
 literals as fixtures) —
 `src/__tests__/brandTokens.test.ts` enforces it,

@@ -32,6 +32,7 @@ import { LogoMark } from "../../../components/LogoMark";
 import { Avatar } from "../../../components/room/Avatar";
 import { PickerSheet, type PickerOption } from "../../../components/teams/PickerSheet";
 import { ReasonSheet } from "../../../components/teams/ReasonSheet";
+import { CredentialSheet, type CredentialField } from "../../../components/ui/CredentialSheet";
 import { InsetSectionHeader, insetRowStyle } from "../../../components/ui/InsetGroup";
 import { ListRow } from "../../../components/ui/ListRow";
 import { fonts, spacing, useChatPalette, type ChatPalette } from "../../../config/theme";
@@ -39,6 +40,8 @@ import { activityHrefs, itemTarget, useMobileActivity } from "../../../lib/activ
 import { purchaseSafeMessage } from "../../../lib/purchaseCta";
 import { relativeTime } from "../../../lib/relativeTime";
 import { useWorkspaceRoster } from "../../../lib/workspaceRoster";
+
+const LOGIN_FIELDS: readonly CredentialField[] = ["username", "password"];
 
 const ACTION_FAILED = "That didn’t go through. Try again.";
 
@@ -386,12 +389,6 @@ export default function Activity() {
     if (action.navigate) return go(action.navigate);
     const proceed = () => {
       const { input } = action;
-      // ponytail: two secret fields need a sheet this screen does not have yet; the web and
-      // desktop Activity carry the login form (a code fits the one-field sheet below).
-      if (input?.kind === "login") {
-        Alert.alert("Add this login on the web", "Open Activity in Lightbulb on your computer to enter the username and password. It goes straight to your workspace's website logins.");
-        return;
-      }
       if (input) setPending({ item, action: { ...action, input } });
       else run(item, action);
     };
@@ -401,6 +398,16 @@ export default function Activity() {
       { text: action.label, style: action.style === "destructive" ? "destructive" : "default", onPress: proceed },
     ]);
   }, [run]);
+
+  // An agent's "add the sign-in here" link lands with `focus=login:<id>`: open its form once.
+  const openedFor = useRef<string | null>(null);
+  useEffect(() => {
+    if (!focusedFor || openedFor.current === focusedFor) return;
+    openedFor.current = focusedFor;
+    const item = items.find((entry) => entry.id === focusedFor);
+    const action = item?.state === "open" ? item.actions.find((entry) => entry.input?.kind === "login") : undefined;
+    if (item && action) onAction(item, action);
+  }, [focusedFor, items, onAction]);
 
   const answer = (value: string) => {
     const current = pendingRef.current;
@@ -496,6 +503,16 @@ export default function Activity() {
         required={input?.required ?? false}
         tone={pending?.action.style === "destructive" ? "danger" : "primary"}
         onSubmit={answer}
+        onClose={() => setPending(null)}
+      />
+      {/* The same answer the web's SecretForm posts: `value` only, straight to the workspace's website sign-ins. */}
+      <CredentialSheet
+        visible={input?.kind === "login"}
+        title={pending?.item.summary.title ?? input?.label ?? ""}
+        hint={input?.hint}
+        fields={LOGIN_FIELDS}
+        submitLabel={pending?.action.label ?? "Add"}
+        onSubmit={({ username, password }) => answer(JSON.stringify({ username, password }))}
         onClose={() => setPending(null)}
       />
       <PickerSheet

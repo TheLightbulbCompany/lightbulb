@@ -39,6 +39,10 @@ MAINTENANCE (Lightbulb engineers): every claim in this skill is anchored to
                               <- apps/infra/hermes/bridge/turn.py (conversation_dir, _terminal_scope TERMINAL_CWD).
                               "never `/tmp`" <- the upstream base image's HERMES_WRITE_SAFE_ROOT=/opt/data (write_file/patch
                                  refuse anything else); sync.py save_profile (only the profile dir persists).
+  - gog API-not-enabled ..... references/integrations.md ("Google Workspace (`gog`)": quote the error and name
+                              the API to enable before any browser workaround)
+                              <- owner request 2026-10-05. No code enforces it (Google is BYO: the Cloud
+                                 project and its enabled APIs are the owner's, so only they can fix it).
   - Plain words, no plumbing  SKILL.md ("Talk to people in plain words, never plumbing")
                               <- observed prod 2026-09-29: an agent told #general "PAPERCLIP_RUN_ID is empty (this is
                                  a webchat session, not a heartbeat)". No code enforces it; the verifier footer that

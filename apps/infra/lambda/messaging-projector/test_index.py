@@ -921,6 +921,18 @@ class PushTests(unittest.TestCase):
         hints = [c.args[1]["payload"] for c in publish.call_args_list if "/users/" in c.args[0]]
         self.assertTrue(hints and all(h["notify"] is False and "push" not in h for h in hints))
 
+    def test_a_progress_line_is_marked_on_the_room_event_and_only_then(self):
+        # The backend stores a progress line `silent` too, so the test above is its no-push proof.
+        message = push_message("Pulled the invoices; totals next.")
+        message["silent"] = message["progress"] = True
+        publish, urlopen = self.project(push_world(), message)
+        urlopen.assert_not_called()
+        room = [c.args[1]["payload"] for c in publish.call_args_list if "/rooms/" in c.args[0]]
+        self.assertEqual([p.get("progress") for p in room], [True])
+        publish, _ = self.project(push_world(), push_message())
+        room = [c.args[1]["payload"] for c in publish.call_args_list if "/rooms/" in c.args[0]]
+        self.assertTrue(room and all("progress" not in p for p in room))
+
     def test_an_agent_reply_names_its_run_in_the_push(self):
         message = push_message()
         message["runId"] = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"

@@ -21,7 +21,7 @@ from core.dynamodb import utc_now_iso
 from core.observability.product_analytics import capture_product_event
 from core.observability.session_analytics import capture_session_event
 from core.repositories import local_sessions_repo as repo, messaging_repo as store
-from core.services import local_sessions as sessions, session_pickup, session_resume, session_screen
+from core.services import local_sessions as sessions, session_pickup, session_presence, session_resume, session_screen
 from core.services.connection_service import ConnectionService
 from core.services.management_api_client import ManagementApiClient
 from core.services.messaging import ApiProblem, ContractModel, make_live_event
@@ -100,6 +100,7 @@ FEATURES = [
     "liveTerminal",
     "remoteInput",
     "sessionTerminal",
+    "sessionPresence",
 ]
 
 
@@ -118,6 +119,7 @@ class DeviceHeartbeat(ContractModel):
     # on every listed session's META as `deviceFeatures` (session_screen reads it).
     live_terminal: bool = False
     remote_input: bool = False
+    session_presence: bool = False
 
     def device_features(self) -> list[str]:
         return sorted(k for k, on in self.model_dump(by_alias=True, exclude={"type", "sessions"}).items() if on)
@@ -621,6 +623,10 @@ class LocalSessionRelay:
                         human,
                         device,
                     )
+                    if message.session_presence:
+                        response = await session_presence.ack_with_presence(
+                            response, owner, [str(s.session_id) for s in message.sessions]
+                        )
                     notify_resources = False
                 elif isinstance(message, Ended):
                     response = await session_pickup.ack_with_pickup(

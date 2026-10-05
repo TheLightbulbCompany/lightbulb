@@ -48,6 +48,53 @@ def _human(device: MachineIdentity) -> AuthContext:
     return AuthContext(user_id=device.user_id, org_id=device.org_id or None)
 
 
+class NativeDecisionRequest(ContractModel):
+    """The owner's own Mac answers from the Claude terminal (spec 2026-10-04-session-sharing-mod §4.3)."""
+
+    session_id: uuid.UUID
+    generation: str = Field(min_length=1, max_length=128)
+    decision: Literal["allow", "decline", "pause", "unpause"]
+    user_id: str | None = Field(default=None, max_length=128)
+    request_id: str | None = Field(default=None, max_length=64)
+
+    @model_validator(mode="after")
+    def names_one_request(self):
+        answers = self.decision in ("allow", "decline")
+        if answers != (self.user_id is not None) or answers != (self.request_id is not None):
+            raise ValueError("allow and decline name one request; pause and unpause name none")
+        return self
+
+
+async def decide(device: MachineIdentity, body: NativeDecisionRequest) -> local_sessions.LocalSession:
+    """The one write a device token reaches (owner approval 2026-10-04): only for the owner's own
+    session on this Mac, at its current generation, while this Mac holds its relay connection.
+    The Mac freezes remote typing while a request is pending, so only the owner can press it."""
+    sid = str(body.session_id)
+    row = await sessions_repo.get_session(device.owner_id, sid)
+    if (
+        not row
+        or row.get("humanUserId") != device.user_id
+        or row.get("deviceId") != device.device_id
+        or row.get("generation") != body.generation
+        or row.get("endedAt") is not None
+    ):
+        raise ApiProblem("LOCAL_SESSION_FORBIDDEN", "Not this Mac's current session.")
+    from core.services.local_session_relay import get_local_session_relay
+
+    connection, _ = await get_local_session_relay().connect(row.get("connectionId") or "")
+    if connection.get("device_id") != device.device_id or connection.get("user_id") != device.user_id:
+        raise ApiProblem("LOCAL_SESSION_FORBIDDEN", "This Mac is not connected.")
+    auth = _human(device)
+    if body.decision in ("pause", "unpause"):
+        session = await local_sessions.set_sharing(auth, sid, body.decision == "unpause", generation=body.generation)
+        from core.services.local_session_relay import publish_resources_changed
+
+        # Same notice the web sharing route sends, so other clients' session views refresh.
+        await publish_resources_changed(device.owner_id, device.user_id)
+        return session
+    return await local_sessions.decide_join(auth, sid, body.user_id, body.decision, request_id=body.request_id)
+
+
 async def _source(device: MachineIdentity, request: NativeToolRequest) -> dict:
     sid = str(request.source_session_id)
     row = await sessions_repo.get_session(device.owner_id, sid)

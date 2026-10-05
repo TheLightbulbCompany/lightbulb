@@ -13,7 +13,7 @@ use tokio::net::{UnixListener, UnixStream};
 
 const MAX_TOOL_FRAME: usize = 12 * 1024;
 
-struct SocketGuard {
+pub(super) struct SocketGuard {
     path: PathBuf,
     inode: u64,
 }
@@ -26,8 +26,8 @@ impl Drop for SocketGuard {
     }
 }
 
-fn bind() -> Result<(UnixListener, SocketGuard)> {
-    let path = enrollment::hook_path().with_file_name("tool.sock");
+pub(super) fn bind(name: &str) -> Result<(UnixListener, SocketGuard)> {
+    let path = enrollment::hook_path().with_file_name(name);
     private_dir(path.parent().ok_or("tool socket directory unavailable")?)?;
     if let Ok(meta) = fs::symlink_metadata(&path) {
         if !meta.file_type().is_socket() || meta.uid() != unsafe { libc::geteuid() } {
@@ -42,7 +42,7 @@ fn bind() -> Result<(UnixListener, SocketGuard)> {
     Ok((listener, SocketGuard { path, inode }))
 }
 
-fn peer_pid(socket: &UnixStream) -> Result<u32> {
+pub(super) fn peer_pid(socket: &UnixStream) -> Result<u32> {
     let fd = socket.as_raw_fd();
     let (mut uid, mut gid) = (0 as libc::uid_t, 0 as libc::gid_t);
     if unsafe { libc::getpeereid(fd, &mut uid, &mut gid) } != 0 || uid != unsafe { libc::geteuid() }
@@ -342,7 +342,7 @@ pub(super) async fn serve(
     enrollment: Enrollment,
     identity: crate::keychain::DeviceIdentity,
 ) {
-    let (listener, _guard) = match bind() {
+    let (listener, _guard) = match bind("tool.sock") {
         Ok(value) => value,
         Err(reason) => {
             crate::log(&format!(

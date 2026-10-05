@@ -49,6 +49,11 @@ fn admit(body: &Value, relay_of: impl Fn(&Value) -> Option<(String, Arc<Ctl>)>) 
     let epoch = body["epoch"].as_u64().filter(|e| *e != 0)?;
     let generation = body["generation"].as_str()?.to_owned();
     let (sid, ctl) = relay_of(body)?;
+    // A join request is waiting for the owner: their band has Allow on it, and a teammate's
+    // key on this pty could press it. Dropped, not queued.
+    if super::presence::frozen(&sid) {
+        return None;
+    }
     if ctl.epoch.load(SeqCst) != epoch {
         return None;
     }
@@ -204,6 +209,7 @@ mod tests {
 
     #[test]
     fn remote_input_is_dropped_unless_watched_at_this_generation_and_the_current_epoch() {
+        let _g = super::super::presence::TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let ctl = Arc::new(Ctl::new(0));
         ctl.epoch.store(7, SeqCst);
         let live = BTreeMap::from([(SID.to_owned(), "gen-1".to_owned())]);
@@ -227,6 +233,25 @@ mod tests {
         assert!(admit(&json!({"type": "local.session.input", "sessionId": SID, "generation": "gen-1", "epoch": 7, "data": "%%"}), watched()).is_none());
         ctl.epoch.store(0, SeqCst);
         assert!(admit(&frame(SID, "gen-1", 0, b"ls\r"), watched()).is_none(), "a relay that has not started streaming");
+    }
+
+    #[test]
+    fn remote_input_is_dropped_while_a_join_request_waits() {
+        use super::super::presence::{set, Entry, JoinRequest, TEST_LOCK};
+        let _g = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let sid = "cccc1111-2222-4333-8444-555566667777";
+        let ctl = Arc::new(Ctl::new(0));
+        ctl.epoch.store(7, SeqCst);
+        let relay = |body: &Value| {
+            let _ = body;
+            Some((sid.to_owned(), ctl.clone()))
+        };
+        let mut e = Entry { generation: "gen-1".into(), paused: false, viewers: vec![], join_requests: vec![] };
+        set(sid, e.clone());
+        assert!(admit(&frame(sid, "gen-1", 7, b"ls\r"), relay).is_some());
+        e.join_requests = vec![JoinRequest { user_id: "u2".into(), name: "Mira".into(), request_id: "r1".into() }];
+        set(sid, e);
+        assert!(admit(&frame(sid, "gen-1", 7, b"ls\r"), relay).is_none());
     }
 
     #[test]

@@ -111,8 +111,17 @@ async def prepare_native_session_send(
     return await native_session_tools.execute(device, body)
 
 
+@router.post("/messaging/native-session-decisions", response_model=local_sessions.LocalSession)
+async def native_session_decision(
+    body: native_session_tools.NativeDecisionRequest,
+    device=Depends(native_session_device),
+):
+    """The owner answers a join request or pauses sharing from their Claude terminal."""
+    return await native_session_tools.decide(device, body)
+
+
 async def device_human(device=Depends(native_session_device)) -> AuthContext:
-    """The paired Mac's enrolled human. Read routes only: a device token never reaches a write."""
+    """The paired Mac's enrolled human. Read routes only. The one device-token write is native-session-decisions (owner approval 2026-10-04), fenced in native_session_tools.decide."""
     await local_sessions._enrolled(device.owner_id, device.user_id, device.device_id)
     return AuthContext(user_id=device.user_id, org_id=device.org_id or None)
 

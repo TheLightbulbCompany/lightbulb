@@ -272,6 +272,7 @@ impl Controller {
                     scope,
                 } = prepared;
                 let native_tools = super::native_tools::serve(scope.clone(), enrollment.clone(), identity.clone());
+                let mod_socket = super::mod_socket::serve(scope.clone(), enrollment.clone(), identity.clone());
                 // Pick-up snapshots run on their OWN task: sharing one `select!` with the
                 // relay would stall every relay frame while a snapshot does its work.
                 let snapshots = super::snapshot::run(
@@ -307,6 +308,7 @@ impl Controller {
                     let _snapshots = AbortOnDrop(tauri::async_runtime::spawn(snapshots));
                     let _resumes = AbortOnDrop(tauri::async_runtime::spawn(resumes));
                     let _native_tools = AbortOnDrop(tauri::async_runtime::spawn(native_tools));
+                    let _mod_socket = AbortOnDrop(tauri::async_runtime::spawn(mod_socket));
                     let hooks = async move {
                         let mut bytes = [0u8; 2048];
                         loop {
@@ -716,6 +718,9 @@ pub async fn local_sessions_set(
         // Skill removal is tracked separately from hook cleanup so a failure in
         // one is never misattributed to the other in the status message.
         let skill_removed = home().and_then(|h| remove_skill(&dir, &h)).is_ok();
+        if let Ok(h) = home() {
+            super::plugin::remove(&dir, &h);
+        }
         let mut parts = Vec::new();
         if !cleaned {
             parts.push("Local sharing stopped; Claude wake-hook removal failed. Retry disable after repairing Claude settings.".to_owned());
@@ -1020,7 +1025,13 @@ fn reassert(state_dir: &Path) -> Vec<String> {
         Err(reason) => return vec![reason],
     };
     match std::env::current_exe() {
-        Ok(executable) => reassert_at(state_dir, &home, &executable),
+        Ok(executable) => {
+            let mut notes = reassert_at(state_dir, &home, &executable);
+            if let Err(reason) = super::plugin::install(state_dir, &home) {
+                notes.push(format!("the lightbulb-sessions Claude plugin was not installed ({reason})"));
+            }
+            notes
+        }
         Err(_) => vec!["the desktop executable is unavailable".into()],
     }
 }

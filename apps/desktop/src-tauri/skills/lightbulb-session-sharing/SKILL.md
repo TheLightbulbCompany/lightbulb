@@ -70,6 +70,7 @@ Check whether the timeout also happens at concurrency 50
 
 ## What it is not
 
-Sharing is not enforcement. This skill is context; Lightbulb's own guarantees
-are the header on every teammate message and the owner's native permission
-prompts, which stay on this machine.
+Sharing is mostly not enforcement. Where the Lightbulb Claude Code plugin is installed, a turn a
+teammate's message started cannot edit settings, hooks, CLAUDE.md, AGENTS.md or .codex/ config:
+the edit is refused with a reason. Lightbulb's other guarantees are the header on every teammate
+message and the owner's native permission prompts, which stay on this machine.

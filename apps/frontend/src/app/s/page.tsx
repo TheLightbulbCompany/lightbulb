@@ -43,7 +43,7 @@ async function publicPost<T>(path: string, body: unknown, token: string | null):
     body: JSON.stringify(body),
   });
   const json = await res.json().catch(() => null);
-  if (!res.ok) throw new Error((json as { message?: string } | null)?.message || "Could not open this link. Try again.");
+  if (!res.ok) throw Object.assign(new Error((json as { message?: string } | null)?.message || "Could not open this link. Try again."), { refused: res.status === 403 || res.status === 404 || res.status === 410 }); // a 429 or 5xx is not a refusal
   return json as T;
 }
 
@@ -106,17 +106,23 @@ export default function SessionLinkPageRoute() {
         setEvents([]); // a sign-in reopens the page: start the transcript again rather than append to it
         await pull();
         // Phase 1 has no public live view: a live session's page follows the transcript (spec §2.2).
-        // Until the Mac commits its pick-up snapshot the page is not continuable and may lack its
-        // title and repository: the poll re-opens it, and stops once it is.
-        let ready = opened.continuable;
+        // Each tick re-opens the link, so the header follows the session (live, ended, offline) and
+        // a turned-off link shows its refusal; the poll stops once the session is not live or the
+        // link is refused. A network blip (not a refusal) just tries again next tick.
         if (opened.state === "live") timer = setInterval(() => {
-          void pull().catch(() => {});
-          if (ready) return;
-          void bearerNow().then(b => publicPost<SessionLinkPage>("/public/session-links/open", { token: stash.token }, b)).then(next => {
-            if (!alive) return;
-            ready = next.continuable;
-            setPage(next);
-          }).catch(() => {});
+          void (async () => {
+            try {
+              const next = await publicPost<SessionLinkPage>("/public/session-links/open", { token: stash.token, refresh: true }, await bearerNow());
+              if (!alive) return;
+              setPage(next);
+              await pull().catch(() => {});
+              if (next.state !== "live" && timer) clearInterval(timer);
+            } catch (e) {
+              if (!alive || !(e as { refused?: boolean }).refused) return;
+              if (timer) clearInterval(timer);
+              setError(e instanceof Error ? e.message : "Could not open this link. Try again.");
+            }
+          })();
         }, POLL_MS);
       } catch (e) {
         if (alive) setError(e instanceof Error ? e.message : "Could not open this link. Try again.");

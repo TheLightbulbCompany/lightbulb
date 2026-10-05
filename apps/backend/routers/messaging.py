@@ -380,10 +380,8 @@ async def delete_local_session_link(session_id: str, auth: AuthContext = Depends
 # Public: an "anyone" link opens with no sign-in. POST so the token rides in the body. These sit
 # under /public/, which API Gateway throttles on its own bucket (api-stack.ts).
 @router.post("/public/session-links/open", response_model=session_links.LinkPage)
-async def open_session_link(
-    body: session_links.LinkTokenRequest, auth: AuthContext | None = Depends(get_optional_user)
-):
-    return await session_links.open_page(auth, body.token)
+async def open_session_link(body: session_links.LinkOpenRequest, auth: AuthContext | None = Depends(get_optional_user)):
+    return await session_links.open_page(auth, body.token, refresh=body.refresh)
 
 
 @router.post("/public/session-links/events", response_model=local_sessions.LocalSessionEventPage)

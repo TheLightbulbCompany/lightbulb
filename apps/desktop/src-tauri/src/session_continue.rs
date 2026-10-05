@@ -222,7 +222,23 @@ pub(crate) async fn clone_of(
         .ok_or("the repository name is not usable here")?;
     let dest = here.join(name);
     if dest.exists() {
-        return Err(format!("./{name} already exists"));
+        // Reuse ./<name> when it is its own repository and its origin is this remote, so a run
+        // from the parent folder still gets the code.
+        let own = git(&dest, &["rev-parse", "--show-toplevel"], None).await.ok();
+        let origin = git(&dest, &["remote", "get-url", "origin"], None)
+            .await
+            .ok()
+            .and_then(|o| normalize_remote(&o));
+        if origin.as_deref() == Some(remote)
+            && own.is_some_and(|t| {
+                std::fs::canonicalize(&t).ok() == std::fs::canonicalize(&dest).ok()
+            })
+        {
+            return Ok((dest, false));
+        }
+        return Err(format!(
+            "./{name} already exists and is not a clone of {remote}; move it or run this from another folder"
+        ));
     }
     let url = format!("https://{remote}.git");
     eprintln!("Cloning {remote}…");
@@ -645,6 +661,29 @@ mod tests {
             clone_of(&here, "github.com/o/r", true).await.unwrap().0,
             here
         );
+    }
+
+    #[tokio::test]
+    async fn a_matching_clone_in_the_current_folder_is_reused() {
+        let dir = tempfile::tempdir().unwrap();
+        let here = std::fs::canonicalize(dir.path()).unwrap();
+        let sub = here.join("r");
+        std::fs::create_dir(&sub).unwrap();
+        let g = |args: &[&str]| {
+            assert!(std::process::Command::new("git")
+                .args(args)
+                .current_dir(&sub)
+                .status()
+                .unwrap()
+                .success())
+        };
+        g(&["init", "-q"]);
+        g(&["remote", "add", "origin", "https://github.com/o/r.git"]);
+        let (path, fresh) = clone_of(&here, "github.com/o/r", true).await.unwrap();
+        assert_eq!((path, fresh), (sub.clone(), false));
+        std::fs::create_dir(here.join("x")).unwrap();
+        let err = clone_of(&here, "github.com/o/x", true).await.unwrap_err();
+        assert!(err.contains("not a clone"), "{err}");
     }
 
     #[tokio::test]

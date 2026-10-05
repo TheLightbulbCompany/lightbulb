@@ -823,6 +823,7 @@ export function MessagingWorkspaceProvider({
     historyErrorMessage: rooms.historyErrorMessage,
     onLoadHistory: rooms.loadHistory,
     onLoadOlder: rooms.loadOlder,
+    onJumpToMessage: (messageId: string) => setTarget({ roomId: rooms.activeRoomId!, messageId }),
     pendingMessages: pending,
     typingMembers: rooms.typingMembers.filter((member) => member.userId !== userId),
     runs: rooms.runs.map(runView),

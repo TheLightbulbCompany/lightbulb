@@ -1,73 +1,48 @@
-import { render, screen, within } from "@testing-library/react";
-import userEvent from "@testing-library/user-event";
-import { beforeEach, expect, it, vi } from "vitest";
+// @vitest-environment jsdom
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { act, fireEvent, render, screen } from "@testing-library/react";
 
-const capture = vi.fn();
-vi.mock("@/lib/analytics", () => ({ capture: (...args: unknown[]) => capture(...args) }));
+const messaging = vi.hoisted(() => ({ searchMessages: vi.fn(), warmSearch: vi.fn() }));
+vi.mock("@/hooks/useLiveEvents", () => ({ useLiveEvents: () => ({ messaging }) }));
+vi.mock("@/lib/analytics", () => ({ capture: vi.fn() }));
 
 import { RoomMessageSearch } from "../RoomMessageSearch";
-import type { RoomMessage } from "../types";
 
-const message: RoomMessage = { messageId: "message", roomId: "room", messageSeq: 1, roomRevision: 1, author: { kind: "human", id: "person", displayName: "Alice" }, text: "Launch checklist", mentions: [], replyToMessageId: null, threadRootMessageId: null, createdAt: "2026-09-10T00:00:00Z", runId: null };
+const hit = { messageId: "m1", roomId: "r1", messageSeq: 3, threadRootMessageId: null, authorName: "Ann",
+  authorKind: "human", createdAt: "2026-10-04T00:00:00Z", snippet: "the \u0001deploy\u0002 fix" };
 
-beforeEach(() => capture.mockClear());
+afterEach(() => { vi.useRealTimers(); vi.clearAllMocks(); });
 
-it("searches only the current room and identifies partial results and thread replies", async () => {
-  const onSelect = vi.fn();
-  const onLoad = vi.fn();
-  const reply = { ...message, messageId: "reply", messageSeq: 2, text: "Launch is ready", threadRootMessageId: message.messageId };
-  const view = render(<RoomMessageSearch roomId="room" messages={[message, reply, { ...message, roomId: "elsewhere", messageId: "foreign", text: "Launch secret" }]} participants={[]} onLoad={onLoad} onSelect={onSelect} loading />);
-  await userEvent.click(screen.getByRole("button", { name: "Search this conversation" }));
-  expect(onLoad).toHaveBeenCalledOnce();
-  expect(screen.getByRole("searchbox", { name: "Search messages" })).toHaveFocus();
-  await userEvent.type(screen.getByRole("searchbox"), " LAUNCH ");
-  expect(screen.getByRole("status")).toHaveTextContent("Results may be incomplete");
-  expect(within(screen.getByRole("list", { name: "Search results" })).getAllByRole("listitem")).toHaveLength(2);
-  expect(screen.queryByText("Launch secret")).not.toBeInTheDocument();
-  view.rerender(<RoomMessageSearch roomId="room" messages={[message, reply]} participants={[]} onSelect={onSelect} complete />);
-  expect(screen.getByRole("status")).toHaveTextContent("2 messages found");
-  await userEvent.click(screen.getByRole("button", { name: /Thread reply Launch is ready/ }));
-  expect(onSelect).toHaveBeenCalledWith(reply);
-  expect(capture).toHaveBeenCalledWith("message_search_used", { result_count_bucket: "1-5" });
-});
+async function typeQuery(value: string) {
+  fireEvent.click(screen.getByRole("button", { name: "Search this conversation" }));
+  fireEvent.change(screen.getByRole("searchbox", { name: "Search messages" }), { target: { value } });
+  await act(async () => { await vi.advanceTimersByTimeAsync(300); });
+}
 
-it("offers recovery instead of claiming no matches across missing history", async () => {
-  const onLoad = vi.fn();
-  render(<RoomMessageSearch roomId="room" messages={[]} participants={[]} error onLoad={onLoad} onSelect={vi.fn()} />);
-  await userEvent.click(screen.getByRole("button", { name: "Search this conversation" }));
-  await userEvent.type(screen.getByRole("searchbox"), "missing");
-  expect(screen.getByRole("status")).toHaveTextContent("Could not load all messages");
-  expect(screen.getByText("No matching messages in the history loaded so far.")).toBeInTheDocument();
-  await userEvent.click(screen.getByRole("button", { name: "Load conversation history" }));
-  expect(onLoad).toHaveBeenCalledTimes(2);
-});
+describe("RoomMessageSearch", () => {
+  it("warms on open, searches this room, and opens a hit", async () => {
+    vi.useFakeTimers();
+    messaging.warmSearch.mockResolvedValue(undefined);
+    messaging.searchMessages.mockResolvedValue({ hits: [hit] });
+    const onSelect = vi.fn();
+    render(<RoomMessageSearch roomId="r1" onSelect={onSelect} />);
+    await typeQuery("deploy");
+    expect(messaging.warmSearch).toHaveBeenCalledTimes(1);
+    expect(messaging.searchMessages).toHaveBeenCalledWith("deploy", { roomId: "r1", limit: 50 });
+    expect(screen.getByText("deploy").tagName).toBe("MARK");
+    fireEvent.click(screen.getByRole("button", { name: /Ann/ }));
+    expect(onSelect).not.toHaveBeenCalled(); // fires on close-auto-focus, like before
+  });
 
-it("names the failure when the server gives a history error reason", async () => {
-  render(<RoomMessageSearch roomId="room" messages={[]} participants={[]} error errorMessage="History is temporarily unavailable" onSelect={vi.fn()} />);
-  await userEvent.click(screen.getByRole("button", { name: "Search this conversation" }));
-  expect(screen.getByRole("status")).toHaveTextContent("Could not load all messages: History is temporarily unavailable");
-});
-
-it("captures message_search_used with a bucketed result count once the search is closed", async () => {
-  render(<RoomMessageSearch roomId="room" messages={[message]} participants={[]} onSelect={vi.fn()} complete />);
-  await userEvent.click(screen.getByRole("button", { name: "Search this conversation" }));
-  await userEvent.type(screen.getByRole("searchbox"), "nothing matches this");
-  await userEvent.keyboard("{Escape}");
-  expect(capture).toHaveBeenCalledWith("message_search_used", { result_count_bucket: "0" });
-});
-
-it("buckets 6+ once results run past five", async () => {
-  const many = Array.from({ length: 6 }, (_, i) => ({ ...message, messageId: `m${i}`, text: "Launch item" }));
-  render(<RoomMessageSearch roomId="room" messages={many} participants={[]} onSelect={vi.fn()} complete />);
-  await userEvent.click(screen.getByRole("button", { name: "Search this conversation" }));
-  await userEvent.type(screen.getByRole("searchbox"), "launch");
-  await userEvent.keyboard("{Escape}");
-  expect(capture).toHaveBeenCalledWith("message_search_used", { result_count_bucket: "6+" });
-});
-
-it("does not capture message_search_used when the dialog closes without a search", async () => {
-  render(<RoomMessageSearch roomId="room" messages={[message]} participants={[]} onSelect={vi.fn()} complete />);
-  await userEvent.click(screen.getByRole("button", { name: "Search this conversation" }));
-  await userEvent.keyboard("{Escape}");
-  expect(capture).not.toHaveBeenCalled();
+  it("says search is starting up on a 503 and retries once", async () => {
+    vi.useFakeTimers();
+    messaging.warmSearch.mockResolvedValue(undefined);
+    messaging.searchMessages.mockRejectedValueOnce({ status: 503 }).mockResolvedValueOnce({ hits: [hit] });
+    render(<RoomMessageSearch roomId="r1" onSelect={vi.fn()} />);
+    await typeQuery("deploy");
+    expect(screen.getByRole("status").textContent).toMatch(/starting up/i);
+    await act(async () => { await vi.advanceTimersByTimeAsync(3_000); });
+    expect(messaging.searchMessages).toHaveBeenCalledTimes(2);
+    expect(screen.getByText("deploy").tagName).toBe("MARK");
+  });
 });

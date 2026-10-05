@@ -79,6 +79,7 @@ export interface RoomPanelProps {
    *  referenced session resolves here, never from the composer's sendable targets. */
   sessions?: readonly LocalSession[];
   onSelectThread?: (parentMessageId: string | null) => void;
+  onJumpToMessage?: (messageId: string) => void;
   selectedThreadId?: string | null;
   onSelectParticipant?: (participant: RoomParticipant) => void | Promise<void>;
   onRetry?: () => void;
@@ -257,6 +258,7 @@ function RoomContent({
   threadComposer,
   sessions: visibleSessions = NO_SESSIONS,
   onSelectThread,
+  onJumpToMessage,
   selectedThreadId,
   onSelectParticipant,
   onRetry,
@@ -684,11 +686,9 @@ function RoomContent({
     <div className="room-conversation" hidden={showContext && isNarrow && !sideHost} onClickCapture={closeOverlay} onFocusCapture={closeOverlay}>
       <RoomHeader room={visibleRoom} roomName={roomName} counterparts={counterparts} participants={participants} participantCount={participants.length}
         canEditRoom={canEditRoom} canLeave={canLeaveRoom} ownerCannotLeave={ownerCannotLeave} actionable={actionable} pinnedCount={pinnedMessageIds.length}
-        search={<RoomMessageSearch roomId={roomId} messages={messages} participants={participants}
-          loading={historyLoading} complete={historyComplete} error={historyError} errorMessage={historyErrorMessage}
-          onLoad={onLoadHistory}
-          onSelect={(message) => {
-            const root = message.threadRootMessageId;
+        search={<RoomMessageSearch roomId={roomId}
+          onSelect={(hit) => {
+            const root = hit.threadRootMessageId;
             // Otherwise the [selection] effect's else-branch focuses this stale trigger
             // (e.g. a "Reply in thread" button) once selection clears below, racing
             // RoomTimeline's own focus of the newly targeted main message.
@@ -697,10 +697,16 @@ function RoomContent({
             // details panel happens to be open, closing it here must not steal
             // focus back to the Details tab once RoomTimeline focuses this result.
             contextWasOpen.current = false;
-            onSelectThread?.(root);
-            setSelection(root ? { kind: "thread", id: root } : null);
             setContextCollapsed(true);
-            setSearchTarget({ messageId: message.messageId, threadRootMessageId: root, token: ++searchTargetToken.current });
+            if (root) {
+              onSelectThread?.(root);
+              setSelection({ kind: "thread", id: root });
+              setSearchTarget({ messageId: hit.messageId, threadRootMessageId: root, token: ++searchTargetToken.current });
+            } else {
+              setSelection(null);
+              // Server hits may not be loaded yet: the permalink target pages history until it is.
+              onJumpToMessage?.(hit.messageId);
+            }
           }} />}
         onOpenDetails={(tab) => { closeDetail(); if (tab) setDetailsTab(tab); setContextCollapsed(false); }}
         onAddPeople={canAddMembers ? () => {

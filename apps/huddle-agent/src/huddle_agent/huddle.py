@@ -346,6 +346,7 @@ class _Voice:
     # run's text box `box` (its sentences are streamed before the run ends; narration before a tool is another
     # box, and its words are not the answer's); `began`: when it began to say the run.
     answer: tuple | None = None
+    cut: bool = False  # a message of it was interrupted: stays, whatever plays to its end afterwards
     began: float = 0.0
     box: tuple | None = None
     unheard: bool = False
@@ -2693,7 +2694,7 @@ class Huddle:
         if v := self._same_session(run):
             if v.saying != run.run_id and (v.answer is None or v.answer[0] != run.run_id):
                 self._settle_answer(v)  # the answer before this one: on the record if it was cut (`_followed`)
-                v.unheard = v.replied = v.resaid = False
+                v.unheard = v.cut = v.replied = v.resaid = False
                 v.began = self._clock()
             if v.box != (run.run_id, run.box):
                 v.box, v.spoke = (run.run_id, run.box), 0
@@ -3055,12 +3056,13 @@ class Huddle:
         if v.answer or run:
             v.spoke += 1
         if interrupted:
-            v.unheard = True
+            v.unheard = v.cut = True
         elif ref and _words_in(text, ref, 0.5):
-            # A part of the answer, said to its end: it is saying the answer, whatever sound came first. A long
-            # answer comes as several messages and a later one may still be cut, so the answer itself stays
-            # until the voice has gone quiet with none of them cut (`_cut_answer`).
-            v.unheard = False
+            # A part of the answer, said to its end. Sound that came before its first word did not stop it
+            # after all. A part that was interrupted stays missing, whatever plays afterwards. A long answer
+            # comes as several messages and a later one may still be cut, so the answer itself stays until
+            # the voice has gone quiet with none of them cut (`_cut_answer`).
+            v.unheard = v.cut
         elif v.unheard:
             v.replied = True  # it answered who cut it: they were talking to it
 
@@ -3076,9 +3078,14 @@ class Huddle:
         """What its speaker said went on from the pending answer's request (a correction, a follow-up: /route's
         `follow`). That request replaces the answer from the moment it is accepted: the stale answer is neither
         said again nor posted beside the new one, also when the follow-up then fails or never speaks."""
-        return v.answer is not None and any(
-            # since it began to say that run: a follow-up may cut a streamed answer before its end frame
-            r.agent == v.agent_id and r.by == "follow" and r.created_at >= v.began
+        if v.answer is None:
+            return False
+        # after the answer's own request was made (a rowless run: since its voice began to say it): the
+        # follow-up may come while that run is still working, or cut a streamed answer before its end frame
+        own = [r.created_at for r in self._requests.by_run(v.answer[0])]
+        since = min(own) if own else v.began
+        return any(
+            r.agent == v.agent_id and r.by == "follow" and r.run_id != v.answer[0] and r.created_at >= since
             for r in self._requests.items
         )
 
@@ -3119,7 +3126,7 @@ class Huddle:
             now - n[3] >= CUT_HANDLED_S
             and now - self._last_heard >= (MEET_QUIET_S if self.setting == "meeting" else REQUEST_QUIET_S)
         ):
-            v.resaid, v.unheard, v.spoke = True, False, 0
+            v.resaid, v.unheard, v.cut, v.spoke = True, False, False, 0
             v.answer = (*n[:3], now, n[4])
             emit_metric("live.answer.resaid", 1, "Count")
             self._note(f"[{self._agent_name(v.agent_id)} says its cut answer again]")

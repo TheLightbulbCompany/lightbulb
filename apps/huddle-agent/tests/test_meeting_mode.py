@@ -1348,3 +1348,51 @@ async def test_narration_said_before_a_tool_is_not_a_word_of_the_answer_that_fol
     await says(h, P1, "Keep us.")  # before a word of the answer
     await quiet_tick(h, clock, h_mod.CUT_HANDLED_S + h_mod.MEET_QUIET_S)
     assert [c[1] for c in resays(lives[0])] == [h_mod.RESAY.format(answer=text)]
+
+
+async def test_a_part_cut_early_stays_missing_when_a_later_part_plays_to_its_end():
+    """Review: a later complete message cleared the interruption, and the cut start was neither said again nor
+    posted."""
+    h, backend, lives, clock, row = await forge_streams_to_priya()
+    streams(h, row.run_id, "Three pull requests are open. ")
+    h.on_agent_state("forge", "speaking")
+    h.on_agent_said("forge", "Three", interrupted=True)  # the start is cut
+    streams(h, row.run_id, "The oldest is the Meta callbacks draft from August.")
+    h.on_agent_said("forge", "The oldest is the Meta callbacks draft from August.")  # the rest plays
+    h.on_agent_state("forge", "listening")
+    ends(h, row.run_id, 1)
+    await quiet_tick(h, clock, h_mod.CUT_HANDLED_S + h_mod.MEET_QUIET_S)
+    assert len(resays(lives[0])) == 1 and "Three pull requests are open." in resays(lives[0])[0][1]
+
+
+async def test_sound_before_the_first_word_is_forgotten_when_the_answer_is_said_anyway():
+    h, backend, lives, clock, text = await forge_answers_priya()
+    await says(h, P1, "Keep us.")  # before a word of the answer
+    h.on_agent_state("forge", "speaking")
+    h.on_agent_said("forge", text)  # the model said it all the same
+    h.on_agent_state("forge", "listening")
+    await quiet_tick(h, clock, h_mod.CUT_HANDLED_S + h_mod.MEET_QUIET_S)
+    await quiet_tick(h, clock, h_mod.CUT_WAIT_S)
+    assert resays(lives[0]) == [] and backend.late_answers == []
+
+
+async def test_a_follow_up_accepted_while_the_run_was_still_silent_replaces_its_answer():
+    """Review: the follow-up's row was older than the answer's first spoken chunk."""
+    h, backend, lives, clock, row = await forge_streams_to_priya()
+    clock.t += 1
+    backend.route_extra = ops([("forge", "the ones opened last month", "follow")])
+    await says(h, P1, "actually, only the ones from last month")  # before the first run said a word
+    follow = h._requests.items[-1]
+    clock.t += 1
+    streams(h, row.run_id, "Three pull requests are open.")
+    h.on_agent_state("forge", "speaking")
+    h.on_agent_said("forge", "Three pull", interrupted=True)
+    h.on_agent_state("forge", "listening")
+    ends(h, row.run_id, 1)
+    h.on_data(None, "call.frame", packet(frame(follow.run_id, "forge", {"type": "error", "seq": 1})))
+    await settle(h)
+    await quiet_tick(h, clock, h_mod.CUT_HANDLED_S + h_mod.MEET_QUIET_S)
+    await quiet_tick(h, clock, h_mod.CUT_WAIT_S)
+    await h.clear_presence()
+    assert resays(lives[0]) == []
+    assert not [a for a in backend.late_answers if "Three pull requests" in a[3]]

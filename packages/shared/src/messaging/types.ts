@@ -655,6 +655,8 @@ export interface ActivityActionInput {
   required: boolean;
   /** `select` only. A `person` input lists the workspace roster client-side; the server validates the id. */
   options: { value: string; label: string }[] | null;
+  /** `login` only: a line to show above the fields (the site's connector is already connected). */
+  hint?: string | null;
 }
 
 export interface ActivityAction {

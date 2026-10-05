@@ -5,6 +5,7 @@ import { useIsWorkspaceAdmin } from "@/hooks/useIsWorkspaceAdmin";
 import { ConnectionsList } from "@/components/settings/ConnectionsList";
 import { GoogleAccountsSection } from "@/components/control/panels/GoogleAccountsSection";
 import { McpServersTab } from "@/components/control/panels/McpServersTab";
+import { WebsiteLoginsSection } from "@/components/control/panels/WebsiteLoginsSection";
 import { useConnections } from "@/hooks/useConnections";
 
 /**
@@ -112,6 +113,9 @@ export function IntegrationsPanel({ variant = "control" }: IntegrationsPanelProp
         {googleConnected && <GoogleAccountsSection canManage={canManage} />}
 
         <ConnectionsList canManage={canManage} />
+
+        {/* The same section Connections shows: the phone's "Manage on web" link lands here. */}
+        <WebsiteLoginsSection canManage={canManage} />
 
         {/* Bring-your-own MCP servers. A mainstream act now (vendors hand out
             remote MCP URLs), so it sits in the open — not behind Advanced.

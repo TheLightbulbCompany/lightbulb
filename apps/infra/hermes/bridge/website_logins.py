@@ -41,7 +41,7 @@ POLL_S = 2.0
 RENEW_S = 60.0  # well inside the backend's 300 s agent lease
 _ASK: ContextVar[dict | None] = ContextVar("website_login_ask", default=None)
 _install_lock = threading.Lock()
-MANAGED_HERE = "Connections → Website logins"
+MANAGED_HERE = "Connections → Website sign-ins"
 # Hermes's own copy points at surfaces that do not exist here (its desktop app and CLI).
 # Ordered: a longer phrase is replaced before any phrase it contains.
 _FOREIGN_POINTERS = (
@@ -142,7 +142,7 @@ class WorkspaceVault:
         return found
 
     def remove_item(self, item_id: str) -> bool:
-        raise _error(f"Website logins are managed by workspace admins in {MANAGED_HERE}.")
+        raise _error(f"Website sign-ins are managed by workspace admins in {MANAGED_HERE}.")
 
 
 def install() -> None:

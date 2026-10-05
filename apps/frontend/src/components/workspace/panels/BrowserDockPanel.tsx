@@ -451,7 +451,7 @@ export function BrowserDockPanel({ api: panelApi }: Partial<IDockviewPanelProps>
               <PopoverContent align="end" className={popover}><BrowserExtensionsSection onChanged={() => setPollNonce((value) => value + 1)} /></PopoverContent>
             </Popover>
             <Popover>
-              <PopoverTrigger aria-label="Website logins" title="Website logins" className="rounded-md border border-[var(--edge)] px-1.5 py-0.5"><KeyRound size={14} /></PopoverTrigger>
+              <PopoverTrigger aria-label="Website sign-ins" title="Website sign-ins" className="rounded-md border border-[var(--edge)] px-1.5 py-0.5"><KeyRound size={14} /></PopoverTrigger>
               <PopoverContent align="end" className={popover}><WebsiteLoginsSection canManage={isAdmin} /></PopoverContent>
             </Popover>
             <button type="button" disabled={busy} onClick={stop} title="Saves sign-ins for the workspace and ends this browser session." className="rounded-md border border-[var(--edge)] px-2 py-0.5 disabled:opacity-50">Stop</button>

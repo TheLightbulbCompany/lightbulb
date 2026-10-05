@@ -26,6 +26,7 @@ Where things live:
 from __future__ import annotations
 
 import asyncio
+import ipaddress
 import logging
 import re
 import secrets
@@ -85,6 +86,63 @@ def normalize_origin(value: str) -> str:
 
 def host_of(origin: str) -> str:
     return origin.split("://", 1)[-1]
+
+
+# ponytail: no public-suffix list (not a dependency). Last two labels, three under the suffixes
+# below. A suffix missing here groups its sites under the suffix itself (e.g. every *.com.ph
+# site as "com.ph"), and a "Sign out" there covers all of them: add it, or adopt a PSL library.
+_MULTI_SUFFIXES = frozenset(
+    "co.uk org.uk ac.uk gov.uk me.uk com.au net.au org.au edu.au gov.au co.nz org.nz co.jp ne.jp or.jp ac.jp "
+    "co.in net.in org.in co.kr or.kr co.za com.br com.mx com.ar com.co com.cn com.hk com.tw com.sg com.my "
+    "co.id co.th com.tr co.il com.ua com.pl com.ng com.eg com.sa com.pk "
+    # shared hosting: each tenant is its own site
+    "github.io herokuapp.com vercel.app netlify.app pages.dev web.app firebaseapp.com azurewebsites.net "
+    "cloudfront.net ngrok.io ngrok.app fly.dev onrender.com".split()
+)
+
+
+def site_of(host: str | None) -> str:
+    """The registrable domain a host, origin or cookie domain belongs to ("accounts.google.com",
+    ".google.com", "https://mail.google.com:8443" -> "google.com"): one sign-ins row per site."""
+    host = (host or "").strip().lower()
+    if "://" in host:
+        host = urlsplit(host).hostname or ""
+    else:
+        host = host.lstrip(".").split("/", 1)[0]
+        if host.count(":") == 1:  # host:port (an IPv6 literal has more than one colon)
+            host = host.split(":", 1)[0]
+    host = host.strip(".")
+    try:
+        ipaddress.ip_address(host.strip("[]"))
+        return host  # an IP address is its own site
+    except ValueError:
+        pass
+    labels = host.split(".")
+    keep = 3 if ".".join(labels[-2:]) in _MULTI_SUFFIXES else 2
+    return ".".join(labels[-keep:])
+
+
+async def connector_hint(owner_id: str, origin: str) -> str | None:
+    """For a login ask: the site belongs to a service this workspace already has CONNECTED (its
+    API connector), so say the password is a separate thing. None when not connected."""
+    from core.repositories import integrations_repo, slack_installs_repo
+    from core.services.credentials.registry import all_providers
+
+    site = site_of(origin)
+    try:
+        for key, provider in all_providers().items():
+            if site in provider.browser_domains:
+                row = await integrations_repo.get(owner_id, key)
+                if row and row.get("status") == "connected":
+                    return f"{provider.browser_name or provider.display_name} is connected. This password is only for the browser."
+        # Slack is not in the connector catalog (it is a channel install), so it is checked here.
+        if site == "slack.com" and any(
+            i.get("status") == "active" for i in await slack_installs_repo.list_for_owner(owner_id)
+        ):
+            return "Slack is connected. This password is only for the browser."
+    except Exception:  # noqa: BLE001 -- a hint is decoration; the ask still goes out
+        logger.warning("website_login connector hint failed owner=%s", owner_id)
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -175,6 +233,78 @@ async def add_login(
         added_by,
     )
     return _public(login_id, meta)
+
+
+async def update_login(
+    owner_id: str, login_id: str, *, username: str | None = None, password: str | None = None, actor: str
+) -> dict | None:
+    """Fix a username and/or replace the password of one saved login. None = no such login.
+    Who added it and when stay as they are; ``updatedBy``/``updatedAt`` record this edit."""
+    if not LOGIN_ID_RE.match(login_id or ""):
+        return None
+    if username is None and password is None:
+        raise LoginError("Enter a new username or a new password.")
+    rows = await _rows(owner_id)
+    row = rows.get(login_id)
+    if row is None:
+        return None
+    if username is not None:
+        username = username.strip()
+        if not username or len(username) > MAX_FIELD:
+            raise LoginError("Enter the username or email.")
+        if any(
+            k != login_id and v.get("origin") == row.get("origin") and v.get("username") == username
+            for k, v in rows.items()
+        ):
+            raise LoginError(f"{username} is already saved for {host_of(row.get('origin', ''))}.")
+    if password is not None and (not password or len(password) > MAX_SECRET):
+        raise LoginError("Enter the password.")
+    if password is not None:
+        await integration_secret_store.put(owner_id, _secret_key(login_id), {"password": password})
+    changes = {"updatedAt": utc_now_iso(), "updatedBy": actor} | (
+        {"username": username} if username is not None else {}
+    )
+    names = {"#id": login_id} | {f"#f{i}": key for i, key in enumerate(changes)}
+    try:
+        await run_in_thread(
+            _table().update_item,
+            Key={"owner_id": owner_id, "provider": LOGINS_KEY},
+            UpdateExpression="SET " + ", ".join(f"logins.#id.#f{i} = :f{i}" for i in range(len(changes))),
+            ConditionExpression="attribute_exists(logins.#id)",
+            ExpressionAttributeNames=names,
+            ExpressionAttributeValues={f":f{i}": value for i, value in enumerate(changes.values())},
+        )
+    except ClientError as exc:
+        if exc.response["Error"]["Code"] != "ConditionalCheckFailedException":
+            raise
+        return None  # removed meanwhile
+    logger.info(
+        "website_login.updated owner=%s login=%s actor=%s username=%s password=%s",
+        owner_id,
+        login_id,
+        actor,
+        username is not None,  # whether each changed, never the value
+        password is not None,
+    )
+    return _public(login_id, {**row, **changes})
+
+
+async def list_sites(owner_id: str) -> list[dict]:
+    """One entry per site: its saved logins, and whether the workspace browser's saved sign-ins
+    hold a session there (``browser_control.signed_in_sites``)."""
+    from core.services import browser_control
+
+    sites: dict[str, dict] = {}
+    for login in await list_logins(owner_id):
+        sites.setdefault(site_of(login["origin"]), {"signedIn": False, "logins": []})["logins"].append(login)
+    try:
+        signed_in = await browser_control.signed_in_sites(owner_id)
+    except Exception as exc:  # noqa: BLE001 -- the saved logins still list
+        logger.warning("website_login sites: browser sign-ins unreadable owner=%s: %s", owner_id, type(exc).__name__)
+        signed_in = set()
+    for site in signed_in:
+        sites.setdefault(site, {"logins": []})["signedIn"] = True
+    return [{"site": site, **sites[site]} for site in sorted(sites)]
 
 
 async def delete_login(owner_id: str, login_id: str, *, actor: str) -> bool:
@@ -316,6 +446,8 @@ async def create_request(
         "agentName": await _agent_name(owner_id, agent_id),
         "roomId": room_id,
         "threadRootMessageId": thread_root_message_id if room_id else None,
+        # Decided once, at the ask (it lives ~7 minutes); Activity renders it from the row.
+        "hint": await connector_hint(owner_id, origin) if kind == "login" else None,
         "status": "pending",
         "createdAt": created,
         "createdEpoch": int(time.time()),
@@ -368,7 +500,7 @@ async def _post_notice(owner_id: str, row: dict, link: str) -> None:
     else:
         text = (
             f"I need a login for {site} to continue. Add it here — the password goes straight to "
-            f"the workspace's website logins, never into this chat: {link}"
+            f"the workspace's website sign-ins, never into this chat: {link}"
         )
     try:
         await messaging_repo.create_message(

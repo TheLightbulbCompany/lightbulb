@@ -121,6 +121,9 @@ class ActionInput(ContractModel):
     label: str
     required: bool
     options: list[ActionOption] | None = None
+    # ``login`` only: a line shown above the fields (e.g. the site's connector is already
+    # connected, so this password is only for the browser).
+    hint: str | None = None
 
 
 class ActionNavigate(ContractModel):
@@ -535,7 +538,7 @@ async def _run_join_action(
     return await current()
 
 
-LOGIN_ADMIN_ONLY = "Only a workspace admin can add website logins."
+LOGIN_ADMIN_ONLY = "Only a workspace admin can add website sign-ins."
 
 
 def render_login_request(row: dict, *, seen: str | None, admin: bool) -> ActivityItem:
@@ -554,7 +557,7 @@ def render_login_request(row: dict, *, seen: str | None, admin: bool) -> Activit
         reason = f"{site} asked for a verification code. It goes into the page, never into chat."
     else:
         reason = (
-            f"Saved to the workspace's website logins for {site}, so every agent can sign in there. "
+            f"Saved to the workspace's website sign-ins for {site}, so every agent can sign in there. "
             "The password never enters chat."
         )
     actions: list[ActivityAction] = []
@@ -565,7 +568,10 @@ def render_login_request(row: dict, *, seen: str | None, admin: bool) -> Activit
                 label="Enter code" if code else "Add login",
                 style="primary",
                 input=ActionInput(
-                    kind="code" if code else "login", label="Code" if code else f"Login for {site}", required=True
+                    kind="code" if code else "login",
+                    label="Code" if code else f"Login for {site}",
+                    required=True,
+                    hint=None if code else row.get("hint"),
                 ),
             ),
             ActivityAction(id="decline", label="Not now"),

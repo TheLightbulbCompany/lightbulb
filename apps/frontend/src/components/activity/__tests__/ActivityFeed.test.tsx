@@ -224,6 +224,18 @@ describe("ActivityFeed", () => {
     expect(props.onOpenCompanyActivity).toHaveBeenCalled();
   });
 
+  it("shows the connector hint above a login ask's fields, and nothing without one", async () => {
+    const hint = "Google is connected. This password is only for the browser.";
+    const hinted: ActivityItem = { ...loginAsk, id: "login:h1",
+      actions: [{ ...loginAsk.actions[0], input: { ...loginAsk.actions[0].input!, hint } }, loginAsk.actions[1]] };
+    setup({ items: [hinted, loginAsk] });
+    await userEvent.click(within(row(hinted.id)).getByRole("button", { name: "Add login" }));
+    const form = within(row(hinted.id)).getByLabelText("Password").closest("form")!;
+    expect(form.firstElementChild).toHaveTextContent(hint);
+    await userEvent.click(within(row(loginAsk.id)).getByRole("button", { name: "Add login" }));
+    expect(within(row(loginAsk.id)).queryByText(hint)).not.toBeInTheDocument();
+  });
+
   it("takes a login an agent asked for in a masked form and posts it as the value only", async () => {
     const { props } = setup({ items: [loginAsk, mention] });
     const pinned = row(loginAsk.id);

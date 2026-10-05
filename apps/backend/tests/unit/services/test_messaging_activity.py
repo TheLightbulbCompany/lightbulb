@@ -186,7 +186,7 @@ async def test_mention_is_self_explaining_and_read_follows_the_room_cursor(world
     assert item["state"] == "open" and item["read"] is False
     assert [a["id"] for a in item["actions"]] == ["reply", "mark_done", "open"]
     reply = item["actions"][0]
-    assert reply["input"] == {"kind": "text", "label": "Reply to Ann", "required": True, "options": None}
+    assert reply["input"] == {"kind": "text", "label": "Reply to Ann", "required": True, "options": None, "hint": None}
     assert item["actions"][2]["navigate"]["kind"] in {"thread", "room"}
     assert page["unseenCount"] == 1 and page["sources"] == {"paperclip": "unavailable"}
     # Reading the room clears it.

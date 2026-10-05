@@ -202,6 +202,13 @@ async def test_members_cannot_manage_logins(env, async_client_org_member):
     body = {"origin": "supademo.com", "username": "u", "password": "p"}
     assert (await async_client_org_member.post("/api/v1/website-logins", json=body)).status_code == 403
     assert (await async_client_org_member.delete("/api/v1/website-logins/vault_0123456789ab")).status_code == 403
+    assert (await async_client_org_member.get("/api/v1/website-logins/sites")).status_code == 403
+    patched = await async_client_org_member.patch("/api/v1/website-logins/vault_0123456789ab", json={"username": "x"})
+    assert patched.status_code == 403
+    with patch("core.services.browser_control.sign_out", AsyncMock()) as sign_out:
+        res = await async_client_org_member.post("/api/v1/website-logins/sites/sign-out", json={"site": "google.com"})
+    assert res.status_code == 403
+    sign_out.assert_not_awaited()
 
 
 async def test_internal_routes_refuse_the_hook_token_and_take_the_vault_token(env, async_client):
@@ -230,3 +237,154 @@ async def test_internal_routes_refuse_the_hook_token_and_take_the_vault_token(en
             headers=good,
         )
         assert res.json() == {"username": "u@x.com", "password": PASSWORD}
+
+
+# ---- website sign-ins: one row per site, edit, sign out, the connector hint ------------------
+
+
+@pytest.mark.parametrize(
+    ("value", "site"),
+    [
+        ("https://accounts.google.com", "google.com"),
+        (".google.com", "google.com"),
+        ("mail.google.com:8443", "google.com"),
+        ("https://app.example.co.uk:8443/login", "example.co.uk"),
+        ("shop.example.com.au", "example.com.au"),
+        ("someone.github.io", "someone.github.io"),  # shared hosting: each tenant is a site
+        ("example.com", "example.com"),
+        ("10.0.0.7", "10.0.0.7"),
+        ("localhost", "localhost"),
+    ],
+)
+def test_site_of_groups_hosts_by_registrable_domain(value, site):
+    assert store.site_of(value) == site
+
+
+async def test_update_fixes_a_username_and_replaces_a_password(env, caplog):
+    caplog.set_level(logging.INFO)
+    saved = await store.add_login(
+        OWNER, "supademo.com", "me@exmaple.com", PASSWORD, added_by=USER_A, added_by_name="ann"
+    )
+    other = await store.add_login(OWNER, "supademo.com", "taken@example.com", "p2", added_by=USER_A)
+
+    fixed = await store.update_login(OWNER, saved["id"], username=" me@example.com ", actor="user_b")
+    # Same id, same origin, who added it and when unchanged; the password untouched.
+    assert fixed == {**saved, "username": "me@example.com"}
+    assert await store.resolve_login(OWNER, saved["id"], agent_id=FRIDAY) == {
+        "username": "me@example.com",
+        "password": PASSWORD,
+    }
+    replaced = await store.update_login(OWNER, saved["id"], password="n3w-Passw0rd", actor="user_b")
+    assert replaced["username"] == "me@example.com" and "password" not in replaced
+    assert (await store.resolve_login(OWNER, saved["id"], agent_id=FRIDAY))["password"] == "n3w-Passw0rd"
+    row = env.Table("integrations").get_item(Key={"owner_id": OWNER, "provider": store.LOGINS_KEY})["Item"]
+    assert row["logins"][saved["id"]]["updatedBy"] == "user_b" and row["logins"][saved["id"]]["addedBy"] == USER_A
+    assert "n3w-Passw0rd" not in _dump_everything(env)
+
+    with pytest.raises(store.LoginError, match="already saved for supademo.com"):
+        await store.update_login(OWNER, saved["id"], username="taken@example.com", actor=USER_A)
+    for bad in ({"username": "  "}, {"password": ""}, {}):
+        with pytest.raises(store.LoginError):
+            await store.update_login(OWNER, saved["id"], actor=USER_A, **bad)
+    assert await store.update_login(OWNER, "vault_ffffffffffff", username="x", actor=USER_A) is None
+    assert await store.update_login(OWNER, "not-an-id", username="x", actor=USER_A) is None
+    assert (await store.resolve_login(OWNER, other["id"], agent_id=FRIDAY))["username"] == "taken@example.com"
+    assert "website_login.updated" in caplog.text and "n3w-Passw0rd" not in caplog.text
+
+
+async def test_sites_merge_saved_logins_with_the_browsers_sign_ins(env):
+    a = await store.add_login(OWNER, "accounts.google.com", "a@x.com", PASSWORD, added_by=USER_A)
+    b = await store.add_login(OWNER, "mail.google.com", "b@x.com", PASSWORD, added_by=USER_A)
+    c = await store.add_login(OWNER, "app.supademo.com", "c@x.com", PASSWORD, added_by=USER_A)
+    with patch("core.services.browser_control.signed_in_sites", AsyncMock(return_value={"google.com", "github.com"})):
+        sites = await store.list_sites(OWNER)
+    assert sites == [
+        {"site": "github.com", "signedIn": True, "logins": []},
+        {"site": "google.com", "signedIn": True, "logins": [a, b]},
+        {"site": "supademo.com", "signedIn": False, "logins": [c]},
+    ]
+    # The browser's save being unreadable never hides the saved logins.
+    with patch("core.services.browser_control.signed_in_sites", AsyncMock(side_effect=RuntimeError("s3"))):
+        assert [s["site"] for s in await store.list_sites(OWNER)] == ["google.com", "supademo.com"]
+
+
+async def test_site_routes_edit_and_sign_out_without_returning_a_secret(env, async_client_org_admin):
+    from core.services import browser_control
+
+    client = async_client_org_admin
+    with (
+        patch("routers.website_logins.resolve_owner_id", lambda auth: OWNER),
+        patch("core.services.browser_control.signed_in_sites", AsyncMock(return_value={"supademo.com"})),
+        patch("core.services.browser_control.sign_out", AsyncMock()) as sign_out,
+    ):
+        body = {"origin": "app.supademo.com", "username": "u@x.com", "password": PASSWORD}
+        created = (await client.post("/api/v1/website-logins", json=body)).json()
+        listed = await client.get("/api/v1/website-logins/sites")
+        assert listed.status_code == 200 and PASSWORD not in listed.text
+        assert listed.json() == {"sites": [{"site": "supademo.com", "signedIn": True, "logins": [created]}]}
+
+        url = f"/api/v1/website-logins/{created['id']}"
+        patched = await client.patch(url, json={"username": "v@x.com", "password": "n3w-Passw0rd"})
+        assert patched.status_code == 200 and patched.json() == {**created, "username": "v@x.com"}
+        assert "n3w-Passw0rd" not in patched.text
+        assert (await client.patch(url, json={})).status_code == 400
+        assert (await client.patch(url, json={"username": " "})).status_code == 400
+        await client.post("/api/v1/website-logins", json={**body, "username": "w@x.com"})
+        clash = await client.patch(url, json={"username": "w@x.com"})
+        assert clash.status_code == 400 and "already saved" in clash.json()["detail"]
+        assert (
+            await client.patch("/api/v1/website-logins/vault_ffffffffffff", json={"username": "x"})
+        ).status_code == 404
+
+        out = await client.post("/api/v1/website-logins/sites/sign-out", json={"site": " Supademo.com "})
+        assert out.status_code == 204 and out.content == b""
+        sign_out.assert_awaited_once()
+        assert sign_out.await_args.args == (OWNER, "supademo.com")
+        # A site is a registrable domain, never a subdomain, URL or bare word.
+        for bad in ("app.supademo.com", "https://supademo.com", "supademo", ""):
+            res = await client.post("/api/v1/website-logins/sites/sign-out", json={"site": bad})
+            assert res.status_code in (400, 422), bad
+        sign_out.assert_awaited_once()
+        sign_out.side_effect = browser_control.BrowserError(browser_control.AGENT_BUSY)
+        busy = await client.post("/api/v1/website-logins/sites/sign-out", json={"site": "supademo.com"})
+        assert busy.status_code == 409 and busy.json()["detail"] == browser_control.AGENT_BUSY
+
+
+@pytest.mark.parametrize(
+    ("origin", "connected", "hint"),
+    [
+        ("https://accounts.google.com", {"google"}, "Google is connected. This password is only for the browser."),
+        ("https://github.com/login", {"github"}, "GitHub is connected. This password is only for the browser."),
+        (
+            "https://login.microsoftonline.com",
+            {"microsoft365"},
+            "Microsoft 365 is connected. This password is only for the browser.",
+        ),
+        ("https://www.notion.so", {"notion"}, "Notion is connected. This password is only for the browser."),
+        ("https://acme.slack.com", {"slack"}, "Slack is connected. This password is only for the browser."),
+        ("https://accounts.google.com", set(), None),  # not connected: no hint
+        ("https://accounts.google.com", {"github"}, None),  # another service's connector
+        ("https://supademo.com", {"google", "github", "slack"}, None),
+    ],
+)
+async def test_a_login_ask_carries_a_hint_when_the_sites_connector_is_connected(env, origin, connected, hint):
+    async def get(owner_id, provider):
+        return {"status": "connected"} if provider in connected else {"status": "reconnect_required"}
+
+    installs = [{"status": "active"}] if "slack" in connected else [{"status": "revoked"}]
+    with (
+        patch("core.repositories.integrations_repo.get", get),
+        patch("core.repositories.slack_installs_repo.list_for_owner", AsyncMock(return_value=installs)),
+    ):
+        created = await store.create_request(
+            OWNER, kind="login", origin=origin, agent_id=FRIDAY, room_id=None, thread_root_message_id=None
+        )
+        code = await store.create_request(
+            OWNER, kind="code", origin=origin, agent_id=FRIDAY, room_id=None, thread_root_message_id=None
+        )
+    row = await store.get_request(OWNER, created["requestId"])
+    item = activity.render_login_request(row, seen=None, admin=True)
+    assert item.actions[0].input.hint == hint
+    assert item.model_dump(by_alias=True)["actions"][0]["input"]["hint"] == hint
+    code_item = activity.render_login_request(await store.get_request(OWNER, code["requestId"]), seen=None, admin=True)
+    assert code_item.actions[0].input.hint is None

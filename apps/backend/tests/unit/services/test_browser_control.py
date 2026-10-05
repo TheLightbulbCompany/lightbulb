@@ -962,3 +962,195 @@ async def test_failed_catch_up_save_leases_stale_session_for_retry_next_run(work
     assert workspace["browser_state"]["controller_id"] == "run-1"
     assert control._stale(workspace["browser_state"])
     restore.assert_not_awaited()
+
+
+# --- website sign-ins: which sites the save is signed in to, and signing one out --------
+
+SECRET = "c00kie-value-never-logged"
+
+
+def _cookie(name, domain, **extra):
+    return {"name": name, "value": SECRET, "domain": domain, "path": "/", "expires": -1, "httpOnly": True} | extra
+
+
+SNAPSHOT = {
+    "cookies": [
+        _cookie("SID", ".google.com"),
+        _cookie("OSID", "mail.google.com"),
+        _cookie("sess", "github.com"),
+        _cookie("old", "expired.example", expires=1),
+        _cookie("_ga", ".analytics.example", httpOnly=False),
+    ],
+    "origins": [
+        {"origin": "https://mail.google.com", "localStorage": [{"name": "t", "value": SECRET}]},
+        {"origin": "https://github.com", "localStorage": [{"name": "k", "value": "v"}]},
+    ],
+}
+
+
+class _FakeS3:
+    def __init__(self, objects):
+        self.objects = objects
+
+    def get_object(self, Bucket, Key):
+        import io
+
+        return {"Body": io.BytesIO(self.objects[Key])}
+
+    def put_object(self, Bucket, Key, Body, ContentType):
+        self.objects[Key] = Body
+
+    def copy_object(self, Bucket, Key, CopySource):
+        self.objects[Key] = self.objects[CopySource["Key"]]
+
+
+@pytest.fixture
+def saved(workspace, monkeypatch):
+    import json
+
+    key = "browser-state/org_browser/k1.json"
+    objects = {key: json.dumps(SNAPSHOT).encode(), control._ext_key(key): b'{"ext": {}}'}
+    workspace["browser_state"].update(saved_key=key, live_key=key, base_key="browser-state/org_browser/k1.base.json")
+    monkeypatch.setattr(control.boto3, "client", lambda *a, **k: _FakeS3(objects))
+    return objects
+
+
+class _FakeBrowser(_FakeCdp):
+    """A browser holding SNAPSHOT's cookies with one tab open on mail.google.com."""
+
+    def __init__(self, stuck=False):
+        super().__init__()
+        self.cookies = [dict(c) for c in SNAPSHOT["cookies"]]
+        self.stuck = stuck
+
+    async def send(self, raw):
+        import json
+
+        message = json.loads(raw)
+        self.sent.append(message)
+        params = message.get("params") or {}
+        if message["method"] == "Network.deleteCookies" and not self.stuck:
+            self.cookies = [c for c in self.cookies if (c["name"], c["domain"]) != (params["name"], params["domain"])]
+        result = {
+            "Target.getTargets": {
+                "targetInfos": [
+                    {"targetId": "a", "type": "page", "url": "https://mail.google.com/mail/u/0/"},
+                    {"targetId": "b", "type": "page", "url": "https://github.com/"},
+                ]
+            },
+            "Target.attachToTarget": {"sessionId": f"page-{params.get('targetId')}"},
+            "Storage.getCookies": {"cookies": self.cookies},
+        }.get(message["method"], {})
+        self._replies.append({"id": message["id"], "result": result})
+
+
+@pytest.mark.asyncio
+async def test_signed_in_sites_come_from_the_saves_unexpired_httponly_cookies(workspace, saved):
+    assert await control.signed_in_sites("org_browser") == {"google.com", "github.com"}
+    workspace["browser_state"]["saved_key"] = "browser-state/another_org/k1.json"  # never another owner's save
+    assert await control.signed_in_sites("org_browser") == set()
+
+
+@pytest.mark.asyncio
+async def test_sign_out_removes_the_site_from_the_live_browser_and_the_save(
+    workspace, agent_tools, saved, monkeypatch, caplog
+):
+    import json
+    import logging
+
+    caplog.set_level(logging.INFO)
+    cdp = _FakeBrowser()
+    monkeypatch.setattr(control.websockets, "connect", MagicMock(return_value=cdp))
+    await control.sign_out("org_browser", "google.com", actor="user_1")
+
+    # Live: only google.com's cookies deleted, its origins cleared, its open tab reloaded.
+    deleted = [m["params"]["domain"] for m in cdp.sent if m["method"] == "Network.deleteCookies"]
+    assert sorted(deleted) == [".google.com", "mail.google.com"]
+    assert {c["domain"] for c in cdp.cookies} == {"github.com", "expired.example", ".analytics.example"}
+    cleared = {m["params"]["origin"] for m in cdp.sent if m["method"] == "Storage.clearDataForOrigin"}
+    assert cleared == {"https://google.com", "https://mail.google.com"}
+    assert [m["sessionId"] for m in cdp.sent if m["method"] == "Page.reload"] == ["page-a"]
+
+    # Saved: a NEW object (the committed one is never rewritten) without the site; the pointer
+    # moved to it on a new generation, back in the mode it was in, with the extension data.
+    state = workspace["browser_state"]
+    assert state["mode"] == "idle" and state["session_id"] == "session" and state["generation"] != "current"
+    assert state["saved_key"] == f"browser-state/org_browser/{state['generation']}.json"
+    assert state["live_key"] == state["saved_key"] and state["base_key"] == "browser-state/org_browser/k1.base.json"
+    after = json.loads(saved[state["saved_key"]])
+    assert {c["domain"] for c in after["cookies"]} == {"github.com", "expired.example", ".analytics.example"}
+    assert [o["origin"] for o in after["origins"]] == ["https://github.com"]
+    assert saved[control._ext_key(state["saved_key"])] == b'{"ext": {}}'
+    assert json.loads(saved["browser-state/org_browser/k1.json"]) == SNAPSHOT
+    control._delete_snapshot.assert_awaited_once_with("browser-state/org_browser/k1.json")
+    assert await control.signed_in_sites("org_browser") == {"github.com"}
+    assert SECRET not in caplog.text and "browser.sign_out" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_sign_out_with_no_running_browser_edits_the_save_only(workspace, saved, monkeypatch):
+    import json
+
+    connect = MagicMock()
+    monkeypatch.setattr(control.websockets, "connect", connect)
+    workspace["browser_state"].update(session_id=None, ended_reason="stopped")
+    await control.sign_out("org_browser", "github.com", actor="user_1")
+    connect.assert_not_called()
+    state = workspace["browser_state"]
+    assert state["ended_reason"] == "stopped" and state["session_id"] is None  # a person's Stop still stands
+    assert {c["domain"] for c in json.loads(saved[state["saved_key"]])["cookies"]} == {
+        ".google.com",
+        "mail.google.com",
+        "expired.example",
+        ".analytics.example",
+    }
+
+
+@pytest.mark.asyncio
+async def test_sign_out_refuses_while_an_agent_holds_the_browser_and_changes_nothing(
+    workspace, agent_tools, saved, monkeypatch
+):
+    import websockets
+
+    connect = MagicMock()
+    monkeypatch.setattr(control.websockets, "connect", connect)
+    _agent(workspace)
+    before = copy.deepcopy(workspace["browser_state"])
+    with pytest.raises(control.BrowserError, match="agent is using"):
+        await control.sign_out("org_browser", "google.com", actor="user_1")
+    connect.assert_not_called()
+    assert workspace["browser_state"] == before and len(saved) == 2
+    # A run still connected after its lease lapsed holds the one automation slot: AWS says 429.
+    workspace["browser_state"].update(mode="idle")
+    before = copy.deepcopy(workspace["browser_state"])
+    refused = websockets.InvalidStatus(MagicMock(status_code=429))
+    monkeypatch.setattr(control.websockets, "connect", MagicMock(side_effect=refused))
+    with pytest.raises(control.BrowserError, match="agent is using"):
+        await control.sign_out("org_browser", "google.com", actor="user_1")
+    assert workspace["browser_state"] == before and len(saved) == 2  # the pointer is back; no new save
+
+
+@pytest.mark.asyncio
+async def test_sign_out_commits_nothing_when_the_live_cookies_would_not_go(workspace, agent_tools, saved, monkeypatch):
+    monkeypatch.setattr(control.websockets, "connect", MagicMock(return_value=_FakeBrowser(stuck=True)))
+    before = copy.deepcopy(workspace["browser_state"])
+    with pytest.raises(control.BrowserError, match="Couldn't sign out in the running browser"):
+        await control.sign_out("org_browser", "google.com", actor="user_1")
+    assert workspace["browser_state"] == before and len(saved) == 2
+
+
+@pytest.mark.asyncio
+async def test_sign_out_never_writes_a_save_it_could_not_read(workspace, saved, monkeypatch):
+    workspace["browser_state"].update(session_id=None)
+    saved["browser-state/org_browser/k1.json"] = b'{"cookies": "not a list"}'
+    before = copy.deepcopy(workspace["browser_state"])
+    with pytest.raises(control.BrowserError):
+        await control.sign_out("org_browser", "google.com", actor="user_1")
+    assert workspace["browser_state"] == before and len(saved) == 2
+
+
+@pytest.mark.asyncio
+async def test_sign_out_is_a_no_op_for_a_workspace_that_never_ran_a_browser(workspace):
+    workspace["browser_state"] = None
+    await control.sign_out("org_browser", "google.com", actor="user_1")
+    assert workspace["browser_state"] is None

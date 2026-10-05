@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "Lightbulb",
   "version": "1.0.0",
-  "description": "Adds Chrome Web Store extensions to the workspace's shared browser, and saves and fills the workspace's website logins.",
+  "description": "Adds Chrome Web Store extensions to the workspace's shared browser, and saves and fills the workspace's website sign-ins.",
   "permissions": [
     "tabs",
     "storage"

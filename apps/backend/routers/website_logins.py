@@ -1,7 +1,8 @@
-"""Website logins: the workspace store every agent's browser fills from.
+"""Website sign-ins: the workspace store every agent's browser fills from.
 
-Humans (Clerk, org admins only): list / add / delete. Values go in, metadata comes out --
-no route ever returns a password.
+Humans (Clerk, org admins only): list / add / edit / delete saved logins, list them per site
+beside the workspace browser's own sign-ins (``/sites``), and sign the browser out of a site.
+Values go in, metadata comes out -- no route ever returns a password or a cookie.
 
 The runtime (the bridge's vault token -- never the hook token, which the agent's shell holds):
 list the metadata, resolve one login at fill time, and file / poll /
@@ -52,6 +53,51 @@ async def add_login(body: AddLoginBody, auth: AuthContext = Depends(get_current_
         )
     except store.LoginError as exc:
         raise _bad(exc) from exc
+
+
+class UpdateLoginBody(BaseModel):
+    username: str | None = Field(default=None, max_length=store.MAX_FIELD)
+    password: str | None = Field(default=None, max_length=store.MAX_SECRET)
+
+
+class SignOutBody(BaseModel):
+    site: str = Field(min_length=1, max_length=253)
+
+
+@router.get("/sites")
+async def list_sites(auth: AuthContext = Depends(get_current_user)):
+    require_org_admin(auth)
+    return {"sites": await store.list_sites(resolve_owner_id(auth))}
+
+
+@router.post("/sites/sign-out", status_code=204)
+async def sign_out_site(body: SignOutBody, auth: AuthContext = Depends(get_current_user)):
+    """Sign the workspace browser out of one site (browser_control.sign_out). 409 with a
+    reason when it cannot be done right now (an agent is using the browser, a save is running)."""
+    from core.services import browser_control
+
+    require_org_admin(auth)
+    site = body.site.strip().lower()
+    if "." not in site or store.site_of(site) != site:
+        raise HTTPException(status_code=400, detail="Enter a site like example.com.")
+    try:
+        await browser_control.sign_out(resolve_owner_id(auth), site, actor=auth.user_id)
+    except browser_control.BrowserError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from None
+
+
+@router.patch("/{login_id}")
+async def update_login(login_id: str, body: UpdateLoginBody, auth: AuthContext = Depends(get_current_user)):
+    require_org_admin(auth)
+    try:
+        updated = await store.update_login(
+            resolve_owner_id(auth), login_id, username=body.username, password=body.password, actor=auth.user_id
+        )
+    except store.LoginError as exc:
+        raise _bad(exc) from exc
+    if updated is None:
+        raise HTTPException(status_code=404, detail="Login not found.")
+    return updated
 
 
 @router.delete("/{login_id}", status_code=204)

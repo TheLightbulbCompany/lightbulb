@@ -48,7 +48,7 @@ with tempfile.TemporaryDirectory() as root:
 
     missing = tool.browser_vault_fill("vault_ffffffffffff")
     rewritten = website_logins.transform_tool_result("browser_vault_fill", missing)
-    assert "hermes vault add" not in rewritten and "Website logins" in rewritten, rewritten
+    assert "hermes vault add" not in rewritten and "Website sign-ins" in rewritten, rewritten
 
     assert not can_prompt_here()
     with website_logins.prompt_scope("agent-1", None, None):

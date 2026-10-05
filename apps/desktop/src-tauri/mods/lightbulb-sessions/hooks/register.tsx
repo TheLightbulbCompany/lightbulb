@@ -6,6 +6,12 @@ import { bashTouchesProtected, classify, colorFor, protectedPath, rowBody, rowLa
 
 export const sharing = atom({ plugin: 'lightbulb-sessions', key: 'state' } as const, null as SessionState | null)
 const problem = atom({ plugin: 'lightbulb-sessions', key: 'error' } as const, null as string | null)
+// An Allow or Resume is waiting on the app, which may be asking the owner in a dialog on the Mac.
+const confirming = atom({ plugin: 'lightbulb-sessions', key: 'confirming' } as const, false)
+// One decision at a time: a second Allow while one is out would open a second dialog on the Mac.
+// A module variable on purpose: it is set and tested in one synchronous step.
+let deciding = false
+const REFUSED = 'Lightbulb did not take that. Try again in the app.'
 
 const POLL_MS = 2000
 const GRACE_MS = 60_000 // a missed poll keeps the last good band this long: the app may just be busy
@@ -21,12 +27,17 @@ async function socketPath($: EngineInterface): Promise<string | null> {
   }
 }
 
-// null: nothing to show (no socket yet, or the app says this session is not shared).
-// undefined: no answer (the app is not running, busy, or refused the call).
-async function call($: EngineInterface, path: string, body?: Decision): Promise<SessionState | null | undefined> {
+// state null: nothing to show (no socket yet, or the app says this session is not shared).
+// state undefined: no answer (the app is not running, busy, or refused the call); `message` is
+// what the app said when it refused, if it said anything (e.g. "Cancelled on this Mac.").
+type Reply = { state: SessionState | null | undefined; message?: string }
+
+// No timeout to set: HttpInit has none, and a hook's budget stops while a `$` call is in flight,
+// so a decide stays open while the owner answers the app's dialog.
+async function call($: EngineInterface, path: string, body?: Decision): Promise<Reply> {
   const socket = await socketPath($)
   // The app removes the socket when sharing stops or it quits: hide at once, not after the grace.
-  if (!socket || !(await $.fs.exists(socket))) return null
+  if (!socket || !(await $.fs.exists(socket))) return { state: null }
   try {
     const res = await $.http.fetch(`${APP}${path}`, {
       method: body ? 'POST' : 'GET',
@@ -34,19 +45,28 @@ async function call($: EngineInterface, path: string, body?: Decision): Promise<
       body: body ? JSON.stringify(body) : undefined,
       socketPath: socket,
     })
-    if (res.status === 404) return null
-    if (res.status !== 200) return undefined
-    return JSON.parse(res.text) as SessionState
+    if (res.status === 404) return { state: null }
+    if (res.status !== 200) return { state: undefined, message: said(res.text) }
+    return { state: JSON.parse(res.text) as SessionState }
+  } catch {
+    return { state: undefined }
+  }
+}
+
+function said(text: string): string | undefined {
+  try {
+    const m = (JSON.parse(text) as { message?: unknown }).message
+    return typeof m === 'string' && m.trim() ? m.slice(0, 200) : undefined
   } catch {
     return undefined
   }
 }
 
 export async function fetchState($: EngineInterface): Promise<SessionState | null | undefined> {
-  return call($, '/v1/state')
+  return (await call($, '/v1/state')).state
 }
 
-export async function decide($: EngineInterface, body: Decision): Promise<SessionState | null | undefined> {
+export async function decide($: EngineInterface, body: Decision): Promise<Reply> {
   return call($, '/v1/decide', body)
 }
 
@@ -119,12 +139,22 @@ export const register: Register = on => {
     if (!s) return next(e)
     const { Box, Button, Text } = $.ui.resolve(e)
     const act = (body: Decision) => async () => {
-      const after = await decide($, body)
-      if (after) await update($, sharing, () => after) // never write back the draw-time `s`: the poll may be newer
-      await update($, problem, () => (after ? null : 'Lightbulb did not take that. Try again in the app.'))
+      if (deciding) return
+      deciding = true
+      const asks = body.decision === 'allow' || body.decision === 'unpause'
+      try {
+        if (asks) await update($, confirming, () => true)
+        const { state: after, message } = await decide($, body)
+        if (after) await update($, sharing, () => after) // never write back the draw-time `s`: the poll may be newer
+        await update($, problem, () => (after ? null : message ?? REFUSED))
+      } finally {
+        deciding = false
+        if (asks) await update($, confirming, () => false)
+      }
     }
     const ask = s.joinRequests[0]
     const err = await read($, problem)
+    const waitingOnMac = await read($, confirming)
     return (
       <Box flexDirection="column">
         <Box>
@@ -140,6 +170,7 @@ export const register: Register = on => {
             <Button key="decline" hotkey="d" label="Decline" onPress={act({ decision: 'decline', userId: ask.userId, requestId: ask.requestId })} />
           </Box>
         )}
+        {waitingOnMac && <Text dimColor>Confirm on your Mac…</Text>}
         {s.approvalWaiting && <Text dimColor>Waiting on you here or in Lightbulb</Text>}
         {err && <Text color="red">{err}</Text>}
       </Box>

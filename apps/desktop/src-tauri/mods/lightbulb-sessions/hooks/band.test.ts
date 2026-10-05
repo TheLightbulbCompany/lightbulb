@@ -20,8 +20,10 @@ type Call = { url: string; method: string; body: unknown; socketPath: string | u
 
 // The world beneath the mod: the socket file, the app over the socket, the session, and the engine's own band.
 // A `$` call's bottom answers `{ value }` or `{ deny }`; a deny is what the mod's call rejects with.
-type Answer = (path: string, body: unknown) => { status: number; body: unknown } | 'refuse' | 'hang'
-function world(on: On, answer: Answer, socketFile = true) {
+type Reply = { status: number; body: unknown }
+type Answer = (path: string, body: unknown) => Reply | 'refuse' | 'hang' | 'held'
+// `held`: the reply the test settles itself (an Allow the owner is still answering on the Mac).
+function world(on: On, answer: Answer, socketFile = true, held?: Promise<Reply>) {
   const calls: Call[] = []
   const socket = { live: true } // whether the app's socket file is there
   const clock = mock.clock(on)
@@ -37,8 +39,9 @@ function world(on: On, answer: Answer, socketFile = true) {
     const a = answer(new URL(e.url).pathname, body)
     if (a === 'refuse') return { deny: 'connect ECONNREFUSED' }
     if (a === 'hang') return new Promise<never>(() => {}) // accepts the connection, never answers
-    const text = JSON.stringify(a.body)
-    return { value: { status: a.status, ok: a.status >= 200 && a.status < 300, headers: {}, text } }
+    const reply = (r: Reply) => ({ value: { status: r.status, ok: r.status >= 200 && r.status < 300, headers: {}, text: JSON.stringify(r.body) } })
+    if (a === 'held') return held!.then(reply)
+    return reply(a)
   })
   on('ui.render', { component: 'AbovePrompt' }, ($, e) => {
     const { Text } = $.ui.resolve(e)
@@ -165,19 +168,72 @@ test('Allow posts the decision and the request leaves the band', async ($, on) =
   }
 })
 
-test('a refused decision shows the error line and keeps the request', async ($, on) => {
+test("a refused decision shows the app's message and keeps the request", async ($, on) => {
   const { clock } = world(on, path => path === '/v1/decide'
-    ? { status: 409, body: { error: 'not_pending', message: 'gone' } }
+    ? { status: 409, body: { error: 'stale', message: 'That request is no longer waiting.' } }
     : { status: 200, body: asking })
   await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
   await clock.settle()
   for (const surface of SURFACES) {
     const ui = await $.ui.mount({ ...BAND, surface })
     await ui.press({ key: 'allow' })
-    expect(await ui.find({ type: 'Text', text: 'Lightbulb did not take that. Try again in the app.' })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: 'That request is no longer waiting.' })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: 'Lightbulb did not take that. Try again in the app.' })).toBeUndefined()
     expect(await ui.find({ key: 'allow' })).toBeDefined()
     await ui.unmount()
   }
+})
+
+test('a refusal with no message shows the generic error line', async ($, on) => {
+  const { clock } = world(on, path => path === '/v1/decide' ? { status: 500, body: 'oops' } : { status: 200, body: asking })
+  await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
+  await clock.settle()
+  const ui = await $.ui.mount({ ...BAND, surface: 'terminal' })
+  await ui.press({ key: 'allow' })
+  expect(await ui.find({ type: 'Text', text: 'Lightbulb did not take that. Try again in the app.' })).toBeDefined()
+})
+
+test('an Allow out blocks a second press', async ($, on) => {
+  let answer: (v: { status: number; body: unknown }) => void = () => {}
+  const held = new Promise<{ status: number; body: unknown }>(r => { answer = r })
+  const { calls, clock } = world(on, path => path === '/v1/decide' ? 'held' : { status: 200, body: asking }, true, held)
+  await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
+  await clock.settle()
+  const ui = await $.ui.mount({ ...BAND, surface: 'terminal' })
+  const first = ui.press({ key: 'allow' })
+  await clock.settle()
+  const sent = calls.filter(c => c.url.endsWith('/v1/decide')).length
+  await ui.press({ key: 'allow' })
+  expect(calls.filter(c => c.url.endsWith('/v1/decide')).length).toBe(sent)
+  answer({ status: 200, body: base })
+  await first
+  expect(sent).toBe(1)
+})
+
+test('a poll that resolves a refused decision clears its error line', async ($, on) => {
+  let state: SessionState = asking
+  const { clock } = world(on, path => path === '/v1/decide'
+    ? { status: 409, body: { error: 'unavailable', message: 'Lightbulb is unreachable.' } }
+    : { status: 200, body: state })
+  await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
+  await clock.settle()
+  const ui = await $.ui.mount({ ...BAND, surface: 'terminal' })
+  await ui.press({ key: 'allow' })
+  expect(await ui.find({ type: 'Text', text: 'Lightbulb is unreachable.' })).toBeDefined()
+  await clock.advance(2000)
+  expect(await ui.find({ type: 'Text', text: 'Lightbulb is unreachable.' })).toBeDefined() // still about the request shown
+  state = { ...asking, joinRequests: [{ userId: 'u2', name: 'Mira Shah', requestId: 'r2', kind: 'join' }] }
+  await clock.advance(2000)
+  expect(await ui.find({ type: 'Text', text: 'Lightbulb is unreachable.' })).toBeUndefined() // that request was answered elsewhere
+  await ui.press({ key: 'pause' })
+  expect(await ui.find({ type: 'Text', text: 'Lightbulb is unreachable.' })).toBeDefined()
+  state = { ...base, paused: true }
+  await clock.advance(2000)
+  expect(await ui.find({ type: 'Text', text: 'Lightbulb is unreachable.' })).toBeUndefined() // paused after all
+  state = base
+  await clock.advance(2000)
+  expect(await ui.find({ type: 'Text', text: 'Lightbulb is unreachable.' })).toBeUndefined() // cleared, not hidden
+  await ui.unmount()
 })
 
 test('Pause posts pause, and a paused band offers Resume', async ($, on) => {

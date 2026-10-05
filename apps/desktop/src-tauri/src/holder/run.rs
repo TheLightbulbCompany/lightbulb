@@ -94,6 +94,14 @@ mod tests {
     }
 
     #[test]
+    fn holder_input_origin_is_a_teammate_only_for_a_type_client_s_plain_input() {
+        assert_eq!(input_origin(INPUT, false), "owner");
+        assert_eq!(input_origin(INPUT, true), "teammate");
+        assert_eq!(input_origin(OWNER_INPUT, true), "owner");
+        assert_eq!(input_origin(OWNER_INPUT, false), "owner");
+    }
+
+    #[test]
     fn holder_environment_parses_and_refuses_an_empty_capture() {
         let wrap = |json: &str| format!("Welcome back!\n{ENV_BEGIN}{json}{ENV_END}\nbye\n").into_bytes();
         let env = parse_environment(&wrap(r#"{"HOME":"/Users/a","PATH":"/usr/bin","SHLVL":"2","MULTI":"a\nb"}"#)).unwrap();
@@ -263,6 +271,10 @@ pub fn run_with_env(socket: &Path, argv: &[String], cwd: &Path, env: Vec<(String
     let mut typists: HashSet<u64> = HashSet::new();
     // Interactive `join` clients waiting for the keyboard, oldest first (also watchers and typists).
     let mut joined: Vec<u64> = vec![];
+    // `type` clients: a remote teammate's keys, relayed by the app (also typists).
+    let mut remote: HashSet<u64> = HashSet::new();
+    // Who wrote the last bytes to the pty (HELLO's `lastInput`).
+    let mut last_input: Option<&'static str> = None;
     let mut exited: Option<(String, u32, Instant)> = None;
 
     loop {
@@ -305,7 +317,7 @@ pub fn run_with_env(socket: &Path, argv: &[String], cwd: &Path, env: Vec<(String
                 let (rows, cols) = model.size();
                 let facts = serde_json::json!({"protocol": 1, "pid": std::process::id(),
                     "providerPid": provider_pid, "argv": argv, "cwd": cwd, "rows": rows, "cols": cols,
-                    "watch": true, "type": true, "joined": joining});
+                    "watch": true, "type": true, "joined": joining, "origin": true, "lastInput": last_input});
                 if !client.send(encode(HELLO, facts.to_string().as_bytes())) {
                     continue;
                 }
@@ -354,13 +366,18 @@ pub fn run_with_env(socket: &Path, argv: &[String], cwd: &Path, env: Vec<(String
                     // Input only: it gets no output and never resizes (the window or CLI owns the
                     // size). Dropping its Client still delivers the queued HELLO.
                     typists.insert(id);
+                    remote.insert(id);
+                    continue;
+                } else if role["role"] == "origin" {
+                    // The facts were the answer.
                     continue;
                 }
                 clients.insert(id, client);
             }
-            Event::Frame(id, INPUT, payload)
+            Event::Frame(id, kind @ (INPUT | OWNER_INPUT), payload)
                 if (interactive == Some(id) || typists.contains(&id)) && !is_probe_reply(&payload) =>
             {
+                last_input = Some(input_origin(kind, remote.contains(&id)));
                 let _ = pty.write_all(&payload);
             }
             Event::Frame(id, RESIZE, payload) if interactive == Some(id) && payload.len() == 4 => {
@@ -393,6 +410,7 @@ pub fn run_with_env(socket: &Path, argv: &[String], cwd: &Path, env: Vec<(String
                 clients.remove(&id);
                 watchers.remove(&id);
                 typists.remove(&id);
+                remote.remove(&id);
                 joined.retain(|j| *j != id);
                 if interactive == Some(id) {
                     interactive = None;
@@ -433,6 +451,12 @@ pub fn run_with_env(socket: &Path, argv: &[String], cwd: &Path, env: Vec<(String
             }
         }
     }
+}
+
+/// Who typed an input: a `type` client's plain INPUT is a teammate's; everything else (the
+/// interactive client, a joined panel, OWNER_INPUT) is the owner's.
+fn input_origin(kind: u8, remote: bool) -> &'static str {
+    if remote && kind != OWNER_INPUT { "teammate" } else { "owner" }
 }
 
 /// RESIZE as the holder tells watch clients: `u16 BE cols`, `u16 BE rows`.

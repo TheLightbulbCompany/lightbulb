@@ -1,7 +1,7 @@
 """What the owner's Mac shows in its Claude terminal about one shared session (spec
 2026-10-04-session-sharing-mod §4.2): who watches, who may type, who is typing, pending join
-requests, paused. A pending request also freezes remote typing on the Mac, so the request
-being answered is pushed at once; everything else rides the heartbeat ack."""
+requests, paused. A new request is pushed at once so the band shows it; everything else rides
+the heartbeat ack."""
 
 from __future__ import annotations
 
@@ -17,6 +17,10 @@ logger = logging.getLogger(__name__)
 
 FEATURE = "sessionPresence"
 PICKUP_FEATURE = "pickupRequests"
+# This Mac strips ctrl+x and mouse reports from remote input, so only the owner can operate the
+# band and nothing freezes while a request waits. An older presence Mac freezes remote input
+# instead, so the web says so (inputPaused).
+BAND_OWNER_ONLY_FEATURE = "bandOwnerOnly"
 TYPING_WINDOW_S = 10
 _clock = time.time
 
@@ -95,8 +99,8 @@ async def ack_with_presence(ack: dict, owner: str, session_ids: list[str]) -> di
         logger.warning("Session presence unavailable")
         return ack
     # A listed session the ack leaves out loses its presence on the Mac, so an entry holding a
-    # join request (an input freeze) is never trimmed: drop quiet entries, then viewer lists,
-    # and if requests alone overflow, send no presence at all (the Mac keeps what it has).
+    # join request (an input freeze on an older Mac) is never trimmed: drop quiet entries, then
+    # viewer lists, and if requests alone overflow, send no presence at all (the Mac keeps what it has).
     out.sort(key=lambda e: not e["joinRequests"])
 
     def fits(p: list) -> bool:
@@ -116,8 +120,9 @@ async def ack_with_presence(ack: dict, owner: str, session_ids: list[str]) -> di
 
 async def push(row: dict) -> None:
     """Best effort, now: a join request was made or answered, or sharing paused or resumed.
-    Always a full entry, an empty one included, so the Mac can lift its input freeze. The row
-    is read again here, after `at` is taken, so `at` never claims a newer read than it is."""
+    Always a full entry, an empty one included, so the Mac drops what is gone (and an older Mac
+    lifts its input freeze). The row is read again here, after `at` is taken, so `at` never
+    claims a newer read than it is."""
     if FEATURE not in row.get("deviceFeatures", ()):
         return
     from core.services.local_session_relay import check_envelope, get_local_session_relay  # imports this module

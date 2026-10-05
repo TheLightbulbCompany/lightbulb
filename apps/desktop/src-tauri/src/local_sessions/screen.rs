@@ -58,7 +58,7 @@ pub(super) struct Ctl {
     /// carry it (`remote_input`): typing aimed at an older screen is dropped.
     pub(super) epoch: AtomicU64,
     /// This relay's one `type` client to the holder (`remote_input`); it closes when we stop.
-    pub(super) typist: Mutex<Option<std::sync::mpsc::SyncSender<Vec<u8>>>>,
+    pub(super) typist: Mutex<Option<std::sync::mpsc::SyncSender<super::remote_input::Typed>>>,
     snapshot: AtomicBool,
     pub(super) stop: AtomicBool,
     until: Mutex<Instant>,
@@ -157,6 +157,14 @@ pub(crate) fn holder_for_session(session_id: &str, panel: bool) -> Option<(Holde
         _ => return None,
     };
     Some((holder, live.generation))
+}
+
+/// The holder that hosts the session's terminal, whose interactive client is the owner's: every
+/// key the owner types goes through it. Never a background job's attach holder (the owner's own
+/// `claude attach` bypasses that one) and never starts one.
+pub(crate) fn hosting_holder(session_id: &str) -> Option<HolderInfo> {
+    let id = LIVE.lock().ok()?.get(session_id)?.native.holder.clone()?;
+    matched(manager::list(), &id)
 }
 
 /// The running attach holder for `job`, or a new one. `start` answers None when this caller may

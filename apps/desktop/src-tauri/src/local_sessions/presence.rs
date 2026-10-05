@@ -1,8 +1,7 @@
 //! Who watches, who may type, pending join requests and pause, per session, as the backend last
 //! said (heartbeat ack `presence`, or a `local.session.presence` frame). Read by `mod_socket`
-//! for the Claude terminal's band. A pending join request freezes remote typing for that session
-//! (spec 2026-10-04-session-sharing-mod §2.4): the request is stored before the mod can read it,
-//! so no teammate key can press Allow.
+//! for the Claude terminal's band. Only the owner can operate the band: remote input never
+//! carries ctrl+x or mouse reports (`remote_input`, spec 2026-10-04-session-sharing-mod §2.4).
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -121,8 +120,7 @@ pub(super) fn get(sid: &str, generation: &str) -> Option<Entry> {
     PRESENCE.lock().ok()?.get(sid).filter(|e| e.generation == generation).cloned()
 }
 
-/// Whether `sid` still holds this pending request. An Allow or Decline is taken only then: the
-/// request is on the band and remote typing is frozen.
+/// Whether `sid` still holds this pending request. An Allow or Decline is taken only then.
 pub(super) fn pending(sid: &str, generation: &str, user: &str, request: &str) -> bool {
     get(sid, generation).is_some_and(|e| e.join_requests.iter().any(|r| r.user_id == user && r.request_id == request))
 }
@@ -145,11 +143,6 @@ pub(super) fn decided(sid: &str, payload: &Value, session: &Value) {
             }
         }
     }
-}
-
-/// Remote typing is dropped while the owner has a join request to answer.
-pub(super) fn frozen(sid: &str, generation: &str) -> bool {
-    get(sid, generation).is_some_and(|e| !e.join_requests.is_empty())
 }
 
 #[cfg(test)]
@@ -181,15 +174,20 @@ mod tests {
         retain(&[]);
     }
 
+    /// Whether `sid` holds any pending request at `generation`.
+    fn asking(sid: &str, generation: &str) -> bool {
+        get(sid, generation).is_some_and(|e| !e.join_requests.is_empty())
+    }
+
     #[test]
-    fn presence_frame_with_a_request_freezes_and_an_empty_one_lifts() {
+    fn presence_frame_with_a_request_stores_it_and_an_empty_one_clears_it() {
         let _g = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         reset();
         offer_frame(&entry(json!([req("u2")])));
-        assert!(frozen(SID, "g1"));
+        assert!(asking(SID, "g1"));
         assert_eq!(get(SID, "g1").unwrap().viewers[0].name, "Aden");
         offer_frame(&entry(json!([])));
-        assert!(!frozen(SID, "g1"));
+        assert!(!asking(SID, "g1"));
     }
 
     #[test]
@@ -211,7 +209,7 @@ mod tests {
         assert!(get("nope", "g1").is_none());
         offer_frame(&entry(json!([req("u2")])));
         offer_ack(&json!({"presenceAt": 900}), &[SID.into()]); // no `presence`: nothing changes, nothing panics
-        assert!(frozen(SID, "g1"));
+        assert!(asking(SID, "g1"));
     }
 
     #[test]
@@ -220,9 +218,9 @@ mod tests {
         reset();
         offer_frame(&entry_at("g1", 300, json!([req("u2")])));
         offer_ack(&ack(json!([entry_at("g1", 200, json!([]))]), 200), &[SID.into()]);
-        assert!(frozen(SID, "g1"), "an older ack entry is ignored");
+        assert!(asking(SID, "g1"), "an older ack entry is ignored");
         offer_ack(&ack(json!([]), 200), &[SID.into()]);
-        assert!(frozen(SID, "g1"), "an older ack that leaves the session out does not remove it");
+        assert!(asking(SID, "g1"), "an older ack that leaves the session out does not remove it");
     }
 
     #[test]
@@ -231,7 +229,7 @@ mod tests {
         reset();
         offer_frame(&entry_at("g1", 100, json!([req("u2")])));
         offer_ack(&ack(json!([entry_at("g1", 200, json!([]))]), 200), &[SID.into()]);
-        assert!(!frozen(SID, "g1"));
+        assert!(!asking(SID, "g1"));
         offer_frame(&entry_at("g1", 300, json!([req("u2")])));
         offer_ack(&ack(json!([]), 400), &[SID.into()]);
         assert!(get(SID, "g1").is_none(), "a later ack that leaves the session out removes it");
@@ -246,18 +244,18 @@ mod tests {
         offer_frame(&entry_at("g1", 100, ask("r1"))); // the push for r1, delivered late
         assert!(pending(SID, "g1", "u2", "r2") && !pending(SID, "g1", "u2", "r1"));
         offer_frame(&entry_at("g1", 200, json!([])));
-        assert!(!frozen(SID, "g1"), "an equal `at` replaces");
+        assert!(!asking(SID, "g1"), "an equal `at` replaces");
     }
 
     #[test]
-    fn presence_an_old_generation_frame_does_not_unfreeze_the_current_one() {
+    fn presence_an_old_generation_frame_does_not_clear_the_current_one() {
         let _g = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         reset();
         offer_frame(&entry_at("g2", 200, json!([req("u2")])));
         offer_frame(&entry_at("g1", 100, json!([]))); // the old run's push, delivered late
-        assert!(frozen(SID, "g2") && pending(SID, "g2", "u2", "r-u2"));
-        // The read-side check stays: g2's request never freezes or answers for another generation.
-        assert!(!frozen(SID, "g1") && !pending(SID, "g3", "u2", "r-u2") && get(SID, "g1").is_none());
+        assert!(asking(SID, "g2") && pending(SID, "g2", "u2", "r-u2"));
+        // The read-side check stays: g2's request never answers for another generation.
+        assert!(!asking(SID, "g1") && !pending(SID, "g3", "u2", "r-u2") && get(SID, "g1").is_none());
         // A g3 decision on a stored g2 entry starts a clean g3 entry.
         decided(SID, &json!({"decision":"pause","generation":"g3"}), &json!({"shared":false}));
         let e = get(SID, "g3").unwrap();
@@ -271,7 +269,7 @@ mod tests {
         let pickup = json!([{"userId":"u2","name":"Mira","requestId":"r1","kind":"pickup"}]);
         offer_frame(&entry_at("g1", 100, pickup));
         assert_eq!(get(SID, "g1").unwrap().join_requests[0].kind, "pickup");
-        assert!(frozen(SID, "g1"));
+        assert!(asking(SID, "g1"));
         offer_frame(&entry_at("g1", 200, json!([req("u3")])));
         assert_eq!(get(SID, "g1").unwrap().join_requests[0].kind, "join");
     }
@@ -286,7 +284,7 @@ mod tests {
         offer_frame(&old);
         offer_ack(&json!({"presence":[old]}), &[SID.into()]);
         offer_ack(&json!({"presence":[]}), &[SID.into()]);
-        assert!(frozen(SID, "g1"));
+        assert!(asking(SID, "g1"));
     }
 
     #[test]
@@ -298,9 +296,9 @@ mod tests {
         b["sessionId"] = json!(other);
         offer_ack(&ack(json!([entry(json!([req("u2")]))]), 100), &[SID.into()]);
         offer_ack(&ack(json!([b]), 100), &[other.into()]);
-        assert!(frozen(SID, "g1") && frozen(other, "g1"), "the second frame's ack must not erase the first's");
+        assert!(asking(SID, "g1") && asking(other, "g1"), "the second frame's ack must not erase the first's");
         offer_ack(&ack(json!([]), 500), &[other.into()]);
-        assert!(frozen(SID, "g1") && !frozen(other, "g1"));
+        assert!(asking(SID, "g1") && !asking(other, "g1"));
         retain(&[]);
         assert!(get(SID, "g1").is_none());
     }

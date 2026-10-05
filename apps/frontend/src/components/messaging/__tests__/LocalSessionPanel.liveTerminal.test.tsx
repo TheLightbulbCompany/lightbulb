@@ -7,10 +7,11 @@ import { LocalSessionPanel } from "../LocalSessionPanel";
 vi.mock("@/lib/analytics", () => ({ capture: vi.fn() }));
 vi.mock("@clerk/nextjs", () => ({ useAuth: () => ({ userId: "alice", orgId: "org_1" }) }));
 // The terminal itself is tested in SessionTerminalView.test; here it just reports that it is live.
-const typing = vi.hoisted(() => ({ canType: true }));
+const typing = vi.hoisted(() => ({ canType: true, admitted: undefined as boolean | undefined }));
 vi.mock("../SessionTerminalView", async () => {
   const { useEffect } = await import("react");
-  return { SessionTerminalView: ({ onLive, onCanType }: { onLive: (live: boolean) => void; onCanType?: (c: boolean) => void }) => {
+  return { SessionTerminalView: ({ onLive, onCanType, admitted }: { onLive: (live: boolean) => void; onCanType?: (c: boolean) => void; admitted?: boolean }) => {
+    typing.admitted = admitted;
     useEffect(() => { onLive(true); onCanType?.(typing.canType); }, [onLive, onCanType]);
     return <div role="region" aria-label="Live terminal (view only)" />;
   } };
@@ -207,6 +208,14 @@ it("pauses an admitted teammate's typing while the owner answers a join request"
   expect(screen.getByRole("region", { name: "Live terminal (view only)" })).toBeTruthy();
   expect(screen.queryByRole("textbox")).toBeNull();
   expect(screen.queryByRole("button", { name: "Ask to join" })).toBeNull();
+});
+
+// A newer Mac (bandOwnerOnly) keeps typing open while a request waits: the server sends no inputPaused.
+it("keeps an admitted teammate typing when the owner's Mac does not pause", async () => {
+  render(<LocalSessionPanel session={{ ...session, allowedSenders: ["alice"], inputPaused: false }} ownerName="Alice" own={false} client={client as never} revision={0} onAccessLost={() => {}} onEvent={() => () => {}} />);
+  await screen.findByRole("region", { name: "Live terminal (view only)" });
+  expect(typing.admitted).toBe(true);
+  expect(screen.queryByText(/Paused while/)).toBeNull();
 });
 
 it("shows no message box while paused even when the terminal refuses typing", async () => {

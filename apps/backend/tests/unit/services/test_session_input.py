@@ -92,7 +92,14 @@ async def test_an_admitted_member_is_forwarded_exactly_once_with_the_right_frame
     assert transport[3] == [
         (
             "conn-1",
-            {"type": "local.session.input", "sessionId": sid, "generation": "generation-1", "epoch": 3, "data": KEYS},
+            {
+                "type": "local.session.input",
+                "sessionId": sid,
+                "generation": "generation-1",
+                "epoch": 3,
+                "data": KEYS,
+                "fromOwner": False,  # a teammate: the Mac strips band keys
+            },
         )
     ]
 
@@ -102,7 +109,7 @@ async def test_the_owner_is_always_admitted(transport):
     sid = await start(transport)
     await capable(transport, sid)
     await session_screen.type_into(ALICE, sid, body())
-    assert len(sent(transport)) == 1
+    assert [b["fromOwner"] for b in sent(transport)] == [True]  # the owner's keys pass untouched
 
 
 @pytest.mark.asyncio
@@ -112,7 +119,7 @@ async def test_team_control_admits_any_member(transport):
     await service.set_team_control(ALICE, sid, True)
     transport[3].clear()
     await session_screen.type_into(OUTSIDER, sid, body())
-    assert len(sent(transport)) == 1
+    assert [b["fromOwner"] for b in sent(transport)] == [False]  # team control never makes them the owner
 
 
 @pytest.mark.asyncio

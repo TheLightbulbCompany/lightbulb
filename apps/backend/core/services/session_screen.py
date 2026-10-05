@@ -355,6 +355,9 @@ async def type_into(auth: AuthContext, session_id: str, body: SessionInput) -> N
         "generation": row["generation"],
         "epoch": body.epoch,
         "data": body.data,
+        # The session's owner: their Mac passes these keys untouched. Anyone else's lose ctrl+x
+        # and mouse reports there, so only the owner can operate the terminal's Claude band.
+        "fromOwner": user == row["humanUserId"],
     }
     check_envelope(envelope)
     new_burst = not typist.burst or now - typist.last > TYPED_BURST_GAP_S

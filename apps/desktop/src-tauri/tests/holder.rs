@@ -294,6 +294,40 @@ fn holder_type_client_types_but_never_resizes_and_gets_no_output() {
     assert!(read_frame(&mut t).is_err(), "a type client receives no output");
 }
 
+/// `lastInput` as an `origin` client reads it in the holder's HELLO.
+fn last_input(socket: &Path) -> serde_json::Value {
+    let mut q = UnixStream::connect(socket).unwrap();
+    q.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+    q.write_all(&encode(HELLO, br#"{"role":"origin"}"#)).unwrap();
+    let (kind, hello) = read_frame(&mut q).unwrap();
+    assert_eq!(kind, HELLO);
+    let facts: serde_json::Value = serde_json::from_slice(&hello).unwrap();
+    assert_eq!(facts["origin"], true);
+    facts["lastInput"].clone()
+}
+
+#[test]
+fn holder_reports_who_wrote_the_last_input() {
+    let socket = start_cat(&temp_dir());
+    assert_eq!(last_input(&socket), serde_json::Value::Null, "nothing typed yet");
+    let mut owner = attach(&socket, "interactive");
+    let mut t = attach(&socket, "type");
+    owner.write_all(&encode(INPUT, b"one\r")).unwrap();
+    read_until(&mut owner, b"one");
+    assert_eq!(last_input(&socket), "owner");
+    t.write_all(&encode(INPUT, b"two\r")).unwrap();
+    read_until(&mut owner, b"two");
+    assert_eq!(last_input(&socket), "teammate", "a type client's plain INPUT is a teammate's");
+    owner.write_all(&encode(INPUT, b"three\r")).unwrap();
+    read_until(&mut owner, b"three");
+    assert_eq!(last_input(&socket), "owner", "the owner typing again takes it back");
+    t.write_all(&encode(INPUT, b"four\r")).unwrap();
+    read_until(&mut owner, b"four");
+    t.write_all(&encode(OWNER_INPUT, b"five\r")).unwrap();
+    read_until(&mut owner, b"five");
+    assert_eq!(last_input(&socket), "owner", "a type client's OWNER_INPUT is the owner's");
+}
+
 /// The size a `recorder` reads in the holder's HELLO: what the pty is now.
 fn size_of(socket: &Path) -> (u64, u64) {
     let mut r = UnixStream::connect(socket).unwrap();

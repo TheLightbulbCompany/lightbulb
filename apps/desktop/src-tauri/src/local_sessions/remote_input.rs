@@ -3,18 +3,25 @@
 //! `type` client. Never answered, whatever arrives. Dropped unless the session is in the live
 //! relay set at that generation (someone watches: nobody types blind), the epoch is the relay's
 //! current one, and the holder takes `type` clients. Terminal probe replies are stripped first.
+//! Frames not marked `fromOwner` (a teammate's, or any from an older backend) also lose ctrl+x
+//! and mouse reports: the session's Claude band takes keys only after ctrl+x Tab or a click, so
+//! a teammate cannot operate it (spec 2026-10-04-session-sharing-mod §2.4). The owner typing in
+//! the Lightbulb app (web, desktop, phone) comes through here too; the backend marks those
+//! frames `fromOwner` and they pass untouched. The owner's own terminal never comes through here.
 //! The connection task only queues: the holder lookup and the writes run on the relay's own
 //! writer thread, which closes its `type` client when the relay stops.
 
 use super::screen::{self, Ctl};
-use crate::holder::protocol::{encode, read_frame, HELLO, INPUT};
+use crate::holder::protocol::{encode, read_frame, HELLO, INPUT, OWNER_INPUT};
 use base64::Engine;
 use serde_json::Value;
 use std::io::Write;
 use std::os::unix::net::UnixStream;
+use std::path::Path;
 use std::sync::atomic::Ordering::SeqCst;
 use std::sync::mpsc::{sync_channel, Receiver, RecvTimeoutError, TrySendError};
-use std::sync::Arc;
+use std::collections::BTreeMap;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 /// The backend's per-call bound on raw bytes.
@@ -25,19 +32,74 @@ const TICK: Duration = Duration::from_millis(50);
 /// After a failed attach, inputs are dropped this long before trying again.
 const RETRY: Duration = Duration::from_secs(1);
 
+/// A band decision is refused this long after a teammate's bytes reached the session: the band
+/// may already be focused by the owner, and `a`/`d`/`p` are its hotkeys (spec §2.4). The holder's
+/// `lastInput` is the main check (`teammate_holds_decision`); this window is the second one, and
+/// the only one for a holder too old to report `lastInput`.
+pub(super) const TEAMMATE_QUIET: Duration = Duration::from_secs(2);
+/// When a teammate's bytes last reached each session's holder.
+static TEAMMATE_TYPED: Mutex<BTreeMap<String, Instant>> = Mutex::new(BTreeMap::new());
+
+/// Records a write that reached the holder; only a teammate's counts.
+fn wrote(sid: &str, from_owner: bool, now: Instant) {
+    if from_owner {
+        return;
+    }
+    if let Ok(mut map) = TEAMMATE_TYPED.lock() {
+        map.retain(|_, at| now.saturating_duration_since(*at) < TEAMMATE_QUIET);
+        map.insert(sid.to_owned(), now);
+    }
+}
+
+/// Whether a teammate's bytes reached `sid` within `TEAMMATE_QUIET` of `now`.
+pub(super) fn teammate_typed_recently(sid: &str, now: Instant) -> bool {
+    TEAMMATE_TYPED.lock().ok().and_then(|m| m.get(sid).copied()).is_some_and(|at| now.saturating_duration_since(at) < TEAMMATE_QUIET)
+}
+
+/// Whether a band decision for `sid` is refused until the owner presses again: the holder says a
+/// teammate wrote the last input (`last_input`, from `holder_last_input`), or a teammate's bytes
+/// reached it within `TEAMMATE_QUIET`.
+// ponytail: a teammate's `a` reaches the pty, Claude stalls, and the owner types another key
+// before Claude reads the `a`: `lastInput` is then the owner's and the decision is the owner's.
+// Closing that needs Claude to say which key it acted on.
+pub(super) fn teammate_holds_decision(sid: &str, now: Instant, last_input: Option<&str>) -> bool {
+    last_input == Some("teammate") || teammate_typed_recently(sid, now)
+}
+
+/// Who wrote the last input to the holder hosting `sid`'s terminal: `"owner"` or `"teammate"`.
+/// None when no holder hosts it (a transcript, or a background job: the window decides), nothing
+/// was typed yet, or the holder is too old to say. Blocking (≤ 2 s).
+pub(super) fn holder_last_input(sid: &str) -> Option<String> {
+    last_input_of(&screen::hosting_holder(sid)?.socket)
+}
+
+fn last_input_of(socket: &Path) -> Option<String> {
+    let mut conn = UnixStream::connect(socket).ok()?;
+    conn.set_read_timeout(Some(Duration::from_secs(2))).ok()?;
+    conn.set_write_timeout(Some(Duration::from_secs(2))).ok()?;
+    conn.write_all(&encode(HELLO, br#"{"role":"origin"}"#)).ok()?;
+    let (kind, facts) = read_frame(&mut conn).ok()?;
+    let facts: Value = serde_json::from_slice(&facts).ok()?;
+    (kind == HELLO).then(|| facts["lastInput"].as_str().map(str::to_owned)).flatten()
+}
+
+/// Keys for the holder, and whether the session's owner typed them.
+pub(super) type Typed = (Vec<u8>, bool);
+
 /// A `local.session.input` frame from the relay. Never blocks, never replies.
 pub(super) fn offer(body: &Value) {
     let Some((sid, generation, ctl, mut keys)) = admit(body, screen::live_relay) else { return };
+    let from_owner = body["fromOwner"] == true;
     let Ok(mut slot) = ctl.typist.lock() else { return };
     if let Some(tx) = slot.as_ref() {
-        match tx.try_send(keys) {
+        match tx.try_send((keys, from_owner)) {
             Ok(()) | Err(TrySendError::Full(_)) => return,
             // Its writer is gone: start another.
-            Err(TrySendError::Disconnected(back)) => keys = back,
+            Err(TrySendError::Disconnected((back, _))) => keys = back,
         }
     }
     let (tx, rx) = sync_channel(QUEUE);
-    let _ = tx.try_send(keys);
+    let _ = tx.try_send((keys, from_owner));
     *slot = Some(tx);
     let theirs = ctl.clone();
     std::thread::spawn(move || write(&sid, &generation, &theirs, &rx));
@@ -49,36 +111,41 @@ fn admit(body: &Value, relay_of: impl Fn(&Value) -> Option<(String, Arc<Ctl>)>) 
     let epoch = body["epoch"].as_u64().filter(|e| *e != 0)?;
     let generation = body["generation"].as_str()?.to_owned();
     let (sid, ctl) = relay_of(body)?;
-    // A join request is waiting for the owner: their band has Allow on it, and a teammate's
-    // key on this pty could press it. Dropped, not queued.
-    if super::presence::frozen(&sid, &generation) {
-        return None;
-    }
     if ctl.epoch.load(SeqCst) != epoch {
         return None;
     }
     let raw = base64::engine::general_purpose::STANDARD.decode(data).ok().filter(|r| r.len() <= MAX_INPUT)?;
-    let keys = strip_probe_replies(&raw);
+    // A missing `fromOwner` (an older backend) strips: the safe default.
+    let keys = strip_remote(&raw, body["fromOwner"] != true);
     (!keys.is_empty()).then_some((sid, generation, ctl, keys))
 }
 
 /// The relay's writer: one `type` client, reattached after an error, closed when the relay stops.
-fn write(sid: &str, generation: &str, ctl: &Ctl, inputs: &Receiver<Vec<u8>>) {
-    let mut conn: Option<UnixStream> = None;
+fn write(sid: &str, generation: &str, ctl: &Ctl, inputs: &Receiver<Typed>) {
+    // The `type` client, and whether its holder takes OWNER_INPUT.
+    let mut conn: Option<(UnixStream, bool)> = None;
     let mut tried: Option<Instant> = None;
+    let mut carry = Carry::default();
     while !ctl.stopped() {
-        let keys = match inputs.recv_timeout(TICK) {
-            Ok(keys) => keys,
+        let (keys, from_owner) = match inputs.recv_timeout(TICK) {
+            Ok((keys, from_owner)) => (carry.feed(&keys, from_owner), from_owner),
             Err(RecvTimeoutError::Timeout) => continue,
             Err(RecvTimeoutError::Disconnected) => break,
         };
+        if keys.is_empty() {
+            continue;
+        }
         for _ in 0..2 {
             if conn.is_none() && tried.is_none_or(|at| at.elapsed() >= RETRY) {
                 tried = Some(Instant::now());
                 conn = attach(sid, generation);
             }
-            let Some(c) = conn.as_mut() else { break };
-            if c.write_all(&encode(INPUT, &keys)).is_ok() {
+            let Some((c, origin)) = conn.as_mut() else { break };
+            // Recorded first: a decide that reads it between the write and the record is refused.
+            wrote(sid, from_owner, Instant::now());
+            // An older holder takes only INPUT, and reports no origin to mark.
+            let kind = if from_owner && *origin { OWNER_INPUT } else { INPUT };
+            if c.write_all(&encode(kind, &keys)).is_ok() {
                 break;
             }
             // The holder went away or restarted: reattach once, now.
@@ -86,13 +153,14 @@ fn write(sid: &str, generation: &str, ctl: &Ctl, inputs: &Receiver<Vec<u8>>) {
             tried = None;
         }
     }
-    if let Some(c) = conn {
+    if let Some((c, _)) = conn {
         let _ = c.shutdown(std::net::Shutdown::Both);
     }
 }
 
-/// A `type` client on the session's holder, only when its HELLO says it takes one.
-fn attach(sid: &str, generation: &str) -> Option<UnixStream> {
+/// A `type` client on the session's holder, only when its HELLO says it takes one, and whether
+/// it takes OWNER_INPUT.
+fn attach(sid: &str, generation: &str) -> Option<(UnixStream, bool)> {
     let (holder, current) = screen::holder_for_session(sid, false)?;
     if current != generation || !holder.type_input {
         return None;
@@ -103,24 +171,117 @@ fn attach(sid: &str, generation: &str) -> Option<UnixStream> {
     conn.write_all(&encode(HELLO, br#"{"role":"type"}"#)).ok()?;
     let (kind, facts) = read_frame(&mut conn).ok()?;
     let facts: Value = serde_json::from_slice(&facts).ok()?;
-    (kind == HELLO && facts["type"] == true).then_some(conn)
+    (kind == HELLO && facts["type"] == true).then_some((conn, facts["origin"] == true))
 }
 
-/// The bytes minus the replies a terminal (xterm.js) sends to queries: DA, CPR, DSR, DECRPM,
-/// kitty keyboard flags, focus, OSC 4/10/11/12 colours, XTVERSION and DECRQSS. The holder
-/// answers queries itself, so a remote viewer's answers would reach the provider as typing.
+/// Remote bytes minus probe replies and, with `band`, band keys, until nothing more goes:
+/// removing one sequence can join its neighbours into another (`ESC ^X [120;5u`).
+pub(super) fn strip_remote(input: &[u8], band: bool) -> Vec<u8> {
+    let mut cur = strip_pass(input, band);
+    loop {
+        let next = strip_pass(&cur, band);
+        if next.len() == cur.len() {
+            return next;
+        }
+        cur = next;
+    }
+}
+
+/// What a teammate's frames may leave unfinished on the pty. A frame is the client's to cut, so
+/// `ESC [120;5` then `u` must not add up to ctrl+x there: an unfinished escape is held until
+/// the next frame completes it, except a lone ESC (the Escape key), which is written at once.
+/// An unfinished escape already written (that ESC, or the owner's) is remembered, and a
+/// teammate's frame that would finish it into a band key is dropped.
+#[derive(Default)]
+struct Carry {
+    written: Vec<u8>,
+    held: Vec<u8>,
+}
+
+impl Carry {
+    fn feed(&mut self, keys: &[u8], from_owner: bool) -> Vec<u8> {
+        if from_owner {
+            // The owner's keys go out as typed; a teammate's held fragment is dropped.
+            let mut ctx = std::mem::take(&mut self.written);
+            ctx.extend_from_slice(keys);
+            self.held.clear();
+            self.written = ctx.split_off(unfinished_from(&ctx));
+            if self.written.len() > 64 {
+                self.written.clear();
+            }
+            return keys.to_vec();
+        }
+        let w = self.written.len();
+        let mut buf = self.written.clone();
+        buf.append(&mut self.held);
+        buf.extend_from_slice(keys);
+        let cut = unfinished_from(&buf);
+        if cut < w {
+            // Nothing complete yet. What is written stays written; the rest waits (bounded).
+            self.held = buf.split_off(w);
+            if self.held.len() > 64 {
+                self.held.clear();
+            }
+            return vec![];
+        }
+        let mut out = strip_remote(&buf[..cut], true);
+        if w > 0 {
+            if out.starts_with(&self.written) && out[w..] == strip_remote(&buf[w..cut], true)[..] {
+                out.drain(..w); // the written part is inert: write only what follows it
+            } else {
+                out.clear(); // it joined a removed sequence: the rest could finish one on the pty
+            }
+            self.written.clear();
+        }
+        // What is left unwritten: an unfinished escape stripping exposed, then the frame's own.
+        let mut unwritten = out.split_off(unfinished_from(&out));
+        unwritten.extend_from_slice(&buf[cut..]);
+        if unwritten == [0x1b] {
+            out.push(0x1b);
+            self.written = unwritten;
+        } else if unwritten.len() <= 64 {
+            self.held = unwritten;
+        }
+        out
+    }
+}
+
+/// Where a trailing unfinished escape starts (`ESC`, `ESC [` with only parameter bytes, or an
+/// `ESC [ M` mouse report short of its 3 bytes), or the length when there is none.
+fn unfinished_from(buf: &[u8]) -> usize {
+    let Some(e) = buf.iter().rposition(|b| *b == 0x1b) else { return buf.len() };
+    let unfinished = match buf.get(e + 1) {
+        None => true,
+        Some(b'[') => match buf.get(e + 2) {
+            Some(b'M') => buf.len() < e + 6,
+            _ => buf[e + 2..].iter().all(|b| (0x20..=0x3f).contains(b)),
+        },
+        _ => false,
+    };
+    if unfinished {
+        e
+    } else {
+        buf.len()
+    }
+}
+
+/// One pass: the bytes minus the replies a terminal (xterm.js) sends to queries (DA, CPR, DSR,
+/// DECRPM, kitty keyboard flags, focus, OSC 4/10/11/12 colours, XTVERSION and DECRQSS: the
+/// holder answers queries itself, so a remote viewer's answers would reach the provider as
+/// typing) and minus band keys (ctrl+x in any encoding, every mouse report).
 /// Known cost: Shift/Ctrl+F3 (`ESC [ 1 ; n R`) reads as a CPR and is dropped.
-pub(super) fn strip_probe_replies(input: &[u8]) -> Vec<u8> {
+fn strip_pass(input: &[u8], band: bool) -> Vec<u8> {
     let mut out = Vec::with_capacity(input.len());
     let mut i = 0;
     while i < input.len() {
-        let reply = match (input[i], input.get(i + 1)) {
-            (0x1b, Some(b'[')) => csi_reply(&input[i + 2..]),
-            (0x1b, Some(&kind @ (b']' | b'P'))) => string_reply(kind, &input[i + 2..]),
+        let cut = match (input[i], input.get(i + 1)) {
+            (0x18, _) if band => Some(1), // legacy ctrl+x
+            (0x1b, Some(b'[')) => csi_reply(&input[i + 2..]).or_else(|| band_csi(&input[i + 2..]).filter(|_| band)).map(|n| n + 2),
+            (0x1b, Some(&kind @ (b']' | b'P'))) => string_reply(kind, &input[i + 2..]).map(|n| n + 2),
             _ => None,
         };
-        match reply {
-            Some(len) => i += 2 + len,
+        match cut {
+            Some(len) => i += len,
             None => {
                 out.push(input[i]);
                 i += 1;
@@ -149,6 +310,40 @@ fn csi_reply(rest: &[u8]) -> Option<usize> {
     reply.then_some(params + inter + 1)
 }
 
+/// The length of a CSI after `ESC [` when it operates the band: a mouse report (SGR
+/// `<b;x;y M|m`, urxvt `b;x;y M`, X10 `M` and 3 bytes) or ctrl+x as CSI-u (`120;5u`, kitty
+/// `120:88;5:1u`, also `X` and code 24) or modifyOtherKeys (`27;5;120~`). None otherwise.
+fn band_csi(rest: &[u8]) -> Option<usize> {
+    if rest.first() == Some(&b'M') {
+        // Unfinished until its 3 bytes are here: `Carry` holds it, and strips it whole.
+        return (rest.len() >= 4).then_some(4);
+    }
+    let params = rest.iter().take_while(|b| (0x30..=0x3f).contains(*b)).count();
+    let inter = rest[params..].iter().take_while(|b| (0x20..=0x2f).contains(*b)).count();
+    let last = *rest.get(params + inter).filter(|b| (0x40..=0x7e).contains(*b))?;
+    let p = &rest[..params];
+    let fields: Vec<&[u8]> = p.split(|b| *b == b';').collect();
+    // A field's first `:` part as a number; an empty one is `default`.
+    let num = |f: Option<&&[u8]>, default: u32| -> Option<u32> {
+        let head = f.map_or(&[][..], |f| f.split(|b| *b == b':').next().unwrap_or(&[]));
+        if head.is_empty() {
+            return Some(default);
+        }
+        std::str::from_utf8(head).ok()?.parse().ok()
+    };
+    let ctrl_x = |key: Option<u32>, mods: Option<u32>| matches!(key, Some(24 | 88 | 120)) && mods.is_some_and(|m| m >= 1 && (m - 1) & 4 != 0);
+    let digits = |f: &&[u8]| !f.is_empty() && f.iter().all(u8::is_ascii_digit);
+    let band = inter == 0
+        && match last {
+            b'M' | b'm' if p.first() == Some(&b'<') => true,
+            b'M' => fields.len() == 3 && fields.iter().all(digits),
+            b'u' => p.first().is_some_and(u8::is_ascii_digit) && ctrl_x(num(fields.first(), 0), num(fields.get(1), 1)),
+            b'~' => fields.first() == Some(&&b"27"[..]) && ctrl_x(num(fields.get(2), 0), num(fields.get(1), 1)),
+            _ => false,
+        };
+    band.then_some(params + inter + 1)
+}
+
 /// The length of an OSC (`]`) or DCS (`P`) after its introducer, through BEL or `ESC \`, when it
 /// is a query reply; None otherwise or when it is not terminated here.
 fn string_reply(kind: u8, rest: &[u8]) -> Option<usize> {
@@ -167,6 +362,57 @@ mod tests {
     use super::*;
     use serde_json::json;
     use std::collections::BTreeMap;
+
+    #[test]
+    fn remote_input_a_teammate_write_holds_band_decisions_for_two_seconds() {
+        let (sid, owner_sid) = ("55555555-5555-4555-8555-555555555555", "66666666-6666-4666-8666-666666666666");
+        let now = Instant::now();
+        assert!(!teammate_typed_recently(sid, now));
+        wrote(sid, false, now);
+        assert!(teammate_typed_recently(sid, now), "a decide right after a teammate's write is refused");
+        assert!(teammate_typed_recently(sid, now + TEAMMATE_QUIET - Duration::from_millis(1)));
+        assert!(!teammate_typed_recently(sid, now + TEAMMATE_QUIET), "allowed once the window passes");
+        wrote(owner_sid, true, now);
+        assert!(!teammate_typed_recently(owner_sid, now), "the owner's frames never hold a decision");
+    }
+
+    #[test]
+    fn remote_input_a_decision_waits_when_the_holder_says_a_teammate_typed_last() {
+        let sid = "77777777-7777-4777-8777-777777777777";
+        let now = Instant::now();
+        assert!(teammate_holds_decision(sid, now, Some("teammate")), "however long ago: origin, not time");
+        assert!(!teammate_holds_decision(sid, now, Some("owner")));
+        assert!(!teammate_holds_decision(sid, now, None), "no holder, or nothing typed: allowed");
+        wrote(sid, false, now);
+        assert!(teammate_holds_decision(sid, now, Some("owner")), "the 2 s window is the second check");
+        assert!(teammate_holds_decision(sid, now, None), "an older holder: the window alone");
+        assert!(!teammate_holds_decision(sid, now + TEAMMATE_QUIET, None));
+    }
+
+    #[test]
+    fn remote_input_reads_last_input_from_a_holder_and_nothing_from_an_older_one() {
+        use std::os::unix::net::UnixListener;
+        let dir = tempfile::tempdir().unwrap();
+        // A holder that answers any HELLO with `facts`.
+        let holder = |name: &str, facts: Value| {
+            let path = dir.path().join(name);
+            let listener = UnixListener::bind(&path).unwrap();
+            std::thread::spawn(move || {
+                let (mut c, _) = listener.accept().unwrap();
+                let (kind, hello) = read_frame(&mut c).unwrap();
+                assert_eq!((kind, serde_json::from_slice::<Value>(&hello).unwrap()["role"].clone()), (HELLO, json!("origin")));
+                c.write_all(&encode(HELLO, facts.to_string().as_bytes())).unwrap();
+            });
+            path
+        };
+        let new = holder("new.sock", json!({"type": true, "origin": true, "lastInput": "teammate"}));
+        assert_eq!(last_input_of(&new).as_deref(), Some("teammate"));
+        let fresh = holder("fresh.sock", json!({"type": true, "origin": true, "lastInput": null}));
+        assert_eq!(last_input_of(&fresh), None, "nothing typed yet");
+        let old = holder("old.sock", json!({"type": true}));
+        assert_eq!(last_input_of(&old), None, "an older holder says nothing: the window decides");
+        assert_eq!(last_input_of(&dir.path().join("gone.sock")), None);
+    }
 
     #[test]
     fn remote_input_strips_terminal_probe_replies_and_keeps_typing() {
@@ -196,8 +442,105 @@ mod tests {
             ("caf\u{e9} \u{1f600}".as_bytes(), "caf\u{e9} \u{1f600}".as_bytes()),
         ];
         for (input, kept) in table {
-            assert_eq!(strip_probe_replies(input), *kept, "{input:?}");
+            assert_eq!(strip_remote(input, true), *kept, "{input:?}");
         }
+    }
+
+    #[test]
+    fn remote_input_strips_ctrl_x_and_mouse_reports_in_every_encoding() {
+        let gone: &[&[u8]] = &[
+            b"\x18",
+            b"\x1b[120;5u",
+            b"\x1b[88;5u",
+            b"\x1b[120;6u",
+            b"\x1b[120:88;6:1u",
+            b"\x1b[120;5:3u",
+            b"\x1b[120;13u",
+            b"\x1b[24;5u",
+            b"\x1b[27;5;120~",
+            b"\x1b[27;5;88~",
+            b"\x1b[<0;10;5M",
+            b"\x1b[<0;10;5m",
+            b"\x1b[<64;3;4M",
+            b"\x1b[M !!",
+            b"\x1b[32;10;5M",
+            b"\x1b\x18[120;5u", // removing ^X would join ESC to a CSI-u ctrl+x
+            b"\x1b[\x1b[<0;1;1M120;5u",
+        ];
+        for input in gone {
+            assert_eq!(strip_remote(input, true), b"", "{input:?}");
+            assert_eq!(strip_remote(input, false), *input, "the owner's keys pass: {input:?}");
+        }
+        let kept: &[(&[u8], &[u8])] = &[
+            (b"ls -la\r", b"ls -la\r"),
+            (b"\x03", b"\x03"),                         // ctrl+c
+            (b"\x1b[A\x1b[B\x1b[1;5D", b"\x1b[A\x1b[B\x1b[1;5D"), // arrows
+            (b"\x1b[99;5u\x1b[13u", b"\x1b[99;5u\x1b[13u"),       // kitty ctrl+c, Enter
+            (b"\x1b[120u\x1b[120;2u", b"\x1b[120u\x1b[120;2u"),   // x and X without ctrl
+            (b"\x1b[27;2;120~", b"\x1b[27;2;120~"),
+            (b"\x1b\t", b"\x1b\t"),
+            (b"a\x18\tb", b"a\tb"), // ctrl+x Tab loses its ctrl+x
+            (b"x\x1b[<0;1;1My", b"xy"),
+        ];
+        for (input, out) in kept {
+            assert_eq!(strip_remote(input, true), *out, "{input:?}");
+        }
+    }
+
+    #[test]
+    fn remote_input_a_band_key_split_across_frames_never_reaches_the_pty() {
+        let run = |frames: &[&[u8]]| {
+            let mut carry = Carry::default();
+            frames.iter().flat_map(|f| carry.feed(f, false)).collect::<Vec<u8>>()
+        };
+        for frames in [
+            &[&b"\x1b[120;5"[..], b"u"][..],
+            &[b"\x1b[", b"120;5u"],
+            &[b"\x1b", b"[120;5u"],
+            &[b"\x1b", b"[", b"120;5u"],
+            &[b"\x1b", b"[120;5u[120;5u"],
+            &[b"a\x1b\x18", b"[120;5u"],
+            &[b"\x1b[<0;10;", b"5M"],
+            &[b"\x1b[M", b" !", b"!"],
+            &[b"\x1b[27;5;12", b"0~"],
+        ] {
+            let pty = run(frames);
+            assert!(strip_remote(&pty, true).len() == pty.len() && !pty.contains(&0x18), "{frames:?} wrote {pty:?}");
+            assert!(pty.iter().all(|b| *b == 0x1b || *b == b'a'), "{frames:?} wrote {pty:?}");
+        }
+        // As `admit` sends them: each frame stripped on its own first, then carried.
+        let admitted = |frames: &[&[u8]]| {
+            let mut carry = Carry::default();
+            frames.iter().flat_map(|f| carry.feed(&strip_remote(f, true), false)).collect::<Vec<u8>>()
+        };
+        for frames in [
+            &[&b"\x1b[M"[..], b" !!"][..],
+            &[b"\x1b[M ", b"!!"],
+            &[b"\x1b[M !", b"!"],
+            &[b"ab\x1b[M", b" !!cd"],
+            &[b"\x1b[", b"M !!"],
+            &[b"\x1b", b"[M !!"],
+            &[b"\x1b[<0;1", b";1M"],
+            &[b"\x1b[120;5", b"u"],
+            &[b"\x1b[27;5;1", b"20~"],
+        ] {
+            let pty = admitted(frames);
+            assert!(!pty.windows(2).any(|w| w == b" !") && strip_remote(&pty, true) == pty && !pty.contains(&0x18), "{frames:?} wrote {pty:?}");
+            assert!(pty.iter().all(|b| b"\x1babcd".contains(b)), "{frames:?} wrote {pty:?}");
+        }
+        assert_eq!(admitted(&[b"ab\x1b[M", b" !!cd"]), b"abcd", "a split X10 report goes whole; the typing around it stays");
+        assert_eq!(strip_remote(b"\x1b[M !", true), b"\x1b[M !", "an unfinished X10 report is left for Carry");
+        assert_eq!(run(&[b"\x1b", b"[A"]), b"\x1b[A", "Escape, then an arrow");
+        assert_eq!(run(&[b"\x1b[20", b"0~hi\x1b[201~"]), b"\x1b[200~hi\x1b[201~", "a paste cut mid-sequence");
+        assert_eq!(run(&[b"\x1b"]), b"\x1b", "Escape goes out at once");
+        assert_eq!(run(&[b"ls\r"]), b"ls\r");
+        // The owner's unfinished escape cannot be finished by a teammate.
+        let mut carry = Carry::default();
+        assert_eq!(carry.feed(b"\x1b[120;5", true), b"\x1b[120;5");
+        assert_eq!(carry.feed(b"u", false), b"");
+        assert_eq!(carry.feed(b"\x1b", true), b"\x1b");
+        assert_eq!(carry.feed(b"[A", false), b"[A", "an inert continuation goes out");
+        assert_eq!(carry.feed(b"\x18\x1b[<0;1;1M", true), b"\x18\x1b[<0;1;1M", "the owner's band keys pass");
     }
 
     const SID: &str = "aaaabbbb-cccc-4ddd-8eee-ffff00001111";
@@ -230,13 +573,19 @@ mod tests {
         assert!(admit(&frame("bbbbcccc-dddd-4eee-8fff-000011112222", "gen-1", 7, b"ls\r"), watched()).is_none(), "not this Mac's");
         assert!(admit(&frame(SID, "gen-1", 7, &[b'x'; MAX_INPUT + 1]), watched()).is_none(), "over the bound");
         assert!(admit(&frame(SID, "gen-1", 7, b"\x1b[12;40R"), watched()).is_none(), "nothing left to type");
+        assert!(admit(&frame(SID, "gen-1", 7, b"\x18\x1b[<0;3;4M"), watched()).is_none(), "only band keys: dropped");
+        let mut owner = frame(SID, "gen-1", 7, b"\x18\x1b[<0;3;4M");
+        owner["fromOwner"] = json!(true);
+        assert_eq!(admit(&owner, watched()).unwrap().3, b"\x18\x1b[<0;3;4M", "the owner's ctrl+x and clicks pass");
+        owner["fromOwner"] = json!(false);
+        assert!(admit(&owner, watched()).is_none(), "a teammate's do not");
         assert!(admit(&json!({"type": "local.session.input", "sessionId": SID, "generation": "gen-1", "epoch": 7, "data": "%%"}), watched()).is_none());
         ctl.epoch.store(0, SeqCst);
         assert!(admit(&frame(SID, "gen-1", 0, b"ls\r"), watched()).is_none(), "a relay that has not started streaming");
     }
 
     #[test]
-    fn remote_input_is_dropped_while_a_join_request_waits() {
+    fn remote_input_is_never_dropped_because_a_request_is_pending() {
         use super::super::presence::{set, Entry, JoinRequest, TEST_LOCK};
         let _g = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let sid = "cccc1111-2222-4333-8444-555566667777";
@@ -251,8 +600,9 @@ mod tests {
         assert!(admit(&frame(sid, "gen-1", 7, b"ls\r"), relay).is_some());
         e.join_requests = vec![JoinRequest { user_id: "u2".into(), name: "Mira".into(), request_id: "r1".into(), kind: "join".into() }];
         set(sid, e);
-        assert!(admit(&frame(sid, "gen-1", 7, b"ls\r"), relay).is_none());
-        assert!(admit(&frame(sid, "gen-2", 7, b"ls\r"), relay).is_some(), "the old generation's request does not freeze a restart");
+        // No paused concept (owner ruling 2026-10-05): while anyone else may type, the band offers
+        // no Allow and the owner answers in Lightbulb, so a writer's keys need not be dropped.
+        assert!(admit(&frame(sid, "gen-1", 7, b"ls\r"), relay).is_some());
     }
 
     #[test]
@@ -260,10 +610,10 @@ mod tests {
         let ctl = Ctl::new(0);
         ctl.stop.store(true, SeqCst);
         let (tx, rx) = sync_channel(1);
-        tx.send(b"never".to_vec()).unwrap();
+        tx.send((b"never".to_vec(), false)).unwrap();
         let started = Instant::now();
         write(SID, "gen-1", &ctl, &rx);
         assert!(started.elapsed() < Duration::from_secs(1));
-        assert_eq!(rx.try_recv().unwrap(), b"never", "nothing is written once the relay stopped");
+        assert_eq!(rx.try_recv().unwrap().0, b"never", "nothing is written once the relay stopped");
     }
 }

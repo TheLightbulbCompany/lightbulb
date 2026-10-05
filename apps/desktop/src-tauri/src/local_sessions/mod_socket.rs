@@ -72,8 +72,8 @@ pub(super) fn decision_body(sid: &str, generation: &str, body: &Value) -> Result
     Ok(out)
 }
 
-/// An Allow or Decline whose request is no longer pending here: refused, so every accepted
-/// press is one made while remote typing was frozen.
+/// An Allow or Decline whose request is no longer pending here: refused, so a press can only
+/// answer the request the band showed.
 pub(super) fn stale(sid: &str, payload: &Value) -> bool {
     match (payload["decision"].as_str(), payload["userId"].as_str(), payload["requestId"].as_str()) {
         (Some("allow" | "decline"), Some(user), Some(request)) => !presence::pending(sid, payload["generation"].as_str().unwrap_or(""), user, request),
@@ -141,6 +141,13 @@ async fn answer(mut socket: UnixStream, scope: PathBuf, enrollment: Enrollment, 
             let Ok(payload) = decision_body(&caller.session_id, &caller.generation, &body) else {
                 return reply(&mut socket, "400 Bad Request", &json!({"error":"invalid_decision"})).await;
             };
+            // Only the owner operates the band (spec §2.4): a teammate's `a`/`d`/`p` reaches Claude
+            // as typing, so the holder says whose input came last.
+            let sid = caller.session_id.clone();
+            let last_input = tokio::task::spawn_blocking(move || super::remote_input::holder_last_input(&sid)).await.ok().flatten();
+            if super::remote_input::teammate_holds_decision(&caller.session_id, std::time::Instant::now(), last_input.as_deref()) {
+                return reply(&mut socket, "409 Conflict", &json!({"error":"teammate_typing","message":"A teammate just typed here. Press again to confirm."})).await;
+            }
             if stale(&caller.session_id, &payload) {
                 return reply(&mut socket, "409 Conflict", &json!({"error":"stale","message":"That request is no longer waiting."})).await;
             }
@@ -242,7 +249,7 @@ mod tests {
         let _g = presence::TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let sid = "44444444-4444-4444-8444-444444444444";
         let allow = decision_body(sid, "g1", &json!({"decision":"allow","userId":"u2","requestId":"r2"})).unwrap();
-        assert!(stale(sid, &allow), "no presence: nothing is frozen, so no answer is taken");
+        assert!(stale(sid, &allow), "no presence: no request is pending, so no answer is taken");
         presence::offer_frame(&json!({"sessionId":sid,"generation":"g1","paused":false,"viewers":[],
             "joinRequests":[{"userId":"u2","name":"Mira","requestId":"r2"}]}));
         assert!(!stale(sid, &allow));

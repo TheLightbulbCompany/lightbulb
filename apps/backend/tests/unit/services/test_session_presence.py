@@ -177,14 +177,16 @@ async def test_push_skips_a_mac_without_the_feature(monkeypatch):
     send.assert_not_awaited()
 
 
-def test_input_paused_is_public_only_with_a_pending_request_on_a_presence_mac(monkeypatch):
+def test_input_paused_only_for_a_presence_mac_without_band_owner_only(monkeypatch):
+    """An older presence Mac drops remote typing while a request waits; one that advertises
+    bandOwnerOnly strips band keys from remote input instead and never pauses."""
     monkeypatch.setattr(sessions, "session_terminal", lambda row: "held")
     base = _row(
         onlineUntil=9_999_999_999,
         capabilitiesVerified=True,
         provider="claude",
         status="idle",
-        eventSeq=1,
+        lastEventAt=1,
         providerVersion="1",
         activeTurnId=None,
         capabilities={},
@@ -196,8 +198,10 @@ def test_input_paused_is_public_only_with_a_pending_request_on_a_presence_mac(mo
     pickup = {"pickupRequests": {"user_zoe": {"state": "pending", "requestId": "p1"}}}
     # An older Mac never shows the pick-up request, so nothing freezes there for it.
     assert sessions._session_public({**base, **pickup}, "user_aden").input_paused is False
-    newer = {"deviceFeatures": ["pickupRequests", "sessionPresence"]}
-    assert sessions._session_public({**base, **pickup, **newer}, "user_aden").input_paused is True
+    older = {"deviceFeatures": ["pickupRequests", "sessionPresence"]}
+    assert sessions._session_public({**base, **pickup, **older}, "user_aden").input_paused is True
+    newer = {"deviceFeatures": ["bandOwnerOnly", "pickupRequests", "sessionPresence"]}
+    assert sessions._session_public({**base, **pending, **pickup, **newer}, "user_aden").input_paused is False
 
 
 @pytest.mark.asyncio
@@ -223,3 +227,6 @@ def test_a_mac_that_advertises_pickup_requests_lands_the_feature():
     assert DeviceHeartbeat.model_validate(frame).device_features() == ["sessionPresence"]
     newer = DeviceHeartbeat.model_validate({**frame, "pickupRequests": True})
     assert newer.device_features() == ["pickupRequests", "sessionPresence"]
+    assert presence.BAND_OWNER_ONLY_FEATURE in FEATURES
+    newest = DeviceHeartbeat.model_validate({**frame, "pickupRequests": True, "bandOwnerOnly": True})
+    assert newest.device_features() == ["bandOwnerOnly", "pickupRequests", "sessionPresence"]

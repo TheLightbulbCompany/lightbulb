@@ -300,7 +300,8 @@ class LocalSession(ContractModel):
     resume: ResumeStatus | None = None
     # Server-computed: ended, not background, and this workspace may start sessions on its Macs.
     resumable: bool = False
-    # A join request is pending and the owner's Mac has paused remote typing until it is answered.
+    # A request is pending and the owner's older Mac (no bandOwnerOnly) drops remote typing
+    # until it is answered.
     input_paused: bool = False
 
     @model_serializer(mode="wrap")
@@ -693,9 +694,12 @@ def _session_public(row: dict, viewer: str | None = None) -> LocalSession:
             public["pendingPickupIds"] = waiting
     from core.services import session_presence  # lazy: it imports this module
 
+    features = row.get("deviceFeatures", ())
+    # Only an older presence Mac freezes; one that advertises bandOwnerOnly never does.
     public["inputPaused"] = bool(
         (session_presence.pending_joins(row) or session_presence.shown_pickups(row))
-        and session_presence.FEATURE in row.get("deviceFeatures", ())
+        and session_presence.FEATURE in features
+        and session_presence.BAND_OWNER_ONLY_FEATURE not in features
         and public["terminal"] is not None
     )
     stats = row.get("stats") or {}

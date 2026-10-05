@@ -406,7 +406,7 @@ export interface LocalSession {
   joinRequestId?: string | null;
   /** The owner's own view only: teammates waiting for an answer to "Ask to join". */
   pendingJoins?: string[];
-  /** A join request is pending and the owner's Mac has paused remote typing until it is answered. */
+  /** A request is pending and the owner's older Mac (no bandOwnerOnly) has paused remote typing until it is answered. A newer Mac never pauses. */
   inputPaused?: boolean;
   /** The owner's own view only: each waiting person's request id, sent back with the answer. */
   pendingJoinIds?: Record<string, string>;

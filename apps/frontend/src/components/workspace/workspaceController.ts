@@ -213,7 +213,7 @@ function addOrFocus(descriptor: PanelDescriptor, extraParams?: Record<string, st
     return;
   }
   const split = descriptor.panelId === TASKS_PANEL_ID && canSplitBesideMessages()
-    && readTasksPlacement() === "split";
+    && tasksPlacement() === "split";
   _api.addPanel({
     id: descriptor.panelId,
     component: descriptor.component,
@@ -332,6 +332,11 @@ export function refitBrowserSplit(): void {
   }
 }
 
+// The choice made in this page. Storage can refuse the write (privacy mode, quota), and an
+// Expand must still hold for the rest of the session rather than read back as "split".
+let _sessionTasksPlacement: TasksPlacement | null = null;
+const tasksPlacement = (): TasksPlacement => _sessionTasksPlacement ?? readTasksPlacement();
+
 /**
  * Keep Tasks where the dock's width allows. Too narrow for Tasks beside the conversation:
  * fold it into the conversation's group as a tab. Wide again, and the stored placement
@@ -346,7 +351,7 @@ function refitTasksSplit(): void {
   if (!_api || !tasks || !messages) return;
   const folded = tasks.group === messages.group;
   const fits = canSplitBesideMessages();
-  if (folded ? !(fits && readTasksPlacement() === "split") : fits) return;
+  if (folded ? !(fits && tasksPlacement() === "split") : fits) return;
   const active = _api.activePanel;
   _shellOpDepth += 1;
   try {
@@ -371,6 +376,7 @@ export function refitSplits(): void {
 // from its old group, so the clear-on-close URL listener is held off the same
 // way closeSubjectDeleted holds it — a move is not a close.
 export function setTasksPlacement(placement: TasksPlacement): void {
+  _sessionTasksPlacement = placement;
   writeTasksPlacement(placement);
   const tasks = _api?.getPanel(TASKS_PANEL_ID);
   const messages = _api?.getPanel(MESSAGES_PANEL_ID);
@@ -585,4 +591,5 @@ export function _resetControllerForTests(): void {
   _hostListeners.clear();
   _macRun = null;
   _macListeners.clear();
+  _sessionTasksPlacement = null;
 }

@@ -172,6 +172,21 @@ describe("Tasks placement", () => {
     }
   });
 
+  it("keeps an Expand for the session when storage refuses the write", () => {
+    vi.spyOn(Storage.prototype, "getItem").mockImplementation(() => { throw new Error("denied"); });
+    vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => { throw new Error("denied"); });
+    const { api, main } = makeApi();
+    attachDockviewApi(api, () => "a1");
+    openPanel("teams-issues");
+    setTasksPlacement("tab");
+    const tasks = api.getPanel("teams-issues") as unknown as FakePanel;
+    tasks.api.moveTo.mockClear();
+    // A resize on a wide dock must not read the "split" fallback and undo it.
+    refitSplits();
+    expect(tasks.api.moveTo).not.toHaveBeenCalled();
+    expect(tasks.group).toBe(main);
+  });
+
   it("leaves Tasks a tab on a wide dock when the person chose Expand", () => {
     const { api, main } = makeApi();
     attachDockviewApi(api, () => "a1");

@@ -570,25 +570,31 @@ impl Journal {
         if receipt.outcome != "unknown" || receipt.ingress.is_some() {
             return Err("intent already anchored".into());
         }
-        let mut file = secure_file(native.transcript.as_ref().ok_or("transcript unavailable")?)?;
-        let meta = file.metadata().map_err(|_| "transcript unavailable")?;
-        if meta.len() > 0 {
-            file.seek(SeekFrom::End(-1))
-                .map_err(|_| "transcript unavailable")?;
-            let mut last = [0];
-            file.read_exact(&mut last)
-                .map_err(|_| "transcript unavailable")?;
-            if last[0] != b'\n' {
-                return Err("partial transcript boundary".into());
+        // A plain `claude` with no turn yet has no transcript: Claude writes it on the first
+        // turn, which this send may be. Admission then reads that file from its start.
+        let cursor = match native.transcript.as_ref() {
+            None if native.provider == "claude" => Cursor::default(),
+            None => return Err("transcript unavailable".into()),
+            Some(path) => {
+                let mut file = secure_file(path)?;
+                let meta = file.metadata().map_err(|_| "transcript unavailable")?;
+                if meta.len() > 0 {
+                    file.seek(SeekFrom::End(-1))
+                        .map_err(|_| "transcript unavailable")?;
+                    let mut last = [0];
+                    file.read_exact(&mut last)
+                        .map_err(|_| "transcript unavailable")?;
+                    if last[0] != b'\n' {
+                        return Err("partial transcript boundary".into());
+                    }
+                }
+                Cursor { offset: meta.len(), inode: Some(meta.ino()) }
             }
-        }
+        };
         receipt.ingress = Some(Ingress {
             workspace_revision,
             native: native.clone(),
-            cursor: Cursor {
-                offset: meta.len(),
-                inode: Some(meta.ino()),
-            },
+            cursor,
             text,
         });
         private_write(&path, &receipt)
@@ -2133,6 +2139,59 @@ mod tests {
             journal.finish("s1", "r1", None, false).unwrap().outcome,
             "applied"
         );
+    }
+
+    #[test]
+    fn local_sessions_plain_claude_send_before_its_first_turn_is_delivered() {
+        // A plain `claude` writes no transcript until its first turn (2.1.289). A teammate's
+        // send was rejected at anchoring ("transcript unavailable") before reaching the socket.
+        let dir = tempfile::tempdir().unwrap();
+        let home_dir = tempfile::tempdir().unwrap();
+        let home = home_dir.path().to_path_buf();
+        let journal = Journal { dir: dir.path().into() };
+        fs::create_dir_all(home.join(".claude/projects")).unwrap();
+        let cmd = command();
+        assert!(journal.admit(&cmd, "g1", 110).unwrap());
+        let native = NativeSession {
+            provider: "claude".into(),
+            conversation: "s".into(),
+            profile: "p".into(),
+            process: process(std::process::id()).unwrap(),
+            transcript: None,
+            socket: None,
+            socket_inode: None,
+            version: "2.1.289".into(),
+            restriction: None,
+            status: "idle".into(),
+            title: None,
+            cwd_name: None,
+            active_turn: None,
+            last_assistant_message: None,
+            holder: None,
+            job: None,
+            forked_from: None,
+        };
+        journal.anchor(&cmd, &native, "unique".into(), None).unwrap();
+        let ingress = journal.reconcile("s1", "r1", "g1").unwrap().ingress.unwrap();
+        assert_eq!(claude::admission(&home, &ingress).unwrap(), None, "not written yet");
+        // The send itself creates the transcript; its first user row is the admission.
+        let project = home.join(".claude/projects/-tmp-work");
+        fs::create_dir_all(&project).unwrap();
+        let row = json!({"type":"user","sessionId":"s","version":"2.1.289","uuid":"aaaabbbb-cccc-4ddd-8eee-ffff00001111",
+            "message":{"role":"user","content":format!("{}unique", claude::PEER_PREFIX)}});
+        fs::write(project.join("s.jsonl"), format!("{{\"type\":\"mode\"}}\n{row}\n")).unwrap();
+        assert_eq!(
+            claude::admission(&home, &ingress).unwrap().as_deref(),
+            Some("aaaabbbb-cccc-4ddd-8eee-ffff00001111")
+        );
+        // Codex keeps refusing an anchor it cannot read back.
+        let codex = NativeSession { provider: "codex".into(), ..native };
+        let mut other = command();
+        other.request_id = "r2".into();
+        other.command_seq += 1;
+        journal.finish("s1", "r1", None, false).unwrap();
+        assert!(journal.admit(&other, "g1", 110).unwrap());
+        assert!(journal.anchor(&other, &codex, "x".into(), None).is_err());
     }
 
     #[test]

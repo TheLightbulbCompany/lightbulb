@@ -39,16 +39,7 @@ pub(super) async fn capture(home: &Path, program: &Path, row: &Value) -> Result<
         .ok_or("invalid native session")?;
     let execution = process(pid)?;
     let root = home.join(".claude/projects");
-    confined_path(home, &root)?;
-    let mut transcripts = vec![];
-    for entry in fs::read_dir(&root).map_err(|_| "Claude profile unavailable")? {
-        let entry = entry.map_err(|_| "Claude project unavailable")?;
-        let path = entry.path().join(format!("{conversation}.jsonl"));
-        if path.try_exists().unwrap_or(false) && confined_path(&root, &path).is_ok() {
-            transcripts.push(path);
-        }
-    }
-    let transcript = (transcripts.len() == 1).then(|| transcripts.remove(0));
+    let transcript = find_transcript(home, conversation)?;
     // A signal, not the gate. The installed binary is the wrong witness for a session
     // launched from the install's app bundle, or for one still running the version the
     // CLI upgraded away from -- so it only answers while the transcript cannot.
@@ -192,6 +183,22 @@ pub(super) async fn capture(home: &Path, program: &Path, row: &Value) -> Result<
         job,
         forked_from,
     })
+}
+
+/// `<conversation>.jsonl` under Claude's projects, when exactly one exists. A fresh session
+/// writes none until its first turn -- which may be the one Lightbulb sends.
+pub(super) fn find_transcript(home: &Path, conversation: &str) -> Result<Option<PathBuf>> {
+    let root = home.join(".claude/projects");
+    confined_path(home, &root)?;
+    let mut transcripts = vec![];
+    for entry in fs::read_dir(&root).map_err(|_| "Claude profile unavailable")? {
+        let entry = entry.map_err(|_| "Claude project unavailable")?;
+        let path = entry.path().join(format!("{conversation}.jsonl"));
+        if path.try_exists().unwrap_or(false) && confined_path(&root, &path).is_ok() {
+            transcripts.push(path);
+        }
+    }
+    Ok((transcripts.len() == 1).then(|| transcripts.remove(0)))
 }
 
 /// The conversation a background session was forked from. Claude starts a session moved to the
@@ -497,15 +504,22 @@ fn correlated_user_uuid(row: &Value, session: &str, version: &str, sent: &str) -
         .map(str::to_owned)
 }
 
-pub(super) fn admission(ingress: &Ingress) -> Result<Option<String>> {
+pub(super) fn admission(home: &Path, ingress: &Ingress) -> Result<Option<String>> {
     if process(ingress.native.process.pid)? != ingress.native.process {
         return Err("native generation changed".into());
     }
-    let path = ingress
-        .native
-        .transcript
-        .as_ref()
-        .ok_or("missing transcript")?;
+    // Anchored before the session's first turn: the transcript is the one this send creates.
+    let found;
+    let path = match &ingress.native.transcript {
+        Some(path) => path,
+        None => match find_transcript(home, &ingress.native.conversation)? {
+            Some(path) => {
+                found = path;
+                &found
+            }
+            None => return Ok(None),
+        },
+    };
     let mut cursor = ingress.cursor.clone();
     let mut matches = vec![];
     // A bounded reconciliation scan; ambiguous/overlarge history is not admission evidence.
@@ -531,9 +545,9 @@ pub(super) fn admission(ingress: &Ingress) -> Result<Option<String>> {
 /// Claude appends the peer row a beat after it accepts the socket write (~80 ms live on
 /// 2.1.282), so a check made right after `send` reads nothing and the first receipt went out
 /// "unknown" -- "Delivery unknown" until the next heartbeat reconciled it. Poll briefly first.
-pub(super) async fn await_admission(ingress: &Ingress) -> Option<String> {
+pub(super) async fn await_admission(home: &Path, ingress: &Ingress) -> Option<String> {
     for _ in 0..20 {
-        match admission(ingress) {
+        match admission(home, ingress) {
             Ok(Some(id)) => return Some(id),
             Err(_) => return None,
             Ok(None) => tokio::time::sleep(std::time::Duration::from_millis(100)).await,
@@ -1668,22 +1682,22 @@ mod tests {
             text: "unique".into(),
         };
         assert_eq!(
-            admission(&ingress).unwrap(),
+            admission(Path::new("/unused"), &ingress).unwrap(),
             None,
             "matching historical content is not admission"
         );
         let mut file = fs::OpenOptions::new().append(true).open(&path).unwrap();
         writeln!(file, "{row}").unwrap();
-        assert!(admission(&ingress).unwrap().is_some());
+        assert!(admission(Path::new("/unused"), &ingress).unwrap().is_some());
         writeln!(file, "{row}").unwrap();
         assert_eq!(
-            admission(&ingress).unwrap(),
+            admission(Path::new("/unused"), &ingress).unwrap(),
             None,
             "duplicate ingress is ambiguous"
         );
         fs::rename(&path, dir.path().join("rotated.jsonl")).unwrap();
         fs::write(&path, format!("{row}\n{row}\n")).unwrap();
-        assert!(admission(&ingress).is_err());
+        assert!(admission(Path::new("/unused"), &ingress).is_err());
 
         // Claude writes the peer row a beat after the socket write: wait for it, don't report unknown.
         fs::write(&path, "").unwrap();
@@ -1703,7 +1717,7 @@ mod tests {
             .enable_time()
             .build()
             .unwrap()
-            .block_on(await_admission(&ingress));
+            .block_on(await_admission(Path::new("/unused"), &ingress));
         writer.join().unwrap();
         assert!(admitted.is_some(), "a row written after the send is admission");
     }

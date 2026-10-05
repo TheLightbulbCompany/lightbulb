@@ -10,6 +10,7 @@ import Markdown, {
 } from "react-native-markdown-display";
 
 import { WEB_ORIGIN } from "../../config/domain";
+import { activityMobileHref } from "../../lib/activityLink";
 import { paperclipMobileHref } from "../../lib/paperclipLink";
 import { sessionMobileHref } from "../../lib/sessionLink";
 import { colors, fonts, radii, spacing, type ChatPalette } from "../../config/theme";
@@ -97,6 +98,11 @@ const rules: RenderRules = {
       const sessionHref = sessionMobileHref(href);
       if (sessionHref) {
         return <Text key={node.key} style={styles.link} onPress={() => router.push(sessionHref)}>{children}</Text>;
+      }
+      // An agent's "add the sign-in here" link: the Activity tab has the form.
+      const activityHref = activityMobileHref(href);
+      if (activityHref) {
+        return <Text key={node.key} style={styles.link} onPress={() => router.push(activityHref)}>{children}</Text>;
       }
       // An issue or run link (the bundled paperclip skill writes e.g.
       // `/ISOA/issues/ISOA-317`) has an in-app screen — push it directly

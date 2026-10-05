@@ -1,5 +1,5 @@
 import { useAuth, useOrganization } from "@clerk/clerk-expo";
-import { useFocusEffect } from "expo-router";
+import { router, useFocusEffect } from "expo-router";
 import {
   useCallback,
   useMemo,
@@ -282,6 +282,18 @@ export default function IntegrationsPanel() {
       style={styles.page}
       contentContainerStyle={styles.content}
     >
+      {/* Org admins only: every website sign-in route 403s for a member. */}
+      {restricted ? null : (
+        <Pressable
+          style={({ pressed }) => [styles.card, pressed && styles.linkRowPressed]}
+          onPress={() => router.push("/(app)/control/website-signins")}
+          accessibilityRole="button"
+          accessibilityLabel="Website sign-ins"
+        >
+          <Text style={[styles.cardTitle, styles.cardTitleStacked]}>Website sign-ins</Text>
+          <Text style={styles.captionText}>Usernames and passwords agents use in the workspace browser.</Text>
+        </Pressable>
+      )}
       {inner}
     </ScrollView>
   );
@@ -345,6 +357,8 @@ function makeStyles(p: ChatPalette) {
       lineHeight: 18,
       color: p.fg,
     },
+    // In a column card (no row to fill), so the title keeps its own height.
+    cardTitleStacked: { flex: 0 },
     statusLabel: {
       fontFamily: fonts.mono,
       fontSize: 10,

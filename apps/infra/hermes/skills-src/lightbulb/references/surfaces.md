@@ -100,9 +100,10 @@ it, and Lightbulb opens one more Codex terminal on the same conversation). A pla
 Claude Code session (its owner can press ← in its terminal to move it to the background) shows
 the labelled transcript.
 
-**New session** (web and desktop): has no first message and no Start button. The person picks the
-approved folder, then presses **Claude Code** or **Codex**. The terminal opens on the
-tool's own start screen, where they can type anything, including `/resume`. The iPhone app still asks for a first message
+**New session** (web and desktop): a small form with no first message. The person picks
+**Claude Code** or **Codex**, an approved folder and, optionally, the model and mode, then presses
+**Start**. The terminal opens on the tool's own start screen, where they can type anything,
+including `/resume`. A Codex session joins Sessions only after its first prompt. The iPhone app still asks for a first message
 ("First message", "Send to Mac").
 
 Rooms' **Devices & sessions** panel lists human-shared Claude/Codex sessions;

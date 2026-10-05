@@ -16,8 +16,6 @@ pub(super) struct Caller {
     pub generation: String,
     pub terminal: Option<&'static str>,
     pub approval_waiting: bool,
-    /// What the owner calls this session, for the Resume question.
-    pub title: Option<String>,
 }
 
 /// The one mirrored, live Claude session whose process is `pid`.
@@ -46,17 +44,16 @@ fn resolve(scope: &Path, pid: u32) -> Option<Caller> {
                 terminal: Some(mirror.native.terminal()).filter(|t| *t != "none"),
                 // A prompt the hook holds open for a remote answer.
                 approval_waiting: mirror.waiting.as_ref().is_some_and(|w| w.held.is_some()),
-                title: mirror.native.title.clone().or_else(|| mirror.native.cwd_name.clone()),
             });
         }
     }
     (found.len() == 1).then(|| found.remove(0))
 }
 
-pub(super) fn state_json(sid: &str, terminal: Option<&str>, presence: Option<presence::Entry>, approval_waiting: bool) -> Value {
+pub(super) fn state_json(sid: &str, terminal: Option<&str>, presence: Option<presence::Entry>, approval_waiting: bool, writer_connected: bool) -> Value {
     let p = presence.unwrap_or(presence::Entry { generation: String::new(), paused: false, viewers: vec![], join_requests: vec![], at: 0 });
     json!({"sessionId": sid, "paused": p.paused, "terminal": terminal,
-           "viewers": p.viewers, "joinRequests": p.join_requests, "approvalWaiting": approval_waiting})
+           "viewers": p.viewers, "joinRequests": p.join_requests, "approvalWaiting": approval_waiting, "writerConnected": writer_connected})
 }
 
 pub(super) fn decision_body(sid: &str, generation: &str, body: &Value) -> Result<Value> {
@@ -85,43 +82,14 @@ pub(super) fn stale(sid: &str, payload: &Value) -> bool {
     }
 }
 
-/// Allow and Resume widen access. While a remote writer is connected, a key on this pty could be
-/// theirs, so the owner confirms in a native dialog the app draws, outside the pty. `ask` shows
-/// it and says whether the owner chose Allow. Err is the reply for a Cancel. Decline and Pause
-/// never ask, and nothing asks while no remote writer is connected.
-pub(super) fn confirm(caller: &Caller, payload: &Value, ask: impl FnOnce(&str) -> bool) -> std::result::Result<(), Value> {
-    let question = match payload["decision"].as_str() {
-        Some("allow") => {
-            let request = presence::get(&caller.session_id, &caller.generation)
-                .and_then(|e| e.join_requests.into_iter().find(|r| Some(r.request_id.as_str()) == payload["requestId"].as_str()));
-            let name = request.as_ref().map_or("this teammate", |r| r.name.as_str());
-            if request.as_ref().is_some_and(|r| r.kind == "pickup") {
-                format!("Let {name} pick up this session?")
-            } else {
-                format!("Let {name} write to this session?")
-            }
-        }
-        Some("unpause") => format!("Resume sharing {}?", caller.title.as_deref().filter(|t| !t.trim().is_empty()).unwrap_or("this session")),
-        _ => return Ok(()),
-    };
-    if !presence::remote_writer(&caller.session_id, &caller.generation) || ask(&question) {
-        return Ok(());
+/// Allow, Decline and Resume answer for the owner. While a remote writer is connected a key on
+/// this pty could be theirs, so the band refuses them: the owner answers in Lightbulb. Pause
+/// narrows access and always goes through.
+pub(super) fn writer_gate(caller: &Caller, payload: &Value) -> std::result::Result<(), Value> {
+    if matches!(payload["decision"].as_str(), Some("allow" | "decline" | "unpause")) && presence::remote_writer(&caller.session_id, &caller.generation) {
+        return Err(json!({"error":"writer_connected","message":"Someone who can type is connected. Answer in Lightbulb."}));
     }
-    Err(json!({"error":"cancelled","message":"Cancelled on this Mac."}))
-}
-
-/// The one real dialog: drawn by this app, never in the pty. Blocks, so never on the main thread.
-/// No app (setup has not run) is a Cancel.
-fn ask_on_this_mac(question: &str) -> bool {
-    use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
-    super::resume::app().is_some_and(|app| {
-        app.dialog()
-            .message(question)
-            .title("Lightbulb")
-            .kind(MessageDialogKind::Warning)
-            .buttons(MessageDialogButtons::OkCancelCustom("Allow".into(), "Cancel".into()))
-            .blocking_show()
-    })
+    Ok(())
 }
 
 pub(super) fn parse_request(raw: &[u8]) -> Option<(String, String, Value)> {
@@ -176,7 +144,7 @@ async fn answer(mut socket: UnixStream, scope: PathBuf, enrollment: Enrollment, 
     let Ok(Some((method, path, body))) = tokio::time::timeout(Duration::from_secs(2), read_request(&mut socket)).await else {
         return reply(&mut socket, "400 Bad Request", &json!({"error":"invalid_request"})).await;
     };
-    let state = |c: &Caller| state_json(&c.session_id, c.terminal, presence::get(&c.session_id, &c.generation), c.approval_waiting);
+    let state = |c: &Caller| state_json(&c.session_id, c.terminal, presence::get(&c.session_id, &c.generation), c.approval_waiting, presence::remote_writer(&c.session_id, &c.generation));
     match (method.as_str(), path.as_str()) {
         ("GET", "/v1/state") => reply(&mut socket, "200 OK", &state(&caller)).await,
         ("POST", "/v1/decide") => {
@@ -186,16 +154,9 @@ async fn answer(mut socket: UnixStream, scope: PathBuf, enrollment: Enrollment, 
             if stale(&caller.session_id, &payload) {
                 return reply(&mut socket, "409 Conflict", &json!({"error":"stale","message":"That request is no longer waiting."})).await;
             }
-            let (caller, payload) = match tokio::task::spawn_blocking(move || {
-                let gate = confirm(&caller, &payload, ask_on_this_mac);
-                (caller, payload, gate)
-            })
-            .await
-            {
-                Ok((caller, payload, Ok(()))) => (caller, payload),
-                Ok((_, _, Err(cancelled))) => return reply(&mut socket, "409 Conflict", &cancelled).await,
-                Err(_) => return reply(&mut socket, "409 Conflict", &json!({"error":"cancelled","message":"Cancelled on this Mac."})).await,
-            };
+            if let Err(refused) = writer_gate(&caller, &payload) {
+                return reply(&mut socket, "409 Conflict", &refused).await;
+            }
             let Ok(token) = crate::device_token::mint_device_token(&identity.private_key_pem, &enrollment.device_id, &enrollment.owner_id, 90) else {
                 return reply(&mut socket, "409 Conflict", &json!({"error":"unavailable","message":"Device authentication unavailable."})).await;
             };
@@ -252,7 +213,7 @@ mod tests {
 
     #[test]
     fn mod_socket_state_shape_has_no_presence_until_the_backend_sends_it() {
-        let state = state_json("11111111-1111-4111-8111-111111111111", Some("held"), None, false);
+        let state = state_json("11111111-1111-4111-8111-111111111111", Some("held"), None, false, false);
         assert_eq!(state["paused"], false);
         assert_eq!(state["viewers"], serde_json::json!([]));
         assert_eq!(state["terminal"], "held");
@@ -306,7 +267,7 @@ mod tests {
     }
 
     fn caller(sid: &str) -> Caller {
-        Caller { session_id: sid.into(), generation: "g1".into(), terminal: None, approval_waiting: false, title: Some("fix-login".into()) }
+        Caller { session_id: sid.into(), generation: "g1".into(), terminal: None, approval_waiting: false }
     }
 
     fn seat(sid: &str, can_type: bool) {
@@ -316,39 +277,28 @@ mod tests {
     }
 
     #[test]
-    fn mod_socket_allow_and_resume_ask_on_this_mac_while_a_remote_writer_is_connected() {
+    fn mod_socket_refuses_allow_decline_and_resume_while_a_remote_writer_is_connected() {
         let _g = presence::TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let sid = "55555555-5555-4555-8555-555555555555";
         seat(sid, true);
-        let allow = decision_body(sid, "g1", &json!({"decision":"allow","userId":"u2","requestId":"r2"})).unwrap();
-        let mut asked = vec![];
-        assert!(confirm(&caller(sid), &allow, |q| { asked.push(q.to_owned()); true }).is_ok());
-        let resume = decision_body(sid, "g1", &json!({"decision":"unpause"})).unwrap();
-        assert!(confirm(&caller(sid), &resume, |q| { asked.push(q.to_owned()); true }).is_ok());
-        assert_eq!(asked, ["Let Mira write to this session?", "Resume sharing fix-login?"]);
-        let cancelled = confirm(&caller(sid), &allow, |_| false).unwrap_err();
-        assert_eq!(cancelled, json!({"error":"cancelled","message":"Cancelled on this Mac."}));
+        let refusal = json!({"error":"writer_connected","message":"Someone who can type is connected. Answer in Lightbulb."});
+        for body in [json!({"decision":"allow","userId":"u2","requestId":"r2"}), json!({"decision":"decline","userId":"u2","requestId":"r2"}), json!({"decision":"unpause"})] {
+            let payload = decision_body(sid, "g1", &body).unwrap();
+            assert_eq!(writer_gate(&caller(sid), &payload).unwrap_err(), refusal, "{body}");
+        }
+        assert!(writer_gate(&caller(sid), &decision_body(sid, "g1", &json!({"decision":"pause"})).unwrap()).is_ok(), "pause always forwards");
+        let state = state_json(sid, None, presence::get(sid, "g1"), false, presence::remote_writer(sid, "g1"));
+        assert_eq!(state["writerConnected"], true);
     }
 
     #[test]
-    fn mod_socket_forwards_without_a_dialog_when_no_remote_writer_is_connected() {
+    fn mod_socket_forwards_every_decision_when_no_remote_writer_is_connected() {
         let _g = presence::TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let sid = "66666666-6666-4666-8666-666666666666";
         seat(sid, false);
-        let allow = decision_body(sid, "g1", &json!({"decision":"allow","userId":"u2","requestId":"r2"})).unwrap();
-        assert!(confirm(&caller(sid), &allow, |_| panic!("no remote writer: no dialog")).is_ok());
-        let resume = decision_body(sid, "g1", &json!({"decision":"unpause"})).unwrap();
-        assert!(confirm(&caller(sid), &resume, |_| panic!("no remote writer: no dialog")).is_ok());
-    }
-
-    #[test]
-    fn mod_socket_decline_and_pause_never_ask() {
-        let _g = presence::TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        let sid = "77777777-7777-4777-8777-777777777777";
-        seat(sid, true);
-        for body in [json!({"decision":"decline","userId":"u2","requestId":"r2"}), json!({"decision":"pause"})] {
-            let payload = decision_body(sid, "g1", &body).unwrap();
-            assert!(confirm(&caller(sid), &payload, |_| panic!("{body} never asks")).is_ok());
+        for body in [json!({"decision":"allow","userId":"u2","requestId":"r2"}), json!({"decision":"decline","userId":"u2","requestId":"r2"}), json!({"decision":"unpause"}), json!({"decision":"pause"})] {
+            assert!(writer_gate(&caller(sid), &decision_body(sid, "g1", &body).unwrap()).is_ok(), "{body}");
         }
+        assert_eq!(state_json(sid, None, presence::get(sid, "g1"), false, presence::remote_writer(sid, "g1"))["writerConnected"], false);
     }
 }

@@ -6,9 +6,7 @@ import { bashTouchesProtected, classify, colorFor, protectedPath, rowBody, rowLa
 
 export const sharing = atom({ plugin: 'lightbulb-sessions', key: 'state' } as const, null as SessionState | null)
 const problem = atom({ plugin: 'lightbulb-sessions', key: 'error' } as const, null as string | null)
-// An Allow or Resume is waiting on the app, which may be asking the owner in a dialog on the Mac.
-const confirming = atom({ plugin: 'lightbulb-sessions', key: 'confirming' } as const, false)
-// One decision at a time: a second Allow while one is out would open a second dialog on the Mac.
+// One decision at a time: a second press while one is out would send the same answer twice.
 // A module variable on purpose: it is set and tested in one synchronous step.
 let deciding = false
 const REFUSED = 'Lightbulb did not take that. Try again in the app.'
@@ -29,11 +27,11 @@ async function socketPath($: EngineInterface): Promise<string | null> {
 
 // state null: nothing to show (no socket yet, or the app says this session is not shared).
 // state undefined: no answer (the app is not running, busy, or refused the call); `message` is
-// what the app said when it refused, if it said anything (e.g. "Cancelled on this Mac.").
+// what the app said when it refused, if it said anything (e.g. "Someone who can type is connected. Answer in Lightbulb.").
 type Reply = { state: SessionState | null | undefined; message?: string }
 
 // No timeout to set: HttpInit has none, and a hook's budget stops while a `$` call is in flight,
-// so a decide stays open while the owner answers the app's dialog.
+// so a slow decide stays open.
 async function call($: EngineInterface, path: string, body?: Decision): Promise<Reply> {
   const socket = await socketPath($)
   // The app removes the socket when sharing stops or it quits: hide at once, not after the grace.
@@ -141,36 +139,35 @@ export const register: Register = on => {
     const act = (body: Decision) => async () => {
       if (deciding) return
       deciding = true
-      const asks = body.decision === 'allow' || body.decision === 'unpause'
       try {
-        if (asks) await update($, confirming, () => true)
         const { state: after, message } = await decide($, body)
         if (after) await update($, sharing, () => after) // never write back the draw-time `s`: the poll may be newer
         await update($, problem, () => (after ? null : message ?? REFUSED))
       } finally {
         deciding = false
-        if (asks) await update($, confirming, () => false)
       }
     }
     const ask = s.joinRequests[0]
     const err = await read($, problem)
-    const waitingOnMac = await read($, confirming)
     return (
       <Box flexDirection="column">
         <Box>
           <Text dimColor>{bandRuns(s).map(r => r.color ? <Text color={r.color}>{r.text}</Text> : r.text)} </Text>
           {s.paused
-            ? <Button key="resume" hotkey="p" label="Resume sharing" onPress={act({ decision: 'unpause' })} />
+            ? s.writerConnected ? null : <Button key="resume" hotkey="p" label="Resume sharing" onPress={act({ decision: 'unpause' })} />
             : <Button key="pause" hotkey="p" label="Pause" onPress={act({ decision: 'pause' })} />}
         </Box>
         {ask && (
           <Box>
             <Text><Text color={colorFor(ask.userId)}>{ask.name}</Text>{requestLine(ask, s.joinRequests.length).slice(ask.name.length)} </Text>
-            <Button key="allow" hotkey="a" variant="primary" label="Allow" onPress={act({ decision: 'allow', userId: ask.userId, requestId: ask.requestId })} />
-            <Button key="decline" hotkey="d" label="Decline" onPress={act({ decision: 'decline', userId: ask.userId, requestId: ask.requestId })} />
+            {s.writerConnected
+              ? <Text dimColor>· answer in Lightbulb</Text>
+              : <>
+                  <Button key="allow" hotkey="a" variant="primary" label="Allow" onPress={act({ decision: 'allow', userId: ask.userId, requestId: ask.requestId })} />
+                  <Button key="decline" hotkey="d" label="Decline" onPress={act({ decision: 'decline', userId: ask.userId, requestId: ask.requestId })} />
+                </>}
           </Box>
         )}
-        {waitingOnMac && <Text dimColor>Confirm on your Mac…</Text>}
         {s.approvalWaiting && <Text dimColor>Waiting on you here or in Lightbulb</Text>}
         {err && <Text color="red">{err}</Text>}
       </Box>

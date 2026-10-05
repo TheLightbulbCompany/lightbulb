@@ -923,7 +923,12 @@ describe("ApiStack — message search (OpenSearch Serverless)", () => {
     const policies = Object.values(dev.findResources("AWS::OpenSearchServerless::SecurityPolicy")) as any[];
     const network = policies.find((p) => p.Properties.Type === "network");
     expect(JSON.stringify(network.Properties.Policy)).toContain('\\"AllowFromPublic\\":false');
-    dev.resourceCountIs("AWS::OpenSearchServerless::VpcEndpoint", 1);
+    dev.resourceCountIs("AWS::OpenSearchServerless::VpcEndpoint", 0);
+    const vpces = Object.values(dev.findResources("AWS::EC2::VPCEndpoint")) as any[];
+    const aossVpce = vpces.filter((v) => JSON.stringify(v.Properties.ServiceName).includes("aoss-data"));
+    expect(aossVpce).toHaveLength(1);
+    expect(aossVpce[0].Properties.PrivateDnsEnabled).toBe(true);
+    expect(aossVpce[0].Properties.VpcEndpointType).toBe("Interface");
   });
 
   test("exactly two principals: the indexer writes, the backend reads and drops indexes", () => {

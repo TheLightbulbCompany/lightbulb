@@ -70,15 +70,17 @@ const oldBackend = (logins: unknown[]) =>
     throw NOT_FOUND;
   });
 
-it("lists from the flat login route, grouped by site, when there is no sites route", async () => {
+it("lists from the flat login route, one card per exact host, when there is no sites route", async () => {
   oldBackend([LOGIN, { ...LOGIN, id: "vault_aaaaaaaaaaaa", origin: "https://mail.google.com:8443", username: "ops" },
     { ...LOGIN, id: "vault_ba9876543210", origin: "https://www.linkedin.com", username: "growth" }]);
   await render(<WebsiteSignIns />);
-  expect(await screen.findByText("google.com")).toBeTruthy();
+  expect(await screen.findByText("accounts.google.com")).toBeTruthy();
   expect(mockApi.get.mock.calls.map(([path]) => path)).toEqual(["/website-logins/sites", "/website-logins"]);
   expect(screen.getByText("dana@example.com")).toBeTruthy();
+  // No guessed registrable domain: a different host is a different card.
+  expect(screen.getByText("mail.google.com")).toBeTruthy();
   expect(screen.getByText("ops")).toBeTruthy();
-  expect(screen.getByText("linkedin.com")).toBeTruthy();
+  expect(screen.getByText("www.linkedin.com")).toBeTruthy();
   expect(screen.queryByText("Signed in in the browser")).toBeNull();
   expect(screen.queryByText(/Couldn’t load/)).toBeNull();
 });
@@ -87,7 +89,7 @@ it("offers only Remove on a row, and Add, when there is no sites route", async (
   oldBackend([LOGIN]);
   const alert = jest.spyOn(Alert, "alert");
   await render(<WebsiteSignIns />);
-  const options = await choose("Actions for dana@example.com on google.com", "Remove");
+  const options = await choose("Actions for dana@example.com on accounts.google.com", "Remove");
   expect(options).toEqual(["Remove", "Cancel"]);
   await act(async () => { alert.mock.calls.at(-1)![2]!.find((b) => b.text === "Remove")!.onPress!(); });
   expect(mockApi.del).toHaveBeenCalledWith("/website-logins/vault_0123456789ab");
@@ -105,7 +107,7 @@ it("shows a sign-in added against a backend with no sites route", async () => {
   await fireEvent.changeText(screen.getByLabelText("Username or email"), "dana");
   await fireEvent.changeText(screen.getByLabelText("Password"), "hunter2");
   await fireEvent.press(screen.getByRole("button", { name: "Add" }));
-  expect(await screen.findByText("example.com")).toBeTruthy();
+  expect(await screen.findByText("app.example.com")).toBeTruthy();
   expect(screen.getByText("dana")).toBeTruthy();
 });
 

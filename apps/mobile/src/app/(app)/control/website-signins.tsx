@@ -65,9 +65,9 @@ export function groupLoginsBySite(logins: readonly WebsiteLogin[]): WebsiteSite[
   const bySite = new Map<string, WebsiteLogin[]>();
   for (const login of logins) {
     const host = login.origin.replace(/^[a-z]+:\/\//i, "").replace(/[:/].*$/, "").toLowerCase();
-    // ponytail: last two labels, so "app.example.co.uk" groups under "co.uk". The server's
-    // /sites does the real grouping; this only runs until the backend that has it is deployed.
-    const site = host.split(".").slice(-2).join(".") || login.origin;
+    // The exact host, not a guessed registrable domain: two-label guessing merges unrelated
+    // "*.co.uk" sites into one card. The server's /sites does the real grouping once deployed.
+    const site = host || login.origin;
     bySite.set(site, [...(bySite.get(site) ?? []), login]);
   }
   return [...bySite.entries()]

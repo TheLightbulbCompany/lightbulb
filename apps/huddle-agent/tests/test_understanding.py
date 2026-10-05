@@ -2561,7 +2561,7 @@ async def test_a_held_answer_is_said_after_the_opening_note_and_a_stop_leaves_no
     h.gate["live"].set()
     await settle(h)
     kinds = [c[0] for c in lives[0].calls]
-    assert kinds.index("commentary") > kinds.index("ack"), (
+    assert kinds.index("commentary") > kinds.index("nudge"), (
         "as on the path that was never held"
     )
     assert held(h) == []

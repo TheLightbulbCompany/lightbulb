@@ -70,7 +70,11 @@ def build_query(q: str, room_ids: list[str], limit: int) -> dict:
     if not _OPERATORS & set(q):
         # Typo tolerance -- only when the person typed no operators, or this OR
         # would match what a phrase or an exclusion asked to leave out.
-        should.append({"multi_match": {"query": q, "fields": fields, "operator": "and", "fuzziness": "AUTO"}})
+        # prefix_length 2: a typo may not change the first two letters. Without it the
+        # stemmed "taglin" reached "again" (2 edits) and flooded prod results.
+        should.append(
+            {"multi_match": {"query": q, "fields": fields, "operator": "and", "fuzziness": "AUTO", "prefix_length": 2}}
+        )
     return {
         "size": limit,
         "_source": _SOURCE,

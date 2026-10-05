@@ -22,4 +22,5 @@ def test_lightbulb_skill_routes_google_checks_to_managed_gog_cli(tmp_path):
         "do not run the generic google workspace skill's `setup.py --check`"
         in normalized_integrations
     )
-    assert "`gog auth status`" in integrations
+    assert "`gog auth list --check`" in skill
+    assert "`gog auth list --check`" in integrations

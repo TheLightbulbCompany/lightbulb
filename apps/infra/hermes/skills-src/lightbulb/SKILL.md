@@ -63,11 +63,13 @@ These hold whether or not you open a reference.
   change: read integrations live from `GET $ISOL8_API_URL/api/v1/platform-info`,
   marketplace listings live with `marketplace_search`, and plan/provider from
   `~/.openclaw/lightbulb-facts.json`. Never recite any of the three from memory.
-- **Google Workspace on Lightbulb uses the managed `gog` CLI.** Verify it with
-  `gog auth status` (and, when needed, a small read-only API call). Do not use
-  the generic Google Workspace skill's profile-token setup check: it targets a
-  separate credential path and can falsely report this managed connection as
-  unauthenticated. See `references/integrations.md`.
+- **Google Workspace on Lightbulb uses the managed `gog` CLI.** Validate its
+  credentials with `gog auth list --check` (and, when needed, an account-scoped
+  read-only API call). `gog auth status` only reports configuration; it does not
+  validate refresh tokens. Do not use the generic Google Workspace skill's
+  profile-token setup check: it targets a separate credential path and can
+  falsely report this managed connection as unauthenticated. See
+  `references/integrations.md`.
 - **Never write an `Authorization: Bearer …` header yourself** — not in a curl
   you type, not in a script you write. The transcript redaction masks
   that header *including* a `$OPENCLAW_HOOK_TOKEN` reference, so the copy you

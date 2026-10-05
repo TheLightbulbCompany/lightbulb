@@ -434,7 +434,7 @@ async def submit_local_session_command(
     session_id: str,
     body: local_sessions.LocalSessionCommand,
     replaces_request_id: str | None = Query(None, alias="replacesRequestId", min_length=1, max_length=256),
-    auth: AuthContext = Depends(get_current_user),
+    auth: AuthContext = Depends(get_human_session),
 ):
     from core.services.local_session_relay import get_local_session_relay
 

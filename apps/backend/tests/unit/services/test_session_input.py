@@ -139,10 +139,11 @@ async def test_agents_are_refused_even_for_their_own_requester(transport):
         ("type_into_local_session", {"session_id", "body", "auth"}),
         ("watch_local_session", {"session_id", "auth"}),
         ("resume_local_session", {"session_id", "body", "auth"}),
+        ("submit_local_session_command", {"session_id", "body", "replaces_request_id", "auth"}),
     ],
 )
 def test_the_human_only_routes_take_a_clerk_session_and_no_room(route, fields):
-    """/input, /viewing and /resume: MCP's opaque OAuth tokens, device tokens (EdDSA) and agent
+    """/input, /viewing, /resume and /commands: MCP's opaque OAuth tokens, device tokens (EdDSA) and agent
     invocations never pass `get_current_user` (an RS256 Clerk JWT check), and `get_human_session`
     also refuses a JWT OAuth access token or a template token; no room parameter, so there is no
     room-scoped door. The services refuse an AgentInvocation on their own as well."""

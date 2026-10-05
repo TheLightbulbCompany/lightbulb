@@ -306,3 +306,96 @@ async def test_a_removed_member_cannot_type_even_while_still_admitted(transport)
     await refused("LOCAL_SESSION_FORBIDDEN", transport, BOB, sid)  # their Clerk JWT is still valid
     await session_screen.type_into(ALICE, sid, body())
     assert len(sent(transport)) == 1, "the owner still types"
+
+
+def viewer_row(db, sid, person=BOB):
+    return db[0].get_item(Key={"pk": repo.session_pk(OWNER, sid), "sk": f"VIEWER#{person.user_id}"}).get("Item")
+
+
+@pytest.mark.asyncio
+async def test_typing_marks_the_typists_live_viewer_row_and_never_creates_one(transport, db, monkeypatch):
+    sid = await start(transport)
+    await capable(transport, sid)
+    await admit(sid)
+    now = time.time()
+    monkeypatch.setattr(session_screen, "_clock", lambda: now)
+    await session_screen.type_into(BOB, sid, body())
+    assert viewer_row(db, sid) is None, "typing without watching creates no viewer row"
+    await session_screen.watch(BOB, sid)
+    await session_screen.type_into(BOB, sid, body())
+    assert viewer_row(db, sid)["typedAt"] == int(now)
+    db[0].update_item(  # the viewer row has lapsed but TTL has not removed it yet
+        Key={"pk": repo.session_pk(OWNER, sid), "sk": f"VIEWER#{BOB.user_id}"},
+        UpdateExpression="SET expiresAt = :e",
+        ExpressionAttributeValues={":e": int(now) - 1},
+    )
+    monkeypatch.setattr(session_screen, "_clock", lambda: now + 5)
+    await session_screen.type_into(BOB, sid, body())
+    assert viewer_row(db, sid)["typedAt"] == int(now), "a lapsed viewer row is not marked"
+    assert len(typed_rows(db, sid)) == 1, "the audit row is kept as before"
+
+
+@pytest.mark.asyncio
+async def test_a_viewer_refresh_keeps_typed_at_and_a_new_lease_starts_without_it(transport, db, monkeypatch):
+    sid = await start(transport)
+    await capable(transport, sid)
+    await admit(sid)
+    now = time.time()
+    monkeypatch.setattr(session_screen, "_clock", lambda: now)
+    await session_screen.watch(BOB, sid)
+    await session_screen.type_into(BOB, sid, body())
+    monkeypatch.setattr(session_screen, "_clock", lambda: now + 5)
+    await session_screen.watch(BOB, sid)  # the 15 s refresh, while still typing
+    assert viewer_row(db, sid)["typedAt"] == int(now)
+    db[0].update_item(  # the lease lapsed
+        Key={"pk": repo.session_pk(OWNER, sid), "sk": f"VIEWER#{BOB.user_id}"},
+        UpdateExpression="SET expiresAt = :e",
+        ExpressionAttributeValues={":e": int(now)},
+    )
+    await session_screen.watch(BOB, sid)
+    assert "typedAt" not in viewer_row(db, sid)
+
+
+@pytest.mark.asyncio
+async def test_a_viewer_refresh_keeps_a_typed_at_marked_while_it_runs(transport, db, monkeypatch):
+    sid = await start(transport)
+    await capable(transport, sid)
+    await session_screen.watch(BOB, sid)
+    real = messaging_repo.run_in_thread
+    marked = []
+
+    async def racing(fn, *args, **kwargs):
+        write = kwargs.get("Item") or ("UpdateExpression" in kwargs and kwargs.get("Key")) or {}
+        if str(write.get("sk", "")).startswith("VIEWER#") and not marked:
+            marked.append(True)  # a keystroke is marked just before the refresh writes
+            db[0].update_item(
+                Key={"pk": repo.session_pk(OWNER, sid), "sk": f"VIEWER#{BOB.user_id}"},
+                UpdateExpression="SET typedAt = :t",
+                ExpressionAttributeValues={":t": 777},
+            )
+        return await real(fn, *args, **kwargs)
+
+    monkeypatch.setattr(messaging_repo, "run_in_thread", racing)
+    await session_screen.watch(BOB, sid)
+    assert marked and viewer_row(db, sid)["typedAt"] == 777
+
+
+@pytest.mark.asyncio
+async def test_a_failed_typing_mark_still_sends_the_keystrokes(transport, monkeypatch):
+    from botocore.exceptions import ClientError
+
+    sid = await start(transport)
+    await capable(transport, sid)
+    await admit(sid)
+    await session_screen.watch(BOB, sid)
+    real = messaging_repo.run_in_thread
+
+    async def throttled(fn, *args, **kwargs):
+        if kwargs.get("UpdateExpression") == "SET typedAt = :now":
+            raise ClientError({"Error": {"Code": "ProvisionedThroughputExceededException"}}, "UpdateItem")
+        return await real(fn, *args, **kwargs)
+
+    monkeypatch.setattr(messaging_repo, "run_in_thread", throttled)
+    transport[3].clear()
+    await session_screen.type_into(BOB, sid, body())
+    assert len(sent(transport)) == 1

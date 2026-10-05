@@ -51,7 +51,7 @@ fn resolve(scope: &Path, pid: u32) -> Option<Caller> {
 }
 
 pub(super) fn state_json(sid: &str, terminal: Option<&str>, presence: Option<presence::Entry>, approval_waiting: bool) -> Value {
-    let p = presence.unwrap_or(presence::Entry { generation: String::new(), paused: false, viewers: vec![], join_requests: vec![] });
+    let p = presence.unwrap_or(presence::Entry { generation: String::new(), paused: false, viewers: vec![], join_requests: vec![], at: 0 });
     json!({"sessionId": sid, "paused": p.paused, "terminal": terminal,
            "viewers": p.viewers, "joinRequests": p.join_requests, "approvalWaiting": approval_waiting})
 }
@@ -76,7 +76,7 @@ pub(super) fn decision_body(sid: &str, generation: &str, body: &Value) -> Result
 /// press is one made while remote typing was frozen.
 pub(super) fn stale(sid: &str, payload: &Value) -> bool {
     match (payload["decision"].as_str(), payload["userId"].as_str(), payload["requestId"].as_str()) {
-        (Some("allow" | "decline"), Some(user), Some(request)) => !presence::pending(sid, user, request),
+        (Some("allow" | "decline"), Some(user), Some(request)) => !presence::pending(sid, payload["generation"].as_str().unwrap_or(""), user, request),
         (Some("allow" | "decline"), ..) => true,
         _ => false,
     }
@@ -134,7 +134,7 @@ async fn answer(mut socket: UnixStream, scope: PathBuf, enrollment: Enrollment, 
     let Ok(Some((method, path, body))) = tokio::time::timeout(Duration::from_secs(2), read_request(&mut socket)).await else {
         return reply(&mut socket, "400 Bad Request", &json!({"error":"invalid_request"})).await;
     };
-    let state = |c: &Caller| state_json(&c.session_id, c.terminal, presence::get(&c.session_id), c.approval_waiting);
+    let state = |c: &Caller| state_json(&c.session_id, c.terminal, presence::get(&c.session_id, &c.generation), c.approval_waiting);
     match (method.as_str(), path.as_str()) {
         ("GET", "/v1/state") => reply(&mut socket, "200 OK", &state(&caller)).await,
         ("POST", "/v1/decide") => {
@@ -248,6 +248,8 @@ mod tests {
         assert!(!stale(sid, &allow));
         let other = decision_body(sid, "g1", &json!({"decision":"decline","userId":"u2","requestId":"r9"})).unwrap();
         assert!(stale(sid, &other), "an older request id is stale");
+        let restarted = decision_body(sid, "g2", &json!({"decision":"allow","userId":"u2","requestId":"r2"})).unwrap();
+        assert!(stale(sid, &restarted), "a request of the old generation cannot be answered by the new one");
         assert!(!stale(sid, &decision_body(sid, "g1", &json!({"decision":"pause"})).unwrap()));
     }
 }

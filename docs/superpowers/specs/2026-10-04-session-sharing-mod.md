@@ -107,11 +107,16 @@ Otherwise `404 {"error":"not_shared"}`; the mod shows nothing.
 - The device-heartbeat ack carries `presence: [{sessionId, generation, paused, viewers,
   joinRequests}]` for this Mac's live sessions that have any viewer, pending request or pause
   (the backstop; shapes as in §4.1; `viewers` from `VIEWER#` rows, `canType` from
-  `allowedSenders`/team control, `typing` from a `TYPED#` burst in the last 10 s; names from
+  `allowedSenders`/team control, `typing` from the viewer row's `typedAt` (set on each admitted keystroke batch) in the last 10 s; names from
   `human_display_name`). Trimmed to `MAX_ENVELOPE_BYTES` like `watching`.
 - A `local.session.presence {sessionId, generation, …same}` frame is sent, best effort, when a
   join request is made or answered (they set and lift the input freeze). Everything else rides
   the ack.
+- Every entry carries `at`, the server milliseconds taken before its row was read, and the ack
+  carries `presenceAt`, the same for the whole ack. The ack and the frame are independent posts,
+  so the Mac keeps per session only the entry with the greatest `at` (equal replaces; no `at`
+  counts as 0), and removes a session the ack leaves out only when what it holds has
+  `at <= presenceAt`. Reads also check the caller's generation.
 
 ### 4.3 Mac → backend: decisions
 

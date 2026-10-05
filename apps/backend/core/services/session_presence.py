@@ -34,23 +34,26 @@ async def _name(user: str) -> str:
         return "A teammate"
 
 
-async def entry(row: dict) -> dict:
+def _ms() -> int:
+    return int(_clock() * 1000)
+
+
+async def entry(row: dict, at: int) -> dict:
+    """`at`: server milliseconds taken before `row` was read. The Mac keeps the entry with the
+    greatest `at`, so an ack and a push that arrive out of order cannot undo a newer read."""
     now = int(_clock())
     pk = repo.session_pk(row["ownerId"], row["sessionId"])
-    viewers = sorted(
-        r["userId"]
+    live = [
+        r
         for r in await store._query(pk, begins_with="VIEWER#")
         if int(r.get("expiresAt", 0)) > now and r["userId"] != row["humanUserId"]
-    )
-    # ponytail: reads every TYPED# burst row (30-day TTL); add a lastAt index if a session's typing history grows large.
-    typing = {
-        r["userId"]
-        for r in await store._query(pk, begins_with="TYPED#")
-        if int(r.get("lastAt", 0)) > now - TYPING_WINDOW_S
-    }
+    ]
+    viewers = sorted(r["userId"] for r in live)
+    typing = {r["userId"] for r in live if int(r.get("typedAt", 0)) > now - TYPING_WINDOW_S}
     return {
         "sessionId": row["sessionId"],
         "generation": row["generation"],
+        "at": at,
         "paused": bool(row.get("unshared")),
         "viewers": [
             {"userId": u, "name": await _name(u), "canType": sessions.may_control(row, u), "typing": u in typing}
@@ -64,13 +67,14 @@ async def entry(row: dict) -> dict:
 
 async def ack_with_presence(ack: dict, owner: str, session_ids: list[str]) -> dict:
     """The backstop: the heartbeat ack names presence for this Mac's sessions. Never costs the heartbeat."""
+    read_at = _ms()
     try:
         out = []
         for sid in session_ids:
             row = await repo.get_session(owner, sid)
             if row is None or row.get("endedAt") is not None:
                 continue
-            e = await entry(row)
+            e = await entry(row, read_at)
             if e["viewers"] or e["joinRequests"] or e["paused"]:
                 out.append(e)
     except Exception:  # noqa: BLE001
@@ -82,24 +86,34 @@ async def ack_with_presence(ack: dict, owner: str, session_ids: list[str]) -> di
     out.sort(key=lambda e: not e["joinRequests"])
 
     def fits(p: list) -> bool:
-        return len(json.dumps({**ack, "presence": p}, separators=(",", ":")).encode()) <= sessions.MAX_ENVELOPE_BYTES
+        return (
+            len(json.dumps({**ack, "presence": p, "presenceAt": read_at}, separators=(",", ":")).encode())
+            <= sessions.MAX_ENVELOPE_BYTES
+        )
 
     while out and not out[-1]["joinRequests"] and not fits(out):
         out.pop()
     if not fits(out):
         out = [{**e, "viewers": []} for e in out]
-    return {**ack, "presence": out} if fits(out) else ack
+    # `presenceAt`: a session left out is removed on the Mac only if what it holds is older.
+    full = {**ack, "presence": out, "presenceAt": read_at}
+    return full if fits(out) else ack
 
 
 async def push(row: dict) -> None:
     """Best effort, now: a join request was made or answered, or sharing paused or resumed.
-    Always a full entry, an empty one included, so the Mac can lift its input freeze."""
+    Always a full entry, an empty one included, so the Mac can lift its input freeze. The row
+    is read again here, after `at` is taken, so `at` never claims a newer read than it is."""
     if FEATURE not in row.get("deviceFeatures", ()):
         return
     from core.services.local_session_relay import check_envelope, get_local_session_relay  # imports this module
 
     try:
-        envelope = {"type": "local.session.presence", **await entry(row)}
+        at = _ms()
+        fresh = await repo.get_session(row["ownerId"], row["sessionId"])
+        if fresh is None:
+            return
+        envelope = {"type": "local.session.presence", **await entry(fresh, at)}
         check_envelope(envelope)
         await get_local_session_relay().management.send_message_async(row["connectionId"], envelope)
     except Exception as exc:  # noqa: BLE001 -- the next ack carries the same news

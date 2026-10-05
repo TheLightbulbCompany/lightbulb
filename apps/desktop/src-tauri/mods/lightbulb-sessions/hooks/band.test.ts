@@ -170,14 +170,14 @@ test('Allow posts the decision and the request leaves the band', async ($, on) =
 
 test("a refused decision shows the app's message and keeps the request", async ($, on) => {
   const { clock } = world(on, path => path === '/v1/decide'
-    ? { status: 409, body: { error: 'cancelled', message: 'Someone who can type is connected. Answer in Lightbulb.' } }
+    ? { status: 409, body: { error: 'cancelled', message: 'Someone who can type is connected. Answer in the Lightbulb session view.' } }
     : { status: 200, body: asking })
   await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
   await clock.settle()
   for (const surface of SURFACES) {
     const ui = await $.ui.mount({ ...BAND, surface })
     await ui.press({ key: 'allow' })
-    expect(await ui.find({ type: 'Text', text: 'Someone who can type is connected. Answer in Lightbulb.' })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: 'Someone who can type is connected. Answer in the Lightbulb session view.' })).toBeDefined()
     expect(await ui.find({ type: 'Text', text: 'Lightbulb did not take that. Try again in the app.' })).toBeUndefined()
     expect(await ui.find({ key: 'allow' })).toBeDefined()
     await ui.unmount()
@@ -216,7 +216,7 @@ test('with a writer connected the request has no Allow or Decline, and says to a
   await clock.settle()
   for (const surface of SURFACES) {
     const ui = await $.ui.mount({ ...BAND, surface })
-    expect(await ui.find({ type: 'Text', text: '· answer in Lightbulb' })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: '· answer in the Lightbulb session view' })).toBeDefined()
     expect(await ui.find({ key: 'allow' })).toBeUndefined()
     expect(await ui.find({ key: 'decline' })).toBeUndefined()
     expect(await ui.find({ key: 'pause' })).toBeDefined()
@@ -224,13 +224,13 @@ test('with a writer connected the request has no Allow or Decline, and says to a
   }
 })
 
-test('paused with a writer connected says resume in Lightbulb and has no Resume button', async ($, on) => {
+test('paused with a writer connected says resume in the Lightbulb session view and has no Resume button', async ($, on) => {
   const { clock } = world(on, () => ({ status: 200, body: { ...base, paused: true, writerConnected: true } }))
   await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
   await clock.settle()
   for (const surface of SURFACES) {
     const ui = await $.ui.mount({ ...BAND, surface })
-    expect(await ui.find({ text: '○ Sharing paused · resume in Lightbulb' })).toBeDefined()
+    expect(await ui.find({ text: '○ Sharing paused · resume in the Lightbulb session view' })).toBeDefined()
     expect(await ui.find({ key: 'resume' })).toBeUndefined()
     await ui.unmount()
   }

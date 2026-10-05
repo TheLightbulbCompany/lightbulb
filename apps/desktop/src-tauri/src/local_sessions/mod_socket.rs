@@ -87,7 +87,7 @@ pub(super) fn stale(sid: &str, payload: &Value) -> bool {
 /// narrows access and always goes through.
 pub(super) fn writer_gate(caller: &Caller, payload: &Value) -> std::result::Result<(), Value> {
     if matches!(payload["decision"].as_str(), Some("allow" | "decline" | "unpause")) && presence::remote_writer(&caller.session_id, &caller.generation) {
-        return Err(json!({"error":"writer_connected","message":"Someone who can type is connected. Answer in Lightbulb."}));
+        return Err(json!({"error":"writer_connected","message":"Someone who can type is connected. Answer in the Lightbulb session view."}));
     }
     Ok(())
 }
@@ -281,7 +281,7 @@ mod tests {
         let _g = presence::TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let sid = "55555555-5555-4555-8555-555555555555";
         seat(sid, true);
-        let refusal = json!({"error":"writer_connected","message":"Someone who can type is connected. Answer in Lightbulb."});
+        let refusal = json!({"error":"writer_connected","message":"Someone who can type is connected. Answer in the Lightbulb session view."});
         for body in [json!({"decision":"allow","userId":"u2","requestId":"r2"}), json!({"decision":"decline","userId":"u2","requestId":"r2"}), json!({"decision":"unpause"})] {
             let payload = decision_body(sid, "g1", &body).unwrap();
             assert_eq!(writer_gate(&caller(sid), &payload).unwrap_err(), refusal, "{body}");

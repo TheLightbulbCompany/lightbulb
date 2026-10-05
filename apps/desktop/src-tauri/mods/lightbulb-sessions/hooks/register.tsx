@@ -27,7 +27,7 @@ async function socketPath($: EngineInterface): Promise<string | null> {
 
 // state null: nothing to show (no socket yet, or the app says this session is not shared).
 // state undefined: no answer (the app is not running, busy, or refused the call); `message` is
-// what the app said when it refused, if it said anything (e.g. "Someone who can type is connected. Answer in Lightbulb.").
+// what the app said when it refused, if it said anything (e.g. "Someone who can type is connected. Answer in the Lightbulb session view.").
 type Reply = { state: SessionState | null | undefined; message?: string }
 
 // No timeout to set: HttpInit has none, and a hook's budget stops while a `$` call is in flight,
@@ -161,7 +161,7 @@ export const register: Register = on => {
           <Box>
             <Text><Text color={colorFor(ask.userId)}>{ask.name}</Text>{requestLine(ask, s.joinRequests.length).slice(ask.name.length)} </Text>
             {s.writerConnected
-              ? <Text dimColor>· answer in Lightbulb</Text>
+              ? <Text dimColor>· answer in the Lightbulb session view</Text>
               : <>
                   <Button key="allow" hotkey="a" variant="primary" label="Allow" onPress={act({ decision: 'allow', userId: ask.userId, requestId: ask.requestId })} />
                   <Button key="decline" hotkey="d" label="Decline" onPress={act({ decision: 'decline', userId: ask.userId, requestId: ask.requestId })} />

@@ -50,7 +50,6 @@ export interface MessagingWorkspaceValue {
   explicitPickCount: number;
 }
 
-/** Nothing but #general and the vendor shared room: a new workspace, whose home is #general. */
 // A pick is "current" while neither the URL nor the focused dock tab moved:
 // tab focus is URL-silent, so href alone misses a click on an open tab.
 export interface PickToken { href: string; activePanelId: string | null | undefined }
@@ -61,6 +60,7 @@ export const pickToken = (): PickToken => ({
 export const pickTokenUnchanged = (a: PickToken, b: PickToken) =>
   a.href === b.href && a.activePanelId === b.activePanelId;
 
+/** Nothing but #general and the vendor shared room: a new workspace, whose home is #general. */
 export function isFreshWorkspace(rooms: readonly RoomSummary[]): boolean {
   return rooms.every((room) => room.isDefault || room.shared);
 }

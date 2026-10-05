@@ -58,6 +58,7 @@ async def test_entry_names_viewers_typists_and_pending_requests(monkeypatch):
             "user_al": {"state": "pending", "requestId": "p2"},
             "user_bo": {"state": "declined", "requestId": "p0"},
         },
+        deviceFeatures=["pickupRequests", "sessionPresence"],
     )
     out = await presence.entry(row, 123)
     assert out["paused"] is False and out["at"] == 123
@@ -72,6 +73,9 @@ async def test_entry_names_viewers_typists_and_pending_requests(monkeypatch):
     ]
     # Pick-up turned on answers every pick-up request.
     assert [r["kind"] for r in (await presence.entry({**row, "pickupAllowed": True}, 123))["joinRequests"]] == ["join"]
+    # A Mac that does not advertise pickupRequests would call a pick-up "asked to join": it gets none.
+    older = {**row, "deviceFeatures": ["sessionPresence"]}
+    assert [r["kind"] for r in (await presence.entry(older, 123))["joinRequests"]] == ["join"]
 
 
 @pytest.mark.asyncio
@@ -102,7 +106,11 @@ async def test_ack_never_trims_an_entry_that_holds_a_join_request(monkeypatch):
         for i in range(4)
     }
     rows |= {
-        f"p{i}": _row(sessionId=f"p{i}", pickupRequests={"user_zoe": {"state": "pending", "requestId": f"pk{i}"}})
+        f"p{i}": _row(
+            sessionId=f"p{i}",
+            pickupRequests={"user_zoe": {"state": "pending", "requestId": f"pk{i}"}},
+            deviceFeatures=["pickupRequests", "sessionPresence"],
+        )
         for i in range(2)
     }
     monkeypatch.setattr(presence.repo, "get_session", AsyncMock(side_effect=lambda owner, sid: rows[sid]))
@@ -186,7 +194,10 @@ def test_input_paused_is_public_only_with_a_pending_request_on_a_presence_mac(mo
     assert sessions._session_public(base, "user_aden").input_paused is False
     assert sessions._session_public({**base, **pending, "deviceFeatures": []}, "user_aden").input_paused is False
     pickup = {"pickupRequests": {"user_zoe": {"state": "pending", "requestId": "p1"}}}
-    assert sessions._session_public({**base, **pickup}, "user_aden").input_paused is True
+    # An older Mac never shows the pick-up request, so nothing freezes there for it.
+    assert sessions._session_public({**base, **pickup}, "user_aden").input_paused is False
+    newer = {"deviceFeatures": ["pickupRequests", "sessionPresence"]}
+    assert sessions._session_public({**base, **pickup, **newer}, "user_aden").input_paused is True
 
 
 @pytest.mark.asyncio
@@ -202,3 +213,13 @@ async def test_an_ack_sized_just_under_the_limit_still_passes_the_envelope_check
     size = len(json.dumps({**kind, "pad": "", "presence": listed, "presenceAt": 0}, separators=(",", ":")).encode())
     ack = {**kind, "pad": "x" * (sessions.MAX_ENVELOPE_BYTES - size)}
     check_envelope(await presence.ack_with_presence(ack, "org_a", ["s"]))
+
+
+def test_a_mac_that_advertises_pickup_requests_lands_the_feature():
+    from core.services.local_session_relay import FEATURES, DeviceHeartbeat
+
+    assert presence.PICKUP_FEATURE in FEATURES
+    frame = {"type": "local.device.heartbeat", "sessions": [], "sessionPresence": True}
+    assert DeviceHeartbeat.model_validate(frame).device_features() == ["sessionPresence"]
+    newer = DeviceHeartbeat.model_validate({**frame, "pickupRequests": True})
+    assert newer.device_features() == ["pickupRequests", "sessionPresence"]

@@ -691,7 +691,7 @@ def _session_public(row: dict, viewer: str | None = None) -> LocalSession:
     from core.services import session_presence  # lazy: it imports this module
 
     public["inputPaused"] = bool(
-        (session_presence.pending_joins(row) or pending_pickups(row))
+        (session_presence.pending_joins(row) or session_presence.shown_pickups(row))
         and session_presence.FEATURE in row.get("deviceFeatures", ())
         and public["terminal"] is not None
     )

@@ -16,6 +16,7 @@ from core.services.messaging import human_display_name
 logger = logging.getLogger(__name__)
 
 FEATURE = "sessionPresence"
+PICKUP_FEATURE = "pickupRequests"
 TYPING_WINDOW_S = 10
 _clock = time.time
 
@@ -25,6 +26,14 @@ def pending_joins(row: dict) -> dict[str, str]:
     if row.get("endedAt") is not None:
         return {}
     return {u: r["requestId"] for u, r in (row.get("joinRequests") or {}).items() if r.get("state") == "pending"}
+
+
+def shown_pickups(row: dict) -> dict[str, str]:
+    """Pending pick-up requests the Mac may show. Only a Mac that advertises pickupRequests gets
+    them: an older one would label each "asked to join", and its Allow would share far more."""
+    if PICKUP_FEATURE not in row.get("deviceFeatures", ()):
+        return {}
+    return sessions.pending_pickups(row)
 
 
 async def _name(user: str) -> str:
@@ -62,7 +71,7 @@ async def entry(row: dict, at: int) -> dict:
         "joinRequests": sorted(
             [
                 {"userId": u, "name": await _name(u), "requestId": rid, "kind": kind}
-                for kind, pending in (("join", pending_joins(row)), ("pickup", sessions.pending_pickups(row)))
+                for kind, pending in (("join", pending_joins(row)), ("pickup", shown_pickups(row)))
                 for u, rid in pending.items()
             ],
             key=lambda r: (r["userId"], r["kind"]),

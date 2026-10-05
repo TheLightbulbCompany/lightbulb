@@ -214,6 +214,11 @@ async def test_private_native_send_is_visible_and_approvable_only_to_its_owner(t
     assert "Private\nbody" not in json.dumps(
         (await session_links.list_events(ALICE, token, 0, 100)).model_dump(by_alias=True)
     )
+    await service.put_link(ALICE, sid, "anyone")  # an outsider holding the link
+    stranger = AuthContext(user_id="user_elsewhere", org_id="org_other")
+    assert "Private\nbody" not in json.dumps(
+        (await session_links.list_events(stranger, token, 0, 100)).model_dump(by_alias=True)
+    )
     await service.set_team_control(ALICE, sid, True)
     with pytest.raises(ApiProblem, match="unavailable"):
         await service.get_private_send_approval(BOB, sid)

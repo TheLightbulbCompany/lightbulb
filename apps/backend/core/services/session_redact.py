@@ -33,6 +33,8 @@ _RULES: list[tuple[re.Pattern[str], str]] = [
     (re.compile(r"\bAIza[0-9A-Za-z_-]{35}"), MARK),
     (re.compile(r"(://)[^/\s:@]+:[^/\s@]+@"), rf"\g<1>{MARK}@"),
     (re.compile(r"/(?:Users|home)/[^/\s\"']+/"), "~/"),
+    # The bare home directory (a cwd, a pwd line), with no trailing slash.
+    (re.compile(r"/(?:Users|home)/[^/\s\"']+(?=$|[\s\"'`:,;)\]])"), "~"),
 ]
 
 

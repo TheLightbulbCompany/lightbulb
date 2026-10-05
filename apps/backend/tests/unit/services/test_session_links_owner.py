@@ -1,5 +1,7 @@
 """The one link (spec §3.1): owner-only, one per session, the pick-up permission on Claude."""
 
+from unittest.mock import AsyncMock, patch
+
 import pytest
 
 from core.repositories import local_sessions_repo as repo, messaging_repo
@@ -103,3 +105,15 @@ async def test_allowing_an_ask_to_pick_up_creates_a_workspace_link(transport, s3
     await service.decide_pickup_request(ALICE, sid, BOB.user_id, "allow", request_id=rid)
     assert asked is not None
     assert (await service.get_link(ALICE, sid)).audience == "workspace"
+
+
+@pytest.mark.asyncio
+async def test_a_failed_allow_takes_its_new_link_back(transport, s3):
+    sid = await claude_session(transport)
+    await service.request_pickup_access(BOB, sid)
+    rid = (await repo.get_session(OWNER, sid))["pickupRequests"][BOB.user_id]["requestId"]
+    boom = ApiProblem("LOCAL_SESSION_CONFLICT", "Session changed. Try again.")
+    with patch.object(pickup, "set_pickup", AsyncMock(side_effect=boom)), pytest.raises(ApiProblem):
+        await service.decide_pickup_request(ALICE, sid, BOB.user_id, "allow", request_id=rid)
+    row = await repo.get_session(OWNER, sid)
+    assert "shareLink" not in row and not row.get("pickupAllowed")

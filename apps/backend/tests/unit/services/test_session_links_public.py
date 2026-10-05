@@ -35,7 +35,9 @@ PUBLIC = {
 
 @pytest.fixture(autouse=True)
 def names():
-    with patch("core.services.messaging.human_display_name", AsyncMock(return_value="Alice Doe")):
+    with patch(
+        "core.services.clerk_admin.get_user", AsyncMock(return_value={"first_name": "Alice", "last_name": "Doe"})
+    ):
         yield
 
 
@@ -202,8 +204,9 @@ async def test_an_event_that_grows_past_the_envelope_falls_back_to_one_line(tran
 @pytest.mark.asyncio
 async def test_owner_name_never_leaks_a_user_id(transport, s3):
     _, token = await link_for(transport, s3)
-    with patch("core.services.messaging.human_display_name", AsyncMock(return_value=ALICE.user_id)):
-        assert (await links.open_page(None, token)).owner_first_name == "Someone"
+    for user in ({"username": "alice99"}, {"email_addresses": [{"email_address": "alice@x.io"}]}, None):
+        with patch("core.services.clerk_admin.get_user", AsyncMock(return_value=user)):
+            assert (await links.open_page(None, token)).owner_first_name == "Someone"
 
 
 @pytest.mark.asyncio
@@ -211,3 +214,12 @@ async def test_the_commit_stores_repo_info_on_the_manifest(transport, s3):
     sid, _ = await link_for(transport, s3, repo_info=PUBLIC)
     manifest = await messaging_repo._get(repo.session_pk(OWNER, sid), "PICKUP")
     assert manifest["repoInfo"] == PUBLIC
+
+
+@pytest.mark.asyncio
+async def test_a_mac_that_stopped_sharing_reads_as_gone(transport, s3):
+    _, token = await link_for(transport, s3)
+    refusal = ApiProblem("LOCAL_SESSION_FORBIDDEN", "Local session sharing is disabled.")
+    with patch.object(service, "_enrolled", AsyncMock(side_effect=refusal)):
+        with pytest.raises(ApiProblem, match=links.GONE):
+            await links.open_page(None, token)

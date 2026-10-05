@@ -58,3 +58,9 @@ def test_a_private_projects_folder_name_is_hidden_only_as_a_path_component():
     assert redact("/home/bob/acme-api", "acme-api") == f"~/{PROJECT}"
     assert redact("/srv/acme-api.v2/x", "acme-api.v2") == f"/srv/{PROJECT}/x"  # the name is literal, not a regex
     assert redact("/Users/alice/acme-api") == "~/acme-api"  # no project: unchanged
+
+
+def test_a_bare_home_directory_loses_the_username():
+    assert redact("cwd /Users/alice") == "cwd ~"
+    assert redact('{"cwd":"/home/bob"}') == '{"cwd":"~"}'
+    assert redact("/Users/alice/app") == "~/app"

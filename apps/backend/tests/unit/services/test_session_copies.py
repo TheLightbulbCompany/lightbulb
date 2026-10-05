@@ -40,7 +40,10 @@ SECRET_LINE = b'{"cwd":"/Users/alice/app","message":"token ghp_abcdefghijklmnopq
 
 @pytest.fixture(autouse=True)
 def names():
-    with patch("core.services.messaging.human_display_name", AsyncMock(return_value="Sam Lee")):
+    with (
+        patch("core.services.messaging.human_display_name", AsyncMock(return_value="Sam Lee")),
+        patch("core.services.clerk_admin.get_user", AsyncMock(return_value={"first_name": "Sam", "last_name": "Lee"})),
+    ):
         yield
 
 
@@ -194,3 +197,113 @@ async def test_the_sweeper_ages_out_old_copies(transport, s3, started):
     assert any(k.startswith("session-copies/") for k in pickup_tests.keys(s3, "session-copies/"))
     await pickup_tests.pickup.sweep_once(now=int(time.time()) + links.COPY_TTL_S + 60)
     assert not any(k.startswith("session-copies/") for k in pickup_tests.keys(s3, "session-copies/"))
+
+
+LINE = b'{"gitBranch":"secret-feature","cwd":"/Users/alice/app","message":{"content":[{"type":"thinking","thinking":"hm","signature":"sig"},{"type":"text","text":"hi"}]}}\n'
+
+
+@pytest.mark.asyncio
+async def test_a_private_copy_drops_the_branch_and_thinking(transport, s3, started):
+    _, token = await shared(transport, s3, repo_info={**PUBLIC, "public": False}, chunks=(LINE,))
+    code = (await links.create_copy(STRANGER, token, links.challenge_of(VERIFIER))).code
+    await links._prepare(started[0])
+    ticket = await links.redeem(code, VERIFIER)
+    body = gzip.decompress(fetch(s3, ticket.downloads.transcript[0].url))
+    assert b"secret-feature" not in body and b"gitBranch" not in body and b"thinking" not in body
+    assert json.loads(body)["message"]["content"] == [{"type": "text", "text": "hi"}]
+
+
+@pytest.mark.asyncio
+async def test_a_public_copy_keeps_the_branch_but_drops_thinking(transport, s3, started):
+    _, token = await shared(transport, s3, chunks=(LINE,))
+    code = (await links.create_copy(STRANGER, token, links.challenge_of(VERIFIER))).code
+    await links._prepare(started[0])
+    body = gzip.decompress(fetch(s3, (await links.redeem(code, VERIFIER)).downloads.transcript[0].url))
+    assert b"secret-feature" in body and b"thinking" not in body
+
+
+def test_a_line_past_the_cap_is_skipped_with_a_marker_even_across_parts():
+    with patch.object(links, "LINE_CAP", 20):
+        lines = links._Lines(None, False)
+        out = lines.feed(b"x" * 15) + lines.feed(b"y" * 15) + lines.feed(b"z" * 5 + b"\n")  # one long line
+        out += lines.feed(b'{"a":1}\n')
+        assert out == links.OMITTED + b'{"a":1}\n'
+        assert lines.carry == b"" and not lines.skipping
+
+
+def test_a_sidecar_entry_streams_by_line_and_a_binary_one_is_dropped():
+    out = io.BytesIO()
+    with tarfile.open(fileobj=out, mode="w:gz") as tout:
+        for name, body in (("a.jsonl", SECRET_LINE * 3), ("b.bin", b"\xff\xfe\x00")):
+            info = tarfile.TarInfo(name)
+            info.size = len(body)
+            source = io.BytesIO(body)
+            with patch.object(links, "CHUNK", 16):
+                links._redact_entry(source, info, tout, None, False)
+    out.seek(0)
+    with tarfile.open(fileobj=out, mode="r:gz") as tin:
+        assert tin.getnames() == ["a.jsonl"]
+        text = tin.extractfile("a.jsonl").read()
+    assert text.count(b"\n") == 3 and b"ghp_" not in text and b"~/app" in text
+
+
+@pytest.mark.asyncio
+async def test_pressing_continue_again_reuses_the_pending_copy(transport, s3, started):
+    _, token = await shared(transport, s3)
+    first = (await links.create_copy(STRANGER, token, links.challenge_of(VERIFIER))).code
+    other = "w" * 43
+    second = (await links.create_copy(STRANGER, token, links.challenge_of(other))).code
+    assert first == second and len(started) == 1
+    assert (await links.redeem(second, other)).state == "preparing"
+    with pytest.raises(ApiProblem):
+        await links.redeem(first, VERIFIER)  # the newest press owns the copy
+
+
+@pytest.mark.asyncio
+async def test_a_session_has_a_copy_cap_per_hour(transport, s3, started):
+    _, token = await shared(transport, s3, audience="workspace")
+    for _ in range(links.COPIES_PER_HOUR):
+        await links.create_copy(BOB, token, links.challenge_of(VERIFIER))
+    with pytest.raises(ApiProblem) as limited:
+        await links.create_copy(BOB, token, links.challenge_of(VERIFIER))
+    assert limited.value.status_code == 429
+
+
+@pytest.mark.asyncio
+async def test_a_copy_being_worked_on_is_not_restarted(transport, s3, started):
+    _, token = await shared(transport, s3)
+    code = (await links.create_copy(STRANGER, token, links.challenge_of(VERIFIER))).code
+    item = started[0]
+    links._working.add(item["copyId"])
+    try:
+        with patch("time.time", return_value=time.time() + links.RESTART_AFTER_S + 1):
+            await links.redeem(code, VERIFIER)
+        assert len(started) == 1
+    finally:
+        links._working.discard(item["copyId"])
+
+
+@pytest.mark.asyncio
+async def test_redeem_reruns_the_link_checks(transport, s3, started):
+    sid, token = await shared(transport, s3)
+    code = (await links.create_copy(STRANGER, token, links.challenge_of(VERIFIER))).code
+    await links._prepare(started[0])
+    await service.put_link(ALICE, sid, "workspace")  # anyone -> workspace: an outsider's copy stops
+    with pytest.raises(ApiProblem):
+        await links.redeem(code, VERIFIER)
+    await service.put_link(ALICE, sid, "anyone")
+    assert (await links.redeem(code, VERIFIER)).state == "ready"
+    await service.set_sharing(ALICE, sid, False)  # paused
+    with pytest.raises(ApiProblem):
+        await links.redeem(code, VERIFIER)
+
+
+@pytest.mark.asyncio
+async def test_a_member_removed_after_continue_cannot_redeem(transport, s3, started):
+    from core.repositories import messaging_repo
+
+    _, token = await shared(transport, s3, audience="workspace")
+    code = (await links.create_copy(BOB, token, links.challenge_of(VERIFIER))).code
+    await messaging_repo.deactivate_user_stream(OWNER, BOB.user_id)
+    with pytest.raises(ApiProblem):
+        await links.redeem(code, VERIFIER)

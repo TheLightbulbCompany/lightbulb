@@ -9,10 +9,10 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import codecs
 import gzip
 import hashlib
 import hmac
-import io
 import json
 import logging
 import secrets
@@ -24,6 +24,7 @@ from typing import Annotated, Literal
 
 from pydantic import Field, model_serializer
 
+from core import encryption
 from core.auth import AuthContext, resolve_owner_id
 from core.dynamodb import run_in_thread
 from core.repositories import local_sessions_repo as repo, messaging_repo as store
@@ -64,13 +65,9 @@ async def _member(auth: AuthContext | None, row: dict) -> bool:
     return True
 
 
-async def resolve(auth: AuthContext | None, token: str) -> tuple[dict, dict, bool]:
-    """(META row, its shareLink, whether the caller is a current member). Every refusal reads the
-    same: no row, a hash META does not hold, paused, the Mac no longer shares, past the snapshot
-    retention, or a workspace link for someone outside it. The route bounds the token's length."""
-    digest = sessions._token_hash(token)
-    lookup = await store._get(sessions._share_pk(digest), "META")
-    row = await repo.get_session(lookup["ownerId"], lookup["sessionId"]) if lookup else None
+async def _live(row: dict | None, digest: str) -> dict:
+    """The link's shareLink when this session still shares it: not paused, hash matches META, the
+    Mac still enrolled, inside the snapshot retention. Every refusal reads the same."""
     link = (row or {}).get("shareLink") or {}
     # Plain !=: the lookup row was found by this hash, so the comparison reveals nothing new.
     if row is None or row.get("unshared") or link.get("tokenHash") != digest:
@@ -82,6 +79,17 @@ async def resolve(auth: AuthContext | None, token: str) -> tuple[dict, dict, boo
     stopped = sessions.pickup_stopped_at(row)
     if stopped is not None and int(time.time()) >= stopped + PICKUP_RETENTION_SECONDS:
         raise _gone()
+    return link
+
+
+async def resolve(auth: AuthContext | None, token: str) -> tuple[dict, dict, bool]:
+    """(META row, its shareLink, whether the caller is a current member). Every refusal reads the
+    same: no row, a hash META does not hold, paused, the Mac no longer shares, past the snapshot
+    retention, or a workspace link for someone outside it. The route bounds the token's length."""
+    digest = sessions._token_hash(token)
+    lookup = await store._get(sessions._share_pk(digest), "META")
+    row = await repo.get_session(lookup["ownerId"], lookup["sessionId"]) if lookup else None
+    link = await _live(row, digest)
     member = await _member(auth, row)
     if link["audience"] != "anyone" and not member:
         raise _gone()
@@ -89,16 +97,27 @@ async def resolve(auth: AuthContext | None, token: str) -> tuple[dict, dict, boo
 
 
 async def _name(user_id: str, *, first: bool) -> str:
-    """A display name, never an id: human_display_name falls back to the Clerk user id."""
+    """The owner's real name (Clerk first/last), never an id, username or email prefix."""
+    from core.services.clerk_admin import get_user
+
+    try:
+        user = await get_user(user_id) or {}
+    except Exception:
+        user = {}
+    name = " ".join(p.strip() for p in (user.get("first_name") or "", user.get("last_name") or "") if p.strip())
+    if not name:
+        return "Someone"
+    return name.split()[0][:40] if first else name[:80]
+
+
+async def _audit_name(user_id: str) -> str:
+    """For the owner's own audit trail: the workspace's usual display name."""
     from core.services.messaging import human_display_name
 
     try:
-        name = (await human_display_name(user_id)).strip()
+        return (await human_display_name(user_id)).strip()[:80] or "Someone"
     except Exception:
-        name = ""
-    if not name or name == user_id:
         return "Someone"
-    return name.split()[0][:40] if first else name[:80]
 
 
 class LinkCode(ContractModel):
@@ -225,8 +244,10 @@ async def list_events(
 COPY_TTL_S = pickup.COPY_TTL_S
 CODE_WINDOW_S = 600
 RESTART_AFTER_S = 300
+COPIES_PER_HOUR = 20  # per session
 _redacting = asyncio.Semaphore(1)  # one redaction at a time per backend task
 _running: set[asyncio.Task] = set()  # held so a running preparation is not garbage-collected
+_working: set[str] = set()  # copyIds this task is preparing or has queued
 
 Challenge = Annotated[str, Field(pattern=r"^[A-Za-z0-9_-]{43}$")]
 
@@ -295,7 +316,19 @@ async def create_copy(auth: AuthContext, token: str, challenge: str) -> CopyCode
     if row["provider"] != "claude":
         raise ApiProblem("LOCAL_SESSION_UNSUPPORTED", "Only Claude Code sessions can be continued.")
     manifest = await pickup.ready_manifest(row)
-    code, now = secrets.token_urlsafe(32), int(time.time())
+    now = int(time.time())
+    # ponytail: read-then-write, so two simultaneous presses can both pass; the per-session cap and
+    # the one-redaction-at-a-time semaphore bound the cost. Add a conditional claim if it is abused.
+    live = [p for p in await store._query(row["pk"], begins_with="COPY#") if int(p.get("expiresAt", 0)) > now]
+    if not member:
+        existing = await _pending_copy(live, auth.user_id, link["tokenHash"])
+        if existing:
+            code = await _reuse(existing, challenge, now)
+            if code:
+                return CopyCode(code=code)
+    if len(live) >= COPIES_PER_HOUR:
+        raise ApiProblem("RATE_LIMITED", "Too many copies of this session. Try again later.", retryable=True)
+    code = secrets.token_urlsafe(32)
     item = {
         "pk": _copy_pk(code),
         "sk": "META",
@@ -319,7 +352,7 @@ async def create_copy(auth: AuthContext, token: str, challenge: str) -> CopyCode
         row["sessionId"],
         auth,
         "session_copied",
-        detail=await _name(auth.user_id, first=False),
+        detail=await _audit_name(auth.user_id),
         subject_user_id=auth.user_id,
     )
     # The per-session pointer retire follows to delete this copy's objects.
@@ -327,6 +360,9 @@ async def create_copy(auth: AuthContext, token: str, challenge: str) -> CopyCode
         "pk": row["pk"],
         "sk": f"COPY#{item['copyId']}",
         "copyId": item["copyId"],
+        "userId": auth.user_id,
+        "itemPk": item["pk"],
+        "codeEnc": encryption.encrypt(code),
         "expiresAt": item["expiresAt"],
     }
     await store._transact(
@@ -342,7 +378,34 @@ async def create_copy(auth: AuthContext, token: str, challenge: str) -> CopyCode
     return CopyCode(code=code)
 
 
+async def _pending_copy(live: list[dict], user_id: str, link_hash: str) -> dict | None:
+    """This taker's copy of the session that is still being prepared, if any."""
+    for pointer in live:
+        if pointer.get("userId") != user_id:
+            continue
+        item = await store._get(pointer["itemPk"], "META")
+        if item and item["state"] == "preparing" and item["linkHash"] == link_hash:
+            return {**item, "codeEnc": pointer["codeEnc"]}
+    return None
+
+
+async def _reuse(existing: dict, challenge: str, now: int) -> str | None:
+    """Press Continue again while a copy is preparing: the same copy, with this press's verifier."""
+    try:
+        code = encryption.decrypt(existing["codeEnc"])
+    except ValueError:
+        return None
+    await run_in_thread(
+        store._table().update_item,
+        Key={"pk": existing["pk"], "sk": "META"},
+        UpdateExpression="SET challenge = :c, createdAt = :now",
+        ExpressionAttributeValues={":c": challenge, ":now": now},
+    )
+    return code
+
+
 def _start(item: dict) -> None:
+    _working.add(item["copyId"])
     task = asyncio.get_running_loop().create_task(_prepare(item))
     _running.add(task)
     task.add_done_callback(_running.discard)
@@ -362,6 +425,13 @@ async def _settle(item: dict, values: dict) -> None:
 
 
 async def _prepare(item: dict) -> None:
+    try:
+        await _prepare_locked(item)
+    finally:
+        _working.discard(item["copyId"])
+
+
+async def _prepare_locked(item: dict) -> None:
     async with _redacting:
         try:
             row = await repo.get_session(item["ownerId"], item["sessionId"])
@@ -369,8 +439,9 @@ async def _prepare(item: dict) -> None:
             if not row or not manifest or row.get("pickupEpoch") != item["epoch"]:
                 raise RuntimeError("snapshot gone")
             info = manifest.get("repoInfo") or {}
-            project = info.get("folder") if info and not info.get("public") else None
-            out = await run_in_thread(_redact_copy, row, manifest, item["copyId"], project)
+            private = bool(info) and not info.get("public")
+            project = info.get("folder") if private else None
+            out = await run_in_thread(_redact_copy, row, manifest, item["copyId"], project, private)
             out.update(
                 state="ready",
                 readyAt=int(time.time()),
@@ -388,14 +459,60 @@ async def _prepare(item: dict) -> None:
                 pass  # a newer run owns it, or the row expired
 
 
-def _redact_line(line: bytes, project: str | None) -> bytes:
+LINE_CAP = 8 * 1024 * 1024
+CHUNK = 1 << 20
+OMITTED = b'{"type":"redacted","note":"line omitted: too long"}\n'
+_THINKING = ("thinking", "redacted_thinking")
+
+
+def _scrub(value, private: bool):
+    """Outsider copies: no thinking blocks (their signatures cover text we would rewrite), and no
+    branch name when the repository is private (Claude writes gitBranch on every line)."""
+    if isinstance(value, list):
+        return [_scrub(v, private) for v in value if not (isinstance(v, dict) and v.get("type") in _THINKING)]
+    if isinstance(value, dict):
+        return {k: _scrub(v, private) for k, v in value.items() if not (private and k == "gitBranch")}
+    return value
+
+
+def _redact_line(line: bytes, project: str | None, private: bool = False) -> bytes:
     end = b"\n" if line.endswith(b"\n") else b""
     text = line[: len(line) - len(end)].decode("utf-8", errors="replace")
     try:
-        body = json.dumps(redact_value(json.loads(text), project), ensure_ascii=False, separators=(",", ":"))
+        body = json.dumps(
+            redact_value(_scrub(json.loads(text), private), project), ensure_ascii=False, separators=(",", ":")
+        )
     except ValueError:
         body = redact(text, project)
     return body.encode("utf-8") + end
+
+
+class _Lines:
+    """Feed it chunks (readline(CHUNK) results, never more than CHUNK bytes each); it returns the
+    redacted bytes for each completed line. A line past LINE_CAP is skipped with a one-line marker, so
+    memory is bounded by LINE_CAP + CHUNK however long a line is. State carries across transcript
+    parts, because the Mac cuts a long line at its chunk size."""
+
+    def __init__(self, project: str | None, private: bool) -> None:
+        self.project, self.private, self.carry, self.skipping = project, private, b"", False
+
+    def feed(self, chunk: bytes) -> bytes:
+        done = chunk.endswith(b"\n")
+        if self.skipping:
+            self.skipping = not done
+            return b""
+        line, self.carry = self.carry + chunk, b""
+        if len(line) > LINE_CAP:
+            self.skipping = not done
+            return OMITTED
+        if not done:
+            self.carry = line
+            return b""
+        return _redact_line(line, self.project, self.private)
+
+    def finish(self) -> bytes:
+        line, self.carry = self.carry, b""
+        return _redact_line(line, self.project, self.private) if line and not self.skipping else b""
 
 
 def _measure(file) -> tuple[int, str]:
@@ -408,24 +525,23 @@ def _measure(file) -> tuple[int, str]:
     return size, digest.hexdigest()
 
 
-def _redact_copy(row: dict, manifest: dict, copy_id: str, project: str | None) -> dict:
+def _redact_copy(row: dict, manifest: dict, copy_id: str, project: str | None, private: bool = False) -> dict:
     """Stream every transcript part through the redactor, one part at a time (parts are up to
     64 MiB, the snapshot up to 1 GiB): gunzip, redact each JSONL line, gzip, upload. A line the Mac
-    split across parts (one longer than its chunk) is carried whole into the next part. Sync:
-    call through run_in_thread."""
+    split across parts is carried whole into the next part (up to LINE_CAP). Sync: call through
+    run_in_thread."""
     client, bucket = pickup._s3(), pickup._bucket()
     base = f"{pickup.COPIES_PREFIX}/{copy_id}/"
-    parts, carry, last = [], b"", len(manifest["parts"]) - 1
+    parts, last = [], len(manifest["parts"]) - 1
+    lines = _Lines(project, private)
     for n, part in enumerate(manifest["parts"]):
         source = client.get_object(Bucket=bucket, Key=pickup._part_key(row, manifest["series"], part))["Body"]
         with tempfile.TemporaryFile() as out:
-            with gzip.GzipFile(fileobj=source, mode="rb") as lines, gzip.GzipFile(fileobj=out, mode="wb") as gz:
-                for line in lines:
-                    line, carry = carry + line, b""
-                    if not line.endswith(b"\n") and n != last:
-                        carry = line
-                        continue
-                    gz.write(_redact_line(line, project))
+            with gzip.GzipFile(fileobj=source, mode="rb") as reader, gzip.GzipFile(fileobj=out, mode="wb") as gz:
+                for chunk in iter(lambda: reader.readline(CHUNK), b""):
+                    gz.write(lines.feed(chunk))
+                if n == last:
+                    gz.write(lines.finish())
             size, digest = _measure(out)
             key = f"{base}t-{part['index']:06d}.gz"
             client.upload_fileobj(out, bucket, key)
@@ -440,24 +556,32 @@ def _redact_copy(row: dict, manifest: dict, copy_id: str, project: str | None) -
                 for member in tin:
                     if member.isdir():
                         tout.addfile(member)
-                        continue
-                    if not member.isfile():
-                        continue
-                    # ponytail: one sidecar file is read whole; stream it if a single file nears memory limits.
-                    data = tin.extractfile(member).read()
-                    try:
-                        data.decode("utf-8")
-                    except UnicodeDecodeError:
-                        continue  # binary entries are dropped, never shown unredacted
-                    body = b"".join(_redact_line(line, project) for line in data.splitlines(keepends=True))
-                    info = tarfile.TarInfo(member.name)
-                    info.size, info.mode, info.mtime = len(body), member.mode, member.mtime
-                    tout.addfile(info, io.BytesIO(body))
+                    elif member.isfile():
+                        _redact_entry(tin.extractfile(member), member, tout, project, private)
             size, digest = _measure(out)
             key = f"{base}sidecars.tgz"
             client.upload_fileobj(out, bucket, key)
         sidecars = {"bytes": size, "sha256": digest, "key": key}
     return {"parts": parts, "sidecars": sidecars}
+
+
+def _redact_entry(source, member, tout, project: str | None, private: bool) -> None:
+    """One sidecar file, line by line into a temp file (never whole in memory). An entry that is not
+    UTF-8 is dropped, never shown unredacted."""
+    decoder, lines = codecs.getincrementaldecoder("utf-8")(), _Lines(project, private)
+    with tempfile.TemporaryFile() as body:
+        try:
+            for chunk in iter(lambda: source.readline(CHUNK), b""):
+                decoder.decode(chunk)
+                body.write(lines.feed(chunk))
+            decoder.decode(b"", final=True)
+        except UnicodeDecodeError:
+            return
+        body.write(lines.finish())
+        info = tarfile.TarInfo(member.name)
+        info.size, info.mode, info.mtime = body.tell(), member.mode, member.mtime
+        body.seek(0)
+        tout.addfile(info, body)
 
 
 async def redeem(code: str, verifier: str) -> CopyTicket | Preparing:
@@ -474,21 +598,26 @@ async def redeem(code: str, verifier: str) -> CopyTicket | Preparing:
     ):
         raise gone
     row = await repo.get_session(item["ownerId"], item["sessionId"])
-    if (
-        row is None
-        or (row.get("shareLink") or {}).get("tokenHash") != item["linkHash"]
-        or row.get("pickupEpoch") != item["epoch"]
-    ):
-        raise gone  # the link was turned off (or the snapshot retired) since Continue was pressed
+    try:
+        link = await _live(row, item["linkHash"])
+        if row.get("pickupEpoch") != item["epoch"]:
+            raise gone
+        # The same door Continue went through: a workspace link opens only for a current member.
+        if item["member"]:
+            await _still_a_member(row, item["userId"])
+        elif link["audience"] != "anyone":
+            raise gone
+    except ApiProblem as exc:
+        raise gone from exc
     if item["state"] == "failed":
         raise ApiProblem("LOCAL_SESSION_CONFLICT", "This copy could not be prepared. Press Continue again.")
     if item["state"] == "preparing":
-        if now - int(item["startedAt"]) > RESTART_AFTER_S:
+        if now - int(item["startedAt"]) > RESTART_AFTER_S and item["copyId"] not in _working:
             try:
                 await _settle(item, {"startedAt": now})
                 _start({**item, "startedAt": now})
             except Exception:
-                pass  # another poll restarted it first
+                pass  # another poll restarted it first (a worker on another task is not visible here)
         return Preparing()
     manifest = await store._get(row["pk"], "PICKUP") if item["member"] else None
     owner = await _name(row["humanUserId"], first=True)

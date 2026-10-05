@@ -2061,9 +2061,19 @@ async def decide_pickup_request(
     if decision == "allow":
         if session_pickup._expired(row):
             raise ApiProblem("LOCAL_SESSION_NOT_FOUND", "This session's snapshot has expired.")
-        # Raises (e.g. a paused session) before any write: the request stays pending.
-        public = await session_pickup.set_pickup(auth, session_id, True, expect_request=(user_id, current["requestId"]))
-        await put_link(auth, session_id, None)  # Allow creates the link as Workspace only (spec §3.1)
+        # Allow creates the link as Workspace only (spec §3.1), first: a session never has pick-up on
+        # without its link. A failure before any write leaves the request pending; one after the link
+        # exists takes the link back.
+        had_link = bool(row.get("shareLink"))
+        await put_link(auth, session_id, None)
+        try:
+            public = await session_pickup.set_pickup(
+                auth, session_id, True, expect_request=(user_id, current["requestId"])
+            )
+        except Exception:
+            if not had_link:
+                await delete_link(auth, session_id)
+            raise
         await _notify_join_answer(row, user_id, "join_allowed", current["requestId"], kind="pickup")
         return public
 

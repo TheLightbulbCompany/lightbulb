@@ -247,9 +247,12 @@ Routes:
 - Mod change: on `session.start` (`register.tsx:129`) read
   `~/.lightbulb/continued/<session id>.json` with `$.fs.read`; while the session is not itself
   shared, the `AbovePrompt` band (`register.tsx:147`) shows
-  `Continued from <from>'s session · Share yours (flickmeon.ai/desktop)`. The mod reads no session
-  id or home directory today (it uses only `$.fs`, `$.clock`, `$.http`, `$.ui`, `$.plugin.root`):
-  confirm the hook API exposes both before building.
+  `Continued from <from>'s session · Share yours (flickmeon.ai/desktop)`. The session id is
+  `$.session.id()` (verified in the 2.1.289 mod API). The CLI picks the fork's id itself and passes
+  `--session-id <uuid>` with `--resume … --fork-session`, so it can name the marker file before
+  Claude starts; check that flag combination on the pinned Claude Code before building. Whether
+  `$.fs.read` may read under `~` is unverified; if not, put the marker in the plugin's own
+  directory (`$.plugin.root`).
 
 ### 3.7 Web
 

@@ -1632,7 +1632,8 @@ impl Host {
             || current.process != native.process
             || current.conversation != native.conversation
             || current.profile != native.profile
-            || current.transcript != native.transcript
+            // None -> Some is the session's first turn writing its transcript, not a new identity.
+            || (native.transcript.is_some() && current.transcript != native.transcript)
             || current.socket != native.socket
             || current.socket_inode != native.socket_inode
             || current.version != native.version
@@ -1695,7 +1696,7 @@ impl Host {
                 if ingress.native.provider == "claude"
                     && self.verified(&ingress.native).await.is_ok()
                 {
-                    if let Ok(Some(id)) = claude::admission(ingress) {
+                    if let Ok(Some(id)) = claude::admission(&self.home, ingress) {
                         receipt = journal.finish(session, request, Some(id), false)?;
                     }
                 }
@@ -1716,6 +1717,29 @@ impl Host {
     }
 
     async fn command(&mut self, cmd: &Command, anchor: Option<&ClockAnchor>) -> Result<Receipt> {
+        let mut why = "";
+        let result = self.command_inner(cmd, anchor, &mut why).await;
+        // One line per command outcome, never its text: a silent "Not delivered" was undiagnosable.
+        let outcome = match &result {
+            Ok(receipt) => receipt.outcome.clone(),
+            Err(error) => format!("error: {error}"),
+        };
+        relay_log(&format!(
+            "command {} ({}) for {}: {outcome}{}{why}",
+            short(&cmd.request_id),
+            cmd.kind,
+            short(&cmd.session_id),
+            if why.is_empty() { "" } else { " -- " },
+        ));
+        result
+    }
+
+    async fn command_inner(
+        &mut self,
+        cmd: &Command,
+        anchor: Option<&ClockAnchor>,
+        why: &mut &'static str,
+    ) -> Result<Receipt> {
         let journal = Journal {
             dir: self.dir.join("receipts"),
         };
@@ -1728,6 +1752,7 @@ impl Host {
             .try_exists()
             .map_err(|_| "journal unavailable")?
         {
+            *why = "replayed request";
             journal.admit(cmd, "", 0)?; // Check immutable payload identity; never resend an intent.
             return self
                 .reconcile(&cmd.session_id, &cmd.request_id, &cmd.expected_generation)
@@ -1762,17 +1787,20 @@ impl Host {
             None
         };
         let Some(native) = native else {
+            *why = if eligible { "native session unverified" } else { "stale generation, expired or stopping" };
             return journal.reconcile(&cmd.session_id, &cmd.request_id, &cmd.expected_generation);
         };
         if live && (native.provider != "codex" || native.status != "busy" || native.socket.is_none()
             || native.active_turn != cmd.expected_turn_id)
         {
+            *why = "no matching active turn";
             return journal.reconcile(&cmd.session_id, &cmd.request_id, &cmd.expected_generation);
         }
         let mut socket = if native.provider == "claude" {
             match claude::connect(&native).await {
                 Ok(socket) => Some(socket),
                 Err(_) => {
+                    *why = "inbox socket unavailable";
                     return journal.reconcile(
                         &cmd.session_id,
                         &cmd.request_id,
@@ -1785,6 +1813,7 @@ impl Host {
         };
         let now = anchor.and_then(ClockAnchor::now).unwrap_or(u64::MAX);
         if !journal.admit(cmd, &mirror.generation, now)? {
+            *why = "not admitted (order, shape or deadline)";
             return journal.reconcile(&cmd.session_id, &cmd.request_id, &cmd.expected_generation);
         }
         // Provenance is server-owned. JSON escaping keeps IDs from spoofing this boundary.
@@ -1799,6 +1828,7 @@ impl Host {
                 .is_some_and(|now| cmd.authorized_at(now))
             || !process(native.process.pid).is_ok_and(|current| current == native.process)
         {
+            *why = if anchored.is_err() { "intent not anchored" } else { "expired, stopping or process changed" };
             return journal.finish(&cmd.session_id, &cmd.request_id, None, false);
         }
         if live {
@@ -1812,12 +1842,13 @@ impl Host {
             };
         }
         // From this point failure/cancellation is unknown, never a retry/rejection.
+        *why = "";
         if let Some(socket) = &mut socket {
             let from = claude::sender_handle(cmd.own, cmd.label.as_ref().and_then(|l| l.handle.as_deref()));
             let _ = claude::send(socket, &text, &from).await;
             let anchored = journal.reconcile(&cmd.session_id, &cmd.request_id, &cmd.expected_generation)?;
             if let Some(ingress) = &anchored.ingress {
-                if let Some(id) = claude::await_admission(ingress).await {
+                if let Some(id) = claude::await_admission(&self.home, ingress).await {
                     journal.finish(&cmd.session_id, &cmd.request_id, Some(id), false)?;
                 }
             }

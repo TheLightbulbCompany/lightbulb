@@ -768,11 +768,16 @@ export class ApiStack extends cdk.Stack {
         allowAllOutbound: false,
       });
       endpointSg.addIngressRule(ec2.Peer.ipv4(props.vpc.vpcCidrBlock), ec2.Port.tcp(443), "VPC to message search");
-      const vpce = new aoss.CfnVpcEndpoint(this, "MessageSearchVpce", {
-        name: `lightbulb-${env}-msg-vpce`,
-        vpcId: props.vpc.vpcId,
-        subnetIds: props.vpc.selectSubnets({ subnetType: ec2.SubnetType.PRIVATE_WITH_EGRESS }).subnetIds,
-        securityGroupIds: [endpointSg.securityGroupId],
+      // NextGen (`on.aws`) collections need a standard PrivateLink endpoint (`aoss-data`, private
+      // DNS). The aoss-managed (Classic) endpoint's DNS covers only `*.aoss.amazonaws.com`, so
+      // traffic went public and the VPC-only network policy answered 401.
+      const vpce = new ec2.InterfaceVpcEndpoint(this, "MessageSearchVpce", {
+        vpc: props.vpc,
+        service: new ec2.InterfaceVpcEndpointService(`com.amazonaws.${this.region}.aoss-data`, 443),
+        privateDnsEnabled: true,
+        subnets: { subnetType: ec2.SubnetType.PRIVATE_WITH_EGRESS },
+        securityGroups: [endpointSg],
+        open: false,
       });
       const network = new aoss.CfnSecurityPolicy(this, "MessageSearchNetwork", {
         name: `lightbulb-${env}-msg-net`,
@@ -780,7 +785,7 @@ export class ApiStack extends cdk.Stack {
         policy: cdk.Stack.of(this).toJsonString([{
           Rules: [{ ResourceType: "collection", Resource: [`collection/${collectionName}`] }],
           AllowFromPublic: false,
-          SourceVPCEs: [vpce.attrId],
+          SourceVPCEs: [vpce.vpcEndpointId],
         }]),
       });
       const collection = new aoss.CfnCollection(this, "MessageSearchCollection", {

@@ -708,10 +708,12 @@ export function MessagingWorkspaceProvider({
   useEffect(() => {
     const moved = previousSelectedRoom.current !== rooms.activeRoomId;
     // Room changes that bypass the directory (a notification, ⌥↑/⌥↓) leave focus
-    // too. A cold load's automatic first room is not a move away from anything.
-    if (moved && previousSelectedRoom.current !== null) setSessionFocus(null);
+    // too. Automatic picks (the cold load's first room, the default agent's DM,
+    // #general's auto-open) are not a move away from anything: a session deep link
+    // that landed first stays open. Only a person's choice marks the scope explicit.
+    if (moved && previousSelectedRoom.current !== null && explicitChoiceScope.current === scope) setSessionFocus(null);
     previousSelectedRoom.current = rooms.activeRoomId;
-  }, [rooms.activeRoomId]);
+  }, [rooms.activeRoomId, scope]);
   const targetRoomId = rooms.activeRoomId;
   const targetMessages = rooms.messages;
   const targetHistoryComplete = rooms.historyComplete;

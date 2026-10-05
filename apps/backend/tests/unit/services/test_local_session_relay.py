@@ -1027,13 +1027,13 @@ async def test_event_ingestion_publishes_a_hint_at_most_once_per_second(transpor
 
 @pytest.mark.asyncio
 async def test_router_dispatches_post_but_receipt_get_is_read_only(transport):
-    from core.auth import get_current_user
+    from core.auth import get_current_user, get_human_session
     from routers.messaging import router
 
     sid = await start(transport)
     app = FastAPI()
     app.include_router(router)
-    app.dependency_overrides[get_current_user] = lambda: ALICE
+    app.dependency_overrides[get_current_user] = app.dependency_overrides[get_human_session] = lambda: ALICE
     with patch("core.services.local_session_relay.get_local_session_relay", return_value=relay(transport)):
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
             path = f"/messaging/sessions/{sid}/commands"
@@ -1450,13 +1450,13 @@ async def test_the_relay_advertises_session_terminal(transport):
 
 @pytest.mark.asyncio
 async def test_http_dispatch_failure_returns_durable_receipt_without_logging_text(transport, caplog):
-    from core.auth import get_current_user
+    from core.auth import get_current_user, get_human_session
     from routers.messaging import router
 
     sid = await start(transport)
     app = FastAPI()
     app.include_router(router)
-    app.dependency_overrides[get_current_user] = lambda: ALICE
+    app.dependency_overrides[get_current_user] = app.dependency_overrides[get_human_session] = lambda: ALICE
     with patch("core.services.local_session_relay.get_local_session_relay", side_effect=RuntimeError("secret-token")):
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
             result = await client.post(

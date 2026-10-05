@@ -178,6 +178,16 @@ describe("Messages room/controller boundary", () => {
     expect(await screen.findByText("Synthetic native investigation history")).toBeInTheDocument();
     expect(api.panels.filter(panel => panel.id === MESSAGES_PANEL_ID)).toHaveLength(1);
   });
+  it("keeps a session deep link open while the cold load settles on its landing room", async () => {
+    // Cold load: the restored Messages panel is still resolving its agent's DM when the URL's session command lands.
+    listed = [{ ...dm("channel", "agent-a", "General"), kind: "channel" }, dm("a-first", "agent-a", "First Alpha")];
+    const { api } = renderWorkspace();
+    act(() => openSessionPanel("native-one"));
+    await waitFor(() => expect(api.getPanel(MESSAGES_PANEL_ID)?.params).toMatchObject({ sessionId: "native-one" }));
+    expect(await screen.findByText("Synthetic native investigation history")).toBeInTheDocument();
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 50)); });
+    expect(screen.getByText("Synthetic native investigation history")).toBeInTheDocument();
+  });
   it("keeps the exact clicked DM, while an explicit same-agent shortcut can retarget it", async () => {
     const { api } = renderWorkspace();
     await waitFor(() => expect(screen.getByLabelText("Selected room")).toHaveTextContent("a-first"));

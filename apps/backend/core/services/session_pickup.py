@@ -38,6 +38,7 @@ from core.repositories import container_repo, local_sessions_repo as repo, messa
 from core.services import local_sessions as sessions
 from core.services.local_sessions import DeviceId, Digest, OpaqueId, PICKUP_RETENTION_SECONDS, _drop_none, iso
 from core.services.messaging import ApiProblem, ContractModel, validate_uuid
+from core.services.session_screen import _still_a_member
 
 logger = logging.getLogger(__name__)
 
@@ -406,6 +407,8 @@ async def request_pickup(auth: AuthContext, session_id: str, pickup_id: str) -> 
     """Any workspace member, the author included. A paused session reads as not found."""
     pickup_id = validate_uuid(pickup_id, label="pick-up ID")
     row, _ = await sessions.authorize_session(auth, None, session_id)
+    # A removed member's Clerk JWT outlives their membership: the same fence as watch/type/resume.
+    await _still_a_member(row, auth.user_id)
     if not row.get("pickupAllowed"):
         raise ApiProblem("LOCAL_SESSION_FORBIDDEN", "Pick-up is off for this session.")
     if _expired(row):

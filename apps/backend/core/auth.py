@@ -256,7 +256,7 @@ async def get_human_session(
     credentials: HTTPAuthorizationCredentials = Depends(security),
 ) -> AuthContext:
     """`get_current_user`, then only a first-party Clerk SESSION token: for the doors that put a
-    person's keystrokes or screen on a Mac (local-session /input, /viewing, /resume). A session
+    person's keystrokes or screen on a Mac (local-session /input, /viewing, /resume, /commands). A session
     token carries `sid`; an OAuth access token issued as a JWT (`typ: at+jwt`, a `client_id`
     claim) and a JWT-template token (no `sid`) are refused with 403. The web, desktop webview
     and mobile call these routes with Clerk's default session token (no template)."""

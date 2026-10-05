@@ -336,6 +336,7 @@ test('a continued marker becomes one line; junk becomes nothing', () => {
   expect(parseContinued('{"from":""}')).toBeNull()
   expect(parseContinued('not json')).toBeNull()
   expect(parseContinued('{"from":"A\\u001b[31mB"}')!.from).toBe('A[31mB')
+  expect(parseContinued('{"from":"A\\u009b31mB"}')!.from).toBe('A31mB') // C1 too
 })
 
 test('an unshared continued session shows the Continued-from band', async ($, on) => {

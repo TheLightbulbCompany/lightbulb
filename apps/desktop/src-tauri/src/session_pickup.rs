@@ -73,6 +73,49 @@ pub(crate) async fn git_run(
     Ok((out.status.success(), out.stdout))
 }
 
+/// `/usr/bin/git` with none of the person's credentials, for what anyone may read: no global or
+/// system config, no credential helper, no prompt, and none of the environment overrides that
+/// would put config back (`git_run` keeps the user's config on purpose; this must not).
+pub(crate) fn anonymous_git(cwd: &Path, args: &[&str]) -> tokio::process::Command {
+    let mut command = tokio::process::Command::new("/usr/bin/git");
+    command
+        .args(["-c", "credential.helper="])
+        .args(args)
+        .current_dir(cwd)
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .env("GIT_ASKPASS", "/usr/bin/false")
+        .env("SSH_ASKPASS", "/usr/bin/false")
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .kill_on_drop(true);
+    for key in [
+        "GIT_CONFIG_PARAMETERS",
+        "GIT_CONFIG_COUNT",
+        "GIT_SSL_NO_VERIFY",
+        "GIT_PROXY_COMMAND",
+        "GIT_DIR",
+        "GIT_WORK_TREE",
+        "GIT_COMMON_DIR",
+        "GIT_OBJECT_DIRECTORY",
+        "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+        "GIT_INDEX_FILE",
+    ] {
+        command.env_remove(key);
+    }
+    for (key, _) in std::env::vars_os() {
+        if key
+            .to_str()
+            .is_some_and(|k| k.starts_with("GIT_CONFIG_KEY_") || k.starts_with("GIT_CONFIG_VALUE_"))
+        {
+            command.env_remove(key);
+        }
+    }
+    command
+}
+
 pub(crate) async fn git(cwd: &Path, args: &[&str], index: Option<&Path>) -> Result<String, String> {
     match git_run(cwd, args, index, Duration::from_secs(300)).await? {
         (true, out) => Ok(String::from_utf8_lossy(&out).trim_end().to_string()),
@@ -260,8 +303,7 @@ fn parse_ticket(value: Value) -> Result<Ticket, Failure> {
         return Err(invalid("The pick-up ticket is malformed."));
     }
     let d = &ticket.downloads;
-    if d
-        .transcript
+    if d.transcript
         .iter()
         .chain(&d.code)
         .chain(&d.sidecars)
@@ -301,8 +343,7 @@ pub(crate) fn downloads_ok(d: &Downloads) -> bool {
             && p.sha256.bytes().all(|b| b.is_ascii_hexdigit())
     }) && !d.transcript.is_empty()
         && d.transcript.iter().all(|p| p.bytes <= PART_MAX)
-        && d
-            .transcript
+        && d.transcript
             .iter()
             .enumerate()
             .all(|(i, p)| p.index == i as u64)
@@ -831,7 +872,15 @@ async fn pick_up(ticket: Value, folder: Option<String>, env: &Env) -> Result<Val
         .map_err(|e| fail("LAUNCH_FAILED", &format!("The session didn't start: {e}")))?;
     // Started with no window: tell the owner at this Mac (spec §5.2).
     let _ = crate::notify::native_notify(
-        format!("Picked up {}", ticket.session.title.as_deref().filter(|t| !t.is_empty()).unwrap_or("a session")),
+        format!(
+            "Picked up {}",
+            ticket
+                .session
+                .title
+                .as_deref()
+                .filter(|t| !t.is_empty())
+                .unwrap_or("a session")
+        ),
         Some("End it from its panel in Lightbulb.".into()),
         Some(format!("pickup-{session}")),
         None,

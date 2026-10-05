@@ -31,7 +31,7 @@ export function requestLine(r: JoinRequest, count: number): string {
 export function parseContinued(text: string): Continued | null {
   try {
     const v = JSON.parse(text) as { from?: unknown; title?: unknown }
-    const clean = (s: unknown) => (typeof s === 'string' ? s.replace(/[\u0000-\u001f\u007f]/g, '').trim().slice(0, 80) : '')
+    const clean = (s: unknown) => (typeof s === 'string' ? s.replace(/[\u0000-\u001f\u007f-\u009f]/g, '').trim().slice(0, 80) : '')
     const from = clean(v.from)
     return from ? { from, title: clean(v.title) || null } : null
   } catch {

@@ -2,7 +2,9 @@
 //! shared Claude Code session and resume it here, in this terminal, as the receiver's own
 //! session. Their Mac, their Claude, their plan; the original session and its Mac are never
 //! contacted. Everything the server sends is untrusted: it is checked with pick-up's own checks.
-use crate::session_pickup::{self as pickup, git, git_run, normalize_remote, Downloads};
+use crate::session_pickup::{
+    self as pickup, anonymous_git, git, git_run, normalize_remote, Downloads,
+};
 use serde::Deserialize;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
@@ -35,6 +37,9 @@ pub(crate) fn parse_link(raw: &str, api_base: &str) -> Option<Link> {
     let token = url.fragment()?;
     (url.scheme() == "https"
         && url.port().is_none()
+        && url.username().is_empty()
+        && url.password().is_none()
+        && url.query().is_none()
         && url.host_str() == Some(web_host.as_str())
         && url.path() == "/s"
         && url_safe(token))
@@ -68,7 +73,10 @@ pub(crate) fn wait_for_code(listener: &std::net::TcpListener) -> Option<String> 
             .filter(|c| url_safe(c))
             .map(str::to_string);
         let (status, body) = match code {
-            Some(_) => ("200 OK", "Continuing in your terminal. You can close this tab."),
+            Some(_) => (
+                "200 OK",
+                "Continuing in your terminal. You can close this tab.",
+            ),
             None => ("404 Not Found", "Not found"),
         };
         let _ = write!(
@@ -105,14 +113,52 @@ pub(crate) struct CopyTicket {
     code: CopyCode,
 }
 
+/// Text from the server or the sharer's Mac, made safe to print: no control characters (C0, ESC,
+/// DEL, C1), so it cannot move the cursor, rewrite the screen or write the clipboard.
+pub(crate) fn printable(s: &str) -> String {
+    s.chars().filter(|c| !c.is_control()).collect()
+}
+
+/// A version string as `claude --version` prints one.
+fn version_ok(v: &str) -> bool {
+    (1..=64).contains(&v.len())
+        && v.bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b".+-".contains(&b))
+}
+
+/// `<dns host>/<path>`, already normalized, that git may fetch as `https://<it>.git`. No IP
+/// literal, no localhost, no userinfo, query, fragment or whitespace: the sharer's Mac chose it.
+fn https_remote(r: &str) -> bool {
+    let Some((host, path)) = r.split_once('/') else {
+        return false;
+    };
+    let labels: Vec<&str> = host.split('.').collect();
+    let host_ok = labels.len() >= 2
+        && labels.iter().all(|l| {
+            !l.is_empty()
+                && !l.starts_with('-')
+                && !l.ends_with('-')
+                && l.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
+        })
+        && !labels
+            .last()
+            .is_some_and(|tld| tld.bytes().all(|b| b.is_ascii_digit()))
+        && !host.eq_ignore_ascii_case("localhost")
+        && !host.to_ascii_lowercase().ends_with(".localhost");
+    let path_ok = !path.is_empty()
+        && path
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b"._~/-".contains(&b))
+        && path
+            .split('/')
+            .all(|seg| !seg.is_empty() && seg != "." && seg != "..");
+    host_ok && path_ok && normalize_remote(&format!("https://{r}")).as_deref() == Some(r)
+}
+
 pub(crate) fn parse_copy(value: Value) -> Result<CopyTicket, String> {
     let bad = || "Lightbulb sent a copy this app will not use.".to_string();
     let t: CopyTicket = serde_json::from_value(value).map_err(|_| bad())?;
-    let remote_ok = t
-        .code
-        .remote
-        .as_deref()
-        .is_some_and(|r| normalize_remote(&format!("https://{r}")).as_deref() == Some(r));
+    let remote_ok = t.code.remote.as_deref().is_some_and(https_remote);
     let mode_ok = match t.code.mode.as_str() {
         "none" => t.downloads.code.is_none(),
         "clone" => {
@@ -131,14 +177,30 @@ pub(crate) fn parse_copy(value: Value) -> Result<CopyTicket, String> {
         }
         _ => false,
     };
-    (uuid::Uuid::parse_str(&t.conversation_id).is_ok() && pickup::downloads_ok(&t.downloads) && mode_ok)
+    (uuid::Uuid::parse_str(&t.conversation_id).is_ok()
+        && version_ok(&t.claude_version)
+        && pickup::downloads_ok(&t.downloads)
+        && mode_ok)
         .then_some(t)
         .ok_or_else(bad)
 }
 
+/// Runs an anonymous git command (see `anonymous_git`); true when it exits 0 in time.
+async fn anonymous(cwd: &Path, args: &[&str], timeout: Duration) -> bool {
+    tokio::time::timeout(timeout, anonymous_git(cwd, args).status())
+        .await
+        .is_ok_and(|status| status.is_ok_and(|s| s.success()))
+}
+
 /// A clone of `remote` to work in: the current folder's repository when its origin matches,
 /// else a fresh `git clone` into `./<name>`. The bool says whether it was cloned just now.
-pub(crate) async fn clone_of(here: &Path, remote: &str) -> Result<(PathBuf, bool), String> {
+/// `public`: clone with none of this person's credentials (the sharer's Mac said it is public,
+/// and the sharer could name one of this person's private repositories).
+pub(crate) async fn clone_of(
+    here: &Path,
+    remote: &str,
+    public: bool,
+) -> Result<(PathBuf, bool), String> {
     if let Ok(top) = git(here, &["rev-parse", "--show-toplevel"], None).await {
         let top = PathBuf::from(top);
         let origin = git(&top, &["remote", "get-url", "origin"], None)
@@ -154,7 +216,8 @@ pub(crate) async fn clone_of(here: &Path, remote: &str) -> Result<(PathBuf, bool
         .next()
         .filter(|n| {
             !n.starts_with(['.', '-'])
-                && n.bytes().all(|b| b.is_ascii_alphanumeric() || b"._-".contains(&b))
+                && n.bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b"._-".contains(&b))
         })
         .ok_or("the repository name is not usable here")?;
     let dest = here.join(name);
@@ -162,9 +225,19 @@ pub(crate) async fn clone_of(here: &Path, remote: &str) -> Result<(PathBuf, bool
         return Err(format!("./{name} already exists"));
     }
     let url = format!("https://{remote}.git");
-    match git_run(here, &["clone", "-q", "--", &url, name], None, Duration::from_secs(900)).await? {
-        (true, _) => Ok((dest, true)),
-        _ => Err("git clone failed".into()),
+    eprintln!("Cloning {remote}…");
+    let args = ["clone", "-q", "--", url.as_str(), name];
+    let cloned = if public {
+        anonymous(here, &args, Duration::from_secs(900)).await
+    } else {
+        git_run(here, &args, None, Duration::from_secs(900))
+            .await?
+            .0
+    };
+    if cloned {
+        Ok((dest, true))
+    } else {
+        Err("git clone failed".into())
     }
 }
 
@@ -178,26 +251,68 @@ async fn get_code(t: &CopyTicket, dir: &Path, here: &Path) -> PathBuf {
             "clone" => {
                 let commit = t.code.commit.as_deref().unwrap_or_default();
                 let branch = format!("continue/{}-{short}", pickup::slug(title));
-                let (repo, fresh) = clone_of(here, remote).await?;
+                let (repo, fresh) = clone_of(here, remote, true).await?;
+                // Fetched from the public URL, anonymously, unless this clone already has it.
+                let have = git(
+                    &repo,
+                    &["cat-file", "-e", &format!("{commit}^{{commit}}")],
+                    None,
+                )
+                .await
+                .is_ok();
+                if !have {
+                    let url = format!("https://{remote}.git");
+                    let fetch = [
+                        "-c",
+                        "core.fsmonitor=false",
+                        "-c",
+                        "core.hooksPath=/dev/null",
+                        "fetch",
+                        "-q",
+                        "--",
+                        url.as_str(),
+                        commit,
+                    ];
+                    anonymous(&repo, &fetch, Duration::from_secs(300)).await;
+                }
                 if fresh {
                     git(&repo, &["checkout", "-q", "-b", &branch, commit], None).await?;
                     return Ok(pickup::workdir(&repo, &t.cwd_relative));
                 }
-                let _ = git_run(&repo, &["fetch", "-q", "origin", commit], None, Duration::from_secs(300)).await;
                 pickup::exclude_worktrees(&repo).await?;
                 let tree = repo
                     .join(".claude/worktrees")
                     .join(format!("continue-{}-{short}", pickup::slug(title)));
-                git(&repo, &["worktree", "add", "-q", "-b", &branch, &tree.to_string_lossy(), commit], None).await?;
+                git(
+                    &repo,
+                    &[
+                        "worktree",
+                        "add",
+                        "-q",
+                        "-b",
+                        &branch,
+                        &tree.to_string_lossy(),
+                        commit,
+                    ],
+                    None,
+                )
+                .await?;
                 Ok(pickup::workdir(&tree, &t.cwd_relative))
             }
             "bundle" => {
-                let (repo, _) = clone_of(here, remote).await?;
+                let (repo, _) = clone_of(here, remote, false).await?;
                 let sid = t.code.session_id.as_deref().unwrap_or_default();
                 let snapshot = t.code.snapshot.as_deref().unwrap_or_default();
-                let (_, tree) = pickup::import_code(&repo, &dir.join("code.bundle"), sid, &short, title, snapshot)
-                    .await
-                    .map_err(|e| e["message"].as_str().unwrap_or("import failed").to_string())?;
+                let (_, tree) = pickup::import_code(
+                    &repo,
+                    &dir.join("code.bundle"),
+                    sid,
+                    &short,
+                    title,
+                    snapshot,
+                )
+                .await
+                .map_err(|e| e["message"].as_str().unwrap_or("import failed").to_string())?;
                 Ok(pickup::workdir(&tree, &t.cwd_relative))
             }
             _ => Ok(here.to_path_buf()),
@@ -205,18 +320,29 @@ async fn get_code(t: &CopyTicket, dir: &Path, here: &Path) -> PathBuf {
     }
     .await;
     result.unwrap_or_else(|reason| {
-        eprintln!("Couldn't get the code ({reason}). Continuing with the conversation only.");
+        eprintln!(
+            "Couldn't get the code ({}). Continuing with the conversation only.",
+            printable(&reason)
+        );
         here.to_path_buf()
     })
 }
 
-fn ensure_mod(claude: &Path, home: &Path) {
+async fn ensure_mod(claude: &Path, home: &Path) {
     use crate::local_sessions::plugin;
-    let listed = std::process::Command::new(claude)
-        .args(["plugin", "list"])
-        .stdin(std::process::Stdio::null())
-        .output();
-    if listed.is_ok_and(|o| String::from_utf8_lossy(&o.stdout).contains(plugin::ID)) {
+    let listed = tokio::time::timeout(
+        Duration::from_secs(15),
+        tokio::process::Command::new(claude)
+            .args(["plugin", "list"])
+            .stdin(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .kill_on_drop(true)
+            .output(),
+    )
+    .await;
+    if listed
+        .is_ok_and(|o| o.is_ok_and(|o| String::from_utf8_lossy(&o.stdout).contains(plugin::ID)))
+    {
         return;
     }
     let state = home
@@ -229,8 +355,18 @@ fn ensure_mod(claude: &Path, home: &Path) {
 }
 
 /// Read by the mod's band (Task 8). Names come from the server: no control characters.
-pub(crate) fn write_marker(home: &Path, session: &str, from: &str, title: Option<&str>) -> std::io::Result<()> {
-    let clean = |s: &str| s.chars().filter(|c| !c.is_control()).take(80).collect::<String>();
+pub(crate) fn write_marker(
+    home: &Path,
+    session: &str,
+    from: &str,
+    title: Option<&str>,
+) -> std::io::Result<()> {
+    let clean = |s: &str| {
+        s.chars()
+            .filter(|c| !c.is_control())
+            .take(80)
+            .collect::<String>()
+    };
     let dir = home.join(".lightbulb/continued");
     std::fs::create_dir_all(&dir)?;
     std::fs::write(
@@ -239,8 +375,13 @@ pub(crate) fn write_marker(home: &Path, session: &str, from: &str, title: Option
     )
 }
 
-async fn redeem(client: &reqwest::Client, api: &str, code: &str, verifier: &str) -> Result<Value, String> {
-    for _ in 0..450 {
+async fn redeem(
+    client: &reqwest::Client,
+    api: &str,
+    code: &str,
+    verifier: &str,
+) -> Result<Value, String> {
+    for attempt in 0..450 {
         let res = client
             .post(format!("{api}/public/session-copies/redeem"))
             .json(&json!({"code": code, "verifier": verifier}))
@@ -250,7 +391,15 @@ async fn redeem(client: &reqwest::Client, api: &str, code: &str, verifier: &str)
         let ok = res.status().is_success();
         let body: Value = res.json().await.unwrap_or(Value::Null);
         if !ok {
-            return Err(body["message"].as_str().unwrap_or("Lightbulb refused the copy.").to_string());
+            // A code that never redeemed came from another local program, not the confirm page
+            // (the verifier did not match). PKCE makes that a refusal, nothing worse.
+            if attempt == 0 && body["code"] == "LOCAL_SESSION_NOT_FOUND" {
+                return Err("Another program answered first. Run the command again.".into());
+            }
+            return Err(body["message"]
+                .as_str()
+                .unwrap_or("Lightbulb refused the copy.")
+                .to_string());
         }
         if body["state"] == "ready" {
             return Ok(body);
@@ -261,16 +410,29 @@ async fn redeem(client: &reqwest::Client, api: &str, code: &str, verifier: &str)
 }
 
 async fn run(raw: &str) -> Result<std::convert::Infallible, String> {
-    let link = parse_link(raw, crate::LIGHTBULB_API_BASE).ok_or("That is not a Lightbulb session link for this app.")?;
-    let home = std::env::var_os("HOME").map(PathBuf::from).ok_or("HOME is not set.")?;
-    let claude = crate::local_sessions::provider_program(&home, "claude").ok_or("Claude Code is not installed on this Mac.")?;
+    let link = parse_link(raw, crate::LIGHTBULB_API_BASE)
+        .ok_or("That is not a Lightbulb session link for this app.")?;
+    let home = std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .ok_or("HOME is not set.")?;
+    let claude = crate::local_sessions::provider_program(&home, "claude")
+        .ok_or("Claude Code is not installed on this Mac.")?;
     let here = std::env::current_dir().map_err(|_| "This folder no longer exists.")?;
     let (verifier, challenge) = verifier_and_challenge();
-    let listener = std::net::TcpListener::bind("127.0.0.1:0").map_err(|_| "Could not listen on this Mac.")?;
-    let port = listener.local_addr().map_err(|_| "Could not listen on this Mac.")?.port();
-    let confirm = format!("{}/s?port={port}&challenge={challenge}#{}", link.web, link.token);
+    let listener =
+        std::net::TcpListener::bind("127.0.0.1:0").map_err(|_| "Could not listen on this Mac.")?;
+    let port = listener
+        .local_addr()
+        .map_err(|_| "Could not listen on this Mac.")?
+        .port();
+    let confirm = format!(
+        "{}/s?port={port}&challenge={challenge}#{}",
+        link.web, link.token
+    );
     eprintln!("Confirm in your browser. If it did not open, visit:\n  {confirm}");
-    let _ = std::process::Command::new("/usr/bin/open").arg(&confirm).status();
+    let _ = std::process::Command::new("/usr/bin/open")
+        .arg(&confirm)
+        .status();
     let code = tokio::task::spawn_blocking(move || wait_for_code(&listener))
         .await
         .ok()
@@ -285,7 +447,10 @@ async fn run(raw: &str) -> Result<std::convert::Infallible, String> {
     let ticket = parse_copy(redeem(&client, &link.api, &code, &verifier).await?)?;
     let installed = pickup::claude_version(&claude).await.unwrap_or_default();
     if pickup::older(&installed, &ticket.claude_version) {
-        return Err(format!("Update Claude Code to continue this session (it needs {}).", ticket.claude_version));
+        return Err(format!(
+            "Update Claude Code to continue this session (it needs {}).",
+            ticket.claude_version
+        ));
     }
     let root = home.join(".lightbulb/continue");
     std::fs::create_dir_all(&root).map_err(|_| "~/.lightbulb is not writable.")?;
@@ -294,25 +459,36 @@ async fn run(raw: &str) -> Result<std::convert::Infallible, String> {
     std::fs::create_dir_all(&dir).map_err(|_| "~/.lightbulb is not writable.")?;
     let transcript = pickup::fetch_downloads(&ticket.downloads, &ticket.conversation_id, &dir)
         .await
-        .map_err(|e| e["message"].as_str().unwrap_or("The download failed.").to_string())?;
+        .map_err(|e| {
+            e["message"]
+                .as_str()
+                .unwrap_or("The download failed.")
+                .to_string()
+        })?;
     let cwd = get_code(&ticket, &dir, &here).await;
-    ensure_mod(&claude, &home);
+    ensure_mod(&claude, &home).await;
     let session = uuid::Uuid::new_v4().to_string();
     let _ = write_marker(&home, &session, &ticket.from, ticket.title.as_deref());
     let argv = pickup::argv(&claude, &transcript, &session);
-    let err = std::process::Command::new(&argv[0]).args(&argv[1..]).current_dir(cwd).exec();
+    let err = std::process::Command::new(&argv[0])
+        .args(&argv[1..])
+        .current_dir(cwd)
+        .exec();
     Err(format!("could not run claude: {err}"))
 }
 
 /// `lightbulb continue '<link>'`: the process exit code (on success this process becomes Claude).
 pub fn main(link: &str) -> i32 {
-    let Ok(rt) = tokio::runtime::Builder::new_current_thread().enable_all().build() else {
+    let Ok(rt) = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+    else {
         return 1;
     };
     match rt.block_on(run(link)) {
         Ok(never) => match never {},
         Err(message) => {
-            eprintln!("lightbulb: {message}");
+            eprintln!("lightbulb: {}", printable(&message));
             1
         }
     }
@@ -333,7 +509,12 @@ mod tests {
         assert_eq!(link.api, "https://api-dev.thelightbulb.company/api/v1");
         assert_eq!(link.token, TOKEN);
         assert_eq!(
-            parse_link(&format!("https://thelightbulb.company/s#{TOKEN}"), "https://api.thelightbulb.company").unwrap().web,
+            parse_link(
+                &format!("https://thelightbulb.company/s#{TOKEN}"),
+                "https://api.thelightbulb.company"
+            )
+            .unwrap()
+            .web,
             "https://thelightbulb.company"
         );
         for bad in [
@@ -353,7 +534,8 @@ mod tests {
         use base64::Engine;
         let (verifier, challenge) = verifier_and_challenge();
         assert_eq!(verifier.len(), 43);
-        let want = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(Sha256::digest(verifier.as_bytes()));
+        let want = base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .encode(Sha256::digest(verifier.as_bytes()));
         assert_eq!(challenge, want);
     }
 
@@ -374,7 +556,8 @@ mod tests {
     }
 
     fn ticket(code: Value, bundle: Value) -> Value {
-        let url = "https://lightbulb-dev-openclaw-replicas.s3.amazonaws.com/session-copies/c/t-000000.gz";
+        let url =
+            "https://lightbulb-dev-openclaw-replicas.s3.amazonaws.com/session-copies/c/t-000000.gz";
         json!({"state": "ready", "title": "Fix login", "from": "Alice", "conversationId": "11111111-2222-4333-8444-555555555555",
             "claudeVersion": "2.1.283", "cwdRelative": "", "code": code,
             "downloads": {"transcript": [{"index": 0, "url": url, "bytes": 3, "sha256": "a".repeat(64)}], "code": bundle, "sidecars": null}})
@@ -383,31 +566,168 @@ mod tests {
     #[test]
     fn a_copy_ticket_is_checked_before_any_download() {
         assert!(parse_copy(ticket(json!({"mode": "none"}), Value::Null)).is_ok());
-        assert!(parse_copy(ticket(json!({"mode": "clone", "remote": "github.com/o/r", "commit": "a".repeat(40)}), Value::Null)).is_ok());
-        assert!(parse_copy(ticket(json!({"mode": "clone", "remote": "github.com/o/r", "commit": "main"}), Value::Null)).is_err());
-        assert!(parse_copy(ticket(json!({"mode": "none"}), json!({"url": "https://evil.example/x", "bytes": 1, "sha256": "a".repeat(64)}))).is_err());
-        assert!(parse_copy(ticket(json!({"mode": "bundle", "remote": "github.com/o/r", "snapshot": "b".repeat(40),
-            "sessionId": "11111111-2222-4333-8444-555555555555"}), Value::Null)).is_err()); // bundle mode needs the bundle
+        assert!(parse_copy(ticket(
+            json!({"mode": "clone", "remote": "github.com/o/r", "commit": "a".repeat(40)}),
+            Value::Null
+        ))
+        .is_ok());
+        assert!(parse_copy(ticket(
+            json!({"mode": "clone", "remote": "github.com/o/r", "commit": "main"}),
+            Value::Null
+        ))
+        .is_err());
+        assert!(parse_copy(ticket(
+            json!({"mode": "none"}),
+            json!({"url": "https://evil.example/x", "bytes": 1, "sha256": "a".repeat(64)})
+        ))
+        .is_err());
+        assert!(parse_copy(ticket(
+            json!({"mode": "bundle", "remote": "github.com/o/r", "snapshot": "b".repeat(40),
+            "sessionId": "11111111-2222-4333-8444-555555555555"}),
+            Value::Null
+        ))
+        .is_err()); // bundle mode needs the bundle
         let mut off_bucket = ticket(json!({"mode": "none"}), Value::Null);
-        off_bucket["downloads"]["transcript"][0]["url"] = json!("https://lightbulb-dev-openclaw-replicas.s3.amazonaws.com/other/x");
+        off_bucket["downloads"]["transcript"][0]["url"] =
+            json!("https://lightbulb-dev-openclaw-replicas.s3.amazonaws.com/other/x");
         assert!(parse_copy(off_bucket).is_err());
     }
 
     #[tokio::test]
     async fn the_current_folder_is_used_when_it_is_a_clone_of_the_remote() {
         let dir = tempfile::tempdir().unwrap();
-        let g = |args: &[&str]| assert!(std::process::Command::new("git").args(args).current_dir(dir.path()).status().unwrap().success());
+        let g = |args: &[&str]| {
+            assert!(std::process::Command::new("git")
+                .args(args)
+                .current_dir(dir.path())
+                .status()
+                .unwrap()
+                .success())
+        };
         g(&["init", "-q"]);
         g(&["remote", "add", "origin", "git@github.com:o/r.git"]);
         let here = std::fs::canonicalize(dir.path()).unwrap();
-        assert_eq!(clone_of(&here, "github.com/o/r").await.unwrap().0, here);
+        assert_eq!(
+            clone_of(&here, "github.com/o/r", true).await.unwrap().0,
+            here
+        );
+    }
+
+    #[tokio::test]
+    async fn clone_mode_in_a_clone_adds_a_worktree_at_the_commit() {
+        let dir = tempfile::tempdir().unwrap();
+        let here = std::fs::canonicalize(dir.path()).unwrap();
+        let g = |args: &[&str]| {
+            assert!(std::process::Command::new("git")
+                .args(args)
+                .current_dir(&here)
+                .status()
+                .unwrap()
+                .success())
+        };
+        g(&["init", "-q"]);
+        g(&[
+            "-c",
+            "user.name=t",
+            "-c",
+            "user.email=t@t",
+            "commit",
+            "-q",
+            "--allow-empty",
+            "-m",
+            "one",
+        ]);
+        g(&["remote", "add", "origin", "git@github.com:o/r.git"]);
+        let head = String::from_utf8(
+            std::process::Command::new("git")
+                .args(["rev-parse", "HEAD"])
+                .current_dir(&here)
+                .output()
+                .unwrap()
+                .stdout,
+        )
+        .unwrap();
+        // The commit is already here, so nothing is fetched: no network in tests.
+        let t = parse_copy(ticket(
+            json!({"mode": "clone", "remote": "github.com/o/r", "commit": head.trim()}),
+            Value::Null,
+        ))
+        .unwrap();
+        let cwd = get_code(&t, &here, &here).await;
+        assert!(cwd.starts_with(here.join(".claude/worktrees")), "{cwd:?}");
+        assert!(cwd.join(".git").exists());
+        let exclude = std::fs::read_to_string(here.join(".git/info/exclude")).unwrap();
+        assert!(exclude.contains(".claude/worktrees/"));
+    }
+
+    #[test]
+    fn a_copy_names_only_a_public_https_remote_and_a_plain_version() {
+        let clone = |remote: &str| {
+            ticket(
+                json!({"mode": "clone", "remote": remote, "commit": "a".repeat(40)}),
+                Value::Null,
+            )
+        };
+        assert!(parse_copy(clone("gitlab.example.com/group/sub/r")).is_ok());
+        for bad in [
+            "127.0.0.1/o/r",
+            "localhost/o/r",
+            "a.localhost/o/r",
+            "u@github.com/o/r",
+            "github.com/o/r?x=1",
+            "github.com/o/r#x",
+            "github.com/o r",
+            "github.com/o/r\n",
+            "github.com",
+            "github.com/../r",
+            "-x.com/o/r",
+        ] {
+            assert!(parse_copy(clone(bad)).is_err(), "{bad}");
+        }
+        let mut odd = ticket(json!({"mode": "none"}), Value::Null);
+        odd["claudeVersion"] = json!("2.1\u{1b}]52;c;eA==\u{7}");
+        assert!(parse_copy(odd).is_err());
+        assert_eq!(printable("a\u{1b}[31mb\u{9b}c\u{7f}"), "a[31mbc");
+    }
+
+    #[test]
+    fn a_link_with_userinfo_or_a_query_is_refused() {
+        for bad in [
+            format!("https://u@dev.thelightbulb.company/s#{TOKEN}"),
+            format!("https://dev.thelightbulb.company/s?x=1#{TOKEN}"),
+        ] {
+            assert!(parse_link(&bad, API).is_none(), "{bad}");
+        }
+    }
+
+    #[test]
+    fn the_loopback_waits_past_a_malformed_code() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let client = std::thread::spawn(move || {
+            for path in [
+                "/done?code=bad!code%20here0000".to_string(),
+                format!("/done?code={TOKEN}"),
+            ] {
+                let mut s = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+                write!(s, "GET {path} HTTP/1.1\r\nHost: x\r\n\r\n").unwrap();
+                let mut answer = String::new();
+                let _ = s.read_to_string(&mut answer);
+            }
+        });
+        assert_eq!(wait_for_code(&listener).as_deref(), Some(TOKEN));
+        client.join().unwrap();
     }
 
     #[test]
     fn the_marker_names_the_fork() {
         let home = tempfile::tempdir().unwrap();
         write_marker(home.path(), "fork-1", "Alice\u{1b}[31m", Some("Fix login")).unwrap();
-        let text = std::fs::read_to_string(home.path().join(".lightbulb/continued/fork-1.json")).unwrap();
-        assert_eq!(serde_json::from_str::<Value>(&text).unwrap(), json!({"from": "Alice[31m", "title": "Fix login"}));
+        let text =
+            std::fs::read_to_string(home.path().join(".lightbulb/continued/fork-1.json")).unwrap();
+        assert_eq!(
+            serde_json::from_str::<Value>(&text).unwrap(),
+            json!({"from": "Alice[31m", "title": "Fix login"})
+        );
     }
 }

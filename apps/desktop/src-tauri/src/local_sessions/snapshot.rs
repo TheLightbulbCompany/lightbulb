@@ -6,7 +6,9 @@
 //! a failing session is simply left alone for 30 seconds.
 use super::transport::relay_log;
 use super::*;
-use crate::session_pickup::{git, git_run, normalize_remote, CODE_MAX, SIDECARS_MAX};
+use crate::session_pickup::{
+    anonymous_git, git, git_run, normalize_remote, CODE_MAX, SIDECARS_MAX,
+};
 use std::collections::{BTreeMap, HashMap};
 use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
@@ -576,30 +578,14 @@ fn known_public(remote: &str) -> Option<bool> {
         .map(|(_, public)| *public)
 }
 
-/// The anonymous probe. Not `git_run`: that keeps the user's global config on purpose, and a
-/// global `url.<ssh>.insteadOf https://` would make this an SSH call with their keys. No config,
-/// no credential helper, no prompt: exit 0 means anyone can read the repository.
+/// The anonymous probe: exit 0 means anyone can read the repository. Not `git_run`: that keeps
+/// the user's global config on purpose, and a global `url.<ssh>.insteadOf https://` would make
+/// this an SSH call with their keys.
 fn probe_command(remote: &str) -> tokio::process::Command {
-    let mut command = tokio::process::Command::new("/usr/bin/git");
-    command
-        .args([
-            "-c",
-            "credential.helper=",
-            "ls-remote",
-            &format!("https://{remote}.git"),
-            "HEAD",
-        ])
-        .current_dir(std::env::temp_dir())
-        .env("GIT_CONFIG_GLOBAL", "/dev/null")
-        .env("GIT_CONFIG_NOSYSTEM", "1")
-        .env("GIT_TERMINAL_PROMPT", "0")
-        .env("GIT_ASKPASS", "/usr/bin/false")
-        .env("SSH_ASKPASS", "/usr/bin/false")
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .kill_on_drop(true);
-    command
+    anonymous_git(
+        &std::env::temp_dir(),
+        &["ls-remote", &format!("https://{remote}.git"), "HEAD"],
+    )
 }
 
 async fn public(remote: &str) -> bool {
@@ -624,20 +610,34 @@ pub(crate) async fn repo_info(top: &Path) -> Value {
     else {
         return Value::Null;
     };
+    // The backend's bounds (`RepoInfo`): a longer value would 422 every commit.
+    if remote.chars().count() > 256 {
+        return Value::Null;
+    }
     let Ok(head) = git(top, &["rev-parse", "--verify", "HEAD"], None).await else {
         return Value::Null;
     };
     let pushed = git(
         top,
-        &["for-each-ref", "--count=1", "--contains", &head, "refs/remotes/origin"],
+        &[
+            "for-each-ref",
+            "--count=1",
+            "--contains",
+            &head,
+            "refs/remotes/origin",
+        ],
         None,
     )
     .await
     .is_ok_and(|out| !out.is_empty());
     let branch = git(top, &["symbolic-ref", "--short", "-q", "HEAD"], None)
         .await
-        .ok();
-    let folder = top.file_name().map(|n| n.to_string_lossy().into_owned());
+        .ok()
+        .filter(|b| b.chars().count() <= 256);
+    let folder = top
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .filter(|f| f.chars().count() <= 255);
     json!({"remote": remote, "branch": branch, "head": head, "pushed": pushed,
         "public": public(&remote).await, "folder": folder})
 }
@@ -970,9 +970,26 @@ mod tests {
     async fn repo_info_reports_remote_branch_head_pushed_and_cached_public() {
         let dir = tempfile::tempdir().unwrap();
         let top = dir.path();
-        let g = |args: &[&str]| assert!(std::process::Command::new("git").args(args).current_dir(top).status().unwrap().success());
+        let g = |args: &[&str]| {
+            assert!(std::process::Command::new("git")
+                .args(args)
+                .current_dir(top)
+                .status()
+                .unwrap()
+                .success())
+        };
         g(&["init", "-q", "-b", "main"]);
-        g(&["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "--allow-empty", "-m", "one"]);
+        g(&[
+            "-c",
+            "user.name=t",
+            "-c",
+            "user.email=t@t",
+            "commit",
+            "-q",
+            "--allow-empty",
+            "-m",
+            "one",
+        ]);
         g(&["remote", "add", "origin", "https://github.com/o/r.git"]);
         remember_public("github.com/o/r", true); // no network in tests
         let info = repo_info(top).await;
@@ -980,15 +997,54 @@ mod tests {
         assert_eq!(info["branch"], "main");
         assert_eq!(info["pushed"], false);
         assert_eq!(info["public"], true);
-        assert_eq!(info["folder"], top.file_name().unwrap().to_string_lossy().as_ref());
+        assert_eq!(
+            info["folder"],
+            top.file_name().unwrap().to_string_lossy().as_ref()
+        );
         g(&["update-ref", "refs/remotes/origin/main", "HEAD"]);
         assert_eq!(repo_info(top).await["pushed"], true);
     }
 
     #[tokio::test]
+    async fn repo_info_drops_a_branch_over_the_backends_limit() {
+        let dir = tempfile::tempdir().unwrap();
+        let top = dir.path();
+        let g = |args: &[&str]| {
+            assert!(std::process::Command::new("git")
+                .args(args)
+                .current_dir(top)
+                .status()
+                .unwrap()
+                .success())
+        };
+        let long = format!("{}/{}", "x".repeat(200), "y".repeat(100));
+        g(&["init", "-q", "-b", &long]);
+        g(&[
+            "-c",
+            "user.name=t",
+            "-c",
+            "user.email=t@t",
+            "commit",
+            "-q",
+            "--allow-empty",
+            "-m",
+            "one",
+        ]);
+        g(&["remote", "add", "origin", "https://github.com/o/long.git"]);
+        remember_public("github.com/o/long", false);
+        let info = repo_info(top).await;
+        assert_eq!(info["remote"], "github.com/o/long");
+        assert!(info["branch"].is_null());
+    }
+
+    #[tokio::test]
     async fn repo_info_is_null_without_origin() {
         let dir = tempfile::tempdir().unwrap();
-        std::process::Command::new("git").args(["init", "-q"]).current_dir(dir.path()).status().unwrap();
+        std::process::Command::new("git")
+            .args(["init", "-q"])
+            .current_dir(dir.path())
+            .status()
+            .unwrap();
         assert!(repo_info(dir.path()).await.is_null());
     }
 
@@ -999,11 +1055,47 @@ mod tests {
         let cmd = probe_command("github.com/o/r");
         let std = cmd.as_std();
         let env: std::collections::HashMap<_, _> = std.get_envs().collect();
-        assert_eq!(env.get(std::ffi::OsStr::new("GIT_CONFIG_GLOBAL")).copied().flatten(), Some(std::ffi::OsStr::new("/dev/null")));
-        assert_eq!(env.get(std::ffi::OsStr::new("GIT_CONFIG_NOSYSTEM")).copied().flatten(), Some(std::ffi::OsStr::new("1")));
-        assert_eq!(env.get(std::ffi::OsStr::new("GIT_ASKPASS")).copied().flatten(), Some(std::ffi::OsStr::new("/usr/bin/false")));
-        let args: Vec<_> = std.get_args().map(|a| a.to_string_lossy().into_owned()).collect();
-        assert_eq!(args, ["-c", "credential.helper=", "ls-remote", "https://github.com/o/r.git", "HEAD"]);
+        assert_eq!(
+            env.get(std::ffi::OsStr::new("GIT_CONFIG_GLOBAL"))
+                .copied()
+                .flatten(),
+            Some(std::ffi::OsStr::new("/dev/null"))
+        );
+        assert_eq!(
+            env.get(std::ffi::OsStr::new("GIT_CONFIG_NOSYSTEM"))
+                .copied()
+                .flatten(),
+            Some(std::ffi::OsStr::new("1"))
+        );
+        assert_eq!(
+            env.get(std::ffi::OsStr::new("GIT_ASKPASS"))
+                .copied()
+                .flatten(),
+            Some(std::ffi::OsStr::new("/usr/bin/false"))
+        );
+        // Environment that would put config back, or turn TLS checks off, is removed.
+        for key in [
+            "GIT_CONFIG_PARAMETERS",
+            "GIT_CONFIG_COUNT",
+            "GIT_SSL_NO_VERIFY",
+            "GIT_PROXY_COMMAND",
+        ] {
+            assert_eq!(env.get(std::ffi::OsStr::new(key)), Some(&None), "{key}");
+        }
+        let args: Vec<_> = std
+            .get_args()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(
+            args,
+            [
+                "-c",
+                "credential.helper=",
+                "ls-remote",
+                "https://github.com/o/r.git",
+                "HEAD"
+            ]
+        );
     }
 
     #[test]

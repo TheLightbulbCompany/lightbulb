@@ -680,9 +680,15 @@ mod tests {
 
     #[test]
     fn continue_takes_exactly_one_link() {
-        assert_eq!(continue_link(&words(&["continue", "https://x/s#t"])), Some(Ok("https://x/s#t")));
+        assert_eq!(
+            continue_link(&words(&["continue", "https://x/s#t"])),
+            Some(Ok("https://x/s#t"))
+        );
         assert_eq!(continue_link(&words(&["continue"])), Some(Err(())));
-        assert_eq!(continue_link(&words(&["continue", "a", "b"])), Some(Err(())));
+        assert_eq!(
+            continue_link(&words(&["continue", "a", "b"])),
+            Some(Err(()))
+        );
         assert_eq!(continue_link(&words(&["claude", "continue"])), None);
     }
 

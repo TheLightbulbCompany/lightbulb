@@ -214,11 +214,12 @@ One row per copy, found by the hash of its continue code:
   (`local_sessions.py:1721`). The owner's Access section lists these entries (`list_audit`,
   `local_sessions.py:1816`); that is "the sharer sees who took a copy".
 
-Objects: `session-pickup/<owner>/<sid>/<epoch>/copies/<copyId>/` (`transcript.jsonl.gz` parts,
-`sidecars.tar.gz`). Under the pick-up prefix on purpose: it stays out of `<owner>/*`, which the
-workspace's agent runtime role can read (`session_pickup.py:12-14`). No new cleanup code:
-`sweep_once` already deletes every object the manifest does not name once it is older than
-`ABANDONED_UPLOAD_S` (one hour, `session_pickup.py:66, 836-840`), and `retire` deletes the epoch.
+Objects: an outsider's redacted copy lives under `session-copies/<copyId>/` (`transcript.jsonl.gz`
+parts, `sidecars.tar.gz`; `session_pickup.COPIES_PREFIX`). The prefix names no owner or session,
+so a presigned URL leaks neither, and it stays out of `<owner>/*`, which the workspace's agent
+runtime role can read. A member's copy is not redacted and is served from the pick-up snapshot's
+own objects under `session-pickup/<owner>/…`. Cleanup: `sweep_once` deletes `session-copies/`
+objects older than `COPY_TTL_S`, and `retire` deletes the copies its session's `COPY#` rows name.
 
 Routes:
 
@@ -269,12 +270,15 @@ command; the page says "Get Lightbulb for Mac" first (§2.2).
      page accepts only an integer port 1024-65535 and only the host `127.0.0.1`.
   2. Poll redeem every 2 s until ready. Download and verify every part (size + sha256) with the
      desktop's code (`session_pickup.rs:300-356, 836-902`), refusing URLs outside the bucket's
-     `/session-pickup/` path (`allowed_url`).
+     `/session-pickup/` and `/session-copies/` paths (`allowed_url`).
   3. Code: `bundle` (workspace members only) → `import_code` (`session_pickup.rs:433`: fetch,
      `bundle verify`, `git worktree add` under `.claude/worktrees/`) inside a clone of `remote` in
      the current folder. `clone` (public repos only) → if the current folder is a clone of
-     `remote`, `fetch` + `git worktree add <commit>`; else `git clone <remote>` into
-     `./<repo-name>` and check out `commit` on `continue/<slug>`. A failure prints "Couldn't get
+     `remote`, `fetch` (unless the commit is already there) + `git worktree add <commit>`; else
+     `git clone https://<remote>.git` into `./<repo-name>` and check out `commit` on
+     `continue/<slug>`. The clone and fetch are anonymous, like the probe (`anonymous_git`): the
+     sharer's Mac says the repo is public, and the sharer could name one of the receiver's
+     private repositories. `remote` must be `<dns host>/<path>`. A failure prints "Couldn't get
      the code (<reason>). Continuing with the conversation only." `none` → the current folder.
   4. Mod: if `claude plugin list` lacks `lightbulb-sessions@lightbulb`, install it with the same
      two commands as `plugin.rs:35-41` (the app already bundles the mod, so there is one source).

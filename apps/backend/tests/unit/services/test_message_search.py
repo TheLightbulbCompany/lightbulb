@@ -26,8 +26,15 @@ def _response(status, body):
     return httpx.Response(status, content=json.dumps(body).encode())
 
 
+def _rows(monkeypatch, rows):
+    """rows: {(room, seq): canonical row}; patches the canonical re-read."""
+    monkeypatch.setattr(message_search.messaging_repo, "get_messages_by_keys", AsyncMock(return_value=rows))
+
+
 @pytest.fixture(autouse=True)
 def _on(monkeypatch):
+    # Default canonical rows: every hit the tests build matches its indexed text.
+    _rows(monkeypatch, {(r, s): {"text": t} for r in (ROOM_A, ROOM_B) for s, t in ((1, "x"), (4, "x"))})
     monkeypatch.setattr(message_search.settings, "SEARCH_ENDPOINT", "https://c.us-east-1.aoss.amazonaws.com")
     monkeypatch.setattr(message_search, "resolve_owner_id", lambda auth: "org_me")
 
@@ -95,6 +102,31 @@ async def test_a_hit_from_a_room_outside_the_callers_set_is_dropped():
     ):
         result = await message_search.search(_auth(), _req())
     assert [str(h.room_id) for h in result.hits] == [ROOM_A]
+
+
+@pytest.mark.parametrize(
+    "row",
+    [None, {"text": "x", "deletedAt": "t"}, {"text": "old", "editedText": "new"}, {"text": "x", "editedText": "y"}],
+    ids=["missing", "deleted", "edited", "edited-differs"],
+)
+async def test_a_hit_whose_canonical_row_is_gone_or_changed_is_dropped(monkeypatch, row):
+    _rows(monkeypatch, {} if row is None else {(ROOM_A, 1): row})
+    src = {"_source": {"messageId": "m", "roomId": ROOM_A, "messageSeq": 1, "createdAt": "t", "text": "x"}}
+    with (
+        patch.object(message_search.messaging, "searchable_rooms", AsyncMock(return_value={ROOM_A: "org_me"})),
+        patch.object(message_search, "_request", AsyncMock(return_value=_response(200, {"hits": {"hits": [src]}}))),
+    ):
+        assert (await message_search.search(_auth(), _req())).hits == []
+
+
+async def test_a_hit_matching_an_edited_row_is_returned(monkeypatch):
+    _rows(monkeypatch, {(ROOM_A, 1): {"text": "old", "editedText": "x"}})
+    src = {"_source": {"messageId": "m", "roomId": ROOM_A, "messageSeq": 1, "createdAt": "t", "text": "x"}}
+    with (
+        patch.object(message_search.messaging, "searchable_rooms", AsyncMock(return_value={ROOM_A: "org_me"})),
+        patch.object(message_search, "_request", AsyncMock(return_value=_response(200, {"hits": {"hits": [src]}}))),
+    ):
+        assert len((await message_search.search(_auth(), _req())).hits) == 1
 
 
 async def test_a_room_the_caller_cannot_read_is_not_searchable():

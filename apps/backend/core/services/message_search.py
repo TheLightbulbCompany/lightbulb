@@ -19,6 +19,7 @@ from pydantic import Field
 
 from core.auth import AuthContext, resolve_owner_id
 from core.config import settings
+from core.repositories import messaging_repo
 from core.services import messaging
 from core.services.messaging import ApiProblem, ContractModel
 
@@ -150,10 +151,19 @@ async def search(auth: AuthContext, request: MessageSearchRequest) -> MessageSea
     if response.status_code != 200:
         logger.error("message search rejected status=%s", response.status_code)
         raise ApiProblem("INTERNAL_ERROR", "Search failed.")
+    candidates = [h for h in response.json().get("hits", {}).get("hits", []) if h["_source"].get("roomId") in rooms]
+    # The index is eventually consistent; DynamoDB is the truth. A hit survives only
+    # while its row exists, is not deleted, and still carries the text that was indexed.
+    rows = await messaging_repo.get_messages_by_keys(
+        [(h["_source"]["roomId"], h["_source"]["messageSeq"]) for h in candidates]
+    )
     hits = []
-    for hit in response.json().get("hits", {}).get("hits", []):
+    for hit in candidates:
         source = hit["_source"]
-        if source.get("roomId") not in rooms:
+        row = rows.get((source["roomId"], source["messageSeq"]))
+        if row is None or row.get("deletedAt"):
+            continue
+        if (row["editedText"] if "editedText" in row else row.get("text") or "") != source.get("text", ""):
             continue
         snippet = (hit.get("highlight", {}).get("text") or [source.get("text", "")[:160]])[0]
         hits.append(

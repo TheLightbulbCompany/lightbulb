@@ -403,6 +403,14 @@ async def test_messages_use_20_digit_seq_and_page_in_order(table):
         await repo.list_messages(room_id, 0, 101)
 
 
+async def test_get_messages_by_keys_returns_rows_and_omits_missing(table):
+    room_id, _ = await _room()
+    await _post(room_id, text="t0", client_id="m-0")
+    got = await repo.get_messages_by_keys([(room_id, 1), (room_id, 99), (room_id, 1)])
+    assert list(got) == [(room_id, 1)] and got[(room_id, 1)]["text"] == "t0"
+    assert await repo.get_messages_by_keys([]) == {}
+
+
 async def test_list_thread_returns_root_and_replies_before_seq_in_order(table):
     room_id, _ = await _room()
     root = await _post(room_id, text="root", client_id="m-0")

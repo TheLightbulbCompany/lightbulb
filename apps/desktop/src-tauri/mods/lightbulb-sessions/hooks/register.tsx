@@ -1,8 +1,8 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 import type { SessionState } from '../types'
-import { bandLine, type Decision } from './state'
-import { bashTouchesProtected, classify, protectedPath, rowBody, rowLabel } from './rules'
+import { bandRuns, type Decision } from './state'
+import { bashTouchesProtected, classify, colorFor, protectedPath, rowBody, rowLabel, senderColor } from './rules'
 
 export const sharing = atom({ plugin: 'lightbulb-sessions', key: 'state' } as const, null as SessionState | null)
 const problem = atom({ plugin: 'lightbulb-sessions', key: 'error' } as const, null as string | null)
@@ -82,13 +82,15 @@ export const register: Register = on => {
   // Redrawn for the person only: the model still reads the labelled text.
   on('ui.render', { component: 'UserMessage', props: { origin: { kind: 'peer' } } }, async ($, e, next) => {
     if (e.props.isExpanded) return next(e)
-    const label = rowLabel(classify(e.props.text))
+    const sender = classify(e.props.text)
+    const label = rowLabel(sender)
     if (!label) return next(e)
     const body = rowBody(e.props.text)
+    const color = senderColor(sender)
     const { Box, Text } = $.ui.resolve(e)
     return (
-      <Box>
-        <Text bold>{label}</Text>
+      <Box borderStyle="round" borderColor={color}>
+        <Text bold color={color}>{label}</Text>
         <Text>  {body.length > 200 ? body.slice(0, 199) + '…' : body}</Text>
       </Box>
     )
@@ -124,14 +126,14 @@ export const register: Register = on => {
     return (
       <Box flexDirection="column">
         <Box>
-          <Text dimColor>{bandLine(s)} </Text>
+          <Text dimColor>{bandRuns(s).map(r => r.color ? <Text color={r.color}>{r.text}</Text> : r.text)} </Text>
           {s.paused
             ? <Button key="resume" hotkey="p" label="Resume sharing" onPress={act({ decision: 'unpause' })} />
             : <Button key="pause" hotkey="p" label="Pause" onPress={act({ decision: 'pause' })} />}
         </Box>
         {ask && (
           <Box>
-            <Text>{ask.name} asked to join{s.joinRequests.length > 1 ? ` (+${s.joinRequests.length - 1} more)` : ''} </Text>
+            <Text><Text color={colorFor(ask.userId)}>{ask.name}</Text> asked to join{s.joinRequests.length > 1 ? ` (+${s.joinRequests.length - 1} more)` : ''} </Text>
             <Button key="allow" hotkey="a" variant="primary" label="Allow" onPress={act({ decision: 'allow', userId: ask.userId, requestId: ask.requestId })} />
             <Button key="decline" hotkey="d" label="Decline" onPress={act({ decision: 'decline', userId: ask.userId, requestId: ask.requestId })} />
           </Box>

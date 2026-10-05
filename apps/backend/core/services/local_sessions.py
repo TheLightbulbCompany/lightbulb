@@ -201,6 +201,7 @@ class PickupStatus(ContractModel):
     repo: str | None = None
     branch: str | None = None
     expires_at: str | None = None
+    private_repo: bool | None = None
 
     @model_serializer(mode="wrap")
     def wire(self, handler, info):
@@ -208,7 +209,7 @@ class PickupStatus(ContractModel):
             self,
             handler(self),
             info,
-            ("state", "reason", "snapshot_at", "bytes", "has_code", "repo", "branch", "expires_at"),
+            ("state", "reason", "snapshot_at", "bytes", "has_code", "repo", "branch", "expires_at", "private_repo"),
         )
 
 
@@ -729,6 +730,7 @@ def _pickup_public(row: dict) -> dict:
         "hasCode": snapshot.get("hasCode"),
         "repo": snapshot.get("repo"),
         "branch": snapshot.get("branch"),
+        "privateRepo": True if "privateFolder" in snapshot else None,
     }
     stopped = pickup_stopped_at(row)
     if stopped is not None:

@@ -20,7 +20,7 @@ from pydantic import Field
 from core.observability.metrics import put_metric
 from core.observability.session_analytics import capture_session_event
 from core.dynamodb import run_in_thread
-from core.auth import AuthContext, get_current_user, get_human_session, resolve_owner_id
+from core.auth import AuthContext, get_current_user, get_human_session, get_optional_user, resolve_owner_id
 from core.config import settings
 from core.repositories import container_repo, messaging_repo
 from core.repositories.paperclip_repo import PaperclipRepo
@@ -33,6 +33,7 @@ from core.services import (
     local_sessions,
     native_session_tools,
     session_pickup,
+    session_links,
     session_resume,
     session_screen,
 )
@@ -374,6 +375,22 @@ async def get_local_session_link(session_id: str, auth: AuthContext = Depends(ge
 @router.delete("/messaging/sessions/{session_id}/link", status_code=204)
 async def delete_local_session_link(session_id: str, auth: AuthContext = Depends(get_current_user)):
     await local_sessions.delete_link(auth, session_id)
+
+
+# Public: an "anyone" link opens with no sign-in. POST so the token rides in the body. These sit
+# under /public/, which API Gateway throttles on its own bucket (api-stack.ts).
+@router.post("/public/session-links/open", response_model=session_links.LinkPage)
+async def open_session_link(
+    body: session_links.LinkTokenRequest, auth: AuthContext | None = Depends(get_optional_user)
+):
+    return await session_links.open_page(auth, body.token)
+
+
+@router.post("/public/session-links/events", response_model=local_sessions.LocalSessionEventPage)
+async def list_session_link_events(
+    body: session_links.LinkEventsRequest, auth: AuthContext | None = Depends(get_optional_user)
+):
+    return await session_links.list_events(auth, body.token, body.after_seq, body.limit)
 
 
 @router.put("/messaging/sessions/{session_id}/usage-sharing", response_model=local_sessions.LocalSession)

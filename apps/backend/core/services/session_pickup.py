@@ -193,6 +193,20 @@ class CommitTranscript(ContractModel):
     total_bytes: int = Field(ge=0)
 
 
+class RepoInfo(ContractModel):
+    """Where the session's code lives, as the author's Mac sees it (spec §3.3). The Mac is the
+    owner's own device, so a wrong answer only mis-describes the owner's own repository."""
+
+    remote: Annotated[str, Field(min_length=1, max_length=256)]
+    branch: Annotated[str, Field(max_length=256)] | None = None
+    head: GitSha
+    pushed: bool
+    public: bool
+    # The repository's top-level folder name: hidden from outsiders when the repo is private.
+    # Null only for a repository at `/`.
+    folder: Annotated[str, Field(min_length=1, max_length=255)] | None = None
+
+
 class CommitRequest(ContractModel):
     series: Series
     conversation_id: OpaqueId
@@ -207,6 +221,7 @@ class CommitRequest(ContractModel):
     code_skipped: Literal["too-large", "none"] | None = None
     sidecars: ManifestSidecars | None = None
     sidecars_skipped: Literal["none"] | None = None
+    repo: RepoInfo | None = None
 
 
 class UnavailableRequest(ContractModel):
@@ -729,6 +744,7 @@ async def commit(row: dict, enrollment: dict, request: CommitRequest) -> None:
             "cwdRelative": request.cwd_relative,
             "snapshotAt": now,
             "ended": request.ended,
+            "repoInfo": request.repo.model_dump(by_alias=True) if request.repo else None,
         }
         # Objects this commit stops naming (an old series, a replaced or skipped blob) are left for
         # the sweeper, which spares them until URL_SECONDS after this: a ticket signed just before
@@ -742,6 +758,8 @@ async def commit(row: dict, enrollment: dict, request: CommitRequest) -> None:
             snapshot["repo"] = code["remote"]
             if code.get("branch"):
                 snapshot["branch"] = code["branch"]
+        if request.repo and not request.repo.public:
+            snapshot["privateFolder"] = request.repo.folder or ""  # read by session_links without a manifest read
         updated = {**current, "pickupSnapshot": snapshot, "revision": str(uuid.uuid4())}
         extra = [{"Put": {"TableName": store._table().name, "Item": manifest}}]
         if request.ended:

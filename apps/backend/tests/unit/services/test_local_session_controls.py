@@ -10,7 +10,7 @@ import pytest
 
 from core.auth import AuthContext
 from core.repositories import local_sessions_repo as repo
-from core.services import activity, local_sessions as service
+from core.services import activity, local_sessions as service, session_links
 from core.services.local_session_relay import _NO_PROMPT, pending_approval
 from core.services.messaging import ApiProblem
 from tests.unit.services import test_local_session_relay as relay_tests, test_local_sessions as registry_tests
@@ -210,6 +210,10 @@ async def test_private_native_send_is_visible_and_approvable_only_to_its_owner(t
     assert public["pendingApproval"]["exact"] is False
     assert "privateSendApproval" not in public
     assert "Private\nbody" not in json.dumps((await service.list_events(BOB, None, sid)).model_dump(by_alias=True))
+    token = (await service.put_link(ALICE, sid, "workspace")).url.split("#", 1)[1]
+    assert "Private\nbody" not in json.dumps(
+        (await session_links.list_events(ALICE, token, 0, 100)).model_dump(by_alias=True)
+    )
     await service.set_team_control(ALICE, sid, True)
     with pytest.raises(ApiProblem, match="unavailable"):
         await service.get_private_send_approval(BOB, sid)
@@ -707,11 +711,15 @@ async def test_sharing_and_join_events_land_on_the_person_who_acted(transport):
     sid = await start(transport)
     await _events(transport, sid, 1)
     with patch("core.services.local_sessions.capture_product_event", create=True) as capture:
-        await service.put_link(ALICE, sid, "anyone")
+        link = await service.put_link(ALICE, sid, "anyone")
+        token = link.url.split("#", 1)[1]
+        await session_links.open_page(BOB, token)
+        await session_links.list_events(BOB, token, 0, 50)  # paging is not another open
         await ask(BOB, sid)
         await decide(ALICE, sid, BOB.user_id, "allow", pushes=[])
     assert [(c.kwargs["event"], c.kwargs["distinct_id"]) for c in capture.call_args_list] == [
         ("share_link_created", ALICE.user_id),
+        ("share_link_opened", BOB.user_id),
         ("session_join_requested", BOB.user_id),
         ("session_join_decided", ALICE.user_id),
     ]

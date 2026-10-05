@@ -336,8 +336,9 @@ export function refitBrowserSplit(): void {
  * Keep Tasks where the dock's width allows. Too narrow for Tasks beside the conversation:
  * fold it into the conversation's group as a tab. Wide again, and the stored placement
  * still says split: put it back beside (the fold is persisted with the layout, so nothing
- * else would). Whichever of the two was in front stays in front, and the stored placement
- * is never written here: a person's own Expand keeps Tasks a tab at any width.
+ * else would). Whatever panel was active stays active (it may be a third tab, such as
+ * Browser or Mail), and the stored placement is never written here: a person's own Expand
+ * keeps Tasks a tab at any width.
  */
 function refitTasksSplit(): void {
   const tasks = _api?.getPanel(TASKS_PANEL_ID);
@@ -346,14 +347,14 @@ function refitTasksSplit(): void {
   const folded = tasks.group === messages.group;
   const fits = canSplitBesideMessages();
   if (folded ? !(fits && readTasksPlacement() === "split") : fits) return;
-  const tasksInFront = _api.activePanel?.id === TASKS_PANEL_ID;
+  const active = _api.activePanel;
   _shellOpDepth += 1;
   try {
     tasks.api.moveTo({ group: messages.group, position: folded ? "right" : "center" });
   } finally {
     _shellOpDepth -= 1;
   }
-  (tasksInFront ? tasks : messages).api.setActive();
+  active?.api.setActive();
   recomputeSnapshot();
 }
 

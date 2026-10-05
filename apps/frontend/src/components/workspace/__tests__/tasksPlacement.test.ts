@@ -154,6 +154,24 @@ describe("Tasks placement", () => {
     expect(tasks.api.moveTo).toHaveBeenCalledTimes(2);
   });
 
+  it("keeps a third tab in front through the fold and the return", () => {
+    const { api } = makeApi();
+    attachDockviewApi(api, () => "a1");
+    openPanel("teams-issues");
+    // Mail is a tab in the conversation's group, and it is what the person is looking at.
+    api.addPanel({ id: "mail", component: "mail" });
+    const mail = api.getPanel("mail") as unknown as FakePanel;
+    const messages = api.getPanel(MESSAGES_PANEL_ID) as unknown as FakePanel;
+    for (const width of [390, 1400]) {
+      mail.api.setActive.mockClear();
+      (api as unknown as { width: number }).width = width;
+      refitSplits();
+      expect(mail.api.setActive).toHaveBeenCalledTimes(1);
+      expect(messages.api.setActive).not.toHaveBeenCalled();
+      expect((api as unknown as { activePanel: FakePanel }).activePanel).toBe(mail);
+    }
+  });
+
   it("leaves Tasks a tab on a wide dock when the person chose Expand", () => {
     const { api, main } = makeApi();
     attachDockviewApi(api, () => "a1");

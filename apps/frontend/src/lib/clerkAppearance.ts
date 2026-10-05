@@ -61,18 +61,19 @@ export const clerkLocalization: Localization = {
 export const clerkAppearance: Appearance = {
   // Clerk resolves `var()` in variables, so the card follows the neutral
   // ladder (and its dark variant) that app/globals.css stamps on <html>.
+  // Unstamped (marketing) pages fall back to the brand tokens they always had.
   variables: {
-    colorPrimary: "var(--fg)",
+    colorPrimary: "var(--fg, var(--midnight))",
     // Clerk's default is white, which vanishes on the light primary of the dark ladder.
-    colorTextOnPrimaryBackground: "var(--plane-pane)",
-    colorBackground: "var(--plane-pane)",
-    colorText: "var(--fg)",
-    colorTextSecondary: "var(--fg-mute)",
-    colorInputBackground: "var(--plane-sidebar)",
-    colorInputText: "var(--fg)",
-    colorDanger: "var(--alert)",
-    colorSuccess: "var(--live)",
-    colorWarning: "var(--alert)",
+    colorTextOnPrimaryBackground: "var(--plane-pane, var(--cream))",
+    colorBackground: "var(--plane-pane, var(--cream))",
+    colorText: "var(--fg, var(--midnight))",
+    colorTextSecondary: "var(--fg-mute, var(--midnight-muted))",
+    colorInputBackground: "var(--plane-sidebar, var(--cream-deep))",
+    colorInputText: "var(--fg, var(--midnight))",
+    colorDanger: "var(--alert, var(--err))",
+    colorSuccess: "var(--live, var(--ok))",
+    colorWarning: "var(--alert, var(--err))",
     borderRadius: "8px", // --radius
     fontFamily: "var(--font-sans), 'Source Sans 3', system-ui, sans-serif",
     fontFamilyButtons: "var(--font-sans), 'Source Sans 3', system-ui, sans-serif",

@@ -112,17 +112,6 @@ describe("workspace onboarding", () => {
     await waitFor(() => expect(screen.getByText("That address is taken. Try another.")).toBeInTheDocument());
     expect(clerk.createOrganization).not.toHaveBeenCalled();
   });
-  it("sits on the brand ground even after a client navigation from the themed chat", () => {
-    const root = document.documentElement;
-    root.setAttribute("data-chat-theme", "dark");
-    const { unmount } = render(<OnboardingPage />);
-    expect(root.hasAttribute("data-chat-theme")).toBe(false);
-    // The way back into /chat is a client navigation: its inline theme
-    // bootstrap won't run again, so onboarding must hand the theme back.
-    unmount();
-    expect(root.getAttribute("data-chat-theme")).toBe("dark");
-    root.removeAttribute("data-chat-theme");
-  });
   it("offers Clerk selection instead of activating an arbitrary membership", () => {
     clerk.memberships = [{ organization: { id: "org_a" } }, { organization: { id: "org_b" } }];
     render(<OnboardingPage />);

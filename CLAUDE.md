@@ -864,7 +864,7 @@ pairs. The phone mirrors the ladder in `apps/mobile/src/config/theme.ts`
 this paragraph said "cream" for two weeks after it stopped being true. No
 colour literal anywhere else except the six deliberate exemptions the scanner
 skips — `landing.css`, `landing-v2.css`, and `components/landing/**` (marketing,
-its own palette), `lib/clerkAppearance.ts` (Clerk takes hex, not `var()`),
+its own palette), `lib/clerkAppearance.ts` (`var()` tokens with brand fallbacks, no hex),
 `*Brand.ts` vendor marks, and tests (`__tests__/`, `*.test.*`, which hold
 literals as fixtures) —
 `src/__tests__/brandTokens.test.ts` enforces it,

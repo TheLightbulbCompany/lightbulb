@@ -1,11 +1,22 @@
-import { THEME_BOOTSTRAP_SCRIPT } from "@/hooks/useChatTheme";
+"use client";
+
+import { useEffect } from "react";
+
+import { THEME_ATTR, THEME_BOOTSTRAP_SCRIPT, resolveTheme } from "@/hooks/useChatTheme";
 
 /**
- * Stamps data-chat-theme on <html> before first paint, so a product page
- * outside /chat gets the same neutral palette (and light/dark preference) as
- * /chat. Inline and synchronous on purpose — see app/chat/layout.tsx. Mount it
- * from the layout of each product route; marketing routes must not.
+ * Owns data-chat-theme on <html> for a product route (/chat and every page
+ * that should look like it). The inline script stamps before first paint on a
+ * full load; React does not execute it on a client navigation, so the effect
+ * stamps then too. On unmount it removes the attribute so a marketing page
+ * reached next is not left neutral. Two stamped routes in a row cannot flash:
+ * the old tree's cleanup runs before the new tree's effect in one commit.
  */
 export function ThemeStamp() {
+  useEffect(() => {
+    const root = document.documentElement;
+    if (!root.hasAttribute(THEME_ATTR)) root.setAttribute(THEME_ATTR, resolveTheme());
+    return () => root.removeAttribute(THEME_ATTR);
+  }, []);
   return <script dangerouslySetInnerHTML={{ __html: THEME_BOOTSTRAP_SCRIPT }} />;
 }

@@ -10,9 +10,9 @@ describe("clerkAppearance", () => {
   const variables = clerkAppearance.variables ?? {};
 
   it("paints Clerk's form on the neutral ladder tokens", () => {
-    expect(variables.colorPrimary).toBe("var(--fg)");
-    expect(variables.colorBackground).toBe("var(--plane-pane)");
-    expect(variables.colorDanger).toBe("var(--alert)");
+    expect(variables.colorPrimary).toBe("var(--fg, var(--midnight))");
+    expect(variables.colorBackground).toBe("var(--plane-pane, var(--cream))");
+    expect(variables.colorDanger).toBe("var(--alert, var(--err))");
   });
 
   it("uses the product face", () => {

@@ -48,6 +48,17 @@ d.setAttribute(${JSON.stringify(THEME_ATTR)}, t);
 document.documentElement.setAttribute(${JSON.stringify(THEME_ATTR)},"light");
 }})();`;
 
+/** Same choice as THEME_BOOTSTRAP_SCRIPT (stored wins, else OS), for client code. */
+export function resolveTheme(): ChatTheme {
+  try {
+    const t = localStorage.getItem(THEME_KEY);
+    if (t === "dark" || t === "light") return t;
+    return window.matchMedia?.("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+  } catch {
+    return DEFAULT_THEME;
+  }
+}
+
 // One shared listener set: every hook consumer re-renders off the same write,
 // so the rail toggle and the mobile footer toggle can never disagree.
 const listeners = new Set<() => void>();

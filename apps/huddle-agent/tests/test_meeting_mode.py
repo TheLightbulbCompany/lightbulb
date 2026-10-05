@@ -1396,3 +1396,59 @@ async def test_a_follow_up_accepted_while_the_run_was_still_silent_replaces_its_
     await h.clear_presence()
     assert resays(lives[0]) == []
     assert not [a for a in backend.late_answers if "Three pull requests" in a[3]]
+
+
+async def test_cut_narration_before_a_tool_does_not_make_the_answer_after_it_said_again():
+    h, backend, lives, clock, row = await forge_streams_to_priya()
+    streams(h, row.run_id, "Let me check GitHub. ")
+    h.on_agent_state("forge", "speaking")
+    h.on_agent_said("forge", "Let me", interrupted=True)  # the narration is cut
+    h.on_agent_state("forge", "listening")
+    run = h._runs.get(row.run_id)
+    run.text = run.spoken = ""
+    run.box += 1
+    text = "Three pull requests are open."
+    streams(h, row.run_id, text)
+    h.on_agent_state("forge", "speaking")
+    h.on_agent_said("forge", text)  # the answer plays whole
+    h.on_agent_state("forge", "listening")
+    ends(h, row.run_id, 1)
+    await quiet_tick(h, clock, h_mod.CUT_HANDLED_S + h_mod.MEET_QUIET_S)
+    await quiet_tick(h, clock, h_mod.CUT_WAIT_S)
+    assert resays(lives[0]) == [] and backend.late_answers == []
+
+
+async def test_a_later_reply_cut_off_is_not_the_answer_heard_before_it():
+    h, backend, lives, clock, row = await forge_streams_to_priya()
+    text = "Three pull requests are open."
+    streams(h, row.run_id, text)
+    h.on_agent_state("forge", "speaking")
+    h.on_agent_said("forge", text)
+    h.on_agent_state("forge", "listening")
+    ends(h, row.run_id, 1)
+    h.on_agent_state("forge", "speaking")
+    h.on_agent_said("forge", "You're welcome, anything", interrupted=True)  # its reply to "thanks" is cut
+    h.on_agent_state("forge", "listening")
+    await quiet_tick(h, clock, h_mod.CUT_HANDLED_S + h_mod.MEET_QUIET_S)
+    await quiet_tick(h, clock, h_mod.CUT_WAIT_S)
+    assert resays(lives[0]) == [] and backend.late_answers == []
+
+
+async def test_a_follow_up_to_another_request_does_not_replace_the_cut_answer():
+    h, backend, lives, clock, text = await forge_answers_priya()
+    h.on_agent_state("forge", "speaking")
+    h.on_agent_said("forge", "Three pull requests", interrupted=True)
+    h.on_agent_state("forge", "listening")
+    clock.t += 1
+    backend.route_extra = ops([("forge", "what shipped last week", "floor")])
+    await says(h, P1, "wait, what shipped last week")
+    other = h._requests.items[-1]
+    clock.t += 1
+    backend.route_extra = ops([("forge", "and the week before", "follow")])  # follows the shipped question
+    await says(h, P1, "and the week before")
+    answer(h, other.run_id, "forge", "The importer shipped.")
+    h.on_agent_said("forge", "The importer shipped.")
+    await quiet_tick(h, clock, h_mod.CUT_HANDLED_S + h_mod.MEET_QUIET_S)
+    await quiet_tick(h, clock, h_mod.CUT_WAIT_S)
+    await h.clear_presence()
+    assert text in [a[3] for a in backend.late_answers], "not superseded: the cut answer is kept"

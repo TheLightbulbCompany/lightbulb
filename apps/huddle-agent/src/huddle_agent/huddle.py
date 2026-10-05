@@ -347,6 +347,7 @@ class _Voice:
     # box, and its words are not the answer's); `began`: when it began to say the run.
     answer: tuple | None = None
     cut: bool = False  # a message of it was interrupted: stays, whatever plays to its end afterwards
+    pending: bool = False  # text handed to it that it has not finished saying (since it last went quiet)
     began: float = 0.0
     box: tuple | None = None
     unheard: bool = False
@@ -1796,6 +1797,10 @@ class Huddle:
             was_speaking = v.agent_state == "speaking"
             if was_speaking and state != "speaking":
                 v.followed_at = self._clock()  # its last word: a meeting follow-up window starts here
+                v.pending = False
+                if v.answer and not (v.cut or v.unheard):
+                    # all it was handed, said with nothing cut: later replies (a "thanks") are not this answer's
+                    v.answer = None
             v.agent_state = state
             v.last_activity = self._clock()
             if state == "speaking" and v.heard_at is not None:
@@ -2697,7 +2702,10 @@ class Huddle:
                 v.unheard = v.cut = v.replied = v.resaid = False
                 v.began = self._clock()
             if v.box != (run.run_id, run.box):
+                # narration before a tool is its own box: its cut, its reply, its words are not the answer's
                 v.box, v.spoke = (run.run_id, run.box), 0
+                v.unheard = v.cut = v.replied = False
+            v.pending = True  # text handed over and not yet said: cleared when the voice next goes quiet
             v.saying = run.run_id
             self._live_call(
                 v, "append_commentary", text, delegation_id=run.delegation_id
@@ -2715,8 +2723,9 @@ class Huddle:
                     "That request finished without a spoken result.",
                     delegation_id=run.delegation_id,
                 )
-            elif answer and not mixed_meet(v.speaker):
-                # `spoke` is kept: sentences said before this end frame were words of the answer
+            elif answer and not mixed_meet(v.speaker) and (v.pending or v.cut or v.unheard or not v.spoke):
+                # not known heard yet. `spoke` is kept: sentences said before this end frame were its words.
+                # Every part said and the voice quiet with nothing cut: heard, nothing is kept.
                 v.answer = (run.run_id, run.request, answer, self._clock(), run.speaker)
             self._requests.delivered({run.run_id})
         elif v := self._floor_voice(run.agent_id):
@@ -3082,11 +3091,18 @@ class Huddle:
             return False
         # after the answer's own request was made (a rowless run: since its voice began to say it): the
         # follow-up may come while that run is still working, or cut a streamed answer before its end frame
-        own = [r.created_at for r in self._requests.by_run(v.answer[0])]
-        since = min(own) if own else v.began
+        own = self._requests.by_run(v.answer[0])
+        since = min(r.created_at for r in own) if own else v.began
+        asker = own[0].asker if own else v.answer[4]
+        mine = [r for r in self._requests.items if r.agent == v.agent_id and r.run_id != v.answer[0]]
+        # ponytail: /route names no amended request id, so a follow-up counts when its asker is this answer's and
+        # no other request of the agent came between; carry the id through `ops` if this misfires
         return any(
-            r.agent == v.agent_id and r.by == "follow" and r.run_id != v.answer[0] and r.created_at >= since
-            for r in self._requests.items
+            r.by == "follow"
+            and r.created_at >= since
+            and r.asker == asker
+            and not any(o.by != "follow" and since <= o.created_at < r.created_at for o in mine)
+            for r in mine
         )
 
     def _settle_answer(self, v: _Voice) -> None:

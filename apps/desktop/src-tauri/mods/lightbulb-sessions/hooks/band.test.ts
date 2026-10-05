@@ -267,7 +267,7 @@ test('a pick-up request names itself and Allow posts its request id', async ($, 
   await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
   await clock.settle()
   const ui = await $.ui.mount({ ...BAND, surface: SURFACES[0] })
-  expect(await ui.find({ type: 'Text', text: 'Mira Shah wants to pick this up · shares the conversation and uncommitted changes' })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: 'Mira Shah wants to pick this up · shares the whole conversation and uncommitted changes with the workspace' })).toBeDefined()
   await ui.press({ key: 'allow' })
   const post = calls.filter(c => c.method === 'POST')
   expect(post[post.length - 1].body).toEqual({ decision: 'allow', userId: 'u1', requestId: 'r9' })

@@ -295,12 +295,12 @@ Anything that can change (email, pull requests, deploys, payments, dates, metric
 Then pick whatever fits the request:
 - Answer: after checking, reply in two or three short spoken sentences, starting with what it is about.
 - Ask: if you cannot tell what is wanted, ask one short clarifying question instead of guessing.
-- Hand it off: if it is real work (research, several lookups, writing or building something) that cannot fit in this turn, say so in one sentence and make sure it gets done by creating a Paperclip task for yourself or for the teammate who owns it:
+- Hand it off: if it is work that should go on after the call (writing or building something, a job that runs for a long time), say so in one sentence and make sure it gets done by creating a Paperclip task for yourself or for the teammate who owns it:
   printf '%s' "<what to do>" | /opt/hermes-skills/paperclip/scripts/paperclip-api.sh create "$PAPERCLIP_COMPANY_ID" --title "<short title>" --assignee "<your or the owner's agent id; yours is $PAPERCLIP_AGENT_ID>" --status todo
   Only promise to follow up if you actually created that task.
 - Cannot: if you lack the access or the tool, say which one, in one sentence.
 Your reply is spoken: no markdown, no lists, no code, no links, no ids. Never claim an action succeeded before it did.
-This turn has a hard limit of a few model steps; when it runs out, say what you found and what is still unchecked.]"""
+Take as many steps as the request needs. Everything you write is spoken as you go, so while you work, before each lookup, say one short sentence with what you found so far or what you are checking next; give real content, never filler like "still checking".]"""
 
 
 # A meeting's unsaid answers ride on its META item (400 KB), for this occurrence and the newest

@@ -30,7 +30,8 @@ SEARCH_INDEX_BATCH_QUEUE_URL = os.environ.get("SEARCH_INDEX_BATCH_QUEUE_URL", ""
 SEARCH_ENDPOINT = os.environ.get("SEARCH_ENDPOINT", "").rstrip("/")
 REGION = os.environ.get("AWS_REGION", "us-east-1")
 MAX_ROUNDS = 5
-DRAIN_MIN_REMAINING_MS = 60_000
+# One attempt can make three sequential OpenSearch calls (40 s timeout each) plus DynamoDB reads.
+DRAIN_MIN_REMAINING_MS = 130_000
 
 MAPPING = {
     "mappings": {
@@ -161,6 +162,21 @@ def process(job: dict[str, Any]) -> None:
     raise RuntimeError("row kept changing; retrying the job")
 
 
+def _release(messages: list[dict[str, Any]]) -> None:
+    entries = [{"Id": m["MessageId"], "ReceiptHandle": m["ReceiptHandle"], "VisibilityTimeout": 0} for m in messages]
+    failed = 0
+    try:
+        for i in range(0, len(entries), 10):
+            response = _sqs().change_message_visibility_batch(
+                QueueUrl=SEARCH_INDEX_BATCH_QUEUE_URL, Entries=entries[i : i + 10]
+            )
+            failed += len(response.get("Failed", []))
+    except Exception as exc:  # noqa: BLE001 - they reappear after the visibility timeout
+        logger.warning("search index drain release error_type=%s", type(exc).__name__)
+    if failed:
+        logger.warning("search index drain release failed count=%d", failed)
+
+
 def drain(context: Any) -> dict[str, int]:
     """Index every queued new-message job (the batch queue has no event source;
     a schedule invokes this). Failed jobs stay queued and retry after visibility."""
@@ -174,9 +190,10 @@ def drain(context: Any) -> dict[str, int]:
         if not messages:
             break
         done = []
-        for message in messages:
+        for position, message in enumerate(messages):
             if context.get_remaining_time_in_millis() < DRAIN_MIN_REMAINING_MS:
-                break  # the rest stay queued for the next drain
+                _release(messages[position:])  # untouched: visible at once, no receive counted against them
+                break
             try:
                 process(json.loads(message["Body"]))
                 done.append({"Id": message["MessageId"], "ReceiptHandle": message["ReceiptHandle"]})

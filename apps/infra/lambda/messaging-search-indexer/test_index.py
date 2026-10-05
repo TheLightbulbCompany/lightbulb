@@ -178,6 +178,19 @@ class DrainTests(unittest.TestCase):
         self.assertEqual(process.call_count, 1)
         self.assertEqual(self.deleted(), ["m0"])
         index._sqs_client.receive_message.assert_called_once()
+        release = index._sqs_client.change_message_visibility_batch.call_args.kwargs
+        self.assertEqual(release["QueueUrl"], BATCH_URL)
+        self.assertEqual([(e["Id"], e["ReceiptHandle"], e["VisibilityTimeout"]) for e in release["Entries"]],
+                         [("m1", "r1", 0), ("m2", "r2", 0)])
+
+    @patch("index.process")
+    def test_failed_release_is_logged_by_count_only(self, process):
+        index._sqs_client.receive_message.return_value = {"Messages": [sqs_msg(i) for i in range(3)]}
+        index._sqs_client.change_message_visibility_batch.return_value = {"Failed": [{"Id": "m1"}]}
+        with self.assertLogs(level="WARNING") as logs:
+            index.drain(FakeContext(300_000, 300_000, 59_999))
+        self.assertIn("count=1", logs.output[0])
+        self.assertNotIn("m1", logs.output[0])
 
     def test_empty_batch_url_receives_nothing(self):
         index.SEARCH_INDEX_BATCH_QUEUE_URL = ""

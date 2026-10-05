@@ -9,7 +9,7 @@ import { useAgents } from "@/hooks/useAgents";
 import { useRosterEntries } from "@/components/agents/useRosterEntries";
 import { useTeamsApi } from "@/hooks/useTeamsApi";
 import type { CompanyAgent, CompanyMember } from "@/components/teams/shared/types";
-import { activateMessagesPanel, openPanel } from "@/components/workspace/workspaceController";
+import { activateMessagesPanel, getWorkspaceSnapshot, openPanel } from "@/components/workspace/workspaceController";
 import { MessageNotifications } from "@/components/notifications/MessageNotifications";
 import { UnreadTitleBadge } from "@/components/notifications/UnreadTitleBadge";
 import { hasBlockingShortcutDialog } from "@/components/teams/shared/lib/keyboardShortcuts";
@@ -51,6 +51,16 @@ export interface MessagingWorkspaceValue {
 }
 
 /** Nothing but #general and the vendor shared room: a new workspace, whose home is #general. */
+// A pick is "current" while neither the URL nor the focused dock tab moved:
+// tab focus is URL-silent, so href alone misses a click on an open tab.
+export interface PickToken { href: string; activePanelId: string | null | undefined }
+export const pickToken = (): PickToken => ({
+  href: window.location.href,
+  activePanelId: getWorkspaceSnapshot()?.activePanelId,
+});
+export const pickTokenUnchanged = (a: PickToken, b: PickToken) =>
+  a.href === b.href && a.activePanelId === b.activePanelId;
+
 export function isFreshWorkspace(rooms: readonly RoomSummary[]): boolean {
   return rooms.every((room) => room.isDefault || room.shared);
 }
@@ -260,8 +270,8 @@ export function MessagingWorkspaceProvider({
   // An async pick that finishes after the person navigated elsewhere (another
   // panel) must not bump: ChatHistorySync would push the DM URL over theirs.
   // Read-only on the URL.
-  const bumpPickIfCurrent = useCallback((startHref: string) => {
-    if (window.location.href === startHref) bumpPick();
+  const bumpPickIfCurrent = useCallback((start: PickToken) => {
+    if (pickTokenUnchanged(start, pickToken())) bumpPick();
   }, [bumpPick]);
   const markExplicitScope = useCallback(() => { explicitChoiceScope.current = scope; }, [scope]);
   const markExplicitChoice = useCallback(() => {
@@ -600,9 +610,9 @@ export function MessagingWorkspaceProvider({
     setCreationError(undefined);
     try {
       markExplicitScope();
-      const startHref = window.location.href;
+      const startToken = pickToken();
       await rooms.createRoom({ clientRoomId: crypto.randomUUID(), ...creation });
-      bumpPickIfCurrent(startHref);
+      bumpPickIfCurrent(startToken);
       return true;
     } catch (error) {
       setCreationError(error instanceof Error ? error.message : "Conversation could not be created.");
@@ -620,8 +630,8 @@ export function MessagingWorkspaceProvider({
     setCreationError(undefined);
     try {
       markExplicitScope();
-      const startHref = window.location.href;
-      if (await rooms.selectDm(participant)) bumpPickIfCurrent(startHref);
+      const startToken = pickToken();
+      if (await rooms.selectDm(participant)) bumpPickIfCurrent(startToken);
     } catch (error) {
       setCreationError(error instanceof Error ? error.message : "Conversation could not be opened.");
     } finally {
@@ -777,16 +787,16 @@ export function MessagingWorkspaceProvider({
   };
   const selectMessageParticipant = useCallback(async (participant: RoomParticipant) => {
     markExplicitScope();
-    const startHref = window.location.href;
-    if (await selectDm(participant)) bumpPickIfCurrent(startHref);
+    const startToken = pickToken();
+    if (await selectDm(participant)) bumpPickIfCurrent(startToken);
   }, [markExplicitScope, bumpPickIfCurrent, selectDm]);
   const { selectAgentDm: hookSelectAgentDm } = rooms;
   const selectAgentDm = useCallback((agentId: string, explicit = true) => {
     if (!explicit) return hookSelectAgentDm(agentId);
     markExplicitScope();
-    const startHref = window.location.href;
+    const startToken = pickToken();
     return hookSelectAgentDm(agentId).then((roomId) => {
-      if (roomId) bumpPickIfCurrent(startHref);
+      if (roomId) bumpPickIfCurrent(startToken);
       return roomId;
     });
   }, [markExplicitScope, bumpPickIfCurrent, hookSelectAgentDm]);

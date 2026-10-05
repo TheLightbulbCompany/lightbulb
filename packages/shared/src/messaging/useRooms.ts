@@ -10,7 +10,7 @@ import useSWR, { useSWRConfig } from "swr";
 import { ApiError } from "../api/error";
 import type { LiveEvent } from "../live/types";
 import type { MessagingClient, RoomAttachmentInput } from "./client";
-import { applyRunFrame, lastSequence, mergeCanonicalMessages, type LiveRoomRun } from "./timeline";
+import { applyRunFrame, declinedRun, lastSequence, mergeCanonicalMessages, shownRunText, type LiveRoomRun } from "./timeline";
 import type {
   ActiveRoomRun,
   CanonicalRoomMessage,
@@ -1304,11 +1304,12 @@ export function useRooms(platform: RoomsPlatform, options: UseRoomsOptions = {})
     const persisted = messages.some(message => !message.progress && (message.runId === run.runId ||
       (run.text.trim() && message.author.kind === "agent" && message.author.id === run.agentId && message.text.trim() === run.text.trim())));
     if (persisted && run.state !== "running") return [];
+    if (declinedRun(run)) return [];
     // Keep activity/controls after an interim reply without painting that reply twice.
     const trigger = run.triggerMessageId ? messagesById.get(run.triggerMessageId) : undefined;
     // Never anchored above its own trigger (a first frame can beat the trigger's live event).
     const anchored = trigger && (run.afterSeq ?? 0) < trigger.messageSeq ? { ...run, afterSeq: trigger.messageSeq } : run;
-    const visible = persisted ? { ...anchored, text: "" } : anchored;
+    const visible = persisted ? { ...anchored, text: "" } : { ...anchored, text: shownRunText(anchored.text) };
     // Recover thread placement from history already loaded, without another HTTP/DB read.
     if (run.threadRootMessageId !== undefined) return [visible];
     if (!run.triggerMessageId || activeRoom?.kind === "dm") return [{ ...visible, threadRootMessageId: null }];

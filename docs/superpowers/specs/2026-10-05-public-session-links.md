@@ -19,8 +19,8 @@ and Ask to pick up (`2026-10-05-ask-to-pick-up.md`).
 3. **Watching needs no sign-in.** The band shows the watcher count; signed-in watchers are shown
    by name. Choosing "Anyone" shows one warning line: a live screen can't be redacted.
 4. **Continue requires sign-in** and gives the person a free workspace through the existing
-   sign-up and provisioning path. Then `npx lightbulb continue <link>` writes the conversation
-   into their Claude Code and opens `claude --resume` on it: their machine, their Claude, their
+   sign-up and provisioning path. Then `lightbulb continue '<link>'` (the desktop app's own CLI;
+   Mac only) writes the conversation into their Claude Code and opens `claude --resume` on it: their machine, their Claude, their
    plan. Nothing runs on our agents; the original is untouched. Their terminal shows "Continued
    from <name>'s session · Share yours". The copy is made when they press Continue. Secrets are
    redacted server-side on every copy. The sharer sees who took a copy.
@@ -29,10 +29,11 @@ and Ask to pick up (`2026-10-05-ask-to-pick-up.md`).
    session**: no membership, no access to anything else, revoked when the owner removes them or
    the session ends. People only.
 6. **Code visibility** is shown on the page and Continue acts on it: public repo (name, branch,
-   commit; code fetched); private repo ("Private repository", no name; Continue clones with the
-   receiver's own git credentials, else conversation only, and says so); not pushed or no repo
-   ("Code not shared", conversation only). Inside the sharer's workspace, Continue keeps Pick
-   up's behaviour (uncommitted work included).
+   commit; code cloned); private repo ("Code is in a private repository"; conversation only);
+   not pushed or no repo ("Code not shared", conversation only). **No remote URL, repo name or
+   branch of a private repo ever leaves the sharer's Mac towards an outside receiver.** Inside the
+   sharer's workspace, Continue keeps Pick up's behaviour (code bundle and uncommitted work
+   included).
 7. **Build order:** Continue, then public Watch, then guest Steer.
 8. Deferred: see §9.
 
@@ -58,11 +59,13 @@ and Ask to pick up (`2026-10-05-ask-to-pick-up.md`).
    **Ended:** the transcript, redacted for anyone outside the workspace.
 3. **Continue in my Claude Code** (Claude sessions only): if signed out, Clerk sign-up, then the
    existing onboarding creates their workspace (provisioning starts as for any new workspace),
-   then back to the page. The page shows `npx lightbulb continue '<link>'` with a copy button.
+   then back to the page. A receiver without the app first sees "Get Lightbulb for Mac"
+   (`/api/download/desktop`, `apps/frontend/src/app/api/download/desktop/route.ts`); the page then
+   shows `lightbulb continue '<link>'` with a copy button.
 4. They run it in their own terminal. The CLI opens the browser on a one-click confirm ("Continue
    <title> in Claude Code on this computer?"), which is the moment the copy is made. The CLI
    downloads the redacted copy, gets the code (§3.3), installs the Lightbulb mod if absent, and
-   execs `claude --resume … --fork-session`. The band reads "Continued from Prasiddha's session ·
+   runs `claude --resume … --fork-session`. The band reads "Continued from Prasiddha's session ·
    Share yours".
 
 A workspace member opening the link gets today's in-app paths (watch, type if allowed, Pick up)
@@ -151,10 +154,11 @@ What the page and the copy show, for someone **outside** the workspace:
 | `repoInfo` | Page | Copy's `code` |
 |---|---|---|
 | `public && pushed` | `github.com/o/r · main · a1b2c3d` | `{mode: "clone", remote, commit: head}` |
-| `!public && pushed` | "Private repository" | `{mode: "clone", remote, commit: head}` |
+| `!public && pushed` | "Code is in a private repository" | `{mode: "none"}`; no remote, name or branch in the ticket |
 | not pushed, null, or older Mac | "Code not shared" | `{mode: "none"}` |
 
-Inside the workspace: the page shows today's repo line (`LocalSessionPanel.tsx:137-138`) and the
+The private row carries nothing from `repoInfo` but the flag. Inside the workspace: the page
+shows today's repo line (`LocalSessionPanel.tsx:137-138`) and the
 copy's code is `{mode: "bundle"}` with the existing bundle URL plus `remote` (Pick up's
 behaviour, uncommitted work included).
 
@@ -209,17 +213,23 @@ Routes:
   verifier is the credential: `sha256(verifier)` must equal the stored `challenge`, so a code
   left in browser history is useless) → `{state: "preparing"}` or a **copy ticket**:
   `{title, from: <owner first name>, transcript: [Download], sidecars, cwdRelative,
-  claudeVersion, code}` with `code` per §3.3. Not a `PickupTicket` (`session_pickup.py:163`):
+  claudeVersion, code}` with `code` per §3.3 (a private repo's is `{mode: "none"}`). Not a `PickupTicket` (`session_pickup.py:163`):
   that carries `session_id`, `human_user_id`, `conversation_id` and `cwd_name`. A `preparing`
   copy older than five minutes is restarted.
 
 ### 3.6 The CLI
 
-- Lives at `apps/cli/` (`@lightbulb/cli` in the pnpm workspace), Node ≥18, no dependencies
-  (built-in `fetch`, `zlib`, `crypto`, `child_process`). Its `prepack` copies
-  `apps/desktop/src-tauri/mods/` into the package so there is one source of the mod. Published to
-  npm by a new `cli-release.yml` on `cli-v*` tags (Linux runner). **The npm name `lightbulb` is
-  taken** (see report); the command needs a name we own.
+No new package. `lightbulb continue '<link>'` is a new subcommand of the existing `lightbulb`
+command, which is the desktop app's own binary (`lightbulb-desktop`): the app links
+`~/.local/bin/lightbulb` to it (`cli::install`, `cli.rs:584`, run at launch by
+`install_at_launch`, `cli.rs:630`), and `main.rs:7-10` hands argv to `cli::cli_args` (`cli.rs:257`,
+which matches the link name or `lightbulb-desktop cli …`) then `cli::main` (`cli.rs:526`), whose
+`parse` (`cli.rs:274`) today accepts only `claude|codex`. Add `continue` there and a Rust
+module beside `session_pickup.rs` that reuses its code directly: `argv` (`:624`), `workdir`
+(`:641`), `import_code` (`:433`), `allowed_url` (`:111`) and the part download checks. Nothing is
+ported. **`cli.rs` may be owned by another in-flight stream: coordinate before editing.** A
+receiver without the app has no command; the page says "Get Lightbulb for Mac" first (§2.2).
+
 - `continue <link>`:
   1. Parse the fragment token locally. Make a random `verifier`. Start a loopback listener on
      `127.0.0.1:<random>` and open
@@ -227,23 +237,23 @@ Routes:
      page (signed in; else sign-up/onboarding first) shows one confirm button, calls
      `POST /session-links/copies`, and redirects to `http://127.0.0.1:<port>/done?code=…`. The
      page accepts only an integer port 1024-65535 and only the host `127.0.0.1`.
-  2. Poll redeem every 2 s until ready. Download and verify every part (size + sha256), as the
-     desktop does (`session_pickup.rs:300-356, 836-902`), refusing URLs outside the bucket's
-     `/session-pickup/` path (`session_pickup.rs:111`).
-  3. Code: `bundle` → inside a clone of `remote` in the current folder, the desktop's
-     `import_code` steps (`session_pickup.rs:433`: fetch, `bundle verify`, `git worktree add` under
-     `.claude/worktrees/`). `clone` → if the current folder is a clone of `remote`, `fetch` + `git
-     worktree add <commit>`; else `git clone <remote>` into `./<repo-name>` and check out `commit`
-     on `continue/<slug>`. Git runs with the person's own credentials. A failure prints "Couldn't
-     get the code (<reason>). Continuing with the conversation only." `none` → the current folder.
-  4. Mod: if `claude plugin list` lacks `lightbulb-sessions@lightbulb`, write the mod to
-     `~/.lightbulb/claude-mods/` and run the same two commands as `plugin.rs:35-41`. Write
-     `~/.lightbulb/continued/<newSessionId>.json` `{from: "<first name>", title}`.
-  5. Exec the desktop's argv (`session_pickup.rs:624-638`): `claude --resume <transcript>
+  2. Poll redeem every 2 s until ready. Download and verify every part (size + sha256) with the
+     desktop's code (`session_pickup.rs:300-356, 836-902`), refusing URLs outside the bucket's
+     `/session-pickup/` path (`allowed_url`).
+  3. Code: `bundle` (workspace members only) → `import_code` (`session_pickup.rs:433`: fetch,
+     `bundle verify`, `git worktree add` under `.claude/worktrees/`) inside a clone of `remote` in
+     the current folder. `clone` (public repos only) → if the current folder is a clone of
+     `remote`, `fetch` + `git worktree add <commit>`; else `git clone <remote>` into
+     `./<repo-name>` and check out `commit` on `continue/<slug>`. A failure prints "Couldn't get
+     the code (<reason>). Continuing with the conversation only." `none` → the current folder.
+  4. Mod: if `claude plugin list` lacks `lightbulb-sessions@lightbulb`, install it with the same
+     two commands as `plugin.rs:35-41` (the app already bundles the mod, so there is one source).
+     Write `~/.lightbulb/continued/<newSessionId>.json` `{from: "<first name>", title}`.
+  5. Run the desktop's `argv` (`session_pickup.rs:624-638`): `claude --resume <transcript>
      --fork-session --session-id <new uuid> --setting-sources user`, in
-     `<worktree>/<cwdRelative>` resolved as `workdir` does (`session_pickup.rs:641`). Claude
-     writes the fork into `~/.claude/projects/` itself; that is how the conversation lands there.
-     The original session and its Mac are never contacted.
+     `<worktree>/<cwdRelative>` resolved by `workdir` (`session_pickup.rs:641`). Claude writes
+     the fork into `~/.claude/projects/` itself; that is how the conversation lands there. The
+     original session and its Mac are never contacted.
 - Mod change: on `session.start` (`register.tsx:129`) read
   `~/.lightbulb/continued/<session id>.json` with `$.fs.read`; while the session is not itself
   shared, the `AbovePrompt` band (`register.tsx:147`) shows
@@ -322,8 +332,8 @@ from Phase 2, receive the live terminal frames, unredacted, while holding a leas
 **Cannot:** learn the owner id, workspace id, session id or the page-model folder path (event
 text is redacted best-effort, §3.4); take a copy; ask to steer; type; subscribe to anything under
 `ws`; reach any other session.
-**A signed-in outsider additionally can:** take a redacted copy (and with it the repo remote for a
-private repo, see report); from Phase 3, ask to steer, and type once allowed.
+**A signed-in outsider additionally can:** take a redacted copy (conversation only for a private repo: no remote, name or branch reaches
+them); from Phase 3, ask to steer, and type once allowed.
 
 - **Tokens:** 256-bit link token in the fragment; 128-bit-plus watch keys and continue codes,
   hash-stored where they are credentials, short TTLs (45 s lease, 10 min code, 1 h copy). A
@@ -341,19 +351,24 @@ private repo, see report); from Phase 3, ask to steer, and type once allowed.
 | Reused | New |
 |---|---|
 | Pick-up snapshot stream, manifest, presigned URLs, retire/sweeper (also cleans copies) | one-link fields, `/link` routes, `/s` page |
-| Desktop `argv`, `workdir`, `import_code`, download checks (ported to Node) | `apps/cli`, `cli-release.yml` |
+| `lightbulb` CLI (`cli.rs`) and the desktop's `argv`, `workdir`, `import_code`, download checks, used directly | a `continue` subcommand |
 | Join requests, `decide_join`, `remove_sender`, band, `native-session-decisions` | `guest` flag, `guests`, link-scoped join/input routes |
 | `watch`/`forward`/`ack_with_watching`, presence | `pub` namespace + API key, `LINKVIEWER`/`PUBWATCH` leases, `anonymousViewers` |
 | `marketplace_safety` patterns, join-link token handling | `session_redact.py`, `SESSIONCOPY` row, copy ticket |
 | Sign-up, onboarding, `provision_new_workspace` | `returnTo` on onboarding |
 | Mod and its install commands | `repoInfo` from the Mac, "Continued from" band |
 
-## 8. Open questions
+## 8. Ruled
 
-1. npm name: `lightbulb` is owned by another publisher. Ask for a transfer, or ship as e.g.
-   `npx @thelightbulbcompany/cli continue` / `npx lightbulb-cli continue`?
-2. Private repos: is it acceptable that a signed-in receiver's CLI receives the repo remote (and
-   so its name) in order to clone (see report)?
+**Ruled (owner, 2026-10-05):**
+
+1. No npm package. Continue is `lightbulb continue '<link>'` in the existing desktop CLI (§3.6).
+   Receivers without the app are told "Get Lightbulb for Mac" first; non-Mac receivers are
+   deferred (§9).
+2. Private repos stay private: no remote URL, repo name or branch of a private repo leaves the
+   sharer's Mac towards an outside receiver. Outside the workspace Continue gives the conversation
+   only and the page says "Code is in a private repository". Inside the workspace Pick up is
+   unchanged (§3.3).
 
 **Ruled (controller, 2026-10-05):**
 
@@ -371,3 +386,4 @@ private repo, see report); from Phase 3, ask to steer, and type once allowed.
 - Screening guest messages and keystrokes.
 - A safety floor for permission modes (e.g. refusing to resume a copy in bypass mode).
 - A paste-the-code confirm for receivers without a browser (ruled above).
+- Continue for receivers not on a Mac (no desktop app, so no CLI).

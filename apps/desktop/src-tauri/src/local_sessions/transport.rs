@@ -149,17 +149,20 @@ impl Host {
             .ok_or("missing local session")?
             .native
             .clone();
-        // lsof, git and bounded file reads: its own task, so they never hold the runtime
-        // thread the connection loop and discovery share.
+        // lsof and git are async and 2 s-bounded each; the file reads run on the blocking pool.
+        // The whole observation is bounded too: an unknown result costs one advisory, a stall
+        // costs every frame queued behind this loop.
         let home = self.home.clone();
-        let observed = tokio::spawn(async move {
+        let scan = tokio::spawn(async move {
             match workspace::session_root(&native, &home).await {
                 Ok(cwd) => workspace::scan(&cwd, &home).await,
                 Err(error) => Err(error),
             }
-        })
-        .await
-        .map_err(|_| "workspace scan stopped")?;
+        });
+        let observed = match tokio::time::timeout(Duration::from_secs(15), scan).await {
+            Ok(joined) => joined.map_err(|_| "workspace scan stopped")?,
+            Err(_) => Err("workspace observation timed out".into()),
+        };
         let root = observed.as_ref().ok().map(|(root, _)| root.clone());
         let keys: Vec<_> = self
             .mirrors

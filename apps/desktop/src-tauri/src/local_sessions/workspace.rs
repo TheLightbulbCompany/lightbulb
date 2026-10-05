@@ -226,6 +226,13 @@ pub(super) async fn scan(cwd: &Path, home: &Path) -> Result<(PathBuf, String)> {
         ],
     )
     .await?;
+    // Up to 512 synchronous file reads: on the blocking pool, never on a runtime worker.
+    tokio::task::spawn_blocking(move || hash_files(root, &files, hash))
+        .await
+        .map_err(|_| "workspace unavailable")?
+}
+
+fn hash_files(root: PathBuf, files: &[u8], mut hash: Sha256) -> Result<(PathBuf, String)> {
     let mut names: Vec<_> = files.split(|b| *b == 0).filter(|p| !p.is_empty()).collect();
     names.sort();
     names.dedup();

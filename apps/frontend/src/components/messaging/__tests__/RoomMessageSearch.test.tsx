@@ -4,7 +4,8 @@ import { act, fireEvent, render, screen } from "@testing-library/react";
 
 const messaging = vi.hoisted(() => ({ searchMessages: vi.fn(), warmSearch: vi.fn() }));
 vi.mock("@/hooks/useLiveEvents", () => ({ useLiveEvents: () => ({ messaging }) }));
-vi.mock("@/lib/analytics", () => ({ capture: vi.fn() }));
+const analytics = vi.hoisted(() => ({ capture: vi.fn() }));
+vi.mock("@/lib/analytics", () => analytics);
 
 import { RoomMessageSearch } from "../RoomMessageSearch";
 
@@ -44,5 +45,25 @@ describe("RoomMessageSearch", () => {
     await act(async () => { await vi.advanceTimersByTimeAsync(3_000); });
     expect(messaging.searchMessages).toHaveBeenCalledTimes(2);
     expect(screen.getByText("deploy").tagName).toBe("MARK");
+  });
+
+  it("selects once after the dialog closes and records the result bucket", async () => {
+    vi.useFakeTimers();
+    messaging.warmSearch.mockResolvedValue(undefined);
+    messaging.searchMessages.mockResolvedValue({ hits: [hit] });
+    const onSelect = vi.fn();
+    render(<RoomMessageSearch roomId="r1" onSelect={onSelect} />);
+    await typeQuery("deploy");
+    fireEvent.click(screen.getByRole("button", { name: /Ann/ }));
+    await act(async () => { await vi.advanceTimersByTimeAsync(500); });
+    expect(onSelect).toHaveBeenCalledTimes(1);
+    expect(onSelect).toHaveBeenCalledWith(hit);
+    expect(analytics.capture).toHaveBeenCalledTimes(1);
+    expect(analytics.capture).toHaveBeenCalledWith("message_search_used", { result_count_bucket: "1-5" });
+  });
+
+  it("does not read live events while closed", () => {
+    render(<RoomMessageSearch roomId="r1" onSelect={vi.fn()} />);
+    expect(messaging.warmSearch).not.toHaveBeenCalled();
   });
 });

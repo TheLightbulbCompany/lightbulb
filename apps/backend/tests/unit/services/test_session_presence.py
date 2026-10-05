@@ -170,3 +170,18 @@ def test_input_paused_is_public_only_with_a_pending_request_on_a_presence_mac(mo
     assert sessions._session_public({**base, **pending}, "user_aden").input_paused is True
     assert sessions._session_public(base, "user_aden").input_paused is False
     assert sessions._session_public({**base, **pending, "deviceFeatures": []}, "user_aden").input_paused is False
+
+
+@pytest.mark.asyncio
+async def test_an_ack_sized_just_under_the_limit_still_passes_the_envelope_check(monkeypatch):
+    from core.services.local_session_relay import check_envelope
+
+    monkeypatch.setattr(presence.store, "_query", _rows(viewers=["user_aden"]))
+    monkeypatch.setattr(presence.repo, "get_session", AsyncMock(return_value=_row()))
+    kind = {"type": "local.device.heartbeat.ack"}
+    listed = (await presence.ack_with_presence({**kind, "pad": ""}, "org_a", ["s"]))["presence"]
+    assert listed, "the session is listed"
+    # The ack's own fields fill the envelope exactly when `presenceAt` is one digit long.
+    size = len(json.dumps({**kind, "pad": "", "presence": listed, "presenceAt": 0}, separators=(",", ":")).encode())
+    ack = {**kind, "pad": "x" * (sessions.MAX_ENVELOPE_BYTES - size)}
+    check_envelope(await presence.ack_with_presence(ack, "org_a", ["s"]))

@@ -87,7 +87,7 @@ async def ack_with_presence(ack: dict, owner: str, session_ids: list[str]) -> di
 
     def fits(p: list) -> bool:
         return (
-            len(json.dumps({**ack, "presence": p, "presenceAt": 0}, separators=(",", ":")).encode())
+            len(json.dumps({**ack, "presence": p, "presenceAt": read_at}, separators=(",", ":")).encode())
             <= sessions.MAX_ENVELOPE_BYTES
         )
 

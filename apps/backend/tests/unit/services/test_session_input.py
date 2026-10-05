@@ -354,3 +354,48 @@ async def test_a_viewer_refresh_keeps_typed_at_and_a_new_lease_starts_without_it
     )
     await session_screen.watch(BOB, sid)
     assert "typedAt" not in viewer_row(db, sid)
+
+
+@pytest.mark.asyncio
+async def test_a_viewer_refresh_keeps_a_typed_at_marked_while_it_runs(transport, db, monkeypatch):
+    sid = await start(transport)
+    await capable(transport, sid)
+    await session_screen.watch(BOB, sid)
+    real = messaging_repo.run_in_thread
+    marked = []
+
+    async def racing(fn, *args, **kwargs):
+        write = kwargs.get("Item") or ("UpdateExpression" in kwargs and kwargs.get("Key")) or {}
+        if str(write.get("sk", "")).startswith("VIEWER#") and not marked:
+            marked.append(True)  # a keystroke is marked just before the refresh writes
+            db[0].update_item(
+                Key={"pk": repo.session_pk(OWNER, sid), "sk": f"VIEWER#{BOB.user_id}"},
+                UpdateExpression="SET typedAt = :t",
+                ExpressionAttributeValues={":t": 777},
+            )
+        return await real(fn, *args, **kwargs)
+
+    monkeypatch.setattr(messaging_repo, "run_in_thread", racing)
+    await session_screen.watch(BOB, sid)
+    assert marked and viewer_row(db, sid)["typedAt"] == 777
+
+
+@pytest.mark.asyncio
+async def test_a_failed_typing_mark_still_sends_the_keystrokes(transport, monkeypatch):
+    from botocore.exceptions import ClientError
+
+    sid = await start(transport)
+    await capable(transport, sid)
+    await admit(sid)
+    await session_screen.watch(BOB, sid)
+    real = messaging_repo.run_in_thread
+
+    async def throttled(fn, *args, **kwargs):
+        if kwargs.get("UpdateExpression") == "SET typedAt = :now":
+            raise ClientError({"Error": {"Code": "ProvisionedThroughputExceededException"}}, "UpdateItem")
+        return await real(fn, *args, **kwargs)
+
+    monkeypatch.setattr(messaging_repo, "run_in_thread", throttled)
+    transport[3].clear()
+    await session_screen.type_into(BOB, sid, body())
+    assert len(sent(transport)) == 1

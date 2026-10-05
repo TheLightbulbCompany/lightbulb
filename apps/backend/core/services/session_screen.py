@@ -73,21 +73,30 @@ async def watch(auth: sessions.Caller, session_id: str) -> None:
             "LOCAL_SESSION_UNSUPPORTED", "This session has no live terminal. Its transcript is shown instead."
         )
     key = _viewer_key(row, auth.user_id)
-    viewer = await store._get(key["pk"], key["sk"])
-    fresh = viewer is None or int(viewer.get("expiresAt", 0)) <= now
     expires = now + VIEWER_TTL_S
     table = store._table()
-    await store.run_in_thread(
-        table.put_item,
-        Item={
-            **key,
-            "userId": auth.user_id,
-            "since": now if fresh else int(viewer["since"]),
-            "expiresAt": expires,
-            # A refresh keeps when they last typed; only a new lease starts without it.
-            **({} if fresh or "typedAt" not in viewer else {"typedAt": int(viewer["typedAt"])}),
-        },
-    )
+    values = {":u": auth.user_id, ":exp": expires, ":now": now}
+    # One conditional write, never read-then-put: a refresh of a live lease leaves `since` and
+    # `typedAt` as they are (a keystroke marked meanwhile is kept); a new lease starts both over.
+    try:
+        await store.run_in_thread(
+            table.update_item,
+            Key=key,
+            UpdateExpression="SET userId = :u, expiresAt = :exp, since = if_not_exists(since, :now)",
+            ConditionExpression="attribute_exists(pk) AND expiresAt > :now",
+            ExpressionAttributeValues=values,
+        )
+        fresh = False
+    except ClientError as exc:
+        if exc.response["Error"]["Code"] != "ConditionalCheckFailedException":
+            raise
+        fresh = True
+        await store.run_in_thread(
+            table.update_item,
+            Key=key,
+            UpdateExpression="SET userId = :u, expiresAt = :exp, since = :now REMOVE typedAt",
+            ExpressionAttributeValues=values,
+        )
     await store.run_in_thread(
         table.update_item,
         Key=_watch_key(row),
@@ -296,7 +305,8 @@ def _typist(sid: str, user: str, now: float) -> _Typist:
 
 async def _mark_typing(row: dict, user: str, now: int) -> None:
     """`typedAt` on the typist's live VIEWER row, so presence reads typing from the rows it
-    already reads. Never creates or revives a row: someone typing without watching is not shown."""
+    already reads. Never creates or revives a row: someone typing without watching is not shown.
+    Best effort: a failure here never costs the keystrokes."""
     key = _viewer_key(row, user)
     try:
         await store.run_in_thread(
@@ -308,7 +318,9 @@ async def _mark_typing(row: dict, user: str, now: int) -> None:
         )
     except ClientError as exc:
         if exc.response["Error"]["Code"] != "ConditionalCheckFailedException":
-            raise
+            logger.info("session typing mark failed error=%s", exc.response["Error"]["Code"])
+    except Exception as exc:  # noqa: BLE001 -- the label is a courtesy; the keys still go
+        logger.info("session typing mark failed error=%s", type(exc).__name__)
 
 
 async def type_into(auth: AuthContext, session_id: str, body: SessionInput) -> None:

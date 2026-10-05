@@ -247,7 +247,6 @@ function RoomContent({
   messages,
   historyLoading,
   historyComplete,
-  historyError,
   historyErrorMessage,
   onLoadHistory,
   onLoadOlder,

@@ -2065,7 +2065,7 @@ async def decide_pickup_request(
         # without its link. A failure before any write leaves the request pending; one after the link
         # exists takes the link back.
         had_link = bool(row.get("shareLink"))
-        await put_link(auth, session_id, None)
+        await put_link(auth, session_id, None, turn_on_pickup=False)
         try:
             public = await session_pickup.set_pickup(
                 auth, session_id, True, expect_request=(user_id, current["requestId"])
@@ -2258,7 +2258,9 @@ def _token_hash(token: str) -> str:
 
 
 class LinkRequest(ContractModel):
-    audience: AUDIENCES
+    # None is Share: create a workspace link if there is none, otherwise keep its audience. Only the
+    # audience select sends one, so a stale or failed read can never narrow an "anyone" link.
+    audience: AUDIENCES | None = None
 
 
 class SessionLink(ContractModel):
@@ -2312,9 +2314,12 @@ def _capture_growth(row: dict, event: str, distinct_id: str, **props) -> None:
     )
 
 
-async def put_link(auth: AuthContext, session_id: str, audience: str | None) -> SessionLink:
-    """Create the session's one link, or change its audience. ``audience`` None is Ask to pick
-    up's Allow: create a workspace link if there is none, otherwise leave the link as it is."""
+async def put_link(
+    auth: AuthContext, session_id: str, audience: str | None, *, turn_on_pickup: bool = True
+) -> SessionLink:
+    """Create the session's one link, or change its audience. ``audience`` None (Share, and Ask to
+    pick up's Allow): create a workspace link if there is none, otherwise leave the link as it is.
+    Allow passes ``turn_on_pickup=False``: it turns pick-up on itself, under its own request fence."""
     import secrets
 
     from core import encryption
@@ -2376,8 +2381,7 @@ async def put_link(auth: AuthContext, session_id: str, audience: str | None) -> 
     else:
         raise ApiProblem("LOCAL_SESSION_CONFLICT", "Session changed. Try again.")
     # The link is the pick-up permission on a Claude session; set_pickup is a no-op while it is on.
-    # Allow (audience None) has just turned it on itself, under its own request fence.
-    if row["provider"] == "claude" and audience is not None:
+    if row["provider"] == "claude" and turn_on_pickup:
         await session_pickup.set_pickup(auth, session_id, True)
     return _link_public(link)
 
@@ -2400,6 +2404,9 @@ async def delete_link(auth: AuthContext, session_id: str) -> None:
         row = await _owned_session(auth, session_id)
         link = row.get("shareLink")
         if not link:
+            # Pick-up switched on by the removed switch has no link: turning off still turns it off.
+            if row.get("pickupAllowed"):
+                await session_pickup.set_pickup(auth, session_id, False)
             return
         owner, sid = row["ownerId"], row["sessionId"]
         try:

@@ -96,28 +96,42 @@ async def resolve(auth: AuthContext | None, token: str) -> tuple[dict, dict, boo
     return row, link, member
 
 
+# open and redeem are unauthenticated: one Clerk call per request would let a reload loop spend the
+# Clerk budget webhooks and provisioning share. Per process, like messaging.human_display_name.
+_NAME_TTL_S, _NO_NAME_TTL_S = 300.0, 60.0
+_names: dict[str, tuple[float, str]] = {}
+
+
 async def _name(user_id: str, *, first: bool) -> str:
     """The owner's real name (Clerk first/last), never an id, username or email prefix."""
     from core.services.clerk_admin import get_user
 
-    try:
-        user = await get_user(user_id) or {}
-    except Exception:
-        user = {}
-    name = " ".join(p.strip() for p in (user.get("first_name") or "", user.get("last_name") or "") if p.strip())
+    now = time.monotonic()
+    hit = _names.get(user_id)
+    if hit and now < hit[0]:
+        name = hit[1]
+    else:
+        try:
+            user = await get_user(user_id) or {}
+        except Exception:
+            user = {}
+        name = " ".join(p.strip() for p in (user.get("first_name") or "", user.get("last_name") or "") if p.strip())
+        _names[user_id] = (now + (_NAME_TTL_S if name else _NO_NAME_TTL_S), name)
     if not name:
         return "Someone"
     return name.split()[0][:40] if first else name[:80]
 
 
 async def _audit_name(user_id: str) -> str:
-    """For the owner's own audit trail: the workspace's usual display name."""
+    """For the owner's own audit trail: the workspace's usual display name, never a raw user id
+    (human_display_name falls back to one)."""
     from core.services.messaging import human_display_name
 
     try:
-        return (await human_display_name(user_id)).strip()[:80] or "Someone"
+        name = (await human_display_name(user_id)).strip()
     except Exception:
         return "Someone"
+    return name[:80] if name and name != user_id else "Someone"
 
 
 class LinkCode(ContractModel):
@@ -245,6 +259,7 @@ COPY_TTL_S = pickup.COPY_TTL_S
 CODE_WINDOW_S = 600
 RESTART_AFTER_S = 300
 COPIES_PER_HOUR = 20  # per session
+TAKER_COPIES_PER_HOUR = 5  # per session per taker, so one outsider cannot use up the session's cap
 _redacting = asyncio.Semaphore(1)  # one redaction at a time per backend task
 _running: set[asyncio.Task] = set()  # held so a running preparation is not garbage-collected
 _working: set[str] = set()  # copyIds this task is preparing or has queued
@@ -326,7 +341,8 @@ async def create_copy(auth: AuthContext, token: str, challenge: str) -> CopyCode
             code = await _reuse(existing, challenge, now)
             if code:
                 return CopyCode(code=code)
-    if len(live) >= COPIES_PER_HOUR:
+    mine = sum(1 for p in live if p.get("userId") == auth.user_id)
+    if mine >= TAKER_COPIES_PER_HOUR or len(live) >= COPIES_PER_HOUR:
         raise ApiProblem("RATE_LIMITED", "Too many copies of this session. Try again later.", retryable=True)
     code = secrets.token_urlsafe(32)
     item = {
@@ -439,16 +455,20 @@ async def _prepare_locked(item: dict) -> None:
             if not row or not manifest or row.get("pickupEpoch") != item["epoch"]:
                 raise RuntimeError("snapshot gone")
             info = manifest.get("repoInfo") or {}
-            private = bool(info) and not info.get("public")
+            # Fail closed: no repoInfo (an older Mac, no origin) is treated as private.
+            private = not info.get("public")
             project = info.get("folder") if private else None
+            # From the manifest as it is now: a commit since Continue may say the repo went private.
+            mode = _code_mode(manifest, False)
             out = await run_in_thread(_redact_copy, row, manifest, item["copyId"], project, private)
             out.update(
                 state="ready",
                 readyAt=int(time.time()),
+                codeMode=mode,
                 conversationId=manifest["conversationId"],
                 claudeVersion=manifest["claudeVersion"],
-                cwdRelative=manifest["cwdRelative"] if item["codeMode"] == "clone" else "",
-                repo=manifest.get("repoInfo") if item["codeMode"] == "clone" else None,
+                cwdRelative=manifest["cwdRelative"] if mode == "clone" else "",
+                repo=info if mode == "clone" else None,
             )
             await _settle(item, out)
         except Exception as exc:

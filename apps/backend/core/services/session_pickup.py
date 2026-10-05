@@ -84,10 +84,6 @@ class DeviceRefused(Exception):
 # --- Wire models -------------------------------------------------------------------------------
 
 
-class PickupToggleRequest(ContractModel):
-    enabled: bool
-
-
 class PickupRequest(ContractModel):
     pickup_id: str
 

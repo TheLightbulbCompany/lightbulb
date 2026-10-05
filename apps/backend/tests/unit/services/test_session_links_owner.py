@@ -117,3 +117,22 @@ async def test_a_failed_allow_takes_its_new_link_back(transport, s3):
         await service.decide_pickup_request(ALICE, sid, BOB.user_id, "allow", request_id=rid)
     row = await repo.get_session(OWNER, sid)
     assert "shareLink" not in row and not row.get("pickupAllowed")
+
+
+@pytest.mark.asyncio
+async def test_share_without_an_audience_never_narrows_a_link(transport, s3):
+    sid = await claude_session(transport)
+    first = await service.put_link(ALICE, sid, None)  # Share: a workspace link, pick-up on
+    assert first.audience == "workspace" and (await repo.get_session(OWNER, sid))["pickupAllowed"] is True
+    await service.put_link(ALICE, sid, "anyone")
+    again = await service.put_link(ALICE, sid, None)  # Share again (a stale or failed read)
+    assert again.url == first.url and again.audience == "anyone"
+
+
+@pytest.mark.asyncio
+async def test_turning_off_with_no_link_still_turns_legacy_pickup_off(transport, s3):
+    sid = await claude_session(transport)
+    await pickup.set_pickup(ALICE, sid, True)  # the removed switch: pick-up on, no link
+    assert "shareLink" not in await repo.get_session(OWNER, sid)
+    await service.delete_link(ALICE, sid)
+    assert not (await repo.get_session(OWNER, sid)).get("pickupAllowed")

@@ -35,6 +35,7 @@ PUBLIC = {
 
 @pytest.fixture(autouse=True)
 def names():
+    links._names.clear()
     with patch(
         "core.services.clerk_admin.get_user", AsyncMock(return_value={"first_name": "Alice", "last_name": "Doe"})
     ):
@@ -205,8 +206,19 @@ async def test_an_event_that_grows_past_the_envelope_falls_back_to_one_line(tran
 async def test_owner_name_never_leaks_a_user_id(transport, s3):
     _, token = await link_for(transport, s3)
     for user in ({"username": "alice99"}, {"email_addresses": [{"email_address": "alice@x.io"}]}, None):
+        links._names.clear()
         with patch("core.services.clerk_admin.get_user", AsyncMock(return_value=user)):
             assert (await links.open_page(None, token)).owner_first_name == "Someone"
+
+
+@pytest.mark.asyncio
+async def test_the_owner_name_is_cached_not_fetched_per_request(transport, s3):
+    _, token = await link_for(transport, s3)
+    fetch = AsyncMock(return_value={"first_name": "Alice"})
+    with patch("core.services.clerk_admin.get_user", fetch):
+        for _ in range(3):
+            assert (await links.open_page(None, token)).owner_first_name == "Alice"
+    assert fetch.await_count == 1
 
 
 @pytest.mark.asyncio

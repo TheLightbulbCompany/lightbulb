@@ -40,6 +40,7 @@ SECRET_LINE = b'{"cwd":"/Users/alice/app","message":"token ghp_abcdefghijklmnopq
 
 @pytest.fixture(autouse=True)
 def names():
+    links._names.clear()
     with (
         patch("core.services.messaging.human_display_name", AsyncMock(return_value="Sam Lee")),
         patch("core.services.clerk_admin.get_user", AsyncMock(return_value={"first_name": "Sam", "last_name": "Lee"})),
@@ -261,12 +262,58 @@ async def test_pressing_continue_again_reuses_the_pending_copy(transport, s3, st
 
 @pytest.mark.asyncio
 async def test_a_session_has_a_copy_cap_per_hour(transport, s3, started):
+    _, token = await shared(transport, s3)
+    for n in range(links.COPIES_PER_HOUR):
+        taker = AuthContext(user_id=f"user_taker{n}", org_id="org_other")
+        await links.create_copy(taker, token, links.challenge_of(VERIFIER))
+    with pytest.raises(ApiProblem) as limited:
+        await links.create_copy(STRANGER, token, links.challenge_of(VERIFIER))
+    assert limited.value.status_code == 429
+
+
+@pytest.mark.asyncio
+async def test_one_taker_cannot_use_up_the_session_cap(transport, s3, started):
     _, token = await shared(transport, s3, audience="workspace")
-    for _ in range(links.COPIES_PER_HOUR):
+    for _ in range(links.TAKER_COPIES_PER_HOUR):
         await links.create_copy(BOB, token, links.challenge_of(VERIFIER))
     with pytest.raises(ApiProblem) as limited:
         await links.create_copy(BOB, token, links.challenge_of(VERIFIER))
     assert limited.value.status_code == 429
+    await links.create_copy(ALICE, token, links.challenge_of(VERIFIER))  # someone else still can
+
+
+@pytest.mark.asyncio
+async def test_a_copy_with_no_repo_info_drops_the_branch(transport, s3, started):
+    _, token = await shared(transport, s3, repo_info=None, chunks=(LINE,))
+    code = (await links.create_copy(STRANGER, token, links.challenge_of(VERIFIER))).code
+    await links._prepare(started[0])
+    ticket = await links.redeem(code, VERIFIER)
+    assert ticket.code.mode == "none"
+    body = gzip.decompress(fetch(s3, ticket.downloads.transcript[0].url))
+    assert b"secret-feature" not in body and b"gitBranch" not in body
+
+
+@pytest.mark.asyncio
+async def test_the_code_mode_is_fixed_when_the_copy_is_prepared(transport, s3, started):
+    sid, token = await shared(transport, s3)
+    code = (await links.create_copy(STRANGER, token, links.challenge_of(VERIFIER))).code
+    assert started[0]["codeMode"] == "clone"
+    pk = pickup_tests.repo.session_pk(OWNER, sid)
+    manifest = await pickup_tests.messaging_repo._get(pk, "PICKUP")
+    manifest["repoInfo"] = {**PUBLIC, "public": False}  # a commit in between: now private
+    pickup_tests.messaging_repo._table().put_item(Item=manifest)
+    await links._prepare(started[0])
+    ticket = (await links.redeem(code, VERIFIER)).model_dump(by_alias=True)
+    assert ticket["code"] == {"mode": "none"} and ticket["cwdRelative"] == ""
+    assert "acme" not in json.dumps(ticket)
+
+
+@pytest.mark.asyncio
+async def test_the_audit_never_names_a_raw_user_id(transport, s3, started):
+    sid, token = await shared(transport, s3)
+    with patch("core.services.messaging.human_display_name", AsyncMock(return_value=STRANGER.user_id)):
+        await links.create_copy(STRANGER, token, links.challenge_of(VERIFIER))
+    assert (await service.list_audit(ALICE, sid)).entries[-1].detail == "Someone"
 
 
 @pytest.mark.asyncio

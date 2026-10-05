@@ -144,6 +144,59 @@ describe("Tasks placement", () => {
     expect(tasks.api.moveTo).toHaveBeenCalledWith({ group: main, position: "center" });
     expect(tasks.group).toBe(main);
     expect(readTasksPlacement()).toBe("split");
+    // Wide again: the stored choice is still split, so Tasks goes back beside.
+    (api as unknown as { width: number }).width = 1400;
+    refitSplits();
+    expect(tasks.api.moveTo).toHaveBeenLastCalledWith({ group: main, position: "right" });
+    expect(tasks.group).not.toBe(main);
+    // Settled: another resize moves nothing.
+    refitSplits();
+    expect(tasks.api.moveTo).toHaveBeenCalledTimes(2);
+  });
+
+  it("keeps a third tab in front through the fold and the return", () => {
+    const { api } = makeApi();
+    attachDockviewApi(api, () => "a1");
+    openPanel("teams-issues");
+    // Mail is a tab in the conversation's group, and it is what the person is looking at.
+    api.addPanel({ id: "mail", component: "mail" });
+    const mail = api.getPanel("mail") as unknown as FakePanel;
+    const messages = api.getPanel(MESSAGES_PANEL_ID) as unknown as FakePanel;
+    for (const width of [390, 1400]) {
+      mail.api.setActive.mockClear();
+      (api as unknown as { width: number }).width = width;
+      refitSplits();
+      expect(mail.api.setActive).toHaveBeenCalledTimes(1);
+      expect(messages.api.setActive).not.toHaveBeenCalled();
+      expect((api as unknown as { activePanel: FakePanel }).activePanel).toBe(mail);
+    }
+  });
+
+  it("keeps an Expand for the session when storage refuses the write", () => {
+    vi.spyOn(Storage.prototype, "getItem").mockImplementation(() => { throw new Error("denied"); });
+    vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => { throw new Error("denied"); });
+    const { api, main } = makeApi();
+    attachDockviewApi(api, () => "a1");
+    openPanel("teams-issues");
+    setTasksPlacement("tab");
+    const tasks = api.getPanel("teams-issues") as unknown as FakePanel;
+    tasks.api.moveTo.mockClear();
+    // A resize on a wide dock must not read the "split" fallback and undo it.
+    refitSplits();
+    expect(tasks.api.moveTo).not.toHaveBeenCalled();
+    expect(tasks.group).toBe(main);
+  });
+
+  it("leaves Tasks a tab on a wide dock when the person chose Expand", () => {
+    const { api, main } = makeApi();
+    attachDockviewApi(api, () => "a1");
+    openPanel("teams-issues");
+    setTasksPlacement("tab");
+    const tasks = api.getPanel("teams-issues") as unknown as FakePanel;
+    tasks.api.moveTo.mockClear();
+    refitSplits();
+    expect(tasks.api.moveTo).not.toHaveBeenCalled();
+    expect(tasks.group).toBe(main);
   });
 
   it("honours a persisted tab choice on the next open", () => {

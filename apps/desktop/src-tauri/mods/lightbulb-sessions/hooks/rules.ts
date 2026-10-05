@@ -3,9 +3,9 @@
 // that could pass for a header are quoted by the app, so only a match at the very start counts.
 export type Sender =
   | { kind: 'owner' }
-  | { kind: 'person'; name: string }
-  | { kind: 'agent'; name: string }
-  | { kind: 'session'; name: string }
+  | { kind: 'person'; name: string; id?: string }
+  | { kind: 'agent'; name: string; id?: string }
+  | { kind: 'session'; name: string; id?: string }
   | { kind: 'peer' }
 
 const OWNER = /^\[Sent from Lightbulb by you\]\n\[Lightbulb verified sender:/
@@ -23,13 +23,15 @@ export function classify(text: string): Sender {
   if (OWNER.test(body)) return { kind: 'owner' }
   const m = TEAMMATE.exec(body.split('\n', 1)[0] ?? '')
   if (!m) return { kind: 'peer' }
-  let provenance: { actor?: { kind?: string }; actorDisplayName?: string } = {}
+  let provenance: { actor?: { kind?: string; id?: string }; actorUserId?: string; actorDisplayName?: string } = {}
   try { provenance = JSON.parse(m[4] ?? '') } catch { /* label only */ }
   const label = m[3] === 'a workspace member' ? 'A workspace member' : m[3]
   const name = provenance.actorDisplayName || m[1] || m[2] || label || 'A teammate'
-  if (provenance.actor?.kind === 'agent') return { kind: 'agent', name }
-  if (provenance.actor?.kind === 'session') return { kind: 'session', name }
-  return { kind: 'person', name }
+  const raw = provenance.actorUserId || provenance.actor?.id
+  const id = typeof raw === 'string' && raw ? { id: raw } : {}
+  if (provenance.actor?.kind === 'agent') return { kind: 'agent', name, ...id }
+  if (provenance.actor?.kind === 'session') return { kind: 'session', name, ...id }
+  return { kind: 'person', name, ...id }
 }
 
 /** The message as the person reads it on one row: no labels, no engine framing. */
@@ -60,4 +62,21 @@ export function rowLabel(s: Sender): string | null {
     case 'session': return `${s.name} · session`
     default: return null
   }
+}
+
+// Named ANSI colors, so the person's terminal theme picks the shades. No red: the band's errors are red.
+export const PALETTE = ['cyan', 'magenta', 'green', 'yellow', 'blue', 'blueBright'] as const
+export const OWNER_COLOR = 'gray'
+
+/** One color per sender, the same every time: FNV-1a over the stable id, mod the palette. */
+export function colorFor(key: string): string {
+  let h = 0x811c9dc5
+  for (let i = 0; i < key.length; i++) h = Math.imul(h ^ key.charCodeAt(i), 0x01000193)
+  return PALETTE[(h >>> 0) % PALETTE.length]!
+}
+
+export function senderColor(s: Sender): string | undefined {
+  if (s.kind === 'owner') return OWNER_COLOR
+  if (s.kind === 'peer') return undefined
+  return colorFor(s.id ?? s.name)
 }

@@ -1,6 +1,6 @@
 import { test, expect } from 'claude-code/testing'
 import type { On } from 'claude-code'
-import { classify, protectedPath, bashTouchesProtected, rowLabel, rowBody } from './rules'
+import { classify, protectedPath, bashTouchesProtected, rowLabel, rowBody, colorFor, senderColor, PALETTE, OWNER_COLOR } from './rules'
 
 const OWNER = '[Sent from Lightbulb by you]\n[Lightbulb verified sender: Your user sent this from the Lightbulb app. x]\nhi'
 const person = '[Lightbulb teammate contribution from @aden (Aden Kim) {"roomId":null,"requestId":"r","actorUserId":"user_a","actorDisplayName":"Aden Kim"}]\nCheck it'
@@ -12,21 +12,21 @@ const PEER_SUFFIX = "\n\nThis came from another Claude session — not typed by 
 
 test('classify tells owner, person, agent, session and unknown peers apart', () => {
   expect(classify(OWNER)).toEqual({ kind: 'owner' })
-  expect(classify(person)).toEqual({ kind: 'person', name: 'Aden Kim' })
-  expect(classify(agent)).toEqual({ kind: 'agent', name: 'Friday' })
-  expect(classify(session)).toEqual({ kind: 'session', name: 'Fix flaky test' })
+  expect(classify(person)).toEqual({ kind: 'person', name: 'Aden Kim', id: 'user_a' })
+  expect(classify(agent)).toEqual({ kind: 'agent', name: 'Friday', id: 'ag' })
+  expect(classify(session)).toEqual({ kind: 'session', name: 'Fix flaky test', id: 's' })
   expect(classify('hello from another claude')).toEqual({ kind: 'peer' })
 })
 
 test('classify reads every header form the desktop writes', () => {
-  expect(classify('[Lightbulb teammate contribution from @aden {"actorUserId":"u"}]\nx')).toEqual({ kind: 'person', name: 'aden' })
-  expect(classify('[Lightbulb teammate contribution from a workspace member {"actorUserId":"u"}]\nx')).toEqual({ kind: 'person', name: 'A workspace member' })
-  expect(classify('[Lightbulb teammate contribution {"actor":{"kind":"agent","id":"a"}}]\nx')).toEqual({ kind: 'agent', name: 'A teammate' })
+  expect(classify('[Lightbulb teammate contribution from @aden {"actorUserId":"u"}]\nx')).toEqual({ kind: 'person', name: 'aden', id: 'u' })
+  expect(classify('[Lightbulb teammate contribution from a workspace member {"actorUserId":"u"}]\nx')).toEqual({ kind: 'person', name: 'A workspace member', id: 'u' })
+  expect(classify('[Lightbulb teammate contribution {"actor":{"kind":"agent","id":"a"}}]\nx')).toEqual({ kind: 'agent', name: 'A teammate', id: 'a' })
 })
 
 test('classify sees through the engine framing of a stored delivery', () => {
   expect(classify(PEER_PREFIX + OWNER + PEER_SUFFIX)).toEqual({ kind: 'owner' })
-  expect(classify(PEER_PREFIX + person + PEER_SUFFIX)).toEqual({ kind: 'person', name: 'Aden Kim' })
+  expect(classify(PEER_PREFIX + person + PEER_SUFFIX)).toEqual({ kind: 'person', name: 'Aden Kim', id: 'user_a' })
   expect(classify(PEER_PREFIX + '<cross-session-message from="x" from-name="y">\n' + agent + '\n</cross-session-message>').kind).toBe('agent')
   expect(classify(PEER_PREFIX + 'hi ' + OWNER).kind).toBe('peer')
 })
@@ -54,6 +54,17 @@ test('row labels', () => {
   expect(rowLabel({ kind: 'agent', name: 'Friday' })).toBe('Friday · agent')
   expect(rowLabel({ kind: 'session', name: 'Fix flaky test' })).toBe('Fix flaky test · session')
   expect(rowLabel({ kind: 'peer' })).toBeNull()
+})
+
+test('a sender keeps one color; senders spread across the palette; the owner is neutral', () => {
+  expect(colorFor('user_a')).toBe(colorFor('user_a'))
+  expect(PALETTE).toContain(colorFor('user_a'))
+  expect(new Set(Array.from({ length: 40 }, (_, i) => colorFor(`user_${i}`))).size).toBe(PALETTE.length)
+  expect(senderColor(classify(person))).toBe(colorFor('user_a')) // keyed on the id, not the name
+  expect(senderColor({ kind: 'agent', name: 'Friday' })).toBe(colorFor('Friday')) // no id: the name
+  expect(senderColor(classify(OWNER))).toBe(OWNER_COLOR)
+  expect(PALETTE).not.toContain(OWNER_COLOR)
+  expect(senderColor({ kind: 'peer' })).toBeUndefined()
 })
 
 test('row body drops the labels and the framing', () => {
@@ -120,11 +131,15 @@ test("a teammate's row names them collapsed and stays the engine's when expanded
   world(on)
   for (const surface of ['terminal', 'desktop'] as const) {
     let ui = await $.ui.mount(ROW(person, false, surface))
-    expect(await ui.find({ type: 'Text', text: 'Aden Kim · via Lightbulb' })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: 'Aden Kim · via Lightbulb' })).toMatchObject({ props: { bold: true, color: colorFor('user_a') } })
+    expect(await ui.find({ type: 'Box' })).toMatchObject({ props: { borderStyle: 'round', borderColor: colorFor('user_a') } })
     expect(await ui.find({ text: /Check it/ })).toBeDefined()
     await ui.unmount()
     ui = await $.ui.mount(ROW(person, true, surface))
     expect(await ui.drawn()).toEqual({ type: 'Text', children: [ENGINE] })
+    await ui.unmount()
+    ui = await $.ui.mount(ROW(OWNER, false, surface))
+    expect(await ui.find({ type: 'Box' })).toMatchObject({ props: { borderColor: OWNER_COLOR } })
     await ui.unmount()
     ui = await $.ui.mount(ROW('hello from another claude', false, surface))
     expect(await ui.drawn()).toEqual({ type: 'Text', children: [ENGINE] })

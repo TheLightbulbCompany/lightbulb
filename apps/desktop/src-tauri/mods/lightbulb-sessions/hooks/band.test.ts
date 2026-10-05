@@ -1,6 +1,7 @@
 import { test, expect, mock } from 'claude-code/testing'
 import type { On } from 'claude-code'
-import { bandLine } from './state'
+import { bandLine, bandRuns } from './state'
+import { colorFor } from './rules'
 import type { SessionState } from '../types'
 
 const P = 'lightbulb-sessions'
@@ -56,6 +57,24 @@ test('band names watchers and typists', () => {
     { userId: 'm', name: 'Mira Shah', canType: false, typing: false },
   ] }
   expect(bandLine(s)).toBe('● Live · Aden Kim, Mira Shah watching · Aden Kim typing')
+  // each name in its person's color, keyed on userId; the rest plain
+  expect(bandRuns(s).filter(r => r.color)).toEqual([
+    { text: 'Aden Kim', color: colorFor('a') }, { text: 'Mira Shah', color: colorFor('m') }, { text: 'Aden Kim', color: colorFor('a') },
+  ])
+})
+
+test('the band draws watcher names and the asker in their colors', async ($, on) => {
+  const s: SessionState = { ...asking, viewers: [{ userId: 'm', name: 'Mira Shah', canType: true, typing: true }] }
+  const { clock } = world(on, () => ({ status: 200, body: s }))
+  await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
+  await clock.settle()
+  for (const surface of SURFACES) {
+    const ui = await $.ui.mount({ ...BAND, surface })
+    const colored = (await ui.findAll({ type: 'Text' })).filter(t => t.props.color).map(t => [t.text, t.props.color])
+    expect(colored).toEqual([['Mira Shah', colorFor('m')], ['Mira Shah', colorFor('m')], ['Aden Kim', colorFor('u1')]])
+    expect(await ui.find({ type: 'Text', text: /Mira Shah watching/ })).toBeDefined()
+    await ui.unmount()
+  }
 })
 
 test('band says transcript for a plain session, and paused wins', () => {

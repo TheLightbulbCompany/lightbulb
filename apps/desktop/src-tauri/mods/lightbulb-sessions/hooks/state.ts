@@ -1,15 +1,23 @@
 import type { SessionState } from '../types'
+import { colorFor } from './rules'
 
 // The pure half of the mod. Everything that touches `$` lives in register.tsx: the engine
 // follows `$` only into functions declared in the hooks module itself, never across an import.
 
 export type Decision = { decision: 'allow' | 'decline' | 'pause' | 'unpause'; userId?: string; requestId?: string }
 
-export function bandLine(s: SessionState): string {
-  if (s.paused) return '○ Sharing paused'
-  if (s.terminal === null) return '● Shared as a transcript'
-  if (s.viewers.length === 0) return '● Live in Lightbulb'
-  const watching = s.viewers.map(v => v.name).join(', ')
-  const typing = s.viewers.filter(v => v.typing).map(v => v.name)
-  return `● Live · ${watching} watching` + (typing.length ? ` · ${typing.join(', ')} typing` : '')
+// The band's one line in runs; a person's name carries their color (keyed on userId).
+export type Run = { text: string; color?: string }
+
+export function bandRuns(s: SessionState): Run[] {
+  if (s.paused) return [{ text: '○ Sharing paused' }]
+  if (s.terminal === null) return [{ text: '● Shared as a transcript' }]
+  if (s.viewers.length === 0) return [{ text: '● Live in Lightbulb' }]
+  const names = (vs: SessionState['viewers']) =>
+    vs.flatMap((v, i): Run[] => [...(i ? [{ text: ', ' }] : []), { text: v.name, color: colorFor(v.userId) }])
+  const typing = s.viewers.filter(v => v.typing)
+  return [{ text: '● Live · ' }, ...names(s.viewers), { text: ' watching' },
+    ...(typing.length ? [{ text: ' · ' }, ...names(typing), { text: ' typing' }] : [])]
 }
+
+export const bandLine = (s: SessionState) => bandRuns(s).map(r => r.text).join('')

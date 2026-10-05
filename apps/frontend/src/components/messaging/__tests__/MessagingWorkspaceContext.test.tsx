@@ -26,7 +26,7 @@ vi.mock("@/hooks/useTeamsApi", () => ({ useTeamsApi: () => ({
     ? { agents: [{ id: "agent-friday", name: "Friday" }, { id: "agent-atlas", name: "Atlas" }] }
     : { members: [{ userId: "owner", name: "Owner" }, { userId: "colleague", name: "Colleague" }] } }),
 }) }));
-vi.mock("@/components/workspace/workspaceController", () => ({ openPanel: vi.fn(), activateMessagesPanel: vi.fn() }));
+vi.mock("@/components/workspace/workspaceController", () => ({ openPanel: vi.fn(), activateMessagesPanel: vi.fn(), getWorkspaceSnapshot: () => ({ activePanelId: null }) }));
 let directory: RoomDirectoryProps;
 let panel: RoomPanelProps;
 let renderComposer = false;

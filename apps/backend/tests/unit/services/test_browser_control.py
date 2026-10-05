@@ -1154,3 +1154,23 @@ async def test_sign_out_is_a_no_op_for_a_workspace_that_never_ran_a_browser(work
     workspace["browser_state"] = None
     await control.sign_out("org_browser", "google.com", actor="user_1")
     assert workspace["browser_state"] is None
+
+
+@pytest.mark.asyncio
+async def test_sign_out_refuses_a_public_suffix_and_leaves_sibling_sites_alone(workspace, saved, monkeypatch):
+    import json
+
+    workspace["browser_state"].update(session_id=None)
+    key = workspace["browser_state"]["saved_key"]
+    cookies = [_cookie("a", ".example.com.ph"), _cookie("b", "shop.example.com.ph"), _cookie("c", "other.com.ph")]
+    origins = [{"origin": f"https://{h}", "localStorage": []} for h in ("shop.example.com.ph", "other.com.ph")]
+    saved[key] = json.dumps({"cookies": cookies, "origins": origins}).encode()
+    before = copy.deepcopy(workspace["browser_state"])
+    for suffix in ("com.ph", "ph", "co.uk", "github.io", "shop.example.com.ph"):
+        with pytest.raises(control.BrowserError, match="Enter a site"):
+            await control.sign_out("org_browser", suffix, actor="user_1")
+    assert workspace["browser_state"] == before and len(saved) == 2
+    await control.sign_out("org_browser", "example.com.ph", actor="user_1")
+    after = json.loads(saved[workspace["browser_state"]["saved_key"]])
+    assert [c["domain"] for c in after["cookies"]] == ["other.com.ph"]
+    assert [o["origin"] for o in after["origins"]] == ["https://other.com.ph"]

@@ -35,6 +35,7 @@ import uuid
 from typing import Any
 from urllib.parse import urlsplit
 
+import tldextract
 from botocore.exceptions import ClientError
 
 from core.dynamodb import get_table, run_in_thread, utc_now_iso
@@ -88,38 +89,46 @@ def host_of(origin: str) -> str:
     return origin.split("://", 1)[-1]
 
 
-# ponytail: no public-suffix list (not a dependency). Last two labels, three under the suffixes
-# below. A suffix missing here groups its sites under the suffix itself (e.g. every *.com.ph
-# site as "com.ph"), and a "Sign out" there covers all of them: add it, or adopt a PSL library.
-_MULTI_SUFFIXES = frozenset(
-    "co.uk org.uk ac.uk gov.uk me.uk com.au net.au org.au edu.au gov.au co.nz org.nz co.jp ne.jp or.jp ac.jp "
-    "co.in net.in org.in co.kr or.kr co.za com.br com.mx com.ar com.co com.cn com.hk com.tw com.sg com.my "
-    "co.id co.th com.tr co.il com.ua com.pl com.ng com.eg com.sa com.pk "
-    # shared hosting: each tenant is its own site
-    "github.io herokuapp.com vercel.app netlify.app pages.dev web.app firebaseapp.com azurewebsites.net "
-    "cloudfront.net ngrok.io ngrok.app fly.dev onrender.com".split()
-)
+# The Public Suffix List (ICANN + private sections, so someone.github.io is its own site), from
+# tldextract's BUNDLED snapshot only: no suffix_list_urls and no cache, so it never fetches.
+# ponytail: the snapshot is as old as the pinned tldextract. A suffix newer than it, or a host
+# the list does not know at all (an intranet name, a made-up TLD), is its own site: an unknown
+# case can only split one site into two rows, never merge two sites into one. Bump tldextract
+# to refresh the list.
+_PSL = tldextract.TLDExtract(suffix_list_urls=(), cache_dir=None, include_psl_private_domains=True)
 
 
-def site_of(host: str | None) -> str:
-    """The registrable domain a host, origin or cookie domain belongs to ("accounts.google.com",
-    ".google.com", "https://mail.google.com:8443" -> "google.com"): one sign-ins row per site."""
-    host = (host or "").strip().lower()
+def _host(value: str | None) -> str:
+    host = (value or "").strip().lower()
     if "://" in host:
         host = urlsplit(host).hostname or ""
     else:
         host = host.lstrip(".").split("/", 1)[0]
         if host.count(":") == 1:  # host:port (an IPv6 literal has more than one colon)
             host = host.split(":", 1)[0]
-    host = host.strip(".")
+    return host.strip(".")
+
+
+def site_of(host: str | None) -> str:
+    """The registrable domain a host, origin or cookie domain belongs to ("accounts.google.com",
+    ".google.com", "https://mail.google.com:8443" -> "google.com"): one sign-ins row per site.
+    Anything without one (an IP address, a bare public suffix, an unknown name) is the whole
+    host, so it never shares a row with another host."""
+    host = _host(host)
+    return _PSL(host).top_domain_under_public_suffix or host
+
+
+def is_site(site: str) -> bool:
+    """A site a sign-out may name: exactly what ``site_of`` answers for its own hosts, with at
+    least two labels, and never a bare public suffix ("com.ph", "co.uk", "github.io") -- that
+    would cover every site under it."""
+    if site != _host(site) or site.count(".") < 1 or site_of(site) != site:
+        return False
     try:
-        ipaddress.ip_address(host.strip("[]"))
-        return host  # an IP address is its own site
+        ipaddress.ip_address(site)
+        return True  # an IP address is its own site
     except ValueError:
-        pass
-    labels = host.split(".")
-    keep = 3 if ".".join(labels[-2:]) in _MULTI_SUFFIXES else 2
-    return ".".join(labels[-keep:])
+        return _PSL(site).top_domain_under_public_suffix == site
 
 
 async def connector_hint(owner_id: str, origin: str) -> str | None:

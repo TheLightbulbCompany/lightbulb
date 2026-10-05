@@ -251,6 +251,13 @@ async def test_internal_routes_refuse_the_hook_token_and_take_the_vault_token(en
         ("https://app.example.co.uk:8443/login", "example.co.uk"),
         ("shop.example.com.au", "example.com.au"),
         ("someone.github.io", "someone.github.io"),  # shared hosting: each tenant is a site
+        ("shop.example.com.ph", "example.com.ph"),  # a suffix no short allowlist would carry
+        ("a.b.co.uk", "b.co.uk"),
+        ("accounts.google.com", "google.com"),
+        ("t.co", "t.co"),  # a two-label ccTLD host is the site itself
+        ("x.y.s3.amazonaws.com", "y.s3.amazonaws.com"),
+        ("intranet.corp.madeuptld", "intranet.corp.madeuptld"),  # unknown: split, never merged
+        ("com.ph", "com.ph"),  # a bare suffix is nobody's site (is_site refuses it)
         ("example.com", "example.com"),
         ("10.0.0.7", "10.0.0.7"),
         ("localhost", "localhost"),
@@ -341,7 +348,7 @@ async def test_site_routes_edit_and_sign_out_without_returning_a_secret(env, asy
         sign_out.assert_awaited_once()
         assert sign_out.await_args.args == (OWNER, "supademo.com")
         # A site is a registrable domain, never a subdomain, URL or bare word.
-        for bad in ("app.supademo.com", "https://supademo.com", "supademo", ""):
+        for bad in ("app.supademo.com", "https://supademo.com", "supademo", "", "com.ph", "co.uk", "github.io", "com"):
             res = await client.post("/api/v1/website-logins/sites/sign-out", json={"site": bad})
             assert res.status_code in (400, 422), bad
         sign_out.assert_awaited_once()
@@ -388,3 +395,29 @@ async def test_a_login_ask_carries_a_hint_when_the_sites_connector_is_connected(
     assert item.model_dump(by_alias=True)["actions"][0]["input"]["hint"] == hint
     code_item = activity.render_login_request(await store.get_request(OWNER, code["requestId"]), seen=None, admin=True)
     assert code_item.actions[0].input.hint is None
+
+
+@pytest.mark.parametrize(
+    ("site", "ok"),
+    [
+        ("example.com.ph", True),
+        ("google.com", True),
+        ("t.co", True),
+        ("someone.github.io", True),
+        ("10.0.0.7", True),
+        ("com.ph", False),  # public suffixes: would cover every site under them
+        ("co.uk", False),
+        ("github.io", False),
+        ("com", False),
+        ("localhost", False),
+        ("shop.example.com.ph", False),  # a subdomain is not a site
+        (".example.com", False),
+        ("Example.com", False),
+    ],
+)
+def test_only_a_registrable_domain_can_be_signed_out(site, ok):
+    assert store.is_site(site) is ok
+
+
+def test_the_suffix_list_never_fetches():
+    assert store._PSL.suffix_list_urls == ()  # the bundled snapshot only

@@ -1086,6 +1086,7 @@ dependencies = [
     { name = "pyyaml" },
     { name = "starlette" },
     { name = "stripe" },
+    { name = "tldextract" },
     { name = "uvicorn" },
     { name = "websockets" },
 ]
@@ -1136,6 +1137,7 @@ requires-dist = [
     { name = "pyyaml", specifier = ">=6.0.3" },
     { name = "starlette", specifier = ">=0.47.2" },
     { name = "stripe", specifier = ">=14.4.1" },
+    { name = "tldextract", specifier = ">=5.3,<6" },
     { name = "uvicorn", specifier = ">=0.31.0,<1.0.0" },
     { name = "websockets", specifier = ">=12.0" },
 ]

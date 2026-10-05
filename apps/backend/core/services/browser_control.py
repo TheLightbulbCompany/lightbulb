@@ -905,6 +905,12 @@ async def sign_out(owner: str, site: str, *, actor: str) -> None:
     refuses (AGENT_BUSY): the run owns the one automation connection AWS admits, and editing
     the save alone would be undone by that run's turn-end save whenever the site refreshed its
     cookies meanwhile."""
+    from core.services import website_logins
+
+    # Never a public suffix or a bare word: every cookie match below is "this cookie's own site
+    # is `site`", so a real site can only ever match itself and its subdomains.
+    if not website_logins.is_site(site):
+        raise BrowserError("Enter a site like example.com.")
     row = await container_repo.get_by_owner_id(owner, consistent=True)
     old = await container_repo.get_browser_state(owner)
     if not row or not old:

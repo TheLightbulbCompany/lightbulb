@@ -78,7 +78,7 @@ async def sign_out_site(body: SignOutBody, auth: AuthContext = Depends(get_curre
 
     require_org_admin(auth)
     site = body.site.strip().lower()
-    if "." not in site or store.site_of(site) != site:
+    if not store.is_site(site):
         raise HTTPException(status_code=400, detail="Enter a site like example.com.")
     try:
         await browser_control.sign_out(resolve_owner_id(auth), site, actor=auth.user_id)

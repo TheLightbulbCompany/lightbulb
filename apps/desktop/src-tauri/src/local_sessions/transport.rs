@@ -141,6 +141,24 @@ fn restart_delay(previous: u64, lived: Duration) -> u64 {
     }
 }
 
+static SCAN_IN_FLIGHT: AtomicBool = AtomicBool::new(false);
+
+/// Held by the task doing a workspace scan; released when that task ends, not when its caller
+/// stops waiting.
+struct ScanClaim(&'static AtomicBool);
+impl ScanClaim {
+    fn take(flag: &'static AtomicBool) -> Option<Self> {
+        flag.compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+            .ok()
+            .map(|_| Self(flag))
+    }
+}
+impl Drop for ScanClaim {
+    fn drop(&mut self) {
+        self.0.store(false, Ordering::SeqCst);
+    }
+}
+
 impl Host {
     async fn observe_workspace(&mut self, key: &str) -> Result<()> {
         let native = self
@@ -152,16 +170,24 @@ impl Host {
         // lsof and git are async and 2 s-bounded each; the file reads run on the blocking pool.
         // The whole observation is bounded too: an unknown result costs one advisory, a stall
         // costs every frame queued behind this loop.
-        let home = self.home.clone();
-        let scan = tokio::spawn(async move {
-            match workspace::session_root(&native, &home).await {
-                Ok(cwd) => workspace::scan(&cwd, &home).await,
-                Err(error) => Err(error),
+        // One scan at a time: a timed-out scan stuck on a stalled filesystem is only detached,
+        // so its claim is held until it really ends and later observations read as unknown.
+        let observed = match ScanClaim::take(&SCAN_IN_FLIGHT) {
+            None => Err("workspace observation in progress".into()),
+            Some(claim) => {
+                let home = self.home.clone();
+                let scan = tokio::spawn(async move {
+                    let _claim = claim;
+                    match workspace::session_root(&native, &home).await {
+                        Ok(cwd) => workspace::scan(&cwd, &home).await,
+                        Err(error) => Err(error),
+                    }
+                });
+                match tokio::time::timeout(Duration::from_secs(15), scan).await {
+                    Ok(joined) => joined.map_err(|_| "workspace scan stopped")?,
+                    Err(_) => Err("workspace observation timed out".into()),
+                }
             }
-        });
-        let observed = match tokio::time::timeout(Duration::from_secs(15), scan).await {
-            Ok(joined) => joined.map_err(|_| "workspace scan stopped")?,
-            Err(_) => Err("workspace observation timed out".into()),
         };
         let root = observed.as_ref().ok().map(|(root, _)| root.clone());
         let keys: Vec<_> = self
@@ -2374,6 +2400,29 @@ async fn send(socket: &mut Socket, body: &Value) -> Result<()> {
 #[cfg(test)]
 pub(super) mod tests {
     use super::*;
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn transport_a_stuck_workspace_scan_blocks_the_next_one() {
+        static FLAG: AtomicBool = AtomicBool::new(false);
+        let (release, stuck) = std::sync::mpsc::channel::<()>();
+        let claim = ScanClaim::take(&FLAG).unwrap();
+        // As in observe_workspace: the claim lives in the task, the blocking work never ends.
+        let scan = tokio::spawn(async move {
+            let _claim = claim;
+            let _ = tokio::task::spawn_blocking(move || stuck.recv()).await;
+        });
+        assert!(tokio::time::timeout(Duration::from_millis(50), scan).await.is_err());
+        assert!(ScanClaim::take(&FLAG).is_none(), "a second scan started beside a stuck one");
+        drop(release);
+        for _ in 0..200 {
+            if let Some(next) = ScanClaim::take(&FLAG) {
+                drop(next);
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        panic!("the claim outlived the scan");
+    }
 
     const SID: &str = "aaaabbbb-cccc-4ddd-8eee-ffff00001111";
     const SID_B: &str = "bbbbcccc-dddd-4eee-8fff-000011112222";

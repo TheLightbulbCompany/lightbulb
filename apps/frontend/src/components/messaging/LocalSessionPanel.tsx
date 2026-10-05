@@ -27,6 +27,8 @@ const BOTTOM_SLACK = 80;
 /** Within this many pixels of the top, older output is fetched. */
 const SCROLLBACK_SLACK = 240;
 
+type Decide = (sessionId: string, userId: string, decision: "allow" | "decline", requestId?: string) => Promise<unknown>;
+type JoinDecider = { decideLocalSessionJoin?: Decide; decideLocalSessionPickup?: Decide };
 type Client = SessionSource["client"] & SessionControlClient & PickupClient & Parameters<typeof SessionDetails>[0]["client"] & JoinDecider & { watchLocalSession?: (sessionId: string) => Promise<unknown>; sendLocalSessionInput?: (sessionId: string, data: string, epoch: number) => Promise<unknown> };
 
 /**
@@ -122,6 +124,7 @@ export function LocalSessionPanel({ session, ownerName, own, client, revision, o
   const typing = Object.keys(typers).map(personName);
   const resume = useSessionResume(client, session, { own, userId, ownerName, nameOf: personName, uuid: () => crypto.randomUUID() });
   const join = useSessionJoinRequest(client, session);
+  const askPickup = useSessionJoinRequest(client, session, "pickup");
   const audit = useSessionAudit(client, session.sessionId,
     `${revision}:${session.latestEventSeq}:${session.teamControl}:${session.allowedSenders?.join()}:${session.joinRequest}:${session.pickup?.allowed}:${session.status}:${session.pendingApproval?.approvalId}`);
   const events = withAuditNotices(history.events, audit, personName);
@@ -211,10 +214,18 @@ export function LocalSessionPanel({ session, ownerName, own, client, revision, o
       </p>
       <div className="session-status-actions">
         {!own && canPickUp(session) && <SessionPickup session={session} ownerName={ownerName} own={false} client={client} />}
+        {!own && !canPickUp(session) && session.provider === "claude" && session.status !== "ended" && !session.pickup?.allowed && askPickup.supported &&
+          <Button type="button" variant="outline" size="sm" disabled={askPickup.saving || askPickup.state === "pending"} onClick={() => void askPickup.ask()}>
+            {askPickup.state === "pending" ? "Requested" : askPickup.state === "declined" ? `${ownerName} declined. Ask again` : "Ask to pick up"}</Button>}
         <Button type="button" variant="ghost" size="sm" onClick={() => show(tab)}><Info aria-hidden="true" />Details</Button>
       </div>
     </div>
-    {own && !!session.pendingJoins?.length && <JoinRequests session={session} client={client} personName={personName} />}
+    {own && !!session.pendingJoins?.length && <JoinRequests waiting={session.pendingJoins} ids={session.pendingJoinIds}
+      line={name => `${name} wants to join this session.`} decide={(who, d, id) => client.decideLocalSessionJoin!(session.sessionId, who, d, id)}
+      enabled={!!client.decideLocalSessionJoin} personName={personName} />}
+    {own && !!session.pendingPickups?.length && <JoinRequests waiting={session.pendingPickups} ids={session.pendingPickupIds}
+      line={name => `${name} wants to pick up this session.`} decide={(who, d, id) => client.decideLocalSessionPickup!(session.sessionId, who, d, id)}
+      enabled={!!client.decideLocalSessionPickup} personName={personName} />}
     {(pressLeft || session.shared === false || session.controlUnavailableReason || session.workspace?.changed) && <div className="session-notices">
       {pressLeft && <p role="status">Press ← in its terminal to share this one live, or turn on Share every session live in {isDesktopApp()
         ? <Link className="underline underline-offset-4" href="/settings?panel=desktop#share-every-session-live">Settings</Link>
@@ -294,22 +305,24 @@ export function LocalSessionPanel({ session, ownerName, own, client, revision, o
   </>;
 }
 
-/** The owner answers "Ask to join" in the session itself, where a request's notification lands. */
-type JoinDecider = { decideLocalSessionJoin?: (sessionId: string, userId: string, decision: "allow" | "decline", requestId?: string) => Promise<unknown> };
-function JoinRequests({ session, client, personName }: { session: LocalSession; client: JoinDecider; personName: (who: string) => string }) {
+/** The owner answers "Ask to join" / "Ask to pick up" in the session itself, where a request's notification lands. */
+function JoinRequests({ waiting, ids, line, decide: send, enabled, personName }: {
+  waiting: string[]; ids?: Record<string, string>; line: (name: string) => string; enabled: boolean;
+  decide: (who: string, decision: "allow" | "decline", id?: string) => Promise<unknown>; personName: (who: string) => string;
+}) {
   // One entry per decision in flight, so finishing one never re-enables another's buttons.
   const [busy, setBusy] = useState<string[]>([]);
   const [error, setError] = useState<string | null>(null);
   const decide = async (who: string, decision: "allow" | "decline") => {
-    if (!client.decideLocalSessionJoin) return;
+    if (!enabled) return;
     setBusy(list => [...list, who]); setError(null);
-    try { await client.decideLocalSessionJoin(session.sessionId, who, decision, session.pendingJoinIds?.[who]); }
+    try { await send(who, decision, ids?.[who]); }
     catch { setError("Could not answer that request. Try again."); }
     finally { setBusy(list => list.filter(x => x !== who)); }
   };
   return <div className="session-notices">
-    {session.pendingJoins?.map(who => <div key={who} role="status" className="local-session-join-request">
-      <p>{personName(who)} wants to join this session.</p>
+    {waiting.map(who => <div key={who} role="status" className="local-session-join-request">
+      <p>{line(personName(who))}</p>
       <div className="local-session-actions">
         <Button type="button" size="sm" disabled={busy.includes(who)} onClick={() => void decide(who, "allow")}>Allow</Button>
         <Button type="button" variant="outline" size="sm" disabled={busy.includes(who)} onClick={() => void decide(who, "decline")}>Decline</Button>

@@ -14,12 +14,14 @@ async function openDetails() {
   return screen.findByRole("dialog", { name: "Load test" });
 }
 
-function focus(entry: { session: LocalSession; ownerName: string; own: boolean } | null, { onClose = vi.fn(), loading = false, getLocalSession, events = [], submit, onMessageOwner, participants, join, decide }: {
+function focus(entry: { session: LocalSession; ownerName: string; own: boolean } | null, { onClose = vi.fn(), loading = false, getLocalSession, events = [], submit, onMessageOwner, participants, join, decide, askPickup, decidePickup }: {
   onClose?: () => void; loading?: boolean; getLocalSession?: SessionSource["client"]["getLocalSession"];
   events?: unknown[]; submit?: SessionSource["client"]["submitLocalSessionCommand"];
   onMessageOwner?: (id: string, name: string) => void; participants?: { kind: "human" | "agent"; id: string; displayName: string }[];
   join?: (sessionId: string) => Promise<LocalSession>;
   decide?: (sessionId: string, userId: string, decision: "allow" | "decline", requestId?: string) => Promise<LocalSession>;
+  askPickup?: (sessionId: string) => Promise<LocalSession>;
+  decidePickup?: (sessionId: string, userId: string, decision: "allow" | "decline", requestId?: string) => Promise<LocalSession>;
 } = {}) {
   const client = {
     listWorkspaceSessions: vi.fn(),
@@ -27,8 +29,11 @@ function focus(entry: { session: LocalSession; ownerName: string; own: boolean }
     listLocalSessionEvents: vi.fn(async () => ({ events, nextAfterSeq: null })),
     submitLocalSessionCommand: submit ?? vi.fn(),
     getLocalSessionCommand: vi.fn(),
+    requestLocalSessionPickup: vi.fn(),
     ...(join ? { requestLocalSessionJoin: join } : {}),
     ...(decide ? { decideLocalSessionJoin: decide } : {}),
+    ...(askPickup ? { requestLocalSessionPickupAccess: askPickup } : {}),
+    ...(decidePickup ? { decideLocalSessionPickup: decidePickup } : {}),
   } as unknown as SessionSource["client"];
   return render(<SessionFocus focus={{ sessionId: "s1" }} entries={entry ? [entry] : []} loading={loading} hintRevision={0} client={client}
     resolveSessionOwner={resolveSessionOwner} onAccessLost={vi.fn()} onClose={onClose} onMessageOwner={onMessageOwner} participants={participants} />);
@@ -214,4 +219,39 @@ it("opens a live origin, not a fork copied from it", async () => {
   render(<SessionFocus focus={{ sessionId: "s1" }} entries={entries} loading={false} hintRevision={0} client={client}
     resolveSessionOwner={resolveSessionOwner} onAccessLost={vi.fn()} onClose={vi.fn()} />);
   expect(await screen.findByRole("heading", { name: "Claude Load test" })).toBeInTheDocument();
+});
+
+const ready = { allowed: true, state: "ready" } as never;
+
+it("lets a teammate ask to pick up, then reads Requested", async () => {
+  const askPickup = vi.fn(async () => ({ ...session, pickupRequest: "pending" as const }));
+  focus({ session, ownerName: "Alice", own: false }, { askPickup });
+  await userEvent.click(await screen.findByRole("button", { name: "Ask to pick up" }));
+  expect(askPickup).toHaveBeenCalledWith("s1");
+  expect(await screen.findByRole("button", { name: "Requested" })).toBeDisabled();
+});
+
+it("says the owner declined the pick-up request and lets the person ask again", async () => {
+  focus({ session: { ...session, pickupRequest: "declined" }, ownerName: "Alice", own: false }, { askPickup: vi.fn() });
+  expect(await screen.findByRole("button", { name: "Alice declined. Ask again" })).toBeEnabled();
+});
+
+it("shows Pick up, not Ask to pick up, once pick-up is allowed and ready", async () => {
+  focus({ session: { ...session, pickup: ready }, ownerName: "Alice", own: false }, { askPickup: vi.fn() });
+  expect(await screen.findByRole("button", { name: /Pick up/ })).toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: "Ask to pick up" })).not.toBeInTheDocument();
+});
+
+it("offers no Ask to pick up on a Codex session", async () => {
+  focus({ session: { ...session, provider: "codex" }, ownerName: "Alice", own: false }, { askPickup: vi.fn() });
+  expect(await screen.findByRole("heading", { name: /Load test/ })).toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: "Ask to pick up" })).not.toBeInTheDocument();
+});
+
+it("lets the owner answer a pick-up request in the session itself", async () => {
+  const decidePickup = vi.fn(async () => session);
+  focus({ session: { ...session, status: "idle", pendingPickups: ["bob"], pendingPickupIds: { bob: "req-9" } }, ownerName: "You", own: true }, { decidePickup });
+  expect(await screen.findByText("Alice wants to pick up this session.")).toBeInTheDocument();
+  await userEvent.click(screen.getByRole("button", { name: "Allow" }));
+  expect(decidePickup).toHaveBeenCalledWith("s1", "bob", "allow", "req-9");
 });

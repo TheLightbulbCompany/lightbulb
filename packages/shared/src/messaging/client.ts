@@ -90,6 +90,9 @@ export interface MessagingClient {
   setLocalSessionTeamControl(sessionId: string, enabled: boolean): Promise<LocalSession>;
   /** A teammate asks the session's owner to let them send. Repeating while pending changes nothing. */
   requestLocalSessionJoin(sessionId: string): Promise<LocalSession>;
+  /** A teammate asks the owner to allow pick-up. (Not requestLocalSessionPickup: that one starts a pick-up.) */
+  requestLocalSessionPickupAccess(sessionId: string): Promise<LocalSession>;
+  decideLocalSessionPickup(sessionId: string, userId: string, decision: "allow" | "decline", requestId?: string): Promise<LocalSession>;
   /** Keep a running session's live terminal coming to this person; sent every 15 s while it is on screen. */
   watchLocalSession(sessionId: string): Promise<void>;
   /** An admitted viewer's keystrokes (base64, at most 4096 raw bytes) for the live terminal screen `epoch` they are looking at. */
@@ -168,6 +171,9 @@ export function createMessagingClient(api: ApiMethods): MessagingClient {
     setLocalSessionSharing: (sessionId, shared) => api.put(`${sessionPath(sessionId)}/sharing`, { shared }) as Promise<LocalSession>,
     setLocalSessionTeamControl: (sessionId, enabled) => api.put(`${sessionPath(sessionId)}/team-control`, { enabled }) as Promise<LocalSession>,
     requestLocalSessionJoin: (sessionId) => api.post(`${sessionPath(sessionId)}/join-requests`, {}) as Promise<LocalSession>,
+    requestLocalSessionPickupAccess: (sessionId) => api.post(`${sessionPath(sessionId)}/pickup-requests`, {}) as Promise<LocalSession>,
+    decideLocalSessionPickup: (sessionId, userId, decision, requestId) =>
+      api.post(`${sessionPath(sessionId)}/pickup-requests/${encodeURIComponent(userId)}`, { decision, ...(requestId ? { requestId } : {}) }) as Promise<LocalSession>,
     watchLocalSession: (sessionId) => api.post(`${sessionPath(sessionId)}/viewing`, {}) as Promise<void>,
     sendLocalSessionInput: async (sessionId, data, epoch) => { await api.post(`${sessionPath(sessionId)}/input`, { data, epoch }); },
     decideLocalSessionJoin: (sessionId, userId, decision, requestId) =>

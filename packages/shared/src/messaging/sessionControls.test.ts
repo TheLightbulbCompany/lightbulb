@@ -37,6 +37,14 @@ describe("auditLine for asking to join", () => {
   });
 });
 
+describe("auditLine for asking to pick up", () => {
+  it("names the person asking and the one declined", () => {
+    expect(auditLine({ at: "", action: "pickup_requested", actorUserId: "user_aden" }, nameOf)).toBe("Aden asked to pick up this session");
+    expect(auditLine({ at: "", action: "pickup_request_declined", actorUserId: "user_owner", subjectUserId: "user_aden" }, nameOf))
+      .toBe("Prasiddha declined Aden's request to pick up this session");
+  });
+});
+
 describe("auditLine", () => {
   it("names who did what, from Lightbulb", () => {
     expect(auditLine({ at: "", action: "approve", actorUserId: "user_aden" }, nameOf)).toBe("Aden approved a permission prompt from Lightbulb");

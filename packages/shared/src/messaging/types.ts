@@ -394,6 +394,11 @@ export interface LocalSession {
   inputPaused?: boolean;
   /** The owner's own view only: each waiting person's request id, sent back with the answer. */
   pendingJoinIds?: Record<string, string>;
+  /** The READER's own ask to pick this session up: pending, or declined by the owner. */
+  pickupRequest?: "pending" | "declined" | null;
+  /** The owner's own view only: teammates waiting for an answer to "Ask to pick up", and their request ids. */
+  pendingPickups?: string[];
+  pendingPickupIds?: Record<string, string>;
   /** A permission prompt the owner's Mac holds open for a remote answer. */
   pendingApproval?: LocalSessionPendingApproval;
   /** As the harness wrote it. Read-only: neither CLI takes a change from outside its terminal. */
@@ -494,7 +499,7 @@ export interface LocalSessionAuditEntry {
   at: string;
   action: "native_send_requested" | "native_send_approved" | "native_send_denied" | "native_send_cancelled" | "send" | "interrupt" | "approve" | "deny" | "cancel" | "team_control_on" | "team_control_off" | "team_control_ended" | "share_link_created" | "share_link_revoked"
     | "pickup_on" | "pickup_off" | "picked_up" | "pickup_expired"
-    | "join_requested" | "join_allowed" | "join_declined" | "sender_removed"
+    | "pickup_requested" | "pickup_request_declined" | "join_requested" | "join_allowed" | "join_declined" | "sender_removed"
     | "resume_requested" | "resume_revoked";
   actorUserId?: string;
   /** Whom an owner's join decision or removal was about. */

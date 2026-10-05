@@ -52,7 +52,12 @@ async def test_entry_names_viewers_typists_and_pending_requests(monkeypatch):
         joinRequests={
             "user_zoe": {"state": "pending", "requestId": "r1"},
             "user_bo": {"state": "declined", "requestId": "r0"},
-        }
+        },
+        pickupRequests={
+            "user_zoe": {"state": "pending", "requestId": "p1"},
+            "user_al": {"state": "pending", "requestId": "p2"},
+            "user_bo": {"state": "declined", "requestId": "p0"},
+        },
     )
     out = await presence.entry(row, 123)
     assert out["paused"] is False and out["at"] == 123
@@ -60,7 +65,13 @@ async def test_entry_names_viewers_typists_and_pending_requests(monkeypatch):
         {"userId": "user_aden", "name": "Aden", "canType": True, "typing": True},
         {"userId": "user_mira", "name": "Mira", "canType": False, "typing": False},
     ]
-    assert out["joinRequests"] == [{"userId": "user_zoe", "name": "Zoe", "requestId": "r1"}]
+    assert out["joinRequests"] == [
+        {"userId": "user_al", "name": "Al", "requestId": "p2", "kind": "pickup"},
+        {"userId": "user_zoe", "name": "Zoe", "requestId": "r1", "kind": "join"},
+        {"userId": "user_zoe", "name": "Zoe", "requestId": "p1", "kind": "pickup"},
+    ]
+    # Pick-up turned on answers every pick-up request.
+    assert [r["kind"] for r in (await presence.entry({**row, "pickupAllowed": True}, 123))["joinRequests"]] == ["join"]
 
 
 @pytest.mark.asyncio
@@ -90,12 +101,16 @@ async def test_ack_never_trims_an_entry_that_holds_a_join_request(monkeypatch):
         f"r{i}": _row(sessionId=f"r{i}", joinRequests={"user_zoe": {"state": "pending", "requestId": f"req{i}"}})
         for i in range(4)
     }
+    rows |= {
+        f"p{i}": _row(sessionId=f"p{i}", pickupRequests={"user_zoe": {"state": "pending", "requestId": f"pk{i}"}})
+        for i in range(2)
+    }
     monkeypatch.setattr(presence.repo, "get_session", AsyncMock(side_effect=lambda owner, sid: rows[sid]))
     monkeypatch.setattr(presence.human_display_name, "side_effect", lambda u: "N" * 120)
     monkeypatch.setattr(presence.store, "_query", _rows(viewers=list(big)))
     ack = await presence.ack_with_presence({"type": "local.device.heartbeat.ack"}, "org_a", list(rows))
     listed = [e["sessionId"] for e in ack["presence"]]
-    assert {f"r{i}" for i in range(4)} <= set(listed)
+    assert {f"r{i}" for i in range(4)} | {"p0", "p1"} <= set(listed)
     assert len(json.dumps(ack, separators=(",", ":")).encode()) <= sessions.MAX_ENVELOPE_BYTES
 
 
@@ -170,6 +185,8 @@ def test_input_paused_is_public_only_with_a_pending_request_on_a_presence_mac(mo
     assert sessions._session_public({**base, **pending}, "user_aden").input_paused is True
     assert sessions._session_public(base, "user_aden").input_paused is False
     assert sessions._session_public({**base, **pending, "deviceFeatures": []}, "user_aden").input_paused is False
+    pickup = {"pickupRequests": {"user_zoe": {"state": "pending", "requestId": "p1"}}}
+    assert sessions._session_public({**base, **pickup}, "user_aden").input_paused is True
 
 
 @pytest.mark.asyncio

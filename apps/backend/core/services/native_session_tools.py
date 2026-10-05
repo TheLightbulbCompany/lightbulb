@@ -92,6 +92,11 @@ async def decide(device: MachineIdentity, body: NativeDecisionRequest) -> local_
         # Same notice the web sharing route sends, so other clients' session views refresh.
         await publish_resources_changed(device.owner_id, device.user_id)
         return session
+    # Join and pick-up requests share one presence list; the request id says which one this answers.
+    if local_sessions.pending_pickups(row).get(body.user_id) == body.request_id:
+        return await local_sessions.decide_pickup_request(
+            auth, sid, body.user_id, body.decision, request_id=body.request_id
+        )
     return await local_sessions.decide_join(auth, sid, body.user_id, body.decision, request_id=body.request_id)
 
 

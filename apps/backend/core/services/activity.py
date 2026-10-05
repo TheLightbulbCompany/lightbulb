@@ -450,22 +450,28 @@ def join_item_id(session_id: str, requester: str, request_id: str) -> str:
     return f"join:{session_id}:{requester}:{request_id}"
 
 
+def pickup_item_id(session_id: str, requester: str, request_id: str) -> str:
+    return f"pickup:{session_id}:{requester}:{request_id}"
+
+
 def render_join_request(row: dict, session: dict, *, seen: str | None) -> ActivityItem:
     """A teammate's ask to join one of the viewer's sessions (``local_sessions.request_join``),
-    open while THAT ask is still pending on the session row."""
-    from core.services.local_sessions import join_request_title
+    or to pick it up (``request_pickup_access``, ``request: "pickup"`` on the row), open while
+    THAT ask is still pending on the session row."""
+    from core.services.local_sessions import join_request_title, pickup_request_title
 
     sid, requester = session["sessionId"], row["requesterId"]
-    current = (session.get("joinRequests") or {}).get(requester) or {}
+    pickup = row.get("request") == "pickup"
+    current = (session.get("pickupRequests" if pickup else "joinRequests") or {}).get(requester) or {}
     open_ = (
-        session.get("endedAt") is None
+        (not session.get("pickupAllowed") if pickup else session.get("endedAt") is None)
         and current.get("state") == "pending"
         and current.get("requestId") == row["requestId"]
     )
     created = _when(row["createdAt"])
     actor = ActivityActor(kind="human", id=requester, name=str(row.get("requesterName") or "A teammate"))
     return ActivityItem(
-        id=join_item_id(sid, requester, row["requestId"]),
+        id=(pickup_item_id if pickup else join_item_id)(sid, requester, row["requestId"]),
         kind="session",
         subtype="join_request",
         actor=actor,
@@ -473,9 +479,11 @@ def render_join_request(row: dict, session: dict, *, seen: str | None) -> Activi
         state="open" if open_ else "resolved",
         read=not _newer_than(created, seen),
         summary=ActivitySummary(
-            title=_clip(join_request_title(actor.name, session), TITLE_CHARS),
+            title=_clip((pickup_request_title if pickup else join_request_title)(actor.name, session), TITLE_CHARS),
             requester=actor,
-            reason="Allow lets just them send follow-ups and answer prompts, until the session ends.",
+            reason="Allow lets everyone in the workspace pick up this session on their Mac."
+            if pickup
+            else "Allow lets just them send follow-ups and answer prompts, until the session ends.",
             links=[ActivityLink(kind="session", id=sid, label="Session")],
         ),
         actions=[
@@ -488,7 +496,7 @@ def render_join_request(row: dict, session: dict, *, seen: str | None) -> Activi
 
 
 async def _run_join_action(
-    auth: AuthContext, session_id: str, requester: str, request_id: str, action_id: str
+    auth: AuthContext, session_id: str, requester: str, request_id: str, action_id: str, *, pickup: bool = False
 ) -> ActivityItem:
     """Allow / Decline from Activity: the same owner-only door as the session route."""
     from core.dynamodb import utc_now_iso
@@ -501,8 +509,9 @@ async def _run_join_action(
         session = await local_sessions_repo.get_session(owner_id, session_id)
         if not session or session.get("ownerId") != owner_id or session.get("humanUserId") != auth.user_id:
             raise ApiProblem("ACTIVITY_NOT_FOUND", "Activity item not found.")
-        entry = (session.get("joinRequests") or {}).get(requester) or {}
+        entry = (session.get("pickupRequests" if pickup else "joinRequests") or {}).get(requester) or {}
         row = {
+            "request": "pickup" if pickup else "join",
             "requesterId": requester,
             "requesterName": await messaging.human_display_name(requester),
             "requestId": request_id,
@@ -515,7 +524,8 @@ async def _run_join_action(
         return item  # already answered (a retried tap), or the session ended
     _require_action(item, action_id)
     decision = "allow" if action_id == "allow" else "decline"
-    await local_sessions.decide_join(auth, session_id, requester, decision, request_id=request_id)
+    decide = local_sessions.decide_pickup_request if pickup else local_sessions.decide_join
+    await decide(auth, session_id, requester, decision, request_id=request_id)
     return await current()
 
 
@@ -1742,8 +1752,8 @@ async def run_action(
         return await _run_login_action(auth, parts[1], action_id, body)
     if parts[0] == "extension" and len(parts) == 2:
         return await _run_extension_action(auth, parts[1], action_id)
-    if parts[0] == "join" and len(parts) == 4 and all(_ID_RE.match(x) for x in parts[1:]):
-        return await _run_join_action(auth, parts[1], parts[2], parts[3], action_id)
+    if parts[0] in ("join", "pickup") and len(parts) == 4 and all(_ID_RE.match(x) for x in parts[1:]):
+        return await _run_join_action(auth, parts[1], parts[2], parts[3], action_id, pickup=parts[0] == "pickup")
     if parts[0] in _MESSAGE_KINDS and len(parts) == 4:
         return await _run_message_action(auth, parts[0], parts[1:], action_id, body)
     if len(parts) == 3 and parts[0] == "paperclip" and _ID_RE.match(parts[2]):

@@ -59,9 +59,14 @@ async def entry(row: dict, at: int) -> dict:
             {"userId": u, "name": await _name(u), "canType": sessions.may_control(row, u), "typing": u in typing}
             for u in viewers
         ],
-        "joinRequests": [
-            {"userId": u, "name": await _name(u), "requestId": rid} for u, rid in sorted(pending_joins(row).items())
-        ],
+        "joinRequests": sorted(
+            [
+                {"userId": u, "name": await _name(u), "requestId": rid, "kind": kind}
+                for kind, pending in (("join", pending_joins(row)), ("pickup", sessions.pending_pickups(row)))
+                for u, rid in pending.items()
+            ],
+            key=lambda r: (r["userId"], r["kind"]),
+        ),
     }
 
 

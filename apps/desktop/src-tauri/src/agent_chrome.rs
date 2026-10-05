@@ -15,7 +15,7 @@ use crate::node_client::{event_text, EventSender};
 use futures_util::future::BoxFuture;
 use futures_util::{SinkExt, StreamExt};
 use serde_json::{json, Value};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -584,6 +584,13 @@ struct Entry {
     current: Option<String>,
     /// The Chrome endpoint this channel connected to (a cast opens its own connection there).
     url: Option<String>,
+    /// Ids of `Target.createTarget` commands that ASKED for a background tab, awaiting their
+    /// response. Only the bridge's sign-in sync does (`browser_state._in_background_tab`);
+    /// agent-browser never sets the flag, the filter adds it for it.
+    hidden_pending: HashSet<u64>,
+    /// The targets those created: never `current`, so the live view does not flip through the
+    /// sync tab's page per saved site.
+    hidden: HashSet<String>,
 }
 
 #[derive(Default)]
@@ -736,7 +743,7 @@ impl Channels {
         }
         self.hooks.epoch.fetch_add(1, Ordering::SeqCst);
         let task = tokio::spawn(self.clone().run(id.to_string(), profile_id, rx));
-        inner.channels.insert(id.to_string(), Entry { tx, task: Some(task), sessions: HashMap::new(), current: None, url: None });
+        inner.channels.insert(id.to_string(), Entry { tx, task: Some(task), sessions: HashMap::new(), current: None, url: None, hidden_pending: HashSet::new(), hidden: HashSet::new() });
         drop(inner);
         if let Some(notice) = payload.get("notice").and_then(Value::as_str) {
             let text: String = notice.chars().filter(|c| !c.is_control()).take(200).collect();
@@ -863,6 +870,20 @@ impl Channels {
     /// ever updates its own map from its own traffic.
     fn note_target_event(&self, channel: &str, text: &str) {
         if !text.contains("Target.attachedToTarget") && !text.contains("Target.detachedFromTarget") {
+            // A requested-background createTarget's response names a tab the view never follows.
+            if text.contains("\"targetId\"") && text.contains("\"result\"") {
+                let mut inner = self.lock();
+                let Some(entry) = inner.channels.get_mut(channel) else { return };
+                if entry.hidden_pending.is_empty() {
+                    return;
+                }
+                let Ok(v) = serde_json::from_str::<Value>(text) else { return };
+                if v.get("id").and_then(Value::as_u64).is_some_and(|id| entry.hidden_pending.remove(&id)) {
+                    if let Some(target) = v.pointer("/result/targetId").and_then(Value::as_str) {
+                        entry.hidden.insert(target.to_string());
+                    }
+                }
+            }
             return;
         }
         let Ok(v) = serde_json::from_str::<Value>(text) else { return };
@@ -875,7 +896,9 @@ impl Channels {
             // them, which would otherwise flip the live view onto a frame or worker.
             "Target.attachedToTarget" if v.pointer("/params/targetInfo/type").and_then(Value::as_str) == Some("page") => {
                 if let Some(target) = v.pointer("/params/targetInfo/targetId").and_then(Value::as_str) {
-                    entry.sessions.insert(session.to_string(), target.to_string());
+                    if !entry.hidden.contains(target) {
+                        entry.sessions.insert(session.to_string(), target.to_string());
+                    }
                 }
             }
             "Target.detachedFromTarget" => {
@@ -907,6 +930,15 @@ impl Channels {
         let (filtered, method, session_id) = filter(data, &self.hooks.downloads);
         if let (Some(method), Some(session_id)) = (method.as_deref(), session_id.as_deref()) {
             self.note_command(channel, method, session_id);
+        }
+        if method.as_deref() == Some("Target.createTarget") {
+            // Rare command: a second parse, of the caller's own flag (the filter sets it on all).
+            let msg = serde_json::from_str::<Value>(data).unwrap_or_default();
+            if let (Some(id), Some(true)) = (msg.get("id").and_then(Value::as_u64), msg.pointer("/params/background").and_then(Value::as_bool)) {
+                if let Some(entry) = self.lock().channels.get_mut(channel) {
+                    entry.hidden_pending.insert(id);
+                }
+            }
         }
         match filtered {
             Filtered::Pass(t) => Route::Chrome(t),
@@ -1843,6 +1875,27 @@ mod tests {
         assert_eq!(ch.current_target("a"), None, "attach alone doesn't set current");
         ch.route_backend("a", &sessioned("Page.navigate", "S1", json!({"url": "https://x"})));
         assert_eq!(ch.current_target("a"), Some("T1".to_string()));
+    }
+
+    #[tokio::test]
+    async fn the_sign_in_sync_tab_never_becomes_current() {
+        // prod 2026-10-05: the live view flipped through every saved site as the bridge's
+        // background tab loaded each one's localStorage.
+        let (ch, _, _rx) = fake(Duration::from_secs(600));
+        open(&ch, "a");
+        ch.note_target_event("a", &attached("S1", "T1"));
+        ch.route_backend("a", &sessioned("Page.navigate", "S1", json!({"url": "https://x"})));
+        ch.route_backend("a", &call("Target.createTarget", json!({"url": "about:blank", "background": true})));
+        ch.note_target_event("a", &json!({"id": 7, "result": {"targetId": "SYNC"}}).to_string());
+        ch.note_target_event("a", &attached("S2", "SYNC"));
+        ch.route_backend("a", &sessioned("Page.navigate", "S2", json!({"url": "https://saved.site/"})));
+        assert_eq!(ch.current_target("a"), Some("T1".to_string()));
+        // The agent's own new tab (agent-browser sends no background flag) is still followed.
+        ch.route_backend("a", &call("Target.createTarget", json!({"url": "https://y"})));
+        ch.note_target_event("a", &json!({"id": 7, "result": {"targetId": "T2"}}).to_string());
+        ch.note_target_event("a", &attached("S3", "T2"));
+        ch.route_backend("a", &sessioned("Runtime.evaluate", "S3", json!({"expression": "1"})));
+        assert_eq!(ch.current_target("a"), Some("T2".to_string()));
     }
 
     #[tokio::test]

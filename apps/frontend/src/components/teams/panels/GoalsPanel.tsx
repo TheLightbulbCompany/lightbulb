@@ -25,7 +25,7 @@ import {
 } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { useInlineTeamsNav } from "@/components/chat/InlineTeamsNav";
-import { teamsDetailUrl } from "@/lib/shellNav";
+import { navigateShell, teamsDetailUrl } from "@/lib/shellNav";
 import { useTeamsApi } from "@/hooks/useTeamsApi";
 import { notifyApiError } from "@/lib/notify";
 import { useGoalMutations } from "@/components/teams/goals/hooks/useGoalMutations";
@@ -174,7 +174,7 @@ export function GoalsPanel() {
     if (nav) {
       nav.openDetail("goal-detail", id);
     } else if (typeof window !== "undefined") {
-      window.history.pushState(null, "", teamsDetailUrl("goal", id));
+      navigateShell(teamsDetailUrl("goal", id));
     }
   };
 

@@ -12,7 +12,7 @@ import { Dialog, DialogPortal, DialogTitle } from "@/components/ui/dialog";
 import { Search } from "lucide-react";
 import { filterNavActions, type CommandPaletteAction } from "./commandPaletteActions";
 import { useCompanyStripeStatus } from "@/components/settings/CompanyStripeSection";
-import { teamsDetailUrl } from "@/lib/shellNav";
+import { navigateShell, teamsDetailUrl } from "@/lib/shellNav";
 import { agentInspectorUrl } from "@/components/teams/shared/lib/agentInspectorUrl";
 import { useFilteredCommandResults } from "./useFilteredCommandResults";
 import { useRoomCommandResults } from "@/components/messaging/roomCommands";
@@ -99,7 +99,7 @@ function CommandPaletteContent({ open, onOpenChange }: CommandPaletteProps) {
     // Palette targets are all in-shell `/chat?...` URLs — commit them through
     // the History API (same mechanism as handleShellLinkClick) so a jump
     // costs no RSC round-trip on the force-dynamic /chat route.
-    window.history.pushState(null, "", item.path);
+    navigateShell(item.path);
   };
 
   const handleKeyDown = (e: React.KeyboardEvent) => {

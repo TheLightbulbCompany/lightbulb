@@ -257,6 +257,12 @@ export function MessagingWorkspaceProvider({
   // recorded against the view being left.
   const [explicitPickCount, setExplicitPickCount] = useState(0);
   const bumpPick = useCallback(() => setExplicitPickCount((n) => n + 1), []);
+  // An async pick that finishes after the person navigated elsewhere (another
+  // panel) must not bump: ChatHistorySync would push the DM URL over theirs.
+  // Read-only on the URL.
+  const bumpPickIfCurrent = useCallback((startHref: string) => {
+    if (window.location.href === startHref) bumpPick();
+  }, [bumpPick]);
   const markExplicitScope = useCallback(() => { explicitChoiceScope.current = scope; }, [scope]);
   const markExplicitChoice = useCallback(() => {
     markExplicitScope();
@@ -594,8 +600,9 @@ export function MessagingWorkspaceProvider({
     setCreationError(undefined);
     try {
       markExplicitScope();
+      const startHref = window.location.href;
       await rooms.createRoom({ clientRoomId: crypto.randomUUID(), ...creation });
-      bumpPick();
+      bumpPickIfCurrent(startHref);
       return true;
     } catch (error) {
       setCreationError(error instanceof Error ? error.message : "Conversation could not be created.");
@@ -613,7 +620,8 @@ export function MessagingWorkspaceProvider({
     setCreationError(undefined);
     try {
       markExplicitScope();
-      if (await rooms.selectDm(participant)) bumpPick();
+      const startHref = window.location.href;
+      if (await rooms.selectDm(participant)) bumpPickIfCurrent(startHref);
     } catch (error) {
       setCreationError(error instanceof Error ? error.message : "Conversation could not be opened.");
     } finally {
@@ -769,17 +777,19 @@ export function MessagingWorkspaceProvider({
   };
   const selectMessageParticipant = useCallback(async (participant: RoomParticipant) => {
     markExplicitScope();
-    if (await selectDm(participant)) bumpPick();
-  }, [markExplicitScope, bumpPick, selectDm]);
+    const startHref = window.location.href;
+    if (await selectDm(participant)) bumpPickIfCurrent(startHref);
+  }, [markExplicitScope, bumpPickIfCurrent, selectDm]);
   const { selectAgentDm: hookSelectAgentDm } = rooms;
   const selectAgentDm = useCallback((agentId: string, explicit = true) => {
     if (!explicit) return hookSelectAgentDm(agentId);
     markExplicitScope();
+    const startHref = window.location.href;
     return hookSelectAgentDm(agentId).then((roomId) => {
-      if (roomId) bumpPick();
+      if (roomId) bumpPickIfCurrent(startHref);
       return roomId;
     });
-  }, [markExplicitScope, bumpPick, hookSelectAgentDm]);
+  }, [markExplicitScope, bumpPickIfCurrent, hookSelectAgentDm]);
   const { activeRoomId: unreadRoomId, markUnread: markRoomUnread } = rooms;
   const markUnreadFrom = useCallback(async (fromSeq: number) => {
     if (unreadRoomId) await markRoomUnread(unreadRoomId, fromSeq);

@@ -12,6 +12,7 @@ on:
       - 'apps/infra/lambda/ses-inbound/**'
       - 'apps/infra/lambda/ws-connect/**'
       - 'apps/infra/lambda/messaging-projector/**'
+      - 'apps/infra/lambda/messaging-search-indexer/**'
       - 'apps/infra/lambda/openrouter-settlement/**'
       - '.github/workflows/backend.yml'
 
@@ -110,6 +111,14 @@ jobs:
           AWS_ACCESS_KEY_ID: testing
           AWS_SECRET_ACCESS_KEY: testing
         run: uv run pytest ../infra/lambda/messaging-projector -v
+        working-directory: apps/backend
+
+      - name: Run messaging-search-indexer Lambda tests
+        env:
+          AWS_DEFAULT_REGION: us-east-1
+          AWS_ACCESS_KEY_ID: testing
+          AWS_SECRET_ACCESS_KEY: testing
+        run: uv run pytest ../infra/lambda/messaging-search-indexer -v
         working-directory: apps/backend
 
       # Fifth one in the same state. The OpenRouter settlement worker is the

@@ -1397,3 +1397,96 @@ class ThreadRootModifyTests(unittest.TestCase):
                 "editedAt": "2026-09-10T00:04:59Z", "threadParticipants": {BOB_ID}}
         publish = self.modify(root)
         self.assertEqual(publish.call_args_list[0].args[1]["type"], "room.message.updated")
+
+
+class SearchEnqueueTests(unittest.TestCase):
+    def setUp(self):
+        self.saved = (index.MESSAGING_TABLE, index.HTTP_ENDPOINT, index.REGION, index._ddb_client,
+                      index.SEARCH_INDEX_QUEUE_URL, index._sqs_client)
+        index.MESSAGING_TABLE = "lightbulb-test-messaging"
+        index.HTTP_ENDPOINT = "https://example.appsync-api.us-east-1.amazonaws.com/event"
+        index.REGION = "us-east-1"
+        index._ddb_client = FakeDdb({(f"ROOM#{ROOM_ID}", "META"): {
+            "deliveryKey": DELIVERY_KEY, "ownerId": "org_room_owner", "workspaceId": WORKSPACE_ID}})
+        index.SEARCH_INDEX_QUEUE_URL = "https://sqs.us-east-1.amazonaws.com/1/search"
+        index._sqs_client = MagicMock()
+
+    def tearDown(self):
+        (index.MESSAGING_TABLE, index.HTTP_ENDPOINT, index.REGION, index._ddb_client,
+         index.SEARCH_INDEX_QUEUE_URL, index._sqs_client) = self.saved
+
+    def _body(self):
+        return json.loads(index._sqs_client.send_message.call_args.kwargs["MessageBody"])
+
+    @patch("index._send_push")
+    @patch("index._notify_members", return_value=[])
+    @patch("index._publish")
+    def test_new_message_enqueues_after_publish_before_push(self, publish, notify, push):
+        order = []
+        publish.side_effect = lambda *a, **k: order.append("publish")
+        index._sqs_client.send_message.side_effect = lambda **_: order.append("enqueue")
+        push.side_effect = lambda *a, **k: order.append("push")
+        index.process_record(stream_record(message_item()))
+        self.assertEqual(self._body(), {"ownerId": "org_room_owner", "roomId": ROOM_ID, "sk": message_item()["sk"]})
+        self.assertEqual(order, ["publish", "enqueue", "push"])
+
+    @patch("index._send_push")
+    @patch("index._notify_members", return_value=[])
+    @patch("index._publish")
+    def test_failed_insert_enqueue_still_pushes(self, publish, notify, push):
+        index._sqs_client.send_message.side_effect = RuntimeError("sqs down")
+        with patch("index._emit_metric") as metric:
+            index.process_record(stream_record(message_item()))
+        push.assert_called_once()
+        self.assertIn("messaging.projector.search_enqueue.failed", [c.args[0] for c in metric.call_args_list])
+
+    @patch("index._publish")
+    def test_failed_edit_enqueue_still_raises(self, publish):
+        index._sqs_client.send_message.side_effect = RuntimeError("sqs down")
+        item = {**message_item(), "messageRevision": 2, "editedText": "x", "editedAt": "2026-10-04T00:00:01Z"}
+        record = stream_record(item)
+        record["eventName"] = "MODIFY"
+        with self.assertRaises(RuntimeError):
+            index.process_record(record)
+
+    @patch("index._publish")
+    def test_edit_enqueues(self, publish):
+        item = {**message_item(), "messageRevision": 2, "editedText": "new words", "editedAt": "2026-10-04T00:00:01Z"}
+        record = stream_record(item)
+        record["eventName"] = "MODIFY"
+        index.process_record(record)
+        self.assertEqual(self._body()["sk"], item["sk"])
+
+    @patch("index._publish")
+    def test_edit_enqueues_even_when_the_workspace_is_unresolvable(self, publish):
+        index._ddb_client = FakeDdb({(f"ROOM#{ROOM_ID}", "META"): {"deliveryKey": DELIVERY_KEY, "ownerId": "org_room_owner"}})
+        item = {**message_item(), "messageRevision": 2, "editedText": None, "deletedAt": "2026-10-04T00:00:02Z",
+                "editedAt": "2026-10-04T00:00:02Z"}
+        with patch("index._workspace_id_for_meta", return_value=None):
+            record = stream_record(item)
+            record["eventName"] = "MODIFY"
+            index.process_record(record)
+        self.assertEqual(self._body()["sk"], item["sk"])
+        publish.assert_not_called()
+
+    @patch("index._send_push")
+    @patch("index._notify_members", return_value=[])
+    @patch("index._publish")
+    def test_search_off_enqueues_nothing(self, publish, notify, push):
+        index.SEARCH_INDEX_QUEUE_URL = ""
+        index.process_record(stream_record(message_item()))
+        index._sqs_client.send_message.assert_not_called()
+
+    @patch("index._publish")
+    def test_reaction_modify_enqueues_nothing(self, publish):
+        record = stream_record({**message_item(), "reactionRevision": 1})
+        record["eventName"] = "MODIFY"
+        index.process_record(record)
+        index._sqs_client.send_message.assert_not_called()
+
+    @patch("index._publish")
+    def test_thread_touch_only_modify_enqueues_nothing(self, publish):
+        record = stream_record({**message_item(), "messageRevision": 1, "threadTouchedAt": "2026-10-04T00:00:00Z"})
+        record["eventName"] = "MODIFY"
+        index.process_record(record)
+        index._sqs_client.send_message.assert_not_called()

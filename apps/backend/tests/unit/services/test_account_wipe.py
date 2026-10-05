@@ -63,6 +63,7 @@ EXPECTED_ORDER = [
     "stripe",
     "usage_counters",
     "messaging",
+    "search",
     "paperclip_row",
     "billing_row",
     "user_row",
@@ -214,6 +215,7 @@ def wipe_mocks():
     messaging_get_room = AsyncMock(return_value={"ownerId": OWNER_ID})
     messaging_delete_room = AsyncMock(return_value=2)
     messaging_delete_owner = AsyncMock(return_value=3)
+    search_delete = AsyncMock(return_value="dropped")
     clerk_delete = AsyncMock(return_value=None)
     agent_keys_list = AsyncMock(return_value=["lightbulb/dev/paperclip-agent-keys/user_abc123/agent-1"])
     agent_keys_delete = AsyncMock(return_value=1)
@@ -275,6 +277,7 @@ def wipe_mocks():
         ("core.services.account_wipe.messaging_repo.get_room", messaging_get_room),
         ("core.services.account_wipe.messaging_repo.delete_room_partition", messaging_delete_room),
         ("core.services.account_wipe.messaging_repo.delete_owner_partition", messaging_delete_owner),
+        ("core.services.account_wipe.message_search.delete_owner_index", search_delete),
         ("core.services.account_wipe.clerk_admin.delete_user", clerk_delete),
         ("core.services.account_wipe.list_owner_agent_key_secret_names", agent_keys_list),
         ("core.services.account_wipe.delete_owner_agent_key_secrets", agent_keys_delete),
@@ -331,6 +334,7 @@ def wipe_mocks():
             messaging_get_room=messaging_get_room,
             messaging_delete_room=messaging_delete_room,
             messaging_delete_owner=messaging_delete_owner,
+            search_delete=search_delete,
             clerk_delete=clerk_delete,
             agent_keys_list=agent_keys_list,
             agent_keys_delete=agent_keys_delete,
@@ -399,6 +403,17 @@ async def test_wipe_account_runs_steps_in_spec_order(wipe_mocks):
     wipe_mocks.agent_keys_delete.assert_awaited_once_with(OWNER_ID)
     wipe_mocks.clerk_delete.assert_awaited_once_with(OWNER_ID)
     wipe_mocks.oauth_revoke.assert_awaited_once_with(user_id=OWNER_ID)
+
+
+@pytest.mark.asyncio
+async def test_search_index_drop_is_its_own_step_and_fails_alone(wipe_mocks):
+    wipe_mocks.search_delete.side_effect = RuntimeError("search down")
+    report = await wipe_account(OWNER_ID, actor_admin_id="admin_1")
+    step = next(step for step in report.steps if step.system == "search")
+    assert step.action == "drop_owner_index"
+    assert step.status == "failed"
+    assert next(s for s in report.steps if s.system == "messaging").status == "ok"
+    wipe_mocks.search_delete.assert_awaited_once_with(OWNER_ID)
 
 
 @pytest.mark.asyncio
@@ -725,6 +740,7 @@ async def test_clerk_delete_still_runs_when_every_other_step_fails(wipe_mocks):
     wipe_mocks.slack_installs_delete.side_effect = RuntimeError("ddb down")
     wipe_mocks.slug_delete.side_effect = RuntimeError("ddb down")
     wipe_mocks.messaging_list_rooms.side_effect = RuntimeError("ddb down")
+    wipe_mocks.search_delete.side_effect = RuntimeError("search down")
 
     report = await wipe_account(OWNER_ID, actor_admin_id="admin_1")
 

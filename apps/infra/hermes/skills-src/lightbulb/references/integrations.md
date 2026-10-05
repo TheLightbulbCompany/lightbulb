@@ -23,6 +23,17 @@ its rail, and each rail surfaces differently to you:
 Do not burn a run hunting for a `github__*` or `aws__*` tool namespace —
 those integrations are CLI-rail and will never have one.
 
+## Google Workspace (`gog`)
+
+Google Workspace on Lightbulb is a managed CLI-rail integration. Validate its
+stored credentials with `gog auth list --check`; `gog auth status` only reports
+configuration and does not validate refresh tokens. If the task needs service-level
+proof, make a small account-scoped read-only call such as listing calendars or Drive
+files. Do not run the generic Google Workspace skill's `setup.py --check`: that
+checker only looks for a separate profile-local `google_token.json`, which
+Lightbulb's managed `gog` connection does not create. A missing file there therefore
+says nothing about the managed connection and must not be reported as disconnected.
+
 ## Microsoft 365 (Microsoft Graph)
 
 The owner connects Microsoft 365 from Connections with their work/school

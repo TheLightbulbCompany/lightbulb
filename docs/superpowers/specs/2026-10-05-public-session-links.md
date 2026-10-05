@@ -110,7 +110,7 @@ Owner routes (Clerk, owner only, `_owned_session` rules, `local_sessions.py:2289
 
 | Route | Does |
 |---|---|
-| `PUT /messaging/sessions/{id}/link {audience}` | create if absent (audit `share_link_created`) or change audience; returns `{url, audience}` |
+| `PUT /messaging/sessions/{id}/link {audience?}` | create if absent (audit `share_link_created`) or change audience; no audience (Share) creates a workspace link or keeps the current one, so a stale read never narrows a link; returns `{url, audience}` |
 | `GET /messaging/sessions/{id}/link` | `{url, audience}` or 404 |
 | `DELETE /messaging/sessions/{id}/link` | delete lookup row and `shareLink`, retire pick-up; audit `share_link_revoked` |
 

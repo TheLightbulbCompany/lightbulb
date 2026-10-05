@@ -1118,14 +1118,20 @@ async def referenced_sessions(owner: str, members: list[dict], session_ids: list
     return out
 
 
-async def set_sharing(auth: AuthContext, session_id: str, shared: bool) -> LocalSession:
+async def set_sharing(
+    auth: AuthContext, session_id: str, shared: bool, *, generation: str | None = None
+) -> LocalSession:
     """The owner pauses or resumes sharing one session. While paused the relay drops its
-    transcript instead of storing it (one notice marks the gap) and nobody else can see it."""
+    transcript instead of storing it (one notice marks the gap) and nobody else can see it.
+    ``generation`` pins the change to the run the caller saw (the Mac's terminal decisions):
+    checked on the row this write is conditioned on, so a resumed session is never changed."""
     for _ in range(6):
         row, enrollment = await authorize_session(auth, None, session_id, owner_only=True)
         # owner_only admits teammates while "Let teammates control" is on; sharing stays the owner's.
         if auth.user_id != row["humanUserId"]:
             raise ApiProblem("LOCAL_SESSION_FORBIDDEN", "Only the session's owner can do that.")
+        if generation is not None and row.get("generation") != generation:
+            raise ApiProblem("LOCAL_SESSION_FORBIDDEN", "Not this Mac's current session.")
         if bool(row.get("unshared")) == shared:  # a change, not a no-op
             updated = {**row, "revision": str(uuid.uuid4())}
             if shared:

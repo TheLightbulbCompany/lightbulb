@@ -485,6 +485,7 @@ async def test_allow_and_pause_run_as_the_owner(monkeypatch):
     pause = tools.NativeDecisionRequest(session_id=_SID, generation="g1", decision="pause")
     assert await tools.decide(_decision_device(), pause) == "paused"
     assert set_sharing.await_args.args[1:] == (str(_SID), False)
+    assert set_sharing.await_args.kwargs == {"generation": "g1"}
     publish.assert_awaited_once_with("org_a", "user_a")
 
 
@@ -499,3 +500,17 @@ async def test_allow_and_pause_run_as_the_owner(monkeypatch):
 def test_decision_body_names_a_request_exactly_when_it_answers_one(fields):
     with pytest.raises(ValueError):
         tools.NativeDecisionRequest(session_id=uuid.uuid4(), generation="g1", **fields)
+
+
+@pytest.mark.asyncio
+async def test_set_sharing_refuses_a_run_the_caller_did_not_see(monkeypatch):
+    sessions = tools.local_sessions
+    row = {"sessionId": str(_SID), "humanUserId": "user_a", "generation": "g2"}
+    monkeypatch.setattr(sessions, "authorize_session", AsyncMock(return_value=(row, {})))
+    put = AsyncMock()
+    monkeypatch.setattr(sessions.repo, "put_session", put)
+    with pytest.raises(ApiProblem):
+        await sessions.set_sharing(
+            tools.AuthContext(user_id="user_a", org_id="org_a"), str(_SID), False, generation="g1"
+        )
+    put.assert_not_awaited()

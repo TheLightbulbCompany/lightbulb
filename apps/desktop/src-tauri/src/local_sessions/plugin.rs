@@ -54,18 +54,39 @@ fn run_all(home: PathBuf, cmds: Vec<Vec<String>>) {
     }
 }
 
-/// Files are written inline; the `claude` calls run on a detached thread because they take
+/// Install and remove are serialised, and only the latest request runs: a quick off-then-on (or
+/// on-then-off) can never finish in the wrong order and leave the plugin in the stale state.
+static LATEST: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static RUNNING: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+fn ticket() -> u64 {
+    LATEST.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1
+}
+
+fn superseded(mine: u64) -> bool {
+    LATEST.load(std::sync::atomic::Ordering::SeqCst) != mine
+}
+
+fn latest_only(home: PathBuf, cmds: Vec<Vec<String>>) {
+    let mine = ticket();
+    std::thread::spawn(move || {
+        let _turn = RUNNING.lock().unwrap_or_else(|e| e.into_inner());
+        if !superseded(mine) {
+            run_all(home, cmds);
+        }
+    });
+}
+
+/// Files are written inline; the `claude` calls run on a background thread because they take
 /// seconds and callers sit on the async runtime.
 pub(crate) fn install(state_dir: &Path, home: &Path) -> Result<()> {
     let root = write_files(state_dir)?;
-    let home = home.to_owned();
-    std::thread::spawn(move || run_all(home, commands(&root, true)));
+    latest_only(home.to_owned(), commands(&root, true));
     Ok(())
 }
 
 pub(crate) fn remove(_state_dir: &Path, home: &Path) {
-    let home = home.to_owned();
-    std::thread::spawn(move || run_all(home, commands(Path::new(""), false)));
+    latest_only(home.to_owned(), commands(Path::new(""), false));
 }
 
 #[cfg(test)]
@@ -88,6 +109,14 @@ mod tests {
         assert_eq!(cmds[0], vec!["plugin", "marketplace", "add", "/m"]);
         assert_eq!(cmds[1], vec!["plugin", "install", "lightbulb-sessions@lightbulb"]);
         assert_eq!(commands(Path::new("/m"), false)[0], vec!["plugin", "uninstall", "lightbulb-sessions@lightbulb"]);
+    }
+
+    #[test]
+    fn plugin_a_newer_request_supersedes_an_older_one() {
+        let install = ticket();
+        let remove = ticket();
+        assert!(superseded(install), "the older install must not run after a newer remove");
+        assert!(!superseded(remove));
     }
 
     #[test]

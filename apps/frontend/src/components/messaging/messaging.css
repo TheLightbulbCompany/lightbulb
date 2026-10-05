@@ -460,14 +460,15 @@
 /* The transcript (.local-session-history) is the one scroller, so it can follow output. */
 .room-session-main { display: flex; flex-direction: column; min-width: 0; min-height: 0; overflow: hidden; }
 .room-context { position: relative; }
-/* New session: an empty view you type into; the chips above the composer carry last use. */
-.new-session-body { flex: 1 1 auto; display: grid; align-content: end; gap: 4px; padding: 16px 20px 8px; }
-.new-session-strip { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin: 0 20px 6px; }
-.new-session-chip { height: 28px; max-width: min(100%, 16rem); padding: 0 8px; border: 1px solid var(--border); border-radius: 999px; background: var(--plane-raised); color: var(--foreground); font-size: .8125rem; text-overflow: ellipsis; }
-.new-session-toggle { display: inline-flex; gap: 2px; padding: 2px; border: 1px solid var(--border); border-radius: 999px; }
-.new-session-toggle button { display: inline-flex; align-items: center; gap: 6px; height: 22px; padding: 0 10px; border-radius: 999px; font-size: .8125rem; color: var(--muted-foreground); }
-.new-session-toggle button[aria-pressed="true"] { background: var(--accent); color: var(--accent-foreground); }
-@media (max-width: 859px) { .new-session-strip { margin: 0 8px 6px; } .new-session-body { padding: 12px; } }
+/* New session: the form is a dialog; the pane shows the start's progress, then its terminal. */
+.new-session-body { flex: 1 1 auto; display: grid; place-content: center; justify-items: center; gap: 12px; padding: 16px 20px; text-align: center; }
+.new-session-status { padding: 6px 20px; border-bottom: 1px solid var(--border); }
+.new-session-tools { display: grid; grid-auto-flow: column; grid-auto-columns: minmax(0, 1fr); gap: 8px; }
+.new-session-tools button { display: grid; justify-items: center; gap: 8px; padding: 16px 8px; border: 1px solid var(--border); border-radius: 8px; background: var(--plane-raised); color: var(--foreground); font-weight: 500; }
+.new-session-tools button:hover { background: var(--accent); }
+.new-session-tools button[aria-pressed="true"] { border-color: var(--ring); box-shadow: 0 0 0 1px var(--ring); background: var(--accent); color: var(--accent-foreground); }
+.new-session-more summary { cursor: pointer; color: var(--muted-foreground); }
+@media (max-width: 859px) { .new-session-body { padding: 12px; } .new-session-status { padding: 6px 12px; } }
 
 /* ── Onboarding setup band ──────────────────────────────────────────────────
    Sits beside .room-intro in the timeline's leading slot, in the starter

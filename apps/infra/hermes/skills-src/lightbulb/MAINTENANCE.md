@@ -66,7 +66,7 @@ MAINTENANCE (Lightbulb engineers): every claim in this skill is anchored to
                                  AWS connection, each run its own tab, the run's tabs closed at its end).
                                  The shared-screen facts (no take-control/Done, autosave, fresh snapshot after a
                                  person's input, sign-in by the person or the vault) must match both.
-  - New session (no first message, web and desktop only; iPhone still asks) ... references/surfaces.md ("New session" paragraph)
+  - New session (small form with Start, no first message, web and desktop only; iPhone still asks) ... references/surfaces.md ("New session" paragraph)
                               <- apps/frontend/src/components/messaging/NewSessionButton.tsx;
                                  apps/desktop/src-tauri/src/session_start.rs;
                                  apps/mobile/src/app/(app)/session/new.tsx (still has the first message)

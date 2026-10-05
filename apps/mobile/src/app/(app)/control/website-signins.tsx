@@ -18,7 +18,12 @@ import { makeAdapter } from "../../../lib/adapter";
 //   DELETE /website-logins/{id}             -> 204
 //   POST   /website-logins/sites/sign-out   { site } -> 204
 // No route ever returns a password. The login shape is the backend's
-// `website_logins._public`.
+// `website_logins._public`. A 400/404/409 carries a readable `detail` (e.g. 409
+// "An agent is using the browser. Try again in a moment."), which ApiError
+// surfaces as its message and every failure alert shows.
+//
+// A backend without /sites (404) still has GET /website-logins -> { logins }
+// plus POST and DELETE: the list is grouped here and only Add and Remove show.
 // ---------------------------------------------------------------------------
 
 export interface WebsiteLogin {
@@ -41,7 +46,8 @@ type State =
   | { kind: "loading" }
   | { kind: "error"; message: string }
   | { kind: "restricted" }
-  | { kind: "ready"; sites: WebsiteSite[] };
+  /** `basic`: the backend has only list / add / remove (no /sites, PATCH or sign-out). */
+  | { kind: "ready"; sites: WebsiteSite[]; basic: boolean };
 
 type Sheet =
   | { mode: "add" }
@@ -53,6 +59,21 @@ const SHEET_FIELDS: Record<Sheet["mode"], readonly CredentialField[]> = {
   username: ["username"],
   password: ["password"],
 };
+
+/** One card per site from a flat login list, for a backend with no /sites route. */
+export function groupLoginsBySite(logins: readonly WebsiteLogin[]): WebsiteSite[] {
+  const bySite = new Map<string, WebsiteLogin[]>();
+  for (const login of logins) {
+    const host = login.origin.replace(/^[a-z]+:\/\//i, "").replace(/[:/].*$/, "").toLowerCase();
+    // ponytail: last two labels, so "app.example.co.uk" groups under "co.uk". The server's
+    // /sites does the real grouping; this only runs until the backend that has it is deployed.
+    const site = host.split(".").slice(-2).join(".") || login.origin;
+    bySite.set(site, [...(bySite.get(site) ?? []), login]);
+  }
+  return [...bySite.entries()]
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([site, grouped]) => ({ site, signedIn: false, logins: grouped }));
+}
 
 const message = (error: unknown) => (error instanceof Error ? error.message : "Request failed");
 
@@ -101,12 +122,19 @@ export default function WebsiteSignIns() {
     if (orgRestrictedRef.current) return setState({ kind: "restricted" });
     setState((prev) => (prev.kind === "ready" ? prev : { kind: "loading" }));
     try {
-      const resp = (await api.get("/website-logins/sites")) as { sites?: WebsiteSite[] };
-      if (loadSeq.current === seq) setState({ kind: "ready", sites: resp.sites ?? [] });
+      let next: State;
+      try {
+        const resp = (await api.get("/website-logins/sites")) as { sites?: WebsiteSite[] };
+        next = { kind: "ready", sites: resp.sites ?? [], basic: false };
+      } catch (err) {
+        if (!(err instanceof ApiError && err.status === 404)) throw err;
+        const resp = (await api.get("/website-logins")) as { logins?: WebsiteLogin[] };
+        next = { kind: "ready", sites: groupLoginsBySite(resp.logins ?? []), basic: true };
+      }
+      if (loadSeq.current === seq) setState(next);
     } catch (err) {
       if (loadSeq.current !== seq) return;
-      // 404: this backend does not have the route yet. Nothing to list, nothing broken.
-      if (err instanceof ApiError && err.status === 404) setState({ kind: "ready", sites: [] });
+      if (err instanceof ApiError && err.status === 404) setState({ kind: "ready", sites: [], basic: true });
       else if (err instanceof ApiError && err.status === 403) setState({ kind: "restricted" });
       else setState({ kind: "error", message: message(err) });
     }
@@ -139,6 +167,8 @@ export default function WebsiteSignIns() {
     }
   };
 
+  const basic = state.kind === "ready" && state.basic;
+
   const confirm = (title: string, body: string, action: string, onPress: () => void) =>
     Alert.alert(title, body, [
       { text: "Cancel", style: "cancel" },
@@ -147,13 +177,13 @@ export default function WebsiteSignIns() {
 
   const openMenu = (site: WebsiteSite, login: WebsiteLogin | null) => {
     const choices: Choice[] = [];
-    if (login) {
+    if (login && !basic) {
       choices.push(
         { text: "Edit username", onPress: () => setSheet({ mode: "username", login }) },
         { text: "Replace password", onPress: () => setSheet({ mode: "password", login }) },
       );
     }
-    if (site.signedIn) {
+    if (site.signedIn && !basic) {
       choices.push({
         text: "Sign out of the browser",
         onPress: () =>
@@ -214,7 +244,7 @@ export default function WebsiteSignIns() {
               sites.map((site) => (
                 <View key={site.site} style={[styles.card, { backgroundColor: p.surface, borderColor: p.edge }]}>
                   <Text style={[styles.site, text]}>{site.site}</Text>
-                  {site.signedIn ? (
+                  {site.signedIn && !basic ? (
                     <View style={styles.marker}>
                       <View style={[styles.dot, { backgroundColor: p.live }]} />
                       <Text style={[styles.caption, mute]}>Signed in in the browser</Text>

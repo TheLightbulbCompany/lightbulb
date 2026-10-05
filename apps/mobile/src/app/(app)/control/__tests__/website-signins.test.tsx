@@ -62,11 +62,75 @@ it("shows the empty state when there are none", async () => {
   expect(await screen.findByText("No website sign-ins yet. When an agent needs one, it asks here.")).toBeTruthy();
 });
 
-it("shows the empty state, not an error, when the backend has no route yet", async () => {
-  mockApi.get.mockRejectedValue(new ApiError(404, { detail: "Not Found" }, "Not Found"));
+const NOT_FOUND = new ApiError(404, { detail: "Not Found" }, "Not Found");
+/** A backend with only GET/POST/DELETE /website-logins. */
+const oldBackend = (logins: unknown[]) =>
+  mockApi.get.mockImplementation(async (path: string) => {
+    if (path === "/website-logins") return { logins };
+    throw NOT_FOUND;
+  });
+
+it("lists from the flat login route, grouped by site, when there is no sites route", async () => {
+  oldBackend([LOGIN, { ...LOGIN, id: "vault_aaaaaaaaaaaa", origin: "https://mail.google.com:8443", username: "ops" },
+    { ...LOGIN, id: "vault_ba9876543210", origin: "https://www.linkedin.com", username: "growth" }]);
+  await render(<WebsiteSignIns />);
+  expect(await screen.findByText("google.com")).toBeTruthy();
+  expect(mockApi.get.mock.calls.map(([path]) => path)).toEqual(["/website-logins/sites", "/website-logins"]);
+  expect(screen.getByText("dana@example.com")).toBeTruthy();
+  expect(screen.getByText("ops")).toBeTruthy();
+  expect(screen.getByText("linkedin.com")).toBeTruthy();
+  expect(screen.queryByText("Signed in in the browser")).toBeNull();
+  expect(screen.queryByText(/Couldn’t load/)).toBeNull();
+});
+
+it("offers only Remove on a row, and Add, when there is no sites route", async () => {
+  oldBackend([LOGIN]);
+  const alert = jest.spyOn(Alert, "alert");
+  await render(<WebsiteSignIns />);
+  const options = await choose("Actions for dana@example.com on google.com", "Remove");
+  expect(options).toEqual(["Remove", "Cancel"]);
+  await act(async () => { alert.mock.calls.at(-1)![2]!.find((b) => b.text === "Remove")!.onPress!(); });
+  expect(mockApi.del).toHaveBeenCalledWith("/website-logins/vault_0123456789ab");
+  expect(screen.getByLabelText("Add a website sign-in")).toBeTruthy();
+});
+
+it("shows a sign-in added against a backend with no sites route", async () => {
+  const logins: unknown[] = [];
+  oldBackend(logins);
+  mockApi.post.mockImplementation(async () => { logins.push({ ...LOGIN, origin: "https://app.example.com", username: "dana" }); });
+  await render(<WebsiteSignIns />);
+  expect(await screen.findByText("No website sign-ins yet. When an agent needs one, it asks here.")).toBeTruthy();
+  await fireEvent.press(screen.getByLabelText("Add a website sign-in"));
+  await fireEvent.changeText(screen.getByLabelText("Website address"), "app.example.com");
+  await fireEvent.changeText(screen.getByLabelText("Username or email"), "dana");
+  await fireEvent.changeText(screen.getByLabelText("Password"), "hunter2");
+  await fireEvent.press(screen.getByRole("button", { name: "Add" }));
+  expect(await screen.findByText("example.com")).toBeTruthy();
+  expect(screen.getByText("dana")).toBeTruthy();
+});
+
+it("shows the empty state, not an error, when neither list route exists", async () => {
+  mockApi.get.mockRejectedValue(NOT_FOUND);
   await render(<WebsiteSignIns />);
   expect(await screen.findByText("No website sign-ins yet. When an agent needs one, it asks here.")).toBeTruthy();
   expect(screen.queryByText(/Couldn’t load/)).toBeNull();
+});
+
+it("tells the person why a browser sign-out was refused", async () => {
+  mockApi.post.mockRejectedValue(new ApiError(409, { detail: "An agent is using the browser. Try again in a moment." },
+    "An agent is using the browser. Try again in a moment."));
+  const alert = jest.spyOn(Alert, "alert");
+  await render(<WebsiteSignIns />);
+  await choose("Actions for dana@example.com on google.com", "Sign out of the browser");
+  await act(async () => { alert.mock.calls.at(-1)![2]!.find((b) => b.text === "Sign out")!.onPress!(); });
+  expect(alert).toHaveBeenLastCalledWith("Couldn’t sign out", "An agent is using the browser. Try again in a moment.");
+});
+
+it("offers only the browser sign-out for a site signed in with cookies alone", async () => {
+  mockApi.get.mockResolvedValue({ sites: [{ site: "github.com", signedIn: true, logins: [] }] });
+  await render(<WebsiteSignIns />);
+  expect(await screen.findByText("No saved password")).toBeTruthy();
+  expect(await choose("Actions for github.com", "Cancel")).toEqual(["Sign out of the browser", "Cancel"]);
 });
 
 it("shows an error with a retry", async () => {

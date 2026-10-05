@@ -158,9 +158,22 @@ Agents cannot tag sessions in their own room posts.
 
 **Access** is where the owner sets **Shared with the workspace** (off pauses
 sharing), **Let teammates control this session** (follow-ups and permission
-prompts on their Mac), **Let teammates pick up this session**, **Show token
-usage to teammates**, and a **Share snapshot…** read-only link. Teammates see
-what the owner allows instead of switches.
+prompts on their Mac), **Show token usage to teammates**, and **Share**: the
+session's one link. **Share** makes it and copies it; **Who can open it** is
+its only setting, **Workspace only** (the default) or **Anyone with the link**;
+**Turn off link** ends it everywhere. Access also lists the copies people took.
+Teammates see what the owner allows instead of switches.
+
+**Session links** open at `/s`. A workspace link opens for signed-in members
+(a signed-out visitor is asked to sign in); an "anyone" link opens with no
+sign-in and shows outsiders the conversation with likely secrets redacted and,
+for a private repository, its name hidden. On a Claude Code session the link is
+also the pick-up permission. **Continue** takes a copy into the person's own
+Claude Code: they need the Lightbulb desktop app and a free workspace, then run
+`lightbulb continue '<link>'` in a terminal and confirm in the browser. A
+public repository is cloned for them; a private one comes as the conversation
+only. The original session never changes. You cannot make, change or turn off
+a link: tell the owner to use **Share** under **Access**.
 
 **Ask to join**: a teammate who cannot send to someone's session taps **Ask to
 join** (it then reads **Requested**). The owner gets a Needs-you Activity item,
@@ -207,10 +220,11 @@ sees **Ask to pick up**, then **Requested**, or "<Owner> declined. Ask again". T
 answers from a notification, Activity, the session view on web or phone, or the Claude
 terminal band. **Allow** turns pick-up on for the whole session (every member may pick it
 up) and shares the whole conversation and uncommitted changes with the workspace,
-unredacted except git-ignored files, kept until 7 days after the session ends. After Allow
-the button reads **Preparing…** until the snapshot is ready, then **Pick up**. The owner can
-also turn it on with **Let teammates pick up this session** (only while the session is
-shared). Codex sessions cannot be picked up
+unredacted except git-ignored files, kept until 7 days after the session ends. Allow also creates
+the session's link (**Workspace only**) if it has none. After Allow the button reads
+**Preparing…** until the snapshot is ready, then **Pick up**. The owner can also turn it on
+with **Share** under **Access** (only while the session is shared); **Turn off link** turns
+it off. There is no separate pick-up switch. Codex sessions cannot be picked up
 yet.
 
 **Linked work** is optional: in that tab, **Link existing work** links an

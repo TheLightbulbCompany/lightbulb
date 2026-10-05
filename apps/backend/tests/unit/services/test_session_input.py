@@ -306,3 +306,30 @@ async def test_a_removed_member_cannot_type_even_while_still_admitted(transport)
     await refused("LOCAL_SESSION_FORBIDDEN", transport, BOB, sid)  # their Clerk JWT is still valid
     await session_screen.type_into(ALICE, sid, body())
     assert len(sent(transport)) == 1, "the owner still types"
+
+
+def viewer_row(db, sid, person=BOB):
+    return db[0].get_item(Key={"pk": repo.session_pk(OWNER, sid), "sk": f"VIEWER#{person.user_id}"}).get("Item")
+
+
+@pytest.mark.asyncio
+async def test_typing_marks_the_typists_live_viewer_row_and_never_creates_one(transport, db, monkeypatch):
+    sid = await start(transport)
+    await capable(transport, sid)
+    await admit(sid)
+    now = time.time()
+    monkeypatch.setattr(session_screen, "_clock", lambda: now)
+    await session_screen.type_into(BOB, sid, body())
+    assert viewer_row(db, sid) is None, "typing without watching creates no viewer row"
+    await session_screen.watch(BOB, sid)
+    await session_screen.type_into(BOB, sid, body())
+    assert viewer_row(db, sid)["typedAt"] == int(now)
+    db[0].update_item(  # the viewer row has lapsed but TTL has not removed it yet
+        Key={"pk": repo.session_pk(OWNER, sid), "sk": f"VIEWER#{BOB.user_id}"},
+        UpdateExpression="SET expiresAt = :e",
+        ExpressionAttributeValues={":e": int(now) - 1},
+    )
+    monkeypatch.setattr(session_screen, "_clock", lambda: now + 5)
+    await session_screen.type_into(BOB, sid, body())
+    assert viewer_row(db, sid)["typedAt"] == int(now), "a lapsed viewer row is not marked"
+    assert len(typed_rows(db, sid)) == 1, "the audit row is kept as before"

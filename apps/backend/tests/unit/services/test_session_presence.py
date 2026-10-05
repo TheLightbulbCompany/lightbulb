@@ -34,11 +34,11 @@ def _env(monkeypatch):
 
 def _rows(viewers=(), typed=()):
     async def query(pk, begins_with):
-        if begins_with == "VIEWER#":
-            return [{"userId": u, "expiresAt": NOW + 30} for u in viewers] + [
-                {"userId": "user_old", "expiresAt": NOW - 1}
-            ]
-        return [{"userId": u, "lastAt": NOW - 2} for u in typed] + [{"userId": "user_mira", "lastAt": NOW - 60}]
+        assert begins_with == "VIEWER#", "presence reads only the VIEWER rows, never the typing history"
+        # A typist typed 2 s ago; everyone else last typed a minute ago.
+        return [{"userId": u, "expiresAt": NOW + 30, "typedAt": NOW - (2 if u in typed else 60)} for u in viewers] + [
+            {"userId": "user_old", "expiresAt": NOW - 1, "typedAt": NOW}
+        ]
 
     return query
 

@@ -37,17 +37,13 @@ async def _name(user: str) -> str:
 async def entry(row: dict) -> dict:
     now = int(_clock())
     pk = repo.session_pk(row["ownerId"], row["sessionId"])
-    viewers = sorted(
-        r["userId"]
+    live = [
+        r
         for r in await store._query(pk, begins_with="VIEWER#")
         if int(r.get("expiresAt", 0)) > now and r["userId"] != row["humanUserId"]
-    )
-    # ponytail: reads every TYPED# burst row (30-day TTL); add a lastAt index if a session's typing history grows large.
-    typing = {
-        r["userId"]
-        for r in await store._query(pk, begins_with="TYPED#")
-        if int(r.get("lastAt", 0)) > now - TYPING_WINDOW_S
-    }
+    ]
+    viewers = sorted(r["userId"] for r in live)
+    typing = {r["userId"] for r in live if int(r.get("typedAt", 0)) > now - TYPING_WINDOW_S}
     return {
         "sessionId": row["sessionId"],
         "generation": row["generation"],

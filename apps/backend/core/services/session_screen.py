@@ -1,6 +1,7 @@
 """Watching a running terminal (spec §5.5, rulings 2026-10-03 §4-5).
 
-LOCALSESSION#<owner>#<sid> / VIEWER#<user>          who gets this session's screen frames
+LOCALSESSION#<owner>#<sid> / VIEWER#<user>          who gets this session's screen frames;
+                                                    `typedAt` is when they last typed
 LOCALUSER#<owner>#<human>  / WATCH#<device>#<sid>   what that Mac's heartbeat ack lists
 LOCALSESSION#<owner>#<sid> / TYPED#<user>#<start>   one admitted person's typing burst (who,
                                                     when, byte count; never the bytes), 30 days
@@ -22,6 +23,7 @@ import uuid
 from dataclasses import dataclass
 from typing import Literal
 
+from botocore.exceptions import ClientError
 from pydantic import Field, field_validator
 
 from core.auth import AuthContext
@@ -285,6 +287,23 @@ def _typist(sid: str, user: str, now: float) -> _Typist:
     return _typists.setdefault((sid, user), _Typist(at=now))
 
 
+async def _mark_typing(row: dict, user: str, now: int) -> None:
+    """`typedAt` on the typist's live VIEWER row, so presence reads typing from the rows it
+    already reads. Never creates or revives a row: someone typing without watching is not shown."""
+    key = _viewer_key(row, user)
+    try:
+        await store.run_in_thread(
+            store._table().update_item,
+            Key=key,
+            UpdateExpression="SET typedAt = :now",
+            ConditionExpression="attribute_exists(pk) AND expiresAt > :now",
+            ExpressionAttributeValues={":now": now},
+        )
+    except ClientError as exc:
+        if exc.response["Error"]["Code"] != "ConditionalCheckFailedException":
+            raise
+
+
 async def type_into(auth: AuthContext, session_id: str, body: SessionInput) -> None:
     """One batch of keystrokes from an admitted person into a running held session's terminal.
 
@@ -338,6 +357,8 @@ async def type_into(auth: AuthContext, session_id: str, body: SessionInput) -> N
             ":n": size,
         },
     )
+    if user != row["humanUserId"]:
+        await _mark_typing(row, user, int(now))
     try:
         sent = await get_local_session_relay().management.send_message_async(row["connectionId"], envelope)
     except Exception as exc:  # noqa: BLE001 -- reported as offline; the content is never logged

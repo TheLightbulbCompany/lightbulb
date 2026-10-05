@@ -107,7 +107,7 @@ Otherwise `404 {"error":"not_shared"}`; the mod shows nothing.
 - The device-heartbeat ack carries `presence: [{sessionId, generation, paused, viewers,
   joinRequests}]` for this Mac's live sessions that have any viewer, pending request or pause
   (the backstop; shapes as in §4.1; `viewers` from `VIEWER#` rows, `canType` from
-  `allowedSenders`/team control, `typing` from a `TYPED#` burst in the last 10 s; names from
+  `allowedSenders`/team control, `typing` from the viewer row's `typedAt` (set on each admitted keystroke batch) in the last 10 s; names from
   `human_display_name`). Trimmed to `MAX_ENVELOPE_BYTES` like `watching`.
 - A `local.session.presence {sessionId, generation, …same}` frame is sent, best effort, when a
   join request is made or answered (they set and lift the input freeze). Everything else rides

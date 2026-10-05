@@ -1399,21 +1399,26 @@ class ThreadRootModifyTests(unittest.TestCase):
         self.assertEqual(publish.call_args_list[0].args[1]["type"], "room.message.updated")
 
 
+IMMEDIATE_URL = "https://sqs.us-east-1.amazonaws.com/1/search"
+BATCH_URL = "https://sqs.us-east-1.amazonaws.com/1/search-batch"
+
+
 class SearchEnqueueTests(unittest.TestCase):
     def setUp(self):
         self.saved = (index.MESSAGING_TABLE, index.HTTP_ENDPOINT, index.REGION, index._ddb_client,
-                      index.SEARCH_INDEX_QUEUE_URL, index._sqs_client)
+                      index.SEARCH_INDEX_QUEUE_URL, index._sqs_client, index.SEARCH_INDEX_BATCH_QUEUE_URL)
         index.MESSAGING_TABLE = "lightbulb-test-messaging"
         index.HTTP_ENDPOINT = "https://example.appsync-api.us-east-1.amazonaws.com/event"
         index.REGION = "us-east-1"
         index._ddb_client = FakeDdb({(f"ROOM#{ROOM_ID}", "META"): {
             "deliveryKey": DELIVERY_KEY, "ownerId": "org_room_owner", "workspaceId": WORKSPACE_ID}})
-        index.SEARCH_INDEX_QUEUE_URL = "https://sqs.us-east-1.amazonaws.com/1/search"
+        index.SEARCH_INDEX_QUEUE_URL = IMMEDIATE_URL
+        index.SEARCH_INDEX_BATCH_QUEUE_URL = BATCH_URL
         index._sqs_client = MagicMock()
 
     def tearDown(self):
         (index.MESSAGING_TABLE, index.HTTP_ENDPOINT, index.REGION, index._ddb_client,
-         index.SEARCH_INDEX_QUEUE_URL, index._sqs_client) = self.saved
+         index.SEARCH_INDEX_QUEUE_URL, index._sqs_client, index.SEARCH_INDEX_BATCH_QUEUE_URL) = self.saved
 
     def _body(self):
         return json.loads(index._sqs_client.send_message.call_args.kwargs["MessageBody"])
@@ -1439,6 +1444,33 @@ class SearchEnqueueTests(unittest.TestCase):
             index.process_record(stream_record(message_item()))
         push.assert_called_once()
         self.assertIn("messaging.projector.search_enqueue.failed", [c.args[0] for c in metric.call_args_list])
+
+    def _queue_url(self):
+        return index._sqs_client.send_message.call_args.kwargs["QueueUrl"]
+
+    @patch("index._send_push")
+    @patch("index._notify_members", return_value=[])
+    @patch("index._publish")
+    def test_new_message_goes_to_the_batch_queue(self, publish, notify, push):
+        index.process_record(stream_record(message_item()))
+        self.assertEqual(self._queue_url(), BATCH_URL)
+
+    @patch("index._send_push")
+    @patch("index._notify_members", return_value=[])
+    @patch("index._publish")
+    def test_new_message_falls_back_to_immediate_without_batch_env(self, publish, notify, push):
+        index.SEARCH_INDEX_BATCH_QUEUE_URL = ""
+        index.process_record(stream_record(message_item()))
+        self.assertEqual(self._queue_url(), IMMEDIATE_URL)
+
+    @patch("index._publish")
+    def test_edit_and_delete_go_to_the_immediate_queue(self, publish):
+        for extra in ({"editedText": "new"}, {"editedText": None, "deletedAt": "2026-10-04T00:00:02Z"}):
+            item = {**message_item(), "messageRevision": 2, "editedAt": "2026-10-04T00:00:01Z", **extra}
+            record = stream_record(item)
+            record["eventName"] = "MODIFY"
+            index.process_record(record)
+            self.assertEqual(self._queue_url(), IMMEDIATE_URL)
 
     @patch("index._publish")
     def test_failed_edit_enqueue_still_raises(self, publish):
@@ -1473,7 +1505,7 @@ class SearchEnqueueTests(unittest.TestCase):
     @patch("index._notify_members", return_value=[])
     @patch("index._publish")
     def test_search_off_enqueues_nothing(self, publish, notify, push):
-        index.SEARCH_INDEX_QUEUE_URL = ""
+        index.SEARCH_INDEX_QUEUE_URL = index.SEARCH_INDEX_BATCH_QUEUE_URL = ""
         index.process_record(stream_record(message_item()))
         index._sqs_client.send_message.assert_not_called()
 

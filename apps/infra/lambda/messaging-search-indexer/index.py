@@ -26,9 +26,12 @@ logger = logging.getLogger()
 logger.setLevel(logging.INFO)
 
 MESSAGING_TABLE = os.environ.get("MESSAGING_TABLE", "")
+SEARCH_INDEX_BATCH_QUEUE_URL = os.environ.get("SEARCH_INDEX_BATCH_QUEUE_URL", "")
 SEARCH_ENDPOINT = os.environ.get("SEARCH_ENDPOINT", "").rstrip("/")
 REGION = os.environ.get("AWS_REGION", "us-east-1")
 MAX_ROUNDS = 5
+# One attempt can make three sequential OpenSearch calls (40 s timeout each) plus DynamoDB reads.
+DRAIN_MIN_REMAINING_MS = 130_000
 
 MAPPING = {
     "mappings": {
@@ -48,6 +51,7 @@ MAPPING = {
 }
 
 _ddb_client = None
+_sqs_client = None
 _deserializer = TypeDeserializer()
 
 
@@ -82,6 +86,13 @@ def _ddb():
     if _ddb_client is None:
         _ddb_client = boto3.client("dynamodb")
     return _ddb_client
+
+
+def _sqs():
+    global _sqs_client
+    if _sqs_client is None:
+        _sqs_client = boto3.client("sqs")
+    return _sqs_client
 
 
 def _get_row(room_id: str, sk: str) -> dict[str, Any] | None:
@@ -151,8 +162,56 @@ def process(job: dict[str, Any]) -> None:
     raise RuntimeError("row kept changing; retrying the job")
 
 
-def handler(event: dict, context: object) -> dict:
-    del context
+def _release(messages: list[dict[str, Any]]) -> None:
+    entries = [{"Id": m["MessageId"], "ReceiptHandle": m["ReceiptHandle"], "VisibilityTimeout": 0} for m in messages]
+    failed = 0
+    try:
+        for i in range(0, len(entries), 10):
+            response = _sqs().change_message_visibility_batch(
+                QueueUrl=SEARCH_INDEX_BATCH_QUEUE_URL, Entries=entries[i : i + 10]
+            )
+            failed += len(response.get("Failed", []))
+    except Exception as exc:  # noqa: BLE001 - they reappear after the visibility timeout
+        logger.warning("search index drain release error_type=%s", type(exc).__name__)
+    if failed:
+        logger.warning("search index drain release failed count=%d", failed)
+
+
+def drain(context: Any) -> dict[str, int]:
+    """Index every queued new-message job (the batch queue has no event source;
+    a schedule invokes this). Failed jobs stay queued and retry after visibility."""
+    drained = failed = 0
+    if not SEARCH_INDEX_BATCH_QUEUE_URL:
+        return {"drained": 0, "failed": 0}
+    while context.get_remaining_time_in_millis() >= DRAIN_MIN_REMAINING_MS:
+        messages = _sqs().receive_message(
+            QueueUrl=SEARCH_INDEX_BATCH_QUEUE_URL, MaxNumberOfMessages=10, WaitTimeSeconds=1, VisibilityTimeout=600
+        ).get("Messages", [])
+        if not messages:
+            break
+        done = []
+        for position, message in enumerate(messages):
+            if context.get_remaining_time_in_millis() < DRAIN_MIN_REMAINING_MS:
+                _release(messages[position:])  # untouched: visible at once, no receive counted against them
+                break
+            try:
+                process(json.loads(message["Body"]))
+                done.append({"Id": message["MessageId"], "ReceiptHandle": message["ReceiptHandle"]})
+            except Exception as exc:  # noqa: BLE001 - left in the queue to retry
+                logger.error("search index job failed message_id=%s error_type=%s", message["MessageId"], type(exc).__name__)
+                failed += 1
+        if done:
+            response = _sqs().delete_message_batch(QueueUrl=SEARCH_INDEX_BATCH_QUEUE_URL, Entries=done)
+            if response.get("Failed"):
+                logger.warning("search index drain delete failed count=%d", len(response["Failed"]))
+        drained += len(done)
+    logger.info("search index drain drained=%d failed=%d", drained, failed)
+    return {"drained": drained, "failed": failed}
+
+
+def handler(event: dict, context: Any) -> dict:
+    if event.get("drain"):
+        return drain(context)
     failures = []
     for record in event.get("Records", []):
         try:

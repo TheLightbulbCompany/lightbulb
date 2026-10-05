@@ -15,7 +15,7 @@ pub(crate) const FILES: &[(&str, &str)] = &[
     ("lightbulb-sessions/hooks/rules.ts", include_str!("../../mods/lightbulb-sessions/hooks/rules.ts")),
     ("lightbulb-sessions/types/index.d.ts", include_str!("../../mods/lightbulb-sessions/types/index.d.ts")),
 ];
-const ID: &str = "lightbulb-sessions@lightbulb";
+pub(crate) const ID: &str = "lightbulb-sessions@lightbulb";
 
 fn write_files(state_dir: &Path) -> Result<PathBuf> {
     let root = state_dir.join("claude-mods");
@@ -75,6 +75,14 @@ fn latest_only(home: PathBuf, cmds: Vec<Vec<String>>) {
             run_all(home, cmds);
         }
     });
+}
+
+/// For `lightbulb continue`: write the mod and install it now, in the foreground (the CLI exits
+/// into Claude right after). Same files and the same two commands as `install`.
+pub(crate) fn install_now(state_dir: &Path, home: &Path) -> Result<()> {
+    let root = write_files(state_dir)?;
+    run_all(home.to_owned(), commands(&root, true));
+    Ok(())
 }
 
 /// Files are written inline; the `claude` calls run on a background thread because they take

@@ -1,7 +1,7 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
-import type { SessionState } from '../types'
-import { bandRuns, requestLine, type Decision } from './state'
+import type { Continued, SessionState } from '../types'
+import { bandRuns, continuedLine, parseContinued, requestLine, type Decision } from './state'
 import { bashTouchesProtected, classify, colorFor, protectedPath, rowBody, rowLabel, senderColor } from './rules'
 
 export const sharing = atom({ plugin: 'lightbulb-sessions', key: 'state' } as const, null as SessionState | null)
@@ -9,6 +9,8 @@ export const sharing = atom({ plugin: 'lightbulb-sessions', key: 'state' } as co
 // still applies (the request is still first, or sharing is still in the state it would change).
 type Problem = { text: string; about: Decision }
 const problem = atom({ plugin: 'lightbulb-sessions', key: 'error' } as const, null as Problem | null)
+// Where this session was continued from, read once from the marker `lightbulb continue` wrote.
+const continued = atom({ plugin: 'lightbulb-sessions', key: 'continued' } as const, null as Continued | null)
 // One decision at a time: a second press while one is out would send the same answer twice.
 // A module variable on purpose: it is set and tested in one synchronous step.
 let deciding = false
@@ -25,6 +27,17 @@ async function socketPath($: EngineInterface): Promise<string | null> {
     return typeof text === 'string' ? text.trim() || null : null
   } catch {
     return null // the socket path is not written yet: show nothing
+  }
+}
+
+async function continuedMarker($: EngineInterface): Promise<Continued | null> {
+  try {
+    const home = await $.env.get('HOME')
+    if (!home) return null
+    const text = await $.fs.read(`${home}/.lightbulb/continued/${await $.session.id()}.json`)
+    return typeof text === 'string' ? parseContinued(text) : null
+  } catch {
+    return null // not a continued session
   }
 }
 
@@ -139,6 +152,10 @@ export const register: Register = on => {
     }
     // Never wait on the app: this runs in every Claude session on the Mac, and a stalled socket
     // must not hold session start. The band appears when the first answer lands.
+    $.clock.after(0, async () => {
+      const c = await continuedMarker($)
+      if (c) await update($, continued, () => c)
+    })
     $.clock.after(0, refresh)
     $.clock.every(POLL_MS, refresh)
     return next(e)
@@ -146,7 +163,13 @@ export const register: Register = on => {
 
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
     const s = await read($, sharing)
-    if (!s) return next(e)
+    if (!s) {
+      // Not shared itself: a continued session says where it came from (spec §3.6).
+      const c = await read($, continued)
+      if (!c) return next(e)
+      const { Text } = $.ui.resolve(e)
+      return <Text dimColor>{continuedLine(c)}</Text>
+    }
     const { Box, Button, Text } = $.ui.resolve(e)
     const act = (body: Decision) => async () => {
       if (deciding) return

@@ -201,6 +201,7 @@ class PickupStatus(ContractModel):
     repo: str | None = None
     branch: str | None = None
     expires_at: str | None = None
+    private_repo: bool | None = None
 
     @model_serializer(mode="wrap")
     def wire(self, handler, info):
@@ -208,7 +209,7 @@ class PickupStatus(ContractModel):
             self,
             handler(self),
             info,
-            ("state", "reason", "snapshot_at", "bytes", "has_code", "repo", "branch", "expires_at"),
+            ("state", "reason", "snapshot_at", "bytes", "has_code", "repo", "branch", "expires_at", "private_repo"),
         )
 
 
@@ -729,6 +730,7 @@ def _pickup_public(row: dict) -> dict:
         "hasCode": snapshot.get("hasCode"),
         "repo": snapshot.get("repo"),
         "branch": snapshot.get("branch"),
+        "privateRepo": True if "privateFolder" in snapshot else None,
     }
     stopped = pickup_stopped_at(row)
     if stopped is not None:
@@ -746,6 +748,12 @@ def pickup_stopped_at(row: dict, now: int | None = None) -> int | None:
         return int(row["endedAt"])
     lease = int(row.get("onlineUntil", 0))
     return lease if lease <= (int(time.time()) if now is None else now) else None
+
+
+def pickup_expired(row: dict) -> bool:
+    """True once the session's snapshot is past its retention: one predicate for opening and sharing a link."""
+    stopped = pickup_stopped_at(row)
+    return stopped is not None and int(time.time()) >= stopped + PICKUP_RETENTION_SECONDS
 
 
 def team_control_on(row: dict) -> bool:
@@ -1735,6 +1743,8 @@ AUDIT_ACTIONS = Literal[
     "team_control_ended",
     "share_link_created",
     "share_link_revoked",
+    "share_link_audience",
+    "session_copied",
     "pickup_on",
     "pickup_off",
     "picked_up",
@@ -2057,8 +2067,19 @@ async def decide_pickup_request(
     if decision == "allow":
         if session_pickup._expired(row):
             raise ApiProblem("LOCAL_SESSION_NOT_FOUND", "This session's snapshot has expired.")
-        # Raises (e.g. a paused session) before any write: the request stays pending.
-        public = await session_pickup.set_pickup(auth, session_id, True, expect_request=(user_id, current["requestId"]))
+        # Allow creates the link as Workspace only (spec §3.1), first: a session never has pick-up on
+        # without its link. A failure before any write leaves the request pending; one after the link
+        # exists takes the link back.
+        had_link = bool(row.get("shareLink"))
+        await put_link(auth, session_id, None, turn_on_pickup=False)
+        try:
+            public = await session_pickup.set_pickup(
+                auth, session_id, True, expect_request=(user_id, current["requestId"])
+            )
+        except Exception:
+            if not had_link:
+                await delete_link(auth, session_id)
+            raise
         await _notify_join_answer(row, user_id, "join_allowed", current["requestId"], kind="pickup")
         return public
 
@@ -2224,14 +2245,12 @@ async def set_usage_sharing(auth: AuthContext, session_id: str, enabled: bool) -
     raise ApiProblem("LOCAL_SESSION_CONFLICT", "Session changed. Try again.")
 
 
-# --- Share links: read-only transcript snapshots (owner ruling 2026-09-25) -------------------
+# --- The one link (spec 2026-10-05-public-session-links §3.1) -------------------------------
 #
-# Workspace-only by design: a link opens for a signed-in member of the owner's workspace and
-# nobody else. A public variant was judged too risky -- transcripts carry code, paths and
-# command lines, and the desktop's credential redaction is a backstop, not a guarantee.
+# One link per session; its audience is the owner's only setting. On a Claude session the link is
+# the pick-up permission. META.shareLink is the truth: the SHARELINK# lookup row only finds it.
 
-SHARE_DEFAULT_DAYS = 7
-SHARE_MAX_DAYS = 30
+AUDIENCES = Literal["workspace", "anyone"]
 
 
 def _share_pk(token_hash: str) -> str:
@@ -2244,57 +2263,42 @@ def _token_hash(token: str) -> str:
     return hashlib.sha256(token.encode("utf-8")).hexdigest()
 
 
-class ShareLinkRequest(ContractModel):
-    expires_in_days: int = Field(default=SHARE_DEFAULT_DAYS, ge=1, le=SHARE_MAX_DAYS)
+class LinkRequest(ContractModel):
+    # None is Share: create a workspace link if there is none, otherwise keep its audience. Only the
+    # audience select sends one, so a stale or failed read can never narrow an "anyone" link.
+    audience: AUDIENCES | None = None
 
 
-class ShareLink(ContractModel):
-    link_id: str
-    created_at: str
-    expires_at: str
-    snapshot_seq: int
-    # Only in the create response: the one time the secret exists outside the owner's clipboard.
-    token: str | None = None
-
-    @model_serializer(mode="wrap")
-    def wire(self, handler, info):
-        return _drop_none(self, handler(self), info, ("token",))
+class SessionLink(ContractModel):
+    # None only when the stored ciphertext no longer decrypts (a rotated ENCRYPTION_KEY): the link
+    # still opens, it just cannot be shown again; turning it off and on makes a new one.
+    url: str | None
+    audience: AUDIENCES
 
 
-class ShareLinks(ContractModel):
-    links: list[ShareLink]
+def link_url(token: str) -> str:
+    from core.config import settings
+
+    return f"{settings.FRONTEND_URL.rstrip('/')}/s#{token}"
 
 
-class SharedSession(ContractModel):
-    session_id: str
-    human_user_id: str
-    provider: Literal["claude", "codex"]
-    title: Annotated[str, Field(max_length=120)] | None = None
-    cwd_name: Annotated[str, Field(max_length=128)] | None = None
-    snapshot_seq: int
-    created_at: str
-    expires_at: str
+def _link_public(link: dict) -> SessionLink:
+    from core import encryption
+
+    try:
+        url = link_url(encryption.decrypt(link["tokenEnc"]))
+    except ValueError:  # encryption.decrypt's only failure
+        logger.warning("session link undecryptable")
+        url = None
+    return SessionLink(url=url, audience=link["audience"])
 
 
-def _share_public(row: dict, token: str | None = None) -> ShareLink:
-    return ShareLink(
-        link_id=row["linkId"],
-        created_at=iso(row["createdAt"]),
-        expires_at=iso(row["expiresAt"]),
-        snapshot_seq=row["snapshotSeq"],
-        token=token,
-    )
-
-
-async def _owned_session(auth: AuthContext, session_id: str, *, sharing: bool = True) -> dict:
-    """The owner's own session. Listing and revoking skip the enrollment check on purpose: an
-    owner who turned sharing off must still be able to find and kill their links."""
-    if sharing:
-        row, _ = await authorize_session(auth, None, session_id)
-    else:
-        row = await repo.get_session(resolve_owner_id(auth), validate_uuid(session_id, label="local session ID"))
-        if row is None:
-            raise ApiProblem("LOCAL_SESSION_NOT_FOUND", "Local session not found.")
+async def _owned_session(auth: AuthContext, session_id: str) -> dict:
+    """The owner's own session. Reading and turning off skip the enrollment check on purpose: an
+    owner who turned sharing off must still be able to find and kill their link."""
+    row = await repo.get_session(resolve_owner_id(auth), validate_uuid(session_id, label="local session ID"))
+    if row is None:
+        raise ApiProblem("LOCAL_SESSION_NOT_FOUND", "Local session not found.")
     if auth.user_id != row["humanUserId"]:
         raise ApiProblem("LOCAL_SESSION_FORBIDDEN", "Only the session's owner can share it.")
     return row
@@ -2316,125 +2320,128 @@ def _capture_growth(row: dict, event: str, distinct_id: str, **props) -> None:
     )
 
 
-async def create_share_link(auth: AuthContext, session_id: str, request: ShareLinkRequest) -> ShareLink:
+async def put_link(
+    auth: AuthContext, session_id: str, audience: str | None, *, turn_on_pickup: bool = True
+) -> SessionLink:
+    """Create the session's one link, or change its audience. ``audience`` None (Share, and Ask to
+    pick up's Allow): create a workspace link if there is none, otherwise leave the link as it is.
+    Allow passes ``turn_on_pickup=False``: it turns pick-up on itself, under its own request fence."""
     import secrets
 
-    row = await _owned_session(auth, session_id)
-    owner, sid = row["ownerId"], row["sessionId"]
-    token = secrets.token_urlsafe(32)
-    now = int(time.time())
-    link = {
-        "linkId": str(uuid.uuid4()),
-        "tokenHash": _token_hash(token),
-        "ownerId": owner,
-        "sessionId": sid,
-        "createdBy": auth.user_id,
-        "createdAt": now,
-        "expiresAt": now + request.expires_in_days * 86400,
-        # The snapshot: what the transcript held when the owner shared it, and never more.
-        "snapshotSeq": int(row.get("eventSeq", 0)),
-    }
+    from core import encryption
+    from core.services import session_pickup
+    from core.services.local_session_relay import publish_resources_changed
+
     table = messaging_repo._table().name
-    audit = audit_row(owner, sid, auth, "share_link_created", detail=f"{request.expires_in_days}d")
-    await messaging_repo._transact(
-        [
-            # The lookup row, found by the hash of the secret; expiresAt is the table's TTL.
-            {"Put": {"TableName": table, "Item": {**link, "pk": _share_pk(link["tokenHash"]), "sk": "META"}}},
-            # The owner's listing row, in the session's own partition.
-            {
-                "Put": {
-                    "TableName": table,
-                    "Item": {**link, "pk": repo.session_pk(owner, sid), "sk": f"SHARE#{link['linkId']}"},
+    for _ in range(6):
+        row, enrollment = await authorize_session(auth, None, session_id)
+        if auth.user_id != row["humanUserId"]:
+            raise ApiProblem("LOCAL_SESSION_FORBIDDEN", "Only the session's owner can share it.")
+        if row.get("unshared"):
+            raise ApiProblem("LOCAL_SESSION_CONFLICT", "Resume sharing before sharing a link.")
+        if pickup_expired(row):
+            raise ApiProblem("LOCAL_SESSION_NOT_FOUND", "This session is too old to share.")
+        owner, sid, link = row["ownerId"], row["sessionId"], row.get("shareLink")
+        if link and (audience is None or link["audience"] == audience):
+            break
+        if link:
+            new = {**link, "audience": audience}
+            extra = [
+                {
+                    "Put": {
+                        "TableName": table,
+                        "Item": audit_row(owner, sid, auth, "share_link_audience", detail=audience),
+                    }
                 }
-            },
-            {"Put": {"TableName": table, "Item": audit}},
-        ]
-    )
-    _capture_growth(row, "share_link_created", auth.user_id, expires_in_days=request.expires_in_days)
-    return _share_public(link, token)
+            ]
+        else:
+            token = secrets.token_urlsafe(32)
+            new = {
+                "tokenHash": _token_hash(token),
+                "tokenEnc": encryption.encrypt(token),
+                "audience": audience or "workspace",
+                "createdAt": int(time.time()),
+                "createdBy": auth.user_id,
+            }
+            lookup = {"pk": _share_pk(new["tokenHash"]), "sk": "META", "ownerId": owner, "sessionId": sid}
+            extra = [
+                {"Put": {"TableName": table, "Item": lookup}},
+                {
+                    "Put": {
+                        "TableName": table,
+                        "Item": audit_row(owner, sid, auth, "share_link_created", detail=new["audience"]),
+                    }
+                },
+            ]
+        try:
+            await repo.put_session(
+                {**row, "shareLink": new, "revision": str(uuid.uuid4())}, row, enrollment, extra=extra
+            )
+        except ClientError as exc:
+            if not messaging_repo._is_cancelled(exc):
+                raise
+            continue
+        if not link:
+            _capture_growth(row, "share_link_created", auth.user_id, audience=new["audience"])
+        await publish_resources_changed(owner, row["humanUserId"])
+        link = new
+        break
+    else:
+        raise ApiProblem("LOCAL_SESSION_CONFLICT", "Session changed. Try again.")
+    # The link is the pick-up permission on a Claude session; set_pickup is a no-op while it is on.
+    if row["provider"] == "claude" and turn_on_pickup:
+        await session_pickup.set_pickup(auth, session_id, True)
+    return _link_public(link)
 
 
-async def list_share_links(auth: AuthContext, session_id: str) -> ShareLinks:
-    row = await _owned_session(auth, session_id, sharing=False)
-    now = int(time.time())
-    rows = await messaging_repo._query(repo.session_pk(row["ownerId"], row["sessionId"]), begins_with="SHARE#")
-    return ShareLinks(links=[_share_public(r) for r in rows if int(r["expiresAt"]) > now])
+async def get_link(auth: AuthContext, session_id: str) -> SessionLink:
+    row = await _owned_session(auth, session_id)
+    if not row.get("shareLink"):
+        raise ApiProblem("LOCAL_SESSION_NOT_FOUND", "This session has no link.")
+    if pickup_expired(row):
+        raise ApiProblem("LOCAL_SESSION_NOT_FOUND", "This session is too old to share.")
+    return _link_public(row["shareLink"])
 
 
-async def revoke_share_link(auth: AuthContext, session_id: str, link_id: str) -> None:
-    row = await _owned_session(auth, session_id, sharing=False)
-    owner, sid = row["ownerId"], row["sessionId"]
-    listing = await messaging_repo._get(repo.session_pk(owner, sid), f"SHARE#{validate_uuid(link_id, label='link ID')}")
-    if listing is None:
-        raise ApiProblem("LOCAL_SESSION_NOT_FOUND", "Share link not found.")
+async def delete_link(auth: AuthContext, session_id: str) -> None:
+    """Turn the link off: every page reads "turned off" and no new copy can be made. On a Claude
+    session this retires the snapshot too, in retire's own transaction. Idempotent."""
+    from core.services import session_pickup
+    from core.services.local_session_relay import publish_resources_changed
+
     table = messaging_repo._table().name
-    audit = audit_row(owner, sid, auth, "share_link_revoked")
-    await messaging_repo._transact(
-        [
-            {"Delete": {"TableName": table, "Key": {"pk": _share_pk(listing["tokenHash"]), "sk": "META"}}},
-            {"Delete": {"TableName": table, "Key": {"pk": listing["pk"], "sk": listing["sk"]}}},
-            {"Put": {"TableName": table, "Item": audit}},
-        ]
-    )
-
-
-async def _open_share(auth: AuthContext, token: str) -> tuple[dict, dict]:
-    """A live link, for a member of the workspace that owns it, while its owner still shares
-    from that Mac: turning sharing off closes the links with the live view. Every failure
-    reads the same."""
-    gone = ApiProblem("LOCAL_SESSION_NOT_FOUND", "This share link has expired or was revoked.")
-    if not 16 <= len(token) <= 128:
-        raise gone
-    link = await messaging_repo._get(_share_pk(_token_hash(token)), "META")
-    if link is None or int(link["expiresAt"]) <= int(time.time()) or caller_owner(auth) != link["ownerId"]:
-        raise gone
-    row = await repo.get_session(link["ownerId"], link["sessionId"])
-    # A session its owner paused reads as gone to everyone else, its links included.
-    if row is None or row.get("unshared"):
-        raise gone
-    try:
-        await _enrolled(link["ownerId"], row["humanUserId"], row["deviceId"])
-    except ApiProblem as exc:
-        raise gone from exc
-    return link, row
-
-
-class SharedTokenRequest(ContractModel):
-    """The token travels in a body, never a path or query: those land in access logs."""
-
-    token: Annotated[str, Field(min_length=16, max_length=128)]
-    after_seq: int = Field(default=0, ge=0)
-    limit: int = Field(default=100, ge=1, le=100)
-
-
-async def get_shared_session(auth: AuthContext, token: str) -> SharedSession:
-    link, row = await _open_share(auth, token)
-    # The open, not every page of events: one row per person per visit.
-    _capture_growth(row, "share_link_opened", auth.user_id)
-    return SharedSession(
-        session_id=row["sessionId"],
-        human_user_id=row["humanUserId"],
-        provider=row["provider"],
-        title=row.get("title"),
-        cwd_name=row.get("cwdName"),
-        snapshot_seq=link["snapshotSeq"],
-        created_at=iso(link["createdAt"]),
-        expires_at=iso(link["expiresAt"]),
-    )
-
-
-async def list_shared_events(
-    auth: AuthContext, token: str, after_seq: int = 0, limit: int = 50
-) -> LocalSessionEventPage:
-    link, _ = await _open_share(auth, token)
-    if after_seq < 0 or not 1 <= limit <= 100:
-        raise ApiProblem("INVALID_REQUEST", "Invalid event pagination.")
-    cap = int(link["snapshotSeq"])
-    if after_seq >= cap:
-        return LocalSessionEventPage(events=[], next_after_seq=None)
-    rows, next_seq = await repo.list_events(link["ownerId"], link["sessionId"], after_seq, min(limit, cap - after_seq))
-    rows = [r for r in rows if int(r["seq"]) <= cap]
-    last = int(rows[-1]["seq"]) if rows else cap
-    return LocalSessionEventPage(
-        events=[_public(LocalSessionEvent, r) for r in rows], next_after_seq=last if last < cap and next_seq else None
-    )
+    for _ in range(6):
+        row = await _owned_session(auth, session_id)
+        link = row.get("shareLink")
+        if not link:
+            # Pick-up switched on by the removed switch has no link: turning off still turns it off.
+            if row.get("pickupAllowed"):
+                await session_pickup.set_pickup(auth, session_id, False)
+            return
+        owner, sid = row["ownerId"], row["sessionId"]
+        try:
+            if row.get("pickupAllowed"):
+                await session_pickup.retire(owner, sid, row, auth=auth, action="share_link_revoked")
+                return
+            await messaging_repo._transact(
+                [
+                    {
+                        "Update": {
+                            "TableName": table,
+                            "Key": {"pk": row["pk"], "sk": "META"},
+                            "UpdateExpression": "REMOVE shareLink SET revision = :new",
+                            "ConditionExpression": "revision = :old",
+                            "ExpressionAttributeValues": {":new": str(uuid.uuid4()), ":old": row["revision"]},
+                        }
+                    },
+                    {"Delete": {"TableName": table, "Key": {"pk": _share_pk(link["tokenHash"]), "sk": "META"}}},
+                    {"Put": {"TableName": table, "Item": audit_row(owner, sid, auth, "share_link_revoked")}},
+                ]
+            )
+        except ClientError as exc:
+            if not messaging_repo._is_cancelled(exc):
+                raise
+            continue
+        await publish_resources_changed(owner, row["humanUserId"])
+        return
+    raise ApiProblem("LOCAL_SESSION_CONFLICT", "Session changed. Try again.")

@@ -124,8 +124,14 @@ MAINTENANCE (Lightbulb engineers): every claim in this skill is anchored to
   - Session Details dialog .. references/surfaces.md (status line, Details tabs, Access switches, footer)
                               <- apps/frontend/src/components/messaging/LocalSessionPanel.tsx (status line, Details + Pick up
                                  buttons); SessionDetails.tsx (About/Changes/Access/Linked work tabs, the Access switches,
-                                 footer Copy link / Message owner / Pick up); SessionShareLinks.tsx (Share snapshot…);
-                                 LocalSessionWork.tsx (Link existing work).
+                                 footer Copy link / Message owner / Pick up); SessionShareLink.tsx (Share, Who can open it,
+                                 Turn off link); LocalSessionWork.tsx (Link existing work).
+  - Session links + Continue  references/surfaces.md ("Session links" paragraph)
+                              <- apps/frontend/src/app/s/page.tsx (the /s page: sign in, Continue, the
+                                 `lightbulb continue '<link>'` command); apps/backend/core/services/session_links.py
+                                 (open, copies, redaction); core/services/local_sessions.py (put_link / delete_link:
+                                 one link, audience, the pick-up permission); apps/desktop/src-tauri/src/session_continue.rs
+                                 (`lightbulb continue`).
   - Session live vs transcript  references/surfaces.md (running = live terminal; not running = "Transcript"; sidebar lists live, All sessions lists every session; no message box under a live terminal)
   - Session status/title/id .. references/surfaces.md (sessions list: waiting-approval = waits for its person; title = person's name else conversation title; one conversation = one sessionId)
                               <- apps/frontend/src/components/messaging/{LocalSessionPanel,RoomDirectory,SessionTerminalView}.tsx.
@@ -156,8 +162,9 @@ MAINTENANCE (Lightbulb engineers): every claim in this skill is anchored to
                                  packages/shared/src/messaging/sessionControls.ts (RESUME_REFUSED, "Not resumed: …").
   - Session pick-up ......... references/surfaces.md ("Pick up" paragraph)
                               <- apps/frontend/src/components/messaging/SessionPickup.tsx (Ask to pick up / Requested / declined / Preparing… / Pick up;
-                                 desktop-only, browser copy); SessionDetails.tsx (the pick-up switch: needs sharing on,
-                                 upload warning, 7-day retention, Codex not yet).
+                                 desktop-only, browser copy); SessionShareLink.tsx (the link is the pick-up permission:
+                                 needs sharing on, upload warning, 7-day retention, Codex not yet; no separate switch);
+                                 core/services/local_sessions.py decide_pickup_request (Allow creates a Workspace only link).
   - Workspace search ........ references/surfaces.md
                               <- apps/frontend/src/components/workspace/WorkspaceHeader.tsx (search button + shortcut label);
                                  apps/frontend/src/components/teams/command-palette/CommandPalette.tsx (the Conversations group,

@@ -182,7 +182,8 @@ async def test_a_decline_that_lands_first_fences_allow(transport):
 
         with patch.object(service, "authorize_session", stale_first), pytest.raises(ApiProblem) as late:
             await service.decide_pickup_request(ALICE, sid, BOB.user_id, "allow", request_id=rid)
-    assert late.value.error.code == "LOCAL_SESSION_CONFLICT" and len(reads) == 2
+    assert late.value.error.code == "LOCAL_SESSION_CONFLICT" and len(reads) == 3  # decide, put_link, set_pickup
+    assert "shareLink" not in await stored(sid)  # the link Allow made first was taken back
     row = await stored(sid)
     assert not row.get("pickupAllowed") and row["pickupRequests"][BOB.user_id]["state"] == "declined"
 

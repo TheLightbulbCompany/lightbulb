@@ -269,7 +269,18 @@ pub struct Ask {
 }
 
 const USAGE: &str = "Usage: lightbulb claude|codex [any claude or codex arguments]\n\
-Starts a session in the Lightbulb app on this Mac, with its live terminal there too.";
+       lightbulb continue '<link>'\n\
+Starts a session in the Lightbulb app on this Mac, with its live terminal there too, or continues\n\
+a shared session from its link in your own Claude Code.";
+
+/// `lightbulb continue '<link>'`: Some when the first word is `continue`.
+pub fn continue_link(args: &[String]) -> Option<Result<&str, ()>> {
+    match args {
+        [first, link] if first == "continue" => Some(Ok(link.as_str())),
+        [first, ..] if first == "continue" => Some(Err(())),
+        _ => None,
+    }
+}
 
 pub fn parse(args: &[String]) -> Result<Ask, String> {
     let Some((tool, rest)) = args.split_first().filter(|(t, _)| *t == "claude" || *t == "codex") else {
@@ -524,6 +535,16 @@ fn attach(socket: &Path, (cols, rows): (u16, u16), signals: libc::sigset_t) -> i
 
 /// `lightbulb …`: the process exit code.
 pub fn main(args: &[String]) -> i32 {
+    // Before `block_signals`, so Ctrl-C works while it waits for the browser.
+    if let Some(link) = continue_link(args) {
+        return match link {
+            Ok(link) => crate::session_continue::main(link),
+            Err(()) => {
+                eprintln!("Usage: lightbulb continue '<link>'");
+                2
+            }
+        };
+    }
     // First, so a Ctrl-C or SIGHUP while the app starts the session stays pending and detaches
     // with the Decision 4 line in `attach`, instead of killing this silently with the session
     // started anyway. The early exits below just exit with it pending.
@@ -655,6 +676,20 @@ mod tests {
 
     fn words(a: &[&str]) -> Vec<String> {
         a.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn continue_takes_exactly_one_link() {
+        assert_eq!(
+            continue_link(&words(&["continue", "https://x/s#t"])),
+            Some(Ok("https://x/s#t"))
+        );
+        assert_eq!(continue_link(&words(&["continue"])), Some(Err(())));
+        assert_eq!(
+            continue_link(&words(&["continue", "a", "b"])),
+            Some(Err(()))
+        );
+        assert_eq!(continue_link(&words(&["claude", "continue"])), None);
     }
 
     #[test]

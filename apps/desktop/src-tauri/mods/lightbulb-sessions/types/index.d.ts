@@ -1,5 +1,6 @@
 export type Viewer = { userId: string; name: string; canType: boolean; typing: boolean }
 export type JoinRequest = { userId: string; name: string; requestId: string; kind: 'join' | 'pickup' }
+export type Continued = { from: string; title: string | null }
 export type SessionState = {
   sessionId: string
   paused: boolean
@@ -11,6 +12,6 @@ export type SessionState = {
 
 declare module 'claude-code' {
   interface PluginState {
-    'lightbulb-sessions': { state: SessionState | null; error: string | null }
+    'lightbulb-sessions': { state: SessionState | null; error: string | null; continued: Continued | null }
   }
 }

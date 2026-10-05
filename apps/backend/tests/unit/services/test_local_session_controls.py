@@ -10,7 +10,7 @@ import pytest
 
 from core.auth import AuthContext
 from core.repositories import local_sessions_repo as repo
-from core.services import activity, local_sessions as service
+from core.services import activity, local_sessions as service, session_links
 from core.services.local_session_relay import _NO_PROMPT, pending_approval
 from core.services.messaging import ApiProblem
 from tests.unit.services import test_local_session_relay as relay_tests, test_local_sessions as registry_tests
@@ -210,9 +210,14 @@ async def test_private_native_send_is_visible_and_approvable_only_to_its_owner(t
     assert public["pendingApproval"]["exact"] is False
     assert "privateSendApproval" not in public
     assert "Private\nbody" not in json.dumps((await service.list_events(BOB, None, sid)).model_dump(by_alias=True))
-    link = await service.create_share_link(ALICE, sid, service.ShareLinkRequest())
+    token = (await service.put_link(ALICE, sid, "workspace")).url.split("#", 1)[1]
     assert "Private\nbody" not in json.dumps(
-        (await service.list_shared_events(BOB, link.token)).model_dump(by_alias=True)
+        (await session_links.list_events(ALICE, token, 0, 100)).model_dump(by_alias=True)
+    )
+    await service.put_link(ALICE, sid, "anyone")  # an outsider holding the link
+    stranger = AuthContext(user_id="user_elsewhere", org_id="org_other")
+    assert "Private\nbody" not in json.dumps(
+        (await session_links.list_events(stranger, token, 0, 100)).model_dump(by_alias=True)
     )
     await service.set_team_control(ALICE, sid, True)
     with pytest.raises(ApiProblem, match="unavailable"):
@@ -361,96 +366,6 @@ async def _events(transport, sid, count, after=0):
         ],
     }
     await relay(transport).handle_message("conn-1", batch)
-
-
-@pytest.mark.asyncio
-async def test_a_share_link_is_the_owners_to_make_a_frozen_snapshot_and_workspace_only(transport):
-    from core.auth import AuthContext
-
-    sid = await start(transport)
-    await _events(transport, sid, 3)
-    with pytest.raises(ApiProblem, match="owner"):
-        await service.create_share_link(BOB, sid, service.ShareLinkRequest())
-    link = await service.create_share_link(ALICE, sid, service.ShareLinkRequest())
-    assert link.token and link.snapshot_seq == 3
-    # Default expiry is seven days.
-    from datetime import datetime
-
-    span = datetime.fromisoformat(link.expires_at.replace("Z", "+00:00")) - datetime.fromisoformat(
-        link.created_at.replace("Z", "+00:00")
-    )
-    assert span.days == 7
-    # The owner's listing never repeats the secret.
-    listed = (await service.list_share_links(ALICE, sid)).model_dump(by_alias=True)["links"]
-    assert [entry["linkId"] for entry in listed] == [link.link_id] and "token" not in listed[0]
-    # A teammate reads the snapshot; later output is not in it.
-    await _events(transport, sid, 2, after=3)
-    shared = await service.get_shared_session(BOB, link.token)
-    assert shared.snapshot_seq == 3 and shared.session_id == sid
-    page = await service.list_shared_events(BOB, link.token, 0, 50)
-    assert [e.text for e in page.events] == ["line 0", "line 1", "line 2"] and page.next_after_seq is None
-    first = await service.list_shared_events(BOB, link.token, 0, 2)
-    assert first.next_after_seq == 2
-    # Nobody outside the workspace, however they got the link.
-    stranger = AuthContext(user_id="user_elsewhere", org_id="org_other")
-    with pytest.raises(ApiProblem, match="expired or was revoked"):
-        await service.get_shared_session(stranger, link.token)
-    with pytest.raises(ApiProblem, match="expired or was revoked"):
-        await service.get_shared_session(BOB, link.token[:-1] + ("A" if link.token[-1] != "A" else "B"))
-    # Revocable by the owner only, and dead at once.
-    with pytest.raises(ApiProblem, match="owner"):
-        await service.revoke_share_link(BOB, sid, link.link_id)
-    await service.revoke_share_link(ALICE, sid, link.link_id)
-    with pytest.raises(ApiProblem, match="expired or was revoked"):
-        await service.list_shared_events(BOB, link.token)
-    assert [a for a, _ in await actions(sid)][-2:] == ["share_link_created", "share_link_revoked"]
-
-
-@pytest.mark.asyncio
-async def test_a_share_link_dies_at_its_expiry(transport):
-    sid = await start(transport)
-    with patch("time.time", return_value=1_000_000):
-        link = await service.create_share_link(ALICE, sid, service.ShareLinkRequest(expiresInDays=1))
-    with patch("time.time", return_value=1_000_000 + 86_399):
-        assert (await service.get_shared_session(BOB, link.token)).session_id == sid
-    with patch("time.time", return_value=1_000_000 + 86_400):
-        with pytest.raises(ApiProblem, match="expired"):
-            await service.get_shared_session(BOB, link.token)
-        assert (await service.list_share_links(ALICE, sid)).links == []
-    with pytest.raises(ValueError):
-        service.ShareLinkRequest(expiresInDays=31)
-
-
-@pytest.mark.asyncio
-async def test_turning_sharing_off_closes_links_but_the_owner_can_still_revoke_them(transport):
-    sid = await start(transport)
-    await _events(transport, sid, 1)
-    link = await service.create_share_link(ALICE, sid, service.ShareLinkRequest())
-    await service.set_enrollment(
-        ALICE,
-        service.EnrollmentRequest(
-            deviceId=relay_tests.MAC,
-            cliDeviceId=relay_tests.CLI,
-            enabled=False,
-            expectedRevision=(await repo.get_enrollment(OWNER, ALICE.user_id, relay_tests.MAC))["revision"],
-        ),
-    )
-    with pytest.raises(ApiProblem, match="expired or was revoked"):
-        await service.get_shared_session(BOB, link.token)
-    assert [entry.link_id for entry in (await service.list_share_links(ALICE, sid)).links] == [link.link_id]
-    await service.revoke_share_link(ALICE, sid, link.link_id)
-    assert (await service.list_share_links(ALICE, sid)).links == []
-
-
-@pytest.mark.asyncio
-async def test_pausing_a_session_closes_its_links_too(transport):
-    sid = await start(transport)
-    link = await service.create_share_link(ALICE, sid, service.ShareLinkRequest())
-    await service.set_sharing(ALICE, sid, False)
-    with pytest.raises(ApiProblem, match="expired or was revoked"):
-        await service.get_shared_session(BOB, link.token)
-    await service.set_sharing(ALICE, sid, True)
-    assert (await service.get_shared_session(BOB, link.token)).session_id == sid
 
 
 @pytest.mark.asyncio
@@ -801,9 +716,10 @@ async def test_sharing_and_join_events_land_on_the_person_who_acted(transport):
     sid = await start(transport)
     await _events(transport, sid, 1)
     with patch("core.services.local_sessions.capture_product_event", create=True) as capture:
-        link = await service.create_share_link(ALICE, sid, service.ShareLinkRequest())
-        await service.get_shared_session(BOB, link.token)
-        await service.list_shared_events(BOB, link.token, 0, 50)  # paging is not another open
+        link = await service.put_link(ALICE, sid, "anyone")
+        token = link.url.split("#", 1)[1]
+        await session_links.open_page(BOB, token)
+        await session_links.list_events(BOB, token, 0, 50)  # paging is not another open
         await ask(BOB, sid)
         await decide(ALICE, sid, BOB.user_id, "allow", pushes=[])
     assert [(c.kwargs["event"], c.kwargs["distinct_id"]) for c in capture.call_args_list] == [
@@ -819,7 +735,7 @@ async def test_sharing_and_join_events_land_on_the_person_who_acted(transport):
             props["author_user_id"] == ALICE.user_id and props["provider"] == "codex"
         )  # the harness registers a Codex session
         assert "line 0" not in str(call.kwargs)
-    assert capture.call_args_list[0].kwargs["properties"]["expires_in_days"] == 7
+    assert capture.call_args_list[0].kwargs["properties"]["audience"] == "anyone"
     assert capture.call_args_list[-1].kwargs["properties"]["decision"] == "allow"
 
 

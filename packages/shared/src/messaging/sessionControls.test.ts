@@ -25,6 +25,15 @@ describe("canControlSession", () => {
   });
 });
 
+describe("auditLine for the session link", () => {
+  it("names who took a copy, from the entry's own detail", () => {
+    const entry = { at: "2026-10-05T10:00:00Z", action: "session_copied", actorUserId: "user_out", detail: "Sam Lee" } as const;
+    expect(auditLine(entry, () => "A teammate")).toBe("Sam Lee took a copy to continue in their Claude Code");
+    expect(auditLine({ ...entry, action: "share_link_audience", actorUserId: "alice", detail: "anyone" }, () => "You"))
+      .toBe("You changed who the link is for");
+  });
+});
+
 describe("auditLine for asking to join", () => {
   it("names the person a decision was about", () => {
     expect(auditLine({ at: "", action: "join_requested", actorUserId: "user_aden" }, nameOf)).toBe("Aden asked to join this session");

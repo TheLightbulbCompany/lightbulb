@@ -16,7 +16,7 @@ import { AUTO_CHECK_INTERVAL_MS, receiptChip, type SessionCommandAttempt, type S
 type Client = Pick<ReturnType<typeof createMessagingClient>,
   "submitLocalSessionCommand" | "cancelLocalSessionCommand" | "listLocalSessionOutbox" | "getPrivateSendApproval"
   | "setLocalSessionTeamControl" | "listLocalSessionAudit" | "setLocalSessionUsageSharing"
-  | "setLocalSessionPickup" | "setLocalSessionSharing" | "requestLocalSessionJoin" | "requestLocalSessionPickupAccess" | "removeLocalSessionSender"
+  | "setLocalSessionSharing" | "requestLocalSessionJoin" | "requestLocalSessionPickupAccess" | "removeLocalSessionSender"
   | "resumeLocalSession" | "revokeLocalSessionResume" | "getLocalSessionCommand" | "getLocalSession">;
 
 /** A session client that may predate the control routes (test doubles, older callers). */
@@ -143,6 +143,8 @@ const ACTION_LINE: Record<LocalSessionAuditEntry["action"], string> = {
   team_control_ended: "",
   share_link_created: "created a share link",
   share_link_revoked: "revoked a share link",
+  share_link_audience: "changed who the link is for",
+  session_copied: "took a copy to continue in their Claude Code",
   pickup_on: "let teammates pick up this session",
   pickup_off: "turned off pick-up and deleted its snapshot",
   picked_up: "picked this session up on their Mac",
@@ -171,6 +173,8 @@ const SUBJECT_LINE: Partial<Record<LocalSessionAuditEntry["action"], (subject: s
 export function auditLine(entry: LocalSessionAuditEntry, nameOf: (userId: string) => string): string {
   if (entry.action === "team_control_ended") return "Teammate control turned off when the session ended";
   if (entry.action === "pickup_expired") return "Pick-up turned off and its snapshot was deleted, 7 days after the session ended";
+  // The taker is often outside the workspace, so the entry's detail carries their name.
+  if (entry.action === "session_copied") return `${entry.detail || (entry.actorUserId ? nameOf(entry.actorUserId) : "Someone")} ${ACTION_LINE.session_copied}`;
   const who = entry.actorUserId ? nameOf(entry.actorUserId) : entry.actorAgentId ? "An agent" : "Lightbulb";
   const failed = entry.state === "rejected" ? " (not delivered)" : entry.state === "unknown" ? " (delivery unknown)" : "";
   const subjectLine = SUBJECT_LINE[entry.action];
@@ -327,14 +331,6 @@ function useSessionSwitch(current: boolean, save: ((next: boolean) => Promise<bo
     finally { setSaving(false); }
   }, [save, failed]);
   return { enabled: override ?? current, saving, error, set, supported: save !== null };
-}
-
-/** The owner's "Let teammates pick up this session". */
-export function useSessionPickupPermission(client: SessionControlClient, session: LocalSession) {
-  const { setLocalSessionPickup } = client;
-  const save = useCallback(async (next: boolean) => (await setLocalSessionPickup!(session.sessionId, next)).pickup?.allowed === true,
-    [setLocalSessionPickup, session.sessionId]);
-  return useSessionSwitch(session.pickup?.allowed === true, setLocalSessionPickup ? save : null, "Could not change pick-up for this session.");
 }
 
 /** The owner's "Shared with the workspace": off pauses sharing, and only they can see the session. */

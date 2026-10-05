@@ -1,6 +1,6 @@
 import { test, expect, mock } from 'claude-code/testing'
 import type { On } from 'claude-code'
-import { bandLine, bandRuns } from './state'
+import { bandLine, bandRuns, continuedLine, parseContinued } from './state'
 import { colorFor } from './rules'
 import type { SessionState } from '../types'
 
@@ -327,5 +327,31 @@ test('a pick-up request names itself and Allow posts its request id', async ($, 
   await ui.press({ key: 'allow' })
   const post = calls.filter(c => c.method === 'POST')
   expect(post[post.length - 1].body).toEqual({ decision: 'allow', userId: 'u1', requestId: 'r9' })
+  await ui.unmount()
+})
+
+test('a continued marker becomes one line; junk becomes nothing', () => {
+  const c = parseContinued('{"from":"Prasiddha","title":"Fix login"}')!
+  expect(continuedLine(c)).toBe("Continued from Prasiddha's session · Share yours (thelightbulb.company)")
+  expect(parseContinued('{"from":""}')).toBeNull()
+  expect(parseContinued('not json')).toBeNull()
+  expect(parseContinued('{"from":"A\\u001b[31mB"}')!.from).toBe('A[31mB')
+  expect(parseContinued('{"from":"A\\u009b31mB"}')!.from).toBe('A31mB') // C1 too
+})
+
+test('an unshared continued session shows the Continued-from band', async ($, on) => {
+  on('session.start', ($, e) => ({ cwd: e.cwd }))
+  on('session.id', () => ({ value: 'fork-1' }))
+  on('env.get', ($, e) => ({ value: e.name === 'HOME' ? '/Users/r' : undefined }))
+  on('fs.read', ($, e) =>
+    e.path === '/Users/r/.lightbulb/continued/fork-1.json'
+      ? { value: '{"from":"Prasiddha","title":"Fix login"}' }
+      : { deny: `no file ${e.path}` }) // no socket file: the app says nothing is shared
+  on('ui.render', { component: 'AbovePrompt' }, ($, e) => $.ui.resolve(e).Text({ children: ENGINE }))
+  const clock = mock.clock(on)
+  await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
+  await clock.settle()
+  const ui = await $.ui.mount({ ...BAND, surface: 'terminal' })
+  expect(await ui.find({ type: 'Text', text: /Continued from Prasiddha's session · Share yours/ })).toBeDefined()
   await ui.unmount()
 })

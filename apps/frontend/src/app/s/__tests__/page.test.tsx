@@ -1,0 +1,49 @@
+import { describe, it, expect, vi, afterEach } from "vitest";
+import { render, screen, act } from "@testing-library/react";
+
+// A freshly shared Claude session opens before the Mac commits its pick-up snapshot: the page
+// must re-open itself while it is not continuable, and stop once it is.
+
+vi.mock("@/lib/api", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/api")>();
+  return { ...actual, useApi: () => ({}), BACKEND_URL: "http://api.test" };
+});
+vi.mock("next/navigation", () => ({ useRouter: () => ({ push: vi.fn() }) }));
+vi.mock("@clerk/nextjs", () => ({
+  useAuth: () => ({ isLoaded: true, isSignedIn: false, orgId: null, getToken: vi.fn() }),
+  SignInButton: ({ children }: { children: React.ReactNode }) => children,
+  SignUpButton: ({ children }: { children: React.ReactNode }) => children,
+}));
+vi.mock("@/components/messaging/NativeSessionTranscript", () => ({ NativeSessionTranscript: () => null }));
+
+import SessionLinkPageRoute from "../page";
+
+const model = (over: object) => ({
+  provider: "claude", state: "live", ownerFirstName: "Ada", code: { visibility: "none" },
+  continuable: false, me: { signedIn: false, member: false }, ...over,
+});
+
+afterEach(() => { vi.useRealTimers(); vi.unstubAllGlobals(); window.sessionStorage.clear(); });
+
+describe("session link page", () => {
+  it("re-opens until the snapshot is ready, then stops", async () => {
+    vi.useFakeTimers();
+    window.sessionStorage.setItem("lightbulb:session-link", JSON.stringify({ token: "tok" }));
+    const opens = [model({}), model({ title: "Fix the bug", continuable: true })];
+    const fetchMock = vi.fn(async (url: string) => {
+      const body = url.endsWith("/open") ? (opens.shift() ?? opens[0] ?? model({ title: "Fix the bug", continuable: true })) : { events: [], nextAfterSeq: null };
+      return { ok: true, json: async () => body } as Response;
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    render(<SessionLinkPageRoute />);
+    await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+    expect(screen.getByText("A shared session")).toBeTruthy();
+    const openCalls = () => fetchMock.mock.calls.filter(c => String(c[0]).endsWith("/open")).length;
+    expect(openCalls()).toBe(1);
+    await act(async () => { await vi.advanceTimersByTimeAsync(5000); });
+    expect(screen.getByText("Fix the bug")).toBeTruthy();
+    expect(openCalls()).toBe(2);
+    await act(async () => { await vi.advanceTimersByTimeAsync(15000); });
+    expect(openCalls()).toBe(2);
+  });
+});

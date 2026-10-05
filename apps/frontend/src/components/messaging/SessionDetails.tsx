@@ -4,8 +4,8 @@ import { useEffect, useId, useMemo, useState, type ReactNode } from "react";
 import { useAuth } from "@clerk/nextjs";
 import { Link, MessageSquare } from "lucide-react";
 import {
-  pickupSource, pickupStatus, sessionChanges, sessionFacts, sessionPlan, sessionStatus, sessionTitle, sessionToolName, usageLine,
-  useSessionPickupPermission, useSessionSharing, useTeamControl, useUsageSharing,
+  auditLine, pickupSource, pickupStatus, sessionChanges, sessionFacts, sessionPlan, sessionStatus, sessionTitle, sessionToolName, usageLine,
+  useSessionAudit, useSessionSharing, useTeamControl, useUsageSharing,
   type LocalSession, type LocalSessionEvent, type SessionControlClient,
 } from "@lightbulb/shared";
 import { Button } from "@/components/ui/button";
@@ -18,13 +18,13 @@ import { LocalSessionWork } from "./LocalSessionWork";
 import { SessionCommitPr } from "./SessionCommitPr";
 import { SessionOverview } from "./SessionOverview";
 import { SessionPickup } from "./SessionPickup";
-import { SessionShareLinks } from "./SessionShareLinks";
+import { SessionShareLink } from "./SessionShareLink";
 import { SessionRenameButton } from "./SessionRenameButton";
 import type { PickupClient } from "./useSessionPickup";
 
 export type SessionDetailsTab = "about" | "changes" | "access" | "work";
 
-type Client = SessionControlClient & PickupClient & Parameters<typeof SessionShareLinks>[0]["client"] & Parameters<typeof SessionCommitPr>[0]["client"] & { setLocalSessionDisplayTitle?: (sessionId: string, title: string | null) => Promise<LocalSession> };
+type Client = SessionControlClient & PickupClient & Parameters<typeof SessionShareLink>[0]["client"] & Parameters<typeof SessionCommitPr>[0]["client"] & { setLocalSessionDisplayTitle?: (sessionId: string, title: string | null) => Promise<LocalSession> };
 
 /** "Claude Code 2.1.283": the tool by its name, then the version out of whatever its `--version` printed. */
 function toolVersion(session: LocalSession): string {
@@ -83,7 +83,6 @@ function About({ session, ownerName, own }: { session: LocalSession; ownerName: 
 function useAccessSwitches(client: Client, session: LocalSession) {
   return {
     control: useTeamControl(client, session),
-    pickup: useSessionPickupPermission(client, session),
     usage: useUsageSharing(client, session),
     sharing: useSessionSharing(client, session),
   };
@@ -125,13 +124,22 @@ function People({ session, ids, remove, label, about, nameOf }: {
   </div>;
 }
 
-function Access({ session, ownerName, own, client, nameOf, switches: { control, pickup, usage, sharing } }: {
+/** Who took a copy and when: the sharer's view of Continue (spec §2.1 step 4). */
+function Copies({ session, client, nameOf }: { session: LocalSession; client: Client; nameOf: (userId: string) => string }) {
+  const entries = useSessionAudit(client, session.sessionId, session.latestEventSeq).filter(e => e.action === "session_copied");
+  if (!entries.length) return null;
+  return <section aria-label="Copies" className="session-setting-text">
+    <p className="session-setting-label">Copies taken</p>
+    <ul>{entries.map(e => <li key={e.at + (e.actorUserId ?? "")}>{auditLine(e, nameOf)} · {timeAgo(e.at)}</li>)}</ul>
+  </section>;
+}
+
+function Access({ session, ownerName, own, client, nameOf, switches: { control, usage, sharing } }: {
   session: LocalSession; ownerName: string; own: boolean; client: Client; nameOf: (userId: string) => string;
   switches: ReturnType<typeof useAccessSwitches>;
 }) {
   const { userId } = useAuth();
   const ended = session.status === "ended";
-  const claude = session.provider === "claude";
   if (!own) {
     const allows = [session.teamControl ? "send follow-ups and answer its prompts" : "", session.pickup?.allowed ? "pick it up on their own Mac" : ""].filter(Boolean);
     const allowed = !!userId && (session.allowedSenders ?? []).includes(userId) && !session.teamControl;
@@ -154,25 +162,18 @@ function Access({ session, ownerName, own, client, nameOf, switches: { control, 
       label="People you let in" about="They asked to join. They can send follow-ups and answer permission prompts until the session ends." />}
     {ended && <People session={session} ids={session.resumeAllowed} remove={client.revokeLocalSessionResume} nameOf={nameOf}
       label="Who can resume it" about="They could send to it when it ended. They can start it again on your Mac, in plan mode, with a message." />}
-    {/* Off always works. On needs the session shared: a paused session uploads nothing. */}
-    {pickup.supported && claude && <Setting label="Let teammates pick up this session" checked={pickup.enabled} disabled={pickup.saving || (!sharing.enabled && !pickup.enabled)} onChange={next => void pickup.set(next)} error={pickup.error}>
-      {!sharing.enabled && !pickup.enabled && <p>Share the session with the workspace first.</p>}
-      <p>A teammate can continue this conversation on their own Mac, with the files it changed.</p>
-      <p className="session-setting-warning">This uploads the whole conversation and your uncommitted changes as they are. Nothing is redacted, so anything a command printed is included. Files your repository ignores, such as <span className="session-fact-value">.env</span>, are never uploaded.</p>
-      <p>Kept until 7 days after the session ends. Turning this off deletes it.</p>
-      {pickup.enabled && <p role="status" className="session-setting-state">{pickupStatus(session.pickup, timeAgo) || "Taking the first snapshot."}</p>}
-    </Setting>}
-    {pickup.supported && !claude && <p className="session-setting-about">Codex sessions cannot be picked up yet.</p>}
     {session.usage && client.setLocalSessionUsageSharing && <Setting label="Show token usage to teammates" checked={usage.enabled} disabled={usage.saving} onChange={next => void usage.set(next)}>
       Teammates see the token counts this session reports. They never see a cost.
     </Setting>}
     <div className="session-setting">
       <div className="session-setting-text">
-        <p className="session-setting-label">Read-only snapshot link</p>
-        <p className="session-setting-about">A link to the transcript as it is now, for anyone signed in to this workspace.</p>
+        <p className="session-setting-label">Link</p>
+        <p className="session-setting-about">One link to this session. You choose who can open it; you can turn it off at any time.</p>
+        {session.pickup?.allowed && <p role="status" className="session-setting-state">{pickupStatus(session.pickup, timeAgo) || "Taking the first snapshot."}</p>}
       </div>
-      <SessionShareLinks session={session} client={client} />
+      <SessionShareLink session={session} client={client} />
     </div>
+    <Copies session={session} client={client} nameOf={nameOf} />
   </div>;
 }
 

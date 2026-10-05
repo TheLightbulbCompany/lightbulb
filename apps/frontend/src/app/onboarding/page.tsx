@@ -7,6 +7,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { THEME_ATTR } from "@/hooks/useChatTheme";
 import { ApiError, useApi } from "@/lib/api";
+import { safeReturnTo } from "@/lib/returnTo";
 
 /** Mirrors the backend's `company_identity.slugify`: the availability check rejects any
  *  slug this would change, so the two must agree. */
@@ -144,7 +145,7 @@ export default function OnboardingPage() {
   useEffect(() => {
     if (!loaded || invitations.length || !organization || orgId !== organization.id) return;
     if (joiningOrgId && organization.id !== joiningOrgId) return;
-    router.replace("/chat");
+    router.replace(safeReturnTo(new URLSearchParams(window.location.search).get("returnTo")));
   }, [loaded, invitations.length, organization, orgId, joiningOrgId, router]);
 
   async function activateJoinedWorkspace(id: string) {

@@ -131,6 +131,14 @@ const SLACK_THROTTLE: Record<string, { burstLimit: number; rateLimit: number }> 
   prod: { burstLimit: 200, rateLimit: 100 },
 };
 
+// Session links open with no sign-in (spec 2026-10-05-public-session-links §6): their own bucket,
+// so an unauthenticated flood never eats the stage-wide budget, and the reverse.
+const PUBLIC_ROUTE_KEY = "ANY /api/v1/public/{proxy+}";
+const PUBLIC_THROTTLE: Record<string, { burstLimit: number; rateLimit: number }> = {
+  dev: { burstLimit: 20, rateLimit: 10 },
+  prod: { burstLimit: 100, rateLimit: 50 },
+};
+
 // One namespace, workspace-scoped paths, tenancy decided here (spec §3). Segments are
 // UUID-only; every decision strong-reads the base table. IAM admits publishers to the
 // namespace; this handler narrows a per-owner container task role to its own rows.
@@ -383,6 +391,12 @@ export class ApiStack extends cdk.Stack {
       target: `integrations/${httpIntegration.ref}`,
     });
 
+    new apigatewayv2.CfnRoute(this, "HttpPublicRoute", {
+      apiId: httpApi.ref,
+      routeKey: PUBLIC_ROUTE_KEY,
+      target: `integrations/${httpIntegration.ref}`,
+    });
+
     // --- HTTP API Log Group ---
     const httpApiLogGroup = new logs.LogGroup(this, "HttpApiLogs", {
       logGroupName: `/aws/api-gateway/lightbulb-${env}-http`,
@@ -407,6 +421,10 @@ export class ApiStack extends cdk.Stack {
         [SLACK_ROUTE_KEY]: {
           ThrottlingBurstLimit: (SLACK_THROTTLE[env] ?? SLACK_THROTTLE.dev).burstLimit,
           ThrottlingRateLimit: (SLACK_THROTTLE[env] ?? SLACK_THROTTLE.dev).rateLimit,
+        },
+        [PUBLIC_ROUTE_KEY]: {
+          ThrottlingBurstLimit: (PUBLIC_THROTTLE[env] ?? PUBLIC_THROTTLE.dev).burstLimit,
+          ThrottlingRateLimit: (PUBLIC_THROTTLE[env] ?? PUBLIC_THROTTLE.dev).rateLimit,
         },
       },
       accessLogSettings: {

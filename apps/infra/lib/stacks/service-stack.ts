@@ -972,6 +972,15 @@ export class ServiceStack extends cdk.Stack {
         resources: [`arn:aws:s3:::lightbulb-${env}-openclaw-replicas/session-pickup/*`],
       }),
     );
+    // Redacted copies of a shared session for a link's holder (session_links.py): an id-free
+    // prefix, so a presigned URL names no owner or session. The sweeper ages them out.
+    this.taskRole.addToPolicy(
+      new iam.PolicyStatement({
+        sid: "SessionCopiesRW",
+        actions: ["s3:GetObject", "s3:PutObject", "s3:DeleteObject"],
+        resources: [`arn:aws:s3:::lightbulb-${env}-openclaw-replicas/session-copies/*`],
+      }),
+    );
 
     // DynamoDB tables
     // Local handle for the Step Functions DynamoDB tasks below. fromTableName

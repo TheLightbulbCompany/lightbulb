@@ -43,6 +43,10 @@ from core.services.session_screen import _still_a_member
 logger = logging.getLogger(__name__)
 
 PREFIX = "session-pickup"
+# Redacted copies for a link's holder live under an id-free prefix, so a presigned URL names no owner
+# or session. The sweeper deletes objects older than COPY_TTL_S; retire deletes a session's own.
+COPIES_PREFIX = "session-copies"
+COPY_TTL_S = 3600
 _ANALYTICS_NS = uuid.uuid5(uuid.NAMESPACE_URL, "lightbulb:session-pickup")
 URL_SECONDS = 15 * 60
 # Short: an upload link signed just before the author turns pick-up off can still land an object,
@@ -78,10 +82,6 @@ class DeviceRefused(Exception):
 
 
 # --- Wire models -------------------------------------------------------------------------------
-
-
-class PickupToggleRequest(ContractModel):
-    enabled: bool
 
 
 class PickupRequest(ContractModel):
@@ -193,6 +193,20 @@ class CommitTranscript(ContractModel):
     total_bytes: int = Field(ge=0)
 
 
+class RepoInfo(ContractModel):
+    """Where the session's code lives, as the author's Mac sees it (spec §3.3). The Mac is the
+    owner's own device, so a wrong answer only mis-describes the owner's own repository."""
+
+    remote: Annotated[str, Field(min_length=1, max_length=256)]
+    branch: Annotated[str, Field(max_length=256)] | None = None
+    head: GitSha
+    pushed: bool
+    public: bool
+    # The repository's top-level folder name: hidden from outsiders when the repo is private.
+    # Null only for a repository at `/`.
+    folder: Annotated[str, Field(min_length=1, max_length=255)] | None = None
+
+
 class CommitRequest(ContractModel):
     series: Series
     conversation_id: OpaqueId
@@ -207,6 +221,7 @@ class CommitRequest(ContractModel):
     code_skipped: Literal["too-large", "none"] | None = None
     sidecars: ManifestSidecars | None = None
     sidecars_skipped: Literal["none"] | None = None
+    repo: RepoInfo | None = None
 
 
 class UnavailableRequest(ContractModel):
@@ -403,12 +418,8 @@ async def _turn_off(auth: AuthContext, owner: str, session_id: str) -> sessions.
 # --- The receiver -------------------------------------------------------------------------------
 
 
-async def request_pickup(auth: AuthContext, session_id: str, pickup_id: str) -> PickupTicket:
-    """Any workspace member, the author included. A paused session reads as not found."""
-    pickup_id = validate_uuid(pickup_id, label="pick-up ID")
-    row, _ = await sessions.authorize_session(auth, None, session_id)
-    # A removed member's Clerk JWT outlives their membership: the same fence as watch/type/resume.
-    await _still_a_member(row, auth.user_id)
+async def ready_manifest(row: dict) -> dict:
+    """The committed manifest a pick-up or a copy may use, or the reason it may not."""
     if not row.get("pickupAllowed"):
         raise ApiProblem("LOCAL_SESSION_FORBIDDEN", "Pick-up is off for this session.")
     if _expired(row):
@@ -418,6 +429,16 @@ async def request_pickup(auth: AuthContext, session_id: str, pickup_id: str) -> 
         raise ApiProblem("LOCAL_SESSION_CONFLICT", "The snapshot is not ready yet.")
     if manifest.get("pickupEpoch", row["pickupEpoch"]) != row["pickupEpoch"]:
         raise ApiProblem("LOCAL_SESSION_CONFLICT", "Snapshot permission changed. Try again.")
+    return manifest
+
+
+async def request_pickup(auth: AuthContext, session_id: str, pickup_id: str) -> PickupTicket:
+    """Any workspace member, the author included. A paused session reads as not found."""
+    pickup_id = validate_uuid(pickup_id, label="pick-up ID")
+    row, _ = await sessions.authorize_session(auth, None, session_id)
+    # A removed member's Clerk JWT outlives their membership: the same fence as watch/type/resume.
+    await _still_a_member(row, auth.user_id)
+    manifest = await ready_manifest(row)
     table = store._table()
     now = int(time.time())
     try:
@@ -456,35 +477,42 @@ async def request_pickup(auth: AuthContext, session_id: str, pickup_id: str) -> 
     return await run_in_thread(_ticket, row, manifest, pickup_id)
 
 
-def _ticket(row: dict, manifest: dict, pickup_id: str) -> PickupTicket:
-    sid, series = row["sessionId"], manifest["series"]
+def downloads(row: dict, manifest: dict) -> Downloads:
+    series = manifest["series"]
     client, bucket = _s3(), _bucket()
 
     def url(key: str) -> str:
         return client.generate_presigned_url("get_object", Params={"Bucket": bucket, "Key": key}, ExpiresIn=URL_SECONDS)
 
     code, sidecars = manifest.get("code"), manifest.get("sidecars")
+    return Downloads(
+        transcript=[
+            TranscriptDownload(
+                index=p["index"],
+                url=url(_part_key(row, series, p)),
+                bytes=p["bytes"],
+                sha256=p["sha256"],
+            )
+            for p in manifest["parts"]
+        ],
+        code=Download(url=url(_key(row, series, "code", sha=code["sha256"])), **_blob(code)) if code else None,
+        sidecars=Download(url=url(_key(row, series, "sidecars", sha=sidecars["sha256"])), **_blob(sidecars))
+        if sidecars
+        else None,
+    )
+
+
+def _ticket(row: dict, manifest: dict, pickup_id: str) -> PickupTicket:
     return PickupTicket(
         pickup_id=pickup_id,
         session=TicketSession(
-            session_id=sid, human_user_id=row["humanUserId"], title=row.get("title"), provider=row["provider"]
+            session_id=row["sessionId"],
+            human_user_id=row["humanUserId"],
+            title=row.get("title"),
+            provider=row["provider"],
         ),
         manifest=_manifest_public(manifest),
-        downloads=Downloads(
-            transcript=[
-                TranscriptDownload(
-                    index=p["index"],
-                    url=url(_part_key(row, series, p)),
-                    bytes=p["bytes"],
-                    sha256=p["sha256"],
-                )
-                for p in manifest["parts"]
-            ],
-            code=Download(url=url(_key(row, series, "code", sha=code["sha256"])), **_blob(code)) if code else None,
-            sidecars=Download(url=url(_key(row, series, "sidecars", sha=sidecars["sha256"])), **_blob(sidecars))
-            if sidecars
-            else None,
-        ),
+        downloads=downloads(row, manifest),
         expires_at=iso(int(time.time()) + URL_SECONDS),
     )
 
@@ -729,6 +757,7 @@ async def commit(row: dict, enrollment: dict, request: CommitRequest) -> None:
             "cwdRelative": request.cwd_relative,
             "snapshotAt": now,
             "ended": request.ended,
+            "repoInfo": request.repo.model_dump(by_alias=True) if request.repo else None,
         }
         # Objects this commit stops naming (an old series, a replaced or skipped blob) are left for
         # the sweeper, which spares them until URL_SECONDS after this: a ticket signed just before
@@ -742,6 +771,8 @@ async def commit(row: dict, enrollment: dict, request: CommitRequest) -> None:
             snapshot["repo"] = code["remote"]
             if code.get("branch"):
                 snapshot["branch"] = code["branch"]
+        if request.repo and not request.repo.public:
+            snapshot["privateFolder"] = request.repo.folder or ""  # read by session_links without a manifest read
         updated = {**current, "pickupSnapshot": snapshot, "revision": str(uuid.uuid4())}
         extra = [{"Put": {"TableName": store._table().name, "Item": manifest}}]
         if request.ended:
@@ -825,6 +856,10 @@ async def sweep_once(*, now: int | None = None) -> int:
     (ended, or its lease lapsed) more than PICKUP_RETENTION_SECONDS ago. Idempotent: every backend task may run it."""
     now = int(time.time()) if now is None else now
     expired = 0
+    try:
+        await run_in_thread(lambda: delete_prefix(f"{COPIES_PREFIX}/", before=now - COPY_TTL_S))
+    except Exception as exc:
+        logger.warning("session copy cleanup failed: %s", type(exc).__name__)
     for owner, sid in await run_in_thread(_session_prefixes):
         row = await repo.get_session(owner, sid)
         if row is not None and row.get("pickupAllowed") and not _expired(row, now):
@@ -864,6 +899,10 @@ async def retire(
     # Listed before the fence: pick-up turned on after it mints a new epoch this list cannot hold,
     # so the deletion below never touches a snapshot committed later.
     retired = await run_in_thread(_subprefixes, session_prefix(owner, sid))
+    # Its outsider copies (session_links.create_copy writes one COPY# row per copy).
+    retired += [
+        f"{COPIES_PREFIX}/{r['copyId']}/" for r in await store._query(pk, begins_with="COPY#") if r.get("copyId")
+    ]
     items = [{"Delete": {"TableName": table, "Key": {"pk": pk, "sk": "PICKUP"}}}]
     allowed = row is not None and bool(row.get("pickupAllowed"))
     updated = None
@@ -876,7 +915,7 @@ async def retire(
     if not allowed:
         items.append({"ConditionCheck": {"TableName": table, "Key": {"pk": pk, "sk": "META"}, **check}})
     else:
-        drop = ("pickupAllowed", "pickupSnapshot", "pickupEpoch")
+        drop = ("pickupAllowed", "pickupSnapshot", "pickupEpoch", "shareLink")
         updated = {key: value for key, value in row.items() if key not in drop}
         updated["revision"] = str(uuid.uuid4())
         items += [
@@ -884,7 +923,7 @@ async def retire(
                 "Update": {
                     "TableName": table,
                     "Key": {"pk": row["pk"], "sk": "META"},
-                    "UpdateExpression": "REMOVE pickupAllowed, pickupSnapshot, pickupEpoch SET revision = :new",
+                    "UpdateExpression": "REMOVE pickupAllowed, pickupSnapshot, pickupEpoch, shareLink SET revision = :new",
                     "ConditionExpression": "revision = :old",
                     "ExpressionAttributeValues": {":new": updated["revision"], ":old": row["revision"]},
                 }
@@ -892,6 +931,16 @@ async def retire(
             _want_delete(row),
             _audit(owner, sid, auth, action),
         ]
+        if row.get("shareLink"):
+            # The link dies with its snapshot: expiry and turning the link off are one act (spec §3.1).
+            items.append(
+                {
+                    "Delete": {
+                        "TableName": table,
+                        "Key": {"pk": sessions._share_pk(row["shareLink"]["tokenHash"]), "sk": "META"},
+                    }
+                }
+            )
     await store._transact(items)
     for prefix in retired:
         await run_in_thread(delete_prefix, prefix)

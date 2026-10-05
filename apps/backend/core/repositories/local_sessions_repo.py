@@ -321,18 +321,32 @@ async def delete_owner(owner_id: str) -> int:
     kwargs = {
         "FilterExpression": Attr("pk").begins_with(f"LOCALUSER#{owner_id}#")
         | Attr("pk").begins_with(f"LOCALSESSION#{owner_id}#"),
-        "ProjectionExpression": "pk, sk",
+        "ProjectionExpression": "pk, sk, shareLink.tokenHash, copyId, itemPk",
         "ConsistentRead": True,
     }
     count = 0
     while True:
         response = await store.run_in_thread(table.scan, **kwargs)
         rows = response.get("Items", [])
+        # External rows the partitions point at (no TTL): the link lookup, each copy's code row and
+        # its session-copies/ objects. Deleted with the page that holds the pointer.
+        extra = []
+        for row in rows:
+            if row["sk"] == "META" and row.get("shareLink"):
+                extra.append({"pk": f"SHARELINK#{row['shareLink']['tokenHash']}", "sk": "META"})
+            if row["sk"].startswith("COPY#") and row.get("copyId"):
+                await store.run_in_thread(
+                    session_pickup.delete_prefix, f"{session_pickup.COPIES_PREFIX}/{row['copyId']}/"
+                )
+                if row.get("itemPk"):
+                    extra.append({"pk": row["itemPk"], "sk": "META"})
 
         def delete_page():
             with table.batch_writer() as batch:
                 for row in rows:
-                    batch.delete_item(Key=row)
+                    batch.delete_item(Key={"pk": row["pk"], "sk": row["sk"]})
+                for key in extra:
+                    batch.delete_item(Key=key)
 
         await store.run_in_thread(delete_page)
         count += len(rows)

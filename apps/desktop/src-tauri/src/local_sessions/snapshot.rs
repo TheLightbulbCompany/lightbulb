@@ -6,7 +6,9 @@
 //! a failing session is simply left alone for 30 seconds.
 use super::transport::relay_log;
 use super::*;
-use crate::session_pickup::{git, git_run, normalize_remote, CODE_MAX, SIDECARS_MAX};
+use crate::session_pickup::{
+    anonymous_git, git, git_run, normalize_remote, CODE_MAX, SIDECARS_MAX,
+};
 use std::collections::{BTreeMap, HashMap};
 use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
@@ -556,6 +558,102 @@ pub(crate) async fn capture_code(
     }))
 }
 
+/// Anonymous `ls-remote` answers, per normalized remote, for an hour (spec §3.3).
+static PUBLIC: std::sync::LazyLock<std::sync::Mutex<HashMap<String, (Instant, bool)>>> =
+    std::sync::LazyLock::new(Default::default);
+const PUBLIC_FOR: Duration = Duration::from_secs(3600);
+
+fn remember_public(remote: &str, public: bool) {
+    PUBLIC
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .insert(remote.to_string(), (Instant::now(), public));
+}
+
+fn known_public(remote: &str) -> Option<bool> {
+    let cache = PUBLIC.lock().unwrap_or_else(|e| e.into_inner());
+    cache
+        .get(remote)
+        .filter(|(at, _)| at.elapsed() < PUBLIC_FOR)
+        .map(|(_, public)| *public)
+}
+
+/// The anonymous probe: exit 0 means anyone can read the repository. Not `git_run`: that keeps
+/// the user's global config on purpose, and a global `url.<ssh>.insteadOf https://` would make
+/// this an SSH call with their keys.
+fn probe_command(remote: &str) -> tokio::process::Command {
+    anonymous_git(
+        &std::env::temp_dir(),
+        &["ls-remote", &format!("https://{remote}.git"), "HEAD"],
+    )
+}
+
+async fn public(remote: &str) -> bool {
+    if let Some(known) = known_public(remote) {
+        return known;
+    }
+    let answer = tokio::time::timeout(Duration::from_secs(15), probe_command(remote).status())
+        .await
+        .is_ok_and(|status| status.is_ok_and(|s| s.success()));
+    remember_public(remote, answer);
+    answer
+}
+
+/// `{remote, branch, head, pushed, public, folder}` for the commit body, or null when this is not
+/// a work tree with an `origin` and a commit. Sent on every commit, bundle or not (spec §3.3).
+/// `folder` is the main checkout's folder name: the server hides it from outsiders when `public` is false.
+pub(crate) async fn repo_info(top: &Path) -> Value {
+    let Some(remote) = git(top, &["remote", "get-url", "origin"], None)
+        .await
+        .ok()
+        .and_then(|o| normalize_remote(&o))
+    else {
+        return Value::Null;
+    };
+    // The backend's bounds (`RepoInfo`): a longer value would 422 every commit.
+    if remote.chars().count() > 256 {
+        return Value::Null;
+    }
+    let Ok(head) = git(top, &["rev-parse", "--verify", "HEAD"], None).await else {
+        return Value::Null;
+    };
+    let pushed = git(
+        top,
+        &[
+            "for-each-ref",
+            "--count=1",
+            "--contains",
+            &head,
+            "refs/remotes/origin",
+        ],
+        None,
+    )
+    .await
+    .is_ok_and(|out| !out.is_empty());
+    let branch = git(top, &["symbolic-ref", "--short", "-q", "HEAD"], None)
+        .await
+        .ok()
+        .filter(|b| b.chars().count() <= 256);
+    // The main checkout's folder (the git common dir's parent), not a linked worktree's: it is the
+    // name every path in the transcript shows, usually the repository's own name.
+    let main = git(
+        top,
+        &["rev-parse", "--path-format=absolute", "--git-common-dir"],
+        None,
+    )
+    .await
+    .ok()
+    .and_then(|dir| PathBuf::from(dir).parent().map(Path::to_path_buf));
+    let folder = main
+        .as_deref()
+        .unwrap_or(top)
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .filter(|f| f.chars().count() <= 255);
+    json!({"remote": remote, "branch": branch, "head": head, "pushed": pushed,
+        "public": public(&remote).await, "folder": folder})
+}
+
 fn sha(bytes: &[u8]) -> String {
     hex::encode(Sha256::digest(bytes))
 }
@@ -786,6 +884,10 @@ async fn snapshot_once(
     };
     let next_index = local.next_index + parts.len() as u64;
     let offset = parts.last().map_or(local.offset, |p| p.1);
+    let repo_info = match top {
+        Some(t) => repo_info(t).await,
+        None => Value::Null,
+    };
     let mut body = json!({
         "series": local.series,
         "conversationId": conversation,
@@ -808,6 +910,7 @@ async fn snapshot_once(
             Side::New(bytes, digest) => json!({"bytes": bytes.len(), "sha256": digest}),
             _ => Value::Null,
         },
+           "repo": repo_info,
     });
     if let Some(fields) = body.as_object_mut() {
         fields.extend(skipped(&code, &side));
@@ -874,6 +977,152 @@ async fn unavailable(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn repo_info_reports_remote_branch_head_pushed_and_cached_public() {
+        let dir = tempfile::tempdir().unwrap();
+        let top = dir.path();
+        let g = |args: &[&str]| {
+            assert!(std::process::Command::new("git")
+                .args(args)
+                .current_dir(top)
+                .status()
+                .unwrap()
+                .success())
+        };
+        g(&["init", "-q", "-b", "main"]);
+        g(&[
+            "-c",
+            "user.name=t",
+            "-c",
+            "user.email=t@t",
+            "commit",
+            "-q",
+            "--allow-empty",
+            "-m",
+            "one",
+        ]);
+        g(&["remote", "add", "origin", "https://github.com/o/r.git"]);
+        remember_public("github.com/o/r", true); // no network in tests
+        let info = repo_info(top).await;
+        assert_eq!(info["remote"], "github.com/o/r");
+        assert_eq!(info["branch"], "main");
+        assert_eq!(info["pushed"], false);
+        assert_eq!(info["public"], true);
+        assert_eq!(
+            info["folder"],
+            top.file_name().unwrap().to_string_lossy().as_ref()
+        );
+        g(&["update-ref", "refs/remotes/origin/main", "HEAD"]);
+        assert_eq!(repo_info(top).await["pushed"], true);
+        // A linked worktree reports the main checkout's folder, the name its paths show.
+        let wt = top.join(".claude").join("worktrees").join("feature-x");
+        g(&[
+            "worktree",
+            "add",
+            "-q",
+            "-b",
+            "feature-x",
+            wt.to_str().unwrap(),
+        ]);
+        assert_eq!(
+            repo_info(&wt).await["folder"],
+            top.file_name().unwrap().to_string_lossy().as_ref()
+        );
+    }
+
+    #[tokio::test]
+    async fn repo_info_drops_a_branch_over_the_backends_limit() {
+        let dir = tempfile::tempdir().unwrap();
+        let top = dir.path();
+        let g = |args: &[&str]| {
+            assert!(std::process::Command::new("git")
+                .args(args)
+                .current_dir(top)
+                .status()
+                .unwrap()
+                .success())
+        };
+        let long = format!("{}/{}", "x".repeat(200), "y".repeat(100));
+        g(&["init", "-q", "-b", &long]);
+        g(&[
+            "-c",
+            "user.name=t",
+            "-c",
+            "user.email=t@t",
+            "commit",
+            "-q",
+            "--allow-empty",
+            "-m",
+            "one",
+        ]);
+        g(&["remote", "add", "origin", "https://github.com/o/long.git"]);
+        remember_public("github.com/o/long", false);
+        let info = repo_info(top).await;
+        assert_eq!(info["remote"], "github.com/o/long");
+        assert!(info["branch"].is_null());
+    }
+
+    #[tokio::test]
+    async fn repo_info_is_null_without_origin() {
+        let dir = tempfile::tempdir().unwrap();
+        std::process::Command::new("git")
+            .args(["init", "-q"])
+            .current_dir(dir.path())
+            .status()
+            .unwrap();
+        assert!(repo_info(dir.path()).await.is_null());
+    }
+
+    #[test]
+    fn the_public_probe_ignores_the_users_git_config() {
+        // A global `url.<ssh>.insteadOf https://` would turn the anonymous probe into an SSH call
+        // with the user's keys, and a private repo would read as public.
+        let cmd = probe_command("github.com/o/r");
+        let std = cmd.as_std();
+        let env: std::collections::HashMap<_, _> = std.get_envs().collect();
+        assert_eq!(
+            env.get(std::ffi::OsStr::new("GIT_CONFIG_GLOBAL"))
+                .copied()
+                .flatten(),
+            Some(std::ffi::OsStr::new("/dev/null"))
+        );
+        assert_eq!(
+            env.get(std::ffi::OsStr::new("GIT_CONFIG_NOSYSTEM"))
+                .copied()
+                .flatten(),
+            Some(std::ffi::OsStr::new("1"))
+        );
+        assert_eq!(
+            env.get(std::ffi::OsStr::new("GIT_ASKPASS"))
+                .copied()
+                .flatten(),
+            Some(std::ffi::OsStr::new("/usr/bin/false"))
+        );
+        // Environment that would put config back, or turn TLS checks off, is removed.
+        for key in [
+            "GIT_CONFIG_PARAMETERS",
+            "GIT_CONFIG_COUNT",
+            "GIT_SSL_NO_VERIFY",
+            "GIT_PROXY_COMMAND",
+        ] {
+            assert_eq!(env.get(std::ffi::OsStr::new(key)), Some(&None), "{key}");
+        }
+        let args: Vec<_> = std
+            .get_args()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(
+            args,
+            [
+                "-c",
+                "credential.helper=",
+                "ls-remote",
+                "https://github.com/o/r.git",
+                "HEAD"
+            ]
+        );
+    }
 
     #[test]
     fn snapshot_transcript_delta_is_complete_lines_only() {

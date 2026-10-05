@@ -14,11 +14,14 @@ let selectAgentDm = vi.fn<(id: string, explicit?: boolean) => Promise<void>>();
 const openSession = vi.fn();
 const openMessage = vi.fn();
 let freshLanding: boolean | null = false;
+let activeRoomId: string | null = null;
+let sessionFocus: { sessionId: string | null } | null = null;
+let roomProps: { roomId: string; composer: { focusAgentId?: string } } | undefined;
 vi.mock("@/hooks/useAgents", () => ({
   useAgents: () => ({ agents: [], defaultId }),
 }));
 vi.mock("@/components/messaging/MessagingWorkspaceContext", () => ({
-  useMessagingWorkspace: () => ({ selectAgentDm, openSession, openMessage, freshLanding }),
+  useMessagingWorkspace: () => ({ selectAgentDm, openSession, openMessage, freshLanding, activeRoomId, sessionFocus, roomProps }),
 }));
 vi.mock("@/components/messaging/MessagingWorkspace", () => ({
   MessagingConversation: () => null,
@@ -46,10 +49,25 @@ beforeEach(() => {
   _resetFocusComposerRequestForTests();
   defaultId = undefined;
   freshLanding = false;
+  activeRoomId = null;
+  sessionFocus = null;
+  roomProps = undefined;
   selectAgentDm = vi.fn().mockResolvedValue(undefined);
 });
 
 describe("ChatPanel", () => {
+  it("does not re-open the room that is already open (the replay of its own URL)", () => {
+    activeRoomId = "r1";
+    const props = makeProps();
+    props.params = { roomId: "r1" };
+    render(<ChatPanel {...props} />);
+    expect(openMessage).not.toHaveBeenCalled();
+    act(() => props.api.updateParameters({ roomId: "r1", messageId: "m1" } as never));
+    expect(openMessage).toHaveBeenLastCalledWith("r1", "m1");
+    act(() => props.api.updateParameters({ roomId: "r2", messageId: undefined } as never));
+    expect(openMessage).toHaveBeenLastCalledWith("r2", null);
+  });
+
   it("consumes session intents including explicit repeats without falling into agent selection", () => {
     const props = makeProps();
     props.params = { sessionId: "s1", sessionIntent: "1" };
@@ -92,20 +110,52 @@ describe("ChatPanel", () => {
 
   it("opens an explicit agent even in a fresh workspace", () => {
     freshLanding = true;
-    render(<ChatPanel {...makeProps("agent-friday")} />);
+    const props = makeProps();
+    render(<ChatPanel {...props} />);
+    act(() => props.api.updateParameters({ agentId: "agent-friday" }));
     expect(selectAgentDm).toHaveBeenCalledExactlyOnceWith("agent-friday", true);
   });
 
   it("keeps an explicit agent deep link while the roster catches up", () => {
-    render(<ChatPanel {...makeProps("agent-late")} />);
+    const props = makeProps();
+    render(<ChatPanel {...props} />);
+    act(() => props.api.updateParameters({ agentId: "agent-late" }));
     expect(selectAgentDm).toHaveBeenCalledExactlyOnceWith("agent-late", true);
+  });
+
+  it("treats the agent restored with the layout as a cold load, not a pick", () => {
+    const props = makeProps("a1");
+    render(<ChatPanel {...props} />);
+    expect(selectAgentDm).toHaveBeenCalledExactlyOnceWith("a1", false);
+    act(() => props.api.updateParameters({ agentId: "a2" }));
+    expect(selectAgentDm).toHaveBeenLastCalledWith("a2", true);
+  });
+
+  it("does not drop a pending agent focus when a room intent is a replay", async () => {
+    let resolve!: (roomId: string) => void;
+    selectAgentDm.mockImplementationOnce(() => new Promise((r) => { resolve = r as never; }) as never);
+    activeRoomId = "r1";
+    requestFocusComposer("agent-friday", "hello");
+    deferFocusComposerRequest("agent-friday");
+    const props = makeProps();
+    const view = render(<ChatPanel {...props} />);
+    act(() => props.api.updateParameters({ agentId: "agent-friday" }));
+    act(() => props.api.updateParameters({ agentId: undefined, roomId: "r1" } as never));
+    expect(openMessage).not.toHaveBeenCalled();
+    const focused = vi.fn();
+    window.addEventListener("getstarted:focus-composer", focused);
+    await act(async () => { resolve("dm-1"); });
+    roomProps = { roomId: "dm-1", composer: {} };
+    view.rerender(<ChatPanel {...props} />);
+    window.removeEventListener("getstarted:focus-composer", focused);
+    expect(focused).toHaveBeenCalledTimes(1);
   });
 
   it("retargets a mounted conversation on Dockview parameter changes", () => {
     const props = makeProps("agent-friday");
     render(<ChatPanel {...props} />);
     act(() => props.api.updateParameters({ agentId: "agent-atlas" }));
-    expect(selectAgentDm.mock.calls).toEqual([["agent-friday", true], ["agent-atlas", true]]);
+    expect(selectAgentDm.mock.calls).toEqual([["agent-friday", false], ["agent-atlas", true]]);
   });
 
   it("does not snap room selection back when the selector changes identity", () => {

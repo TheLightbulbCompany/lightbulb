@@ -51,10 +51,20 @@ const mailState = { newCount: 0 };
 vi.mock("@/components/mail/useTeamMail", () => ({ useNewMailCount: () => mailState.newCount }));
 vi.mock("../workspaceController", () => ({ openPanel: (...args: unknown[]) => openPanel(...args), activateMessagesPanel: () => activateMessagesPanel(), useWorkspaceState: () => ({ activePanelId }) }));
 
+const recordMessagesNavigation = vi.fn();
+vi.mock("../chatHistory", () => ({ recordMessagesNavigation: () => recordMessagesNavigation() }));
+
 import { trackTeamRunActivity } from "@/components/notifications/teamRunActivity";
 import { WorkspaceHeader } from "../WorkspaceHeader";
 
 describe("WorkspaceHeader", () => {
+  it("records the Messages button as a navigation", () => {
+    render(<WorkspaceHeader chatReady={false} />);
+    fireEvent.click(screen.getByRole("button", { name: "Messages" }));
+    expect(activateMessagesPanel).toHaveBeenCalled();
+    expect(recordMessagesNavigation).toHaveBeenCalled();
+  });
+
   it("offers Hire right after Tasks and opens the marketplace, not a panel", () => {
     render(<WorkspaceHeader chatReady={false} />);
     const labels = within(screen.getByRole("navigation", { name: "Workspace" }))

@@ -26,9 +26,11 @@ interface ChatPanelParams {
 export function ChatPanel(props: IDockviewPanelProps<ChatPanelParams>): React.ReactElement {
   const params = useDockPanelParams(props);
   const { defaultId } = useAgents();
-  const { selectAgentDm, roomProps, openMessage, openSession, freshLanding } = useMessagingWorkspace();
+  const { selectAgentDm, roomProps, openMessage, openSession, freshLanding, activeRoomId, sessionFocus } = useMessagingWorkspace();
   const lastRequested = useRef<string | null>(null);
   const navigationRequest = useRef(0);
+  // The agent restored with the saved layout is a cold load, not a pick.
+  const restoredAgent = useRef(props.params.agentId);
   const [focusDestination, setFocusDestination] = useState<{ agentId: string; roomId: string } | null>(null);
   const deliveredDestination = useRef<typeof focusDestination>(null);
   // A room permalink wins over any agent-selection request riding along with
@@ -43,6 +45,8 @@ export function ChatPanel(props: IDockviewPanelProps<ChatPanelParams>): React.Re
       : params.agentId ?? null;
 
   useEffect(() => {
+    const restored = restoredAgent.current === requested;
+    restoredAgent.current = undefined;
     if (!requested) {
       lastRequested.current = null;
       return;
@@ -50,7 +54,7 @@ export function ChatPanel(props: IDockviewPanelProps<ChatPanelParams>): React.Re
     if (lastRequested.current === requested) return;
     lastRequested.current = requested;
     const request = ++navigationRequest.current;
-    void selectAgentDm(requested, !defaultRequest).then((roomId) => {
+    void selectAgentDm(requested, !defaultRequest && !restored).then((roomId) => {
       if (navigationRequest.current !== request) return;
       if (roomId) setFocusDestination({ agentId: requested, roomId });
       else cancelFocusComposerRequest(requested);
@@ -71,10 +75,17 @@ export function ChatPanel(props: IDockviewPanelProps<ChatPanelParams>): React.Re
     const key = JSON.stringify([params.roomId, params.messageId, params.sessionId, params.sessionIntent]);
     if (lastOpenedRoom.current === key) return;
     lastOpenedRoom.current = key;
-    ++navigationRequest.current; // A pending agent-DM focus must not supersede a room intent.
-    if (params.sessionId) openSession(params.sessionId);
-    else if (params.roomId) openMessage(params.roomId, params.messageId ?? null);
-  }, [params.roomId, params.messageId, params.sessionId, params.sessionIntent, openMessage, openSession]);
+    // A pending agent-DM focus must not supersede a room intent (a skipped replay is not one).
+    if (params.sessionId) {
+      ++navigationRequest.current;
+      openSession(params.sessionId);
+    // The replay of a room the person just picked (ChatHistorySync wrote its URL)
+    // must not re-open it: that would clear a scroll target and close a session view.
+    } else if (params.roomId && (params.messageId || params.roomId !== activeRoomId || sessionFocus)) {
+      ++navigationRequest.current;
+      openMessage(params.roomId, params.messageId ?? null);
+    }
+  }, [params.roomId, params.messageId, params.sessionId, params.sessionIntent, openMessage, openSession, activeRoomId, sessionFocus]);
 
   const roomId = roomProps?.roomId;
   const roomAgentId = roomProps?.composer.focusAgentId;

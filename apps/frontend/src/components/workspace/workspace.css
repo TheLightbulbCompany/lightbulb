@@ -581,3 +581,13 @@
   }
   .workspace-phone-bar button:focus-visible { outline: 2px solid var(--midnight); outline-offset: -2px; }
 }
+
+/* Back/Forward: two compact arrows in one rail slot. */
+.workspace-rail__history { display: flex; flex: none; gap: 2px; width: 44px; }
+.workspace-rail__history > button {
+  display: flex; flex: 1; align-items: center; justify-content: center;
+  height: 28px; border-radius: 7px; color: var(--midnight-muted); cursor: pointer;
+}
+.workspace-rail__history > button:hover:not(:disabled) { color: var(--midnight); background: var(--cream-deeper); }
+.workspace-rail__history > button:disabled { opacity: 0.5; cursor: not-allowed; }
+.workspace-rail__history > button:focus-visible { outline: 2px solid var(--midnight); outline-offset: 1px; }

@@ -1,5 +1,29 @@
-import { describe, it, expect } from "vitest";
-import { shellUrlFromPaperclipPath } from "../shellNav";
+// @vitest-environment jsdom
+import { describe, it, expect, vi } from "vitest";
+import { navigateShell, pushSearchParams, setCurrentEntryNamer, shellUrlFromPaperclipPath } from "../shellNav";
+
+describe("setCurrentEntryNamer", () => {
+  it("names a command-less entry before a push leaves it, and only that", () => {
+    window.history.replaceState(null, "", "/chat");
+    const namer = vi.fn(() => "panel=chat&room=r1");
+    setCurrentEntryNamer(namer);
+    const replace = vi.spyOn(window.history, "replaceState");
+    pushSearchParams(new URLSearchParams("panel=teams-issues"));
+    expect(replace).toHaveBeenCalledExactlyOnceWith(null, "", "/chat?panel=chat&room=r1");
+    navigateShell("/chat?panel=mail");
+    expect(replace).toHaveBeenCalledTimes(1);
+    window.history.replaceState(null, "", "/chat?agent=a1");
+    replace.mockClear();
+    pushSearchParams(new URLSearchParams("panel=teams-issues"));
+    expect(replace).not.toHaveBeenCalled();
+    window.history.replaceState(null, "", "/chat");
+    setCurrentEntryNamer(null);
+    replace.mockClear();
+    navigateShell("/chat?panel=mail");
+    expect(replace).not.toHaveBeenCalled();
+    replace.mockRestore();
+  });
+});
 
 describe("shellUrlFromPaperclipPath", () => {
   it("maps company-prefixed issue paths to the in-shell detail URL", () => {

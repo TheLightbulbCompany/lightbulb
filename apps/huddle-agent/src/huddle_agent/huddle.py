@@ -154,11 +154,9 @@ MEET_QUIET_S = 3.0
 # A meeting voice is muted, so the worker stops it for someone who keeps talking over it this long. Shorter is a
 # backchannel ("mm-hm", a cough): the agent carries on.
 TALK_OVER_S = 1.0
-# A voice opened for a request never heard it asked (the line that woke it was said before it opened), and the
-# request is already running. What it says first is the worker's, given to it as words to say: asked to
-# acknowledge, the model greeted ("I'm here, what's on your mind", "Yes, I'm here. What's up?") or read its
-# note out ("On it. The caller asked what's open.") in the 10-04 prod Meets.
-ON_IT = "On it."
+# A meeting voice never hears the question (it is muted), so its seed says what to say once the run is started:
+# without it the model greeted ("Yes, I'm here. What's up?", 10-04 prod Meet).
+MEET_ACK = ' Say a short acknowledgement now, two or three words like "On it.", then wait for the result.'
 # The final POST's backoff and its whole budget. The budget stays under the job's shutdown window
 # (agent.py SHUTDOWN_S): the flush usually runs from the shutdown callback.
 FINAL_TRANSCRIPT_RETRY_S = (1, 2, 4, 8, 16)
@@ -231,7 +229,6 @@ class Live(Protocol):
     def interrupt(self) -> Any: ...  # AgentSession.interrupt(force=True)
     def mute(self) -> None: ...
     def nudge(self) -> None: ...  # generate_reply(): a request the model may decline
-    def acknowledge(self, text: str) -> None: ...  # the worker's own words, said once (GPT-Live commentary)
     def reply_to(
         self, text: str
     ) -> None: ...  # generate_reply(user_input=text): a typed user turn
@@ -2085,7 +2082,8 @@ class Huddle:
                 (
                     "developer",
                     # the voice's own speaker: a queued or delivered voice has no line of its own to read a label from
-                    f"{v.label or self._talker(identity, mark)} asked: {request} — already handed to your backend self; don't delegate it again",
+                    f"{v.label or self._talker(identity, mark)} asked: {request} — already handed to your backend self; don't delegate it again"
+                    + (f".{MEET_ACK}" if mixed_meet(identity) else ""),
                 )
             )
         # conversation engine §3.5: the one acknowledgement, of the rows still open after the awaits above
@@ -2136,11 +2134,8 @@ class Huddle:
             if (mixed_meet(identity) and told) or self._live_call(
                 v, "append_thinking", f"{v.label or self._talker(identity, mark)} is talking to you"
             ):
-                if request and not ack_said and not said:
-                    # its own request alone, already running (driven): the worker's acknowledgement, as words
-                    self._live_call(v, "acknowledge", ON_IT)
-                elif told or identity in self._released:
-                    # who is on what, or small talk: in the seed, and the model says it; no typed user turn
+                if told or identity in self._released:
+                    # the request is already running (driven): the model acknowledges it, no typed user turn
                     self._live_call(v, "nudge")
         self._released.discard(identity)
         self._runs.release(v.driven_run)  # sentences that came while it opened are said now, none dropped

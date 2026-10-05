@@ -296,9 +296,6 @@ class FakeLive:
     def nudge(self):
         self._rec("nudge")
 
-    def acknowledge(self, text):
-        self._rec("ack", text)
-
     def append_instructions(self, text):
         self._rec("instructions", text)
 
@@ -431,8 +428,7 @@ async def test_summon_by_name_opens_that_agents_own_voice():
         "user",
         "Aden: we shipped huddles",
     )  # the summoning line is not a user line
-    # its request is already running: the worker's own acknowledgement, never a nudge the model answers freely
-    assert live.calls == [("thinking", "Prasiddha is talking to you", None), ("ack", h_mod.ON_IT)]
+    assert live.calls == [("thinking", "Prasiddha is talking to you", None), ("nudge",)]
 
 
 async def test_plain_line_does_not_summon():
@@ -1454,7 +1450,7 @@ async def test_talk_start_unknown_agent_or_floor_holder_or_stranger_is_ignored()
     await h.talk_start("u2", json.dumps({"agentId": "forge"}))
     await h.talk_start("agent-other", json.dumps({"agentId": "gauge"}))
     await h.talk_start("u1", "not json")
-    assert len(lives) == 1 and lives[0].calls[-1] == ("ack", h_mod.ON_IT)
+    assert len(lives) == 1 and lives[0].calls[-1] == ("nudge",)
 
 
 async def test_concurrent_talk_starts_summon_once():

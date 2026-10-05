@@ -34,10 +34,11 @@ import type {
   LocalSessionCommandReceipt,
   LocalSessionOfflineOutbox,
   LocalSessionAuditEntry,
-  LocalSessionShareLink,
   LocalSessionPickupOutcome,
   LocalSessionPickupTicket,
-  SharedLocalSession,
+  SessionCopyCode,
+  SessionLink,
+  SessionLinkAudience,
 } from "./types";
 
 /**
@@ -107,16 +108,14 @@ export interface MessagingClient {
   /** The owner takes one person's resume back. */
   revokeLocalSessionResume(sessionId: string, userId: string): Promise<LocalSession>;
   listLocalSessionAudit(sessionId: string): Promise<{ entries: LocalSessionAuditEntry[] }>;
-  /** Owner-only snapshot links, opened only by signed-in members of the owner's workspace. */
-  createLocalSessionShareLink(sessionId: string, expiresInDays: number): Promise<LocalSessionShareLink>;
-  listLocalSessionShareLinks(sessionId: string): Promise<{ links: LocalSessionShareLink[] }>;
-  revokeLocalSessionShareLink(sessionId: string, linkId: string): Promise<void>;
-  getSharedLocalSession(token: string): Promise<SharedLocalSession>;
-  listSharedLocalSessionEvents(token: string, afterSeq: number, limit?: number): Promise<LocalSessionEventPage>;
+  /** Owner-only: the session's one link (404 when it has none). */
+  getLocalSessionLink(sessionId: string): Promise<SessionLink>;
+  putLocalSessionLink(sessionId: string, audience: SessionLinkAudience): Promise<SessionLink>;
+  deleteLocalSessionLink(sessionId: string): Promise<void>;
+  /** Continue: the moment a copy is made. The challenge is the CLI's; the token rides in the body. */
+  createSessionCopy(token: string, challenge: string): Promise<SessionCopyCode>;
   /** Owner-only: let workspace members see this session's token meter. */
   setLocalSessionUsageSharing(sessionId: string, enabled: boolean): Promise<LocalSession>;
-  /** The owner's "Let teammates pick up this session". Off deletes the stored snapshot. */
-  setLocalSessionPickup(sessionId: string, enabled: boolean): Promise<LocalSession>;
   /** Short-lived links to a session's snapshot, for the Mac that will continue it. Safe to repeat with the same id. */
   requestLocalSessionPickup(sessionId: string, pickupId: string): Promise<LocalSessionPickupTicket>;
   reportLocalSessionPickupOutcome(sessionId: string, pickupId: string, outcome: LocalSessionPickupOutcome): Promise<void>;
@@ -186,15 +185,12 @@ export function createMessagingClient(api: ApiMethods): MessagingClient {
     resumeLocalSession: (sessionId, request) => api.post(`${sessionPath(sessionId)}/resume`, request) as Promise<LocalSession>,
     revokeLocalSessionResume: (sessionId, userId) =>
       api.del(`${sessionPath(sessionId)}/resume-allowed/${encodeURIComponent(userId)}`) as Promise<LocalSession>,
-    createLocalSessionShareLink: (sessionId, expiresInDays) => api.post(`${sessionPath(sessionId)}/share-links`, { expiresInDays }) as Promise<LocalSessionShareLink>,
-    listLocalSessionShareLinks: (sessionId) => api.get(`${sessionPath(sessionId)}/share-links`) as Promise<{ links: LocalSessionShareLink[] }>,
-    revokeLocalSessionShareLink: async (sessionId, linkId) => { await api.del(`${sessionPath(sessionId)}/share-links/${encodeURIComponent(linkId)}`); },
+    getLocalSessionLink: (sessionId) => api.get(`${sessionPath(sessionId)}/link`) as Promise<SessionLink>,
+    putLocalSessionLink: (sessionId, audience) => api.put(`${sessionPath(sessionId)}/link`, { audience }) as Promise<SessionLink>,
+    deleteLocalSessionLink: async (sessionId) => { await api.del(`${sessionPath(sessionId)}/link`); },
     // POST: the token rides in the body, never a URL a log would keep.
-    getSharedLocalSession: (token) => api.post("/messaging/shared-sessions/open", { token }) as Promise<SharedLocalSession>,
-    listSharedLocalSessionEvents: (token, afterSeq, limit = 100) =>
-      api.post("/messaging/shared-sessions/events", { token, afterSeq, limit }) as Promise<LocalSessionEventPage>,
+    createSessionCopy: (token, challenge) => api.post("/session-links/copies", { token, challenge }) as Promise<SessionCopyCode>,
     setLocalSessionUsageSharing: (sessionId, enabled) => api.put(`${sessionPath(sessionId)}/usage-sharing`, { enabled }) as Promise<LocalSession>,
-    setLocalSessionPickup: (sessionId, enabled) => api.put(`${sessionPath(sessionId)}/pickup`, { enabled }) as Promise<LocalSession>,
     requestLocalSessionPickup: (sessionId, pickupId) => api.post(`${sessionPath(sessionId)}/pickups`, { pickupId }) as Promise<LocalSessionPickupTicket>,
     reportLocalSessionPickupOutcome: async (sessionId, pickupId, outcome) => { await api.post(`${sessionPath(sessionId)}/pickups/${encodeURIComponent(pickupId)}/outcome`, outcome); },
     listLocalSessionAudit: (sessionId) => api.get(`${sessionPath(sessionId)}/audit`) as Promise<{ entries: LocalSessionAuditEntry[] }>,

@@ -462,6 +462,8 @@ export interface LocalSessionPickup {
   branch?: string | null;
   expiresAt?: string | null;
   reason?: string | null;
+  /** The repository is private: its folder name is hidden from outsiders. */
+  privateRepo?: boolean;
 }
 
 export interface LocalSessionPickupPart { url: string; bytes: number; sha256: string }
@@ -514,6 +516,7 @@ export interface PrivateSendApproval {
 export interface LocalSessionAuditEntry {
   at: string;
   action: "native_send_requested" | "native_send_approved" | "native_send_denied" | "native_send_cancelled" | "send" | "interrupt" | "approve" | "deny" | "cancel" | "team_control_on" | "team_control_off" | "team_control_ended" | "share_link_created" | "share_link_revoked"
+    | "share_link_audience" | "session_copied"
     | "pickup_on" | "pickup_off" | "picked_up" | "pickup_expired"
     | "pickup_requested" | "pickup_request_declined" | "join_requested" | "join_allowed" | "join_declined" | "sender_removed"
     | "resume_requested" | "resume_revoked";
@@ -526,12 +529,15 @@ export interface LocalSessionAuditEntry {
   state?: LocalSessionCommandReceipt["state"];
 }
 
-/** A read-only transcript snapshot link. `token` is present only in the create response. */
-export interface LocalSessionShareLink { linkId: string; createdAt: string; expiresAt: string; snapshotSeq: number; token?: string }
-export interface SharedLocalSession {
-  sessionId: string; humanUserId: string; provider: "claude" | "codex"; title?: string | null; cwdName?: string | null;
-  snapshotSeq: number; createdAt: string; expiresAt: string;
+export type SessionLinkAudience = "workspace" | "anyone";
+/** The session's one link. `url` is null only when it can no longer be shown (turn it off and on). */
+export interface SessionLink { url: string | null; audience: SessionLinkAudience }
+export interface SessionLinkCode { visibility: "public" | "private" | "none" | "workspace"; remote?: string; branch?: string; commit?: string }
+export interface SessionLinkPage {
+  title: string | null; ownerFirstName: string; provider: "claude" | "codex"; state: "live" | "ended" | "offline";
+  code: SessionLinkCode; continuable: boolean; me: { signedIn: boolean; member: boolean }; sessionId?: string;
 }
+export interface SessionCopyCode { code: string }
 
 export interface WorkspaceSessions { sessions: LocalSession[] }
 

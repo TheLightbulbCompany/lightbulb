@@ -2,7 +2,7 @@ import { useState } from "react";
 import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { expect, it, vi } from "vitest";
-import type { LocalSession, LocalSessionEvent } from "@lightbulb/shared";
+import type { LocalSession, LocalSessionAuditEntry, LocalSessionEvent } from "@lightbulb/shared";
 import { SessionDetails, type SessionDetailsTab } from "../SessionDetails";
 
 const usage = { inputTokens: 1200, outputTokens: 340, cacheReadTokens: 0, cacheWriteTokens: 0 };
@@ -18,9 +18,9 @@ const client = () => ({
   submitLocalSessionCommand: vi.fn(), getLocalSessionCommand: vi.fn(), getLocalSession: vi.fn(), listWorkspaceSessions: vi.fn(), listLocalSessionEvents: vi.fn(),
   setLocalSessionSharing: vi.fn(async (_: string, shared: boolean) => session({ shared })),
   setLocalSessionTeamControl: vi.fn(async (_: string, teamControl: boolean) => session({ teamControl })),
-  setLocalSessionPickup: vi.fn(async (_: string, allowed: boolean) => session({ pickup: { allowed, state: "preparing" } })),
   setLocalSessionUsageSharing: vi.fn(async (_: string, shareUsage: boolean) => session({ shareUsage })),
-  createLocalSessionShareLink: vi.fn(),
+  getLocalSessionLink: vi.fn(async () => { throw new Error("404"); }), putLocalSessionLink: vi.fn(), deleteLocalSessionLink: vi.fn(),
+  listLocalSessionAudit: vi.fn(async () => ({ entries: [] as LocalSessionAuditEntry[] })),
   removeLocalSessionSender: vi.fn(async () => session()),
 });
 
@@ -32,12 +32,12 @@ function Details({ tab: initial = "access", s = session(), own = true, c = clien
 }
 const switchNamed = (name: string) => screen.getByRole("switch", { name });
 
-it("gives the owner all four switches on Access, and the snapshot link", () => {
+it("gives the owner three switches on Access, and the Share link", async () => {
   render(<Details />);
   expect(screen.getAllByRole("switch").map(s => (s as HTMLButtonElement).labels[0]?.textContent)).toEqual([
-    "Shared with the workspace", "Let teammates control this session", "Let teammates pick up this session", "Show token usage to teammates",
+    "Shared with the workspace", "Let teammates control this session", "Show token usage to teammates",
   ]);
-  expect(screen.getByRole("button", { name: "Share snapshot…" })).toBeInTheDocument();
+  expect(await screen.findByRole("button", { name: "Share" })).toBeInTheDocument();
 });
 
 it("writes each switch through its own client method and shows the server's answer", async () => {
@@ -47,10 +47,6 @@ it("writes each switch through its own client method and shows the server's answ
   expect(c.setLocalSessionTeamControl).toHaveBeenCalledWith("s1", true);
   expect(await screen.findByRole("switch", { name: "Let teammates control this session", checked: true })).toBeInTheDocument();
 
-  await userEvent.click(switchNamed("Let teammates pick up this session"));
-  expect(c.setLocalSessionPickup).toHaveBeenCalledWith("s1", true);
-  expect(switchNamed("Let teammates pick up this session")).toBeChecked();
-
   await userEvent.click(switchNamed("Show token usage to teammates"));
   expect(c.setLocalSessionUsageSharing).toHaveBeenCalledWith("s1", true);
   expect(await screen.findByRole("switch", { name: "Show token usage to teammates", checked: true })).toBeInTheDocument();
@@ -58,32 +54,6 @@ it("writes each switch through its own client method and shows the server's answ
   await userEvent.click(switchNamed("Shared with the workspace"));
   expect(c.setLocalSessionSharing).toHaveBeenCalledWith("s1", false);
   expect(switchNamed("Shared with the workspace")).not.toBeChecked();
-});
-
-it("will not allow pick-up on a session that is not shared, and can always turn it off", async () => {
-  // Paused: nothing is uploaded, so allowing pick-up would promise what cannot happen.
-  const paused = client();
-  const { unmount } = render(<Details c={paused} s={session({ shared: false })} />);
-  expect(switchNamed("Let teammates pick up this session")).toBeDisabled();
-  expect(screen.getByText("Share the session with the workspace first.")).toBeInTheDocument();
-  await userEvent.click(switchNamed("Let teammates pick up this session"));
-  expect(paused.setLocalSessionPickup).not.toHaveBeenCalled();
-  unmount();
-
-  // Already allowed, then paused: the owner must still be able to take it back.
-  const allowed = client();
-  render(<Details c={allowed} s={session({ shared: false, pickup: { allowed: true, state: "ready" } })} />);
-  expect(switchNamed("Let teammates pick up this session")).toBeEnabled();
-  await userEvent.click(switchNamed("Let teammates pick up this session"));
-  expect(allowed.setLocalSessionPickup).toHaveBeenCalledWith("s1", false);
-});
-
-it("follows the server when it answers other than asked", async () => {
-  const c = { ...client(), setLocalSessionPickup: vi.fn(async () => session({ pickup: { allowed: false } })) };
-  render(<Details c={c} />);
-  await userEvent.click(switchNamed("Let teammates pick up this session"));
-  expect(c.setLocalSessionPickup).toHaveBeenCalledWith("s1", true);
-  expect(switchNamed("Let teammates pick up this session")).not.toBeChecked();
 });
 
 it("shows a failed save's error and puts the switch back", async () => {
@@ -97,18 +67,9 @@ it("shows a failed save's error and puts the switch back", async () => {
   expect(switchNamed("Let teammates control this session")).not.toBeChecked();
 });
 
-it("warns what pick-up uploads before the owner turns it on", () => {
-  render(<Details />);
-  expect(switchNamed("Let teammates pick up this session")).not.toBeChecked();
-  const warning = screen.getByText(/Nothing is redacted/);
-  expect(warning).toHaveTextContent(/uploads the whole conversation and your uncommitted changes/);
-  expect(warning).toHaveTextContent(/Files your repository ignores, such as \.env, are never uploaded\./);
-});
-
-it("offers no pick-up switch on a Codex session, and says why", () => {
+it("offers no pick-up switch on a Codex session", () => {
   render(<Details s={session({ provider: "codex" })} />);
   expect(screen.queryByRole("switch", { name: "Let teammates pick up this session" })).not.toBeInTheDocument();
-  expect(screen.getByText("Codex sessions cannot be picked up yet.")).toBeInTheDocument();
   expect(switchNamed("Let teammates control this session")).toBeInTheDocument();
 });
 
@@ -186,4 +147,12 @@ it("lists who may resume an ended session, each with Remove", async () => {
   expect(screen.getByText("Who can resume it")).toBeInTheDocument();
   await userEvent.click(screen.getByRole("button", { name: "Remove Bob" }));
   expect(c.revokeLocalSessionResume).toHaveBeenCalledWith("s1", "bob");
+});
+
+it("lists who took a copy on Access", async () => {
+  const c = { ...client(), listLocalSessionAudit: vi.fn(async () => ({ entries: [
+    { at: "2026-10-05T10:00:00Z", action: "session_copied" as const, actorUserId: "user_out", detail: "Sam Lee" },
+  ] })) };
+  render(<Details c={c} />);
+  expect(await screen.findByText(/Sam Lee/)).toBeInTheDocument();
 });

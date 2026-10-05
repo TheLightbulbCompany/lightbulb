@@ -2045,7 +2045,7 @@ async def decide_pickup_request(
         raise ApiProblem("LOCAL_SESSION_CONFLICT", "That request was already answered.")
     if decision == "allow":
         # Raises (e.g. a paused session) before any write: the request stays pending.
-        public = await session_pickup.set_pickup(auth, session_id, True)
+        public = await session_pickup.set_pickup(auth, session_id, True, expect_request=(user_id, current["requestId"]))
         await _notify_join_answer(row, user_id, "join_allowed", current["requestId"], kind="pickup")
         return public
 

@@ -116,9 +116,9 @@ async def test_allow_turns_pick_up_on_and_tells_the_requester(transport):
         calls = []
         real = pickup.set_pickup
 
-        async def spy(auth, session_id, enabled):
+        async def spy(auth, session_id, enabled, **kw):
             calls.append((auth.user_id, session_id, enabled))
-            return await real(auth, session_id, enabled)
+            return await real(auth, session_id, enabled, **kw)
 
         with patch.object(pickup, "set_pickup", spy):
             public = await service.decide_pickup_request(ALICE, sid, BOB.user_id, "allow", request_id=rid)
@@ -162,6 +162,29 @@ async def test_decline_then_ask_again(transport):
         "pickup_request_declined",
         "pickup_requested",
     ]
+
+
+@pytest.mark.asyncio
+async def test_a_decline_that_lands_first_fences_allow(transport):
+    """Allow read the request pending; a Decline from another surface committed before its write."""
+    sid = await claude_session(transport)
+    with recorded():
+        await service.request_pickup_access(BOB, sid)
+        rid = (await stored(sid))["pickupRequests"][BOB.user_id]["requestId"]
+        pending = await service.authorize_session(ALICE, None, sid)
+        await service.decide_pickup_request(ALICE, sid, BOB.user_id, "decline", request_id=rid)
+        real = service.authorize_session
+        reads = []
+
+        async def stale_first(*args, **kw):
+            reads.append(1)
+            return pending if len(reads) == 1 else await real(*args, **kw)
+
+        with patch.object(service, "authorize_session", stale_first), pytest.raises(ApiProblem) as late:
+            await service.decide_pickup_request(ALICE, sid, BOB.user_id, "allow", request_id=rid)
+    assert late.value.error.code == "LOCAL_SESSION_CONFLICT" and len(reads) == 2
+    row = await stored(sid)
+    assert not row.get("pickupAllowed") and row["pickupRequests"][BOB.user_id]["state"] == "declined"
 
 
 @pytest.mark.asyncio

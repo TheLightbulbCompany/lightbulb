@@ -23,6 +23,7 @@ import * as kms from "aws-cdk-lib/aws-kms";
 import * as lambda from "aws-cdk-lib/aws-lambda";
 import * as lambdaEventSources from "aws-cdk-lib/aws-lambda-event-sources";
 import * as logs from "aws-cdk-lib/aws-logs";
+import * as aoss from "aws-cdk-lib/aws-opensearchserverless";
 import * as pipes from "aws-cdk-lib/aws-pipes";
 import * as route53 from "aws-cdk-lib/aws-route53";
 import * as route53Targets from "aws-cdk-lib/aws-route53-targets";
@@ -263,6 +264,10 @@ export class ApiStack extends cdk.Stack {
    * fixed dev URL on the no-cert/no-zone synth path (unit tests, unknown envs)
    * so this is never `undefined` in service-stack's ECS env map. */
   public readonly gatewayRelayUrl: string;
+  /** Message search (OpenSearch Serverless). Empty strings while search is off for this env. */
+  public readonly messageSearchEndpoint: string;
+  public readonly messageSearchCollectionArn: string;
+  public readonly messageSearchQueueUrl: string;
 
   constructor(scope: Construct, id: string, props: ApiStackProps) {
     super(scope, id, props);
@@ -729,6 +734,134 @@ export class ApiStack extends cdk.Stack {
     );
     projectorFn.addEventSource(projectorEventSource);
 
+    // ---- Message search: OpenSearch Serverless NextGen ----
+    // The projector only ENQUEUES a row pointer; a VPC indexer re-reads the row
+    // and writes the index, so an indexing cold start (10-30 s) can never stall
+    // live delivery on this stream shard. DynamoDB stays the truth: standby
+    // replicas are off and scripts/reindex_messages.py rebuilds an index.
+    // The collection's endpoint and ARN cross to ServiceStack as CloudFormation
+    // exports, and Name/Tags/EncryptionConfig/CollectionGroupName force
+    // REPLACEMENT: a new stage-wide tag (lightbulb-stage.ts applies cdk.Tags)
+    // replaces the collection, blocks on the export, and empties the index.
+    // Plan such a change as: drop the import, deploy, change, re-import, reindex.
+    // ponytail: dev only until the measured-cost gate (plan Task 6/7).
+    let indexDlq: sqs.Queue | undefined;
+    const searchEnabled = env === "dev";
+    if (searchEnabled) {
+      const collectionName = `lightbulb-${env}-messages`;
+      const group = new aoss.CfnCollectionGroup(this, "MessageSearchGroup", {
+        name: `lightbulb-${env}-search`,
+        generation: "NEXTGEN",
+        standbyReplicas: "DISABLED",
+        capacityLimits: {
+          minIndexingCapacityInOcu: 0,
+          minSearchCapacityInOcu: 0,
+          maxIndexingCapacityInOcu: 2,
+          maxSearchCapacityInOcu: 2,
+        },
+      });
+      const endpointSg = new ec2.SecurityGroup(this, "MessageSearchEndpointSg", {
+        vpc: props.vpc,
+        description: "OpenSearch Serverless VPC endpoint (message search)",
+        allowAllOutbound: false,
+      });
+      endpointSg.addIngressRule(ec2.Peer.ipv4(props.vpc.vpcCidrBlock), ec2.Port.tcp(443), "VPC to message search");
+      const vpce = new aoss.CfnVpcEndpoint(this, "MessageSearchVpce", {
+        name: `lightbulb-${env}-msg-vpce`,
+        vpcId: props.vpc.vpcId,
+        subnetIds: props.vpc.selectSubnets({ subnetType: ec2.SubnetType.PRIVATE_WITH_EGRESS }).subnetIds,
+        securityGroupIds: [endpointSg.securityGroupId],
+      });
+      const network = new aoss.CfnSecurityPolicy(this, "MessageSearchNetwork", {
+        name: `lightbulb-${env}-msg-net`,
+        type: "network",
+        policy: cdk.Stack.of(this).toJsonString([{
+          Rules: [{ ResourceType: "collection", Resource: [`collection/${collectionName}`] }],
+          AllowFromPublic: false,
+          SourceVPCEs: [vpce.attrId],
+        }]),
+      });
+      const collection = new aoss.CfnCollection(this, "MessageSearchCollection", {
+        name: collectionName,
+        type: "SEARCH",
+        collectionGroupName: group.name, // standby replicas follow the group
+        // Same key as the messaging table: search holds the same data.
+        encryptionConfig: { awsOwnedKey: false, kmsKeyArn: props.paperclipKmsKeyArn },
+      });
+      collection.addDependency(group);
+      collection.addDependency(network);
+
+      indexDlq = new sqs.Queue(this, "MessageSearchIndexDlq", {
+        queueName: `${resourcePrefix(env)}message-search-index-dlq`,
+        retentionPeriod: cdk.Duration.days(14),
+        encryption: sqs.QueueEncryption.SQS_MANAGED,
+      });
+      const indexQueue = new sqs.Queue(this, "MessageSearchIndexQueue", {
+        queueName: `${resourcePrefix(env)}message-search-index`,
+        // AWS guidance: visibility >= 6x the consumer's timeout (120 s).
+        visibilityTimeout: cdk.Duration.minutes(15),
+        encryption: sqs.QueueEncryption.SQS_MANAGED,
+        deadLetterQueue: { queue: indexDlq, maxReceiveCount: 5 },
+      });
+
+      const indexer = new lambda.Function(this, "MessageSearchIndexer", {
+        functionName: `${resourcePrefix(env)}message-search-indexer`,
+        runtime: lambda.Runtime.PYTHON_3_13,
+        handler: "index.handler",
+        code: lambda.Code.fromAsset(path.join(__dirname, "..", "..", "lambda", "messaging-search-indexer")),
+        // One job per invocation: a cold start (<=30 s) plus a write/verify loop fits.
+        timeout: cdk.Duration.seconds(120),
+        memorySize: 256,
+        vpc: props.vpc,
+        vpcSubnets: { subnetType: ec2.SubnetType.PRIVATE_WITH_EGRESS },
+        environment: {
+          MESSAGING_TABLE: messagingTable.tableName,
+          SEARCH_ENDPOINT: collection.attrCollectionEndpoint,
+        },
+        logGroup: new logs.LogGroup(this, "MessageSearchIndexerLogs", {
+          logGroupName: logGroupPath(env, "message-search-indexer"),
+          retention: logs.RetentionDays.ONE_MONTH,
+          removalPolicy: cdk.RemovalPolicy.DESTROY,
+        }),
+      });
+      messagingTable.grantReadData(indexer);
+      indexer.addToRolePolicy(new iam.PolicyStatement({ actions: ["aoss:APIAccessAll"], resources: [collection.attrArn] }));
+      indexer.addEventSource(new lambdaEventSources.SqsEventSource(indexQueue, {
+        batchSize: 1,
+        reportBatchItemFailures: true,
+        maxConcurrency: 5, // a backfill must not fan out past the OCU cap
+      }));
+      indexQueue.grantSendMessages(projectorFn);
+      projectorFn.addEnvironment("SEARCH_INDEX_QUEUE_URL", indexQueue.queueUrl);
+
+      // MUST match service-stack's `roleName: lightbulb-${env}-backend-task`. The
+      // provisioner Lambda runs as this role too, so wipes reach DeleteIndex.
+      const backendRoleArn = `arn:aws:iam::${this.account}:role/lightbulb-${env}-backend-task`;
+      const indexes = [`index/${collectionName}/messages-*`];
+      new aoss.CfnAccessPolicy(this, "MessageSearchAccess", {
+        name: `lightbulb-${env}-msg-access`,
+        type: "data",
+        policy: cdk.Stack.of(this).toJsonString([
+          {
+            Rules: [{ ResourceType: "index", Resource: indexes, Permission: ["aoss:CreateIndex", "aoss:DescribeIndex", "aoss:WriteDocument"] }],
+            Principal: [indexer.role!.roleArn],
+          },
+          {
+            Rules: [{ ResourceType: "index", Resource: indexes, Permission: ["aoss:ReadDocument", "aoss:DescribeIndex", "aoss:DeleteIndex"] }],
+            Principal: [backendRoleArn],
+          },
+        ]),
+      });
+
+      this.messageSearchEndpoint = collection.attrCollectionEndpoint;
+      this.messageSearchCollectionArn = collection.attrArn;
+      this.messageSearchQueueUrl = indexQueue.queueUrl;
+    } else {
+      this.messageSearchEndpoint = "";
+      this.messageSearchCollectionArn = "";
+      this.messageSearchQueueUrl = "";
+    }
+
     const pipeRole = new iam.Role(this, "OpenClawWorkPipeRole", {
       roleName: `${resourcePrefix(env)}openclaw-work-pipe`,
       assumedBy: new iam.ServicePrincipal("pipes.amazonaws.com"),
@@ -916,6 +1049,16 @@ def handler(event, context):
       evaluationPeriods: 1,
       treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
     });
+    if (indexDlq) {
+      pageAlarm("MessageSearchIndexDlqVisibleAlarm", {
+        alarmName: `${resourcePrefix(env)}message-search-index-dlq-visible`,
+        alarmDescription: "PAGE: message search index jobs exhausted retries; search may show stale or deleted text until replayed.",
+        metric: indexDlq.metricApproximateNumberOfMessagesVisible({ period: cdk.Duration.minutes(1), statistic: "Maximum" }),
+        threshold: 1,
+        evaluationPeriods: 1,
+        treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
+      });
+    }
     pageAlarm("OpenClawWorkPipeFailuresAlarm", {
       alarmName: `${resourcePrefix(env)}openclaw-work-pipe-failures`,
       alarmDescription:

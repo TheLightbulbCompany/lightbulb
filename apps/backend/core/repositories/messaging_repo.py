@@ -648,6 +648,23 @@ async def list_rooms_for_member(owner_id: str, kind: str, member_id: str) -> lis
     return out
 
 
+async def get_messages_by_keys(keys: list[tuple[str, int]]) -> dict[tuple[str, int], dict]:
+    """Strongly consistent batch read of canonical MSG rows by (room_id, seq).
+    Missing rows are absent from the result."""
+    table = _table()
+    wanted = [{"pk": room_pk(r), "sk": msg_sk(s)} for r, s in dict.fromkeys(keys)]
+    out: dict[tuple[str, int], dict] = {}
+    for i in range(0, len(wanted), 100):
+        request = {table.name: {"Keys": wanted[i : i + 100], "ConsistentRead": True}}
+        while request:
+            response = await run_in_thread(table.meta.client.batch_get_item, RequestItems=request)
+            for item in response.get("Responses", {}).get(table.name, []):
+                item = _plain(item)
+                out[(item["pk"].removeprefix("ROOM#"), int(item["sk"].removeprefix("MSG#")))] = item
+            request = response.get("UnprocessedKeys") or {}
+    return out
+
+
 # ---------------------------------------------------------------------------
 # room creation
 # ---------------------------------------------------------------------------

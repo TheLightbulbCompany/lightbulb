@@ -290,12 +290,14 @@ describe("ApiStack — canonical messaging storage and work delivery", () => {
     expect(retained.every((resource) => resource.DeletionPolicy === "Retain")).toBe(true);
   });
 
-  test("creates one application FIFO plus its FIFO DLQ and one standard Pipe DLQ", () => {
+  test("creates one application FIFO plus its FIFO DLQ, one standard Pipe DLQ and the message search index queue pair", () => {
     const queues = Object.values(API_TEMPLATE.findResources("AWS::SQS::Queue")) as any[];
     const byName = Object.fromEntries(
       queues.map((queue) => [queue.Properties.QueueName, queue.Properties]),
     );
     expect(Object.keys(byName).sort()).toEqual([
+      "lightbulb-dev-message-search-index",
+      "lightbulb-dev-message-search-index-dlq",
       "lightbulb-dev-openclaw-work-dlq.fifo",
       "lightbulb-dev-openclaw-work-pipe-failures",
       "lightbulb-dev-openclaw-work.fifo",
@@ -478,7 +480,10 @@ describe("ApiStack — canonical messaging storage and work delivery", () => {
   });
 
   test("messaging stream has exactly the projector and direct Pipe consumers", () => {
-    API_TEMPLATE.resourceCountIs("AWS::Lambda::EventSourceMapping", 1);
+    const streamMappings = Object.values(
+      API_TEMPLATE.findResources("AWS::Lambda::EventSourceMapping"),
+    ).filter((m: any) => JSON.stringify(m.Properties.EventSourceArn).includes("StreamArn"));
+    expect(streamMappings).toHaveLength(1);
     API_TEMPLATE.resourceCountIs("AWS::Pipes::Pipe", 1);
     API_TEMPLATE.hasResourceProperties("AWS::Lambda::EventSourceMapping", {
       BatchSize: 10,
@@ -689,7 +694,7 @@ describe("ApiStack — ws frames/{roomId}/{deliveryKey} sub-channel (parsePath)"
 });
 
 describe("ApiStack — messaging projector permissions and alarms", () => {
-  test("projector is Python 3.13, bounded, partial-batch configured, and has no SQS access", () => {
+  test("projector is Python 3.13, bounded, partial-batch configured, and may only send to the search index queue", () => {
     API_TEMPLATE.hasResourceProperties("AWS::Lambda::Function", {
       FunctionName: "lightbulb-dev-messaging-projector",
       Runtime: "python3.13",
@@ -719,7 +724,15 @@ describe("ApiStack — messaging projector permissions and alarms", () => {
     expect(granted.has("kms:Decrypt")).toBe(true);
     expect([...granted].some((action) => action.startsWith("kms:GenerateDataKey"))).toBe(true);
     expect(granted.has("appsync:EventPublish")).toBe(true);
-    expect([...granted].filter((action) => action.startsWith("sqs:"))).toEqual([]);
+    const sqsActions = [...granted].filter((action) => action.startsWith("sqs:"));
+    for (const a of sqsActions) {
+      expect(["sqs:SendMessage", "sqs:GetQueueAttributes", "sqs:GetQueueUrl"]).toContain(a);
+    }
+    const sqsResources = JSON.stringify(
+      statements.filter((st) => actions(st).some((a) => a.startsWith("sqs:"))).map((st) => st.Resource),
+    );
+    expect(sqsResources).toContain("MessageSearchIndexQueue");
+    expect(sqsResources).not.toContain("OpenClawWork");
     const publishResources = statements
       .filter((statement) => actions(statement).includes("appsync:EventPublish"))
       .flatMap((statement) =>
@@ -882,5 +895,71 @@ describe("ApiStack — messaging projector permissions and alarms", () => {
         expect.stringContaining(`lightbulb-dev-alerts-${tier}`),
       ]);
     }
+  });
+});
+
+describe("ApiStack — message search (OpenSearch Serverless)", () => {
+  const dev = API_TEMPLATE;
+
+  test("a NextGen collection group with no standby replicas and capped OCUs", () => {
+    dev.hasResourceProperties("AWS::OpenSearchServerless::CollectionGroup", {
+      Generation: "NEXTGEN",
+      StandbyReplicas: "DISABLED",
+      CapacityLimits: {
+        MinIndexingCapacityInOcu: 0,
+        MinSearchCapacityInOcu: 0,
+        MaxIndexingCapacityInOcu: 2,
+        MaxSearchCapacityInOcu: 2,
+      },
+    });
+    dev.hasResourceProperties("AWS::OpenSearchServerless::Collection", {
+      Name: "lightbulb-dev-messages",
+      Type: "SEARCH",
+      EncryptionConfig: Match.objectLike({ AWSOwnedKey: false }),
+    });
+  });
+
+  test("the collection is reachable only through the VPC endpoint", () => {
+    const policies = Object.values(dev.findResources("AWS::OpenSearchServerless::SecurityPolicy")) as any[];
+    const network = policies.find((p) => p.Properties.Type === "network");
+    expect(JSON.stringify(network.Properties.Policy)).toContain('\\"AllowFromPublic\\":false');
+    dev.resourceCountIs("AWS::OpenSearchServerless::VpcEndpoint", 1);
+  });
+
+  test("exactly two principals: the indexer writes, the backend reads and drops indexes", () => {
+    const access = Object.values(dev.findResources("AWS::OpenSearchServerless::AccessPolicy")) as any[];
+    expect(access).toHaveLength(1);
+    const text = JSON.stringify(access[0].Properties.Policy);
+    expect(text).toContain("role/lightbulb-dev-backend-task");
+    expect(text).toContain("aoss:WriteDocument");
+    expect(text).toContain("aoss:DeleteIndex");
+    expect(text).not.toContain("aoss:*");
+  });
+
+  test("the projector only enqueues; the indexer runs in the VPC, one job at a time", () => {
+    dev.hasResourceProperties("AWS::Lambda::Function", {
+      FunctionName: Match.stringLikeRegexp("messaging-projector"),
+      Environment: { Variables: Match.objectLike({ SEARCH_INDEX_QUEUE_URL: Match.anyValue() }) },
+    });
+    dev.hasResourceProperties("AWS::Lambda::Function", {
+      FunctionName: Match.stringLikeRegexp("message-search-indexer"),
+      VpcConfig: Match.objectLike({ SubnetIds: Match.anyValue() }),
+    });
+    dev.hasResourceProperties("AWS::Lambda::EventSourceMapping", {
+      BatchSize: 1,
+      FunctionResponseTypes: ["ReportBatchItemFailures"],
+      ScalingConfig: { MaximumConcurrency: 5 },
+    });
+  });
+
+  test("a stuck index job pages", () => {
+    dev.hasResourceProperties("AWS::CloudWatch::Alarm", {
+      AlarmName: "lightbulb-dev-message-search-index-dlq-visible",
+    });
+  });
+
+  test("prod has no search resources until the cost gate (plan Task 7)", () => {
+    const prod = synthApiStack("prod");
+    prod.resourceCountIs("AWS::OpenSearchServerless::Collection", 0);
   });
 });

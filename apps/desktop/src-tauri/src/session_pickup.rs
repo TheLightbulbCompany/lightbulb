@@ -25,7 +25,7 @@ const TRANSCRIPT_RAW_MAX: u64 = 1024 * 1024 * 1024;
 const SIDECARS_RAW_MAX: u64 = 1024 * 1024 * 1024;
 const KEEP: Duration = Duration::from_secs(7 * 24 * 3600);
 
-type Failure = Value;
+pub(crate) type Failure = Value;
 
 fn fail(code: &str, message: &str) -> Failure {
     json!({"code": code, "message": message})
@@ -117,7 +117,8 @@ pub(crate) fn allowed_url(raw: &str) -> bool {
         && url.username().is_empty()
         && url.password().is_none()
         && url.host_str().is_some_and(bucket_host)
-        && url.path().starts_with("/session-pickup/")
+        // Copies of shared sessions live under `session-copies/<copyId>/` (spec 2026-10-05).
+        && (url.path().starts_with("/session-pickup/") || url.path().starts_with("/session-copies/"))
 }
 
 fn bucket_host(host: &str) -> bool {
@@ -155,7 +156,7 @@ fn version(text: &str) -> Option<Vec<u64>> {
 }
 
 /// Strictly older, compared numerically component by component (`2.1.99 < 2.1.283`).
-fn older(installed: &str, required: &str) -> bool {
+pub(crate) fn older(installed: &str, required: &str) -> bool {
     match (version(installed), version(required)) {
         (Some(have), Some(need)) => have < need,
         (None, Some(_)) => true,
@@ -164,7 +165,7 @@ fn older(installed: &str, required: &str) -> bool {
 }
 
 /// A teammate controls the session title: reduce it to `[a-z0-9-]` before it names a branch.
-fn slug(title: &str) -> String {
+pub(crate) fn slug(title: &str) -> String {
     let mut out = String::new();
     for c in title.chars().flat_map(char::to_lowercase) {
         if out.len() >= 40 {
@@ -192,26 +193,26 @@ fn uuid_ok(id: &str) -> bool {
     uuid::Uuid::parse_str(id).is_ok()
 }
 
-fn hex_sha(s: &str) -> bool {
+pub(crate) fn hex_sha(s: &str) -> bool {
     matches!(s.len(), 40 | 64) && s.bytes().all(|b| b.is_ascii_hexdigit())
 }
 
 #[derive(Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
-struct Download {
+pub(crate) struct Download {
     #[serde(default)]
-    index: u64,
-    url: String,
-    bytes: u64,
-    sha256: String,
+    pub(crate) index: u64,
+    pub(crate) url: String,
+    pub(crate) bytes: u64,
+    pub(crate) sha256: String,
 }
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct Downloads {
-    transcript: Vec<Download>,
-    code: Option<Download>,
-    sidecars: Option<Download>,
+pub(crate) struct Downloads {
+    pub(crate) transcript: Vec<Download>,
+    pub(crate) code: Option<Download>,
+    pub(crate) sidecars: Option<Download>,
 }
 
 #[derive(Deserialize)]
@@ -259,31 +260,19 @@ fn parse_ticket(value: Value) -> Result<Ticket, Failure> {
         return Err(invalid("The pick-up ticket is malformed."));
     }
     let d = &ticket.downloads;
-    let all: Vec<&Download> = d
+    if d
         .transcript
         .iter()
         .chain(&d.code)
         .chain(&d.sidecars)
-        .collect();
-    if all.iter().any(|p| !allowed_url(&p.url)) {
+        .any(|p| !allowed_url(&p.url))
+    {
         return Err(fail(
             "URL_REFUSED",
             "The ticket names a download this app will not fetch.",
         ));
     }
-    let total = all.iter().fold(0u64, |sum, p| sum.saturating_add(p.bytes));
-    if all
-        .iter()
-        .any(|p| p.sha256.len() != 64 || !p.sha256.bytes().all(|b| b.is_ascii_hexdigit()))
-        || d.transcript.is_empty()
-        || d.transcript.iter().any(|p| p.bytes > PART_MAX)
-        || d.transcript
-            .iter()
-            .enumerate()
-            .any(|(i, p)| p.index != i as u64)
-        || d.code.as_ref().is_some_and(|c| c.bytes > CODE_MAX)
-        || d.sidecars.as_ref().is_some_and(|s| s.bytes > SIDECARS_MAX)
-        || total > TOTAL_MAX
+    if !downloads_ok(d)
         || d.code.is_some() != ticket.manifest.code.is_some()
         || ticket
             .manifest
@@ -294,6 +283,32 @@ fn parse_ticket(value: Value) -> Result<Ticket, Failure> {
         return Err(invalid("The pick-up ticket is malformed."));
     }
     Ok(ticket)
+}
+
+/// Every URL in the bucket's pick-up path, digests well formed, transcript non-empty and in
+/// order, each part and the total under their caps. Shared by pick-up tickets and copy tickets.
+pub(crate) fn downloads_ok(d: &Downloads) -> bool {
+    let all: Vec<&Download> = d
+        .transcript
+        .iter()
+        .chain(&d.code)
+        .chain(&d.sidecars)
+        .collect();
+    let total = all.iter().fold(0u64, |sum, p| sum.saturating_add(p.bytes));
+    all.iter().all(|p| {
+        allowed_url(&p.url)
+            && p.sha256.len() == 64
+            && p.sha256.bytes().all(|b| b.is_ascii_hexdigit())
+    }) && !d.transcript.is_empty()
+        && d.transcript.iter().all(|p| p.bytes <= PART_MAX)
+        && d
+            .transcript
+            .iter()
+            .enumerate()
+            .all(|(i, p)| p.index == i as u64)
+        && d.code.as_ref().is_none_or(|c| c.bytes <= CODE_MAX)
+        && d.sidecars.as_ref().is_none_or(|s| s.bytes <= SIDECARS_MAX)
+        && total <= TOTAL_MAX
 }
 
 /// Size and sha256 of a file on disk against the ticket. Blocking: run off the runtime.
@@ -430,6 +445,37 @@ async fn candidates(approved: &[PathBuf], remote: &str) -> Vec<PathBuf> {
 /// Idempotent per pickup id: a retry after a failed launch reuses the worktree it made
 /// (see `reusable`) and never restores over it again -- the person may already have
 /// worked in it.
+/// Keep `.claude/worktrees/` out of the repository's status: add it to `info/exclude` unless
+/// something already ignores it.
+pub(crate) async fn exclude_worktrees(repo: &Path) -> Result<(), String> {
+    let unwritable = || "The repository's exclude file could not be written.".to_string();
+    if git_run(
+        repo,
+        &["check-ignore", "-q", ".claude/worktrees"],
+        None,
+        Duration::from_secs(30),
+    )
+    .await
+    .map_err(|_| "git is unavailable.".to_string())?
+    .0
+    {
+        return Ok(());
+    }
+    let exclude = git(repo, &["rev-parse", "--git-path", "info/exclude"], None)
+        .await
+        .map_err(|_| "The repository could not be read.".to_string())?;
+    let exclude = repo.join(exclude);
+    if let Some(parent) = exclude.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let mut file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&exclude)
+        .map_err(|_| unwritable())?;
+    writeln!(file, "\n.claude/worktrees/").map_err(|_| unwritable())
+}
+
 pub(crate) async fn import_code(
     repo: &Path,
     bundle: &Path,
@@ -491,31 +537,7 @@ pub(crate) async fn import_code(
     if !resolves_to(repo, &reference, snapshot).await {
         return Err(failed("The session's changes did not match the ticket."));
     }
-    if !git_run(
-        repo,
-        &["check-ignore", "-q", ".claude/worktrees"],
-        None,
-        Duration::from_secs(30),
-    )
-    .await
-    .map_err(|_| failed("git is unavailable."))?
-    .0
-    {
-        let exclude = git(repo, &["rev-parse", "--git-path", "info/exclude"], None)
-            .await
-            .map_err(|_| failed("The repository could not be read."))?;
-        let exclude = repo.join(exclude);
-        if let Some(parent) = exclude.parent() {
-            let _ = std::fs::create_dir_all(parent);
-        }
-        let mut file = std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&exclude)
-            .map_err(|_| failed("The repository's exclude file could not be written."))?;
-        writeln!(file, "\n.claude/worktrees/")
-            .map_err(|_| failed("The repository's exclude file could not be written."))?;
-    }
+    exclude_worktrees(repo).await.map_err(|m| failed(&m))?;
     let tree = worktree.to_string_lossy();
     git(
         repo,
@@ -621,7 +643,7 @@ async fn reusable(repo: &Path, worktree: &Path, reference: &str, snapshot: &str)
 }
 
 /// The exact argv the holder runs: a fixed binary, fixed flags, values as their own elements.
-fn argv(claude: &Path, transcript: &Path, session: &str) -> Vec<String> {
+pub(crate) fn argv(claude: &Path, transcript: &Path, session: &str) -> Vec<String> {
     vec![
         claude.to_string_lossy().into_owned(),
         "--resume".into(),
@@ -638,7 +660,7 @@ fn argv(claude: &Path, transcript: &Path, session: &str) -> Vec<String> {
 
 /// Where Claude starts: `<worktree>/<cwdRelative>` only if it resolves to a directory
 /// still inside the worktree (a symlink in the author's tree must not lead out of it).
-fn workdir(worktree: &Path, relative: &str) -> PathBuf {
+pub(crate) fn workdir(worktree: &Path, relative: &str) -> PathBuf {
     let root = std::fs::canonicalize(worktree).unwrap_or_else(|_| worktree.to_path_buf());
     let relative = Path::new(relative);
     if !relative
@@ -653,7 +675,7 @@ fn workdir(worktree: &Path, relative: &str) -> PathBuf {
         .unwrap_or(root)
 }
 
-async fn claude_version(program: &Path) -> Option<String> {
+pub(crate) async fn claude_version(program: &Path) -> Option<String> {
     let out = tokio::time::timeout(
         Duration::from_secs(10),
         tokio::process::Command::new(program)
@@ -672,7 +694,7 @@ async fn claude_version(program: &Path) -> Option<String> {
 }
 
 /// Pick-up folders older than seven days go at the start of the next pick-up.
-fn prune(root: &Path) {
+pub(crate) fn prune(root: &Path) {
     for entry in std::fs::read_dir(root).into_iter().flatten().flatten() {
         let old = entry
             .metadata()
@@ -834,21 +856,30 @@ async fn pick_up(ticket: Value, folder: Option<String>, env: &Env) -> Result<Val
 
 /// Download and verify every part; returns the reassembled transcript's path.
 async fn fetch_parts(ticket: &Ticket, dir: &Path) -> Result<PathBuf, Failure> {
+    fetch_downloads(&ticket.downloads, &ticket.manifest.conversation_id, dir).await
+}
+
+/// Download and verify every part of `d`; returns the reassembled transcript's path.
+pub(crate) async fn fetch_downloads(
+    d: &Downloads,
+    conversation: &str,
+    dir: &Path,
+) -> Result<PathBuf, Failure> {
     let client = reqwest::Client::builder()
         .redirect(reqwest::redirect::Policy::none())
         .timeout(Duration::from_secs(600))
         .build()
         .map_err(|_| fail("DOWNLOAD_FAILED", "The download could not start."))?;
     let mut parts = vec![];
-    for part in &ticket.downloads.transcript {
+    for part in &d.transcript {
         let path = dir.join(format!("t-{:06}.gz", part.index));
         download(&client, part, &path).await?;
         parts.push(path);
     }
-    if let Some(code) = &ticket.downloads.code {
+    if let Some(code) = &d.code {
         download(&client, code, &dir.join("code.bundle")).await?;
     }
-    let sidecars = match &ticket.downloads.sidecars {
+    let sidecars = match &d.sidecars {
         Some(side) => {
             let path = dir.join("sidecars.tgz");
             download(&client, side, &path).await?;
@@ -856,7 +887,7 @@ async fn fetch_parts(ticket: &Ticket, dir: &Path) -> Result<PathBuf, Failure> {
         }
         None => None,
     };
-    let (dir, conversation) = (dir.to_path_buf(), ticket.manifest.conversation_id.clone());
+    let (dir, conversation) = (dir.to_path_buf(), conversation.to_string());
     tokio::task::spawn_blocking(move || assemble(&dir, &conversation, &parts, sidecars.as_deref()))
         .await
         .map_err(|_| fail("STORAGE_FAILED", "Desktop storage is unavailable."))?
@@ -1175,6 +1206,12 @@ mod tests {
         assert!(allowed_url(good));
         assert!(allowed_url(
             "https://lightbulb-dev-openclaw-replicas.s3.us-east-1.amazonaws.com/session-pickup/o/a"
+        ));
+        assert!(allowed_url(
+            "https://lightbulb-dev-openclaw-replicas.s3.amazonaws.com/session-copies/c/t-000000.gz"
+        ));
+        assert!(!allowed_url(
+            "https://lightbulb-dev-openclaw-replicas.s3.amazonaws.com/session-copies-x/c"
         ));
         assert!(!allowed_url(&good.replace("https", "http")));
         assert!(!allowed_url(

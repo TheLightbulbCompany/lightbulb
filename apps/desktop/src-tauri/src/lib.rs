@@ -19,6 +19,7 @@ pub mod pair_client;
 pub mod pair_state;
 pub mod proxy;
 pub mod screen;
+mod session_continue;
 mod session_pickup;
 mod session_start;
 mod shell_integration;

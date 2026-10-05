@@ -7,7 +7,7 @@ pub(crate) mod lifecycle;
 mod native_mcp;
 mod native_tools;
 mod mod_socket;
-mod plugin;
+pub(crate) mod plugin;
 mod presence;
 pub use native_mcp::serve_mcp;
 pub(crate) mod snapshot;

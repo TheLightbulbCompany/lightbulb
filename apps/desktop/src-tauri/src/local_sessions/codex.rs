@@ -1068,7 +1068,7 @@ pub(super) fn configure_hooks(home: &Path, executable: &Path, enabled: bool) -> 
         return Err("Codex config path cannot be trusted safely".into());
     }
     let mut doc: Value = if path.try_exists().map_err(|e| e.to_string())? {
-        serde_json::from_reader(secure_file(&path)?.take(1024 * 1024))
+        read_json(secure_file(&path)?, 1024 * 1024)
             .map_err(|_| "invalid Codex hooks")?
     } else if enabled {
         json!({})

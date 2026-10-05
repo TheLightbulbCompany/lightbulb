@@ -1101,7 +1101,7 @@ pub(super) fn new_subagents(
         .map(|(id, path)| {
             let meta: Value = secure_file(&dir.join(format!("agent-{id}.meta.json")))
                 .ok()
-                .and_then(|f| serde_json::from_reader(f.take(64 * 1024)).ok())
+                .and_then(|f| read_json(f, 64 * 1024).ok())
                 .unwrap_or(Value::Null);
             let mut start = lifecycle(
                 "subagent_start",
@@ -1166,7 +1166,7 @@ pub(super) fn hook_command(executable: &Path, provider: &str) -> Result<String> 
 
 fn hook_settings(path: &Path, executable: &Path, enabled: bool) -> Result<(Value, Value)> {
     let mut settings: Value = if path.try_exists().map_err(|e| e.to_string())? {
-        serde_json::from_reader(secure_file(path)?.take(1024 * 1024))
+        read_json(secure_file(path)?, 1024 * 1024)
             .map_err(|_| "invalid Claude settings")?
     } else {
         json!({})

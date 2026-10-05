@@ -79,7 +79,14 @@ async def watch(auth: sessions.Caller, session_id: str) -> None:
     table = store._table()
     await store.run_in_thread(
         table.put_item,
-        Item={**key, "userId": auth.user_id, "since": now if fresh else int(viewer["since"]), "expiresAt": expires},
+        Item={
+            **key,
+            "userId": auth.user_id,
+            "since": now if fresh else int(viewer["since"]),
+            "expiresAt": expires,
+            # A refresh keeps when they last typed; only a new lease starts without it.
+            **({} if fresh or "typedAt" not in viewer else {"typedAt": int(viewer["typedAt"])}),
+        },
     )
     await store.run_in_thread(
         table.update_item,

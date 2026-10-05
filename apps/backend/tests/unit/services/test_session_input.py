@@ -333,3 +333,24 @@ async def test_typing_marks_the_typists_live_viewer_row_and_never_creates_one(tr
     await session_screen.type_into(BOB, sid, body())
     assert viewer_row(db, sid)["typedAt"] == int(now), "a lapsed viewer row is not marked"
     assert len(typed_rows(db, sid)) == 1, "the audit row is kept as before"
+
+
+@pytest.mark.asyncio
+async def test_a_viewer_refresh_keeps_typed_at_and_a_new_lease_starts_without_it(transport, db, monkeypatch):
+    sid = await start(transport)
+    await capable(transport, sid)
+    await admit(sid)
+    now = time.time()
+    monkeypatch.setattr(session_screen, "_clock", lambda: now)
+    await session_screen.watch(BOB, sid)
+    await session_screen.type_into(BOB, sid, body())
+    monkeypatch.setattr(session_screen, "_clock", lambda: now + 5)
+    await session_screen.watch(BOB, sid)  # the 15 s refresh, while still typing
+    assert viewer_row(db, sid)["typedAt"] == int(now)
+    db[0].update_item(  # the lease lapsed
+        Key={"pk": repo.session_pk(OWNER, sid), "sk": f"VIEWER#{BOB.user_id}"},
+        UpdateExpression="SET expiresAt = :e",
+        ExpressionAttributeValues={":e": int(now)},
+    )
+    await session_screen.watch(BOB, sid)
+    assert "typedAt" not in viewer_row(db, sid)

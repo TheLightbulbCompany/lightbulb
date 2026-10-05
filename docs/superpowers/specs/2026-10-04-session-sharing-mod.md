@@ -112,6 +112,11 @@ Otherwise `404 {"error":"not_shared"}`; the mod shows nothing.
 - A `local.session.presence {sessionId, generation, …same}` frame is sent, best effort, when a
   join request is made or answered (they set and lift the input freeze). Everything else rides
   the ack.
+- Every entry carries `at`, the server milliseconds taken before its row was read, and the ack
+  carries `presenceAt`, the same for the whole ack. The ack and the frame are independent posts,
+  so the Mac keeps per session only the entry with the greatest `at` (equal replaces; no `at`
+  counts as 0), and removes a session the ack leaves out only when what it holds has
+  `at <= presenceAt`. Reads also check the caller's generation.
 
 ### 4.3 Mac → backend: decisions
 

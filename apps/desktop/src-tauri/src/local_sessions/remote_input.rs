@@ -246,7 +246,7 @@ mod tests {
             let _ = body;
             Some((sid.to_owned(), ctl.clone()))
         };
-        let mut e = Entry { generation: "gen-1".into(), paused: false, viewers: vec![], join_requests: vec![] };
+        let mut e = Entry { generation: "gen-1".into(), paused: false, viewers: vec![], join_requests: vec![], at: 0 };
         set(sid, e.clone());
         assert!(admit(&frame(sid, "gen-1", 7, b"ls\r"), relay).is_some());
         e.join_requests = vec![JoinRequest { user_id: "u2".into(), name: "Mira".into(), request_id: "r1".into() }];

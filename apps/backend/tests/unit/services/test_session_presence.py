@@ -54,8 +54,8 @@ async def test_entry_names_viewers_typists_and_pending_requests(monkeypatch):
             "user_bo": {"state": "declined", "requestId": "r0"},
         }
     )
-    out = await presence.entry(row)
-    assert out["paused"] is False
+    out = await presence.entry(row, 123)
+    assert out["paused"] is False and out["at"] == 123
     assert out["viewers"] == [
         {"userId": "user_aden", "name": "Aden", "canType": True, "typing": True},
         {"userId": "user_mira", "name": "Mira", "canType": False, "typing": False},
@@ -78,6 +78,7 @@ async def test_ack_lists_only_sessions_with_something_to_show_and_stays_in_the_e
     monkeypatch.setattr(presence.store, "_query", query)
     ack = await presence.ack_with_presence({"type": "local.device.heartbeat.ack"}, "org_a", list(rows))
     assert "quiet" not in [e["sessionId"] for e in ack["presence"]]
+    assert ack["presenceAt"] == NOW * 1000 and {e["at"] for e in ack["presence"]} == {NOW * 1000}
     assert len(json.dumps(ack, separators=(",", ":")).encode()) <= sessions.MAX_ENVELOPE_BYTES
 
 
@@ -131,9 +132,12 @@ async def test_push_sends_an_empty_entry_once_the_request_is_answered(monkeypatc
         "get_local_session_relay",
         lambda: SimpleNamespace(management=SimpleNamespace(send_message_async=send)),
     )
-    await presence.push(_row(joinRequests={}))
+    monkeypatch.setattr(presence.repo, "get_session", AsyncMock(return_value=_row(joinRequests={})))
+    stale = _row(joinRequests={"user_zoe": {"state": "pending", "requestId": "r1"}})
+    await presence.push(stale)  # the caller's copy is older than the row: push reads it again
     frame = send.await_args.args[1]
     assert frame["type"] == "local.session.presence" and frame["joinRequests"] == [] and frame["viewers"] == []
+    assert frame["at"] == NOW * 1000
 
 
 @pytest.mark.asyncio

@@ -54,7 +54,9 @@ fn parse(body: &Value) -> Option<(String, Entry)> {
 /// leaves every other entry alone. Absent (an older backend or a failed read) leaves what we
 /// have. The ack and a frame are independent posts, so an ack read before a frame that landed
 /// after `sent` must not undo it: such a session keeps the ack's entry with the union (by user)
-/// of both pending requests, or the frame's entry if the ack omits it.
+/// of both pending requests (the frame's request wins for a person in both: it is the newer
+/// ask), or the frame's entry if the ack omits it. Entries of two generations never merge: the
+/// ack's replaces it, and every read checks the caller's generation.
 pub(super) fn offer_ack(list: &Value, sent: Instant, sids: &[String]) {
     let Some(list) = list.as_array() else { return };
     let mut fresh: BTreeMap<_, _> = list.iter().take(64).filter_map(parse).collect();
@@ -62,15 +64,12 @@ pub(super) fn offer_ack(list: &Value, sent: Instant, sids: &[String]) {
     for sid in sids {
         let late = map.get(sid).filter(|(_, at)| at.is_some_and(|t| t > sent)).cloned();
         match (fresh.remove(sid), late) {
-            (Some(mut e), Some((old, at))) => {
-                for r in old.join_requests {
-                    if !e.join_requests.iter().any(|x| x.user_id == r.user_id) {
-                        e.join_requests.push(r);
-                    }
-                }
+            (Some(mut e), Some((old, at))) if old.generation == e.generation => {
+                e.join_requests.retain(|x| !old.join_requests.iter().any(|r| same_ask(r, x)));
+                e.join_requests.extend(old.join_requests);
                 map.insert(sid.clone(), (e, at));
             }
-            (Some(e), None) => {
+            (Some(e), _) => {
                 map.insert(sid.clone(), (e, None));
             }
             (None, Some(_)) => {}
@@ -79,6 +78,11 @@ pub(super) fn offer_ack(list: &Value, sent: Instant, sids: &[String]) {
             }
         }
     }
+}
+
+/// Two requests that are the same ask, so the newer replaces the older when merging.
+fn same_ask(a: &JoinRequest, b: &JoinRequest) -> bool {
+    a.user_id == b.user_id
 }
 
 /// A new heartbeat round names every session this Mac still reports: forget the rest.
@@ -109,22 +113,28 @@ pub(super) fn set(sid: &str, entry: Entry) {
     }
 }
 
-pub(super) fn get(sid: &str) -> Option<Entry> {
-    PRESENCE.lock().ok()?.get(sid).map(|(e, _)| e.clone())
+/// The entry for `sid` only while it is of `generation`: a session restarted under the same id
+/// must not inherit the old run's viewers or pending requests.
+pub(super) fn get(sid: &str, generation: &str) -> Option<Entry> {
+    PRESENCE.lock().ok()?.get(sid).filter(|(e, _)| e.generation == generation).map(|(e, _)| e.clone())
 }
 
 /// Whether `sid` still holds this pending request. An Allow or Decline is taken only then: the
 /// request is on the band and remote typing is frozen.
-pub(super) fn pending(sid: &str, user: &str, request: &str) -> bool {
-    get(sid).is_some_and(|e| e.join_requests.iter().any(|r| r.user_id == user && r.request_id == request))
+pub(super) fn pending(sid: &str, generation: &str, user: &str, request: &str) -> bool {
+    get(sid, generation).is_some_and(|e| e.join_requests.iter().any(|r| r.user_id == user && r.request_id == request))
 }
 
 /// A decision the backend took (`payload` as sent, `session` as answered), applied now so the
 /// reply is not the pre-decision state. The backend's presence push follows and replaces it.
 pub(super) fn decided(sid: &str, payload: &Value, session: &Value) {
     let Ok(mut map) = PRESENCE.lock() else { return };
-    let blank = || Entry { generation: payload["generation"].as_str().unwrap_or("").to_owned(), paused: false, viewers: vec![], join_requests: vec![] };
+    let generation = payload["generation"].as_str().unwrap_or("");
+    let blank = || Entry { generation: generation.to_owned(), paused: false, viewers: vec![], join_requests: vec![] };
     let (e, at) = map.entry(sid.to_owned()).or_insert_with(|| (blank(), None));
+    if e.generation != generation {
+        *e = blank();
+    }
     match payload["decision"].as_str() {
         Some("allow" | "decline") => e.join_requests.retain(|r| Some(r.request_id.as_str()) != payload["requestId"].as_str()),
         _ => {
@@ -137,8 +147,8 @@ pub(super) fn decided(sid: &str, payload: &Value, session: &Value) {
 }
 
 /// Remote typing is dropped while the owner has a join request to answer.
-pub(super) fn frozen(sid: &str) -> bool {
-    get(sid).is_some_and(|e| !e.join_requests.is_empty())
+pub(super) fn frozen(sid: &str, generation: &str) -> bool {
+    get(sid, generation).is_some_and(|e| !e.join_requests.is_empty())
 }
 
 #[cfg(test)]
@@ -158,10 +168,10 @@ mod tests {
     fn presence_frame_with_a_request_freezes_and_an_empty_one_lifts() {
         let _g = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         offer_frame(&entry(json!([{"userId":"u2","name":"Mira","requestId":"r1"}])));
-        assert!(frozen(SID));
-        assert_eq!(get(SID).unwrap().viewers[0].name, "Aden");
+        assert!(frozen(SID, "g1"));
+        assert_eq!(get(SID, "g1").unwrap().viewers[0].name, "Aden");
         offer_frame(&entry(json!([])));
-        assert!(!frozen(SID));
+        assert!(!frozen(SID, "g1"));
     }
 
     #[test]
@@ -170,15 +180,15 @@ mod tests {
         let other = "22222222-2222-4222-8222-222222222222";
         offer_frame(&json!({"sessionId":other,"generation":"g1","paused":true,"viewers":[],"joinRequests":[]}));
         offer_ack(&json!([entry(json!([]))]), Instant::now(), &[SID.into(), other.into()]);
-        assert!(get(other).is_none());
-        assert!(get(SID).is_some());
+        assert!(get(other, "g1").is_none());
+        assert!(get(SID, "g1").is_some());
     }
 
     #[test]
     fn presence_ignores_a_bad_session_id_and_absent_lists() {
         let _g = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         offer_frame(&json!({"sessionId":"nope","generation":"g1","paused":false,"viewers":[],"joinRequests":[]}));
-        assert!(get("nope").is_none());
+        assert!(get("nope", "g1").is_none());
         offer_ack(&serde_json::Value::Null, Instant::now(), &[SID.into()]); // an older backend: nothing changes, nothing panics
     }
 
@@ -192,18 +202,18 @@ mod tests {
         let sent = Instant::now();
         offer_frame(&entry(json!([req("u2")])));
         offer_ack(&json!([entry(json!([]))]), sent, &[SID.into()]);
-        assert!(frozen(SID));
+        assert!(frozen(SID, "g1"));
         offer_ack(&json!([]), sent, &[SID.into()]); // the ack does not list the session: the frame's entry stays
-        assert!(frozen(SID));
+        assert!(frozen(SID, "g1"));
     }
 
     #[test]
     fn presence_a_frame_from_before_the_heartbeat_is_replaced_by_the_ack() {
         let _g = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         offer_frame(&entry(json!([req("u2")])));
-        assert!(frozen(SID));
+        assert!(frozen(SID, "g1"));
         offer_ack(&json!([entry(json!([]))]), Instant::now(), &[SID.into()]);
-        assert!(!frozen(SID));
+        assert!(!frozen(SID, "g1"));
     }
 
     #[test]
@@ -212,8 +222,43 @@ mod tests {
         let sent = Instant::now();
         offer_frame(&entry(json!([req("u2"), req("u3")])));
         offer_ack(&json!([entry(json!([req("u3"), req("u4")]))]), sent, &[SID.into()]);
-        let ids: Vec<_> = get(SID).unwrap().join_requests.into_iter().map(|r| r.user_id).collect();
-        assert_eq!(ids, ["u3", "u4", "u2"]);
+        let ids: Vec<_> = get(SID, "g1").unwrap().join_requests.into_iter().map(|r| r.user_id).collect();
+        assert_eq!(ids, ["u4", "u2", "u3"]);
+    }
+
+    #[test]
+    fn presence_a_late_frame_keeps_a_newer_request_from_the_same_person() {
+        let _g = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let sent = Instant::now();
+        // r1 was answered and u2 asked again as r2 after the heartbeat went; the ack still has r1.
+        offer_frame(&entry(json!([{"userId":"u2","name":"u2","requestId":"r2"}])));
+        offer_ack(&json!([entry(json!([{"userId":"u2","name":"u2","requestId":"r1"}]))]), sent, &[SID.into()]);
+        assert!(pending(SID, "g1", "u2", "r2"), "the frame's newer ask survives");
+        assert!(!pending(SID, "g1", "u2", "r1"), "the answered ask is gone");
+        assert_eq!(get(SID, "g1").unwrap().join_requests.len(), 1);
+    }
+
+    #[test]
+    fn presence_of_another_generation_is_never_read() {
+        let _g = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        offer_frame(&entry(json!([req("u2")])));
+        assert!(frozen(SID, "g1") && pending(SID, "g1", "u2", "r-u2"));
+        // The session restarted as g2: g1's request neither freezes it nor can be answered.
+        assert!(!frozen(SID, "g2") && !pending(SID, "g2", "u2", "r-u2") && get(SID, "g2").is_none());
+        // An ack for g2 replaces the late g1 frame instead of merging into it.
+        let mut g2 = entry(json!([]));
+        g2["generation"] = json!("g2");
+        let sent = Instant::now();
+        offer_frame(&entry(json!([req("u2")])));
+        offer_ack(&json!([g2]), sent, &[SID.into()]);
+        assert!(get(SID, "g2").unwrap().join_requests.is_empty() && get(SID, "g1").is_none());
+        // A delayed g1 frame lands after: g2 still reads nothing frozen.
+        offer_frame(&entry(json!([req("u2")])));
+        assert!(!frozen(SID, "g2"));
+        // A g2 decision on a stored g1 entry starts a clean g2 entry.
+        decided(SID, &json!({"decision":"pause","generation":"g2"}), &json!({"shared":false}));
+        let e = get(SID, "g2").unwrap();
+        assert!(e.paused && e.join_requests.is_empty());
     }
 
     #[test]
@@ -225,11 +270,11 @@ mod tests {
         b["sessionId"] = json!(other);
         offer_ack(&json!([entry(json!([req("u2")]))]), sent, &[SID.into()]);
         offer_ack(&json!([b]), sent, &[other.into()]);
-        assert!(frozen(SID) && frozen(other), "the second frame's ack must not erase the first's");
+        assert!(frozen(SID, "g1") && frozen(other, "g1"), "the second frame's ack must not erase the first's");
         offer_ack(&json!([]), Instant::now(), &[other.into()]);
-        assert!(frozen(SID) && !frozen(other));
+        assert!(frozen(SID, "g1") && !frozen(other, "g1"));
         retain(&[]);
-        assert!(get(SID).is_none());
+        assert!(get(SID, "g1").is_none());
     }
 
     #[test]
@@ -243,12 +288,12 @@ mod tests {
     fn presence_a_decision_drops_the_answered_request_and_sets_pause() {
         let _g = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         offer_frame(&entry(json!([req("u2"), req("u3")])));
-        assert!(pending(SID, "u2", "r-u2") && !pending(SID, "u2", "r-other"));
-        decided(SID, &json!({"decision":"allow","userId":"u2","requestId":"r-u2"}), &json!({"shared":true}));
-        assert!(!pending(SID, "u2", "r-u2") && pending(SID, "u3", "r-u3"));
-        decided(SID, &json!({"decision":"pause"}), &json!({"shared":false}));
-        assert!(get(SID).unwrap().paused);
-        decided(SID, &json!({"decision":"unpause"}), &json!({"shared":true}));
-        assert!(!get(SID).unwrap().paused);
+        assert!(pending(SID, "g1", "u2", "r-u2") && !pending(SID, "g1", "u2", "r-other"));
+        decided(SID, &json!({"decision":"allow","generation":"g1","userId":"u2","requestId":"r-u2"}), &json!({"shared":true}));
+        assert!(!pending(SID, "g1", "u2", "r-u2") && pending(SID, "g1", "u3", "r-u3"));
+        decided(SID, &json!({"decision":"pause","generation":"g1"}), &json!({"shared":false}));
+        assert!(get(SID, "g1").unwrap().paused);
+        decided(SID, &json!({"decision":"unpause","generation":"g1"}), &json!({"shared":true}));
+        assert!(!get(SID, "g1").unwrap().paused);
     }
 }

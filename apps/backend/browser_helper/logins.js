@@ -84,7 +84,7 @@
     const save = reply?.ok && reply.save;
     if (!save) return false;
     const site = save.origin.replace(/^https?:\/\//, "");
-    await show(`Save this login for the workspace?`, `${save.username} on ${site}. Everyone in the workspace, agents included, can sign in with it. The password is stored in Website logins, never in chat.`, [
+    await show(`Save this login for the workspace?`, `${save.username} on ${site}. Everyone in the workspace, agents included, can sign in with it. The password is stored in Website sign-ins, never in chat.`, [
       { label: "Save", primary: true, run: async () => {
         const r = await ask({ type: "save" });
         return r?.ok ? null : r?.error || "Couldn't save the login. Try again.";
@@ -100,7 +100,7 @@
     const reply = await ask({ type: "logins" });
     const logins = (reply?.ok && reply.logins) || [];
     if (!logins.length) return;
-    await show(`Sign in to ${host}`, "From the workspace's Website logins.", [
+    await show(`Sign in to ${host}`, "From the workspace's Website sign-ins.", [
       ...logins.slice(0, 3).map((login, i) => ({ label: `Fill ${login.username}`, primary: i === 0, run: async () => {
         const r = await ask({ type: "fill", id: login.id });
         return r?.ok ? null : r?.error || "Couldn't fill the login. Try again.";

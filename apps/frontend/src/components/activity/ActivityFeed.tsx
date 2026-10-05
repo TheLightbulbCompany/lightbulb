@@ -262,7 +262,7 @@ function Detail({ preview }: { preview: NonNullable<ActivityItem["summary"]["pre
 
 /**
  * An agent's ask for a website login or a sign-in code. The answer goes to the server as
- * `value` only (never a note) and straight into the workspace's website logins; nothing here
+ * `value` only (never a note) and straight into the workspace's website sign-ins; nothing here
  * keeps it after the post, and it is never shown back.
  */
 function SecretForm({ action, busy, onCancel, onSubmit }: {
@@ -283,6 +283,7 @@ function SecretForm({ action, busy, onCancel, onSubmit }: {
   const field = "w-full rounded-md border px-2 py-1.5 text-sm";
   const tone = { borderColor: "var(--edge)", background: "var(--cream)", color: "var(--midnight)" };
   return <form className="activity-form" onSubmit={submit} autoComplete="off">
+    {login && action.input?.hint && <p className="text-sm" style={{ color: "var(--fg-soft)" }}>{action.input.hint}</p>}
     {login
       ? <>
         <input aria-label="Username or email" placeholder="Username or email" value={username} autoFocus

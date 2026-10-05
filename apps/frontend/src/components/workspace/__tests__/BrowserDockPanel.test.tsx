@@ -212,11 +212,11 @@ describe("BrowserDockPanel", () => {
     expect(bar).toHaveTextContent(/^Shared browser · idle · Saved 9:50\sPM/);
   });
 
-  it("opens Extensions and Website logins from the bar, and polls at once after an extension change", async () => {
+  it("opens Extensions and Website sign-ins from the bar, and polls at once after an extension change", async () => {
     get.mockResolvedValue({ active: true, url: "https://signed", sessionId: "s1", generation: "g1", mode: "idle" });
     render(<Panel />);
     await flush();
-    await act(async () => { fireEvent.click(screen.getByRole("button", { name: "Website logins" })); });
+    await act(async () => { fireEvent.click(screen.getByRole("button", { name: "Website sign-ins" })); });
     expect(screen.getByText("logins-section true")).toBeInTheDocument();
     await act(async () => { fireEvent.keyDown(document.activeElement ?? document.body, { key: "Escape" }); });
     await act(async () => { fireEvent.click(screen.getByRole("button", { name: "Extensions" })); });

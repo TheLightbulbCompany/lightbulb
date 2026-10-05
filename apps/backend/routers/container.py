@@ -601,7 +601,7 @@ async def browser_helper_logins(origin: str, request: Request):
 @browser_router.post("/helper/logins", status_code=201)
 async def browser_helper_save(body: HelperSave, request: Request):
     """The helper's "Save this login for the workspace?" -- into the same store Connections ->
-    Website logins lists and the agents' vault fills from."""
+    Website sign-ins lists and the agents' vault fills from."""
     from core.services import website_logins
 
     owner_id, _ = await _helper_owner(request)

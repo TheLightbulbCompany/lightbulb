@@ -517,6 +517,12 @@ class Provider(BaseModel):
     # 1-click Automations trigger source declaration. None = this provider is
     # not (yet) wired as a webhook trigger source. See Inbound docstring.
     inbound: Inbound | None = None
+    # Registrable domains of this service's own website. An agent's ask for a website login on
+    # one of them, while this connector is connected, carries a hint that the password is only
+    # for the browser (website_logins.connector_hint). ``browser_name`` is the name that hint
+    # uses when it differs from display_name.
+    browser_domains: list[str] = Field(default_factory=list)
+    browser_name: str | None = None
 
     # populate_by_name lets us pass either the `validate` alias (YAML) or the
     # `validation` field name (Python construction) when building a Provider.

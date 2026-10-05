@@ -11,6 +11,9 @@ vi.mock("@/components/settings/ConnectionsList", () => ({ ConnectionsList: () =>
 vi.mock("@/components/control/panels/GoogleAccountsSection", () => ({
   GoogleAccountsSection: () => <div data-testid="google-accounts" />,
 }));
+vi.mock("@/components/control/panels/WebsiteLoginsSection", () => ({
+  WebsiteLoginsSection: () => <div data-testid="website-sign-ins" />,
+}));
 vi.mock("@/components/control/panels/McpServersTab", () => ({ McpServersTab: () => <div data-testid="mcp-servers-tab" /> }));
 
 describe("IntegrationsPanel", () => {

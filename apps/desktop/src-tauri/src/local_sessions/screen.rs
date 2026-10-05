@@ -58,7 +58,7 @@ pub(super) struct Ctl {
     /// carry it (`remote_input`): typing aimed at an older screen is dropped.
     pub(super) epoch: AtomicU64,
     /// This relay's one `type` client to the holder (`remote_input`); it closes when we stop.
-    pub(super) typist: Mutex<Option<std::sync::mpsc::SyncSender<Vec<u8>>>>,
+    pub(super) typist: Mutex<Option<std::sync::mpsc::SyncSender<super::remote_input::Typed>>>,
     snapshot: AtomicBool,
     pub(super) stop: AtomicBool,
     until: Mutex<Instant>,

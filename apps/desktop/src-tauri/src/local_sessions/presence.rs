@@ -1,7 +1,7 @@
 //! Who watches, who may type, pending join requests and pause, per session, as the backend last
 //! said (heartbeat ack `presence`, or a `local.session.presence` frame). Read by `mod_socket`
-//! for the Claude terminal's band, and by `mod_socket` to tell whether a remote writer is connected
-//! (then an Allow or Resume is confirmed in a native dialog, spec 2026-10-04-session-sharing-mod §2.4).
+//! for the Claude terminal's band. Only the owner can operate the band: remote input never
+//! carries ctrl+x or mouse reports (`remote_input`, spec 2026-10-04-session-sharing-mod §2.4).
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -143,11 +143,6 @@ pub(super) fn decided(sid: &str, payload: &Value, session: &Value) {
             }
         }
     }
-}
-
-/// Whether someone other than the owner may type into `sid` right now.
-pub(super) fn remote_writer(sid: &str, generation: &str) -> bool {
-    get(sid, generation).is_some_and(|e| e.viewers.iter().any(|v| v.can_type))
 }
 
 #[cfg(test)]

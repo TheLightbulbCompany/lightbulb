@@ -16,9 +16,13 @@ import { navigateShell, teamsDetailUrl } from "@/lib/shellNav";
 import { agentInspectorUrl } from "@/components/teams/shared/lib/agentInspectorUrl";
 import { useFilteredCommandResults } from "./useFilteredCommandResults";
 import { useRoomCommandResults } from "@/components/messaging/roomCommands";
+import { useMessageSearch } from "@/components/messaging/useMessageSearch";
+import { plainSnippet } from "@/components/messaging/searchSnippet";
+import { useMessagingWorkspaceOptional } from "@/components/messaging/MessagingWorkspaceContext";
+import { roomDisplayName } from "@lightbulb/shared";
 
 type FlatItem = {
-  kind: "conversation" | "nav" | "agent" | "issue" | "project";
+  kind: "conversation" | "message" | "nav" | "agent" | "issue" | "project";
   id: string;
   label: string;
   path: string;
@@ -79,16 +83,29 @@ function CommandPaletteContent({ open, onOpenChange }: CommandPaletteProps) {
   );
   const { agents, issues, projects } = useFilteredCommandResults(query, open);
   const conversations = useRoomCommandResults(query, open);
+  const workspace = useMessagingWorkspaceOptional();
+  const messageSearch = useMessageSearch(query, { enabled: open && !!workspace, limit: 8, minLength: 2 });
+  const messageHits = useMemo(() => messageSearch.hits.map((hit) => {
+    const room = workspace?.directoryProps?.rooms.find((candidate) => candidate.roomId === hit.roomId);
+    return {
+      id: `message:${hit.messageId}`,
+      label: plainSnippet(hit.snippet),
+      sublabel: room ? `${hit.authorName || "Unknown author"} · ${roomDisplayName(room, room.participants)}` : hit.authorName || "Unknown author",
+      run: () => workspace?.openNotificationTarget(hit.roomId, hit.threadRootMessageId, hit.messageId),
+    };
+  }), [messageSearch.hits, workspace]);
+  const warming = messageSearch.state === "warming";
 
   const flatItems = useMemo<FlatItem[]>(() => {
     const items: FlatItem[] = [];
     conversations.forEach((c) => items.push({ kind: "conversation", id: c.id, label: c.label, path: "", run: c.run }));
+    messageHits.forEach((m) => items.push({ kind: "message", id: m.id, label: m.label, path: "", run: m.run }));
     navResults.forEach((a) => items.push({ kind: "nav", id: a.id, label: a.label, path: a.path }));
     agents.forEach((a) => items.push({ kind: "agent", id: a.id, label: a.name, path: agentInspectorUrl(a.id) }));
     issues.forEach((i) => items.push({ kind: "issue", id: i.id, label: i.title, path: teamsDetailUrl("issue", i.id) }));
     projects.forEach((p) => items.push({ kind: "project", id: p.id, label: p.name, path: teamsDetailUrl("project", p.id) }));
     return items;
-  }, [conversations, navResults, agents, issues, projects]);
+  }, [conversations, messageHits, navResults, agents, issues, projects]);
 
   // Derive a clamped index from raw state — no setState-in-effect needed.
   const selectedIndex = Math.min(rawSelectedIndex, Math.max(0, flatItems.length - 1));
@@ -129,7 +146,7 @@ function CommandPaletteContent({ open, onOpenChange }: CommandPaletteProps) {
         />
         <input
           autoFocus
-          placeholder="Search agents, issues, projects, or jump to..."
+          placeholder="Search messages, agents, issues, projects, or jump to..."
           value={query}
           onChange={(e) => setQuery(e.target.value)}
           onKeyDown={handleKeyDown}
@@ -146,7 +163,7 @@ function CommandPaletteContent({ open, onOpenChange }: CommandPaletteProps) {
                 fontFamily: "var(--font-serif), Georgia, serif",
               }}
             >
-              No results.
+              {warming ? "Search is starting up…" : "No results."}
             </div>
           ) : (
             <>
@@ -163,6 +180,17 @@ function CommandPaletteContent({ open, onOpenChange }: CommandPaletteProps) {
                         onMouseEnter={() => setSelectedIndex(idx)}
                         onClick={() => select(flatItems[idx])}
                       />
+                    );
+                  })}
+                </Group>
+              )}
+              {messageHits.length > 0 && (
+                <Group label="Messages">
+                  {messageHits.map((m) => {
+                    const idx = flatItems.findIndex((it) => it.kind === "message" && it.id === m.id);
+                    return (
+                      <Row key={m.id} label={m.label} sublabel={m.sublabel} selected={selectedIndex === idx}
+                        onMouseEnter={() => setSelectedIndex(idx)} onClick={() => select(flatItems[idx])} />
                     );
                   })}
                 </Group>

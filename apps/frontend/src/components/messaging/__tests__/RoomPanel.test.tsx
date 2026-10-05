@@ -6,6 +6,17 @@ import { RoomPanel, type RoomPanelProps } from "../RoomPanel";
 import type { RoomRunView } from "@lightbulb/shared";
 import type { RoomMessage, RoomParticipant } from "../types";
 
+// Search results come from the server; the query picks which hit comes back.
+const searchHits = vi.hoisted(() => ({ byQuery: {} as Record<string, unknown[]> }));
+vi.mock("../useMessageSearch", () => ({
+  useMessageSearch: (query: string) => {
+    const hits = searchHits.byQuery[query.trim()] ?? [];
+    return { hits, state: hits.length ? "done" : "idle" };
+  },
+}));
+const hitFor = (m: RoomMessage) => ({ messageId: m.messageId, roomId: m.roomId, messageSeq: m.messageSeq, threadRootMessageId: m.threadRootMessageId,
+  authorName: "Friday", authorKind: "agent", createdAt: m.createdAt, snippet: m.text });
+
 vi.mock("@/components/huddle/useRoomHuddle", () => ({ useRoomHuddle: () => ({ userIds: [], available: false }) }));
 
 // RoomPanel reads the narrow breakpoint straight off matchMedia (tests/setup.ts
@@ -24,7 +35,7 @@ const narrowViewport = () => {
     dispatchEvent: vi.fn(),
   })) as unknown as typeof window.matchMedia;
 };
-afterEach(() => { window.matchMedia = wideMatchMedia; });
+afterEach(() => { window.matchMedia = wideMatchMedia; searchHits.byQuery = {}; });
 
 const owner: RoomParticipant = { kind: "human", id: "owner", displayName: "Owner", mentionHandle: null, role: "owner", listenMode: null, joinedAt: "2026-09-10T00:00:00Z", joinedSeq: 0 };
 const friday: RoomParticipant = { ...owner, kind: "agent", id: "friday", displayName: "Friday", role: "member", agentActivity: "running" };
@@ -63,26 +74,26 @@ it.each(["dm", "group-dm", "channel"] as const)("does not expose management with
   expect(screen.queryByRole("button", { name: "Remove Friday" })).not.toBeInTheDocument();
 });
 
-it("navigates search results into controlled threads and focuses main results", async () => {
-  const scroll = vi.fn();
-  HTMLElement.prototype.scrollIntoView = scroll;
+it("opens a thread-reply hit in its thread and jumps to a main-list hit", async () => {
+  HTMLElement.prototype.scrollIntoView = vi.fn();
   const onSelectThread = vi.fn();
+  const onJumpToMessage = vi.fn();
   const reply = { ...message, messageId: "reply", messageSeq: 2, text: "Searchable reply", threadRootMessageId: message.messageId };
-  const view = render(<RoomPanel {...props} messages={[message, reply]} selectedThreadId={null} onSelectThread={onSelectThread} historyComplete />);
+  searchHits.byQuery = { searchable: [hitFor(reply)], hello: [hitFor(message)] };
+  const view = render(<RoomPanel {...props} messages={[message, reply]} selectedThreadId={null} onSelectThread={onSelectThread} onJumpToMessage={onJumpToMessage} />);
   await userEvent.click(screen.getByRole("button", { name: "Search this conversation" }));
   await userEvent.type(screen.getByRole("searchbox"), "searchable");
   await userEvent.click(within(screen.getByRole("list", { name: "Search results" })).getByRole("button"));
   await waitFor(() => expect(onSelectThread).toHaveBeenLastCalledWith(message.messageId));
-  view.rerender(<RoomPanel {...props} messages={[message, reply]} selectedThreadId={message.messageId} onSelectThread={onSelectThread} historyComplete />);
+  expect(onJumpToMessage).not.toHaveBeenCalled();
+  view.rerender(<RoomPanel {...props} messages={[message, reply]} selectedThreadId={message.messageId} onSelectThread={onSelectThread} onJumpToMessage={onJumpToMessage} />);
   const thread = screen.getByRole("complementary", { name: "Thread" });
   expect(within(thread).getByText("Searchable reply").closest("article")).toHaveFocus();
-  expect(scroll).toHaveBeenCalledWith({ block: "center" });
   await userEvent.click(screen.getByRole("button", { name: "Search this conversation" }));
   await userEvent.type(screen.getByRole("searchbox"), "hello");
   await userEvent.click(within(screen.getByRole("list", { name: "Search results" })).getByRole("button"));
   await waitFor(() => expect(onSelectThread).toHaveBeenLastCalledWith(null));
-  view.rerender(<RoomPanel {...props} messages={[message, reply]} selectedThreadId={null} onSelectThread={onSelectThread} historyComplete />);
-  expect(screen.getByRole("article", { name: "Message from Friday" }).closest("[data-message-id]")).toHaveFocus();
+  expect(onJumpToMessage).toHaveBeenCalledWith("room", message.messageId);
 });
 
 it("loads missing replies when a thread opens from a bounded history page", () => {
@@ -95,10 +106,12 @@ it("loads missing replies when a thread opens from a bounded history page", () =
   expect(onLoadHistory).toHaveBeenCalledOnce();
 });
 
-it("does not leave focus on a stale thread trigger when a search result targets a main message", async () => {
+it("does not leave focus on a stale thread trigger when a search result jumps to a main message", async () => {
   HTMLElement.prototype.scrollIntoView = vi.fn();
+  const onJumpToMessage = vi.fn();
   const reply = { ...message, messageId: "reply", messageSeq: 2, text: "Reply text", threadRootMessageId: message.messageId };
-  render(<RoomPanel {...props} messages={[message, reply]} />);
+  searchHits.byQuery = { hello: [hitFor(message)] };
+  render(<RoomPanel {...props} messages={[message, reply]} onJumpToMessage={onJumpToMessage} />);
   const replyTrigger = screen.getByRole("button", { name: "Reply in thread" });
   await userEvent.click(replyTrigger);
   expect(screen.getByRole("complementary", { name: "Thread" })).toBeInTheDocument();
@@ -106,8 +119,21 @@ it("does not leave focus on a stale thread trigger when a search result targets 
   await userEvent.type(screen.getByRole("searchbox"), "hello");
   await userEvent.click(within(screen.getByRole("list", { name: "Search results" })).getByRole("button"));
   await waitFor(() => expect(screen.queryByRole("complementary", { name: "Thread" })).not.toBeInTheDocument());
-  expect(screen.getByRole("article", { name: "Message from Friday" }).closest("[data-message-id]")).toHaveFocus();
+  expect(onJumpToMessage).toHaveBeenCalledWith("room", message.messageId);
   expect(replyTrigger).not.toHaveFocus();
+});
+
+it("scrolls to a main-list hit again when the same hit is picked twice", async () => {
+  const scroll = vi.fn();
+  HTMLElement.prototype.scrollIntoView = scroll;
+  searchHits.byQuery = { hello: [hitFor(message)] };
+  render(<RoomPanel {...props} onJumpToMessage={vi.fn()} />);
+  for (const n of [1, 2]) {
+    await userEvent.click(screen.getByRole("button", { name: "Search this conversation" }));
+    await userEvent.type(screen.getByRole("searchbox"), "hello");
+    await userEvent.click(within(screen.getByRole("list", { name: "Search results" })).getByRole("button"));
+    await waitFor(() => expect(scroll).toHaveBeenCalledTimes(n));
+  }
 });
 
 it("names a DM for its counterpart and uses canonical author and member activity", () => {

@@ -14,6 +14,7 @@ import type {
   MemberKind,
   MemberPrefsRequest,
   MessagePage,
+  MessageSearchResponse,
   PatchRoomRequest,
   ReadCursorRequest,
   ReadCursorResponse,
@@ -141,6 +142,8 @@ export interface MessagingClient {
   leaveRoom(roomId: string): Promise<void>;
   /** Owner-only channel delete (a tombstone; history is kept server-side). */
   deleteRoom(roomId: string): Promise<void>;
+  searchMessages(query: string, options?: { roomId?: string; limit?: number }): Promise<MessageSearchResponse>;
+  warmSearch(): Promise<void>;
   setPin(roomId: string, messageId: string, pinned: boolean): Promise<RoomDetail>;
   setTyping(request: TypingRequest): Promise<void>;
   abortRun(runId: string): Promise<AbortRunResponse>;
@@ -265,6 +268,15 @@ export function createMessagingClient(api: ApiMethods): MessagingClient {
     },
     async deleteRoom(roomId) {
       await api.del(roomPath(roomId));
+    },
+    // POST: the query must not ride in a URL (access logs).
+    searchMessages: (query, options) => api.post("/messaging/search", {
+      q: query,
+      ...(options?.roomId ? { roomId: options.roomId } : {}),
+      ...(options?.limit ? { limit: options.limit } : {}),
+    }) as Promise<MessageSearchResponse>,
+    async warmSearch() {
+      await api.post("/messaging/search/warm", {});
     },
     setPin: (roomId, messageId, pinned) => (pinned
       ? api.put(`${roomPath(roomId)}/pins/${encodeURIComponent(messageId)}`, {})

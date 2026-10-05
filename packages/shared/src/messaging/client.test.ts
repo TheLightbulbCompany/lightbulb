@@ -20,6 +20,16 @@ const agentId = "22222222-2222-4222-8222-222222222222";
 const messageId = "33333333-3333-4333-8333-333333333333";
 
 describe("messaging HTTP client", () => {
+  it("searches messages in a POST body and warms search", async () => {
+    const { client, methods } = setup();
+    await client.searchMessages("deploy fix", { roomId, limit: 20 });
+    expect(methods.post).toHaveBeenCalledWith("/messaging/search", { q: "deploy fix", roomId, limit: 20 });
+    await client.searchMessages("deploy");
+    expect(methods.post).toHaveBeenLastCalledWith("/messaging/search", { q: "deploy" });
+    await client.warmSearch();
+    expect(methods.post).toHaveBeenLastCalledWith("/messaging/search/warm", {});
+  });
+
   it("reads Activity with an opaque cursor, marks it seen and runs one escaped action door", async () => {
     const { client, methods } = setup();
     await client.listActivity();

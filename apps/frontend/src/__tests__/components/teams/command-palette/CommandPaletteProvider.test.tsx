@@ -4,6 +4,9 @@ import { render, fireEvent, screen, act } from "@testing-library/react";
 vi.mock("@/components/teams/command-palette/useFilteredCommandResults", () => ({
   useFilteredCommandResults: vi.fn(() => ({ agents: [], issues: [], projects: [] })),
 }));
+vi.mock("@/hooks/useLiveEvents", () => ({
+  useLiveEvents: () => ({ messaging: { searchMessages: vi.fn().mockResolvedValue({ hits: [] }), warmSearch: vi.fn().mockResolvedValue(undefined) } }),
+}));
 vi.mock("@/components/settings/CompanyStripeSection", () => ({
   useCompanyStripeStatus: () => ({ data: null }),
 }));

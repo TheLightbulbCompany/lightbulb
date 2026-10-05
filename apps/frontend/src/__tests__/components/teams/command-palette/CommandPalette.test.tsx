@@ -4,6 +4,9 @@ import { render, fireEvent, screen } from "@testing-library/react";
 vi.mock("@/components/teams/command-palette/useFilteredCommandResults", () => ({
   useFilteredCommandResults: vi.fn(() => ({ agents: [], issues: [], projects: [] })),
 }));
+vi.mock("@/hooks/useLiveEvents", () => ({
+  useLiveEvents: () => ({ messaging: { searchMessages: vi.fn().mockResolvedValue({ hits: [] }), warmSearch: vi.fn().mockResolvedValue(undefined) } }),
+}));
 vi.mock("@/components/settings/CompanyStripeSection", () => ({
   useCompanyStripeStatus: () => ({ data: null }),
 }));
@@ -28,7 +31,7 @@ test("renders 'Navigate' group with the IA nav actions on open with empty query"
 
 test("typing in search filters nav actions", () => {
   render(<CommandPalette open onOpenChange={vi.fn()} />);
-  const input = screen.getByPlaceholderText(/search agents/i);
+  const input = screen.getByPlaceholderText(/search messages/i);
   fireEvent.change(input, { target: { value: "inbo" } });
   expect(screen.getByText("Inbox")).toBeInTheDocument();
   expect(screen.queryByText("Home")).not.toBeInTheDocument();

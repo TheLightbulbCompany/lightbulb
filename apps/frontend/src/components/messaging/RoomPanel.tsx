@@ -79,6 +79,7 @@ export interface RoomPanelProps {
    *  referenced session resolves here, never from the composer's sendable targets. */
   sessions?: readonly LocalSession[];
   onSelectThread?: (parentMessageId: string | null) => void;
+  onJumpToMessage?: (roomId: string, messageId: string) => void;
   selectedThreadId?: string | null;
   onSelectParticipant?: (participant: RoomParticipant) => void | Promise<void>;
   onRetry?: () => void;
@@ -246,7 +247,6 @@ function RoomContent({
   messages,
   historyLoading,
   historyComplete,
-  historyError,
   historyErrorMessage,
   onLoadHistory,
   onLoadOlder,
@@ -257,6 +257,7 @@ function RoomContent({
   threadComposer,
   sessions: visibleSessions = NO_SESSIONS,
   onSelectThread,
+  onJumpToMessage,
   selectedThreadId,
   onSelectParticipant,
   onRetry,
@@ -684,11 +685,9 @@ function RoomContent({
     <div className="room-conversation" hidden={showContext && isNarrow && !sideHost} onClickCapture={closeOverlay} onFocusCapture={closeOverlay}>
       <RoomHeader room={visibleRoom} roomName={roomName} counterparts={counterparts} participants={participants} participantCount={participants.length}
         canEditRoom={canEditRoom} canLeave={canLeaveRoom} ownerCannotLeave={ownerCannotLeave} actionable={actionable} pinnedCount={pinnedMessageIds.length}
-        search={<RoomMessageSearch roomId={roomId} messages={messages} participants={participants}
-          loading={historyLoading} complete={historyComplete} error={historyError} errorMessage={historyErrorMessage}
-          onLoad={onLoadHistory}
-          onSelect={(message) => {
-            const root = message.threadRootMessageId;
+        search={<RoomMessageSearch roomId={roomId}
+          onSelect={(hit) => {
+            const root = hit.threadRootMessageId;
             // Otherwise the [selection] effect's else-branch focuses this stale trigger
             // (e.g. a "Reply in thread" button) once selection clears below, racing
             // RoomTimeline's own focus of the newly targeted main message.
@@ -698,9 +697,17 @@ function RoomContent({
             // focus back to the Details tab once RoomTimeline focuses this result.
             contextWasOpen.current = false;
             onSelectThread?.(root);
-            setSelection(root ? { kind: "thread", id: root } : null);
             setContextCollapsed(true);
-            setSearchTarget({ messageId: message.messageId, threadRootMessageId: root, token: ++searchTargetToken.current });
+            if (root) {
+              setSelection({ kind: "thread", id: root });
+              setSearchTarget({ messageId: hit.messageId, threadRootMessageId: root, token: ++searchTargetToken.current });
+            } else {
+              setSelection(null);
+              // Server hits may not be loaded yet: the permalink target pages history until it is.
+              // A fresh token makes picking an already-targeted message scroll again.
+              setSearchTarget({ messageId: hit.messageId, threadRootMessageId: null, token: ++searchTargetToken.current });
+              onJumpToMessage?.(roomId, hit.messageId);
+            }
           }} />}
         onOpenDetails={(tab) => { closeDetail(); if (tab) setDetailsTab(tab); setContextCollapsed(false); }}
         onAddPeople={canAddMembers ? () => {
@@ -737,7 +744,7 @@ function RoomContent({
         <RoomTimeline roomId={roomId} messages={mainMessages} readSeq={sentSinceOpen ? null : newLineSeq} ownLastSentSeq={ownLastSentSeq} sendToken={sendToken}
           historyComplete={historyComplete} historyLoading={historyLoading} historyError={historyErrorMessage} onLoadOlder={onLoadOlder}
           targetMessageId={targetMessageId ?? (activeSearchTarget ? activeSearchTarget.messageId : null)}
-          targetToken={targetMessageId ? undefined : activeSearchTarget?.token}
+          targetToken={activeSearchTarget && activeSearchTarget.messageId === (targetMessageId ?? activeSearchTarget.messageId) ? activeSearchTarget.token : undefined}
           renderMessage={renderMainMessage}
           leading={historyComplete ? <>
             <RoomIntro room={visibleRoom} roomName={roomName} participants={participants} />

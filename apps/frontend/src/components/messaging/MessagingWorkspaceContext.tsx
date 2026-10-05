@@ -33,6 +33,7 @@ export interface MessagingWorkspaceValue {
   /** `explicit` false only for the default-agent fallback, which isn't a user's pick. */
   selectAgentDm: (agentId: string, explicit?: boolean) => Promise<string | null>;
   openMessage: (roomId: string, messageId: string | null) => void;
+  openNotificationTarget: (roomId: string, threadId: string | null, messageId?: string) => void;
   openSession: (sessionId: string) => void;
   /** Focus an empty new session (the composer that starts one on your Mac). */
   openNewSession: () => void;
@@ -824,6 +825,7 @@ export function MessagingWorkspaceProvider({
     historyErrorMessage: rooms.historyErrorMessage,
     onLoadHistory: rooms.loadHistory,
     onLoadOlder: rooms.loadOlder,
+    onJumpToMessage: (roomId: string, messageId: string) => setTarget({ roomId, messageId }),
     pendingMessages: pending,
     typingMembers: rooms.typingMembers.filter((member) => member.userId !== userId),
     runs: rooms.runs.map(runView),
@@ -899,6 +901,7 @@ export function MessagingWorkspaceProvider({
     roomProps,
     selectAgentDm,
     openMessage,
+    openNotificationTarget,
     openSession,
     openNewSession,
     sessionFocus,

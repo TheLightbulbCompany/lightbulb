@@ -259,6 +259,8 @@ export type {
   MemberPrefsRequest,
   MemberRef,
   MessagePage,
+  MessageSearchHit,
+  MessageSearchResponse,
   ActiveRoomRun,
   RoomDetail,
   RoomKind,

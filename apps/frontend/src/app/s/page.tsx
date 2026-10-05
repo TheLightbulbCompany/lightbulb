@@ -43,7 +43,7 @@ async function publicPost<T>(path: string, body: unknown, token: string | null):
     body: JSON.stringify(body),
   });
   const json = await res.json().catch(() => null);
-  if (!res.ok) throw Object.assign(new Error((json as { message?: string } | null)?.message || "Could not open this link. Try again."), { refused: true });
+  if (!res.ok) throw Object.assign(new Error((json as { message?: string } | null)?.message || "Could not open this link. Try again."), { refused: res.status === 403 || res.status === 404 || res.status === 410 }); // a 429 or 5xx is not a refusal
   return json as T;
 }
 
@@ -112,7 +112,7 @@ export default function SessionLinkPageRoute() {
         if (opened.state === "live") timer = setInterval(() => {
           void (async () => {
             try {
-              const next = await publicPost<SessionLinkPage>("/public/session-links/open", { token: stash.token }, await bearerNow());
+              const next = await publicPost<SessionLinkPage>("/public/session-links/open", { token: stash.token, refresh: true }, await bearerNow());
               if (!alive) return;
               setPage(next);
               await pull().catch(() => {});

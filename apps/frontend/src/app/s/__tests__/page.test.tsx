@@ -57,7 +57,7 @@ describe("session link page", () => {
     const fetchMock = vi.fn(async (url: string) => {
       if (!url.endsWith("/open")) return { ok: true, json: async () => ({ events: [], nextAfterSeq: null }) } as Response;
       const o = opens.shift() ?? { ok: false, body: { message: "This link is off." } };
-      return { ok: o.ok, json: async () => o.body } as Response;
+      return { ok: o.ok, status: o.ok ? 200 : 404, json: async () => o.body } as Response;
     });
     vi.stubGlobal("fetch", fetchMock);
     render(<SessionLinkPageRoute />);
@@ -77,7 +77,7 @@ describe("session link page", () => {
     const fetchMock = vi.fn(async (url: string) => {
       if (!url.endsWith("/open")) return { ok: true, json: async () => ({ events: [], nextAfterSeq: null }) } as Response;
       const o = opens.shift() ?? { ok: false, body: { message: "This link is off." } };
-      return { ok: o.ok, json: async () => o.body } as Response;
+      return { ok: o.ok, status: o.ok ? 200 : 404, json: async () => o.body } as Response;
     });
     vi.stubGlobal("fetch", fetchMock);
     render(<SessionLinkPageRoute />);
@@ -87,5 +87,27 @@ describe("session link page", () => {
     const openCalls = () => fetchMock.mock.calls.filter(c => String(c[0]).endsWith("/open")).length;
     await act(async () => { await vi.advanceTimersByTimeAsync(15000); });
     expect(openCalls()).toBe(2);
+  });
+
+  it("keeps polling through a throttle or a server error, and the poll is a refresh", async () => {
+    vi.useFakeTimers();
+    window.sessionStorage.setItem("lightbulb:session-link", JSON.stringify({ token: "tok" }));
+    let n = 0;
+    const fetchMock = vi.fn(async (url: string, _init?: RequestInit) => {
+      if (!url.endsWith("/open")) return { ok: true, status: 200, json: async () => ({ events: [], nextAfterSeq: null }) } as Response;
+      n += 1;
+      if (n === 2) return { ok: false, status: 429, json: async () => ({ message: "Too many requests" }) } as Response;
+      if (n === 3) return { ok: false, status: 503, json: async () => null } as Response;
+      return { ok: true, status: 200, json: async () => model({ continuable: true }) } as Response;
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    render(<SessionLinkPageRoute />);
+    await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+    await act(async () => { await vi.advanceTimersByTimeAsync(15000); });
+    expect(screen.queryByRole("alert")).toBeNull();
+    const opens = fetchMock.mock.calls.filter(c => String(c[0]).endsWith("/open"));
+    expect(opens.length).toBe(4);
+    expect(JSON.parse(String(opens[0][1]?.body)).refresh).toBeUndefined();
+    expect(JSON.parse(String(opens[1][1]?.body)).refresh).toBe(true);
   });
 });

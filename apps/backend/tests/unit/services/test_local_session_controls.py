@@ -719,6 +719,7 @@ async def test_sharing_and_join_events_land_on_the_person_who_acted(transport):
         link = await service.put_link(ALICE, sid, "anyone")
         token = link.url.split("#", 1)[1]
         await session_links.open_page(BOB, token)
+        await session_links.open_page(BOB, token, refresh=True)  # the page's poll is not another open
         await session_links.list_events(BOB, token, 0, 50)  # paging is not another open
         await ask(BOB, sid)
         await decide(ALICE, sid, BOB.user_id, "allow", pushes=[])

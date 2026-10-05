@@ -50,6 +50,10 @@ class LinkTokenRequest(ContractModel):
     token: Token
 
 
+class LinkOpenRequest(LinkTokenRequest):
+    refresh: bool = False  # the page's poll: same answer, no "opened" event
+
+
 class LinkEventsRequest(LinkTokenRequest):
     after_seq: int = Field(default=0, ge=0)
     limit: int = Field(default=100, ge=1, le=100)
@@ -213,7 +217,7 @@ def _title(row: dict, member: bool) -> str | None:
     return redact(title, _project(row)) if _known(row) else None
 
 
-async def open_page(auth: AuthContext | None, token: str) -> LinkPage:
+async def open_page(auth: AuthContext | None, token: str, *, refresh: bool = False) -> LinkPage:
     row, _, member = await resolve(auth, token)
     manifest = await store._get(row["pk"], "PICKUP") if row.get("pickupAllowed") else None
     continuable = (
@@ -222,7 +226,7 @@ async def open_page(auth: AuthContext | None, token: str) -> LinkPage:
         and (row.get("pickupSnapshot") or {}).get("state") == "ready"
         and not pickup._expired(row)
     )
-    if auth is not None:
+    if auth is not None and not refresh:  # the page's poll re-opens every few seconds: one open, one event
         sessions._capture_growth(row, "share_link_opened", auth.user_id, member=member)
     return LinkPage(
         title=_title(row, member),

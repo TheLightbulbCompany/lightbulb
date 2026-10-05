@@ -136,3 +136,11 @@ async def test_turning_off_with_no_link_still_turns_legacy_pickup_off(transport,
     assert "shareLink" not in await repo.get_session(OWNER, sid)
     await service.delete_link(ALICE, sid)
     assert not (await repo.get_session(OWNER, sid)).get("pickupAllowed")
+
+
+@pytest.mark.asyncio
+async def test_a_session_past_retention_cannot_get_a_link(transport, s3):
+    sid = await claude_session(transport)
+    with patch.object(service, "pickup_expired", return_value=True):
+        with pytest.raises(ApiProblem, match="too old to share"):
+            await service.put_link(ALICE, sid, "workspace")

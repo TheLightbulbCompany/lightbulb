@@ -106,7 +106,18 @@ export default function SessionLinkPageRoute() {
         setEvents([]); // a sign-in reopens the page: start the transcript again rather than append to it
         await pull();
         // Phase 1 has no public live view: a live session's page follows the transcript (spec §2.2).
-        if (opened.state === "live") timer = setInterval(() => { void pull().catch(() => {}); }, POLL_MS);
+        // Until the Mac commits its pick-up snapshot the page is not continuable and may lack its
+        // title and repository: the poll re-opens it, and stops once it is.
+        let ready = opened.continuable;
+        if (opened.state === "live") timer = setInterval(() => {
+          void pull().catch(() => {});
+          if (ready) return;
+          void bearerNow().then(b => publicPost<SessionLinkPage>("/public/session-links/open", { token: stash.token }, b)).then(next => {
+            if (!alive) return;
+            ready = next.continuable;
+            setPage(next);
+          }).catch(() => {});
+        }, POLL_MS);
       } catch (e) {
         if (alive) setError(e instanceof Error ? e.message : "Could not open this link. Try again.");
       }

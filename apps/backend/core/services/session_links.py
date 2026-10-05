@@ -29,7 +29,7 @@ from core.auth import AuthContext, resolve_owner_id
 from core.dynamodb import run_in_thread
 from core.repositories import local_sessions_repo as repo, messaging_repo as store
 from core.services import local_sessions as sessions, session_pickup as pickup
-from core.services.local_sessions import PICKUP_RETENTION_SECONDS, _drop_none
+from core.services.local_sessions import _drop_none
 from core.services.messaging import ApiProblem, ContractModel
 from core.services.session_redact import MARK, redact, redact_value
 from core.services.session_screen import _still_a_member
@@ -83,8 +83,7 @@ async def _live(row: dict | None, digest: str) -> dict:
         await sessions._enrolled(row["ownerId"], row["humanUserId"], row["deviceId"])
     except ApiProblem as exc:
         raise ApiProblem("LOCAL_SESSION_OFFLINE", "The owner's Mac stopped sharing sessions.") from exc
-    stopped = sessions.pickup_stopped_at(row)
-    if stopped is not None and int(time.time()) >= stopped + PICKUP_RETENTION_SECONDS:
+    if sessions.pickup_expired(row):
         raise ApiProblem("LOCAL_SESSION_NOT_FOUND", "This session's snapshot expired.")
     return link
 

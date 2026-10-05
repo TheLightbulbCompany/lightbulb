@@ -750,6 +750,12 @@ def pickup_stopped_at(row: dict, now: int | None = None) -> int | None:
     return lease if lease <= (int(time.time()) if now is None else now) else None
 
 
+def pickup_expired(row: dict) -> bool:
+    """True once the session's snapshot is past its retention: one predicate for opening and sharing a link."""
+    stopped = pickup_stopped_at(row)
+    return stopped is not None and int(time.time()) >= stopped + PICKUP_RETENTION_SECONDS
+
+
 def team_control_on(row: dict) -> bool:
     """The owner's per-session opt-in, which never outlives the session."""
     return bool(row.get("teamControl")) and row.get("endedAt") is None
@@ -2333,6 +2339,8 @@ async def put_link(
             raise ApiProblem("LOCAL_SESSION_FORBIDDEN", "Only the session's owner can share it.")
         if row.get("unshared"):
             raise ApiProblem("LOCAL_SESSION_CONFLICT", "Resume sharing before sharing a link.")
+        if pickup_expired(row):
+            raise ApiProblem("LOCAL_SESSION_NOT_FOUND", "This session is too old to share.")
         owner, sid, link = row["ownerId"], row["sessionId"], row.get("shareLink")
         if link and (audience is None or link["audience"] == audience):
             break
@@ -2390,6 +2398,8 @@ async def get_link(auth: AuthContext, session_id: str) -> SessionLink:
     row = await _owned_session(auth, session_id)
     if not row.get("shareLink"):
         raise ApiProblem("LOCAL_SESSION_NOT_FOUND", "This session has no link.")
+    if pickup_expired(row):
+        raise ApiProblem("LOCAL_SESSION_NOT_FOUND", "This session is too old to share.")
     return _link_public(row["shareLink"])
 
 

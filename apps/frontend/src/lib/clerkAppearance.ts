@@ -63,6 +63,8 @@ export const clerkAppearance: Appearance = {
   // ladder (and its dark variant) that app/globals.css stamps on <html>.
   variables: {
     colorPrimary: "var(--fg)",
+    // Clerk's default is white, which vanishes on the light primary of the dark ladder.
+    colorTextOnPrimaryBackground: "var(--plane-pane)",
     colorBackground: "var(--plane-pane)",
     colorText: "var(--fg)",
     colorTextSecondary: "var(--fg-mute)",
@@ -82,6 +84,9 @@ export const clerkAppearance: Appearance = {
     formButtonPrimary: "bg-midnight text-cream hover:bg-midnight-soft",
     footerActionLink: "text-midnight underline",
     formFieldInput: "bg-cream-deep border-edge text-midnight",
+    // Apple's and GitHub's marks are solid black: invert them on the dark ladder.
+    providerIcon__apple: "[[data-chat-theme=dark]_&]:invert",
+    providerIcon__github: "[[data-chat-theme=dark]_&]:invert",
     headerTitle: "font-serif", // §05: Lora for the one heading the user reads
     socialButtonsBlockButton: "border-edge bg-cream text-midnight hover:bg-cream-deep",
   },

@@ -56,6 +56,12 @@ def test_query_always_filters_to_the_given_rooms_and_keeps_old_messages_findable
     assert {"weight": 0.5} in scoring["functions"]  # floor: an old exact match still ranks
 
 
+def test_typo_tolerance_keeps_the_first_two_letters():
+    fuzzy = _bool(message_search.build_query("tagline", [ROOM_A], 30))["should"][1]["multi_match"]
+    assert fuzzy["fuzziness"] == "AUTO"
+    assert fuzzy["prefix_length"] == 2
+
+
 def test_operators_turn_off_the_fuzzy_clause():
     assert len(_bool(message_search.build_query("deploy fix", [ROOM_A], 30))["should"]) == 2
     for q in ['"deploy fix"', "deploy -prod", "depl*"]:

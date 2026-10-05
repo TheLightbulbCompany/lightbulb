@@ -249,7 +249,7 @@ mod tests {
         let mut e = Entry { generation: "gen-1".into(), paused: false, viewers: vec![], join_requests: vec![], at: 0 };
         set(sid, e.clone());
         assert!(admit(&frame(sid, "gen-1", 7, b"ls\r"), relay).is_some());
-        e.join_requests = vec![JoinRequest { user_id: "u2".into(), name: "Mira".into(), request_id: "r1".into() }];
+        e.join_requests = vec![JoinRequest { user_id: "u2".into(), name: "Mira".into(), request_id: "r1".into(), kind: "join".into() }];
         set(sid, e);
         assert!(admit(&frame(sid, "gen-1", 7, b"ls\r"), relay).is_none());
         assert!(admit(&frame(sid, "gen-2", 7, b"ls\r"), relay).is_some(), "the old generation's request does not freeze a restart");

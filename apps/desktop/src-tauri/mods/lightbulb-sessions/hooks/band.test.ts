@@ -141,7 +141,7 @@ test('band shows nothing when the session is not shared', async ($, on) => {
   }
 })
 
-const asking: SessionState = { ...base, joinRequests: [{ userId: 'u1', name: 'Aden Kim', requestId: 'r1' }] }
+const asking: SessionState = { ...base, joinRequests: [{ userId: 'u1', name: 'Aden Kim', requestId: 'r1', kind: 'join' }] }
 
 test('Allow posts the decision and the request leaves the band', async ($, on) => {
   const { calls, clock } = world(on, path => ({ status: 200, body: path === '/v1/decide' ? base : asking }))
@@ -259,4 +259,17 @@ test('a removed socket hides the band at once; a failing fetch on a live socket 
   socket.live = false // sharing stopped: the app removed its socket
   await clock.advance(2000)
   expect(await buttons()).toBe(0)
+})
+
+test('a pick-up request names itself and Allow posts its request id', async ($, on) => {
+  const pickup: SessionState = { ...base, joinRequests: [{ userId: 'u1', name: 'Mira Shah', requestId: 'r9', kind: 'pickup' }] }
+  const { calls, clock } = world(on, path => ({ status: 200, body: path === '/v1/decide' ? base : pickup }))
+  await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
+  await clock.settle()
+  const ui = await $.ui.mount({ ...BAND, surface: SURFACES[0] })
+  expect(await ui.find({ type: 'Text', text: 'Mira Shah wants to pick this up' })).toBeDefined()
+  await ui.press({ key: 'allow' })
+  const post = calls.filter(c => c.method === 'POST')
+  expect(post[post.length - 1].body).toEqual({ decision: 'allow', userId: 'u1', requestId: 'r9' })
+  await ui.unmount()
 })

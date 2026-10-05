@@ -24,6 +24,13 @@ pub(super) struct JoinRequest {
     pub user_id: String,
     pub name: String,
     pub request_id: String,
+    /// "join" (a person asking in) or "pickup" (asking to take the session over); an older backend sends none.
+    #[serde(default = "join_kind")]
+    pub kind: String,
+}
+
+fn join_kind() -> String {
+    "join".into()
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
@@ -255,6 +262,18 @@ mod tests {
         decided(SID, &json!({"decision":"pause","generation":"g3"}), &json!({"shared":false}));
         let e = get(SID, "g3").unwrap();
         assert!(e.paused && e.join_requests.is_empty());
+    }
+
+    #[test]
+    fn presence_request_kind_round_trips_and_defaults_to_join() {
+        let _g = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        reset();
+        let pickup = json!([{"userId":"u2","name":"Mira","requestId":"r1","kind":"pickup"}]);
+        offer_frame(&entry_at("g1", 100, pickup));
+        assert_eq!(get(SID, "g1").unwrap().join_requests[0].kind, "pickup");
+        assert!(frozen(SID, "g1"));
+        offer_frame(&entry_at("g1", 200, json!([req("u3")])));
+        assert_eq!(get(SID, "g1").unwrap().join_requests[0].kind, "join");
     }
 
     #[test]

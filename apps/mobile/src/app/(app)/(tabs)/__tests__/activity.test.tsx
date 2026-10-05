@@ -457,3 +457,54 @@ describe("activity links", () => {
   });
 
 });
+
+const loginItem = (hint?: string) => item({
+  id: "login:0123456789abcdef0123456789abcdef", kind: "login", subtype: "login",
+  summary: { ...item().summary, title: "Growth needs the login for accounts.google.com", reason: null, preview: null },
+  actions: [
+    action({ id: "provide", label: "Add login", style: "primary",
+      input: { kind: "login", label: "Login for accounts.google.com", required: true, options: null, hint } }),
+    action({ id: "decline", label: "Not now" }),
+  ],
+});
+
+it("answers a login ask with the web's value shape and forgets the password", async () => {
+  mockState = { items: [loginItem("Google is connected. This password is only for the browser.")] };
+  const alert = jest.spyOn(Alert, "alert");
+  await render(<Activity />);
+  await fireEvent.press(screen.getByLabelText("Review: Growth needs the login for accounts.google.com"));
+  const buttons = alert.mock.calls[0][2]!;
+  await act(async () => { buttons.find((b) => b.text === "Add login")!.onPress!(); });
+  // A sheet, not the old "add this on the web" alert.
+  expect(alert).toHaveBeenCalledTimes(1);
+  expect(screen.getByText("Google is connected. This password is only for the browser.")).toBeTruthy();
+  const password = screen.getByLabelText("Password");
+  expect(password.props.secureTextEntry).toBe(true);
+  expect(password.props.textContentType).toBe("password");
+  const username = screen.getByLabelText("Username or email");
+  expect(username.props).toMatchObject({ autoCapitalize: "none", autoCorrect: false, textContentType: "username" });
+  // Both fields are required.
+  await fireEvent.changeText(username, "  dana@example.com ");
+  expect(screen.getAllByRole("button", { name: "Add login" }).at(-1)!.props.accessibilityState?.disabled).toBe(true);
+  await fireEvent.changeText(password, " p@ss word ");
+  await fireEvent.press(screen.getAllByRole("button", { name: "Add login" }).at(-1)!);
+  expect(mockRunAction).toHaveBeenCalledWith("login:0123456789abcdef0123456789abcdef", "provide", {
+    value: JSON.stringify({ username: "dana@example.com", password: " p@ss word " }),
+  });
+  expect(screen.queryByDisplayValue(" p@ss word ")).toBeNull();
+});
+
+it("opens the login form straight from a focused sign-in link", async () => {
+  mockParams = { focus: "login:0123456789abcdef0123456789abcdef" };
+  mockState = { items: [loginItem()] };
+  await render(<Activity />);
+  expect(await screen.findByLabelText("Password")).toBeTruthy();
+  expect(mockRunAction).not.toHaveBeenCalled();
+});
+
+it("does not open a form for a focused login ask that is already resolved", async () => {
+  mockParams = { focus: "login:0123456789abcdef0123456789abcdef" };
+  mockState = { items: [{ ...loginItem(), state: "resolved" }] };
+  await render(<Activity />);
+  expect(screen.queryByLabelText("Password")).toBeNull();
+});

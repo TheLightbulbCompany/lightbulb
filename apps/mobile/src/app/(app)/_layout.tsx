@@ -182,6 +182,7 @@ export default function AppLayout() {
                   <Stack.Screen name="control/usage" options={{ title: "Usage" }} />
                   <Stack.Screen name="control/llm" options={{ title: "Model & Credits" }} />
                   <Stack.Screen name="control/integrations" options={{ title: "Integrations" }} />
+                  <Stack.Screen name="control/website-signins" options={{ title: "Website sign-ins" }} />
                   <Stack.Screen name="control/marketplace" options={{ title: "Marketplace" }} />
                   <Stack.Screen name="control/listing/[id]" options={{ title: "Listing" }} />
                   <Stack.Screen name="workspaces" options={{ title: "Switch workspace" }} />

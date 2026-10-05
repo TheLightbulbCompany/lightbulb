@@ -33,7 +33,8 @@ export function useMessageSearch(
       .catch((error: { status?: number }) => {
         if (!live) return;
         const warming = error?.status === 503;
-        setResult({ key, hits: [], state: warming ? "warming" : "error" });
+        // A 503 on the retry is a real failure: never say "starting up" forever.
+        setResult({ key, hits: [], state: warming && !retried ? "warming" : "error" });
         if (warming && !retried) retry = setTimeout(() => void run(true), RETRY_MS);
       });
     const timer = setTimeout(() => void run(false), DEBOUNCE_MS);

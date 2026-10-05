@@ -38,4 +38,38 @@ describe("useMessageSearch", () => {
     expect(messaging.searchMessages).toHaveBeenCalledTimes(2);
     expect(result.current.state).toBe("done");
   });
+
+  it("ends in error when the retry also gets a 503", async () => {
+    vi.useFakeTimers();
+    messaging.warmSearch.mockResolvedValue(undefined);
+    messaging.searchMessages.mockRejectedValue({ status: 503 });
+    const { result } = renderHook(() => useMessageSearch("deploy", { enabled: true, limit: 8 }));
+    await act(async () => { await vi.advanceTimersByTimeAsync(300); });
+    expect(result.current.state).toBe("warming");
+    await act(async () => { await vi.advanceTimersByTimeAsync(10_000); });
+    expect(messaging.searchMessages).toHaveBeenCalledTimes(2);
+    expect(result.current.state).toBe("error");
+  });
+
+  it("shows loading with no stale hits when the term changes", async () => {
+    vi.useFakeTimers();
+    messaging.warmSearch.mockResolvedValue(undefined);
+    messaging.searchMessages.mockResolvedValueOnce({ hits: [hit] }).mockResolvedValueOnce({ hits: [] });
+    const { result, rerender } = renderHook(({ q }) => useMessageSearch(q, { enabled: true, limit: 8 }), { initialProps: { q: "deploy" } });
+    await act(async () => { await vi.advanceTimersByTimeAsync(300); });
+    expect(result.current.hits).toEqual([hit]);
+    rerender({ q: "deployed" });
+    expect(result.current).toEqual({ hits: [], state: "loading" });
+    await act(async () => { await vi.advanceTimersByTimeAsync(300); });
+    expect(result.current).toEqual({ hits: [], state: "done" });
+  });
+
+  it("clears timers on unmount", async () => {
+    vi.useFakeTimers();
+    messaging.warmSearch.mockResolvedValue(undefined);
+    const { unmount } = renderHook(() => useMessageSearch("deploy", { enabled: true, limit: 8 }));
+    unmount();
+    await act(async () => { await vi.advanceTimersByTimeAsync(5_000); });
+    expect(messaging.searchMessages).not.toHaveBeenCalled();
+  });
 });

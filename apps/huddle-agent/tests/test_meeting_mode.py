@@ -1269,3 +1269,63 @@ async def test_a_follow_up_that_fails_before_a_word_still_replaces_the_cut_answe
     await h.clear_presence()
     assert resays(lives[0]) == []
     assert text not in [a[3] for a in backend.late_answers]
+
+
+def streams(h, run_id, text):
+    """A sentence of the answer reaches its voice while the run is still open, as frames.Runs hands it over
+    (a lone chunk frame would wait in the reorder window until the run ends)."""
+    run = h._runs.get(run_id)
+    run.text += text
+    run.spoken = run.text
+    h.say(run, text.strip(), False)
+
+
+def ends(h, run_id, seq):
+    h.on_data(None, "call.frame", packet(frame(run_id, "forge", {"type": "run_ended", "seq": seq})))
+
+
+async def forge_streams_to_priya():
+    h, room, backend, lives, clock, log = await per_person()
+    backend.route_extra = ops([("forge", "list the open PRs", "name")])
+    await says(h, P1, "Forge, what PRs are open?")
+    (row,) = h._requests.items
+    backend.route_extra = ops([])
+    return h, backend, lives, clock, row
+
+
+async def test_an_answer_heard_before_its_run_ended_is_not_said_again_for_a_thank_you():
+    """Review: the end frame made a fresh pending answer, and "great, thanks" then read as sound before a word."""
+    h, backend, lives, clock, row = await forge_streams_to_priya()
+    text = "Three pull requests are open. "
+    streams(h, row.run_id, text)
+    h.on_agent_state("forge", "speaking")
+    h.on_agent_said("forge", text.strip())  # the whole answer, heard while the run was still open
+    h.on_agent_state("forge", "listening")
+    ends(h, row.run_id, 1)
+    await says(h, P1, "great, thanks")
+    await quiet_tick(h, clock, h_mod.CUT_HANDLED_S + h_mod.MEET_QUIET_S)
+    await quiet_tick(h, clock, h_mod.CUT_WAIT_S)
+    assert resays(lives[0]) == [] and backend.late_answers == []
+
+
+async def test_a_follow_up_that_cut_a_streamed_answer_before_its_end_replaces_it_even_if_it_fails():
+    """Review: the follow-up's row was older than the answer's hand-over, so it did not count as its replacement."""
+    h, backend, lives, clock, row = await forge_streams_to_priya()
+    streams(h, row.run_id, "Three pull requests are open. ")
+    h.on_agent_state("forge", "speaking")
+    h.on_agent_said("forge", "Three pull", interrupted=True)
+    h.on_agent_state("forge", "listening")
+    clock.t += 1
+    backend.route_extra = ops([("forge", "the ones opened last month", "follow")])
+    await says(h, P1, "actually, only the ones from last month")
+    follow = h._requests.items[-1]
+    clock.t += 1
+    streams(h, row.run_id, "The oldest is from August.")
+    ends(h, row.run_id, 1)  # the original run ends after the follow-up was accepted
+    h.on_data(None, "call.frame", packet(frame(follow.run_id, "forge", {"type": "error", "seq": 1})))
+    await settle(h)
+    await quiet_tick(h, clock, h_mod.CUT_HANDLED_S + h_mod.MEET_QUIET_S)
+    await quiet_tick(h, clock, h_mod.CUT_WAIT_S)
+    await h.clear_presence()
+    assert resays(lives[0]) == []
+    assert not [a for a in backend.late_answers if "Three pull requests" in a[3]]

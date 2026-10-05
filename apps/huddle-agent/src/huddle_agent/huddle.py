@@ -342,8 +342,10 @@ class _Voice:
     # Live's model stops for its own speaker's sound, so they can cut its answer and the worker never cut it:
     # `answer` is the ended run's (run_id, request, text, at, speaker) until it is known heard; `unheard`: its
     # speech was interrupted, or their sound came before a word of it; `replied`: it then answered them (they
-    # were talking to it); `resaid`: it was said again once; `spoke`: its messages since the answer was handed over.
+    # were talking to it); `resaid`: it was said again once; `spoke`: its messages since it began to say that
+    # run (its sentences are streamed before the run ends); `began`: when it began to.
     answer: tuple | None = None
+    began: float = 0.0
     unheard: bool = False
     replied: bool = False
     resaid: bool = False
@@ -2690,6 +2692,7 @@ class Huddle:
             if v.saying != run.run_id and (v.answer is None or v.answer[0] != run.run_id):
                 self._settle_answer(v)  # the answer before this one: on the record if it was cut (`_followed`)
                 v.unheard = v.replied = v.resaid = False
+                v.spoke, v.began = 0, self._clock()
             v.saying = run.run_id
             self._live_call(
                 v, "append_commentary", text, delegation_id=run.delegation_id
@@ -2708,7 +2711,8 @@ class Huddle:
                     delegation_id=run.delegation_id,
                 )
             elif answer and not mixed_meet(v.speaker):
-                v.answer, v.spoke = (run.run_id, run.request, answer, self._clock(), run.speaker), 0
+                # `spoke` is kept: sentences said before this end frame were words of the answer
+                v.answer = (run.run_id, run.request, answer, self._clock(), run.speaker)
             self._requests.delivered({run.run_id})
         elif v := self._floor_voice(run.agent_id):
             if answer:
@@ -3044,7 +3048,7 @@ class Huddle:
         """A Live voice's message while it says (or has just been handed) a run's answer."""
         run = self._runs.get(v.saying or "")
         ref = v.answer[2] if v.answer else run.text if run else ""
-        if v.answer:
+        if v.answer or run:
             v.spoke += 1
         if interrupted:
             v.unheard = True
@@ -3068,9 +3072,10 @@ class Huddle:
         """What its speaker said went on from the pending answer's request (a correction, a follow-up: /route's
         `follow`). That request replaces the answer from the moment it is accepted: the stale answer is neither
         said again nor posted beside the new one, also when the follow-up then fails or never speaks."""
-        n = v.answer
-        return n is not None and any(
-            r.agent == v.agent_id and r.by == "follow" and r.created_at >= n[3] for r in self._requests.items
+        return v.answer is not None and any(
+            # since it began to say that run: a follow-up may cut a streamed answer before its end frame
+            r.agent == v.agent_id and r.by == "follow" and r.created_at >= v.began
+            for r in self._requests.items
         )
 
     def _settle_answer(self, v: _Voice) -> None:

@@ -179,7 +179,8 @@ function AuthenticatedWorkspace({ scopeId, workspaceName }: { scopeId: string; w
     if (!navOpen) return;
     // Keyboard and switch users land in the drawer, not behind its backdrop
     // (the pane is `inert` while it is open), and return to the menu button.
-    shellRef.current?.querySelector<HTMLElement>(".workspace-rail button")?.focus();
+    // The first ENABLED control: Back is first in the rail and is disabled with no history.
+    shellRef.current?.querySelector<HTMLElement>(".workspace-rail button:not(:disabled)")?.focus();
     const menuButton = menuButtonRef.current;
     // Widening past the phone breakpoint hides the drawer's backdrop, so
     // close it there rather than leave the pane inert with no way out.

@@ -26,9 +26,10 @@ it, so almost nobody knows the feature exists.
 4. **Claude Code only**, like pick-up itself. An ended session can be asked for: its snapshot is
    kept after it ends.
 5. **Terminal decisions follow the join rules.** A pending pick-up request also freezes remote
-   typing on the owner's Mac, because Allow shares the transcript and code. The Mac answers through
-   the existing door, `POST /messaging/native-session-decisions`, with two more decisions:
-   `allow_pickup`, `decline_pickup`.
+   typing on the owner's Mac, because Allow shares the transcript and code. A pick-up request rides
+   the join-request plumbing as a variant (`kind: "pickup"`), so the Mac, the mod and the activity
+   feed need no new paths: the Mac answers through the existing door with `allow` / `decline`, and
+   the backend tells the two apart by which map holds the request id.
 
 ## 3. Contract
 
@@ -43,23 +44,27 @@ it, so almost nobody knows the feature exists.
   requestId}` (owner only) → public session. Allow runs `set_pickup(…, True)`.
 - Public session: the requester sees `pickupRequest` ("pending"|"declined"); the owner sees `pendingPickups: [userId]` and `pendingPickupIds: {userId:
   requestId}`.
-- Notifications, as join requests: an activity row (subtype `pickup_request`) and
-  `workspace.session.attention` + push to the owner; the answer goes to the requester
-  ("<Owner> let you pick up <title>" / "<Owner> declined your request").
-- Presence (§4.2 of the mod spec) gains `pickupRequests: [{userId, name, requestId}]`; a pick-up
-  request is pushed like a join request; `inputPaused` also counts pending pick-up requests.
-- Device door: `decision` adds `allow_pickup` and `decline_pickup` (with `userId` and `requestId`).
+- Notifications, as join requests: an activity row with subtype `join_request` and
+  `request: "pickup"` (title "<Name> wants to pick up <title>", its own reason line; activity
+  item id `pickup:<sid>:<user>:<requestId>`, Allow/Decline routed to the pick-up decision), and
+  `workspace.session.attention` state `join_request` + push to the owner. The answer goes to the
+  requester as `join_allowed`/`join_declined` attention ("<Owner> let you pick up <title>" /
+  "<Owner> declined your request to pick up <title>").
+- Presence entries' `joinRequests` items gain `kind: "join" | "pickup"`; pick-up requests are
+  included and pushed like join requests; `inputPaused` counts both.
+- Device door (`native-session-decisions`): `allow`/`decline` route to the pick-up decision when
+  `requestId` matches the user's pending pick-up request, else to the join decision.
 
 ### 3.2 Desktop
 
-`presence::Entry` gains `pickup_requests`; `frozen()` is true while either list is non-empty;
-`mod.sock` `/v1/state` returns `pickupRequests`; `/v1/decide` accepts the two new decisions under the
-same "still pending here" rule.
+`presence::JoinRequest` gains `kind` (serde default `"join"`), passed through to `/v1/state`.
+Nothing else changes: the freeze, the "still pending here" check and the local update after a
+decision all key on the request id.
 
 ### 3.3 Mod
 
-The band shows a pick-up request row like a join request row: `Mira Shah wants to pick this up`
-`[Allow]` `[Decline]`. Join requests show first.
+The band's request row reads by kind: `Mira Shah asked to join` or `Mira Shah wants to pick this
+up`, `[Allow]` `[Decline]`.
 
 ### 3.4 Web and phone
 

@@ -876,7 +876,7 @@ async def retire(
     if not allowed:
         items.append({"ConditionCheck": {"TableName": table, "Key": {"pk": pk, "sk": "META"}, **check}})
     else:
-        drop = ("pickupAllowed", "pickupSnapshot", "pickupEpoch")
+        drop = ("pickupAllowed", "pickupSnapshot", "pickupEpoch", "shareLink")
         updated = {key: value for key, value in row.items() if key not in drop}
         updated["revision"] = str(uuid.uuid4())
         items += [
@@ -884,7 +884,7 @@ async def retire(
                 "Update": {
                     "TableName": table,
                     "Key": {"pk": row["pk"], "sk": "META"},
-                    "UpdateExpression": "REMOVE pickupAllowed, pickupSnapshot, pickupEpoch SET revision = :new",
+                    "UpdateExpression": "REMOVE pickupAllowed, pickupSnapshot, pickupEpoch, shareLink SET revision = :new",
                     "ConditionExpression": "revision = :old",
                     "ExpressionAttributeValues": {":new": updated["revision"], ":old": row["revision"]},
                 }
@@ -892,6 +892,16 @@ async def retire(
             _want_delete(row),
             _audit(owner, sid, auth, action),
         ]
+        if row.get("shareLink"):
+            # The link dies with its snapshot: expiry and turning the link off are one act (spec §3.1).
+            items.append(
+                {
+                    "Delete": {
+                        "TableName": table,
+                        "Key": {"pk": sessions._share_pk(row["shareLink"]["tokenHash"]), "sk": "META"},
+                    }
+                }
+            )
     await store._transact(items)
     for prefix in retired:
         await run_in_thread(delete_prefix, prefix)

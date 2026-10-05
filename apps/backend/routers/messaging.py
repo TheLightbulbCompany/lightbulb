@@ -329,14 +329,6 @@ async def remove_local_session_sender(session_id: str, user_id: str, auth: AuthC
     return await local_sessions.remove_sender(auth, session_id, user_id)
 
 
-@router.put("/messaging/sessions/{session_id}/pickup", response_model=local_sessions.LocalSession)
-async def set_local_session_pickup(
-    session_id: str, body: session_pickup.PickupToggleRequest, auth: AuthContext = Depends(get_current_user)
-):
-    """The owner's "Let teammates pick this up" switch; it stays on after the session ends."""
-    return await session_pickup.set_pickup(auth, session_id, body.enabled)
-
-
 @router.post("/messaging/sessions/{session_id}/pickups", response_model=session_pickup.PickupTicket)
 async def request_local_session_pickup(
     session_id: str, body: session_pickup.PickupRequest, auth: AuthContext = Depends(get_current_user)
@@ -366,35 +358,22 @@ async def revoke_local_session_resume(session_id: str, user_id: str, auth: AuthC
     return await session_resume.revoke_resume(auth, session_id, user_id)
 
 
-@router.post("/messaging/sessions/{session_id}/share-links", response_model=local_sessions.ShareLink, status_code=201)
-async def create_local_session_share_link(
-    session_id: str, body: local_sessions.ShareLinkRequest, auth: AuthContext = Depends(get_current_user)
+@router.put("/messaging/sessions/{session_id}/link", response_model=local_sessions.SessionLink)
+async def put_local_session_link(
+    session_id: str, body: local_sessions.LinkRequest, auth: AuthContext = Depends(get_current_user)
 ):
-    """Owner-only: a read-only snapshot link for signed-in members of the owner's workspace."""
-    return await local_sessions.create_share_link(auth, session_id, body)
+    """Owner-only: create the session's one link, or change who it is for."""
+    return await local_sessions.put_link(auth, session_id, body.audience)
 
 
-@router.get("/messaging/sessions/{session_id}/share-links", response_model=local_sessions.ShareLinks)
-async def list_local_session_share_links(session_id: str, auth: AuthContext = Depends(get_current_user)):
-    return await local_sessions.list_share_links(auth, session_id)
+@router.get("/messaging/sessions/{session_id}/link", response_model=local_sessions.SessionLink)
+async def get_local_session_link(session_id: str, auth: AuthContext = Depends(get_current_user)):
+    return await local_sessions.get_link(auth, session_id)
 
 
-@router.delete("/messaging/sessions/{session_id}/share-links/{link_id}", status_code=204)
-async def revoke_local_session_share_link(session_id: str, link_id: str, auth: AuthContext = Depends(get_current_user)):
-    await local_sessions.revoke_share_link(auth, session_id, link_id)
-
-
-# POST so the token rides in the body, never a path or query string that access logs keep.
-@router.post("/messaging/shared-sessions/open", response_model=local_sessions.SharedSession)
-async def open_shared_session(body: local_sessions.SharedTokenRequest, auth: AuthContext = Depends(get_current_user)):
-    return await local_sessions.get_shared_session(auth, body.token)
-
-
-@router.post("/messaging/shared-sessions/events", response_model=local_sessions.LocalSessionEventPage)
-async def list_shared_session_events(
-    body: local_sessions.SharedTokenRequest, auth: AuthContext = Depends(get_current_user)
-):
-    return await local_sessions.list_shared_events(auth, body.token, body.after_seq, body.limit)
+@router.delete("/messaging/sessions/{session_id}/link", status_code=204)
+async def delete_local_session_link(session_id: str, auth: AuthContext = Depends(get_current_user)):
+    await local_sessions.delete_link(auth, session_id)
 
 
 @router.put("/messaging/sessions/{session_id}/usage-sharing", response_model=local_sessions.LocalSession)

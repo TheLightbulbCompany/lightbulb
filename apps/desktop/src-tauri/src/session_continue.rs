@@ -375,13 +375,31 @@ pub(crate) fn write_marker(
     )
 }
 
+/// The server's refusal, by its problem code. Its message names the reason (the owner turned the
+/// link off, paused the session, or their Mac stopped sharing); the fallback covers a body
+/// without one.
+fn refusal(body: &Value) -> String {
+    let fallback = match body["code"].as_str() {
+        // The verifier did not match: another local program answered the confirm page first.
+        // PKCE makes that a refusal, nothing worse.
+        Some("LOCAL_SESSION_FORBIDDEN") => {
+            return "Another program answered first. Run the command again.".into()
+        }
+        Some("LOCAL_SESSION_NOT_FOUND") => "The owner turned this link off.",
+        Some("LOCAL_SESSION_CONFLICT") => "The owner paused this session.",
+        Some("LOCAL_SESSION_OFFLINE") => "The owner's Mac stopped sharing sessions.",
+        _ => "Lightbulb refused the copy.",
+    };
+    body["message"].as_str().unwrap_or(fallback).to_string()
+}
+
 async fn redeem(
     client: &reqwest::Client,
     api: &str,
     code: &str,
     verifier: &str,
 ) -> Result<Value, String> {
-    for attempt in 0..450 {
+    for _ in 0..450 {
         let res = client
             .post(format!("{api}/public/session-copies/redeem"))
             .json(&json!({"code": code, "verifier": verifier}))
@@ -391,15 +409,7 @@ async fn redeem(
         let ok = res.status().is_success();
         let body: Value = res.json().await.unwrap_or(Value::Null);
         if !ok {
-            // A code that never redeemed came from another local program, not the confirm page
-            // (the verifier did not match). PKCE makes that a refusal, nothing worse.
-            if attempt == 0 && body["code"] == "LOCAL_SESSION_NOT_FOUND" {
-                return Err("Another program answered first. Run the command again.".into());
-            }
-            return Err(body["message"]
-                .as_str()
-                .unwrap_or("Lightbulb refused the copy.")
-                .to_string());
+            return Err(refusal(&body));
         }
         if body["state"] == "ready" {
             return Ok(body);
@@ -496,6 +506,30 @@ pub fn main(link: &str) -> i32 {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_refusal_names_its_reason() {
+        let say = |code: &str, message: Option<&str>| {
+            super::refusal(&serde_json::json!({"code": code, "message": message}))
+        };
+        assert!(say("LOCAL_SESSION_FORBIDDEN", Some("x")).starts_with("Another program"));
+        assert_eq!(
+            say(
+                "LOCAL_SESSION_CONFLICT",
+                Some("The owner paused this session.")
+            ),
+            "The owner paused this session."
+        );
+        assert_eq!(
+            say("LOCAL_SESSION_OFFLINE", None),
+            "The owner's Mac stopped sharing sessions."
+        );
+        assert_eq!(
+            say("LOCAL_SESSION_NOT_FOUND", None),
+            "The owner turned this link off."
+        );
+        assert_eq!(say("RATE_LIMITED", None), "Lightbulb refused the copy.");
+    }
+
     use super::*;
     use std::io::Read;
 

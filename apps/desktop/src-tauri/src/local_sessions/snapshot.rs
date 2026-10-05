@@ -601,7 +601,7 @@ async fn public(remote: &str) -> bool {
 
 /// `{remote, branch, head, pushed, public, folder}` for the commit body, or null when this is not
 /// a work tree with an `origin` and a commit. Sent on every commit, bundle or not (spec §3.3).
-/// `folder` is the top-level folder's name: the server hides it from outsiders when `public` is false.
+/// `folder` is the main checkout's folder name: the server hides it from outsiders when `public` is false.
 pub(crate) async fn repo_info(top: &Path) -> Value {
     let Some(remote) = git(top, &["remote", "get-url", "origin"], None)
         .await
@@ -634,7 +634,19 @@ pub(crate) async fn repo_info(top: &Path) -> Value {
         .await
         .ok()
         .filter(|b| b.chars().count() <= 256);
-    let folder = top
+    // The main checkout's folder (the git common dir's parent), not a linked worktree's: it is the
+    // name every path in the transcript shows, usually the repository's own name.
+    let main = git(
+        top,
+        &["rev-parse", "--path-format=absolute", "--git-common-dir"],
+        None,
+    )
+    .await
+    .ok()
+    .and_then(|dir| PathBuf::from(dir).parent().map(Path::to_path_buf));
+    let folder = main
+        .as_deref()
+        .unwrap_or(top)
         .file_name()
         .map(|n| n.to_string_lossy().into_owned())
         .filter(|f| f.chars().count() <= 255);
@@ -1003,6 +1015,20 @@ mod tests {
         );
         g(&["update-ref", "refs/remotes/origin/main", "HEAD"]);
         assert_eq!(repo_info(top).await["pushed"], true);
+        // A linked worktree reports the main checkout's folder, the name its paths show.
+        let wt = top.join(".claude").join("worktrees").join("feature-x");
+        g(&[
+            "worktree",
+            "add",
+            "-q",
+            "-b",
+            "feature-x",
+            wt.to_str().unwrap(),
+        ]);
+        assert_eq!(
+            repo_info(&wt).await["folder"],
+            top.file_name().unwrap().to_string_lossy().as_ref()
+        );
     }
 
     #[tokio::test]

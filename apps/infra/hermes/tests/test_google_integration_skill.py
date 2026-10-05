@@ -17,5 +17,9 @@ def test_lightbulb_skill_routes_google_checks_to_managed_gog_cli(tmp_path):
     integrations = (out / "lightbulb/references/integrations.md").read_text()
 
     assert "Google Workspace on Lightbulb uses the managed `gog` CLI" in skill
-    assert "do not run the generic Google Workspace skill's `setup.py --check`" in integrations
+    normalized_integrations = " ".join(integrations.split()).lower()
+    assert (
+        "do not run the generic google workspace skill's `setup.py --check`"
+        in normalized_integrations
+    )
     assert "`gog auth status`" in integrations

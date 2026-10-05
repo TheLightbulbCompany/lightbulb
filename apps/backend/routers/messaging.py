@@ -393,6 +393,18 @@ async def list_session_link_events(
     return await session_links.list_events(auth, body.token, body.after_seq, body.limit)
 
 
+@router.post("/session-links/copies", response_model=session_links.CopyCode, status_code=201)
+async def copy_session_link(body: session_links.CopyRequest, auth: AuthContext = Depends(get_human_session)):
+    """Continue: the moment a copy is made (spec §3.5). Needs the taker's own workspace."""
+    return await session_links.create_copy(auth, body.token, body.challenge)
+
+
+@router.post("/public/session-copies/redeem", response_model=session_links.CopyTicket | session_links.Preparing)
+async def redeem_session_copy(body: session_links.RedeemRequest):
+    """The CLI's poll. No sign-in: the code plus the CLI's verifier is the credential."""
+    return await session_links.redeem(body.code, body.verifier)
+
+
 @router.put("/messaging/sessions/{session_id}/usage-sharing", response_model=local_sessions.LocalSession)
 async def set_local_session_usage_sharing(
     session_id: str, body: local_sessions.UsageSharingRequest, auth: AuthContext = Depends(get_current_user)

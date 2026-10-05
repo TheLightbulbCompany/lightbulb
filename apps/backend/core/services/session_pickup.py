@@ -418,12 +418,8 @@ async def _turn_off(auth: AuthContext, owner: str, session_id: str) -> sessions.
 # --- The receiver -------------------------------------------------------------------------------
 
 
-async def request_pickup(auth: AuthContext, session_id: str, pickup_id: str) -> PickupTicket:
-    """Any workspace member, the author included. A paused session reads as not found."""
-    pickup_id = validate_uuid(pickup_id, label="pick-up ID")
-    row, _ = await sessions.authorize_session(auth, None, session_id)
-    # A removed member's Clerk JWT outlives their membership: the same fence as watch/type/resume.
-    await _still_a_member(row, auth.user_id)
+async def ready_manifest(row: dict) -> dict:
+    """The committed manifest a pick-up or a copy may use, or the reason it may not."""
     if not row.get("pickupAllowed"):
         raise ApiProblem("LOCAL_SESSION_FORBIDDEN", "Pick-up is off for this session.")
     if _expired(row):
@@ -433,6 +429,16 @@ async def request_pickup(auth: AuthContext, session_id: str, pickup_id: str) -> 
         raise ApiProblem("LOCAL_SESSION_CONFLICT", "The snapshot is not ready yet.")
     if manifest.get("pickupEpoch", row["pickupEpoch"]) != row["pickupEpoch"]:
         raise ApiProblem("LOCAL_SESSION_CONFLICT", "Snapshot permission changed. Try again.")
+    return manifest
+
+
+async def request_pickup(auth: AuthContext, session_id: str, pickup_id: str) -> PickupTicket:
+    """Any workspace member, the author included. A paused session reads as not found."""
+    pickup_id = validate_uuid(pickup_id, label="pick-up ID")
+    row, _ = await sessions.authorize_session(auth, None, session_id)
+    # A removed member's Clerk JWT outlives their membership: the same fence as watch/type/resume.
+    await _still_a_member(row, auth.user_id)
+    manifest = await ready_manifest(row)
     table = store._table()
     now = int(time.time())
     try:
@@ -471,35 +477,42 @@ async def request_pickup(auth: AuthContext, session_id: str, pickup_id: str) -> 
     return await run_in_thread(_ticket, row, manifest, pickup_id)
 
 
-def _ticket(row: dict, manifest: dict, pickup_id: str) -> PickupTicket:
-    sid, series = row["sessionId"], manifest["series"]
+def downloads(row: dict, manifest: dict) -> Downloads:
+    series = manifest["series"]
     client, bucket = _s3(), _bucket()
 
     def url(key: str) -> str:
         return client.generate_presigned_url("get_object", Params={"Bucket": bucket, "Key": key}, ExpiresIn=URL_SECONDS)
 
     code, sidecars = manifest.get("code"), manifest.get("sidecars")
+    return Downloads(
+        transcript=[
+            TranscriptDownload(
+                index=p["index"],
+                url=url(_part_key(row, series, p)),
+                bytes=p["bytes"],
+                sha256=p["sha256"],
+            )
+            for p in manifest["parts"]
+        ],
+        code=Download(url=url(_key(row, series, "code", sha=code["sha256"])), **_blob(code)) if code else None,
+        sidecars=Download(url=url(_key(row, series, "sidecars", sha=sidecars["sha256"])), **_blob(sidecars))
+        if sidecars
+        else None,
+    )
+
+
+def _ticket(row: dict, manifest: dict, pickup_id: str) -> PickupTicket:
     return PickupTicket(
         pickup_id=pickup_id,
         session=TicketSession(
-            session_id=sid, human_user_id=row["humanUserId"], title=row.get("title"), provider=row["provider"]
+            session_id=row["sessionId"],
+            human_user_id=row["humanUserId"],
+            title=row.get("title"),
+            provider=row["provider"],
         ),
         manifest=_manifest_public(manifest),
-        downloads=Downloads(
-            transcript=[
-                TranscriptDownload(
-                    index=p["index"],
-                    url=url(_part_key(row, series, p)),
-                    bytes=p["bytes"],
-                    sha256=p["sha256"],
-                )
-                for p in manifest["parts"]
-            ],
-            code=Download(url=url(_key(row, series, "code", sha=code["sha256"])), **_blob(code)) if code else None,
-            sidecars=Download(url=url(_key(row, series, "sidecars", sha=sidecars["sha256"])), **_blob(sidecars))
-            if sidecars
-            else None,
-        ),
+        downloads=downloads(row, manifest),
         expires_at=iso(int(time.time()) + URL_SECONDS),
     )
 

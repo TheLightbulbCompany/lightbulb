@@ -15,7 +15,7 @@ from core.auth import AuthContext
 from core.services import local_sessions as service, session_links as links
 from core.services.messaging import ApiProblem
 from tests.unit.services import test_session_pickup as pickup_tests
-from tests.unit.services.test_local_sessions import ALICE, BOB
+from tests.unit.services.test_local_sessions import ALICE, BOB, OWNER
 
 db = pickup_tests.db
 transport = pickup_tests.transport
@@ -84,14 +84,12 @@ async def test_an_outsider_copy_is_redacted_and_clones_a_public_repo(transport, 
     assert ticket["code"] == {"mode": "clone", "remote": "github.com/acme/app", "commit": "a" * 40}
     body = gzip.decompress(fetch(s3, ticket["downloads"]["transcript"][0]["url"]))
     assert b"ghp_" not in body and b"[redacted]" in body and b'"~/app"' in body
-    assert "/copies/" in ticket["downloads"]["transcript"][0]["url"]
+    assert "/session-copies/" in ticket["downloads"]["transcript"][0]["url"]
     with tarfile.open(fileobj=io.BytesIO(fetch(s3, ticket["downloads"]["sidecars"]["url"])), mode="r:gz") as tar:
         assert tar.getnames() == ["subagents/a.jsonl"]  # the binary entry is dropped
         assert b"ghp_" not in tar.extractfile("subagents/a.jsonl").read()
-    # The presigned URLs carry the S3 key (owner/session ids): the brief keeps copies under the session
-    # prefix so retire and the sweeper delete them, so the id check covers the rest of the ticket.
-    text = json.dumps({k: v for k, v in ticket.items() if k != "downloads"})
-    assert sid not in text and ALICE.user_id not in text
+    text = json.dumps(ticket)  # downloads (the presigned URLs) included
+    assert sid not in text and ALICE.user_id not in text and OWNER not in text
     entries = (await service.list_audit(ALICE, sid)).entries
     assert (entries[-1].action, entries[-1].detail, entries[-1].subject_user_id) == (
         "session_copied",
@@ -119,7 +117,10 @@ async def test_a_member_copy_is_ready_at_once_with_the_bundle(transport, s3, sta
     assert started == []
     ticket = (await links.redeem(code, VERIFIER)).model_dump(by_alias=True)
     assert ticket["code"]["mode"] == "bundle" and ticket["code"]["sessionId"] == sid
-    assert ticket["downloads"]["code"] is not None and "/copies/" not in ticket["downloads"]["transcript"][0]["url"]
+    assert (
+        ticket["downloads"]["code"] is not None
+        and "/session-copies/" not in ticket["downloads"]["transcript"][0]["url"]
+    )
     assert b"ghp_" in gzip.decompress(fetch(s3, ticket["downloads"]["transcript"][0]["url"]))  # members: unredacted
 
 
@@ -170,3 +171,26 @@ async def test_continue_needs_the_takers_own_workspace(transport, s3):
     with pytest.raises(HTTPException) as no_org:
         await links.create_copy(AuthContext(user_id="user_new", org_id=None), token, links.challenge_of(VERIFIER))
     assert no_org.value.status_code == 409
+
+
+@pytest.mark.asyncio
+async def test_turning_the_link_off_deletes_its_copies(transport, s3, started):
+    sid, token = await shared(transport, s3)
+    code = (await links.create_copy(STRANGER, token, links.challenge_of(VERIFIER))).code
+    await links._prepare(started[0])
+    assert any(k.startswith("session-copies/") for k in pickup_tests.keys(s3, "session-copies/"))
+    await service.delete_link(ALICE, sid)
+    assert not any(k.startswith("session-copies/") for k in pickup_tests.keys(s3, "session-copies/"))
+    with pytest.raises(ApiProblem):
+        await links.redeem(code, VERIFIER)
+
+
+@pytest.mark.asyncio
+async def test_the_sweeper_ages_out_old_copies(transport, s3, started):
+    _, token = await shared(transport, s3)
+    await links.create_copy(STRANGER, token, links.challenge_of(VERIFIER))
+    await links._prepare(started[0])
+    await pickup_tests.pickup.sweep_once()
+    assert any(k.startswith("session-copies/") for k in pickup_tests.keys(s3, "session-copies/"))
+    await pickup_tests.pickup.sweep_once(now=int(time.time()) + links.COPY_TTL_S + 60)
+    assert not any(k.startswith("session-copies/") for k in pickup_tests.keys(s3, "session-copies/"))

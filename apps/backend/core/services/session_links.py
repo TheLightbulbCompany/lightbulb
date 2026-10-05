@@ -222,7 +222,7 @@ async def list_events(
 
 # --- Copies (spec §3.5) ------------------------------------------------------------------------
 
-COPY_TTL_S = 3600
+COPY_TTL_S = pickup.COPY_TTL_S
 CODE_WINDOW_S = 600
 RESTART_AFTER_S = 300
 _redacting = asyncio.Semaphore(1)  # one redaction at a time per backend task
@@ -322,7 +322,20 @@ async def create_copy(auth: AuthContext, token: str, challenge: str) -> CopyCode
         detail=await _name(auth.user_id, first=False),
         subject_user_id=auth.user_id,
     )
-    await store._transact([{"Put": {"TableName": table, "Item": item}}, {"Put": {"TableName": table, "Item": audit}}])
+    # The per-session pointer retire follows to delete this copy's objects.
+    pointer = {
+        "pk": row["pk"],
+        "sk": f"COPY#{item['copyId']}",
+        "copyId": item["copyId"],
+        "expiresAt": item["expiresAt"],
+    }
+    await store._transact(
+        [
+            {"Put": {"TableName": table, "Item": item}},
+            {"Put": {"TableName": table, "Item": pointer}},
+            {"Put": {"TableName": table, "Item": audit}},
+        ]
+    )
     if not member:
         _start(item)
     sessions._capture_growth(row, "session_copied", auth.user_id, member=member)
@@ -401,7 +414,7 @@ def _redact_copy(row: dict, manifest: dict, copy_id: str, project: str | None) -
     split across parts (one longer than its chunk) is carried whole into the next part. Sync:
     call through run_in_thread."""
     client, bucket = pickup._s3(), pickup._bucket()
-    base = f"{pickup.session_prefix(row['ownerId'], row['sessionId'])}{row['pickupEpoch']}/copies/{copy_id}/"
+    base = f"{pickup.COPIES_PREFIX}/{copy_id}/"
     parts, carry, last = [], b"", len(manifest["parts"]) - 1
     for n, part in enumerate(manifest["parts"]):
         source = client.get_object(Bucket=bucket, Key=pickup._part_key(row, manifest["series"], part))["Body"]

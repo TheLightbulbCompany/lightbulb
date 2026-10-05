@@ -43,6 +43,10 @@ from core.services.session_screen import _still_a_member
 logger = logging.getLogger(__name__)
 
 PREFIX = "session-pickup"
+# Redacted copies for a link's holder live under an id-free prefix, so a presigned URL names no owner
+# or session. The sweeper deletes objects older than COPY_TTL_S; retire deletes a session's own.
+COPIES_PREFIX = "session-copies"
+COPY_TTL_S = 3600
 _ANALYTICS_NS = uuid.uuid5(uuid.NAMESPACE_URL, "lightbulb:session-pickup")
 URL_SECONDS = 15 * 60
 # Short: an upload link signed just before the author turns pick-up off can still land an object,
@@ -856,6 +860,10 @@ async def sweep_once(*, now: int | None = None) -> int:
     (ended, or its lease lapsed) more than PICKUP_RETENTION_SECONDS ago. Idempotent: every backend task may run it."""
     now = int(time.time()) if now is None else now
     expired = 0
+    try:
+        await run_in_thread(lambda: delete_prefix(f"{COPIES_PREFIX}/", before=now - COPY_TTL_S))
+    except Exception as exc:
+        logger.warning("session copy cleanup failed: %s", type(exc).__name__)
     for owner, sid in await run_in_thread(_session_prefixes):
         row = await repo.get_session(owner, sid)
         if row is not None and row.get("pickupAllowed") and not _expired(row, now):
@@ -895,6 +903,10 @@ async def retire(
     # Listed before the fence: pick-up turned on after it mints a new epoch this list cannot hold,
     # so the deletion below never touches a snapshot committed later.
     retired = await run_in_thread(_subprefixes, session_prefix(owner, sid))
+    # Its outsider copies (session_links.create_copy writes one COPY# row per copy).
+    retired += [
+        f"{COPIES_PREFIX}/{r['copyId']}/" for r in await store._query(pk, begins_with="COPY#") if r.get("copyId")
+    ]
     items = [{"Delete": {"TableName": table, "Key": {"pk": pk, "sk": "PICKUP"}}}]
     allowed = row is not None and bool(row.get("pickupAllowed"))
     updated = None

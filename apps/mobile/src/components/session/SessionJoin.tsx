@@ -1,13 +1,12 @@
-import { useSessionJoinRequest, type LocalSession, type SessionControlClient } from "@lightbulb/shared";
+import { pickupRequestLine, useSessionJoinRequest, type LocalSession, type SessionControlClient } from "@lightbulb/shared";
 import { useState } from "react";
 import { Pressable, StyleSheet, Text, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { fonts, radii, spacing, useChatPalette } from "../../config/theme";
 
-type JoinDecider = {
-  decideLocalSessionJoin?: (sessionId: string, userId: string, decision: "allow" | "decline", requestId?: string) => Promise<unknown>;
-};
+type Decide = (sessionId: string, userId: string, decision: "allow" | "decline", requestId?: string) => Promise<unknown>;
+type JoinDecider = { decideLocalSessionJoin?: Decide; decideLocalSessionPickup?: Decide };
 
 /**
  * What a teammate sees under a session they cannot send to: who can, and a way
@@ -49,9 +48,8 @@ export function AskToJoin({ session, client, ownerName }: {
 }
 
 /**
- * The owner answers "Ask to join" in the session itself, where the request's
- * notification lands. One answered here leaves at once; the session's own
- * refresh then confirms it.
+ * The owner answers "Ask to join" and "Ask to pick up" in the session itself,
+ * where the request's notification lands.
  */
 export function JoinRequests({ session, client, personName, onAnswered }: {
   session: LocalSession;
@@ -59,21 +57,55 @@ export function JoinRequests({ session, client, personName, onAnswered }: {
   personName: (userId: string) => string;
   onAnswered: () => void;
 }) {
+  return (
+    <>
+      <Requests
+        sessionId={session.sessionId}
+        waiting={session.pendingJoins}
+        ids={session.pendingJoinIds}
+        line={(name) => `${name} wants to join this session.`}
+        decide={client.decideLocalSessionJoin}
+        personName={personName}
+        onAnswered={onAnswered}
+      />
+      <Requests
+        sessionId={session.sessionId}
+        waiting={session.pendingPickups}
+        ids={session.pendingPickupIds}
+        line={pickupRequestLine}
+        decide={client.decideLocalSessionPickup}
+        personName={personName}
+        onAnswered={onAnswered}
+      />
+    </>
+  );
+}
+
+/** One answered here leaves at once; the session's own refresh then confirms it. */
+function Requests({ sessionId, waiting: asked, ids, line, decide: send, personName, onAnswered }: {
+  sessionId: string;
+  waiting?: string[];
+  ids?: Record<string, string>;
+  line: (name: string) => string;
+  decide?: Decide;
+  personName: (userId: string) => string;
+  onAnswered: () => void;
+}) {
   const palette = useChatPalette();
   // Keyed by request, not person: someone who asks again after a decline is a new request.
-  const key = (who: string) => `${who}:${session.pendingJoinIds?.[who] ?? ""}`;
+  const key = (who: string) => `${who}:${ids?.[who] ?? ""}`;
   const [busy, setBusy] = useState<string[]>([]);
   const [answered, setAnswered] = useState<string[]>([]);
   const [error, setError] = useState<string | null>(null);
-  const waiting = (session.pendingJoins ?? []).filter((who) => !answered.includes(key(who)));
-  if (!client.decideLocalSessionJoin || waiting.length === 0) return null;
+  const waiting = (asked ?? []).filter((who) => !answered.includes(key(who)));
+  if (!send || waiting.length === 0) return null;
   const decide = async (who: string, decision: "allow" | "decline") => {
     const id = key(who);
     setBusy((list) => [...list, id]);
     setError(null);
     try {
       // The request the owner saw, so a stale tap never answers a newer one.
-      await client.decideLocalSessionJoin?.(session.sessionId, who, decision, session.pendingJoinIds?.[who]);
+      await send(sessionId, who, decision, ids?.[who]);
       setAnswered((list) => [...list, id]);
       onAnswered();
     } catch {
@@ -86,7 +118,7 @@ export function JoinRequests({ session, client, personName, onAnswered }: {
     <View style={styles.requests} accessibilityLiveRegion="polite">
       {waiting.map((who) => (
         <View key={who} style={[styles.request, { backgroundColor: palette.surface, borderColor: palette.edge }]}>
-          <Text style={[styles.requestText, { color: palette.fg }]}>{personName(who)} wants to join this session.</Text>
+          <Text style={[styles.requestText, { color: palette.fg }]}>{line(personName(who))}</Text>
           <View style={styles.answers}>
             <Pressable
               onPress={() => void decide(who, "allow")}

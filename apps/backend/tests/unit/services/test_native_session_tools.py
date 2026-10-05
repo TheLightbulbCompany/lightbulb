@@ -514,3 +514,28 @@ async def test_set_sharing_refuses_a_run_the_caller_did_not_see(monkeypatch):
             tools.AuthContext(user_id="user_a", org_id="org_a"), str(_SID), False, generation="g1"
         )
     put.assert_not_awaited()
+
+
+@pytest.mark.parametrize(
+    ("request_id", "routed"),
+    [("rp", "pickup"), ("rj", "join"), ("unknown", "join")],
+)
+async def test_the_mac_answers_each_request_by_its_own_id(monkeypatch, request_id, routed):
+    """One person with a join and a pick-up request pending; an older desktop sends no kind."""
+    row = _decision_row(
+        joinRequests={"user_z": {"state": "pending", "requestId": "rj"}},
+        pickupRequests={"user_z": {"state": "pending", "requestId": "rp"}},
+    )
+    monkeypatch.setattr(tools.sessions_repo, "get_session", AsyncMock(return_value=row))
+    _connected(monkeypatch)
+    doors = {"join": AsyncMock(return_value="join"), "pickup": AsyncMock(return_value="pickup")}
+    monkeypatch.setattr(tools.local_sessions, "decide_join", doors["join"])
+    monkeypatch.setattr(tools.local_sessions, "decide_pickup_request", doors["pickup"])
+    body = tools.NativeDecisionRequest(
+        session_id=_SID, generation="g1", decision="allow", user_id="user_z", request_id=request_id
+    )
+    assert await tools.decide(_decision_device(), body) == routed
+    door = doors[routed]
+    assert door.await_args.args[1:] == (str(_SID), "user_z", "allow")
+    assert door.await_args.kwargs == {"request_id": request_id}
+    assert not doors["pickup" if routed == "join" else "join"].await_count

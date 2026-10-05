@@ -79,6 +79,7 @@ const mockListOutbox = jest.fn(async () => ({ commands: [] as LocalSessionComman
 const mockGetPrivateApproval = jest.fn();
 const mockAskToJoin = jest.fn(async (): Promise<LocalSession> => ({ ...mockSession, joinRequest: "pending" }));
 const mockDecideJoin = jest.fn(async (): Promise<LocalSession> => mockSession);
+const mockDecidePickup = jest.fn(async (): Promise<LocalSession> => mockSession);
 const mockLive = {
   httpReady: true, liveConnected: true, liveError: null, liveChannels: ["/rooms/room-1/k"], connectionRevision: 1,
   messaging: {
@@ -97,6 +98,7 @@ const mockLive = {
     getPrivateSendApproval: mockGetPrivateApproval,
     requestLocalSessionJoin: mockAskToJoin,
     decideLocalSessionJoin: mockDecideJoin,
+    decideLocalSessionPickup: mockDecidePickup,
     sendMessage: jest.fn(), downloadAttachment: jest.fn(), attachmentUrl: jest.fn(), uploadAttachment: jest.fn(), markUnread: jest.fn(),
     setTyping: jest.fn(), abortRun: jest.fn(), steerRun: jest.fn(), createRoom: jest.fn(), updateRoom: jest.fn(),
     upsertMember: jest.fn(), removeMember: jest.fn(), updateMessage: jest.fn(), setReaction: jest.fn(),
@@ -132,6 +134,7 @@ describe("session screen", () => {
     mockGetPrivateApproval.mockRejectedValue(new ApiError(404, null));
     mockAskToJoin.mockClear();
     mockDecideJoin.mockClear();
+    mockDecidePickup.mockClear();
   });
 
   it("titles the screen with the tool's mark, the session and where it runs", async () => {
@@ -375,6 +378,16 @@ describe("session screen", () => {
     await fireEvent.press(screen.getByLabelText("Allow Bob"));
     expect(mockDecideJoin).toHaveBeenCalledWith("sess-1", "user-b", "allow", "req-1");
     await waitFor(() => expect(screen.queryByText("Bob wants to join this session.")).toBeNull());
+  });
+
+  it("lets the owner allow a teammate who asked to pick up", async () => {
+    mockSession = { ...base, pendingPickups: ["user-b"], pendingPickupIds: { "user-b": "pick-1" } };
+    await render(<SessionScreen />);
+    expect(await screen.findByText("Bob wants to pick up this session. Allow lets everyone in the workspace pick it up, and uploads the whole conversation and your uncommitted changes as they are. Nothing is redacted.")).toBeTruthy();
+    await fireEvent.press(screen.getByLabelText("Allow Bob"));
+    expect(mockDecidePickup).toHaveBeenCalledWith("sess-1", "user-b", "allow", "pick-1");
+    expect(mockDecideJoin).not.toHaveBeenCalled();
+    await waitFor(() => expect(screen.queryByText("Bob wants to pick up this session. Allow lets everyone in the workspace pick it up, and uploads the whole conversation and your uncommitted changes as they are. Nothing is redacted.")).toBeNull());
   });
 
   it("keeps the request and says so when the answer did not go through", async () => {

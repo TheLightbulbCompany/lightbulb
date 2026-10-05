@@ -1,4 +1,4 @@
-import type { SessionState } from '../types'
+import type { JoinRequest, SessionState } from '../types'
 import { colorFor } from './rules'
 
 // The pure half of the mod. Everything that touches `$` lives in register.tsx: the engine
@@ -21,3 +21,8 @@ export function bandRuns(s: SessionState): Run[] {
 }
 
 export const bandLine = (s: SessionState) => bandRuns(s).map(r => r.text).join('')
+
+export function requestLine(r: JoinRequest, count: number): string {
+  const verb = r.kind === 'pickup' ? 'wants to pick this up · shares the whole conversation and uncommitted changes with the workspace' : 'asked to join'
+  return `${r.name} ${verb}` + (count > 1 ? ` (+${count - 1} more)` : '')
+}

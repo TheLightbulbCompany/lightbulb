@@ -34,7 +34,7 @@ const SOURCE_LABEL: Record<string, string> = {
   approval: "Approval",
   issue_thread_interaction: "Question",
   decision: "Decision",
-  join_request: "Join request",
+  join_request: "Request",
   review: "Review",
   blocker_attention: "Blocked",
   recovery_action: "Recovery",

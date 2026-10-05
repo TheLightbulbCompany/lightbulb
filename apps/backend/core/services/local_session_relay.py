@@ -101,6 +101,7 @@ FEATURES = [
     "remoteInput",
     "sessionTerminal",
     "sessionPresence",
+    "pickupRequests",
 ]
 
 
@@ -120,6 +121,9 @@ class DeviceHeartbeat(ContractModel):
     live_terminal: bool = False
     remote_input: bool = False
     session_presence: bool = False
+    # This Mac's terminal names a pick-up request as one (spec 2026-10-05-ask-to-pick-up). An
+    # older Mac would show it as a join request, so presence leaves pick-ups out for it.
+    pickup_requests: bool = False
 
     def device_features(self) -> list[str]:
         return sorted(k for k, on in self.model_dump(by_alias=True, exclude={"type", "sessions"}).items() if on)

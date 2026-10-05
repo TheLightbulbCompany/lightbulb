@@ -16,7 +16,7 @@ import { AUTO_CHECK_INTERVAL_MS, receiptChip, type SessionCommandAttempt, type S
 type Client = Pick<ReturnType<typeof createMessagingClient>,
   "submitLocalSessionCommand" | "cancelLocalSessionCommand" | "listLocalSessionOutbox" | "getPrivateSendApproval"
   | "setLocalSessionTeamControl" | "listLocalSessionAudit" | "setLocalSessionUsageSharing"
-  | "setLocalSessionPickup" | "setLocalSessionSharing" | "requestLocalSessionJoin" | "removeLocalSessionSender"
+  | "setLocalSessionPickup" | "setLocalSessionSharing" | "requestLocalSessionJoin" | "requestLocalSessionPickupAccess" | "removeLocalSessionSender"
   | "resumeLocalSession" | "revokeLocalSessionResume" | "getLocalSessionCommand" | "getLocalSession">;
 
 /** A session client that may predate the control routes (test doubles, older callers). */
@@ -35,33 +35,40 @@ export function canControlSession(session: LocalSession, own: boolean, userId?: 
     (own || session.teamControl === true || (!!userId && (session.allowedSenders ?? []).includes(userId)));
 }
 
+/** The owner's row for a pick-up request, web and phone alike. It says what Allow shares,
+ * in the substance of the owner's own pick-up switch warning. */
+export const pickupRequestLine = (name: string) =>
+  `${name} wants to pick up this session. Allow lets everyone in the workspace pick it up, and uploads the whole conversation and your uncommitted changes as they are. Nothing is redacted.`;
+
 /**
  * A teammate's "Ask to join": `state` is the server's answer (none, pending, declined),
  * held as pending the moment they tap. Asking again while pending is a no-op server-side.
  */
-export function useSessionJoinRequest(client: SessionControlClient, session: LocalSession) {
+export function useSessionJoinRequest(client: SessionControlClient, session: LocalSession, kind: "join" | "pickup" = "join") {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   // This person's own reply, kept only until the next session update of any kind: whatever the
   // session says after that (the same request, an answer, an allow, a removal) is at least as new.
-  const [override, setOverride] = useState<{ state: LocalSession["joinRequest"]; sent?: true; base?: LocalSession } | undefined>(undefined);
+  const [override, setOverride] = useState<{ state: LocalSession["joinRequest"] | LocalSession["pickupRequest"]; sent?: true; base?: LocalSession } | undefined>(undefined);
   const latest = useRef(session);
   latest.current = session;
   const mine = override !== undefined && (override.sent === true || override.base === session);
-  const state = (mine ? override.state : session.joinRequest) ?? null;
+  const field = kind === "pickup" ? "pickupRequest" : "joinRequest";
+  const send = kind === "pickup" ? client.requestLocalSessionPickupAccess : client.requestLocalSessionJoin;
+  const state = (mine ? override.state : session[field]) ?? null;
   const ask = useCallback(async () => {
-    if (!client.requestLocalSessionJoin) return;
+    if (!send) return;
     const started = latest.current;
     setSaving(true); setError(null); setOverride({ state: "pending", sent: true });
     try {
-      const reply = await client.requestLocalSessionJoin(session.sessionId);
+      const reply = await send(session.sessionId);
       // The session moved while this was in flight: whatever it says now is newer than the reply.
-      setOverride(latest.current === started ? { state: reply.joinRequest ?? null, base: started } : undefined);
+      setOverride(latest.current === started ? { state: reply[field] ?? null, base: started } : undefined);
     }
     catch { setOverride(undefined); setError("Could not send your request. Try again."); }
     finally { setSaving(false); }
-  }, [client, session.sessionId]);
-  return { state, saving, error, ask, supported: !!client.requestLocalSessionJoin };
+  }, [send, field, session.sessionId]);
+  return { state, saving, error, ask, supported: !!send };
 }
 
 /** The one follow-up "Commit & open PR" sends. Plain instructions: the harness, not
@@ -140,6 +147,8 @@ const ACTION_LINE: Record<LocalSessionAuditEntry["action"], string> = {
   pickup_off: "turned off pick-up and deleted its snapshot",
   picked_up: "picked this session up on their Mac",
   pickup_expired: "",
+  pickup_requested: "asked to pick up this session",
+  pickup_request_declined: "",
   join_requested: "asked to join this session",
   join_allowed: "",
   join_declined: "",
@@ -151,6 +160,7 @@ const ACTION_LINE: Record<LocalSessionAuditEntry["action"], string> = {
 /** Owner decisions about one person, by the person they were about. */
 const SUBJECT_LINE: Partial<Record<LocalSessionAuditEntry["action"], (subject: string) => string>> = {
   join_allowed: subject => `let ${subject} send to this session`,
+  pickup_request_declined: subject => `declined ${subject}'s request to pick up this session`,
   join_declined: subject => `declined ${subject}'s request to join`,
   sender_removed: subject => `removed ${subject} from this session`,
   resume_revoked: subject => `stopped ${subject} from resuming this session`,

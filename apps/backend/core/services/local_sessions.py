@@ -276,6 +276,11 @@ class LocalSession(ContractModel):
     pending_joins: list[str] | None = None
     # Request id per waiting person, so an answer from the session names the request it saw.
     pending_join_ids: dict[str, str] | None = None
+    # The READER's own ask to pick up, while pick-up is off; absent otherwise.
+    pickup_request: Literal["pending", "declined"] | None = None
+    # The owner's own view only: who is waiting for pick-up, and under which request id.
+    pending_pickups: list[str] | None = None
+    pending_pickup_ids: dict[str, str] | None = None
     pending_approval: PendingApproval | None = None
     # Read-only: the harness's own model and permission mode. Neither CLI takes a runtime
     # change from outside its terminal (Claude's mode only rides an approval's setMode).
@@ -320,6 +325,9 @@ class LocalSession(ContractModel):
                 "join_request_id",
                 "pending_joins",
                 "pending_join_ids",
+                "pickup_request",
+                "pending_pickups",
+                "pending_pickup_ids",
             ),
         )
 
@@ -672,10 +680,21 @@ def _session_public(row: dict, viewer: str | None = None) -> LocalSession:
         if waiting:
             public["pendingJoins"] = sorted(waiting)
             public["pendingJoinIds"] = waiting
+    from core.services import session_pickup  # lazy: it imports this module
+
+    lapsed = session_pickup._expired(row)  # an expired snapshot leaves nothing to ask for or allow
+    pick = (row.get("pickupRequests") or {}).get(viewer) if viewer else None
+    if pick and not row.get("pickupAllowed") and not lapsed:
+        public["pickupRequest"] = pick["state"]
+    if viewer and viewer == row["humanUserId"] and not lapsed:
+        waiting = pending_pickups(row)
+        if waiting:
+            public["pendingPickups"] = sorted(waiting)
+            public["pendingPickupIds"] = waiting
     from core.services import session_presence  # lazy: it imports this module
 
     public["inputPaused"] = bool(
-        session_presence.pending_joins(row)
+        (session_presence.pending_joins(row) or session_presence.shown_pickups(row))
         and session_presence.FEATURE in row.get("deviceFeatures", ())
         and public["terminal"] is not None
     )
@@ -1719,6 +1738,8 @@ AUDIT_ACTIONS = Literal[
     "join_requested",
     "join_allowed",
     "join_declined",
+    "pickup_requested",
+    "pickup_request_declined",
     "sender_removed",
     "resume_requested",
     "resume_revoked",
@@ -1876,7 +1897,9 @@ def _valid_user(user_id: str) -> str:
         raise ApiProblem("INVALID_REQUEST", "Invalid user ID.") from exc
 
 
-async def _change_session(auth: AuthContext, session_id: str, change, audit_action: str, subject: str | None):
+async def _change_session(
+    auth: AuthContext, session_id: str, change, audit_action: str, subject: str | None, *, allow_ended: bool = False
+):
     """Load, let ``change`` return the new row (or None for "nothing to do"), write it with one
     audit row, and hint the workspace. ``change`` may raise to refuse."""
     from core.services.local_session_relay import publish_resources_changed
@@ -1884,7 +1907,7 @@ async def _change_session(auth: AuthContext, session_id: str, change, audit_acti
     owner = resolve_owner_id(auth)
     for _ in range(6):
         row, enrollment = await authorize_session(auth, None, session_id)
-        if row.get("endedAt") is not None:
+        if row.get("endedAt") is not None and not allow_ended:
             raise ApiProblem("LOCAL_SESSION_OFFLINE", "The desktop session has ended.")
         updated = change(row)
         if updated is None:
@@ -1978,27 +2001,121 @@ async def remove_sender(auth: AuthContext, session_id: str, user_id: str) -> Loc
     return _session_public(row, auth.user_id)
 
 
+def pending_pickups(row: dict) -> dict[str, str]:
+    """Each person waiting for the owner to allow pick-up, with the request id they asked under."""
+    if row.get("pickupAllowed"):
+        return {}
+    return {u: r["requestId"] for u, r in (row.get("pickupRequests") or {}).items() if r.get("state") == "pending"}
+
+
+async def request_pickup_access(auth: AuthContext, session_id: str) -> LocalSession:
+    """A teammate asks the owner to allow pick-up (spec 2026-10-05-ask-to-pick-up). Claude only;
+    an ended session may be asked for (its snapshot outlives it). Asking while pending or while
+    pick-up is on changes nothing; a declined person may ask again."""
+    from core.services import session_pickup  # lazy: it imports this module
+
+    me = auth.user_id
+
+    def change(row: dict) -> dict | None:
+        if me == row["humanUserId"]:
+            raise ApiProblem("LOCAL_SESSION_FORBIDDEN", "This is your own session.")
+        if row["provider"] != "claude":
+            raise ApiProblem("LOCAL_SESSION_UNSUPPORTED", "Only Claude Code sessions can be picked up.")
+        if session_pickup._expired(row):
+            raise ApiProblem("LOCAL_SESSION_NOT_FOUND", "This session's snapshot has expired.")
+        requests = dict(row.get("pickupRequests") or {})
+        if row.get("pickupAllowed") or (requests.get(me) or {}).get("state") == "pending":
+            return None
+        requests[me] = {"state": "pending", "requestId": str(uuid.uuid4()), "createdAt": utc_now_iso()}
+        return {**row, "pickupRequests": requests}
+
+    row, audit = await _change_session(auth, session_id, change, "pickup_requested", None, allow_ended=True)
+    if audit is not None:
+        await _notify_join_request(row, me, kind="pickup")
+        await _push_presence(row)
+    return _session_public(row, me)
+
+
+async def decide_pickup_request(
+    auth: AuthContext, session_id: str, user_id: str, decision: str, *, request_id: str | None = None
+) -> LocalSession:
+    """The owner answers one pick-up request. Allow turns pick-up on for the whole session through
+    set_pickup, which also clears every pending request, audits ``pickup_on`` and pushes presence."""
+    from core.services import session_pickup
+
+    user_id = _valid_user(user_id)
+    row, _ = await authorize_session(auth, None, session_id)
+    if auth.user_id != row["humanUserId"]:
+        raise ApiProblem("LOCAL_SESSION_FORBIDDEN", "Only the session's owner can answer a request to pick up.")
+    current = (row.get("pickupRequests") or {}).get(user_id) or {}
+    if current.get("state") != "pending" or (request_id is not None and current.get("requestId") != request_id):
+        raise ApiProblem("LOCAL_SESSION_CONFLICT", "That request was already answered.")
+    if decision == "allow":
+        if session_pickup._expired(row):
+            raise ApiProblem("LOCAL_SESSION_NOT_FOUND", "This session's snapshot has expired.")
+        # Raises (e.g. a paused session) before any write: the request stays pending.
+        public = await session_pickup.set_pickup(auth, session_id, True, expect_request=(user_id, current["requestId"]))
+        await _notify_join_answer(row, user_id, "join_allowed", current["requestId"], kind="pickup")
+        return public
+
+    def change(r: dict) -> dict | None:
+        requests = dict(r.get("pickupRequests") or {})
+        cur = requests.get(user_id) or {}
+        if cur.get("state") != "pending" or cur.get("requestId") != current["requestId"]:
+            return None
+        requests[user_id] = {**cur, "state": "declined"}
+        return {**r, "pickupRequests": requests}
+
+    row, audit = await _change_session(auth, session_id, change, "pickup_request_declined", user_id, allow_ended=True)
+    if audit is not None:
+        await _notify_join_answer(row, user_id, "join_declined", current["requestId"], kind="pickup")
+        await _push_presence(row)
+    return _session_public(row, auth.user_id)
+
+
+#: What Allow on a pick-up request shares, in the substance of the owner's own pick-up switch
+#: warning (SessionDetails.tsx). Activity and the push both say it.
+PICKUP_ALLOW_COPY = (
+    "Allow lets everyone in the workspace pick up this session on their Mac. It uploads the whole "
+    "conversation and your uncommitted changes as they are. Nothing is redacted."
+)
+
+
+def pickup_request_title(name: str, row: dict) -> str:
+    from core.services import notification_copy as copy
+
+    return (
+        f"{name} wants to pick up {copy.line(row.get('displayTitle') or row.get('title'), 40) or row['sessionId'][:8]}"
+    )
+
+
 def join_request_title(name: str, row: dict) -> str:
     from core.services import notification_copy as copy
 
     return f"{name} wants to join {copy.line(row.get('displayTitle') or row.get('title'), 40) or row['sessionId'][:8]}"
 
 
-async def _notify_join_request(row: dict, requester: str) -> None:
-    """The owner's "needs you" item, a live event and a push. Best effort, each on its own."""
+async def _notify_join_request(row: dict, requester: str, *, kind: str = "join") -> None:
+    """The owner's "needs you" item, a live event and a push. Best effort, each on its own.
+    ``kind="pickup"`` is the same item for a request to pick up (spec 2026-10-05-ask-to-pick-up)."""
     from core.services.local_session_relay import ACTIVITY_TTL_S
     from core.services.messaging import human_display_name
 
     owner, human, sid = row["ownerId"], row["humanUserId"], row["sessionId"]
-    request = row["joinRequests"][requester]
+    pickup = kind == "pickup"
+    request = row["pickupRequests" if pickup else "joinRequests"][requester]
     request_id, created = request["requestId"], request["createdAt"]
     try:
         name = await human_display_name(requester)
     except Exception:
         name = "A teammate"
-    title = join_request_title(name, row)
-    body = "Allow them to send follow-ups and answer prompts in this session."
-    event_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"local-session-join|{sid}|{request_id}"))
+    if pickup:
+        title = pickup_request_title(name, row)
+        body = PICKUP_ALLOW_COPY
+    else:
+        title = join_request_title(name, row)
+        body = "Allow them to send follow-ups and answer prompts in this session."
+    event_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"local-session-{kind}|{sid}|{request_id}"))
     try:
         await messaging_repo.put_activity_row(
             {
@@ -2012,6 +2129,7 @@ async def _notify_join_request(row: dict, requester: str) -> None:
                 "requestId": request_id,
                 "createdAt": created,
                 "expiresAt": int(time.time()) + ACTIVITY_TTL_S,
+                **({"request": "pickup"} if pickup else {}),
             }
         )
     except Exception:
@@ -2050,7 +2168,9 @@ async def _session_notice(owner: str, user: str, sid: str, state: str, title: st
         logger.warning("Session %s push failed", state)
 
 
-async def _notify_join_answer(row: dict, requester: str, state: str, request_id: str | None) -> None:
+async def _notify_join_answer(
+    row: dict, requester: str, state: str, request_id: str | None, *, kind: str = "join"
+) -> None:
     """Tell the person who asked how the owner answered, once per decision."""
     from core.services import notification_copy as copy
     from core.services.messaging import human_display_name
@@ -2061,11 +2181,15 @@ async def _notify_join_answer(row: dict, requester: str, state: str, request_id:
     except Exception:
         name = "The session's owner"
     session = copy.line(row.get("displayTitle") or row.get("title"), 40) or sid[:8]
-    if state == "join_allowed":
+    if kind == "pickup" and state == "join_allowed":
+        title, body = f"{name} let you pick up {session}", "Pick it up on your Mac once its snapshot is ready."
+    elif kind == "pickup":
+        title, body = f"{name} declined your request to pick up {session}", "You can ask again."
+    elif state == "join_allowed":
         title, body = f"{name} let you into {session}", "You can send follow-ups and answer its prompts."
     else:
         title, body = f"{name} declined your request", session
-    event_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"local-session-join-answer|{sid}|{request_id}|{state}"))
+    event_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"local-session-{kind}-answer|{sid}|{request_id}|{state}"))
     await _session_notice(row["ownerId"], requester, sid, state, title, body, event_id)
 
 

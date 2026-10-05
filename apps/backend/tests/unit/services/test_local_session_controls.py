@@ -821,3 +821,40 @@ async def test_sharing_and_join_events_land_on_the_person_who_acted(transport):
         assert "line 0" not in str(call.kwargs)
     assert capture.call_args_list[0].kwargs["properties"]["expires_in_days"] == 7
     assert capture.call_args_list[-1].kwargs["properties"]["decision"] == "allow"
+
+
+@pytest.mark.asyncio
+async def test_a_pick_up_request_shows_and_is_answered_in_activity(transport):
+    from tests.unit.services.test_session_pickup import claude_session
+
+    sid = await claude_session(transport)
+
+    async def no_push(*args, **kwargs):
+        return None
+
+    with (
+        patch("core.services.push_service.send_push_to_user", no_push),
+        patch("core.services.messaging.human_display_name", _name),
+    ):
+        await service.request_pickup_access(BOB, sid)
+    rid = (await repo.get_session(OWNER, sid))["pickupRequests"][BOB.user_id]["requestId"]
+    [item] = joins(await feed(ALICE))
+    assert item.id == f"pickup:{sid}:{BOB.user_id}:{rid}" and item.state == "open"
+    assert item.summary.title == f"Bob wants to pick up {sid[:8]}"
+    assert item.summary.reason == (
+        "Allow lets everyone in the workspace pick up this session on their Mac. It uploads the whole "
+        "conversation and your uncommitted changes as they are. Nothing is redacted."
+    )
+    assert [a.id for a in item.actions] == ["allow", "decline"]
+    decide = service.decide_pickup_request
+    calls = []
+
+    async def spy(*args, **kwargs):
+        calls.append((args[1:], kwargs))
+        return await decide(*args, **kwargs)
+
+    with patch.object(service, "decide_pickup_request", spy), patch.object(service, "decide_join") as join:
+        done = await act(ALICE, item.id, "allow")
+    assert calls == [((sid, BOB.user_id, "allow"), {"request_id": rid})] and not join.called
+    assert done.id == item.id and done.state == "resolved" and done.actions == []
+    assert (await repo.get_session(OWNER, sid))["pickupAllowed"] is True

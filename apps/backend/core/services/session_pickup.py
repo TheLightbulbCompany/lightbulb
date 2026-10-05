@@ -324,8 +324,14 @@ def _expired(row: dict, now: int | None = None) -> bool:
 # --- The author's switch ------------------------------------------------------------------------
 
 
-async def set_pickup(auth: AuthContext, session_id: str, enabled: bool) -> sessions.LocalSession:
-    """Only the session's own human flips it; unlike teammate control, also after it ended."""
+async def set_pickup(
+    auth: AuthContext, session_id: str, enabled: bool, *, expect_request: tuple[str, str] | None = None
+) -> sessions.LocalSession:
+    """Only the session's own human flips it; unlike teammate control, also after it ended.
+
+    ``expect_request`` is ``(user_id, request_id)`` when Allow answers a pick-up request: the
+    request must still be pending on the row this conditional write replaces, so a Decline that
+    lands first cannot be overridden."""
     from core.services.local_session_relay import publish_resources_changed
 
     owner = resolve_owner_id(auth)
@@ -335,6 +341,10 @@ async def set_pickup(auth: AuthContext, session_id: str, enabled: bool) -> sessi
         row, enrollment = await sessions.authorize_session(auth, None, session_id)
         if auth.user_id != row["humanUserId"]:
             raise ApiProblem("LOCAL_SESSION_FORBIDDEN", "Only the session's owner can allow pick-up.")
+        if expect_request is not None:
+            asked = (row.get("pickupRequests") or {}).get(expect_request[0]) or {}
+            if asked.get("state") != "pending" or asked.get("requestId") != expect_request[1]:
+                raise ApiProblem("LOCAL_SESSION_CONFLICT", "That request was already answered.")
         if row["provider"] != "claude":
             raise ApiProblem("LOCAL_SESSION_UNSUPPORTED", "Only Claude Code sessions can be picked up.")
         if row.get("pickupAllowed"):
@@ -349,6 +359,10 @@ async def set_pickup(auth: AuthContext, session_id: str, enabled: bool) -> sessi
             "pickupSnapshot": {"state": "preparing"},
             "pickupEpoch": uuid.uuid4().hex,
             "revision": str(uuid.uuid4()),
+            # Everyone may pick it up now, so every pending ask is answered (spec 2026-10-05-ask-to-pick-up).
+            "pickupRequests": {
+                u: r for u, r in (row.get("pickupRequests") or {}).items() if r.get("state") != "pending"
+            },
         }
         extra = [_audit(owner, sid, auth, "pickup_on"), _want_put(row)]
         try:
@@ -358,6 +372,8 @@ async def set_pickup(auth: AuthContext, session_id: str, enabled: bool) -> sessi
                 raise
             continue
         await publish_resources_changed(owner, row["humanUserId"])
+        if sessions.pending_pickups(row):
+            await sessions._push_presence(updated)  # a pending ask froze the owner's Mac; lift it now
         return sessions._session_public(updated, auth.user_id)
     raise ApiProblem("LOCAL_SESSION_CONFLICT", "Session changed. Try again.")
 

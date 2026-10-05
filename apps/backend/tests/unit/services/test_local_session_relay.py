@@ -2004,6 +2004,7 @@ async def test_subagent_events_round_trip_and_a_long_background_end_notifies_onc
     from core.services import activity, local_session_relay as module
 
     assert "sessionSubagents" in module.FEATURES
+    assert "pickupRequests" in module.FEATURES
     pushes = []
 
     async def push(user_id, title, body, data=None):

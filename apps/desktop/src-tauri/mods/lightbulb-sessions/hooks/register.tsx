@@ -1,7 +1,7 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 import type { SessionState } from '../types'
-import { bandRuns, type Decision } from './state'
+import { bandRuns, requestLine, type Decision } from './state'
 import { bashTouchesProtected, classify, colorFor, protectedPath, rowBody, rowLabel, senderColor } from './rules'
 
 export const sharing = atom({ plugin: 'lightbulb-sessions', key: 'state' } as const, null as SessionState | null)
@@ -133,7 +133,7 @@ export const register: Register = on => {
         </Box>
         {ask && (
           <Box>
-            <Text><Text color={colorFor(ask.userId)}>{ask.name}</Text> asked to join{s.joinRequests.length > 1 ? ` (+${s.joinRequests.length - 1} more)` : ''} </Text>
+            <Text><Text color={colorFor(ask.userId)}>{ask.name}</Text>{requestLine(ask, s.joinRequests.length).slice(ask.name.length)} </Text>
             <Button key="allow" hotkey="a" variant="primary" label="Allow" onPress={act({ decision: 'allow', userId: ask.userId, requestId: ask.requestId })} />
             <Button key="decline" hotkey="d" label="Decline" onPress={act({ decision: 'decline', userId: ask.userId, requestId: ask.requestId })} />
           </Box>

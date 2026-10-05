@@ -177,9 +177,10 @@ async def test_push_skips_a_mac_without_the_feature(monkeypatch):
     send.assert_not_awaited()
 
 
-def test_input_paused_is_public_only_with_a_pending_request_on_a_presence_mac(monkeypatch):
+def test_a_pending_request_never_pauses_input_in_the_public_session(monkeypatch):
+    """Owner ruling 2026-10-05: no paused concept. A pending request changes nobody's access."""
     monkeypatch.setattr(sessions, "session_terminal", lambda row: "held")
-    base = _row(
+    row = _row(
         onlineUntil=9_999_999_999,
         capabilitiesVerified=True,
         provider="claude",
@@ -188,16 +189,13 @@ def test_input_paused_is_public_only_with_a_pending_request_on_a_presence_mac(mo
         providerVersion="1",
         activeTurnId=None,
         capabilities={},
+        deviceFeatures=["pickupRequests", "sessionPresence"],
+        joinRequests={"user_zoe": {"state": "pending", "requestId": "r1"}},
+        pickupRequests={"user_zoe": {"state": "pending", "requestId": "p1"}},
     )
-    pending = {"joinRequests": {"user_zoe": {"state": "pending", "requestId": "r1"}}}
-    assert sessions._session_public({**base, **pending}, "user_aden").input_paused is True
-    assert sessions._session_public(base, "user_aden").input_paused is False
-    assert sessions._session_public({**base, **pending, "deviceFeatures": []}, "user_aden").input_paused is False
-    pickup = {"pickupRequests": {"user_zoe": {"state": "pending", "requestId": "p1"}}}
-    # An older Mac never shows the pick-up request, so nothing freezes there for it.
-    assert sessions._session_public({**base, **pickup}, "user_aden").input_paused is False
-    newer = {"deviceFeatures": ["pickupRequests", "sessionPresence"]}
-    assert sessions._session_public({**base, **pickup, **newer}, "user_aden").input_paused is True
+    public = sessions._session_public(row, "user_aden")
+    assert "inputPaused" not in public.model_dump(by_alias=True)
+    assert not hasattr(public, "input_paused")
 
 
 @pytest.mark.asyncio

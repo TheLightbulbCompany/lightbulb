@@ -300,8 +300,6 @@ class LocalSession(ContractModel):
     resume: ResumeStatus | None = None
     # Server-computed: ended, not background, and this workspace may start sessions on its Macs.
     resumable: bool = False
-    # A join request is pending and the owner's Mac has paused remote typing until it is answered.
-    input_paused: bool = False
 
     @model_serializer(mode="wrap")
     def wire(self, handler, info):
@@ -691,13 +689,6 @@ def _session_public(row: dict, viewer: str | None = None) -> LocalSession:
         if waiting:
             public["pendingPickups"] = sorted(waiting)
             public["pendingPickupIds"] = waiting
-    from core.services import session_presence  # lazy: it imports this module
-
-    public["inputPaused"] = bool(
-        (session_presence.pending_joins(row) or session_presence.shown_pickups(row))
-        and session_presence.FEATURE in row.get("deviceFeatures", ())
-        and public["terminal"] is not None
-    )
     stats = row.get("stats") or {}
     for key in ("model", "permissionMode"):
         if stats.get(key):

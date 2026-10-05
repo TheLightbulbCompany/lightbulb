@@ -49,11 +49,6 @@ fn admit(body: &Value, relay_of: impl Fn(&Value) -> Option<(String, Arc<Ctl>)>) 
     let epoch = body["epoch"].as_u64().filter(|e| *e != 0)?;
     let generation = body["generation"].as_str()?.to_owned();
     let (sid, ctl) = relay_of(body)?;
-    // A join request is waiting for the owner: their band has Allow on it, and a teammate's
-    // key on this pty could press it. Dropped, not queued.
-    if super::presence::frozen(&sid, &generation) {
-        return None;
-    }
     if ctl.epoch.load(SeqCst) != epoch {
         return None;
     }
@@ -236,7 +231,7 @@ mod tests {
     }
 
     #[test]
-    fn remote_input_is_dropped_while_a_join_request_waits() {
+    fn remote_input_is_never_dropped_because_a_request_is_pending() {
         use super::super::presence::{set, Entry, JoinRequest, TEST_LOCK};
         let _g = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let sid = "cccc1111-2222-4333-8444-555566667777";
@@ -251,8 +246,9 @@ mod tests {
         assert!(admit(&frame(sid, "gen-1", 7, b"ls\r"), relay).is_some());
         e.join_requests = vec![JoinRequest { user_id: "u2".into(), name: "Mira".into(), request_id: "r1".into(), kind: "join".into() }];
         set(sid, e);
-        assert!(admit(&frame(sid, "gen-1", 7, b"ls\r"), relay).is_none());
-        assert!(admit(&frame(sid, "gen-2", 7, b"ls\r"), relay).is_some(), "the old generation's request does not freeze a restart");
+        // No paused concept (owner ruling 2026-10-05): the owner's Allow is confirmed in a dialog
+        // the app draws, so a writer's keys on this pty cannot answer it and need not be dropped.
+        assert!(admit(&frame(sid, "gen-1", 7, b"ls\r"), relay).is_some());
     }
 
     #[test]

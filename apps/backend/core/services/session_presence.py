@@ -1,7 +1,7 @@
 """What the owner's Mac shows in its Claude terminal about one shared session (spec
 2026-10-04-session-sharing-mod §4.2): who watches, who may type, who is typing, pending join
-requests, paused. A pending request also freezes remote typing on the Mac, so the request
-being answered is pushed at once; everything else rides the heartbeat ack."""
+requests, paused. A new request is pushed at once so the band shows it; everything else rides
+the heartbeat ack."""
 
 from __future__ import annotations
 

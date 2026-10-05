@@ -32,15 +32,16 @@ step, and call HTTP over a Unix socket (`$.http.fetch(url, { socketPath })`).
 3. **Sharing decisions can be made in the terminal** (owner, 2026-10-04): Allow or Decline a
    join request, Pause, Unpause.
 4. **Only the owner's machine can press them.** A live terminal carries an admitted teammate's
-   keys and mouse on the same pty as the owner's, and the mod cannot tell them apart. So **the
-   app freezes remote input for a session while it holds a pending join request for it**:
-   `remote_input.rs` drops `local.session.input` frames. The app sets the freeze when it stores
-   the request, before the mod can read and draw it, so no remote key can press a button that
-   was not yet on screen. Only remote `type`-client input is dropped: the owner keeps typing in
-   their terminal and in the app panel. The freeze lifts when no request is pending. Pause
-   narrows sharing and needs none; while paused, remote input is already cut, so Unpause needs
-   none either. A frozen typist's web terminal view says "Paused while the owner answers a
-   request to join" (`SessionTerminalView.tsx`, from the public session's pending requests).
+   keys and mouse on the same pty as the owner's, and the mod cannot tell them apart. There is
+   no paused concept (owner ruling 2026-10-05): people have read or write access, and remote
+   input is never frozen while a request waits. Instead, when the mod sends a decision that
+   widens access (`allow`, `unpause`) and any current viewer of that session has `canType`
+   (a remote writer is connected, per the stored presence for that generation), the app shows a
+   native macOS dialog on the owner's Mac ("Let Mira write to this session?" / "Resume sharing
+   fix-login?", Allow/Cancel) before it forwards the decision. The app process draws it, never
+   the pty, so a remote writer's keys cannot answer it. Cancel replies `409 {"error":"cancelled",
+   "message":"Cancelled on this Mac."}`. With no remote writer connected the decision goes out
+   with no dialog. `decline` and `pause` narrow access and never ask.
 5. **A Mac may write these decisions for its owner.** Today a device token reaches read routes
    only (`routers/messaging.py`, `device_human`). This adds one write door, device-authed like
    `/messaging/native-session-tools`: `POST /messaging/native-session-decisions`
@@ -71,7 +72,7 @@ The band above the prompt, one line, only while sharing is on:
 | Live, watched | `● Live · Aden, Mira watching · Aden typing` `[Pause]` |
 | Transcript (plain session) | `● Shared as a transcript` `[Pause]` |
 | Paused | `○ Sharing paused` `[Resume sharing]` |
-| Join request | `Aden Kim asked to join` `[Allow]` `[Decline]` (remote input frozen) |
+| Join request | `Aden Kim asked to join` `[Allow]` `[Decline]` |
 | Remote approval pending | `Waiting on you here or in Lightbulb` |
 
 On surfaces that do not draw (VS Code chat, `claude -p`) the hooks still run; nothing shows.
@@ -110,7 +111,7 @@ Otherwise `404 {"error":"not_shared"}`; the mod shows nothing.
   `allowedSenders`/team control, `typing` from the viewer row's `typedAt` (set on each admitted keystroke batch) in the last 10 s; names from
   `human_display_name`). Trimmed to `MAX_ENVELOPE_BYTES` like `watching`.
 - A `local.session.presence {sessionId, generation, …same}` frame is sent, best effort, when a
-  join request is made or answered (they set and lift the input freeze). Everything else rides
+  join request is made or answered (so the band shows it at once). Everything else rides
   the ack.
 - Every entry carries `at`, the server milliseconds taken before its row was read, and the ack
   carries `presenceAt`, the same for the whole ack. The ack and the frame are independent posts,
@@ -141,9 +142,8 @@ logged and never blocks sharing (the mod is an addition).
 | Piece | Where |
 |---|---|
 | Mod | `apps/desktop/src-tauri/mods/lightbulb-sessions/` |
-| `mod.sock`, decide, input freeze, install | `local_sessions/mod_socket.rs`, `remote_input.rs`, `enrollment.rs`, `transport.rs` |
+| `mod.sock`, decide, confirmation dialog, install | `local_sessions/mod_socket.rs`, `enrollment.rs`, `transport.rs` |
 | Presence, decision door | `core/services/session_presence.py` (new), `session_screen.py` ack, `routers/messaging.py` |
-| Frozen-typist notice | `apps/frontend/src/components/messaging/SessionTerminalView.tsx` |
 
 Not touched: `cli.rs`, `session_start.rs`, status wording (owned by the native-session
 session), `ExplicitSharingNotice.tsx` (#3716).

@@ -148,6 +148,11 @@ pub(crate) fn install(app: &tauri::AppHandle) {
     let _ = APP.set(app.clone());
 }
 
+/// The app, once setup installed it: the mod socket's confirmation dialog needs it too.
+pub(super) fn app() -> Option<tauri::AppHandle> {
+    APP.get().cloned()
+}
+
 pub(super) struct Resumer {
     pub api: String,
     pub key_pem: String,

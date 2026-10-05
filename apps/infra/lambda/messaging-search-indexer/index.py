@@ -169,12 +169,14 @@ def drain(context: Any) -> dict[str, int]:
         return {"drained": 0, "failed": 0}
     while context.get_remaining_time_in_millis() >= DRAIN_MIN_REMAINING_MS:
         messages = _sqs().receive_message(
-            QueueUrl=SEARCH_INDEX_BATCH_QUEUE_URL, MaxNumberOfMessages=10, WaitTimeSeconds=0, VisibilityTimeout=600
+            QueueUrl=SEARCH_INDEX_BATCH_QUEUE_URL, MaxNumberOfMessages=10, WaitTimeSeconds=1, VisibilityTimeout=600
         ).get("Messages", [])
         if not messages:
             break
         done = []
         for message in messages:
+            if context.get_remaining_time_in_millis() < DRAIN_MIN_REMAINING_MS:
+                break  # the rest stay queued for the next drain
             try:
                 process(json.loads(message["Body"]))
                 done.append({"Id": message["MessageId"], "ReceiptHandle": message["ReceiptHandle"]})
@@ -182,7 +184,9 @@ def drain(context: Any) -> dict[str, int]:
                 logger.error("search index job failed message_id=%s error_type=%s", message["MessageId"], type(exc).__name__)
                 failed += 1
         if done:
-            _sqs().delete_message_batch(QueueUrl=SEARCH_INDEX_BATCH_QUEUE_URL, Entries=done)
+            response = _sqs().delete_message_batch(QueueUrl=SEARCH_INDEX_BATCH_QUEUE_URL, Entries=done)
+            if response.get("Failed"):
+                logger.warning("search index drain delete failed count=%d", len(response["Failed"]))
         drained += len(done)
     logger.info("search index drain drained=%d failed=%d", drained, failed)
     return {"drained": drained, "failed": failed}

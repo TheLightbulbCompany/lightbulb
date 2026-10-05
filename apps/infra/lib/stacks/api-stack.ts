@@ -813,6 +813,9 @@ export class ApiStack extends cdk.Stack {
     // Batch queue: new messages. No event source; MessageSearchBatchDrain empties it.
     const batchQueue = new sqs.Queue(this, "MessageSearchBatchQueue", {
       queueName: `${resourcePrefix(env)}message-search-index-batch`,
+      // No consumer receives from it until a drain runs, so a dead drain would otherwise
+      // let messages expire silently; the stale alarm below pages first.
+      retentionPeriod: cdk.Duration.days(14),
       visibilityTimeout: cdk.Duration.minutes(30),
       encryption: sqs.QueueEncryption.SQS_MANAGED,
       deadLetterQueue: { queue: indexDlq, maxReceiveCount: 5 },
@@ -1063,6 +1066,14 @@ def handler(event, context):
         statistic: "Maximum",
       }),
       threshold: 1,
+      evaluationPeriods: 1,
+      treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
+    });
+    pageAlarm("MessageSearchBatchStaleAlarm", {
+      alarmName: `${resourcePrefix(env)}message-search-batch-stale`,
+      alarmDescription: "PAGE: message search batch drain is not running; new messages are not becoming searchable.",
+      metric: batchQueue.metricApproximateAgeOfOldestMessage({ period: cdk.Duration.minutes(5), statistic: "Maximum" }),
+      threshold: 5400, // 90 minutes, about 2 x the 39-minute drain
       evaluationPeriods: 1,
       treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
     });

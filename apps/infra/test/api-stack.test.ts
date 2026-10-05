@@ -972,6 +972,7 @@ describe("ApiStack — message search (OpenSearch Serverless)", () => {
     const queues = Object.values(dev.findResources("AWS::SQS::Queue")) as any[];
     const batch = queues.find((q) => q.Properties.QueueName === "lightbulb-dev-message-search-index-batch");
     expect(batch.Properties.VisibilityTimeout).toBe(1800);
+    expect(batch.Properties.MessageRetentionPeriod).toBe(1209600);
     expect(JSON.stringify(batch.Properties.RedrivePolicy)).toContain("MessageSearchIndexDlq");
     expect(batch.Properties.RedrivePolicy.maxReceiveCount).toBe(5);
     const sqsMappings = Object.values(dev.findResources("AWS::Lambda::EventSourceMapping")).filter((m: any) =>
@@ -983,6 +984,16 @@ describe("ApiStack — message search (OpenSearch Serverless)", () => {
       FunctionName: Match.stringLikeRegexp("message-search-indexer"),
       Timeout: 300,
       Environment: { Variables: Match.objectLike({ SEARCH_INDEX_BATCH_QUEUE_URL: Match.anyValue() }) },
+    });
+  });
+
+  test("a stalled batch drain pages", () => {
+    dev.hasResourceProperties("AWS::CloudWatch::Alarm", {
+      AlarmName: "lightbulb-dev-message-search-batch-stale",
+      Threshold: 5400,
+      EvaluationPeriods: 1,
+      TreatMissingData: "notBreaching",
+      MetricName: "ApproximateAgeOfOldestMessage",
     });
   });
 

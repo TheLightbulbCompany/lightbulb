@@ -137,6 +137,7 @@ class DrainTests(unittest.TestCase):
         for c in index._sqs_client.delete_message_batch.call_args_list:
             self.assertLessEqual(len(c.kwargs["Entries"]), 10)
         self.assertEqual(index._sqs_client.receive_message.call_args.kwargs["QueueUrl"], BATCH_URL)
+        self.assertEqual(index._sqs_client.receive_message.call_args.kwargs["WaitTimeSeconds"], 1)
 
     @patch("index.process", side_effect=[None, RuntimeError("boom"), None])
     def test_a_failing_job_is_not_deleted(self, process):
@@ -155,8 +156,27 @@ class DrainTests(unittest.TestCase):
     @patch("index.process")
     def test_stops_when_time_is_low(self, process):
         index._sqs_client.receive_message.return_value = {"Messages": [sqs_msg(1)]}
-        result = index.drain(FakeContext(300_000, 59_999))
+        result = index.drain(FakeContext(300_000, 300_000, 59_999))
         self.assertEqual(result, {"drained": 1, "failed": 0})
+        index._sqs_client.receive_message.assert_called_once()
+
+    @patch("index.process")
+    def test_failed_delete_is_logged_by_count_only(self, process):
+        index._sqs_client.receive_message.side_effect = [{"Messages": [sqs_msg(1)]}, {}]
+        index._sqs_client.delete_message_batch.return_value = {"Failed": [{"Id": "m1"}]}
+        with self.assertLogs(level="WARNING") as logs:
+            index.drain(FakeContext(300_000))
+        self.assertIn("count=1", logs.output[0])
+        self.assertNotIn("m1", logs.output[0])
+
+    @patch("index.process")
+    def test_stops_mid_batch_when_time_is_low(self, process):
+        index._sqs_client.receive_message.return_value = {"Messages": [sqs_msg(i) for i in range(3)]}
+        # loop check, msg0 check, msg1 check (low)
+        result = index.drain(FakeContext(300_000, 300_000, 59_999))
+        self.assertEqual(result, {"drained": 1, "failed": 0})
+        self.assertEqual(process.call_count, 1)
+        self.assertEqual(self.deleted(), ["m0"])
         index._sqs_client.receive_message.assert_called_once()
 
     def test_empty_batch_url_receives_nothing(self):

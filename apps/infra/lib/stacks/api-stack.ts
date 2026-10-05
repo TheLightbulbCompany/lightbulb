@@ -737,8 +737,8 @@ export class ApiStack extends cdk.Stack {
     // ---- Message search: OpenSearch Serverless NextGen ----
     // The projector only ENQUEUES a row pointer; a VPC indexer re-reads the row
     // and writes the index, so an indexing cold start (10-30 s) can never stall
-    // live delivery on this stream shard. DynamoDB stays the truth: standby
-    // replicas are off and scripts/reindex_messages.py rebuilds an index.
+    // live delivery on this stream shard. DynamoDB stays the truth:
+    // scripts/reindex_messages.py rebuilds an index.
     // The collection's endpoint and ARN cross to ServiceStack as CloudFormation
     // exports, and Name/Tags/EncryptionConfig/CollectionGroupName force
     // REPLACEMENT: a new stage-wide tag (lightbulb-stage.ts applies cdk.Tags)
@@ -752,7 +752,9 @@ export class ApiStack extends cdk.Stack {
       const group = new aoss.CfnCollectionGroup(this, "MessageSearchGroup", {
         name: `lightbulb-${env}-search`,
         generation: "NEXTGEN",
-        standbyReplicas: "DISABLED",
+        // NEXTGEN rejects DISABLED ("StandbyReplicas cannot be set to DISABLED for
+        // NEXTGEN collection groups"); compute still scales to zero when idle.
+        standbyReplicas: "ENABLED",
         capacityLimits: {
           minIndexingCapacityInOcu: 0,
           minSearchCapacityInOcu: 0,

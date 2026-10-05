@@ -901,10 +901,10 @@ describe("ApiStack — messaging projector permissions and alarms", () => {
 describe("ApiStack — message search (OpenSearch Serverless)", () => {
   const dev = API_TEMPLATE;
 
-  test("a NextGen collection group with no standby replicas and capped OCUs", () => {
+  test("a NextGen collection group (standby replicas are mandatory there) with capped OCUs", () => {
     dev.hasResourceProperties("AWS::OpenSearchServerless::CollectionGroup", {
       Generation: "NEXTGEN",
-      StandbyReplicas: "DISABLED",
+      StandbyReplicas: "ENABLED",
       CapacityLimits: {
         MinIndexingCapacityInOcu: 0,
         MinSearchCapacityInOcu: 0,

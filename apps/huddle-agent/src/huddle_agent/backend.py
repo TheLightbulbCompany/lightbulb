@@ -192,9 +192,6 @@ class Backend:
         }
         await self._post(f"/internal/huddles/{self._room_id}/late-answer", body)
 
-    async def meet_chat(self, text: str) -> None:
-        await self._post(f"/internal/huddles/{self._room_id}/meet-chat", {"text": text})
-
     async def transcript(
         self, huddle_id: str, lines: list[dict], final: bool = False
     ) -> None:

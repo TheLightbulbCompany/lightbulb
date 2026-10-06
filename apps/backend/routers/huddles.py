@@ -155,12 +155,6 @@ class LateAnswerBody(BaseModel):
     answer: str = Field(max_length=20000)
 
 
-class MeetChatBody(BaseModel):
-    ownerId: _Id
-    roomToken: _Id
-    text: str = Field(min_length=1, max_length=500)
-
-
 class FramesBody(BaseModel):
     events: list[dict[str, Any]] = Field(max_length=50)
 
@@ -372,16 +366,6 @@ async def late_answer(room_id: str, body: LateAnswerBody):
     room_id = _room_id(room_id)
     _require_room_token(body.roomToken, room_id, body.ownerId)
     await voice_calls.post_late_answer(body.ownerId, room_id, body.agentId, body.runId, body.request, body.answer)
-    return {"ok": True}
-
-
-@router.post("/internal/huddles/{room_id}/meet-chat", dependencies=[_Worker])
-async def meet_chat(room_id: str, body: MeetChatBody):
-    """A line in the Meet's own chat, from the bot: an agent's hand went up. Nobody watches a tile, and a
-    Recall bot cannot raise Meet's hand (no API, probed 10-06). A room with no bot in a Meet says nothing."""
-    room_id = _room_id(room_id)
-    _require_room_token(body.roomToken, room_id, body.ownerId)
-    voice_calls._fire(meeting_invites.say_in_meet(room_id, body.text))
     return {"ok": True}
 
 

@@ -704,16 +704,6 @@ _VOICE_LIMIT_LINES = {
 }
 
 
-async def say_in_meet(room_id: str, text: str) -> None:
-    """The bot posts one line in the Meet's chat. A room with no meeting, or no bot in it, says nothing."""
-    try:
-        bot_id = (((await messaging_repo.get_room(room_id)) or {}).get("meeting") or {}).get("recallBotId")
-        if bot_id:
-            await meeting_bots.say(bot_id, text)
-    except Exception:  # noqa: BLE001 -- fired and forgotten: the tile still shows the hand
-        logger.warning("meeting room %s: chat line failed", room_id, exc_info=True)
-
-
 async def say_voice_limit(room_id: str, reason: str | None) -> None:
     """The bot says in the Meet's chat why the agents are silent, once an occurrence: the worker asks
     for a voice on every line said to an agent, and nobody watches a tile. Marked before it is sent,

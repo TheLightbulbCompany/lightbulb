@@ -260,9 +260,6 @@ class FakeBackend:
         self.presences.append(user_ids)
         self.versions.append(version)
 
-    async def meet_chat(self, text):
-        self.meet_chats = getattr(self, "meet_chats", []) + [text]
-
     async def late_answer(self, agent_id, run_id, request, answer):
         self.late_answers.append((agent_id, run_id, request, answer))
 

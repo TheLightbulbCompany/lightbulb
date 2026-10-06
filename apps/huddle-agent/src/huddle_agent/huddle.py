@@ -3601,9 +3601,6 @@ class Huddle:
         for run_id, (aid, n) in ready.items():
             if run_id not in self._speech:
                 self._render(n, aid)
-                # once a hand: the Meet's chat says it too (a talked-over answer keeps its audio, so no repeat)
-                name = self._agent_name(aid)
-                self._spawn(self._backend.meet_chat(f'\u270b {name} has an answer: {n[1][:120]}. Say "go ahead, {name}".'))
         for run_id in [r for r in self._speech if r not in ready]:
             t = self._speech.pop(run_id)
             if t.done() and not t.cancelled() and t.exception() is None:

@@ -1214,6 +1214,15 @@ PROGRESS_MIN_INTERVAL_S = 60.0
 PROGRESS_MIN_CHARS = 12
 
 
+def _cut_short(text: str) -> bool:
+    """A line the model abandoned mid-sentence to make its tool call. Seen on dev 2026-10-06:
+    deepseek-v4-flash stored 14 of 43 such messages cut ("**Step 21: Read step-0", "**Sleep 4 of").
+    ponytail: only unclosed markdown or brackets are detectable; a cut that happens to balance
+    still posts. Skipping costs nothing: the next complete line takes the same slot."""
+    return bool(text.count("**") % 2 or text.count("`") % 2
+                or text.count("(") > text.count(")") or text.count("[") > text.count("]"))
+
+
 def _progress_poster(agent_id: str, body: dict):
     """Hermes's `interim_assistant_callback` for an addressed room turn, or None.
 
@@ -1235,7 +1244,7 @@ def _progress_poster(agent_id: str, body: dict):
             text = (text or "").strip()
             at = time.monotonic()
             if (len(text) < PROGRESS_MIN_CHARS or at - posted["at"] < PROGRESS_MIN_INTERVAL_S
-                    or _is_silence(text) or run_aborted(run_id)):
+                    or _is_silence(text) or _cut_short(text) or run_aborted(run_id)):
                 return
             posted["at"], posted["count"] = at, posted["count"] + 1
             _post_reply(agent_id, {

@@ -102,7 +102,7 @@ async def test_a_ready_answer_raises_its_hand_and_its_live_voice_says_it_when_pe
     await first_sound(h)
     assert status(h, "forge") == "speaking"
     await last_word(h)
-    assert status(h, "forge") == "idle" and ("aclose",) in [c[:1] for c in lives[0].calls] or status(h, "forge") == "idle"
+    assert status(h, "forge") == "idle" and ("close",) in [c[:1] for c in lives[0].calls] or status(h, "forge") == "idle"
     assert len(backend.turns) == 1 and h.gptlive_seconds() >= 0
 
 
@@ -281,7 +281,7 @@ async def test_a_voice_the_backend_refuses_says_nothing():
 
     h, backend, lives, clock = await asked()
 
-    async def refuse(agent_id):
+    async def refuse(agent_id, silent=False):
         raise BackendError(409, "agent_not_in_room", None)
 
     backend.session = refuse
@@ -289,3 +289,53 @@ async def test_a_voice_the_backend_refuses_says_nothing():
     await turns()
     await pause(h, clock)
     assert lives == [] and told(lives) == []
+
+
+async def test_an_agent_has_one_hand_voice_however_many_answers_and_its_time_is_charged_to_the_call():
+    """Codex on #3776: two sessions of one agent share a track name, and their time was billed to nobody."""
+    h, backend, lives, clock = await asked()
+    run = h._requests.items[0].run_id
+    talks(h, P2)
+    answer(h, run, "forge", "Three PRs are open.")
+    h._news["forge"].append(("run-2", "the closed PRs", "Nine are closed.", clock.t, P1))  # a second one, ready too
+    h._rowless.add("run-2")
+    await turns()
+    assert len(lives) == 1 and backend.silent_sessions == ["forge"], "one voice, and no naming prompt used up"
+    for words in ("Three PRs are open.", "Nine are closed."):
+        clock.t += h_mod.gate.ANNOUNCE_QUIET
+        await pause(h, clock)
+        assert told(lives)[-1] == words
+        await first_sound(h)
+        await last_word(h)
+    assert len(lives) == 1 and status(h, "forge") == "idle", "the same voice said both"
+    lives[0].final_usage = 12.0
+    await h.tick()
+    await turns()
+    assert ("close",) in [c[:1] for c in lives[0].calls]
+    await h.clear_presence()
+    assert backend.ends and backend.ends[-1][1] >= 12, "its seconds reach the call's bill"
+
+
+async def test_a_hand_nobody_leaves_a_pause_for_closes_its_voice_and_opens_it_again_to_speak():
+    h, backend, lives, clock = await asked()
+    talks(h, P2)
+    answer(h, h._requests.items[0].run_id, "forge", "Three PRs are open.")
+    await turns()
+    clock.t += h_mod.HAND_HOLD_S
+    await h.tick()
+    await turns()
+    assert ("close",) in [c[:1] for c in lives[0].calls] and status(h, "forge") == "has_news", "the hand stays up"
+    await h.tick()
+    await turns()
+    assert len(lives) == 1, "not reopened while people talk"
+    await pause(h, clock)
+    assert len(lives) == 2 and told(lives) == ["Three PRs are open."]
+
+
+async def test_the_last_person_leaving_closes_a_hand_voice():
+    h, backend, lives, clock = await asked()
+    answer(h, h._requests.items[0].run_id, "forge", "Three PRs are open.")
+    await turns()
+    await h.on_participants({})
+    await turns()
+    assert ("close",) in [c[:1] for c in lives[0].calls]

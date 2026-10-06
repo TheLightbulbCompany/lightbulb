@@ -39,3 +39,36 @@ async def test_the_meeting_voice_is_read_without_claiming_the_naming_prompt(monk
     with pytest.raises(Exception) as refused:
         await voice_calls.agent_meet_voice(owner_id="org_1", room_id="r1", agent_id="gone")
     assert "agent_not_in_room" in str(getattr(refused.value, "detail", refused.value))
+
+
+@pytest.mark.asyncio
+async def test_a_silent_session_keeps_the_naming_prompt_for_a_real_conversation(monkeypatch):
+    """Codex on #3776: a raised-hand voice only says what it is given; it must not use the prompt up."""
+
+    async def owned(owner_id, room_id):
+        return {"name": "general"}
+
+    async def members(room_id):
+        return [{"kind": "agent", "id": "g1", "displayName": "Growth"}]
+
+    async def starters(owner_id):
+        return {"growth": "g1"}
+
+    async def reads(owner_id, agent_id):
+        return {"name": "Growth", "title": "Growth"}, None, None
+
+    claims = []
+
+    async def claim(owner_id, agent_id):
+        claims.append(agent_id)
+        return True
+
+    monkeypatch.setattr(voice_calls, "_owned_room", owned)
+    monkeypatch.setattr(voice_calls.messaging_repo, "list_members", members)
+    monkeypatch.setattr(voice_calls, "_starter_ids", starters)
+    monkeypatch.setattr(voice_calls, "_session_reads", reads)
+    monkeypatch.setattr(voice_calls, "_claim_voice_asked", claim)
+    silent = await voice_calls.agent_session(owner_id="org_1", room_id="r1", agent_id="g1", ask_name=False)
+    assert silent["askName"] is False and claims == []
+    asked = await voice_calls.agent_session(owner_id="org_1", room_id="r1", agent_id="g1")
+    assert asked["askName"] is True and claims == ["g1"]

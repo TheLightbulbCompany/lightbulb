@@ -693,7 +693,7 @@ async def agent_meet_voice(*, owner_id: str, room_id: str, agent_id: str) -> dic
     return {"voice": voice_persona.agent_meet_voice(agent_id, starters, title)}
 
 
-async def agent_session(*, owner_id: str, room_id: str, agent_id: str) -> dict:
+async def agent_session(*, owner_id: str, room_id: str, agent_id: str, ask_name: bool = True) -> dict:
     """One agent's GPT-Live session: its own voice and persona. Falls back to the bare persona
     (no role, SOUL or notes) when the reads fail or overrun."""
     meta = await _owned_room(owner_id, room_id)
@@ -703,7 +703,11 @@ async def agent_session(*, owner_id: str, room_id: str, agent_id: str) -> dict:
         raise _problem(409, code="agent_not_in_room")
     row, soul, notes_md = await _session_reads(owner_id, agent_id)
     name = (row or {}).get("name") or me.get("displayName") or "Agent"
-    ask_name = voice_persona.is_default_name(agent_id, name, starters) and await _claim_voice_asked(owner_id, agent_id)
+    ask_name = (
+        ask_name
+        and voice_persona.is_default_name(agent_id, name, starters)
+        and await _claim_voice_asked(owner_id, agent_id)
+    )
     title = (row or {}).get("title") or (row or {}).get("role")
     persona = voice_persona.build_agent_persona(
         name=name,

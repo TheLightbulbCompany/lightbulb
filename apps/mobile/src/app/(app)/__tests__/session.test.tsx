@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react-native";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react-native";
 import { ApiError, type LiveEvent, type LocalSession, type LocalSessionCommand, type LocalSessionCommandReceipt, type LocalSessionEvent, type RoomDetail } from "@lightbulb/shared";
 import type { ReactNode } from "react";
 
@@ -19,10 +19,12 @@ jest.mock("expo-router", () => {
     },
     useFocusEffect: (cb: () => undefined | (() => void)) => useEffect(() => cb(), [cb]),
     useIsFocused: () => true,
-    useLocalSearchParams: () => ({ sessionId: "sess-1" }),
+    useLocalSearchParams: () => ({ sessionId: mockSessionId }),
   };
 });
 let mockScope = 0;
+let mockSessionId = "sess-1";
+const mockEventHandlers = new Set<(event: LiveEvent) => void>();
 jest.mock("@clerk/clerk-expo", () => ({
   useAuth: () => ({ userId: "user-a", getToken: jest.fn(async () => "token") }),
   useOrganization: () => ({ organization: { id: `org-${mockScope}` } }),
@@ -90,7 +92,7 @@ const mockLive = {
     getRunStatus: jest.fn(async () => ({ runId: "r", state: "terminal" })),
     listWorkspaceSessions: mockListSessions,
     // A session missing from the settled list is fetched directly; default to a genuine 404.
-    getLocalSession: jest.fn(async () => { throw new ApiError(404, null); }),
+    getLocalSession: jest.fn(async (_sessionId: string): Promise<LocalSession> => { throw new ApiError(404, null); }),
     listLocalSessionEvents: mockListEvents,
     submitLocalSessionCommand: mockSubmit,
     getLocalSessionCommand: mockGetCommand,
@@ -105,7 +107,7 @@ const mockLive = {
     getLiveConfig: jest.fn(), setMemberPrefs: jest.fn(), putSections: jest.fn(),
   },
   claimActiveRoomSubscription: jest.fn(() => () => {}),
-  onEvent: (_handler: (event: LiveEvent) => void) => () => {},
+  onEvent: (handler: (event: LiveEvent) => void) => { mockEventHandlers.add(handler); return () => { mockEventHandlers.delete(handler); }; },
   onChatMessage: () => () => {},
   runtime: {}, rpc: jest.fn(), getOperation: jest.fn(),
 };
@@ -118,6 +120,9 @@ import SessionScreen from "../session/[sessionId]";
 describe("session screen", () => {
   beforeEach(() => {
     mockScope += 1;
+    mockSessionId = "sess-1";
+    mockLive.messaging.getLocalSession.mockReset();
+    mockLive.messaging.getLocalSession.mockRejectedValue(new ApiError(404, null));
     mockSession = base;
     mockEvents = events;
     mockListSessions.mockClear();
@@ -316,6 +321,74 @@ describe("session screen", () => {
     await render(<SessionScreen />);
     await waitFor(() => expect(screen.getAllByText("History has a gap. Control is unavailable until the desktop reconnects safely.").length).toBeGreaterThan(0));
     expect(screen.queryByLabelText("Send a follow-up to Claude")).toBeNull();
+  });
+
+
+  describe("direct session fallback", () => {
+    beforeEach(() => { mockListSessions.mockResolvedValue({ sessions: [] }); jest.useFakeTimers(); });
+    afterEach(async () => { await cleanup(); jest.useRealTimers(); });
+    const get = mockLive.messaging.getLocalSession;
+    const advance = async (ms: number) => { await act(async () => { await jest.advanceTimersByTimeAsync(ms); }); };
+
+    it("recovers an ended session after a transient direct-fetch failure", async () => {
+      get.mockRejectedValueOnce(new TypeError("network")).mockResolvedValue({ ...base, status: "ended" });
+      await render(<SessionScreen />);
+      await advance(1000);
+      expect(get).toHaveBeenCalledTimes(2);
+      expect(screen.getByText("Fix relay")).toBeTruthy();
+    });
+
+    it("stops after three failures and lets the person retry", async () => {
+      get.mockRejectedValue(new TypeError("network"));
+      await render(<SessionScreen />);
+      await advance(10000);
+      expect(get).toHaveBeenCalledTimes(3);
+      expect(screen.getByText("Could not load this session.")).toBeTruthy();
+      get.mockResolvedValue({ ...base, status: "ended" });
+      await fireEvent.press(screen.getByRole("button", { name: "Try again" }));
+      expect(screen.getByText("Fix relay")).toBeTruthy();
+    });
+
+    it("does not retry a genuine 404", async () => {
+      await render(<SessionScreen />);
+      await advance(10000);
+      expect(get).toHaveBeenCalledTimes(1);
+      expect(screen.getByText("This session is no longer shared.")).toBeTruthy();
+    });
+
+    it("refetches on a resources hint and ignores the superseded response", async () => {
+      let old!: (s: LocalSession) => void;
+      get.mockImplementationOnce(() => new Promise(resolve => { old = resolve; })).mockResolvedValue({ ...base, status: "ended" });
+      await render(<SessionScreen />);
+      await act(async () => {
+        for (const handler of mockEventHandlers) handler({ type: "workspace.sessions.changed", payload: { transcript: true } } as LiveEvent);
+      });
+      expect(get).toHaveBeenCalledTimes(2);
+      expect(screen.getByText("Fix relay")).toBeTruthy();
+      await act(async () => { old({ ...base, title: "Stale response" }); });
+      expect(screen.queryByText("Stale response")).toBeNull();
+    });
+
+    it("fetches again on A → B → A and ignores old requests", async () => {
+      let old!: (s: LocalSession) => void;
+      get.mockImplementationOnce(() => new Promise(resolve => { old = resolve; })).mockImplementation(async id => ({ ...base, sessionId: id, status: "ended" }));
+      const view = await render(<SessionScreen />);
+      mockSessionId = "sess-2";
+      await view.rerender(<SessionScreen />);
+      mockSessionId = "sess-1";
+      await view.rerender(<SessionScreen />);
+      expect(get.mock.calls.map(([id]) => id)).toEqual(["sess-1", "sess-2", "sess-1"]);
+      await act(async () => { old({ ...base, title: "Stale response" }); });
+      expect(screen.getByText("Fix relay")).toBeTruthy();
+    });
+
+    it("cancels a scheduled retry when unmounted", async () => {
+      get.mockRejectedValue(new TypeError("network"));
+      const view = await render(<SessionScreen />);
+      await view.unmount();
+      await advance(10000);
+      expect(get).toHaveBeenCalledTimes(1);
+    });
   });
 
   it("says when the session is no longer shared", async () => {

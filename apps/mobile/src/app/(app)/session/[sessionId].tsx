@@ -76,17 +76,34 @@ export default function SessionScreen() {
   // list has settled) is fetched directly, the same fallback the web pane uses,
   // so an ended session still opens with its real status.
   const coldLoading = workspace.loading && workspace.sessions.length === 0;
-  const fetchedFor = useRef<string | null>(null);
-  const [fallback, setFallback] = useState<{ sessionId: string; session: LocalSession | null; notFound: boolean } | null>(null);
+  const hasListedSession = Boolean(listed);
+  const [retryRevision, setRetryRevision] = useState(0);
+  const [fallback, setFallback] = useState<{ sessionId: string; session: LocalSession | null; notFound: boolean; error: boolean } | null>(null);
   useEffect(() => {
-    if (listed || coldLoading || !sessionId || fetchedFor.current === sessionId) return;
-    fetchedFor.current = sessionId;
+    if (hasListedSession || coldLoading || !sessionId || !live) return;
     let alive = true;
-    void rooms.resourceSource.client.getLocalSession(sessionId)
-      .then((s) => { if (alive) setFallback({ sessionId, session: s, notFound: false }); })
-      .catch((e) => { if (alive) setFallback({ sessionId, session: null, notFound: e instanceof ApiError && e.status === 404 }); });
-    return () => { alive = false; };
-  }, [listed, coldLoading, sessionId, rooms.resourceSource.client]);
+    let attempts = 0;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    // A list refresh must not cancel a missing session's fetch just because its objects changed.
+    // A new hint or explicit retry starts a fresh bounded request; cleanup retires the old one.
+    const fetchSession = async () => {
+      attempts += 1;
+      try {
+        const session = await rooms.resourceSource.client.getLocalSession(sessionId);
+        if (alive) setFallback({ sessionId, session, notFound: false, error: false });
+      } catch (e) {
+        if (!alive) return;
+        const notFound = e instanceof ApiError && e.status === 404;
+        if (!notFound && attempts < 3) {
+          timer = setTimeout(() => void fetchSession(), attempts * 1000);
+        } else {
+          setFallback({ sessionId, session: null, notFound, error: !notFound });
+        }
+      }
+    };
+    void fetchSession();
+    return () => { alive = false; clearTimeout(timer); };
+  }, [hasListedSession, coldLoading, rooms.resourceSource.client, sessionId, workspace.hintRevision, retryRevision, live]);
   const resolvedFallback = fallback?.sessionId === sessionId ? fallback : null;
   const session = listed ?? resolvedFallback?.session ?? undefined;
   useEffect(() => {
@@ -181,6 +198,13 @@ export default function SessionScreen() {
             <>
               <Text accessibilityRole="alert" style={[styles.errorText, { color: palette.alert }]}>{workspace.error}</Text>
               <Pressable onPress={() => void workspace.refresh()} accessibilityRole="button" accessibilityLabel="Try again">
+                <Text style={[styles.link, { color: palette.link }]}>Try again</Text>
+              </Pressable>
+            </>
+          ) : resolvedFallback?.error ? (
+            <>
+              <Text accessibilityRole="alert" style={[styles.errorText, { color: palette.alert }]}>Could not load this session.</Text>
+              <Pressable onPress={() => { setFallback(null); setRetryRevision(v => v + 1); }} accessibilityRole="button" accessibilityLabel="Try again">
                 <Text style={[styles.link, { color: palette.link }]}>Try again</Text>
               </Pressable>
             </>

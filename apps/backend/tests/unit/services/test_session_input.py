@@ -6,11 +6,12 @@ terminal. Every call re-checks admission; refused calls send nothing; nothing ty
 import base64
 import json as _json
 import time
+from unittest.mock import AsyncMock
 
 import pytest
 
 from core.repositories import local_sessions_repo as repo, messaging_repo
-from core.services import local_sessions as service, session_screen
+from core.services import local_sessions as service, session_presence, session_screen
 from core.services.local_session_grants import AgentInvocation
 from core.services.messaging import ApiProblem
 from tests.unit.services.test_local_session_relay import (  # noqa: F401 -- fixtures
@@ -30,6 +31,9 @@ KEYS = base64.b64encode(b"ls -la\r").decode()
 @pytest.fixture(autouse=True)
 def _fresh(request, monkeypatch):
     monkeypatch.setattr(session_screen, "_typists", {})
+    monkeypatch.setattr(
+        session_presence, "human_display_name", AsyncMock(side_effect=lambda u: u.removeprefix("user_").title())
+    )
     if "transport" in request.fixturenames:
         transport = request.getfixturevalue("transport")
         monkeypatch.setattr("core.services.local_session_relay.get_local_session_relay", lambda: relay(transport))
@@ -99,9 +103,28 @@ async def test_an_admitted_member_is_forwarded_exactly_once_with_the_right_frame
                 "epoch": 3,
                 "data": KEYS,
                 "fromOwner": False,  # a teammate: the Mac strips band keys
+                "actor": {"userId": BOB.user_id, "name": BOB.user_id.removeprefix("user_").title()},
             },
         )
     ]
+
+
+@pytest.mark.asyncio
+async def test_a_typist_whose_name_cannot_be_read_goes_unnamed_and_the_owner_is_never_named(transport, monkeypatch):
+    sid = await start(transport)
+    await capable(transport, sid)
+    await admit(sid)
+    transport[3].clear()
+    lookup = AsyncMock(side_effect=lambda u: u)  # a failed Clerk lookup answers the bare id
+    monkeypatch.setattr(session_presence, "human_display_name", lookup)
+    await session_screen.type_into(BOB, sid, body())
+    await session_screen.type_into(ALICE, sid, body())
+    assert ["actor" in b for b in sent(transport)] == [False, False]
+    lookup.side_effect = lambda u: "Bob Stone"
+    await session_screen.type_into(BOB, sid, body())
+    await session_screen.type_into(BOB, sid, body())
+    assert [b.get("actor") for b in sent(transport)][2:] == [{"userId": BOB.user_id, "name": "Bob Stone"}] * 2
+    assert lookup.await_count == 2, "a read name is kept for the typist; the owner is never looked up"
 
 
 @pytest.mark.asyncio

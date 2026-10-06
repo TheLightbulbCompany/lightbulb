@@ -1,7 +1,7 @@
 import { test, expect, mock } from 'claude-code/testing'
 import type { On } from 'claude-code'
-import { bandLine, bandRuns, continuedLine, parseContinued } from './state'
-import { colorFor } from './rules'
+import { bandLine, bandRuns, continuedLine, parseContinued, rememberTyped, typist } from './state'
+import { colorFor, type Sender } from './rules'
 import type { SessionState } from '../types'
 
 const P = 'lightbulb-sessions'
@@ -354,4 +354,113 @@ test('an unshared continued session shows the Continued-from band', async ($, on
   const ui = await $.ui.mount({ ...BAND, surface: 'terminal' })
   expect(await ui.find({ type: 'Text', text: /Continued from Prasiddha's session · Share yours/ })).toBeDefined()
   await ui.unmount()
+})
+
+// --- who typed in the live terminal -------------------------------------------
+
+const ADEN = { userId: 'user_a', name: 'Aden Kim' }
+
+test('typist reads who typed only from a live, unpaused session, as printable text', () => {
+  expect(typist({ ...base, typedBy: ADEN })).toEqual({ kind: 'typed', name: 'Aden Kim', id: 'user_a' })
+  expect(typist({ ...base, typedBy: { userId: 'user_a', name: ' Aden\u001b[31m Kim\n' } })).toEqual({ kind: 'typed', name: 'Aden[31m Kim', id: 'user_a' })
+  expect(typist(base)).toBeNull()
+  expect(typist({ ...base, terminal: null, typedBy: ADEN })).toBeNull() // a transcript takes no typing
+  expect(typist({ ...base, paused: true, typedBy: ADEN })).toBeNull()
+  expect(typist({ ...base, typedBy: { userId: 'user_a', name: ' ' } })).toBeNull()
+  expect(typist(null)).toBeNull()
+  expect(typist(undefined)).toBeNull()
+})
+
+test('typed prompts are remembered by text, the last submit wins, and the memory is bounded', () => {
+  const rows = new Map<string, Sender>()
+  const aden: Sender = { kind: 'typed', name: 'Aden Kim', id: 'user_a' }
+  rememberTyped(rows, ' run the tests\n', aden)
+  expect(rows.get('run the tests')).toEqual(aden)
+  rememberTyped(rows, 'run the tests', null) // the owner submits the same text: no label
+  expect(rows.size).toBe(0)
+  rememberTyped(rows, '  ', aden)
+  expect(rows.size).toBe(0)
+  for (let i = 0; i < 250; i++) rememberTyped(rows, `p${i}`, aden)
+  expect(rows.size).toBe(200)
+  expect(rows.has('p0')).toBe(false)
+  expect(rows.has('p249')).toBe(true)
+})
+
+const TYPED_ROW = (text: string, isExpanded: boolean, surface: 'terminal' | 'desktop') => ({
+  plugin: P,
+  surface,
+  component: 'UserMessage' as const,
+  props: { text, origin: { kind: 'composer' as const }, isExpanded },
+})
+const ENGINE_ROW = '(the engine draws its own row)'
+// The engine beneath a typed prompt: it enters, and its row draws.
+function prompts(on: On) {
+  on('prompt.submit', ($, e) => ({ text: e.text, origin: e.origin }))
+  on('ui.render', { component: 'UserMessage' }, ($, e) => $.ui.resolve(e).Text({ children: ENGINE_ROW }))
+}
+const typedPrompt = (text: string) => ({ text, wait: false, origin: { kind: 'composer' as const } })
+
+test("a prompt a teammate typed in the live terminal is labelled theirs; the owner's own is not", async ($, on) => {
+  let state: SessionState = base
+  const { calls, clock } = world(on, () => ({ status: 200, body: state }))
+  prompts(on)
+  await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
+  await clock.settle()
+  state = { ...base, typedBy: ADEN }
+  const before = calls.length
+  await $.prompt.submit(typedPrompt('run the tests'))
+  expect(calls.slice(before)).toMatchObject([{ url: 'http://lightbulb/v1/state', method: 'GET' }]) // asked once, at the Enter
+  for (const surface of SURFACES) {
+    for (const isExpanded of [false, true]) {
+      const ui = await $.ui.mount(TYPED_ROW('run the tests', isExpanded, surface))
+      expect(await ui.find({ type: 'Text', text: 'Aden Kim · typed' })).toMatchObject({ props: { bold: true, color: colorFor('user_a') } })
+      expect(await ui.find({ type: 'Box' })).toMatchObject({ props: { borderStyle: 'round', borderColor: colorFor('user_a') } })
+      expect(await ui.find({ type: 'Text', text: 'run the tests' })).toBeDefined()
+      await ui.unmount()
+    }
+  }
+  // The owner typed the next one: the holder says so, the app sends no typedBy.
+  state = base
+  await $.prompt.submit(typedPrompt('my own prompt'))
+  let ui = await $.ui.mount(TYPED_ROW('my own prompt', false, 'terminal'))
+  expect(await ui.drawn()).toEqual({ type: 'Text', children: [ENGINE_ROW] })
+  await ui.unmount()
+  // The same text, now the owner's: the label goes (rows are told apart by text alone).
+  await $.prompt.submit(typedPrompt('run the tests'))
+  ui = await $.ui.mount(TYPED_ROW('run the tests', false, 'terminal'))
+  expect(await ui.drawn()).toEqual({ type: 'Text', children: [ENGINE_ROW] })
+  await ui.unmount()
+})
+
+test('a typed prompt asks the app nothing unless the session is shared live', async ($, on) => {
+  let state: SessionState | null = null
+  const { calls, clock } = world(on, () => (state ? { status: 200, body: state } : { status: 404, body: { error: 'not_shared' } }))
+  prompts(on)
+  await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
+  for (const now of [null, { ...base, terminal: null, typedBy: ADEN }, { ...base, paused: true, typedBy: ADEN }]) {
+    state = now
+    await clock.advance(2000) // the poll reads it
+    const before = calls.length
+    await $.prompt.submit(typedPrompt('hello'))
+    expect(calls.length).toBe(before)
+    const ui = await $.ui.mount(TYPED_ROW('hello', false, 'terminal'))
+    expect(await ui.drawn()).toEqual({ type: 'Text', children: [ENGINE_ROW] })
+    await ui.unmount()
+  }
+})
+
+test('a typed prompt does not wait on an app that stopped answering', async ($, on) => {
+  let answer: Answer = () => ({ status: 200, body: base })
+  const { clock } = world(on, (path, body) => answer(path, body))
+  prompts(on)
+  await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
+  await clock.settle()
+  answer = () => 'hang'
+  let entered = false
+  const sent = $.prompt.submit(typedPrompt('still goes')).then(() => { entered = true })
+  await clock.advance(1499)
+  expect(entered).toBe(false)
+  await clock.advance(1)
+  await sent
+  expect(entered).toBe(true)
 })

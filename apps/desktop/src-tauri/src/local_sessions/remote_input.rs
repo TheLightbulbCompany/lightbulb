@@ -51,6 +51,55 @@ fn wrote(sid: &str, from_owner: bool, now: Instant) {
     }
 }
 
+/// A teammate who typed: (user id, display name), from the frame's `actor`.
+pub(super) type Typist = (String, String);
+/// The teammate whose bytes last reached each session's holder.
+// ponytail: one entry per session a teammate typed into, kept until the app quits (a few hundred
+// bytes each). Prune with the mirror's end if that ever shows up in memory.
+static LAST_TYPIST: Mutex<BTreeMap<String, Typist>> = Mutex::new(BTreeMap::new());
+
+/// The frame's `actor`, bounded and printable. None from an older backend, or when the name
+/// could not be read there.
+fn typist_of(body: &Value) -> Option<Typist> {
+    let user = body["actor"]["userId"].as_str().filter(|u| !u.is_empty() && u.len() <= 128)?;
+    let name: String = body["actor"]["name"].as_str()?.chars().filter(|c| !c.is_control()).take(80).collect();
+    (!name.trim().is_empty()).then(|| (user.to_owned(), name.trim().to_owned()))
+}
+
+/// Records whose bytes just reached the holder. A teammate's unnamed frame clears the record: the
+/// last typist is then unknown, never the one before. The owner's frames leave it alone (the
+/// holder says when the owner typed last).
+fn typed(sid: &str, from_owner: bool, typist: Option<Typist>) {
+    if from_owner {
+        return;
+    }
+    if let Ok(mut map) = LAST_TYPIST.lock() {
+        match typist {
+            Some(t) => map.insert(sid.to_owned(), t),
+            None => map.remove(sid),
+        };
+    }
+}
+
+/// Whether a teammate's bytes ever reached `sid` under a name: the cheap check before the
+/// blocking holder query.
+pub(super) fn has_typist(sid: &str) -> bool {
+    LAST_TYPIST.lock().is_ok_and(|m| m.contains_key(sid))
+}
+
+/// The teammate who typed the session's last input, for the mod's "<Name> · typed" row. Only
+/// when the holder says a teammate wrote last (`last_input`, from `holder_last_input`); a holder
+/// too old to say falls back to the `TEAMMATE_QUIET` window. Never when it says the owner did.
+// ponytail: the last write is what counts. The owner types a prompt and a teammate presses Enter:
+// it is labelled the teammate's.
+pub(super) fn typed_by(sid: &str, now: Instant, last_input: Option<&str>) -> Option<Typist> {
+    let teammate = match last_input {
+        Some(origin) => origin == "teammate",
+        None => teammate_typed_recently(sid, now),
+    };
+    teammate.then(|| LAST_TYPIST.lock().ok()?.get(sid).cloned()).flatten()
+}
+
 /// Whether a teammate's bytes reached `sid` within `TEAMMATE_QUIET` of `now`.
 pub(super) fn teammate_typed_recently(sid: &str, now: Instant) -> bool {
     TEAMMATE_TYPED.lock().ok().and_then(|m| m.get(sid).copied()).is_some_and(|at| now.saturating_duration_since(at) < TEAMMATE_QUIET)
@@ -83,23 +132,24 @@ fn last_input_of(socket: &Path) -> Option<String> {
     (kind == HELLO).then(|| facts["lastInput"].as_str().map(str::to_owned)).flatten()
 }
 
-/// Keys for the holder, and whether the session's owner typed them.
-pub(super) type Typed = (Vec<u8>, bool);
+/// Keys for the holder, whether the session's owner typed them, and the teammate who did.
+pub(super) type Typed = (Vec<u8>, bool, Option<Typist>);
 
 /// A `local.session.input` frame from the relay. Never blocks, never replies.
 pub(super) fn offer(body: &Value) {
     let Some((sid, generation, ctl, mut keys)) = admit(body, screen::live_relay) else { return };
     let from_owner = body["fromOwner"] == true;
+    let typist = typist_of(body);
     let Ok(mut slot) = ctl.typist.lock() else { return };
     if let Some(tx) = slot.as_ref() {
-        match tx.try_send((keys, from_owner)) {
+        match tx.try_send((keys, from_owner, typist.clone())) {
             Ok(()) | Err(TrySendError::Full(_)) => return,
             // Its writer is gone: start another.
-            Err(TrySendError::Disconnected((back, _))) => keys = back,
+            Err(TrySendError::Disconnected((back, ..))) => keys = back,
         }
     }
     let (tx, rx) = sync_channel(QUEUE);
-    let _ = tx.try_send((keys, from_owner));
+    let _ = tx.try_send((keys, from_owner, typist));
     *slot = Some(tx);
     let theirs = ctl.clone();
     std::thread::spawn(move || write(&sid, &generation, &theirs, &rx));
@@ -127,8 +177,8 @@ fn write(sid: &str, generation: &str, ctl: &Ctl, inputs: &Receiver<Typed>) {
     let mut tried: Option<Instant> = None;
     let mut carry = Carry::default();
     while !ctl.stopped() {
-        let (keys, from_owner) = match inputs.recv_timeout(TICK) {
-            Ok((keys, from_owner)) => (carry.feed(&keys, from_owner), from_owner),
+        let (keys, from_owner, typist) = match inputs.recv_timeout(TICK) {
+            Ok((keys, from_owner, typist)) => (carry.feed(&keys, from_owner), from_owner, typist),
             Err(RecvTimeoutError::Timeout) => continue,
             Err(RecvTimeoutError::Disconnected) => break,
         };
@@ -143,6 +193,7 @@ fn write(sid: &str, generation: &str, ctl: &Ctl, inputs: &Receiver<Typed>) {
             let Some((c, origin)) = conn.as_mut() else { break };
             // Recorded first: a decide that reads it between the write and the record is refused.
             wrote(sid, from_owner, Instant::now());
+            typed(sid, from_owner, typist.clone());
             // An older holder takes only INPUT, and reports no origin to mark.
             let kind = if from_owner && *origin { OWNER_INPUT } else { INPUT };
             if c.write_all(&encode(kind, &keys)).is_ok() {
@@ -390,6 +441,31 @@ mod tests {
     }
 
     #[test]
+    fn remote_input_names_the_teammate_only_while_their_input_is_the_last() {
+        let sid = "88888888-8888-4888-8888-888888888888";
+        let now = Instant::now();
+        let aden = typist_of(&json!({"actor": {"userId": "user_a", "name": " Aden\u{1b}[31m Kim\n"}})).unwrap();
+        assert_eq!(aden, ("user_a".to_owned(), "Aden[31m Kim".to_owned()), "control characters never reach the terminal");
+        assert!(typist_of(&json!({"fromOwner": false})).is_none(), "an older backend names nobody");
+        assert!(typist_of(&json!({"actor": {"userId": "", "name": "x"}})).is_none());
+        assert!(typist_of(&json!({"actor": {"userId": "u", "name": " "}})).is_none());
+        assert!(!has_typist(sid));
+        assert_eq!(typed_by(sid, now, Some("teammate")), None, "a teammate typed, but nobody said who");
+        typed(sid, false, Some(aden.clone()));
+        assert!(has_typist(sid));
+        assert_eq!(typed_by(sid, now, Some("teammate")), Some(aden.clone()));
+        assert_eq!(typed_by(sid, now, Some("owner")), None, "the owner typed last: their own prompt");
+        assert_eq!(typed_by(sid, now, None), None, "no holder answer and no recent write");
+        wrote(sid, false, now);
+        assert_eq!(typed_by(sid, now, None), Some(aden.clone()), "an older holder: the 2 s window decides");
+        assert_eq!(typed_by(sid, now, Some("owner")), None, "the holder's answer wins over the window");
+        typed(sid, true, None);
+        assert_eq!(typed_by(sid, now, Some("teammate")), Some(aden), "the owner's frames leave the record");
+        typed(sid, false, None);
+        assert_eq!(typed_by(sid, now, Some("teammate")), None, "an unnamed teammate is never the one before");
+    }
+
+    #[test]
     fn remote_input_reads_last_input_from_a_holder_and_nothing_from_an_older_one() {
         use std::os::unix::net::UnixListener;
         let dir = tempfile::tempdir().unwrap();
@@ -610,7 +686,7 @@ mod tests {
         let ctl = Ctl::new(0);
         ctl.stop.store(true, SeqCst);
         let (tx, rx) = sync_channel(1);
-        tx.send((b"never".to_vec(), false)).unwrap();
+        tx.send((b"never".to_vec(), false, None)).unwrap();
         let started = Instant::now();
         write(SID, "gen-1", &ctl, &rx);
         assert!(started.elapsed() < Duration::from_secs(1));

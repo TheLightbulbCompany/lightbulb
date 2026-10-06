@@ -245,6 +245,31 @@ async def test_dispatch_labels_the_sender_with_room_handle_and_name(transport, d
 
 
 @pytest.mark.asyncio
+async def test_dispatch_names_a_person_who_sent_from_no_room(transport, monkeypatch):
+    """Prod 2026-10-05: a follow-up sent from the session's own page (roomId "") reached the
+    owner's terminal as "A workspace member". It carries the name presence shows."""
+    from unittest.mock import AsyncMock
+
+    from core.services import local_session_relay as relay_module, session_presence
+
+    names = AsyncMock(return_value="Isol8 Admin")
+    monkeypatch.setattr(session_presence, "human_display_name", names)
+    sid = await start(transport)
+    await service.set_team_control(ALICE, sid, True)
+    await messaging_repo.ensure_user_stream(OWNER, BOB.user_id)
+    await service.submit_command(BOB, None, sid, command(service))
+    transport[3].clear()
+    await relay(transport).dispatch_session(OWNER, sid)
+    commands = [body for _, body in transport[3] if body["type"] == "local.session.command"]
+    assert commands[0]["command"]["roomId"] == ""
+    assert commands[0]["actor"] == {"kind": "human", "handle": None, "displayName": "Isol8 Admin"}
+    # A failed lookup answers the bare id: no label, never an opaque id in the terminal.
+    names.return_value = BOB.user_id
+    assert await relay_module._actor_label({"roomId": "", "actorUserId": BOB.user_id}) is None
+    assert await relay_module._actor_label({"roomId": "", "actor": {"kind": "agent", "id": "friday"}}) is None
+
+
+@pytest.mark.asyncio
 async def test_optional_cli_revocation_does_not_revoke_native_mac_sharing(transport, db):
     sid = await start(transport)
     db[1].update_item(

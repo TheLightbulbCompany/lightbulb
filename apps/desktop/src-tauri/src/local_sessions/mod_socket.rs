@@ -136,7 +136,19 @@ async fn answer(mut socket: UnixStream, scope: PathBuf, enrollment: Enrollment, 
     };
     let state = |c: &Caller| state_json(&c.session_id, c.terminal, presence::get(&c.session_id, &c.generation), c.approval_waiting);
     match (method.as_str(), path.as_str()) {
-        ("GET", "/v1/state") => reply(&mut socket, "200 OK", &state(&caller)).await,
+        ("GET", "/v1/state") => {
+            let mut out = state(&caller);
+            // `typedBy`: the teammate whose keys were the session's last input, so the mod can
+            // label a prompt they submitted. The holder is asked only once a teammate has typed.
+            if super::remote_input::has_typist(&caller.session_id) {
+                let sid = caller.session_id.clone();
+                let last_input = tokio::task::spawn_blocking(move || super::remote_input::holder_last_input(&sid)).await.ok().flatten();
+                if let Some((user, name)) = super::remote_input::typed_by(&caller.session_id, std::time::Instant::now(), last_input.as_deref()) {
+                    out["typedBy"] = json!({"userId": user, "name": name});
+                }
+            }
+            reply(&mut socket, "200 OK", &out).await
+        }
         ("POST", "/v1/decide") => {
             let Ok(payload) = decision_body(&caller.session_id, &caller.generation, &body) else {
                 return reply(&mut socket, "400 Bad Request", &json!({"error":"invalid_decision"})).await;

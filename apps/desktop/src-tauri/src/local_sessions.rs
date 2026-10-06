@@ -414,8 +414,8 @@ impl Command {
                 Some(name) => format!(" from @{} ({})", clean(handle), clean(name)),
                 None => format!(" from @{}", clean(handle)),
             },
-            Some(ActorLabel { kind, display_name: Some(name), .. }) if kind == "session" =>
-                format!(" from {}", clean(name)),
+            // No handle: a shared session, or a person who sent from no room (their name alone).
+            Some(ActorLabel { display_name: Some(name), .. }) => format!(" from {}", clean(name)),
             _ if self.actor.is_none() => " from a workspace member".into(),
             _ => String::new(),
         };
@@ -3268,6 +3268,14 @@ mod tests {
             unlabelled,
             "label never enters the idempotency hash"
         );
+        cmd.label = Some(ActorLabel { kind: "human".into(), handle: None, display_name: Some("Isol8 Admin".into()) });
+        assert!(
+            cmd.header().starts_with("[Lightbulb teammate contribution from Isol8 Admin {"),
+            "a person who sent from no room is named, not \"a workspace member\""
+        );
+        assert_eq!(cmd.provenance()["actorDisplayName"], "Isol8 Admin");
+        assert!(teammate_contribution(&format!("{}hello", cmd.header())).is_some());
+        cmd.label = Some(ActorLabel { kind: "human".into(), handle: Some("aden".into()), display_name: Some("Aden Kim".into()) });
         let header = cmd.header();
         assert!(header.starts_with("[Lightbulb teammate contribution from @aden (Aden Kim) {"));
         assert_eq!(cmd.provenance()["actorHandle"], "aden");

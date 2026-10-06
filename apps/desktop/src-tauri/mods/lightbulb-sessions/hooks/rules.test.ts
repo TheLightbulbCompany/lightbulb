@@ -24,6 +24,15 @@ test('classify reads every header form the desktop writes', () => {
   expect(classify('[Lightbulb teammate contribution {"actor":{"kind":"agent","id":"a"}}]\nx')).toEqual({ kind: 'agent', name: 'A teammate', id: 'a' })
 })
 
+test('classify names a person who sent from no room: the name alone, or the provenance name', () => {
+  // The desktop's header for a label with a name and no handle (a follow-up from the session's own page).
+  expect(classify('[Lightbulb teammate contribution from Isol8 Admin {"roomId":"","requestId":"r","actorUserId":"u","actorDisplayName":"Isol8 Admin"}]\nx'))
+    .toEqual({ kind: 'person', name: 'Isol8 Admin', id: 'u' })
+  // An older desktop still writes "a workspace member"; the backend's name in the provenance wins.
+  expect(classify('[Lightbulb teammate contribution from a workspace member {"roomId":"","requestId":"r","actorUserId":"u","actorDisplayName":"Isol8 Admin"}]\nx'))
+    .toEqual({ kind: 'person', name: 'Isol8 Admin', id: 'u' })
+})
+
 test('classify sees through the engine framing of a stored delivery', () => {
   expect(classify(PEER_PREFIX + OWNER + PEER_SUFFIX)).toEqual({ kind: 'owner' })
   expect(classify(PEER_PREFIX + person + PEER_SUFFIX)).toEqual({ kind: 'person', name: 'Aden Kim', id: 'user_a' })
@@ -62,6 +71,7 @@ test('row labels', () => {
   expect(rowLabel({ kind: 'person', name: 'Aden Kim' })).toBe('Aden Kim · via Lightbulb')
   expect(rowLabel({ kind: 'agent', name: 'Friday' })).toBe('Friday · agent')
   expect(rowLabel({ kind: 'session', name: 'Fix flaky test' })).toBe('Fix flaky test · session')
+  expect(rowLabel({ kind: 'typed', name: 'Aden Kim' })).toBe('Aden Kim · typed')
   expect(rowLabel({ kind: 'peer' })).toBeNull()
 })
 
@@ -71,6 +81,7 @@ test('a sender keeps one color; senders spread across the palette; the owner is 
   expect(new Set(Array.from({ length: 40 }, (_, i) => colorFor(`user_${i}`))).size).toBe(PALETTE.length)
   expect(senderColor(classify(person))).toBe(colorFor('user_a')) // keyed on the id, not the name
   expect(senderColor({ kind: 'agent', name: 'Friday' })).toBe(colorFor('Friday')) // no id: the name
+  expect(senderColor({ kind: 'typed', name: 'Aden Kim', id: 'user_a' })).toBe(colorFor('user_a')) // the band's color for them
   expect(senderColor(classify(OWNER))).toBe(OWNER_COLOR)
   expect(PALETTE).not.toContain(OWNER_COLOR)
   expect(senderColor({ kind: 'peer' })).toBeUndefined()

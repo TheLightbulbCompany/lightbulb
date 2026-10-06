@@ -6,6 +6,9 @@ export type Sender =
   | { kind: 'person'; name: string; id?: string }
   | { kind: 'agent'; name: string; id?: string }
   | { kind: 'session'; name: string; id?: string }
+  // A teammate who typed and submitted a prompt in the live terminal. Never read from a header:
+  // the desktop app says who typed last (mod.sock `typedBy`).
+  | { kind: 'typed'; name: string; id?: string }
   | { kind: 'peer' }
 
 const OWNER = /^\[Sent from Lightbulb by you\]\n\[Lightbulb verified sender:/
@@ -74,6 +77,7 @@ export function rowLabel(s: Sender): string | null {
     case 'person': return `${s.name} · via Lightbulb`
     case 'agent': return `${s.name} · agent`
     case 'session': return `${s.name} · session`
+    case 'typed': return `${s.name} · typed`
     default: return null
   }
 }

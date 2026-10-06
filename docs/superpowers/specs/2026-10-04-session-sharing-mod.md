@@ -84,6 +84,17 @@ The band above the prompt, one line, only while sharing is on:
 | Join request | `Aden Kim asked to join` `[Allow]` `[Decline]` |
 | Remote approval pending | `Waiting on you here or in Lightbulb` |
 
+Rows in the transcript name who sent them, the label and the border in that sender's color
+(`colorFor(id)`, the band's): `Aden Kim · via Lightbulb` for a follow-up sent from Lightbulb,
+and `Aden Kim · typed` for a prompt a teammate typed and submitted in the live terminal, which
+the engine would otherwise draw as the owner's own. The Enter is what counts: the owner types,
+a teammate presses Enter, and the row is the teammate's. The typed label lives in the mod's
+memory, keyed on the prompt's text (a `UserMessage` row carries no id, and a hook may not set a
+prompt's origin): a reload or a resumed session draws those rows plain, and the model reads a
+typed prompt exactly as the owner's. A follow-up sent from the session's own page (no room)
+carries the sender's display name from the same lookup presence uses, so it never reads
+"A workspace member" for a person whose name is known.
+
 On surfaces that do not draw (VS Code chat, `claude -p`) the hooks still run; nothing shows.
 Below v2.1.287 the plugin does not load and today's behaviour stays.
 
@@ -102,10 +113,14 @@ Otherwise `404 {"error":"not_shared"}`; the mod shows nothing.
    "terminal":"held"|"attach"|null,
    "viewers":[{"userId":"…","name":"Aden Kim","canType":true,"typing":false}],
    "joinRequests":[{"userId":"…","name":"Mira Shah","requestId":"…"}],
-   "approvalWaiting":false}
+   "approvalWaiting":false,
+   "typedBy":{"userId":"…","name":"Aden Kim"}}
   ```
   `paused` is the row's `unshared`. `approvalWaiting`: approval.rs holds this session's prompt
-  for a remote answer. The mod polls every 2 s.
+  for a remote answer. The mod polls every 2 s. `typedBy` is present only while the holder says
+  a teammate wrote the session's last input (`lastInput`; a holder too old to say falls back to
+  the 2 s window): the `actor` of the last `local.session.input` frame that reached the holder.
+  The mod asks once more on `prompt.submit` of a typed prompt and labels that prompt's row.
 - `POST /v1/decide {"decision":"allow"|"decline"|"pause"|"unpause","userId"?,"requestId"?}` →
   `200 <state>` or `409 {"error":"…","message":"…"}`. The app forwards to §4.3 with a short-lived device JWT, as `native_tools.rs` does.
 

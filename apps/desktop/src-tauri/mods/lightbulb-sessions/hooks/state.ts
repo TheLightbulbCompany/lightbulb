@@ -1,5 +1,5 @@
 import type { Continued, JoinRequest, SessionState } from '../types'
-import { colorFor } from './rules'
+import { colorFor, type Sender } from './rules'
 
 // The pure half of the mod. Everything that touches `$` lives in register.tsx: the engine
 // follows `$` only into functions declared in the hooks module itself, never across an import.
@@ -27,13 +27,34 @@ export function requestLine(r: JoinRequest, count: number): string {
   return `${r.name} ${verb}` + (count > 1 ? ` (+${count - 1} more)` : '')
 }
 
+const printable = (s: unknown) => (typeof s === 'string' ? s.replace(/[\u0000-\u001f\u007f-\u009f]/g, '').trim().slice(0, 80) : '')
+
+/** Who typed the live terminal's last input, when a teammate did. Their name came from a server. */
+export function typist(s: SessionState | null | undefined): Sender | null {
+  const [id, name] = [printable(s?.typedBy?.userId), printable(s?.typedBy?.name)]
+  return s && !s.paused && s.terminal !== null && id && name ? { kind: 'typed', name, id } : null
+}
+
+// Prompts a teammate typed and submitted in the live terminal, by their text: a UserMessage row
+// carries no id, and a hook may not set a prompt's origin.
+// ponytail: in memory and keyed on the text. The owner submitting the same text later drops the
+// label from both rows; a reload or a resumed session forgets all of them (the rows draw as the
+// owner's own). A header in the stored text would survive those, but the model would read it.
+const TYPED_CAP = 200
+export function rememberTyped(rows: Map<string, Sender>, text: string, who: Sender | null): void {
+  const key = text.trim()
+  rows.delete(key)
+  if (!who || !key) return
+  rows.set(key, who)
+  if (rows.size > TYPED_CAP) rows.delete(rows.keys().next().value!)
+}
+
 // The marker `lightbulb continue` writes before it starts Claude. Its text came from a server.
 export function parseContinued(text: string): Continued | null {
   try {
     const v = JSON.parse(text) as { from?: unknown; title?: unknown }
-    const clean = (s: unknown) => (typeof s === 'string' ? s.replace(/[\u0000-\u001f\u007f-\u009f]/g, '').trim().slice(0, 80) : '')
-    const from = clean(v.from)
-    return from ? { from, title: clean(v.title) || null } : null
+    const from = printable(v.from)
+    return from ? { from, title: printable(v.title) || null } : null
   } catch {
     return null
   }

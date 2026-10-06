@@ -1,8 +1,8 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 import type { Continued, SessionState } from '../types'
-import { bandRuns, continuedLine, parseContinued, requestLine, type Decision } from './state'
-import { bashTouchesProtected, classify, colorFor, protectedPath, rowBody, rowLabel, senderColor } from './rules'
+import { bandRuns, continuedLine, parseContinued, rememberTyped, requestLine, typist, type Decision } from './state'
+import { bashTouchesProtected, classify, colorFor, protectedPath, rowBody, rowLabel, senderColor, type Sender } from './rules'
 
 export const sharing = atom({ plugin: 'lightbulb-sessions', key: 'state' } as const, null as SessionState | null)
 // A refused decision's message, and the decision it was about: it stays only while that decision
@@ -15,6 +15,11 @@ const continued = atom({ plugin: 'lightbulb-sessions', key: 'continued' } as con
 // A module variable on purpose: it is set and tested in one synchronous step.
 let deciding = false
 const REFUSED = 'Lightbulb did not take that. Try again in the app.'
+
+// Prompts a teammate typed in the live terminal (state.ts rememberTyped). A module variable on
+// purpose: prompt.submit writes it before the row draws.
+const typedRows = new Map<string, Sender>()
+const TYPED_WAIT_MS = 1500 // a prompt never waits longer than this on the app
 
 const POLL_MS = 2000
 const GRACE_MS = 60_000 // a missed poll keeps the last good band this long: the app may just be busy
@@ -105,6 +110,15 @@ export const register: Register = on => {
   // appended as an engine attachment row.
   on('prompt.submit', async ($, e, next) => {
     if (e.origin.kind === 'peer' && TEAMMATE_KINDS.has(classify(e.text).kind)) teammateTurn = true
+    // A prompt typed at the terminal: the owner's own keys, or a teammate's through Lightbulb.
+    // Asked once, at the Enter, and only where the last poll showed a live shared terminal, so an
+    // unshared session never waits on the app.
+    if (e.origin.kind === 'composer') {
+      const s = await read($, sharing)
+      const live = s && !s.paused && s.terminal !== null
+      const now = live ? await Promise.race([fetchState($), $.clock.sleep(TYPED_WAIT_MS, { signal: next.signal }).then(() => undefined, () => undefined)]) : null
+      rememberTyped(typedRows, e.text, typist(now))
+    }
     return next(e)
   })
 
@@ -135,6 +149,21 @@ export const register: Register = on => {
       <Box borderStyle="round" borderColor={color}>
         <Text bold color={color}>{label}</Text>
         <Text>  {body.length > 200 ? body.slice(0, 199) + '…' : body}</Text>
+      </Box>
+    )
+  })
+
+  // A prompt a teammate typed and submitted in the live terminal: the engine's row would read as
+  // the owner's own. Drawn expanded too (the whole prompt is shown, so ctrl+o loses nothing).
+  on('ui.render', { component: 'UserMessage', props: { origin: { kind: 'composer' } } }, async ($, e, next) => {
+    const who = typedRows.get(e.props.text.trim())
+    if (!who) return next(e)
+    const color = senderColor(who)
+    const { Box, Text } = $.ui.resolve(e)
+    return (
+      <Box borderStyle="round" borderColor={color} flexDirection="column">
+        <Text bold color={color}>{rowLabel(who)}</Text>
+        <Text>{e.props.text}</Text>
       </Box>
     )
   })

@@ -67,6 +67,26 @@ def test_at_most_one_line_per_interval_and_none_in_a_short_turn(posts):
     assert [b["eventId"].rsplit(":", 1)[-1] for _, b in posts] == ["1", "2"]
 
 
+@pytest.mark.parametrize("text", ["**Step 21: Read step-0", "**Sleep 4 of", "Step 28: sleep 20 (2 of 4",
+                                  "Running `pytest tests/unit", "See [the report"])
+def test_a_line_cut_off_by_the_tool_call_is_skipped_and_keeps_the_slot(posts, text):
+    post = turn._progress_poster("ceo", BODY)
+    _later(posts, 61)
+    post(text)
+    assert posts == []
+    post("**Step 22: Read step-09** (9 of 12), then `wc -w`.")  # the next whole line, same slot
+    assert len(posts) == 1
+
+
+@pytest.mark.parametrize("text", ["Computed 2 ** 3 = 8; validating now.", "Scanning **/*.py next.",
+                                  "**Done:** 12 files written; reading them back.", "x**2 computed, plotting."])
+def test_a_whole_line_with_literal_stars_still_posts(posts, text):
+    post = turn._progress_poster("ceo", BODY)
+    _later(posts, 61)
+    post(text)
+    assert len(posts) == 1
+
+
 @pytest.mark.parametrize("text", ["", "   ", "On it.", None, "[SILENT]"])
 def test_empty_short_and_silence_lines_are_skipped(posts, silence_filter, text):  # noqa: F811
     post = turn._progress_poster("ceo", BODY)

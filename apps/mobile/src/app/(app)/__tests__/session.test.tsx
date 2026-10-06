@@ -449,6 +449,19 @@ describe("session screen", () => {
       expect(screen.queryByText("Could not refresh this session.")).toBeNull();
     });
 
+    it("retries the direct fetch even while the workspace list remains unavailable", async () => {
+      mockListSessions.mockRejectedValue(new TypeError("list unavailable"));
+      get.mockRejectedValue(new TypeError("network"));
+      await render(<SessionScreen />);
+      await advance(3000);
+      expect(get).toHaveBeenCalledTimes(3);
+      expect(screen.getByText("Could not refresh shared sessions.")).toBeTruthy();
+      get.mockResolvedValue({ ...base, status: "ended" });
+      await fireEvent.press(screen.getByRole("button", { name: "Try again" }));
+      expect(get).toHaveBeenCalledTimes(4);
+      expect(screen.getByText("Fix relay")).toBeTruthy();
+    });
+
     it("fetches again on A → B → A and ignores old requests", async () => {
       let old!: (s: LocalSession) => void;
       get.mockImplementationOnce(() => new Promise(resolve => { old = resolve; })).mockImplementation(async id => ({ ...base, sessionId: id, status: "ended" }));

@@ -232,7 +232,7 @@ export default function SessionScreen() {
           {workspace.error ? (
             <>
               <Text accessibilityRole="alert" style={[styles.errorText, { color: palette.alert }]}>{workspace.error}</Text>
-              <Pressable onPress={() => void workspace.refresh()} accessibilityRole="button" accessibilityLabel="Try again">
+              <Pressable onPress={() => { retryFallback(); void workspace.refresh(); }} accessibilityRole="button" accessibilityLabel="Try again">
                 <Text style={[styles.link, { color: palette.link }]}>Try again</Text>
               </Pressable>
             </>

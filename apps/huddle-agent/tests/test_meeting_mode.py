@@ -1210,6 +1210,16 @@ async def test_an_answer_handed_over_but_not_yet_spoken_is_kept_when_another_age
     assert [n[2] for n in h._cut_off.get("forge", ([],))[0]] == ["Three PRs are open."]
 
 
+async def test_a_meeting_that_ends_before_the_answers_first_word_puts_it_on_the_record():
+    h, room, backend, lives, clock, log = await per_person()
+    backend.route_extra = ops([("forge", "list the open PRs", "name")])
+    await says(h, P1, "Forge, what PRs are open?")
+    (row,) = h._requests.items
+    answer(h, row.run_id, "forge", "Three PRs are open.")  # handed to the voice, no audio yet
+    await h.clear_presence()
+    assert [a[3] for a in backend.late_answers] == ["Three PRs are open."]
+
+
 async def test_i_stop_between_two_people_does_not_stop_the_agent_that_is_speaking():
     h, room, backend, lives, clock, log = await per_person()
     backend.route_extra = ops([("forge", "list the open PRs", "name")])

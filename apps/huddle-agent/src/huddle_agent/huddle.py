@@ -820,6 +820,8 @@ class Huddle:
 
     async def _post_unheard(self) -> None:
         """The call is ending: every answer nobody heard, and every request never started, goes to the room."""
+        if (v := self._voice) and in_meet(v.speaker):
+            self._keep_unsaid(v)  # handed to its voice and not said to the end, also before its first word
         held = [(a, n) for a, (items, _, _) in self._cut_off.items() for n in items]  # cut off mid-announcement
         self._cut_off.clear()
         if (v := self._voice) and v.told:  # being said as the call ends: not said to its end (§4.5)

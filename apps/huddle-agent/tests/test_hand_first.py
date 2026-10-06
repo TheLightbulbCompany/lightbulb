@@ -393,3 +393,29 @@ async def test_its_name_then_a_pause_then_the_question_is_asked_of_that_agent():
     # and a line that names it carries the name to /route as well
     await says(h, P2, "Forge, what PRs are open?")
     assert backend.route_floors[-1]["agent"] == "forge" and backend.routes[-1][1].startswith("Forge")
+
+
+async def test_only_the_first_hand_holds_a_voice_open_and_a_failed_close_still_bills_its_time():
+    """Codex on #3777: two held hands spend two sessions against one window; a close that raises billed nothing."""
+    h, backend, lives, clock = await meeting()
+    backend.route_extra = ops([("forge", "list the open PRs", "name")])
+    await says(h, P1, "Forge, what PRs are open?")
+    backend.route_extra = ops([("gauge", "this week's signups", "name")])
+    await says(h, P2, "Gauge, how many signups this week?")
+    backend.route_extra = ops([])
+    talks(h, P2)
+    forge, gauge = (next(r.run_id for r in h._requests.items if r.agent == a) for a in ("forge", "gauge"))
+    answer(h, forge, "forge", "Three PRs are open.")
+    clock.t += 1
+    answer(h, gauge, "gauge", "Forty signups.")
+    await turns()
+    assert [l.agent_id for l in lives] == ["forge"], "the second hand waits its turn with no session open"
+
+    async def broken_close():
+        raise RuntimeError("close failed")
+
+    lives[0].aclose = broken_close
+    lives[0].usage_seconds = lambda: (_ for _ in ()).throw(RuntimeError("no usage"))
+    clock.t += 7
+    await h.end_exchange(force=True)  # the worker is leaving
+    assert backend.ends and backend.ends[-1][1] >= 7, "the time it was open is billed, and before /end"

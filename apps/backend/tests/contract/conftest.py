@@ -192,6 +192,37 @@ def _mock_oauth_external_deps(monkeypatch):
 
         _create_contract_tables(client, _table_name)
 
+        # The messaging table is named by settings.MESSAGING_TABLE, not the prefix.
+        # The public session-link routes (/public/session-links/*,
+        # /public/session-copies/redeem) take no sign-in and read it first, so
+        # without it the repo raises "MESSAGING_TABLE is not configured" -> 500.
+        # Empty, every fuzzed token or code misses and the route answers its 404.
+        from core.config import settings as _settings
+
+        client.create_table(
+            TableName="contract-test-messaging",
+            KeySchema=[{"AttributeName": "pk", "KeyType": "HASH"}, {"AttributeName": "sk", "KeyType": "RANGE"}],
+            AttributeDefinitions=[
+                {"AttributeName": "pk", "AttributeType": "S"},
+                {"AttributeName": "sk", "AttributeType": "S"},
+                {"AttributeName": "sweep", "AttributeType": "S"},
+                {"AttributeName": "deadlineAt", "AttributeType": "N"},
+            ],
+            # The run-ledger sweeper runs in this harness's lifespan and queries this index.
+            GlobalSecondaryIndexes=[
+                {
+                    "IndexName": "by-run-deadline",
+                    "KeySchema": [
+                        {"AttributeName": "sweep", "KeyType": "HASH"},
+                        {"AttributeName": "deadlineAt", "KeyType": "RANGE"},
+                    ],
+                    "Projection": {"ProjectionType": "KEYS_ONLY"},
+                }
+            ],
+            BillingMode="PAY_PER_REQUEST",
+        )
+        monkeypatch.setattr(_settings, "MESSAGING_TABLE", "contract-test-messaging")
+
         # Pre-seed a pending device-code session for the contract test user
         # so /poll has a row to look up. /start would normally create this
         # row, but schemathesis hits each endpoint independently. Field

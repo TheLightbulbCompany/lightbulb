@@ -763,11 +763,10 @@ impl Host {
         Ok(None)
     }
 
-    /// A held prompt nobody holds any more was answered in the terminal: Claude
-    /// kills the hook when the human answers there. A hook that lets go says so
-    /// (`PermissionRelease`), so a vanished channel is not a prompt still open, and
-    /// the session is back at work until discovery or the next hook says otherwise.
-    /// Probed each tick with an empty datagram the hook ignores.
+    /// A vanished approval channel is no longer remotely answerable. It may have
+    /// been answered locally, crashed or expired before its release arrived; none
+    /// proves the native prompt was answered. Discovery or the next lifecycle hook
+    /// restores a known status. Probed with an empty datagram the hook ignores.
     fn approval_tick(&mut self) -> Vec<String> {
         let mut moved = vec![];
         for (key, mirror) in self.mirrors.iter_mut() {
@@ -789,7 +788,7 @@ impl Host {
             mirror.queue.push(approval_row("", &unheld));
             mirror.waiting = Some(unheld);
             if mirror.native.status == "waiting-approval" {
-                mirror.native.status = "busy".into();
+                mirror.native.status = "unknown".into();
             }
             if persist_changed(&self.dir, key, mirror, &before).is_ok() {
                 moved.push(key.clone());
@@ -3628,7 +3627,7 @@ pub(super) mod tests {
     }
 
     #[test]
-    fn local_sessions_held_prompt_is_tagged_acknowledged_and_released_when_answered_in_the_terminal() {
+    fn local_sessions_lost_approval_channel_does_not_claim_the_agent_is_working() {
         let dir = tempfile::tempdir().unwrap();
         let mut host = test_host(dir.path(), vec![(SID, test_mirror(SID, "gen-1"))]);
         let key = host.mirrors.keys().next().unwrap().clone();
@@ -3666,15 +3665,19 @@ pub(super) mod tests {
         // Still held: the probe changes nothing.
         assert!(host.approval_tick().is_empty());
         assert_eq!(host.mirrors[&key].native.status, "waiting-approval");
-        // Answered in the terminal (Claude kills the hook): the channel is gone with no
-        // release, so no prompt is open and the session is back at work.
+        // The hook can disappear because the terminal answered, the hook crashed,
+        // or its hold expired before the release arrived. A missing channel alone
+        // cannot prove the terminal is back at work.
         drop(hook_side);
         let _ = fs::remove_file(&reply);
         assert_eq!(host.approval_tick(), vec![key.clone()]);
-        assert_eq!(host.mirrors[&key].native.status, "busy", "no prompt is open any more");
+        assert_eq!(host.mirrors[&key].native.status, "unknown", "no evidence the native prompt was answered");
         assert!(host.mirrors[&key].waiting.as_ref().unwrap().held.is_none());
         assert!(host.mirrors[&key].queue[1].get("itemId").is_none());
         assert!(host.approval_tick().is_empty(), "once, not every tick");
+        host.apply_hook(&hook(lifecycle::Provider::Codex, "UserPromptSubmit", SID)).unwrap();
+        assert_eq!(host.mirrors[&key].native.status, "busy", "a native lifecycle event can restore a known state");
+        assert!(host.mirrors[&key].waiting.is_none());
     }
 
     #[test]

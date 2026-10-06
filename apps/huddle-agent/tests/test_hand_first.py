@@ -48,11 +48,11 @@ async def last_word(h, agent="forge"):
 
 
 async def pause(h, clock):
-    """Everyone stops: the speech detector says so, and the worker looks at once."""
+    """Everyone stops, for long enough even after a false start: the speech detector says so."""
     for who in PEOPLE:
         h.on_speech(who, False)
     h.on_active_speakers(set())
-    clock.t += 0.1
+    clock.t += h_mod.HAND_RETRY_QUIET_S + 0.1
     await h.tick()
     await turns()
 
@@ -125,7 +125,7 @@ async def test_talk_before_its_first_sound_calls_the_start_off_and_uses_up_no_tr
         h.on_speech(P2, True)  # someone goes on before it made a sound
         await turns()
         assert h._saying is None and status(h, "forge") == "has_news"
-        assert lives[0].calls[-1] == ("interrupt",)
+        assert ("interrupt",) in lives[-2].calls and ("close",) in lives[-2].calls, "that session is closed: surely silent"
     clock.t += h_mod.gate.ANNOUNCE_QUIET + 1
     await h.tick()
     await turns()
@@ -141,6 +141,7 @@ async def test_talked_over_three_times_in_pauses_it_took_itself_the_answer_goes_
         await pause(h, clock)
         await first_sound(h)
         assert status(h, "forge") == "speaking"
+        clock.t += h_mod.COLLIDE_S
         h.on_speech(P2, True)
         h._yield_if_talked_over()
         await turns()
@@ -192,6 +193,7 @@ async def test_talking_over_its_answer_stops_it_and_its_hand_stays_up():
     await pause(h, clock)
     await first_sound(h)
     assert status(h, "forge") == "speaking"
+    clock.t += h_mod.COLLIDE_S
     h._yield_if_talked_over()  # a cough: nobody is still talking when the clock runs out
     await turns()
     assert status(h, "forge") == "speaking"
@@ -205,7 +207,7 @@ async def test_talking_over_its_answer_stops_it_and_its_hand_stays_up():
     await pause(h, clock)
     await first_sound(h)
     await last_word(h)
-    assert len(told(lives)) == 2 and len(lives) == 1 and status(h, "forge") == "idle", "said whole, same voice"
+    assert len(told(lives)) == 2 and len(lives) == 2 and status(h, "forge") == "idle", "said whole, by a fresh session"
 
 
 async def test_an_answer_nobody_calls_on_goes_on_the_record_when_the_meeting_ends():
@@ -339,3 +341,39 @@ async def test_the_last_person_leaving_closes_a_hand_voice():
     await h.on_participants({})
     await turns()
     assert ("close",) in [c[:1] for c in lives[0].calls]
+
+
+async def test_someone_starting_as_it_starts_makes_it_yield_at_once_and_costs_no_try():
+    """Rig 10-06: its start takes 2 s; a person who begins in that time must not be talked over for a second."""
+    h, backend, lives, clock = await asked()
+    answer(h, h._requests.items[0].run_id, "forge", "Three PRs are open.")
+    await turns()
+    for _ in range(h_mod.DELIVERY_TRIES + 1):
+        clock.t += h_mod.gate.ANNOUNCE_QUIET
+        await pause(h, clock)
+        await first_sound(h)
+        clock.t += 0.3
+        h.on_speech(P2, True)  # no grace second: a collision, not an interruption
+        await turns()
+        assert h._saying is None and status(h, "forge") == "has_news" and ("close",) in lives[-2].calls
+    assert backend.late_answers == [] and h._news.get("forge")
+
+
+async def test_after_a_false_start_it_waits_for_a_real_pause_not_the_next_breath():
+    """Rig 10-06: with 1.7 s between speakers it blurted a syllable at every gap."""
+    h, backend, lives, clock = await asked()
+    answer(h, h._requests.items[0].run_id, "forge", "Three PRs are open.")
+    await turns()
+    await pause(h, clock)
+    h.on_speech(P2, True)  # ran into someone
+    await turns()
+    for who in PEOPLE:
+        h.on_speech(who, False)
+    clock.t += 0.5
+    await h.tick()
+    await turns()
+    assert len(told(lives)) == 1, "a breath: it holds"
+    clock.t += h_mod.HAND_RETRY_QUIET_S
+    await h.tick()
+    await turns()
+    assert len(told(lives)) == 2

@@ -909,8 +909,9 @@ class LocalSessionRelay:
                 or approval["inputDigest"] != detail.input_digest
             ):
                 raise ApiProblem("INVALID_REQUEST", "Private approval does not match this prompt.")
-        if approval is not None and approval is not _NO_PROMPT:
-            # A prompt is live the moment it is reported, so the hint is not throttled.
+        approval_changed = approval is not _NO_PROMPT and row.get("pendingApproval") != approval
+        if approval_changed or (approval is not None and approval is not _NO_PROMPT):
+            # Prompt changes, including release, must refresh the session list immediately.
             hint = True
         updated = _revised(
             row,
@@ -941,7 +942,7 @@ class LocalSessionRelay:
         if notify_ended is not None:
             _spawn(notify_attention(updated, "finished", notify_ended))
         if hint:
-            await publish_resources_changed(row["ownerId"], row["humanUserId"], transcript=True)
+            await publish_resources_changed(row["ownerId"], row["humanUserId"], transcript=not approval_changed)
         return {
             "type": "local.session.events.ack",
             "sessionId": row["sessionId"],

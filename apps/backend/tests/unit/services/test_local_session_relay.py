@@ -1904,6 +1904,55 @@ async def test_event_batches_send_a_transcript_workspace_hint(transport, db):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("change", ["created", "replaced", "released", "unchanged"])
+async def test_approval_metadata_changes_refresh_the_session_list_without_waiting_for_poll(transport, change):
+    await messaging_repo.ensure_user_stream(OWNER, ALICE.user_id)
+    await messaging_repo.ensure_user_stream(OWNER, BOB.user_id)
+    with patch("time.time", return_value=2000000000.0):
+        await service.set_enrollment(ALICE, service.EnrollmentRequest(deviceId=MAC, enabled=True))
+        connect(transport)
+        registered = await relay(transport).handle_message(
+            "conn-1", registration(provider="claude", status="waiting-approval", activeTurnId=None)
+        )
+        sid = registered["sessionId"]
+        frame = {
+            "type": "local.session.events",
+            "sessionId": sid,
+            "generation": "generation-1",
+            "batchId": "initial-approval",
+            "afterSeq": 0,
+            "events": [fixture("approval-pending-event")],
+        }
+        if change != "created":
+            await relay(transport).handle_message("conn-1", frame)
+        transport[4].clear()
+        event = fixture("approval-pending-event")
+        if change == "replaced":
+            event["itemId"] = "appr-replacement"
+            event["tool"]["input"]["inputDigest"] = "e" * 64
+        elif change == "released":
+            event = {"kind": "lifecycle", "role": "system", "text": "", "lifecycle": "approval_pending"}
+        frame.update(batchId="approval-change", afterSeq=0 if change == "created" else 1, events=[event])
+        await relay(transport).handle_message("conn-1", frame)
+
+        public = await service.get_session(ALICE, sid)
+        assert public.status == "waiting-approval"
+        if change == "released":
+            assert public.pending_approval is None
+        else:
+            assert public.pending_approval.approval_id == event["itemId"]
+        hints = [json.loads(h["events"][0]) for h in transport[4] if "/users/" in h["channel"]]
+        assert len(hints) == 2
+        expected = {"humanUserId": ALICE.user_id}
+        if change == "unchanged":
+            expected["transcript"] = True
+        assert all(h["type"] == "workspace.sessions.changed" and h["payload"] == expected for h in hints)
+        # Retrying the committed batch must not invalidate the list a second time.
+        await relay(transport).handle_message("conn-1", frame)
+        assert len(transport[4]) == len(hints)
+
+
+@pytest.mark.asyncio
 async def test_device_heartbeat_hints_once_per_frame(transport, monkeypatch):
     """Two lapsed mirrors in one frame each need a hint; the frame sends one, not one per session."""
     from unittest.mock import AsyncMock

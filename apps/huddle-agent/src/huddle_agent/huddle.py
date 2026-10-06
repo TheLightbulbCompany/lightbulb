@@ -1841,7 +1841,11 @@ class Huddle:
                 # spoke (`ended`, tick): those are done only once it has spoken, not on "thinking".
                 if was_speaking or not in_meet(v.speaker):
                     v.told = []
-                if (run := self._runs.get(v.saying or "")) is None or run.ended:
+                # A meeting answer is handed over when its run ends, before any audio: it is said only once the
+                # voice has spoken and stopped, not on a state change before its first word.
+                if ((run := self._runs.get(v.saying or "")) is None or run.ended) and (
+                    was_speaking or not in_meet(v.speaker)
+                ):
                     v.saying = None  # its answer was said to the end too
             self._sync_state()
 
@@ -2581,11 +2585,9 @@ class Huddle:
         request, that agent's (unnamed: anyone's) newest running run. Neither late-answer door posts it, and
         the worker never does; it may still be spoken. Said over a cut announcement (§4.8), it covers that."""
         # a meeting: several people may have talked over it at once, so anyone's unnamed "don't post that" covers it
-        cut = [
-            a
-            for a, (_, who, _) in self._cut_off.items()
-            if a == agent_id or agent_id is None and (who == asker or self.setting == "meeting")
-        ]
+        cut = [a for a, (_, who, _) in self._cut_off.items() if a == agent_id or agent_id is None and who == asker]
+        if not cut and agent_id is None and self.setting == "meeting" and self._cut_off:
+            cut = [max(self._cut_off, key=lambda a: self._cut_off[a][2])]  # "that": the newest one cut
         for a in cut:
             del self._cut_off[a]
         if cut:
@@ -3526,8 +3528,10 @@ class Huddle:
         """Close a voice that no longer holds the floor; its GPT-Live seconds go to the window."""
         if v is not None:
             self._settle_answer(v)  # cut and never said again: on the record
-            if in_meet(v.speaker) and v.agent_state == "speaking":
-                self._keep_unsaid(v)  # closed mid-answer (someone named another agent): never lost
+            if in_meet(v.speaker):
+                # closed with an answer handed to it and not said to its end, also before its first word
+                # (someone named another agent): never lost
+                self._keep_unsaid(v)
         if v is None or v.live is None:
             return
         if (

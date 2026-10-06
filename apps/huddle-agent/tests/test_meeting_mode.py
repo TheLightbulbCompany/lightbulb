@@ -1179,9 +1179,10 @@ async def test_a_second_person_naming_the_open_agent_moves_its_attention_with_no
 async def test_anyones_dont_post_that_covers_an_answer_talked_over_in_a_meeting():
     h, room, backend, lives, clock, log = await per_person()
     await h.on_participants({**MEET_PEOPLE, "meet:room-1:p3": "Lee"})
+    h._cut_off["gauge"] = ([("run-0", "signups", "Forty signups.", clock.t - 5, P1)], P1, clock.t - 5)
     h._cut_off["forge"] = ([("run-1", "the open PRs", "Three PRs are open.", clock.t, P1)], P2, clock.t)
     h._no_post(None, "meet:room-1:p3")  # not the one recorded as the talker
-    assert "forge" not in h._cut_off
+    assert list(h._cut_off) == ["gauge"], "only the newest one cut: the other answer is still posted"
 
 
 async def test_an_answer_cut_short_by_a_switch_to_another_named_agent_is_kept():
@@ -1193,6 +1194,19 @@ async def test_an_answer_cut_short_by_a_switch_to_another_named_agent_is_kept():
     h.on_agent_state("forge", "speaking")
     backend.route_extra = ops([("gauge", "signups this week", "name")])
     await says(h, P2, "Gauge, how many signups this week?")  # Forge's voice is closed for Gauge's
+    assert [n[2] for n in h._cut_off.get("forge", ([],))[0]] == ["Three PRs are open."]
+
+
+async def test_an_answer_handed_over_but_not_yet_spoken_is_kept_when_another_agent_is_named():
+    h, room, backend, lives, clock, log = await per_person()
+    backend.route_extra = ops([("forge", "list the open PRs", "name")])
+    await says(h, P1, "Forge, what PRs are open?")
+    (row,) = h._requests.items
+    answer(h, row.run_id, "forge", "Three PRs are open.")
+    h.on_agent_state("forge", "thinking")  # no audio yet
+    h.on_agent_state("forge", "listening")
+    backend.route_extra = ops([("gauge", "signups this week", "name")])
+    await says(h, P2, "Gauge, how many signups this week?")
     assert [n[2] for n in h._cut_off.get("forge", ([],))[0]] == ["Three PRs are open."]
 
 

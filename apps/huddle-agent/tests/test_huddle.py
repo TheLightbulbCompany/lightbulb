@@ -45,6 +45,19 @@ class FakeRoom:
         self.shut = True
         self.log.append("shutdown")
 
+    # hand first: a ready answer's audio. `hold` set: the play lasts until the test releases or cancels it.
+    async def prepare(self, agent_id, voice, text):
+        self.prepared = getattr(self, "prepared", []) + [(agent_id, text)]
+        return (agent_id, text)
+
+    async def play(self, speech):
+        self.played = getattr(self, "played", []) + [speech]
+        if getattr(self, "hold", None):
+            await self.hold.wait()
+
+    def discard(self, speech):
+        self.discarded = getattr(self, "discarded", []) + [speech]
+
     def notices(self):
         return [(p, to) for topic, p, to in self.published if topic == "live.notice"]
 

@@ -688,9 +688,10 @@ async def agent_session(*, owner_id: str, room_id: str, agent_id: str) -> dict:
     row, soul, notes_md = await _session_reads(owner_id, agent_id)
     name = (row or {}).get("name") or me.get("displayName") or "Agent"
     ask_name = voice_persona.is_default_name(agent_id, name, starters) and await _claim_voice_asked(owner_id, agent_id)
+    title = (row or {}).get("title") or (row or {}).get("role")
     persona = voice_persona.build_agent_persona(
         name=name,
-        role=(row or {}).get("title") or (row or {}).get("role"),
+        role=title,
         soul_excerpt=hermes_profiles.strip_generated_marker(soul) if soul else None,
         voice_notes=hermes_profiles.parse_voice_notes_md(notes_md)[1],
         room_name=meta.get("name"),
@@ -701,7 +702,8 @@ async def agent_session(*, owner_id: str, room_id: str, agent_id: str) -> dict:
     return {
         "agentId": agent_id,
         "name": name,
-        "voice": voice_persona.agent_voice(agent_id, starters),
+        "voice": voice_persona.agent_voice(agent_id, starters, title),
+        "meetVoice": voice_persona.agent_meet_voice(agent_id, starters, title),
         "persona": persona,
         "askName": ask_name,
     }

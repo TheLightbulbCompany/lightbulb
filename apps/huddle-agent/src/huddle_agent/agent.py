@@ -12,6 +12,7 @@ import contextlib
 import itertools
 import json
 import logging
+import os
 import time
 
 from livekit import rtc
@@ -115,6 +116,7 @@ class _TrimmedGPTLiveModel(GPTLiveModel):
 
 
 FALLBACK_VOICE = "marin"
+TTS_VOICES = frozenset("alloy echo fable onyx nova shimmer coral verse ballad ash sage marin cedar".split())
 # Routing v2 §6 / R6: end a turn when it sounds finished, not after 350 ms of silence, so a mid-thought pause is
 # not routed as half a line. The plugin accepts it (validated against the OpenAI SDK union); whether OpenAI
 # accepts it on a gpt-4o-mini-transcribe transcription session is unverified, hence SERVER_VAD.
@@ -125,6 +127,12 @@ SERVER_VAD = {
     "prefix_padding_ms": 600,
     "silence_duration_ms": 700,
 }
+
+
+# A meeting: the plain silence rule, and a short one. semantic_vad gave a line's words 1.5-5.8 s after it was
+# said, this gives them in about 1.3 s (rig, 10-06). A sentence it splits at a pause is still one request: the
+# next line of someone an agent is attending to needs no name (huddle._attend).
+MEET_VAD = {**SERVER_VAD, "silence_duration_ms": 400}
 
 
 def retry_without_semantic_vad(
@@ -324,6 +332,36 @@ class _Room:
         self._tasks.add(t)
         t.add_done_callback(self._tasks.discard)
 
+    async def prepare(self, agent_id: str, voice: str, text: str) -> tuple:
+        """A ready answer as audio, on its own `agent-<id>` track, published before anyone calls on it: a
+        call-on then only has to push frames (GPT-Live took 2 s to its first sound; rig, 10-06)."""
+        # the backend sends a speech-model voice (voice_persona.agent_meet_voice); an older one sends a Live voice
+        voice = voice if voice in TTS_VOICES else FALLBACK_VOICE
+        frames = [ev.frame async for ev in openai.TTS(model="gpt-4o-mini-tts", voice=voice).synthesize(text)]
+        while len(frames) > 1 and max(frames[0].data, default=0) < 300 and min(frames[0].data, default=0) > -300:
+            frames.pop(0)  # the speech model opens with silence: a call-on starts on the first sound
+        source = rtc.AudioSource(frames[0].sample_rate, frames[0].num_channels)
+        track = rtc.LocalAudioTrack.create_audio_track(f"agent-{agent_id}", source)
+        pub = await self._ctx.room.local_participant.publish_track(
+            track, rtc.TrackPublishOptions(source=rtc.TrackSource.SOURCE_MICROPHONE)
+        )
+        return source, frames, pub
+
+    async def play(self, speech: tuple) -> None:
+        """Returns when the last of it was heard. Cancelled (talked over): silent at once."""
+        source, frames, _ = speech
+        try:
+            for f in frames:
+                await source.capture_frame(f)
+            await source.wait_for_playout()
+        finally:
+            source.clear_queue()
+
+    def discard(self, speech: tuple) -> None:
+        t = asyncio.create_task(self._ctx.room.local_participant.unpublish_track(speech[2].sid))
+        self._tasks.add(t)
+        t.add_done_callback(self._tasks.discard)
+
     def shutdown(self) -> None:
         self.closed = True
         self._ctx.shutdown("no humans left in the huddle")
@@ -335,7 +373,9 @@ async def _on_request(req: JobRequest) -> None:
 
 # agent_name is deprecated in 1.8.3 (worker.py rtc_session) and LIVEKIT_AGENT_NAME wins over it; the
 # Dockerfile sets LIVEKIT_AGENT_NAME=lightbulb-huddle so both agree. Drop this kwarg once it is removed.
-@server.rtc_session(agent_name="lightbulb-huddle", on_request=_on_request)
+# HUDDLE_RIG_AGENT_NAME: the multi-voice test rig runs this worker on a laptop under its own dispatch name, so no
+# real call reaches it. Unset everywhere else.
+@server.rtc_session(agent_name=os.environ.get("HUDDLE_RIG_AGENT_NAME", "lightbulb-huddle"), on_request=_on_request)
 async def entrypoint(ctx: JobContext) -> None:
     meta = json.loads(ctx.job.metadata)
     started = time.monotonic()
@@ -344,10 +384,11 @@ async def entrypoint(ctx: JobContext) -> None:
     backend = Backend(meta["roomId"], meta["ownerId"], meta["roomToken"])
     vad = silero.VAD.load()
     # streaming; interims still drive barge-in, semantic_vad only decides when a final lands
+    meeting = meta.get("source") == "meet"
     stt_engine = openai.STT(
-        model="gpt-4o-mini-transcribe", use_realtime=True, turn_detection=SEMANTIC_VAD
+        model="gpt-4o-mini-transcribe", use_realtime=True, turn_detection=MEET_VAD if meeting else SEMANTIC_VAD
     )
-    vad_state = {"vad": "semantic"}
+    vad_state = {"vad": "server" if meeting else "semantic"}
 
     @stt_engine.on("metrics_collected")
     def _stt_metrics(m) -> None:
@@ -529,6 +570,11 @@ async def entrypoint(ctx: JobContext) -> None:
         lambda speakers: huddle.on_active_speakers({p.identity for p in speakers}),
     )
     await ctx.connect()
+    # LiveKit sends a participant's attribute changes at once only while it publishes a track; one that does
+    # not is batched every 3 s (measured on the rig: a tile went to "working" 3.0 s after the worker wrote it).
+    # The worker publishes only while a voice is open, so it holds one silent track for its whole job.
+    presence = rtc.LocalAudioTrack.create_audio_track("presence", rtc.AudioSource(48000, 1))
+    await ctx.room.local_participant.publish_track(presence, rtc.TrackPublishOptions(source=rtc.TrackSource.SOURCE_UNKNOWN))
     ctx.room.local_participant.register_rpc_method(
         "talk_start", lambda d: rpc_talk(d, True)
     )

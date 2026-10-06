@@ -86,3 +86,35 @@ def test_agent_persona_caps_soul_and_notes_and_fits_the_instruction_limit():
     assert "s" * vp.SOUL_EXCERPT_MAX in p and "s" * (vp.SOUL_EXCERPT_MAX + 1) not in p
     assert "n" * 1000 in p and "n" * 1001 not in p
     assert len(p) / 4 < 16_384
+
+
+def test_each_starter_role_has_its_own_meeting_voice_and_other_agents_never_take_one():
+    from core.services import voice_persona as vp
+
+    starters = {role: f"id-{role}" for role in vp.STARTER_MEET_VOICES}
+    voices = [vp.agent_meet_voice(aid, starters) for aid in starters.values()]
+    assert len(set(voices)) == len(voices) and set(voices) <= set(vp.MEET_VOICE_POOL)
+    others = {vp.agent_meet_voice(f"other-{i}", starters) for i in range(200)}
+    assert others and not others & set(voices) and others <= set(vp.MEET_VOICE_POOL)
+    assert vp.agent_meet_voice("other-1", starters) == vp.agent_meet_voice("other-1", None), "stable for an agent"
+
+
+def test_a_roster_with_no_recorded_starters_takes_the_role_voices_by_title():
+    """The founder workspace: Friday is its CEO, Forge its engineer... and three of them shared one voice."""
+    from core.services import voice_persona as vp
+
+    team = {
+        "friday": ("CEO", "ceo"),
+        "forge": ("Forge — Engineering & Reliability", "engineering"),
+        "tally": ("Tally — Finance, Cost & Margin", "finance"),
+        "pulse": ("Pulse — Distribution, Content & Prospecting", "growth"),
+        "gauge": ("Gauge — Activation & GTM Analytics", "analytics"),
+        "vera": ("Vera — Customer Operations & Revenue Recovery", "customer_operations"),
+    }
+    for aid, (title, role) in team.items():
+        assert vp.agent_voice(aid, None, title) == vp.STARTER_VOICES[role]
+        assert vp.agent_meet_voice(aid, {}, title) == vp.STARTER_MEET_VOICES[role]
+    assert vp.agent_voice("atlas", None, "Agent Recruiter") not in vp.STARTER_VOICES.values()
+    # a workspace that does record its starters: a hire's title never takes a starter's voice
+    starters = {"engineering": "eng-1"}
+    assert vp.agent_voice("hire", starters, "Senior Engineer") not in vp.STARTER_VOICES.values()

@@ -27,14 +27,29 @@ it("shows Working: <task> for an agent that holds the floor as listening", () =>
   expect(screen.getByText("Working: open pull requests")).toBeInTheDocument();
 });
 
-it("lists hand-ups before working agents", () => {
-  const { container } = tile({ ...A("a", "working", { working: "task" }), ...A("b", "has_news", { hand: "news" }) });
+it("makes the first raised hand the hero, with no topic and no instruction", () => {
+  const { container } = tile({ ...A("a", "working", { working: "task" }), ...A("b", "has_news", { hand: "news" }), ...A("c", "has_news", { hand: "more" }) });
+  const hero = container.querySelector("[data-hand]")!;
+  expect(hero.textContent).toBe("Bb has an answer"); // its initial, then the one line
   const rows = [...container.querySelectorAll("ul")[0].querySelectorAll("li")].map((li) => li.lastElementChild?.textContent);
-  expect(rows).toEqual(["Hand up: news", "Working: task"]);
+  expect(rows).toEqual(["Hand up", "Working: task"]);
+  expect(container.textContent).not.toMatch(/news|more|go ahead/i);
+});
+
+it("a speaker keeps the stage: a raised hand waits as a row", () => {
+  const { container } = tile({ ...A("a", "speaking"), ...A("b", "has_news", { hand: "news" }) });
+  expect(container.querySelector("[data-hand]")).toBeNull();
+  expect(container.textContent).toContain("Hand up");
+});
+
+it("says Listening to <name> for an agent that heard its name", () => {
+  const { container } = tile(A("a", "working", { working: "listening to Priya" }));
+  expect(container.textContent).toContain("Listening to Priya");
+  expect(container.textContent).not.toContain("Working:");
 });
 
 it("collapses activity past three rows into +N more", () => {
-  tile(Object.assign({}, ...["a", "b", "c", "d", "e"].map((id) => A(id, "has_news", { hand: id }))));
+  tile(Object.assign({}, ...["a", "b", "c", "d", "e"].map((id) => A(id, "working", { working: id }))));
   expect(screen.getByText("+2 more")).toBeInTheDocument();
 });
 

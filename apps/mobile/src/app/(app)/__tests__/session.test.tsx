@@ -391,6 +391,25 @@ describe("session screen", () => {
       expect(get).toHaveBeenCalledTimes(4);
     });
 
+    it.each(["404", "exhaustion"] as const)("does not refetch a settled %s on an ordinary workspace poll", async (failure) => {
+      get.mockRejectedValue(failure === "404" ? new ApiError(404, null) : new TypeError("network"));
+      await render(<SessionScreen />);
+      await advance(10000);
+      const calls = failure === "404" ? 1 : 3;
+      expect(get).toHaveBeenCalledTimes(calls);
+      // Hold the 30s list poll open so loading visibly toggles on, then settles with no hint.
+      let settle!: (result: { sessions: LocalSession[] }) => void;
+      mockListSessions.mockImplementationOnce(() => new Promise(resolve => { settle = resolve; }));
+      await advance(20000);
+      await act(async () => { settle({ sessions: [] }); });
+      expect(get).toHaveBeenCalledTimes(calls);
+      get.mockResolvedValue({ ...base, status: "ended" });
+      if (failure === "404") await hint();
+      else await fireEvent.press(screen.getByRole("button", { name: "Try again" }));
+      expect(screen.getByText("Fix relay")).toBeTruthy();
+      expect(get).toHaveBeenCalledTimes(calls + 1);
+    });
+
     it("fetches again on A → B → A and ignores old requests", async () => {
       let old!: (s: LocalSession) => void;
       get.mockImplementationOnce(() => new Promise(resolve => { old = resolve; })).mockImplementation(async id => ({ ...base, sessionId: id, status: "ended" }));

@@ -42,13 +42,14 @@ export function SessionFocus({ focus, entries, loading, hintRevision, client, re
   const hasListedSession = Boolean(entry);
   const [retryRevision, setRetryRevision] = useState(0);
   const [fallback, setFallback] = useState<{ sessionId: string; session: LocalSession | null; notFound: boolean; error: boolean } | null>(null);
-  const revalidate = useRef<(() => void) | null>(null);
+  const revalidate = useRef<((hint: number, retry: number) => void) | null>(null);
   useEffect(() => {
     if (hasListedSession) return;
     let alive = true;
     let pending = false;
     let queued = false;
     let attempts = 0;
+    let lastRequested: { hint: number; retry: number } | null = null;
     let timer: ReturnType<typeof setTimeout> | undefined;
     // Keep the current request and its retry budget through same-session hints/list refreshes.
     // Coalesce those hints into one revalidation after this bounded sequence settles.
@@ -76,11 +77,16 @@ export function SessionFocus({ focus, entries, loading, hintRevision, client, re
       attempts = 0;
       void fetchSession();
     };
-    revalidate.current = request;
+    revalidate.current = (hint, retry) => {
+      // Ordinary list polls do not restart a settled 404 or exhausted sequence.
+      if (lastRequested?.hint === hint && lastRequested.retry === retry) return;
+      lastRequested = { hint, retry };
+      request();
+    };
     return () => { alive = false; clearTimeout(timer); revalidate.current = null; };
   }, [hasListedSession, client, focus.sessionId]);
   useEffect(() => {
-    if (!hasListedSession && !coldLoading) revalidate.current?.();
+    if (!hasListedSession && !coldLoading) revalidate.current?.(hintRevision, retryRevision);
   }, [hasListedSession, coldLoading, client, focus.sessionId, hintRevision, retryRevision]);
   const resolvedFallback = fallback?.sessionId === focus.sessionId ? fallback : null;
   const session = entry?.session ?? resolvedFallback?.session ?? null;

@@ -111,3 +111,25 @@ it("ignores a slow response after unmount", async () => {
   expect(screen.queryByText("Recovered session")).not.toBeInTheDocument();
   expect(get).toHaveBeenCalledTimes(1);
 });
+
+
+it.each(["404", "exhaustion"] as const)("does not refetch a settled %s on ordinary workspace polls", async (failure) => {
+  vi.useFakeTimers();
+  const get = vi.fn<SessionSource["client"]["getLocalSession"]>().mockRejectedValue(failure === "404" ? new ApiError(404, null) : new TypeError("network"));
+  const view = setup(get);
+  await act(async () => { await vi.advanceTimersByTimeAsync(10000); });
+  const calls = failure === "404" ? 1 : 3;
+  expect(get).toHaveBeenCalledTimes(calls);
+  for (let i = 0; i < 2; i += 1) {
+    await act(async () => { view.rerender(<SessionFocus {...view.props} loading />); });
+    await act(async () => { view.rerender(<SessionFocus {...view.props} />); });
+  }
+  expect(get).toHaveBeenCalledTimes(calls);
+  get.mockResolvedValue(session);
+  await act(async () => {
+    if (failure === "404") view.rerender(<SessionFocus {...view.props} hintRevision={1} />);
+    else fireEvent.click(screen.getByRole("button", { name: "Try again" }));
+  });
+  expect(screen.getByRole("heading", { name: "Claude Recovered session" })).toBeInTheDocument();
+  expect(get).toHaveBeenCalledTimes(calls + 1);
+});

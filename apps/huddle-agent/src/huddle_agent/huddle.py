@@ -158,7 +158,7 @@ MEET_FOLLOWUP_S = 10.0
 HAND_FIRST = True
 # Its hand is up: it speaks in the first real gap (nobody has talked this long), or sooner when someone turns
 # to it by name. Owner ruling 10-06: nobody should have to say a set phrase to hear the answer.
-HAND_QUIET_S = 2.0
+HAND_QUIET_S = 1.5
 HEARD_NAME_S = 8.0  # its tile says it heard its name this long, unless the line's final says more first
 # What is left of a line that only calls on an agent, once its name is gone ("go ahead, Friday", "yes Friday?")
 CALL_ON_WORDS = frozenset(
@@ -437,6 +437,7 @@ class Huddle:
         # Hand first: a ready answer's audio (run id -> the task that renders it), and the one being said
         self._speech: dict[str, asyncio.Task] = {}
         self._saying: tuple[str, str, asyncio.Task] | None = None  # (agent, run id, its play)
+        self._speech_end = -math.inf  # when the speech detector last heard someone stop
         self._heard_name: dict[str, tuple[str, float]] = {}  # agent -> (who said its name, until): on the tile
         self._interim: dict[str, str] = {}  # identity -> the words of the sentence they are saying now
         self._over_timer: asyncio.TimerHandle | None = None
@@ -2001,12 +2002,18 @@ class Huddle:
             self._voiced.add(identity)
         else:
             self._voiced.discard(identity)
+            self._speech_end = self._clock()
         if started and self._saying and identity in self._voiced and not self._over_timer:
             # The speech detector alone starts the clock: the SFU's sound level came a second later (rig, 10-06)
             self._over_timer = asyncio.get_running_loop().call_later(TALK_OVER_S, self._yield_if_talked_over)
         self._talking_changed()
         if not started and self.setting == "meeting" and HAND_FIRST:
             self._called_on_early(identity)
+            if any(self._news.values()):  # a hand is up: look again the moment the gap is long enough,
+                # not at the next 1 s tick (rig, 10-06: the tick alone added up to a second of dead air)
+                asyncio.get_running_loop().call_later(
+                    HAND_QUIET_S + 0.05, lambda: self._spawn(self._proactive(self._clock()))
+                )
 
     def _talking_changed(self) -> None:
         """Who is talking: the SFU hears sound from them and the transcriber's speech detector hears speech
@@ -3532,8 +3539,11 @@ class Huddle:
         speaking and none has spoken for REQUEST_QUIET_S. A requested answer is not news: no rate limit."""
         hand = self.setting == "meeting" and HAND_FIRST
         quiet = REQUEST_QUIET_S if self.setting != "meeting" else HAND_QUIET_S if hand else MEET_QUIET_S
-        # hand first: the speech detector alone holds it back too (the SFU's level lags a second; rig, 10-06)
-        if self._speaking or (hand and self._voiced) or now - self._last_heard < quiet:
+        # hand first: the speech detector alone times the gap (the SFU's level lags a second; rig, 10-06)
+        if hand:
+            if self._voiced or now - self._speech_end < quiet:
+                return None
+        elif self._speaking or now - self._last_heard < quiet:
             return None
         items = [
             (n, aid)

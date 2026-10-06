@@ -38,11 +38,11 @@ describe("WebsiteLoginsSection", () => {
     expect(api.get).toHaveBeenCalledWith("/website-logins/sites");
     expect(within(supademo).getByText("me@example.com")).toBeInTheDocument();
     expect(within(supademo).getByText(/app\.supademo\.com · Added by ann@example\.com · Never used/)).toBeInTheDocument();
-    expect(within(supademo).getByText("Not signed in in the browser")).toBeInTheDocument();
+    expect(within(supademo).getByText("No browser session")).toBeInTheDocument();
     expect(within(supademo).queryByRole("button", { name: /Sign out/ })).not.toBeInTheDocument();
     const google = await row("google.com");
-    expect(within(google).getByText("Signed in in the browser")).toBeInTheDocument();
-    expect(within(google).getByText("No saved login. Signed in by hand in the browser.")).toBeInTheDocument();
+    expect(within(google).getByText("Browser session saved")).toBeInTheDocument();
+    expect(within(google).getByText("No saved password. The browser keeps a session for this site.")).toBeInTheDocument();
   });
 
   it("signs the browser out of a site only after the confirmation", async () => {

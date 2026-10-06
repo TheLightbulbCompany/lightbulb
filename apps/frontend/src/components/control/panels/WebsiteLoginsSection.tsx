@@ -121,16 +121,16 @@ export function WebsiteLoginsSection({ canManage }: { canManage: boolean }) {
                       {site.signedIn
                         ? <span className="flex items-center gap-2 text-sm text-[var(--fg-soft)]">
                           <span aria-hidden className="size-1.5 rounded-full bg-[var(--live)]" />
-                          Signed in in the browser
+                          Browser session saved
                           <Button size="sm" variant="ghost" disabled={busy === `site:${site.site}`}
                             aria-label={`Sign out of ${site.site}`} onClick={() => signOut(site.site)}>
                             Sign out
                           </Button>
                         </span>
-                        : <span className="text-sm text-[var(--fg-mute)]">Not signed in in the browser</span>}
+                        : <span className="text-sm text-[var(--fg-mute)]">No browser session</span>}
                     </div>
                     {site.logins.length === 0
-                      ? <p className="text-sm text-[var(--fg-mute)]">No saved login. Signed in by hand in the browser.</p>
+                      ? <p className="text-sm text-[var(--fg-mute)]">No saved password. The browser keeps a session for this site.</p>
                       : <ul className="space-y-2">
                         {site.logins.map((login) => <li key={login.id} className="text-sm">
                           <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-1">

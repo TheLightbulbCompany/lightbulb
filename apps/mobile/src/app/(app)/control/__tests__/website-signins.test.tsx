@@ -53,7 +53,7 @@ it("lists each site with its usernames and the browser marker", async () => {
   expect(screen.getByText("dana@example.com")).toBeTruthy();
   expect(screen.getByText("linkedin.com")).toBeTruthy();
   expect(screen.getByText("growth")).toBeTruthy();
-  expect(screen.getAllByText("Signed in in the browser")).toHaveLength(1);
+  expect(screen.getAllByText("Browser session saved")).toHaveLength(1);
 });
 
 it("shows the empty state when there are none", async () => {
@@ -81,7 +81,7 @@ it("lists from the flat login route, one card per exact host, when there is no s
   expect(screen.getByText("mail.google.com")).toBeTruthy();
   expect(screen.getByText("ops")).toBeTruthy();
   expect(screen.getByText("www.linkedin.com")).toBeTruthy();
-  expect(screen.queryByText("Signed in in the browser")).toBeNull();
+  expect(screen.queryByText("Browser session saved")).toBeNull();
   expect(screen.queryByText(/Couldn’t load/)).toBeNull();
 });
 

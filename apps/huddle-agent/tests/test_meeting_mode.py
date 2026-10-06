@@ -1167,6 +1167,23 @@ async def test_someone_elses_short_final_does_not_cut_a_meeting_voice_either():
     assert ("interrupt",) not in lives[0].calls and h._voice.agent_state == "speaking"
 
 
+async def test_a_second_person_naming_the_open_agent_moves_its_attention_with_no_note_to_read_out():
+    h, room, backend, lives, clock, log = await per_person()
+    await says(h, P1, "Forge, what PRs are open?")
+    calls = len(lives[0].calls)
+    await says(h, P2, "Forge, and which one is the oldest?")
+    assert h._voice.speaker == P2 and h._voice.label == "Dan"
+    assert not [c for c in lives[0].calls[calls:] if c[0] == "thinking" and "is talking to you" in c[1]]
+
+
+async def test_anyones_dont_post_that_covers_an_answer_talked_over_in_a_meeting():
+    h, room, backend, lives, clock, log = await per_person()
+    await h.on_participants({**MEET_PEOPLE, "meet:room-1:p3": "Lee"})
+    h._cut_off["forge"] = ([("run-1", "the open PRs", "Three PRs are open.", clock.t, P1)], P2, clock.t)
+    h._no_post(None, "meet:room-1:p3")  # not the one recorded as the talker
+    assert "forge" not in h._cut_off
+
+
 # -- a Live voice's answer cut by its own speaker's sound (10-04 prod Meet: a noisy microphone's junk lines landed
 # as Forge began its answer; the model stopped for them and the answer was gone) --
 

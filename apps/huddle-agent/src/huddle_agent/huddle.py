@@ -2210,6 +2210,11 @@ class Huddle:
         if identity == v.speaker:
             return True
         v.speaker, v.ack_rows = identity, []
+        if in_meet(identity):
+            # a muted meeting voice: its attention moves to this person; no note it could read out (it is told
+            # what they asked through `_answer_heard`)
+            v.label, v.followed_at = self._label(identity), self._clock()
+            return self._live_call(v, "set_participant", identity)
         return self._live_call(v, "set_participant", identity) and self._live_call(
             v, "append_thinking", f"{self._talker(identity)} is talking to you"
         )
@@ -2567,7 +2572,12 @@ class Huddle:
         """ "don't post that": the named agent's newest open request, else the room's newest; with no
         request, that agent's (unnamed: anyone's) newest running run. Neither late-answer door posts it, and
         the worker never does; it may still be spoken. Said over a cut announcement (§4.8), it covers that."""
-        cut = [a for a, (_, who, _) in self._cut_off.items() if a == agent_id or agent_id is None and who == asker]
+        # a meeting: several people may have talked over it at once, so anyone's unnamed "don't post that" covers it
+        cut = [
+            a
+            for a, (_, who, _) in self._cut_off.items()
+            if a == agent_id or agent_id is None and (who == asker or self.setting == "meeting")
+        ]
         for a in cut:
             del self._cut_off[a]
         if cut:

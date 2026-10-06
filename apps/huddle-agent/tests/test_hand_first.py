@@ -64,6 +64,7 @@ async def test_a_ready_answer_raises_its_hand_and_is_not_said_until_someone_call
     assert status(h, "forge") == "has_news" and h._state()["lightbulb.agent.forge.hand"]
     await settle(h)
     assert h._room.prepared == [("forge", "Three PRs are open.")], "its audio is made when the hand goes up"
+    assert backend.meet_chats == ['\u270b Forge has an answer: list the open PRs. Say "go ahead, Forge".'], "and the Meet's chat says so, once"
     clock.t += 60  # a long quiet: it still does not take the floor by itself
     await h.tick()
     await settle(h)

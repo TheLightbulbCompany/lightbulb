@@ -3581,13 +3581,17 @@ class Huddle:
                     self._attend[to] = (agent_id, self._clock() + MEET_FOLLOWUP_S)
             self._sync_state()
 
-    async def _speech_for(self, item: tuple, agent_id: str) -> Any:
+    def _render(self, item: tuple, agent_id: str) -> asyncio.Task:
+        """The answer's audio, started once a run (ponytail: a failed render is not retried)."""
         if item[0] not in self._speech:
             async def render() -> Any:
                 voice = (await self._backend.session(agent_id))["voice"]
                 return await self._room.prepare(agent_id, voice, item[2])
             self._speech[item[0]] = asyncio.ensure_future(render())
-        return await asyncio.shield(self._speech[item[0]])  # ponytail: a failed render is not retried
+        return self._speech[item[0]]
+
+    async def _speech_for(self, item: tuple, agent_id: str) -> Any:
+        return await asyncio.shield(self._render(item, agent_id))
 
     def _speech_sync(self) -> None:
         """Every ready answer of a hand-first meeting has its audio made ahead; an answer that left is unpublished."""
@@ -3596,7 +3600,10 @@ class Huddle:
         ready = {n[0]: (aid, n) for aid, news in self._news.items() for n in news}
         for run_id, (aid, n) in ready.items():
             if run_id not in self._speech:
-                self._spawn(self._speech_for(n, aid))
+                self._render(n, aid)
+                # once a hand: the Meet's chat says it too (a talked-over answer keeps its audio, so no repeat)
+                name = self._agent_name(aid)
+                self._spawn(self._backend.meet_chat(f'\u270b {name} has an answer: {n[1][:120]}. Say "go ahead, {name}".'))
         for run_id in [r for r in self._speech if r not in ready]:
             t = self._speech.pop(run_id)
             if t.done() and not t.cancelled() and t.exception() is None:

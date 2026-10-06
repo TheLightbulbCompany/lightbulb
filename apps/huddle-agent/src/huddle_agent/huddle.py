@@ -32,7 +32,7 @@ from typing import Any, Awaitable, Callable, Protocol
 
 from huddle_agent import gate
 from huddle_agent.backend import BackendError
-from huddle_agent.frames import WORKING_CHARS, Run, Runs
+from huddle_agent.frames import APPEND_CHARS, WORKING_CHARS, Run, Runs
 from huddle_agent.request_list import ENDED, LINE_CHARS, OPEN, Request, RequestList, ack_line
 from huddle_agent.transcript import (
     Transcript,
@@ -351,6 +351,7 @@ class _Voice:
     # a meeting: its run's text so far, said once the run ends. A run speaks a sentence before each lookup, which
     # in a meeting is an agent talking again and again over people; only the answer is said there.
     holding: str = ""
+    held_for: tuple | None = None  # (run id, text box) `holding` belongs to: another run or box starts it empty
     # Live's model stops for its own speaker's sound, so they can cut its answer and the worker never cut it:
     # `answer` is the ended run's (run_id, request, text, at, speaker) until it is known heard; `unheard`: its
     # speech was interrupted, or their sound came before a word of it; `replied`: it then answered them (they
@@ -2699,8 +2700,6 @@ class Huddle:
         return v if v and run.gen == v.gen else None
 
     def progress(self, run: Run, text: str) -> None:
-        if (v := self._same_session(run)) and in_meet(v.speaker):
-            v.holding = ""  # a tool starts: what it wrote so far was an update, not the answer
         # not to a muted meeting voice: it said each one aloud ("I'm still checking", 10-04 prod Meet); the tile shows it
         if (v := self._same_session(run)) and not in_meet(v.speaker):
             self._live_call(
@@ -2724,6 +2723,10 @@ class Huddle:
             v.pending = True  # text handed over and not yet said: cleared when the voice next goes quiet
             v.saying = run.run_id
             if in_meet(v.speaker):
+                if v.held_for != (run.run_id, run.box):
+                    # another run (the one before was stopped or failed), or a tool started: what was written
+                    # before it was an update, or a cancelled answer, never part of this one
+                    v.held_for, v.holding = (run.run_id, run.box), ""
                 v.holding += text  # said whole when the run ends (`ended`)
                 return
             self._live_call(
@@ -2735,9 +2738,10 @@ class Huddle:
         if answer and (news := self._news.get(run.agent_id)):  # §4.8: the real answer replaces its failure line
             news[:] = [n for n in news if n[0] != run.run_id or n[2] != CANT_REACH]
         if v := self._same_session(run):
-            if in_meet(v.speaker) and v.holding.strip():
-                self._live_call(v, "append_commentary", v.holding, delegation_id=run.delegation_id)
-            v.holding = ""
+            if in_meet(v.speaker) and v.held_for == (run.run_id, run.box) and (held := v.holding.strip()):
+                for i in range(0, len(held), APPEND_CHARS):  # GPT-Live caps each append at 500 tokens
+                    self._live_call(v, "append_commentary", held[i : i + APPEND_CHARS], delegation_id=run.delegation_id)
+            v.holding, v.held_for = "", None
             if not run.spoken.strip():
                 self._live_call(
                     v,

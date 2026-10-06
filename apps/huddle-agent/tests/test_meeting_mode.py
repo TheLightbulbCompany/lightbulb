@@ -1107,7 +1107,7 @@ async def test_a_meeting_run_says_only_its_answer_not_an_update_before_each_look
     run = h._runs.get(row.run_id)
     said = lambda: [c[1] for c in lives[0].calls if c[0] == "commentary"]
     h.say(run, "Let me check GitHub. ", False)
-    h.progress(run, "github")  # a tool starts: that sentence was an update
+    run.box += 1  # a tool starts (frames.Runs), also the same tool twice: that sentence was an update
     h.say(run, "You merged three pull requests. ", False)
     clock.t += h_mod.MEET_FOLLOWUP_S / 2
     await h.tick()
@@ -1117,6 +1117,25 @@ async def test_a_meeting_run_says_only_its_answer_not_an_update_before_each_look
     h.say(run, "The largest was the audio bridge.", True)
     h.ended(run, run.text)
     assert said() == ["You merged three pull requests. The largest was the audio bridge."]
+
+
+async def test_a_stopped_meeting_runs_text_is_not_said_with_the_next_answer_and_a_long_one_goes_in_parts():
+    h, room, backend, lives, clock, log = await per_person()
+    backend.route_extra = ops([("forge", "list the open PRs", "name")])
+    await says(h, P1, "Forge, what PRs are open?")
+    first = h._runs.get(h._requests.items[0].run_id)
+    h.say(first, "Three pull requests are open. ", False)
+    h._runs.abort(first.run_id)  # stopped: its text must never be said
+    from huddle_agent.frames import Run
+
+    long = "x" * (h_mod.APPEND_CHARS + 10)
+    second = Run("run-2", "forge", gen=first.gen, delegation_id=first.delegation_id)
+    second.text = second.spoken = long
+    h._runs._runs["run-2"] = second
+    h.say(second, long, True)
+    h.ended(second, long)
+    said = [c[1] for c in lives[0].calls if c[0] == "commentary"]
+    assert said == [long[: h_mod.APPEND_CHARS], long[h_mod.APPEND_CHARS :]]
 
 
 # -- a Live voice's answer cut by its own speaker's sound (10-04 prod Meet: a noisy microphone's junk lines landed

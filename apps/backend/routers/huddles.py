@@ -69,6 +69,12 @@ class RoomBody(BaseModel):
     roomToken: _Id
 
 
+class SessionBody(RoomBody):
+    # A Meet answer said from a raised hand: the voice only says what it is given, so the one-time "what
+    # should I call you" prompt is not asked and must not be used up.
+    silent: bool = False
+
+
 class SummonBody(BaseModel):
     ownerId: _Id
     roomToken: _Id
@@ -258,10 +264,12 @@ async def team(room_id: str, body: RoomBody):
 
 
 @router.post("/internal/huddles/{room_id}/agents/{agent_id}/session", dependencies=[_Worker])
-async def agent_session(room_id: str, agent_id: str, body: RoomBody):
+async def agent_session(room_id: str, agent_id: str, body: SessionBody):
     room_id = _room_id(room_id)
     _require_room_token(body.roomToken, room_id, body.ownerId)
-    return await voice_calls.agent_session(owner_id=body.ownerId, room_id=room_id, agent_id=agent_id)
+    return await voice_calls.agent_session(
+        owner_id=body.ownerId, room_id=room_id, agent_id=agent_id, ask_name=not body.silent
+    )
 
 
 @router.post("/internal/huddles/{room_id}/agents/{agent_id}/meet-voice", dependencies=[_Worker])

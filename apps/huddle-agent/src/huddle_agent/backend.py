@@ -123,9 +123,10 @@ class Backend:
             {"speakerUserId": speaker, **self._label(speaker_name)},
         )
 
-    async def session(self, agent_id: str) -> dict:
+    async def session(self, agent_id: str, silent: bool = False) -> dict:
+        """`silent`: a voice that only says what it is given; the agent's naming prompt is not used up."""
         return await self._post(
-            f"/internal/huddles/{self._room_id}/agents/{agent_id}/session", {}
+            f"/internal/huddles/{self._room_id}/agents/{agent_id}/session", {"silent": True} if silent else {}
         )
 
     async def turn(

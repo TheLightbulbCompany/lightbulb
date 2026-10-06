@@ -160,6 +160,11 @@ HAND_FIRST = True
 # is the pause it waits, and a person who talks in it calls the start off unheard. Sooner when someone turns to
 # it by name. Owner rulings 10-06: no set phrase to hear the answer, and the Live model says it, live.
 HAND_QUIET_S = 0.0
+START_S = 6.0  # its first sound comes about 2 s after it is asked; none by now is a start that failed
+SAY_MAX_S = 90.0
+COLLIDE_S = 1.2  # someone starts within this of its first sound: it yields at once, as a person would
+HAND_RETRY_QUIET_S = 1.5  # after a false start it waits this much silence, so it does not blurt at every breath
+HAND_HOLD_S = 60.0  # a hand's voice stays open and silent this long; then it opens again when it is to speak
 HEARD_NAME_S = 8.0  # its tile says it heard its name this long, unless the line's final says more first
 # What is left of a line that only calls on an agent, once its name is gone ("go ahead, Friday", "yes Friday?")
 CALL_ON_WORDS = frozenset(
@@ -436,6 +441,11 @@ class Huddle:
         self._speech: dict[str, asyncio.Task] = {}
         self._saying: tuple[str, str, asyncio.Task] | None = None  # (agent, run id, its play)
         self._say_audio, self._say_done = False, asyncio.Event()  # its first sound came; it finished
+        self._say_audio_at, self._say_started = 0.0, asyncio.Event()
+        self._false_starts = 0  # starts that ran into someone since an answer was last said
+        self._speech_at: dict[str, float] = {}  # when each hand voice opened
+        self._speech_closing: dict[str, asyncio.Future] = {}  # an agent's hand voice on its way out
+        self._speech_cold: set[str] = set()  # agents whose hand voice was closed unsaid: reopened at the pause
         self._speech_end = -math.inf  # when the speech detector last heard someone stop
         self._heard_name: dict[str, tuple[str, float]] = {}  # agent -> (who said its name, until): on the tile
         self._interim: dict[str, str] = {}  # identity -> the words of the sentence they are saying now
@@ -1951,10 +1961,19 @@ class Huddle:
         """GPT-Live's agent state. Speaking is activity: the idle clock restarts when it stops."""
         if self._saying and self._saying[0] == agent_id and self._floor_voice(agent_id) is None:
             if state == "speaking":
+                if not self._say_audio:
+                    self._say_audio_at = self._clock()
+                    self._say_started.set()
                 self._say_audio = True  # its first sound: the tile says it speaks only now
                 self._sync_state()
             elif self._say_audio:
                 self._say_done.set()  # it said it
+            return
+        if state == "speaking" and self._floor_voice(agent_id) is None and agent_id in self._speech:
+            t = self._speech[agent_id]  # a hand voice speaking with nothing to say (a start it was told to drop)
+            if t.done() and not t.cancelled() and t.exception() is None:
+                with contextlib.suppress(Exception):
+                    t.result().interrupt()
             return
         if v := self._floor_voice(agent_id):
             was_speaking = v.agent_state == "speaking"
@@ -2005,8 +2024,10 @@ class Huddle:
         else:
             self._voiced.discard(identity)
             self._speech_end = self._clock()
-        if started and self._saying and identity in self._voiced and not self._say_audio:
-            self._saying[2].cancel()  # before its first sound: the start is called off, nobody heard anything
+        if started and self._saying and identity in self._voiced and not self._said_long():
+            # Before its first sound, or in its first second: two started at once, and it is the one that yields,
+            # at once (rig 10-06: a person began 0.4 s before its first sound and it talked over them for 1.2 s).
+            self._saying[2].cancel()
         elif started and self._saying and identity in self._voiced and not self._over_timer:
             # The speech detector alone starts the clock: the SFU's sound level came a second later (rig, 10-06)
             self._over_timer = asyncio.get_running_loop().call_later(TALK_OVER_S, self._yield_if_talked_over)
@@ -2015,9 +2036,10 @@ class Huddle:
             self._called_on_early(identity)
             if any(self._news.values()):  # a hand is up: look again the moment the gap is long enough,
                 # not at the next 1 s tick (rig, 10-06: the tick alone added up to a second of dead air)
-                asyncio.get_running_loop().call_later(
-                    HAND_QUIET_S + 0.05, lambda: self._spawn(self._proactive(self._clock()))
-                )
+                for wait in (HAND_QUIET_S, HAND_RETRY_QUIET_S):
+                    asyncio.get_running_loop().call_later(
+                        wait + 0.05, lambda: self._spawn(self._proactive(self._clock()))
+                    )
 
     def _talking_changed(self) -> None:
         """Who is talking: the SFU hears sound from them and the transcriber's speech detector hears speech
@@ -3542,7 +3564,9 @@ class Huddle:
         """The oldest ready answer someone asked for (ties: request order) and its agent, once no human is
         speaking and none has spoken for REQUEST_QUIET_S. A requested answer is not news: no rate limit."""
         hand = self.setting == "meeting" and HAND_FIRST
-        quiet = REQUEST_QUIET_S if self.setting != "meeting" else HAND_QUIET_S if hand else MEET_QUIET_S
+        quiet = REQUEST_QUIET_S if self.setting != "meeting" else MEET_QUIET_S
+        if hand:  # a start that ran into someone: this meeting's pauses are short, so it waits out a real one
+            quiet = HAND_RETRY_QUIET_S if self._false_starts else HAND_QUIET_S
         # hand first: the speech detector alone times the gap (the SFU's level lags a second; rig, 10-06)
         if hand:
             if self._voiced or now - self._speech_end < quiet:
@@ -3586,19 +3610,31 @@ class Huddle:
         if self._saying:
             return
         self._saying = (agent_id, item[0], asyncio.current_task())
-        self._say_audio, self._say_done = False, asyncio.Event()
+        self._say_audio, self._say_done, self._say_started = False, asyncio.Event(), asyncio.Event()
         live, said = None, False
         try:
             live = await self._speech_for(item, agent_id)
             self._note(f"[{self._agent_name(agent_id)} has the pause and says its answer to: {item[1][:80]}]")
             live.append_commentary(item[2])
-            await self._say_done.wait()
+            # no sound in START_S: the model let it pass (seen on the rig after two interrupted starts)
+            await asyncio.wait_for(self._say_started.wait(), START_S)
+            await asyncio.wait_for(self._say_done.wait(), SAY_MAX_S)
             said = True
-        except asyncio.CancelledError:
+        except (asyncio.CancelledError, asyncio.TimeoutError):
+            # Stopped, or never started: this session is done with. An interrupt before the model's first sound
+            # does not stop the sound that follows (rig 10-06: it then talked over a person for 3 s), and only
+            # a closed session is surely silent. A fresh one opens while its hand stays up.
             if live is not None:
                 with contextlib.suppress(Exception):
                     live.interrupt()
-            if self._say_audio:  # heard, then talked over
+            if t := self._speech.pop(agent_id, None):
+                if t.done() and not t.cancelled() and t.exception() is None:
+                    self._drop_speech(agent_id, t.result())
+                else:
+                    t.cancel()
+            if not self._said_long():
+                self._false_starts += 1
+            if self._said_long():  # heard, then talked over (a collision at its start is nobody's fault)
                 emit_metric("live.meet.hand_back_up", 1, "Count")
                 if own:
                     tries = self._delivery_tries.get(item[0], (0, 0.0))[0]
@@ -3609,48 +3645,85 @@ class Huddle:
                 self._news[agent_id] = [n for n in self._news.get(agent_id, []) if n[0] != item[0]]
                 self._requests.delivered({item[0]})
                 self._delivery_tries.pop(item[0], None)
+                self._false_starts = 0
                 if to:  # who it answered may follow up with no name
                     self._attend[to] = (agent_id, self._clock() + MEET_FOLLOWUP_S)
             self._sync_state()
 
-    def _render(self, item: tuple, agent_id: str) -> asyncio.Task:
-        """The answer's voice: a GPT-Live session of its agent, opened when its hand goes up and silent until
-        `_say_ready` (ponytail: a session that fails to open is not retried; the answer goes to the notes)."""
-        if item[0] not in self._speech:
+    def _said_long(self) -> bool:
+        """It has been audible for more than a false start."""
+        return self._say_audio and self._clock() - self._say_audio_at >= COLLIDE_S
+
+    def _render(self, agent_id: str, speaker: str | None = None) -> asyncio.Task:
+        """The agent's hand voice: ONE GPT-Live session an agent, for every answer it has ready (two would share
+        the `agent-<id>` track name, and closing one unpublishes both). Opened inside a call window, so it is
+        billed and the voice limit applies. ponytail: a session that fails to open is not retried."""
+        if agent_id not in self._speech:
             async def render() -> Any:
-                session = await self._backend.session(agent_id)
-                speaker = item[4] if item[4] in self._people else min(self._people)
+                if closing := self._speech_closing.get(agent_id):
+                    await asyncio.wait({closing})
+                who = speaker if speaker in self._people else min(self._people)
+                await self._ensure_window(who)
+                session = await self._backend.session(agent_id, silent=True)
                 seed = [(
                     "developer",
-                    f"You are in a team meeting on Google Meet and you hear nothing of it. {self._name(speaker)} "
-                    f"asked you: {item[1]}. Your answer is ready and your hand is up. Stay silent until you are "
-                    "given the answer to say; then say it once, briefly, as yourself, and stop. No greeting, no "
-                    "question, nothing else.",
+                    "You are in a team meeting on Google Meet and you hear nothing of it. People asked you things; "
+                    "your hand is up. Stay silent until you are given an answer to say; then say it once, briefly, "
+                    "as yourself, and stop. No greeting, no question, nothing else.",
                 )]
                 return await self._live_factory(
-                    agent_id=agent_id, persona=session["persona"], voice=session["voice"], speaker=speaker, seed=seed
+                    agent_id=agent_id, persona=session["persona"], voice=session["voice"], speaker=who, seed=seed
                 )
-            self._speech[item[0]] = asyncio.ensure_future(render())
-        return self._speech[item[0]]
+            self._speech[agent_id] = asyncio.ensure_future(render())
+            self._speech_at[agent_id] = self._clock()
+        return self._speech[agent_id]
 
     async def _speech_for(self, item: tuple, agent_id: str) -> Any:
-        return await asyncio.shield(self._render(item, agent_id))
+        self._speech_cold.discard(agent_id)
+        return await asyncio.shield(self._render(agent_id, item[4]))
+
+    def _drop_speech(self, agent_id: str, live: Any) -> None:
+        """Closes a hand voice. Its agent's next one waits for this: closing unpublishes every track named
+        `agent-<id>`, the new session's too (rig 10-06: the answer was then said into nothing)."""
+        prev = self._speech_closing.get(agent_id)
+
+        async def close() -> None:
+            if prev:
+                await asyncio.wait({prev})
+            await self._close_speech(live)
+
+        self._speech_closing[agent_id] = asyncio.ensure_future(close())
+
+    async def _close_speech(self, live: Any) -> None:
+        """Its time is voice time, said or not: the final usage lands during the close (as `_close` reads it)."""
+        usage = 0.0
+        try:
+            await live.aclose()
+            usage = live.usage_seconds()
+        except Exception:
+            logger.exception("huddle hand voice close failed")
+        self._closed_seconds += usage
+        if w := self._window:
+            w.used_seconds += usage
 
     def _speech_sync(self) -> None:
-        """Every ready answer of a hand-first meeting holds its voice open; an answer that left closes it."""
-        if self.setting != "meeting" or not HAND_FIRST or not self._people:
+        """An agent with a ready answer holds its voice open, for HAND_HOLD_S at most (a hand nobody leaves a
+        pause for must not burn the day's voice minutes: it opens again when the pause comes). An agent with
+        none left, or an empty meeting, closes it."""
+        if self.setting != "meeting" or not HAND_FIRST:
             return
-        ready = {n[0]: (aid, n) for aid, news in self._news.items() for n in news}
-        for run_id, (aid, n) in ready.items():
-            if run_id not in self._speech:
-                self._render(n, aid)
-        for run_id in [r for r in self._speech if r not in ready]:
-            t = self._speech.pop(run_id)
+        ready = {aid for aid, news in self._news.items() if news} if self._people else set()
+        saying = self._saying[0] if self._saying else None
+        for aid in ready:
+            if aid not in self._speech and aid not in self._speech_cold:
+                self._render(aid, self._news[aid][0][4])
+            elif aid in self._speech and aid != saying and self._clock() - self._speech_at[aid] >= HAND_HOLD_S:
+                self._speech_cold.add(aid)
+        self._speech_cold &= ready
+        for aid in [a for a in self._speech if a not in ready or (a in self._speech_cold and a != saying)]:
+            t = self._speech.pop(aid)
             if t.done() and not t.cancelled() and t.exception() is None:
-                live = t.result()
-                with contextlib.suppress(Exception):
-                    self._closed_seconds += live.usage_seconds()  # it counts as voice time, said or not
-                self._spawn(live.aclose())
+                self._drop_speech(aid, t.result())
             else:
                 t.cancel()
 
@@ -3853,8 +3926,8 @@ class Huddle:
     async def _end_window(self, force: bool = False) -> None:
         """Caller holds the lock. Ends the window only when no voice is open or joining."""
         w = self._window
-        if w is None or self._voice is not None:
-            return
+        if w is None or self._voice is not None or self._speech:
+            return  # a hand voice is open: its time is charged to this window when it closes
         if not force and self._requests.open() and self._clock() < w.deadline:
             return  # an open request still needs /turns (spec §3.3); tick() ends it after the last
         self._window = None

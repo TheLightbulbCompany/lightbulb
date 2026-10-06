@@ -171,8 +171,9 @@ class FakeBackend:
             raise self.summon_error
         return SUMMON
 
-    async def session(self, agent_id):
+    async def session(self, agent_id, silent=False):
         self.sessions.append(agent_id)
+        self.silent_sessions = getattr(self, "silent_sessions", []) + ([agent_id] if silent else [])
         if self.session_gate:
             await self.session_gate.wait()
         name = next(a["name"] for a in self.team_data["agents"] if a["id"] == agent_id)

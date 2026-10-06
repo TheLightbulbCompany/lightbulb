@@ -1,6 +1,5 @@
 //! Hook datagram parsing, the hook-event -> status transition table, and the
-//! Codex hook-trust hash/key recipe. Pure module: no I/O, no wiring into the
-//! transport yet (see Task 11).
+//! Codex hook-trust hash/key recipe. Hook sources come from OS process ancestry.
 
 use serde_json::{json, Map, Value};
 use sha2::{Digest, Sha256};
@@ -18,9 +17,88 @@ pub(crate) enum Provider {
     Codex,
 }
 
+/// Native process identity, independent of executable aliases and relay generations.
+/// Fences process restarts, not reordered turns within one process. A Codex
+/// app server can host multiple conversations under the same PID and birth time.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct HookProcess {
+    pub pid: u32,
+    pub birth_micros: u64,
+}
+
+impl HookProcess {
+    pub(super) fn of(process: &super::Process) -> Self {
+        Self { pid: process.pid, birth_micros: process.birth_micros }
+    }
+}
+
+/// Only shells may intervene between the hook and its native provider. Do not
+/// walk through an unknown launcher to some unrelated provider farther up.
+/// Claude's native installer also exposes releases as `claude/versions/<v>`;
+/// its app bundle hard link is named `claude`. Codex Desktop, daemon and held
+/// CLI processes all run the native `codex` executable.
+fn hook_ancestor(
+    provider: &str,
+    mut current: super::Process,
+    mut parent: impl FnMut(&super::Process) -> Option<super::Process>,
+) -> Option<HookProcess> {
+    if !matches!(provider, "claude" | "codex") { return None; }
+    let mut seen = std::collections::BTreeSet::new();
+    for _ in 0..8 {
+        if current.pid <= 1 || current.birth_micros == 0 || !seen.insert(current.pid) {
+            return None;
+        }
+        let path = &current.executable;
+        let name = path.file_name()?.to_str()?;
+        let claude_release = provider == "claude"
+            && path.parent()?.file_name().is_some_and(|n| n == "versions")
+            && path.parent()?.parent()?.file_name().is_some_and(|n| n == "claude")
+            && name.split('.').count() == 3
+            && name.split('.').all(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()));
+        if name == provider || claude_release {
+            return Some(HookProcess::of(&current));
+        }
+        if !matches!(name, "sh" | "bash" | "zsh" | "dash") { return None; }
+        current = parent(&current)?;
+    }
+    None
+}
+
+/// Resolve a relationship, not just two live PIDs. A reparented child keeps
+/// its birth time, and a reused parent PID may already name another process.
+fn checked_parent(
+    child: &super::Process,
+    mut parent: impl FnMut(u32) -> Option<super::Process>,
+    mut process: impl FnMut(u32) -> Option<super::Process>,
+) -> Option<super::Process> {
+    let first = parent(child.pid)?;
+    if first.birth_micros > child.birth_micros
+        || parent(child.pid)? != first
+        || process(child.pid)? != *child
+    {
+        return None;
+    }
+    Some(first)
+}
+
+fn hook_process(provider: &str) -> Option<HookProcess> {
+    let own = super::process(std::process::id()).ok()?;
+    let parent = |child: &super::Process| checked_parent(
+        child,
+        |pid| super::native_tools::parent(pid).ok(),
+        |pid| super::process(pid).ok(),
+    );
+    let first = parent(&own)?;
+    let source = hook_ancestor(provider, first, parent)?;
+    let live = super::process(source.pid).ok()?;
+    (HookProcess::of(&live) == source).then_some(source)
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct HookEvent {
     pub provider: Provider,
+    pub source_process: Option<HookProcess>,
     pub event: String, // hook_event_name as sent
     pub session_id: String,
     pub transcript_path: Option<String>,
@@ -86,7 +164,7 @@ fn take_bytes(s: &str, max: usize) -> String {
 /// order to stay under `DATAGRAM_MAX`: `lastAssistantMessage` -> `waitingText`
 /// -> `cwd` -> `transcriptPath`.
 pub(crate) fn build_datagram(provider: &str, stdin_json: &Value) -> Vec<u8> {
-    build(provider, stdin_json, None)
+    build(provider, stdin_json, None, hook_process(provider))
 }
 
 /// A held prompt's announcement: the ordinary datagram plus how to answer it.
@@ -97,17 +175,17 @@ pub(crate) fn build_held_datagram(
     stdin_json: &Value,
     held: &super::approval::Held,
 ) -> Vec<u8> {
-    build(provider, stdin_json, Some(held))
+    build(provider, stdin_json, Some(held), hook_process(provider))
 }
 
 /// The hook let a held prompt go.
 pub(crate) fn build_release_datagram(provider: &str, stdin_json: &Value, id: &str) -> Vec<u8> {
     let session: String = stdin_json["session_id"].as_str().unwrap_or("").chars().take(128).collect();
-    serde_json::to_vec(&json!({"v":1,"provider":provider,"event":"PermissionRelease","sessionId":session,"approvalId":id}))
+    serde_json::to_vec(&json!({"v":2,"provider":provider,"event":"PermissionRelease","sessionId":session,"approvalId":id,"sourceProcess":hook_process(provider)}))
         .unwrap_or_default()
 }
 
-fn build(provider: &str, stdin_json: &Value, held: Option<&super::approval::Held>) -> Vec<u8> {
+fn build(provider: &str, stdin_json: &Value, held: Option<&super::approval::Held>, source: Option<HookProcess>) -> Vec<u8> {
     let s = |k: &str| stdin_json[k].as_str().map(str::to_owned);
     // Summarized, never forwarded: `tool_input` is unbounded and holds file
     // contents, patches and whatever a command line carries.
@@ -121,7 +199,7 @@ fn build(provider: &str, stdin_json: &Value, held: Option<&super::approval::Held
         }
     });
     let mut fields: Vec<(&str, Option<String>)> = vec![
-        ("v", Some("1".into())),
+        ("v", Some("2".into())),
         ("provider", Some(provider.into())),
         ("event", s("hook_event_name").map(|m| take_bytes(&m, 32))),
         ("sessionId", s("session_id").map(|m| take_bytes(&m, 128))),
@@ -157,9 +235,10 @@ fn build(provider: &str, stdin_json: &Value, held: Option<&super::approval::Held
         let mut map = Map::new();
         for (k, v) in &fields {
             if let Some(v) = v {
-                map.insert((*k).into(), if *k == "v" { json!(1) } else { json!(v) });
+                map.insert((*k).into(), if *k == "v" { json!(2) } else { json!(v) });
             }
         }
+        map.insert("sourceProcess".into(), json!(source));
         if let Some(held) = held {
             map.insert("held".into(), json!(held));
         }
@@ -181,6 +260,24 @@ fn build(provider: &str, stdin_json: &Value, held: Option<&super::approval::Held
 /// (garbage, or missing a non-empty, bounded `sessionId`).
 pub(crate) fn parse_datagram(bytes: &[u8]) -> Option<HookEvent> {
     let v: Value = serde_json::from_slice(bytes).ok()?;
+    // Legacy datagrams still wake discovery, but cannot identify a process.
+    // Only v2 attributes a hook to a process. A v1 datagram carrying a
+    // non-null identity is rejected, never upgraded into a lifecycle mutation.
+    // Unknown versions and malformed identities must not degrade to legacy.
+    match v["v"].as_u64()? {
+        1 if !v["sourceProcess"].is_null() => return None,
+        1 | 2 => {},
+        _ => return None,
+    }
+    let source_process = if v["sourceProcess"].is_null() {
+        None
+    } else {
+        let source: HookProcess = serde_json::from_value(v["sourceProcess"].clone()).ok()?;
+        if source.pid <= 1 || source.pid > i32::MAX as u32 || source.birth_micros == 0 {
+            return None;
+        }
+        Some(source)
+    };
     let provider = match v["provider"].as_str()? {
         "claude" => Provider::Claude,
         "codex" => Provider::Codex,
@@ -189,6 +286,7 @@ pub(crate) fn parse_datagram(bytes: &[u8]) -> Option<HookEvent> {
     let s = |k: &str| v[k].as_str().map(str::to_owned);
     Some(HookEvent {
         provider,
+        source_process,
         event: s("event")?,
         session_id: s("sessionId").filter(|x| !x.is_empty() && x.len() <= 128)?,
         transcript_path: s("transcriptPath"),
@@ -360,7 +458,166 @@ mod tests {
     use serde_json::json;
 
     fn ev(event: &str) -> HookEvent {
-        HookEvent { provider: Provider::Claude, event: event.into(), session_id: "s".into(), transcript_path: None, cwd: None, notification_type: None, message: None, reason: None, last_assistant_message: None, tool_name: None, tool_use_id: None, waiting_text: None, held: None }
+        HookEvent { source_process: None, provider: Provider::Claude, event: event.into(), session_id: "s".into(), transcript_path: None, cwd: None, notification_type: None, message: None, reason: None, last_assistant_message: None, tool_name: None, tool_use_id: None, waiting_text: None, held: None }
+    }
+
+    fn ancestor(pid: u32, executable: &str) -> super::super::Process {
+        super::super::Process { pid, birth_micros: 100 + pid as u64, executable: executable.into() }
+    }
+
+    #[test]
+    fn lifecycle_parent_rejects_a_reparented_child() {
+        let child = ancestor(100, "/hook");
+        let old = ancestor(10, "/opt/codex");
+        let adopted = ancestor(11, "/other/parent");
+        let mut reads = [old, adopted].into_iter();
+        assert_eq!(checked_parent(&child, |_| reads.next(), |_| Some(child.clone())), None);
+    }
+
+    #[test]
+    fn lifecycle_parent_rejects_a_parent_born_after_the_child() {
+        let child = ancestor(100, "/hook");
+        let reused = ancestor(200, "/opt/codex");
+        assert_eq!(checked_parent(&child, |_| Some(reused.clone()), |_| Some(child.clone())), None);
+    }
+
+    #[test]
+    fn lifecycle_parent_rejects_parent_pid_reuse_during_resolution() {
+        let child = ancestor(100, "/hook");
+        let old = ancestor(10, "/opt/codex");
+        let mut reused = old.clone();
+        reused.birth_micros += 1;
+        let mut reads = [old, reused].into_iter();
+        assert_eq!(checked_parent(&child, |_| reads.next(), |_| Some(child.clone())), None);
+    }
+
+    #[test]
+    fn lifecycle_parent_rejects_child_pid_reuse_during_resolution() {
+        let child = ancestor(100, "/hook");
+        let parent = ancestor(10, "/opt/codex");
+        let mut reused = child.clone();
+        reused.birth_micros += 1;
+        assert_eq!(checked_parent(&child, |_| Some(parent.clone()), |_| Some(reused.clone())), None);
+    }
+
+    #[test]
+    fn lifecycle_parent_accepts_only_a_stable_older_relationship() {
+        let child = ancestor(100, "/hook");
+        let parent = ancestor(10, "/opt/codex");
+        assert_eq!(checked_parent(&child, |_| Some(parent.clone()), |_| Some(child.clone())), Some(parent.clone()));
+        let mut vanished = [Some(parent), None].into_iter();
+        assert_eq!(checked_parent(&child, |_| vanished.next().flatten(), |_| Some(child.clone())), None);
+    }
+
+    #[test]
+    fn lifecycle_hook_generation_follows_native_ancestry_only() {
+        for (provider, path) in [
+            ("claude", "/opt/claude"),
+            ("claude", "/home/.local/share/claude/versions/2.1.273"),
+            ("claude", "/opt/ClaudeCode.app/Contents/MacOS/claude"),
+            ("codex", "/Applications/Codex.app/Contents/Resources/codex"),
+            ("codex", "/Applications/ChatGPT.app/Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex"),
+            ("codex", "/home/.codex/packages/app-server-daemon/releases/0.159.2-arm64-apple-darwin/bin/codex"),
+        ] {
+            let native = ancestor(42, path);
+            let expected = Some(HookProcess::of(&native));
+            assert_eq!(hook_ancestor(provider, native.clone(), |_| None), expected);
+            let shell = ancestor(43, "/bin/sh");
+            assert_eq!(hook_ancestor(provider, shell.clone(), |_| Some(native.clone())), expected);
+            assert_eq!(hook_ancestor(provider, ancestor(44, "/bin/bash"), |p| {
+                Some(if p.pid == 44 { shell.clone() } else { native.clone() })
+            }), expected);
+        }
+        for path in ["/usr/bin/node", "/other/versions/2.1.273", "/usr/bin/python", "/opt/codex"] {
+            assert_eq!(hook_ancestor("claude", ancestor(42, path), |_| Some(ancestor(99, "/opt/claude"))), None);
+        }
+        assert_eq!(hook_ancestor("unknown", ancestor(42, "/opt/unknown"), |_| None), None);
+        assert_eq!(hook_ancestor("codex", ancestor(42, "/bin/sh"), |_| None), None);
+        assert_eq!(hook_ancestor("codex", ancestor(42, "/bin/sh"), |_| Some(ancestor(42, "/bin/sh"))), None);
+        assert_eq!(hook_ancestor("codex", ancestor(42, "/bin/sh"), |p| Some(ancestor(p.pid + 1, "/bin/sh"))), None);
+        let mut missing_birth = ancestor(42, "/opt/codex");
+        missing_birth.birth_micros = 0;
+        assert_eq!(hook_ancestor("codex", missing_birth, |_| None), None);
+    }
+
+    #[test]
+    fn lifecycle_generation_is_not_taken_from_provider_stdin() {
+        let stdin = json!({"session_id":"abc", "hook_event_name":"PermissionRequest",
+            "pid": 2, "birth_micros": 1, "sourceProcess": {"pid": 2, "birthMicros": 1}});
+        let held = super::super::approval::Held { id: "appr-0123456789abcdef0123456789abcdef".into(),
+            input_digest: "d".repeat(64), reply: "/tmp/reply.sock".into(), exact: true, modes: vec![] };
+        for bytes in [build_datagram("codex", &stdin), build_held_datagram("codex", &stdin, &held),
+            build_release_datagram("codex", &stdin, &held.id)] {
+            let parsed = parse_datagram(&bytes).unwrap();
+            assert_eq!(parsed.source_process, hook_process("codex"));
+            assert_ne!(parsed.source_process, Some(HookProcess { pid: 2, birth_micros: 1 }));
+        }
+        // Process identity is essential even when every optional field is dropped.
+        let source = HookProcess { pid: 42, birth_micros: 123456789 };
+        let huge = json!({"session_id":"abc", "hook_event_name":"Stop", "transcript_path":"x".repeat(2000),
+            "cwd":"y".repeat(2000), "last_assistant_message":"z".repeat(2000)});
+        let bytes = build("codex", &huge, Some(&held), Some(source.clone()));
+        assert!(bytes.len() <= DATAGRAM_MAX);
+        let parsed = parse_datagram(&bytes).unwrap();
+        assert_eq!(parsed.source_process, Some(source));
+        assert_eq!(parsed.held, Some(held));
+    }
+
+    #[test]
+    #[ignore = "requires an explicitly isolated native provider invoking this test as its hook"]
+    fn lifecycle_owned_native_hook_generation() {
+        use std::io::Read;
+        let provider = std::env::var("LIGHTBULB_HOOK_PROBE_PROVIDER").unwrap();
+        let dir = std::env::var("LIGHTBULB_HOOK_PROBE_DIR").unwrap();
+        let mut bytes = Vec::new();
+        std::io::stdin().take(65536).read_to_end(&mut bytes).unwrap();
+        let stdin: Value = serde_json::from_slice(&bytes).unwrap();
+        let source = hook_process(&provider).expect("actual native provider ancestor");
+        let native = super::super::process(source.pid).unwrap();
+        let held = super::super::approval::Held { id: "appr-0123456789abcdef0123456789abcdef".into(),
+            input_digest: "d".repeat(64), reply: "/tmp/reply.sock".into(), exact: true, modes: vec![] };
+        for bytes in [build_datagram(&provider, &stdin), build_held_datagram(&provider, &stdin, &held),
+            build_release_datagram(&provider, &stdin, &held.id)] {
+            assert_eq!(parse_datagram(&bytes).unwrap().source_process, Some(source.clone()));
+        }
+        let proof = json!({"provider":provider,"event":stdin["hook_event_name"],
+            "sourceProcess":source,"executable":native.executable,"hookPid":std::process::id()});
+        let path = std::path::Path::new(&dir).join(format!("{}.json", uuid::Uuid::new_v4()));
+        std::fs::write(path, serde_json::to_vec(&proof).unwrap()).unwrap();
+    }
+
+    #[test]
+    fn lifecycle_v1_cannot_upgrade_to_an_attributed_hook() {
+        for event in ["Stop", "SessionEnd", "SessionStart", "PermissionRequest", "PermissionRelease"] {
+            let wire = json!({"v":1,"provider":"codex","event":event,"sessionId":"abc",
+                "sourceProcess":{"pid":42,"birthMicros":123},
+                "approvalId":"appr-0123456789abcdef0123456789abcdef"});
+            assert!(parse_datagram(&serde_json::to_vec(&wire).unwrap()).is_none(), "{event}");
+        }
+        // Absent/null identity keeps the exact-ID legacy release protocol.
+        let mut release = json!({"v":1,"provider":"codex","event":"PermissionRelease","sessionId":"abc",
+            "approvalId":"appr-0123456789abcdef0123456789abcdef"});
+        for source in [None, Some(Value::Null)] {
+            if let Some(source) = source { release["sourceProcess"] = source; }
+            let parsed = parse_datagram(&serde_json::to_vec(&release).unwrap()).unwrap();
+            assert_eq!(parsed.source_process, None);
+            assert_eq!(transition(&parsed), Transition::Release("appr-0123456789abcdef0123456789abcdef".into()));
+        }
+    }
+
+    #[test]
+    fn lifecycle_generation_parsing_fails_closed() {
+        let legacy = json!({"v":1,"provider":"codex","event":"Stop","sessionId":"abc"});
+        assert_eq!(parse_datagram(&serde_json::to_vec(&legacy).unwrap()).unwrap().source_process, None);
+        for source in [json!({"pid":42}), json!({"pid":0,"birthMicros":123}),
+            json!({"pid":42,"birthMicros":0}), json!({"pid":4294967295u32,"birthMicros":123}),
+            json!({"pid":"42","birthMicros":123})] {
+            let mut wire = legacy.clone(); wire["v"] = json!(2); wire["sourceProcess"] = source;
+            assert!(parse_datagram(&serde_json::to_vec(&wire).unwrap()).is_none());
+        }
+        let mut unknown = legacy;
+        unknown["v"] = json!(3);
+        assert!(parse_datagram(&serde_json::to_vec(&unknown).unwrap()).is_none());
     }
 
     #[test]

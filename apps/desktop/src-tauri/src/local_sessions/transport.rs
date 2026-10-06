@@ -524,6 +524,13 @@ impl Host {
                 m.ended_at.is_none()
                     && m.native.provider == provider
                     && m.native.conversation == event.session_id
+                    && match &event.source_process {
+                        Some(source) => *source == lifecycle::HookProcess::of(&m.native.process),
+                        // Older hook binaries can release only the exact held
+                        // approval ID below. They cannot change status, end a
+                        // resumed process, bind a start or acknowledge a prompt.
+                        None => matches!(lifecycle::transition(event), lifecycle::Transition::Release(_)),
+                    }
             })
             .map(|(key, _)| key.clone())
         else {
@@ -2797,12 +2804,67 @@ pub(super) mod tests {
     }
 
     #[test]
+    fn local_sessions_stale_hook_cannot_mutate_resumed_process() {
+        for event in ["Stop", "SessionEnd"] {
+            let dir = tempfile::tempdir().unwrap();
+            let mut mirror = test_mirror(SID, "resumed");
+            mirror.native.status = "busy".into();
+            let old = mirror.native.process.clone();
+            mirror.native.process.birth_micros += 1;
+            let mut host = test_host(dir.path(), vec![(SID, mirror)]);
+            let key = host.mirrors.keys().next().unwrap().clone();
+            let before = serde_json::to_value(&host.mirrors[&key]).unwrap();
+            let event = lifecycle::parse_datagram(&serde_json::to_vec(&json!({
+                "v": 2, "provider": "codex", "sessionId": SID, "event": event,
+                "sourceProcess": {"pid": old.pid, "birthMicros": old.birth_micros}
+            })).unwrap()).unwrap();
+            assert_eq!(host.apply_hook(&event).unwrap(), None);
+            assert_eq!(serde_json::to_value(&host.mirrors[&key]).unwrap(), before);
+            assert!(host.ended_pending.is_empty());
+        }
+    }
+
+    #[test]
+    fn local_sessions_hook_generation_accepts_native_sessions_and_rejects_legacy_mutations() {
+        for provider in [lifecycle::Provider::Claude, lifecycle::Provider::Codex] {
+            for held in [false, true] {
+                let dir = tempfile::tempdir().unwrap();
+                let mut mirror = test_mirror(SID, "current");
+                mirror.native.provider = if provider == lifecycle::Provider::Claude { "claude" } else { "codex" }.into();
+                mirror.native.holder = held.then(|| "ab12cd34".into());
+                mirror.native.job = (provider == lifecycle::Provider::Claude).then(|| "1234abcd".into());
+                let mut host = test_host(dir.path(), vec![(SID, mirror)]);
+                let key = host.mirrors.keys().next().unwrap().clone();
+                let busy = hook(provider.clone(), "UserPromptSubmit", SID);
+                assert_eq!(host.apply_hook(&busy).unwrap(), Some(key.clone()));
+                assert_eq!(host.mirrors[&key].native.status, "busy");
+                for name in ["Stop", "SessionEnd", "SessionStart", "PermissionRequest", "Notification"] {
+                    let mut legacy = hook(provider.clone(), name, SID);
+                    legacy.source_process = None;
+                    legacy.notification_type = Some("permission_prompt".into());
+                    let before = serde_json::to_value(&host.mirrors[&key]).unwrap();
+                    assert_eq!(host.apply_hook(&legacy).unwrap(), None);
+                    assert_eq!(serde_json::to_value(&host.mirrors[&key]).unwrap(), before);
+                }
+                let mut stale = hook(provider.clone(), "Stop", SID);
+                stale.source_process.as_mut().unwrap().pid += 1;
+                assert_eq!(host.apply_hook(&stale).unwrap(), None);
+                assert_eq!(host.apply_hook(&hook(provider.clone(), "Stop", SID)).unwrap(), Some(key.clone()));
+                assert_eq!(host.mirrors[&key].native.status, "idle");
+                assert_eq!(host.apply_hook(&hook(provider.clone(), "SessionEnd", SID)).unwrap(), Some(key.clone()));
+                assert!(host.mirrors[&key].ended_at.is_some());
+            }
+        }
+    }
+
+    #[test]
     fn local_sessions_hook_events_drive_status_and_end() {
         let dir = tempfile::tempdir().unwrap();
         let mut host = test_host(dir.path(), vec![(SID, test_mirror(SID, "gen-1"))]);
         let key = host.mirrors.keys().next().unwrap().clone();
         let mut ev = lifecycle::HookEvent {
             provider: lifecycle::Provider::Codex,
+            source_process: Some(lifecycle::HookProcess::of(&process(std::process::id()).unwrap())),
             event: "UserPromptSubmit".into(),
             session_id: SID.into(),
             transcript_path: None,
@@ -3704,7 +3766,22 @@ pub(super) mod tests {
             &id,
         ))
         .unwrap();
-        assert_eq!(host.apply_hook(&release).unwrap(), Some(key.clone()));
+        let before = serde_json::to_value(&host.mirrors[&key]).unwrap();
+        let mut stale = release.clone();
+        let mut source = lifecycle::HookProcess::of(&host.mirrors[&key].native.process);
+        source.birth_micros += 1;
+        stale.source_process = Some(source);
+        assert_eq!(host.apply_hook(&stale).unwrap(), None);
+        let mut wrong_id = release.clone();
+        wrong_id.source_process = None;
+        wrong_id.held.as_mut().unwrap().id = format!("appr-{}", uuid::Uuid::new_v4().simple());
+        assert_eq!(host.apply_hook(&wrong_id).unwrap(), None);
+        assert_eq!(serde_json::to_value(&host.mirrors[&key]).unwrap(), before);
+        // A v1 release from an older hook can untag only this exact prompt.
+        let legacy_wire = json!({"v":1,"provider":"codex",
+            "sessionId":SID,"event":"PermissionRelease","approvalId":id});
+        let legacy = lifecycle::parse_datagram(&serde_json::to_vec(&legacy_wire).unwrap()).unwrap();
+        assert_eq!(host.apply_hook(&legacy).unwrap(), Some(key.clone()));
         let mirror = &host.mirrors[&key];
         assert_eq!(mirror.native.status, "waiting-approval");
         assert!(mirror.waiting.as_ref().unwrap().held.is_none());
@@ -5046,6 +5123,7 @@ pub(super) mod tests {
     fn hook(provider: lifecycle::Provider, event: &str, session: &str) -> lifecycle::HookEvent {
         lifecycle::HookEvent {
             provider,
+            source_process: Some(lifecycle::HookProcess::of(&process(std::process::id()).unwrap())),
             event: event.into(),
             session_id: session.into(),
             transcript_path: None,

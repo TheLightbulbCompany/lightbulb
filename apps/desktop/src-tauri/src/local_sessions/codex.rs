@@ -24,7 +24,7 @@ const ACCEPTED_APP_ORIGINATORS: [&str; 1] = ["Codex Desktop"];
 // Exact builds with observed supported history grammar and native queue delivery.
 const ACCEPTED_VERSIONS: [&str; 6] = ["0.149.0", "0.153.4", "0.155.0-alpha.2.6", "0.157.1", "0.159.2", "0.159.3"];
 const CONTROL_DAEMON_VERSION: &str = "0.159.3";
-const DESKTOP_CODEX: &str = "/Applications/ChatGPT.app/Contents/Resources/codex";
+const DESKTOP_RESOURCES: &str = "/Applications/ChatGPT.app/Contents/Resources";
 
 fn accepted_version(version: &str) -> bool {
     ACCEPTED_VERSIONS.contains(&version) || at_least(version, [0, 159, 2])
@@ -49,9 +49,18 @@ fn accepted_app_source(source: &str, payload: &Value) -> bool {
             && payload["cli_version"].as_str().is_some_and(|v| v == "0.157.1" || at_least(v, [0, 159, 2])))
 }
 
+fn desktop_program_in(resources: &Path, running: Option<&Path>) -> Option<PathBuf> {
+    ["codex-cli/CodexCLI.app/Contents/MacOS/codex", "codex"]
+        .into_iter()
+        .map(|relative| resources.join(relative))
+        .find(|path| {
+            running.is_none_or(|expected| expected == path)
+                && fs::symlink_metadata(path).is_ok_and(|meta| meta.is_file())
+        })
+}
+
 fn desktop_program() -> Option<PathBuf> {
-    let path = PathBuf::from(DESKTOP_CODEX);
-    fs::symlink_metadata(&path).ok()?.is_file().then_some(path)
+    desktop_program_in(Path::new(DESKTOP_RESOURCES), None)
 }
 
 /// Recent TUIs delegate rollout writing to a separately installed app server, which updates
@@ -176,6 +185,15 @@ fn from_rollout(
     let reported = row["payload"]["cli_version"]
         .as_str()
         .ok_or("missing runtime version")?;
+    // A Desktop app upgrade resumes the same rollout and keeps its creation-time
+    // cli_version. The writer is verified separately against the exact installed
+    // bundle inode; a supported paginated header is not its current runtime version.
+    let desktop_upgrade = source == "vscode"
+        && row["payload"]["originator"] == "Codex Desktop"
+        && row["payload"]["history_mode"] == "paginated"
+        && at_least(version, [0, 159, 2]);
+    let verified = accepted_version(reported) && accepted_version(version)
+        && (reported == version || desktop_upgrade);
     let (status, active_turn, title) = tail_state(&path);
     let title = root.parent().and_then(|codex| thread_name(&codex.join("session_index.jsonl"), conversation)).or(title);
     Ok(NativeSession {
@@ -186,9 +204,8 @@ fn from_rollout(
         transcript: Some(path),
         socket: None,
         socket_inode: None,
-        version: reported.into(),
-        restriction: (!accepted_version(reported) || reported != version)
-            .then(|| "runtime-unverified".into()),
+        version: if verified { version } else { reported }.into(),
+        restriction: (!verified).then(|| "runtime-unverified".into()),
         status: status.into(),
         title,
         // The backend's SessionRegistration caps cwd_name at 128 characters.
@@ -275,8 +292,7 @@ pub(super) async fn capture(home: &Path, program: &Path, pid: u32) -> Result<Vec
     let version = match daemon_release(home, &execution) {
         Some((path, version)) => named_release_version(&execution, &path, &version).await,
         None => {
-            let installed = desktop_program()
-                .filter(|path| path == &execution.executable)
+            let installed = desktop_program_in(Path::new(DESKTOP_RESOURCES), Some(&execution.executable))
                 .unwrap_or_else(|| program.to_path_buf());
             runtime_version(&execution, &installed, "codex").await
         }
@@ -1796,6 +1812,45 @@ mod tests {
         assert_eq!(tail_state(&path).0, "idle");
         assert!(active_turn_started_after(&path, ended_at, Some(ended_at * 1000)));
     }
+    #[test]
+    fn local_sessions_codex_finds_the_running_desktop_bundle_layout() {
+        let dir = tempfile::tempdir().unwrap();
+        let resources = dir.path();
+        let old = resources.join("codex");
+        let new = resources.join("codex-cli/CodexCLI.app/Contents/MacOS/codex");
+        fs::create_dir_all(new.parent().unwrap()).unwrap();
+        fs::write(&new, "new bundle").unwrap();
+        assert_eq!(desktop_program_in(resources, Some(&new)), Some(new.clone()));
+        fs::write(&old, "old bundle").unwrap();
+        assert_eq!(desktop_program_in(resources, Some(&new)), Some(new.clone()));
+        assert_eq!(desktop_program_in(resources, Some(&old)), Some(old.clone()));
+        assert_eq!(desktop_program_in(resources, Some(&resources.join("other/codex"))), None);
+        fs::remove_file(&new).unwrap();
+        std::os::unix::fs::symlink(&old, &new).unwrap();
+        assert_eq!(desktop_program_in(resources, Some(&new)), None, "never execute an unexpected symlink");
+    }
+
+    #[test]
+    fn local_sessions_codex_desktop_upgrade_keeps_supported_history_verified() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = fs::canonicalize(dir.path()).unwrap();
+        let path = root.join("rollout-app.jsonl");
+        fs::write(&path, format!("{}\n", json!({"type":"session_meta","payload":{
+            "id":"app", "source":"vscode", "originator":"Codex Desktop",
+            "cli_version":"0.155.0-alpha.2.6", "history_mode":"paginated"}}))).unwrap();
+        let process = Process { pid: 42, birth_micros: 123, executable: "/app/codex".into() };
+        let resumed = from_rollout(&root, process.clone(), &path, "0.160.1").unwrap();
+        assert_eq!(resumed.restriction, None);
+        assert_eq!(resumed.version, "0.160.1", "runtime version must describe the verified writer");
+        for unverified in ["", "0.150.0", "0.160.1-custom"] {
+            assert_eq!(from_rollout(&root, process.clone(), &path, unverified).unwrap().restriction.as_deref(), Some("runtime-unverified"));
+        }
+        let meta = json!({"type":"session_meta","payload":{"id":"app","source":"vscode",
+            "originator":"Codex Desktop","cli_version":"0.150.0","history_mode":"paginated"}});
+        fs::write(&path, format!("{meta}\n")).unwrap();
+        assert_eq!(from_rollout(&root, process, &path, "0.160.1").unwrap().restriction.as_deref(), Some("runtime-unverified"));
+    }
+
     #[test]
     fn local_sessions_codex_discovers_only_process_owned_cli_profile_history() {
         let dir = tempfile::tempdir().unwrap();

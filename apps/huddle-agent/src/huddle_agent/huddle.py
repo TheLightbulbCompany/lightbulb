@@ -348,10 +348,6 @@ class _Voice:
     label: str = ""
     followed_at: float = 0.0
     saying: str | None = None  # a meeting: the run whose answer it is saying now (`_talked_over`)
-    # a meeting: its run's text so far, said once the run ends. A run speaks a sentence before each lookup, which
-    # in a meeting is an agent talking again and again over people; only the answer is said there.
-    holding: str = ""
-    held_for: tuple | None = None  # (run id, text box) `holding` belongs to: another run or box starts it empty
     # Live's model stops for its own speaker's sound, so they can cut its answer and the worker never cut it:
     # `answer` is the ended run's (run_id, request, text, at, speaker) until it is known heard; `unheard`: its
     # speech was interrupted, or their sound came before a word of it; `replied`: it then answered them (they
@@ -905,7 +901,7 @@ class Huddle:
         if no_post:
             self._no_post(target, identity)  # engine §3.6; nothing is posted as a turn
             return
-        if stop_request(text):
+        if stop_request(text, self._team["agents"]):
             # "stop" / "never mind" to an agent aborts its runs (D §8): the agent it names, from anyone, else
             # the floor-holder when its pinned speaker says it. In a mixed meeting, also a stop said over it
             # talking: "never mind" between two people must not abort a working run.
@@ -1017,7 +1013,7 @@ class Huddle:
             # still go unclaimed.
             if a.lightbulb:
                 self._spawn(self._lightbulb_over(v, identity, text, mark))
-            elif real_speech(text) and not pause(text) and not stop_request(text) and is_question(text):
+            elif real_speech(text) and not pause(text) and not stop_request(text, self._team["agents"]) and is_question(text):
                 self._unclaimed = (now + UNCLAIMED_QUESTION_S, identity, text, mark)
             return
         if (
@@ -1053,7 +1049,7 @@ class Huddle:
                 a.ambiguous
                 or not real_speech(text)
                 or pause(text)
-                or stop_request(text)
+                or stop_request(text, self._team["agents"])
             ):
                 return
             if self.setting == "meeting":
@@ -1112,7 +1108,7 @@ class Huddle:
         answers them once the floor settles."""
         v.lines.append(f"{name}: {text}")
         self._flush_lines(v)
-        if real_speech(text) and not pause(text) and not stop_request(text):
+        if real_speech(text) and not pause(text) and not stop_request(text, self._team["agents"]):
             self._spawn(
                 self._route_and_summon(identity, text, mark, humans=len(self._people), routed=routed)
             )
@@ -1141,6 +1137,9 @@ class Huddle:
             or v.live is None
             or identity == v.speaker
             or v.agent_state != "speaking"
+            # a meeting voice is stopped by `_talked_over` (tick), which keeps the answer for the next pause; a
+            # cut here would leave it "listening", so that path would never run and the answer would be lost
+            or in_meet(v.speaker)
         ):
             return
         if identity in self._cut_by:
@@ -2723,11 +2722,8 @@ class Huddle:
             v.pending = True  # text handed over and not yet said: cleared when the voice next goes quiet
             v.saying = run.run_id
             if in_meet(v.speaker):
-                if v.held_for != (run.run_id, run.box):
-                    # another run (the one before was stopped or failed), or a tool started: what was written
-                    # before it was an update, or a cancelled answer, never part of this one
-                    v.held_for, v.holding = (run.run_id, run.box), ""
-                v.holding += text  # said whole when the run ends (`ended`)
+                # A meeting: a run speaks a sentence before each lookup, which there is an agent talking again
+                # and again over people. Nothing is said as it streams; its answer is said when it ends.
                 return
             self._live_call(
                 v, "append_commentary", text, delegation_id=run.delegation_id
@@ -2738,10 +2734,12 @@ class Huddle:
         if answer and (news := self._news.get(run.agent_id)):  # §4.8: the real answer replaces its failure line
             news[:] = [n for n in news if n[0] != run.run_id or n[2] != CANT_REACH]
         if v := self._same_session(run):
-            if in_meet(v.speaker) and v.held_for == (run.run_id, run.box) and (held := v.holding.strip()):
-                for i in range(0, len(held), APPEND_CHARS):  # GPT-Live caps each append at 500 tokens
-                    self._live_call(v, "append_commentary", held[i : i + APPEND_CHARS], delegation_id=run.delegation_id)
-            v.holding, v.held_for = "", None
+            if in_meet(v.speaker):
+                # the run's last text box (updates before a tool are gone from it), with its own spacing
+                for i in range(0, len(answer), APPEND_CHARS):  # GPT-Live caps each append at 500 tokens
+                    self._live_call(
+                        v, "append_commentary", answer[i : i + APPEND_CHARS], delegation_id=run.delegation_id
+                    )
             if not run.spoken.strip():
                 self._live_call(
                     v,

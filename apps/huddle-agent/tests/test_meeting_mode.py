@@ -1075,9 +1075,11 @@ async def test_a_dismissal_stops_a_meeting_agent():
     await says(h, P1, "Forge, what PRs are open?")
     await says(h, P2, "Forge, get the fuck out of here")
     assert ("interrupt",) in lives[0].calls
-    for text in ("Forge, go away", "forge leave", "Forge, that's enough", "Forge, stop talking"):
-        assert h_mod.stop_request(text), text
-    assert not h_mod.stop_request("Forge, get the report out")
+    team = h._team["agents"]
+    for text in ("Forge, go away", "forge leave", "Forge, that's enough", "Forge, stop talking", "go away"):
+        assert h_mod.stop_request(text, team), text
+    for text in ("Forge, get the report out", "I leave", "we go away", "I shut up"):
+        assert not h_mod.stop_request(text, team), text
 
 
 async def test_with_no_voice_a_per_person_statement_wakes_nobody_and_a_question_waits_unclaimed():
@@ -1104,38 +1106,51 @@ async def test_a_meeting_run_says_only_its_answer_not_an_update_before_each_look
     backend.route_extra = ops([("forge", "what I worked on", "name")])
     await says(h, P1, "Forge, what did I work on in the last two days?")
     (row,) = h._requests.items
-    run = h._runs.get(row.run_id)
     said = lambda: [c[1] for c in lives[0].calls if c[0] == "commentary"]
-    h.say(run, "Let me check GitHub. ", False)
-    run.box += 1  # a tool starts (frames.Runs), also the same tool twice: that sentence was an update
-    h.say(run, "You merged three pull requests. ", False)
-    clock.t += h_mod.MEET_FOLLOWUP_S / 2
+    chunk = lambda text, seq: h.on_data(None, "call.frame", packet(frame(row.run_id, "forge", {"type": "chunk", "content": text, "append": True, "seq": seq})))
+    chunk("Let me check GitHub. ", 1)
+    h.on_data(None, "call.frame", packet(frame(row.run_id, "forge", {"type": "tool_start", "tool": "github", "toolCallId": "t1", "seq": 2})))
+    chunk("You merged three pull requests. ", 3)
+    chunk("The largest was the audio bridge.", 4)
+    await quiet_tick_meet(h, clock, h_mod.MEET_FOLLOWUP_S / 2)
+    assert said() == [] and not [c for c in lives[0].calls if c[0] == "thinking" and "taking a moment" in c[1]]
+    h.on_data(None, "call.frame", packet(frame(row.run_id, "forge", {"type": "run_ended", "seq": 5})))
+    assert said() == ["You merged three pull requests. The largest was the audio bridge."], "one answer, its own spacing"
+
+
+async def quiet_tick_meet(h, clock, seconds):
+    clock.t += seconds
     await h.tick()
     await settle(h)
-    assert said() == [] and not [c for c in lives[0].calls if c[0] == "thinking" and "taking a moment" in c[1]]
-    run.text = run.spoken = "You merged three pull requests. The largest was the audio bridge."
-    h.say(run, "The largest was the audio bridge.", True)
-    h.ended(run, run.text)
-    assert said() == ["You merged three pull requests. The largest was the audio bridge."]
 
 
-async def test_a_stopped_meeting_runs_text_is_not_said_with_the_next_answer_and_a_long_one_goes_in_parts():
+async def test_a_long_meeting_answer_goes_to_the_voice_in_parts():
     h, room, backend, lives, clock, log = await per_person()
     backend.route_extra = ops([("forge", "list the open PRs", "name")])
     await says(h, P1, "Forge, what PRs are open?")
-    first = h._runs.get(h._requests.items[0].run_id)
-    h.say(first, "Three pull requests are open. ", False)
-    h._runs.abort(first.run_id)  # stopped: its text must never be said
-    from huddle_agent.frames import Run
-
+    (row,) = h._requests.items
     long = "x" * (h_mod.APPEND_CHARS + 10)
-    second = Run("run-2", "forge", gen=first.gen, delegation_id=first.delegation_id)
-    second.text = second.spoken = long
-    h._runs._runs["run-2"] = second
-    h.say(second, long, True)
-    h.ended(second, long)
+    answer(h, row.run_id, "forge", long)
     said = [c[1] for c in lives[0].calls if c[0] == "commentary"]
     assert said == [long[: h_mod.APPEND_CHARS], long[h_mod.APPEND_CHARS :]]
+
+
+async def test_someone_elses_first_words_do_not_cut_a_meeting_voice_before_the_talk_over_rule():
+    """Review: the interim barge-in cut it to "listening", so `_talked_over` never ran and the answer was lost."""
+    h, room, backend, lives, clock, log = await per_person()
+    backend.route_extra = ops([("forge", "list the open PRs", "name")])
+    await says(h, P1, "Forge, what PRs are open?")
+    (row,) = h._requests.items
+    answer(h, row.run_id, "forge", "Three PRs are open.")
+    h.on_agent_state("forge", "speaking")
+    h.on_interim_transcript(P2, "Dan", "so I was thinking")
+    assert ("interrupt",) not in lives[0].calls and h._voice.agent_state == "speaking"
+    talks(h, P2)
+    clock.t += h_mod.TALK_OVER_S
+    await h.tick()
+    await settle(h)
+    assert ("interrupt",) in lives[0].calls and h._voice is None
+    assert h._cut_off.get("forge"), "kept for the record or the next pause"
 
 
 # -- a Live voice's answer cut by its own speaker's sound (10-04 prod Meet: a noisy microphone's junk lines landed

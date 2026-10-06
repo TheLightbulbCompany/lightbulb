@@ -156,7 +156,11 @@ MEET_QUIET_S = 3.0
 TALK_OVER_S = 1.0
 # A meeting voice never hears the question (it is muted), so its seed says what to say once the run is started:
 # without it the model greeted ("Yes, I'm here. What's up?", 10-04 prod Meet).
-MEET_ACK = ' Say a short acknowledgement now, two or three words like "On it.", then wait for the result.'
+# No example phrase: given "like 'On it.'", it said "On it." every time (10-05 prod Meet). Its words are its own.
+MEET_ACK = (
+    " Acknowledge it now in a few words of your own that fit what was asked, a different way each time; say "
+    "nothing about this note; then wait for the result."
+)
 # The final POST's backoff and its whole budget. The budget stays under the job's shutdown window
 # (agent.py SHUTDOWN_S): the flush usually runs from the shutdown callback.
 FINAL_TRANSCRIPT_RETRY_S = (1, 2, 4, 8, 16)

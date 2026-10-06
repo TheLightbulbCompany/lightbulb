@@ -935,6 +935,7 @@ class Huddle:
             barge
             and cut != v.agent_id
             and v.agent_state == "speaking"
+            and not in_meet(v.speaker)  # a meeting voice is stopped by `_talked_over` only (see the interim path)
             and (a.agent_ids or a.lightbulb or real_speech(text))
         ):
             self._cut(v, identity)  # no interim got there first: cut on the final
@@ -3187,7 +3188,9 @@ class Huddle:
             unsaid.append((run.run_id, run.request, run.text.strip(), self._clock(), run.speaker))
         if unsaid:
             held = self._cut_off.get(v.agent_id, ([], "", 0.0))[0]
-            self._cut_off[v.agent_id] = (held + unsaid, v.speaker, self._clock())
+            # who talked over it (a per-person Meet: maybe not its asker): their "don't post that" covers it
+            talker = v.speaker if v.speaker in self._speaking or not self._speaking else min(self._speaking)
+            self._cut_off[v.agent_id] = (held + unsaid, talker, self._clock())
         v.saying, v.told = None, []
         self._drop(v, keep_queue=True)  # closed: a run still working no longer speaks through it
 

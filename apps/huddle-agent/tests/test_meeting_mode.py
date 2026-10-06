@@ -1151,6 +1151,20 @@ async def test_someone_elses_first_words_do_not_cut_a_meeting_voice_before_the_t
     await settle(h)
     assert ("interrupt",) in lives[0].calls and h._voice is None
     assert h._cut_off.get("forge"), "kept for the record or the next pause"
+    assert h._cut_off["forge"][1] == P2, "the one who talked over it: their 'don't post that' covers it"
+
+
+async def test_someone_elses_short_final_does_not_cut_a_meeting_voice_either():
+    """Review: the final-transcript fallback still cut it when the line ended before the talk-over tick."""
+    h, room, backend, lives, clock, log = await per_person()
+    backend.route_extra = ops([("forge", "list the open PRs", "name")])
+    await says(h, P1, "Forge, what PRs are open?")
+    (row,) = h._requests.items
+    answer(h, row.run_id, "forge", "Three PRs are open.")
+    h.on_agent_state("forge", "speaking")
+    backend.route_extra = ops([])
+    await says(h, P2, "yeah that makes sense to me")  # a short line, no interim first
+    assert ("interrupt",) not in lives[0].calls and h._voice.agent_state == "speaking"
 
 
 # -- a Live voice's answer cut by its own speaker's sound (10-04 prod Meet: a noisy microphone's junk lines landed

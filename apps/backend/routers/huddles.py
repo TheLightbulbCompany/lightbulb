@@ -264,6 +264,15 @@ async def agent_session(room_id: str, agent_id: str, body: RoomBody):
     return await voice_calls.agent_session(owner_id=body.ownerId, room_id=room_id, agent_id=agent_id)
 
 
+@router.post("/internal/huddles/{room_id}/agents/{agent_id}/meet-voice", dependencies=[_Worker])
+async def agent_meet_voice(room_id: str, agent_id: str, body: RoomBody):
+    """The voice that reads this agent's ready answer in a Meet. Not `/session`: that one claims the one-time
+    "what should I call you" prompt, which a read-aloud answer never asks."""
+    room_id = _room_id(room_id)
+    _require_room_token(body.roomToken, room_id, body.ownerId)
+    return await voice_calls.agent_meet_voice(owner_id=body.ownerId, room_id=room_id, agent_id=agent_id)
+
+
 @router.post("/internal/huddles/calls/{call_id}/turns", dependencies=[_Worker])
 async def turn(call_id: str, body: TurnBody):
     call = await _worker_call(call_id, body.roomToken)

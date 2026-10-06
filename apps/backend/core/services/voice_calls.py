@@ -677,6 +677,22 @@ async def _session_reads(owner_id: str, agent_id: str) -> tuple[dict | None, str
     return row, soul, notes
 
 
+async def agent_meet_voice(*, owner_id: str, room_id: str, agent_id: str) -> dict:
+    """An agent's meeting voice and nothing else: no persona, and the naming prompt stays unclaimed."""
+    await _owned_room(owner_id, room_id)
+    members, starters = await asyncio.gather(messaging_repo.list_members(room_id), _starter_ids(owner_id))
+    if not any(m.get("kind") == "agent" and m["id"] == agent_id for m in members):
+        raise _problem(409, code="agent_not_in_room")  # removed while its run finished: it says nothing
+    try:  # the roster alone: a slow SOUL.md read must not cost a founder-roster agent its role voice
+        roster = await asyncio.wait_for(messaging.load_agent_roster(owner_id), _SESSION_READ_BUDGET_S)
+    except Exception:  # noqa: BLE001 -- no title: the agent's stable fallback voice
+        logger.warning("meet voice roster read failed owner=%s agent=%s", owner_id, agent_id, exc_info=True)
+        roster = []
+    row = next((r for r in roster if r["id"] == agent_id), None)
+    title = (row or {}).get("title") or (row or {}).get("role")
+    return {"voice": voice_persona.agent_meet_voice(agent_id, starters, title)}
+
+
 async def agent_session(*, owner_id: str, room_id: str, agent_id: str) -> dict:
     """One agent's GPT-Live session: its own voice and persona. Falls back to the bare persona
     (no role, SOUL or notes) when the reads fail or overrun."""

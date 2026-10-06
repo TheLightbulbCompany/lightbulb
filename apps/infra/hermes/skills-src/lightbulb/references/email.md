@@ -39,9 +39,13 @@ will not answer it.
 
 **Meetings.** Put the team address on a Google Calendar event with a Meet link:
 one "<Company> agents · Lightbulb" participant joins each time it meets. No
-room opens; every agent is in the call. In the Meet an agent answers when
-someone says its name (or "Lightbulb") and takes that person's follow-up for a
-few seconds; it stays out of all other talk. Afterwards the transcript posts in
+room opens; every agent is in the call. In the Meet someone asks an agent by
+saying its name (or "Lightbulb") anywhere in a sentence; the next thing that
+person says within a few seconds needs no name. The agent says nothing while it
+works: its tile shows it listening, then working, then a raised hand when the
+answer is ready. It speaks in the next pause in the talk, or at once when
+someone turns to it by name. Talked over, it stops, keeps its hand up and says
+the whole answer at the next pause. It stays out of all other talk. Afterwards the transcript posts in
 the general channel and one agent there writes the notes; action items become
 tasks. If no agent is in that channel no notes are written and the organizer's
 mail says so; with no general channel the organizer is mailed the transcript.

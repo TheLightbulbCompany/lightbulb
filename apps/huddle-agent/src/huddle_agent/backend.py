@@ -123,6 +123,9 @@ class Backend:
             {"speakerUserId": speaker, **self._label(speaker_name)},
         )
 
+    async def meet_voice(self, agent_id: str) -> dict:
+        return await self._post(f"/internal/huddles/{self._room_id}/agents/{agent_id}/meet-voice", {})
+
     async def session(self, agent_id: str) -> dict:
         return await self._post(
             f"/internal/huddles/{self._room_id}/agents/{agent_id}/session", {}

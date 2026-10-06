@@ -3602,8 +3602,14 @@ class Huddle:
         """The answer's audio, started once a run (ponytail: a failed render is not retried)."""
         if item[0] not in self._speech:
             async def render() -> Any:
-                session = await self._backend.session(agent_id)
-                voice = session.get("meetVoice") or session["voice"]  # an older backend: agent.py falls back
+                try:  # never `/session`: it claims the one-time naming prompt, which this never asks
+                    voice = (await self._backend.meet_voice(agent_id))["voice"]
+                except BackendError as e:
+                    # an older backend (no such route) or an outage: agent.py's fallback voice says it. A refusal
+                    # (the room is gone, the agent left it) is no voice at all: nothing is said.
+                    if not (e.status == 0 or e.status >= 500 or e.code == "http_404"):
+                        raise
+                    voice = ""
                 return await self._room.prepare(agent_id, voice, item[2])
             self._speech[item[0]] = asyncio.ensure_future(render())
         return self._speech[item[0]]

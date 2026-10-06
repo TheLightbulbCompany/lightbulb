@@ -680,7 +680,9 @@ async def _session_reads(owner_id: str, agent_id: str) -> tuple[dict | None, str
 async def agent_meet_voice(*, owner_id: str, room_id: str, agent_id: str) -> dict:
     """An agent's meeting voice and nothing else: no persona, and the naming prompt stays unclaimed."""
     await _owned_room(owner_id, room_id)
-    starters = await _starter_ids(owner_id)
+    members, starters = await asyncio.gather(messaging_repo.list_members(room_id), _starter_ids(owner_id))
+    if not any(m.get("kind") == "agent" and m["id"] == agent_id for m in members):
+        raise _problem(409, code="agent_not_in_room")  # removed while its run finished: it says nothing
     try:  # the roster alone: a slow SOUL.md read must not cost a founder-roster agent its role voice
         roster = await asyncio.wait_for(messaging.load_agent_roster(owner_id), _SESSION_READ_BUDGET_S)
     except Exception:  # noqa: BLE001 -- no title: the agent's stable fallback voice

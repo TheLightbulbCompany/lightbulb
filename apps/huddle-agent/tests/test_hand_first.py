@@ -58,21 +58,62 @@ async def test_a_name_in_the_middle_of_a_sentence_asks_that_agent():
 
 
 
-async def test_a_ready_answer_raises_its_hand_and_is_not_said_until_someone_calls_on_it():
+async def test_a_ready_answer_raises_its_hand_and_is_said_in_the_next_gap():
+    """Owner ruling 10-06: nobody says a set phrase to hear it. It waits for people to stop, then speaks."""
     h, backend, lives, clock = await asked()
+    talks(h, P2)  # the meeting goes on while it works
     answer(h, h._requests.items[0].run_id, "forge", "Three PRs are open.")
-    assert status(h, "forge") == "has_news" and h._state()["lightbulb.agent.forge.hand"]
+    assert status(h, "forge") == "has_news"
     await turns()
     assert h._room.prepared == [("forge", "Three PRs are open.")], "its audio is made when the hand goes up"
-    clock.t += 60  # a long quiet: it still does not take the floor by itself
+    clock.t += 60
     await h.tick()
     await settle(h)
-    assert not hasattr(h._room, "played") and backend.late_answers == []
-    await says(h, P2, "Go ahead, Forge.")  # anyone may call on it
+    assert not hasattr(h._room, "played") and backend.late_answers == [], "never over a person"
+    h.on_speech(P2, False)
+    h.on_active_speakers(set())
+    clock.t += h_mod.HAND_QUIET_S - 0.5
+    await h.tick()
+    await settle(h)
+    assert not hasattr(h._room, "played"), "a breath is not a gap"
+    clock.t += 0.5
+    await h.tick()
+    await settle(h)
     assert h._room.played == [("forge", "Three PRs are open.")] and lives == [], "prepared audio, no voice session"
     assert status(h, "forge") == "idle" and h._room.discarded == h._room.played
-    assert len(backend.turns) == 1, "a call-on is not a new request"
+    assert len(backend.turns) == 1
 
+
+async def test_someone_turning_to_it_by_name_hears_the_answer_at_once():
+    h, backend, lives, clock = await asked()
+    talks(h, P2)
+    answer(h, h._requests.items[0].run_id, "forge", "Three PRs are open.")
+    await says(h, P2, "Go ahead, Forge.")  # no gap needed, and anyone may
+    assert h._room.played == [("forge", "Three PRs are open.")] and len(backend.turns) == 1, "not a new request"
+
+
+async def test_talked_over_three_times_in_gaps_it_took_itself_the_answer_goes_to_the_notes():
+    import asyncio
+
+    h, backend, lives, clock = await asked()
+    answer(h, h._requests.items[0].run_id, "forge", "Three PRs are open.")
+    h._room.hold = asyncio.Event()
+    for _ in range(h_mod.DELIVERY_TRIES):
+        clock.t += 10
+        await h.tick()
+        await turns()
+        assert status(h, "forge") == "speaking"
+        h.on_speech(P2, True)
+        h._yield_if_talked_over()
+        await turns()
+        assert status(h, "forge") == "has_news"
+        h.on_speech(P2, False)
+    clock.t += 10
+    await h.tick()
+    await turns()
+    await h.tick()
+    await turns()
+    assert status(h, "forge") == "idle" and [a[3] for a in backend.late_answers] == ["Three PRs are open."]
 
 
 async def test_just_its_name_calls_on_an_agent_with_its_hand_up():

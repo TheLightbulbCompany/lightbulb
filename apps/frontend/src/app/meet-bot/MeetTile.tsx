@@ -2,7 +2,7 @@
 
 import { useEffect } from "react";
 import { Hand } from "lucide-react";
-import { agentHand, agentLiveStatus, agentStateLine, agentWorking, floorHolder, meetVoiceLimitText, voiceLimit } from "@lightbulb/shared";
+import { agentLiveStatus, agentStateLine, agentWorking, floorHolder, meetVoiceLimitText, voiceLimit } from "@lightbulb/shared";
 import { agentTint } from "@/lib/agentTint";
 
 // The palette tokens live on <html>; stamp the dark theme there and put the previous value back on unmount.
@@ -60,13 +60,14 @@ export function MeetTile({ agents, attrs, notice }: { agents: Record<string, Til
     return s === "working" || ((s === "listening" || s === "joining") && !!agentWorking(attrs, id));
   };
   const isHand = (id: string) => agentLiveStatus(attrs, id) === "has_news";
-  // Hand first: with nobody speaking, the first raised hand is the hero. People call on it by name, so the
-  // tile says how; a Recall bot cannot raise Meet's own hand (no API; our own guest is refused, 10-06).
+  // Hand first: with nobody speaking, the first raised hand is the hero. A Recall bot cannot raise Meet's own
+  // hand (no API; our own guest is refused, 10-06), so the tile is the hand. No topic and no instruction
+  // (owner ruling 10-06): it speaks in the next gap by itself.
   const raised = speaker ? undefined : roster.find(isHand);
   const busy = roster.filter((id) => id !== speaker && id !== raised && (isHand(id) || isWorking(id)));
   const activity = [...busy.filter(isHand), ...busy.filter((id) => !isHand(id))];
   const rowLine = (id: string) => isHand(id)
-    ? agentStateLine("has_news", { hand: agentHand(attrs, id), meeting: true })
+    ? "Hand up"
     : agentStateLine("working", { working: agentWorking(attrs, id) });
   const onStage = (id: string) => id === speaker || id === raised || activity.includes(id);
   const stageBusy = !!speaker || !!raised || activity.length > 0;
@@ -138,12 +139,6 @@ export function MeetTile({ agents, attrs, notice }: { agents: Record<string, Til
                   </span>
                 </span>
                 <p data-speaker-name className="max-w-[1100px] truncate font-semibold" style={{ fontSize: 64, lineHeight: "70px", marginTop: 22 }}>{nameOf(raised)} has an answer</p>
-                {agentHand(attrs, raised) && (
-                  <p className="max-w-[1000px] truncate text-center" style={{ fontSize: 34, lineHeight: "42px", ...soft }}>{agentHand(attrs, raised)}</p>
-                )}
-                <p className="rounded-full font-semibold" style={{ fontSize: 38, lineHeight: "46px", marginTop: 18, padding: "10px 34px", border: "3px solid var(--link)" }}>
-                  Say &ldquo;Go ahead, {nameOf(raised)}&rdquo;
-                </p>
               </div>
             )}
             {activity.length > 0 && (
@@ -162,7 +157,7 @@ export function MeetTile({ agents, attrs, notice }: { agents: Record<string, Til
             )}
           </div>
           <div className="flex shrink-0 flex-col items-center pb-4" style={{ gap: 8 }}>
-            {!raised && stripHint}
+            {stripHint}
             <ul data-roster className="flex items-start justify-center" style={{ gap: 24 }}>
               {roster.slice(0, 8).map((id) => {
                 const live = id === speaker;

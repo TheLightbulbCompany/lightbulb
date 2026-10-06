@@ -153,10 +153,12 @@ MEET_SHARE_S = 1.0  # a second speaker is named on a line only when they spoke t
 MEET_FOLLOWUP_S = 10.0
 # Hand first (owner ruling 2026-10-06, after two real meetings where an agent that chose its own moment to
 # speak was slow, spoke over people and was cut off): in a meeting an agent never speaks to acknowledge. A
-# request shows on its tile at once and runs with no voice; a ready answer raises its hand; it speaks only when
-# someone calls on it by name ("go ahead, Friday", or just "Friday"). Nobody calls: the answer goes on the
-# record when it expires (NEWS_TTL) or the meeting ends.
+# request shows on its tile at once and runs with no voice; a ready answer raises its hand; it speaks in the
+# next real gap, or when someone turns to it by name. Talked over, it stops and its hand stays up.
 HAND_FIRST = True
+# Its hand is up: it speaks in the first real gap (nobody has talked this long), or sooner when someone turns
+# to it by name. Owner ruling 10-06: nobody should have to say a set phrase to hear the answer.
+HAND_QUIET_S = 2.0
 HEARD_NAME_S = 8.0  # its tile says it heard its name this long, unless the line's final says more first
 # What is left of a line that only calls on an agent, once its name is gone ("go ahead, Friday", "yes Friday?")
 CALL_ON_WORDS = frozenset(
@@ -3427,10 +3429,13 @@ class Huddle:
         otherwise the oldest news is announced by its own agent once the room is quiet (D §8)."""
         if not self._people or self._speaking or self._lock.locked():
             return
-        if self.setting == "meeting" and HAND_FIRST:
-            return  # its hand is up; it speaks when someone calls on it (`_meeting_line`)
+        if self._saying:
+            return
         if ready := self._ready_delivery(now):
-            await self._deliver(*ready)
+            if self.setting == "meeting" and HAND_FIRST:
+                self._spawn(self._deliver(*ready))  # the tick must not wait for the whole answer to be said
+            else:
+                await self._deliver(*ready)
             return
         if self.setting == "meeting":
             return
@@ -3514,6 +3519,7 @@ class Huddle:
             tries >= DELIVERY_TRIES
             and now - at >= gate.ANNOUNCE_QUIET
             and not (v and v.announce is n)  # its voice is open and about to say it
+            and not (self._saying and self._saying[1] == n[0])  # being said now
         )
 
     def _cant_reach_seed(self, n: tuple) -> str | None:
@@ -3524,7 +3530,10 @@ class Huddle:
     def _ready_delivery(self, now: float, skip_agent: str | None = None) -> tuple[tuple, str] | None:
         """The oldest ready answer someone asked for (ties: request order) and its agent, once no human is
         speaking and none has spoken for REQUEST_QUIET_S. A requested answer is not news: no rate limit."""
-        if self._speaking or now - self._last_heard < (MEET_QUIET_S if self.setting == "meeting" else REQUEST_QUIET_S):
+        hand = self.setting == "meeting" and HAND_FIRST
+        quiet = REQUEST_QUIET_S if self.setting != "meeting" else HAND_QUIET_S if hand else MEET_QUIET_S
+        # hand first: the speech detector alone holds it back too (the SFU's level lags a second; rig, 10-06)
+        if self._speaking or (hand and self._voiced) or now - self._last_heard < quiet:
             return None
         items = [
             (n, aid)
@@ -3541,7 +3550,10 @@ class Huddle:
         attempt is counted: a refused open waits gate.ANNOUNCE_QUIET, and after DELIVERY_TRIES the room
         gets it (_expire_news), so a backend outage cannot open a session every tick."""
         if self.setting == "meeting" and HAND_FIRST:
-            await self._say_ready(item, agent_id, to)
+            if to is None:  # it took a quiet moment itself: talked over DELIVERY_TRIES times, the notes get it
+                tries = self._delivery_tries.get(item[0], (0, 0.0))[0]
+                self._delivery_tries[item[0]] = (tries + 1, self._clock())
+            await self._say_ready(item, agent_id, to or item[4])
             return
         if self._requests.by_run(item[0]) or item[0] in self._rowless:  # unrequested news is paced by the rate limit
             tries = self._delivery_tries.get(item[0], (0, 0.0))[0]

@@ -78,6 +78,15 @@ def test_a_line_cut_off_by_the_tool_call_is_skipped_and_keeps_the_slot(posts, te
     assert len(posts) == 1
 
 
+@pytest.mark.parametrize("text", ["Computed 2 ** 3 = 8; validating now.", "Scanning **/*.py next.",
+                                  "**Done:** 12 files written; reading them back.", "x**2 computed, plotting."])
+def test_a_whole_line_with_literal_stars_still_posts(posts, text):
+    post = turn._progress_poster("ceo", BODY)
+    _later(posts, 61)
+    post(text)
+    assert len(posts) == 1
+
+
 @pytest.mark.parametrize("text", ["", "   ", "On it.", None, "[SILENT]"])
 def test_empty_short_and_silence_lines_are_skipped(posts, silence_filter, text):  # noqa: F811
     post = turn._progress_poster("ceo", BODY)

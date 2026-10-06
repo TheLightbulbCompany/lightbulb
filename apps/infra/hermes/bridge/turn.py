@@ -1219,7 +1219,9 @@ def _cut_short(text: str) -> bool:
     deepseek-v4-flash stored 14 of 43 such messages cut ("**Step 21: Read step-0", "**Sleep 4 of").
     ponytail: only unclosed markdown or brackets are detectable; a cut that happens to balance
     still posts. Skipping costs nothing: the next complete line takes the same slot."""
-    return bool(text.count("**") % 2 or text.count("`") % 2
+    # Bold is counted as opener vs closer, so a literal `2 ** 3` or `**/*.py` is not a marker.
+    opened = len(re.findall(r"\*\*(?=[^\s/*])", text)) > len(re.findall(r"(?<=[^\s*])\*\*", text))
+    return bool(opened or text.count("`") % 2
                 or text.count("(") > text.count(")") or text.count("[") > text.count("]"))
 
 

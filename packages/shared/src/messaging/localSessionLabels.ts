@@ -10,7 +10,7 @@ export const sessionTitle = (s: LocalSession): string =>
 export const sessionLabel = (s: LocalSession) => `${sessionToolName(s.provider)} · ${sessionTitle(s)}`;
 
 export const sessionStatus: Record<LocalSession["status"], string> = {
-  idle: "Idle", busy: "Working", "waiting-approval": "Waiting for input", unknown: "No recent activity", offline: "Offline", ended: "Ended",
+  idle: "Idle", busy: "Working", "waiting-approval": "Waiting for input", unknown: "Status unavailable", offline: "Offline", ended: "Ended",
 };
 
 /** List/sidebar ordering, shared by web and mobile: busy → waiting on the owner → idle-ish → gone. */

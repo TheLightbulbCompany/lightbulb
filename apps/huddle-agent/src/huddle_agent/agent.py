@@ -12,6 +12,7 @@ import contextlib
 import itertools
 import json
 import logging
+import os
 import time
 
 from livekit import rtc
@@ -335,7 +336,7 @@ async def _on_request(req: JobRequest) -> None:
 
 # agent_name is deprecated in 1.8.3 (worker.py rtc_session) and LIVEKIT_AGENT_NAME wins over it; the
 # Dockerfile sets LIVEKIT_AGENT_NAME=lightbulb-huddle so both agree. Drop this kwarg once it is removed.
-@server.rtc_session(agent_name="lightbulb-huddle", on_request=_on_request)
+@server.rtc_session(agent_name=os.environ.get("HUDDLE_RIG_AGENT_NAME", "lightbulb-huddle"), on_request=_on_request)
 async def entrypoint(ctx: JobContext) -> None:
     meta = json.loads(ctx.job.metadata)
     started = time.monotonic()

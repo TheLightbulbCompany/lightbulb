@@ -23,7 +23,7 @@ export function bandRuns(s: SessionState): Run[] {
 export const bandLine = (s: SessionState) => bandRuns(s).map(r => r.text).join('')
 
 export function requestLine(r: JoinRequest, count: number): string {
-  const verb = r.kind === 'pickup' ? 'wants to pick this up · shares the whole conversation and uncommitted changes with the workspace' : 'asked to join'
+  const verb = r.kind === 'pickup' ? 'wants to pick this up · conversation + uncommitted changes' : 'asked to join'
   return `${r.name} ${verb}` + (count > 1 ? ` (+${count - 1} more)` : '')
 }
 

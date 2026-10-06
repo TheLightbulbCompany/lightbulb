@@ -241,6 +241,7 @@
 .session-facts + .session-notes { padding-top: 12px; border-top: 1px solid var(--border); }
 .session-setting { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; padding: 12px 0; border-top: 1px solid var(--border); }
 .session-setting:first-child { padding-top: 0; border-top: 0; }
+.session-setting-stacked { flex-direction: column; align-items: stretch; gap: 10px; }
 .session-setting-text { display: grid; gap: 4px; min-width: 0; }
 .session-setting-text > label, .session-setting-label { font-weight: 600; }
 .session-setting-about { display: grid; gap: 6px; font-size: .8125rem; color: var(--muted-foreground); }

@@ -110,4 +110,21 @@ describe("session link page", () => {
     expect(JSON.parse(String(opens[0][1]?.body)).refresh).toBeUndefined();
     expect(JSON.parse(String(opens[1][1]?.body)).refresh).toBe(true);
   });
+  it("opens a second link pasted into the same tab", async () => {
+    vi.useFakeTimers();
+    window.sessionStorage.setItem("lightbulb:session-link", JSON.stringify({ token: "first" }));
+    const fetchMock = vi.fn(async (url: string, init?: RequestInit) => {
+      if (!url.endsWith("/open")) return { ok: true, status: 200, json: async () => ({ events: [], nextAfterSeq: null }) } as Response;
+      const token = JSON.parse(String(init?.body)).token;
+      return { ok: true, status: 200, json: async () => model({ state: "ended", title: token === "second" ? "The second session" : "The first session" }) } as Response;
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    render(<SessionLinkPageRoute />);
+    await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+    expect(screen.getByText("The first session")).toBeTruthy();
+    // Only the fragment changes: the browser fires hashchange and does not reload the page.
+    await act(async () => { window.location.hash = "#second"; window.dispatchEvent(new HashChangeEvent("hashchange")); await vi.advanceTimersByTimeAsync(0); });
+    expect(screen.getByText("The second session")).toBeTruthy();
+    expect(window.location.hash).toBe(""); // the token left the address bar again
+  });
 });

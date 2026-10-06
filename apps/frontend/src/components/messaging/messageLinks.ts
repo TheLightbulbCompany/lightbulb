@@ -27,6 +27,19 @@ export function parseSessionPermalink(href: string, origin = window.location.ori
   } catch { return null; }
 }
 
+/** Copies text that is still being fetched. Started inside the click, so Safari and the desktop
+ *  webview still count the press: they refuse a clipboard write that begins after an await. */
+export async function copyTextWhenReady(text: Promise<string>): Promise<boolean> {
+  try {
+    if (typeof ClipboardItem === "undefined" || !navigator.clipboard?.write) return copyText(await text);
+    const blob = text.then(t => { if (!t) throw new Error("nothing to copy"); return new Blob([t], { type: "text/plain" }); });
+    await navigator.clipboard.write([new ClipboardItem({ "text/plain": blob })]);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 export async function copyText(text: string): Promise<boolean> {
   try {
     await navigator.clipboard.writeText(text);

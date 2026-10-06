@@ -165,7 +165,7 @@ function Access({ session, ownerName, own, client, nameOf, switches: { control, 
     {session.usage && client.setLocalSessionUsageSharing && <Setting label="Show token usage to teammates" checked={usage.enabled} disabled={usage.saving} onChange={next => void usage.set(next)}>
       Teammates see the token counts this session reports. They never see a cost.
     </Setting>}
-    <div className="session-setting">
+    <div className="session-setting session-setting-stacked">
       <div className="session-setting-text">
         <p className="session-setting-label">Link</p>
         <p className="session-setting-about">One link to this session. You choose who can open it; you can turn it off at any time.</p>

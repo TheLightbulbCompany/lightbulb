@@ -33,7 +33,8 @@ function readStash(): string {
   if (fragment) return (lifted = JSON.stringify({ token: fragment, ...(parseConfirm(window.location.search) ?? {}) }));
   try { return window.sessionStorage.getItem(KEY) ?? lifted; } catch { return lifted; }
 }
-const noSubscribe = () => () => {};
+// A second link opened in the same tab changes only the fragment: no navigation, just hashchange.
+const onHash = (changed: () => void) => { window.addEventListener("hashchange", changed); return () => window.removeEventListener("hashchange", changed); };
 
 /** Raw fetch: useApi refuses to call without a token, and these routes take none. */
 async function publicPost<T>(path: string, body: unknown, token: string | null): Promise<T> {
@@ -59,7 +60,7 @@ export default function SessionLinkPageRoute() {
   const api = useApi();
   const client = useMemo(() => createMessagingClient(api), [api]);
   const { isLoaded, isSignedIn, orgId, getToken } = useAuth();
-  const raw = useSyncExternalStore(noSubscribe, readStash, () => null);
+  const raw = useSyncExternalStore(onHash, readStash, () => null);
   const stash = useMemo<Stash | null>(() => { try { return raw ? JSON.parse(raw) as Stash : null; } catch { return null; } }, [raw]);
   const [page, setPage] = useState<SessionLinkPage | null>(null);
   const [events, setEvents] = useState<LocalSessionEvent[]>([]);
@@ -77,7 +78,7 @@ export default function SessionLinkPageRoute() {
     const now = readStash();
     try { window.sessionStorage.setItem(KEY, now); } catch { /* storage blocked: this visit only */ }
     window.history.replaceState(null, "", "/s");
-  }, []);
+  }, [raw]);
 
   useEffect(() => {
     if (!stash || !isLoaded) return;

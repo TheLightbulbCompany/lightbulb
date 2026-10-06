@@ -4,7 +4,7 @@ import { useEffect, useId, useState } from "react";
 import { Link2 } from "lucide-react";
 import { ApiError, type createMessagingClient, type LocalSession, type SessionLink, type SessionLinkAudience } from "@lightbulb/shared";
 import { Button } from "@/components/ui/button";
-import { copyText } from "./messageLinks";
+import { copyText, copyTextWhenReady } from "./messageLinks";
 
 type Client = Partial<Pick<ReturnType<typeof createMessagingClient>, "getLocalSessionLink" | "putLocalSessionLink" | "deleteLocalSessionLink">>;
 
@@ -38,8 +38,10 @@ export function SessionShareLink({ session, client }: { session: LocalSession; c
     finally { setBusy(false); }
   };
   const share = async () => {
-    const next = link ?? await save();
-    if (next?.url) setStatus(await copyText(next.url) ? "Link copied." : "Copy the link below.");
+    if (link?.url) { setStatus(await copyText(link.url) ? "Link copied." : "Copy the link below."); return; }
+    const made = save();
+    const copied = copyTextWhenReady(made.then(n => n?.url ?? ""));
+    if ((await made)?.url) setStatus(await copied ? "Link copied." : "Copy the link below.");
   };
   const off = async () => {
     setBusy(true);

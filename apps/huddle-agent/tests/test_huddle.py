@@ -184,6 +184,9 @@ class FakeBackend:
             raise self.summon_error
         return SUMMON
 
+    async def meet_voice(self, agent_id):
+        return {"voice": f"meet-{agent_id}"}
+
     async def session(self, agent_id):
         self.sessions.append(agent_id)
         if self.session_gate:

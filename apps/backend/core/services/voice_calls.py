@@ -677,6 +677,14 @@ async def _session_reads(owner_id: str, agent_id: str) -> tuple[dict | None, str
     return row, soul, notes
 
 
+async def agent_meet_voice(*, owner_id: str, room_id: str, agent_id: str) -> dict:
+    """An agent's meeting voice and nothing else: no persona, and the naming prompt stays unclaimed."""
+    await _owned_room(owner_id, room_id)
+    starters, (row, _, _) = await asyncio.gather(_starter_ids(owner_id), _session_reads(owner_id, agent_id))
+    title = (row or {}).get("title") or (row or {}).get("role")
+    return {"voice": voice_persona.agent_meet_voice(agent_id, starters, title)}
+
+
 async def agent_session(*, owner_id: str, room_id: str, agent_id: str) -> dict:
     """One agent's GPT-Live session: its own voice and persona. Falls back to the bare persona
     (no role, SOUL or notes) when the reads fail or overrun."""

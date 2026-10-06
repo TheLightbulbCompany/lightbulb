@@ -80,6 +80,7 @@ async def test_a_ready_answer_raises_its_hand_and_is_said_in_the_next_gap():
     await h.tick()
     await settle(h)
     assert h._room.played == [("forge", "Three PRs are open.")] and lives == [], "prepared audio, no voice session"
+    assert backend.sessions == [], "no Live session is asked for: that would use up the agent's naming prompt"
     assert status(h, "forge") == "idle" and h._room.discarded == h._room.played
     assert len(backend.turns) == 1
 

@@ -52,6 +52,13 @@ export default function Page() {
         }
 
         /* ── LEFT PANEL: branding ── */
+        /* The brand panel is the dark half in both themes. On the dark ladder --midnight is
+           the light text colour, so re-point the two names it uses instead of inverting. */
+        :root[data-chat-theme="dark"] .auth-brand {
+          --midnight: var(--plane-rail);
+          --cream: var(--fg);
+        }
+
         .auth-brand {
           background: var(--midnight);
           display: flex;

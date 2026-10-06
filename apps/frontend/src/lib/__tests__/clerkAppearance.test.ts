@@ -13,6 +13,8 @@ describe("clerkAppearance", () => {
     expect(variables.colorPrimary).toBe("var(--fg, var(--midnight))");
     expect(variables.colorBackground).toBe("var(--plane-pane, var(--cream))");
     expect(variables.colorDanger).toBe("var(--alert, var(--err))");
+    // Clerk tints borders, dividers and social-button labels from this; its default is black.
+    expect(variables.colorNeutral).toBe("var(--fg, var(--midnight))");
   });
 
   it("uses the product face", () => {

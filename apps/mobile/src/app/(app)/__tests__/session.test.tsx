@@ -356,9 +356,9 @@ describe("session screen", () => {
       expect(screen.getByText("This session is no longer shared.")).toBeTruthy();
     });
 
-    const hint = async (transcript = true) => {
+    const hint = async (transcript = false) => {
       await act(async () => {
-        for (const handler of mockEventHandlers) handler({ type: "workspace.sessions.changed", payload: { transcript } } as LiveEvent);
+        for (const handler of mockEventHandlers) handler({ type: "workspace.sessions.changed", payload: { humanUserId: "user-a", ...(transcript ? { transcript: true } : {}) } } as LiveEvent);
       });
     };
 
@@ -408,6 +408,34 @@ describe("session screen", () => {
       else await fireEvent.press(screen.getByRole("button", { name: "Try again" }));
       expect(screen.getByText("Fix relay")).toBeTruthy();
       expect(get).toHaveBeenCalledTimes(calls + 1);
+    });
+
+    it("keeps a loaded transcript through transient revalidation failures and permits retry", async () => {
+      get.mockResolvedValueOnce({ ...base, status: "ended" }).mockRejectedValue(new TypeError("network"));
+      await render(<SessionScreen />);
+      await hint();
+      await advance(3000);
+      expect(screen.getByText("Fix relay")).toBeTruthy();
+      expect(screen.getByText("Could not refresh this session.")).toBeTruthy();
+      get.mockResolvedValue({ ...base, status: "ended", title: "Refreshed session" });
+      await fireEvent.press(screen.getByRole("button", { name: "Try again" }));
+      expect(screen.getByText("Refreshed session")).toBeTruthy();
+    });
+
+    it("discards a loaded fallback when revalidation confirms a 404", async () => {
+      get.mockResolvedValueOnce({ ...base, status: "ended" }).mockRejectedValue(new ApiError(404, null));
+      await render(<SessionScreen />);
+      await hint();
+      expect(screen.getByText("This session is no longer shared.")).toBeTruthy();
+    });
+
+    it("does not fetch metadata for transcript-only hints, but revalidates a real resources change", async () => {
+      get.mockResolvedValue({ ...base, status: "ended" });
+      await render(<SessionScreen />);
+      for (let i = 0; i < 4; i += 1) await hint(true);
+      expect(get).toHaveBeenCalledTimes(1);
+      await hint(false);
+      expect(get).toHaveBeenCalledTimes(2);
     });
 
     it("fetches again on A → B → A and ignores old requests", async () => {

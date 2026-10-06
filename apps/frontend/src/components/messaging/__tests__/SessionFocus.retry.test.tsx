@@ -1,12 +1,12 @@
 import { act, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, expect, it, vi } from "vitest";
-import { ApiError, type LocalSession, type SessionSource } from "@lightbulb/shared";
+import { ApiError, type LiveEvent, type LocalSession, type SessionSource } from "@lightbulb/shared";
 import { SessionFocus } from "../SessionFocus";
 
 vi.mock("../LocalSessionPanel", () => ({ LocalSessionPanel: ({ session }: { session: LocalSession }) => <p>{session.title}</p> }));
 const session = { sessionId: "s1", humanUserId: "alice", provider: "claude", status: "ended", title: "Recovered session" } as LocalSession;
-function setup(getLocalSession = vi.fn<SessionSource["client"]["getLocalSession"]>()) {
-  const props = { focus: { sessionId: "s1" }, entries: [], loading: false, hintRevision: 0,
+function setup(getLocalSession = vi.fn<SessionSource["client"]["getLocalSession"]>(), onEvent?: SessionSource["onEvent"]) {
+  const props = { focus: { sessionId: "s1" }, entries: [], loading: false, hintRevision: 0, onEvent,
     client: { getLocalSession } as unknown as SessionSource["client"],
     resolveSessionOwner: () => ({ ownerName: "Alice", own: false }), onAccessLost: vi.fn(), onClose: vi.fn() };
   return { ...render(<SessionFocus {...props} />), props, getLocalSession };
@@ -132,4 +132,44 @@ it.each(["404", "exhaustion"] as const)("does not refetch a settled %s on ordina
   });
   expect(screen.getByRole("heading", { name: "Claude Recovered session" })).toBeInTheDocument();
   expect(get).toHaveBeenCalledTimes(calls + 1);
+});
+
+
+it("keeps a loaded transcript through transient revalidation failures and permits retry", async () => {
+  vi.useFakeTimers();
+  const get = vi.fn<SessionSource["client"]["getLocalSession"]>().mockResolvedValueOnce(session).mockRejectedValue(new TypeError("network"));
+  const view = setup(get);
+  await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+  await act(async () => { view.rerender(<SessionFocus {...view.props} hintRevision={1} />); });
+  await act(async () => { await vi.advanceTimersByTimeAsync(3000); });
+  expect(screen.getByRole("heading", { name: "Claude Recovered session" })).toBeInTheDocument();
+  expect(screen.getByText("Could not refresh this session.")).toBeInTheDocument();
+  get.mockResolvedValue({ ...session, title: "Refreshed session" });
+  await act(async () => { fireEvent.click(screen.getByRole("button", { name: "Try again" })); });
+  expect(screen.getByRole("heading", { name: "Claude Refreshed session" })).toBeInTheDocument();
+});
+
+it("discards a loaded fallback when revalidation confirms a 404", async () => {
+  const get = vi.fn<SessionSource["client"]["getLocalSession"]>().mockResolvedValueOnce(session).mockRejectedValue(new ApiError(404, null));
+  const view = setup(get);
+  await act(async () => {});
+  await act(async () => { view.rerender(<SessionFocus {...view.props} hintRevision={1} />); });
+  expect(screen.getByText("This session is no longer shared.")).toBeInTheDocument();
+});
+
+it("does not fetch metadata for transcript-only hints, but revalidates a real resources change", async () => {
+  const handlers = new Set<(event: LiveEvent) => void>();
+  const onEvent: SessionSource["onEvent"] = handler => { handlers.add(handler); return () => { handlers.delete(handler); }; };
+  const get = vi.fn<SessionSource["client"]["getLocalSession"]>().mockResolvedValue(session);
+  const view = setup(get, onEvent);
+  await act(async () => {});
+  for (let hintRevision = 1; hintRevision <= 4; hintRevision += 1) {
+    await act(async () => {
+      for (const handler of handlers) handler({ type: "workspace.sessions.changed", payload: { transcript: true } } as LiveEvent);
+      view.rerender(<SessionFocus {...view.props} hintRevision={hintRevision} />);
+    });
+  }
+  expect(get).toHaveBeenCalledTimes(1);
+  await act(async () => { for (const handler of handlers) handler({ type: "workspace.sessions.changed", payload: { humanUserId: "alice" } } as LiveEvent); });
+  expect(get).toHaveBeenCalledTimes(2);
 });

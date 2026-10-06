@@ -42,6 +42,13 @@ export function SessionFocus({ focus, entries, loading, hintRevision, client, re
   const hasListedSession = Boolean(entry);
   const [retryRevision, setRetryRevision] = useState(0);
   const [fallback, setFallback] = useState<{ sessionId: string; session: LocalSession | null; notFound: boolean; error: boolean } | null>(null);
+  const [metadataRevision, setMetadataRevision] = useState(0);
+  useEffect(() => {
+    return onEvent?.(event => {
+      if (event.type === "workspace.sessions.changed" && !event.payload.transcript) setMetadataRevision(v => v + 1);
+    });
+  }, [onEvent]);
+  const fallbackHintRevision = onEvent ? metadataRevision : hintRevision;
   const revalidate = useRef<((hint: number, retry: number) => void) | null>(null);
   useEffect(() => {
     if (hasListedSession) return;
@@ -65,7 +72,9 @@ export function SessionFocus({ focus, entries, loading, hintRevision, client, re
           timer = setTimeout(() => void fetchSession(), attempts * 1000);
           return;
         }
-        setFallback({ sessionId: focus.sessionId, session: null, notFound, error: !notFound });
+        setFallback(previous => ({ sessionId: focus.sessionId,
+          session: !notFound && previous?.sessionId === focus.sessionId ? previous.session : null,
+          notFound, error: !notFound }));
       }
       if (!alive) return;
       pending = false;
@@ -86,8 +95,12 @@ export function SessionFocus({ focus, entries, loading, hintRevision, client, re
     return () => { alive = false; clearTimeout(timer); revalidate.current = null; };
   }, [hasListedSession, client, focus.sessionId]);
   useEffect(() => {
-    if (!hasListedSession && !coldLoading) revalidate.current?.(hintRevision, retryRevision);
-  }, [hasListedSession, coldLoading, client, focus.sessionId, hintRevision, retryRevision]);
+    if (!hasListedSession && !coldLoading) revalidate.current?.(fallbackHintRevision, retryRevision);
+  }, [hasListedSession, coldLoading, client, focus.sessionId, fallbackHintRevision, retryRevision]);
+  const retryFallback = () => {
+    setFallback(current => current?.session ? { ...current, error: false } : null);
+    setRetryRevision(v => v + 1);
+  };
   const resolvedFallback = fallback?.sessionId === focus.sessionId ? fallback : null;
   const session = entry?.session ?? resolvedFallback?.session ?? null;
   const owner = entry ?? (session ? resolveSessionOwner(session.humanUserId) : null);
@@ -99,11 +112,15 @@ export function SessionFocus({ focus, entries, loading, hintRevision, client, re
         {session && owner?.own && client.setLocalSessionDisplayTitle && <SessionRenameButton session={session} onRename={client.setLocalSessionDisplayTitle} icon />}
         <Button className="ml-auto" variant="ghost" size="icon-sm" aria-label="Close session" onClick={onClose}><X aria-hidden="true" /></Button>
       </header>
+      {session && resolvedFallback?.error && <div className="p-4 text-sm text-muted-foreground">
+        <p role="status">Could not refresh this session.</p>
+        <Button variant="ghost" onClick={retryFallback}>Try again</Button>
+      </div>}
       {session && owner ? <LocalSessionPanel key={sessionViewKey(session)} session={session} ownerName={owner.ownerName} own={owner.own}
         client={client} revision={hintRevision} onAccessLost={onAccessLost} participants={participants} onMessageOwner={messageOwner} onEvent={onEvent} nameOf={id => resolveSessionOwner(id).ownerName} />
         : <div className="p-4 text-sm text-muted-foreground">
           <p role="status">{resolvedFallback?.notFound ? "This session is no longer shared." : resolvedFallback?.error ? "Could not load this session." : "Loading session…"}</p>
-          {resolvedFallback?.error && <Button variant="ghost" onClick={() => { setFallback(null); setRetryRevision(v => v + 1); }}>Try again</Button>}
+          {resolvedFallback?.error && <Button variant="ghost" onClick={retryFallback}>Try again</Button>}
         </div>}
     </div>
   </section>;

@@ -79,6 +79,14 @@ export default function SessionScreen() {
   const hasListedSession = Boolean(listed);
   const [retryRevision, setRetryRevision] = useState(0);
   const [fallback, setFallback] = useState<{ sessionId: string; session: LocalSession | null; notFound: boolean; error: boolean } | null>(null);
+  const onSessionEvent = rooms.resourceSource.onEvent;
+  const [metadataRevision, setMetadataRevision] = useState(0);
+  useEffect(() => {
+    if (!live) return;
+    return onSessionEvent(event => {
+      if (event.type === "workspace.sessions.changed" && !event.payload.transcript) setMetadataRevision(v => v + 1);
+    });
+  }, [onSessionEvent, live]);
   const revalidate = useRef<((hint: number, retry: number) => void) | null>(null);
   useEffect(() => {
     if (hasListedSession || !sessionId || !live) return;
@@ -102,7 +110,9 @@ export default function SessionScreen() {
           timer = setTimeout(() => void fetchSession(), attempts * 1000);
           return;
         }
-        setFallback({ sessionId, session: null, notFound, error: !notFound });
+        setFallback(previous => ({ sessionId,
+          session: !notFound && previous?.sessionId === sessionId ? previous.session : null,
+          notFound, error: !notFound }));
       }
       if (!alive) return;
       pending = false;
@@ -123,8 +133,12 @@ export default function SessionScreen() {
     return () => { alive = false; clearTimeout(timer); revalidate.current = null; };
   }, [hasListedSession, rooms.resourceSource.client, sessionId, live]);
   useEffect(() => {
-    if (!hasListedSession && !coldLoading && sessionId && live) revalidate.current?.(workspace.hintRevision, retryRevision);
-  }, [hasListedSession, coldLoading, rooms.resourceSource.client, sessionId, workspace.hintRevision, retryRevision, live]);
+    if (!hasListedSession && !coldLoading && sessionId && live) revalidate.current?.(metadataRevision, retryRevision);
+  }, [hasListedSession, coldLoading, rooms.resourceSource.client, sessionId, metadataRevision, retryRevision, live]);
+  const retryFallback = () => {
+    setFallback(current => current?.session ? { ...current, error: false } : null);
+    setRetryRevision(v => v + 1);
+  };
   const resolvedFallback = fallback?.sessionId === sessionId ? fallback : null;
   const session = listed ?? resolvedFallback?.session ?? undefined;
   useEffect(() => {
@@ -225,7 +239,7 @@ export default function SessionScreen() {
           ) : resolvedFallback?.error ? (
             <>
               <Text accessibilityRole="alert" style={[styles.errorText, { color: palette.alert }]}>Could not load this session.</Text>
-              <Pressable onPress={() => { setFallback(null); setRetryRevision(v => v + 1); }} accessibilityRole="button" accessibilityLabel="Try again">
+              <Pressable onPress={retryFallback} accessibilityRole="button" accessibilityLabel="Try again">
                 <Text style={[styles.link, { color: palette.link }]}>Try again</Text>
               </Pressable>
             </>
@@ -241,6 +255,12 @@ export default function SessionScreen() {
   return (
     <View style={[styles.container, { backgroundColor: palette.ground }]}>
       <Stack.Screen options={headerOptions} />
+      {resolvedFallback?.error && <View style={styles.banner}>
+        <Text accessibilityRole="alert" style={[styles.errorText, { color: palette.alert }]}>Could not refresh this session.</Text>
+        <Pressable onPress={retryFallback} accessibilityRole="button" accessibilityLabel="Try again">
+          <Text style={[styles.link, { color: palette.link }]}>Try again</Text>
+        </Pressable>
+      </View>}
       {rooms.selectRoomError && (
         // A failed DM open (the header button) is transient and must not hide
         // the transcript underneath a full-screen blocked state -- see

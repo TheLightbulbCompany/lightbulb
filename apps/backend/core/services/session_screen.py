@@ -28,7 +28,7 @@ from pydantic import Field, field_validator
 
 from core.auth import AuthContext
 from core.repositories import local_sessions_repo as repo, messaging_repo as store
-from core.services import live_events, local_sessions as sessions
+from core.services import live_events, local_sessions as sessions, session_presence
 from core.services.messaging import ContractModel, make_live_event
 
 logger = logging.getLogger(__name__)
@@ -359,6 +359,13 @@ async def type_into(auth: AuthContext, session_id: str, body: SessionInput) -> N
         # and mouse reports there, so only the owner can operate the terminal's Claude band.
         "fromOwner": user == row["humanUserId"],
     }
+    if user != row["humanUserId"]:
+        # Who typed: the Mac's Claude terminal labels a prompt a teammate submitted with their
+        # name. `_name` keeps its own short cache, so nothing is kept here: a failed lookup (the
+        # bare id, or its "A teammate" fallback) sends this frame without a name and the next asks again.
+        name = await session_presence._name(user)
+        if name not in (user, "A teammate"):
+            envelope["actor"] = {"userId": user, "name": name}
     check_envelope(envelope)
     new_burst = not typist.burst or now - typist.last > TYPED_BURST_GAP_S
     if new_burst:

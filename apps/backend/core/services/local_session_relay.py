@@ -216,20 +216,27 @@ def _conflict(reason: str, **fields: object) -> ApiProblem:
 
 
 async def _actor_label(command: dict) -> dict | None:
-    """Room-derived handle and name of the sender; the desktop shows it in the owner's terminal."""
+    """Handle and name of the sender; the desktop shows it in the owner's terminal. The room's
+    member row when there is one; a person with no room (a follow-up sent from the session's own
+    page stores roomId "") or no row in it still gets the name presence shows."""
     from core.services.messaging import human_emails, with_human_handles
 
     if (command.get("actor") or {}).get("kind") == "session":
         return {"kind": "session", "displayName": "Shared native session"}
-    room_id = command.get("roomId")
-    if not room_id:
-        return None
     kind, member_id = ("agent", command["actor"]["id"]) if "actor" in command else ("human", command["actorUserId"])
-    room_members = await store.list_members(room_id)
-    members = with_human_handles(room_members, await human_emails(room_members))
-    member = next((m for m in members if m.get("kind") == kind and str(m.get("id")) == member_id), None)
+    member = None
+    if room_id := command.get("roomId"):
+        room_members = await store.list_members(room_id)
+        members = with_human_handles(room_members, await human_emails(room_members))
+        member = next((m for m in members if m.get("kind") == kind and str(m.get("id")) == member_id), None)
     if member is None:
-        return None
+        if kind != "human":
+            return None
+        from core.services.session_presence import _name  # imports this module's siblings
+
+        name = await _name(member_id)
+        # A failed lookup answers the bare user id: no label is better than an opaque id.
+        return None if name == member_id else {"kind": "human", "handle": None, "displayName": name}
     return {
         "kind": kind,
         "handle": member.get("mentionHandle") or None,

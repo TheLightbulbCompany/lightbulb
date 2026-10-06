@@ -356,17 +356,39 @@ describe("session screen", () => {
       expect(screen.getByText("This session is no longer shared.")).toBeTruthy();
     });
 
-    it("refetches on a resources hint and ignores the superseded response", async () => {
-      let old!: (s: LocalSession) => void;
-      get.mockImplementationOnce(() => new Promise(resolve => { old = resolve; })).mockResolvedValue({ ...base, status: "ended" });
-      await render(<SessionScreen />);
+    const hint = async (transcript = true) => {
       await act(async () => {
-        for (const handler of mockEventHandlers) handler({ type: "workspace.sessions.changed", payload: { transcript: true } } as LiveEvent);
+        for (const handler of mockEventHandlers) handler({ type: "workspace.sessions.changed", payload: { transcript } } as LiveEvent);
       });
-      expect(get).toHaveBeenCalledTimes(2);
+    };
+
+    it("keeps a slow fetch alive through several hints and coalesces revalidation", async () => {
+      let resolve!: (s: LocalSession) => void;
+      get.mockImplementationOnce(() => new Promise(r => { resolve = r; })).mockImplementation(() => new Promise(() => {}));
+      await render(<SessionScreen />);
+      for (let i = 0; i < 4; i += 1) await hint(i % 2 === 0);
+      expect(get).toHaveBeenCalledTimes(1);
+      await act(async () => { resolve({ ...base, status: "ended" }); });
       expect(screen.getByText("Fix relay")).toBeTruthy();
-      await act(async () => { old({ ...base, title: "Stale response" }); });
-      expect(screen.queryByText("Stale response")).toBeNull();
+      expect(get).toHaveBeenCalledTimes(2);
+    });
+
+    it("retries a previous 404 on a later hint", async () => {
+      get.mockRejectedValueOnce(new ApiError(404, null)).mockResolvedValue({ ...base, status: "ended" });
+      await render(<SessionScreen />);
+      expect(screen.getByText("This session is no longer shared.")).toBeTruthy();
+      await hint();
+      expect(screen.getByText("Fix relay")).toBeTruthy();
+    });
+
+    it("does not reset the three-attempt budget when hints arrive during retry backoff", async () => {
+      get.mockRejectedValue(new TypeError("network"));
+      await render(<SessionScreen />);
+      for (let i = 0; i < 4; i += 1) await hint();
+      expect(get).toHaveBeenCalledTimes(1);
+      await advance(3000);
+      expect(screen.getByText("Could not load this session.")).toBeTruthy();
+      expect(get).toHaveBeenCalledTimes(4);
     });
 
     it("fetches again on A → B → A and ignores old requests", async () => {
@@ -380,6 +402,16 @@ describe("session screen", () => {
       expect(get.mock.calls.map(([id]) => id)).toEqual(["sess-1", "sess-2", "sess-1"]);
       await act(async () => { old({ ...base, title: "Stale response" }); });
       expect(screen.getByText("Fix relay")).toBeTruthy();
+    });
+
+    it("ignores a slow response after unmount", async () => {
+      let resolve!: (s: LocalSession) => void;
+      get.mockImplementation(() => new Promise(r => { resolve = r; }));
+      const view = await render(<SessionScreen />);
+      await view.unmount();
+      await act(async () => { resolve(base); });
+      expect(screen.queryByText("Fix relay")).toBeNull();
+      expect(get).toHaveBeenCalledTimes(1);
     });
 
     it("cancels a scheduled retry when unmounted", async () => {

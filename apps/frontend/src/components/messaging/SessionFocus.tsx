@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { X } from "lucide-react";
 import { ApiError, sessionTitle, sessionViewKey, type LocalSession, type SessionSource } from "@lightbulb/shared";
 import { Button } from "@/components/ui/button";
@@ -42,13 +42,16 @@ export function SessionFocus({ focus, entries, loading, hintRevision, client, re
   const hasListedSession = Boolean(entry);
   const [retryRevision, setRetryRevision] = useState(0);
   const [fallback, setFallback] = useState<{ sessionId: string; session: LocalSession | null; notFound: boolean; error: boolean } | null>(null);
+  const revalidate = useRef<(() => void) | null>(null);
   useEffect(() => {
-    if (hasListedSession || coldLoading) return;
+    if (hasListedSession) return;
     let alive = true;
+    let pending = false;
+    let queued = false;
     let attempts = 0;
     let timer: ReturnType<typeof setTimeout> | undefined;
-    // A list refresh must not cancel a missing session's fetch just because its objects changed.
-    // A new hint or explicit retry starts a fresh bounded request; cleanup retires the old one.
+    // Keep the current request and its retry budget through same-session hints/list refreshes.
+    // Coalesce those hints into one revalidation after this bounded sequence settles.
     const fetchSession = async () => {
       attempts += 1;
       try {
@@ -59,13 +62,25 @@ export function SessionFocus({ focus, entries, loading, hintRevision, client, re
         const notFound = e instanceof ApiError && e.status === 404;
         if (!notFound && attempts < 3) {
           timer = setTimeout(() => void fetchSession(), attempts * 1000);
-        } else {
-          setFallback({ sessionId: focus.sessionId, session: null, notFound, error: !notFound });
+          return;
         }
+        setFallback({ sessionId: focus.sessionId, session: null, notFound, error: !notFound });
       }
+      if (!alive) return;
+      pending = false;
+      if (queued) { queued = false; request(); }
     };
-    void fetchSession();
-    return () => { alive = false; clearTimeout(timer); };
+    const request = () => {
+      if (pending) { queued = true; return; }
+      pending = true;
+      attempts = 0;
+      void fetchSession();
+    };
+    revalidate.current = request;
+    return () => { alive = false; clearTimeout(timer); revalidate.current = null; };
+  }, [hasListedSession, client, focus.sessionId]);
+  useEffect(() => {
+    if (!hasListedSession && !coldLoading) revalidate.current?.();
   }, [hasListedSession, coldLoading, client, focus.sessionId, hintRevision, retryRevision]);
   const resolvedFallback = fallback?.sessionId === focus.sessionId ? fallback : null;
   const session = entry?.session ?? resolvedFallback?.session ?? null;

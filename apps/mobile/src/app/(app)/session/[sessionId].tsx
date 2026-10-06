@@ -79,13 +79,16 @@ export default function SessionScreen() {
   const hasListedSession = Boolean(listed);
   const [retryRevision, setRetryRevision] = useState(0);
   const [fallback, setFallback] = useState<{ sessionId: string; session: LocalSession | null; notFound: boolean; error: boolean } | null>(null);
+  const revalidate = useRef<(() => void) | null>(null);
   useEffect(() => {
-    if (hasListedSession || coldLoading || !sessionId || !live) return;
+    if (hasListedSession || !sessionId || !live) return;
     let alive = true;
+    let pending = false;
+    let queued = false;
     let attempts = 0;
     let timer: ReturnType<typeof setTimeout> | undefined;
-    // A list refresh must not cancel a missing session's fetch just because its objects changed.
-    // A new hint or explicit retry starts a fresh bounded request; cleanup retires the old one.
+    // Keep the current request and its retry budget through same-session hints/list refreshes.
+    // Coalesce those hints into one revalidation after this bounded sequence settles.
     const fetchSession = async () => {
       attempts += 1;
       try {
@@ -96,13 +99,25 @@ export default function SessionScreen() {
         const notFound = e instanceof ApiError && e.status === 404;
         if (!notFound && attempts < 3) {
           timer = setTimeout(() => void fetchSession(), attempts * 1000);
-        } else {
-          setFallback({ sessionId, session: null, notFound, error: !notFound });
+          return;
         }
+        setFallback({ sessionId, session: null, notFound, error: !notFound });
       }
+      if (!alive) return;
+      pending = false;
+      if (queued) { queued = false; request(); }
     };
-    void fetchSession();
-    return () => { alive = false; clearTimeout(timer); };
+    const request = () => {
+      if (pending) { queued = true; return; }
+      pending = true;
+      attempts = 0;
+      void fetchSession();
+    };
+    revalidate.current = request;
+    return () => { alive = false; clearTimeout(timer); revalidate.current = null; };
+  }, [hasListedSession, rooms.resourceSource.client, sessionId, live]);
+  useEffect(() => {
+    if (!hasListedSession && !coldLoading && sessionId && live) revalidate.current?.();
   }, [hasListedSession, coldLoading, rooms.resourceSource.client, sessionId, workspace.hintRevision, retryRevision, live]);
   const resolvedFallback = fallback?.sessionId === sessionId ? fallback : null;
   const session = listed ?? resolvedFallback?.session ?? undefined;

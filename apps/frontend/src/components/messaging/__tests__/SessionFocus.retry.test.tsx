@@ -43,14 +43,41 @@ it("does not retry a genuine 404", async () => {
   expect(screen.getByText("This session is no longer shared.")).toBeInTheDocument();
 });
 
-it("refetches after a resources hint and ignores the superseded response", async () => {
-  let old!: (s: LocalSession) => void;
-  const get = vi.fn<SessionSource["client"]["getLocalSession"]>().mockImplementationOnce(() => new Promise(resolve => { old = resolve; })).mockResolvedValue(session);
+it("keeps a slow fetch alive through several hints and coalesces revalidation", async () => {
+  let resolve!: (s: LocalSession) => void;
+  const get = vi.fn<SessionSource["client"]["getLocalSession"]>().mockImplementationOnce(() => new Promise(r => { resolve = r; })).mockImplementation(() => new Promise(() => {}));
   const view = setup(get);
+  for (let hintRevision = 1; hintRevision <= 4; hintRevision += 1) {
+    await act(async () => { view.rerender(<SessionFocus {...view.props} hintRevision={hintRevision} loading={hintRevision % 2 === 1} />); });
+  }
+  expect(get).toHaveBeenCalledTimes(1);
+  await act(async () => { resolve(session); });
+  expect(screen.getByRole("heading", { name: "Claude Recovered session" })).toBeInTheDocument();
+  expect(get).toHaveBeenCalledTimes(2);
+});
+
+it("retries a previous 404 on a later hint", async () => {
+  const get = vi.fn<SessionSource["client"]["getLocalSession"]>().mockRejectedValueOnce(new ApiError(404, null)).mockResolvedValue(session);
+  const view = setup(get);
+  await act(async () => {});
+  expect(screen.getByText("This session is no longer shared.")).toBeInTheDocument();
   await act(async () => { view.rerender(<SessionFocus {...view.props} hintRevision={1} />); });
   expect(screen.getByRole("heading", { name: "Claude Recovered session" })).toBeInTheDocument();
-  await act(async () => { old({ ...session, title: "Stale response" }); });
-  expect(screen.queryByText("Stale response")).not.toBeInTheDocument();
+});
+
+it("does not reset the three-attempt budget when hints arrive during retry backoff", async () => {
+  vi.useFakeTimers();
+  const get = vi.fn<SessionSource["client"]["getLocalSession"]>().mockRejectedValue(new TypeError("network"));
+  const view = setup(get);
+  await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+  for (let hintRevision = 1; hintRevision <= 4; hintRevision += 1) {
+    await act(async () => { view.rerender(<SessionFocus {...view.props} hintRevision={hintRevision} />); });
+  }
+  expect(get).toHaveBeenCalledTimes(1);
+  await act(async () => { await vi.advanceTimersByTimeAsync(3000); });
+  expect(screen.getByText("Could not load this session.")).toBeInTheDocument();
+  // Three attempts finish, then the four hints cause only one queued revalidation.
+  expect(get).toHaveBeenCalledTimes(4);
 });
 
 it("fetches again on A → B → A and ignores old requests", async () => {
@@ -75,13 +102,12 @@ it("cancels a scheduled retry when unmounted", async () => {
 });
 
 
-it("restarts a fetch canceled by a cold workspace refresh", async () => {
-  let old!: (s: LocalSession) => void;
-  const get = vi.fn<SessionSource["client"]["getLocalSession"]>().mockImplementationOnce(() => new Promise(resolve => { old = resolve; })).mockResolvedValue(session);
+it("ignores a slow response after unmount", async () => {
+  let resolve!: (s: LocalSession) => void;
+  const get = vi.fn<SessionSource["client"]["getLocalSession"]>().mockImplementation(() => new Promise(r => { resolve = r; }));
   const view = setup(get);
-  view.rerender(<SessionFocus {...view.props} loading />);
-  await act(async () => { view.rerender(<SessionFocus {...view.props} />); });
-  expect(get).toHaveBeenCalledTimes(2);
-  await act(async () => { old({ ...session, title: "Stale response" }); });
-  expect(screen.getByRole("heading", { name: "Claude Recovered session" })).toBeInTheDocument();
+  view.unmount();
+  await act(async () => { resolve(session); });
+  expect(screen.queryByText("Recovered session")).not.toBeInTheDocument();
+  expect(get).toHaveBeenCalledTimes(1);
 });

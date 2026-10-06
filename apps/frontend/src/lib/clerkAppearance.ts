@@ -68,6 +68,9 @@ export const clerkAppearance: Appearance = {
     colorTextOnPrimaryBackground: "var(--plane-pane, var(--cream))",
     colorBackground: "var(--plane-pane, var(--cream))",
     colorText: "var(--fg, var(--midnight))",
+    // Borders, outlines, the divider and social-button labels are tints of this. Clerk's
+    // default is black, which is invisible on the dark ladder.
+    colorNeutral: "var(--fg, var(--midnight))",
     colorTextSecondary: "var(--fg-mute, var(--midnight-muted))",
     colorInputBackground: "var(--plane-sidebar, var(--cream-deep))",
     colorInputText: "var(--fg, var(--midnight))",

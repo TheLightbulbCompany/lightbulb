@@ -3607,7 +3607,8 @@ class Huddle:
         """The answer's audio, started once a run (ponytail: a failed render is not retried)."""
         if item[0] not in self._speech:
             async def render() -> Any:
-                voice = (await self._backend.session(agent_id))["voice"]
+                session = await self._backend.session(agent_id)
+                voice = session.get("meetVoice") or session["voice"]  # an older backend: agent.py falls back
                 return await self._room.prepare(agent_id, voice, item[2])
             self._speech[item[0]] = asyncio.ensure_future(render())
         return self._speech[item[0]]

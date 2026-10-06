@@ -86,3 +86,14 @@ def test_agent_persona_caps_soul_and_notes_and_fits_the_instruction_limit():
     assert "s" * vp.SOUL_EXCERPT_MAX in p and "s" * (vp.SOUL_EXCERPT_MAX + 1) not in p
     assert "n" * 1000 in p and "n" * 1001 not in p
     assert len(p) / 4 < 16_384
+
+
+def test_each_starter_role_has_its_own_meeting_voice_and_other_agents_never_take_one():
+    from core.services import voice_persona as vp
+
+    starters = {role: f"id-{role}" for role in vp.STARTER_MEET_VOICES}
+    voices = [vp.agent_meet_voice(aid, starters) for aid in starters.values()]
+    assert len(set(voices)) == len(voices) and set(voices) <= set(vp.MEET_VOICE_POOL)
+    others = {vp.agent_meet_voice(f"other-{i}", starters) for i in range(200)}
+    assert others and not others & set(voices) and others <= set(vp.MEET_VOICE_POOL)
+    assert vp.agent_meet_voice("other-1", starters) == vp.agent_meet_voice("other-1", None), "stable for an agent"

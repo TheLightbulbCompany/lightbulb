@@ -702,6 +702,7 @@ async def agent_session(*, owner_id: str, room_id: str, agent_id: str) -> dict:
         "agentId": agent_id,
         "name": name,
         "voice": voice_persona.agent_voice(agent_id, starters),
+        "meetVoice": voice_persona.agent_meet_voice(agent_id, starters),
         "persona": persona,
         "askName": ask_name,
     }

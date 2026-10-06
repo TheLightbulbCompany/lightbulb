@@ -39,6 +39,32 @@ STARTER_VOICES = {
     "customer_operations": "willow",
 }
 _HASH_POOL = tuple(v for v in VOICE_POOL if v not in STARTER_VOICES.values())
+# A Meet: a ready answer is read aloud by the speech model (gpt-4o-mini-tts), which has its own voices; of the
+# Live voices only "marin" exists there. Each starter role keeps one voice of its own in every meeting.
+MEET_VOICE_POOL = (
+    "alloy",
+    "ash",
+    "ballad",
+    "cedar",
+    "coral",
+    "echo",
+    "fable",
+    "marin",
+    "nova",
+    "onyx",
+    "sage",
+    "shimmer",
+    "verse",
+)
+STARTER_MEET_VOICES = {
+    "ceo": "marin",
+    "engineering": "ash",
+    "finance": "onyx",
+    "growth": "coral",
+    "analytics": "sage",
+    "customer_operations": "shimmer",
+}
+_MEET_HASH_POOL = tuple(v for v in MEET_VOICE_POOL if v not in STARTER_MEET_VOICES.values())
 _DEFAULT_NAMES = {key: label for key, label, *_ in STARTER_ROSTER}
 SOUL_EXCERPT_MAX = 1500
 
@@ -53,6 +79,14 @@ def agent_voice(agent_id: str, starter_ids: dict | None) -> str:
     if role in STARTER_VOICES:
         return STARTER_VOICES[role]
     return _HASH_POOL[int(hashlib.sha256(agent_id.encode()).hexdigest(), 16) % len(_HASH_POOL)]
+
+
+def agent_meet_voice(agent_id: str, starter_ids: dict | None) -> str:
+    """The voice that reads this agent's answers in a Meet: its role's, else a stable pick from the rest."""
+    role = _starter_role(agent_id, starter_ids)
+    if role in STARTER_MEET_VOICES:
+        return STARTER_MEET_VOICES[role]
+    return _MEET_HASH_POOL[int(hashlib.sha256(agent_id.encode()).hexdigest(), 16) % len(_MEET_HASH_POOL)]
 
 
 def is_default_name(agent_id: str, name: str | None, starter_ids: dict | None) -> bool:

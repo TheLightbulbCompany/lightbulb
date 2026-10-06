@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect } from "react";
+import { Hand } from "lucide-react";
 import { agentHand, agentLiveStatus, agentStateLine, agentWorking, floorHolder, meetVoiceLimitText, voiceLimit } from "@lightbulb/shared";
 import { agentTint } from "@/lib/agentTint";
 
@@ -59,15 +60,19 @@ export function MeetTile({ agents, attrs, notice }: { agents: Record<string, Til
     return s === "working" || ((s === "listening" || s === "joining") && !!agentWorking(attrs, id));
   };
   const isHand = (id: string) => agentLiveStatus(attrs, id) === "has_news";
-  const busy = roster.filter((id) => id !== speaker && (isHand(id) || isWorking(id)));
+  // Hand first: with nobody speaking, the first raised hand is the hero. People call on it by name, so the
+  // tile says how; a Recall bot cannot raise Meet's own hand (no API; our own guest is refused, 10-06).
+  const raised = speaker ? undefined : roster.find(isHand);
+  const busy = roster.filter((id) => id !== speaker && id !== raised && (isHand(id) || isWorking(id)));
   const activity = [...busy.filter(isHand), ...busy.filter((id) => !isHand(id))];
   const rowLine = (id: string) => isHand(id)
     ? agentStateLine("has_news", { hand: agentHand(attrs, id), meeting: true })
     : agentStateLine("working", { working: agentWorking(attrs, id) });
-  const onStage = (id: string) => id === speaker || activity.includes(id);
-  const stageBusy = !!speaker || activity.length > 0;
-  const maxRows = speaker ? 2 : 3;
-  const rowSize = speaker ? { av: 52, name: 34, line: 34, gap: 12 } : { av: 80, name: 46, line: 38, gap: 20 };
+  const onStage = (id: string) => id === speaker || id === raised || activity.includes(id);
+  const stageBusy = !!speaker || !!raised || activity.length > 0;
+  const hero = speaker ?? raised;
+  const maxRows = hero ? 2 : 3;
+  const rowSize = hero ? { av: 52, name: 34, line: 34, gap: 12 } : { av: 80, name: 46, line: 38, gap: 20 };
   const limitText = limit ? meetVoiceLimitText(limit) : "";
   // The page can be in the room before the worker is: until an agent shows up, nobody is listening yet.
   const shown = notice ?? (roster.length === 0 && !limit ? "Connecting…" : null);
@@ -90,7 +95,10 @@ export function MeetTile({ agents, attrs, notice }: { agents: Record<string, Til
       <style>{`.meet-ring{box-shadow:0 0 0 6px var(--plane-pane),0 0 0 12px var(--live)}
 @keyframes meet-pulse{0%,100%{box-shadow:0 0 0 6px var(--plane-pane),0 0 0 12px var(--live),0 0 0 12px color-mix(in srgb,var(--live) 35%,transparent)}
 50%{box-shadow:0 0 0 6px var(--plane-pane),0 0 0 12px var(--live),0 0 0 26px color-mix(in srgb,var(--live) 0%,transparent)}}
-.meet-ring{animation:meet-pulse 2.2s ease-in-out infinite}@media (prefers-reduced-motion:reduce){.meet-ring{animation:none}}`}</style>
+.meet-ring{animation:meet-pulse 2.2s ease-in-out infinite}
+@keyframes meet-hand{0%,100%{transform:translateY(0) rotate(0)}30%{transform:translateY(-10px) rotate(-8deg)}60%{transform:translateY(-4px) rotate(6deg)}}
+.meet-hand{animation:meet-hand 1.8s ease-in-out infinite;transform-origin:50% 90%}
+@media (prefers-reduced-motion:reduce){.meet-ring,.meet-hand{animation:none}}`}</style>
       <span className="absolute left-10 top-5 text-2xl" style={{ color: "var(--fg-mute)" }}>Lightbulb</span>
       {shown ? (
         <p className="flex flex-1 items-center justify-center text-5xl" role="status">{shown}</p>
@@ -120,6 +128,24 @@ export function MeetTile({ agents, attrs, notice }: { agents: Record<string, Til
                 <p style={{ fontSize: 34, lineHeight: "40px", ...soft }}>{agentStateLine("speaking")}</p>
               </div>
             )}
+            {raised && (
+              <div data-hand className="flex flex-col items-center">
+                <span className="relative rounded-full" style={{ boxShadow: "0 0 0 6px var(--plane-pane), 0 0 0 12px var(--link)" }}>
+                  <Avatar id={raised} name={nameOf(raised)} url={agents[raised]?.avatarUrl} size={180} />
+                  <span className="absolute flex items-center justify-center rounded-full"
+                    style={{ right: -22, bottom: -10, width: 92, height: 92, background: "var(--link)", color: "var(--plane-pane)", boxShadow: "0 0 0 6px var(--plane-pane)" }}>
+                    <Hand className="meet-hand" size={54} strokeWidth={2.2} aria-hidden />
+                  </span>
+                </span>
+                <p data-speaker-name className="max-w-[1100px] truncate font-semibold" style={{ fontSize: 64, lineHeight: "70px", marginTop: 22 }}>{nameOf(raised)} has an answer</p>
+                {agentHand(attrs, raised) && (
+                  <p className="max-w-[1000px] truncate text-center" style={{ fontSize: 34, lineHeight: "42px", ...soft }}>{agentHand(attrs, raised)}</p>
+                )}
+                <p className="rounded-full font-semibold" style={{ fontSize: 38, lineHeight: "46px", marginTop: 18, padding: "10px 34px", border: "3px solid var(--link)" }}>
+                  Say &ldquo;Go ahead, {nameOf(raised)}&rdquo;
+                </p>
+              </div>
+            )}
             {activity.length > 0 && (
               <div className="mx-auto w-fit max-w-[1000px]">
                 <ul className="grid items-center" style={{ gridTemplateColumns: "auto auto minmax(0, 1fr)", columnGap: 24, rowGap: rowSize.gap }}>
@@ -136,7 +162,7 @@ export function MeetTile({ agents, attrs, notice }: { agents: Record<string, Til
             )}
           </div>
           <div className="flex shrink-0 flex-col items-center pb-4" style={{ gap: 8 }}>
-            {stripHint}
+            {!raised && stripHint}
             <ul data-roster className="flex items-start justify-center" style={{ gap: 24 }}>
               {roster.slice(0, 8).map((id) => {
                 const live = id === speaker;

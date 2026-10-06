@@ -112,7 +112,10 @@ export function agentStateLine(status: AgentLiveStatus, x: AgentLineExtras = {})
     case "speaking": return "Speaking";
     case "joining": return "Joining…";
     case "listening": return x.listeningTo ? `Listening to ${x.listeningTo}` : "Listening";
-    case "working": return x.working ? `Working: ${x.working}` : "Working";
+    case "working":
+      // a meeting agent that heard its name, before the request is understood ("listening to Priya")
+      if (x.working?.startsWith("listening to ")) return `L${x.working.slice(1)}`;
+      return x.working ? `Working: ${x.working}` : "Working";
     case "has_news":
       if (x.meeting) return `Hand up: ${x.hand || "has something for you"}`;
       // the topic is the task as it was asked ("what PRs are open"): "Has what PRs…" would not read

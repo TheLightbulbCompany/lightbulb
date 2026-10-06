@@ -247,7 +247,7 @@ export default function WebsiteSignIns() {
                   {site.signedIn && !basic ? (
                     <View style={styles.marker}>
                       <View style={[styles.dot, { backgroundColor: p.live }]} />
-                      <Text style={[styles.caption, mute]}>Signed in in the browser</Text>
+                      <Text style={[styles.caption, mute]}>Browser session saved</Text>
                     </View>
                   ) : null}
                   {(site.logins.length > 0 ? site.logins : [null]).map((login) => (

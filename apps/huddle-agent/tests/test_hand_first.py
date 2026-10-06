@@ -116,3 +116,38 @@ async def test_a_question_nobody_takes_is_worked_on_with_no_voice():
     await h.tick()
     await settle(h)
     assert len(backend.turns) == 1 and lives == []
+
+
+async def test_its_tile_shows_it_heard_its_name_while_the_sentence_is_still_being_said():
+    h, backend, lives, clock = await meeting()
+    h.on_interim_transcript(P1, "Priya", "all right, hey Forge")
+    assert status(h, "forge") == "working" and "listening to Priya" in h._state()["lightbulb.agent.forge.working"]
+    assert lives == [] and backend.routes == []
+    clock.t += h_mod.HEARD_NAME_S + 1  # nothing followed: back to idle
+    assert status(h, "forge") == "idle"
+
+
+async def test_a_call_on_gives_the_floor_when_they_stop_talking_not_seconds_later_on_the_final():
+    h, backend, lives, clock = await asked()
+    answer(h, h._requests.items[0].run_id, "forge", "Three PRs are open.")
+    talks(h, P2)
+    h.on_interim_transcript(P2, "Dan", "go ahead Forge")
+    h.on_speech(P2, False)  # the speech detector: they stopped
+    h.on_active_speakers(set())
+    await settle(h)
+    assert len(lives) == 1 and lives[0].speaker == P2
+    await says(h, P2, "Go ahead, Forge.")  # the final, seconds later
+    assert len(lives) == 1 and len(backend.turns) == 1, "not delivered twice, not a new request"
+
+
+async def test_stopping_mid_sentence_on_its_name_does_not_give_it_the_floor_for_a_new_request():
+    h, backend, lives, clock = await asked()
+    answer(h, h._requests.items[0].run_id, "forge", "Three PRs are open.")
+    h.on_interim_transcript(P2, "Dan", "Forge, never mind")
+    h.on_speech(P2, False)
+    await settle(h)
+    assert lives == []
+    h.on_interim_transcript(P2, "Dan", "Forge, can you also check the deploy pipeline status")
+    h.on_speech(P2, False)
+    await settle(h)
+    assert lives == [], "a real request is decided on its final"

@@ -155,6 +155,7 @@ MEET_FOLLOWUP_S = 10.0
 # someone calls on it by name ("go ahead, Friday", or just "Friday"). Nobody calls: the answer goes on the
 # record when it expires (NEWS_TTL) or the meeting ends.
 HAND_FIRST = True
+HEARD_NAME_S = 8.0  # its tile says it heard its name this long, unless the line's final says more first
 # What is left of a line that only calls on an agent, once its name is gone ("go ahead, Friday", "yes Friday?")
 CALL_ON_WORDS = frozenset(
     "go ahead yes yeah yep ok okay sure please what do did you have got find found tell us me so hey hi "
@@ -426,6 +427,9 @@ class Huddle:
         self._meet_roster: list[str] = []  # the humans in the Meet, from the latest packet that had a roster
         # a meeting, hand first: identity -> (agent, until): whose next line needs no name
         self._attend: dict[str, tuple[str, float]] = {}
+        self._heard_name: dict[str, tuple[str, float]] = {}  # agent -> (who said its name, until): on the tile
+        self._interim: dict[str, str] = {}  # identity -> the words of the sentence they are saying now
+        self._over_timer: asyncio.TimerHandle | None = None
         self._unclaimed: tuple | None = (
             None  # (deadline, identity, text, mark): an open question
         )
@@ -991,6 +995,8 @@ class Huddle:
         as does the next line of someone it is attending to (they named it, or it just answered them). Asked
         work runs with no voice. Other talk is the meeting's own: transcript only, though a question nobody
         takes may still be routed."""
+        for agent_id in [x for x, (who, _) in self._heard_name.items() if who == identity]:
+            del self._heard_name[agent_id]
         named = self._named(text, a)
         attend = self._attend.get(identity)
         if not named and attend and now <= attend[1] and real_speech(text):
@@ -1001,6 +1007,10 @@ class Huddle:
             return
         for agent_id in named:
             self._attend[identity] = (agent_id, now + MEET_FOLLOWUP_S)
+        self._interim.pop(identity, None)
+        v = self._voice
+        if v is not None and v.path == "announce" and v.agent_id in named and self._calls_on(text):
+            return  # it was given the floor on these words already (`_called_on_early`)
         ready = [aid for aid in named if self._news.get(aid)]
         if ready and self._calls_on(text):
             # called on: its oldest answer, now. No pause is waited for: a person gave it the floor.
@@ -1011,6 +1021,19 @@ class Huddle:
             self._requests.pending(mark, identity, named, now)  # on the tile while /route decides
             self._sync_state()
         self._spawn(self._hand_ask(identity, text, mark))
+
+    def _called_on_early(self, identity: str) -> None:
+        """They stopped talking and what they said so far only calls on an agent with its hand up ("go ahead,
+        Friday"): it gets the floor now. The transcriber's final comes 2-3 s after the last word (measured on the
+        rig), which is the whole of a dead pause; the final then finds its voice already open."""
+        text = self._interim.get(identity, "")
+        if not text or self._voice is not None or self._lock.locked():
+            return
+        a = address(text, self._team["agents"], self._team["people"])
+        ready = [aid for aid in self._named(text, a) if self._news.get(aid)]
+        if ready and self._calls_on(text) and not stop_request(text, self._team["agents"]):
+            self._interim.pop(identity, None)
+            self._spawn(self._deliver(self._news[ready[0]][0], ready[0], identity))
 
     def _calls_on(self, text: str) -> bool:
         """The line only gives an agent the floor: its name and at most a word or two of real content."""
@@ -1211,6 +1234,17 @@ class Huddle:
         v, text = self._voice, text.strip()
         if text:
             self._utter_from.setdefault(identity, self._clock())
+        if text and self.setting == "meeting" and HAND_FIRST:
+            # hand first: the tile answers a name while the sentence is still being said (a silence of 0.7 s
+            # already reads as nobody there); what the line asks is decided on its final
+            self._interim[identity] = text
+            a = address(text, self._team["agents"], self._team["people"])
+            heard = [x for x in self._named(text, a) if x not in self._heard_name]
+            for agent_id in heard:
+                self._heard_name[agent_id] = (identity, self._clock() + HEARD_NAME_S)
+            if heard:
+                self._sync_state()
+            return
         if v and text and identity == v.speaker:
             v.handoff = None  # the person the agent asked is answering
         if (
@@ -1938,6 +1972,8 @@ class Huddle:
         else:
             self._voiced.discard(identity)
         self._talking_changed()
+        if not started and self.setting == "meeting" and HAND_FIRST:
+            self._called_on_early(identity)
 
     def _talking_changed(self) -> None:
         """Who is talking: the SFU hears sound from them and the transcriber's speech detector hears speech
@@ -1957,7 +1993,12 @@ class Huddle:
         if not started or v is None or v.path != "announce":
             return
         if self.setting == "meeting" and HAND_FIRST:
-            return  # called on by a person: the tail of their own words must not drop it (`_talked_over` yields)
+            # called on by a person: the tail of their own words must not drop it. It yields to someone who
+            # keeps talking, checked TALK_OVER_S after they began (the 1 s tick alone added up to a second).
+            if self._over_timer:
+                self._over_timer.cancel()
+            self._over_timer = asyncio.get_running_loop().call_later(TALK_OVER_S, self._yield_if_talked_over)
+            return
         if v.announce:
             if self.setting == "meeting" and (tried := self._delivery_tries.get(v.announce[0])):
                 # A meeting talks most of the time: a drop is no failure to open, so it uses up no try. The answer
@@ -3279,6 +3320,12 @@ class Huddle:
             self._note(f"[{self._agent_name(v.agent_id)} says its cut answer again]")
             self._live_call(v, "append_commentary", RESAY.format(answer=n[2]), delegation_id=None)
 
+    def _yield_if_talked_over(self) -> None:
+        self._over_timer = None
+        v = self._voice
+        if v and v.live is not None and in_meet(v.speaker) and v.agent_state == "speaking" and self._speaking:
+            self._talked_over(v)
+
     def _talked_over(self, v: _Voice) -> None:
         """A meeting voice hears nobody, so the worker stops it for someone who keeps talking over it, as the
         model's own ear does in a Live call. What it was saying is not lost: a run still working ends as a ready
@@ -3520,8 +3567,15 @@ class Huddle:
                 status = "has_news"
             else:
                 status = "idle"
-            state[f"lightbulb.agent.{aid}.status"] = status
-            state[f"lightbulb.agent.{aid}.working"] = self._requests.task(aid) or self._runs.working(aid)
+            heard = self._heard_name.get(aid)
+            if heard and self._clock() > heard[1]:
+                heard = self._heard_name.pop(aid, None) and None
+            state[f"lightbulb.agent.{aid}.status"] = "working" if heard and status == "idle" else status
+            state[f"lightbulb.agent.{aid}.working"] = (
+                self._requests.task(aid)
+                or self._runs.working(aid)
+                or (f"listening to {self._name(heard[0])}" if heard and status == "idle" else "")
+            )
             # what a raised hand is about: the oldest answer it has ready (the Meet tile and the Live bar show it)
             state[f"lightbulb.agent.{aid}.hand"] = (
                 self._news[aid][0][1][:WORKING_CHARS] if status == "has_news" else ""

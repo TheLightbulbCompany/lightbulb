@@ -76,17 +76,69 @@ export default function SessionScreen() {
   // list has settled) is fetched directly, the same fallback the web pane uses,
   // so an ended session still opens with its real status.
   const coldLoading = workspace.loading && workspace.sessions.length === 0;
-  const fetchedFor = useRef<string | null>(null);
-  const [fallback, setFallback] = useState<{ sessionId: string; session: LocalSession | null; notFound: boolean } | null>(null);
+  const hasListedSession = Boolean(listed);
+  const [retryRevision, setRetryRevision] = useState(0);
+  const [fallback, setFallback] = useState<{ sessionId: string; session: LocalSession | null; notFound: boolean; error: boolean } | null>(null);
+  const onSessionEvent = rooms.resourceSource.onEvent;
+  const [metadataRevision, setMetadataRevision] = useState(0);
   useEffect(() => {
-    if (listed || coldLoading || !sessionId || fetchedFor.current === sessionId) return;
-    fetchedFor.current = sessionId;
+    if (!live) return;
+    return onSessionEvent(event => {
+      if (event.type === "workspace.sessions.changed" && !event.payload.transcript) setMetadataRevision(v => v + 1);
+    });
+  }, [onSessionEvent, live]);
+  const revalidate = useRef<((hint: number, retry: number) => void) | null>(null);
+  useEffect(() => {
+    if (hasListedSession || !sessionId || !live) return;
     let alive = true;
-    void rooms.resourceSource.client.getLocalSession(sessionId)
-      .then((s) => { if (alive) setFallback({ sessionId, session: s, notFound: false }); })
-      .catch((e) => { if (alive) setFallback({ sessionId, session: null, notFound: e instanceof ApiError && e.status === 404 }); });
-    return () => { alive = false; };
-  }, [listed, coldLoading, sessionId, rooms.resourceSource.client]);
+    let pending = false;
+    let queued = false;
+    let attempts = 0;
+    let lastRequested: { hint: number; retry: number } | null = null;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    // Keep the current request and its retry budget through same-session hints/list refreshes.
+    // Coalesce those hints into one revalidation after this bounded sequence settles.
+    const fetchSession = async () => {
+      attempts += 1;
+      try {
+        const session = await rooms.resourceSource.client.getLocalSession(sessionId);
+        if (alive) setFallback({ sessionId, session, notFound: false, error: false });
+      } catch (e) {
+        if (!alive) return;
+        const notFound = e instanceof ApiError && e.status === 404;
+        if (!notFound && attempts < 3) {
+          timer = setTimeout(() => void fetchSession(), attempts * 1000);
+          return;
+        }
+        setFallback(previous => ({ sessionId,
+          session: !notFound && previous?.sessionId === sessionId ? previous.session : null,
+          notFound, error: !notFound }));
+      }
+      if (!alive) return;
+      pending = false;
+      if (queued) { queued = false; request(); }
+    };
+    const request = () => {
+      if (pending) { queued = true; return; }
+      pending = true;
+      attempts = 0;
+      void fetchSession();
+    };
+    revalidate.current = (hint, retry) => {
+      // Ordinary list polls do not restart a settled 404 or exhausted sequence.
+      if (lastRequested?.hint === hint && lastRequested.retry === retry) return;
+      lastRequested = { hint, retry };
+      request();
+    };
+    return () => { alive = false; clearTimeout(timer); revalidate.current = null; };
+  }, [hasListedSession, rooms.resourceSource.client, sessionId, live]);
+  useEffect(() => {
+    if (!hasListedSession && !coldLoading && sessionId && live) revalidate.current?.(metadataRevision, retryRevision);
+  }, [hasListedSession, coldLoading, rooms.resourceSource.client, sessionId, metadataRevision, retryRevision, live]);
+  const retryFallback = () => {
+    setFallback(current => current?.session ? { ...current, error: false } : null);
+    setRetryRevision(v => v + 1);
+  };
   const resolvedFallback = fallback?.sessionId === sessionId ? fallback : null;
   const session = listed ?? resolvedFallback?.session ?? undefined;
   useEffect(() => {
@@ -180,7 +232,14 @@ export default function SessionScreen() {
           {workspace.error ? (
             <>
               <Text accessibilityRole="alert" style={[styles.errorText, { color: palette.alert }]}>{workspace.error}</Text>
-              <Pressable onPress={() => void workspace.refresh()} accessibilityRole="button" accessibilityLabel="Try again">
+              <Pressable onPress={() => { retryFallback(); void workspace.refresh(); }} accessibilityRole="button" accessibilityLabel="Try again">
+                <Text style={[styles.link, { color: palette.link }]}>Try again</Text>
+              </Pressable>
+            </>
+          ) : resolvedFallback?.error ? (
+            <>
+              <Text accessibilityRole="alert" style={[styles.errorText, { color: palette.alert }]}>Could not load this session.</Text>
+              <Pressable onPress={retryFallback} accessibilityRole="button" accessibilityLabel="Try again">
                 <Text style={[styles.link, { color: palette.link }]}>Try again</Text>
               </Pressable>
             </>
@@ -196,6 +255,12 @@ export default function SessionScreen() {
   return (
     <View style={[styles.container, { backgroundColor: palette.ground }]}>
       <Stack.Screen options={headerOptions} />
+      {!hasListedSession && resolvedFallback?.error && <View style={styles.banner}>
+        <Text accessibilityRole="alert" style={[styles.errorText, { color: palette.alert }]}>Could not refresh this session.</Text>
+        <Pressable onPress={retryFallback} accessibilityRole="button" accessibilityLabel="Try again">
+          <Text style={[styles.link, { color: palette.link }]}>Try again</Text>
+        </Pressable>
+      </View>}
       {rooms.selectRoomError && (
         // A failed DM open (the header button) is transient and must not hide
         // the transcript underneath a full-screen blocked state -- see

@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react-native";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react-native";
 import { ApiError, type LiveEvent, type LocalSession, type LocalSessionCommand, type LocalSessionCommandReceipt, type LocalSessionEvent, type RoomDetail } from "@lightbulb/shared";
 import type { ReactNode } from "react";
 
@@ -19,10 +19,12 @@ jest.mock("expo-router", () => {
     },
     useFocusEffect: (cb: () => undefined | (() => void)) => useEffect(() => cb(), [cb]),
     useIsFocused: () => true,
-    useLocalSearchParams: () => ({ sessionId: "sess-1" }),
+    useLocalSearchParams: () => ({ sessionId: mockSessionId }),
   };
 });
 let mockScope = 0;
+let mockSessionId = "sess-1";
+const mockEventHandlers = new Set<(event: LiveEvent) => void>();
 jest.mock("@clerk/clerk-expo", () => ({
   useAuth: () => ({ userId: "user-a", getToken: jest.fn(async () => "token") }),
   useOrganization: () => ({ organization: { id: `org-${mockScope}` } }),
@@ -90,7 +92,7 @@ const mockLive = {
     getRunStatus: jest.fn(async () => ({ runId: "r", state: "terminal" })),
     listWorkspaceSessions: mockListSessions,
     // A session missing from the settled list is fetched directly; default to a genuine 404.
-    getLocalSession: jest.fn(async () => { throw new ApiError(404, null); }),
+    getLocalSession: jest.fn(async (_sessionId: string): Promise<LocalSession> => { throw new ApiError(404, null); }),
     listLocalSessionEvents: mockListEvents,
     submitLocalSessionCommand: mockSubmit,
     getLocalSessionCommand: mockGetCommand,
@@ -105,7 +107,7 @@ const mockLive = {
     getLiveConfig: jest.fn(), setMemberPrefs: jest.fn(), putSections: jest.fn(),
   },
   claimActiveRoomSubscription: jest.fn(() => () => {}),
-  onEvent: (_handler: (event: LiveEvent) => void) => () => {},
+  onEvent: (handler: (event: LiveEvent) => void) => { mockEventHandlers.add(handler); return () => { mockEventHandlers.delete(handler); }; },
   onChatMessage: () => () => {},
   runtime: {}, rpc: jest.fn(), getOperation: jest.fn(),
 };
@@ -118,6 +120,9 @@ import SessionScreen from "../session/[sessionId]";
 describe("session screen", () => {
   beforeEach(() => {
     mockScope += 1;
+    mockSessionId = "sess-1";
+    mockLive.messaging.getLocalSession.mockReset();
+    mockLive.messaging.getLocalSession.mockRejectedValue(new ApiError(404, null));
     mockSession = base;
     mockEvents = events;
     mockListSessions.mockClear();
@@ -316,6 +321,177 @@ describe("session screen", () => {
     await render(<SessionScreen />);
     await waitFor(() => expect(screen.getAllByText("History has a gap. Control is unavailable until the desktop reconnects safely.").length).toBeGreaterThan(0));
     expect(screen.queryByLabelText("Send a follow-up to Claude")).toBeNull();
+  });
+
+
+  describe("direct session fallback", () => {
+    beforeEach(() => { mockListSessions.mockResolvedValue({ sessions: [] }); jest.useFakeTimers(); });
+    afterEach(async () => { await cleanup(); jest.useRealTimers(); });
+    const get = mockLive.messaging.getLocalSession;
+    const advance = async (ms: number) => { await act(async () => { await jest.advanceTimersByTimeAsync(ms); }); };
+
+    it("recovers an ended session after a transient direct-fetch failure", async () => {
+      get.mockRejectedValueOnce(new TypeError("network")).mockResolvedValue({ ...base, status: "ended" });
+      await render(<SessionScreen />);
+      await advance(1000);
+      expect(get).toHaveBeenCalledTimes(2);
+      expect(screen.getByText("Fix relay")).toBeTruthy();
+    });
+
+    it("stops after three failures and lets the person retry", async () => {
+      get.mockRejectedValue(new TypeError("network"));
+      await render(<SessionScreen />);
+      await advance(10000);
+      expect(get).toHaveBeenCalledTimes(3);
+      expect(screen.getByText("Could not load this session.")).toBeTruthy();
+      get.mockResolvedValue({ ...base, status: "ended" });
+      await fireEvent.press(screen.getByRole("button", { name: "Try again" }));
+      expect(screen.getByText("Fix relay")).toBeTruthy();
+    });
+
+    it("does not retry a genuine 404", async () => {
+      await render(<SessionScreen />);
+      await advance(10000);
+      expect(get).toHaveBeenCalledTimes(1);
+      expect(screen.getByText("This session is no longer shared.")).toBeTruthy();
+    });
+
+    const hint = async (transcript = false) => {
+      await act(async () => {
+        for (const handler of mockEventHandlers) handler({ type: "workspace.sessions.changed", payload: { humanUserId: "user-a", ...(transcript ? { transcript: true } : {}) } } as LiveEvent);
+      });
+    };
+
+    it("keeps a slow fetch alive through several hints and coalesces revalidation", async () => {
+      let resolve!: (s: LocalSession) => void;
+      get.mockImplementationOnce(() => new Promise(r => { resolve = r; })).mockImplementation(() => new Promise(() => {}));
+      await render(<SessionScreen />);
+      for (let i = 0; i < 4; i += 1) await hint(i % 2 === 0);
+      expect(get).toHaveBeenCalledTimes(1);
+      await act(async () => { resolve({ ...base, status: "ended" }); });
+      expect(screen.getByText("Fix relay")).toBeTruthy();
+      expect(get).toHaveBeenCalledTimes(2);
+    });
+
+    it("retries a previous 404 on a later hint", async () => {
+      get.mockRejectedValueOnce(new ApiError(404, null)).mockResolvedValue({ ...base, status: "ended" });
+      await render(<SessionScreen />);
+      expect(screen.getByText("This session is no longer shared.")).toBeTruthy();
+      await hint();
+      expect(screen.getByText("Fix relay")).toBeTruthy();
+    });
+
+    it("does not reset the three-attempt budget when hints arrive during retry backoff", async () => {
+      get.mockRejectedValue(new TypeError("network"));
+      await render(<SessionScreen />);
+      for (let i = 0; i < 4; i += 1) await hint();
+      expect(get).toHaveBeenCalledTimes(1);
+      await advance(3000);
+      expect(screen.getByText("Could not load this session.")).toBeTruthy();
+      expect(get).toHaveBeenCalledTimes(4);
+    });
+
+    it.each(["404", "exhaustion"] as const)("does not refetch a settled %s on an ordinary workspace poll", async (failure) => {
+      get.mockRejectedValue(failure === "404" ? new ApiError(404, null) : new TypeError("network"));
+      await render(<SessionScreen />);
+      await advance(10000);
+      const calls = failure === "404" ? 1 : 3;
+      expect(get).toHaveBeenCalledTimes(calls);
+      // Hold the 30s list poll open so loading visibly toggles on, then settles with no hint.
+      let settle!: (result: { sessions: LocalSession[] }) => void;
+      mockListSessions.mockImplementationOnce(() => new Promise(resolve => { settle = resolve; }));
+      await advance(20000);
+      await act(async () => { settle({ sessions: [] }); });
+      expect(get).toHaveBeenCalledTimes(calls);
+      get.mockResolvedValue({ ...base, status: "ended" });
+      if (failure === "404") await hint();
+      else await fireEvent.press(screen.getByRole("button", { name: "Try again" }));
+      expect(screen.getByText("Fix relay")).toBeTruthy();
+      expect(get).toHaveBeenCalledTimes(calls + 1);
+    });
+
+    it("keeps a loaded transcript through transient revalidation failures and permits retry", async () => {
+      get.mockResolvedValueOnce({ ...base, status: "ended" }).mockRejectedValue(new TypeError("network"));
+      await render(<SessionScreen />);
+      await hint();
+      await advance(3000);
+      expect(screen.getByText("Fix relay")).toBeTruthy();
+      expect(screen.getByText("Could not refresh this session.")).toBeTruthy();
+      get.mockResolvedValue({ ...base, status: "ended", title: "Refreshed session" });
+      await fireEvent.press(screen.getByRole("button", { name: "Try again" }));
+      expect(screen.getByText("Refreshed session")).toBeTruthy();
+    });
+
+    it("discards a loaded fallback when revalidation confirms a 404", async () => {
+      get.mockResolvedValueOnce({ ...base, status: "ended" }).mockRejectedValue(new ApiError(404, null));
+      await render(<SessionScreen />);
+      await hint();
+      expect(screen.getByText("This session is no longer shared.")).toBeTruthy();
+    });
+
+    it("does not fetch metadata for transcript-only hints, but revalidates a real resources change", async () => {
+      get.mockResolvedValue({ ...base, status: "ended" });
+      await render(<SessionScreen />);
+      for (let i = 0; i < 4; i += 1) await hint(true);
+      expect(get).toHaveBeenCalledTimes(1);
+      await hint(false);
+      expect(get).toHaveBeenCalledTimes(2);
+    });
+
+    it("hides an old fallback failure when the workspace list supplies fresh session data", async () => {
+      get.mockRejectedValue(new TypeError("network"));
+      await render(<SessionScreen />);
+      await advance(3000);
+      expect(screen.getByText("Could not load this session.")).toBeTruthy();
+      mockListSessions.mockResolvedValue({ sessions: [base] });
+      await hint();
+      expect(screen.getByText("Fix relay")).toBeTruthy();
+      expect(screen.queryByText("Could not refresh this session.")).toBeNull();
+    });
+
+    it("retries the direct fetch even while the workspace list remains unavailable", async () => {
+      mockListSessions.mockRejectedValue(new TypeError("list unavailable"));
+      get.mockRejectedValue(new TypeError("network"));
+      await render(<SessionScreen />);
+      await advance(3000);
+      expect(get).toHaveBeenCalledTimes(3);
+      expect(screen.getByText("Could not refresh shared sessions.")).toBeTruthy();
+      get.mockResolvedValue({ ...base, status: "ended" });
+      await fireEvent.press(screen.getByRole("button", { name: "Try again" }));
+      expect(get).toHaveBeenCalledTimes(4);
+      expect(screen.getByText("Fix relay")).toBeTruthy();
+    });
+
+    it("fetches again on A → B → A and ignores old requests", async () => {
+      let old!: (s: LocalSession) => void;
+      get.mockImplementationOnce(() => new Promise(resolve => { old = resolve; })).mockImplementation(async id => ({ ...base, sessionId: id, status: "ended" }));
+      const view = await render(<SessionScreen />);
+      mockSessionId = "sess-2";
+      await view.rerender(<SessionScreen />);
+      mockSessionId = "sess-1";
+      await view.rerender(<SessionScreen />);
+      expect(get.mock.calls.map(([id]) => id)).toEqual(["sess-1", "sess-2", "sess-1"]);
+      await act(async () => { old({ ...base, title: "Stale response" }); });
+      expect(screen.getByText("Fix relay")).toBeTruthy();
+    });
+
+    it("ignores a slow response after unmount", async () => {
+      let resolve!: (s: LocalSession) => void;
+      get.mockImplementation(() => new Promise(r => { resolve = r; }));
+      const view = await render(<SessionScreen />);
+      await view.unmount();
+      await act(async () => { resolve(base); });
+      expect(screen.queryByText("Fix relay")).toBeNull();
+      expect(get).toHaveBeenCalledTimes(1);
+    });
+
+    it("cancels a scheduled retry when unmounted", async () => {
+      get.mockRejectedValue(new TypeError("network"));
+      const view = await render(<SessionScreen />);
+      await view.unmount();
+      await advance(10000);
+      expect(get).toHaveBeenCalledTimes(1);
+    });
   });
 
   it("says when the session is no longer shared", async () => {

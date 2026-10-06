@@ -39,17 +39,68 @@ export function SessionFocus({ focus, entries, loading, hintRevision, client, re
     ?? entries.find((candidate) => candidate.session.forkedFrom === focus.sessionId)
     ?? exact;
   const coldLoading = loading && entries.length === 0;
-  const fetchedFor = useRef<string | null>(null);
-  const [fallback, setFallback] = useState<{ sessionId: string; session: LocalSession | null; notFound: boolean } | null>(null);
+  const hasListedSession = Boolean(entry);
+  const [retryRevision, setRetryRevision] = useState(0);
+  const [fallback, setFallback] = useState<{ sessionId: string; session: LocalSession | null; notFound: boolean; error: boolean } | null>(null);
+  const [metadataRevision, setMetadataRevision] = useState(0);
   useEffect(() => {
-    if (entry || coldLoading || fetchedFor.current === focus.sessionId) return;
-    fetchedFor.current = focus.sessionId;
+    return onEvent?.(event => {
+      if (event.type === "workspace.sessions.changed" && !event.payload.transcript) setMetadataRevision(v => v + 1);
+    });
+  }, [onEvent]);
+  const fallbackHintRevision = onEvent ? metadataRevision : hintRevision;
+  const revalidate = useRef<((hint: number, retry: number) => void) | null>(null);
+  useEffect(() => {
+    if (hasListedSession) return;
     let alive = true;
-    void client.getLocalSession(focus.sessionId)
-      .then((session) => { if (alive) setFallback({ sessionId: focus.sessionId, session, notFound: false }); })
-      .catch((e) => { if (alive) setFallback({ sessionId: focus.sessionId, session: null, notFound: e instanceof ApiError && e.status === 404 }); });
-    return () => { alive = false; };
-  }, [entry, coldLoading, client, focus.sessionId]);
+    let pending = false;
+    let queued = false;
+    let attempts = 0;
+    let lastRequested: { hint: number; retry: number } | null = null;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    // Keep the current request and its retry budget through same-session hints/list refreshes.
+    // Coalesce those hints into one revalidation after this bounded sequence settles.
+    const fetchSession = async () => {
+      attempts += 1;
+      try {
+        const session = await client.getLocalSession(focus.sessionId);
+        if (alive) setFallback({ sessionId: focus.sessionId, session, notFound: false, error: false });
+      } catch (e) {
+        if (!alive) return;
+        const notFound = e instanceof ApiError && e.status === 404;
+        if (!notFound && attempts < 3) {
+          timer = setTimeout(() => void fetchSession(), attempts * 1000);
+          return;
+        }
+        setFallback(previous => ({ sessionId: focus.sessionId,
+          session: !notFound && previous?.sessionId === focus.sessionId ? previous.session : null,
+          notFound, error: !notFound }));
+      }
+      if (!alive) return;
+      pending = false;
+      if (queued) { queued = false; request(); }
+    };
+    const request = () => {
+      if (pending) { queued = true; return; }
+      pending = true;
+      attempts = 0;
+      void fetchSession();
+    };
+    revalidate.current = (hint, retry) => {
+      // Ordinary list polls do not restart a settled 404 or exhausted sequence.
+      if (lastRequested?.hint === hint && lastRequested.retry === retry) return;
+      lastRequested = { hint, retry };
+      request();
+    };
+    return () => { alive = false; clearTimeout(timer); revalidate.current = null; };
+  }, [hasListedSession, client, focus.sessionId]);
+  useEffect(() => {
+    if (!hasListedSession && !coldLoading) revalidate.current?.(fallbackHintRevision, retryRevision);
+  }, [hasListedSession, coldLoading, client, focus.sessionId, fallbackHintRevision, retryRevision]);
+  const retryFallback = () => {
+    setFallback(current => current?.session ? { ...current, error: false } : null);
+    setRetryRevision(v => v + 1);
+  };
   const resolvedFallback = fallback?.sessionId === focus.sessionId ? fallback : null;
   const session = entry?.session ?? resolvedFallback?.session ?? null;
   const owner = entry ?? (session ? resolveSessionOwner(session.humanUserId) : null);
@@ -61,9 +112,16 @@ export function SessionFocus({ focus, entries, loading, hintRevision, client, re
         {session && owner?.own && client.setLocalSessionDisplayTitle && <SessionRenameButton session={session} onRename={client.setLocalSessionDisplayTitle} icon />}
         <Button className="ml-auto" variant="ghost" size="icon-sm" aria-label="Close session" onClick={onClose}><X aria-hidden="true" /></Button>
       </header>
+      {!hasListedSession && session && resolvedFallback?.error && <div className="p-4 text-sm text-muted-foreground">
+        <p role="status">Could not refresh this session.</p>
+        <Button variant="ghost" onClick={retryFallback}>Try again</Button>
+      </div>}
       {session && owner ? <LocalSessionPanel key={sessionViewKey(session)} session={session} ownerName={owner.ownerName} own={owner.own}
         client={client} revision={hintRevision} onAccessLost={onAccessLost} participants={participants} onMessageOwner={messageOwner} onEvent={onEvent} nameOf={id => resolveSessionOwner(id).ownerName} />
-        : <p role="status" className="p-4 text-sm text-muted-foreground">{resolvedFallback?.notFound ? "This session is no longer shared." : "Loading session…"}</p>}
+        : <div className="p-4 text-sm text-muted-foreground">
+          <p role="status">{resolvedFallback?.notFound ? "This session is no longer shared." : resolvedFallback?.error ? "Could not load this session." : "Loading session…"}</p>
+          {resolvedFallback?.error && <Button variant="ghost" onClick={retryFallback}>Try again</Button>}
+        </div>}
     </div>
   </section>;
 }

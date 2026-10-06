@@ -18,6 +18,8 @@ State:
 
 from __future__ import annotations
 
+import os
+
 import asyncio
 import collections
 import json
@@ -267,6 +269,9 @@ class Room(Protocol):
         self, attrs: dict[str, str]
     ) -> None: ...  # the worker's participant attributes
     def shutdown(self) -> None: ...
+    async def prepare(self, agent_id: str, voice: str, text: str) -> Any: ...  # a ready answer as audio
+    async def play(self, speech: Any) -> None: ...
+    def discard(self, speech: Any) -> None: ...
 
 
 def emit_metric(
@@ -427,6 +432,9 @@ class Huddle:
         self._meet_roster: list[str] = []  # the humans in the Meet, from the latest packet that had a roster
         # a meeting, hand first: identity -> (agent, until): whose next line needs no name
         self._attend: dict[str, tuple[str, float]] = {}
+        # Hand first: a ready answer's audio (run id -> the task that renders it), and the one being said
+        self._speech: dict[str, asyncio.Task] = {}
+        self._saying: tuple[str, str, asyncio.Task] | None = None  # (agent, run id, its play)
         self._heard_name: dict[str, tuple[str, float]] = {}  # agent -> (who said its name, until): on the tile
         self._interim: dict[str, str] = {}  # identity -> the words of the sentence they are saying now
         self._over_timer: asyncio.TimerHandle | None = None
@@ -915,6 +923,16 @@ class Huddle:
         mine = v is not None and self._mine(v, identity, now, began, mark)
         if real_speech(text) and not mine:  # a line that routes itself (§4.2)
             self._spoke[identity] = mark
+        if self._saying and (
+            stop_all(text)
+            or stop_request(text, self._team["agents"])
+            and stop_target(text, self._team["agents"]) in (None, self._saying[0])
+        ):
+            agent_id, run_id, play = self._saying
+            play.cancel()  # "stop" while it says a called-on answer: not said again; it goes on the record
+            for n in [n for n in self._news.get(agent_id, []) if n[0] == run_id]:
+                self._news[agent_id].remove(n)
+                self._spawn(self._late_answer(agent_id, n))
         if stop_all(text):
             # Engine §3.6: "everyone stop" / "stop all": every open request and every run, the floor cut.
             if v:
@@ -999,6 +1017,8 @@ class Huddle:
             del self._heard_name[agent_id]
         named = self._named(text, a)
         attend = self._attend.get(identity)
+        if os.environ.get("HUDDLE_RIG_TRACE"):
+            logger.info("rigtrace line named=%s attend=%s news=%s", named, bool(attend), {k: len(v) for k, v in self._news.items()})
         if not named and attend and now <= attend[1] and real_speech(text):
             named = [attend[0]]  # a follow-up needs no name
         if not named and not a.lightbulb:
@@ -1008,17 +1028,25 @@ class Huddle:
         for agent_id in named:
             self._attend[identity] = (agent_id, now + MEET_FOLLOWUP_S)
         self._interim.pop(identity, None)
-        v = self._voice
-        if v is not None and v.path == "announce" and v.agent_id in named and self._calls_on(text):
-            return  # it was given the floor on these words already (`_called_on_early`)
+        if self._saying and self._saying[0] in named and self._calls_on(text):
+            return  # it has the floor on these words already
         ready = [aid for aid in named if self._news.get(aid)]
         if ready and self._calls_on(text):
             # called on: its oldest answer, now. No pause is waited for: a person gave it the floor.
             agent_id = ready[0]
             self._spawn(self._deliver(self._news[agent_id][0], agent_id, identity))
             return
+        if named and self._calls_on(text):
+            # "Friday?" with no hand up asks nothing ("Okay Friday, go ahead" after its answer started a new run
+            # on the rig): its tile shows it is listening, and their next line needs no name.
+            for agent_id in named:
+                self._heard_name[agent_id] = (identity, now + HEARD_NAME_S)
+            self._sync_state()
+            return
         if named:
             self._requests.pending(mark, identity, named, now)  # on the tile while /route decides
+            if os.environ.get("HUDDLE_RIG_TRACE"):
+                logger.info("rigtrace pending working=%s running=%s", [self._requests.working(x) for x in named], [self._runs.running(x) for x in named])
             self._sync_state()
         self._spawn(self._hand_ask(identity, text, mark))
 
@@ -1027,7 +1055,7 @@ class Huddle:
         Friday"): it gets the floor now. The transcriber's final comes 2-3 s after the last word (measured on the
         rig), which is the whole of a dead pause; the final then finds its voice already open."""
         text = self._interim.get(identity, "")
-        if not text or self._voice is not None or self._lock.locked():
+        if not text or self._saying or self._lock.locked():
             return
         a = address(text, self._team["agents"], self._team["people"])
         ready = [aid for aid in self._named(text, a) if self._news.get(aid)]
@@ -1971,6 +1999,9 @@ class Huddle:
             self._voiced.add(identity)
         else:
             self._voiced.discard(identity)
+        if started and self._saying and identity in self._voiced and not self._over_timer:
+            # The speech detector alone starts the clock: the SFU's sound level came a second later (rig, 10-06)
+            self._over_timer = asyncio.get_running_loop().call_later(TALK_OVER_S, self._yield_if_talked_over)
         self._talking_changed()
         if not started and self.setting == "meeting" and HAND_FIRST:
             self._called_on_early(identity)
@@ -1990,6 +2021,8 @@ class Huddle:
         if started and self.setting == "meeting":
             self._unclaimed = None  # someone talks after the question: a person took it
         v = self._voice
+        if self._saying:
+            return  # `on_speech` times a talk-over of a said answer
         if not started or v is None or v.path != "announce":
             return
         if self.setting == "meeting" and HAND_FIRST:
@@ -3322,6 +3355,10 @@ class Huddle:
 
     def _yield_if_talked_over(self) -> None:
         self._over_timer = None
+        if self._saying:
+            if self._voiced:  # still talking a second on: no cough, no "mm-hm"
+                self._saying[2].cancel()
+            return
         v = self._voice
         if v and v.live is not None and in_meet(v.speaker) and v.agent_state == "speaking" and self._speaking:
             self._talked_over(v)
@@ -3503,6 +3540,9 @@ class Huddle:
         """Its own agent says it, pinned to who asked (else the last speaker, else anyone here). Each
         attempt is counted: a refused open waits gate.ANNOUNCE_QUIET, and after DELIVERY_TRIES the room
         gets it (_expire_news), so a backend outage cannot open a session every tick."""
+        if self.setting == "meeting" and HAND_FIRST:
+            await self._say_ready(item, agent_id, to)
+            return
         if self._requests.by_run(item[0]) or item[0] in self._rowless:  # unrequested news is paced by the rate limit
             tries = self._delivery_tries.get(item[0], (0, 0.0))[0]
             self._delivery_tries[item[0]] = (tries + 1, self._clock())
@@ -3513,6 +3553,56 @@ class Huddle:
         await self.summon(
             speaker, agent_id, request=None, path="announce", announce=item, label=rows[0].label if rows else ""
         )
+
+    async def _say_ready(self, item: tuple, agent_id: str, to: str | None) -> None:
+        """Called on: its answer, in its own voice, from audio made when its hand went up. Talked over, it
+        stops at once and the answer stays (hand back up); the next call-on says it whole."""
+        if self._saying:
+            return
+        self._saying = (agent_id, item[0], asyncio.current_task())
+        self._sync_state()
+        said = False
+        try:
+            speech = await self._speech_for(item, agent_id)
+            self._note(f"[{self._agent_name(agent_id)} is called on and says its answer to: {item[1][:80]}]")
+            await self._room.play(speech)
+            said = True
+        except asyncio.CancelledError:
+            emit_metric("live.meet.hand_back_up", 1, "Count")
+        finally:
+            self._saying = None
+            if said:
+                self._news[agent_id] = [n for n in self._news.get(agent_id, []) if n[0] != item[0]]
+                self._requests.delivered({item[0]})
+                self._transcript.add_agent(
+                    agent_id, self._agent_name(agent_id), item[2], at=self._clock(), to=self._name(to) if to else ""
+                )
+                if to:  # who called on it may follow up with no name
+                    self._attend[to] = (agent_id, self._clock() + MEET_FOLLOWUP_S)
+            self._sync_state()
+
+    async def _speech_for(self, item: tuple, agent_id: str) -> Any:
+        if item[0] not in self._speech:
+            async def render() -> Any:
+                voice = (await self._backend.session(agent_id))["voice"]
+                return await self._room.prepare(agent_id, voice, item[2])
+            self._speech[item[0]] = asyncio.ensure_future(render())
+        return await asyncio.shield(self._speech[item[0]])  # ponytail: a failed render is not retried
+
+    def _speech_sync(self) -> None:
+        """Every ready answer of a hand-first meeting has its audio made ahead; an answer that left is unpublished."""
+        if self.setting != "meeting" or not HAND_FIRST:
+            return
+        ready = {n[0]: (aid, n) for aid, news in self._news.items() for n in news}
+        for run_id, (aid, n) in ready.items():
+            if run_id not in self._speech:
+                self._spawn(self._speech_for(n, aid))
+        for run_id in [r for r in self._speech if r not in ready]:
+            t = self._speech.pop(run_id)
+            if t.done() and not t.cancelled() and t.exception() is None:
+                self._room.discard(t.result())
+            else:
+                t.cancel()
 
     def _asker_gone(self, n: tuple, now: float) -> bool:
         return bool(self._requests.by_run(n[0])) and n[4] not in self._people and now - n[3] >= ASKER_GONE_S
@@ -3541,7 +3631,7 @@ class Huddle:
         """C4: what the tiles show, as the worker's participant attributes."""
         v = self._voice
         state = {
-            "lightbulb.speaking_agent": v.agent_id if v else "",
+            "lightbulb.speaking_agent": self._saying[0] if self._saying else v.agent_id if v else "",
             "lightbulb.listening_to": self._with(v) if v else "",
             "lightbulb.voice_limit": self._voice_limit,
             # C4: answer order with the floor-holder at the head, while a multi-name request is pending
@@ -3553,7 +3643,9 @@ class Huddle:
         }
         for a in self._team["agents"]:
             aid = a["id"]
-            if v and v.agent_id == aid:
+            if self._saying and self._saying[0] == aid:
+                status = "speaking"
+            elif v and v.agent_id == aid:
                 status = (
                     "joining"
                     if v.live is None
@@ -3587,7 +3679,10 @@ class Huddle:
 
     def _sync_state(self) -> None:
         """Writes only what changed; a key that is gone (a departed agent) is written "" (deleted)."""
+        self._speech_sync()
         state = self._state()
+        if os.environ.get("HUDDLE_RIG_TRACE"):
+            logger.info("rigtrace sync %s", {k.split(".")[2][:4]: v for k, v in state.items() if k.endswith(".status") and v != "idle"})
         diff = {k: val for k, val in state.items() if self._published.get(k, "") != val}
         diff.update(
             {k: "" for k, val in self._published.items() if k not in state and val}

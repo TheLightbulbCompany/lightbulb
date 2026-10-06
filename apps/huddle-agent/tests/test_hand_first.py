@@ -19,6 +19,19 @@ async def says(h, who, text):
     await settle(h)
 
 
+async def hears(h, who, text):
+    """`says`, while an answer is being said: its play never ends, so nothing waits for every task."""
+    await h.on_final_transcript(who, PEOPLE[who], text)
+    await turns()
+
+
+async def turns():
+    import asyncio
+
+    for _ in range(20):
+        await asyncio.sleep(0)
+
+
 def status(h, agent):
     return h._state()[f"lightbulb.agent.{agent}.status"]
 
@@ -44,25 +57,32 @@ async def test_a_name_in_the_middle_of_a_sentence_asks_that_agent():
     assert len(backend.turns) == 1 and lives == []
 
 
+
 async def test_a_ready_answer_raises_its_hand_and_is_not_said_until_someone_calls_on_it():
     h, backend, lives, clock = await asked()
     answer(h, h._requests.items[0].run_id, "forge", "Three PRs are open.")
     assert status(h, "forge") == "has_news" and h._state()["lightbulb.agent.forge.hand"]
+    await settle(h)
+    assert h._room.prepared == [("forge", "Three PRs are open.")], "its audio is made when the hand goes up"
     clock.t += 60  # a long quiet: it still does not take the floor by itself
     await h.tick()
     await settle(h)
-    assert lives == [] and backend.late_answers == []
+    assert not hasattr(h._room, "played") and backend.late_answers == []
     await says(h, P2, "Go ahead, Forge.")  # anyone may call on it
-    assert len(lives) == 1 and lives[0].speaker == P2
-    assert "Three PRs are open." in str(lives[0].seed)
+    assert h._room.played == [("forge", "Three PRs are open.")] and lives == [], "prepared audio, no voice session"
+    assert status(h, "forge") == "idle" and h._room.discarded == h._room.played
     assert len(backend.turns) == 1, "a call-on is not a new request"
+
 
 
 async def test_just_its_name_calls_on_an_agent_with_its_hand_up():
     h, backend, lives, clock = await asked()
     answer(h, h._requests.items[0].run_id, "forge", "Three PRs are open.")
     await says(h, P1, "Forge?")
-    assert len(lives) == 1 and "Three PRs are open." in str(lives[0].seed)
+    assert h._room.played == [("forge", "Three PRs are open.")]
+    await says(h, P1, "Okay Forge, go ahead.")  # no hand up now: it asks nothing
+    assert len(backend.turns) == 1 and len(h._room.played) == 1
+    assert h._state()["lightbulb.agent.forge.working"] == "listening to Priya"
 
 
 async def test_talk_between_people_reaches_no_agent():
@@ -83,21 +103,27 @@ async def test_who_asked_can_follow_up_without_the_name_for_a_few_seconds():
     assert [(r.agent, r.by) for r in h._requests.items] == [("forge", "name"), ("forge", "follow")] and lives == []
 
 
+
 async def test_talking_over_a_called_on_answer_stops_it_and_its_hand_goes_back_up():
+    import asyncio
+
     h, backend, lives, clock = await asked()
     answer(h, h._requests.items[0].run_id, "forge", "Three PRs are open.")
-    await says(h, P1, "Go ahead, Forge.")
-    h.on_agent_state("forge", "speaking")
-    talks(h, P2)
-    clock.t += h_mod.TALK_OVER_S
-    await h.tick()
-    await settle(h)
-    assert ("interrupt",) in lives[0].calls and h._voice is None
+    h._room.hold = asyncio.Event()  # the answer is being said
+    await hears(h, P1, "Go ahead, Forge.")
+    assert status(h, "forge") == "speaking"
+    h._yield_if_talked_over()  # a cough: nobody is still talking when the clock runs out
+    await turns()
+    assert status(h, "forge") == "speaking"
+    h.on_speech(P2, True)
+    assert h._over_timer is not None, "the speech detector alone starts the clock"
+    h._yield_if_talked_over()
+    await turns()
     assert status(h, "forge") == "has_news" and backend.late_answers == [], "not lost and not posted: the hand again"
     h.on_speech(P2, False)
-    h.on_active_speakers(set())
+    h._room.hold = None
     await says(h, P1, "Sorry Forge, go ahead.")
-    assert len(lives) == 2 and "Three PRs are open." in str(lives[1].seed)
+    assert len(h._room.played) == 2 and status(h, "forge") == "idle", "said whole the second time"
 
 
 async def test_an_answer_nobody_calls_on_goes_on_the_record_when_the_meeting_ends():
@@ -127,6 +153,7 @@ async def test_its_tile_shows_it_heard_its_name_while_the_sentence_is_still_bein
     assert status(h, "forge") == "idle"
 
 
+
 async def test_a_call_on_gives_the_floor_when_they_stop_talking_not_seconds_later_on_the_final():
     h, backend, lives, clock = await asked()
     answer(h, h._requests.items[0].run_id, "forge", "Three PRs are open.")
@@ -135,9 +162,9 @@ async def test_a_call_on_gives_the_floor_when_they_stop_talking_not_seconds_late
     h.on_speech(P2, False)  # the speech detector: they stopped
     h.on_active_speakers(set())
     await settle(h)
-    assert len(lives) == 1 and lives[0].speaker == P2
+    assert len(h._room.played) == 1
     await says(h, P2, "Go ahead, Forge.")  # the final, seconds later
-    assert len(lives) == 1 and len(backend.turns) == 1, "not delivered twice, not a new request"
+    assert len(h._room.played) == 1 and len(backend.turns) == 1, "not delivered twice, not a new request"
 
 
 async def test_stopping_mid_sentence_on_its_name_does_not_give_it_the_floor_for_a_new_request():
@@ -151,3 +178,16 @@ async def test_stopping_mid_sentence_on_its_name_does_not_give_it_the_floor_for_
     h.on_speech(P2, False)
     await settle(h)
     assert lives == [], "a real request is decided on its final"
+
+
+async def test_stop_while_it_says_its_answer_ends_it_and_it_is_not_said_again():
+    import asyncio
+
+    h, backend, lives, clock = await asked()
+    answer(h, h._requests.items[0].run_id, "forge", "Three PRs are open.")
+    h._room.hold = asyncio.Event()
+    await hears(h, P1, "Go ahead, Forge.")
+    await hears(h, P2, "Forge, stop.")
+    await turns()
+    assert status(h, "forge") == "idle" and not h._news.get("forge")
+    assert backend.late_answers == [], "a stopped request is not posted either (engine §3.6)"

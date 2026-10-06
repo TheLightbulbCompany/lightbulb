@@ -109,3 +109,28 @@ def _meta_webhook_configured(monkeypatch):
     from core.config import settings
 
     monkeypatch.setattr(settings, "META_WEBHOOK_VERIFY_TOKEN", "chaos-verify-token")
+
+
+@pytest.fixture(autouse=True)
+def _messaging_table(chaos_ddb, monkeypatch):
+    """Provision the messaging table for the fuzz.
+
+    The /public/session-links/* and /public/session-copies/redeem routes take no
+    sign-in, so they are the only messaging routes an unauthenticated request
+    drives all the way to the store (every other one answers 401 first). With
+    MESSAGING_TABLE unset the repo raises and the fuzz reads a harness gap as a
+    500; with an empty table every generated token or code misses and the route
+    answers its real 404.
+    """
+    from core.config import settings
+
+    chaos_ddb.create_table(
+        TableName="chaos-messaging",
+        KeySchema=[{"AttributeName": "pk", "KeyType": "HASH"}, {"AttributeName": "sk", "KeyType": "RANGE"}],
+        AttributeDefinitions=[
+            {"AttributeName": "pk", "AttributeType": "S"},
+            {"AttributeName": "sk", "AttributeType": "S"},
+        ],
+        BillingMode="PAY_PER_REQUEST",
+    )
+    monkeypatch.setattr(settings, "MESSAGING_TABLE", "chaos-messaging")

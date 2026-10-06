@@ -13,7 +13,7 @@ from httpx import ASGITransport, AsyncClient
 from moto import mock_aws
 from pydantic import ValidationError
 
-from core.auth import AuthContext, get_current_user
+from core.auth import AuthContext, get_current_user, get_human_session
 from core.repositories import local_sessions_repo as repo, messaging_repo
 from core.services import local_sessions as service
 from core.services.messaging import ApiProblem
@@ -717,7 +717,7 @@ async def test_http_routes_use_clerk_identity_and_validate_payloads(db):
     async with AsyncClient(transport=transport, base_url="http://test") as client:
         path = "/api/v1/desktop/local-sessions/enrollment"
         assert (await client.put(path, json={"deviceId": MAC, "enabled": True})).status_code in (401, 403)
-        app.dependency_overrides[get_current_user] = lambda: BOB
+        app.dependency_overrides[get_current_user] = app.dependency_overrides[get_human_session] = lambda: BOB
         assert (await client.put(path, json={"deviceId": MAC, "enabled": True})).status_code == 403
         # Sessions are workspace-scoped (2026-09-24): a teammate reads, only the owner commands.
         base = f"/api/v1/messaging/sessions/{sid}"
@@ -725,15 +725,17 @@ async def test_http_routes_use_clerk_identity_and_validate_payloads(db):
         assert (await client.get(f"{base}/events?afterSeq=0&limit=2")).status_code == 200
         payload = command(service).model_dump(by_alias=True)
         assert (await client.post(f"{base}/commands", json=payload)).status_code == 403
-        app.dependency_overrides[get_current_user] = lambda: ALICE
+        app.dependency_overrides[get_current_user] = app.dependency_overrides[get_human_session] = lambda: ALICE
         assert (await client.post(f"{base}/commands", json={**payload, "actorUserId": BOB.user_id})).status_code == 422
         response = await client.post(f"{base}/commands", json=payload)
         assert response.status_code == 202 and response.json()["actorUserId"] == ALICE.user_id
         assert response.json()["roomId"] == ""
         assert (await client.get(f"{base}/commands/request-1")).json() == response.json()
-        app.dependency_overrides[get_current_user] = lambda: BOB
+        app.dependency_overrides[get_current_user] = app.dependency_overrides[get_human_session] = lambda: BOB
         assert (await client.get(f"{base}/commands/request-1")).status_code == 403
-        app.dependency_overrides[get_current_user] = lambda: AuthContext(user_id=ALICE.user_id)
+        app.dependency_overrides[get_current_user] = app.dependency_overrides[get_human_session] = lambda: AuthContext(
+            user_id=ALICE.user_id
+        )
         assert (await client.put(path, json={"deviceId": MAC, "enabled": True})).status_code == 409
 
 
@@ -972,7 +974,7 @@ async def test_workspace_sessions_route_binds(db):
     sid = await registered(conversation="conv-http")
     app = FastAPI()
     app.include_router(messaging.router, prefix="/api/v1")
-    app.dependency_overrides[get_current_user] = lambda: BOB
+    app.dependency_overrides[get_current_user] = app.dependency_overrides[get_human_session] = lambda: BOB
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         response = await client.get("/api/v1/messaging/sessions")
     assert response.status_code == 200
@@ -990,7 +992,7 @@ async def test_single_session_route_reads_an_ended_session_for_any_member(db):
     await repo.put_session({**row, "endedAt": int(time.time()), "lastEventAt": int(time.time())}, row, enrollment)
     app = FastAPI()
     app.include_router(messaging.router, prefix="/api/v1")
-    app.dependency_overrides[get_current_user] = lambda: BOB
+    app.dependency_overrides[get_current_user] = app.dependency_overrides[get_human_session] = lambda: BOB
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         response = await client.get(f"/api/v1/messaging/sessions/{sid}")
     assert response.status_code == 200

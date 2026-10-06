@@ -39,7 +39,7 @@ from livekit.plugins.openai.realtime import (
 from livekit.plugins.openai.realtime.gpt_live_model import _render_item
 
 from huddle_agent.backend import Backend
-from huddle_agent.huddle import Huddle, emit_metric, mixed_meet
+from huddle_agent.huddle import Huddle, emit_metric, in_meet
 from huddle_agent.transcript import trim_items
 
 logger = logging.getLogger("huddle")
@@ -235,7 +235,7 @@ def room_options(agent_id: str, speaker: str) -> room_io.RoomOptions:
 async def _start(
     room, huddle: Huddle, vad, agent_id, persona, voice, speaker, seed
 ) -> _Live:
-    muted = mixed_meet(speaker)  # the whole Meet as one participant; a person of a per-person Meet is heard
+    muted = in_meet(speaker)  # a meeting voice never hears the Meet: the worker listens (huddle.in_meet)
     agent = _Voice(agent_id, persona, huddle, seed, muted=muted)
     session = AgentSession(
         llm=_TrimmedGPTLiveModel(voice=voice, delegation="client"), vad=vad

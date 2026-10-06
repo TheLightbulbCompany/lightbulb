@@ -369,7 +369,10 @@ def pause(text: str) -> bool:
 
 _STOP = re.compile(
     r"^(?:(?:hey|ok|okay) )?(?:please )?(?:([a-z0-9]+(?: [a-z0-9]+)?) ?, ?|([a-z0-9]+) )??(?:please )?(?:just )?"
-    r"(?:stop|never ?mind|cancel (?:that|it)|forget it)$"
+    r"(?:stop(?: talking)?|never ?mind|cancel (?:that|it)|forget it"
+    # a dismissal is a stop too (10-05 prod Meet: "Friday, get the fuck out of here" got "I'm here")
+    r"|(?P<dismiss>get (?:the (?:fuck|hell|heck) )?out(?: of here)?|go away|leave(?: us(?: alone)?)?|be quiet|shut up"
+    r"|that(?:'s| is) (?:all|enough)(?: thanks| thank you)?))$"
 )
 
 
@@ -386,9 +389,21 @@ def _agent_named(said: str | None, agents: list[dict]) -> str | None:
     return next((a["id"] for a in agents if said and " ".join(_tokens(a["name"])) == said), None)
 
 
-def stop_request(text: str) -> bool:
-    """The whole utterance, after an optional name, is stop / never mind / cancel that|it / forget it."""
-    return _stop_match(text) is not None
+def stop_request(text: str, agents: list[dict] | None = None) -> bool:
+    """The whole utterance, after an optional name, is stop / never mind / cancel that|it / forget it, or a
+    dismissal ("go away", "get out of here"). A dismissal with a word before it is one only when that word
+    names an agent in `agents`: "I leave" and "we go away" are people talking."""
+    m = _stop_match(text)
+    if m is None:
+        return False
+    said = m.group(1) or m.group(2)
+    return not (m.group("dismiss") and said) or _agent_named(said, agents or []) is not None
+
+
+def stop_bare(text: str) -> bool:
+    """A stop with no word before it ("stop", "ok never mind", "go away")."""
+    m = _stop_match(text)
+    return m is not None and not (m.group(1) or m.group(2))
 
 
 def stop_target(text: str, agents: list[dict]) -> str | None:

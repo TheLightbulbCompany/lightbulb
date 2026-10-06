@@ -3696,21 +3696,26 @@ class Huddle:
         `agent-<id>`, the new session's too (rig 10-06: the answer was then said into nothing)."""
         prev = self._speech_closing.get(agent_id)
 
+        opened = self._speech_at.get(agent_id, self._clock())
+
         async def close() -> None:
             if prev:
                 await asyncio.wait({prev})
-            await self._close_speech(live)
+            await self._close_speech(live, opened)
 
         self._speech_closing[agent_id] = asyncio.ensure_future(close())
 
-    async def _close_speech(self, live: Any) -> None:
-        """Its time is voice time, said or not: the final usage lands during the close (as `_close` reads it)."""
+    async def _close_speech(self, live: Any, opened: float) -> None:
+        """Its time is voice time, said or not: the final usage lands during the close (as `_close` reads it).
+        A close or a usage read that fails bills the time it was open, never nothing."""
         usage = 0.0
         try:
             await live.aclose()
-            usage = live.usage_seconds()
         except Exception:
             logger.exception("huddle hand voice close failed")
+        with contextlib.suppress(Exception):
+            usage = live.usage_seconds()
+        usage = usage or max(0.0, self._clock() - opened)
         self._closed_seconds += usage
         if w := self._window:
             w.used_seconds += usage
@@ -3723,13 +3728,29 @@ class Huddle:
             return
         ready = {aid for aid, news in self._news.items() if news} if self._people else set()
         saying = self._saying[0] if self._saying else None
-        for aid in ready:
-            if aid not in self._speech and aid not in self._speech_cold:
-                self._render(aid, self._news[aid][0][4])
-            elif aid in self._speech and aid != saying and self._clock() - self._speech_at[aid] >= HAND_HOLD_S:
-                self._speech_cold.add(aid)
+        # ONE hand voice is held open: the agent whose answer is oldest (it speaks first). Two hands held would
+        # spend two sessions' seconds against one window's budget. The others open when their turn comes.
+        first = min(ready, key=lambda a: self._news[a][0][3], default=None)
+        if (w := self._window) and first:
+            held = 0.0
+            for t in self._speech.values():
+                if t.done() and not t.cancelled() and t.exception() is None:
+                    with contextlib.suppress(Exception):
+                        held += t.result().usage_seconds()
+            if self._clock() >= w.deadline or w.used_seconds + held >= w.budget:
+                first = None  # the window's time is spent: nothing is held open on it
         self._speech_cold &= ready
-        for aid in [a for a in self._speech if a not in ready or (a in self._speech_cold and a != saying)]:
+        close = [a for a in self._speech if a not in ready]
+        for aid in ready - {saying}:
+            if aid in self._speech:
+                expired = self._clock() - self._speech_at[aid] >= HAND_HOLD_S
+                if aid != first or expired:
+                    close.append(aid)
+                    if aid == first:
+                        self._speech_cold.add(aid)  # its hold ran out: it opens again when it is to speak
+            elif aid == first and aid not in self._speech_cold:
+                self._render(aid, self._news[aid][0][4])
+        for aid in close:
             t = self._speech.pop(aid)
             if t.done() and not t.cancelled() and t.exception() is None:
                 self._drop_speech(aid, t.result())
@@ -3935,8 +3956,19 @@ class Huddle:
     async def _end_window(self, force: bool = False) -> None:
         """Caller holds the lock. Ends the window only when no voice is open or joining."""
         w = self._window
-        if w is None or self._voice is not None or self._speech:
-            return  # a hand voice is open: its time is charged to this window when it closes
+        if force:  # the exchange is over: hand voices close now, and their seconds are in before /end
+            for aid in list(self._speech):
+                t = self._speech.pop(aid)
+                if t.done() and not t.cancelled() and t.exception() is None:
+                    self._drop_speech(aid, t.result())
+                else:
+                    t.cancel()
+        closing = [f for f in self._speech_closing.values() if not f.done()]
+        if closing and force:
+            await asyncio.wait(closing, timeout=5)
+            closing = []
+        if w is None or self._voice is not None or self._speech or closing:
+            return  # a hand voice is open or closing: its time is charged to this window
         if not force and self._requests.open() and self._clock() < w.deadline:
             return  # an open request still needs /turns (spec §3.3); tick() ends it after the last
         self._window = None

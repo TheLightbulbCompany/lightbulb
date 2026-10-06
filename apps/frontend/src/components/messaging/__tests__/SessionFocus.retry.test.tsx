@@ -173,3 +173,15 @@ it("does not fetch metadata for transcript-only hints, but revalidates a real re
   await act(async () => { for (const handler of handlers) handler({ type: "workspace.sessions.changed", payload: { humanUserId: "alice" } } as LiveEvent); });
   expect(get).toHaveBeenCalledTimes(2);
 });
+
+
+it("hides an old fallback failure when the workspace list supplies fresh session data", async () => {
+  vi.useFakeTimers();
+  const get = vi.fn<SessionSource["client"]["getLocalSession"]>().mockRejectedValue(new TypeError("network"));
+  const view = setup(get);
+  await act(async () => { await vi.advanceTimersByTimeAsync(3000); });
+  expect(screen.getByText("Could not load this session.")).toBeInTheDocument();
+  await act(async () => { view.rerender(<SessionFocus {...view.props} entries={[{ session, ownerName: "Alice", own: false }]} />); });
+  expect(screen.getByRole("heading", { name: "Claude Recovered session" })).toBeInTheDocument();
+  expect(screen.queryByText("Could not refresh this session.")).not.toBeInTheDocument();
+});

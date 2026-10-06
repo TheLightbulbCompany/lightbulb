@@ -438,6 +438,17 @@ describe("session screen", () => {
       expect(get).toHaveBeenCalledTimes(2);
     });
 
+    it("hides an old fallback failure when the workspace list supplies fresh session data", async () => {
+      get.mockRejectedValue(new TypeError("network"));
+      await render(<SessionScreen />);
+      await advance(3000);
+      expect(screen.getByText("Could not load this session.")).toBeTruthy();
+      mockListSessions.mockResolvedValue({ sessions: [base] });
+      await hint();
+      expect(screen.getByText("Fix relay")).toBeTruthy();
+      expect(screen.queryByText("Could not refresh this session.")).toBeNull();
+    });
+
     it("fetches again on A → B → A and ignores old requests", async () => {
       let old!: (s: LocalSession) => void;
       get.mockImplementationOnce(() => new Promise(resolve => { old = resolve; })).mockImplementation(async id => ({ ...base, sessionId: id, status: "ended" }));

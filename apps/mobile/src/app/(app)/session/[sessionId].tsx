@@ -255,7 +255,7 @@ export default function SessionScreen() {
   return (
     <View style={[styles.container, { backgroundColor: palette.ground }]}>
       <Stack.Screen options={headerOptions} />
-      {resolvedFallback?.error && <View style={styles.banner}>
+      {!hasListedSession && resolvedFallback?.error && <View style={styles.banner}>
         <Text accessibilityRole="alert" style={[styles.errorText, { color: palette.alert }]}>Could not refresh this session.</Text>
         <Pressable onPress={retryFallback} accessibilityRole="button" accessibilityLabel="Try again">
           <Text style={[styles.link, { color: palette.link }]}>Try again</Text>

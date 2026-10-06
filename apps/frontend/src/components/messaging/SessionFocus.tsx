@@ -112,7 +112,7 @@ export function SessionFocus({ focus, entries, loading, hintRevision, client, re
         {session && owner?.own && client.setLocalSessionDisplayTitle && <SessionRenameButton session={session} onRename={client.setLocalSessionDisplayTitle} icon />}
         <Button className="ml-auto" variant="ghost" size="icon-sm" aria-label="Close session" onClick={onClose}><X aria-hidden="true" /></Button>
       </header>
-      {session && resolvedFallback?.error && <div className="p-4 text-sm text-muted-foreground">
+      {!hasListedSession && session && resolvedFallback?.error && <div className="p-4 text-sm text-muted-foreground">
         <p role="status">Could not refresh this session.</p>
         <Button variant="ghost" onClick={retryFallback}>Try again</Button>
       </div>}

@@ -680,7 +680,13 @@ async def _session_reads(owner_id: str, agent_id: str) -> tuple[dict | None, str
 async def agent_meet_voice(*, owner_id: str, room_id: str, agent_id: str) -> dict:
     """An agent's meeting voice and nothing else: no persona, and the naming prompt stays unclaimed."""
     await _owned_room(owner_id, room_id)
-    starters, (row, _, _) = await asyncio.gather(_starter_ids(owner_id), _session_reads(owner_id, agent_id))
+    starters = await _starter_ids(owner_id)
+    try:  # the roster alone: a slow SOUL.md read must not cost a founder-roster agent its role voice
+        roster = await asyncio.wait_for(messaging.load_agent_roster(owner_id), _SESSION_READ_BUDGET_S)
+    except Exception:  # noqa: BLE001 -- no title: the agent's stable fallback voice
+        logger.warning("meet voice roster read failed owner=%s agent=%s", owner_id, agent_id, exc_info=True)
+        roster = []
+    row = next((r for r in roster if r["id"] == agent_id), None)
     title = (row or {}).get("title") or (row or {}).get("role")
     return {"voice": voice_persona.agent_meet_voice(agent_id, starters, title)}
 

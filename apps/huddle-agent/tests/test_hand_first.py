@@ -233,3 +233,22 @@ async def test_stop_while_it_says_its_answer_ends_it_and_it_is_not_said_again():
     await turns()
     assert status(h, "forge") == "idle" and not h._news.get("forge")
     assert backend.late_answers == [], "a stopped request is not posted either (engine §3.6)"
+
+
+async def test_a_refused_meeting_voice_says_nothing_but_an_older_backend_still_speaks():
+    """Codex on #3775: the room was archived after the answer became ready; only a missing route falls back."""
+    from huddle_agent.backend import BackendError
+
+    for err, said in ((BackendError(404, "room_not_found", None), False), (BackendError(404, "http_404", None), True)):
+        h, backend, lives, clock = await asked()
+
+        async def refuse(agent_id, err=err):
+            raise err
+
+        backend.meet_voice = refuse
+        answer(h, h._requests.items[0].run_id, "forge", "Three PRs are open.")
+        await turns()
+        clock.t += 10
+        await h.tick()
+        await turns()
+        assert bool(getattr(h._room, "played", [])) is said

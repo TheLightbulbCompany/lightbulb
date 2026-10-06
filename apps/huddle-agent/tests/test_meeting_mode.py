@@ -1184,6 +1184,32 @@ async def test_anyones_dont_post_that_covers_an_answer_talked_over_in_a_meeting(
     assert "forge" not in h._cut_off
 
 
+async def test_an_answer_cut_short_by_a_switch_to_another_named_agent_is_kept():
+    h, room, backend, lives, clock, log = await per_person()
+    backend.route_extra = ops([("forge", "list the open PRs", "name")])
+    await says(h, P1, "Forge, what PRs are open?")
+    (row,) = h._requests.items
+    answer(h, row.run_id, "forge", "Three PRs are open.")
+    h.on_agent_state("forge", "speaking")
+    backend.route_extra = ops([("gauge", "signups this week", "name")])
+    await says(h, P2, "Gauge, how many signups this week?")  # Forge's voice is closed for Gauge's
+    assert [n[2] for n in h._cut_off.get("forge", ([],))[0]] == ["Three PRs are open."]
+
+
+async def test_i_stop_between_two_people_does_not_stop_the_agent_that_is_speaking():
+    h, room, backend, lives, clock, log = await per_person()
+    backend.route_extra = ops([("forge", "list the open PRs", "name")])
+    await says(h, P1, "Forge, what PRs are open?")
+    (row,) = h._requests.items
+    answer(h, row.run_id, "forge", "Three PRs are open.")
+    h.on_agent_state("forge", "speaking")
+    backend.route_extra = ops([])
+    await says(h, P2, "we cancel that")
+    assert ("interrupt",) not in lives[0].calls
+    await says(h, P2, "stop")  # a bare stop said over it does
+    assert ("interrupt",) in lives[0].calls
+
+
 # -- a Live voice's answer cut by its own speaker's sound (10-04 prod Meet: a noisy microphone's junk lines landed
 # as Forge began its answer; the model stopped for them and the answer was gone) --
 

@@ -46,6 +46,7 @@ from huddle_agent.transcript import (
     real_speech,
     soundex,
     stop_all,
+    stop_bare,
     stop_request,
     stop_target,
     strip_wake,
@@ -905,7 +906,13 @@ class Huddle:
             # "stop" / "never mind" to an agent aborts its runs (D §8): the agent it names, from anyone, else
             # the floor-holder when its pinned speaker says it. In a mixed meeting, also a stop said over it
             # talking: "never mind" between two people must not abort a working run.
-            over = in_meet(identity) and v is not None and v.agent_state == "speaking"
+            # ...said with no word before it, or to an agent by name: "I stop" between two people is not one
+            over = (
+                in_meet(identity)
+                and v is not None
+                and v.agent_state == "speaking"
+                and (stop_bare(text) or stop_target(text, self._team["agents"]) is not None)
+            )
             target = stop_target(text, self._team["agents"]) or (
                 v.agent_id if mine or over else None
             )
@@ -2536,6 +2543,7 @@ class Huddle:
         if v := self._floor_voice(agent_id):
             v.driven = None
             v.answer = None  # a stop said over its answer: neither said again nor posted (§4.8)
+            v.saying, v.told = None, []
             v.last_activity = self._clock()
             self._live_call(v, "interrupt")
         aborted = [run.run_id for run in self._runs.running(agent_id)]
@@ -3192,6 +3200,12 @@ class Huddle:
         talker calls it off, as a cut announcement does (§4.8)."""
         emit_metric("live.meet.talked_over", 1, "Count")
         self._live_call(v, "interrupt")
+        self._keep_unsaid(v)
+        self._drop(v, keep_queue=True)  # closed: a run still working no longer speaks through it
+
+    def _keep_unsaid(self, v: _Voice) -> None:
+        """What a meeting voice was saying when it was stopped short (talked over, or closed for another agent
+        someone named) goes on the record like a cut announcement (§4.8)."""
         unsaid = list(v.told)  # earlier answers handed to it and not yet said to their end
         run = self._runs.get(v.saying or "")
         if run is not None and run.ended and not (run.aborted or run.failed) and run.text.strip():
@@ -3202,7 +3216,6 @@ class Huddle:
             talker = v.speaker if v.speaker in self._speaking or not self._speaking else min(self._speaking)
             self._cut_off[v.agent_id] = (held + unsaid, talker, self._clock())
         v.saying, v.told = None, []
-        self._drop(v, keep_queue=True)  # closed: a run still working no longer speaks through it
 
     def _apply_held(self, now: float) -> None:
         """understanding §4.4: a held line whose speaker said nothing more for HOLD_APPLY_S is applied as /route
@@ -3513,6 +3526,8 @@ class Huddle:
         """Close a voice that no longer holds the floor; its GPT-Live seconds go to the window."""
         if v is not None:
             self._settle_answer(v)  # cut and never said again: on the record
+            if in_meet(v.speaker) and v.agent_state == "speaking":
+                self._keep_unsaid(v)  # closed mid-answer (someone named another agent): never lost
         if v is None or v.live is None:
             return
         if (

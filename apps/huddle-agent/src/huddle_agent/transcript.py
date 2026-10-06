@@ -400,6 +400,12 @@ def stop_request(text: str, agents: list[dict] | None = None) -> bool:
     return not (m.group("dismiss") and said) or _agent_named(said, agents or []) is not None
 
 
+def stop_bare(text: str) -> bool:
+    """A stop with no word before it ("stop", "ok never mind", "go away")."""
+    m = _stop_match(text)
+    return m is not None and not (m.group(1) or m.group(2))
+
+
 def stop_target(text: str, agents: list[dict]) -> str | None:
     """The agent a stop names, by its exact name: naming is enough for a stop, default names included."""
     m = _stop_match(text)

@@ -56,7 +56,9 @@ pub(super) type Typist = (String, String);
 /// The teammate whose bytes last reached each session's holder.
 // ponytail: one entry per session a teammate typed into, kept until the app quits (a few hundred
 // bytes each). Prune with the mirror's end if that ever shows up in memory.
-static LAST_TYPIST: Mutex<BTreeMap<String, Typist>> = Mutex::new(BTreeMap::new());
+static LAST_TYPIST: Mutex<BTreeMap<String, (Typist, Instant)>> = Mutex::new(BTreeMap::new());
+/// How long after a teammate's Enter the mod's question may still be about that prompt.
+const SUBMIT_WINDOW: Duration = Duration::from_secs(3);
 
 /// The frame's `actor`, bounded and printable. None from an older backend, or when the name
 /// could not be read there.
@@ -66,16 +68,17 @@ fn typist_of(body: &Value) -> Option<Typist> {
     (!name.trim().is_empty()).then(|| (user.to_owned(), name.trim().to_owned()))
 }
 
-/// Records whose bytes just reached the holder. A teammate's unnamed frame clears the record: the
-/// last typist is then unknown, never the one before. The owner's frames leave it alone (the
-/// holder says when the owner typed last).
-fn typed(sid: &str, from_owner: bool, typist: Option<Typist>) {
-    if from_owner {
+/// Records the teammate whose Enter just reached the holder: the Enter submits the prompt, so a
+/// frame without one changes nothing (another teammate typing after it is not the submitter).
+/// An unnamed teammate's Enter clears the record: the submitter is then unknown, never the one
+/// before. The owner's frames leave it alone (the holder says when the owner typed last).
+fn typed(sid: &str, from_owner: bool, typist: Option<Typist>, keys: &[u8], now: Instant) {
+    if from_owner || !keys.iter().any(|b| matches!(b, b'\r' | b'\n')) {
         return;
     }
     if let Ok(mut map) = LAST_TYPIST.lock() {
         match typist {
-            Some(t) => map.insert(sid.to_owned(), t),
+            Some(t) => map.insert(sid.to_owned(), (t, now)),
             None => map.remove(sid),
         };
     }
@@ -87,17 +90,20 @@ pub(super) fn has_typist(sid: &str) -> bool {
     LAST_TYPIST.lock().is_ok_and(|m| m.contains_key(sid))
 }
 
-/// The teammate who typed the session's last input, for the mod's "<Name> · typed" row. Only
-/// when the holder says a teammate wrote last (`last_input`, from `holder_last_input`); a holder
-/// too old to say falls back to the `TEAMMATE_QUIET` window. Never when it says the owner did.
-// ponytail: the last write is what counts. The owner types a prompt and a teammate presses Enter:
-// it is labelled the teammate's.
+/// The teammate who submitted the session's last prompt, for the mod's "<Name> · typed" row.
+/// Only when the holder says a teammate wrote last (`last_input`, from `holder_last_input`) and
+/// that teammate's Enter is within `SUBMIT_WINDOW`. A holder too old to say names nobody: it
+/// cannot see the owner's own keyboard, so a guess could put a teammate's name on the owner's
+/// prompt.
+// ponytail: the Enter is what counts. The owner types a prompt and a teammate presses Enter: it
+// is labelled the teammate's. The owner presses Enter and a teammate types within the window
+// before the mod asks: the holder says "teammate" and an earlier submitter may be named.
 pub(super) fn typed_by(sid: &str, now: Instant, last_input: Option<&str>) -> Option<Typist> {
-    let teammate = match last_input {
-        Some(origin) => origin == "teammate",
-        None => teammate_typed_recently(sid, now),
-    };
-    teammate.then(|| LAST_TYPIST.lock().ok()?.get(sid).cloned()).flatten()
+    if last_input != Some("teammate") {
+        return None;
+    }
+    let (typist, at) = LAST_TYPIST.lock().ok()?.get(sid).cloned()?;
+    (now.saturating_duration_since(at) < SUBMIT_WINDOW).then_some(typist)
 }
 
 /// Whether a teammate's bytes reached `sid` within `TEAMMATE_QUIET` of `now`.
@@ -193,7 +199,7 @@ fn write(sid: &str, generation: &str, ctl: &Ctl, inputs: &Receiver<Typed>) {
             let Some((c, origin)) = conn.as_mut() else { break };
             // Recorded first: a decide that reads it between the write and the record is refused.
             wrote(sid, from_owner, Instant::now());
-            typed(sid, from_owner, typist.clone());
+            typed(sid, from_owner, typist.clone(), &keys, Instant::now());
             // An older holder takes only INPUT, and reports no origin to mark.
             let kind = if from_owner && *origin { OWNER_INPUT } else { INPUT };
             if c.write_all(&encode(kind, &keys)).is_ok() {
@@ -451,17 +457,21 @@ mod tests {
         assert!(typist_of(&json!({"actor": {"userId": "u", "name": " "}})).is_none());
         assert!(!has_typist(sid));
         assert_eq!(typed_by(sid, now, Some("teammate")), None, "a teammate typed, but nobody said who");
-        typed(sid, false, Some(aden.clone()));
+        typed(sid, false, Some(aden.clone()), b"hello", now);
+        assert!(!has_typist(sid), "typing without Enter submits nothing");
+        typed(sid, false, Some(aden.clone()), b"hello\r", now);
         assert!(has_typist(sid));
         assert_eq!(typed_by(sid, now, Some("teammate")), Some(aden.clone()));
         assert_eq!(typed_by(sid, now, Some("owner")), None, "the owner typed last: their own prompt");
-        assert_eq!(typed_by(sid, now, None), None, "no holder answer and no recent write");
         wrote(sid, false, now);
-        assert_eq!(typed_by(sid, now, None), Some(aden.clone()), "an older holder: the 2 s window decides");
-        assert_eq!(typed_by(sid, now, Some("owner")), None, "the holder's answer wins over the window");
-        typed(sid, true, None);
+        assert_eq!(typed_by(sid, now, None), None, "an older holder cannot see the owner's keys: nobody is named");
+        let mira = ("user_m".to_owned(), "Mira".to_owned());
+        typed(sid, false, Some(mira), b"x", now);
+        assert_eq!(typed_by(sid, now, Some("teammate")), Some(aden.clone()), "another teammate's keys after the Enter are not the submitter");
+        typed(sid, true, None, b"\r", now);
         assert_eq!(typed_by(sid, now, Some("teammate")), Some(aden), "the owner's frames leave the record");
-        typed(sid, false, None);
+        assert_eq!(typed_by(sid, now + SUBMIT_WINDOW, Some("teammate")), None, "an old Enter is not this prompt's");
+        typed(sid, false, None, b"\r", now);
         assert_eq!(typed_by(sid, now, Some("teammate")), None, "an unnamed teammate is never the one before");
     }
 

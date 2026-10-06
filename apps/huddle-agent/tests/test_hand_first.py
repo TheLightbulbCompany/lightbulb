@@ -377,3 +377,19 @@ async def test_after_a_false_start_it_waits_for_a_real_pause_not_the_next_breath
     await h.tick()
     await turns()
     assert len(told(lives)) == 2
+
+
+async def test_its_name_then_a_pause_then_the_question_is_asked_of_that_agent():
+    """10-06 prod Meet (Aden): "Friday." ... "Can you tell me about our most recent container run?" came as two
+    lines; the second names nobody, was routed with no agent, and nothing happened."""
+    h, backend, lives, clock = await meeting()
+    await says(h, P1, "Forge.")
+    assert backend.turns == [] and h._state()["lightbulb.agent.forge.working"] == "listening to Priya"
+    backend.route_extra = ops([("forge", "the most recent container run", "floor")])
+    clock.t += 6
+    await says(h, P1, "Can you tell me about our most recent container run?")
+    assert backend.route_floors[-1] == {"agent": "forge", "speaker": "Priya", "mine": True}
+    assert len(backend.turns) == 1 and status(h, "forge") == "working"
+    # and a line that names it carries the name to /route as well
+    await says(h, P2, "Forge, what PRs are open?")
+    assert backend.route_floors[-1]["agent"] == "forge" and backend.routes[-1][1].startswith("Forge")

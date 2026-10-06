@@ -1056,7 +1056,7 @@ class Huddle:
         if named:
             self._requests.pending(mark, identity, named, now)  # on the tile while /route decides
             self._sync_state()
-        self._spawn(self._hand_ask(identity, text, mark))
+        self._spawn(self._hand_ask(identity, text, mark, agent=named[0] if named else None))
 
     def _called_on_early(self, identity: str) -> None:
         """They stopped talking and what they said so far only calls on an agent with its hand up ("go ahead,
@@ -1077,12 +1077,17 @@ class Huddle:
         rest = [w for w in _words(strip_wake(text))[1] if w not in names and w not in CALL_ON_WORDS]
         return len(rest) <= 1
 
-    async def _hand_ask(self, identity: str, text: str, mark: int, unclaimed: bool = False) -> None:
-        """Understand a meeting line and start what it asks, with no voice (hand first)."""
+    async def _hand_ask(
+        self, identity: str, text: str, mark: int, unclaimed: bool = False, agent: str | None = None
+    ) -> None:
+        """Understand a meeting line and start what it asks, with no voice (hand first). `agent`: who the line is
+        said to: the one it names, or the one attending to its speaker. /route is told, because the line itself
+        often does not say (10-06 prod Meet: "Friday." ... "Can you tell me about our most recent container
+        run?" is two lines to the transcriber, and the second one was routed to nobody)."""
         fut, rec = self._in_flight(identity), None
         try:
             r = await self._understand(
-                identity, strip_wake(text), len(self._people), unclaimed, True, "name", mark, until=fut
+                identity, text, len(self._people), unclaimed, True, "name", mark, until=fut, to_agent=agent
             )
             o = r.get("ops") if isinstance(r, dict) else None
             if o is not None:
@@ -1580,6 +1585,7 @@ class Huddle:
         quiet: bool = False,
         path: str = "jev",
         mark: int | None = None,
+        to_agent: str | None = None,
     ) -> dict | None:
         """The line's /route call alone (understanding §4.4): who answers and, from a current backend, `ops`.
         None when it failed; a line spoken to the agents says so, unless `quiet` (its caller has a fallback).
@@ -1594,6 +1600,9 @@ class Huddle:
                 # `mine`: the speaker is already talking with the floor agent; their asks need no name (§4.4)
                 floor={"agent": v.agent_id, "speaker": self._with(v), "mine": self._mine(v, identity, heard_at, mark=mark)}
                 if v
+                # hand first: no voice is open, but this speaker is talking to that agent
+                else {"agent": to_agent, "speaker": self._talker(identity, mark), "mine": True}
+                if to_agent
                 else None,
                 voice_runs=(
                     [{"agent": x.agent_id, "request": x.request[:200]} for x in self._runs.running()]

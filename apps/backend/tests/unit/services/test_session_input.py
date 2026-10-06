@@ -124,7 +124,9 @@ async def test_a_typist_whose_name_cannot_be_read_goes_unnamed_and_the_owner_is_
     await session_screen.type_into(BOB, sid, body())
     await session_screen.type_into(BOB, sid, body())
     assert [b.get("actor") for b in sent(transport)][2:] == [{"userId": BOB.user_id, "name": "Bob Stone"}] * 2
-    assert lookup.await_count == 2, "a read name is kept for the typist; the owner is never looked up"
+    # Nothing is kept per typist (a failed lookup must not stick): the name's own cache is
+    # human_display_name's. Three Bob frames, three asks; the owner is never looked up.
+    assert lookup.await_count == 3
 
 
 @pytest.mark.asyncio

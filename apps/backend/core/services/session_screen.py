@@ -275,7 +275,6 @@ class _Typist:
     burst: int = 0  # this person's current burst start (its audit row), 0 = none yet
     last: float = 0.0  # their last accepted call
     told: float = 0.0  # when the owner last heard "is typing"
-    name: str = ""  # their display name, looked up once
 
 
 # ponytail: per backend task, so N tasks allow N x (20 calls/s, 64 KiB/min) per (session, person),
@@ -362,10 +361,10 @@ async def type_into(auth: AuthContext, session_id: str, body: SessionInput) -> N
     }
     if user != row["humanUserId"]:
         # Who typed: the Mac's Claude terminal labels a prompt a teammate submitted with their
-        # name. A failed lookup answers the bare id: not kept, and the frame goes without a name.
-        name = typist.name or await session_presence._name(user)
-        if name != user:
-            typist.name = name
+        # name. `_name` keeps its own short cache, so nothing is kept here: a failed lookup (the
+        # bare id, or its "A teammate" fallback) sends this frame without a name and the next asks again.
+        name = await session_presence._name(user)
+        if name not in (user, "A teammate"):
             envelope["actor"] = {"userId": user, "name": name}
     check_envelope(envelope)
     new_burst = not typist.burst or now - typist.last > TYPED_BURST_GAP_S

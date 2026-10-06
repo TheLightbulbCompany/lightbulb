@@ -369,7 +369,10 @@ def pause(text: str) -> bool:
 
 _STOP = re.compile(
     r"^(?:(?:hey|ok|okay) )?(?:please )?(?:([a-z0-9]+(?: [a-z0-9]+)?) ?, ?|([a-z0-9]+) )??(?:please )?(?:just )?"
-    r"(?:stop|never ?mind|cancel (?:that|it)|forget it)$"
+    r"(?:stop(?: talking)?|never ?mind|cancel (?:that|it)|forget it"
+    # a dismissal is a stop too (10-05 prod Meet: "Friday, get the fuck out of here" got "I'm here")
+    r"|get (?:the (?:fuck|hell|heck) )?out(?: of here)?|go away|leave(?: us(?: alone)?)?|be quiet|shut up"
+    r"|that(?:'s| is) (?:all|enough)(?: thanks| thank you)?)$"
 )
 
 

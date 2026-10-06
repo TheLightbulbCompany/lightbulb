@@ -116,7 +116,6 @@ class _TrimmedGPTLiveModel(GPTLiveModel):
 
 
 FALLBACK_VOICE = "marin"
-TTS_VOICES = frozenset("alloy echo fable onyx nova shimmer coral verse ballad ash sage marin cedar".split())
 # Routing v2 §6 / R6: end a turn when it sounds finished, not after 350 ms of silence, so a mid-thought pause is
 # not routed as half a line. The plugin accepts it (validated against the OpenAI SDK union); whether OpenAI
 # accepts it on a gpt-4o-mini-transcribe transcription session is unverified, hence SERVER_VAD.
@@ -329,36 +328,6 @@ class _Room:
 
     def set_attributes(self, attrs: dict[str, str]) -> None:
         t = asyncio.create_task(self._ctx.room.local_participant.set_attributes(attrs))
-        self._tasks.add(t)
-        t.add_done_callback(self._tasks.discard)
-
-    async def prepare(self, agent_id: str, voice: str, text: str) -> tuple:
-        """A ready answer as audio, on its own `agent-<id>` track, published before anyone calls on it: a
-        call-on then only has to push frames (GPT-Live took 2 s to its first sound; rig, 10-06)."""
-        # the backend sends a speech-model voice (voice_persona.agent_meet_voice); an older one sends a Live voice
-        voice = voice if voice in TTS_VOICES else FALLBACK_VOICE
-        frames = [ev.frame async for ev in openai.TTS(model="gpt-4o-mini-tts", voice=voice).synthesize(text)]
-        while len(frames) > 1 and max(frames[0].data, default=0) < 300 and min(frames[0].data, default=0) > -300:
-            frames.pop(0)  # the speech model opens with silence: a call-on starts on the first sound
-        source = rtc.AudioSource(frames[0].sample_rate, frames[0].num_channels)
-        track = rtc.LocalAudioTrack.create_audio_track(f"agent-{agent_id}", source)
-        pub = await self._ctx.room.local_participant.publish_track(
-            track, rtc.TrackPublishOptions(source=rtc.TrackSource.SOURCE_MICROPHONE)
-        )
-        return source, frames, pub
-
-    async def play(self, speech: tuple) -> None:
-        """Returns when the last of it was heard. Cancelled (talked over): silent at once."""
-        source, frames, _ = speech
-        try:
-            for f in frames:
-                await source.capture_frame(f)
-            await source.wait_for_playout()
-        finally:
-            source.clear_queue()
-
-    def discard(self, speech: tuple) -> None:
-        t = asyncio.create_task(self._ctx.room.local_participant.unpublish_track(speech[2].sid))
         self._tasks.add(t)
         t.add_done_callback(self._tasks.discard)
 

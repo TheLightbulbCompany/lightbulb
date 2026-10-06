@@ -32,6 +32,31 @@ async def turns():
         await asyncio.sleep(0)
 
 
+def told(lives):
+    """The answers a voice was given to say."""
+    return [c[1] for live in lives for c in live.calls if c[0] == "commentary"]
+
+
+async def first_sound(h, agent="forge"):
+    h.on_agent_state(agent, "speaking")
+    await turns()
+
+
+async def last_word(h, agent="forge"):
+    h.on_agent_state(agent, "listening")
+    await turns()
+
+
+async def pause(h, clock):
+    """Everyone stops: the speech detector says so, and the worker looks at once."""
+    for who in PEOPLE:
+        h.on_speech(who, False)
+    h.on_active_speakers(set())
+    clock.t += 0.1
+    await h.tick()
+    await turns()
+
+
 def status(h, agent):
     return h._state()[f"lightbulb.agent.{agent}.status"]
 
@@ -58,60 +83,70 @@ async def test_a_name_in_the_middle_of_a_sentence_asks_that_agent():
 
 
 
-async def test_a_ready_answer_raises_its_hand_and_is_said_in_the_next_gap():
-    """Owner ruling 10-06: nobody says a set phrase to hear it. It waits for people to stop, then speaks."""
+async def test_a_ready_answer_raises_its_hand_and_its_live_voice_says_it_when_people_stop():
+    """Owner rulings 10-06: no set phrase to hear it, and GPT-Live says it, live, in its own voice."""
     h, backend, lives, clock = await asked()
     talks(h, P2)  # the meeting goes on while it works
     answer(h, h._requests.items[0].run_id, "forge", "Three PRs are open.")
-    assert status(h, "forge") == "has_news"
     await turns()
-    assert h._room.prepared == [("forge", "Three PRs are open.")], "its audio is made when the hand goes up"
+    assert status(h, "forge") == "has_news"
+    assert len(lives) == 1 and lives[0].agent_id == "forge", "its voice opens when the hand goes up"
+    assert told(lives) == [] and "Stay silent" in str(lives[0].seed), "open and silent"
     clock.t += 60
     await h.tick()
-    await settle(h)
-    assert not hasattr(h._room, "played") and backend.late_answers == [], "never over a person"
-    h.on_speech(P2, False)
-    h.on_active_speakers(set())
-    clock.t += h_mod.HAND_QUIET_S - 0.5
-    await h.tick()
-    await settle(h)
-    assert not hasattr(h._room, "played"), "a breath is not a gap"
-    clock.t += 0.5
-    await h.tick()
-    await settle(h)
-    assert h._room.played == [("forge", "Three PRs are open.")] and lives == [], "prepared audio, no voice session"
-    assert backend.sessions == [], "no Live session is asked for: that would use up the agent's naming prompt"
-    assert status(h, "forge") == "idle" and h._room.discarded == h._room.played
-    assert len(backend.turns) == 1
+    await turns()
+    assert told(lives) == [] and backend.late_answers == [], "never over a person"
+    await pause(h, clock)
+    assert told(lives) == ["Three PRs are open."], "told to speak the moment they stop"
+    assert status(h, "forge") == "has_news", "the tile says speaking only at its first sound"
+    await first_sound(h)
+    assert status(h, "forge") == "speaking"
+    await last_word(h)
+    assert status(h, "forge") == "idle" and ("aclose",) in [c[:1] for c in lives[0].calls] or status(h, "forge") == "idle"
+    assert len(backend.turns) == 1 and h.gptlive_seconds() >= 0
 
 
-async def test_someone_turning_to_it_by_name_hears_the_answer_at_once():
+async def test_someone_turning_to_it_by_name_hears_the_answer_without_waiting_for_a_pause():
     h, backend, lives, clock = await asked()
     talks(h, P2)
     answer(h, h._requests.items[0].run_id, "forge", "Three PRs are open.")
-    await says(h, P2, "Go ahead, Forge.")  # no gap needed, and anyone may
-    assert h._room.played == [("forge", "Three PRs are open.")] and len(backend.turns) == 1, "not a new request"
+    await turns()
+    await hears(h, P2, "Go ahead, Forge.")  # anyone may
+    assert told(lives) == ["Three PRs are open."] and len(backend.turns) == 1, "not a new request"
 
 
-async def test_talked_over_three_times_in_gaps_it_took_itself_the_answer_goes_to_the_notes():
-    import asyncio
-
+async def test_talk_before_its_first_sound_calls_the_start_off_and_uses_up_no_try():
     h, backend, lives, clock = await asked()
     answer(h, h._requests.items[0].run_id, "forge", "Three PRs are open.")
-    h._room.hold = asyncio.Event()
+    await turns()
+    for _ in range(h_mod.DELIVERY_TRIES + 2):  # a lively meeting: many short pauses
+        await pause(h, clock)
+        assert h._saying is not None
+        h.on_speech(P2, True)  # someone goes on before it made a sound
+        await turns()
+        assert h._saying is None and status(h, "forge") == "has_news"
+        assert lives[0].calls[-1] == ("interrupt",)
+    clock.t += h_mod.gate.ANNOUNCE_QUIET + 1
+    await h.tick()
+    await turns()
+    assert backend.late_answers == [], "nobody heard a start: it is still waiting, not sent to the notes"
+
+
+async def test_talked_over_three_times_in_pauses_it_took_itself_the_answer_goes_to_the_notes():
+    h, backend, lives, clock = await asked()
+    answer(h, h._requests.items[0].run_id, "forge", "Three PRs are open.")
+    await turns()
     for _ in range(h_mod.DELIVERY_TRIES):
         clock.t += 10
-        await h.tick()
-        await turns()
+        await pause(h, clock)
+        await first_sound(h)
         assert status(h, "forge") == "speaking"
         h.on_speech(P2, True)
         h._yield_if_talked_over()
         await turns()
         assert status(h, "forge") == "has_news"
-        h.on_speech(P2, False)
     clock.t += 10
-    await h.tick()
-    await turns()
+    await pause(h, clock)
     await h.tick()
     await turns()
     assert status(h, "forge") == "idle" and [a[3] for a in backend.late_answers] == ["Three PRs are open."]
@@ -119,11 +154,15 @@ async def test_talked_over_three_times_in_gaps_it_took_itself_the_answer_goes_to
 
 async def test_just_its_name_calls_on_an_agent_with_its_hand_up():
     h, backend, lives, clock = await asked()
+    talks(h, P2)
     answer(h, h._requests.items[0].run_id, "forge", "Three PRs are open.")
-    await says(h, P1, "Forge?")
-    assert h._room.played == [("forge", "Three PRs are open.")]
-    await says(h, P1, "Okay Forge, go ahead.")  # no hand up now: it asks nothing
-    assert len(backend.turns) == 1 and len(h._room.played) == 1
+    await turns()
+    await hears(h, P1, "Forge?")
+    assert told(lives) == ["Three PRs are open."]
+    await first_sound(h)
+    await last_word(h)
+    await hears(h, P1, "Okay Forge, go ahead.")  # no hand up now: it asks nothing
+    assert len(backend.turns) == 1 and len(told(lives)) == 1
     assert h._state()["lightbulb.agent.forge.working"] == "listening to Priya"
 
 
@@ -146,13 +185,12 @@ async def test_who_asked_can_follow_up_without_the_name_for_a_few_seconds():
 
 
 
-async def test_talking_over_a_called_on_answer_stops_it_and_its_hand_goes_back_up():
-    import asyncio
-
+async def test_talking_over_its_answer_stops_it_and_its_hand_stays_up():
     h, backend, lives, clock = await asked()
     answer(h, h._requests.items[0].run_id, "forge", "Three PRs are open.")
-    h._room.hold = asyncio.Event()  # the answer is being said
-    await hears(h, P1, "Go ahead, Forge.")
+    await turns()
+    await pause(h, clock)
+    await first_sound(h)
     assert status(h, "forge") == "speaking"
     h._yield_if_talked_over()  # a cough: nobody is still talking when the clock runs out
     await turns()
@@ -162,10 +200,12 @@ async def test_talking_over_a_called_on_answer_stops_it_and_its_hand_goes_back_u
     h._yield_if_talked_over()
     await turns()
     assert status(h, "forge") == "has_news" and backend.late_answers == [], "not lost and not posted: the hand again"
-    h.on_speech(P2, False)
-    h._room.hold = None
-    await says(h, P1, "Sorry Forge, go ahead.")
-    assert len(h._room.played) == 2 and status(h, "forge") == "idle", "said whole the second time"
+    assert ("interrupt",) in lives[0].calls
+    clock.t += h_mod.gate.ANNOUNCE_QUIET  # it does not jump back in the instant they breathe
+    await pause(h, clock)
+    await first_sound(h)
+    await last_word(h)
+    assert len(told(lives)) == 2 and len(lives) == 1 and status(h, "forge") == "idle", "said whole, same voice"
 
 
 async def test_an_answer_nobody_calls_on_goes_on_the_record_when_the_meeting_ends():
@@ -199,14 +239,15 @@ async def test_its_tile_shows_it_heard_its_name_while_the_sentence_is_still_bein
 async def test_a_call_on_gives_the_floor_when_they_stop_talking_not_seconds_later_on_the_final():
     h, backend, lives, clock = await asked()
     answer(h, h._requests.items[0].run_id, "forge", "Three PRs are open.")
+    await turns()
     talks(h, P2)
     h.on_interim_transcript(P2, "Dan", "go ahead Forge")
     h.on_speech(P2, False)  # the speech detector: they stopped
     h.on_active_speakers(set())
-    await settle(h)
-    assert len(h._room.played) == 1
-    await says(h, P2, "Go ahead, Forge.")  # the final, seconds later
-    assert len(h._room.played) == 1 and len(backend.turns) == 1, "not delivered twice, not a new request"
+    await turns()
+    assert len(told(lives)) == 1
+    await hears(h, P2, "Go ahead, Forge.")  # the final, seconds later
+    assert len(told(lives)) == 1 and len(backend.turns) == 1, "not delivered twice, not a new request"
 
 
 async def test_stopping_mid_sentence_on_its_name_does_not_give_it_the_floor_for_a_new_request():
@@ -223,32 +264,28 @@ async def test_stopping_mid_sentence_on_its_name_does_not_give_it_the_floor_for_
 
 
 async def test_stop_while_it_says_its_answer_ends_it_and_it_is_not_said_again():
-    import asyncio
-
     h, backend, lives, clock = await asked()
     answer(h, h._requests.items[0].run_id, "forge", "Three PRs are open.")
-    h._room.hold = asyncio.Event()
-    await hears(h, P1, "Go ahead, Forge.")
+    await turns()
+    await pause(h, clock)
+    await first_sound(h)
     await hears(h, P2, "Forge, stop.")
     await turns()
     assert status(h, "forge") == "idle" and not h._news.get("forge")
     assert backend.late_answers == [], "a stopped request is not posted either (engine §3.6)"
 
 
-async def test_a_refused_meeting_voice_says_nothing_but_an_older_backend_still_speaks():
-    """Codex on #3775: the room was archived after the answer became ready; only a missing route falls back."""
+async def test_a_voice_the_backend_refuses_says_nothing():
+    """The room was archived, the agent left it, or today's voice minutes are used up."""
     from huddle_agent.backend import BackendError
 
-    for err, said in ((BackendError(404, "room_not_found", None), False), (BackendError(404, "http_404", None), True)):
-        h, backend, lives, clock = await asked()
+    h, backend, lives, clock = await asked()
 
-        async def refuse(agent_id, err=err):
-            raise err
+    async def refuse(agent_id):
+        raise BackendError(409, "agent_not_in_room", None)
 
-        backend.meet_voice = refuse
-        answer(h, h._requests.items[0].run_id, "forge", "Three PRs are open.")
-        await turns()
-        clock.t += 10
-        await h.tick()
-        await turns()
-        assert bool(getattr(h._room, "played", [])) is said
+    backend.session = refuse
+    answer(h, h._requests.items[0].run_id, "forge", "Three PRs are open.")
+    await turns()
+    await pause(h, clock)
+    assert lives == [] and told(lives) == []

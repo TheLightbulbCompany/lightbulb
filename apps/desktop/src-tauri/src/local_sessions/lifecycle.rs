@@ -245,8 +245,14 @@ fn build(provider: &str, stdin_json: &Value, held: Option<&super::approval::Held
 pub(crate) fn parse_datagram(bytes: &[u8]) -> Option<HookEvent> {
     let v: Value = serde_json::from_slice(bytes).ok()?;
     // Legacy datagrams still wake discovery, but cannot identify a process.
+    // Only v2 attributes a hook to a process. A v1 datagram carrying a
+    // non-null identity is rejected, never upgraded into a lifecycle mutation.
     // Unknown versions and malformed identities must not degrade to legacy.
-    if !matches!(v["v"].as_u64(), Some(1 | 2)) { return None; }
+    match v["v"].as_u64()? {
+        1 if !v["sourceProcess"].is_null() => return None,
+        1 | 2 => {},
+        _ => return None,
+    }
     let source_process = if v["sourceProcess"].is_null() {
         None
     } else {
@@ -518,6 +524,25 @@ mod tests {
             "sourceProcess":source,"executable":native.executable,"hookPid":std::process::id()});
         let path = std::path::Path::new(&dir).join(format!("{}.json", uuid::Uuid::new_v4()));
         std::fs::write(path, serde_json::to_vec(&proof).unwrap()).unwrap();
+    }
+
+    #[test]
+    fn lifecycle_v1_cannot_upgrade_to_an_attributed_hook() {
+        for event in ["Stop", "SessionEnd", "SessionStart", "PermissionRequest", "PermissionRelease"] {
+            let wire = json!({"v":1,"provider":"codex","event":event,"sessionId":"abc",
+                "sourceProcess":{"pid":42,"birthMicros":123},
+                "approvalId":"appr-0123456789abcdef0123456789abcdef"});
+            assert!(parse_datagram(&serde_json::to_vec(&wire).unwrap()).is_none(), "{event}");
+        }
+        // Absent/null identity keeps the exact-ID legacy release protocol.
+        let mut release = json!({"v":1,"provider":"codex","event":"PermissionRelease","sessionId":"abc",
+            "approvalId":"appr-0123456789abcdef0123456789abcdef"});
+        for source in [None, Some(Value::Null)] {
+            if let Some(source) = source { release["sourceProcess"] = source; }
+            let parsed = parse_datagram(&serde_json::to_vec(&release).unwrap()).unwrap();
+            assert_eq!(parsed.source_process, None);
+            assert_eq!(transition(&parsed), Transition::Release("appr-0123456789abcdef0123456789abcdef".into()));
+        }
     }
 
     #[test]

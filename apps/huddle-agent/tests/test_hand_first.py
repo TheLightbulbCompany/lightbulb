@@ -62,7 +62,7 @@ async def test_a_ready_answer_raises_its_hand_and_is_not_said_until_someone_call
     h, backend, lives, clock = await asked()
     answer(h, h._requests.items[0].run_id, "forge", "Three PRs are open.")
     assert status(h, "forge") == "has_news" and h._state()["lightbulb.agent.forge.hand"]
-    await settle(h)
+    await turns()
     assert h._room.prepared == [("forge", "Three PRs are open.")], "its audio is made when the hand goes up"
     clock.t += 60  # a long quiet: it still does not take the floor by itself
     await h.tick()

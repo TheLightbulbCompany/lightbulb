@@ -73,17 +73,40 @@ def _starter_role(agent_id: str, starter_ids: dict | None) -> str | None:
     return next((role for role, aid in (starter_ids or {}).items() if aid and aid == agent_id), None)
 
 
-def agent_voice(agent_id: str, starter_ids: dict | None) -> str:
+# A roster from before the starter six (the founder's) records no starter ids, but its agents hold the same
+# jobs under their own titles ("Forge — Engineering & Reliability"). The first word found picks the role.
+_TITLE_ROLES = (
+    ("ceo", ("ceo", "chief executive")),
+    ("customer_operations", ("customer",)),
+    ("engineering", ("engineer",)),
+    ("finance", ("financ",)),
+    ("analytics", ("analytic",)),
+    ("growth", ("growth", "distribution", "marketing")),
+)
+
+
+def _voice_role(agent_id: str, starter_ids: dict | None, title: str | None) -> str | None:
+    """The starter role whose voice this agent takes: its recorded one; else, in a workspace that records no
+    starters, the role its title names. ponytail: two such agents with one job share a voice."""
+    if role := _starter_role(agent_id, starter_ids):
+        return role
+    if any((starter_ids or {}).values()) or not title:
+        return None
+    t = title.casefold()
+    return next((role for role, words in _TITLE_ROLES if any(w in t for w in words)), None)
+
+
+def agent_voice(agent_id: str, starter_ids: dict | None, title: str | None = None) -> str:
     """A starter's hand-picked role voice; any other agent hashes over the pool minus those."""
-    role = _starter_role(agent_id, starter_ids)
+    role = _voice_role(agent_id, starter_ids, title)
     if role in STARTER_VOICES:
         return STARTER_VOICES[role]
     return _HASH_POOL[int(hashlib.sha256(agent_id.encode()).hexdigest(), 16) % len(_HASH_POOL)]
 
 
-def agent_meet_voice(agent_id: str, starter_ids: dict | None) -> str:
+def agent_meet_voice(agent_id: str, starter_ids: dict | None, title: str | None = None) -> str:
     """The voice that reads this agent's answers in a Meet: its role's, else a stable pick from the rest."""
-    role = _starter_role(agent_id, starter_ids)
+    role = _voice_role(agent_id, starter_ids, title)
     if role in STARTER_MEET_VOICES:
         return STARTER_MEET_VOICES[role]
     return _MEET_HASH_POOL[int(hashlib.sha256(agent_id.encode()).hexdigest(), 16) % len(_MEET_HASH_POOL)]

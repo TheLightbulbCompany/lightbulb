@@ -18,7 +18,6 @@ State:
 
 from __future__ import annotations
 
-import os
 
 import asyncio
 import collections
@@ -1020,8 +1019,6 @@ class Huddle:
             del self._heard_name[agent_id]
         named = self._named(text, a)
         attend = self._attend.get(identity)
-        if os.environ.get("HUDDLE_RIG_TRACE"):
-            logger.info("rigtrace line named=%s attend=%s news=%s", named, bool(attend), {k: len(v) for k, v in self._news.items()})
         if not named and attend and now <= attend[1] and real_speech(text):
             named = [attend[0]]  # a follow-up needs no name
         if not named and not a.lightbulb:
@@ -1048,8 +1045,6 @@ class Huddle:
             return
         if named:
             self._requests.pending(mark, identity, named, now)  # on the tile while /route decides
-            if os.environ.get("HUDDLE_RIG_TRACE"):
-                logger.info("rigtrace pending working=%s running=%s", [self._requests.working(x) for x in named], [self._runs.running(x) for x in named])
             self._sync_state()
         self._spawn(self._hand_ask(identity, text, mark))
 
@@ -3708,8 +3703,6 @@ class Huddle:
         """Writes only what changed; a key that is gone (a departed agent) is written "" (deleted)."""
         self._speech_sync()
         state = self._state()
-        if os.environ.get("HUDDLE_RIG_TRACE"):
-            logger.info("rigtrace sync %s", {k.split(".")[2][:4]: v for k, v in state.items() if k.endswith(".status") and v != "idle"})
         diff = {k: val for k, val in state.items() if self._published.get(k, "") != val}
         diff.update(
             {k: "" for k, val in self._published.items() if k not in state and val}

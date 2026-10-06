@@ -682,7 +682,13 @@ async def _voice_notes_reply(agent_id: str, ctx: TeamsContext, body: VoiceNotesB
         await run_in_thread(hermes_profiles.upload_voice_notes, owner_id, agent_id, text)
         await voice_calls.send_note_saved(owner_id, agent_id, name, notes, ctx.user_id)
     row = await _repo().resolve_owner_row(owner_id)
-    return {"name": name, "notes": notes, "voice": agent_voice(agent_id, getattr(row, "starter_agent_ids", None))}
+    return {
+        "name": name,
+        "notes": notes,
+        "voice": agent_voice(
+            agent_id, getattr(row, "starter_agent_ids", None), agent.get("title") or agent.get("role")
+        ),
+    }
 
 
 @router.get("/agents/{agent_id}/voice-notes")

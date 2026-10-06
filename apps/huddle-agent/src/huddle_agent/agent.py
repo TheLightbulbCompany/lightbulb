@@ -129,14 +129,10 @@ SERVER_VAD = {
 }
 
 
-def _stt_vad() -> dict:
-    """Rig experiment: HUDDLE_STT_VAD=server|high picks the transcriber's end-of-turn rule (default: semantic, auto)."""
-    mode = os.environ.get("HUDDLE_STT_VAD", "")
-    if mode == "server":
-        return {**SERVER_VAD, "silence_duration_ms": int(os.environ.get("HUDDLE_VAD_SILENCE_MS", "700"))}
-    if mode == "high":
-        return {"type": "semantic_vad", "eagerness": "high"}
-    return SEMANTIC_VAD
+# A meeting: the plain silence rule, and a short one. semantic_vad gave a line's words 1.5-5.8 s after it was
+# said, this gives them in about 1.3 s (rig, 10-06). A sentence it splits at a pause is still one request: the
+# next line of someone an agent is attending to needs no name (huddle._attend).
+MEET_VAD = {**SERVER_VAD, "silence_duration_ms": 400}
 
 
 def retry_without_semantic_vad(
@@ -339,8 +335,7 @@ class _Room:
     async def prepare(self, agent_id: str, voice: str, text: str) -> tuple:
         """A ready answer as audio, on its own `agent-<id>` track, published before anyone calls on it: a
         call-on then only has to push frames (GPT-Live took 2 s to its first sound; rig, 10-06)."""
-        # ponytail: GPT-Live has voices the speech model lacks ("delta"): those agents speak as FALLBACK_VOICE in a
-        # meeting. Give every agent a voice both models have if the difference matters.
+        # the backend sends a speech-model voice (voice_persona.agent_meet_voice); an older one sends a Live voice
         voice = voice if voice in TTS_VOICES else FALLBACK_VOICE
         frames = [ev.frame async for ev in openai.TTS(model="gpt-4o-mini-tts", voice=voice).synthesize(text)]
         while len(frames) > 1 and max(frames[0].data, default=0) < 300 and min(frames[0].data, default=0) > -300:
@@ -378,6 +373,8 @@ async def _on_request(req: JobRequest) -> None:
 
 # agent_name is deprecated in 1.8.3 (worker.py rtc_session) and LIVEKIT_AGENT_NAME wins over it; the
 # Dockerfile sets LIVEKIT_AGENT_NAME=lightbulb-huddle so both agree. Drop this kwarg once it is removed.
+# HUDDLE_RIG_AGENT_NAME: the multi-voice test rig runs this worker on a laptop under its own dispatch name, so no
+# real call reaches it. Unset everywhere else.
 @server.rtc_session(agent_name=os.environ.get("HUDDLE_RIG_AGENT_NAME", "lightbulb-huddle"), on_request=_on_request)
 async def entrypoint(ctx: JobContext) -> None:
     meta = json.loads(ctx.job.metadata)
@@ -387,18 +384,11 @@ async def entrypoint(ctx: JobContext) -> None:
     backend = Backend(meta["roomId"], meta["ownerId"], meta["roomToken"])
     vad = silero.VAD.load()
     # streaming; interims still drive barge-in, semantic_vad only decides when a final lands
-    if os.environ.get("HUDDLE_STT_VAD") == "local":
-        # Rig experiment: the worker's own speech detector ends a turn (0.6 s of silence) and the words are
-        # transcribed once. OpenAI's realtime transcriber reported the end of speech 1-5 s after the last word,
-        # and its "interim" words only after that (rig trace 10-06), which is most of every dead pause.
-        words = openai.STT(model="gpt-4o-mini-transcribe")
-        stt_engine = stt.StreamAdapter(
-            stt=words,
-            vad=silero.VAD.load(min_silence_duration=float(os.environ.get("HUDDLE_VAD_SILENCE", "0.6"))),
-        )
-    else:
-        stt_engine = words = openai.STT(model="gpt-4o-mini-transcribe", use_realtime=True, turn_detection=_stt_vad())
-    vad_state = {"vad": "semantic" if _stt_vad() == SEMANTIC_VAD else "server"}
+    meeting = meta.get("source") == "meet"
+    stt_engine = openai.STT(
+        model="gpt-4o-mini-transcribe", use_realtime=True, turn_detection=MEET_VAD if meeting else SEMANTIC_VAD
+    )
+    vad_state = {"vad": "server" if meeting else "semantic"}
 
     @stt_engine.on("metrics_collected")
     def _stt_metrics(m) -> None:
@@ -430,7 +420,7 @@ async def entrypoint(ctx: JobContext) -> None:
         room=room,
         backend=backend,
         live_factory=live_factory,
-        on_vocabulary=lambda prompt: words.update_options(
+        on_vocabulary=lambda prompt: stt_engine.update_options(
             prompt=prompt
         ),  # open streams take it in place
         # a Google Meet bridged in by a Recall bot (the meeting dispatch)
@@ -473,9 +463,6 @@ async def entrypoint(ctx: JobContext) -> None:
                     try:
                         # the transcriber's own speech detector: it answers to speech, not to sound, and it
                         # fires before any word is transcribed (who is talking, for the floor)
-                        if os.environ.get("HUDDLE_RIG_TRACE"):
-                            logger.info("rigtrace %s %s %s", p.name, ev.type.name if hasattr(ev.type, "name") else ev.type,
-                                        (ev.alternatives[0].text[:40] if ev.alternatives else ""))
                         if ev.type == stt.SpeechEventType.START_OF_SPEECH:
                             huddle.on_speech(p.identity, True)
                         elif ev.type == stt.SpeechEventType.END_OF_SPEECH:

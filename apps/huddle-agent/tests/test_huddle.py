@@ -137,6 +137,7 @@ class FakeBackend:
         open=(),
     ):
         self.routes.append((speaker, utterance, transcript))
+        self.route_floors = getattr(self, "route_floors", []) + [floor]
         self.route_humans.append(humans)
         self.route_bodies.append(
             {

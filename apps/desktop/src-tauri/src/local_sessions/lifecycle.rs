@@ -65,14 +65,30 @@ fn hook_ancestor(
     None
 }
 
+/// Resolve a relationship, not just two live PIDs. A reparented child keeps
+/// its birth time, and a reused parent PID may already name another process.
+fn checked_parent(
+    child: &super::Process,
+    mut parent: impl FnMut(u32) -> Option<super::Process>,
+    mut process: impl FnMut(u32) -> Option<super::Process>,
+) -> Option<super::Process> {
+    let first = parent(child.pid)?;
+    if first.birth_micros > child.birth_micros
+        || parent(child.pid)? != first
+        || process(child.pid)? != *child
+    {
+        return None;
+    }
+    Some(first)
+}
+
 fn hook_process(provider: &str) -> Option<HookProcess> {
     let own = super::process(std::process::id()).ok()?;
-    // Recheck each child after reading its parent so PID reuse cannot splice
-    // together two different generations during the bounded ancestry walk.
-    let parent = |child: &super::Process| {
-        let parent = super::native_tools::parent(child.pid).ok()?;
-        (super::process(child.pid).ok()? == *child).then_some(parent)
-    };
+    let parent = |child: &super::Process| checked_parent(
+        child,
+        |pid| super::native_tools::parent(pid).ok(),
+        |pid| super::process(pid).ok(),
+    );
     let first = parent(&own)?;
     let source = hook_ancestor(provider, first, parent)?;
     let live = super::process(source.pid).ok()?;
@@ -447,6 +463,50 @@ mod tests {
 
     fn ancestor(pid: u32, executable: &str) -> super::super::Process {
         super::super::Process { pid, birth_micros: 100 + pid as u64, executable: executable.into() }
+    }
+
+    #[test]
+    fn lifecycle_parent_rejects_a_reparented_child() {
+        let child = ancestor(100, "/hook");
+        let old = ancestor(10, "/opt/codex");
+        let adopted = ancestor(11, "/other/parent");
+        let mut reads = [old, adopted].into_iter();
+        assert_eq!(checked_parent(&child, |_| reads.next(), |_| Some(child.clone())), None);
+    }
+
+    #[test]
+    fn lifecycle_parent_rejects_a_parent_born_after_the_child() {
+        let child = ancestor(100, "/hook");
+        let reused = ancestor(200, "/opt/codex");
+        assert_eq!(checked_parent(&child, |_| Some(reused.clone()), |_| Some(child.clone())), None);
+    }
+
+    #[test]
+    fn lifecycle_parent_rejects_parent_pid_reuse_during_resolution() {
+        let child = ancestor(100, "/hook");
+        let old = ancestor(10, "/opt/codex");
+        let mut reused = old.clone();
+        reused.birth_micros += 1;
+        let mut reads = [old, reused].into_iter();
+        assert_eq!(checked_parent(&child, |_| reads.next(), |_| Some(child.clone())), None);
+    }
+
+    #[test]
+    fn lifecycle_parent_rejects_child_pid_reuse_during_resolution() {
+        let child = ancestor(100, "/hook");
+        let parent = ancestor(10, "/opt/codex");
+        let mut reused = child.clone();
+        reused.birth_micros += 1;
+        assert_eq!(checked_parent(&child, |_| Some(parent.clone()), |_| Some(reused.clone())), None);
+    }
+
+    #[test]
+    fn lifecycle_parent_accepts_only_a_stable_older_relationship() {
+        let child = ancestor(100, "/hook");
+        let parent = ancestor(10, "/opt/codex");
+        assert_eq!(checked_parent(&child, |_| Some(parent.clone()), |_| Some(child.clone())), Some(parent.clone()));
+        let mut vanished = [Some(parent), None].into_iter();
+        assert_eq!(checked_parent(&child, |_| vanished.next().flatten(), |_| Some(child.clone())), None);
     }
 
     #[test]

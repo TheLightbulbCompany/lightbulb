@@ -426,6 +426,11 @@ def test_spoken_words_are_spent_across_queued_answers_in_delivery_order():
     bags = h_mod._said_bags("No PRs are open.")
     assert h_mod._unsaid_with("No PRs are open.", bags) == ""
     assert h_mod._unsaid_with("No PRs are open. The deploy is green.", bags) == "No PRs are open. The deploy is green."
+    # Codex on #3800: a "Yes." is spent too, and a phonetic match spends the word that sounded like it
+    bags = h_mod._said_bags("Yes.")
+    assert h_mod._unsaid_with("Yes.", bags) == "" and h_mod._unsaid_with("Yes.", bags) == "Yes."
+    bags = h_mod._said_bags("peers are open")
+    assert h_mod._unsaid_with("PRs are open.", bags) == "" and h_mod._unsaid_with("Peers are open.", bags) == "Peers are open."
 
 
 async def test_news_handed_to_a_named_voice_keeps_its_hand_if_the_voice_closes_before_its_first_word():

@@ -199,39 +199,44 @@ def _words(text: str) -> tuple[set[str], list[str]]:
     return {w for w in words if w not in FUNCTION_WORDS}, words
 
 
-def _said_bags(said: str) -> tuple[list[str], collections.Counter, collections.Counter]:
-    """What was heard, as bags the sentences of an answer spend in order (`_unsaid_with`): all words, the content
-    words, and their sounds. One set of bags serves every answer of one delivery, in delivery order, so two
-    answers that share wording are not both heard for the price of one (Codex on #3792)."""
-    said_all = _words(said)[1]
-    left = collections.Counter(w for w in said_all if w not in FUNCTION_WORDS)
-    sounds = collections.Counter(soundex(w) for w in left.elements() if len(w) > 2 and w.isascii())
-    return said_all, left, sounds
+def _said_bags(said: str) -> tuple[collections.Counter, collections.Counter]:
+    """What was heard, as bags the sentences of an answer spend in order (`_unsaid_with`): every word, and the
+    content words. One set of bags serves every answer of one delivery, in delivery order, so two answers that
+    share wording are not both heard for the price of one (Codex on #3792)."""
+    words = _words(said)[1]
+    return collections.Counter(words), collections.Counter(w for w in words if w not in FUNCTION_WORDS)
 
 
-def _unsaid_with(answer: str, bags: tuple) -> str:
+def _unsaid_with(answer: str, bags: tuple[collections.Counter, collections.Counter]) -> str:
     """`unsaid_part` against bags the answers said before this one have already spent."""
-    said_all, left, sounds = bags
+    all_left, left = bags
     sentences = [x for x in re.split(r"(?<=[.!?])\s+", answer.strip()) if x]
     for i, sentence in enumerate(sentences):
         words = _words(sentence)[1]
         content = [w for w in words if w not in FUNCTION_WORDS]
-        if not content and not all(w in said_all for w in words):  # "Yes." / "I can.": said only word for word
-            return answer if i == 0 else " ".join(sentences[i:])
-        spend: list[tuple[str, str]] = []
-        for w in content:
-            key = soundex(w) if len(w) > 2 and w.isascii() else ""
-            if left[w] - sum(1 for x, _ in spend if x == w) > 0:
-                spend.append((w, key))
-            elif key and sounds[key] - sum(1 for _, k in spend if k == key) > 0:  # misheard ("peers" for "PRs")
-                spend.append(("", key))
-        if content and len(spend) / len(content) < 0.7:
-            return answer if i == 0 else " ".join(sentences[i:])  # the same object when nothing of it was said
-        for w, key in spend:  # a sentence that was said spends its words
-            if w:
+        spend: list[str] = []  # the heard words this sentence uses up, once it counts as said
+        if not content:  # "Yes." / "I can.": said only word for word, each word once
+            for w in words:
+                if all_left[w] - spend.count(w) > 0:
+                    spend.append(w)
+            if len(spend) < len(words):
+                return answer if i == 0 else " ".join(sentences[i:])
+        else:
+            for w in content:
+                if left[w] - spend.count(w) > 0:
+                    spend.append(w)
+                    continue
+                key = soundex(w) if len(w) > 2 and w.isascii() else ""
+                # misheard by the other transcriber ("peers" for "PRs"): spend the word that sounds like it
+                heard = next((x for x in left if len(x) > 2 and x.isascii() and left[x] - spend.count(x) > 0 and soundex(x) == key), None) if key else None
+                if heard is not None:
+                    spend.append(heard)
+            if len(spend) / len(content) < 0.7:
+                return answer if i == 0 else " ".join(sentences[i:])  # the same object when nothing of it was said
+        for w in spend:
+            all_left[w] -= 1
+            if w in left:
                 left[w] -= 1
-            if key:
-                sounds[key] -= 1
     return ""
 
 
@@ -3360,7 +3365,9 @@ class Huddle:
         if unsaid and in_meet(v.speaker):
             # a meeting: nothing is lost and nothing is posted yet. Its hand goes back up with what was not heard,
             # from the sentence it was cut on, said at the next pause or when someone turns to it (owner 10-06/07).
-            bags = _said_bags(" ".join(v.said))  # spent in delivery order: shared wording is not heard twice
+            # spent in the seed's delivery order (Codex on #3800): shared wording is not heard twice
+            unsaid.sort(key=lambda n: (self._requests.order(n[0]), n[3]))
+            bags = _said_bags(" ".join(v.said))
             unsaid = [(n[0], n[1], rest, *n[3:]) for n in unsaid if (rest := _unsaid_with(n[2], bags))]
             have = {n[0] for n in self._news.get(v.agent_id, [])}
             self._news.setdefault(v.agent_id, []).extend(n for n in unsaid if n[0] not in have)

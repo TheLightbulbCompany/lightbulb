@@ -79,3 +79,21 @@ def test_the_meet_bots_page_is_never_a_person():
         assert agent.person(SimpleNamespace(identity=identity, kind=ingress))
     assert agent.person(SimpleNamespace(identity="u1", kind=standard))
     assert not agent.person(SimpleNamespace(identity="agent-x", kind=rtc.ParticipantKind.PARTICIPANT_KIND_AGENT))
+
+
+def test_a_meeting_voices_rule_is_applied_again_after_a_reconnect():
+    """Codex on #3792: a reconnect rebuilds the session from its first instructions, without the rule that
+    keeps a per-person voice out of its person's talk to others."""
+    from unittest.mock import MagicMock
+
+    duplex, handlers = MagicMock(), {}
+    duplex.on.side_effect = lambda event, cb: handlers.__setitem__(event, cb)
+    live = agent._Live("forge", MagicMock(), duplex, MagicMock())
+    handlers["session_reconnected"](None)
+    assert duplex.append_instructions.call_count == 0, "no rule, nothing to re-apply"
+    live.meet_rule("You hear only Priya.")
+    live.meet_rule("You hear only Dan.")  # the floor moved: the newest rule is the one in force
+    handlers["session_reconnected"](None)
+    assert [c.args[0] for c in duplex.append_instructions.call_args_list] == [
+        "You hear only Priya.", "You hear only Dan.", "You hear only Dan."
+    ]

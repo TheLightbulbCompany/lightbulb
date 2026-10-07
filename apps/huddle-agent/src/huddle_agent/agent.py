@@ -187,6 +187,7 @@ class _Live:
         )
         self.append_instructions = duplex.append_instructions
         self._duplex, self._muted = duplex, muted  # muted from its start: a meeting voice (see _Voice.on_enter)
+        self._rule: str | None = None  # the meeting rule in force (huddle.MEET_RULES), re-applied on a reconnect
         # A reconnect is a new GPT-Live session, and a new session hears: a muted voice (a meeting's, which
         # must never hear the Meet) is muted again on each one.
         duplex.on("session_reconnected", self._on_reconnected)
@@ -199,9 +200,17 @@ class _Live:
         self._muted = True
         self._duplex.mute_input()
 
+    def meet_rule(self, text: str) -> None:
+        """The standing rule of a per-person meeting voice: who it hears. The newest supersedes (its wording
+        says so), and a reconnect, which rebuilds the session from its first instructions, gets it again."""
+        self._rule = text
+        self._duplex.append_instructions(text)
+
     def _on_reconnected(self, _ev=None) -> None:
         if self._muted:
             self._duplex.mute_input()
+        if self._rule:
+            self._duplex.append_instructions(self._rule)
 
     def interrupt(self):
         return self._session.interrupt(force=True)

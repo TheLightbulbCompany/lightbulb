@@ -301,6 +301,9 @@ class FakeLive:
     def append_instructions(self, text):
         self._rec("instructions", text)
 
+    def meet_rule(self, text):
+        self._rec("instructions", text)  # recorded as the instruction it is
+
     def reply_to(self, text):
         self._rec("reply_to", text)
 

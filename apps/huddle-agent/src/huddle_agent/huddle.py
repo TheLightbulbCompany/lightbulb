@@ -166,7 +166,7 @@ MEET_RULES = (
     "This is a team meeting on Google Meet with several people. You hear only {name}; you cannot hear the "
     "others, and {name} talks to them too. Speak only when {name} is talking to you. When what you hear is said "
     "to someone else, or is not for you, say nothing at all: no acknowledgement, no sound. Never answer a "
-    "question that was asked of someone else."
+    "question that was asked of someone else. This replaces any earlier rule about who you hear."
 )
 TRAIL_S = 8.0  # a meeting line that trails off ("Can one of you tell me...") waits this long for its rest
 SAID_LOG_N, SAID_LOG_S = 12, 120.0  # a meeting hand whose words the agent said meanwhile is let go, not said again
@@ -266,6 +266,7 @@ class Live(Protocol):
     def interrupt(self) -> Any: ...  # AgentSession.interrupt(force=True)
     def mute(self) -> None: ...
     def nudge(self) -> None: ...  # generate_reply(): a request the model may decline
+    def meet_rule(self, text: str) -> None: ...  # a per-person meeting voice's standing rule; kept for a reconnect
     def reply_to(
         self, text: str
     ) -> None: ...  # generate_reply(user_input=text): a typed user turn
@@ -2245,7 +2246,7 @@ class Huddle:
             self._live_call(v, "mute")
         elif in_meet(identity):
             # A person of a per-person Meet is heard like anyone in a Live call, under the meeting rule.
-            self._live_call(v, "append_instructions", MEET_RULES.format(name=self._talker(identity, mark)))
+            self._live_call(v, "meet_rule", MEET_RULES.format(name=self._talker(identity, mark)))
         if v.driven:
             v.driven.bind_until = v.opened + BIND_SECONDS
         if v.announce:  # consumed when its audio starts (on_agent_state)
@@ -2314,7 +2315,7 @@ class Huddle:
             # told what they asked through `_answer_heard`). A per-person voice now hears them: the rule says so.
             v.label, v.followed_at = self._label(identity), self._clock()
             if not mixed_meet(identity):
-                self._live_call(v, "append_instructions", MEET_RULES.format(name=self._talker(identity)))
+                self._live_call(v, "meet_rule", MEET_RULES.format(name=self._talker(identity)))
             return self._live_call(v, "set_participant", identity)
         return self._live_call(v, "set_participant", identity) and self._live_call(
             v, "append_thinking", f"{self._talker(identity)} is talking to you"

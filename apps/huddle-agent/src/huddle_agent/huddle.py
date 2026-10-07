@@ -1451,6 +1451,11 @@ class Huddle:
                 if o.get("social") or o.get("more")
                 else f'{self._talker(identity, mark)} said: "{text}"'
             )
+            # /route's word on what the agent owes this line (`ops.say`): called on while its work is still
+            # running, it says so, naming the work. A line that only calls on it is never a new request.
+            say = o.get("say") or {}
+            if say.get("agentId") == agent_id and say.get("kind") == "status" and say.get("task"):
+                said += f' You are still working on this for them: "{say["task"]}". Tell them so.'
         return first, ack, said
 
     async def _named_summon(self, identity: str, text: str, mark: int, summon, understood: tuple) -> None:

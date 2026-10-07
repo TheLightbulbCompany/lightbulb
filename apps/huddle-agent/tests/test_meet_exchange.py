@@ -530,3 +530,18 @@ async def test_a_mouths_answer_it_reported_said_leaves_no_hand():
     await h.tick()
     await settle(h)
     assert not h._news.get("forge")
+
+
+async def test_called_on_while_its_work_runs_the_voice_is_told_what_it_is_still_working_on():
+    """Codex on #3820: /route's `ops.say` status was read by nobody."""
+    h, backend, lives, clock = await asked()
+    clock.t += h_mod.MEET_FOLLOWUP_S  # its voice closed; the run still works
+    await h.tick()
+    await settle(h)
+    assert h._voice is None
+    backend.route_extra = {"ops": {"requests": [], "social": "forge", "more": False, "cancel": [], "steer": [],
+                                   "people": False, "say": {"agentId": "forge", "kind": "status",
+                                                            "task": "list the open PRs", "text": None}}}
+    await says(h, P1, "Forge, go ahead.")
+    assert len(backend.turns) == 1, "no new run"
+    assert 'You are still working on this for them: "list the open PRs"' in str(lives[-1].seed) + str(lives[-1].calls)

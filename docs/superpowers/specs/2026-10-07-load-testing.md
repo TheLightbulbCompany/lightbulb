@@ -24,8 +24,8 @@ Last row = main blast radius: unreserved projector/`ws-message` share prod's Lam
 
 | Piece | What | Status |
 |---|---|---|
-| Load generator | **Round one: k6 on ONE machine** (owner ruling). AWS **Distributed Load Testing** (DLT, CFN, k6 on Fargate) only if one runner cannot make the load. In DLT: **Native mode** only (Standard mode overrides the k6 `options`, dropping arrival-rate executors and thresholds), and every task runs a full copy of the script, so divide the target rate by task count (10 tasks × 40 rps = 400 rps otherwise). | DLT owner-gated |
-| Fixtures | `apps/backend/scripts/load/fixtures.py` — Python, imports `Clerk`/`Session`/`dev_only` from `scripts/multiparty_e2e/runner.py` (no second Clerk client). `setup` / `teardown` subcommands. | to write |
+| Load generator | **Round one: k6 on ONE machine** (owner ruling). AWS **Distributed Load Testing** (DLT, CFN, k6 on Fargate) only if one runner cannot make the load. In DLT: **Native mode** only (Standard mode overrides the k6 `options`, dropping arrival-rate executors and thresholds), and every task runs a full copy of the script, so divide the target rate by task count (10 tasks × 40 rps = 400 rps otherwise) and partition receivers and fixture credentials per task (`__ENV.TASK_INDEX`/`TASK_COUNT` slice `users`), or keep scenarios with receivers off DLT. | DLT owner-gated |
+| Fixtures | `apps/backend/scripts/load/fixtures.py` — Python, imports `Clerk`/`Session`/`dev_only` from `scripts/multiparty_e2e/runner.py` (no second Clerk client). That `Session` activates the module-level `ORG` (the excluded Jev test workspace), so `fixtures.py` parameterizes it with each fixture org id, activating that org before minting; preflight asserts every fixture JWT's `o.id` equals its fixture org. `setup` / `teardown` subcommands. | to write |
 | k6 scripts | `apps/backend/scripts/load/k6/{messaging,agents,viewers}.js`, reading `fixtures.json` | to write |
 | Mac simulator | `apps/backend/scripts/load/mac_sim.py` (scenario 3) — Python, not k6; see §4 | to write |
 
@@ -59,7 +59,7 @@ VUs: `preAllocatedVUs = ceil(peak rate/s × p95 iteration s × 1.5)`, `maxVUs = 
 ```js
 const arrival = (pre, max) => ({ executor: 'ramping-arrival-rate', startRate: 0, timeUnit: '1s',
   stages: JSON.parse(__ENV.STAGES), preAllocatedVUs: pre, maxVUs: max });
-const listen = (n) => ({ executor: 'constant-vus', exec: 'listen', vus: n, duration: __ENV.SEND_S + 60 + 's' });
+const listen = (n) => ({ executor: 'constant-vus', exec: 'listen', vus: n, duration: Number(__ENV.SEND_S) + 60 + 's' });
 export const options = { scenarios: { send: { ...arrival(30, 60), exec: 'send', startTime: '30s' },
   recv: listen(Number(__ENV.RECEIVERS)) }, thresholds: { http_req_failed: ['rate<0.005'] } };
 // Senders hold no socket; each receiver VU (users[i]) holds one AppSync subscription (appsyncEvents.ts port)

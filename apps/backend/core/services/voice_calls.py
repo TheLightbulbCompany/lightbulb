@@ -975,7 +975,8 @@ def _understood(
     conversation, a named agent, a line among people the room judge picked an agent for). Not implied, an
     unnamed part is no request. Owners marked ``None`` here are filled by the caller (the floor agent, the
     judge's agent, the chief of staff).
-    Returns ``{requests: [{agentId|None, task, by}], talk, more, cancel, steer}``."""
+    Returns ``{requests: [{agentId|None, task, by}], talk, more, nudge, cancel, steer}``. ``nudge``: a part only
+    calls on an agent or tells it to go on ("Friday, go ahead"); that is never a request."""
     parts, pieces = addressing["parts"], addressing["pieces"]
     named = [(name, agent) for name, agent, _ in addressing["named"]]
     by_name = dict(named)
@@ -1055,6 +1056,8 @@ def _understood(
         "talk": any(kind[p["index"]] in ("social", "more", "context") for p in parts) or not parts,
         "people": bool(parts) and all(kind[p["index"]] == "people" for p in parts),
         "more": any(kind[p["index"]] == "more" for p in parts),
+        # a name and nothing else ("Friday?") calls on the agent too
+        "nudge": any(kind[p["index"]] == "nudge" for p in parts) or bool(named and not parts),
         "cancel": [],
         "steer": [],
     }
@@ -1126,7 +1129,8 @@ async def route_live_line(
     Jev down: the whole line is one request for the named agents, else (wake word, unclaimed) one agent;
     a line only the floor or a lone speaker implies is no request.
     Returns ``{agentId, agentIds, requests?, hold?, ops}``: ``ops`` is ``{requests: [{agentId, task, by}],
-    social, more, cancel, steer}``; the other fields are what a worker before ``ops`` reads."""
+    social, more, cancel, steer, people, say}``; ``say`` is ``{agentId, kind, task, text}`` or None: the one agent
+    that speaks now (``kind``: ack, steer, status, social). The other fields are what a worker before ``ops`` reads."""
     members = [
         {**m, "listenMode": "active"} if m.get("kind") == "agent" else m
         for m in await messaging_repo.list_members(room_id)
@@ -1268,7 +1272,7 @@ async def route_live_line(
             # a question to the room nobody took (the worker waited), or a wake-word line, that Jev heard as
             # people talk: it was said to the agents, so one agent answers it. Small talk stays small talk.
             u["requests"] = [{"agentId": None, "task": utterance, "by": ""}]
-    if picked and not u["requests"] and not u["cancel"] and not u["steer"]:
+    if picked and not u["requests"] and not u["cancel"] and not u["steer"] and not u.get("nudge"):
         # the judge heard something to answer where the parts saw talk between people: the line is its request
         u["requests"] = [{"agentId": None, "task": utterance, "by": ""}]
     elif picked and len(u["requests"]) == 1 and u["requests"][0]["by"] == "fit":
@@ -1306,19 +1310,43 @@ async def route_live_line(
             social = floor_agent
         elif implied and not meeting:
             social = await someone()
+    steered = [r["agentId"] for r in earlier if r["id"] in {s["requestId"] for s in u["steer"]}]
+    # Driven voice: the voice is a mouth, so the router says who speaks NOW and about what. Jev down: nobody.
+    # ``text`` is None: Jev returns choices and probabilities, never words, so no line is written in this call.
+    say = None
+    # Called on, nothing new asked ("Friday, go ahead"): the agent reports on what it has open.
+    who = named[0] if named else floor_agent if mine else None
+    called = bool(u.get("nudge")) and implied
+    theirs = [r for r in earlier if r["status"] in (*_OPEN_STATUS, "ready") and who in (None, r["agentId"])]
+    if addressing["path"] == "fallback":
+        pass
+    elif requests:  # acknowledge the ask (also a stale answer asked again with its correction)
+        say = {"agentId": requests[0]["agentId"], "kind": "ack", "task": requests[0]["task"]}
+    elif u["cancel"]:
+        pass  # a stop is obeyed in silence
+    elif steered:
+        say = {"agentId": steered[0], "kind": "steer", "task": u["steer"][0]["text"]}
+    elif called and theirs:
+        # A ready answer needs no line (the worker speaks the answer itself); a working one is named.
+        if not any(r["status"] == "ready" for r in theirs):
+            say = {"agentId": theirs[0]["agentId"], "kind": "status", "task": theirs[0]["task"]}
+    elif social or (called and who):
+        say = {"agentId": social or who, "kind": "social", "task": None}  # small talk; nothing open is nothing new
     ops = {
         "requests": requests,
         "social": social,
         "more": u["more"],
         "cancel": u["cancel"],
         "steer": u["steer"],
+        # the line is talk between people: a meeting voice pinned to its speaker gives the floor back
+        "people": bool(u["people"]) and not requests,
+        "say": say and {**say, "text": None},
     }
     # What a worker before ``ops`` reads. It hands the WHOLE line to every agent in ``agentIds`` unless
     # ``requests`` splits it, and it reads ``requests`` only for a line that names two or more agents. So
     # it is told what the router told it before understanding: the agents the line names, each with its
     # part; else one agent (the first owner, the steered request's agent, or whoever replies to small talk).
     by_name = list(dict.fromkeys(r["agentId"] for r in requests if r["by"] == "name"))
-    steered = [r["agentId"] for r in earlier if r["id"] in {s["requestId"] for s in u["steer"]}]
     order = by_name or ([r["agentId"] for r in requests] or steered or ([social] if social else []))[:1]
     outcome = "routed" if requests else "social" if social else "none"
     put_metric("voice.routing.jev", dimensions={"outcome": outcome, "setting": setting})

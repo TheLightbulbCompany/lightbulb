@@ -2794,6 +2794,13 @@ KINDS = {
         "themselves; not for the AI team"
     ),
     "cancel": "Calls off or pauses something the team was asked earlier ('forget the deck', 'hold off on that')",
+    # Driven voice: "Friday, go ahead" read as a plain instruction and became a run of its own. Not yet
+    # run on scripts/speak_gate_bench/understand.py: a new choice moves the others' probabilities.
+    "nudge": (
+        "Only calls on a teammate, checks that it is there, or tells it to go on with or report on what it "
+        "was ALREADY asked ('Friday?', 'go ahead', 'are you there', 'so, what did you find', 'any update'); "
+        "it names no new thing to find out or do"
+    ),
 }
 WHO_PART_INSTRUCTIONS = (
     "The latest message was spoken on a voice call with a team of AI teammates, and was cut into parts. For "

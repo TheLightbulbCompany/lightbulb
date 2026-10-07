@@ -32,6 +32,10 @@ def decide():
         yield decide
 
 
+NOBODY = {"requests": [], "social": None, "more": False, "cancel": [], "steer": [], "people": False, "say": None}
+SMALL_TALK = {"agentId": "friday", "kind": "social", "task": None, "text": None}
+
+
 async def route(decide, line, said, *, speaker="user_p", humans=1, floor=None, mine=True, opened=(), **kw):
     decide.return_value = said
     if floor:
@@ -180,7 +184,7 @@ async def test_a_greeting_is_no_request(decide):
     """Prod started a backend run for "Hey guys, how's it going?" and greeted twice."""
     hello = jev_says(kinds=["social", "social"])  # "Hey guys," | "how's it going"
     got = await route(decide, "Hey guys, how's it going?", hello)
-    assert got["ops"] == {"requests": [], "social": "friday", "more": False, "cancel": [], "steer": []}
+    assert got["ops"] == {**NOBODY, "social": "friday", "say": SMALL_TALK}
     assert got["agentIds"] == ["friday"] and "requests" not in got
     two = await route(decide, "Hey guys, how's it going?", hello, humans=2)
     assert two["ops"]["social"] is None and two["agentIds"] == []  # people greeting each other
@@ -194,7 +198,7 @@ async def test_an_announcement_then_a_request(decide):
     assert tasks(got) == [("friday", "I need to know when the update is in", "chief")]
     assert got["ops"]["more"] is True
     alone = await route(decide, "I have a few questions, bear with me.", jev_says(kinds=["more"]))
-    assert alone["ops"] == {"requests": [], "social": "friday", "more": True, "cancel": [], "steer": []}
+    assert alone["ops"] == {**NOBODY, "social": "friday", "more": True, "say": SMALL_TALK}
 
 
 async def test_a_named_agent_owns_every_ask_on_its_line(decide):
@@ -455,7 +459,7 @@ async def test_the_room_judge_down_falls_back_like_chat(decide):
 async def test_said_to_a_person_is_for_nobody(decide):
     said = jev_says(kinds=["request"], whos=["forge"], names=["addressed"])
     got = await route(decide, "Leo, can you send me that deck after this?", said, humans=2, floor="gauge")
-    assert got["ops"] == {"requests": [], "social": None, "more": False, "cancel": [], "steer": []}
+    assert got["ops"] == {**NOBODY, "people": True}
     typed = await route(decide, "did you call the landlord", jev_says(kinds=["people"]), floor="gauge")
     assert typed["ops"]["requests"] == [] and typed["ops"]["social"] is None
 
@@ -571,3 +575,38 @@ async def test_who_is_asked_is_not_a_request_of_its_own(decide):
         ("pulse", "schedule the promo", "name"),
         ("forge", "whoever handles billing can you check why Hooli got charged twice", "fit"),
     ]
+
+
+# ---- a line that only calls on an agent (driven voice: ops.say) ----
+
+
+async def test_go_ahead_is_no_request_and_reports_the_working_one(decide):
+    said = jev_says(kinds=["nudge"], names=["addressed"], amends="r1")
+    got = await route(decide, "Gauge, go ahead.", said, opened=OPEN)
+    assert got["ops"]["requests"] == [] and got["ops"]["steer"] == [] and got["ops"]["social"] is None
+    assert got["ops"]["say"] == {"agentId": "gauge", "kind": "status", "task": OPEN[0]["task"], "text": None}
+    assert "nudge" in decide.await_args.args[1]["k0"]["criteria"]
+    # its answer is ready: the worker speaks the answer itself, so no line
+    ready = [{**OPEN[0], "status": "ready"}]
+    got = await route(decide, "Gauge, go ahead.", said, opened=ready)
+    assert got["ops"]["requests"] == [] and got["ops"]["cancel"] == [] and got["ops"]["say"] is None
+    # a name alone is the same call-on, with no part for Jev to read
+    got = await route(decide, "Gauge?", jev_says(names=["addressed"]), opened=OPEN)
+    assert got["ops"]["say"]["kind"] == "status" and got["ops"]["requests"] == []
+    # nothing open (r2 is delivered): nothing new, so small talk
+    got = await route(decide, "Forge, are you there?", jev_says(kinds=["nudge"], names=["addressed"]), opened=OPEN)
+    assert got["ops"]["requests"] == []
+    assert got["ops"]["say"] == {"agentId": "forge", "kind": "social", "task": None, "text": None}
+
+
+async def test_a_stop_says_nothing_and_a_correction_is_acknowledged(decide):
+    said = jev_says(kinds=["cancel"], names=["not_a_name"], drops="r1")  # "Forget" is heard as "Forge"
+    stop = await route(decide, "Forget the signups.", said, opened=OPEN)
+    assert stop["ops"]["cancel"] == ["r1"] and stop["ops"]["say"] is None
+    fix = await route(decide, "Actually make that last month.", jev_says(kinds=["request"], amends="r1"), opened=OPEN)
+    assert fix["ops"]["say"] == {
+        "agentId": "gauge",
+        "kind": "steer",
+        "task": "Actually make that last month",
+        "text": None,
+    }

@@ -289,6 +289,9 @@ class FakeLive:
     def append_commentary(self, text, delegation_id=None):
         self._rec("commentary", text, delegation_id)
 
+    def say(self, text):
+        self._rec("say", text)
+
     def mute(self):
         self._rec("mute")
 
@@ -300,9 +303,6 @@ class FakeLive:
 
     def append_instructions(self, text):
         self._rec("instructions", text)
-
-    def meet_rule(self, text):
-        self._rec("instructions", text)  # recorded as the instruction it is
 
     def reply_to(self, text):
         self._rec("reply_to", text)
@@ -1828,7 +1828,7 @@ def _fake_live_stack(monkeypatch, refuse=()):
             self.closed = True
 
     class FakeVoice:
-        def __init__(self, agent_id, persona, huddle, seed, muted=False):
+        def __init__(self, agent_id, persona, huddle, seed, muted=False, gated=False):
             self.duplex_session = types_ns(
                 append_thinking=None,
                 append_commentary=None,

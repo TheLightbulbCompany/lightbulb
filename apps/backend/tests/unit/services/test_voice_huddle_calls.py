@@ -555,7 +555,15 @@ def _asked(got):
     return [(r["agentId"], r["by"]) for r in got["ops"]["requests"]]
 
 
-NOBODY = {"requests": [], "social": None, "more": False, "cancel": [], "steer": []}
+NOBODY = {"requests": [], "social": None, "more": False, "cancel": [], "steer": [], "people": False, "say": None}
+
+
+def _say(agent, kind, task=None):
+    """``ops.say``. ``text`` is None: Jev writes no words, so nothing in the one call can."""
+    return {"agentId": agent, "kind": kind, "task": task, "text": None}
+
+
+TO_PEOPLE = {**NOBODY, "people": True}  # talk between people: a meeting voice gives the floor back
 
 
 async def test_live_unnamed_lines_go_to_jev_with_every_agent_listening(live_env):
@@ -612,8 +620,8 @@ async def test_live_alone_nobody_counts_as_jev_down(live_env):
 
 async def test_live_two_people_jev_may_pick_nobody(live_env):
     """Among several people the room judge says whether an agent answers at all."""
-    assert (await _live(live_env, "did you see the game", jev_says(kinds=["people"]), humans=2))["ops"] == NOBODY
-    assert (await _live(live_env, "what's our burn", jev_says(kinds=["request"]), humans=2))["ops"] == NOBODY
+    assert (await _live(live_env, "did you see the game", jev_says(kinds=["people"]), humans=2))["ops"] == TO_PEOPLE
+    assert (await _live(live_env, "what's our burn", jev_says(kinds=["request"]), humans=2))["ops"] == TO_PEOPLE
     live_env.judge.return_value = {"who": "fin-1"}
     sure = await _live(live_env, "what's our burn", jev_says(kinds=["request"], whos=["ceo-1"]), humans=2)
     assert _asked(sure) == [("fin-1", "room")]  # one ask: the judge's teammate, whatever fits the part
@@ -625,7 +633,7 @@ async def test_live_two_people_jev_may_pick_nobody(live_env):
 async def test_live_a_line_to_a_person_is_silent(live_env):
     said = jev_says(kinds=["request"], whos=["fin-1"], names=["addressed"])
     got = await _live(live_env, "Aden, can you check the deck?", said, humans=2)
-    assert got["agentId"] is None and got["agentIds"] == [] and got["ops"] == NOBODY
+    assert got["agentId"] is None and got["agentIds"] == [] and got["ops"] == TO_PEOPLE
     assert "n0" in live_env.await_args.args[1]  # Jev was asked whether "Aden" is a name
 
 
@@ -805,7 +813,7 @@ def test_a_bridged_meet_person_acts_as_the_owner_under_their_own_name():
 async def test_live_two_names_with_nothing_asked_get_one_voice_and_no_requests(live_env):
     """ "Finance and Ada?" asks nothing: no run for either, and one voice (the first named) says a line."""
     got = await _live(live_env, "Finance and Ada?", jev_says(names=["addressed", "addressed"]), humans=2)
-    assert got["ops"] == {"requests": [], "social": "fin-1", "more": False, "cancel": [], "steer": []}
+    assert got["ops"] == {**NOBODY, "social": "fin-1", "say": _say("fin-1", "social")}
     assert got["agentIds"] == ["fin-1"] and "requests" not in got
 
 
@@ -860,3 +868,17 @@ def test_turn_note_checks_now_and_answers_one_request():
     # no step cap (owner ruling 2026-10-05): the run takes the steps it needs and speaks updates as it goes
     assert "hard limit" not in note and "Take as many steps as the request needs" in note
     assert "what you found so far or what you are checking next" in note
+
+
+# ---- ops.say: who speaks now, and about what (driven voice) ----
+
+
+async def test_live_say_names_the_agent_and_the_ask_and_nothing_for_people_or_jev_down(live_env):
+    asked = await _live(live_env, "Finance, what's our burn", jev_says(kinds=["request"], names=["addressed"]))
+    assert asked["ops"]["say"] == _say("fin-1", "ack", "what's our burn")
+    thanks = await _live(live_env, "Thanks, Finance.", jev_says(kinds=["social"], names=["addressed"]))
+    assert thanks["ops"]["say"] == _say("fin-1", "social") and thanks["ops"]["requests"] == []
+    people = await _live(live_env, "did you see the game", jev_says(kinds=["people"]), humans=2)
+    assert people["ops"]["say"] is None
+    down = await _live(live_env, "Finance, what's our burn", None)  # Jev down: the request runs, nobody speaks
+    assert _asked(down) == [("fin-1", "name")] and down["ops"]["say"] is None

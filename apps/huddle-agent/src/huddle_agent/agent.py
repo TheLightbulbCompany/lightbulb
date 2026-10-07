@@ -38,9 +38,11 @@ from livekit.plugins.openai.realtime import (
     GPTLiveSession,
 )
 from livekit.plugins.openai.realtime.gpt_live_model import _render_item
+from openai import AsyncOpenAI
+from openai.types.realtime import ResponseCreateEvent
 
 from huddle_agent.backend import Backend
-from huddle_agent.huddle import Huddle, emit_metric, mixed_meet
+from huddle_agent.huddle import Huddle, emit_metric, in_meet
 from huddle_agent.transcript import trim_items
 
 logger = logging.getLogger("huddle")
@@ -51,17 +53,22 @@ SHUTDOWN_S = 60
 server = AgentServer(shutdown_process_timeout=SHUTDOWN_S)
 
 
+def _seeded(seed: list[tuple[str, str]]) -> llm.ChatContext:
+    """The huddle so far, as this agent saw it (Transcript.seed)."""
+    ctx = llm.ChatContext.empty()
+    for role, text in seed:
+        ctx.add_message(role=role, content=text)
+    return ctx
+
+
 class _Voice(Agent):
-    """One agent's voice. The seed is the huddle so far, as this agent saw it (Transcript.seed)."""
+    """One agent's GPT-Live voice."""
 
     def __init__(
         self, agent_id: str, persona: str, huddle: Huddle, seed: list[tuple[str, str]], muted: bool = False
     ) -> None:
-        ctx = llm.ChatContext.empty()
-        for role, text in seed:
-            ctx.add_message(role=role, content=text)
         super().__init__(
-            instructions=persona, chat_ctx=ctx
+            instructions=persona, chat_ctx=_seeded(seed)
         )  # no tools: client delegation raises on any
         self._agent_id, self._huddle, self._muted = agent_id, huddle, muted
         self._tasks: set[asyncio.Task[None]] = set()
@@ -95,7 +102,8 @@ class _Voice(Agent):
 
 class _TrimmedSession(GPTLiveSession):
     """GPT-Live reseeds every (re)connect from its whole `_history` and only caps the item count, so
-    a long huddle would outgrow the seed's token limit. Seed the newest items within ours instead."""
+    a long huddle would outgrow the seed's token limit. Seed the newest items within ours instead.
+"""
 
     # ponytail: private API, re-check on livekit-agents upgrades
     def _session_start_event(self):
@@ -116,6 +124,16 @@ class _TrimmedGPTLiveModel(GPTLiveModel):
 
 
 FALLBACK_VOICE = "marin"
+NOTES_N = 14  # the newest notes a written line is made from
+WRITE_TIMEOUT_S = 3.0
+# The Realtime model's voices. An agent's voice is picked for GPT-Live, which has more ("stone": 10-07 rig, a
+# refused session and a second open). One it lacks maps to one it has, the same one every time for that name,
+# so two agents still sound different.
+REALTIME_VOICES = ("alloy", "ash", "ballad", "coral", "echo", "sage", "shimmer", "verse", "marin", "cedar")
+
+
+def realtime_voice(voice: str) -> str:
+    return voice if voice in REALTIME_VOICES else REALTIME_VOICES[sum(voice.encode()) % len(REALTIME_VOICES)]
 # Routing v2 §6 / R6: end a turn when it sounds finished, not after 350 ms of silence, so a mid-thought pause is
 # not routed as half a line. The plugin accepts it (validated against the OpenAI SDK union); whether OpenAI
 # accepts it on a gpt-4o-mini-transcribe transcription session is unverified, hence SERVER_VAD.
@@ -180,7 +198,6 @@ class _Live:
     ) -> None:
         self.agent_id, self.track_name = agent_id, f"agent-{agent_id}"
         self._session, self._room = session, room
-        self.set_participant = session.room_io.set_participant
         self.append_thinking, self.append_commentary = (
             duplex.append_thinking,
             duplex.append_commentary,
@@ -195,6 +212,15 @@ class _Live:
         self.reply_to = lambda text: session.generate_reply(
             user_input=text
         )  # a typed user turn
+
+    def set_participant(self, identity: str) -> None:
+        self._session.room_io.set_participant(identity)
+
+    def hear(self, since: float) -> None:
+        pass  # it hears its speaker itself
+
+    def say(self, text: str) -> None:
+        self.append_commentary(text)  # GPT-Live has no word-for-word speech: its own words for it
 
     def mute(self) -> None:
         self._muted = True
@@ -227,6 +253,171 @@ class _Live:
         await _unpublish(self._room, self.track_name)
 
 
+#: Added to a driven voice's persona: every word it says is ordered by the worker.
+DRIVEN = "You read lines aloud. You are given each line, and you say exactly that line and nothing else."
+SAY = "Say this line aloud, word for word, and nothing else:\n"
+# The agent's short lines (an acknowledgement, a status, a reply to small talk) are written by a small text
+# model from what the worker knows (who said what, what was asked, what is open), then read aloud word for
+# word. The speech model never words anything: with a question in view it answered from its own head ("it's
+# $1,600", 10-07 rig). Measured 10-07: about 0.6 s to write, 10 of 10 lines with no invented fact.
+WRITER_MODEL = "gpt-4.1-mini"
+WRITER = (
+    "You write the one short sentence this teammate says aloud next on a voice call, in the first person, in "
+    "their own voice. The notes say who said what and what is being worked on. This teammate's answers to real "
+    "questions come from work that takes time and arrive separately: never answer a question yourself, and "
+    "never state a number, price, date, name or fact that is not in the notes. Acknowledge what was asked "
+    "specifically, or say truthfully how the open work stands, or reply to small talk the way a person would. "
+    "When a request was just handed over, say only that you are on it and name what was asked: claim nothing "
+    "about its state, its result or who is doing it. "
+    "One sentence, at most 16 words, natural and plain, a different way each time. No filler, no \"backend\", "
+    "no mention of notes or instructions. Output the sentence only."
+)
+
+
+class _DrivenSession(openai.realtime.RealtimeSession):
+    """A line to say word for word goes to the model without the conversation (`input: []`), and what it said
+    still joins the conversation. With the conversation in view the model answers the last thing a person
+    said instead, from its own head (10-07, real model: 5 of 12 lines exact after an open question, "$12 per
+    user per month" among the rest; 12 of 12 without)."""
+
+    # ponytail: private API (the plugin builds response.create itself), re-check on livekit-agents upgrades
+    def send_event(self, event) -> None:
+        if isinstance(event, ResponseCreateEvent):
+            event.response.input = []  # every order carries all it needs: the voice never reads the conversation
+        super().send_event(event)
+
+
+class _DrivenModel(openai.realtime.RealtimeModel):
+    def session(self, *, turn_detection_disabled: bool = False) -> _DrivenSession:
+        sess = _DrivenSession(self, turn_detection_disabled=turn_detection_disabled)
+        self._sessions.add(sess)
+        return sess
+
+
+class _DrivenLive:
+    """One agent's voice in a meeting, as huddle.Live: a Realtime model with no ears and no turn detection, so
+    it is silent until the worker orders it to speak, and what it knows arrives as text. GPT-Live answers
+    whatever it hears and cannot be told to listen without answering (10-07 rig sales call).
+
+    Orders run one after the other on one chain, so two lines never overlap and what it is told to know
+    lands before the order after it. `interrupt` stops the speech and drops the orders not yet started."""
+
+    def __init__(
+        self, agent_id: str, session: AgentSession, agent: Agent, room: rtc.Room, persona: str = ""
+    ) -> None:
+        self.agent_id, self.track_name = agent_id, f"agent-{agent_id}"
+        self._session, self._agent, self._room = session, agent, room
+        self._tail: asyncio.Task | None = None
+        self._epoch = 0  # raised by interrupt: a speech order queued under an older one is dropped
+        # The Realtime plugin reports tokens, not session seconds (`session_duration` is 0): wall clock, open to
+        # close, is what a GPT-Live session bills by too.
+        self._opened, self._closed = time.monotonic(), None
+        # What it was told to know since it last spoke (its seed first): a nudge's order is made of these.
+        self._notes: list[str] = [
+            m.text_content or "" for m in agent.chat_ctx.items if getattr(m, "role", "") == "developer"
+        ]
+        self._persona = persona  # who it is, for the lines written for it
+        self._writer: AsyncOpenAI | None = None  # made at the first line: a test has no key
+
+    def _order(self, do, keep: bool = False) -> None:
+        """`do()` after every order before it. `keep`: something to know, which an interrupt does not drop."""
+        prior, epoch = self._tail, self._epoch
+
+        async def run() -> None:
+            if prior is not None:
+                await asyncio.wait([prior])
+            if self._closed is not None or (not keep and epoch != self._epoch):
+                return
+            try:
+                await do()  # a speech handle: done when the line is said, or cut. It never raises.
+            except Exception:
+                logger.exception("huddle driven voice order failed")
+
+        self._tail = asyncio.create_task(run())
+
+    def say(self, text: str) -> None:
+        self._order(lambda: self._session.generate_reply(instructions=SAY + text))
+
+    def _own(self, text: str) -> None:
+        async def do() -> None:
+            line = await self._write(text)
+            if line:
+                await self._session.generate_reply(instructions=SAY + line)
+
+        self._order(do)
+
+    async def _write(self, notes: str) -> str:
+        try:
+            self._writer = self._writer or AsyncOpenAI()
+            r = await asyncio.wait_for(
+                self._writer.chat.completions.create(
+                    model=WRITER_MODEL,
+                    max_tokens=48,
+                    temperature=0.8,
+                    messages=[
+                        {"role": "system", "content": f"{self._persona}\n\n{WRITER}"},
+                        {"role": "user", "content": notes},
+                    ],
+                ),
+                WRITE_TIMEOUT_S,
+            )
+            return (r.choices[0].message.content or "").strip()
+        except Exception:  # noqa: BLE001 -- no line is better than a late or a made-up one
+            logger.warning("huddle driven voice: no line written", exc_info=True)
+            return ""
+
+    def append_commentary(self, text: str, *, delegation_id: str | None = None) -> None:
+        self._own("\n".join([*self._notes[-NOTES_N:], text]))  # said once, in its own words
+
+    def append_thinking(self, text: str, *, delegation_id: str | None = None) -> None:
+        self._notes.append(text)
+
+        async def know() -> None:
+            ctx = self._agent.realtime_llm_session.chat_ctx.copy()
+            ctx.add_message(role="developer", content=text)
+            await self._agent.update_chat_ctx(ctx)  # an item of the conversation: no response is asked for
+
+        self._order(know, keep=True)
+
+    def append_instructions(self, text: str) -> None:
+        # Part of the session's instructions, so a reconnect, which sends them again, keeps the rule.
+        self._order(lambda: self._agent.update_instructions(f"{self._agent.instructions}\n\n{text}"), keep=True)
+
+    meet_rule = append_instructions
+
+    def nudge(self) -> None:
+        if self._notes:  # nothing to go on: nothing to say
+            self._own("\n".join(self._notes[-NOTES_N:]) + "\n\nSay your line now.")
+
+    def reply_to(self, text: str) -> None:
+        self._own("\n".join([*self._notes[-NOTES_N:], f'They just said to you: "{text}"']))
+
+    def interrupt(self):
+        self._epoch += 1
+        return self._session.interrupt(force=True)
+
+    def mute(self) -> None:
+        pass  # it has no ears
+
+    def hear(self, since: float) -> None:
+        pass
+
+    def set_participant(self, identity: str) -> None:
+        pass
+
+    def usage_seconds(self) -> float:
+        return (self._closed if self._closed is not None else time.monotonic()) - self._opened
+
+    def _stop(self) -> None:
+        if self._closed is None:
+            self._closed = time.monotonic()
+
+    async def aclose(self) -> None:
+        self._stop()
+        await self._session.aclose()
+        await _unpublish(self._room, self.track_name)
+
+
 def noise_filter():
     """LiveKit Cloud's background noise model (Krisp NC, no extra cost), on everything a person's microphone
     sends before the transcriber and the voice hear it: music, a fan or a street is not speech, and the
@@ -235,31 +426,23 @@ def noise_filter():
     return noise_cancellation.NC()
 
 
-def room_options(agent_id: str, speaker: str) -> room_io.RoomOptions:
+def room_options(agent_id: str, speaker: str, ears: bool = True) -> room_io.RoomOptions:
     # Pinned to the speaker, so it never hears whoever RoomIO would auto-link first. No text input
     # (people type into the room, not to the voice) and no pre-connect buffer (the worker is not a
-    # client that holds audio for it).
+    # client that holds audio for it). `ears=False`: a driven voice, which takes no audio at all.
     return room_io.RoomOptions(
         participant_identity=speaker,
         close_on_disconnect=False,
         text_input=False,
-        audio_input=room_io.AudioInputOptions(pre_connect_audio=False, noise_cancellation=noise_filter()),
+        audio_input=room_io.AudioInputOptions(pre_connect_audio=False, noise_cancellation=noise_filter())
+        if ears
+        else False,
         audio_output=room_io.AudioOutputOptions(track_name=f"agent-{agent_id}"),
     )
 
 
-async def _start(
-    room, huddle: Huddle, vad, agent_id, persona, voice, speaker, seed
-) -> _Live:
-    muted = mixed_meet(speaker)  # a mixed meeting's voice never hears the Meet: the worker listens (huddle.in_meet)
-    agent = _Voice(agent_id, persona, huddle, seed, muted=muted)
-    session = AgentSession(
-        llm=_TrimmedGPTLiveModel(voice=voice, delegation="client"), vad=vad
-    )
-    session.on(
-        "user_state_changed",
-        lambda ev: ev.new_state == "speaking" and huddle.on_speaker_activity(agent_id),
-    )
+async def _open(session: AgentSession, agent: Agent, room, huddle: Huddle, agent_id, speaker, ears=True) -> None:
+    """Start `session` in the room with what every voice reports to the huddle: its state and what it said."""
     session.on(
         "agent_state_changed", lambda ev: huddle.on_agent_state(agent_id, ev.new_state)
     )
@@ -279,7 +462,7 @@ async def _start(
         await session.start(
             agent=agent,
             room=room,
-            room_options=room_options(agent_id, speaker),
+            room_options=room_options(agent_id, speaker, ears),
             record=False,
         )
     except BaseException:
@@ -287,21 +470,56 @@ async def _start(
             await session.aclose()
             await _unpublish(room, f"agent-{agent_id}")
         raise
-    live = _Live(agent_id, session, agent.duplex_session, room, muted=muted)  # type: ignore[arg-type]
+
+
+async def _start(
+    room, huddle: Huddle, vad, agent_id, persona, voice, speaker, seed
+) -> _Live:
+    agent = _Voice(agent_id, persona, huddle, seed)
+    session = AgentSession(
+        llm=_TrimmedGPTLiveModel(voice=voice, delegation="client"), vad=vad
+    )
+    session.on(
+        "user_state_changed",
+        lambda ev: ev.new_state == "speaking" and huddle.on_speaker_activity(agent_id),
+    )
+    await _open(session, agent, room, huddle, agent_id, speaker)
+    live = _Live(agent_id, session, agent.duplex_session, room)  # type: ignore[arg-type]
     # An unrecoverable realtime error closes the session under us: end the exchange then, not on the next call.
     session.on("close", lambda _ev: huddle.on_live_closed(live))
     return live
 
 
+async def _start_driven(
+    room, huddle: Huddle, vad, agent_id, persona, voice, speaker, seed
+) -> _DrivenLive:
+    agent = Agent(instructions=f"{persona}\n\n{DRIVEN}", chat_ctx=_seeded(seed))
+    # turn_detection=None and no audio input: nothing but an order makes it speak. No vad: nothing to detect.
+    session = AgentSession(
+        llm=_DrivenModel(model="gpt-realtime", voice=realtime_voice(voice), turn_detection=None)
+    )
+    await _open(session, agent, room, huddle, agent_id, speaker, ears=False)
+    live = _DrivenLive(agent_id, session, agent, room, persona=persona)
+
+    def closed(_ev) -> None:
+        live._stop()  # billed to here, whoever closed it
+        huddle.on_live_closed(live)
+
+    session.on("close", closed)
+    return live
+
+
 async def start_live(
     room, huddle: Huddle, vad, *, agent_id, persona, voice, speaker, seed
-) -> _Live:
+) -> _Live | _DrivenLive:
+    # Every Meet voice is a mouth: the worker listens, /route and the agent decide, the voice says it.
+    start = _start_driven if in_meet(speaker) else _start
     try:
-        return await _start(room, huddle, vad, agent_id, persona, voice, speaker, seed)
+        return await start(room, huddle, vad, agent_id, persona, voice, speaker, seed)
     except Exception:
         if voice == FALLBACK_VOICE:
             raise
-        # a voice GPT-Live no longer accepts must not cost the agent its voice altogether
+        # a voice the model no longer accepts must not cost the agent its voice altogether
         logger.warning(
             "huddle voice %s refused; retrying with %s",
             voice,
@@ -309,7 +527,7 @@ async def start_live(
             exc_info=True,
         )
         emit_metric("live.voice.fallback", 1, "Count")
-        return await _start(
+        return await start(
             room, huddle, vad, agent_id, persona, FALLBACK_VOICE, speaker, seed
         )
 
@@ -372,7 +590,7 @@ async def entrypoint(ctx: JobContext) -> None:
     def _stt_metrics(m) -> None:
         usage["stt"] += m.audio_duration
 
-    async def live_factory(**kw) -> _Live:
+    async def live_factory(**kw) -> _Live | _DrivenLive:
         return await start_live(ctx.room, huddle, vad, **kw)
 
     def flush_metrics() -> None:

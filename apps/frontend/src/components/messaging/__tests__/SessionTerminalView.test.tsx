@@ -7,9 +7,12 @@ import { SessionTerminalView, terminalScale } from "../SessionTerminalView";
 
 const writes: Uint8Array[] = [];
 const hooks: { data?: (d: string) => void; key?: (e: unknown) => boolean; term?: { cols: number; rows: number };
-  options?: { scrollback?: number }; resets: number; wheel?: (e: { deltaY: number }) => boolean; screen?: { w: number; h: number } } = { resets: 0 };
+  options?: { scrollback?: number }; resets: number; screen?: { w: number; h: number }; scrolled: number[]; binary?: boolean } = { resets: 0, scrolled: [] };
 vi.mock("@xterm/xterm", () => ({ Terminal: class {
   cols = 80; rows = 24; options = { disableStdin: true };
+  buffer = { active: { viewportY: 100 } }; // 100 rows of history above the screen
+  scrollLines(n: number) { hooks.scrolled.push(n); this.buffer.active.viewportY = Math.max(0, Math.min(100, this.buffer.active.viewportY + n)); }
+  onBinary() { hooks.binary = true; }
   constructor(options: { scrollback?: number }) { hooks.term = this; hooks.options = options; }
   // The drawn grid: xterm sizes `.xterm-screen` to cols x rows, whatever the box around it is.
   open(el: HTMLElement) {
@@ -18,13 +21,12 @@ vi.mock("@xterm/xterm", () => ({ Terminal: class {
     Object.defineProperty(shown, "offsetHeight", { get: () => hooks.screen?.h ?? 0 });
   }
   reset() { hooks.resets += 1; } dispose() {}
-  attachCustomWheelEventHandler(cb: (e: { deltaY: number }) => boolean) { hooks.wheel = cb; }
   onData(cb: (d: string) => void) { hooks.data = cb; }
   attachCustomKeyEventHandler(cb: (e: unknown) => boolean) { hooks.key = cb; }
   resize(c: number, r: number) { this.cols = c; this.rows = r; }
   write(data: Uint8Array, done?: () => void) { writes.push(data); done?.(); }
 } }));
-afterEach(() => { writes.length = 0; hooks.resets = 0; hooks.screen = undefined; window.localStorage.clear(); vi.useRealTimers(); });
+afterEach(() => { writes.length = 0; hooks.resets = 0; hooks.scrolled = []; hooks.binary = undefined; hooks.screen = undefined; window.localStorage.clear(); vi.useRealTimers(); });
 const CLEAR = Array.from(new TextEncoder().encode("\x1b[?1049l\x1b[r\x1b[2J\x1b[H"));
 
 const screenEvent = (sessionId: string, kind = "snapshot", seq = 0, epoch = 1, data = "G1tI") => ({ schemaVersion: 1, eventId: `e${seq}`, type: "workspace.session.screen", occurredAt: "now",
@@ -166,6 +168,18 @@ describe("typing into the live terminal", () => {
     await type("\x1b[?1;2c"); await type("\x1b[12;40R"); await type("\x1b[I");
     expect(input).not.toHaveBeenCalled();
   });
+  // A click, drag or wheel in a Lightbulb view is not typing: with mouse tracking on (Claude Code
+  // turns it on) xterm writes each as a report through onData, which an admitted typist would send.
+  it("never sends a mouse report, in any encoding, and keeps the typing around it", async () => {
+    const input = vi.fn(async () => undefined);
+    await mount(true, input);
+    await type("\x1b[<0;10;5M"); await type("\x1b[<0;10;5m"); await type("\x1b[<64;10;5M"); // SGR: press, release, wheel
+    await type("\x1b[M !!"); await type("\x1b[32;10;5M"); // X10 and urxvt
+    expect(input).not.toHaveBeenCalled();
+    await type("a\x1b[<35;120;40Mb");
+    expect(sent(input)).toEqual([[b64("ab"), 1]]);
+    expect(hooks.binary).toBeUndefined(); // X10's binary reports have no listener at all
+  });
   // WebKit (Safari, the desktop app's web view) crashes its WebContent process when the unseen
   // terminal is taken out of flow: its parent is a column flexbox and its containing block a grid.
   it("keeps the unseen terminal in flow", () => {
@@ -302,16 +316,83 @@ describe("a readable terminal in a narrow pane", () => {
     expect(el.scrollTop).toBe(880);
   });
 
-  it("the wheel moves the box while it can, then the terminal's own scrollback", async () => {
+  /** A wheel over the terminal, as the browser delivers it: at xterm's own element, inside the box. */
+  const wheel = (init: WheelEventInit) => {
+    const target = document.querySelector<HTMLElement>(".xterm-screen")!;
+    const reached = vi.fn(); // xterm's listener: with mouse tracking on it reports the wheel and cancels it
+    target.addEventListener("wheel", reached);
+    const event = new WheelEvent("wheel", { bubbles: true, cancelable: true, ...init });
+    act(() => { target.dispatchEvent(event); });
+    target.removeEventListener("wheel", reached);
+    return { reached: reached.mock.calls.length > 0, prevented: event.defaultPrevented };
+  };
+
+  // The prod finding: Claude Code turns mouse tracking on, xterm then takes every wheel as a mouse
+  // report and cancels it, so neither the box nor the scrollback ever moved.
+  it("the wheel never reaches xterm: the box moves while it can, then the terminal's own scrollback", async () => {
     const { el, emit } = await open();
     emit(screenEvent("s1"));
-    // false = xterm leaves the event alone and the browser scrolls the box; true = xterm scrolls its history.
-    el.scrollTop = 490;
-    expect(hooks.wheel?.({ deltaY: -30 })).toBe(false); // up: the rest of this screen first
-    expect(hooks.wheel?.({ deltaY: 30 })).toBe(true); // down at the bottom: back toward the tail
+    el.scrollTop = 490; // the bottom of the box
+    expect(wheel({ deltaY: -90 })).toEqual({ reached: false, prevented: false }); // up: the browser scrolls the box
+    expect(hooks.scrolled).toEqual([]);
     el.scrollTop = 0;
-    expect(hooks.wheel?.({ deltaY: -30 })).toBe(true); // up at the top: into history
-    expect(hooks.wheel?.({ deltaY: 30 })).toBe(false);
+    expect(wheel({ deltaY: 90 })).toEqual({ reached: false, prevented: false }); // down from the top: the box again
+    expect(wheel({ deltaY: -90 })).toEqual({ reached: false, prevented: true }); // up at the top: into history
+    expect(hooks.scrolled).toEqual([-2]); // 1173 px / 30 rows = 39 px a row
+    el.scrollTop = 490;
+    expect(wheel({ deltaY: 90 })).toEqual({ reached: false, prevented: true }); // down at the bottom: back toward the tail
+    expect(hooks.scrolled).toEqual([-2, 2]);
+    expect(wheel({ deltaY: 90 })).toEqual({ reached: false, prevented: false }); // at the tail of both: nothing to take
+  });
+
+  it("a slow trackpad adds up to whole rows", async () => {
+    const { el, emit } = await open();
+    emit(screenEvent("s1"));
+    el.scrollTop = 0;
+    for (let i = 0; i < 5; i += 1) wheel({ deltaY: -10 });
+    expect(hooks.scrolled).toEqual([-1]);
+  });
+
+  it("scrolls sideways on a horizontal wheel and on shift+wheel, never into history", async () => {
+    const { el, emit } = await open();
+    emit(screenEvent("s1"));
+    el.scrollTop = 0;
+    expect(wheel({ deltaX: 40 })).toEqual({ reached: false, prevented: false }); // the browser scrolls the box sideways
+    expect(wheel({ deltaY: -90, shiftKey: true })).toEqual({ reached: false, prevented: false });
+    expect(hooks.scrolled).toEqual([]);
+    wheel({ deltaX: 40, deltaY: -90 }); // a diagonal swipe at the top: history, and the box still moves sideways
+    expect(hooks.scrolled).toEqual([-2]);
+    expect(el.scrollLeft).toBe(40);
+  });
+
+  it("output that arrives while the viewer reads history does not move the view", async () => {
+    const { el, emit } = await open();
+    emit(screenEvent("s1"));
+    el.scrollTop = 0; fireEvent.scroll(el);
+    wheel({ deltaY: -400 });
+    expect(hooks.term && (hooks.term as unknown as { buffer: { active: { viewportY: number } } }).buffer.active.viewportY).toBe(90);
+    emit(screenEvent("s1", "output", 1));
+    expect(el.scrollTop).toBe(0);
+    expect(hooks.scrolled).toEqual([-10]); // nothing scrolled it back down
+  });
+
+  it("says so when a readable terminal is wider than the pane, and only then", async () => {
+    const hint = "Wider than this pane · scroll sideways or choose Fit";
+    const { emit, view } = await open();
+    expect(screen.queryByText(hint)).toBeNull(); // nothing drawn yet
+    emit(screenEvent("s1"));
+    expect(screen.getByText(hint).closest(".session-terminal-scroll")).toBeNull(); // in the strip, not over the text
+    fireEvent.click(screen.getByRole("button", { name: "Fit" }));
+    expect(screen.queryByText(hint)).toBeNull();
+    view.unmount();
+    window.localStorage.clear();
+    hooks.screen = { w: 600, h: 300 }; // an 80-column session fits a 660 px pane
+    let send: (e: LiveEvent) => void = () => {};
+    render(<SessionTerminalView session={{ sessionId: "s1", generation: "g1" }} onEvent={(h) => { send = h; return () => {}; }} watch={async () => undefined} onLive={() => {}} />);
+    await act(async () => { await vi.dynamicImportSettled(); });
+    box();
+    act(() => { send(screenEvent("s1")); });
+    expect(screen.queryByText(hint)).toBeNull();
   });
 
   it("has a Fit / Readable switch that is remembered for this viewer", async () => {

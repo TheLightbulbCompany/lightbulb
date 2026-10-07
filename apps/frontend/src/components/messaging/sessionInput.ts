@@ -12,6 +12,12 @@ const PROBE_REPLY = new RegExp([
 
 export const dropProbeReplies = (data: string): string => data.replace(PROBE_REPLY, "");
 
+/** With mouse tracking on, xterm writes every click, drag and wheel through `onData` as a report.
+ *  A remote pointer in the owner's program is not typing: no report ever goes to the Mac. No key
+ *  produces these (SGR `CSI < b;x;y M|m`, X10 `CSI M` + 3 characters, urxvt `CSI b;x;y M`). */
+const MOUSE_REPORT = /\x1b\[(?:<\d+;\d+;\d+[Mm]|M[\s\S]{3}|\d+;\d+;\d+M)/g;
+export const dropMouseReports = (data: string): string => data.replace(MOUSE_REPORT, "");
+
 export const MAX_INPUT_BYTES = 4096;
 /** Shift+Enter is a newline in Claude Code only as ESC CR; xterm would send a plain CR, which submits. */
 export const SHIFT_ENTER = "\x1b\r";

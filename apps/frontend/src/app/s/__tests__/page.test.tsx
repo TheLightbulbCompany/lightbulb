@@ -28,7 +28,12 @@ describe("session link page", () => {
   // The acceptance finding: an incomplete link was one unstyled line in the top-left corner.
   const inCard = () => {
     const alert = screen.getByRole("alert");
-    expect(alert.closest(".session-state-panel")).not.toBeNull();
+    const card = alert.closest<HTMLElement>(".session-state-panel")!;
+    expect(card).not.toBeNull();
+    // The prod finding: one line near the top of an empty page. It is a bordered card in the middle of the viewport.
+    expect(card.className).toContain("border");
+    expect(card.parentElement?.className).toContain("content-center");
+    expect(card.closest("main")?.className).toContain("min-h-dvh");
     expect(screen.getByRole("link", { name: "Lightbulb" }).getAttribute("href")).toBe("/");
     return alert;
   };

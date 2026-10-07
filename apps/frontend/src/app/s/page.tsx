@@ -59,9 +59,12 @@ function CodeLine({ code }: { code: SessionLinkCode }) {
 /** A link that cannot be shown (incomplete, off, expired, not found): the page's own frame and
  *  centred panel, under the product name, instead of one loose line in the corner. */
 function Unopened({ children }: { children: React.ReactNode }) {
-  return <main className="mx-auto max-w-3xl p-4">
+  return <main className="mx-auto flex min-h-dvh max-w-3xl flex-col p-4">
     <header className="mb-4"><Link href="/" className="text-lg font-semibold">Lightbulb</Link></header>
-    <section aria-label="Session link" className="session-state-panel">{children}</section>
+    {/* A grid, so the panel keeps its own height in the middle of the viewport (its `flex: 1` would fill a flex parent). */}
+    <div className="grid flex-1 content-center">
+      <section aria-label="Session link" className="session-state-panel rounded-lg border">{children}</section>
+    </div>
   </main>;
 }
 
@@ -176,7 +179,7 @@ export default function SessionLinkPageRoute() {
             <Button type="button" variant="outline" size="sm" onClick={() => void copyText(command)}>Copy command</Button>
           </>}
     </section>}
-    <section aria-label="Session state" className="session-state-panel">
+    <section aria-label="Session state" className="session-state-panel rounded-lg border">
       {page.state === "ended" ? <><p className="font-semibold">Ended</p><p>The screen is gone: this session&apos;s terminal closed.</p></>
         : page.state === "offline" ? <p className="font-semibold">{page.ownerFirstName}&apos;s Mac is offline</p>
         : page.me.member ? <p>This session is live in Lightbulb. Open it there to watch its terminal.</p>

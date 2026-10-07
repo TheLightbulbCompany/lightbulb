@@ -689,3 +689,6 @@ button.native-session-panel-row:hover .native-session-panel-activity { color: va
   .room-session-focus.session-chat-open > .room-session-main { display: none; }
   .room-session-focus.session-chat-open > .session-chat { border-left: 0; }
 }
+
+/* Readable only, while the picture is wider than the box: says where the rest of each line is. */
+.session-terminal-hint { margin-right: auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; line-height: 20px; color: color-mix(in srgb, var(--terminal-fg) 65%, var(--terminal-bg)); }

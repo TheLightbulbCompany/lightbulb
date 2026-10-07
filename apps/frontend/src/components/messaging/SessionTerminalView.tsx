@@ -4,7 +4,7 @@ import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { ApiError, NEW_SCREEN, receiveScreen, type LiveEvent, type LocalSession, type SessionScreen } from "@lightbulb/shared";
 import type { Terminal } from "@xterm/xterm";
 import "@xterm/xterm/css/xterm.css";
-import { chunkInput, dropProbeReplies, SHIFT_ENTER } from "./sessionInput";
+import { chunkInput, dropMouseReports, dropProbeReplies, SHIFT_ENTER } from "./sessionInput";
 
 const WATCH_EVERY_MS = 15_000;
 /** A snapshot or a ping comes at least every 10 s; this long with no frame, or only pings that do not match the screen it has, and the picture is frozen, so it says Reconnecting. */
@@ -38,8 +38,9 @@ const atBottom = (el: HTMLElement) => el.scrollTop + el.clientHeight >= el.scrol
  *  until the `session` prop changes; an offline Mac (409 LOCAL_SESSION_OFFLINE, transient)
  *  loses only that batch. The viewer never resizes the Mac's terminal:
  *  the grid is drawn at the Mac's own cols x rows and only scaled here (`terminalScale`), and where
- *  the scaled picture is larger than the box, the box scrolls. One wheel rule covers both scrolls:
- *  the box moves while it can, and only then the terminal's own scrollback. */
+ *  the scaled picture is larger than the box, the box scrolls. The wheel is this view's alone and
+ *  never xterm's (`onWheel`): the box moves while it can, and only then the terminal's own
+ *  scrollback. No click, drag or wheel is ever sent to the Mac (`dropMouseReports`). */
 export function SessionTerminalView({ session, onEvent, watch, onLive, onCanType, input, admitted = false }: {
   session: Pick<LocalSession, "sessionId" | "generation">;
   input?: (data: Uint8Array, epoch: number) => Promise<unknown>;
@@ -68,6 +69,8 @@ export function SessionTerminalView({ session, onEvent, watch, onLive, onCanType
   // The drawn grid and the box around it, in px; null until both have a size (the box has none while unseen).
   const [seenAt, setSeenAt] = useState<{ grid: Extent; box: Extent } | null>(null);
   const scale = seenAt ? terminalScale(size, seenAt.grid, seenAt.box) : 1;
+  // At the readable floor a wide session runs past the pane's right edge, and long lines end mid-word.
+  const wide = size === "readable" && !!seenAt && Math.floor(seenAt.grid.w * scale) > seenAt.box.w;
   // The prompt is on the last row: stay there until the viewer scrolls away, and again once they come back.
   const following = useRef(true);
   useLayoutEffect(() => { if (following.current && box.current) box.current.scrollTop = box.current.scrollHeight; }, [scale, seenAt]);
@@ -117,12 +120,36 @@ export function SessionTerminalView({ session, onEvent, watch, onLive, onCanType
     };
     const fit = () => {
       const shown = host.current?.querySelector<HTMLElement>(".xterm-screen");
-      const around = box.current;
       if (!shown?.offsetWidth || !shown.offsetHeight || !around?.clientWidth || !around.clientHeight) return;
       const [gw, gh, bw, bh] = [shown.offsetWidth, shown.offsetHeight, around.clientWidth, around.clientHeight];
       setSeenAt((was) => was && was.grid.w === gw && was.grid.h === gh && was.box.w === bw && was.box.h === bh ? was : { grid: { w: gw, h: gh }, box: { w: bw, h: bh } });
       if (following.current) around.scrollTop = around.scrollHeight;
     };
+    // The session's program (Claude Code) turns mouse tracking on, and xterm then takes every wheel
+    // as a mouse report and cancels it (Terminal.ts bindMouse: its custom wheel handler cannot stop
+    // that), or on a full-screen app sends arrow keys. So xterm never sees the wheel: stopped here,
+    // in capture, above xterm's own element. Left alone, the browser scrolls the box, both ways.
+    const around = box.current;
+    let carry = 0; // a trackpad sends fractions of a row
+    const onWheel = (e: WheelEvent) => {
+      e.stopPropagation();
+      const dy = e.shiftKey || e.ctrlKey ? 0 : e.deltaY; // shift+wheel is sideways, ctrl+wheel a zoom
+      if (!around || !dy || (dy < 0 ? around.scrollTop > 0 : !atBottom(around))) return;
+      // The box is at its end this way: the terminal's own scrollback takes over.
+      around.scrollLeft += e.deltaX;
+      const shown = host.current?.querySelector<HTMLElement>(".xterm-screen");
+      if (!term || !shown?.offsetHeight) return;
+      // One row as drawn (the scaled height; jsdom has no layout, so the unscaled one there).
+      const row = e.deltaMode === 1 ? 1 : (e.deltaMode === 2 ? around.clientHeight : shown.getBoundingClientRect().height || shown.offsetHeight) / term.rows;
+      carry += dy / row;
+      const lines = Math.trunc(carry);
+      if (!lines) return;
+      carry -= lines;
+      const was = term.buffer.active.viewportY;
+      term.scrollLines(lines); // xterm keeps its place in history while output arrives, and follows again at the tail
+      if (term.buffer.active.viewportY !== was) e.preventDefault();
+    };
+    around?.addEventListener("wheel", onWheel, { capture: true, passive: false });
     const apply = (frames: SessionScreen[]) => {
       if (!term) { queued.push(...frames); return; }
       for (const frame of frames) {
@@ -152,14 +179,9 @@ export function SessionTerminalView({ session, onEvent, watch, onLive, onCanType
         }
         return true;
       });
-      // xterm scrolls its scrollback on the wheel (and on a full-screen app sends arrow keys) and
-      // would never let the box move. `false` leaves the event to the browser, which scrolls the box.
-      term.attachCustomWheelEventHandler((e) => {
-        const around = box.current;
-        return !around || !(e.deltaY < 0 ? around.scrollTop > 0 : e.deltaY > 0 && !atBottom(around));
-      });
+      // onBinary is deliberately not wired: it carries only X10 mouse reports.
       term.onData((d) => {
-        const data = dropProbeReplies(d);
+        const data = dropMouseReports(dropProbeReplies(d));
         if (!data || !typing.current.canType) return;
         pending += data; frameId ||= requestAnimationFrame(flush);
       });
@@ -183,11 +205,12 @@ export function SessionTerminalView({ session, onEvent, watch, onLive, onCanType
     });
     const observer = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(fit);
     if (box.current) observer?.observe(box.current);
-    return () => { alive = false; pending = ""; if (frameId) cancelAnimationFrame(frameId); termRef.current = null; clearTimeout(stale); off(); observer?.disconnect(); term?.dispose(); onLive(false); };
+    return () => { alive = false; pending = ""; if (frameId) cancelAnimationFrame(frameId); termRef.current = null; clearTimeout(stale); off(); observer?.disconnect(); around?.removeEventListener("wheel", onWheel, { capture: true }); term?.dispose(); onLive(false); };
   }, [session.sessionId, session.generation, onEvent, onLive]);
   return <>
     <div className="session-terminal-view session-terminal-frame" data-live={live} role="region" aria-label={canType ? "Live terminal" : "Live terminal (view only)"}>
       <div className="session-terminal-size" role="group" aria-label="Terminal size">
+        {wide && <span className="session-terminal-hint">Wider than this pane · scroll sideways or choose Fit</span>}
         <button type="button" aria-pressed={size === "readable"} title="Text at a readable size; scroll to see the rest" onClick={() => choose("readable")}>Readable</button>
         <button type="button" aria-pressed={size === "fit"} title="The whole screen at once" onClick={() => choose("fit")}>Fit</button>
       </div>

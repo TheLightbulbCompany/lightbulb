@@ -697,114 +697,134 @@ class LocalSessionRelay:
 
     async def _device_heartbeat(self, cid: str, connection: dict, enrollment: dict, message: DeviceHeartbeat) -> dict:
         """One frame per device renews every mirror it still owns; the rest come back rejected."""
-        # ponytail: a read, a lease write and a delivery pass per listed session, capped at 24;
-        # batch the reads if a device ever carries enough live mirrors for it to show.
+        # Each session's lease and delivery stay ordered; independent sessions overlap below.
         owner, now, started = connection.get("org_id") or connection["user_id"], int(time.time()), time.monotonic()
         rejected, reconcile = [], []
         # One workspace hint per frame, not per session: every session here is the same human's.
         # It still fires when the frame fails part-way, because the retry finds those rows already
         # matching and would not hint again.
         hint = False
-        # A row that loses its revision race (an upload or a dispatch wrote it meanwhile) goes
-        # back on the end of this list to be re-read and re-applied alone, twice at most: one
-        # conflict must not rerun every other row. Past that, handle_message reruns the frame.
-        items = list(message.sessions)
-        retries: dict[str, int] = {}
-        try:
-            for item in items:
-                row = await repo.get_session(owner, item.session_id)
-                if (
-                    row is None
-                    or row["deviceId"] != connection["device_id"]
-                    or row["generation"] != item.generation
-                    or row.get("connectionId") != cid
-                    or row.get("endedAt") is not None
-                ):
-                    # Unknown, superseded or ended here: the desktop re-registers it.
-                    rejected.append(item.session_id)
-                    continue
-                labels = {
-                    key: value
-                    for key, value in (
-                        ("title", item.title),
-                        ("cwdName", item.cwd_name),
-                        ("lastAssistantMessage", item.last_assistant_message),
-                    )
-                    if value is not None
-                }
-                updated = _revised(
-                    row,
-                    status=item.status,
-                    activeTurnId=item.active_turn_id,
-                    controlUnavailableReason=item.control_unavailable_reason,
-                    onlineUntil=now + LIVENESS_SECONDS,
-                    workspace=item.workspace.model_dump(by_alias=True),
-                    # Rides the write every heartbeat makes anyway: no extra write, and /viewing
-                    # already holds this row.
-                    deviceFeatures=message.device_features(),
-                    **labels,
-                )
-                if item.terminal is not None:
-                    updated["terminal"] = item.terminal
-                if item.capabilities is not None and row["capabilitiesVerified"]:
-                    caps = item.capabilities
-                    if caps.send_mode != "queue" or (row["provider"] != "codex" and (caps.steer or caps.interrupt)):
+        # Sessions are independent, but one frame still waits for all its writes before ACK.
+        # Keep duplicate entries and revision retries serial within each session. Four groups
+        # overlap their network I/O without opening an unbounded DynamoDB request burst.
+        groups: dict[str, list[HeartbeatSession]] = {}
+        for item in message.sessions:
+            groups.setdefault(item.session_id, []).append(item)
+        slots = asyncio.Semaphore(4)
+
+        async def renew(items: list[HeartbeatSession]) -> tuple[list[str], list[dict]]:
+            nonlocal hint
+            rejected, reconcile = [], []
+            retries: dict[str, int] = {}
+            async with slots:
+                for item in items:
+                    row = await repo.get_session(owner, item.session_id)
+                    if (
+                        row is None
+                        or row["deviceId"] != connection["device_id"]
+                        or row["generation"] != item.generation
+                        or row.get("connectionId") != cid
+                        or row.get("endedAt") is not None
+                    ):
+                        # Unknown, superseded or ended here: the desktop re-registers it.
                         rejected.append(item.session_id)
                         continue
-                    updated["capabilities"] = caps.model_dump(by_alias=True)
-                # Heartbeats may withdraw authority. A fresh registration is
-                # required to restore it after runtime revalidation.
-                if item.control_unavailable_reason is not None:
-                    updated.update(
-                        capabilities=sessions.Capabilities().model_dump(by_alias=True), capabilitiesVerified=False
+                    labels = {
+                        key: value
+                        for key, value in (
+                            ("title", item.title),
+                            ("cwdName", item.cwd_name),
+                            ("lastAssistantMessage", item.last_assistant_message),
+                        )
+                        if value is not None
+                    }
+                    updated = _revised(
+                        row,
+                        status=item.status,
+                        activeTurnId=item.active_turn_id,
+                        controlUnavailableReason=item.control_unavailable_reason,
+                        onlineUntil=now + LIVENESS_SECONDS,
+                        workspace=item.workspace.model_dump(by_alias=True),
+                        # Rides the write every heartbeat makes anyway: no extra write, and /viewing
+                        # already holds this row.
+                        deviceFeatures=message.device_features(),
+                        **labels,
                     )
-                if item.status in _TURN_STATUSES and row["status"] not in _TURN_STATUSES:
-                    updated["busySince"] = now
-                attention = _attention(row, item.status, now)
-                if attention == "waiting":
-                    updated["waitingSince"] = now  # which wait an Activity item is about
-                if attention == "finished":
-                    updated["finishedNotifiedAt"] = now
-                if item.status not in _TURN_STATUSES:
-                    updated.pop("subagentEnded", None)
-                if item.stats is not None:
-                    updated["stats"] = item.stats.model_dump(by_alias=True, exclude_none=True)
-                # The prompt is answered (here or in the terminal) once the session stops waiting.
-                if item.status != "waiting-approval":
-                    updated.pop("pendingApproval", None)
-                    updated.pop("privateSendApproval", None)
-                moved = any(row.get(field) != updated.get(field) for field in _PUBLIC_FIELDS) or any(
-                    (row.get("stats") or {}).get(key) != (updated.get("stats") or {}).get(key)
-                    for key in ("model", "permissionMode")
-                )
-                scanned = row.get("workspace") != updated.get("workspace")
-                controls_changed = row.get("capabilities") != updated.get("capabilities")
-                terminal_changed = row.get("terminal") != updated.get("terminal")
-                if moved:
-                    updated["lastEventAt"] = now
-                try:
-                    await repo.put_session(updated, row, enrollment, extra=[self._connection_check(cid, connection)])
-                except ClientError as exc:
-                    if not store._is_cancelled(exc) or retries.get(item.session_id, 0) >= 2:
-                        raise
-                    retries[item.session_id] = retries.get(item.session_id, 0) + 1
-                    items.append(item)
-                    continue
-                if attention:
-                    # The write above is revision-fenced, so exactly one frame wins a transition:
-                    # one state change is one notification, retries included.
-                    _spawn(notify_attention(updated, attention))
-                # A workspace scan is worth a refetch but is not the user doing something,
-                # so it hints without stamping lastEventAt. A lapsed lease reads as
-                # offline, so recovery must reach the room even when nothing else moved;
-                # renewal makes that fire once.
-                if moved or scanned or controls_changed or terminal_changed or row["onlineUntil"] <= now:
-                    hint = True
-                # Reconcile after delivery: this heartbeat's own dispatch is part of what the journal must settle.
-                await self.dispatch_session(owner, item.session_id)
-                pending = await self._reconcile_for(owner, item.session_id, row["generation"])
-                if pending is not None:
-                    reconcile.append({"sessionId": item.session_id, **pending})
+                    if item.terminal is not None:
+                        updated["terminal"] = item.terminal
+                    if item.capabilities is not None and row["capabilitiesVerified"]:
+                        caps = item.capabilities
+                        if caps.send_mode != "queue" or (row["provider"] != "codex" and (caps.steer or caps.interrupt)):
+                            rejected.append(item.session_id)
+                            continue
+                        updated["capabilities"] = caps.model_dump(by_alias=True)
+                    # Heartbeats may withdraw authority. A fresh registration is
+                    # required to restore it after runtime revalidation.
+                    if item.control_unavailable_reason is not None:
+                        updated.update(
+                            capabilities=sessions.Capabilities().model_dump(by_alias=True), capabilitiesVerified=False
+                        )
+                    if item.status in _TURN_STATUSES and row["status"] not in _TURN_STATUSES:
+                        updated["busySince"] = now
+                    attention = _attention(row, item.status, now)
+                    if attention == "waiting":
+                        updated["waitingSince"] = now  # which wait an Activity item is about
+                    if attention == "finished":
+                        updated["finishedNotifiedAt"] = now
+                    if item.status not in _TURN_STATUSES:
+                        updated.pop("subagentEnded", None)
+                    if item.stats is not None:
+                        updated["stats"] = item.stats.model_dump(by_alias=True, exclude_none=True)
+                    # The prompt is answered (here or in the terminal) once the session stops waiting.
+                    if item.status != "waiting-approval":
+                        updated.pop("pendingApproval", None)
+                        updated.pop("privateSendApproval", None)
+                    moved = any(row.get(field) != updated.get(field) for field in _PUBLIC_FIELDS) or any(
+                        (row.get("stats") or {}).get(key) != (updated.get("stats") or {}).get(key)
+                        for key in ("model", "permissionMode")
+                    )
+                    scanned = row.get("workspace") != updated.get("workspace")
+                    controls_changed = row.get("capabilities") != updated.get("capabilities")
+                    terminal_changed = row.get("terminal") != updated.get("terminal")
+                    if moved:
+                        updated["lastEventAt"] = now
+                    try:
+                        await repo.put_session(
+                            updated, row, enrollment, extra=[self._connection_check(cid, connection)]
+                        )
+                    except ClientError as exc:
+                        if not store._is_cancelled(exc) or retries.get(item.session_id, 0) >= 2:
+                            raise
+                        retries[item.session_id] = retries.get(item.session_id, 0) + 1
+                        items.append(item)
+                        continue
+                    if attention:
+                        # The write above is revision-fenced, so exactly one frame wins a transition:
+                        # one state change is one notification, retries included.
+                        _spawn(notify_attention(updated, attention))
+                    # A workspace scan is worth a refetch but is not the user doing something,
+                    # so it hints without stamping lastEventAt. A lapsed lease reads as
+                    # offline, so recovery must reach the room even when nothing else moved;
+                    # renewal makes that fire once.
+                    if moved or scanned or controls_changed or terminal_changed or row["onlineUntil"] <= now:
+                        hint = True
+                    # Reconcile after delivery: this heartbeat's own dispatch is part of what the journal must settle.
+                    await self.dispatch_session(owner, item.session_id)
+                    pending = await self._reconcile_for(owner, item.session_id, row["generation"])
+                    if pending is not None:
+                        reconcile.append({"sessionId": item.session_id, **pending})
+            return rejected, reconcile
+
+        try:
+            # Drain every group even on failure: no lease write may outlive this frame's
+            # hint/ACK/error. Preserve the original exception for handle_message's retries.
+            outcomes = await asyncio.gather(*(renew(items) for items in groups.values()), return_exceptions=True)
+            for outcome in outcomes:
+                if isinstance(outcome, BaseException):
+                    raise outcome
+                denied, pending = outcome
+                rejected.extend(denied)
+                reconcile.extend(pending)
             return {
                 "type": "local.device.heartbeat.ack",
                 "rejected": rejected,

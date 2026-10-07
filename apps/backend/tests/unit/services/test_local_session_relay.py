@@ -1231,6 +1231,111 @@ async def test_native_successor_unblocks_new_input_without_replaying_old_unknown
 
 
 @pytest.mark.asyncio
+async def test_device_heartbeat_overlaps_independent_sessions_with_a_bounded_limit(transport):
+    first = await start(transport)
+    host = relay(transport)
+    sids = [first]
+    for index in range(1, 8):
+        ack = await host.handle_message("conn-1", registration(nativeConversationId=f"thread-{index + 1}"))
+        sids.append(ack["sessionId"])
+    frame = heartbeat(first)
+    frame["sessions"] = [heartbeat(sid)["sessions"][0] for sid in sids]
+    real_get = repo.get_session
+    entered, release = asyncio.Event(), asyncio.Event()
+    seen, active, maximum = set(), 0, 0
+
+    async def slow_first_read(owner, sid):
+        nonlocal active, maximum
+        if sid not in seen:
+            seen.add(sid)
+            active += 1
+            maximum = max(maximum, active)
+            if active == 4:
+                entered.set()
+            await release.wait()
+            active -= 1
+        return await real_get(owner, sid)
+
+    with patch.object(repo, "get_session", slow_first_read):
+        task = asyncio.create_task(host.handle_message("conn-1", frame))
+        try:
+            await asyncio.wait_for(entered.wait(), timeout=1)
+        finally:
+            release.set()
+            response = await task
+    assert response["type"] == "local.device.heartbeat.ack"
+    assert response["rejected"] == []
+    assert maximum == 4
+    assert seen == set(sids)
+
+
+@pytest.mark.asyncio
+async def test_device_heartbeat_keeps_duplicate_session_updates_in_order(transport):
+    sid = await start(transport)
+    frame = heartbeat(sid)
+    frame["sessions"] = [heartbeat(sid, status="busy")["sessions"][0], heartbeat(sid, status="idle")["sessions"][0]]
+    real_put = repo.put_session
+    first_started, release = asyncio.Event(), asyncio.Event()
+    statuses = []
+    second_before_release = False
+
+    async def ordered_put(updated, *args, **kwargs):
+        nonlocal second_before_release
+        statuses.append(updated["status"])
+        if len(statuses) == 1:
+            first_started.set()
+            await release.wait()
+        elif not release.is_set():
+            second_before_release = True
+        return await real_put(updated, *args, **kwargs)
+
+    with patch.object(repo, "put_session", ordered_put):
+        task = asyncio.create_task(relay(transport).handle_message("conn-1", frame))
+        try:
+            await asyncio.wait_for(first_started.wait(), timeout=1)
+        finally:
+            release.set()
+            await task
+    assert statuses == ["busy", "idle"]
+    assert not second_before_release
+    assert (await repo.get_session(OWNER, sid))["status"] == "idle"
+
+
+@pytest.mark.asyncio
+async def test_device_heartbeat_drains_workers_and_preserves_the_original_error(transport):
+    first = await start(transport)
+    host = relay(transport)
+    second = (await host.handle_message("conn-1", registration(nativeConversationId="thread-2")))["sessionId"]
+    frame = heartbeat(first)
+    frame["sessions"].append(heartbeat(second, status="idle")["sessions"][0])
+    real_get = repo.get_session
+    second_started, release = asyncio.Event(), asyncio.Event()
+    seen = False
+
+    async def failing_read(owner, sid):
+        nonlocal seen
+        if sid == first:
+            await second_started.wait()
+            raise RuntimeError("original read failed")
+        if sid == second and not seen:
+            seen = True
+            second_started.set()
+            await release.wait()
+        return await real_get(owner, sid)
+
+    with patch.object(repo, "get_session", failing_read):
+        task = asyncio.create_task(host.handle_message("conn-1", frame))
+        try:
+            await asyncio.wait_for(second_started.wait(), timeout=1)
+            assert not task.done()
+        finally:
+            release.set()
+            with pytest.raises(RuntimeError, match="original read failed"):
+                await task
+    assert (await repo.get_session(OWNER, second))["status"] == "idle"
+
+
+@pytest.mark.asyncio
 async def test_unchanged_device_heartbeat_keeps_last_event_at_and_sends_no_hint(transport):
     with patch("time.time", return_value=10000):
         sid = await start(transport)

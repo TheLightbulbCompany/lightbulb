@@ -1906,6 +1906,12 @@ class Huddle:
         del log[:-SAID_LOG_N]
         if v and not mouth(v.speaker):
             self._answer_message(v, text, interrupted)
+        elif v and not interrupted:
+            # a mouth says an answer word for word: one it said to its end is done
+            done = {n[0] for n in v.told if not unsaid_part(n[2], text)}
+            v.told = [n for n in v.told if n[0] not in done]
+            if v.saying in done:
+                v.saying = None
         to = self._with(v) if v else ""
         self._transcript.add_agent(
             agent_id, self._agent_name(agent_id), text, at=self._clock(), to=to
@@ -1964,14 +1970,13 @@ class Huddle:
                 v.announcing = False
                 # said to the end: nothing to post. A mouth also keeps answers handed to it before it
                 # spoke (`ended`, tick): those are done only once it has spoken, not on "thinking".
-                if was_speaking or not mouth(v.speaker):
+                # A mouth reports each line it finished (`on_agent_said`): what it was handed is done then, not
+                # when it stops speaking. It stops after an acknowledgement or a holding line too, and the
+                # answer ordered just before that was taken for said (10-07 rig: cut after two words, no hand).
+                if not mouth(v.speaker):
                     v.told = []
-                # A mouth's answer is handed over when its run ends, before any audio: it is said only once the
-                # voice has spoken and stopped, not on a state change before its first word.
-                if ((run := self._runs.get(v.saying or "")) is None or run.ended) and (
-                    was_speaking or not mouth(v.speaker)
-                ):
-                    v.saying = None  # its answer was said to the end too
+                    if (run := self._runs.get(v.saying or "")) is None or run.ended:
+                        v.saying = None  # its answer was said to the end too
             self._sync_state()
 
     def on_active_speakers(self, identities: set[str]) -> None:
@@ -2893,8 +2898,11 @@ class Huddle:
             news[:] = [n for n in news if n[0] != run.run_id or n[2] != CANT_REACH]
         if v := self._same_session(run):
             if mouth(v.speaker) and answer:
-                # the run's last text box (updates before a tool are gone from it), word for word
+                # the run's last text box (updates before a tool are gone from it), word for word; kept until
+                # the voice reports it said (`on_agent_said`), so a cut leaves it for the hand
                 self._live_call(v, "say", answer)
+                if all(n[0] != run.run_id for n in v.told):
+                    v.told.append((run.run_id, run.request, answer, self._clock(), run.speaker))
             if not run.spoken.strip():
                 self._live_call(
                     v,
@@ -3374,7 +3382,10 @@ class Huddle:
         someone named) goes on the record like a cut announcement (§4.8)."""
         unsaid = list(v.told)  # earlier answers handed to it and not yet said to their end
         run = self._runs.get(v.saying or "")
-        if run is not None and run.ended and not (run.aborted or run.failed) and run.text.strip():
+        if (
+            run is not None and run.ended and not (run.aborted or run.failed) and run.text.strip()
+            and all(n[0] != run.run_id for n in unsaid)
+        ):
             unsaid.append((run.run_id, run.request, run.text.strip(), self._clock(), run.speaker))
         if unsaid and in_meet(v.speaker):
             # a meeting: nothing is lost and nothing is posted yet. Its hand goes back up with what was not heard,

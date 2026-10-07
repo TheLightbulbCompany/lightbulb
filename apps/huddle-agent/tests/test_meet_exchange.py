@@ -497,3 +497,36 @@ async def test_a_meeting_voice_that_names_a_person_stays_with_its_own_speaker():
     h, backend, lives, clock = await asked()
     h.on_agent_said("forge", "Dan, it is fifty dollars a month.")
     assert h._voice is not None and h._voice.speaker == P1 and ("set_participant", P2) not in lives[0].calls
+
+
+async def test_a_mouths_answer_cut_after_a_holding_line_ended_still_goes_to_its_hand():
+    """10-07 rig sales call on the driven voice: the answer was ordered, the voice stopped speaking (its holding
+    line had just ended), and that silence was taken for the answer said. Talked over two words in, no hand."""
+    h, backend, lives, clock = await asked()
+    (row,) = h._requests.items
+    h.on_agent_state("forge", "speaking")  # its acknowledgement
+    h.on_agent_said("forge", "On it.")
+    answer(h, row.run_id, "forge", "Three PRs are open. The oldest is two days old.")
+    h.on_agent_state("forge", "listening")  # the acknowledgement's audio ends AFTER the answer was ordered
+    assert ("say", "Three PRs are open. The oldest is two days old.") in lives[0].calls
+    h.on_agent_state("forge", "speaking")  # the answer begins
+    talks(h, P2)
+    clock.t += h_mod.TALK_OVER_S
+    await h.tick()
+    await settle(h)
+    assert h._voice is None
+    assert [n[2] for n in h._news.get("forge", [])] == ["Three PRs are open. The oldest is two days old."]
+
+
+async def test_a_mouths_answer_it_reported_said_leaves_no_hand():
+    h, backend, lives, clock = await asked()
+    (row,) = h._requests.items
+    answer(h, row.run_id, "forge", "Three PRs are open.")
+    h.on_agent_state("forge", "speaking")
+    h.on_agent_said("forge", "Three PRs are open.")
+    h.on_agent_state("forge", "listening")
+    talks(h, P2)
+    clock.t += h_mod.TALK_OVER_S
+    await h.tick()
+    await settle(h)
+    assert not h._news.get("forge")

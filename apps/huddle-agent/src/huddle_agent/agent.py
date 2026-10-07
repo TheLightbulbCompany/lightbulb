@@ -123,6 +123,14 @@ class _TrimmedGPTLiveModel(GPTLiveModel):
 
 
 FALLBACK_VOICE = "marin"
+# The Realtime model's voices. An agent's voice is picked for GPT-Live, which has more ("stone": 10-07 rig, a
+# refused session and a second open). One it lacks maps to one it has, the same one every time for that name,
+# so two agents still sound different.
+REALTIME_VOICES = ("alloy", "ash", "ballad", "coral", "echo", "sage", "shimmer", "verse", "marin", "cedar")
+
+
+def realtime_voice(voice: str) -> str:
+    return voice if voice in REALTIME_VOICES else REALTIME_VOICES[sum(voice.encode()) % len(REALTIME_VOICES)]
 # Routing v2 §6 / R6: end a turn when it sounds finished, not after 350 ms of silence, so a mid-thought pause is
 # not routed as half a line. The plugin accepts it (validated against the OpenAI SDK union); whether OpenAI
 # accepts it on a gpt-4o-mini-transcribe transcription session is unverified, hence SERVER_VAD.
@@ -433,7 +441,7 @@ async def _start_driven(
     agent = Agent(instructions=f"{persona}\n\n{DRIVEN}", chat_ctx=_seeded(seed))
     # turn_detection=None and no audio input: nothing but an order makes it speak. No vad: nothing to detect.
     session = AgentSession(
-        llm=_DrivenModel(model="gpt-realtime", voice=voice, turn_detection=None)
+        llm=_DrivenModel(model="gpt-realtime", voice=realtime_voice(voice), turn_detection=None)
     )
     await _open(session, agent, room, huddle, agent_id, speaker, ears=False)
     live = _DrivenLive(agent_id, session, agent, room)

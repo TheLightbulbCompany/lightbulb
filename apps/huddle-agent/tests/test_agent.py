@@ -295,3 +295,10 @@ def test_a_word_for_word_line_goes_to_the_model_without_the_conversation():
     assert sent(f"persona\n{agent.SAY}Fifty dollars.")["input"] == []
     assert "input" not in sent("persona\nTell Priya you are on it."), "its own words are chosen with the call in view"
     assert "input" not in sent(None)  # a nudge
+
+
+def test_a_voice_the_realtime_model_lacks_maps_to_one_it_has_the_same_each_time():
+    from huddle_agent.agent import REALTIME_VOICES, realtime_voice
+
+    assert realtime_voice("marin") == "marin"
+    assert realtime_voice("stone") in REALTIME_VOICES and realtime_voice("stone") == realtime_voice("stone")

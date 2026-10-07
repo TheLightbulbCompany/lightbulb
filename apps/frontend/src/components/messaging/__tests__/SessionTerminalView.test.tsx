@@ -1,23 +1,30 @@
 import { readFileSync } from "node:fs";
 import path from "node:path";
-import { act, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ApiError, type LiveEvent } from "@lightbulb/shared";
-import { SessionTerminalView } from "../SessionTerminalView";
+import { SessionTerminalView, terminalScale } from "../SessionTerminalView";
 
 const writes: Uint8Array[] = [];
 const hooks: { data?: (d: string) => void; key?: (e: unknown) => boolean; term?: { cols: number; rows: number };
-  options?: { scrollback?: number }; resets: number } = { resets: 0 };
+  options?: { scrollback?: number }; resets: number; wheel?: (e: { deltaY: number }) => boolean; screen?: { w: number; h: number } } = { resets: 0 };
 vi.mock("@xterm/xterm", () => ({ Terminal: class {
   cols = 80; rows = 24; options = { disableStdin: true };
   constructor(options: { scrollback?: number }) { hooks.term = this; hooks.options = options; }
-  open() {} reset() { hooks.resets += 1; } dispose() {}
+  // The drawn grid: xterm sizes `.xterm-screen` to cols x rows, whatever the box around it is.
+  open(el: HTMLElement) {
+    const shown = el.appendChild(document.createElement("div")); shown.className = "xterm-screen";
+    Object.defineProperty(shown, "offsetWidth", { get: () => hooks.screen?.w ?? 0 });
+    Object.defineProperty(shown, "offsetHeight", { get: () => hooks.screen?.h ?? 0 });
+  }
+  reset() { hooks.resets += 1; } dispose() {}
+  attachCustomWheelEventHandler(cb: (e: { deltaY: number }) => boolean) { hooks.wheel = cb; }
   onData(cb: (d: string) => void) { hooks.data = cb; }
   attachCustomKeyEventHandler(cb: (e: unknown) => boolean) { hooks.key = cb; }
   resize(c: number, r: number) { this.cols = c; this.rows = r; }
   write(data: Uint8Array, done?: () => void) { writes.push(data); done?.(); }
 } }));
-afterEach(() => { writes.length = 0; hooks.resets = 0; vi.useRealTimers(); });
+afterEach(() => { writes.length = 0; hooks.resets = 0; hooks.screen = undefined; window.localStorage.clear(); vi.useRealTimers(); });
 const CLEAR = Array.from(new TextEncoder().encode("\x1b[?1049l\x1b[r\x1b[2J\x1b[H"));
 
 const screenEvent = (sessionId: string, kind = "snapshot", seq = 0, epoch = 1, data = "G1tI") => ({ schemaVersion: 1, eventId: `e${seq}`, type: "workspace.session.screen", occurredAt: "now",
@@ -238,4 +245,96 @@ it("the viewer's own size never reaches the Mac or changes the terminal's size",
   expect(watch).toHaveBeenCalledTimes(1);
   expect([hooks.term?.cols, hooks.term?.rows]).toEqual([100, 30]);
   vi.unstubAllGlobals();
+});
+
+describe("a readable terminal in a narrow pane", () => {
+  // The acceptance finding: a 124x69 session in a 984 px window drew at scale 0.38, about 5 px text.
+  const GRID = { w: 968, h: 1173 }; // 124 x 69 at 13 px Menlo
+  const PANE = { w: 660, h: 390 };
+  /** The scroll box, given a size (jsdom lays nothing out). */
+  const box = (size = PANE, scrollHeight = 880) => {
+    const el = document.querySelector<HTMLElement>(".session-terminal-scroll")!;
+    Object.defineProperty(el, "clientWidth", { configurable: true, get: () => size.w });
+    Object.defineProperty(el, "clientHeight", { configurable: true, get: () => size.h });
+    Object.defineProperty(el, "scrollHeight", { configurable: true, get: () => scrollHeight });
+    return el;
+  };
+  const drawn = () => document.querySelector<HTMLElement>(".session-terminal-scroll > div > div")!.style.transform;
+  const open = async (props: Partial<Parameters<typeof SessionTerminalView>[0]> = {}) => {
+    hooks.screen = GRID;
+    let emit: (e: LiveEvent) => void = () => {};
+    const view = render(<SessionTerminalView session={{ sessionId: "s1", generation: "g1" }} onEvent={(h) => { emit = h; return () => {}; }}
+      watch={async () => undefined} onLive={() => {}} {...props} />);
+    await act(async () => { await vi.dynamicImportSettled(); });
+    const el = box();
+    return { el, view, emit: (e: LiveEvent) => act(() => { emit(e); }) };
+  };
+
+  it("fits the width, never below the readable floor, and never above full size", () => {
+    expect(terminalScale("readable", GRID, PANE)).toBe(0.75); // 660 / 968 = 0.68: the floor holds
+    expect(terminalScale("readable", GRID, { w: 850, h: 390 })).toBeCloseTo(850 / 968);
+    expect(terminalScale("readable", GRID, { w: 2000, h: 390 })).toBe(1);
+    expect(terminalScale("fit", GRID, PANE)).toBeCloseTo(390 / 1173); // the old whole-screen fit
+    expect(terminalScale("fit", GRID, { w: 2000, h: 2000 })).toBe(1);
+  });
+
+  it("draws at the readable scale inside a box that scrolls both ways", async () => {
+    const { emit } = await open();
+    emit(screenEvent("s1"));
+    expect(drawn()).toBe("scale(0.75)");
+    // The wrapper takes the scaled size, so the box scrolls exactly as far as the picture reaches.
+    const sized = document.querySelector<HTMLElement>(".session-terminal-scroll > div")!;
+    expect([sized.style.width, sized.style.height]).toEqual(["726px", "879px"]);
+    const css = readFileSync(path.resolve(__dirname, "../messaging.css"), "utf8");
+    expect(/\.session-terminal-scroll\s*\{([^}]*)\}/.exec(css)?.[1]).toContain("overflow: auto");
+  });
+
+  it("keeps the bottom of the screen in view as output arrives, until the viewer scrolls away", async () => {
+    const { el, emit } = await open();
+    emit(screenEvent("s1"));
+    expect(el.scrollTop).toBe(880);
+    el.scrollTop = 100; fireEvent.scroll(el); // the viewer reads further up
+    emit(screenEvent("s1", "output", 1));
+    expect(el.scrollTop).toBe(100);
+    el.scrollTop = 490; fireEvent.scroll(el); // back at the bottom: 490 + 390 = 880
+    el.scrollTop = 0;
+    emit(screenEvent("s1", "output", 2));
+    expect(el.scrollTop).toBe(880);
+  });
+
+  it("the wheel moves the box while it can, then the terminal's own scrollback", async () => {
+    const { el, emit } = await open();
+    emit(screenEvent("s1"));
+    // false = xterm leaves the event alone and the browser scrolls the box; true = xterm scrolls its history.
+    el.scrollTop = 490;
+    expect(hooks.wheel?.({ deltaY: -30 })).toBe(false); // up: the rest of this screen first
+    expect(hooks.wheel?.({ deltaY: 30 })).toBe(true); // down at the bottom: back toward the tail
+    el.scrollTop = 0;
+    expect(hooks.wheel?.({ deltaY: -30 })).toBe(true); // up at the top: into history
+    expect(hooks.wheel?.({ deltaY: 30 })).toBe(false);
+  });
+
+  it("has a Fit / Readable switch that is remembered for this viewer", async () => {
+    const { emit, view } = await open();
+    emit(screenEvent("s1"));
+    const group = screen.getByRole("group", { name: "Terminal size" });
+    expect(group.closest(".session-terminal-scroll")).toBeNull(); // its own strip, never over the text
+    expect(screen.getByRole("button", { name: "Readable" }).getAttribute("aria-pressed")).toBe("true");
+    fireEvent.click(screen.getByRole("button", { name: "Fit" }));
+    expect(screen.getByRole("button", { name: "Fit" }).getAttribute("aria-pressed")).toBe("true");
+    expect(drawn()).toBe(`scale(${390 / 1173})`);
+    view.unmount();
+    await open();
+    expect(screen.getByRole("button", { name: "Fit" }).getAttribute("aria-pressed")).toBe("true");
+  });
+
+  it("works when this browser's storage is blocked", async () => {
+    const get = vi.spyOn(Storage.prototype, "getItem").mockImplementation(() => { throw new Error("blocked"); });
+    const set = vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => { throw new Error("blocked"); });
+    const { emit } = await open();
+    emit(screenEvent("s1"));
+    fireEvent.click(screen.getByRole("button", { name: "Fit" }));
+    expect(screen.getByRole("button", { name: "Fit" }).getAttribute("aria-pressed")).toBe("true");
+    get.mockRestore(); set.mockRestore();
+  });
 });

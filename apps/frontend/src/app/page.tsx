@@ -9,11 +9,19 @@ import { WorkspaceBand } from "@/components/landing/WorkspaceBand";
 import { PricingThreeCard as Pricing } from "@/components/landing/PricingThreeCard";
 import { AskAI } from "@/components/landing/AskAI";
 import { Footer } from "@/components/landing/Footer";
-import { JsonLd, organizationJsonLd, pageMetadata, softwareApplicationJsonLd, websiteJsonLd } from "@/lib/seo";
+import {
+  HOME_DESCRIPTION,
+  HOME_TITLE,
+  JsonLd,
+  organizationJsonLd,
+  pageMetadata,
+  softwareApplicationJsonLd,
+  websiteJsonLd,
+} from "@/lib/seo";
 
 export const metadata: Metadata = pageMetadata({
-  title: "Lightbulb — AI Agents for Autonomous Businesses",
-  description: "Run your company with persistent AI agents, cloud workspaces, and an agent marketplace for autonomous business operations.",
+  title: HOME_TITLE,
+  description: HOME_DESCRIPTION,
   path: "/",
 });
 

@@ -122,6 +122,22 @@ export type LaunchHostDecision =
 
 const LAUNCH_HOST_SET = new Set(LAUNCH_HOSTS);
 
+export type CanonicalHostDecision = { kind: "redirect"; to: string } | null;
+
+/**
+ * Consolidate the duplicate www origin onto the apex. A rel=canonical is only
+ * a hint; the permanent redirect makes every crawl and backlink resolve to the
+ * same host while preserving the requested resource and attribution query.
+ */
+export function decideCanonicalHostRedirect(
+  host: string | null | undefined,
+  pathname: string,
+  search: string,
+): CanonicalHostDecision {
+  if ((host ?? "").toLowerCase() !== `www.${ROOT_DOMAIN}`) return null;
+  return { kind: "redirect", to: `${SITE_URL}${pathname}${search}` };
+}
+
 /**
  * Pure host/path -> decision for flickmeon.ai, the launch-competition site: the
  * root serves `/launch`, every other path redirects to the product domain.
@@ -174,6 +190,8 @@ const _clerkMiddleware = clerkMiddleware(async (auth, req) => {
 
 export default function middleware(req: NextRequest, evt: Parameters<typeof _clerkMiddleware>[1]) {
   const host = (req.headers.get("host") ?? "").toLowerCase();
+  const canonicalHost = decideCanonicalHostRedirect(host, req.nextUrl.pathname, req.nextUrl.search);
+  if (canonicalHost) return NextResponse.redirect(canonicalHost.to, 308);
   const launch = decideLaunchHostRouting(host, req.nextUrl.pathname, req.nextUrl.search);
   if (launch?.kind === "redirect") return NextResponse.redirect(launch.to, 308);
   if (launch?.kind === "rewrite") {

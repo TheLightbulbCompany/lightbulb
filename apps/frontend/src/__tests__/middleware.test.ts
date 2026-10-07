@@ -8,6 +8,7 @@ import {
 } from '@/lib/domain';
 import {
   decideAdminHostRouting,
+  decideCanonicalHostRedirect,
   decideLaunchHostRouting,
   decidePaperclipLinkRedirect,
 } from '@/middleware';
@@ -56,6 +57,21 @@ describe('domain config', () => {
   it('admits no duplicates', () => {
     expect(new Set(DEFAULT_ADMIN_HOSTS).size).toBe(DEFAULT_ADMIN_HOSTS.length);
     expect(new Set(PAPERCLIP_HOSTS).size).toBe(PAPERCLIP_HOSTS.length);
+  });
+});
+
+describe('decideCanonicalHostRedirect (SEO host consolidation)', () => {
+  it('permanently consolidates the www host onto the apex while preserving path and query', () => {
+    expect(
+      decideCanonicalHostRedirect(
+        'www.thelightbulb.company',
+        '/blog/persistent-ai-agent-workspace',
+        '?utm_source=google',
+      ),
+    ).toEqual({
+      kind: 'redirect',
+      to: 'https://thelightbulb.company/blog/persistent-ai-agent-workspace?utm_source=google',
+    });
   });
 });
 

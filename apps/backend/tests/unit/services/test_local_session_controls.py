@@ -528,6 +528,28 @@ async def test_a_person_let_in_cannot_stop_the_owners_run(transport):
 
 
 @pytest.mark.asyncio
+async def test_only_the_owner_ends_a_session_and_only_one_with_its_own_process(transport):
+    sid = await start(transport)
+    await ask(BOB, sid)
+    await service.decide_join(ALICE, sid, BOB.user_id, "allow")
+    await service.set_team_control(ALICE, sid, True)
+    row = await repo.get_session(OWNER, sid)
+    end = service.LocalSessionCommand(requestId="end-1", expectedGeneration=row["generation"], kind="end")
+    with pytest.raises(ApiProblem, match="owner can end"):
+        service.require_command_scope(BOB, row, "end")  # not even under team control
+    service.require_command_scope(ALICE, row, "end")
+    # Ending needs no send capability, so an unverified session can still be ended.
+    service._require_control({**row, "provider": "claude", "capabilitiesVerified": False}, end)
+    with pytest.raises(ApiProblem, match="on its Mac"):
+        service._require_control({**row, "provider": "codex", "terminal": "attach"}, end)
+    service._require_control({**row, "provider": "codex", "terminal": "held"}, end)  # Lightbulb holds it
+    with pytest.raises(ApiProblem, match="on its Mac"):  # Claude's daemon owns a background session
+        service._require_control({**row, "provider": "claude", "kind": "background", "terminal": "attach"}, end)
+    with pytest.raises(ValueError):
+        service.LocalSessionCommand(requestId="end-2", expectedGeneration="g", kind="end", text="bye")
+
+
+@pytest.mark.asyncio
 async def test_a_queued_stop_from_a_person_let_in_is_refused_at_delivery(transport):
     sid = await start(transport)
     await ask(BOB, sid)

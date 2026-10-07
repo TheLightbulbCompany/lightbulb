@@ -136,6 +136,7 @@ const ACTION_LINE: Record<LocalSessionAuditEntry["action"], string> = {
   send: "sent a follow-up",
   cancel: "cancelled a queued follow-up",
   interrupt: "stopped the session",
+  end: "ended the session",
   approve: "approved a permission prompt",
   deny: "denied a permission prompt",
   team_control_on: "let teammates control this session",

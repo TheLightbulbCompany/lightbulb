@@ -1774,7 +1774,9 @@ impl Host {
         else {
             return Err("unknown command session".into());
         };
-        if cmd.kind != "interrupt" { self.observe_workspace(&key).await?; }
+        // Neither carries text into the session, so neither needs the workspace notice.
+        let textless = matches!(cmd.kind.as_str(), "interrupt" | "end");
+        if !textless { self.observe_workspace(&key).await?; }
         let Some(mirror) = self
             .mirrors
             .values()
@@ -1804,7 +1806,16 @@ impl Host {
             *why = "no matching active turn";
             return journal.reconcile(&cmd.session_id, &cmd.request_id, &cmd.expected_generation);
         }
-        let mut socket = if native.provider == "claude" {
+        // Only this Mac's own human ends a session, and only one whose process is its own: one
+        // Lightbulb holds, or a plain Claude. A Codex app or daemon process hosts many
+        // conversations and a Claude background session belongs to Claude's daemon.
+        if cmd.kind == "end"
+            && (!cmd.own || (native.holder.is_none() && (native.provider != "claude" || native.job.is_some())))
+        {
+            *why = "this session's process is not its own to end";
+            return journal.reconcile(&cmd.session_id, &cmd.request_id, &cmd.expected_generation);
+        }
+        let mut socket = if native.provider == "claude" && cmd.kind != "end" {
             match claude::connect(&native).await {
                 Ok(socket) => Some(socket),
                 Err(_) => {
@@ -1825,8 +1836,8 @@ impl Host {
             return journal.reconcile(&cmd.session_id, &cmd.request_id, &cmd.expected_generation);
         }
         // Provenance is server-owned. JSON escaping keeps IDs from spoofing this boundary.
-        let text = if cmd.kind == "interrupt" { String::new() } else { cmd.native_text(&native.provider, &mirror.workspace.notice()) };
-        let anchored = if cmd.kind == "interrupt" { Ok(()) } else { journal.anchor(
+        let text = if textless { String::new() } else { cmd.native_text(&native.provider, &mirror.workspace.notice()) };
+        let anchored = if textless { Ok(()) } else { journal.anchor(
             cmd, &native, text.clone(), Some(mirror.workspace.revision()),
         ) };
         if anchored.is_err()
@@ -1838,6 +1849,20 @@ impl Host {
         {
             *why = if anchored.is_err() { "intent not anchored" } else { "expired, stopping or process changed" };
             return journal.finish(&cmd.session_id, &cmd.request_id, None, false);
+        }
+        if cmd.kind == "end" {
+            // The owner's End, from any device. A held session ends as the panel's End does, by
+            // stopping its holder; a plain Claude as closing its terminal does (it saves and
+            // leaves on SIGTERM). The mirror then reports the end. The check just above proved
+            // this pid is still the process that was verified.
+            let sent = match native.holder.clone() {
+                Some(id) => tokio::task::spawn_blocking(crate::holder::manager::list).await.ok()
+                    .and_then(|holders| holders.into_iter().find(|h| h.id == id))
+                    .map(|holder| crate::holder::manager::stop(holder.pid))
+                    .is_some(),
+                None => unsafe { libc::kill(native.process.pid as libc::pid_t, libc::SIGTERM) == 0 },
+            };
+            return journal.finish(&cmd.session_id, &cmd.request_id, sent.then(|| cmd.request_id.clone()), false);
         }
         if live {
             let turn = cmd.expected_turn_id.as_deref().ok_or("active turn required")?;

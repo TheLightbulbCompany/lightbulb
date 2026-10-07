@@ -82,7 +82,14 @@ export function LocalSessionPanel({ session, ownerName, own, client, revision, o
   const people = useMemo(() => [{ kind: "human" as const, id: session.humanUserId, displayName: ownerName }, ...participants], [session.humanUserId, ownerName, participants]);
   const agentName = useCallback((agentId: string) => people.find(p => p.id === agentId)?.displayName ?? "Agent", [people]);
   const personName = useCallback((who: string) => nameOf?.(who) ?? people.find(p => p.id === who)?.displayName ?? "A teammate", [nameOf, people]);
-  const command = useSessionCommand(client, session, { uuid: () => crypto.randomUUID(), onAccessLost, onSent: () => setText(""), agentName, allowInterrupt: own || !!session.teamControl, allowOffline: true });
+  const command = useSessionCommand(client, session, { uuid: () => crypto.randomUUID(), onAccessLost, onSent: () => setText(""), agentName, allowInterrupt: own || !!session.teamControl, allowOffline: true, allowEnd: own });
+  // Two clicks, as in the Mac's own terminal bar: a stray one never ends a session.
+  const [endArmed, setEndArmed] = useState(false);
+  useEffect(() => {
+    if (!endArmed) return;
+    const timer = setTimeout(() => setEndArmed(false), 3000);
+    return () => clearTimeout(timer);
+  }, [endArmed]);
   const outbox = useSessionOutbox(client, session.sessionId,
     `${session.status}:${session.status === "offline" ? revision : 0}:${command.attempt?.request.requestId}:${command.receipt?.state}`,
     session.status !== "offline" && session.status !== "ended");
@@ -221,6 +228,10 @@ export function LocalSessionPanel({ session, ownerName, own, client, revision, o
         {!own && !canPickUp(session) && session.provider === "claude" && !session.pickup?.allowed && askPickup.supported &&
           <Button type="button" variant="outline" size="sm" disabled={askPickup.saving || askPickup.state === "pending"} onClick={() => void askPickup.ask()}>
             {askPickup.state === "pending" ? "Requested" : askPickup.state === "declined" ? `${ownerName} declined. Ask again` : "Ask to pick up"}</Button>}
+        {command.attempt?.request.kind === "end" && command.chip && <span role="status" className="text-sm"><ReceiptChip chip={command.chip} /></span>}
+        {/* The app's own terminal on this Mac has End in its bar; this is the same control everywhere else. */}
+        {command.canEnd && local !== "local" && <Button type="button" variant="outline" size="sm" disabled={command.locked}
+          onClick={() => { if (endArmed) command.end(); setEndArmed(!endArmed); }}>{endArmed ? "Click again to end" : "End session"}</Button>}
         <Button type="button" variant="ghost" size="sm" onClick={() => show(tab)}><Info aria-hidden="true" />Details</Button>
       </div>
     </div>

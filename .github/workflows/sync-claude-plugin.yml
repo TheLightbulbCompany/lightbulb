@@ -1,11 +1,17 @@
 # Copies packages/claude-plugin/ to the public marketplace repo
 # TheLightbulbCompany/lightbulb-plugin on every change that reaches main.
 #
-# GITHUB_TOKEN is scoped to this repository and cannot push to another one, so the
-# push uses a PAT in the secret PLUGIN_SYNC_TOKEN: a fine-grained token with
-# "Contents: Read and write" on TheLightbulbCompany/lightbulb-plugin only.
-# Until the owner adds that secret, the job prints a notice and passes, so main
-# never goes red because of it.
+# GITHUB_TOKEN is scoped to this repository and cannot push to another one. The
+# push uses a deploy key instead: an ed25519 key with write access on
+# TheLightbulbCompany/lightbulb-plugin only, its private half in the secret
+# PLUGIN_SYNC_DEPLOY_KEY. To rotate it, add a new key with
+#   gh api -X POST repos/TheLightbulbCompany/lightbulb-plugin/keys -f title=plugin-sync -f key="$(cat new.pub)" -F read_only=false
+# then `gh secret set PLUGIN_SYNC_DEPLOY_KEY < new` here, and delete the old key.
+# Without the secret the job prints a notice and passes, so main never goes red because of it.
+#
+# The key and known_hosts live in $RUNNER_TEMP, not ~/.ssh, so a self-hosted runner keeps
+# neither the key nor a changed ~/.ssh after the job. GitHub's host key is pinned (the
+# ed25519 key from docs.github.com "GitHub's SSH key fingerprints"), not fetched by ssh-keyscan.
 name: sync-claude-plugin
 'on':
   push:
@@ -27,15 +33,22 @@ jobs:
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
       - name: Push packages/claude-plugin to lightbulb-plugin
         env:
-          PLUGIN_SYNC_TOKEN: ${{ secrets.PLUGIN_SYNC_TOKEN }}
+          PLUGIN_SYNC_DEPLOY_KEY: ${{ secrets.PLUGIN_SYNC_DEPLOY_KEY }}
         run: |
           set -euo pipefail
-          if [ -z "$PLUGIN_SYNC_TOKEN" ]; then
-            echo "::notice::PLUGIN_SYNC_TOKEN is not set; skipping the sync to TheLightbulbCompany/lightbulb-plugin."
+          if [ -z "$PLUGIN_SYNC_DEPLOY_KEY" ]; then
+            echo "::notice::PLUGIN_SYNC_DEPLOY_KEY is not set; skipping the sync to TheLightbulbCompany/lightbulb-plugin."
             exit 0
           fi
+          ssh_dir="$RUNNER_TEMP/plugin-sync-ssh"
+          trap 'rm -rf "$ssh_dir"' EXIT
+          (umask 077 && mkdir -p "$ssh_dir" && printf '%s\n' "$PLUGIN_SYNC_DEPLOY_KEY" > "$ssh_dir/id_ed25519")
+          chmod 600 "$ssh_dir/id_ed25519"
+          echo 'github.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl' > "$ssh_dir/known_hosts"
+          export GIT_SSH_COMMAND="ssh -i $ssh_dir/id_ed25519 -o IdentitiesOnly=yes -o UserKnownHostsFile=$ssh_dir/known_hosts -o StrictHostKeyChecking=yes"
           dest="$RUNNER_TEMP/lightbulb-plugin"
-          git clone --quiet "https://x-access-token:${PLUGIN_SYNC_TOKEN}@github.com/TheLightbulbCompany/lightbulb-plugin.git" "$dest"
+          rm -rf "$dest"
+          git clone --quiet git@github.com:TheLightbulbCompany/lightbulb-plugin.git "$dest"
           rsync -a --delete --exclude .git packages/claude-plugin/ "$dest/"
           cd "$dest"
           git add -A

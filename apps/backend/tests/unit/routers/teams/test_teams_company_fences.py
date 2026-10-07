@@ -52,14 +52,24 @@ def _calls(dependant):
         yield from _calls(d)
 
 
+def _walk(routes, prefix=""):
+    # FastAPI >= 0.142 keeps include_router() as a nested _IncludedRouter instead of flattening.
+    for r in routes:
+        if hasattr(r, "original_router"):
+            yield from _walk(r.original_router.routes, prefix + r.include_context.prefix)
+        else:
+            yield prefix, r
+
+
 def _unfenced():
     out = set()
-    for r in router.routes:
-        if not re.search(r"\{\w+\}", r.path):
+    for prefix, r in _walk(router.routes):
+        path = prefix + r.path
+        if not re.search(r"\{\w+\}", path):
             continue
         if FENCES & set(_calls(r.dependant)):
             continue
-        out |= {(m, r.path) for m in r.methods}
+        out |= {(m, path) for m in r.methods}
     return out
 
 

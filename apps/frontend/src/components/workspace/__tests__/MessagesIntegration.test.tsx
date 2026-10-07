@@ -175,7 +175,9 @@ describe("Messages room/controller boundary", () => {
   it("opens the roomless panel=session permalink grammar into the Messages panel and shows the session", async () => {
     const { api } = renderWorkspace("agent-a", "?panel=session&session=native-one");
     await waitFor(() => expect(api.getPanel(MESSAGES_PANEL_ID)?.params).toMatchObject({ sessionId: "native-one" }));
-    expect(await screen.findByText("Synthetic native investigation history")).toBeInTheDocument();
+    expect(await screen.findByText("This session was not started through Lightbulb, so its screen is not here.")).toBeInTheDocument();
+    expect(document.querySelector(".session-status-line")).toHaveTextContent("Idle");
+    expect(screen.queryByText("Synthetic native investigation history")).not.toBeInTheDocument();
     expect(api.panels.filter(panel => panel.id === MESSAGES_PANEL_ID)).toHaveLength(1);
   });
   it("keeps a session deep link open while the cold load settles on its landing room", async () => {
@@ -184,9 +186,10 @@ describe("Messages room/controller boundary", () => {
     const { api } = renderWorkspace();
     act(() => openSessionPanel("native-one"));
     await waitFor(() => expect(api.getPanel(MESSAGES_PANEL_ID)?.params).toMatchObject({ sessionId: "native-one" }));
-    expect(await screen.findByText("Synthetic native investigation history")).toBeInTheDocument();
+    expect(await screen.findByText("This session was not started through Lightbulb, so its screen is not here.")).toBeInTheDocument();
     await act(async () => { await new Promise((resolve) => setTimeout(resolve, 50)); });
-    expect(screen.getByText("Synthetic native investigation history")).toBeInTheDocument();
+    expect(screen.getByText("This session was not started through Lightbulb, so its screen is not here.")).toBeInTheDocument();
+    expect(screen.queryByText("Synthetic native investigation history")).not.toBeInTheDocument();
   });
   it("keeps the exact clicked DM, while an explicit same-agent shortcut can retarget it", async () => {
     const { api } = renderWorkspace();

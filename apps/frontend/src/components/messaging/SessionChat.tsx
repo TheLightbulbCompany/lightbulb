@@ -62,10 +62,19 @@ export function SessionChat({ sessionId, sessionOwnerId, knownRoomId, openChat, 
     }, (e: unknown) => {
       if (!alive) return;
       setError(e instanceof ApiError && e.status === 409 ? "This chat is full." : "Chat is not available for this session.");
-      onRoom?.(null); // the error panel replaced the room
+      // The error panel replaced the room. The slot lets go of it too, or the known room would keep
+      // its subscription and its cursor would keep advancing behind the panel.
+      selectRoom(null);
+      setRoomId(null);
+      onRoom?.(null);
     });
     return () => { alive = false; onRoom?.(null); };
   }, [sessionId, known, openChat, selectRoom, onRoom]);
+
+  // Sharing paused while the column was open: the hook already dropped the subscription and stopped
+  // reading; the "Access removed" panel is not the room on screen either.
+  const accessRemoved = rooms.accessRemoved;
+  useEffect(() => { if (accessRemoved) onRoom?.(null); }, [accessRemoved, onRoom]);
 
   const [text, setText] = useState("");
   const [clientMessageId, setClientMessageId] = useState(() => crypto.randomUUID());

@@ -130,6 +130,8 @@ it("reports the known room as on screen before the door answers, and takes it ba
   await act(async () => { refuse(new ApiError(404, null)); });
   expect(await screen.findByText("Chat is not available for this session.")).toBeInTheDocument();
   expect(onRoom).toHaveBeenLastCalledWith(null);
+  // The slot lets go of the room: nothing is fetched or marked read behind the error panel.
+  expect(selectRoom).toHaveBeenLastCalledWith(null);
 });
 
 it("reads the known room again once the door answers (a session that ended during the race is not left writable)", async () => {
@@ -140,4 +142,14 @@ it("reads the known room again once the door answers (a session that ended durin
   expect(refreshRoom).not.toHaveBeenCalled();
   await act(async () => { land({ ...detail, archivedAt: "2026-10-07T11:00:00Z" }); });
   expect(refreshRoom).toHaveBeenCalledTimes(1);
+});
+
+it("stops counting the room as on screen once access to it is removed", async () => {
+  const onRoom = vi.fn();
+  const props = { sessionId: "s1", sessionOwnerId: "user_alice", openChat: vi.fn(async () => detail), onClose: vi.fn(), onRoom };
+  const view = render(<SessionChat {...props} />);
+  await waitFor(() => expect(onRoom).toHaveBeenLastCalledWith("chat-1"));
+  rooms.value = { ...rooms.value, accessRemoved: true, messages: [] };
+  view.rerender(<SessionChat {...props} />);
+  await waitFor(() => expect(onRoom).toHaveBeenLastCalledWith(null));
 });

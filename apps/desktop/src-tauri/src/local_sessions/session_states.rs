@@ -1,6 +1,6 @@
 //! Session states beyond a running terminal (spec 2026-10-07 §5.1, §5.4): an ended held session's
 //! final screen, which its holder keeps while this app runs, and why a running session has no
-//! terminal. `transport.rs` calls in here at six one-line seams; `screen.rs` is untouched: a kept
+//! terminal. `transport.rs` calls in here at seven one-line seams; `screen.rs` is untouched: a kept
 //! ended screen is indexed as live, so a viewer's watch reaches its holder like a running one's.
 //!
 //! A screen is an ended session's only when its holder's provider exited and that session ended
@@ -42,12 +42,18 @@ fn features(features: &Value) -> (bool, bool) {
     (has("endedScreens"), has("terminalReason"))
 }
 
-/// A registration ack's `features`. Per connection, like the other `relay_reads_*` flags: every
-/// heartbeat follows a registration ack on the same connection.
+/// A registration ack's `features`. Per connection, like the other `relay_reads_*` flags:
+/// `Host::reset_relay_features` clears them (Null) when a socket starts, so a reconnect to an
+/// older relay sends nothing it would refuse before its own ack is read.
 pub(super) fn read_features(listed: &Value) {
     let (screens, reason) = features(listed);
     READS_ENDED_SCREENS.store(screens, SeqCst);
     READS_TERMINAL_REASON.store(reason, SeqCst);
+}
+
+#[cfg(test)]
+pub(super) fn reads_ended_screens() -> bool {
+    READS_ENDED_SCREENS.load(SeqCst)
 }
 
 /// When this holder's provider exited (unix ms), if the holder shows only its final screen now.

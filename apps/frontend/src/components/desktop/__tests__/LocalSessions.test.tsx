@@ -311,6 +311,30 @@ it("keeps a Mac's own answer when it pairs again: off stays off, and turning it 
   await waitFor(() => expect(invoke).toHaveBeenCalledWith("shell_integration_set", {enabled:false}));
   localStorage.removeItem("lightbulb.desktop.liveSharingOffer");
 });
+it("never writes the switch for an already-offered Mac before its stored answer is known, or when it cannot be read", async () => {
+  localStorage.setItem("lightbulb.desktop.liveSharingOffer", "1");
+  // The read is still out: the switch waits, and Continue leaves the rc files alone.
+  let answer: (on: boolean) => void = () => {};
+  invoke.mockImplementation(async (command) => command === "shell_integration_status" ? new Promise<boolean>(resolve => { answer = resolve; }) : command === "local_sessions_set" ? 1 : { enrollment:null, pairedWorkspaceId:"org", status:"paused" });
+  const first = render(<DesktopPermissionsGate />);
+  const waiting = await screen.findByRole("button", {name:/Share every session live/});
+  expect(waiting).toBeDisabled();
+  expect(waiting).toHaveAttribute("aria-pressed", "false");
+  await userEvent.click(screen.getByRole("button", {name:"Continue"}));
+  await waitFor(() => expect(screen.queryByRole("alertdialog")).toBeNull());
+  expect(invoke.mock.calls.some(([command]) => command === "shell_integration_set")).toBe(false);
+  answer(false);
+  first.unmount();
+  localStorage.removeItem("isol8.desktop.permissions.v1");
+  // The read failed: the same.
+  invoke.mockImplementation(async (command) => { if (command === "shell_integration_status") throw new Error("no"); return command === "local_sessions_set" ? 1 : { enrollment:null, pairedWorkspaceId:"org", status:"paused" }; });
+  render(<DesktopPermissionsGate />);
+  expect(await screen.findByRole("button", {name:/Share every session live/})).toBeDisabled();
+  await userEvent.click(screen.getByRole("button", {name:"Continue"}));
+  await waitFor(() => expect(screen.queryByRole("alertdialog")).toBeNull());
+  expect(invoke.mock.calls.some(([command]) => command === "shell_integration_set")).toBe(false);
+  localStorage.removeItem("lightbulb.desktop.liveSharingOffer");
+});
 
 it("names the workspace sharing is on in, never its raw id, and shows the desktop status as its own note", async () => {
   const on = (status: string) => ({enrollment:{ownerId:"org",humanUserId:"alice",enabled:true,paused:false},pairedWorkspaceId:"org",status});

@@ -488,6 +488,7 @@ impl Host {
     }
 
     fn reset_relay_features(&mut self) {
+        super::session_states::read_features(&Value::Null);
         for mirror in self.mirrors.values_mut() {
             mirror.subagents.relay = false;
             mirror.subagents.relay_known = false;
@@ -3379,8 +3380,14 @@ pub(super) mod tests {
         mirror.subagents.relay_known = true;
         let mut host = test_host(dir.path(), vec![(SID, mirror)]);
 
+        // Only `endedScreens`: it changes no frame without a real ended holder, so tests running
+        // beside this one never see it.
+        super::super::session_states::read_features(&json!(["endedScreens"]));
+        assert!(super::super::session_states::reads_ended_screens());
+
         host.reset_relay_features();
 
+        assert!(!super::super::session_states::reads_ended_screens(), "an older relay on the next socket must get no `screens` frame");
         assert!(!host.mirrors[SID].subagents.relay);
         assert!(!host.mirrors[SID].subagents.relay_known);
     }

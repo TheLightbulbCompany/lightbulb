@@ -49,19 +49,22 @@ export function DesktopPermissionsGate() {
     DEFAULT_DESKTOP_PERMISSIONS,
   );
   const [choice, setChoice] = useState<boolean | null>(null);
-  // On by default (owner ruling 2026-10-07): the item says which files it edits, and one click turns it off.
-  // A Mac that already answered the offer (an earlier pairing, or the notice) keeps its answer:
-  // `stored` is what its rc files say now, read only for such a Mac.
+  // On by default (owner ruling 2026-10-07) for a Mac that was never offered the switch: the item
+  // says which files it edits, and one click turns it off. A Mac that already answered (an earlier
+  // pairing, or the notice) keeps its answer: `stored` is what its rc files say now. Until that is
+  // read the switch waits, and if it cannot be read this dialog never writes it.
+  // Read on every render: the notice can make the offer while this is mounted.
+  const offered = (() => { try { return !!localStorage.getItem(LIVE_SHARING_OFFER_KEY); } catch { return true; } })();
   const [stored, setStored] = useState<boolean | null>(null);
   const [liveChoice, setLive] = useState<boolean | null>(null);
-  const live = liveChoice ?? stored ?? true;
+  const liveKnown = !offered || stored !== null;
+  const live = liveChoice ?? (offered ? stored ?? false : true);
   useEffect(() => {
-    if (!shouldShowGate) return;
-    try { if (!localStorage.getItem(LIVE_SHARING_OFFER_KEY)) return; } catch { return; }
+    if (!shouldShowGate || !offered) return;
     let current = true;
     getTauri()?.core?.invoke<boolean>("shell_integration_status").then(on => { if (current && typeof on === "boolean") setStored(on); }, () => {});
     return () => { current = false; };
-  }, [shouldShowGate]);
+  }, [shouldShowGate, offered]);
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
   const operation = useRef(0);
@@ -123,7 +126,7 @@ export function DesktopPermissionsGate() {
           return;
         }
       }
-      if (enableSharing && live !== (stored ?? false)) {
+      if (enableSharing && liveKnown && live !== (stored ?? false)) {
         // Best effort: the switch stays in Settings if this build or the rc files refuse. Off here
         // is that switch turned off: it removes the block.
         await getTauri()?.core?.invoke("shell_integration_set", { enabled: live }).catch(() => {});
@@ -168,7 +171,7 @@ export function DesktopPermissionsGate() {
               <button
                 key={key}
                 type="button"
-                disabled={saving || (key !== "sessions" && key !== "live" && !shouldShowGate)}
+                disabled={saving || (key === "live" ? !liveKnown : key !== "sessions" && !shouldShowGate)}
                 onClick={() => key === "sessions" ? setChoice(!sessionChoice) : key === "live" ? setLive(!live) : toggle(key)}
                 className={[
                   "flex w-full items-center gap-3 rounded-md border p-3 text-left transition",

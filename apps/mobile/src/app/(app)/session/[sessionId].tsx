@@ -189,6 +189,15 @@ export default function SessionScreen() {
       // this only stops it from becoming an unhandled rejection.
       .catch(() => {});
   }, [rooms, session]);
+  const [chatError, setChatError] = useState<string | null>(null);
+  // The session's chat (spec 2026-10-07-session-chat-design §3): the room screen, pushed; back returns here.
+  const openChat = useCallback(() => {
+    if (!session) return;
+    setChatError(null);
+    rooms.resourceSource.client.openSessionChat(session.sessionId)
+      .then((room) => router.push(`/(app)/room/${room.roomId}`))
+      .catch(() => setChatError("Chat is not available for this session."));
+  }, [rooms.resourceSource.client, session]);
   // Hoisted above the early returns below — see the room screen.
   const keyboardOffset = usePushedScreenKeyboardOffset();
   const [detailsOpen, setDetailsOpen] = useState(false);
@@ -212,17 +221,26 @@ export default function SessionScreen() {
         onPress={() => setDetailsOpen(true)}
       />
     ) : undefined,
-    // Only when someone ELSE is sharing this session -- no "message yourself".
-    headerRight: session && session.humanUserId !== userId ? () => (
-      <Pressable
-        accessibilityRole="button"
-        accessibilityLabel={`Message ${ownerName}`}
-        // 20pt icon + 12pt hitSlop on every side reaches the 44pt tap-target floor.
-        hitSlop={12}
-        onPress={messageOwner}
-      >
-        <SymbolView accessibilityElementsHidden name="bubble.left" size={20} tintColor={palette.fgSoft} />
-      </Pressable>
+    // Chat for everyone who can read the session; the DM button only on someone else's.
+    headerRight: session ? () => (
+      <View style={styles.headerActions}>
+        <Pressable accessibilityRole="button" accessibilityLabel={session.chatUnread ? `Chat, ${session.chatUnread} unread` : "Chat"}
+          hitSlop={12} onPress={openChat} style={styles.chatButton}>
+          <SymbolView accessibilityElementsHidden name="bubble.left.and.bubble.right" size={20} tintColor={palette.fgSoft} />
+          {!!session.chatUnread && <Text style={[styles.chatCount, { color: palette.link }]}>{session.chatUnread > 99 ? "99+" : session.chatUnread}</Text>}
+        </Pressable>
+        {session.humanUserId !== userId && (
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel={`Message ${ownerName}`}
+            // 20pt icon + 12pt hitSlop on every side reaches the 44pt tap-target floor.
+            hitSlop={12}
+            onPress={messageOwner}
+          >
+            <SymbolView accessibilityElementsHidden name="bubble.left" size={20} tintColor={palette.fgSoft} />
+          </Pressable>
+        )}
+      </View>
     ) : undefined,
   };
 
@@ -271,6 +289,9 @@ export default function SessionScreen() {
           <Text accessibilityRole="alert" style={[styles.errorText, { color: palette.alert }]}>{rooms.selectRoomError}</Text>
         </View>
       )}
+      {chatError && <View style={styles.banner}>
+        <Text accessibilityRole="alert" style={[styles.errorText, { color: palette.alert }]}>{chatError}</Text>
+      </View>}
       <SessionBody
         key={sessionViewKey(session)}
         session={session}
@@ -537,6 +558,9 @@ function SessionBody({
 
 const styles = StyleSheet.create({
   container: { flex: 1 },
+  headerActions: { flexDirection: "row", alignItems: "center", gap: 20 },
+  chatButton: { flexDirection: "row", alignItems: "center", gap: 4 },
+  chatCount: { fontSize: 13, fontWeight: "600" },
   centered: { flex: 1, padding: spacing.lg, gap: spacing.sm },
   // Top/bottom are swapped against an un-inverted list: `paddingTop` draws at
   // the bottom (against the composer), `paddingBottom` at the top.

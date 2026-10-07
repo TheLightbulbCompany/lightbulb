@@ -1699,10 +1699,28 @@ fn window_open_override_script() -> String {
     )
 }
 
+/// Keeps macOS from napping this process while its window is hidden, for as long as it runs.
+/// App Nap drops every thread to the throttled band and coalesces its timers, and this process
+/// owns the session connection and the node relay: prod 2026-10-07, 53 of 53 slow connection-loop
+/// iterations (one of 112 s) fell inside a nap and none outside. The `NSAppSleepDisabled`
+/// Info.plist key is not honoured (macOS 26). The option does not hold the Mac awake.
+fn refuse_app_nap() {
+    #[cfg(target_os = "macos")]
+    {
+        use objc2_foundation::{NSActivityOptions, NSProcessInfo, NSString};
+        let activity = NSProcessInfo::processInfo().beginActivityWithOptions_reason(
+            NSActivityOptions::UserInitiatedAllowingIdleSystemSleep,
+            &NSString::from_str("Relays this Mac's sessions and agent commands while its window is hidden"),
+        );
+        // Never ended: the activity lasts as long as the process.
+        std::mem::forget(activity);
+    }
+}
+
 pub fn run() {
     let context = tauri::generate_context!();
     match process_owner::claim(&context.config().identifier) {
-        Ok(process_owner::Claim::Primary) => {}
+        Ok(process_owner::Claim::Primary) => refuse_app_nap(),
         Ok(process_owner::Claim::Forwarded) => return,
         Err(e) => {
             log(&format!("[setup] desktop ownership unavailable: {e}"));

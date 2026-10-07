@@ -35,11 +35,14 @@
     case for this app.
 
     NOT NSActivityIdleSystemSleepDisabled: this suppresses App Nap only and
-    deliberately does not hold the machine awake. If a future macOS ignores
-    this key from a bundle, the equivalent is an NSProcessInfo activity
-    assertion with .userInitiatedAllowingIdleSystemSleep held for the lifetime
-    of the node connection — same intent, needs Obj-C interop the crate does
-    not currently have.
+    deliberately does not hold the machine awake.
+
+    THIS KEY IS NOT WHAT HOLDS. macOS 26 ignores it from a bundle: on
+    2026-10-07 runningboardd set "AppNap state: active:Y" on an install that
+    carried it, six times in 26 minutes, and the session connection stalled
+    for up to 112 s. What holds is the NSProcessInfo activity
+    (.userInitiatedAllowingIdleSystemSleep) that `refuse_app_nap` in lib.rs
+    begins at launch and never ends. The key stays for a macOS that reads it.
   -->
   <key>NSAppSleepDisabled</key>
   <true/>

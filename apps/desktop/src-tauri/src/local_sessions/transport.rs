@@ -1447,7 +1447,7 @@ impl Host {
             let deadline = pending_rpc.as_ref().map(|rpc| rpc.sent() + ACK_DEADLINE);
             tokio::select! {
                 _ = tick.tick() => {
-                    arm = "tick";
+                    arm = laps.woke("tick");
                     self.liveness_tick();
                     if last_recovery_scan.elapsed() >= Duration::from_secs(1) {
                         last_recovery_scan = Instant::now();
@@ -1477,7 +1477,7 @@ impl Host {
                         None => std::future::pending().await,
                     }
                 } => {
-                    arm = "hook";
+                    arm = laps.woke("hook");
                     match event {
                         Some(event) => {
                             // A turn can start and finish before discovery first sees its
@@ -1496,7 +1496,7 @@ impl Host {
                     }
                 },
                 update = updates.recv() => {
-                    arm = "discovery update";
+                    arm = laps.woke("discovery update");
                     let Some((update, listed)) = update else {return Err("discovery stopped".into());};
                     for key in self.observe(update, &listed)? {
                         registered.remove(&key);
@@ -1504,19 +1504,19 @@ impl Host {
                     }
                 },
                 Some(frame) = screens.recv() => {
-                    arm = "screen frame";
+                    arm = laps.woke("screen frame");
                     // Fire and forget: the relay never answers a screen frame.
                     send(socket, &frame).await?;
                 },
                 Some((ask, answer)) = reconciled.recv() => {
-                    arm = "reconciliation receipt";
+                    arm = laps.woke("reconciliation receipt");
                     let receipt = answer?;
                     reconciles.answered(&ask, receipt.outcome == "unknown");
                     self.acknowledge_workspace(&ask.session, &ask.generation, &receipt)?;
                     send(socket, &receipt_wire(&ask.session, &ask.request, &receipt)).await?;
                 },
                 incoming = next_or_deadline(socket, deadline) => {
-                    arm = "relay frame";
+                    arm = laps.woke("relay frame");
                     let message = incoming?.ok_or("session socket closed")?.map_err(|_| "session socket failed")?;
                     let Message::Text(text) = message else {
                         if matches!(message, Message::Close(_)) {return Err("session socket closed".into());}
@@ -2645,11 +2645,15 @@ struct Laps {
     iteration: Instant,
     lap: Instant,
     slowest: (&'static str, Duration),
+    /// How long the `select!` waited before an arm ran.
+    waited: Duration,
 }
+/// The `select!` wait: its 100 ms tick bounds it, so a longer one is this task not being run.
+const WAIT: &str = "waiting for an event";
 impl Laps {
     fn new() -> Self {
         let now = Instant::now();
-        Self { iteration: now, lap: now, slowest: ("", Duration::ZERO) }
+        Self { iteration: now, lap: now, slowest: ("", Duration::ZERO), waited: Duration::ZERO }
     }
     fn lap(&mut self, step: &'static str) {
         let took = self.lap.elapsed();
@@ -2658,20 +2662,44 @@ impl Laps {
         }
         self.lap = Instant::now();
     }
+    /// First thing in a `select!` arm: the wait is its own lap, not part of `arm`'s.
+    fn woke(&mut self, arm: &'static str) -> &'static str {
+        self.waited = self.lap.elapsed();
+        self.lap(WAIT);
+        arm
+    }
     /// Closes the iteration whose `select!` ran `arm`, then starts the next one.
     fn next(&mut self, arm: &'static str) {
         self.lap(arm);
-        let took = self.iteration.elapsed();
-        if took > Duration::from_secs(1) {
-            relay_log(&format!(
-                "connection loop iteration took {:.1}s; slowest step: {} ({:.1}s)",
-                took.as_secs_f64(),
-                self.slowest.0,
-                self.slowest.1.as_secs_f64()
-            ));
-        }
+        let lines = slow_iteration(self.iteration.elapsed(), self.slowest, self.waited);
+        // Reset first: the time the log write takes belongs to the next iteration.
         *self = Self::new();
+        for line in lines {
+            relay_log(&line);
+        }
     }
+}
+
+/// What a finished iteration logs: its slowest step when it took over a second, and that the
+/// loop was not run at all when the `select!` wait alone passed five (prod 2026-10-07: App Nap
+/// held the whole process for 112 s and the log blamed `tick`).
+fn slow_iteration(took: Duration, slowest: (&'static str, Duration), waited: Duration) -> Vec<String> {
+    let mut lines = vec![];
+    if took > Duration::from_secs(1) {
+        lines.push(format!(
+            "connection loop iteration took {:.1}s; slowest step: {} ({:.1}s)",
+            took.as_secs_f64(),
+            slowest.0,
+            slowest.1.as_secs_f64()
+        ));
+    }
+    if waited > Duration::from_secs(5) {
+        lines.push(format!(
+            "connection loop not scheduled for {:.1}s (App Nap or a starved runtime)",
+            waited.as_secs_f64()
+        ));
+    }
+    lines
 }
 
 async fn send(socket: &mut Socket, body: &Value) -> Result<()> {
@@ -4995,6 +5023,24 @@ pub(super) mod tests {
         server.await.unwrap();
         let a: Mirror = private_read(&dir.path().join("a-session.json")).unwrap();
         assert_eq!(a.session_id.as_deref(), Some(SID));
+    }
+    #[test]
+    fn local_sessions_a_loop_that_was_not_scheduled_says_so() {
+        let secs = Duration::from_secs;
+        assert!(slow_iteration(Duration::from_millis(900), ("uploads", Duration::from_millis(800)), Duration::from_millis(100)).is_empty());
+        // Slow work is named by its step; a short wait is not a scheduling problem.
+        let busy = slow_iteration(secs(9), ("uploads", secs(8)), Duration::from_millis(100));
+        assert_eq!(busy, ["connection loop iteration took 9.0s; slowest step: uploads (8.0s)"]);
+        let napped = slow_iteration(secs(113), (WAIT, secs(112)), secs(112));
+        assert_eq!(napped[0], "connection loop iteration took 113.0s; slowest step: waiting for an event (112.0s)");
+        assert_eq!(napped[1], "connection loop not scheduled for 112.0s (App Nap or a starved runtime)");
+        // The wait is its own lap: the arm that ran after it is charged only its own time.
+        let mut laps = Laps::new();
+        laps.lap = Instant::now() - secs(6);
+        assert_eq!(laps.woke("tick"), "tick");
+        assert!(laps.waited >= secs(6) && laps.slowest.0 == WAIT);
+        laps.lap("tick");
+        assert_eq!(laps.slowest.0, WAIT);
     }
     #[test]
     fn local_sessions_log_lines_start_with_their_utc_time() {

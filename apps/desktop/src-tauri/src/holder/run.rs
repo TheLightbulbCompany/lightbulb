@@ -397,7 +397,8 @@ pub fn run_with_env(socket: &Path, argv: &[String], cwd: &Path, env: Vec<(String
                 clients.insert(id, client);
             }
             Event::Frame(id, kind @ (INPUT | OWNER_INPUT), payload)
-                if !ended && (interactive == Some(id) || typists.contains(&id)) && !is_probe_reply(&payload) =>
+                // Not once End was taken: nothing typed after it may reach a provider that is shutting down.
+                if !ended && !ending && (interactive == Some(id) || typists.contains(&id)) && !is_probe_reply(&payload) =>
             {
                 last_input = Some(input_origin(kind, remote.contains(&id)));
                 model.typed(&payload, Instant::now());

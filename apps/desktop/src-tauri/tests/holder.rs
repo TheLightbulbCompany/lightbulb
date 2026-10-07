@@ -576,6 +576,24 @@ fn holder_end_kills_a_provider_that_ignores_the_hang_up_and_keeps_the_screen_it_
     assert!(!has(&screen, b"\x1b[?1049h") && !has(&screen, b"\x1b[?1000h"), "normal-buffer content, mouse off");
 }
 
+/// Review of #3818: once End is taken, nothing typed reaches a provider that is slow to leave.
+#[test]
+fn holder_end_takes_no_more_input_while_the_provider_is_leaving() {
+    let dir = temp_dir();
+    // Ignores the hang-up and echoes any line it is sent.
+    let socket = start(&dir, &["/bin/sh", "-c",
+        r#"trap '' HUP; printf '\033[?1049h\033[2J\033[Hwaiting'; while read x; do printf '\r\ngot-%s' "$x"; done"#]);
+    let mut c = attach(&socket, "interactive");
+    wait_screen(&socket, b"waiting");
+    c.set_read_timeout(Some(run::END_KILL_AFTER + Duration::from_secs(5))).unwrap();
+    assert!(manager::end(&manager::list_in(&dir).into_iter().next().unwrap()));
+    std::thread::sleep(Duration::from_millis(300));
+    c.write_all(&encode(INPUT, b"late\r")).unwrap();
+    while read_frame(&mut c).expect("EXIT before timeout").0 != EXIT {}
+    let screen = ended_screen(&socket);
+    assert!(has(&screen, b"waiting") && !has(&screen, b"got-late"), "{:?}", String::from_utf8_lossy(&screen));
+}
+
 /// Bug 2026-10-07: the kept picture after `/exit` was the frame with the slash-command menu.
 #[test]
 fn holder_keeps_the_picture_from_before_the_command_that_ended_the_session() {

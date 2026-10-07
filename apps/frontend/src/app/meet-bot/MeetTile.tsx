@@ -68,7 +68,8 @@ export function MeetTile({ agents, attrs, notice }: { agents: Record<string, Til
   const activity = [...busy.filter(isHand), ...busy.filter((id) => !isHand(id))];
   const rowLine = (id: string) => isHand(id)
     ? "Hand up"
-    : agentStateLine("working", { working: agentWorking(attrs, id) });
+    // no request text (owner ruling 10-06): "Working", or "Listening to <name>" for a name it just heard
+    : agentWorking(attrs, id).startsWith("listening to ") ? agentStateLine("working", { working: agentWorking(attrs, id) }) : "Working";
   const onStage = (id: string) => id === speaker || id === raised || activity.includes(id);
   const stageBusy = !!speaker || !!raised || activity.length > 0;
   const hero = speaker ?? raised;

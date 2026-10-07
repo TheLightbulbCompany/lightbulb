@@ -160,6 +160,8 @@ async def ws_message(
 ) -> Response:
     if not x_connection_id:
         raise HTTPException(status_code=400, detail="Missing x-connection-id header")
+    # Before the connection lookup: a full thread pool or a slow table spends the budget there too.
+    started = time.monotonic()
     row = await asyncio.to_thread((await get_connection_service()).get_connection, x_connection_id)
     if row is None or row.get("connection_type") != "local-session":
         raise HTTPException(status_code=403, detail="Machine connection required")
@@ -169,7 +171,6 @@ async def ws_message(
     from core.services.messaging import ApiProblem
 
     relay = get_local_session_relay()
-    started = time.monotonic()
     if isinstance(body, dict) and body.get("type") == "local.session.screen":
         # Never answered, not even with an error: see session_screen.forward.
         if len(await request.body()) <= MAX_ENVELOPE_BYTES:

@@ -463,8 +463,8 @@ pub fn run_with_env(socket: &Path, argv: &[String], cwd: &Path, env: Vec<(String
                     let _ = std::fs::remove_file(socket.with_extension("thread"));
                     return Ok(());
                 }
-                // Every client hears the end (the CLI exits with the code, the screen relay restarts
-                // as a watcher of the final screen). The socket, model and log stay until the app
+                // Every client hears the end (the CLI exits with the code, the screen relay stays
+                // and asks for the final screen). The socket, model and log stay until the app
                 // stops this holder (`manager::stop`): nothing is written anywhere.
                 clients.retain(|_, c| c.send(frame.clone()));
                 ended = true;

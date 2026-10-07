@@ -311,6 +311,9 @@ class LocalSession(ContractModel):
     # A request is pending and the owner's older Mac (no bandOwnerOnly) drops remote typing
     # until it is answered.
     input_paused: bool = False
+    # The viewer's seat in this session's chat, once they are in it (spec 2026-10-07-session-chat-design §4.1).
+    chat_room_id: str | None = None
+    chat_unread: int | None = None
 
     @model_serializer(mode="wrap")
     def wire(self, handler, info):
@@ -339,6 +342,8 @@ class LocalSession(ContractModel):
                 "pickup_request",
                 "pending_pickups",
                 "pending_pickup_ids",
+                "chat_room_id",
+                "chat_unread",
             ),
         )
 
@@ -1106,7 +1111,14 @@ async def list_workspace_sessions(auth: Caller, *, include_ended: bool = False) 
         ]
     )
     live = [s for s in found if s.status != "ended"][:WORKSPACE_SESSION_CAP]
-    return WorkspaceSessions(sessions=live + [s for s in found if s.status == "ended"][:RECENT_ENDED_CAP])
+    sessions = live + [s for s in found if s.status == "ended"][:RECENT_ENDED_CAP]
+    if viewer is not None and sessions:
+        from core.services import session_chat  # lazy: it imports this module
+
+        sessions = session_chat.with_chat(
+            sessions, await session_chat.chat_state(owner, viewer, [s.session_id for s in sessions])
+        )
+    return WorkspaceSessions(sessions=sessions)
 
 
 SESSION_SUMMARY_CAP = 24
@@ -1206,6 +1218,11 @@ async def set_sharing(
                 continue
             row = updated
             await _push_presence(row)
+        if not shared:
+            from core.services import session_chat  # lazy: it imports this module
+
+            # On every pause, not only a change: a retry after a failed silence finishes it.
+            await session_chat.silence(row["ownerId"], row["sessionId"], keep=row["humanUserId"])
         return _session_public(row, auth.user_id)
     raise ApiProblem("LOCAL_SESSION_CONFLICT", "Session changed. Try again.")
 
@@ -1214,7 +1231,14 @@ async def get_session(auth: Caller, session_id: str) -> LocalSession:
     """One session for any workspace member, ended included: the list keeps only live
     ones, but an open view or an old link must still show a session that has ended."""
     row, _ = await authorize_session(auth, None, session_id)
-    return _session_public(row, _viewer(auth))
+    viewer = _viewer(auth)
+    public = _session_public(row, viewer)
+    if viewer is None:
+        return public
+    from core.services import session_chat  # lazy: it imports this module
+
+    state = await session_chat.chat_state(row["ownerId"], viewer, [row["sessionId"]])
+    return session_chat.with_chat([public], state)[0]
 
 
 class DisplayTitleRequest(ContractModel):

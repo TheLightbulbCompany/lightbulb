@@ -165,3 +165,63 @@ async def open_chat(auth: AuthContext, session_id: str) -> RoomDetail:
     if await messaging_repo.get_member(room_id, "human", auth.user_id) is None:
         meta = await _seat(owner_id, meta, auth.user_id)
     return await messaging._room_detail(meta, auth.user_id)
+
+
+async def silence(owner_id: str, session_id: str, *, keep: str | None) -> int:
+    """Unshare or revoke: every human but ``keep`` leaves the chat, each with a delivery-key
+    rotation, so nobody who lost the session keeps hearing it. Idempotent; returns how many left."""
+    room_id = session_room_id(owner_id, session_id)
+    removed = 0
+    for member in await messaging_repo.list_members(room_id):
+        if member.get("kind") != "human" or member["id"] == keep:
+            continue
+        for attempt in range(3):
+            meta = await messaging_repo.get_room(room_id)
+            if meta is None:
+                return removed
+            try:
+                await messaging._remove_member_with_notices(meta, "human", member["id"])
+                break
+            except ClientError as exc:
+                if not messaging_repo._is_cancelled(exc) or attempt == 2:
+                    raise
+        removed += 1
+    return removed
+
+
+async def archive_for_session(owner_id: str, session_id: str) -> None:
+    meta = await messaging_repo.get_room(session_room_id(owner_id, session_id))
+    if meta is not None and not meta.get("archivedAt"):
+        await _set_archived(meta, True)
+
+
+async def chat_state(owner_id: str, viewer: str, session_ids: list[str]) -> dict[str, tuple[str, int]]:
+    """``{sessionId: (roomId, unread)}`` for the chats the viewer sits in: one batch read."""
+    # ponytail: three keys per session, so a full list (150) is five BatchGets per poll; stamp
+    # chatRoomId on the session row at room create and read only those when the list gets hot.
+    rooms = {sid: session_room_id(owner_id, sid) for sid in session_ids}
+    keys: list[tuple[str, str]] = []
+    for room_id in rooms.values():
+        pk = messaging_repo.room_pk(room_id)
+        keys += [(pk, "META"), (pk, messaging_repo.member_sk("human", viewer)), (pk, messaging_repo.read_sk(viewer))]
+    rows = await messaging_repo.batch_get(keys) if keys else {}
+    out: dict[str, tuple[str, int]] = {}
+    for sid, room_id in rooms.items():
+        pk = messaging_repo.room_pk(room_id)
+        meta = rows.get((pk, "META"))
+        member = rows.get((pk, messaging_repo.member_sk("human", viewer)))
+        if meta and member and not meta.get("deletedAt"):
+            out[sid] = (
+                room_id,
+                messaging_repo.unread_count(meta, member, rows.get((pk, messaging_repo.read_sk(viewer)))),
+            )
+    return out
+
+
+def with_chat(sessions: list, state: dict[str, tuple[str, int]]) -> list:
+    return [
+        s.model_copy(update={"chat_room_id": state[s.session_id][0], "chat_unread": state[s.session_id][1]})
+        if s.session_id in state
+        else s
+        for s in sessions
+    ]

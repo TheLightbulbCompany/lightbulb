@@ -898,6 +898,12 @@ class LocalSessionRelay:
             updated.pop(key, None)
         await repo.put_session(updated, row, enrollment, extra=extra)
         _capture_lifecycle(updated, "local_session_ended", end_reason=message.reason)
+        from core.services import session_chat  # lazy: it imports local_sessions
+
+        try:
+            await session_chat.archive_for_session(owner, row["sessionId"])
+        except Exception:  # the next chat open archives it too (session_chat._follow_lifecycle)
+            logger.warning("session chat archive failed for %s", row["sessionId"], exc_info=True)
         await publish_resources_changed(owner, row["humanUserId"])
         return ack
 

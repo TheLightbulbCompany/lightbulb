@@ -174,3 +174,88 @@ def test_the_chat_door_never_touches_session_control():
         "decide_join",
     ):
         assert name not in source, name
+
+
+@pytest.mark.asyncio
+async def test_people_in_a_session_chat_follow_the_session_never_a_hand(monkeypatch):
+    with pytest.raises(ApiProblem):
+        messaging._deny_vendor_human_change(META, "human")
+    messaging._deny_vendor_human_change(META, "agent")  # the owner may add agents
+    monkeypatch.setattr(messaging, "require_room_member", AsyncMock(return_value=(META, {"role": "owner"})))
+    for archived in (True, False):
+        with pytest.raises(ApiProblem) as refused:
+            await messaging.patch_room(ALICE, ROOM, messaging.PatchRoomRequest(archived=archived))
+        assert refused.value.error.code == "ROOM_NOT_ARCHIVABLE"
+    with pytest.raises(ApiProblem) as refused:
+        await messaging.delete_room(ALICE, ROOM)
+    assert refused.value.error.code == "ROOM_NOT_DELETABLE"
+
+
+@pytest.mark.asyncio
+async def test_an_agents_unbound_post_stays_in_the_session_chat(monkeypatch):
+    from core.services import meeting_invites
+
+    output_room = AsyncMock(return_value="general")
+    monkeypatch.setattr(meeting_invites, "output_room", output_room)
+    monkeypatch.setattr(messaging.messaging_repo, "get_room", AsyncMock(return_value=META))
+    monkeypatch.setattr(messaging.messaging_repo, "get_member", AsyncMock(return_value=None))
+    request = messaging.AgentMessageRequest(
+        event_id="evt-1",
+        room_id=ROOM,
+        agent_id=CEO_ID,
+        text="hello",
+        reply_to_message_id=None,
+        thread_root_message_id=None,
+    )
+    with pytest.raises(ApiProblem) as refused:
+        await messaging.create_agent_message(OWNER, request)
+    assert refused.value.error.code == "MEMBER_NOT_FOUND"  # judged in the session room itself
+    output_room.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_silence_removes_every_human_but_the_kept_one_with_rotation(monkeypatch):
+    members = [
+        {"kind": "human", "id": ALICE.user_id},
+        {"kind": "human", "id": BOB.user_id},
+        {"kind": "agent", "id": CEO_ID},
+    ]
+    monkeypatch.setattr(session_chat.messaging_repo, "list_members", AsyncMock(return_value=members))
+    monkeypatch.setattr(session_chat.messaging_repo, "get_room", AsyncMock(return_value=META))
+    remove = AsyncMock(return_value=META)
+    monkeypatch.setattr(messaging, "_remove_member_with_notices", remove)
+    assert await session_chat.silence(OWNER, SID, keep=ALICE.user_id) == 1
+    remove.assert_awaited_once_with(META, "human", BOB.user_id)
+    remove.reset_mock()
+    assert await session_chat.silence(OWNER, SID, keep=None) == 2
+
+
+@pytest.mark.asyncio
+async def test_an_agents_unbound_post_in_a_meet_room_still_goes_to_its_output_room(monkeypatch):
+    """The redirect narrowed to rooms with a meeting record: a Google Meet's hidden room keeps it."""
+    from core.services import meeting_invites
+
+    meet = {"roomId": ROOM, "ownerId": OWNER, "kind": "channel", "hidden": True, "meeting": {"title": "Standup"}}
+    general = {"roomId": "general", "ownerId": OWNER, "kind": "channel"}
+    output_room = AsyncMock(return_value="general")
+    monkeypatch.setattr(meeting_invites, "output_room", output_room)
+    monkeypatch.setattr(
+        messaging.messaging_repo, "get_room", AsyncMock(side_effect=lambda rid: meet if rid == ROOM else general)
+    )
+    get_member = AsyncMock(
+        side_effect=lambda rid, kind, mid: {"kind": "agent", "id": mid} if rid == "general" else None
+    )
+    monkeypatch.setattr(messaging.messaging_repo, "get_member", get_member)
+    monkeypatch.setattr(messaging, "load_agent_roster", AsyncMock(return_value=[]))  # stops the post after the redirect
+    request = messaging.AgentMessageRequest(
+        event_id="evt-2",
+        room_id=ROOM,
+        agent_id=CEO_ID,
+        text="late answer",
+        reply_to_message_id=None,
+        thread_root_message_id=None,
+    )
+    with pytest.raises(ApiProblem):
+        await messaging.create_agent_message(OWNER, request)
+    output_room.assert_awaited_once_with(OWNER, ROOM)
+    assert [call.args[0] for call in get_member.await_args_list] == ["general", "general"]  # judged in the output room

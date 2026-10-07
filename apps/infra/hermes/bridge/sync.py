@@ -333,6 +333,12 @@ _DEFERRED_PREFIXES = (".curator_backups/", "cache/")
 _DEFERRED_RESTORE_DELAY_S = 2.0  # the turn's own restore_subtree (its work/ tree) goes first
 _RESTORED_SUBTREES: set[tuple[str, str]] = set()
 
+def _restored_work_tree(agent_id: str, rel: str) -> bool:
+    """A work/ object in a tree this process restored for its turn: a backend write into it (a
+    Files-panel save) still reaches the warm microVM on the next revision bump, as before."""
+    return rel.startswith(WORK_DIR_PREFIX) and (agent_id, "/".join(rel.split("/")[:2]) + "/") in _RESTORED_SUBTREES
+
+
 #: Restore-side skip: reinstallable home caches an older image already pushed. Deliberately NOT
 #: ``is_excluded``/``is_reproducible`` -- those name backend-owned files and migrated skills a cold
 #: start MUST pull -- and not all of ``home/.local``: the backend projects CLI credentials under
@@ -928,6 +934,10 @@ def _pull_changed_objects(agent_id: str) -> bool:
                 # a trailing "/" is a directory marker, not a file: renaming onto an existing
                 # directory raises, and it is the realistic "one poison key" instance.
                 if not rel or rel.endswith("/") or rel.startswith("mcp-tokens/") or is_excluded(rel):
+                    continue
+                if rel.startswith(_RESTORE_SKIP_PREFIXES) and not _restored_work_tree(agent_id, rel):
+                    # never on this disk (Codex on #3794: with work/ absent from _SYNCED, every old
+                    # work object looked new to this walk and the first bump brought the 940 MB back)
                     continue
                 if rel.endswith((".db", ".sqlite")):
                     continue

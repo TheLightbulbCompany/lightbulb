@@ -128,6 +128,23 @@ def test_an_object_this_microvm_has_never_seen_is_pulled(home, s3):
     assert s3.downloaded == [_prefix() + "memories/seeded.md"]
 
 
+def test_a_bump_leaves_other_conversations_work_trees_in_s3_but_takes_a_restored_ones_edits(home, s3, monkeypatch):
+    """Codex on #3794: the cold restore leaves work/ absent from _SYNCED, so this walk saw every old work
+    object as new and brought the 940 MB straight back on the first bump. A tree this process restored
+    for its turn still takes a Files-panel save; the others stay in S3 with the stale home caches."""
+    s3.objects = {
+        _prefix() + "work/room-1/notes.md": ("edited in the Files panel", 300.0),
+        _prefix() + "work/room-2/clip.mp4": ("an old conversation's clip", 300.0),
+        _prefix() + "home/.cache/pip/wheel": ("x", 300.0),
+    }
+    sync._SYNCED["a1"] = {}
+    monkeypatch.setattr(sync, "_RESTORED_SUBTREES", {("a1", "work/room-1/")})
+
+    sync._pull_changed_objects("a1")
+
+    assert s3.downloaded == [_prefix() + "work/room-1/notes.md"]
+
+
 def test_a_cold_restore_still_downloads_everything(home, s3):
     s3.objects = {
         _prefix() + "config.yaml": ("model: x", 10.0),

@@ -2392,8 +2392,15 @@ async def test_a_heartbeat_reports_the_time_of_each_of_its_steps(transport):
 
 @pytest.mark.asyncio
 async def test_a_hosted_client_follow_up_is_labelled_with_its_client_and_person(monkeypatch):
-    from core.services import local_session_relay as relay_module, messaging
+    from core.services import local_session_relay as relay_module, session_presence
 
-    monkeypatch.setattr(messaging, "human_display_name", AsyncMock(return_value="Ann"))
-    label = await relay_module._actor_label({"roomId": "", "actorUserId": "user_a", "viaClient": "Claude Code"})
-    assert label == {"kind": "human", "handle": None, "displayName": "Claude Code via Ann"}
+    command = {"roomId": "", "actorUserId": "user_a", "viaClient": "Claude Code"}
+    monkeypatch.setattr(session_presence, "human_display_name", AsyncMock(return_value="Ann"))
+    assert await relay_module._actor_label(command) == {
+        "kind": "human",
+        "handle": None,
+        "displayName": "Claude Code via Ann",
+    }
+    # A Clerk failure only blurs the label; dispatch still goes out.
+    monkeypatch.setattr(session_presence, "human_display_name", AsyncMock(side_effect=RuntimeError("clerk down")))
+    assert (await relay_module._actor_label(command))["displayName"] == "Claude Code via A teammate"

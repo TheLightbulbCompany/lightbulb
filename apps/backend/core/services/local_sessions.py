@@ -1534,6 +1534,8 @@ async def submit_command(
             not isinstance(auth, AgentInvocation)
             and not room_id
             and not source_session_id
+            # A hosted MCP client sends only to a live session (find_sessions canSend), never the offline inbox.
+            and not via_client
             and request.kind == "send"
             and request.expected_turn_id is None
             and (row["status"] == "offline" or row["onlineUntil"] <= now)

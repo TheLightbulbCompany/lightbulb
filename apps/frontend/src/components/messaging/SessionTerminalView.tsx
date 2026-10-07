@@ -7,12 +7,14 @@ import "@xterm/xterm/css/xterm.css";
 import { chunkInput, dropProbeReplies, SHIFT_ENTER } from "./sessionInput";
 
 const WATCH_EVERY_MS = 15_000;
-/** Snapshots come every 10 s; this long with no frame at all and the picture is frozen, so it says Reconnecting. */
+/** A snapshot or a ping comes at least every 10 s; this long with neither and the picture is frozen, so it says Reconnecting. */
 const STALE_AFTER_MS = 30_000;
 /** Stops input: no access (403/404) or a Mac that cannot take typing. OFFLINE is another 409 and passes. */
 const refuses = (e: unknown) => e instanceof ApiError && (e.status === 403 || e.status === 404
   || (e.status === 409 && (e.body as { code?: string } | null)?.code === "LOCAL_SESSION_UNSUPPORTED"));
 const decode = (data: string) => Uint8Array.from(atob(data), (c) => c.charCodeAt(0));
+/** Clears the visible screen only: xterm's erase never pushes it into scrollback, so history stays. */
+const CLEAR = new TextEncoder().encode("\x1b[2J\x1b[H");
 
 /** A running session's real terminal, live (rulings 2026-10-03 §4): for teammates, and for its
  *  owner anywhere but at that Mac. Read-only unless `input` is given and the person is `admitted`
@@ -61,6 +63,7 @@ export function SessionTerminalView({ session, onEvent, watch, onLive, onCanType
   useEffect(() => {
     let term: Terminal | null = null;
     let order = NEW_SCREEN;
+    let drawn = -1; // the relay run on screen; a new one starts the terminal over
     const queued: SessionScreen[] = [];
     let alive = true;
     let stale: ReturnType<typeof setTimeout> | undefined;
@@ -82,23 +85,28 @@ export function SessionTerminalView({ session, onEvent, watch, onLive, onCanType
       }
     };
     const fit = () => {
-      const drawn = host.current?.querySelector<HTMLElement>(".xterm-screen");
+      const shown = host.current?.querySelector<HTMLElement>(".xterm-screen");
       const box = host.current?.parentElement;
-      if (drawn?.offsetWidth && box) setScale(Math.min(1, box.clientWidth / drawn.offsetWidth, box.clientHeight / drawn.offsetHeight));
+      if (shown?.offsetWidth && box) setScale(Math.min(1, box.clientWidth / shown.offsetWidth, box.clientHeight / shown.offsetHeight));
     };
     const apply = (frames: SessionScreen[]) => {
       if (!term) { queued.push(...frames); return; }
       for (const frame of frames) {
-        if (frame.kind === "snapshot") { term.reset(); setLive(true); setSeen(true); onLive(true); }
+        if (frame.epoch !== drawn) { term.reset(); drawn = frame.epoch; }
         if (term.cols !== frame.cols || term.rows !== frame.rows) term.resize(frame.cols, frame.rows);
-        term.write(decode(frame.data), fit);
+        let bytes = decode(frame.data);
+        if (frame.kind === "snapshot") {
+          const redraw = new Uint8Array(CLEAR.length + bytes.length); redraw.set(CLEAR); redraw.set(bytes, CLEAR.length);
+          bytes = redraw; setLive(true); setSeen(true); onLive(true);
+        }
+        term.write(bytes, fit);
       }
     };
     void import("@xterm/xterm").then(({ Terminal }) => {
       if (!alive || !host.current) return;
       // xterm takes colour strings, not var(): read the terminal tokens from globals.css.
       const token = (name: string) => getComputedStyle(document.documentElement).getPropertyValue(name).trim() || undefined;
-      term = new Terminal({ disableStdin: true, cursorBlink: false, scrollback: 0, fontSize: 13,
+      term = new Terminal({ disableStdin: true, cursorBlink: false, scrollback: 5000, fontSize: 13,
         fontFamily: "Menlo, 'SF Mono', monospace", theme: { background: token("--terminal-bg"), foreground: token("--terminal-fg") } });
       term.open(host.current);
       termRef.current = term;

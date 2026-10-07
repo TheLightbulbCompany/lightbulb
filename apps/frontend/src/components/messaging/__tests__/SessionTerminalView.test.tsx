@@ -6,18 +6,22 @@ import { ApiError, type LiveEvent } from "@lightbulb/shared";
 import { SessionTerminalView } from "../SessionTerminalView";
 
 const writes: Uint8Array[] = [];
-const hooks: { data?: (d: string) => void; key?: (e: unknown) => boolean } = {};
+const hooks: { data?: (d: string) => void; key?: (e: unknown) => boolean; term?: { cols: number; rows: number };
+  options?: { scrollback?: number }; resets: number } = { resets: 0 };
 vi.mock("@xterm/xterm", () => ({ Terminal: class {
-  cols = 80; rows = 24; options = { disableStdin: true }; open() {} reset() {} dispose() {}
+  cols = 80; rows = 24; options = { disableStdin: true };
+  constructor(options: { scrollback?: number }) { hooks.term = this; hooks.options = options; }
+  open() {} reset() { hooks.resets += 1; } dispose() {}
   onData(cb: (d: string) => void) { hooks.data = cb; }
   attachCustomKeyEventHandler(cb: (e: unknown) => boolean) { hooks.key = cb; }
   resize(c: number, r: number) { this.cols = c; this.rows = r; }
   write(data: Uint8Array, done?: () => void) { writes.push(data); done?.(); }
 } }));
-afterEach(() => { writes.length = 0; vi.useRealTimers(); });
+afterEach(() => { writes.length = 0; hooks.resets = 0; vi.useRealTimers(); });
+const CLEAR = [0x1b, 0x5b, 0x32, 0x4a, 0x1b, 0x5b, 0x48];
 
-const screenEvent = (sessionId: string, kind = "snapshot", seq = 0) => ({ schemaVersion: 1, eventId: `e${seq}`, type: "workspace.session.screen", occurredAt: "now",
-  payload: { sessionId, generation: "g1", epoch: 1, seq, cols: 100, rows: 30, kind, data: "G1tI" } }) as LiveEvent;
+const screenEvent = (sessionId: string, kind = "snapshot", seq = 0, epoch = 1, data = "G1tI") => ({ schemaVersion: 1, eventId: `e${seq}`, type: "workspace.session.screen", occurredAt: "now",
+  payload: { sessionId, generation: "g1", epoch, seq, cols: 100, rows: 30, kind, data } }) as LiveEvent;
 
 it("watches while on screen, draws the snapshot read-only, and ignores other sessions", async () => {
   vi.useFakeTimers();
@@ -29,7 +33,7 @@ it("watches while on screen, draws the snapshot read-only, and ignores other ses
   expect(watch).toHaveBeenCalledWith("s1");
   await act(async () => { await vi.dynamicImportSettled(); }); // xterm's dynamic import
   act(() => { emit(screenEvent("other")); emit(screenEvent("s1")); });
-  expect(writes.map((w) => Array.from(w))).toEqual([[0x1b, 0x5b, 0x48]]);
+  expect(writes.map((w) => Array.from(w))).toEqual([[...CLEAR, 0x1b, 0x5b, 0x48]]);
   expect(onLive).toHaveBeenCalledWith(true);
   await act(async () => { await vi.advanceTimersByTimeAsync(15_000); });
   expect(watch).toHaveBeenCalledTimes(2);
@@ -162,4 +166,51 @@ describe("typing into the live terminal", () => {
     expect(rule).toContain("visibility: hidden");
     expect(rule).not.toMatch(/position\s*:/);
   });
+});
+
+const mountView = async (props: Partial<Parameters<typeof SessionTerminalView>[0]> = {}) => {
+  let emit: (e: LiveEvent) => void = () => {};
+  const onLive = vi.fn();
+  const watch = vi.fn(async () => undefined);
+  render(<SessionTerminalView session={{ sessionId: "s1", generation: "g1" }} onEvent={(h) => { emit = h; return () => {}; }}
+    watch={watch} onLive={onLive} {...props} />);
+  await act(async () => { await vi.dynamicImportSettled(); });
+  return { emit: (e: LiveEvent) => act(() => { emit(e); }), onLive, watch };
+};
+
+it("writes history under the first snapshot, keeps it when later snapshots redraw, and starts over on a new run", async () => {
+  const { emit } = await mountView();
+  expect(hooks.options?.scrollback).toBe(5000);
+  emit(screenEvent("s1", "history", 0, 1, btoa("old\r\n")));
+  emit(screenEvent("s1", "snapshot", 1));
+  expect(writes.map((w) => Array.from(w))).toEqual([Array.from(new TextEncoder().encode("old\r\n")), [...CLEAR, 0x1b, 0x5b, 0x48]]);
+  emit(screenEvent("s1", "snapshot", 2));
+  expect(hooks.resets).toBe(1);
+  emit(screenEvent("s1", "snapshot", 0, 2));
+  expect(hooks.resets).toBe(2);
+});
+
+it("a ping keeps a quiet terminal live and draws nothing", async () => {
+  vi.useFakeTimers();
+  const { emit, onLive } = await mountView();
+  emit(screenEvent("s1"));
+  for (let i = 0; i < 3; i += 1) {
+    await act(async () => { await vi.advanceTimersByTimeAsync(20_000); });
+    emit(screenEvent("s1", "ping", 1, 1, ""));
+  }
+  expect(onLive).toHaveBeenLastCalledWith(true);
+  expect(writes).toHaveLength(1);
+});
+
+it("the viewer's own size never reaches the Mac or changes the terminal's size", async () => {
+  let resized: () => void = () => {};
+  vi.stubGlobal("ResizeObserver", class { constructor(cb: () => void) { resized = cb; } observe() {} disconnect() {} });
+  const input = vi.fn(async () => undefined);
+  const { emit, watch } = await mountView({ input, admitted: true });
+  emit(screenEvent("s1"));
+  act(() => { resized(); resized(); });
+  expect(input).not.toHaveBeenCalled();
+  expect(watch).toHaveBeenCalledTimes(1);
+  expect([hooks.term?.cols, hooks.term?.rows]).toEqual([100, 30]);
+  vi.unstubAllGlobals();
 });

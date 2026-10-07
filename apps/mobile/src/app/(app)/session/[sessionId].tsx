@@ -560,7 +560,7 @@ const styles = StyleSheet.create({
   container: { flex: 1 },
   headerActions: { flexDirection: "row", alignItems: "center", gap: 20 },
   chatButton: { flexDirection: "row", alignItems: "center", gap: 4 },
-  chatCount: { fontSize: 13, fontWeight: "600" },
+  chatCount: { fontFamily: fonts.sansSemiBold, fontSize: 13, lineHeight: 18 },
   centered: { flex: 1, padding: spacing.lg, gap: spacing.sm },
   // Top/bottom are swapped against an un-inverted list: `paddingTop` draws at
   // the bottom (against the composer), `paddingBottom` at the top.

@@ -73,25 +73,26 @@ So Friday cannot reach a session from Teams work, nor message one whose owner di
 | `GET /messaging/local-session-agent/resources` | Workspace shared sessions (decision 2). Each session gains `agentSend: "direct" \| "ask" \| "unavailable"`. `unavailable` uses the liveness half of `native_session_tools.sendable` (:136-145). `devices`/`pairedNodes` stay room-scoped. They are empty for a Paperclip grant. |
 | `POST …/local-session-agent/sessions/{sid}/commands` | `send`/`interrupt`: direct when `requesterId == humanUserId` or the owner's pref is `allow`. Otherwise it files an ask and returns `202 {state: "awaiting_approval", requestId, expiresAt}`. A repeated `requestId` returns the same ask. |
 | `GET …/commands/{requestId}` | `COMMAND#` first, else the ask: pending → `awaiting_approval`, declined → `rejected` + `reason: "declined"`, expired → `rejected` + `reason: "expired"`. |
-| `POST /messaging/sessions/{sid}/agent-asks/{requestId}` (new, Clerk) | `{decision: "send" \| "decline"}`. Only `humanUserId` may decide: never a teammate under team control. Settles pending → `sent`/`declined` exactly once. Send then runs §3.3. Returns the receipt. |
+| `POST /messaging/sessions/{sid}/agent-asks/{requestId}` (new, Clerk) | `{decision: "send" \| "decline"}`. Only `humanUserId` may decide: never a teammate under team control. Decline: pending → `declined` (conditional update). Send: §3.3. Either once; a later decision → 409. Returns the receipt. |
 
 Ask row, on the session's pk in the messaging table: `sk AGENTASK#<requestId>`, `agentId`,
 `agentName`, `kind` (`send`/`interrupt`), `text`, `expectedGeneration`, `expectedTurnId`,
-`origin`, `status` (`pending`/`sent`/`declined`), `createdAt`, `expiresAt` (+24 h, also the TTL).
-Expiry is read lazily (`expiresAt <= now` is expired); nothing sweeps.
+`origin`, `status` (`pending`/`sent`/`declined`/`failed` + `reason`), `createdAt`, `expiresAt` (+24 h,
+read lazily: `<= now` is expired; nothing sweeps), `ttl` (`expiresAt` + 7 d, so the receipt outlives it).
 
 ### 3.3 Send on approval
 
 The resolver builds `AgentInvocation(owner, origin.roomId, agentId, expires_at=now+30,
 invocation_id=askId, requester_id=<session owner>, origin)` and calls `submit_command` with the
-stored command, then `dispatch_session`. That is the path `native_session_tools.session_send` uses
-(:402-416). The requester is the approving owner, so the unchanged owner-only rule (:965-975)
-admits it. The row keeps `actor: {kind: "agent", id}` (`submit_command` :1455-1462) and gains
-`approvedBy: <owner>`. The audit row gains it too (`audit_row` :1854). `_actor_label`
-(`local_session_relay.py:255-275`) labels it `Friday, approved by you` (displayName) when
-`approvedBy` is set, and resolves the agent name without a room. A stale ask fails the normal
-checks (generation, turn, offline; `_require_control` :1349-1386). The receipt is then `rejected`
-with that reason. Nothing is retried.
+stored command, then `dispatch_session`, as `native_session_tools.session_send` does (:402-416).
+The requester is the owner, so the owner-only rule (:965-975) admits it. The row keeps `actor:
+{kind: "agent", id}` (:1455-1462) and, like its audit row (:1854), gains `approvedBy`;
+`_actor_label` (`local_session_relay.py:255-275`) shows `Friday, approved by you`. A stale ask fails the normal
+checks (generation, turn, offline; `_require_control` :1349-1386): the ask goes pending → `failed`
+with that reason, read as `rejected`. Nothing is retried. **Atomic:** pending → `sent` is a
+conditional Update in `admit_command`'s own transaction (`submit_command`'s `source_conditions` →
+`extra`, :1612-1618), so no ask reads `sent` without its `COMMAND#` row. A crash leaves it `pending`;
+Send again replays under the same `requestId`.
 
 ### 3.4 The setting
 
@@ -161,7 +162,7 @@ approval ask. |`. Plugin schema description (:211-213) and `MAINTENANCE.md` (:19
 | `resources` with a Paperclip grant lists a non-room member's shared session, never an `unshared` one | widening |
 | Requester-owned send → `COMMAND#` row, no ask (regression) | decision 3 |
 | Non-owner send → ask row, no `COMMAND#`, no dispatch, `awaiting_approval`; same `requestId` again → same ask | decision 4 |
-| Send → command with `actor.kind: "agent"`, `approvedBy`, dispatched; second decision → 409 | settle once |
+| Send → command with `actor.kind: "agent"`, `approvedBy`; admission failure leaves the ask `pending`; 2nd decision → 409 | atomic, once |
 | Decline → `rejected`/`declined`; expired → `rejected`/`expired`; decide after expiry → 409 | end states |
 | Team-control teammate cannot decide; pref `allow` → direct send; absent pref = `ask` | owner only, setting |
 | Interrupt asks; 2nd pending → 429; 6th in 24 h → 429 | bounds |
@@ -171,10 +172,9 @@ approval ask. |`. Plugin schema description (:211-213) and `MAINTENANCE.md` (:19
 ## 6. Not in this work
 
 The terminal band / Mac answer door; the phone setting; waking the agent on a decision; allowlists.
-
 ## 7. Decisions taken (owner may overrule)
 
 1. The ask lives in Activity (Needs you), not the Teams approvals list (decision 5).
 2. Paperclip wakes never carry a requester, so they always ask unless the owner allows.
-3. Grant lifetime 1800 s for every turn; `allow` is per person, across workspaces, all agents.
-4. Asks expire after 24 h; 1 pending and 5 per day per agent per session; `read` never asks.
+3. Grant 1800 s for every turn; `allow` per person, all workspaces and agents; asks expire in
+   24 h; 1 pending and 5/day per agent per session; `read` never asks.

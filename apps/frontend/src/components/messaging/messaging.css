@@ -658,3 +658,6 @@ button.native-session-panel-row:hover .native-session-panel-activity { color: va
 .session-terminal-size button[aria-pressed="true"] { color: var(--terminal-fg); background: color-mix(in srgb, var(--terminal-fg) 16%, var(--terminal-bg)); }
 .session-terminal-size button:focus-visible { outline: 2px solid var(--terminal-fg); outline-offset: 1px; }
 .session-terminal-scroll { flex: 1; min-height: 0; overflow: auto; }
+
+/* Ended · <time> above an ended session's final screen (spec 2026-10-07 §5.4). */
+.session-ended-line { flex: none; margin: 0; padding: 6px 12px; font-size: 13px; color: var(--fg-mute); }

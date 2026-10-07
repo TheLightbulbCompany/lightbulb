@@ -283,3 +283,44 @@ it("reads 20 older pages in the background and no more, Details open or not", as
   await new Promise(r => setTimeout(r, 150));
   expect(list).toHaveBeenCalledTimes(21);
 });
+
+it("keeps an ended held session's final screen, read-only, under an Ended line with Resume", async () => {
+  const ended: LocalSession = { ...session, status: "ended", screenAvailable: true, latestEventSeq: 4, resumable: true, endedAt: new Date(Date.now() - 120_000).toISOString() };
+  render(<LocalSessionPanel session={ended} ownerName="Alice" own client={{ ...client, resumeLocalSession: vi.fn() } as never} revision={0} onAccessLost={() => {}} onEvent={() => () => {}} />);
+  await screen.findByRole("region", { name: "Live terminal (view only)" });
+  expect(typing.admitted).toBe(false);
+  expect(document.querySelector(".session-ended-line")!.textContent).toMatch(/^Ended · /);
+  expect(screen.queryByText("The screen is gone: this session's terminal closed.")).toBeNull();
+  expect(await screen.findByRole("button", { name: "Resume" })).toBeTruthy();
+});
+
+it("says the screen is gone once the Mac no longer shows it", () => {
+  render(<LocalSessionPanel session={{ ...session, status: "ended", latestEventSeq: 4 }} ownerName="Alice" own={false} client={client as never} revision={0} onAccessLost={() => {}} onEvent={() => () => {}} />);
+  expect(screen.getByText("The screen is gone: this session's terminal closed.")).toBeTruthy();
+  expect(screen.queryByRole("region", { name: /Live terminal/ })).toBeNull();
+});
+
+it("offers Pick up and a disabled Resume while the owner's Mac is offline", () => {
+  const offline: LocalSession = { ...session, status: "offline", pickup: { allowed: true, state: "ready", hasCode: false } };
+  render(<LocalSessionPanel session={offline} ownerName="Alice" own={false} client={{ ...client, requestLocalSessionPickup: vi.fn() } as never} revision={0} onAccessLost={() => {}} />);
+  expect(screen.getByText("Alice's Mac is offline")).toBeTruthy();
+  expect(screen.getByRole("button", { name: "Resume" })).toBeDisabled();
+  expect(screen.getByText("Resume works once Alice's Mac is back. Pick up continues it on your Mac now.")).toBeTruthy();
+  expect(screen.getByRole("button", { name: /Pick up/ })).toBeTruthy();
+});
+
+it("tells how a no-daemon Codex session gets its screen, and says nothing for a reason it cannot act on", () => {
+  const props = { ownerName: "Alice", client: client as never, revision: 0, onAccessLost: () => {}, onEvent: () => () => {} };
+  const codex: LocalSession = { ...session, provider: "codex", terminal: undefined, terminalReason: "no-daemon" };
+  const line = (text: string) => screen.getByText((_, el) => el?.tagName === "P" && el.textContent === text);
+  const mine = render(<LocalSessionPanel {...props} own session={codex} />);
+  expect(line("Start it again with lightbulb codex to share its screen.")).toBeTruthy();
+  mine.unmount();
+  const theirs = render(<LocalSessionPanel {...props} own={false} session={codex} />);
+  expect(line("Ask Alice to start it again with lightbulb codex.")).toBeTruthy();
+  expect(screen.queryByText(/press ←/i)).toBeNull();
+  theirs.unmount();
+  render(<LocalSessionPanel {...props} own={false} session={{ ...session, terminal: undefined, terminalReason: "unknown" }} />);
+  expect(screen.getByText("This session was not started through Lightbulb, so its screen is not here.")).toBeTruthy();
+  expect(screen.queryByText(/press ←/i)).toBeNull();
+});

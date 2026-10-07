@@ -175,3 +175,43 @@ async def test_what_an_earlier_answer_said_does_not_count_as_this_one_said():
     talks(h, P2)
     await settle(h)
     assert [n[2] for n in h._news.get("forge", [])] == ["Three PRs are open. The oldest is two days old."]
+
+
+async def test_an_answer_handed_to_a_later_voice_of_the_agent_starts_its_own_said_list():
+    """Codex on #3792: the hand-over path did not restart the list, so old words could count as this answer's."""
+    h, backend, lives, clock = await asked()
+    (row,) = h._requests.items
+    clock.t += h_mod.MEET_FOLLOWUP_S
+    await h.tick()
+    await settle(h)
+    assert h._voice is None and row.status == "working"
+    await says(h, P1, "Forge, are you there?")  # a new voice of the same agent opens
+    h._voice.said = ["Three PRs are open."]  # what it said in this exchange so far, same words by chance
+    answer(h, row.run_id, "forge", "Three PRs are open. The oldest is two days old.")  # the earlier run: handed over
+    h.on_agent_state("forge", "speaking")
+    talks(h, P2)
+    clock.t += h_mod.TALK_OVER_S
+    await h.tick()
+    await settle(h)
+    assert [n[2] for n in h._news.get("forge", [])] == ["Three PRs are open. The oldest is two days old."]
+
+
+async def test_the_talk_over_clock_runs_from_when_someone_else_began_not_from_its_own_person():
+    """Codex on #3792: its person had talked a while, then a brief interjection by someone else cut it at once."""
+    h, backend, lives, clock = await asked()
+    (row,) = h._requests.items
+    answer(h, row.run_id, "forge", "Three PRs are open.")
+    h.on_agent_state("forge", "speaking")
+    talks(h, P1)  # its own person, for a while
+    clock.t += h_mod.TALK_OVER_S + 5
+    await h.tick()
+    await settle(h)
+    assert h._voice is not None
+    talks(h, P2)  # someone else begins now
+    await h.tick()
+    await settle(h)
+    assert h._voice is not None and ("interrupt",) not in lives[0].calls, "a word in: not a talk-over yet"
+    clock.t += h_mod.TALK_OVER_S
+    await h.tick()
+    await settle(h)
+    assert h._voice is None and ("interrupt",) in lives[0].calls

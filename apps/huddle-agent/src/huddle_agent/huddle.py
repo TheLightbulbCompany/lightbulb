@@ -462,6 +462,7 @@ class Huddle:
         self._delivery_tries: dict[str, tuple[int, float]] = {}
         self._voice_limit = ""  # why the backend refuses to open a voice (its /summon reason); "" when it does not
         self._trail: dict[str, tuple[str, float]] = {}  # a meeting line that trailed off, and when
+        self._others_from = 0.0  # when someone other than the open voice's person began talking
         self._rowless: set[str] = set()  # a meeting's ready answers that have no request row (delivered like one)
         self._level: set[str] = set()  # humans in the SFU's active speakers: sound, maybe not speech
         self._voiced: set[str] = set()  # humans the transcriber's speech detector hears speaking
@@ -1934,6 +1935,12 @@ class Huddle:
             self._last_heard = self._clock()
         if humans and not self._speaking:
             self._talk_from = self._clock()
+        v = self._voice
+        if v is not None and in_meet(v.speaker) and not mixed_meet(v.speaker):
+            # the talk-over clock of a per-person voice runs from when someone OTHER than its person began,
+            # not from its person's own start (Codex on #3792: a brief interjection cut it at once)
+            if humans - {v.speaker} and not self._speaking - {v.speaker}:
+                self._others_from = self._clock()
         started, self._speaking = humans - self._speaking, humans
         if started and self.setting == "meeting":
             self._unclaimed = None  # someone talks after the question: a person took it
@@ -2845,6 +2852,7 @@ class Huddle:
                 text = f"Your earlier task on {run.request[:80]} finished: {answer}"
                 self._live_call(v, "append_commentary", text, delegation_id=None)
                 if in_meet(v.speaker):  # being said: kept until its audio ends (`_talked_over`, hang-up)
+                    v.said = []  # an answer boundary: a cut is measured against what it says from here
                     v.told.append((run.run_id, run.request, answer, self._clock(), run.speaker))
             self._requests.delivered({run.run_id})
         elif (
@@ -3087,7 +3095,7 @@ class Huddle:
             and v.agent_state == "speaking"
             # anyone else in the meeting (a per-person voice's own person interrupts it the model's way)
             and (self._speaking if mixed_meet(v.speaker) else self._speaking - {v.speaker})
-            and now - self._talk_from >= TALK_OVER_S
+            and now - (self._talk_from if mixed_meet(v.speaker) else self._others_from) >= TALK_OVER_S
         ):
             self._talked_over(v)
             return

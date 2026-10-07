@@ -394,5 +394,7 @@ def test_a_line_about_a_colleague_is_not_a_handoff_to_them():
     for line in ("Leo is pushing the fix", "Dan has the details", "Dan will push it tonight", "Dan can push it"):
         assert not h_mod.opens_with_person(line, people), line
     for line in ("Dan, is it ready?", "Dan will you push it?", "Dan what do you think?", "Leo you there?",
-                 "Dan please push it", "Leo did you push that fix?"):
+                 "Dan please push it", "Leo did you push that fix?", "Dan are the PRs open?", "Dan is it ready?"):
         assert h_mod.opens_with_person(line, people), line
+    # a bare imperative has no mark the worker can read; the voice's own meeting rule covers it
+    assert not h_mod.opens_with_person("Dan fix the deployment", people)

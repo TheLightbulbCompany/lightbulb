@@ -378,9 +378,11 @@ def opens_with_person(text: str, people: list[dict]) -> bool:
             # said TO them: a comma, "you"/"please" next, or a question put to them ("Dan did you push it?",
             # "Dan what do you think"). Not a name that is also a word ("Will we ship today?") and not a line
             # ABOUT them said to the agent ("Leo is pushing the fix", "Dan has the details": Codex on #3792).
+            # A question that opens with their name is to them when STT gave no comma ("Dan are the PRs
+            # open?"). A bare imperative ("Dan fix the deployment") is left to the voice's own meeting rule.
             rest = tokens[i + n : i + n + 3]
             return rest[0] in (",", "please", "you", "your", "yours") or (
-                rest[0] in _ASK and any(t in ("you", "your") for t in rest[1:])
+                rest[0] in _ASK and (any(t in ("you", "your") for t in rest[1:]) or text.rstrip().endswith("?"))
             )
     return False
 

@@ -223,13 +223,13 @@ pub fn page_top(window_height: f64, viewport_height: Option<f64>) -> f64 {
 }
 
 /// One log line per distinct measurement, so a misplaced terminal can be read from the log.
-fn note_placement(window: f64, parent: f64, viewport: Option<f64>, top: f64) {
-    static LAST: Mutex<Option<(u64, u64, u64)>> = Mutex::new(None);
-    let key = (window.to_bits(), parent.to_bits(), viewport.unwrap_or(-1.0).to_bits());
+fn note_placement(window: f64, viewport: Option<f64>, top: f64) {
+    static LAST: Mutex<Option<(u64, u64)>> = Mutex::new(None);
+    let key = (window.to_bits(), viewport.unwrap_or(-1.0).to_bits());
     if let Ok(mut last) = LAST.lock() {
         if *last != Some(key) {
             *last = Some(key);
-            crate::log(&format!("[terminal-panel] window {window} parent {parent} page {viewport:?} shift {top}"));
+            crate::log(&format!("[terminal-panel] window {window} page {viewport:?} shift {top}"));
         }
     }
 }
@@ -294,16 +294,11 @@ pub async fn terminal_panel(
     let window = app.get_window("main").ok_or("The Lightbulb window is not open.")?;
     let scale = window.scale_factor().map_err(|e| e.to_string())?;
     let size = window.inner_size().map_err(|e| e.to_string())?.to_logical::<f64>(scale);
-    // The terminal is a sibling of the page's own view, placed in their shared parent. That parent
-    // ends where the page's view ends, so its height is the view's offset plus the view's height.
-    // Read from the view itself: `inner_size` is not that parent on every macOS.
-    let parent_height = match (webview.position(), webview.size()) {
-        (Ok(p), Ok(s)) => p.to_logical::<f64>(scale).y + s.to_logical::<f64>(scale).height,
-        _ => size.height,
-    };
-    let top = page_top(parent_height, viewport.map(|v| v.height));
-    note_placement(size.height, parent_height, viewport.map(|v| v.height), top);
-    match rect.and_then(|r| fit(Rect { y: r.y + top, ..r }, (size.width, parent_height.max(size.height)))) {
+    // Measured on macOS 26: a window configured 1400x900 (inner) is 1400x900 outside too, so its
+    // content view runs under the title bar and `inner_size` includes it; the page is inset below.
+    let top = page_top(size.height, viewport.map(|v| v.height));
+    note_placement(size.height, viewport.map(|v| v.height), top);
+    match rect.and_then(|r| fit(Rect { y: r.y + top, ..r }, (size.width, size.height))) {
         Some(r) => show(&app, &window, &holder, r)?,
         None => hide(&app),
     }

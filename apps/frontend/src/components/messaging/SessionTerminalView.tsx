@@ -135,19 +135,23 @@ export function SessionTerminalView({ session, onEvent, watch, onLive, onCanType
       e.stopPropagation();
       const dy = e.shiftKey || e.ctrlKey ? 0 : e.deltaY; // shift+wheel is sideways, ctrl+wheel a zoom
       if (!around || !dy || (dy < 0 ? around.scrollTop > 0 : !atBottom(around))) return;
-      // The box is at its end this way: the terminal's own scrollback takes over.
-      around.scrollLeft += e.deltaX;
+      // The box is at its end this way: the terminal's own scrollback takes over. From here both
+      // axes are applied by hand, and the event is cancelled if either moved: left to the browser
+      // as well, a diagonal swipe would move sideways twice.
       const shown = host.current?.querySelector<HTMLElement>(".xterm-screen");
       if (!term || !shown?.offsetHeight) return;
       // One row as drawn (the scaled height; jsdom has no layout, so the unscaled one there).
-      const row = e.deltaMode === 1 ? 1 : (e.deltaMode === 2 ? around.clientHeight : shown.getBoundingClientRect().height || shown.offsetHeight) / term.rows;
-      carry += dy / row;
+      const rowPx = (shown.getBoundingClientRect().height || shown.offsetHeight) / term.rows;
+      // deltaMode: 0 is pixels, 1 lines, 2 pages (a page is the terminal's visible rows).
+      const [rows, px] = e.deltaMode === 1 ? [1, rowPx] : e.deltaMode === 2 ? [term.rows, around.clientWidth] : [1 / rowPx, 1];
+      const left = around.scrollLeft;
+      around.scrollLeft += e.deltaX * px;
+      carry += dy * rows;
       const lines = Math.trunc(carry);
-      if (!lines) return;
       carry -= lines;
       const was = term.buffer.active.viewportY;
-      term.scrollLines(lines); // xterm keeps its place in history while output arrives, and follows again at the tail
-      if (term.buffer.active.viewportY !== was) e.preventDefault();
+      if (lines) term.scrollLines(lines); // xterm keeps its place in history while output arrives, and follows again at the tail
+      if (around.scrollLeft !== left || term.buffer.active.viewportY !== was) e.preventDefault();
     };
     around?.addEventListener("wheel", onWheel, { capture: true, passive: false });
     const apply = (frames: SessionScreen[]) => {

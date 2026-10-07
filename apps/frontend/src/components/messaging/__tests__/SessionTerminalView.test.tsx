@@ -360,9 +360,31 @@ describe("a readable terminal in a narrow pane", () => {
     expect(wheel({ deltaX: 40 })).toEqual({ reached: false, prevented: false }); // the browser scrolls the box sideways
     expect(wheel({ deltaY: -90, shiftKey: true })).toEqual({ reached: false, prevented: false });
     expect(hooks.scrolled).toEqual([]);
-    wheel({ deltaX: 40, deltaY: -90 }); // a diagonal swipe at the top: history, and the box still moves sideways
+    // A diagonal swipe at the top: history, and the box moves sideways once. Both axes are applied
+    // here and the event is cancelled, or the browser would add deltaX a second time.
+    expect(wheel({ deltaX: 40, deltaY: -90 })).toEqual({ reached: false, prevented: true });
     expect(hooks.scrolled).toEqual([-2]);
     expect(el.scrollLeft).toBe(40);
+  });
+
+  it("cancels a diagonal wheel whose only movement is sideways, so it is not applied twice", async () => {
+    const { el, emit } = await open();
+    emit(screenEvent("s1"));
+    el.scrollTop = 490;
+    wheel({ deltaY: 4000 }); // the tail of the box and of history
+    hooks.scrolled = [];
+    expect(wheel({ deltaX: 40, deltaY: 90 })).toEqual({ reached: false, prevented: true });
+    expect(el.scrollLeft).toBe(40);
+  });
+
+  it("reads the wheel's unit: pixels by the row height, lines as rows, pages as screens of rows", async () => {
+    const { el, emit } = await open();
+    emit(screenEvent("s1")); // 30 rows, 39 px each
+    el.scrollTop = 0;
+    wheel({ deltaY: -90, deltaMode: 0 });
+    wheel({ deltaY: -3, deltaMode: 1 });
+    wheel({ deltaY: -1, deltaMode: 2 });
+    expect(hooks.scrolled).toEqual([-2, -3, -30]);
   });
 
   it("output that arrives while the viewer reads history does not move the view", async () => {

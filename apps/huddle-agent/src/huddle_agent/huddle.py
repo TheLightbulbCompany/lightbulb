@@ -452,6 +452,7 @@ class Huddle:
         self._false_starts = 0  # starts that ran into someone since an answer was last said
         # agent -> things to say that are not answers: (key, "", words, at, to, kind); see LINE_TTL_S
         self._lines: dict[str, list[tuple]] = {}
+        self._warm_at: dict[str, float] = {}  # agents whose voice is open ahead of anything to say
         self._line_seq = 0
         self._narration: dict[str, str] = {}  # run -> what it wrote before its next lookup (a progress note)
         self._trail: dict[str, tuple[str, float]] = {}  # identity -> a line that trailed off, and when
@@ -3749,6 +3750,15 @@ class Huddle:
         billed and the voice limit applies. ponytail: a session that fails to open is not retried."""
         if agent_id not in self._speech:
             async def render() -> Any:
+                # One hand voice in the room at a time (rig 10-06: with two open, both tracks carried sound at
+                # once). Another agent's open one closes first; it opens again when it next has the pause.
+                saying = self._saying[0] if self._saying else None
+                for other in [a for a in self._speech if a not in (agent_id, saying)]:
+                    t = self._speech.pop(other)
+                    if t.done() and not t.cancelled() and t.exception() is None:
+                        self._drop_speech(other, t.result())
+                    else:
+                        t.cancel()
                 # every hand voice on its way out first: this agent's (its close unpublishes the shared track
                 # name) and any other's (its last seconds land during the close, and the budget must see them)
                 if closing := [f for f in self._speech_closing.values() if not f.done()]:
@@ -3821,10 +3831,21 @@ class Huddle:
             if self._people
             else set()
         )
+        # Its voice opens as soon as it hears its name or a request reaches it, so "on it" is two seconds after
+        # the question and not six (rig 10-06: the session opened only once there was something to say).
+        soon = {aid for aid in self._heard_name if self._agent(aid)} | {
+            a["id"] for a in self._team["agents"] if self._requests.working(a["id"])
+        }
+        if self._people and not ready:
+            ready = set(list(soon)[:1])
+            self._warm_at.update({a: self._warm_at.get(a, self._clock()) for a in ready})
+        self._warm_at = {a: t for a, t in self._warm_at.items() if a in ready}
         saying = self._saying[0] if self._saying else None
         # ONE hand voice is held open: the agent whose answer is oldest (it speaks first). Two hands held would
         # spend two sessions' seconds against one window's budget. The others open when their turn comes.
-        oldest = lambda a: min(x[3] for x in (self._news.get(a) or []) + self._lines.get(a, []))  # noqa: E731
+        oldest = lambda a: min(  # noqa: E731
+            [x[3] for x in (self._news.get(a) or []) + self._lines.get(a, [])] or [self._warm_at.get(a, 0.0)]
+        )
         first = min(ready, key=oldest, default=None)
         if (w := self._window) and first:
             held = 0.0
@@ -3844,7 +3865,8 @@ class Huddle:
                     if aid == first:
                         self._speech_cold.add(aid)  # its hold ran out: it opens again when it is to speak
             elif aid == first and aid not in self._speech_cold:
-                self._render(aid, ((self._news.get(aid) or []) + self._lines.get(aid, []))[0][4])
+                items = (self._news.get(aid) or []) + self._lines.get(aid, [])
+                self._render(aid, items[0][4] if items else None)
         for aid in close:
             t = self._speech.pop(aid)
             if t.done() and not t.cancelled() and t.exception() is None:

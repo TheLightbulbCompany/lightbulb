@@ -241,3 +241,24 @@ it("shows no transcript while a held session's terminal has no frame yet", () =>
   expect(screen.queryByRole("region", { name: "Native session history" })).toBeNull();
   expect(document.querySelector(".session-status-line")!.textContent).not.toMatch(/Transcript/);
 });
+
+const textEvent = (seq: number) => ({ seq, kind: "text", role: "user", text: `t${seq}` });
+const change = { seq: 3, kind: "tool", role: "assistant", itemId: "c1", tool: { name: "FileChange", status: "completed", result: { "a.ts": { type: "add", content: "x\n" } } } };
+
+it("keeps loading older pages without a scroll so the plan and changed files see the whole session", async () => {
+  const list = vi.fn(async (_id: string, after: number) => ({ events: after === 0 ? [textEvent(1), textEvent(2), change, ...Array.from({ length: 7 }, (_, i) => textEvent(4 + i))] : Array.from({ length: 50 }, (_, i) => textEvent(11 + i)), nextAfterSeq: null }));
+  render(<LocalSessionPanel session={{ ...session, status: "idle", latestEventSeq: 60 }} ownerName="Alice" own client={{ ...client, listLocalSessionEvents: list } as never} revision={0} onAccessLost={() => {}} />);
+  await waitFor(() => expect(list).toHaveBeenCalledWith("s", 0, 10));
+  expect(await screen.findByText(/1 file changed/)).toBeTruthy();
+});
+
+it("shows a retry line in the status area when the first history load fails, and clears it after a good retry", async () => {
+  let fail = true;
+  const list = vi.fn(async () => { if (fail) throw new Error("net"); return { events: [], nextAfterSeq: null }; });
+  render(<LocalSessionPanel session={{ ...session, status: "idle" }} ownerName="Alice" own client={{ ...client, listLocalSessionEvents: list } as never} revision={0} onAccessLost={() => {}} />);
+  expect(await screen.findByText("Could not load session details.")).toBeTruthy();
+  fail = false;
+  screen.getByRole("button", { name: "Retry" }).click();
+  await waitFor(() => expect(screen.queryByText("Could not load session details.")).toBeNull());
+  expect(list.mock.calls.length).toBeGreaterThanOrEqual(2);
+});

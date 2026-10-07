@@ -23,6 +23,9 @@ import { timeAgo } from "@/components/teams/shared/lib/timeAgo";
 import type { PickupClient } from "./useSessionPickup";
 import { ResumeDelivery, SessionResume } from "./SessionResume";
 
+/** Older history pages read per session, so a huge session never loops. */
+const MAX_OLDER_PAGES = 20;
+
 type Decide = (sessionId: string, userId: string, decision: "allow" | "decline", requestId?: string) => Promise<unknown>;
 type JoinDecider = { decideLocalSessionJoin?: Decide; decideLocalSessionPickup?: Decide };
 type Client = SessionSource["client"] & SessionControlClient & PickupClient & Parameters<typeof SessionDetails>[0]["client"] & JoinDecider & { watchLocalSession?: (sessionId: string) => Promise<unknown>; sendLocalSessionInput?: (sessionId: string, data: string, epoch: number) => Promise<unknown> };
@@ -47,6 +50,14 @@ export function LocalSessionPanel({ session, ownerName, own, client, revision, o
   // The history feeds the plan, the changed files and the pending approval; no rows are drawn from it, so no poll.
   const source = useHistorySource(client, session, revision);
   const history = useLocalSessionHistory(client, source.sessionId, source.latestEventSeq, revision, onAccessLost, { pollMs: 0 });
+  // Nothing scrolls the history any more, so read back through older pages for the plan and changed files. Bounded per session.
+  const olderPages = useRef({ id: session.sessionId, n: 0 });
+  useEffect(() => {
+    if (olderPages.current.id !== source.sessionId) olderPages.current = { id: source.sessionId, n: 0 };
+    if (!history.hasOlder || history.loading || history.error || olderPages.current.n >= MAX_OLDER_PAGES) return;
+    olderPages.current.n += 1;
+    void history.load("older");
+  }, [history, source.sessionId]);
   const [text, setText] = useState("");
   const [details, setDetails] = useState<SessionDetailsTab | null>(null);
   const [tab, setTab] = useState<SessionDetailsTab>("about");
@@ -182,6 +193,7 @@ export function LocalSessionPanel({ session, ownerName, own, client, revision, o
         {session.pickedUpFrom && <span>picked up from {personName(session.pickedUpFrom.humanUserId)}</span>}
         {changes.length > 0 && <button type="button" className="session-status-link" onClick={() => show("changes")}>
           {changes.length} {changes.length === 1 ? "file" : "files"} changed<span className="local-session-add">+{added}</span><span className="local-session-del">−{removed}</span></button>}
+        {history.error && <span role="status">Could not load session details. <button type="button" className="session-status-link" onClick={() => void history.retry()}>Retry</button></span>}
         {plan && plan.length > 0 && <button type="button" className="session-status-link" onClick={() => show("changes")}>plan {done} of {plan.length}</button>}
       </p>
       <div className="session-status-actions">

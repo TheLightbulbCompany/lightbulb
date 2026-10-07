@@ -165,13 +165,15 @@ Teammates see what the owner allows instead of switches.
 
 **Session links** open at `/s`. A workspace link opens for signed-in members
 (a signed-out visitor is asked to sign in); an "anyone" link opens with no
-sign-in and shows outsiders the conversation with likely secrets redacted and,
-for a private repository, its name hidden. On a Claude Code session the link is
-also the pick-up permission. **Continue** takes a copy into the person's own
-Claude Code: they need the Lightbulb desktop app and a free workspace, then run
-`lightbulb continue '<link>'` in a terminal and confirm in the browser. A
-public repository is cloned for them; a private one comes as the conversation
-only. The original session never changes. You cannot make, change or turn off
+sign-in. The page shows the session's title, owner, tool and state (live, ended
+or offline) and the **Continue** option; it shows no conversation and no
+transcript. On a Claude Code session the link is also the pick-up permission.
+**Continue** takes a copy into the person's own Claude Code: they need the
+Lightbulb desktop app and a free workspace, then run `lightbulb continue
+'<link>'` in a terminal and confirm in the browser. That copy is the only way
+the conversation reaches an outsider, with likely secrets redacted and, for a
+private repository, its name hidden. A public repository is cloned for them; a
+private one comes as the conversation only. The original session never changes. You cannot make, change or turn off
 a link: tell the owner to use **Share** under **Access**.
 
 **Ask to join**: a teammate who cannot send to someone's session taps **Ask to

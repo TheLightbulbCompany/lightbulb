@@ -233,6 +233,9 @@ def _unsaid_with(answer: str, bags: tuple[collections.Counter, collections.Count
                     spend.append(heard)
             if len(spend) / len(content) < 0.7:
                 return answer if i == 0 else " ".join(sentences[i:])  # the same object when nothing of it was said
+            for w in words:  # a said sentence spends its function words too ("I can deploy." then "I can.")
+                if w in FUNCTION_WORDS and all_left[w] - spend.count(w) > 0:
+                    spend.append(w)
         for w in spend:
             all_left[w] -= 1
             if w in left:

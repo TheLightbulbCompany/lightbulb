@@ -62,10 +62,12 @@ jobs:
           dest="$RUNNER_TEMP/lightbulb-plugin"
           rm -rf "$dest"
           git clone --quiet git@github.com:TheLightbulbCompany/lightbulb-plugin.git "$dest"
-          # A re-run keeps its original SHA. Publish only a source at or after the one published
-          # last (named in the last sync commit's `Source:` trailer), never an older tree.
+          # A re-run of THIS workflow (run attempt > 1) keeps its original SHA, so it publishes
+          # only a source at or after the one published last (the last sync commit's `Source:`
+          # trailer). A first attempt follows prod as deployed: a deploy re-run that rolls prod
+          # back starts a new sync run, which publishes the older tree under the next version.
           prev=$(git -C "$dest" log -1 --format=%B 2>/dev/null | sed -n 's/^Source: //p')
-          if [ -n "$prev" ]; then
+          if [ -n "$prev" ] && [ "$GITHUB_RUN_ATTEMPT" -gt 1 ]; then
             status=$(gh api "repos/$GITHUB_REPOSITORY/compare/$prev...$SOURCE_SHA" --jq .status)
             if [ "$status" != ahead ] && [ "$status" != identical ]; then
               echo "::notice::$SOURCE_SHA is $status relative to the published $prev; not publishing an older tree."

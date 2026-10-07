@@ -131,3 +131,13 @@ it("reports the known room as on screen before the door answers, and takes it ba
   expect(await screen.findByText("Chat is not available for this session.")).toBeInTheDocument();
   expect(onRoom).toHaveBeenLastCalledWith(null);
 });
+
+it("reads the known room again once the door answers (a session that ended during the race is not left writable)", async () => {
+  const refreshRoom = vi.fn();
+  rooms.value = { ...rooms.value, refreshRoom };
+  let land!: (room: RoomDetail) => void;
+  render(<SessionChat sessionId="s1" sessionOwnerId="user_alice" knownRoomId="chat-1" openChat={vi.fn(() => new Promise<RoomDetail>((resolve) => { land = resolve; }))} onClose={vi.fn()} />);
+  expect(refreshRoom).not.toHaveBeenCalled();
+  await act(async () => { land({ ...detail, archivedAt: "2026-10-07T11:00:00Z" }); });
+  expect(refreshRoom).toHaveBeenCalledTimes(1);
+});

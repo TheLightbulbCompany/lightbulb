@@ -44,6 +44,8 @@ export function SessionChat({ sessionId, sessionOwnerId, knownRoomId, openChat, 
   // The door (a POST: seat, lifecycle, fence) must answer before anyone posts; reading need not wait.
   const [opened, setOpened] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const refreshRoom = useRef(rooms.refreshRoom);
+  useEffect(() => { refreshRoom.current = rooms.refreshRoom; });
   useEffect(() => {
     let alive = true;
     // Its messages are on screen from here on, so notifications treat it as watched already.
@@ -53,6 +55,9 @@ export function SessionChat({ sessionId, sessionOwnerId, knownRoomId, openChat, 
       setRoomId(room.roomId);
       setOpened(true);
       selectRoom(room.roomId);
+      // The known room's detail was read beside the door, and selecting the same id reads nothing:
+      // the door may have just archived or reopened it (the session ended or resumed), so read it again.
+      if (known === room.roomId) void refreshRoom.current?.();
       onRoom?.(room.roomId);
     }, (e: unknown) => {
       if (!alive) return;

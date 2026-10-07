@@ -215,3 +215,24 @@ async def test_the_talk_over_clock_runs_from_when_someone_else_began_not_from_it
     await h.tick()
     await settle(h)
     assert h._voice is None and ("interrupt",) in lives[0].calls
+
+
+def test_opens_with_person_needs_a_word_said_to_them_not_just_a_name_that_is_also_a_word():
+    """Codex on #3792: "Will we ship today?" with a Will in the meeting is not a handoff to Will."""
+    people = [{"name": "Will Smith"}, {"name": "Leo"}]
+    assert h_mod.opens_with_person("Leo, did you push that?", people)
+    assert h_mod.opens_with_person("Leo did you push that", people)
+    assert h_mod.opens_with_person("hey Will, can you hear me?", people)
+    assert not h_mod.opens_with_person("Will we ship today?", people)
+    assert not h_mod.opens_with_person("Leo pushed it last night.", people)
+
+
+async def test_a_trailing_piece_stays_on_the_record_even_if_its_rest_never_comes():
+    """Codex on #3792: a held fragment was dropped from the transcript when the speaker moved on."""
+    h, room, backend, lives, clock, log = await per_person()
+    await says(h, P1, "Oh, and...")
+    assert "Oh, and..." in h._transcript.text()
+    clock.t += h_mod.TRAIL_S + 1
+    await says(h, P1, "Can one of you tell me about my open tasks?")
+    assert h._unclaimed is not None and h._unclaimed[2] == "Can one of you tell me about my open tasks?", "too late to join"
+    assert h._transcript.text().count("Oh, and...") == 1

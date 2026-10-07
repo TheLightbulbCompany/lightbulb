@@ -375,8 +375,12 @@ def opens_with_person(text: str, people: list[dict]) -> bool:
     names.discard("")
     for n in (2, 1):
         if len(tokens) > i + n and " ".join(tokens[i : i + n]) in names:
-            return True
+            # said TO them: a comma, or a second-person word next ("Will we ship today?" is not to Will)
+            return tokens[i + n] == "," or tokens[i + n] in _TO_YOU
     return False
+
+
+_TO_YOU = frozenset("you your yours can could would will did do does are were is was have has what how why when where please".split())
 
 
 def trails_off(text: str) -> bool:

@@ -899,11 +899,13 @@ class Huddle:
             # The transcriber ends a line at a short pause, so a thought said in pieces arrives in pieces. One
             # that trails off is not a request yet (10-06 prod Meet: "Can one of you tell me..." was run as one,
             # and the agent asked back what was meant): it is joined to what comes next.
+            # The record keeps each piece as it was said; only the understanding sees them joined.
             trail = self._trail.pop(identity, None)
             if trail and now - trail[1] <= TRAIL_S:
                 text = f"{trail[0]} {text}"
             if trails_off(text):
                 self._trail[identity] = (text, now)
+                self._transcript.add_person(identity, f"{name} (Meet)", text[len(trail[0]) + 1 :] if trail else text, at=now)
                 return
         if self.setting == "meeting":
             self._unclaimed = (

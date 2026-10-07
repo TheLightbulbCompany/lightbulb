@@ -1420,6 +1420,7 @@ async def submit_command(
     source_pairing: tuple[str, str] | None = None,
     room_meta_fenced_by_extra: bool = False,
     replaces_request_id: str | None = None,
+    via_client: str | None = None,
 ) -> CommandReceipt:
     owner = caller_owner(auth)
     # A roomless command is stored with roomId "": current desktops require the field as a string.
@@ -1581,6 +1582,8 @@ async def submit_command(
             ),
             **({"nativeHop": native_hop} if native_hop is not None else {}),
             **({"replacesRequestId": replaces_request_id} if replaces_request_id else {}),
+            # A hosted MCP client sending on its person's authority: the label names both.
+            **({"viaClient": via_client} if via_client else {}),
             **(
                 {
                     "sourceHumanUserId": auth.user_id,

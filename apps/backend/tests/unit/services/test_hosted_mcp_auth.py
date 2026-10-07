@@ -89,11 +89,12 @@ async def test_send_resolves_thread_root_and_member_mentions(monkeypatch):
     monkeypatch.setattr(hosted_mcp, "get_access_token", lambda: SimpleNamespace(client_id="https://x.example/c"))
     monkeypatch.setattr(hosted_mcp.messaging, "human_display_name", AsyncMock(return_value="Ann"))
 
+    monkeypatch.setattr(hosted_mcp, "_pin_destination", AsyncMock())
+
     await hosted_mcp.send_message(
-        room_id,
         "Please coordinate",
-        str(uuid.uuid4()),
-        session_id=str(uuid.uuid4()),
+        uuid.uuid4(),
+        room_id=room_id,
         reply_to_message_id=reply_id,
         mention_ids=[agent_id, human_id],
     )
@@ -101,7 +102,7 @@ async def test_send_resolves_thread_root_and_member_mentions(monkeypatch):
     assert body.reply_to_message_id == uuid.UUID(reply_id)
     assert body.thread_root_message_id == uuid.UUID(root_id)
     assert [(member.kind, member.id) for member in body.mentions] == [("agent", agent_id), ("human", human_id)]
-    assert len(body.session_mentions) == 1
+    assert body.session_mentions == []
     assert post.await_args.kwargs["via"] == "lightbulb_mcp"
 
 
@@ -157,7 +158,8 @@ async def test_send_authors_as_the_client_on_the_humans_behalf(monkeypatch):
     monkeypatch.setattr(hosted_mcp.messaging, "human_display_name", AsyncMock(return_value="Ann"))
     post = AsyncMock(return_value=SimpleNamespace(room_id=uuid.UUID(room_id), message_id=uuid.uuid4(), message_seq=1))
     monkeypatch.setattr(hosted_mcp.messaging, "create_human_message", post)
-    await hosted_mcp.send_message(room_id, "hi", str(uuid.uuid4()))
+    monkeypatch.setattr(hosted_mcp, "_pin_destination", AsyncMock())
+    await hosted_mcp.send_message("hi", uuid.uuid4(), room_id=room_id)
     assert post.await_args.args[0].user_id == "user_sender"
     assert post.await_args.kwargs["author_override"] == {
         "kind": "system",
@@ -184,3 +186,104 @@ async def test_receipt_finds_the_client_authored_row_by_its_accountable_human(mo
     assert get.await_args.args[1] == hosted_mcp.messaging_repo.human_idemp_sk("user_sender", str(request_id))
     row["actorUserId"] = "user_other"
     assert (await hosted_mcp.receipt_for(auth, room_id, request_id)) == {"state": "not_found"}
+
+
+def _hosted_sender(monkeypatch):
+    auth = AuthContext(user_id="user_sender", org_id="org_test")
+    monkeypatch.setattr(hosted_mcp, "_caller", lambda *_scope: auth)
+    monkeypatch.setattr(
+        hosted_mcp,
+        "get_access_token",
+        lambda: SimpleNamespace(client_id="https://claude.ai/oauth/claude-code-client-metadata"),
+    )
+    pin = AsyncMock()
+    monkeypatch.setattr(hosted_mcp, "_pin_destination", pin)
+    return auth, pin
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("targets", [{}, {"room_id": "r", "person_id": "p"}, {"room_id": "r", "session_id": "s"}])
+async def test_send_needs_exactly_one_destination(monkeypatch, targets):
+    _hosted_sender(monkeypatch)
+    with pytest.raises(hosted_mcp.messaging.ApiProblem) as error:
+        await hosted_mcp.send_message("hi", uuid.uuid4(), **targets)
+    assert error.value.error.code == "INVALID_REQUEST"
+
+
+@pytest.mark.asyncio
+async def test_person_send_posts_into_the_dm_it_finds_or_opens(monkeypatch):
+    auth, pin = _hosted_sender(monkeypatch)
+    room_id, request_id = str(uuid.uuid4()), uuid.uuid4()
+    person_dm = AsyncMock(return_value=room_id)
+    monkeypatch.setattr(hosted_mcp.native_session_tools, "person_dm", person_dm)
+    monkeypatch.setattr(hosted_mcp.messaging, "get_room", AsyncMock(return_value=SimpleNamespace(members=[])))
+    monkeypatch.setattr(hosted_mcp.messaging, "human_display_name", AsyncMock(return_value="Ann"))
+    post = AsyncMock(return_value=SimpleNamespace(room_id=uuid.UUID(room_id), message_id=uuid.uuid4(), message_seq=1))
+    monkeypatch.setattr(hosted_mcp.messaging, "create_human_message", post)
+    result = await hosted_mcp.send_message("hi", request_id, person_id="user_b")
+    person_dm.assert_awaited_once_with(auth, "user_b", create=True)
+    pin.assert_awaited_once_with(auth, request_id, f"room:{room_id}")
+    assert post.await_args.args[1] == room_id and result["roomId"] == room_id
+
+
+@pytest.mark.asyncio
+async def test_session_send_is_a_follow_up_under_the_persons_control_authority(monkeypatch):
+    auth, pin = _hosted_sender(monkeypatch)
+    sid, request_id = str(uuid.uuid4()), uuid.uuid4()
+    target = {"sessionId": sid, "ownerId": "org_test", "generation": "g1"}
+    authorize = AsyncMock(return_value=(target, {}))
+    monkeypatch.setattr(hosted_mcp.local_sessions, "authorize_session", authorize)
+    send = AsyncMock(return_value={"state": "pending"})
+    monkeypatch.setattr(hosted_mcp.native_session_tools, "session_send", send)
+    post = AsyncMock()
+    monkeypatch.setattr(hosted_mcp.messaging, "create_human_message", post)
+
+    result = await hosted_mcp.send_message("run the tests", request_id, session_id=sid)
+
+    assert result == {"sessionId": sid, "requestId": str(request_id), "state": "pending"}
+    authorize.assert_awaited_once_with(auth, None, sid, owner_only=True)
+    pin.assert_awaited_once_with(auth, request_id, f"session:{sid}")
+    send.assert_awaited_once_with(auth, target, "run the tests", str(request_id), via_client="Claude Code")
+    post.assert_not_awaited()  # nothing is posted to a room
+    with pytest.raises(hosted_mcp.messaging.ApiProblem):
+        await hosted_mcp.send_message("x", uuid.uuid4(), session_id=sid, mention_ids=["a"])
+
+
+@pytest.mark.asyncio
+async def test_receipt_reads_the_pinned_destination(monkeypatch):
+    auth = AuthContext(user_id="user_sender", org_id="org_test")
+    monkeypatch.setattr(hosted_mcp, "_caller", lambda *_scope: auth)
+    sid, room_id, request_id = str(uuid.uuid4()), str(uuid.uuid4()), uuid.uuid4()
+    pins = {}
+    monkeypatch.setattr(hosted_mcp.messaging_repo, "_get", AsyncMock(side_effect=lambda pk, sk: pins.get((pk, sk))))
+    key = hosted_mcp._sent_key(auth, request_id)
+    assert (await hosted_mcp.message_receipt(request_id)) == {"state": "unknown"}
+
+    pins[key] = {"destination": f"session:{sid}"}
+    get_command = AsyncMock(return_value=SimpleNamespace(state="applied"))
+    monkeypatch.setattr(hosted_mcp.local_sessions, "get_command", get_command)
+    assert (await hosted_mcp.message_receipt(request_id))["state"] == "applied"
+    get_command.assert_awaited_once_with(auth, None, sid, str(request_id))
+    get_command.side_effect = hosted_mcp.messaging.ApiProblem("LOCAL_SESSION_NOT_FOUND", "gone")
+    assert (await hosted_mcp.message_receipt(request_id))["state"] == "unknown"
+
+    pins[key] = {"destination": f"room:{room_id}"}
+    room_receipt = AsyncMock(return_value={"state": "posted"})
+    monkeypatch.setattr(hosted_mcp, "receipt_for", room_receipt)
+    assert (await hosted_mcp.message_receipt(request_id)) == {"state": "posted"}
+    room_receipt.assert_awaited_once_with(auth, room_id, request_id)
+
+
+@pytest.mark.asyncio
+async def test_a_request_id_cannot_be_reused_for_another_destination(monkeypatch):
+    from botocore.exceptions import ClientError
+
+    auth, request_id = AuthContext(user_id="user_sender", org_id="org_test"), uuid.uuid4()
+    taken = ClientError({"Error": {"Code": "ConditionalCheckFailedException"}}, "PutItem")
+    monkeypatch.setattr(hosted_mcp, "run_in_thread", AsyncMock(side_effect=taken))
+    monkeypatch.setattr(hosted_mcp.messaging_repo, "_table", lambda: SimpleNamespace(put_item=None))
+    monkeypatch.setattr(hosted_mcp.messaging_repo, "_get", AsyncMock(return_value={"destination": "room:a"}))
+    await hosted_mcp._pin_destination(auth, request_id, "room:a")  # a retry to the same place is fine
+    with pytest.raises(hosted_mcp.messaging.ApiProblem) as error:
+        await hosted_mcp._pin_destination(auth, request_id, "session:b")
+    assert error.value.error.code == "IDEMPOTENCY_CONFLICT"

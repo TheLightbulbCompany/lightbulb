@@ -93,6 +93,7 @@ async def test_session_targets_exclude_offline_and_unsendable_sessions(monkeypat
             human_user_id="user_owner",
             team_control=False,
             allowed_senders=[],
+            control_unavailable_reason=None,
         )
 
     offline, unsendable, reachable = session("offline", "queue"), session("idle", "none"), session("idle", "queue")
@@ -539,3 +540,41 @@ async def test_the_mac_answers_each_request_by_its_own_id(monkeypatch, request_i
     assert door.await_args.args[1:] == (str(_SID), "user_z", "allow")
     assert door.await_args.kwargs == {"request_id": request_id}
     assert not doors["pickup" if routed == "join" else "join"].await_count
+
+
+@pytest.mark.asyncio
+async def test_person_dm_opens_one_deterministic_dm_only_when_asked(monkeypatch):
+    auth = tools.AuthContext(user_id="user_owner", org_id="org_a")
+    monkeypatch.setattr(tools.messaging, "list_rooms", AsyncMock(return_value=SimpleNamespace(rooms=[])))
+    room_id = uuid.uuid4()
+    create = AsyncMock(return_value=SimpleNamespace(room_id=room_id))
+    monkeypatch.setattr(tools.messaging, "create_room", create)
+    with pytest.raises(ApiProblem) as error:
+        await tools.person_dm(auth, "user_b")
+    assert error.value.error.code == "ROOM_NOT_FOUND"
+    assert await tools.person_dm(auth, "user_b", create=True) == str(room_id)
+    await tools.person_dm(auth, "user_b", create=True)
+    first, second = (call.args[1] for call in create.await_args_list)
+    assert first.kind == "dm" and [(m.kind, m.id) for m in first.members] == [("human", "user_b")]
+    assert first.client_room_id == second.client_room_id  # a retry cannot open a second DM
+    with pytest.raises(ApiProblem):
+        await tools.person_dm(auth, "user_owner", create=True)
+
+
+@pytest.mark.asyncio
+async def test_session_send_admits_then_dispatches_and_survives_a_dispatch_failure(monkeypatch):
+    from core.services import local_session_relay
+
+    sid = str(uuid.uuid4())
+    target = {"sessionId": sid, "ownerId": "org_a", "generation": "g7"}
+    submit = AsyncMock(return_value=SimpleNamespace(state="pending"))
+    monkeypatch.setattr(tools.local_sessions, "submit_command", submit)
+    relay = SimpleNamespace(dispatch_session=AsyncMock(side_effect=RuntimeError("socket gone")))
+    monkeypatch.setattr(local_session_relay, "get_local_session_relay", lambda: relay)
+    auth = tools.AuthContext(user_id="user_owner", org_id="org_a")
+    result = await tools.session_send(auth, target, "hi", "req-1", via_client="Claude Code")
+    assert result == {"state": "pending", "destination": f"session:{sid}", "targetRequestId": "req-1"}
+    command = submit.await_args.args[3]
+    assert (command.kind, command.text, command.expected_generation) == ("send", "hi", "g7")
+    assert submit.await_args.kwargs == {"via_client": "Claude Code"}
+    relay.dispatch_session.assert_awaited_once_with("org_a", sid)

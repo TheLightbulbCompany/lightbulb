@@ -10,6 +10,7 @@ import uuid
 from urllib.parse import urlsplit
 
 import httpx
+from botocore.exceptions import ClientError
 from mcp.server import MCPServer
 from mcp.server.auth.middleware.auth_context import get_access_token
 from mcp.server.auth.provider import AccessToken, TokenVerifier
@@ -19,8 +20,9 @@ from pydantic import AnyHttpUrl
 
 from core.auth import AuthContext
 from core.config import settings
+from core.dynamodb import run_in_thread
 from core.repositories import messaging_repo
-from core.services import clerk_admin, local_sessions, messaging
+from core.services import clerk_admin, local_sessions, messaging, native_session_tools
 
 logger = logging.getLogger(__name__)
 
@@ -194,17 +196,7 @@ async def sessions_for(auth: AuthContext, query: str = "", limit: int = 30) -> d
                 "ownerName": owner_names[session.human_user_id],
                 "status": session.status,
                 "sendMode": session.capabilities.send_mode,
-                "canSend": (
-                    session.capabilities_verified
-                    and session.control_unavailable_reason is None
-                    and session.capabilities.send_mode != "none"
-                    and session.status not in {"ended", "offline"}
-                    and (
-                        auth.user_id == session.human_user_id
-                        or session.team_control
-                        or auth.user_id in session.allowed_senders
-                    )
-                ),
+                "canSend": native_session_tools.sendable(session, auth.user_id),
             }
             for session in matches[: max(1, min(limit, 50))]
         ],
@@ -268,18 +260,53 @@ def client_identity(client_id: str) -> tuple[str, str]:
     return host, host
 
 
+def _sent_key(auth: AuthContext, request_id: uuid.UUID) -> tuple[str, str]:
+    return f"MCPSEND#{auth.org_id}#{auth.user_id}", f"SEND#{request_id}"
+
+
+async def _pin_destination(auth: AuthContext, request_id: uuid.UUID, destination: str) -> None:
+    """Remember where a request_id went, so message_receipt needs only the id and a reuse elsewhere fails."""
+    pk, sk = _sent_key(auth, request_id)
+    item = {"pk": pk, "sk": sk, "destination": destination, "expiresAt": messaging_repo._expires_at()}
+    try:
+        await run_in_thread(messaging_repo._table().put_item, Item=item, ConditionExpression="attribute_not_exists(sk)")
+    except ClientError as exc:
+        if exc.response.get("Error", {}).get("Code") != "ConditionalCheckFailedException":
+            raise
+        prior = await messaging_repo._get(pk, sk)
+        if prior is None or prior.get("destination") != destination:
+            raise messaging.ApiProblem("IDEMPOTENCY_CONFLICT", "request_id was used for another destination.") from exc
+
+
 @mcp.tool()
 async def send_message(
-    room_id: str,
     text: str,
     request_id: uuid.UUID,
+    room_id: str | None = None,
+    person_id: str | None = None,
     session_id: str | None = None,
     reply_to_message_id: uuid.UUID | None = None,
     mention_ids: list[str] | None = None,
 ) -> dict:
-    """Send as this client on the signed-in person's behalf; optionally reply in a thread, address room members, or reference a session (session_id is a link: the session is not messaged)."""
+    """Send as this client on the signed-in person's behalf to exactly one of room_id, person_id (a member id; opens the DM if needed) or session_id (a follow-up into a shared session you may send to; see find_sessions canSend). Room and person sends may reply in a thread or address room members."""
     auth = _caller(WRITE_SCOPE)
     slug, client = client_identity(get_access_token().client_id)
+    if sum(target is not None for target in (room_id, person_id, session_id)) != 1:
+        raise messaging.ApiProblem("INVALID_REQUEST", "Send to exactly one of room_id, person_id or session_id.")
+    if session_id is not None:
+        if reply_to_message_id or mention_ids:
+            raise messaging.ApiProblem("INVALID_REQUEST", "A session follow-up takes no thread or mentions.")
+        session_id = messaging.validate_uuid(session_id, label="session ID")
+        await _pin_destination(auth, request_id, f"session:{session_id}")
+        target, _ = await local_sessions.authorize_session(auth, None, session_id, owner_only=True)
+        # The person's own authority (actorUserId) admits and dispatches it, exactly like their
+        # follow-up from the session page; the label tells the session a client wrote it.
+        result = await native_session_tools.session_send(auth, target, text, str(request_id), via_client=client)
+        return {"sessionId": session_id, "requestId": str(request_id), "state": result["state"]}
+    if person_id is not None:
+        room_id = await native_session_tools.person_dm(auth, person_id, create=True)
+    room_id = messaging.validate_uuid(room_id, label="room ID")
+    await _pin_destination(auth, request_id, f"room:{room_id}")
     room = await messaging.get_room(auth, room_id)
     members = {member.id: member for member in room.members}
     selected = list(dict.fromkeys(mention_ids or []))
@@ -299,7 +326,7 @@ async def send_message(
             client_message_id=request_id,
             text=text,
             mentions=[{"kind": members[member_id].kind, "id": member_id} for member_id in selected],
-            session_mentions=[session_id] if session_id else [],
+            session_mentions=[],
             reply_to_message_id=uuid.UUID(reply_id) if reply_id else None,
             thread_root_message_id=uuid.UUID(thread_root_id) if thread_root_id else None,
         ),
@@ -319,9 +346,22 @@ async def send_message(
 
 
 @mcp.tool()
-async def message_receipt(room_id: str, request_id: uuid.UUID) -> dict:
+async def message_receipt(request_id: uuid.UUID) -> dict:
     """Reconcile a send by its request ID, including when the send response was lost."""
-    return await receipt_for(_caller(), room_id, request_id)
+    auth = _caller()
+    pinned = await messaging_repo._get(*_sent_key(auth, request_id))
+    if pinned is None:
+        return {"state": "unknown"}
+    kind, target = pinned["destination"].split(":", 1)
+    if kind == "room":
+        return await receipt_for(auth, target, request_id)
+    try:
+        command = await local_sessions.get_command(auth, None, target, str(request_id))
+    except messaging.ApiProblem as exc:
+        if exc.error.code != "LOCAL_SESSION_NOT_FOUND":
+            raise
+        return {"sessionId": target, "requestId": str(request_id), "state": "unknown"}
+    return {"sessionId": target, "requestId": str(request_id), "state": command.state}
 
 
 # API Gateway rewrites Host to the private ALB DNS name. The public OAuth URL is

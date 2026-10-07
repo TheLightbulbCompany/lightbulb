@@ -253,6 +253,11 @@ async def _actor_label(command: dict) -> dict | None:
     if (command.get("actor") or {}).get("kind") == "session":
         return {"kind": "session", "displayName": "Shared native session"}
     kind, member_id = ("agent", command["actor"]["id"]) if "actor" in command else ("human", command["actorUserId"])
+    if command.get("viaClient"):
+        from core.services.messaging import human_display_name
+
+        name = await human_display_name(member_id)
+        return {"kind": "human", "handle": None, "displayName": f"{command['viaClient']} via {name}"}
     member = None
     if room_id := command.get("roomId"):
         room_members = await store.list_members(room_id)

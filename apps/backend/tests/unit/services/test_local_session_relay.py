@@ -2388,3 +2388,12 @@ async def test_a_heartbeat_reports_the_time_of_each_of_its_steps(transport):
     finally:
         module.frame_steps.reset(token)
     assert set(steps) == {"connect", "screens", "renew", "resume", "pickup", "watching", "presence"}
+
+
+@pytest.mark.asyncio
+async def test_a_hosted_client_follow_up_is_labelled_with_its_client_and_person(monkeypatch):
+    from core.services import local_session_relay as relay_module, messaging
+
+    monkeypatch.setattr(messaging, "human_display_name", AsyncMock(return_value="Ann"))
+    label = await relay_module._actor_label({"roomId": "", "actorUserId": "user_a", "viaClient": "Claude Code"})
+    assert label == {"kind": "human", "handle": None, "displayName": "Claude Code via Ann"}

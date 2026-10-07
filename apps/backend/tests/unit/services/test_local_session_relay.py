@@ -181,6 +181,38 @@ async def test_start_id_arrives_late_belongs_only_to_owner_and_one_generation(tr
 
 
 @pytest.mark.asyncio
+async def test_start_id_of_a_run_that_ended_offline_arrives_with_its_end(transport):
+    """The draining register of an ended run is unverified, so it may not carry a start identity.
+    Its end frame does; a live unverified register is still refused."""
+    start_id = "11111111-1111-4111-8111-111111111111"
+    drain = dict(status="idle", activeTurnId=None, controlUnavailableReason="runtime-unverified")
+    await service.set_enrollment(ALICE, service.EnrollmentRequest(deviceId=MAC, cliDeviceId=CLI, enabled=True))
+    connect(transport)
+    with pytest.raises(ApiProblem) as refused:
+        await relay(transport).handle_message("conn-1", registration(startId=start_id, **drain))
+    assert refused.value.error.code == "LOCAL_SESSION_CONFLICT"
+    sid = (await relay(transport).handle_message("conn-1", registration(**drain)))["sessionId"]
+    assert "startId" not in await repo.get_session(OWNER, sid)
+    ended = {**fixture("session-ended"), "sessionId": sid, "generation": "generation-1", "endedAt": 1}
+    await relay(transport).handle_message("conn-1", {**ended, "startId": start_id})
+    row = await repo.get_session(OWNER, sid)
+    assert row["status"] == "ended" and row["startId"] == start_id
+    assert service._session_public(row, ALICE.user_id).start_id == start_id
+    assert service._session_public(row, BOB.user_id).start_id is None
+
+
+@pytest.mark.asyncio
+async def test_an_end_never_replaces_the_start_id_its_run_registered(transport):
+    start_id = "11111111-1111-4111-8111-111111111111"
+    sid = await start(transport)
+    await relay(transport).handle_message("conn-1", registration(startId=start_id))
+    ended = {**fixture("session-ended"), "sessionId": sid, "generation": "generation-1", "endedAt": 1}
+    await relay(transport).handle_message("conn-1", {**ended, "startId": "22222222-2222-4222-8222-222222222222"})
+    row = await repo.get_session(OWNER, sid)
+    assert row["status"] == "ended" and row["startId"] == start_id
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("change", ["none", "member", "expiry"])
 async def test_agent_dispatch_uses_typed_author_and_fences_revocation_or_expiry(transport, db, monkeypatch, change):
     from core.services import local_session_grants as grants

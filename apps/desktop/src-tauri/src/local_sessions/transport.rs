@@ -826,6 +826,7 @@ impl Host {
     fn ended_frame(
         &mut self,
         recovering_ended: &mut BTreeSet<String>,
+        relay_reads_ended_start: bool,
     ) -> Result<Option<(Rpc, Value)>> {
         let Self {
             dir,
@@ -875,6 +876,13 @@ impl Host {
                 "generation":mirror.generation,
                 "reason":mirror.ended_reason.as_deref().unwrap_or("exited"),
                 "endedAt":ended_at});
+            // The draining register of an ended mirror carries no start identity. A relay that
+            // has never heard this generation's (the whole run was offline) learns it here.
+            if let Some(start_id) = start_links::linked(dir, &mirror.native, &mirror.generation)
+                .filter(|_| relay_reads_ended_start)
+            {
+                frame["startId"] = json!(start_id);
+            }
             super::session_states::add_screen(&mut frame, mirrors, &key);
             ended_pending.remove(index);
             return Ok(Some((reported, frame)));
@@ -1290,6 +1298,7 @@ impl Host {
         let mut relay_reads_presence = false;
         let mut relay_reads_pickups = false;
         let mut relay_reads_band_owner_only = false;
+        let mut relay_reads_ended_start = false;
         // An end the relay has not been told about -- because it happened while the
         // socket was down, or in a previous run of this process -- is still owed to it.
         self.liveness_tick();
@@ -1397,7 +1406,7 @@ impl Host {
                             heartbeat_frames.push_back(idle_heartbeat());
                         }
                     }
-                    if let Some((reported, frame)) = self.ended_frame(&mut recovering_ended)? {
+                    if let Some((reported, frame)) = self.ended_frame(&mut recovering_ended, relay_reads_ended_start)? {
                         send(socket, &frame).await?;
                         pending_rpc = Some(reported);
                     } else if let Some(frame) = heartbeat_frames.pop_front() {
@@ -1549,6 +1558,7 @@ impl Host {
                             relay_reads_presence = body["features"].as_array().is_some_and(|f| f.iter().any(|x| x == "sessionPresence"));
                             relay_reads_pickups = body["features"].as_array().is_some_and(|f| f.iter().any(|x| x == "pickupRequests"));
                             relay_reads_band_owner_only = body["features"].as_array().is_some_and(|f| f.iter().any(|x| x == "bandOwnerOnly"));
+                            relay_reads_ended_start = body["features"].as_array().is_some_and(|f| f.iter().any(|x| x == "endedStartId"));
                             let sid = body["sessionId"].as_str().filter(|s|uuid::Uuid::parse_str(s).is_ok()).ok_or("invalid session ID")?;
                             let after = body["afterSeq"].as_u64().ok_or("missing upload cursor")?;
                             let server = body["serverTime"].as_u64().ok_or("missing server time")?;
@@ -6023,6 +6033,81 @@ pub(super) mod tests {
             assert_eq!(registration["session"]["controlUnavailableReason"], "runtime-unverified");
             reply(&mut socket, json!({"type":"local.session.registered","sessionId":SID,
                 "generation":registration["session"]["generation"],"afterSeq":0,"serverTime":1000,
+                "features":["endedStartId"],"reconcile":null})).await;
+
+            let events = next_frame(&mut socket).await;
+            assert_eq!(events["type"], "local.session.events");
+            assert_eq!(events["events"][0]["text"], "short-lived public output");
+            reply(&mut socket, json!({"type":"local.session.events.ack","sessionId":SID,
+                "batchId":events["batchId"],"afterSeq":1})).await;
+
+            let ended = next_frame(&mut socket).await;
+            assert_eq!(ended["type"], "local.session.ended");
+            // The whole run may have been offline: the end names the start it was bound to.
+            assert_eq!(ended["startId"], "11111111-1111-4111-8111-111111111111");
+            reply(&mut socket, json!({"type":"local.session.ended.ack","sessionId":SID})).await;
+            socket.close(None).await.unwrap();
+        });
+        let (_tx, mut rx) = tokio::sync::mpsc::channel(1);
+        let (mut socket, _) = tokio_tungstenite::connect_async(format!("ws://{address}"))
+            .await
+            .unwrap();
+        let _ = tokio::time::timeout(
+            Duration::from_secs(5),
+            host.connection(&mut socket, &mut rx, "alice"),
+        )
+        .await;
+        server.await.unwrap();
+        let stored: Mirror = private_read(&dir.path().join(format!("{key}.json"))).unwrap();
+        assert_eq!(stored.after_seq, 1);
+        assert!(stored.pending.is_none() && stored.queue.is_empty() && stored.ended_sent);
+        assert!(fs::metadata(transcript).is_ok());
+    }
+
+    #[tokio::test]
+    async fn local_sessions_an_older_relay_gets_no_start_identity_on_an_end() {
+        let dir = tempfile::tempdir().unwrap();
+        let native = observed_fixture(dir.path());
+        let key = native_key(&native);
+        let transcript = native.transcript.clone().unwrap();
+        let mut rows = (0..33)
+            .map(|_| format!("{}\n", json!({"type":"progress"})))
+            .collect::<String>();
+        rows.push_str(&fs::read_to_string(&transcript).unwrap());
+        fs::write(&transcript, rows).unwrap();
+        let mut mirror = test_mirror("s", "gen-1");
+        mirror.native = native;
+        mirror.native.status = "ended".into();
+        mirror.registration.acknowledged = Some("gen-1".into());
+        mirror.ended_at = Some(epoch_secs());
+        mirror.ended_reason = Some("exited".into());
+        // Started from the web or a phone: the relay refuses a start identity on an
+        // unverified register, and a refused drain is an end that is never reported.
+        private_write(
+            &dir.path().join(format!("start-{}.json",
+                fingerprint(&json!([mirror.native.provider, mirror.native.conversation]).to_string()))),
+            &json!({"startId":"11111111-1111-4111-8111-111111111111","provider":mirror.native.provider,
+                "conversation":mirror.native.conversation,"launcher":process(std::process::id()).unwrap(),
+                "boundGeneration":"gen-1"}),
+        )
+        .unwrap();
+        assert!(start_links::linked(dir.path(), &mirror.native, &mirror.generation).is_some());
+        let mut host = test_host(dir.path(), vec![(key.as_str(), mirror)]);
+        host.heartbeat_interval = Duration::from_secs(60);
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (tcp, _) = listener.accept().await.unwrap();
+            let mut socket = tokio_tungstenite::accept_async(tcp).await.unwrap();
+            let registration = next_frame(&mut socket).await;
+            assert_eq!(registration["type"], "local.session.register");
+            assert!(registration["session"].get("startId").is_none());
+            assert_eq!(registration["session"]["status"], "idle");
+            assert_eq!(registration["session"]["activeTurnId"], Value::Null);
+            assert_eq!(registration["session"]["controlUnavailableReason"], "runtime-unverified");
+            reply(&mut socket, json!({"type":"local.session.registered","sessionId":SID,
+                "generation":registration["session"]["generation"],"afterSeq":0,"serverTime":1000,
                 "features":[],"reconcile":null})).await;
 
             let events = next_frame(&mut socket).await;
@@ -6033,6 +6118,7 @@ pub(super) mod tests {
 
             let ended = next_frame(&mut socket).await;
             assert_eq!(ended["type"], "local.session.ended");
+            assert!(ended.get("startId").is_none(), "an older relay refuses the unknown field");
             reply(&mut socket, json!({"type":"local.session.ended.ack","sessionId":SID})).await;
             socket.close(None).await.unwrap();
         });

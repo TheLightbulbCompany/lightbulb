@@ -124,7 +124,10 @@ class _TrimmedGPTLiveModel(GPTLiveModel):
 
 
 FALLBACK_VOICE = "marin"
-NOTES_N = 14  # the newest notes a written line is made from
+# The newest notes a written line is made from: what was just asked and how to acknowledge it. Older notes are
+# the worker's own bookkeeping (who else is working on what), and a line made from them read it out ("Vera's
+# checking...", "Who's working on what: Atlas is handling...", 10-07 rig).
+NOTES_N = 2
 WRITE_TIMEOUT_S = 3.0
 # The Realtime model's voices. An agent's voice is picked for GPT-Live, which has more ("stone": 10-07 rig, a
 # refused session and a second open). One it lacks maps to one it has, the same one every time for that name,

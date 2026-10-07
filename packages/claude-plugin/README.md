@@ -37,4 +37,4 @@ Do not add this marketplace on a Mac that runs the Lightbulb desktop app. The ap
 
 ## Source
 
-This repository is a copy. The source is `packages/claude-plugin/` in the private Lightbulb monorepo, and CI syncs it here on every change.
+This repository is a copy. The source is `packages/claude-plugin/` in the private Lightbulb monorepo, and CI copies it here after each production release of Lightbulb.

@@ -131,6 +131,19 @@ roots so the harness knows what a teammate contribution is. Sessions whose
 process has exited read **Ended** and are hidden until a member presses Show
 recent; they cannot receive follow-ups.
 
+**Claude Code or Codex without the Mac app** (Linux, Windows, or a Mac with no
+Lightbulb app): the person installs the `lightbulb` plugin from the public
+marketplace `TheLightbulbCompany/lightbulb-plugin`. It gives the hosted
+`lightbulb` MCP server and the `lightbulb-session-sharing` skill. It does not
+share sessions; only the Mac app does that. Claude Code:
+`claude plugin marketplace add TheLightbulbCompany/lightbulb-plugin`, then
+`claude plugin install lightbulb@lightbulb`. Codex:
+`codex plugin marketplace add TheLightbulbCompany/lightbulb-plugin`, then
+`codex plugin add lightbulb@lightbulb` and `codex mcp login lightbulb`. On first
+use they sign in to Lightbulb and choose the workspace. On a Mac that runs the
+Lightbulb app, tell them not to add this marketplace: the app installs its own
+copy under the same name `lightbulb`.
+
 When a participant's session is live, every room message you receive carries a
 `sessions` list inside the **Lightbulb room** structured context: `sessionId`,
 who owns it (`humanUserId`, `displayName`), `provider`, `cwdName`, `title`,

@@ -12,13 +12,19 @@
 # The key and known_hosts live in $RUNNER_TEMP, not ~/.ssh, so a self-hosted runner keeps
 # neither the key nor a changed ~/.ssh after the job. GitHub's host key is pinned (the
 # ed25519 key from docs.github.com "GitHub's SSH key fingerprints"), not fetched by ssh-keyscan.
+#
+# When: after a successful prod promotion (a `deploy` run started by workflow_dispatch), from
+# the commit that run deployed. The plugin's skill describes the hosted MCP contract, so it must
+# not reach users before the backend that serves that contract is in prod; a merge to main is
+# not a deploy. A promotion that changed nothing in packages/claude-plugin/ pushes nothing. A
+# manual dispatch of this workflow syncs main's head: use it only for a change that needs no
+# backend.
 name: sync-claude-plugin
 'on':
-  push:
-    branches: [main]
-    paths:
-      - packages/claude-plugin/**
-      - .github/workflows/sync-claude-plugin.yml
+  workflow_run:
+    workflows: [deploy]
+    types: [completed]
+  workflow_dispatch: {}
 permissions:
   contents: read
 concurrency:
@@ -26,13 +32,19 @@ concurrency:
   cancel-in-progress: false
 jobs:
   sync:
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'workflow_dispatch')
     runs-on: ${{ vars.CI_RUNNER }}
     timeout-minutes: 10
     steps:
       - name: Checkout
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
       - name: Push packages/claude-plugin to lightbulb-plugin
         env:
+          SOURCE_SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
           PLUGIN_SYNC_DEPLOY_KEY: ${{ secrets.PLUGIN_SYNC_DEPLOY_KEY }}
         run: |
           set -euo pipefail
@@ -67,5 +79,5 @@ jobs:
           stamp "0.1.${GITHUB_RUN_NUMBER}"
           git add -A
           git -c user.name=lightbulb-bot -c user.email=lightbulb-bot@users.noreply.github.com \
-            commit --quiet -m "sync: lightbulb@${GITHUB_SHA::7}"
+            commit --quiet -m "sync: lightbulb@${SOURCE_SHA::7}"
           git push --quiet origin HEAD:main

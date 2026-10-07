@@ -110,6 +110,9 @@ MAINTENANCE (Lightbulb engineers): every claim in this skill is anchored to
                                  (MESSAGES are the agent's verbatim errors);
                                  apps/desktop/src-tauri/src/agent_chrome.rs;
                                  apps/frontend/src/components/desktop/LocalBrowserSetup.tsx.
+  - Plugin without the app .. references/surfaces.md ("Claude Code or Codex without the Mac app")
+                              <- packages/claude-plugin/README.md (install commands, Mac caveat);
+                                 .github/workflows/sync-claude-plugin.yml (public repo TheLightbulbCompany/lightbulb-plugin).
   - Paired Mac execution .... references/platform-primitives.md
                               <- apps/infra/hermes/plugins/lightbulb/desktop.py; bridge/turn.py;
                                  apps/backend/routers/desktop_execution.py;

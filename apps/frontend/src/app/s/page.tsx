@@ -3,16 +3,14 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { useRouter } from "next/navigation";
 import { SignInButton, SignUpButton, useAuth } from "@clerk/nextjs";
-import { createMessagingClient, type LocalSessionEvent, type SessionLinkCode, type SessionLinkPage } from "@lightbulb/shared";
+import { createMessagingClient, type SessionLinkCode, type SessionLinkPage } from "@lightbulb/shared";
 import { ApiError, BACKEND_URL, useApi } from "@/lib/api";
 import { Button } from "@/components/ui/button";
-import { NativeSessionTranscript } from "@/components/messaging/NativeSessionTranscript";
 import { copyText, sessionPermalink } from "@/components/messaging/messageLinks";
 
 // The link's credential lives in the fragment, kept in this tab across sign-up (Clerk's modal
 // on this page) and onboarding, never in a URL a server sees (spec §3.7).
 const KEY = "lightbulb:session-link";
-const MAX_PAGES = 40;
 const POLL_MS = 5000;
 type Stash = { token: string; port?: number; challenge?: string };
 
@@ -63,7 +61,6 @@ export default function SessionLinkPageRoute() {
   const raw = useSyncExternalStore(onHash, readStash, () => null);
   const stash = useMemo<Stash | null>(() => { try { return raw ? JSON.parse(raw) as Stash : null; } catch { return null; } }, [raw]);
   const [page, setPage] = useState<SessionLinkPage | null>(null);
-  const [events, setEvents] = useState<LocalSessionEvent[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [continueError, setContinueError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -83,20 +80,9 @@ export default function SessionLinkPageRoute() {
   useEffect(() => {
     if (!stash || !isLoaded) return;
     let alive = true;
-    let after = 0;
     // A fresh Clerk token on each poll: they live about a minute, and the poll runs for as long as
     // the session is live.
     const bearerNow = async () => (isSignedIn ? await tokenOf.current() : null);
-    const pull = async () => {
-      const bearer = await bearerNow();
-      for (let n = 0; n < MAX_PAGES; n += 1) {
-        const next: { events: LocalSessionEvent[]; nextAfterSeq: number | null } = await publicPost("/public/session-links/events", { token: stash.token, afterSeq: after, limit: 100 }, bearer);
-        if (!alive) return;
-        setEvents(list => [...list, ...next.events]);
-        after = next.nextAfterSeq ?? (next.events.at(-1)?.seq ?? after);
-        if (next.nextAfterSeq === null) break;
-      }
-    };
     let timer: ReturnType<typeof setInterval> | undefined;
     (async () => {
       try {
@@ -104,10 +90,7 @@ export default function SessionLinkPageRoute() {
         if (!alive) return;
         setError(null); // a sign-in reopens a link that was refused while signed out
         setPage(opened);
-        setEvents([]); // a sign-in reopens the page: start the transcript again rather than append to it
-        await pull();
-        // Phase 1 has no public live view: a live session's page follows the transcript (spec §2.2).
-        // Each tick re-opens the link, so the header follows the session (live, ended, offline) and
+        // The page shows facts only, never a transcript. Each tick re-opens the link, so the header follows the session (live, ended, offline) and
         // a turned-off link shows its refusal; the poll stops once the session is not live or the
         // link is refused. A network blip (not a refusal) just tries again next tick.
         if (opened.state === "live") timer = setInterval(() => {
@@ -116,7 +99,6 @@ export default function SessionLinkPageRoute() {
               const next = await publicPost<SessionLinkPage>("/public/session-links/open", { token: stash.token, refresh: true }, await bearerNow());
               if (!alive) return;
               setPage(next);
-              await pull().catch(() => {});
               if (next.state !== "live" && timer) clearInterval(timer);
             } catch (e) {
               if (!alive || !(e as { refused?: boolean }).refused) return;
@@ -182,6 +164,10 @@ export default function SessionLinkPageRoute() {
             <Button type="button" variant="outline" size="sm" onClick={() => void copyText(command)}>Copy command</Button>
           </>}
     </section>}
-    <NativeSessionTranscript provider={page.provider} events={events} busy={false} ownerName={page.ownerFirstName} participants={[]} />
+    <section aria-label="Session state" className="session-state-panel">
+      {page.state === "ended" ? <><p className="font-semibold">Ended</p><p>The screen is gone: this session&apos;s terminal closed.</p></>
+        : page.state === "offline" ? <p className="font-semibold">{page.ownerFirstName}&apos;s Mac is offline</p>
+        : <p>This session is live in Lightbulb. Open it there to watch its terminal.</p>}
+    </section>
   </main>;
 }

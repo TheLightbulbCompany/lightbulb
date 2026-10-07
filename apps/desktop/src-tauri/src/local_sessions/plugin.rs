@@ -67,14 +67,18 @@ fn ours(list: &[u8], root: &Path) -> bool {
     })
 }
 
-/// Whether `claude plugin marketplace list --json` holds a marketplace named `lightbulb` that is
-/// not the app's folder: the public marketplace, added before the app. It holds the name, so the
-/// app's `marketplace add` cannot register its folder and the public copy (no socket file, a
-/// blank band) stays in use. Turning sharing on replaces it; the app serves everything it gave
-/// (the MCP server, the skill). Only a positive match counts.
-fn foreign_marketplace(list: &[u8], root: &Path) -> bool {
+/// Whether `claude plugin marketplace list --json` holds the public marketplace
+/// (TheLightbulbCompany/lightbulb-plugin, as a `github` `repo` or a git `url`) under the name
+/// `lightbulb`, added before the app. It holds the name, so the app's `marketplace add` cannot
+/// register its folder and the public copy (no socket file, a blank band) stays in use. Turning
+/// sharing on replaces it; the app serves everything it gave (the MCP server, the skill). Any
+/// other `lightbulb` marketplace is not the app's to remove and is left alone.
+fn public_marketplace(list: &[u8]) -> bool {
+    let public = |v: &serde_json::Value| {
+        v.as_str().is_some_and(|s| s.to_ascii_lowercase().contains("thelightbulbcompany/lightbulb-plugin"))
+    };
     serde_json::from_slice::<Vec<serde_json::Value>>(list).is_ok_and(|list| {
-        list.iter().any(|m| m["name"] == "lightbulb" && m["path"].as_str().is_none_or(|p| Path::new(p) != root))
+        list.iter().any(|m| m["name"] == "lightbulb" && (public(&m["repo"]) || public(&m["url"])))
     })
 }
 
@@ -87,7 +91,7 @@ fn run_all(home: PathBuf, root: &Path, cmds: Vec<Vec<String>>) {
     };
     for args in cmds {
         if args[1] == "marketplace"
-            && run(&["plugin", "marketplace", "list", "--json"]).is_ok_and(|o| o.status.success() && foreign_marketplace(&o.stdout, root))
+            && run(&["plugin", "marketplace", "list", "--json"]).is_ok_and(|o| o.status.success() && public_marketplace(&o.stdout))
         {
             transport::relay_log("lightbulb plugin: replacing the public lightbulb marketplace with the app's copy");
             let _ = run(&["plugin", "marketplace", "remove", "lightbulb"]);
@@ -184,13 +188,14 @@ mod tests {
     }
 
     #[test]
-    fn plugin_on_replaces_only_a_foreign_lightbulb_marketplace() {
-        let root = Path::new("/state/claude-mods");
-        assert!(!foreign_marketplace(br#"[{"name":"lightbulb","source":"directory","path":"/state/claude-mods"}]"#, root));
-        assert!(foreign_marketplace(br#"[{"name":"lightbulb","source":"github","repo":"TheLightbulbCompany/lightbulb-plugin"}]"#, root));
-        assert!(foreign_marketplace(br#"[{"name":"lightbulb","source":"directory","path":"/elsewhere"}]"#, root));
-        assert!(!foreign_marketplace(br#"[{"name":"other","source":"github"}]"#, root));
-        assert!(!foreign_marketplace(b"not json", root));
+    fn plugin_on_replaces_only_the_public_lightbulb_marketplace() {
+        // Shapes as `claude plugin marketplace list --json` prints them (Claude Code 2.1.293).
+        assert!(!public_marketplace(br#"[{"name":"lightbulb","source":"directory","path":"/state/claude-mods"}]"#));
+        assert!(public_marketplace(br#"[{"name":"lightbulb","source":"github","repo":"TheLightbulbCompany/lightbulb-plugin"}]"#));
+        assert!(public_marketplace(br#"[{"name":"lightbulb","source":"git","url":"https://github.com/TheLightbulbCompany/lightbulb-plugin.git"}]"#));
+        assert!(!public_marketplace(br#"[{"name":"lightbulb","source":"directory","path":"/my/fork"}]"#));
+        assert!(!public_marketplace(br#"[{"name":"lightbulb","source":"github","repo":"someone/lightbulb"}]"#));
+        assert!(!public_marketplace(b"not json"));
     }
 
     #[test]

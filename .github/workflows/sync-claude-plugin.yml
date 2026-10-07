@@ -45,6 +45,7 @@ jobs:
       - name: Push packages/claude-plugin to lightbulb-plugin
         env:
           SOURCE_SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
+          GH_TOKEN: ${{ github.token }}
           PLUGIN_SYNC_DEPLOY_KEY: ${{ secrets.PLUGIN_SYNC_DEPLOY_KEY }}
         run: |
           set -euo pipefail
@@ -61,6 +62,16 @@ jobs:
           dest="$RUNNER_TEMP/lightbulb-plugin"
           rm -rf "$dest"
           git clone --quiet git@github.com:TheLightbulbCompany/lightbulb-plugin.git "$dest"
+          # A re-run keeps its original SHA. Publish only a source at or after the one published
+          # last (named in the last sync commit's `Source:` trailer), never an older tree.
+          prev=$(git -C "$dest" log -1 --format=%B 2>/dev/null | sed -n 's/^Source: //p')
+          if [ -n "$prev" ]; then
+            status=$(gh api "repos/$GITHUB_REPOSITORY/compare/$prev...$SOURCE_SHA" --jq .status)
+            if [ "$status" != ahead ] && [ "$status" != identical ]; then
+              echo "::notice::$SOURCE_SHA is $status relative to the published $prev; not publishing an older tree."
+              exit 0
+            fi
+          fi
           # The public copy carries a version; the monorepo's plugin.json has none. Codex (and
           # Claude Code, once a version is set) reinstall only when it changes, so each sync that
           # changes content gets a new one. Put the old version back first, so an unchanged
@@ -82,5 +93,5 @@ jobs:
           stamp "0.1.$(( ${last:-0} + 1 ))"
           git add -A
           git -c user.name=lightbulb-bot -c user.email=lightbulb-bot@users.noreply.github.com \
-            commit --quiet -m "sync: lightbulb@${SOURCE_SHA::7}"
+            commit --quiet -m "sync: lightbulb@${SOURCE_SHA::7}" -m "Source: $SOURCE_SHA"
           git push --quiet origin HEAD:main

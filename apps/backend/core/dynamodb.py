@@ -2,6 +2,8 @@
 
 import asyncio
 import functools
+import time
+from contextvars import ContextVar
 from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Any, Callable, TypeVar
@@ -40,8 +42,27 @@ def get_table(short_name: str):
 T = TypeVar("T")
 
 
+#: A caller that wants to know what its calls cost sets a list here; each call made under it
+#: appends (seconds waiting for a pool thread, seconds running). The pool is the process's
+#: default one (6 threads on 2 vCPU), so a long wait means something else filled it.
+call_stats: ContextVar[list[tuple[float, float]] | None] = ContextVar("dynamodb_call_stats", default=None)
+
+
 async def run_in_thread(func: Callable[..., T], *args: Any, **kwargs: Any) -> T:
-    return await asyncio.to_thread(functools.partial(func, **kwargs) if kwargs else func, *args)
+    call = functools.partial(func, **kwargs) if kwargs else func
+    stats = call_stats.get()
+    if stats is None:
+        return await asyncio.to_thread(call, *args)
+    queued = time.monotonic()
+
+    def timed() -> T:
+        started = time.monotonic()
+        try:
+            return call(*args)
+        finally:
+            stats.append((started - queued, time.monotonic() - started))
+
+    return await asyncio.to_thread(timed)
 
 
 def plain(value: Any) -> Any:

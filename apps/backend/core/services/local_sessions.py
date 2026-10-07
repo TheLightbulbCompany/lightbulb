@@ -7,6 +7,7 @@ connection; its identity arguments must come from that connection, never its pay
 from __future__ import annotations
 
 import asyncio
+import itertools
 import logging
 import time
 import uuid
@@ -1065,10 +1066,12 @@ async def _live_public_sessions(
     sessions: list[LocalSession] = []
     # One enrollment verdict per (human, device) per call: history piles up on one Mac.
     enrolled: dict[tuple[str, str], bool] = {}
+    # One batched read per 100 kept rows, not one GetItem each: 314 of those per listing queued
+    # on the thread pool every DynamoDB call shares and stalled the relay (prod 2026-10-07).
+    # ponytail: still every historical row; an owner-keyed live index if history grows large.
+    rows = iter(await repo.get_sessions(owner, [p["sessionId"] for human_rows in projections for p in human_rows]))
     for human, human_rows in zip(humans, projections):
-        # ponytail: one concurrent read per historical row; an owner-keyed live index if history grows large.
-        rows = await asyncio.gather(*(repo.get_session(owner, p["sessionId"]) for p in human_rows))
-        for row in rows:
+        for row in itertools.islice(rows, len(human_rows)):
             if row is None or row.get("ownerId") != owner or row.get("humanUserId") != human:
                 continue
             key = (human, row["deviceId"])

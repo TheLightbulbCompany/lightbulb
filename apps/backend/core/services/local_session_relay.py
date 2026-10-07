@@ -11,6 +11,8 @@ import json
 import logging
 import time
 import uuid
+from contextlib import contextmanager
+from contextvars import ContextVar
 from functools import lru_cache
 from typing import Annotated, Literal
 
@@ -36,6 +38,20 @@ DISPATCH_WINDOW_SECONDS = 30
 PAUSED_NOTICE = "Sharing was paused here. Activity from this point until sharing resumed is not shown."
 logger = logging.getLogger(__name__)
 _ANALYTICS_NS = uuid.uuid5(uuid.NAMESPACE_URL, "lightbulb:local-session-lifecycle")
+
+#: Seconds per named step of the frame being handled, for the router's slow-frame line.
+frame_steps: ContextVar[dict[str, float] | None] = ContextVar("local_session_frame_steps", default=None)
+
+
+@contextmanager
+def step(name: str):
+    started = time.monotonic()
+    try:
+        yield
+    finally:
+        steps = frame_steps.get()
+        if steps is not None:
+            steps[name] = steps.get(name, 0.0) + time.monotonic() - started
 
 
 #: The Lightbulb holder a session runs in (8 hex). Optional: every session on a paired Mac is
@@ -428,7 +444,7 @@ class LocalSessionRelay:
         self.connections, self.management = connections, management
 
     async def connect(self, connection_id: str) -> tuple[dict, dict]:
-        row = await asyncio.to_thread(self.connections.get_connection, connection_id)
+        row = await store.run_in_thread(self.connections.get_connection, connection_id)
         if (
             not row
             or row.get("connection_type") != "local-session"
@@ -483,7 +499,8 @@ class LocalSessionRelay:
         except ValidationError as exc:
             # Never return/log validation input: it can contain transcript or secrets.
             raise ApiProblem("INVALID_REQUEST", "Invalid local session envelope.") from exc
-        connection, enrollment = await self.connect(cid)
+        with step("connect"):
+            connection, enrollment = await self.connect(cid)
         owner, human, device = (
             connection.get("org_id") or connection["user_id"],
             connection["user_id"],
@@ -625,7 +642,8 @@ class LocalSessionRelay:
                         await store.ensure_user_stream(owner, human)
                     except Exception:
                         logger.warning("Local session register left without a user stream for %s", human)
-                    await self.dispatch_session(owner, sid)
+                    with step("dispatch"):
+                        await self.dispatch_session(owner, sid)
                     response = {
                         "type": "local.session.registered",
                         "sessionId": sid,
@@ -636,60 +654,62 @@ class LocalSessionRelay:
                         "local session registered",
                         extra={"sid": sid, "cid": cid, "cursor": row["eventSeq"], "resumed": previous is not None},
                     )
-                    response["reconcile"] = await self._reconcile_for(owner, sid, row["generation"])
+                    with step("reconcile"):
+                        response["reconcile"] = await self._reconcile_for(owner, sid, row["generation"])
                     response["serverTime"] = int(time.time())
                     response["features"] = FEATURES
-                    watch = await session_screen.watch_on_register(row)
+                    with step("watching"):
+                        watch = await session_screen.watch_on_register(row)
                     if watch:
                         response["watch"] = watch
                 elif isinstance(message, DeviceHeartbeat):
                     # Resume first, then pick-up: each trims its own list to what is left of the
                     # envelope. Watching last: an empty list read there stops every relay.
                     # First, so this frame's own ack already lists the screens it keeps.
-                    await session_screen.keep_screens(owner, human, device, cid, [str(s) for s in message.screens])
-                    response = await session_screen.ack_with_watching(
-                        await session_pickup.ack_with_pickup(
-                            await session_resume.ack_with_resume(
-                                await self._device_heartbeat(cid, connection, enrollment, message),
-                                owner,
-                                human,
-                                device,
-                            ),
-                            owner,
-                            human,
-                            device,
-                        ),
-                        owner,
-                        human,
-                        device,
-                    )
+                    with step("screens"):
+                        await session_screen.keep_screens(owner, human, device, cid, [str(s) for s in message.screens])
+                    with step("renew"):
+                        response = await self._device_heartbeat(cid, connection, enrollment, message)
+                    with step("resume"):
+                        response = await session_resume.ack_with_resume(response, owner, human, device)
+                    with step("pickup"):
+                        response = await session_pickup.ack_with_pickup(response, owner, human, device)
+                    with step("watching"):
+                        response = await session_screen.ack_with_watching(response, owner, human, device)
                     if message.session_presence:
-                        response = await session_presence.ack_with_presence(
-                            response, owner, [str(s.session_id) for s in message.sessions]
-                        )
+                        with step("presence"):
+                            response = await session_presence.ack_with_presence(
+                                response, owner, [str(s.session_id) for s in message.sessions]
+                            )
                     notify_resources = False
                 elif isinstance(message, Ended):
-                    response = await session_pickup.ack_with_pickup(
-                        await self._ended(cid, connection, enrollment, message), owner, human, device
-                    )
+                    with step("ended"):
+                        response = await self._ended(cid, connection, enrollment, message)
+                    with step("pickup"):
+                        response = await session_pickup.ack_with_pickup(response, owner, human, device)
                     notify_resources = False
                 else:
                     sid = str(message.session_id)
                     # A current connection may reconcile its journal from an older
                     # execution; events/heartbeats must match the current generation.
-                    row = await self._current(
-                        cid, connection, sid, None if isinstance(message, Receipt) else message.generation
-                    )
+                    with step("session"):
+                        row = await self._current(
+                            cid, connection, sid, None if isinstance(message, Receipt) else message.generation
+                        )
                     if isinstance(message, Events):
-                        response = await self._events(cid, connection, enrollment, row, message)
+                        with step("events"):  # its own workspace hint included
+                            response = await self._events(cid, connection, enrollment, row, message)
                         # _events throttles and publishes its own hint; the
                         # generic post-loop publish below must not double it.
                         notify_resources = False
                     else:
-                        response = await self._receipt(cid, connection, enrollment, row, message)
-                        await self.dispatch_session(owner, sid)
+                        with step("receipt"):
+                            response = await self._receipt(cid, connection, enrollment, row, message)
+                        with step("dispatch"):
+                            await self.dispatch_session(owner, sid)
                 if notify_resources:
-                    await publish_resources_changed(owner, human)
+                    with step("hint"):
+                        await publish_resources_changed(owner, human)
                 check_envelope(response)
                 return response
             except ClientError as exc:
@@ -1208,13 +1228,16 @@ class LocalSessionRelay:
                     return
                 commands = await repo.list_commands(owner, sid)
                 # Expire even commands behind an unresolved outcome; never queue old input indefinitely.
+                expired = False
                 for command in commands:
                     if command["state"] == "pending" and command["deliverBy"] <= int(time.time()):
                         await repo.replace_command(
                             command, _revised(command, state="rejected", updatedAt=int(time.time()))
                         )
                         _capture_offline_rejection(row, command, "expired")
-                commands = await repo.list_commands(owner, sid)
+                        expired = True
+                if expired:  # read again only what this pass changed: every heartbeat comes through here
+                    commands = await repo.list_commands(owner, sid)
                 command = next(
                     (
                         c
@@ -1267,7 +1290,7 @@ class LocalSessionRelay:
                     )
                     continue
                 # Strong record absence proves no network attempt has happened in this path.
-                if not row.get("connectionId") or not await asyncio.to_thread(
+                if not row.get("connectionId") or not await store.run_in_thread(
                     self.connections.get_connection, row["connectionId"]
                 ):
                     return

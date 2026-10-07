@@ -88,8 +88,7 @@ async def ack_with_presence(ack: dict, owner: str, session_ids: list[str]) -> di
     read_at = _ms()
     try:
         out = []
-        for sid in session_ids:
-            row = await repo.get_session(owner, sid)
+        for row in await repo.get_sessions(owner, session_ids):  # one read for the frame
             if row is None or row.get("endedAt") is not None:
                 continue
             e = await entry(row, read_at)

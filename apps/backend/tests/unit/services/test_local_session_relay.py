@@ -2320,3 +2320,71 @@ async def test_same_mac_native_session_send_names_each_item_once_and_dispatches(
         ]
         assert len(keys) == len(set(keys))
     assert (await repo.get_command(OWNER, target, sent.request_id))["state"] == "dispatched"
+
+
+@pytest.fixture
+def thread_hops(monkeypatch):
+    """Every DynamoDB call, Management API post and AppSync signature is one job on the default
+    thread pool (6 threads on 2 vCPU), which the whole backend process shares."""
+    real, hops = asyncio.to_thread, []
+
+    async def counted(func, *args, **kwargs):
+        hops.append(func)
+        return await real(func, *args, **kwargs)
+
+    monkeypatch.setattr(asyncio, "to_thread", counted)
+    return hops
+
+
+@pytest.mark.asyncio
+async def test_a_full_heartbeat_frame_costs_a_bounded_number_of_thread_pool_calls(transport, thread_hops):
+    """24 sessions is one frame's cap; a Mac with 44 sends two. 3 calls admit the frame, 5 per
+    session renew it and settle its commands, 1 per session reads its viewers, 4 fill the ack's
+    lists. It was 198 (prod 2026-10-07: one Mac's heartbeats were a tenth of the table's reads)."""
+    first = await start(transport)
+    host = relay(transport)
+    sids = [first]
+    for index in range(1, 24):
+        ack = await host.handle_message("conn-1", registration(nativeConversationId=f"thread-{index + 1}"))
+        sids.append(ack["sessionId"])
+    frame = heartbeat(first)
+    frame["sessions"] = [heartbeat(sid)["sessions"][0] for sid in sids]
+    frame["sessionPresence"] = True
+    thread_hops.clear()
+    response = await host.handle_message("conn-1", frame)
+    assert response["rejected"] == []
+    assert len(thread_hops) <= 24 * 6 + 8, len(thread_hops)
+
+
+@pytest.mark.asyncio
+async def test_a_full_events_frame_costs_a_bounded_number_of_thread_pool_calls(transport, thread_hops):
+    """32 events is one frame's cap: they land in the one transaction, so the cost does not
+    grow with them. The workspace hint costs 4 calls per member with a live stream."""
+    await messaging_repo.ensure_user_stream(OWNER, ALICE.user_id)
+    sid = await start(transport)
+    body = {
+        "type": "local.session.events",
+        "sessionId": sid,
+        "generation": "generation-1",
+        "batchId": "b1",
+        "afterSeq": 0,
+        "events": [{"kind": "text", "role": "assistant", "text": f"line {i}"} for i in range(32)],
+    }
+    thread_hops.clear()
+    response = await relay(transport).handle_message("conn-1", body)
+    assert response["afterSeq"] == 32
+    assert len(thread_hops) <= 12, len(thread_hops)
+
+
+@pytest.mark.asyncio
+async def test_a_heartbeat_reports_the_time_of_each_of_its_steps(transport):
+    from core.services import local_session_relay as module
+
+    sid = await start(transport)
+    steps: dict[str, float] = {}
+    token = module.frame_steps.set(steps)
+    try:
+        await relay(transport).handle_message("conn-1", {**heartbeat(sid), "sessionPresence": True})
+    finally:
+        module.frame_steps.reset(token)
+    assert set(steps) == {"connect", "screens", "renew", "resume", "pickup", "watching", "presence"}

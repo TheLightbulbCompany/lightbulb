@@ -19,6 +19,7 @@ from typing import Any
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, Response
 
 from core.config import settings
+from core.dynamodb import call_stats, run_in_thread
 from core.services.connection_service import ConnectionService
 
 logger = logging.getLogger(__name__)
@@ -60,10 +61,14 @@ _SLOW_FRAME_S = 3.0
 
 
 async def _log_slow_frame(body: Any, cid: str, started: float, handled: float) -> None:
-    """One line for a frame that took long, saying where: its handler, the reply through the
-    Management API, or the process itself. Every DynamoDB call and that reply wait for a thread
-    of the default pool (6 on 2 vCPU), so `pool_wait_ms` is a full pool and `loop_lag_ms` a busy
-    event loop; both small means AWS answered slowly. Never frame content."""
+    """One line for a frame that took long, saying where. `steps`: its three slowest steps.
+    `db_calls`/`db_queue_ms`/`db_ms`: every DynamoDB call the frame made, the time they waited for
+    a thread of the default pool (6 on 2 vCPU, shared by the whole process) and the time they ran.
+    A large `db_queue_ms` is a full pool: another request queued hundreds of calls (prod
+    2026-10-07, the session list). A large `db_ms` with DynamoDB's own latency at 2 ms is the
+    process out of CPU. Both are sums, so calls that overlap can add up to more than `ms`.
+    `pool_wait_ms` and `loop_lag_ms` are one probe each, taken after the frame, so they miss a
+    queue that has drained by then. Never frame content."""
     done = time.monotonic()
     if done - started < _SLOW_FRAME_S:
         return
@@ -71,6 +76,10 @@ async def _log_slow_frame(body: Any, cid: str, started: float, handled: float) -
     pooled = time.monotonic()
     await asyncio.sleep(0)
     raw_frame = body.get("type") if isinstance(body, dict) else None
+    from core.services.local_session_relay import frame_steps
+
+    steps = sorted((frame_steps.get() or {}).items(), key=lambda item: -item[1])[:3]
+    calls = list(call_stats.get() or ())
     logger.warning(
         "local session frame slow",
         extra={
@@ -78,6 +87,10 @@ async def _log_slow_frame(body: Any, cid: str, started: float, handled: float) -
             "cid": cid,
             "ms": int((done - started) * 1000),
             "handle_ms": int((handled - started) * 1000),
+            "steps": ",".join(f"{name}:{int(seconds * 1000)}" for name, seconds in steps),
+            "db_calls": len(calls),
+            "db_queue_ms": int(sum(waited for waited, _ in calls) * 1000),
+            "db_ms": int(sum(ran for _, ran in calls) * 1000),
             "pool_wait_ms": int((pooled - done) * 1000),
             "loop_lag_ms": int((time.monotonic() - pooled) * 1000),
         },
@@ -162,11 +175,15 @@ async def ws_message(
         raise HTTPException(status_code=400, detail="Missing x-connection-id header")
     # Before the connection lookup: a full thread pool or a slow table spends the budget there too.
     started = time.monotonic()
-    row = await asyncio.to_thread((await get_connection_service()).get_connection, x_connection_id)
+    from core.services.local_session_relay import frame_steps, get_local_session_relay, step
+
+    frame_steps.set({})
+    call_stats.set([])
+    with step("connection"):
+        row = await run_in_thread((await get_connection_service()).get_connection, x_connection_id)
     if row is None or row.get("connection_type") != "local-session":
         raise HTTPException(status_code=403, detail="Machine connection required")
 
-    from core.services.local_session_relay import get_local_session_relay
     from core.services.local_sessions import MAX_ENVELOPE_BYTES
     from core.services.messaging import ApiProblem
 
@@ -176,7 +193,8 @@ async def ws_message(
         if len(await request.body()) <= MAX_ENVELOPE_BYTES:
             from core.services import session_screen
 
-            await session_screen.forward(relay, x_connection_id, body)
+            with step("forward"):
+                await session_screen.forward(relay, x_connection_id, body)
         await _log_slow_frame(body, x_connection_id, started, time.monotonic())
         return Response(status_code=200)
     try:
@@ -215,6 +233,7 @@ async def ws_message(
             return Response(status_code=200)
         response = {"type": "local.session.error", "code": "INTERNAL"}
     handled = time.monotonic()
-    await relay.management.send_message_async(x_connection_id, response)
+    with step("reply"):
+        await relay.management.send_message_async(x_connection_id, response)
     await _log_slow_frame(body, x_connection_id, started, handled)
     return Response(status_code=200)

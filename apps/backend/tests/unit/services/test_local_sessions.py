@@ -931,6 +931,25 @@ async def test_list_workspace_sessions_is_owner_wide_sorted_and_keeps_offline(db
     assert other.sessions == []
 
 
+async def test_listing_the_workspace_reads_session_rows_in_batches_not_one_by_one(db, monkeypatch):
+    """Prod 2026-10-07: one GET /messaging/sessions read each of 314 kept rows with its own
+    GetItem (97 % of the table's reads), all queued at once on the 6-thread pool every other
+    DynamoDB call of the process waits for. Relay frames behind them took up to 12 s."""
+    await messaging_repo.ensure_user_stream(OWNER, ALICE.user_id)
+    sids = [await registered(conversation=f"conv-{i}") for i in range(30)]
+    real, hops = asyncio.to_thread, 0
+
+    async def counted(func, *args, **kwargs):
+        nonlocal hops
+        hops += 1
+        return await real(func, *args, **kwargs)
+
+    monkeypatch.setattr(asyncio, "to_thread", counted)
+    listed = await service.list_workspace_sessions(BOB)
+    assert {s.session_id for s in listed.sessions} == set(sids)
+    assert hops <= 8, f"{hops} thread-pool calls to list 30 sessions"
+
+
 async def test_list_workspace_sessions_include_ended_appends_the_last_seven_days(db):
     await messaging_repo.ensure_user_stream(OWNER, ALICE.user_id)
     now = 10_000_000

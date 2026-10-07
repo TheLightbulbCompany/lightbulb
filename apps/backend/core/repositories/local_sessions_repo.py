@@ -38,6 +38,13 @@ async def get_session(owner_id: str, local_session_id: str) -> dict | None:
     return await store._get(session_pk(owner_id, local_session_id), "META")
 
 
+async def get_sessions(owner_id: str, local_session_ids: list[str]) -> list[dict | None]:
+    """Many META rows in one strong read per 100, in the order asked; None where there is none."""
+    keys = [(session_pk(owner_id, sid), "META") for sid in local_session_ids]
+    found = await store.batch_get(keys)
+    return [found.get(key) for key in keys]
+
+
 async def list_user_sessions(owner_id: str, user_id: str) -> list[dict]:
     return await store._query(user_pk(owner_id, user_id), begins_with="SESSION#")
 

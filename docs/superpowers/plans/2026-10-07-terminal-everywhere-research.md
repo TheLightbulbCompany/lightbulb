@@ -606,6 +606,61 @@ first draft; they are superseded by that ruling.
   `create_room` call sites.
 - Nothing was built, run or changed on the Mac beyond the research worktree.
 
+## 3b. Host spike: holder vs tmux vs herdr (locally tested, founder's Mac, 2026-10-07)
+
+Owner asked whether tmux or herdr is a better host than the holder. Throwaway harness in the
+session scratchpad (a Python client speaking the holder wire protocol, a headless xterm.js 5
+renderer, a private tmux 3.6b server with hidden chrome, pty clients). Same Claude Code 2.1.292
+`--model haiku` session under each host, same keystrokes. Nothing was built; the holder came from
+the installed app 0.4.606 (`lightbulb-desktop holder <sock> --size=120x40 -- claude`).
+
+**Rendering fidelity (holder).** Twelve snapshots over a run with a trust prompt, a short
+answer, a long answer interrupted by Esc, a resize to 90x30 and `/exit`. For each snapshot the
+raw pty bytes up to that offset and the holder's `vt100` snapshot were both rendered by headless
+xterm.js and compared row by row: **0 differing rows in 12 of 12 snapshots**, including the two
+after the resize. The `vt100` model reproduced Claude Code's screen exactly in this run. Not
+covered: kitty keyboard mode, synchronized output, images, a Codex session.
+
+**Esc.** Holder: Esc during a running answer → "Interrupted" drawn 0.11 s later. Esc during the
+thinking phase (both hosts) cancels the turn and Claude puts the prompt back in the composer with
+no "Interrupted" text. tmux with `escape-time 0` interrupted as well (seen on the next snapshot;
+not byte-timed). herdr's docs set no Esc delay issue; untested.
+
+**Many clients.** Holder (cheap shell program, no model): a `join` client never resizes (its
+RESIZE is ignored, the program stays 40x120); a replacing interactive client sends DETACHED to the
+previous one and resizes the pty (program sees 30x90), watchers and joined clients receive RESIZE,
+and the joined client is PROMOTED when the replacer leaves; `replayFrom: 0` and REPLAY(0) return the
+whole log (3,043 bytes). All as `holder/protocol.rs` and `run.rs` document. tmux with
+`window-size latest`: when a 90x30 client attached beside the 120x40 one, the window shrank to
+90x30 and the 120x40 client saw the small window inside a field of `·` dots. tmux's default
+(`smallest`) shrinks the owner's own window instead. Either way it is one size per session, and
+tmux's rendering of the mismatch is worse than the holder's scaling.
+
+**Resources, scenario run (~60 s).** holder RSS mean 9.0 MB, max 10.3 MB, CPU mean 0.1 %;
+tmux server RSS mean 3.3 MB, max 3.9 MB, CPU mean 0.1 %. Both negligible.
+
+**20-minute idle run with four prompts.** Both hosts answered all four prompts (holder output checked for ONE, TWO, THREE, FOUR; the tmux session ran to its `/exit`). holder RSS mean 7.3 MB, max 9.5 MB, CPU mean 0.01%, max 1.1% (116 samples); tmux server RSS mean 1.0 MB, max 3.6 MB, CPU mean 0.01%, max 1.1% (122 samples). Neither process died, restarted or leaked over the 21 minutes.
+
+**Observed side effect.** The spike sessions were plain `claude` processes, so the running
+Lightbulb app discovered them and the mod band read "Shared as a transcript" inside the
+tmux-hosted session (visible in the client capture). They ended with `/exit`.
+
+**herdr (read, not run).** herdr is Rust + `portable-pty` 0.9 (vendored, the same crate the
+holder uses) + `ghostty-vt` (Ghostty's terminal model through bindings). Its public socket API
+gives clients `pane.read` (recent lines), `pane.wait_for_output`, `pane.output_matched`,
+`pane.scroll_changed`, `session.snapshot` and agent state; attached clients use an internal
+screen codec. Streaming a herdr pane to our web and phone viewers would mean polling `pane.read`
+(the mirror shape) or speaking its private client protocol. Its agent state comes from the
+foreground process plus "screen manifests" (regex over the bottom of the screen), with
+`blocked` deliberately strict; we already get the same from hooks.
+
+**Conclusion.** The holder is the same architecture herdr chose (server-owned pty with
+`portable-pty`); the only component where herdr is stronger is the screen model (`ghostty-vt`
+vs `vt100`), and in this run `vt100` showed no error. tmux adds a bundled binary, hidden chrome,
+an escape-delay setting and worse multi-size behaviour for the same one-size semantics. Keep the
+holder. If a later acceptance run finds a rendering error, swap the model crate (`ghostty-vt`
+is the proven candidate), not the host.
+
 ## 4. Production-tested
 None by this research. Prior prod results reused (memory, 2026-10-04/05): held sessions,
 `claude --bg` attach, plain Codex attach (three holder closures in the first minutes, then

@@ -223,6 +223,14 @@ unverified); window capture and recordings (declined); Line mode (declined).
 
 ## 11. Evidence
 
+Host spike, 2026-10-07 (research report §3b): the holder's snapshots matched a headless xterm.js
+render of the raw pty bytes in 12 of 12 samples of a Claude Code 2.1.292 session; Esc
+interrupted in 0.11 s; join, replace, resize and replay behaved as `holder/protocol.rs` says;
+tmux 3.6b with hidden chrome worked too but showed the owner a field of dots when a smaller
+client attached, and needs a bundled binary. herdr is `portable-pty` + `ghostty-vt`, the same
+shape as the holder with a stronger screen model. Decision: keep the holder; if a rendering
+error ever appears, swap the model crate (`ghostty-vt`), not the host.
+
 Observed in code on `main` `dfce908f8` (citations above). Locally observed on the founder's Mac
 2026-10-07: Claude Code 2.1.292 (`claude attach` opens background sessions only), Codex 0.159.3,
 VS Code, Cursor, ChatGPT.app and Claude.app installed, every running Claude

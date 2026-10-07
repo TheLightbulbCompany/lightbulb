@@ -899,6 +899,7 @@ class Huddle:
             return
         now = self._clock()
         record = text  # what goes on the record: a joined line records only its new piece
+        holding = False
         if in_meet(identity):
             # The transcriber ends a line at a short pause, so a thought said in pieces arrives in pieces. One
             # that trails off is not a request yet (10-06 prod Meet: "Can one of you tell me..." was run as one,
@@ -908,11 +909,10 @@ class Huddle:
             if trail and now - trail[1] <= TRAIL_S:
                 text = f"{trail[0]} {text}"
                 record = text[len(trail[0]) + 1 :]  # the pieces before it are on the record already
-            if trails_off(text) and not self._control(text):
-                # (a "Forge, stop..." is a stop, not a fragment: held, it would never be applied)
+            # (a "Forge, stop..." is a stop, not a fragment: held, it would never be applied)
+            holding = trails_off(text) and not self._control(text)
+            if holding:
                 self._trail[identity] = (text, now)
-                self._transcript.add_person(identity, f"{name} (Meet)", record, at=now)
-                return
         if self.setting == "meeting":
             self._unclaimed = (
                 None  # someone spoke after the question: it was not left unclaimed
@@ -939,6 +939,8 @@ class Huddle:
         self._final_at[identity] = now
         self._last_speaker = identity
         self._last_heard = now
+        if holding:
+            return  # on the record and someone spoke (an unclaimed question is theirs now); its rest is on the way
         mine = v is not None and self._mine(v, identity, now, began, mark)
         if real_speech(text) and not mine:  # a line that routes itself (§4.2)
             self._spoke[identity] = mark

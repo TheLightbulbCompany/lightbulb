@@ -357,3 +357,13 @@ async def test_a_hand_is_trimmed_to_what_was_not_heard_when_the_cut_message_land
     h.on_agent_said("forge", "The oldest is two days old. One of", interrupted=True)  # the cut message, late
     await h.tick()
     assert [n[2] for n in h._news.get("forge", [])] == ["One of them is a draft."]
+
+
+async def test_a_trailing_fragment_still_claims_an_unclaimed_question():
+    """Codex on #3792: "Well..." from a person answering a question nobody claimed must count as someone
+    answering, or the question is routed to an agent over them."""
+    h, room, backend, lives, clock, log = await per_person()
+    await says(h, P1, "what did we ship last week?")
+    assert h._unclaimed is not None
+    await says(h, P2, "Well...")
+    assert h._unclaimed is None and h._last_speaker == P2

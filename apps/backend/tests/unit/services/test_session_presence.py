@@ -83,7 +83,9 @@ async def test_ack_lists_only_sessions_with_something_to_show_and_stays_in_the_e
     monkeypatch.setattr(presence.store, "_query", _rows(viewers=["user_aden"]))
     rows = {f"s{i}": _row(sessionId=f"s{i}", generation="g" * 100) for i in range(24)}
     rows["quiet"] = _row(sessionId="quiet")
-    monkeypatch.setattr(presence.repo, "get_session", AsyncMock(side_effect=lambda owner, sid: rows[sid]))
+    monkeypatch.setattr(
+        presence.repo, "get_sessions", AsyncMock(side_effect=lambda owner, sids: [rows[s] for s in sids])
+    )
     monkeypatch.setattr(presence.human_display_name, "side_effect", lambda u: "N" * 120)
     quiet_query = _rows()
 
@@ -113,7 +115,9 @@ async def test_ack_never_trims_an_entry_that_holds_a_join_request(monkeypatch):
         )
         for i in range(2)
     }
-    monkeypatch.setattr(presence.repo, "get_session", AsyncMock(side_effect=lambda owner, sid: rows[sid]))
+    monkeypatch.setattr(
+        presence.repo, "get_sessions", AsyncMock(side_effect=lambda owner, sids: [rows[s] for s in sids])
+    )
     monkeypatch.setattr(presence.human_display_name, "side_effect", lambda u: "N" * 120)
     monkeypatch.setattr(presence.store, "_query", _rows(viewers=list(big)))
     ack = await presence.ack_with_presence({"type": "local.device.heartbeat.ack"}, "org_a", list(rows))
@@ -127,7 +131,9 @@ async def test_ack_drops_viewers_then_presence_rather_than_a_join_request(monkey
     one = {"user_zoe": {"state": "pending", "requestId": "req"}}
     many = {f"user_p{i}": {"state": "pending", "requestId": f"req{i}"} for i in range(8)}
     rows = {f"r{i}": _row(sessionId=f"r{i}", joinRequests=one) for i in range(24)}
-    monkeypatch.setattr(presence.repo, "get_session", AsyncMock(side_effect=lambda owner, sid: rows[sid]))
+    monkeypatch.setattr(
+        presence.repo, "get_sessions", AsyncMock(side_effect=lambda owner, sids: [rows[s] for s in sids])
+    )
     monkeypatch.setattr(presence.human_display_name, "side_effect", lambda u: "N" * 120)
     monkeypatch.setattr(presence.store, "_query", _rows(viewers=[f"user_v{i}" for i in range(30)]))
     ack = await presence.ack_with_presence({"type": "local.device.heartbeat.ack"}, "org_a", list(rows))
@@ -139,7 +145,7 @@ async def test_ack_drops_viewers_then_presence_rather_than_a_join_request(monkey
 
 @pytest.mark.asyncio
 async def test_ack_survives_a_read_failure(monkeypatch):
-    monkeypatch.setattr(presence.repo, "get_session", AsyncMock(side_effect=RuntimeError("ddb")))
+    monkeypatch.setattr(presence.repo, "get_sessions", AsyncMock(side_effect=RuntimeError("ddb")))
     ack = {"type": "local.device.heartbeat.ack"}
     assert await presence.ack_with_presence(ack, "org_a", ["s1"]) == ack
 
@@ -209,7 +215,7 @@ async def test_an_ack_sized_just_under_the_limit_still_passes_the_envelope_check
     from core.services.local_session_relay import check_envelope
 
     monkeypatch.setattr(presence.store, "_query", _rows(viewers=["user_aden"]))
-    monkeypatch.setattr(presence.repo, "get_session", AsyncMock(return_value=_row()))
+    monkeypatch.setattr(presence.repo, "get_sessions", AsyncMock(return_value=[_row()]))
     kind = {"type": "local.device.heartbeat.ack"}
     listed = (await presence.ack_with_presence({**kind, "pad": ""}, "org_a", ["s"]))["presence"]
     assert listed, "the session is listed"

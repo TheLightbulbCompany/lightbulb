@@ -392,3 +392,42 @@ async def test_a_slow_frame_says_where_its_time_went(app, connection_service, ca
     assert slow.frame == frame and slow.cid == "conn-1"
     assert all(isinstance(getattr(slow, key), int) for key in ("ms", "handle_ms", "pool_wait_ms", "loop_lag_ms"))
     assert "private terminal text" not in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_a_slow_frame_names_its_slowest_steps_and_what_its_database_calls_waited(
+    app, connection_service, caplog, monkeypatch
+):
+    """Prod 2026-10-07: frames took 9 s inside the handler while the one after-the-fact pool probe
+    read 30 ms. The calls had queued behind another endpoint's 314 reads; the line could not say
+    so. It now carries the three slowest steps and, over every DynamoDB call the frame made, how
+    long they waited for a thread (`db_queue_ms`) against how long they ran (`db_ms`)."""
+    import asyncio
+    import logging
+
+    from core.dynamodb import run_in_thread
+    from core.services import local_session_relay
+
+    monkeypatch.setattr("routers.websocket_chat._SLOW_FRAME_S", 0)
+    caplog.set_level(logging.WARNING, logger="routers.websocket_chat")
+    connection_service.get_connection.return_value = {"connection_type": "local-session"}
+
+    async def handle(_cid, _body):
+        with local_session_relay.step("renew"):
+            await asyncio.sleep(0.03)
+            await run_in_thread(lambda: None)
+        with local_session_relay.step("presence"):
+            await run_in_thread(lambda: None)
+        return {"type": "local.device.heartbeat.ack"}
+
+    machine = MagicMock()
+    machine.handle_message = handle
+    machine.management.send_message_async = AsyncMock()
+    with patch("core.services.local_session_relay.get_local_session_relay", return_value=machine):
+        body = {"type": "local.device.heartbeat", "sessions": []}
+        assert (await _post(app, "/ws/message", headers={"x-connection-id": "conn-1"}, json=body)).status_code == 200
+    slow = next(r for r in caplog.records if r.getMessage() == "local session frame slow")
+    names = [part.split(":")[0] for part in slow.steps.split(",")]
+    assert names[0] == "renew" and set(names) <= {"renew", "presence", "connection", "reply"} and len(names) <= 3
+    # The router's own connection read, then the handler's two.
+    assert slow.db_calls == 3 and isinstance(slow.db_queue_ms, int) and isinstance(slow.db_ms, int)

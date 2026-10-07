@@ -1,0 +1,40 @@
+version: 2
+# Weekly, one grouped PR per ecosystem for minor+patch; majors arrive one by one.
+updates:
+  - package-ecosystem: npm # pnpm workspaces use the npm key
+    # Workspace root, the two lockfile roots outside pnpm-workspace.yaml, and
+    # apps/infra, whose package-lock.json is what deploy.yml's `npm ci` reads.
+    directories:
+      - /
+      - /apps/infra
+      - /stripe-app
+      - /apps/infra/lambda/openrouter-gate
+    schedule: { interval: weekly }
+    open-pull-requests-limit: 5
+    groups:
+      minor-and-patch:
+        update-types: [minor, patch]
+  - package-ecosystem: uv
+    directories:
+      - /apps/backend
+      - /apps/huddle-agent
+    schedule: { interval: weekly }
+    open-pull-requests-limit: 5
+    groups:
+      minor-and-patch:
+        update-types: [minor, patch]
+  - package-ecosystem: cargo
+    directory: /apps/desktop/src-tauri
+    schedule: { interval: weekly }
+    open-pull-requests-limit: 5
+    groups:
+      minor-and-patch:
+        update-types: [minor, patch]
+  - package-ecosystem: github-actions
+    directory: /
+    schedule: { interval: weekly }
+    open-pull-requests-limit: 5
+    groups:
+      actions:
+        patterns: ["*"]
+        update-types: [minor, patch]

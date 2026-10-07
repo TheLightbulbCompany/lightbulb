@@ -196,8 +196,9 @@ mod tests {
                     walk(&p, base, out);
                 } else if !p.file_name().unwrap().to_string_lossy().contains(".test.") {
                     let rel = p.strip_prefix(base).unwrap().to_string_lossy().into_owned();
-                    // Left out on purpose: the Mac app serves MCP and the skill itself.
-                    if rel != "lightbulb/.mcp.json" && !rel.starts_with("lightbulb/skills/") {
+                    // Left out on purpose: the Mac app serves MCP and the skill itself, and the
+                    // README is the public repo's front page.
+                    if rel != "lightbulb/.mcp.json" && rel != "README.md" && !rel.starts_with("lightbulb/skills/") {
                         out.push(rel);
                     }
                 }

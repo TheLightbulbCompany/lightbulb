@@ -1,0 +1,48 @@
+# Copies packages/claude-plugin/ to the public marketplace repo
+# TheLightbulbCompany/lightbulb-plugin on every change that reaches main.
+#
+# GITHUB_TOKEN is scoped to this repository and cannot push to another one, so the
+# push uses a PAT in the secret PLUGIN_SYNC_TOKEN: a fine-grained token with
+# "Contents: Read and write" on TheLightbulbCompany/lightbulb-plugin only.
+# Until the owner adds that secret, the job prints a notice and passes, so main
+# never goes red because of it.
+name: sync-claude-plugin
+'on':
+  push:
+    branches: [main]
+    paths:
+      - packages/claude-plugin/**
+      - .github/workflows/sync-claude-plugin.yml
+permissions:
+  contents: read
+concurrency:
+  group: plugin-sync
+  cancel-in-progress: false
+jobs:
+  sync:
+    runs-on: ${{ vars.CI_RUNNER }}
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      - name: Push packages/claude-plugin to lightbulb-plugin
+        env:
+          PLUGIN_SYNC_TOKEN: ${{ secrets.PLUGIN_SYNC_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [ -z "$PLUGIN_SYNC_TOKEN" ]; then
+            echo "::notice::PLUGIN_SYNC_TOKEN is not set; skipping the sync to TheLightbulbCompany/lightbulb-plugin."
+            exit 0
+          fi
+          dest="$RUNNER_TEMP/lightbulb-plugin"
+          git clone --quiet "https://x-access-token:${PLUGIN_SYNC_TOKEN}@github.com/TheLightbulbCompany/lightbulb-plugin.git" "$dest"
+          rsync -a --delete --exclude .git packages/claude-plugin/ "$dest/"
+          cd "$dest"
+          git add -A
+          if git diff --cached --quiet; then
+            echo "lightbulb-plugin is already up to date."
+            exit 0
+          fi
+          git -c user.name=lightbulb-bot -c user.email=lightbulb-bot@users.noreply.github.com \
+            commit --quiet -m "sync: lightbulb@${GITHUB_SHA::7}"
+          git push --quiet origin HEAD:main

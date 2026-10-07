@@ -51,8 +51,9 @@ export function DesktopPermissionsGate() {
   const [choice, setChoice] = useState<boolean | null>(null);
   // On by default (owner ruling 2026-10-07) for a Mac that was never offered the switch: the item
   // says which files it edits, and one click turns it off. A Mac that already answered (an earlier
-  // pairing, or the notice) keeps its answer: `stored` is what its rc files say now. Until that is
-  // read the switch waits, and if it cannot be read this dialog never writes it.
+  // pairing, or the notice) keeps its answer: `stored` is what its rc files say now (read for every
+  // Mac). Until that is read an offered Mac's switch waits, and if it cannot be read the switch
+  // stays disabled, so nothing is written.
   // Read on every render: the notice can make the offer while this is mounted.
   const offered = (() => { try { return !!localStorage.getItem(LIVE_SHARING_OFFER_KEY); } catch { return true; } })();
   const [stored, setStored] = useState<boolean | null>(null);
@@ -60,11 +61,11 @@ export function DesktopPermissionsGate() {
   const liveKnown = !offered || stored !== null;
   const live = liveChoice ?? (offered ? stored ?? false : true);
   useEffect(() => {
-    if (!shouldShowGate || !offered) return;
+    if (!shouldShowGate) return;
     let current = true;
     getTauri()?.core?.invoke<boolean>("shell_integration_status").then(on => { if (current && typeof on === "boolean") setStored(on); }, () => {});
     return () => { current = false; };
-  }, [shouldShowGate, offered]);
+  }, [shouldShowGate]);
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
   const operation = useRef(0);
@@ -126,10 +127,13 @@ export function DesktopPermissionsGate() {
           return;
         }
       }
-      if (enableSharing && liveKnown && live !== (stored ?? false)) {
-        // Best effort: the switch stays in Settings if this build or the rc files refuse. Off here
-        // is that switch turned off: it removes the block.
-        await getTauri()?.core?.invoke("shell_integration_set", { enabled: live }).catch(() => {});
+      // What the person pressed is always applied, whatever this dialog believes the rc files say
+      // (off removes the block). Untouched: a never-offered Mac gets the default, an offered one
+      // keeps what it has.
+      const write = liveChoice ?? (!offered && stored !== true ? true : null);
+      if (enableSharing && write !== null) {
+        // Best effort: the switch stays in Settings if this build or the rc files refuse.
+        await getTauri()?.core?.invoke("shell_integration_set", { enabled: write }).catch(() => {});
       }
       // This dialog made the offer, whatever the answer: the notice for Macs paired before the
       // switch existed (LiveSharingOffer) must not ask again.

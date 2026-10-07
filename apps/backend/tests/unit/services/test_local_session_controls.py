@@ -210,15 +210,6 @@ async def test_private_native_send_is_visible_and_approvable_only_to_its_owner(t
     assert public["pendingApproval"]["exact"] is False
     assert "privateSendApproval" not in public
     assert "Private\nbody" not in json.dumps((await service.list_events(BOB, None, sid)).model_dump(by_alias=True))
-    token = (await service.put_link(ALICE, sid, "workspace")).url.split("#", 1)[1]
-    assert "Private\nbody" not in json.dumps(
-        (await session_links.list_events(ALICE, token, 0, 100)).model_dump(by_alias=True)
-    )
-    await service.put_link(ALICE, sid, "anyone")  # an outsider holding the link
-    stranger = AuthContext(user_id="user_elsewhere", org_id="org_other")
-    assert "Private\nbody" not in json.dumps(
-        (await session_links.list_events(stranger, token, 0, 100)).model_dump(by_alias=True)
-    )
     await service.set_team_control(ALICE, sid, True)
     with pytest.raises(ApiProblem, match="unavailable"):
         await service.get_private_send_approval(BOB, sid)
@@ -742,7 +733,6 @@ async def test_sharing_and_join_events_land_on_the_person_who_acted(transport):
         token = link.url.split("#", 1)[1]
         await session_links.open_page(BOB, token)
         await session_links.open_page(BOB, token, refresh=True)  # the page's poll is not another open
-        await session_links.list_events(BOB, token, 0, 50)  # paging is not another open
         await ask(BOB, sid)
         await decide(ALICE, sid, BOB.user_id, "allow", pushes=[])
     assert [(c.kwargs["event"], c.kwargs["distinct_id"]) for c in capture.call_args_list] == [

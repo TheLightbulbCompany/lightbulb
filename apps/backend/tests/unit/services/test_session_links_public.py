@@ -151,55 +151,22 @@ async def test_every_closed_door_reads_the_same(transport, s3):
     await service.set_sharing(ALICE, sid, True)
     await service.delete_link(ALICE, sid)
     with pytest.raises(ApiProblem, match=links.GONE):
-        await links.list_events(None, token, 0, 50)
+        await links.open_page(None, token)
 
 
 @pytest.mark.asyncio
-async def test_outsider_events_are_redacted_and_carry_no_actor(transport, s3):
-    sid, token = await link_for(transport, s3)
-    await say(transport, sid, ["key ghp_abcdefghijklmnopqrstuvwx in /Users/alice/app", "ok"])
-    page = (await links.list_events(STRANGER, token, 0, 50)).model_dump(by_alias=True)
-    assert [e["text"] for e in page["events"]] == ["key [redacted] in ~/app", "ok"]
-    assert all("actor" not in e and "originRequestId" not in e for e in page["events"])
-    member = (await links.list_events(BOB, token, 0, 50)).model_dump(by_alias=True)
-    assert member["events"][0]["text"].startswith("key ghp_") and "actor" in member["events"][0]
-
-
-@pytest.mark.asyncio
-async def test_a_private_repos_folder_is_hidden_from_outsiders_only(transport, s3):
+async def test_a_private_repos_folder_is_recorded_for_copies(transport, s3):
     sid, token = await link_for(transport, s3, repo_info={**PUBLIC, "public": False})
     await say(transport, sid, ["edited /Users/alice/app/src/a.py"])
-    assert [e.text for e in (await links.list_events(STRANGER, token, 0, 50)).events] == ["edited ~/<project>/src/a.py"]
-    assert (await links.list_events(ALICE, token, 0, 50)).events[0].text == "edited /Users/alice/app/src/a.py"
     assert (await repo.get_session(OWNER, sid))["pickupSnapshot"]["privateFolder"] == "app"
     assert (await service.get_session(ALICE, sid)).pickup.private_repo is True
 
 
-@pytest.mark.asyncio
-async def test_outsiders_see_no_events_before_the_first_snapshot(transport, s3):
-    # Until the Mac commits, nobody knows whether the folder name is private.
-    sid = await claude_session(transport)
-    token = (await service.put_link(ALICE, sid, "anyone")).url.split("#", 1)[1]
-    await say(transport, sid, ["in /Users/alice/app"])
-    assert (await links.list_events(STRANGER, token, 0, 50)).events == []
-    assert len((await links.list_events(ALICE, token, 0, 50)).events) == 1
+def test_there_is_no_public_events_route():
+    """An "anyone" link page shows facts only; the conversation reaches an outsider only as a Continue copy."""
+    from routers import messaging
 
-
-@pytest.mark.asyncio
-async def test_an_event_that_grows_past_the_envelope_falls_back_to_one_line(transport, s3):
-    sid, token = await link_for(transport, s3)
-    row = {
-        "pk": repo.session_pk(OWNER, sid),
-        "sk": f"EVENT#{99:020d}",
-        "seq": 99,
-        "kind": "text",
-        "role": "assistant",
-        "truncated": False,
-        "text": "://a:b@ " * 2000,
-    }
-    messaging_repo._table().put_item(Item=row)
-    events = (await links.list_events(None, token, 98, 10)).events
-    assert events[0].text == "[redacted]" and events[0].truncated is True
+    assert not [r for r in messaging.router.routes if getattr(r, "path", "").endswith("/public/session-links/events")]
 
 
 @pytest.mark.asyncio

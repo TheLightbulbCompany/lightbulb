@@ -54,3 +54,18 @@ async def test_chat_seats_readers_without_admitting_them_and_follows_sharing_and
     # The same conversation resumes (re-registers, un-ended): a chat left open takes posts again.
     await relay(transport).handle_message("conn-1", relay_tests.registration())
     assert not (await messaging_repo.get_room(room)).get("archivedAt")
+
+
+@pytest.mark.asyncio
+async def test_a_removed_member_with_a_live_token_gets_no_chat_and_no_stream_back(transport):
+    """Opening a chat must never turn a removed member's private stream back on."""
+    sid = await start(transport)
+    await messaging_repo.ensure_user_stream(registry_tests.OWNER, BOB.user_id)
+    await messaging_repo.deactivate_user_stream(registry_tests.OWNER, BOB.user_id)
+    with pytest.raises(ApiProblem) as refused:
+        await session_chat.open_chat(BOB, sid)
+    assert refused.value.error.code == "LOCAL_SESSION_NOT_FOUND"
+    assert (await messaging_repo.get_user_stream(registry_tests.OWNER, BOB.user_id))["active"] is False
+    room = session_chat.session_room_id(registry_tests.OWNER, sid)
+    assert await messaging_repo.get_member(room, "human", BOB.user_id) is None
+    assert await messaging_repo.get_room(room) is None  # refused before any write

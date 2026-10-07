@@ -163,7 +163,11 @@ async def _active(owner_id: str, user_id: str) -> bool:
 
 async def _seat(owner_id: str, meta: dict, user_id: str) -> dict:
     """Seat one reader as a plain member. A lost revision race re-reads and retries."""
-    await messaging_repo.ensure_user_stream(owner_id, user_id)
+    if await messaging_repo.get_user_stream(owner_id, user_id) is None:
+        # Only a person who never had a stream gets one here (create-if-absent). An inactive
+        # row is a removed member: ensure_user_stream would turn it back on, so it is never
+        # called for one (open_chat refused them before this).
+        await messaging_repo.ensure_user_stream(owner_id, user_id)
     member = {
         "kind": "human",
         "id": user_id,
@@ -200,6 +204,11 @@ async def open_chat(auth: AuthContext, session_id: str) -> RoomDetail:
     gone = ApiProblem("LOCAL_SESSION_NOT_FOUND", "Local session not found.")
     # The session row outlives its person's membership: no chat about someone who left.
     if not await _active(owner_id, owner_user):
+        raise gone
+    # A removed member whose token has not expired yet: refused before any write. No stream row
+    # at all is a member who has not opened messaging yet, and is seated.
+    reader = await messaging_repo.get_user_stream(owner_id, auth.user_id)
+    if reader is not None and not reader.get("active"):
         raise gone
     room_id = session_room_id(owner_id, session_id)
     meta = await messaging_repo.get_room(room_id) or await _create(owner_id, room_id, row)

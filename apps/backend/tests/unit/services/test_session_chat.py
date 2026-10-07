@@ -87,7 +87,7 @@ async def test_first_open_creates_one_hidden_room_and_seats_the_reader(env):
         "member",
         None,
     )
-    env["ensure_user_stream"].assert_any_await(OWNER, BOB.user_id)
+    env["ensure_user_stream"].assert_not_awaited()  # Bob has a stream: seating never touches it
 
 
 @pytest.mark.asyncio
@@ -410,8 +410,8 @@ async def test_no_chat_opens_for_a_session_whose_person_left_the_workspace(env):
 async def test_a_seat_that_lands_after_the_owner_was_revoked_is_taken_back(env, monkeypatch):
     """revoke_human_membership may silence the room before this seat lands (the row is still shared)."""
     env["get_room"].return_value = META
-    streams = {ALICE.user_id: [{"active": True}, {"active": False}], BOB.user_id: [{"active": True}]}
-    env["get_user_stream"].side_effect = lambda owner, uid: streams[uid].pop(0)
+    alice = [{"active": True}, {"active": False}]  # at the door, then removed
+    env["get_user_stream"].side_effect = lambda owner, uid: alice.pop(0) if uid == ALICE.user_id else {"active": True}
     silence = AsyncMock(return_value=1)
     monkeypatch.setattr(session_chat, "silence", silence)
     with pytest.raises(ApiProblem) as refused:
@@ -423,7 +423,8 @@ async def test_a_seat_that_lands_after_the_owner_was_revoked_is_taken_back(env, 
 @pytest.mark.asyncio
 async def test_a_reader_revoked_while_being_seated_loses_only_their_own_seat(env, monkeypatch):
     env["get_room"].return_value = META
-    env["get_user_stream"].side_effect = lambda owner, uid: {"active": uid == ALICE.user_id}
+    bob = [{"active": True}, {"active": True}, {"active": False}]  # door, seat, then removed
+    env["get_user_stream"].side_effect = lambda owner, uid: {"active": True} if uid == ALICE.user_id else bob.pop(0)
     unseat = AsyncMock(return_value=True)
     monkeypatch.setattr(session_chat, "_unseat", unseat)
     with pytest.raises(ApiProblem):
@@ -447,3 +448,21 @@ async def test_a_removed_owners_chats_are_silenced_after_their_stream_is_off(mon
     await messaging.revoke_human_membership(OWNER, ALICE.user_id)
     assert order == ["stream off", "silence"]
     session_chat.silence.assert_awaited_once_with(OWNER, SID, keep=None)
+
+
+@pytest.mark.asyncio
+async def test_a_reader_with_no_stream_yet_gets_one_and_a_removed_reader_is_refused_before_any_write(env, monkeypatch):
+    monkeypatch.setattr(session_chat, "_unseat", AsyncMock(return_value=True))
+    env["get_room"].return_value = META
+    env["get_user_stream"].side_effect = lambda owner, uid: {"active": True} if uid == ALICE.user_id else None
+    with pytest.raises(ApiProblem):  # seated, then the post-seat check finds no stream in this fake
+        await session_chat.open_chat(BOB, SID)
+    env["ensure_user_stream"].assert_awaited_once_with(OWNER, BOB.user_id)
+    env["ensure_user_stream"].reset_mock()
+    env["upsert_member"].reset_mock()
+    env["get_user_stream"].side_effect = lambda owner, uid: {"active": uid == ALICE.user_id}
+    with pytest.raises(ApiProblem) as refused:
+        await session_chat.open_chat(BOB, SID)
+    assert refused.value.error.code == "LOCAL_SESSION_NOT_FOUND"
+    env["ensure_user_stream"].assert_not_awaited()
+    env["upsert_member"].assert_not_awaited()

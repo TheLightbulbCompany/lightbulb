@@ -1151,3 +1151,15 @@ it("keeps the chat flag on a session link held for the session list (a cold-load
   await landList([liveSession("s1", "colleague")]);
   expect(workspaceValue.sessionFocus).toEqual({ sessionId: "s1", chat: true });
 });
+
+it("tells notifications the session chat on screen shows replies inline, and stops when it closes", async () => {
+  state.resourceSource.client.listWorkspaceSessions.mockResolvedValue({ sessions: [] });
+  compose();
+  await act(async () => {});
+  expect((notifications as unknown as { repliesInline?: boolean }).repliesInline).toBeFalsy();
+  act(() => workspaceValue.openSession("s1", true));
+  act(() => workspaceValue.setSessionChatRoomId("chat-1"));
+  expect(notifications).toMatchObject({ activeRoomId: "chat-1", roomVisible: true, repliesInline: true });
+  act(() => workspaceValue.setSessionChatRoomId(null));
+  expect((notifications as unknown as { repliesInline?: boolean }).repliesInline).toBeFalsy();
+});

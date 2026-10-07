@@ -20,6 +20,10 @@ updates:
       - /apps/huddle-agent
     schedule: { interval: weekly }
     open-pull-requests-limit: 5
+    # Library majors are deliberate migrations, not bot merges.
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
     groups:
       minor-and-patch:
         update-types: [minor, patch]
@@ -27,6 +31,10 @@ updates:
     directory: /apps/desktop/src-tauri
     schedule: { interval: weekly }
     open-pull-requests-limit: 5
+    # Library majors are deliberate migrations, not bot merges.
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
     groups:
       minor-and-patch:
         update-types: [minor, patch]

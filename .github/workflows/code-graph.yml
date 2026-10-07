@@ -37,7 +37,7 @@ jobs:
     # ~90 s measured locally; the cap bounds a hang on the shared runner.
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - uses: astral-sh/setup-uv@v4
 

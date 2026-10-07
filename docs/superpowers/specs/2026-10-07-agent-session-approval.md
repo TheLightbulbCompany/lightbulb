@@ -73,7 +73,7 @@ So Friday cannot reach a session from Teams work, nor message one whose owner di
 | `GET /messaging/local-session-agent/resources` | Workspace shared sessions (decision 2). Each session gains `agentSend: "direct" \| "ask" \| "unavailable"`. `unavailable` uses the liveness half of `native_session_tools.sendable` (:136-145). `devices`/`pairedNodes` stay room-scoped. They are empty for a Paperclip grant. |
 | `POST …/local-session-agent/sessions/{sid}/commands` | `send`/`interrupt`: direct when `requesterId == humanUserId` or the owner's pref is `allow`. Otherwise it files an ask and returns `202 {state: "awaiting_approval", requestId, expiresAt}`. A repeated `requestId` returns the same ask. |
 | `GET …/commands/{requestId}` | `COMMAND#` first, else the ask: pending → `awaiting_approval`, declined → `rejected` + `reason: "declined"`, expired → `rejected` + `reason: "expired"`. |
-| `POST /messaging/sessions/{sid}/agent-asks/{requestId}` (new, Clerk) | `{decision: "send" \| "decline"}`. Only `humanUserId` may decide: never a teammate under team control. Decline: pending → `declined` (conditional update). Send: §3.3. Either once; a later decision → 409. Returns the receipt. |
+| `POST /messaging/sessions/{sid}/agent-asks/{requestId}` (new, Clerk) | `{decision: "send" \| "decline"}`. Only `humanUserId` may decide: never a teammate under team control. Decline: pending → `declined`; Send: §3.3. Both conditional; a loser → 409 `LOCAL_SESSION_ASK_SETTLED`. Returns the receipt. |
 
 Ask row, on the session's pk in the messaging table: `sk AGENTASK#<requestId>`, `agentId`,
 `agentName`, `kind` (`send`/`interrupt`), `text`, `expectedGeneration`, `expectedTurnId`,
@@ -87,12 +87,13 @@ invocation_id=askId, requester_id=<session owner>, origin)` and calls `submit_co
 stored command, then `dispatch_session`, as `native_session_tools.session_send` does (:402-416).
 The requester is the owner, so the owner-only rule (:965-975) admits it. The row keeps `actor:
 {kind: "agent", id}` (:1455-1462) and, like its audit row (:1854), gains `approvedBy`;
-`_actor_label` (`local_session_relay.py:255-275`) shows `Friday, approved by you`. A stale ask fails the normal
-checks (generation, turn, offline; `_require_control` :1349-1386): the ask goes pending → `failed`
-with that reason, read as `rejected`. Nothing is retried. **Atomic:** pending → `sent` is a
-conditional Update in `admit_command`'s own transaction (`submit_command`'s `source_conditions` →
-`extra`, :1612-1618), so no ask reads `sent` without its `COMMAND#` row. A crash leaves it `pending`;
-Send again replays under the same `requestId`.
+`_actor_label` (`local_session_relay.py:255-275`) shows `Friday, approved by you`. A stale ask fails
+checks (`_require_control` :1349-1386): the ask goes `sent` → `failed` with that reason, read as
+`rejected`; nothing is retried. **Once:** Send first flips pending → `sent` as its own conditional
+write; a loser gets 409 `LOCAL_SESSION_ASK_SETTLED` with the current receipt, and only the winner
+calls `submit_command` (whose existing-command return, :1479-1483, would let a loser "succeed").
+**Resume:** a crash between the two leaves `sent` with no `COMMAND#`; any later Send on a `sent` ask
+reads `COMMAND#<requestId>` and, if absent, submits under the same `requestId` (idempotent).
 
 ### 3.4 The setting
 
@@ -137,8 +138,7 @@ approval ask. |`. Plugin schema description (:211-213) and `MAINTENANCE.md` (:19
 
 | Bound | Value |
 |---|---|
-| Pending asks per (agent, session) | 1. A second `requestId` while one waits → `429 LOCAL_SESSION_ASK_PENDING`. |
-| Asks per (agent, session) per 24 h | 5, declined ones included → `429 LOCAL_SESSION_RATE_LIMITED`. |
+| Asks per (agent, session) | 1 pending (another `requestId` → `429 LOCAL_SESSION_ASK_PENDING`); 5 per 24 h, declines included (→ `429 LOCAL_SESSION_RATE_LIMITED`). |
 | `read`, `resources`, `receipt` / `interrupt` | Never ask / same ask as `send`. |
 | `approve` / `end` | Still never an agent's (`local_sessions.py:1434-1436`, :1345-1347). |
 | Hop caps | Unchanged. An agent command carries no `nativeHop` (`_outgoing_hop` counts session actors only, `native_session_tools.py:419-436`). `AGENT_REPLY_CAP` (`messaging.py:50`) governs rooms, not sessions. |
@@ -162,7 +162,7 @@ approval ask. |`. Plugin schema description (:211-213) and `MAINTENANCE.md` (:19
 | `resources` with a Paperclip grant lists a non-room member's shared session, never an `unshared` one | widening |
 | Requester-owned send → `COMMAND#` row, no ask (regression) | decision 3 |
 | Non-owner send → ask row, no `COMMAND#`, no dispatch, `awaiting_approval`; same `requestId` again → same ask | decision 4 |
-| Send → command with `actor.kind: "agent"`, `approvedBy`; admission failure leaves the ask `pending`; 2nd decision → 409 | atomic, once |
+| Two concurrent Sends → one `COMMAND#`, loser 409; `sent` + no `COMMAND#` → next Send submits it | once, resume |
 | Decline → `rejected`/`declined`; expired → `rejected`/`expired`; decide after expiry → 409 | end states |
 | Team-control teammate cannot decide; pref `allow` → direct send; absent pref = `ask` | owner only, setting |
 | Interrupt asks; 2nd pending → 429; 6th in 24 h → 429 | bounds |

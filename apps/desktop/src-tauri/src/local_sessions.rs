@@ -1250,8 +1250,9 @@ fn reconcile_sessions(current: &mut Vec<NativeSession>, discovered: Vec<NativeSe
 /// keeps the pid), so the provider is the holder's direct child and the one process `hello`
 /// reports. Anything the provider starts in turn is its own session, tracked without a holder.
 fn holder_of(pid: u32, holders: &[HolderInfo]) -> Option<&HolderInfo> {
-    let parent = native_tools::parent(pid).ok()?.pid;
-    holders.iter().find(|h| h.provider_pid == pid && h.pid == parent)
+    let provider = process(pid).ok()?;
+    holders.iter().find(|h| h.provider_pid == pid
+        && crate::holder::identity::is_parent(pid, provider.birth_micros, h.pid))
 }
 
 /// Every session is tracked (rulings 2026-10-04). Names the holder a held one runs in: Claude as
@@ -1264,7 +1265,7 @@ fn track(found: &mut Vec<NativeSession>, holders: &[HolderInfo]) {
         let holder = if session.provider == "codex" {
             holders.iter().find(|h| crate::holder::manager::thread(h).as_deref() == Some(session.conversation.as_str()))
         } else {
-            holder_of(session.process.pid, holders)
+            holder_of(session.process.pid, holders).filter(|_| process(session.process.pid).ok().as_ref() == Some(&session.process))
         };
         session.holder = holder.map(|h| h.id.clone());
     }

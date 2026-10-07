@@ -57,3 +57,13 @@ it("says when the chat is full or unavailable", async () => {
   render(<SessionChat sessionId="s1" sessionOwnerId="user_alice" openChat={vi.fn(async () => { throw new ApiError(404, null); })} onClose={vi.fn()} />);
   expect(await screen.findByText("Chat is not available for this session.")).toBeInTheDocument();
 });
+
+it("shows a message's attachments (the phone and agents can post them into the same room)", async () => {
+  global.URL.createObjectURL = vi.fn(() => "blob:mock");
+  global.URL.revokeObjectURL = vi.fn();
+  const downloadAttachment = vi.fn(async () => new Blob(["x"], { type: "image/png" }));
+  rooms.value = { ...rooms.value, downloadAttachment, attachmentUrl: vi.fn(),
+    messages: [{ ...fromBob, attachments: [{ id: "att-1", fileName: "trace.png", contentType: "image/png", size: 10 }] }] };
+  render(<SessionChat sessionId="s1" sessionOwnerId="user_alice" openChat={vi.fn(async () => detail)} onClose={vi.fn()} />);
+  await waitFor(() => expect(downloadAttachment).toHaveBeenCalledWith("chat-1", "att-1"));
+});

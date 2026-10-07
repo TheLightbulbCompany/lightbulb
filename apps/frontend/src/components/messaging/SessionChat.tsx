@@ -79,6 +79,7 @@ export function SessionChat({ sessionId, sessionOwnerId, openChat, onClose, onRo
     currentUserId={me} actionable={!archived} inThread={false} collapsed={collapsed} replyCount={0} highlighted={false}
     mentionsViewer={message.mentions.some((m) => m.kind === "human" && m.id === me)}
     markdown={roomMarkdown} urlTransform={roomUrlTransform} quickReactions={NO_REACTIONS} reactionPending={false} reactionError={false}
+    onDownloadAttachment={rooms.downloadAttachment} onAttachmentUrl={rooms.attachmentUrl}
     personColor={message.author.kind === "human" ? personColor(message.author.id, sessionOwnerId) : undefined} />;
 
   return <aside className="session-chat" aria-label="Session chat">

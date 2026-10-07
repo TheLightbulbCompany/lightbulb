@@ -64,6 +64,12 @@ async def _default_agents(owner_id: str) -> list[dict]:
     return _ceo_member(company, await messaging.load_agent_roster(owner_id))
 
 
+def _room_name(row: dict) -> str:
+    # The agent's turn carries the room name, so "Session chat" is how it knows where it is.
+    title = (row.get("displayTitle") or row.get("title") or row.get("cwdName") or "Session")[:TITLE_MAX]
+    return f"Session chat · {title}"
+
+
 async def _create(owner_id: str, room_id: str, row: dict) -> dict:
     owner_user = row["humanUserId"]
     members = [
@@ -77,7 +83,6 @@ async def _create(owner_id: str, room_id: str, row: dict) -> dict:
         },
         *await _default_agents(owner_id),
     ]
-    title = (row.get("displayTitle") or row.get("title") or row.get("cwdName") or "Session")[:TITLE_MAX]
     await messaging_repo.ensure_user_stream(owner_id, owner_user)
     try:
         return await messaging_repo.create_room(
@@ -85,8 +90,7 @@ async def _create(owner_id: str, room_id: str, row: dict) -> dict:
             room_id=room_id,
             client_room_id=f"session-room-v1:{row['sessionId']}",
             creator_user_id=owner_user,
-            # The agent's turn carries the room name, so "Session chat" is how it knows where it is.
-            name=f"Session chat · {title}",
+            name=_room_name(row),
             kind="channel",
             members=members,
             req_hash=messaging_repo.request_hash("session-room-v1", row["sessionId"]),
@@ -124,10 +128,20 @@ async def _set_archived(meta: dict, archived: bool) -> dict:
 
 
 async def _follow_lifecycle(meta: dict, row: dict) -> dict:
-    """Ended sessions read only; a resumed one (same id, endedAt cleared) takes posts again."""
+    """Ended sessions read only; a resumed one (same id, endedAt cleared) takes posts again.
+    The room is named after the session's current title."""
     ended = row.get("endedAt") is not None
     if ended != bool(meta.get("archivedAt")):
-        return await _set_archived(meta, ended)
+        meta = await _set_archived(meta, ended)
+    name = _room_name(row)
+    if meta.get("name") != name:  # the session got its title, or its owner renamed it
+        try:
+            meta = await messaging_repo.patch_room_meta(meta["roomId"], {"name": name})
+        except ClientError as exc:
+            if not messaging_repo._is_cancelled(exc):
+                raise
+            return meta  # lost a revision race: the next open names it
+        await messaging._publish_room_metadata(meta)
     return meta
 
 

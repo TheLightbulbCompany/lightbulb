@@ -2195,6 +2195,8 @@ async def patch_room(auth: AuthContext, room_id: str, request: PatchRoomRequest)
         raise ApiProblem("ROOM_FORBIDDEN", "Direct messages cannot be renamed.")
     if "name" in updates and is_vendor_room(meta):
         raise ApiProblem("ROOM_FORBIDDEN", "This channel's name is managed by Lightbulb.")
+    if "name" in updates and is_session_room(meta):
+        raise ApiProblem("ROOM_FORBIDDEN", "This chat is named after its session.")
     if request.archived is not None and is_session_room(meta):
         raise ApiProblem("ROOM_NOT_ARCHIVABLE", "This chat opens and closes with its session.")
     if request.archived is not None and request.archived != bool(meta.get("archivedAt")):

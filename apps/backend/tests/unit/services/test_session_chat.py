@@ -22,6 +22,7 @@ META = {
     "roomId": ROOM,
     "ownerId": OWNER,
     "kind": "channel",
+    "name": "Session chat · Fix relay",
     "revision": 1,
     "lastSeq": 0,
     "hidden": True,
@@ -316,3 +317,21 @@ async def test_a_lifecycle_write_that_loses_the_revision_race_is_tried_again(env
     env["get_room"].side_effect = [META, {**META, "archivedAt": "t"}]
     await session_chat.follow_session(OWNER, SID, ended=True)
     assert env["patch_room_meta"].await_count == 1
+
+
+@pytest.mark.asyncio
+async def test_the_chat_is_named_after_the_session_and_follows_a_rename(env, monkeypatch):
+    """The agent's turn and the phone's header read the room name: it tracks the session's title."""
+    env["get_room"].return_value = {**META, "name": "Session chat · Session"}
+    env["get_member"].return_value = {"kind": "human", "id": BOB.user_id}
+    await session_chat.open_chat(BOB, SID)
+    env["patch_room_meta"].assert_awaited_once_with(ROOM, {"name": "Session chat · Fix relay"})
+    env["patch_room_meta"].reset_mock()
+    env["get_room"].return_value = {**META, "name": "Session chat · Fix relay"}
+    await session_chat.open_chat(BOB, SID)
+    env["patch_room_meta"].assert_not_awaited()
+    # Nobody renames it by hand: the next open would only take the name back.
+    monkeypatch.setattr(messaging, "require_room_member", AsyncMock(return_value=(META, {"role": "owner"})))
+    with pytest.raises(ApiProblem) as refused:
+        await messaging.patch_room(ALICE, ROOM, messaging.PatchRoomRequest(name="mine"))
+    assert refused.value.error.code == "ROOM_FORBIDDEN"

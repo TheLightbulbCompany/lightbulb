@@ -2,9 +2,11 @@ version: 2
 # Weekly, one grouped PR per ecosystem for minor+patch; majors arrive one by one.
 updates:
   - package-ecosystem: npm # pnpm workspaces use the npm key
-    # Workspace root plus the two lockfile roots outside pnpm-workspace.yaml.
+    # Workspace root, the two lockfile roots outside pnpm-workspace.yaml, and
+    # apps/infra, whose package-lock.json is what deploy.yml's `npm ci` reads.
     directories:
       - /
+      - /apps/infra
       - /stripe-app
       - /apps/infra/lambda/openrouter-gate
     schedule: { interval: weekly }
@@ -35,3 +37,4 @@ updates:
     groups:
       actions:
         patterns: ["*"]
+        update-types: [minor, patch]

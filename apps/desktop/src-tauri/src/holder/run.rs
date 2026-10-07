@@ -104,6 +104,36 @@ mod tests {
         assert_eq!(input_origin(OWNER_INPUT, false), "owner");
     }
 
+    /// Owner ruling 2026-10-07: every Claude Code session a holder hosts runs in the classic
+    /// renderer, whatever the person's environment asks for. Codex is left alone.
+    #[test]
+    fn holder_gives_claude_code_the_classic_renderer_and_codex_nothing() {
+        let words = |a: &[&str]| a.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        let classic = |env: &[(&str, &str)], argv: &[&str]| {
+            let env = provider_environment(env.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect(), &words(argv));
+            env.into_iter().filter(|(k, _)| k == CLASSIC_RENDERER).map(|(_, v)| v).collect::<Vec<_>>()
+        };
+        const START: &str = "lightbulb-start";
+        for claude in ["/Users/a/.local/share/claude/versions/2.1.293", "/opt/homebrew/Caskroom/claude-code/2.1.293/claude", "/opt/ClaudeCode.app/Contents/MacOS/claude"] {
+            assert!(is_claude_program(Path::new(claude)), "{claude}");
+            for argv in [&[claude, "--resume", "abc"][..], &["/bin/sh", "-c", "…", START, "start-1", "/scope", claude, "--model", "opus"],
+                &["/bin/sh", "-c", "…", "lightbulb-attach", claude, "8ed71738"]] {
+                assert_eq!(classic(&[("PATH", "/bin")], argv), ["1"], "{argv:?}");
+            }
+            // The person's own choice of renderer does not hold for a shared session: one value, ours.
+            assert_eq!(classic(&[(CLASSIC_RENDERER, "0"), ("CLAUDE_CODE_NO_FLICKER", "1")], &[claude]), ["1"]);
+        }
+        let codex = "/opt/homebrew/lib/node_modules/@openai/codex/node_modules/@openai/codex-darwin-arm64/vendor/aarch64-apple-darwin/bin/codex";
+        for argv in [&[codex, "--no-daemon", "resume", "x"][..], &["/bin/sh", "-c", "…", START, "start-1", "/scope", codex, "--no-daemon"],
+            &["/bin/sh", "-c", "…", "lightbulb-attach", codex, "019a1b2c-0000-7000-8000-000000000000"],
+            // A prompt that names Claude, a folder called claude, another program's versions folder.
+            &[codex, "--", "run claude"], &["/Users/claude/bin/codex"], &["/other/versions/2.1.293"], &["/bin/sh", "-c", "claude"], &[]] {
+            assert_eq!(classic(&[("PATH", "/bin")], argv), Vec::<String>::new(), "{argv:?}");
+        }
+        // Not ours to set means not ours to remove.
+        assert_eq!(classic(&[(CLASSIC_RENDERER, "1")], &[codex]), ["1"]);
+    }
+
     #[test]
     fn holder_environment_parses_and_refuses_an_empty_capture() {
         let wrap = |json: &str| format!("Welcome back!\n{ENV_BEGIN}{json}{ENV_END}\nbye\n").into_bytes();
@@ -112,7 +142,7 @@ mod tests {
         assert!(!env.iter().any(|(k, _)| k == "SHLVL"));
         assert_eq!(parse_environment(b""), None);
         let kept = provider_environment(vec![("PATH".into(), "/bin".into()), ("CLAUDE_CODE_CHILD_SESSION".into(), "1".into()),
-            ("CLAUDE_CODE_SSE_PORT".into(), "1".into()), ("CLAUDE_CODE_USE_BEDROCK".into(), "1".into())]);
+            ("CLAUDE_CODE_SSE_PORT".into(), "1".into()), ("CLAUDE_CODE_USE_BEDROCK".into(), "1".into())], &["/opt/homebrew/bin/codex".into()]);
         assert_eq!(kept.iter().map(|(k, _)| k.as_str()).collect::<Vec<_>>(), ["PATH", "CLAUDE_CODE_USE_BEDROCK"],
             "another session's markers go; the person's own Claude Code settings stay");
         assert_eq!(parse_environment(&wrap(r#"{"PATH":"/usr/bin"}"#)), None);
@@ -155,16 +185,57 @@ const SESSION_MARKERS: &[&str] = &[
     "CLAUDE_CODE_SESSION_ID", "CLAUDE_CODE_SSE_PORT", "CLAUDE_PID", "CLAUDE_EFFORT",
 ];
 
-/// The environment a provider is started with: the captured one, minus another session's markers.
-pub fn provider_environment(env: Vec<(String, String)>) -> Vec<(String, String)> {
-    env.into_iter().filter(|(k, _)| !SESSION_MARKERS.contains(&k.as_str())).collect()
+/// Claude Code's own switch for its classic renderer (code.claude.com/docs/en/fullscreen). Every
+/// Claude Code session a holder hosts runs with it (owner ruling 2026-10-07): the fullscreen
+/// renderer draws on the alternate screen, so the output has no history and a teammate watching
+/// cannot scroll back. It wins over the person's `tui` setting and over `CLAUDE_CODE_NO_FLICKER=1`
+/// (the first row of Claude Code's own table; tested on 2.1.293), and there is no setting for it.
+pub const CLASSIC_RENDERER: &str = "CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN";
+
+/// Whether `program` is Claude Code as this app runs it: `claude`, or the release file its
+/// installer links that name to (`claude/versions/<x.y.z>`). Codex is always `codex`.
+pub fn is_claude_program(program: &Path) -> bool {
+    let name = |p: &Path| p.file_name().and_then(|n| n.to_str()).map(str::to_owned);
+    let Some(file) = name(program) else { return false };
+    let release = || {
+        let versions = program.parent()?;
+        (name(versions)? == "versions" && name(versions.parent()?)? == "claude"
+            && file.split('.').count() == 3
+            && file.split('.').all(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit())))
+        .then_some(())
+    };
+    file == "claude" || release().is_some()
+}
+
+/// Whether a holder's argv runs Claude Code: every way this app starts one (New session, a remote
+/// start and `lightbulb claude` through `session_start::held_argv`; a resume and a pick-up
+/// directly; `manager::attach_argv` for a background session).
+pub fn runs_claude_code(argv: &[String]) -> bool {
+    let program = match argv {
+        [sh, _, _, name, _, _, program, ..] if sh == "/bin/sh" && name == "lightbulb-start" => program,
+        [sh, _, _, name, program, _] if sh == "/bin/sh" && name == "lightbulb-attach" => program,
+        [program, ..] => program,
+        [] => return false,
+    };
+    is_claude_program(Path::new(program))
+}
+
+/// The environment the provider `argv` runs is started with: the captured one, minus another
+/// session's markers, and for Claude Code with the classic renderer whatever the capture said.
+pub fn provider_environment(env: Vec<(String, String)>, argv: &[String]) -> Vec<(String, String)> {
+    let classic = runs_claude_code(argv);
+    let mut env: Vec<_> = env.into_iter().filter(|(k, _)| !SESSION_MARKERS.contains(&k.as_str()) && !(classic && k == CLASSIC_RENDERER)).collect();
+    if classic {
+        env.push((CLASSIC_RENDERER.into(), "1".into()));
+    }
+    env
 }
 
 pub fn run_with_env(socket: &Path, argv: &[String], cwd: &Path, env: Vec<(String, String)>, size: Option<(u16, u16)>) -> Result<()> {
     // The terminal that asked for this session, if one did: its first screen is drawn at that
     // size, so a replay of it fits that terminal.
     let (cols, rows) = size.map_or((COLS, ROWS), |(c, r)| (c.clamp(1, 1000), r.clamp(1, 500)));
-    let env = provider_environment(env);
+    let env = provider_environment(env, argv);
     let program = argv.first().ok_or_else(|| std::io::Error::other("no program"))?;
     let pair = native_pty_system()
         .openpty(PtySize { rows, cols, pixel_width: 0, pixel_height: 0 })
@@ -268,6 +339,9 @@ pub fn run_with_env(socket: &Path, argv: &[String], cwd: &Path, env: Vec<(String
     });
 
     let mut model = Model::new(rows, cols);
+    if runs_claude_code(argv) {
+        model.classic_claude_code();
+    }
     let mut log: VecDeque<u8> = VecDeque::new();
     let mut total: u64 = 0;
     // Connected but not yet introduced: they get nothing until their HELLO is answered.
@@ -287,7 +361,7 @@ pub fn run_with_env(socket: &Path, argv: &[String], cwd: &Path, env: Vec<(String
     let mut ended = false;
     // When the provider exited (unix ms): HELLO's `endedAt` once `ended`.
     let mut exited_at_ms = 0u64;
-    // Once `ended`: the last alternate-screen picture, when that is what the person last saw
+    // Once `ended`: the picture the person last saw, when the final screen is not it
     // (`Model::ended_picture`). Every snapshot is then this picture, and nothing follows it.
     let mut ended_picture: Option<Vec<u8>> = None;
     // An END was taken: the provider is on its way out.

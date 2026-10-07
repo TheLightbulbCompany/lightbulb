@@ -451,6 +451,11 @@ mod tests {
         assert_eq!(argv[2], CODEX_ATTACH_SCRIPT);
         assert!(CODEX_ATTACH_SCRIPT.contains("--remote unix://") && CODEX_ATTACH_SCRIPT.contains("check_for_update_on_startup=false"));
         assert_eq!(attach_job(&info(argv.clone())), Some(thread));
+        // The attach client of a Claude background session is started with the classic-renderer
+        // switch like every Claude Code process a holder runs; Codex's is not. (Claude Code draws
+        // an attached background session fullscreen whatever the variable says: its docs, 2026-10-07.)
+        let classic = |argv: &[String]| crate::holder::run::provider_environment(vec![], argv).iter().any(|(k, _)| k == crate::holder::run::CLASSIC_RENDERER);
+        assert!(classic(&attach_argv(claude, "8ed71738")) && !classic(&argv));
         assert_eq!((attach_provider("8ed71738"), attach_provider(thread), attach_provider("01a10845-c8f1")), (Some("claude"), Some("codex"), None));
         // One provider's script with the other's job is not ours.
         let mut crossed = argv;

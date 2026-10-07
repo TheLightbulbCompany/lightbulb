@@ -713,6 +713,30 @@ mod tests {
         assert_eq!(&held[6..], &argv[..]);
     }
 
+    /// Owner ruling 2026-10-07: New session, a remote start and `lightbulb claude` all hand the
+    /// holder an argv it knows as Claude Code, so it runs in the classic renderer; Codex does not.
+    #[test]
+    fn every_start_of_claude_code_gets_the_classic_renderer_and_codex_does_not() {
+        let classic = |argv: &[String]| {
+            crate::holder::run::provider_environment(vec![], argv).iter().any(|(k, v)| k == crate::holder::run::CLASSIC_RENDERER && v == "1")
+        };
+        let start = |tool: &str| -> Start {
+            serde_json::from_value(json!({"tool": tool, "folder": "/f", "model": null, "mode": null, "effort": null, "prompt": "fix it", "startId": "start-1"})).unwrap()
+        };
+        let link = Some(("start-1", "/scope"));
+        let claude = Path::new("/Users/a/.local/share/claude/versions/2.1.293");
+        let codex = Path::new("/opt/homebrew/bin/codex");
+        // New session and a remote start.
+        assert!(classic(&held_argv(&argv(claude, &start("claude")), link)));
+        assert!(!classic(&held_argv(&argv(codex, &start("codex")), link)));
+        // `lightbulb claude …` (the shell switch routes a plain `claude` here), whatever the person adds.
+        for args in [&[][..], &["--resume", "abc"], &["attach", "8ed71738"], &["--", "codex"]] {
+            let args: Vec<String> = args.iter().map(|s| s.to_string()).collect();
+            assert!(classic(&held_argv(&cli_argv(claude, "claude", &args), link)), "{args:?}");
+            assert!(!classic(&held_argv(&cli_argv(codex, "codex", &args), link)), "{args:?}");
+        }
+    }
+
     #[test]
     fn session_start_terminal_command_folder_is_an_approved_folder_or_inside_one() {
         let approved = [PathBuf::from("/Users/a/code")];

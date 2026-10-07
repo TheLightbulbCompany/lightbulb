@@ -51,12 +51,7 @@ fn hook_ancestor(
         }
         let path = &current.executable;
         let name = path.file_name()?.to_str()?;
-        let claude_release = provider == "claude"
-            && path.parent()?.file_name().is_some_and(|n| n == "versions")
-            && path.parent()?.parent()?.file_name().is_some_and(|n| n == "claude")
-            && name.split('.').count() == 3
-            && name.split('.').all(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()));
-        if name == provider || claude_release {
+        if name == provider || (provider == "claude" && crate::holder::run::is_claude_program(path)) {
             return Some(HookProcess::of(&current));
         }
         if !matches!(name, "sh" | "bash" | "zsh" | "dash") { return None; }

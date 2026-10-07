@@ -133,6 +133,17 @@ async def _source(device: MachineIdentity, request: NativeToolRequest) -> dict:
     return row
 
 
+def sendable(session: local_sessions.LocalSession, user_id: str) -> bool:
+    """A live, verified session this person may send a follow-up into (both MCP servers list this)."""
+    return (
+        session.status in local_sessions.LIVE_STATUSES
+        and session.capabilities_verified
+        and session.control_unavailable_reason is None
+        and session.capabilities.send_mode != "none"
+        and (session.human_user_id == user_id or session.team_control or user_id in session.allowed_senders)
+    )
+
+
 async def _targets(auth: AuthContext, source_id: str) -> dict:
     rooms = (await messaging.list_rooms(auth)).rooms
     sessions = (await local_sessions.list_workspace_sessions(auth)).sessions
@@ -161,11 +172,7 @@ async def _targets(auth: AuthContext, source_id: str) -> dict:
     session_rows = [
         {"destination": f"session:{s.session_id}", "provider": s.provider, "title": s.title, "status": s.status}
         for s in sessions
-        if str(s.session_id) != source_id
-        and s.status in local_sessions.LIVE_STATUSES
-        and s.capabilities_verified
-        and s.capabilities.send_mode != "none"
-        and (s.human_user_id == auth.user_id or s.team_control or auth.user_id in s.allowed_senders)
+        if str(s.session_id) != source_id and sendable(s, auth.user_id)
     ][:20]
     return {"rooms": room_rows, "people": list(people.values())[:20], "sessions": session_rows}
 
@@ -378,14 +385,11 @@ async def _session_send(auth: AuthContext, source: dict, session_id: str, text: 
                 sessions_repo.enrollment_condition(enrollment),
             ]
         )
-    command = local_sessions.LocalSessionCommand(
-        request_id=request_id, expected_generation=target["generation"], kind="send", text=text
-    )
-    receipt = await local_sessions.submit_command(
+    return await session_send(
         auth,
-        None,
-        session_id,
-        command,
+        target,
+        text,
+        request_id,
         source_session_id=source["sessionId"],
         source_generation=source["generation"],
         source_turn_id=source.get("activeTurnId"),
@@ -393,11 +397,22 @@ async def _session_send(auth: AuthContext, source: dict, session_id: str, text: 
         source_conditions=source_conditions,
         source_pairing=(source["humanUserId"], source["deviceId"]),
     )
+
+
+async def session_send(auth: AuthContext, target: dict, text: str, request_id: str, **source: Any) -> dict:
+    """One follow-up into an authorized target session; the native and hosted MCP sends both land here."""
+    from core.services.local_session_relay import get_local_session_relay
+
+    session_id = target["sessionId"]
+    command = local_sessions.LocalSessionCommand(
+        request_id=request_id, expected_generation=target["generation"], kind="send", text=text
+    )
+    receipt = await local_sessions.submit_command(auth, None, session_id, command, **source)
     try:
-        await relay.dispatch_session(source["ownerId"], session_id)
+        await get_local_session_relay().dispatch_session(target["ownerId"], session_id)
     except Exception:
         # Durable admission stays queued; the device heartbeat retries delivery.
-        logger.warning("native session send dispatch failed session=%s", session_id, exc_info=True)
+        logger.warning("session send dispatch failed session=%s", session_id, exc_info=True)
     return {"state": receipt.state, "destination": f"session:{session_id}", "targetRequestId": request_id}
 
 
@@ -424,14 +439,39 @@ async def _outgoing_hop(source: dict) -> int:
 async def _resolve_destination(auth: AuthContext, destination: str) -> str:
     if not destination.startswith("person:"):
         return destination
-    member_id = destination.removeprefix("person:")
+    return f"room:{await person_dm(auth, destination.removeprefix('person:'))}"
+
+
+async def person_dm(auth: AuthContext, member_id: str, *, create_key: str | None = None) -> str:
+    """The caller's DM room with this member. A native session needs it open already; the
+    hosted MCP opens one (``create_key``: its request id), the same find-or-create the web uses.
+    Reuse comes from the lookup. The create id is per operation, never per pair: a pair id would
+    replay the first DM's create receipt after that DM became a group DM, and post to the group."""
     if member_id == auth.user_id:
-        raise ApiProblem("INVALID_REQUEST", "A native session cannot message its own person destination.")
+        raise ApiProblem("INVALID_REQUEST", "Cannot message your own person destination.")
     rooms = (await messaging.list_rooms(auth)).rooms
     match = next((r for r in rooms if r.kind == "dm" and any(m.id == member_id for m in r.members)), None)
-    if match is None:
+    if match is not None:
+        return str(match.room_id)
+    if create_key is None:
         raise ApiProblem("ROOM_NOT_FOUND", "Open a direct message with this person first.")
-    return f"room:{match.room_id}"
+    # People are Clerk ids; anything else is an agent, which create_room checks against the roster.
+    counterpart = (
+        messaging.CreateRoomMember(kind="human", id=member_id, role="member", listen_mode=None)
+        if member_id.startswith("user_")
+        else messaging.CreateRoomMember(kind="agent", id=member_id, role="member", listen_mode="active")
+    )
+    room = await messaging.create_room(
+        auth,
+        messaging.CreateRoomRequest(
+            # Per send, so a retry of this send replays this create and nothing older.
+            client_room_id=uuid.uuid5(uuid.NAMESPACE_URL, f"lightbulb-dm:{auth.user_id}:{member_id}:{create_key}"),
+            name=None,
+            kind="dm",
+            members=[counterpart],
+        ),
+    )
+    return str(room.room_id)
 
 
 async def _dispatch_native(

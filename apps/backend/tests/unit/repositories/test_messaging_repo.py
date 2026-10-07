@@ -804,6 +804,19 @@ async def test_wipe_deletes_room_partitions_owner_rows_and_streams_only_for_that
 
 
 @pytest.mark.asyncio
+async def test_workspace_wipe_removes_hosted_mcp_send_receipts(table):
+    import uuid
+
+    from core.auth import AuthContext
+    from core.services import hosted_mcp
+
+    pk, sk = hosted_mcp._sent_key(AuthContext(user_id=USER_A, org_id=OWNER), uuid.uuid4())
+    table.put_item(Item={"pk": pk, "sk": sk, "destination": "room:r"})
+    assert await repo.delete_owner_partition(OWNER) > 0
+    assert await repo._get(pk, sk) is None
+
+
+@pytest.mark.asyncio
 async def test_set_member_prefs_writes_only_named_fields_and_leaves_revision_alone(table):
     room_id, meta = await _room()
 

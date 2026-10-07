@@ -93,6 +93,7 @@ async def test_session_targets_exclude_offline_and_unsendable_sessions(monkeypat
             human_user_id="user_owner",
             team_control=False,
             allowed_senders=[],
+            control_unavailable_reason=None,
         )
 
     offline, unsendable, reachable = session("offline", "queue"), session("idle", "none"), session("idle", "queue")
@@ -539,3 +540,112 @@ async def test_the_mac_answers_each_request_by_its_own_id(monkeypatch, request_i
     assert door.await_args.args[1:] == (str(_SID), "user_z", "allow")
     assert door.await_args.kwargs == {"request_id": request_id}
     assert not doors["pickup" if routed == "join" else "join"].await_count
+
+
+@pytest.mark.asyncio
+async def test_person_dm_opens_a_dm_per_send_and_reuses_only_a_real_dm(monkeypatch):
+    auth = tools.AuthContext(user_id="user_owner", org_id="org_a")
+    person = SimpleNamespace(id="user_b")
+    group = SimpleNamespace(room_id=uuid.uuid4(), kind="group-dm", members=[person, SimpleNamespace(id="user_c")])
+    rooms = [group]  # the first DM with user_b was converted in place into this group DM
+    monkeypatch.setattr(tools.messaging, "list_rooms", AsyncMock(side_effect=lambda _a: SimpleNamespace(rooms=rooms)))
+    new_dm = uuid.uuid4()
+    create = AsyncMock(return_value=SimpleNamespace(room_id=new_dm))
+    monkeypatch.setattr(tools.messaging, "create_room", create)
+    monkeypatch.setattr(tools.messaging, "load_agent_roster", AsyncMock(side_effect=RuntimeError("no roster read")))
+    with pytest.raises(ApiProblem) as error:
+        await tools.person_dm(auth, "user_b")
+    assert error.value.error.code == "ROOM_NOT_FOUND"
+
+    # A new person send opens a NEW dm; it never lands in the group.
+    assert await tools.person_dm(auth, "user_b", create_key="req-1") == str(new_dm)
+    await tools.person_dm(auth, "user_b", create_key="req-2")
+    first, second = (call.args[1] for call in create.await_args_list)
+    assert first.kind == "dm" and [(m.kind, m.id) for m in first.members] == [("human", "user_b")]
+    # Per-send create ids: no send can replay an older create receipt (the group's origin).
+    assert first.client_room_id != second.client_room_id
+
+    # Reuse comes from the lookup: once a real DM exists, nothing is created.
+    rooms.append(SimpleNamespace(room_id=new_dm, kind="dm", members=[person]))
+    create.reset_mock()
+    assert await tools.person_dm(auth, "user_b", create_key="req-3") == str(new_dm)
+    create.assert_not_awaited()
+
+    await tools.person_dm(auth, "0b5e3c1e-agent", create_key="req-4")
+    agent = create.await_args.args[1].members[0]
+    assert (agent.kind, agent.id, agent.listen_mode) == ("agent", "0b5e3c1e-agent", "active")
+    with pytest.raises(ApiProblem):
+        await tools.person_dm(auth, "user_owner", create_key="req-5")
+
+
+@pytest.mark.asyncio
+async def test_session_send_admits_then_dispatches_and_survives_a_dispatch_failure(monkeypatch):
+    from core.services import local_session_relay
+
+    sid = str(uuid.uuid4())
+    target = {"sessionId": sid, "ownerId": "org_a", "generation": "g7"}
+    submit = AsyncMock(return_value=SimpleNamespace(state="pending"))
+    monkeypatch.setattr(tools.local_sessions, "submit_command", submit)
+    relay = SimpleNamespace(dispatch_session=AsyncMock(side_effect=RuntimeError("socket gone")))
+    monkeypatch.setattr(local_session_relay, "get_local_session_relay", lambda: relay)
+    auth = tools.AuthContext(user_id="user_owner", org_id="org_a")
+    result = await tools.session_send(auth, target, "hi", "req-1", via_client="Claude Code")
+    assert result == {"state": "pending", "destination": f"session:{sid}", "targetRequestId": "req-1"}
+    command = submit.await_args.args[3]
+    assert (command.kind, command.text, command.expected_generation) == ("send", "hi", "g7")
+    assert submit.await_args.kwargs == {"via_client": "Claude Code"}
+    relay.dispatch_session.assert_awaited_once_with("org_a", sid)
+
+
+@pytest.mark.asyncio
+async def test_session_send_refuses_when_control_fails_closed_between_authorize_and_admit(monkeypatch):
+    import time
+
+    sid = str(uuid.uuid4())
+    clean = {
+        "sessionId": sid,
+        "ownerId": "org_a",
+        "humanUserId": "user_owner",
+        "generation": "g",
+        "status": "idle",
+        "onlineUntil": int(time.time()) + 60,
+        "capabilities": {"sendMode": "queue", "interrupt": False},
+        "capabilitiesVerified": True,
+    }
+    # A heartbeat flips the row after the caller's authorize; submit_command's own read sees it.
+    flipped = {**clean, "controlUnavailableReason": "history-gap"}
+    monkeypatch.setattr(tools.local_sessions, "authorize_session", AsyncMock(return_value=(flipped, {})))
+    monkeypatch.setattr(tools.local_sessions.repo, "get_command", AsyncMock(return_value=None))
+    admit = AsyncMock()
+    monkeypatch.setattr(tools.local_sessions.repo, "admit_command", admit)
+    with pytest.raises(ApiProblem) as error:
+        await tools.session_send(tools.AuthContext(user_id="user_owner", org_id="org_a"), clean, "hi", "r1")
+    assert error.value.error.code == "LOCAL_SESSION_UNSUPPORTED"
+    admit.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_a_hosted_client_send_never_enters_an_offline_sessions_queue(monkeypatch):
+    import time
+
+    sid = str(uuid.uuid4())
+    offline = {
+        "sessionId": sid,
+        "ownerId": "org_a",
+        "humanUserId": "user_owner",
+        "generation": "g",
+        "status": "offline",
+        "onlineUntil": int(time.time()) - 5,
+        "capabilities": {"sendMode": "queue", "interrupt": False},
+        "capabilitiesVerified": True,
+    }
+    monkeypatch.setattr(tools.local_sessions, "authorize_session", AsyncMock(return_value=(offline, {})))
+    monkeypatch.setattr(tools.local_sessions.repo, "get_command", AsyncMock(return_value=None))
+    admit = AsyncMock()
+    monkeypatch.setattr(tools.local_sessions.repo, "admit_command", admit)
+    with pytest.raises(ApiProblem) as error:
+        await tools.session_send(
+            tools.AuthContext(user_id="user_owner", org_id="org_a"), offline, "hi", "r1", via_client="Claude Code"
+        )
+    assert error.value.error.code == "LOCAL_SESSION_OFFLINE"
+    admit.assert_not_awaited()

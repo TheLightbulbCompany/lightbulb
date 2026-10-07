@@ -3505,8 +3505,11 @@ async def create_human_message(
     native_conditions: list[dict] | None = None,
     via: Literal["lightbulb_mcp"] | None = None,
     author_override: dict | None = None,
+    expected_room_revision: int | None = None,
 ) -> CanonicalMessage:
-    """``author_override`` is the hosted MCP's client identity; ``auth`` stays the accountable human."""
+    """``author_override`` is the hosted MCP's client identity; ``auth`` stays the accountable human.
+    ``expected_room_revision`` fences the write: a room changed since that read (e.g. a DM turned
+    into a group DM) refuses with MESSAGE_CONFLICT instead of posting to the new audience."""
     meta, sender = await require_room_member(resolve_owner_id(auth), auth.user_id, room_id)
     owner_id = meta["ownerId"]  # room-scoped writes are keyed on the ROOM owner, never the caller's workspace
     mentions = await _validate_mentions(room_id, request.mentions)
@@ -3632,7 +3635,7 @@ async def create_human_message(
             attachments=attachments,
             thread_root_seq=_root_seq(links, request.thread_root_message_id),
             acting_human_id=auth.user_id if native_source_id or author_override else None,
-            expected_room_revision=int(meta["revision"]) if native_source_id else None,
+            expected_room_revision=int(meta["revision"]) if native_source_id else expected_room_revision,
             agent_hop=native_hop if native_source_id else None,
             extra_conditions=native_conditions if native_source_id else None,
             addressing=_stored_addressing(addressing),

@@ -1,4 +1,4 @@
-import { act, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { expect, it, vi } from "vitest";
 import type { LiveEvent } from "@lightbulb/shared";
 import { type LocalSession } from "@lightbulb/shared";
@@ -13,7 +13,7 @@ vi.mock("../SessionTerminalView", async () => {
   return { SessionTerminalView: ({ onLive, onCanType, admitted }: { onLive: (live: boolean) => void; onCanType?: (c: boolean) => void; admitted?: boolean }) => {
     typing.admitted = admitted;
     useEffect(() => { onLive(true); onCanType?.(typing.canType); }, [onLive, onCanType]);
-    return <div role="region" aria-label="Live terminal (view only)" />;
+    return <div role="region" aria-label="Live terminal (view only)"><div className="session-terminal-scroll" /></div>;
   } };
 });
 
@@ -323,4 +323,45 @@ it("tells how a no-daemon Codex session gets its screen, and says nothing for a 
   render(<LocalSessionPanel {...props} own={false} session={{ ...session, terminal: undefined, terminalReason: "unknown" }} />);
   expect(screen.getByText("This session was not started through Lightbulb, so its screen is not here.")).toBeTruthy();
   expect(screen.queryByText(/press ←/i)).toBeNull();
+});
+
+it("says Ended just now, not that the screen is gone, while a held session's kept screen is still on its way", async () => {
+  // Claude's SessionEnd hook ends the session before the provider exits; the Mac reports the kept screen on a later heartbeat.
+  vi.useFakeTimers();
+  const gone = "The screen is gone: this session's terminal closed.";
+  const ended: LocalSession = { ...session, status: "ended", latestEventSeq: 4, endedAt: new Date(Date.now() - 2_000).toISOString() };
+  const view = render(<LocalSessionPanel session={ended} ownerName="Alice" own={false} client={client as never} revision={0} onAccessLost={() => {}} onEvent={() => () => {}} />);
+  expect(screen.getByText("Ended just now")).toBeTruthy();
+  expect(screen.queryByText(gone)).toBeNull();
+  await act(async () => { await vi.advanceTimersByTimeAsync(17_000); });
+  expect(screen.queryByText(gone)).toBeNull();
+  await act(async () => { await vi.advanceTimersByTimeAsync(1_100); });
+  expect(screen.getByText(gone)).toBeTruthy();
+  expect(screen.queryByText("Ended just now")).toBeNull();
+  view.unmount();
+  // Never held: there is no screen to wait for.
+  render(<LocalSessionPanel session={{ ...ended, terminal: undefined, endedAt: new Date().toISOString() }} ownerName="Alice" own={false} client={client as never} revision={0} onAccessLost={() => {}} onEvent={() => () => {}} />);
+  expect(screen.getByText(gone)).toBeTruthy();
+  vi.useRealTimers();
+});
+
+it("opens an ended session's kept screen at its top left, once, and leaves a running one at its tail", async () => {
+  const ended: LocalSession = { ...session, status: "ended", screenAvailable: true, latestEventSeq: 4, endedAt: new Date(Date.now() - 120_000).toISOString() };
+  const view = render(<LocalSessionPanel session={ended} ownerName="Alice" own={false} client={client as never} revision={0} onAccessLost={() => {}} onEvent={() => () => {}} />);
+  await screen.findByRole("region", { name: "Live terminal (view only)" });
+  const box = document.querySelector<HTMLElement>(".session-terminal-scroll")!;
+  // The terminal view follows its last row; in an ended picture that can be a blank part of the screen.
+  box.scrollTop = 400; box.scrollLeft = 30;
+  fireEvent.scroll(box);
+  expect([box.scrollTop, box.scrollLeft]).toEqual([0, 0]);
+  box.scrollTop = 200;
+  fireEvent.scroll(box);
+  expect(box.scrollTop).toBe(200); // the reader's own scrolling is left alone
+  view.unmount();
+  render(<LocalSessionPanel session={session} ownerName="Alice" own={false} client={client as never} revision={0} onAccessLost={() => {}} onEvent={() => () => {}} />);
+  await screen.findByRole("region", { name: "Live terminal (view only)" });
+  const live = document.querySelector<HTMLElement>(".session-terminal-scroll")!;
+  live.scrollTop = 400;
+  fireEvent.scroll(live);
+  expect(live.scrollTop).toBe(400);
 });

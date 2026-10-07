@@ -27,6 +27,10 @@ import { ResumeDelivery, SessionResume } from "./SessionResume";
  *  under the history window's 2,000-row cap, so reading back never evicts the newest events. A longer
  *  session's summary covers its last 1,000 events; a complete one needs a server-side summary. */
 const MAX_OLDER_PAGES = 20;
+/** How long an ended held session may be without its kept screen before the screen counts as gone: Claude's
+ *  SessionEnd hook ends the session before the provider exits, and the Mac reports the kept screen on a later
+ *  heartbeat (11.5 s in prod, desktop 0.4.625). */
+const SCREEN_DUE_MS = 20_000;
 
 type Decide = (sessionId: string, userId: string, decision: "allow" | "decline", requestId?: string) => Promise<unknown>;
 type JoinDecider = { decideLocalSessionJoin?: Decide; decideLocalSessionPickup?: Decide };
@@ -76,6 +80,25 @@ export function LocalSessionPanel({ session, ownerName, own, client, revision, o
   const endedScreen = session.status === "ended" && session.screenAvailable === true && hasTerminal;
   // An offline session still probes this Mac's holder: "offline" is the relay's view (sharing off, a reconnect), not the Mac's.
   const local = useLocalTerminal(session.status === "ended" || (running && !hasTerminal) ? null : { sessionId: session.sessionId }, slot, details === null);
+  // Until then the panel does not say the screen is gone; the timer redraws it when the wait is over.
+  const screenDueAt = session.status === "ended" && hasTerminal && !endedScreen && session.endedAt ? Date.parse(session.endedAt) + SCREEN_DUE_MS : 0;
+  const [, redraw] = useState(0);
+  useEffect(() => {
+    const left = screenDueAt - Date.now();
+    if (!(left > 0)) return;
+    const timer = setTimeout(() => redraw(n => n + 1), left);
+    return () => clearTimeout(timer);
+  }, [screenDueAt]);
+  const screenDue = Date.now() < screenDueAt;
+  // The terminal view follows its last row, which in a kept picture can be a blank part of the screen: its
+  // first scroll goes back to the top left instead, and after that the reader's scrolling is their own.
+  const placed = useRef("");
+  const openAtTop = (event: { target: EventTarget }) => {
+    const box = event.target;
+    if (placed.current === session.sessionId || !(box instanceof HTMLElement) || !box.classList.contains("session-terminal-scroll")) return;
+    placed.current = session.sessionId;
+    box.scrollTop = 0; box.scrollLeft = 0;
+  };
   const watchRemote = local === "none" && hasTerminal && (running || endedScreen) && !!onEvent && !!client.watchLocalSession;
   const [screenLive, setScreenLive] = useState(false);
   // False once the terminal is read-only for this viewer (the Mac refused input): the message box is the way to send then.
@@ -175,8 +198,8 @@ export function LocalSessionPanel({ session, ownerName, own, client, revision, o
   const endedEmpty = session.provider === "claude" && session.latestEventSeq === 0 && !session.controlUnavailableReason;
   const endedAt = session.endedAt ? <time dateTime={session.endedAt} title={new Date(session.endedAt).toLocaleString()}>{timeAgo(session.endedAt)}</time> : null;
   const endedPanel = <div className="session-state-panel" role="status">
-    <p className="session-state-title">{endedAt ? <>Ended {endedAt}</> : "Ended"}</p>
-    <p>{endedEmpty ? "This session ended before anything was sent." : "The screen is gone: this session's terminal closed."}</p>
+    <p className="session-state-title">{screenDue && !endedEmpty ? "Ended just now" : endedAt ? <>Ended {endedAt}</> : "Ended"}</p>
+    {(endedEmpty || !screenDue) && <p>{endedEmpty ? "This session ended before anything was sent." : "The screen is gone: this session's terminal closed."}</p>}
   </div>;
   const endedLine = <p className="session-ended-line" role="status">{endedAt ? <>Ended · {endedAt}</> : "Ended"}</p>;
   const offlinePanel = <div className="session-state-panel" role="status">
@@ -251,9 +274,9 @@ export function LocalSessionPanel({ session, ownerName, own, client, revision, o
       ? <div ref={slot} className="local-session-terminal" role="region" aria-label="Session terminal" />
       : <>
       {session.status === "ended" ? (endedScreen ? endedLine : endedPanel) : session.status === "offline" ? offlinePanel : notStarted ? noticePanel : null}
-      {watchRemote && <SessionTerminalView session={session} onEvent={onEvent!} watch={client.watchLocalSession!} onLive={setScreenLive} onCanType={setTermCanType}
+      {watchRemote && <div className="session-terminal-slot" onScrollCapture={endedScreen ? openAtTop : undefined}><SessionTerminalView session={session} onEvent={onEvent!} watch={client.watchLocalSession!} onLive={setScreenLive} onCanType={setTermCanType}
         admitted={running && control && session.shared !== false && !(session.inputPaused && !own)}
-        input={client.sendLocalSessionInput ? (bytes, epoch) => client.sendLocalSessionInput!(session.sessionId, toBase64(bytes), epoch) : undefined} />}
+        input={client.sendLocalSessionInput ? (bytes, epoch) => client.sendLocalSessionInput!(session.sessionId, toBase64(bytes), epoch) : undefined} /></div>}
       {terminalLive && control && !own && session.inputPaused && <p className="text-sm text-muted-foreground">Paused while {ownerName} answers a request to join.</p>}
       {liveTerminal && <div className="local-session-feedback">{feedback}</div>}
       {!liveTerminal && (session.status !== "ended" || !!pendingText || queuedOutbox.length > 0) && <div className="local-session-feedback">{feedback}</div>}

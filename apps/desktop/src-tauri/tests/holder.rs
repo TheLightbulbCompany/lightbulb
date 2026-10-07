@@ -152,6 +152,66 @@ fn holder_keeps_the_final_screen_after_its_provider_exits_and_refuses_input() {
     // ponytail: the holder thread outlives this test (in-process); `manager::stop` would signal the test runner.
 }
 
+/// Send `go` to a provider that waits on `read`, then follow the holder to its EXIT.
+fn run_to_exit(c: &mut UnixStream) {
+    c.write_all(&encode(INPUT, b"go\r")).unwrap();
+    while read_frame(c).expect("EXIT before timeout").0 != EXIT {}
+}
+
+/// What an ended holder shows a new watch client, and again when that client asks for a snapshot.
+fn ended_screen(socket: &Path) -> Vec<u8> {
+    let mut w = attach(socket, "watch");
+    let (kind, first) = read_frame(&mut w).unwrap();
+    assert_eq!(kind, SNAPSHOT);
+    w.write_all(&encode(SNAPSHOT, b"")).unwrap();
+    let (kind, again) = read_frame(&mut w).unwrap();
+    assert_eq!(kind, SNAPSHOT);
+    assert_eq!(split_offset(&first).unwrap().1, split_offset(&again).unwrap().1, "every snapshot of an ended holder is the same picture");
+    split_offset(&first).unwrap().1.to_vec()
+}
+
+fn has(hay: &[u8], needle: &[u8]) -> bool {
+    hay.windows(needle.len()).any(|w| w == needle)
+}
+
+/// Claude Code's fullscreen renderer on `/exit`: it leaves the alternate screen, prints two lines
+/// to the normal one and exits. The kept screen is the last picture the person saw (prod 0.4.625
+/// kept only the two lines).
+#[test]
+fn holder_keeps_the_last_alternate_picture_when_the_provider_leaves_it_to_exit() {
+    let dir = temp_dir();
+    let socket = start(&dir, &["/bin/sh", "-c", concat!(
+        r"read x; printf '\033[?1049h\033[2J\033[H\033[?1000h\033[1mconversation-top\033[0m\r\nlast-answer\r\n> prompt-box';",
+        r" printf '\033[?1000l\033[?1049l'; printf 'Resume this session with:\r\nclaude --resume 8ed71738\r\n'; exit 0")]);
+    let mut c = attach(&socket, "interactive");
+    run_to_exit(&mut c);
+    let screen = ended_screen(&socket);
+    for line in [&b"conversation-top"[..], b"last-answer", b"> prompt-box"] {
+        assert!(has(&screen, line), "the kept screen has {:?}: {:?}", String::from_utf8_lossy(line), String::from_utf8_lossy(&screen));
+    }
+    assert!(!has(&screen, b"claude --resume"), "not the shell's exit lines");
+    assert!(!has(&screen, b"\x1b[?1049h"), "served as normal-buffer content, so the viewer can scroll and select");
+    assert!(!has(&screen, b"\x1b[?1000h"), "a read-only picture turns no mouse reporting on");
+}
+
+/// A full-screen program (vim, less) that closed long before the session ended is not the last
+/// picture: the normal screen is.
+#[test]
+fn holder_keeps_the_normal_screen_when_the_alternate_one_closed_long_before_the_exit() {
+    let dir = temp_dir();
+    let socket = start(&dir, &["/bin/sh", "-c", concat!(
+        r"read x; printf '\033[?1049h\033[2J\033[Hvim-buffer\033[?1049l'; printf 'after-vim\r\n';",
+        r" read y; printf 'final-words'; exit 0")]);
+    let mut c = attach(&socket, "interactive");
+    c.write_all(&encode(INPUT, b"go\r")).unwrap();
+    read_until(&mut c, b"after-vim");
+    std::thread::sleep(Duration::from_millis(5300)); // past the 5 s in which a leave counts as shutting down
+    run_to_exit(&mut c);
+    let screen = ended_screen(&socket);
+    assert!(has(&screen, b"after-vim") && has(&screen, b"final-words"), "{:?}", String::from_utf8_lossy(&screen));
+    assert!(!has(&screen, b"vim-buffer"));
+}
+
 #[test]
 fn holder_manager_lists_live_holders_and_drops_dead_sockets() {
     let dir = temp_dir();

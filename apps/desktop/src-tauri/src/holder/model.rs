@@ -2,6 +2,8 @@
 //! to the terminal queries the provider sends, so a session with no window still starts and
 //! two windows never both answer.
 
+use std::time::{Duration, Instant};
+
 /// Queries the provider sends and the fixed answer the holder gives. CPR (`ESC[6n`) is
 /// answered from the model's cursor instead.
 const PROBES: &[(&[u8], &[u8])] = &[
@@ -44,8 +46,31 @@ pub struct Model {
     parser: vt100::Parser,
     /// The last bytes of the previous read: a query split across two reads is still answered.
     tail: Vec<u8>,
+    /// The alternate screen as it was when the provider last left it, and when that was.
+    left_alternate: Option<(Vec<u8>, Instant)>,
 }
 const TAIL: usize = 16;
+/// A provider that exits this soon after leaving the alternate screen left it to shut down (Claude
+/// Code's fullscreen renderer on `/exit`); a longer gap is a full-screen program that closed mid-session.
+pub const SHUTDOWN_LEAVE: Duration = Duration::from_secs(5);
+/// Mouse reporting off: a kept picture is read-only, and xterm selects no text while it is on.
+const MOUSE_OFF: &[u8] = b"\x1b[?9;1000;1002;1003l";
+
+/// Where in the new bytes (after the first `skip` bytes of `hay`) each sequence that leaves the
+/// alternate screen starts: `ESC[?…l` naming 47 or 1049, the two the model acts on. One that began
+/// in the bytes before starts at 0.
+fn alternate_leaves(hay: &[u8], skip: usize) -> Vec<usize> {
+    let mut cuts = Vec::new();
+    for start in 0..hay.len() {
+        let Some(rest) = hay[start..].strip_prefix(b"\x1b[?") else { continue };
+        let params = rest.iter().take_while(|b| b.is_ascii_digit() || **b == b';').count();
+        let end = start + 3 + params + 1;
+        if rest.get(params) == Some(&b'l') && end > skip && rest[..params].split(|b| *b == b';').any(|p| p == b"47" || p == b"1049") {
+            cuts.push(start.saturating_sub(skip));
+        }
+    }
+    cuts
+}
 
 /// How many times `needle` ends inside the new bytes (after the first `skip` bytes of `hay`).
 fn completed(hay: &[u8], needle: &[u8], skip: usize) -> usize {
@@ -54,7 +79,7 @@ fn completed(hay: &[u8], needle: &[u8], skip: usize) -> usize {
 
 impl Model {
     pub fn new(rows: u16, cols: u16) -> Self {
-        Self { parser: vt100::Parser::new(rows, cols, 5000), tail: Vec::new() }
+        Self { parser: vt100::Parser::new(rows, cols, 5000), tail: Vec::new(), left_alternate: None }
     }
 
     /// Feed provider output. Returns what to write back to the pty: the probe answers.
@@ -68,7 +93,19 @@ impl Model {
                 answers.extend_from_slice(answer);
             }
         }
-        self.parser.process(bytes);
+        // Stop just before each leave of the alternate screen, to keep the picture it ends.
+        let mut done = 0;
+        for cut in alternate_leaves(&seen, skip) {
+            self.parser.process(&bytes[done..cut]);
+            done = cut;
+            let screen = self.parser.screen();
+            if screen.alternate_screen() {
+                let mut picture = screen.contents_formatted();
+                picture.extend_from_slice(MOUSE_OFF);
+                self.left_alternate = Some((picture, Instant::now()));
+            }
+        }
+        self.parser.process(&bytes[done..]);
         for _ in 0..completed(&seen, CPR, skip) {
             let (row, col) = self.parser.screen().cursor_position();
             answers.extend_from_slice(format!("\x1b[{};{}R", row + 1, col + 1).as_bytes());
@@ -94,6 +131,15 @@ impl Model {
         }
         out.extend(screen.state_formatted());
         out
+    }
+
+    /// The last picture of a provider that exited at `exited` on its way out of the alternate
+    /// screen: what the person saw while it ran, not the lines it printed after. Drawn as normal-screen
+    /// content with no input modes (no `ESC[?1049h`): an alternate buffer has no scrollback, and the
+    /// picture is only read. None when the normal screen is the last picture.
+    pub fn ended_picture(&self, exited: Instant) -> Option<Vec<u8>> {
+        let (picture, left) = self.left_alternate.as_ref()?;
+        (!self.parser.screen().alternate_screen() && exited.saturating_duration_since(*left) < SHUTDOWN_LEAVE).then(|| picture.clone())
     }
 }
 
@@ -148,6 +194,34 @@ mod tests {
         assert!(model.snapshot().windows(8).any(|w| w == b"\x1b[?2004h"));
         model.feed(b"\x1b[?1049hX");
         assert!(model.snapshot().starts_with(b"\x1b[?1049h"));
+    }
+
+    #[test]
+    fn holder_model_keeps_the_alternate_picture_a_provider_leaves() {
+        let has = |hay: &[u8], needle: &[u8]| hay.windows(needle.len()).any(|w| w == needle);
+        let now = Instant::now();
+        // Split across two reads, and one of several modes in one sequence.
+        for leave in [&[&b"\x1b[?1049l"[..]][..], &[b"\x1b[?10", b"49l"], &[b"\x1b[?1000;1049l"], &[b"\x1b[?47l"]] {
+            let mut model = Model::new(10, 40);
+            assert_eq!(model.ended_picture(now), None, "no alternate screen yet");
+            model.feed(b"shell\r\n\x1b[?1049h\x1b[?1000hpicture");
+            assert_eq!(model.ended_picture(now), None, "still on it: the snapshot is that screen already");
+            model.feed(b"-drawn");
+            for part in leave {
+                model.feed(part);
+            }
+            model.feed(b"resume lines");
+            let picture = model.ended_picture(Instant::now()).expect("the picture it left");
+            assert!(has(&picture, b"picture-drawn") && !has(&picture, b"resume lines") && !has(&picture, b"shell"), "{leave:?}");
+            assert!(!has(&picture, b"\x1b[?1049h") && !has(&picture, b"\x1b[?1000h"), "normal-screen content, no modes");
+            assert_eq!(model.ended_picture(Instant::now() + SHUTDOWN_LEAVE), None, "left long before the exit");
+            assert!(has(&model.snapshot(), b"resume lines"), "the live snapshot is unchanged");
+            model.feed(b"\x1b[?1049hagain");
+            assert_eq!(model.ended_picture(Instant::now()), None, "back on the alternate screen");
+        }
+        let mut model = Model::new(10, 40);
+        model.feed(b"classic renderer\x1b[?1049l\x1b[?25l\x1b[?2004l");
+        assert_eq!(model.ended_picture(Instant::now()), None, "never on the alternate screen");
     }
 
     #[test]

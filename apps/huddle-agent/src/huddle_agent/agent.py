@@ -256,6 +256,13 @@ DRIVEN = (
     "that. Never state a fact that is not in the order."
 )
 SAY = "Say this line aloud, word for word, and nothing else:\n"
+# Its own words (an acknowledgement, a short reply), from the order alone. It is the voice, not the agent: it
+# has no knowledge, and with a question in view it answers from its own head ("it's $1,600", 10-07 rig).
+OWN = (
+    "\n\nSay one short sentence of your own for this, as yourself. You do not know the answer to anything: never "
+    "answer a question, and never say a number, a price, a name or a fact that is not written above. If something "
+    "needs looking up, say you are on it."
+)
 
 
 class _DrivenSession(openai.realtime.RealtimeSession):
@@ -266,8 +273,8 @@ class _DrivenSession(openai.realtime.RealtimeSession):
 
     # ponytail: private API (the plugin builds response.create itself), re-check on livekit-agents upgrades
     def send_event(self, event) -> None:
-        if isinstance(event, ResponseCreateEvent) and SAY in (event.response.instructions or ""):
-            event.response.input = []
+        if isinstance(event, ResponseCreateEvent):
+            event.response.input = []  # every order carries all it needs: the voice never reads the conversation
         super().send_event(event)
 
 
@@ -294,6 +301,10 @@ class _DrivenLive:
         # The Realtime plugin reports tokens, not session seconds (`session_duration` is 0): wall clock, open to
         # close, is what a GPT-Live session bills by too.
         self._opened, self._closed = time.monotonic(), None
+        # What it was told to know since it last spoke (its seed first): a nudge's order is made of these.
+        self._notes: list[str] = [
+            m.text_content or "" for m in agent.chat_ctx.items if getattr(m, "role", "") == "developer"
+        ]
 
     def _order(self, do, keep: bool = False) -> None:
         """`do()` after every order before it. `keep`: something to know, which an interrupt does not drop."""
@@ -314,10 +325,15 @@ class _DrivenLive:
     def say(self, text: str) -> None:
         self._order(lambda: self._session.generate_reply(instructions=SAY + text))
 
+    def _own(self, text: str) -> None:
+        self._order(lambda: self._session.generate_reply(instructions=text + OWN))
+
     def append_commentary(self, text: str, *, delegation_id: str | None = None) -> None:
-        self._order(lambda: self._session.generate_reply(instructions=text))  # said once, in its own words
+        self._own(text)  # said once, in its own words
 
     def append_thinking(self, text: str, *, delegation_id: str | None = None) -> None:
+        self._notes.append(text)
+
         async def know() -> None:
             ctx = self._agent.realtime_llm_session.chat_ctx.copy()
             ctx.add_message(role="developer", content=text)
@@ -332,10 +348,12 @@ class _DrivenLive:
     meet_rule = append_instructions
 
     def nudge(self) -> None:
-        self._order(lambda: self._session.generate_reply())
+        notes, self._notes = self._notes[-3:], []
+        if notes:  # nothing to go on: nothing to say
+            self._own("\n".join(notes))
 
     def reply_to(self, text: str) -> None:
-        self._order(lambda: self._session.generate_reply(user_input=text))
+        self._own(f'Someone said to you: "{text}"')
 
     def interrupt(self):
         self._epoch += 1

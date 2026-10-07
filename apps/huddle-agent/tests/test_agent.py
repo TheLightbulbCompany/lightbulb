@@ -165,6 +165,7 @@ async def test_a_driven_voice_says_its_orders_one_after_the_other():
     live, session, _ = _driven()
     live.say("The Workspace plan costs fifty dollars.")
     live.append_commentary("Tell Priya you are on it.")
+    live.append_thinking("Priya asked: what shipped")
     live.nudge()
     live.reply_to("what shipped")
     await _settle()
@@ -175,7 +176,12 @@ async def test_a_driven_voice_says_its_orders_one_after_the_other():
         session.handles[-1].set_result(None)
         await _settle()
         assert len(session.orders) == n
-    assert session.orders[1:] == [{"instructions": "Tell Priya you are on it."}, {}, {"user_input": "what shipped"}]
+    # its own words come from the order alone, under the no-facts guard: never from the conversation
+    assert [o["instructions"] for o in session.orders[1:]] == [
+        "Tell Priya you are on it." + agent.OWN,
+        "Priya asked: what shipped" + agent.OWN,
+        'Someone said to you: "what shipped"' + agent.OWN,
+    ]
 
 
 async def test_an_interrupt_stops_a_driven_voice_and_drops_what_was_queued():
@@ -293,8 +299,8 @@ def test_a_word_for_word_line_goes_to_the_model_without_the_conversation():
         return session._msg_ch.send_nowait.call_args.args[0].response.model_dump(exclude_unset=True)
 
     assert sent(f"persona\n{agent.SAY}Fifty dollars.")["input"] == []
-    assert "input" not in sent("persona\nTell Priya you are on it."), "its own words are chosen with the call in view"
-    assert "input" not in sent(None)  # a nudge
+    # 10-07 rig: with the call in view its own words answered the question ("it's $1,600")
+    assert sent("persona\nTell Priya you are on it.")["input"] == []
 
 
 def test_a_voice_the_realtime_model_lacks_maps_to_one_it_has_the_same_each_time():

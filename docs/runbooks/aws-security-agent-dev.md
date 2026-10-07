@@ -1,7 +1,6 @@
 # AWS Security Agent against dev — runbook
 
-Status: dev is the only permitted target; the owner has NOT yet approved running it. Prod is NOT a target.
-Researched 2026-10-07 from the [AWS user guide](https://docs.aws.amazon.com/securityagent/latest/userguide/) (now "part of AWS Continuum").
+Status: dev is the only permitted target; the owner has NOT yet approved the run. Prod is NOT a target. Researched 2026-10-07 from the [AWS user guide](https://docs.aws.amazon.com/securityagent/latest/userguide/) (now "part of AWS Continuum").
 Cost: $50 per task-hour, metered per second; 2-month free trial from the first run
 ([FAQ](https://aws.amazon.com/security-agent/faqs/)). Data is KMS-encrypted, not used for training;
 test logs go to CloudWatch in our account.
@@ -106,6 +105,7 @@ List derived from `apps/backend/main.py` and `routers/` on 2026-10-07; re-run
 | `/api/v1/internal` | Hook-token machine routes (messaging runs/usage, provisioning, browser, mac-cdp, website-logins). |
 | `/api/v1/auth` (desktop sign-in tokens), `/api/v1/desktop`, `/api/v1/desktop-sessions`, `/api/v1/desktop-execution` | Mint Clerk sign-in tokens, pair devices, start Mac sessions. |
 | `/api/v1/oauth`, `/api/v1/connections` | Real third-party OAuth flows. |
+| `/api/v1/support` | Ticket POSTs email the real support inbox (no rate limit). |
 | `https://api-dev.thelightbulb.company/api/v1/users/me/delete` | Wipes the test org mid-run. |
 
 Every row is an absolute URL or a path (no verb, no `*`); excluding a path also excludes everything beneath it. Entries starting with `/` take the API host: enter `https://api-dev.thelightbulb.company` + path. Absolute URLs (the admin host, the `dev.` admin URL, the delete URL) are entered verbatim. Confirm each in the wizard's "Derived examples" before launch.

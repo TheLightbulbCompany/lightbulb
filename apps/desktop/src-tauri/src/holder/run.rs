@@ -482,21 +482,20 @@ fn tell(clients: &HashMap<u64, Client>, watchers: &HashSet<u64>, frame: &[u8]) {
 struct Client {
     queue: SyncSender<Vec<u8>>,
     stream: UnixStream,
-    writer: std::thread::JoinHandle<()>,
 }
 
 impl Client {
     fn start(stream: UnixStream) -> Option<Self> {
         let mut writer = stream.try_clone().ok()?;
         let (queue, frames) = sync_channel::<Vec<u8>>(CLIENT_QUEUE);
-        let writer = std::thread::spawn(move || {
+        std::thread::spawn(move || {
             for frame in frames {
                 if writer.write_all(&frame).is_err() {
                     return;
                 }
             }
         });
-        Some(Self { queue, stream, writer })
+        Some(Self { queue, stream })
     }
 
     /// False when the client is gone or too slow; the caller drops it.

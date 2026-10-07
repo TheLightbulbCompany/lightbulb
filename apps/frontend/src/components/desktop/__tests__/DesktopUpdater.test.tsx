@@ -24,6 +24,7 @@ describe("DesktopUpdater webview-driven flow", () => {
   });
 
   afterEach(() => {
+    vi.unstubAllGlobals();
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     delete (window as any).__TAURI__;
   });
@@ -32,6 +33,35 @@ describe("DesktopUpdater webview-driven flow", () => {
     render(<DesktopUpdater version="9.9" />);
     expect(screen.getByText(/Lightbulb v9\.9/i)).toBeTruthy();
     expect(screen.queryByRole("button", { name: /check for updates/i })).toBeNull();
+  });
+
+  it("shows the installed native version instead of a stale web label", async () => {
+    installTauriBridge(vi.fn(async () => ({ target: "darwin-aarch64", current_version: "0.4.606" })));
+    render(<DesktopUpdater version="0.1" />);
+    expect(await screen.findByText("Lightbulb v0.4.606")).toBeTruthy();
+    expect(screen.queryByText("Lightbulb v0.1")).toBeNull();
+  });
+
+  it("does not claim a web version when native identity is unavailable", async () => {
+    installTauriBridge(vi.fn(async () => { throw new Error("identity unavailable"); }));
+    render(<DesktopUpdater version="0.1" />);
+    expect(await screen.findByText(/version unavailable/i)).toBeTruthy();
+    expect(screen.queryByText("Lightbulb v0.1")).toBeNull();
+  });
+
+  it("exposes useful installation failure details without signed download URLs", async () => {
+    installTauriBridge(vi.fn(async (cmd: string) => {
+      if (cmd === "updater_identity") return { target: "darwin-aarch64", current_version: "0.4.603" };
+      throw "install: signature verification failed for https://example.com/app?token=PRIVATE_TOKEN";
+    }));
+    const manifest = { version: "0.4.606", url: "https://example.com/app", signature: "signature", notes: null, pub_date: null };
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ status: 200, ok: true, json: async () => manifest }));
+    render(<DesktopUpdater />);
+    await userEvent.click(await screen.findByRole("button", { name: /check for updates/i }));
+    await userEvent.click(await screen.findByRole("button", { name: /install v0.4.606/i }));
+    expect(await screen.findByText(/install: signature verification failed/)).toBeTruthy();
+    expect(document.body.textContent).not.toContain("PRIVATE_TOKEN");
+    expect(screen.getByRole("button", { name: /retry/i })).toBeTruthy();
   });
 
   it("fetches manifest via webview, shows the install button, then hands manifest to Rust", async () => {

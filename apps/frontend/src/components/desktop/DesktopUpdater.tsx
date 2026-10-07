@@ -4,10 +4,8 @@ import { useCallback, useEffect, useState } from "react";
 
 import { capture } from "@/lib/analytics";
 
-// Sidebar footer for the desktop app. Replaces the static "isol8 v0.1"
-// label with a clickable updater. In the regular browser this just
-// renders the version label — the updater UI only appears when the
-// Tauri webview is present.
+// Desktop footer: installed version comes from Rust, never the web bundle.
+// Update checking/installing remains available only in the Tauri webview.
 //
 // Architecture note: as of feat/webview-updater (#673), the update CHECK
 // runs in the webview rather than via Tauri's plugin-updater. The plugin
@@ -19,12 +17,11 @@ import { capture } from "@/lib/analytics";
 //
 // Tauri command surface (apps/desktop/src-tauri/src/lib.rs):
 //   - updater_identity     → { target, current_version }
-//   - apply_update_manifest → downloads from GitHub (public), verifies
-//                            minisign signature, installs, restarts
+//   - apply_update_manifest → downloads the manifest-selected bundle,
+//                            verifies minisign, installs and restarts
 //
-// The bundle download URL inside the manifest is a github.com release
-// asset (PUBLIC, no auth), so the Rust-side download doesn't need
-// Vercel auth either.
+// The download route resolves the selected private release asset server-side;
+// the Rust client does not receive the GitHub token.
 
 type TauriBridge = {
   core?: {
@@ -59,6 +56,14 @@ type UiState =
   | { kind: "installing" }
   | { kind: "error"; message: string };
 
+/** Diagnostic text stays useful without exposing expiring download credentials. */
+function updateErrorMessage(error: unknown): string {
+  return String(error instanceof Error ? error.message : error)
+    .replace(/https?:\/\/[^\s"'<>]+/gi, "[download URL]")
+    .replace(/\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b/g, "[token]")
+    .slice(0, 500);
+}
+
 function getTauri(): TauriBridge | null {
   if (typeof window === "undefined") return null;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -67,7 +72,7 @@ function getTauri(): TauriBridge | null {
 }
 
 export function DesktopUpdater({
-  version = "0.1",
+  version,
 }: {
   version?: string;
 }) {
@@ -77,11 +82,25 @@ export function DesktopUpdater({
   // on the desktop and the updater UI replaces the static label.
   const [tauri, setTauri] = useState<TauriBridge | null>(null);
   const [state, setState] = useState<UiState>({ kind: "idle" });
+  const [installedVersion, setInstalledVersion] = useState<string | null>(null);
 
   useEffect(() => {
     // eslint-disable-next-line react-hooks/set-state-in-effect -- SSR-safe init; see note above.
     setTauri(getTauri());
   }, []);
+
+  useEffect(() => {
+    if (!tauri?.core) return;
+    let alive = true;
+    void tauri.core.invoke<UpdaterIdentity>("updater_identity")
+      .then(identity => {
+        if (alive && typeof identity.current_version === "string" && identity.current_version.trim()) {
+          setInstalledVersion(identity.current_version);
+        }
+      })
+      .catch(() => { /* Keep version unavailable; a web build number is not the installed app. */ });
+    return () => { alive = false; };
+  }, [tauri]);
 
   const check = useCallback(async () => {
     if (!tauri?.core) return;
@@ -94,6 +113,8 @@ export function DesktopUpdater({
       const identity = await tauri.core.invoke<UpdaterIdentity>(
         "updater_identity",
       );
+
+      setInstalledVersion(identity.current_version);
 
       // Fetch the manifest with the webview's normal `fetch`, which
       // carries the Vercel SSO cookie automatically. Use a relative
@@ -113,10 +134,9 @@ export function DesktopUpdater({
         return;
       }
       if (!res.ok) {
-        const text = await res.text().catch(() => "");
         setState({
           kind: "error",
-          message: `manifest fetch ${res.status}: ${text || res.statusText}`,
+          message: `Update check failed (HTTP ${res.status}).`,
         });
         return;
       }
@@ -133,7 +153,7 @@ export function DesktopUpdater({
     } catch (e) {
       setState({
         kind: "error",
-        message: e instanceof Error ? e.message : String(e),
+        message: updateErrorMessage(e),
       });
     }
   }, [tauri]);
@@ -151,18 +171,18 @@ export function DesktopUpdater({
     } catch (e) {
       setState({
         kind: "error",
-        message: e instanceof Error ? e.message : String(e),
+        message: updateErrorMessage(e),
       });
     }
   }, [tauri, state]);
 
   if (!tauri) {
-    return <div className="version-text">Lightbulb v{version}</div>;
+    return <div className="version-text">{version ? `Lightbulb v${version}` : "Lightbulb"}</div>;
   }
 
   return (
     <div className="version-text" style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-      <span>Lightbulb v{version}</span>
+      <span>{installedVersion ? `Lightbulb v${installedVersion}` : "Lightbulb · version unavailable"}</span>
       {state.kind === "idle" && (
         <button
           type="button"
@@ -216,7 +236,7 @@ export function DesktopUpdater({
       )}
       {state.kind === "installing" && <span style={{ fontSize: 11, opacity: 0.7 }}>Installing…</span>}
       {state.kind === "error" && (
-        <span style={{ fontSize: 11, color: "var(--err)" }}>
+        <div role="alert" style={{ fontSize: 11, color: "var(--err)" }}>
           Update error.{" "}
           <button
             type="button"
@@ -225,7 +245,11 @@ export function DesktopUpdater({
           >
             retry
           </button>
-        </span>
+          <details style={{ marginTop: 4 }}>
+            <summary style={{ cursor: "pointer" }}>Error details</summary>
+            <p style={{ whiteSpace: "pre-wrap", overflowWrap: "anywhere", margin: "4px 0" }}>{state.message}</p>
+          </details>
+        </div>
       )}
     </div>
   );

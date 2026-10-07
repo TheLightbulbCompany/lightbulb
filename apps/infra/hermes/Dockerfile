@@ -44,7 +44,20 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # Intuit publishes this server only as source. Keep the same pinned commit and
 # dev-dependency build fix used by the retired OpenClaw image; the runtime image
 # carries only the compiled server after pruning build tools.
+#
+# quickbooks-mcp/ is our overlay: the pinned server (and upstream HEAD as of
+# 2026-09-15) has create/read/update/delete/search/pdf for invoices but no SEND,
+# so an agent could draft an invoice and never email it (Anna's Frozen Treats,
+# 2026-10-06). send_invoice wraps node-quickbooks's sendInvoicePdf
+# (POST /v3/company/{realmId}/invoice/{id}/send, accounting scope). The two
+# files are copied into the checkout and registered in index.ts before the
+# build; the grep pins exactly one import + one RegisterTool, so a drifted
+# index.ts fails the build instead of silently dropping the tool. Upstream PR
+# intuit/quickbooks-online-mcp-server#151 (open since 2026-09-30, unreviewed)
+# adds the same send_invoice with the same params and guards; once a pin
+# carries it, the count check fails the build and this overlay gets deleted.
 ENV QUICKBOOKS_MCP_COMMIT=c351dc011d9cb14b211857457085f7994d8b1e15
+COPY quickbooks-mcp/ /opt/quickbooks-mcp-overlay/
 RUN set -eux; \
     mkdir -p /opt/quickbooks-mcp; \
     cd /opt/quickbooks-mcp; \
@@ -53,10 +66,20 @@ RUN set -eux; \
     git fetch -q --depth 1 origin "$QUICKBOOKS_MCP_COMMIT"; \
     git checkout -q FETCH_HEAD; \
     rm -rf .git; \
+    cp /opt/quickbooks-mcp-overlay/send-invoice.tool.ts src/tools/; \
+    cp /opt/quickbooks-mcp-overlay/send-quickbooks-invoice.handler.ts src/handlers/; \
+    rm -rf /opt/quickbooks-mcp-overlay; \
+    perl -pi -e 's|^(import \{ GetInvoicePdfTool \} from "./tools/get-invoice-pdf.tool.js";)$|$1\nimport { SendInvoiceTool } from "./tools/send-invoice.tool.js";|' src/index.ts; \
+    perl -pi -e 's|^(\s*)(RegisterTool\(server, GetInvoicePdfTool\);)$|$1$2\n$1RegisterTool(server, SendInvoiceTool);|' src/index.ts; \
+    test "$(grep -c SendInvoiceTool src/index.ts)" = 2; \
+    perl -pi -e 's|^(\s*)("create_": CRUD_CATEGORY\.WRITE,)$|$1$2\n$1"send_": CRUD_CATEGORY.WRITE,|' src/helpers/register-tool.ts; \
+    grep -q '"send_": CRUD_CATEGORY.WRITE,' src/helpers/register-tool.ts; \
     npm ci --include=dev --ignore-scripts; \
     npm run build; \
     npm prune --omit=dev; \
     test -f /opt/quickbooks-mcp/dist/index.js; \
+    grep -q '"send_invoice"' /opt/quickbooks-mcp/dist/tools/send-invoice.tool.js; \
+    grep -q 'RegisterTool(server, SendInvoiceTool)' /opt/quickbooks-mcp/dist/index.js; \
     printf '%s\n' '#!/bin/sh' 'set -eu' 'export QUICKBOOKS_TOKEN_STORE_PATH="${HOME}/quickbooks/.env"' 'exec node /opt/quickbooks-mcp/dist/index.js' > /usr/local/bin/lightbulb-quickbooks-mcp; \
     chmod 0755 /usr/local/bin/lightbulb-quickbooks-mcp; \
     sh -n /usr/local/bin/lightbulb-quickbooks-mcp; \

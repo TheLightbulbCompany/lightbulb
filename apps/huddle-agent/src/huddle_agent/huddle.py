@@ -1718,6 +1718,9 @@ class Huddle:
 
     def _cancel(self, r: Request) -> None:
         """`ops.cancel` (understanding §4.4): its run aborted the way _stop aborts one; its answer never said or posted."""
+        # what its voice had still to say about it ("on it", a progress note) goes with it
+        if not any(x.agent == r.agent and x is not r and x.status in OPEN for x in self._requests.items):
+            self._lines.pop(r.agent, None)
         v = self._voice
         run = self._runs.get(r.run_id) if r.run_id else None
         # its voice is saying it, or about to (review B5-1): cut it, as a stop does
@@ -2780,6 +2783,7 @@ class Huddle:
         """The only door that stops a voice run: an explicit stop to that agent. Interrupts its voice if it
         holds the floor and aborts every running run of that agent (and no one else's). `mark`: the stop's line
         (default: the newest); a line said at or before it, even one still at /route, starts nothing for it."""
+        self._lines.pop(agent_id, None)  # and what its voice had still to say about them
         if v := self._floor_voice(agent_id):
             v.driven = None
             v.answer = None  # a stop said over its answer: neither said again nor posted (§4.8)
@@ -2807,6 +2811,7 @@ class Huddle:
         """ "everyone stop" / "stop all" (engine §3.6): every open request cancelled (a line /route is still
         splitting starts nothing), every run aborted, the floor cut, and nothing left queued to answer."""
         mark = self._transcript.last_mark if mark is None else mark
+        self._lines.clear()
         rows = self._requests.cancel(mark=mark)
         agents = {r.agent for r in rows} | {r.agent_id for r in self._runs.running()}
         if self._voice:
@@ -3836,8 +3841,9 @@ class Huddle:
         soon = {aid for aid in self._heard_name if self._agent(aid)} | {
             a["id"] for a in self._team["agents"] if self._requests.working(a["id"])
         }
-        if self._people and not ready:
-            ready = set(list(soon)[:1])
+        if self._people and not ready and soon:
+            # the one already warm stays (a second request must not swap sessions); else a stable pick
+            ready = {next((a for a in self._warm_at if a in soon), None) or min(soon)}
             self._warm_at.update({a: self._warm_at.get(a, self._clock()) for a in ready})
         self._warm_at = {a: t for a, t in self._warm_at.items() if a in ready}
         saying = self._saying[0] if self._saying else None

@@ -270,7 +270,8 @@ WRITER = (
     "When a request was just handed over, say only that you are on it and name what was asked: claim nothing "
     "about its state, its result or who is doing it. "
     "One sentence, at most 16 words, natural and plain, a different way each time. No filler, no \"backend\", "
-    "no mention of notes or instructions. Output the sentence only."
+    "no mention of notes or instructions. Never invite more questions or offer further help. If the notes hold "
+    "nothing new that was said to this teammate or asked of them, output exactly NONE. Output the sentence only."
 )
 
 
@@ -361,7 +362,8 @@ class _DrivenLive:
                 ),
                 WRITE_TIMEOUT_S,
             )
-            return (r.choices[0].message.content or "").strip()
+            line = (r.choices[0].message.content or "").strip()
+            return "" if line.strip(" .\"'").upper() == "NONE" else line  # nothing worth saying: silence
         except Exception:  # noqa: BLE001 -- no line is better than a late or a made-up one
             logger.warning("huddle driven voice: no line written", exc_info=True)
             return ""

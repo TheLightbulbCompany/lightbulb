@@ -933,7 +933,8 @@ class Huddle:
                 v and cut == v.agent_id and v.live is not None
             ):  # cut off by noise: carry on
                 emit_metric("live.bargein.empty", 1, "Count")
-                self._live_call(v, "nudge")
+                if not mouth(v.speaker):  # a mouth has nothing to carry on with: it speaks on an order, not a nudge
+                    self._live_call(v, "nudge")
             return
         now = self._clock()
         record = text  # what goes on the record: a joined line records only its new piece
@@ -1299,7 +1300,8 @@ class Huddle:
             text
         ):  # a backchannel: the agent carries on, still pinned to its speaker
             emit_metric("live.bargein.empty", 1, "Count")
-            self._live_call(v, "nudge")
+            if not mouth(v.speaker):  # a mouth has nothing to carry on with: it speaks on an order, not a nudge
+                self._live_call(v, "nudge")
             return
         if not self._repoint(v, identity):
             return
@@ -1663,7 +1665,8 @@ class Huddle:
         if v is not None and v.live is not None and self._live_call(
             v, "append_thinking", f'{self._agent_name(r.agent)} dropped: "{r.task}".'
         ):
-            self._live_call(v, "nudge")
+            if not mouth(v.speaker):  # a mouth has nothing to carry on with: it speaks on an order, not a nudge
+                self._live_call(v, "nudge")
         self._start_queued()  # the agent's next row
 
     async def _steer_row(self, r: Request, speaker: str, mark: int, text: str) -> None:
@@ -2081,7 +2084,8 @@ class Huddle:
     async def talk_end(self, identity: str) -> None:
         v = self._voice
         if v and v.live is not None and identity == v.speaker:
-            self._live_call(v, "nudge")
+            if not mouth(v.speaker):  # a mouth has nothing to carry on with: it speaks on an order, not a nudge
+                self._live_call(v, "nudge")
         elif (
             self._lock.locked()
         ):  # released before the summon finished: nudge once it has
@@ -2315,7 +2319,8 @@ class Huddle:
             if (mouth(identity) and told) or self._live_call(
                 v, "append_thinking", f"{v.label or self._talker(identity, mark)} is talking to you"
             ):
-                if told or identity in self._released:
+                # a mouth is nudged only for something to acknowledge: its line is written, it cannot decline
+                if told or (identity in self._released and not mouth(identity)):
                     # the request is already running (driven): the model acknowledges it, no typed user turn
                     self._live_call(v, "nudge")
         self._released.discard(identity)

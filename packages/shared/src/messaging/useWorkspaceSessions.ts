@@ -41,12 +41,18 @@ export function useWorkspaceSessions(
       if (id === request.current) { refreshing.current = false; setLoading(false); }
     }
   }, [client, includeEnded]);
+  const chatRooms = useRef(new Set<string>());
+  useEffect(() => { chatRooms.current = new Set(sessions.flatMap((s) => s.chatRoomId ? [s.chatRoomId] : [])); }, [sessions]);
   useEffect(() => {
     if (!enabled) return;
     void refresh();
     // Every hint bumps hintRevision so an open session view pulls newer events; a transcript
     // batch only changes that content, not the list.
     const unsubscribe = onEvent(event => {
+      // A top-level message in a listed session's chat: the list carries its unread count
+      // (`chatUnread`), and the server's count is the only one (it leaves out the reader's own posts).
+      if (event.type === "room.message.available" && chatRooms.current.has(event.payload.roomId)
+        && !event.payload.threadRootMessageId && !event.payload.previewOnly) void refresh();
       if (event.type !== "workspace.sessions.changed") return;
       setHintRevision(v => v + 1);
       if (!event.payload.transcript) void refresh();

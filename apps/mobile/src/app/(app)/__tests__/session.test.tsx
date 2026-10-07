@@ -101,6 +101,7 @@ const mockLive = {
     requestLocalSessionJoin: mockAskToJoin,
     decideLocalSessionJoin: mockDecideJoin,
     decideLocalSessionPickup: mockDecidePickup,
+    openSessionChat: jest.fn(async () => ({ ...mockRoom, roomId: "chat-1" })),
     sendMessage: jest.fn(), downloadAttachment: jest.fn(), attachmentUrl: jest.fn(), uploadAttachment: jest.fn(), markUnread: jest.fn(),
     setTyping: jest.fn(), abortRun: jest.fn(), steerRun: jest.fn(), createRoom: jest.fn(), updateRoom: jest.fn(),
     upsertMember: jest.fn(), removeMember: jest.fn(), updateMessage: jest.fn(), setReaction: jest.fn(),
@@ -817,5 +818,25 @@ describe("session screen", () => {
     expect(screen.getByLabelText("Jump to latest")).toBeTruthy();
     await act(async () => { list.props.onScroll?.(scrolledTo(0)); });
     expect(screen.queryByLabelText("Jump to latest")).toBeNull();
+  });
+
+  it("opens the session's chat as its own screen, with its unread count", async () => {
+    (router.push as jest.Mock).mockClear();
+    mockSession = { ...base, chatUnread: 2 };
+    await render(<SessionScreen />);
+    const chat = await screen.findByLabelText("Chat, 2 unread");
+    const listed = mockLive.messaging.listWorkspaceSessions.mock.calls.length;
+    await fireEvent.press(chat);
+    expect(mockLive.messaging.openSessionChat).toHaveBeenCalledWith("sess-1");
+    await waitFor(() => expect(router.push).toHaveBeenCalledWith("/(app)/room/chat-1"));
+    // The list learns the room now, so its next message counts on the Chat button.
+    await waitFor(() => expect(mockLive.messaging.listWorkspaceSessions.mock.calls.length).toBeGreaterThan(listed));
+  });
+
+  it("says so when the session's chat cannot open", async () => {
+    mockLive.messaging.openSessionChat.mockRejectedValueOnce(new ApiError(404, null));
+    await render(<SessionScreen />);
+    await fireEvent.press(await screen.findByLabelText("Chat"));
+    expect(await screen.findByText("Chat is not available for this session.")).toBeTruthy();
   });
 });

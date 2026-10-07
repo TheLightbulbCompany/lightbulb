@@ -130,6 +130,16 @@ describe("useRooms platform seams", () => {
     expect(messaging.listMessages).not.toHaveBeenCalled();
   });
 
+  it("opens a room the list does not carry (a hidden session chat) through its detail", async () => {
+    messaging.listRooms.mockResolvedValue({ rooms: [], sections: [] });
+    const { result } = renderHook(() => useRooms(platform(), { autoSelect: false }), { wrapper });
+    act(() => result.current.selectRoom(room.roomId));
+    await waitFor(() => expect(result.current.activeRoom?.roomId).toBe(room.roomId));
+    expect(messaging.getRoom).toHaveBeenCalledWith(room.roomId);
+    await waitFor(() => expect(result.current.messages.map((m) => m.messageId)).toEqual(["msg-1"]));
+    expect(live.claimActiveRoomSubscription).toHaveBeenCalledWith(expect.objectContaining({ roomId: room.roomId }));
+  });
+
   it("uploads a DOM Blob and the phone's byte-carrying part through the same call", async () => {
     const { result } = renderHook(() => useRooms(platform()), { wrapper });
     act(() => result.current.selectRoom(room.roomId));

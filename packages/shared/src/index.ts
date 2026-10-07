@@ -56,6 +56,8 @@ export type { CallTurnFrame, ChatIncomingMessage, LiveEvent, LiveEventOf, Messag
 export { applyRoomActivity, pruneRoomActivity, roomLiveLine, typingLine } from "./messaging/roomActivity";
 export type { RoomActivity } from "./messaging/roomActivity";
 export { createMessagingClient } from "./messaging/client";
+export { PERSON_COLORS, personColor } from "./messaging/personColor";
+export type { PersonColor } from "./messaging/personColor";
 export type { RoomAttachmentInput } from "./messaging/client";
 export { wrapSelection } from "./messaging/composerText";
 export type { MarkdownStyle } from "./messaging/composerText";

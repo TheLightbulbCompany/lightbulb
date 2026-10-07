@@ -1,17 +1,18 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
-import { X } from "lucide-react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { MessageSquare, X } from "lucide-react";
 import { ApiError, sessionTitle, sessionViewKey, type LocalSession, type SessionSource } from "@lightbulb/shared";
 import { Button } from "@/components/ui/button";
 import { LocalSessionPanel } from "./LocalSessionPanel";
+import { SessionChat } from "./SessionChat";
 import { SessionToolIcon } from "./SessionToolIcon";
 import { SessionRenameButton } from "./SessionRenameButton";
 import type { Person } from "./NativeSessionTranscript";
 import type { SidebarSession } from "./roomSections";
 
 /** `sessionId: null` is a new, not-yet-started session (NewSessionView), or with `all` the All sessions list. */
-export interface SessionFocusTarget { sessionId: string | null; all?: boolean }
+export interface SessionFocusTarget { sessionId: string | null; all?: boolean; chat?: boolean }
 
 /**
  * Focus placement: a shared session lives in the workspace, not in a room
@@ -22,7 +23,7 @@ export interface SessionFocusTarget { sessionId: string | null; all?: boolean }
  * list has ever loaded) still opens with its real status. "No longer shared"
  * is reserved for a genuine 404.
  */
-export function SessionFocus({ focus, entries, loading, hintRevision, client, resolveSessionOwner, onAccessLost, onClose, participants, onMessageOwner, onEvent }: {
+export function SessionFocus({ focus, entries, loading, hintRevision, client, resolveSessionOwner, onAccessLost, onClose, participants, onMessageOwner, onEvent, chatOpen = false, onChatOpenChange, onChatRoom }: {
   onEvent?: SessionSource["onEvent"];
   focus: { sessionId: string }; entries: readonly SidebarSession[]; loading: boolean; hintRevision: number;
   client: SessionSource["client"]; resolveSessionOwner: (humanUserId: string) => { ownerName: string; own: boolean };
@@ -31,6 +32,10 @@ export function SessionFocus({ focus, entries, loading, hintRevision, client, re
   participants?: readonly Person[];
   /** Opens the DM with the session's owner (someone else's session only). */
   onMessageOwner?: (humanUserId: string, ownerName: string) => void;
+  /** The session's chat column is open (the context owns it: the main room lends it the live subscription). */
+  chatOpen?: boolean;
+  onChatOpenChange?: (open: boolean) => void;
+  onChatRoom?: (roomId: string | null) => void;
 }) {
   // A Claude session moved to the background continues as a fork (`forkedFrom`): show that one,
   // but only in place of an ENDED origin -- a live origin can have a fork of its own.
@@ -105,12 +110,31 @@ export function SessionFocus({ focus, entries, loading, hintRevision, client, re
   const session = entry?.session ?? resolvedFallback?.session ?? null;
   const owner = entry ?? (session ? resolveSessionOwner(session.humanUserId) : null);
   const messageOwner = session && owner && !owner.own && onMessageOwner ? () => onMessageOwner(session.humanUserId, owner.ownerName) : undefined;
-  return <section className="room-panel room-session-focus" aria-label="Shared session">
+  // Chat beside the terminal (PR #3807). Unread is the server's count from
+  // the session list, which refetches when a chat message arrives (useWorkspaceSessions); nothing is
+  // counted here. Reading the chat zeroes it until the list refreshes.
+  // Opening refreshes the session list: a first open creates the seat, and the list must carry its
+  // `chatRoomId` for the room's next message to count (useWorkspaceSessions filters on it).
+  const openSessionChat = client.openSessionChat;
+  const openChat = useMemo(() => openSessionChat && ((sessionId: string) =>
+    openSessionChat(sessionId).then((room) => { onAccessLost(); return room; })), [openSessionChat, onAccessLost]);
+  const [readThrough, setReadThrough] = useState<LocalSession | null>(null);
+  const toggleChat = () => {
+    if (chatOpen) setReadThrough(session);
+    onChatOpenChange?.(!chatOpen);
+  };
+  const unread = chatOpen || readThrough === session ? 0 : session?.chatUnread ?? 0;
+  const showChat = Boolean(session && openChat && onChatOpenChange);
+  return <section className={`room-panel room-session-focus${showChat && chatOpen ? " session-chat-open" : ""}`} aria-label="Shared session">
     <div className="room-session-main">
       <header className="room-context-header">
         <h3 className="font-semibold room-wrap flex items-center gap-2">{session ? <><SessionToolIcon provider={session.provider} /><span className="min-w-0">{sessionTitle(session)}</span></> : "Shared session"}</h3>
         {session && owner?.own && client.setLocalSessionDisplayTitle && <SessionRenameButton session={session} onRename={client.setLocalSessionDisplayTitle} icon />}
-        <Button className="ml-auto" variant="ghost" size="icon-sm" aria-label="Close session" onClick={onClose}><X aria-hidden="true" /></Button>
+        {showChat && <Button className="ml-auto" variant="ghost" size="sm" aria-pressed={chatOpen}
+          aria-label={unread ? `Chat, ${unread} unread` : "Chat"} onClick={toggleChat}>
+          <MessageSquare aria-hidden="true" />Chat{unread > 0 && <span className="session-chat-unread" aria-hidden="true">{unread > 99 ? "99+" : unread}</span>}
+        </Button>}
+        <Button className={showChat ? undefined : "ml-auto"} variant="ghost" size="icon-sm" aria-label="Close session" onClick={onClose}><X aria-hidden="true" /></Button>
       </header>
       {!hasListedSession && session && resolvedFallback?.error && <div className="p-4 text-sm text-muted-foreground">
         <p role="status">Could not refresh this session.</p>
@@ -123,5 +147,7 @@ export function SessionFocus({ focus, entries, loading, hintRevision, client, re
           {resolvedFallback?.error && <Button variant="ghost" onClick={retryFallback}>Try again</Button>}
         </div>}
     </div>
+    {showChat && chatOpen && session && openChat && <SessionChat key={session.sessionId} sessionId={session.sessionId}
+      sessionOwnerId={session.humanUserId} openChat={openChat} onClose={toggleChat} onRoom={onChatRoom} />}
   </section>;
 }

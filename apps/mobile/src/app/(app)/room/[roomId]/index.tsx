@@ -662,20 +662,27 @@ function Conversation() {
           />
         );
       })()}
-      <RoomComposer
-        members={members ?? []}
-        sessionTargets={sessionTargets}
-        placeholder={`Message ${title}`}
-        disabled={!canSend}
-        reconnecting={!rooms.liveConnected}
-        onSend={sendAndCatchUp}
-        onUploadAttachment={rooms.uploadAttachment}
-        onAbort={runningRun ? () => void rooms.abortRun(runningRun.runId).catch(() => {}) : null}
-        onTypingChange={reportTyping}
-        draftKey={composerDraftKey}
-        roomKind={room?.kind}
-        runningAgentIds={runningAgentIds}
-      />
+      {room?.archivedAt ? (
+        // An archived room takes no posts (the server refuses them): say so instead of a composer.
+        <Text accessibilityRole="text" style={[styles.archived, { color: palette.fgSoft }]}>
+          {room.session ? "This session ended. Its chat is read-only." : "This channel is archived."}
+        </Text>
+      ) : (
+        <RoomComposer
+          members={members ?? []}
+          sessionTargets={sessionTargets}
+          placeholder={`Message ${title}`}
+          disabled={!canSend}
+          reconnecting={!rooms.liveConnected}
+          onSend={sendAndCatchUp}
+          onUploadAttachment={rooms.uploadAttachment}
+          onAbort={runningRun ? () => void rooms.abortRun(runningRun.runId).catch(() => {}) : null}
+          onTypingChange={reportTyping}
+          draftKey={composerDraftKey}
+          roomKind={room?.kind}
+          runningAgentIds={runningAgentIds}
+        />
+      )}
     </KeyboardAvoidingView>
   );
 }
@@ -725,6 +732,7 @@ const styles = StyleSheet.create({
     gap: spacing.sm,
   },
   errorText: { fontFamily: fonts.sans, fontSize: 14, lineHeight: 20 },
+  archived: { fontFamily: fonts.sans, fontSize: 14, lineHeight: 20, textAlign: "center", padding: spacing.md },
   retryText: { fontFamily: fonts.sansMedium, fontSize: 13, lineHeight: 18 },
   olderLoading: { marginVertical: spacing.md },
   timeline: { flex: 1 },

@@ -104,6 +104,14 @@ it("suppresses a focused conversation but not an unopened thread in it", async (
   await waitFor(() => expect(mocks.notifySuccess).toHaveBeenCalledTimes(1));
 });
 
+it("suppresses thread replies too in a room that shows replies inline (a session's chat)", async () => {
+  vi.mocked(document.hasFocus).mockReturnValue(true);
+  render(<MessageNotifications activeRoomId="room" threadId={null} roomVisible repliesInline onOpen={vi.fn()} />);
+  await act(async () => { emit({ ...event, payload: { ...event.payload, threadRootMessageId: "root" } } as LiveEvent); });
+  expect(mocks.nativeNotify).not.toHaveBeenCalled();
+  expect(mocks.notifySuccess).not.toHaveBeenCalled();
+});
+
 describe("asking for notification permission", () => {
   const renderIt = renderAway;
 

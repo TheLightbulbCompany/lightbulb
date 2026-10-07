@@ -57,6 +57,8 @@ interface RoomMessageItemProps {
   onOpenSession?: (sessionId: string) => void;
   toolbarExtras?: ReactNode;
   menuExtras?: ReactNode;
+  /** A person's colour in a session's chat (`personColor`), the same as in its terminal. */
+  personColor?: string;
 }
 
 /** A session chip is a reference, like a document link: it never messaged the session. */
@@ -73,7 +75,7 @@ function SessionCard({ sessionId, label, session, onOpen }: {
   </span>;
 }
 
-export function RoomMessageItem({ id, message, text, participant, currentUserId, actionable, inThread, collapsed, startEditing, onEditingClosed, replyCount, lastReplyAt, threadParticipants = [], workingNames = [], receipt, highlighted, mentionsViewer, markdown, urlTransform, quickReactions, reactionPending, reactionError, onToggleReaction, onOpenThread, onSelectParticipant, onUpdateMessage, onDownloadAttachment, onAttachmentUrl, sessions = [], onOpenSession, toolbarExtras, menuExtras }: RoomMessageItemProps): ReactElement {
+export function RoomMessageItem({ id, message, text, participant, currentUserId, actionable, inThread, collapsed, startEditing, onEditingClosed, replyCount, lastReplyAt, threadParticipants = [], workingNames = [], receipt, highlighted, mentionsViewer, markdown, urlTransform, quickReactions, reactionPending, reactionError, onToggleReaction, onOpenThread, onSelectParticipant, onUpdateMessage, onDownloadAttachment, onAttachmentUrl, sessions = [], onOpenSession, toolbarExtras, menuExtras, personColor }: RoomMessageItemProps): ReactElement {
   const name = participant?.displayName || message.author.displayName || "Unknown author";
   const timestamp = !Number.isNaN(Date.parse(message.createdAt)) ? message.createdAt : undefined;
   const time = timestamp ? new Date(timestamp).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }) : "";
@@ -91,7 +93,7 @@ export function RoomMessageItem({ id, message, text, participant, currentUserId,
       onClick={(event) => onOpenThread(event.currentTarget)}><MessageCircle aria-hidden="true" /></Button>}
     {toolbarExtras}
   </> : undefined;
-  return <article id={id} tabIndex={-1} className={cn("room-message", collapsed && "room-message-collapsed", highlighted && "room-message-highlight", mentionsViewer && "room-message-mentions-me")} aria-label={`Message from ${name}`}>
+  return <article id={id} tabIndex={-1} className={cn("room-message", collapsed && "room-message-collapsed", highlighted && "room-message-highlight", mentionsViewer && "room-message-mentions-me")} aria-label={`Message from ${name}`} data-person={personColor}>
     {collapsed
       ? <span className="room-message-gutter" aria-hidden="true">{time}</span>
       : participant ? <ParticipantAvatar participant={participant} showPresence={false} /> : <Identity name={name} avatarOnly size="default" />}

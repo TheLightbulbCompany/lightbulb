@@ -34,7 +34,11 @@ export interface MessagingWorkspaceValue {
   selectAgentDm: (agentId: string, explicit?: boolean) => Promise<string | null>;
   openMessage: (roomId: string, messageId: string | null) => void;
   openNotificationTarget: (roomId: string, threadId: string | null, messageId?: string) => void;
-  openSession: (sessionId: string) => void;
+  openSession: (sessionId: string, chat?: boolean) => void;
+  /** Open or close the focused session's chat column. */
+  setSessionChat: (open: boolean) => void;
+  /** The chat room on screen beside a session (SessionChat reports it), or null. */
+  setSessionChatRoomId: (roomId: string | null) => void;
   /** Focus an empty new session (the composer that starts one on your Mac). */
   openNewSession: () => void;
   sessionFocus: SessionFocusTarget | null;
@@ -169,6 +173,10 @@ export function MessagingWorkspaceProvider({
   const [sessionFocus, setSessionFocus] = useState<SessionFocusTarget | null>(null);
   // Focus covers the room. A covered room must neither auto-read nor silence its notifications.
   const roomVisible = subscribeToRoom && !sessionFocus;
+  // The live provider carries ONE room channel. While a session's chat is open the covered room
+  // lends it that channel, and catches up when it gets it back.
+  const sessionChatOpen = !!sessionFocus?.chat;
+  const [sessionChatRoomId, setSessionChatRoomId] = useState<string | null>(null);
   // Browser watches run frames even when the room is hidden; visibility still
   // controls read receipts and notification suppression.
   // Fresh or returning is decided once per workspace, as soon as the room list
@@ -178,7 +186,7 @@ export function MessagingWorkspaceProvider({
   const freshLanding = landing?.scope === scope ? landing.fresh : null;
   const rooms = useRooms(
     defaultAgentId && freshLanding === false ? initialAgentId ?? defaultAgentId : initialAgentId,
-    subscribeToRoom || observeRuns,
+    (subscribeToRoom || observeRuns) && !sessionChatOpen,
     roomVisible,
   );
   const observedLanding = rooms.roomsLoading || rooms.roomsError ? null : landingFor(rooms.rooms);
@@ -664,25 +672,28 @@ export function MessagingWorkspaceProvider({
   // A permalink applied before the workspace session list lands (a cold load,
   // a new tab, a deep link) cannot yet tell a live session from an ended one,
   // so it waits here and is replayed once the list settles.
-  const heldLink = useRef<string | null>(null);
+  const heldLink = useRef<{ sessionId: string; chat: boolean } | null>(null);
   const closeSession = useCallback(() => { heldLink.current = null; setSessionFocus(null); }, []);
   /** Returns false when the link is held for the session list. */
-  const applySession = useCallback((sessionId: string) => {
+  const applySession = useCallback((sessionId: string, chat = false) => {
     heldLink.current = null; // the latest intent wins
     if (workspaceSessions.loading && !workspaceSessions.sessions.some((candidate) => candidate.sessionId === sessionId)) {
-      heldLink.current = sessionId;
+      heldLink.current = { sessionId, chat };
       return false;
     }
     setThreadId(null);
     setTarget(null);
-    setSessionFocus({ sessionId });
+    setSessionFocus(chat ? { sessionId, chat } : { sessionId });
     return true;
   }, [workspaceSessions.sessions, workspaceSessions.loading]);
   // A person's open is a pick; a held link's later replay (applySession) is not —
   // they may have moved on by the time the list lands.
-  const openSession = useCallback((sessionId: string) => {
-    if (applySession(sessionId)) bumpPick();
+  const openSession = useCallback((sessionId: string, chat = false) => {
+    if (applySession(sessionId, chat)) bumpPick();
   }, [applySession, bumpPick]);
+  const setSessionChat = useCallback((open: boolean) => {
+    setSessionFocus((current) => current?.sessionId ? { ...current, chat: open } : current);
+  }, []);
   const openNewSession = useCallback(() => {
     heldLink.current = null;
     setThreadId(null);
@@ -698,7 +709,7 @@ export function MessagingWorkspaceProvider({
   useEffect(() => {
     const link = heldLink.current;
     if (!link || workspaceSessions.loading) return;
-    applySession(link);
+    applySession(link.sessionId, link.chat);
   }, [workspaceSessions.loading, applySession]);
   const openMessage = useCallback((roomId: string, messageId: string | null) => {
     closeSession();
@@ -872,7 +883,7 @@ export function MessagingWorkspaceProvider({
   } : null;
 
   // Muted rooms never badge anywhere: not the sidebar, not the browser-tab title.
-  const openNotificationTarget = useCallback((roomId: string, targetThreadId: string | null, messageId?: string) => {
+  const openRoomTarget = useCallback((roomId: string, targetThreadId: string | null, messageId?: string) => {
     // The room may be the one focus covers; opening it has to uncover it.
     closeSession();
     selectRoom(roomId);
@@ -881,6 +892,17 @@ export function MessagingWorkspaceProvider({
     if (messageId && !targetThreadId) setTarget({ roomId, messageId });
     activateMessagesPanel();
   }, [closeSession, selectRoom]);
+  const listedRoomIds = useMemo(() => new Set(rooms.rooms.map((room) => room.roomId)), [rooms.rooms]);
+  const lookupRoom = rooms.resourceSource.client.getRoom;
+  const openNotificationTarget = useCallback((roomId: string, targetThreadId: string | null, messageId?: string) => {
+    if (listedRoomIds.has(roomId)) { openRoomTarget(roomId, targetThreadId, messageId); return; }
+    // A session's chat is hidden from the room list: ask the room what it belongs to, and open the
+    // session with its chat beside it rather than a bare room.
+    void lookupRoom(roomId).then((room) => {
+      if (room.session) { openSession(room.session.sessionId, true); activateMessagesPanel(); }
+      else openRoomTarget(roomId, targetThreadId, messageId);
+    }, () => openRoomTarget(roomId, targetThreadId, messageId));
+  }, [listedRoomIds, lookupRoom, openRoomTarget, openSession]);
   // A failed-run toast (RunNotifications) opens the room the run ran in.
   useEffect(() => {
     const onOpenRoom = (event: Event) => {
@@ -906,13 +928,15 @@ export function MessagingWorkspaceProvider({
     openNewSession,
     sessionFocus,
     closeSession,
+    setSessionChat,
+    setSessionChatRoomId,
     sessionSource: rooms.resourceSource,
     resolveSessionOwner,
     workspaceSessions,
     scope,
     freshLanding,
     explicitPickCount,
-  }}><MessageNotifications activeRoomId={rooms.activeRoomId} threadId={threadId} roomVisible={roomVisible} rooms={rooms.rooms}
+  }}><MessageNotifications activeRoomId={sessionChatRoomId ?? rooms.activeRoomId} threadId={threadId} roomVisible={sessionChatRoomId ? true : roomVisible} repliesInline={!!sessionChatRoomId} rooms={rooms.rooms}
     onOpen={openNotificationTarget} activeSessionId={sessionFocus?.sessionId ?? null}
     onOpenSession={(sessionId) => { openSession(sessionId); activateMessagesPanel(); }} /><ShortcutSheet open={shortcutsOpen} onOpenChange={setShortcutsOpen} /><UnreadTitleBadge unread={unreadTotal} />{children}
     {selectRoomError && <div role="alert" className="px-4 py-2 text-sm text-err">{selectRoomError}{" "}

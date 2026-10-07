@@ -241,6 +241,10 @@ class LastMessage(ContractModel):
     thread_root_message_id: str | None = None
 
 
+class SessionRef(ContractModel):
+    session_id: str
+
+
 class RoomSummary(ContractModel):
     room_id: uuid.UUID
     name: str | None
@@ -284,6 +288,8 @@ class RoomSummary(ContractModel):
     # Set while the channel is archived: history stays readable, nothing new posts.
     archived_at: datetime | None = None
     archived_by: str | None = None
+    # A session's chat room (hidden from the room list): the session it talks beside.
+    session: SessionRef | None = None
 
 
 class ActiveRun(ContractModel):
@@ -1589,6 +1595,7 @@ def _room_summary_fields(meta: dict, member: dict, read: dict | None, mention_co
         "is_default": is_default_room(meta),
         "archived_at": meta.get("archivedAt"),
         "archived_by": meta.get("archivedBy"),
+        "session": SessionRef(session_id=meta["session"]["sessionId"]) if meta.get("session") else None,
     }
 
 
@@ -1775,8 +1782,14 @@ def is_default_room(meta: dict) -> bool:
     return bool(owner_id) and str(meta.get("roomId")) == default_room_id(owner_id)
 
 
+def is_session_room(meta: dict) -> bool:
+    """A session's chat (PR #3807): hidden, and its humans follow session read access."""
+    return bool(meta.get("session"))
+
+
 def _deny_vendor_human_change(meta: dict, kind: str) -> None:
-    if kind == "human" and is_vendor_room(meta):
+    # A session chat's people follow session read access (spec 2026-10-07 decision 2).
+    if kind == "human" and (is_vendor_room(meta) or is_session_room(meta)):
         raise ApiProblem("ROOM_FORBIDDEN", "Membership of this channel is managed by Lightbulb.")
 
 
@@ -2182,6 +2195,10 @@ async def patch_room(auth: AuthContext, room_id: str, request: PatchRoomRequest)
         raise ApiProblem("ROOM_FORBIDDEN", "Direct messages cannot be renamed.")
     if "name" in updates and is_vendor_room(meta):
         raise ApiProblem("ROOM_FORBIDDEN", "This channel's name is managed by Lightbulb.")
+    if "name" in updates and is_session_room(meta):
+        raise ApiProblem("ROOM_FORBIDDEN", "This chat is named after its session.")
+    if request.archived is not None and is_session_room(meta):
+        raise ApiProblem("ROOM_NOT_ARCHIVABLE", "This chat opens and closes with its session.")
     if request.archived is not None and request.archived != bool(meta.get("archivedAt")):
         if request.archived:
             _require_archivable(meta)
@@ -2406,7 +2423,7 @@ async def delete_room(auth: AuthContext, room_id: str) -> None:
         meta, member = await require_room_member(owner_id, auth.user_id, room_id)
         if member.get("role") != "owner":
             raise ApiProblem("ROOM_FORBIDDEN", "Only the channel's owner can delete it.")
-        if meta.get("kind") != "channel" or is_default_room(meta) or is_vendor_room(meta):
+        if meta.get("kind") != "channel" or is_default_room(meta) or is_vendor_room(meta) or is_session_room(meta):
             name = "#general" if is_default_room(meta) else "This room"
             raise ApiProblem("ROOM_NOT_DELETABLE", f"{name} can't be deleted.")
         new_key = str(uuid.uuid4())
@@ -2427,6 +2444,7 @@ async def delete_room(auth: AuthContext, room_id: str) -> None:
 async def revoke_human_membership(owner_id: str, user_id: str) -> None:
     """Rotate every room key before deactivating this user's private stream."""
     discovered = await messaging_repo.list_rooms_for_member(owner_id, "human", user_id)
+    own_session_chats: list[str] = []
     for row in discovered:
         room_id = row["meta"]["roomId"]
         member = await messaging_repo.get_member(room_id, "human", user_id)
@@ -2436,7 +2454,17 @@ async def revoke_human_membership(owner_id: str, user_id: str) -> None:
         if meta is None or messaging_repo.member_home(member, meta["ownerId"]) != owner_id:
             continue
         await _remove_member_with_notices(meta, "human", user_id)
+        if is_session_room(meta) and meta["session"].get("ownerId") == user_id:
+            own_session_chats.append(meta["session"]["sessionId"])
     await messaging_repo.deactivate_user_stream(owner_id, user_id)
+    if own_session_chats:
+        # Their sessions' chats go silent for everyone: the person they were about is gone. After
+        # the stream is off, which the chat door reads once it has seated someone: a seat that
+        # lands before this list is removed here, one that lands after it is refused there.
+        from core.services import session_chat  # lazy: it imports this module
+
+        for session_id in own_session_chats:
+            await session_chat.silence(owner_id, session_id, keep=None)
 
 
 async def list_messages(
@@ -4183,9 +4211,10 @@ async def create_agent_message(owner_id: str, request: AgentMessageRequest) -> A
     if meta is None or meta.get("deletedAt") or meta.get("ownerId") != owner_id:
         raise ApiProblem("ROOM_NOT_FOUND", "Room not found.")
     bound = request.run_id or request.reply_to_message_id or request.thread_root_message_id
-    if meta.get("hidden") and not (bound or request.uploaded_attachments):
-        # A Google Meet's room is read by nobody: what an agent posts there (a late Live answer)
-        # goes to the meeting's output room when it sits there. Every door resolves the same room,
+    if meta.get("hidden") and meta.get("meeting") and not (bound or request.uploaded_attachments):
+        # A Google Meet's room (hidden, with a meeting record) is read by nobody: what an agent posts
+        # there (a late Live answer) goes to the meeting's output room when it sits there. A session's
+        # chat is hidden too, but people read it, so it keeps its posts. Every door resolves the same room,
         # so a replay hashes the same and stays idempotent. A post bound to the hidden room (a run,
         # a reply, a thread, a runtime-uploaded attachment) stays there: those are checked against it.
         from core.services.meeting_invites import _post_line, output_room

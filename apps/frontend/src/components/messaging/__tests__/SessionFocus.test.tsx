@@ -1,8 +1,11 @@
-import { render, screen, within } from "@testing-library/react";
+import { act, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { expect, it, vi } from "vitest";
 import { ApiError, type LocalSession, type SessionSource } from "@lightbulb/shared";
 import { SessionFocus } from "../SessionFocus";
+
+vi.mock("../SessionChat", () => ({ SessionChat: ({ onClose, openChat }: { onClose: () => void; openChat: (id: string) => Promise<unknown> }) =>
+  <aside aria-label="Session chat"><button onClick={onClose}>Close chat</button><button onClick={() => void openChat("s1")}>Open door</button></aside> }));
 
 const session: LocalSession = { sessionId: "s1", deviceId: "mac", humanUserId: "alice", provider: "claude", terminal: "held", providerVersion: "2.1.269", generation: "g", status: "busy", activeTurnId: null,
   capabilities: { sendMode: "queue", steer: false, interrupt: false }, capabilitiesVerified: true, controlUnavailableReason: null, latestEventSeq: 0, title: "Load test" };
@@ -261,4 +264,56 @@ it("reads Preparing… (disabled) while pick-up is allowed but the snapshot is n
 it("says why when the snapshot is unavailable", async () => {
   focus({ session: { ...session, pickup: { allowed: true, state: "unavailable", reason: "too-large" } }, ownerName: "Alice", own: false }, { askPickup: vi.fn() });
   expect(await screen.findByText("This session is too large to snapshot.")).toBeInTheDocument();
+});
+
+function chatFocus(chatOpen: boolean, chatUnread?: number) {
+  const onChatOpenChange = vi.fn();
+  const client = { listWorkspaceSessions: vi.fn(), getLocalSession: vi.fn(), listLocalSessionEvents: vi.fn(async () => ({ events: [], nextAfterSeq: null })),
+    submitLocalSessionCommand: vi.fn(), getLocalSessionCommand: vi.fn(), openSessionChat: vi.fn() } as unknown as SessionSource["client"];
+  render(<SessionFocus focus={{ sessionId: "s1" }} entries={[{ session: { ...session, chatUnread, chatRoomId: "chat-1" }, ownerName: "Alice", own: false }]}
+    loading={false} hintRevision={0} client={client} resolveSessionOwner={resolveSessionOwner} onAccessLost={vi.fn()} onClose={vi.fn()}
+    chatOpen={chatOpen} onChatOpenChange={onChatOpenChange} />);
+  return onChatOpenChange;
+}
+
+it("offers the session's chat with its unread count and opens it beside the terminal", async () => {
+  const onChatOpenChange = chatFocus(false, 2);
+  await userEvent.click(await screen.findByRole("button", { name: "Chat, 2 unread" }));
+  expect(onChatOpenChange).toHaveBeenCalledWith(true);
+  expect(screen.queryByRole("complementary", { name: "Session chat" })).not.toBeInTheDocument();
+});
+
+it("renders the chat column while open and closes it from either side", async () => {
+  const onChatOpenChange = chatFocus(true, 2);
+  expect(await screen.findByRole("complementary", { name: "Session chat" })).toBeInTheDocument();
+  expect(document.querySelector(".room-session-focus.session-chat-open")).not.toBeNull();
+  expect(screen.getByRole("button", { name: "Chat" })).toHaveAttribute("aria-pressed", "true"); // no count while reading
+  await userEvent.click(screen.getByRole("button", { name: "Close chat" }));
+  expect(onChatOpenChange).toHaveBeenCalledWith(false);
+});
+
+it("shows the server's chat unread count and never adds live arrivals on top (the list refetches on one)", async () => {
+  let emit: (event: unknown) => void = () => {};
+  const onEvent = ((handler: (event: unknown) => void) => { emit = handler; return () => {}; }) as unknown as SessionSource["onEvent"];
+  const client = { listWorkspaceSessions: vi.fn(), getLocalSession: vi.fn(), listLocalSessionEvents: vi.fn(async () => ({ events: [], nextAfterSeq: null })),
+    submitLocalSessionCommand: vi.fn(), getLocalSessionCommand: vi.fn(), openSessionChat: vi.fn() } as unknown as SessionSource["client"];
+  const view = (chatUnread: number) => <SessionFocus focus={{ sessionId: "s1" }} entries={[{ session: { ...session, chatRoomId: "chat-1", chatUnread }, ownerName: "Alice", own: false }]}
+    loading={false} hintRevision={0} client={client} onEvent={onEvent} resolveSessionOwner={resolveSessionOwner} onAccessLost={vi.fn()} onClose={vi.fn()} chatOpen={false} onChatOpenChange={vi.fn()} />;
+  const { rerender } = render(view(1));
+  await screen.findByRole("button", { name: "Chat, 1 unread" });
+  act(() => emit({ type: "room.message.available", payload: { roomId: "chat-1", threadRootMessageId: null } }));
+  expect(screen.getByRole("button", { name: "Chat, 1 unread" })).toBeInTheDocument();
+  rerender(view(2)); // the refreshed list already counts that message
+  expect(screen.getByRole("button", { name: "Chat, 2 unread" })).toBeInTheDocument();
+});
+
+it("refreshes the session list when the chat opens, so a first open's room is known for its next message", async () => {
+  const onAccessLost = vi.fn();
+  const client = { listWorkspaceSessions: vi.fn(), getLocalSession: vi.fn(), listLocalSessionEvents: vi.fn(async () => ({ events: [], nextAfterSeq: null })),
+    submitLocalSessionCommand: vi.fn(), getLocalSessionCommand: vi.fn(), openSessionChat: vi.fn(async () => ({ roomId: "chat-1" })) } as unknown as SessionSource["client"];
+  render(<SessionFocus focus={{ sessionId: "s1" }} entries={[{ session, ownerName: "Alice", own: false }]} loading={false} hintRevision={0} client={client}
+    resolveSessionOwner={resolveSessionOwner} onAccessLost={onAccessLost} onClose={vi.fn()} chatOpen onChatOpenChange={vi.fn()} />);
+  await userEvent.click(await screen.findByRole("button", { name: "Open door" }));
+  expect(client.openSessionChat).toHaveBeenCalledWith("s1");
+  expect(onAccessLost).toHaveBeenCalled();
 });

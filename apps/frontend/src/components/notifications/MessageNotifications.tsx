@@ -13,6 +13,8 @@ export function MessageNotifications(props: {
   activeRoomId: string | null;
   threadId: string | null;
   roomVisible: boolean;
+  /** The room on screen shows thread replies inline (a session's chat): a reply there is on screen too. */
+  repliesInline?: boolean;
   onOpen: (roomId: string, threadId: string | null, messageId: string) => void;
   /** The shared session on screen, if any: its own notifications are not shown while you watch it. */
   activeSessionId?: string | null;
@@ -119,7 +121,7 @@ export function MessageNotifications(props: {
       seen.add(messageId);
       if (seen.size > 1000) seen.delete(seen.values().next().value!);
       const watched = current.current.roomVisible && current.current.activeRoomId === roomId &&
-        (!threadRootMessageId || current.current.threadId === threadRootMessageId) &&
+        (!threadRootMessageId || current.current.repliesInline || current.current.threadId === threadRootMessageId) &&
         document.visibilityState === "visible" && document.hasFocus();
       if (watched) return;
       if (data.runId && !claimRunNotice(data.runId)) return;

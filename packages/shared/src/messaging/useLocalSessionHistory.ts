@@ -8,7 +8,7 @@ import type { LocalSession, LocalSessionEvent } from "./types";
 
 export interface SessionSource {
   client: Pick<ReturnType<typeof createMessagingClient>, "listWorkspaceSessions" | "getLocalSession" | "listLocalSessionEvents" | "submitLocalSessionCommand" | "getLocalSessionCommand" | "setLocalSessionSharing"> &
-    Partial<Pick<ReturnType<typeof createMessagingClient>, "cancelLocalSessionCommand" | "setLocalSessionDisplayTitle" | "watchLocalSession">>;
+    Partial<Pick<ReturnType<typeof createMessagingClient>, "cancelLocalSessionCommand" | "setLocalSessionDisplayTitle" | "watchLocalSession" | "openSessionChat">>;
   onEvent: (handler: (event: LiveEvent) => void) => () => void;
   connectionRevision: number;
 }

@@ -131,6 +131,11 @@ MAINTENANCE (Lightbulb engineers): every claim in this skill is anchored to
                                  buttons); SessionDetails.tsx (About/Changes/Access/Linked work tabs, the Access switches,
                                  footer Copy link / Message owner / Pick up); SessionShareLink.tsx (Share, Who can open it,
                                  Turn off link); LocalSessionWork.tsx (Link existing work).
+  - Session chat ............ references/surfaces.md ("Session chat" paragraph: hidden room, CEO on mentions,
+                              answer in the chat, never into the session)
+                              <- apps/backend/core/services/session_chat.py; apps/backend/routers/messaging.py (POST .../chat);
+                                 apps/frontend/src/components/messaging/{SessionChat,SessionFocus}.tsx;
+                                 apps/mobile/src/app/(app)/session/[sessionId].tsx (Chat button)
   - Session links + Continue  references/surfaces.md ("Session links" paragraph)
                               <- apps/frontend/src/app/s/page.tsx (the /s page: sign in, Continue, the
                                  `lightbulb continue '<link>'` command); apps/backend/core/services/session_links.py

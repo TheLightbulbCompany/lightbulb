@@ -602,6 +602,13 @@ class LocalSessionRelay:
                         if picked_up_from:
                             row["pickedUpFrom"] = picked_up_from
                     await repo.put_session(row, previous, enrollment, extra=extra)
+                    if previous and previous.get("endedAt") is not None:
+                        from core.services import session_chat  # lazy: it imports local_sessions
+
+                        try:  # a resume: its chat takes posts again, also for people who have it open
+                            await session_chat.follow_session(owner, sid)
+                        except Exception:  # the next chat open reopens it too (_follow_lifecycle)
+                            logger.warning("session chat reopen failed for %s", sid, exc_info=True)
                     if previous is None or previous["generation"] != row["generation"]:
                         # The desktop may discover an already-running native process: shared, not started.
                         _capture_lifecycle(row, "local_session_shared")
@@ -898,6 +905,12 @@ class LocalSessionRelay:
             updated.pop(key, None)
         await repo.put_session(updated, row, enrollment, extra=extra)
         _capture_lifecycle(updated, "local_session_ended", end_reason=message.reason)
+        from core.services import session_chat  # lazy: it imports local_sessions
+
+        try:
+            await session_chat.follow_session(owner, row["sessionId"])
+        except Exception:  # the next chat open archives it too (session_chat._follow_lifecycle)
+            logger.warning("session chat archive failed for %s", row["sessionId"], exc_info=True)
         await publish_resources_changed(owner, row["humanUserId"])
         return ack
 

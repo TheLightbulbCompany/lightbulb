@@ -65,7 +65,8 @@ const room: RoomDetail = {
 const state = {
   resourceSource: { client: { listLocalSessionEvents: vi.fn(), submitLocalSessionCommand: vi.fn(), getLocalSessionCommand: vi.fn(), listWorkspaceSessions: vi.fn(async () => ({ sessions: [] as never[] })),
     // A session missing from the settled list is fetched directly (SessionFocus's fallback); default to a genuine 404.
-    getLocalSession: vi.fn(async () => { throw new ApiError(404, null); }) }, onEvent: () => () => {}, connectionRevision: 1 },
+    getLocalSession: vi.fn(async () => { throw new ApiError(404, null); }),
+    getRoom: vi.fn(async () => room) }, onEvent: () => () => {}, connectionRevision: 1 },
   rooms: [room], roomsError: undefined as Error | undefined, roomsLoading: false,
   directoryError: undefined as Error | undefined, directoryLoading: false,
   activeRoomId: room.roomId as string | null, activeRoom: room,
@@ -156,10 +157,11 @@ it("records room_opened once per room and composer_typing_started once per room 
   view.unmount();
 });
 
-it("opens the room a failed-run toast names", () => {
+it("opens the room a failed-run toast names", async () => {
+  state.resourceSource.client.getRoom.mockResolvedValueOnce({ ...room, roomId: "room-9" });
   const view = compose();
   act(() => { window.dispatchEvent(new CustomEvent("openRoom", { detail: { roomId: "room-9", threadId: null } })); });
-  expect(state.selectRoom).toHaveBeenCalledWith("room-9");
+  await waitFor(() => expect(state.selectRoom).toHaveBeenCalledWith("room-9"));
   view.unmount();
 });
 
@@ -1119,4 +1121,45 @@ describe("opening #general once it is seeded", () => {
     view.rerender(shell());
     expect(workspaceValue.activeRoomId).toBe("general-2");
   });
+});
+
+it("opens a session with its chat when a notification names the session's hidden room", async () => {
+  state.resourceSource.client.listWorkspaceSessions.mockResolvedValue({ sessions: [] });
+  state.resourceSource.client.getRoom.mockResolvedValueOnce({ ...room, roomId: "chat-1", kind: "channel", session: { sessionId: "s1" } });
+  compose();
+  await act(async () => {});
+  act(() => notifications.onOpen("chat-1", null));
+  await waitFor(() => expect(workspaceValue.sessionFocus).toEqual({ sessionId: "s1", chat: true }));
+  expect(state.selectRoom).not.toHaveBeenCalledWith("chat-1");
+});
+
+it("lends the one live room subscription to the session chat while it is open", async () => {
+  state.resourceSource.client.listWorkspaceSessions.mockResolvedValue({ sessions: [] });
+  compose();
+  await act(async () => {});
+  act(() => workspaceValue.openSession("s1", true));
+  expect(mocks.rooms.mock.calls.at(-1)?.[1]).toBe(false);
+  act(() => workspaceValue.setSessionChat(false));
+  expect(mocks.rooms.mock.calls.at(-1)?.[1]).toBe(true);
+});
+
+it("keeps the chat flag on a session link held for the session list (a cold-load notification tap)", async () => {
+  const landList = holdSessionList();
+  render(<MessagingWorkspaceProvider><CaptureContext /></MessagingWorkspaceProvider>);
+  act(() => workspaceValue.openSession("s1", true));
+  expect(workspaceValue.sessionFocus).toBeNull();
+  await landList([liveSession("s1", "colleague")]);
+  expect(workspaceValue.sessionFocus).toEqual({ sessionId: "s1", chat: true });
+});
+
+it("tells notifications the session chat on screen shows replies inline, and stops when it closes", async () => {
+  state.resourceSource.client.listWorkspaceSessions.mockResolvedValue({ sessions: [] });
+  compose();
+  await act(async () => {});
+  expect((notifications as unknown as { repliesInline?: boolean }).repliesInline).toBeFalsy();
+  act(() => workspaceValue.openSession("s1", true));
+  act(() => workspaceValue.setSessionChatRoomId("chat-1"));
+  expect(notifications).toMatchObject({ activeRoomId: "chat-1", roomVisible: true, repliesInline: true });
+  act(() => workspaceValue.setSessionChatRoomId(null));
+  expect((notifications as unknown as { repliesInline?: boolean }).repliesInline).toBeFalsy();
 });

@@ -73,7 +73,8 @@ export function DesktopPermissions() {
 }
 
 export const SHARE_LIVE_LABEL = "Share every session live";
-export const SHARE_LIVE_DESCRIPTION = "Plain claude and codex in your terminals start through Lightbulb, so their live terminal shows here too. Adds a marked block to ~/.zshrc and ~/.bashrc.";
+export const SHARE_LIVE_FILES = "~/.zshrc, ~/.bashrc and your bash login file (~/.bash_profile, ~/.bash_login or ~/.profile, whichever you have)";
+export const SHARE_LIVE_DESCRIPTION = `Plain claude and codex in a new terminal tab start through Lightbulb, so their live terminal shows here too. Adds a marked block to ${SHARE_LIVE_FILES}; turning it off removes it.`;
 
 /** Settings row: "Share every session live" — the `claude`/`codex` shell functions (the desktop's
  *  shell_integration module). Hidden in a browser and on a desktop build without the command. */
@@ -101,7 +102,7 @@ export function ShareEverySessionLive() {
     description={<>Typing <code>claude</code> or <code>codex</code> in a terminal starts it through Lightbulb, so its live terminal shows here too.</>}
     toggle={{ checked: on, disabled: busy, onChange: () => void toggle() }}
   >
-    <p className="settings-row-note">Adds a marked block to ~/.zshrc and ~/.bashrc, and removes it when you turn this off. Open a new terminal tab after you change it.</p>
+    <p className="settings-row-note">Adds a marked block to {SHARE_LIVE_FILES}, and removes it when you turn this off. Open a new terminal tab after you change it.</p>
     {error ? <p className="settings-row-error" role="alert">{error}</p> : null}
   </SettingRow>;
 }

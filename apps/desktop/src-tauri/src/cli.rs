@@ -99,8 +99,11 @@ pub fn refusal(tool: &str, args: &[String]) -> Option<String> {
     }
     let before_dashes = args.iter().take_while(|a| *a != "--");
     for arg in before_dashes {
+        // --bg starts a background job and returns: the job is shared through `claude attach` (spec §4 row c), so the real tool runs.
         let refused = tool == "claude"
             && (arg == "--print"
+                || arg == "--bg"
+                || arg == "--background"
                 || arg.starts_with("--print=")
                 || (arg.len() > 1 && arg.starts_with('-') && !arg.starts_with("--") && arg[1..].bytes().all(|b| b.is_ascii_alphabetic()) && arg.contains('p')));
         if refused {
@@ -698,7 +701,8 @@ mod tests {
             &["--permission-mode", "bypassPermissions"], &["--model", "opus", "fix it"], &["--", "-p"], &[]] {
             assert_eq!(refusal("claude", &words(ok)), None, "{ok:?}");
         }
-        for no in [&["-p", "hi"][..], &["--print", "hi"], &["-cp", "hi"], &["--print=json"]] {
+        for no in [&["-p", "hi"][..], &["--print", "hi"], &["-cp", "hi"], &["--print=json"], &["--bg"], &["--bg", "fix it"],
+            &["--background", "fix it"], &["--resume", "abc", "--bg"]] {
             assert!(refusal("claude", &words(no)).is_some(), "{no:?}");
         }
         for ok in [&[][..], &["resume"], &["resume", "--last"], &["fork"], &["fixit"], &["fix the build"], &["-C", "app"],
@@ -717,6 +721,7 @@ mod tests {
             assert!(refusal("claude", &words(no)).is_some(), "{no:?}");
         }
         assert_eq!(refusal("claude", &words(&["--", "--help"])), None);
+        assert_eq!(refusal("claude", &words(&["--", "--bg"])), None, "a prompt that says --bg is the prompt");
         // The installed Codex's own list catches a command this build has never heard of.
         assert!(codex_refusal(&words(&["newthing"]), &["newthing".to_string()]).is_some());
         assert_eq!(codex_refusal(&words(&["fork"]), &["fork".to_string()]), None);

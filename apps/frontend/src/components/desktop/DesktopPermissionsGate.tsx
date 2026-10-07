@@ -49,8 +49,8 @@ export function DesktopPermissionsGate() {
     DEFAULT_DESKTOP_PERMISSIONS,
   );
   const [choice, setChoice] = useState<boolean | null>(null);
-  // Off by default: it edits ~/.zshrc and ~/.bashrc, so only on an explicit yes.
-  const [live, setLive] = useState(false);
+  // On by default (owner ruling 2026-10-07): the item says which files it edits, and one click turns it off.
+  const [live, setLive] = useState(true);
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
   const operation = useRef(0);

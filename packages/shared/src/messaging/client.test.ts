@@ -20,6 +20,12 @@ const agentId = "22222222-2222-4222-8222-222222222222";
 const messageId = "33333333-3333-4333-8333-333333333333";
 
 describe("messaging HTTP client", () => {
+  it("opens a session's chat through its own door", async () => {
+    const { client, methods } = setup();
+    await client.openSessionChat("sess 1");
+    expect(methods.post).toHaveBeenCalledWith("/messaging/sessions/sess%201/chat", {});
+  });
+
   it("searches messages in a POST body and warms search", async () => {
     const { client, methods } = setup();
     await client.searchMessages("deploy fix", { roomId, limit: 20 });

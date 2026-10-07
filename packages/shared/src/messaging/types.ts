@@ -79,6 +79,8 @@ export interface RoomSummary {
   archivedBy?: string | null;
   /** Set once the channel's owner deleted it. The backend hides a deleted room, so clients rarely see it. */
   deletedAt?: string | null;
+  /** A session's chat (hidden from the room list): the session it talks beside. Absent on every other room. */
+  session?: { sessionId: string } | null;
 }
 
 export interface ActiveRoomRun {
@@ -414,6 +416,10 @@ export interface LocalSession {
   pendingJoins?: string[];
   /** A request is pending and the owner's older Mac (no bandOwnerOnly) has paused remote typing until it is answered. A newer Mac never pauses. */
   inputPaused?: boolean;
+  /** The viewer's seat in this session's chat, once they are in it. */
+  chatRoomId?: string;
+  /** Top-level chat messages above the viewer's read point, capped at 99. */
+  chatUnread?: number;
   /** The owner's own view only: each waiting person's request id, sent back with the answer. */
   pendingJoinIds?: Record<string, string>;
   /** The READER's own ask to pick this session up: pending, or declined by the owner. */

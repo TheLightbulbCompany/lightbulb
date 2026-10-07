@@ -1,4 +1,4 @@
-"""Synthetic Macs for load scenario 3 (spec docs/superpowers/specs/2026-10-07-load-testing.md §4).
+"""Synthetic Macs for load scenario 3 (see scripts/load/README.md).
 
 Each fixture user (the first ``--macs`` in fixtures.json) plays one paired Mac: it pairs two fresh
 Ed25519 keys (``POST /desktop/pair``), enrolls, opens the local-session relay socket with a
@@ -285,10 +285,13 @@ class Mac:
             await _sleep(stop, 1 / self.args.events_per_s)
 
     async def frames(self, stop: asyncio.Event) -> None:
+        # On a fixed schedule, so the viewers' "fps x seconds watched" is what was really sent.
+        start, n = time.monotonic(), 0
         while self.args.fps and not stop.is_set():
             for s in list(self.sessions):
                 await self.screen(s, "output")
-            await _sleep(stop, 1 / self.args.fps)
+            n += 1
+            await _sleep(stop, max(0.0, start + n / self.args.fps - time.monotonic()))
 
     async def offline_check(self, stop: asyncio.Event) -> None:
         """Spec §4: sessions listed offline while their Mac is connected must stay 0."""
@@ -339,6 +342,33 @@ async def _sleep(stop: asyncio.Event, seconds: float) -> None:
         pass
 
 
+CHILD_GRACE_S = 30
+
+
+async def run_child(command: list[str], stop: asyncio.Event, env: dict, grace: float = CHILD_GRACE_S) -> int:
+    """Run the viewers' command until it exits or ``stop`` fires. A stop that came first launches
+    nothing; a stop while it runs sends SIGTERM (k6 stops gracefully and prints its summary), then
+    kills it after ``grace`` seconds."""
+    if stop.is_set():
+        return 130
+    proc = await asyncio.create_subprocess_exec(*command, env=env)
+    done = asyncio.create_task(proc.wait())
+    stopped = asyncio.create_task(stop.wait())
+    await asyncio.wait([done, stopped], return_when=asyncio.FIRST_COMPLETED)
+    stopped.cancel()
+    if done.done():
+        return proc.returncode
+    try:
+        proc.terminate()
+        await asyncio.wait_for(asyncio.shield(done), grace)
+    except ProcessLookupError:
+        pass
+    except asyncio.TimeoutError:
+        proc.kill()
+        await done
+    return 130
+
+
 async def simulate(args, users: list[dict]) -> int:
     stats: Counter = Counter()
     rtts: list[float] = []
@@ -354,11 +384,12 @@ async def simulate(args, users: list[dict]) -> int:
         write_private(
             SESSIONS_OUT,
             {
+                "fps": args.fps,
                 "sessions": [
                     {"sessionId": s["sessionId"], "orgId": m.user["orgId"], "ownerUserId": m.user["userId"]}
                     for m in macs
                     for s in m.sessions
-                ]
+                ],
             },
         )
         print(f"{len(macs)} Macs, {sum(len(m.sessions) for m in macs)} sessions registered", file=sys.stderr)
@@ -368,14 +399,7 @@ async def simulate(args, users: list[dict]) -> int:
             for job in (m.heartbeats, m.events, m.frames, m.offline_check) + ((m.storm,) if args.storm_at else ())
         ]
         if args.command:
-            proc = await asyncio.create_subprocess_exec(
-                *args.command, env={**os.environ, "MAC_SESSIONS": str(SESSIONS_OUT.resolve())}
-            )
-            done = asyncio.create_task(proc.wait())
-            await asyncio.wait([done, asyncio.create_task(stop.wait())], return_when=asyncio.FIRST_COMPLETED)
-            code = proc.returncode if done.done() else 130
-            if not done.done():
-                await proc.wait()  # k6 got the terminal's Ctrl-C too: let it write its summary
+            code = await run_child(args.command, stop, {**os.environ, "MAC_SESSIONS": str(SESSIONS_OUT.resolve())})
         else:
             await _sleep(stop, args.duration)
         stop.set()

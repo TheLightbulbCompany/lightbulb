@@ -85,13 +85,13 @@ export function send(data) {
 }
 
 export function listen(data) {
-  if (!L.onlyFirstIteration(SEND_S + 60)) return;
+  if (!L.onlyFirstIteration(L.LISTEN_S)) return;
   const o = receivers[exec.scenario.iterationInTest];
   if (o === undefined) return;
   const org = data.orgs[o];
   const user = orgs[o].creator;
   const channels = org.rooms.map((r) => L.roomChannel(data.rooms[r]));
-  L.subscribe(user, L.liveConfig(user), channels, L.remainingMs(SEND_S + 60, 5_000), {
+  L.subscribe(user, L.liveConfig(user), channels, L.remainingMs(L.LISTEN_S, 5_000), {
     event: (ev) => {
       const m = ev.payload;
       if (ev.type !== 'room.message.created' || !m || !m.author || m.author.kind !== 'agent') return;

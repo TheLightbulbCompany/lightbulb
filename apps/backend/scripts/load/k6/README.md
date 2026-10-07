@@ -1,11 +1,11 @@
 # k6 scenarios
 
-Design: `docs/superpowers/specs/2026-10-07-load-testing.md`. Every command runs from `apps/backend`
+Facts, blast radius and server-side metrics: `../README.md`. Every command runs from `apps/backend`
 under `fixtures.py run`, which signs the fixture users in, sets `FIXTURES`, and deletes the file after.
 `F` below is short for `uv run python -m scripts.load.fixtures`. **Never run any of these without the
 owner's go for that run** (see `../README.md`).
 
-Common env: `SEND_S` = seconds of sending (senders start at 30 s; receivers hold `SEND_S + 60` s),
+Common env: `SEND_S` = seconds of sending (senders start at 30 s; receivers hold `SEND_S + 90` s: the 30 s head start plus a 60 s drain),
 `STAGES` = k6 `ramping-arrival-rate` stages (JSON), `TIME_UNIT` (default `1s`), `PRE_VUS`/`MAX_VUS`
 (override the spec's sizing), `RUN_ID` (names the load rooms; set the same value on every DLT task),
 `TASK_INDEX`/`TASK_COUNT` (DLT: each task keeps its slice of senders and receivers; **`STAGES` are per
@@ -52,7 +52,7 @@ Thresholds: `crosstalk` = 0 (abort on fail), `http_req_failed` < 0.5%, `reply_se
 `REPLY_P95_MS` (20 s warm, 90 s cold). Recorded: `turns_sent` vs `replies_ok` (the difference is turns
 with no reply inside the window), `replies_without_token`. The server-side bars (`messaging.work.queue_wait`,
 `messaging.reply.latency`, run sweeps, DLQs, Lambda throttles, usage-counter deltas) are read from
-CloudWatch per spec §3; cold vs warm is labelled from bridge process-start logs only.
+CloudWatch (see `../README.md`); cold vs warm is labelled from bridge process-start logs only.
 
 ## Scenario 3: viewers (`viewers.js`, driven by `mac_sim.py`)
 
@@ -66,6 +66,12 @@ Macs are the first `--macs` fixture users; viewers are the other users of the sa
 | 3b relay breadth | `--users-per-org 50` | `mac_sim --macs M --sessions 3 --events-per-s 1 --fps 0 --duration 600` for M in 10, 25, 50 (no viewers) |
 | 3c reconnect storm | `--users-per-org 50` | 3b at M = 50 with `--storm-at 300` |
 | 3d viewer churn | `--users-per-org 51` | 3a with `-e VIEWERS=50 -e CHURN_S=30` |
+
+`frame_delivered` counts against what the Mac sent while each view was live: `mac_sim` sends output
+frames on a fixed `fps` schedule (written to `mac_sessions.json`) and stamps each with its send time,
+so a view expects `fps × seconds watched` frames and every one it never got — leading, trailing, or
+all of them — is a loss. (k6 reads files only at init, so a sent-seq list written during the run
+could not be read back.)
 
 Thresholds: `frame_latency_ms` p95 < 1 s, `frame_delivered` ≥ 99% (3a), `/viewing`
 `http_req_duration{name:POST /messaging/sessions/:id/viewing}` p95 < 500 ms, `http_req_failed` < 0.5%.

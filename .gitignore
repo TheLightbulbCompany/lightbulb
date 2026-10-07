@@ -90,6 +90,6 @@ apps/infra/hermes/skills/
 # TLC scratch (tla/check.sh passes -cleanup, this covers a crashed run)
 tla/states/
 
-# Load-test fixtures: live Clerk client JWTs per test user (docs/superpowers/specs/2026-10-07-load-testing.md)
+# Load-test fixtures: live Clerk client JWTs per test user (apps/backend/scripts/load/README.md)
 apps/backend/scripts/load/fixtures.json
 apps/backend/scripts/load/mac_sessions.json

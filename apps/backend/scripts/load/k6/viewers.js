@@ -13,7 +13,9 @@ const PER_SESSION = Number(__ENV.VIEWERS || 1);
 const CHURN_S = Number(__ENV.CHURN_S || 0);
 if (!(SEND_S > 0)) throw new Error('SEND_S (seconds of watching) is required');
 
-const sessions = JSON.parse(open(__ENV.MAC_SESSIONS)).sessions;
+const macs = JSON.parse(open(__ENV.MAC_SESSIONS));
+const sessions = macs.sessions;
+const FPS = Number(macs.fps); // output frames the Mac sends per second per session
 const owners = new Set(sessions.map((s) => s.ownerUserId));
 const all = sessions.flatMap((s) => {
   const pool = L.fixtures.users.filter((u) => u.orgId === s.orgId && !owners.has(u.userId));
@@ -49,23 +51,28 @@ export function listen() {
     if (!me) throw new Error('more VUs than viewers');
     cfg = L.liveConfig(me.user); // also creates the user stream /viewing checks
   }
-  const left = L.remainingMs(SEND_S + 60, 2_000);
+  const left = L.remainingMs(L.LISTEN_S, 2_000);
   if (left <= 0) return;
-  const seqs = {}; // epoch -> Set(seq)
+  // Delivery is counted against what the Mac sent while this view was live: its output frames
+  // carry their send time, so a frame belongs to the window by that time, and frames never
+  // received (leading, trailing, or all of them) count as lost.
+  let from = 0;
+  const got = [];
   L.subscribe(me.user, cfg, [L.userChannel(cfg)], CHURN_S ? Math.min(CHURN_S * 1000, left) : left, {
-    subscribed: () => viewing(true),
+    subscribed: () => { viewing(true); from = Date.now() + 2_000; }, // 2 s for the lease to reach the relay
     tick: () => viewing(false),
     event: (ev) => {
       const f = ev.payload;
       if (ev.type !== 'workspace.session.screen' || !f || f.sessionId !== me.sessionId || f.kind === 'ping') return;
-      (seqs[f.epoch] = seqs[f.epoch] || new Set()).add(f.seq);
       const ts = /LT=(\d+);/.exec(encoding.b64decode(f.data, 'std', 's'));
-      if (ts) frameLatency.add(Date.now() - Number(ts[1]));
+      if (!ts) return;
+      frameLatency.add(Date.now() - Number(ts[1]));
+      if (f.kind === 'output') got.push(Number(ts[1]));
     },
   }, 15_000);
-  // Every seq between the first and last frame this view saw, per Mac relay run.
-  for (const set of Object.values(seqs)) {
-    const list = [...set];
-    for (let s = Math.min(...list); s <= Math.max(...list); s++) frameDelivered.add(set.has(s));
-  }
+  const until = Date.now() - 1_000; // frames still in flight at close are not counted either way
+  if (!from || until <= from) return; // never subscribed: appsync_errors already says so
+  const received = got.filter((t) => t >= from && t < until).length;
+  const expected = Math.max(received, Math.floor((FPS * (until - from)) / 1000));
+  for (let i = 0; i < expected; i++) frameDelivered.add(i < received);
 }

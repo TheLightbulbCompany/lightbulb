@@ -1,7 +1,8 @@
 # Load-test harness (dev only)
 
-Design and pass bars: `docs/superpowers/specs/2026-10-07-load-testing.md`. Per-sub-test commands:
-`k6/README.md`.
+Three scenarios: (1) messaging, humans only; (2) agent conversations; (3) Claude Code session
+sharing, with synthetic Macs. Per-sub-test commands and client-side thresholds: `k6/README.md`.
+The design spec was deleted when this shipped (git history keeps it); this file is the record.
 
 > **Never run anything here without the owner's go for that run.** Dev pools (work Lambda 20, gate 25,
 > stage throttle 50 rps) are shared with the team, and Lambda/API GW/AppSync/AgentCore quotas are shared
@@ -39,6 +40,42 @@ uv run python -m scripts.load.fixtures teardown
 The pilot also measures what the spec leaves open: Clerk FAPI per-IP limits, whether one client JWT
 used by several k6 VUs keeps rotating cleanly, and whether AppSync keeps a subscription open past its
 token's 60 s life (the harness refreshes HTTP tokens every 40 s but does not re-subscribe).
+
+## Scenarios
+
+| # | Question | Cost per run (list prices, verify) |
+|---|---|---|
+| 1 messaging | How many msg/s can one room, and the whole dev stack, accept and deliver live? Suspects in order: the per-room `lastSeq` transaction (6 tries, no backoff), the 50 rps stage throttle, the projector (one invocation per shard, batch 10), AppSync fan-out, the search indexer | < $5 (~50k messages: DynamoDB ~$0.40, AppSync < $0.10, Lambda < $0.10), plus AOSS OCU-hours if search scales out |
+| 2 agents | What turn rate and how many simultaneous cold workspaces before replies queue, and where does the time go? Suspects: work Lambda cap 20 (cold ≈ 0.36 wakes/s), single-flight losers polling inside a slot, the per-agent turn lock, gate concurrency 25, the trial cap, AgentCore quotas shared with prod | ≤ orgs × $0.25/day (trial keys stop themselves) + ~1 h microVM per org. A 10-turn pilot reads tokens/turn; above ~$0.005/turn, 2d hits the cap mid-run: lower its rate, never lift the cap |
+| 3 sessions | What does one shared session's frame fan-out (one AppSync publish per viewer per frame) and many Macs' relay traffic cost? Backend half only: no real Claude/Codex, holder, journal or Tauri transport | < $5 (3a at V = 50 ≈ 0.23 M publishes); no model spend |
+
+Order (owner's proposal): 2-user pilot, then 1, 3, 2 — cheapest and least shared first.
+
+## Facts every run inherits (verify before quoting; the sources move)
+
+| Fact | Value | Source |
+|---|---|---|
+| Dev HTTP API throttle | 100 burst / 50 rps, stage-wide, shared by every dev user | `api-stack.ts` `THROTTLE_CONFIG.dev` |
+| Work consumer | batch 1, `maxConcurrency` 20, timeout 180 s; a cold wake holds a slot ~55 s | `service-stack.ts` `WorkConsumer` |
+| Projector | DDB stream, batch 10, **no reserved concurrency** (shares prod's Lambda pool) | `api-stack.ts` `MessagingProjector` |
+| openrouter-gate | reserved concurrency 25, one slot per in-flight model call | `openrouter-gate-stack.ts` |
+| Trial key | $0.25/day per owner; over it the gate answers 429 `trial_daily_cap`. Scenario 2 spend is at most orgs × $0.25/day | CLAUDE.md "Managed inference" |
+| Room size | `messaging_repo.MAX_ROOM_MEMBERS` = 32 | |
+| Relay | frames ≤ 16 KiB envelope, screen ≤ 11 KiB raw, 2 MiB/min per session per backend task; heartbeat 10 s, offline after 30 s; viewer lease 45 s, renewed every 15 s (these POSTs count against the 50 rps) | `local_session_relay.py`, `session_screen.py` |
+| One AWS account for dev AND prod | Lambda unreserved concurrency, API GW, AppSync and AgentCore quotas are shared with prod | CLAUDE.md "AWS Configuration" |
+
+Never post in `#general` (all six agents listen there). Message text never opens with a member's name
+(a name-addressed open wakes Jev). Scenario 2 uses only @mentions, so no Jev call and no ambient wake.
+
+## Server-side metrics to read (CloudWatch, `LightbulbAI`, `env=dev`)
+
+| Scenario | Watch | Pass |
+|---|---|---|
+| 1 | `messaging.projector.notify.latency` (service=messaging-projector, full dimension set incl. `room_kind`); projector `IteratorAge`, `Errors`; `lightbulb-dev-messaging` `ThrottledRequests`/`TransactionConflict`; AppSync `ConnectServerError`, `SubscribeServerError`, `BroadcastEventServerError`, `BroadcastDroppedEvents`; API GW `5xx`, `Latency`; index DLQ, `MessageSearchBatchStaleAlarm` | IteratorAge < 5 s, 0 errors, 0 throttles, 5xx = 0 |
+| 2 | `messaging.work.queue_wait` (warm p95 < 1 s), `messaging.ingress.latency` (warm p95 < 1 s), `messaging.run.start_latency`, `messaging.run.duration`, `messaging.reply.latency` (warm p95 < 20 s, cold < 90 s), `messaging.run.swept` and `messaging.run.first_turn_failed` (0), work DLQ + pipe DLQ (0), Lambda `Throttles` on work consumer and gate, gate `ConcurrentExecutions`, `lightbulb-dev-usage-counters` deltas per fixture owner | as listed; throttles are the ceiling being looked for |
+| 3 | `session.relay.*`, `session.screen.*` (`frame.forwarded`, `frame.dropped`, `publish.failed`, `viewers`), `session.command.dispatch.latency`; API GW WS `IntegrationError`, `ExecutionError`; `ws-message` `Errors`, `Throttles`, `ConcurrentExecutions`; DDB throttles on messaging + containers; backend ECS `CPUUtilization` | errors 0; CPU recorded |
+
+Cold vs warm (scenario 2) is labelled only from bridge process-start evidence (`docs/runbooks/chat-performance.md`), else `unknown`.
 
 ## Kill switch
 

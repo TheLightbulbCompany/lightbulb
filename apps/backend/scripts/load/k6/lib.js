@@ -1,4 +1,4 @@
-// Shared k6 pieces for the load harness (spec docs/superpowers/specs/2026-10-07-load-testing.md).
+// Shared k6 pieces for the load harness (see scripts/load/README.md).
 // Dev only: every request goes to the hard-coded dev hosts, and the script aborts otherwise.
 import http from 'k6/http';
 import ws from 'k6/ws';
@@ -35,7 +35,9 @@ export const arrival = (pre, max) => ({
   executor: 'ramping-arrival-rate', startRate: 0, timeUnit: __ENV.TIME_UNIT || '1s',
   stages: JSON.parse(__ENV.STAGES), preAllocatedVUs: vus('PRE_VUS', pre), maxVUs: vus('MAX_VUS', max),
 });
-export const listen = (n) => ({ executor: 'constant-vus', exec: 'listen', vus: n, duration: Number(__ENV.SEND_S) + 60 + 's' });
+// Receivers start at 0, senders at 30 s for SEND_S: hold the 30 s head start plus a 60 s drain.
+export const LISTEN_S = Number(__ENV.SEND_S) + 90;
+export const listen = (n) => ({ executor: 'constant-vus', exec: 'listen', vus: n, duration: LISTEN_S + 's' });
 
 /** ms left in the current scenario, minus a margin for end-of-run reads. */
 export function remainingMs(durationS, marginMs) {

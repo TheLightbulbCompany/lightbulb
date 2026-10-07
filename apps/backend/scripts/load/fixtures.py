@@ -1,4 +1,4 @@
-"""Load-test fixtures: dev-only Clerk users + workspaces (spec docs/superpowers/specs/2026-10-07-load-testing.md).
+"""Load-test fixtures: dev-only Clerk users + workspaces (see scripts/load/README.md).
 
     cd apps/backend
     uv run python -m scripts.load.fixtures setup    --orgs 1 --users-per-org 20 [--dry-run]

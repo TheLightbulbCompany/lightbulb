@@ -62,7 +62,7 @@ export function send(data) {
 }
 
 export function listen(data) {
-  if (!L.onlyFirstIteration(SEND_S + 60)) return;
+  if (!L.onlyFirstIteration(L.LISTEN_S)) return;
   const me = receivers[exec.scenario.iterationInTest];
   if (!me) return;
   const room = data.rooms[me.room];
@@ -72,7 +72,7 @@ export function listen(data) {
   const live = new Set();
   const healed = new Set();
   const cfg = L.liveConfig(me.user);
-  L.subscribe(me.user, cfg, [L.roomChannel(room)], L.remainingMs(SEND_S + 60, 15_000), {
+  L.subscribe(me.user, cfg, [L.roomChannel(room)], L.remainingMs(L.LISTEN_S, 15_000), {
     subscribed: (_, at) => { counted = at < firstSend; },
     event: (ev) => {
       if (ev.type !== 'room.message.created' || ev.payload.roomId !== room.roomId) return;

@@ -1,6 +1,7 @@
 """The synthetic Mac's wire frames and device token (scripts/load/mac_sim.py), checked with the
 backend's own verifiers: machine_auth for the token, the relay's frame models for every frame."""
 
+import asyncio
 import base64
 import time
 from unittest.mock import AsyncMock
@@ -87,3 +88,65 @@ def test_dry_run_calls_nothing(monkeypatch, capsys):
     assert "9.38 MiB/min" in out and "k6 run v.js" in out
     with pytest.raises(SystemExit):
         sim.main(["--dry-run", "--frame-bytes", str(sim.MAX_RAW + 1)])
+
+
+class FakeProc:
+    """A child that exits on its own (``exits_alone``), on SIGTERM (``obeys``), or only on kill."""
+
+    def __init__(self, obeys: bool, exits_alone: bool = False):
+        self.obeys, self.calls, self.returncode = obeys, [], None
+        self._exit = asyncio.Event()
+        if exits_alone:
+            self.returncode = 0
+            self._exit.set()
+
+    async def wait(self):
+        await self._exit.wait()
+        return self.returncode
+
+    def terminate(self):
+        self.calls.append("terminate")
+        if self.obeys:
+            self.returncode = -15
+            self._exit.set()
+
+    def kill(self):
+        self.calls.append("kill")
+        self.returncode = -9
+        self._exit.set()
+
+
+async def _child(monkeypatch, proc, stop_now=False, stop_later=False):
+    spawned = []
+
+    async def spawn(*cmd, env):
+        spawned.append(cmd)
+        return proc
+
+    monkeypatch.setattr(sim.asyncio, "create_subprocess_exec", spawn)
+    stop = asyncio.Event()
+    if stop_now:
+        stop.set()
+    if stop_later:
+        asyncio.get_running_loop().call_later(0.01, stop.set)
+    return await sim.run_child(["k6", "run"], stop, {}, grace=0.05), spawned
+
+
+async def test_a_stop_before_the_command_launches_nothing(monkeypatch):
+    assert await _child(monkeypatch, FakeProc(obeys=True), stop_now=True) == (130, [])
+
+
+async def test_the_command_finishing_first_returns_its_code(monkeypatch):
+    assert await _child(monkeypatch, FakeProc(obeys=True, exits_alone=True)) == (0, [("k6", "run")])
+
+
+async def test_a_stop_while_running_terminates_the_child(monkeypatch):
+    proc = FakeProc(obeys=True)
+    assert (await _child(monkeypatch, proc, stop_later=True))[0] == 130
+    assert proc.calls == ["terminate"]
+
+
+async def test_a_child_that_ignores_sigterm_is_killed_after_the_grace(monkeypatch):
+    proc = FakeProc(obeys=False)
+    assert (await _child(monkeypatch, proc, stop_later=True))[0] == 130
+    assert proc.calls == ["terminate", "kill"]

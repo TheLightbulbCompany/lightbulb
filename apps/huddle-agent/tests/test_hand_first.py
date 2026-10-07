@@ -524,3 +524,15 @@ async def test_a_note_nobody_left_a_pause_for_is_dropped_not_said_late():
     clock.t += h_mod.LINE_TTL_S["ack"] + 1
     await pause(h, clock)
     assert told(lives) == [], "a stale on-it is worse than none"
+
+
+async def test_a_stopped_request_takes_its_unsaid_on_it_with_it():
+    """Codex on #3785: "Forge, stop" before the on-it was said, and it said "on it" at the next pause."""
+    h, backend, lives, clock = await meeting(lines=True)
+    talks(h, P2)  # its on-it has to wait
+    backend.route_extra = ops([("forge", "list the open PRs", "name")])
+    await hears(h, P1, "Forge, what PRs are open?")
+    backend.route_extra = ops([])
+    await hears(h, P1, "Forge, stop.")
+    await pause(h, clock)
+    assert told(lives) == []

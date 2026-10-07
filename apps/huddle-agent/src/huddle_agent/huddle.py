@@ -2329,6 +2329,10 @@ class Huddle:
         if v.announce:  # consumed when its audio starts (on_agent_state)
             if self._live_call(v, "append_instructions", ANNOUNCE_NOW):
                 self._live_call(v, "nudge")
+        elif in_meet(identity) and not mixed_meet(identity) and request:
+            # It was handed the question as audio (`_hear`) and answers that, in its own words. The "is talking
+            # to you" note and the nudge made it greet first ("Hi, I'm here. Go ahead.", 10-07 rig).
+            pass
         elif v.path != "announce":
             told = bool(request or ack_said or said)
             # A mixed meeting: the seed already says who said what and what to say about it. The "is talking to

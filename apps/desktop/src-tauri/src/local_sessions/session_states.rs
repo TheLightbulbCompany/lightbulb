@@ -120,6 +120,15 @@ fn holder_end(id: &str) -> Option<u64> {
     ENDS.get(id)
 }
 
+/// A relay read this holder's EXIT: its provider exited now. Known here at once, not when the
+/// next pass has asked the holder (up to PROBE_SOON and an `index` later): a viewer waits that
+/// long for the kept picture. A pass already under way may still drop it; the one after finds it.
+pub(super) fn holder_ended(id: &str) {
+    if let Ok(mut at) = ENDS.at.lock() {
+        at.entry(id.to_owned()).or_insert_with(now_ms);
+    }
+}
+
 /// One holder, asked on `Ends::refresh`'s thread. An end never changes, so a known one is only
 /// checked for still being there (a closed holder's screen is gone).
 fn ask_holder(id: &str) -> Option<u64> {

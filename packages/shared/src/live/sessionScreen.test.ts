@@ -29,17 +29,35 @@ it("writes nothing before a snapshot, then everything in seq order", () => {
 it("drops duplicates and frames from an older relay run", () => {
   expect(feed([f(0, "snapshot", 2), f(1, "output", 2), f(1, "output", 2), f(7, "output", 1)]).written).toEqual(["s0", "o1"]);
 });
-it("stops writing after a gap it cannot fill, until the next snapshot, and takes no history for a run it has drawn", () => {
-  const gap = [f(0, "snapshot"), ...Array.from({ length: 17 }, (_, i) => f(i + 2))];
+it("stops writing after a gap it cannot fill, until the next snapshot, and takes no second history for a run it has drawn", () => {
+  const gap = [f(0, "history"), f(1, "snapshot"), ...Array.from({ length: 17 }, (_, i) => f(i + 3))];
   const { order, written } = feed(gap);
-  expect(written).toEqual(["s0"]);
+  expect(written).toEqual(["h0", "s1"]);
   expect(feed([f(29, "history"), f(30, "snapshot"), f(31)], order).written).toEqual(["s30", "o31"]);
 });
 it("a new viewer writes the run's history, then the snapshot, then output; output between them is covered by the snapshot", () => {
   expect(feed([f(1, "history"), f(0, "history"), f(2), f(3, "snapshot"), f(4)]).written).toEqual(["h0", "h1", "s3", "o4"]);
 });
-it("a viewer that has the run's screen consumes history in order and writes none of it", () => {
-  expect(feed([f(0, "snapshot"), f(2, "history"), f(1, "history"), f(3, "snapshot"), f(4)]).written).toEqual(["s0", "s3", "o4"]);
+it("a viewer that has the run's history consumes a later burst in order and writes none of it", () => {
+  expect(feed([f(0, "history"), f(1, "snapshot"), f(3, "history"), f(2, "history"), f(4, "snapshot"), f(5)]).written).toEqual(["h0", "s1", "s4", "o5"]);
+});
+it("a viewer that drew the run before any history reached it writes the next burst, once", () => {
+  // Prod 2026-10-07: a view that mounted in a hidden tab drew another tab's frames; its own fresh
+  // watch, when shown, then brought a burst it consumed and never wrote. In order or not.
+  const drawn = feed([f(3, "snapshot"), f(4), f(5, "snapshot")]);
+  expect(drawn.written).toEqual(["s3", "o4", "s5"]);
+  const burst = feed([f(7, "history"), f(6, "history"), f(8), f(9, "snapshot"), f(10)], drawn.order);
+  expect(burst.written).toEqual(["h6", "h7", "s9", "o10"]);
+  expect(feed([f(11, "history"), f(12, "snapshot")], burst.order).written).toEqual(["s12"]);
+  // The same after frames were lost and it fell out of sync.
+  const lost = feed(Array.from({ length: 17 }, (_, i) => f(i + 20)), drawn.order);
+  expect(feed([f(40, "history"), f(41, "snapshot")], lost.order).written).toEqual(["h40", "s41"]);
+});
+it("an empty history frame is all the history there is: later bursts are someone else's", () => {
+  const { order, written } = feed([f(0, "history"), f(1, "snapshot")]);
+  expect(written).toEqual(["h0", "s1"]);
+  expect(order.bare).toBe(false);
+  expect(feed([f(0, "snapshot")]).order.bare).toBe(true);
 });
 it("history arriving after its snapshot is never written", () => {
   expect(feed([f(2, "snapshot"), f(0, "history"), f(1, "history"), f(3)]).written).toEqual(["s2", "o3"]);

@@ -121,6 +121,7 @@ export function SessionTerminalView({ session, onEvent, watch, onLive, onCanType
     let term: Terminal | null = null;
     let order = NEW_SCREEN;
     let drawn = -1; // the relay run on screen; a new one starts the terminal over
+    let wrote = ""; // the kind of the frame written last
     const queued: SessionScreen[] = [];
     let alive = true;
     let stale: ReturnType<typeof setTimeout> | undefined;
@@ -180,7 +181,10 @@ export function SessionTerminalView({ session, onEvent, watch, onLive, onCanType
     const apply = (frames: SessionScreen[]) => {
       if (!term) { queued.push(...frames); return; }
       for (const frame of frames) {
-        if (frame.epoch !== drawn) { term.reset(); drawn = frame.epoch; }
+        // History is only ever written as a burst under its snapshot, and the burst is the whole picture:
+        // a run this view already draws without it (`receiveScreen`) starts over there as a new run does.
+        if (frame.epoch !== drawn || (frame.kind === "history" && wrote !== "history")) { term.reset(); drawn = frame.epoch; }
+        wrote = frame.kind;
         if (term.cols !== frame.cols || term.rows !== frame.rows) term.resize(frame.cols, frame.rows);
         let bytes = decode(frame.data);
         if (frame.kind === "snapshot") {

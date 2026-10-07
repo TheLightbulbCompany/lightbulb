@@ -267,6 +267,35 @@ async def test_a_screen_that_comes_back_tells_the_open_panels_once(transport, db
 
 
 @pytest.mark.asyncio
+async def test_a_screen_reported_after_the_end_is_asked_for_at_once_for_whoever_watched_it_end(transport):
+    """Prod 2026-10-07: a viewer read the exit lines for 8 s. The Mac's frames, the kept picture
+    included, are dropped from the end until this report, and nothing asked for the picture again
+    before the viewer's own page had refetched and sent a fresh watch."""
+    sid = await start(transport)
+    await ack(transport, sid)
+    await session_screen.watch(BOB, sid)
+    await end(transport, sid)  # the hook's end came before the holder had its final screen
+    transport[3].clear()
+    acked = await relay(transport).handle_message("conn-1", screens(sid))
+    nudges = [(c, b) for c, b in transport[3] if b["type"] == "local.session.watch"]
+    assert [(c, b["sessionId"], b["generation"]) for c, b in nudges] == [("conn-1", sid, "generation-1")]
+    assert [w["since"] for w in acked["watching"]] == [nudges[0][1]["since"]], "the ack that lists them is not news"
+    transport[3].clear()
+    await relay(transport).handle_message("conn-1", screens(sid))
+    assert [b for _, b in transport[3] if b["type"] == "local.session.watch"] == [], "a renewal is not news"
+
+
+@pytest.mark.asyncio
+async def test_a_screen_reported_after_the_end_asks_the_mac_for_nothing_when_nobody_watches(transport):
+    sid = await start(transport)
+    await ack(transport, sid)
+    await end(transport, sid)
+    transport[3].clear()
+    await relay(transport).handle_message("conn-1", screens(sid))
+    assert [b for _, b in transport[3] if b["type"] == "local.session.watch"] == []
+
+
+@pytest.mark.asyncio
 async def test_every_heartbeat_ack_lists_the_relays_features(transport):
     """A Mac whose sessions have all ended registers nothing after a reconnect: the ack of its
     idle heartbeat (and of every other) is where it learns `endedScreens` again."""

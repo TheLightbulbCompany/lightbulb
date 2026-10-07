@@ -217,8 +217,8 @@ async def keep_screens(owner: str, human: str, device: str, cid: str, sids: list
     """The Mac's ended held sessions whose holder still shows the final screen (spec 2026-10-07
     §5.4): each stays watchable for one more lease. Only this Mac's own; never raises (a lost
     renewal lapses the screen 30 s later, nothing worse). A screen that was not there (the end
-    came before the holder had it, or its lease lapsed in a heartbeat gap) is news: open panels
-    refetch, once."""
+    came before the holder had it, or its lease lapsed in a heartbeat gap) is news: its viewers'
+    Mac relay is asked for the picture, and open panels refetch, once."""
     from core.services.local_session_relay import LIVENESS_SECONDS, publish_resources_changed  # imports this module
 
     now = int(_clock())
@@ -242,6 +242,12 @@ async def keep_screens(owner: str, human: str, device: str, cid: str, sids: list
                 ExpressionAttributeValues={":u": now + LIVENESS_SECONDS, ":c": cid, ":d": device},
             )
             if not sessions.screen_available(row, now):
+                # Whoever watched it through the end has no picture of it: the frames the Mac sent
+                # between the end and this report were dropped (`forward`). Ask the Mac for it now,
+                # as for a new viewer, before any page has heard and asked for itself.
+                watched = await watch_on_register(row)
+                if watched and "liveTerminal" in row.get("deviceFeatures", ()):
+                    await _nudge({**row, "screenConnectionId": cid}, watched["since"])
                 await publish_resources_changed(owner, human)
         except Exception as exc:  # noqa: BLE001 -- see docstring
             logger.info("ended screen not kept error=%s", type(exc).__name__)

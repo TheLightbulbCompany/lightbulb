@@ -431,3 +431,89 @@ async def test_a_slow_frame_names_its_slowest_steps_and_what_its_database_calls_
     assert names[0] == "renew" and set(names) <= {"renew", "presence", "connection", "reply"} and len(names) <= 3
     # The router's own connection read, then the handler's two.
     assert slow.db_calls == 3 and isinstance(slow.db_queue_ms, int) and isinstance(slow.db_ms, int)
+
+
+_LOCAL_CONNECTION = {
+    "user_id": "user-1",
+    "org_id": "org-1",
+    "connection_type": "local-session",
+    "auth_kind": "device",
+    "client_id": "lightbulb-local-sessions",
+    "device_id": "a" * 64,
+}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("frame", "name"),
+    [
+        ("local.session.register", "register"),
+        ("local.device.heartbeat", "heartbeat"),
+        ("local.session.events", "events"),
+        ("local.session.ended", "ended"),
+        ("local.session.receipt", "receipt"),
+        ("local.session.screen", "screen"),
+    ],
+)
+async def test_each_relay_frame_is_counted_by_type(app, connection_service, frame, name):
+    connection_service.get_connection.return_value = _LOCAL_CONNECTION
+    machine = MagicMock()
+    machine.handle_message = AsyncMock(return_value={"type": "ack"})
+    machine.management.send_message_async = AsyncMock(return_value=True)
+    with (
+        patch("core.services.local_session_relay.get_local_session_relay", return_value=machine),
+        patch("core.services.session_screen.forward", AsyncMock()),
+        patch("routers.websocket_chat.put_metric") as metric,
+    ):
+        await _post(app, "/ws/message", headers={"x-connection-id": "conn-1"}, json={"type": frame})
+    names = [c.args[0] for c in metric.call_args_list]
+    if name == "heartbeat":
+        assert names == ["session.relay.message.heartbeat", "session.relay.heartbeat.latency"]
+        assert metric.call_args_list[1].args[2] == "Milliseconds"
+    else:
+        assert names == [f"session.relay.message.{name}"]
+
+
+@pytest.mark.asyncio
+async def test_an_unknown_frame_type_is_not_a_metric_name(app, connection_service):
+    connection_service.get_connection.return_value = _LOCAL_CONNECTION
+    machine = MagicMock()
+    machine.handle_message = AsyncMock(return_value={"type": "ack"})
+    machine.management.send_message_async = AsyncMock()
+    with (
+        patch("core.services.local_session_relay.get_local_session_relay", return_value=machine),
+        patch("routers.websocket_chat.put_metric") as metric,
+    ):
+        await _post(app, "/ws/message", headers={"x-connection-id": "conn-1"}, json={"type": "x" * 40})
+    metric.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_relay_connection_open_and_close_are_counted(app, connection_service):
+    connection_service.get_connection.return_value = {**_LOCAL_CONNECTION, "org_id": None, "device_id": "device-1"}
+    machine = MagicMock()
+    machine.connect = AsyncMock()
+    with (
+        patch("core.services.local_session_relay.get_local_session_relay", return_value=machine),
+        patch("routers.websocket_chat.put_metric") as metric,
+    ):
+        await _post(app, "/ws/connect", headers=_LOCAL_SESSION_HEADERS)
+        await _post(app, "/ws/disconnect", headers={"x-connection-id": "conn-1"})
+    assert [c.args[0] for c in metric.call_args_list] == [
+        "session.relay.connection.open",
+        "session.relay.connection.close",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_a_heartbeat_ack_that_never_reached_the_mac_has_no_latency(app, connection_service):
+    connection_service.get_connection.return_value = _LOCAL_CONNECTION
+    machine = MagicMock()
+    machine.handle_message = AsyncMock(return_value={"type": "ack"})
+    machine.management.send_message_async = AsyncMock(return_value=False)  # GoneException
+    with (
+        patch("core.services.local_session_relay.get_local_session_relay", return_value=machine),
+        patch("routers.websocket_chat.put_metric") as metric,
+    ):
+        await _post(app, "/ws/message", headers={"x-connection-id": "conn-1"}, json={"type": "local.device.heartbeat"})
+    assert [c.args[0] for c in metric.call_args_list] == ["session.relay.message.heartbeat"]

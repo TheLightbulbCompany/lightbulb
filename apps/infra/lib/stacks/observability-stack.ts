@@ -3705,6 +3705,65 @@ def handler(event, context):
           }),
       ),
     );
+
+    // ----- Local-session relay (Claude Code session sharing; load-test scenario 3) -----
+    const relayMetric = (
+      metricName: string,
+      statistic: string,
+      label: string,
+    ) =>
+      new cloudwatch.Metric({
+        namespace: "LightbulbAI",
+        metricName,
+        statistic,
+        period: cdk.Duration.minutes(1),
+        dimensionsMap: dims,
+        label,
+      });
+    dashboard.addWidgets(
+      new cloudwatch.GraphWidget({
+        title: "Session relay frames + connections",
+        left: [
+          ...["register", "heartbeat", "events", "ended", "receipt", "screen"].map(
+            (type) => relayMetric(`session.relay.message.${type}`, "Sum", type),
+          ),
+          relayMetric("session.relay.connection.open", "Sum", "open"),
+          relayMetric("session.relay.connection.close", "Sum", "close"),
+        ],
+        width: 6,
+        height: 6,
+      }),
+      new cloudwatch.GraphWidget({
+        title: "Session relay latency (ms)",
+        left: [
+          relayMetric("session.relay.heartbeat.latency", "p50", "heartbeat ack p50"),
+          relayMetric("session.relay.heartbeat.latency", "p99", "heartbeat ack p99"),
+          relayMetric("session.command.dispatch.latency", "p50", "command dispatch p50"),
+          relayMetric("session.command.dispatch.latency", "p99", "command dispatch p99"),
+        ],
+        width: 6,
+        height: 6,
+      }),
+      new cloudwatch.GraphWidget({
+        title: "Session screen frames",
+        left: [
+          relayMetric("session.screen.frame.forwarded", "Sum", "forwarded"),
+          relayMetric("session.screen.frame.dropped", "Sum", "dropped (budget)"),
+        ],
+        right: [relayMetric("session.screen.bytes", "Sum", "bytes forwarded")],
+        width: 6,
+        height: 6,
+      }),
+      new cloudwatch.GraphWidget({
+        title: "Session screen viewers per frame",
+        left: [
+          relayMetric("session.screen.viewers", "Average", "avg"),
+          relayMetric("session.screen.viewers", "Maximum", "max"),
+        ],
+        width: 6,
+        height: 6,
+      }),
+    );
   }
 
   // =========================================================================

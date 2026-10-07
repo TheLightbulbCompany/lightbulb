@@ -174,6 +174,45 @@ async def test_screen_frames_over_the_minute_budget_are_dropped(transport, monke
 
 
 @pytest.mark.asyncio
+async def test_screen_frames_forwarded_and_dropped_by_the_budget_are_metered(transport, monkeypatch):
+    from unittest.mock import call, patch
+
+    sid = await start(transport)
+    await messaging_repo.ensure_user_stream(OWNER, BOB.user_id)
+    await session_screen.watch(BOB, sid)
+    monkeypatch.setattr(session_screen, "BUDGET_BYTES_PER_MINUTE", 4)
+    monkeypatch.setattr(session_screen, "_spent", {})
+    with patch.object(session_screen, "put_metric") as metric:
+        for seq in range(3):  # 3 raw bytes each: only the first fits the 4-byte minute
+            await session_screen.forward(relay(transport), "conn-1", frame(sid, seq=seq))
+    assert metric.call_args_list == [
+        call("session.screen.frame.forwarded"),
+        call("session.screen.bytes", 3, "Bytes"),
+        call("session.screen.viewers", 1),
+        call("session.screen.frame.dropped"),
+        call("session.screen.frame.dropped"),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_a_failed_viewer_publish_is_not_counted_as_forwarded(transport, monkeypatch):
+    from unittest.mock import AsyncMock, MagicMock, call, patch
+
+    sid = await start(transport)
+    await messaging_repo.ensure_user_stream(OWNER, BOB.user_id)
+    await session_screen.watch(BOB, sid)
+    monkeypatch.setattr(session_screen, "_spent", {})
+    publisher = MagicMock(publish_user=AsyncMock(side_effect=RuntimeError("appsync down")))
+    with (
+        patch.object(session_screen.live_events, "get_live_event_publisher", return_value=publisher),
+        patch.object(session_screen, "put_metric") as metric,
+    ):
+        await session_screen.forward(relay(transport), "conn-1", frame(sid, seq=0))
+    publisher.publish_user.assert_awaited_once()
+    assert metric.call_args_list == [call("session.screen.publish.failed", 1)]
+
+
+@pytest.mark.asyncio
 async def test_expired_watch_rows_never_push_a_live_session_out_of_the_ack(transport, db):
     sid = await start(transport)
     await session_screen.watch(BOB, sid)

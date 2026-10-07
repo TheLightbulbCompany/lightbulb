@@ -28,6 +28,7 @@ from botocore.exceptions import ClientError
 from pydantic import Field, field_validator, model_validator
 
 from core.auth import AuthContext
+from core.observability.metrics import put_metric
 from core.repositories import local_sessions_repo as repo, messaging_repo as store
 from core.services import live_events, local_sessions as sessions, session_presence
 from core.services.messaging import ContractModel, make_live_event
@@ -314,6 +315,7 @@ async def forward(relay, cid: str, body: dict) -> None:
         size = len(base64.b64decode(frame.data))
         # Only drops: the real spend is below, after the frame is proven to be this Mac's.
         if _spent_up(str(frame.session_id), size, _clock()):
+            put_metric("session.screen.frame.dropped")
             return
         connection, _ = await relay.connect(cid)
         owner = connection.get("org_id") or connection["user_id"]
@@ -338,14 +340,26 @@ async def forward(relay, cid: str, body: dict) -> None:
             for r in await store._query(repo.session_pk(owner, sid), begins_with="VIEWER#")
             if int(r.get("expiresAt", 0)) > now
         ]
-        if not viewers or not _spend(sid, size, now):
+        if not viewers:
+            return
+        if not _spend(sid, size, now):
+            put_metric("session.screen.frame.dropped")
             return
         event = make_live_event(
             "workspace.session.screen", frame.model_dump(mode="json", by_alias=True, exclude={"type"})
         )
         publisher = live_events.get_live_event_publisher()
         # publish_user finds no channel for a removed member: they get nothing.
-        await asyncio.gather(*(publisher.publish_user(owner, user, event) for user in viewers), return_exceptions=True)
+        results = await asyncio.gather(
+            *(publisher.publish_user(owner, user, event) for user in viewers), return_exceptions=True
+        )
+        delivered = sum(r is True for r in results)
+        if delivered < len(viewers):
+            put_metric("session.screen.publish.failed", len(viewers) - delivered)
+        if delivered:
+            put_metric("session.screen.frame.forwarded")
+            put_metric("session.screen.bytes", size * delivered, "Bytes")
+            put_metric("session.screen.viewers", delivered)
     except Exception as exc:  # noqa: BLE001 -- see docstring
         logger.info("session screen frame dropped error=%s", type(exc).__name__)
 

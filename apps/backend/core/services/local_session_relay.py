@@ -20,6 +20,7 @@ from botocore.exceptions import ClientError
 from pydantic import Field, TypeAdapter, ValidationError
 
 from core.dynamodb import utc_now_iso
+from core.observability.metrics import put_metric
 from core.observability.product_analytics import capture_product_event
 from core.observability.session_analytics import capture_session_event
 from core.repositories import local_sessions_repo as repo, messaging_repo as store
@@ -1360,6 +1361,11 @@ class LocalSessionRelay:
                     # Even Gone can follow a delivered SDK retry. Never replay an attempted post.
                     await repo.replace_command(
                         dispatched, _revised(dispatched, state="unknown", updatedAt=int(time.time()))
+                    )
+                elif not window and "createdAtMs" in claim:
+                    # Online sends only: a queued follow-up or offline send (window) waits on purpose.
+                    put_metric(
+                        "session.command.dispatch.latency", time.time() * 1000 - claim["createdAtMs"], "Milliseconds"
                     )
                 return
             except ClientError as exc:

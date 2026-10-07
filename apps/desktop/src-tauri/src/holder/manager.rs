@@ -242,6 +242,7 @@ pub fn list_in(dir: &Path) -> Vec<HolderInfo> {
 /// Connect as an output-only client and read the holder's facts.
 pub fn hello(socket: &Path) -> Option<HolderInfo> {
     let mut conn = UnixStream::connect(socket).ok()?;
+    let peer = super::identity::peer(&conn)?;
     conn.set_read_timeout(Some(Duration::from_secs(2))).ok()?;
     conn.write_all(&encode(HELLO, br#"{"role":"recorder"}"#)).ok()?;
     let (kind, payload) = read_frame(&mut conn).ok()?;
@@ -249,11 +250,13 @@ pub fn hello(socket: &Path) -> Option<HolderInfo> {
         return None;
     }
     let v: serde_json::Value = serde_json::from_slice(&payload).ok()?;
+    let pid = u32::try_from(v["pid"].as_u64()?).ok()?;
+    if pid != peer.pid || super::identity::read(pid) != Some(peer) { return None; }
     Some(HolderInfo {
         id: socket.file_stem()?.to_string_lossy().into_owned(),
         socket: socket.to_path_buf(),
-        pid: v["pid"].as_u64()? as u32,
-        provider_pid: v["providerPid"].as_u64()? as u32,
+        pid,
+        provider_pid: u32::try_from(v["providerPid"].as_u64()?).ok()?,
         argv: serde_json::from_value(v["argv"].clone()).ok()?,
         cwd: PathBuf::from(v["cwd"].as_str()?),
         watch: v["watch"].as_bool().unwrap_or(false),
@@ -283,6 +286,25 @@ pub fn bind_thread(info: &HolderInfo, thread: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn holder_hello_rejects_a_claimed_pid_that_is_not_the_socket_peer() {
+        use std::os::unix::net::UnixListener;
+        for claimed in [std::process::id(), std::process::id() + 1] {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("ab12cd34.sock");
+            let listener = UnixListener::bind(&path).unwrap();
+            let server = std::thread::spawn(move || {
+                let (mut conn, _) = listener.accept().unwrap();
+                assert_eq!(read_frame(&mut conn).unwrap().0, HELLO);
+                let facts = serde_json::json!({"pid":claimed,"providerPid":2,"argv":[],"cwd":"/"});
+                conn.write_all(&encode(HELLO, facts.to_string().as_bytes())).unwrap();
+            });
+            assert_eq!(hello(&path).is_some(), claimed == std::process::id());
+            server.join().unwrap();
+        }
+    }
 
     #[test]
     fn holder_attach_is_recognised_only_by_lightbulbs_own_argv() {

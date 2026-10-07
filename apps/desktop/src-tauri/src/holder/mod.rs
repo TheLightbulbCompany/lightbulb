@@ -3,6 +3,7 @@
 //! Spec: docs/superpowers/specs/2026-10-02-managed-session-sharing.md §5.1-5.2.
 
 pub mod manager;
+pub(crate) mod identity;
 pub mod model;
 pub mod protocol;
 pub mod run;

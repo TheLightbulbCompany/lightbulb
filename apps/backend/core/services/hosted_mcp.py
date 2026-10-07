@@ -267,7 +267,8 @@ def _sent_key(auth: AuthContext, request_id: uuid.UUID) -> tuple[str, str]:
 async def _pin_destination(auth: AuthContext, request_id: uuid.UUID, destination: str) -> None:
     """Remember where a request_id went, so message_receipt needs only the id and a reuse elsewhere fails."""
     pk, sk = _sent_key(auth, request_id)
-    item = {"pk": pk, "sk": sk, "destination": destination, "expiresAt": messaging_repo._expires_at()}
+    # No TTL: this is the receipt index and the cross-destination guard, like the room IDEMP row.
+    item = {"pk": pk, "sk": sk, "destination": destination}
     try:
         await run_in_thread(messaging_repo._table().put_item, Item=item, ConditionExpression="attribute_not_exists(sk)")
     except ClientError as exc:

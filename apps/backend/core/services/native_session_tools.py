@@ -453,11 +453,11 @@ async def person_dm(auth: AuthContext, member_id: str, *, create: bool = False) 
         return str(match.room_id)
     if not create:
         raise ApiProblem("ROOM_NOT_FOUND", "Open a direct message with this person first.")
-    roster = await messaging.load_agent_roster(messaging.resolve_owner_id(auth))
+    # People are Clerk ids; anything else is an agent, which create_room checks against the roster.
     counterpart = (
-        messaging.CreateRoomMember(kind="agent", id=member_id, role="member", listen_mode="active")
-        if any(agent["id"] == member_id for agent in roster)
-        else messaging.CreateRoomMember(kind="human", id=member_id, role="member", listen_mode=None)
+        messaging.CreateRoomMember(kind="human", id=member_id, role="member", listen_mode=None)
+        if member_id.startswith("user_")
+        else messaging.CreateRoomMember(kind="agent", id=member_id, role="member", listen_mode="active")
     )
     room = await messaging.create_room(
         auth,

@@ -95,8 +95,8 @@ describe("GET /api/download/desktop", () => {
     let published = [oldRelease];
     vi.stubGlobal("fetch", vi.fn(async (url: string | URL) => {
       const u = String(url);
-      if (u.includes("/releases?")) return Response.json(published);
-      if (u.endsWith("/releases/tags/desktop-v0.4.603")) return Response.json(oldRelease);
+      if (u.includes("/releases?")) return new Response(JSON.stringify(published));
+      if (u.endsWith("/releases/tags/desktop-v0.4.603")) return new Response(JSON.stringify(oldRelease));
       if (u === sig.url) return new Response("SIGNATURE-603");
       return new Response(null, { status: 302, headers: { location: signedUrlFor(u) } });
     }));

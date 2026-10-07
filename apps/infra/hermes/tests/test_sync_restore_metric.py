@@ -26,9 +26,11 @@ def test_a_cold_restore_emits_one_emf_line(home, s3, capsys):
     directive = doc["_aws"]["CloudWatchMetrics"][0]
     assert directive["Namespace"] == "LightbulbAI"
     assert directive["Dimensions"] == [["env", "service"]]
-    assert {m["Name"] for m in directive["Metrics"]} == {"bridge.restore.seconds", "bridge.restore.objects"}
+    assert {m["Name"] for m in directive["Metrics"]} == {
+        "bridge.restore.seconds", "bridge.restore.objects", "bridge.restore.disk_free_mb",
+    }
     assert doc["env"] == "prod" and doc["service"] == "hermes-bridge"
-    assert doc["bridge.restore.objects"] == 3
+    assert doc["bridge.restore.objects"] == 3 and doc["bridge.restore.disk_free_mb"] > 0
 
 
 def test_a_warm_call_emits_nothing(home, s3, capsys):

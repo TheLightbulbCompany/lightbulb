@@ -70,8 +70,10 @@ shrink it**: a removed file stays saved and returns on the next cold start.
   saved) from growing with every branch. A slot is gone after a cold start:
   keep the branch pushed, then `git -C "$C" worktree prune` and
   `git -C "$C" worktree add /tmp/wt/REPO-1 BRANCH` to get it back.
-- `node_modules`, `.venv`, `.next`, `dist` and `build` are never saved: rerun
-  `npm ci` / `uv sync` after a cold start.
+- `node_modules`, any `*venv` folder (`.venv`, `.docx-venv`), `.next`, `dist`
+  and `build` are never saved: rerun `npm ci` / `uv sync` after a cold start.
+  After a cold start only this conversation's `work/` folder is on disk; the
+  other conversations' folders are not.
 - Push a work-in-progress branch before any long command: a turn cut short
   loses every file it had not saved.
 - `~/.gitconfig` is not saved. At the start of each session set `user.name`

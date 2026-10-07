@@ -14,6 +14,7 @@ REPRODUCIBLE = (
     ".venv/bin/python",
     "repo/.venv/lib/python3.12/site-packages/x.py",
     "venv/bin/activate",
+    "work/c/.docx-venv/bin/python",
     "__pycache__/mod.cpython-312.pyc",
     "repo/src/__pycache__/mod.pyc",
     ".next/server/app.js",
@@ -188,10 +189,11 @@ def test_hermes_lock_sidecars_never_sync_in_either_direction(home, monkeypatch):
 def test_regenerable_caches_never_sync_and_durable_trees_come_down_after_the_profile(home, monkeypatch):
     """Pulse's cold restore was 3,582 objects / 22.8 s, of which ~38 were the profile. Hermes's own
     backup rule (hermes_cli/backup.py) says what under cache/ is regenerable: everything but its
-    kept media subdirs. Those regenerable caches never sync in either direction. Old conversations'
-    work/ trees, the curator's rollback blobs and the kept media caches are durable, so they still
-    come down -- after the profile, in the background -- and a conversation's own work/ tree is
-    pulled by its turn (restore_subtree), once."""
+    kept media subdirs. Those regenerable caches never sync in either direction. The curator's
+    rollback blobs and the kept media caches are durable, so they still come down -- after the
+    profile, in the background. A conversation's work/ tree is pulled by its turn (restore_subtree),
+    once, and an old conversation's never: the session's disk is 1 GB, and the founder's old trees
+    alone were 940 MB (10-07 prod outage)."""
     monkeypatch.setattr(sync, "S3_BUCKET", "bucket-under-test")
     monkeypatch.setattr(sync, "_start_deferred_restore", lambda agent_id: None)  # driven by hand below
     monkeypatch.setattr(sync, "_DEFERRED_RESTORE_DELAY_S", 0)
@@ -217,9 +219,10 @@ def test_regenerable_caches_never_sync_and_durable_trees_come_down_after_the_pro
     fake.downloaded.clear()
     (profile / ".curator_backups" / "blobs").mkdir(parents=True)
     (profile / ".curator_backups" / "blobs" / "x").write_text("written by this turn")  # before the background got there
-    assert sync._restore_deferred("a1") == 2  # the rest, in the background; the turn's own write wins
-    assert sorted(k[len(prefix):] for k in fake.downloaded) == ["cache/images/pic.png", "work/room-2/notes.txt"]
+    assert sync._restore_deferred("a1") == 1  # the rest, in the background; the turn's own write wins
+    assert [k[len(prefix):] for k in fake.downloaded] == ["cache/images/pic.png"]
     assert (profile / ".curator_backups" / "blobs" / "x").read_text() == "written by this turn"
+    assert not (profile / "work" / "room-2").exists()  # another conversation's tree: in S3 until its turn"
     assert not (profile / "cache" / "web").exists()  # regenerable: never restored
 
     (profile / "cache" / "web").mkdir(parents=True)

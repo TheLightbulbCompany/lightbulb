@@ -54,11 +54,29 @@ fn commands(root: &Path, on: bool) -> Vec<Vec<String>> {
     }
 }
 
+/// Whether `claude plugin list --json` shows `ID` read from the app's own folder (`root`). A
+/// `lightbulb@lightbulb` read from anywhere else is the person's own install of the public plugin
+/// (its hosted MCP server and skill), which turning sharing off must not remove. A list that does
+/// not parse, or does not hold `ID`, counts as ours: the uninstall then does what it always did.
+fn ours(list: &[u8], root: &Path) -> bool {
+    let Ok(list) = serde_json::from_slice::<Vec<serde_json::Value>>(list) else { return true };
+    list.iter().find(|p| p["id"] == ID).is_none_or(|p| {
+        p["readFromFolder"].as_str().is_some_and(|f| Path::new(f).starts_with(root))
+    })
+}
+
 /// Every step runs even if an earlier one fails: a repeat enable finds the marketplace and the
 /// plugin already there, so "already added/installed" failures are expected and only logged.
-fn run_all(home: PathBuf, cmds: Vec<Vec<String>>) {
+fn run_all(home: PathBuf, root: &Path, cmds: Vec<Vec<String>>) {
     let Some(claude) = provider_program(&home, "claude") else { return };
+    let run = |args: &[&str]| {
+        std::process::Command::new(&claude).args(args).stdin(std::process::Stdio::null()).output()
+    };
     for args in cmds {
+        if args[1] == "uninstall" && !run(&["plugin", "list", "--json"]).is_ok_and(|o| ours(&o.stdout, root)) {
+            transport::relay_log("lightbulb plugin: left in place, it is not the app's copy");
+            continue;
+        }
         match std::process::Command::new(&claude).args(&args).stdin(std::process::Stdio::null()).output() {
             Ok(out) if out.status.success() => {}
             Ok(out) => transport::relay_log(&format!("lightbulb plugin: {} exited {}", args.join(" "), out.status)),
@@ -80,12 +98,12 @@ fn superseded(mine: u64) -> bool {
     LATEST.load(std::sync::atomic::Ordering::SeqCst) != mine
 }
 
-fn latest_only(home: PathBuf, cmds: Vec<Vec<String>>) {
+fn latest_only(home: PathBuf, root: PathBuf, cmds: Vec<Vec<String>>) {
     let mine = ticket();
     std::thread::spawn(move || {
         let _turn = RUNNING.lock().unwrap_or_else(|e| e.into_inner());
         if !superseded(mine) {
-            run_all(home, cmds);
+            run_all(home, &root, cmds);
         }
     });
 }
@@ -94,7 +112,7 @@ fn latest_only(home: PathBuf, cmds: Vec<Vec<String>>) {
 /// into Claude right after). Same files and the same two commands as `install`.
 pub(crate) fn install_now(state_dir: &Path, home: &Path) -> Result<()> {
     let root = write_files(state_dir)?;
-    run_all(home.to_owned(), commands(&root, true));
+    run_all(home.to_owned(), &root, commands(&root, true));
     Ok(())
 }
 
@@ -102,12 +120,13 @@ pub(crate) fn install_now(state_dir: &Path, home: &Path) -> Result<()> {
 /// seconds and callers sit on the async runtime.
 pub(crate) fn install(state_dir: &Path, home: &Path) -> Result<()> {
     let root = write_files(state_dir)?;
-    latest_only(home.to_owned(), commands(&root, true));
+    latest_only(home.to_owned(), root.clone(), commands(&root, true));
     Ok(())
 }
 
-pub(crate) fn remove(_state_dir: &Path, home: &Path) {
-    latest_only(home.to_owned(), commands(Path::new(""), false));
+pub(crate) fn remove(state_dir: &Path, home: &Path) {
+    let root = state_dir.join("claude-mods");
+    latest_only(home.to_owned(), root.clone(), commands(&root, false));
 }
 
 #[cfg(test)]
@@ -132,6 +151,17 @@ mod tests {
         std::fs::write(&file, "an older app's mod").unwrap();
         write_files(dir.path()).unwrap();
         assert_eq!(std::fs::read_to_string(&file).unwrap(), include_str!("../../../../../packages/claude-plugin/lightbulb/hooks/register.tsx"));
+    }
+
+    #[test]
+    fn plugin_off_leaves_a_public_install_in_place() {
+        let root = Path::new("/state/claude-mods");
+        let at = |f: &str| format!(r#"[{{"id":"lightbulb@lightbulb","readFromFolder":"{f}"}}]"#).into_bytes();
+        assert!(ours(&at("/state/claude-mods/lightbulb"), root));
+        assert!(!ours(&at("/elsewhere/lightbulb"), root));
+        assert!(!ours(br#"[{"id":"lightbulb@lightbulb","installPath":"/cache/lightbulb/abc"}]"#, root));
+        assert!(ours(b"[]", root));
+        assert!(ours(b"not json", root));
     }
 
     #[test]

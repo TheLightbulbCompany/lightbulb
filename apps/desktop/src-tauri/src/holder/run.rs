@@ -440,6 +440,22 @@ pub fn run_with_env(socket: &Path, argv: &[String], cwd: &Path, env: Vec<(String
                 }
                 let (status, code) = exited.take().map(|(s, c, _)| (s, c)).unwrap_or_default();
                 let frame = encode(EXIT, serde_json::json!({ "status": status, "code": code }).to_string().as_bytes());
+                if is_attach(argv) {
+                    // One more client of the provider's own host (spec §4 k): no screen of ours to
+                    // keep, and the next viewer needs a new client, so this holder ends with it.
+                    for client in clients.values() {
+                        client.send(frame.clone());
+                    }
+                    // Let every writer deliver its last frames (a stalled one gets two seconds).
+                    let writers: Vec<_> = clients.into_values().map(|c| c.writer).collect();
+                    let deadline = Instant::now() + Duration::from_secs(2);
+                    while writers.iter().any(|w| !w.is_finished()) && Instant::now() < deadline {
+                        std::thread::sleep(Duration::from_millis(10));
+                    }
+                    let _ = std::fs::remove_file(socket);
+                    let _ = std::fs::remove_file(socket.with_extension("thread"));
+                    return Ok(());
+                }
                 // Every client hears the end (the CLI exits with the code, the screen relay restarts
                 // as a watcher of the final screen). The socket, model and log stay until the app
                 // stops this holder (`manager::stop`): nothing is written anywhere.
@@ -454,6 +470,11 @@ pub fn run_with_env(socket: &Path, argv: &[String], cwd: &Path, env: Vec<(String
             }
         }
     }
+}
+
+/// Lightbulb's own attach client (`manager::attach_argv`), by the name that marks it.
+fn is_attach(argv: &[String]) -> bool {
+    argv.len() == 6 && argv[0] == "/bin/sh" && argv[3] == "lightbulb-attach"
 }
 
 /// Who typed an input: a `type` client's plain INPUT is a teammate's; everything else (the
@@ -482,20 +503,21 @@ fn tell(clients: &HashMap<u64, Client>, watchers: &HashSet<u64>, frame: &[u8]) {
 struct Client {
     queue: SyncSender<Vec<u8>>,
     stream: UnixStream,
+    writer: std::thread::JoinHandle<()>,
 }
 
 impl Client {
     fn start(stream: UnixStream) -> Option<Self> {
         let mut writer = stream.try_clone().ok()?;
         let (queue, frames) = sync_channel::<Vec<u8>>(CLIENT_QUEUE);
-        std::thread::spawn(move || {
+        let writer = std::thread::spawn(move || {
             for frame in frames {
                 if writer.write_all(&frame).is_err() {
                     return;
                 }
             }
         });
-        Some(Self { queue, stream })
+        Some(Self { queue, stream, writer })
     }
 
     /// False when the client is gone or too slow; the caller drops it.

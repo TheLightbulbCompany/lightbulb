@@ -89,6 +89,22 @@ fn holder_replays_from_an_offset_and_reports_a_gap_beyond_its_log() {
     assert!(read_until(&mut r, b"replay-me").len() >= 9);
 }
 
+/// An attach holder is one more client of the provider's own host (spec 2026-10-07 §4 k): when
+/// that client leaves there is no screen of ours to keep, and the next viewer needs a new client.
+#[test]
+fn holder_attach_client_exit_closes_the_holder_and_removes_its_socket() {
+    let dir = temp_dir();
+    let argv = manager::attach_argv(Path::new("/bin/echo"), "8ed71738");
+    let argv: Vec<&str> = argv.iter().map(String::as_str).collect();
+    let socket = start(&dir, &argv);
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while socket.exists() && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert!(!socket.exists(), "an attach holder ends with its client");
+    assert!(manager::list_in(&dir).is_empty());
+}
+
 #[test]
 fn holder_keeps_the_final_screen_after_its_provider_exits_and_refuses_input() {
     let dir = temp_dir();

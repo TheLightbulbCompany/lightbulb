@@ -282,13 +282,13 @@ async def _pin_destination(auth: AuthContext, request_id: uuid.UUID, destination
         return prior
 
 
-async def _person_room(auth: AuthContext, request_id: uuid.UUID, person_id: str) -> str:
+async def _person_room(auth: AuthContext, request_id: uuid.UUID, person_id: str, *, create: bool) -> str:
     """The DM a person send goes to, pinned on its record once known: a retry or receipt keeps that
     room even after it grows into a group DM or a newer DM appears."""
     pinned = await _pin_destination(auth, request_id, f"person:{person_id}")
     if pinned.get("roomId"):
         return pinned["roomId"]
-    room_id = await native_session_tools.person_dm(auth, person_id, create_key=str(request_id))
+    room_id = await native_session_tools.person_dm(auth, person_id, create_key=str(request_id) if create else None)
     pk, sk = _sent_key(auth, request_id)
     updated = await run_in_thread(
         messaging_repo._table().update_item,
@@ -298,6 +298,16 @@ async def _person_room(auth: AuthContext, request_id: uuid.UUID, person_id: str)
         ReturnValues="ALL_NEW",
     )
     return updated["Attributes"]["roomId"]
+
+
+async def _posted(auth: AuthContext, room_id: str, request_id: uuid.UUID) -> bool:
+    """This send already committed in that room (a retry replays it wherever the room went since)."""
+    return (
+        await messaging_repo._get(
+            messaging_repo.room_pk(room_id), messaging_repo.human_idemp_sk(auth.user_id, str(request_id))
+        )
+        is not None
+    )
 
 
 @mcp.tool()
@@ -325,13 +335,25 @@ async def send_message(
         # follow-up from the session page; the label tells the session a client wrote it.
         result = await native_session_tools.session_send(auth, target, text, str(request_id), via_client=client)
         return {"sessionId": session_id, "requestId": str(request_id), "state": result["state"]}
+    try:
+        # Checked before any room is opened, so a refused send leaves no empty DM behind.
+        messaging.validate_message_text(text)
+    except ValueError as exc:
+        raise messaging.ApiProblem("INVALID_REQUEST", str(exc)) from exc
     if person_id is not None:
-        # Reserved before the DM opens, so a conflicting reuse leaves no empty room.
-        room_id = await _person_room(auth, request_id, person_id)
+        # Reserved before the DM opens, so a conflicting reuse leaves no empty room. A reply or a
+        # mention needs the DM to exist already: neither can be valid in a room opened just now.
+        room_id = await _person_room(auth, request_id, person_id, create=not (reply_to_message_id or mention_ids))
     else:
         room_id = messaging.validate_uuid(room_id, label="room ID")
         await _pin_destination(auth, request_id, f"room:{room_id}")
     room = await messaging.get_room(auth, room_id)
+    if person_id is not None and room.kind != "dm" and not await _posted(auth, room_id, request_id):
+        # The DM became a group DM: a send meant for one person must not reach the group.
+        raise messaging.ApiProblem(
+            "MESSAGE_CONFLICT",
+            "That direct message is now a group conversation. Send with its room_id, or with a new request_id.",
+        )
     members = {member.id: member for member in room.members}
     selected = list(dict.fromkeys(mention_ids or []))
     if len(selected) > 32 or any(member_id not in members for member_id in selected):
@@ -355,6 +377,8 @@ async def send_message(
             thread_root_message_id=uuid.UUID(thread_root_id) if thread_root_id else None,
         ),
         via="lightbulb_mcp",
+        # A DM that turns into a group DM after this read refuses the write (MESSAGE_CONFLICT).
+        expected_room_revision=room.room_revision if person_id is not None else None,
         author_override={
             "kind": "system",
             "id": f"mcp:{auth.user_id}:{slug}",

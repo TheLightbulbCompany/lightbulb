@@ -220,12 +220,17 @@ async def test_person_send_posts_into_the_dm_it_finds_or_opens(monkeypatch):
     update = AsyncMock(return_value={"Attributes": {"roomId": room_id}})
     monkeypatch.setattr(hosted_mcp, "run_in_thread", update)
     monkeypatch.setattr(hosted_mcp.messaging_repo, "_table", lambda: SimpleNamespace(update_item=None))
-    monkeypatch.setattr(hosted_mcp.messaging, "get_room", AsyncMock(return_value=SimpleNamespace(members=[])))
+    monkeypatch.setattr(
+        hosted_mcp.messaging,
+        "get_room",
+        AsyncMock(return_value=SimpleNamespace(members=[], kind="dm", room_revision=3)),
+    )
     monkeypatch.setattr(hosted_mcp.messaging, "human_display_name", AsyncMock(return_value="Ann"))
     post = AsyncMock(return_value=SimpleNamespace(room_id=uuid.UUID(room_id), message_id=uuid.uuid4(), message_seq=1))
     monkeypatch.setattr(hosted_mcp.messaging, "create_human_message", post)
     result = await hosted_mcp.send_message("hi", request_id, person_id="user_b")
     person_dm.assert_awaited_once_with(auth, "user_b", create_key=str(request_id))
+    assert post.await_args.kwargs["expected_room_revision"] == 3  # fenced against a DM->group change
     pin.assert_awaited_once_with(auth, request_id, "person:user_b")  # reserved before the DM opens
     assert update.await_args.kwargs["ExpressionAttributeValues"] == {":room": room_id}  # the DM is pinned
     assert post.await_args.args[1] == room_id and result["roomId"] == room_id
@@ -308,3 +313,47 @@ async def test_a_request_id_cannot_be_reused_for_another_destination(monkeypatch
     with pytest.raises(hosted_mcp.messaging.ApiProblem) as error:
         await hosted_mcp._pin_destination(auth, request_id, "session:b")
     assert error.value.error.code == "IDEMPOTENCY_CONFLICT"
+
+
+@pytest.mark.asyncio
+async def test_a_refused_person_send_opens_no_dm(monkeypatch):
+    _auth, pin = _hosted_sender(monkeypatch)
+    pin.return_value = {"destination": "person:user_b"}
+    person_dm = AsyncMock(side_effect=hosted_mcp.messaging.ApiProblem("ROOM_NOT_FOUND", "none"))
+    monkeypatch.setattr(hosted_mcp.native_session_tools, "person_dm", person_dm)
+    with pytest.raises(hosted_mcp.messaging.ApiProblem) as error:
+        await hosted_mcp.send_message("   ", uuid.uuid4(), person_id="user_b")
+    assert error.value.error.code == "INVALID_REQUEST"
+    person_dm.assert_not_awaited()
+    pin.assert_not_awaited()
+    # A mention (or reply) cannot be valid in a room opened just now: it never opens one.
+    with pytest.raises(hosted_mcp.messaging.ApiProblem):
+        await hosted_mcp.send_message("hi", uuid.uuid4(), person_id="user_b", mention_ids=["user_b"])
+    assert person_dm.await_args.kwargs == {"create_key": None}
+
+
+@pytest.mark.asyncio
+async def test_a_person_send_refuses_a_dm_that_became_a_group(monkeypatch):
+    auth, pin = _hosted_sender(monkeypatch)
+    room_id, request_id = str(uuid.uuid4()), uuid.uuid4()
+    pin.return_value = {"destination": "person:user_b", "roomId": room_id}
+    # The DM was converted between the lookup and the write.
+    monkeypatch.setattr(
+        hosted_mcp.messaging,
+        "get_room",
+        AsyncMock(return_value=SimpleNamespace(members=[], kind="group-dm", room_revision=4)),
+    )
+    receipts = {}
+    monkeypatch.setattr(hosted_mcp.messaging_repo, "_get", AsyncMock(side_effect=lambda pk, sk: receipts.get(sk)))
+    post = AsyncMock()
+    monkeypatch.setattr(hosted_mcp.messaging, "create_human_message", post)
+    with pytest.raises(hosted_mcp.messaging.ApiProblem) as error:
+        await hosted_mcp.send_message("hi", request_id, person_id="user_b")
+    assert error.value.error.code == "MESSAGE_CONFLICT"
+    post.assert_not_awaited()
+    # A retry of a send that already committed before the conversion still replays.
+    receipts[hosted_mcp.messaging_repo.human_idemp_sk(auth.user_id, str(request_id))] = {"messageSeq": 1}
+    monkeypatch.setattr(hosted_mcp.messaging, "human_display_name", AsyncMock(return_value="Ann"))
+    post.return_value = SimpleNamespace(room_id=uuid.UUID(room_id), message_id=uuid.uuid4(), message_seq=1)
+    await hosted_mcp.send_message("hi", request_id, person_id="user_b")
+    post.assert_awaited_once()

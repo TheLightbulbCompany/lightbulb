@@ -25,6 +25,7 @@ import json
 import logging
 import os
 import re
+import shutil
 import sqlite3
 import threading
 import time
@@ -164,8 +165,10 @@ HOME_EXCLUDE_GLOBS = (
 # these dirs and stamps every file before discarding it -- the PUTs go, the local walk does not.
 # Upgrade path for both: archive the workspace subtree as ONE object and special-case it in
 # save_profile/restore_profile, the way the SQLite backup API already is below. Not implemented.
+# "*venv" is every venv-shaped name: .venv, venv, and the per-job ones a skill makes (.docx-venv:
+# 65 MB each, 130 MB of the founder's profiles by 10-07).
 _REPRODUCIBLE_DIRS = (
-    "node_modules", ".venv", "venv", "__pycache__", ".next", "dist", "build", "target",
+    "node_modules", "*venv", "__pycache__", ".next", "dist", "build", "target",
     "coverage", ".turbo", ".pytest_cache", ".mypy_cache", ".ruff_cache", ".cache",
 )
 _REPRODUCIBLE_GLOBS = tuple(
@@ -319,13 +322,22 @@ def is_reproducible(rel: str) -> bool:
 
 WORK_DIR_PREFIX = "work/"
 #: Durable trees a cold start does not wait for: they come down in the background right after the
-#: profile itself (_restore_deferred), and a conversation's own work/ tree is pulled first, by its
-#: turn (restore_subtree). Pulse carried ~1,900 objects across twenty old conversations' work/
-#: trees plus 266 curator rollback blobs; none of them is needed before the first reply. cache/
-#: reaches here only for Hermes's kept media subdirs (the rest is regenerable, never restored).
-_DEFERRED_PREFIXES = (WORK_DIR_PREFIX, ".curator_backups/", "cache/")
+#: profile itself (_restore_deferred). cache/ reaches here only for Hermes's kept media subdirs
+#: (the rest is regenerable, never restored). work/ is deliberately NOT here: a conversation's own
+#: tree is pulled by its turn (restore_subtree) and every other conversation's stays in S3. A
+#: session's disk is 1 GB, fixed (AgentCore quota), and the founder's agents held 940 MB of old
+#: work/ trees (raw demo clips, clones, a venv per docx job); sweeping them all down filled the
+#: disk four hours into a session and every turn after that died in SQLite ("disk I/O error",
+#: 10-07 prod). Pulse's 266 curator rollback blobs and the kept media are small: they still come.
+_DEFERRED_PREFIXES = (".curator_backups/", "cache/")
 _DEFERRED_RESTORE_DELAY_S = 2.0  # the turn's own restore_subtree (its work/ tree) goes first
 _RESTORED_SUBTREES: set[tuple[str, str]] = set()
+
+def _restored_work_tree(agent_id: str, rel: str) -> bool:
+    """A work/ object in a tree this process restored for its turn: a backend write into it (a
+    Files-panel save) still reaches the warm microVM on the next revision bump, as before."""
+    return rel.startswith(WORK_DIR_PREFIX) and (agent_id, "/".join(rel.split("/")[:2]) + "/") in _RESTORED_SUBTREES
+
 
 #: Restore-side skip: reinstallable home caches an older image already pushed. Deliberately NOT
 #: ``is_excluded``/``is_reproducible`` -- those name backend-owned files and migrated skills a cold
@@ -335,11 +347,15 @@ _RESTORE_SKIP_PREFIXES = (
     *(f"{PROFILE_HOME}/{name}/" for name in _HOME_UNSYNCED),
     PNPM_STORE_PREFIX,
     f"{PAPERCLIP_RUNS_DIR}/",  # read by key on a poll miss, never needed in the profile dir
+    WORK_DIR_PREFIX,  # a conversation's tree comes down on its own turn (see _DEFERRED_PREFIXES)
 )
 
 #: Per-file S3 GET/PUT ran at ~10-16 objects/s sequentially (Forge: 92,139 objects in 5,749 s).
 #: boto3 clients are thread-safe, so the one shared ``_s3()`` client serves every worker.
 _SYNC_WORKERS = 32
+#: Below this much free disk the next turn's SQLite write is the one that fails -- with "disk I/O
+#: error" and nothing to say why (10-07 prod). The warning is the clue.
+LOW_DISK_MB = 200
 
 
 def _fan_out(fn, items) -> None:
@@ -427,7 +443,7 @@ def _change_stamp(path: Path) -> int:
     return max(stamps, default=0)
 
 
-def _emit_restore_metric(seconds: float, objects: int) -> None:
+def _emit_restore_metric(seconds: float, objects: int, free_mb: float) -> None:
     """One CloudWatch EMF line per cold restore. Raw JSON on stdout: CloudWatch extracts EMF only
     from a log event that IS the JSON, so the logger's "[bridge] " prefix would hide it. Runtime log
     groups are per runtime, so a CDK metric filter cannot target them; EMF works in any group.
@@ -447,6 +463,7 @@ def _emit_restore_metric(seconds: float, objects: int) -> None:
                             "Metrics": [
                                 {"Name": "bridge.restore.seconds", "Unit": "Seconds"},
                                 {"Name": "bridge.restore.objects", "Unit": "Count"},
+                                {"Name": "bridge.restore.disk_free_mb", "Unit": "Megabytes"},
                             ],
                         }
                     ],
@@ -455,6 +472,7 @@ def _emit_restore_metric(seconds: float, objects: int) -> None:
                 "service": "hermes-bridge",
                 "bridge.restore.seconds": round(seconds, 3),
                 "bridge.restore.objects": objects,
+                "bridge.restore.disk_free_mb": round(free_mb),
             }
         ),
         flush=True,
@@ -540,8 +558,8 @@ def _start_deferred_restore(agent_id: str) -> None:
 
 def _restore_deferred(agent_id: str) -> int:
     """Bring down the trees the cold restore deferred (_DEFERRED_PREFIXES), one subtree at a time
-    so a turn's own restore_subtree interleaves instead of waiting: every conversation's work/
-    tree, the curator's rollback blobs, Hermes's kept media caches. Returns the object count."""
+    so a turn's own restore_subtree interleaves instead of waiting: the curator's rollback blobs
+    and Hermes's kept media caches. Returns the object count."""
     time.sleep(_DEFERRED_RESTORE_DELAY_S)
     dest = _profile_dir(agent_id)
     prefix = f"{S3_PREFIX}/{agent_id}/"
@@ -553,8 +571,8 @@ def _restore_deferred(agent_id: str) -> int:
                     rel = obj["Key"][len(prefix):]
                     if is_regenerable_cache(rel):
                         continue
-                    sub = "/".join(rel.split("/")[:2]) if top in (WORK_DIR_PREFIX, "cache/") else top.rstrip("/")
-                    if "/" in rel[len(top):] or top not in (WORK_DIR_PREFIX, "cache/"):
+                    sub = "/".join(rel.split("/")[:2]) if top == "cache/" else top.rstrip("/")
+                    if "/" in rel[len(top):] or top != "cache/":
                         if sub not in subtrees:
                             subtrees.append(sub)
         total = sum(restore_subtree(agent_id, dest / sub) for sub in subtrees)
@@ -606,8 +624,9 @@ def _restore_profile(agent_id: str) -> float:
     n = len(wanted)
     _restored.add(agent_id)
     took = time.time() - t0
-    log.info("restored profile %s: %d objects in %.1fs (%d deferred)", agent_id, n, took, deferred)
-    _emit_restore_metric(took, n)
+    free_mb = shutil.disk_usage(dest).free / 1e6
+    log.info("restored profile %s: %d objects in %.1fs (%d deferred), %.0f MB free", agent_id, n, took, deferred, free_mb)
+    _emit_restore_metric(took, n, free_mb)
     if deferred:
         _start_deferred_restore(agent_id)
     # Minor 12 (fix round 1 continuation): the tree walk above just downloaded .revision (if the
@@ -703,6 +722,8 @@ def save_profile(agent_id: str) -> float:
             log.warning("delete propagation failed for %s", agent_id, exc_info=True)
         took = time.time() - t0
         log.info("saved profile %s: %d changed objects in %.1fs", agent_id, n, took)
+        if (free_mb := shutil.disk_usage(src).free / 1e6) < LOW_DISK_MB:
+            log.warning("profile disk low: %.0f MB free after saving %s", free_mb, agent_id)
     try:
         save_rotated_cli_credentials()
     except Exception:  # a listing blip retries on the next save
@@ -913,6 +934,10 @@ def _pull_changed_objects(agent_id: str) -> bool:
                 # a trailing "/" is a directory marker, not a file: renaming onto an existing
                 # directory raises, and it is the realistic "one poison key" instance.
                 if not rel or rel.endswith("/") or rel.startswith("mcp-tokens/") or is_excluded(rel):
+                    continue
+                if rel.startswith(_RESTORE_SKIP_PREFIXES) and not _restored_work_tree(agent_id, rel):
+                    # never on this disk (Codex on #3794: with work/ absent from _SYNCED, every old
+                    # work object looked new to this walk and the first bump brought the 940 MB back)
                     continue
                 if rel.endswith((".db", ".sqlite")):
                     continue

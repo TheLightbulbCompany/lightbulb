@@ -636,8 +636,13 @@ button.native-session-panel-row:hover .native-session-panel-activity { color: va
 .native-session-tool > .native-session-muted { white-space: nowrap; }
 
 .session-terminal-view { flex: 1; min-height: 0; overflow: hidden; background: var(--terminal-bg); padding: 6px 8px; }
-/* Laid out but unseen until its first snapshot, so xterm can measure itself. */
-.session-terminal-view[data-live="false"] { position: absolute; visibility: hidden; }
+/* Laid out but unseen until its first snapshot, so xterm can measure itself. Collapsed in flow,
+   never position: absolute: a box that is out of flow under this column flexbox takes a grid
+   ancestor as its containing block, and WebKit (Safari and the desktop app's web view, macOS 26.2)
+   then crashes its whole WebContent process the first time anything reads a layout width
+   (RenderBox::columnFlexItemHasStretchAlignment -> RenderGrid::selfAlignmentNormalBehavior). A
+   teammate's window went blank the moment they opened a live session. */
+.session-terminal-view[data-live="false"] { flex: none; height: 0; padding: 0; visibility: hidden; }
 /* Pending and queued follow-ups stay visible under the live terminal. */
 .local-session-feedback:empty { display: none; }
 .local-session-feedback { flex: none; max-height: 30%; overflow: auto; }

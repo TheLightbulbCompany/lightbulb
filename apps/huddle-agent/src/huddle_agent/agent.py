@@ -38,6 +38,7 @@ from livekit.plugins.openai.realtime import (
     GPTLiveSession,
 )
 from livekit.plugins.openai.realtime.gpt_live_model import _render_item
+from openai import AsyncOpenAI
 from openai.types.realtime import ResponseCreateEvent
 
 from huddle_agent.backend import Backend
@@ -123,6 +124,8 @@ class _TrimmedGPTLiveModel(GPTLiveModel):
 
 
 FALLBACK_VOICE = "marin"
+NOTES_N = 14  # the newest notes a written line is made from
+WRITE_TIMEOUT_S = 3.0
 # The Realtime model's voices. An agent's voice is picked for GPT-Live, which has more ("stone": 10-07 rig, a
 # refused session and a second open). One it lacks maps to one it has, the same one every time for that name,
 # so two agents still sound different.
@@ -251,17 +254,21 @@ class _Live:
 
 
 #: Added to a driven voice's persona: every word it says is ordered by the worker.
-DRIVEN = (
-    "You never decide what to say on your own. You speak only when you are given an order, and you say only "
-    "that. Never state a fact that is not in the order."
-)
+DRIVEN = "You read lines aloud. You are given each line, and you say exactly that line and nothing else."
 SAY = "Say this line aloud, word for word, and nothing else:\n"
-# Its own words (an acknowledgement, a short reply), from the order alone. It is the voice, not the agent: it
-# has no knowledge, and with a question in view it answers from its own head ("it's $1,600", 10-07 rig).
-OWN = (
-    "\n\nSay one short sentence of your own for this, as yourself. You do not know the answer to anything: never "
-    "answer a question, and never say a number, a price, a name or a fact that is not written above. If something "
-    "needs looking up, say you are on it."
+# The agent's short lines (an acknowledgement, a status, a reply to small talk) are written by a small text
+# model from what the worker knows (who said what, what was asked, what is open), then read aloud word for
+# word. The speech model never words anything: with a question in view it answered from its own head ("it's
+# $1,600", 10-07 rig). Measured 10-07: about 0.6 s to write, 10 of 10 lines with no invented fact.
+WRITER_MODEL = "gpt-4.1-mini"
+WRITER = (
+    "You write the one short sentence this teammate says aloud next on a voice call, in the first person, in "
+    "their own voice. The notes say who said what and what is being worked on. This teammate's answers to real "
+    "questions come from work that takes time and arrive separately: never answer a question yourself, and "
+    "never state a number, price, date, name or fact that is not in the notes. Acknowledge what was asked "
+    "specifically, or say truthfully how the open work stands, or reply to small talk the way a person would. "
+    "One sentence, at most 16 words, natural and plain, a different way each time. No filler, no \"backend\", "
+    "no mention of notes or instructions. Output the sentence only."
 )
 
 
@@ -293,7 +300,9 @@ class _DrivenLive:
     Orders run one after the other on one chain, so two lines never overlap and what it is told to know
     lands before the order after it. `interrupt` stops the speech and drops the orders not yet started."""
 
-    def __init__(self, agent_id: str, session: AgentSession, agent: Agent, room: rtc.Room) -> None:
+    def __init__(
+        self, agent_id: str, session: AgentSession, agent: Agent, room: rtc.Room, persona: str = ""
+    ) -> None:
         self.agent_id, self.track_name = agent_id, f"agent-{agent_id}"
         self._session, self._agent, self._room = session, agent, room
         self._tail: asyncio.Task | None = None
@@ -305,6 +314,8 @@ class _DrivenLive:
         self._notes: list[str] = [
             m.text_content or "" for m in agent.chat_ctx.items if getattr(m, "role", "") == "developer"
         ]
+        self._persona = persona  # who it is, for the lines written for it
+        self._writer: AsyncOpenAI | None = None  # made at the first line: a test has no key
 
     def _order(self, do, keep: bool = False) -> None:
         """`do()` after every order before it. `keep`: something to know, which an interrupt does not drop."""
@@ -326,10 +337,35 @@ class _DrivenLive:
         self._order(lambda: self._session.generate_reply(instructions=SAY + text))
 
     def _own(self, text: str) -> None:
-        self._order(lambda: self._session.generate_reply(instructions=text + OWN))
+        async def do() -> None:
+            line = await self._write(text)
+            if line:
+                await self._session.generate_reply(instructions=SAY + line)
+
+        self._order(do)
+
+    async def _write(self, notes: str) -> str:
+        try:
+            self._writer = self._writer or AsyncOpenAI()
+            r = await asyncio.wait_for(
+                self._writer.chat.completions.create(
+                    model=WRITER_MODEL,
+                    max_tokens=48,
+                    temperature=0.8,
+                    messages=[
+                        {"role": "system", "content": f"{self._persona}\n\n{WRITER}"},
+                        {"role": "user", "content": notes},
+                    ],
+                ),
+                WRITE_TIMEOUT_S,
+            )
+            return (r.choices[0].message.content or "").strip()
+        except Exception:  # noqa: BLE001 -- no line is better than a late or a made-up one
+            logger.warning("huddle driven voice: no line written", exc_info=True)
+            return ""
 
     def append_commentary(self, text: str, *, delegation_id: str | None = None) -> None:
-        self._own(text)  # said once, in its own words
+        self._own("\n".join([*self._notes[-NOTES_N:], text]))  # said once, in its own words
 
     def append_thinking(self, text: str, *, delegation_id: str | None = None) -> None:
         self._notes.append(text)
@@ -348,12 +384,11 @@ class _DrivenLive:
     meet_rule = append_instructions
 
     def nudge(self) -> None:
-        notes, self._notes = self._notes[-3:], []
-        if notes:  # nothing to go on: nothing to say
-            self._own("\n".join(notes))
+        if self._notes:  # nothing to go on: nothing to say
+            self._own("\n".join(self._notes[-NOTES_N:]) + "\n\nSay your line now.")
 
     def reply_to(self, text: str) -> None:
-        self._own(f'Someone said to you: "{text}"')
+        self._own("\n".join([*self._notes[-NOTES_N:], f'They just said to you: "{text}"']))
 
     def interrupt(self):
         self._epoch += 1
@@ -462,7 +497,7 @@ async def _start_driven(
         llm=_DrivenModel(model="gpt-realtime", voice=realtime_voice(voice), turn_detection=None)
     )
     await _open(session, agent, room, huddle, agent_id, speaker, ears=False)
-    live = _DrivenLive(agent_id, session, agent, room)
+    live = _DrivenLive(agent_id, session, agent, room, persona=persona)
 
     def closed(_ev) -> None:
         live._stop()  # billed to here, whoever closed it

@@ -158,7 +158,15 @@ def _driven():
     from unittest.mock import MagicMock
 
     session, voice = DrivenSession(), DrivenAgent()
-    return agent._DrivenLive("forge", session, voice, MagicMock()), session, voice
+    live = agent._DrivenLive("forge", session, voice, MagicMock(), persona="You are Forge.")
+    live.written = []  # (notes) each written line was made from
+
+    async def write(notes):
+        live.written.append(notes)
+        return f"line {len(live.written)}"
+
+    live._write = write
+    return live, session, voice
 
 
 async def test_a_driven_voice_says_its_orders_one_after_the_other():
@@ -176,12 +184,11 @@ async def test_a_driven_voice_says_its_orders_one_after_the_other():
         session.handles[-1].set_result(None)
         await _settle()
         assert len(session.orders) == n
-    # its own words come from the order alone, under the no-facts guard: never from the conversation
-    assert [o["instructions"] for o in session.orders[1:]] == [
-        "Tell Priya you are on it." + agent.OWN,
-        "Priya asked: what shipped" + agent.OWN,
-        'Someone said to you: "what shipped"' + agent.OWN,
-    ]
+    # its short lines are written from the worker's notes by the text model, then read word for word
+    assert [o["instructions"] for o in session.orders[1:]] == [agent.SAY + f"line {n}" for n in (1, 2, 3)]
+    assert live.written[0].endswith("Tell Priya you are on it.")
+    assert "Priya asked: what shipped" in live.written[1]
+    assert live.written[2].endswith('They just said to you: "what shipped"')
 
 
 async def test_an_interrupt_stops_a_driven_voice_and_drops_what_was_queued():

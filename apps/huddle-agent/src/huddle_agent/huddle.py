@@ -207,8 +207,9 @@ def _said_bags(said: str) -> tuple[collections.Counter, collections.Counter]:
     return collections.Counter(words), collections.Counter(w for w in words if w not in FUNCTION_WORDS)
 
 
-def _unsaid_with(answer: str, bags: tuple[collections.Counter, collections.Counter]) -> str:
-    """`unsaid_part` against bags the answers said before this one have already spent."""
+def _unsaid_with(answer: str, bags: tuple[collections.Counter, collections.Counter]) -> tuple[str, list[str]]:
+    """`unsaid_part` against bags the answers said before this one have already spent: (the rest, the heard
+    words the cut sentence spent -- what a boundary carries over so its other half completes it)."""
     all_left, left = bags
     sentences = [x for x in re.split(r"(?<=[.!?])\s+", answer.strip()) if x]
     for i, sentence in enumerate(sentences):
@@ -239,8 +240,8 @@ def _unsaid_with(answer: str, bags: tuple[collections.Counter, collections.Count
             if w in left:
                 left[w] -= 1
         if not said:
-            return answer if i == 0 else " ".join(sentences[i:])  # the same object when nothing of it was said
-    return ""
+            return (answer if i == 0 else " ".join(sentences[i:])), spend  # the same object when nothing was said
+    return "", []
 
 
 def unsaid_part(answer: str, said: str) -> str:
@@ -248,7 +249,7 @@ def unsaid_part(answer: str, said: str) -> str:
     sentence counts as said when most of its words were, in order: the words a sentence used are spent, so a
     later sentence made of the same words is not heard for free; the first sentence that was not said starts
     the rest."""
-    return _unsaid_with(answer, _said_bags(said))
+    return _unsaid_with(answer, _said_bags(said))[0]
 
 
 def _words_in(a: str, b: str, share: float = SAME_SPEECH) -> bool:
@@ -3363,17 +3364,14 @@ class Huddle:
         if not v.told:
             return []  # an earlier Live-call answer's words count for nothing after the boundary
         v.told.sort(key=lambda n: (self._requests.order(n[0]), n[3]))
-        heard = " ".join(v.said)
-        bags = _said_bags(heard)
-        v.told = [(n[0], n[1], rest, *n[3:]) for n in v.told if (rest := _unsaid_with(n[2], bags))]
-        # the heard words of each remaining answer's first sentence (the one cut by the boundary), and only those
-        left = collections.Counter(_words(heard)[1])
-        carry: list[str] = []
-        for n in v.told:
-            for w in _words(re.split(r"(?<=[.!?])\s+", n[2].strip())[0])[1]:
-                if left[w] > 0:
-                    carry.append(w)
-                    left[w] -= 1
+        bags = _said_bags(" ".join(v.said))
+        kept, carry = [], []  # the carry is what each cut sentence spent, from the bags: a word an earlier
+        for n in v.told:  # answer used is not carried (Codex on #3803: "Build passed." then "Build failed.")
+            rest, fragment = _unsaid_with(n[2], bags)
+            if rest:
+                kept.append((n[0], n[1], rest, *n[3:]))
+                carry += fragment
+        v.told = kept
         return [" ".join(carry)] if carry else []
 
     def _keep_unsaid(self, v: _Voice) -> None:
@@ -3395,7 +3393,7 @@ class Huddle:
             # spent in the seed's delivery order (Codex on #3800): shared wording is not heard twice
             unsaid.sort(key=lambda n: (self._requests.order(n[0]), n[3]))
             bags = _said_bags(" ".join(v.said))
-            unsaid = [(n[0], n[1], rest, *n[3:]) for n in unsaid if (rest := _unsaid_with(n[2], bags))]
+            unsaid = [(n[0], n[1], rest, *n[3:]) for n in unsaid if (rest := _unsaid_with(n[2], bags)[0])]
             have = {n[0] for n in self._news.get(v.agent_id, [])}
             self._news.setdefault(v.agent_id, []).extend(n for n in unsaid if n[0] not in have)
             self._rowless.update(n[0] for n in unsaid)

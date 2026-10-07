@@ -424,21 +424,21 @@ def test_the_unsaid_part_spends_the_words_a_sentence_used():
 def test_spoken_words_are_spent_across_queued_answers_in_delivery_order():
     """Codex on #3792 (after the merge): two queued answers share wording and only the first was said."""
     bags = h_mod._said_bags("No PRs are open.")
-    assert h_mod._unsaid_with("No PRs are open.", bags) == ""
-    assert h_mod._unsaid_with("No PRs are open. The deploy is green.", bags) == "No PRs are open. The deploy is green."
+    assert h_mod._unsaid_with("No PRs are open.", bags)[0] == ""
+    assert h_mod._unsaid_with("No PRs are open. The deploy is green.", bags)[0] == "No PRs are open. The deploy is green."
     # Codex on #3800: a "Yes." is spent too, and a phonetic match spends the word that sounded like it
     bags = h_mod._said_bags("Yes.")
-    assert h_mod._unsaid_with("Yes.", bags) == "" and h_mod._unsaid_with("Yes.", bags) == "Yes."
+    assert h_mod._unsaid_with("Yes.", bags)[0] == "" and h_mod._unsaid_with("Yes.", bags)[0] == "Yes."
     bags = h_mod._said_bags("peers are open")
-    assert h_mod._unsaid_with("PRs are open.", bags) == "" and h_mod._unsaid_with("Peers are open.", bags) == "Peers are open."
+    assert h_mod._unsaid_with("PRs are open.", bags)[0] == "" and h_mod._unsaid_with("Peers are open.", bags)[0] == "Peers are open."
     bags = h_mod._said_bags("I can deploy.")  # a said sentence spends its function words too
-    assert h_mod._unsaid_with("I can deploy.", bags) == "" and h_mod._unsaid_with("I can.", bags) == "I can."
+    assert h_mod._unsaid_with("I can deploy.", bags)[0] == "" and h_mod._unsaid_with("I can.", bags)[0] == "I can."
     bags = h_mod._said_bags("build")  # a cut sentence keeps its text whole but its fragment's words are spent
-    assert h_mod._unsaid_with("The build failed during deployment.", bags) == "The build failed during deployment."
-    assert h_mod._unsaid_with("Build.", bags) == "Build."
+    assert h_mod._unsaid_with("The build failed during deployment.", bags)[0] == "The build failed during deployment."
+    assert h_mod._unsaid_with("Build.", bags)[0] == "Build."
     bags = h_mod._said_bags("I can build")  # a cut sentence's function words are spent too
-    assert h_mod._unsaid_with("I can build after deployment fails.", bags) == "I can build after deployment fails."
-    assert h_mod._unsaid_with("I can.", bags) == "I can."
+    assert h_mod._unsaid_with("I can build after deployment fails.", bags)[0] == "I can build after deployment fails."
+    assert h_mod._unsaid_with("I can.", bags)[0] == "I can."
 
 
 async def test_news_handed_to_a_named_voice_keeps_its_hand_if_the_voice_closes_before_its_first_word():
@@ -500,3 +500,12 @@ async def test_a_sentence_cut_by_an_answer_boundary_is_completed_by_its_other_ha
     h.on_agent_said("forge", "are open.")  # the other half
     await says(h, P1, "Dan, did you push that fix last night?")
     assert [n[2] for n in h._news.get("forge", [])] == ["The deploy is green."]
+
+
+def test_a_word_an_earlier_answer_used_is_not_carried_over_the_boundary():
+    """Codex on #3803: "Build passed." heard, "Build failed." not; "build" must not carry, or "failed." alone
+    would complete the second answer."""
+    bags = h_mod._said_bags("Build passed.")
+    assert h_mod._unsaid_with("Build passed.", bags) == ("", [])
+    assert h_mod._unsaid_with("Build failed.", bags) == ("Build failed.", [])
+    assert h_mod._unsaid_with("Three PRs are open.", h_mod._said_bags("Three PRs")) == ("Three PRs are open.", ["three", "prs"])

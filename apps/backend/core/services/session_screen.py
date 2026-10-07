@@ -71,7 +71,10 @@ async def watch(auth: sessions.Caller, session_id: str, mounted: bool = False) -
     row, _ = await sessions.authorize_session(auth, None, session_id)
     await _still_a_member(row, auth.user_id)
     now = int(_clock())
-    if row.get("endedAt") is not None or row.get("unshared") or int(row.get("onlineUntil", 0)) <= now:
+    kept = sessions.screen_available(row, now)  # an ended held session's final screen (spec 2026-10-07 §5.4)
+    if row.get("unshared") or (not kept and (row.get("endedAt") is not None or int(row.get("onlineUntil", 0)) <= now)):
+        if row.get("endedAt") is not None and row.get("screenUntil") is not None:
+            await _screen_gone(row)
         raise sessions.ApiProblem("LOCAL_SESSION_OFFLINE", "This session is not running.")
     if sessions.session_terminal(row) is None:
         raise sessions.ApiProblem(
@@ -116,6 +119,24 @@ async def watch(auth: sessions.Caller, session_id: str, mounted: bool = False) -
         await _nudge(row, now)
 
 
+async def _screen_gone(row: dict) -> None:
+    """A final screen's lease lapsed (the app quit or closed that holder) and nothing says so: open
+    panels refetch now, once. The lease is removed so the next refused ping tells nobody again."""
+    from core.services import local_session_relay  # it imports this module
+
+    try:
+        await store.run_in_thread(
+            store._table().update_item,
+            Key={"pk": row["pk"], "sk": "META"},
+            UpdateExpression="REMOVE screenUntil",
+            ConditionExpression="screenUntil = :u",
+            ExpressionAttributeValues={":u": row["screenUntil"]},
+        )
+    except ClientError:
+        return  # renewed meanwhile, or another ping already told them
+    await local_session_relay.publish_resources_changed(row["ownerId"], row["humanUserId"])
+
+
 async def _nudge(row: dict, since: int) -> None:
     """Tell the Mac now, not at its next heartbeat ack (up to 10 s). Only a Mac that advertised
     `liveTerminal`: an older desktop drops its connection over a frame it does not know. The
@@ -132,9 +153,11 @@ async def _nudge(row: dict, since: int) -> None:
         "generation": row["generation"],
         "since": since,
     }
+    # An ended session's final screen is on the connection that renews it.
+    cid = row.get("screenConnectionId") if row.get("endedAt") is not None else row["connectionId"]
     try:
         check_envelope(envelope)
-        if not await get_local_session_relay().management.send_message_async(row["connectionId"], envelope):
+        if not await get_local_session_relay().management.send_message_async(cid, envelope):
             logger.info("session watch nudge not delivered")
     except Exception as exc:  # noqa: BLE001 -- best effort; the next ack carries the same news
         logger.info("session watch nudge failed error=%s", type(exc).__name__)
@@ -151,7 +174,9 @@ async def ack_with_watching(ack: dict, owner: str, human: str, device: str) -> d
         live = [r for r in rows if int(r.get("expiresAt", 0)) > now]
         for r in sorted(live, key=lambda r: int(r.get("since", 0)))[-ACK_CAP:]:
             meta = await repo.get_session(owner, r["sessionId"])
-            if meta is None or meta.get("endedAt") is not None or meta.get("unshared"):
+            if meta is None or meta.get("unshared"):
+                continue
+            if meta.get("endedAt") is not None and not sessions.screen_available(meta, now):
                 continue
             watching.append({"sessionId": r["sessionId"], "since": int(r["since"])})
     except Exception:
@@ -270,13 +295,16 @@ async def forward(relay, cid: str, body: dict) -> None:
             row is None
             or row.get("humanUserId") != connection["user_id"]
             or row.get("deviceId") != connection["device_id"]
-            or row.get("connectionId") != cid
             or row.get("generation") != frame.generation
-            or row.get("endedAt") is not None
             or row.get("unshared")
         ):
             return
         now = _clock()
+        if row.get("endedAt") is None:
+            if row.get("connectionId") != cid:
+                return
+        elif not sessions.screen_available(row, int(now)) or row.get("screenConnectionId") != cid:
+            return  # an ended session streams only its kept final screen, from the connection that keeps it
         viewers = [
             r["userId"]
             for r in await store._query(repo.session_pk(owner, sid), begins_with="VIEWER#")

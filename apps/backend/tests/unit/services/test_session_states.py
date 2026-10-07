@@ -8,7 +8,12 @@ import time
 import pytest
 
 from core.repositories import local_sessions_repo as repo
-from core.services import local_session_relay as relay_module, local_sessions as service
+from core.services import (
+    live_events,
+    local_session_relay as relay_module,
+    local_sessions as service,
+    session_screen,
+)
 from core.services.messaging import ApiProblem
 from tests.unit.services.test_local_session_relay import (  # noqa: F401 -- fixtures
     _own_spawned_tasks,
@@ -20,11 +25,13 @@ from tests.unit.services.test_local_session_relay import (  # noqa: F401 -- fixt
     start,
     transport,
 )
-from tests.unit.services.test_local_sessions import BOB, OWNER
+from tests.unit.services.test_local_sessions import ALICE, BOB, OWNER
 from tests.unit.services.test_session_screen import (  # noqa: F401 -- autouse fixtures
     _nudges_reach_the_test_mac,
+    _published,
     _teammates_are_members,
     ack,
+    frame,
 )
 
 
@@ -111,3 +118,70 @@ async def test_screens_are_kept_only_for_this_macs_ended_held_sessions(transport
     await end(transport, sid, screen=True)
     await relay(transport).handle_message("conn-1", screens(sid))
     assert "screenUntil" not in await repo.get_session(OWNER, sid), "an attach session's screen closes with it"
+
+
+@pytest.mark.asyncio
+async def test_a_kept_final_screen_is_watched_streamed_and_never_typed_into(transport):
+    sid = await start(transport)
+    await ack(transport, sid)
+    await end(transport, sid, screen=True)
+    await session_screen.watch(BOB, sid)
+    acked = await relay(transport).handle_message("conn-1", screens(sid))
+    assert [w["sessionId"] for w in acked["watching"]] == [sid]
+    transport[4].clear()
+    await session_screen.forward(relay(transport), "conn-1", frame(sid))
+    bob = await live_events.get_live_event_publisher().user_channel(OWNER, BOB.user_id)
+    assert [(c, e["type"]) for c, e in await _published(transport)] == [(bob, "workspace.session.screen")]
+    with pytest.raises(ApiProblem) as typed:
+        await session_screen.type_into(
+            ALICE, sid, session_screen.SessionInput.model_validate({"data": "YQ==", "epoch": 1})
+        )
+    assert typed.value.error.code == "LOCAL_SESSION_OFFLINE"
+
+
+@pytest.mark.asyncio
+async def test_a_screen_frame_for_an_ended_session_needs_its_kept_screen_and_connection(transport, db):
+    sid = await start(transport)
+    await ack(transport, sid)
+    await end(transport, sid, screen=True)
+    await session_screen.watch(BOB, sid)
+    set_meta(db, sid, screenConnectionId="conn-2")
+    transport[4].clear()
+    await session_screen.forward(relay(transport), "conn-1", frame(sid))
+    assert await _published(transport) == [], "another connection's frame"
+    set_meta(db, sid, screenConnectionId="conn-1", screenUntil=1)
+    await session_screen.forward(relay(transport), "conn-1", frame(sid))
+    assert await _published(transport) == [], "a lapsed screen"
+
+
+@pytest.mark.asyncio
+async def test_a_lapsed_final_screen_refuses_watching_and_tells_the_open_panels(transport, db, monkeypatch):
+    sid = await start(transport)
+    await ack(transport, sid)
+    await end(transport, sid, screen=True)
+    set_meta(db, sid, screenUntil=1)
+    told = []
+
+    async def hint(owner, human, **_):
+        told.append((owner, human))
+
+    monkeypatch.setattr(relay_module, "publish_resources_changed", hint)
+    with pytest.raises(ApiProblem) as refused:
+        await session_screen.watch(BOB, sid)
+    assert refused.value.error.code == "LOCAL_SESSION_OFFLINE"
+    assert told == [(OWNER, ALICE.user_id)]
+    with pytest.raises(ApiProblem):
+        await session_screen.watch(BOB, sid)
+    assert len(told) == 1, "a panel that pings again is not a reason to tell the workspace again"
+    assert (await relay(transport).handle_message("conn-1", screens()))["watching"] == []
+
+
+@pytest.mark.asyncio
+async def test_a_new_viewer_of_a_kept_screen_nudges_the_connection_that_keeps_it(transport, db):
+    sid = await start(transport)
+    await ack(transport, sid)
+    await end(transport, sid, screen=True)
+    set_meta(db, sid, connectionId="conn-old")
+    transport[3].clear()
+    await session_screen.watch(BOB, sid)
+    assert [(c, b["type"]) for c, b in transport[3]] == [("conn-1", "local.session.watch")]

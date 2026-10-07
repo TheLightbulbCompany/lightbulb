@@ -89,6 +89,8 @@ class HeartbeatSession(ContractModel):
     # Claude background session through `claude attach`), "none" (transcript only). Sent only
     # once FEATURES lists sessionTerminal. Null is silence.
     terminal: Literal["held", "attach", "none"] | None = None
+    # Why `terminal` is "none" (spec 2026-10-07 §5.1). Sent only once FEATURES lists terminalReason.
+    terminal_reason: sessions.TerminalReason | None = None
 
 
 #: What this relay reads beyond the frozen frames; the desktop sends a field only once listed.
@@ -103,6 +105,8 @@ FEATURES = [
     "sessionPresence",
     "pickupRequests",
     "bandOwnerOnly",
+    "endedScreens",
+    "terminalReason",
 ]
 
 
@@ -117,6 +121,9 @@ class DeviceHeartbeat(ContractModel):
 
     type: Literal["local.device.heartbeat"]
     sessions: Annotated[list[HeartbeatSession], Field(max_length=24)]
+    # Ended held sessions whose holder still shows the final screen (spec §5.4). Sent only once
+    # FEATURES lists endedScreens, in a frame of its own with no sessions.
+    screens: Annotated[list[uuid.UUID], Field(max_length=24)] = []
     # What this Mac can do. Each is one boolean, sent only once FEATURES lists it, and lands
     # on every listed session's META as `deviceFeatures` (session_screen reads it).
     live_terminal: bool = False
@@ -130,7 +137,9 @@ class DeviceHeartbeat(ContractModel):
     band_owner_only: bool = False
 
     def device_features(self) -> list[str]:
-        return sorted(k for k, on in self.model_dump(by_alias=True, exclude={"type", "sessions"}).items() if on)
+        return sorted(
+            k for k, on in self.model_dump(by_alias=True, exclude={"type", "sessions", "screens"}).items() if on
+        )
 
 
 class Ended(ContractModel):
@@ -139,6 +148,8 @@ class Ended(ContractModel):
     generation: sessions.OpaqueId
     reason: Literal["exited", "process-exited"]
     ended_at: int = Field(ge=0)
+    # The holder keeps the final screen (spec §5.4). Sent only once FEATURES lists endedScreens.
+    screen: bool = False
 
 
 Event = sessions.LocalSessionEventBody
@@ -622,6 +633,8 @@ class LocalSessionRelay:
                 elif isinstance(message, DeviceHeartbeat):
                     # Resume first, then pick-up: each trims its own list to what is left of the
                     # envelope. Watching last: an empty list read there stops every relay.
+                    # First, so this frame's own ack already lists the screens it keeps.
+                    await session_screen.keep_screens(owner, human, device, cid, [str(s) for s in message.screens])
                     response = await session_screen.ack_with_watching(
                         await session_pickup.ack_with_pickup(
                             await session_resume.ack_with_resume(
@@ -752,6 +765,10 @@ class LocalSessionRelay:
                     )
                     if item.terminal is not None:
                         updated["terminal"] = item.terminal
+                        if item.terminal == "none" and item.terminal_reason is not None:
+                            updated["terminalReason"] = item.terminal_reason
+                        else:
+                            updated.pop("terminalReason", None)
                     if item.capabilities is not None and row["capabilitiesVerified"]:
                         caps = item.capabilities
                         if caps.send_mode != "queue" or (row["provider"] != "codex" and (caps.steer or caps.interrupt)):
@@ -785,7 +802,10 @@ class LocalSessionRelay:
                     )
                     scanned = row.get("workspace") != updated.get("workspace")
                     controls_changed = row.get("capabilities") != updated.get("capabilities")
-                    terminal_changed = row.get("terminal") != updated.get("terminal")
+                    terminal_changed = (row.get("terminal"), row.get("terminalReason")) != (
+                        updated.get("terminal"),
+                        updated.get("terminalReason"),
+                    )
                     if moved:
                         updated["lastEventAt"] = now
                     try:
@@ -851,6 +871,12 @@ class LocalSessionRelay:
         # where it would outrank every live row in a lastEventAt ordering.
         ended_at = min(message.ended_at, int(time.time()))
         updated = _revised(row, status="ended", endedAt=ended_at, lastEventAt=ended_at, endedReason=message.reason)
+        if message.screen and sessions.session_terminal(row) == "held":
+            # The holder keeps the final screen; the Mac's `screens` heartbeats renew this lease.
+            updated["screenUntil"] = int(time.time()) + LIVENESS_SECONDS
+            updated["screenConnectionId"] = cid
+        else:
+            updated.pop("screenUntil", None)
         updated.pop("pendingApproval", None)
         updated.pop("privateSendApproval", None)
         extra = [self._connection_check(cid, connection)]

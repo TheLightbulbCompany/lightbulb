@@ -164,6 +164,36 @@ async def ack_with_watching(ack: dict, owner: str, human: str, device: str) -> d
         watching = watching[1:]  # oldest viewer set first
 
 
+async def keep_screens(owner: str, human: str, device: str, cid: str, sids: list[str]) -> None:
+    """The Mac's ended held sessions whose holder still shows the final screen (spec 2026-10-07
+    §5.4): each stays watchable for one more lease. Only this Mac's own; never raises (a lost
+    renewal lapses the screen 30 s later, nothing worse)."""
+    from core.services.local_session_relay import LIVENESS_SECONDS  # it imports this module
+
+    now = int(_clock())
+    for sid in sids:
+        try:
+            row = await repo.get_session(owner, sid)
+            if (
+                row is None
+                or row.get("humanUserId") != human
+                or row.get("deviceId") != device
+                or row.get("endedAt") is None
+                or sessions.session_terminal(row) != "held"
+            ):
+                continue
+            # ponytail: a write per kept screen per heartbeat (10 s); skip it while the lease is fresh if that ever shows.
+            await store.run_in_thread(
+                store._table().update_item,
+                Key={"pk": repo.session_pk(owner, sid), "sk": "META"},
+                UpdateExpression="SET screenUntil = :u, screenConnectionId = :c",
+                ConditionExpression="attribute_exists(endedAt) AND deviceId = :d",
+                ExpressionAttributeValues={":u": now + LIVENESS_SECONDS, ":c": cid, ":d": device},
+            )
+        except Exception as exc:  # noqa: BLE001 -- see docstring
+            logger.info("ended screen not kept error=%s", type(exc).__name__)
+
+
 MAX_RAW_BYTES = 11 * 1024
 BUDGET_BYTES_PER_MINUTE = 2 * 1024 * 1024
 # ponytail: per backend task, so N tasks allow N x 2 MiB/min per session; a shared counter would

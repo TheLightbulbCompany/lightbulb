@@ -263,7 +263,7 @@ async def _lookup_teammates(owner_id: str, roster: list[dict] | None = None) -> 
 async def _lookup_connected_integrations(owner_id: str) -> list[dict]:
     """``[{provider, rail}]`` for every CONNECTED integrations row. NAMES only: nothing from the
     row but its key and status is read. A ``projects/<p>`` row is the Stripe Projects rail; any
-    other row takes its registry actor (``mcp``/``cli``), else ``oauth``. Never raises."""
+    other row takes its registry actor (``mcp``/``cli``/``skill``), else ``oauth``. Never raises."""
     try:
         from core.repositories import integrations_repo
         from core.services.credentials import registry
@@ -279,7 +279,7 @@ async def _lookup_connected_integrations(owner_id: str) -> list[dict]:
                 out.append({"provider": key[len(integrations_repo.PROJECTS_KEY_PREFIX) :], "rail": "projects"})
                 continue
             actor = getattr(providers.get(key), "actor", None)
-            out.append({"provider": key, "rail": actor if actor in ("mcp", "cli") else "oauth"})
+            out.append({"provider": key, "rail": actor if actor in ("mcp", "cli", "skill") else "oauth"})
         return sorted(out, key=lambda e: (e["provider"], e["rail"]))
     except Exception as e:  # noqa: BLE001 — facts must never block callers
         logger.warning("owner_facts: integrations lookup failed for %s: %s", owner_id, e)

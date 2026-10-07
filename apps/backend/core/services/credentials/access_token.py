@@ -13,6 +13,13 @@ class ReconnectRequired(RuntimeError):
     """The workspace has no usable, refreshable grant for this provider."""
 
 
+async def _mark_reconnect(owner_id: str, provider_key: str) -> None:
+    from core.services.owner_facts import write_owner_facts
+
+    await integrations_repo.set_status(owner_id, provider_key, "reconnect_required")
+    await write_owner_facts(owner_id)  # best-effort: drops it from the agents' connected_integrations
+
+
 async def get(owner_id: str, provider_key: str) -> str:
     """Return a fresh access token for a connected backend-refreshed OAuth provider."""
     provider = registry.get_provider(provider_key)
@@ -27,7 +34,7 @@ async def get(owner_id: str, provider_key: str) -> str:
             raise ReconnectRequired(provider_key)
         credential = await integration_secret_store.get(owner_id, provider_key)
         if not credential or not credential.get("access_token"):
-            await integrations_repo.set_status(owner_id, provider_key, "reconnect_required")
+            await _mark_reconnect(owner_id, provider_key)
             raise ReconnectRequired(provider_key)
 
         expiry = credential.get("token_expiry")
@@ -37,20 +44,20 @@ async def get(owner_id: str, provider_key: str) -> str:
                 if expires_at.tzinfo is None:
                     raise ValueError("naive token expiry")
             except (TypeError, ValueError) as exc:
-                await integrations_repo.set_status(owner_id, provider_key, "reconnect_required")
+                await _mark_reconnect(owner_id, provider_key)
                 raise ReconnectRequired(provider_key) from exc
             if expires_at <= datetime.now(timezone.utc) + timedelta(minutes=1):
                 if not credential.get("refresh_token"):
-                    await integrations_repo.set_status(owner_id, provider_key, "reconnect_required")
+                    await _mark_reconnect(owner_id, provider_key)
                     raise ReconnectRequired(provider_key)
                 try:
                     credential = await oauth_dance.refresh(owner_id, provider_key, credential)
                 except ValueError as exc:
-                    await integrations_repo.set_status(owner_id, provider_key, "reconnect_required")
+                    await _mark_reconnect(owner_id, provider_key)
                     raise ReconnectRequired(provider_key) from exc
                 except httpx.HTTPStatusError as exc:
                     if exc.response.status_code in (400, 401):
-                        await integrations_repo.set_status(owner_id, provider_key, "reconnect_required")
+                        await _mark_reconnect(owner_id, provider_key)
                         raise ReconnectRequired(provider_key) from exc
                     raise
                 await integration_secret_store.put(owner_id, provider_key, credential)

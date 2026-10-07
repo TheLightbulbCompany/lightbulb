@@ -191,7 +191,7 @@ export default function SessionScreen() {
   }, [rooms, session]);
   const [chatError, setChatError] = useState<string | null>(null);
   const refreshSessions = workspace.refresh;
-  // The session's chat (spec 2026-10-07-session-chat-design §3): the room screen, pushed; back returns here.
+  // The session's chat (PR #3807): the room screen, pushed; back returns here.
   const openChat = useCallback(() => {
     if (!session) return;
     setChatError(null);

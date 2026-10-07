@@ -1783,7 +1783,7 @@ def is_default_room(meta: dict) -> bool:
 
 
 def is_session_room(meta: dict) -> bool:
-    """A session's chat (spec 2026-10-07-session-chat-design): hidden, and its humans follow session read access."""
+    """A session's chat (PR #3807): hidden, and its humans follow session read access."""
     return bool(meta.get("session"))
 
 

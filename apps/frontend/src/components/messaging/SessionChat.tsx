@@ -17,7 +17,7 @@ import "./messaging.css";
 const NO_REACTIONS: readonly string[] = [];
 
 /**
- * The session's chat (spec 2026-10-07-session-chat-design §4.2): people talk beside the terminal,
+ * The session's chat (PR #3807): people talk beside the terminal,
  * never into it. Its own room slot (subscription, scroll, draft), so a terminal reset never touches
  * the draft. It posts only through the room message door; a chat seat never lets anyone type into
  * the session. Threads and reactions are left out: replies render inline.
@@ -87,7 +87,10 @@ export function SessionChat({ sessionId, sessionOwnerId, openChat, onClose, onRo
       <h3 className="font-semibold">Chat</h3>
       <Button className="ml-auto" variant="ghost" size="icon-sm" aria-label="Close chat" onClick={onClose}><X aria-hidden="true" /></Button>
     </header>
-    {error ? <p role="status" className="p-4 text-sm text-muted-foreground">{error}</p> : <>
+    {rooms.accessRemoved
+      // Sharing paused (or the reader left the workspace) while the column was open: the room panel's words.
+      ? <p role="status" className="p-4 text-sm text-muted-foreground">Access removed. You can no longer view this conversation.</p>
+      : error ? <p role="status" className="p-4 text-sm text-muted-foreground">{error}</p> : <>
       <RoomTimeline roomId={roomId ?? "opening"} messages={messages} readSeq={null} ownLastSentSeq={null}
         renderMessage={renderMessage} historyComplete={rooms.historyComplete} historyLoading={rooms.historyLoading}
         historyError={rooms.historyErrorMessage} onLoadOlder={() => void rooms.loadOlder()}

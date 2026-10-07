@@ -110,7 +110,7 @@ export function SessionFocus({ focus, entries, loading, hintRevision, client, re
   const session = entry?.session ?? resolvedFallback?.session ?? null;
   const owner = entry ?? (session ? resolveSessionOwner(session.humanUserId) : null);
   const messageOwner = session && owner && !owner.own && onMessageOwner ? () => onMessageOwner(session.humanUserId, owner.ownerName) : undefined;
-  // Chat beside the terminal (spec 2026-10-07-session-chat-design §3). Unread is the server's count from
+  // Chat beside the terminal (PR #3807). Unread is the server's count from
   // the session list, which refetches when a chat message arrives (useWorkspaceSessions); nothing is
   // counted here. Reading the chat zeroes it until the list refreshes.
   // Opening refreshes the session list: a first open creates the seat, and the list must carry its

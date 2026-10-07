@@ -311,7 +311,7 @@ class LocalSession(ContractModel):
     # A request is pending and the owner's older Mac (no bandOwnerOnly) drops remote typing
     # until it is answered.
     input_paused: bool = False
-    # The viewer's seat in this session's chat, once they are in it (spec 2026-10-07-session-chat-design §4.1).
+    # The viewer's seat in this session's chat, once they are in it (PR #3807).
     chat_room_id: str | None = None
     chat_unread: int | None = None
 

@@ -1,6 +1,6 @@
 """Session chat: one hidden channel per shared session, where people talk beside the terminal.
 
-Spec docs/superpowers/specs/2026-10-07-session-chat-design.md. Membership is a projection of
+Design record: PR #3807 (the spec is in git history). Membership is a projection of
 session read access: whoever can read the session is seated when they open the chat, and nobody
 is added or removed by hand. Nothing here reads or writes a session's control fields, so a chat
 seat never lets anyone type into the terminal. Posting is the ordinary room message door.
@@ -18,7 +18,7 @@ from core.auth import AuthContext, resolve_owner_id
 from core.constants import SYSTEM_ACTOR_ID
 from core.observability.metrics import put_metric
 from core.repositories import messaging_repo
-from core.services import local_sessions, messaging
+from core.services import livekit_huddles, local_sessions, messaging
 from core.services.messaging import ApiProblem, RoomDetail
 
 logger = logging.getLogger(__name__)
@@ -122,6 +122,8 @@ async def _set_archived(meta: dict, archived: bool) -> dict:
             if archived == bool(meta.get("archivedAt")):
                 return meta  # another writer installed it
             continue
+        if archived:
+            await livekit_huddles.close_room(meta["roomId"])  # an archived chat holds no huddle; never raises
         await messaging._publish_room_metadata(meta)
         return meta
     return meta  # pragma: no cover -- the loop returns or raises
@@ -214,11 +216,17 @@ async def silence(owner_id: str, session_id: str, *, keep: str | None) -> int:
                 return removed
             try:
                 await messaging._remove_member_with_notices(meta, "human", member["id"])
+                removed += 1
                 break
             except ClientError as exc:
-                if not messaging_repo._is_cancelled(exc) or attempt == 2:
+                if not messaging_repo._is_cancelled(exc):
                     raise
-        removed += 1
+                # A lost revision race, or another silence (a pause racing the door's own
+                # cleanup) took this seat first: a member already gone is the goal.
+                if await messaging_repo.get_member(room_id, "human", member["id"]) is None:
+                    break
+                if attempt == 2:
+                    raise
     return removed
 
 

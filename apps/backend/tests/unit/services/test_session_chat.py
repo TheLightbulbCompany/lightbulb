@@ -1,4 +1,4 @@
-"""The session chat door (spec 2026-10-07-session-chat-design §2, §4.1)."""
+"""The session chat door (PR #3807)."""
 
 import inspect
 from types import SimpleNamespace
@@ -57,6 +57,8 @@ def env(monkeypatch):
     )
     monkeypatch.setattr(messaging, "_publish_room_metadata", AsyncMock())
     monkeypatch.setattr(messaging, "_room_detail", AsyncMock(side_effect=lambda meta, user_id, member=None: meta))
+    fakes["close_huddle"] = AsyncMock()
+    monkeypatch.setattr(session_chat.livekit_huddles, "close_room", fakes["close_huddle"])
     metrics: list[str] = []
     monkeypatch.setattr(session_chat, "put_metric", lambda name, *a, **k: metrics.append(name))
     fakes["metrics"] = metrics
@@ -346,3 +348,30 @@ async def test_a_room_created_as_its_session_ends_is_archived_from_the_fresh_row
     await session_chat.open_chat(BOB, SID)
     updates = env["patch_room_meta"].await_args.args[1]
     assert updates["archivedAt"] and updates["archivedBy"] == "__system__"
+
+
+@pytest.mark.asyncio
+async def test_silence_counts_a_member_someone_else_already_removed_as_done(monkeypatch):
+    """A pause's silence can race the door's own cleanup of the same seat: gone is the goal, not a 500."""
+    from botocore.exceptions import ClientError
+
+    lost = ClientError({"Error": {"Code": "TransactionCanceledException"}}, "TransactWriteItems")
+    members = [{"kind": "human", "id": ALICE.user_id}, {"kind": "human", "id": BOB.user_id}]
+    monkeypatch.setattr(session_chat.messaging_repo, "list_members", AsyncMock(return_value=members))
+    monkeypatch.setattr(session_chat.messaging_repo, "get_room", AsyncMock(return_value=META))
+    monkeypatch.setattr(session_chat.messaging_repo, "get_member", AsyncMock(return_value=None))
+    remove = AsyncMock(side_effect=lost)
+    monkeypatch.setattr(messaging, "_remove_member_with_notices", remove)
+    assert await session_chat.silence(OWNER, SID, keep=ALICE.user_id) == 0
+    remove.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_archiving_the_chat_closes_its_huddle_and_reopening_does_not(env):
+    env["get_room"].return_value = META
+    await session_chat.follow_session(OWNER, SID, ended=True)
+    env["close_huddle"].assert_awaited_once_with(ROOM)
+    env["close_huddle"].reset_mock()
+    env["get_room"].return_value = {**META, "archivedAt": "t"}
+    await session_chat.follow_session(OWNER, SID, ended=False)
+    env["close_huddle"].assert_not_awaited()

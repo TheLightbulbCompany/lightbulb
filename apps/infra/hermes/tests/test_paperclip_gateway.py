@@ -161,7 +161,7 @@ def test_native_context_completes_with_real_output_usage_and_session(home, monke
     }
     assert seen["run_kwargs"] == {
         "user_message": REQUEST["input"],
-        "system_message": REQUEST["instructions"],
+        "system_message": f"{REQUEST['instructions']}\n\n{turn._repo_rule("agent-1")}",  # the clone rule rides every prompt
     }
     assert seen["construct"] == ("agent-1", {"sessionKey": SESSION}, None, SESSION)
     assert not turn._desktop_state_path(turn._profile_dir("agent-1"), RUN).exists()

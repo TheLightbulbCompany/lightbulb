@@ -582,3 +582,19 @@ async def test_session_send_admits_then_dispatches_and_survives_a_dispatch_failu
     assert (command.kind, command.text, command.expected_generation) == ("send", "hi", "g7")
     assert submit.await_args.kwargs == {"via_client": "Claude Code"}
     relay.dispatch_session.assert_awaited_once_with("org_a", sid)
+
+
+@pytest.mark.asyncio
+async def test_session_send_refuses_a_session_whose_control_failed_closed(monkeypatch):
+    submit = AsyncMock()
+    monkeypatch.setattr(tools.local_sessions, "submit_command", submit)
+    target = {
+        "sessionId": str(uuid.uuid4()),
+        "ownerId": "org_a",
+        "generation": "g",
+        "controlUnavailableReason": "history-gap",
+    }
+    with pytest.raises(ApiProblem) as error:
+        await tools.session_send(tools.AuthContext(user_id="user_owner", org_id="org_a"), target, "hi", "r")
+    assert error.value.error.code == "LOCAL_SESSION_UNSUPPORTED"
+    submit.assert_not_awaited()

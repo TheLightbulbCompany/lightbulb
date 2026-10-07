@@ -404,6 +404,9 @@ async def session_send(auth: AuthContext, target: dict, text: str, request_id: s
     from core.services.local_session_relay import get_local_session_relay
 
     session_id = target["sessionId"]
+    if target.get("controlUnavailableReason"):
+        # The Mac failed control closed; find_sessions says canSend false, and admission agrees.
+        raise ApiProblem("LOCAL_SESSION_UNSUPPORTED", "Sending is unavailable for this session.")
     command = local_sessions.LocalSessionCommand(
         request_id=request_id, expected_generation=target["generation"], kind="send", text=text
     )

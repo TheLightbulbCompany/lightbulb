@@ -305,9 +305,12 @@ async def send_message(
         result = await native_session_tools.session_send(auth, target, text, str(request_id), via_client=client)
         return {"sessionId": session_id, "requestId": str(request_id), "state": result["state"]}
     if person_id is not None:
+        # Reserve the request_id before opening a DM, so a conflicting reuse leaves no empty room.
+        await _pin_destination(auth, request_id, f"person:{person_id}")
         room_id = await native_session_tools.person_dm(auth, person_id, create=True)
-    room_id = messaging.validate_uuid(room_id, label="room ID")
-    await _pin_destination(auth, request_id, f"room:{room_id}")
+    else:
+        room_id = messaging.validate_uuid(room_id, label="room ID")
+        await _pin_destination(auth, request_id, f"room:{room_id}")
     room = await messaging.get_room(auth, room_id)
     members = {member.id: member for member in room.members}
     selected = list(dict.fromkeys(mention_ids or []))
@@ -354,6 +357,12 @@ async def message_receipt(request_id: uuid.UUID) -> dict:
     if pinned is None:
         return {"state": "unknown"}
     kind, target = pinned["destination"].split(":", 1)
+    if kind == "person":
+        try:
+            target = await native_session_tools.person_dm(auth, target)
+        except messaging.ApiProblem:
+            return {"state": "not_found"}
+        kind = "room"
     if kind == "room":
         return await receipt_for(auth, target, request_id)
     try:

@@ -222,7 +222,7 @@ async def test_person_send_posts_into_the_dm_it_finds_or_opens(monkeypatch):
     monkeypatch.setattr(hosted_mcp.messaging, "create_human_message", post)
     result = await hosted_mcp.send_message("hi", request_id, person_id="user_b")
     person_dm.assert_awaited_once_with(auth, "user_b", create=True)
-    pin.assert_awaited_once_with(auth, request_id, f"room:{room_id}")
+    pin.assert_awaited_once_with(auth, request_id, "person:user_b")  # reserved before the DM opens
     assert post.await_args.args[1] == room_id and result["roomId"] == room_id
 
 
@@ -272,6 +272,14 @@ async def test_receipt_reads_the_pinned_destination(monkeypatch):
     monkeypatch.setattr(hosted_mcp, "receipt_for", room_receipt)
     assert (await hosted_mcp.message_receipt(request_id)) == {"state": "posted"}
     room_receipt.assert_awaited_once_with(auth, room_id, request_id)
+
+    pins[key] = {"destination": "person:user_b"}
+    person_dm = AsyncMock(return_value=room_id)
+    monkeypatch.setattr(hosted_mcp.native_session_tools, "person_dm", person_dm)
+    assert (await hosted_mcp.message_receipt(request_id)) == {"state": "posted"}
+    person_dm.assert_awaited_once_with(auth, "user_b")  # a receipt never opens a DM
+    person_dm.side_effect = hosted_mcp.messaging.ApiProblem("ROOM_NOT_FOUND", "none")
+    assert (await hosted_mcp.message_receipt(request_id)) == {"state": "not_found"}
 
 
 @pytest.mark.asyncio

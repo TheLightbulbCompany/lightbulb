@@ -205,7 +205,7 @@ def unsaid_part(answer: str, said: str) -> str:
     sentences = [x for x in re.split(r"(?<=[.!?])\s+", answer.strip()) if x]
     for i, sentence in enumerate(sentences):
         if not _words_in(sentence, said, 0.7):
-            return " ".join(sentences[i:])
+            return answer if i == 0 else " ".join(sentences[i:])  # the same object when nothing of it was said
     return ""
 
 
@@ -908,7 +908,8 @@ class Huddle:
             if trail and now - trail[1] <= TRAIL_S:
                 text = f"{trail[0]} {text}"
                 record = text[len(trail[0]) + 1 :]  # the pieces before it are on the record already
-            if trails_off(text):
+            if trails_off(text) and not self._control(text):
+                # (a "Forge, stop..." is a stop, not a fragment: held, it would never be applied)
                 self._trail[identity] = (text, now)
                 self._transcript.add_person(identity, f"{name} (Meet)", record, at=now)
                 return
@@ -3297,6 +3298,11 @@ class Huddle:
         self._keep_unsaid(v)
         self._drop(v, keep_queue=True)  # closed: a run still working no longer speaks through it
 
+    def _control(self, text: str) -> bool:
+        """A stop, "everyone stop" or "don't post that": applied the moment it is heard, never held."""
+        agents = self._team["agents"]
+        return stop_all(text) or stop_request(text, agents) or no_post_command(text, agents)[0]
+
     def _keep_unsaid(self, v: _Voice) -> None:
         """What a meeting voice was saying when it was stopped short (talked over, or closed for another agent
         someone named) goes on the record like a cut announcement (§4.8)."""
@@ -3389,10 +3395,15 @@ class Huddle:
             for agent_id, news in list(self._news.items()):
                 log = self._said_log.get(agent_id, [])
                 done = []
-                for n in news:  # only words said since this hand went up count (an earlier answer's do not)
+                for i, n in enumerate(news):  # only words said since this hand went up count (an earlier answer's do not)
                     said = " ".join(t for at, t in log if at >= n[3] and now - at <= SAID_LOG_S)
-                    if said and not unsaid_part(n[2], said):
+                    if not said:
+                        continue
+                    rest = unsaid_part(n[2], said)
+                    if not rest:
                         done.append(n)
+                    elif rest != n[2]:  # its first sentences were heard (the cut message lands after the hand went up)
+                        news[i] = (n[0], n[1], rest, *n[3:])
                 if done:
                     news[:] = [n for n in news if n not in done]
                     self._requests.delivered({n[0] for n in done})

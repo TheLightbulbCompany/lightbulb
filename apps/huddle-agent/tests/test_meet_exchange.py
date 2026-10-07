@@ -335,3 +335,25 @@ async def test_a_hand_raised_after_the_same_words_were_said_is_not_let_go():
     await h.tick()
     await settle(h)
     assert [n[2] for n in h._news.get("forge", [])] == ["No PRs are open."]
+
+
+async def test_a_stop_that_trails_off_is_a_stop_not_a_fragment():
+    """Codex on #3792: "Forge, stop..." held as a fragment was never applied."""
+    h, backend, lives, clock = await asked()
+    (row,) = h._requests.items
+    await says(h, P1, "Forge, stop...")
+    assert row.status == "cancelled" and backend.aborts == [row.run_id]
+
+
+async def test_a_hand_is_trimmed_to_what_was_not_heard_when_the_cut_message_lands_late():
+    """Codex on #3792: LiveKit reports the cut message after the hand went back up, so the worker learns only
+    then which sentences were heard. The hand keeps the rest, not the whole."""
+    h, backend, lives, clock = await asked()
+    await announced(h, backend, lives, clock, "Three PRs are open. The oldest is two days old. One of them is a draft.")
+    talks(h, P1)  # its own person interrupts it
+    await settle(h)
+    assert [n[2] for n in h._news.get("forge", [])] == ["The oldest is two days old. One of them is a draft."]
+    clock.t += 1
+    h.on_agent_said("forge", "The oldest is two days old. One of", interrupted=True)  # the cut message, late
+    await h.tick()
+    assert [n[2] for n in h._news.get("forge", [])] == ["One of them is a draft."]

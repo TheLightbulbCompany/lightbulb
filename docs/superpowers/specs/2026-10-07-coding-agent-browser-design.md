@@ -28,12 +28,12 @@ here is scheduled before those ship. Facts cite `main` at `dfce908f8`.
   on its command line, listening port via `lsof`); keep only Chromes whose profile is a
   dedicated automation profile (never the person's everyday profile). The Claude-in-Chrome
   extension drives the everyday Chrome with no CDP door; it is out of scope for a live view
-  unless the owner enables a window mirror (terminal spec §5.6) for that window.
+  (no window capture, owner ruling 2026-10-07).
 - **Association:** the browser belongs to exactly one session (its process ancestor). The
   session row carries `browsers: [{id, kind: "cdp"|"extension", title, url}]`; no browser is ever
   attached to a session that did not spawn it.
 - **View:** a "Browser" tab beside the terminal (same column as session chat), frames on the
-  session screen rail (`kind: "image"`, same budget and adaptation as the window mirror), only
+  session screen rail (`kind: "image"`, with its own budget; a session browser is a real CDP screencast of a dedicated automation Chrome, not a window capture), only
   while someone watches. Only the tab the agent drives is cast (CDP `Target.getTargets` of that
   Chrome, the agent's current target); other tabs of that Chrome are never shown.
 - **Control:** read-only for everyone; clicks and keys only for people who may type into the

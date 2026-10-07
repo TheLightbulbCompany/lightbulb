@@ -568,6 +568,12 @@ A session-chat door MUST:
 
 ## 2. Inferred
 
+Owner ruling 2026-10-07, after reading the first draft: no pictures of windows and no stored
+recordings. The agreed design keeps only real terminal processes (held, attach, mirror), keeps an
+ended holder's final screen in memory while the app runs, and shows an explicit state otherwise.
+The two bullets below about recordings and window capture record the inference that led to the
+first draft; they are superseded by that ruling.
+
 - Lightbulb's holder already is herdr's server-owned pane; the gap is coverage (sessions we did
   not start) and persistence (history, recordings), not architecture.
 - Origins with no attachable pty (IDE panels, Codex desktop app, Claude Desktop Code tab) can only

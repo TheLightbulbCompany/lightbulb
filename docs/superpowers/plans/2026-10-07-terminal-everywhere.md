@@ -24,8 +24,9 @@ functions/files where possible. No slice here dispatches a release; prod trains 
 owner's coordinator session.
 
 ## Owner decisions that gate slices
-D1 recording (gates S5), D2 switch default-on (S4), D3 window mirror (S7), D4 phone hosting
-(S3), D5 retention (S5), D6 Line default (S8). S1, S2, S6 need no decision.
+Agreed 2026-10-07: no pictures, no recordings; the ended screen lives while the app runs. Open:
+D2 switch default-on (gates S4), D-mirror which terminals (S6: tmux alone needs no decision),
+D6 Line default (S8). S1, S2, S3, S5, S7 need no decision.
 
 ## P1 — Terminal everywhere
 
@@ -39,7 +40,7 @@ Files: `LocalSessionPanel.tsx`, `SessionTerminalView.tsx`, mobile `session/[sess
   Lightbulb / Resume) for `terminal === null`, ended, offline; never event-derived rows.
 - Remove the 30 s automatic transcript fallback; show "Reconnecting…" instead.
 - Accept: on prod, a plain interactive Claude session opened by a teammate shows the explicit
-  state and no rows from events; an ended session shows "No recording" + Resume; the terminal
+  state and no rows from events; an ended session shows its final screen, or the "Ended" state after an app restart, plus Resume; the terminal
   of a held session is unchanged; `lightbulb_local_sessions read` still returns events (agent
   unaffected); Codex review clean.
 
@@ -58,7 +59,7 @@ Files: `local_sessions/screen.rs`, `holder/panel.rs`, `session_screen.py` (`kind
   a hidden tab brought back shows the picture within 2 s with history intact; the picture never
   swaps to a transcript; relay log shows no budget drops at idle.
 
-### S3. Phone terminal (D4)
+### S3. Phone terminal (WebView)
 Files: `apps/frontend/src/app/terminal/page.tsx` (static xterm page), mobile session screen,
 `components/session/TerminalView.tsx`, key bar, Line composer.
 - Accept (simulator against prod, then TestFlight): a held session renders the real terminal;
@@ -74,18 +75,19 @@ Files: `DesktopPermissionsGate.tsx`, `ExplicitSharingNotice.tsx`, `LocalSessions
   Settings switch shows on; turning it off removes the rc block; `lightbulb claude --bg` runs the
   real tool.
 
-### S5. Recording and replay (D1, D5)
-Files: `holder/run.rs` (append at 302, 337, 388), new `local_sessions/recording.rs` (parts,
-upload over the pick-up rail), backend `core/services/session_recording.py`, routes
-`GET /messaging/sessions/{id}/recording` + device-JWT presign routes, `service-stack.ts` IAM
-statement + sweeper, web/phone replay component, chaining for `forkedFrom` and generations.
-- Accept (prod): end a held session → within 1 min its recording replays on web and phone with
-  the exact screens; quit the app → a viewer sees "Mac offline" + the recording through the last
-  upload; Resume → old generation replays, then the live terminal continues; unshare → the
-  recording route returns 404 and S3 parts are gone within the sweep; an agent runtime cannot
-  read the prefix (IAM test); `anyone` links do not serve it.
+### S5. The ended screen and the offline state
+Files: `holder/run.rs` (keep the socket, model and log after EXIT; refuse input; close on the
+app's request), `holder/manager.rs`, `local_sessions.rs` (`terminal()` + `screenAvailable`),
+`local_sessions.py` (`_session_public` keeps `terminal` on an ended held session while the
+screen is available; `watch` admits it), web and phone states "Ended · <time>" + Resume and
+"Mac offline" + Resume + Pick up.
+- Accept (prod, founder Mac + a second account): end a held session → the final screen stays
+  visible to the teammate with Resume beside it; Resume → the panel switches to the live
+  terminal and the old holder closes; quit the app → the teammate sees "Mac offline" with
+  Resume disabled and Pick up offered; relaunch → the ended screen is gone and the state says so;
+  nothing is written under Application Support or S3 (checked).
 
-### S6. Host-terminal mirror (tmux first)
+### S6. Host-terminal mirror (tmux first; iTerm2 and Terminal.app on D-mirror)
 Files: new `local_sessions/mirror.rs` (tty → tmux pane → `capture-pane -e`), heartbeat
 `terminal: "mirror"`, backend passthrough, viewer label and "Open in Lightbulb" action.
 - Accept (prod, founder Mac, a plain `claude` inside tmux): a teammate sees the real tmux
@@ -93,11 +95,14 @@ Files: new `local_sessions/mirror.rs` (tty → tmux pane → `capture-pane -e`),
   switches the panel to the fork's live terminal; no AppleEvents prompt for tmux. iTerm2 and
   Terminal.app follow in a second PR with their one-time Automation consent in Settings → Desktop.
 
-### S7. Window mirror spike (D3), then build
-Spike (throwaway): ScreenCaptureKit capture of the VS Code window of a Claude extension session,
-matched by pid; measure CPU and frame size; confirm the Screen Recording prompt appears once.
-Build only on a passing spike. Accept: a VS Code-hosted session shows its window read-only to a
-teammate; nothing typed; no other windows captured.
+### S7. "Open in a terminal" for IDE and desktop-app sessions
+Files: desktop discovery (`terminalReason: app` for VS Code / Cursor / JetBrains / Codex app /
+Claude Desktop sessions), a `terminal_open` command that runs `start_held` with
+`claude --resume <conversation>` / `codex resume <thread>`, web and phone state panel.
+- Accept (prod, founder Mac): a Claude session started in VS Code's panel shows "Runs in VS Code,
+  not in a terminal" to a teammate, with no transcript rows; the owner presses Open in a terminal
+  → a held session with the same conversation appears live for both; a teammate has no such
+  button; the VS Code session keeps running.
 
 ### S8. Line mode for typists (D6) + "prompt not empty" hint
 Files: `SessionTerminalView.tsx`, mobile composer, holder HELLO `bracketedPaste`.
@@ -124,15 +129,15 @@ session archives the room; a mentioned agent answers in chat and never in the te
 | Plain `claude`, switch on | held | PASS (prod-tested 2026-10-04 on the founder Mac) | S4 makes it default |
 | Plain `claude`, switch off / shell open before it | transcript | FAIL | S4, S6 |
 | `claude --bg` job | attach terminal | PASS (prod-tested 2026-10-04) | S2 for history |
-| ← moved session | attach (fork) | PASS; origin history only via transcript fallback | S5 chaining |
+| ← moved session | attach (fork) | PASS | — |
 | Plain `codex` on the daemon | attach terminal | PASS (prod-tested 2026-10-04, holder closures seen 3× then stable) | S2 |
 | `codex --no-daemon` outside Lightbulb | transcript | FAIL | S6 |
-| VS Code / Cursor / JetBrains Claude panel | not tracked or transcript | FAIL | S7 (spike) |
-| Codex desktop app threads | transcript | FAIL | S7 (spike) |
-| Claude Desktop Code tab | not tracked | FAIL (no TUI; window only) | S7 |
-| Ended session | transcript | FAIL | S5 |
-| Mac offline / app quit | transcript | FAIL | S5 |
-| Resumed session, before first draw | transcript | FAIL | S5 |
+| VS Code / Cursor / JetBrains Claude panel | not tracked or transcript | FAIL | S7 (explicit state + Open in a terminal) |
+| Codex desktop app threads | transcript | FAIL | S7 |
+| Claude Desktop Code tab | not tracked | FAIL (no TUI exists) | S7 |
+| Ended held session | transcript | FAIL | S5 (final screen while the app runs) |
+| Mac offline / app quit | transcript | FAIL | S5 (explicit state; by design no screen) |
+| Resumed session | transcript until the tool redraws | PASS once the tool draws; S1 removes the transcript | S1 |
 | Any session on the iPhone | transcript | FAIL | S3 |
 | Viewer resize changes another's view | never | PASS (observed) | — |
 | Owner panel resize changes viewers' cols×rows | yes, by design (owner's terminal) | PASS by design | — |

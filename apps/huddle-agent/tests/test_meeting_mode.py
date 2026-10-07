@@ -612,7 +612,7 @@ def quiet_meet(h):
     h.on_active_speakers(set())
 
 
-async def test_a_meeting_voice_stops_for_someone_who_keeps_talking_over_it_and_its_answer_goes_on_the_record():
+async def test_a_meeting_voice_stops_for_someone_who_keeps_talking_over_it_and_its_hand_goes_back_up():
     h, room, backend, lives, clock, log = await priya_asks_forge(rows=True)
     (row,) = h._requests.items
     answer(h, row.run_id, "forge", "Three PRs are open.")  # handed to its open voice, which says it
@@ -633,7 +633,15 @@ async def test_a_meeting_voice_stops_for_someone_who_keeps_talking_over_it_and_i
     clock.t += h_mod.CUT_HANDLED_S
     await h.tick()
     await settle(h)
-    assert [a[3] for a in backend.late_answers] == ["Three PRs are open."], "not said to its end: on the record"
+    assert backend.late_answers == [] and [n[2] for n in h._news.get("forge", [])] == ["Three PRs are open."], (
+        "not said to its end: its hand goes back up (owner ruling 10-06), nothing is posted"
+    )
+    assert h._state()["lightbulb.agent.forge.status"] == "has_news"
+    quiet_meet(h)
+    clock.t += h_mod.MEET_QUIET_S + h_mod.gate.ANNOUNCE_QUIET
+    await h.tick()
+    await settle(h)
+    assert h._voice is not None and h._voice.path == "announce" and "Three PRs are open." in str(lives[-1].seed)
 
 
 async def test_a_meeting_answer_still_coming_when_its_voice_is_talked_over_is_said_whole_at_the_next_pause():
@@ -935,7 +943,15 @@ async def test_an_earlier_answer_handed_to_an_open_meeting_voice_is_not_lost_whe
     clock.t += h_mod.CUT_HANDLED_S
     await h.tick()
     await settle(h)
-    assert [a[3] for a in backend.late_answers] == ["Three PRs are open."]
+    assert backend.late_answers == [] and [n[2] for n in h._news.get("forge", [])] == ["Three PRs are open."], (
+        "not said to its end: its hand goes back up (owner ruling 10-06), nothing is posted"
+    )
+    assert h._state()["lightbulb.agent.forge.status"] == "has_news"
+    quiet_meet(h)
+    clock.t += h_mod.MEET_QUIET_S + h_mod.gate.ANNOUNCE_QUIET
+    await h.tick()
+    await settle(h)
+    assert h._voice is not None and h._voice.path == "announce" and "Three PRs are open." in str(lives[-1].seed)
 
 
 async def test_a_long_presentation_keeps_its_speakers_name():
@@ -1009,15 +1025,15 @@ def test_only_the_one_colon_meet_participant_is_the_mixed_meeting():
     assert h_mod.mixed_meet(MEET) and not h_mod.mixed_meet(P1) and not h_mod.mixed_meet("u1")
 
 
-async def test_a_per_person_meet_voice_is_muted_like_any_meeting_voice():
-    """10-05 prod Meet: a per-person voice heard its speaker directly and answered the meeting's own talk."""
+async def test_a_per_person_meet_voice_hears_its_person_under_the_meeting_rule():
+    """10-05 prod Meet: a per-person voice heard its speaker directly and answered the meeting's own talk. It
+    still hears them (the model runs the exchange, owner ruling 10-06) and is told it is a meeting: rig 10-06,
+    0 of 12 side-talk lines answered with the rule, 4 of 4 without."""
     h, room, backend, lives, clock, log = await per_person()
     await says(h, P1, "hey Forge what did we ship")
-    assert lives[0].speaker == P1 and ("mute",) in lives[0].calls
-    assert h._voice.label == "Priya"
-    assert not any("is talking to you" in str(c) for c in lives[0].calls if c[0] == "thinking")
-
-
+    assert lives[0].speaker == P1 and ("mute",) not in lives[0].calls
+    assert any("You hear only Priya" in c[1] for c in lives[0].calls if c[0] == "instructions")
+    assert h_mod.MEET_ACK not in str(lives[0].seed) and h._voice.label == "Priya"
 async def test_a_per_person_line_carries_its_persons_identity_and_name():
     h, room, backend, lives, clock, log = await per_person()
     await says(h, P1, "Forge, check the board")
@@ -1100,8 +1116,8 @@ async def test_with_no_voice_a_per_person_statement_wakes_nobody_and_a_question_
     assert backend.presences == []
 
 
-async def test_a_meeting_run_says_only_its_answer_not_an_update_before_each_lookup():
-    """10-05 prod Meet: "I'm still checking that. It's taking", then pieces of an answer, over two people talking."""
+async def test_a_per_person_run_speaks_what_it_writes_before_a_lookup_and_then_its_answer():
+    """10-06 prod Meet: a two-minute run was two minutes of silence. Its own narration is the update."""
     h, room, backend, lives, clock, log = await per_person()
     backend.route_extra = ops([("forge", "what I worked on", "name")])
     await says(h, P1, "Forge, what did I work on in the last two days?")
@@ -1113,9 +1129,9 @@ async def test_a_meeting_run_says_only_its_answer_not_an_update_before_each_look
     chunk("You merged three pull requests. ", 3)
     chunk("The largest was the audio bridge.", 4)
     await quiet_tick_meet(h, clock, h_mod.MEET_FOLLOWUP_S / 2)
-    assert said() == [] and not [c for c in lives[0].calls if c[0] == "thinking" and "taking a moment" in c[1]]
+    assert [x.strip() for x in said()] == ["Let me check GitHub."], "what it wrote before the lookup, said then"
     h.on_data(None, "call.frame", packet(frame(row.run_id, "forge", {"type": "run_ended", "seq": 5})))
-    assert said() == ["You merged three pull requests. The largest was the audio bridge."], "one answer, its own spacing"
+    assert " ".join(x.strip() for x in said()[1:]) == "You merged three pull requests. The largest was the audio bridge."
 
 
 async def quiet_tick_meet(h, clock, seconds):
@@ -1150,8 +1166,7 @@ async def test_someone_elses_first_words_do_not_cut_a_meeting_voice_before_the_t
     await h.tick()
     await settle(h)
     assert ("interrupt",) in lives[0].calls and h._voice is None
-    assert h._cut_off.get("forge"), "kept for the record or the next pause"
-    assert h._cut_off["forge"][1] == P2, "the one who talked over it: their 'don't post that' covers it"
+    assert [n[2] for n in h._news.get("forge", [])] == ["Three PRs are open."], "kept: its hand is up again"
 
 
 async def test_someone_elses_short_final_does_not_cut_a_meeting_voice_either():
@@ -1194,7 +1209,7 @@ async def test_an_answer_cut_short_by_a_switch_to_another_named_agent_is_kept():
     h.on_agent_state("forge", "speaking")
     backend.route_extra = ops([("gauge", "signups this week", "name")])
     await says(h, P2, "Gauge, how many signups this week?")  # Forge's voice is closed for Gauge's
-    assert [n[2] for n in h._cut_off.get("forge", ([],))[0]] == ["Three PRs are open."]
+    assert [n[2] for n in h._news.get("forge", [])] == ["Three PRs are open."], "its hand is up again"
 
 
 async def test_an_answer_handed_over_but_not_yet_spoken_is_kept_when_another_agent_is_named():
@@ -1207,7 +1222,7 @@ async def test_an_answer_handed_over_but_not_yet_spoken_is_kept_when_another_age
     h.on_agent_state("forge", "listening")
     backend.route_extra = ops([("gauge", "signups this week", "name")])
     await says(h, P2, "Gauge, how many signups this week?")
-    assert [n[2] for n in h._cut_off.get("forge", ([],))[0]] == ["Three PRs are open."]
+    assert [n[2] for n in h._news.get("forge", [])] == ["Three PRs are open."], "its hand is up again"
 
 
 async def test_a_meeting_that_ends_before_the_answers_first_word_puts_it_on_the_record():

@@ -1,0 +1,1 @@
+{ "name": "lightbulb", "description": "Lightbulb in Codex: the lightbulb MCP server and the session-sharing skill.", "skills": "./skills/", "mcpServers": "./.mcp.json", "hooks": { "hooks": {} } }

@@ -77,12 +77,17 @@ jobs:
           # The public copy carries a version; the monorepo's plugin.json has none. Codex (and
           # Claude Code, once a version is set) reinstall only when it changes, so each sync that
           # changes content gets a new one. Put the old version back first, so an unchanged
-          # tree reads as unchanged.
+          # tree reads as unchanged. Both manifests carry it: Claude Code reads .claude-plugin/,
+          # Codex reads .codex-plugin/.
           manifest=lightbulb/.claude-plugin/plugin.json
           old=$(jq -r '.version // empty' "$dest/$manifest" 2>/dev/null || true)
           rsync -a --delete --exclude .git packages/claude-plugin/ "$dest/"
           cd "$dest"
-          stamp() { jq --arg v "$1" '.version = $v' "$manifest" > "$manifest.tmp" && mv "$manifest.tmp" "$manifest"; }
+          stamp() {
+            for m in lightbulb/.claude-plugin/plugin.json lightbulb/.codex-plugin/plugin.json; do
+              jq --arg v "$1" '.version = $v' "$m" > "$m.tmp" && mv "$m.tmp" "$m"
+            done
+          }
           if [ -n "$old" ]; then stamp "$old"; fi
           git add -A
           if git diff --cached --quiet; then

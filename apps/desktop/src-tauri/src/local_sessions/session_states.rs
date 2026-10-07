@@ -1,7 +1,8 @@
 //! Session states beyond a running terminal (spec 2026-10-07 §5.1, §5.4): an ended held session's
 //! final screen, which its holder keeps while this app runs, and why a running session has no
-//! terminal. `transport.rs` calls in here at eight one-line seams; `screen.rs` is untouched: a kept
-//! ended screen is indexed as live, so a viewer's watch reaches its holder like a running one's.
+//! terminal. `transport.rs` calls in here at eight one-line seams. A kept ended screen is indexed as live,
+//! so a viewer's watch reaches its holder like a running one's; a relay already on the holder
+//! stays through the end (`screen::pump`), and one started just after waits on `is_settling`.
 //!
 //! A screen is an ended session's only when its holder's provider exited and that session ended
 //! with it. `/clear`, `/resume`, `/new` and the agent view end a conversation while its holder runs
@@ -33,6 +34,15 @@ static SWEPT: Mutex<Option<Instant>> = Mutex::new(None);
 const ENDED_WITH_MS: u64 = 10_000;
 /// How often the holders of ended sessions are asked whether their provider exited.
 const PROBE_EVERY: Duration = Duration::from_secs(2);
+/// The same, while a session that just ended waits for its holder's answer (`settling`).
+const PROBE_SOON: Duration = Duration::from_millis(300);
+/// A session that ended this recently may yet keep its screen: its holder's provider is still
+/// shutting down, or the pass that asks it has not come round.
+const SETTLE_MS: u64 = ENDED_WITH_MS + 5_000;
+/// An ended holder is closed no sooner than this after its provider exited, whatever is known.
+const SWEEP_AFTER_MS: u64 = 30_000;
+/// The registered sessions the last `index` found `settling`.
+static SETTLING: Mutex<BTreeSet<String>> = Mutex::new(BTreeSet::new());
 
 /// Holder id -> when its provider exited, as last asked. The relay loop only reads this: asking
 /// is a socket round trip per holder with a 2 s read timeout, and the loop that waited for one
@@ -53,11 +63,11 @@ impl Ends {
         self.at.lock().ok()?.get(id).copied()
     }
 
-    /// Asks every one of `holders` once, off the caller's thread: at most every PROBE_EVERY, and
+    /// Asks every one of `holders` once, off the caller's thread: at most once in `every`, and
     /// never beside a pass that has not finished (a holder that does not answer holds one thread).
-    fn refresh(&'static self, holders: BTreeSet<String>, ask: impl Fn(&str) -> Option<u64> + Send + 'static) {
+    fn refresh(&'static self, holders: BTreeSet<String>, every: Duration, ask: impl Fn(&str) -> Option<u64> + Send + 'static) {
         let Ok(mut asked) = self.asked.lock() else { return };
-        if asked.is_some_and(|at| at.elapsed() < PROBE_EVERY) {
+        if asked.is_some_and(|at| at.elapsed() < every) {
             return;
         }
         if holders.is_empty() {
@@ -210,11 +220,15 @@ fn add_reason_if(reads: bool, entry: &mut Value, native: &NativeSession) {
 /// session's screen are closed. Returns the mirrors whose screen is newly kept: the caller brings
 /// the heartbeat forward so the relay hears of it now.
 pub(super) fn index(mirrors: &BTreeMap<String, Mirror>) -> Vec<String> {
-    ENDS.refresh(ended_holders(mirrors), ask_holder);
+    let soon = SETTLING.lock().is_ok_and(|settling| !settling.is_empty());
+    ENDS.refresh(ended_holders(mirrors), if soon { PROBE_SOON } else { PROBE_EVERY }, ask_holder);
     let kept = kept(mirrors, &holder_end);
     let shown = with_kept(mirrors, &holder_end);
     super::screen::index(shown.as_ref().unwrap_or(mirrors));
-    sweep(named(mirrors, &kept));
+    if let Ok(mut waiting) = SETTLING.lock() {
+        *waiting = settling(mirrors, &kept, now_ms());
+    }
+    sweep(named(mirrors, &kept), unknown(mirrors, &holder_end));
     let now = kept.iter().map(|(key, _)| key.to_string()).collect();
     SHOWN.lock().map(|mut shown| fresh(&mut shown, now)).unwrap_or_default()
 }
@@ -247,8 +261,35 @@ fn named(mirrors: &BTreeMap<String, Mirror>, kept: &[(&str, &Mirror)]) -> BTreeS
     mirrors.values().filter(|m| m.ended_at.is_none()).chain(kept.iter().map(|(_, m)| *m)).filter_map(|m| m.native.holder.clone()).collect()
 }
 
-/// Off the relay loop, at most every SWEEP_EVERY: `list` and `is_ended` talk to every holder.
-fn sweep(named: BTreeSet<String>) {
+/// The holders an ended session names whose end is not known: their provider still runs, they are
+/// closed, or nothing has asked them since it exited. Only the last can be an ended holder, and
+/// that one may be about to show its session's screen.
+fn unknown(mirrors: &BTreeMap<String, Mirror>, end: &impl Fn(&str) -> Option<u64>) -> BTreeSet<String> {
+    ended_holders(mirrors).into_iter().filter(|id| end(id).is_none()).collect()
+}
+
+fn now_ms() -> u64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis() as u64)
+}
+
+/// The registered sessions that ended in the last SETTLE_MS in a holder and keep no screen yet.
+fn settling(mirrors: &BTreeMap<String, Mirror>, kept: &[(&str, &Mirror)], now_ms: u64) -> BTreeSet<String> {
+    mirrors
+        .iter()
+        .filter(|(key, m)| m.native.holder.is_some() && !kept.iter().any(|(k, _)| k == key))
+        .filter(|(_, m)| m.ended_at.is_some_and(|at| m.ended_at_ms.unwrap_or(at * 1000) + SETTLE_MS > now_ms))
+        .filter_map(|(_, m)| m.session_id.clone())
+        .collect()
+}
+
+/// Whether this session just ended in a holder that may yet keep its screen (as of the last
+/// `index`): a relay starting now waits for the answer instead of finding no terminal.
+pub(super) fn is_settling(session_id: &str) -> bool {
+    SETTLING.lock().is_ok_and(|settling| settling.contains(session_id))
+}
+
+/// Off the relay loop, at most every SWEEP_EVERY: `list` and `ended_at` talk to every holder.
+fn sweep(named: BTreeSet<String>, unknown: BTreeSet<String>) {
     if cfg!(test) {
         return; // never signal the developer's own holders
     }
@@ -258,7 +299,10 @@ fn sweep(named: BTreeSet<String>) {
     }
     *last = Some(Instant::now());
     std::thread::spawn(move || {
-        for pid in orphans(&manager::list(), &named, manager::is_ended) {
+        let holders = manager::list();
+        for pid in orphans(&holders, &named, &unknown, |h| manager::ended_at(&h.socket), now_ms()) {
+            let id = holders.iter().find(|h| h.pid == pid).map_or("", |h| h.id.as_str());
+            super::transport::relay_log(&format!("closed ended holder {id}: no session shows its screen"));
             manager::stop(pid);
         }
     });
@@ -266,9 +310,16 @@ fn sweep(named: BTreeSet<String>) {
 
 /// Ended holders no session needs: a resumed session's old holder once discovery names the new
 /// one, a session reaped after a day, a screen past the newest SCREENS_MAX, or a final screen
-/// that is no session's to show. A running holder nobody names yet (just started) never is.
-fn orphans(holders: &[HolderInfo], named: &BTreeSet<String>, ended: impl Fn(&HolderInfo) -> bool) -> Vec<u32> {
-    holders.iter().filter(|h| !named.contains(&h.id) && ended(h)).map(|h| h.pid).collect()
+/// that is no session's to show. A running holder nobody names yet (just started) never is, nor
+/// one that ended (`ended`: when, unix ms) under SWEEP_AFTER_MS ago, nor one whose screen is
+/// `unknown`: not known yet is not "no session's screen".
+fn orphans(holders: &[HolderInfo], named: &BTreeSet<String>, unknown: &BTreeSet<String>, ended: impl Fn(&HolderInfo) -> Option<u64>, now_ms: u64) -> Vec<u32> {
+    holders
+        .iter()
+        .filter(|h| !named.contains(&h.id) && !unknown.contains(&h.id))
+        .filter(|h| ended(h).is_some_and(|at| at + SWEEP_AFTER_MS <= now_ms))
+        .map(|h| h.pid)
+        .collect()
 }
 
 #[cfg(test)]
@@ -346,13 +397,13 @@ mod tests {
         let mirrors = BTreeMap::from([("a".to_string(), ended("h1", 100, SID))]);
         assert_eq!(ended_holders(&mirrors), BTreeSet::from(["h1".to_string()]));
         // The relay loop's tick, every second: nothing is asked while the answer is fresh.
-        ends.refresh(ended_holders(&mirrors), |_: &str| { ASKED.store(true, SeqCst); None });
+        ends.refresh(ended_holders(&mirrors), PROBE_EVERY, |_: &str| { ASKED.store(true, SeqCst); None });
         assert_eq!(keys(&kept(&mirrors, &|id: &str| ends.get(id))), ["a"]);
         std::thread::sleep(Duration::from_millis(50));
         assert!(!ASKED.load(SeqCst) && !ends.asking.load(SeqCst), "a holder was asked on a warm cache");
         // No ended session names a holder: what was known is dropped, and still nothing is asked.
         asked_long_ago(ends);
-        ends.refresh(BTreeSet::new(), |_: &str| { ASKED.store(true, SeqCst); None });
+        ends.refresh(BTreeSet::new(), PROBE_EVERY, |_: &str| { ASKED.store(true, SeqCst); None });
         assert_eq!(ends.get("h1"), None);
         assert!(!ASKED.load(SeqCst) && !ends.asking.load(SeqCst));
     }
@@ -364,13 +415,13 @@ mod tests {
         let (answer, wait) = std::sync::mpsc::channel::<()>();
         let wait = Mutex::new(wait);
         let started = Instant::now();
-        ends.refresh(holders(), move |_: &str| { let _ = wait.lock().unwrap().recv(); None });
+        ends.refresh(holders(), PROBE_EVERY, move |_: &str| { let _ = wait.lock().unwrap().recv(); None });
         assert_eq!(ends.get("h1"), None, "not known yet: no screen is kept, and nothing waits");
         // Later ticks, while that holder still has not answered: no second thread, no wait.
         static AGAIN: AtomicBool = AtomicBool::new(false);
         for _ in 0..3 {
             asked_long_ago(ends);
-            ends.refresh(holders(), |_: &str| { AGAIN.store(true, SeqCst); None });
+            ends.refresh(holders(), PROBE_EVERY, |_: &str| { AGAIN.store(true, SeqCst); None });
         }
         assert!(started.elapsed() < Duration::from_millis(200), "a tick waited {:?} for a holder", started.elapsed());
         assert!(!AGAIN.load(SeqCst), "a second pass started beside the stuck one");
@@ -378,7 +429,7 @@ mod tests {
         drop(answer);
         for _ in 0..200 {
             asked_long_ago(ends);
-            ends.refresh(holders(), |_: &str| Some(5));
+            ends.refresh(holders(), PROBE_EVERY, |_: &str| Some(5));
             if ends.get("h1") == Some(5) {
                 return;
             }
@@ -422,11 +473,13 @@ mod tests {
         assert_eq!(screens_frame(&[SID.into()]), serde_json::from_str::<Value>(GOLDEN).unwrap());
     }
 
+    fn holder(id: &str, pid: u32) -> HolderInfo {
+        HolderInfo { id: id.into(), socket: format!("/x/{id}.sock").into(), pid, provider_pid: 2, argv: vec![], cwd: "/".into(), watch: true, type_input: true }
+    }
+
     #[test]
     fn an_ended_holder_is_closed_unless_a_running_session_or_a_reported_screen_names_it() {
-        let h = |id: &str, pid| HolderInfo { id: id.into(), socket: format!("/x/{id}.sock").into(), pid, provider_pid: 2,
-            argv: vec![], cwd: "/".into(), watch: true, type_input: true };
-        let holders = [h("h1", 10), h("fresh", 11), h("h3", 12), h("livehold", 13)];
+        let holders = [holder("h1", 10), holder("fresh", 11), holder("h3", 12), holder("livehold", 13), holder("resumed", 14)];
         let mut live = test_mirror("thread-live", "gen-1");
         live.native.holder = Some("livehold".into());
         let mirrors = BTreeMap::from([
@@ -434,9 +487,38 @@ mod tests {
             ("c".to_string(), ended("h3", 50, "left-earlier")),
             ("j".to_string(), live),
         ]);
-        let named = named(&mirrors, &kept(&mirrors, &|_: &str| Some(101_000)));
-        // `fresh` runs (no mirror names it yet); `h3` shows a screen no session may be shown.
-        assert_eq!(orphans(&holders, &named, |x: &HolderInfo| x.id != "fresh"), vec![12]);
+        let end = |_: &str| Some(101_000);
+        let named = named(&mirrors, &kept(&mirrors, &end));
+        let unknown = unknown(&mirrors, &end);
+        // `fresh` runs (no mirror names it yet); `h3` shows a screen no session may be shown;
+        // `resumed` is a session's old holder, which no mirror names any more.
+        let ended = |x: &HolderInfo| (x.id != "fresh").then_some(101_000);
+        assert_eq!(orphans(&holders, &named, &unknown, ended, 101_000 + SWEEP_AFTER_MS), vec![12, 14]);
+        assert!(orphans(&holders, &named, &unknown, ended, 101_000 + SWEEP_AFTER_MS - 1).is_empty(), "never in the moments after an end");
+    }
+
+    #[test]
+    fn an_ended_holder_is_never_closed_while_its_screen_is_not_yet_known() {
+        // Prod 2026-10-07 14:18Z, desktop 0.4.629: `/exit` in a held session, and its holder was
+        // gone within 4 s. The end is read from a cache a background pass fills (`Ends`): right
+        // after the exit it has no answer yet, and "not asked yet" read as "shows no session's screen".
+        let holders = [holder("h1", 10)];
+        let mirrors = BTreeMap::from([("a".to_string(), ended("h1", 100, SID))]);
+        let cold = |_: &str| None;
+        assert!(kept(&mirrors, &cold).is_empty(), "nothing is kept yet");
+        let needed = named(&mirrors, &kept(&mirrors, &cold));
+        // The sweep's own question, asked of the holder itself, is answered at once: it has ended.
+        let ended = |_: &HolderInfo| Some(100_500);
+        for later in [0, SWEEP_AFTER_MS, 24 * 3_600_000] {
+            assert!(orphans(&holders, &needed, &unknown(&mirrors, &cold), ended, 100_500 + later).is_empty(), "unknown is not `no screen` ({later} ms)");
+        }
+        // The pass answers: the screen is kept, and its holder is named.
+        let warm = |_: &str| Some(100_500);
+        assert!(unknown(&mirrors, &warm).is_empty());
+        assert!(named(&mirrors, &kept(&mirrors, &warm)).contains("h1"));
+        assert_eq!(settling(&mirrors, &kept(&mirrors, &cold), 104_000), BTreeSet::from([SID.to_string()]), "a relay waits for the answer");
+        assert!(settling(&mirrors, &kept(&mirrors, &warm), 104_000).is_empty(), "kept: nothing to wait for");
+        assert!(settling(&mirrors, &kept(&mirrors, &cold), 100_000 + SETTLE_MS).is_empty(), "long ended: its holder ran on, or is gone");
     }
 
     #[test]

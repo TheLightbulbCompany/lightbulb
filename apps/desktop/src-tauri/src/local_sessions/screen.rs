@@ -37,6 +37,8 @@ const RESYNC: Duration = Duration::from_secs(30);
 /// A relay no heartbeat ack has renewed for this long stops (its relay socket is down).
 const LEASE: Duration = Duration::from_secs(30);
 const TICK: Duration = Duration::from_millis(50);
+/// How long a new relay waits for a session that just ended to be indexed with its kept screen.
+const SETTLE_WAIT: Duration = Duration::from_secs(5);
 /// A nudged relay outlives acks that miss it for this long: an ack the backend built just before
 /// the viewer arrived can land after the nudge. Longer than one 10 s heartbeat.
 const GRACE: Duration = Duration::from_secs(15);
@@ -432,7 +434,15 @@ fn spawn(sid: String, since: u64) -> Arc<Ctl> {
 }
 
 fn run(sid: &str, ctl: &Ctl) -> Result<(), String> {
-    let (holder, generation) = holder_for_session(sid, false).ok_or("not a held session")?;
+    let mut found = holder_for_session(sid, false);
+    // A held session that just ended: its holder keeps the final screen, and the index names it
+    // once the holder has said so (`session_states`). Until then it is not "not held".
+    let asked = Instant::now();
+    while found.is_none() && asked.elapsed() < SETTLE_WAIT && !ctl.stopped() && super::session_states::is_settling(sid) {
+        std::thread::sleep(Duration::from_millis(100));
+        found = holder_for_session(sid, false);
+    }
+    let (holder, generation) = found.ok_or("not a held session")?;
     if !holder.watch {
         return Err("its holder predates live terminals; restart the session to share its screen".into());
     }
@@ -576,7 +586,8 @@ fn next_epoch(last: &AtomicU64, now_ms: u64) -> u64 {
     now_ms.max(prev + 1)
 }
 
-/// Holder frames in, relay frames out, until the lease ends, the session exits or the holder goes.
+/// Holder frames in, relay frames out, until the lease ends or the holder goes. A session's exit
+/// does not end it: a holder that stays keeps the final screen, and this relay shows it.
 #[allow(clippy::too_many_arguments)]
 fn pump(frames: &Receiver<(u8, Vec<u8>)>, to_holder: &mut impl Write, ids: (&str, &str), mut size: (u16, u16),
         ctl: &Ctl, send: &dyn Fn(Value) -> bool, budget: Budget, history: &dyn Fn(usize) -> Option<Vec<u8>>) -> Result<(), String> {
@@ -595,6 +606,8 @@ fn pump(frames: &Receiver<(u8, Vec<u8>)>, to_holder: &mut impl Write, ids: (&str
     // (it heals frames lost past this Mac) or none was asked for in `resync` (a viewer with no
     // screen gets one), else a ping.
     let mut last_beat = Instant::now();
+    // The provider exited. An attach holder closes next; a session's own holder stays.
+    let mut exited = false;
     loop {
         if ctl.stopped() {
             return Ok(());
@@ -609,7 +622,10 @@ fn pump(frames: &Receiver<(u8, Vec<u8>)>, to_holder: &mut impl Write, ids: (&str
         }
         if ctl.snapshot.load(SeqCst) && last_snapshot.elapsed() >= SNAPSHOT_GAP && out.budget.left() > 0.0 {
             ctl.snapshot.store(false, SeqCst);
-            to_holder.write_all(&encode(SNAPSHOT, b"")).map_err(|e| e.to_string())?;
+            match to_holder.write_all(&encode(SNAPSHOT, b"")) {
+                Err(_) if exited => return Ok(()),
+                sent => sent.map_err(|e| e.to_string())?,
+            }
             last_snapshot = Instant::now();
         }
         match frames.recv_timeout(TICK) {
@@ -634,11 +650,18 @@ fn pump(frames: &Receiver<(u8, Vec<u8>)>, to_holder: &mut impl Write, ids: (&str
             }
             Ok((EXIT, _)) => {
                 if !pending.is_empty() {
-                    out.emit("output", &pending, size);
+                    out.emit("output", &std::mem::take(&mut pending), size);
+                    held_since = None;
                 }
-                return Ok(());
+                // The output above ends with what the provider printed on its way out (Claude
+                // Code: the resume lines). The holder's final picture is its next snapshot: ask
+                // now, on this connection. A relay started after the end depends on the index.
+                exited = true;
+                ctl.snapshot.store(true, SeqCst);
+                last_snapshot = Instant::now().checked_sub(SNAPSHOT_GAP).unwrap_or_else(Instant::now);
             }
             Ok(_) | Err(RecvTimeoutError::Timeout) => {}
+            Err(RecvTimeoutError::Disconnected) if exited => return Ok(()),
             Err(RecvTimeoutError::Disconnected) => return Err("the holder closed".into()),
         }
         if pending.len() >= CHUNK || held_since.is_some_and(|at| at.elapsed() >= FLUSH) {
@@ -707,6 +730,7 @@ mod tests {
         tx.send((RESIZE, vec![0, 90, 0, 30])).unwrap();
         tx.send((OUTPUT, with_offset(12_297, b"after"))).unwrap();
         tx.send((EXIT, b"{}".to_vec())).unwrap();
+        drop(tx); // an attach holder: it closes with its client, and that is no error
         let sent = std::cell::RefCell::new(vec![]);
         let mut to_holder = vec![];
         pump(&rx, &mut to_holder, ("sid", "gen"), (120, 40), &Ctl::new(0), &|f| { sent.borrow_mut().push(f); true }, Budget::new(), &|_| None).unwrap();
@@ -715,6 +739,29 @@ mod tests {
         assert_eq!(shape, [("snapshot".into(), 120), ("output".into(), 120), ("output".into(), 120), ("output".into(), 90)]);
         assert_eq!(sent.iter().map(|f| f["seq"].as_u64().unwrap()).collect::<Vec<_>>(), [0, 1, 2, 3]);
         assert!(to_holder.windows(5).any(|w| w == encode(SNAPSHOT, b"").as_slice()), "a resize asks for a fresh screen");
+    }
+
+    #[test]
+    fn screen_relay_stays_on_a_holder_whose_session_ended_and_sends_its_final_picture() {
+        // Claude Code 2.1.292 on `/exit` (captured 2026-10-07): it leaves the alternate screen and
+        // prints the resume lines, then exits. Those are live output; the holder's final picture
+        // (`Model::ended_picture`) only ever comes in a snapshot asked for after the exit.
+        let (tx, rx) = std::sync::mpsc::channel();
+        tx.send((SNAPSHOT, with_offset(0, b"\x1b[?1049hthe conversation"))).unwrap();
+        tx.send((OUTPUT, with_offset(24, b"\x1b[?1049l\r\nResume this session with:"))).unwrap();
+        tx.send((EXIT, b"{}".to_vec())).unwrap();
+        let ctl = leased(Duration::from_millis(1500));
+        let mut holder = Answering { tx, answer: vec![(SNAPSHOT, with_offset(60, b"the conversation"))], asked: vec![] };
+        let sent = std::cell::RefCell::new(vec![]);
+        let started = Instant::now();
+        pump(&rx, &mut holder, ("sid", "gen"), (80, 24), &ctl, &|f| { sent.borrow_mut().push(f); true }, Budget::new(), &|_| None).unwrap();
+        let sent = sent.into_inner();
+        assert_eq!(sent.iter().map(|f| f["kind"].as_str().unwrap()).collect::<Vec<_>>(), ["snapshot", "output", "snapshot"]);
+        let last = base64::engine::general_purpose::STANDARD.decode(sent[2]["data"].as_str().unwrap()).unwrap();
+        assert_eq!(last, b"the conversation", "the viewer is left on the final picture, not the resume lines");
+        assert_eq!(holder.asked.len(), 1);
+        assert!(holder.asked[0] - started < Duration::from_millis(500), "asked at the exit, not a beat later");
+        assert!(started.elapsed() >= Duration::from_millis(1400), "the relay left at the exit; a new one may find no screen indexed yet");
     }
 
     /// A holder that answers every snapshot request with `answer` and notes when it was asked.
@@ -1026,6 +1073,7 @@ mod tests {
         let (tx, rx) = std::sync::mpsc::channel();
         tx.send((SNAPSHOT, with_offset(30_720, b"\x1b[Hscreen"))).unwrap();
         tx.send((EXIT, b"{}".to_vec())).unwrap();
+        drop(tx);
         let asked = std::cell::Cell::new(0);
         let sent = std::cell::RefCell::new(vec![]);
         pump(&rx, &mut Vec::<u8>::new(), ("sid", "gen"), (120, 40), &Ctl::new(0), &|f| { sent.borrow_mut().push(f); true }, Budget::new(),

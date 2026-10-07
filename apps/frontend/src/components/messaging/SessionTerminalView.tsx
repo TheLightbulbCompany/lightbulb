@@ -56,13 +56,16 @@ export function SessionTerminalView({ session, onEvent, watch, onLive, onCanType
   const [live, setLive] = useState(false);
   // Whether a frame ever arrived: "Connecting…" until then, "Reconnecting…" after the picture went stale.
   const [seen, setSeen] = useState(false);
-  // No frame for STALE_AFTER_MS after mount: a Mac whose app predates terminal frames never sends one.
+  // Whether this view is asking the Mac for the screen: not while the tab is hidden (below).
+  const [watching, setWatching] = useState(false);
+  // No frame for STALE_AFTER_MS of watching: a Mac whose app predates terminal frames never sends
+  // one. A hidden tab asked for nothing, so its silence says nothing about the Mac.
   const [silent, setSilent] = useState(false);
   useEffect(() => {
-    if (seen) { setSilent(false); return; }
+    if (seen || !watching) { setSilent(false); return; }
     const timer = setTimeout(() => setSilent(true), STALE_AFTER_MS);
     return () => clearTimeout(timer);
-  }, [seen, session.sessionId, session.generation]);
+  }, [seen, watching, session.sessionId, session.generation]);
   const box = useRef<HTMLDivElement>(null);
   const [size, setSize] = useState<TerminalSize>(savedSize);
   const choose = (next: TerminalSize) => { setSize(next); try { window.localStorage.setItem(SIZE_KEY, next); } catch { /* storage blocked: this visit only */ } };
@@ -97,11 +100,13 @@ export function SessionTerminalView({ session, onEvent, watch, onLive, onCanType
       clearInterval(timer);
       ping(fresh);
       asked.current = session.sessionId;
+      setWatching(true);
       timer = setInterval(() => { if (!refused) ping(false); }, WATCH_EVERY_MS);
     };
     const onVisibility = () => {
       if (document.visibilityState !== "hidden") { if (!refused) start(true); return; }
       clearInterval(timer); timer = undefined;
+      setWatching(false);
     };
     if (document.visibilityState !== "hidden") start(asked.current !== session.sessionId);
     document.addEventListener("visibilitychange", onVisibility);

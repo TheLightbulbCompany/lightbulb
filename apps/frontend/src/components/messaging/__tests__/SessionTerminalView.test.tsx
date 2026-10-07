@@ -132,6 +132,26 @@ it("tells the viewer when no frame arrives in 30 s, and clears it on the first s
   expect(screen.queryByRole("status")).toBeNull();
 });
 
+it("a hidden tab only says Connecting: the 30 s clock runs while the tab is shown and watching", async () => {
+  vi.useFakeTimers();
+  let state: DocumentVisibilityState = "hidden";
+  const spy = vi.spyOn(document, "visibilityState", "get").mockImplementation(() => state);
+  const show = (next: DocumentVisibilityState) => act(() => { state = next; document.dispatchEvent(new Event("visibilitychange")); });
+  const status = () => screen.getByRole("status").textContent;
+  render(<SessionTerminalView session={{ sessionId: "s1", generation: "g1" }} onEvent={() => () => {}} watch={async () => undefined} onLive={() => {}} />);
+  // Hidden, it sends no watch, so nothing can arrive: that is not the Mac's doing.
+  await act(async () => { await vi.advanceTimersByTimeAsync(5 * 60_000); });
+  expect(status()).toBe("Connecting…");
+  show("visible");
+  await act(async () => { await vi.advanceTimersByTimeAsync(29_000); });
+  expect(status()).toBe("Connecting…"); // the clock started when the watch was sent, not at mount
+  await act(async () => { await vi.advanceTimersByTimeAsync(1_001); });
+  expect(status()).toMatch(/Nothing has arrived from the Mac in 30 seconds/);
+  show("hidden");
+  expect(status()).toBe("Connecting…");
+  spy.mockRestore();
+});
+
 const b64 = (s: string) => btoa(s);
 const mount = async (admitted: boolean, input: (d: Uint8Array, e: number) => Promise<unknown>, session: { sessionId: string; generation: string } = { sessionId: "s1", generation: "g1" }) => {
   let emit: (e: LiveEvent) => void = () => {};

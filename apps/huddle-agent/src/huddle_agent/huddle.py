@@ -201,10 +201,26 @@ def _words(text: str) -> tuple[set[str], list[str]]:
 
 def unsaid_part(answer: str, said: str) -> str:
     """The answer from the sentence it was cut on (owner ruling 10-07: what was heard is not said again). A
-    sentence counts as said when most of its words were; the first one that was not starts the rest."""
+    sentence counts as said when most of its words were, in order: the words a sentence used are spent, so a
+    later sentence made of the same words is not heard for free (Codex on #3792); the first sentence that was
+    not said starts the rest."""
     sentences = [x for x in re.split(r"(?<=[.!?])\s+", answer.strip()) if x]
+    left = collections.Counter(w for w in _words(said)[1] if w not in FUNCTION_WORDS)
+    sounds = collections.Counter(soundex(w) for w in left.elements() if len(w) > 2 and w.isascii())
     for i, sentence in enumerate(sentences):
-        if not _words_in(sentence, said, 0.7):
+        content = [w for w in _words(sentence)[1] if w not in FUNCTION_WORDS]
+        hits = 0
+        for w in content:
+            key = soundex(w) if len(w) > 2 and w.isascii() else ""
+            if left[w] > 0:
+                left[w] -= 1
+                sounds[key] -= 1
+            elif key and sounds[key] > 0:  # misheard by the other transcriber ("peers" for "PRs")
+                sounds[key] -= 1
+            else:
+                continue
+            hits += 1
+        if content and hits / len(content) < 0.7:
             return answer if i == 0 else " ".join(sentences[i:])  # the same object when nothing of it was said
     return ""
 
@@ -906,6 +922,8 @@ class Huddle:
             # and the agent asked back what was meant): it is joined to what comes next.
             # The record keeps each piece as it was said; only the understanding sees them joined.
             trail = self._trail.pop(identity, None)
+            if trail and self._control(text):
+                trail = None  # a stop or "don't post that" stands on its own: the fragment is not its prefix
             if trail and now - trail[1] <= TRAIL_S:
                 text = f"{trail[0]} {text}"
                 record = text[len(trail[0]) + 1 :]  # the pieces before it are on the record already

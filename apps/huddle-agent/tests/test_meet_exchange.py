@@ -398,3 +398,20 @@ def test_a_line_about_a_colleague_is_not_a_handoff_to_them():
         assert h_mod.opens_with_person(line, people), line
     # a bare imperative has no mark the worker can read; the voice's own meeting rule covers it
     assert not h_mod.opens_with_person("Dan fix the deployment", people)
+
+
+async def test_a_stop_after_a_trailing_fragment_is_still_a_stop():
+    """Codex on #3792: "Oh, and..." then "Forge, stop..." was joined into one trailing line and never applied."""
+    h, backend, lives, clock = await asked()
+    (row,) = h._requests.items
+    await says(h, P1, "Oh, and...")
+    await says(h, P1, "Forge, stop...")
+    assert row.status == "cancelled" and backend.aborts == [row.run_id]
+
+
+def test_the_unsaid_part_spends_the_words_a_sentence_used():
+    """Codex on #3792: a later sentence made of the same words is not heard for free."""
+    assert h_mod.unsaid_part("Three PRs are open. Three open PRs are in backend.", "Three PRs are open.") == (
+        "Three open PRs are in backend."
+    )
+    assert h_mod.unsaid_part("Three PRs are open. Two PRs are drafts.", "Three PRs are open. Two PRs are drafts.") == ""

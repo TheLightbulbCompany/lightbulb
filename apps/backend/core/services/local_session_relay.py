@@ -639,6 +639,9 @@ class LocalSessionRelay:
                     response["reconcile"] = await self._reconcile_for(owner, sid, row["generation"])
                     response["serverTime"] = int(time.time())
                     response["features"] = FEATURES
+                    watch = await session_screen.watch_on_register(row)
+                    if watch:
+                        response["watch"] = watch
                 elif isinstance(message, DeviceHeartbeat):
                     # Resume first, then pick-up: each trims its own list to what is left of the
                     # envelope. Watching last: an empty list read there stops every relay.

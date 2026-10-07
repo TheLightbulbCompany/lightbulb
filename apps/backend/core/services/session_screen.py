@@ -194,6 +194,25 @@ async def ack_with_watching(ack: dict, owner: str, human: str, device: str) -> d
         watching = watching[1:]  # oldest viewer set first
 
 
+async def watch_on_register(row: dict) -> dict | None:
+    """Someone watches the session that just registered: the nudge, on its own registration ack.
+
+    After a reconnect the Mac heard of its viewers only from its first heartbeat ack, sent after
+    every session had registered again (25 s in prod, 2026-10-07), and a nudge sent while the
+    connection was down reached nobody. Shaped like the nudge, with the WATCH row's own `since`.
+    Never costs the registration."""
+    try:
+        if row.get("unshared"):
+            return None
+        watch = (await store.run_in_thread(store._table().get_item, Key=_watch_key(row))).get("Item")
+        if not watch or int(watch.get("expiresAt", 0)) <= int(_clock()):
+            return None
+        return {"sessionId": row["sessionId"], "generation": row["generation"], "since": int(watch["since"])}
+    except Exception:
+        logger.warning("Watched session unavailable at registration")
+        return None
+
+
 async def keep_screens(owner: str, human: str, device: str, cid: str, sids: list[str]) -> None:
     """The Mac's ended held sessions whose holder still shows the final screen (spec 2026-10-07
     §5.4): each stays watchable for one more lease. Only this Mac's own; never raises (a lost

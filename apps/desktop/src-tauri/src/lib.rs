@@ -119,11 +119,15 @@ pub struct NodeState {
     pub status: Mutex<String>,
 }
 
-/// File-based logger for macOS GUI apps (stdout not visible).
+/// File-based logger for macOS GUI apps (stdout not visible). Tests print only: their lines
+/// ("relay unavailable or pairing revoked", fake session ids) sat in the installed app's own log.
 pub fn log(msg: &str) {
-    use std::io::Write;
-    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open("/tmp/lightbulb-desktop.log") {
-        let _ = writeln!(f, "{}", msg);
+    #[cfg(not(test))]
+    {
+        use std::io::Write;
+        if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open("/tmp/lightbulb-desktop.log") {
+            let _ = writeln!(f, "{}", msg);
+        }
     }
     println!("{}", msg);
 }

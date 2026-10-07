@@ -395,3 +395,22 @@ def test_a_ping_carries_no_data_and_other_kinds_are_refused():
     for bad in ({"kind": "ping", "data": "G1tI"}, {"kind": "input"}):
         with pytest.raises(ValidationError):
             session_screen.Screen.model_validate({**golden, **bad})
+
+
+@pytest.mark.asyncio
+async def test_a_watched_session_that_registers_again_is_told_on_its_own_ack(transport, monkeypatch):
+    """After a reconnect the Mac learned who watches only from its first heartbeat ack, after
+    every session had registered again (25 s in prod, 2026-10-07): the viewer saw nothing."""
+    from tests.unit.services.test_local_session_relay import registration
+
+    sid = await start(transport)
+    now = time.time()
+    monkeypatch.setattr(session_screen, "_clock", lambda: now)
+    assert "watch" not in await relay(transport).handle_message("conn-1", registration()), "nobody watches"
+    await session_screen.watch(BOB, sid)
+    connect(transport, cid="conn-2", stamp="2000")
+    ack = await relay(transport).handle_message("conn-2", registration())
+    # The nudge's own shape and the WATCH row's `since`: no second history burst at the next ack.
+    assert ack["watch"] == {"sessionId": sid, "generation": "generation-1", "since": int(now)}
+    monkeypatch.setattr(session_screen, "_clock", lambda: now + 61)
+    assert "watch" not in await relay(transport).handle_message("conn-2", registration()), "the viewer left"

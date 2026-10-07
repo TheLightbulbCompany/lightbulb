@@ -215,6 +215,12 @@ const QUARANTINE: Duration = Duration::from_secs(300);
 /// acknowledgement, and an idle (or just-woken) Mac is the usual one to resume on.
 const IDLE_HEARTBEAT: Duration = Duration::from_secs(30);
 
+/// How long a register, heartbeat or end waits for its acknowledgment before the connection is
+/// given up. Well past the ws-message Lambda's 10 s: the backend goes on working after the Lambda
+/// gives up and still posts the ack (15.6 s after the frame, prod 2026-10-07). At 10 s the Mac
+/// dropped a healthy connection and every session registered again. The relay's lease is 30 s.
+const ACK_DEADLINE: Duration = Duration::from_secs(30);
+
 fn idle_heartbeat() -> Value {
     json!({"type":"local.device.heartbeat","sessions":[]})
 }
@@ -1438,7 +1444,7 @@ impl Host {
                 }
             }
             laps.lap("uploads");
-            let deadline = pending_rpc.as_ref().map(|rpc| rpc.sent() + Duration::from_secs(10));
+            let deadline = pending_rpc.as_ref().map(|rpc| rpc.sent() + ACK_DEADLINE);
             tokio::select! {
                 _ = tick.tick() => {
                     arm = "tick";
@@ -1521,7 +1527,7 @@ impl Host {
                     let body: Value = serde_json::from_str(&text).map_err(|_| "invalid session frame")?;
                     match body["type"].as_str() {
                         Some("local.session.registered") => {
-                            let rpc = pending_rpc.take().ok_or("unsolicited session acknowledgment")?;
+                            let Some(rpc) = pending_rpc.take() else { late_ack(); continue; };
                             let Rpc::Register{key,sent,wall,native_restriction,start_id} = rpc else {return Err("mismatched session acknowledgment".into());};
                             if quarantine_active(&quarantined, &key) {
                                 // A late ACK must never put a quarantined session back in rotation.
@@ -1598,6 +1604,9 @@ impl Host {
                                 }
                             }
                             self.finish_deferred_end(&key)?;
+                            // Someone watches it now: stream at once, not after every other
+                            // session has registered and the first heartbeat is acked.
+                            if body["watch"].is_object() {super::screen::nudge(&body["watch"]);}
                             if let Some(fresh) = ack_anchor(server, sent, wall) {anchor = Some(fresh);}
                             if !body["reconcile"].is_null() {
                                 let request = body["reconcile"]["requestId"].as_str().ok_or("invalid reconciliation")?;
@@ -1607,7 +1616,7 @@ impl Host {
                             }
                         },
                         Some("local.device.heartbeat.ack") => {
-                            let rpc = pending_rpc.take().ok_or("unsolicited session acknowledgment")?;
+                            let Some(rpc) = pending_rpc.take() else { late_ack(); continue; };
                             let Rpc::Heartbeat{sent,wall,sids} = rpc else {return Err("mismatched session acknowledgment".into());};
                             super::snapshot::offer(&body["pickup"], &self.mirrors);
                             super::screen::offer(&body["watching"]);
@@ -1636,7 +1645,7 @@ impl Host {
                             }
                         },
                         Some("local.session.ended.ack") => {
-                            let rpc = pending_rpc.take().ok_or("unsolicited session acknowledgment")?;
+                            let Some(rpc) = pending_rpc.take() else { late_ack(); continue; };
                             let Rpc::Ended{key,at,generation,..} = rpc else {return Err("mismatched session acknowledgment".into());};
                             super::snapshot::offer(&body["pickup"], &self.mirrors);
                             // Told. Nothing more is uploaded, heartbeated or registered for
@@ -1700,7 +1709,7 @@ impl Host {
                             }
                             // A named error is about this session's events frame only while a
                             // batch is outstanding; in every other case it is the in-flight RPC's
-                            // own reply, and holding the slot would stall until the 10s timeout.
+                            // own reply, and holding the slot would stall until the ack deadline.
                             if pending_rpc.as_ref().and_then(Rpc::key) == Some(key.as_str())
                                 && !(attributed && sent_batches.contains_key(&key))
                             {
@@ -1730,11 +1739,9 @@ impl Host {
                                 let kind: String = other.unwrap_or("no type").chars().take(48).collect();
                                 relay_log(&format!("ignored a frame this app does not know ({kind}); later ones on this connection are not logged"));
                             }
-                            // The gateway's error is the answer the in-flight request will get: free
-                            // the slot as for INTERNAL, so it goes again on its own cadence.
-                            if other.is_none() {
-                                pending_rpc = None;
-                            }
+                            // The in-flight request keeps its slot: the Lambda gave up, not the
+                            // backend, and the ack still comes. Freed here, the next request took
+                            // that late ack as its own and its own ack then answered nothing.
                         },
                     }
                 }
@@ -2600,7 +2607,13 @@ fn quarantine(
     sent_batches.remove(key);
 }
 
-/// The next relay frame, or the in-flight request's ten seconds running out. Biased: a loop
+/// An ack with no request in flight answers one this Mac no longer waits for. Ending the
+/// connection for it took every session offline; ignoring it costs nothing.
+fn late_ack() {
+    relay_log("ignored an acknowledgment that answers no request in flight");
+}
+
+/// The next relay frame, or the in-flight request's deadline (`ACK_DEADLINE`) running out. Biased: a loop
 /// that overslept the deadline still reads an answer already in the socket buffer first.
 async fn next_or_deadline<S: futures_util::Stream + Unpin>(
     socket: &mut S,
@@ -5098,6 +5111,53 @@ pub(super) mod tests {
     async fn local_sessions_a_gateway_error_frame_does_not_end_the_connection() {
         // API Gateway's own frame when a backend call outlives the ws-message Lambda (10 s). It
         // has no `type`; taken as fatal, it tore the connection down (prod 2026-10-07).
+        const WATCHED: &str = "7b0c1c0e-51f4-4a4e-9d0b-2f6a8f0f3d11";
+        let dir = tempfile::tempdir().unwrap();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (tcp, _) = listener.accept().await.unwrap();
+            let mut socket = tokio_tungstenite::accept_async(tcp).await.unwrap();
+            assert_eq!(next_frame(&mut socket).await["type"], "local.session.register");
+            // Someone watches this session: its own registration ack says so.
+            reply(&mut socket, json!({"type":"local.session.registered","sessionId":SID,"generation":"g-a",
+                "afterSeq":0,"serverTime":100,"reconcile":null,
+                "watch":{"sessionId":WATCHED,"generation":"g-a","since":7}})).await;
+            assert_eq!(next_frame(&mut socket).await["type"], "local.device.heartbeat");
+            let gateway = json!({"message":"Internal server error","connectionId":"abc=","requestId":"def="});
+            let ack = json!({"type":"local.device.heartbeat.ack","rejected":[],"reconcile":[],"serverTime":101});
+            reply(&mut socket, gateway.clone()).await;
+            // The Lambda gave up; the backend is still working and its ack still comes (prod
+            // 2026-10-07: 10 s later). The request stays in flight: a second heartbeat sent now
+            // would take the late ack as its own, and its own ack would then answer nothing.
+            let quiet = tokio::time::timeout(Duration::from_millis(600), socket.next()).await;
+            assert!(quiet.is_err(), "a second request went out while the first could still be answered");
+            reply(&mut socket, ack.clone()).await;
+            assert_eq!(next_frame(&mut socket).await["type"], "local.device.heartbeat");
+            // An ack that answers nothing (its request was given up on) is ignored, like the
+            // gateway's frame and a typed frame this app does not know.
+            reply(&mut socket, ack.clone()).await;
+            reply(&mut socket, ack).await;
+            reply(&mut socket, json!({"type":"local.session.ended.ack"})).await;
+            reply(&mut socket, gateway).await;
+            reply(&mut socket, json!({"type":"local.session.from-a-newer-relay"})).await;
+            assert_eq!(next_frame(&mut socket).await["type"], "local.device.heartbeat");
+            socket.close(None).await.unwrap();
+        });
+        let mut host = test_host(dir.path(), vec![("a-session", test_mirror("native-a", "g-a"))]);
+        host.heartbeat_interval = Duration::from_millis(200);
+        let (_tx, mut rx) = tokio::sync::mpsc::channel(1);
+        let (mut socket, _) = tokio_tungstenite::connect_async(format!("ws://{address}")).await.unwrap();
+        let ended = tokio::time::timeout(Duration::from_secs(5), host.connection(&mut socket, &mut rx, "alice")).await.unwrap();
+        server.await.unwrap();
+        assert_eq!(ended, Err("session socket closed".into()), "only the relay closing ends it");
+        assert!(super::super::screen::was_nudged(WATCHED), "the watched session waited for a heartbeat ack");
+    }
+    #[tokio::test]
+    async fn local_sessions_an_ack_later_than_the_gateways_ten_seconds_still_counts() {
+        // Prod 2026-10-07 15:23:06Z: the backend took 15.6 s over one heartbeat. The Mac gave up
+        // at 10 s and dropped the connection, so 39 sessions registered again and a teammate
+        // who had just opened one saw nothing for 30 s. The ack was on its way.
         let dir = tempfile::tempdir().unwrap();
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
@@ -5108,14 +5168,8 @@ pub(super) mod tests {
             reply(&mut socket, json!({"type":"local.session.registered","sessionId":SID,"generation":"g-a",
                 "afterSeq":0,"serverTime":100,"reconcile":null})).await;
             assert_eq!(next_frame(&mut socket).await["type"], "local.device.heartbeat");
-            let gateway = json!({"message":"Internal server error","connectionId":"abc=","requestId":"def="});
-            reply(&mut socket, gateway.clone()).await;
-            // The heartbeat it answered goes again on its cadence: the slot was freed.
-            assert_eq!(next_frame(&mut socket).await["type"], "local.device.heartbeat");
-            // With nothing in flight it is ignored too, and so is a typed frame this app does not know.
-            reply(&mut socket, json!({"type":"local.device.heartbeat.ack","rejected":[],"reconcile":[],"serverTime":101})).await;
-            reply(&mut socket, gateway).await;
-            reply(&mut socket, json!({"type":"local.session.from-a-newer-relay"})).await;
+            tokio::time::sleep(Duration::from_millis(10_500)).await;
+            reply(&mut socket, json!({"type":"local.device.heartbeat.ack","rejected":[],"reconcile":[],"serverTime":111})).await;
             assert_eq!(next_frame(&mut socket).await["type"], "local.device.heartbeat");
             socket.close(None).await.unwrap();
         });
@@ -5123,9 +5177,10 @@ pub(super) mod tests {
         host.heartbeat_interval = Duration::from_millis(50);
         let (_tx, mut rx) = tokio::sync::mpsc::channel(1);
         let (mut socket, _) = tokio_tungstenite::connect_async(format!("ws://{address}")).await.unwrap();
-        let ended = tokio::time::timeout(Duration::from_secs(5), host.connection(&mut socket, &mut rx, "alice")).await.unwrap();
+        let ended = tokio::time::timeout(Duration::from_secs(20), host.connection(&mut socket, &mut rx, "alice")).await.unwrap();
         server.await.unwrap();
-        assert_eq!(ended, Err("session socket closed".into()), "only the relay closing ends it");
+        assert_eq!(ended, Err("session socket closed".into()), "a slow backend is not a dead relay");
+        assert!(ACK_DEADLINE >= Duration::from_secs(30), "the backend's worst seen answer is 15.6 s");
     }
     #[tokio::test]
     async fn local_sessions_rejected_batch_keeps_the_connection_and_the_pending_batch() {
@@ -5300,7 +5355,7 @@ pub(super) mod tests {
             assert_eq!(first["session"]["generation"], "g-a");
             // A restored session already carries its id, so this rejection is a NAMED error with
             // no batch outstanding -- the shape of a rejected heartbeat or receipt, whose reply
-            // this error is. Leaving the RPC slot occupied would stall until the 10s timeout.
+            // this error is. Leaving the RPC slot occupied would stall until the ack deadline.
             reply(&mut socket, json!({"type":"local.session.error","code":"LOCAL_SESSION_CONFLICT","sessionId":SID})).await;
             let second = next_frame(&mut socket).await;
             assert_eq!(second["type"], "local.session.register");

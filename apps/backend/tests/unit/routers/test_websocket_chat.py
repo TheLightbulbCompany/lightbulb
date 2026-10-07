@@ -367,3 +367,28 @@ async def test_a_screen_frame_is_forwarded_and_never_answered(app, connection_se
     assert response.status_code == oversized.status_code == 200
     forward.assert_awaited_once_with(machine, "conn-1", body)
     machine.management.send_message_async.assert_not_called()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("frame", ["local.device.heartbeat", "local.session.screen"])
+async def test_a_slow_frame_says_where_its_time_went(app, connection_service, caplog, monkeypatch, frame):
+    """Prod 2026-10-07: a heartbeat whose own work took 355 ms was answered over 10 s later and
+    nothing logged said why. One line per slow frame: handler, reply, thread pool, event loop."""
+    import logging
+
+    monkeypatch.setattr("routers.websocket_chat._SLOW_FRAME_S", 0)
+    caplog.set_level(logging.WARNING, logger="routers.websocket_chat")
+    connection_service.get_connection.return_value = {"connection_type": "local-session"}
+    machine = MagicMock()
+    machine.handle_message = AsyncMock(return_value={"type": "local.device.heartbeat.ack"})
+    machine.management.send_message_async = AsyncMock()
+    with (
+        patch("core.services.local_session_relay.get_local_session_relay", return_value=machine),
+        patch("core.services.session_screen.forward", AsyncMock()),
+    ):
+        body = {"type": frame, "sessions": [{"title": "private terminal text"}]}
+        assert (await _post(app, "/ws/message", headers={"x-connection-id": "conn-1"}, json=body)).status_code == 200
+    slow = next(r for r in caplog.records if r.getMessage() == "local session frame slow")
+    assert slow.frame == frame and slow.cid == "conn-1"
+    assert all(isinstance(getattr(slow, key), int) for key in ("ms", "handle_ms", "pool_wait_ms", "loop_lag_ms"))
+    assert "private terminal text" not in caplog.text

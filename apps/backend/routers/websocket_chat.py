@@ -13,6 +13,7 @@ from __future__ import annotations
 import asyncio
 import hmac
 import logging
+import time
 from typing import Any
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, Response
@@ -54,6 +55,33 @@ router = APIRouter(tags=["websocket"], dependencies=[Depends(require_ws_internal
 
 # The single-flight requests a desktop waits on (transport.rs `Rpc`).
 _AWAITED_FRAMES = {"local.session.register", "local.device.heartbeat", "local.session.ended"}
+# The ws-message Lambda gives up on a frame at 10 s.
+_SLOW_FRAME_S = 3.0
+
+
+async def _log_slow_frame(body: Any, cid: str, started: float, handled: float) -> None:
+    """One line for a frame that took long, saying where: its handler, the reply through the
+    Management API, or the process itself. Every DynamoDB call and that reply wait for a thread
+    of the default pool (6 on 2 vCPU), so `pool_wait_ms` is a full pool and `loop_lag_ms` a busy
+    event loop; both small means AWS answered slowly. Never frame content."""
+    done = time.monotonic()
+    if done - started < _SLOW_FRAME_S:
+        return
+    await asyncio.to_thread(lambda: None)
+    pooled = time.monotonic()
+    await asyncio.sleep(0)
+    raw_frame = body.get("type") if isinstance(body, dict) else None
+    logger.warning(
+        "local session frame slow",
+        extra={
+            "frame": raw_frame if isinstance(raw_frame, str) and len(raw_frame) <= 64 else None,
+            "cid": cid,
+            "ms": int((done - started) * 1000),
+            "handle_ms": int((handled - started) * 1000),
+            "pool_wait_ms": int((pooled - done) * 1000),
+            "loop_lag_ms": int((time.monotonic() - pooled) * 1000),
+        },
+    )
 
 
 def _assert_local_session_connection(
@@ -141,12 +169,14 @@ async def ws_message(
     from core.services.messaging import ApiProblem
 
     relay = get_local_session_relay()
+    started = time.monotonic()
     if isinstance(body, dict) and body.get("type") == "local.session.screen":
         # Never answered, not even with an error: see session_screen.forward.
         if len(await request.body()) <= MAX_ENVELOPE_BYTES:
             from core.services import session_screen
 
             await session_screen.forward(relay, x_connection_id, body)
+        await _log_slow_frame(body, x_connection_id, started, time.monotonic())
         return Response(status_code=200)
     try:
         if len(await request.body()) > MAX_ENVELOPE_BYTES:
@@ -183,5 +213,7 @@ async def ws_message(
         if frame not in _AWAITED_FRAMES:
             return Response(status_code=200)
         response = {"type": "local.session.error", "code": "INTERNAL"}
+    handled = time.monotonic()
     await relay.management.send_message_async(x_connection_id, response)
+    await _log_slow_frame(body, x_connection_id, started, handled)
     return Response(status_code=200)

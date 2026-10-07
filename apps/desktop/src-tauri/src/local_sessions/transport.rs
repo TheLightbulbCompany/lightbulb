@@ -343,8 +343,13 @@ impl Host {
         if let Some(origin) = origin {
             frame["session"]["forkedFrom"] = json!(origin);
         }
-        if let Some(start_id) = start_links::linked(&self.dir, &mirror.native, &mirror.generation) {
-            frame["session"]["startId"] = json!(start_id);
+        // An ended mirror registers only to drain, as `runtime-unverified`. The relay refuses a
+        // start identity on an unverified register (LOCAL_SESSION_CONFLICT, every retry), and
+        // keeps the one this generation already bound.
+        if status.is_none() {
+            if let Some(start_id) = start_links::linked(&self.dir, &mirror.native, &mirror.generation) {
+                frame["session"]["startId"] = json!(start_id);
+            }
         }
         if let Some(status) = status {
             frame["session"]["status"] = json!(status);
@@ -1590,7 +1595,9 @@ impl Host {
                             // Unless `advance` just promoted a successor -- the relay
                             // has never seen THAT generation, and uploading under it
                             // would only earn a rejection.
-                            let current_start_id = start_links::linked(&self.dir, &mirror.native, &mirror.generation);
+                            // An ended mirror's draining register carries no start identity.
+                            let current_start_id = start_links::linked(&self.dir, &mirror.native, &mirror.generation)
+                                .filter(|_| mirror.ended_at.is_none());
                             if advanced || native_restriction != mirror.native.restriction || start_id != current_start_id {
                                 registered.remove(&key);
                             } else {
@@ -5989,6 +5996,17 @@ pub(super) mod tests {
         mirror.registration.acknowledged = Some("gen-1".into());
         mirror.ended_at = Some(epoch_secs());
         mirror.ended_reason = Some("exited".into());
+        // Started from the web or a phone: the relay refuses a start identity on an
+        // unverified register, and a refused drain is an end that is never reported.
+        private_write(
+            &dir.path().join(format!("start-{}.json",
+                fingerprint(&json!([mirror.native.provider, mirror.native.conversation]).to_string()))),
+            &json!({"startId":"11111111-1111-4111-8111-111111111111","provider":mirror.native.provider,
+                "conversation":mirror.native.conversation,"launcher":process(std::process::id()).unwrap(),
+                "boundGeneration":"gen-1"}),
+        )
+        .unwrap();
+        assert!(start_links::linked(dir.path(), &mirror.native, &mirror.generation).is_some());
         let mut host = test_host(dir.path(), vec![(key.as_str(), mirror)]);
         host.heartbeat_interval = Duration::from_secs(60);
 
@@ -5999,6 +6017,7 @@ pub(super) mod tests {
             let mut socket = tokio_tungstenite::accept_async(tcp).await.unwrap();
             let registration = next_frame(&mut socket).await;
             assert_eq!(registration["type"], "local.session.register");
+            assert!(registration["session"].get("startId").is_none());
             assert_eq!(registration["session"]["status"], "idle");
             assert_eq!(registration["session"]["activeTurnId"], Value::Null);
             assert_eq!(registration["session"]["controlUnavailableReason"], "runtime-unverified");

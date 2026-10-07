@@ -76,7 +76,10 @@ jobs:
             echo "lightbulb-plugin is already up to date."
             exit 0
           fi
-          stamp "0.1.${GITHUB_RUN_NUMBER}"
+          # One more than the published version, never the run number: a re-run keeps its old
+          # run number and would stamp a lower version over a newer one.
+          last="${old##*.}"
+          stamp "0.1.$(( ${last:-0} + 1 ))"
           git add -A
           git -c user.name=lightbulb-bot -c user.email=lightbulb-bot@users.noreply.github.com \
             commit --quiet -m "sync: lightbulb@${SOURCE_SHA::7}"

@@ -7,11 +7,12 @@ import { LocalSessionPanel } from "../LocalSessionPanel";
 vi.mock("@/lib/analytics", () => ({ capture: vi.fn() }));
 vi.mock("@clerk/nextjs", () => ({ useAuth: () => ({ userId: "alice", orgId: "org_1" }) }));
 // The terminal itself is tested in SessionTerminalView.test; here it just reports that it is live.
-const typing = vi.hoisted(() => ({ canType: true, admitted: undefined as boolean | undefined }));
+const typing = vi.hoisted(() => ({ canType: true, admitted: undefined as boolean | undefined, kept: undefined as boolean | undefined, mounts: 0 }));
 vi.mock("../SessionTerminalView", async () => {
   const { useEffect } = await import("react");
-  return { SessionTerminalView: ({ onLive, onCanType, admitted }: { onLive: (live: boolean) => void; onCanType?: (c: boolean) => void; admitted?: boolean }) => {
-    typing.admitted = admitted;
+  return { SessionTerminalView: ({ onLive, onCanType, admitted, kept }: { onLive: (live: boolean) => void; onCanType?: (c: boolean) => void; admitted?: boolean; kept?: boolean }) => {
+    typing.admitted = admitted; typing.kept = kept;
+    useEffect(() => { typing.mounts += 1; }, []);
     useEffect(() => { onLive(true); onCanType?.(typing.canType); }, [onLive, onCanType]);
     return <div role="region" aria-label="Live terminal (view only)"><div className="session-terminal-scroll" /></div>;
   } };
@@ -369,4 +370,42 @@ it("opens an ended session's kept screen at its top left, once, and leaves a run
   live.scrollTop = 400;
   fireEvent.scroll(live);
   expect(live.scrollTop).toBe(400);
+});
+
+it("keeps the terminal a viewer was watching mounted from the end to the kept screen", async () => {
+  // Prod 2026-10-07 (web d829499b5): the row is ended for seconds before the Mac's heartbeat reports the kept screen,
+  // and the server sends no `terminal` meanwhile. The view was unmounted and a new one mounted on "Connecting…".
+  vi.useFakeTimers();
+  typing.mounts = 0;
+  const props = { ownerName: "Alice", own: false, client: client as never, revision: 0, onAccessLost: () => {}, onEvent: () => () => {} };
+  const terminal = () => screen.queryByRole("region", { name: "Live terminal (view only)" });
+  const view = render(<LocalSessionPanel {...props} session={session} />);
+  expect(terminal()).toBeTruthy();
+  const ended: LocalSession = { ...session, status: "ended", terminal: undefined, wasHeld: true, latestEventSeq: 4, endedAt: new Date().toISOString() };
+  view.rerender(<LocalSessionPanel {...props} session={ended} />);
+  expect(terminal()).toBeTruthy();
+  expect(document.querySelector(".session-ended-line")!.textContent).toMatch(/^Ended · /);
+  expect(screen.queryByText("Ended just now")).toBeNull();
+  expect([typing.admitted, typing.kept]).toEqual([false, false]); // read-only, and the kept picture is not there yet
+  await act(async () => { await vi.advanceTimersByTimeAsync(9_000); });
+  view.rerender(<LocalSessionPanel {...props} session={{ ...ended, terminal: "held", screenAvailable: true }} />);
+  expect(terminal()).toBeTruthy();
+  expect(typing.kept).toBe(true);
+  await act(async () => { await vi.advanceTimersByTimeAsync(30_000); });
+  expect(terminal()).toBeTruthy();
+  expect(typing.mounts).toBe(1); // one terminal the whole time: its picture was never thrown away
+  vi.useRealTimers();
+});
+
+it("gives up the terminal a viewer was watching when no kept screen is reported in 20 s", async () => {
+  vi.useFakeTimers();
+  const props = { ownerName: "Alice", own: false, client: client as never, revision: 0, onAccessLost: () => {}, onEvent: () => () => {} };
+  const view = render(<LocalSessionPanel {...props} session={session} />);
+  view.rerender(<LocalSessionPanel {...props} session={{ ...session, status: "ended", terminal: undefined, wasHeld: true, latestEventSeq: 4, endedAt: new Date().toISOString() }} />);
+  await act(async () => { await vi.advanceTimersByTimeAsync(19_000); });
+  expect(screen.queryByRole("region", { name: "Live terminal (view only)" })).toBeTruthy();
+  await act(async () => { await vi.advanceTimersByTimeAsync(1_100); });
+  expect(screen.queryByRole("region", { name: "Live terminal (view only)" })).toBeNull();
+  expect(screen.getByText("The screen is gone: this session's terminal closed.")).toBeTruthy();
+  vi.useRealTimers();
 });

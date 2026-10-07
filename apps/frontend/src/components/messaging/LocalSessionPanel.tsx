@@ -100,7 +100,14 @@ export function LocalSessionPanel({ session, ownerName, own, client, revision, o
     placed.current = session.sessionId;
     box.scrollTop = 0; box.scrollLeft = 0;
   };
-  const watchRemote = local === "none" && hasTerminal && (running || endedScreen) && !!onEvent && !!client.watchLocalSession;
+  const canWatch = local === "none" && !!onEvent && !!client.watchLocalSession;
+  // A viewer who was watching when the session ended keeps that terminal, with its last picture, until the
+  // kept screen is reported or the wait is over: the server sends no `terminal` in between, and a terminal
+  // taken away there came back empty, on "Connecting…" (prod 2026-10-07).
+  const watched = useRef("");
+  const keptWatching = canWatch && screenDue && watched.current === session.sessionId;
+  const watchRemote = (canWatch && hasTerminal && (running || endedScreen)) || keptWatching;
+  useEffect(() => { watched.current = watchRemote ? session.sessionId : ""; }, [watchRemote, session.sessionId]);
   const [screenLive, setScreenLive] = useState(false);
   // False once the terminal is read-only for this viewer (the Mac refused input): the message box is the way to send then.
   const [termCanType, setTermCanType] = useState(true);
@@ -274,8 +281,8 @@ export function LocalSessionPanel({ session, ownerName, own, client, revision, o
     {local !== "none"
       ? <div ref={slot} className="local-session-terminal" role="region" aria-label="Session terminal" />
       : <>
-      {session.status === "ended" ? (endedScreen ? endedLine : endedPanel) : session.status === "offline" ? offlinePanel : notStarted ? noticePanel : null}
-      {watchRemote && <div className="session-terminal-slot" onScrollCapture={endedScreen ? openAtTop : undefined}><SessionTerminalView session={session} onEvent={onEvent!} watch={client.watchLocalSession!} onLive={setScreenLive} onCanType={setTermCanType}
+      {session.status === "ended" ? (endedScreen || keptWatching ? endedLine : endedPanel) : session.status === "offline" ? offlinePanel : notStarted ? noticePanel : null}
+      {watchRemote && <div className="session-terminal-slot" onScrollCapture={endedScreen ? openAtTop : undefined}><SessionTerminalView session={session} onEvent={onEvent!} watch={client.watchLocalSession!} onLive={setScreenLive} onCanType={setTermCanType} kept={endedScreen}
         admitted={running && control && session.shared !== false && !(session.inputPaused && !own)}
         input={client.sendLocalSessionInput ? (bytes, epoch) => client.sendLocalSessionInput!(session.sessionId, toBase64(bytes), epoch) : undefined} /></div>}
       {terminalLive && control && !own && session.inputPaused && <p className="text-sm text-muted-foreground">Paused while {ownerName} answers a request to join.</p>}

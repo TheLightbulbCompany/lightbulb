@@ -39,6 +39,13 @@ const LEASE: Duration = Duration::from_secs(30);
 const TICK: Duration = Duration::from_millis(50);
 /// How long a new relay waits for a session that just ended to be indexed with its kept screen.
 const SETTLE_WAIT: Duration = Duration::from_secs(5);
+/// How long output is held back from the point where the provider leaves the alternate screen.
+/// Claude Code leaves it to shut down and prints "Resume this session with: ..." on the normal
+/// screen; it exited 0.47 s after (2.1.292, `holder::model::CLAUDE_EXIT_READS`). Those lines are not
+/// the session's picture. A program that left mid-session (an editor closing) is this much late.
+// ponytail: a provider slower than this to exit shows its exit lines until the kept snapshot
+// replaces them; the holder's own rule (`model::SHUTDOWN_LEAVE`, 5 s) is the upper bound to move to.
+const LEAVE_HOLD: Duration = Duration::from_secs(2);
 /// A nudged relay outlives acks that miss it for this long: an ack the backend built just before
 /// the viewer arrived can land after the nudge. Longer than one 10 s heartbeat.
 const GRACE: Duration = Duration::from_secs(15);
@@ -77,6 +84,8 @@ pub(super) struct Ctl {
     beat: Duration,
     /// The longest a quiet relay goes without a snapshot (RESYNC; tests shorten it).
     resync: Duration,
+    /// LEAVE_HOLD; tests shorten it.
+    leave_hold: Duration,
     pub(super) stop: AtomicBool,
     until: Mutex<Instant>,
     /// Absence from `watching` does not stop the relay before this (a nudge sets it).
@@ -86,7 +95,7 @@ pub(super) struct Ctl {
 impl Ctl {
     pub(super) fn new(since: u64) -> Self {
         Self { since: AtomicU64::new(since), epoch: AtomicU64::new(0), typist: Mutex::new(None), snapshot: AtomicBool::new(false),
-            history: AtomicBool::new(false), beat: SNAPSHOT_EVERY, resync: RESYNC, stop: AtomicBool::new(false),
+            history: AtomicBool::new(false), beat: SNAPSHOT_EVERY, resync: RESYNC, leave_hold: LEAVE_HOLD, stop: AtomicBool::new(false),
             until: Mutex::new(Instant::now() + LEASE), keep: Mutex::new(Instant::now()) }
     }
     fn renew(&self) {
@@ -608,6 +617,9 @@ fn pump(frames: &Receiver<(u8, Vec<u8>)>, to_holder: &mut impl Write, ids: (&str
     let mut last_beat = Instant::now();
     // The provider exited. An attach holder closes next; a session's own holder stays.
     let mut exited = false;
+    // Since when `pending` starts with a leave of the alternate screen (LEAVE_HOLD): held until
+    // the provider exits (dropped: the kept snapshot is the picture) or the hold is over (sent).
+    let mut leaving: Option<Instant> = None;
     loop {
         if ctl.stopped() {
             return Ok(());
@@ -620,7 +632,8 @@ fn pump(frames: &Receiver<(u8, Vec<u8>)>, to_holder: &mut impl Write, ids: (&str
             last_beat = Instant::now();
             if out.dirty || last_snapshot.elapsed() >= ctl.resync { ctl.snapshot.store(true, SeqCst) } else { out.ping(size) }
         }
-        if ctl.snapshot.load(SeqCst) && last_snapshot.elapsed() >= SNAPSHOT_GAP && out.budget.left() > 0.0 {
+        // Not while output is held: a snapshot taken now would show the lines being held back.
+        if ctl.snapshot.load(SeqCst) && leaving.is_none() && last_snapshot.elapsed() >= SNAPSHOT_GAP && out.budget.left() > 0.0 {
             ctl.snapshot.store(false, SeqCst);
             match to_holder.write_all(&encode(SNAPSHOT, b"")) {
                 Err(_) if exited => return Ok(()),
@@ -634,13 +647,27 @@ fn pump(frames: &Receiver<(u8, Vec<u8>)>, to_holder: &mut impl Write, ids: (&str
                 // It already shows whatever output was waiting.
                 pending.clear();
                 held_since = None;
+                leaving = None;
                 out.emit("snapshot", screen, size);
             }
             Ok((OUTPUT, payload)) => {
+                let had = pending.len();
                 pending.extend_from_slice(split_offset(&payload).ok_or("bad output")?.1);
                 held_since.get_or_insert_with(Instant::now);
+                if leaving.is_none() {
+                    // A little before the new bytes too: the sequence can be split across two reads.
+                    // ponytail: one split across two sends (200 ms apart) is missed; carry a tail if a provider ever does that.
+                    let from = had.saturating_sub(32);
+                    if let Some(cut) = crate::holder::model::alternate_leaves(&pending[from..], 0).first().map(|cut| from + cut) {
+                        if cut > 0 {
+                            out.emit("output", &pending.drain(..cut).collect::<Vec<u8>>(), size);
+                        }
+                        leaving = Some(Instant::now());
+                    }
+                }
             }
             Ok((RESIZE, payload)) if payload.len() == 4 => {
+                leaving = None;
                 if !pending.is_empty() {
                     out.emit("output", &std::mem::take(&mut pending), size);
                     held_since = None;
@@ -649,13 +676,15 @@ fn pump(frames: &Receiver<(u8, Vec<u8>)>, to_holder: &mut impl Write, ids: (&str
                 ctl.snapshot.store(true, SeqCst);
             }
             Ok((EXIT, _)) => {
-                if !pending.is_empty() {
+                if leaving.take().is_some() {
+                    // What the provider printed on its way out (Claude Code: the resume lines).
+                    pending.clear();
+                } else if !pending.is_empty() {
                     out.emit("output", &std::mem::take(&mut pending), size);
-                    held_since = None;
                 }
-                // The output above ends with what the provider printed on its way out (Claude
-                // Code: the resume lines). The holder's final picture is its next snapshot: ask
-                // now, on this connection. A relay started after the end depends on the index.
+                held_since = None;
+                // The holder's final picture is its next snapshot: ask now, on this connection.
+                // A relay started after the end depends on the index.
                 exited = true;
                 ctl.snapshot.store(true, SeqCst);
                 last_snapshot = Instant::now().checked_sub(SNAPSHOT_GAP).unwrap_or_else(Instant::now);
@@ -664,7 +693,11 @@ fn pump(frames: &Receiver<(u8, Vec<u8>)>, to_holder: &mut impl Write, ids: (&str
             Err(RecvTimeoutError::Disconnected) if exited => return Ok(()),
             Err(RecvTimeoutError::Disconnected) => return Err("the holder closed".into()),
         }
-        if pending.len() >= CHUNK || held_since.is_some_and(|at| at.elapsed() >= FLUSH) {
+        // More than a chunk after the leave is no exit either.
+        if pending.len() >= CHUNK || leaving.is_some_and(|at| at.elapsed() >= ctl.leave_hold) {
+            leaving = None;
+        }
+        if leaving.is_none() && (pending.len() >= CHUNK || held_since.is_some_and(|at| at.elapsed() >= FLUSH)) {
             out.emit("output", &std::mem::take(&mut pending), size);
             held_since = None;
         }
@@ -744,11 +777,15 @@ mod tests {
     #[test]
     fn screen_relay_stays_on_a_holder_whose_session_ended_and_sends_its_final_picture() {
         // Claude Code 2.1.292 on `/exit` (captured 2026-10-07): it leaves the alternate screen and
-        // prints the resume lines, then exits. Those are live output; the holder's final picture
-        // (`Model::ended_picture`) only ever comes in a snapshot asked for after the exit.
+        // prints the resume lines, then exits. The holder's final picture (`Model::ended_picture`)
+        // only ever comes in a snapshot asked for after the exit.
+        use crate::holder::model::CLAUDE_EXIT_READS;
+        let has = |hay: &[u8], needle: &[u8]| hay.windows(needle.len()).any(|w| w == needle);
         let (tx, rx) = std::sync::mpsc::channel();
         tx.send((SNAPSHOT, with_offset(0, b"\x1b[?1049hthe conversation"))).unwrap();
-        tx.send((OUTPUT, with_offset(24, b"\x1b[?1049l\r\nResume this session with:"))).unwrap();
+        for read in CLAUDE_EXIT_READS {
+            tx.send((OUTPUT, with_offset(24, read))).unwrap();
+        }
         tx.send((EXIT, b"{}".to_vec())).unwrap();
         let ctl = leased(Duration::from_millis(1500));
         let mut holder = Answering { tx, answer: vec![(SNAPSHOT, with_offset(60, b"the conversation"))], asked: vec![] };
@@ -756,12 +793,38 @@ mod tests {
         let started = Instant::now();
         pump(&rx, &mut holder, ("sid", "gen"), (80, 24), &ctl, &|f| { sent.borrow_mut().push(f); true }, Budget::new(), &|_| None).unwrap();
         let sent = sent.into_inner();
+        let data = |f: &Value| base64::engine::general_purpose::STANDARD.decode(f["data"].as_str().unwrap()).unwrap();
+        // Prod 2026-10-07: a viewer read "Resume this session with: claude --resume ..." as the
+        // session's picture for 7 s. What the provider prints after it leaves the alternate screen
+        // on its way out never goes to a viewer: the picture before it stays, then the kept one.
         assert_eq!(sent.iter().map(|f| f["kind"].as_str().unwrap()).collect::<Vec<_>>(), ["snapshot", "output", "snapshot"]);
-        let last = base64::engine::general_purpose::STANDARD.decode(sent[2]["data"].as_str().unwrap()).unwrap();
-        assert_eq!(last, b"the conversation", "the viewer is left on the final picture, not the resume lines");
+        assert!(sent.iter().all(|f| !has(&data(f), b"Resume this session") && !has(&data(f), b"\x1b[?1049l")));
+        assert_eq!(data(&sent[1]), [CLAUDE_EXIT_READS[0], CLAUDE_EXIT_READS[1], b"\x1b[?1004l"].concat(), "what came before the leave is live output");
+        assert_eq!(data(&sent[2]), b"the conversation", "the viewer is left on the final picture");
         assert_eq!(holder.asked.len(), 1);
         assert!(holder.asked[0] - started < Duration::from_millis(500), "asked at the exit, not a beat later");
         assert!(started.elapsed() >= Duration::from_millis(1400), "the relay left at the exit; a new one may find no screen indexed yet");
+    }
+
+    #[test]
+    fn screen_relay_sends_what_follows_a_leave_of_the_alternate_screen_when_no_exit_does() {
+        // A full-screen program that closed mid-session (an editor, a pager): the session runs on,
+        // and its normal screen is the picture. Late by the hold, never lost.
+        let (tx, rx) = std::sync::mpsc::channel();
+        tx.send((SNAPSHOT, with_offset(0, b"\x1b[?1049heditor"))).unwrap();
+        tx.send((OUTPUT, with_offset(14, b"saved\x1b[?10"))).unwrap();
+        tx.send((OUTPUT, with_offset(26, b"49l$ back at the prompt"))).unwrap();
+        let ctl = Ctl { leave_hold: Duration::from_millis(600), ..leased(Duration::from_millis(1500)) };
+        let sent = std::cell::RefCell::new(vec![]);
+        let started = Instant::now();
+        let _keep = tx;
+        pump(&rx, &mut Vec::<u8>::new(), ("sid", "gen"), (80, 24), &ctl, &|f| { sent.borrow_mut().push((started.elapsed(), f)); true }, Budget::new(), &|_| None).unwrap();
+        let sent = sent.into_inner();
+        let data = |f: &Value| base64::engine::general_purpose::STANDARD.decode(f["data"].as_str().unwrap()).unwrap();
+        assert_eq!(sent.iter().map(|(_, f)| f["kind"].as_str().unwrap()).collect::<Vec<_>>(), ["snapshot", "output", "output"]);
+        assert_eq!(data(&sent[1].1), b"saved", "a leave split across two reads is still found");
+        assert_eq!(data(&sent[2].1), b"\x1b[?1049l$ back at the prompt");
+        assert!(sent[1].0 < Duration::from_millis(500) && sent[2].0 >= Duration::from_millis(550), "held for the hold, then sent: {:?}", sent[2].0);
     }
 
     /// A holder that answers every snapshot request with `answer` and notes when it was asked.

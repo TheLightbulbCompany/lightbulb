@@ -89,6 +89,52 @@ it("a view mounted in a hidden tab asks for nothing until the tab is shown", asy
   spy.mockRestore();
 });
 
+it("asks for the kept picture once when the session it was watching ends, and draws it in place", async () => {
+  // The backend refuses the watch (409) between the end and the Mac's report of the kept screen, and drops
+  // the Mac's frames; a renewal after that is no new viewer, so nothing sent the kept picture (prod 2026-10-07).
+  vi.useFakeTimers();
+  let emit: (e: LiveEvent) => void = () => {};
+  const watch = vi.fn(async () => undefined);
+  const props = { session: { sessionId: "s1", generation: "g1" }, onEvent: (h: (e: LiveEvent) => void) => { emit = h; return () => {}; }, watch, onLive: vi.fn() };
+  const { rerender } = render(<SessionTerminalView {...props} />);
+  await act(async () => { await vi.dynamicImportSettled(); });
+  act(() => { emit(screenEvent("s1")); });
+  const term = hooks.term;
+  watch.mockImplementation(async () => { throw new ApiError(409, { code: "LOCAL_SESSION_OFFLINE" }); });
+  rerender(<SessionTerminalView {...props} kept={false} />);
+  await act(async () => { await vi.advanceTimersByTimeAsync(15_000); });
+  expect(watch.mock.calls).toEqual([["s1", true], ["s1", false]]); // refused, and it goes on renewing
+  expect(screen.queryByRole("status")).toBeNull(); // the last live picture stays, with no Connecting
+  watch.mockImplementation(async () => undefined);
+  rerender(<SessionTerminalView {...props} kept />);
+  expect(watch.mock.calls.slice(2)).toEqual([["s1", true]]); // the kept screen is there: one fresh ask
+  rerender(<SessionTerminalView {...props} kept />);
+  await act(async () => { await vi.advanceTimersByTimeAsync(15_000); });
+  expect(watch.mock.calls.slice(3)).toEqual([["s1", false]]);
+  act(() => { emit(screenEvent("s1", "snapshot", 5, 1, "a2VwdA==")); });
+  expect(hooks.term).toBe(term); // the same terminal,
+  expect(hooks.resets).toBe(1); // started over only for its first frame
+  expect(Array.from(writes[1])).toEqual([...CLEAR, ...new TextEncoder().encode("kept")]);
+  expect(screen.queryByRole("status")).toBeNull();
+});
+
+it("a hidden tab asks for the kept picture when it is shown, not before", async () => {
+  vi.useFakeTimers();
+  let state: DocumentVisibilityState = "visible";
+  const spy = vi.spyOn(document, "visibilityState", "get").mockImplementation(() => state);
+  const show = (next: DocumentVisibilityState) => act(() => { state = next; document.dispatchEvent(new Event("visibilitychange")); });
+  const watch = vi.fn(async () => undefined);
+  const props = { session: { sessionId: "s1", generation: "g1" }, onEvent: () => () => {}, watch, onLive: vi.fn() };
+  const { rerender } = render(<SessionTerminalView {...props} />);
+  show("hidden");
+  rerender(<SessionTerminalView {...props} kept />);
+  await act(async () => { await vi.advanceTimersByTimeAsync(60_000); });
+  expect(watch).toHaveBeenCalledTimes(1);
+  show("visible");
+  expect(watch.mock.calls).toEqual([["s1", true], ["s1", true]]);
+  spy.mockRestore();
+});
+
 it("goes back to not-live when frames stop, and live again on the next snapshot", async () => {
   vi.useFakeTimers();
   let emit: (e: LiveEvent) => void = () => {};

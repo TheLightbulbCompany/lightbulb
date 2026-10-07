@@ -22,7 +22,7 @@ it("Share makes the one link and copies it; the audience switch warns; Turn off 
   expect(navigator.clipboard.writeText).toHaveBeenCalledWith(url);
   await userEvent.selectOptions(screen.getByLabelText("Who can open it"), "anyone");
   expect(client.putLocalSessionLink).toHaveBeenLastCalledWith("s1", "anyone");
-  expect(await screen.findByRole("note")).toHaveTextContent("Anyone with the link can read this conversation");
+  expect(await screen.findByRole("note")).toHaveTextContent("Anyone with the link sees this session's title, who runs it, the tool and its state, and can continue it with a copy of the conversation");
   await userEvent.click(screen.getByRole("button", { name: "Turn off link" }));
   expect(client.deleteLocalSessionLink).toHaveBeenCalledWith("s1");
   expect(await screen.findByRole("button", { name: "Share" })).toBeInTheDocument();

@@ -217,7 +217,7 @@ export function SessionDetails({ open, onOpenChange, onClosed, tab, onTab, sessi
         <TabsContent value="changes" className="session-details-tab">
           {hasChanges
             ? <SessionOverview expanded events={events} changesAction={<SessionCommitPr session={session} client={client} own={own} ownerName={ownerName} />} />
-            : <p className="text-muted-foreground">No plan and no file changes in the part of the conversation that is loaded. Scroll the transcript back to load more.</p>}
+            : <p className="text-muted-foreground">No plan or file changes yet.</p>}
         </TabsContent>
         <TabsContent value="access" className="session-details-tab"><Access session={session} ownerName={ownerName} own={own} client={client} switches={switches} nameOf={nameOf ?? (() => "A teammate")} /></TabsContent>
         <TabsContent value="work" className="session-details-tab"><LocalSessionWork sessionId={session.sessionId} /></TabsContent>

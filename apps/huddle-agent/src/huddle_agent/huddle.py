@@ -199,34 +199,56 @@ def _words(text: str) -> tuple[set[str], list[str]]:
     return {w for w in words if w not in FUNCTION_WORDS}, words
 
 
-def unsaid_part(answer: str, said: str) -> str:
-    """The answer from the sentence it was cut on (owner ruling 10-07: what was heard is not said again). A
-    sentence counts as said when most of its words were, in order: the words a sentence used are spent, so a
-    later sentence made of the same words is not heard for free (Codex on #3792); the first sentence that was
-    not said starts the rest."""
+def _said_bags(said: str) -> tuple[collections.Counter, collections.Counter]:
+    """What was heard, as bags the sentences of an answer spend in order (`_unsaid_with`): every word, and the
+    content words. One set of bags serves every answer of one delivery, in delivery order, so two answers that
+    share wording are not both heard for the price of one (Codex on #3792)."""
+    words = _words(said)[1]
+    return collections.Counter(words), collections.Counter(w for w in words if w not in FUNCTION_WORDS)
+
+
+def _unsaid_with(answer: str, bags: tuple[collections.Counter, collections.Counter]) -> str:
+    """`unsaid_part` against bags the answers said before this one have already spent."""
+    all_left, left = bags
     sentences = [x for x in re.split(r"(?<=[.!?])\s+", answer.strip()) if x]
-    said_all = _words(said)[1]
-    left = collections.Counter(w for w in said_all if w not in FUNCTION_WORDS)
-    sounds = collections.Counter(soundex(w) for w in left.elements() if len(w) > 2 and w.isascii())
     for i, sentence in enumerate(sentences):
         words = _words(sentence)[1]
         content = [w for w in words if w not in FUNCTION_WORDS]
-        if not content and not all(w in said_all for w in words):  # "Yes." / "I can.": said only word for word
-            return answer if i == 0 else " ".join(sentences[i:])
-        hits = 0
-        for w in content:
-            key = soundex(w) if len(w) > 2 and w.isascii() else ""
-            if left[w] > 0:
+        spend: list[str] = []  # the heard words this sentence uses up, said to its end or not
+        if not content:  # "Yes." / "I can.": said only word for word, each word once
+            for w in words:
+                if all_left[w] - spend.count(w) > 0:
+                    spend.append(w)
+            said = len(spend) == len(words)
+        else:
+            for w in content:
+                if left[w] - spend.count(w) > 0:
+                    spend.append(w)
+                    continue
+                key = soundex(w) if len(w) > 2 and w.isascii() else ""
+                # misheard by the other transcriber ("peers" for "PRs"): spend the word that sounds like it
+                heard = next((x for x in left if len(x) > 2 and x.isascii() and left[x] - spend.count(x) > 0 and soundex(x) == key), None) if key else None
+                if heard is not None:
+                    spend.append(heard)
+            said = len(spend) / len(content) >= 0.7
+            for w in words:  # its function words too ("I can deploy." then "I can."), said to its end or cut
+                if w in FUNCTION_WORDS and all_left[w] - spend.count(w) > 0:
+                    spend.append(w)
+        for w in spend:  # also for a cut sentence: its fragment's words are not heard again by a later answer
+            all_left[w] -= 1
+            if w in left:
                 left[w] -= 1
-                sounds[key] -= 1
-            elif key and sounds[key] > 0:  # misheard by the other transcriber ("peers" for "PRs")
-                sounds[key] -= 1
-            else:
-                continue
-            hits += 1
-        if content and hits / len(content) < 0.7:
+        if not said:
             return answer if i == 0 else " ".join(sentences[i:])  # the same object when nothing of it was said
     return ""
+
+
+def unsaid_part(answer: str, said: str) -> str:
+    """The answer from the sentence it was cut on (owner ruling 10-07: what was heard is not said again). A
+    sentence counts as said when most of its words were, in order: the words a sentence used are spent, so a
+    later sentence made of the same words is not heard for free; the first sentence that was not said starts
+    the rest."""
+    return _unsaid_with(answer, _said_bags(said))
 
 
 def _words_in(a: str, b: str, share: float = SAME_SPEECH) -> bool:
@@ -2262,6 +2284,9 @@ class Huddle:
         if (
             news and not v.announce and v.path != "announce"
         ):  # an announcement dropped before its audio keeps it
+            if in_meet(identity):
+                # in its seed, not yet said: a close before its first word raises the hand again (_keep_unsaid)
+                v.told = list(news)
             self._consume_news(agent_id)  # handed to its own agent: consumed
         v.live, v.opened, v.naming = live, self._clock(), bool(session.get("askName"))
         v.followed_at = v.opened
@@ -3343,8 +3368,10 @@ class Huddle:
         if unsaid and in_meet(v.speaker):
             # a meeting: nothing is lost and nothing is posted yet. Its hand goes back up with what was not heard,
             # from the sentence it was cut on, said at the next pause or when someone turns to it (owner 10-06/07).
-            heard = " ".join(v.said)
-            unsaid = [(n[0], n[1], rest, *n[3:]) for n in unsaid if (rest := unsaid_part(n[2], heard))]
+            # spent in the seed's delivery order (Codex on #3800): shared wording is not heard twice
+            unsaid.sort(key=lambda n: (self._requests.order(n[0]), n[3]))
+            bags = _said_bags(" ".join(v.said))
+            unsaid = [(n[0], n[1], rest, *n[3:]) for n in unsaid if (rest := _unsaid_with(n[2], bags))]
             have = {n[0] for n in self._news.get(v.agent_id, [])}
             self._news.setdefault(v.agent_id, []).extend(n for n in unsaid if n[0] not in have)
             self._rowless.update(n[0] for n in unsaid)

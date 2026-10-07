@@ -33,7 +33,7 @@ The first time Claude Code or Codex uses the `lightbulb` server, it opens a brow
 
 ## Mac with the Lightbulb desktop app
 
-Do not add this marketplace on a Mac that runs the Lightbulb desktop app. The app installs its own copy of this plugin, from a marketplace that is also named `lightbulb`. If you add this one as well, Claude Code loads this copy instead. This copy has no `socket` file, so the session-sharing band stays blank.
+Do not add this marketplace on a Mac that runs the Lightbulb desktop app. The app installs its own copy of this plugin, from a marketplace that is also named `lightbulb`. If you add this one as well, Claude Code loads this copy instead. This copy has no `socket` file, so the session-sharing band stays blank. If you added it before you installed the app, turning on sharing in the app replaces it with the app's copy.
 
 ## Source
 

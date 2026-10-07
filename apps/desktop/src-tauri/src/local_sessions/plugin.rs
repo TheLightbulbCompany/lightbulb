@@ -67,6 +67,17 @@ fn ours(list: &[u8], root: &Path) -> bool {
     })
 }
 
+/// Whether `claude plugin marketplace list --json` holds a marketplace named `lightbulb` that is
+/// not the app's folder: the public marketplace, added before the app. It holds the name, so the
+/// app's `marketplace add` cannot register its folder and the public copy (no socket file, a
+/// blank band) stays in use. Turning sharing on replaces it; the app serves everything it gave
+/// (the MCP server, the skill). Only a positive match counts.
+fn foreign_marketplace(list: &[u8], root: &Path) -> bool {
+    serde_json::from_slice::<Vec<serde_json::Value>>(list).is_ok_and(|list| {
+        list.iter().any(|m| m["name"] == "lightbulb" && m["path"].as_str().is_none_or(|p| Path::new(p) != root))
+    })
+}
+
 /// Every step runs even if an earlier one fails: a repeat enable finds the marketplace and the
 /// plugin already there, so "already added/installed" failures are expected and only logged.
 fn run_all(home: PathBuf, root: &Path, cmds: Vec<Vec<String>>) {
@@ -75,6 +86,12 @@ fn run_all(home: PathBuf, root: &Path, cmds: Vec<Vec<String>>) {
         std::process::Command::new(&claude).args(args).stdin(std::process::Stdio::null()).output()
     };
     for args in cmds {
+        if args[1] == "marketplace"
+            && run(&["plugin", "marketplace", "list", "--json"]).is_ok_and(|o| o.status.success() && foreign_marketplace(&o.stdout, root))
+        {
+            transport::relay_log("lightbulb plugin: replacing the public lightbulb marketplace with the app's copy");
+            let _ = run(&["plugin", "marketplace", "remove", "lightbulb"]);
+        }
         if args[1] == "uninstall" && !run(&["plugin", "list", "--json"]).is_ok_and(|o| o.status.success() && ours(&o.stdout, root)) {
             transport::relay_log("lightbulb plugin: left in place, it is not the app's copy");
             continue;
@@ -164,6 +181,16 @@ mod tests {
         assert!(!ours(br#"[{"id":"lightbulb@lightbulb","installPath":"/cache/lightbulb/abc"}]"#, root));
         assert!(!ours(b"[]", root));
         assert!(!ours(b"not json", root));
+    }
+
+    #[test]
+    fn plugin_on_replaces_only_a_foreign_lightbulb_marketplace() {
+        let root = Path::new("/state/claude-mods");
+        assert!(!foreign_marketplace(br#"[{"name":"lightbulb","source":"directory","path":"/state/claude-mods"}]"#, root));
+        assert!(foreign_marketplace(br#"[{"name":"lightbulb","source":"github","repo":"TheLightbulbCompany/lightbulb-plugin"}]"#, root));
+        assert!(foreign_marketplace(br#"[{"name":"lightbulb","source":"directory","path":"/elsewhere"}]"#, root));
+        assert!(!foreign_marketplace(br#"[{"name":"other","source":"github"}]"#, root));
+        assert!(!foreign_marketplace(b"not json", root));
     }
 
     #[test]

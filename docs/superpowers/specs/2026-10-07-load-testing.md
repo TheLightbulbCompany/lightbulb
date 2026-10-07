@@ -54,8 +54,7 @@ sequentially (each fires the Paperclip JOIN + `#general` seat). The webhook is a
 `GET /messaging/rooms` shows `#general` with the six starter agents, **before any timer starts** (vital for scenario 2).
 Load rooms come from `POST /messaging/rooms`; **never post in `#general`** (all six agents `active`).
 
-**k6 shape (all three scripts).** Each message/frame carries the sender's `Date.now()`; receivers
-subtract their own (Fargate syncs to Amazon Time Sync, skew ≪ the 100 ms resolution used).
+**k6 shape (all three scripts).** Each message/frame carries the sender's `Date.now()`; receivers subtract their own.
 VUs: `preAllocatedVUs = ceil(peak rate/s × p95 iteration s × 1.5)`, `maxVUs = 2×`, both ≤ fixture users.
 ```js
 const arrival = (pre, max) => ({ executor: 'ramping-arrival-rate', startRate: 0, timeUnit: '1s',

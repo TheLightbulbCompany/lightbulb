@@ -413,9 +413,9 @@ mod tests {
         };
         let (model, mut viewer, rested, exited) = run(true);
         let said = |lines: &[String], text: &str| lines.iter().any(|l| l.contains(text));
-        assert!(said(&rested, "Reply with the single word BRAVO.") && !said(&rested, "/exit"));
+        assert!(said(&rested, "Reply with the single word BRAVO.") && !said(&rested, "❯ /exit") && !said(&rested, "Exit the CLI"));
         let last = lines(&mut viewer);
-        assert!(said(&last, "Exit the CLI") && said(&last, "Resume this session with:") && last.len() > rested.len(), "the final screen has the menu and the resume lines");
+        assert!(said(&last, "❯ /exit") && said(&last, "Exit the CLI") && said(&last, "Resume this session with:") && last.len() > rested.len(), "the final screen has the menu and the resume lines");
         let picture = model.ended_picture(exited).expect("the screen at rest before /exit");
         assert!(!picture.windows(8).any(|w| w == b"\x1b[?1049h"));
         viewer.process(WEB_CLEAR);
@@ -426,7 +426,7 @@ mod tests {
         late.process(WEB_CLEAR);
         late.process(&picture);
         let shown = lines(&mut late);
-        assert!(said(&shown, "Reply with the single word BRAVO.") && !said(&shown, "/exit") && !said(&shown, "Resume this session"));
+        assert!(said(&shown, "Reply with the single word BRAVO.") && !said(&shown, "❯ /exit") && !said(&shown, "Exit the CLI") && !said(&shown, "Resume this session"));
         // Live, the terminal still shows what the provider drew last.
         let mut live = vt100::Parser::new(40, 120, 0);
         live.process(&model.snapshot());

@@ -2,6 +2,7 @@ import * as cdk from "aws-cdk-lib";
 import * as ec2 from "aws-cdk-lib/aws-ec2";
 import * as elbv2 from "aws-cdk-lib/aws-elasticloadbalancingv2";
 import * as acm from "aws-cdk-lib/aws-certificatemanager";
+import * as wafv2 from "aws-cdk-lib/aws-wafv2";
 import { Construct } from "constructs";
 
 export interface NetworkStackProps extends cdk.StackProps {
@@ -97,6 +98,70 @@ export class NetworkStack extends cdk.Stack {
     this.targetGroupV2 = named.targetGroup;
     this.albHttpListenerArnV2 = named.httpListenerArn;
     this.albHttpsListenerArnV2 = named.httpsListenerArn;
+
+    // -------------------------------------------------------------------------
+    // WAF web ACL on the ALB — COUNT ONLY. WAFv2 cannot attach to an API Gateway
+    // HTTP API (REST APIs only), and the AppSync Event API is not a supported
+    // resource, so the ALB behind the VPC Link is the one choke point that
+    // covers the backend REST, the Paperclip host route and the bv- listener.
+    // Every rule counts and the default action is allow: this ships to read the
+    // metrics. Switching to block is a separate, owner-approved change, and
+    // test/network-stack.test.ts fails if a rule stops being count-only.
+    // -------------------------------------------------------------------------
+    const countOnly = { count: {} };
+    const managed = (name: string, priority: number): wafv2.CfnWebACL.RuleProperty => ({
+      name,
+      priority,
+      overrideAction: countOnly,
+      statement: { managedRuleGroupStatement: { vendorName: "AWS", name } },
+      visibilityConfig: {
+        cloudWatchMetricsEnabled: true,
+        sampledRequestsEnabled: true,
+        metricName: `${env}-${name}`,
+      },
+    });
+    const webAcl = new wafv2.CfnWebACL(this, "AlbWebAcl", {
+      name: `lightbulb-${env}-alb`,
+      scope: "REGIONAL",
+      defaultAction: { allow: {} },
+      visibilityConfig: {
+        cloudWatchMetricsEnabled: true,
+        sampledRequestsEnabled: true,
+        metricName: `lightbulb-${env}-alb`,
+      },
+      rules: [
+        managed("AWSManagedRulesCommonRuleSet", 10),
+        managed("AWSManagedRulesKnownBadInputsRuleSet", 20),
+        {
+          // 10,000 requests / 5 min / client IP (~33 rps sustained). API Gateway's
+          // stage throttle (prod 200 rps, 500 burst) is aggregate, so this only
+          // flags a single source flooding. The ALB sits behind API Gateway, so
+          // the source address is API GW's: key on the forwarded client IP.
+          // ponytail: X-Forwarded-For's first hop is client-suppliable; fine for
+          // counting, revisit before switching this rule to block.
+          name: "PerIpRateLimit",
+          priority: 30,
+          action: countOnly,
+          statement: {
+            rateBasedStatement: {
+              limit: 10000,
+              evaluationWindowSec: 300,
+              aggregateKeyType: "FORWARDED_IP",
+              forwardedIpConfig: { headerName: "X-Forwarded-For", fallbackBehavior: "MATCH" },
+            },
+          },
+          visibilityConfig: {
+            cloudWatchMetricsEnabled: true,
+            sampledRequestsEnabled: true,
+            metricName: `${env}-PerIpRateLimit`,
+          },
+        },
+      ],
+    });
+    new wafv2.CfnWebACLAssociation(this, "AlbWebAclAssociation", {
+      resourceArn: named.alb.loadBalancerArn,
+      webAclArn: webAcl.attrArn,
+    });
 
     this.albSecurityGroup.addIngressRule(
       ec2.Peer.ipv4(this.vpc.vpcCidrBlock),

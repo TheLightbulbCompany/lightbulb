@@ -83,3 +83,33 @@ describe("NetworkStack — browser-view listener", () => {
     });
   });
 });
+
+describe("NetworkStack — WAF web ACL (count-only)", () => {
+  const template = buildNetworkStack("dev");
+
+  test("ACL exists, allows by default, and is associated to the ALB", () => {
+    template.hasResourceProperties("AWS::WAFv2::WebACL", {
+      Scope: "REGIONAL",
+      DefaultAction: { Allow: {} },
+    });
+    template.hasResourceProperties("AWS::WAFv2::WebACLAssociation", {
+      ResourceArn: { Ref: Match.stringLikeRegexp("^AlbV2") },
+    });
+  });
+
+  test("every rule is count-only: switching to block is a deliberate, separate change", () => {
+    const acls = Object.values(template.findResources("AWS::WAFv2::WebACL"));
+    expect(acls).toHaveLength(1);
+    const rules: any[] = (acls[0] as any).Properties.Rules;
+    expect(rules.length).toBe(3);
+    for (const r of rules) {
+      if (r.Statement.ManagedRuleGroupStatement) {
+        expect(r.OverrideAction).toEqual({ Count: {} });
+        expect(r.Action).toBeUndefined();
+      } else {
+        expect(r.Action).toEqual({ Count: {} });
+      }
+      expect(r.VisibilityConfig.CloudWatchMetricsEnabled).toBe(true);
+    }
+  });
+});

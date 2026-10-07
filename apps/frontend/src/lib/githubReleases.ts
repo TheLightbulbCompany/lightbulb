@@ -21,6 +21,8 @@
  * are filtered explicitly since the token sees them.
  */
 
+import { createHmac, timingSafeEqual } from "node:crypto";
+
 export const LIGHTBULB_REPO = "TheLightbulbCompany/lightbulb";
 
 const PROD_TAG_PREFIX = "desktop-v";
@@ -55,6 +57,19 @@ export function githubHeaders(): Record<string, string> {
     headers.Authorization = `Bearer ${token}`;
   }
   return headers;
+}
+
+/** Only a manifest-issued release selection may create a distinct authenticated tag lookup. */
+export function releaseDownloadToken(tag: string, arch: string, kind: string): string | null {
+  const key = process.env.GITHUB_RELEASES_TOKEN;
+  return key ? createHmac("sha256", key)
+    .update(JSON.stringify(["desktop-release-download", tag, arch, kind])).digest("hex") : null;
+}
+
+export function validReleaseDownloadToken(tag: string, arch: string, kind: string, token: string | null): boolean {
+  if (!token || !/^[a-f0-9]{64}$/.test(token)) return false;
+  const expected = releaseDownloadToken(tag, arch, kind);
+  return expected !== null && timingSafeEqual(Buffer.from(token, "hex"), Buffer.from(expected, "hex"));
 }
 
 /**

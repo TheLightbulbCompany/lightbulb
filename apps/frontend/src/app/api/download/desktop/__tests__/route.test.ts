@@ -1,8 +1,9 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { NextRequest } from "next/server";
 
 import { GET } from "../route";
 import { GET as getManifest } from "../../../desktop/update/[target]/[current_version]/route";
+import { releaseDownloadToken } from "@/lib/githubReleases";
 
 type GhAssetFixture = {
   url: string;
@@ -60,6 +61,11 @@ afterEach(() => {
   vi.unstubAllGlobals();
   vi.unstubAllEnvs();
 });
+beforeEach(() => vi.stubEnv("GITHUB_RELEASES_TOKEN", "release-test-key"));
+
+function pinned(version: string, tag = `desktop-v${version}`) {
+  return `/api/download/desktop?kind=bundle&version=${version}&token=${releaseDownloadToken(tag, "aarch64", "bundle")}`;
+}
 
 describe("GET /api/download/desktop", () => {
   const arm: GhAssetFixture = {
@@ -149,23 +155,40 @@ describe("GET /api/download/desktop", () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
+  it.each(["", "&token=tampered", `&token=${"0".repeat(64)}`])("rejects unissued version lookups without GitHub calls (%s)", async (token) => {
+    const { fetchMock } = stubGitHub([prodRelease]);
+    const res = await GET(reqFor(`/api/download/desktop?kind=bundle&version=0.2.6${token}`, "thelightbulb.company"));
+    expect(res.status).toBe(403);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it.each([['version', '0.2.7'], ['arch', 'x64'], ['kind', 'dmg']])("rejects changes to the issued %s before querying GitHub", async (field, value) => {
+    const { fetchMock } = stubGitHub([prodRelease]);
+    const url = new URL(pinned("0.2.6"), "https://thelightbulb.company");
+    url.searchParams.set(field, value);
+    const res = await GET(new NextRequest(url, { headers: { host: "thelightbulb.company" } }));
+    expect(res.status).toBe(403);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
   it("does not switch a missing pinned release to the latest", async () => {
     stubGitHub([prodRelease]);
-    const res = await GET(reqFor("/api/download/desktop?kind=bundle&version=0.2.5", "thelightbulb.company"));
+    const res = await GET(reqFor(pinned("0.2.5"), "thelightbulb.company"));
     expect(res.status).toBe(404);
     expect(await res.json()).toEqual({ error: "no_release", version: "0.2.5" });
   });
 
   it("does not serve a draft pinned release", async () => {
     stubGitHub([{ ...prodRelease, draft: true }]);
-    const res = await GET(reqFor("/api/download/desktop?kind=bundle&version=0.2.6", "thelightbulb.company"));
+    const res = await GET(reqFor(pinned("0.2.6"), "thelightbulb.company"));
     expect(res.status).toBe(404);
   });
 
   it("keeps pinned versions within the host's environment", async () => {
-    stubGitHub([prodRelease]);
-    const res = await GET(reqFor("/api/download/desktop?kind=bundle&version=0.2.6", "dev.thelightbulb.company"));
-    expect(res.status).toBe(404);
+    const { fetchMock } = stubGitHub([prodRelease]);
+    const res = await GET(reqFor(pinned("0.2.6"), "dev.thelightbulb.company"));
+    expect(res.status).toBe(403);
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 
   it("serves the updater bundle via ?kind=bundle", async () => {

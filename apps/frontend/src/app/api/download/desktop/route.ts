@@ -5,6 +5,7 @@ import {
   pickLatestRelease,
   resolveAssetLocation,
   tagPrefixFromHost,
+  validReleaseDownloadToken,
 } from "@/lib/githubReleases";
 
 type Arch = "aarch64" | "x64";
@@ -31,6 +32,9 @@ export async function GET(req: NextRequest) {
   const version = req.nextUrl.searchParams.get("version");
   if (version !== null && !/^\d+\.\d+\.\d+$/.test(version)) {
     return NextResponse.json({ error: "invalid_version" }, { status: 400 });
+  }
+  if (version && !validReleaseDownloadToken(`${prefix}${version}`, arch, kind, req.nextUrl.searchParams.get("token"))) {
+    return NextResponse.json({ error: "invalid_download_token" }, { status: 403 });
   }
 
   const { release, githubStatus } = version

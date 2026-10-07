@@ -120,3 +120,14 @@ it("says so each time its read cursor moves: on open and on a message read while
   view.rerender(<SessionChat {...props} />);
   await waitFor(() => expect(onRead).toHaveBeenCalledTimes(2));
 });
+
+it("reports the known room as on screen before the door answers, and takes it back when the door refuses", async () => {
+  const onRoom = vi.fn();
+  let refuse!: (error: unknown) => void;
+  const openChat = vi.fn(() => new Promise<RoomDetail>((_, reject) => { refuse = reject; }));
+  render(<SessionChat sessionId="s1" sessionOwnerId="user_alice" knownRoomId="chat-1" openChat={openChat} onClose={vi.fn()} onRoom={onRoom} />);
+  expect(onRoom).toHaveBeenLastCalledWith("chat-1"); // its messages are on screen: no toast for them
+  await act(async () => { refuse(new ApiError(404, null)); });
+  expect(await screen.findByText("Chat is not available for this session.")).toBeInTheDocument();
+  expect(onRoom).toHaveBeenLastCalledWith(null);
+});

@@ -46,7 +46,8 @@ export function SessionChat({ sessionId, sessionOwnerId, knownRoomId, openChat, 
   const [error, setError] = useState<string | null>(null);
   useEffect(() => {
     let alive = true;
-    if (known) selectRoom(known);
+    // Its messages are on screen from here on, so notifications treat it as watched already.
+    if (known) { selectRoom(known); onRoom?.(known); }
     openChat(sessionId).then((room) => {
       if (!alive) return;
       setRoomId(room.roomId);
@@ -54,7 +55,9 @@ export function SessionChat({ sessionId, sessionOwnerId, knownRoomId, openChat, 
       selectRoom(room.roomId);
       onRoom?.(room.roomId);
     }, (e: unknown) => {
-      if (alive) setError(e instanceof ApiError && e.status === 409 ? "This chat is full." : "Chat is not available for this session.");
+      if (!alive) return;
+      setError(e instanceof ApiError && e.status === 409 ? "This chat is full." : "Chat is not available for this session.");
+      onRoom?.(null); // the error panel replaced the room
     });
     return () => { alive = false; onRoom?.(null); };
   }, [sessionId, known, openChat, selectRoom, onRoom]);

@@ -500,6 +500,26 @@ describe("session screen", () => {
     await waitFor(() => expect(screen.getByText("This session is no longer shared.")).toBeTruthy());
   });
 
+  it("says Ended with how long ago", async () => {
+    mockSession = { ...base, status: "ended", endedAt: new Date(Date.now() - 5 * 60_000).toISOString() };
+    mockLive.messaging.getLocalSession.mockResolvedValue(mockSession);
+    await render(<SessionScreen />);
+    expect(await screen.findByText("Ended · 5m")).toBeTruthy();
+  });
+
+  it("tells a teammate how a plain session gets its screen", async () => {
+    mockSession = { ...base, humanUserId: "user-b" };
+    await render(<SessionScreen />);
+    expect(await screen.findByText("Ask Bob to press ← in their terminal.")).toBeTruthy();
+  });
+
+  it("tells a teammate how a no-daemon Codex session gets its screen, with no ← line", async () => {
+    mockSession = { ...base, humanUserId: "user-b", provider: "codex", terminalReason: "no-daemon" };
+    await render(<SessionScreen />);
+    expect(await screen.findByText("Ask Bob to start it again with lightbulb codex.")).toBeTruthy();
+    expect(screen.queryByText(/press ←/)).toBeNull();
+  });
+
   it("shows someone else's session read-only: no prompt row, only who can send", async () => {
     mockSession = { ...base, humanUserId: "user-b" };
     await render(<SessionScreen />);

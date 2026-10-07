@@ -2,6 +2,7 @@ import * as cdk from "aws-cdk-lib";
 import * as ec2 from "aws-cdk-lib/aws-ec2";
 import * as elbv2 from "aws-cdk-lib/aws-elasticloadbalancingv2";
 import * as acm from "aws-cdk-lib/aws-certificatemanager";
+import * as wafv2 from "aws-cdk-lib/aws-wafv2";
 import { Construct } from "constructs";
 
 export interface NetworkStackProps extends cdk.StackProps {
@@ -97,6 +98,147 @@ export class NetworkStack extends cdk.Stack {
     this.targetGroupV2 = named.targetGroup;
     this.albHttpListenerArnV2 = named.httpListenerArn;
     this.albHttpsListenerArnV2 = named.httpsListenerArn;
+
+    // -------------------------------------------------------------------------
+    // WAF web ACL on the ALB — COUNT ONLY. WAFv2 cannot attach to an API Gateway
+    // HTTP API (REST APIs only), and the AppSync Event API is not a supported
+    // resource, so the ALB behind the VPC Link is the one choke point that
+    // covers the backend REST, the Paperclip host route and the bv- listener.
+    // Every rule counts and the default action is allow: this ships to read the
+    // metrics. Switching to block is a separate, owner-approved change, and
+    // test/network-stack.test.ts fails if a rule stops being count-only.
+    // Request sampling is OFF: samples store raw URLs and headers, and this ALB
+    // carries bearer tokens (device token in the bv- query string, Authorization).
+    // -------------------------------------------------------------------------
+    const countOnly = { count: {} };
+    // A group-level count still lets an inner Block end evaluation at the first
+    // match, hiding later rules' metrics, so each inner rule is overridden to
+    // count too (AWS's testing shape). Names are from `aws wafv2
+    // describe-managed-rule-group` (2026-10-07); a rule AWS adds later is still
+    // covered by the group-level override, just not broken out in metrics.
+    const managed = (
+      name: string,
+      priority: number,
+      innerRules: string[],
+    ): wafv2.CfnWebACL.RuleProperty => ({
+      name,
+      priority,
+      overrideAction: countOnly,
+      statement: {
+        managedRuleGroupStatement: {
+          vendorName: "AWS",
+          name,
+          ruleActionOverrides: innerRules.map((r) => ({ name: r, actionToUse: countOnly })),
+        },
+      },
+      visibilityConfig: {
+        cloudWatchMetricsEnabled: true,
+        sampledRequestsEnabled: false,
+        metricName: `${env}-${name}`,
+      },
+    });
+    const webAcl = new wafv2.CfnWebACL(this, "AlbWebAcl", {
+      name: `lightbulb-${env}-alb`,
+      scope: "REGIONAL",
+      defaultAction: { allow: {} },
+      visibilityConfig: {
+        cloudWatchMetricsEnabled: true,
+        sampledRequestsEnabled: false,
+        metricName: `lightbulb-${env}-alb`,
+      },
+      rules: [
+        managed("AWSManagedRulesCommonRuleSet", 10, [
+          "NoUserAgent_HEADER",
+          "UserAgent_BadBots_HEADER",
+          "SizeRestrictions_QUERYSTRING",
+          "SizeRestrictions_Cookie_HEADER",
+          "SizeRestrictions_BODY",
+          "SizeRestrictions_URIPATH",
+          "EC2MetaDataSSRF_BODY",
+          "EC2MetaDataSSRF_COOKIE",
+          "EC2MetaDataSSRF_URIPATH",
+          "EC2MetaDataSSRF_QUERYARGUMENTS",
+          "GenericLFI_QUERYARGUMENTS",
+          "GenericLFI_URIPATH",
+          "GenericLFI_BODY",
+          "RestrictedExtensions_URIPATH",
+          "RestrictedExtensions_QUERYARGUMENTS",
+          "GenericRFI_QUERYARGUMENTS",
+          "GenericRFI_BODY",
+          "GenericRFI_URIPATH",
+          "CrossSiteScripting_COOKIE",
+          "CrossSiteScripting_QUERYARGUMENTS",
+          "CrossSiteScripting_BODY",
+          "CrossSiteScripting_URIPATH",
+        ]),
+        managed("AWSManagedRulesKnownBadInputsRuleSet", 20, [
+          "JavaDeserializationRCE_BODY",
+          "JavaDeserializationRCE_URIPATH",
+          "JavaDeserializationRCE_QUERYSTRING",
+          "JavaDeserializationRCE_HEADER",
+          "Host_localhost_HEADER",
+          "PROPFIND_METHOD",
+          "ExploitablePaths_URIPATH",
+          "Log4JRCE_QUERYSTRING",
+          "Log4JRCE_BODY",
+          "Log4JRCE_URIPATH",
+          "Log4JRCE_HEADER",
+          "ReactJSRCE_BODY",
+        ]),
+        {
+          // 10,000 requests / 5 min / client IP (~33 rps sustained). API Gateway's
+          // stage throttle (prod 200 rps, 500 burst) is aggregate, so this only
+          // flags a single source flooding. The ALB sits behind API Gateway, so
+          // the source address is API GW's: key on X-Lightbulb-Client-Ip, which
+          // the API GW integration overwrites with $context.identity.sourceIp
+          // (api-stack.ts), so a client cannot spoof it. Traffic that skips API
+          // GW (the bv- door) can carry a client-set one, so it is scoped out below.
+          name: "PerIpRateLimit",
+          priority: 30,
+          action: countOnly,
+          statement: {
+            rateBasedStatement: {
+              limit: 10000,
+              evaluationWindowSec: 300,
+              aggregateKeyType: "FORWARDED_IP",
+              forwardedIpConfig: { headerName: "X-Lightbulb-Client-Ip", fallbackBehavior: "NO_MATCH" },
+              // company[-env] requests are reverse-proxied by Vercel (next.config.ts),
+              // so their source IP is a shared Vercel egress, not a user: leave them
+              // out rather than pool unrelated users into one bucket. Vercel rewrites
+              // them onto the api[-env] host under this path prefix (the host header
+              // API GW sees is api[-env], so the path is the only marker).
+              // The bv- door (/api/v1/gateway/*) is out too: CloudFront forwards every
+              // viewer header there, so a client could set X-Lightbulb-Client-Ip itself.
+              scopeDownStatement: {
+                notStatement: {
+                  statement: {
+                    orStatement: {
+                      statements: ["/__paperclip_proxy__", "/api/v1/gateway/"].map((prefix) => ({
+                        byteMatchStatement: {
+                          searchString: prefix,
+                          fieldToMatch: { uriPath: {} },
+                          positionalConstraint: "STARTS_WITH",
+                          textTransformations: [{ priority: 0, type: "NONE" }],
+                        },
+                      })),
+                    },
+                  },
+                },
+              },
+            },
+          },
+          visibilityConfig: {
+            cloudWatchMetricsEnabled: true,
+            sampledRequestsEnabled: false,
+            metricName: `${env}-PerIpRateLimit`,
+          },
+        },
+      ],
+    });
+    new wafv2.CfnWebACLAssociation(this, "AlbWebAclAssociation", {
+      resourceArn: named.alb.loadBalancerArn,
+      webAclArn: webAcl.attrArn,
+    });
 
     this.albSecurityGroup.addIngressRule(
       ec2.Peer.ipv4(this.vpc.vpcCidrBlock),

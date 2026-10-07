@@ -83,3 +83,51 @@ describe("NetworkStack — browser-view listener", () => {
     });
   });
 });
+
+describe("NetworkStack — WAF web ACL (count-only)", () => {
+  const template = buildNetworkStack("dev");
+
+  test("ACL exists, allows by default, and is associated to the ALB", () => {
+    template.hasResourceProperties("AWS::WAFv2::WebACL", {
+      Scope: "REGIONAL",
+      DefaultAction: { Allow: {} },
+    });
+    template.hasResourceProperties("AWS::WAFv2::WebACLAssociation", {
+      ResourceArn: { Ref: Match.stringLikeRegexp("^AlbV2") },
+    });
+  });
+
+  test("every rule is count-only: switching to block is a deliberate, separate change", () => {
+    const acls = Object.values(template.findResources("AWS::WAFv2::WebACL"));
+    expect(acls).toHaveLength(1);
+    const rules: any[] = (acls[0] as any).Properties.Rules;
+    expect(rules.length).toBe(3);
+    for (const r of rules) {
+      if (r.Statement.ManagedRuleGroupStatement) {
+        expect(r.OverrideAction).toEqual({ Count: {} });
+        expect(r.Action).toBeUndefined();
+      } else {
+        expect(r.Action).toEqual({ Count: {} });
+      }
+      expect(r.VisibilityConfig.CloudWatchMetricsEnabled).toBe(true);
+      // Samples would store raw URLs/headers (bearer tokens).
+      expect(r.VisibilityConfig.SampledRequestsEnabled).toBe(false);
+      // Every inner managed rule counts too, else the first inner Block ends evaluation.
+      const inner = r.Statement.ManagedRuleGroupStatement?.RuleActionOverrides;
+      if (r.Statement.ManagedRuleGroupStatement) {
+        expect(inner.length).toBeGreaterThan(10);
+        for (const o of inner) expect(o.ActionToUse).toEqual({ Count: {} });
+      }
+    }
+    expect((acls[0] as any).Properties.VisibilityConfig.SampledRequestsEnabled).toBe(false);
+    // Rate rule keys on the header API GW overwrites, never client-suppliable XFF.
+    const rate = rules.find((r) => r.Statement.RateBasedStatement);
+    expect(rate.Statement.RateBasedStatement.ForwardedIPConfig.HeaderName).toBe("X-Lightbulb-Client-Ip");
+    // Vercel-proxied company.* hosts share one egress IP, so they are scoped out.
+    const scope = JSON.stringify(rate.Statement.RateBasedStatement.ScopeDownStatement);
+    expect(scope).toContain("NotStatement");
+    expect(scope).toContain('"UriPath":{}');
+    expect(scope).toContain("/__paperclip_proxy__");
+    expect(scope).toContain("/api/v1/gateway/"); // bv- door: client can set the header
+  });
+});

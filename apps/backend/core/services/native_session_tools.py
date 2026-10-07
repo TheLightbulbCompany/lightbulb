@@ -442,16 +442,18 @@ async def _resolve_destination(auth: AuthContext, destination: str) -> str:
     return f"room:{await person_dm(auth, destination.removeprefix('person:'))}"
 
 
-async def person_dm(auth: AuthContext, member_id: str, *, create: bool = False) -> str:
+async def person_dm(auth: AuthContext, member_id: str, *, create_key: str | None = None) -> str:
     """The caller's DM room with this member. A native session needs it open already; the
-    hosted MCP opens one with a workspace person (``create``), the same find-or-create the web uses."""
+    hosted MCP opens one (``create_key``: its request id), the same find-or-create the web uses.
+    Reuse comes from the lookup. The create id is per operation, never per pair: a pair id would
+    replay the first DM's create receipt after that DM became a group DM, and post to the group."""
     if member_id == auth.user_id:
         raise ApiProblem("INVALID_REQUEST", "Cannot message your own person destination.")
     rooms = (await messaging.list_rooms(auth)).rooms
     match = next((r for r in rooms if r.kind == "dm" and any(m.id == member_id for m in r.members)), None)
     if match is not None:
         return str(match.room_id)
-    if not create:
+    if create_key is None:
         raise ApiProblem("ROOM_NOT_FOUND", "Open a direct message with this person first.")
     # People are Clerk ids; anything else is an agent, which create_room checks against the roster.
     counterpart = (
@@ -462,8 +464,8 @@ async def person_dm(auth: AuthContext, member_id: str, *, create: bool = False) 
     room = await messaging.create_room(
         auth,
         messaging.CreateRoomRequest(
-            # Deterministic, so a retried send cannot open a second DM.
-            client_room_id=uuid.uuid5(uuid.NAMESPACE_URL, f"lightbulb-dm:{auth.user_id}:{member_id}"),
+            # Per send, so a retry of this send replays this create and nothing older.
+            client_room_id=uuid.uuid5(uuid.NAMESPACE_URL, f"lightbulb-dm:{auth.user_id}:{member_id}:{create_key}"),
             name=None,
             kind="dm",
             members=[counterpart],

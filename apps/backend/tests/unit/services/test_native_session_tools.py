@@ -543,26 +543,39 @@ async def test_the_mac_answers_each_request_by_its_own_id(monkeypatch, request_i
 
 
 @pytest.mark.asyncio
-async def test_person_dm_opens_one_deterministic_dm_only_when_asked(monkeypatch):
+async def test_person_dm_opens_a_dm_per_send_and_reuses_only_a_real_dm(monkeypatch):
     auth = tools.AuthContext(user_id="user_owner", org_id="org_a")
-    monkeypatch.setattr(tools.messaging, "list_rooms", AsyncMock(return_value=SimpleNamespace(rooms=[])))
-    room_id = uuid.uuid4()
-    create = AsyncMock(return_value=SimpleNamespace(room_id=room_id))
+    person = SimpleNamespace(id="user_b")
+    group = SimpleNamespace(room_id=uuid.uuid4(), kind="group-dm", members=[person, SimpleNamespace(id="user_c")])
+    rooms = [group]  # the first DM with user_b was converted in place into this group DM
+    monkeypatch.setattr(tools.messaging, "list_rooms", AsyncMock(side_effect=lambda _a: SimpleNamespace(rooms=rooms)))
+    new_dm = uuid.uuid4()
+    create = AsyncMock(return_value=SimpleNamespace(room_id=new_dm))
     monkeypatch.setattr(tools.messaging, "create_room", create)
     monkeypatch.setattr(tools.messaging, "load_agent_roster", AsyncMock(side_effect=RuntimeError("no roster read")))
     with pytest.raises(ApiProblem) as error:
         await tools.person_dm(auth, "user_b")
     assert error.value.error.code == "ROOM_NOT_FOUND"
-    assert await tools.person_dm(auth, "user_b", create=True) == str(room_id)
-    await tools.person_dm(auth, "user_b", create=True)
+
+    # A new person send opens a NEW dm; it never lands in the group.
+    assert await tools.person_dm(auth, "user_b", create_key="req-1") == str(new_dm)
+    await tools.person_dm(auth, "user_b", create_key="req-2")
     first, second = (call.args[1] for call in create.await_args_list)
     assert first.kind == "dm" and [(m.kind, m.id) for m in first.members] == [("human", "user_b")]
-    assert first.client_room_id == second.client_room_id  # a retry cannot open a second DM
-    await tools.person_dm(auth, "0b5e3c1e-agent", create=True)
+    # Per-send create ids: no send can replay an older create receipt (the group's origin).
+    assert first.client_room_id != second.client_room_id
+
+    # Reuse comes from the lookup: once a real DM exists, nothing is created.
+    rooms.append(SimpleNamespace(room_id=new_dm, kind="dm", members=[person]))
+    create.reset_mock()
+    assert await tools.person_dm(auth, "user_b", create_key="req-3") == str(new_dm)
+    create.assert_not_awaited()
+
+    await tools.person_dm(auth, "0b5e3c1e-agent", create_key="req-4")
     agent = create.await_args.args[1].members[0]
     assert (agent.kind, agent.id, agent.listen_mode) == ("agent", "0b5e3c1e-agent", "active")
     with pytest.raises(ApiProblem):
-        await tools.person_dm(auth, "user_owner", create=True)
+        await tools.person_dm(auth, "user_owner", create_key="req-5")
 
 
 @pytest.mark.asyncio

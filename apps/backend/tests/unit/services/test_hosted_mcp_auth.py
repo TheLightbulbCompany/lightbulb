@@ -225,7 +225,7 @@ async def test_person_send_posts_into_the_dm_it_finds_or_opens(monkeypatch):
     post = AsyncMock(return_value=SimpleNamespace(room_id=uuid.UUID(room_id), message_id=uuid.uuid4(), message_seq=1))
     monkeypatch.setattr(hosted_mcp.messaging, "create_human_message", post)
     result = await hosted_mcp.send_message("hi", request_id, person_id="user_b")
-    person_dm.assert_awaited_once_with(auth, "user_b", create=True)
+    person_dm.assert_awaited_once_with(auth, "user_b", create_key=str(request_id))
     pin.assert_awaited_once_with(auth, request_id, "person:user_b")  # reserved before the DM opens
     assert update.await_args.kwargs["ExpressionAttributeValues"] == {":room": room_id}  # the DM is pinned
     assert post.await_args.args[1] == room_id and result["roomId"] == room_id

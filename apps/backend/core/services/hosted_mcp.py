@@ -288,7 +288,7 @@ async def _person_room(auth: AuthContext, request_id: uuid.UUID, person_id: str)
     pinned = await _pin_destination(auth, request_id, f"person:{person_id}")
     if pinned.get("roomId"):
         return pinned["roomId"]
-    room_id = await native_session_tools.person_dm(auth, person_id, create=True)
+    room_id = await native_session_tools.person_dm(auth, person_id, create_key=str(request_id))
     pk, sk = _sent_key(auth, request_id)
     updated = await run_in_thread(
         messaging_repo._table().update_item,

@@ -800,10 +800,17 @@ it("holds a permalink until the workspace session list lands, then opens it in f
   mocks.rooms.mockReturnValue(state);
   render(<MessagingWorkspaceProvider><CaptureContext /><MessagingConversation /></MessagingWorkspaceProvider>);
   act(() => workspaceValue.openSession("s1"));
-  expect(workspaceValue.sessionFocus).toBeNull();
+  // Prod 2026-10-07: the restored room and its live composer showed here until the list landed,
+  // so a person typing right after a reload posted into the wrong room.
+  expect(workspaceValue.sessionFocus).toEqual({ sessionId: "s1" });
+  expect(screen.getByRole("region", { name: "Shared session" })).toBeInTheDocument();
+  expect(screen.getByText("Opening session…")).toBeInTheDocument();
+  expect(document.querySelector(".room-composer, textarea")).toBeNull();
+  expect(mocks.rooms.mock.calls.at(-1)?.[2]).toBe(false); // the covered room does not auto-read either
   await landList([liveSession("s1", "colleague")]);
   expect(workspaceValue.sessionFocus).toEqual({ sessionId: "s1" });
   expect(screen.getByRole("region", { name: "Shared session" })).toBeInTheDocument();
+  expect(screen.queryByText("Opening session…")).not.toBeInTheDocument();
 });
 
 it("counts a person's session open as a pick, but not a held link's later replay", async () => {
@@ -1147,7 +1154,7 @@ it("keeps the chat flag on a session link held for the session list (a cold-load
   const landList = holdSessionList();
   render(<MessagingWorkspaceProvider><CaptureContext /></MessagingWorkspaceProvider>);
   act(() => workspaceValue.openSession("s1", true));
-  expect(workspaceValue.sessionFocus).toBeNull();
+  expect(workspaceValue.sessionFocus).toEqual({ sessionId: "s1", chat: true });
   await landList([liveSession("s1", "colleague")]);
   expect(workspaceValue.sessionFocus).toEqual({ sessionId: "s1", chat: true });
 });

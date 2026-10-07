@@ -669,25 +669,21 @@ export function MessagingWorkspaceProvider({
   const [target, setTarget] = useState<{ roomId: string; messageId: string | null } | null>(null);
   const selectRoom = chooseRoom;
   const selectDm = rooms.selectDm;
-  // A permalink applied before the workspace session list lands (a cold load,
-  // a new tab, a deep link) cannot yet tell a live session from an ended one,
-  // so it waits here and is replayed once the list settles.
-  const heldLink = useRef<{ sessionId: string; chat: boolean } | null>(null);
-  const closeSession = useCallback(() => { heldLink.current = null; setSessionFocus(null); }, []);
-  /** Returns false when the link is held for the session list. */
+  const closeSession = useCallback(() => setSessionFocus(null), []);
+  /**
+   * Focus the session NOW, whatever the session list knows. A link applied before the list lands
+   * (a reload, a new tab, a deep link) used to wait for it, and the restored room stood in with a
+   * live composer: a person typing right after a reload posted into that room (prod 2026-10-07).
+   * SessionFocus owns the wait ("Opening session…") and the unknown id ("no longer shared").
+   * Returns false for such an early link: it is the URL's replay, not a pick.
+   */
   const applySession = useCallback((sessionId: string, chat = false) => {
-    heldLink.current = null; // the latest intent wins
-    if (workspaceSessions.loading && !workspaceSessions.sessions.some((candidate) => candidate.sessionId === sessionId)) {
-      heldLink.current = { sessionId, chat };
-      return false;
-    }
     setThreadId(null);
     setTarget(null);
     setSessionFocus(chat ? { sessionId, chat } : { sessionId });
-    return true;
+    return !(workspaceSessions.loading && !workspaceSessions.sessions.some((candidate) => candidate.sessionId === sessionId));
   }, [workspaceSessions.sessions, workspaceSessions.loading]);
-  // A person's open is a pick; a held link's later replay (applySession) is not —
-  // they may have moved on by the time the list lands.
+  // A person's open is a pick; a link applied before the list lands is not.
   const openSession = useCallback((sessionId: string, chat = false) => {
     if (applySession(sessionId, chat)) bumpPick();
   }, [applySession, bumpPick]);
@@ -695,22 +691,15 @@ export function MessagingWorkspaceProvider({
     setSessionFocus((current) => current?.sessionId ? { ...current, chat: open } : current);
   }, []);
   const openNewSession = useCallback(() => {
-    heldLink.current = null;
     setThreadId(null);
     setTarget(null);
     setSessionFocus({ sessionId: null });
   }, []);
   const openAllSessions = useCallback(() => {
-    heldLink.current = null;
     setThreadId(null);
     setTarget(null);
     setSessionFocus({ sessionId: null, all: true });
   }, []);
-  useEffect(() => {
-    const link = heldLink.current;
-    if (!link || workspaceSessions.loading) return;
-    applySession(link.sessionId, link.chat);
-  }, [workspaceSessions.loading, applySession]);
   const openMessage = useCallback((roomId: string, messageId: string | null) => {
     closeSession();
     selectRoom(roomId);

@@ -37,6 +37,8 @@ export interface RoomComposerProps {
   /** Drafts that count as empty (an unfinished suggested reply), so Send stays off until completed. */
   placeholderDrafts?: readonly string[];
   label?: string;
+  /** The visible hint in the empty box; the room's own by default. */
+  placeholder?: string;
   onTypingChange?: (typing: boolean) => void;
   onUploadAttachment?: (file: File) => Promise<MessageAttachment>;
   onEditLast?: () => void;
@@ -109,6 +111,7 @@ function ComposerAttempt({
   focusToken,
   placeholderDrafts,
   label = "Message",
+  placeholder,
   onTypingChange,
   onUploadAttachment,
   onEditLast,
@@ -553,7 +556,7 @@ function ComposerAttempt({
       optionId={(index) => `${fieldId}-option-${index}`} onHover={setActiveIndex} onPick={(index) => chooseEmoji(emojiOptions[index].emoji)}
       renderRow={(entry) => <><span aria-hidden="true" className="text-lg">{entry.emoji}</span><span className="flex-1 text-left truncate">{entry.name}</span></>} />}
     <Textarea ref={field} id={fieldId} value={text} disabled={!editable} rows={1} aria-invalid={!!error}
-      aria-describedby={`${fieldId}-help ${fieldId}-status${showHint ? ` ${fieldId}-respond` : ""}`} placeholder={label === "Reply to thread" ? "Reply to thread…" : "Message the conversation · @ to mention"}
+      aria-describedby={`${fieldId}-help ${fieldId}-status${showHint ? ` ${fieldId}-respond` : ""}`} placeholder={placeholder ?? (label === "Reply to thread" ? "Reply to thread…" : "Message the conversation · @ to mention")}
       aria-autocomplete="list" aria-expanded={listOpen} aria-controls={listOpen ? `${fieldId}-targets` : undefined}
       aria-activedescendant={listOpen ? `${fieldId}-option-${activeIndex}` : undefined}
       onChange={(event) => { onTextChange(event.target.value); onTypingChange?.(!!event.target.value.trim()); syncTrigger(event.target.value, event.target.selectionStart); }}

@@ -9,15 +9,18 @@ import { useLiveEvents } from "@/hooks/useLiveEvents";
 export const pageVisible = () => document.visibilityState === "visible" && document.hasFocus();
 
 /** `roomVisible` false: something covers the room (a session in focus), so it must not auto-read.
- *  `autoSelect` false: a second room slot (a session's chat) that never picks a listed room on its own. */
-export function useRooms(initialAgentId?: string | null, subscribeToRoom = true, roomVisible = true, autoSelect = true) {
+ *  `autoSelect` false: a second room slot (a session's chat) that never picks a listed room on its own.
+ *  `needsFocus` false: that slot reads while the page is visible, focused or not -- a person watching a
+ *  session beside another window is reading its chat (prod 2026-10-07: the count came back after a reload). */
+export function useRooms(initialAgentId?: string | null, subscribeToRoom = true, roomVisible = true, autoSelect = true, needsFocus = true) {
   const { isLoaded, userId, orgId } = useAuth();
   const live = useLiveEvents();
   // Both callbacks are []-stable so the shared hook's visibility effect
   // subscribes once, not once per render; `roomVisible` is read through a ref.
   const roomVisibleRef = useRef(roomVisible);
   const listeners = useRef(new Set<() => void>());
-  const isVisible = useCallback(() => roomVisibleRef.current && pageVisible(), []);
+  const isVisible = useCallback(() => roomVisibleRef.current
+    && (needsFocus ? pageVisible() : document.visibilityState === "visible"), [needsFocus]);
   const onVisibilityChange = useCallback((listener: () => void) => {
     listeners.current.add(listener);
     window.addEventListener("focus", listener);

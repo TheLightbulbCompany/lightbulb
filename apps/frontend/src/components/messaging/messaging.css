@@ -675,20 +675,19 @@ button.native-session-panel-row:hover .native-session-panel-activity { color: va
 .session-chat .room-message[data-person="yellow"] { --person-color: var(--person-yellow); }
 .session-chat .room-message[data-person="blue"] { --person-color: var(--person-blue); }
 .session-chat .room-message[data-person="blueBright"] { --person-color: var(--person-blue-bright); }
-@media (min-width: 1180px) {
-  .room-session-focus.session-chat-open { grid-template-columns: minmax(0, 1fr) 344px; }
+/* SessionFocus picks one of three from the PANEL's width (sessionChatLayout), not the window's:
+   the rail and sidebar take the rest, so a window-width query overlaid a panel that could not spare it. */
+.room-session-focus.session-chat-push { grid-template-columns: minmax(0, 1fr) 344px; }
+/* Too narrow to keep 420px of terminal: over the session's body only. The two insets are measured,
+   so the terminal-size strip above and the session's controls below stay in reach. */
+.room-session-focus.session-chat-overlay > .session-chat {
+  position: absolute; z-index: 3; top: var(--session-chat-top, 0px); right: 0; bottom: var(--session-chat-bottom, 0px); width: 344px; max-width: 100%;
+  border-top: 1px solid var(--border); border-bottom: 1px solid var(--border);
+  box-shadow: -16px 0 32px color-mix(in srgb, var(--midnight) 12%, transparent);
 }
-@media (min-width: 860px) and (max-width: 1179px) {
-  .room-session-focus.session-chat-open > .session-chat {
-    position: absolute; z-index: 3; inset: 0 0 0 auto; width: 344px;
-    box-shadow: -16px 0 32px color-mix(in srgb, var(--midnight) 12%, transparent);
-  }
-}
-@media (max-width: 859px) {
-  /* The chat takes the screen, like a pushed page; the terminal stays mounted underneath. */
-  .room-session-focus.session-chat-open > .room-session-main { display: none; }
-  .room-session-focus.session-chat-open > .session-chat { border-left: 0; }
-}
+/* The chat takes the screen, like a pushed page; the terminal stays mounted underneath. */
+.room-session-focus.session-chat-screen > .room-session-main { display: none; }
+.room-session-focus.session-chat-screen > .session-chat { border-left: 0; }
 
 /* Readable only, while the picture is wider than the box: says where the rest of each line is. */
 .session-terminal-hint { margin-right: auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; line-height: 20px; color: color-mix(in srgb, var(--terminal-fg) 65%, var(--terminal-bg)); }

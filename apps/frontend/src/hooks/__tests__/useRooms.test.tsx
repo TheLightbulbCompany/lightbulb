@@ -212,6 +212,24 @@ describe("useRooms canonical reconciliation", () => {
     await waitFor(() => expect(messaging.markRead).toHaveBeenCalled());
   });
 
+  it("marks a session's chat read on open and on arrival while the page is visible, focused or not", async () => {
+    vi.mocked(document.hasFocus).mockReturnValue(false);
+    const { result } = renderHook(() => useRooms(null, true, true, false, false), { wrapper });
+    act(() => result.current.selectRoom(room.roomId));
+    await waitFor(() => expect(messaging.markRead).toHaveBeenCalledWith(room.roomId, { lastReadSeq: 1 }));
+    const second = { ...firstMessage, messageId: "message-2", messageSeq: 2 };
+    act(() => { for (const handler of handlers) handler(messageEvent(second)); });
+    await waitFor(() => expect(messaging.markRead).toHaveBeenCalledWith(room.roomId, { lastReadSeq: 2 }));
+  });
+
+  it("leaves a session's chat unread while the page is hidden", async () => {
+    vi.spyOn(document, "visibilityState", "get").mockReturnValue("hidden");
+    const { result } = renderHook(() => useRooms(null, true, true, false, false), { wrapper });
+    act(() => result.current.selectRoom(room.roomId));
+    await waitFor(() => expect(result.current.messages).toHaveLength(1));
+    expect(messaging.markRead).not.toHaveBeenCalled();
+  });
+
   it("keeps a covered room unread, and marks it read as soon as it is uncovered", async () => {
     const { result, rerender } = renderHook(({ roomVisible }) => useRooms(null, true, roomVisible), {
       wrapper, initialProps: { roomVisible: false },

@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { act, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, expect, it, vi } from "vitest";
 import { ApiError, type CanonicalRoomMessage, type RoomDetail } from "@lightbulb/shared";
 
@@ -34,11 +34,12 @@ it("opens the session's own room in a second slot and colours people as the term
   const onRoom = vi.fn();
   const view = render(<SessionChat sessionId="s1" sessionOwnerId="user_alice" openChat={vi.fn(async () => detail)} onClose={vi.fn()} onRoom={onRoom} />);
   await waitFor(() => expect(selectRoom).toHaveBeenCalledWith("chat-1"));
-  expect(rooms.value.args).toEqual([null, true, true, false]); // its own slot: never auto-selects a listed room
+  expect(rooms.value.args).toEqual([null, true, true, false, false]); // its own slot: never auto-selects a listed room; reads while visible
   expect(onRoom).toHaveBeenCalledWith("chat-1");
   expect(screen.getByRole("complementary", { name: "Session chat" })).toBeInTheDocument();
   expect(document.querySelector('[data-person="green"]')).toHaveTextContent("is it the relay?");
   expect(screen.getByLabelText("Message the people here")).toBeInTheDocument();
+  expect(screen.getByPlaceholderText("Message the people here")).toBeInTheDocument(); // prod showed the room's generic one
   view.unmount();
   expect(onRoom).toHaveBeenLastCalledWith(null);
 });
@@ -80,4 +81,42 @@ it("says access was removed, with no composer, when sharing pauses while the cha
   render(<SessionChat sessionId="s1" sessionOwnerId="user_alice" openChat={vi.fn(async () => detail)} onClose={vi.fn()} />);
   expect(await screen.findByText("Access removed. You can no longer view this conversation.")).toBeInTheDocument();
   expect(screen.queryByLabelText("Message the people here")).not.toBeInTheDocument();
+});
+
+it("closes from the left of its header, away from the session's own close (a double click closed both)", async () => {
+  render(<SessionChat sessionId="s1" sessionOwnerId="user_alice" openChat={vi.fn(async () => detail)} onClose={vi.fn()} />);
+  const close = await screen.findByRole("button", { name: "Close chat" });
+  expect(close.parentElement).toHaveClass("room-context-header");
+  expect(close.parentElement!.firstElementChild).toBe(close);
+  expect(close).not.toHaveClass("ml-auto");
+});
+
+it("shows its frame at once and loads the room the session already names while the door opens", async () => {
+  let land!: (room: RoomDetail) => void;
+  const openChat = vi.fn(() => new Promise<RoomDetail>((resolve) => { land = resolve; }));
+  rooms.value = { ...rooms.value, messages: [] };
+  render(<SessionChat sessionId="s1" sessionOwnerId="user_alice" knownRoomId="chat-1" openChat={openChat} onClose={vi.fn()} />);
+  expect(selectRoom).toHaveBeenCalledWith("chat-1"); // in parallel with the POST
+  expect(screen.getByRole("heading", { name: "Chat" })).toBeInTheDocument();
+  expect(screen.getByText("Opening chat…")).toBeInTheDocument();
+  expect(screen.getByLabelText("Message the people here")).toBeDisabled(); // the door must open before anyone posts
+  await act(async () => { land(detail); });
+  expect(screen.getByLabelText("Message the people here")).toBeEnabled();
+  expect(screen.queryByText("Opening chat…")).not.toBeInTheDocument();
+});
+
+it("shows the known room's messages before the door answers", () => {
+  render(<SessionChat sessionId="s1" sessionOwnerId="user_alice" knownRoomId="chat-1" openChat={vi.fn(() => new Promise<RoomDetail>(() => {}))} onClose={vi.fn()} />);
+  expect(screen.getByText("is it the relay?")).toBeInTheDocument();
+  expect(screen.getByLabelText("Message the people here")).toBeDisabled();
+});
+
+it("says so each time its read cursor moves: on open and on a message read while it is open", async () => {
+  const onRead = vi.fn();
+  const props = { sessionId: "s1", sessionOwnerId: "user_alice", openChat: vi.fn(async () => detail), onClose: vi.fn(), onRead };
+  const view = render(<SessionChat {...props} />);
+  await waitFor(() => expect(onRead).toHaveBeenCalledTimes(1));
+  rooms.value = { ...rooms.value, activeRoom: { ...detail, lastReadSeq: 2 } }; // markRead landed for a new arrival
+  view.rerender(<SessionChat {...props} />);
+  await waitFor(() => expect(onRead).toHaveBeenCalledTimes(2));
 });

@@ -123,5 +123,10 @@ describe("NetworkStack — WAF web ACL (count-only)", () => {
     // Rate rule keys on the header API GW overwrites, never client-suppliable XFF.
     const rate = rules.find((r) => r.Statement.RateBasedStatement);
     expect(rate.Statement.RateBasedStatement.ForwardedIPConfig.HeaderName).toBe("X-Lightbulb-Client-Ip");
+    // Vercel-proxied company.* hosts share one egress IP, so they are scoped out.
+    const scope = JSON.stringify(rate.Statement.RateBasedStatement.ScopeDownStatement);
+    expect(scope).toContain("NotStatement");
+    expect(scope).toContain("x-isol8-public-host");
+    expect(scope).toContain("company.");
   });
 });

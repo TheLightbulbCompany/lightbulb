@@ -202,6 +202,25 @@ export class NetworkStack extends cdk.Stack {
               evaluationWindowSec: 300,
               aggregateKeyType: "FORWARDED_IP",
               forwardedIpConfig: { headerName: "X-Lightbulb-Client-Ip", fallbackBehavior: "NO_MATCH" },
+              // company[-env] requests are reverse-proxied by Vercel (next.config.ts),
+              // so their source IP is a shared Vercel egress, not a user: leave them
+              // out rather than pool unrelated users into one bucket.
+              scopeDownStatement: {
+                notStatement: {
+                  statement: {
+                    orStatement: {
+                      statements: ["company.", "dev.company."].map((prefix) => ({
+                        byteMatchStatement: {
+                          searchString: prefix,
+                          fieldToMatch: { singleHeader: { name: "x-isol8-public-host" } },
+                          positionalConstraint: "STARTS_WITH",
+                          textTransformations: [{ priority: 0, type: "LOWERCASE" }],
+                        },
+                      })),
+                    },
+                  },
+                },
+              },
             },
           },
           visibilityConfig: {

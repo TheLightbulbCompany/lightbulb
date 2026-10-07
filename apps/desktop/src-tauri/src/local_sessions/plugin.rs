@@ -56,12 +56,14 @@ fn commands(root: &Path, on: bool) -> Vec<Vec<String>> {
 
 /// Whether `claude plugin list --json` shows `ID` read from the app's own folder (`root`). A
 /// `lightbulb@lightbulb` read from anywhere else is the person's own install of the public plugin
-/// (its hosted MCP server and skill), which turning sharing off must not remove. A list that does
-/// not parse, or does not hold `ID`, counts as ours: the uninstall then does what it always did.
+/// (its hosted MCP server and skill), which turning sharing off must not remove. Only a positive
+/// match counts: a list that fails or does not parse leaves the plugin in place. That costs little
+/// when it is ours, because the mod shows nothing once sharing is off (the app removes the socket).
 fn ours(list: &[u8], root: &Path) -> bool {
-    let Ok(list) = serde_json::from_slice::<Vec<serde_json::Value>>(list) else { return true };
-    list.iter().find(|p| p["id"] == ID).is_none_or(|p| {
-        p["readFromFolder"].as_str().is_some_and(|f| Path::new(f).starts_with(root))
+    serde_json::from_slice::<Vec<serde_json::Value>>(list).is_ok_and(|list| {
+        list.iter().any(|p| {
+            p["id"] == ID && p["readFromFolder"].as_str().is_some_and(|f| Path::new(f).starts_with(root))
+        })
     })
 }
 
@@ -73,7 +75,7 @@ fn run_all(home: PathBuf, root: &Path, cmds: Vec<Vec<String>>) {
         std::process::Command::new(&claude).args(args).stdin(std::process::Stdio::null()).output()
     };
     for args in cmds {
-        if args[1] == "uninstall" && !run(&["plugin", "list", "--json"]).is_ok_and(|o| ours(&o.stdout, root)) {
+        if args[1] == "uninstall" && !run(&["plugin", "list", "--json"]).is_ok_and(|o| o.status.success() && ours(&o.stdout, root)) {
             transport::relay_log("lightbulb plugin: left in place, it is not the app's copy");
             continue;
         }
@@ -160,8 +162,8 @@ mod tests {
         assert!(ours(&at("/state/claude-mods/lightbulb"), root));
         assert!(!ours(&at("/elsewhere/lightbulb"), root));
         assert!(!ours(br#"[{"id":"lightbulb@lightbulb","installPath":"/cache/lightbulb/abc"}]"#, root));
-        assert!(ours(b"[]", root));
-        assert!(ours(b"not json", root));
+        assert!(!ours(b"[]", root));
+        assert!(!ours(b"not json", root));
     }
 
     #[test]

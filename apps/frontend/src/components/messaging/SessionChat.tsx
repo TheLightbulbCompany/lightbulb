@@ -34,7 +34,7 @@ export function SessionChat({ sessionId, sessionOwnerId, openChat, onClose, onRo
   onRead?: () => void;
 }) {
   const { userId } = useAuth();
-  const rooms = useRooms(null, true, true, false, false);
+  const rooms = useRooms(null, true, true, false);
   const { selectRoom, sendMessage } = rooms;
   // Nothing is selected until the door (a POST: seat, lifecycle, fence) answers, and then only the
   // room it returns. A room id the session list already names is never loaded ahead of it: that id

@@ -34,7 +34,7 @@ it("opens the session's own room in a second slot and colours people as the term
   const onRoom = vi.fn();
   const view = render(<SessionChat sessionId="s1" sessionOwnerId="user_alice" openChat={vi.fn(async () => detail)} onClose={vi.fn()} onRoom={onRoom} />);
   await waitFor(() => expect(selectRoom).toHaveBeenCalledWith("chat-1"));
-  expect(rooms.value.args).toEqual([null, true, true, false, false]); // its own slot: never auto-selects a listed room; reads while visible
+  expect(rooms.value.args).toEqual([null, true, true, false]); // its own slot: never auto-selects a listed room; reads under the room focus rule
   expect(onRoom).toHaveBeenCalledWith("chat-1");
   expect(screen.getByRole("complementary", { name: "Session chat" })).toBeInTheDocument();
   expect(document.querySelector('[data-person="green"]')).toHaveTextContent("is it the relay?");

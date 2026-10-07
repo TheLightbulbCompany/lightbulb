@@ -516,6 +516,30 @@ fn holder_runs_the_provider_in_the_environment_it_was_handed() {
     manager::stop(info.pid);
 }
 
+/// Owner ruling 2026-10-07: a held Claude Code session runs in Claude Code's classic renderer, so
+/// its output has history a watcher can scroll back through. The real holder binary, started as
+/// `lightbulb claude` starts it (the terminal's own environment, the start-link wrapper), with a
+/// script under each provider's name in place of the provider.
+#[test]
+fn holder_starts_claude_code_in_the_classic_renderer_and_codex_as_it_is() {
+    use std::os::unix::fs::PermissionsExt;
+    for (name, renderer) in [("claude", "renderer=1 flicker=1"), ("codex", "renderer=unset flicker=1")] {
+        let dir = temp_dir();
+        let program = dir.parent().unwrap().join(name);
+        std::fs::write(&program, "#!/bin/sh\necho \"renderer=${CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN:-unset} flicker=${CLAUDE_CODE_NO_FLICKER:-unset}\"\nexec cat\n").unwrap();
+        std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755)).unwrap();
+        // The person asked for fullscreen in their own shell: a shared session is classic all the same.
+        let env = vec![("PATH".to_string(), "/usr/bin:/bin".to_string()), ("CLAUDE_CODE_NO_FLICKER".into(), "1".into())];
+        let argv: Vec<String> = ["/bin/sh", "-c", r#"shift 2; exec "$@""#, "lightbulb-start", "start-1", "/scope", program.to_str().unwrap()].map(String::from).to_vec();
+        let info = manager::start_with_env(Path::new(env!("CARGO_BIN_EXE_lightbulb-desktop")), &dir, Path::new("/"), &argv, None, Some(env)).unwrap();
+        let mut c = UnixStream::connect(&info.socket).unwrap();
+        c.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+        c.write_all(&encode(HELLO, br#"{"role":"interactive","replayFrom":0}"#)).unwrap();
+        read_until(&mut c, renderer.as_bytes());
+        manager::stop(info.pid);
+    }
+}
+
 /// Wait until the holder's screen shows `needle` (drawn before or after any client attached).
 fn wait_screen(socket: &Path, needle: &[u8]) {
     let deadline = Instant::now() + Duration::from_secs(5);

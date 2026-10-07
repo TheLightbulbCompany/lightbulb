@@ -1371,6 +1371,8 @@ mod tests {
                 "user"
             ]
         );
+        // A picked-up session runs in the classic renderer, as a new one does (owner ruling 2026-10-07).
+        assert!(crate::holder::run::provider_environment(vec![], &argv).iter().any(|(k, _)| k == crate::holder::run::CLASSIC_RENDERER));
     }
 
     #[test]

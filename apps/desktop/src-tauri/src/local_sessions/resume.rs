@@ -369,6 +369,9 @@ mod tests {
             ["/bin/codex", "--no-daemon", "--sandbox", "read-only", "--ask-for-approval", "on-request", "resume", CONV]
         );
         assert_eq!(argv(codex, &wanted("codex", "default"), true)[3], "workspace-write");
+        // A resumed Claude Code session runs in the classic renderer, as a new one does (owner ruling 2026-10-07).
+        let classic = |argv: &[String]| crate::holder::run::provider_environment(vec![], argv).iter().any(|(k, _)| k == crate::holder::run::CLASSIC_RENDERER);
+        assert!(classic(&argv(claude, &wanted("claude", "default"), true)) && !classic(&argv(codex, &wanted("codex", "default"), true)));
     }
 
     #[test]

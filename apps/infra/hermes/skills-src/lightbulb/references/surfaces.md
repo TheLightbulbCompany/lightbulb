@@ -211,7 +211,11 @@ an allowed person's permission never extends to an agent acting for them.
 **Live terminal**: a running held session shows its real terminal in the
 session panel (desktop app on the owner's Mac; the owner types there, **End**
 takes two clicks, and the separate terminal window is gone). Teammates who can
-read the session, and the owner on another device, watch the same terminal live;
+read the session, and the owner on another device, watch the same terminal live.
+Lightbulb runs the Claude Code sessions it starts in Claude Code's classic
+renderer, so a watcher can scroll back through such a session's earlier output
+(a Claude Code background session and a Codex session still show only the
+current screen);
 while no frame has arrived it says "Connecting…", and after 30 s of silence "Reconnecting…". The owner, anyone accepted through **Ask to join**, or everyone when
 **Let teammates control this session** is on can type straight into it,
 including answering the tool's own prompts; others watch read-only and see a "Watching · Ask to join" line. There is no message

@@ -262,3 +262,23 @@ it("shows a retry line in the status area when the first history load fails, and
   await waitFor(() => expect(screen.queryByText("Could not load session details.")).toBeNull());
   expect(list.mock.calls.length).toBeGreaterThanOrEqual(2);
 });
+
+it("keeps a queued follow-up visible and cancellable after the session ends", async () => {
+  const receipt = { requestId: "r1", expectedGeneration: "g1", kind: "send", text: "queued while offline", state: "pending", deliverBy: Math.floor(Date.now() / 1000) + 3600 };
+  const cancel = vi.fn(async () => ({ ...receipt, state: "cancelled" }));
+  render(<LocalSessionPanel session={{ ...session, status: "ended", latestEventSeq: 3 }} ownerName="Alice" own
+    client={{ ...client, listLocalSessionOutbox: vi.fn(async () => ({ commands: [receipt] })), cancelLocalSessionCommand: cancel } as never} revision={0} onAccessLost={() => {}} />);
+  expect(await screen.findByText("queued while offline")).toBeTruthy();
+  screen.getByRole("button", { name: /cancel/i }).click();
+  await waitFor(() => expect(cancel).toHaveBeenCalledWith("s", "r1"));
+});
+
+it("reads 20 older pages in the background, and all of them while Details is open", async () => {
+  const list = vi.fn(async (_id: string, after: number, limit: number) => ({ events: Array.from({ length: limit }, (_, i) => textEvent(after + 1 + i)), nextAfterSeq: null }));
+  render(<LocalSessionPanel session={{ ...session, status: "idle", latestEventSeq: 1300 }} ownerName="Alice" own client={{ ...client, listLocalSessionEvents: list } as never} revision={0} onAccessLost={() => {}} />);
+  await waitFor(() => expect(list).toHaveBeenCalledTimes(21));
+  await new Promise(r => setTimeout(r, 100));
+  expect(list).toHaveBeenCalledTimes(21);
+  screen.getByRole("button", { name: "Details" }).click();
+  await waitFor(() => expect(list).toHaveBeenCalledTimes(26));
+});

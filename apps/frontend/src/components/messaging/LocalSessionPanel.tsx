@@ -50,16 +50,16 @@ export function LocalSessionPanel({ session, ownerName, own, client, revision, o
   // The history feeds the plan, the changed files and the pending approval; no rows are drawn from it, so no poll.
   const source = useHistorySource(client, session, revision);
   const history = useLocalSessionHistory(client, source.sessionId, source.latestEventSeq, revision, onAccessLost, { pollMs: 0 });
-  // Nothing scrolls the history any more, so read back through older pages for the plan and changed files. Bounded per session.
+  const [text, setText] = useState("");
+  const [details, setDetails] = useState<SessionDetailsTab | null>(null);
+  // Nothing scrolls the history any more, so read back through older pages for the plan and changed files. Bounded per session while Details is closed; with Details open the read runs to the start, so Changes and the plan are complete.
   const olderPages = useRef({ id: session.sessionId, n: 0 });
   useEffect(() => {
     if (olderPages.current.id !== source.sessionId) olderPages.current = { id: source.sessionId, n: 0 };
-    if (!history.hasOlder || history.loading || history.error || olderPages.current.n >= MAX_OLDER_PAGES) return;
+    if (!history.hasOlder || history.loading || history.error || (details === null && olderPages.current.n >= MAX_OLDER_PAGES)) return;
     olderPages.current.n += 1;
     void history.load("older");
-  }, [history, source.sessionId]);
-  const [text, setText] = useState("");
-  const [details, setDetails] = useState<SessionDetailsTab | null>(null);
+  }, [history, source.sessionId, details]);
   const [tab, setTab] = useState<SessionDetailsTab>("about");
   const slot = useRef<HTMLDivElement>(null);
   // Running on this Mac: the real terminal replaces the session view (rulings 2026-10-03 §2).
@@ -241,7 +241,7 @@ export function LocalSessionPanel({ session, ownerName, own, client, revision, o
         input={client.sendLocalSessionInput ? (bytes, epoch) => client.sendLocalSessionInput!(session.sessionId, toBase64(bytes), epoch) : undefined} />}
       {terminalLive && control && !own && session.inputPaused && <p className="text-sm text-muted-foreground">Paused while {ownerName} answers a request to join.</p>}
       {liveTerminal && <div className="local-session-feedback">{feedback}</div>}
-      {!liveTerminal && session.status !== "ended" && <div className="local-session-feedback">{feedback}</div>}
+      {!liveTerminal && (session.status !== "ended" || !!pendingText || queuedOutbox.length > 0) && <div className="local-session-feedback">{feedback}</div>}
     </>}
     {session.status === "ended" ? <SessionResume flow={resume} own={own} ownerName={ownerName} /> : terminalLive && control && (local === "local" || termCanType || (!own && session.inputPaused)) ? null : control ? <form className="room-composer local-session-composer native-session-composer" onSubmit={event => { event.preventDefault(); command.send(text); }}>
       <label htmlFor={id} className="sr-only">Send to {target}</label>

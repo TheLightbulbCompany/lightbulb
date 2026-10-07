@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { MessageSquare, X } from "lucide-react";
 import { ApiError, sessionTitle, sessionViewKey, type LocalSession, type SessionSource } from "@lightbulb/shared";
 import { Button } from "@/components/ui/button";
@@ -113,7 +113,11 @@ export function SessionFocus({ focus, entries, loading, hintRevision, client, re
   // Chat beside the terminal (spec 2026-10-07-session-chat-design §3). Unread is the server's count from
   // the session list, which refetches when a chat message arrives (useWorkspaceSessions); nothing is
   // counted here. Reading the chat zeroes it until the list refreshes.
-  const openChat = client.openSessionChat;
+  // Opening refreshes the session list: a first open creates the seat, and the list must carry its
+  // `chatRoomId` for the room's next message to count (useWorkspaceSessions filters on it).
+  const openSessionChat = client.openSessionChat;
+  const openChat = useMemo(() => openSessionChat && ((sessionId: string) =>
+    openSessionChat(sessionId).then((room) => { onAccessLost(); return room; })), [openSessionChat, onAccessLost]);
   const [readThrough, setReadThrough] = useState<LocalSession | null>(null);
   const toggleChat = () => {
     if (chatOpen) setReadThrough(session);

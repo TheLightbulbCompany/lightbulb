@@ -190,14 +190,16 @@ export default function SessionScreen() {
       .catch(() => {});
   }, [rooms, session]);
   const [chatError, setChatError] = useState<string | null>(null);
+  const refreshSessions = workspace.refresh;
   // The session's chat (spec 2026-10-07-session-chat-design §3): the room screen, pushed; back returns here.
   const openChat = useCallback(() => {
     if (!session) return;
     setChatError(null);
     rooms.resourceSource.client.openSessionChat(session.sessionId)
-      .then((room) => router.push(`/(app)/room/${room.roomId}`))
+      // The list learns the room (a first open creates the seat), so its next message counts here.
+      .then((room) => { void refreshSessions(); router.push(`/(app)/room/${room.roomId}`); })
       .catch(() => setChatError("Chat is not available for this session."));
-  }, [rooms.resourceSource.client, session]);
+  }, [rooms.resourceSource.client, session, refreshSessions]);
   // Hoisted above the early returns below — see the room screen.
   const keyboardOffset = usePushedScreenKeyboardOffset();
   const [detailsOpen, setDetailsOpen] = useState(false);

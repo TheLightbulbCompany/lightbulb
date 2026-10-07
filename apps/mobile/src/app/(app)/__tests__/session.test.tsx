@@ -824,9 +824,13 @@ describe("session screen", () => {
     (router.push as jest.Mock).mockClear();
     mockSession = { ...base, chatUnread: 2 };
     await render(<SessionScreen />);
-    await fireEvent.press(await screen.findByLabelText("Chat, 2 unread"));
+    const chat = await screen.findByLabelText("Chat, 2 unread");
+    const listed = mockLive.messaging.listWorkspaceSessions.mock.calls.length;
+    await fireEvent.press(chat);
     expect(mockLive.messaging.openSessionChat).toHaveBeenCalledWith("sess-1");
     await waitFor(() => expect(router.push).toHaveBeenCalledWith("/(app)/room/chat-1"));
+    // The list learns the room now, so its next message counts on the Chat button.
+    await waitFor(() => expect(mockLive.messaging.listWorkspaceSessions.mock.calls.length).toBeGreaterThan(listed));
   });
 
   it("says so when the session's chat cannot open", async () => {

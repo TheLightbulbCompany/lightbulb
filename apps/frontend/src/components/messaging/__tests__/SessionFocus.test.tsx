@@ -4,8 +4,8 @@ import { expect, it, vi } from "vitest";
 import { ApiError, type LocalSession, type SessionSource } from "@lightbulb/shared";
 import { SessionFocus } from "../SessionFocus";
 
-vi.mock("../SessionChat", () => ({ SessionChat: ({ onClose }: { onClose: () => void }) =>
-  <aside aria-label="Session chat"><button onClick={onClose}>Close chat</button></aside> }));
+vi.mock("../SessionChat", () => ({ SessionChat: ({ onClose, openChat }: { onClose: () => void; openChat: (id: string) => Promise<unknown> }) =>
+  <aside aria-label="Session chat"><button onClick={onClose}>Close chat</button><button onClick={() => void openChat("s1")}>Open door</button></aside> }));
 
 const session: LocalSession = { sessionId: "s1", deviceId: "mac", humanUserId: "alice", provider: "claude", terminal: "held", providerVersion: "2.1.269", generation: "g", status: "busy", activeTurnId: null,
   capabilities: { sendMode: "queue", steer: false, interrupt: false }, capabilitiesVerified: true, controlUnavailableReason: null, latestEventSeq: 0, title: "Load test" };
@@ -305,4 +305,15 @@ it("shows the server's chat unread count and never adds live arrivals on top (th
   expect(screen.getByRole("button", { name: "Chat, 1 unread" })).toBeInTheDocument();
   rerender(view(2)); // the refreshed list already counts that message
   expect(screen.getByRole("button", { name: "Chat, 2 unread" })).toBeInTheDocument();
+});
+
+it("refreshes the session list when the chat opens, so a first open's room is known for its next message", async () => {
+  const onAccessLost = vi.fn();
+  const client = { listWorkspaceSessions: vi.fn(), getLocalSession: vi.fn(), listLocalSessionEvents: vi.fn(async () => ({ events: [], nextAfterSeq: null })),
+    submitLocalSessionCommand: vi.fn(), getLocalSessionCommand: vi.fn(), openSessionChat: vi.fn(async () => ({ roomId: "chat-1" })) } as unknown as SessionSource["client"];
+  render(<SessionFocus focus={{ sessionId: "s1" }} entries={[{ session, ownerName: "Alice", own: false }]} loading={false} hintRevision={0} client={client}
+    resolveSessionOwner={resolveSessionOwner} onAccessLost={onAccessLost} onClose={vi.fn()} chatOpen onChatOpenChange={vi.fn()} />);
+  await userEvent.click(await screen.findByRole("button", { name: "Open door" }));
+  expect(client.openSessionChat).toHaveBeenCalledWith("s1");
+  expect(onAccessLost).toHaveBeenCalled();
 });

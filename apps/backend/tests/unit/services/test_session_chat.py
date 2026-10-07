@@ -66,8 +66,9 @@ def env(monkeypatch):
 @pytest.mark.asyncio
 async def test_first_open_creates_one_hidden_room_and_seats_the_reader(env):
     await session_chat.open_chat(BOB, SID)
-    # Checked before the seat and again after it (a pause in between must not leave a seat).
-    assert session_chat.local_sessions.authorize_session.await_args_list == [call(BOB, None, SID)] * 2
+    # Read at the door, again after the room is created (an end or resume in between) and again
+    # after the seat (a pause in between must not leave a seat).
+    assert session_chat.local_sessions.authorize_session.await_args_list == [call(BOB, None, SID)] * 3
     kwargs = env["create_room"].await_args.kwargs
     assert (kwargs["room_id"], kwargs["kind"], kwargs["creator_user_id"]) == (ROOM, "channel", ALICE.user_id)
     assert kwargs["name"] == "Session chat · Fix relay"
@@ -335,3 +336,13 @@ async def test_the_chat_is_named_after_the_session_and_follows_a_rename(env, mon
     with pytest.raises(ApiProblem) as refused:
         await messaging.patch_room(ALICE, ROOM, messaging.PatchRoomRequest(name="mine"))
     assert refused.value.error.code == "ROOM_FORBIDDEN"
+
+
+@pytest.mark.asyncio
+async def test_a_room_created_as_its_session_ends_is_archived_from_the_fresh_row(env):
+    """The end hook found no room yet: the door reads the session again after creating one."""
+    ended = ({**ROW, "endedAt": 10}, {})
+    session_chat.local_sessions.authorize_session.side_effect = [(ROW, {}), ended, ended]
+    await session_chat.open_chat(BOB, SID)
+    updates = env["patch_room_meta"].await_args.args[1]
+    assert updates["archivedAt"] and updates["archivedBy"] == "__system__"

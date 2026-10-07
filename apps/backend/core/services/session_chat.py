@@ -181,7 +181,12 @@ async def open_chat(auth: AuthContext, session_id: str) -> RoomDetail:
     row, _ = await local_sessions.authorize_session(auth, None, session_id)
     owner_id = resolve_owner_id(auth)
     room_id = session_room_id(owner_id, row["sessionId"])
-    meta = await messaging_repo.get_room(room_id) or await _create(owner_id, room_id, row)
+    meta = await messaging_repo.get_room(room_id)
+    if meta is None:
+        meta = await _create(owner_id, room_id, row)
+        # The session may have ended or resumed while the room did not exist, when its hook
+        # (follow_session) had nothing to move: read it again so the new room starts in step.
+        row, _ = await local_sessions.authorize_session(auth, None, session_id)
     meta = await _follow_lifecycle(meta, row)
     if await messaging_repo.get_member(room_id, "human", auth.user_id) is None:
         meta = await _seat(owner_id, meta, auth.user_id)

@@ -415,3 +415,7 @@ def test_the_unsaid_part_spends_the_words_a_sentence_used():
         "Three open PRs are in backend."
     )
     assert h_mod.unsaid_part("Three PRs are open. Two PRs are drafts.", "Three PRs are open. Two PRs are drafts.") == ""
+    # an answer of function words only ("Yes.", "I can.") is kept unless said word for word (Codex on #3792)
+    assert h_mod.unsaid_part("Yes. The build is green.", "") == "Yes. The build is green."
+    assert h_mod.unsaid_part("Yes. The build is green.", "Yes.") == "The build is green."
+    assert h_mod.unsaid_part("I can.", "I can.") == ""

@@ -205,10 +205,14 @@ def unsaid_part(answer: str, said: str) -> str:
     later sentence made of the same words is not heard for free (Codex on #3792); the first sentence that was
     not said starts the rest."""
     sentences = [x for x in re.split(r"(?<=[.!?])\s+", answer.strip()) if x]
-    left = collections.Counter(w for w in _words(said)[1] if w not in FUNCTION_WORDS)
+    said_all = _words(said)[1]
+    left = collections.Counter(w for w in said_all if w not in FUNCTION_WORDS)
     sounds = collections.Counter(soundex(w) for w in left.elements() if len(w) > 2 and w.isascii())
     for i, sentence in enumerate(sentences):
-        content = [w for w in _words(sentence)[1] if w not in FUNCTION_WORDS]
+        words = _words(sentence)[1]
+        content = [w for w in words if w not in FUNCTION_WORDS]
+        if not content and not all(w in said_all for w in words):  # "Yes." / "I can.": said only word for word
+            return answer if i == 0 else " ".join(sentences[i:])
         hits = 0
         for w in content:
             key = soundex(w) if len(w) > 2 and w.isascii() else ""

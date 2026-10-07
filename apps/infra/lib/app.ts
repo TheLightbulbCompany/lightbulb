@@ -53,7 +53,7 @@ const bindDevHostToPreview = (host: string) => ({
 // frontend-ci.yml and mobile-ci.yml already carry.
 const setupPnpmStep = () => ({
   name: "Setup pnpm",
-  uses: "pnpm/action-setup@v4",
+  uses: "pnpm/action-setup@v6",
   with: { dest: "${{ runner.temp }}/setup-pnpm" },
 });
 
@@ -69,9 +69,9 @@ const companyVercelEnv = { ...vercelEnv, VERCEL_PROJECT_ID: "${{ secrets.VERCEL_
 const COMPANY_DOMAIN = "about.thelightbulb.company";
 const companyVercelSteps = (prod: boolean) => [
   // Vercel needs no git credentials; do not leave the token in the checkout.
-  { name: "Checkout", uses: "actions/checkout@v4", with: { "persist-credentials": false } },
+  { name: "Checkout", uses: "actions/checkout@v7", with: { "persist-credentials": false } },
   setupPnpmStep(),
-  { name: "Setup Node.js", uses: "actions/setup-node@v4", with: { "node-version": "20", cache: "pnpm" } },
+  { name: "Setup Node.js", uses: "actions/setup-node@v7", with: { "node-version": "20", cache: "pnpm" } },
   { name: "Install Vercel CLI", run: "npm install -g vercel" },
   { name: "Pull Vercel Settings", run: `vercel pull --yes${prod ? " --environment=production" : ""} --token=$VERCEL_TOKEN`, env: companyVercelEnv },
   { name: "Build Company Site", run: `vercel build${prod ? " --prod" : ""} --token=$VERCEL_TOKEN`, env: companyVercelEnv },
@@ -136,7 +136,7 @@ const CDKOUT_S3_URI = `s3://${CDKOUT_BUCKET}/gha-cdk-out/\${{ github.run_id }}-\
 const CDKOUT_TARBALL = `${CDKOUT_S3_URI}/cdk.out.tgz`;
 const CDKOUT_OIDC_STEP = {
   name: "Authenticate Via OIDC Role",
-  uses: "aws-actions/configure-aws-credentials@v4",
+  uses: "aws-actions/configure-aws-credentials@v6",
   with: {
     "aws-region": "us-west-2",
     "role-duration-seconds": 1800,
@@ -237,9 +237,9 @@ pipeline.addStageWithGitHubOptions(devStage, {
     // Deploy frontend to Vercel (preview) and alias to dev.{rootDomain}
     new GitHubActionStep("DeployVercelDev", {
       jobSteps: [
-        { name: "Checkout", uses: "actions/checkout@v4" },
+        { name: "Checkout", uses: "actions/checkout@v7" },
         setupPnpmStep(),
-        { name: "Setup Node.js", uses: "actions/setup-node@v4", with: { "node-version": "20", cache: "pnpm" } },
+        { name: "Setup Node.js", uses: "actions/setup-node@v7", with: { "node-version": "20", cache: "pnpm" } },
         { name: "Install Vercel CLI", run: "npm install -g vercel" },
         { name: "Pull Vercel Settings", run: "vercel pull --yes --token=$VERCEL_TOKEN", env: vercelEnv },
         {
@@ -347,9 +347,9 @@ pipeline.addStageWithGitHubOptions(prodStage, {
     // Deploy frontend to Vercel (production) and alias to {rootDomain}
     new GitHubActionStep("DeployVercelProd", {
       jobSteps: [
-        { name: "Checkout", uses: "actions/checkout@v4" },
+        { name: "Checkout", uses: "actions/checkout@v7" },
         setupPnpmStep(),
-        { name: "Setup Node.js", uses: "actions/setup-node@v4", with: { "node-version": "20", cache: "pnpm" } },
+        { name: "Setup Node.js", uses: "actions/setup-node@v7", with: { "node-version": "20", cache: "pnpm" } },
         { name: "Install Vercel CLI", run: "npm install -g vercel" },
         { name: "Pull Vercel Settings", run: "vercel pull --yes --environment=production --token=$VERCEL_TOKEN", env: vercelEnv },
         {
@@ -600,7 +600,7 @@ for (const job of assetJobNames()) {
   cdkoutPatches.push(
     JsonPatch.add(`/jobs/${job}/steps/0`, {
       name: "Setup Node",
-      uses: "actions/setup-node@v4",
+      uses: "actions/setup-node@v7",
       with: { "node-version": "20" },
     }),
   );

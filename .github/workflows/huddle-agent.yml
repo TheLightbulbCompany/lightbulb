@@ -20,7 +20,7 @@ jobs:
       run:
         working-directory: apps/huddle-agent
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: astral-sh/setup-uv@v4
       - run: uv sync
       - run: uv run pytest
@@ -30,7 +30,7 @@ jobs:
     if: github.event_name == 'push' && vars.LIVEKIT_DEV_ENABLED == 'true'
     runs-on: ${{ vars.CI_RUNNER }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       # lk agent deploy needs the livekit.toml that `lk agent create` wrote for this project (README).
       - run: cp apps/huddle-agent/livekit.dev.toml apps/huddle-agent/livekit.toml
       - uses: livekit/deploy-action@v2.12.2
@@ -47,7 +47,7 @@ jobs:
     if: github.event_name == 'workflow_dispatch' && vars.LIVEKIT_PROD_ENABLED == 'true'
     runs-on: ${{ vars.CI_RUNNER }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       # lk agent deploy needs the livekit.toml that `lk agent create` wrote for this project (README).
       - run: cp apps/huddle-agent/livekit.prod.toml apps/huddle-agent/livekit.toml
       - uses: livekit/deploy-action@v2.12.2

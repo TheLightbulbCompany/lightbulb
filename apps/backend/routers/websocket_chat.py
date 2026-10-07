@@ -251,8 +251,8 @@ async def ws_message(
         response = {"type": "local.session.error", "code": "INTERNAL"}
     handled = time.monotonic()
     with step("reply"):
-        await relay.management.send_message_async(x_connection_id, response)
-    if frame_name == "heartbeat":
+        acked = await relay.management.send_message_async(x_connection_id, response)
+    if frame_name == "heartbeat" and acked is True:  # False/Gone: no ack reached the Mac
         put_metric("session.relay.heartbeat.latency", (time.monotonic() - started) * 1000, "Milliseconds")
     await _log_slow_frame(body, x_connection_id, started, handled)
     return Response(status_code=200)

@@ -195,6 +195,24 @@ async def test_screen_frames_forwarded_and_dropped_by_the_budget_are_metered(tra
 
 
 @pytest.mark.asyncio
+async def test_a_failed_viewer_publish_is_not_counted_as_forwarded(transport, monkeypatch):
+    from unittest.mock import AsyncMock, MagicMock, call, patch
+
+    sid = await start(transport)
+    await messaging_repo.ensure_user_stream(OWNER, BOB.user_id)
+    await session_screen.watch(BOB, sid)
+    monkeypatch.setattr(session_screen, "_spent", {})
+    publisher = MagicMock(publish_user=AsyncMock(side_effect=RuntimeError("appsync down")))
+    with (
+        patch.object(session_screen.live_events, "get_live_event_publisher", return_value=publisher),
+        patch.object(session_screen, "put_metric") as metric,
+    ):
+        await session_screen.forward(relay(transport), "conn-1", frame(sid, seq=0))
+    publisher.publish_user.assert_awaited_once()
+    assert metric.call_args_list == [call("session.screen.publish.failed", 1)]
+
+
+@pytest.mark.asyncio
 async def test_expired_watch_rows_never_push_a_live_session_out_of_the_ack(transport, db):
     sid = await start(transport)
     await session_screen.watch(BOB, sid)

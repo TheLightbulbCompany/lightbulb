@@ -345,15 +345,21 @@ async def forward(relay, cid: str, body: dict) -> None:
         if not _spend(sid, size, now):
             put_metric("session.screen.frame.dropped")
             return
-        put_metric("session.screen.frame.forwarded")
-        put_metric("session.screen.bytes", size, "Bytes")
-        put_metric("session.screen.viewers", len(viewers))
         event = make_live_event(
             "workspace.session.screen", frame.model_dump(mode="json", by_alias=True, exclude={"type"})
         )
         publisher = live_events.get_live_event_publisher()
         # publish_user finds no channel for a removed member: they get nothing.
-        await asyncio.gather(*(publisher.publish_user(owner, user, event) for user in viewers), return_exceptions=True)
+        results = await asyncio.gather(
+            *(publisher.publish_user(owner, user, event) for user in viewers), return_exceptions=True
+        )
+        delivered = sum(r is True for r in results)
+        if delivered < len(viewers):
+            put_metric("session.screen.publish.failed", len(viewers) - delivered)
+        if delivered:
+            put_metric("session.screen.frame.forwarded")
+            put_metric("session.screen.bytes", size * delivered, "Bytes")
+            put_metric("session.screen.viewers", delivered)
     except Exception as exc:  # noqa: BLE001 -- see docstring
         logger.info("session screen frame dropped error=%s", type(exc).__name__)
 

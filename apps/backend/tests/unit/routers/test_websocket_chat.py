@@ -459,7 +459,7 @@ async def test_each_relay_frame_is_counted_by_type(app, connection_service, fram
     connection_service.get_connection.return_value = _LOCAL_CONNECTION
     machine = MagicMock()
     machine.handle_message = AsyncMock(return_value={"type": "ack"})
-    machine.management.send_message_async = AsyncMock()
+    machine.management.send_message_async = AsyncMock(return_value=True)
     with (
         patch("core.services.local_session_relay.get_local_session_relay", return_value=machine),
         patch("core.services.session_screen.forward", AsyncMock()),
@@ -503,3 +503,17 @@ async def test_relay_connection_open_and_close_are_counted(app, connection_servi
         "session.relay.connection.open",
         "session.relay.connection.close",
     ]
+
+
+@pytest.mark.asyncio
+async def test_a_heartbeat_ack_that_never_reached_the_mac_has_no_latency(app, connection_service):
+    connection_service.get_connection.return_value = _LOCAL_CONNECTION
+    machine = MagicMock()
+    machine.handle_message = AsyncMock(return_value={"type": "ack"})
+    machine.management.send_message_async = AsyncMock(return_value=False)  # GoneException
+    with (
+        patch("core.services.local_session_relay.get_local_session_relay", return_value=machine),
+        patch("routers.websocket_chat.put_metric") as metric,
+    ):
+        await _post(app, "/ws/message", headers={"x-connection-id": "conn-1"}, json={"type": "local.device.heartbeat"})
+    assert [c.args[0] for c in metric.call_args_list] == ["session.relay.message.heartbeat"]

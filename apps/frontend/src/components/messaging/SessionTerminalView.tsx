@@ -8,7 +8,7 @@ import { NEW_SCREEN, receiveScreen } from "./sessionScreen";
 import { chunkInput, dropProbeReplies, SHIFT_ENTER } from "./sessionInput";
 
 const WATCH_EVERY_MS = 15_000;
-/** Snapshots come every 10 s; this long with no frame at all and the picture is frozen, so the transcript takes over again. */
+/** Snapshots come every 10 s; this long with no frame at all and the picture is frozen, so it says Reconnecting. */
 const STALE_AFTER_MS = 30_000;
 /** Stops input: no access (403/404) or a Mac that cannot take typing. OFFLINE is another 409 and passes. */
 const refuses = (e: unknown) => e instanceof ApiError && (e.status === 403 || e.status === 404
@@ -33,6 +33,8 @@ export function SessionTerminalView({ session, onEvent, watch, onLive, onCanType
 }) {
   const host = useRef<HTMLDivElement>(null);
   const [live, setLive] = useState(false);
+  // Whether a frame ever arrived: "Connecting…" until then, "Reconnecting…" after the picture went stale.
+  const [seen, setSeen] = useState(false);
   const [scale, setScale] = useState(1);
   const [refusedFor, setRefusedFor] = useState<string | null>(null);
   // Keyed by id and generation, not the object: the session list swaps the object on every refresh.
@@ -81,7 +83,7 @@ export function SessionTerminalView({ session, onEvent, watch, onLive, onCanType
     const apply = (frames: SessionScreen[]) => {
       if (!term) { queued.push(...frames); return; }
       for (const frame of frames) {
-        if (frame.kind === "snapshot") { term.reset(); setLive(true); onLive(true); }
+        if (frame.kind === "snapshot") { term.reset(); setLive(true); setSeen(true); onLive(true); }
         if (term.cols !== frame.cols || term.rows !== frame.rows) term.resize(frame.cols, frame.rows);
         term.write(decode(frame.data), fit);
       }
@@ -123,7 +125,10 @@ export function SessionTerminalView({ session, onEvent, watch, onLive, onCanType
     if (host.current?.parentElement) observer?.observe(host.current.parentElement);
     return () => { alive = false; pending = ""; if (frameId) cancelAnimationFrame(frameId); termRef.current = null; clearTimeout(stale); off(); observer?.disconnect(); term?.dispose(); onLive(false); };
   }, [session.sessionId, session.generation, onEvent, onLive]);
-  return <div className="session-terminal-view" data-live={live} role="region" aria-label={canType ? "Live terminal" : "Live terminal (view only)"}>
-    <div ref={host} style={{ transform: `scale(${scale})`, transformOrigin: "top left" }} />
-  </div>;
+  return <>
+    <div className="session-terminal-view" data-live={live} role="region" aria-label={canType ? "Live terminal" : "Live terminal (view only)"}>
+      <div ref={host} style={{ transform: `scale(${scale})`, transformOrigin: "top left" }} />
+    </div>
+    {!live && <div className="session-terminal-wait" role="status">{seen ? "Reconnecting…" : "Connecting…"}</div>}
+  </>;
 }

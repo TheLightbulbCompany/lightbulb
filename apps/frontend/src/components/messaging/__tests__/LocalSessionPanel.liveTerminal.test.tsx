@@ -1,7 +1,7 @@
 import { act, render, screen, waitFor } from "@testing-library/react";
 import { expect, it, vi } from "vitest";
 import type { LiveEvent } from "@lightbulb/shared";
-import { sessionStatus, type LocalSession } from "@lightbulb/shared";
+import { type LocalSession } from "@lightbulb/shared";
 import { LocalSessionPanel } from "../LocalSessionPanel";
 
 vi.mock("@/lib/analytics", () => ({ capture: vi.fn() }));
@@ -61,14 +61,19 @@ it("shows who is typing into the owner's session for 6 s after the last event", 
   vi.useRealTimers();
 });
 
-it("labels a session that is not running as a transcript, and a live one not at all", () => {
+it("never labels the status line as a transcript, and shows the ended and offline panels", () => {
   const props = { ownerName: "Alice", client: client as never, revision: 0, onAccessLost: () => {} };
-  const { unmount } = render(<LocalSessionPanel {...props} own={false} session={{ ...session, status: "ended" }} />);
-  expect(screen.getByText("Transcript · Ended")).toBeTruthy();
-  unmount();
-  const offline = render(<LocalSessionPanel {...props} own={false} session={{ ...session, status: "offline" }} />);
-  expect(screen.getByText("Transcript · Alice's Mac is offline")).toBeTruthy();
-  expect(document.querySelector(".session-status-line")!.textContent!.match(/Alice/g)).toHaveLength(1);
+  const ended = render(<LocalSessionPanel {...props} own={false} session={{ ...session, status: "ended", latestEventSeq: 3, endedAt: new Date(Date.now() - 3600_000).toISOString() }} />);
+  expect(document.querySelector(".session-status-line")!.textContent).not.toMatch(/Transcript/);
+  expect(document.querySelector(".session-state-title")!.textContent).toMatch(/^Ended/);
+  expect(screen.getByText("The screen is gone: this session's terminal closed.")).toBeTruthy();
+  expect(screen.queryByRole("region", { name: "Native session history" })).toBeNull();
+  ended.unmount();
+  const offline = render(<LocalSessionPanel {...props} own session={{ ...session, status: "offline", lastEventAt: new Date(Date.now() - 7200_000).toISOString() }} />);
+  expect(screen.getByText("Your Mac is offline")).toBeTruthy();
+  expect(screen.getByText(/Last seen/)).toBeTruthy();
+  expect(screen.getByText("Mac offline. Follow-ups wait up to 24 hours for this session to reconnect.")).toBeTruthy();
+  expect(document.querySelector(".session-status-line")!.textContent).not.toMatch(/Transcript/);
   offline.unmount();
   render(<LocalSessionPanel {...props} own={false} session={session} />);
   expect(screen.queryByText(/Transcript/)).toBeNull();
@@ -87,11 +92,11 @@ it("says to answer in the live terminal only while the terminal accepts typing",
   typing.canType = true;
 });
 
-it("shows a plain Claude session's transcript with its status, and tells its owner how to get the terminal", () => {
+it("tells a plain session's owner it was not started through Lightbulb and how to get the terminal", () => {
   client.watchLocalSession.mockClear();
   const plain: LocalSession = { ...session, terminal: undefined, status: "busy" };
   render(<LocalSessionPanel session={plain} ownerName="Alice" own client={client as never} revision={0} onAccessLost={() => {}} onEvent={() => () => {}} />);
-  expect(screen.getByText(`Transcript · ${sessionStatus.busy}`)).toBeTruthy();
+  expect(screen.getByText("This session was not started through Lightbulb, so its screen is not here.")).toBeTruthy();
   const hint = "Press ← in its terminal to share this one live, or turn on Share every session live in Settings to make every new session live.";
   expect(screen.getByText((_, el) => el?.tagName === "P" && el.textContent === hint)).toBeTruthy();
   expect(screen.queryByRole("link", { name: "Settings" })).toBeNull();
@@ -110,14 +115,17 @@ it("links the hint's Settings to the live-sessions switch in the desktop app", (
   }
 });
 
-it("gives a plain Codex session and a teammate no ← hint", () => {
+it("gives a plain Codex session no hint, and a teammate of a plain Claude session the Ask line", () => {
   const props = { ownerName: "Alice", client: client as never, revision: 0, onAccessLost: () => {}, onEvent: () => () => {} };
-  const codex = render(<LocalSessionPanel {...props} own session={{ ...session, provider: "codex", terminal: undefined }} />);
-  expect(screen.queryByText(/Press ←/)).toBeNull();
+  const codex = render(<LocalSessionPanel {...props} own={false} session={{ ...session, provider: "codex", terminal: undefined }} />);
+  expect(screen.getByText("This session was not started through Lightbulb, so its screen is not here.")).toBeTruthy();
+  expect(screen.queryByText(/press ←/i)).toBeNull();
+  expect(screen.queryByText(/Ask Alice/)).toBeNull();
   codex.unmount();
   render(<LocalSessionPanel {...props} own={false} session={{ ...session, terminal: undefined }} />);
   expect(screen.queryByText(/Press ←/)).toBeNull();
-  expect(screen.getByText(`Transcript · ${sessionStatus.idle}`)).toBeTruthy();
+  expect(screen.getByText("Ask Alice to press ← in their terminal.")).toBeTruthy();
+  expect(document.querySelector(".session-status-line")!.textContent).not.toMatch(/Transcript/);
 });
 
 it("still probes this Mac's holder for an offline session, and never for a running one with no terminal", () => {
@@ -195,7 +203,7 @@ it("says an empty ended session never started, and offers Resume only for one th
   empty.unmount();
   // History the Mac could not read may hold a real conversation: no "nothing was sent" claim beside its Resume.
   const unread = render(<LocalSessionPanel {...props} session={{ ...session, status: "ended", latestEventSeq: 0, controlUnavailableReason: "history-gap", resumable: true }} />);
-  expect(await screen.findByText("No shared output yet.")).toBeTruthy();
+  expect(await screen.findByText("The screen is gone: this session's terminal closed.")).toBeTruthy();
   expect(screen.queryByText("This session ended before anything was sent.")).toBeNull();
   unread.unmount();
   render(<LocalSessionPanel {...props} session={{ ...session, status: "ended", latestEventSeq: 4, resumable: true }} />);
@@ -225,4 +233,11 @@ it("shows no message box while paused even when the terminal refuses typing", as
     expect(await screen.findByText(/Paused while Alice answers/)).toBeTruthy();
     expect(screen.queryByRole("textbox")).toBeNull();
   } finally { typing.canType = true; }
+});
+
+it("shows no transcript while a held session's terminal has no frame yet", () => {
+  // The real SessionTerminalView draws Connecting…/Reconnecting… (SessionTerminalView.test); the panel never swaps to rows.
+  render(<LocalSessionPanel session={{ ...session, status: "busy" }} ownerName="Alice" own client={client as never} revision={0} onAccessLost={() => {}} onEvent={() => () => {}} />);
+  expect(screen.queryByRole("region", { name: "Native session history" })).toBeNull();
+  expect(document.querySelector(".session-status-line")!.textContent).not.toMatch(/Transcript/);
 });

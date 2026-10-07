@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import asyncio
+import collections
 import contextlib
 import itertools
 import json
@@ -40,7 +41,7 @@ from livekit.plugins.openai.realtime import (
 from livekit.plugins.openai.realtime.gpt_live_model import _render_item
 
 from huddle_agent.backend import Backend
-from huddle_agent.huddle import Huddle, emit_metric, mixed_meet
+from huddle_agent.huddle import Huddle, emit_metric, in_meet, mixed_meet
 from huddle_agent.transcript import trim_items
 
 logger = logging.getLogger("huddle")
@@ -55,7 +56,8 @@ class _Voice(Agent):
     """One agent's voice. The seed is the huddle so far, as this agent saw it (Transcript.seed)."""
 
     def __init__(
-        self, agent_id: str, persona: str, huddle: Huddle, seed: list[tuple[str, str]], muted: bool = False
+        self, agent_id: str, persona: str, huddle: Huddle, seed: list[tuple[str, str]], muted: bool = False,
+        gated: bool = False,
     ) -> None:
         ctx = llm.ChatContext.empty()
         for role, text in seed:
@@ -63,13 +65,15 @@ class _Voice(Agent):
         super().__init__(
             instructions=persona, chat_ctx=ctx
         )  # no tools: client delegation raises on any
-        self._agent_id, self._huddle, self._muted = agent_id, huddle, muted
+        self._agent_id, self._huddle, self._muted, self._gated = agent_id, huddle, muted, gated
         self._tasks: set[asyncio.Task[None]] = set()
 
     async def on_enter(self) -> None:
         session = self.duplex_session
         assert isinstance(session, GPTLiveSession)
         session.on("delegation_created", self._on_delegation_created)
+        if self._gated and isinstance(session, _TrimmedSession):
+            session.gated = True  # from its first frame: people are talking while the session opens
         if self._muted:
             # A meeting voice must never hear the Meet. Muted here, as the session starts: the mute the huddle
             # sends comes after session.start returns, and people may be talking while the session opens.
@@ -93,9 +97,50 @@ class _Voice(Agent):
             )
 
 
+#: What each person said lately, as audio: a meeting voice hears a line only once /route says it is for it
+#: (`_TrimmedSession.gated`), and then from here. Per identity, the last HEARD_S seconds, (epoch s, frame).
+HEARD_S = 30.0
+HAND_OVER_SPEED = 4.0  # a held line reaches the model this much faster than it was said (spike 10-07: understood)
+_heard: dict[str, collections.deque[tuple[float, rtc.AudioFrame]]] = {}
+
+
+def remember(identity: str, frame: rtc.AudioFrame) -> None:
+    ring = _heard.setdefault(identity, collections.deque())
+    now = time.time()
+    ring.append((now, frame))
+    while ring and ring[0][0] < now - HEARD_S:
+        ring.popleft()
+
+
 class _TrimmedSession(GPTLiveSession):
     """GPT-Live reseeds every (re)connect from its whole `_history` and only caps the item count, so
-    a long huddle would outgrow the seed's token limit. Seed the newest items within ours instead."""
+    a long huddle would outgrow the seed's token limit. Seed the newest items within ours instead.
+
+    `gated`: a per-person meeting voice. GPT-Live answers whatever it hears and has no setting to listen
+    without answering, so who a line is for is decided before it hears it: its pinned speaker's live audio
+    is replaced by silence, and the worker hands it a line's real audio (`hand_over`) once /route says the
+    line is for this agent (10-07 rig sales call: it answered its speaker's talk to the prospect, then took
+    over the call). Spike 10-07: 0 of 16 side-talk lines answered, every line for it answered."""
+
+    gated = False
+    _handing = False
+
+    def push_audio(self, frame: rtc.AudioFrame) -> None:
+        if self._handing:
+            return  # a held line is going in: live silence must not be cut into it
+        if self.gated:
+            n = frame.samples_per_channel * frame.num_channels
+            frame = rtc.AudioFrame(bytes(n * 2), frame.sample_rate, frame.num_channels, frame.samples_per_channel)
+        super().push_audio(frame)
+
+    async def hand_over(self, frames: list[rtc.AudioFrame]) -> None:
+        self._handing = True
+        try:
+            for f in frames:
+                super().push_audio(f)
+                await asyncio.sleep(f.duration / HAND_OVER_SPEED)
+        finally:
+            self._handing = False
 
     # ponytail: private API, re-check on livekit-agents upgrades
     def _session_start_event(self):
@@ -177,10 +222,11 @@ class _Live:
         duplex: GPTLiveSession,
         room: rtc.Room,
         muted: bool = False,
+        speaker: str = "",
     ) -> None:
         self.agent_id, self.track_name = agent_id, f"agent-{agent_id}"
-        self._session, self._room = session, room
-        self.set_participant = session.room_io.set_participant
+        self._session, self._room, self._speaker = session, room, speaker
+        self._hand: asyncio.Task | None = None
         self.append_thinking, self.append_commentary = (
             duplex.append_thinking,
             duplex.append_commentary,
@@ -195,6 +241,25 @@ class _Live:
         self.reply_to = lambda text: session.generate_reply(
             user_input=text
         )  # a typed user turn
+
+    def set_participant(self, identity: str) -> None:
+        self._speaker = identity
+        self._session.room_io.set_participant(identity)
+
+    def hear(self, since: float) -> None:
+        """Hand the model what its speaker said from `since` (epoch s): a line /route said is for this agent."""
+        frames = [f for t, f in _heard.get(self._speaker, ()) if t >= since]
+        if not frames or not isinstance(self._duplex, _TrimmedSession):
+            return
+        prior = self._hand
+
+        async def run() -> None:
+            if prior is not None:
+                with contextlib.suppress(Exception):
+                    await prior  # one line after the other, never interleaved
+            await self._duplex.hand_over(frames)
+
+        self._hand = asyncio.create_task(run())
 
     def mute(self) -> None:
         self._muted = True
@@ -252,7 +317,8 @@ async def _start(
     room, huddle: Huddle, vad, agent_id, persona, voice, speaker, seed
 ) -> _Live:
     muted = mixed_meet(speaker)  # a mixed meeting's voice never hears the Meet: the worker listens (huddle.in_meet)
-    agent = _Voice(agent_id, persona, huddle, seed, muted=muted)
+    gated = in_meet(speaker) and not muted  # a per-person meeting voice: it hears what /route passes (hear)
+    agent = _Voice(agent_id, persona, huddle, seed, muted=muted, gated=gated)
     session = AgentSession(
         llm=_TrimmedGPTLiveModel(voice=voice, delegation="client"), vad=vad
     )
@@ -287,7 +353,7 @@ async def _start(
             await session.aclose()
             await _unpublish(room, f"agent-{agent_id}")
         raise
-    live = _Live(agent_id, session, agent.duplex_session, room, muted=muted)  # type: ignore[arg-type]
+    live = _Live(agent_id, session, agent.duplex_session, room, muted=muted, speaker=speaker)  # type: ignore[arg-type]
     # An unrecoverable realtime error closes the session under us: end the exchange then, not on the next call.
     session.on("close", lambda _ev: huddle.on_live_closed(live))
     return live
@@ -432,6 +498,7 @@ async def entrypoint(ctx: JobContext) -> None:
 
             async def push() -> None:
                 async for ev in audio:
+                    remember(p.identity, ev.frame)
                     stream.push_frame(ev.frame)
                 stream.end_input()
 

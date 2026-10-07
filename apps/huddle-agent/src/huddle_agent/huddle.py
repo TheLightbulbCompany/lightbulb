@@ -308,6 +308,7 @@ class Live(Protocol):
     def append_instructions(self, text: str) -> None: ...  # a standing rule
     def interrupt(self) -> Any: ...  # AgentSession.interrupt(force=True)
     def mute(self) -> None: ...
+    def hear(self, since: float) -> None: ...  # a meeting voice is handed its speaker's audio from `since`
     def nudge(self) -> None: ...  # generate_reply(): a request the model may decline
     def meet_rule(self, text: str) -> None: ...  # a per-person meeting voice's standing rule; kept for a reconnect
     def reply_to(
@@ -382,6 +383,8 @@ class _Voice:
     opened: float = 0.0
     agent_state: str = "listening"  # GPT-Live's AgentState
     naming: bool = False  # a first-time-naming question is open (C4)
+    heard_until: float = 0.0  # a gated meeting voice was handed its speaker's audio up to here (epoch s)
+    heard_mark: int = -1  # ...and the transcript mark of the last line it was handed
     posting: int = 0  # turn POSTs in flight
     lines: list[str] = field(
         default_factory=list
@@ -509,6 +512,7 @@ class Huddle:
         self._trail: dict[str, tuple[str, float]] = {}  # a meeting line that trailed off, and when
         self._others_from = 0.0  # when someone other than the open voice's person began talking
         self._said_log: dict[str, list[tuple[float, str]]] = {}  # what each agent said lately, to let a said hand go
+        self._span: dict[str, float] = {}  # identity -> where its newest line's audio begins (epoch s)
         self._rowless: set[str] = set()  # a meeting's ready answers that have no request row (delivered like one)
         self._level: set[str] = set()  # humans in the SFU's active speakers: sound, maybe not speech
         self._voiced: set[str] = set()  # humans the transcriber's speech detector hears speaking
@@ -926,6 +930,12 @@ class Huddle:
         # Talking is not ended here: the detector's stop comes before its sentence's final, and by then the
         # person may be saying the next sentence.
         began = self._utter_from.pop(identity, None)
+        # where this line's audio begins (a gated meeting voice is handed it from there): the pieces of a
+        # joined line count from the first
+        at0 = min(max(began or self._clock() - 6.0, self._clock() - 20.0) - 0.4, self._clock())
+        if identity in self._trail:
+            at0 = min(at0, self._span.get(identity, at0))
+        self._span[identity] = at0
         if heard := self._final_heard.pop(identity, None):
             heard.set()  # a delegation waiting for this final looks again (understanding §4.6)
         cut = self._cut_by.pop(identity, None)
@@ -1733,6 +1743,8 @@ class Huddle:
             self._keep_unsaid(v)
             self._drop(v, keep_queue=True)
             return []
+        if own and in_meet(identity) and not mixed_meet(identity):
+            self._hear(v, identity, mark)  # /route did not call it talk between people: its voice hears it now
         # Routing v2 §4.2: someone else spoke since; their line routes itself, seeing this one. A named ask stands.
         # The floor speaker's line stands too: its voice heard it and may delegate it (§4.6). Cancel and steer
         # name earlier rows: they stand either way.
@@ -1918,7 +1930,9 @@ class Huddle:
         )
         # D §9: the floor-holder asking a present person by name hands them the floor for HANDOFF_SECONDS
         target = addressed_by_name(text, self._people) if v else None
-        if target is None or target == v.speaker:
+        if target is None or target == v.speaker or in_meet(v.speaker):
+            # ...never in a meeting: naming the prospect moved its ears to them and it ran the sales call
+            # (10-07 rig). Its ears move only when /route says that person is talking to it.
             return
         back = v.handoff[0] if v.handoff else v.speaker
         if self._repoint(v, target):
@@ -2264,9 +2278,7 @@ class Huddle:
                     "developer",
                     # the voice's own speaker: a queued or delivered voice has no line of its own to read a label from
                     f"{v.label or self._talker(identity, mark)} asked: {request} — already handed to your backend self; don't delegate it again"
-                    # a meeting voice opens AFTER the line that asked: it never heard it, per-person or mixed
-                    # (10-07 rig: "Hey, I'm here. Go ahead." to a pricing question)
-                    + (f".{MEET_ACK}" if in_meet(identity) else ""),
+                    + (f".{MEET_ACK}" if mixed_meet(identity) else ""),
                 )
             )
         # conversation engine §3.5: the one acknowledgement, of the rows still open after the awaits above
@@ -2302,6 +2314,8 @@ class Huddle:
                 v.told = list(news)
             self._consume_news(agent_id)  # handed to its own agent: consumed
         v.live, v.opened, v.naming = live, self._clock(), bool(session.get("askName"))
+        if in_meet(identity) and not mixed_meet(identity) and request:
+            self._hear(v, identity, mark)  # it opened after the line that asked: it hears that line now, as audio
         v.followed_at = v.opened
         if mixed_meet(identity):
             # A mouth, not an ear: it hears the whole Meet as one speaker and would answer talk not meant for it
@@ -3361,6 +3375,16 @@ class Huddle:
         self._live_call(v, "interrupt")
         self._keep_unsaid(v)
         self._drop(v, keep_queue=True)  # closed: a run still working no longer speaks through it
+
+    def _hear(self, v: _Voice, identity: str, mark: int | None) -> None:
+        """Hand a gated meeting voice its speaker's line at `mark`, once, from where the last one ended."""
+        mark = self._transcript.last_mark if mark is None else mark
+        if v.live is None or mark <= v.heard_mark:
+            return
+        since = max(self._span.get(identity, self._clock() - 6.0), v.heard_until)
+        v.heard_mark, v.heard_until = mark, self._clock()
+        self._live_call(v, "hear", since)
+        emit_metric("live.meet.line_heard", 1, "Count")
 
     def _control(self, text: str) -> bool:
         """A stop, "everyone stop" or "don't post that": applied the moment it is heard, never held."""

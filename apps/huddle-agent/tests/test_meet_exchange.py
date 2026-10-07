@@ -313,14 +313,6 @@ async def test_a_joined_line_records_only_its_new_piece():
     assert h._unclaimed is not None and h._unclaimed[2] == "Oh, and... what shipped?", "understood as one line"
 
 
-async def test_handing_the_floor_to_another_person_tells_the_voice_it_now_hears_them():
-    """Codex on #3792: the rule still named the first person after the floor moved."""
-    h, backend, lives, clock = await asked()
-    h.on_agent_said("forge", "Dan, does that work for you?")  # the agent asks Dan by name: the floor is Dan's
-    rules = [c[1] for c in lives[0].calls if c[0] == "instructions"]
-    assert any("You hear only Dan" in r for r in rules) and h._voice.speaker == P2
-
-
 async def test_a_hand_raised_after_the_same_words_were_said_is_not_let_go():
     """Codex on #3792: an earlier answer's words must not count for a later hand."""
     h, backend, lives, clock = await asked()
@@ -521,3 +513,24 @@ async def test_a_line_the_router_understood_as_said_to_a_person_releases_the_flo
     assert h._voice is None
     answer(h, row.run_id, "forge", "Three PRs are open.")
     assert [n[2] for n in h._news.get("forge", [])] == ["Three PRs are open."], "its hand, not its voice"
+
+
+async def test_a_meeting_voice_hears_the_line_that_opened_it_and_then_only_lines_the_router_passes():
+    """10-07: GPT-Live answers whatever it hears, so /route decides before it hears. The asking line is handed
+    to it as audio when it opens; a later line of its speaker is handed over unless it is talk between people."""
+    h, backend, lives, clock = await asked()
+    assert lives[0].calls.count(("hear",)) == 1, "the question that opened it"
+    clock.t += 5
+    await says(h, P1, "And the day after that?")
+    assert lives[0].calls.count(("hear",)) == 2
+    clock.t += 5
+    backend.route_extra = {"ops": {"requests": [], "social": None, "more": False, "cancel": [], "steer": [], "people": True}}
+    await says(h, P1, "Monthly, with an annual option. And what is your current tool costing you?")
+    assert lives[0].calls.count(("hear",)) == 2 and h._voice is None, "talk between people: never heard, floor given back"
+
+
+async def test_a_meeting_voice_that_names_a_person_keeps_its_ears_on_its_own_speaker():
+    """10-07 rig sales call: "Maya, it is fifty dollars" moved its ears to the prospect and it ran the call."""
+    h, backend, lives, clock = await asked()
+    h.on_agent_said("forge", "Dan, it is fifty dollars a month.")
+    assert h._voice is not None and h._voice.speaker == P1 and ("set_participant", P2) not in lives[0].calls

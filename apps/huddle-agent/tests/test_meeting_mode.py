@@ -1033,7 +1033,7 @@ async def test_a_per_person_meet_voice_hears_its_person_under_the_meeting_rule()
     await says(h, P1, "hey Forge what did we ship")
     assert lives[0].speaker == P1 and ("mute",) not in lives[0].calls
     assert any("You hear only Priya" in c[1] for c in lives[0].calls if c[0] == "instructions")
-    assert h_mod.MEET_ACK in str(lives[0].seed) and h._voice.label == "Priya"  # it opened after the line: it never heard it
+    assert h_mod.MEET_ACK not in str(lives[0].seed) and h._voice.label == "Priya"
 async def test_a_per_person_line_carries_its_persons_identity_and_name():
     h, room, backend, lives, clock, log = await per_person()
     await says(h, P1, "Forge, check the board")

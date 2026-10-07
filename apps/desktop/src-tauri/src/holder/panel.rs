@@ -192,12 +192,13 @@ fn relay(stream: TcpStream) -> std::io::Result<()> {
         match said(ws.read()) {
             Said::Frame(kind, payload) => holder.write_all(&encode(kind, &payload))?,
             Said::End => {
-                // The panel's End control: the same as closing a terminal.
+                // The panel's End control: the provider ends and the holder keeps its last picture.
                 // The page hides End for an attach terminal; one sent anyway ends only that client.
                 match manager::hello(&socket) {
                     Some(info) if manager::attach_job(&info).is_some() => manager::stop_attach(&info),
-                    Some(info) => manager::stop(info.pid),
-                    None => {}
+                    // Its holder stays: the page hears EXIT on this connection, as after `/exit`.
+                    Some(info) if manager::end(&info) => continue,
+                    _ => {}
                 }
                 return Ok(());
             }

@@ -51,6 +51,18 @@ pub struct Model {
     /// A control sequence the last read ended inside (`ESC[` and parameters, no final byte yet):
     /// one that leaves the alternate screen is found whole however the reads split it.
     partial_csi: Vec<u8>,
+    /// When the provider last wrote.
+    last_output: Option<Instant>,
+    /// When someone last typed, and whether that left a line unsent (no Enter yet).
+    typed: Option<(Instant, bool)>,
+    /// The alternate screen as it rested before the line now being typed (or just sent) was begun.
+    resting: Option<Resting>,
+}
+struct Resting {
+    picture: Vec<u8>,
+    began: Instant,
+    /// When Enter sent that line.
+    sent: Option<Instant>,
 }
 /// No real control sequence is longer; a longer run of parameter bytes is not carried.
 const PARTIAL_CSI_MAX: usize = 64;
@@ -67,6 +79,15 @@ const TAIL: usize = 16;
 /// A provider that exits this soon after leaving the alternate screen left it to shut down (Claude
 /// Code's fullscreen renderer on `/exit`); a longer gap is a full-screen program that closed mid-session.
 pub const SHUTDOWN_LEAVE: Duration = Duration::from_secs(5);
+/// A screen with no output for this long is at rest: what the person is looking at, not a frame
+/// of an answer being drawn.
+pub const QUIET: Duration = Duration::from_millis(1500);
+/// A line left unsent this long is no longer the line being typed: the next key begins a new one.
+/// Also how old a resting picture may be when the line that followed it ends the session.
+pub const RESTING_FOR: Duration = Duration::from_secs(30);
+/// A provider that leaves the alternate screen this soon after an Enter left because of that line
+/// (`/exit`: Claude Code 2.1.292 leaves within 10 ms).
+pub const SENT_LEAVE: Duration = Duration::from_secs(3);
 /// Mouse reporting off: a kept picture is read-only, and xterm selects no text while it is on.
 const MOUSE_OFF: &[u8] = b"\x1b[?9;1000;1002;1003l";
 
@@ -93,11 +114,46 @@ fn completed(hay: &[u8], needle: &[u8], skip: usize) -> usize {
 
 impl Model {
     pub fn new(rows: u16, cols: u16) -> Self {
-        Self { parser: vt100::Parser::new(rows, cols, 5000), tail: Vec::new(), left_alternate: None, partial_csi: Vec::new() }
+        Self { parser: vt100::Parser::new(rows, cols, 5000), tail: Vec::new(), left_alternate: None, partial_csi: Vec::new(),
+            last_output: None, typed: None, resting: None }
     }
 
     /// Feed provider output. Returns what to write back to the pty: the probe answers.
     pub fn feed(&mut self, bytes: &[u8]) -> Vec<u8> {
+        self.feed_at(bytes, Instant::now())
+    }
+
+    /// The alternate screen as a picture for a normal buffer: read-only, so no mouse reporting.
+    fn picture(&self) -> Vec<u8> {
+        let mut picture = self.parser.screen().contents_formatted();
+        picture.extend_from_slice(MOUSE_OFF);
+        picture
+    }
+
+    /// Someone (the owner or a teammate) is about to type `bytes`. The first key of a new line,
+    /// typed at a screen at rest, keeps that screen: the picture the person was reading before
+    /// the command that may end the session (`/exit` and its menu) was drawn over it.
+    pub fn typed(&mut self, bytes: &[u8], now: Instant) {
+        // Mouse and focus reports are not typing.
+        if [&b"\x1b[<"[..], b"\x1b[M", b"\x1b[I", b"\x1b[O"].iter().any(|report| bytes.starts_with(report)) {
+            return;
+        }
+        let since = |at: Instant| now.saturating_duration_since(at);
+        let unsent = self.typed.is_some_and(|(at, unsent)| unsent && since(at) < RESTING_FOR);
+        if !unsent {
+            let at_rest = self.parser.screen().alternate_screen() && self.last_output.is_none_or(|at| since(at) >= QUIET);
+            // (Typed over an answer still being drawn: no picture, and the one before an earlier line is not this line's.)
+            self.resting = at_rest.then(|| Resting { picture: self.picture(), began: now, sent: None });
+        }
+        let enter = bytes.contains(&b'\r');
+        if let Some(resting) = self.resting.as_mut().filter(|_| enter) {
+            resting.sent = Some(now);
+        }
+        self.typed = Some((now, !enter));
+    }
+
+    pub fn feed_at(&mut self, bytes: &[u8], now: Instant) -> Vec<u8> {
+        self.last_output = Some(now);
         let skip = self.tail.len();
         let mut seen = std::mem::take(&mut self.tail);
         seen.extend_from_slice(bytes);
@@ -116,11 +172,12 @@ impl Model {
         for cut in alternate_leaves(&csi, carried) {
             self.parser.process(&bytes[done..cut]);
             done = cut;
-            let screen = self.parser.screen();
-            if screen.alternate_screen() {
-                let mut picture = screen.contents_formatted();
-                picture.extend_from_slice(MOUSE_OFF);
-                self.left_alternate = Some((picture, Instant::now()));
+            if self.parser.screen().alternate_screen() {
+                // Left right after a line was sent: that line ended the session, and the picture
+                // from before it was typed is the one to keep.
+                let since = |at: Instant| now.saturating_duration_since(at);
+                let rested = self.resting.take().filter(|r| since(r.began) < RESTING_FOR && r.sent.is_some_and(|at| since(at) < SENT_LEAVE));
+                self.left_alternate = Some((rested.map_or_else(|| self.picture(), |r| r.picture), now));
             }
         }
         self.parser.process(&bytes[done..]);
@@ -154,10 +211,14 @@ impl Model {
     /// The last picture of a provider that exited at `exited` on its way out of the alternate
     /// screen: what the person saw while it ran, not the lines it printed after. Drawn as normal-screen
     /// content with no input modes (no `ESC[?1049h`): an alternate buffer has no scrollback, and the
-    /// picture is only read. None when the normal screen is the last picture.
+    /// picture is only read. A provider that died on the alternate screen (killed) left that
+    /// screen as its last picture. None when the normal screen is the last picture.
     pub fn ended_picture(&self, exited: Instant) -> Option<Vec<u8>> {
+        if self.parser.screen().alternate_screen() {
+            return Some(self.picture());
+        }
         let (picture, left) = self.left_alternate.as_ref()?;
-        (!self.parser.screen().alternate_screen() && exited.saturating_duration_since(*left) < SHUTDOWN_LEAVE).then(|| picture.clone())
+        (exited.saturating_duration_since(*left) < SHUTDOWN_LEAVE).then(|| picture.clone())
     }
 }
 
@@ -223,7 +284,8 @@ mod tests {
             let mut model = Model::new(10, 40);
             assert_eq!(model.ended_picture(now), None, "no alternate screen yet");
             model.feed(b"shell\r\n\x1b[?1049h\x1b[?1000hpicture");
-            assert_eq!(model.ended_picture(now), None, "still on it: the snapshot is that screen already");
+            let on_it = model.ended_picture(now).expect("died on it: that screen");
+            assert!(has(&on_it, b"picture") && !has(&on_it, b"shell") && !has(&on_it, b"\x1b[?1049h") && !has(&on_it, b"\x1b[?1000h"));
             model.feed(b"-drawn");
             for part in leave {
                 model.feed(part);
@@ -235,7 +297,8 @@ mod tests {
             assert_eq!(model.ended_picture(Instant::now() + SHUTDOWN_LEAVE), None, "left long before the exit");
             assert!(has(&model.snapshot(), b"resume lines"), "the live snapshot is unchanged");
             model.feed(b"\x1b[?1049hagain");
-            assert_eq!(model.ended_picture(Instant::now()), None, "back on the alternate screen");
+            let again = model.ended_picture(Instant::now()).expect("back on the alternate screen");
+            assert!(has(&again, b"again") && !has(&again, b"resume lines"));
         }
         // Longer than any fixed tail, split anywhere: the exact split from review, and a byte at a time.
         let long: &[u8] = b"\x1b[?1000;1002;1003;1049l";
@@ -277,6 +340,97 @@ mod tests {
         let picture = model.ended_picture(Instant::now() + Duration::from_millis(470)).expect("the conversation it left");
         assert!(has(&picture, b"READY") && !has(&picture, b"Resume this session"));
         assert!(has(&model.snapshot(), b"Resume this session") && !has(&model.snapshot(), b"READY"), "live, the terminal shows the resume lines");
+    }
+
+    /// Bug 2026-10-07: the kept picture after `/exit` was the frame with the slash-command menu.
+    #[test]
+    fn holder_model_keeps_the_picture_from_before_the_command_that_ended_the_session() {
+        let has = |hay: &[u8], needle: &[u8]| hay.windows(needle.len()).any(|w| w == needle);
+        let secs = |s: f32| Duration::from_secs_f32(s);
+        const LEAVE: &[u8] = b"\x1b[?1000l\x1b[?1049l\r\nResume this session with:";
+        const MENU: &[u8] = b"\x1b[5;1H/exit     Exit the CLI\x1b[6;1H/context  Show context";
+        let drawn = |t0: Instant| {
+            let mut model = Model::new(10, 60);
+            model.feed_at(b"\x1b[?1049h\x1b[2J\x1b[H\x1b[?1000h> question\r\nthe last answer\x1b[9;1H> ", t0);
+            model
+        };
+        // Typed a key at a time, with a pause to read the menu before Enter.
+        let t0 = Instant::now();
+        let mut model = drawn(t0);
+        for (i, key) in b"/exit".iter().enumerate() {
+            let at = t0 + secs(10.0 + i as f32 * 0.2);
+            model.typed(&[*key], at);
+            model.feed_at(&[*key], at);
+            model.feed_at(MENU, at);
+        }
+        model.typed(b"\x1b[<35;10;5M", t0 + secs(12.0)); // the mouse moved over the menu
+        model.typed(b"\r", t0 + secs(14.0));
+        model.feed_at(LEAVE, t0 + secs(14.01));
+        let picture = model.ended_picture(t0 + secs(14.4)).expect("the picture before the command");
+        assert!(has(&picture, b"the last answer") && has(&picture, b"> question"));
+        assert!(!has(&picture, b"Exit the CLI") && !has(&picture, b"/exit") && !has(&picture, b"Resume this session"), "{:?}", String::from_utf8_lossy(&picture));
+        assert!(!has(&picture, b"\x1b[?1049h") && !has(&picture, b"\x1b[?1000h"));
+
+        // A whole line in one write (a paste, a teammate's relayed line).
+        let mut model = drawn(t0);
+        model.typed(b"/exit\r", t0 + secs(10.0));
+        model.feed_at(MENU, t0 + secs(10.0));
+        model.feed_at(LEAVE, t0 + secs(10.2));
+        assert!(!has(&model.ended_picture(t0 + secs(10.5)).unwrap(), b"Exit the CLI"));
+
+        // Typed while an answer was still being drawn: no resting picture, so the last frame.
+        let mut model = drawn(t0);
+        model.typed(b"/exit", t0 + secs(1.0));
+        model.feed_at(MENU, t0 + secs(1.0));
+        model.typed(b"\r", t0 + secs(1.2));
+        model.feed_at(LEAVE, t0 + secs(1.21));
+        assert!(has(&model.ended_picture(t0 + secs(1.5)).unwrap(), b"Exit the CLI"));
+
+        // The line was a question, answered; the session was then ended some other way (End, a
+        // signal): the answer is the last picture, not the screen before the question.
+        let mut model = drawn(t0);
+        model.typed(b"another question\r", t0 + secs(10.0));
+        model.feed_at(b"\x1b[3;1Ha newer answer", t0 + secs(12.0));
+        model.feed_at(LEAVE, t0 + secs(20.0));
+        assert!(has(&model.ended_picture(t0 + secs(20.3)).unwrap(), b"a newer answer"));
+
+        // A line left unsent for long is not the line being typed: `/exit` after it begins anew.
+        let mut model = drawn(t0);
+        model.typed(b"x", t0 + secs(10.0));
+        model.feed_at(b"\x1b[9;3Hx-typed-long-ago", t0 + secs(10.0));
+        model.typed(b"/exit\r", t0 + secs(100.0));
+        model.feed_at(MENU, t0 + secs(100.0));
+        model.feed_at(LEAVE, t0 + secs(100.1));
+        let picture = model.ended_picture(t0 + secs(100.4)).unwrap();
+        assert!(has(&picture, b"x-typed-long-ago") && !has(&picture, b"Exit the CLI"));
+    }
+
+    /// End session: the holder signals its provider. Claude Code 2.1.292 (fullscreen, 120x40 pty,
+    /// captured 2026-10-07) on SIGHUP or SIGTERM writes what it writes on `/exit` (first read 3 ms
+    /// after the signal) and exits 129 / 143 about 0.33 s later.
+    #[test]
+    fn holder_model_keeps_the_conversation_real_claude_code_leaves_when_signalled() {
+        let has = |hay: &[u8], needle: &[u8]| hay.windows(needle.len()).any(|w| w == needle);
+        const SIGNAL_READS: &[&[u8]] = &[
+            b"\x1b[?1006l\x1b[?1003l\x1b[?1002l\x1b[?1000l",
+            b"\x1b[?25h",
+            b"\x1b[?1004l\x1b[?1049l\x1b[>4m\x1b[>4m\x1b[?2031l\x1b[?2004l\x1b(B\x0f\x1b[?1016l\x1b[?1006l\x1b[?1003l\x1b[?1002l\x1b[?1000l\x1b[?25h\x1b7\x1b[r\x1b8",
+            b"\x1b[?25h",
+            b"\x1b(B\x0f\x1b[?1016l\x1b[?1006l\x1b[?1003l\x1b[?1002l\x1b[?1000l\x1b[>4m\x1b[?1004l\x1b[?2031l\x1b[?2004l\x1b[?25h\x1b7\x1b[r\x1b8\x1b]0;\x07",
+            b"\x1b[2m\x1b[22m\r\n\x1b[2mResume this session with:\x1b[22m\r\n\x1b[2mclaude --resume 1ea45316-3bb7-4447-b8f2-3d769e032c41\x1b[22m\r\n\x1b[2m\x1b[22m",
+            b"\x1b[?25h",
+        ];
+        let t0 = Instant::now();
+        let mut model = Model::new(40, 120);
+        model.feed_at(b"\x1b[?1049h\x1b[2J\x1b[H\x1b[?1000h\x1b[?25l\x1b[H\r\x1b[6B> Reply with the single word READY.\r\x1b[1BREADY\x1b[40;1H\x1b[38;3H\x1b[?25h", t0);
+        // A provider killed outright (SIGKILL after it ignored the signal) dies on the alternate screen.
+        let killed = model.ended_picture(t0 + Duration::from_secs(60)).expect("the screen it died on");
+        assert!(has(&killed, b"READY") && !has(&killed, b"\x1b[?1049h") && !has(&killed, b"\x1b[?1000h"));
+        for read in SIGNAL_READS {
+            model.feed_at(read, t0 + Duration::from_secs(45));
+        }
+        let picture = model.ended_picture(t0 + Duration::from_millis(45_330)).expect("the conversation it left");
+        assert!(has(&picture, b"READY") && !has(&picture, b"Resume this session"));
     }
 
     #[test]

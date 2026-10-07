@@ -1977,15 +1977,13 @@ impl Host {
             return journal.finish(&cmd.session_id, &cmd.request_id, None, false);
         }
         if cmd.kind == "end" {
-            // The owner's End, from any device. A held session ends as the panel's End does, by
-            // stopping its holder; a plain Claude as closing its terminal does (it saves and
-            // leaves on SIGTERM). The mirror then reports the end. The check just above proved
+            // The owner's End, from any device. A held session ends as the panel's End does: its
+            // holder ends the provider and keeps the last picture; a plain Claude as closing its
+            // terminal does (it saves and leaves on SIGTERM). The mirror then reports the end. The check just above proved
             // this pid is still the process that was verified.
             let sent = match native.holder.clone() {
-                Some(id) => tokio::task::spawn_blocking(crate::holder::manager::list).await.ok()
-                    .and_then(|holders| holders.into_iter().find(|h| h.id == id))
-                    .map(|holder| crate::holder::manager::stop(holder.pid))
-                    .is_some(),
+                Some(id) => tokio::task::spawn_blocking(move || crate::holder::manager::list().into_iter().find(|h| h.id == id)
+                    .map(|holder| crate::holder::manager::end(&holder)).is_some()).await.unwrap_or(false),
                 None => unsafe { libc::kill(native.process.pid as libc::pid_t, libc::SIGTERM) == 0 },
             };
             return journal.finish(&cmd.session_id, &cmd.request_id, sent.then(|| cmd.request_id.clone()), false);

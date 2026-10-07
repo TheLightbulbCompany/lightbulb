@@ -515,3 +515,83 @@ fn holder_runs_the_provider_in_the_environment_it_was_handed() {
     read_until(&mut c, b"mark=from-terminal claudecode=unset inherit=unset");
     manager::stop(info.pid);
 }
+
+/// Wait until the holder's screen shows `needle` (drawn before or after any client attached).
+fn wait_screen(socket: &Path, needle: &[u8]) {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        let mut w = attach(socket, "watch");
+        let (kind, snap) = read_frame(&mut w).unwrap();
+        if kind == SNAPSHOT && has(&snap, needle) {
+            return;
+        }
+        assert!(Instant::now() < deadline, "the screen never showed {:?}", String::from_utf8_lossy(needle));
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
+/// End session (bug 2026-10-07: End stopped the holder, so "The screen is gone"). The holder ends
+/// its provider itself and keeps the last picture, as after `/exit`.
+#[test]
+fn holder_end_ends_the_provider_and_keeps_its_last_picture() {
+    let dir = temp_dir();
+    // As Claude Code does on SIGHUP: leave the alternate screen, print the resume lines, exit 129.
+    let socket = start(&dir, &["/bin/sh", "-c", concat!(
+        r#"trap 'printf "\033[?1000l\033[?1049lResume this session with:\r\n"; exit 129' HUP;"#,
+        r" printf '\033[?1049h\033[2J\033[H\033[?1000hlast-answer\r\n> prompt-box'; while :; do sleep 0.1; done")]);
+    let mut c = attach(&socket, "interactive");
+    wait_screen(&socket, b"prompt-box");
+    let info = manager::list_in(&dir).into_iter().next().unwrap();
+    assert!(manager::end(&info), "this holder takes END, so it is not stopped");
+    let exit = loop {
+        let (kind, payload) = read_frame(&mut c).expect("EXIT before timeout");
+        if kind == EXIT {
+            break serde_json::from_slice::<serde_json::Value>(&payload).unwrap();
+        }
+    };
+    assert_eq!(exit["code"], 129, "the provider was hung up on, as when its terminal closes");
+    assert!(manager::is_ended(&manager::list_in(&dir).into_iter().next().expect("the holder stays")));
+    let screen = ended_screen(&socket);
+    assert!(has(&screen, b"last-answer") && has(&screen, b"> prompt-box"), "{:?}", String::from_utf8_lossy(&screen));
+    assert!(!has(&screen, b"Resume this session") && !has(&screen, b"\x1b[?1049h") && !has(&screen, b"\x1b[?1000h"));
+    assert!(!manager::end(&info) || manager::is_ended(&info), "a second End changes nothing");
+}
+
+/// A provider that ignores the hang-up is killed, and the alternate screen it died on is kept as
+/// normal-buffer content.
+#[test]
+fn holder_end_kills_a_provider_that_ignores_the_hang_up_and_keeps_the_screen_it_died_on() {
+    let dir = temp_dir();
+    let socket = start(&dir, &["/bin/sh", "-c",
+        r"trap '' HUP; printf '\033[?1049h\033[2J\033[H\033[?1000hstuck-screen'; while :; do sleep 0.1; done"]);
+    let mut c = attach(&socket, "interactive");
+    wait_screen(&socket, b"stuck-screen");
+    c.set_read_timeout(Some(run::END_KILL_AFTER + Duration::from_secs(5))).unwrap();
+    let asked = Instant::now();
+    assert!(manager::end(&manager::list_in(&dir).into_iter().next().unwrap()));
+    while read_frame(&mut c).expect("EXIT before timeout").0 != EXIT {}
+    assert!(asked.elapsed() >= run::END_KILL_AFTER - Duration::from_millis(200), "it had its time to leave");
+    let screen = ended_screen(&socket);
+    assert!(has(&screen, b"stuck-screen"), "{:?}", String::from_utf8_lossy(&screen));
+    assert!(!has(&screen, b"\x1b[?1049h") && !has(&screen, b"\x1b[?1000h"), "normal-buffer content, mouse off");
+}
+
+/// Bug 2026-10-07: the kept picture after `/exit` was the frame with the slash-command menu.
+#[test]
+fn holder_keeps_the_picture_from_before_the_command_that_ended_the_session() {
+    let dir = temp_dir();
+    // Draws a conversation; on the typed line draws a menu over it, then leaves and exits.
+    let socket = start(&dir, &["/bin/sh", "-c", concat!(
+        r"printf '\033[?1049h\033[2J\033[Hthe-last-answer\r\n> '; read x;",
+        r" printf '\033[2;1HExit the CLI menu'; sleep 0.2; printf '\033[?1049lResume this session with:\r\n'; exit 0")]);
+    let mut c = attach(&socket, "interactive");
+    wait_screen(&socket, b"the-last-answer");
+    std::thread::sleep(Duration::from_millis(1700)); // the screen is at rest
+    c.write_all(&encode(INPUT, b"/exit")).unwrap();
+    std::thread::sleep(Duration::from_millis(300));
+    c.write_all(&encode(INPUT, b"\r")).unwrap();
+    while read_frame(&mut c).expect("EXIT before timeout").0 != EXIT {}
+    let screen = ended_screen(&socket);
+    assert!(has(&screen, b"the-last-answer"), "{:?}", String::from_utf8_lossy(&screen));
+    assert!(!has(&screen, b"Exit the CLI") && !has(&screen, b"/exit") && !has(&screen, b"Resume this session"), "{:?}", String::from_utf8_lossy(&screen));
+}

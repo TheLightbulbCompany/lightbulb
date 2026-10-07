@@ -24,6 +24,9 @@ const CLIENT_QUEUE: usize = 1024;
 const OUTPUT_BACKLOG: usize = 8 << 20;
 /// How long to keep reading output after the provider exits.
 const EXIT_DRAIN: Duration = Duration::from_secs(1);
+/// How long a provider told to end (END) has to exit before it is killed. Claude Code 2.1.292
+/// exits 0.33 s after SIGHUP.
+pub const END_KILL_AFTER: Duration = Duration::from_secs(5);
 
 /// `--size=<cols>x<rows>`: the size of the terminal that asked for this session.
 pub fn parse_size(arg: &str) -> Option<(u16, u16)> {
@@ -229,11 +232,15 @@ pub fn run_with_env(socket: &Path, argv: &[String], cwd: &Path, env: Vec<(String
         let _ = out_tx.send(Event::Eof);
     });
     let exit_tx = tx.clone();
+    // Set once the provider is reaped: its pid may then belong to another process.
+    let reaped = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let provider_reaped = reaped.clone();
     std::thread::spawn(move || {
         let (status, code) = match child.wait() {
             Ok(s) => (format!("{s:?}"), s.exit_code()),
             Err(e) => (e.to_string(), 1),
         };
+        provider_reaped.store(true, Ordering::SeqCst);
         let _ = exit_tx.send(Event::Exit(status, code));
     });
     std::thread::spawn(move || {
@@ -283,6 +290,8 @@ pub fn run_with_env(socket: &Path, argv: &[String], cwd: &Path, env: Vec<(String
     // Once `ended`: the last alternate-screen picture, when that is what the person last saw
     // (`Model::ended_picture`). Every snapshot is then this picture, and nothing follows it.
     let mut ended_picture: Option<Vec<u8>> = None;
+    // An END was taken: the provider is on its way out.
+    let mut ending = false;
 
     loop {
         let event = match &exited {
@@ -328,7 +337,7 @@ pub fn run_with_env(socket: &Path, argv: &[String], cwd: &Path, env: Vec<(String
                 let (rows, cols) = model.size();
                 let facts = serde_json::json!({"protocol": 1, "pid": std::process::id(),
                     "providerPid": provider_pid, "argv": argv, "cwd": cwd, "rows": rows, "cols": cols,
-                    "watch": true, "type": true, "joined": joining, "origin": true, "lastInput": last_input,
+                    "watch": true, "type": true, "joined": joining, "origin": true, "lastInput": last_input, "end": true,
                     "ended": ended, "endedAt": ended.then_some(exited_at_ms)});
                 if !client.send(encode(HELLO, facts.to_string().as_bytes())) {
                     continue;
@@ -391,7 +400,29 @@ pub fn run_with_env(socket: &Path, argv: &[String], cwd: &Path, env: Vec<(String
                 if !ended && (interactive == Some(id) || typists.contains(&id)) && !is_probe_reply(&payload) =>
             {
                 last_input = Some(input_origin(kind, remote.contains(&id)));
+                model.typed(&payload, Instant::now());
                 let _ = pty.write_all(&payload);
+            }
+            // From any connection: the socket is this user's alone, and the app's End asks on a
+            // short-lived `origin` one.
+            Event::Frame(_, END, _) if !ending && !ended && exited.is_none() && provider_pid > 1 => {
+                ending = true;
+                // The provider leads its terminal's process group (the pty made it a session
+                // leader): what a closing terminal hangs up on.
+                let group = -(provider_pid as libc::pid_t);
+                let reaped = reaped.clone();
+                if !reaped.load(Ordering::SeqCst) {
+                    unsafe { libc::kill(group, libc::SIGHUP) };
+                }
+                std::thread::spawn(move || {
+                    let deadline = Instant::now() + END_KILL_AFTER;
+                    while Instant::now() < deadline && !reaped.load(Ordering::SeqCst) {
+                        std::thread::sleep(Duration::from_millis(50));
+                    }
+                    if !reaped.load(Ordering::SeqCst) {
+                        unsafe { libc::kill(group, libc::SIGKILL) };
+                    }
+                });
             }
             Event::Frame(id, RESIZE, payload) if !ended && interactive == Some(id) && payload.len() == 4 => {
                 let cols = u16::from_be_bytes([payload[0], payload[1]]).max(1);

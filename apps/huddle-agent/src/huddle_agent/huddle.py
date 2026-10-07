@@ -2919,6 +2919,7 @@ class Huddle:
                 text = f"Your earlier task on {run.request[:80]} finished: {answer}"
                 self._live_call(v, "append_commentary", text, delegation_id=None)
                 if in_meet(v.speaker):  # being said: kept until its audio ends (`_talked_over`, hang-up)
+                    self._settle_told(v)  # what it said of the earlier answers counts before the reset
                     v.said = []  # an answer boundary: a cut is measured against what it says from here
                     v.told.append((run.run_id, run.request, answer, self._clock(), run.speaker))
             self._requests.delivered({run.run_id})
@@ -3351,6 +3352,16 @@ class Huddle:
         """A stop, "everyone stop" or "don't post that": applied the moment it is heard, never held."""
         agents = self._team["agents"]
         return stop_all(text) or stop_request(text, agents) or no_post_command(text, agents)[0]
+
+    def _settle_told(self, v: _Voice) -> None:
+        """An answer boundary while the voice is still talking: what it has said so far is applied to the
+        answers handed to it before `v.said` is reset, so a later turn-away does not raise a hand for words
+        already heard (Codex on #3800: a seeded news said to its end came back after a later answer's reset)."""
+        if not v.told:
+            return
+        v.told.sort(key=lambda n: (self._requests.order(n[0]), n[3]))
+        bags = _said_bags(" ".join(v.said))
+        v.told = [(n[0], n[1], rest, *n[3:]) for n in v.told if (rest := _unsaid_with(n[2], bags))]
 
     def _keep_unsaid(self, v: _Voice) -> None:
         """What a meeting voice was saying when it was stopped short (talked over, or closed for another agent

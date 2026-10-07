@@ -456,3 +456,26 @@ async def test_news_handed_to_a_named_voice_keeps_its_hand_if_the_voice_closes_b
     await says(h, P1, "Dan, did you push that fix last night?")  # before its first word
     assert h._voice is None and [n[2] for n in h._news.get("forge", [])] == ["Three PRs are open."]
     assert backend.late_answers == []
+
+
+async def test_seeded_news_said_to_its_end_stays_said_when_a_later_answer_resets_the_list():
+    """Codex on #3800 (after the merge): a named voice said its seeded news, a second run's answer arrived while
+    it still talked and reset `v.said`, and a turn-away then raised the said news again."""
+    h, backend, lives, clock = await asked()
+    (row1,) = h._requests.items
+    backend.route_extra = ops([("forge", "check the deploy", "name")])
+    await says(h, P1, "Forge, also check the deploy.")
+    backend.route_extra = ops([])
+    row2 = next(r for r in h._requests.items if r is not row1)
+    clock.t += h_mod.MEET_FOLLOWUP_S  # the exchange closed while both runs worked
+    await h.tick()
+    await settle(h)
+    answer(h, row1.run_id, "forge", "Three PRs are open.")
+    await says(h, P1, "Forge, go ahead.")  # called on its hand: the news rides its seed
+    assert h._voice is not None
+    h.on_agent_state("forge", "speaking")
+    h.on_agent_said("forge", "Three PRs are open.")  # the seed, said to its end
+    answer(h, row2.run_id, "forge", "The deploy is green.")  # a second answer lands while it still talks
+    await says(h, P1, "Dan, did you push that fix last night?")  # turns away
+    assert h._voice is None
+    assert [n[2] for n in h._news.get("forge", [])] == ["The deploy is green."]

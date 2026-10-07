@@ -1,10 +1,9 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { ApiError, type LiveEvent, type LocalSession, type SessionScreen } from "@lightbulb/shared";
+import { ApiError, NEW_SCREEN, receiveScreen, type LiveEvent, type LocalSession, type SessionScreen } from "@lightbulb/shared";
 import type { Terminal } from "@xterm/xterm";
 import "@xterm/xterm/css/xterm.css";
-import { NEW_SCREEN, receiveScreen } from "./sessionScreen";
 import { chunkInput, dropProbeReplies, SHIFT_ENTER } from "./sessionInput";
 
 const WATCH_EVERY_MS = 15_000;

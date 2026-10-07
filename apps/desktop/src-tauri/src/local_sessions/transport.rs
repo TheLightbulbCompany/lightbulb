@@ -878,7 +878,9 @@ impl Host {
                 "endedAt":ended_at});
             // The draining register of an ended mirror carries no start identity. A relay that
             // has never heard this generation's (the whole run was offline) learns it here.
-            if let Some(start_id) = start_links::linked(dir, &mirror.native, &mirror.generation)
+            // `bound`, not `linked`: a mirror restricted since (an app restart marks it
+            // `runtime-unverified` before liveness ends it) was still bound while verified.
+            if let Some(start_id) = start_links::bound(dir, &mirror.native, &mirror.generation)
                 .filter(|_| relay_reads_ended_start)
             {
                 frame["startId"] = json!(start_id);
@@ -3196,6 +3198,33 @@ pub(super) mod tests {
         let stored: Mirror = private_read(&dir.path().join(format!("{key}.json"))).unwrap();
         assert_eq!(stored.native.status, "ended");
         assert_eq!(stored.ended_reason.as_deref(), Some("exited"));
+    }
+
+    #[test]
+    fn local_sessions_a_restricted_ended_mirror_still_names_its_bound_start_on_the_end() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut mirror = test_mirror(SID, "gen-1");
+        mirror.session_id = Some(SID.into());
+        mirror.native.status = "ended".into();
+        // An app restart marks a mirror unverified before liveness finds its process gone.
+        mirror.native.restriction = Some("runtime-unverified".into());
+        mirror.ended_at = Some(1_700_000_042);
+        private_write(
+            &dir.path().join(format!("start-{}.json",
+                fingerprint(&json!([mirror.native.provider, mirror.native.conversation]).to_string()))),
+            &json!({"startId":"11111111-1111-4111-8111-111111111111","provider":mirror.native.provider,
+                "conversation":mirror.native.conversation,"launcher":process(std::process::id()).unwrap(),
+                "boundGeneration":"gen-1"}),
+        )
+        .unwrap();
+        let mut host = test_host(dir.path(), vec![(SID, mirror)]);
+        for (relay_reads, expected) in [(false, Value::Null), (true, json!("11111111-1111-4111-8111-111111111111"))] {
+            host.ended_pending = vec![SID.into()];
+            let (_, frame) = host.ended_frame(&mut BTreeSet::new(), relay_reads).unwrap().unwrap();
+            assert_eq!(frame["type"], "local.session.ended");
+            assert_eq!(frame["startId"], expected);
+        }
+        assert!(host.begin_ended_recovery(SID).unwrap()["session"].get("startId").is_none());
     }
 
     #[test]

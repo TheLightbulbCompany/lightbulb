@@ -161,10 +161,17 @@ pub(super) fn bind(scope: &Path, native: &NativeSession, generation: &str) -> Re
     Ok(true)
 }
 
+/// The start a register may claim: bound to this generation, on a runtime verified now.
 pub(super) fn linked(scope: &Path, native: &NativeSession, generation: &str) -> Option<String> {
     if native.restriction.is_some() {
         return None;
     }
+    bound(scope, native, generation)
+}
+
+/// The start this generation was bound to, whatever the runtime's state now. The binding was
+/// made while the runtime was verified; an end reports it, and an ended row grants no control.
+pub(super) fn bound(scope: &Path, native: &NativeSession, generation: &str) -> Option<String> {
     let link: Link = private_read(&path(scope, &native.provider, &native.conversation)).ok()?;
     (valid_start_id(&link.start_id)
         && link.provider == native.provider
@@ -226,6 +233,11 @@ mod tests {
         );
         assert!(!bind(temp.path(), &native, "generation-2").unwrap());
         assert!(linked(temp.path(), &native, "generation-2").is_none());
+        let mut restricted = native.clone();
+        restricted.restriction = Some("runtime-unverified".into());
+        assert!(linked(temp.path(), &restricted, "generation-1").is_none());
+        assert_eq!(bound(temp.path(), &restricted, "generation-1").as_deref(), Some("11111111-1111-4111-8111-111111111111"));
+        assert!(bound(temp.path(), &restricted, "generation-2").is_none());
         let mut other = native;
         other.conversation = "native-2".into();
         create_once(

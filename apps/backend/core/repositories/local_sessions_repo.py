@@ -253,6 +253,23 @@ async def list_commands(owner: str, sid: str) -> list[dict]:
     return sorted(await store._query(session_pk(owner, sid), begins_with="COMMAND#"), key=lambda row: row["commandSeq"])
 
 
+async def mark_reconcile_asked(command: dict, now: int, every: int) -> bool:
+    """True for the one heartbeat that may ask the desktop to reconcile this command now."""
+    try:
+        await store.run_in_thread(
+            store._table().update_item,
+            Key={"pk": command["pk"], "sk": command["sk"]},
+            UpdateExpression="SET reconcileAskedAt = :now",
+            ConditionExpression="attribute_exists(sk) AND (attribute_not_exists(reconcileAskedAt) OR reconcileAskedAt <= :cutoff)",
+            ExpressionAttributeValues={":now": now, ":cutoff": now - every},
+        )
+    except store.ClientError as exc:
+        if exc.response["Error"]["Code"] == "ConditionalCheckFailedException":
+            return False
+        raise
+    return True
+
+
 async def replace_command(
     previous: dict, updated: dict, *, checks: Sequence[dict] = (), extra: Sequence[dict] = ()
 ) -> None:

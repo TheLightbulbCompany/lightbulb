@@ -1176,6 +1176,26 @@ async def test_reconnect_exposes_only_blocking_request_for_journal_reconciliatio
 
 
 @pytest.mark.asyncio
+async def test_unknown_command_is_not_reconciled_on_every_heartbeat(transport):
+    """Each ask makes the Mac verify the native process (seconds of `lsof` and transcript reads).
+    Asked every 10 s for a command that never settles, that took a Mac offline (2026-10-07)."""
+    sid = await start(transport)
+    await service.submit_command(BOB, ROOM, sid, command(service))
+    with patch.object(transport[2], "send_message_async", return_value=False):
+        await relay(transport).dispatch_session(OWNER, sid)
+    assert (await repo.get_command(OWNER, sid, "request-1"))["state"] == "unknown"
+    asked = [{"sessionId": sid, "requestId": "request-1", "generation": "generation-1", "state": "unknown"}]
+    assert (await relay(transport).handle_message("conn-1", heartbeat(sid)))["reconcile"] == asked
+    assert (await relay(transport).handle_message("conn-1", heartbeat(sid)))["reconcile"] == []
+    with patch("time.time", return_value=time.time() + 59):
+        assert (await relay(transport).handle_message("conn-1", heartbeat(sid)))["reconcile"] == []
+    with patch("time.time", return_value=time.time() + 61):
+        assert (await relay(transport).handle_message("conn-1", heartbeat(sid)))["reconcile"] == asked
+    # The ask is bookkeeping: the command is still the unknown one its receipt will settle.
+    assert (await repo.get_command(OWNER, sid, "request-1"))["state"] == "unknown"
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("old_outcome", ["unknown", "dispatched"])
 @pytest.mark.parametrize("current_outcome", ["unknown", "dispatched"])
 async def test_native_successor_unblocks_new_input_without_replaying_old_unknown(

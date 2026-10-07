@@ -364,11 +364,25 @@ fn settle(relays: &mut BTreeMap<String, Arc<Ctl>>, wanted: &BTreeMap<String, u64
 /// A backend `local.session.watch`: someone just started watching. Never answered; anything this
 /// Mac cannot stream (not its session, another generation, ended) is ignored.
 pub(super) fn nudge(body: &Value) {
+    #[cfg(test)]
+    if let (Ok(mut nudged), Some(sid)) = (NUDGED.lock(), body["sessionId"].as_str()) {
+        nudged.insert(sid.to_owned());
+    }
     let Some(sid) = LIVE.lock().ok().and_then(|live| nudged(body, |sid| live.get(sid).map(|l| l.generation.clone())))
     else { return };
     let Ok(mut relays) = RELAYS.lock() else { return };
     relays.retain(|_, ctl| !ctl.stopped());
     nudge_relay(&mut relays, sid, body["since"].as_u64(), spawn);
+}
+
+/// Every session id a `local.session.watch` named, as the relay loop handed it over. (Not
+/// `RELAYS`: `LIVE` is one static, and parallel tests' connections index over each other.)
+#[cfg(test)]
+static NUDGED: Mutex<std::collections::BTreeSet<String>> = Mutex::new(std::collections::BTreeSet::new());
+
+#[cfg(test)]
+pub(super) fn was_nudged(sid: &str) -> bool {
+    NUDGED.lock().is_ok_and(|nudged| nudged.contains(sid))
 }
 
 /// The running relay of a session this Mac holds at `body`'s generation: what remote input

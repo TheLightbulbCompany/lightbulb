@@ -52,6 +52,43 @@ it("watches while on screen, draws the snapshot read-only, and ignores other ses
   expect(watch).toHaveBeenCalledTimes(2);
 });
 
+it("a hidden tab stops watching, and asks for one fresh screen when it is shown again", async () => {
+  vi.useFakeTimers();
+  let state: DocumentVisibilityState = "visible";
+  const spy = vi.spyOn(document, "visibilityState", "get").mockImplementation(() => state);
+  const show = (next: DocumentVisibilityState) => act(() => { state = next; document.dispatchEvent(new Event("visibilitychange")); });
+  const watch = vi.fn(async () => undefined);
+  const { unmount } = render(<SessionTerminalView session={{ sessionId: "s1", generation: "g1" }}
+    onEvent={() => () => {}} watch={watch} onLive={vi.fn()} />);
+  expect(watch.mock.calls).toEqual([["s1", true]]);
+  show("hidden");
+  // A hidden tab's timers run about once a minute: each late renewal found the 45 s lease lapsed
+  // and counted as a new viewer, a history burst a minute. Hidden, it asks for nothing at all.
+  await act(async () => { await vi.advanceTimersByTimeAsync(5 * 60_000); });
+  expect(watch).toHaveBeenCalledTimes(1);
+  show("visible");
+  expect(watch.mock.calls).toEqual([["s1", true], ["s1", true]]); // the lease lapsed: one fresh screen
+  await act(async () => { await vi.advanceTimersByTimeAsync(15_000); });
+  expect(watch.mock.calls.slice(2)).toEqual([["s1", false]]); // and renewals again, one timer
+  unmount();
+  show("hidden"); show("visible");
+  expect(watch).toHaveBeenCalledTimes(3);
+  spy.mockRestore();
+});
+
+it("a view mounted in a hidden tab asks for nothing until the tab is shown", async () => {
+  vi.useFakeTimers();
+  let state: DocumentVisibilityState = "hidden";
+  const spy = vi.spyOn(document, "visibilityState", "get").mockImplementation(() => state);
+  const watch = vi.fn(async () => undefined);
+  render(<SessionTerminalView session={{ sessionId: "s1", generation: "g1" }} onEvent={() => () => {}} watch={watch} onLive={vi.fn()} />);
+  await act(async () => { await vi.advanceTimersByTimeAsync(60_000); });
+  expect(watch).not.toHaveBeenCalled();
+  act(() => { state = "visible"; document.dispatchEvent(new Event("visibilitychange")); });
+  expect(watch.mock.calls).toEqual([["s1", true]]);
+  spy.mockRestore();
+});
+
 it("goes back to not-live when frames stop, and live again on the next snapshot", async () => {
   vi.useFakeTimers();
   let emit: (e: LiveEvent) => void = () => {};

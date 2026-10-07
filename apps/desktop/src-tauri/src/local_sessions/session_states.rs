@@ -31,8 +31,56 @@ static SWEPT: Mutex<Option<Instant>> = Mutex::new(None);
 // left less than this before the provider quit either ties with the one that replaced it (no screen
 // is kept) or, with none after it (the agent view), keeps those last seconds' screen.
 const ENDED_WITH_MS: u64 = 10_000;
-/// Holder id -> when its provider exited (None: it still ran when last asked, at that Instant).
-static ENDS: Mutex<BTreeMap<String, (Option<u64>, Instant)>> = Mutex::new(BTreeMap::new());
+/// How often the holders of ended sessions are asked whether their provider exited.
+const PROBE_EVERY: Duration = Duration::from_secs(2);
+
+/// Holder id -> when its provider exited, as last asked. The relay loop only reads this: asking
+/// is a socket round trip per holder with a 2 s read timeout, and the loop that waited for one
+/// sent no heartbeat meanwhile. `refresh` asks on its own thread.
+struct Ends {
+    at: Mutex<BTreeMap<String, u64>>,
+    asked: Mutex<Option<Instant>>,
+    asking: AtomicBool,
+}
+static ENDS: Ends = Ends::new();
+
+impl Ends {
+    const fn new() -> Self {
+        Self { at: Mutex::new(BTreeMap::new()), asked: Mutex::new(None), asking: AtomicBool::new(false) }
+    }
+
+    fn get(&self, id: &str) -> Option<u64> {
+        self.at.lock().ok()?.get(id).copied()
+    }
+
+    /// Asks every one of `holders` once, off the caller's thread: at most every PROBE_EVERY, and
+    /// never beside a pass that has not finished (a holder that does not answer holds one thread).
+    fn refresh(&'static self, holders: BTreeSet<String>, ask: impl Fn(&str) -> Option<u64> + Send + 'static) {
+        let Ok(mut asked) = self.asked.lock() else { return };
+        if asked.is_some_and(|at| at.elapsed() < PROBE_EVERY) {
+            return;
+        }
+        if holders.is_empty() {
+            // No ended session names a holder: nothing to ask, and no thread every two seconds.
+            if let Ok(mut at) = self.at.lock() {
+                at.clear();
+            }
+            return;
+        }
+        if self.asking.swap(true, SeqCst) {
+            return;
+        }
+        *asked = Some(Instant::now());
+        drop(asked);
+        std::thread::spawn(move || {
+            let found: BTreeMap<String, u64> = holders.into_iter().filter_map(|id| ask(&id).map(|at| (id, at))).collect();
+            if let Ok(mut at) = self.at.lock() {
+                *at = found;
+            }
+            self.asking.store(false, SeqCst);
+        });
+    }
+}
 /// The mirrors whose screen the last `index` kept.
 static SHOWN: Mutex<BTreeSet<String>> = Mutex::new(BTreeSet::new());
 
@@ -56,23 +104,25 @@ pub(super) fn reads_ended_screens() -> bool {
     READS_ENDED_SCREENS.load(SeqCst)
 }
 
-/// When this holder's provider exited (unix ms), if the holder shows only its final screen now.
-/// An end never changes, so it is asked once; a holder that still runs is asked again a second later.
+/// When this holder's provider exited (unix ms), if the holder showed only its final screen when
+/// last asked (up to PROBE_EVERY and one pass ago). Never a socket: this runs on the relay loop.
 fn holder_end(id: &str) -> Option<u64> {
+    ENDS.get(id)
+}
+
+/// One holder, asked on `Ends::refresh`'s thread. An end never changes, so a known one is only
+/// checked for still being there (a closed holder's screen is gone).
+fn ask_holder(id: &str) -> Option<u64> {
     let socket = manager::socket_dir().join(format!("{id}.sock"));
-    let mut ends = ENDS.lock().ok()?;
-    if UnixStream::connect(&socket).is_err() {
-        ends.remove(id); // closed: its screen is gone
-        return None;
+    match ENDS.get(id) {
+        Some(at) => UnixStream::connect(&socket).ok().map(|_| at),
+        None => manager::ended_at(&socket),
     }
-    match ends.get(id) {
-        Some((Some(at), _)) => return Some(*at),
-        Some((None, asked)) if asked.elapsed() < Duration::from_secs(1) => return None,
-        _ => {}
-    }
-    let at = manager::ended_at(&socket);
-    ends.insert(id.to_owned(), (at, Instant::now()));
-    at
+}
+
+/// The holders an ended session was last seen in: the only ones whose end matters here.
+fn ended_holders(mirrors: &BTreeMap<String, Mirror>) -> BTreeSet<String> {
+    mirrors.values().filter(|m| m.ended_at.is_some()).filter_map(|m| m.native.holder.clone()).collect()
 }
 
 /// The ended sessions whose final screen this Mac still shows, by mirror key, newest end first, one
@@ -160,6 +210,7 @@ fn add_reason_if(reads: bool, entry: &mut Value, native: &NativeSession) {
 /// session's screen are closed. Returns the mirrors whose screen is newly kept: the caller brings
 /// the heartbeat forward so the relay hears of it now.
 pub(super) fn index(mirrors: &BTreeMap<String, Mirror>) -> Vec<String> {
+    ENDS.refresh(ended_holders(mirrors), ask_holder);
     let kept = kept(mirrors, &holder_end);
     let shown = with_kept(mirrors, &holder_end);
     super::screen::index(shown.as_ref().unwrap_or(mirrors));
@@ -280,6 +331,60 @@ mod tests {
         assert!(kept(&slow, &|_: &str| Some(100_001 + ENDED_WITH_MS)).is_empty());
         // The process was seen gone after the holder ended.
         assert_eq!(keys(&kept(&slow, &|_: &str| Some(1))), ["a"]);
+    }
+
+    fn asked_long_ago(ends: &Ends) {
+        *ends.asked.lock().unwrap() = None;
+    }
+
+    #[test]
+    fn a_known_end_is_read_without_asking_its_holder() {
+        let ends: &'static Ends = Box::leak(Box::new(Ends::new()));
+        ends.at.lock().unwrap().insert("h1".into(), 101_000);
+        *ends.asked.lock().unwrap() = Some(Instant::now());
+        static ASKED: AtomicBool = AtomicBool::new(false);
+        let mirrors = BTreeMap::from([("a".to_string(), ended("h1", 100, SID))]);
+        assert_eq!(ended_holders(&mirrors), BTreeSet::from(["h1".to_string()]));
+        // The relay loop's tick, every second: nothing is asked while the answer is fresh.
+        ends.refresh(ended_holders(&mirrors), |_: &str| { ASKED.store(true, SeqCst); None });
+        assert_eq!(keys(&kept(&mirrors, &|id: &str| ends.get(id))), ["a"]);
+        std::thread::sleep(Duration::from_millis(50));
+        assert!(!ASKED.load(SeqCst) && !ends.asking.load(SeqCst), "a holder was asked on a warm cache");
+        // No ended session names a holder: what was known is dropped, and still nothing is asked.
+        asked_long_ago(ends);
+        ends.refresh(BTreeSet::new(), |_: &str| { ASKED.store(true, SeqCst); None });
+        assert_eq!(ends.get("h1"), None);
+        assert!(!ASKED.load(SeqCst) && !ends.asking.load(SeqCst));
+    }
+
+    #[test]
+    fn a_holder_that_never_answers_cannot_delay_a_tick() {
+        let ends: &'static Ends = Box::leak(Box::new(Ends::new()));
+        let holders = || BTreeSet::from(["h1".to_string()]);
+        let (answer, wait) = std::sync::mpsc::channel::<()>();
+        let wait = Mutex::new(wait);
+        let started = Instant::now();
+        ends.refresh(holders(), move |_: &str| { let _ = wait.lock().unwrap().recv(); None });
+        assert_eq!(ends.get("h1"), None, "not known yet: no screen is kept, and nothing waits");
+        // Later ticks, while that holder still has not answered: no second thread, no wait.
+        static AGAIN: AtomicBool = AtomicBool::new(false);
+        for _ in 0..3 {
+            asked_long_ago(ends);
+            ends.refresh(holders(), |_: &str| { AGAIN.store(true, SeqCst); None });
+        }
+        assert!(started.elapsed() < Duration::from_millis(200), "a tick waited {:?} for a holder", started.elapsed());
+        assert!(!AGAIN.load(SeqCst), "a second pass started beside the stuck one");
+        // It answers at last (or its read times out): the next pass runs and is read on a later tick.
+        drop(answer);
+        for _ in 0..200 {
+            asked_long_ago(ends);
+            ends.refresh(holders(), |_: &str| Some(5));
+            if ends.get("h1") == Some(5) {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        panic!("the pass after a stuck one never ran");
     }
 
     #[test]

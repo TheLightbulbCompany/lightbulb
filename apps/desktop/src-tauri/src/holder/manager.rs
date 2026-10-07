@@ -1,7 +1,7 @@
 //! Starting and finding holders. No registry file: a holder IS its socket, and `HELLO` says
 //! what runs in it. A socket that refuses a connection belongs to a dead holder.
 
-use super::protocol::{encode, read_frame, split_offset, with_offset, HELLO, OUTPUT, REPLAY, SNAPSHOT};
+use super::protocol::{encode, read_frame, split_offset, with_offset, END, HELLO, OUTPUT, REPLAY, SNAPSHOT};
 use serde::Serialize;
 use std::io::Write;
 use std::os::unix::fs::PermissionsExt;
@@ -61,6 +61,30 @@ pub(crate) fn ensure_dir(dir: &Path) -> Result<(), String> {
 /// It leads its own process group (`setsid`), so the group id is its pid.
 pub fn stop(pid: u32) {
     unsafe { libc::kill(-(pid as libc::pid_t), libc::SIGTERM) };
+}
+
+/// End the session a holder runs and keep its last picture: the holder ends its provider itself
+/// (END) and then shows the final screen, as after `/exit`. A holder from a build before END is
+/// stopped, as End always did; its screen goes with it (false). Blocks for up to 2 s.
+pub fn end(info: &HolderInfo) -> bool {
+    let kept = ask_end(&info.socket);
+    if !kept {
+        stop(info.pid);
+    }
+    kept
+}
+
+/// True when the holder takes END and was sent one.
+fn ask_end(socket: &Path) -> bool {
+    let ask = || {
+        let mut conn = UnixStream::connect(socket).ok()?;
+        conn.set_read_timeout(Some(Duration::from_secs(2))).ok()?;
+        conn.write_all(&encode(HELLO, br#"{"role":"origin"}"#)).ok()?;
+        let (kind, facts) = read_frame(&mut conn).ok()?;
+        let facts = serde_json::from_slice::<serde_json::Value>(&facts).ok().filter(|_| kind == HELLO)?;
+        (facts["end"] == true).then(|| conn.write_all(&encode(END, b"")).ok()).flatten()
+    };
+    ask().is_some()
 }
 
 /// How Lightbulb shows a session that the provider's own daemon hosts: as one more client of it
@@ -377,6 +401,37 @@ mod tests {
             assert_eq!(hello(&path).is_some(), claimed == std::process::id());
             server.join().unwrap();
         }
+    }
+
+    /// The owner's Mac, 2026-10-07: holder 737019b6, started 2026-10-04 by an older build, says
+    /// exactly this (no `origin`, `lastInput`, `end`). It is a holder like any other: it serves
+    /// watch clients, so its session is held; only End differs (no END, so it is stopped).
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn holder_from_an_older_build_is_still_a_holder_that_serves_watch_clients() {
+        use std::os::unix::net::UnixListener;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("737019b6.sock");
+        let listener = UnixListener::bind(&path).unwrap();
+        let server = std::thread::spawn(move || {
+            let mut frames = vec![];
+            for _ in 0..2 {
+                let (mut conn, _) = listener.accept().unwrap();
+                assert_eq!(read_frame(&mut conn).unwrap().0, HELLO);
+                let facts = serde_json::json!({"protocol":1,"pid":std::process::id(),"providerPid":63976,
+                    "argv":["/bin/sh","-c","…","lightbulb-start","ced8346d-3b2a-4a09-966b-6ebf14e11638","scope","/claude/versions/2.1.289"],
+                    "cwd":"/w","rows":43,"cols":124,"watch":true,"type":true,"joined":false});
+                conn.write_all(&encode(HELLO, facts.to_string().as_bytes())).unwrap();
+                conn.set_read_timeout(Some(Duration::from_millis(300))).unwrap();
+                frames.push(read_frame(&mut conn).ok().map(|(kind, _)| kind));
+            }
+            frames
+        });
+        let info = hello(&path).expect("an older holder is listed");
+        assert!(info.watch && info.type_input && info.provider_pid == 63976);
+        assert_eq!(info.start_id(), Some("ced8346d-3b2a-4a09-966b-6ebf14e11638"));
+        assert!(!ask_end(&path), "it does not take END: the caller stops it instead");
+        assert_eq!(server.join().unwrap(), [None, None], "and is never sent a frame it does not know");
     }
 
     #[test]

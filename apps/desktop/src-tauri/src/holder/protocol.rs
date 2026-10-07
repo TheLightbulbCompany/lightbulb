@@ -6,8 +6,9 @@ use std::io::{Error, ErrorKind, Read, Result};
 /// Holder → client: session facts (`"watch": true` when it serves watch clients, `"type": true`
 /// when it takes `type` ones, `"joined": true` when a `join` client found an interactive one,
 /// `"origin": true` when it takes OWNER_INPUT and reports `"lastInput"`: who wrote the last bytes
-/// to the pty, `"owner"`, `"teammate"` (a `type` client's plain INPUT) or null). An `origin`
-/// client gets the facts and nothing else: it is how the app asks for `lastInput`.
+/// to the pty, `"owner"`, `"teammate"` (a `type` client's plain INPUT) or null), `"end": true`
+/// when it takes END. An `origin` client gets the facts and nothing else: it is how the app asks
+/// for `lastInput`.
 /// An interactive `join` client never takes the keyboard from another: while one is attached it
 /// watches and types at that client's size (its RESIZE is ignored), and gets PROMOTED when that
 /// client leaves. Without one it is the interactive client.
@@ -36,6 +37,11 @@ pub const PROMOTED: u8 = 10;
 /// `type` client → holder: INPUT that the session's owner typed (in the Lightbulb app). Sent only
 /// to a holder whose HELLO says `"origin": true`; an older holder ignores this kind.
 pub const OWNER_INPUT: u8 = 11;
+/// Any client → holder (empty payload): end the provider and keep its last picture. The holder
+/// hangs up on the provider's process group, as a closing terminal does, and kills it if it has
+/// not exited after `run::END_KILL_AFTER`. Sent only to a holder whose HELLO says `"end": true`;
+/// an older holder is stopped instead (`manager::stop`), and its screen goes with it.
+pub const END: u8 = 12;
 
 /// No frame is larger than this; a longer declared length is refused before allocating it.
 pub const MAX_PAYLOAD: usize = 8 << 20;
@@ -78,7 +84,7 @@ mod tests {
 
     #[test]
     fn holder_frames_round_trip_every_kind() {
-        for kind in [HELLO, OUTPUT, INPUT, RESIZE, EXIT, REPLAY, GAP, SNAPSHOT, DETACHED, PROMOTED, OWNER_INPUT] {
+        for kind in [HELLO, OUTPUT, INPUT, RESIZE, EXIT, REPLAY, GAP, SNAPSHOT, DETACHED, PROMOTED, OWNER_INPUT, END] {
             let bytes = encode(kind, b"payload\x00\xff");
             assert_eq!(read_frame(&mut bytes.as_slice()).unwrap(), (kind, b"payload\x00\xff".to_vec()));
         }

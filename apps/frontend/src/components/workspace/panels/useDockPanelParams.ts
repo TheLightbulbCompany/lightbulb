@@ -13,6 +13,12 @@ import type { IDockviewPanelProps } from "dockview-react";
 // keys explicitly set to `undefined`.
 export function useDockPanelParams<T extends object>(props: IDockviewPanelProps<T>): T {
   const [params, setParams] = useState<T>(props.params);
+  // An update made before this panel mounted (the shell applies the URL command right after it
+  // restores the layout) fires its event with nobody listening: dockview renders the panel once
+  // with the restored params and then hands the merged bag in as props. Without this, a reload of
+  // ?panel=chat&session= kept the restored params and opened the default room.
+  const [handed, setHanded] = useState(props.params);
+  if (handed !== props.params) { setHanded(props.params); setParams(props.params); }
   useEffect(() => {
     const d = props.api.onDidParametersChange((next) => {
       setParams((prev) => {

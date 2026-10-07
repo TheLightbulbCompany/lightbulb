@@ -80,6 +80,17 @@ describe("ChatPanel", () => {
     expect(selectAgentDm).not.toHaveBeenCalled();
     expect(openMessage).not.toHaveBeenCalled();
   });
+  // A reload with ?panel=chat&session= in the URL: the shell applies the URL command right after
+  // it restores the layout, before this panel has mounted. Dockview then renders the panel once with
+  // the restored params and again with the command's, and fires no parameters-changed event for it.
+  it("opens the session a URL command set before the panel mounted", () => {
+    const props = makeProps("agent-a");
+    const view = render(<ChatPanel {...props} />);
+    expect(openSession).not.toHaveBeenCalled();
+    view.rerender(<ChatPanel {...props} params={{ sessionId: "s-reload", sessionIntent: "1" }} />);
+    expect(openSession).toHaveBeenLastCalledWith("s-reload");
+  });
+
   it("resolves the sentinel when the default roster arrives", () => {
     const props = makeProps(DEFAULT_AGENT_SENTINEL);
     const view = render(<ChatPanel {...props} />);

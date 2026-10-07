@@ -269,6 +269,7 @@ it("turns Share every session live on and off through the desktop, off by defaul
   expect(invoke).toHaveBeenCalledWith("shell_integration_set", {enabled:true});
 });
 it("turns Share every session live on at pairing unless the person turns it off", async () => {
+  localStorage.removeItem("lightbulb.desktop.liveSharingOffer");
   invoke.mockImplementation(async (command) => command === "local_sessions_set" ? 1 : { enrollment:null, pairedWorkspaceId:"org", status:"paused" });
   render(<DesktopPermissionsGate />);
   const live = await screen.findByRole("button", {name:/Share every session live/});
@@ -287,6 +288,28 @@ it("records that pairing made the Share every session live offer, also when it w
   expect(invoke.mock.calls.some(([command]) => command === "shell_integration_set")).toBe(false);
   // The once-per-Mac notice for Macs paired before the switch existed must not ask again.
   expect(localStorage.getItem("lightbulb.desktop.liveSharingOffer")).toBe("1");
+});
+it("keeps a Mac's own answer when it pairs again: off stays off, and turning it off there removes the block", async () => {
+  // This Mac was offered the switch before (an earlier pairing, or the notice) and its rc files say no.
+  localStorage.setItem("lightbulb.desktop.liveSharingOffer", "1");
+  let on = false;
+  invoke.mockImplementation(async (command) => command === "shell_integration_status" ? on : command === "local_sessions_set" ? 1 : { enrollment:null, pairedWorkspaceId:"org", status:"paused" });
+  const first = render(<DesktopPermissionsGate />);
+  await waitFor(() => expect(screen.getByRole("button", {name:/Share every session live/})).toHaveAttribute("aria-pressed", "false"));
+  await userEvent.click(screen.getByRole("button", {name:"Continue"}));
+  await waitFor(() => expect(screen.queryByRole("alertdialog")).toBeNull());
+  expect(invoke.mock.calls.some(([command]) => command === "shell_integration_set")).toBe(false);
+  first.unmount();
+  localStorage.removeItem("isol8.desktop.permissions.v1"); // the grant that pairing just wrote: this Mac pairs once more
+  // It said yes before: still pressed, and unpressing it here is the Settings switch turned off.
+  on = true;
+  render(<DesktopPermissionsGate />);
+  const live = await screen.findByRole("button", {name:/Share every session live/});
+  expect(live).toHaveAttribute("aria-pressed", "true");
+  await userEvent.click(live);
+  await userEvent.click(screen.getByRole("button", {name:"Continue"}));
+  await waitFor(() => expect(invoke).toHaveBeenCalledWith("shell_integration_set", {enabled:false}));
+  localStorage.removeItem("lightbulb.desktop.liveSharingOffer");
 });
 
 it("names the workspace sharing is on in, never its raw id, and shows the desktop status as its own note", async () => {

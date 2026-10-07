@@ -50,7 +50,18 @@ export function DesktopPermissionsGate() {
   );
   const [choice, setChoice] = useState<boolean | null>(null);
   // On by default (owner ruling 2026-10-07): the item says which files it edits, and one click turns it off.
-  const [live, setLive] = useState(true);
+  // A Mac that already answered the offer (an earlier pairing, or the notice) keeps its answer:
+  // `stored` is what its rc files say now, read only for such a Mac.
+  const [stored, setStored] = useState<boolean | null>(null);
+  const [liveChoice, setLive] = useState<boolean | null>(null);
+  const live = liveChoice ?? stored ?? true;
+  useEffect(() => {
+    if (!shouldShowGate) return;
+    try { if (!localStorage.getItem(LIVE_SHARING_OFFER_KEY)) return; } catch { return; }
+    let current = true;
+    getTauri()?.core?.invoke<boolean>("shell_integration_status").then(on => { if (current && typeof on === "boolean") setStored(on); }, () => {});
+    return () => { current = false; };
+  }, [shouldShowGate]);
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
   const operation = useRef(0);
@@ -112,9 +123,10 @@ export function DesktopPermissionsGate() {
           return;
         }
       }
-      if (enableSharing && live) {
-        // Best effort: the switch stays in Settings if this build or the rc files refuse.
-        await getTauri()?.core?.invoke("shell_integration_set", { enabled: true }).catch(() => {});
+      if (enableSharing && live !== (stored ?? false)) {
+        // Best effort: the switch stays in Settings if this build or the rc files refuse. Off here
+        // is that switch turned off: it removes the block.
+        await getTauri()?.core?.invoke("shell_integration_set", { enabled: live }).catch(() => {});
       }
       // This dialog made the offer, whatever the answer: the notice for Macs paired before the
       // switch existed (LiveSharingOffer) must not ask again.

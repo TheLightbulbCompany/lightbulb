@@ -15,6 +15,16 @@ describe("session labels", () => {
     expect(sessionToolName("gemini")).toBe("gemini");
   });
 
+  it("shows a title that opens with a URL as its host and the words after it", () => {
+    const s = { ...base, provider: "claude", sessionId: "abcdef123" } as LocalSession;
+    expect(sessionTitle({ ...s, title: "https://code.claude.com/docs/en/agents?x=1#top we have a problem" })).toBe("code.claude.com · we have a problem");
+    expect(sessionTitle({ ...s, title: "http://user:secret@example.com/path" })).toBe("example.com");
+    expect(sessionTitle({ ...s, title: "see https://example.com/a" })).toBe("see https://example.com/a"); // only a leading URL
+    expect(sessionTitle({ ...s, title: "https://" })).toBe("https://");
+    // A name the owner typed is shown as typed.
+    expect(sessionTitle({ ...s, title: "x", displayTitle: "https://example.com/board" })).toBe("https://example.com/board");
+  });
+
   it("labels ended sessions and refuses to send to them", () => {
     expect(sessionStatus.ended).toBe("Ended");
     expect(canSendToSession({ ...base, status: "ended" })).toBe(false);

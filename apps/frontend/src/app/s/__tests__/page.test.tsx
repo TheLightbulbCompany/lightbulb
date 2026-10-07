@@ -25,6 +25,28 @@ const model = (over: object) => ({
 afterEach(() => { vi.useRealTimers(); vi.unstubAllGlobals(); window.sessionStorage.clear(); });
 
 describe("session link page", () => {
+  // The acceptance finding: an incomplete link was one unstyled line in the top-left corner.
+  const inCard = () => {
+    const alert = screen.getByRole("alert");
+    expect(alert.closest(".session-state-panel")).not.toBeNull();
+    expect(screen.getByRole("link", { name: "Lightbulb" }).getAttribute("href")).toBe("/");
+    return alert;
+  };
+
+  it("shows an incomplete link in the page's card, under the product name", () => {
+    render(<SessionLinkPageRoute />);
+    expect(inCard().textContent).toBe("This link is incomplete. Ask for it again.");
+  });
+
+  it("shows a refused link (off, expired, not found) in the same card, with the sign-in offer", async () => {
+    window.sessionStorage.setItem("lightbulb:session-link", JSON.stringify({ token: "tok" }));
+    vi.stubGlobal("fetch", vi.fn(async () => ({ ok: false, status: 410, json: async () => ({ message: "This link has expired." }) }) as Response));
+    render(<SessionLinkPageRoute />);
+    await act(async () => { await new Promise((r) => setTimeout(r, 0)); });
+    expect(inCard().textContent).toBe("This link has expired.");
+    expect(screen.getByRole("button", { name: "Sign in to open this session" }).closest(".session-state-panel")).not.toBeNull();
+  });
+
   it("re-opens on every tick while the session is live", async () => {
     vi.useFakeTimers();
     window.sessionStorage.setItem("lightbulb:session-link", JSON.stringify({ token: "tok" }));

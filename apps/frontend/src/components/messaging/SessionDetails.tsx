@@ -68,7 +68,7 @@ function About({ session, ownerName, own }: { session: LocalSession; ownerName: 
     </dl>
     <div className="session-notes">
       <p>Follow-ups {queued ? "queue behind the current turn" : "wait for the current turn"} on {own ? "your" : `${ownerName}'s`} Mac. They run with {own ? "your" : "their"} permissions and count against {own ? "your" : "their"} usage.</p>
-      <p>Output arrives block by block as the tool records it, not token by token. {session.workspace?.overlap ? "Another session is working in the same checkout; coordinate edits. " : ""}
+      <p>{session.workspace?.overlap ? "Another session is working in the same checkout; coordinate edits. " : ""}
         {session.workspace?.coverage === "bounded" ? "Ignored, sensitive and oversized files are not watched for outside changes." : "Outside changes to this checkout are not being watched."}</p>
     </div>
   </>;

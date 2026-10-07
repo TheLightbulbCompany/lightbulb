@@ -3,10 +3,18 @@ import type { LocalSession } from "./types";
 const TOOL_NAMES: Record<string, string> = { claude: "Claude", codex: "Codex" };
 /** The coding tool's display name; an unknown future provider shows its raw id. */
 export const sessionToolName = (provider: string): string => TOOL_NAMES[provider] ?? provider;
+/** A tool's title is the first prompt, and a prompt that opens with a pasted link made the title
+ *  one long URL ("https://code.cl…"). Shown as the host and the words after it; a name the owner
+ *  typed (`displayTitle`) is never changed. */
+const hostFirst = (title: string | undefined): string | undefined => {
+  const [, address, words] = /^https?:\/\/(\S+)\s*(.*)$/i.exec(title ?? "") ?? [];
+  const host = address?.split(/[/?#]/)[0].split("@").pop();
+  return host ? [host, words].filter(Boolean).join(" · ") : title;
+};
 /** The title without the tool prefix, for surfaces that show the tool as a logo. */
 // Never an id: VoiceOver reads it aloud as gibberish.
 export const sessionTitle = (s: LocalSession): string =>
-  s.displayTitle?.trim() || s.title?.trim() || s.cwdName?.trim() || `${sessionToolName(s.provider)} session`;
+  s.displayTitle?.trim() || hostFirst(s.title?.trim()) || s.cwdName?.trim() || `${sessionToolName(s.provider)} session`;
 export const sessionLabel = (s: LocalSession) => `${sessionToolName(s.provider)} · ${sessionTitle(s)}`;
 
 export const sessionStatus: Record<LocalSession["status"], string> = {

@@ -231,10 +231,9 @@ def _unsaid_with(answer: str, bags: tuple[collections.Counter, collections.Count
                 if heard is not None:
                     spend.append(heard)
             said = len(spend) / len(content) >= 0.7
-            if said:
-                for w in words:  # a said sentence spends its function words too ("I can deploy." then "I can.")
-                    if w in FUNCTION_WORDS and all_left[w] - spend.count(w) > 0:
-                        spend.append(w)
+            for w in words:  # its function words too ("I can deploy." then "I can."), said to its end or cut
+                if w in FUNCTION_WORDS and all_left[w] - spend.count(w) > 0:
+                    spend.append(w)
         for w in spend:  # also for a cut sentence: its fragment's words are not heard again by a later answer
             all_left[w] -= 1
             if w in left:

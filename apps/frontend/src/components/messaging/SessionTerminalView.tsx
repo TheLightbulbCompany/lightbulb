@@ -7,14 +7,16 @@ import "@xterm/xterm/css/xterm.css";
 import { chunkInput, dropProbeReplies, SHIFT_ENTER } from "./sessionInput";
 
 const WATCH_EVERY_MS = 15_000;
-/** A snapshot or a ping comes at least every 10 s; this long with neither and the picture is frozen, so it says Reconnecting. */
+/** A snapshot or a ping comes at least every 10 s; this long with no frame, or only pings that do not match the screen it has, and the picture is frozen, so it says Reconnecting. */
 const STALE_AFTER_MS = 30_000;
 /** Stops input: no access (403/404) or a Mac that cannot take typing. OFFLINE is another 409 and passes. */
 const refuses = (e: unknown) => e instanceof ApiError && (e.status === 403 || e.status === 404
   || (e.status === 409 && (e.body as { code?: string } | null)?.code === "LOCAL_SESSION_UNSUPPORTED"));
 const decode = (data: string) => Uint8Array.from(atob(data), (c) => c.charCodeAt(0));
-/** Clears the visible screen only: xterm's erase never pushes it into scrollback, so history stays. */
-const CLEAR = new TextEncoder().encode("\x1b[2J\x1b[H");
+/** Clears the visible screen only: xterm's erase never pushes it into scrollback, so history stays.
+ *  First it leaves the alternate screen and drops the scroll region, so modes the last screen set
+ *  do not outlive it; the holder's snapshot enters the alternate screen itself when it is on one. */
+const CLEAR = new TextEncoder().encode("\x1b[?1049l\x1b[r\x1b[2J\x1b[H");
 
 /** A running session's real terminal, live (rulings 2026-10-03 §4): for teammates, and for its
  *  owner anywhere but at that Mac. Read-only unless `input` is given and the person is `admitted`
@@ -27,7 +29,8 @@ export function SessionTerminalView({ session, onEvent, watch, onLive, onCanType
   input?: (data: Uint8Array, epoch: number) => Promise<unknown>;
   admitted?: boolean;
   onEvent: (handler: (event: LiveEvent) => void) => () => void;
-  watch: (sessionId: string) => Promise<unknown>;
+  /** `fresh`: this view just mounted and has no screen, so the Mac is asked for one now. */
+  watch: (sessionId: string, fresh?: boolean) => Promise<unknown>;
   onLive: (live: boolean) => void;
   /** Whether this viewer can type right now; false once the Mac refuses input. */
   onCanType?: (canType: boolean) => void;
@@ -53,11 +56,15 @@ export function SessionTerminalView({ session, onEvent, watch, onLive, onCanType
   typing.current = { canType, input, session, refuse: (k: string) => setRefusedFor(k) };
   const termRef = useRef<Terminal | null>(null);
   useEffect(() => { if (termRef.current) termRef.current.options.disableStdin = !canType; }, [canType]);
+  // The session this view last asked a screen for: `watch` may change identity between renders,
+  // and each fresh ask costs every viewer a history burst.
+  const asked = useRef("");
   useEffect(() => {
     let refused = false;
-    const ping = () => void watch(session.sessionId).catch((e) => { if (e instanceof ApiError && (e.status === 403 || e.status === 404)) { refused = true; setLive(false); onLive(false); } });
-    ping();
-    const timer = setInterval(() => { if (!refused) ping(); }, WATCH_EVERY_MS);
+    const ping = (fresh: boolean) => void watch(session.sessionId, fresh).catch((e) => { if (e instanceof ApiError && (e.status === 403 || e.status === 404)) { refused = true; setLive(false); onLive(false); } });
+    ping(asked.current !== session.sessionId);
+    asked.current = session.sessionId;
+    const timer = setInterval(() => { if (!refused) ping(false); }, WATCH_EVERY_MS);
     return () => clearInterval(timer);
   }, [session.sessionId, watch, onLive]);
   useEffect(() => {
@@ -129,8 +136,14 @@ export function SessionTerminalView({ session, onEvent, watch, onLive, onCanType
       if (event.type !== "workspace.session.screen") return;
       const frame = event.payload;
       if (frame.sessionId !== session.sessionId || frame.generation !== session.generation) return;
-      clearTimeout(stale);
-      stale = setTimeout(() => { setLive(false); onLive(false); }, STALE_AFTER_MS);
+      // A ping proves the picture is current only when it names the frame this view waits for:
+      // one ahead of that means a frame was lost, and one with no screen yet proves nothing.
+      const current = frame.kind === "ping" && order.synced && frame.epoch === order.epoch && frame.seq === order.next;
+      if (frame.kind !== "ping" || current) {
+        clearTimeout(stale);
+        stale = setTimeout(() => { setLive(false); onLive(false); }, STALE_AFTER_MS);
+      }
+      if (current) { setLive(true); onLive(true); }
       const step = receiveScreen(order, frame);
       order = step.order;
       apply(step.write);

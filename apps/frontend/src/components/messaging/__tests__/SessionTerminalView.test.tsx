@@ -18,7 +18,7 @@ vi.mock("@xterm/xterm", () => ({ Terminal: class {
   write(data: Uint8Array, done?: () => void) { writes.push(data); done?.(); }
 } }));
 afterEach(() => { writes.length = 0; hooks.resets = 0; vi.useRealTimers(); });
-const CLEAR = [0x1b, 0x5b, 0x32, 0x4a, 0x1b, 0x5b, 0x48];
+const CLEAR = Array.from(new TextEncoder().encode("\x1b[?1049l\x1b[r\x1b[2J\x1b[H"));
 
 const screenEvent = (sessionId: string, kind = "snapshot", seq = 0, epoch = 1, data = "G1tI") => ({ schemaVersion: 1, eventId: `e${seq}`, type: "workspace.session.screen", occurredAt: "now",
   payload: { sessionId, generation: "g1", epoch, seq, cols: 100, rows: 30, kind, data } }) as LiveEvent;
@@ -30,13 +30,14 @@ it("watches while on screen, draws the snapshot read-only, and ignores other ses
   const onLive = vi.fn();
   const { unmount } = render(<SessionTerminalView session={{ sessionId: "s1", generation: "g1" }}
     onEvent={(h) => { emit = h; return () => {}; }} watch={watch} onLive={onLive} />);
-  expect(watch).toHaveBeenCalledWith("s1");
+  expect(watch).toHaveBeenCalledWith("s1", true); // a mount has no screen: it asks for one
   await act(async () => { await vi.dynamicImportSettled(); }); // xterm's dynamic import
   act(() => { emit(screenEvent("other")); emit(screenEvent("s1")); });
   expect(writes.map((w) => Array.from(w))).toEqual([[...CLEAR, 0x1b, 0x5b, 0x48]]);
   expect(onLive).toHaveBeenCalledWith(true);
   await act(async () => { await vi.advanceTimersByTimeAsync(15_000); });
   expect(watch).toHaveBeenCalledTimes(2);
+  expect(watch).toHaveBeenLastCalledWith("s1", false); // a renewal asks for nothing
   unmount();
   await act(async () => { await vi.advanceTimersByTimeAsync(30_000); });
   expect(watch).toHaveBeenCalledTimes(2);
@@ -200,6 +201,30 @@ it("a ping keeps a quiet terminal live and draws nothing", async () => {
   }
   expect(onLive).toHaveBeenLastCalledWith(true);
   expect(writes).toHaveLength(1);
+});
+
+it("a ping that matches the screen brings a stale terminal back live", async () => {
+  vi.useFakeTimers();
+  const { emit, onLive } = await mountView();
+  emit(screenEvent("s1"));
+  await act(async () => { await vi.advanceTimersByTimeAsync(31_000); });
+  expect(onLive).toHaveBeenLastCalledWith(false);
+  expect(screen.getByRole("status").textContent).toBe("Reconnecting…");
+  emit(screenEvent("s1", "ping", 1, 1, ""));
+  expect(onLive).toHaveBeenLastCalledWith(true);
+  expect(screen.queryByRole("status")).toBeNull();
+});
+
+it("a ping ahead of the screen (a frame was lost) does not keep it live", async () => {
+  vi.useFakeTimers();
+  const { emit, onLive } = await mountView();
+  emit(screenEvent("s1"));
+  await act(async () => { await vi.advanceTimersByTimeAsync(20_000); });
+  emit(screenEvent("s1", "ping", 2, 1, "")); // seq 1 never arrived
+  await act(async () => { await vi.advanceTimersByTimeAsync(11_000); });
+  expect(onLive).toHaveBeenLastCalledWith(false);
+  emit(screenEvent("s1", "ping", 2, 1, ""));
+  expect(onLive).toHaveBeenLastCalledWith(false); // still waiting for a snapshot
 });
 
 it("the viewer's own size never reaches the Mac or changes the terminal's size", async () => {

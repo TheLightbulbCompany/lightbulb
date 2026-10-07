@@ -1,9 +1,11 @@
 import { NextRequest, NextResponse } from "next/server";
 
 import {
+  getPublishedRelease,
   pickLatestRelease,
   resolveAssetLocation,
   tagPrefixFromHost,
+  validReleaseDownloadToken,
 } from "@/lib/githubReleases";
 
 type Arch = "aarch64" | "x64";
@@ -27,8 +29,20 @@ export async function GET(req: NextRequest) {
   const arch = archFromQuery(req.nextUrl.searchParams.get("arch"));
   const kind = kindFromQuery(req.nextUrl.searchParams.get("kind"));
   const prefix = tagPrefixFromHost(req.headers.get("host"));
+  const version = req.nextUrl.searchParams.get("version");
+  if (version !== null && !/^\d+\.\d+\.\d+$/.test(version)) {
+    return NextResponse.json({ error: "invalid_version" }, { status: 400 });
+  }
+  if (version && !validReleaseDownloadToken(`${prefix}${version}`, arch, kind, req.nextUrl.searchParams.get("token"))) {
+    return NextResponse.json({ error: "invalid_download_token" }, { status: 403 });
+  }
 
-  const { release, githubStatus } = await pickLatestRelease(prefix);
+  const { release, githubStatus } = version
+    ? await getPublishedRelease(`${prefix}${version}`)
+    : await pickLatestRelease(prefix);
+  if (version && githubStatus === 404) {
+    return NextResponse.json({ error: "no_release", version }, { status: 404 });
+  }
   if (githubStatus < 200 || githubStatus >= 300) {
     return NextResponse.json(
       { error: "github_unavailable", status: githubStatus },

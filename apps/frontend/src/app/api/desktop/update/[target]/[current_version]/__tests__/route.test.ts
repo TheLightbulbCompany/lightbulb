@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { NextRequest } from "next/server";
 
 import { GET } from "../route";
@@ -51,6 +51,7 @@ afterEach(() => {
   vi.unstubAllGlobals();
   vi.unstubAllEnvs();
 });
+beforeEach(() => vi.stubEnv("GITHUB_RELEASES_TOKEN", "release-test-key"));
 
 describe("GET /api/desktop/update/[target]/[current_version]", () => {
   const armBundle: GhAssetFixture = {
@@ -100,10 +101,14 @@ describe("GET /api/desktop/update/[target]/[current_version]", () => {
       // Bundle URL points back at our download route (which mints a
       // fresh signed URL per request), NOT at GitHub directly — a
       // private repo's URLs either 404 anonymously or expire.
-      url: "https://dev.thelightbulb.company/api/download/desktop?arch=aarch64&kind=bundle",
       signature: "SIG-XYZ",
       notes: "release notes",
     });
+    const download = new URL(body.url);
+    expect(download.origin).toBe("https://dev.thelightbulb.company");
+    expect(download.pathname).toBe("/api/download/desktop");
+    expect(download.searchParams.get("version")).toBe("0.2.11");
+    expect(download.searchParams.get("token")).toMatch(/^[a-f0-9]{64}$/);
   });
 
   it("falls back to the canonical host when the Host header isn't ours", async () => {
@@ -123,9 +128,8 @@ describe("GET /api/desktop/update/[target]/[current_version]", () => {
     });
     expect(res.status).toBe(200);
     const body = await res.json();
-    expect(body.url).toBe(
-      "https://thelightbulb.company/api/download/desktop?arch=aarch64&kind=bundle",
-    );
+    expect(new URL(body.url).origin).toBe("https://thelightbulb.company");
+    expect(new URL(body.url).searchParams.get("version")).toBe("0.2.11");
   });
 
   it("fetches the signature from the asset API URL with auth", async () => {
@@ -157,6 +161,16 @@ describe("GET /api/desktop/update/[target]/[current_version]", () => {
       }),
     });
     expect(res.status).toBe(204);
+  });
+
+  it("does not issue a manifest when its download token cannot be signed", async () => {
+    vi.stubEnv("GITHUB_RELEASES_TOKEN", "");
+    stubGitHub([fullDevRelease]);
+    const res = await GET(reqFor("dev.thelightbulb.company"), {
+      params: Promise.resolve({ target: "darwin-aarch64", current_version: "0.1.0" }),
+    });
+    expect(res.status).toBe(503);
+    expect(await res.json()).toEqual({ error: "download_unavailable" });
   });
 
   it("returns 204 when bundle assets aren't attached yet (mid-build)", async () => {

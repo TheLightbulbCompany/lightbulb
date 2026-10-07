@@ -5,6 +5,7 @@ import {
   githubHeaders,
   isNewer,
   pickLatestRelease,
+  releaseDownloadToken,
   tagPrefixFromHost,
   versionFromTag,
 } from "@/lib/githubReleases";
@@ -96,6 +97,10 @@ export async function GET(
     // the DMG first. Treat as no-update so the client retries later.
     return new NextResponse(null, { status: 204 });
   }
+  const downloadToken = releaseDownloadToken(candidate.tag_name, arch, "bundle");
+  if (!downloadToken) {
+    return NextResponse.json({ error: "download_unavailable" }, { status: 503 });
+  }
 
   // Tauri's updater wants the signature value INLINE in the manifest, not
   // a URL to fetch separately. The .sig asset is small (a few hundred
@@ -135,7 +140,7 @@ export async function GET(
     version: latestVersion,
     notes: candidate.body ?? candidate.name ?? "",
     pub_date: candidate.published_at,
-    url: `${scheme}://${host}/api/download/desktop?arch=${arch}&kind=bundle`,
+    url: `${scheme}://${host}/api/download/desktop?arch=${arch}&kind=bundle&version=${encodeURIComponent(latestVersion)}&token=${downloadToken}`,
     signature,
   });
 }

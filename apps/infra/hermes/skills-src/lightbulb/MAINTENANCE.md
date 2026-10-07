@@ -255,7 +255,7 @@ MAINTENANCE (Lightbulb engineers): every claim in this skill is anchored to
                               <- core/services/credentials/providers.yaml (github scopes + gh_cli; vercel_cli paste_token +
                                  skill_cli/VERCEL_TOKEN; aws aws_sts tiers, PowerUserAccess = no IAM; cloudflare/sentry/posthog
                                  actor: mcp); credentials/skills/vercel/SKILL.md (the pinned npx form);
-                                 apps/infra/hermes/bridge/sync.py (no DELETE propagation, HOME_EXCLUDE_GLOBS .gitconfig,
+                                 apps/infra/hermes/bridge/sync.py (a save deletes from S3 what the agent deleted, M6-R51; HOME_EXCLUDE_GLOBS .gitconfig,
                                  _REPRODUCIBLE_DIRS node_modules/*venv/.next/dist/build, work/ of other conversations never
                                  restored, save at end of turn);
                                  apps/infra/hermes/Dockerfile (global npm installs as root, then USER 1000; no dockerd);

@@ -1688,9 +1688,7 @@ def system_prompt(body: dict, agent_id: str, media: list[str] | None = None) -> 
             f"outside your profile folder is lost when the workspace restarts.\n"
             f"Your shell starts in this conversation's own folder "
             f"({conversation_dir(agent_id, _resolve_session_key(agent_id, body))}); files from earlier "
-            f"work are in your profile folder ({_profile_dir(agent_id)}). A repository is cloned once, "
-            f"partially, at {_profile_dir(agent_id)}/.run/<repo>; branches get worktrees under /tmp/wt, "
-            f"which is never saved and costs nothing.\n"
+            f"work are in your profile folder ({_profile_dir(agent_id)}). {_repo_rule(agent_id)}\n"
             # What you write beside tool calls is posted to the room (_progress_poster).
             "On a long job, write one short line of real progress beside your tool calls, about "
             "every 8 tool calls or every 2 minutes: what is done and what is next. It is posted "
@@ -2378,6 +2376,16 @@ def _install_aws_shell_fence() -> None:
         local._scrubbed_env = fenced
 
 
+def _repo_rule(agent_id: str) -> str:
+    """Where a clone lives, in every prompt. Forge kept two full clones (417 MB) in its saved profile
+    because the room prompt and SKILL.md pointed it at the profile root while the rule sat in a
+    reference it never opened (10-07)."""
+    return (
+        f"A repository is cloned once, partially, at {_profile_dir(agent_id)}/.run/<repo>; branches get "
+        "worktrees under /tmp/wt, which is never saved and costs nothing."
+    )
+
+
 def conversation_dir(agent_id: str, session_key: str) -> Path:
     """<profile>/work/<conversation>: the shell's starting folder for one conversation, so two
     conversations of one agent running at once never share a working tree. Named by the session
@@ -2969,7 +2977,9 @@ def _run_native_paperclip(identity: dict, request: dict, conversation: str | Non
             if paperclip_run_aborted(run_id):
                 return "cancelled", None, "", dict(ZERO_USAGE)
             try:
-                system = with_profile_agents_md(agent_id, request["instructions"])
+                # the clone rule rides every prompt, a Paperclip issue's too (Codex on #3798): with only
+                # Hermes's github skill in view, an issue run clones into its conversation folder
+                system = with_profile_agents_md(agent_id, f"{request['instructions']}\n\n{_repo_rule(agent_id)}")
                 if conversation:
                     # As _converse runs a room key: its own transcript, observed rows split out.
                     text = f"{BOUND_WAKE_HEADER.format(issue=identity.get('issueId'))}\n\n{request['input']}"

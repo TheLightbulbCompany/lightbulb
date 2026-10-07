@@ -6,7 +6,8 @@ description: >
   rather than on the task's domain: emailing your owner or replying to mail
   (you share the team address and a helper script here — there is no Gmail or
   himalaya to find); connecting a service, channel,
-  or webhook trigger; hiring, publishing, or importing an agent; plans,
+  or webhook trigger; any work in a git repository (where the clone lives,
+  branches, pull requests); hiring, publishing, or importing an agent; plans,
   providers, credits; where a UI surface lives and what to
   tell the owner to click; setting up Stripe or a paid account for the company;
   what you are and are not allowed to do. Also read it before designing

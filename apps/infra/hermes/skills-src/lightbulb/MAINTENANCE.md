@@ -37,8 +37,9 @@ MAINTENANCE (Lightbulb engineers): every claim in this skill is anchored to
   - Shell working folder .... SKILL.md (scripts non-negotiable: "your cwd is this conversation's own folder")
                               + references/email.md
                               <- apps/infra/hermes/bridge/turn.py (conversation_dir, _terminal_scope TERMINAL_CWD).
-                              "never `/tmp`" <- the upstream base image's HERMES_WRITE_SAFE_ROOT=/opt/data (write_file/patch
-                                 refuse anything else); sync.py save_profile (only the profile dir persists).
+                              `.scratch/` for worktrees <- the upstream base image's HERMES_WRITE_SAFE_ROOT=/opt/data
+                                 (write_file/patch refuse /tmp, which is why the old "/tmp/wt" rule never worked);
+                                 sync.py SCRATCH_DIR in EXCLUDE_GLOBS (never synced); save_profile (only the profile dir persists).
   - gog API-not-enabled ..... references/integrations.md ("Google Workspace (`gog`)": quote the error and name
                               the API to enable before any browser workaround)
                               <- owner request 2026-10-05. No code enforces it (Google is BYO: the Cloud
@@ -255,7 +256,7 @@ MAINTENANCE (Lightbulb engineers): every claim in this skill is anchored to
                               <- core/services/credentials/providers.yaml (github scopes + gh_cli; vercel_cli paste_token +
                                  skill_cli/VERCEL_TOKEN; aws aws_sts tiers, PowerUserAccess = no IAM; cloudflare/sentry/posthog
                                  actor: mcp); credentials/skills/vercel/SKILL.md (the pinned npx form);
-                                 apps/infra/hermes/bridge/sync.py (no DELETE propagation, HOME_EXCLUDE_GLOBS .gitconfig,
+                                 apps/infra/hermes/bridge/sync.py (a save deletes from S3 what the agent deleted, M6-R51; HOME_EXCLUDE_GLOBS .gitconfig,
                                  _REPRODUCIBLE_DIRS node_modules/*venv/.next/dist/build, work/ of other conversations never
                                  restored, save at end of turn);
                                  apps/infra/hermes/Dockerfile (global npm installs as root, then USER 1000; no dockerd);

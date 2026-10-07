@@ -333,6 +333,6 @@ def test_a_turn_in_the_room_conversation_uses_its_lock_transcript_and_folder(mon
     assert outcome[:3] == ("completed", None, "progress recorded")
     assert seen["construct"] == ({"sessionKey": ROOM_KEY, "room": {"id": ROOM}}, ROOM_KEY)
     assert terminals == [ROOM_KEY]
-    assert seen["run"]["system_message"] is None and seen["system"] == REQUEST["instructions"]
+    assert seen["run"]["system_message"] is None and seen["system"].startswith(REQUEST["instructions"]) and "/.run/<repo>" in seen["system"]
     assert seen["run"]["conversation_history"] == [{"role": "user", "content": "fix the bug"}]
     assert seen["run"]["user_message"].endswith(REQUEST["input"]) and "Nothing you write in this turn is posted to the room" in seen["run"]["user_message"]

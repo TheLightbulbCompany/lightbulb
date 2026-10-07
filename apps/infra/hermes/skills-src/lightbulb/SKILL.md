@@ -6,7 +6,8 @@ description: >
   rather than on the task's domain: emailing your owner or replying to mail
   (you share the team address and a helper script here — there is no Gmail or
   himalaya to find); connecting a service, channel,
-  or webhook trigger; hiring, publishing, or importing an agent; plans,
+  or webhook trigger; any work in a git repository (where the clone lives,
+  branches, pull requests); hiring, publishing, or importing an agent; plans,
   providers, credits; where a UI surface lives and what to
   tell the owner to click; setting up Stripe or a paid account for the company;
   what you are and are not allowed to do. Also read it before designing
@@ -50,7 +51,7 @@ directory (`/app/skills/lightbulb/`).
 | `references/money.md` | The owner's **Money** tab; getting the company its own Stripe account; and the Stripe Projects rail that creates paid accounts (analytics, hosting, a database…) on the company's identity and hands you the credentials as env vars. Carries the workflow-state and HTTP-status tables. |
 | `references/skills.md` | Where your skills live and which of the three directories you can write to. **Read it before using Paperclip's company-skills library** — that path does not reach a Lightbulb agent and answers `supported: false`. |
 | `references/marketplace.md` | Hiring an agent, recommending one, publishing (seller side), whole pre-built companies, the `skills` toolset, and importing an existing Claude Code setup. |
-| `references/software-projects.md` | Building a software project from nothing to live: connections to check, default stack, repo, keeping your workspace small, Vercel/AWS deploys, CI, PR review, and what to do when it needs a database or paid service. |
+| `references/software-projects.md` | Any work in a git repository (clone, branch, fix, PR), and building a software project from nothing to live: connections to check, default stack, repo, keeping your workspace small, Vercel/AWS deploys, CI, PR review, and what to do when it needs a database or paid service. |
 | `references/voice.md` | Live voice requests, renames, how you talk: a voice request is a normal turn in this room whose reply is spoken and never posted; when to call `lightbulb_voice_profile` (only when asked; confirm renames, replacements and clears first). |
 | `references/company-and-plans.md` | The six-role starter roster, rename-safe identity and `chainOfCommand`, **naming the company** (load-bearing, hard to undo), plans and prices, the three provider paths, and voice calls (free minutes, credits). |
 
@@ -78,9 +79,10 @@ These hold whether or not you open a reference.
   round-trips through your transcript:
   `/app/skills/lightbulb/scripts/lightbulb-api.sh`,
   `lightbulb-connect.sh`, `lightbulb-mail.sh`, `lightbulb-post.sh` (absolute paths — your cwd is
-  this conversation's own folder, `<profile>/work/<conversation>`, not the skill root; repos from
-  earlier work live at your profile root). Draft briefs, notes and other working files in that
-  folder, never `/tmp`: a write outside your profile is refused and never saved.
+  this conversation's own folder, `<profile>/work/<conversation>`, not the skill root). Draft
+  briefs, notes and other working files in that folder: your profile is saved, except
+  `.scratch/`. A repository is cloned once, partially, at `$HERMES_HOME/.run/<repo>`, and
+  branches get worktrees under `$HERMES_HOME/.scratch/wt` (`references/software-projects.md`).
 - **Talk to people in plain words, never plumbing.** Never mention env vars, run ids,
   heartbeats, webchat sessions, tool or script names, file paths outside the workspace, or
   internal system names (Paperclip, Hermes, AgentCore; say Teams, a task) to people. Say what

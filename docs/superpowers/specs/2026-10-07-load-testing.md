@@ -60,12 +60,13 @@ VUs: `preAllocatedVUs = ceil(peak rate/s × p95 iteration s × 1.5)`, `maxVUs = 
 ```js
 const arrival = (pre, max) => ({ executor: 'ramping-arrival-rate', startRate: 0, timeUnit: '1s',
   stages: JSON.parse(__ENV.STAGES), preAllocatedVUs: pre, maxVUs: max });
-export const options = { scenarios: { s: arrival(30, 60) }, thresholds: { http_req_failed: ['rate<0.005'] } };
-// messaging.js arrival(30, 60): 40/s × 0.5 s. agents.js arrival(30, 30): iteration = send only, one
-// listener per org times replies, 2b's 30-at-once burst sets pre. viewers.js: { executor: 'constant-vus',
-// vus: Number(__ENV.VIEWERS), duration: __ENV.DURATION } (holds its socket, POSTs /viewing every 15 s).
-// Every VU: users[i] from fixtures.json, 40 s token refresher, one AppSync socket ported from
-// packages/shared/src/live/appsyncEvents.ts on GET /messaging/live-config's channels; Trend per hop.
+const listen = (n) => ({ executor: 'constant-vus', exec: 'listen', vus: n, duration: __ENV.SEND_S + 60 + 's' });
+export const options = { scenarios: { send: { ...arrival(30, 60), exec: 'send', startTime: '30s' },
+  recv: listen(Number(__ENV.RECEIVERS)) }, thresholds: { http_req_failed: ['rate<0.005'] } };
+// Idle arrival-rate VUs never run, so senders hold no socket: every receiver is its own constant-vus VU
+// holding one AppSync subscription (appsyncEvents.ts port, GET /messaging/live-config) for send + 60 s drain.
+// messaging.js arrival(30, 60), recv = subscribers; agents.js arrival(30, 30) send-only, recv = 1 per org;
+// viewers.js recv only (POSTs /viewing every 15 s). Every VU: users[i], 40 s token refresher, Trend per hop.
 ```
 
 ## 2. Scenario 1 — messaging load (humans only, no agents)
@@ -100,7 +101,7 @@ Each VU also reconciles like a client (`GET …/messages?afterSeq=`) on a detect
 |---|---|---|
 | Send ack (`POST /messaging/rooms/{id}/messages`) | k6 `http_req_duration` | p95 < 500 ms |
 | Send → AppSync receipt | k6 Trend `live_delivery_ms` | p95 < 2 s (baseline notify p95 1.4 s) |
-| Live delivery completeness | received seqs vs sent; gaps healed by `afterSeq` read | 100% after reconcile |
+| Live delivery completeness | received seqs vs sent, counting only receivers that reported connected before the first send (senders start at 30 s); gaps healed by `afterSeq` read | 100% after reconcile |
 | Errors | k6 `http_req_failed` (429 counted separately) | < 0.5% in 1a–1c |
 | Hot-room ceiling (1a) | first step where 5xx > 0 | **recorded**, not pass/fail |
 | Projector | `LightbulbAI messaging.projector.notify.latency` (service=messaging-projector, full dimension set incl. `room_kind`), `AWS/Lambda IteratorAge`, `Errors` | IteratorAge < 5 s, 0 errors |

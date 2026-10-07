@@ -23,7 +23,9 @@ import { timeAgo } from "@/components/teams/shared/lib/timeAgo";
 import type { PickupClient } from "./useSessionPickup";
 import { ResumeDelivery, SessionResume } from "./SessionResume";
 
-/** Older history pages read per session, so a huge session never loops. */
+/** Older history pages read per session for the plan and changed-files summaries: 20 pages is 1,000 events,
+ *  under the history window's 2,000-row cap, so reading back never evicts the newest events. A longer
+ *  session's summary covers its last 1,000 events; a complete one needs a server-side summary. */
 const MAX_OLDER_PAGES = 20;
 
 type Decide = (sessionId: string, userId: string, decision: "allow" | "decline", requestId?: string) => Promise<unknown>;
@@ -47,16 +49,18 @@ export function LocalSessionPanel({ session, ownerName, own, client, revision, o
   participants?: readonly Person[];
   onMessageOwner?: () => void;
 }) {
-  // The history feeds the plan, the changed files and the pending approval; no rows are drawn from it, so no poll.
+  // The history feeds the plan, the changed files, the pending prompt and the approval reason. No rows are drawn
+  // from it, but the relay throttles hints with no trailing edge, so a quiet poll while busy keeps those current.
+  const busy = session.status === "busy";
   const source = useHistorySource(client, session, revision);
-  const history = useLocalSessionHistory(client, source.sessionId, source.latestEventSeq, revision, onAccessLost, { pollMs: 0 });
+  const history = useLocalSessionHistory(client, source.sessionId, source.latestEventSeq, revision, onAccessLost, { pollMs: busy ? 5000 : 0 });
   const [text, setText] = useState("");
   const [details, setDetails] = useState<SessionDetailsTab | null>(null);
   // Nothing scrolls the history any more, so read back through older pages for the plan and changed files. Bounded per session while Details is closed; with Details open the read runs to the start, so Changes and the plan are complete.
   const olderPages = useRef({ id: session.sessionId, n: 0 });
   useEffect(() => {
     if (olderPages.current.id !== source.sessionId) olderPages.current = { id: source.sessionId, n: 0 };
-    if (!history.hasOlder || history.loading || history.error || (details === null && olderPages.current.n >= MAX_OLDER_PAGES)) return;
+    if (!history.hasOlder || history.loading || history.error || olderPages.current.n >= MAX_OLDER_PAGES) return;
     olderPages.current.n += 1;
     void history.load("older");
   }, [history, source.sessionId, details]);

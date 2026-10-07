@@ -273,12 +273,13 @@ it("keeps a queued follow-up visible and cancellable after the session ends", as
   await waitFor(() => expect(cancel).toHaveBeenCalledWith("s", "r1"));
 });
 
-it("reads 20 older pages in the background, and all of them while Details is open", async () => {
+it("reads 20 older pages in the background and no more, Details open or not", async () => {
   const list = vi.fn(async (_id: string, after: number, limit: number) => ({ events: Array.from({ length: limit }, (_, i) => textEvent(after + 1 + i)), nextAfterSeq: null }));
   render(<LocalSessionPanel session={{ ...session, status: "idle", latestEventSeq: 1300 }} ownerName="Alice" own client={{ ...client, listLocalSessionEvents: list } as never} revision={0} onAccessLost={() => {}} />);
   await waitFor(() => expect(list).toHaveBeenCalledTimes(21));
   await new Promise(r => setTimeout(r, 100));
   expect(list).toHaveBeenCalledTimes(21);
   screen.getByRole("button", { name: "Details" }).click();
-  await waitFor(() => expect(list).toHaveBeenCalledTimes(26));
+  await new Promise(r => setTimeout(r, 150));
+  expect(list).toHaveBeenCalledTimes(21);
 });

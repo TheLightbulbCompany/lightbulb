@@ -4,8 +4,9 @@
 //! chunks of at most 11 KiB raw (base64 plus envelope fits the 16 KiB relay frame), each with the
 //! terminal's size; the holder's recent output as `history` frames before the snapshot of a new or
 //! grown viewer set; a fresh snapshot after a resize and after a lost frame (at most one a second);
-//! and every 10 s a snapshot when output went out since the last one, else a `ping` (spec §5.2). Nothing is queued for later; nothing is sent while
-//! nobody watches. Output past the backend's budget (2 MiB raw a minute) is dropped here, not
+//! and every 10 s a snapshot when output went out since the last one or none was asked for in
+//! 30 s (a viewer that lost its first screen is never left without one), else a `ping` (spec §5.2).
+//! Nothing is queued for later; nothing is sent while nobody watches. Output past the backend's budget (2 MiB raw a minute) is dropped here, not
 //! sent to be dropped there, and a snapshot follows once the budget is back.
 //! A `local.session.watch` nudge from the backend starts a relay at once (a new viewer sees the
 //! screen in about a second, not at the next ack); the acks still keep it going and stop it.
@@ -30,6 +31,9 @@ use tokio::sync::mpsc;
 const CHUNK: usize = 11 * 1024;
 const FLUSH: Duration = Duration::from_millis(200);
 const SNAPSHOT_EVERY: Duration = Duration::from_secs(10);
+/// A quiet relay still redraws this often: pings alone never give a screen to a viewer whose
+/// first snapshot was lost, or who mounted again without the backend saying so.
+const RESYNC: Duration = Duration::from_secs(30);
 /// A relay no heartbeat ack has renewed for this long stops (its relay socket is down).
 const LEASE: Duration = Duration::from_secs(30);
 const TICK: Duration = Duration::from_millis(50);
@@ -69,6 +73,8 @@ pub(super) struct Ctl {
     history: AtomicBool,
     /// How often a relay's viewers hear from it (SNAPSHOT_EVERY; tests shorten it).
     beat: Duration,
+    /// The longest a quiet relay goes without a snapshot (RESYNC; tests shorten it).
+    resync: Duration,
     pub(super) stop: AtomicBool,
     until: Mutex<Instant>,
     /// Absence from `watching` does not stop the relay before this (a nudge sets it).
@@ -78,7 +84,7 @@ pub(super) struct Ctl {
 impl Ctl {
     pub(super) fn new(since: u64) -> Self {
         Self { since: AtomicU64::new(since), epoch: AtomicU64::new(0), typist: Mutex::new(None), snapshot: AtomicBool::new(false),
-            history: AtomicBool::new(false), beat: SNAPSHOT_EVERY, stop: AtomicBool::new(false),
+            history: AtomicBool::new(false), beat: SNAPSHOT_EVERY, resync: RESYNC, stop: AtomicBool::new(false),
             until: Mutex::new(Instant::now() + LEASE), keep: Mutex::new(Instant::now()) }
     }
     fn renew(&self) {
@@ -342,7 +348,10 @@ fn settle(relays: &mut BTreeMap<String, Arc<Ctl>>, wanted: &BTreeMap<String, u64
     }
     for (sid, ctl) in relays.iter() {
         if let Some(since) = wanted.get(sid) {
-            ctl.since.store(*since, SeqCst);
+            // Only ever raised: an ack built before a nudge lists an older `since`, and taking it
+            // would make the next ack look like one more new viewer (a second history burst).
+            // MAX is "not known yet" (a nudge from a backend that sends no `since`).
+            let _ = ctl.since.fetch_update(SeqCst, SeqCst, |was| Some(if was == u64::MAX { *since } else { was.max(*since) }));
             ctl.renew();
         }
     }
@@ -359,7 +368,7 @@ pub(super) fn nudge(body: &Value) {
     else { return };
     let Ok(mut relays) = RELAYS.lock() else { return };
     relays.retain(|_, ctl| !ctl.stopped());
-    nudge_relay(&mut relays, sid, spawn);
+    nudge_relay(&mut relays, sid, body["since"].as_u64(), spawn);
 }
 
 /// The running relay of a session this Mac holds at `body`'s generation: what remote input
@@ -376,16 +385,21 @@ pub(super) fn nudged(body: &Value, generation_of: impl Fn(&str) -> Option<String
     (generation_of(sid)? == body["generation"].as_str()?).then(|| sid.to_owned())
 }
 
-fn nudge_relay(relays: &mut BTreeMap<String, Arc<Ctl>>, sid: String, spawn: impl Fn(String, u64) -> Arc<Ctl>) {
+/// `since`: the viewer's arrival as the next ack will list it (the nudge carries it), so that ack
+/// is not taken for one more new viewer. None from a backend that does not send it.
+fn nudge_relay(relays: &mut BTreeMap<String, Arc<Ctl>>, sid: String, since: Option<u64>, spawn: impl Fn(String, u64) -> Arc<Ctl>) {
     if let Some(ctl) = relays.get(&sid) {
         // Running already: the new viewer needs history and a screen now, not in up to 10 s.
         ctl.history.store(true, SeqCst);
+        if let Some(since) = since {
+            let _ = ctl.since.fetch_update(SeqCst, SeqCst, |was| Some(if was == u64::MAX { since } else { was.max(since) }));
+        }
         ctl.nudged();
         return;
     }
-    // The holder snapshots a new watch client unasked. `since` is unknown until an ack lists it;
-    // MAX keeps that first ack from asking for a second snapshot.
-    let ctl = spawn(sid.clone(), u64::MAX);
+    // The holder snapshots a new watch client unasked. With no `since`, MAX keeps the first ack
+    // that lists it from asking for a second snapshot.
+    let ctl = spawn(sid.clone(), since.unwrap_or(u64::MAX));
     ctl.nudged();
     relays.insert(sid, ctl);
 }
@@ -564,7 +578,8 @@ fn pump(frames: &Receiver<(u8, Vec<u8>)>, to_holder: &mut impl Write, ids: (&str
     // (a resize, a lost frame).
     let mut last_snapshot = Instant::now().checked_sub(SNAPSHOT_GAP).unwrap_or_else(Instant::now);
     // Viewers hear from the relay every `beat`: a snapshot when output went out since the last one
-    // (it heals frames lost past this Mac), else a ping. A quiet screen is never redrawn.
+    // (it heals frames lost past this Mac) or none was asked for in `resync` (a viewer with no
+    // screen gets one), else a ping.
     let mut last_beat = Instant::now();
     loop {
         if ctl.stopped() {
@@ -576,7 +591,7 @@ fn pump(frames: &Receiver<(u8, Vec<u8>)>, to_holder: &mut impl Write, ids: (&str
         }
         if last_beat.elapsed() >= ctl.beat {
             last_beat = Instant::now();
-            if out.dirty { ctl.snapshot.store(true, SeqCst) } else { out.ping(size) }
+            if out.dirty || last_snapshot.elapsed() >= ctl.resync { ctl.snapshot.store(true, SeqCst) } else { out.ping(size) }
         }
         if ctl.snapshot.load(SeqCst) && last_snapshot.elapsed() >= SNAPSHOT_GAP && out.budget.left() > 0.0 {
             ctl.snapshot.store(false, SeqCst);
@@ -782,7 +797,7 @@ mod tests {
         let spawned = std::cell::RefCell::new(vec![]);
         let fake = |sid: String, since: u64| { spawned.borrow_mut().push((sid, since)); Arc::new(Ctl::new(since)) };
         let mut relays = BTreeMap::new();
-        nudge_relay(&mut relays, sid.clone(), &fake);
+        nudge_relay(&mut relays, sid.clone(), None, &fake);
         assert_eq!(*spawned.borrow(), [(sid.clone(), u64::MAX)], "started at once, before any ack");
         settle(&mut relays, &BTreeMap::new(), &fake);
         assert!(relays.contains_key(&sid), "an ack built before the viewer arrived does not stop it");
@@ -800,9 +815,33 @@ mod tests {
         assert_eq!(spawned.borrow().len(), 1);
         // A nudge for a running relay asks it for a fresh screen instead of starting another.
         let mut relays = BTreeMap::from([(sid.clone(), Arc::new(Ctl::new(5)))]);
-        nudge_relay(&mut relays, sid.clone(), &fake);
+        nudge_relay(&mut relays, sid.clone(), None, &fake);
         assert!(relays[&sid].history.load(SeqCst) && relays[&sid].kept());
         assert_eq!(spawned.borrow().len(), 1);
+    }
+
+    #[test]
+    fn a_nudge_carries_the_viewers_since_so_the_ack_that_lists_them_asks_for_no_second_history() {
+        let sid = "aaaabbbb-cccc-4ddd-8eee-ffff00001111".to_owned();
+        let fake = |_: String, since: u64| Arc::new(Ctl::new(since));
+        let ack = |since: u64| BTreeMap::from([(sid.clone(), since)]);
+        // A relay with one viewer since 50; a second arrives at 100 and the backend nudges.
+        let mut relays = BTreeMap::from([(sid.clone(), Arc::new(Ctl::new(50)))]);
+        nudge_relay(&mut relays, sid.clone(), Some(100), &fake);
+        assert_eq!(relays[&sid].since.load(SeqCst), 100);
+        assert!(relays[&sid].history.swap(false, SeqCst), "one history request, which the pump takes");
+        // An ack built before the viewer arrived lands after the nudge: `since` is not lowered.
+        settle(&mut relays, &ack(50), &fake);
+        assert_eq!(relays[&sid].since.load(SeqCst), 100);
+        settle(&mut relays, &ack(100), &fake);
+        assert!(!relays[&sid].history.load(SeqCst), "the ack that lists the nudged viewer is not news");
+        settle(&mut relays, &ack(101), &fake);
+        assert!(relays[&sid].history.load(SeqCst), "a later viewer still is");
+        // A nudge that starts the relay: its first ack is not news either.
+        let mut relays = BTreeMap::new();
+        nudge_relay(&mut relays, sid.clone(), Some(100), &fake);
+        settle(&mut relays, &ack(100), &fake);
+        assert!(!relays[&sid].history.load(SeqCst) && relays[&sid].since.load(SeqCst) == 100);
     }
 
     #[test]
@@ -830,7 +869,7 @@ mod tests {
             ctl
         };
         let mut relays = BTreeMap::new();
-        nudge_relay(&mut relays, sid.clone(), attach); // no `offer`, no ack
+        nudge_relay(&mut relays, sid.clone(), None, attach); // no `offer`, no ack
         fake_holder.join().unwrap();
         let started = Instant::now();
         while sent.lock().unwrap().is_empty() && started.elapsed() < Duration::from_secs(2) {
@@ -1009,8 +1048,9 @@ mod tests {
             if output {
                 tx.send((OUTPUT, with_offset(6, b"x"))).unwrap();
             }
-            let mut ctl = leased(Duration::from_millis(1700));
-            ctl.beat = Duration::from_millis(400);
+            // The busy run's output goes out at FLUSH (200 ms): well before the first beat.
+            let mut ctl = leased(Duration::from_millis(2600));
+            ctl.beat = Duration::from_millis(800);
             let mut holder = Answering { tx, answer: vec![(SNAPSHOT, with_offset(7, b"screen"))], asked: vec![] };
             let sent = std::cell::RefCell::new(vec![]);
             pump(&rx, &mut holder, ("sid", "gen"), (80, 24), &ctl, &|f| { sent.borrow_mut().push(f); true }, Budget::new(), &|_| None).unwrap();
@@ -1023,6 +1063,24 @@ mod tests {
         let (busy, asked) = run(true);
         assert_eq!(asked, 1);
         assert_eq!(busy[..4], [("snapshot".into(), 0), ("output".into(), 1), ("snapshot".into(), 2), ("ping".into(), 3)]);
+    }
+
+    #[test]
+    fn a_quiet_relay_still_redraws_once_no_snapshot_was_asked_for_in_its_resync() {
+        let (tx, rx) = std::sync::mpsc::channel();
+        tx.send((SNAPSHOT, with_offset(0, b"screen"))).unwrap();
+        // Beats at 0.5, 1.0, 1.5 and 2.0 s. The last request counts as 1 s before the start, so
+        // the second beat is the first one `resync` after it.
+        let mut ctl = leased(Duration::from_millis(2300));
+        ctl.beat = Duration::from_millis(500);
+        ctl.resync = Duration::from_millis(1700);
+        let mut holder = Answering { tx, answer: vec![(SNAPSHOT, with_offset(6, b"screen"))], asked: vec![] };
+        let sent = std::cell::RefCell::new(vec![]);
+        pump(&rx, &mut holder, ("sid", "gen"), (80, 24), &ctl, &|f| { sent.borrow_mut().push(f); true }, Budget::new(), &|_| None).unwrap();
+        let sent = kinds(&sent.into_inner());
+        assert_eq!(holder.asked.len(), 1, "one redraw, pings between: {sent:?}");
+        assert_eq!(sent[..3], [("snapshot".into(), 0), ("ping".into(), 1), ("snapshot".into(), 1)]);
+        assert!(sent.len() > 3 && sent[3..].iter().all(|k| *k == ("ping".into(), 2)), "{sent:?}");
     }
 
     #[test]

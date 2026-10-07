@@ -402,6 +402,8 @@ async def test_connected_integrations_names_and_rails_only_no_secret_material():
             "provider_resources": [{"env_keys": ["K"]}],
         },
         {"owner_id": "o", "provider": "google", "status": "reconnect_required"},
+        {"owner_id": "o", "provider": "projects/posthog", "status": "connected", "provider_resources": []},
+        {"owner_id": "o", "provider": "slack", "status": "connected"},
     ]
     reg = {"github": MagicMock(actor="cli"), "linear": MagicMock(actor="mcp")}
     with (
@@ -453,3 +455,17 @@ async def test_write_owner_facts_writes_the_manifest_to_every_profile():
     assert written["ids"] == ["a1"]
     assert facts["teammates"] == [{"id": "a1", "name": "Friday", "role": "ceo", "is_ceo": True}]
     assert facts["connected_integrations"] == [{"provider": "github", "rail": "cli"}]
+
+
+@pytest.mark.asyncio
+async def test_delete_agent_everywhere_refreshes_facts_for_every_caller():
+    from core.services import paperclip_agent_lifecycle as lc
+
+    with (
+        patch.object(lc, "prepare_paperclip_agent_delete", AsyncMock(return_value={})),
+        patch("core.services.hermes_profiles.delete_profile"),
+        patch.object(lc, "delete_paperclip_for_chat", AsyncMock()),
+        patch("core.services.owner_facts.write_owner_facts", AsyncMock()) as facts,
+    ):
+        await lc.delete_agent_everywhere(owner_id="org_1", agent_id="a1")
+    facts.assert_awaited_once_with("org_1")

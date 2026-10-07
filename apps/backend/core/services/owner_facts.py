@@ -263,7 +263,7 @@ async def _lookup_teammates(owner_id: str, roster: list[dict] | None = None) -> 
 async def _lookup_connected_integrations(owner_id: str) -> list[dict]:
     """``[{provider, rail}]`` for every CONNECTED integrations row. NAMES only: nothing from the
     row but its key and status is read. A ``projects/<p>`` row is the Stripe Projects rail; any
-    other row takes its registry actor (``mcp``/``cli``/``skill``), else ``oauth``. Never raises."""
+    other row takes its registry actor (``mcp``/``cli``/``skill``), else ``oauth``. Rows outside the catalog, and a ``projects/`` row with no resources, are skipped. Never raises."""
     try:
         from core.repositories import integrations_repo
         from core.services.credentials import registry
@@ -276,9 +276,14 @@ async def _lookup_connected_integrations(owner_id: str) -> list[dict]:
             if not key or row.get("status") != "connected":
                 continue
             if key.startswith(integrations_repo.PROJECTS_KEY_PREFIX):
+                if not row.get("provider_resources"):
+                    continue  # last resource removed: the row stays "connected" but nothing is bound
                 out.append({"provider": key[len(integrations_repo.PROJECTS_KEY_PREFIX) :], "rail": "projects"})
                 continue
-            actor = getattr(providers.get(key), "actor", None)
+            provider = providers.get(key)
+            if provider is None:
+                continue  # not a catalog integration (e.g. the Slack channel's bookkeeping row)
+            actor = provider.actor
             out.append({"provider": key, "rail": actor if actor in ("mcp", "cli", "skill") else "oauth"})
         return sorted(out, key=lambda e: (e["provider"], e["rail"]))
     except Exception as e:  # noqa: BLE001 — facts must never block callers

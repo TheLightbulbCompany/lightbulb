@@ -358,9 +358,6 @@ async def execute_sync(
             raise ApiProblem(
                 "RUNTIME_UNAVAILABLE", str(exc), retryable=True, retry_after=3, details={"method": method}
             ) from exc
-        from core.services.owner_facts import write_owner_facts
-
-        await write_owner_facts(owner_id)  # best-effort: the survivors' `teammates` drop the deleted agent
         await _invalidate(owner_id, method)
         return result
     if method == "agents.create":

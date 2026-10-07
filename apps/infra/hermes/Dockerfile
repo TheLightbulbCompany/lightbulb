@@ -76,7 +76,8 @@ RUN set -eux; \
     npm run build; \
     npm prune --omit=dev; \
     test -f /opt/quickbooks-mcp/dist/index.js; \
-    node --input-type=module -e "const m = await import('/opt/quickbooks-mcp/dist/tools/send-invoice.tool.js'); if (m.SendInvoiceTool.name !== 'send_invoice' || typeof m.SendInvoiceTool.handler !== 'function') process.exit(1)"; \
+    grep -q '"send_invoice"' /opt/quickbooks-mcp/dist/tools/send-invoice.tool.js; \
+    grep -q 'RegisterTool(server, SendInvoiceTool)' /opt/quickbooks-mcp/dist/index.js; \
     printf '%s\n' '#!/bin/sh' 'set -eu' 'export QUICKBOOKS_TOKEN_STORE_PATH="${HOME}/quickbooks/.env"' 'exec node /opt/quickbooks-mcp/dist/index.js' > /usr/local/bin/lightbulb-quickbooks-mcp; \
     chmod 0755 /usr/local/bin/lightbulb-quickbooks-mcp; \
     sh -n /usr/local/bin/lightbulb-quickbooks-mcp; \

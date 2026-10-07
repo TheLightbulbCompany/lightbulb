@@ -115,7 +115,7 @@ export function WorkspaceSidebar({ onRecoveryReprovision, chatReady, onNavigate 
             <HealthIndicator onRecoveryReprovision={onRecoveryReprovision} />
           )}
           <NodeStatusPill />
-          <DesktopUpdater version="0.1" />
+          <DesktopUpdater />
         </details>
       </div>
     </div>

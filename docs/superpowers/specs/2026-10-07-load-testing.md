@@ -31,17 +31,14 @@ Last row = main blast radius: unreserved projector/`ws-message` share prod's Lam
 
 **Auth (all scenarios).** Exactly the multiparty runner's sanctioned path, no password, no OTP:
 
-1. `fixtures.py setup` reads `lightbulb/dev/clerk_secret_key`, refuses unless
-   `GET /v1/instance` says `environment_type == development` (runner already does).
-2. Creates users `load-{nnnn}+clerk_test@example.com` via BAPI `POST /users`
-   (`skip_password_requirement`), first name `Ldu{nnnn}` so no message text can match a member
-   name (a name opening a message triggers the 2 s Jev addressing call in `core/services/messaging.py` `address()`).
-3. Mints a one-time `POST /sign_in_tokens`, redeems it on the dev FAPI
-   (`up-moth-55.clerk.accounts.dev`, `_is_native=1`), sets the active org, and writes
-   `{userId, sid, clientJwt}` per user to `fixtures.json`.
-4. Each k6 VU owns one user and refreshes its own 60 s JWTs: `POST /v1/client/sessions/{sid}/tokens`
-   (API) and `…/tokens/lightbulb-appsync` (AppSync) every 40 s, carrying the rotating client JWT
-   forward exactly as `Session._post` does.
+1. `fixtures.py setup` reads `lightbulb/dev/clerk_secret_key`, refuses unless `GET /v1/instance` says
+   `environment_type == development` (runner already does).
+2. Creates users `load-{nnnn}+clerk_test@example.com` via BAPI `POST /users` (`skip_password_requirement`), first
+   name `Ldu{nnnn}`: no message text may open with a member name (that triggers Jev in `messaging.address()`).
+3. Mints a one-time `POST /sign_in_tokens`, redeems it on the dev FAPI (`up-moth-55.clerk.accounts.dev`,
+   `_is_native=1`), sets the active org, and writes `{userId, sid, clientJwt}` per user to `fixtures.json`.
+4. Each k6 VU owns one user and refreshes its own 60 s JWTs every 40 s: `POST /v1/client/sessions/{sid}/tokens`
+   (API) and `…/tokens/lightbulb-appsync`, carrying the rotating client JWT forward as `Session._post` does.
 
 Pre-checks: `GET /v1/users/count` against Clerk's dev-instance user cap (documented as 100; verify).
 Dev org member cap is unlimited (`max_allowed_memberships: 0`). FAPI per-IP limits are unknown and all
@@ -52,8 +49,10 @@ creates it mode 0600, and the run deletes it in a `finally` and a SIGINT/SIGTERM
 **Fixture orgs.** BAPI `POST /organizations {name, created_by}` fires `organization.created` →
 `provision_new_workspace` → the normal SFN provision (Paperclip company, six starter agents,
 AgentCore runtime, trial OpenRouter key). Members via `POST /organizations/{id}/memberships`,
-sequentially (each fires the Paperclip JOIN + `#general` seat). Load rooms are created by the
-harness with `POST /messaging/rooms`; **never post in `#general`** (all six agents `active`).
+sequentially (each fires the Paperclip JOIN + `#general` seat). The webhook is async, so `setup` polls the creator's
+`GET /container/status` until `runtime_phase == "ready"` (`chat_available` true) and `teams_state != "failed"`, and
+`GET /messaging/rooms` shows `#general` with the six starter agents, **before any timer starts** (vital for scenario 2).
+Load rooms come from `POST /messaging/rooms`; **never post in `#general`** (all six agents `active`).
 
 **k6 shape (all three scripts).** Each message/frame carries the sender's `Date.now()`; receivers
 subtract their own (Fargate syncs to Amazon Time Sync, skew ≪ the 100 ms resolution used).
@@ -88,7 +87,8 @@ no runtime; test users have no Expo tokens, so push fan-out sends nothing.
 | Sub-test | Load | Holds |
 |---|---|---|
 | 1a hot room | 1 room, concurrent senders 1, 2, 4, 8, 16, each at 1 msg/s | 3 min per step |
-| 1b fan-out | 1 sender at 1 msg/s; subscribers 1, 10, 40, 80 | 3 min per step |
+| 1b fan-out | 1 sender at 1 msg/s; subscribers 1, 10, 20, 31 (`messaging_repo.MAX_ROOM_MEMBERS` = 32 incl. sender, else `MEMBER_LIMIT`) | 3 min per step |
+| 1b′ volume | 3 rooms × (1 sender + 31 subscribers), 1 msg/s each: projector + AppSync publish volume, not per-room fan-out | 3 min |
 | 1c breadth | 20 rooms × 4 members; arrival rate 5 → 40 rps total (under the 50 rps throttle) | 10 min ramp, 10 min hold |
 | 1d (optional) | 1c above 50 rps, only after a CDK PR raises `THROTTLE_CONFIG.dev` (§5) | owner-gated |
 
@@ -237,7 +237,7 @@ Trends are primary.
 | Shared prod quotas | stop if account-wide Lambda `ConcurrentExecutions` > 50% of `aws lambda get-account-settings` limit, or any prod page alarm fires |
 | Raising the throttle (1d only) | PR changing `THROTTLE_CONFIG.dev` in `api-stack.ts` (+ `cdk synth`, commit `deploy.yml`), merge deploys dev; a revert PR after the run. No console edits (CLAUDE.md Critical Rules) |
 | Kill switch | Ctrl-C on k6 (DLT: "Cancel test"); `mac_sim.py` exits on SIGINT and closes sockets; queued agent turns drain by themselves (each org capped at $0.25/day). Emergency only, owner-approved: purge the dev work FIFO (drops every dev user's pending turns) |
-| Cleanup | rooms: `DELETE /messaging/rooms/{id}`; scenario 2: `PATCH /debug/provision` per fixture org (stops the warm session — do not wait 4 h); devices: `DELETE /desktop/devices/{id}`. Owner-scoped per fixture org, never a table scan: (1) remove every non-creator member (Clerk BAPI membership delete) and delete those Clerk users; (2) the creator, now sole member, calls `POST /users/me/delete` (`workspace_wipe.wipe_own_workspace`: runtime, Paperclip company + Aurora users, rows); (3) delete any Clerk org/user left. Never call `DELETE /debug/user-data` per member (403 for non-admins). Delete `fixtures.json`. If per-org cleanup leaves residue after a round, the owner permits the full `dev-clean-slate-reset` skill (all four steps) as the fallback — run it only between rounds, never mid-run, and announce it to the team first since it wipes every dev workspace. |
+| Cleanup | rooms: `DELETE /messaging/rooms/{id}`; scenario 2: `PATCH /debug/provision` per fixture org (stops the warm session — do not wait 4 h); devices: `DELETE /desktop/devices/{id}`. Owner-scoped per fixture org, never a table scan: (1) remove every non-creator member (Clerk BAPI membership delete) and delete those Clerk users; (2) wait until BAPI `GET /organizations/{id}/memberships` lists only the creator, then the creator calls `POST /users/me/delete` with `{"confirm_email": "<creator email>"}` (422 without it) — `workspace_wipe.wipe_own_workspace`: runtime, Paperclip company + Aurora users, rows. A 409 means the async `organizationMembership.deleted` webhook has not yet cleared a removed member from the workspace's records: retry with backoff (≤ 2 min), never skip. Calling it while Clerk still lists others only archives the creator's membership; (3) delete any Clerk org/user left. Never call `DELETE /debug/user-data` per member (403 for non-admins). Delete `fixtures.json`. If per-org cleanup leaves residue after a round, the owner permits the full `dev-clean-slate-reset` skill (all four steps) as the fallback — run it only between rounds, never mid-run, and announce it to the team first since it wipes every dev workspace. |
 ## 6. Owner decisions
 
 1. Target load: messaging rps for the "pass" run (proposal: 40 rps dev, under the throttle), concurrent cold workspaces (proposal: 20), viewers per session (proposal: 25).

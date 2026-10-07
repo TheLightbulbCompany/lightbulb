@@ -8,3 +8,4 @@ def _meeting_design(request, monkeypatch):
     """The tests written before hand first (a meeting voice that opens on a name) still run against that
     path while both exist; `test_hand_first.py` runs the meeting design that ships."""
     monkeypatch.setattr(h_mod, "HAND_FIRST", request.module.__name__ == "test_hand_first")
+    monkeypatch.setattr(h_mod, "START_S", 0.3)  # a voice that makes no sound: tests do not wait six real seconds

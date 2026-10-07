@@ -362,6 +362,17 @@ def is_question(text: str) -> bool:
     return t.endswith("?") or bool(_QUESTION_START.match(t))
 
 
+_TRAIL_WORDS = frozenset("um uh er hmm oh and so well like but the a".split())
+
+
+def trails_off(text: str) -> bool:
+    """The speaker stopped mid-thought: the transcriber's "..." at its end, or nothing but filler ("Um", "Oh,
+    and"). Its rest is on the way."""
+    t = text.strip()
+    words = re.findall(r"[a-z']+", t.lower())
+    return t.endswith(("...", "…")) or (bool(words) and all(w in _TRAIL_WORDS for w in words))
+
+
 def pause(text: str) -> bool:
     """A halt and nothing more ("hold on", "wait, um"): the person wants the floor, not an answer."""
     return halt(text) and not real_speech(_HALT.sub(" ", text.lower()))

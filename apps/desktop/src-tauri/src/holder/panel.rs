@@ -188,6 +188,7 @@ fn relay(stream: TcpStream) -> std::io::Result<()> {
 /// The page's own size, as it reads it (`innerWidth` x `innerHeight`).
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq)]
 pub struct Viewport {
+    pub width: f64,
     pub height: f64,
 }
 
@@ -215,21 +216,22 @@ pub fn fit(rect: Rect, window: (f64, f64)) -> Option<Rect> {
 /// the terminal is placed in the parent view the two share. Where that parent runs under the title
 /// bar and the page does not (seen on macOS 26), an unshifted terminal sat a title bar too high and
 /// covered the status line above it. Zero wherever the two agree, and for a size no title bar explains.
-pub fn page_top(window_height: f64, viewport_height: Option<f64>) -> f64 {
-    match viewport_height {
-        Some(h) if h.is_finite() && h > 0.0 && window_height - h > 0.0 && window_height - h <= 80.0 => window_height - h,
+pub fn page_top(window: (f64, f64), viewport: Option<Viewport>) -> f64 {
+    match viewport {
+        // A zoomed page reports a smaller size in both directions: only a page as wide as the
+        // window is measured in the window's own units.
+        Some(v) if (v.width - window.0).abs() <= 1.0 && v.height > 0.0 && window.1 - v.height > 0.0 && window.1 - v.height <= 80.0 => window.1 - v.height,
         _ => 0.0,
     }
 }
 
 /// One log line per distinct measurement, so a misplaced terminal can be read from the log.
-fn note_placement(window: f64, viewport: Option<f64>, top: f64) {
-    static LAST: Mutex<Option<(u64, u64)>> = Mutex::new(None);
-    let key = (window.to_bits(), viewport.unwrap_or(-1.0).to_bits());
+fn note_placement(window: (f64, f64), viewport: Option<Viewport>, top: f64) {
+    static LAST: Mutex<Option<((f64, f64), Option<Viewport>)>> = Mutex::new(None);
     if let Ok(mut last) = LAST.lock() {
-        if *last != Some(key) {
-            *last = Some(key);
-            crate::log(&format!("[terminal-panel] window {window} page {viewport:?} shift {top}"));
+        if *last != Some((window, viewport)) {
+            *last = Some((window, viewport));
+            crate::log(&format!("[terminal-panel] window {window:?} page {:?} shift {top}", viewport.map(|v| (v.width, v.height))));
         }
     }
 }
@@ -296,8 +298,8 @@ pub async fn terminal_panel(
     let size = window.inner_size().map_err(|e| e.to_string())?.to_logical::<f64>(scale);
     // Measured on macOS 26: a window configured 1400x900 (inner) is 1400x900 outside too, so its
     // content view runs under the title bar and `inner_size` includes it; the page is inset below.
-    let top = page_top(size.height, viewport.map(|v| v.height));
-    note_placement(size.height, viewport.map(|v| v.height), top);
+    let top = page_top((size.width, size.height), viewport);
+    note_placement((size.width, size.height), viewport, top);
     match rect.and_then(|r| fit(Rect { y: r.y + top, ..r }, (size.width, size.height))) {
         Some(r) => show(&app, &window, &holder, r)?,
         None => hide(&app),
@@ -420,12 +422,15 @@ mod tests {
 
     #[test]
     fn terminal_panel_starts_where_the_page_does() {
-        assert_eq!(page_top(900.0, Some(868.0)), 32.0, "the page starts a title bar below the window's top");
-        assert_eq!(page_top(868.0, Some(868.0)), 0.0);
-        assert_eq!(page_top(900.0, None), 0.0, "an older page sends no size");
-        assert_eq!(page_top(900.0, Some(400.0)), 0.0, "no title bar is 500 tall: a zoomed or odd page is left alone");
-        assert_eq!(page_top(900.0, Some(950.0)), 0.0);
-        assert_eq!(page_top(900.0, Some(f64::NAN)), 0.0);
+        let page = |width, height| Some(Viewport { width, height });
+        let window = (1400.0, 900.0);
+        assert_eq!(page_top(window, page(1400.0, 868.0)), 32.0, "the page starts a title bar below the window's top");
+        assert_eq!(page_top((1400.0, 868.0), page(1400.0, 868.0)), 0.0);
+        assert_eq!(page_top(window, None), 0.0, "an older page sends no size");
+        assert_eq!(page_top(window, page(1333.3, 857.1)), 0.0, "a page zoomed to 105% is narrower too: not a title bar");
+        assert_eq!(page_top(window, page(1400.0, 400.0)), 0.0, "no title bar is 500 tall");
+        assert_eq!(page_top(window, page(1400.0, 950.0)), 0.0);
+        assert_eq!(page_top(window, page(1400.0, f64::NAN)), 0.0);
     }
 
     #[test]

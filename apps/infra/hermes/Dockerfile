@@ -52,7 +52,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # (POST /v3/company/{realmId}/invoice/{id}/send, accounting scope). The two
 # files are copied into the checkout and registered in index.ts before the
 # build; the grep pins exactly one import + one RegisterTool, so a drifted
-# index.ts fails the build instead of silently dropping the tool.
+# index.ts fails the build instead of silently dropping the tool. Upstream PR
+# intuit/quickbooks-online-mcp-server#151 (open since 2026-09-30, unreviewed)
+# adds the same send_invoice with the same params and guards; once a pin
+# carries it, the count check fails the build and this overlay gets deleted.
 ENV QUICKBOOKS_MCP_COMMIT=c351dc011d9cb14b211857457085f7994d8b1e15
 COPY quickbooks-mcp/ /opt/quickbooks-mcp-overlay/
 RUN set -eux; \

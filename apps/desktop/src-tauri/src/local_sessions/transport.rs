@@ -2048,7 +2048,11 @@ fn transcript_unread(mirror: &Mirror) -> bool {
     let within_retention = mirror.ended_at.is_some_and(|ended_at| {
         epoch_secs().saturating_sub(ended_at) < ENDED_RETENTION_SECS
     });
-    let unfinished_child = within_retention && mirror
+    // A Claude sub-agent runs inside its session's own process: once that process is gone it
+    // can write nothing more, and what it did write is the unread check below. Waiting on it
+    // held the end back for a day and kept a dead session listed as idle (prod 2026-10-07).
+    let child_can_still_write = mirror.native.provider != "claude" || still_running(&mirror.native.process);
+    let unfinished_child = within_retention && child_can_still_write && mirror
         .subagents
         .known
         .values()
@@ -3324,6 +3328,25 @@ pub(super) mod tests {
         mirror.ended_at = Some(epoch_secs());
 
         assert!(needs_ended_recovery(&mirror));
+    }
+
+    #[test]
+    fn local_sessions_a_dead_claude_session_is_not_held_open_by_unfinished_subagents() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut mirror = test_mirror(SID, "gen-1");
+        mirror.native = observed_fixture(dir.path());
+        let parent = mirror.native.transcript.as_ref().unwrap();
+        let metadata = fs::metadata(parent).unwrap();
+        mirror.cursor.offset = metadata.len();
+        mirror.cursor.inode = Some(metadata.ino());
+        // Killed mid-task: the child never reported an end, and its journal is fully read.
+        mirror.subagents.known.insert("agent-1".into(), Subagent::default());
+        mirror.ended_at = Some(epoch_secs());
+
+        mirror.native.process = process(std::process::id()).unwrap();
+        assert!(needs_ended_recovery(&mirror), "a running session may still hear from its child");
+        mirror.native.process.birth_micros += 1; // that process is gone
+        assert!(!needs_ended_recovery(&mirror), "a dead session's end is reported at once");
     }
 
     #[test]

@@ -261,22 +261,43 @@ def client_identity(client_id: str) -> tuple[str, str]:
 
 
 def _sent_key(auth: AuthContext, request_id: uuid.UUID) -> tuple[str, str]:
-    return f"MCPSEND#{auth.org_id}#{auth.user_id}", f"SEND#{request_id}"
+    # Under the workspace's OWNER# partition, so both wipes' delete_owner_partition removes it.
+    return messaging_repo.owner_pk(auth.org_id), f"MCPSEND#{auth.user_id}#{request_id}"
 
 
-async def _pin_destination(auth: AuthContext, request_id: uuid.UUID, destination: str) -> None:
+async def _pin_destination(auth: AuthContext, request_id: uuid.UUID, destination: str) -> dict:
     """Remember where a request_id went, so message_receipt needs only the id and a reuse elsewhere fails."""
     pk, sk = _sent_key(auth, request_id)
     # No TTL: this is the receipt index and the cross-destination guard, like the room IDEMP row.
     item = {"pk": pk, "sk": sk, "destination": destination}
     try:
         await run_in_thread(messaging_repo._table().put_item, Item=item, ConditionExpression="attribute_not_exists(sk)")
+        return item
     except ClientError as exc:
         if exc.response.get("Error", {}).get("Code") != "ConditionalCheckFailedException":
             raise
         prior = await messaging_repo._get(pk, sk)
         if prior is None or prior.get("destination") != destination:
             raise messaging.ApiProblem("IDEMPOTENCY_CONFLICT", "request_id was used for another destination.") from exc
+        return prior
+
+
+async def _person_room(auth: AuthContext, request_id: uuid.UUID, person_id: str) -> str:
+    """The DM a person send goes to, pinned on its record once known: a retry or receipt keeps that
+    room even after it grows into a group DM or a newer DM appears."""
+    pinned = await _pin_destination(auth, request_id, f"person:{person_id}")
+    if pinned.get("roomId"):
+        return pinned["roomId"]
+    room_id = await native_session_tools.person_dm(auth, person_id, create=True)
+    pk, sk = _sent_key(auth, request_id)
+    updated = await run_in_thread(
+        messaging_repo._table().update_item,
+        Key={"pk": pk, "sk": sk},
+        UpdateExpression="SET roomId = if_not_exists(roomId, :room)",
+        ExpressionAttributeValues={":room": room_id},
+        ReturnValues="ALL_NEW",
+    )
+    return updated["Attributes"]["roomId"]
 
 
 @mcp.tool()
@@ -305,9 +326,8 @@ async def send_message(
         result = await native_session_tools.session_send(auth, target, text, str(request_id), via_client=client)
         return {"sessionId": session_id, "requestId": str(request_id), "state": result["state"]}
     if person_id is not None:
-        # Reserve the request_id before opening a DM, so a conflicting reuse leaves no empty room.
-        await _pin_destination(auth, request_id, f"person:{person_id}")
-        room_id = await native_session_tools.person_dm(auth, person_id, create=True)
+        # Reserved before the DM opens, so a conflicting reuse leaves no empty room.
+        room_id = await _person_room(auth, request_id, person_id)
     else:
         room_id = messaging.validate_uuid(room_id, label="room ID")
         await _pin_destination(auth, request_id, f"room:{room_id}")
@@ -358,11 +378,9 @@ async def message_receipt(request_id: uuid.UUID) -> dict:
         return {"state": "unknown"}
     kind, target = pinned["destination"].split(":", 1)
     if kind == "person":
-        try:
-            target = await native_session_tools.person_dm(auth, target)
-        except messaging.ApiProblem:
-            return {"state": "not_found"}
-        kind = "room"
+        if not pinned.get("roomId"):
+            return {"state": "not_found"}  # the send stopped before its DM was known
+        kind, target = "room", pinned["roomId"]
     if kind == "room":
         return await receipt_for(auth, target, request_id)
     try:

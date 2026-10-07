@@ -23,6 +23,8 @@ every protected operation rechecks the base ``MEMBER#`` row strongly):
     OWNER#<owner>   OPERATION#<id>                     async runtime op status/result
     OWNER#<owner>   WORK#OPERATION#<id>                one-shot outbox for runtime work
     OWNER#<owner>   WORKSPACE                          opaque AppSync channel-path segment
+    OWNER#<owner>   MCPSEND#<user>#<requestId>          hosted MCP send: its destination (+ roomId once a
+                                                       person send's DM is known); no TTL, the receipt index
     OWNER#<owner>   RUN#<runId>                         async turn ledger (Task 9)
     OWNER#<owner>   USAGE#<runId>                       first-writer-wins usage-callback receipt (Task 7)
     OWNER#<owner>   VOICERUN#<runId>                    a Live voice run's room, agent and speaker (2 h TTL; NOT RUN#:

@@ -412,16 +412,19 @@ pub fn run_with_env(socket: &Path, argv: &[String], cwd: &Path, env: Vec<(String
                 // The provider leads its terminal's process group (the pty made it a session
                 // leader): what a closing terminal hangs up on.
                 let group = -(provider_pid as libc::pid_t);
-                let reaped = reaped.clone();
                 if !reaped.load(Ordering::SeqCst) {
                     unsafe { libc::kill(group, libc::SIGHUP) };
                 }
                 std::thread::spawn(move || {
+                    // The whole group, not only its leader: a subprocess that ignores the hang-up
+                    // would otherwise keep working in the folder after End. A group id is not
+                    // reused while a member lives, and signal 0 fails once none does.
+                    let alive = || unsafe { libc::kill(group, 0) } == 0;
                     let deadline = Instant::now() + END_KILL_AFTER;
-                    while Instant::now() < deadline && !reaped.load(Ordering::SeqCst) {
+                    while Instant::now() < deadline && alive() {
                         std::thread::sleep(Duration::from_millis(50));
                     }
-                    if !reaped.load(Ordering::SeqCst) {
+                    if alive() {
                         unsafe { libc::kill(group, libc::SIGKILL) };
                     }
                 });

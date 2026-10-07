@@ -594,6 +594,29 @@ fn holder_end_takes_no_more_input_while_the_provider_is_leaving() {
     assert!(has(&screen, b"waiting") && !has(&screen, b"got-late"), "{:?}", String::from_utf8_lossy(&screen));
 }
 
+/// Review of #3818: the provider leaves on the hang-up but a subprocess ignores it. End stops
+/// that one too, after the same wait.
+#[test]
+fn holder_end_also_stops_a_subprocess_that_ignores_the_hang_up() {
+    let dir = temp_dir();
+    let pidfile = dir.join("child.pid");
+    let script = format!(
+        r#"(trap '' HUP; while :; do sleep 0.1; done) & echo $! > {}; trap 'exit 129' HUP; printf 'ready'; while :; do sleep 0.1; done"#,
+        pidfile.display());
+    let socket = start(&dir, &["/bin/sh", "-c", &script]);
+    let mut c = attach(&socket, "interactive");
+    wait_screen(&socket, b"ready");
+    let child: libc::pid_t = std::fs::read_to_string(&pidfile).unwrap().trim().parse().unwrap();
+    assert_eq!(unsafe { libc::kill(child, 0) }, 0, "the subprocess runs");
+    c.set_read_timeout(Some(run::END_KILL_AFTER + Duration::from_secs(5))).unwrap();
+    assert!(manager::end(&manager::list_in(&dir).into_iter().next().unwrap()));
+    let until = Instant::now() + run::END_KILL_AFTER + Duration::from_secs(3);
+    while unsafe { libc::kill(child, 0) } == 0 && Instant::now() < until {
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    assert_ne!(unsafe { libc::kill(child, 0) }, 0, "End left a subprocess running");
+}
+
 /// Bug 2026-10-07: the kept picture after `/exit` was the frame with the slash-command menu.
 #[test]
 fn holder_keeps_the_picture_from_before_the_command_that_ended_the_session() {

@@ -126,7 +126,7 @@ describe("NetworkStack — WAF web ACL (count-only)", () => {
     // Vercel-proxied company.* hosts share one egress IP, so they are scoped out.
     const scope = JSON.stringify(rate.Statement.RateBasedStatement.ScopeDownStatement);
     expect(scope).toContain("NotStatement");
-    expect(scope).toContain('"SingleHeader":{"Name":"x-isol8-public-host"}');
-    expect(scope).toContain("company.");
+    expect(scope).toContain('"UriPath":{}');
+    expect(scope).toContain("/__paperclip_proxy__");
   });
 });

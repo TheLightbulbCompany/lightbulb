@@ -204,19 +204,17 @@ export class NetworkStack extends cdk.Stack {
               forwardedIpConfig: { headerName: "X-Lightbulb-Client-Ip", fallbackBehavior: "NO_MATCH" },
               // company[-env] requests are reverse-proxied by Vercel (next.config.ts),
               // so their source IP is a shared Vercel egress, not a user: leave them
-              // out rather than pool unrelated users into one bucket.
+              // out rather than pool unrelated users into one bucket. Vercel rewrites
+              // them onto the api[-env] host under this path prefix (the host header
+              // API GW sees is api[-env], so the path is the only marker).
               scopeDownStatement: {
                 notStatement: {
                   statement: {
-                    orStatement: {
-                      statements: ["company.", "dev.company."].map((prefix) => ({
-                        byteMatchStatement: {
-                          searchString: prefix,
-                          fieldToMatch: { singleHeader: { Name: "x-isol8-public-host" } },
-                          positionalConstraint: "STARTS_WITH",
-                          textTransformations: [{ priority: 0, type: "LOWERCASE" }],
-                        },
-                      })),
+                    byteMatchStatement: {
+                      searchString: "/__paperclip_proxy__",
+                      fieldToMatch: { uriPath: {} },
+                      positionalConstraint: "STARTS_WITH",
+                      textTransformations: [{ priority: 0, type: "NONE" }],
                     },
                   },
                 },

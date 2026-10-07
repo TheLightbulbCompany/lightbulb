@@ -73,7 +73,8 @@ async def watch(auth: sessions.Caller, session_id: str, mounted: bool = False) -
     now = int(_clock())
     kept = sessions.screen_available(row, now)  # an ended held session's final screen (spec 2026-10-07 §5.4)
     if row.get("unshared") or (not kept and (row.get("endedAt") is not None or int(row.get("onlineUntil", 0)) <= now)):
-        if row.get("endedAt") is not None and row.get("screenUntil") is not None:
+        # Only a lapsed lease is gone. A paused session's screen is still on the Mac.
+        if not kept and row.get("endedAt") is not None and row.get("screenUntil") is not None:
             await _screen_gone(row)
         raise sessions.ApiProblem("LOCAL_SESSION_OFFLINE", "This session is not running.")
     if sessions.session_terminal(row) is None:
@@ -192,8 +193,10 @@ async def ack_with_watching(ack: dict, owner: str, human: str, device: str) -> d
 async def keep_screens(owner: str, human: str, device: str, cid: str, sids: list[str]) -> None:
     """The Mac's ended held sessions whose holder still shows the final screen (spec 2026-10-07
     §5.4): each stays watchable for one more lease. Only this Mac's own; never raises (a lost
-    renewal lapses the screen 30 s later, nothing worse)."""
-    from core.services.local_session_relay import LIVENESS_SECONDS  # it imports this module
+    renewal lapses the screen 30 s later, nothing worse). A screen that was not there (the end
+    came before the holder had it, or its lease lapsed in a heartbeat gap) is news: open panels
+    refetch, once."""
+    from core.services.local_session_relay import LIVENESS_SECONDS, publish_resources_changed  # imports this module
 
     now = int(_clock())
     for sid in sids:
@@ -215,6 +218,8 @@ async def keep_screens(owner: str, human: str, device: str, cid: str, sids: list
                 ConditionExpression="attribute_exists(endedAt) AND deviceId = :d",
                 ExpressionAttributeValues={":u": now + LIVENESS_SECONDS, ":c": cid, ":d": device},
             )
+            if not sessions.screen_available(row, now):
+                await publish_resources_changed(owner, human)
         except Exception as exc:  # noqa: BLE001 -- see docstring
             logger.info("ended screen not kept error=%s", type(exc).__name__)
 

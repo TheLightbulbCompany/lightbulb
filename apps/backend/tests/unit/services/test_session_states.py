@@ -7,7 +7,8 @@ import time
 
 import pytest
 
-from core.repositories import local_sessions_repo as repo
+from core.auth import AuthContext
+from core.repositories import local_sessions_repo as repo, messaging_repo
 from core.services import (
     live_events,
     local_session_relay as relay_module,
@@ -185,3 +186,64 @@ async def test_a_new_viewer_of_a_kept_screen_nudges_the_connection_that_keeps_it
     transport[3].clear()
     await session_screen.watch(BOB, sid)
     assert [(c, b["type"]) for c, b in transport[3]] == [("conn-1", "local.session.watch")]
+
+
+@pytest.mark.asyncio
+async def test_a_kept_screen_is_only_for_people_who_can_read_the_session(transport, monkeypatch):
+    sid = await start(transport)
+    await ack(transport, sid)
+    await end(transport, sid, screen=True)
+    await session_screen.watch(BOB, sid)
+    told = []
+
+    async def hint(owner, human, **_):
+        told.append((owner, human))
+
+    monkeypatch.setattr(relay_module, "publish_resources_changed", hint)
+    # Another workspace's member: the session does not exist for them.
+    with pytest.raises(ApiProblem) as refused:
+        await session_screen.watch(AuthContext(user_id="user_eve", org_id="org_other"), sid)
+    assert refused.value.error.code == "LOCAL_SESSION_NOT_FOUND"
+    # A removed member's still-valid JWT.
+    await messaging_repo.deactivate_user_stream(OWNER, BOB.user_id)
+    with pytest.raises(ApiProblem) as refused:
+        await session_screen.watch(BOB, sid)
+    assert refused.value.error.code == "LOCAL_SESSION_FORBIDDEN"
+    await messaging_repo.ensure_user_stream(OWNER, BOB.user_id)
+    # The owner stops sharing it: gone for a teammate, not streamed, and the Mac stops.
+    await service.set_sharing(ALICE, sid, False)
+    for person, code in ((BOB, "LOCAL_SESSION_NOT_FOUND"), (ALICE, "LOCAL_SESSION_OFFLINE")):
+        with pytest.raises(ApiProblem) as refused:
+            await session_screen.watch(person, sid)
+        assert refused.value.error.code == code
+    transport[4].clear()
+    await session_screen.forward(relay(transport), "conn-1", frame(sid))
+    assert await _published(transport) == []
+    assert (await relay(transport).handle_message("conn-1", screens(sid)))["watching"] == []
+    # The screen is still on the Mac: a refused ping must not drop its lease or tell the workspace.
+    row = await repo.get_session(OWNER, sid)
+    assert int(row["screenUntil"]) > time.time() and told == []
+    # Shared again: the same screen is back.
+    await service.set_sharing(ALICE, sid, True)
+    await session_screen.watch(BOB, sid)
+
+
+@pytest.mark.asyncio
+async def test_a_screen_that_comes_back_tells_the_open_panels_once(transport, db, monkeypatch):
+    sid = await start(transport)
+    await ack(transport, sid)
+    await end(transport, sid)  # the hook's end came before the holder had its final screen
+    told = []
+
+    async def hint(owner, human, **_):
+        told.append((owner, human))
+
+    monkeypatch.setattr(relay_module, "publish_resources_changed", hint)
+    await relay(transport).handle_message("conn-1", screens(sid))
+    assert (await public(sid)).screen_available is True
+    assert told == [(OWNER, ALICE.user_id)]
+    await relay(transport).handle_message("conn-1", screens(sid))
+    assert len(told) == 1, "a renewal is not news"
+    set_meta(db, sid, screenUntil=1)  # a heartbeat gap let the lease lapse
+    await relay(transport).handle_message("conn-1", screens(sid))
+    assert len(told) == 2

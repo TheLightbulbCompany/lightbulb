@@ -1342,8 +1342,9 @@ class Huddle:
                 self._record(identity, fut, rec, text)
 
         self._spawn(run())
-        if kw.get("floor_line") and in_meet(identity) and (v := self._voice) is not None:
-            # a muted meeting voice heard none of it (its follow-up, or a held one applied): told what came of it
+        if kw.get("floor_line") and mixed_meet(identity) and (v := self._voice) is not None:
+            # a muted meeting voice heard none of it (its follow-up, or a held one applied): told what came of it.
+            # A per-person voice heard it itself: told again, it answered twice (Codex on #3792)
             self._spawn(self._answer_heard(v, identity, text, fut, f'{self._talker(identity)} asked: "{text}"'))
         return fut
 
@@ -1889,6 +1890,7 @@ class Huddle:
             if state == "speaking" and self._speaking and v.path == "announce":
                 emit_metric("live.floor.overlap", 1, "Count")  # a delivery's audio began over a person
             if state == "speaking" and v.announce:  # the first audio consumes the news
+                v.said = []  # what it says from here is this answer's (a cut is measured against it)
                 v.told = list(self._news.get(agent_id, []))
                 self._consume_news(agent_id)  # all of it was in the seed
                 v.announcing, v.announce = v.path == "announce", None
@@ -2800,7 +2802,7 @@ class Huddle:
             if v.saying != run.run_id and (v.answer is None or v.answer[0] != run.run_id):
                 self._settle_answer(v)  # the answer before this one: on the record if it was cut (`_followed`)
                 v.unheard = v.cut = v.replied = v.resaid = False
-                v.began = self._clock()
+                v.began, v.said = self._clock(), []
             if v.box != (run.run_id, run.box):
                 # narration before a tool is its own box: its cut, its reply, its words are not the answer's
                 v.box, v.spoke = (run.run_id, run.box), 0

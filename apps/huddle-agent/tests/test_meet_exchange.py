@@ -145,3 +145,33 @@ async def test_a_talked_over_answer_comes_back_from_the_sentence_it_was_cut_on()
     talks(h, P2)
     await settle(h)
     assert [n[2] for n in h._news.get("forge", [])] == ["The oldest is two days old. One of them is a draft."]
+
+
+async def test_a_follow_up_its_voice_heard_is_not_fed_to_it_again_as_text():
+    """Codex on #3792: the muted design told the voice what its person said; a duplex voice heard it."""
+    h, backend, lives, clock = await asked()
+    kinds = lambda: [c[0] for c in lives[0].calls]  # noqa: E731
+    before, routes = kinds(), len(backend.routes)
+    backend.route_extra = ops([("forge", "the closed PRs too", "follow")])
+    await says(h, P1, "and the closed ones too")
+    assert len(backend.routes) == routes + 1, "the worker still understands the line"
+    assert [k for k in kinds()[len(before):] if k in ("reply_to", "nudge", "commentary")] == []
+
+
+async def test_what_an_earlier_answer_said_does_not_count_as_this_one_said():
+    """Codex on #3792: a sentence repeated from an earlier answer looked already heard."""
+    h, backend, lives, clock = await asked()
+    (row,) = h._requests.items
+    clock.t += h_mod.MEET_FOLLOWUP_S
+    await h.tick()
+    await settle(h)
+    answer(h, row.run_id, "forge", "Three PRs are open. The oldest is two days old.")
+    quiet(h)
+    clock.t += h_mod.MEET_QUIET_S + h_mod.gate.ANNOUNCE_QUIET
+    await h.tick()
+    await settle(h)
+    h._voice.said = ["Three PRs are open.", "The oldest is two days old."]  # an earlier answer, same words
+    h.on_agent_state("forge", "speaking")  # this answer's audio begins: nothing of it is said yet
+    talks(h, P2)
+    await settle(h)
+    assert [n[2] for n in h._news.get("forge", [])] == ["Three PRs are open. The oldest is two days old."]

@@ -62,10 +62,10 @@ const arrival = (pre, max) => ({ executor: 'ramping-arrival-rate', startRate: 0,
 const listen = (n) => ({ executor: 'constant-vus', exec: 'listen', vus: n, duration: __ENV.SEND_S + 60 + 's' });
 export const options = { scenarios: { send: { ...arrival(30, 60), exec: 'send', startTime: '30s' },
   recv: listen(Number(__ENV.RECEIVERS)) }, thresholds: { http_req_failed: ['rate<0.005'] } };
-// Idle arrival-rate VUs never run, so senders hold no socket: every receiver is its own constant-vus VU
-// holding one AppSync subscription (appsyncEvents.ts port, GET /messaging/live-config) for send + 60 s drain.
-// messaging.js arrival(30, 60), recv = subscribers; agents.js arrival(30, 30) send-only, recv = 1 per org;
-// viewers.js recv only (POSTs /viewing every 15 s). Every VU: users[i], 40 s token refresher, Trend per hop.
+// Senders hold no socket; each receiver VU (users[i]) holds one AppSync subscription (appsyncEvents.ts port)
+// for send + 60 s drain. messaging.js arrival(30, 60), recv = subscribers; agents.js arrival(30, 30), recv = 1
+// per org; viewers.js recv only. Senders pick per ITERATION (k6 may run only some VUs), tokens cached per user:
+// import exec from 'k6/execution'; const u = senders[exec.scenario.iterationInTest % senders.length]; // 1a: 16 senders
 ```
 
 ## 2. Scenario 1 — messaging load (humans only, no agents)
@@ -201,7 +201,7 @@ after `LIVENESS_SECONDS` 30; viewer lease `POST /messaging/sessions/{id}/viewing
 | Sub-test | Load | Probes |
 |---|---|---|
 | 3a fan-out | 1 Mac, 1 shared session, `output` frames at 4/s × 8 KiB (1.9 MiB/min, under the 2 MiB/min `BUDGET_BYTES_PER_MINUTE`), viewers V = 1, 5, 10, 25, 50 | per-viewer publish cost, backend CPU, frame latency |
-| 3a′ limiter | 3a at V = 10 with 6/s × 8 KiB (2.8 MiB/min, ~30% over budget) | drops land before fan-out; latency of the frames that pass |
+| 3a′ limiter | 3a at V = 10 with 20/s × 8 KiB (9.4 MiB/min: `_spent` is per backend task and the ALB spreads frames, so even 4 tasks see 2.3 > 2 MiB/min each) | drops land before fan-out; latency of the frames that pass |
 | 3b relay breadth | M = 10, 25, 50 Macs × 3 sessions, heartbeats 10 s, `events` 1/s | `ws-message` Lambda, DDB writes, heartbeat-ack RTT |
 | 3c reconnect storm | 3b at M = 50, then every socket closed and reopened within 1 s | re-register burst, offline flips, conditional-write conflicts |
 | 3d viewer churn | 50 viewers open/close the view every 30 s against 3a | `VIEWER#`/`WATCH#` row churn, Mac snapshot resends |

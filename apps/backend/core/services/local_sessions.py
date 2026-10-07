@@ -1566,6 +1566,8 @@ async def submit_command(
             "commandSeq": row["commandSeq"] + 1,
             "state": "pending",
             "createdAt": now,
+            # Server-side only (not in CommandReceipt): the relay's dispatch-latency metric.
+            "createdAtMs": int(time.time() * 1000),
             "deliverBy": min(now + 30, auth.expires_at)
             if isinstance(auth, AgentInvocation)
             else now + (OFFLINE_SEND_SECONDS if offline_send else 30),

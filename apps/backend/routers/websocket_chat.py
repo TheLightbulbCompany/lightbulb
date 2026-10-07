@@ -20,6 +20,7 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Request, Response
 
 from core.config import settings
 from core.dynamodb import call_stats, run_in_thread
+from core.observability.metrics import put_metric
 from core.services.connection_service import ConnectionService
 
 logger = logging.getLogger(__name__)
@@ -125,6 +126,17 @@ def _assert_local_session_connection(
     return org_id or user_id
 
 
+# Relay frame -> metric name suffix (session.relay.message.<name>). A fixed map: never the raw type.
+_RELAY_FRAMES = {
+    "local.session.register": "register",
+    "local.device.heartbeat": "heartbeat",
+    "local.session.events": "events",
+    "local.session.ended": "ended",
+    "local.session.receipt": "receipt",
+    "local.session.screen": "screen",
+}
+
+
 @router.post("/connect", status_code=200)
 async def ws_connect(
     x_connection_id: str | None = Header(None, alias="x-connection-id"),
@@ -149,6 +161,7 @@ async def ws_connect(
     from core.services.local_session_relay import get_local_session_relay
 
     await get_local_session_relay().connect(x_connection_id)
+    put_metric("session.relay.connection.open")
     return Response(status_code=200)
 
 
@@ -158,6 +171,7 @@ async def ws_disconnect(
 ) -> Response:
     if not x_connection_id:
         return Response(status_code=200)
+    put_metric("session.relay.connection.close")
     try:
         (await get_connection_service()).delete_connection(x_connection_id)
     except Exception:
@@ -188,7 +202,10 @@ async def ws_message(
     from core.services.messaging import ApiProblem
 
     relay = get_local_session_relay()
-    if isinstance(body, dict) and body.get("type") == "local.session.screen":
+    frame_name = _RELAY_FRAMES.get(body.get("type")) if isinstance(body, dict) else None
+    if frame_name:
+        put_metric(f"session.relay.message.{frame_name}")
+    if frame_name == "screen":
         # Never answered, not even with an error: see session_screen.forward.
         if len(await request.body()) <= MAX_ENVELOPE_BYTES:
             from core.services import session_screen
@@ -235,5 +252,7 @@ async def ws_message(
     handled = time.monotonic()
     with step("reply"):
         await relay.management.send_message_async(x_connection_id, response)
+    if frame_name == "heartbeat":
+        put_metric("session.relay.heartbeat.latency", (time.monotonic() - started) * 1000, "Milliseconds")
     await _log_slow_frame(body, x_connection_id, started, handled)
     return Response(status_code=200)

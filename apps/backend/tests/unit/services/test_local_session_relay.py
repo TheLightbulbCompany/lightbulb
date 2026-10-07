@@ -245,6 +245,40 @@ async def test_dispatch_labels_the_sender_with_room_handle_and_name(transport, d
 
 
 @pytest.mark.asyncio
+async def test_an_online_dispatch_meters_its_latency_and_a_queued_send_does_not(transport):
+    import core.services.local_session_relay as relay_module
+
+    sid = await start(transport)
+    await service.submit_command(ALICE, None, sid, command(service))
+    transport[3].clear()
+    with patch.object(relay_module, "put_metric") as metric:
+        await relay(transport).dispatch_session(OWNER, sid)
+    sent = [body["command"] for _, body in transport[3] if body["type"] == "local.session.command"]
+    assert len(sent) == 1 and "createdAtMs" not in sent[0], "the stamp is server-side only"
+    (latency,) = metric.call_args_list
+    assert latency.args[0] == "session.command.dispatch.latency" and latency.args[2] == "Milliseconds"
+    assert 0 <= latency.args[1] < 60_000
+
+    # A follow-up queued while the Mac was offline waits on purpose: not a dispatch latency.
+    applied = {"Key": {"pk": repo.session_pk(OWNER, sid), "sk": f"COMMAND#{sent[0]['requestId']}"}}
+    messaging_repo._table().update_item(
+        **applied,
+        UpdateExpression="SET #s = :a",
+        ExpressionAttributeNames={"#s": "state"},
+        ExpressionAttributeValues={":a": "applied"},
+    )
+    offline = {"Key": {"pk": repo.session_pk(OWNER, sid), "sk": "META"}, "UpdateExpression": "SET onlineUntil = :past"}
+    messaging_repo._table().update_item(**offline, ExpressionAttributeValues={":past": int(time.time()) - 1})
+    await service.submit_command(ALICE, None, sid, command(service, requestId="queued", text="later"))
+    connect(transport, "conn-2", "2000")
+    transport[3].clear()
+    with patch.object(relay_module, "put_metric") as metric:
+        await relay(transport).handle_message("conn-2", registration(status="idle"))
+    assert [b["command"]["requestId"] for _, b in transport[3] if b["type"] == "local.session.command"] == ["queued"]
+    assert "session.command.dispatch.latency" not in [c.args[0] for c in metric.call_args_list]
+
+
+@pytest.mark.asyncio
 async def test_dispatch_names_a_person_who_sent_from_no_room(transport, monkeypatch):
     """Prod 2026-10-05: a follow-up sent from the session's own page (roomId "") reached the
     owner's terminal as "A workspace member". It carries the name presence shows."""

@@ -111,11 +111,26 @@ export class NetworkStack extends cdk.Stack {
     // carries bearer tokens (device token in the bv- query string, Authorization).
     // -------------------------------------------------------------------------
     const countOnly = { count: {} };
-    const managed = (name: string, priority: number): wafv2.CfnWebACL.RuleProperty => ({
+    // A group-level count still lets an inner Block end evaluation at the first
+    // match, hiding later rules' metrics, so each inner rule is overridden to
+    // count too (AWS's testing shape). Names are from `aws wafv2
+    // describe-managed-rule-group` (2026-10-07); a rule AWS adds later is still
+    // covered by the group-level override, just not broken out in metrics.
+    const managed = (
+      name: string,
+      priority: number,
+      innerRules: string[],
+    ): wafv2.CfnWebACL.RuleProperty => ({
       name,
       priority,
       overrideAction: countOnly,
-      statement: { managedRuleGroupStatement: { vendorName: "AWS", name } },
+      statement: {
+        managedRuleGroupStatement: {
+          vendorName: "AWS",
+          name,
+          ruleActionOverrides: innerRules.map((r) => ({ name: r, actionToUse: countOnly })),
+        },
+      },
       visibilityConfig: {
         cloudWatchMetricsEnabled: true,
         sampledRequestsEnabled: false,
@@ -132,8 +147,44 @@ export class NetworkStack extends cdk.Stack {
         metricName: `lightbulb-${env}-alb`,
       },
       rules: [
-        managed("AWSManagedRulesCommonRuleSet", 10),
-        managed("AWSManagedRulesKnownBadInputsRuleSet", 20),
+        managed("AWSManagedRulesCommonRuleSet", 10, [
+          "NoUserAgent_HEADER",
+          "UserAgent_BadBots_HEADER",
+          "SizeRestrictions_QUERYSTRING",
+          "SizeRestrictions_Cookie_HEADER",
+          "SizeRestrictions_BODY",
+          "SizeRestrictions_URIPATH",
+          "EC2MetaDataSSRF_BODY",
+          "EC2MetaDataSSRF_COOKIE",
+          "EC2MetaDataSSRF_URIPATH",
+          "EC2MetaDataSSRF_QUERYARGUMENTS",
+          "GenericLFI_QUERYARGUMENTS",
+          "GenericLFI_URIPATH",
+          "GenericLFI_BODY",
+          "RestrictedExtensions_URIPATH",
+          "RestrictedExtensions_QUERYARGUMENTS",
+          "GenericRFI_QUERYARGUMENTS",
+          "GenericRFI_BODY",
+          "GenericRFI_URIPATH",
+          "CrossSiteScripting_COOKIE",
+          "CrossSiteScripting_QUERYARGUMENTS",
+          "CrossSiteScripting_BODY",
+          "CrossSiteScripting_URIPATH",
+        ]),
+        managed("AWSManagedRulesKnownBadInputsRuleSet", 20, [
+          "JavaDeserializationRCE_BODY",
+          "JavaDeserializationRCE_URIPATH",
+          "JavaDeserializationRCE_QUERYSTRING",
+          "JavaDeserializationRCE_HEADER",
+          "Host_localhost_HEADER",
+          "PROPFIND_METHOD",
+          "ExploitablePaths_URIPATH",
+          "Log4JRCE_QUERYSTRING",
+          "Log4JRCE_BODY",
+          "Log4JRCE_URIPATH",
+          "Log4JRCE_HEADER",
+          "ReactJSRCE_BODY",
+        ]),
         {
           // 10,000 requests / 5 min / client IP (~33 rps sustained). API Gateway's
           // stage throttle (prod 200 rps, 500 burst) is aggregate, so this only

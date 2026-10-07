@@ -110,6 +110,15 @@ describe("NetworkStack — WAF web ACL (count-only)", () => {
         expect(r.Action).toEqual({ Count: {} });
       }
       expect(r.VisibilityConfig.CloudWatchMetricsEnabled).toBe(true);
+      // Samples would store raw URLs/headers (bearer tokens).
+      expect(r.VisibilityConfig.SampledRequestsEnabled).toBe(false);
+      // Every inner managed rule counts too, else the first inner Block ends evaluation.
+      const inner = r.Statement.ManagedRuleGroupStatement?.RuleActionOverrides;
+      if (r.Statement.ManagedRuleGroupStatement) {
+        expect(inner.length).toBeGreaterThan(10);
+        for (const o of inner) expect(o.ActionToUse).toEqual({ Count: {} });
+      }
     }
+    expect((acls[0] as any).Properties.VisibilityConfig.SampledRequestsEnabled).toBe(false);
   });
 });

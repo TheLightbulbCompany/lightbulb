@@ -169,7 +169,7 @@ async def test_agents_are_refused_even_for_their_own_requester(transport):
     ("route", "fields"),
     [
         ("type_into_local_session", {"session_id", "body", "auth"}),
-        ("watch_local_session", {"session_id", "auth"}),
+        ("watch_local_session", {"session_id", "body", "auth"}),  # body: `fresh` alone
         ("resume_local_session", {"session_id", "body", "auth"}),
         ("submit_local_session_command", {"session_id", "body", "replaces_request_id", "auth"}),
     ],

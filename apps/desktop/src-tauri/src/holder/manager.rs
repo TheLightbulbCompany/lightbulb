@@ -1,7 +1,7 @@
 //! Starting and finding holders. No registry file: a holder IS its socket, and `HELLO` says
 //! what runs in it. A socket that refuses a connection belongs to a dead holder.
 
-use super::protocol::{encode, read_frame, HELLO};
+use super::protocol::{encode, read_frame, split_offset, with_offset, HELLO, OUTPUT, REPLAY, SNAPSHOT};
 use serde::Serialize;
 use std::io::Write;
 use std::os::unix::fs::PermissionsExt;
@@ -264,6 +264,54 @@ pub fn hello(socket: &Path) -> Option<HolderInfo> {
     })
 }
 
+/// The holder's last `max` bytes of output for a viewer's scrollback (spec §5.2 `history`, §5.6),
+/// from a line start unless they start the session. Asked on a short-lived `watch` connection, so
+/// it never mixes with a relay's own stream. Empty when nothing was printed; None when the holder
+/// does not answer.
+pub fn history(socket: &Path, max: usize) -> Option<Vec<u8>> {
+    let mut conn = UnixStream::connect(socket).ok()?;
+    conn.set_read_timeout(Some(Duration::from_secs(2))).ok()?;
+    history_on(&mut conn, max)
+}
+
+fn history_on(conn: &mut UnixStream, max: usize) -> Option<Vec<u8>> {
+    conn.write_all(&encode(HELLO, br#"{"role":"watch"}"#)).ok()?;
+    if read_frame(conn).ok()?.0 != HELLO {
+        return None;
+    }
+    // A watch client's first frame is the screen, at the log's current end.
+    let (kind, screen) = read_frame(conn).ok()?;
+    let (end, _) = split_offset(&screen).filter(|_| kind == SNAPSHOT)?;
+    if end == 0 || max == 0 {
+        return Some(vec![]);
+    }
+    conn.write_all(&encode(REPLAY, &with_offset(end - end.min(max as u64), b""))).ok()?;
+    // Live output goes on from `end`, each frame where the last ended; the answer is the one that
+    // does not (it starts below and runs to where the live output is now).
+    let mut next = end;
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while Instant::now() < deadline {
+        let (kind, payload) = read_frame(conn).ok()?;
+        if kind != OUTPUT {
+            continue; // GAP: the older part is gone, the answer follows.
+        }
+        let (from, bytes) = split_offset(&payload)?;
+        if from == next {
+            next += bytes.len() as u64;
+            continue;
+        }
+        let cut = bytes.len().saturating_sub(max);
+        let kept = &bytes[cut..];
+        if from + cut as u64 == 0 {
+            return Some(kept.to_vec());
+        }
+        // Mid-session: start at a line, not inside one or inside an escape sequence.
+        let line = kept.iter().position(|b| *b == b'\n').map_or(0, |i| i + 1);
+        return Some(kept[line..].to_vec());
+    }
+    None
+}
+
 /// The Codex thread this holder's provider is on, as its own `SessionStart` hook recorded it
 /// (spec §5.4: a Codex rollout may be written by a shared app server, not the holder's child).
 pub fn thread(info: &HolderInfo) -> Option<String> {
@@ -405,5 +453,42 @@ mod tests {
         std::fs::write(&info.socket, b"").unwrap(); // a socket nobody listens on
         assert!(list_in(dir.path()).is_empty());
         assert_eq!(thread(&info), None, "a dead holder's binding goes with its socket");
+    }
+
+    /// A holder that answers a watch HELLO with its screen at `end`, sends `live` output, then
+    /// answers a REPLAY with `answer`; returns the `from` it was asked for.
+    fn replaying(end: u64, live: &'static [u8], answer: Option<(u64, &'static [u8])>) -> (UnixStream, std::thread::JoinHandle<Option<u64>>) {
+        use super::super::protocol::{split_offset, with_offset, OUTPUT, REPLAY, SNAPSHOT};
+        let (mac, mut holder) = UnixStream::pair().unwrap();
+        let fake = std::thread::spawn(move || {
+            assert_eq!(read_frame(&mut holder).unwrap(), (HELLO, br#"{"role":"watch"}"#.to_vec()));
+            holder.write_all(&encode(HELLO, b"{}")).unwrap();
+            holder.write_all(&encode(SNAPSHOT, &with_offset(end, b"screen"))).unwrap();
+            holder.write_all(&encode(OUTPUT, &with_offset(end, live))).unwrap();
+            let (from, bytes) = answer?;
+            let (kind, ask) = read_frame(&mut holder).unwrap();
+            assert_eq!(kind, REPLAY);
+            holder.write_all(&encode(OUTPUT, &with_offset(from, bytes))).unwrap();
+            Some(split_offset(&ask).unwrap().0)
+        });
+        (mac, fake)
+    }
+
+    #[test]
+    fn history_is_the_log_tail_before_the_screen_from_a_line_and_never_live_output() {
+        // Log "one\ntwo\nthree\nfour\n" is offsets 0..19; the answer runs to the live end (23).
+        let (mut mac, fake) = replaying(19, b"live", Some((9, b"hree\nfour\nlive")));
+        assert_eq!(history_on(&mut mac, 10).as_deref(), Some(&b"four\nlive"[..]));
+        assert_eq!(fake.join().unwrap(), Some(9), "asked from max bytes under the screen");
+        let (mut mac, fake) = replaying(5, b"", Some((0, b"hi\nyo")));
+        assert_eq!(history_on(&mut mac, 100).as_deref(), Some(&b"hi\nyo"[..]), "the session's start is kept whole");
+        assert_eq!(fake.join().unwrap(), Some(0));
+        let (mut mac, fake) = replaying(0, b"", None);
+        assert_eq!(history_on(&mut mac, 100).as_deref(), Some(&b""[..]));
+        assert_eq!(fake.join().unwrap(), None, "nothing printed yet: nothing asked");
+        let (mut mac, mut old) = UnixStream::pair().unwrap();
+        old.write_all(&encode(HELLO, b"{}")).unwrap();
+        old.write_all(&encode(super::super::protocol::OUTPUT, &super::super::protocol::with_offset(0, b"x"))).unwrap();
+        assert_eq!(history_on(&mut mac, 100), None, "a holder older than watch clients sends no screen first");
     }
 }

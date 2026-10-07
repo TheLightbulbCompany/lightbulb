@@ -2,9 +2,11 @@
 //! ack lists a held session as watched, attach to its holder as a `watch` client and send
 //! `local.session.screen` frames on the relay socket: the holder's snapshot first, then output in
 //! chunks of at most 11 KiB raw (base64 plus envelope fits the 16 KiB relay frame), each with the
-//! terminal's size; a fresh snapshot every 10 s, when the viewer set grows, after a resize and
-//! after a lost frame (at most one a second). Nothing is queued for later; nothing is sent while
-//! nobody watches. Output past the backend's budget (2 MiB raw a minute) is dropped here, not
+//! terminal's size; the holder's recent output as `history` frames before the snapshot of a new or
+//! grown viewer set; a fresh snapshot after a resize and after a lost frame (at most one a second);
+//! and every 10 s a snapshot when output went out since the last one or none was asked for in
+//! 30 s (a viewer that lost its first screen is never left without one), else a `ping` (spec §5.2).
+//! Nothing is queued for later; nothing is sent while nobody watches. Output past the backend's budget (2 MiB raw a minute) is dropped here, not
 //! sent to be dropped there, and a snapshot follows once the budget is back.
 //! A `local.session.watch` nudge from the backend starts a relay at once (a new viewer sees the
 //! screen in about a second, not at the next ack); the acks still keep it going and stop it.
@@ -29,6 +31,9 @@ use tokio::sync::mpsc;
 const CHUNK: usize = 11 * 1024;
 const FLUSH: Duration = Duration::from_millis(200);
 const SNAPSHOT_EVERY: Duration = Duration::from_secs(10);
+/// A quiet relay still redraws this often: pings alone never give a screen to a viewer whose
+/// first snapshot was lost, or who mounted again without the backend saying so.
+const RESYNC: Duration = Duration::from_secs(30);
 /// A relay no heartbeat ack has renewed for this long stops (its relay socket is down).
 const LEASE: Duration = Duration::from_secs(30);
 const TICK: Duration = Duration::from_millis(50);
@@ -41,6 +46,10 @@ const SNAPSHOT_GAP: Duration = Duration::from_secs(1);
 /// The backend's per-session budget (`session_screen.BUDGET_BYTES_PER_MINUTE`).
 const BUDGET_PER_MINUTE: usize = 2 * 1024 * 1024;
 const BURST: usize = 256 * 1024;
+/// Budget a history burst leaves for the snapshot and output after it.
+const HISTORY_RESERVE: usize = 64 * 1024;
+/// How long a history burst may wait for room in the shallow relay queue before it counts as lost.
+const PACE: Duration = Duration::from_secs(3);
 
 #[derive(Clone)]
 struct Live {
@@ -60,6 +69,12 @@ pub(super) struct Ctl {
     /// This relay's one `type` client to the holder (`remote_input`); it closes when we stop.
     pub(super) typist: Mutex<Option<std::sync::mpsc::SyncSender<super::remote_input::Typed>>>,
     snapshot: AtomicBool,
+    /// The viewer set grew (an ack's `since` moved, or a nudge): history, then a snapshot.
+    history: AtomicBool,
+    /// How often a relay's viewers hear from it (SNAPSHOT_EVERY; tests shorten it).
+    beat: Duration,
+    /// The longest a quiet relay goes without a snapshot (RESYNC; tests shorten it).
+    resync: Duration,
     pub(super) stop: AtomicBool,
     until: Mutex<Instant>,
     /// Absence from `watching` does not stop the relay before this (a nudge sets it).
@@ -68,7 +83,8 @@ pub(super) struct Ctl {
 
 impl Ctl {
     pub(super) fn new(since: u64) -> Self {
-        Self { since: AtomicU64::new(since), epoch: AtomicU64::new(0), typist: Mutex::new(None), snapshot: AtomicBool::new(false), stop: AtomicBool::new(false),
+        Self { since: AtomicU64::new(since), epoch: AtomicU64::new(0), typist: Mutex::new(None), snapshot: AtomicBool::new(false),
+            history: AtomicBool::new(false), beat: SNAPSHOT_EVERY, resync: RESYNC, stop: AtomicBool::new(false),
             until: Mutex::new(Instant::now() + LEASE), keep: Mutex::new(Instant::now()) }
     }
     fn renew(&self) {
@@ -327,12 +343,15 @@ fn settle(relays: &mut BTreeMap<String, Arc<Ctl>>, wanted: &BTreeMap<String, u64
     }
     for sid in snapshot {
         if let Some(ctl) = relays.get(&sid) {
-            ctl.snapshot.store(true, SeqCst);
+            ctl.history.store(true, SeqCst);
         }
     }
     for (sid, ctl) in relays.iter() {
         if let Some(since) = wanted.get(sid) {
-            ctl.since.store(*since, SeqCst);
+            // Only ever raised: an ack built before a nudge lists an older `since`, and taking it
+            // would make the next ack look like one more new viewer (a second history burst).
+            // MAX is "not known yet" (a nudge from a backend that sends no `since`).
+            let _ = ctl.since.fetch_update(SeqCst, SeqCst, |was| Some(if was == u64::MAX { *since } else { was.max(*since) }));
             ctl.renew();
         }
     }
@@ -349,7 +368,7 @@ pub(super) fn nudge(body: &Value) {
     else { return };
     let Ok(mut relays) = RELAYS.lock() else { return };
     relays.retain(|_, ctl| !ctl.stopped());
-    nudge_relay(&mut relays, sid, spawn);
+    nudge_relay(&mut relays, sid, body["since"].as_u64(), spawn);
 }
 
 /// The running relay of a session this Mac holds at `body`'s generation: what remote input
@@ -366,16 +385,21 @@ pub(super) fn nudged(body: &Value, generation_of: impl Fn(&str) -> Option<String
     (generation_of(sid)? == body["generation"].as_str()?).then(|| sid.to_owned())
 }
 
-fn nudge_relay(relays: &mut BTreeMap<String, Arc<Ctl>>, sid: String, spawn: impl Fn(String, u64) -> Arc<Ctl>) {
+/// `since`: the viewer's arrival as the next ack will list it (the nudge carries it), so that ack
+/// is not taken for one more new viewer. None from a backend that does not send it.
+fn nudge_relay(relays: &mut BTreeMap<String, Arc<Ctl>>, sid: String, since: Option<u64>, spawn: impl Fn(String, u64) -> Arc<Ctl>) {
     if let Some(ctl) = relays.get(&sid) {
-        // Running already: the new viewer needs a screen now, not in up to 10 s.
-        ctl.snapshot.store(true, SeqCst);
+        // Running already: the new viewer needs history and a screen now, not in up to 10 s.
+        ctl.history.store(true, SeqCst);
+        if let Some(since) = since {
+            let _ = ctl.since.fetch_update(SeqCst, SeqCst, |was| Some(if was == u64::MAX { since } else { was.max(since) }));
+        }
         ctl.nudged();
         return;
     }
-    // The holder snapshots a new watch client unasked. `since` is unknown until an ack lists it;
-    // MAX keeps that first ack from asking for a second snapshot.
-    let ctl = spawn(sid.clone(), u64::MAX);
+    // The holder snapshots a new watch client unasked. With no `since`, MAX keeps the first ack
+    // that lists it from asking for a second snapshot.
+    let ctl = spawn(sid.clone(), since.unwrap_or(u64::MAX));
     ctl.nudged();
     relays.insert(sid, ctl);
 }
@@ -399,13 +423,15 @@ fn run(sid: &str, ctl: &Ctl) -> Result<(), String> {
         return Err("its holder predates live terminals; restart the session to share its screen".into());
     }
     let mut conn = UnixStream::connect(&holder.socket).map_err(|e| e.to_string())?;
-    let result = watch(&mut conn, sid, &generation, ctl, &send_out);
+    let socket = holder.socket.clone();
+    let history = move |max: usize| manager::history(&socket, max);
+    let result = watch(&mut conn, sid, &generation, ctl, &send_out, &history);
     // Every exit, early ones included: the reader thread's clone is unblocked only by this.
     let _ = conn.shutdown(std::net::Shutdown::Both);
     result
 }
 
-fn watch(conn: &mut UnixStream, sid: &str, generation: &str, ctl: &Ctl, send: &dyn Fn(Value) -> bool) -> Result<(), String> {
+fn watch(conn: &mut UnixStream, sid: &str, generation: &str, ctl: &Ctl, send: &dyn Fn(Value) -> bool, history: &dyn Fn(usize) -> Option<Vec<u8>>) -> Result<(), String> {
     conn.write_all(&encode(HELLO, br#"{"role":"watch"}"#)).map_err(|e| e.to_string())?;
     let mut reader = conn.try_clone().map_err(|e| e.to_string())?;
     let (tx, frames) = std::sync::mpsc::sync_channel(256);
@@ -422,7 +448,7 @@ fn watch(conn: &mut UnixStream, sid: &str, generation: &str, ctl: &Ctl, send: &d
     }
     let facts: Value = serde_json::from_slice(&hello).unwrap_or_default();
     let size = (facts["cols"].as_u64().unwrap_or(120) as u16, facts["rows"].as_u64().unwrap_or(40) as u16);
-    pump(&frames, conn, (sid, generation), size, ctl, send, Budget::new())
+    pump(&frames, conn, (sid, generation), size, ctl, send, Budget::new(), history)
 }
 
 /// Raw screen bytes this relay may still send: refills at the backend's rate, holds a burst.
@@ -453,6 +479,10 @@ impl Budget {
         self.tokens -= bytes as f64;
         true
     }
+    /// Bytes a history burst may use now: what is left above the reserve, at most BURST.
+    fn room(&mut self) -> usize {
+        (self.left() - HISTORY_RESERVE as f64).clamp(0.0, BURST as f64) as usize
+    }
 }
 
 struct Out<'a> {
@@ -464,6 +494,8 @@ struct Out<'a> {
     budget: Budget,
     /// A frame was lost since the last snapshot: viewers wait for the next one, so output is waste.
     stale: bool,
+    /// Output went out since the last snapshot: the beat redraws (it heals frames lost past this Mac) instead of pinging.
+    dirty: bool,
 }
 
 impl Out<'_> {
@@ -479,10 +511,39 @@ impl Out<'_> {
             return;
         }
         self.stale = false;
+        self.dirty = !snapshot;
         for frame in frames_for(self.ids, self.epoch, &mut self.seq, size, kind, bytes) {
             if !(self.send)(frame) {
                 self.lost();
             }
+        }
+    }
+    /// The holder's recent output for viewers with no screen in this run yet (spec §5.2), sized to
+    /// what the budget allows now so the snapshot after it always fits: a short budget trims it
+    /// from its old end. Paced into the shallow relay queue (a burst is up to 24 frames); a frame
+    /// that finds no room within PACE is lost like any other.
+    fn history(&mut self, fetch: &dyn Fn(usize) -> Option<Vec<u8>>, size: (u16, u16)) {
+        let room = self.budget.room();
+        let Some(bytes) = (room > 0).then(|| fetch(room)).flatten().filter(|b| !b.is_empty()) else { return };
+        let bytes = &bytes[bytes.len().saturating_sub(room)..];
+        self.budget.take(bytes.len(), true);
+        let deadline = Instant::now() + PACE;
+        for frame in frames_for(self.ids, self.epoch, &mut self.seq, size, "history", bytes) {
+            while !(self.send)(frame.clone()) {
+                if Instant::now() >= deadline {
+                    self.lost();
+                    return;
+                }
+                std::thread::sleep(Duration::from_millis(20));
+            }
+        }
+    }
+    /// Proof of life on a quiet screen: no data, and no place in the order (it carries the next
+    /// seq without taking it), so a lost one costs nothing.
+    fn ping(&mut self, size: (u16, u16)) {
+        let mut seq = self.seq;
+        for frame in frames_for(self.ids, self.epoch, &mut seq, size, "ping", b"") {
+            let _ = (self.send)(frame);
         }
     }
     fn lost(&mut self) {
@@ -502,22 +563,37 @@ fn next_epoch(last: &AtomicU64, now_ms: u64) -> u64 {
 }
 
 /// Holder frames in, relay frames out, until the lease ends, the session exits or the holder goes.
+#[allow(clippy::too_many_arguments)]
 fn pump(frames: &Receiver<(u8, Vec<u8>)>, to_holder: &mut impl Write, ids: (&str, &str), mut size: (u16, u16),
-        ctl: &Ctl, send: &dyn Fn(Value) -> bool, budget: Budget) -> Result<(), String> {
+        ctl: &Ctl, send: &dyn Fn(Value) -> bool, budget: Budget, history: &dyn Fn(usize) -> Option<Vec<u8>>) -> Result<(), String> {
     let epoch = next_epoch(&LAST_EPOCH, SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_millis() as u64));
     ctl.epoch.store(epoch, SeqCst);
-    let mut out = Out { ids, epoch, seq: 0, ctl, send, budget, stale: false };
+    let mut out = Out { ids, epoch, seq: 0, ctl, send, budget, stale: false, dirty: false };
+    // A new run's viewers get history first; the holder's own first snapshot is queued behind it.
+    ctl.history.store(false, SeqCst);
+    out.history(history, size);
     let mut pending: Vec<u8> = Vec::new();
     let mut held_since: Option<Instant> = None;
     // The holder sends a watch client its first snapshot unasked; a request may follow at once
-    // (a resize, a lost frame), and the periodic one comes a gap early.
+    // (a resize, a lost frame).
     let mut last_snapshot = Instant::now().checked_sub(SNAPSHOT_GAP).unwrap_or_else(Instant::now);
+    // Viewers hear from the relay every `beat`: a snapshot when output went out since the last one
+    // (it heals frames lost past this Mac) or none was asked for in `resync` (a viewer with no
+    // screen gets one), else a ping.
+    let mut last_beat = Instant::now();
     loop {
         if ctl.stopped() {
             return Ok(());
         }
-        let due = ctl.snapshot.load(SeqCst) || last_snapshot.elapsed() >= SNAPSHOT_EVERY;
-        if due && last_snapshot.elapsed() >= SNAPSHOT_GAP && out.budget.left() > 0.0 {
+        if ctl.history.swap(false, SeqCst) {
+            out.history(history, size);
+            ctl.snapshot.store(true, SeqCst);
+        }
+        if last_beat.elapsed() >= ctl.beat {
+            last_beat = Instant::now();
+            if out.dirty || last_snapshot.elapsed() >= ctl.resync { ctl.snapshot.store(true, SeqCst) } else { out.ping(size) }
+        }
+        if ctl.snapshot.load(SeqCst) && last_snapshot.elapsed() >= SNAPSHOT_GAP && out.budget.left() > 0.0 {
             ctl.snapshot.store(false, SeqCst);
             to_holder.write_all(&encode(SNAPSHOT, b"")).map_err(|e| e.to_string())?;
             last_snapshot = Instant::now();
@@ -558,7 +634,7 @@ fn pump(frames: &Receiver<(u8, Vec<u8>)>, to_holder: &mut impl Write, ids: (&str
     }
 }
 
-/// A snapshot that does not fit one frame continues as "output" frames with the next seqs.
+/// A snapshot that does not fit one frame continues as "output" frames with the next seqs; history stays "history".
 fn frames_for(ids: (&str, &str), epoch: u64, seq: &mut u64, size: (u16, u16), kind: &str, bytes: &[u8]) -> Vec<Value> {
     let chunks: Vec<&[u8]> = if bytes.is_empty() { vec![&[]] } else { bytes.chunks(CHUNK).collect() };
     chunks
@@ -567,7 +643,7 @@ fn frames_for(ids: (&str, &str), epoch: u64, seq: &mut u64, size: (u16, u16), ki
         .map(|(i, chunk)| {
             let frame = json!({"type": "local.session.screen", "sessionId": ids.0, "generation": ids.1,
                 "epoch": epoch, "seq": *seq, "cols": size.0, "rows": size.1,
-                "kind": if i == 0 { kind } else { "output" },
+                "kind": if i == 0 || kind == "history" { kind } else { "output" },
                 "data": base64::engine::general_purpose::STANDARD.encode(chunk)});
             *seq += 1;
             frame
@@ -619,7 +695,7 @@ mod tests {
         tx.send((EXIT, b"{}".to_vec())).unwrap();
         let sent = std::cell::RefCell::new(vec![]);
         let mut to_holder = vec![];
-        pump(&rx, &mut to_holder, ("sid", "gen"), (120, 40), &Ctl::new(0), &|f| { sent.borrow_mut().push(f); true }, Budget::new()).unwrap();
+        pump(&rx, &mut to_holder, ("sid", "gen"), (120, 40), &Ctl::new(0), &|f| { sent.borrow_mut().push(f); true }, Budget::new(), &|_| None).unwrap();
         let sent = sent.into_inner();
         let shape: Vec<(String, u64)> = sent.iter().map(|f| (f["kind"].as_str().unwrap().into(), f["cols"].as_u64().unwrap())).collect();
         assert_eq!(shape, [("snapshot".into(), 120), ("output".into(), 120), ("output".into(), 120), ("output".into(), 90)]);
@@ -662,7 +738,7 @@ mod tests {
         let mut holder = Answering { tx, answer: vec![(SNAPSHOT, with_offset(0, b"screen"))], asked: vec![] };
         let started = Instant::now();
         // Every frame is lost, so every snapshot asks for the next one.
-        pump(&rx, &mut holder, ("sid", "gen"), (80, 24), &ctl, &|_| false, Budget::new()).unwrap();
+        pump(&rx, &mut holder, ("sid", "gen"), (80, 24), &ctl, &|_| false, Budget::new(), &|_| None).unwrap();
         assert!(started.elapsed() < Duration::from_secs(4));
         assert!((2..=3).contains(&holder.asked.len()), "asked {} times, not every tick", holder.asked.len());
         for pair in holder.asked.windows(2) {
@@ -683,7 +759,7 @@ mod tests {
         let budget = Budget { tokens: 0.0, cap: 64.0 * 1024.0, per_s: 2000.0, at: Instant::now() };
         let sent = std::cell::RefCell::new(vec![]);
         let started = Instant::now();
-        pump(&rx, &mut holder, ("sid", "gen"), (80, 24), &ctl, &|f| { sent.borrow_mut().push(f); true }, budget).unwrap();
+        pump(&rx, &mut holder, ("sid", "gen"), (80, 24), &ctl, &|f| { sent.borrow_mut().push(f); true }, budget, &|_| None).unwrap();
         let sent = sent.into_inner();
         let shape: Vec<(String, u64)> = sent.iter().map(|f| (f["kind"].as_str().unwrap().into(), f["seq"].as_u64().unwrap())).collect();
         // seq 1 is the dropped output's: the gap sends viewers to the next snapshot; "more" never went.
@@ -721,7 +797,7 @@ mod tests {
         let spawned = std::cell::RefCell::new(vec![]);
         let fake = |sid: String, since: u64| { spawned.borrow_mut().push((sid, since)); Arc::new(Ctl::new(since)) };
         let mut relays = BTreeMap::new();
-        nudge_relay(&mut relays, sid.clone(), &fake);
+        nudge_relay(&mut relays, sid.clone(), None, &fake);
         assert_eq!(*spawned.borrow(), [(sid.clone(), u64::MAX)], "started at once, before any ack");
         settle(&mut relays, &BTreeMap::new(), &fake);
         assert!(relays.contains_key(&sid), "an ack built before the viewer arrived does not stop it");
@@ -729,6 +805,9 @@ mod tests {
         settle(&mut relays, &BTreeMap::from([(sid.clone(), 1_760_000_000)]), &fake);
         assert!(!relays[&sid].snapshot.load(SeqCst));
         assert_eq!(relays[&sid].since.load(SeqCst), 1_760_000_000);
+        assert!(!relays[&sid].history.load(SeqCst));
+        settle(&mut relays, &BTreeMap::from([(sid.clone(), 1_760_000_001)]), &fake);
+        assert!(relays[&sid].history.load(SeqCst), "a new viewer arrived: history, then a snapshot");
         *relays[&sid].keep.lock().unwrap() = Instant::now();
         let ctl = relays[&sid].clone();
         settle(&mut relays, &BTreeMap::new(), &fake);
@@ -736,9 +815,33 @@ mod tests {
         assert_eq!(spawned.borrow().len(), 1);
         // A nudge for a running relay asks it for a fresh screen instead of starting another.
         let mut relays = BTreeMap::from([(sid.clone(), Arc::new(Ctl::new(5)))]);
-        nudge_relay(&mut relays, sid.clone(), &fake);
-        assert!(relays[&sid].snapshot.load(SeqCst) && relays[&sid].kept());
+        nudge_relay(&mut relays, sid.clone(), None, &fake);
+        assert!(relays[&sid].history.load(SeqCst) && relays[&sid].kept());
         assert_eq!(spawned.borrow().len(), 1);
+    }
+
+    #[test]
+    fn a_nudge_carries_the_viewers_since_so_the_ack_that_lists_them_asks_for_no_second_history() {
+        let sid = "aaaabbbb-cccc-4ddd-8eee-ffff00001111".to_owned();
+        let fake = |_: String, since: u64| Arc::new(Ctl::new(since));
+        let ack = |since: u64| BTreeMap::from([(sid.clone(), since)]);
+        // A relay with one viewer since 50; a second arrives at 100 and the backend nudges.
+        let mut relays = BTreeMap::from([(sid.clone(), Arc::new(Ctl::new(50)))]);
+        nudge_relay(&mut relays, sid.clone(), Some(100), &fake);
+        assert_eq!(relays[&sid].since.load(SeqCst), 100);
+        assert!(relays[&sid].history.swap(false, SeqCst), "one history request, which the pump takes");
+        // An ack built before the viewer arrived lands after the nudge: `since` is not lowered.
+        settle(&mut relays, &ack(50), &fake);
+        assert_eq!(relays[&sid].since.load(SeqCst), 100);
+        settle(&mut relays, &ack(100), &fake);
+        assert!(!relays[&sid].history.load(SeqCst), "the ack that lists the nudged viewer is not news");
+        settle(&mut relays, &ack(101), &fake);
+        assert!(relays[&sid].history.load(SeqCst), "a later viewer still is");
+        // A nudge that starts the relay: its first ack is not news either.
+        let mut relays = BTreeMap::new();
+        nudge_relay(&mut relays, sid.clone(), Some(100), &fake);
+        settle(&mut relays, &ack(100), &fake);
+        assert!(!relays[&sid].history.load(SeqCst) && relays[&sid].since.load(SeqCst) == 100);
     }
 
     #[test]
@@ -761,12 +864,12 @@ mod tests {
             let (theirs, out) = (ctl.clone(), out.clone());
             let mut mac = mac.try_clone().unwrap();
             std::thread::spawn(move || {
-                watch(&mut mac, &sid, "gen-1", &theirs, &|f| { out.lock().unwrap().push(f); true }).unwrap();
+                watch(&mut mac, &sid, "gen-1", &theirs, &|f| { out.lock().unwrap().push(f); true }, &|_| None).unwrap();
             });
             ctl
         };
         let mut relays = BTreeMap::new();
-        nudge_relay(&mut relays, sid.clone(), attach); // no `offer`, no ack
+        nudge_relay(&mut relays, sid.clone(), None, attach); // no `offer`, no ack
         fake_holder.join().unwrap();
         let started = Instant::now();
         while sent.lock().unwrap().is_empty() && started.elapsed() < Duration::from_secs(2) {
@@ -898,5 +1001,107 @@ mod tests {
             argv: vec!["/claude".into()], cwd: "/w".into(), watch: true, type_input: true };
         assert_eq!(matched(vec![holder("aaaa0001"), holder("aaaa0002")], "aaaa0002").unwrap().id, "aaaa0002");
         assert!(matched(vec![holder("aaaa0001")], "aaaa0003").is_none(), "a gone holder has no terminal");
+    }
+
+    fn kinds(sent: &[Value]) -> Vec<(String, u64)> {
+        sent.iter().map(|f| (f["kind"].as_str().unwrap().into(), f["seq"].as_u64().unwrap())).collect()
+    }
+
+    #[test]
+    fn a_new_run_sends_history_before_the_holders_first_snapshot_and_leaves_room_for_it() {
+        let (tx, rx) = std::sync::mpsc::channel();
+        tx.send((SNAPSHOT, with_offset(30_720, b"\x1b[Hscreen"))).unwrap();
+        tx.send((EXIT, b"{}".to_vec())).unwrap();
+        let asked = std::cell::Cell::new(0);
+        let sent = std::cell::RefCell::new(vec![]);
+        pump(&rx, &mut Vec::<u8>::new(), ("sid", "gen"), (120, 40), &Ctl::new(0), &|f| { sent.borrow_mut().push(f); true }, Budget::new(),
+            &|max| { asked.set(max); Some(vec![b'h'; 30 * 1024]) }).unwrap();
+        assert_eq!(asked.get(), BURST - HISTORY_RESERVE);
+        assert_eq!(kinds(&sent.borrow()), [("history".into(), 0), ("history".into(), 1), ("history".into(), 2), ("snapshot".into(), 3)]);
+    }
+
+    #[test]
+    fn a_grown_viewer_set_gets_history_then_a_fresh_snapshot_and_a_short_budget_trims_history_from_its_old_end() {
+        let (tx, rx) = std::sync::mpsc::channel();
+        tx.send((SNAPSHOT, with_offset(10, b"screen"))).unwrap();
+        let ctl = Arc::new(leased(Duration::from_millis(1500)));
+        let later = ctl.clone();
+        std::thread::spawn(move || { std::thread::sleep(Duration::from_millis(200)); later.history.store(true, SeqCst); });
+        let mut holder = Answering { tx, answer: vec![(SNAPSHOT, with_offset(10, b"fresh"))], asked: vec![] };
+        // No refill: 20 bytes of room at the start, 4 left when the viewer arrives.
+        let budget = Budget { tokens: (HISTORY_RESERVE + 20) as f64, cap: BURST as f64, per_s: 0.0, at: Instant::now() };
+        let sent = std::cell::RefCell::new(vec![]);
+        pump(&rx, &mut holder, ("sid", "gen"), (80, 24), &ctl, &|f| { sent.borrow_mut().push(f); true }, budget,
+            &|_| Some(b"0123456789".to_vec())).unwrap();
+        let sent = sent.into_inner();
+        assert_eq!(kinds(&sent), [("history".into(), 0), ("snapshot".into(), 1), ("history".into(), 2), ("snapshot".into(), 3)]);
+        let data = |f: &Value| base64::engine::general_purpose::STANDARD.decode(f["data"].as_str().unwrap()).unwrap();
+        assert_eq!((data(&sent[0]), data(&sent[2])), (b"0123456789".to_vec(), b"6789".to_vec()));
+        assert_eq!(holder.asked.len(), 1, "one fresh snapshot after the history");
+    }
+
+    #[test]
+    fn a_quiet_relay_pings_instead_of_redrawing_and_output_brings_the_snapshot_back() {
+        let run = |output: bool| {
+            let (tx, rx) = std::sync::mpsc::channel();
+            tx.send((SNAPSHOT, with_offset(0, b"screen"))).unwrap();
+            if output {
+                tx.send((OUTPUT, with_offset(6, b"x"))).unwrap();
+            }
+            // The busy run's output goes out at FLUSH (200 ms): well before the first beat.
+            let mut ctl = leased(Duration::from_millis(2600));
+            ctl.beat = Duration::from_millis(800);
+            let mut holder = Answering { tx, answer: vec![(SNAPSHOT, with_offset(7, b"screen"))], asked: vec![] };
+            let sent = std::cell::RefCell::new(vec![]);
+            pump(&rx, &mut holder, ("sid", "gen"), (80, 24), &ctl, &|f| { sent.borrow_mut().push(f); true }, Budget::new(), &|_| None).unwrap();
+            (kinds(&sent.into_inner()), holder.asked.len())
+        };
+        let (quiet, asked) = run(false);
+        assert_eq!(asked, 0, "a quiet screen is never redrawn");
+        assert_eq!(quiet[0], ("snapshot".into(), 0));
+        assert!(quiet.len() >= 3 && quiet[1..].iter().all(|k| *k == ("ping".into(), 1)), "{quiet:?}");
+        let (busy, asked) = run(true);
+        assert_eq!(asked, 1);
+        assert_eq!(busy[..4], [("snapshot".into(), 0), ("output".into(), 1), ("snapshot".into(), 2), ("ping".into(), 3)]);
+    }
+
+    #[test]
+    fn a_quiet_relay_still_redraws_once_no_snapshot_was_asked_for_in_its_resync() {
+        let (tx, rx) = std::sync::mpsc::channel();
+        tx.send((SNAPSHOT, with_offset(0, b"screen"))).unwrap();
+        // Beats at 0.5, 1.0, 1.5 and 2.0 s. The last request counts as 1 s before the start, so
+        // the second beat is the first one `resync` after it.
+        let mut ctl = leased(Duration::from_millis(2300));
+        ctl.beat = Duration::from_millis(500);
+        ctl.resync = Duration::from_millis(1700);
+        let mut holder = Answering { tx, answer: vec![(SNAPSHOT, with_offset(6, b"screen"))], asked: vec![] };
+        let sent = std::cell::RefCell::new(vec![]);
+        pump(&rx, &mut holder, ("sid", "gen"), (80, 24), &ctl, &|f| { sent.borrow_mut().push(f); true }, Budget::new(), &|_| None).unwrap();
+        let sent = kinds(&sent.into_inner());
+        assert_eq!(holder.asked.len(), 1, "one redraw, pings between: {sent:?}");
+        assert_eq!(sent[..3], [("snapshot".into(), 0), ("ping".into(), 1), ("snapshot".into(), 1)]);
+        assert!(sent.len() > 3 && sent[3..].iter().all(|k| *k == ("ping".into(), 2)), "{sent:?}");
+    }
+
+    #[test]
+    fn a_history_burst_waits_for_room_in_the_relay_queue() {
+        let ctl = Ctl::new(0);
+        let calls = std::cell::Cell::new(0);
+        let sent = std::cell::RefCell::new(vec![]);
+        let send = |f: Value| { calls.set(calls.get() + 1); calls.get() % 2 == 0 && { sent.borrow_mut().push(f); true } };
+        let mut out = Out { ids: ("sid", "gen"), epoch: 1, seq: 0, ctl: &ctl, send: &send, budget: Budget::new(), stale: false, dirty: false };
+        out.history(&|_| Some(vec![b'h'; 3 * CHUNK]), (80, 24));
+        assert_eq!(kinds(&sent.borrow()), [("history".into(), 0), ("history".into(), 1), ("history".into(), 2)]);
+        assert!(!out.stale, "a full queue for a moment is not a lost frame");
+    }
+
+    #[test]
+    fn a_history_burst_that_never_finds_room_is_lost_within_its_pace() {
+        let ctl = Ctl::new(0);
+        let mut out = Out { ids: ("sid", "gen"), epoch: 1, seq: 0, ctl: &ctl, send: &|_| false, budget: Budget::new(), stale: false, dirty: false };
+        let started = Instant::now();
+        out.history(&|_| Some(vec![b'h'; 3 * CHUNK]), (80, 24));
+        assert!(started.elapsed() < PACE + Duration::from_millis(500));
+        assert!(out.stale && ctl.snapshot.load(SeqCst) && out.seq == 3, "lost: viewers skip to the next snapshot");
     }
 }

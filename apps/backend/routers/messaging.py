@@ -241,10 +241,17 @@ async def record_local_session_open(
     )
 
 
+class SessionViewingRequest(ContractModel):
+    # The view just mounted and has no screen yet: the Mac is asked for history and a snapshot.
+    fresh: bool = False
+
+
 @router.post("/messaging/sessions/{session_id}/viewing", status_code=204)
-async def watch_local_session(session_id: str, auth: AuthContext = Depends(get_human_session)):
+async def watch_local_session(
+    session_id: str, body: SessionViewingRequest | None = None, auth: AuthContext = Depends(get_human_session)
+):
     """A person keeps a running session's live terminal coming: every 15 s while it is on screen."""
-    await session_screen.watch(auth, session_id)
+    await session_screen.watch(auth, session_id, mounted=bool(body and body.fresh))
 
 
 @router.post("/messaging/sessions/{session_id}/input", status_code=204)

@@ -7,6 +7,7 @@ import json as _json
 import time
 
 import pytest
+from pydantic import ValidationError
 
 from core.repositories import local_sessions_repo as repo, messaging_repo
 from core.services import live_events, local_sessions as service, session_screen
@@ -203,12 +204,17 @@ def _nudges(transport):
 
 
 @pytest.mark.asyncio
-async def test_a_new_viewer_nudges_a_capable_mac_once_and_a_repeat_post_does_not(transport):
+async def test_a_new_viewer_nudges_a_capable_mac_once_and_a_repeat_post_does_not(transport, monkeypatch):
     sid = await start(transport)
     await ack(transport, sid)  # the golden heartbeat advertises liveTerminal
     transport[3].clear()
+    now = time.time()
+    monkeypatch.setattr(session_screen, "_clock", lambda: now)
     await session_screen.watch(BOB, sid)
-    assert transport[3] == [("conn-1", {"type": "local.session.watch", "sessionId": sid, "generation": "generation-1"})]
+    nudge = {"type": "local.session.watch", "sessionId": sid, "generation": "generation-1", "since": int(now)}
+    assert transport[3] == [("conn-1", nudge)]
+    # The ack that lists this viewer carries the nudge's own `since`: no news, no second history.
+    assert (await ack(transport, sid))["watching"] == [{"sessionId": sid, "since": int(now)}]
     await session_screen.watch(BOB, sid)  # the same person, 15 s later: not new
     assert len(_nudges(transport)) == 1
     await session_screen.watch(ALICE, sid)  # another person is new
@@ -278,7 +284,39 @@ def test_the_golden_watch_frame_fits_the_relay_envelope():
     from core.services.local_session_relay import check_envelope
 
     check_envelope(fixture("session-watch"))
-    assert set(fixture("session-watch")) == {"type", "sessionId", "generation"}
+    assert set(fixture("session-watch")) == {"type", "sessionId", "generation", "since"}
+
+
+@pytest.mark.asyncio
+async def test_a_view_that_mounts_inside_its_lease_is_a_new_viewer_and_a_renewal_is_not(transport, monkeypatch):
+    sid = await start(transport)
+    await ack(transport, sid)
+    now = time.time()
+    monkeypatch.setattr(session_screen, "_clock", lambda: now)
+    await session_screen.watch(BOB, sid, mounted=True)
+    monkeypatch.setattr(session_screen, "_clock", lambda: now + 5)
+    await session_screen.watch(BOB, sid)  # the 15 s renewal: nothing new
+    assert [n["since"] for n in _nudges(transport)] == [int(now)]
+    await session_screen.watch(BOB, sid, mounted=True)  # the page was refreshed: it has no screen
+    assert [n["since"] for n in _nudges(transport)] == [int(now), int(now + 5)]
+    assert (await ack(transport, sid))["watching"] == [{"sessionId": sid, "since": int(now + 5)}]
+
+
+def test_the_viewing_route_passes_a_mount_on_and_takes_no_body_as_a_renewal(monkeypatch):
+    import asyncio
+
+    from routers import messaging as router
+
+    seen = []
+
+    async def watch(auth, session_id, mounted=False):
+        seen.append(mounted)
+
+    monkeypatch.setattr(router.session_screen, "watch", watch)
+    asyncio.run(router.watch_local_session("s1", router.SessionViewingRequest(fresh=True), BOB))
+    asyncio.run(router.watch_local_session("s1", router.SessionViewingRequest(), BOB))
+    asyncio.run(router.watch_local_session("s1", None, BOB))  # a client older than `fresh`
+    assert seen == [True, False, False]
 
 
 @pytest.mark.asyncio
@@ -306,3 +344,24 @@ async def test_a_session_without_a_live_terminal_is_neither_watched_nor_typed_in
         )
     assert typed.value.error.code == "LOCAL_SESSION_UNSUPPORTED"
     assert not [b for _, b in transport[3] if b["type"] == "local.session.input"], "no keystroke reaches the Mac"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("kind", ["history", "ping"])
+async def test_history_and_ping_frames_reach_current_viewers_like_output(transport, kind):
+    sid = await start(transport)
+    await messaging_repo.ensure_user_stream(OWNER, BOB.user_id)
+    await session_screen.watch(BOB, sid)
+    transport[4].clear()
+    body = frame(sid, kind=kind, data="" if kind == "ping" else "G1tI")
+    await session_screen.forward(relay(transport), "conn-1", body)
+    published = await _published(transport)
+    assert [(e["type"], e["payload"]["kind"]) for _, e in published] == [("workspace.session.screen", kind)]
+
+
+def test_a_ping_carries_no_data_and_other_kinds_are_refused():
+    golden = fixture("session-screen")
+    session_screen.Screen.model_validate({**golden, "kind": "ping", "data": ""})
+    for bad in ({"kind": "ping", "data": "G1tI"}, {"kind": "input"}):
+        with pytest.raises(ValidationError):
+            session_screen.Screen.model_validate({**golden, **bad})

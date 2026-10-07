@@ -7,7 +7,8 @@ LOCALSESSION#<owner>#<sid> / TYPED#<user>#<start>   one admitted person's typing
                                                     when, byte count; never the bytes), 30 days
 
 Both expire 45 s after the viewer's last POST (they post every 15 s). `since` is when the
-newest viewer arrived: the Mac sends a fresh snapshot when it moves. Screen frames themselves
+newest viewer arrived, or mounted again inside its lease: the Mac sends history and a fresh
+snapshot when it moves. Screen frames themselves
 are published to each viewer's own user channel and stored nowhere (see `forward`).
 """
 
@@ -24,7 +25,7 @@ from dataclasses import dataclass
 from typing import Literal
 
 from botocore.exceptions import ClientError
-from pydantic import Field, field_validator
+from pydantic import Field, field_validator, model_validator
 
 from core.auth import AuthContext
 from core.repositories import local_sessions_repo as repo, messaging_repo as store
@@ -60,9 +61,13 @@ async def _still_a_member(row: dict, user: str) -> None:
         raise sessions.ApiProblem("LOCAL_SESSION_FORBIDDEN", "You are no longer in this workspace.")
 
 
-async def watch(auth: sessions.Caller, session_id: str) -> None:
+async def watch(auth: sessions.Caller, session_id: str, mounted: bool = False) -> None:
     """A person has this running session's terminal on screen. Humans who can read it only:
-    `authorize_session` refuses agents on the roomless path, and no room id is accepted here."""
+    `authorize_session` refuses agents on the roomless path, and no room id is accepted here.
+
+    `mounted`: the view just opened and has no screen (a page refresh inside the 45 s lease
+    looks like a renewal otherwise), so it counts as a new viewer: `since` moves and the Mac is
+    nudged. The Mac's budget bounds what a client that always says so can cost."""
     row, _ = await sessions.authorize_session(auth, None, session_id)
     await _still_a_member(row, auth.user_id)
     now = int(_clock())
@@ -77,20 +82,23 @@ async def watch(auth: sessions.Caller, session_id: str) -> None:
     table = store._table()
     values = {":u": auth.user_id, ":exp": expires, ":now": now}
     # One conditional write, never read-then-put: a refresh of a live lease leaves `since` and
-    # `typedAt` as they are (a keystroke marked meanwhile is kept); a new lease starts both over.
-    try:
-        await store.run_in_thread(
-            table.update_item,
-            Key=key,
-            UpdateExpression="SET userId = :u, expiresAt = :exp, since = if_not_exists(since, :now)",
-            ConditionExpression="attribute_exists(pk) AND expiresAt > :now",
-            ExpressionAttributeValues=values,
-        )
-        fresh = False
-    except ClientError as exc:
-        if exc.response["Error"]["Code"] != "ConditionalCheckFailedException":
-            raise
-        fresh = True
+    # `typedAt` as they are (a keystroke marked meanwhile is kept); a new lease, or a view that
+    # just mounted, starts both over.
+    fresh = mounted
+    if not fresh:
+        try:
+            await store.run_in_thread(
+                table.update_item,
+                Key=key,
+                UpdateExpression="SET userId = :u, expiresAt = :exp, since = if_not_exists(since, :now)",
+                ConditionExpression="attribute_exists(pk) AND expiresAt > :now",
+                ExpressionAttributeValues=values,
+            )
+        except ClientError as exc:
+            if exc.response["Error"]["Code"] != "ConditionalCheckFailedException":
+                raise
+            fresh = True
+    if fresh:
         await store.run_in_thread(
             table.update_item,
             Key=key,
@@ -105,16 +113,25 @@ async def watch(auth: sessions.Caller, session_id: str) -> None:
         ExpressionAttributeValues={":sid": row["sessionId"], ":exp": expires, ":now": now},
     )
     if fresh and "liveTerminal" in row.get("deviceFeatures", ()):
-        await _nudge(row)
+        await _nudge(row, now)
 
 
-async def _nudge(row: dict) -> None:
+async def _nudge(row: dict, since: int) -> None:
     """Tell the Mac now, not at its next heartbeat ack (up to 10 s). Only a Mac that advertised
     `liveTerminal`: an older desktop drops its connection over a frame it does not know. The
-    Mac never answers; the ack's `watching` stays the backstop and the stop signal."""
+    Mac never answers; the ack's `watching` stays the backstop and the stop signal.
+
+    `since` is the WATCH row's own, so the ack that lists this viewer next is not news to the
+    Mac and asks for no second history burst. A desktop that predates the key ignores it (it
+    reads `sessionId` and `generation` out of the JSON by name)."""
     from core.services.local_session_relay import check_envelope, get_local_session_relay  # imports this module
 
-    envelope = {"type": "local.session.watch", "sessionId": row["sessionId"], "generation": row["generation"]}
+    envelope = {
+        "type": "local.session.watch",
+        "sessionId": row["sessionId"],
+        "generation": row["generation"],
+        "since": since,
+    }
     try:
         check_envelope(envelope)
         if not await get_local_session_relay().management.send_message_async(row["connectionId"], envelope):
@@ -162,7 +179,9 @@ class Screen(ContractModel):
     seq: int = Field(ge=0, lt=2**53)
     cols: int = Field(ge=1, le=1000)
     rows: int = Field(ge=1, le=500)
-    kind: Literal["snapshot", "output"]
+    # history: the holder's recent output, before a snapshot, for viewers with no screen yet;
+    # ping: no data, proves a quiet stream is alive (spec §5.2).
+    kind: Literal["snapshot", "output", "history", "ping"]
     data: str = Field(max_length=4 * ((MAX_RAW_BYTES + 2) // 3))
 
     @field_validator("data")
@@ -173,6 +192,12 @@ class Screen(ContractModel):
         except (binascii.Error, ValueError) as exc:
             raise ValueError("data is not base64") from exc
         return value
+
+    @model_validator(mode="after")
+    def _ping_is_empty(self) -> Screen:
+        if self.kind == "ping" and self.data:
+            raise ValueError("a ping carries no data")
+        return self
 
 
 def _spent_up(sid: str, size: int, now: float) -> bool:
@@ -198,7 +223,8 @@ async def forward(relay, cid: str, body: dict) -> None:
     """One `local.session.screen` frame from a Mac to the people watching that session.
 
     Never answers and never raises: the Mac waits for no reply, and an error frame would end
-    its relay connection. A dropped frame costs a viewer one snapshot interval (at most 10 s).
+    its relay connection. A dropped frame costs a viewer the wait for the next snapshot: at most
+    10 s while the screen prints, at most 30 s (the Mac's resync) once it is quiet.
     Checks the row like any session frame; never writes it, nor anything else."""
     try:
         frame = Screen.model_validate(body)

@@ -219,13 +219,15 @@ export type SessionAttention = {
   state: "waiting" | "finished" | "join_request" | "join_allowed" | "join_declined";
   push: { title: string; body: string; data: { source: "session"; sessionId: string } };
 };
+const SCREEN_KINDS = new Set<string>(["snapshot", "output", "history"]);
 const SESSION_ATTENTION_STATES = new Set<string>(["waiting", "finished", "join_request", "join_allowed", "join_declined"]);
-/** One piece of a running session's live terminal, for a person watching it (spec §5.5). `epoch`
- *  is one relay run on the Mac and `seq` orders frames within it; a "snapshot" starts the screen
- *  over. `data` is base64 terminal output. Nothing stores it. */
+/** One piece of a running session's live terminal, for a person watching it (spec §5.2). `epoch`
+ *  is one relay run on the Mac and `seq` orders frames within it; a "snapshot" redraws the
+ *  screen, "history" is the holder's recent output sent before a snapshot, "ping" (no data, no
+ *  seq of its own) proves a quiet stream alive. `data` is base64 terminal output. Nothing stores it. */
 export type SessionScreen = {
   sessionId: string; generation: string; epoch: number; seq: number;
-  cols: number; rows: number; kind: "snapshot" | "output"; data: string;
+  cols: number; rows: number; kind: "snapshot" | "output" | "history" | "ping"; data: string;
 };
 /** An admitted person started (or is still) typing into this owner's live session terminal. */
 export type SessionTyping = { sessionId: string; userId: string };
@@ -413,7 +415,7 @@ function payloadValid(type: LiveEventType, payload: unknown): boolean {
         && Number.isSafeInteger(payload.seq) && (payload.seq as number) >= 0
         && Number.isInteger(payload.cols) && (payload.cols as number) >= 1 && (payload.cols as number) <= 1000
         && Number.isInteger(payload.rows) && (payload.rows as number) >= 1 && (payload.rows as number) <= 500
-        && (payload.kind === "snapshot" || payload.kind === "output") && text(payload.data);
+        && (payload.kind === "ping" ? payload.data === "" : SCREEN_KINDS.has(payload.kind as string) && text(payload.data));
     case "workspace.session.typing":
       return str(payload.sessionId) && str(payload.userId);
     case "workspace.session.attention":

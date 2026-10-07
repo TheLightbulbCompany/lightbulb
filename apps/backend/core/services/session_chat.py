@@ -164,6 +164,13 @@ async def open_chat(auth: AuthContext, session_id: str) -> RoomDetail:
     meta = await _follow_lifecycle(meta, row)
     if await messaging_repo.get_member(room_id, "human", auth.user_id) is None:
         meta = await _seat(owner_id, meta, auth.user_id)
+        # Sharing may have paused between the check above and this seat, after the pause's
+        # silence() listed the room. Read the session again: whoever lost it loses the seat.
+        try:
+            await local_sessions.authorize_session(auth, None, session_id)
+        except ApiProblem:
+            await silence(owner_id, row["sessionId"], keep=row["humanUserId"])
+            raise
     return await messaging._room_detail(meta, auth.user_id)
 
 
@@ -196,25 +203,20 @@ async def archive_for_session(owner_id: str, session_id: str) -> None:
 
 
 async def chat_state(owner_id: str, viewer: str, session_ids: list[str]) -> dict[str, tuple[str, int]]:
-    """``{sessionId: (roomId, unread)}`` for the chats the viewer sits in: one batch read."""
-    # ponytail: three keys per session, so a full list (150) is five BatchGets per poll; stamp
-    # chatRoomId on the session row at room create and read only those when the list gets hot.
+    """``{sessionId: (roomId, unread)}`` for the chats the viewer sits in. One key per session
+    finds the viewer's seats; only a seated chat costs its META and read cursor on top."""
     rooms = {sid: session_room_id(owner_id, sid) for sid in session_ids}
-    keys: list[tuple[str, str]] = []
-    for room_id in rooms.values():
-        pk = messaging_repo.room_pk(room_id)
-        keys += [(pk, "META"), (pk, messaging_repo.member_sk("human", viewer)), (pk, messaging_repo.read_sk(viewer))]
-    rows = await messaging_repo.batch_get(keys) if keys else {}
+    seat, read = messaging_repo.member_sk("human", viewer), messaging_repo.read_sk(viewer)
+    if not rooms:
+        return {}
+    seats = await messaging_repo.batch_get([(messaging_repo.room_pk(room_id), seat) for room_id in rooms.values()])
+    rows = await messaging_repo.batch_get([(pk, sk) for pk, _ in seats for sk in ("META", read)]) if seats else {}
     out: dict[str, tuple[str, int]] = {}
     for sid, room_id in rooms.items():
         pk = messaging_repo.room_pk(room_id)
-        meta = rows.get((pk, "META"))
-        member = rows.get((pk, messaging_repo.member_sk("human", viewer)))
+        meta, member = rows.get((pk, "META")), seats.get((pk, seat))
         if meta and member and not meta.get("deletedAt"):
-            out[sid] = (
-                room_id,
-                messaging_repo.unread_count(meta, member, rows.get((pk, messaging_repo.read_sk(viewer)))),
-            )
+            out[sid] = (room_id, messaging_repo.unread_count(meta, member, rows.get((pk, read))))
     return out
 
 

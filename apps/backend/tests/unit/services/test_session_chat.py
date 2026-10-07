@@ -2,7 +2,7 @@
 
 import inspect
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, call
 
 import pytest
 
@@ -65,7 +65,8 @@ def env(monkeypatch):
 @pytest.mark.asyncio
 async def test_first_open_creates_one_hidden_room_and_seats_the_reader(env):
     await session_chat.open_chat(BOB, SID)
-    session_chat.local_sessions.authorize_session.assert_awaited_once_with(BOB, None, SID)
+    # Checked before the seat and again after it (a pause in between must not leave a seat).
+    assert session_chat.local_sessions.authorize_session.await_args_list == [call(BOB, None, SID)] * 2
     kwargs = env["create_room"].await_args.kwargs
     assert (kwargs["room_id"], kwargs["kind"], kwargs["creator_user_id"]) == (ROOM, "channel", ALICE.user_id)
     assert kwargs["name"] == "Session chat · Fix relay"
@@ -259,3 +260,40 @@ async def test_an_agents_unbound_post_in_a_meet_room_still_goes_to_its_output_ro
         await messaging.create_agent_message(OWNER, request)
     output_room.assert_awaited_once_with(OWNER, ROOM)
     assert [call.args[0] for call in get_member.await_args_list] == ["general", "general"]  # judged in the output room
+
+
+@pytest.mark.asyncio
+async def test_a_reader_seated_while_sharing_pauses_loses_the_seat(env, monkeypatch):
+    """The pause's silence() may list the room before this seat lands: the door reads the session again."""
+    env["get_room"].return_value = META
+    gone = ApiProblem("LOCAL_SESSION_NOT_FOUND", "Local session not found.")
+    session_chat.local_sessions.authorize_session.side_effect = [(ROW, {}), gone]
+    silence = AsyncMock(return_value=1)
+    monkeypatch.setattr(session_chat, "silence", silence)
+    with pytest.raises(ApiProblem) as refused:
+        await session_chat.open_chat(BOB, SID)
+    assert refused.value.error.code == "LOCAL_SESSION_NOT_FOUND"
+    env["upsert_member"].assert_awaited_once()
+    silence.assert_awaited_once_with(OWNER, SID, keep=ALICE.user_id)
+
+
+@pytest.mark.asyncio
+async def test_chat_state_reads_one_key_per_session_until_the_viewer_has_a_seat(monkeypatch):
+    other = "22222222-2222-4222-8222-222222222222"
+    pk = session_chat.messaging_repo.room_pk(ROOM)
+    seat = session_chat.messaging_repo.member_sk("human", BOB.user_id)
+    read = session_chat.messaging_repo.read_sk(BOB.user_id)
+    table = {
+        (pk, seat): {"pk": pk, "sk": seat, "joinedTopOrdinal": 1},
+        (pk, "META"): {**META, "topCount": 4},
+        (pk, read): {"topOrdinal": 2},
+    }
+    batch_get = AsyncMock(side_effect=lambda keys: {key: table[key] for key in keys if key in table})
+    monkeypatch.setattr(session_chat.messaging_repo, "batch_get", batch_get)
+    assert await session_chat.chat_state(OWNER, BOB.user_id, [SID, other]) == {SID: (ROOM, 2)}
+    first, second = (c.args[0] for c in batch_get.await_args_list)
+    assert len(first) == 2 and all(sk == seat for _, sk in first)
+    assert sorted(second) == sorted([(pk, "META"), (pk, read)])
+    batch_get.reset_mock()
+    assert await session_chat.chat_state(OWNER, BOB.user_id, [other]) == {}
+    assert batch_get.await_count == 1

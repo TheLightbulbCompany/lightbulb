@@ -36,8 +36,10 @@ async def test_chat_seats_readers_without_admitting_them_and_follows_sharing_and
     seen = await service.get_session(BOB, sid)
     assert (seen.chat_room_id, seen.chat_unread) == (room, 0)
     # Pausing sharing empties the chat of everyone but its owner, and Bob cannot reopen it.
+    key = (await messaging_repo.get_room(room))["deliveryKey"]
     await service.set_sharing(ALICE, sid, False)
     assert await messaging_repo.get_member(room, "human", BOB.user_id) is None
+    assert (await messaging_repo.get_room(room))["deliveryKey"] != key  # the channel Bob heard is dead
     assert await messaging_repo.get_member(room, "human", ALICE.user_id) is not None
     with pytest.raises(ApiProblem):
         await session_chat.open_chat(BOB, sid)

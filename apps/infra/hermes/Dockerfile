@@ -72,6 +72,8 @@ RUN set -eux; \
     perl -pi -e 's|^(import \{ GetInvoicePdfTool \} from "./tools/get-invoice-pdf.tool.js";)$|$1\nimport { SendInvoiceTool } from "./tools/send-invoice.tool.js";|' src/index.ts; \
     perl -pi -e 's|^(\s*)(RegisterTool\(server, GetInvoicePdfTool\);)$|$1$2\n$1RegisterTool(server, SendInvoiceTool);|' src/index.ts; \
     test "$(grep -c SendInvoiceTool src/index.ts)" = 2; \
+    perl -pi -e 's|^(\s*)("create_": CRUD_CATEGORY\.WRITE,)$|$1$2\n$1"send_": CRUD_CATEGORY.WRITE,|' src/helpers/register-tool.ts; \
+    grep -q '"send_": CRUD_CATEGORY.WRITE,' src/helpers/register-tool.ts; \
     npm ci --include=dev --ignore-scripts; \
     npm run build; \
     npm prune --omit=dev; \

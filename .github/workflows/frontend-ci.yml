@@ -40,7 +40,7 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Setup pnpm
-        uses: pnpm/action-setup@v4
+        uses: pnpm/action-setup@v6
         with:
           # Per-job install dir, and load-bearing again now that this job is
           # back on the self-hosted box: several runner instances share one

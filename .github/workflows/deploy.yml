@@ -1824,7 +1824,7 @@ jobs:
         with:
           persist-credentials: false
       - name: Setup pnpm
-        uses: pnpm/action-setup@v4
+        uses: pnpm/action-setup@v6
         with:
           dest: ${{ runner.temp }}/setup-pnpm
       - name: Setup Node.js
@@ -1875,7 +1875,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
       - name: Setup pnpm
-        uses: pnpm/action-setup@v4
+        uses: pnpm/action-setup@v6
         with:
           dest: ${{ runner.temp }}/setup-pnpm
       - name: Setup Node.js
@@ -2645,7 +2645,7 @@ jobs:
         with:
           persist-credentials: false
       - name: Setup pnpm
-        uses: pnpm/action-setup@v4
+        uses: pnpm/action-setup@v6
         with:
           dest: ${{ runner.temp }}/setup-pnpm
       - name: Setup Node.js
@@ -2728,7 +2728,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
       - name: Setup pnpm
-        uses: pnpm/action-setup@v4
+        uses: pnpm/action-setup@v6
         with:
           dest: ${{ runner.temp }}/setup-pnpm
       - name: Setup Node.js

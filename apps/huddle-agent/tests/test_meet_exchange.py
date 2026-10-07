@@ -66,3 +66,82 @@ async def test_a_line_that_trails_off_waits_for_its_rest_and_is_one_line():
     assert backend.routes == [] and h._unclaimed is None
     await says(h, P1, "about my open tasks?")
     assert h._unclaimed is not None and h._unclaimed[2] == "Oh, and... Can one of you tell me... about my open tasks?"
+
+
+async def test_a_name_in_the_middle_of_a_sentence_opens_the_exchange_when_nobody_has_the_floor():
+    """10-06 prod Meet: "...all right, hey Forge, what PRs are open?" got nothing for 30 s."""
+    h, room, backend, lives, clock, log = await per_person()
+    backend.route_extra = ops([("forge", "list the open PRs", "name")])
+    await says(h, P1, "Now let us think about how to test this. All right, hey Forge, what PRs are open?")
+    assert len(lives) == 1 and lives[0].agent_id == "forge" and len(backend.turns) == 1
+
+
+async def test_an_announced_answer_talked_over_by_someone_else_goes_back_to_the_hand_not_the_record():
+    """Rig 10-07: Leonardo's "oh wait, sorry" over the announcement sent the answer to the record (late-answer)."""
+    h, backend, lives, clock = await asked()
+    (row,) = h._requests.items
+    clock.t += h_mod.MEET_FOLLOWUP_S  # the exchange closed while the run worked
+    await h.tick()
+    await settle(h)
+    assert h._voice is None
+    answer(h, row.run_id, "forge", "Three PRs are open.")
+    quiet(h)
+    clock.t += h_mod.MEET_QUIET_S + h_mod.gate.ANNOUNCE_QUIET
+    await h.tick()
+    await settle(h)
+    assert h._voice is not None and h._voice.path == "announce"
+    h.on_agent_state("forge", "speaking")  # its audio is out: the news is consumed
+    talks(h, P2)  # someone else starts over it
+    await settle(h)
+    assert h._voice is None and ("interrupt",) in lives[-1].calls
+    assert [n[2] for n in h._news.get("forge", [])] == ["Three PRs are open."] and backend.late_answers == []
+    h.on_speech(P2, False)
+    quiet(h)
+    clock.t += h_mod.MEET_QUIET_S + h_mod.gate.ANNOUNCE_QUIET
+    await h.tick()
+    await settle(h)
+    assert h._voice is not None and h._voice.path == "announce" and len(lives) == 3, "said whole at the next pause"
+
+
+async def test_its_own_person_interrupting_an_announcement_is_left_to_the_model():
+    h, backend, lives, clock = await asked()
+    (row,) = h._requests.items
+    clock.t += h_mod.MEET_FOLLOWUP_S
+    await h.tick()
+    await settle(h)
+    answer(h, row.run_id, "forge", "Three PRs are open.")
+    quiet(h)
+    clock.t += h_mod.MEET_QUIET_S + h_mod.gate.ANNOUNCE_QUIET
+    await h.tick()
+    await settle(h)
+    h.on_agent_state("forge", "speaking")
+    talks(h, P1)  # the person it is pinned to: "Forge, what about the closed ones?"
+    await settle(h)
+    assert h._voice is not None and ("interrupt",) not in lives[-1].calls
+
+
+def test_the_unsaid_part_starts_at_the_sentence_that_was_cut():
+    answer = "Three PRs are open. The oldest is two days old. One of them is a draft."
+    assert h_mod.unsaid_part(answer, "Three PRs are open.") == "The oldest is two days old. One of them is a draft."
+    assert h_mod.unsaid_part(answer, "Three PRs are open. The oldest is") == "The oldest is two days old. One of them is a draft."
+    assert h_mod.unsaid_part(answer, "") == answer and h_mod.unsaid_part(answer, answer) == ""
+
+
+async def test_a_talked_over_answer_comes_back_from_the_sentence_it_was_cut_on():
+    """Owner 10-07: per sentence, so whichever it was interrupted on can be said."""
+    h, backend, lives, clock = await asked()
+    (row,) = h._requests.items
+    clock.t += h_mod.MEET_FOLLOWUP_S
+    await h.tick()
+    await settle(h)
+    answer(h, row.run_id, "forge", "Three PRs are open. The oldest is two days old. One of them is a draft.")
+    quiet(h)
+    clock.t += h_mod.MEET_QUIET_S + h_mod.gate.ANNOUNCE_QUIET
+    await h.tick()
+    await settle(h)
+    h.on_agent_state("forge", "speaking")
+    h.on_agent_said("forge", "Three PRs are open.")  # heard to its end
+    h.on_agent_said("forge", "The oldest is", interrupted=True)  # cut here
+    talks(h, P2)
+    await settle(h)
+    assert [n[2] for n in h._news.get("forge", [])] == ["The oldest is two days old. One of them is a draft."]

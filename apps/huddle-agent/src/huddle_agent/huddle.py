@@ -198,6 +198,16 @@ def _words(text: str) -> tuple[set[str], list[str]]:
     return {w for w in words if w not in FUNCTION_WORDS}, words
 
 
+def unsaid_part(answer: str, said: str) -> str:
+    """The answer from the sentence it was cut on (owner ruling 10-07: what was heard is not said again). A
+    sentence counts as said when most of its words were; the first one that was not starts the rest."""
+    sentences = [x for x in re.split(r"(?<=[.!?])\s+", answer.strip()) if x]
+    for i, sentence in enumerate(sentences):
+        if not _words_in(sentence, said, 0.7):
+            return " ".join(sentences[i:])
+    return ""
+
+
 def _words_in(a: str, b: str, share: float = SAME_SPEECH) -> bool:
     """Most of `a`'s content words are in `b` (understanding §4.6); a word the other transcriber misheard counts
     when it sounds the same ("peers" for "PRs"). `share` 1: every one, spelled the same, for a match that makes
@@ -348,6 +358,7 @@ class _Voice:
     )
     announcing: bool = False  # a proactive announcement's audio is playing
     told: list = field(default_factory=list)  # the news its announcement says: posted if a person cuts it (§4.8)
+    said: list[str] = field(default_factory=list)  # what it said, as GPT-Live heard itself: the cut sentence is known
     wake_dims: dict[str, str] | None = (
         None  # live.wake.fired's dimensions, for a voice a name woke
     )
@@ -958,6 +969,12 @@ class Huddle:
             text = f"{held[0]} {text}"
         self._last_line[identity] = text
         a = address(text, self._team["agents"], self._team["people"])
+        if in_meet(identity) and v is None and not a.agent_ids:
+            # A meeting, nobody on the floor: a name anywhere in the sentence asks that agent ("...all right,
+            # hey Friday, what is on my calendar?"; 10-06 prod Meet, where it got nothing for 30 s).
+            for aid in self._named(text, a):
+                a.agent_ids.append(aid)
+                a.matches.setdefault(aid, "exact")
         unrouted = self._unrouted.pop(identity, None)
         if (
             (a.agent_ids or a.lightbulb)
@@ -1821,6 +1838,8 @@ class Huddle:
         tagged with the person it was talking to ("Forge → Leo: ...", routing v2 §5). `interrupted`: its
         speaker's sound stopped it before the end (the SDK's mark on the message)."""
         v = self._floor_voice(agent_id)
+        if v:
+            v.said.append(text)
         if v and not mixed_meet(v.speaker):
             self._answer_message(v, text, interrupted)
         to = self._with(v) if v else ""
@@ -1931,9 +1950,14 @@ class Huddle:
                 self._live_call(v, "interrupt")
             self._drop(v)
         elif v.announcing:
+            if in_meet(v.speaker) and not mixed_meet(v.speaker) and started <= {v.speaker}:
+                return  # its own person interrupts it: GPT-Live hears them and stops by itself (a follow-up, a stop)
             v.announcing = False
             emit_metric("live.announce.cut", 1, "Count")
             self._note(f"[announce {self._agent_name(v.agent_id)} cut off: someone talked]")
+            if in_meet(v.speaker):
+                self._talked_over(v)  # a meeting: its hand goes back up with the answer, said whole at the next pause
+                return
             self._live_call(v, "interrupt")
             if v.told:  # understanding §4.8: cut off before its end; the room gets it unless the cutter forbids it
                 held = self._cut_off.get(v.agent_id, ([], "", 0.0))[0]
@@ -3254,8 +3278,10 @@ class Huddle:
         if run is not None and run.ended and not (run.aborted or run.failed) and run.text.strip():
             unsaid.append((run.run_id, run.request, run.text.strip(), self._clock(), run.speaker))
         if unsaid and in_meet(v.speaker):
-            # a meeting: nothing is lost and nothing is posted yet. Its hand goes back up with the same answer,
-            # said whole at the next pause or when someone turns to it (owner ruling 10-06).
+            # a meeting: nothing is lost and nothing is posted yet. Its hand goes back up with what was not heard,
+            # from the sentence it was cut on, said at the next pause or when someone turns to it (owner 10-06/07).
+            heard = " ".join(v.said)
+            unsaid = [(n[0], n[1], rest, *n[3:]) for n in unsaid if (rest := unsaid_part(n[2], heard))]
             have = {n[0] for n in self._news.get(v.agent_id, [])}
             self._news.setdefault(v.agent_id, []).extend(n for n in unsaid if n[0] not in have)
             self._rowless.update(n[0] for n in unsaid)

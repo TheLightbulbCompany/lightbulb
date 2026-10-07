@@ -419,3 +419,27 @@ def test_the_unsaid_part_spends_the_words_a_sentence_used():
     assert h_mod.unsaid_part("Yes. The build is green.", "") == "Yes. The build is green."
     assert h_mod.unsaid_part("Yes. The build is green.", "Yes.") == "The build is green."
     assert h_mod.unsaid_part("I can.", "I can.") == ""
+
+
+def test_spoken_words_are_spent_across_queued_answers_in_delivery_order():
+    """Codex on #3792 (after the merge): two queued answers share wording and only the first was said."""
+    bags = h_mod._said_bags("No PRs are open.")
+    assert h_mod._unsaid_with("No PRs are open.", bags) == ""
+    assert h_mod._unsaid_with("No PRs are open. The deploy is green.", bags) == "No PRs are open. The deploy is green."
+
+
+async def test_news_handed_to_a_named_voice_keeps_its_hand_if_the_voice_closes_before_its_first_word():
+    """Codex on #3792 (after the merge): a participant called on Forge's hand, the seed consumed the news, and the
+    voice closed before a word (they turned to a colleague), so the answer was gone."""
+    h, backend, lives, clock = await asked()
+    (row,) = h._requests.items
+    clock.t += h_mod.MEET_FOLLOWUP_S
+    await h.tick()
+    await settle(h)
+    answer(h, row.run_id, "forge", "Three PRs are open.")
+    assert [n[2] for n in h._news.get("forge", [])] == ["Three PRs are open."]
+    await says(h, P1, "Forge, go ahead.")  # called on its hand: the news rides its seed
+    assert h._voice is not None and not h._news.get("forge")
+    await says(h, P1, "Dan, did you push that fix last night?")  # before its first word
+    assert h._voice is None and [n[2] for n in h._news.get("forge", [])] == ["Three PRs are open."]
+    assert backend.late_answers == []

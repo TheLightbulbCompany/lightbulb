@@ -1144,7 +1144,7 @@ async def test_a_per_person_run_says_nothing_as_it_streams_and_its_answer_word_f
     chunk("You merged three pull requests. ", 3)
     chunk("The largest was the audio bridge.", 4)
     await quiet_tick_meet(h, clock, h_mod.MEET_FOLLOWUP_S / 2)
-    ack = ("Okay, what I worked on. I'm on it now.",)
+    ack = ("Sure, I'm on it now.",)  # a question is not read back inside the line
     assert said() == [ack], "its acknowledgement, and nothing as it streams"
     h.on_data(None, "call.frame", packet(frame(row.run_id, "forge", {"type": "run_ended", "seq": 5})))
     assert said() == [ack, ("You merged three pull requests. The largest was the audio bridge.",)]

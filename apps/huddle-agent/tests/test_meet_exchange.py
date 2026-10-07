@@ -588,3 +588,11 @@ async def test_a_written_reply_may_be_said_only_while_its_voice_has_the_floor_an
     await h.tick()
     await settle(h)
     assert h._voice is None and not h.may_speak("forge")
+
+
+async def test_a_question_is_not_read_back_inside_an_acknowledgement():
+    """10-07 rig: "Sure, let me work on that: what is on my calendar tomorrow." """
+    h, backend, lives, clock = await asked()
+    for task in ("what is on my calendar tomorrow", "how many agents come with a new workspace", "check my inbox"):
+        assert task.split()[0] not in h._line(h_mod.ACKS, task) and "{task}" not in h._line(h_mod.ACKS, task)
+    assert "{task}" not in h._line(h_mod.ACKS, "List the open PRs.")

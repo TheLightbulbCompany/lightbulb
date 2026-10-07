@@ -195,6 +195,7 @@ COULD_NOT = (
     "I could not finish that one, sorry.",
     "That did not work. I could not do it.",
 )
+ASKS = frozenset("what who when where why how which is are was were can could do does did will would should".split())
 TASK_WORDS = 12  # a longer task is not read back: the line without it is said
 # The final POST's backoff and its whole budget. The budget stays under the job's shutdown window
 # (agent.py SHUTDOWN_S): the flush usually runs from the shutdown callback.
@@ -1386,7 +1387,15 @@ class Huddle:
         first = task.split(" ", 1)[0]
         if first != "I" and not first.startswith(("I'", "I\u2019")) and first[1:] == first[1:].lower():
             task = task[:1].lower() + task[1:]  # it follows other words. A name or "PRs" keeps its capitals.
-        fits = bool(task) and len(task.split()) <= TASK_WORDS
+        # A question is not read back ("Sure, let me work on that: what is on my calendar tomorrow.", 10-07
+        # rig), nor a task in the asker's first person: only a short instruction reads well inside a line.
+        words = task.lower().split()
+        fits = (
+            bool(task)
+            and len(words) <= TASK_WORDS
+            and words[0] not in ASKS
+            and not {"my", "i", "me", "our", "we"} & set(words)
+        )
         at = self._line_at.get(lines, self._line_seed)
         while not fits and "{task}" in lines[at % len(lines)]:
             at += 1

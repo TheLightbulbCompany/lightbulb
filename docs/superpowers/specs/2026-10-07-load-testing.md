@@ -26,9 +26,9 @@ same Lambda pool as prod's projector. Every run stops at 50% of the account conc
 
 | Piece | What | Status |
 |---|---|---|
-| Load generator | AWS **Distributed Load Testing** (DLT) CFN solution in us-east-1, k6 runner on Fargate. Owner's preferred harness. | to deploy (owner-gated) |
+| Load generator | **Round one: k6 on ONE machine** (owner ruling). AWS **Distributed Load Testing** (DLT, CFN, k6 on Fargate) only if one runner cannot make the load. In DLT: **Native mode** only (Standard mode overrides the k6 `options`, dropping arrival-rate executors and thresholds), and every task runs a full copy of the script, so divide the target rate by task count (10 tasks × 40 rps = 400 rps otherwise). | DLT owner-gated |
 | Fixtures | `apps/backend/scripts/load/fixtures.py` — Python, imports `Clerk`/`Session`/`dev_only` from `scripts/multiparty_e2e/runner.py` (no second Clerk client). `setup` / `teardown` subcommands. | to write |
-| k6 scripts | `apps/backend/scripts/load/k6/{messaging,agents,viewers}.js`, uploaded to DLT with `fixtures.json` | to write |
+| k6 scripts | `apps/backend/scripts/load/k6/{messaging,agents,viewers}.js`, reading `fixtures.json` | to write |
 | Mac simulator | `apps/backend/scripts/load/mac_sim.py` (scenario 3) — Python, not k6; see §4 | to write |
 
 **Auth (all scenarios).** Exactly the multiparty runner's sanctioned path, no password, no OTP:
@@ -152,7 +152,7 @@ only with bridge process-start evidence (`chat-performance.md`), else `unknown`.
 | `messaging.run.swept`, `messaging.run.first_turn_failed` | 0 |
 | Work DLQ / pipe-failure queue depth (`OpenClawWorkDlqVisibleAlarm`, `OpenClawWorkPipeDlqVisibleAlarm`) | 0 |
 | `AWS/Lambda Throttles` on work consumer and gate; gate `ConcurrentExecutions` | recorded; the ceiling we are looking for |
-| `messaging.usage.callback` token counts | used for the cost line below |
+| Tokens per turn: deltas in `lightbulb-dev-usage-counters` (`usage_repo`, written by `usage_service.record_usage`) per fixture owner; $ from each fixture key's OpenRouter usage | used for the cost line below |
 
 **Spend — what is actually possible.**
 
@@ -163,7 +163,7 @@ only with bridge process-start evidence (`chat-performance.md`), else `unknown`.
 | Dev-only stub | `forward.mjs` hard-codes `https://openrouter.ai/api/v1/chat/completions`; a stub needs new gate code behind an env switch (against the no-flags ruling). | no |
 | **Trial fixture orgs on the existing policy** | Real path end to end. Each fixture org's OpenRouter key stops itself at $0.25/day, so worst-case spend is **O × $0.25/day by construction** (30 orgs → $7.50). | **recommended** |
 
-A 10-turn pilot reads tokens per turn from `messaging.usage.callback`; above ~$0.005/turn, 2d hits the
+A 10-turn pilot reads tokens per turn from the usage-counter deltas above; above ~$0.005/turn, 2d hits the
 cap mid-run and reports 429s, not latency — then lower 2d's rate rather than lift the cap.
 **AgentCore cost:** microVM time per org = run + time until stopped; idle timeout is **4 h**
 (`IDLE_TIMEOUT_S`), so teardown stops sessions. Budget ≈ O × 1 h of microVM plus DLT Fargate; Jev cost 0.
@@ -183,7 +183,7 @@ cap mid-run and reports 429s, not latency — then lower 2d's rate rather than l
 So k6 cannot be the Mac (no Ed25519 in its crypto module, and a 300 s token cannot be
 pre-minted for a long run). `mac_sim.py` (asyncio + `cryptography` + `websockets`) plays M Macs
 from one process: its load is small (M/10 heartbeats/s). Run it from a one-off Fargate task in
-dev or the operator's machine; k6 in DLT plays the viewers. One synthetic Mac per test user:
+dev or the operator's machine; k6 plays the viewers. One synthetic Mac per test user:
 `paired_devices` is a map on the owner's **single** containers row (400 KB item limit).
 
 **Not synthesizable:** the real Claude/Codex process, the holder PTY and its xterm snapshots,
@@ -199,7 +199,8 @@ after `LIVENESS_SECONDS` 30; viewer lease `POST /messaging/sessions/{id}/viewing
 
 | Sub-test | Load | Probes |
 |---|---|---|
-| 3a fan-out | 1 Mac, 1 shared session, `output` frames at 5/s (8 KB), viewers V = 1, 5, 10, 25, 50 | per-viewer publish cost, backend CPU, frame latency |
+| 3a fan-out | 1 Mac, 1 shared session, `output` frames at 4/s × 8 KiB (1.9 MiB/min, under the 2 MiB/min `BUDGET_BYTES_PER_MINUTE`), viewers V = 1, 5, 10, 25, 50 | per-viewer publish cost, backend CPU, frame latency |
+| 3a′ limiter | 3a at V = 10 with 6/s × 8 KiB (2.8 MiB/min, ~30% over budget) | drops land before fan-out; latency of the frames that pass |
 | 3b relay breadth | M = 10, 25, 50 Macs × 3 sessions, heartbeats 10 s, `events` 1/s | `ws-message` Lambda, DDB writes, heartbeat-ack RTT |
 | 3c reconnect storm | 3b at M = 50, then every socket closed and reopened within 1 s | re-register burst, offline flips, conditional-write conflicts |
 | 3d viewer churn | 50 viewers open/close the view every 30 s against 3a | `VIEWER#`/`WATCH#` row churn, Mac snapshot resends |
@@ -212,7 +213,7 @@ Trends are primary.
 | Metric | Pass |
 |---|---|
 | Frame Mac send → viewer receipt (k6 Trend) | p95 < 1 s at V = 25 |
-| Frames delivered / frames sent per viewer (budget drops counted apart) | ≥ 99% under budget |
+| Frames delivered / frames sent per viewer (3a only; 3a′ just records the drop rate) | ≥ 99% |
 | Heartbeat → `local.device.heartbeat.ack` RTT (sim) | p95 < 1 s |
 | Sessions read offline while their Mac is connected (`GET /messaging/sessions`) | 0 |
 | `POST …/viewing` | p95 < 500 ms, 0 5xx |
@@ -234,16 +235,14 @@ Trends are primary.
 | Shared dev pools | work Lambda (20), gate (25), stage throttle (50 rps) are shared with the team's dev use: run in an announced window |
 | Shared prod quotas | stop if account-wide Lambda `ConcurrentExecutions` > 50% of `aws lambda get-account-settings` limit, or any prod page alarm fires |
 | Raising the throttle (1d only) | PR changing `THROTTLE_CONFIG.dev` in `api-stack.ts` (+ `cdk synth`, commit `deploy.yml`), merge deploys dev; a revert PR after the run. No console edits (CLAUDE.md Critical Rules) |
-| Kill switch | DLT "Cancel test" stops k6; `mac_sim.py` exits on SIGINT and closes sockets; queued agent turns drain by themselves (each org capped at $0.25/day). Emergency only, owner-approved: purge the dev work FIFO (drops every dev user's pending turns) |
-| Cleanup | rooms: `DELETE /messaging/rooms/{id}`; scenario 2: `PATCH /debug/provision` per fixture org (stops the warm session — do not wait 4 h); devices: `DELETE /desktop/devices/{id}`; users/orgs: `DELETE /debug/user-data` per user, then the `dev-clean-slate-reset` skill steps 2–3 (runtime, Paperclip Better Auth rows) and Clerk BAPI deletes; delete `fixtures.json` from DLT's bucket |
-| DLT stack | deployed once by the owner (CFN, outside CDK); deleted or kept per decision below |
-
+| Kill switch | Ctrl-C on k6 (DLT: "Cancel test"); `mac_sim.py` exits on SIGINT and closes sockets; queued agent turns drain by themselves (each org capped at $0.25/day). Emergency only, owner-approved: purge the dev work FIFO (drops every dev user's pending turns) |
+| Cleanup | rooms: `DELETE /messaging/rooms/{id}`; scenario 2: `PATCH /debug/provision` per fixture org (stops the warm session — do not wait 4 h); devices: `DELETE /desktop/devices/{id}`. Owner-scoped per fixture org, never a table scan: (1) remove every non-creator member (Clerk BAPI membership delete) and delete those Clerk users; (2) the creator, now sole member, calls `POST /users/me/delete` (`workspace_wipe.wipe_own_workspace`: runtime, Paperclip company + Aurora users, rows); (3) delete any Clerk org/user left. **Never** use `dev-clean-slate-reset` (it wipes shared dev tables) or `DELETE /debug/user-data` per member (403 for non-admins). Delete `fixtures.json` |
 ## 6. Owner decisions
 
 1. Target load: messaging rps for the "pass" run (proposal: 40 rps dev, under the throttle), concurrent cold workspaces (proposal: 20), viewers per session (proposal: 25).
 2. Budget per run: scenario 2 ceiling O × $0.25/day (proposal O = 20 → $5) plus ≈ 1 h microVM per org.
 3. Which first (proposal: a 2-user 1a pilot proving auth/AppSync/clock, then 1, 3, 2 — cheapest and least shared first).
-4. Approve deploying the DLT CloudFormation stack in the shared account (and whether to keep it).
+4. If one k6 machine falls short: approve the DLT CloudFormation stack (owner-deployed, outside CDK) in the shared account, and whether to keep it.
 5. Approve the trial-org spend path for scenario 2 (no free model, no stub, no BYO).
 6. Approve a temporary `THROTTLE_CONFIG.dev` raise for 1d, or skip 1d.
 7. Run window: dev pools are shared with the team; prod shares account quotas.

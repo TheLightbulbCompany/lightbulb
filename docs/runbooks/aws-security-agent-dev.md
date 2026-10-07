@@ -97,19 +97,19 @@ List derived from `apps/backend/main.py` and `routers/` on 2026-10-07; re-run
 
 | Exclude | Why |
 |---|---|
-| host `admin.dev.thelightbulb.company`, and `https://dev.thelightbulb.company/admin` | Dev admin READS PROD data (standing note). A subdomain of a verified host is in scope unless excluded. |
+| `https://admin.dev.thelightbulb.company`, and `https://dev.thelightbulb.company/admin` | Dev admin READS PROD data (standing note). A subdomain of a verified host is in scope unless excluded. |
 | `/api/v1/admin` (includes `/api/v1/admin/marketplace`) | Same data risk; wipe, refund, takedown actions. |
 | `/api/v1/webhooks` | Clerk, Stripe (platform + Connect), SES inbound, Paperclip events, Metronome, Apple IAP: signature endpoints, noise, third-party side effects. |
 | `/api/v1/billing/webhooks/stripe`, `/api/v1/hooks` | More signed third-party endpoints (Stripe billing, Meta, Paperclip trigger). |
 | `/api/v1/debug` | `provision` and `user-data` destroy the workspace; the rest reprovision. Excluded by default; allow only on the throwaway org by explicit owner decision. |
 | `/api/v1/launch` | Launch-competition writes: `referral`, `join`, `team-interest`, `connect-stripe`, `entry`, `display-name`. |
-| `/api/v1/billing/checkout`, `/api/v1/billing/portal`, `/api/v1/billing/credits/top_up`, `/api/v1/billing/provider`, `/api/v1/billing/apple`, `/api/v1/marketplace/checkout`, `/api/v1/company/stripe` | Create Stripe/Apple objects, charge money, or bind keys. |
+| `/api/v1/billing/checkout`, `/api/v1/billing/portal`, `/api/v1/billing/credits/top_up`, `/api/v1/billing/provider`, `/api/v1/billing/apple`, `/api/v1/marketplace/checkout`, `/api/v1/marketplace/payouts` (onboard creates a Stripe Connect account), `/api/v1/company/stripe`, `/api/v1/company/provisioning` (Stripe Projects rail: payment and connect links, workflows) | Create Stripe/Apple objects, charge money, or bind keys. Re-grep `stripe` in `routers/` before the run. |
 | `/api/v1/internal` | Hook-token machine routes (messaging runs/usage, provisioning, browser, mac-cdp, website-logins). |
 | `/api/v1/auth` (desktop sign-in tokens), `/api/v1/desktop`, `/api/v1/desktop-sessions`, `/api/v1/desktop-execution` | Mint Clerk sign-in tokens, pair devices, start Mac sessions. |
 | `/api/v1/oauth`, `/api/v1/connections` | Real third-party OAuth flows. |
 | `https://api-dev.thelightbulb.company/api/v1/users/me/delete` | Wipes the test org mid-run. |
 
-Every row is a host, URL or path (no verb, no `*`); excluding a path also excludes everything beneath it. Enter each as `https://api-dev.thelightbulb.company<path>` and confirm it in the wizard's "Derived examples" before launch.
+Every row is an absolute URL or a path (no verb, no `*`); excluding a path also excludes everything beneath it. Entries starting with `/` take the API host: enter `https://api-dev.thelightbulb.company` + path. Absolute URLs (the admin host, the `dev.` admin URL, the delete URL) are entered verbatim. Confirm each in the wizard's "Derived examples" before launch.
 
 Also exclude email, username and password change paths: "the agent could lock the
 credentials it is testing". `/api/v1/messaging` stays in scope only if the owner

@@ -189,9 +189,10 @@ export class NetworkStack extends cdk.Stack {
           // 10,000 requests / 5 min / client IP (~33 rps sustained). API Gateway's
           // stage throttle (prod 200 rps, 500 burst) is aggregate, so this only
           // flags a single source flooding. The ALB sits behind API Gateway, so
-          // the source address is API GW's: key on the forwarded client IP.
-          // ponytail: X-Forwarded-For's first hop is client-suppliable; fine for
-          // counting, revisit before switching this rule to block.
+          // the source address is API GW's: key on X-Lightbulb-Client-Ip, which
+          // the API GW integration overwrites with $context.identity.sourceIp
+          // (api-stack.ts), so a client cannot spoof it. Traffic that skips API
+          // GW (the bv- door) has no header and is not counted by this rule.
           name: "PerIpRateLimit",
           priority: 30,
           action: countOnly,
@@ -200,7 +201,7 @@ export class NetworkStack extends cdk.Stack {
               limit: 10000,
               evaluationWindowSec: 300,
               aggregateKeyType: "FORWARDED_IP",
-              forwardedIpConfig: { headerName: "X-Forwarded-For", fallbackBehavior: "MATCH" },
+              forwardedIpConfig: { headerName: "X-Lightbulb-Client-Ip", fallbackBehavior: "NO_MATCH" },
             },
           },
           visibilityConfig: {

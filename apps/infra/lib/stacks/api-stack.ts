@@ -372,6 +372,10 @@ export class ApiStack extends cdk.Stack {
         timeoutInMillis: 30000,
         requestParameters: {
           "overwrite:header.X-Isol8-Public-Host": "$context.domainName",
+          // The WAF per-IP rate rule (network-stack.ts) keys on this. `overwrite`
+          // replaces anything the client sent, unlike X-Forwarded-For, which
+          // API Gateway only appends to.
+          "overwrite:header.X-Lightbulb-Client-Ip": "$context.identity.sourceIp",
         },
       },
     );

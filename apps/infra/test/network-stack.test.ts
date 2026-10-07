@@ -120,5 +120,8 @@ describe("NetworkStack — WAF web ACL (count-only)", () => {
       }
     }
     expect((acls[0] as any).Properties.VisibilityConfig.SampledRequestsEnabled).toBe(false);
+    // Rate rule keys on the header API GW overwrites, never client-suppliable XFF.
+    const rate = rules.find((r) => r.Statement.RateBasedStatement);
+    expect(rate.Statement.RateBasedStatement.ForwardedIPConfig.HeaderName).toBe("X-Lightbulb-Client-Ip");
   });
 });

@@ -38,7 +38,7 @@ jobs:
       DESKTOP_EXECUTION_OWNER_PROD: ${{ vars.DESKTOP_EXECUTION_OWNER_PROD }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
       - name: Build
         run: |-
           cd apps/infra
@@ -1820,7 +1820,7 @@ jobs:
     env: {}
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           persist-credentials: false
       - name: Setup pnpm
@@ -1873,7 +1873,7 @@ jobs:
     env: {}
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
       - name: Setup pnpm
         uses: pnpm/action-setup@v4
         with:
@@ -2641,7 +2641,7 @@ jobs:
     env: {}
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           persist-credentials: false
       - name: Setup pnpm
@@ -2726,7 +2726,7 @@ jobs:
     env: {}
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
       - name: Setup pnpm
         uses: pnpm/action-setup@v4
         with:

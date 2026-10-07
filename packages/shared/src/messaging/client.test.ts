@@ -266,6 +266,8 @@ it("keeps a running session's live terminal coming by posting /viewing", async (
   const client = createMessagingClient({ post } as unknown as ApiMethods);
   await client.watchLocalSession("s 1");
   expect(post).toHaveBeenCalledWith("/messaging/sessions/s%201/viewing", {});
+  await client.watchLocalSession("s 1", true); // a view that just mounted
+  expect(post).toHaveBeenLastCalledWith("/messaging/sessions/s%201/viewing", { fresh: true });
 });
 
 it("posts an admitted viewer's keystrokes with the screen epoch to /input", async () => {

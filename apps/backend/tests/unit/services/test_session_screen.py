@@ -204,12 +204,17 @@ def _nudges(transport):
 
 
 @pytest.mark.asyncio
-async def test_a_new_viewer_nudges_a_capable_mac_once_and_a_repeat_post_does_not(transport):
+async def test_a_new_viewer_nudges_a_capable_mac_once_and_a_repeat_post_does_not(transport, monkeypatch):
     sid = await start(transport)
     await ack(transport, sid)  # the golden heartbeat advertises liveTerminal
     transport[3].clear()
+    now = time.time()
+    monkeypatch.setattr(session_screen, "_clock", lambda: now)
     await session_screen.watch(BOB, sid)
-    assert transport[3] == [("conn-1", {"type": "local.session.watch", "sessionId": sid, "generation": "generation-1"})]
+    nudge = {"type": "local.session.watch", "sessionId": sid, "generation": "generation-1", "since": int(now)}
+    assert transport[3] == [("conn-1", nudge)]
+    # The ack that lists this viewer carries the nudge's own `since`: no news, no second history.
+    assert (await ack(transport, sid))["watching"] == [{"sessionId": sid, "since": int(now)}]
     await session_screen.watch(BOB, sid)  # the same person, 15 s later: not new
     assert len(_nudges(transport)) == 1
     await session_screen.watch(ALICE, sid)  # another person is new
@@ -279,7 +284,39 @@ def test_the_golden_watch_frame_fits_the_relay_envelope():
     from core.services.local_session_relay import check_envelope
 
     check_envelope(fixture("session-watch"))
-    assert set(fixture("session-watch")) == {"type", "sessionId", "generation"}
+    assert set(fixture("session-watch")) == {"type", "sessionId", "generation", "since"}
+
+
+@pytest.mark.asyncio
+async def test_a_view_that_mounts_inside_its_lease_is_a_new_viewer_and_a_renewal_is_not(transport, monkeypatch):
+    sid = await start(transport)
+    await ack(transport, sid)
+    now = time.time()
+    monkeypatch.setattr(session_screen, "_clock", lambda: now)
+    await session_screen.watch(BOB, sid, mounted=True)
+    monkeypatch.setattr(session_screen, "_clock", lambda: now + 5)
+    await session_screen.watch(BOB, sid)  # the 15 s renewal: nothing new
+    assert [n["since"] for n in _nudges(transport)] == [int(now)]
+    await session_screen.watch(BOB, sid, mounted=True)  # the page was refreshed: it has no screen
+    assert [n["since"] for n in _nudges(transport)] == [int(now), int(now + 5)]
+    assert (await ack(transport, sid))["watching"] == [{"sessionId": sid, "since": int(now + 5)}]
+
+
+def test_the_viewing_route_passes_a_mount_on_and_takes_no_body_as_a_renewal(monkeypatch):
+    import asyncio
+
+    from routers import messaging as router
+
+    seen = []
+
+    async def watch(auth, session_id, mounted=False):
+        seen.append(mounted)
+
+    monkeypatch.setattr(router.session_screen, "watch", watch)
+    asyncio.run(router.watch_local_session("s1", router.SessionViewingRequest(fresh=True), BOB))
+    asyncio.run(router.watch_local_session("s1", router.SessionViewingRequest(), BOB))
+    asyncio.run(router.watch_local_session("s1", None, BOB))  # a client older than `fresh`
+    assert seen == [True, False, False]
 
 
 @pytest.mark.asyncio

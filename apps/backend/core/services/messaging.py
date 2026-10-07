@@ -241,6 +241,10 @@ class LastMessage(ContractModel):
     thread_root_message_id: str | None = None
 
 
+class SessionRef(ContractModel):
+    session_id: str
+
+
 class RoomSummary(ContractModel):
     room_id: uuid.UUID
     name: str | None
@@ -284,6 +288,8 @@ class RoomSummary(ContractModel):
     # Set while the channel is archived: history stays readable, nothing new posts.
     archived_at: datetime | None = None
     archived_by: str | None = None
+    # A session's chat room (hidden from the room list): the session it talks beside.
+    session: SessionRef | None = None
 
 
 class ActiveRun(ContractModel):
@@ -1589,6 +1595,7 @@ def _room_summary_fields(meta: dict, member: dict, read: dict | None, mention_co
         "is_default": is_default_room(meta),
         "archived_at": meta.get("archivedAt"),
         "archived_by": meta.get("archivedBy"),
+        "session": SessionRef(session_id=meta["session"]["sessionId"]) if meta.get("session") else None,
     }
 
 
@@ -1773,6 +1780,11 @@ def is_default_room(meta: dict) -> bool:
     """
     owner_id = meta.get("ownerId") or ""
     return bool(owner_id) and str(meta.get("roomId")) == default_room_id(owner_id)
+
+
+def is_session_room(meta: dict) -> bool:
+    """A session's chat (spec 2026-10-07-session-chat-design): hidden, and its humans follow session read access."""
+    return bool(meta.get("session"))
 
 
 def _deny_vendor_human_change(meta: dict, kind: str) -> None:

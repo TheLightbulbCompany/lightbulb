@@ -32,6 +32,7 @@ from core.services import (
     link_preview,
     local_sessions,
     native_session_tools,
+    session_chat,
     session_pickup,
     session_links,
     session_resume,
@@ -260,6 +261,13 @@ async def type_into_local_session(
 ):
     """An admitted person types into a running session's live terminal (owner ruling 2026-10-03)."""
     await session_screen.type_into(auth, session_id, body)
+
+
+@router.post("/messaging/sessions/{session_id}/chat", response_model=RoomDetail)
+async def open_local_session_chat(session_id: str, auth: AuthContext = Depends(get_human_session)):
+    """The session's chat room, beside its terminal: created on first open, the reader seated.
+    People only (a Clerk session); an unshared session has no chat for anyone but its owner."""
+    return await session_chat.open_chat(auth, session_id)
 
 
 @router.patch("/messaging/sessions/{session_id}/display-title", response_model=local_sessions.LocalSession)

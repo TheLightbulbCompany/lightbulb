@@ -24,9 +24,9 @@ functions/files where possible. No slice here dispatches a release; prod trains 
 owner's coordinator session.
 
 ## Owner decisions that gate slices
-Agreed 2026-10-07: no pictures, no recordings; the ended screen lives while the app runs. Open:
-D2 switch default-on (gates S4), D-mirror which terminals (S6: tmux alone needs no decision),
-D6 Line default (S8). S1, S2, S3, S5, S7 need no decision.
+Agreed 2026-10-07: no pictures, no recordings, no mirrors, no Line mode; the shell switch on by
+default; keys as in native Claude Code with a typist-coloured cursor; the ended screen lives while
+the app runs. Nothing is open.
 
 ## P1 — Terminal everywhere
 
@@ -67,7 +67,7 @@ Files: `apps/frontend/src/app/terminal/page.tsx` (static xterm page), mobile ses
   prompt; Keys mode sends Esc/arrows; backgrounding and returning recovers within 10 s; approval
   cards and Ask to join still work; no transcript list anywhere.
 
-### S4. Hosting by default (D2)
+### S4. Hosting by default
 Files: `DesktopPermissionsGate.tsx`, `ExplicitSharingNotice.tsx`, `LocalSessions.tsx` copy,
 `cli.rs` (`--bg` passthrough), pairing copy.
 - Accept (prod, new pairing on a test account's Mac or re-pair on the founder Mac): after
@@ -87,13 +87,11 @@ screen is available; `watch` admits it), web and phone states "Ended · <time>" 
   Resume disabled and Pick up offered; relaunch → the ended screen is gone and the state says so;
   nothing is written under Application Support or S3 (checked).
 
-### S6. Host-terminal mirror (tmux first; iTerm2 and Terminal.app on D-mirror)
-Files: new `local_sessions/mirror.rs` (tty → tmux pane → `capture-pane -e`), heartbeat
-`terminal: "mirror"`, backend passthrough, viewer label and "Open in Lightbulb" action.
-- Accept (prod, founder Mac, a plain `claude` inside tmux): a teammate sees the real tmux
-  screen updating ≤1 s behind, read-only, labelled "Watching · tmux"; pressing ← in that terminal
-  switches the panel to the fork's live terminal; no AppleEvents prompt for tmux. iTerm2 and
-  Terminal.app follow in a second PR with their one-time Automation consent in Settings → Desktop.
+### S6. Explicit states for unheld plain sessions
+Files: desktop `terminalReason` (`plain`, `no-daemon`), web and phone state panel.
+- Accept (prod): a plain `claude` started in a shell opened before the switch shows "Press ← in
+  its terminal" to everyone and no transcript; pressing ← switches the panel to the attach
+  terminal; a `codex --no-daemon` session shows "Start it again with `lightbulb codex`".
 
 ### S7. "Open in a terminal" for IDE and desktop-app sessions
 Files: desktop discovery (`terminalReason: app` for VS Code / Cursor / JetBrains / Codex app /
@@ -104,11 +102,14 @@ Claude Desktop sessions), a `terminal_open` command that runs `start_held` with
   → a held session with the same conversation appears live for both; a teammate has no such
   button; the VS Code session keeps running.
 
-### S8. Line mode for typists (D6) + "prompt not empty" hint
-Files: `SessionTerminalView.tsx`, mobile composer, holder HELLO `bracketedPaste`.
-- Accept (prod, two accounts): two people typing — one in Keys, one in Line — produce two
-  correctly attributed prompts in the mod band; a Line send is one `TYPED#` burst; no typing pause
-  is ever shown to the owner.
+### S8. Typist-coloured cursor and presence in the Lightbulb views
+Files: `local_sessions/screen.rs` (`typist` on frames for 4 s after a teammate's input),
+`session_screen.py` (`Screen` model), `SessionTerminalView.tsx`, the desktop panel
+`terminal.js`, the phone terminal page.
+- Accept (prod, two accounts): when the teammate types, every Lightbulb view shows the cursor
+  in the teammate's colour with their name for about 4 s, then the plain cursor returns; the
+  owner's keys restore the plain cursor at once; the band still says "Aden typing"; no typing
+  pause anywhere; the submitted prompt carries the teammate's label.
 
 ## P2 — Session chat (spec 2026-10-07-session-chat-design.md)
 S9 backend room door + lifecycle hooks; S10 web second room slot + right column + notification
@@ -127,11 +128,11 @@ session archives the room; a mentioned agent answers in chat and never in the te
 | Same, earlier history / scrollback for a viewer | screen only | FAIL | S2 |
 | Same, viewer hidden then shown | snapshot ≤10 s, history lost | FAIL | S2 |
 | Plain `claude`, switch on | held | PASS (prod-tested 2026-10-04 on the founder Mac) | S4 makes it default |
-| Plain `claude`, switch off / shell open before it | transcript | FAIL | S4, S6 |
+| Plain `claude`, switch off / shell open before it | transcript | FAIL | S4 (default on), S6 (explicit state → ←) |
 | `claude --bg` job | attach terminal | PASS (prod-tested 2026-10-04) | S2 for history |
 | ← moved session | attach (fork) | PASS | — |
 | Plain `codex` on the daemon | attach terminal | PASS (prod-tested 2026-10-04, holder closures seen 3× then stable) | S2 |
-| `codex --no-daemon` outside Lightbulb | transcript | FAIL | S6 |
+| `codex --no-daemon` outside Lightbulb | transcript | FAIL | S6 (explicit state) |
 | VS Code / Cursor / JetBrains Claude panel | not tracked or transcript | FAIL | S7 (explicit state + Open in a terminal) |
 | Codex desktop app threads | transcript | FAIL | S7 |
 | Claude Desktop Code tab | not tracked | FAIL (no TUI exists) | S7 |
@@ -141,7 +142,7 @@ session archives the room; a mentioned agent answers in chat and never in the te
 | Any session on the iPhone | transcript | FAIL | S3 |
 | Viewer resize changes another's view | never | PASS (observed) | — |
 | Owner panel resize changes viewers' cols×rows | yes, by design (owner's terminal) | PASS by design | — |
-| Two typists on one prompt | raw interleave, labelled by Enter | PARTIAL | S8 |
+| Two typists on one prompt | raw interleave, labelled by Enter, no cursor colour | PARTIAL | S8 |
 | Automatic transcript fallback after 30 s stale | exists | FAIL (brief forbids) | S1 |
 | Mod band, owner-only Allow/Decline, no typing pause | as ruled | PASS (prod-tested 2026-10-05) | — |
 | Session chat beside the terminal | none ("Message owner" closes the session) | FAIL | P2 |

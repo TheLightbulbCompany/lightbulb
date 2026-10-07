@@ -1874,6 +1874,9 @@ end tell"#,
                 log(&format!("[setup] file_access::init failed: {}", e));
             }
 
+            // An ended session's final screen lives only while the app that saw it end runs (spec 2026-10-07 §5.4).
+            std::thread::spawn(holder::manager::stop_ended);
+
             // ponytail: remove in the next desktop release (legacy OpenClaw profile, spec D2)
             if let Ok(app_data) = app.path().app_data_dir() {
                 let state_dir = state_dir_in(&app_data);

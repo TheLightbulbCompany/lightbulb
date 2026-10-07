@@ -276,6 +276,10 @@ pub fn run_with_env(socket: &Path, argv: &[String], cwd: &Path, env: Vec<(String
     // Who wrote the last bytes to the pty (HELLO's `lastInput`).
     let mut last_input: Option<&'static str> = None;
     let mut exited: Option<(String, u32, Instant)> = None;
+    // Spec 2026-10-07 §5.4: the provider exited; the final screen stays for watchers, in memory only.
+    let mut ended = false;
+    // When the provider exited (unix ms): HELLO's `endedAt` once `ended`.
+    let mut exited_at_ms = 0u64;
 
     loop {
         let event = match &exited {
@@ -313,11 +317,12 @@ pub fn run_with_env(socket: &Path, argv: &[String], cwd: &Path, env: Vec<(String
                 let role = serde_json::from_slice::<serde_json::Value>(&payload).unwrap_or_default();
                 // The app's panel joins a session a terminal (`lightbulb claude`) already has: it
                 // never takes that terminal's keyboard or size.
-                let joining = role["role"] == "interactive" && role["join"] == true && interactive.is_some();
+                let joining = !ended && role["role"] == "interactive" && role["join"] == true && interactive.is_some();
                 let (rows, cols) = model.size();
                 let facts = serde_json::json!({"protocol": 1, "pid": std::process::id(),
                     "providerPid": provider_pid, "argv": argv, "cwd": cwd, "rows": rows, "cols": cols,
-                    "watch": true, "type": true, "joined": joining, "origin": true, "lastInput": last_input});
+                    "watch": true, "type": true, "joined": joining, "origin": true, "lastInput": last_input,
+                    "ended": ended, "endedAt": ended.then_some(exited_at_ms)});
                 if !client.send(encode(HELLO, facts.to_string().as_bytes())) {
                     continue;
                 }
@@ -328,7 +333,7 @@ pub fn run_with_env(socket: &Path, argv: &[String], cwd: &Path, env: Vec<(String
                     watchers.insert(id);
                     typists.insert(id);
                     joined.push(id);
-                } else if role["role"] == "interactive" {
+                } else if role["role"] == "interactive" && !ended {
                     // Take the window's size first, so its snapshot is drawn at that size.
                     if let (Some(cols), Some(rows)) = (role["cols"].as_u64(), role["rows"].as_u64()) {
                         let (cols, rows) = (cols.clamp(1, 1000) as u16, rows.clamp(1, 500) as u16);
@@ -355,7 +360,8 @@ pub fn run_with_env(socket: &Path, argv: &[String], cwd: &Path, env: Vec<(String
                     if !client.send(first) {
                         continue;
                     }
-                } else if role["role"] == "watch" {
+                } else if role["role"] == "watch" || (ended && role["role"] == "interactive") {
+                    // (After the end an interactive window, the desktop panel included, only watches.)
                     // Output-only, plus the screen to start from, fresh ones on request and every
                     // size change: what a live view needs. It never types and never resizes.
                     if !client.send(encode(SNAPSHOT, &with_offset(total, &model.snapshot()))) {
@@ -375,12 +381,12 @@ pub fn run_with_env(socket: &Path, argv: &[String], cwd: &Path, env: Vec<(String
                 clients.insert(id, client);
             }
             Event::Frame(id, kind @ (INPUT | OWNER_INPUT), payload)
-                if (interactive == Some(id) || typists.contains(&id)) && !is_probe_reply(&payload) =>
+                if !ended && (interactive == Some(id) || typists.contains(&id)) && !is_probe_reply(&payload) =>
             {
                 last_input = Some(input_origin(kind, remote.contains(&id)));
                 let _ = pty.write_all(&payload);
             }
-            Event::Frame(id, RESIZE, payload) if interactive == Some(id) && payload.len() == 4 => {
+            Event::Frame(id, RESIZE, payload) if !ended && interactive == Some(id) && payload.len() == 4 => {
                 let cols = u16::from_be_bytes([payload[0], payload[1]]).max(1);
                 let rows = u16::from_be_bytes([payload[2], payload[3]]).max(1);
                 let _ = pair.master.resize(PtySize { rows, cols, pixel_width: 0, pixel_height: 0 });
@@ -428,6 +434,7 @@ pub fn run_with_env(socket: &Path, argv: &[String], cwd: &Path, env: Vec<(String
             }
             Event::Exit(status, code) => {
                 exited = Some((status, code, Instant::now()));
+                exited_at_ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis() as u64);
             }
             Event::Eof => {
                 if exited.is_none() {
@@ -436,21 +443,41 @@ pub fn run_with_env(socket: &Path, argv: &[String], cwd: &Path, env: Vec<(String
                 }
                 let (status, code) = exited.take().map(|(s, c, _)| (s, c)).unwrap_or_default();
                 let frame = encode(EXIT, serde_json::json!({ "status": status, "code": code }).to_string().as_bytes());
-                for client in clients.values() {
-                    client.send(frame.clone());
+                if is_attach(argv) {
+                    // One more client of the provider's own host (spec §4 k): no screen of ours to
+                    // keep, and the next viewer needs a new client, so this holder ends with it.
+                    for client in clients.values() {
+                        client.send(frame.clone());
+                    }
+                    // Let every writer deliver its last frames (a stalled one gets two seconds).
+                    let writers: Vec<_> = clients.into_values().map(|c| c.writer).collect();
+                    let deadline = Instant::now() + Duration::from_secs(2);
+                    while writers.iter().any(|w| !w.is_finished()) && Instant::now() < deadline {
+                        std::thread::sleep(Duration::from_millis(10));
+                    }
+                    let _ = std::fs::remove_file(socket);
+                    let _ = std::fs::remove_file(socket.with_extension("thread"));
+                    return Ok(());
                 }
-                // Let every writer deliver its last frames (a stalled one gets two seconds).
-                let writers: Vec<_> = clients.into_values().map(|c| c.writer).collect();
-                let deadline = Instant::now() + Duration::from_secs(2);
-                while writers.iter().any(|w| !w.is_finished()) && Instant::now() < deadline {
-                    std::thread::sleep(Duration::from_millis(10));
-                }
-                let _ = std::fs::remove_file(socket);
+                // Every client hears the end (the CLI exits with the code, the screen relay restarts
+                // as a watcher of the final screen). The socket, model and log stay until the app
+                // stops this holder (`manager::stop`): nothing is written anywhere.
+                clients.retain(|_, c| c.send(frame.clone()));
+                ended = true;
+                interactive = None;
+                typists.clear();
+                remote.clear();
+                joined.clear();
+                // A resumed Codex thread must bind to its new holder, never to this one.
                 let _ = std::fs::remove_file(socket.with_extension("thread"));
-                return Ok(());
             }
         }
     }
+}
+
+/// Lightbulb's own attach client (`manager::attach_argv`), by the name that marks it.
+fn is_attach(argv: &[String]) -> bool {
+    argv.len() == 6 && argv[0] == "/bin/sh" && argv[3] == "lightbulb-attach"
 }
 
 /// Who typed an input: a `type` client's plain INPUT is a teammate's; everything else (the

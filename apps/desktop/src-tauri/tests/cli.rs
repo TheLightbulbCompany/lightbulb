@@ -207,7 +207,7 @@ fn cli_restores_the_terminal_after_ctrl_c_ends_the_session() {
     cli.keys.write_all(b"\x03").unwrap();
     assert_eq!(cli.exit_code(), 1, "a provider killed by a signal reports 1");
     assert!(cli.cooked());
-    eventually("the session to end", || !holder.exists());
+    eventually("the session to end", || manager::hello(&holder).is_some_and(|h| manager::is_ended(&h)));
 }
 
 #[test]

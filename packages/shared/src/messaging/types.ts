@@ -385,6 +385,10 @@ export interface LocalSession {
   /** Which live terminal a running session has: "held" (Lightbulb runs it) or "attach" (a Claude
    *  background session). Absent: its transcript is all there is. */
   terminal?: "held" | "attach";
+  /** Why a running session has no live terminal, as its Mac reports it (spec 2026-10-07 §5.1). */
+  terminalReason?: "plain" | "no-daemon" | "app" | "sdk" | "unknown";
+  /** An ended held session whose final screen its owner's Mac still shows; `terminal` stays set while it is. */
+  screenAvailable?: boolean;
   /** The session this one continues: a Claude session moved to the background (←) forks a new one. */
   forkedFrom?: string;
   /** Harness-derived: Claude ai-title or listing name, Codex first prompt. */

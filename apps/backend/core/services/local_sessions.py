@@ -25,6 +25,8 @@ from core.services.messaging import ApiProblem, ContractModel, require_room_memb
 from core.services.local_session_grants import AgentInvocation
 
 STATUSES = Literal["idle", "busy", "waiting-approval", "unknown", "offline", "ended"]
+# Why a running session has no live terminal, as its Mac says (spec 2026-10-07 §5.1).
+TerminalReason = Literal["plain", "no-daemon", "app", "sdk", "unknown"]
 # What a device may claim. `offline` is the backend's verdict on a lapsed lease and
 # `ended` is written by the ended frame; neither is ever a status the device reports.
 INPUT_STATUSES = Literal["idle", "busy", "waiting-approval", "unknown"]
@@ -261,6 +263,11 @@ class LocalSession(ContractModel):
     # Which live terminal a running session has: "held" (a Lightbulb holder runs it) or "attach"
     # (a Claude background session the Mac attaches to). Absent: its transcript is all there is.
     terminal: Literal["held", "attach"] | None = None
+    # Why a running session has no live terminal (spec 2026-10-07 §4 f, g); absent when it has one.
+    terminal_reason: TerminalReason | None = None
+    # An ended held session whose final screen its owner's Mac still shows (spec §5.4); `terminal`
+    # stays set while it is. Absent otherwise.
+    screen_available: bool | None = None
     # The session this one continues: a Claude session moved to the background (<-) is a fork.
     forked_from: OpaqueId | None = None
     # False while the owner has paused sharing this one session: only they can see it.
@@ -315,6 +322,8 @@ class LocalSession(ContractModel):
                 "pending_approval",
                 "start_id",
                 "terminal",
+                "terminal_reason",
+                "screen_available",
                 "forked_from",
                 "model",
                 "display_title",
@@ -595,6 +604,15 @@ def session_terminal(row: dict) -> Literal["held", "attach"] | None:
     return "held" if reported is None and row.get("holderId") else None
 
 
+def screen_available(row: dict, now: int | None = None) -> bool:
+    """An ended held session whose holder still shows its final screen (spec 2026-10-07 §5.4). The
+    Mac says so on the end and renews `screenUntil` with every heartbeat while it lasts; it lapses
+    when the app quits, relaunches or closes that holder."""
+    if row.get("endedAt") is None or session_terminal(row) != "held":
+        return False
+    return int(row.get("screenUntil") or 0) > (int(time.time()) if now is None else now)
+
+
 def ended_empty(provider: str, status: str, event_seq: int, control_unavailable_reason: str | None) -> bool:
     """A Claude Code session that ended before its first message: Claude writes a transcript only
     on that message, so there is nothing to show or resume (`claude --resume` answers "No
@@ -651,7 +669,13 @@ def _session_public(row: dict, viewer: str | None = None) -> LocalSession:
         public["status"] = "ended"
     elif row["onlineUntil"] <= int(time.time()):
         public["status"] = "offline"
-    public["terminal"] = None if public["status"] in ("ended", "offline") else session_terminal(row)
+    screen = public["status"] == "ended" and screen_available(row)
+    public["terminal"] = session_terminal(row) if public["status"] not in ("ended", "offline") or screen else None
+    if screen:
+        public["screenAvailable"] = True
+    reason = public.pop("terminalReason", None)
+    if public["status"] not in ("ended", "offline") and public["terminal"] is None and reason:
+        public["terminalReason"] = reason
     if not row["capabilitiesVerified"]:
         public["capabilities"] = Capabilities().model_dump(by_alias=True)
     public["teamControl"] = team_control_on(row)

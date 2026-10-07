@@ -89,22 +89,67 @@ fn holder_replays_from_an_offset_and_reports_a_gap_beyond_its_log() {
     assert!(read_until(&mut r, b"replay-me").len() >= 9);
 }
 
+/// An attach holder is one more client of the provider's own host (spec 2026-10-07 §4 k): when
+/// that client leaves there is no screen of ours to keep, and the next viewer needs a new client.
 #[test]
-fn holder_exits_with_its_provider_and_removes_its_socket() {
-    let socket = start_cat(&temp_dir());
+fn holder_attach_client_exit_closes_the_holder_and_removes_its_socket() {
+    let dir = temp_dir();
+    let argv = manager::attach_argv(Path::new("/bin/echo"), "8ed71738");
+    let argv: Vec<&str> = argv.iter().map(String::as_str).collect();
+    let socket = start(&dir, &argv);
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while socket.exists() && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert!(!socket.exists(), "an attach holder ends with its client");
+    assert!(manager::list_in(&dir).is_empty());
+}
+
+#[test]
+fn holder_keeps_the_final_screen_after_its_provider_exits_and_refuses_input() {
+    let dir = temp_dir();
+    let socket = start(&dir, &["/bin/sh", "-c", "read x; printf final-screen; exit 0"]);
+    std::fs::write(socket.with_extension("thread"), "11111111-1111-4111-8111-111111111111").unwrap();
+    assert_eq!(manager::ended_at(&socket), None, "a running holder is not ended");
     let mut c = attach(&socket, "interactive");
-    c.write_all(&encode(INPUT, b"\x04")).unwrap();
+    c.write_all(&encode(INPUT, b"go\r")).unwrap();
     loop {
         let (kind, _) = read_frame(&mut c).expect("EXIT before timeout");
         if kind == EXIT {
             break;
         }
     }
-    let deadline = Instant::now() + Duration::from_secs(5);
-    while socket.exists() && Instant::now() < deadline {
-        std::thread::sleep(Duration::from_millis(20));
-    }
-    assert!(!socket.exists());
+    assert_eq!(last_input(&socket), "owner");
+    // Still listed, and it says it ended.
+    let info = manager::list_in(&dir).into_iter().next().expect("the holder stays after its provider");
+    assert!(manager::is_ended(&info));
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as u64;
+    let at = manager::ended_at(&socket).expect("an ended holder says when its provider exited");
+    assert!(now.saturating_sub(at) < 30_000, "{at} is not a recent unix time in ms");
+    assert!(!socket.with_extension("thread").exists(), "an ended holder never claims a Codex thread");
+    // A new viewer gets the final screen.
+    let mut w = UnixStream::connect(&socket).unwrap();
+    w.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+    w.write_all(&encode(HELLO, br#"{"role":"watch"}"#)).unwrap();
+    let (kind, hello) = read_frame(&mut w).unwrap();
+    assert_eq!(kind, HELLO);
+    assert_eq!(serde_json::from_slice::<serde_json::Value>(&hello).unwrap()["ended"], true);
+    let (kind, snap) = read_frame(&mut w).unwrap();
+    assert_eq!(kind, SNAPSHOT);
+    assert!(split_offset(&snap).unwrap().1.windows(12).any(|x| x == b"final-screen"));
+    // An interactive client is only a watcher now, and a teammate's keys go nowhere.
+    let mut late = UnixStream::connect(&socket).unwrap();
+    late.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+    late.write_all(&encode(HELLO, br#"{"role":"interactive","cols":10,"rows":5}"#)).unwrap();
+    assert_eq!(read_frame(&mut late).unwrap().0, HELLO);
+    assert_eq!(read_frame(&mut late).unwrap().0, SNAPSHOT);
+    assert_eq!(size_of(&socket), (120, 40), "a late window never resizes the final screen");
+    let mut t = UnixStream::connect(&socket).unwrap();
+    t.write_all(&encode(HELLO, br#"{"role":"type"}"#)).unwrap();
+    t.write_all(&encode(INPUT, b"typed-after-exit")).unwrap();
+    std::thread::sleep(Duration::from_millis(200));
+    assert_eq!(last_input(&socket), "owner", "input after the end is refused");
+    // ponytail: the holder thread outlives this test (in-process); `manager::stop` would signal the test runner.
 }
 
 #[test]

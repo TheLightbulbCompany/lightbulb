@@ -1,7 +1,7 @@
 import { useAuth } from "@clerk/clerk-expo";
 import { SymbolView } from "expo-symbols";
 import {
-  ApiError, buildRows, canControlSession, groupRows, mainEvents, pendingApproval, receiptChip, sessionLabel, sessionRingState, sessionStatus, sessionTitle, sessionViewKey, unavailableReason, useHistorySource, useLocalSessionHistory, usePendingPrompt, useSessionCommand, useSessionOutbox, useSessionResume, useWorkspaceSessions,
+  ApiError, buildRows, canControlSession, groupRows, mainEvents, pendingApproval, receiptChip, sessionLabel, sessionRingState, sessionStatus, sessionTitle, sessionViewKey, terminalStateReason, unavailableReason, useHistorySource, useLocalSessionHistory, usePendingPrompt, useSessionCommand, useSessionOutbox, useSessionResume, useWorkspaceSessions,
   type LocalSession, type SessionControlClient, type SessionSource, type TranscriptItem,
 } from "@lightbulb/shared";
 import { randomUUID } from "expo-crypto";
@@ -31,6 +31,7 @@ import { useDesktopSessionApi } from "../../../lib/desktopSessions";
 import { JumpToLatest } from "../../../components/conversation/JumpToLatest";
 import { usePushedScreenKeyboardOffset } from "../../../lib/keyboardOffset";
 import { useReadBack } from "../../../lib/readBack";
+import { relativeTime } from "../../../lib/relativeTime";
 import { useMobileRooms } from "../../../lib/rooms";
 import { fetchMembers, useTeamsConfig, type CompanyMember } from "../../../lib/teamsData";
 
@@ -41,6 +42,7 @@ const BOTTOM_SLACK = 80;
 function sessionWhere(session: LocalSession, own: boolean, ownerName: string): string {
   const mac = own ? "your Mac" : `${ownerName}’s Mac`;
   if (session.status === "offline") return `${mac[0].toUpperCase()}${mac.slice(1)} is offline`;
+  if (session.status === "ended" && session.endedAt) return `Ended · ${relativeTime(Date.parse(session.endedAt))}`;
   return `${sessionStatus[session.status]} on ${mac}`;
 }
 
@@ -329,6 +331,7 @@ function SessionBody({
   const insets = useSafeAreaInsets();
   const busy = session.status === "busy";
   const ended = session.status === "ended";
+  const reason = terminalStateReason(session);
   const source = useHistorySource(client, session, revision);
   const history = useLocalSessionHistory(client, source.sessionId, source.latestEventSeq, revision, onAccessLost, { pollMs });
   const [text, setText] = useState("");
@@ -400,10 +403,12 @@ function SessionBody({
           </Pressable>
         </View>
       )}
-      {own && session.provider === "claude" && !session.terminal && !ended && session.status !== "offline" && (
-        // A plain `claude` is a transcript only; ← in its terminal (or the desktop setting) makes it live.
+      {reason !== null && (
+        // No terminal here yet: what gets its screen shared (spec 2026-10-07 §4 f, g).
         <Text style={[styles.meta, styles.liveHint, { color: palette.fgMute }]} accessibilityLiveRegion="polite">
-          Press ← in its terminal to share this one live, or turn on Share every session live in Settings to make every new session live.
+          {reason === "plain"
+            ? own ? "Press ← in its terminal to share this one live, or turn on Share every session live in Settings to make every new session live." : `Ask ${ownerName} to press ← in their terminal.`
+            : own ? "Start it again with lightbulb codex to share its screen." : `Ask ${ownerName} to start it again with lightbulb codex.`}
         </Text>
       )}
       {remoteApproval && <SessionApprovalCard key={session.pendingApproval?.approvalId} session={session} client={client} allowed={control} own={own} ownerName={ownerName} />}

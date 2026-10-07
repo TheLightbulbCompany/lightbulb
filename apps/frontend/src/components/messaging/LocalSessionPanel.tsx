@@ -6,7 +6,7 @@ import { capture } from "@/lib/analytics";
 import { Info, MessageSquare, Send } from "lucide-react";
 import {
   canControlSession, useSessionResume, mainEvents, pendingApproval, receiptChip, sendBlockedReason, sessionChanges, sessionFooter, sessionLabel, sessionPlan, sessionStatus, unavailableReason,
-  pickupRequestLine, pickupStatus, useHistorySource, useLocalSessionHistory, usePendingPrompt, useSessionCommand, useSessionJoinRequest, useSessionOutbox,
+  pickupRequestLine, pickupStatus, terminalStateReason, useHistorySource, useLocalSessionHistory, usePendingPrompt, useSessionCommand, useSessionJoinRequest, useSessionOutbox,
   type LocalSession, type SessionControlClient, type SessionSource,
 } from "@lightbulb/shared";
 import Link from "next/link";
@@ -71,9 +71,12 @@ export function LocalSessionPanel({ session, ownerName, own, client, revision, o
   // session through `claude attach`. A plain interactive Claude and any plain Codex: the transcript.
   const hasTerminal = !!session.terminal;
   const running = session.status !== "ended" && session.status !== "offline";
+  // An ended held session keeps its final screen while the owner's app runs (spec 2026-10-07 §5.4). Everyone, its
+  // owner at that Mac included, watches it through the relay: the app's own panel closes with the provider.
+  const endedScreen = session.status === "ended" && session.screenAvailable === true && hasTerminal;
   // An offline session still probes this Mac's holder: "offline" is the relay's view (sharing off, a reconnect), not the Mac's.
   const local = useLocalTerminal(session.status === "ended" || (running && !hasTerminal) ? null : { sessionId: session.sessionId }, slot, details === null);
-  const watchRemote = local === "none" && hasTerminal && running && !!onEvent && !!client.watchLocalSession;
+  const watchRemote = local === "none" && hasTerminal && (running || endedScreen) && !!onEvent && !!client.watchLocalSession;
   const [screenLive, setScreenLive] = useState(false);
   // False once the terminal is read-only for this viewer (the Mac refused input): the message box is the way to send then.
   const [termCanType, setTermCanType] = useState(true);
@@ -170,21 +173,29 @@ export function LocalSessionPanel({ session, ownerName, own, client, revision, o
   </>;
 
   const endedEmpty = session.provider === "claude" && session.latestEventSeq === 0 && !session.controlUnavailableReason;
+  const endedAt = session.endedAt ? <time dateTime={session.endedAt} title={new Date(session.endedAt).toLocaleString()}>{timeAgo(session.endedAt)}</time> : null;
   const endedPanel = <div className="session-state-panel" role="status">
-    <p className="session-state-title">{session.endedAt ? <>Ended <time dateTime={session.endedAt} title={new Date(session.endedAt).toLocaleString()}>{timeAgo(session.endedAt)}</time></> : "Ended"}</p>
+    <p className="session-state-title">{endedAt ? <>Ended {endedAt}</> : "Ended"}</p>
     <p>{endedEmpty ? "This session ended before anything was sent." : "The screen is gone: this session's terminal closed."}</p>
   </div>;
+  const endedLine = <p className="session-ended-line" role="status">{endedAt ? <>Ended · {endedAt}</> : "Ended"}</p>;
   const offlinePanel = <div className="session-state-panel" role="status">
     <p className="session-state-title">{own ? "Your Mac is offline" : `${ownerName}'s Mac is offline`}</p>
     {session.lastEventAt && <p>Last seen {timeAgo(session.lastEventAt)}</p>}
+    <Button type="button" variant="outline" size="sm" disabled>Resume</Button>
+    <p>{`Resume works once ${own ? "your" : `${ownerName}'s`} Mac is back.`}{!own && canPickUp(session) ? " Pick up continues it on your Mac now." : ""}</p>
   </div>;
+  const reason = terminalStateReason(session);
   const noticePanel = <div className="session-state-panel" role="status">
     <p className="session-state-title">This session was not started through Lightbulb, so its screen is not here.</p>
-    {session.provider === "claude" && (own
+    {reason === "plain" && (own
       ? <p>Press ← in its terminal to share this one live, or turn on Share every session live in {isDesktopApp()
         ? <Link className="underline underline-offset-4" href="/settings?panel=desktop#share-every-session-live">Settings</Link>
         : "Settings"} to make every new session live.</p>
       : <p>Ask {ownerName} to press ← in their terminal.</p>)}
+    {reason === "no-daemon" && (own
+      ? <p>Start it again with <code>lightbulb codex</code> to share its screen.</p>
+      : <p>Ask {ownerName} to start it again with <code>lightbulb codex</code>.</p>)}
   </div>;
 
   return <>
@@ -239,9 +250,9 @@ export function LocalSessionPanel({ session, ownerName, own, client, revision, o
     {local !== "none"
       ? <div ref={slot} className="local-session-terminal" role="region" aria-label="Session terminal" />
       : <>
-      {session.status === "ended" ? endedPanel : session.status === "offline" ? offlinePanel : notStarted ? noticePanel : null}
+      {session.status === "ended" ? (endedScreen ? endedLine : endedPanel) : session.status === "offline" ? offlinePanel : notStarted ? noticePanel : null}
       {watchRemote && <SessionTerminalView session={session} onEvent={onEvent!} watch={client.watchLocalSession!} onLive={setScreenLive} onCanType={setTermCanType}
-        admitted={control && session.shared !== false && !(session.inputPaused && !own)}
+        admitted={running && control && session.shared !== false && !(session.inputPaused && !own)}
         input={client.sendLocalSessionInput ? (bytes, epoch) => client.sendLocalSessionInput!(session.sessionId, toBase64(bytes), epoch) : undefined} />}
       {terminalLive && control && !own && session.inputPaused && <p className="text-sm text-muted-foreground">Paused while {ownerName} answers a request to join.</p>}
       {liveTerminal && <div className="local-session-feedback">{feedback}</div>}

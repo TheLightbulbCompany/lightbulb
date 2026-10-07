@@ -93,14 +93,18 @@ founders publish it.
 **Which sessions are shared**: every Claude Code and Codex session on a Mac where its owner
 turned session sharing on, whether it was started in Lightbulb (**New session**, a remote
 start, a pick-up, a resume, `lightbulb claude` / `lightbulb codex`) or as a plain `claude` or
-`codex` in any terminal. The owner can pause one session or turn sharing off for the Mac. A
-running session shows its live terminal when Lightbulb started it, when it is a Claude Code
+`codex` in any terminal. The owner can pause one session or turn sharing off for the Mac. When a
+person pairs a Mac, **Share every session live** starts on (they can turn it off there or later
+in Settings), so a plain `claude` or `codex` typed in a new terminal tab runs through Lightbulb.
+A running session shows its live terminal when Lightbulb started it, when it is a Claude Code
 background session, or when it is a plain Codex session (Codex's own background service runs
 it, and Lightbulb opens one more Codex terminal on the same conversation). Any other running
-session shows a notice that it was not started through Lightbulb (its owner presses ← in its
-terminal to bring it here). On the web and in the desktop app people never see a transcript; the phone
-still shows a session's history as a list until it gets the live terminal. You still read the
-structured record with `lightbulb_local_sessions`.
+session shows a notice that it was not started through Lightbulb, with the one thing that brings
+its screen here: for a plain Claude session its owner presses ← in its terminal; for a Codex
+session started with `--no-daemon` its owner starts it again with `lightbulb codex`. On the web
+and in the desktop app people never see a transcript; the phone still shows a session's history
+as a list until it gets the live terminal. You still read the structured record with
+`lightbulb_local_sessions`.
 
 **New session** (web and desktop): a small form with no first message. The person picks
 **Claude Code** or **Codex**, an approved folder and, optionally, the model and mode, then presses
@@ -112,8 +116,11 @@ Rooms' **Devices & sessions** panel lists human-shared Claude/Codex sessions;
 opening one from that list opens the session in that room's right column.
 Opening a session from the sidebar Sessions section or from a session link
 instead fills the middle with the sharer's DM beside it. A running session
-shows as a live terminal. A live terminal has no Lightbulb message box under it: the terminal is the only input (the box returns only if the Mac refuses remote typing). A viewer who cannot type sees a "Watching · Ask to join" line instead. An ended session shows "Ended" with Resume, and a session whose Mac is
-offline shows "Mac offline" with the follow-up box. The sidebar Sessions section lists live
+shows as a live terminal. A live terminal has no Lightbulb message box under it: the terminal is the only input (the box returns only if the Mac refuses remote typing). A viewer who cannot type sees a "Watching · Ask to join" line instead. An ended session that Lightbulb hosted keeps its final screen, read-only, under "Ended · <time>"
+with Resume, for as long as the owner's Lightbulb app runs; once the app quits or restarts the
+panel says the screen is gone, still with Resume. Nothing of the screen is saved anywhere. A
+session whose Mac is offline shows "Mac offline" with Resume greyed out, the follow-up box, and
+**Pick up** for a teammate when its owner allows pick-up. The sidebar Sessions section lists live
 sessions; All sessions lists every session. Desktop sharing is opt-in; disabling it stops local sharing. Native
 credentials and approvals remain on the owner's machine. Follow-ups reach the
 owner's terminal labelled with the sender's room handle (`Message from @aden`

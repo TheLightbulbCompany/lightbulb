@@ -14,6 +14,7 @@ pub(crate) mod snapshot;
 mod remote_input;
 pub(crate) mod resume;
 pub(crate) mod screen;
+mod session_states;
 mod stats;
 mod start_links;
 mod transport;
@@ -1015,6 +1016,22 @@ impl NativeSession {
             (None, Some(_)) => "attach",
             _ => "none",
         }
+    }
+
+    /// Why a running session has no live terminal (spec 2026-10-07 §4 f, g); None when it has one.
+    /// `plain`: Claude in a shell without "Share every session live" (← moves it to a background
+    /// job). `no-daemon`: a Codex TUI off Codex's shared daemon (`codex --no-daemon`).
+    fn terminal_reason(&self) -> Option<&'static str> {
+        if self.terminal() != "none" {
+            return None;
+        }
+        Some(match self.provider.as_str() {
+            "claude" => "plain",
+            // ponytail: codex::DESKTOP_RESOURCES's app, repeated; S7 replaces this arm with `app`.
+            "codex" if self.process.executable.starts_with("/Applications/ChatGPT.app/") => "unknown",
+            "codex" => "no-daemon",
+            _ => "unknown",
+        })
     }
 }
 

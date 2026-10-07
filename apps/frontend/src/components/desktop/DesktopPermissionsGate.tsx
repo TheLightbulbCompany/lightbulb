@@ -49,8 +49,23 @@ export function DesktopPermissionsGate() {
     DEFAULT_DESKTOP_PERMISSIONS,
   );
   const [choice, setChoice] = useState<boolean | null>(null);
-  // Off by default: it edits ~/.zshrc and ~/.bashrc, so only on an explicit yes.
-  const [live, setLive] = useState(false);
+  // On by default (owner ruling 2026-10-07) for a Mac that was never offered the switch: the item
+  // says which files it edits, and one click turns it off. A Mac that already answered (an earlier
+  // pairing, or the notice) keeps its answer: `stored` is what its rc files say now (read for every
+  // Mac). Until that is read an offered Mac's switch waits, and if it cannot be read the switch
+  // stays disabled, so nothing is written.
+  // Read on every render: the notice can make the offer while this is mounted.
+  const offered = (() => { try { return !!localStorage.getItem(LIVE_SHARING_OFFER_KEY); } catch { return true; } })();
+  const [stored, setStored] = useState<boolean | null>(null);
+  const [liveChoice, setLive] = useState<boolean | null>(null);
+  const liveKnown = !offered || stored !== null;
+  const live = liveChoice ?? (offered ? stored ?? false : true);
+  useEffect(() => {
+    if (!shouldShowGate) return;
+    let current = true;
+    getTauri()?.core?.invoke<boolean>("shell_integration_status").then(on => { if (current && typeof on === "boolean") setStored(on); }, () => {});
+    return () => { current = false; };
+  }, [shouldShowGate]);
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
   const operation = useRef(0);
@@ -112,9 +127,13 @@ export function DesktopPermissionsGate() {
           return;
         }
       }
-      if (enableSharing && live) {
+      // What the person pressed is always applied, whatever this dialog believes the rc files say
+      // (off removes the block). Untouched: a never-offered Mac gets the default, an offered one
+      // keeps what it has.
+      const write = liveChoice ?? (!offered && stored !== true ? true : null);
+      if (enableSharing && write !== null) {
         // Best effort: the switch stays in Settings if this build or the rc files refuse.
-        await getTauri()?.core?.invoke("shell_integration_set", { enabled: true }).catch(() => {});
+        await getTauri()?.core?.invoke("shell_integration_set", { enabled: write }).catch(() => {});
       }
       // This dialog made the offer, whatever the answer: the notice for Macs paired before the
       // switch existed (LiveSharingOffer) must not ask again.
@@ -156,7 +175,7 @@ export function DesktopPermissionsGate() {
               <button
                 key={key}
                 type="button"
-                disabled={saving || (key !== "sessions" && key !== "live" && !shouldShowGate)}
+                disabled={saving || (key === "live" ? !liveKnown : key !== "sessions" && !shouldShowGate)}
                 onClick={() => key === "sessions" ? setChoice(!sessionChoice) : key === "live" ? setLive(!live) : toggle(key)}
                 className={[
                   "flex w-full items-center gap-3 rounded-md border p-3 text-left transition",

@@ -488,6 +488,7 @@ impl Host {
     }
 
     fn reset_relay_features(&mut self) {
+        super::session_states::read_features(&Value::Null);
         for mirror in self.mirrors.values_mut() {
             mirror.subagents.relay = false;
             mirror.subagents.relay_known = false;
@@ -760,10 +761,11 @@ impl Host {
                 generation: mirror.generation.clone(),
                 sent: Instant::now(),
             };
-            let frame = json!({"type":"local.session.ended","sessionId":session,
+            let mut frame = json!({"type":"local.session.ended","sessionId":session,
                 "generation":mirror.generation,
                 "reason":mirror.ended_reason.as_deref().unwrap_or("exited"),
                 "endedAt":ended_at});
+            super::session_states::add_screen(&mut frame, mirrors, &key);
             ended_pending.remove(index);
             return Ok(Some((reported, frame)));
         }
@@ -1175,7 +1177,7 @@ impl Host {
         // An end the relay has not been told about -- because it happened while the
         // socket was down, or in a previous run of this process -- is still owed to it.
         self.liveness_tick();
-        super::screen::index(&self.mirrors);
+        super::session_states::index(&self.mirrors);
         let mut recovering_ended = ended_recovery_keys(&self.mirrors);
         let mut unreported: Vec<String> = self
             .mirrors
@@ -1271,6 +1273,7 @@ impl Host {
                         }
                         self.heartbeat_dirty.clear();
                         let frames = device_heartbeats_with_controls(&self.mirrors, &registered, relay_reads_stats, relay_reads_controls, relay_reads_live_terminal, relay_reads_remote_input, relay_reads_terminal, relay_reads_presence, relay_reads_pickups, relay_reads_band_owner_only)?;
+                        let frames = super::session_states::with_screens(frames, &self.mirrors);
                         super::presence::retain(&frames.iter().flat_map(super::presence::frame_sids).collect::<Vec<_>>());
                         heartbeat_frames = frames.into();
                         if heartbeat_frames.is_empty() && last_idle.elapsed() >= IDLE_HEARTBEAT {
@@ -1343,7 +1346,7 @@ impl Host {
                         last_probe = Instant::now();
                         let moved = self.approval_tick();
                         self.heartbeat_dirty.extend(moved);
-                        super::screen::index(&self.mirrors);
+                        self.heartbeat_dirty.extend(super::session_states::index(&self.mirrors));
                     }
                     if reaped.elapsed() >= Duration::from_secs(60) {
                         reaped = Instant::now();
@@ -1419,6 +1422,7 @@ impl Host {
                             relay_reads_live_terminal = body["features"].as_array().is_some_and(|f| f.iter().any(|x| x == "liveTerminal"));
                             relay_reads_remote_input = body["features"].as_array().is_some_and(|f| f.iter().any(|x| x == "remoteInput"));
                             relay_reads_terminal = body["features"].as_array().is_some_and(|f| f.iter().any(|x| x == "sessionTerminal"));
+                            super::session_states::read_features(&body["features"]);
                             relay_reads_presence = body["features"].as_array().is_some_and(|f| f.iter().any(|x| x == "sessionPresence"));
                             relay_reads_pickups = body["features"].as_array().is_some_and(|f| f.iter().any(|x| x == "pickupRequests"));
                             relay_reads_band_owner_only = body["features"].as_array().is_some_and(|f| f.iter().any(|x| x == "bandOwnerOnly"));
@@ -1495,6 +1499,7 @@ impl Host {
                             let Rpc::Heartbeat{sent,wall,sids} = rpc else {return Err("mismatched session acknowledgment".into());};
                             super::snapshot::offer(&body["pickup"], &self.mirrors);
                             super::screen::offer(&body["watching"]);
+                            super::session_states::read_ack(&body);
                             super::presence::offer_ack(&body, &sids);
                             super::resume::offer(&body["resume"], &self.mirrors);
                             let server = body["serverTime"].as_u64().ok_or("missing server time")?;
@@ -2301,6 +2306,7 @@ fn device_heartbeats_with_controls(
         }
         if terminal {
             entry["terminal"] = json!(m.native.terminal());
+            super::session_states::add_reason(&mut entry, &m.native);
         }
         if ascii_wire_len(&envelope(std::slice::from_ref(&entry)))? > 16384 {
             // One session too big to travel even alone would make every frame it
@@ -3375,8 +3381,13 @@ pub(super) mod tests {
         mirror.subagents.relay_known = true;
         let mut host = test_host(dir.path(), vec![(SID, mirror)]);
 
+        // Only `endedScreens`: it changes no frame without a real ended holder, so tests running
+        // beside this one never see it.
+        super::super::session_states::read_features(&json!(["endedScreens"]));
+
         host.reset_relay_features();
 
+        assert!(!super::super::session_states::reads_ended_screens(), "an older relay on the next socket must get no `screens` frame");
         assert!(!host.mirrors[SID].subagents.relay);
         assert!(!host.mirrors[SID].subagents.relay_known);
     }
@@ -5239,7 +5250,7 @@ pub(super) mod tests {
                 "the relay rejects the whole frame over one unknown status word"
             );
             let ack = json!({"type":"local.device.heartbeat.ack","rejected":[SID_B],
-                "reconcile":[],"serverTime":1010,"watching":[]});
+                "reconcile":[],"serverTime":1010,"features":[],"watching":[]});
             let golden_ack: Value = serde_json::from_str(GOLDEN_HEARTBEAT_ACK).unwrap();
             assert_eq!(frame_keys(&ack), frame_keys(&golden_ack));
             reply(&mut socket, ack).await;

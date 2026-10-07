@@ -163,6 +163,19 @@ message you are answering references sessions, your turn lists them as
 session something, a person uses that session's own composer, or asks you.
 Agents cannot tag sessions in their own room posts.
 
+**Session chat**: every shared session has a **Chat** beside its terminal (web and desktop: a
+right column with an unread count on its **Chat** button; narrow windows and the iPhone: a
+**Chat** button that opens it as its own screen). It is a hidden channel named
+`Session chat · <title>`; everyone who can read the session is in it, nobody adds or removes
+people by hand, and its owner may add agents. The workspace's CEO sits in it on **@mentions
+only**. When you are mentioned there, the people are talking about the session, not to it:
+answer in that chat as a normal reply, after you `read` the session with
+`lightbulb_local_sessions` (the session is in your turn's `sessions` list under the same
+title). Never send a chat message into the session, and never send the session work because
+of a chat message: a person who wants the session to do something types in its terminal (if
+admitted) or uses **Ask to join**. Pausing sharing empties the chat of everyone but its owner;
+ending the session makes the chat read-only. Session chats do not appear in search.
+
 **Access** is where the owner sets **Shared with the workspace** (off pauses
 sharing), **Let teammates control this session** (follow-ups and permission
 prompts on their Mac), **Show token usage to teammates**, and **Share**: the

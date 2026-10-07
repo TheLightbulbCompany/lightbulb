@@ -163,15 +163,19 @@ mod tests {
                 if p.is_dir() {
                     walk(&p, base, out);
                 } else if !p.file_name().unwrap().to_string_lossy().contains(".test.") {
-                    out.push(p.strip_prefix(base).unwrap().to_string_lossy().into_owned());
+                    let rel = p.strip_prefix(base).unwrap().to_string_lossy().into_owned();
+                    // Left out on purpose: the Mac app serves MCP and the skill itself.
+                    if rel != "lightbulb/.mcp.json" && !rel.starts_with("lightbulb/skills/") {
+                        out.push(rel);
+                    }
                 }
             }
         }
-        let base = Path::new(env!("CARGO_MANIFEST_DIR")).join("mods");
+        let base = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../packages/claude-plugin");
         let mut found = Vec::new();
         walk(&base, &base, &mut found);
         for f in &found {
-            assert!(FILES.iter().any(|(rel, _)| rel == f), "mods/{f} is missing from plugin::FILES");
+            assert!(FILES.iter().any(|(rel, _)| rel == f), "packages/claude-plugin/{f} is missing from plugin::FILES");
         }
         assert_eq!(found.len(), FILES.len());
     }

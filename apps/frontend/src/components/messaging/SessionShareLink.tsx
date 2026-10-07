@@ -58,7 +58,7 @@ export function SessionShareLink({ session, client }: { session: LocalSession; c
         <option value="anyone">Anyone with the link</option>
       </select>
       {link.audience === "anyone" && <p role="note" className="session-setting-warning">
-        Anyone with the link sees this session&apos;s title, who runs it, the tool and its state, and can continue it with a copy of the conversation in their Claude Code. Likely secrets are redacted from that copy; anything else in it is not.
+        Anyone with the link sees this session&apos;s title, who runs it, the tool and its state{session.provider === "claude" ? ", and can continue it with a copy of the conversation in their Claude Code. Likely secrets are redacted from that copy; anything else in it is not." : "."}
       </p>}
       {link.audience === "anyone" && session.pickup?.privateRepo && <p className="session-setting-warning">This conversation includes code Claude read from your private repository.</p>}
       {session.provider === "claude" && <p className="session-setting-about">Teammates with the link can pick it up with your uncommitted changes, unredacted. Files your repository ignores are never uploaded. Kept until 7 days after the session ends.</p>}

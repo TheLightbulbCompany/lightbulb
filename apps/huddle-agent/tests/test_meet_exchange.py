@@ -386,3 +386,13 @@ async def test_an_answer_cut_before_its_person_turned_away_is_kept_once_in_the_h
     await h.tick()
     await settle(h)
     assert backend.late_answers == [] and h._voice is not None and h._voice.path == "announce"
+
+
+def test_a_line_about_a_colleague_is_not_a_handoff_to_them():
+    """Codex on #3792: "Leo is pushing the fix" said to the agent closed its voice as a turn to Leo."""
+    people = [{"name": "Leo Park"}, {"name": "Dan"}]
+    for line in ("Leo is pushing the fix", "Dan has the details", "Dan will push it tonight", "Dan can push it"):
+        assert not h_mod.opens_with_person(line, people), line
+    for line in ("Dan, is it ready?", "Dan will you push it?", "Dan what do you think?", "Leo you there?",
+                 "Dan please push it", "Leo did you push that fix?"):
+        assert h_mod.opens_with_person(line, people), line

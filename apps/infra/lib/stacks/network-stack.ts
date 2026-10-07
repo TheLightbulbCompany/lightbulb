@@ -192,7 +192,7 @@ export class NetworkStack extends cdk.Stack {
           // the source address is API GW's: key on X-Lightbulb-Client-Ip, which
           // the API GW integration overwrites with $context.identity.sourceIp
           // (api-stack.ts), so a client cannot spoof it. Traffic that skips API
-          // GW (the bv- door) has no header and is not counted by this rule.
+          // GW (the bv- door) can carry a client-set one, so it is scoped out below.
           name: "PerIpRateLimit",
           priority: 30,
           action: countOnly,
@@ -207,14 +207,20 @@ export class NetworkStack extends cdk.Stack {
               // out rather than pool unrelated users into one bucket. Vercel rewrites
               // them onto the api[-env] host under this path prefix (the host header
               // API GW sees is api[-env], so the path is the only marker).
+              // The bv- door (/api/v1/gateway/*) is out too: CloudFront forwards every
+              // viewer header there, so a client could set X-Lightbulb-Client-Ip itself.
               scopeDownStatement: {
                 notStatement: {
                   statement: {
-                    byteMatchStatement: {
-                      searchString: "/__paperclip_proxy__",
-                      fieldToMatch: { uriPath: {} },
-                      positionalConstraint: "STARTS_WITH",
-                      textTransformations: [{ priority: 0, type: "NONE" }],
+                    orStatement: {
+                      statements: ["/__paperclip_proxy__", "/api/v1/gateway/"].map((prefix) => ({
+                        byteMatchStatement: {
+                          searchString: prefix,
+                          fieldToMatch: { uriPath: {} },
+                          positionalConstraint: "STARTS_WITH",
+                          textTransformations: [{ priority: 0, type: "NONE" }],
+                        },
+                      })),
                     },
                   },
                 },

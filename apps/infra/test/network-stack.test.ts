@@ -128,5 +128,6 @@ describe("NetworkStack — WAF web ACL (count-only)", () => {
     expect(scope).toContain("NotStatement");
     expect(scope).toContain('"UriPath":{}');
     expect(scope).toContain("/__paperclip_proxy__");
+    expect(scope).toContain("/api/v1/gateway/"); // bv- door: client can set the header
   });
 });

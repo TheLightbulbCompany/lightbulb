@@ -228,7 +228,7 @@ class Runs:
             self._sink.failed(run)
         elif kind == "run_ended":
             run.ended = True
-            if frame.get("outcome") not in (None, "completed", "success"):
+            if frame.get("outcome") not in (None, "done"):  # the wire's success is "done" (bridge _WIRE_OUTCOME)
                 logger.warning("run %s of agent %s ended %s: %s", run.run_id, run.agent_id, frame.get("outcome"),
                                str({k: v for k, v in frame.items() if k in ("error", "reason", "code", "message", "detail")})[:300])
             self._say_ready(run, True)

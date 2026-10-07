@@ -206,3 +206,17 @@ def test_runs_ignore_old_event_type():
     sink, runs = one_run()
     runs.on_event({"type": "call.turn.frame", "payload": {"runId": "r1", "frame": {"type": "run_ended"}}})
     assert sink.calls == []
+
+
+def test_a_done_run_logs_no_warning_but_an_error_outcome_does(caplog):
+    """Codex on #3792: the wire's success outcome is "done"; the warning fired on every good run."""
+    import logging
+
+    sink, runs = one_run()
+    with caplog.at_level(logging.WARNING, logger="huddle.frames"):
+        rframe(runs, "r1", {"type": "run_ended", "outcome": "done"})
+    assert not caplog.records
+    sink, runs = one_run()
+    with caplog.at_level(logging.WARNING, logger="huddle.frames"):
+        rframe(runs, "r1", {"type": "run_ended", "outcome": "error", "message": "boom"})
+    assert any("ended error" in r.getMessage() for r in caplog.records)

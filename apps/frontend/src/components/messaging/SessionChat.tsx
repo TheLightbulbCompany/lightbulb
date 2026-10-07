@@ -22,10 +22,8 @@ const NO_REACTIONS: readonly string[] = [];
  * the draft. It posts only through the room message door; a chat seat never lets anyone type into
  * the session. Threads and reactions are left out: replies render inline.
  */
-export function SessionChat({ sessionId, sessionOwnerId, knownRoomId, openChat, onClose, onRoom, onRead }: {
+export function SessionChat({ sessionId, sessionOwnerId, openChat, onClose, onRoom, onRead }: {
   sessionId: string;
-  /** The chat room the session list already names for this reader: it loads beside the door's POST. */
-  knownRoomId?: string;
   /** The session's own person: their name takes the owner colour, as in the terminal. */
   sessionOwnerId: string;
   openChat: (sessionId: string) => Promise<RoomDetail>;
@@ -38,38 +36,23 @@ export function SessionChat({ sessionId, sessionOwnerId, knownRoomId, openChat, 
   const { userId } = useAuth();
   const rooms = useRooms(null, true, true, false, false);
   const { selectRoom, sendMessage } = rooms;
-  // Read once: the list names the room after a first open, and that must not open the door again.
-  const [known] = useState(knownRoomId ?? null);
-  const [roomId, setRoomId] = useState<string | null>(known);
-  // The door (a POST: seat, lifecycle, fence) must answer before anyone posts; reading need not wait.
-  const [opened, setOpened] = useState(false);
+  // Nothing is selected until the door (a POST: seat, lifecycle, fence) answers, and then only the
+  // room it returns. A room id the session list already names is never loaded ahead of it: that id
+  // can be stale, and a refused read cannot be undone by a door that then opens.
+  const [roomId, setRoomId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const refreshRoom = useRef(rooms.refreshRoom);
-  useEffect(() => { refreshRoom.current = rooms.refreshRoom; });
   useEffect(() => {
     let alive = true;
-    // Its messages are on screen from here on, so notifications treat it as watched already.
-    if (known) { selectRoom(known); onRoom?.(known); }
     openChat(sessionId).then((room) => {
       if (!alive) return;
       setRoomId(room.roomId);
-      setOpened(true);
       selectRoom(room.roomId);
-      // The known room's detail was read beside the door, and selecting the same id reads nothing:
-      // the door may have just archived or reopened it (the session ended or resumed), so read it again.
-      if (known === room.roomId) void refreshRoom.current?.();
       onRoom?.(room.roomId);
     }, (e: unknown) => {
-      if (!alive) return;
-      setError(e instanceof ApiError && e.status === 409 ? "This chat is full." : "Chat is not available for this session.");
-      // The error panel replaced the room. The slot lets go of it too, or the known room would keep
-      // its subscription and its cursor would keep advancing behind the panel.
-      selectRoom(null);
-      setRoomId(null);
-      onRoom?.(null);
+      if (alive) setError(e instanceof ApiError && e.status === 409 ? "This chat is full." : "Chat is not available for this session.");
     });
     return () => { alive = false; onRoom?.(null); };
-  }, [sessionId, known, openChat, selectRoom, onRoom]);
+  }, [sessionId, openChat, selectRoom, onRoom]);
 
   // Sharing paused while the column was open: the hook already dropped the subscription and stopped
   // reading; the "Access removed" panel is not the room on screen either.
@@ -126,7 +109,7 @@ export function SessionChat({ sessionId, sessionOwnerId, knownRoomId, openChat, 
       <RoomTimeline roomId={roomId ?? "opening"} messages={messages} readSeq={null} ownLastSentSeq={null}
         renderMessage={renderMessage} historyComplete={rooms.historyComplete} historyLoading={rooms.historyLoading}
         historyError={rooms.historyErrorMessage} onLoadOlder={() => void rooms.loadOlder()}
-        empty={<p className="room-empty">{opened ? "Talk about the session here. The terminal stays the session's." : "Opening chat…"}</p>}>
+        empty={<p className="room-empty">{roomId ? "Talk about the session here. The terminal stays the session's." : "Opening chat…"}</p>}>
         {rooms.optimisticMessages.filter((m) => m.roomId === roomId).map((m) =>
           <p key={m.clientMessageId} className="room-message opacity-60">{m.text}</p>)}
       </RoomTimeline>
@@ -134,7 +117,7 @@ export function SessionChat({ sessionId, sessionOwnerId, knownRoomId, openChat, 
         ? <p role="status" className="room-composer room-archived text-sm text-muted-foreground">This session ended. Its chat is read-only.</p>
         : <RoomComposer text={text} onTextChange={setText} members={members} clientMessageId={clientMessageId}
           sendState={rooms.sendState(clientMessageId)} onSubmit={send} onRetry={send}
-          onReconcile={(id) => rooms.reconcileSend(id)} onUploadAttachment={rooms.uploadAttachment} disabled={!opened || !rooms.httpReady} label="Message the people here" placeholder="Message the people here" roomKind="channel" />}
+          onReconcile={(id) => rooms.reconcileSend(id)} onUploadAttachment={rooms.uploadAttachment} disabled={!roomId || !rooms.httpReady} label="Message the people here" placeholder="Message the people here" roomKind="channel" />}
     </>}
   </aside>;
 }

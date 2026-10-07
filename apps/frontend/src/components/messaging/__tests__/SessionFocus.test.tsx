@@ -4,8 +4,8 @@ import { afterEach, expect, it, vi } from "vitest";
 import { ApiError, type LocalSession, type SessionSource } from "@lightbulb/shared";
 import { SessionFocus, sessionChatLayout } from "../SessionFocus";
 
-vi.mock("../SessionChat", () => ({ SessionChat: ({ onClose, openChat, onRead, knownRoomId }: { onClose: () => void; openChat: (id: string) => Promise<unknown>; onRead?: () => void; knownRoomId?: string }) =>
-  <aside aria-label="Session chat" data-known-room={knownRoomId}><button onClick={onClose}>Close chat</button><button onClick={() => void openChat("s1")}>Open door</button><button onClick={onRead}>Read</button></aside> }));
+vi.mock("../SessionChat", () => ({ SessionChat: ({ onClose, openChat, onRead }: { onClose: () => void; openChat: (id: string) => Promise<unknown>; onRead?: () => void }) =>
+  <aside aria-label="Session chat"><button onClick={onClose}>Close chat</button><button onClick={() => void openChat("s1")}>Open door</button><button onClick={onRead}>Read</button></aside> }));
 
 const session: LocalSession = { sessionId: "s1", deviceId: "mac", humanUserId: "alice", provider: "claude", terminal: "held", providerVersion: "2.1.269", generation: "g", status: "busy", activeTurnId: null,
   capabilities: { sendMode: "queue", steer: false, interrupt: false }, capabilitiesVerified: true, controlUnavailableReason: null, latestEventSeq: 0, title: "Load test" };
@@ -324,9 +324,7 @@ it("refreshes the session list when the open chat is read, so the header and the
     submitLocalSessionCommand: vi.fn(), getLocalSessionCommand: vi.fn(), openSessionChat: vi.fn() } as unknown as SessionSource["client"];
   render(<SessionFocus focus={{ sessionId: "s1" }} entries={[{ session: { ...session, chatRoomId: "chat-1", chatUnread: 1 }, ownerName: "Alice", own: false }]} loading={false} hintRevision={0} client={client}
     resolveSessionOwner={resolveSessionOwner} onAccessLost={onAccessLost} onClose={vi.fn()} chatOpen onChatOpenChange={vi.fn()} />);
-  // The room the list already names loads beside the door's POST.
-  expect(await screen.findByRole("complementary", { name: "Session chat" })).toHaveAttribute("data-known-room", "chat-1");
-  await userEvent.click(screen.getByRole("button", { name: "Read" }));
+  await userEvent.click(await screen.findByRole("button", { name: "Read" }));
   expect(onAccessLost).toHaveBeenCalledTimes(1);
 });
 

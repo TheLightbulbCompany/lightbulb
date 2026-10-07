@@ -191,7 +191,7 @@ export function SessionFocus({ focus, entries, loading, hintRevision, client, re
           {resolvedFallback?.error && <Button variant="ghost" onClick={retryFallback}>Try again</Button>}
         </div>}
     </div>
-    {chatShown && session && openChat && <SessionChat key={session.sessionId} sessionId={session.sessionId} knownRoomId={session.chatRoomId}
+    {chatShown && session && openChat && <SessionChat key={session.sessionId} sessionId={session.sessionId}
       sessionOwnerId={session.humanUserId} openChat={openChat} onClose={toggleChat} onRoom={onChatRoom} onRead={onAccessLost} />}
   </section>;
 }

@@ -91,24 +91,31 @@ it("closes from the left of its header, away from the session's own close (a dou
   expect(close).not.toHaveClass("ml-auto");
 });
 
-it("shows its frame at once and loads the room the session already names while the door opens", async () => {
+it("shows its frame at once, and selects nothing until the door answers with the room", async () => {
   let land!: (room: RoomDetail) => void;
   const openChat = vi.fn(() => new Promise<RoomDetail>((resolve) => { land = resolve; }));
-  rooms.value = { ...rooms.value, messages: [] };
-  render(<SessionChat sessionId="s1" sessionOwnerId="user_alice" knownRoomId="chat-1" openChat={openChat} onClose={vi.fn()} />);
-  expect(selectRoom).toHaveBeenCalledWith("chat-1"); // in parallel with the POST
+  const onRoom = vi.fn();
+  // The hook mock holds chat-1's messages throughout: the column must not show a room it has not opened.
+  render(<SessionChat sessionId="s1" sessionOwnerId="user_alice" openChat={openChat} onClose={vi.fn()} onRoom={onRoom} />);
   expect(screen.getByRole("heading", { name: "Chat" })).toBeInTheDocument();
   expect(screen.getByText("Opening chat…")).toBeInTheDocument();
   expect(screen.getByLabelText("Message the people here")).toBeDisabled(); // the door must open before anyone posts
+  expect(selectRoom).not.toHaveBeenCalled(); // no room, so no subscription and no read
+  expect(onRoom).not.toHaveBeenCalled();
+  expect(screen.queryByText("is it the relay?")).not.toBeInTheDocument();
   await act(async () => { land(detail); });
+  expect(selectRoom).toHaveBeenCalledExactlyOnceWith("chat-1");
+  expect(onRoom).toHaveBeenLastCalledWith("chat-1");
   expect(screen.getByLabelText("Message the people here")).toBeEnabled();
-  expect(screen.queryByText("Opening chat…")).not.toBeInTheDocument();
+  expect(screen.getByText("is it the relay?")).toBeInTheDocument();
 });
 
-it("shows the known room's messages before the door answers", () => {
-  render(<SessionChat sessionId="s1" sessionOwnerId="user_alice" knownRoomId="chat-1" openChat={vi.fn(() => new Promise<RoomDetail>(() => {}))} onClose={vi.fn()} />);
-  expect(screen.getByText("is it the relay?")).toBeInTheDocument();
-  expect(screen.getByLabelText("Message the people here")).toBeDisabled();
+it("selects nothing when the door refuses", async () => {
+  const onRoom = vi.fn();
+  render(<SessionChat sessionId="s1" sessionOwnerId="user_alice" openChat={vi.fn(async () => { throw new ApiError(404, null); })} onClose={vi.fn()} onRoom={onRoom} />);
+  expect(await screen.findByText("Chat is not available for this session.")).toBeInTheDocument();
+  expect(selectRoom).not.toHaveBeenCalled();
+  expect(onRoom).not.toHaveBeenCalled();
 });
 
 it("says so each time its read cursor moves: on open and on a message read while it is open", async () => {
@@ -119,29 +126,6 @@ it("says so each time its read cursor moves: on open and on a message read while
   rooms.value = { ...rooms.value, activeRoom: { ...detail, lastReadSeq: 2 } }; // markRead landed for a new arrival
   view.rerender(<SessionChat {...props} />);
   await waitFor(() => expect(onRead).toHaveBeenCalledTimes(2));
-});
-
-it("reports the known room as on screen before the door answers, and takes it back when the door refuses", async () => {
-  const onRoom = vi.fn();
-  let refuse!: (error: unknown) => void;
-  const openChat = vi.fn(() => new Promise<RoomDetail>((_, reject) => { refuse = reject; }));
-  render(<SessionChat sessionId="s1" sessionOwnerId="user_alice" knownRoomId="chat-1" openChat={openChat} onClose={vi.fn()} onRoom={onRoom} />);
-  expect(onRoom).toHaveBeenLastCalledWith("chat-1"); // its messages are on screen: no toast for them
-  await act(async () => { refuse(new ApiError(404, null)); });
-  expect(await screen.findByText("Chat is not available for this session.")).toBeInTheDocument();
-  expect(onRoom).toHaveBeenLastCalledWith(null);
-  // The slot lets go of the room: nothing is fetched or marked read behind the error panel.
-  expect(selectRoom).toHaveBeenLastCalledWith(null);
-});
-
-it("reads the known room again once the door answers (a session that ended during the race is not left writable)", async () => {
-  const refreshRoom = vi.fn();
-  rooms.value = { ...rooms.value, refreshRoom };
-  let land!: (room: RoomDetail) => void;
-  render(<SessionChat sessionId="s1" sessionOwnerId="user_alice" knownRoomId="chat-1" openChat={vi.fn(() => new Promise<RoomDetail>((resolve) => { land = resolve; }))} onClose={vi.fn()} />);
-  expect(refreshRoom).not.toHaveBeenCalled();
-  await act(async () => { land({ ...detail, archivedAt: "2026-10-07T11:00:00Z" }); });
-  expect(refreshRoom).toHaveBeenCalledTimes(1);
 });
 
 it("stops counting the room as on screen once access to it is removed", async () => {

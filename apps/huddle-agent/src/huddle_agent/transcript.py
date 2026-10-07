@@ -365,6 +365,20 @@ def is_question(text: str) -> bool:
 _TRAIL_WORDS = frozenset("um uh er hmm oh and so well like but the a".split())
 
 
+def opens_with_person(text: str, people: list[dict]) -> bool:
+    """The line opens with a person's name and goes on ("Leo, did you push that?", "Aden can you hear me"):
+    said to that person. `people`: the /team rows."""
+    tokens = _tokens(text)
+    i = 1 if tokens and tokens[0] in _LEADS else 0
+    i += 1 if len(tokens) > i and tokens[i] == "," else 0
+    names = {" ".join(_tokens(n)) for p in people for n in (p.get("name") or "", (p.get("name") or "").split(" ")[0])}
+    names.discard("")
+    for n in (2, 1):
+        if len(tokens) > i + n and " ".join(tokens[i : i + n]) in names:
+            return True
+    return False
+
+
 def trails_off(text: str) -> bool:
     """The speaker stopped mid-thought: the transcriber's "..." at its end, or nothing but filler ("Um", "Oh,
     and"). Its rest is on the way."""

@@ -780,8 +780,18 @@ class LocalSessionRelay:
         slots = asyncio.Semaphore(4)
         # One strong read for the whole frame. Only a session's first pass may take its row from
         # here: a duplicate entry or a revision retry reads again, and the fenced write below
-        # catches a row that moved since.
+        # catches a row that moved since. A batched row is never grounds to reject: a session
+        # registered while its group waited for a slot reads as missing here.
         first: dict[str, dict | None] = {}
+
+        def foreign(row: dict | None, item: HeartbeatSession) -> bool:
+            return (
+                row is None
+                or row["deviceId"] != connection["device_id"]
+                or row["generation"] != item.generation
+                or row.get("connectionId") != cid
+                or row.get("endedAt") is not None
+            )
 
         async def renew(items: list[HeartbeatSession]) -> tuple[list[str], list[dict]]:
             nonlocal hint
@@ -789,17 +799,10 @@ class LocalSessionRelay:
             retries: dict[str, int] = {}
             async with slots:
                 for item in items:
-                    if item.session_id in first:
-                        row = first.pop(item.session_id)
-                    else:
+                    row = first.pop(item.session_id) if item.session_id in first else None
+                    if foreign(row, item):
                         row = await repo.get_session(owner, item.session_id)
-                    if (
-                        row is None
-                        or row["deviceId"] != connection["device_id"]
-                        or row["generation"] != item.generation
-                        or row.get("connectionId") != cid
-                        or row.get("endedAt") is not None
-                    ):
+                    if foreign(row, item):
                         # Unknown, superseded or ended here: the desktop re-registers it.
                         rejected.append(item.session_id)
                         continue
@@ -890,8 +893,7 @@ class LocalSessionRelay:
                     if moved or scanned or controls_changed or terminal_changed or row["onlineUntil"] <= now:
                         hint = True
                     # Reconcile after delivery: this heartbeat's own dispatch is part of what the journal must settle.
-                    # `updated` is the row this heartbeat just wrote: delivery starts from it.
-                    await self.dispatch_session(owner, item.session_id, updated)
+                    await self.dispatch_session(owner, item.session_id)
                     pending = await self._reconcile_for(owner, item.session_id, row["generation"], spaced=True)
                     if pending is not None:
                         reconcile.append({"sessionId": item.session_id, **pending})
@@ -1244,11 +1246,10 @@ class LocalSessionRelay:
             self._connection_check(row["connectionId"], connection),
         ]
 
-    async def dispatch_session(self, owner: str, sid: str, fresh: dict | None = None) -> None:
-        """`fresh`: the META row the caller just wrote, used for the first pass only."""
+    async def dispatch_session(self, owner: str, sid: str) -> None:
         for _ in range(6):
             try:
-                row, fresh = fresh or await repo.get_session(owner, sid), None
+                row = await repo.get_session(owner, sid)
                 if not row:
                     return
                 commands = await repo.list_commands(owner, sid)

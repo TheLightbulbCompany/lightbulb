@@ -1922,15 +1922,26 @@ async def test_device_heartbeat_retries_only_the_row_that_lost_its_revision_race
         response = await relay(transport).handle_message("conn-1", frame)
 
     assert response["type"] == "local.device.heartbeat.ack" and response["rejected"] == []
-    # One batched read for the frame and no per-session first read: the only single read is
-    # the contested row's retry.
+    # One batched read for the frame and no per-session first read: each session's one single
+    # read is delivery's own, and only the contested row's retry reads again.
     batched.assert_awaited_once_with(OWNER, sids)
-    assert [call.args for call in single.await_args_list] == [(OWNER, contested)]
+    reads = [call.args[1] for call in single.await_args_list]
+    assert {sid: reads.count(sid) for sid in sids} == {sids[0]: 1, contested: 2, sids[2]: 1}
     # The contested row is re-read and written again; the others are written once, so the
     # frame itself ran once.
     assert puts == {sids[0]: 1, contested: 2, sids[2]: 1}
     rows = [await repo.get_session(OWNER, sid) for sid in sids]
     assert [row["status"] for row in rows] == ["idle"] * 3
+
+
+@pytest.mark.asyncio
+async def test_device_heartbeat_never_rejects_on_the_batched_row_alone(transport):
+    sid = await start(transport)
+    # The batch ran before this session was registered onto the connection: it read nothing.
+    with patch.object(repo, "get_sessions", AsyncMock(return_value=[None])):
+        response = await relay(transport).handle_message("conn-1", heartbeat(sid, status="idle"))
+    assert response["rejected"] == []
+    assert (await repo.get_session(OWNER, sid))["status"] == "idle"
 
 
 @pytest.mark.asyncio

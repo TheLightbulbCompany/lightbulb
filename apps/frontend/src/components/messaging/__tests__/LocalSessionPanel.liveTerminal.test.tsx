@@ -339,6 +339,11 @@ it("says Ended just now, not that the screen is gone, while a held session's kep
   expect(screen.getByText(gone)).toBeTruthy();
   expect(screen.queryByText("Ended just now")).toBeNull();
   view.unmount();
+  // Opened before the Mac's first heartbeat after the exit: the server sends no terminal for an ended session without a screen, only that it was held.
+  const early = render(<LocalSessionPanel session={{ ...ended, terminal: undefined, wasHeld: true, endedAt: new Date().toISOString() }} ownerName="Alice" own={false} client={client as never} revision={0} onAccessLost={() => {}} onEvent={() => () => {}} />);
+  expect(screen.getByText("Ended just now")).toBeTruthy();
+  expect(screen.queryByText(gone)).toBeNull();
+  early.unmount();
   // Never held: there is no screen to wait for.
   render(<LocalSessionPanel session={{ ...ended, terminal: undefined, endedAt: new Date().toISOString() }} ownerName="Alice" own={false} client={client as never} revision={0} onAccessLost={() => {}} onEvent={() => () => {}} />);
   expect(screen.getByText(gone)).toBeTruthy();

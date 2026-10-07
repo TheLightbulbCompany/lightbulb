@@ -268,6 +268,9 @@ class LocalSession(ContractModel):
     # An ended held session whose final screen its owner's Mac still shows (spec §5.4); `terminal`
     # stays set while it is. Absent otherwise.
     screen_available: bool | None = None
+    # An ended session that was held: its kept screen may still be reported (the Mac does that on
+    # its first heartbeat after the provider exits), so a viewer waits before saying it is gone.
+    was_held: bool | None = None
     # The session this one continues: a Claude session moved to the background (<-) is a fork.
     forked_from: OpaqueId | None = None
     # False while the owner has paused sharing this one session: only they can see it.
@@ -327,6 +330,7 @@ class LocalSession(ContractModel):
                 "terminal",
                 "terminal_reason",
                 "screen_available",
+                "was_held",
                 "forked_from",
                 "model",
                 "display_title",
@@ -678,6 +682,8 @@ def _session_public(row: dict, viewer: str | None = None) -> LocalSession:
     public["terminal"] = session_terminal(row) if public["status"] not in ("ended", "offline") or screen else None
     if screen:
         public["screenAvailable"] = True
+    if public["status"] == "ended" and session_terminal(row) == "held":
+        public["wasHeld"] = True
     reason = public.pop("terminalReason", None)
     if public["status"] not in ("ended", "offline") and public["terminal"] is None and reason:
         public["terminalReason"] = reason

@@ -85,6 +85,23 @@ async def test_the_mac_names_why_a_running_session_has_no_terminal(transport):
 
 
 @pytest.mark.asyncio
+async def test_an_ended_session_says_it_was_held_before_the_mac_reports_its_screen(transport):
+    # A viewer who opens it between the end and the Mac's first heartbeat after the exit: no
+    # terminal and no screen yet, but the panel must know a kept screen may still come.
+    held = await start(transport)
+    assert (await public(held)).was_held is None, "a running session has its terminal instead"
+    await end(transport, held)
+    seen = await public(held)
+    assert (seen.status, seen.terminal, seen.screen_available, seen.was_held) == ("ended", None, None, True)
+    assert seen.model_dump(by_alias=True, mode="json")["wasHeld"] is True
+    # Never held (the Mac said so before the end): there is no screen to wait for.
+    plain = {**await repo.get_session(OWNER, held), "terminal": "none"}
+    seen = service._session_public(plain, BOB.user_id)
+    assert seen.was_held is None
+    assert "wasHeld" not in seen.model_dump(by_alias=True, mode="json")
+
+
+@pytest.mark.asyncio
 async def test_an_ended_held_session_keeps_its_terminal_while_the_mac_keeps_its_screen(transport, db):
     sid = await start(transport)
     await ack(transport, sid)

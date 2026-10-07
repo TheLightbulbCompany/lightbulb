@@ -81,7 +81,8 @@ export function LocalSessionPanel({ session, ownerName, own, client, revision, o
   // An offline session still probes this Mac's holder: "offline" is the relay's view (sharing off, a reconnect), not the Mac's.
   const local = useLocalTerminal(session.status === "ended" || (running && !hasTerminal) ? null : { sessionId: session.sessionId }, slot, details === null);
   // Until then the panel does not say the screen is gone; the timer redraws it when the wait is over.
-  const screenDueAt = session.status === "ended" && hasTerminal && !endedScreen && session.endedAt ? Date.parse(session.endedAt) + SCREEN_DUE_MS : 0;
+  // (`wasHeld`: the server sends no `terminal` for an ended session until its screen is reported.)
+  const screenDueAt = session.status === "ended" && (hasTerminal || session.wasHeld === true) && !endedScreen && session.endedAt ? Date.parse(session.endedAt) + SCREEN_DUE_MS : 0;
   const [, redraw] = useState(0);
   useEffect(() => {
     const left = screenDueAt - Date.now();

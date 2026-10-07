@@ -391,6 +391,8 @@ export interface LocalSession {
   terminalReason?: "plain" | "no-daemon" | "app" | "sdk" | "unknown";
   /** An ended held session whose final screen its owner's Mac still shows; `terminal` stays set while it is. */
   screenAvailable?: boolean;
+  /** An ended session that was held: its kept screen may still be on its way from the Mac. */
+  wasHeld?: boolean;
   /** The session this one continues: a Claude session moved to the background (←) forks a new one. */
   forkedFrom?: string;
   /** Harness-derived: Claude ai-title or listing name, Codex first prompt. */

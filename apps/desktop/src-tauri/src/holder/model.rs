@@ -48,6 +48,20 @@ pub struct Model {
     tail: Vec<u8>,
     /// The alternate screen as it was when the provider last left it, and when that was.
     left_alternate: Option<(Vec<u8>, Instant)>,
+    /// A control sequence the last read ended inside (`ESC[` and parameters, no final byte yet):
+    /// one that leaves the alternate screen is found whole however the reads split it.
+    partial_csi: Vec<u8>,
+}
+/// No real control sequence is longer; a longer run of parameter bytes is not carried.
+const PARTIAL_CSI_MAX: usize = 64;
+
+/// The control sequence `bytes` ends inside, if any: from its last ESC, when only `[` and
+/// parameter bytes follow it.
+fn partial_csi(bytes: &[u8]) -> &[u8] {
+    let Some(start) = bytes.iter().rposition(|b| *b == 0x1b) else { return &[] };
+    let rest = &bytes[start..];
+    let open = rest.len() == 1 || (rest[1] == b'[' && rest[2..].iter().all(|b| (0x30..=0x3f).contains(b)));
+    if open && rest.len() <= PARTIAL_CSI_MAX { rest } else { &[] }
 }
 const TAIL: usize = 16;
 /// A provider that exits this soon after leaving the alternate screen left it to shut down (Claude
@@ -79,7 +93,7 @@ fn completed(hay: &[u8], needle: &[u8], skip: usize) -> usize {
 
 impl Model {
     pub fn new(rows: u16, cols: u16) -> Self {
-        Self { parser: vt100::Parser::new(rows, cols, 5000), tail: Vec::new(), left_alternate: None }
+        Self { parser: vt100::Parser::new(rows, cols, 5000), tail: Vec::new(), left_alternate: None, partial_csi: Vec::new() }
     }
 
     /// Feed provider output. Returns what to write back to the pty: the probe answers.
@@ -95,7 +109,11 @@ impl Model {
         }
         // Stop just before each leave of the alternate screen, to keep the picture it ends.
         let mut done = 0;
-        for cut in alternate_leaves(&seen, skip) {
+        let mut csi = std::mem::take(&mut self.partial_csi);
+        let carried = csi.len();
+        csi.extend_from_slice(bytes);
+        self.partial_csi = partial_csi(&csi).to_vec();
+        for cut in alternate_leaves(&csi, carried) {
             self.parser.process(&bytes[done..cut]);
             done = cut;
             let screen = self.parser.screen();
@@ -218,6 +236,19 @@ mod tests {
             assert!(has(&model.snapshot(), b"resume lines"), "the live snapshot is unchanged");
             model.feed(b"\x1b[?1049hagain");
             assert_eq!(model.ended_picture(Instant::now()), None, "back on the alternate screen");
+        }
+        // Longer than any fixed tail, split anywhere: the exact split from review, and a byte at a time.
+        let long: &[u8] = b"\x1b[?1000;1002;1003;1049l";
+        let byte_wise: Vec<&[u8]> = long.chunks(1).collect();
+        for parts in [vec![&long[..20], &long[20..]], byte_wise] {
+            let mut model = Model::new(10, 40);
+            model.feed(b"\x1b[?1049hpicture-drawn");
+            for part in parts {
+                model.feed(part);
+            }
+            model.feed(b"resume lines");
+            let picture = model.ended_picture(Instant::now()).expect("the picture it left");
+            assert!(has(&picture, b"picture-drawn") && !has(&picture, b"resume lines"));
         }
         let mut model = Model::new(10, 40);
         model.feed(b"classic renderer\x1b[?1049l\x1b[?25l\x1b[?2004l");

@@ -34,7 +34,7 @@ reqwest = { version = "0.12", default-features = false, features = ["json", "rus
 urlencoding = "2"
 security-framework = "3"
 ed25519-dalek = { version = "2", features = ["pem", "pkcs8", "rand_core"] }
-rand = "0.8"
+rand = "0.9"
 jsonwebtoken = "9"
 
 [target.'cfg(unix)'.dependencies]

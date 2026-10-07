@@ -54,7 +54,7 @@ type UiState =
       manifest: UpdateManifest;
     }
   | { kind: "installing" }
-  | { kind: "error"; message: string };
+  | { kind: "error"; message: string; crossDeviceInstall?: boolean };
 
 /** Diagnostic text stays useful without exposing expiring download credentials. */
 function updateErrorMessage(error: unknown): string {
@@ -169,9 +169,11 @@ export function DesktopUpdater({
       // The Rust side calls app.restart() after install — we'll never
       // reach this branch in practice, but keep it for the no-op case.
     } catch (e) {
+      const message = updateErrorMessage(e);
       setState({
         kind: "error",
-        message: updateErrorMessage(e),
+        message,
+        crossDeviceInstall: /cross[- ]device link|\bos error 18\b/i.test(message),
       });
     }
   }, [tauri, state]);
@@ -245,6 +247,13 @@ export function DesktopUpdater({
           >
             retry
           </button>
+          {state.crossDeviceInstall && (
+            <p style={{ margin: "4px 0" }}>
+              The updater could not move the app between locations. Save your work and quit Lightbulb.
+              Eject any Lightbulb disk image, download the latest installer from the official Lightbulb website,
+              drag Lightbulb to Applications, then open it from Applications.
+            </p>
+          )}
           <details style={{ marginTop: 4 }}>
             <summary style={{ cursor: "pointer" }}>Error details</summary>
             <p style={{ whiteSpace: "pre-wrap", overflowWrap: "anywhere", margin: "4px 0" }}>{state.message}</p>

@@ -61,6 +61,28 @@ describe("DesktopUpdater webview-driven flow", () => {
     await userEvent.click(await screen.findByRole("button", { name: /install v0.4.606/i }));
     expect(await screen.findByText(/install: signature verification failed/)).toBeTruthy();
     expect(document.body.textContent).not.toContain("PRIVATE_TOKEN");
+    expect(screen.queryByText(/save your work and quit Lightbulb/i)).toBeNull();
+    expect(screen.getByRole("button", { name: /retry/i })).toBeTruthy();
+  });
+
+  it.each([
+    "INSTALL: CROSS-DEVICE LINK (OS ERROR 18)",
+    "install: cross-device link",
+    "install: operation failed (os error 18)",
+  ])("shows manual installation guidance for %s on an older native app", async (error) => {
+    installTauriBridge(vi.fn(async (cmd: string) => {
+      if (cmd === "updater_identity") return { target: "darwin-aarch64", current_version: "0.4.465" };
+      throw `${error} https://example.com/app?token=PRIVATE_TOKEN`;
+    }));
+    const manifest = { version: "0.4.606", url: "https://example.com/app", signature: "signature", notes: null, pub_date: null };
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ status: 200, ok: true, json: async () => manifest }));
+    render(<DesktopUpdater />);
+    await userEvent.click(await screen.findByRole("button", { name: /check for updates/i }));
+    await userEvent.click(await screen.findByRole("button", { name: /install v0.4.606/i }));
+    expect(await screen.findByText(/save your work and quit Lightbulb/i)).toBeTruthy();
+    expect(screen.getByText(/drag Lightbulb to Applications/i)).toBeTruthy();
+    expect(screen.getByText(new RegExp(error.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i"))).toBeTruthy();
+    expect(document.body.textContent).not.toContain("PRIVATE_TOKEN");
     expect(screen.getByRole("button", { name: /retry/i })).toBeTruthy();
   });
 

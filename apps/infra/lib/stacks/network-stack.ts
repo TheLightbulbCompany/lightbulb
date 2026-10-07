@@ -212,7 +212,7 @@ export class NetworkStack extends cdk.Stack {
                       statements: ["company.", "dev.company."].map((prefix) => ({
                         byteMatchStatement: {
                           searchString: prefix,
-                          fieldToMatch: { singleHeader: { name: "x-isol8-public-host" } },
+                          fieldToMatch: { singleHeader: { Name: "x-isol8-public-host" } },
                           positionalConstraint: "STARTS_WITH",
                           textTransformations: [{ priority: 0, type: "LOWERCASE" }],
                         },

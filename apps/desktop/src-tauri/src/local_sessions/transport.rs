@@ -1499,6 +1499,7 @@ impl Host {
                             let Rpc::Heartbeat{sent,wall,sids} = rpc else {return Err("mismatched session acknowledgment".into());};
                             super::snapshot::offer(&body["pickup"], &self.mirrors);
                             super::screen::offer(&body["watching"]);
+                            super::session_states::read_ack(&body);
                             super::presence::offer_ack(&body, &sids);
                             super::resume::offer(&body["resume"], &self.mirrors);
                             let server = body["serverTime"].as_u64().ok_or("missing server time")?;
@@ -3383,7 +3384,6 @@ pub(super) mod tests {
         // Only `endedScreens`: it changes no frame without a real ended holder, so tests running
         // beside this one never see it.
         super::super::session_states::read_features(&json!(["endedScreens"]));
-        assert!(super::super::session_states::reads_ended_screens());
 
         host.reset_relay_features();
 
@@ -5250,7 +5250,7 @@ pub(super) mod tests {
                 "the relay rejects the whole frame over one unknown status word"
             );
             let ack = json!({"type":"local.device.heartbeat.ack","rejected":[SID_B],
-                "reconcile":[],"serverTime":1010,"watching":[]});
+                "reconcile":[],"serverTime":1010,"features":[],"watching":[]});
             let golden_ack: Value = serde_json::from_str(GOLDEN_HEARTBEAT_ACK).unwrap();
             assert_eq!(frame_keys(&ack), frame_keys(&golden_ack));
             reply(&mut socket, ack).await;

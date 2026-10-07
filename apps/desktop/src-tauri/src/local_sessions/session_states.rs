@@ -1,6 +1,6 @@
 //! Session states beyond a running terminal (spec 2026-10-07 §5.1, §5.4): an ended held session's
 //! final screen, which its holder keeps while this app runs, and why a running session has no
-//! terminal. `transport.rs` calls in here at seven one-line seams; `screen.rs` is untouched: a kept
+//! terminal. `transport.rs` calls in here at eight one-line seams; `screen.rs` is untouched: a kept
 //! ended screen is indexed as live, so a viewer's watch reaches its holder like a running one's.
 //!
 //! A screen is an ended session's only when its holder's provider exited and that session ended
@@ -93,6 +93,21 @@ fn kept<'a>(mirrors: &'a BTreeMap<String, Mirror>, end: &impl Fn(&str) -> Option
     kept
 }
 
+/// A heartbeat ack's `features`, when it lists any: None from a relay older than the key, which
+/// leaves what this connection knows (nothing, after `reset_relay_features`) as it is.
+fn ack_features(ack: &Value) -> Option<(bool, bool)> {
+    ack.get("features").map(features)
+}
+
+/// A heartbeat ack. With every session ended nothing registers after a reconnect, so this is where
+/// the connection learns `endedScreens` again and its kept screens go on being renewed.
+pub(super) fn read_ack(ack: &Value) {
+    if let Some((screens, reason)) = ack_features(ack) {
+        READS_ENDED_SCREENS.store(screens, SeqCst);
+        READS_TERMINAL_REASON.store(reason, SeqCst);
+    }
+}
+
 fn screens_frame(sids: &[String]) -> Value {
     json!({"type": "local.device.heartbeat", "sessions": [], "screens": sids})
 }
@@ -103,11 +118,17 @@ pub(super) fn with_screens(frames: Vec<Value>, mirrors: &BTreeMap<String, Mirror
 }
 
 fn with_screens_if(reads: bool, mut frames: Vec<Value>, mirrors: &BTreeMap<String, Mirror>, end: &impl Fn(&str) -> Option<u64>) -> Vec<Value> {
+    let sids: Vec<String> = kept(mirrors, end).into_iter().filter_map(|(_, m)| m.session_id.clone()).collect();
+    if sids.is_empty() {
+        return frames;
+    }
     if reads {
-        let sids: Vec<String> = kept(mirrors, end).into_iter().filter_map(|(_, m)| m.session_id.clone()).collect();
-        if !sids.is_empty() {
-            frames.push(screens_frame(&sids));
-        }
+        frames.push(screens_frame(&sids));
+    } else if frames.is_empty() {
+        // Not known yet on this connection, and no session's heartbeat is going: the plain idle
+        // heartbeat any relay takes, so its ack says (`read_ack`). An older relay gets one each
+        // cadence while a screen is kept, and nothing else.
+        frames.push(json!({"type": "local.device.heartbeat", "sessions": []}));
     }
     frames
 }
@@ -268,6 +289,27 @@ mod tests {
         let kept = kept(&mirrors, &|_: &str| Some(0));
         assert_eq!(kept.len(), 24);
         assert_eq!(kept[0].1.session_id.as_deref(), Some("s29"));
+    }
+
+    #[test]
+    fn a_reconnect_with_only_ended_screens_learns_the_feature_again_from_a_heartbeat_ack() {
+        let mirrors = BTreeMap::from([("a".to_string(), ended("ab12cd34", 5, SID))]);
+        let end = |_: &str| Some(5_000);
+        // A new socket: nothing is known, and no live session will register. The heartbeat is
+        // the plain idle one any relay takes, sent so that its ack can say what the relay reads.
+        let (reads, _) = features(&Value::Null);
+        assert_eq!(with_screens_if(reads, vec![], &mirrors, &end), [json!({"type": "local.device.heartbeat", "sessions": []})]);
+        assert_eq!(with_screens_if(reads, vec![json!({"type": "x"})], &mirrors, &end).len(), 1, "a heartbeat goes anyway: its ack will say");
+        assert!(with_screens_if(reads, vec![], &BTreeMap::new(), &end).is_empty(), "no kept screen, nothing to ask for");
+        // An older relay's ack lists nothing: nothing is learned and no `screens` is sent.
+        let old = json!({"type": "local.device.heartbeat.ack", "rejected": [], "reconcile": [], "serverTime": 1});
+        assert_eq!(ack_features(&old), None);
+        // This relay's does: the next heartbeat names the screens again.
+        let (reads, reason) = ack_features(&json!({"type": "local.device.heartbeat.ack", "features": ["endedScreens"]})).unwrap();
+        assert!(reads && !reason);
+        assert_eq!(with_screens_if(reads, vec![], &mirrors, &end)[0]["screens"], json!([SID]));
+        // An ack that lists features without it turns it off.
+        assert_eq!(ack_features(&json!({"features": []})), Some((false, false)));
     }
 
     #[test]

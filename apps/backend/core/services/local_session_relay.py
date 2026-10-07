@@ -850,6 +850,10 @@ class LocalSessionRelay:
                 "rejected": rejected,
                 "reconcile": reconcile,
                 "serverTime": now,
+                # A Mac whose sessions have all ended registers nothing after a reconnect: this
+                # is where it learns what the relay reads (its kept `screens`). Older desktops
+                # read the ack by key and ignore it.
+                "features": FEATURES,
             }
         finally:
             if hint:

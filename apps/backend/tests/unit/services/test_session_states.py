@@ -247,3 +247,14 @@ async def test_a_screen_that_comes_back_tells_the_open_panels_once(transport, db
     set_meta(db, sid, screenUntil=1)  # a heartbeat gap let the lease lapse
     await relay(transport).handle_message("conn-1", screens(sid))
     assert len(told) == 2
+
+
+@pytest.mark.asyncio
+async def test_every_heartbeat_ack_lists_the_relays_features(transport):
+    """A Mac whose sessions have all ended registers nothing after a reconnect: the ack of its
+    idle heartbeat (and of every other) is where it learns `endedScreens` again."""
+    sid = await start(transport)
+    for body in (heartbeat(sid), {**fixture("device-heartbeat"), "sessions": []}, screens()):
+        acked = await relay(transport).handle_message("conn-1", body)
+        assert acked["type"] == "local.device.heartbeat.ack"
+        assert acked["features"] == relay_module.FEATURES

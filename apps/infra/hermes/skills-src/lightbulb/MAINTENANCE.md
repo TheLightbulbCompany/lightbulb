@@ -124,7 +124,7 @@ MAINTENANCE (Lightbulb engineers): every claim in this skill is anchored to
                                  apps/desktop/src-tauri/src/local_sessions.rs (track);
                                  apps/frontend/src/components/messaging/{LocalSessionPanel,NativeSessionTranscript,RoomDirectory,SessionFocus,RoomComposer}.tsx;
                                  packages/shared/src/messaging/mentions.ts (human session tokens);
-                                 apps/desktop/src-tauri/skills/lightbulb-session-sharing/SKILL.md; SKILL.md (sessions routing row).
+                                 packages/claude-plugin/lightbulb/skills/lightbulb-session-sharing/SKILL.md; SKILL.md (sessions routing row).
                                  Optional adapter/tool availability requires the promoted Hermes image; docs are not deployment evidence.
   - Session Details dialog .. references/surfaces.md (status line, Details tabs, Access switches, footer)
                               <- apps/frontend/src/components/messaging/LocalSessionPanel.tsx (status line, Details + Pick up
@@ -168,7 +168,7 @@ MAINTENANCE (Lightbulb engineers): every claim in this skill is anchored to
                                  apps/desktop/src-tauri/src/session_start.rs (terminal_start / start / cli_start);
                                  apps/desktop/src-tauri/src/cli.rs (`lightbulb claude|codex`);
                                  apps/frontend/src/components/messaging/StartSessionDialog.tsx;
-                                 apps/desktop/src-tauri/skills/lightbulb-session-sharing/SKILL.md.
+                                 packages/claude-plugin/lightbulb/skills/lightbulb-session-sharing/SKILL.md.
   - Session resume .......... references/surfaces.md ("Resume" paragraph)
                               <- apps/backend/core/services/session_resume.py (who may resume, plan mode, 24 h, revoke);
                                  apps/desktop/src-tauri/src/local_sessions/resume.rs (same folder, approved now; refusal codes);

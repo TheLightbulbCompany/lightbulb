@@ -36,6 +36,8 @@ name: desktop-build
   pull_request:
     paths:
     - apps/desktop/**
+    # The app compiles in the Claude plugin's files (local_sessions/plugin.rs, enrollment.rs).
+    - packages/claude-plugin/**
   workflow_dispatch: {}
 permissions:
   contents: write

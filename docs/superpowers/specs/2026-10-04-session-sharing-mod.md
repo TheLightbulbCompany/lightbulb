@@ -165,7 +165,7 @@ logged and never blocks sharing (the mod is an addition).
 
 | Piece | Where |
 |---|---|
-| Mod | `apps/desktop/src-tauri/mods/lightbulb-sessions/` |
+| Mod | `packages/claude-plugin/lightbulb/` (plugin `lightbulb`; was `lightbulb-sessions`) |
 | `mod.sock`, decide, install | `local_sessions/mod_socket.rs`, `enrollment.rs`, `transport.rs` |
 | Band keys stripped from a teammate's input | `local_sessions/remote_input.rs`, `session_screen.py` (`fromOwner`) |
 | Paused notice for an older Mac | `apps/frontend/src/components/messaging/LocalSessionPanel.tsx` |

@@ -1,5 +1,0 @@
-{
-  "name": "lightbulb",
-  "owner": { "name": "Lightbulb" },
-  "plugins": [{ "name": "lightbulb-sessions", "source": "./lightbulb-sessions", "description": "Session sharing in Claude Code: who is watching, join requests, teammate messages." }]
-}

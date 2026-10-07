@@ -1,1 +1,0 @@
-{ "name": "lightbulb-sessions", "version": "0.1.0", "description": "Session sharing in Claude Code: who is watching, join requests, teammate messages.", "types": "./types/index.d.ts" }

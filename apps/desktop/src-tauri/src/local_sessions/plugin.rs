@@ -1,28 +1,34 @@
-//! The `lightbulb-sessions` Claude Code plugin (spec 2026-10-04-session-sharing-mod §4.4). Its
-//! files are compiled in, written to the app's state dir as a folder marketplace, and installed
-//! with the person's own `claude`. Claude reads a folder marketplace from the folder itself, so
-//! an app update rewrites the files and the next session loads them. Never fatal: the mod is an
-//! addition to sharing, not part of it.
+//! The `lightbulb` Claude Code plugin's mod (spec 2026-10-04-session-sharing-mod §4.4). The
+//! canonical plugin is `packages/claude-plugin/` (the marketplace off-Mac users add); the app
+//! compiles in the mod's files only, writes them to its state dir as a folder marketplace of the
+//! same name, and installs them with the person's own `claude`. It leaves out the plugin's
+//! `.mcp.json` (on a Mac the stdio `lightbulb` shim in native_mcp.rs is the server) and its
+//! `skills/` (enrollment.rs copies the skill to ~/.claude/skills and ~/.codex/skills), so a Mac
+//! never gets a second server or a second copy of the skill. Claude reads a folder marketplace
+//! from the folder itself, so an app update rewrites the files and the next session loads them.
+//! Never fatal: the mod is an addition to sharing, not part of it.
+//!
+//! The plugin was `lightbulb-sessions` until 2026-10-07. The marketplace's `renames` map moves an
+//! old install to `lightbulb@lightbulb` (checked against Claude Code 2.1.293: after the new files
+//! land, `claude plugin list` shows only `lightbulb@lightbulb`, read from the folder).
 //!
 //! Checked against Claude Code 2.1.292 (2026-10-07): a repeat `plugin install` answers "already
 //! installed ... it loads in place from <folder>, so edits there take effect at the next session
-//! start or /reload-plugins". So no version bump is needed for a changed file to load. The copy
-//! under `~/.claude/plugins/cache/lightbulb/lightbulb-sessions/<version>` (the `installPath` in
-//! `installed_plugins.json`) is a snapshot from the first install and is not what a session
-//! loads. A Claude session already running keeps the mod it started with.
+//! start or /reload-plugins". So no version bump is needed for a changed file to load. A Claude
+//! session already running keeps the mod it started with.
 
 use super::*;
 
 pub(crate) const FILES: &[(&str, &str)] = &[
-    (".claude-plugin/marketplace.json", include_str!("../../mods/.claude-plugin/marketplace.json")),
-    ("lightbulb-sessions/.claude-plugin/plugin.json", include_str!("../../mods/lightbulb-sessions/.claude-plugin/plugin.json")),
-    ("lightbulb-sessions/hooks/hooks.json", include_str!("../../mods/lightbulb-sessions/hooks/hooks.json")),
-    ("lightbulb-sessions/hooks/register.tsx", include_str!("../../mods/lightbulb-sessions/hooks/register.tsx")),
-    ("lightbulb-sessions/hooks/state.ts", include_str!("../../mods/lightbulb-sessions/hooks/state.ts")),
-    ("lightbulb-sessions/hooks/rules.ts", include_str!("../../mods/lightbulb-sessions/hooks/rules.ts")),
-    ("lightbulb-sessions/types/index.d.ts", include_str!("../../mods/lightbulb-sessions/types/index.d.ts")),
+    (".claude-plugin/marketplace.json", include_str!("../../../../../packages/claude-plugin/.claude-plugin/marketplace.json")),
+    ("lightbulb/.claude-plugin/plugin.json", include_str!("../../../../../packages/claude-plugin/lightbulb/.claude-plugin/plugin.json")),
+    ("lightbulb/hooks/hooks.json", include_str!("../../../../../packages/claude-plugin/lightbulb/hooks/hooks.json")),
+    ("lightbulb/hooks/register.tsx", include_str!("../../../../../packages/claude-plugin/lightbulb/hooks/register.tsx")),
+    ("lightbulb/hooks/state.ts", include_str!("../../../../../packages/claude-plugin/lightbulb/hooks/state.ts")),
+    ("lightbulb/hooks/rules.ts", include_str!("../../../../../packages/claude-plugin/lightbulb/hooks/rules.ts")),
+    ("lightbulb/types/index.d.ts", include_str!("../../../../../packages/claude-plugin/lightbulb/types/index.d.ts")),
 ];
-pub(crate) const ID: &str = "lightbulb-sessions@lightbulb";
+pub(crate) const ID: &str = "lightbulb@lightbulb";
 
 fn write_files(state_dir: &Path) -> Result<PathBuf> {
     let root = state_dir.join("claude-mods");
@@ -34,7 +40,7 @@ fn write_files(state_dir: &Path) -> Result<PathBuf> {
         }
     }
     let socket = enrollment::hook_path().with_file_name("mod.sock");
-    fs::write(root.join("lightbulb-sessions/socket"), format!("{}\n", socket.display()))
+    fs::write(root.join("lightbulb/socket"), format!("{}\n", socket.display()))
         .map_err(|_| "plugin write failed")?;
     Ok(root)
 }
@@ -113,8 +119,8 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let root = write_files(dir.path()).unwrap();
         assert!(root.join(".claude-plugin/marketplace.json").is_file());
-        assert!(root.join("lightbulb-sessions/hooks/register.tsx").is_file());
-        let socket = std::fs::read_to_string(root.join("lightbulb-sessions/socket")).unwrap();
+        assert!(root.join("lightbulb/hooks/register.tsx").is_file());
+        let socket = std::fs::read_to_string(root.join("lightbulb/socket")).unwrap();
         assert!(socket.trim().ends_with("/mod.sock"));
     }
 
@@ -122,18 +128,23 @@ mod tests {
     fn plugin_a_changed_mod_file_replaces_the_one_an_older_app_wrote() {
         let dir = tempfile::tempdir().unwrap();
         let root = write_files(dir.path()).unwrap();
-        let file = root.join("lightbulb-sessions/hooks/register.tsx");
+        let file = root.join("lightbulb/hooks/register.tsx");
         std::fs::write(&file, "an older app's mod").unwrap();
         write_files(dir.path()).unwrap();
-        assert_eq!(std::fs::read_to_string(&file).unwrap(), include_str!("../../mods/lightbulb-sessions/hooks/register.tsx"));
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), include_str!("../../../../../packages/claude-plugin/lightbulb/hooks/register.tsx"));
+    }
+
+    #[test]
+    fn plugin_the_app_copy_has_no_mcp_server_and_no_skill() {
+        assert!(FILES.iter().all(|(p, _)| !p.ends_with(".mcp.json") && !p.contains("/skills/")));
     }
 
     #[test]
     fn plugin_commands_name_the_bundled_marketplace() {
         let cmds = commands(Path::new("/m"), true);
         assert_eq!(cmds[0], vec!["plugin", "marketplace", "add", "/m"]);
-        assert_eq!(cmds[1], vec!["plugin", "install", "lightbulb-sessions@lightbulb"]);
-        assert_eq!(commands(Path::new("/m"), false)[0], vec!["plugin", "uninstall", "lightbulb-sessions@lightbulb"]);
+        assert_eq!(cmds[1], vec!["plugin", "install", "lightbulb@lightbulb"]);
+        assert_eq!(commands(Path::new("/m"), false)[0], vec!["plugin", "uninstall", "lightbulb@lightbulb"]);
     }
 
     #[test]

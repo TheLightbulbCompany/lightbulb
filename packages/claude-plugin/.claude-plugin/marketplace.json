@@ -1,0 +1,6 @@
+{
+  "name": "lightbulb",
+  "owner": { "name": "Lightbulb" },
+  "plugins": [{ "name": "lightbulb", "source": "./lightbulb", "description": "Lightbulb in Claude Code: the lightbulb MCP server, the session-sharing skill, and the session-sharing band." }],
+  "renames": { "lightbulb-sessions": "lightbulb" }
+}

@@ -4,13 +4,13 @@ import type { Continued, SessionState } from '../types'
 import { bandRuns, continuedLine, keysHint, parseContinued, rememberTyped, requestLine, typist, type Decision } from './state'
 import { bashTouchesProtected, classify, colorFor, protectedPath, rowBody, rowLabel, senderColor, type Sender } from './rules'
 
-export const sharing = atom({ plugin: 'lightbulb-sessions', key: 'state' } as const, null as SessionState | null)
+export const sharing = atom({ plugin: 'lightbulb', key: 'state' } as const, null as SessionState | null)
 // A refused decision's message, and the decision it was about: it stays only while that decision
 // still applies (the request is still first, or sharing is still in the state it would change).
 type Problem = { text: string; about: Decision }
-const problem = atom({ plugin: 'lightbulb-sessions', key: 'error' } as const, null as Problem | null)
+const problem = atom({ plugin: 'lightbulb', key: 'error' } as const, null as Problem | null)
 // Where this session was continued from, read once from the marker `lightbulb continue` wrote.
-const continued = atom({ plugin: 'lightbulb-sessions', key: 'continued' } as const, null as Continued | null)
+const continued = atom({ plugin: 'lightbulb', key: 'continued' } as const, null as Continued | null)
 // One decision at a time: a second press while one is out would send the same answer twice.
 // A module variable on purpose: it is set and tested in one synchronous step.
 let deciding = false

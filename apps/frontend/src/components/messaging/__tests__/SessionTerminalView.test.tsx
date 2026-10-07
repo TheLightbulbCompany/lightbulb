@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+import path from "node:path";
 import { act, render } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ApiError, type LiveEvent } from "@lightbulb/shared";
@@ -123,5 +125,13 @@ describe("typing into the live terminal", () => {
     await mount(true, input);
     await type("\x1b[?1;2c"); await type("\x1b[12;40R"); await type("\x1b[I");
     expect(input).not.toHaveBeenCalled();
+  });
+  // WebKit (Safari, the desktop app's web view) crashes its WebContent process when the unseen
+  // terminal is taken out of flow: its parent is a column flexbox and its containing block a grid.
+  it("keeps the unseen terminal in flow", () => {
+    const css = readFileSync(path.resolve(__dirname, "../messaging.css"), "utf8");
+    const rule = /\.session-terminal-view\[data-live="false"\]\s*\{([^}]*)\}/.exec(css)?.[1] ?? "";
+    expect(rule).toContain("visibility: hidden");
+    expect(rule).not.toMatch(/position\s*:/);
   });
 });

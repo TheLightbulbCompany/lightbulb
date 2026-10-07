@@ -24,7 +24,7 @@ from dataclasses import dataclass
 from typing import Literal
 
 from botocore.exceptions import ClientError
-from pydantic import Field, field_validator
+from pydantic import Field, field_validator, model_validator
 
 from core.auth import AuthContext
 from core.repositories import local_sessions_repo as repo, messaging_repo as store
@@ -162,7 +162,9 @@ class Screen(ContractModel):
     seq: int = Field(ge=0, lt=2**53)
     cols: int = Field(ge=1, le=1000)
     rows: int = Field(ge=1, le=500)
-    kind: Literal["snapshot", "output"]
+    # history: the holder's recent output, before a snapshot, for viewers with no screen yet;
+    # ping: no data, proves a quiet stream is alive (spec §5.2).
+    kind: Literal["snapshot", "output", "history", "ping"]
     data: str = Field(max_length=4 * ((MAX_RAW_BYTES + 2) // 3))
 
     @field_validator("data")
@@ -173,6 +175,12 @@ class Screen(ContractModel):
         except (binascii.Error, ValueError) as exc:
             raise ValueError("data is not base64") from exc
         return value
+
+    @model_validator(mode="after")
+    def _ping_is_empty(self) -> Screen:
+        if self.kind == "ping" and self.data:
+            raise ValueError("a ping carries no data")
+        return self
 
 
 def _spent_up(sid: str, size: int, now: float) -> bool:

@@ -7,6 +7,7 @@ import json as _json
 import time
 
 import pytest
+from pydantic import ValidationError
 
 from core.repositories import local_sessions_repo as repo, messaging_repo
 from core.services import live_events, local_sessions as service, session_screen
@@ -306,3 +307,24 @@ async def test_a_session_without_a_live_terminal_is_neither_watched_nor_typed_in
         )
     assert typed.value.error.code == "LOCAL_SESSION_UNSUPPORTED"
     assert not [b for _, b in transport[3] if b["type"] == "local.session.input"], "no keystroke reaches the Mac"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("kind", ["history", "ping"])
+async def test_history_and_ping_frames_reach_current_viewers_like_output(transport, kind):
+    sid = await start(transport)
+    await messaging_repo.ensure_user_stream(OWNER, BOB.user_id)
+    await session_screen.watch(BOB, sid)
+    transport[4].clear()
+    body = frame(sid, kind=kind, data="" if kind == "ping" else "G1tI")
+    await session_screen.forward(relay(transport), "conn-1", body)
+    published = await _published(transport)
+    assert [(e["type"], e["payload"]["kind"]) for _, e in published] == [("workspace.session.screen", kind)]
+
+
+def test_a_ping_carries_no_data_and_other_kinds_are_refused():
+    golden = fixture("session-screen")
+    session_screen.Screen.model_validate({**golden, "kind": "ping", "data": ""})
+    for bad in ({"kind": "ping", "data": "G1tI"}, {"kind": "input"}):
+        with pytest.raises(ValidationError):
+            session_screen.Screen.model_validate({**golden, **bad})

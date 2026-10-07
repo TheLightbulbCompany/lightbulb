@@ -100,6 +100,10 @@ pub(super) struct Host {
     rediscover: Option<Arc<tokio::sync::Notify>>,
     /// Sessions that have ended and whose end the relay has not been told about.
     ended_pending: Vec<String>,
+    /// Whether the relay lists `endedStartId`, as its latest ack said; None until one has.
+    /// Kept across connections, unlike the other feature flags: an end retried on a new
+    /// connection goes out before anything registers, and must still name its bound start.
+    relay_reads_ended_start: Option<bool>,
     /// Sessions whose heartbeat fields moved between heartbeats: one goes out
     /// early rather than up to ten seconds late.
     heartbeat_dirty: BTreeSet<String>,
@@ -826,12 +830,12 @@ impl Host {
     fn ended_frame(
         &mut self,
         recovering_ended: &mut BTreeSet<String>,
-        relay_reads_ended_start: bool,
     ) -> Result<Option<(Rpc, Value)>> {
         let Self {
             dir,
             mirrors,
             ended_pending,
+            relay_reads_ended_start,
             ..
         } = self;
         let mut index = ended_pending.len();
@@ -863,6 +867,14 @@ impl Host {
             if codex_turn_active_after_end(mirror) {
                 continue;
             }
+            // `bound`, not `linked`: a mirror restricted since (an app restart marks it
+            // `runtime-unverified` before liveness ends it) was still bound while verified.
+            let start_id = start_links::bound(dir, &mirror.native, &mirror.generation);
+            if start_id.is_some() && relay_reads_ended_start.is_none() {
+                // First connection of this run and nothing has registered: the next
+                // heartbeat ack says whether the relay reads a start identity on an end.
+                continue;
+            }
             // Upload and discovery run on their own cadence. Recovery keys stay
             // held until the throttled scan observes that all parent/child files
             // have drained; a plain missed end takes the direct path above.
@@ -878,11 +890,7 @@ impl Host {
                 "endedAt":ended_at});
             // The draining register of an ended mirror carries no start identity. A relay that
             // has never heard this generation's (the whole run was offline) learns it here.
-            // `bound`, not `linked`: a mirror restricted since (an app restart marks it
-            // `runtime-unverified` before liveness ends it) was still bound while verified.
-            if let Some(start_id) = start_links::bound(dir, &mirror.native, &mirror.generation)
-                .filter(|_| relay_reads_ended_start)
-            {
+            if let Some(start_id) = start_id.filter(|_| *relay_reads_ended_start == Some(true)) {
                 frame["startId"] = json!(start_id);
             }
             super::session_states::add_screen(&mut frame, mirrors, &key);
@@ -1056,6 +1064,7 @@ impl Host {
             hooks: None,
             rediscover: None,
             ended_pending: vec![],
+            relay_reads_ended_start: None,
             heartbeat_dirty: BTreeSet::new(),
             heartbeat_interval: Duration::from_secs(10),
             verify: verify_native,
@@ -1300,7 +1309,6 @@ impl Host {
         let mut relay_reads_presence = false;
         let mut relay_reads_pickups = false;
         let mut relay_reads_band_owner_only = false;
-        let mut relay_reads_ended_start = false;
         // An end the relay has not been told about -- because it happened while the
         // socket was down, or in a previous run of this process -- is still owed to it.
         self.liveness_tick();
@@ -1408,7 +1416,7 @@ impl Host {
                             heartbeat_frames.push_back(idle_heartbeat());
                         }
                     }
-                    if let Some((reported, frame)) = self.ended_frame(&mut recovering_ended, relay_reads_ended_start)? {
+                    if let Some((reported, frame)) = self.ended_frame(&mut recovering_ended)? {
                         send(socket, &frame).await?;
                         pending_rpc = Some(reported);
                     } else if let Some(frame) = heartbeat_frames.pop_front() {
@@ -1560,7 +1568,7 @@ impl Host {
                             relay_reads_presence = body["features"].as_array().is_some_and(|f| f.iter().any(|x| x == "sessionPresence"));
                             relay_reads_pickups = body["features"].as_array().is_some_and(|f| f.iter().any(|x| x == "pickupRequests"));
                             relay_reads_band_owner_only = body["features"].as_array().is_some_and(|f| f.iter().any(|x| x == "bandOwnerOnly"));
-                            relay_reads_ended_start = body["features"].as_array().is_some_and(|f| f.iter().any(|x| x == "endedStartId"));
+                            self.relay_reads_ended_start = Some(reads_ended_start(&body));
                             let sid = body["sessionId"].as_str().filter(|s|uuid::Uuid::parse_str(s).is_ok()).ok_or("invalid session ID")?;
                             let after = body["afterSeq"].as_u64().ok_or("missing upload cursor")?;
                             let server = body["serverTime"].as_u64().ok_or("missing server time")?;
@@ -1640,6 +1648,7 @@ impl Host {
                             super::snapshot::offer(&body["pickup"], &self.mirrors);
                             super::screen::offer(&body["watching"]);
                             super::session_states::read_ack(&body);
+                            self.relay_reads_ended_start = Some(reads_ended_start(&body));
                             super::presence::offer_ack(&body, &sids);
                             super::resume::offer(&body["resume"], &self.mirrors);
                             let server = body["serverTime"].as_u64().ok_or("missing server time")?;
@@ -2601,6 +2610,12 @@ fn wire_batch(mut batch: Value) -> Value {
     batch
 }
 
+/// A register or heartbeat ack's `features` lists `endedStartId`. No list is a relay older
+/// than the feature.
+fn reads_ended_start(ack: &Value) -> bool {
+    ack["features"].as_array().is_some_and(|f| f.iter().any(|x| x == "endedStartId"))
+}
+
 fn quarantine_active(quarantined: &BTreeMap<String, Instant>, key: &str) -> bool {
     quarantined
         .get(key)
@@ -2855,6 +2870,7 @@ pub(super) mod tests {
             hooks: None,
             rediscover: None,
             ended_pending: vec![],
+            relay_reads_ended_start: None,
             heartbeat_dirty: BTreeSet::new(),
             heartbeat_interval: Duration::from_secs(10),
             verify: verify_native,
@@ -3218,9 +3234,16 @@ pub(super) mod tests {
         )
         .unwrap();
         let mut host = test_host(dir.path(), vec![(SID, mirror)]);
+        // Nothing has said what this relay reads yet: the end waits for the first ack.
+        host.ended_pending = vec![SID.into()];
+        assert!(host.ended_frame(&mut BTreeSet::new()).unwrap().is_none());
+        assert_eq!(host.ended_pending, vec![SID.to_string()]);
+        // What an earlier connection's ack said still holds on a later one, where a
+        // drained end goes out before anything registers.
         for (relay_reads, expected) in [(false, Value::Null), (true, json!("11111111-1111-4111-8111-111111111111"))] {
             host.ended_pending = vec![SID.into()];
-            let (_, frame) = host.ended_frame(&mut BTreeSet::new(), relay_reads).unwrap().unwrap();
+            host.relay_reads_ended_start = Some(relay_reads);
+            let (_, frame) = host.ended_frame(&mut BTreeSet::new()).unwrap().unwrap();
             assert_eq!(frame["type"], "local.session.ended");
             assert_eq!(frame["startId"], expected);
         }
@@ -4640,6 +4663,7 @@ pub(super) mod tests {
             hooks: None,
             rediscover: None,
             ended_pending: vec![],
+            relay_reads_ended_start: None,
             heartbeat_dirty: BTreeSet::new(),
             heartbeat_interval: Duration::from_secs(10),
             verify: verify_native,
@@ -4832,6 +4856,7 @@ pub(super) mod tests {
             hooks: None,
             rediscover: None,
             ended_pending: vec![],
+            relay_reads_ended_start: None,
             heartbeat_dirty: BTreeSet::new(),
             heartbeat_interval: Duration::from_secs(10),
             verify: verify_native,
@@ -5532,6 +5557,7 @@ pub(super) mod tests {
             hooks: None,
             rediscover: None,
             ended_pending: vec![],
+            relay_reads_ended_start: None,
             heartbeat_dirty: BTreeSet::new(),
             heartbeat_interval: Duration::from_secs(10),
             verify: verify_native,
@@ -6089,6 +6115,7 @@ pub(super) mod tests {
         server.await.unwrap();
         let stored: Mirror = private_read(&dir.path().join(format!("{key}.json"))).unwrap();
         assert_eq!(stored.after_seq, 1);
+        assert_eq!(host.relay_reads_ended_start, Some(true), "known to the next connection too");
         assert!(stored.pending.is_none() && stored.queue.is_empty() && stored.ended_sent);
         assert!(fs::metadata(transcript).is_ok());
     }

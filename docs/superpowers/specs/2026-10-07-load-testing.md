@@ -1,7 +1,6 @@
 # Load testing — messaging, agent conversations, session sharing (design, not run)
 
-Owner ruling 2026-10-07: three scenarios, **dev only, nothing runs without Prasiddha's confirmation**.
-The repo has no load test today. Delete this spec once the harness ships (CLAUDE.md "Planning docs are disposable").
+Owner ruling 2026-10-07: **dev only, nothing runs without Prasiddha's confirmation**. No load test exists today; delete this spec once the harness ships.
 
 ## 0. Facts every scenario inherits
 
@@ -19,8 +18,7 @@ The repo has no load test today. Delete this spec once the harness ships (CLAUDE
 | Dev baseline (2026-09-20) | queue wait p50 19 ms / p95 23 ms; ingress p50 232 ms / p95 30.5 s; reply p50 13.1 s / p95 57.3 s; projector notify p50 765 ms / p95 1.4 s | `docs/runbooks/chat-performance.md` |
 | **One AWS account for dev AND prod** (`877352799272`) | Lambda unreserved concurrency, API GW account rps, AppSync, AgentCore quotas are **shared with prod** | CLAUDE.md "AWS Configuration" |
 
-The last row is the main blast-radius fact: the projector and `ws-message` (unreserved) draw on the
-same Lambda pool as prod's projector. Every run stops at 50% of the account concurrency limit.
+Last row = main blast radius: unreserved projector/`ws-message` share prod's Lambda pool; stop at 50% of the account limit.
 
 ## 1. Shared harness
 
@@ -47,7 +45,9 @@ same Lambda pool as prod's projector. Every run stops at 50% of the account conc
 
 Pre-checks: `GET /v1/users/count` against Clerk's dev-instance user cap (documented as 100; verify).
 Dev org member cap is unlimited (`max_allowed_memberships: 0`). FAPI per-IP limits are unknown and all
-DLT tasks share one NAT: the pilot measures them. `fixtures.json` holds live client JWTs: deleted at teardown.
+DLT tasks share one NAT: the pilot measures them. `apps/backend/scripts/load/fixtures.json` holds each user's
+Clerk client JWT + session id (enough to mint API/AppSync tokens): root `.gitignore` lists it (this PR), `setup`
+creates it mode 0600, and the run deletes it in a `finally` and a SIGINT/SIGTERM handler, so a kill leaves none.
 
 **Fixture orgs.** BAPI `POST /organizations {name, created_by}` fires `organization.created` →
 `provision_new_workspace` → the normal SFN provision (Paperclip company, six starter agents,
@@ -57,13 +57,16 @@ harness with `POST /messaging/rooms`; **never post in `#general`** (all six agen
 
 **k6 shape (all three scripts).** Each message/frame carries the sender's `Date.now()`; receivers
 subtract their own (Fargate syncs to Amazon Time Sync, skew ≪ the 100 ms resolution used).
+VUs: `preAllocatedVUs = ceil(peak rate/s × p95 iteration s × 1.5)`, `maxVUs = 2×`, both ≤ fixture users.
 ```js
-export const options = { scenarios: { s: { executor: 'ramping-arrival-rate', stages: __ENV.STAGES } },
-  thresholds: { http_req_failed: ['rate<0.005'], live_delivery_ms: ['p(95)<2000'] } };
-// setup(): read fixtures.json; VU i takes users[i] → token refresher (40 s), one AppSync
-// socket ported from packages/shared/src/live/appsyncEvents.ts (header-* subprotocol,
-// connection_init, subscribe to /ws/<ws>/rooms/<room>/<deliveryKey> and /users/<key>
-// from GET /messaging/live-config); default(): the scenario's one action; Trend per hop.
+const arrival = (pre, max) => ({ executor: 'ramping-arrival-rate', startRate: 0, timeUnit: '1s',
+  stages: JSON.parse(__ENV.STAGES), preAllocatedVUs: pre, maxVUs: max });
+export const options = { scenarios: { s: arrival(30, 60) }, thresholds: { http_req_failed: ['rate<0.005'] } };
+// messaging.js arrival(30, 60): 40/s × 0.5 s. agents.js arrival(30, 30): iteration = send only, one
+// listener per org times replies, 2b's 30-at-once burst sets pre. viewers.js: { executor: 'constant-vus',
+// vus: Number(__ENV.VIEWERS), duration: __ENV.DURATION } (holds its socket, POSTs /viewing every 15 s).
+// Every VU: users[i] from fixtures.json, 40 s token refresher, one AppSync socket ported from
+// packages/shared/src/live/appsyncEvents.ts on GET /messaging/live-config's channels; Trend per hop.
 ```
 
 ## 2. Scenario 1 — messaging load (humans only, no agents)
@@ -79,9 +82,8 @@ deliver live? Bottlenecks, in order of suspicion:
 | Projector → AppSync | one inbound publish per room event, fan-out to N subscribers | `BroadcastDroppedEvents`, `BroadcastEventServerError` |
 | Index queue → AOSS | projector enqueues every message for search; indexer `maxConcurrency` 5 | index DLQ, `MessageSearchBatchStaleAlarm` |
 
-**Shape.** One fixture org, U = 20 → 80 users (bounded by the Clerk cap). Rooms have human
-members only, so `select_dispatch_targets` writes no `WORK#` rows, no Jev call, no runtime.
-Test users have no Expo tokens, so the projector's push fan-out sends nothing.
+**Shape.** One fixture org, U = 20 → 80 users (Clerk cap). Human-only rooms: no `WORK#` rows, no Jev,
+no runtime; test users have no Expo tokens, so push fan-out sends nothing.
 
 | Sub-test | Load | Holds |
 |---|---|---|
@@ -128,9 +130,8 @@ bridge 202 → turn → gate → OpenRouter → `run.ended` callback → reply w
 
 **Shape.** O fixture orgs (5 → 30), each provisioned as above (one runtime each). Messages are
 **DMs or @mentions** only: both are `user_request`, so no Jev routing call and no ambient wakes.
-Body: `Reply with exactly the token <T> and nothing else. Do not use tools.`
-(`messaging-concurrency-check.md`), so every reply is checkable for cross-talk. Cold/warm is labelled
-only with bridge process-start evidence (`chat-performance.md`), else `unknown`.
+Body: `Reply with exactly the token <T> and nothing else. Do not use tools.` (cross-talk check, `messaging-concurrency-check.md`).
+Cold/warm is labelled only with bridge process-start evidence (`chat-performance.md`), else `unknown`.
 
 | Sub-test | Load |
 |---|---|

@@ -34,7 +34,8 @@ const toolHandler = async ({ params }: any) => {
   }
 
   const invoice = response.result || {};
-  const to = invoice.BillEmail?.Address ?? send_to ?? "the invoice's BillEmail address";
+  // send_to wins: QuickBooks mails the override without rewriting the invoice's BillEmail.
+  const to = send_to ?? invoice.BillEmail?.Address ?? "the invoice's BillEmail address";
   return {
     content: [
       {

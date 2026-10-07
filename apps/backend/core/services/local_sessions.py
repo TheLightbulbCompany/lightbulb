@@ -1280,6 +1280,12 @@ async def set_display_title(auth: AuthContext, session_id: str, title: str | Non
             if not messaging_repo._is_cancelled(exc):
                 raise
             continue
+        from core.services import session_chat  # lazy: it imports this module
+
+        try:  # the chat is named after the session: an existing one takes the new title now
+            await session_chat.follow_session(owner, row["sessionId"])
+        except Exception:  # the next chat open names it too (session_chat._follow_lifecycle)
+            logger.warning("session chat rename failed for %s", row["sessionId"], exc_info=True)
         await publish_resources_changed(owner, row["humanUserId"])
         return _session_public(updated, auth.user_id)
     raise ApiProblem("LOCAL_SESSION_CONFLICT", "Session changed. Try again.")

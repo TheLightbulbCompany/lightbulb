@@ -69,3 +69,11 @@ async def test_a_removed_member_with_a_live_token_gets_no_chat_and_no_stream_bac
     room = session_chat.session_room_id(registry_tests.OWNER, sid)
     assert await messaging_repo.get_member(room, "human", BOB.user_id) is None
     assert await messaging_repo.get_room(room) is None  # refused before any write
+
+
+@pytest.mark.asyncio
+async def test_renaming_the_session_renames_its_chat_at_once(transport):
+    sid = await start(transport)
+    room = str((await session_chat.open_chat(ALICE, sid)).room_id)
+    await service.set_display_title(ALICE, sid, "Relay fix")
+    assert (await messaging_repo.get_room(room))["name"] == "Session chat · Relay fix"

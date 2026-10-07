@@ -67,6 +67,19 @@ describe("RoomDetails", () => {
     expect(screen.getByText("Listening")).toBeTruthy();
   });
 
+  it("offers only what a session's chat allows: agents in and out, no archive, no people by hand", async () => {
+    const carol = { kind: "human" as const, id: "user-c", displayName: "Carol" };
+    await setup(room({ session: { sessionId: "s1" } }, "owner"), { candidates: [{ kind: "agent" as const, id: "agent-2", displayName: "Atlas" }, carol] });
+    expect(screen.queryByText("Archive channel")).toBeNull();
+    expect(screen.queryByText("Leave channel")).toBeNull();
+    await fireEvent.press(screen.getByText("Add members"));
+    expect(screen.getByLabelText("Atlas")).toBeTruthy();
+    expect(screen.queryByLabelText("Carol")).toBeNull();
+    await fireEvent.press(screen.getByText("Remove members"));
+    expect(screen.getByLabelText("Friday")).toBeTruthy();
+    expect(screen.queryByLabelText("Bob")).toBeNull();
+  });
+
   it("hides the mode in a DM, where it is inert", async () => {
     await setup(room({ kind: "dm", name: null, members: [member({ role: "owner" }), friday] }));
     expect(screen.queryByText("Off")).toBeNull();

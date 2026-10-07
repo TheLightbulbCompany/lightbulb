@@ -215,21 +215,28 @@ async def open_chat(auth: AuthContext, session_id: str) -> RoomDetail:
     meta = await _follow_lifecycle(owner_id, session_id, meta)
     if await messaging_repo.get_member(room_id, "human", auth.user_id) is None:
         meta = await _seat(owner_id, meta, auth.user_id)
-        # Everything read above may be stale by now: a pause, or a removal from the workspace,
-        # can silence the room just before this seat lands. Read it all again; whoever lost the
-        # session loses the seat, with the rotation.
-        try:
-            await local_sessions.authorize_session(auth, None, session_id)
-        except ApiProblem:
-            await silence(owner_id, session_id, keep=owner_user)
-            raise
-        if not await _active(owner_id, owner_user):
-            await silence(owner_id, session_id, keep=None)
-            raise gone
-        if not await _active(owner_id, auth.user_id):
-            await _unseat(room_id, auth.user_id)
-            raise gone
+    await _fence(auth, owner_id, session_id, owner_user, room_id)
     return await messaging._room_detail(meta, auth.user_id)
+
+
+async def _fence(auth: AuthContext, owner_id: str, session_id: str, owner_user: str, room_id: str) -> None:
+    """The door's closing check, on every path (room created, reader seated, or already a
+    member), before the room and its delivery key are returned. Everything the door read may be
+    stale by now: a pause, or a removal from the workspace, can silence the room just before a
+    seat (or the create, which seats the session's person) lands. Read it all again; whoever
+    lost the session loses the seat, with the rotation."""
+    try:
+        await local_sessions.authorize_session(auth, None, session_id)
+    except ApiProblem:
+        await silence(owner_id, session_id, keep=owner_user)
+        raise
+    gone = ApiProblem("LOCAL_SESSION_NOT_FOUND", "Local session not found.")
+    if not await _active(owner_id, owner_user):
+        await silence(owner_id, session_id, keep=None)
+        raise gone
+    if not await _active(owner_id, auth.user_id):
+        await _unseat(room_id, auth.user_id)
+        raise gone
 
 
 async def _unseat(room_id: str, user_id: str) -> bool:

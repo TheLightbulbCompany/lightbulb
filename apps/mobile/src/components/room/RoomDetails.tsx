@@ -66,15 +66,18 @@ export function RoomDetails({
   const noun = room.kind === "group-dm" ? "group chat" : "channel";
   const canChangeMode = canChangeListenMode(viewer?.role, room);
   const canManageMembers = isChannel && isAdmin;
+  // A session's chat: its people follow who can read the session and it opens and closes with the
+  // session, so the backend refuses every change by hand except its owner's agents.
+  const managed = !!room.session;
   const canAdd = !room.shared && (!isChannel || isAdmin);
   const removable = canManageMembers
-    ? room.members.filter((m) => m.role !== "owner" && !(room.shared && m.kind === "human"))
+    ? room.members.filter((m) => m.role !== "owner" && !((room.shared || managed) && m.kind === "human"))
     : [];
-  const addable = candidates.filter((c) => !room.members.some((m) => m.kind === c.kind && m.id === c.id));
+  const addable = candidates.filter((c) => !(managed && c.kind === "human") && !room.members.some((m) => m.kind === c.kind && m.id === c.id));
   // A group chat's creator holds no powers there, so anyone may leave or archive
   // one; a channel owner may not leave; never the shared room.
-  const canLeave = !room.shared && (room.kind === "group-dm" || (isChannel && !!viewer && viewer.role !== "owner"));
-  const canArchive = !room.shared && !room.isDefault && (room.kind === "group-dm" || (isChannel && isAdmin));
+  const canLeave = !room.shared && !managed && (room.kind === "group-dm" || (isChannel && !!viewer && viewer.role !== "owner"));
+  const canArchive = !room.shared && !managed && !room.isDefault && (room.kind === "group-dm" || (isChannel && isAdmin));
 
   const run = (action: () => Promise<unknown>, fallback: string) => {
     setError(null);

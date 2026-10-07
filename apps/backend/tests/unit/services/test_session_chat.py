@@ -466,3 +466,34 @@ async def test_a_reader_with_no_stream_yet_gets_one_and_a_removed_reader_is_refu
     assert refused.value.error.code == "LOCAL_SESSION_NOT_FOUND"
     env["ensure_user_stream"].assert_not_awaited()
     env["upsert_member"].assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_the_owner_removed_as_they_create_the_chat_gets_no_room_key(env, monkeypatch):
+    """The first open by the session's own person seats them in the create itself: the door's
+    closing check runs on every path, not only after a new seat."""
+    env["get_member"].return_value = {"kind": "human", "id": ALICE.user_id}  # seated by the create
+    alice = [{"active": True}, {"active": True}, {"active": False}]  # door (as owner, as reader), then removed
+    env["get_user_stream"].side_effect = lambda owner, uid: alice.pop(0)
+    silence = AsyncMock(return_value=1)
+    monkeypatch.setattr(session_chat, "silence", silence)
+    with pytest.raises(ApiProblem) as refused:
+        await session_chat.open_chat(ALICE, SID)
+    assert refused.value.error.code == "LOCAL_SESSION_NOT_FOUND"
+    env["create_room"].assert_awaited_once()
+    env["upsert_member"].assert_not_awaited()
+    silence.assert_awaited_once_with(OWNER, SID, keep=None)
+    messaging._room_detail.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_a_reader_already_seated_is_checked_again_on_every_open(env, monkeypatch):
+    env["get_room"].return_value = META
+    env["get_member"].return_value = {"kind": "human", "id": BOB.user_id}
+    gone = ApiProblem("LOCAL_SESSION_NOT_FOUND", "Local session not found.")
+    session_chat.local_sessions.authorize_session.side_effect = [(ROW, {}), gone]
+    silence = AsyncMock(return_value=1)
+    monkeypatch.setattr(session_chat, "silence", silence)
+    with pytest.raises(ApiProblem):
+        await session_chat.open_chat(BOB, SID)
+    silence.assert_awaited_once_with(OWNER, SID, keep=ALICE.user_id)

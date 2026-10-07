@@ -101,10 +101,10 @@ it("Changes shows the plan and the files when the events carry them, and says so
   const { unmount } = render(<Details tab="changes" events={events} />);
   expect(screen.getByText("Plan · 1 of 2 done")).toBeInTheDocument();
   expect(screen.getByText("src/a.ts")).toBeInTheDocument();
-  expect(screen.queryByText(/No plan and no file changes/)).not.toBeInTheDocument();
+  expect(screen.queryByText(/No plan or file changes yet/)).not.toBeInTheDocument();
   unmount();
   render(<Details tab="changes" events={[ev(1, { kind: "text", role: "assistant", text: "hi" })]} />);
-  expect(screen.getByText(/^No plan and no file changes in the part of the conversation that is loaded\./)).toBeInTheDocument();
+  expect(screen.getByText(/^No plan or file changes yet\./)).toBeInTheDocument();
 });
 
 it("switches tabs from the tab list", async () => {

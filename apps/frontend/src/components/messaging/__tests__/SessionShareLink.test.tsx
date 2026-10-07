@@ -22,10 +22,18 @@ it("Share makes the one link and copies it; the audience switch warns; Turn off 
   expect(navigator.clipboard.writeText).toHaveBeenCalledWith(url);
   await userEvent.selectOptions(screen.getByLabelText("Who can open it"), "anyone");
   expect(client.putLocalSessionLink).toHaveBeenLastCalledWith("s1", "anyone");
-  expect(await screen.findByRole("note")).toHaveTextContent("Anyone with the link can read this conversation");
+  expect(await screen.findByRole("note")).toHaveTextContent("Anyone with the link sees this session's title, who runs it, the tool and its state, and can continue it with a copy of the conversation");
   await userEvent.click(screen.getByRole("button", { name: "Turn off link" }));
   expect(client.deleteLocalSessionLink).toHaveBeenCalledWith("s1");
   expect(await screen.findByRole("button", { name: "Share" })).toBeInTheDocument();
+});
+
+it("promises no copy of the conversation on a Codex link", async () => {
+  const client = { getLocalSessionLink: vi.fn(async () => ({ url, audience: "anyone" as const })), putLocalSessionLink: vi.fn(), deleteLocalSessionLink: vi.fn() };
+  render(<SessionShareLink session={{ ...session, provider: "codex" }} client={client} />);
+  const note = await screen.findByRole("note");
+  expect(note).toHaveTextContent("Anyone with the link sees this session's title, who runs it, the tool and its state.");
+  expect(note).not.toHaveTextContent("copy of the conversation");
 });
 
 it("warns that a private repository's code is in the conversation", async () => {

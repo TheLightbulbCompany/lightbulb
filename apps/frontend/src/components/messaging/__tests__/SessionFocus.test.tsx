@@ -69,11 +69,12 @@ it("shows 'Loading session…' while the workspace list has not yet settled, wit
   expect(getLocalSession).not.toHaveBeenCalled();
 });
 
-it("falls back to a direct fetch and renders an ended session as a transcript, with Resume and no follow-up box", async () => {
+it("falls back to a direct fetch and renders an ended session as the Ended panel, with Resume and no follow-up box", async () => {
   const ended: LocalSession = { ...session, status: "ended" };
   focus(null, { getLocalSession: vi.fn(async () => ended) });
-  await screen.findByRole("region", { name: "Native session history" });
-  expect(within(statusLine()).getByText("Transcript · Ended")).toBeInTheDocument();
+  await screen.findByText("This session ended before anything was sent.");
+  expect(within(statusLine()).getByText("Ended")).toBeInTheDocument();
+  expect(statusLine().textContent).not.toMatch(/Transcript/);
   expect(within(statusLine()).getByText("Alice")).toBeInTheDocument();
   expect(screen.queryByRole("button", { name: "Send follow-up" })).not.toBeInTheDocument();
   expect(screen.queryByText("Only Alice can send to this session.")).not.toBeInTheDocument();
@@ -137,16 +138,6 @@ it("offers Message owner beside the read-only line and in Details", async () => 
   const details = await openDetails();
   await userEvent.click(within(details).getByRole("button", { name: "Message Alice" }));
   expect(onMessageOwner).toHaveBeenCalledTimes(2);
-});
-
-it("names an agent-sent prompt by the agent's display name", async () => {
-  focus({ session, ownerName: "Alice", own: false }, {
-    participants: [{ kind: "agent", id: "ceo-1", displayName: "CEO" }],
-    events: [{ seq: 1, kind: "text", role: "user", text: "check the build", actor: { kind: "agent", agentId: "ceo-1" } }],
-  });
-  expect(await screen.findByText("check the build")).toBeInTheDocument();
-  expect(screen.getByText("CEO")).toBeInTheDocument();
-  expect(screen.queryByText("Teammate")).not.toBeInTheDocument();
 });
 
 it("explains that an offline follow-up waits for the Mac", async () => {

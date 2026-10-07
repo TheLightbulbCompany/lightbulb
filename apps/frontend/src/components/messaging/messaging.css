@@ -148,7 +148,6 @@
 .room-resource-session:hover { background: var(--accent); }
 .local-session-event { padding: 12px 0; border-bottom: 1px solid var(--border); }
 .local-session-composer { max-height: 45%; overflow: auto; }
-.local-session-scroll { position: relative; display: flex; flex-direction: column; flex: 1; min-height: 0; }
 /* The desktop app draws the live terminal over this box, in a webview of its own. */
 .local-session-terminal { flex: 1; min-height: 240px; background: var(--terminal-bg); }
 .local-session-actions { display: flex; flex-wrap: wrap; gap: 8px; }
@@ -458,7 +457,6 @@
 /* Focus placement: a session opened from the sidebar or a link takes the
    whole middle of the Messages panel. */
 .room-session-focus { display: grid; grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(0, 1fr); }
-/* The transcript (.local-session-history) is the one scroller, so it can follow output. */
 .room-session-main { display: flex; flex-direction: column; min-width: 0; min-height: 0; overflow: hidden; }
 .room-context { position: relative; }
 /* New session: the form is a dialog; the pane shows the start's progress, then its terminal. */
@@ -615,9 +613,6 @@
 .native-session-finished[data-status="error"] > .native-session-glyph { color: var(--err); }
 .native-session-inline-more { margin-left: 6px; text-decoration: none; }
 .native-session-spinner { color: var(--brass, var(--warn)); }
-.native-session-shimmer { height: 2px; margin-bottom: 8px; background: linear-gradient(90deg, transparent, var(--muted-foreground), transparent); background-size: 50% 100%; background-repeat: no-repeat; animation: native-session-shimmer 1.2s linear infinite; opacity: .5; }
-@keyframes native-session-shimmer { from { background-position: -50% 0; } to { background-position: 150% 0; } }
-@media (prefers-reduced-motion: reduce) { .native-session-shimmer { animation: none; } }
 /* The panel Claude Code pins above its prompt. */
 .native-session-panel { padding: 4px 16px; border-top: 1px solid var(--border); font-family: var(--font-mono), ui-monospace, SFMono-Regular, monospace; font-size: .75rem; }
 .native-session-panel-row { display: flex; width: 100%; gap: 8px; align-items: baseline; padding: 1px 0; background: none; border: 0; color: inherit; text-align: left; font: inherit; }
@@ -643,6 +638,11 @@ button.native-session-panel-row:hover .native-session-panel-activity { color: va
    (RenderBox::columnFlexItemHasStretchAlignment -> RenderGrid::selfAlignmentNormalBehavior). A
    teammate's window went blank the moment they opened a live session. */
 .session-terminal-view[data-live="false"] { flex: none; height: 0; padding: 0; visibility: hidden; }
+/* No frame yet, or none for 30 s: the terminal stays collapsed above; this says why. */
+.session-terminal-wait { flex: 1; min-height: 240px; display: grid; place-content: center; background: var(--terminal-bg); color: var(--fg-mute); font-size: 14px; }
+/* The body of a session with no terminal: ended, offline, or not started through Lightbulb. */
+.session-state-panel { flex: 1; min-height: 160px; display: grid; place-content: center; justify-items: center; gap: 6px; padding: 24px; text-align: center; color: var(--fg-mute); background: var(--plane-pane); }
+.session-state-panel .session-state-title { color: var(--fg); font-weight: 600; }
 /* Pending and queued follow-ups stay visible under the live terminal. */
 .local-session-feedback:empty { display: none; }
 .local-session-feedback { flex: none; max-height: 30%; overflow: auto; }

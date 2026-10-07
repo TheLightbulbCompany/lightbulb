@@ -14,7 +14,6 @@ vi.mock("@clerk/nextjs", () => ({
   SignInButton: ({ children }: { children: React.ReactNode }) => children,
   SignUpButton: ({ children }: { children: React.ReactNode }) => children,
 }));
-vi.mock("@/components/messaging/NativeSessionTranscript", () => ({ NativeSessionTranscript: () => null }));
 
 import SessionLinkPageRoute from "../page";
 
@@ -126,5 +125,30 @@ describe("session link page", () => {
     await act(async () => { window.location.hash = "#second"; window.dispatchEvent(new HashChangeEvent("hashchange")); await vi.advanceTimersByTimeAsync(0); });
     expect(screen.getByText("The second session")).toBeTruthy();
     expect(window.location.hash).toBe(""); // the token left the address bar again
+  });
+  it("shows the state, never a transcript, and does not fetch events", async () => {
+    vi.useFakeTimers();
+    window.sessionStorage.setItem("lightbulb:session-link", JSON.stringify({ token: "tok" }));
+    const fetchMock = vi.fn(async (_url: string) => ({ ok: true, status: 200, json: async () => model({ state: "ended" }) } as Response));
+    vi.stubGlobal("fetch", fetchMock);
+    render(<SessionLinkPageRoute />);
+    await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+    expect(screen.getByText(/The screen is gone/)).toBeTruthy();
+    expect(fetchMock.mock.calls.some(c => String(c[0]).endsWith("/events"))).toBe(false);
+  });
+  it("tells a member to open a live session in Lightbulb, and a nonmember only that it is live", async () => {
+    vi.useFakeTimers();
+    window.sessionStorage.setItem("lightbulb:session-link", JSON.stringify({ token: "tok" }));
+    let member = true;
+    vi.stubGlobal("fetch", vi.fn(async (_url: string) => ({ ok: true, status: 200, json: async () => model({ state: "live", sessionId: "s1", me: { signedIn: member, member } }) } as Response)));
+    const first = render(<SessionLinkPageRoute />);
+    await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+    expect(screen.getByText(/Open it there to watch its terminal/)).toBeTruthy();
+    first.unmount();
+    member = false;
+    render(<SessionLinkPageRoute />);
+    await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+    expect(screen.getByText("This session is live.")).toBeTruthy();
+    expect(screen.queryByText(/Open it there/)).toBeNull();
   });
 });

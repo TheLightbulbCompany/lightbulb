@@ -1,18 +1,18 @@
 "use client";
 
-import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 import { useAuth } from "@clerk/nextjs";
 import { capture } from "@/lib/analytics";
 import { Info, MessageSquare, Send } from "lucide-react";
 import {
   canControlSession, useSessionResume, mainEvents, pendingApproval, receiptChip, sendBlockedReason, sessionChanges, sessionFooter, sessionLabel, sessionPlan, sessionStatus, unavailableReason,
-  pickupRequestLine, pickupStatus, useHistorySource, useLocalSessionHistory, usePendingPrompt, useSessionAudit, useSessionCommand, useSessionJoinRequest, useSessionOutbox, withAuditNotices,
+  pickupRequestLine, pickupStatus, useHistorySource, useLocalSessionHistory, usePendingPrompt, useSessionCommand, useSessionJoinRequest, useSessionOutbox,
   type LocalSession, type SessionControlClient, type SessionSource,
 } from "@lightbulb/shared";
 import Link from "next/link";
 import { Button } from "@/components/ui/button";
 import { isDesktopApp } from "@/lib/desktopNotify";
-import { NativeSessionTranscript, ReceiptChip, SubagentPanel, revealSubagent, type Person } from "./NativeSessionTranscript";
+import { NativeSessionTranscript, ReceiptChip, type Person } from "./NativeSessionTranscript";
 import { SessionApprovalCard } from "./SessionControls";
 import { SessionTerminalView } from "./SessionTerminalView";
 import { useLocalTerminal } from "./localTerminal";
@@ -23,19 +23,20 @@ import { timeAgo } from "@/components/teams/shared/lib/timeAgo";
 import type { PickupClient } from "./useSessionPickup";
 import { ResumeDelivery, SessionResume } from "./SessionResume";
 
-/** Distance from the bottom, in px, still counted as "at the bottom" (mobile's value). */
-const BOTTOM_SLACK = 80;
-/** Within this many pixels of the top, older output is fetched. */
-const SCROLLBACK_SLACK = 240;
+/** Older history pages read per session for the plan and changed-files summaries: 20 pages is 1,000 events,
+ *  under the history window's 2,000-row cap, so reading back never evicts the newest events. A longer
+ *  session's summary covers its last 1,000 events; a complete one needs a server-side summary. */
+const MAX_OLDER_PAGES = 20;
 
 type Decide = (sessionId: string, userId: string, decision: "allow" | "decline", requestId?: string) => Promise<unknown>;
 type JoinDecider = { decideLocalSessionJoin?: Decide; decideLocalSessionPickup?: Decide };
 type Client = SessionSource["client"] & SessionControlClient & PickupClient & Parameters<typeof SessionDetails>[0]["client"] & JoinDecider & { watchLocalSession?: (sessionId: string) => Promise<unknown>; sendLocalSessionInput?: (sessionId: string, data: string, epoch: number) => Promise<unknown> };
 
 /**
- * A shared session: its status on one line, the conversation as its terminal
- * draws it, and the prompt. What the session is running, what it changed and
- * who may do what with it live behind Details, so the transcript has the room.
+ * A shared session: its status on one line and one body: the live terminal, or
+ * a plain panel saying why there is none (ended, Mac offline, not started through
+ * Lightbulb). Never a transcript. What the session is running, what it changed
+ * and who may do what with it live behind Details.
  */
 export function LocalSessionPanel({ session, ownerName, own, client, revision, onAccessLost, participants = [], onMessageOwner, nameOf, onEvent }: {
   /** Live events, for watching a running session's terminal from another machine. */
@@ -48,15 +49,21 @@ export function LocalSessionPanel({ session, ownerName, own, client, revision, o
   participants?: readonly Person[];
   onMessageOwner?: () => void;
 }) {
+  // The history feeds the plan, the changed files, the pending prompt and the approval reason. No rows are drawn
+  // from it, but the relay throttles hints with no trailing edge, so a quiet poll while busy keeps those current.
   const busy = session.status === "busy";
-  // Backstop poll while the session is producing output: the relay throttles
-  // transcript hints (1/s per session, no trailing edge), so hints alone can
-  // leave an open transcript behind during sustained output. Idle sessions
-  // stay on hints plus the sessions safety poll. Quiet: no spinner, no focus steal.
   const source = useHistorySource(client, session, revision);
   const history = useLocalSessionHistory(client, source.sessionId, source.latestEventSeq, revision, onAccessLost, { pollMs: busy ? 5000 : 0 });
   const [text, setText] = useState("");
   const [details, setDetails] = useState<SessionDetailsTab | null>(null);
+  // Nothing scrolls the history any more, so read back through older pages for the plan and changed files. Bounded per session while Details is closed; with Details open the read runs to the start, so Changes and the plan are complete.
+  const olderPages = useRef({ id: session.sessionId, n: 0 });
+  useEffect(() => {
+    if (olderPages.current.id !== source.sessionId) olderPages.current = { id: source.sessionId, n: 0 };
+    if (!history.hasOlder || history.loading || history.error || olderPages.current.n >= MAX_OLDER_PAGES) return;
+    olderPages.current.n += 1;
+    void history.load("older");
+  }, [history, source.sessionId, details]);
   const [tab, setTab] = useState<SessionDetailsTab>("about");
   const slot = useRef<HTMLDivElement>(null);
   // Running on this Mac: the real terminal replaces the session view (rulings 2026-10-03 §2).
@@ -71,13 +78,8 @@ export function LocalSessionPanel({ session, ownerName, own, client, revision, o
   // False once the terminal is read-only for this viewer (the Mac refused input): the message box is the way to send then.
   const [termCanType, setTermCanType] = useState(true);
   const liveTerminal = watchRemote && screenLive;
-  // Not running: this is the structured transcript, not a terminal. The Mac's own name is not in the public record, so the owner's name stands for it.
-  const transcriptLabel = local !== "none" ? null
-    : session.status === "ended" ? "Transcript · Ended"
-    : session.status === "offline" ? `Transcript · ${own ? "your" : `${ownerName}'s`} Mac is offline`
-    : hasTerminal ? null : `Transcript · ${sessionStatus[session.status]}`;
   // ← in a plain Claude session moves it to the background, where Lightbulb can attach to it.
-  const pressLeft = own && session.provider === "claude" && !hasTerminal && running;
+  const notStarted = running && !hasTerminal;
   const id = useId();
   const people = useMemo(() => [{ kind: "human" as const, id: session.humanUserId, displayName: ownerName }, ...participants], [session.humanUserId, ownerName, participants]);
   const agentName = useCallback((agentId: string) => people.find(p => p.id === agentId)?.displayName ?? "Agent", [people]);
@@ -133,9 +135,6 @@ export function LocalSessionPanel({ session, ownerName, own, client, revision, o
   const resume = useSessionResume(client, session, { own, userId, ownerName, nameOf: personName, uuid: () => crypto.randomUUID() });
   const join = useSessionJoinRequest(client, session);
   const askPickup = useSessionJoinRequest(client, session, "pickup");
-  const audit = useSessionAudit(client, session.sessionId,
-    `${revision}:${session.latestEventSeq}:${session.teamControl}:${session.allowedSenders?.join()}:${session.joinRequest}:${session.pickup?.allowed}:${session.status}:${session.pendingApproval?.approvalId}`);
-  const events = withAuditNotices(history.events, audit, personName);
   const glyph = session.provider === "claude" ? "❯" : "›";
   const plan = useMemo(() => sessionPlan(main), [main]);
   const changes = useMemo(() => sessionChanges(main), [main]);
@@ -150,54 +149,16 @@ export function LocalSessionPanel({ session, ownerName, own, client, revision, o
     setTab(next); setDetails(next);
   };
 
-  // Like a terminal: open at the bottom, stick to it while the reader is there,
-  // stop the moment they scroll up, and fetch older output on its own as they
-  // near the top. Growth is watched on the content box, so a tool row filling in
-  // (no new seq) still re-pins.
-  const scroller = useRef<HTMLDivElement>(null);
-  const content = useRef<HTMLDivElement>(null);
-  const atBottomRef = useRef(true);
-  const toBottom = useCallback(() => { const node = scroller.current; if (node) node.scrollTop = node.scrollHeight; }, []);
-  // Height before an older page lands, so the reader stays on the line they were reading.
-  const anchor = useRef<{ height: number; top: number } | null>(null);
-  useLayoutEffect(() => {
-    const node = scroller.current;
-    if (!node || !anchor.current) return;
-    node.scrollTop = node.scrollHeight - anchor.current.height + anchor.current.top;
-    anchor.current = null;
-  }, [history.events]);
-  // A window shorter than the pane cannot be scrolled up, so fill it the way a terminal's scrollback would.
-  useEffect(() => {
-    const node = scroller.current;
-    if (node && !history.loading && !history.error && history.hasOlder && node.scrollHeight <= node.clientHeight) void history.load("older");
-  }, [history]);
-  useEffect(() => {
-    const node = content.current;
-    if (!node || typeof ResizeObserver === "undefined") return;
-    const observer = new ResizeObserver(() => { if (atBottomRef.current) toBottom(); });
-    observer.observe(node);
-    return () => observer.disconnect();
-  }, [toBottom, liveTerminal]);
-  const onScroll = () => {
-    const node = scroller.current;
-    if (!node) return;
-    atBottomRef.current = node.scrollHeight - node.scrollTop - node.clientHeight <= BOTTOM_SLACK;
-    if (history.loading) return;
-    if (node.scrollTop < SCROLLBACK_SLACK && history.hasOlder) {
-      anchor.current = { height: node.scrollHeight, top: node.scrollTop };
-      void history.load("older");
-    } else if (atBottomRef.current && history.hasNewer) void history.load("newer");
-  };
   const messageOwner = !own && onMessageOwner
     ? <Button type="button" variant="outline" size="sm" onClick={onMessageOwner}><MessageSquare aria-hidden="true" />Message {ownerName}</Button> : null;
   const added = changes.reduce((n, file) => n + file.added, 0);
   const removed = changes.reduce((n, file) => n + file.removed, 0);
   const done = plan?.filter(step => step.status === "completed").length ?? 0;
 
-  // The transcript, or (under a live terminal) just its pending and queued rows: sent follow-ups stay visible.
-  const transcript = <>
-          <NativeSessionTranscript provider={session.provider} events={liveTerminal ? [] : events} busy={busy && !history.hasNewer && !liveTerminal} ownerName={ownerName} participants={people}
-            status={session.status} pending={pendingText && !history.hasNewer ? { text: pendingText, chip: command.chip,
+  // No events are drawn: just the sent-but-not-echoed prompt and the queued rows, so a follow-up stays visible.
+  const feedback = <>
+          <NativeSessionTranscript provider={session.provider} events={[]} busy={false} ownerName={ownerName} participants={people}
+            status={session.status} pending={pendingText ? { text: pendingText, chip: command.chip,
               onRetry: command.receipt?.state === "rejected" ? command.retry : undefined,
               onCancel: command.receipt?.state === "rejected" ? command.dismiss : command.canCancel ? () => void command.cancel() : undefined } : null}
             outbox={queuedOutbox.map(receipt => ({
@@ -208,16 +169,35 @@ export function LocalSessionPanel({ session, ownerName, own, client, revision, o
     {queuedOutbox.some(receipt => receipt.state === "pending" || receipt.state === "dispatched" || receipt.state === "unknown") && <Button type="button" variant="outline" size="sm" onClick={() => void outbox.refresh()}>Check queued delivery</Button>}
   </>;
 
+  const endedEmpty = session.provider === "claude" && session.latestEventSeq === 0 && !session.controlUnavailableReason;
+  const endedPanel = <div className="session-state-panel" role="status">
+    <p className="session-state-title">{session.endedAt ? <>Ended <time dateTime={session.endedAt} title={new Date(session.endedAt).toLocaleString()}>{timeAgo(session.endedAt)}</time></> : "Ended"}</p>
+    <p>{endedEmpty ? "This session ended before anything was sent." : "The screen is gone: this session's terminal closed."}</p>
+  </div>;
+  const offlinePanel = <div className="session-state-panel" role="status">
+    <p className="session-state-title">{own ? "Your Mac is offline" : `${ownerName}'s Mac is offline`}</p>
+    {session.lastEventAt && <p>Last seen {timeAgo(session.lastEventAt)}</p>}
+  </div>;
+  const noticePanel = <div className="session-state-panel" role="status">
+    <p className="session-state-title">This session was not started through Lightbulb, so its screen is not here.</p>
+    {session.provider === "claude" && (own
+      ? <p>Press ← in its terminal to share this one live, or turn on Share every session live in {isDesktopApp()
+        ? <Link className="underline underline-offset-4" href="/settings?panel=desktop#share-every-session-live">Settings</Link>
+        : "Settings"} to make every new session live.</p>
+      : <p>Ask {ownerName} to press ← in their terminal.</p>)}
+  </div>;
+
   return <>
     <div className="session-status">
       <p className="session-status-line">
         <span className={`native-session-dot native-session-dot-${session.status}`} aria-hidden="true" />
-        <span>{transcriptLabel ?? sessionStatus[session.status]}</span>
-        {!(transcriptLabel && session.status === "offline") && <span>{own ? "You" : ownerName}</span>}
+        <span>{sessionStatus[session.status]}</span>
+        <span>{own ? "You" : ownerName}</span>
         {where && <span className="session-fact-value room-wrap">{where}</span>}
         {session.pickedUpFrom && <span>picked up from {personName(session.pickedUpFrom.humanUserId)}</span>}
         {changes.length > 0 && <button type="button" className="session-status-link" onClick={() => show("changes")}>
           {changes.length} {changes.length === 1 ? "file" : "files"} changed<span className="local-session-add">+{added}</span><span className="local-session-del">−{removed}</span></button>}
+        {history.error && <span role="status">Could not load session details. <button type="button" className="session-status-link" onClick={() => void history.retry()}>Retry</button></span>}
         {plan && plan.length > 0 && <button type="button" className="session-status-link" onClick={() => show("changes")}>plan {done} of {plan.length}</button>}
       </p>
       <div className="session-status-actions">
@@ -241,10 +221,7 @@ export function LocalSessionPanel({ session, ownerName, own, client, revision, o
     {own && !!session.pendingPickups?.length && <JoinRequests waiting={session.pendingPickups} ids={session.pendingPickupIds}
       line={pickupRequestLine} decide={(who, d, id) => client.decideLocalSessionPickup!(session.sessionId, who, d, id)}
       enabled={!!client.decideLocalSessionPickup} personName={personName} />}
-    {(pressLeft || session.shared === false || session.controlUnavailableReason || session.workspace?.changed) && <div className="session-notices">
-      {pressLeft && <p role="status">Press ← in its terminal to share this one live, or turn on Share every session live in {isDesktopApp()
-        ? <Link className="underline underline-offset-4" href="/settings?panel=desktop#share-every-session-live">Settings</Link>
-        : "Settings"} to make every new session live.</p>}
+    {(session.shared === false || session.controlUnavailableReason || session.workspace?.changed) && <div className="session-notices">
       {session.shared === false && <p role="status">Sharing is paused. Only you can see this session, and nothing it does now is shared.</p>}
       {session.controlUnavailableReason && <p role="status" className="text-warn">{unavailableReason[session.controlUnavailableReason]}</p>}
       {session.workspace?.changed && <p role="status" className="text-warn">Files changed outside this session. It will re-read them before your next follow-up.</p>}
@@ -262,24 +239,15 @@ export function LocalSessionPanel({ session, ownerName, own, client, revision, o
     {local !== "none"
       ? <div ref={slot} className="local-session-terminal" role="region" aria-label="Session terminal" />
       : <>
+      {session.status === "ended" ? endedPanel : session.status === "offline" ? offlinePanel : notStarted ? noticePanel : null}
       {watchRemote && <SessionTerminalView session={session} onEvent={onEvent!} watch={client.watchLocalSession!} onLive={setScreenLive} onCanType={setTermCanType}
         admitted={control && session.shared !== false && !(session.inputPaused && !own)}
         input={client.sendLocalSessionInput ? (bytes, epoch) => client.sendLocalSessionInput!(session.sessionId, toBase64(bytes), epoch) : undefined} />}
       {terminalLive && control && !own && session.inputPaused && <p className="text-sm text-muted-foreground">Paused while {ownerName} answers a request to join.</p>}
-      {liveTerminal ? <div className="local-session-feedback">{transcript}</div> : <div className="local-session-scroll">
-      <div ref={scroller} className="room-context-body local-session-history" role="region" aria-label="Native session history" tabIndex={0} onScroll={onScroll}>
-        <div ref={content}>
-          {history.loading && <div className="native-session-shimmer" role="status" aria-label="Loading session history" />}
-          {transcript}
-          {history.error && <div role="alert"><p>{history.error}</p><Button variant="outline" onClick={() => void history.retry()}>Retry history</Button></div>}
-          {!history.loading && !history.error && history.events.length === 0 && !pendingText && <p>{session.provider === "claude" && session.status === "ended" && !session.controlUnavailableReason ? "This session ended before anything was sent." : "No shared output yet."}</p>}
-
-        </div>
-      </div>
-    </div>}
+      {liveTerminal && <div className="local-session-feedback">{feedback}</div>}
+      {!liveTerminal && (session.status !== "ended" || !!pendingText || queuedOutbox.length > 0) && <div className="local-session-feedback">{feedback}</div>}
     </>}
-    <SubagentPanel provider={session.provider} events={history.events} status={session.status} onPick={id => revealSubagent(content.current, id)} />
-    {session.status === "ended" ? <SessionResume flow={resume} own={own} ownerName={ownerName} /> : terminalLive && control && (local === "local" || termCanType || (!own && session.inputPaused)) ? null : control ? <form className="room-composer local-session-composer native-session-composer" onSubmit={event => { event.preventDefault(); atBottomRef.current = true; command.send(text); }}>
+    {session.status === "ended" ? <SessionResume flow={resume} own={own} ownerName={ownerName} /> : terminalLive && control && (local === "local" || termCanType || (!own && session.inputPaused)) ? null : control ? <form className="room-composer local-session-composer native-session-composer" onSubmit={event => { event.preventDefault(); command.send(text); }}>
       <label htmlFor={id} className="sr-only">Send to {target}</label>
       <div className="native-session-prompt-row"><span className="native-session-glyph" aria-hidden="true">{glyph}</span>
         <textarea id={id} className="room-input" rows={2} value={text} disabled={!command.canSend || command.locked} onChange={event => setText(event.target.value)}

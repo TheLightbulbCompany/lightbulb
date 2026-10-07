@@ -31,7 +31,7 @@ from core.repositories import local_sessions_repo as repo, messaging_repo as sto
 from core.services import local_sessions as sessions, session_pickup as pickup
 from core.services.local_sessions import _drop_none
 from core.services.messaging import ApiProblem, ContractModel
-from core.services.session_redact import MARK, redact, redact_value
+from core.services.session_redact import redact, redact_value
 from core.services.session_screen import _still_a_member
 
 logger = logging.getLogger(__name__)
@@ -52,11 +52,6 @@ class LinkTokenRequest(ContractModel):
 
 class LinkOpenRequest(LinkTokenRequest):
     refresh: bool = False  # the page's poll: same answer, no "opened" event
-
-
-class LinkEventsRequest(LinkTokenRequest):
-    after_seq: int = Field(default=0, ge=0)
-    limit: int = Field(default=100, ge=1, le=100)
 
 
 async def _member(auth: AuthContext | None, row: dict) -> bool:
@@ -238,32 +233,6 @@ async def open_page(auth: AuthContext | None, token: str, *, refresh: bool = Fal
         me=LinkMe(signed_in=auth is not None, member=member),
         session_id=row["sessionId"] if member else None,
     )
-
-
-def _event(stored: dict, member: bool, project: str | None) -> sessions.LocalSessionEvent:
-    if member:
-        return sessions._public(sessions.LocalSessionEvent, stored)
-    data = {k: v for k, v in stored.items() if k not in ("actor", "originRequestId")}
-    for key in ("text", "tool"):
-        if key in data:
-            data[key] = redact_value(data[key], project)
-    try:
-        return sessions._public(sessions.LocalSessionEvent, data)
-    except ValueError:  # redaction grew it past the 16 KiB envelope: one line in its place
-        return sessions.LocalSessionEvent(
-            seq=stored["seq"], kind=stored["kind"], role=stored["role"], text=MARK, truncated=True
-        )
-
-
-async def list_events(
-    auth: AuthContext | None, token: str, after_seq: int, limit: int
-) -> sessions.LocalSessionEventPage:
-    row, _, member = await resolve(auth, token)
-    if not member and not _known(row):
-        return sessions.LocalSessionEventPage(events=[], next_after_seq=None)  # Review Focus 6
-    rows, next_seq = await repo.list_events(row["ownerId"], row["sessionId"], after_seq, limit)
-    project = None if member else _project(row)
-    return sessions.LocalSessionEventPage(events=[_event(r, member, project) for r in rows], next_after_seq=next_seq)
 
 
 # --- Copies (spec §3.5) ------------------------------------------------------------------------

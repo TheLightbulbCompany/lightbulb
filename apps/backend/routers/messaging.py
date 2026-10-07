@@ -384,13 +384,6 @@ async def open_session_link(body: session_links.LinkOpenRequest, auth: AuthConte
     return await session_links.open_page(auth, body.token, refresh=body.refresh)
 
 
-@router.post("/public/session-links/events", response_model=local_sessions.LocalSessionEventPage)
-async def list_session_link_events(
-    body: session_links.LinkEventsRequest, auth: AuthContext | None = Depends(get_optional_user)
-):
-    return await session_links.list_events(auth, body.token, body.after_seq, body.limit)
-
-
 @router.post("/session-links/copies", response_model=session_links.CopyCode, status_code=201)
 async def copy_session_link(body: session_links.CopyRequest, auth: AuthContext = Depends(get_human_session)):
     """Continue: the moment a copy is made (spec §3.5). Needs the taker's own workspace."""

@@ -137,7 +137,7 @@ MAINTENANCE (Lightbulb engineers): every claim in this skill is anchored to
                                  (open, copies, redaction); core/services/local_sessions.py (put_link / delete_link:
                                  one link, audience, the pick-up permission); apps/desktop/src-tauri/src/session_continue.rs
                                  (`lightbulb continue`).
-  - Session live vs transcript  references/surfaces.md (running = live terminal; not running = "Transcript"; sidebar lists live, All sessions lists every session; no message box under a live terminal)
+  - Session live vs transcript  references/surfaces.md (running = live terminal or a "not started through Lightbulb" notice; ended = "Ended" + Resume; offline = "Mac offline"; no transcript on web and desktop (the phone still lists history); sidebar lists live, All sessions lists every session; no message box under a live terminal)
   - Session status/title/id .. references/surfaces.md (sessions list: waiting-approval = waits for its person; title = person's name else conversation title; one conversation = one sessionId)
                               <- apps/frontend/src/components/messaging/{LocalSessionPanel,RoomDirectory,SessionTerminalView}.tsx.
   - Session ask to join ..... references/surfaces.md ("Ask to join" paragraph)
@@ -148,7 +148,7 @@ MAINTENANCE (Lightbulb engineers): every claim in this skill is anchored to
                                  Requested / declined line); SessionDetails.tsx (People you let in, Remove).
   - Session live terminal ... references/surfaces.md ("Live terminal" paragraph)
                               <- apps/frontend/src/components/messaging/{LocalSessionPanel,SessionTerminalView}.tsx
-                                 (terminal in the panel, transcript fallback, "<name> is typing", read-only for
+                                 (terminal in the panel, ended/offline/notice panels, no transcript, "<name> is typing", read-only for
                                  non-admitted); core/services/local_sessions.py (may_control / allowedSenders gate on input);
                                  core/services/session_screen.py (type_into / watch: active-membership fence);
                                  apps/desktop/src-tauri/src/holder/{run,panel}.rs (the panel joins a `lightbulb claude` terminal).

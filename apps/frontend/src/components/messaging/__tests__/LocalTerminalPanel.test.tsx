@@ -23,6 +23,7 @@ it("a session this Mac runs shows its live terminal in place of the transcript, 
   const { unmount } = render(panel(session));
   await waitFor(() => expect(invoke).toHaveBeenCalledWith("terminal_panel", { sessionId: "session", rect: { x: 300, y: 120, width: 800, height: 500 }, at: expect.any(Number) }));
   expect(screen.getByRole("region", { name: "Session terminal" })).toBeInTheDocument();
+  expect(screen.queryByRole("textbox", { name: /send to/i })).toBeNull();
   expect(screen.queryByRole("region", { name: "Native session history" })).toBeNull();
   unmount();
   expect(invoke).toHaveBeenLastCalledWith("terminal_panel", { sessionId: "session", rect: null, at: expect.any(Number) });
@@ -31,7 +32,7 @@ it("a session this Mac runs shows its live terminal in place of the transcript, 
 it("a session this Mac does not run keeps the session view", async () => {
   desktop({ live: false });
   render(panel(session));
-  expect(await screen.findByRole("region", { name: "Native session history" })).toBeInTheDocument();
+  expect(await screen.findByRole("textbox", { name: /send to/i })).toBeInTheDocument();
 });
 
 it("Details takes the terminal away so the sheet is not drawn under it", async () => {
@@ -46,7 +47,7 @@ it("Details takes the terminal away so the sheet is not drawn under it", async (
 it("an ended session never asks for a terminal", async () => {
   const invoke = desktop({ live: true });
   render(panel({ ...session, status: "ended" }));
-  expect(await screen.findByRole("region", { name: "Native session history" })).toBeInTheDocument();
+  expect(await screen.findByText("This session ended before anything was sent.")).toBeInTheDocument();
   expect(invoke).not.toHaveBeenCalledWith("terminal_panel", expect.anything());
 });
 
@@ -72,7 +73,7 @@ it("keeps asking while no holder answers, and promotes the panel when one does",
     (window as { __TAURI__?: unknown }).__TAURI__ = { core: { invoke } };
     render(panel(session));
     await vi.advanceTimersByTimeAsync(100);
-    expect(screen.getByRole("region", { name: "Native session history" })).toBeInTheDocument();
+    expect(screen.getByRole("textbox", { name: /send to/i })).toBeInTheDocument();
     expect(screen.queryByRole("region", { name: "Session terminal" })).toBeNull();
     await vi.advanceTimersByTimeAsync(2500);
     // The slot was gone while the answer was "none": the probe asks without a rect.

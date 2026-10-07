@@ -509,3 +509,15 @@ def test_a_word_an_earlier_answer_used_is_not_carried_over_the_boundary():
     assert h_mod._unsaid_with("Build passed.", bags) == ("", [])
     assert h_mod._unsaid_with("Build failed.", bags) == ("Build failed.", [])
     assert h_mod._unsaid_with("Three PRs are open.", h_mod._said_bags("Three PRs")) == ("Three PRs are open.", ["three", "prs"])
+
+
+async def test_a_line_the_router_understood_as_said_to_a_person_releases_the_floor():
+    """10-07 rig sales call: "Monthly, with an annual option. Maya, what is your current tool costing you?" kept
+    the floor and the agent said its answer over Maya's reply. /route says who a line is for; no word pattern."""
+    h, backend, lives, clock = await asked()
+    (row,) = h._requests.items
+    backend.route_extra = {"ops": {"requests": [], "social": None, "more": False, "cancel": [], "steer": [], "people": True}}
+    await says(h, P1, "Monthly, with an annual option. And what is your current tool costing you?")
+    assert h._voice is None
+    answer(h, row.run_id, "forge", "Three PRs are open.")
+    assert [n[2] for n in h._news.get("forge", [])] == ["Three PRs are open."], "its hand, not its voice"

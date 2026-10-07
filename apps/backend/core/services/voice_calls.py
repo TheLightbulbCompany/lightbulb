@@ -1312,6 +1312,8 @@ async def route_live_line(
         "more": u["more"],
         "cancel": u["cancel"],
         "steer": u["steer"],
+        # the line is talk between people: a meeting voice pinned to its speaker gives the floor back
+        "people": bool(u["people"]) and not requests,
     }
     # What a worker before ``ops`` reads. It hands the WHOLE line to every agent in ``agentIds`` unless
     # ``requests`` splits it, and it reads ``requests`` only for a line that names two or more agents. So

@@ -1723,6 +1723,16 @@ class Huddle:
             # ...and the voice is still with that speaker: someone else may have named the agent while /route decided
             and (not in_meet(identity) or (floor_line and v.label == self._label(identity, mark)))
         )
+        if own and in_meet(identity) and not mixed_meet(identity) and ops.get("people") and not (
+            reqs or social or ops.get("cancel") or ops.get("steer")
+        ):
+            # /route understood the line as said to another person ("Monthly, with an annual option. Maya, what
+            # is your current tool costing you?"): the floor is theirs no more, and what the voice had still to
+            # say keeps its hand up. The understanding decides this, not a pattern on the words (owner 10-07).
+            self._note(f"[{self._agent_name(v.agent_id)}'s voice closes: {self._name(identity)} is talking to someone else]")
+            self._keep_unsaid(v)
+            self._drop(v, keep_queue=True)
+            return []
         # Routing v2 §4.2: someone else spoke since; their line routes itself, seeing this one. A named ask stands.
         # The floor speaker's line stands too: its voice heard it and may delegate it (§4.6). Cancel and steer
         # name earlier rows: they stand either way.
@@ -2254,7 +2264,9 @@ class Huddle:
                     "developer",
                     # the voice's own speaker: a queued or delivered voice has no line of its own to read a label from
                     f"{v.label or self._talker(identity, mark)} asked: {request} — already handed to your backend self; don't delegate it again"
-                    + (f".{MEET_ACK}" if mixed_meet(identity) else ""),
+                    # a meeting voice opens AFTER the line that asked: it never heard it, per-person or mixed
+                    # (10-07 rig: "Hey, I'm here. Go ahead." to a pricing question)
+                    + (f".{MEET_ACK}" if in_meet(identity) else ""),
                 )
             )
         # conversation engine §3.5: the one acknowledgement, of the rows still open after the awaits above

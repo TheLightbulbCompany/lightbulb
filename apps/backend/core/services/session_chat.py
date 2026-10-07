@@ -196,10 +196,11 @@ async def silence(owner_id: str, session_id: str, *, keep: str | None) -> int:
     return removed
 
 
-async def archive_for_session(owner_id: str, session_id: str) -> None:
+async def follow_session(owner_id: str, session_id: str, *, ended: bool) -> None:
+    """The session ended (archive its chat) or resumed (reopen it), for a chat that already exists."""
     meta = await messaging_repo.get_room(session_room_id(owner_id, session_id))
-    if meta is not None and not meta.get("archivedAt"):
-        await _set_archived(meta, True)
+    if meta is not None and ended != bool(meta.get("archivedAt")):
+        await _set_archived(meta, ended)
 
 
 async def chat_state(owner_id: str, viewer: str, session_ids: list[str]) -> dict[str, tuple[str, int]]:

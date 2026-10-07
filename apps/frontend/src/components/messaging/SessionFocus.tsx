@@ -110,26 +110,16 @@ export function SessionFocus({ focus, entries, loading, hintRevision, client, re
   const session = entry?.session ?? resolvedFallback?.session ?? null;
   const owner = entry ?? (session ? resolveSessionOwner(session.humanUserId) : null);
   const messageOwner = session && owner && !owner.own && onMessageOwner ? () => onMessageOwner(session.humanUserId, owner.ownerName) : undefined;
-  // Chat beside the terminal (spec 2026-10-07-session-chat-design §3). Unread: the server's count from the
-  // session list, plus live arrivals since; reading the chat zeroes both until the list refreshes.
+  // Chat beside the terminal (spec 2026-10-07-session-chat-design §3). Unread is the server's count from
+  // the session list, which refetches when a chat message arrives (useWorkspaceSessions); nothing is
+  // counted here. Reading the chat zeroes it until the list refreshes.
   const openChat = client.openSessionChat;
-  // This view outlives a session switch, so the live count is kept per chat room.
-  const [live, setLive] = useState<{ roomId: string; count: number } | null>(null);
   const [readThrough, setReadThrough] = useState<LocalSession | null>(null);
-  const chatRoomId = session?.chatRoomId;
-  useEffect(() => chatOpen || !chatRoomId ? undefined : onEvent?.((event) => {
-    if (event.type === "room.message.available" && event.payload.roomId === chatRoomId
-      && !event.payload.threadRootMessageId && !event.payload.previewOnly) {
-      setLive((current) => ({ roomId: chatRoomId, count: (current?.roomId === chatRoomId ? current.count : 0) + 1 }));
-    }
-  }), [onEvent, chatRoomId, chatOpen]);
   const toggleChat = () => {
-    setLive(null);
     if (chatOpen) setReadThrough(session);
     onChatOpenChange?.(!chatOpen);
   };
-  const liveUnread = live && live.roomId === chatRoomId ? live.count : 0;
-  const unread = chatOpen ? 0 : (readThrough === session ? 0 : session?.chatUnread ?? 0) + liveUnread;
+  const unread = chatOpen || readThrough === session ? 0 : session?.chatUnread ?? 0;
   const showChat = Boolean(session && openChat && onChatOpenChange);
   return <section className={`room-panel room-session-focus${showChat && chatOpen ? " session-chat-open" : ""}`} aria-label="Shared session">
     <div className="room-session-main">

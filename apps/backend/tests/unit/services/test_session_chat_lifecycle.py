@@ -51,3 +51,6 @@ async def test_chat_seats_readers_without_admitting_them_and_follows_sharing_and
     ended = {**fixture("session-ended"), "sessionId": sid, "generation": "generation-1", "endedAt": 10005}
     await relay(transport).handle_message("conn-1", ended)
     assert (await messaging_repo.get_room(room)).get("archivedAt")
+    # The same conversation resumes (re-registers, un-ended): a chat left open takes posts again.
+    await relay(transport).handle_message("conn-1", relay_tests.registration())
+    assert not (await messaging_repo.get_room(room)).get("archivedAt")

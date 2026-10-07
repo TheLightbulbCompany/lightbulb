@@ -292,22 +292,17 @@ it("renders the chat column while open and closes it from either side", async ()
   expect(onChatOpenChange).toHaveBeenCalledWith(false);
 });
 
-it("counts chat messages that arrive while the chat is closed, for that session's room only", async () => {
+it("shows the server's chat unread count and never adds live arrivals on top (the list refetches on one)", async () => {
   let emit: (event: unknown) => void = () => {};
   const onEvent = ((handler: (event: unknown) => void) => { emit = handler; return () => {}; }) as unknown as SessionSource["onEvent"];
   const client = { listWorkspaceSessions: vi.fn(), getLocalSession: vi.fn(), listLocalSessionEvents: vi.fn(async () => ({ events: [], nextAfterSeq: null })),
     submitLocalSessionCommand: vi.fn(), getLocalSessionCommand: vi.fn(), openSessionChat: vi.fn() } as unknown as SessionSource["client"];
-  const entries = [
-    { session: { ...session, chatRoomId: "chat-1" }, ownerName: "Alice", own: false },
-    { session: { ...session, sessionId: "s2", chatRoomId: "chat-2" }, ownerName: "Alice", own: false },
-  ];
-  const view = (sessionId: string) => <SessionFocus focus={{ sessionId }} entries={entries} loading={false} hintRevision={0} client={client} onEvent={onEvent}
-    resolveSessionOwner={resolveSessionOwner} onAccessLost={vi.fn()} onClose={vi.fn()} chatOpen={false} onChatOpenChange={vi.fn()} />;
-  const { rerender } = render(view("s1"));
-  await screen.findByRole("button", { name: "Chat" });
+  const view = (chatUnread: number) => <SessionFocus focus={{ sessionId: "s1" }} entries={[{ session: { ...session, chatRoomId: "chat-1", chatUnread }, ownerName: "Alice", own: false }]}
+    loading={false} hintRevision={0} client={client} onEvent={onEvent} resolveSessionOwner={resolveSessionOwner} onAccessLost={vi.fn()} onClose={vi.fn()} chatOpen={false} onChatOpenChange={vi.fn()} />;
+  const { rerender } = render(view(1));
+  await screen.findByRole("button", { name: "Chat, 1 unread" });
   act(() => emit({ type: "room.message.available", payload: { roomId: "chat-1", threadRootMessageId: null } }));
-  act(() => emit({ type: "room.message.available", payload: { roomId: "other", threadRootMessageId: null } }));
   expect(screen.getByRole("button", { name: "Chat, 1 unread" })).toBeInTheDocument();
-  rerender(view("s2"));
-  expect(await screen.findByRole("button", { name: "Chat" })).toBeInTheDocument(); // the other session's count does not follow
+  rerender(view(2)); // the refreshed list already counts that message
+  expect(screen.getByRole("button", { name: "Chat, 2 unread" })).toBeInTheDocument();
 });

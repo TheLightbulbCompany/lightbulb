@@ -41,6 +41,19 @@ describe("useWorkspaceSessions", () => {
     expect(listWorkspaceSessions).toHaveBeenCalledTimes(2);
   });
 
+  it("refetches when a message lands in a listed session's chat, so its unread count is the server's", async () => {
+    listWorkspaceSessions.mockResolvedValueOnce({ sessions: [{ sessionId: "s1", chatRoomId: "chat-1" } as never] });
+    const { result } = renderHook(() => useWorkspaceSessions(source));
+    await waitFor(() => expect(result.current.sessions).toHaveLength(1));
+    const available = (payload: object) => ({ eventId: "e", type: "room.message.available", payload } as unknown as LiveEvent);
+    act(() => handler?.(available({ roomId: "other", messageSeq: 3 })));
+    act(() => handler?.(available({ roomId: "chat-1", messageSeq: 3, previewOnly: true })));
+    act(() => handler?.(available({ roomId: "chat-1", messageSeq: 3, threadRootMessageId: "m1" })));
+    expect(listWorkspaceSessions).toHaveBeenCalledTimes(1);
+    act(() => handler?.(available({ roomId: "chat-1", messageSeq: 3 })));
+    await waitFor(() => expect(listWorkspaceSessions).toHaveBeenCalledTimes(2));
+  });
+
   it("bumps hintRevision on every sessions hint, transcript ones included", async () => {
     const { result } = renderHook(() => useWorkspaceSessions(source));
     await waitFor(() => expect(listWorkspaceSessions).toHaveBeenCalledTimes(1));

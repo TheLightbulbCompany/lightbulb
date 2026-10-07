@@ -2,6 +2,10 @@
 //! final screen, which its holder keeps while this app runs, and why a running session has no
 //! terminal. `transport.rs` calls in here at six one-line seams; `screen.rs` is untouched: a kept
 //! ended screen is indexed as live, so a viewer's watch reaches its holder like a running one's.
+//!
+//! A screen is an ended session's only when its holder's provider exited and that session ended
+//! with it. `/clear`, `/resume`, `/new` and the agent view end a conversation while its holder runs
+//! on with another: that terminal is never the ended session's screen.
 
 use super::{Mirror, NativeSession};
 use crate::holder::manager::{self, HolderInfo};
@@ -21,6 +25,16 @@ const SCREENS_MAX: usize = 24;
 /// How often holders no mirror names are looked for.
 const SWEEP_EVERY: Duration = Duration::from_secs(10);
 static SWEPT: Mutex<Option<Instant>> = Mutex::new(None);
+/// A session that ended up to this long before its holder's provider exited ended with it: the
+/// `SessionEnd` hook comes first, then the provider shuts down.
+// ponytail: a time window, not an identity (a holder does not know its conversation). A conversation
+// left less than this before the provider quit either ties with the one that replaced it (no screen
+// is kept) or, with none after it (the agent view), keeps those last seconds' screen.
+const ENDED_WITH_MS: u64 = 10_000;
+/// Holder id -> when its provider exited (None: it still ran when last asked, at that Instant).
+static ENDS: Mutex<BTreeMap<String, (Option<u64>, Instant)>> = Mutex::new(BTreeMap::new());
+/// The mirrors whose screen the last `index` kept.
+static SHOWN: Mutex<BTreeSet<String>> = Mutex::new(BTreeSet::new());
 
 /// (`endedScreens`, `terminalReason`) as a registration ack's `features` lists them.
 fn features(features: &Value) -> (bool, bool) {
@@ -36,21 +50,41 @@ pub(super) fn read_features(listed: &Value) {
     READS_TERMINAL_REASON.store(reason, SeqCst);
 }
 
-/// The holder still listens: its final screen is there. A connect only, never a wait on a reply.
-fn holder_listens(id: &str) -> bool {
-    UnixStream::connect(manager::socket_dir().join(format!("{id}.sock"))).is_ok()
+/// When this holder's provider exited (unix ms), if the holder shows only its final screen now.
+/// An end never changes, so it is asked once; a holder that still runs is asked again a second later.
+fn holder_end(id: &str) -> Option<u64> {
+    let socket = manager::socket_dir().join(format!("{id}.sock"));
+    let mut ends = ENDS.lock().ok()?;
+    if UnixStream::connect(&socket).is_err() {
+        ends.remove(id); // closed: its screen is gone
+        return None;
+    }
+    match ends.get(id) {
+        Some((Some(at), _)) => return Some(*at),
+        Some((None, asked)) if asked.elapsed() < Duration::from_secs(1) => return None,
+        _ => {}
+    }
+    let at = manager::ended_at(&socket);
+    ends.insert(id.to_owned(), (at, Instant::now()));
+    at
 }
 
-/// An ended, registered held session whose holder still shows its final screen.
-fn keeps_screen(m: &Mirror, listens: &impl Fn(&str) -> bool) -> bool {
-    m.ended_at.is_some() && m.session_id.is_some() && m.native.holder.as_deref().is_some_and(listens)
-}
-
-/// The ended screens this Mac still shows, newest end first, one frame's worth.
-fn screens(mirrors: &BTreeMap<String, Mirror>, listens: &impl Fn(&str) -> bool) -> Vec<String> {
-    let mut kept: Vec<&Mirror> = mirrors.values().filter(|m| keeps_screen(m, listens)).collect();
-    kept.sort_by_key(|m| std::cmp::Reverse(m.ended_at));
-    kept.into_iter().take(SCREENS_MAX).filter_map(|m| m.session_id.clone()).collect()
+/// The ended sessions whose final screen this Mac still shows, by mirror key, newest end first, one
+/// frame's worth: registered, and the only session that ended with its holder's provider. `end`:
+/// when a holder's provider exited (None while it runs, or once the holder is closed).
+fn kept<'a>(mirrors: &'a BTreeMap<String, Mirror>, end: &impl Fn(&str) -> Option<u64>) -> Vec<(&'a str, &'a Mirror)> {
+    let mut by_holder: BTreeMap<&str, Vec<(&str, &Mirror)>> = BTreeMap::new();
+    for (key, m) in mirrors {
+        let (Some(at), Some(holder)) = (m.ended_at, m.native.holder.as_deref()) else { continue };
+        if end(holder).is_some_and(|exited| m.ended_at_ms.unwrap_or(at * 1000) + ENDED_WITH_MS >= exited) {
+            by_holder.entry(holder).or_default().push((key, m));
+        }
+    }
+    let mut kept: Vec<(&str, &Mirror)> =
+        by_holder.into_values().filter(|with| with.len() == 1).map(|with| with[0]).filter(|(_, m)| m.session_id.is_some()).collect();
+    kept.sort_by_key(|(_, m)| std::cmp::Reverse(m.ended_at));
+    kept.truncate(SCREENS_MAX);
+    kept
 }
 
 fn screens_frame(sids: &[String]) -> Value {
@@ -59,12 +93,12 @@ fn screens_frame(sids: &[String]) -> Value {
 
 /// The heartbeat's frames, plus one naming the kept ended screens for a relay that reads it.
 pub(super) fn with_screens(frames: Vec<Value>, mirrors: &BTreeMap<String, Mirror>) -> Vec<Value> {
-    with_screens_if(READS_ENDED_SCREENS.load(SeqCst), frames, mirrors, &holder_listens)
+    with_screens_if(READS_ENDED_SCREENS.load(SeqCst), frames, mirrors, &holder_end)
 }
 
-fn with_screens_if(reads: bool, mut frames: Vec<Value>, mirrors: &BTreeMap<String, Mirror>, listens: &impl Fn(&str) -> bool) -> Vec<Value> {
+fn with_screens_if(reads: bool, mut frames: Vec<Value>, mirrors: &BTreeMap<String, Mirror>, end: &impl Fn(&str) -> Option<u64>) -> Vec<Value> {
     if reads {
-        let sids = screens(mirrors, listens);
+        let sids: Vec<String> = kept(mirrors, end).into_iter().filter_map(|(_, m)| m.session_id.clone()).collect();
         if !sids.is_empty() {
             frames.push(screens_frame(&sids));
         }
@@ -72,13 +106,14 @@ fn with_screens_if(reads: bool, mut frames: Vec<Value>, mirrors: &BTreeMap<Strin
     frames
 }
 
-/// `local.session.ended` says the final screen stays, so viewers keep it without waiting for a heartbeat.
-pub(super) fn add_screen(frame: &mut Value, mirror: &Mirror) {
-    add_screen_if(READS_ENDED_SCREENS.load(SeqCst), frame, mirror, &holder_listens);
+/// `local.session.ended` says the final screen stays, when the holder already has it (an end the
+/// hook reported before the provider exited does not: the next heartbeat's `screens` names it).
+pub(super) fn add_screen(frame: &mut Value, mirrors: &BTreeMap<String, Mirror>, key: &str) {
+    add_screen_if(READS_ENDED_SCREENS.load(SeqCst), frame, mirrors, key, &holder_end);
 }
 
-fn add_screen_if(reads: bool, frame: &mut Value, mirror: &Mirror, listens: &impl Fn(&str) -> bool) {
-    if reads && keeps_screen(mirror, listens) {
+fn add_screen_if(reads: bool, frame: &mut Value, mirrors: &BTreeMap<String, Mirror>, key: &str, end: &impl Fn(&str) -> Option<u64>) {
+    if reads && kept(mirrors, end).iter().any(|(k, _)| *k == key) {
         frame["screen"] = json!(true);
     }
 }
@@ -94,26 +129,44 @@ fn add_reason_if(reads: bool, entry: &mut Value, native: &NativeSession) {
     }
 }
 
-/// `screen::index` with every kept ended screen indexed as live; then holders no mirror names are closed.
-pub(super) fn index(mirrors: &BTreeMap<String, Mirror>) {
-    let shown = with_kept(mirrors, &holder_listens);
+/// `screen::index` with every kept ended screen indexed as live; then ended holders that show no
+/// session's screen are closed. Returns the mirrors whose screen is newly kept: the caller brings
+/// the heartbeat forward so the relay hears of it now.
+pub(super) fn index(mirrors: &BTreeMap<String, Mirror>) -> Vec<String> {
+    let kept = kept(mirrors, &holder_end);
+    let shown = with_kept(mirrors, &holder_end);
     super::screen::index(shown.as_ref().unwrap_or(mirrors));
-    sweep(mirrors.values().filter_map(|m| m.native.holder.clone()).collect());
+    sweep(named(mirrors, &kept));
+    let now = kept.iter().map(|(key, _)| key.to_string()).collect();
+    SHOWN.lock().map(|mut shown| fresh(&mut shown, now)).unwrap_or_default()
+}
+
+/// What is in `now` and was not in `shown`; `shown` becomes `now`.
+fn fresh(shown: &mut BTreeSet<String>, now: BTreeSet<String>) -> Vec<String> {
+    let new = now.difference(shown).cloned().collect();
+    *shown = now;
+    new
 }
 
 /// The mirrors the screen index should see; None when no ended screen is kept (nothing to copy).
 // ponytail: clones the live mirrors once a second while a screen is kept; an index that took ids would not (screen.rs is S2's).
-fn with_kept(mirrors: &BTreeMap<String, Mirror>, listens: &impl Fn(&str) -> bool) -> Option<BTreeMap<String, Mirror>> {
-    if !mirrors.values().any(|m| keeps_screen(m, listens)) {
+fn with_kept(mirrors: &BTreeMap<String, Mirror>, end: &impl Fn(&str) -> Option<u64>) -> Option<BTreeMap<String, Mirror>> {
+    let kept: BTreeSet<&str> = kept(mirrors, end).into_iter().map(|(key, _)| key).collect();
+    if kept.is_empty() {
         return None;
     }
     Some(
         mirrors
             .iter()
-            .filter(|(_, m)| m.ended_at.is_none() || keeps_screen(m, listens))
+            .filter(|(key, m)| m.ended_at.is_none() || kept.contains(key.as_str()))
             .map(|(k, m)| (k.clone(), Mirror { ended_at: None, ..m.clone() }))
             .collect(),
     )
+}
+
+/// The holders a session still needs: a running session's, and each kept screen's.
+fn named(mirrors: &BTreeMap<String, Mirror>, kept: &[(&str, &Mirror)]) -> BTreeSet<String> {
+    mirrors.values().filter(|m| m.ended_at.is_none()).chain(kept.iter().map(|(_, m)| *m)).filter_map(|m| m.native.holder.clone()).collect()
 }
 
 /// Off the relay loop, at most every SWEEP_EVERY: `list` and `is_ended` talk to every holder.
@@ -133,8 +186,9 @@ fn sweep(named: BTreeSet<String>) {
     });
 }
 
-/// Ended holders no mirror names: a resumed session's old holder once discovery names the new
-/// one, or a session reaped after a day. A running holder nobody names yet (just started) never is.
+/// Ended holders no session needs: a resumed session's old holder once discovery names the new
+/// one, a session reaped after a day, a screen past the newest SCREENS_MAX, or a final screen
+/// that is no session's to show. A running holder nobody names yet (just started) never is.
 fn orphans(holders: &[HolderInfo], named: &BTreeSet<String>, ended: impl Fn(&HolderInfo) -> bool) -> Vec<u32> {
     holders.iter().filter(|h| !named.contains(&h.id) && ended(h)).map(|h| h.pid).collect()
 }
@@ -148,38 +202,66 @@ mod tests {
     const GOLDEN: &str =
         include_str!("../../../../../packages/shared/fixtures/local-session-frames/device-heartbeat-screens.json");
 
+    /// A registered session `sid` that ended at `at` seconds, last seen in `holder`.
     fn ended(holder: &str, at: u64, sid: &str) -> Mirror {
-        let mut m = test_mirror(&format!("thread-{holder}"), "gen-1");
+        let mut m = test_mirror(&format!("thread-{sid}"), "gen-1");
         m.session_id = Some(sid.into());
         m.native.holder = Some(holder.into());
         m.ended_at = Some(at);
+        m.ended_at_ms = Some(at * 1000);
         m
     }
 
+    fn keys(kept: &[(&str, &Mirror)]) -> Vec<String> {
+        kept.iter().map(|(k, _)| k.to_string()).collect()
+    }
+
     #[test]
-    fn an_ended_screen_is_kept_only_while_its_holder_listens_and_is_indexed_as_live() {
+    fn only_the_session_that_ended_with_its_holder_keeps_a_screen_and_is_indexed_as_live() {
         let mut live = test_mirror("thread-live", "gen-1");
         live.session_id = Some("live".into());
+        let mut unregistered = ended("h6", 100, "x");
+        unregistered.session_id = None;
+        let mut alone = ended("h7", 100, "y");
+        alone.session_id = None;
         let mirrors = BTreeMap::from([
-            ("a".to_string(), ended("ab12cd34", 5, SID)),
-            ("b".to_string(), ended("dead0000", 9, "gone")),
-            ("c".to_string(), live),
+            ("a".to_string(), ended("h1", 100, SID)),
+            // `/clear`, `/resume` or the agent view: the conversation ended, its holder runs on.
+            ("b".to_string(), ended("running", 100, "cleared")),
+            // It left this holder long before the provider exited: that final screen is not its own.
+            ("c".to_string(), ended("h3", 50, "left-earlier")),
+            // Two ended with one holder: nothing says whose screen it is.
+            ("d".to_string(), ended("h4", 99, "one")),
+            ("e".to_string(), ended("h4", 100, "other")),
+            // An unregistered session counts as the other candidate, and keeps nothing itself.
+            ("f".to_string(), ended("h6", 100, "registered")),
+            ("g".to_string(), unregistered),
+            ("h".to_string(), alone),
+            ("i".to_string(), ended("gone", 100, "closed")),
+            ("j".to_string(), live),
         ]);
-        let listens = |id: &str| id == "ab12cd34";
-        assert_eq!(screens(&mirrors, &listens), vec![SID.to_string()]);
-        let shown = with_kept(&mirrors, &listens).unwrap();
-        assert_eq!(shown.keys().cloned().collect::<Vec<_>>(), ["a", "c"]);
+        // Each holder's provider exited at 101 s; `running` still runs and `gone` does not answer.
+        let end = |id: &str| (id != "running" && id != "gone").then_some(101_000);
+        assert_eq!(keys(&kept(&mirrors, &end)), ["a"]);
+        let shown = with_kept(&mirrors, &end).unwrap();
+        assert_eq!(shown.keys().cloned().collect::<Vec<_>>(), ["a", "j"]);
         assert!(shown.values().all(|m| m.ended_at.is_none()));
-        assert!(with_kept(&mirrors, &|_: &str| false).is_none(), "nothing kept: the mirrors go in as they are");
+        assert!(with_kept(&mirrors, &|_: &str| None).is_none(), "nothing kept: the mirrors go in as they are");
+        // The hook's end comes first, then the provider shuts down: still the same end.
+        let slow = BTreeMap::from([("a".to_string(), ended("h1", 100, SID))]);
+        assert_eq!(keys(&kept(&slow, &|_: &str| Some(100_000 + ENDED_WITH_MS))), ["a"]);
+        assert!(kept(&slow, &|_: &str| Some(100_001 + ENDED_WITH_MS)).is_empty());
+        // The process was seen gone after the holder ended.
+        assert_eq!(keys(&kept(&slow, &|_: &str| Some(1))), ["a"]);
     }
 
     #[test]
     fn screens_are_newest_first_and_one_frame_at_most() {
         let mirrors: BTreeMap<String, Mirror> =
             (0..30u64).map(|i| (format!("k{i}"), ended(&format!("{i:08}"), i, &format!("s{i}")))).collect();
-        let sids = screens(&mirrors, &|_: &str| true);
-        assert_eq!(sids.len(), 24);
-        assert_eq!(sids[0], "s29");
+        let kept = kept(&mirrors, &|_: &str| Some(0));
+        assert_eq!(kept.len(), 24);
+        assert_eq!(kept[0].1.session_id.as_deref(), Some("s29"));
     }
 
     #[test]
@@ -188,12 +270,30 @@ mod tests {
     }
 
     #[test]
-    fn only_an_ended_holder_no_mirror_names_is_closed() {
+    fn an_ended_holder_is_closed_unless_a_running_session_or_a_reported_screen_names_it() {
         let h = |id: &str, pid| HolderInfo { id: id.into(), socket: format!("/x/{id}.sock").into(), pid, provider_pid: 2,
             argv: vec![], cwd: "/".into(), watch: true, type_input: true };
-        let holders = [h("named000", 10), h("fresh000", 11), h("old00000", 12)];
-        let named = BTreeSet::from(["named000".to_string()]);
-        assert_eq!(orphans(&holders, &named, |x: &HolderInfo| x.id != "fresh000"), vec![12]);
+        let holders = [h("h1", 10), h("fresh", 11), h("h3", 12), h("livehold", 13)];
+        let mut live = test_mirror("thread-live", "gen-1");
+        live.native.holder = Some("livehold".into());
+        let mirrors = BTreeMap::from([
+            ("a".to_string(), ended("h1", 100, SID)),
+            ("c".to_string(), ended("h3", 50, "left-earlier")),
+            ("j".to_string(), live),
+        ]);
+        let named = named(&mirrors, &kept(&mirrors, &|_: &str| Some(101_000)));
+        // `fresh` runs (no mirror names it yet); `h3` shows a screen no session may be shown.
+        assert_eq!(orphans(&holders, &named, |x: &HolderInfo| x.id != "fresh"), vec![12]);
+    }
+
+    #[test]
+    fn a_screen_is_news_once_when_it_is_first_kept() {
+        let mut shown = BTreeSet::new();
+        assert_eq!(fresh(&mut shown, BTreeSet::from(["a".to_string()])), ["a"]);
+        assert!(fresh(&mut shown, BTreeSet::from(["a".to_string()])).is_empty());
+        assert_eq!(fresh(&mut shown, BTreeSet::from(["a".to_string(), "b".to_string()])), ["b"]);
+        assert!(fresh(&mut shown, BTreeSet::new()).is_empty());
+        assert_eq!(fresh(&mut shown, BTreeSet::from(["a".to_string()])), ["a"], "kept again after it was gone");
     }
 
     #[test]
@@ -220,21 +320,22 @@ mod tests {
         assert_eq!(features(&Value::Null), (false, false));
         let mut m = test_mirror("thread-1", "gen-1");
         m.native.provider = "claude".into();
-        let kept = BTreeMap::from([("a".to_string(), ended("ab12cd34", 5, SID))]);
-        let listens = |_: &str| true;
+        let mirrors = BTreeMap::from([("a".to_string(), ended("ab12cd34", 5, SID))]);
+        let end = |_: &str| Some(5_000);
         let mut entry = json!({});
         add_reason_if(false, &mut entry, &m.native);
         assert!(entry.get("terminalReason").is_none());
-        assert_eq!(with_screens_if(false, vec![json!({"type": "x"})], &kept, &listens).len(), 1);
-        let mut end = json!({"type": "local.session.ended"});
-        add_screen_if(false, &mut end, &kept["a"], &listens);
-        assert!(end.get("screen").is_none());
+        assert_eq!(with_screens_if(false, vec![json!({"type": "x"})], &mirrors, &end).len(), 1);
+        let mut frame = json!({"type": "local.session.ended"});
+        add_screen_if(false, &mut frame, &mirrors, "a", &end);
+        assert!(frame.get("screen").is_none());
         add_reason_if(true, &mut entry, &m.native);
         assert_eq!(entry["terminalReason"], "plain");
-        assert_eq!(with_screens_if(true, vec![json!({"type": "x"})], &kept, &listens)[1]["screens"], json!([SID]));
-        assert_eq!(with_screens_if(true, vec![], &BTreeMap::new(), &listens).len(), 0, "no kept screen, no frame");
-        add_screen_if(true, &mut end, &kept["a"], &listens);
-        assert_eq!(end["screen"], true);
-        add_screen_if(true, &mut end, &kept["a"], &|_: &str| false);
+        assert_eq!(with_screens_if(true, vec![json!({"type": "x"})], &mirrors, &end)[1]["screens"], json!([SID]));
+        assert_eq!(with_screens_if(true, vec![], &BTreeMap::new(), &end).len(), 0, "no kept screen, no frame");
+        add_screen_if(true, &mut frame, &mirrors, "a", &|_: &str| None);
+        assert!(frame.get("screen").is_none(), "its holder still runs, or is gone");
+        add_screen_if(true, &mut frame, &mirrors, "a", &end);
+        assert_eq!(frame["screen"], true);
     }
 }

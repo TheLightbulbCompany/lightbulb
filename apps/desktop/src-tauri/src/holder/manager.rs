@@ -331,17 +331,19 @@ pub fn bind_thread(info: &HolderInfo, thread: &str) {
     }
 }
 
-/// Whether this holder's provider exited and it only shows the final screen (spec 2026-10-07
-/// §5.4). An older holder never says so; one that does not answer is not ended.
+/// When this holder's provider exited (unix ms), if it only shows the final screen now (spec
+/// 2026-10-07 §5.4). An older holder never says so; one that does not answer is not ended.
+pub fn ended_at(socket: &Path) -> Option<u64> {
+    let mut conn = UnixStream::connect(socket).ok()?;
+    conn.set_read_timeout(Some(Duration::from_secs(2))).ok()?;
+    conn.write_all(&encode(HELLO, br#"{"role":"origin"}"#)).ok()?;
+    let (kind, facts) = read_frame(&mut conn).ok()?;
+    serde_json::from_slice::<serde_json::Value>(&facts).ok().filter(|_| kind == HELLO)?["endedAt"].as_u64()
+}
+
+/// Whether this holder's provider exited and it only shows the final screen.
 pub fn is_ended(info: &HolderInfo) -> bool {
-    let Ok(mut conn) = UnixStream::connect(&info.socket) else { return false };
-    if conn.set_read_timeout(Some(Duration::from_secs(2))).is_err()
-        || conn.write_all(&encode(HELLO, br#"{"role":"origin"}"#)).is_err()
-    {
-        return false;
-    }
-    matches!(read_frame(&mut conn), Ok((HELLO, facts))
-        if serde_json::from_slice::<serde_json::Value>(&facts).is_ok_and(|v| v["ended"] == true))
+    ended_at(&info.socket).is_some()
 }
 
 /// Close every holder that only shows an ended session's final screen. The app does this once at

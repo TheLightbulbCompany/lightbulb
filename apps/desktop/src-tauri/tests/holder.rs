@@ -110,6 +110,7 @@ fn holder_keeps_the_final_screen_after_its_provider_exits_and_refuses_input() {
     let dir = temp_dir();
     let socket = start(&dir, &["/bin/sh", "-c", "read x; printf final-screen; exit 0"]);
     std::fs::write(socket.with_extension("thread"), "11111111-1111-4111-8111-111111111111").unwrap();
+    assert_eq!(manager::ended_at(&socket), None, "a running holder is not ended");
     let mut c = attach(&socket, "interactive");
     c.write_all(&encode(INPUT, b"go\r")).unwrap();
     loop {
@@ -122,6 +123,9 @@ fn holder_keeps_the_final_screen_after_its_provider_exits_and_refuses_input() {
     // Still listed, and it says it ended.
     let info = manager::list_in(&dir).into_iter().next().expect("the holder stays after its provider");
     assert!(manager::is_ended(&info));
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as u64;
+    let at = manager::ended_at(&socket).expect("an ended holder says when its provider exited");
+    assert!(now.saturating_sub(at) < 30_000, "{at} is not a recent unix time in ms");
     assert!(!socket.with_extension("thread").exists(), "an ended holder never claims a Codex thread");
     // A new viewer gets the final screen.
     let mut w = UnixStream::connect(&socket).unwrap();

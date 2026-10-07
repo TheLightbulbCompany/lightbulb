@@ -278,6 +278,8 @@ pub fn run_with_env(socket: &Path, argv: &[String], cwd: &Path, env: Vec<(String
     let mut exited: Option<(String, u32, Instant)> = None;
     // Spec 2026-10-07 §5.4: the provider exited; the final screen stays for watchers, in memory only.
     let mut ended = false;
+    // When the provider exited (unix ms): HELLO's `endedAt` once `ended`.
+    let mut exited_at_ms = 0u64;
 
     loop {
         let event = match &exited {
@@ -320,7 +322,7 @@ pub fn run_with_env(socket: &Path, argv: &[String], cwd: &Path, env: Vec<(String
                 let facts = serde_json::json!({"protocol": 1, "pid": std::process::id(),
                     "providerPid": provider_pid, "argv": argv, "cwd": cwd, "rows": rows, "cols": cols,
                     "watch": true, "type": true, "joined": joining, "origin": true, "lastInput": last_input,
-                    "ended": ended});
+                    "ended": ended, "endedAt": ended.then_some(exited_at_ms)});
                 if !client.send(encode(HELLO, facts.to_string().as_bytes())) {
                     continue;
                 }
@@ -432,6 +434,7 @@ pub fn run_with_env(socket: &Path, argv: &[String], cwd: &Path, env: Vec<(String
             }
             Event::Exit(status, code) => {
                 exited = Some((status, code, Instant::now()));
+                exited_at_ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis() as u64);
             }
             Event::Eof => {
                 if exited.is_none() {

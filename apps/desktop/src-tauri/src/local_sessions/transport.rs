@@ -764,7 +764,7 @@ impl Host {
                 "generation":mirror.generation,
                 "reason":mirror.ended_reason.as_deref().unwrap_or("exited"),
                 "endedAt":ended_at});
-            super::session_states::add_screen(&mut frame, mirror);
+            super::session_states::add_screen(&mut frame, mirrors, &key);
             ended_pending.remove(index);
             return Ok(Some((reported, frame)));
         }
@@ -1345,7 +1345,7 @@ impl Host {
                         last_probe = Instant::now();
                         let moved = self.approval_tick();
                         self.heartbeat_dirty.extend(moved);
-                        super::session_states::index(&self.mirrors);
+                        self.heartbeat_dirty.extend(super::session_states::index(&self.mirrors));
                     }
                     if reaped.elapsed() >= Duration::from_secs(60) {
                         reaped = Instant::now();

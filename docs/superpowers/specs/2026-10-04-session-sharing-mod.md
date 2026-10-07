@@ -154,12 +154,14 @@ Returns the public session. Audit and notifications as the web path.
 
 ### 4.4 Install
 
-The plugin ships in the app bundle as a folder marketplace
-(`Contents/Resources/mods/.claude-plugin/marketplace.json`, plugin `lightbulb-sessions`,
-`"source": "./lightbulb-sessions"`). Turning Claude sharing on runs
-`claude plugin marketplace add <folder>` and `claude plugin install lightbulb-sessions@lightbulb`
-with the provider binary `provider_program` finds; turning it off uninstalls it. A failure is
-logged and never blocks sharing (the mod is an addition).
+The source is `packages/claude-plugin/` (marketplace `lightbulb`, plugin `lightbulb`,
+`"source": "./lightbulb"`). The app compiles in the mod's files only (no `.mcp.json`, no
+`skills/`) and writes them to its state dir, `local-sessions/claude-mods/`, as a folder
+marketplace. Turning Claude sharing on runs `claude plugin marketplace add <folder>` and
+`claude plugin install lightbulb@lightbulb` with the provider binary `provider_program` finds;
+turning it off uninstalls it, but only when `claude plugin list --json` shows it read from that
+folder. The marketplace's `renames` map moves an old `lightbulb-sessions@lightbulb` install to
+the new ID. A failure is logged and never blocks sharing (the mod is an addition).
 
 ## 5. Pieces
 

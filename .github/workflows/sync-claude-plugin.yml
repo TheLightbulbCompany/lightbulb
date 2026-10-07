@@ -49,13 +49,23 @@ jobs:
           dest="$RUNNER_TEMP/lightbulb-plugin"
           rm -rf "$dest"
           git clone --quiet git@github.com:TheLightbulbCompany/lightbulb-plugin.git "$dest"
+          # The public copy carries a version; the monorepo's plugin.json has none. Codex (and
+          # Claude Code, once a version is set) reinstall only when it changes, so each sync that
+          # changes content gets a new one. Put the old version back first, so an unchanged
+          # tree reads as unchanged.
+          manifest=lightbulb/.claude-plugin/plugin.json
+          old=$(jq -r '.version // empty' "$dest/$manifest" 2>/dev/null || true)
           rsync -a --delete --exclude .git packages/claude-plugin/ "$dest/"
           cd "$dest"
+          stamp() { jq --arg v "$1" '.version = $v' "$manifest" > "$manifest.tmp" && mv "$manifest.tmp" "$manifest"; }
+          if [ -n "$old" ]; then stamp "$old"; fi
           git add -A
           if git diff --cached --quiet; then
             echo "lightbulb-plugin is already up to date."
             exit 0
           fi
+          stamp "0.1.${GITHUB_RUN_NUMBER}"
+          git add -A
           git -c user.name=lightbulb-bot -c user.email=lightbulb-bot@users.noreply.github.com \
             commit --quiet -m "sync: lightbulb@${GITHUB_SHA::7}"
           git push --quiet origin HEAD:main

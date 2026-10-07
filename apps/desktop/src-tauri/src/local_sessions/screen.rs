@@ -1009,7 +1009,7 @@ mod tests {
             if output {
                 tx.send((OUTPUT, with_offset(6, b"x"))).unwrap();
             }
-            let mut ctl = leased(Duration::from_millis(1300));
+            let mut ctl = leased(Duration::from_millis(1700));
             ctl.beat = Duration::from_millis(400);
             let mut holder = Answering { tx, answer: vec![(SNAPSHOT, with_offset(7, b"screen"))], asked: vec![] };
             let sent = std::cell::RefCell::new(vec![]);

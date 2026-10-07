@@ -778,6 +778,20 @@ class LocalSessionRelay:
         for item in message.sessions:
             groups.setdefault(item.session_id, []).append(item)
         slots = asyncio.Semaphore(4)
+        # One strong read for the whole frame. Only a session's first pass may take its row from
+        # here: a duplicate entry or a revision retry reads again, and the fenced write below
+        # catches a row that moved since. A batched row is never grounds to reject: a session
+        # registered while its group waited for a slot reads as missing here.
+        first: dict[str, dict | None] = {}
+
+        def foreign(row: dict | None, item: HeartbeatSession) -> bool:
+            return (
+                row is None
+                or row["deviceId"] != connection["device_id"]
+                or row["generation"] != item.generation
+                or row.get("connectionId") != cid
+                or row.get("endedAt") is not None
+            )
 
         async def renew(items: list[HeartbeatSession]) -> tuple[list[str], list[dict]]:
             nonlocal hint
@@ -785,14 +799,10 @@ class LocalSessionRelay:
             retries: dict[str, int] = {}
             async with slots:
                 for item in items:
-                    row = await repo.get_session(owner, item.session_id)
-                    if (
-                        row is None
-                        or row["deviceId"] != connection["device_id"]
-                        or row["generation"] != item.generation
-                        or row.get("connectionId") != cid
-                        or row.get("endedAt") is not None
-                    ):
+                    row = first.pop(item.session_id) if item.session_id in first else None
+                    if foreign(row, item):
+                        row = await repo.get_session(owner, item.session_id)
+                    if foreign(row, item):
                         # Unknown, superseded or ended here: the desktop re-registers it.
                         rejected.append(item.session_id)
                         continue
@@ -892,6 +902,7 @@ class LocalSessionRelay:
         try:
             # Drain every group even on failure: no lease write may outlive this frame's
             # hint/ACK/error. Preserve the original exception for handle_message's retries.
+            first.update(zip(groups, await repo.get_sessions(owner, list(groups))))
             outcomes = await asyncio.gather(*(renew(items) for items in groups.values()), return_exceptions=True)
             for outcome in outcomes:
                 if isinstance(outcome, BaseException):

@@ -1326,12 +1326,13 @@ async def test_device_heartbeat_overlaps_independent_sessions_with_a_bounded_lim
         sids.append(ack["sessionId"])
     frame = heartbeat(first)
     frame["sessions"] = [heartbeat(sid)["sessions"][0] for sid in sids]
-    real_get = repo.get_session
+    real_put = repo.put_session
     entered, release = asyncio.Event(), asyncio.Event()
     seen, active, maximum = set(), 0, 0
 
-    async def slow_first_read(owner, sid):
+    async def slow_first_write(updated, *args, **kwargs):
         nonlocal active, maximum
+        sid = updated["sessionId"]
         if sid not in seen:
             seen.add(sid)
             active += 1
@@ -1340,9 +1341,9 @@ async def test_device_heartbeat_overlaps_independent_sessions_with_a_bounded_lim
                 entered.set()
             await release.wait()
             active -= 1
-        return await real_get(owner, sid)
+        return await real_put(updated, *args, **kwargs)
 
-    with patch.object(repo, "get_session", slow_first_read):
+    with patch.object(repo, "put_session", slow_first_write):
         task = asyncio.create_task(host.handle_message("conn-1", frame))
         try:
             await asyncio.wait_for(entered.wait(), timeout=1)
@@ -1394,29 +1395,25 @@ async def test_device_heartbeat_drains_workers_and_preserves_the_original_error(
     second = (await host.handle_message("conn-1", registration(nativeConversationId="thread-2")))["sessionId"]
     frame = heartbeat(first)
     frame["sessions"].append(heartbeat(second, status="idle")["sessions"][0])
-    real_get = repo.get_session
+    real_put = repo.put_session
     second_started, release = asyncio.Event(), asyncio.Event()
-    seen = False
 
-    async def failing_read(owner, sid):
-        nonlocal seen
-        if sid == first:
+    async def failing_write(updated, *args, **kwargs):
+        if updated["sessionId"] == first:
             await second_started.wait()
-            raise RuntimeError("original read failed")
-        if sid == second and not seen:
-            seen = True
-            second_started.set()
-            await release.wait()
-        return await real_get(owner, sid)
+            raise RuntimeError("original write failed")
+        second_started.set()
+        await release.wait()
+        return await real_put(updated, *args, **kwargs)
 
-    with patch.object(repo, "get_session", failing_read):
+    with patch.object(repo, "put_session", failing_write):
         task = asyncio.create_task(host.handle_message("conn-1", frame))
         try:
             await asyncio.wait_for(second_started.wait(), timeout=1)
             assert not task.done()
         finally:
             release.set()
-            with pytest.raises(RuntimeError, match="original read failed"):
+            with pytest.raises(RuntimeError, match="original write failed"):
                 await task
     assert (await repo.get_session(OWNER, second))["status"] == "idle"
 
@@ -1917,15 +1914,34 @@ async def test_device_heartbeat_retries_only_the_row_that_lost_its_revision_race
             await real(module._revised(previous), previous, enrollment)
         await real(row, previous, enrollment, **kwargs)
 
-    with patch.object(repo, "put_session", side_effect=upload_wins_once):
+    with (
+        patch.object(repo, "put_session", side_effect=upload_wins_once),
+        patch.object(repo, "get_sessions", wraps=repo.get_sessions) as batched,
+        patch.object(repo, "get_session", wraps=repo.get_session) as single,
+    ):
         response = await relay(transport).handle_message("conn-1", frame)
 
     assert response["type"] == "local.device.heartbeat.ack" and response["rejected"] == []
+    # One batched read for the frame and no per-session first read: each session's one single
+    # read is delivery's own, and only the contested row's retry reads again.
+    batched.assert_awaited_once_with(OWNER, sids)
+    reads = [call.args[1] for call in single.await_args_list]
+    assert {sid: reads.count(sid) for sid in sids} == {sids[0]: 1, contested: 2, sids[2]: 1}
     # The contested row is re-read and written again; the others are written once, so the
     # frame itself ran once.
     assert puts == {sids[0]: 1, contested: 2, sids[2]: 1}
     rows = [await repo.get_session(OWNER, sid) for sid in sids]
     assert [row["status"] for row in rows] == ["idle"] * 3
+
+
+@pytest.mark.asyncio
+async def test_device_heartbeat_never_rejects_on_the_batched_row_alone(transport):
+    sid = await start(transport)
+    # The batch ran before this session was registered onto the connection: it read nothing.
+    with patch.object(repo, "get_sessions", AsyncMock(return_value=[None])):
+        response = await relay(transport).handle_message("conn-1", heartbeat(sid, status="idle"))
+    assert response["rejected"] == []
+    assert (await repo.get_session(OWNER, sid))["status"] == "idle"
 
 
 @pytest.mark.asyncio

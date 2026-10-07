@@ -1,15 +1,11 @@
 # AWS Security Agent against dev — runbook
 
-Status: owner-approved for DEV only (2026-10-07). Prod is NOT a target.
-Researched 2026-10-07 from the AWS user guide (the service is now branded
-"AWS Security Agent (part of AWS Continuum)"; docs base
-`https://docs.aws.amazon.com/securityagent/latest/userguide/`). Re-read the cited
-pages before the console session: the service is new and moves.
-
-Cost: pay-as-you-go, $50 per task-hour, metered per second; a 2-month free trial
-starts at the first pentest run. Customer data is KMS-encrypted and not used for
-training; test logs go to CloudWatch in our account
-([FAQ](https://aws.amazon.com/security-agent/faqs/)).
+Status: owner-approved for DEV only (2026-10-07). Prod is NOT a target. Researched 2026-10-07
+from the [AWS user guide](https://docs.aws.amazon.com/securityagent/latest/userguide/) (service now
+branded "part of AWS Continuum"); re-read the cited pages first, the service moves.
+Cost: $50 per task-hour, metered per second; 2-month free trial from the first run
+([FAQ](https://aws.amazon.com/security-agent/faqs/)). Data is KMS-encrypted, not used for training;
+test logs go to CloudWatch in our account.
 
 ## 0. Facts to know first
 
@@ -58,7 +54,6 @@ Roles defined in CDK, per [create-iam-role](https://docs.aws.amazon.com/security
   `secretsmanager:GetSecretValue` on `lightbulb-dev*` and our credential secret,
   `logs:CreateLogStream`/`PutLogEvents` on `/aws/securityagent/lightbulb-dev*`, and
   `lambda:InvokeFunction` on the credential Lambda only. No VPC or S3 (the VPC policy grants EC2 ENI on `*`).
-- No AWS service-linked role is documented.
 
 ## 2. Targets
 
@@ -96,48 +91,53 @@ AgentCore runtimes (no public endpoint; reached only via `InvokeAgentRuntime`). 
 
 ## 3. HARD EXCLUSIONS (set as Out of scope)
 
-Excluding a path also excludes everything nested beneath it
 ([best practices](https://aws.github.io/aws-security-services-best-practices/guides/security-agent/)).
 List derived from `apps/backend/main.py` and `routers/` on 2026-10-07; re-run
 `grep -n include_router apps/backend/main.py` before the run.
 
 | Exclude | Why |
 |---|---|
-| host `admin.dev.thelightbulb.company`, and `dev.thelightbulb.company/admin*` | Dev admin READS PROD data (standing note). A subdomain of a verified host is in scope unless excluded. |
-| `/api/v1/admin/*` (includes `/api/v1/admin/marketplace/*`) | Same data risk; wipe, refund, takedown actions. |
-| `/api/v1/webhooks/*` | Clerk, Stripe (platform + Connect), SES inbound, Paperclip events, Metronome, Apple IAP: signature endpoints, noise, third-party side effects. |
-| `/api/v1/billing/webhooks/stripe`, `/api/v1/hooks/*` | More signed third-party endpoints (Stripe billing, Meta, Paperclip trigger). |
-| `/api/v1/debug/*` | `provision` and `user-data` destroy the workspace; the rest reprovision. Excluded by default; allow only on the throwaway org by explicit owner decision. |
-| `/api/v1/launch/*` | Launch-competition writes: `referral`, `join`, `team-interest`, `connect-stripe`, `entry`, `display-name`. |
-| `/api/v1/billing/checkout`, `/api/v1/billing/portal`, `/api/v1/billing/credits/top_up`, `/api/v1/billing/provider`, `/api/v1/billing/apple/*`, `/api/v1/marketplace/checkout`, `/api/v1/company/stripe/*` | Create Stripe/Apple objects, charge money, or bind keys. |
-| `/api/v1/internal/*` | Hook-token machine routes (messaging runs/usage, provisioning, browser, mac-cdp, website-logins). |
-| `/api/v1/auth/*` (desktop sign-in tokens), `/api/v1/desktop/*`, `/api/v1/desktop-sessions/*`, `/api/v1/desktop-execution/*` | Mint Clerk sign-in tokens, pair devices, start Mac sessions. |
-| `/api/v1/oauth/*`, `/api/v1/connections*` | Real third-party OAuth flows. |
+| host `admin.dev.thelightbulb.company`, and `https://dev.thelightbulb.company/admin` | Dev admin READS PROD data (standing note). A subdomain of a verified host is in scope unless excluded. |
+| `/api/v1/admin` (includes `/api/v1/admin/marketplace`) | Same data risk; wipe, refund, takedown actions. |
+| `/api/v1/webhooks` | Clerk, Stripe (platform + Connect), SES inbound, Paperclip events, Metronome, Apple IAP: signature endpoints, noise, third-party side effects. |
+| `/api/v1/billing/webhooks/stripe`, `/api/v1/hooks` | More signed third-party endpoints (Stripe billing, Meta, Paperclip trigger). |
+| `/api/v1/debug` | `provision` and `user-data` destroy the workspace; the rest reprovision. Excluded by default; allow only on the throwaway org by explicit owner decision. |
+| `/api/v1/launch` | Launch-competition writes: `referral`, `join`, `team-interest`, `connect-stripe`, `entry`, `display-name`. |
+| `/api/v1/billing/checkout`, `/api/v1/billing/portal`, `/api/v1/billing/credits/top_up`, `/api/v1/billing/provider`, `/api/v1/billing/apple`, `/api/v1/marketplace/checkout`, `/api/v1/company/stripe` | Create Stripe/Apple objects, charge money, or bind keys. |
+| `/api/v1/internal` | Hook-token machine routes (messaging runs/usage, provisioning, browser, mac-cdp, website-logins). |
+| `/api/v1/auth` (desktop sign-in tokens), `/api/v1/desktop`, `/api/v1/desktop-sessions`, `/api/v1/desktop-execution` | Mint Clerk sign-in tokens, pair devices, start Mac sessions. |
+| `/api/v1/oauth`, `/api/v1/connections` | Real third-party OAuth flows. |
 | `https://api-dev.thelightbulb.company/api/v1/users/me/delete` | Wipes the test org mid-run. |
 
-Every row is a host, URL or path (no HTTP verb): the console takes URLs, and `*` marks everything beneath. Under `/api/v1/debug/*` the destructive routes are DELETE `provision` and `user-data`; the whole prefix is excluded.
+Every row is a host, URL or path (no verb, no `*`); excluding a path also excludes everything beneath it. Enter each as `https://api-dev.thelightbulb.company<path>` and confirm it in the wizard's "Derived examples" before launch.
 
 Also exclude email, username and password change paths: "the agent could lock the
-credentials it is testing". `/api/v1/messaging/*` stays in scope only if the owner
+credentials it is testing". `/api/v1/messaging` stays in scope only if the owner
 accepts the spend: each agent-room message wakes a real runtime.
 
 ## 4. Test identity
 
 - Create a NEW throwaway Clerk org and user on the dev instance, address
   `sec-pentest+clerk_test@<our mail domain>`. Never `admin@...`: the bootstrap-admin
-  collision bug (issue #2003) blocks Paperclip seeding. Free tier (`trial_local`). The dev
-  Clerk instance is shared with prod previews, so no real person's email.
+  collision bug (issue #2003) blocks Paperclip seeding. Free tier (`trial_local`); no real person's email
+  (dev Clerk is shared with prod previews).
 - Credential method. The credential **Access URL must be one of the test's target endpoints**
   ([provide-testing-credentials](https://docs.aws.amazon.com/securityagent/latest/userguide/provide-testing-credentials.html)),
   so for an `api-dev`-only run the Clerk login page on `dev.` cannot be the login. The API takes a
-  Clerk session JWT and those live 60 s by default, so a static secret cannot work. Chosen path: the
-  **Lambda** strategy ("dynamic credential generation", invoked synchronously, must finish in 30 s,
-  receives `pentest_arn` and `actor_identifier`). A small Lambda in the infra PR reads the Clerk
-  secret key (`lightbulb/dev/clerk_secret_key`) and the throwaway user id, creates a session for
-  that user through the Clerk Backend API, calls `POST /v1/sessions/{id}/tokens`, and returns the
-  token as plaintext. Login prompt: "Set the Authorization header to `Bearer <the credential>`
-  on every request to https://api-dev.thelightbulb.company". Access URL
-  `https://api-dev.thelightbulb.company`. The service role needs `lambda:InvokeFunction` only.
+  Clerk session JWT (60 s by default), so a static secret cannot work. Chosen path: the **Lambda**
+  strategy (invoked synchronously, 30 s limit). A small Lambda in the infra PR reads
+  `lightbulb/dev/clerk_secret_key` and the throwaway user id, creates a session through the Clerk
+  Backend API, calls `POST /v1/sessions/{id}/tokens`, and returns the token as plaintext. The session must have the throwaway org ACTIVE, or the token has no `o.id`
+  claim (`core/auth.py` reads the workspace from it) and every product API 409s. Clerk's
+  [BAPI spec](https://github.com/clerk/openapi-specs/blob/main/bapi/2025-04-10.yml) `createSession`
+  takes `user_id` and `active_organization_id` ("the organization to set as active for this session");
+  it is "intended only for use in testing, and is not available for production instances" (fine: dev).
+  `POST /v1/sessions/{id}/tokens` takes `expires_in_seconds`, so the 60 s default can be raised.
+  Login prompt: "Set the Authorization header to `Bearer <the credential>` on every request to
+  https://api-dev.thelightbulb.company". Access URL `https://api-dev.thelightbulb.company`.
+  **Preflight, before starting the run:** invoke the Lambda once and check
+  `jwt.decode(tok, options={"verify_signature": False})["o"]["id"] == "<throwaway org id>"`;
+  abort otherwise.
   **Fallback:** authenticated API testing needs the `dev.` target (and Vercel approval), using
   Secrets Manager `{"username","password"}` and the Clerk sign-in page as the login. SMS, push and
   hardware-key MFA are unsupported.
@@ -147,11 +147,11 @@ accepts the spend: each agent-room message wakes a real runtime.
 
 ## 5. Budget
 
-AWS gives no per-app estimate in the docs. Its best-practices guide says an average test is
-"roughly 24 task-hours" (about $1,200, "illustrative"); the quickstart says most runs finish
-within 16 wall-clock hours; the minimum task-hour limit is 20.
-Proposal: one pentest on `api-dev`, **limit 24 task-hours** = **$1,200** ceiling (a `dev.` pentest, if approved, adds $1,200). A reached limit stops the run and keeps findings. The first run
-should fall inside the free trial: check Billing before starting. Revalidating a fix costs far less.
+AWS gives no per-app estimate. Its best-practices guide: an average test is "roughly 24
+task-hours" (about $1,200, "illustrative"); most runs finish within 16 wall-clock hours; the
+minimum limit is 20. Proposal: one `api-dev` pentest, **limit 24 task-hours** = **$1,200**
+ceiling (a `dev.` pentest, if approved, adds $1,200). A reached limit stops the run and keeps
+findings. The first run should fall inside the free trial: check Billing first.
 
 Alerts (budget + CloudWatch alarms) are defined in CDK, section 8.
 
@@ -160,29 +160,30 @@ Alerts (budget + CloudWatch alarms) are defined in CDK, section 8.
 - Watch: web app Run overview / Logs / Findings tabs; CloudWatch group
   `/aws/securityagent/lightbulb-dev*`; CloudTrail `securityagent.amazonaws.com`. Our side:
   ALB 5xx, ECS CPU, DynamoDB throttles. If anything pages, stop the run in the web app.
-- Findings land in the web app **Findings** tab (description, severity, risk type, evidence).
-  Prasiddha reads them first. Triage into one PR per finding with the evidence quoted
-  (critical/high same day); nothing goes in a public issue. WAF-bypassed runs can over-report.
-- Cleanup of the test org: as its sole member call `POST /api/v1/users/me/delete`
-  (`wipe_own_workspace`: runs the Paperclip company deletion and removes the Aurora users).
-  Do NOT use `DELETE /debug/user-data` for this: it leaves the Paperclip tenant behind. Only
-  after that, delete the org and user in Clerk (dev). Then remove the TXT records, Lambda and
-  (unless kept) the Agent Space stack through a CDK PR.
+- Findings land in the web app **Findings** tab. Prasiddha reads them first; triage into one PR
+  per finding with the evidence quoted (critical/high same day); nothing in a public issue.
+- Cleanup of the test org, first: as its sole member call, with the throwaway user's token,
+  `curl -X POST https://api-dev.thelightbulb.company/api/v1/users/me/delete -H "Authorization: Bearer $TOK"
+  -H 'Content-Type: application/json' -d '{"confirm_email":"<throwaway address>"}'`
+  (`DeleteAccountRequest`; 422/400 if the email does not match). Require a 2xx before anything else:
+  it runs `wipe_own_workspace` (Paperclip company deletion, Aurora users, and the Clerk user and
+  organization). Do NOT use `DELETE /debug/user-data`: it leaves the Paperclip tenant behind. Check
+  Clerk (dev) only for leftovers. Then remove the TXT records, Lambda and (unless kept) the
+  Agent Space stack through a CDK PR.
 
 ## 7. Unknowns (the docs did not answer)
 
 - OPEN OWNER QUESTION: our Vercel plan and whether Vercel approves; decides if `dev.` is a target.
 - Whether the Lambda credential is fetched once per run (a 60 s token would then expire) or per
   login. If once: use a dedicated Clerk JWT template with a long lifetime, if the backend accepts it.
-- Whether a Clerk session token carries the org claim the API requires (`resolve_owner_id` 409s without it).
+- Whether the default session token (not a template) carries `o.id` for a session made with `active_organization_id`: the preflight check proves it. If not, fallback below.
 - Whether `CfnTargetDomain` exposes the TXT record value (docs list none): hence the two-step flow.
 - Whether `api-dev` sits behind a WAF (branch `feat/waf-count-mode`): it may block the agent; no IPs to allowlist.
-- The exact Budgets service name; the free-trial cap; whether dev Clerk bot protection blocks the sign-in.
+- The Budgets service name; the free-trial cap; whether Clerk bot protection blocks sign-in.
 
 ## 8. Infra PR spec (apps/infra, dev stage only; follow-up to this docs PR)
 
-Run `npx cdk synth` and commit the regenerated `deploy.yml`. Two deploys, because the TXT value is
-only known after the TargetDomain exists.
+Run `npx cdk synth`, commit the regenerated `deploy.yml`. Two deploys: the TXT value exists only after the TargetDomain.
 - **New `security-agent-stack.ts`** (dev only): `CfnApplication` (RoleArn = application role, no
   IdC), `CfnAgentSpace` `lightbulb-dev` (`AwsResources`: service role, log group, credential
   Lambda ARN; `TargetDomainIds`), one `CfnTargetDomain` per host (`DNS_TXT`: `api-dev.` and, only

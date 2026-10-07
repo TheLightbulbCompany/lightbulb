@@ -505,6 +505,7 @@ impl Journal {
                     && cmd.expected_turn_id.is_none()
             }
             "interrupt" => cmd.text.is_none() && cmd.expected_turn_id.as_deref().is_some_and(|id| !id.is_empty()),
+            "end" => cmd.text.is_none() && cmd.expected_turn_id.is_none(),
             _ => false,
         };
         let admit = ordered

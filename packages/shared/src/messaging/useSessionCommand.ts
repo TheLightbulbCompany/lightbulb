@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import { ApiError } from "../api/error";
-import { canSendToSession } from "./localSessionLabels";
+import { canSendToSession, sessionLive } from "./localSessionLabels";
 import type { LocalSession, LocalSessionCommand, LocalSessionCommandReceipt, LocalSessionEvent } from "./types";
 import type { SessionControlClient } from "./sessionControls";
 import { accessLost, type SessionSource } from "./useLocalSessionHistory";
@@ -38,10 +38,12 @@ export function receiptChip(attempt: SessionCommandAttempt | null | undefined, a
       : !receipt ? { label: "Not delivered", tone: "error", detail: attempt.error ?? null }
         : receipt.state === "unknown" ? { label: "Delivery unknown", tone: "warn", detail: attempt.error ?? UNKNOWN_DETAIL }
           : receipt.cancelledAt ? { label: "Cancelled", tone: "warn", detail: "This follow-up will not be delivered." }
-            : receipt.state === "rejected" ? { label: "Not delivered", tone: "error", detail: "This follow-up was not delivered." }
+            : receipt.state === "rejected" ? attempt.request.kind === "end" ? { label: "Not ended", tone: "error", detail: "This session could not be ended from here. End it on its Mac." }
+              : { label: "Not delivered", tone: "error", detail: "This follow-up was not delivered." }
             : attempt.request.kind === "send" && receipt.state === "applied" ? null
             : receipt.held ? { label: "Queued on your Mac", tone: "pending", detail: "Admission is not completed work." }
-            : receipt.state === "applied" ? { label: attempt.request.kind === "interrupt" ? "Stop requested" : "Delivered", tone: "ok", detail: "Admission is not completed work." }
+            : receipt.state === "applied" ? attempt.request.kind === "end" ? { label: "Ending", tone: "ok", detail: null }
+              : { label: attempt.request.kind === "interrupt" ? "Stop requested" : "Delivered", tone: "ok", detail: "Admission is not completed work." }
                 : receipt.state === "pending" && receipt.deliverBy - receipt.createdAt > AUTO_CHECK_WINDOW_SECONDS
                   ? { label: "Queued for session", tone: "pending", detail: "The Mac will recheck this session before delivery. Expires after 24 hours." }
                   : { label: "Sending", tone: "pending", detail: receipt.state === "dispatched" ? "Waiting for the session to accept it." : null };
@@ -129,7 +131,7 @@ export function useSessionOutbox(client: SessionControlClient, sessionId: string
  */
 export function useSessionCommand(
   client: SessionSource["client"], session: LocalSession,
-  { uuid, onAccessLost, onSent, agentName, allowInterrupt = false, allowOffline = false }: { uuid: () => string; onAccessLost: () => void; onSent?: () => void; agentName?: (id: string) => string; allowInterrupt?: boolean; allowOffline?: boolean },
+  { uuid, onAccessLost, onSent, agentName, allowInterrupt = false, allowOffline = false, allowEnd = false }: { uuid: () => string; onAccessLost: () => void; onSent?: () => void; agentName?: (id: string) => string; allowInterrupt?: boolean; allowOffline?: boolean; allowEnd?: boolean },
 ) {
   const [attempt, setAttempt] = useState<SessionCommandAttempt | null>(null);
   const [checking, setChecking] = useState(false);
@@ -145,6 +147,8 @@ export function useSessionCommand(
   const active = session.status === "busy" && !!session.activeTurnId && canSend;
   const canSteer = active && session.capabilities.steer;
   const canInterrupt = active && session.capabilities.interrupt && allowInterrupt;
+  // The owner's alone, and only while the Mac mirrors it. A Codex process hosts many conversations, so only Claude.
+  const canEnd = allowEnd && session.provider === "claude" && sessionLive(session);
   const unknownCurrent = attempt?.receipt?.state === "unknown" && attempt.receipt.expectedGeneration === session.generation;
   const locked = checking || attempt?.state === "sending" || attempt?.state === "uncertain" || unknownCurrent;
 
@@ -206,7 +210,7 @@ export function useSessionCommand(
   }, [client, session.sessionId, requestId, offlineExpiry]);
 
   async function submit(request: LocalSessionCommand, replacesRequestId?: string) {
-    if (pending.current || !canSend) return;
+    if (pending.current || (!canSend && request.kind !== "end")) return; // ending needs no send capability
     pending.current = true;
     setAttempt({ request, replacesRequestId, state: "sending" });
     try {
@@ -245,6 +249,12 @@ export function useSessionCommand(
   function interrupt() {
     if (locked || !canInterrupt || !session.activeTurnId) return;
     void submit({ requestId: uuid(), expectedGeneration: session.generation, expectedTurnId: session.activeTurnId, kind: "interrupt" });
+  }
+
+  /** Ends the session on its Mac, as closing its terminal would. The caller confirms first. */
+  function end() {
+    if (locked || !canEnd) return;
+    void submit({ requestId: uuid(), expectedGeneration: session.generation, kind: "end" });
   }
 
   function retry() {
@@ -302,5 +312,5 @@ export function useSessionCommand(
   }
   const canCheck = attempt?.state === "uncertain" || receipt?.state === "unknown"
     || (receiptPolling && autoCheckExhaustedFor === requestId);
-  return { attempt, receipt, chip: receiptChip(attempt, agentName), canSend, canSteer, canInterrupt, canCancel, locked, checking, canCheck, send, steer: (text: string) => send(text, true), interrupt, cancel, retry, dismiss, checkDelivery, syncReceipt };
+  return { attempt, receipt, chip: receiptChip(attempt, agentName), canSend, canSteer, canInterrupt, canEnd, canCancel, locked, checking, canCheck, send, steer: (text: string) => send(text, true), interrupt, end, cancel, retry, dismiss, checkDelivery, syncReceipt };
 }

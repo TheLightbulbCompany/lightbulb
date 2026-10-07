@@ -448,7 +448,7 @@ _APPROVAL_FIELDS = ("approval_id", "decision", "mode", "input_digest")
 class LocalSessionCommand(ContractModel):
     request_id: OpaqueId
     expected_generation: OpaqueId
-    kind: Literal["send", "interrupt", "approve"]
+    kind: Literal["send", "interrupt", "approve", "end"]
     text: str | None = Field(default=None, max_length=MAX_COMMAND_BYTES)
     expected_turn_id: OpaqueId | None = None
     approval_id: OpaqueId | None = None
@@ -462,6 +462,8 @@ class LocalSessionCommand(ContractModel):
             raise ValueError("send requires text")
         if self.kind == "interrupt" and self.text is not None:
             raise ValueError("interrupt does not accept text")
+        if self.kind == "end" and (self.text is not None or self.expected_turn_id is not None):
+            raise ValueError("end takes no text and no turn")
         approval = [getattr(self, name) is not None for name in _APPROVAL_FIELDS]
         if self.kind == "approve":
             if not (self.approval_id and self.decision and self.input_digest) or self.expected_turn_id:
@@ -1276,6 +1278,9 @@ def require_command_scope(auth: Caller, row: dict, kind: str) -> None:
     if kind == "interrupt" and not isinstance(auth, AgentInvocation):
         if auth.user_id != row["humanUserId"] and not team_control_on(row):
             raise ApiProblem("LOCAL_SESSION_FORBIDDEN", "Only the session's owner can stop this run.")
+    # Ending is the owner's alone: never a teammate under team control, never an agent.
+    if kind == "end" and (isinstance(auth, AgentInvocation) or auth.user_id != row["humanUserId"]):
+        raise ApiProblem("LOCAL_SESSION_FORBIDDEN", "Only the session's owner can end it.")
 
 
 def _require_control(row: dict, request: LocalSessionCommand, *, allow_offline_send: bool = False) -> None:
@@ -1285,6 +1290,12 @@ def _require_control(row: dict, request: LocalSessionCommand, *, allow_offline_s
         raise ApiProblem("LOCAL_SESSION_OFFLINE", "The desktop session has ended.")
     if (row["status"] == "offline" or row["onlineUntil"] <= int(time.time())) and not allow_offline_send:
         raise ApiProblem("LOCAL_SESSION_OFFLINE", "The desktop session is offline.")
+    if request.kind == "end":
+        # The Mac stops the session's own process. A Codex process hosts many conversations, so
+        # only Claude can be ended; it needs no send capability, so an unverified session can be too.
+        if row["provider"] != "claude":
+            raise ApiProblem("LOCAL_SESSION_UNSUPPORTED", "This session can only be ended on its Mac.")
+        return
     caps = row["capabilities"]
     if not row["capabilitiesVerified"]:
         raise ApiProblem("LOCAL_SESSION_UNSUPPORTED", "Sending is unavailable for this session.")
@@ -1736,6 +1747,7 @@ AUDIT_ACTIONS = Literal[
     "send",
     "cancel",
     "interrupt",
+    "end",
     "approve",
     "deny",
     "team_control_on",

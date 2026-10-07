@@ -29,7 +29,7 @@ def capture_session_event(
     start_id: str | None = None,
     request_id: str | None = None,
     source_session_id: str | None = None,
-    command_kind: Literal["send", "interrupt", "approve"] | None = None,
+    command_kind: Literal["send", "interrupt", "approve", "end"] | None = None,
     origin: Origin | None = None,
     state: State | None = None,
     destination_kind: Literal["room", "person", "session"] | None = None,

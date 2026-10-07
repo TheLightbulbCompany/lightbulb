@@ -517,7 +517,7 @@ export interface PrivateSendApproval {
 
 export interface LocalSessionAuditEntry {
   at: string;
-  action: "native_send_requested" | "native_send_approved" | "native_send_denied" | "native_send_cancelled" | "send" | "interrupt" | "approve" | "deny" | "cancel" | "team_control_on" | "team_control_off" | "team_control_ended" | "share_link_created" | "share_link_revoked"
+  action: "native_send_requested" | "native_send_approved" | "native_send_denied" | "native_send_cancelled" | "send" | "interrupt" | "end" | "approve" | "deny" | "cancel" | "team_control_on" | "team_control_off" | "team_control_ended" | "share_link_created" | "share_link_revoked"
     | "share_link_audience" | "session_copied"
     | "pickup_on" | "pickup_off" | "picked_up" | "pickup_expired"
     | "pickup_requested" | "pickup_request_declined" | "join_requested" | "join_allowed" | "join_declined" | "sender_removed"
@@ -583,13 +583,13 @@ export type LocalSessionCommand = {
   requestId: string;
   expectedGeneration: string;
   expectedTurnId?: string | null;
-} & ({ kind: "send"; text: string } | { kind: "interrupt"; text?: never }
+} & ({ kind: "send"; text: string } | { kind: "interrupt"; text?: never } | { kind: "end"; text?: never; expectedTurnId?: never }
   | { kind: "approve"; approvalId: string; decision: "allow" | "deny"; inputDigest: string; mode?: LocalSessionApprovalMode; text?: string });
 
 export type LocalSessionCommandReceipt = {
   requestId: string;
   expectedGeneration: string;
-  kind: "send" | "interrupt" | "approve";
+  kind: "send" | "interrupt" | "approve" | "end";
   text: string | null;
   expectedTurnId: string | null;
   sessionId: string;

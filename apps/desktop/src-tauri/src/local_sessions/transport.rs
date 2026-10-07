@@ -613,7 +613,7 @@ impl Host {
         recovering_ended.retain(|key| {
             self.mirrors
                 .get(key)
-                .is_some_and(needs_ended_recovery)
+                .is_some_and(|m| needs_ended_recovery(m) || owes_bound_register(&self.dir, m))
         });
         for key in ended_recovery_keys(&self.mirrors) {
             recovering_ended.insert(key.clone());
@@ -858,6 +858,12 @@ impl Host {
                 continue;
             }
             let Some(session) = mirror.session_id.clone() else {
+                if owes_bound_register(dir, mirror) {
+                    // Someone started this run and waits to open it: the relay has to learn
+                    // it existed. The draining register gives it a session, then this end.
+                    recovering_ended.insert(key.clone());
+                    continue;
+                }
                 let before = serde_json::to_value(&*mirror).map_err(|e| e.to_string())?;
                 mirror.ended_sent = true;
                 persist_changed(dir, &key, mirror, &before)?;
@@ -1424,7 +1430,8 @@ impl Host {
                         // registers here: ask now, not at the idle heartbeat 30 s on.
                         (self.relay_reads_ended_start.is_none()
                             && self.ended_pending.iter().any(|key| {
-                                self.mirrors.get(key).is_some_and(|m| {
+                                // A recovering key registers on this socket: that ack says it.
+                                !recovering_ended.contains(key) && self.mirrors.get(key).is_some_and(|m| {
                                     start_links::bound(&self.dir, &m.native, &m.generation).is_some()
                                 })
                             }))
@@ -1641,6 +1648,8 @@ impl Host {
                                 }
                             }
                             self.finish_deferred_end(&key)?;
+                            // A register that had nothing to drain is done: its end is next.
+                            self.refresh_ended_recovery(&mut recovering_ended);
                             // Someone watches it now: stream at once, not after every other
                             // session has registered and the first heartbeat is acked.
                             if body["watch"].is_object() {super::screen::nudge(&body["watch"]);}
@@ -2277,6 +2286,15 @@ fn needs_ended_recovery(mirror: &Mirror) -> bool {
         && !mirror.ended_sent
         && has_drainable_backlog(mirror)
         && !codex_turn_active_after_end(mirror)
+}
+
+/// An ended run the relay has never heard of, bound to a remote start: it registers once,
+/// with nothing to drain, so its end has a session to land on. True only until that ack.
+fn owes_bound_register(dir: &Path, mirror: &Mirror) -> bool {
+    mirror.ended_at.is_some()
+        && !mirror.ended_sent
+        && mirror.session_id.is_none()
+        && start_links::bound(dir, &mirror.native, &mirror.generation).is_some()
 }
 
 fn ended_recovery_keys(mirrors: &BTreeMap<String, Mirror>) -> BTreeSet<String> {
@@ -5862,6 +5880,64 @@ pub(super) mod tests {
         server.await.unwrap();
         let stored: Mirror = private_read(&persisted).unwrap();
         assert!(stored.ended_sent, "an acknowledged end is durable across restarts");
+    }
+
+    /// Started from the web or a phone, ended offline before it wrote anything: the relay has
+    /// never heard of it. It registers once to exist, then its end names the start.
+    #[tokio::test]
+    async fn local_sessions_a_bound_run_that_ended_unregistered_and_empty_is_still_reported() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut mirror = test_mirror(SID, "gen-1");
+        mirror.native.status = "ended".into();
+        mirror.ended_at = Some(1_700_000_042);
+        private_write(
+            &dir.path().join(format!("start-{}.json",
+                fingerprint(&json!([mirror.native.provider, mirror.native.conversation]).to_string()))),
+            &json!({"startId":"11111111-1111-4111-8111-111111111111","provider":mirror.native.provider,
+                "conversation":mirror.native.conversation,"launcher":process(std::process::id()).unwrap(),
+                "boundGeneration":"gen-1"}),
+        )
+        .unwrap();
+        assert!(!needs_ended_recovery(&mirror), "nothing to drain");
+        // Its neighbour has no bound start: retired silently, as before.
+        let mut silent = test_mirror(SID_B, "gen-2");
+        silent.native.status = "ended".into();
+        silent.ended_at = Some(1_700_000_043);
+        let mut host = test_host(dir.path(), vec![("a-session", mirror), ("b-session", silent)]);
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (tcp, _) = listener.accept().await.unwrap();
+            let mut socket = tokio_tungstenite::accept_async(tcp).await.unwrap();
+            let registration = next_frame(&mut socket).await;
+            assert_eq!(registration["type"], "local.session.register");
+            assert_eq!(registration["session"]["nativeConversationId"], SID);
+            assert_eq!(registration["session"]["controlUnavailableReason"], "runtime-unverified");
+            assert!(registration["session"].get("startId").is_none());
+            reply(&mut socket, json!({"type":"local.session.registered","sessionId":SID,
+                "generation":registration["session"]["generation"],"afterSeq":0,"serverTime":1000,
+                "features":["endedStartId"],"reconcile":null})).await;
+            let ended = next_frame(&mut socket).await;
+            assert_eq!(ended["type"], "local.session.ended", "one register, then the end");
+            assert_eq!(ended["sessionId"], SID);
+            assert_eq!(ended["startId"], "11111111-1111-4111-8111-111111111111");
+            reply(&mut socket, json!({"type":"local.session.ended.ack","sessionId":SID})).await;
+            let quiet = tokio::time::timeout(Duration::from_millis(400), socket.next()).await;
+            assert!(quiet.is_err(), "nothing registers again and the unbound end stays silent: {quiet:?}");
+            socket.close(None).await.unwrap();
+        });
+        let (_tx, mut rx) = tokio::sync::mpsc::channel(1);
+        let (mut socket, _) = tokio_tungstenite::connect_async(format!("ws://{address}"))
+            .await
+            .unwrap();
+        let _ = tokio::time::timeout(
+            Duration::from_secs(5),
+            host.connection(&mut socket, &mut rx, "alice"),
+        )
+        .await;
+        server.await.unwrap();
+        let stored: Mirror = private_read(&dir.path().join("a-session.json")).unwrap();
+        assert!(stored.ended_sent && stored.session_id.as_deref() == Some(SID));
     }
 
     /// A drained end retried on a new socket: nothing registers, so the Mac asks with a

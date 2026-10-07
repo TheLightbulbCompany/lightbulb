@@ -61,6 +61,12 @@ Check whether the timeout also happens at concurrency 50
   call a pending or queued message delivered. A message posts as this verified session, never as the owner, and these
   tools cannot answer permission prompts. A native-session reply chain stops
   after two hops.
+- The `lightbulb` server has two forms: the Mac app's local server (above) and
+  the hosted server at `api.thelightbulb.company/mcp` (signed in with OAuth).
+  The tools and arguments are the same. On the hosted server, a message is
+  posted as "Claude Code via <Name>" with the signed-in person's authority,
+  not as the session. `find_sessions` marks no session `isThisSession`,
+  because a hosted caller is not a session.
 - If the tools or destination are unavailable, say so rather than claiming a
   message was sent. The `@aden` header alone is not a destination.
 - The transcript is mirrored. Keep answers self-contained, do not paste

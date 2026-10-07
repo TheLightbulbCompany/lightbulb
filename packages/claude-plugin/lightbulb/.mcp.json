@@ -1,0 +1,1 @@
+{ "mcpServers": { "lightbulb": { "type": "http", "url": "https://api.thelightbulb.company/mcp" } } }

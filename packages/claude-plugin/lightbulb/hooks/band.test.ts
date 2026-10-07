@@ -4,7 +4,7 @@ import { bandLine, bandRuns, continuedLine, keysHint, parseContinued, rememberTy
 import { colorFor, type Sender } from './rules'
 import type { SessionState } from '../types'
 
-const P = 'lightbulb-sessions'
+const P = 'lightbulb'
 const SOCKET = '/tmp/lightbulb-test/mod.sock'
 const ENGINE = '(the engine draws its own band)'
 const SURFACES = ['terminal', 'desktop'] as const
@@ -30,7 +30,7 @@ function world(on: On, answer: Answer, socketFile = true, held?: Promise<Reply>)
   on('session.start', ($, e) => ({ cwd: e.cwd }))
   on('fs.exists', ($, e) => ({ value: e.path === SOCKET && socket.live }))
   on('fs.read', ($, e) => {
-    if (socketFile && e.path.endsWith('/lightbulb-sessions/socket')) return { value: `${SOCKET}\n` }
+    if (socketFile && e.path.endsWith('/lightbulb/socket')) return { value: `${SOCKET}\n` }
     return { deny: `no file ${e.path}` }
   })
   on('http.fetch', ($, e) => {

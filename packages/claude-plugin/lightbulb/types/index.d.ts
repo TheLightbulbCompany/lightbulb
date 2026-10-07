@@ -15,6 +15,6 @@ export type SessionState = {
 
 declare module 'claude-code' {
   interface PluginState {
-    'lightbulb-sessions': { state: SessionState | null; error: string | null; continued: Continued | null }
+    'lightbulb': { state: SessionState | null; error: string | null; continued: Continued | null }
   }
 }

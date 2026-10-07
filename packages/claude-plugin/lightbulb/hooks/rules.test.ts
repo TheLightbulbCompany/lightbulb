@@ -149,7 +149,7 @@ test("a teammate's turn cannot edit config; the owner's can; the guard ends with
 })
 
 const ROW = (text: string, isExpanded: boolean, surface: 'terminal' | 'desktop') => ({
-  plugin: 'lightbulb-sessions',
+  plugin: 'lightbulb',
   surface,
   component: 'UserMessage' as const,
   props: { text, origin: { kind: 'peer' as const }, isExpanded },

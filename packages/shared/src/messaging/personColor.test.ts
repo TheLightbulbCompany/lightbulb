@@ -3,7 +3,7 @@ import { PERSON_COLORS, personColor } from "./personColor";
 
 describe("personColor", () => {
   it("matches the terminal mod's colorFor (rules.ts) for the same Clerk ids", () => {
-    // Values computed with apps/desktop/src-tauri/mods/lightbulb-sessions/hooks/rules.ts colorFor.
+    // Values computed with packages/claude-plugin/lightbulb/hooks/rules.ts colorFor.
     expect(personColor("user_alice", "owner")).toBe("magenta");
     expect(personColor("user_bob", "owner")).toBe("green");
     expect(personColor("user_carol", "owner")).toBe("cyan");

@@ -998,7 +998,7 @@ fn disable_body(enrollment: &Enrollment) -> Value {
     body
 }
 
-pub(crate) const SKILL_MD: &str = include_str!("../../skills/lightbulb-session-sharing/SKILL.md");
+pub(crate) const SKILL_MD: &str = include_str!("../../../../../packages/claude-plugin/lightbulb/skills/lightbulb-session-sharing/SKILL.md");
 const SKILL_DIR: &str = "lightbulb-session-sharing";
 
 /// Bundled skill into each installed harness's user skill root. Only directories this desktop creates are recorded.
@@ -1071,7 +1071,7 @@ fn reassert(state_dir: &Path) -> Vec<String> {
         Ok(executable) => {
             let mut notes = reassert_at(state_dir, &home, &executable);
             if let Err(reason) = super::plugin::install(state_dir, &home) {
-                notes.push(format!("the lightbulb-sessions Claude plugin was not installed ({reason})"));
+                notes.push(format!("the lightbulb Claude plugin was not installed ({reason})"));
             }
             notes
         }

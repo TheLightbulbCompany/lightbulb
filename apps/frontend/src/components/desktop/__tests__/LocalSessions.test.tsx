@@ -104,7 +104,7 @@ it("explains the full audience and requires an already connected Mac", async () 
   await waitFor(()=>expect(screen.getByText("Connect this Mac first.")).toBeTruthy());
   expect(screen.getByText(/Something typed in one conversation can be visible in another/)).toBeTruthy();
   expect(screen.getByText(/can be visible in another, and someone added/)).toBeTruthy();
-  expect(screen.getByText("claude mcp add --transport http lightbulb https://api.thelightbulb.company/mcp")).toBeInTheDocument();
+  expect(screen.getByText("claude plugin marketplace add TheLightbulbCompany/lightbulb-plugin")).toBeInTheDocument();
   expect(document.body.textContent).not.toMatch(/org_/);
   expect(screen.getByRole("button",{name:"Turn on sharing"}).hasAttribute("disabled")).toBe(true);
 });
@@ -258,7 +258,7 @@ it("shows per-provider setup read from disk and retries setup without re-enrolli
   await waitFor(() => expect(invoke).toHaveBeenCalledWith("local_sessions_repair"));
   expect(invoke.mock.calls.some(([command]) => command === "local_sessions_set")).toBe(false);
   expect(providerSetupLine("Codex", {cli:true,mcp:"configured",hooks:"configured"})).toBe("Codex — Ready for new sessions");
-  expect(screen.getByText("claude mcp add --transport http lightbulb https://api.thelightbulb.company/mcp")).toBeInTheDocument();
+  expect(screen.getByText("claude plugin marketplace add TheLightbulbCompany/lightbulb-plugin")).toBeInTheDocument();
 });
 it("turns Share every session live on and off through the desktop, off by default", async () => {
   invoke.mockImplementation(async (command, args) => command === "shell_integration_set" ? args.enabled : false);

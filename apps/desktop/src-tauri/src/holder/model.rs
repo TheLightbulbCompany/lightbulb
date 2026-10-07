@@ -96,7 +96,7 @@ const MOUSE_OFF: &[u8] = b"\x1b[?9;1000;1002;1003l";
 /// Where in the new bytes (after the first `skip` bytes of `hay`) each sequence that leaves the
 /// alternate screen starts: `ESC[?…l` naming 47 or 1049, the two the model acts on. One that began
 /// in the bytes before starts at 0.
-fn alternate_leaves(hay: &[u8], skip: usize) -> Vec<usize> {
+pub(crate) fn alternate_leaves(hay: &[u8], skip: usize) -> Vec<usize> {
     let mut cuts = Vec::new();
     for start in 0..hay.len() {
         let Some(rest) = hay[start..].strip_prefix(b"\x1b[?") else { continue };
@@ -248,6 +248,19 @@ pub fn is_probe_reply(input: &[u8]) -> bool {
         || csi_body(s, 'R').is_some_and(|b| digits(&b) && b.contains(';'))
 }
 
+/// Claude Code 2.1.292, `tui: fullscreen`, in a 120x40 pty (captured 2026-10-07): its reads
+/// from Enter on `/exit` to the end, as they arrived. It exited 0.47 s after the first.
+#[cfg(test)]
+pub(crate) const CLAUDE_EXIT_READS: &[&[u8]] = &[
+    b"\x1b[?1006l\x1b[?1003l\x1b[?1002l\x1b[?1000l",
+    b"\x1b[?25h",
+    b"\x1b[?1004l\x1b[?1049l\x1b[>4m\x1b[>4m\x1b[?2031l\x1b[?2004l\x1b(B\x0f\x1b[?1016l\x1b[?1006l\x1b[?1003l\x1b[?1002l\x1b[?1000l\x1b[?25h\x1b7\x1b[r\x1b8",
+    b"\x1b[?25h",
+    b"\x1b(B\x0f\x1b[?1016l\x1b[?1006l\x1b[?1003l\x1b[?1002l\x1b[?1000l\x1b[>4m\x1b[?1004l\x1b[?2031l\x1b[?2004l\x1b[?25h\x1b7\x1b[r\x1b8\x1b]0;\x07",
+    b"\x1b[2m\x1b[22m\r\n\x1b[2mResume this session with:\x1b[22m\r\n\x1b[2mclaude --resume 5591f323-31ca-4057-846d-1a38487a091b\x1b[22m\r\n\x1b[2m\x1b[22m",
+    b"\x1b[?25h",
+];
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -331,20 +344,9 @@ mod tests {
     #[test]
     fn holder_model_keeps_the_conversation_real_claude_code_leaves_on_exit() {
         let has = |hay: &[u8], needle: &[u8]| hay.windows(needle.len()).any(|w| w == needle);
-        // Claude Code 2.1.292, `tui: fullscreen`, in a 120x40 pty (captured 2026-10-07): its reads
-        // from Enter on `/exit` to the end, as they arrived. It exited 0.47 s after the first.
-        const EXIT_READS: &[&[u8]] = &[
-            b"\x1b[?1006l\x1b[?1003l\x1b[?1002l\x1b[?1000l",
-            b"\x1b[?25h",
-            b"\x1b[?1004l\x1b[?1049l\x1b[>4m\x1b[>4m\x1b[?2031l\x1b[?2004l\x1b(B\x0f\x1b[?1016l\x1b[?1006l\x1b[?1003l\x1b[?1002l\x1b[?1000l\x1b[?25h\x1b7\x1b[r\x1b8",
-            b"\x1b[?25h",
-            b"\x1b(B\x0f\x1b[?1016l\x1b[?1006l\x1b[?1003l\x1b[?1002l\x1b[?1000l\x1b[>4m\x1b[?1004l\x1b[?2031l\x1b[?2004l\x1b[?25h\x1b7\x1b[r\x1b8\x1b]0;\x07",
-            b"\x1b[2m\x1b[22m\r\n\x1b[2mResume this session with:\x1b[22m\r\n\x1b[2mclaude --resume 5591f323-31ca-4057-846d-1a38487a091b\x1b[22m\r\n\x1b[2m\x1b[22m",
-            b"\x1b[?25h",
-        ];
         let mut model = Model::new(40, 120);
         model.feed(b"\x1b[?2004h\x1b[?2031h\x1b[?1004h\x1b[?1049h\x1b[2J\x1b[H\x1b[?1000h\x1b[?1002h\x1b[?1003h\x1b[?1006h\x1b[?25l\x1b[H\r\x1b[6B> Reply with the single word READY.\r\x1b[1BREADY\x1b[40;1H\x1b[38;3H\x1b[?25h");
-        for read in EXIT_READS {
+        for read in CLAUDE_EXIT_READS {
             model.feed(read);
         }
         let picture = model.ended_picture(Instant::now() + Duration::from_millis(470)).expect("the conversation it left");

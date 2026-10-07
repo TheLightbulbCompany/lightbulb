@@ -41,8 +41,12 @@ const atBottom = (el: HTMLElement) => el.scrollTop + el.clientHeight >= el.scrol
  *  the scaled picture is larger than the box, the box scrolls. The wheel is this view's alone and
  *  never xterm's (`onWheel`): the box moves while it can, and only then the terminal's own
  *  scrollback. No click, drag or wheel is ever sent to the Mac (`dropMouseReports`). */
-export function SessionTerminalView({ session, onEvent, watch, onLive, onCanType, input, admitted = false }: {
+export function SessionTerminalView({ session, onEvent, watch, onLive, onCanType, input, admitted = false, kept = false }: {
   session: Pick<LocalSession, "sessionId" | "generation">;
+  /** The session ended and its Mac reports the final screen. A view that watched it through the end asks
+   *  for that picture once, as a new viewer does: until the report the backend refuses the watch and drops
+   *  the Mac's frames, and a renewal after it is no new viewer, so nothing else sends the picture. */
+  kept?: boolean;
   input?: (data: Uint8Array, epoch: number) => Promise<unknown>;
   admitted?: boolean;
   onEvent: (handler: (event: LiveEvent) => void) => () => void;
@@ -86,9 +90,10 @@ export function SessionTerminalView({ session, onEvent, watch, onLive, onCanType
   typing.current = { canType, input, session, refuse: (k: string) => setRefusedFor(k) };
   const termRef = useRef<Terminal | null>(null);
   useEffect(() => { if (termRef.current) termRef.current.options.disableStdin = !canType; }, [canType]);
-  // The session this view last asked a screen for: `watch` may change identity between renders,
-  // and each fresh ask costs every viewer a history burst.
+  // The screen this view last asked for (a session's, or its kept one): `watch` may change identity
+  // between renders, and each fresh ask costs every viewer a history burst.
   const asked = useRef("");
+  const screenKey = `${session.sessionId}:${kept}`;
   useEffect(() => {
     let refused = false;
     const ping = (fresh: boolean) => void watch(session.sessionId, fresh).catch((e) => { if (e instanceof ApiError && (e.status === 403 || e.status === 404)) { refused = true; setLive(false); onLive(false); } });
@@ -99,7 +104,7 @@ export function SessionTerminalView({ session, onEvent, watch, onLive, onCanType
     const start = (fresh: boolean) => {
       clearInterval(timer);
       ping(fresh);
-      asked.current = session.sessionId;
+      asked.current = screenKey;
       setWatching(true);
       timer = setInterval(() => { if (!refused) ping(false); }, WATCH_EVERY_MS);
     };
@@ -108,10 +113,10 @@ export function SessionTerminalView({ session, onEvent, watch, onLive, onCanType
       clearInterval(timer); timer = undefined;
       setWatching(false);
     };
-    if (document.visibilityState !== "hidden") start(asked.current !== session.sessionId);
+    if (document.visibilityState !== "hidden") start(asked.current !== screenKey);
     document.addEventListener("visibilitychange", onVisibility);
     return () => { clearInterval(timer); document.removeEventListener("visibilitychange", onVisibility); };
-  }, [session.sessionId, watch, onLive]);
+  }, [session.sessionId, screenKey, watch, onLive]);
   useEffect(() => {
     let term: Terminal | null = null;
     let order = NEW_SCREEN;

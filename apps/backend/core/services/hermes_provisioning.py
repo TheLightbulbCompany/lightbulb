@@ -1283,6 +1283,11 @@ async def refresh_agent_soul(owner_id: str, agent_id: str, by: str | None = None
             await voice_calls.send_renamed_notices(owner_id, agent_id, name, by, changed)
     except Exception:  # noqa: BLE001
         logger.warning("rename follow-ups failed owner=%s agent=%s", owner_id, agent_id, exc_info=True)
+    # Every rename door (Teams PATCH, agents.update, voice profile edit) lands here, so this is the
+    # one place the `teammates` manifest in every agent's facts file learns the new name/role.
+    from core.services.owner_facts import write_owner_facts
+
+    await write_owner_facts(owner_id)  # best-effort, never raises
 
 
 async def write_profiles(owner_id: str) -> None:

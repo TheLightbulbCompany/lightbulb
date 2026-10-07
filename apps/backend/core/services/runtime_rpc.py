@@ -387,9 +387,6 @@ async def execute_sync(
         # _mirror_agent_update already applied every profile-side patch (model-block
         # re-derivation, SOUL.md refresh) -- there is no bridge RPC for agents.update, so this
         # never falls through to container_rpc.call.
-        from core.services.owner_facts import write_owner_facts
-
-        await write_owner_facts(owner_id)  # best-effort: a rename/retitle reaches every `teammates` list
         await _invalidate(owner_id, "agents.update")
         return {"ok": True}
     if method == "models.list":

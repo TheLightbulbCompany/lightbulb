@@ -655,9 +655,6 @@ async def patch_agent(
                 agent_id,
                 exc_info=True,
             )
-        from core.services.owner_facts import write_owner_facts
-
-        await write_owner_facts(owner_id)  # best-effort: a rename/retitle reaches every `teammates` list
     # Paperclip may echo the full agent record (including adapterConfig)
     # in PATCH responses; redact for the same reason as the GETs.
     return _redact_agent(upstream)

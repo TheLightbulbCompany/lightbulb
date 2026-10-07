@@ -301,3 +301,37 @@ async def test_a_per_person_answer_cut_by_its_persons_noise_is_said_once_more_li
     await settle(h)
     resays = [c for c in lives[0].calls if c[0] == "commentary" and c[1].startswith("Your answer was cut off")]
     assert len(resays) == 1 and h_mod.RESAY.format(answer=text) == resays[0][1]
+
+
+async def test_a_joined_line_records_only_its_new_piece():
+    """Codex on #3792: the fragment and then the whole joined line were both on the record."""
+    h, room, backend, lives, clock, log = await per_person()
+    await says(h, P1, "Oh, and...")
+    await says(h, P1, "what shipped?")
+    text = h._transcript.text()
+    assert text.count("Oh, and...") == 1 and "what shipped?" in text and "Oh, and... what shipped?" not in text
+    assert h._unclaimed is not None and h._unclaimed[2] == "Oh, and... what shipped?", "understood as one line"
+
+
+async def test_handing_the_floor_to_another_person_tells_the_voice_it_now_hears_them():
+    """Codex on #3792: the rule still named the first person after the floor moved."""
+    h, backend, lives, clock = await asked()
+    h.on_agent_said("forge", "Dan, does that work for you?")  # the agent asks Dan by name: the floor is Dan's
+    rules = [c[1] for c in lives[0].calls if c[0] == "instructions"]
+    assert any("You hear only Dan" in r for r in rules) and h._voice.speaker == P2
+
+
+async def test_a_hand_raised_after_the_same_words_were_said_is_not_let_go():
+    """Codex on #3792: an earlier answer's words must not count for a later hand."""
+    h, backend, lives, clock = await asked()
+    h.on_agent_said("forge", "No PRs are open.")  # an earlier answer
+    (row,) = h._requests.items
+    clock.t += h_mod.MEET_FOLLOWUP_S
+    await h.tick()
+    await settle(h)
+    clock.t += 1
+    answer(h, row.run_id, "forge", "No PRs are open.")  # the same words, raised later
+    talks(h, P2)
+    await h.tick()
+    await settle(h)
+    assert [n[2] for n in h._news.get("forge", [])] == ["No PRs are open."]

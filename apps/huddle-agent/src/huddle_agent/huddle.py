@@ -897,6 +897,7 @@ class Huddle:
                 self._live_call(v, "nudge")
             return
         now = self._clock()
+        record = text  # what goes on the record: a joined line records only its new piece
         if in_meet(identity):
             # The transcriber ends a line at a short pause, so a thought said in pieces arrives in pieces. One
             # that trails off is not a request yet (10-06 prod Meet: "Can one of you tell me..." was run as one,
@@ -905,9 +906,10 @@ class Huddle:
             trail = self._trail.pop(identity, None)
             if trail and now - trail[1] <= TRAIL_S:
                 text = f"{trail[0]} {text}"
+                record = text[len(trail[0]) + 1 :]  # the pieces before it are on the record already
             if trails_off(text):
                 self._trail[identity] = (text, now)
-                self._transcript.add_person(identity, f"{name} (Meet)", text[len(trail[0]) + 1 :] if trail else text, at=now)
+                self._transcript.add_person(identity, f"{name} (Meet)", record, at=now)
                 return
         if self.setting == "meeting":
             self._unclaimed = (
@@ -916,13 +918,13 @@ class Huddle:
             if identity.startswith("meet:") and not mixed_meet(identity):
                 # one person of the Meet: their own name; the record still shows they were in the Meet
                 self._said_by[identity] = name
-                mark = self._transcript.add_person(identity, f"{name} (Meet)", text, at=now)
+                mark = self._transcript.add_person(identity, f"{name} (Meet)", record, at=now)
             elif identity.startswith("meet:"):
                 if began is None or now - began > MEET_SPAN_MAX_S:
                     began = now  # a stale start (an STT stream that never finalised)
                 name = self._said_by[identity] = self._meet_label(began, now)
                 mark = self._transcript.add_person(
-                    identity, f"{name} (Meet)", text, at=now
+                    identity, f"{name} (Meet)", record, at=now
                 )
                 self._said_at[mark] = name
                 while len(self._said_at) > SPEAKER_WINDOWS:
@@ -2308,9 +2310,11 @@ class Huddle:
             return True
         v.speaker, v.ack_rows = identity, []
         if in_meet(identity):
-            # a muted meeting voice: its attention moves to this person; no note it could read out (it is told
-            # what they asked through `_answer_heard`)
+            # a meeting voice: its attention moves to this person; no note it could read out (a mixed meet's is
+            # told what they asked through `_answer_heard`). A per-person voice now hears them: the rule says so.
             v.label, v.followed_at = self._label(identity), self._clock()
+            if not mixed_meet(identity):
+                self._live_call(v, "append_instructions", MEET_RULES.format(name=self._talker(identity)))
             return self._live_call(v, "set_participant", identity)
         return self._live_call(v, "set_participant", identity) and self._live_call(
             v, "append_thinking", f"{self._talker(identity)} is talking to you"
@@ -3382,8 +3386,12 @@ class Huddle:
     def _expire_news(self, now: float) -> None:
         if self.setting == "meeting":
             for agent_id, news in list(self._news.items()):
-                said = " ".join(t for at, t in self._said_log.get(agent_id, []) if now - at <= SAID_LOG_S)
-                done = [n for n in news if said and not unsaid_part(n[2], said)]
+                log = self._said_log.get(agent_id, [])
+                done = []
+                for n in news:  # only words said since this hand went up count (an earlier answer's do not)
+                    said = " ".join(t for at, t in log if at >= n[3] and now - at <= SAID_LOG_S)
+                    if said and not unsaid_part(n[2], said):
+                        done.append(n)
                 if done:
                     news[:] = [n for n in news if n not in done]
                     self._requests.delivered({n[0] for n in done})

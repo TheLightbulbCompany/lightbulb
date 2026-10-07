@@ -6,6 +6,7 @@ Keep the two in step: same REORDER_WINDOW.
 
 from __future__ import annotations
 
+import logging
 import re
 import time
 from dataclasses import dataclass, field
@@ -21,6 +22,8 @@ STALE_TURN_SECONDS = 300
 QUEUED_TURN_SECONDS = 1_800  # a run_queued run waits on the room lock behind a chat run (the chat run budget)
 
 _SENTENCES = re.compile(r".*[.!?](?=\s)", re.DOTALL)
+
+logger = logging.getLogger("huddle.frames")
 
 
 def take_sentences(text: str) -> tuple[str, str]:
@@ -216,9 +219,18 @@ class Runs:
             self._say_ready(run, run.ended)  # a closing chunk that lands after run_ended is final
         elif kind == "error":
             run.failed = run.ended = True
+            # the bridge's own reason, for the ops log (10-07: every turn of a workspace failed in 0.4 s and the
+            # worker had nothing to say about why)
+            logger.warning(
+                "run %s of agent %s failed: %s", run.run_id, run.agent_id,
+                str({k: v for k, v in frame.items() if k in ("message", "error", "code", "reason", "detail")})[:300],
+            )
             self._sink.failed(run)
         elif kind == "run_ended":
             run.ended = True
+            if frame.get("outcome") not in (None, "completed", "success"):
+                logger.warning("run %s of agent %s ended %s: %s", run.run_id, run.agent_id, frame.get("outcome"),
+                               str({k: v for k, v in frame.items() if k in ("error", "reason", "code", "message", "detail")})[:300])
             self._say_ready(run, True)
             self._sink.ended(run, run.text.strip())
 

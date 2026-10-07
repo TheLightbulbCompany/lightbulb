@@ -368,8 +368,10 @@ async def test_a_meeting_voice_takes_its_speakers_follow_up_for_10_seconds():
     clock.t += 9
     await hear(h, "and the closed ones")
     assert backend.route_bodies[-1]["floor"] == {"agent": "forge", "speaker": "Priya", "mine": True}
-    # /route gave no `ops`: the whole line is the request, and the muted voice is told to answer it
-    assert backend.turns[-1]["utterance"] == "and the closed ones" and lives[0].calls[-1] == ("nudge",)
+    # /route gave no `ops`: the whole line is the request, and the mouth acknowledges it with a fixed line
+    # that does not read the line back
+    assert backend.turns[-1]["utterance"] == "and the closed ones"
+    assert lives[0].calls[-1] == ("say", "Okay, let me look into that.") and ("nudge",) not in lives[0].calls
 
     # begun at 9 s, final at 12 s: the voice waits while the meeting talks, and the line is a follow-up
     h.on_agent_state("forge", "speaking")
@@ -427,6 +429,8 @@ async def test_a_meeting_voice_closes_after_its_piece_and_its_answer_is_said_lat
     assert ("say", "Three PRs are open.") in lives[1].calls, "word for word, not a seed line to put in its own words"
     assert "Three PRs are open." not in str(lives[1].seed)
     h.on_agent_state("forge", "speaking")
+    assert row.status == "ready", "ordered and begun is not delivered"
+    h.on_agent_said("forge", "Three PRs are open.")
     assert row.status == "delivered" and backend.late_answers == []
 
 
@@ -486,7 +490,8 @@ async def test_a_bare_name_then_the_request_is_understood_as_that_agents():
     await hear(h, "what PRs are open")
     assert backend.route_bodies[-1]["floor"]["mine"] is True
     assert backend.turns[-1]["agentId"] == "forge"
-    assert lives[0].calls[-1] == ("nudge",)  # the muted voice is told to acknowledge it
+    # its "Forge?" run still works: the mouth says the new ask is next, in a fixed line
+    assert lives[0].calls[-1] == ("say", h_mod.QUEUED_LINES[0])
 
 
 async def test_a_live_floor_line_is_still_its_speakers_and_the_voice_stays_open():
@@ -713,13 +718,15 @@ async def test_a_meeting_voice_is_told_what_to_say_and_gets_no_note_it_could_rea
     await hear(h, "Forge, what PRs are open?")
     notes = [c for c in lives[0].calls if c[0] == "thinking"]
     assert not any("is talking to you" in str(c) for c in notes)
-    assert h_mod.MEET_ACK in str(lives[0].seed) and ("nudge",) in lives[0].calls
+    # its acknowledgement is a fixed line the worker picked: no model is asked for one
+    assert ("say", "Okay, list the open PRs. I'm on it now.") in lives[0].calls
+    assert not [c for c in lives[0].calls if c[0] in ("nudge", "commentary", "reply_to")]
 
     h, room, backend, lives, clock, log = make()  # a Live call keeps its note
     await h.on_participants({"u1": "Prasiddha"})
     await say(h, "u1", "hey Forge what did we ship")
     assert ("thinking", "Prasiddha is talking to you", None) in lives[0].calls
-    assert h_mod.MEET_ACK not in str(lives[0].seed)
+    assert ("nudge",) in lives[0].calls and not [c for c in lives[0].calls if c[0] == "say"]
 
 
 async def test_a_meeting_voice_gets_no_working_note_for_each_tool_its_run_uses():
@@ -931,7 +938,7 @@ async def test_an_earlier_answer_handed_to_an_open_meeting_voice_is_not_lost_whe
     await hear(h, "Forge, are you there?")  # a new voice of the same agent opens
     assert h._voice is not None and h._voice.agent_id == "forge"
     answer(h, row.run_id, "forge", "Three PRs are open.")  # the earlier run ends: handed to the open voice
-    assert row.status == "delivered"
+    assert row.status == "ready", "ordered, not yet said"
     h.on_agent_state("forge", "thinking")
     h.on_agent_state("forge", "speaking")
     talks(h, MEET, "Google Meet")
@@ -1032,14 +1039,15 @@ def test_every_meet_voice_is_a_mouth():
 
 async def test_a_per_person_meet_voice_is_a_mouth_like_a_mixed_meetings():
     """10-05 prod Meet and the 10-07 rig: a per-person voice that heard its speaker answered the meeting's own
-    talk and said facts of its own. It has no ears (owner ruling 10-07): it is told what was asked as text and
-    acknowledges that, as a mixed meeting's voice does."""
+    talk and said facts of its own. It has no ears (owner ruling 10-07): the worker acknowledges what was asked
+    with a fixed line, as for a mixed meeting's voice."""
     h, room, backend, lives, clock, log = await per_person()
     await says(h, P1, "hey Forge what did we ship")
     assert lives[0].speaker == P1 and ("mute",) in lives[0].calls
     assert not [c for c in lives[0].calls if c[0] == "instructions"], "no rule about who it hears: it hears nobody"
-    assert h_mod.MEET_ACK in str(lives[0].seed) and "Priya asked" in str(lives[0].seed) and h._voice.label == "Priya"
-    assert ("nudge",) in lives[0].calls
+    assert h._voice.label == "Priya"
+    # /route gave no `ops`: the whole line runs, and the line that acknowledges it does not read it back
+    assert ("say", "Sure, I'm on it now.") in lives[0].calls and ("nudge",) not in lives[0].calls
 async def test_a_per_person_line_carries_its_persons_identity_and_name():
     h, room, backend, lives, clock, log = await per_person()
     await says(h, P1, "Forge, check the board")
@@ -1136,9 +1144,10 @@ async def test_a_per_person_run_says_nothing_as_it_streams_and_its_answer_word_f
     chunk("You merged three pull requests. ", 3)
     chunk("The largest was the audio bridge.", 4)
     await quiet_tick_meet(h, clock, h_mod.MEET_FOLLOWUP_S / 2)
-    assert said() == [], "nothing as it streams"
+    ack = ("Sure, I'm on it now.",)  # a question is not read back inside the line
+    assert said() == [ack], "its acknowledgement, and nothing as it streams"
     h.on_data(None, "call.frame", packet(frame(row.run_id, "forge", {"type": "run_ended", "seq": 5})))
-    assert said() == [("You merged three pull requests. The largest was the audio bridge.",)]
+    assert said() == [ack, ("You merged three pull requests. The largest was the audio bridge.",)]
 
 
 async def quiet_tick_meet(h, clock, seconds):
@@ -1147,15 +1156,17 @@ async def quiet_tick_meet(h, clock, seconds):
     await settle(h)
 
 
-async def test_a_long_meeting_answer_is_one_order_to_say():
-    """Parts cut at a character count would be said word for word, each ending in the middle of a word."""
+async def test_a_long_meeting_answer_is_handed_to_the_voice_whole():
+    """Parts cut at a character count would be said word for word, each ending in the middle of a word. The
+    voice says it a sentence at a time (agent.py `_DrivenLive.say`)."""
     h, room, backend, lives, clock, log = await per_person()
     backend.route_extra = ops([("forge", "list the open PRs", "name")])
     await says(h, P1, "Forge, what PRs are open?")
     (row,) = h._requests.items
     long = "Three PRs are open. " * 200
     answer(h, row.run_id, "forge", long)
-    assert [c for c in lives[0].calls if c[0] in ("commentary", "say")] == [("say", long.strip())]
+    assert [c for c in lives[0].calls if c[0] in ("commentary", "say")][1:] == [("say", long.strip())]
+    assert h._voice.utterances[-1].units == ["Three PRs are open."] * 200
 
 
 async def test_someone_elses_first_words_do_not_cut_a_meeting_voice_before_the_talk_over_rule():

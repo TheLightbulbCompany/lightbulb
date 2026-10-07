@@ -304,8 +304,8 @@ class FakeLive:
     def append_instructions(self, text):
         self._rec("instructions", text)
 
-    def reply_to(self, text):
-        self._rec("reply_to", text)
+    def reply_to(self, text, who=None):  # `who`: a mouth is told who said it
+        self._rec("reply_to", text, *([who] if who else []))
 
     def usage_seconds(self):
         return self.usage
@@ -349,6 +349,7 @@ def make(**kw):
         **kw,
     )
     h.fail, h.gate, h.vocab = fail, gate, vocab
+    h._line_seed = 0  # a mouth's fixed lines start at the first of each list
     return h, room, backend, lives, clock, log
 
 

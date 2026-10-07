@@ -171,7 +171,7 @@ def soundex(word: str) -> str:
     letters = [c for c in word.lower() if c.isalpha()]
     if not letters:
         return ""
-    code = lambda c: next(
+    code = lambda c: next(  # noqa: E731
         (
             str(d)
             for d, g in enumerate(("bfpv", "cgjkqsxz", "dt", "l", "mn", "r"), 1)

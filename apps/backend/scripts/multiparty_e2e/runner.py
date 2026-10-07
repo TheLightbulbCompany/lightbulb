@@ -95,25 +95,34 @@ class Clerk:
             resp.raise_for_status()
         return user["id"]
 
-    def session(self, user_id: str) -> "Session":
+    def session(self, user_id: str, org: str | None = None) -> "Session":
         ticket = (
             self.http.post("/sign_in_tokens", json={"user_id": user_id, "expires_in_seconds": 300})
             .raise_for_status()
             .json()["token"]
         )
-        return Session(ticket)
+        return Session(ticket, org)
 
 
 class Session:
     """A native FAPI client signed in with a one-time ticket; mints 60 s session JWTs on demand."""
 
-    def __init__(self, ticket: str):
+    def __init__(self, ticket: str, org: str | None = None):
         self.http = httpx.Client(base_url=FAPI, params={"_is_native": "1"}, headers=UA, timeout=20)
         self.client_jwt = self.http.post("/v1/client").headers["authorization"]
         resp = self._post("/v1/client/sign_ins", {"strategy": "ticket", "ticket": ticket})
         self.sid = resp["response"]["created_session_id"]
-        self._post(f"/v1/client/sessions/{self.sid}/touch", {"active_organization_id": ORG})
+        # ``org``: the workspace every minted JWT carries (load fixtures pass their own org).
+        self._post(f"/v1/client/sessions/{self.sid}/touch", {"active_organization_id": org or ORG})
         self._jwt, self._at = "", 0.0
+
+    @classmethod
+    def resume(cls, sid: str, client_jwt: str) -> "Session":
+        """A session another process signed in (load fixtures hand over ``sid`` + client JWT)."""
+        self = cls.__new__(cls)
+        self.http = httpx.Client(base_url=FAPI, params={"_is_native": "1"}, headers=UA, timeout=20)
+        self.client_jwt, self.sid, self._jwt, self._at = client_jwt, sid, "", 0.0
+        return self
 
     def _post(self, path: str, data: dict | None = None) -> dict:
         resp = self.http.post(path, data=data or {}, headers={"Authorization": self.client_jwt}).raise_for_status()

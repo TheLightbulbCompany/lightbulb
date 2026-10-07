@@ -1190,6 +1190,9 @@ async def write_profile_for_agent(
     from core.services.paperclip_api_key import ensure_paperclip_api_key
 
     agent_id = agent_row["id"]
+    # A roster fan-out passes ``inputs``; a lone create/hire/deploy does not, and that one must
+    # also refresh the OTHER agents' facts so their `teammates` list gains the newcomer.
+    lone_agent = inputs is None
     if inputs is None:
         inputs = await resolve_profile_inputs(owner_id)
     paperclip_api_key = await ensure_paperclip_api_key(
@@ -1219,7 +1222,7 @@ async def write_profile_for_agent(
     if soul_md_override is not None:
         files.soul_md = soul_md_override
     await upload_profile(owner_id, agent_id, files)
-    await _stage_owner_facts(owner_id, [agent_id], inputs)
+    await _stage_owner_facts(owner_id, [agent_id], inputs, refresh_roster=lone_agent)
 
 
 async def refresh_agent_soul(owner_id: str, agent_id: str, by: str | None = None) -> None:
@@ -1280,6 +1283,11 @@ async def refresh_agent_soul(owner_id: str, agent_id: str, by: str | None = None
             await voice_calls.send_renamed_notices(owner_id, agent_id, name, by, changed)
     except Exception:  # noqa: BLE001
         logger.warning("rename follow-ups failed owner=%s agent=%s", owner_id, agent_id, exc_info=True)
+    # Every rename door (Teams PATCH, agents.update, voice profile edit) lands here, so this is the
+    # one place the `teammates` manifest in every agent's facts file learns the new name/role.
+    from core.services.owner_facts import write_owner_facts
+
+    await write_owner_facts(owner_id)  # best-effort, never raises
 
 
 async def write_profiles(owner_id: str) -> None:
@@ -1331,7 +1339,9 @@ async def write_profiles(owner_id: str) -> None:
         await write_profile_for_agent(owner_id, agent, soul_md_override=keep, inputs=inputs)
 
 
-async def _stage_owner_facts(owner_id: str, agent_ids: list[str], inputs: ProfileInputs) -> None:
+async def _stage_owner_facts(
+    owner_id: str, agent_ids: list[str], inputs: ProfileInputs, *, refresh_roster: bool = False
+) -> None:
     """Fix round 1, Important 2: a freshly provisioned workspace never ran the ECS config
     writer (the only caller ``owner_facts.write_owner_facts`` ever had), so it had NO
     ``lightbulb-facts.json`` at all while the bundled skill tells every
@@ -1348,14 +1358,20 @@ async def _stage_owner_facts(owner_id: str, agent_ids: list[str], inputs: Profil
     race an in-flight billing write. Email + provisioning-workflow lookups reuse
     ``owner_facts``'s own private helpers so this can never diverge from what the ECS path
     renders. Best-effort, matching ``write_owner_facts``'s own contract -- a facts-file hiccup
-    must never fail provisioning."""
+    must never fail provisioning.
+
+    ``refresh_roster`` also writes the file to every OTHER agent already in the roster (a lone
+    create/hire/deploy changed the `teammates` list they carry). The roster fan-out leaves it
+    off: its later agents have no profile yet, and a facts write would half-create one."""
     import json
 
     from core.repositories import billing_repo
     from core.services import hermes_profiles
     from core.services.owner_facts import (
+        _lookup_connected_integrations,
         _lookup_email_address,
         _lookup_owner_timezone,
+        _lookup_teammates,
         _lookup_provisioning,
         build_owner_facts,
     )
@@ -1363,12 +1379,20 @@ async def _stage_owner_facts(owner_id: str, agent_ids: list[str], inputs: Profil
     try:
         account = await billing_repo.get_by_owner_id(owner_id, consistent_read=True) or {}
         account = {**account, "provider_choice": inputs.provider_choice, "byo_provider": inputs.byo_provider}
+        roster = None
+        if refresh_roster:
+            from core.services.messaging import load_agent_roster
+
+            roster = await load_agent_roster(owner_id)
+            agent_ids = list(dict.fromkeys([*agent_ids, *(a["id"] for a in roster)]))
         facts = build_owner_facts(
             owner_id,
             account,
             email_address=await _lookup_email_address(owner_id),
             provisioning=await _lookup_provisioning(owner_id),
             owner_timezone=await _lookup_owner_timezone(owner_id),
+            teammates=await _lookup_teammates(owner_id, roster),
+            connected_integrations=await _lookup_connected_integrations(owner_id),
         )
         facts_json = json.dumps(facts, indent=2) + "\n"
         await run_in_thread(hermes_profiles.write_facts_to_profiles, owner_id, agent_ids, facts_json)

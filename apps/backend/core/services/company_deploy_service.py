@@ -344,6 +344,11 @@ async def _run_company_deploy(
                     kind,
                 )
 
+        # Per-agent writes above share one `inputs` and never refresh each other's `teammates`.
+        from core.services.owner_facts import write_owner_facts
+
+        await write_owner_facts(owner_id)  # best-effort: keeps the agents' facts manifest current
+
         logger.info(
             "company_deploy: owner=%s deploy summary -- created=%d skipped_aux=%s",
             owner_id,

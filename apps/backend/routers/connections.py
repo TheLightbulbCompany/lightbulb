@@ -42,6 +42,7 @@ from core.services.credentials import hermes_cli
 from core.services.credentials.mcp_server import reconcile_integrations
 from core.services import paperclip_github_token
 from core.services.google_identity import seed_agent_google_identity
+from core.services.owner_facts import write_owner_facts
 from core.services.owner_lifecycle import OwnerLifecycleBusyError, owner_lifecycle_guard
 
 logger = logging.getLogger(__name__)
@@ -568,6 +569,7 @@ async def connect_paste(provider: str, body: PasteBody, auth: AuthContext = Depe
             detail="failed to apply the connection to your container; please retry",
         )
     await integrations_repo.put_status(owner_id, provider, "connected")
+    await write_owner_facts(owner_id)  # best-effort: refresh the agents' connected_integrations manifest
     return {"status": "connected", "provider": provider}
 
 
@@ -717,6 +719,7 @@ async def aws_complete(provider: str, body: AwsCompleteBody, auth: AuthContext =
     try:
         await apply_connection.apply_connection(owner_id, provider, {**credential, "cli_token": cli_token})
         await integrations_repo.put_status(owner_id, provider, "connected")
+        await write_owner_facts(owner_id)  # best-effort: refresh the agents' connected_integrations manifest
     except Exception:
         # Best-effort rollback: a failed connect must leave no on-disk ~/.aws
         # bundle. Each teardown step is wrapped independently so one failure
@@ -838,6 +841,7 @@ async def disconnect(provider: str, account: str | None = None, auth: AuthContex
         # probed provider is still a 404.
         await integration_secret_store.delete(owner_id, provider)
         await integrations_repo.delete(owner_id, provider)
+        await write_owner_facts(owner_id)  # best-effort: refresh the agents' connected_integrations manifest
         return {"status": "disconnected", "provider": provider}
     # ?account= scopes the disconnect to one Google account. It is Google-specific
     # (one provider, many accounts), so reject it on any other provider rather
@@ -903,6 +907,7 @@ async def _disconnect_teardown(owner_id: str, provider: str, p: registry.Provide
     # one) and the status row, then blank any per-agent openclaw.json slots.
     await integration_secret_store.delete(owner_id, provider)
     await integrations_repo.delete(owner_id, provider)
+    await write_owner_facts(owner_id)  # best-effort: refresh the agents' connected_integrations manifest
     # NB: a DCR provider's cached public client in oauth_app_store is deliberately
     # LEFT in place on disconnect. start() re-registers it (overwriting in place)
     # when the requested scope set changes, so reconnect picks up new scopes without
@@ -1170,6 +1175,7 @@ async def oauth_callback(
             await integrations_repo.put_status(
                 owner_id, prov, "connected", identity=credential.get("account"), tenant_id=credential.get("tenant_id")
             )
+            await write_owner_facts(owner_id)  # best-effort: refresh the agents' connected_integrations manifest
     except OwnerLifecycleBusyError:
         # The OAuth state is already consumed at this point, so nothing is
         # written before the guard -- land back on the connections page with a

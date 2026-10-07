@@ -357,3 +357,115 @@ async def test_owner_timezone_getter_failure_is_utc(monkeypatch):
     monkeypatch.setattr(clerk_admin, "get_organization", AsyncMock(return_value={"created_by": "user_owner"}))
     monkeypatch.setattr(user_repo, "get_timezone", AsyncMock(side_effect=RuntimeError("ddb")), raising=False)
     assert await owner_facts._lookup_owner_timezone("org_1") == "UTC"
+
+
+# ---- declared manifest: teammates + connected_integrations ----------------------------------
+from unittest.mock import AsyncMock, MagicMock, patch  # noqa: E402
+
+
+def test_build_owner_facts_manifest_defaults_empty():
+    facts = owner_facts.build_owner_facts("org_1", None)
+    assert facts["teammates"] == []
+    assert facts["connected_integrations"] == []
+
+
+def test_teammates_use_starter_role_key_and_flag_the_ceo():
+    roster = [
+        {"id": "a1", "name": "Friday", "role": "general"},
+        {"id": "a2", "name": "Fin", "role": "cfo"},
+        {"id": "a3", "name": "Custom", "role": "designer"},
+    ]
+    out = owner_facts._teammates_from_roster(roster, {"ceo": "a1", "finance": "a2"})
+    assert out == [
+        {"id": "a1", "name": "Friday", "role": "ceo", "is_ceo": True},
+        {"id": "a2", "name": "Fin", "role": "finance", "is_ceo": False},
+        {"id": "a3", "name": "Custom", "role": "designer", "is_ceo": False},
+    ]
+
+
+def test_teammates_legacy_roster_root_ceo_and_empty():
+    legacy = [{"id": "a1", "name": "Boss", "role": "ceo"}, {"id": "a2", "name": "X", "role": "ceo", "reportsTo": "a1"}]
+    out = owner_facts._teammates_from_roster(legacy, None)
+    assert [t["is_ceo"] for t in out] == [True, False]
+    assert owner_facts._teammates_from_roster([], {"ceo": "a1"}) == []
+
+
+@pytest.mark.asyncio
+async def test_connected_integrations_names_and_rails_only_no_secret_material():
+    rows = [
+        {"owner_id": "o", "provider": "github", "status": "connected", "identity": "me@x.com", "tenant_id": "t"},
+        {"owner_id": "o", "provider": "linear", "status": "connected"},
+        {
+            "owner_id": "o",
+            "provider": "projects/stripe",
+            "status": "connected",
+            "provider_resources": [{"env_keys": ["K"]}],
+        },
+        {"owner_id": "o", "provider": "google", "status": "reconnect_required"},
+        {"owner_id": "o", "provider": "projects/posthog", "status": "connected", "provider_resources": []},
+        {"owner_id": "o", "provider": "slack", "status": "connected"},
+    ]
+    reg = {"github": MagicMock(actor="cli"), "linear": MagicMock(actor="mcp")}
+    with (
+        patch("core.repositories.integrations_repo.list_for_owner", AsyncMock(return_value=rows)),
+        patch("core.services.credentials.registry.all_providers", return_value=reg),
+    ):
+        out = await owner_facts._lookup_connected_integrations("o")
+    assert out == [
+        {"provider": "github", "rail": "cli"},
+        {"provider": "linear", "rail": "mcp"},
+        {"provider": "stripe", "rail": "projects"},
+    ]
+    blob = json.dumps(out)
+    assert "me@x.com" not in blob and "env_keys" not in blob
+
+
+@pytest.mark.asyncio
+async def test_connected_integrations_empty_and_failure_are_empty_lists():
+    with patch("core.repositories.integrations_repo.list_for_owner", AsyncMock(return_value=[])):
+        assert await owner_facts._lookup_connected_integrations("o") == []
+    with patch("core.repositories.integrations_repo.list_for_owner", AsyncMock(side_effect=RuntimeError("boom"))):
+        assert await owner_facts._lookup_connected_integrations("o") == []
+
+
+@pytest.mark.asyncio
+async def test_write_owner_facts_writes_the_manifest_to_every_profile():
+    written = {}
+    roster = [{"id": "a1", "name": "Friday", "role": "general"}]
+    company = MagicMock(starter_agent_ids={"ceo": "a1"})
+    with (
+        patch.object(owner_facts.billing_repo, "get_by_owner_id", AsyncMock(return_value={})),
+        patch.object(owner_facts, "_lookup_email_address", AsyncMock(return_value=None)),
+        patch.object(owner_facts, "_lookup_provisioning", AsyncMock(return_value=[])),
+        patch.object(owner_facts, "_lookup_owner_timezone", AsyncMock(return_value="UTC")),
+        patch.object(
+            owner_facts,
+            "_lookup_connected_integrations",
+            AsyncMock(return_value=[{"provider": "github", "rail": "cli"}]),
+        ),
+        patch("core.services.messaging.load_agent_roster", AsyncMock(return_value=roster)),
+        patch("core.repositories.paperclip_repo.PaperclipRepo.resolve_owner_row", AsyncMock(return_value=company)),
+        patch(
+            "core.services.hermes_profiles.write_facts_to_profiles",
+            side_effect=lambda o, ids, body: written.update(ids=ids, body=body),
+        ),
+    ):
+        await owner_facts.write_owner_facts("org_1")
+    facts = json.loads(written["body"])
+    assert written["ids"] == ["a1"]
+    assert facts["teammates"] == [{"id": "a1", "name": "Friday", "role": "ceo", "is_ceo": True}]
+    assert facts["connected_integrations"] == [{"provider": "github", "rail": "cli"}]
+
+
+@pytest.mark.asyncio
+async def test_delete_agent_everywhere_refreshes_facts_for_every_caller():
+    from core.services import paperclip_agent_lifecycle as lc
+
+    with (
+        patch.object(lc, "prepare_paperclip_agent_delete", AsyncMock(return_value={})),
+        patch("core.services.hermes_profiles.delete_profile"),
+        patch.object(lc, "delete_paperclip_for_chat", AsyncMock()),
+        patch("core.services.owner_facts.write_owner_facts", AsyncMock()) as facts,
+    ):
+        await lc.delete_agent_everywhere(owner_id="org_1", agent_id="a1")
+    facts.assert_awaited_once_with("org_1")

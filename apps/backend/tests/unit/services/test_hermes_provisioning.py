@@ -1431,7 +1431,7 @@ async def test_write_profile_for_agent_writes_and_uploads(monkeypatch):
     assert upload_mock.await_args.args[0] == "owner_1"
     assert upload_mock.await_args.args[1] == "agent_new"
     assert upload_mock.await_args.args[2].soul_md == "ORIGINAL"
-    stage_facts.assert_awaited_once_with("owner_1", ["agent_new"], inputs)
+    stage_facts.assert_awaited_once_with("owner_1", ["agent_new"], inputs, refresh_roster=True)
 
 
 @pytest.mark.asyncio
@@ -1463,6 +1463,14 @@ async def test_write_profile_for_agent_stages_facts_for_the_new_agent(monkeypatc
     )
     monkeypatch.setattr("core.services.owner_facts._lookup_email_address", AsyncMock(return_value=None))
     monkeypatch.setattr("core.services.owner_facts._lookup_provisioning", AsyncMock(return_value=[]))
+    monkeypatch.setattr("core.services.owner_facts._lookup_owner_timezone", AsyncMock(return_value="UTC"))
+    monkeypatch.setattr("core.services.owner_facts._lookup_connected_integrations", AsyncMock(return_value=[]))
+    monkeypatch.setattr("core.services.owner_facts._lookup_teammates", AsyncMock(return_value=[]))
+    # A lone create/hire also refreshes the OTHER agents' facts (their `teammates` gained it).
+    monkeypatch.setattr(
+        "core.services.messaging.load_agent_roster",
+        AsyncMock(return_value=[{"id": "agent_old"}, {"id": "agent_new"}]),
+    )
     staged = {}
     monkeypatch.setattr(
         "core.services.hermes_profiles.write_facts_to_profiles",
@@ -1471,7 +1479,7 @@ async def test_write_profile_for_agent_stages_facts_for_the_new_agent(monkeypatc
 
     await hermes_provisioning.write_profile_for_agent("owner_1", {"id": "agent_new"})
 
-    assert staged == {"owner_id": "owner_1", "agent_ids": ["agent_new"]}
+    assert staged == {"owner_id": "owner_1", "agent_ids": ["agent_new", "agent_old"]}
 
 
 @pytest.mark.asyncio

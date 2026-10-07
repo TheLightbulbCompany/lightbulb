@@ -291,6 +291,12 @@ MAINTENANCE (Lightbulb engineers): every claim in this skill is anchored to
                                  which is why the company-skills route answers supported:false
   - Skills / self-learning .. references/marketplace.md
                               <- apps/frontend/src/components/control/panels/SkillsTab.tsx
+  - Connected integrations / roster manifest
+                              references/integrations.md ("What YOU already have connected") +
+                              references/platform-primitives.md ("Teammates in a room")
+                              <- core/services/owner_facts.py (`connected_integrations`, `teammates`;
+                                 refreshed on connect/disconnect in routers/connections.py and on
+                                 agent create/delete)
   - Connectable catalog ..... references/integrations.md
                               <- apps/backend/routers/platform_info.py (live GET /api/v1/platform-info);
                                  core/services/credentials/registry.py (all_providers);

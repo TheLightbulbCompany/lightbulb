@@ -323,6 +323,12 @@ async def prepare_paperclip_agent_delete(
         await http.aclose()
 
 
+async def _refresh_facts(owner_id: str) -> None:
+    from core.services.owner_facts import write_owner_facts
+
+    await write_owner_facts(owner_id)  # best-effort, never raises
+
+
 async def delete_agent_everywhere(*, owner_id: str, agent_id: str) -> dict[str, Any]:
     """Delete an agent across Paperclip and its Hermes profile.
 
@@ -340,6 +346,7 @@ async def delete_agent_everywhere(*, owner_id: str, agent_id: str) -> dict[str, 
     # `agents.delete` RPC, and no openclaw.json entry or Lightbulb channel account to strip.
     await run_in_thread(hermes_profiles.delete_profile, owner_id, agent_id)
     await delete_paperclip_for_chat(owner_id=owner_id, agent_id=agent_id)
+    await _refresh_facts(owner_id)  # every caller (RPC, Teams, admin): no survivor keeps a ghost teammate
     return {"deleted": True, "agent_id": agent_id, **preserved}
 
 
@@ -566,3 +573,4 @@ async def delete_paperclip_for_marketplace(
         )
     finally:
         await http.aclose()
+    await _refresh_facts(owner_id)

@@ -126,3 +126,12 @@ async def test_teams_patch_rename_and_its_undo_reach_the_open_window(world, monk
         ("Ada", "Nova", "user_1"),
         ("Nova", "Ada", "user_1"),
     ]
+
+
+async def test_rename_seam_refreshes_the_facts_manifest(world, monkeypatch):
+    """Teams PATCH, agents.update and the voice profile edit all rename through here, so the
+    `teammates` list in every agent's facts file must be refreshed from this one place."""
+    facts = AsyncMock()
+    monkeypatch.setattr("core.services.owner_facts.write_owner_facts", facts)
+    await refresh_agent_soul(OWNER, AGENT)
+    facts.assert_awaited_once_with(OWNER)

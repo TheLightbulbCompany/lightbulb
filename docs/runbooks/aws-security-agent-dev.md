@@ -21,11 +21,11 @@ training; test logs go to CloudWatch in our account
 3. AWS publishes no egress IP range. Fixed IPs exist only if we attach a VPC with a
    NAT gateway and Elastic IPs; otherwise requests carry `User-Agent: securityagent`
    ([best practices](https://aws.github.io/aws-security-services-best-practices/guides/security-agent/)).
-4. The run is autonomous and exercises live functionality. There is no request-rate
-   setting; if it causes problems, stop the run.
-5. This is a hand-done console change, which the repo's Critical Rules otherwise
-   forbid. It is a one-time owner-approved exception: afterwards record the agent
-   space, roles and DNS record in CLAUDE.md (AWS Configuration), or delete them (section 6).
+4. Only the Agent Space and its two roles are console-only (the docs: "The console creates
+   both roles for you"; there is no IaC for them). That is a one-time owner-approved exception
+   to the repo's Critical Rules: afterwards record the agent space and role ARNs in CLAUDE.md
+   (AWS Configuration), or delete them (section 6). Everything WE create is CDK in `apps/infra/`,
+   deployed by CI before the console session (section 8).
 
 ## 1. Console steps (account 877352799272, us-east-1)
 
@@ -70,11 +70,11 @@ Names are console-generated, not fixed. Per
 | Target | Verify | Notes |
 |---|---|---|
 | `https://api-dev.thelightbulb.company` | DNS TXT or HTTP route | API GW HTTP API to ECS FastAPI. |
-| `https://dev.thelightbulb.company` | DNS TXT or HTTP route | Next.js on Vercel; see the Vercel policy below. |
+| `https://dev.thelightbulb.company` | DNS TXT or HTTP route | Next.js on Vercel. **Conditional**: only with Vercel approval (below); otherwise OMIT it. |
 
 Verification ([enable-test-domain](https://docs.aws.amazon.com/securityagent/latest/userguide/enable-test-domain.html)):
 - DNS TXT: copy **Record name** and **Record value** from the Target domains table, add the
-  TXT record, choose **Verify**. **One-click verification** exists only for a domain
+  TXT record (via CDK, section 8), choose **Verify**. **One-click verification** exists only for a domain
   "registered in Route 53 (same AWS account)"; we hold a hosted zone, so it may not apply.
 - HTTP route: file `.well-known/aws/securityagent-domain-verification.json` containing
   `{"tokens": ["<token>"]}` over valid TLS. For `dev.` that means a public file in the
@@ -87,9 +87,11 @@ updated 2026-07-30): Pro and Enterprise may test their own apps; Hobby may not; 
 platform itself is off-limits. "Volumetric" testing ("a large number of requests from an
 automated scanner") is Enterprise-only with advance notice through the CSM/AE. Vercel
 recommends setting tester IPs to **Bypass** in Project Firewall and reverting afterwards;
-we pay variable costs (bandwidth, functions). An AI pentest agent may count as volumetric.
-Because AWS gives no IPs, a firewall Bypass by IP is not possible. Action: confirm our
-Vercel plan; if not Enterprise, get Vercel's written OK or keep the `dev.` run low-volume.
+we pay variable costs (bandwidth, functions). An AI pentest agent may count as volumetric, and the service has no rate setting, so
+volume cannot be capped. Because AWS gives no IPs, a firewall Bypass by IP is not possible.
+**Rule:** `dev.thelightbulb.company` is a target only with Vercel's written approval or
+Enterprise-plan coordination with the CSM/AE. Otherwise it is OMITTED and the run covers
+`api-dev` only. Our Vercel plan is an OPEN OWNER QUESTION.
 
 **Out of scope (do not add as targets):** AppSync Events (subscribe-only Clerk OIDC, IAM
 publish; not a domain web target), `ws-dev` / `bv-dev` WebSockets (device-JWT only), and
@@ -110,11 +112,11 @@ List derived from `apps/backend/main.py` and `routers/` on 2026-10-07; re-run
 | `/api/v1/admin/*` (includes `/api/v1/admin/marketplace/*`) | Same data risk; wipe, refund, takedown actions. |
 | `/api/v1/webhooks/*` | Clerk, Stripe (platform + Connect), SES inbound, Paperclip events, Metronome, Apple IAP: signature endpoints, noise, third-party side effects. |
 | `/api/v1/billing/webhooks/stripe`, `/api/v1/hooks/*` | More signed third-party endpoints (Stripe billing, Meta, Paperclip trigger). |
-| `/api/v1/debug/*` | `DELETE /debug/provision` and `/debug/user-data` destroy the workspace; POST/PATCH reprovision. Excluded by default; allow only on the throwaway org by explicit owner decision. |
+| `/api/v1/debug/*` | `DELETE /api/v1/debug/provision` and `/api/v1/debug/user-data` destroy the workspace; POST/PATCH reprovision. Excluded by default; allow only on the throwaway org by explicit owner decision. |
 | `/api/v1/launch/*` | Launch-competition writes: `referral`, `join`, `team-interest`, `connect-stripe`, `entry`, `display-name`. |
-| `/api/v1/billing/checkout`, `/billing/portal`, `/billing/credits/top_up`, `/billing/provider`, `/billing/apple/*`, `/api/v1/marketplace/checkout`, `/api/v1/company/stripe/*` | Create Stripe/Apple objects, charge money, or bind keys. |
+| `/api/v1/billing/checkout`, `/api/v1/billing/portal`, `/api/v1/billing/credits/top_up`, `/api/v1/billing/provider`, `/api/v1/billing/apple/*`, `/api/v1/marketplace/checkout`, `/api/v1/company/stripe/*` | Create Stripe/Apple objects, charge money, or bind keys. |
 | `/api/v1/internal/*` | Hook-token machine routes (messaging runs/usage, provisioning, browser, mac-cdp, website-logins). |
-| `/api/v1/auth/desktop/*`, `/api/v1/desktop/*`, `/api/v1/desktop-sessions/*` | Mint Clerk sign-in tokens, pair devices, start Mac sessions. |
+| `/api/v1/auth/*` (desktop sign-in tokens), `/api/v1/desktop/*`, `/api/v1/desktop-sessions/*`, `/api/v1/desktop-execution/*` | Mint Clerk sign-in tokens, pair devices, start Mac sessions. |
 | `/api/v1/oauth/*`, `/api/v1/connections*` | Real third-party OAuth flows. |
 | `POST /api/v1/users/me/delete` | Wipes the test org mid-run. |
 
@@ -132,9 +134,8 @@ accepts the spend: each agent-room message wakes a real runtime.
   IAM role ([provide-testing-credentials](https://docs.aws.amazon.com/securityagent/latest/userguide/provide-testing-credentials.html)).
   Pick **Secrets Manager (static)**: secret `lightbulb/dev/security-agent/pentest-user`
   as `{"username":"..","password":".."}`, same account and region, attached to the Agent
-  Space so the console grants `GetSecretValue`. A Lambda buys nothing: Clerk sign-in tokens
-  are one-time and we would have to build the function. The password is created from a mode-600
-  file I open (secrets-via-opened-file rule); never pasted in chat or the console form.
+  Space so the console grants `GetSecretValue`. A Lambda buys nothing (Clerk sign-in tokens
+  are one-time). Set the value from a mode-600 file, never pasted in chat or the console form.
 - Login prompt: "Go to https://dev.thelightbulb.company/sign-in, enter the username and
   password from the secret, and submit." Access URL `https://dev.thelightbulb.company`.
   SMS, push and hardware-key MFA are unsupported; TOTP and email MFA are. Use **Save and test**
@@ -152,34 +153,48 @@ Proposal: two separate pentests (`api-dev`, `dev`), **limit 24 task-hours each**
 task-hours = **$2,400**. A reached limit stops the run and keeps findings. The first run
 should fall inside the free trial: check Billing before starting. Revalidating a fix costs far less.
 
-Alerts: an AWS Budgets cost budget (Billing > Budgets) filtered to the AWS Security Agent
-service, $1,200 per month, alerts at 50% actual and 100% forecast to the existing alarm SNS
-topic (exact Service name unverified until usage appears). Also a CloudWatch alarm on
-`AWS/SecurityAgent` `FailedPentestJobs` and `ConcurrentPentestJobs` (dimension `AgentSpaceId`).
+Alerts (budget + CloudWatch alarms) are defined in CDK, section 8.
 
 ## 6. During and after the run
 
 - Watch: web app Run overview / Logs / Findings tabs; CloudWatch group
-  `/aws/securityagent/lightbulb-dev*` (stream prefix `lightbulb-dev`); CloudTrail source
-  `securityagent.amazonaws.com`. Our side: ALB 5xx, ECS CPU, DynamoDB throttles, Vercel
-  firewall. If anything pages, stop the run in the web app. A failed **Preflight** tab check
-  stops the run before testing.
+  `/aws/securityagent/lightbulb-dev*`; CloudTrail `securityagent.amazonaws.com`. Our side:
+  ALB 5xx, ECS CPU, DynamoDB throttles. If anything pages, stop the run in the web app.
 - Findings land in the web app **Findings** tab (description, severity, risk type, evidence).
   Prasiddha reads them first. Triage into one PR per finding with the evidence quoted
   (critical/high same day); nothing goes in a public issue. WAF-bypassed runs can over-report.
-- Cleanup of the test org: `DELETE /api/v1/debug/provision`, then `DELETE /api/v1/debug/user-data`
-  from the org's own session, then delete the org and user in Clerk (dev). Then delete the
-  secret, the verification TXT record or file, and (unless kept) the Agent Space and roles.
+- Cleanup of the test org: as its sole member call `POST /api/v1/users/me/delete`
+  (`wipe_own_workspace`: runs the Paperclip company deletion and removes the Aurora users).
+  Do NOT use `DELETE /debug/user-data` for this: it leaves the Paperclip tenant behind. Only
+  after that, delete the org and user in Clerk (dev). Then remove the secret and TXT records
+  (a CDK PR) and, unless kept, the Agent Space and roles in the console.
 - Record in CLAUDE.md: agent space id, role ARNs, verified hosts, run date.
 
 ## 7. Unknowns (the docs did not answer)
 
-- Exact generated role names; whether any AWS service-linked role exists.
-- Our Vercel plan, and whether this run counts as volumetric.
-- Whether Route 53 one-click verification works for our hosted zone.
-- The exact Budgets service name; whether the free trial caps at some task-hours.
+- OPEN OWNER QUESTION: our Vercel plan and whether Vercel approves; decides if `dev.` is a target.
+
+- Exact generated role names; any service-linked role; the exact Budgets service name; free-trial cap.
 - Whether `api-dev` sits behind a WAF (branch `feat/waf-count-mode` suggests so): it may
   block the agent or skew findings, and AWS publishes no IPs to allowlist.
 - Whether dev Clerk has password sign-in on, and whether bot protection or captcha stops the agent.
 - Whether the agent can test the API with a Bearer token beyond the browser login.
-- The current supported-region list and task-hour pricing beyond the trial.
+
+## 8. Infra we create (CDK in `apps/infra/`, deployed by CI before the console session)
+
+A follow-up infra PR (not this one) adds these; run `npx cdk synth` and commit the regenerated
+`deploy.yml`. Dev stage only.
+- **dns-stack.ts**: one `TXT` record per verified host in the existing hosted zone, at the
+  **Record name** the Target domains table shows (the console shows it only after the domain
+  is added, so add the domain first, then ship the record with its exact name/value as
+  context). Records: `api-dev.thelightbulb.company` and, only if approved, `dev.`. Never the apex.
+  Removed by a later PR after the run.
+- **auth-stack.ts** (secrets live there): Secrets Manager secret
+  `lightbulb/dev/security-agent/pentest-user`, no value in CDK (`generateSecretString` off);
+  the owner sets the JSON value from a mode-600 file. Same account and region as the Agent Space.
+  Attach it to the space in the console so the service role gets `GetSecretValue`.
+- **observability-stack.ts**: an `aws-budgets` `CfnBudget` ($1,200/month, filtered to the
+  AWS Security Agent service, alerts 50% actual and 100% forecast to the existing alarm SNS
+  topic) and CloudWatch alarms on `AWS/SecurityAgent` `FailedPentestJobs` and
+  `ConcurrentPentestJobs` (dimension `AgentSpaceId`). Dev stage only; the Budget is
+  account-wide, so deploy it from one stage.

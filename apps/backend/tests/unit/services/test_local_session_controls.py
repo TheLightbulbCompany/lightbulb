@@ -543,6 +543,8 @@ async def test_only_the_owner_ends_a_session_and_only_one_with_its_own_process(t
     with pytest.raises(ApiProblem, match="on its Mac"):
         service._require_control({**row, "provider": "codex", "terminal": "attach"}, end)
     service._require_control({**row, "provider": "codex", "terminal": "held"}, end)  # Lightbulb holds it
+    with pytest.raises(ApiProblem, match="on its Mac"):  # Claude's daemon owns a background session
+        service._require_control({**row, "provider": "claude", "kind": "background", "terminal": "attach"}, end)
     with pytest.raises(ValueError):
         service.LocalSessionCommand(requestId="end-2", expectedGeneration="g", kind="end", text="bye")
 

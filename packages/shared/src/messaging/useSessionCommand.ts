@@ -149,7 +149,9 @@ export function useSessionCommand(
   const canInterrupt = active && session.capabilities.interrupt && allowInterrupt;
   // The owner's alone, and only while the Mac mirrors it: a session Lightbulb holds, or a plain Claude.
   // A Codex app or daemon process hosts many conversations, so it cannot be ended alone.
-  const canEnd = allowEnd && (session.provider === "claude" || session.terminal === "held") && sessionLive(session);
+  // A Claude background session belongs to Claude's daemon.
+  const canEnd = allowEnd && sessionLive(session)
+    && (session.terminal === "held" || (session.provider === "claude" && session.kind !== "background"));
   const unknownCurrent = attempt?.receipt?.state === "unknown" && attempt.receipt.expectedGeneration === session.generation;
   const locked = checking || attempt?.state === "sending" || attempt?.state === "uncertain" || unknownCurrent;
 

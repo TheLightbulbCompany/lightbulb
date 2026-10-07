@@ -1294,7 +1294,8 @@ def _require_control(row: dict, request: LocalSessionCommand, *, allow_offline_s
         # The Mac stops the session's own process: one Lightbulb holds, or a plain Claude. A Codex
         # app or daemon process hosts many conversations. Ending needs no send capability, so an
         # unverified session can be ended too.
-        if row["provider"] != "claude" and session_terminal(row) != "held":
+        # A Claude background session belongs to Claude's daemon, not to itself.
+        if session_terminal(row) != "held" and (row["provider"] != "claude" or row.get("kind") == "background"):
             raise ApiProblem("LOCAL_SESSION_UNSUPPORTED", "This session can only be ended on its Mac.")
         return
     caps = row["capabilities"]

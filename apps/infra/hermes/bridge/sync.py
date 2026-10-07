@@ -217,8 +217,13 @@ PAPERCLIP_RUNS_DIR = ".paperclip-runs"
 PAPERCLIP_RUN_RECORD_TTL_S = 24 * 3600
 _RUN_RECORD_ID = re.compile(r"^[A-Za-z0-9_-]+$")  # the poll route's own run-id charset
 
+#: The agent's scratch space: worktrees and other throwaway checkouts. Inside the profile (so Hermes's own
+#: write_file/patch, fenced to HERMES_WRITE_SAFE_ROOT=/opt/data, can edit there -- /tmp they cannot, which is
+#: why the "/tmp/wt" worktree rule never worked and Forge cloned into its saved tree, 10-07) and never synced.
+SCRATCH_DIR = ".scratch"
 EXCLUDE_GLOBS = (
     *_CREDENTIAL_GLOBS,
+    f"{SCRATCH_DIR}/*",
     "sessions/request_dump_*.json",
     "logs/*",
     "logs/**/*",

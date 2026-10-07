@@ -2382,7 +2382,7 @@ def _repo_rule(agent_id: str) -> str:
     reference it never opened (10-07)."""
     return (
         f"A repository is cloned once, partially, at {_profile_dir(agent_id)}/.run/<repo>; branches get "
-        "worktrees under /tmp/wt, which is never saved and costs nothing."
+        f"worktrees under {_profile_dir(agent_id)}/.scratch/wt, which is never saved and costs nothing."
     )
 
 

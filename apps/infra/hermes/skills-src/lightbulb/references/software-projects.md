@@ -59,17 +59,18 @@ removed from the saved copy at your next save.
   `gh repo clone OWNER/REPO "$HERMES_HOME/.run/REPO" -- --filter=blob:none`
   (or `--depth 1`). Without the folder argument it clones into the current
   folder, which is this conversation's.
-- Branches get worktrees, not second clones. A worktree lives OUTSIDE your
-  saved workspace, in a numbered slot you reuse. Your shell starts in the
+- Branches get worktrees, not second clones. A worktree lives under
+  `$HERMES_HOME/.scratch/wt`, which is never saved (and, unlike `/tmp`, your
+  file tools can write there), in a numbered slot you reuse. Your shell starts in the
   conversation's folder, so name the clone in every worktree command
   (`C="$HERMES_HOME/.run/REPO"`):
   `git -C "$C" fetch origin main` then
-  `git -C "$C" worktree add /tmp/wt/REPO-1 -b BRANCH origin/main`. `/tmp` is
-  never saved, so the checkout cannot grow your workspace, and reusing slot
+  `git -C "$C" worktree add "$HERMES_HOME/.scratch/wt/REPO-1" -b BRANCH origin/main`.
+  `.scratch/` is never saved, so the checkout cannot grow your workspace, and reusing slot
   names stops git's own record of worktrees (kept inside the clone, which IS
   saved) from growing with every branch. A slot is gone after a cold start:
   keep the branch pushed, then `git -C "$C" worktree prune` and
-  `git -C "$C" worktree add /tmp/wt/REPO-1 BRANCH` to get it back.
+  `git -C "$C" worktree add "$HERMES_HOME/.scratch/wt/REPO-1" BRANCH` to get it back.
 - `node_modules`, any `*venv` folder (`.venv`, `.docx-venv`), `.next`, `dist`
   and `build` are never saved: rerun `npm ci` / `uv sync` after a cold start.
   After a cold start only this conversation's `work/` folder is on disk; the

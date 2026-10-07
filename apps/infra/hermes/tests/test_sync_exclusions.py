@@ -60,6 +60,12 @@ def test_source_and_git_stay_synced():
         assert sync.is_reproducible(rel) is False, rel
 
 
+def test_the_scratch_folder_never_syncs():
+    """Worktrees live in .scratch/ (inside HERMES_WRITE_SAFE_ROOT, unlike /tmp) and never reach S3."""
+    for rel in (".scratch/wt/repo-1/src/index.ts", ".scratch/wt/repo-1/.git", ".scratch/notes.md"):
+        assert sync.is_excluded(rel) is True, rel
+
+
 def test_agent_written_credentials_never_go_up():
     for rel in CREDENTIALS:
         assert sync.is_excluded(rel) is True, rel

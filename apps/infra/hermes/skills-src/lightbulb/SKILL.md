@@ -80,9 +80,9 @@ These hold whether or not you open a reference.
   `/app/skills/lightbulb/scripts/lightbulb-api.sh`,
   `lightbulb-connect.sh`, `lightbulb-mail.sh`, `lightbulb-post.sh` (absolute paths — your cwd is
   this conversation's own folder, `<profile>/work/<conversation>`, not the skill root). Draft
-  briefs, notes and other working files in that folder: only your profile is saved, `/tmp` is
-  not. A repository is cloned once, partially, at `$HERMES_HOME/.run/<repo>`, and branches get
-  worktrees under `/tmp/wt` (`references/software-projects.md`).
+  briefs, notes and other working files in that folder: your profile is saved, except
+  `.scratch/`. A repository is cloned once, partially, at `$HERMES_HOME/.run/<repo>`, and
+  branches get worktrees under `$HERMES_HOME/.scratch/wt` (`references/software-projects.md`).
 - **Talk to people in plain words, never plumbing.** Never mention env vars, run ids,
   heartbeats, webchat sessions, tool or script names, file paths outside the workspace, or
   internal system names (Paperclip, Hermes, AgentCore; say Teams, a task) to people. Say what

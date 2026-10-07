@@ -280,6 +280,9 @@ pub fn run_with_env(socket: &Path, argv: &[String], cwd: &Path, env: Vec<(String
     let mut ended = false;
     // When the provider exited (unix ms): HELLO's `endedAt` once `ended`.
     let mut exited_at_ms = 0u64;
+    // Once `ended`: the last alternate-screen picture, when that is what the person last saw
+    // (`Model::ended_picture`). Every snapshot is then this picture, and nothing follows it.
+    let mut ended_picture: Option<Vec<u8>> = None;
 
     loop {
         let event = match &exited {
@@ -297,6 +300,10 @@ pub fn run_with_env(socket: &Path, argv: &[String], cwd: &Path, env: Vec<(String
         match event {
             Event::Output(bytes) => {
                 backlog.fetch_sub(bytes.len(), Ordering::SeqCst);
+                if ended_picture.is_some() {
+                    // A leftover child still writing: never over the kept picture.
+                    continue;
+                }
                 let answers = model.feed(&bytes);
                 if !answers.is_empty() && exited.is_none() {
                     let _ = pty.write_all(&answers);
@@ -364,7 +371,7 @@ pub fn run_with_env(socket: &Path, argv: &[String], cwd: &Path, env: Vec<(String
                     // (After the end an interactive window, the desktop panel included, only watches.)
                     // Output-only, plus the screen to start from, fresh ones on request and every
                     // size change: what a live view needs. It never types and never resizes.
-                    if !client.send(encode(SNAPSHOT, &with_offset(total, &model.snapshot()))) {
+                    if !client.send(encode(SNAPSHOT, &with_offset(total, &ended_picture.clone().unwrap_or_else(|| model.snapshot())))) {
                         continue;
                     }
                     watchers.insert(id);
@@ -395,7 +402,7 @@ pub fn run_with_env(socket: &Path, argv: &[String], cwd: &Path, env: Vec<(String
             }
             Event::Frame(id, SNAPSHOT, _) if watchers.contains(&id) => {
                 if let Some(client) = clients.get(&id) {
-                    client.send(encode(SNAPSHOT, &with_offset(total, &model.snapshot())));
+                    client.send(encode(SNAPSHOT, &with_offset(total, &ended_picture.clone().unwrap_or_else(|| model.snapshot()))));
                 }
             }
             Event::Frame(id, REPLAY, payload) => {
@@ -437,11 +444,8 @@ pub fn run_with_env(socket: &Path, argv: &[String], cwd: &Path, env: Vec<(String
                 exited_at_ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis() as u64);
             }
             Event::Eof => {
-                if exited.is_none() {
-                    // The terminal closed first; the exit status follows from the wait thread.
-                    continue;
-                }
-                let (status, code) = exited.take().map(|(s, c, _)| (s, c)).unwrap_or_default();
+                // (None: the terminal closed first; the exit status follows from the wait thread.)
+                let Some((status, code, exited_at)) = exited.take() else { continue };
                 let frame = encode(EXIT, serde_json::json!({ "status": status, "code": code }).to_string().as_bytes());
                 if is_attach(argv) {
                     // One more client of the provider's own host (spec §4 k): no screen of ours to
@@ -464,6 +468,7 @@ pub fn run_with_env(socket: &Path, argv: &[String], cwd: &Path, env: Vec<(String
                 // stops this holder (`manager::stop`): nothing is written anywhere.
                 clients.retain(|_, c| c.send(frame.clone()));
                 ended = true;
+                ended_picture = model.ended_picture(exited_at);
                 interactive = None;
                 typists.clear();
                 remote.clear();

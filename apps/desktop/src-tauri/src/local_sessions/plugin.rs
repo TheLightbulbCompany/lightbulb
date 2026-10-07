@@ -94,7 +94,9 @@ fn run_all(home: PathBuf, root: &Path, cmds: Vec<Vec<String>>) {
             && run(&["plugin", "marketplace", "list", "--json"]).is_ok_and(|o| o.status.success() && public_marketplace(&o.stdout))
         {
             transport::relay_log("lightbulb plugin: replacing the public lightbulb marketplace with the app's copy");
-            let _ = run(&["plugin", "marketplace", "remove", "lightbulb"]);
+            // User scope only, the scope the app adds to: a project's or a local declaration
+            // (and the plugins it installed) is not the app's to remove.
+            let _ = run(&["plugin", "marketplace", "remove", "lightbulb", "--scope", "user"]);
         }
         if args[1] == "uninstall" && !run(&["plugin", "list", "--json"]).is_ok_and(|o| o.status.success() && ours(&o.stdout, root)) {
             transport::relay_log("lightbulb plugin: left in place, it is not the app's copy");

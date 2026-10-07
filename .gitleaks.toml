@@ -1,0 +1,13 @@
+# Default ruleset plus path allowlists for known fixtures. Rules are never weakened.
+[extend]
+useDefault = true
+
+[allowlist]
+description = "test fixtures, vendored bundle, public client keys"
+paths = [
+  '''apps/backend/tests/''',
+  '''apps/desktop/src-tauri/terminal/xterm\.js''',
+  '''docs/runbooks/''',
+]
+# Clerk publishable keys and PostHog project keys are public by design.
+regexes = ['''pk_(test|live)_[A-Za-z0-9=_-]+''', '''phc_[A-Za-z0-9]+''']

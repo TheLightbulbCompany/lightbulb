@@ -214,13 +214,12 @@ def _unsaid_with(answer: str, bags: tuple[collections.Counter, collections.Count
     for i, sentence in enumerate(sentences):
         words = _words(sentence)[1]
         content = [w for w in words if w not in FUNCTION_WORDS]
-        spend: list[str] = []  # the heard words this sentence uses up, once it counts as said
+        spend: list[str] = []  # the heard words this sentence uses up, said to its end or not
         if not content:  # "Yes." / "I can.": said only word for word, each word once
             for w in words:
                 if all_left[w] - spend.count(w) > 0:
                     spend.append(w)
-            if len(spend) < len(words):
-                return answer if i == 0 else " ".join(sentences[i:])
+            said = len(spend) == len(words)
         else:
             for w in content:
                 if left[w] - spend.count(w) > 0:
@@ -231,15 +230,17 @@ def _unsaid_with(answer: str, bags: tuple[collections.Counter, collections.Count
                 heard = next((x for x in left if len(x) > 2 and x.isascii() and left[x] - spend.count(x) > 0 and soundex(x) == key), None) if key else None
                 if heard is not None:
                     spend.append(heard)
-            if len(spend) / len(content) < 0.7:
-                return answer if i == 0 else " ".join(sentences[i:])  # the same object when nothing of it was said
-            for w in words:  # a said sentence spends its function words too ("I can deploy." then "I can.")
-                if w in FUNCTION_WORDS and all_left[w] - spend.count(w) > 0:
-                    spend.append(w)
-        for w in spend:
+            said = len(spend) / len(content) >= 0.7
+            if said:
+                for w in words:  # a said sentence spends its function words too ("I can deploy." then "I can.")
+                    if w in FUNCTION_WORDS and all_left[w] - spend.count(w) > 0:
+                        spend.append(w)
+        for w in spend:  # also for a cut sentence: its fragment's words are not heard again by a later answer
             all_left[w] -= 1
             if w in left:
                 left[w] -= 1
+        if not said:
+            return answer if i == 0 else " ".join(sentences[i:])  # the same object when nothing of it was said
     return ""
 
 

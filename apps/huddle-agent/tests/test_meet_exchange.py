@@ -433,6 +433,9 @@ def test_spoken_words_are_spent_across_queued_answers_in_delivery_order():
     assert h_mod._unsaid_with("PRs are open.", bags) == "" and h_mod._unsaid_with("Peers are open.", bags) == "Peers are open."
     bags = h_mod._said_bags("I can deploy.")  # a said sentence spends its function words too
     assert h_mod._unsaid_with("I can deploy.", bags) == "" and h_mod._unsaid_with("I can.", bags) == "I can."
+    bags = h_mod._said_bags("build")  # a cut sentence keeps its text whole but its fragment's words are spent
+    assert h_mod._unsaid_with("The build failed during deployment.", bags) == "The build failed during deployment."
+    assert h_mod._unsaid_with("Build.", bags) == "Build."
 
 
 async def test_news_handed_to_a_named_voice_keeps_its_hand_if_the_voice_closes_before_its_first_word():

@@ -223,11 +223,20 @@ impl Controller {
         Ok(())
     }
 
+    /// The page reported the person sharing already runs for. Nothing changed: the relay
+    /// connection stays up.
+    fn sharing_as(&self, human: Option<&str>) -> bool {
+        let same = self.human.lock().is_ok_and(|known| known.as_ref().is_some_and(|known| known.as_deref() == human));
+        same && human.is_some() && self.running.lock().is_ok_and(|running| running.is_some())
+    }
+
     fn stop(&self) {
         if let Ok(mut running) = self.running.lock() {
             if let Some(run) = running.take() {
                 run.stop.store(true, Ordering::SeqCst);
                 run.task.abort();
+                // The aborted connection logs nothing itself; a reconnect must have a cause on file.
+                transport::relay_log("connection closed by the app: sharing stops or restarts");
             }
         }
         if let Ok(mut status) = self.status.lock() {
@@ -623,6 +632,11 @@ pub async fn local_sessions_auth(
     state: tauri::State<'_, Controller>,
     human_user_id: Option<String>,
 ) -> Result<()> {
+    // Every page load reports this. The same person with sharing already running changes
+    // nothing: restarting here dropped the relay connection and every teammate's live view.
+    if state.sharing_as(human_user_id.as_deref()) {
+        return Ok(());
+    }
     // Invalidate in-flight enrollment before waiting for its network request.
     {
         let mut human = state
@@ -1451,6 +1465,23 @@ mod tests {
             );
             assert!(state.running.lock().unwrap().is_none());
         }
+    }
+    #[tokio::test]
+    async fn local_sessions_a_page_load_by_the_same_person_keeps_the_running_relay() {
+        // Every page load reports who is signed in. That report stopped and restarted the
+        // relay connection with no log line (prod 2026-10-07 15:44:38Z, 20 of 20 page loads).
+        let state = Controller::default();
+        *state.human.lock().unwrap() = Some(Some("alice".into()));
+        assert!(!state.sharing_as(Some("alice")), "nothing runs yet: the report has to start it");
+        *state.running.lock().unwrap() = Some(Running {
+            stop: Arc::new(AtomicBool::new(false)),
+            task: tauri::async_runtime::spawn(std::future::pending()),
+        });
+        assert!(state.sharing_as(Some("alice")));
+        assert!(!state.sharing_as(Some("bob")), "another person: sharing stops");
+        assert!(!state.sharing_as(None), "signed out: sharing stops");
+        state.stop();
+        assert!(!state.sharing_as(Some("alice")));
     }
     #[test]
     fn local_sessions_authenticate_treats_unreported_as_unchanged() {

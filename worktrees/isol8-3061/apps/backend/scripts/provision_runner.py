@@ -1,0 +1,284 @@
+"""One-shot workspace-provision runner. The lightbulb-{env}-provision Step
+Functions state machine (``core.services.provision_dispatch`` starts it) runs it
+as a Lambda (``scripts.provision_lambda``); ``main`` is the manual CLI.
+
+Exit codes: 0 provisioned, 10 deterministic failure (no retry), 11 transient
+failure (retried). ``provision_lambda`` maps them to the typed errors the
+machine's Retry/Catch match on.
+
+Three legs, in order: ``prepare_hermes_workspace`` settles the owner's tokens
+and boot secret; step 0 seeds the owner's Paperclip company (see
+``_seed_owner_paperclip``); the runtime leg provisions the workspace's
+AgentCore runtime and writes every roster profile
+(``hermes_provisioning.provision_hermes_runtime``) — a NO-OP when the
+workspace is already running. Then ``reconcile_runtime`` makes the (now
+running) runtime match billing, so a provider or plan that changed while this
+execution ran still lands, and a dispatch against a live workspace is a plain
+reconcile. Its failure is reported by its own metric, never as a provision
+failure: the runtime it would have adjusted is already serving.
+
+No lease: every step is idempotent at its source, so two concurrent runs for
+one owner converge. A failure is recorded on the row with its retryability
+(``container_repo.mark_provision_error``) before the mapped exit code.
+"""
+
+from __future__ import annotations
+
+import argparse
+import asyncio
+import logging
+import sys
+
+
+# Imported eagerly (unlike this module's other core.* imports, which are lazy inside
+# functions) so tests can monkeypatch `provision_runner.hermes_provisioning` directly.
+from core.services import hermes_provisioning
+
+EXIT_OK = 0
+EXIT_DETERMINISTIC = 10
+EXIT_TRANSIENT = 11
+
+logger = logging.getLogger("provision_runner")
+
+
+async def _seed_owner_paperclip(owner_id: str) -> int:
+    """Step 0: run the OWNER Paperclip seed BEFORE the container work. Returns
+    an exit code from the runner's ABI (0 ok / 10 deterministic / 11 transient).
+
+    WHY here: GET /container/status used to run provision_org (Better-Auth
+    signup + company + starter roster) on the poll thread, where load-balanced
+    poll fan-out double-ran it and double-created the company. This is now THE
+    owner-seed path; two concurrent executions are fenced by the seed's own
+    durable claims (``try_acquire_org_create_claim`` / the seed claim in
+    ``paperclip_provisioning``), which stay until Paperclip company create is
+    idempotent in prod.
+
+    Reuses the SAME service helper ensure_user_ready uses
+    (``_ensure_paperclip_for_org``) — no seed logic is duplicated. It keeps
+    its own swallows: 409 (a benign concurrent-seed no-op) and 422 (a
+    duplicate-email orphan, recorded as a paperclip-row failure — Teams
+    degraded, but the container must still boot,
+    so it is NOT a reason to fail the whole provision). Only a GENUINE seed
+    failure — a non-409/422 Paperclip error, a timeout/connection error, or a
+    config bug — propagates here, where it is classified into the exit-code ABI
+    exactly like a container failure (``classify_provision_error``): transient
+    -> EXIT_TRANSIENT (SFN retries), deterministic -> EXIT_DETERMINISTIC (SFN
+    stops). This ties seed success to the execution instead of the old
+    poll-thread swallow that booted the box regardless.
+
+    Org-only. Personal workspaces no longer exist (the September 2026 cohort
+    was purged or migrated), so a non-org ``owner_id`` is refused with
+    EXIT_DETERMINISTIC before anything is seeded — the executor's own fence,
+    matching ``ensure_user_ready``'s refusal of a no-org caller. The dispatch
+    carries ONLY owner_id (the triggering admin can differ between two polls,
+    so it is not a stable input). So step 0 resolves the
+    company's bootstrap identity from Clerk: the org CREATOR
+    (``get_organization().created_by``) — always an admin, and a STABLE
+    per-org choice the executor's determinism prefers over "whichever admin's
+    poll won the race". ``owner_email`` is resolved via ``lookup_owner_email``
+    (the runner has Clerk creds), the same fallback the helpers use for a JWT
+    without an email claim; passing it in avoids a redundant second lookup
+    inside the helper.
+
+    After the seed, ``arm_nightly_ceo`` arms the nightly-CEO routine on the
+    freshly seeded CEO. It is gated INSIDE on ``should_arm_nightly_ceo`` — paid
+    OR an unexpired ``trial_local``; an expired trial is a no-op — and arming
+    here, not only on a UI poll, is what makes it deterministic for org
+    first-provisions and trial→paid conversions, both of which reach this
+    executor. Its failures classify exactly like the seed's.
+    ``trust_cache=False``: a retry of a run that died between the arm's claim
+    write and its routine create must not trust the claim cache.
+    """
+    from core.auth import is_org_owner_id
+    from core.repositories.container_repo import classify_provision_error
+    from core.services import clerk_admin
+    from core.services.paperclip_owner_email import lookup_owner_email
+    from core.services.user_provision import _ensure_paperclip_for_org, arm_nightly_ceo
+
+    if not is_org_owner_id(owner_id):
+        logger.error("seed step 0: owner %s is not a workspace (org) — refusing to provision", owner_id)
+        return EXIT_DETERMINISTIC
+
+    try:
+        org = await clerk_admin.get_organization(owner_id)
+        creator_user_id = (org or {}).get("created_by")
+        if not creator_user_id:
+            # No resolvable bootstrap identity for the org. A Clerk hiccup
+            # (or an unset CLERK_SECRET_KEY in a misconfigured env) is the
+            # likely cause — a genuinely creator-less Clerk org is
+            # vanishingly rare — so treat it as transient and let SFN retry
+            # rather than fail the provision on a momentary blip.
+            logger.warning(
+                "seed step 0: org %s has no resolvable Clerk creator — deferring (transient)",
+                owner_id,
+            )
+            return EXIT_TRANSIENT
+        owner_email = await lookup_owner_email(org_id=owner_id, fallback_user_id=creator_user_id) or ""
+        # is_admin=True: the org creator is definitionally an org admin, so
+        # the create branch of _ensure_paperclip_for_org is authorized. When
+        # the company already exists (an idempotent re-run) this same call
+        # falls through to the JOIN path and no-ops on the creator's already
+        # -active owner row.
+        await _ensure_paperclip_for_org(org_id=owner_id, user_id=creator_user_id, email=owner_email, is_admin=True)
+        await arm_nightly_ceo(owner_id, trust_cache=False)
+    except Exception as exc:  # noqa: BLE001 — classified into the exit-code ABI
+        logger.exception("seed step 0 (owner paperclip) failed for owner %s", owner_id)
+        _, retryable = classify_provision_error(exc)
+        return EXIT_TRANSIENT if retryable else EXIT_DETERMINISTIC
+    return EXIT_OK
+
+
+async def run(owner_id: str) -> int:
+    from core.auth import is_org_owner_id
+    from core.observability.logging import bind_log_context
+
+    bind_log_context(user_id=owner_id)
+
+    # M4-R33: mint/write hook_token + gateway_token (+ the boot secret) BEFORE step 0 seeds
+    # the roster: step 0's starter-agent loop bakes hook_token into the adapter at seed time.
+    # A row that already has a runtime already has its tokens, and the reconcile below
+    # prepares it -- running prepare here too would rewrite the boot secret first and hide
+    # that boot-time change from the reconcile's restart decision (C1: a warm session kept
+    # a bearer nothing restarts it off).
+    from core.repositories import container_repo
+
+    try:
+        row = await container_repo.get_by_owner_id(owner_id, consistent=True) or {}
+        if not row.get("agentcore_runtime_arn"):
+            await hermes_provisioning.prepare_hermes_workspace(owner_id)
+    except Exception as exc:  # noqa: BLE001 — classified + recorded
+        return await _record_failure(owner_id, exc, "prepare")
+
+    seed_exit = await _seed_owner_paperclip(owner_id)
+    if seed_exit == EXIT_DETERMINISTIC:
+        await _mark_error(
+            owner_id,
+            "provision refused: owner is not a workspace (org)"
+            if not is_org_owner_id(owner_id)
+            else "provision seed: owner paperclip seed or nightly-CEO arm failed (see log)",
+            retryable=False,
+        )
+    if seed_exit != EXIT_OK:
+        # A transient failure writes nothing: the machine retries it, and its MarkFailedExhausted
+        # writes the error row if the retries run out (see _record_failure).
+        return seed_exit
+    await _drain_pending_brief(owner_id)
+    await _seat_workspace_rooms(owner_id)
+
+    try:
+        await hermes_provisioning.provision_hermes_runtime(owner_id)
+    except Exception as exc:  # noqa: BLE001 — classified + recorded
+        return await _record_failure(owner_id, exc, "runtime provision")
+    await _arm_trial(owner_id)
+    await hermes_provisioning.reconcile_runtime(owner_id)
+    return EXIT_OK
+
+
+#: Bound on the brief drain inside the provisioner Lambda: the drain retries with sleeps of its
+#: own (onboarding_brief._RETRY_BACKOFF_S, ~3 min), which must not eat the runtime leg's budget.
+BRIEF_DRAIN_TIMEOUT_S = 30.0
+
+
+async def _drain_pending_brief(owner_id: str) -> None:
+    """Step 0 just made the Paperclip company active: fulfil a first-room message captured
+    before it was (``onboarding_brief.capture_first_workspace_message`` drains its own capture
+    too). Idempotent and claim-fenced; a no-op read when nothing is pending. Never fails the
+    provision -- an unfinished drain leaves the brief PENDING for the next drain."""
+    from core.observability.metrics import put_metric
+    from core.services.onboarding_brief import reconcile_pending_brief
+
+    try:
+        await asyncio.wait_for(reconcile_pending_brief(owner_id), timeout=BRIEF_DRAIN_TIMEOUT_S)
+    except Exception:  # noqa: BLE001 — incl. TimeoutError; reconcile_pending_brief never raises itself
+        logger.exception("provision: pending onboarding-brief drain failed for owner %s", owner_id)
+        put_metric("onboarding_brief.provision_drain.error")
+
+
+async def _seat_workspace_rooms(owner_id: str) -> None:
+    """Step 0 just made the company active: create the vendor shared channel and seat every
+    current teammate in ``#general``. A member who joined before the room existed was missed by
+    the ``organizationMembership.created`` webhook's seat. Both are idempotent (a removed member
+    is never re-seated: the AUTOJOIN marker stays). Never fails the provision."""
+    from core.observability.metrics import put_metric
+    from core.services.clerk_admin import list_organization_members
+    from core.services.messaging import ensure_vendor_room, join_default_room
+
+    try:
+        await ensure_vendor_room(owner_id)
+    except Exception:  # noqa: BLE001
+        logger.exception("provision: vendor room reconcile failed for owner %s", owner_id)
+        put_metric("messaging.vendor_room.error")
+    try:
+        for member in await list_organization_members(owner_id):
+            try:
+                await join_default_room(owner_id, member["user_id"])
+            except Exception:  # noqa: BLE001
+                logger.exception(
+                    "provision: default room join failed for owner %s user %s", owner_id, member["user_id"]
+                )
+                put_metric("messaging.default_room.error")
+    except Exception:  # noqa: BLE001 — a roster read failure never fails the provision
+        logger.exception("provision: teammate roster read failed for owner %s", owner_id)
+        put_metric("messaging.default_room.error")
+
+
+async def _arm_trial(owner_id: str) -> None:
+    """The runtime is created and the row ``running``: start an unarmed ``trial_local`` clock,
+    once (a conditional write -- a no-op for a paid or already-armed row). Never fails the
+    provision: an unarmed trial simply has not started counting yet."""
+    from core.observability.metrics import put_metric
+    from core.repositories import billing_repo
+
+    try:
+        await billing_repo.arm_trial_if_unset(owner_id)
+    except Exception:  # noqa: BLE001
+        logger.exception("provision: trial arm failed for owner %s", owner_id)
+        put_metric("provision.trial_arm.error")
+
+
+async def _record_failure(owner_id: str, exc: Exception, stage: str) -> int:
+    """Classify a Hermes-leg failure, record it on the row, map it to the exit-code ABI —
+    so the stepper's Retry (and the SFN retry loop) can act on it instead of an open spinner."""
+    from core.repositories.container_repo import classify_provision_error
+    from core.services.openrouter_keys import KeyClaimConflict
+
+    logger.exception("hermes %s failed for owner %s", stage, owner_id)
+    if isinstance(exc, KeyClaimConflict):
+        # The claim loser: a concurrent attempt for this SAME owner already won the
+        # OpenRouter key claim and is finishing it (normally a couple of seconds).
+        # Retry without writing status="error" -- that write is what the user saw
+        # flash as a provision error for a condition that self-heals on the SFN's
+        # own 10s retry. A genuinely stuck claim (crashed winner) still surfaces:
+        # the claim row's 300s TTL bounds it, and the SFN's own retry-exhausted
+        # backstop (service-stack.ts markFailedExhausted) writes the error row if
+        # retries run out first.
+        return EXIT_TRANSIENT
+    _, retryable = classify_provision_error(exc)
+    if retryable:
+        # Same reasoning as the claim loser above: the SFN retries a transient failure within
+        # this execution, so an error row now would flash "Setup failed" over a provision that
+        # is about to succeed. MarkFailedExhausted writes it if the retries run out.
+        return EXIT_TRANSIENT
+    await _mark_error(owner_id, f"hermes {stage} failed: {exc}", retryable=False)
+    return EXIT_DETERMINISTIC
+
+
+async def _mark_error(owner_id: str, last_error: str, *, retryable: bool) -> None:
+    from core.repositories import container_repo
+
+    try:
+        await container_repo.mark_provision_error(owner_id, last_error=last_error, retryable=retryable)
+    except Exception:  # noqa: BLE001 — best-effort; the exit code is the ABI
+        logger.exception("provision: error write failed for owner %s", owner_id)
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--owner", required=True)
+    args = parser.parse_args()
+    logging.basicConfig(level=logging.INFO, stream=sys.stdout)
+    sys.exit(asyncio.run(run(args.owner)))
+
+
+if __name__ == "__main__":
+    main()

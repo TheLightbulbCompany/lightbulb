@@ -1,0 +1,50 @@
+# =============================================================================
+# Docker Ignore File
+# =============================================================================
+# Prevents unnecessary files from being included in the Docker build context.
+
+# Virtual environments
+env/
+venv/
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+coverage.xml
+*.cover
+
+# Development
+.git/
+.gitignore
+.env
+.env.*
+!.env.example
+*.db
+*.db-shm
+*.db-wal
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Documentation
+docs/
+*.md
+!README.md
+
+# Misc
+.DS_Store
+*.log
+tmp/
+temp/
+.ruff_cache/
+.claude/

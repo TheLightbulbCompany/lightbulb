@@ -2,6 +2,8 @@ import { SymbolView, type SFSymbol } from "expo-symbols";
 import {
   activeTrigger,
   applyCompletion,
+  MESSAGE_ATTACHMENT_MAX_BYTES,
+  resolveMessageAttachmentContentType,
   resolveTypedMentions,
   respondHint,
   searchEmoji,
@@ -10,6 +12,7 @@ import {
   type RoomKind,
   type RoomMember,
 } from "@lightbulb/shared";
+import * as DocumentPicker from "expo-document-picker";
 import * as ImagePicker from "expo-image-picker";
 import { useCallback, useRef, useState } from "react";
 import {
@@ -45,8 +48,9 @@ import { usePulse } from "../chat/usePulse";
 import { Avatar } from "./Avatar";
 import { EmojiPickerSheet } from "./EmojiPickerSheet";
 
-/** Web composer parity: at most four images on one message. */
-const MAX_PHOTOS = 4;
+/** Web composer parity: at most four attachments on one message. */
+const MAX_ATTACHMENTS = 4;
+const XLSX_CONTENT_TYPE = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
 
 /**
  * The formatting toolbar, in the web composer's order. Icon-only: a phone has
@@ -375,24 +379,52 @@ export function RoomComposer({
     }
   }, [stagePhoto]);
 
+  const pickFile = useCallback(async () => {
+    try {
+      const result = await DocumentPicker.getDocumentAsync({
+        type: [XLSX_CONTENT_TYPE],
+        multiple: false,
+        copyToCacheDirectory: true,
+      });
+      const asset = result.canceled ? undefined : result.assets?.[0];
+      if (!asset) return;
+      const contentType = resolveMessageAttachmentContentType(asset.name, asset.mimeType ?? "");
+      if (contentType !== XLSX_CONTENT_TYPE) {
+        setError("That file isn't an XLSX workbook we can send.");
+        return;
+      }
+      const size = asset.size ?? 0;
+      if (size > MESSAGE_ATTACHMENT_MAX_BYTES[contentType]) {
+        setError("XLSX files must be 20 MiB or smaller.");
+        return;
+      }
+      setError(null);
+      draft.stage({ uri: asset.uri, name: asset.name, contentType, size });
+    } catch {
+      setError("Couldn't open your files. Try again.");
+    }
+  }, [draft]);
+
   const attach = useCallback(() => {
     setError(null);
     if (Platform.OS === "ios") {
       ActionSheetIOS.showActionSheetWithOptions(
-        { options: ["Photo Library", "Take Photo", "Cancel"], cancelButtonIndex: 2 },
+        { options: ["Photo Library", "Take Photo", "Choose File", "Cancel"], cancelButtonIndex: 3 },
         (index) => {
           if (index === 0) void pickFromLibrary();
           if (index === 1) void takePhoto();
+          if (index === 2) void pickFile();
         },
       );
       return;
     }
-    Alert.alert("Attach photo", undefined, [
+    Alert.alert("Attach file", undefined, [
       { text: "Photo Library", onPress: () => void pickFromLibrary() },
       { text: "Take Photo", onPress: () => void takePhoto() },
+      { text: "Choose File", onPress: () => void pickFile() },
       { text: "Cancel", style: "cancel" },
     ]);
-  }, [pickFromLibrary, takePhoto]);
+  }, [pickFile, pickFromLibrary, takePhoto]);
 
   const body = text.trim();
   const mentions = resolveTypedMentions(body, members);
@@ -582,15 +614,15 @@ export function RoomComposer({
           <Pressable
             style={styles.railButton}
             onPress={attach}
-            disabled={disabled || busy || draft.attachments.length >= MAX_PHOTOS}
+            disabled={disabled || busy || draft.attachments.length >= MAX_ATTACHMENTS}
             hitSlop={6}
             accessibilityRole="button"
-            accessibilityLabel="Attach photo"
+            accessibilityLabel="Attach files"
           >
             {draft.uploading ? (
               <ActivityIndicator size="small" color={colors.mute} />
             ) : (
-              <SymbolView accessibilityElementsHidden name="photo" size={18} tintColor={colors.mute} />
+              <SymbolView accessibilityElementsHidden name="paperclip" size={18} tintColor={colors.mute} />
             )}
           </Pressable>
           {/* Who will answer, in the rail's empty middle rather than a row of

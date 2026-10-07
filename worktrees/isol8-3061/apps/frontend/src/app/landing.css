@@ -1,0 +1,1348 @@
+/*
+ * Landing page design system ("The Quiet Machine").
+ *
+ * Editorial print aesthetic on the brand cream/forest tokens defined in
+ * globals.css (:root). Every class is prefixed `ld-` so it cannot collide
+ * with the legacy landing classes still used by /marketplace, which keep
+ * their original styles.
+ *
+ * Motion contract: curves and clocks come from the token layer in
+ * globals.css — `var(--ease-out)`, `var(--dur-fast|base|slow|strike)`.
+ * `--dur-strike` (700ms) is the lamp's clock: every surface the strike
+ * repaints eases on it, and `Scene.tsx`'s STRIKE_MS is the same number in
+ * the R3F loop. Hover motion lives inside `@media (hover: hover) and
+ * (pointer: fine)`; every reduce block drops transforms and keeps opacity.
+ */
+
+/* ---------------------------------------------------------------- shell */
+
+.ld-page {
+  background: var(--cream);
+  color: var(--midnight);
+  font-family: var(--font-source-sans), ui-sans-serif, system-ui, sans-serif;
+  overflow-x: clip;
+}
+
+/* mono micro-labels used everywhere */
+.ld-mono {
+  font-family: var(--font-geist-mono), ui-monospace, SFMono-Regular, monospace;
+  font-size: 10px;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--midnight-muted);
+}
+
+/* ------------------------------------------------------------- sections */
+
+.ld-section {
+  position: relative;
+  max-width: 1240px;
+  margin: 0 auto;
+  padding: 88px 48px;
+}
+
+.ld-kicker {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  margin-bottom: 22px;
+  font-family: var(--font-geist-mono), ui-monospace, SFMono-Regular, monospace;
+  font-size: 11px;
+  letter-spacing: 0.22em;
+  text-transform: uppercase;
+  color: var(--midnight);
+}
+
+.ld-kicker::before {
+  content: "";
+  width: 26px;
+  height: 1px;
+  background: var(--midnight);
+}
+
+.ld-h2 {
+  font-family: var(--font-lora-serif), Georgia, serif;
+  font-weight: 500;
+  font-size: clamp(34px, 5vw, 58px);
+  line-height: 1.05;
+  letter-spacing: var(--tracking-display);
+  color: var(--midnight);
+  max-width: 16ch;
+}
+
+.ld-h2 em {
+  font-style: italic;
+  color: var(--midnight);
+}
+
+.ld-lede {
+  margin-top: 22px;
+  max-width: 52ch;
+  font-size: 17px;
+  line-height: 1.65;
+  color: var(--midnight-soft);
+}
+
+.ld-lede strong {
+  color: var(--midnight);
+  font-weight: 600;
+}
+
+/* -------------------------------------------------------------- buttons */
+
+.ld-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  padding: 16px 30px;
+  border-radius: 999px;
+  background: var(--midnight);
+  color: var(--cream);
+  font-size: 15px;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  border: 1px solid var(--midnight);
+  transition: transform var(--dur-fast) var(--ease-out),
+    box-shadow var(--dur-base) ease, background var(--dur-base) ease,
+    opacity var(--dur-base) ease;
+}
+
+/* Hover MOTION only on a real pointer — a tap on touch fires :hover and the
+   lift sticks until the next tap elsewhere. */
+@media (hover: hover) and (pointer: fine) {
+  .ld-btn:hover {
+    /* Was `var(--cream-deep)`, which never touched `color` (--cream): in
+       either room the label painted onto its own hover ground and vanished.
+       A darker step of the same ground keeps the cream label legible. */
+    background: color-mix(in srgb, var(--midnight) 88%, var(--cream));
+    transform: translateY(-2px);
+    box-shadow: 0 14px 34px color-mix(in srgb, var(--midnight) 22%, transparent);
+  }
+
+  .ld-btn:hover .ld-btn-arrow {
+    transform: translateX(4px);
+  }
+}
+
+/* After the hover rule, so a press wins over the lift. */
+.ld-btn:active {
+  transform: scale(0.97);
+}
+
+.ld-btn .ld-btn-arrow {
+  display: inline-block;
+  transition: transform var(--dur-base) var(--ease-out);
+}
+
+.ld-btn--ghost {
+  background: transparent;
+  color: var(--midnight);
+  border: 1px solid var(--edge);
+}
+
+.ld-btn--ghost:hover {
+  background: var(--cream-deep);
+  border-color: var(--midnight-faint);
+  box-shadow: none;
+  color: var(--midnight);
+}
+
+/* ----------------------------------------------------------- marketplace */
+
+/* Sits on cream — the forest band moved to the workspace-demo stage. */
+.ld-mkt {
+  background: var(--cream);
+  color: var(--midnight);
+  position: relative;
+}
+
+.ld-mkt-head {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 48px;
+}
+
+.ld-mkt-link {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-family: var(--font-geist-mono), ui-monospace, monospace;
+  font-size: 11px;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--midnight);
+  border-bottom: 1px solid color-mix(in srgb, var(--midnight) 30%, transparent);
+  padding-bottom: 4px;
+  transition: border-color var(--dur-base) ease, color var(--dur-base) ease;
+}
+
+.ld-mkt-link:hover {
+  color: var(--midnight);
+  border-color: var(--midnight);
+}
+
+.ld-shelf {
+  margin-top: 44px;
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 14px;
+}
+
+.ld-listing {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 26px 24px;
+  border-radius: 18px;
+  background: var(--cream);
+  border: 1px solid var(--edge);
+  color: var(--midnight);
+  transition: transform var(--dur-base) var(--ease-out),
+    box-shadow var(--dur-base) ease, border-color var(--dur-base) ease;
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .ld-listing:hover {
+    transform: translateY(-6px);
+    border-color: var(--midnight-faint);
+    box-shadow: 0 22px 54px rgba(26, 26, 26, 0.08);
+  }
+}
+
+.ld-listing-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+/* The monogram puck. Only the marketplace shelf still uses it. */
+.ld-puck {
+  width: 48px;
+  height: 48px;
+  border-radius: 15px;
+  background: var(--cream);
+  border: 1px solid var(--edge);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-family: var(--font-geist-mono), ui-monospace, monospace;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--midnight);
+  box-shadow: 0 8px 22px rgba(26, 26, 26, 0.08);
+}
+
+.ld-listing .ld-puck {
+  background: var(--cream-deep);
+  border-color: var(--edge);
+  color: var(--midnight);
+  font-family: var(--font-lora-serif), Georgia, serif;
+  font-style: italic;
+  font-size: 20px;
+  box-shadow: none;
+  width: 46px;
+  height: 46px;
+  border-radius: 14px;
+}
+
+.ld-price {
+  font-family: var(--font-geist-mono), ui-monospace, monospace;
+  font-size: 10.5px;
+  letter-spacing: 0.1em;
+  padding: 4px 10px;
+  border-radius: 99px;
+  border: 1px solid color-mix(in srgb, var(--midnight) 30%, transparent);
+  color: var(--midnight);
+}
+
+.ld-listing h3 {
+  font-family: var(--font-lora-serif), Georgia, serif;
+  font-size: 21px;
+  font-weight: 500;
+  color: var(--midnight);
+}
+
+.ld-listing-desc {
+  font-size: 13px;
+  line-height: 1.6;
+  color: var(--midnight-soft);
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.ld-listing-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.ld-listing-tag {
+  font-family: var(--font-geist-mono), ui-monospace, monospace;
+  font-size: var(--text-2xs);
+  letter-spacing: var(--tracking-caps);
+  text-transform: uppercase;
+  color: var(--midnight-muted);
+  border: 1px solid var(--edge);
+  padding: 3px 8px;
+  border-radius: 99px;
+}
+
+.ld-listing-foot {
+  margin-top: auto;
+  padding-top: 14px;
+  border-top: 1px solid var(--edge-soft);
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--midnight);
+}
+
+/* -------------------------------------------------------------- pricing */
+
+.ld-price-note {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 12px;
+  margin-top: 16px;
+}
+
+.ld-price-big {
+  font-family: var(--font-lora-serif), Georgia, serif;
+  font-size: clamp(44px, 5vw, 64px);
+  font-weight: 500;
+  letter-spacing: -0.02em;
+  color: var(--midnight);
+}
+
+.ld-price-big sup {
+  font-size: 0.45em;
+  vertical-align: super;
+}
+
+.ld-price-per {
+  font-family: var(--font-geist-mono), ui-monospace, monospace;
+  font-size: 11px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--midnight-muted);
+}
+
+/* The free path. Deliberately at body size, not the 11px uppercase mono of
+   .ld-price-per: the free trial used to be set five times smaller than the
+   price it qualifies, on the same baseline, which is how visitors came away
+   certain it costs $50 just to try. */
+.ld-price-free {
+  margin-top: 14px;
+  max-width: 46ch;
+  font-size: var(--text-ui);
+  line-height: 1.6;
+  color: var(--midnight-muted);
+}
+
+.ld-price-free strong {
+  color: var(--midnight);
+  font-weight: 600;
+}
+
+.ld-price-free a {
+  color: var(--midnight);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+  text-decoration-color: var(--brass);
+}
+
+.ld-price-free a:hover {
+  text-decoration-color: var(--midnight);
+}
+
+.ld-price-grid {
+  margin-top: 40px;
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 14px;
+  align-items: stretch;
+}
+
+.ld-price-card {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  padding: 34px 30px;
+  border-radius: 20px;
+  border: 1px solid var(--edge);
+  background: var(--cream);
+  position: relative;
+  transition: transform var(--dur-base) var(--ease-out), box-shadow var(--dur-base) ease;
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .ld-price-card:hover {
+    transform: translateY(-4px);
+    box-shadow: 0 22px 54px rgba(26, 26, 26, 0.08);
+  }
+}
+
+.ld-price-card--hi {
+  background: var(--midnight);
+  border-color: var(--midnight);
+}
+
+.ld-price-card--hi:hover {
+  box-shadow: 0 26px 64px color-mix(in srgb, var(--midnight) 32%, transparent);
+}
+
+.ld-price-card .ld-pc-tag {
+  font-family: var(--font-geist-mono), ui-monospace, monospace;
+  font-size: var(--text-2xs);
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--midnight);
+  margin-bottom: 18px;
+}
+
+.ld-price-card--hi .ld-pc-tag {
+  color: var(--brass);
+}
+
+.ld-price-card h3 {
+  font-family: var(--font-lora-serif), Georgia, serif;
+  font-size: 25px;
+  font-weight: 500;
+  color: var(--midnight);
+  margin-bottom: 6px;
+}
+
+.ld-price-card--hi h3 {
+  color: var(--cream);
+}
+
+.ld-price-card .ld-pc-sub {
+  font-size: 13.5px;
+  color: var(--midnight-muted);
+  margin-bottom: 24px;
+  line-height: 1.5;
+}
+
+.ld-price-card--hi .ld-pc-sub {
+  color: color-mix(in srgb, var(--cream) 65%, transparent);
+}
+
+.ld-price-card ul {
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin-bottom: 30px;
+  flex: 1;
+}
+
+.ld-price-card li {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  font-size: 14px;
+  line-height: 1.5;
+  color: var(--midnight-soft);
+}
+
+.ld-price-card--hi li {
+  color: color-mix(in srgb, var(--cream) 85%, transparent);
+}
+
+.ld-price-card li::before {
+  content: "";
+  flex-shrink: 0;
+  width: 14px;
+  height: 14px;
+  margin-top: 3px;
+  border-radius: 50%;
+  background: var(--cream-deep) url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='8' height='8' viewBox='0 0 10 10' fill='none' stroke='%2306402B' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M1.5 5l2.5 2.5 4.5-4'/%3E%3C/svg%3E") center / 8px no-repeat;
+}
+
+.ld-price-card--hi li::before {
+  background-color: rgba(240, 195, 78, 0.18);
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='8' height='8' viewBox='0 0 10 10' fill='none' stroke='%23a8e6c6' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M1.5 5l2.5 2.5 4.5-4'/%3E%3C/svg%3E");
+}
+
+.ld-price-card .ld-btn {
+  width: 100%;
+  padding: 14px 24px;
+  font-size: 14px;
+}
+
+.ld-price-card--hi .ld-btn {
+  background: var(--cream);
+  color: var(--midnight);
+  border-color: var(--cream);
+}
+
+.ld-price-card--hi .ld-btn:hover {
+  background: var(--cream);
+  box-shadow: 0 14px 34px rgba(0, 0, 0, 0.25);
+}
+
+.ld-pc-trial {
+  font-family: var(--font-geist-mono), ui-monospace, monospace;
+  font-size: var(--text-2xs);
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--midnight);
+  margin-bottom: 6px;
+}
+
+/* What the button below actually does. These three CTAs carry a ?provider=
+   that skips the free tier and opens Stripe Checkout, so the card has to say
+   so — otherwise the free line above this grid reads as a promise the buttons
+   break. */
+.ld-pc-charge {
+  font-size: var(--text-caption);
+  color: var(--midnight-muted);
+  margin-bottom: 20px;
+}
+
+/* The recommended card is dark, and --midnight-muted on it measured ~2.7:1
+   against rgb(15,26,43) — under the 4.5:1 floor, and dimmer than every other
+   line on the card. That inverts the point of this line: the "you will be
+   charged" warning ended up least legible on the card people are most likely
+   to click. Same treatment the sibling .ld-pc-sub already gets. */
+.ld-price-card--hi .ld-pc-charge {
+  color: color-mix(in srgb, var(--cream) 65%, transparent);
+}
+
+.ld-price-card--hi .ld-pc-trial {
+  color: var(--brass);
+}
+
+.ld-teams-strip {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 24px;
+  flex-wrap: wrap;
+  margin-top: 32px;
+  padding: 24px 28px;
+  border: 1px solid var(--edge);
+  border-radius: 16px;
+}
+
+.ld-teams-copy h3 {
+  font-family: var(--font-lora-serif), Georgia, serif;
+  font-weight: 500;
+  color: var(--midnight);
+  margin: 0;
+}
+
+.ld-teams-copy p {
+  color: var(--midnight-muted);
+  margin: 4px 0 0;
+}
+
+/* --------------------------------------------------------------- footer */
+
+.ld-footer {
+  background: var(--midnight);
+  color: var(--cream);
+  position: relative;
+  overflow: hidden;
+  padding: 72px 48px 32px;
+}
+
+.ld-footer-inner {
+  max-width: 1240px;
+  margin: 0 auto;
+  position: relative;
+  z-index: 1;
+}
+
+.ld-footer-top {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 48px;
+  padding-bottom: 48px;
+}
+
+.ld-footer-cta h2 {
+  font-family: var(--font-lora-serif), Georgia, serif;
+  font-size: clamp(30px, 4vw, 48px);
+  font-weight: 500;
+  line-height: 1.1;
+  letter-spacing: -0.015em;
+  max-width: 18ch;
+}
+
+.ld-footer-cta h2 em {
+  /* Lora italic carries the emphasis; yellow is never type (§06). */
+  font-style: italic;
+}
+
+.ld-footer-cta .ld-btn {
+  margin-top: 30px;
+  background: var(--cream);
+  color: var(--midnight);
+  border-color: var(--cream);
+}
+
+.ld-footer-cta .ld-btn:hover {
+  background: var(--cream);
+  box-shadow: 0 14px 34px rgba(0, 0, 0, 0.3);
+}
+
+.ld-footer-cols {
+  display: flex;
+  gap: 72px;
+}
+
+.ld-footer-col {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.ld-footer-col span {
+  font-family: var(--font-geist-mono), ui-monospace, monospace;
+  font-size: var(--text-2xs);
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: color-mix(in srgb, var(--cream) 64%, transparent) /* 64%: 6.5:1 on midnight, 5.0:1 once the dark room inverts it */;
+  margin-bottom: 6px;
+}
+
+.ld-footer-col a {
+  font-size: 13.5px;
+  color: color-mix(in srgb, var(--cream) 78%, transparent);
+  transition: color 0.2s ease;
+}
+
+.ld-footer-col a:hover {
+  color: var(--cream);
+}
+
+.ld-footer-word {
+  display: block;
+  width: 100%;
+  text-align: center;
+  font-family: var(--font-lora-serif), Georgia, serif;
+  font-style: italic;
+  font-weight: 500;
+  font-size: clamp(110px, 21vw, 320px);
+  line-height: 0.78;
+  letter-spacing: -0.04em;
+  color: transparent;
+  -webkit-text-stroke: 1px color-mix(in srgb, var(--cream) 22%, transparent);
+  user-select: none;
+  pointer-events: none;
+  /* confident bleed: the wordmark is cropped by the footer's bottom edge */
+  margin-top: 40px;
+  margin-bottom: -0.34em;
+}
+
+.ld-footer-base {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 20px;
+  flex-wrap: wrap;
+  border-top: 1px solid color-mix(in srgb, var(--cream) 14%, transparent);
+  padding-top: 24px;
+  position: relative;
+  z-index: 1;
+}
+
+.ld-footer-base,
+.ld-footer-base a {
+  font-family: var(--font-geist-mono), ui-monospace, monospace;
+  font-size: var(--text-2xs);
+  letter-spacing: var(--tracking-caps);
+  text-transform: uppercase;
+  color: color-mix(in srgb, var(--cream) 64%, transparent) /* 64%: 6.5:1 on midnight, 5.0:1 once the dark room inverts it */;
+}
+
+.ld-footer-base a:hover {
+  color: var(--cream);
+}
+
+/* ------------------------------------------------------------ responsive */
+
+@media (max-width: 1024px) {
+  .ld-section {
+    padding: 72px 32px;
+  }
+
+  .ld-shelf,
+  .ld-price-grid {
+    grid-template-columns: repeat(2, 1fr);
+  }
+
+  .ld-footer {
+    padding: 72px 32px 32px;
+  }
+}
+
+@media (max-width: 768px) {
+  .ld-section {
+    padding: 56px 20px;
+  }
+
+  .ld-puck {
+    width: 42px;
+    height: 42px;
+    border-radius: 13px;
+    font-size: 11px;
+  }
+
+  .ld-mkt-head {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 20px;
+  }
+
+  .ld-shelf {
+    grid-template-columns: 1fr;
+    margin-top: 40px;
+  }
+
+  .ld-price-grid {
+    grid-template-columns: 1fr;
+    margin-top: 36px;
+  }
+
+  .ld-footer {
+    padding: 64px 20px 28px;
+  }
+
+  .ld-footer-top {
+    flex-direction: column;
+    gap: 44px;
+    padding-bottom: 44px;
+  }
+
+  .ld-footer-cols {
+    gap: 44px;
+    flex-wrap: wrap;
+  }
+}
+
+@media (max-width: 480px) {
+  .ld-btn {
+    padding: 14px 22px;
+    font-size: 14px;
+  }
+}
+
+/* keep the legacy navbar's auth links on one line at mid widths */
+.landing-nav .nav-login {
+  white-space: nowrap;
+}
+.landing-nav .btn-primary {
+  white-space: nowrap;
+}
+
+/* ================================================================== */
+/* Funnel-first hero — Cursor-shaped fold: eyebrow, serif-8 mark,      */
+/* headline, pill input, one line. Compressed so the workspace demo's  */
+/* top edge is inside the first viewport at 1440x900.                  */
+/* ================================================================== */
+
+/* ================================================================ */
+/* The funnel hero — "Quiet Room" (Brand Identity Manual v1.0).       */
+/*                                                                    */
+/* The hero lamp (three.js/SVG) that used to hang over this section   */
+/* has been removed as unreachable — nothing rendered it. Restraint   */
+/* is the direction: brass hairlines, a lot of cream.                 */
+/* ================================================================ */
+
+.ld-funnel {
+  position: relative;
+  /* Clears the lamp: the pull chain reaches ~215px (SVG fallback) and the
+     3D pendant hangs lower still, both sitting on top of the eyebrow. */
+  padding: clamp(230px, 30vh, 300px) 48px 56px;
+  display: grid;
+  place-items: center;
+  text-align: center;
+  /* `clip`, not `hidden`: the fan is wider than the viewport and must be
+     contained on x while still bleeding up behind the nav. `hidden` would
+     also make this a scroll container and break the sticky nav. */
+  overflow-x: clip;
+  overflow-y: visible;
+}
+
+.ld-funnel-in {
+  position: relative;
+  z-index: 1;
+  width: 100%;
+  max-width: 940px;
+}
+
+/* The ray fan, sitting behind the headline. Barely embers while the room is
+   dark; it blooms when the lamp is switched on. That differential IS the
+   payoff of pulling the cord — without it the toggle reads as a colour swap. */
+/* The light the lamp casts. This was the sunrise mark's ray fan, decomposed
+   with `display: none` so only the needles showed — but §07 permits exactly
+   one decomposition of the logo (a single filament blade) and names the ray
+   fan among the parts that are "never broken out on their own". §01 is the
+   same rule from the other side: the product mark is the lamp with the
+   ceremony removed, and the ray fan is the ceremony.
+
+   The hero lamp this light used to belong to has been removed (unreachable
+   — nothing rendered it); this section carries no light effect today. */
+
+.ld-funnel-eyebrow {
+  margin: 0 0 22px;
+  font-size: 11px;
+  letter-spacing: 0.19em; /* §05: small labels set wide and uppercase */
+  /* §06 "Decided": labels on cream are midnight at reduced opacity, never
+     brass (2.94:1). 60% as written measures 4.40:1 — under the 4.5:1 AA
+     floor — so this uses 66% (5.34:1), the nearest value that clears it. */
+  color: color-mix(in srgb, var(--midnight) 66%, transparent);
+}
+
+.ld-funnel-mark {
+  display: block;
+  height: 84px;
+  width: auto;
+  margin: 0 auto 18px;
+  animation: ld-fade 0.9s ease both;
+}
+
+@keyframes ld-fade {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+
+.ld-funnel-h1 {
+  font-family: var(--font-lora-serif), Georgia, serif;
+  font-weight: 500; /* Lora Medium — the wordmark's weight; the owner does not want a bold display */
+  /* Sized so "small teams & solo founders." holds one line inside
+     .ld-funnel-in at the desktop fold; the break lands after "for". */
+  font-size: clamp(34px, 4.4vw, 56px);
+  line-height: 1.08;
+  letter-spacing: var(--tracking-display); /* §05 display sets tight */
+  color: var(--midnight);
+  margin: 0;
+  text-wrap: balance;
+}
+
+/* one pill input, CTA embedded */
+.ld-ask {
+  margin: 36px auto 0;
+  max-width: 640px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 8px 8px 24px;
+  border-radius: 999px;
+  /* §06: never pure white. #fff was the one harsh surface on the page. */
+  background: var(--cream-deep);
+  border: 1px solid var(--edge);
+  box-shadow: 0 18px 44px color-mix(in srgb, var(--midnight) 7%, transparent);
+  transition: border-color var(--dur-fast) ease, box-shadow var(--dur-fast) ease,
+    background var(--dur-fast) ease;
+}
+
+.ld-ask:focus-within {
+  border-color: var(--brass);
+  box-shadow: 0 0 0 4px rgba(240, 195, 78, 0.18);
+}
+
+.ld-ask input {
+  flex: 1;
+  min-width: 0;
+  background: none;
+  border: 0;
+  font-family: var(--font-lora-serif), Georgia, serif;
+  font-size: 17px;
+  color: var(--midnight);
+  padding: 10px 0;
+}
+
+.ld-ask input::placeholder {
+  /* On the pill's --cream-deep, not --cream: 0.5 midnight measured 3.21:1
+     there and --midnight-muted (4.56:1 on cream) only 4.15:1. 0.62 midnight is 4.6:1. */
+  color: color-mix(in srgb, var(--midnight) 62%, transparent);
+}
+
+.ld-ask input:focus {
+  outline: none;
+}
+
+/* The Start button is the light: bulb on midnight type, the one place the
+   yellow is allowed to fill a shape (§06 — it is the light source). */
+.ld-ask .ld-btn {
+  flex-shrink: 0;
+  padding: 12px 24px;
+  font-size: 14px;
+  background: var(--bulb);
+  border-color: var(--bulb);
+  color: var(--midnight);
+}
+
+.ld-ask .ld-btn:hover:not(:disabled) {
+  box-shadow: 0 12px 30px rgba(240, 195, 78, 0.32);
+}
+
+/* Enablement at 3 characters used to be an untransitioned opacity jump. The
+   fade is on .ld-btn's own transition list (`opacity var(--dur-base)`), so it
+   reads as the light reaching the button rather than a state flip. */
+.ld-ask .ld-btn:disabled {
+  opacity: 0.45;
+  transform: none;
+  box-shadow: none;
+  cursor: default;
+}
+
+.ld-funnel-fine {
+  margin: 18px auto 0;
+  max-width: 72ch;
+  font-size: 13.5px;
+  line-height: 1.55;
+  color: var(--midnight-muted);
+}
+
+/* Two doors above the pill: the in-chat picker's two paths at equal weight,
+   where a quiet swap line used to hide the second one. Pressed = the door
+   you are standing in; the pill's placeholder and label follow it. */
+.ld-doors {
+  margin: 30px auto 0;
+  display: inline-flex;
+  gap: 4px;
+  padding: 4px;
+  border: 1px solid var(--edge);
+  border-radius: 999px;
+  background: var(--cream-deep);
+}
+
+.ld-door {
+  min-height: 40px;
+  padding: 8px 18px;
+  border: 0;
+  border-radius: 999px;
+  background: none;
+  cursor: pointer;
+  font-size: 13.5px;
+  color: var(--midnight-muted);
+  transition: color var(--dur-fast) ease, background var(--dur-fast) ease;
+}
+
+.ld-door:hover {
+  color: var(--midnight);
+}
+
+.ld-door[aria-pressed="true"] {
+  background: var(--midnight);
+  color: var(--cream);
+}
+
+.ld-doors + .ld-ask {
+  margin-top: 16px;
+}
+
+@media (max-width: 720px) {
+  .ld-funnel { padding-inline: 20px; }
+  /* Two doors share the width instead of racing it: at 320px the pair
+     would otherwise spill past the pill. */
+  .ld-doors { display: flex; width: 100%; }
+  .ld-door { flex: 1; padding-inline: 10px; }
+  .ld-ask { flex-direction: column; align-items: stretch; padding: 14px; border-radius: 18px; }
+  .ld-ask .ld-btn { justify-content: center; }
+}
+
+/* ================================================================ */
+/* Workspace demo — the real /chat components, staged near-full-bleed */
+/* on the deep-forest band (the staged contrast moment). The page     */
+/* scrolls INTO this: its top edge shows inside the first viewport.   */
+/* ================================================================ */
+
+.ld-demo {
+  position: relative;
+  background: var(--midnight);
+  overflow: hidden;
+}
+
+.ld-demo::after {
+  /* grain — same treatment the marketplace band used to carry */
+  content: "";
+  position: absolute;
+  inset: 0;
+  background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.7' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='0.04'/%3E%3C/svg%3E");
+  pointer-events: none;
+}
+
+.ld-demo-stage {
+  position: relative;
+  z-index: 1;
+  width: min(92vw, 1400px);
+  margin: 0 auto;
+  padding: 56px 0 88px;
+}
+
+/* The demo sidebar's app-icon slot: the product bulb alone. */
+.ld-sidebar-mark {
+  height: 26px;
+  width: auto;
+}
+
+/* Slim hairline chrome — no mac-dots title bar. */
+.ld-demo-window {
+  border: 1px solid color-mix(in srgb, var(--cream) 18%, transparent);
+  border-radius: 14px;
+  background: var(--cream);
+  box-shadow: 0 40px 120px rgba(0, 0, 0, 0.35);
+  overflow: hidden;
+}
+
+.ld-demo-body {
+  display: flex;
+  height: min(780px, 84vh);
+  min-height: 520px;
+}
+
+.ld-demo-sidebar {
+  width: 280px;
+  flex-shrink: 0;
+}
+
+.ld-demo-main {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-width: 0;
+  background: var(--cream);
+}
+
+/* Slim white header row — the workspace shell's `.workspace-header` at demo
+   scale: file-browser + layout-reset icons left, help + avatar right. */
+.ld-demo-topbar {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  height: 44px;
+  padding: 0 12px;
+  border-bottom: 1px solid var(--edge);
+  background: var(--cream);
+}
+
+.ld-topbar-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 4px;
+  color: var(--midnight-muted);
+}
+
+/* ONE entrance for the demo, and one for the transcript that arrives inside
+   it after hydration (MessageList is `ssr:false` — Prism + react-markdown are
+   not worth the landing page's first-load JS, and it used to pop into an empty
+   column). Both fade as a UNIT: no per-element stagger, so nothing shows up
+   out of reading order. */
+.ld-demo-body,
+.ld-demo-enter {
+  opacity: 1;
+  /* `none`, not `translateY(0)`: a settled transform would make these a
+     containing block for every position:fixed descendant, for a 300ms
+     entrance. It still interpolates — `none` is the identity transform. */
+  transform: none;
+  transition: opacity 300ms var(--ease-out), transform 300ms var(--ease-out);
+}
+
+@starting-style {
+  .ld-demo-body,
+  .ld-demo-enter {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+}
+
+/* The demo is a PICTURE of the product, not a panel: its inner scrollers (the
+   mock roster, each panel's list, the transcript) swallowed the page's wheel —
+   a scroll over the demo scrolled the fake roster. They clip instead. */
+.ld-demo-body .sidebar-scroll,
+.ld-demo-body .overflow-y-auto,
+.ld-demo-body .overflow-auto {
+  overflow: hidden;
+}
+
+/* Three-panel dock — chat left (full height), Dashboard right-top, Inbox
+   right-bottom, separated by hairline gaps like dockview's sashes. */
+.ld-dock {
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  grid-template-rows: minmax(0, 53fr) minmax(0, 47fr);
+  gap: 1px;
+  background: var(--edge);
+}
+
+.ld-panel {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+}
+
+.ld-panel--left {
+  grid-row: 1 / 3;
+}
+
+/* The left panel is keyed on the view (WorkspaceDemo), so a switch remounts
+   its body and this crossfade covers the swap instead of teleporting. */
+.ld-panel--left .ld-panel-body {
+  opacity: 1;
+  transition: opacity 150ms var(--ease-out);
+}
+
+@starting-style {
+  .ld-panel--left .ld-panel-body {
+    opacity: 0;
+  }
+}
+
+/* Dockview-style tab strip: light-gray container, active tab white. */
+.ld-tabstrip {
+  flex: none;
+  display: flex;
+  align-items: stretch;
+  height: 32px;
+  background: #ececec;
+}
+
+.ld-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 10px 0 12px;
+  font-size: 12.5px;
+  color: var(--midnight);
+  background: var(--cream);
+}
+
+.ld-tab-x {
+  color: var(--midnight-muted);
+}
+
+.ld-panel-body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  background: var(--cream);
+}
+
+/* six illustrative cards read better at 3-up than the fetched shelf's 4-up */
+.ld-shelf--teaser {
+  grid-template-columns: repeat(3, 1fr);
+}
+
+@media (max-width: 960px) {
+  .ld-shelf--teaser {
+    grid-template-columns: repeat(2, 1fr);
+  }
+}
+
+.ld-demo-mobilenav {
+  display: none;
+}
+
+/* Below ~1000px there isn't room for three panels — show ONE, picked by the
+   dock's data-pane (sidebar still visible down to 720px and drives it). */
+@media (max-width: 1000px) {
+  .ld-dock {
+    display: flex;
+  }
+
+  .ld-dock .ld-panel {
+    display: none;
+    flex: 1;
+  }
+
+  .ld-dock[data-pane="left"] .ld-panel--left,
+  .ld-dock[data-pane="dashboard"] .ld-panel--dash,
+  .ld-dock[data-pane="inbox"] .ld-panel--inbox {
+    display: flex;
+  }
+}
+
+@media (max-width: 720px) {
+  .ld-demo-sidebar {
+    display: none;
+  }
+
+  .ld-demo-mobilenav {
+    display: flex;
+    gap: 2px;
+    padding: 0 10px;
+    border-bottom: 1px solid var(--edge);
+  }
+
+  .ld-demo-mobilenav button {
+    flex: 1;
+    padding: 10px 0;
+    font-size: 12.5px;
+    color: var(--midnight-muted);
+    background: none;
+    border: 0;
+    border-bottom: 2px solid transparent;
+    font-family: inherit;
+    cursor: pointer;
+  }
+
+  .ld-demo-mobilenav button.on {
+    color: var(--midnight);
+    border-color: var(--midnight);
+  }
+
+  .ld-funnel {
+    /* The pendant's glass spans 10.9%–30.2% of the section's height (camera
+       fov 40, lookAt tilt), and the section is ~518px of content plus this
+       padding — so P ≥ 0.302·(518+P) + 10 ⇒ 240px keeps the apex above the
+       eyebrow. At 112px the bulb sat on the eyebrow and the headline. */
+    padding: 240px 22px 48px;
+  }
+
+  .ld-funnel-mark {
+    height: 64px;
+  }
+
+  .ld-ask {
+    padding-left: 18px;
+  }
+
+  /* let the headline wrap naturally on narrow screens — the desktop line
+     break is placed for a ~66px two-line fold and strands a short tail on
+     its own line at this width */
+  .ld-funnel-h1 br {
+    display: none;
+  }
+
+  .ld-shelf--teaser {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ld-funnel-mark {
+    animation: none;
+  }
+
+  /* Opacity stays (it aids comprehension); the 4px lift goes. */
+  .ld-demo-body,
+  .ld-demo-enter {
+    transform: none;
+    transition: opacity 300ms var(--ease-out);
+  }
+}
+
+[data-lb-theme="dark"] .ld-funnel-eyebrow { color: var(--brass); }
+/* The closing copy sits over the neon wordmark, and brass letters on an amber
+   glow is the same yellow twice. Cream here ONLY — --midnight-muted stays
+   brass for every other label on the dark ground (§06). The hover needs its
+   own line: same specificity as the rule above it, so it would otherwise lose
+   on source order. */
+[data-lb-theme="dark"] .ld-funnel-fine { color: var(--midnight-soft); }
+
+.ld-page {
+  transition: background-color var(--dur-strike) var(--ease-out),
+    color var(--dur-strike) var(--ease-out);
+}
+
+/* The theme flips custom properties on .ld-page; descendants that consume
+   them would otherwise snap. For the strike's duration (the store holds
+   `data-lb-theming` on <html> for 800ms — keep the numbers below inside that
+   window) the surfaces a strike can actually SEE ease on the same clock as
+   the hero's wall: the nav, the funnel and its descendants, and the demo's
+   band (one solid fill — its interior is masked instead, below). Scoped to
+   those rather than `.ld-page *`, because the lamp is only reachable from the
+   hero: the marketplace, pricing and footer flip unobserved, and the demo's
+   ~300 nodes no longer each run a transition. The !important is what lets
+   this window beat a component's own `transition` list. */
+[data-lb-theming] .ld-page,
+[data-lb-theming] .ld-demo,
+[data-lb-theming] :is(.landing-nav, .ld-funnel),
+[data-lb-theming] :is(.landing-nav, .ld-funnel) * {
+  transition:
+    background-color var(--dur-strike) var(--ease-out),
+    color var(--dur-strike) var(--ease-out),
+    border-color var(--dur-strike) var(--ease-out),
+    box-shadow var(--dur-strike) var(--ease-out),
+    opacity var(--dur-strike) var(--ease-out),
+    fill var(--dur-strike) var(--ease-out),
+    stroke var(--dur-strike) var(--ease-out) !important;
+}
+
+/* Text must never cross its own ground. Foreground and background were
+   interpolating on the same curve and met at ~350ms: the headline, the nav
+   links and "Grow it instead" disappeared into the wall mid-strike. So type
+   BLINKS instead — out in 150ms, `color` snapping while it is at zero (the
+   `color 0s … 150ms` below is that snap: a zero-length transition fired on a
+   delay), then back over 250ms. Chosen over the blur mask because this type
+   is 66px Lora display, where a 2px blur reads as a focus pull rather than a
+   crossfade. `:not(:disabled)` keeps the 0.45-opacity Start button from
+   flashing enabled. */
+[data-lb-theming] :is(.landing-nav, .ld-funnel)
+  :is(h1, h2, h3, p, a, button, span, label, em, strong, input):not(:disabled) {
+  transition:
+    color 0s linear 150ms,
+    background-color var(--dur-strike) var(--ease-out),
+    border-color var(--dur-strike) var(--ease-out),
+    box-shadow var(--dur-strike) var(--ease-out),
+    fill var(--dur-strike) var(--ease-out),
+    stroke var(--dur-strike) var(--ease-out) !important;
+  animation: ld-strike-text 400ms var(--ease-out) both;
+}
+
+@keyframes ld-strike-text {
+  0% { opacity: 1; }
+  37.5% { opacity: 0; } /* 150ms — the colour snaps here, unseen */
+  100% { opacity: 1; }
+}
+
+/* The demo takes the same mask at the CONTAINER level rather than on its ~300
+   nodes: the window blinks out, its whole interior (card grounds AND type)
+   swaps in one frame while it is invisible, and it blinks back over the band,
+   which is the one surface in there still easing. Deliberately no transition
+   inside .ld-demo-window — a card that eases while its label snaps is the
+   same crossing bug one level down. */
+[data-lb-theming] .ld-demo-window {
+  animation: ld-strike-text 400ms var(--ease-out) both;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ld-page { transition: none; }
+  [data-lb-theming] .ld-page,
+  [data-lb-theming] .ld-demo,
+  [data-lb-theming] :is(.landing-nav, .ld-funnel),
+  [data-lb-theming] :is(.landing-nav, .ld-funnel) * { transition: none !important; }
+  /* The strike still flips; a reduce user just gets it without the dip. */
+  [data-lb-theming] :is(.landing-nav, .ld-funnel) *,
+  [data-lb-theming] .ld-demo-window { animation: none; }
+}
+
+/* DOM side of the two states. Dark = waiting (still ≥4.5:1); lit = reading. */
+[data-lb-theme="dark"] .ld-funnel-h1 { color: color-mix(in srgb, var(--midnight) 92%, transparent); }
+/* Literal cream, never var(--cream): inside the dark page that token IS
+   midnight, so the label and the placeholder were painted onto their own
+   background (1.05:1). */
+[data-lb-theme="dark"] .ld-ask .ld-btn {
+  background: transparent;
+  color: color-mix(in srgb, var(--midnight) 92%, transparent);
+  box-shadow: inset 0 0 0 1px var(--brass);
+}
+[data-lb-theme="dark"] .ld-ask input { color: color-mix(in srgb, var(--midnight) 92%, transparent); }
+/* 0.62, not 0.45: the pill is --cream-deep (var(--cream-deep)) in the dark, where
+   0.45 cream measured 3.91:1. */
+[data-lb-theme="dark"] .ld-ask input::placeholder { color: color-mix(in srgb, var(--midnight) 62%, transparent); }
+.ld-funnel-h1, .ld-ask .ld-btn {
+  transition: color var(--dur-strike) var(--ease-out),
+              background-color var(--dur-strike) var(--ease-out),
+              box-shadow var(--dur-strike) var(--ease-out);
+}
+@media (prefers-reduced-motion: reduce) {
+  .ld-funnel-h1, .ld-ask .ld-btn { transition: none; }
+}

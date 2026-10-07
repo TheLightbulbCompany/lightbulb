@@ -85,6 +85,21 @@ def test_materialize_fetches_only_messages_with_attachments(home, monkeypatch):
     assert sync.materialize_attachments(body) == paths and len(fetched) == 2  # cached on disk, not refetched
 
 
+def test_xlsx_materializes_with_extension_read_file_uses_for_extraction(home, monkeypatch):
+    monkeypatch.setattr(sync, "_get_backend_bytes", lambda _path: b"PK\x03\x04workbook")
+    attachment = {
+        "id": "sheet-1",
+        "fileName": "forecast.xlsx",
+        "contentType": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        "size": 12,
+    }
+    body = {"room": {"id": "room-1"}, "message": {"attachments": [attachment]}}
+
+    [path] = sync.materialize_attachments(body)
+
+    assert Path(path).name == "sheet-1.xlsx"
+
+
 def test_room_context_and_system_prompt_carry_the_media_list():
     ctx = turn.room_context(f.ingress(), "ceo", media=["/mnt/a1.png"])
     assert ctx["media"] == ["/mnt/a1.png"]

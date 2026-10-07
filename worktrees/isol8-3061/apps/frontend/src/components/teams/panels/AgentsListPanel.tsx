@@ -1,0 +1,433 @@
+"use client";
+
+// The roster AND the org chart: same `/agents` read, two views. The retired
+// `teams-org-chart` key aliases onto this panel (panelRegistry's
+// RETIRED_PANEL_ALIASES) and arrives as `view: "chart"`, so an old link opens
+// ONE Agents tab on the chart rather than a second tab drawing the same rows.
+
+import { useMemo, useState } from "react";
+import { Bot, List, Network } from "lucide-react";
+import {
+  EditorialButton,
+  EditorialDialog,
+  PanelDataTable,
+  PanelEmptyState,
+  PanelMasthead,
+  PanelToolbar,
+  type PanelDataColumn,
+} from "@/components/teams/shell";
+import { AgentCreateChooser } from "@/components/agents/AgentCreateChooser";
+import { useMarketplaceDrawer } from "@/components/marketplace/drawer/MarketplaceDrawerProvider";
+import { OrgChart } from "@/components/teams/org-chart/OrgChart";
+import {
+  setAgentsViewMode,
+  useAgentsViewMode,
+  type AgentsViewMode,
+} from "@/components/teams/agents/agentsViewMode";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import { cn } from "@/lib/utils";
+import { useTeamsApi } from "@/hooks/useTeamsApi";
+import { handleShellLinkClick } from "@/lib/shellNav";
+import { agentInspectorUrl } from "@/components/teams/shared/lib/agentInspectorUrl";
+import { useAgentMutations } from "@/components/teams/agents/hooks/useAgentMutations";
+import type { CompanyAgent } from "@/components/teams/shared/types";
+
+export interface AgentsListPanelProps {
+  /** `?view=` (or the retired `teams-org-chart` key), already validated by the
+   *  router. Honoured on this mount without touching the stored preference —
+   *  the toggle takes the view back, and the preference is what it always was.
+   *  Re-delivered rather than remounted when an already-open panel is
+   *  re-opened, so it is compared against its previous value below. */
+  initialView?: AgentsViewMode | null;
+}
+
+export function AgentsListPanel({ initialView }: AgentsListPanelProps = {}) {
+  const { read } = useTeamsApi();
+  const { pause, resume, remove } = useAgentMutations();
+  const { data, isLoading, error, mutate } = read<{ agents: CompanyAgent[] }>(
+    "/agents",
+  );
+  const [creating, setCreating] = useState(false);
+  const [search, setSearch] = useState("");
+  const storedView = useAgentsViewMode();
+  const [viewDeepLink, setViewDeepLink] = useState<AgentsViewMode | null>(initialView ?? null);
+  const view = viewDeepLink ?? storedView;
+  // Adjust-state-during-render, not an effect — the same pattern TasksList
+  // uses for its `?groupBy` re-delivery: dockview merges parameters into an
+  // open panel instead of remounting it, and a plain sidebar nav clears them.
+  const [prevInitialView, setPrevInitialView] = useState(initialView);
+  if (initialView !== prevInitialView) {
+    setPrevInitialView(initialView);
+    setViewDeepLink(initialView ?? null);
+  }
+
+  const agents = data?.agents;
+  const filtered = useMemo(() => {
+    const list = agents ?? [];
+    return search
+      ? list.filter((a) =>
+          (a.name + " " + (a.role ?? "") + " " + (a.origin ?? ""))
+            .toLowerCase()
+            .includes(search.toLowerCase()),
+        )
+      : list;
+  }, [agents, search]);
+
+  if (error) {
+    return (
+      <div
+        role="alert"
+        className="editorial-page p-8 font-editorial-serif text-xl italic text-[var(--err)]"
+      >
+        We couldn&rsquo;t load your agents.
+      </div>
+    );
+  }
+
+  const columns: PanelDataColumn<CompanyAgent>[] = [
+    {
+      key: "name",
+      header: "Name",
+      sortable: true,
+      cell: (a) => (
+        <div className="font-medium text-[var(--midnight)]">{a.name}</div>
+      ),
+    },
+    {
+      key: "role",
+      header: "Role",
+      cell: (a) => (
+        <span className="label-caps text-[var(--midnight-muted)]">
+          {a.role}
+        </span>
+      ),
+    },
+    {
+      key: "origin",
+      header: "Origin",
+      cell: (a) => (
+        <span className="text-xs text-[var(--midnight-soft)]">
+          {a.origin ?? "Custom"}
+          {a.origin === "Marketplace" && a.marketplace
+            ? ` · ${a.marketplace.slug} v${a.marketplace.version}`
+            : ""}
+        </span>
+      ),
+    },
+    {
+      key: "actions",
+      header: "",
+      align: "right",
+      cell: (a) => {
+        const paused = a.status === "paused";
+        return (
+          <span className="flex items-center justify-end gap-2">
+            <button
+              className="text-sm hover:underline text-[var(--midnight-soft)]"
+              onClick={() => (paused ? resume(a.id) : pause(a.id))}
+            >
+              {paused ? "Resume" : "Pause"}
+            </button>
+            <button
+              className="text-sm hover:underline text-[var(--err)]"
+              onClick={() => {
+                if (window.confirm(`Delete ${a.name}? This removes the agent and its workspace.`)) {
+                  remove(a.id);
+                }
+              }}
+            >
+              Delete
+            </button>
+          </span>
+        );
+      },
+    },
+    {
+      key: "open",
+      header: "",
+      align: "right",
+      cell: (a) => (
+        <a
+          href={agentInspectorUrl(a.id)}
+          onClick={(e) => handleShellLinkClick(e, agentInspectorUrl(a.id))}
+          className="text-sm hover:underline"
+          style={{ color: "var(--midnight)" }}
+        >
+          Open →
+        </a>
+      ),
+    },
+  ];
+
+  return (
+    <div className="editorial-page flex flex-col gap-4 p-4 sm:p-5 lg:p-6 max-w-[1600px] mx-auto w-full">
+      <PanelMasthead
+        overline="Team"
+        title="Agents"
+        actions={
+          <EditorialButton variant="primary" onClick={() => setCreating(true)}>
+            New agent
+          </EditorialButton>
+        }
+      />
+      <PanelToolbar
+        // Chart view keeps the value (so returning to the list restores the
+        // search) but does not offer the box: a control that visibly changes
+        // nothing is worse than no control.
+        searchValue={view === "chart" ? "" : search}
+        onSearchChange={setSearch}
+        searchPlaceholder={view === "chart" ? "" : "Find agent..."}
+        searchAriaLabel="Search agents"
+        hideSearch={view === "chart"}
+        actions={
+          <ViewModeToggle
+            view={view}
+            onChange={(mode) => {
+              // An explicit pick beats the deep link and becomes the preference.
+              setViewDeepLink(null);
+              setAgentsViewMode(mode);
+            }}
+          />
+        }
+      />
+      {isLoading ? (
+        <div role="status" className="font-editorial-serif text-xl italic text-[var(--midnight-muted)]">
+          Loading…
+        </div>
+      ) : filtered.length === 0 ? (
+        <PanelEmptyState
+          icon={Bot}
+          headline="No agents yet."
+          supporting={
+            search
+              ? "No agents match your search."
+              : "Spin up your first agent — assign a role + start delegating work."
+          }
+          action={{ label: "New agent", onClick: () => setCreating(true) }}
+        />
+      ) : view === "chart" ? (
+        // The chart draws the WHOLE roster, never the search-filtered slice.
+        // An org chart is a structure, and filtering a structure is not a
+        // smaller structure — it is several orphaned roots that misdescribe who
+        // reports to whom. Search stays a list affordance, the way grouping and
+        // sort are list-only on Tasks.
+        <OrgChart agents={agents ?? []} />
+      ) : (
+        <PanelDataTable<CompanyAgent>
+          rows={filtered}
+          columns={columns}
+          rowKey={(a) => a.id}
+        />
+      )}
+
+      {creating && (
+        <CreateAgentDialog
+          agents={agents ?? []}
+          onClose={() => setCreating(false)}
+          onCreated={() => {
+            setCreating(false);
+            mutate();
+          }}
+        />
+      )}
+    </div>
+  );
+}
+
+/** Roster or org chart. Modelled on TasksList's list/board toggle — same
+ *  control shape, same per-browser persistence idiom. */
+function ViewModeToggle({
+  view,
+  onChange,
+}: {
+  view: AgentsViewMode;
+  onChange: (mode: AgentsViewMode) => void;
+}) {
+  const buttonClass = (active: boolean) =>
+    cn(
+      "inline-flex h-7 w-7 items-center justify-center transition-colors",
+      active
+        ? "bg-[var(--midnight)] text-[var(--cream)]"
+        : "text-[var(--midnight-muted)] hover:text-[var(--midnight)]",
+    );
+  return (
+    <div className="flex items-center overflow-hidden rounded-md border border-[var(--edge)]">
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <button
+            type="button"
+            className={buttonClass(view === "list")}
+            onClick={() => onChange("list")}
+            aria-pressed={view === "list"}
+            aria-label="List view"
+          >
+            <List size={16} />
+          </button>
+        </TooltipTrigger>
+        <TooltipContent>List view</TooltipContent>
+      </Tooltip>
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <button
+            type="button"
+            className={buttonClass(view === "chart")}
+            onClick={() => onChange("chart")}
+            aria-pressed={view === "chart"}
+            aria-label="Org chart view"
+          >
+            <Network size={16} />
+          </button>
+        </TooltipTrigger>
+        <TooltipContent>Org chart</TooltipContent>
+      </Tooltip>
+    </div>
+  );
+}
+
+function CreateAgentDialog({
+  agents,
+  onClose,
+  onCreated,
+}: {
+  /** Existing roster — the manager picker's candidates. A brand-new agent
+   *  has no descendants, so every existing agent is an eligible manager. */
+  agents: CompanyAgent[];
+  onClose: () => void;
+  onCreated: () => void;
+}) {
+  const { post } = useTeamsApi();
+  const { open: openMarketplace } = useMarketplaceDrawer();
+  // Chooser first: steer toward hiring a pre-built marketplace agent; the
+  // custom-build form is the secondary path.
+  const [mode, setMode] = useState<"choose" | "build">("choose");
+  const [name, setName] = useState("");
+  const [role, setRole] = useState("engineer");
+  const [title, setTitle] = useState("");
+  const [reportsTo, setReportsTo] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  async function submit() {
+    setSubmitting(true);
+    setErr(null);
+    try {
+      // SECURITY: body intentionally contains NO adapterType, NO adapterConfig,
+      // NO url, NO authToken. The BFF synthesizes the openclaw_gateway adapter
+      // server-side via core.services.paperclip_adapter_config and rejects any
+      // smuggled fields with 422 (Pydantic extra="forbid"). Defense in depth:
+      // the UI doesn't even render those inputs.
+      //
+      // Rich hire (A7): title + reportsTo are already accepted by CreateAgentBody
+      // end-to-end. Include them ONLY when set — an empty title would write a
+      // blank field and an empty reportsTo means "top level" (omit, don't send "").
+      // Budget is deliberately NOT surfaced: per-agent budget is gated on a
+      // separate cost_events bridge, not the owner's provider path.
+      const body: {
+        name: string;
+        role: string;
+        title?: string;
+        reportsTo?: string;
+      } = { name, role };
+      const trimmedTitle = title.trim();
+      if (trimmedTitle) body.title = trimmedTitle;
+      if (reportsTo) body.reportsTo = reportsTo;
+      await post("/agents", body);
+      onCreated();
+    } catch (e) {
+      setErr(String(e));
+      setSubmitting(false);
+    }
+  }
+
+  if (mode === "choose") {
+    return (
+      <EditorialDialog
+        open
+        onOpenChange={(o) => !o && onClose()}
+        title="New agent"
+      >
+        <AgentCreateChooser
+          surface="teams"
+          onHire={() => {
+            onClose();
+            openMarketplace({ view: "browse" });
+          }}
+          onBuild={() => setMode("build")}
+        />
+      </EditorialDialog>
+    );
+  }
+
+  return (
+    <EditorialDialog
+      open
+      onOpenChange={(o) => !o && onClose()}
+      title="New agent"
+    >
+      <div className="flex flex-col gap-3">
+        <label className="block">
+          <span className="text-sm text-[var(--midnight-soft)]">Name</span>
+          <input
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            className="w-full border border-[var(--edge)] bg-[var(--cream)] rounded-sm px-3 py-2 mt-1 text-[var(--midnight)]"
+          />
+        </label>
+        <label className="block">
+          <span className="text-sm text-[var(--midnight-soft)]">Title</span>
+          <input
+            value={title}
+            onChange={(e) => setTitle(e.target.value)}
+            placeholder="e.g. Senior backend engineer"
+            className="w-full border border-[var(--edge)] bg-[var(--cream)] rounded-sm px-3 py-2 mt-1 text-[var(--midnight)]"
+          />
+        </label>
+        <label className="block">
+          <span className="text-sm text-[var(--midnight-soft)]">Role</span>
+          <select
+            value={role}
+            onChange={(e) => setRole(e.target.value)}
+            className="w-full border border-[var(--edge)] bg-[var(--cream)] rounded-sm px-3 py-2 mt-1 text-[var(--midnight)]"
+          >
+            <option value="engineer">Engineer</option>
+            <option value="ceo">CEO</option>
+            <option value="manager">Manager</option>
+          </select>
+        </label>
+        <label className="block">
+          <span className="text-sm text-[var(--midnight-soft)]">Reports to</span>
+          <select
+            aria-label="Reports to"
+            value={reportsTo}
+            onChange={(e) => setReportsTo(e.target.value)}
+            className="w-full border border-[var(--edge)] bg-[var(--cream)] rounded-sm px-3 py-2 mt-1 text-[var(--midnight)]"
+          >
+            <option value="">No manager (top level)</option>
+            {agents.map((a) => (
+              <option key={a.id} value={a.id}>
+                {a.name}
+              </option>
+            ))}
+          </select>
+        </label>
+        {err && (
+          <div className="text-err text-ui border border-err bg-cream rounded-lg px-3 py-2">
+            {err}
+          </div>
+        )}
+        <div className="flex justify-end gap-2 mt-2">
+          <EditorialButton variant="secondary" size="sm" onClick={onClose}>
+            Cancel
+          </EditorialButton>
+          <EditorialButton
+            size="sm"
+            onClick={submit}
+            disabled={submitting || !name}
+          >
+            {submitting ? "Creating…" : "Create"}
+          </EditorialButton>
+        </div>
+      </div>
+    </EditorialDialog>
+  );
+}

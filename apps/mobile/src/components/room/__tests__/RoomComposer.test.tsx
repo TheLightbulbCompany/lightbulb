@@ -72,7 +72,7 @@ const caretAt = (position: number) =>
     nativeEvent: { selection: { start: position, end: position } },
   });
 
-function choosePhotoSource(index: 0 | 1) {
+function choosePhotoSource(index: 0 | 1 | 2) {
   return jest
     .spyOn(ActionSheetIOS, "showActionSheetWithOptions")
     .mockImplementation((_options, callback) => callback(index));
@@ -88,16 +88,42 @@ describe("RoomComposer", () => {
     ImagePicker.requestCameraPermissionsAsync.mockResolvedValue({ granted: true });
     ImagePicker.launchImageLibraryAsync.mockResolvedValue({ canceled: true, assets: null });
     ImagePicker.launchCameraAsync.mockResolvedValue({ canceled: true, assets: null });
+    const DocumentPicker = jest.requireMock("expo-document-picker");
+    DocumentPicker.getDocumentAsync.mockResolvedValue({ canceled: true, assets: null });
   });
 
-  it("offers the photo library and camera from the attachment action", async () => {
+  it("offers files, the photo library and camera from the attachment action", async () => {
     const sheet = choosePhotoSource(0);
     await setup();
-    await fireEvent.press(screen.getByLabelText("Attach photo"));
+    await fireEvent.press(screen.getByLabelText("Attach files"));
     expect(sheet).toHaveBeenCalledWith(
-      expect.objectContaining({ options: ["Photo Library", "Take Photo", "Cancel"] }),
+      expect.objectContaining({ options: ["Photo Library", "Take Photo", "Choose File", "Cancel"] }),
       expect.any(Function),
     );
+  });
+
+  it("uploads a picked XLSX workbook straight away", async () => {
+    choosePhotoSource(2);
+    const DocumentPicker = jest.requireMock("expo-document-picker");
+    DocumentPicker.getDocumentAsync.mockResolvedValueOnce({
+      canceled: false,
+      assets: [{
+        uri: "file:///forecast.xlsx",
+        name: "forecast.xlsx",
+        mimeType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        size: 123,
+      }],
+    });
+    const { onUploadAttachment } = await setup();
+
+    await fireEvent.press(screen.getByLabelText("Attach files"));
+
+    expect(await screen.findByText("forecast.xlsx")).toBeTruthy();
+    await waitFor(() => expect(onUploadAttachment).toHaveBeenCalledWith({
+      uri: "file:///forecast.xlsx",
+      name: "forecast.xlsx",
+      type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    }));
   });
 
   it("opens the mention typeahead on @ and completes the picked handle", async () => {
@@ -161,7 +187,7 @@ describe("RoomComposer", () => {
     });
     const onSend = jest.fn(async () => {});
     const { onUploadAttachment } = await setup(onSend);
-    await fireEvent.press(screen.getByLabelText("Attach photo"));
+    await fireEvent.press(screen.getByLabelText("Attach files"));
     expect(await screen.findByText("a.png")).toBeTruthy();
     await waitFor(() =>
       expect(onUploadAttachment).toHaveBeenCalledWith({
@@ -295,7 +321,7 @@ describe("RoomComposer", () => {
       assets: [{ uri: "file:///a.png", fileName: "a.png", mimeType: "image/png", fileSize: 10 }],
     });
     await setup();
-    await fireEvent.press(screen.getByLabelText("Attach photo"));
+    await fireEvent.press(screen.getByLabelText("Attach files"));
     expect(await screen.findByLabelText("Preview a.png")).toBeTruthy();
     await fireEvent.press(screen.getByLabelText("Remove a.png"));
     expect(screen.queryByLabelText("Preview a.png")).toBeNull();
@@ -339,7 +365,7 @@ describe("RoomComposer", () => {
       ],
     });
     const { onUploadAttachment } = await setup();
-    await fireEvent.press(screen.getByLabelText("Attach photo"));
+    await fireEvent.press(screen.getByLabelText("Attach files"));
     await waitFor(() => expect(screen.getByText(/The limit is 5MB/)).toBeTruthy());
     expect(onUploadAttachment).not.toHaveBeenCalled();
   });
@@ -359,7 +385,7 @@ describe("RoomComposer", () => {
       ],
     });
     await setup();
-    await fireEvent.press(screen.getByLabelText("Attach photo"));
+    await fireEvent.press(screen.getByLabelText("Attach files"));
     expect(await screen.findByLabelText("Preview camera.jpg")).toBeTruthy();
   });
 
@@ -368,7 +394,7 @@ describe("RoomComposer", () => {
     const ImagePicker = jest.requireMock("expo-image-picker");
     ImagePicker.requestCameraPermissionsAsync.mockResolvedValueOnce({ granted: false });
     await setup();
-    await fireEvent.press(screen.getByLabelText("Attach photo"));
+    await fireEvent.press(screen.getByLabelText("Attach files"));
     expect(
       await screen.findByText("Camera access is needed. Allow it in Settings, then try again."),
     ).toBeTruthy();
@@ -390,10 +416,10 @@ describe("RoomComposer", () => {
       ],
     });
     const { onUploadAttachment } = await setup();
-    await fireEvent.press(screen.getByLabelText("Attach photo"));
+    await fireEvent.press(screen.getByLabelText("Attach files"));
     expect(await screen.findByText(/isn't a photo we can send/)).toBeTruthy();
     expect(onUploadAttachment).not.toHaveBeenCalled();
-    expect(screen.getByLabelText("Attach photo")).toBeTruthy();
+    expect(screen.getByLabelText("Attach files")).toBeTruthy();
   });
 
   it("keeps a failed upload on its own chip, retryable", async () => {
@@ -421,7 +447,7 @@ describe("RoomComposer", () => {
         draftKey={draftKey()}
       />,
     );
-    await fireEvent.press(screen.getByLabelText("Attach photo"));
+    await fireEvent.press(screen.getByLabelText("Attach files"));
     // The failure belongs to the photo, not to the message: the chip offers
     // the retry, and the rest of the draft is untouched.
     expect(await screen.findByLabelText("Retry uploading a.png")).toBeTruthy();

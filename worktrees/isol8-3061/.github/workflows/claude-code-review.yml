@@ -1,0 +1,207 @@
+name: Claude Code Review
+
+on:
+  # Re-enabled (paused to workflow_dispatch in #1837, when CodeRabbit and
+  # Greptile were doing the reviewing). Both are gone, so this is the reviewer
+  # again — and the only PR workflow that runs on EVERY pull request, which is
+  # what makes it eligible as the required status check on `main`.
+  #
+  # Do NOT add a `paths:` / `paths-ignore:` filter here. A path-filtered
+  # workflow does not start at all on a non-matching PR, so no check is ever
+  # reported and a required check would block that PR forever. (A job-level
+  # `if:` is safe — a SKIPPED job reports success to branch protection; a
+  # workflow that never starts reports nothing.) That is precisely why the
+  # other PR gates — backend / frontend / infra / company / mobile CI, all
+  # path-filtered — cannot serve as the required check.
+  pull_request:
+    types: [opened, synchronize, ready_for_review, reopened]
+  workflow_dispatch:
+
+# Supersede in-flight reviews for the same PR — `synchronize` fires on every
+# push, so without this each push stacked another review run behind the last.
+# `github.ref` is refs/pull/<n>/merge here (pull_request only), so the group is
+# per-PR and PRs never cancel each other.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # Ask the installed `chatgpt-codex-connector` GitHub App for a review. It is
+  # billed to the owner's ChatGPT plan, not a per-repo SaaS seat, so it costs
+  # nothing extra now that CodeRabbit and Greptile are gone.
+  #
+  # It CANNOT be the gate: the connector answers with an issue comment or a 👍
+  # reaction and never publishes a status check, so branch protection has
+  # nothing to require. `claude-review` below is the gate; this is the second
+  # opinion. Codex also no longer auto-reviews on open — a comment is required.
+  request-codex-review:
+    # Skip on `synchronize`: re-posting on every push spams the thread, and the
+    # connector re-reviews the new head by itself. Skip drafts — `ready_for_review`
+    # is in the trigger list, so a draft gets its ping when it is marked ready.
+    # `github.event_name` guards the workflow_dispatch path, where there is no
+    # pull_request context at all.
+    if: >-
+      github.event_name == 'pull_request'
+      && github.event.action != 'synchronize'
+      && !github.event.pull_request.draft
+    # Follow the same hosted/self-hosted switch as every other Linux PR gate.
+    # This job only needs the Node runtime already required by github-script.
+    runs-on: ${{ vars.CI_RUNNER }}
+    timeout-minutes: 5
+    permissions:
+      pull-requests: write
+    steps:
+      # github-script, not the `gh` CLI: `gh` is only proven present on the
+      # self-hosted *macOS* runner (desktop-build.yml). Nothing on the Linux
+      # CI_RUNNER box uses it, so do not bet the review request on it being
+      # installed. This step runs on the runner's node, which is already
+      # required by every JS action the box runs (actions/checkout below).
+      - name: Ask Codex to review
+        uses: actions/github-script@v7
+        with:
+          # The body must be a BARE `@codex review`. Trailing text in the
+          # comment has been observed to stop the connector picking the
+          # request up — resist adding "please" or a checklist here.
+          script: |
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.payload.pull_request.number,
+              body: '@codex review',
+            });
+
+  claude-review:
+    runs-on: ${{ vars.CI_RUNNER }}
+    # An agent session has no natural upper bound, and on the shared box an
+    # unbounded one camps a runner slot the PR-gating workflows are queueing
+    # for. Bound it.
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      # write (was read) so the review can actually post inline comments +
+      # a summary. The previous config could not post even if it had run.
+      pull-requests: write
+      issues: read
+      id-token: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          # full history (was depth 1) so the PR's merge-base resolves for the diff
+          fetch-depth: 0
+
+      - name: Run Claude Code Review
+        id: claude_review
+        uses: anthropics/claude-code-action@v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          # Direct review prompt instead of the `/code-review` plugin: the plugin
+          # crashed on turn 1 with "Internal error: directory mismatch for
+          # tsconfig.json" on every PR (monorepo with many tsconfig.json files),
+          # spent $0, reviewed nothing, and the step still reported success —
+          # a green check that never looked at a line of the diff.
+          prompt: |
+            You are reviewing pull request #${{ github.event.pull_request.number }}
+            of ${{ github.repository }} as a rigorous senior reviewer.
+
+            Review the changes in this pull request — the diff is provided to you;
+            open the changed files for surrounding context as needed. Then WRITE
+            your review as your response — it is posted automatically as the PR
+            comment. Do NOT use any tool to post a comment yourself.
+
+            Review for, in priority order:
+            - Correctness: data-shape mismatches (a component reading fields the
+              BFF/API or TS types do not actually provide, so it renders
+              `undefined`), unguarded array access, missing null/error handling,
+              and broken request/response contracts (e.g. a request body whose
+              keys the server's schema silently strips).
+            - Theme discipline: this app uses a cream/forest editorial theme on
+              CSS variables (`--cream --ink --ink-soft --mute --edge --forest
+              --danger --warn`). Flag raw hex / `rgba()` literals, shadcn semantic
+              classes (`text-muted-foreground`, `bg-accent`, `bg-primary`,
+              `border-border`), and ESPECIALLY raw shadcn `Dialog`/`DialogContent`
+              used without theme overrides — its default is `bg-black`/white text,
+              i.e. a black modal on a cream surface.
+            - Missing states: data surfaces lacking loading / empty / error states.
+            - Security and obvious performance problems.
+
+            Be concrete: every finding cites `file:line` and the specific fix. If
+            there are genuinely no issues, say so in one line — never stay silent.
+          # POST the review as the PR comment. The action only creates the comment
+          # (and wires CLAUDE_COMMENT_ID so posting works) when it is NOT in
+          # prompt-only "agent mode" — i.e. track_progress MUST be true. With the
+          # default track_progress:false + a prompt, the review runs but is never
+          # posted (claude-code-action issue #1108) — which is why earlier runs
+          # reviewed cleanly yet left zero comments on the PR.
+          track_progress: true
+          use_sticky_comment: true
+          # Do NOT set `claude_args: --allowedTools ...` here: that REPLACES the
+          # action's default tool set, which would drop the built-in
+          # comment-posting tool that track_progress relies on — and the agent
+          # gets the diff from track_progress mode, so it needs no extra tools.
+
+      # Fail-loud guard: the action reports `success` even when the agent
+      # crashes on turn 1 (is_error=true, $0 spent, nothing reviewed) — a green
+      # check that never read the diff. Read the execution output and fail the
+      # job when the review did not actually complete, so a broken reviewer is
+      # visibly red instead of silently passing.
+      - name: Verify the review actually ran
+        if: always()
+        env:
+          REVIEW_OUTCOME: ${{ steps.claude_review.outcome }}
+          EXECUTION_FILE: ${{ steps.claude_review.outputs.execution_file }}
+        run: |
+          set -uo pipefail
+          # A genuine step failure is a hard fail.
+          if [ "${REVIEW_OUTCOME}" != "success" ]; then
+            echo "::error::Claude review step outcome was '${REVIEW_OUTCOME}', not success."
+            exit 1
+          fi
+          # The action does not always set execution_file: on a PR that edits
+          # this workflow it skips entirely (it requires the file to match the
+          # default branch — "works once you merge"), and on some clean runs the
+          # output is hidden for security. Treat a missing file as a WARNING, not
+          # a red check — failing here would false-red those PRs. The hard signal
+          # below is the one the action emits reliably when the agent crashes.
+          if [ -z "${EXECUTION_FILE:-}" ] || [ ! -f "${EXECUTION_FILE}" ]; then
+            echo "::warning::Claude review produced no execution output file — could not confirm a completed review (the action skips PRs that edit this workflow until merged, and hides output on some runs). If reviews seem dead on normal PRs, check the run duration (a real review takes minutes) and the CLAUDE_CODE_OAUTH_TOKEN secret."
+            exit 0
+          fi
+          # Whitespace-strip so the key match is tolerant of pretty-printing.
+          compact="$(tr -d ' \n\t\r' < "${EXECUTION_FILE}")"
+          # Check is_error on the FINAL result object ONLY — the stream contains
+          # many messages and a successful review legitimately includes
+          # intermediate tool results with "is_error":true (a recovered tool
+          # call). Greping the whole file matched those and red-failed clean
+          # reviews; scope to the flat `{"type":"result",...}` object instead.
+          # `|| true` is LOAD-BEARING. This step runs under `bash -e` (GitHub's
+          # default `shell: bash -e {0}`) and the script sets `pipefail`, so a
+          # grep that matches NOTHING returns 1 and aborts the whole step —
+          # emitting a bare "Process completed with exit code 1" with no
+          # ::error:: line and no success line, which is undiagnosable from the
+          # log. That false-reds clean reviews: observed on PR #1459, where the
+          # result object itself said is_error:false, subtype:success, 37 turns,
+          # $1.95 — a complete review that posted real findings — yet the check
+          # went red. Reproduced locally: an execution file the pattern can't
+          # match reproduces the exact signature.
+          result_is_error="$(printf '%s' "$compact" \
+            | grep -oE '"type":"result"[^}]*' \
+            | grep -oE '"is_error":(true|false)' \
+            | head -1 || true)"
+          if [ "$result_is_error" = '"is_error":true' ]; then
+            echo "::error::Claude review's result reported is_error=true — it crashed before completing the review (the action still reports the step 'success'). Most likely an expired CLAUDE_CODE_OAUTH_TOKEN secret or a Claude usage cap. Rotate the token (claude setup-token → gh secret set CLAUDE_CODE_OAUTH_TOKEN) and re-run."
+            exit 1
+          fi
+          # Couldn't find the marker at all. Warn, don't red — same posture as
+          # the missing-execution-file branch above. A red here means "the guard
+          # could not parse", not "the review failed", and blocking merges on
+          # that is strictly worse than a warning: the review comment is still
+          # on the PR to read. Print a fingerprint so a real regression in the
+          # action's output shape is still diagnosable.
+          if [ -z "$result_is_error" ]; then
+            echo "::warning::Could not extract is_error from a '\"type\":\"result\"' object in the execution file — not failing the check on a parse miss. Read the review comment on the PR directly. If reviews look genuinely dead, check run duration (a real review takes minutes) and the CLAUDE_CODE_OAUTH_TOKEN secret."
+            echo "Execution file size: $(wc -c < "${EXECUTION_FILE}") bytes; contains '\"type\":\"result\"': $(grep -c '"type":"result"' <<< "$compact" || true)"
+            exit 0
+          fi
+          echo "Claude review completed without error."

@@ -55,6 +55,8 @@ PDF_MAX_BYTES = 20 * 1024 * 1024
 # ZIPs are opaque downloads. The service only checks their container signature;
 # it never extracts, previews, or executes their contents.
 ZIP_MAX_BYTES = 20 * 1024 * 1024
+XLSX_MAX_BYTES = 20 * 1024 * 1024
+XLSX_CONTENT_TYPE = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 ATTACHMENT_MAX_BYTES_BY_TYPE = {
     "image/png": IMAGE_MAX_BYTES,
     "image/jpeg": IMAGE_MAX_BYTES,
@@ -62,6 +64,7 @@ ATTACHMENT_MAX_BYTES_BY_TYPE = {
     "image/gif": IMAGE_MAX_BYTES,
     "application/pdf": PDF_MAX_BYTES,
     "application/zip": ZIP_MAX_BYTES,
+    XLSX_CONTENT_TYPE: XLSX_MAX_BYTES,
 }
 ATTACHMENT_MAX_BYTES = max(ATTACHMENT_MAX_BYTES_BY_TYPE.values())
 # Base64 is exactly 4 characters per 3 bytes: the ENCODED ceiling for that largest cap.
@@ -371,7 +374,15 @@ class CanonicalMessage(ContractModel):
 class MessageAttachment(ContractModel):
     id: uuid.UUID
     file_name: str = Field(min_length=1, max_length=256)
-    content_type: Literal["image/png", "image/jpeg", "image/webp", "image/gif", "application/pdf", "application/zip"]
+    content_type: Literal[
+        "image/png",
+        "image/jpeg",
+        "image/webp",
+        "image/gif",
+        "application/pdf",
+        "application/zip",
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    ]
     size: int = Field(gt=0)
 
     @field_validator("file_name")
@@ -942,12 +953,17 @@ _ATTACHMENT_SIGNATURES = {
     # Local file, empty archive, and spanned archive signatures. No archive
     # parsing follows this bounded signature check.
     "application/zip": ((b"PK\x03\x04", b"PK\x05\x06", b"PK\x07\x08"), ".zip"),
+    # XLSX is an OOXML ZIP container. Hermes's read_file performs the workbook
+    # extraction; this boundary only verifies the bounded container signature.
+    XLSX_CONTENT_TYPE: ((b"PK\x03\x04", b"PK\x05\x06", b"PK\x07\x08"), ".xlsx"),
 }
 
 
 def canonical_attachment_content_type(file_name: str, content_type: str) -> str:
     declared = content_type.lower().split(";", 1)[0].strip()
-    zip_name = PurePath(file_name).suffix.lower() == ".zip"
+    suffix = PurePath(file_name).suffix.lower()
+    zip_name = suffix == ".zip"
+    xlsx_name = suffix == ".xlsx"
     if declared in {"application/zip", "application/x-zip-compressed"}:
         if not zip_name:
             raise ValueError("ZIP attachments must use a .zip filename")
@@ -955,6 +971,14 @@ def canonical_attachment_content_type(file_name: str, content_type: str) -> str:
     if zip_name:
         if declared in {"", "application/octet-stream"}:
             return "application/zip"
+        raise ValueError("attachment filename extension does not match the declared content type")
+    if declared == XLSX_CONTENT_TYPE:
+        if not xlsx_name:
+            raise ValueError("XLSX attachments must use a .xlsx filename")
+        return XLSX_CONTENT_TYPE
+    if xlsx_name:
+        if declared in {"", "application/octet-stream"}:
+            return XLSX_CONTENT_TYPE
         raise ValueError("attachment filename extension does not match the declared content type")
     return declared
 
@@ -964,7 +988,7 @@ def validate_attachment_bytes(content_type: str, data: bytes) -> str:
     cap = ATTACHMENT_MAX_BYTES_BY_TYPE.get(content_type)
     if not expected or not cap or not data or len(data) > cap:
         raise ValueError(
-            "attachment must be PNG, JPEG, WebP, GIF, PDF, or ZIP, and at most 5 MiB for images or 20 MiB for PDF/ZIP"
+            "attachment must be PNG, JPEG, WebP, GIF, PDF, ZIP, or XLSX, and at most 5 MiB for images or 20 MiB for documents"
         )
     signature, suffix = expected
     signatures = signature if isinstance(signature, tuple) else (signature,)

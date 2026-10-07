@@ -1,0 +1,10 @@
+{
+  "name": "@lightbulb/backend",
+  "private": true,
+  "scripts": {
+    "dev": "uv run uvicorn main:app --reload --port 8000",
+    "test": "uv run pytest tests/ -v",
+    "lint": "uv run ruff check . && uv run ruff format --check .",
+    "build": "echo 'no build step'"
+  }
+}

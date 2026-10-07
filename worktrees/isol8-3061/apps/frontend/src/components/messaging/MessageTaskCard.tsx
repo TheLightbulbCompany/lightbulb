@@ -1,0 +1,111 @@
+"use client";
+
+// Tasks an agent names in a room message (`ISO-14`), shown live under the
+// text. No new data: one shared read of the Tasks panel's own list key, so any
+// number of messages costs zero extra requests, and freshness is that key's
+// SWR refresh. Unknown ids, no Paperclip company, or a failed read → nothing.
+
+import { useMemo, type MouseEvent } from "react";
+import Link from "next/link";
+import { useInlineTeamsNav } from "@/components/chat/InlineTeamsNav";
+import { useLiveRuns } from "@/components/teams/dashboard/hooks/useLiveRuns";
+import { IssueRow } from "@/components/teams/inbox/IssueRow";
+import { buildLiveIssueState } from "@/components/teams/shared/lib/liveRuns";
+import type { CompanyAgent, Issue } from "@/components/teams/shared/types";
+import { EditorialButton } from "@/components/teams/shell";
+import { useTeamsApi } from "@/hooks/useTeamsApi";
+import { handleShellLinkClick, navigateShell, teamsDetailUrl, teamsPanelUrl } from "@/lib/shellNav";
+
+// Paperclip's identifier is `${company.issuePrefix}-${number}`
+// (packages/shared/src/issue-references.ts ISSUE_REFERENCE_IDENTIFIER_RE).
+// Uppercase-only here, unlike upstream: in chat prose `utf-8` is not a task.
+const CODE = /```[\s\S]*?```|`[^`\n]*`/g;
+const TOKEN = /https?:\/\/\S+|\b[A-Z][A-Z0-9]*-\d+\b/g;
+const MAX_ROWS = 3;
+// Same key as IssuesPanel, so the cache is shared with the Tasks panel.
+// ponytail: the list is limit-capped upstream, so a very old task can miss; add
+// an id lookup read if that bites.
+const ISSUES_KEY = "/issues?excludeRoutineExecutions=true";
+
+export function taskIdentifiers(text: string): string[] {
+  const ids = new Set<string>();
+  for (const [token] of text.replace(CODE, " ").matchAll(TOKEN)) {
+    if (!token.startsWith("http")) ids.add(token);
+  }
+  return [...ids];
+}
+
+// The one thing a task waits on the viewer for, if any.
+export function needsYouAction(issue: Issue): "Review" | "Unblock" | null {
+  if (issue.status === "in_review" || issue.status === "review" || issue.status === "pending") return "Review";
+  const attention = typeof issue.blockerAttention === "object" ? issue.blockerAttention?.state : null;
+  if (issue.status === "blocked" || attention === "needs_attention" || attention === "stalled") return "Unblock";
+  return null;
+}
+
+// The named ids that are real tasks, in the order named. No ids → no read.
+export function useReferencedTasks(ids: readonly string[]): Issue[] {
+  const { read } = useTeamsApi();
+  const { data } = read<{ issues: Issue[] }>(ids.length ? ISSUES_KEY : null);
+  return useMemo(() => {
+    const byIdentifier = new Map((data?.issues ?? []).map((i) => [i.identifier, i]));
+    return ids.map((id) => byIdentifier.get(id)).filter((i): i is Issue => !!i);
+  }, [data, ids]);
+}
+
+export function MessageTaskCard({ text }: { text: string }) {
+  const ids = useMemo(() => taskIdentifiers(text), [text]);
+  return ids.length ? <TaskRows ids={ids} /> : null;
+}
+
+function TaskRows({ ids }: { ids: string[] }) {
+  const matched = useReferencedTasks(ids);
+  if (!matched.length) return null;
+  const rest = matched.length - MAX_ROWS;
+  const tasksUrl = teamsPanelUrl("issues");
+
+  return (
+    <section aria-label="Tasks in this message" className="editorial-card mt-1.5 max-w-xl px-1 py-0.5">
+      <TaskRowList issues={matched.slice(0, MAX_ROWS)} />
+      {rest > 0 && (
+        <Link href={tasksUrl} prefetch={false} className="block px-2 py-1.5 text-xs text-[var(--midnight-muted)] hover:underline"
+          onClick={(e: MouseEvent<HTMLAnchorElement>) => handleShellLinkClick(e, tasksUrl)}>
+          +{rest} more
+        </Link>
+      )}
+    </section>
+  );
+}
+
+// IssueRow + live dot + assignee + the one needs-you action, per task.
+export function TaskRowList({ issues, label }: { issues: readonly Issue[]; label?: string }) {
+  const { read } = useTeamsApi();
+  const { data: agentsData } = read<{ agents: CompanyAgent[] }>("/agents");
+  const { runs } = useLiveRuns();
+  const nav = useInlineTeamsNav();
+  const live = useMemo(() => buildLiveIssueState(runs), [runs]);
+  const open = (issueId: string) =>
+    nav ? nav.openDetail("issue-detail", issueId) : navigateShell(teamsDetailUrl("issue", issueId));
+  const assignee = (issue: Issue) =>
+    agentsData?.agents.find((a) => a.id === issue.assigneeAgentId)?.name ?? undefined;
+
+  return (
+    <ul aria-label={label}>
+      {issues.map((issue) => {
+        const action = needsYouAction(issue);
+        return (
+          <li key={issue.id} className="flex items-center gap-2 border-b border-[var(--edge)] last:border-b-0">
+            <IssueRow issue={issue} live={live.get(issue.id)} className="min-w-0 flex-1 border-b-0"
+              trailingMeta={assignee(issue)} mobileMeta={assignee(issue)} />
+            {action && (
+              <EditorialButton variant="secondary" size="sm" className="mr-2 shrink-0"
+                aria-label={`${action} ${issue.identifier}`} onClick={() => open(issue.id)}>
+                {action}
+              </EditorialButton>
+            )}
+          </li>
+        );
+      })}
+    </ul>
+  );
+}

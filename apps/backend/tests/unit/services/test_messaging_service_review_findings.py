@@ -241,6 +241,23 @@ def test_zip_mime_aliases_and_safe_extension_fallback_canonicalize_but_mismatche
         messaging.canonical_attachment_content_type("setup.exe", "application/zip")
 
 
+def test_xlsx_validation_accepts_zip_container_and_safe_mime_fallbacks():
+    xlsx = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    for declared in (xlsx, "application/octet-stream", ""):
+        assert messaging.canonical_attachment_content_type("forecast.XLSX", declared) == xlsx
+    assert validate_attachment_bytes(xlsx, b"PK\x03\x04workbook") == ".xlsx"
+    at_limit = b"PK\x03\x04" + b"0" * (messaging.XLSX_MAX_BYTES - 4)
+    assert validate_attachment_bytes(xlsx, at_limit) == ".xlsx"
+    with pytest.raises(ValueError):
+        validate_attachment_bytes(xlsx, at_limit + b"0")
+    with pytest.raises(ValueError, match="extension"):
+        messaging.canonical_attachment_content_type("forecast.xlsx", "application/pdf")
+    with pytest.raises(ValueError, match=".xlsx filename"):
+        messaging.canonical_attachment_content_type("forecast.exe", xlsx)
+    with pytest.raises(ValueError):
+        validate_attachment_bytes(xlsx, b"not a workbook container")
+
+
 @pytest.mark.asyncio
 async def test_text_file_upload_reproduces_clear_api_400_at_attachment_validation(monkeypatch):
     auth = AuthContext(user_id="user", org_id="owner")
@@ -256,7 +273,7 @@ async def test_text_file_upload_reproduces_clear_api_400_at_attachment_validatio
 
     assert exc_info.value.status_code == 400
     assert exc_info.value.error.code == "INVALID_REQUEST"
-    assert "PNG, JPEG, WebP, GIF, PDF, or ZIP" in exc_info.value.error.message
+    assert "PNG, JPEG, WebP, GIF, PDF, ZIP, or XLSX" in exc_info.value.error.message
 
 
 def test_message_attachment_enforces_per_type_size_cap():
@@ -270,6 +287,19 @@ def test_message_attachment_enforces_per_type_size_cap():
     with pytest.raises(ValueError):
         MessageAttachment(
             id=uuid.uuid4(), file_name="big.png", content_type="image/png", size=messaging.IMAGE_MAX_BYTES + 1
+        )
+    MessageAttachment(
+        id=uuid.uuid4(),
+        file_name="forecast.xlsx",
+        content_type=messaging.XLSX_CONTENT_TYPE,
+        size=messaging.XLSX_MAX_BYTES,
+    )
+    with pytest.raises(ValueError):
+        MessageAttachment(
+            id=uuid.uuid4(),
+            file_name="forecast.xlsx",
+            content_type=messaging.XLSX_CONTENT_TYPE,
+            size=messaging.XLSX_MAX_BYTES + 1,
         )
 
 

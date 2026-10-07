@@ -46,6 +46,21 @@ def test_a_6mib_pdf_is_accepted():
     assert turn.parse_ingress(f.ingress(message=msg))["message"]["attachments"][0]["size"] == 6 * 1024 * 1024
 
 
+def test_an_xlsx_attachment_reaches_the_agent_at_the_document_size_limit():
+    content_type = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    msg = f.message(attachments=[{"id": f.ROOM, "fileName": "forecast.xlsx",
+                                  "contentType": content_type, "size": 20 * 1024 * 1024}])
+
+    parsed = turn.parse_ingress(f.ingress(message=msg))
+
+    assert parsed["message"]["attachments"][0]["contentType"] == content_type
+
+    too_large = f.message(attachments=[{"id": f.ROOM, "fileName": "forecast.xlsx",
+                                        "contentType": content_type, "size": 20 * 1024 * 1024 + 1}])
+    with pytest.raises(turn.IngressError, match="size exceeds"):
+        turn.parse_ingress(f.ingress(message=too_large))
+
+
 def test_a_6mib_png_is_still_refused():
     msg = f.message(attachments=[{"id": f.ROOM, "fileName": "photo.png",
                                   "contentType": "image/png", "size": 6 * 1024 * 1024}])

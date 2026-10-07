@@ -1,0 +1,124 @@
+"""Unit tests for the admin-client methods used by the Inbox surface.
+
+Verify each method calls the right upstream URL with the right HTTP verb,
+forwards the session cookie via headers, and returns the parsed JSON body.
+"""
+
+from __future__ import annotations
+
+import os
+from unittest.mock import AsyncMock, MagicMock
+
+import pytest
+
+os.environ.setdefault("CLERK_ISSUER", "https://test.clerk.accounts.dev")
+
+
+@pytest.fixture
+def admin_client_with_fake_http():
+    """Build a PaperclipAdminClient with a fake httpx-like http object."""
+    from core.services.paperclip_admin_client import PaperclipAdminClient
+
+    fake_http = MagicMock()
+    # Default: succeed with empty JSON body. Tests override per-call.
+    resp = MagicMock()
+    resp.status_code = 200
+    resp.content = b"{}"
+    resp.json.return_value = {}
+    resp.text = "{}"
+    fake_http.get = AsyncMock(return_value=resp)
+    fake_http.post = AsyncMock(return_value=resp)
+    fake_http.delete = AsyncMock(return_value=resp)
+    fake_http.patch = AsyncMock(return_value=resp)
+
+    client = PaperclipAdminClient(http_client=fake_http)
+    return client, fake_http
+
+
+@pytest.mark.asyncio
+async def test_list_company_heartbeat_runs(admin_client_with_fake_http):
+    client, http = admin_client_with_fake_http
+    await client.list_company_heartbeat_runs(company_id="co_x", session_cookie="c=1", status="failed")
+    http.get.assert_awaited_once()
+    call = http.get.call_args
+    assert call.args[0] == "/api/companies/co_x/heartbeat-runs"
+    assert call.kwargs.get("params", {}).get("status") == "failed"
+
+
+@pytest.mark.asyncio
+async def test_list_company_live_runs(admin_client_with_fake_http):
+    client, http = admin_client_with_fake_http
+    await client.list_company_live_runs(company_id="co_x", session_cookie="c=1")
+    http.get.assert_awaited_once()
+    assert http.get.call_args.args[0] == "/api/companies/co_x/live-runs"
+
+
+@pytest.mark.asyncio
+async def test_get_heartbeat_run(admin_client_with_fake_http):
+    client, http = admin_client_with_fake_http
+    await client.get_heartbeat_run(run_id="run_42", session_cookie="c=1")
+    http.get.assert_awaited_once()
+    assert http.get.call_args.args[0] == "/api/heartbeat-runs/run_42"
+
+
+@pytest.mark.asyncio
+async def test_archive_issue(admin_client_with_fake_http):
+    client, http = admin_client_with_fake_http
+    await client.archive_issue(issue_id="iss_7", session_cookie="c=1")
+    http.post.assert_awaited_once()
+    call = http.post.call_args
+    assert call.args[0] == "/api/issues/iss_7/inbox-archive"
+
+
+@pytest.mark.asyncio
+async def test_unarchive_issue(admin_client_with_fake_http):
+    client, http = admin_client_with_fake_http
+    await client.unarchive_issue(issue_id="iss_7", session_cookie="c=1")
+    http.delete.assert_awaited_once()
+    assert http.delete.call_args.args[0] == "/api/issues/iss_7/inbox-archive"
+
+
+@pytest.mark.asyncio
+async def test_wake_agent_posts_body(admin_client_with_fake_http):
+    client, http = admin_client_with_fake_http
+    await client.wake_agent(
+        agent_id="ag_9",
+        session_cookie="c=1",
+        body={"source": "on_demand", "reason": "retry"},
+    )
+    http.post.assert_awaited_once()
+    call = http.post.call_args
+    assert call.args[0] == "/api/agents/ag_9/wakeup"
+    assert call.kwargs.get("json") == {"source": "on_demand", "reason": "retry"}
+
+
+@pytest.mark.asyncio
+async def test_wake_agent_defaults_to_on_demand_when_body_omitted(admin_client_with_fake_http):
+    client, http = admin_client_with_fake_http
+    await client.wake_agent(agent_id="ag_9", session_cookie="c=1")
+    http.post.assert_awaited_once()
+    assert http.post.call_args.kwargs.get("json") == {"source": "on_demand"}
+
+
+@pytest.mark.asyncio
+async def test_mark_issue_read(admin_client_with_fake_http):
+    client, http = admin_client_with_fake_http
+    await client.mark_issue_read(issue_id="iss_7", session_cookie="c=1")
+    http.post.assert_awaited_once()
+    assert http.post.call_args.args[0] == "/api/issues/iss_7/read"
+
+
+@pytest.mark.asyncio
+async def test_mark_issue_unread(admin_client_with_fake_http):
+    client, http = admin_client_with_fake_http
+    await client.mark_issue_unread(issue_id="iss_7", session_cookie="c=1")
+    http.delete.assert_awaited_once()
+    assert http.delete.call_args.args[0] == "/api/issues/iss_7/read"
+
+
+@pytest.mark.asyncio
+async def test_get_approval_detail(admin_client_with_fake_http):
+    client, http = admin_client_with_fake_http
+    await client.get_approval(approval_id="apv_1", session_cookie="c=1")
+    http.get.assert_awaited_once()
+    assert http.get.call_args.args[0] == "/api/approvals/apv_1"

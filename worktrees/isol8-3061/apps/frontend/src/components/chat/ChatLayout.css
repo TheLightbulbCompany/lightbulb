@@ -1,0 +1,946 @@
+.app-shell {
+  display: grid;
+  grid-template-columns: 280px 1fr 0px;
+  grid-template-areas: "sidebar main viewer";
+  height: 100vh;
+  overflow: hidden;
+}
+.app-shell.with-file-viewer {
+  grid-template-columns: 0px 380px 1fr;
+}
+.file-viewer-panel {
+  grid-area: viewer;
+  min-width: 0;
+}
+.cream-sidebar {
+  /* Mobile's nav plane. Two planes here, not three: there is no rail on this
+     shell, so there is no third region to separate. */
+  background: var(--plane-sidebar);
+  border-right: 1px solid var(--edge);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  transition: opacity var(--dur-base) var(--ease-out), visibility 0s linear 0s;
+}
+.app-shell.with-file-viewer .cream-sidebar {
+  opacity: 0;
+  pointer-events: none;
+  border-right: none;
+  visibility: hidden;
+  transition: opacity var(--dur-base) var(--ease-out), visibility 0s linear var(--dur-base);
+}
+.sidebar-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 16px 20px;
+  border-bottom: 1px solid var(--edge);
+}
+.sidebar-logo {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.teams-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  border: 1px solid var(--edge);
+  border-radius: 999px;
+  background: var(--cream);
+  color: var(--midnight);
+  padding: 5px 10px;
+  font-size: var(--text-caption);
+  font-weight: 700;
+  text-decoration: none;
+  transition: background var(--dur-fast) ease, border-color var(--dur-fast) ease;
+}
+/* The sidebar itself is --cream-deep, so hovering the pill TO --cream-deep
+   dissolved its fill. --cream-deeper is the one remaining step that reads
+   against both the pill's --cream rest state and the sidebar ground. */
+.teams-pill:hover {
+  background: var(--cream-deeper);
+  border-color: var(--midnight-faint);
+}
+.teams-pill b {
+  display: inline-flex;
+  min-width: 16px;
+  height: 16px;
+  align-items: center;
+  justify-content: center;
+  border-radius: 999px;
+  background: var(--midnight);
+  color: var(--cream);
+  font-size: var(--text-2xs);
+  line-height: 1;
+}
+.sidebar-settings-link {
+  color: var(--midnight-muted);
+  transition: color var(--dur-fast) ease;
+  display: flex;
+  align-items: center;
+}
+.sidebar-settings-link:hover {
+  color: var(--midnight);
+}
+.tab-switcher {
+  display: flex;
+  margin: 12px 16px;
+  background: var(--cream-deeper);
+  border-radius: 999px;
+  padding: 3px;
+}
+.tab-btn {
+  flex: 1;
+  padding: 6px 0;
+  font-size: var(--text-ui);
+  font-weight: 500;
+  text-align: center;
+  border-radius: 999px;
+  border: none;
+  cursor: pointer;
+  transition: background var(--dur-fast) ease, color var(--dur-fast) ease;
+  background: transparent;
+  color: var(--midnight-muted);
+}
+.tab-btn.active {
+  background: var(--cream);
+  color: var(--midnight);
+  box-shadow: var(--shadow-hair);
+}
+.tab-btn:not(.active):hover {
+  color: var(--midnight);
+}
+/* Co-equal create pill: two first-class create actions (agent | task) in one
+   midnight control, reusing the primary-button treatment (same --midnight
+   ground, --cream type, 8px radius, 13px/500 type, and sidebar margins). Each half is
+   an equal flex segment; a whisper-quiet cream hairline divides them, and only
+   the hovered half lightens so the affordance is per-action. */
+.create-pill {
+  display: flex;
+  align-items: stretch;
+  margin: 4px 16px 8px;
+  border: 1.5px solid var(--midnight);
+  border-radius: var(--radius-md);
+  background: var(--midnight);
+  overflow: hidden;
+}
+.create-pill__seg {
+  flex: 1 1 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 8px 10px;
+  background: transparent;
+  border: none;
+  color: var(--cream);
+  font-size: var(--text-ui);
+  font-weight: 500;
+  cursor: pointer;
+  transition:
+    transform var(--dur-fast) var(--ease-out),
+    background var(--dur-fast) ease;
+}
+.create-pill__seg:hover:not(:disabled) {
+  background: var(--midnight-soft);
+}
+.create-pill__seg:active:not(:disabled) {
+  transform: scale(0.97);
+}
+/* Disabled while the workspace is still provisioning — dimmed, no hover
+   lightening, default cursor. */
+.create-pill__seg:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+/* A midnight fill is a reversed ground: --ring resolves to midnight here and
+   would vanish. Repointing the token lets the ONE global :focus-visible recipe
+   apply as-is; the negative offset keeps the outline inside `overflow: hidden`. */
+.create-pill {
+  --ring: var(--cream);
+}
+.create-pill__seg:focus-visible {
+  outline-offset: -3px;
+}
+.create-pill__divider {
+  flex: 0 0 auto;
+  width: 1px;
+  align-self: stretch;
+  background: color-mix(in srgb, var(--cream) 22%, transparent);
+}
+.agent-list {
+  flex: 1;
+  overflow-y: auto;
+  padding: 0 12px;
+}
+/* Flag-ON single scroll region: roster + CompanyNav + Gallery share ONE
+   scroll, so the roster renders at natural height instead of collapsing under
+   CompanyNav's own scroll. Scoped to the wrapper so flag-OFF `.agent-list`
+   (a direct flex child of `.cream-sidebar`) keeps its own scroll, unchanged. */
+.sidebar-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+}
+.sidebar-scroll > .agent-list {
+  flex: none;
+  overflow: visible;
+}
+/* Roster expander — the chevron that reveals the agents behind Friday and the
+   pins. Deliberately quiet: it is a way back to the team, not a call to
+   action, so it reads as the section's footer rather than a button. */
+.agent-list__expander {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 8px 10px;
+  margin-top: 2px;
+  border-radius: 8px;
+  color: var(--midnight-soft);
+  font-family: var(--font-mono), ui-monospace, monospace;
+  font-size: var(--text-2xs);
+  line-height: 1.4;
+  font-weight: 600;
+  letter-spacing: var(--tracking-caps);
+  text-transform: uppercase;
+  text-align: left;
+  cursor: pointer;
+  transition: background-color var(--dur-fast) ease,
+    color var(--dur-fast) ease;
+}
+
+.agent-list__expander:hover {
+  background: var(--cream-deep);
+  color: var(--midnight);
+}
+
+.agent-list__expander-chevron--open {
+  transform: rotate(180deg);
+}
+
+/* The chevron rotates; honour a reduced-motion preference by snapping. */
+@media (prefers-reduced-motion: no-preference) {
+  .agent-list__expander svg {
+    transition: transform var(--dur-fast) ease;
+  }
+}
+
+.agent-section-label {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 4px 6px;
+  color: var(--midnight-soft);
+  font-family: var(--font-mono), ui-monospace, monospace;
+  font-size: var(--text-2xs);
+  line-height: 1.4;
+  font-weight: 600;
+  letter-spacing: var(--tracking-caps);
+  text-transform: uppercase;
+}
+/* The count inherits the label's colour — it is the same voice, emphasised by
+   losing the caps tracking, not by a second tone. `font-weight` is restated
+   because <b>'s UA default is `bolder`, which resolves ABOVE the label's 600. */
+.agent-section-label b {
+  font-weight: 600;
+  letter-spacing: 0;
+}
+/* The headline states, when there is news to report. Same mono/caps type as
+   the label itself — this is the label speaking, not a badge bolted onto it. */
+.agent-section-label__working {
+  color: var(--midnight);
+  font-weight: 600;
+}
+.agent-section-label__attention {
+  color: var(--err);
+  font-weight: 600;
+}
+.agent-item {
+  display: flex;
+  align-items: center;
+  /* `flex-wrap` lets the nested `.session-list` (flex-basis:100%) drop onto its
+     own line BELOW the agent row instead of squeezing in as a horizontal flex
+     sibling of the monogram/name/actions. No effect on the row itself — the
+     other children already fit on one line. */
+  flex-wrap: wrap;
+  padding: 8px 8px;
+  border-radius: var(--radius-md);
+  cursor: pointer;
+  transition: background var(--dur-fast) ease;
+  position: relative;
+  /* Column gap is 0 on purpose: any horizontal space BETWEEN the row button
+     and the action cluster would be a dead zone, since neither the gap nor
+     `.agent-item` itself handles clicks any more. `.agent-item__main` carries
+     that spacing as its own padding instead, so it stays clickable. The row
+     gap is what separates the nested session list, and keeps its 10px. */
+  column-gap: 0;
+  row-gap: 10px;
+}
+.agent-item:hover {
+  background: var(--cream);
+  box-shadow: var(--shadow-hair);
+}
+.agent-item.active {
+  background: var(--cream-deeper);
+  box-shadow: var(--shadow-hair);
+}
+
+/* ── The row's click target ───────────────────────────────────────────────
+   A real <button> so the roster is keyboard-reachable (the row was a bare
+   `<div onClick>`). Native chrome is stripped back to nothing; it has to look
+   exactly like the text-and-avatar row it replaced. It fills everything the
+   per-row actions don't, so clicking anywhere in the row still selects. */
+.agent-item__main {
+  /* `flex-basis: 0`, NOT auto. The row is `flex-wrap: wrap` (so the session
+     list can drop to its own line), so a main that claims its max-content
+     width shoves the always-present-but-transparent action cluster onto a
+     second line and the row grows 32px — measured: every row with a name
+     longer than "Quill" did exactly that. Basis 0 makes it take what is left
+     after the actions instead. */
+  flex: 1 1 0;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  position: relative;
+  /* Right padding replaces the row's old column-gap — see `.agent-item`. */
+  padding: 0 10px 0 0;
+  border: 0;
+  background: none;
+  font: inherit;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+/* ── The duty rail ────────────────────────────────────────────────────────
+   A 2px stripe on the row's leading edge, carrying the agent's state colour.
+   It sits in the row's own left padding, so it reads as an edge marker rather
+   than content, and it is scoped to `__main` so it stops at the row and never
+   runs down the nested session list.
+
+   The point is the negative space: an idle agent gets NO rail, so a roster
+   with nothing happening has no stripes at all and the eye lands straight on
+   the rows that do. A marker on every row would be decoration — which is
+   exactly what the hardcoded green dot this replaces had become. */
+.agent-item__main::before {
+  content: "";
+  position: absolute;
+  /* Sits in the row's own 8px padding, a couple of px inside the hover card's
+     8px corner radius so it never collides with the rounded edge. */
+  left: -6px;
+  top: 1px;
+  bottom: 1px;
+  width: 2px;
+  border-radius: 999px;
+  background: transparent;
+}
+/* --ok, not --brass: this rail sits on the --cream-deep sidebar, where brass
+   measures 2.76:1 — under 1.4.11's 3:1 for a state indicator. */
+.agent-item[data-state="running"] .agent-item__main::before {
+  background: var(--ok);
+}
+.agent-item[data-state="attention"] .agent-item__main::before {
+  background: var(--err);
+}
+.agent-item[data-state="paused"] .agent-item__main::before {
+  background: var(--midnight-faint);
+}
+/* `terminated` gets NO rail at all, and that absence IS the distinction from
+   paused. A paused agent is a live teammate you switched off and can switch
+   back on — it keeps a rail because it's a condition you can act on. A
+   terminated one is permanently dead (it will quietly vanish from assignee
+   pickers), so there is nothing to act on and nothing to mark; it just
+   recedes. The word on line two carries the difference for anyone reading. */
+.agent-item[data-state="terminated"] .agent-monogram {
+  opacity: 0.4;
+}
+.agent-item[data-state="terminated"] .agent-name {
+  color: var(--midnight-muted);
+}
+
+/* A paused/terminated agent is switched off on purpose — recede it rather
+   than colouring it, so "off" costs the eye nothing on the way past. */
+.agent-item[data-state="paused"] .agent-monogram {
+  opacity: 0.55;
+}
+
+/* Friday sits in a fixed top slot with a hairline under her, so "the one that
+   orchestrates the others" is legible as structure rather than as luck of the
+   sort order. Position and a rule do that work — deliberately NOT a larger
+   avatar or an accent glow, which would compete with the state colours for the
+   same visual channel. Suppressed when she is the only agent. */
+.agent-item[data-ceo="true"]:not(:last-child) {
+  margin-bottom: 9px;
+}
+.agent-item[data-ceo="true"]:not(:last-child)::after {
+  content: "";
+  position: absolute;
+  left: 8px;
+  right: 8px;
+  bottom: -5px;
+  height: 1px;
+  background: var(--edge);
+}
+
+/* Friday's rank. Mono caps at the roster label's scale — the same voice the
+   section header uses, so it reads as structure, not a badge. */
+.agent-rank {
+  flex: none;
+  font-family: var(--font-mono), ui-monospace, monospace;
+  font-size: var(--text-2xs);
+  line-height: 1.4;
+  font-weight: 600;
+  letter-spacing: var(--tracking-caps);
+  color: var(--midnight-label);
+}
+
+/* ── The state line ───────────────────────────────────────────────────────
+   Replaces the model name on line two whenever the agent has something to
+   report. Model is a fact about the machine; "Working" is a fact about the
+   work, and the work is what the owner opened the app for. */
+.agent-state {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-size: var(--text-caption);
+  font-weight: 500;
+  white-space: nowrap;
+  overflow: hidden;
+}
+.agent-state--running {
+  color: var(--midnight);
+}
+.agent-state--attention {
+  color: var(--err);
+}
+.agent-state--paused,
+.agent-state--terminated,
+/* An unrecognised status prints verbatim in the neutral tone — we are showing
+   the owner what the backend said, not claiming to know what it means. */
+.agent-state--unknown {
+  color: var(--midnight-muted);
+}
+/* Quiet states get a plain dot; `running` uses the shared LiveRunDot (the
+   live-run ping every other Teams surface uses) so the roster
+   speaks the app's existing liveness language instead of a second one.
+
+   The three markers differ in FORM, not only in colour — expanding ping,
+   filled disc, hollow ring — so the state survives being read by someone who
+   cannot separate the hues. The state word beside each one is the primary
+   channel regardless; colour is the redundant one. */
+.agent-state__dot {
+  flex: none;
+  width: 6px;
+  height: 6px;
+  border-radius: 999px;
+  background: currentColor;
+}
+.agent-state--paused .agent-state__dot,
+.agent-state--terminated .agent-state__dot,
+.agent-state--unknown .agent-state__dot {
+  background: none;
+  border: 1.5px solid currentColor;
+}
+/* Terminated is the one state with no marker of any kind. */
+.agent-state--terminated .agent-state__dot {
+  display: none;
+}
+.agent-avatar {
+  width: 32px;
+  height: 32px;
+  border-radius: var(--radius-md);
+  background: var(--midnight);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+.agent-avatar svg {
+  color: var(--cream);
+  width: 16px;
+  height: 16px;
+}
+.agent-info {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+/* Base rules stay block + ellipsis: the landing page's WorkspaceDemo renders
+   `<div class="agent-name">` with bare text and no `__text` child, so making
+   this a flex container globally would strip its truncation. */
+.agent-name {
+  font-size: var(--text-ui);
+  font-weight: 500;
+  color: var(--midnight);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+/* Roster instances only: lay the name out beside the CEO rank. */
+.agent-item__main .agent-name {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  min-width: 0;
+}
+/* Inside the roster the NAME is the element that truncates — the rank chip
+   beside it must keep its full width, so the ellipsis moves to the text. */
+.agent-name__text {
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.agent-model {
+  font-size: var(--text-caption);
+  color: var(--midnight-soft);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.agent-row-actions {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  opacity: 0;
+  transition: opacity var(--dur-fast) var(--ease-out);
+  flex-shrink: 0;
+}
+/* `:focus-within` is not a nicety here — the actions are `opacity: 0` until
+   hover, so without it a keyboard user tabs into rename/delete buttons that
+   are focused but invisible. Hover alone made them unusable without a mouse. */
+.agent-item:hover .agent-row-actions,
+.agent-item:focus-within .agent-row-actions {
+  opacity: 1;
+}
+/* On a touch device there is no hover, so the roster's per-row actions were
+   permanently invisible in the mobile drawer while still reserving their
+   width. They already hold their space — showing them costs no layout. */
+@media (hover: none) {
+  .agent-row-actions {
+    opacity: 1;
+  }
+}
+.agent-row-action {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border: 0;
+  background: transparent;
+  color: var(--midnight-muted);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: background var(--dur-fast) ease, color var(--dur-fast) ease;
+}
+.agent-row-action:hover {
+  background: var(--cream);
+  color: var(--midnight);
+}
+.agent-row-action--err:hover {
+  color: var(--err);
+}
+/* Nested per-agent session list — rendered under the active agent row. Mounted
+   inside `.agent-item` (a flex row); `flex-basis:100%` + the parent's
+   `flex-wrap:wrap` push it onto its own line, so it reads as an indented block
+   below the agent instead of an unstyled horizontal flex item. Cream/midnight
+   sidebar palette, matching `.agent-item`. */
+.session-list {
+  flex-basis: 100%;
+  /* Without this, the list's `min-width: auto` resolves to the longest label's
+     intrinsic (nowrap) width, so it refuses to shrink, overflows the sidebar,
+     and the labels hard-clip instead of truncating. The ellipsis chain needs
+     `min-width: 0` at every flex level — the item and label already set it. */
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  /* Indent under the 28px monogram + the row's 10px gap. */
+  padding: 2px 2px 2px 38px;
+  margin-top: -2px;
+}
+/* A column, not a row: the name + relative time sit on one line and the
+   last-message preview wraps under them. Rows with no preview collapse back
+   to a single line on their own — no modifier class needed. */
+.session-item {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 1px;
+  width: 100%;
+  min-width: 0;
+  padding: 5px 8px;
+  border: 0;
+  background: transparent;
+  border-radius: var(--radius-md);
+  color: var(--midnight-muted);
+  font-size: var(--text-xs);
+  text-align: left;
+  cursor: pointer;
+  transition: background var(--dur-fast) ease, color var(--dur-fast) ease;
+}
+.session-item:hover {
+  background: var(--cream);
+  color: var(--midnight);
+}
+.session-item.active {
+  background: var(--cream-deeper);
+  color: var(--midnight);
+  font-weight: 500;
+}
+.session-line {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  min-width: 0;
+}
+.session-label {
+  flex: 1;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+/* Bad terminal outcome. Colour is the secondary cue — the icon carries an
+   aria-label and a title, so the signal survives without it. */
+.session-outcome {
+  flex-shrink: 0;
+  align-self: center;
+  color: var(--err);
+}
+/* Metadata, so it never wins width from the name: it keeps its intrinsic size
+   and the label truncates around it. */
+.session-when {
+  flex-shrink: 0;
+  font-size: var(--text-2xs);
+  color: var(--midnight-faint);
+}
+.session-preview {
+  min-width: 0;
+  font-size: var(--text-2xs);
+  line-height: var(--text-2xs--line-height);
+  color: var(--midnight-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.session-row {
+  display: flex;
+  align-items: center;
+  width: 100%;
+  min-width: 0;
+}
+.session-row .session-item {
+  flex: 1;
+  min-width: 0;
+}
+.session-rename {
+  display: none;
+  flex-shrink: 0;
+  padding: 4px;
+  border: 0;
+  background: transparent;
+  border-radius: var(--radius-sm);
+  color: var(--midnight-muted);
+  cursor: pointer;
+}
+.session-row:hover .session-rename,
+.session-row:focus-within .session-rename {
+  display: flex;
+}
+.session-rename:hover {
+  background: var(--cream);
+  color: var(--midnight);
+}
+/* Shares .session-rename's base + hover-reveal; only the hover intent color
+   differs (destructive red, matching .agent-row-action--err). The
+   .session-row ancestor isn't scoping — it lifts specificity above
+   .session-rename:hover so red wins even if these rules get reordered. */
+.session-row .session-delete:hover {
+  background: var(--cream);
+  color: var(--err);
+}
+/* A pinned row's pin stays visible at rest — hover-only, the row would sit on
+   top with nothing on screen explaining why. Same button, higher specificity
+   than the `display:none` base. */
+.session-row .session-action--on {
+  display: flex;
+  color: var(--midnight);
+}
+/* Archived drawer — collapsed by default, under "New session". */
+.session-archived {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+.session-archived-toggle {
+  color: var(--midnight-faint);
+}
+.session-archived-note {
+  padding: 4px 8px 4px 26px;
+  color: var(--midnight-faint);
+  font-size: var(--text-2xs);
+}
+/* Archived rows are read-only: restore or delete, never select. Dimmed rather
+   than recoloured so the whole row reads as inactive in both themes. */
+.session-row--archived {
+  opacity: 0.72;
+}
+.session-row--archived .session-item {
+  cursor: default;
+}
+/* Restore and delete stay visible at rest here. The drawer is opened
+   deliberately and holds a handful of rows, so hiding the only way back out
+   behind a hover would make archive look one-way all over again. */
+.session-row--archived .session-rename {
+  display: flex;
+}
+.session-row--archived .session-item:hover {
+  background: transparent;
+  color: var(--midnight-muted);
+}
+.session-rename-input {
+  flex: 1;
+  min-width: 0;
+  padding: 4px 8px;
+  border: 1px solid var(--edge);
+  border-radius: var(--radius-md);
+  background: var(--cream);
+  color: var(--midnight);
+  font-size: var(--text-xs);
+}
+.session-new {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 5px 8px;
+  margin-top: 1px;
+  border: 0;
+  background: transparent;
+  border-radius: var(--radius-md);
+  color: var(--midnight-muted);
+  font-size: var(--text-xs);
+  cursor: pointer;
+  transition: background var(--dur-fast) ease, color var(--dur-fast) ease;
+}
+.session-new:hover {
+  background: var(--cream);
+  color: var(--midnight);
+}
+.sidebar-footer {
+  border-top: 1px solid var(--edge);
+  padding: 12px 16px;
+}
+.appearance-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-top: 10px;
+}
+.appearance-toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  /* 44px, not the rail's 40: this is the touch shell. */
+  width: 44px;
+  height: 44px;
+  border-radius: var(--radius-md);
+  color: var(--midnight-muted);
+  cursor: pointer;
+}
+.appearance-toggle:hover {
+  color: var(--midnight);
+  background: var(--cream-deeper);
+}
+.appearance-toggle[aria-pressed="true"] {
+  color: var(--brand);
+  background: var(--cream-deeper);
+}
+.appearance-toggle:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 1px;
+}
+.user-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.user-avatar {
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  background: var(--cream-deeper);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: var(--text-xs);
+  font-weight: 600;
+  color: var(--midnight-soft);
+  flex-shrink: 0;
+}
+.user-info {
+  flex: 1;
+  min-width: 0;
+}
+.user-name {
+  font-size: var(--text-ui);
+  font-weight: 500;
+  color: var(--midnight);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.plan-badge {
+  font-size: var(--text-2xs);
+  line-height: 1.4;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: var(--tracking-caps);
+  padding: 1px 6px;
+  border-radius: var(--radius-sm);
+  background: var(--cream);
+  color: var(--midnight-label);
+}
+/* The free-tier countdown, on its own line under the user row so it gets the
+   full footer width. The .plan-badge above shares a 280px row with a name that
+   already ellipsizes, so a longer label there would squeeze the name away. */
+.free-tier-note {
+  margin-top: 8px;
+  font-size: var(--text-2xs);
+  line-height: 1.4;
+  color: var(--midnight-muted);
+}
+.free-tier-note a {
+  color: var(--midnight-label);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.free-tier-note a:hover {
+  color: var(--midnight);
+}
+.version-text {
+  text-align: center;
+  font-size: var(--text-2xs);
+  line-height: 1.4;
+  color: var(--midnight-muted);
+  font-family: var(--font-mono), ui-monospace, monospace;
+  letter-spacing: var(--tracking-caps);
+  text-transform: uppercase;
+  padding-top: 8px;
+}
+.main-area {
+  background: var(--cream);
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  position: relative;
+}
+.main-header {
+  height: 56px;
+  border-bottom: 1px solid var(--edge);
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  padding: 0 16px;
+  background: var(--cream);
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: var(--z-chrome);
+}
+.main-content {
+  flex: 1;
+  min-height: 0;
+  padding-top: 56px;
+  display: flex;
+  flex-direction: column;
+  overflow-y: auto;
+}
+.mobile-hamburger {
+  display: none;
+  align-items: center;
+  justify-content: center;
+  background: none;
+  border: none;
+  cursor: pointer;
+  padding: 10px;
+  margin: -6px;
+  color: var(--midnight-muted);
+  transition: color var(--dur-fast) ease;
+}
+.mobile-hamburger:hover {
+  color: var(--midnight);
+}
+.sidebar-backdrop {
+  display: none;
+}
+.subscription-banner {
+  margin: 8px 16px;
+  padding: 12px;
+  background: var(--cream);
+  border: 1px solid var(--ok);
+  border-radius: var(--radius-md);
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.subscription-banner svg {
+  color: var(--ok);
+  flex-shrink: 0;
+}
+.subscription-banner p {
+  font-size: var(--text-sm);
+  color: var(--ok);
+  margin: 0;
+}
+/* Exact complement of useIsDesktop's (min-width: 860px) shell boundary. */
+@media (max-width: 859px) {
+  .app-shell {
+    grid-template-columns: 1fr;
+    grid-template-areas: "main";
+  }
+  .app-shell.with-file-viewer {
+    grid-template-columns: 1fr;
+    grid-template-areas: "viewer";
+  }
+  .app-shell.with-file-viewer .main-area {
+    display: none;
+  }
+  .cream-sidebar {
+    display: none;
+  }
+  .cream-sidebar.mobile-open {
+    display: flex;
+    position: fixed;
+    top: 0;
+    left: 0;
+    bottom: 0;
+    width: min(280px, 85vw);
+    /* Same layer as its backdrop; the drawer wins on DOM order (ChatLayout
+       renders the backdrop first), so no second z-index step is needed. */
+    z-index: var(--z-overlay);
+    box-shadow: var(--shadow-lift);
+  }
+  .sidebar-backdrop {
+    display: none;
+  }
+  .sidebar-backdrop.visible {
+    display: block;
+    position: fixed;
+    inset: 0;
+    background: color-mix(in srgb, var(--midnight) 30%, transparent);
+    z-index: var(--z-overlay);
+  }
+  .mobile-hamburger {
+    display: flex;
+  }
+}

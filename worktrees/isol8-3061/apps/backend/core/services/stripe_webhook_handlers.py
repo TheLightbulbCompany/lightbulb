@@ -1,0 +1,712 @@
+"""Per-event handlers for the Stripe webhook dispatcher.
+
+`routers/billing.py:handle_stripe_webhook` used to be a 230-line if/elif
+chain dispatching on `event["type"]`. Each branch is independent — they
+share only the owner-account resolution and the (already-extracted)
+dedup check — so the chain factors cleanly into a
+`{event_type: handler}` dispatch table plus this module of handler
+functions.
+
+Each handler returns either:
+- `None`     → the router responds with the default `{"status": "ok"}`
+- `Response` → the router returns that response verbatim
+
+Handlers receive an `Event` envelope so they can read `event["data"]`
+or `event["type"]` if they need to disambiguate.
+
+Credit top-ups no longer pass through Stripe webhooks at all: funding is a
+Metronome payment-gated commit (core/billing/metronome_funding.py) that
+Metronome collects via the customer's billing-provider configuration, so
+only the subscription lifecycle remains here.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import logging
+import uuid
+from typing import Any, Awaitable, Callable
+
+import stripe
+from fastapi import Response
+
+from core.config import settings
+from core.dynamodb import utc_now_iso
+from core.observability.metrics import put_metric, timing
+from core.observability.product_analytics import capture_product_event
+from core.repositories import billing_repo
+from core.services.billing_service import BillingService
+
+logger = logging.getLogger(__name__)
+
+
+# A Checkout Session Stripe has actually SETTLED — the precondition for
+# stamping the launch winner's coupon as consumed.
+#   - "paid"               : card cleared synchronously.
+#   - "no_payment_required": $0 due — a 100%-off coupon, which is exactly the
+#                            shape of the launch winner's free Workspace month —
+#                            still a completed purchase.
+# Anything else ("unpaid") is a delayed method (ACH etc.): Stripe fires
+# checkout.session.completed immediately and async_payment_succeeded (or
+# _failed) later, so nothing may be granted or stamped until that second
+# event arrives on this same handler.
+_SETTLED_PAYMENT_STATUSES = ("paid", "no_payment_required")
+
+
+# Namespace for the deterministic ``trial_converted`` event uuid: Stripe delivers several events per
+# subscription change, each can see ``old_status == "trial_local"``, and PostHog dedupes on the uuid.
+_TRIAL_CONVERTED_NAMESPACE = uuid.UUID("2b7e3c1a-9d4f-4e6b-8a2c-5f1d7e9b3c60")
+
+"""Strong refs for fire-and-forget tasks — see ``dispatch_company_stripe_request``. Module-level
+because the tasks outlive the request that spawned them."""
+_BACKGROUND_TASKS: set[asyncio.Task] = set()
+
+
+async def _request_company_stripe(owner_id: str) -> None:
+    """Best-effort "connect the company's Stripe account" card. Never raises."""
+    from core.services import company_stripe_approval
+
+    try:
+        await company_stripe_approval.request_company_stripe(
+            owner_id=owner_id,
+            issue_id=None,
+            reason=(
+                "Your subscription is live. Connecting the company's Stripe account "
+                "turns on payments, customers and revenue reporting."
+            ),
+        )
+    except Exception:
+        put_metric("company_stripe.request.error")
+        logger.exception(
+            "Could not file the company Stripe request for owner %s on entering_live — "
+            "the owner can still connect from Settings, and Friday can re-file",
+            owner_id,
+        )
+
+
+def dispatch_company_stripe_request(owner_id: str) -> None:
+    """Ask the owner to set up (or connect) the company's Stripe account.
+
+    Nothing platform-side asked before this: ``request_company_stripe`` had a
+    single caller, the container hook route, so the card appeared only when
+    Friday spontaneously filed it — and the resulting
+    ``company_stripe_account_id`` is what the whole Money data plane
+    (Payments / Customers / Products / Home rollups) reads through.
+
+    We ASK, never auto-create. Creating the account for the owner would
+    foreclose "connect my existing Stripe" (``connect/start`` 409s once bound),
+    permanently stamp a raw owner_id as the Stripe display name, and flip owner
+    facts to ``pending`` — which the fleet skill reads as "already requested,
+    do not ask again".
+
+    Idempotent twice over, so firing it here is safe: the call short-circuits
+    when an account is already bound, and ``file_board_card`` dedupes on the
+    pending ``company_stripe`` marker, so at most one card exists at a time.
+
+    Fire-and-forget: filing a card is several Paperclip round trips (company lookup, admin
+    cookie, pending list, then the create), too many to await inside a Stripe
+    webhook, and the strong reference below is what stops asyncio garbage-
+    collecting the task mid-await.
+
+    An owner whose Paperclip company does not exist yet gets NO card and no
+    error: ``file_board_card`` returns None on the company gate. Reachable only
+    on the rare direct-to-paid entry (no prior ``trial_local`` row, so no
+    provisioned container yet), and ``entering_live`` is a one-shot edge that
+    never re-fires — the owner's Settings page and Friday remain the fallbacks,
+    exactly as they were before this dispatch existed.
+    """
+    task = asyncio.create_task(_request_company_stripe(owner_id))
+    _BACKGROUND_TASKS.add(task)
+    task.add_done_callback(_BACKGROUND_TASKS.discard)
+
+
+# ---------------------------------------------------------------------------
+# Owner-account resolution (moved verbatim from routers/billing.py)
+# ---------------------------------------------------------------------------
+
+
+async def resolve_owner_account(subscription_event_data: dict) -> dict | None:
+    """Resolve the billing-accounts row for a Stripe subscription webhook.
+
+    Stripe customers are now keyed by email and can fan out to multiple
+    DDB rows (one human → personal + org rows sharing one Stripe customer),
+    so the GSI on ``stripe_customer_id`` is no longer 1:1.
+
+    Resolution order:
+      1. ``subscription.metadata.workspace_id`` — canonical workspace binding
+         set by unified Checkout. ``owner_id`` remains a legacy fallback.
+      2. ``stripe_customer_id`` GSI → if exactly one match, use it
+         (legacy 1:1 case). If multiple, filter by
+         ``stripe_subscription_id == event.id``.
+    """
+    metadata = subscription_event_data.get("metadata") or {}
+    workspace_id = metadata.get("workspace_id")
+    owner_id = workspace_id or metadata.get("owner_id")
+    if owner_id:
+        account = await billing_repo.get_by_owner_id(owner_id)
+        if account and account.get("stripe_customer_id") == subscription_event_data.get("customer"):
+            return account
+        # workspace_id is an explicit canonical binding. A missing/mismatched
+        # row must not fall through to a shared-customer guess.
+        if workspace_id:
+            put_metric("stripe.webhook.owner_resolve", dimensions={"path": "workspace_metadata_miss"})
+            return None
+        put_metric("stripe.webhook.owner_resolve", dimensions={"path": "metadata_miss"})
+
+    customer_id = subscription_event_data.get("customer")
+    if not customer_id:
+        put_metric("stripe.webhook.owner_resolve", dimensions={"path": "unresolved"})
+        return None
+
+    candidates = await billing_repo.list_by_stripe_customer_id(customer_id)
+    if not candidates:
+        put_metric("stripe.webhook.owner_resolve", dimensions={"path": "unresolved"})
+        return None
+    if len(candidates) == 1:
+        put_metric("stripe.webhook.owner_resolve", dimensions={"path": "customer_id_legacy"})
+        return candidates[0]
+
+    sub_id = subscription_event_data.get("id")
+    matches = [c for c in candidates if c.get("stripe_subscription_id") == sub_id]
+    if len(matches) == 1:
+        put_metric("stripe.webhook.owner_resolve", dimensions={"path": "customer_id_subfilter"})
+        return matches[0]
+
+    # Ambiguous: shared customer with no subscription_id match (e.g. a
+    # brand-new customer.subscription.created event from a row whose
+    # checkout was fired before this change deployed and so lacks
+    # metadata.owner_id). Surface as unresolved rather than guessing.
+    logger.warning(
+        "Ambiguous Stripe webhook owner resolution: customer=%s sub=%s candidates=%d",
+        customer_id,
+        sub_id,
+        len(candidates),
+    )
+    put_metric("stripe.webhook.owner_resolve", dimensions={"path": "ambiguous"})
+    return None
+
+
+# ---------------------------------------------------------------------------
+# Per-event handlers
+# ---------------------------------------------------------------------------
+
+
+async def _maybe_set_customer_default_payment_method(event_data: dict[str, Any]) -> None:
+    """Promote the subscription's payment method to the CUSTOMER's invoice
+    default when the customer has none.
+
+    Stripe Checkout attaches the collected payment method to the
+    SUBSCRIPTION only — the Customer's invoice_settings.default_payment_method
+    stays empty. Metronome's charge_automatically collection charges the
+    CUSTOMER default, so without this promotion every Metronome invoice
+    (payment-gated credit top-ups, usage) fails for every
+    checkout-onboarded customer.
+
+    Idempotent (an existing customer default is never clobbered) and
+    best-effort: a Stripe failure here must not fail the webhook — Stripe
+    would retry the whole event, and the subscription-state sync is the
+    part that matters. The metrics keep gaps operator-visible.
+    """
+    payment_method = event_data.get("default_payment_method")
+    customer_id = event_data.get("customer")
+    if not payment_method or not customer_id:
+        return
+    # Webhook payloads carry the payment method as an id string unless the
+    # event was built with expansions; accept both shapes.
+    if isinstance(payment_method, dict):
+        payment_method = payment_method.get("id")
+        if not payment_method:
+            return
+    try:
+        with timing("stripe.api.latency", {"op": "customers.retrieve"}):
+            customer = stripe.Customer.retrieve(customer_id)
+        if (customer.get("invoice_settings") or {}).get("default_payment_method"):
+            return
+        with timing("stripe.api.latency", {"op": "customers.modify"}):
+            stripe.Customer.modify(customer_id, invoice_settings={"default_payment_method": payment_method})
+        put_metric("billing.default_pm.set")
+        logger.info(
+            "Set Stripe customer %s default payment method %s (from subscription %s)",
+            customer_id,
+            payment_method,
+            event_data.get("id"),
+        )
+    except Exception:
+        put_metric("billing.default_pm.error")
+        logger.exception("Failed to set default payment method for Stripe customer %s", customer_id)
+
+
+def _subscriber_distinct_id(account: dict, event_data: dict) -> str | None:
+    """Clerk USER id to key PostHog events on, so server-side billing events
+    merge onto the same person the frontend ``identify()``s. Personal owners:
+    ``owner_id`` IS the Clerk user id. Org owners: ``owner_id`` is the org id,
+    so prefer the subscribing human's ``clerk_user_id`` threaded through
+    checkout metadata (the subscription checkout sets it)."""
+    metadata = event_data.get("metadata") or {}
+    return metadata.get("clerk_user_id") or account.get("owner_id")
+
+
+def _bridge_subscription_state(
+    account: dict,
+    event_data: dict,
+    old_status: str | None,
+    new_status: str,
+    metadata_provider: str | None,
+) -> None:
+    """Land the subscription-state transition on the PostHog person (customer
+    analytics) and keep billing state on the profile for segmentation.
+    Complements — does not replace — the EMF ``stripe.subscription`` metric."""
+    if new_status == old_status:
+        return  # payment-method / no-op .updated — nothing to record
+    provider = metadata_provider or account.get("provider_choice")
+    set_person = {
+        "subscription_status": new_status,
+        "is_subscribed": new_status in ("trialing", "active"),
+        "provider_choice": provider,
+        "trial_end": event_data.get("trial_end"),
+    }
+    if new_status == "trialing" and old_status != "trialing":
+        event = "trial_started"
+    elif new_status == "active" and old_status == "trialing":
+        event = "trial_converted"  # the trial->paid moment — the core SaaS metric
+    elif new_status == "active":
+        event = "subscription_activated"
+    elif new_status == "past_due":
+        event = "subscription_past_due"
+    else:
+        event = "subscription_status_changed"
+    capture_product_event(
+        distinct_id=_subscriber_distinct_id(account, event_data),
+        event=event,
+        properties={"provider_choice": provider, "from_status": old_status, "to_status": new_status},
+        set_person=set_person,
+    )
+
+
+def _workspace_plan_from_subscription_items(event_data: dict[str, Any]) -> str | None:
+    """Return the configured Workspace/Ultra plan for one recurring item only.
+
+    A workspace subscription has exactly one recurring Stripe item.  Never
+    persist a subscription event whose item shape cannot prove that invariant:
+    accepting an unknown or multi-item payload can mask an unsupported
+    recurring charge.
+    """
+    items = (event_data.get("items") or {}).get("data") or []
+    if len(items) != 1:
+        reason = "missing_or_multiple_items"
+    else:
+        price = (items[0] or {}).get("price") or {}
+        price_id = price.get("id")
+        if not isinstance(price.get("recurring"), dict):
+            reason = "non_recurring_item"
+        elif price_id == settings.STRIPE_BASE_PRICE_ID and price_id:
+            return "base"
+        elif price_id == settings.STRIPE_WORKSPACE_PRICE_ID and price_id:
+            return "standard"
+        elif price_id == settings.STRIPE_ULTRA_PRICE_ID and price_id:
+            return "ultra_pro"
+        else:
+            reason = "unknown_price"
+    put_metric("stripe.subscription.invalid_shape", dimensions={"reason": reason})
+    logger.warning(
+        "Ignoring subscription %s: expected one configured recurring Workspace or Ultra item (%s)",
+        event_data.get("id"),
+        reason,
+    )
+    return None
+
+
+async def handle_subscription_state(event: dict[str, Any], billing_service: BillingService) -> Response | None:
+    """`customer.subscription.created` + `customer.subscription.updated`.
+
+    Single source of truth for subscription-state sync. Fires on trial
+    start (.created), trial→active transitions, payment-method updates,
+    past_due transitions, and cancellation-at-period-end (all .updated).
+    We just persist the Stripe-side state so the frontend can render
+    trial banners + access gates without a Stripe round-trip.
+
+    CRITICAL: Stripe Checkout for a brand-new trial emits
+    customer.subscription.CREATED first; .updated only fires on later
+    state transitions. Without the .created branch, the user's first
+    trial never persists subscription_status or provider_choice — they
+    get stuck on the ProviderPicker after returning from Checkout
+    because is_subscribed stays False.
+    """
+    event_type = event["type"]
+    event_data = event["data"]["object"]
+    put_metric(
+        "stripe.subscription",
+        dimensions={
+            "event": event_type.split(".")[-1],
+            "status": event_data.get("status", "unknown"),
+        },
+    )
+    # Customer-side fix, deliberately BEFORE owner resolution: the default
+    # payment method matters to Metronome regardless of whether we can map
+    # the subscription to a billing row.
+    await _maybe_set_customer_default_payment_method(event_data)
+    account = await resolve_owner_account(event_data)
+    if not account:
+        return None
+    # Capture the prior status BEFORE persisting the new one, so the PostHog
+    # bridge below can detect transitions (esp. trialing -> active, the
+    # trial->paid moment).
+    old_status = account.get("subscription_status")
+    new_status = event_data.get("status", "active")
+    if new_status in ("incomplete", "incomplete_expired") and old_status in ("trial_local", "active", "trialing"):
+        # Checkout bills immediately (no Stripe trial), so a Checkout-born
+        # subscription can surface here as `incomplete` (.created fires before
+        # the first invoice settles) or `incomplete_expired` (checkout
+        # abandoned). Neither may ever overwrite an access-granting status:
+        #
+        #   - over "trial_local": the write would (a) make the follow-on
+        #     active event see old_status != "trial_local" and silently skip
+        #     the trial→paid conversion reprovision below, leaving a paying
+        #     customer on the locked-down trial box, and (b) strip a
+        #     still-valid free-tier owner's platform access (`incomplete*` is
+        #     not in _ACTIVE_STATUSES).
+        #   - over "active"/"trialing": webhook delivery is UNORDERED
+        #     (https://docs.stripe.com/webhooks#event-ordering) — the stale
+        #     .created(incomplete) can land after .updated(active) already
+        #     persisted, and writing it would block a customer who paid.
+        #     Stripe's state machine never re-enters incomplete from a live
+        #     state, so an incomplete event against a live row is always
+        #     stale or out of order.
+        #
+        # Skip ALL writes: for a fresh checkout the active event carries the
+        # same metadata and performs them; for a stale event the row is
+        # already correct; an abandoned checkout leaves the free tier
+        # untouched.
+        logger.info(
+            "Skipping stale %s persist for owner %s (stored status %s)",
+            new_status,
+            account["owner_id"],
+            old_status,
+        )
+        return None
+    new_plan = _workspace_plan_from_subscription_items(event_data)
+    if new_plan is None:
+        return None
+    await billing_repo.set_subscription(
+        owner_id=account["owner_id"],
+        subscription_id=event_data["id"],
+        status=new_status,
+        trial_end=event_data.get("trial_end"),
+    )
+    metadata = event_data.get("metadata") or {}
+    metadata_provider = metadata.get("provider_choice")
+    metadata_byo = metadata.get("byo_provider")
+    provider_persisted = False
+    # The provider backup below runs only on the transition INTO a live paid
+    # status — the first usable event of a new subscription. That is usually
+    # .created(active|trialing), but for a checkout-born sub whose .created
+    # surfaced as `incomplete` (skipped entirely by the guard above), it is
+    # the follow-up .updated(active) that performs the deferred writes.
+    #
+    # Events on an already-established subscription (renewals,
+    # payment-method changes, and past_due/unpaid/paused recoveries) must
+    # NEVER persist it: subscription metadata is a snapshot of the provider
+    # chosen at checkout and is never updated by change_provider, so on those
+    # events it can be stale history. Persisting it there clobbers a
+    # post-onboarding provider switch back to the checkout-time value — and
+    # set_provider_choice's REMOVE strips oauth_connector_user_id with it.
+    #
+    # Prior states are an ALLOWLIST of "no live subscription behind this row"
+    # (fresh signup, local free tier, unsettled/dead checkout, terminal
+    # cancel — a canceled owner can only come back via a new checkout with
+    # fresh metadata). Anything else, including Stripe statuses that don't
+    # exist yet, defaults to "existing subscription — skip". A None status
+    # counts only when the row also carries no subscription id: with one, a
+    # None-status row is a LEGACY PAID subscription (is_subscription_active
+    # treats it as live, so it can have switched providers already).
+    pre_live_statuses = ("trial_local", "incomplete", "incomplete_expired", "canceled")
+    entering_live = new_status in ("active", "trialing") and (
+        old_status in pre_live_statuses or (old_status is None and not account.get("stripe_subscription_id"))
+    )
+    if entering_live and metadata_provider in ("chatgpt_oauth", "byo_key"):
+        # provider_choice lives on billing_accounts (per-owner), not on
+        # the user row. /trial-checkout writes synchronously before
+        # creating the Stripe Checkout session; this webhook write is
+        # the idempotent backup for any legacy Stripe sessions that
+        # predate the synchronous write, or for direct-API callers who
+        # skipped the /trial-checkout entry point.
+        try:
+            await billing_repo.set_provider_choice(
+                account["owner_id"],
+                provider_choice=metadata_provider,
+                byo_provider=metadata_byo if metadata_provider == "byo_key" else None,
+                # Never record the connector here. Subscription metadata is
+                # unauthenticated snapshot data, and a stale or bogus
+                # ``clerk_user_id`` recorded onto the row wedges the workspace
+                # permanently: the provision gate waits on a ghost's tokens
+                # while /start and the provider switch 403 every real human
+                # (issue #2864 follow-up). The connector is recorded only by
+                # authenticated writers — the synchronous trial-checkout
+                # write, change-provider, and the poll-time set-once claim —
+                # so an unset row stays claimable by the first real admin's
+                # device flow instead of stranding on a phantom.
+                connector_user_id=None,
+            )
+            provider_persisted = True
+        except Exception:
+            logger.exception(
+                "Failed to persist provider_choice for owner %s",
+                account["owner_id"],
+            )
+
+    if entering_live:
+        # The Metronome customer is NOT created here: this transition dispatches a durable
+        # reconcile (below), and ``reconcile_runtime`` ensures the customer for a ledger-eligible
+        # non-ChatGPT/BYO owner -- an SFN execution a backend deploy cannot kill, where the old
+        # fire-and-forget task here could die and Stripe's redelivery never re-enters this edge.
+
+        # Launch Competition: this first-activation transition is what counts
+        # a referred owner toward their referrer (and retries the owner's own
+        # pending milestone credit grants). Best-effort — never raises; its
+        # own CAS dedup makes duplicate/unordered deliveries inert.
+        # NOTE: the Apple IAP activation path does NOT come through here — it
+        # must call on_subscription_activated too when the mobile app ships.
+        from core.services import launch_referral
+
+        await launch_referral.on_subscription_activated(account["owner_id"])
+
+        # Ask the owner to connect the company's Stripe account. Unconditional
+        # on the LLM provider above: this is the owner's own revenue rail, not
+        # ours, and every paid shape needs it for the Money surfaces to hold
+        # anything at all.
+        dispatch_company_stripe_request(account["owner_id"])
+
+        # Listening is paid, and a room's seed runs once — so a room seeded on
+        # the trial keeps its agents on Mentions after upgrading. First entry
+        # into paid only: a canceled owner was paid before, so a Mentions agent
+        # may be their own choice, and reconciliation never resets a user's
+        # choice. Best-effort: the status already committed, so a raise here
+        # would 500 the webhook and Stripe's retry would never re-enter this.
+        if old_status != "canceled":
+            from core.services import messaging
+
+            try:
+                await messaging.promote_listening(account["owner_id"])
+            except Exception:
+                logger.exception("listening promotion failed for owner %s", account["owner_id"])
+
+    plan_persisted = False
+    try:
+        await billing_repo.set_plan(account["owner_id"], plan=new_plan, now_iso=utc_now_iso())
+        plan_persisted = True
+    except Exception:
+        logger.exception("Failed to persist plan for owner %s", account["owner_id"])
+    if settings.OPENROUTER_WORKSPACE_ID:
+        # A plan/status change can move the owner's OpenRouter key between the
+        # trial and Base daily limits (the capped model's valve). Best-effort:
+        # a key with no change is a no-op, and a failure never 500s Stripe.
+        try:
+            from core.services.openrouter_keys import relimit_owner_key
+
+            await relimit_owner_key(account["owner_id"])
+        except Exception:
+            logger.exception("Failed to relimit OpenRouter key for owner %s", account["owner_id"])
+    # Decided here, dispatched LAST (below): a failed dispatch raises so Stripe redelivers, and
+    # everything before it must already have run once.
+    reconcile_needed = (
+        new_status in ("active", "trialing")
+        or provider_persisted
+        or (plan_persisted and account.get("plan") != new_plan)
+    )
+    if old_status == "trial_local" and new_status in ("trialing", "active"):
+        # Trial funnel telemetry: the free-tier trial converting to paid billing -- distinct
+        # from the generic trialing->active "trial_converted" the bridge below may also emit for
+        # a REAL (card-collected) Stripe trial. Several events per subscription change can each
+        # see old_status == "trial_local"; the deterministic uuid makes PostHog keep one.
+        capture_product_event(
+            distinct_id=_subscriber_distinct_id(account, event_data),
+            event="trial_converted",
+            properties={
+                "from_status": old_status,
+                "to_status": new_status,
+                # Same persisted-only rule as the bridge below: claim the metadata provider
+                # only when its row write committed.
+                "provider_choice": (metadata_provider if provider_persisted else None)
+                or account.get("provider_choice"),
+            },
+            event_uuid=str(uuid.uuid5(_TRIAL_CONVERTED_NAMESPACE, f"{account['owner_id']}:{event_data['id']}")),
+        )
+
+    # Refresh the owner-facts file (plan/provider snapshot the bundled isol8
+    # skill points agents at). Subscription-state flips land HERE — not via
+    # change_provider — so without this write a past_due/canceled transition
+    # would leave agents reporting an active paid plan. The just-persisted
+    # status (and the backup-path provider, when written) ride along as
+    # overrides — same-process pinning that outranks any row read.
+    # write_owner_facts is internally best-effort.
+    from core.services.owner_facts import write_owner_facts
+
+    facts_overrides: dict = {"subscription_status": new_status}
+    if provider_persisted:
+        # Only claim the metadata provider when its billing-row write actually
+        # committed — a swallowed set_provider_choice failure above must not
+        # produce a facts file asserting a provider the row never got.
+        facts_overrides["provider_choice"] = metadata_provider
+        facts_overrides["byo_provider"] = metadata_byo if metadata_provider == "byo_key" else None
+    if plan_persisted:
+        facts_overrides["plan"] = new_plan
+    await write_owner_facts(account["owner_id"], account_overrides=facts_overrides)
+
+    # Customer-analytics bridge (the EMF put_metric above is the operational
+    # counterpart) — land the lifecycle transition on the person. Metadata
+    # only rides along when its billing-row write committed; otherwise the
+    # bridge falls back to the row's provider, so a skipped backup (live→live
+    # recovery) or a swallowed write failure never stamps the person profile
+    # with a provider the row doesn't have.
+    _bridge_subscription_state(
+        account, event_data, old_status, new_status, metadata_provider if provider_persisted else None
+    )
+
+    if reconcile_needed:
+        # Make the runtime match the billing just committed: a trial->paid conversion (the
+        # workspace still runs the trial provider in every profile), a re-subscribe, a
+        # provider/plan change -- and any live event at all, because a REDELIVERY of a
+        # conversion finds old_status already "active" (entering_live False, no plan diff) and
+        # must still reach the reconcile. That costs one idempotent reconcile per renewal event.
+        # ``reconcile_runtime`` re-derives the owner role and gate token, moves the OpenRouter key
+        # onto the paid limit, rewrites every profile, ensures the Metronome customer and re-arms
+        # the nightly CEO. ORDER: every billing write above has committed, and the reconcile
+        # reads billing strongly consistent, so it never renders the trial shape.
+        #
+        # A dispatch that could not start RAISES: the router drops the dedup row and 500s, so
+        # Stripe redelivers. Every step above is idempotent under redelivery (see the slice 3
+        # report): the set_* writes rewrite the same values, entering_live side effects no longer
+        # fire (old_status is now live), trial_converted dedupes on its uuid.
+        from core.services.provision_dispatch import dispatch_reconcile
+
+        if not await dispatch_reconcile(account["owner_id"]):
+            raise RuntimeError(f"reconcile dispatch failed for owner {account['owner_id']}; Stripe will redeliver")
+    return None
+
+
+async def handle_trial_will_end(event: dict[str, Any], billing_service: BillingService) -> Response | None:
+    """`customer.subscription.trial_will_end`.
+
+    Plan 3 §7.2 + §8.2: Stripe fires this 3 days before trial_end. We
+    just emit a metric so we can see how often it fires; Stripe sends
+    its own default reminder email regardless. A branded reminder
+    email via SES is a follow-up.
+    """
+    event_data = event["data"]["object"]
+    put_metric("trial.will_end_3day")
+    account = await resolve_owner_account(event_data)
+    if account:
+        logger.info(
+            "Trial will end in 3 days for owner %s (trial_end=%s)",
+            account["owner_id"],
+            event_data.get("trial_end"),
+        )
+        capture_product_event(
+            distinct_id=_subscriber_distinct_id(account, event_data),
+            event="trial_will_end",
+            properties={"trial_end": event_data.get("trial_end")},
+        )
+    return None
+
+
+async def handle_subscription_deleted(event: dict[str, Any], billing_service: BillingService) -> Response | None:
+    """`customer.subscription.deleted`."""
+    event_data = event["data"]["object"]
+    put_metric("stripe.subscription", dimensions={"event": "deleted"})
+
+    account = await resolve_owner_account(event_data)
+    if not account:
+        return None
+    # Customer-analytics bridge: record the churn on the person BEFORE teardown
+    # (so it fires even if container/Paperclip teardown throws). ``was_trialing``
+    # splits trial-abandon (activation problem) from post-charge churn (value
+    # problem) — two different failures needing different fixes.
+    capture_product_event(
+        distinct_id=_subscriber_distinct_id(account, event_data),
+        event="subscription_cancelled",
+        properties={
+            "was_trialing": account.get("subscription_status") == "trialing",
+            "provider_choice": account.get("provider_choice"),
+            "cancel_at_period_end": bool(event_data.get("cancel_at_period_end")),
+        },
+        set_person={"subscription_status": "canceled", "is_subscribed": False},
+    )
+    await billing_service.cancel_subscription(account)
+    logger.info("Subscription cancelled for owner %s", account["owner_id"])
+
+    # Reset the pricing tier to the implicit standard plan — teardown removes the
+    # container but leaves the billing row, and a lingering plan="ultra_pro"
+    # would misreport the tier (and, if the owner re-subscribes onto a flat sub,
+    # the first flat-price webhook would read the stale ultra_pro and treat it as
+    # a downgrade). Guarded like the other set_plan calls: best-effort so a
+    # transient DDB failure never 500s the webhook back to Stripe, and set_plan
+    # is attribute_exists-guarded so an already-deleted row is a silent no-op.
+    try:
+        await billing_repo.set_plan(account["owner_id"], plan="standard", now_iso=utc_now_iso())
+    except Exception:
+        logger.exception("Failed to reset plan to standard on cancel for owner %s", account["owner_id"])
+
+    # Owner-facts refresh + container teardown + Paperclip disable, but ONLY if
+    # nothing else is still paying. Stripe ending is no longer the same question
+    # as the entitlement ending: an owner can hold a live Apple subscription on
+    # the same row, in which case the shared status stays active and tearing
+    # their container down would take away exactly what they are still paying
+    # for — with no further webhook coming to put it back.
+    from core.services.entitlement_teardown import teardown_if_unentitled
+
+    await teardown_if_unentitled(account["owner_id"], trigger="subscription_deleted")
+    return None
+
+
+async def handle_invoice_payment_failed(event: dict[str, Any], billing_service: BillingService) -> Response | None:
+    event_data = event["data"]["object"]
+    put_metric("stripe.subscription", dimensions={"event": "payment_failed"})
+    logger.warning("Payment failed for customer %s", event_data.get("customer"))
+    return None
+
+
+async def handle_checkout_session(event: dict[str, Any], billing_service: BillingService) -> Response | None:
+    """Handle the Checkout events still owned outside subscription lifecycle.
+
+    Subscription state is handled exclusively by ``customer.subscription.*``.
+    Customer credit purchases use Metronome payment-gated commits directly;
+    there is no Stripe Checkout credit-settlement or bundled-credit branch.
+    """
+    session = event["data"]["object"]
+    session_metadata = session.get("metadata") or {}
+    # Launch competition: a settled session that carried the winner free-month
+    # discount just CONSUMED the coupon — stamp the sheet row so a forced
+    # close rerun cannot attach a second free month to the subscription this
+    # checkout minted. This check happens before the handler returns because
+    # most winner checkouts carry no credits at all. The settled check is
+    # load-bearing, not defensive: a delayed-payment session fires
+    # checkout.session.completed while the payment can still FAIL, and
+    # stamping there burns the winner's free month without ever giving it to
+    # them. async_payment_succeeded lands back here and stamps it then.
+    # Best-effort — never raises.
+    if (
+        session_metadata.get("launch_winner_coupon") == "true"
+        and session_metadata.get("owner_id")
+        and session.get("payment_status") in _SETTLED_PAYMENT_STATUSES
+    ):
+        from core.services.launch_close import mark_winner_coupon_consumed
+
+        await mark_winner_coupon_consumed(session_metadata["owner_id"])
+    return Response(status_code=200)
+
+
+# ---------------------------------------------------------------------------
+# Dispatch table
+# ---------------------------------------------------------------------------
+
+HandlerFn = Callable[[dict[str, Any], BillingService], Awaitable[Response | None]]
+
+STRIPE_WEBHOOK_HANDLERS: dict[str, HandlerFn] = {
+    "customer.subscription.created": handle_subscription_state,
+    "customer.subscription.updated": handle_subscription_state,
+    "customer.subscription.trial_will_end": handle_trial_will_end,
+    "customer.subscription.deleted": handle_subscription_deleted,
+    "invoice.payment_failed": handle_invoice_payment_failed,
+    "checkout.session.completed": handle_checkout_session,
+    "checkout.session.async_payment_succeeded": handle_checkout_session,
+}

@@ -1,0 +1,298 @@
+"""
+Shared test fixtures for Isol8 backend tests.
+
+Tests use mocked DynamoDB (via moto or plain mocks) — no real database needed.
+"""
+
+import os
+
+# Set required env vars for the test environment before any module imports.
+# core.auth -> core.config constructs Settings() at module load and raises if
+# CLERK_ISSUER is missing, so collection fails without these defaults.
+os.environ.setdefault("CLERK_ISSUER", "https://test.clerk.accounts.dev")
+os.environ.setdefault("ENCRYPTION_KEY", "wHc3hAOcLlFzWyu3Ph7xIyClIdVQTrIzFOZDtu_pIEY=")
+os.environ.setdefault("GATE_BEARER_HMAC_KEY", "test-gate-bearer-hmac-key")
+os.environ.setdefault("AWS_REGION", "us-east-1")
+os.environ.setdefault("AWS_DEFAULT_REGION", "us-east-1")
+
+import json
+from typing import AsyncGenerator, Generator
+from unittest.mock import patch
+
+import pytest
+from fastapi.testclient import TestClient
+from httpx import ASGITransport, AsyncClient
+
+from core.auth import AuthContext
+from core.middleware import shutdown_aware
+
+
+@pytest.fixture(autouse=True)
+def _reset_shutdown_flag():
+    """Reset the process-global shutdown flag around every test.
+
+    ``_shutting_down`` is module-global state. Tests that drive the lifespan
+    shutdown set it True; with ShutdownAwareMiddleware mounted on the app, a
+    leaked True would make every subsequent test get a 503. Reset before and
+    after each test so the flag never leaks across the session.
+    """
+    shutdown_aware.set_shutting_down(False)
+    yield
+    shutdown_aware.set_shutting_down(False)
+
+
+@pytest.fixture(autouse=True)
+def _launch_settings_read_defaults():
+    """Default every test to a launch-settings row that reads cleanly as
+    "nothing saved yet" (feature off).
+
+    Unit tests have no DynamoDB, so the real ``get_sync`` would attempt a
+    network read and fail. Patching the read to "no row" keeps the launch
+    feature off for tests that aren't about it. Tests that want a live
+    schedule use the ``launch_schedule`` fixture (it patches over this one);
+    the repo's own moto tests override this fixture to exercise the real
+    read. The cache is dropped either side so no row leaks across tests."""
+    from core.repositories import launch_settings_repo
+    from core.services import launch_phase
+
+    launch_phase.invalidate()
+    with patch.object(launch_settings_repo, "get_sync", return_value=None):
+        yield
+    launch_phase.invalidate()
+
+
+def parse_sse_events(response_text: str) -> list[dict]:
+    """Parse SSE events from response text into list of event dicts."""
+    lines = [line for line in response_text.split("\n") if line.startswith("data:")]
+    return [json.loads(line.replace("data: ", "")) for line in lines]
+
+
+@pytest.fixture
+def mock_user_payload() -> dict:
+    """Default mock user JWT payload."""
+    return {
+        "sub": "user_test_123",
+        "email": "test@example.com",
+        "iss": "https://test.clerk.accounts.dev",
+        "aud": "test-audience",
+        "exp": 9999999999,
+        "iat": 1234567890,
+    }
+
+
+@pytest.fixture
+def mock_auth_context(mock_org_admin_context: AuthContext) -> AuthContext:
+    """Default mock auth context for an active workspace admin."""
+    return mock_org_admin_context
+
+
+@pytest.fixture
+def mock_current_user(mock_auth_context):
+    """Dependency override for get_current_user with workspace-admin auth."""
+
+    async def _mock_get_current_user():
+        return mock_auth_context
+
+    return _mock_get_current_user
+
+
+@pytest.fixture
+def mock_org_admin_context() -> AuthContext:
+    """Mock auth context for org admin."""
+    return AuthContext(
+        user_id="user_test_123",
+        org_id="org_test_456",
+        org_role="org:admin",
+        org_slug="test-org",
+        org_permissions=["org:billing:manage"],
+    )
+
+
+@pytest.fixture
+def mock_org_member_context() -> AuthContext:
+    """Mock auth context for org member (non-admin)."""
+    return AuthContext(
+        user_id="user_test_789",
+        org_id="org_test_456",
+        org_role="org:member",
+        org_slug="test-org",
+    )
+
+
+@pytest.fixture
+def mock_org_admin_user(mock_org_admin_context):
+    """Dependency override for get_current_user with org admin context."""
+
+    async def _mock():
+        return mock_org_admin_context
+
+    return _mock
+
+
+@pytest.fixture
+def mock_org_member_user(mock_org_member_context):
+    """Dependency override for get_current_user with org member context."""
+
+    async def _mock():
+        return mock_org_member_context
+
+    return _mock
+
+
+@pytest.fixture
+def mock_jwks() -> dict:
+    """Mock JWKS response for JWT verification tests."""
+    return {
+        "keys": [
+            {
+                "kty": "RSA",
+                "kid": "test-key-id",
+                "use": "sig",
+                "n": "test-modulus",
+                "e": "AQAB",
+            }
+        ]
+    }
+
+
+@pytest.fixture
+def app():
+    """Create a fresh FastAPI app instance for testing."""
+    from main import app as fastapi_app
+
+    return fastapi_app
+
+
+@pytest.fixture
+def client(app, mock_current_user) -> Generator:
+    """Synchronous test client with mocked auth."""
+    from core.auth import get_current_user
+
+    app.dependency_overrides[get_current_user] = mock_current_user
+
+    with TestClient(app) as test_client:
+        yield test_client
+
+    app.dependency_overrides.clear()
+
+
+@pytest.fixture
+async def async_client(app, mock_current_user) -> AsyncGenerator:
+    """Async test client with mocked workspace-admin auth."""
+    from core.auth import get_current_user
+
+    app.dependency_overrides[get_current_user] = mock_current_user
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+        yield ac
+
+    app.dependency_overrides.clear()
+
+
+@pytest.fixture
+async def async_client_org_admin(app, mock_org_admin_user) -> AsyncGenerator:
+    """Async test client authenticated as org admin (user_test_123 in org_test_456)."""
+    from core.auth import get_current_user
+
+    app.dependency_overrides[get_current_user] = mock_org_admin_user
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+        yield ac
+
+    app.dependency_overrides.clear()
+
+
+@pytest.fixture
+async def async_client_org_member(app, mock_org_member_user) -> AsyncGenerator:
+    """Async test client authenticated as org member (user_test_789 in org_test_456)."""
+    from core.auth import get_current_user
+
+    app.dependency_overrides[get_current_user] = mock_org_member_user
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+        yield ac
+
+    app.dependency_overrides.clear()
+
+
+@pytest.fixture
+async def unauthenticated_async_client(app) -> AsyncGenerator:
+    """Async test client without auth mocking (for auth failure tests)."""
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+        yield ac
+
+
+@pytest.fixture
+def mock_llm_stream():
+    """Mock LLM streaming response generator."""
+
+    async def _mock_stream():
+        for chunk in ["Hello", " ", "world", "!"]:
+            yield chunk
+
+    return _mock_stream
+
+
+@pytest.fixture
+def mock_hf_sse_response() -> list[bytes]:
+    """Mock HuggingFace SSE response data."""
+    return [
+        b'data: {"choices":[{"delta":{"content":"Hello"}}]}\n\n',
+        b'data: {"choices":[{"delta":{"content":" world"}}]}\n\n',
+        b'data: {"choices":[{"delta":{"content":"!"}}]}\n\n',
+        b"data: [DONE]\n\n",
+    ]
+
+
+@pytest.fixture
+def mock_settings():
+    """Mock settings with test values."""
+    with patch("core.config.settings") as mock:
+        mock.CLERK_ISSUER = "https://test.clerk.accounts.dev"
+        mock.clerk_authorized_parties_list = []
+        mock.API_V1_STR = "/api/v1"
+        mock.ENCRYPTION_KEY = "dGVzdC1lbmNyeXB0aW9uLWtleS0xMjM0NTY3OA=="
+        yield mock
+
+
+@pytest.fixture
+def launch_schedule():
+    """Patch the launch-settings row in memory. Call with (closes_at[, start_at,
+    end_at]) datetimes, or no args to turn the feature off. ``closed_at``
+    simulates the admin close action's stamp."""
+    from contextlib import contextmanager
+    from datetime import timedelta
+    from unittest.mock import patch
+
+    from core.repositories import launch_settings_repo
+    from core.services import launch_phase
+
+    @contextmanager
+    def _set(closes_at=None, start_at=None, end_at=None, *, comp_slots=200, closed_at=None, enabled=None):
+        start = start_at or (closes_at + timedelta(hours=12) if closes_at else None)
+        end = end_at or (start + timedelta(days=61) if start else None)
+        row = {
+            **launch_settings_repo.DEFAULTS,
+            "enabled": (closes_at is not None) if enabled is None else enabled,
+            "sheet_closes_at": closes_at.isoformat() if closes_at else None,
+            "competition_start_at": start.isoformat() if start else None,
+            "competition_end_at": end.isoformat() if end else None,
+            "closed_at": closed_at.isoformat() if closed_at else None,
+            "comp_slots": comp_slots,
+        }
+
+        async def _get():
+            return row
+
+        def _get_sync():
+            return row
+
+        launch_phase.invalidate()
+        with (
+            patch.object(launch_settings_repo, "get", _get),
+            patch.object(launch_settings_repo, "get_sync", _get_sync),
+        ):
+            yield
+        launch_phase.invalidate()
+
+    return _set

@@ -1,0 +1,122 @@
+"use client";
+
+// Desktop navigation shares canonical room state with the Messages dock panel.
+import "@/components/chat/ChatLayout.css";
+import "./workspace.css";
+
+import { useEffect, useState } from "react";
+import { useUser } from "@clerk/nextjs";
+import { UsersRound } from "lucide-react";
+
+import { GallerySection } from "@/components/chat/GallerySection";
+import { HealthIndicator } from "@/components/chat/HealthIndicator";
+import { useBilling } from "@/hooks/useBilling";
+import { visibleCompanySections } from "@/components/chat/companySections";
+import { useCompanyStripeStatus } from "@/components/settings/CompanyStripeSection";
+import { MessagingDirectory } from "@/components/messaging/MessagingWorkspace";
+import { planLabel, isFreeTierExpired } from "@/lib/planLabel";
+import { FreeTierNote } from "@/components/chat/FreeTierNote";
+import { useMarketplaceDrawer } from "@/components/marketplace/drawer/MarketplaceDrawerProvider";
+import { DesktopUpdater } from "@/components/desktop/DesktopUpdater";
+import { NodeStatusPill } from "@/components/desktop/NodeStatusPill";
+import { emitStep } from "@/components/getstarted/getStartedEvents";
+import { activateMessagesPanel, openPanel, useWorkspaceState } from "./workspaceController";
+
+
+interface WorkspaceSidebarProps {
+  onRecoveryReprovision: () => void;
+  /** The dock is available once the runtime is ready or parked. */
+  chatReady: boolean;
+}
+
+export function WorkspaceSidebar({ onRecoveryReprovision, chatReady }: WorkspaceSidebarProps): React.ReactElement {
+  const { user } = useUser();
+  const { account, isSubscribed } = useBilling();
+  const { activePanelId } = useWorkspaceState();
+  const { data: stripeStatus } = useCompanyStripeStatus();
+  const moreItems = [
+    { panel: "teams-agents", label: "Agents", Icon: UsersRound },
+    ...visibleCompanySections({ provisioningEnabled: Boolean(stripeStatus?.provisioning_enabled) })
+      .flatMap((section) => section.items)
+      .filter(({ panel }) => !["teams-dashboard", "teams-search", "teams-inbox", "teams-issues"].includes(panel)),
+  ];
+
+  // Captured once so the footer's expiry check is stable across re-renders.
+  const [nowMs] = useState(() => Date.now());
+  const subscriptionStatus = account?.subscription_status ?? null;
+  const isTrialExpired = isFreeTierExpired(subscriptionStatus, account?.trial_end, nowMs);
+  const userName = user?.fullName || user?.firstName || "User";
+  // ponytail: first membership stands in for the active org (workspace-first
+  // onboarding gives one org per user); read useAuth().orgId if that changes.
+  const workspaceName = user?.organizationMemberships?.[0]?.organization?.name || "Lightbulb";
+  const userInitials = userName
+    .split(" ")
+    .map((n: string) => n[0])
+    .join("")
+    .slice(0, 2)
+    .toUpperCase();
+
+  // Preserve the hire completion signal and consume the drawer's marker.
+  const { state: drawerState, setFreshlyInstalled } = useMarketplaceDrawer();
+  useEffect(() => {
+    if (!drawerState.freshlyInstalledAgentId) return;
+    emitStep("hire");
+    const handle = setTimeout(() => setFreshlyInstalled(null), 600);
+    return () => clearTimeout(handle);
+  }, [drawerState.freshlyInstalledAgentId, setFreshlyInstalled]);
+
+  return (
+    <div className="cream-sidebar">
+      <div className="sidebar-header">
+        <h1 className="workspace-name" title={workspaceName}>{workspaceName}</h1>
+      </div>
+
+
+      <div className="sidebar-scroll">
+        {/* Messaging never needs the container, so conversations never wait on it. */}
+        <MessagingDirectory onOpenRoom={() => activateMessagesPanel()} />
+        <details className="workspace-more-nav">
+          <summary>More</summary>
+          <nav aria-label="More workspace destinations">
+            {moreItems.map(({ panel, label, Icon }) => (
+              <button
+                key={panel}
+                type="button"
+                aria-current={activePanelId === panel ? "page" : undefined}
+                disabled={!chatReady}
+                title={chatReady ? undefined : "Available once your workspace is ready"}
+                onClick={() => openPanel(panel, {}, { pushUrl: true })}
+              >
+                <Icon size={16} aria-hidden="true" />
+                <span>{label}</span>
+              </button>
+            ))}
+          </nav>
+        </details>
+      </div>
+
+
+      <div className="sidebar-footer">
+        <div className="user-row">
+          <div className="user-avatar">{userInitials}</div>
+          <div className="user-info">
+            <div className="user-name">{userName}</div>
+          </div>
+          {planLabel(subscriptionStatus, { expired: isTrialExpired }) && (
+            <span className="plan-badge">{planLabel(subscriptionStatus, { expired: isTrialExpired })}</span>
+          )}
+        </div>
+        <FreeTierNote />
+        <details className="workspace-status">
+          <summary>Workspace tools</summary>
+          <GallerySection />
+          {(isSubscribed || subscriptionStatus === "trial_local") && (
+            <HealthIndicator onRecoveryReprovision={onRecoveryReprovision} />
+          )}
+          <NodeStatusPill />
+          <DesktopUpdater version="0.1" />
+        </details>
+      </div>
+    </div>
+  );
+}

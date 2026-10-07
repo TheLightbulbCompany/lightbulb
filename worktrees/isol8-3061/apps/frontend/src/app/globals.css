@@ -1,0 +1,1524 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+@import "./landing.css";
+@import "./landing-v2.css";
+@import "./blog.css";
+
+@custom-variant dark (&:is(.dark *));
+
+@theme inline {
+  /* `bg-white`/`text-white`/`border-white` repointed to cream: §06 says the
+     light ground is cream and never pure white. Need paper-white? Write it. */
+  --color-white: var(--cream);
+
+  --font-sans: var(--font-source-sans);
+  --font-serif: var(--font-lora-serif);
+  --font-mono: var(--font-geist-mono);
+
+  /* Brand primitives as Tailwind colours: `bg-cream-deep`, `text-brass`,
+     `border-edge`, `text-ok`. */
+  --color-midnight: var(--midnight);
+  --color-cream: var(--cream);
+  --color-cream-deep: var(--cream-deep);
+  --color-cream-deeper: var(--cream-deeper);
+  --color-bulb: var(--bulb);
+  --color-brass: var(--brass);
+  --color-edge: var(--edge);
+  --color-edge-soft: var(--edge-soft);
+  --color-midnight-soft: var(--midnight-soft);
+  --color-midnight-muted: var(--midnight-muted);
+  --color-midnight-label: var(--midnight-label);
+  --color-midnight-faint: var(--midnight-faint);
+  --color-ok: var(--ok);
+  --color-warn: var(--warn);
+  --color-err: var(--err);
+  --color-info: var(--info);
+
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-ring: var(--ring);
+  --color-input: var(--input);
+  --color-border: var(--border);
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-accent: var(--accent);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-muted: var(--muted);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-secondary: var(--secondary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-primary: var(--primary);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-popover: var(--popover);
+  --color-card-foreground: var(--card-foreground);
+  --color-card: var(--card);
+}
+
+/* Scales the plain-CSS files also need (landing.css, ChatLayout.css, …).
+   `static` emits every variable to :root even when no utility uses it;
+   `inline` still bakes the value into the utilities. */
+@theme static inline {
+  /* ── Radius scale: four steps. 4 (chips, inline controls), 8 (inputs,
+     buttons, rows), 12 (cards, popovers), 16 (dialogs, panels), full. The
+     larger Tailwind names collapse onto the same steps so nothing renders a
+     fifth. Hand-typed 7/10/14/18/20px radii are a bug; use these. */
+  --radius-xs: 0.25rem;
+  --radius-sm: 0.25rem;
+  --radius-md: 0.5rem;
+  --radius-lg: 0.75rem;
+  --radius-xl: 1rem;
+  --radius-2xl: 1rem;
+  --radius-3xl: 1.25rem;
+  --radius-4xl: 1.5rem;
+
+  /* ── Motion curves. Built-in CSS easings are too weak for deliberate UI, so
+     Tailwind's `ease-out` / `ease-in-out` utilities are repointed to these.
+     Entering/exiting → ease-out. Moving on screen → ease-in-out. Sheets and
+     drawers → ease-drawer. Never ease-in on UI. Clocks live on :root (--dur-*). */
+  --ease-out: cubic-bezier(0.23, 1, 0.32, 1);
+  --ease-in-out: cubic-bezier(0.77, 0, 0.175, 1);
+  --ease-drawer: cubic-bezier(0.32, 0.72, 0, 1);
+
+  /* ── Shadows: three, all cast in midnight (never neutral black on cream).
+     hair = a card resting on the page; pop = popovers/dropdowns/menus;
+     lift = dialogs and hovered cards. Recipes live on :root (see --shadow-hair);
+     Tailwind's sm/md/lg/xl map onto them so `shadow-md` is already on brand. */
+  --shadow-2xs: var(--shadow-hair);
+  --shadow-xs: var(--shadow-hair);
+  --shadow-sm: var(--shadow-hair);
+  --shadow-md: var(--shadow-pop);
+  --shadow-lg: var(--shadow-pop);
+  --shadow-xl: var(--shadow-lift);
+  --shadow-2xl: var(--shadow-lift);
+
+  /* ── Type scale additions. With Tailwind's xs (12) / sm (14) / base (16) /
+     lg (18) / xl (20) / 2xl (24) these make the seven UI steps:
+     10 · 11 · 12 · 13 · 14 · 16 · 22. Arbitrary `text-[Npx]` is a bug. */
+  --text-2xs: 0.625rem;
+  --text-2xs--line-height: 1.4;
+  --text-caption: 0.6875rem;
+  --text-caption--line-height: 1.4;
+  --text-ui: 0.8125rem;
+  --text-ui--line-height: 1.4;
+  --text-title: 1.375rem;
+  --text-title--line-height: 1.15;
+
+  /* ── Tracking is size-specific: display tightens, small caps open. Body 0. */
+  --tracking-display: -0.02em;
+  --tracking-caps: 0.12em;
+}
+
+/*
+ * Brand Identity Manual v1.0 §06 — the only colours the product may use.
+ * Every other colour in src/ is a bug; scripts/brand-tokens-scan.mjs finds them.
+ *
+ * Contrast is checked on EVERY cream step a token can sit on, not only on
+ * --cream: the sidebar is --cream-deep, active rows and the inbox tab pill
+ * are --cream-deeper, table hover is --edge. Text clears 4.5:1 on all three
+ * steps; --faint clears the 3:1 non-text bar on all three.
+ *   text on --cream / --cream-deep / --cream-deeper:
+ *     --midnight       #0F1A2B  15.2 / 14.3 / 13.0
+ *     --midnight-soft  #3D4550   8.5 /  8.0 /  7.3
+ *     --midnight-muted #595E66   5.7 /  5.4 /  4.9   (was 64% = 4.98 / 4.68 / 4.27 ✗)
+ *     --midnight-label #5D6269   5.4 /  5.0 /  4.6   (was 61% = 4.55 / 4.27 / 3.90 ✗)
+ *     --ok 5.44   --warn 5.30   --err 6.33   --info 6.76  (on --cream, measured)
+ *     --midnight-faint #797C7F   3.7 /  3.4 /  3.1   disabled + non-text only (1.4.3 exempt)
+ *     --brass           2.94:1  NEVER body copy on cream (§06 names this a fail)
+ *     --bulb            1.45:1  never type, never a page fill
+ *   reversed (.dark) on --midnight #0F1A2B, --card #212B3A:
+ *     --foreground     #F5EFE2  15.24:1   --muted-foreground #B0AFAB  7.96:1
+ *     --ok 7.40:1   --warn 7.42:1   --err 6.70:1   --info 7.99:1
+ *     (on --card:   6.04     6.06        5.47        6.53)
+ *     --brass  5.18:1 on midnight, 4.23:1 on --card — rules and labels, not copy.
+ */
+/*
+ * Chat theme system
+ *
+ * Color splits into three layers that vary independently:
+ *   ladder    rail / sidebar / pane / raised / edge   — varies with theme
+ *   hue       the brand tint the chrome carries       — varies with focus
+ *   semantic  unread / mention / presence / run state — varies with NEITHER
+ *
+ * Focus mode is the hue layer set to neutral, which is why it costs almost
+ * nothing: no component opts in. And because the semantic layer never varies,
+ * no theme can make an unread badge or a failed run ambiguous.
+ *
+ * Scoped to :root attributes rather than :has(.workspace-shell) for two
+ * reasons. The desktop dock shell is the ONLY element carrying
+ * .workspace-shell (WorkspaceShell.tsx) — mobile renders .app-shell, so the
+ * old selector left mobile /chat on the brand cream palette while desktop was
+ * white. And a :root attribute reaches Radix portals rendered under <body>
+ * without needing :has() at all, which is what the old block's comment said it
+ * was fighting.
+ *
+ * Attributes are stamped on <html> before first paint by the inline script in
+ * app/chat/layout.tsx. `light` + `full` is the default; the blocks below are
+ * ordered so later ones win on equal specificity.
+ *
+ * Contrast: every text token is checked against EVERY plane it can sit on —
+ * pane, sidebar, raised, selected AND rail — not just the pane. A token that
+ * clears 4.5:1 on white can fail badly on the rail: --fg-mute at #6E7A88 read
+ * 4.37 on the pane and 3.24 on the rail, which is what the sidebar's section
+ * labels actually sit on. §06 says this explicitly and it is easy to skip.
+ *
+ * Worst-plane ratios after solving (AA floor 4.5 for text):
+ *   light/full   fg-mute 4.67  link 4.96  alert 4.65  live 4.68  brand 4.70
+ *   light/focus  fg-mute 4.63  link 4.98  alert 4.67  live 4.70  brand 5.75
+ *   dark/full    fg-mute 4.66  link 5.92  alert 4.65  live 5.55  brand 7.60
+ *   dark/focus   fg-mute 4.65  link 6.32  alert 4.71  live 5.92  brand 6.54
+ * --fg never drops below 10.85 and --fg-soft below 5.36 (light/full, on the
+ * rail) — both well clear, but nowhere near the 8:1 an earlier draft claimed.
+ *
+ * src/__tests__/chatThemeContrast.test.ts recomputes all 140 pairs, so a
+ * hand-edit that breaks one fails the build rather than shipping.
+ */
+:root[data-chat-theme] {
+  /* ── Ladder: light ── */
+  --plane-rail:    #D9DEE7;
+  --plane-sidebar: #EBEEF3;
+  --plane-pane:    #FFFFFF;
+  --plane-raised:  #F5F7FA;
+  --plane-edge:    #DCE1E9;
+
+  /* ── Type ── */
+  --fg:      #161C24;
+  --fg-soft: #4D5866;
+  --fg-mute: #57616C;
+
+  /* ── Semantic: constant across focus ── */
+  --link:   #1E52CC;
+  --on-link:#FFFFFF;
+  --alert:  #A83C29;
+  --live:   #186D48;
+
+  /* ── Hue: the one layer focus drains ── */
+  --brand: #7F5810;
+  --agent-tint-1: #8A5A12;
+  --agent-tint-2: #1E52CC;
+  --agent-tint-3: #1C7350;
+  /* Initials sit ON a tint, so they need the tint's own foreground: the light
+     tints are dark (white reads), the dark tints are light (ink reads). */
+  --on-agent-tint: #FFFFFF;
+
+  --plane-selected: #DDE4F2;
+  --plane-hover:    #F0F3F8;
+}
+
+:root[data-chat-theme="dark"] {
+  --plane-rail:    #0C121A;
+  --plane-sidebar: #121B26;
+  --plane-pane:    #18222F;
+  --plane-raised:  #212D3C;
+  --plane-edge:    #2A3646;
+
+  --fg:      #E9EEF4;
+  --fg-soft: #A7B4C4;
+  --fg-mute: #939EAD;
+
+  --link:   #8FB0FF;
+  --on-link:#0C121A;
+  --alert:  #E7806F;
+  --live:   #4BC08A;
+
+  --brand: #F0C34E;
+  --agent-tint-1: #F0C34E;
+  --agent-tint-2: #7FA8F0;
+  --agent-tint-3: #63C09A;
+  --on-agent-tint: #0C121A;
+
+  --plane-selected: #243448;
+  --plane-hover:    #1E2A38;
+}
+
+/* Focus drains the hue layer only. The ladder keeps its three depths and every
+   semantic token above is inherited untouched. */
+:root[data-chat-theme="light"][data-chat-accent="focus"] {
+  --plane-rail:    #DEDEDE;
+  --plane-sidebar: #EFEFEF;
+  --plane-pane:    #FFFFFF;
+  --plane-raised:  #F7F7F7;
+  --plane-edge:    #E2E2E2;
+
+  --fg:      #1A1A1C;
+  --fg-soft: #52525A;
+  --fg-mute: #606069;
+
+  --brand: #52525A;
+  --agent-tint-1: #6E6E78;
+  --agent-tint-2: #6E6E78;
+  --agent-tint-3: #6E6E78;
+  --on-agent-tint: #FFFFFF;
+
+  --plane-selected: #E4E4E6;
+  --plane-hover:    #F2F2F3;
+}
+
+:root[data-chat-theme="dark"][data-chat-accent="focus"] {
+  --plane-rail:    #101012;
+  --plane-sidebar: #171719;
+  --plane-pane:    #1E1E21;
+  --plane-raised:  #27272B;
+  --plane-edge:    #323236;
+
+  --fg:      #ECECEE;
+  --fg-soft: #B4B4B8;
+  --fg-mute: #97979C;
+
+  --brand: #B4B4B8;
+  --agent-tint-1: #9B9BA2;
+  --agent-tint-2: #9B9BA2;
+  --agent-tint-3: #9B9BA2;
+  --on-agent-tint: #101012;
+
+  --plane-selected: #2E2E33;
+  --plane-hover:    #26262A;
+}
+
+/*
+ * The legacy brand-token names are kept as a view onto the ladder, so the
+ * ~15 shadcn primitives in components/ui/ and every rule in ChatLayout.css /
+ * messaging.css / workspace.css that already reads --cream-deep, --edge,
+ * --midnight-muted &c. picks up the theme with no edit. New code should name
+ * the --plane-* / --fg-* tokens directly.
+ */
+:root[data-chat-theme] {
+  --cream:         var(--plane-pane);
+  --cream-deep:    var(--plane-sidebar);
+  --cream-deeper:  var(--plane-selected);
+  --edge:          var(--plane-edge);
+  --edge-soft:     var(--plane-hover);
+  --midnight:       var(--fg);
+  --midnight-soft:  var(--fg-soft);
+  --midnight-muted: var(--fg-mute);
+  --midnight-label: var(--fg-mute);
+  --midnight-faint: var(--fg-mute);
+
+  --background: var(--plane-pane);
+  --foreground: var(--fg);
+  --card: var(--plane-pane);
+  --card-foreground: var(--fg);
+  --popover: var(--plane-raised);
+  --popover-foreground: var(--fg);
+  --primary: var(--fg);
+  --primary-foreground: var(--plane-pane);
+  --secondary: var(--plane-raised);
+  --secondary-foreground: var(--fg);
+  --muted: var(--plane-sidebar);
+  --muted-foreground: var(--fg-mute);
+  --accent: var(--plane-selected);
+  --accent-foreground: var(--fg);
+  --border: var(--plane-edge);
+  --input: var(--plane-edge);
+  --ring: var(--link);
+  --destructive: var(--alert);
+  --destructive-foreground: var(--plane-pane);
+
+  --ok:   var(--live);
+  --warn: var(--brand);
+  --err:  var(--alert);
+  --info: var(--link);
+  --on-info: var(--on-link);
+
+  --presence: var(--live);
+  /* Agents are always reachable, so their dot is the link blue, never the
+     human online/offline green — see ParticipantAvatar. Presence stays
+     UNIFORM across agents on purpose: identity is carried by the avatar tint
+     (--agent-tint-*), and the two must not compete. */
+  --presence-agent: var(--link);
+
+  --chart-1: var(--live);
+  --chart-2: var(--link);
+  --chart-3: var(--brand);
+  --chart-4: var(--alert);
+  --chart-5: var(--fg-mute);
+}
+
+:root {
+  --radius: 0.5rem;
+
+  /* Motion clocks. Utilities: `duration-(--dur-base)`; CSS: `var(--dur-base)`.
+     fast = press feedback, tooltips, hover colour · base = popovers, dropdowns,
+     list enter · slow = dialogs, drawers, panel swaps. UI never exceeds slow;
+     strike is the landing lamp's clock and marketing-only. */
+  --dur-fast: 120ms;
+  --dur-base: 180ms;
+  --dur-slow: 280ms;
+  --dur-strike: 700ms;
+
+  /* Layers. Chrome (sticky headers, toolbars) < overlays (dialogs, menus) <
+     toasts. A bare `z-50` on chrome ties with the dialog scrim; use these. */
+  --z-chrome: 20;
+  --z-overlay: 50;
+  --z-toast: 60;
+
+  /* Shadow recipes (defined here, not in @theme: Tailwind's optimizer rewrites
+     color-mix() inside theme values). The theme's sm/md/lg/xl point at these. */
+  --shadow-hair: 0 1px 0 color-mix(in srgb, var(--midnight) 4%, transparent);
+  --shadow-pop:
+    0 4px 12px color-mix(in srgb, var(--midnight) 8%, transparent),
+    0 12px 32px color-mix(in srgb, var(--midnight) 10%, transparent);
+  --shadow-lift: 0 16px 40px color-mix(in srgb, var(--midnight) 10%, transparent);
+
+  --midnight: #0F1A2B;              /* headers, dark UI, all body copy on cream */
+  --cream: #F5EFE2;                 /* default light ground; never pure white */
+  --bulb: #F0C34E;                  /* the light — one accent at a time */
+  --brass: #B68235;                 /* rules, small labels ON MIDNIGHT only */
+
+  --cream-deep: #EFE8D9;            /* the one surface step (hover/selected, inset inputs) */
+  --cream-deeper: #E7DECB;          /* the second step (pressed, table stripe) */
+  --edge: #DED5C2;                  /* hairline borders on cream */
+  --edge-soft: #E8E0D0;             /* softer separation on cream */
+
+  --midnight-soft: color-mix(in srgb, var(--midnight) 80%, var(--cream));   /* secondary text */
+  --midnight-muted: color-mix(in srgb, var(--midnight) 68%, var(--cream));  /* tertiary/metadata text — 68% is the lowest step that clears AA on --cream-deeper (4.9:1) */
+  /* §06 says 60% for small uppercase labels; a label is text and labels sit
+     on the --cream-deep sidebar, so the floor is AA on cream-deep: 66% is
+     the lowest step that clears it (5.0:1) and cream-deeper (4.6:1). */
+  --midnight-label: color-mix(in srgb, var(--midnight) 66%, var(--cream));
+  --midnight-faint: color-mix(in srgb, var(--midnight) 54%, var(--cream));  /* disabled text; also status dots, diagram strokes — 3.1:1 on cream-deeper, the 3:1 non-text bar on every step (50% was 2.8 there) */
+
+  /* §06 state pairs — the second value is for the reversed ground. */
+  --ok: #3A6B45;    --ok-reversed: #7FB58D;
+  --warn: #96501A;  --warn-reversed: #E09A55;
+  --err: #96382B;   --err-reversed: #DB8C7C;
+  --info: #35566F;  --info-reversed: #93B4C9;
+
+  /* shadcn/ui surface contract as a view onto the tokens above, so the
+     ~15 primitives in components/ui/ need no edits. Cards are delineated by
+     --border, not a surface shift. */
+  --background: var(--cream);
+  --foreground: var(--midnight);
+  --card: var(--cream);
+  --card-foreground: var(--midnight);
+  --popover: var(--cream);
+  --popover-foreground: var(--midnight);
+  --primary: var(--midnight);
+  --primary-foreground: var(--cream);
+  --secondary: var(--cream-deep);
+  --secondary-foreground: var(--midnight);
+  --muted: var(--cream-deep);
+  --muted-foreground: var(--midnight-muted);
+  --accent: var(--cream-deep);
+  --accent-foreground: var(--midnight);
+  --destructive: var(--err);
+  --destructive-foreground: var(--cream);
+  --border: var(--edge);
+  --input: var(--edge);
+  --ring: var(--midnight);  /* on cream the bulb is 1.45:1 — a focus ring must clear 3:1, so cream rings midnight */
+
+  /* Growth-dashboard series: 1 ok, 2 info, 3 warn, 4 err, 5 neutral. Semantic:
+     1 = autonomous/healthy, 2 = human-initiated, 3 = nightly CEO, 4 = alert,
+     5 = secondary/unknown. The fifth is deliberately NOT a state colour — a
+     state colour only ever means state, and it was brass, a second warm gold
+     that no reader could separate from warn in one chart. */
+  --chart-1: var(--ok);
+  --chart-2: var(--info);
+  --chart-3: var(--warn);
+  --chart-4: var(--err);
+  --chart-5: var(--midnight-muted);
+}
+
+/*
+ * Reversed — cream on midnight, §06's reversed treatment, not gray.
+ * Scoped to /admin, the only surface applying `.dark` (app/admin/layout.tsx:45,52);
+ * the class stays the mechanism so a future dark mode is one class away.
+ */
+.dark {
+  --background: var(--midnight);
+  --foreground: var(--cream);
+  --card: color-mix(in srgb, var(--midnight) 92%, var(--cream));
+  --card-foreground: var(--cream);
+  --popover: color-mix(in srgb, var(--midnight) 92%, var(--cream));
+  --popover-foreground: var(--cream);
+  --primary: var(--cream);
+  --primary-foreground: var(--midnight);
+  --secondary: color-mix(in srgb, var(--midnight) 86%, var(--cream));
+  --secondary-foreground: var(--cream);
+  --muted: color-mix(in srgb, var(--midnight) 86%, var(--cream));
+  --muted-foreground: color-mix(in srgb, var(--cream) 70%, var(--midnight));
+  --accent: color-mix(in srgb, var(--midnight) 86%, var(--cream));
+  --accent-foreground: var(--cream);
+  --destructive: var(--err-reversed);
+  --destructive-foreground: var(--midnight);
+  --border: color-mix(in srgb, var(--cream) 14%, var(--midnight));
+  --input: color-mix(in srgb, var(--cream) 14%, var(--midnight));
+  /* The one place the bulb appears in product chrome: focus is where the
+     light is — and on midnight it clears 3:1, which it cannot do on cream. */
+  --ring: var(--bulb);
+
+  /* The state tokens flip here, so no component ever names a -reversed token. */
+  --ok: var(--ok-reversed);
+  --warn: var(--warn-reversed);
+  --err: var(--err-reversed);
+  --info: var(--info-reversed);
+
+  --chart-1: var(--ok);
+  --chart-2: var(--info);
+  --chart-3: var(--warn);
+  --chart-4: var(--err);
+  /* = --muted-foreground on this ground; --midnight-muted is a cream-ground
+     mix and would compute to a near-invisible grey on midnight. */
+  --chart-5: color-mix(in srgb, var(--cream) 70%, var(--midnight));
+}
+
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+
+  body {
+    @apply bg-background text-foreground;
+    /* §05: Source Sans 3 for everything that is not prose. */
+    font-family: var(--font-sans), ui-sans-serif, system-ui, sans-serif;
+  }
+
+  /* The one focus recipe. Keyboard focus only (`:focus-visible`, never
+     `:focus`); midnight on cream, bulb on midnight via --ring. Components
+     do not carry their own `ring-*` / `outline` focus styles. */
+  :focus-visible {
+    outline: 2px solid var(--ring);
+    outline-offset: 2px;
+  }
+}
+
+/* The product's most repeated typographic element — the small uppercase
+   label over a section, a column, a field. One recipe: 10px · 600 · 0.12em ·
+   --midnight-label (4.55:1 on cream). On a stepped surface (cream-deep and
+   below) pair it with `text-midnight-soft`. */
+@utility label-caps {
+  font-size: 0.625rem;
+  line-height: 1.4;
+  font-weight: 600;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--midnight-label);
+}
+
+@layer utilities {
+  .bg-noise {
+    background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noiseFilter'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.65' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noiseFilter)' opacity='0.05'/%3E%3C/svg%3E");
+  }
+}
+
+.font-editorial {
+  font-family: var(--font-sans), ui-sans-serif, system-ui, sans-serif;
+}
+
+.font-editorial-serif {
+  font-family: var(--font-serif), Georgia, serif;
+}
+
+.editorial-page {
+  min-height: 100vh;
+  background: var(--cream);
+  color: var(--midnight);
+  font-family: var(--font-sans), ui-sans-serif, system-ui, sans-serif;
+}
+
+.editorial-card,
+.agent-card {
+  border: 1px solid var(--edge);
+  background: var(--cream);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-hair);
+}
+
+.editorial-card-hover,
+.agent-card {
+  transition:
+    transform var(--dur-base) var(--ease-out),
+    box-shadow var(--dur-base) ease,
+    border-color var(--dur-base) ease;
+}
+
+.editorial-card-hover:hover,
+.agent-card:hover {
+  box-shadow: var(--shadow-lift);
+}
+
+/* The lift is gated: a tap on a touch device fires a sticky :hover, so an
+   ungated transform leaves the card floating after the finger is gone. */
+@media (hover: hover) and (pointer: fine) {
+  .editorial-card-hover:hover,
+  .agent-card:hover {
+    transform: translateY(-3px);
+  }
+}
+
+.editorial-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  border-radius: 999px;
+  border: 1px solid transparent;
+  font-family: var(--font-sans), ui-sans-serif, system-ui, sans-serif;
+  /* 600, matching buttonVariants — the two dialects render as one control. */
+  font-weight: 600;
+  transition:
+    transform var(--dur-fast) var(--ease-out),
+    background var(--dur-fast) ease,
+    color var(--dur-fast) ease,
+    border-color var(--dur-fast) ease;
+}
+
+/* Press feedback: the control has to look like it heard you. */
+.editorial-btn:active:not(:disabled) {
+  transform: scale(0.97);
+}
+
+.editorial-btn--sm  { padding: 4px 10px; font-size: var(--text-xs); line-height: 1.4; }
+.editorial-btn--md  { padding: 6px 14px; font-size: var(--text-ui); line-height: 1.4; }
+.editorial-btn--lg  { padding: 8px 18px; font-size: var(--text-sm); line-height: 1.4; }
+.editorial-btn--icon { padding: 6px;     width: 32px; height: 32px; }
+
+.editorial-btn--primary {
+  background: var(--midnight);
+  color: var(--cream);
+}
+
+.editorial-btn--primary:hover {
+  background: color-mix(in srgb, var(--midnight) 88%, var(--cream));
+}
+
+.editorial-btn--secondary {
+  background: var(--cream);
+  color: var(--midnight);
+  border-color: var(--edge);
+}
+
+.editorial-btn--ghost {
+  background: transparent;
+  color: var(--midnight);
+  border: 1px solid transparent;
+}
+.editorial-btn--ghost:hover:not(:disabled) {
+  background: var(--edge);
+}
+
+.editorial-btn--destructive {
+  background: var(--err);
+  color: var(--cream);
+  border: 1px solid var(--err);
+}
+.editorial-btn--destructive:hover:not(:disabled) {
+  filter: brightness(0.95);
+}
+
+.editorial-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* FILLED variants need a real disabled treatment, not the blanket alpha
+ * above. At 50% opacity a --midnight fill composites to a washed-out sage
+ * (#8a8578) and drags its own --cream label down with it — the label ends up
+ * near the page colour, so it reads as a ghostly blob at ~2.5:1 rather than
+ * as a disabled control. Flattening to a muted surface + --midnight-muted label keeps
+ * the shape legible as a STATE (~2.9:1, and it's the design system's own
+ * secondary-text token). Disabled controls are exempt from WCAG 1.4.3, but
+ * this is still an improvement on what it replaces, not a regression. */
+.editorial-btn--primary:disabled,
+.editorial-btn--destructive:disabled {
+  opacity: 1;
+  background: var(--cream-deeper);
+  color: var(--midnight-muted);
+  border-color: var(--edge);
+}
+
+.agent-monogram {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  border: 1px solid;
+  font-family: var(--font-serif), Georgia, serif;
+  font-style: italic;
+  font-weight: 700;
+  line-height: 1;
+}
+
+.agent-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  border-radius: var(--radius-sm);
+  background: var(--cream-deep);
+  color: var(--midnight-muted);
+  padding: 3px 7px;
+  font-family: var(--font-mono), ui-monospace, SFMono-Regular, monospace;
+  font-size: var(--text-2xs);
+  line-height: 1.4;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: var(--tracking-caps);
+}
+
+.agent-pill--midnight {
+  background: var(--cream-deep);
+  color: var(--midnight);
+}
+
+/* brass = the detail colour: paid, price, a small mark. The HAIRLINE is brass;
+   the label is the ground's text colour — brass type on cream is 2.94:1 (§06 fail). */
+.agent-pill--brass {
+  background: transparent;
+  box-shadow: inset 0 0 0 1px var(--brass);
+  color: var(--foreground);
+}
+
+.agent-pill--err {
+  background: transparent;
+  box-shadow: inset 0 0 0 1px var(--err);
+  color: var(--err);
+}
+
+.agent-pill--warn {
+  background: transparent;
+  box-shadow: inset 0 0 0 1px var(--warn);
+  color: var(--warn);
+}
+
+.section-label {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 12px;
+  font-family: var(--font-mono), ui-monospace, SFMono-Regular, monospace;
+  color: var(--midnight-label);
+  font-size: var(--text-2xs);
+  line-height: 1.4;
+  font-weight: 600;
+  letter-spacing: var(--tracking-caps);
+  text-transform: uppercase;
+}
+
+.section-label::before,
+.section-label::after {
+  content: "";
+  height: 1px;
+  background: var(--edge);
+}
+
+.section-label::before {
+  width: 18px;
+}
+
+.section-label::after {
+  flex: 1;
+}
+
+.section-label b {
+  color: var(--midnight);
+  font-weight: 700;
+  letter-spacing: 0;
+}
+
+.agent-card {
+  display: flex;
+  min-height: 260px;
+  flex-direction: column;
+  gap: 14px;
+  padding: 22px;
+  color: var(--midnight);
+}
+
+.agent-card__head {
+  display: flex;
+  align-items: flex-start;
+  gap: 14px;
+}
+
+.agent-card h3 {
+  margin: 0;
+  color: var(--midnight);
+  font-family: var(--font-serif), Georgia, serif;
+  font-size: var(--text-title);
+  line-height: 1.15;
+}
+
+.agent-card__head p {
+  margin-top: 4px;
+  color: var(--midnight-label);
+  font-family: var(--font-mono), ui-monospace, SFMono-Regular, monospace;
+  font-size: var(--text-2xs);
+  line-height: 1.4;
+  font-weight: 600;
+  letter-spacing: var(--tracking-caps);
+  text-transform: uppercase;
+}
+
+.agent-card__quote {
+  min-height: 44px;
+  color: var(--midnight-soft);
+  font-family: var(--font-serif), Georgia, serif;
+  font-size: var(--text-sm);
+  font-style: italic;
+  line-height: 1.6;
+}
+
+.agent-card__pills {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+
+.agent-card__foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: auto;
+  border-top: 1px solid var(--edge);
+  padding-top: 12px;
+}
+
+.agent-card__foot > span {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--midnight-muted);
+  font-size: var(--text-caption);
+}
+
+.status-dot {
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  border-radius: 999px;
+  flex: 0 0 auto;
+}
+
+.status-dot--active {
+  background: var(--brass);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--brass) 18%, transparent);
+}
+
+/* ═══════════════════════════════════════════════
+   THINKING FILAMENT
+   Replaces the rotating 8 → ∞ glyph. The lamp's cage
+   filament heats while the agent works and cools when
+   it stops. Fast attack, slow decay — a square 50/50
+   blink reads as a broken bulb, i.e. an error, which is
+   the opposite of "running".
+   ═══════════════════════════════════════════════ */
+
+.agent-glyph { display: block; flex: none; }
+
+.agent-glyph .agent-glyph-glass {
+  fill: none;
+  stroke: var(--midnight);
+  opacity: 0.34;
+  transition: stroke var(--dur-slow) ease, opacity var(--dur-slow) ease;
+}
+.agent-glyph .agent-glyph-cage {
+  fill: var(--midnight);
+  stroke: var(--midnight);
+  opacity: 0.32;
+  transition: opacity var(--dur-slow) ease, fill var(--dur-slow) ease, stroke var(--dur-slow) ease;
+}
+.agent-glyph .agent-glyph-collar {
+  fill: var(--midnight);
+  opacity: 0.45;
+  transition: opacity var(--dur-slow) ease;
+}
+
+.agent-glyph.agent-glyph--thinking .agent-glyph-cage {
+  animation: filament-incandesce 1.45s cubic-bezier(0.2, 0.9, 0.3, 1) infinite;
+}
+.agent-glyph.agent-glyph--thinking .agent-glyph-glass {
+  animation: filament-envelope 1.45s cubic-bezier(0.2, 0.9, 0.3, 1) infinite;
+}
+
+@keyframes filament-incandesce {
+  0%   { opacity: 0.28; fill: var(--midnight);  stroke: var(--midnight); }
+  14%  { opacity: 1;    fill: var(--bulb); stroke: var(--bulb); }  /* attack */
+  62%  { opacity: 0.62; fill: var(--bulb); stroke: var(--bulb); }  /* decay  */
+  100% { opacity: 0.28; fill: var(--midnight);  stroke: var(--midnight); }
+}
+@keyframes filament-envelope {
+  0%   { opacity: 0.34; stroke: var(--midnight); }
+  14%  { opacity: 0.95; stroke: var(--brass); }
+  62%  { opacity: 0.55; stroke: var(--brass); }
+  100% { opacity: 0.34; stroke: var(--midnight); }
+}
+
+/* Motion is decoration here, not information — the label beside the glyph
+   ("Working…", "Thinking…") already carries the state, so reduced-motion
+   holds the bulb lit rather than cycling it. */
+@media (prefers-reduced-motion: reduce) {
+  .agent-glyph.agent-glyph--thinking .agent-glyph-cage,
+  .agent-glyph.agent-glyph--thinking .agent-glyph-glass { animation: none; }
+  .agent-glyph.agent-glyph--thinking .agent-glyph-cage {
+    opacity: 1; fill: var(--bulb); stroke: var(--bulb);
+  }
+  .agent-glyph.agent-glyph--thinking .agent-glyph-glass {
+    opacity: 0.9; stroke: var(--brass);
+  }
+}
+
+/* ═══════════════════════════════════════════════
+   MARKETING CHROME — the nav and footer shared by the landing page, the
+   blog/docs/SEO layouts and /marketplace. The landing page's own surface
+   lives in landing.css (`ld-*`); the previous landing's hero, workflow,
+   features, pricing, marketplace, FAQ and reveal blocks were deleted with
+   the page they styled.
+   ═══════════════════════════════════════════════ */
+
+/* ── NAV ── */
+.landing-nav {
+  position: fixed; top: 0; left: 0; right: 0; z-index: 50;
+  display: grid; grid-template-columns: 1fr auto 1fr; align-items: center;
+  padding: 16px 24px;
+  border-bottom: 1px solid var(--edge);
+  background: rgba(245, 239, 226, 0.95);
+  backdrop-filter: blur(12px);
+}
+
+/* The nav themes with the room. It is rendered INSIDE `.ld-page` (page.tsx,
+   and the blog/docs/seo layouts), so it inherits the page-wide theme
+   transition — and scoping to `.ld-page` is deliberate: `data-lb-theme` lives
+   on <html> and survives a soft nav to /marketplace, whose layout renders this
+   same nav OUTSIDE `.ld-page` on a cream page. Without any dark rule the bar
+   floated old-cream over the midnight room. */
+[data-lb-theme="dark"] .ld-page .landing-nav {
+  background: rgba(15, 26, 43, 0.92);
+  border-bottom-color: rgba(245, 239, 226, 0.14);
+}
+[data-lb-theme="dark"] .ld-page .landing-nav .brand-logo--midnight { color: #F5EFE2; }
+[data-lb-theme="dark"] .ld-page .landing-nav .nav-badge { color: #F5EFE2; }
+[data-lb-theme="dark"] .ld-page .landing-nav .nav-links { color: rgba(245, 239, 226, 0.72); }
+[data-lb-theme="dark"] .ld-page .landing-nav .nav-links a:hover,
+[data-lb-theme="dark"] .ld-page .landing-nav .nav-links a.active {
+  color: #F5EFE2;
+  background: rgba(245, 239, 226, 0.08);
+}
+[data-lb-theme="dark"] .ld-page .landing-nav .nav-login { color: rgba(245, 239, 226, 0.72); }
+[data-lb-theme="dark"] .ld-page .landing-nav .nav-login:hover { color: #F5EFE2; }
+/* The primary button inverts with the page tokens (cream fill, midnight type);
+   its hover/active fills are hardcoded midnight, which would put midnight type
+   on midnight. */
+[data-lb-theme="dark"] .ld-page .landing-nav .btn-primary:hover { background: color-mix(in srgb, #F5EFE2 88%, #0F1A2B); }
+[data-lb-theme="dark"] .ld-page .landing-nav .btn-primary:active { background: color-mix(in srgb, #F5EFE2 78%, #0F1A2B); }
+.nav-links { display: flex; gap: 8px; font-size: 14px; font-weight: 500; color: var(--midnight-muted); }
+.nav-links a {
+  padding: 6px 14px; border-radius: 99px;
+  transition: color .2s, background .2s;
+  position: relative; text-decoration: none; color: inherit;
+}
+.nav-links a:hover { color: var(--midnight); background: rgba(15, 26, 43,.06); }
+.nav-links a.active { color: var(--midnight); background: rgba(15, 26, 43,.08); font-weight: 600; }
+/* scaleX from the centre — `left`/`right` animated layout on every hover. */
+.nav-links a::after {
+  content: ''; position: absolute; bottom: 2px; left: 14px; right: 14px;
+  height: 1.5px; background: var(--midnight); border-radius: 1px;
+  transform: scaleX(0); transform-origin: center;
+  transition: transform var(--dur-base) var(--ease-out);
+}
+.nav-links a:hover::after, .nav-links a.active::after { transform: scaleX(1); }
+.nav-brand { display: flex; align-items: flex-start; }
+.nav-brand .nav-badge { margin-top: 2px; }
+.nav-badge {
+  display: inline-block;
+  font-size: 8px; font-weight: 700; letter-spacing: 1px; text-transform: uppercase;
+  /* NOT --brass: that token is brass since the rebrand, and §06
+     records brass on cream at 2.9:1 — a fail it names explicitly. Midnight
+     is 15.2:1, and the brass stays where it belongs, on the rule and the
+     wash behind this badge. */
+  color: var(--midnight); background: rgba(182, 130, 53,.12);
+  border: 1px solid rgba(182, 130, 53,.3);
+  padding: 1px 5px; border-radius: 99px;
+  vertical-align: super; margin-left: 3px; line-height: 1.4;
+}
+.nav-right { display: flex; align-items: center; gap: 16px; justify-content: flex-end; }
+.nav-login { font-size: 14px; font-weight: 500; color: var(--midnight-muted); transition: color .2s; text-decoration: none; }
+.nav-login:hover { color: var(--midnight); }
+.btn-primary {
+  padding: 8px 20px; font-size: 14px; font-weight: 700; font-family: inherit;
+  color: var(--cream); background: var(--midnight); border-radius: 999px; border: none; cursor: pointer;
+  transition: transform var(--dur-fast) var(--ease-out), background var(--dur-base) ease;
+  text-decoration: none; display: inline-block;
+}
+.btn-primary:hover { background: #16223a; }
+.btn-primary:active { background: #0a1422; transform: scale(0.97); }
+.btn-secondary {
+  padding: 12px 28px; font-size: 14px; font-weight: 500; font-family: inherit;
+  color: var(--midnight-muted); border: 1px solid var(--edge); border-radius: 999px; background: transparent;
+  cursor: pointer; transition: background .2s, border-color .2s; text-decoration: none; display: inline-block;
+}
+.btn-secondary:hover { background: var(--cream-deep); border-color: var(--midnight-faint); }
+/* ── NAV MOBILE ── */
+.nav-hamburger {
+  display: none;
+  background: none;
+  border: none;
+  cursor: pointer;
+  padding: 4px;
+  flex-direction: column;
+  gap: 5px;
+  z-index: 60;
+}
+.hamburger-line {
+  display: block;
+  width: 20px;
+  height: 2px;
+  background: var(--midnight);
+  border-radius: 1px;
+  transition: transform 0.25s ease, opacity 0.25s ease;
+}
+.hamburger-line.open:nth-child(1) { transform: translateY(7px) rotate(45deg); }
+.hamburger-line.open:nth-child(2) { opacity: 0; }
+.hamburger-line.open:nth-child(3) { transform: translateY(-7px) rotate(-45deg); }
+.nav-mobile-login { display: none; }
+.nav-mobile-backdrop { display: none; }
+
+@media (max-width: 768px) {
+  .landing-nav {
+    grid-template-columns: 1fr auto;
+    padding: 12px 16px;
+  }
+  .nav-links {
+    display: none;
+    position: absolute;
+    top: 100%;
+    left: 0;
+    right: 0;
+    background: rgba(245, 239, 226, 0.98);
+    backdrop-filter: blur(12px);
+    flex-direction: column;
+    padding: 16px;
+    gap: 4px;
+    border-bottom: 1px solid var(--edge);
+    box-shadow: 0 8px 24px rgba(0,0,0,0.08);
+    z-index: 55;
+  }
+  [data-lb-theme="dark"] .ld-page .landing-nav .nav-links { background: rgba(15, 26, 43, 0.98); }
+  /* It hangs off the bar, so it arrives from above. Closing snaps — the
+     class comes off and display goes back to none, which is cheap and fine. */
+  .nav-links.mobile-open {
+    display: flex;
+    opacity: 1;
+    transform: translateY(0);
+    transition: opacity var(--dur-base) var(--ease-out), transform var(--dur-base) var(--ease-out);
+  }
+  @starting-style {
+    .nav-links.mobile-open { opacity: 0; transform: translateY(-6px); }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    /* Keep the fade, drop the drop. */
+    @starting-style {
+      .nav-links.mobile-open { transform: none; }
+    }
+  }
+  .nav-links a { padding: 12px 16px; font-size: 15px; border-radius: 8px; }
+  .nav-mobile-login { display: block; }
+  .nav-login { display: none; }
+  .nav-hamburger { display: flex; }
+  .nav-mobile-backdrop {
+    display: block;
+    position: fixed;
+    inset: 0;
+    z-index: 49;
+    background: rgba(0,0,0,0.2);
+  }
+}
+
+/* Named for the landing page's old fake typing cursor (.wf-type-cursor,
+   deleted with the rest of that page); the real chat stream inherited it. */
+@keyframes wf-cursor-blink { 0%,100%{opacity:1} 50%{opacity:0} }
+
+/* ── CHAT STREAM: caret + block reveal (MessageList.tsx) ──
+   .chat-caret is the streaming caret. Reuses @keyframes wf-cursor-blink
+   above — do not duplicate it.
+   .chat-block-in fires once per streamed block on mount: settled blocks
+   memo-hit and never re-render, and the growing tail block is reconciled
+   in place rather than remounted, so this can never re-trigger or flicker.
+   Opacity + a small translate only — no blur filter, `will-change: filter`
+   on every streamed block is a real paint cost for a subtle effect.
+   Covered by the reduced-motion rule below (no second rule needed).
+   .chat-tail fuses the caret onto the same line as the last line of prose
+   for the common case (a block that ends in a single paragraph); it's a
+   no-op for blocks ending in a list/table/code fence, where the caret
+   falls to its own line instead — an acceptable degrade rather than
+   forcing every block shape inline. */
+.chat-caret {
+  display: inline-block; width: 2px; height: 1em; background: var(--midnight);
+  margin-left: 2px; vertical-align: text-bottom; animation: wf-cursor-blink .6s step-end infinite;
+}
+@keyframes chat-block-in { from { opacity: 0; transform: translateY(3px); } to { opacity: 1; transform: none; } }
+.chat-block-in { animation: chat-block-in var(--dur-base) var(--ease-out) both; }
+.chat-tail > p:last-child { display: inline; }
+/* Turn-action buttons (Copy/Share, AgentHead) — 24px is under the 44px
+   touch-target guidance; bump the hit area on coarse (touch) pointers.
+   .chat-thinking-trigger (ThinkingBlock) is inline content, not a fixed
+   icon box, so it can't grow the same way without shifting the settled
+   "one quiet line" it sits on — padding widens the actual clickable
+   border-box, and the matching negative margin cancels the flow-layout shift
+   so the rendered line stays put on desktop too.
+
+   The growth is DOWNWARD AND SIDEWAYS ONLY, never up. A symmetric expansion is
+   sized to the largest neighbour gap, but collision is decided by the smallest,
+   and above this trigger the smallest is ZERO: MarkdownContent paragraphs use
+   `mb-3 last:mb-0`, so a thinking block following prose has no buffer at all,
+   and AgentHead's row leaves only `mb-2` (8px). A symmetric 12px grow put this
+   hit-box 4px inside AgentHead's 32px Copy/Share buttons, so a tap aimed at
+   Copy on a turn that opened with reasoning hit the Thinking toggle instead —
+   trading one touch bug for a worse one. Downward there IS room (`mb-4`, 16px
+   > 12px), which lands the same 32px height as .chat-action-btn above. */
+@media (pointer: coarse) {
+  .chat-action-btn { width: 32px; height: 32px; }
+  .chat-thinking-trigger { margin: 0 -12px -12px; padding: 0 12px 12px; }
+  /* .chat-code-copy-btn (CodeBlock) — same technique as .chat-thinking-trigger
+     above: negative margin + matching padding grows the clickable box without
+     growing the layout box, so it can't widen a code block past its own
+     overflow-x scroll container. Same DOWNWARD AND SIDEWAYS ONLY, never up:
+     a code fence can open a turn directly (no prose between it and
+     AgentHead's Copy/Share row above), and this button can't tell which
+     case it's in from CSS alone, so it only ever grows into its own header
+     row's padding and the code pane below it — never toward whatever sits
+     above the block. */
+  .chat-code-copy-btn { margin: 0 -12px -12px; padding: 0 12px 12px; }
+  /* .chat-hire-alt-btn (HireCard alternatives drawer) — rows are stacked
+     with `space-y-1` (4px), the smallest guaranteed gap in the drawer: it's
+     the same 4px between every pair of rows, by construction. The bump must
+     use THAT gap, not the (unguaranteed) space below the last row where the
+     drawer ends — growing the last row down too would eat into whatever
+     content follows the card, which we don't control. So :not(:last-child)
+     excludes it, and every other row claims its own 4px gap once, downward
+     only (10px = the 6px `py-1.5` base + the 4px gap), same technique as
+     .chat-thinking-trigger above: negative margin cancels padding's push on
+     the surrounding flow, so neighbouring rows don't shift. */
+  .chat-hire-alt-list > li:not(:last-child) .chat-hire-alt-btn {
+    margin-bottom: -4px;
+    padding-bottom: 10px;
+  }
+}
+/* ── FOOTER ── */
+.landing-footer { background: #0F1A2B; padding: 48px 24px; }
+.footer-inner { max-width: 1152px; margin: 0 auto; display: flex; justify-content: space-between; align-items: center; gap: 32px; flex-wrap: wrap; }
+.footer-links { display: flex; gap: 32px; font-size: 14px; }
+.footer-links a { color: rgba(255,255,255,.6); transition: color .15s; text-decoration: none; position: relative; display: inline-block; }
+.footer-links a::after { content: ''; position: absolute; bottom: -2px; left: 0; width: 0; height: 1px; background: var(--cream); transition: width .3s ease; }
+.footer-links a:hover { color: var(--cream); }
+.footer-links a:hover::after { width: 100%; }
+.footer-legal-cluster { display: flex; flex-wrap: wrap; gap: 18px; font-size: 12px; }
+.footer-legal-cluster a { color: rgba(255,255,255,.45); transition: color .15s; text-decoration: none; position: relative; display: inline-block; }
+.footer-legal-cluster a::after { content: ''; position: absolute; bottom: -2px; left: 0; width: 0; height: 1px; background: var(--cream); transition: width .3s ease; }
+.footer-legal-cluster a:hover { color: var(--cream); }
+.footer-legal-cluster a:hover::after { width: 100%; }
+.footer-copy { font-size: 12px; color: rgba(255,255,255,.4); }
+@media (max-width: 768px) {
+  .landing-footer { padding: 32px 20px; }
+  .footer-inner { flex-direction: column; text-align: center; gap: 16px; }
+  .footer-links { justify-content: center; gap: 20px; flex-wrap: wrap; }
+}
+
+/* ── REDUCED MOTION — gentler, not zero ──
+   Opacity and colour transitions stay (they aid comprehension); movement goes.
+   Spinners keep spinning — a frozen loader reads as a hang. Surfaces that carry
+   their own reduce rules (.agent-glyph, the provisioning stepper, the landing
+   lamp) still apply them; this block is the floor, not a universal nuke. */
+@media (prefers-reduced-motion: reduce) {
+  /* tw-animate-css enter/exit: keep the fade, zero the translate/scale/rotate.
+     Unlayered, so it beats the `slide-in-from-*` / `zoom-in-*` utilities. */
+  .animate-in, .animate-out {
+    --tw-enter-translate-x: 0; --tw-enter-translate-y: 0; --tw-enter-scale: 1; --tw-enter-rotate: 0;
+    --tw-exit-translate-x: 0; --tw-exit-translate-y: 0; --tw-exit-scale: 1; --tw-exit-rotate: 0;
+  }
+  .animate-pulse, .animate-ping, .animate-bounce { animation: none; }
+  .chat-block-in { animation-name: chat-block-fade; }
+}
+@keyframes chat-block-fade { from { opacity: 0; } to { opacity: 1; } }
+
+/* ═══════════════════════════════════════════════
+   LEGAL / SUPPORT PAGE STYLES
+   ═══════════════════════════════════════════════ */
+
+.legal-page {
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+  background: var(--cream);
+  color: var(--midnight);
+  font-family: var(--font-sans), ui-sans-serif, system-ui, sans-serif;
+  line-height: 1.6;
+}
+
+.legal-topbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  max-width: 960px;
+  width: 100%;
+  margin: 0 auto;
+  padding: 20px 24px;
+}
+
+.legal-btn-back {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-family: var(--font-sans), ui-sans-serif, system-ui, sans-serif;
+  font-size: var(--text-sm);
+  font-weight: 600;
+  color: var(--midnight);
+  background: transparent;
+  border: 2px solid var(--midnight);
+  border-radius: 999px;
+  padding: 8px 20px;
+  text-decoration: none;
+  cursor: pointer;
+  transition: background var(--dur-base) var(--ease-out), color var(--dur-base) var(--ease-out);
+}
+
+.legal-btn-back:hover {
+  background: var(--midnight);
+  color: var(--cream);
+}
+
+.legal-divider {
+  border: none;
+  border-top: 1px solid var(--edge);
+  max-width: 960px;
+  margin: 0 auto;
+  width: 100%;
+}
+
+.legal-content {
+  flex: 1;
+  max-width: 800px;
+  margin: 0 auto;
+  padding: 48px 24px 80px;
+  width: 100%;
+}
+
+.legal-content h1 {
+  font-family: var(--font-serif), Lora, serif;
+  font-size: var(--text-2xl);
+  font-weight: 700;
+  color: var(--midnight);
+  margin-bottom: 8px;
+  line-height: 1.15;
+}
+
+.legal-content h2 {
+  font-family: var(--font-serif), Lora, serif;
+  font-size: var(--text-title);
+  font-weight: 700;
+  color: var(--midnight);
+  margin-top: 40px;
+  margin-bottom: 12px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--edge);
+}
+
+.legal-meta {
+  font-size: var(--text-sm);
+  color: var(--midnight-muted);
+  margin-bottom: 40px;
+}
+
+.legal-content p {
+  margin-bottom: 16px;
+}
+
+.legal-content ul,
+.legal-content ol {
+  margin-bottom: 16px;
+  padding-left: 24px;
+}
+
+.legal-content li {
+  margin-bottom: 8px;
+}
+
+.legal-content li::marker {
+  color: var(--midnight);
+}
+
+.legal-content strong {
+  font-weight: 600;
+}
+
+.legal-content a {
+  color: var(--midnight);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.legal-content a:hover {
+  opacity: 0.8;
+}
+
+.legal-tier-table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 16px 0 24px;
+  font-size: var(--text-sm);
+}
+
+.legal-tier-table th,
+.legal-tier-table td {
+  text-align: left;
+  padding: 10px 16px;
+  border: 1px solid var(--edge);
+}
+
+.legal-tier-table th {
+  background: var(--midnight);
+  color: var(--cream);
+  font-weight: 600;
+}
+
+.legal-tier-table td {
+  background: var(--cream);
+}
+
+.legal-footer {
+  border-top: 1px solid var(--edge);
+  padding: 32px 24px;
+  text-align: center;
+  font-size: var(--text-sm);
+  color: var(--midnight-muted);
+}
+
+.legal-footer-links {
+  margin-top: 8px;
+  display: flex;
+  justify-content: center;
+  gap: 24px;
+}
+
+.legal-footer-links a {
+  font-size: var(--text-sm);
+  color: var(--midnight);
+  text-decoration: none;
+  font-weight: 500;
+}
+
+.legal-footer-links a:hover {
+  text-decoration: underline;
+}
+
+/* ── Support page specifics ── */
+
+.support-content {
+  flex: 1;
+  max-width: 700px;
+  margin: 0 auto;
+  padding: 48px 24px 64px;
+  width: 100%;
+}
+
+.support-header {
+  text-align: center;
+  margin-bottom: 40px;
+}
+
+.support-header h1 {
+  font-family: var(--font-serif), Lora, serif;
+  font-size: var(--text-2xl);
+  font-weight: 700;
+  color: var(--midnight);
+  margin-bottom: 8px;
+}
+
+.support-header p {
+  font-size: var(--text-base);
+  color: var(--midnight-soft);
+  max-width: 480px;
+  margin: 0 auto;
+}
+
+.support-form {
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+}
+
+.support-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.support-field label {
+  font-size: var(--text-sm);
+  font-weight: 600;
+  color: var(--midnight);
+}
+
+.support-field input,
+.support-field select,
+.support-field textarea {
+  font-family: var(--font-sans), ui-sans-serif, system-ui, sans-serif;
+  font-size: var(--text-base);
+  color: var(--midnight);
+  background: var(--cream);
+  border: 1px solid var(--edge);
+  border-radius: var(--radius-md);
+  padding: 12px 16px;
+  min-height: 44px;
+  transition: border-color var(--dur-base) var(--ease-out);
+}
+
+.support-field input::placeholder,
+.support-field textarea::placeholder {
+  color: var(--midnight-muted);
+}
+
+.support-field select {
+  appearance: none;
+  background-image: url("data:image/svg+xml,%3Csvg width='12' height='8' viewBox='0 0 12 8' fill='none' xmlns='http://www.w3.org/2000/svg'%3E%3Cpath d='M1 1.5L6 6.5L11 1.5' stroke='%235c5c5c' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 16px center;
+  padding-right: 40px;
+  cursor: pointer;
+}
+
+.support-field textarea {
+  min-height: 160px;
+  resize: vertical;
+  line-height: 1.6;
+}
+
+.support-submit {
+  font-family: var(--font-sans), ui-sans-serif, system-ui, sans-serif;
+  font-size: var(--text-base);
+  font-weight: 600;
+  color: var(--cream);
+  background: var(--midnight);
+  border: none;
+  border-radius: 999px;
+  padding: 14px 32px;
+  min-height: 48px;
+  cursor: pointer;
+  align-self: flex-start;
+  transition: background var(--dur-base) var(--ease-out), transform var(--dur-fast) var(--ease-out);
+}
+
+.support-submit:hover {
+  background: color-mix(in srgb, var(--midnight) 88%, var(--cream));
+}
+
+.support-submit:active {
+  transform: scale(0.98);
+}
+
+.support-direct {
+  margin-top: 40px;
+  text-align: center;
+  padding-top: 32px;
+  border-top: 1px solid var(--edge);
+  color: var(--midnight-soft);
+  font-size: var(--text-sm);
+}
+
+.support-direct a {
+  color: var(--midnight);
+  font-weight: 600;
+  text-decoration: none;
+}
+
+.support-direct a:hover {
+  text-decoration: underline;
+}
+
+@media (max-width: 600px) {
+  .legal-content h1,
+  .support-header h1 { font-size: var(--text-title); }
+  .legal-content h2 { font-size: var(--text-base); }
+  .support-submit { width: 100%; text-align: center; }
+}
+
+/* Marketplace drawer: freshly-installed agent slide-in (Task 16).
+   Transform + opacity only — the keyframe used to animate `background` too,
+   which repaints the row on every frame for a flash nobody asked for. */
+@keyframes agent-arrive {
+  from {
+    opacity: 0;
+    transform: translateY(-8px) scale(0.96);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+.agent-item.new-arrival {
+  animation: agent-arrive var(--dur-slow) var(--ease-out) both;
+}
+/* Its own reduce rule: the arrival still needs to register, minus the move. */
+@media (prefers-reduced-motion: reduce) {
+  .agent-item.new-arrival { animation-name: chat-block-fade; }
+}
+
+/* ── BRAND LOGO (canonical wordmark) ── */
+.brand-logo-link { display: inline-flex; align-items: center; text-decoration: none; }
+.brand-logo {
+  font-family: var(--font-serif), Georgia, serif;
+  /* §03 wordmark spec: Lora Medium, uppercase, tracking +0.18em. Weight
+     below 400 is never used, and 700 is not the spec — 500 is. */
+  font-weight: 500;
+  letter-spacing: 0.18em;
+  line-height: 1.15;
+  display: inline-flex;
+  align-items: center;
+  transition: color .2s ease;
+}
+.brand-logo--midnight   { color: var(--midnight); }
+.brand-logo--cream { color: var(--cream); }
+
+/* The product bulb (§01). Was a styled Didone "8" glyph; it is artwork now,
+   so it scales by em like the glyph did but cannot be re-set wrong by a
+   font fallback. Height leads because the bulb is taller than it is wide. */
+.brand-mark {
+  display: inline-block;
+  height: 1.35em;
+  width: auto;
+  vertical-align: -0.22em;
+  flex: none;
+}
+.brand-logo .brand-mark {
+  margin-right: 0.5em;
+}
+/* Standalone hero mark (chat empty state, provider picker). */
+.brand-mark--hero { height: 56px; }
+.brand-sunrise {
+  display: block;
+  width: 100%;
+  height: auto;
+}
+.brand-logo--sm { font-size: 15px; }
+.brand-logo--md { font-size: 18px; }
+.brand-logo--lg { font-size: 24px; }
+.brand-logo-link:hover .brand-logo--cream { color: var(--bulb); }
+
+/*
+ * Chat transcript occlusion.
+ *
+ * The /chat transcript keeps every message in the DOM for the life of the
+ * session. Per-streaming-frame reflow is cheap (a chunk only dirties the tail
+ * message's subtree), but any change that invalidates ALL layout — a dockview
+ * panel resize, a web-font finishing load, browser zoom — is O(number of
+ * messages): measured at ~24ms (≈1.5 dropped frames) on a 1000-message
+ * transcript. content-visibility:auto lets the browser skip layout + paint for
+ * off-screen groups, flattening that ~40x, while keeping every node in the DOM
+ * so Ctrl-F, the accessibility tree, session replay, and the autoscroll pin all
+ * keep working untouched.
+ *
+ * Applied to the transcript's direct children (each rendered message group)
+ * rather than the groups themselves because user-side groups render as a
+ * fragment, not a single wrapper. The streaming tail is always on-screen, so it
+ * renders normally and grows normally — occlusion only ever affects the
+ * scrolled-away history above it.
+ *
+ * `auto` in contain-intrinsic-size makes the browser remember each group's real
+ * height once it has rendered, so scrollHeight — which the autoscroll pin reads
+ * to snap to the bottom — stays accurate. The 200px is only the fallback for a
+ * group that has never yet been on-screen (a freshly loaded long history).
+ */
+.chat-transcript > * {
+  content-visibility: auto;
+  contain-intrinsic-size: auto 200px;
+}

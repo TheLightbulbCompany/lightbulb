@@ -1,0 +1,114 @@
+/* thelightbulb.company — the prototype's CSS, fonts via next/font variables. */
+:root {
+  --ink: #0c0c0c;
+  --paper: #e8e2d6;
+  --gold: #f0c34e;
+  --ground: var(--ink);
+  --fg: var(--paper);
+  --fg-muted: color-mix(in oklab, var(--fg) 55%, transparent);
+  --rule: color-mix(in oklab, var(--fg) 14%, transparent);
+}
+* { box-sizing: border-box; }
+html { scroll-behavior: auto; }
+body {
+  margin: 0;
+  background: var(--ground);
+  color: var(--fg);
+  font-family: var(--font-sans), system-ui, sans-serif;
+  font-size: 15px;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+  overflow-x: clip;
+}
+#gl { position: fixed; inset: 0; z-index: 0; }
+#gl canvas { display: block; width: 100%; height: 100%; }
+
+/* chrome */
+.nav {
+  position: fixed; inset: 0 0 auto 0; z-index: 5;
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 22px 40px;
+  font-family: var(--font-mono), monospace; font-size: 11px; letter-spacing: 0.14em; text-transform: uppercase;
+}
+.nav .brand { display: flex; align-items: center; gap: 12px; color: inherit; text-decoration: none; }
+.nav .brand svg { width: 16px; height: auto; }
+.nav a { color: inherit; text-decoration: none; opacity: 0.7; }
+.nav a:hover { opacity: 1; }
+.nav .links { display: flex; gap: 28px; }
+
+.rail {
+  position: fixed; left: 40px; top: 50%; transform: translateY(-50%); z-index: 5;
+  display: flex; flex-direction: column; gap: 14px;
+}
+.rail i { display: block; width: 4px; height: 4px; border-radius: 50%; background: var(--fg); opacity: 0.3; transition: opacity .3s, transform .3s; }
+.rail i.on { opacity: 1; transform: scale(1.6); }
+
+.scrub {
+  position: fixed; right: 40px; bottom: 28px; z-index: 5;
+  width: 180px; height: 1px; background: var(--rule);
+}
+.scrub b { position: absolute; top: -3px; left: 0; width: 1px; height: 7px; background: var(--gold); }
+
+/* leader labels */
+#labels { position: fixed; inset: 0; z-index: 4; pointer-events: none; }
+#labels svg { position: absolute; inset: 0; width: 100%; height: 100%; overflow: visible; }
+#labels polyline { fill: none; stroke: var(--fg); stroke-width: 1; opacity: 0.55; }
+#labels circle { fill: var(--gold); }
+.lbl {
+  position: absolute; transform: translate(0, -50%);
+  font-family: var(--font-mono), monospace; font-size: 11px; letter-spacing: 0.12em; text-transform: uppercase;
+  white-space: nowrap; transition: opacity .25s;
+}
+.lbl small { display: block; letter-spacing: 0.08em; opacity: 0.55; font-size: 10px; }
+
+/* content */
+main { position: relative; z-index: 2; }
+section { min-height: 100vh; padding: 0 40px; display: grid; align-content: center; }
+.eyebrow { font-family: var(--font-mono), monospace; font-size: 11px; letter-spacing: 0.16em; text-transform: uppercase; color: var(--fg-muted); margin: 0 0 18px; }
+h1, h2 { font-family: var(--font-serif), Georgia, serif; font-weight: 400; letter-spacing: -0.01em; line-height: 0.95; margin: 0; }
+h1 { font-size: clamp(56px, 9vw, 150px); }
+h2 { font-size: clamp(44px, 6.4vw, 104px); }
+h2 em { font-style: italic; color: var(--gold); }
+p.lede { font-size: clamp(16px, 1.3vw, 20px); max-width: 34ch; color: var(--fg-muted); margin: 22px 0 0; }
+
+.hero { align-content: end; padding-bottom: 12vh; }
+.hero h1 { max-width: 9ch; }
+.strike { justify-items: end; text-align: right; }
+.strike h2 { max-width: 10ch; }
+
+.prod { grid-template-columns: minmax(0, 34%) 1fr; column-gap: 40px; align-items: center; }
+.prod .idx { font-family: var(--font-mono), monospace; font-size: 11px; letter-spacing: 0.16em; color: var(--fg-muted); display: flex; gap: 14px; align-items: center; margin-bottom: 18px; }
+/* the stage word is the bulb's own vocabulary for maturity — Lit, Warming up, A spark, Sketched */
+.prod .stage { padding: 3px 8px; border: 1px solid var(--rule); border-radius: 999px; font-size: 10px; }
+.prod .stage-ai { border-color: var(--gold); color: var(--gold); }
+.prod .stage-goose { color: var(--fg); }
+.prod .note { text-transform: none; letter-spacing: 0.02em; opacity: 0.7; }
+/* idea-stage chapters carry less weight: smaller title, quieter copy */
+.prod.idea h2 { font-size: clamp(32px, 3.4vw, 56px); }
+.prod.idea p { max-width: 40ch; }
+.prod h2 { font-size: clamp(40px, 4.6vw, 76px); }
+.prod p { max-width: 36ch; color: var(--fg-muted); margin: 18px 0 0; }
+.prod a { color: var(--fg); text-decoration: none; border-bottom: 1px solid var(--gold); }
+
+.vision { justify-items: center; text-align: center; align-content: start; padding-top: 14vh; }
+.vision h2 { max-width: 12ch; }
+.vision p { max-width: 52ch; margin-left: auto; margin-right: auto; }
+
+footer {
+  position: relative; z-index: 2; min-height: 60vh; padding: 60px 40px 40px;
+  display: grid; grid-template-columns: 1fr auto; align-items: end;
+  border-top: 1px solid var(--rule);
+}
+footer .mark svg { width: 120px; height: auto; }
+footer .mail { font-family: var(--font-serif), Georgia, serif; font-size: clamp(28px, 3.6vw, 56px); color: var(--fg); text-decoration: none; }
+footer .meta { font-family: var(--font-mono), monospace; font-size: 11px; letter-spacing: 0.12em; text-transform: uppercase; color: var(--fg-muted); margin-top: 24px; }
+footer .cols { display: flex; gap: 40px; font-family: var(--font-mono), monospace; font-size: 11px; letter-spacing: 0.12em; text-transform: uppercase; }
+footer .cols a { display: block; color: var(--fg-muted); text-decoration: none; margin-top: 10px; }
+
+@media (max-width: 800px) {
+  .prod { grid-template-columns: 1fr; align-content: end; padding-bottom: 12vh; }
+  .rail, .scrub, #labels { display: none; }
+  .nav .links { display: none; }
+  footer { grid-template-columns: 1fr; gap: 40px; }
+  footer .cols { justify-self: start; }
+}

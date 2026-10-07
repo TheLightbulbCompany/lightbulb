@@ -1,0 +1,536 @@
+/* ============================================================ blog
+   Styling for the marketing blog (/blog and /blog/[slug]).
+   Reuses the landing design tokens (cream / forest / ink / serif).
+   Scoped under .blog-* so it never leaks into the app surface.
+   ============================================================ */
+
+.blog-wrap {
+  max-width: 760px;
+  margin: 0 auto;
+  padding: 132px 24px 96px;
+}
+
+/* ---- shared header bits ---- */
+.blog-eyebrow {
+  font-family: var(--font-geist-mono), ui-monospace, SFMono-Regular, monospace;
+  font-size: 11px;
+  letter-spacing: 0.22em;
+  text-transform: uppercase;
+  color: var(--midnight);
+  margin-bottom: 18px;
+}
+
+.blog-title {
+  font-family: var(--font-serif), Georgia, serif;
+  font-size: clamp(38px, 6vw, 60px);
+  line-height: 1.05;
+  letter-spacing: -0.01em;
+  color: var(--midnight);
+}
+
+.blog-lede {
+  margin-top: 20px;
+  font-size: 18px;
+  line-height: 1.6;
+  color: var(--midnight-soft);
+  max-width: 62ch;
+}
+
+.blog-header {
+  padding-bottom: 40px;
+  margin-bottom: 40px;
+  border-bottom: 1px solid var(--edge);
+}
+
+/* ---- index list ---- */
+.blog-list {
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 28px;
+  counter-reset: post;
+}
+
+.blog-card {
+  position: relative;
+  border: 1px solid var(--edge);
+  border-radius: 16px;
+  background: color-mix(in srgb, var(--cream) 50%, transparent);
+  overflow: hidden;
+  transition: border-color var(--dur-base) var(--ease-out), box-shadow var(--dur-base) var(--ease-out), transform var(--dur-base) var(--ease-out);
+}
+/* Editorial index numeral (01, 02 …) — decorative, drawn from CSS counter. */
+.blog-card::before {
+  counter-increment: post;
+  content: counter(post, decimal-leading-zero);
+  position: absolute;
+  top: 22px;
+  right: 26px;
+  font-family: var(--font-geist-mono), ui-monospace, monospace;
+  font-size: 12px;
+  letter-spacing: 0.1em;
+  color: var(--midnight-faint);
+  transition: color var(--dur-base) ease;
+}
+/* Forest hairline that wipes in from the left edge on hover. */
+.blog-card::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: 0;
+  height: 2px;
+  width: 100%;
+  background: var(--midnight);
+  transform: scaleX(0);
+  transform-origin: left;
+  transition: transform var(--dur-slow) var(--ease-out);
+}
+.blog-card:hover {
+  border-color: var(--edge);
+  box-shadow: var(--shadow-pop);
+  transform: translateY(-2px);
+}
+.blog-card:hover::before {
+  color: var(--midnight);
+}
+.blog-card:hover::after {
+  transform: scaleX(1);
+}
+
+.blog-card-link {
+  display: block;
+  padding: 28px 30px;
+  text-decoration: none;
+  color: inherit;
+}
+
+.blog-card-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-family: var(--font-geist-mono), ui-monospace, monospace;
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--midnight-muted);
+}
+
+.blog-card-title {
+  margin-top: 12px;
+  font-family: var(--font-serif), Georgia, serif;
+  font-size: 26px;
+  line-height: 1.2;
+  color: var(--midnight);
+}
+
+.blog-card-desc {
+  margin-top: 10px;
+  font-size: 15.5px;
+  line-height: 1.6;
+  color: var(--midnight-soft);
+}
+
+.blog-card-cta {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 18px;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--midnight);
+}
+.blog-card-arrow {
+  transition: transform var(--dur-slow) var(--ease-out);
+}
+.blog-card:hover .blog-card-arrow {
+  transform: translateX(4px);
+}
+
+/* ---- article ---- */
+.blog-back {
+  margin-bottom: 28px;
+  font-family: var(--font-geist-mono), ui-monospace, monospace;
+  font-size: 12px;
+  letter-spacing: 0.06em;
+}
+.blog-back a {
+  color: var(--midnight-muted);
+  text-decoration: none;
+  transition: color var(--dur-base) ease;
+}
+.blog-back a:hover {
+  color: var(--midnight);
+}
+
+.blog-article-header {
+  padding-bottom: 34px;
+  margin-bottom: 34px;
+  border-bottom: 1px solid var(--edge);
+}
+.blog-article-title {
+  margin-top: 14px;
+  font-family: var(--font-serif), Georgia, serif;
+  font-size: clamp(32px, 5vw, 48px);
+  line-height: 1.08;
+  letter-spacing: -0.01em;
+  color: var(--midnight);
+}
+
+/* ---- prose (markdown body) ---- */
+.blog-prose {
+  font-size: 17px;
+  line-height: 1.75;
+  color: var(--midnight-soft);
+}
+.blog-prose > * + * {
+  margin-top: 22px;
+}
+.blog-prose h2 {
+  font-family: var(--font-serif), Georgia, serif;
+  font-size: 28px;
+  line-height: 1.25;
+  color: var(--midnight);
+  margin-top: 48px;
+  margin-bottom: 4px;
+}
+.blog-prose h3 {
+  font-family: var(--font-serif), Georgia, serif;
+  font-size: 21px;
+  line-height: 1.3;
+  color: var(--midnight);
+  margin-top: 34px;
+}
+.blog-prose p {
+  color: var(--midnight-soft);
+}
+/* Editorial drop cap on the opening paragraph. */
+.blog-prose > p:first-of-type::first-letter {
+  float: left;
+  font-family: var(--font-serif), Georgia, serif;
+  font-size: 3.4em;
+  line-height: 0.82;
+  font-weight: 700;
+  color: var(--midnight);
+  margin: 6px 12px 0 0;
+}
+.blog-prose strong {
+  color: var(--midnight);
+  font-weight: 650;
+}
+.blog-prose a {
+  color: var(--midnight);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  text-decoration-thickness: 1px;
+}
+.blog-prose a:hover {
+  /* NOT --brass: brass since the rebrand, 2.9:1 on cream. The default
+     is already midnight, so hover changes the rule rather than the hue —
+     which is also the one thing §06 lets brass do on a light ground. */
+  text-decoration-color: var(--brass);
+  text-decoration-thickness: 2px;
+}
+.blog-prose ul,
+.blog-prose ol {
+  padding-left: 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.blog-prose ul {
+  list-style: disc;
+}
+.blog-prose ol {
+  list-style: decimal;
+}
+.blog-prose li {
+  padding-left: 4px;
+}
+.blog-prose li::marker {
+  color: var(--midnight);
+}
+.blog-prose code {
+  font-family: var(--font-geist-mono), ui-monospace, monospace;
+  font-size: 0.88em;
+  background: var(--cream-deep);
+  color: var(--midnight);
+  border-radius: 4px;
+  padding: 2px 6px;
+}
+.blog-prose pre {
+  background: var(--midnight);
+  color: var(--cream);
+  border-radius: 12px;
+  padding: 20px 22px;
+  overflow-x: auto;
+}
+.blog-prose pre code {
+  background: transparent;
+  color: inherit;
+  padding: 0;
+  font-size: 14px;
+  line-height: 1.6;
+}
+.blog-prose blockquote {
+  border-left: 3px solid var(--edge);
+  padding-left: 18px;
+  color: var(--midnight-muted);
+  font-style: italic;
+}
+.blog-prose hr {
+  border: none;
+  border-top: 1px solid var(--edge);
+  margin: 40px 0;
+}
+.blog-prose table {
+  border-collapse: collapse;
+  display: block;
+  font-size: 15px;
+  line-height: 1.5;
+  max-width: 100%;
+  overflow-x: auto;
+  width: 100%;
+}
+
+.blog-prose th,
+.blog-prose td {
+  border-bottom: 1px solid color-mix(in srgb, var(--midnight) 14%, transparent);
+  padding: 10px 14px 10px 0;
+  text-align: left;
+  vertical-align: top;
+}
+
+.blog-prose th {
+  color: var(--midnight);
+  font-family: var(--font-geist-mono), ui-monospace, SFMono-Regular, monospace;
+  font-size: 12px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+.blog-prose img {
+  max-width: 100%;
+  height: auto;
+  border-radius: 12px;
+}
+
+/* ---- article-footer CTA ---- */
+.blog-article-footer {
+  margin-top: 64px;
+  padding: 36px 32px;
+  border: 1px solid var(--edge);
+  border-radius: 18px;
+  background: var(--cream-deep);
+  text-align: center;
+}
+.blog-article-footer h2 {
+  font-family: var(--font-serif), Georgia, serif;
+  font-size: 26px;
+  color: var(--midnight);
+}
+.blog-article-footer p {
+  margin: 12px auto 24px;
+  max-width: 46ch;
+  font-size: 15.5px;
+  line-height: 1.6;
+  color: var(--midnight-soft);
+}
+
+/* ---- load choreography ----
+   Staggered fade-up reveal on first paint, matching the landing page's
+   motion language. Pure CSS (pages are static/server-rendered). */
+@keyframes blog-fade-up {
+  from {
+    opacity: 0;
+    transform: translateY(14px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.blog-header,
+.blog-card,
+.blog-back,
+.blog-article-header,
+.blog-prose,
+.blog-article-footer {
+  animation: blog-fade-up 0.6s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+/* Index: header first, then each card in sequence. */
+.blog-header {
+  animation-delay: 0.02s;
+}
+.blog-card:nth-child(1) {
+  animation-delay: 0.1s;
+}
+.blog-card:nth-child(2) {
+  animation-delay: 0.18s;
+}
+.blog-card:nth-child(3) {
+  animation-delay: 0.26s;
+}
+.blog-card:nth-child(n + 4) {
+  animation-delay: 0.34s;
+}
+
+/* Article: back link, header, body, CTA in sequence. */
+.blog-back {
+  animation-delay: 0.02s;
+}
+.blog-article-header {
+  animation-delay: 0.1s;
+}
+.blog-prose {
+  animation-delay: 0.18s;
+}
+.blog-article-footer {
+  animation-delay: 0.26s;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .blog-header,
+  .blog-card,
+  .blog-back,
+  .blog-article-header,
+  .blog-prose,
+  .blog-article-footer {
+    animation: none;
+  }
+  .blog-card::after {
+    transition: none;
+  }
+}
+
+/* ============================================================ docs
+   Public documentation hub. Uses blog typography primitives and adds
+   dense, crawlable cards for SEO/GEO answer extraction.
+   ============================================================ */
+
+.docs-wrap {
+  max-width: 1120px;
+}
+
+.docs-hero {
+  max-width: 840px;
+}
+
+.docs-hero-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-top: 28px;
+}
+
+.docs-layout {
+  align-items: start;
+  display: grid;
+  gap: 56px;
+  grid-template-columns: 200px minmax(0, 1fr);
+}
+
+.docs-nav {
+  display: grid;
+  gap: 4px;
+  position: sticky;
+  top: 96px;
+}
+
+.docs-nav a {
+  border-radius: 12px;
+  color: var(--midnight);
+  font-family: var(--font-geist-mono), ui-monospace, SFMono-Regular, monospace;
+  font-size: 12px;
+  line-height: 1.45;
+  padding: 10px 12px;
+  text-decoration: none;
+  transition: background var(--dur-base) ease;
+}
+
+.docs-nav a:hover {
+  background: color-mix(in srgb, var(--cream) 95%, transparent);
+}
+
+.docs-nav a[aria-current="page"] {
+  background: color-mix(in srgb, var(--midnight) 10%, transparent);
+  font-weight: 700;
+}
+
+.docs-main {
+  min-width: 0;
+}
+
+/* Docs are reference pages: no editorial drop cap. */
+.docs-main .blog-prose > p:first-of-type::first-letter {
+  color: inherit;
+  float: none;
+  font: inherit;
+  line-height: inherit;
+  margin: 0;
+  padding: 0;
+}
+
+.docs-faq {
+  border: 1px solid color-mix(in srgb, var(--midnight) 16%, transparent);
+  border-radius: 28px;
+  background: color-mix(in srgb, var(--cream) 78%, transparent);
+  box-shadow: var(--shadow-lift);
+  padding: 28px;
+}
+
+.docs-faq h2 {
+  color: var(--midnight);
+  font-family: var(--font-serif), Georgia, serif;
+  font-size: clamp(1.55rem, 2.5vw, 2.25rem);
+  line-height: 1.05;
+  margin: 0 0 14px;
+}
+
+.docs-faq p {
+  color: var(--midnight);
+  font-size: 16px;
+  line-height: 1.72;
+}
+
+.docs-faq {
+  margin-top: 22px;
+}
+
+.docs-faq-list {
+  display: grid;
+  gap: 12px;
+  margin-top: 18px;
+}
+
+.docs-faq details {
+  border: 1px solid color-mix(in srgb, var(--midnight) 14%, transparent);
+  border-radius: 18px;
+  background: color-mix(in srgb, var(--cream) 38%, transparent);
+  padding: 16px 18px;
+}
+
+.docs-faq summary {
+  color: var(--midnight);
+  cursor: pointer;
+  font-weight: 700;
+}
+
+@media (max-width: 860px) {
+  .docs-layout {
+    gap: 24px;
+    grid-template-columns: 1fr;
+  }
+
+  .docs-nav {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    position: static;
+  }
+
+  .docs-nav a {
+    border: 1px solid color-mix(in srgb, var(--midnight) 18%, transparent);
+  }
+}

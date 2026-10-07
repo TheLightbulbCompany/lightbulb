@@ -112,6 +112,26 @@ it.each([
   await waitFor(() => expect(upload).toHaveBeenCalled());
 });
 
+it.each([
+  ["Forecast.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"],
+  ["Forecast.XLSX", "application/octet-stream"],
+  ["Forecast.xlsx", ""],
+])("uploads workbook %s declared as %s", async (name, type) => {
+  const canonical = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" as const;
+  const upload = vi.fn(async () => ({ ...attachment, fileName: name, contentType: canonical }));
+  render(<Harness onUploadAttachment={upload} />);
+  drop(new File(["PK\u0003\u0004"], name, { type }));
+  await waitFor(() => expect(upload).toHaveBeenCalled());
+});
+
+it("never uploads an .xlsx whose declared type contradicts its name", async () => {
+  const upload = vi.fn(async () => attachment);
+  render(<Harness onUploadAttachment={upload} />);
+  drop(new File(["PK\u0003\u0004"], "Forecast.xlsx", { type: "application/pdf" }));
+  await screen.findByText(/Unsupported file type/);
+  expect(upload).not.toHaveBeenCalled();
+});
+
 // A `.zip` name with a contradictory declared type is the one case the backend
 // raises on rather than guessing — the client must not send it either.
 it("never uploads a .zip whose declared type contradicts its name", async () => {

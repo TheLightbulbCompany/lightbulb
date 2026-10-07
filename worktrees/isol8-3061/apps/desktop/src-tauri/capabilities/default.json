@@ -1,0 +1,22 @@
+{
+  "$schema": "https://raw.githubusercontent.com/tauri-apps/tauri/dev/crates/tauri-utils/schema.json",
+  "identifier": "default",
+  "description": "Default capabilities for Lightbulb desktop",
+  "windows": [
+    "main"
+  ],
+  "remote": {
+    "urls": [
+      "https://dev.flickmeon.ai/*",
+      "https://flickmeon.ai/*"
+    ]
+  },
+  "permissions": [
+    "desktop-approval:deny-desktop-shell-answer",
+    "core:default",
+    "deep-link:default",
+    "shell:allow-open",
+    "updater:default",
+    "dialog:default"
+  ]
+}

@@ -242,9 +242,9 @@ function ComposerAttempt({
 
   function validationError(file: File): string | undefined {
     const type = supportedType(file);
-    if (!type) return "Unsupported file type or mismatched filename. Attach PNG, JPEG, WebP, GIF, PDF, or ZIP files.";
+    if (!type) return "Unsupported file type or mismatched filename. Attach PNG, JPEG, WebP, GIF, PDF, ZIP, or XLSX files.";
     if (file.size > MESSAGE_ATTACHMENT_MAX_BYTES[type]) {
-      const kind = type === "application/pdf" ? "PDFs" : type === "application/zip" ? "ZIP files" : "Images";
+      const kind = type === "application/pdf" ? "PDFs" : type === "application/zip" ? "ZIP files" : type.includes("spreadsheetml") ? "XLSX files" : "Images";
       return `${kind} must be ${type.startsWith("image/") ? "5" : "20"} MiB or smaller.`;
     }
     if (!file.size) return "This file is empty.";

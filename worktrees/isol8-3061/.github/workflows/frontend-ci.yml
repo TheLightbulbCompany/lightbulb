@@ -1,0 +1,78 @@
+# =============================================================================
+# Frontend CI (PRs only)
+# =============================================================================
+name: Frontend CI
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'apps/frontend/**'
+      # packages/shared resolves straight to ./src/index.ts with no build step,
+      # and the frontend suite exercises it (useAgentChat, useGateway, the Teams
+      # run-transcript modules). Without this, a shared-only PR could break the
+      # frontend tests and merge with them never having run.
+      - 'packages/**'
+      - '.github/workflows/frontend-ci.yml'
+      - 'pnpm-lock.yaml'
+
+# Supersede in-flight runs for the same PR. `github.ref` is refs/pull/<n>/merge
+# here (pull_request only), so the group is per-PR and PRs never cancel each
+# other.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  NODE_VERSION: "20"
+
+jobs:
+  lint-and-build:
+    name: Lint & Build
+    runs-on: ${{ vars.CI_RUNNER }}
+    # This job had no cap at all, which on a hosted runner only meant a wasted
+    # 6-hour bill. On the shared self-hosted box it means a wedged `next build`
+    # camps a runner slot that every other workflow is queueing for, so the cap
+    # is now load-bearing. Lint + tsc + build is a ~10m job; 30m bounds a hang.
+    timeout-minutes: 30
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          # Per-job install dir, and load-bearing again now that this job is
+          # back on the self-hosted box: several runner instances share one
+          # home there, so two concurrent jobs installing pnpm into the
+          # default ~/setup-pnpm race each other (ENOTEMPTY on rmdir).
+          # `runner.temp` is per-runner-instance, so this keeps them apart.
+          dest: ${{ runner.temp }}/setup-pnpm
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'pnpm'
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Run ESLint
+        run: pnpm --filter @lightbulb/frontend run lint
+
+      - name: Type check
+        run: pnpm --filter @lightbulb/frontend exec tsc --noEmit
+
+      # ~380 jsdom files. vitest.config.ts caps the run at 2 worker threads,
+      # which matches the core count of the ubuntu-latest runner a private repo
+      # gets; measured peak RSS is well under a gigabyte, so the `test` script's
+      # 8 GB heap ceiling never binds. Raising maxThreads means re-measuring.
+      - name: Unit tests
+        run: pnpm --filter @lightbulb/frontend run test
+
+      - name: Build
+        env:
+          NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY: ${{ secrets.CLERK_PUBLISHABLE_KEY }}
+          NEXT_PUBLIC_API_URL: https://api-dev.flickmeon.ai/api/v1
+        run: pnpm --filter @lightbulb/frontend run build

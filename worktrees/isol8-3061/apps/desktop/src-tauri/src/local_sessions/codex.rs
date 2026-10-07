@@ -1,0 +1,1132 @@
+use super::*;
+
+/// Rollout sources we mirror: the terminal CLI, and the ChatGPT / Codex
+/// Desktop app's bundled codex (which writes `source: "vscode"` into the
+/// same `~/.codex`). The VS Code *extension* writes the identical `source`
+/// value, so `vscode` alone is not enough to admit a rollout — see
+/// `ACCEPTED_APP_ORIGINATORS`. `exec` and subagent rollouts stay out either
+/// way.
+const ACCEPTED_SOURCES: [&str; 2] = ["cli", "vscode"];
+
+/// The exact `session_meta.payload.originator` the ChatGPT / Codex Desktop
+/// app writes into its rollouts (surveyed live on this Mac: every one of 268
+/// `vscode`-sourced rollouts under `~/.codex/sessions` carries this value).
+/// Required only when `source == "vscode"` — it is what tells the app's own
+/// sessions apart from the VS Code extension's, which shares the same
+/// `source` but was never asked for here.
+const ACCEPTED_APP_ORIGINATORS: [&str; 1] = ["Codex Desktop"];
+
+/// Runtimes whose *paginated* rollout grammar this parser was verified
+/// against. A `"legacy"` rollout carries none of the `item_completed` rows
+/// this parser reads — text lives in bare `user_message`/`agent_message`
+/// event_msgs and tool calls in `response_item` rows — so it is refused
+/// outright rather than mirrored blank; see `accepted_history_mode` below.
+const ACCEPTED_VERSIONS: [&str; 2] = ["0.149.0", "0.153.4"];
+
+fn accepted_version(version: &str) -> bool {
+    ACCEPTED_VERSIONS.contains(&version)
+}
+
+/// `vscode` (app) rollouts must be the Codex Desktop app itself; `cli`
+/// rollouts carry no such requirement.
+fn accepted_app_source(source: &str, payload: &Value) -> bool {
+    if source != "vscode" {
+        return true;
+    }
+    let originator = payload["originator"].as_str().unwrap_or("");
+    ACCEPTED_APP_ORIGINATORS.contains(&originator)
+}
+
+/// `vscode` (app) rollouts must be explicitly paginated (fail closed); `cli`
+/// rollouts keep the historic rule — absent means accepted, only the literal
+/// `"legacy"` is refused — since 0.149.0 CLI rollouts never carried the
+/// field. One helper for both `from_rollout` and `normalize` so the two
+/// cannot drift.
+fn accepted_history_mode(source: &str, payload: &Value) -> bool {
+    if source == "vscode" {
+        payload["history_mode"] == "paginated"
+    } else {
+        payload["history_mode"] != "legacy"
+    }
+}
+
+fn from_rollout(
+    root: &Path,
+    process: Process,
+    path: &Path,
+    version: &str,
+) -> Result<NativeSession> {
+    let path = confined_path(root, path)?;
+    let mut reader = BufReader::new(secure_file(&path)?.take(65536));
+    let mut line = String::new();
+    reader
+        .read_line(&mut line)
+        .map_err(|_| "rollout unavailable")?;
+    let row: Value = serde_json::from_str(&line).map_err(|_| "rollout metadata unavailable")?;
+    let source = row["payload"]["source"].as_str().unwrap_or("");
+    if row["type"] != "session_meta" || !ACCEPTED_SOURCES.contains(&source) {
+        return Err("not a Codex CLI or app rollout".into());
+    }
+    if !accepted_app_source(source, &row["payload"]) {
+        return Err("not the Codex desktop app".into());
+    }
+    if !accepted_history_mode(source, &row["payload"]) {
+        return Err("legacy rollout grammar is not mirrored".into());
+    }
+    let conversation = row["payload"]["id"]
+        .as_str()
+        .filter(|s| !s.is_empty() && s.len() <= 128)
+        .ok_or("invalid native identity")?;
+    let reported = row["payload"]["cli_version"]
+        .as_str()
+        .ok_or("missing runtime version")?;
+    let (status, active_turn, title) = tail_state(&path);
+    Ok(NativeSession {
+        provider: "codex".into(),
+        conversation: conversation.into(),
+        profile: fingerprint(&root.to_string_lossy()),
+        process,
+        transcript: Some(path),
+        socket: None,
+        socket_inode: None,
+        version: reported.into(),
+        restriction: (!accepted_version(reported) || reported != version)
+            .then(|| "runtime-unverified".into()),
+        status: status.into(),
+        title,
+        // The backend's SessionRegistration caps cwd_name at 128 characters.
+        cwd_name: row["payload"]["cwd"]
+            .as_str()
+            .and_then(|c| Path::new(c).file_name())
+            .map(|n| n.to_string_lossy().chars().take(128).collect()),
+        active_turn,
+        last_assistant_message: None,
+        background: false,
+    })
+}
+
+/// Like `open_files`, but keeps only paths the process holds open for
+/// writing (lsof access mode `w` or `u` -- read-write; `r` is read-only).
+/// Codex-only: a process merely reading another thread's rollout -- the
+/// app-server loading a thread's history, the CLI resume picker browsing
+/// past sessions -- must never be mistaken for that thread's owner, so
+/// `capture` cannot use the shared `open_files` (which Claude's capture
+/// keeps using unchanged).
+async fn open_write_files(pid: u32) -> Result<Vec<PathBuf>> {
+    let mut mode = None;
+    Ok(native_output(
+        Path::new("/usr/sbin/lsof"),
+        &["-n", "-a", "-p", &pid.to_string(), "-Fan"],
+    )
+    .await?
+    .lines()
+    .filter_map(|line| {
+        if line.starts_with('f') {
+            mode = None;
+            None
+        } else if let Some(a) = line.strip_prefix('a') {
+            mode = a.chars().next();
+            None
+        } else {
+            line.strip_prefix('n')
+                .filter(|p| p.starts_with('/') && matches!(mode, Some('w') | Some('u')))
+        }
+    })
+    .map(PathBuf::from)
+    .collect())
+}
+
+/// A single Codex process can host more than one thread at once (the ChatGPT
+/// / Codex Desktop app runs one `codex app-server` pid for every open
+/// conversation), each with its own rollout file open. Mirror every rollout
+/// `from_rollout` accepts and that the process currently holds open for
+/// writing; a rollout it refuses (exec, subagent, legacy grammar, other
+/// originator) is skipped rather than failing the whole process, unless none
+/// is accepted, in which case the first refusal's error is returned.
+pub(super) async fn capture(home: &Path, program: &Path, pid: u32) -> Result<Vec<NativeSession>> {
+    let execution = process(pid)?;
+    let root = home.join(".codex/sessions");
+    confined_path(home, &root)?;
+    let mut paths: Vec<_> = open_write_files(pid)
+        .await?
+        .into_iter()
+        .filter(|p| {
+            p.starts_with(&root)
+                && p.file_name()
+                    .is_some_and(|n| n.to_string_lossy().starts_with("rollout-"))
+                && p.extension().is_some_and(|e| e == "jsonl")
+        })
+        .collect();
+    if paths.is_empty() {
+        return Err("native rollout is not available yet".into());
+    }
+    // A writer and a reader (or two writers) on the same rollout must still
+    // yield one session.
+    paths.sort();
+    paths.dedup();
+    let version = runtime_version(&execution, program, "codex")
+        .await
+        .unwrap_or_default();
+    let mut found = Vec::with_capacity(paths.len());
+    let mut refusal = None;
+    for path in &paths {
+        match from_rollout(&root, execution.clone(), path, &version) {
+            Ok(session) => found.push(session),
+            Err(e) => {
+                refusal.get_or_insert(e);
+            }
+        };
+    }
+    if process(pid)? != execution {
+        return Err("process changed during discovery".into());
+    }
+    if found.is_empty() {
+        // paths was non-empty and found is empty, so every path hit the Err
+        // arm above, and each one sets refusal -- it is always Some here.
+        return Err(refusal.expect("a refusal was recorded for every refused path"));
+    }
+    Ok(found)
+}
+
+pub(super) async fn discover(home: &Path) -> Result<Vec<NativeSession>> {
+    let Some(program) = provider_program(home, "codex") else {
+        return Ok(vec![]);
+    };
+    let processes = native_output(Path::new("/bin/ps"), &["-axo", "pid=,comm="]).await?;
+    let mut found = vec![];
+    for row in processes.lines() {
+        let mut fields = row.trim().splitn(2, char::is_whitespace);
+        let Some(pid) = fields.next().and_then(|p| p.parse().ok()) else {
+            continue;
+        };
+        let Some(name) = fields.next() else {
+            continue;
+        };
+        if !name.contains("/codex") {
+            continue;
+        }
+        if let Ok(sessions) = capture(home, &program, pid).await {
+            found.extend(sessions);
+        }
+    }
+    Ok(found)
+}
+
+fn queued_id(output: &str, thread: &str) -> Option<String> {
+    let (id, target) = output
+        .trim()
+        .strip_prefix("Queued message ")?
+        .strip_suffix('.')?
+        .split_once(" for thread ")?;
+    (target == thread && uuid::Uuid::parse_str(id).is_ok()).then(|| id.into())
+}
+
+pub(super) async fn send(native: &NativeSession, text: &str) -> Result<Option<String>> {
+    let output = native_output(
+        &native.process.executable,
+        &["queue", "--thread", &native.conversation, "--message", text],
+    )
+    .await?;
+    if process(native.process.pid)? != native.process {
+        return Ok(None);
+    }
+    Ok(queued_id(&output, &native.conversation))
+}
+
+/// Last turn event and first prompt in the rollout's final 2 MiB.
+pub(super) fn tail_state(path: &Path) -> (&'static str, Option<String>, Option<String>) {
+    let Ok(mut file) = secure_file(path) else {
+        return ("unknown", None, None);
+    };
+    let Ok(len) = file.metadata().map(|m| m.len()) else {
+        return ("unknown", None, None);
+    };
+    let offset = len.saturating_sub(2 * 1024 * 1024);
+    if file.seek(SeekFrom::Start(offset)).is_err() {
+        return ("unknown", None, None);
+    }
+    let mut reader = BufReader::new(file.take(2 * 1024 * 1024));
+    if offset > 0 {
+        let mut partial = String::new();
+        let _ = reader.read_line(&mut partial);
+    }
+    let (mut status, mut turn, mut title) = ("unknown", None, None);
+    for line in reader.lines().map_while(|l| l.ok()) {
+        let Ok(row) = serde_json::from_str::<Value>(&line) else {
+            continue;
+        };
+        if row["type"] != "event_msg" {
+            continue;
+        }
+        let payload = &row["payload"];
+        match payload["type"].as_str() {
+            Some("task_started") => {
+                status = "busy";
+                turn = payload["turn_id"].as_str().map(str::to_owned);
+            }
+            Some("task_complete") | Some("turn_aborted") => {
+                status = "idle";
+                turn = None;
+            }
+            Some("item_completed")
+                if title.is_none() && payload["item"]["type"] == "UserMessage" =>
+            {
+                let text = payload["item"]["content"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter(|b| b["type"] == "text")
+                    .filter_map(|b| b["text"].as_str())
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                let first = text.lines().next().unwrap_or("").trim();
+                if !first.is_empty() && !first.starts_with(HEADER_PREFIX) {
+                    title = Some(redact(first).chars().take(60).collect());
+                }
+            }
+            _ => {}
+        }
+    }
+    (status, turn, title)
+}
+
+fn item(item: &Value, ts: Option<&str>) -> Option<Value> {
+    let id = item["id"].as_str();
+    let texts = |content: &Value, block: &str| {
+        content
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter(|b| b["type"] == block)
+            .filter_map(|b| b["text"].as_str())
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    let basename = |p: &str| {
+        Path::new(p)
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default()
+    };
+    Some(match item["type"].as_str()? {
+        "UserMessage" => {
+            let text = texts(&item["content"], "text");
+            if text.is_empty() {
+                return None;
+            }
+            match teammate_contribution(&text) {
+                Some((provenance, body)) => {
+                    let mut e = event("text", "user", &body, ts, id);
+                    if let Some(actor) = actor_of(&provenance) {
+                        e["actor"] = actor;
+                    }
+                    e
+                }
+                None => event("text", "user", &text, ts, id),
+            }
+        }
+        "AgentMessage" => {
+            // The TUI renders every AgentMessage, and the phase is often absent; withhold only a
+            // phase this build does not know, which may not be transcript prose at all.
+            if item["phase"]
+                .as_str()
+                .is_some_and(|p| p != "commentary" && p != "final_answer")
+            {
+                return None;
+            }
+            let text = texts(&item["content"], "Text");
+            if text.is_empty() {
+                return None;
+            }
+            event("text", "assistant", &text, ts, id)
+        }
+        "Reasoning" => {
+            let text = item["summary_text"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(Value::as_str)
+                .collect::<Vec<_>>()
+                .join("\n");
+            event("thinking", "assistant", &text, ts, id)
+        }
+        "CommandExecution" => {
+            let command = item["command"]
+                .as_array()
+                .and_then(|c| c.last())
+                .and_then(Value::as_str)
+                .unwrap_or("");
+            let output = item["aggregated_output"].as_str().unwrap_or("");
+            let (text, lines) = preview(output, PREVIEW_LINES);
+            let failed =
+                item["status"] == "failed" || item["exit_code"].as_i64().is_some_and(|c| c != 0);
+            let mut e = event("tool", "assistant", &text, ts, id);
+            let (input, input_cut) = bound_json(json!({"command": command}), MAX_TOOL_INPUT);
+            let (result, result_cut) = bound_json(
+                json!({"exitCode": item["exit_code"], "output": output}),
+                MAX_TOOL_RESULT,
+            );
+            e["tool"] = json!({"name": "CommandExecution",
+                "status": if item["status"] == "in_progress" { "running" } else if failed { "error" } else { "done" },
+                "input": input, "result": result, "lines": lines});
+            if input_cut || result_cut {
+                e["truncated"] = json!(true);
+            }
+            e
+        }
+        "FileChange" => {
+            let changes: serde_json::Map<String, Value> = item["changes"].as_object().into_iter().flatten()
+                .map(|(path, change)| (basename(path), json!({"type": change["type"], "diff": change["diff"], "content": change["content"]})))
+                .collect();
+            let names = changes.keys().cloned().collect::<Vec<_>>().join(", ");
+            let mut e = event("tool", "assistant", &names, ts, id);
+            let (result, cut) = bound_json(Value::Object(changes), MAX_TOOL_RESULT);
+            e["tool"] = json!({"name": "FileChange", "status": if item["status"] == "failed" { "error" } else { "done" },
+                "result": result});
+            if cut {
+                e["truncated"] = json!(true);
+            }
+            e
+        }
+        "McpToolCall" => {
+            let label = format!(
+                "{}.{}",
+                item["server"].as_str().unwrap_or(""),
+                item["tool"].as_str().unwrap_or("")
+            );
+            let mut e = event("tool", "assistant", &label, ts, id);
+            let (input, input_cut) = bound_json(
+                json!({"server": item["server"], "tool": item["tool"], "arguments": item["arguments"]}),
+                MAX_TOOL_INPUT,
+            );
+            let (result, result_cut) = bound_json(
+                json!({"content": item["result"]["content"]}),
+                MAX_TOOL_RESULT,
+            );
+            e["tool"] = json!({"name": "McpToolCall",
+                "status": if item["result"]["isError"] == true || item["status"] == "failed" { "error" } else { "done" },
+                "input": input, "result": result});
+            if input_cut || result_cut {
+                e["truncated"] = json!(true);
+            }
+            e
+        }
+        "Extension" => {
+            let query = item["query"].as_str().unwrap_or("");
+            let mut e = event("tool", "assistant", query, ts, id);
+            let (input, cut) = bound_json(json!({"query": query}), MAX_TOOL_INPUT);
+            e["tool"] = json!({"name": item["kind"].as_str().unwrap_or("Extension"), "status": "done", "input": input});
+            if cut {
+                e["truncated"] = json!(true);
+            }
+            e
+        }
+        "SubAgentActivity" | "CollabAgentToolCall" => {
+            let label = item["agent_path"]
+                .as_str()
+                .or(item["tool"].as_str())
+                .unwrap_or("");
+            let mut e = event("tool", "assistant", label, ts, id);
+            e["tool"] = json!({"name": item["type"], "status": "done"});
+            e
+        }
+        "ContextCompaction" => lifecycle("compaction", "", ts, id),
+        _ => return None,
+    })
+}
+
+pub(super) fn normalize(session: &str, row: &Value) -> Result<Vec<Value>> {
+    if row.get("channel").is_some() || row.get("phase").is_some() {
+        return Ok(vec![]);
+    }
+    let meta_source = row["payload"]["source"].as_str().unwrap_or("");
+    if row["type"] == "session_meta"
+        && (row["payload"]["id"] != session
+            || !accepted_version(row["payload"]["cli_version"].as_str().unwrap_or(""))
+            || !accepted_app_source(meta_source, &row["payload"])
+            || !accepted_history_mode(meta_source, &row["payload"]))
+    {
+        return Err("runtime-unverified".into());
+    }
+    if row["type"] != "event_msg" {
+        return Ok(vec![]);
+    }
+    let payload = &row["payload"];
+    let ts = row["timestamp"].as_str();
+    let turn = |suffix: &str| payload["turn_id"].as_str().map(|t| format!("{t}:{suffix}"));
+    Ok(match payload["type"].as_str() {
+        Some("task_started") => vec![lifecycle("turn_start", "", ts, turn("start").as_deref())],
+        Some("task_complete") => vec![lifecycle("turn_end", "", ts, turn("end").as_deref())],
+        Some("turn_aborted") => vec![lifecycle("turn_aborted", "", ts, turn("abort").as_deref())],
+        Some("item_completed") => item(&payload["item"], ts).into_iter().collect(),
+        _ => vec![],
+    })
+}
+
+/// Replace one of the user's own Codex files atomically, keeping its mode.
+/// Not `private_write`: these are the user's configuration, not our 0600 state,
+/// and a 0600 rewrite of a file Codex shares would be a surprise.
+fn replace(path: &Path, contents: &[u8]) -> Result<()> {
+    use std::os::unix::fs::OpenOptionsExt;
+    let mode = fs::symlink_metadata(path)
+        .ok()
+        .filter(|meta| meta.is_file())
+        .map_or(0o600, |meta| meta.mode() & 0o777);
+    let temp = path.with_file_name(format!(".{}.tmp", uuid::Uuid::new_v4()));
+    let written = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(mode)
+        .open(&temp)
+        .map_err(|e| e.to_string())
+        .and_then(|mut file| {
+            file.write_all(contents)
+                .and_then(|()| file.sync_all())
+                .map_err(|e| e.to_string())
+        })
+        .and_then(|()| fs::rename(&temp, path).map_err(|e| e.to_string()));
+    if written.is_err() {
+        let _ = fs::remove_file(&temp);
+    }
+    written
+}
+
+/// Add or update one `[hooks.state."<key>"]` trust block, leaving every other
+/// line of `config.toml` byte-for-byte alone.
+fn upsert_trust(config: &str, key: &str, hash: &str) -> String {
+    let header = format!("[hooks.state.\"{key}\"]");
+    let trusted = format!("trusted_hash = \"{hash}\"");
+    let mut lines: Vec<String> = config.lines().map(str::to_owned).collect();
+    match lines.iter().position(|line| line.trim() == header) {
+        Some(start) => {
+            let block = &lines[start + 1..];
+            // Bounded by the next table header: a block of ours that somehow
+            // lost its hash must never rewrite the next table's.
+            let end = block
+                .iter()
+                .position(|line| line.trim_start().starts_with('['))
+                .unwrap_or(block.len());
+            match block[..end]
+                .iter()
+                .position(|line| line.trim_start().starts_with("trusted_hash"))
+            {
+                Some(at) => lines[start + 1 + at] = trusted,
+                None => lines.insert(start + 1, trusted),
+            }
+        }
+        None => lines.extend([String::new(), header, trusted]),
+    }
+    let mut out = lines.join("\n");
+    out.push('\n');
+    out
+}
+
+/// Drop one `[hooks.state."<key>"]` block: its header, the lines up to the next
+/// table, and the blank line `upsert_trust` put in front of it.
+fn remove_trust(config: &str, key: &str) -> String {
+    let header = format!("[hooks.state.\"{key}\"]");
+    let mut kept: Vec<&str> = Vec::new();
+    let mut dropping = false;
+    for line in config.lines() {
+        if line.trim() == header {
+            if kept.last().is_some_and(|line| line.trim().is_empty()) {
+                kept.pop();
+            }
+            dropping = true;
+            continue;
+        }
+        if dropping {
+            if !line.trim_start().starts_with('[') {
+                continue;
+            }
+            dropping = false;
+        }
+        kept.push(line);
+    }
+    let mut out = kept.join("\n");
+    if !out.is_empty() {
+        out.push('\n');
+    }
+    out
+}
+
+/// Install (or remove) the lifecycle hooks in `~/.codex/hooks.json` together
+/// with the `config.toml` trust entries Codex requires before it will run them
+/// -- an untrusted group is skipped silently, so the two must move as one.
+pub(super) fn configure_hooks(home: &Path, executable: &Path, enabled: bool) -> Result<()> {
+    let dir = home.join(".codex");
+    if !dir.is_dir() {
+        return Ok(()); // Codex is not installed on this Mac.
+    }
+    let path = dir.join("hooks.json");
+    // The trust key is this path, written into a TOML bare-string table header.
+    // A quote or backslash in it would corrupt the user's config.toml, so refuse
+    // before either file is touched rather than escape our way through.
+    if path.to_string_lossy().contains(['"', '\\']) {
+        return Err("Codex config path cannot be trusted safely".into());
+    }
+    let mut doc: Value = if path.try_exists().map_err(|e| e.to_string())? {
+        serde_json::from_reader(secure_file(&path)?.take(1024 * 1024))
+            .map_err(|_| "invalid Codex hooks")?
+    } else if enabled {
+        json!({})
+    } else {
+        return Ok(());
+    };
+    if !doc.is_object() {
+        return Err("invalid Codex hooks".into());
+    }
+    if doc.get("hooks").is_none() {
+        doc["hooks"] = json!({});
+    }
+    // Every launch re-asserts these, and a no-op must not rewrite (and
+    // reformat) files the user owns.
+    let original = doc.clone();
+    let command = super::claude::hook_command(executable, "codex")?;
+    let hooks = doc["hooks"].as_object_mut().ok_or("invalid Codex hooks")?;
+    // key -> hash to trust, or None to untrust.
+    let mut trust: Vec<(String, Option<String>)> = Vec::new();
+    for (event, _) in super::claude::HOOK_EVENTS {
+        let Some(label) = lifecycle::codex_event_label(event) else {
+            continue;
+        };
+        // Codex forces SessionEnd synchronous and normalizes its missing
+        // timeout to 1; every other event normalizes to the written value.
+        let (timeout, is_async) = if event == "SessionEnd" {
+            (1, false)
+        } else {
+            (5, true)
+        };
+        let entry =
+            json!({"hooks":[{"type":"command","command":command,"timeout":timeout,"async":is_async}]});
+        let slot = if enabled {
+            Some(hooks.entry(event).or_insert_with(|| json!([])))
+        } else {
+            hooks.get_mut(event)
+        };
+        let Some(slot) = slot else { continue };
+        let entries = slot.as_array_mut().ok_or("invalid Codex hooks")?;
+        // Our group is the one running our command. Re-appending it instead
+        // would shift every group the user keeps after it -- and their trust
+        // keys are that index.
+        let found = entries
+            .iter()
+            .position(|existing| existing["hooks"][0]["command"].as_str() == Some(&*command));
+        // Never guess an index when disabling: `<hooks.json>:<event>:0:0` is a
+        // real key that another tool's first group may own.
+        let index = if enabled {
+            Some(match found {
+                Some(at) => {
+                    entries[at] = entry;
+                    at
+                }
+                None => {
+                    entries.push(entry);
+                    entries.len() - 1
+                }
+            })
+        } else {
+            if let Some(at) = found {
+                entries.remove(at);
+            }
+            found
+        };
+        if entries.is_empty() {
+            hooks.remove(event);
+        }
+        if let Some(index) = index {
+            trust.push((
+                lifecycle::codex_trust_key(&path, label, index),
+                enabled.then(|| {
+                    lifecycle::codex_trust_hash(label, None, &command, timeout, is_async, None)
+                }),
+            ));
+        }
+    }
+    if doc != original {
+        replace(
+            &path,
+            &serde_json::to_vec_pretty(&doc).map_err(|e| e.to_string())?,
+        )?;
+    }
+    if trust.is_empty() {
+        return Ok(());
+    }
+    let config = dir.join("config.toml");
+    let mut text = if config.try_exists().map_err(|e| e.to_string())? {
+        let mut text = String::new();
+        secure_file(&config)?
+            .take(1024 * 1024)
+            .read_to_string(&mut text)
+            .map_err(|_| "invalid Codex config")?;
+        text
+    } else if enabled {
+        String::new()
+    } else {
+        return Ok(());
+    };
+    let original = text.clone();
+    for (key, hash) in &trust {
+        text = match hash {
+            Some(hash) => upsert_trust(&text, key, hash),
+            None => remove_trust(&text, key),
+        };
+    }
+    if text == original {
+        return Ok(());
+    }
+    replace(&config, text.as_bytes())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn local_sessions_codex_hooks_install_trust_and_remove() {
+        let home = tempfile::tempdir().unwrap();
+        let codex = home.path().join(".codex");
+        fs::create_dir_all(&codex).unwrap();
+        fs::write(codex.join("config.toml"), "model = \"x\"\n\n[hooks.state]\n\n[hooks.state.\"other:stop:0:0\"]\ntrusted_hash = \"sha256:aa\"\n").unwrap();
+        fs::write(
+            codex.join("hooks.json"),
+            r#"{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"theirs"}]}]}}"#,
+        )
+        .unwrap();
+        configure_hooks(home.path(), Path::new("/app"), true).unwrap();
+        let hooks: Value =
+            serde_json::from_str(&fs::read_to_string(codex.join("hooks.json")).unwrap()).unwrap();
+        assert_eq!(
+            hooks["hooks"]["Stop"].as_array().unwrap().len(),
+            2,
+            "theirs kept, ours appended"
+        );
+        assert_eq!(hooks["hooks"]["SessionEnd"][0]["hooks"][0]["timeout"], 1);
+        let config = fs::read_to_string(codex.join("config.toml")).unwrap();
+        let key = format!("{}:stop:1:0", codex.join("hooks.json").display());
+        assert!(config.contains(&format!("[hooks.state.\"{key}\"]")));
+        let expected = lifecycle::codex_trust_hash(
+            "stop",
+            None,
+            "'/app' local-session-hook codex",
+            5,
+            true,
+            None,
+        );
+        assert!(config.contains(&format!("trusted_hash = \"{expected}\"")));
+        assert!(config.contains("other:stop:0:0"));
+
+        // A group the user adds AFTER ours keeps its index across a resume --
+        // their own trust key is that index, so moving ours invalidates it.
+        let mut doc: Value =
+            serde_json::from_str(&fs::read_to_string(codex.join("hooks.json")).unwrap()).unwrap();
+        doc["hooks"]["Stop"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!({"hooks":[{"type":"command","command":"later"}]}));
+        fs::write(
+            codex.join("hooks.json"),
+            serde_json::to_vec_pretty(&doc).unwrap(),
+        )
+        .unwrap();
+        configure_hooks(home.path(), Path::new("/app"), true).unwrap(); // idempotent
+        let doc: Value =
+            serde_json::from_str(&fs::read_to_string(codex.join("hooks.json")).unwrap()).unwrap();
+        let stop = doc["hooks"]["Stop"].as_array().unwrap();
+        assert_eq!(stop.len(), 3);
+        assert_eq!(stop[0]["hooks"][0]["command"], "theirs");
+        assert_eq!(
+            stop[2]["hooks"][0]["command"], "later",
+            "ours stayed at index 1 instead of being re-appended"
+        );
+        assert_eq!(
+            fs::read_to_string(codex.join("config.toml"))
+                .unwrap()
+                .matches(&key)
+                .count(),
+            1
+        );
+        configure_hooks(home.path(), Path::new("/app"), false).unwrap();
+        let hooks: Value =
+            serde_json::from_str(&fs::read_to_string(codex.join("hooks.json")).unwrap()).unwrap();
+        let stop = hooks["hooks"]["Stop"].as_array().unwrap();
+        assert_eq!(
+            (
+                stop.len(),
+                stop[0]["hooks"][0]["command"].as_str(),
+                stop[1]["hooks"][0]["command"].as_str(),
+            ),
+            (2, Some("theirs"), Some("later")),
+            "only our group is removed, and in place"
+        );
+        assert!(hooks["hooks"].get("SessionEnd").is_none());
+        let config = fs::read_to_string(codex.join("config.toml")).unwrap();
+        assert!(
+            !config.contains(&key)
+                && config.contains("other:stop:0:0")
+                && config.starts_with("model = \"x\"")
+        );
+
+        // Codex installed, but no hooks.json or config.toml written yet.
+        let fresh = tempfile::tempdir().unwrap();
+        fs::create_dir_all(fresh.path().join(".codex")).unwrap();
+        configure_hooks(fresh.path(), Path::new("/app"), true).unwrap();
+        let hooks: Value = serde_json::from_str(
+            &fs::read_to_string(fresh.path().join(".codex/hooks.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            hooks["hooks"]["SessionStart"][0]["hooks"][0]["command"],
+            "'/app' local-session-hook codex"
+        );
+        assert!(
+            hooks["hooks"].get("Notification").is_none(),
+            "Codex has no Notification event"
+        );
+        let config = fs::read_to_string(fresh.path().join(".codex/config.toml")).unwrap();
+        assert_eq!(config.matches("[hooks.state.").count(), 4);
+
+        // No Codex on this Mac: nothing to install, and not an error.
+        let bare = tempfile::tempdir().unwrap();
+        configure_hooks(bare.path(), Path::new("/app"), true).unwrap();
+        assert!(!bare.path().join(".codex").exists());
+    }
+
+    /// Claude has two hooks Codex must never be given (`PreToolUse`,
+    /// `PermissionRequest`). Codex trusts a hook group by a hash of its identity
+    /// at an index, so one extra installed entry silently invalidates keys and
+    /// Codex then skips the group. This pins the whole set -- events, commands
+    /// and trust hashes -- to exactly what shipped.
+    #[test]
+    fn local_sessions_codex_hook_set_and_trust_hashes_are_frozen() {
+        let home = tempfile::tempdir().unwrap();
+        fs::create_dir_all(home.path().join(".codex")).unwrap();
+        configure_hooks(home.path(), Path::new("/app"), true).unwrap();
+        let doc: Value =
+            serde_json::from_str(&fs::read_to_string(home.path().join(".codex/hooks.json")).unwrap())
+                .unwrap();
+        let hooks = doc["hooks"].as_object().unwrap();
+        assert_eq!(
+            hooks.keys().map(String::as_str).collect::<Vec<_>>(),
+            ["SessionStart", "UserPromptSubmit", "Stop", "SessionEnd"],
+            "Codex installs the five shared events minus Notification, and nothing else"
+        );
+        for (event, timeout, is_async) in [
+            ("SessionStart", json!(5), json!(true)),
+            ("UserPromptSubmit", json!(5), json!(true)),
+            ("Stop", json!(5), json!(true)),
+            ("SessionEnd", json!(1), json!(false)),
+        ] {
+            assert_eq!(
+                hooks[event],
+                json!([{"hooks":[{"type":"command","command":"'/app' local-session-hook codex",
+                    "timeout":timeout,"async":is_async}]}]),
+                "{event}"
+            );
+        }
+        let config = fs::read_to_string(home.path().join(".codex/config.toml")).unwrap();
+        let path = home.path().join(".codex/hooks.json");
+        for (index, label, hash) in [
+            (0, "session_start", "sha256:e92f980584c0d2e69241c742b5098cc77ee3c72dde0acf0000958fef54d406c2"),
+            (0, "user_prompt_submit", "sha256:1b9663f4792c847238b9ce60fa8356836634675cf6edcd96b9660a8bbac50d5a"),
+            (0, "stop", "sha256:560328742055693cdfd246bce82c94a8b396c388029444fb0adb39b8899b547e"),
+            (0, "session_end", "sha256:73824c3fd7c65d780e2b8aa1740084f4ce2090a802322de8aac307784a3698d8"),
+        ] {
+            let key = lifecycle::codex_trust_key(&path, label, index);
+            assert!(
+                config.contains(&format!("[hooks.state.\"{key}\"]\ntrusted_hash = \"{hash}\"")),
+                "{label} trust entry moved"
+            );
+        }
+        assert_eq!(config.matches("[hooks.state.").count(), 4);
+    }
+
+    #[test]
+    fn local_sessions_codex_refuses_a_path_the_trust_table_cannot_quote() {
+        let root = tempfile::tempdir().unwrap();
+        let home = root.path().join("we\"ird");
+        fs::create_dir_all(home.join(".codex")).unwrap();
+        let config = home.join(".codex/config.toml");
+        fs::write(&config, "model = \"x\"\n").unwrap();
+        assert_eq!(
+            configure_hooks(&home, Path::new("/app"), true).unwrap_err(),
+            "Codex config path cannot be trusted safely"
+        );
+        assert_eq!(fs::read_to_string(&config).unwrap(), "model = \"x\"\n");
+        assert!(!home.join(".codex/hooks.json").exists());
+    }
+
+    #[test]
+    fn local_sessions_codex_items_become_terminal_items() {
+        let meta = json!({"type":"session_meta","payload":{"id":"s","cli_version":"0.149.0","source":"cli"}});
+        assert!(normalize("s", &meta).unwrap().is_empty());
+        assert!(normalize("other", &meta).is_err());
+        let app_meta = json!({"type":"session_meta","payload":{"id":"s","cli_version":"0.153.4","source":"vscode","originator":"Codex Desktop","history_mode":"paginated"}});
+        assert!(normalize("s", &app_meta).unwrap().is_empty());
+        let old_meta = json!({"type":"session_meta","payload":{"id":"s","cli_version":"0.140.0","source":"cli"}});
+        assert!(normalize("s", &old_meta).is_err());
+        let legacy_meta = json!({"type":"session_meta","payload":{"id":"s","cli_version":"0.153.4","source":"vscode","originator":"Codex Desktop","history_mode":"legacy"}});
+        assert!(normalize("s", &legacy_meta).is_err());
+        let unknown_history_meta = json!({"type":"session_meta","payload":{"id":"s","cli_version":"0.153.4","source":"vscode","originator":"Codex Desktop"}});
+        assert!(normalize("s", &unknown_history_meta).is_err());
+        let other_originator_meta = json!({"type":"session_meta","payload":{"id":"s","cli_version":"0.153.4","source":"vscode","originator":"vscode-extension","history_mode":"paginated"}});
+        assert!(normalize("s", &other_originator_meta).is_err());
+        let ts = "2026-09-12T10:00:00.000Z";
+        let ev = |item: Value| json!({"type":"event_msg","timestamp":ts,"payload":{"type":"item_completed","thread_id":"s","turn_id":"t1","item":item}});
+        let user = normalize("s", &ev(json!({"type":"UserMessage","id":"u1","content":[{"type":"text","text":"[Lightbulb teammate contribution from @aden (Aden Kim) {\"roomId\":\"r\",\"requestId\":\"q\",\"actorUserId\":\"user_a\"}]\nrun it"}]}))).unwrap();
+        assert_eq!(
+            (user[0]["text"].as_str(), user[0]["actor"].clone()),
+            (Some("run it"), json!({"userId":"user_a"}))
+        );
+        let reasoning = normalize(
+            "s",
+            &ev(json!({"type":"Reasoning","id":"r1","summary_text":["**Planning the rerun**"]})),
+        )
+        .unwrap();
+        assert_eq!(
+            (reasoning[0]["kind"].as_str(), reasoning[0]["text"].as_str()),
+            (Some("thinking"), Some("**Planning the rerun**"))
+        );
+        let output = (1..=25)
+            .map(|i| format!("l{i}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let cmd = normalize("s", &ev(json!({"type":"CommandExecution","id":"e1","command":["/bin/zsh","-lc","git status"],"cwd":"file:///x","aggregated_output":output,"exit_code":1,"status":"completed"}))).unwrap();
+        assert_eq!(cmd[0]["tool"]["name"], "CommandExecution");
+        assert_eq!(cmd[0]["tool"]["input"]["command"], "git status");
+        assert_eq!(cmd[0]["tool"]["status"], "error");
+        assert_eq!(cmd[0]["tool"]["lines"], 25);
+        assert_eq!(
+            cmd[0]["text"].as_str().unwrap().lines().count(),
+            PREVIEW_LINES
+        );
+        let change = normalize("s", &ev(json!({"type":"FileChange","id":"f1","changes":{"/Users/me/repo/src/a.ts":{"type":"update","diff":"-a\n+b"}}}))).unwrap();
+        assert_eq!(change[0]["text"], "a.ts");
+        assert_eq!(change[0]["tool"]["result"]["a.ts"]["diff"], "-a\n+b");
+        let mcp = normalize("s", &ev(json!({"type":"McpToolCall","id":"m1","server":"codex_app","tool":"open","arguments":{"a":1},"status":"completed","result":{"content":[{"type":"text","text":"ok"}],"isError":false}}))).unwrap();
+        assert_eq!(
+            (mcp[0]["text"].as_str(), mcp[0]["tool"]["status"].as_str()),
+            (Some("codex_app.open"), Some("done"))
+        );
+        let search = normalize(
+            "s",
+            &ev(json!({"type":"Extension","kind":"web.search","id":"w1","query":"k6 timeout"})),
+        )
+        .unwrap();
+        assert_eq!(
+            (
+                search[0]["tool"]["name"].as_str(),
+                search[0]["text"].as_str()
+            ),
+            (Some("web.search"), Some("k6 timeout"))
+        );
+        let secret_search = normalize(
+            "s",
+            &ev(json!({"type":"Extension","kind":"web.search","id":"w2","query":"find AKIAIOSFODNN7EXAMPLE"})),
+        )
+        .unwrap();
+        let query = secret_search[0]["tool"]["input"]["query"].as_str().unwrap();
+        assert!(query.contains("[redacted]"));
+        assert!(!query.contains("AKIAIOSFODNN7EXAMPLE"));
+        let final_answer = normalize("s", &ev(json!({"type":"AgentMessage","id":"a1","phase":"final_answer","content":[{"type":"Text","text":"Done."}]}))).unwrap();
+        assert_eq!(
+            (
+                final_answer[0]["kind"].as_str(),
+                final_answer[0]["text"].as_str()
+            ),
+            (Some("text"), Some("Done."))
+        );
+        // Absent phase is ordinary; only an unrecognized phase is withheld.
+        let commentary = normalize("s", &ev(json!({"type":"AgentMessage","id":"a2","phase":"commentary","content":[{"type":"Text","text":"Thinking aloud."}]}))).unwrap();
+        assert_eq!(commentary[0]["text"].as_str(), Some("Thinking aloud."));
+        let bare = normalize("s", &ev(json!({"type":"AgentMessage","id":"a3","content":[{"type":"Text","text":"Still done."}]}))).unwrap();
+        assert_eq!(bare[0]["text"].as_str(), Some("Still done."));
+        assert!(normalize("s", &ev(json!({"type":"AgentMessage","id":"a4","phase":"analysis","content":[{"type":"Text","text":"scratch"}]}))).unwrap().is_empty());
+        assert_eq!(
+            normalize("s", &ev(json!({"type":"ContextCompaction","id":"c1"}))).unwrap()[0]
+                ["lifecycle"],
+            "compaction"
+        );
+        let started = json!({"type":"event_msg","timestamp":ts,"payload":{"type":"task_started","turn_id":"t1"}});
+        assert_eq!(
+            normalize("s", &started).unwrap()[0]["lifecycle"],
+            "turn_start"
+        );
+        let aborted = json!({"type":"event_msg","timestamp":ts,"payload":{"type":"turn_aborted","turn_id":"t1","reason":"interrupted"}});
+        assert_eq!(
+            normalize("s", &aborted).unwrap()[0]["lifecycle"],
+            "turn_aborted"
+        );
+        assert!(normalize("s", &json!({"type":"response_item","payload":{"type":"message","role":"assistant","phase":"final_answer","content":[{"type":"output_text","text":"legacy"}]}})).unwrap().is_empty());
+        assert!(normalize(
+            "s",
+            &json!({"type":"event_msg","payload":{"type":"token_count"}})
+        )
+        .unwrap()
+        .is_empty());
+    }
+
+    #[test]
+    fn local_sessions_codex_tail_state_reports_busy_idle_and_title() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("rollout.jsonl");
+        let started = json!({"type":"event_msg","payload":{"type":"task_started","turn_id":"t9"}});
+        let complete =
+            json!({"type":"event_msg","payload":{"type":"task_complete","turn_id":"t9"}});
+        let user = json!({"type":"event_msg","payload":{"type":"item_completed","item":{"type":"UserMessage","content":[{"type":"text","text":"Check whether the timeout also happens at concurrency 50, please, and report back with numbers"}]}}});
+        fs::write(&path, format!("{user}\n{started}\n")).unwrap();
+        let (status, turn, title) = tail_state(&path);
+        assert_eq!((status, turn.as_deref()), ("busy", Some("t9")));
+        assert_eq!(title.as_deref().map(str::len), Some(60));
+        fs::write(&path, format!("{user}\n{started}\n{complete}\n")).unwrap();
+        assert_eq!(tail_state(&path).0, "idle");
+        fs::write(&path, "{}\n").unwrap();
+        assert_eq!(tail_state(&path), ("unknown", None, None));
+        let secret_user = json!({"type":"event_msg","payload":{"type":"item_completed","item":{"type":"UserMessage","content":[{"type":"text","text":"use sk-abcdefghijklmnopqrstuvwxyz12 please"}]}}});
+        fs::write(&path, format!("{secret_user}\n")).unwrap();
+        let title = tail_state(&path).2.unwrap();
+        assert!(title.contains("[redacted]"));
+        assert!(!title.contains("sk-abcdefghijklmnopqrstuvwxyz12"));
+        let header_user = json!({"type":"event_msg","payload":{"type":"item_completed","item":{"type":"UserMessage","content":[{"type":"text","text":"[Lightbulb teammate contribution from @aden (Aden Kim) {\"roomId\":\"r\"}]\nrun it"}]}}});
+        let later_user = json!({"type":"event_msg","payload":{"type":"item_completed","item":{"type":"UserMessage","content":[{"type":"text","text":"plain later prompt"}]}}});
+        fs::write(&path, format!("{header_user}\n{later_user}\n")).unwrap();
+        assert_eq!(tail_state(&path).2.as_deref(), Some("plain later prompt"));
+    }
+    #[test]
+    fn local_sessions_codex_discovers_only_process_owned_cli_profile_history() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = fs::canonicalize(dir.path()).unwrap();
+        let path = root.join("rollout-owned.jsonl");
+        fs::write(&path, "{\"type\":\"session_meta\",\"payload\":{\"id\":\"owned\",\"source\":\"cli\",\"cli_version\":\"0.149.0\"}}\n{\"type\":\"event_msg\",\"payload\":{\"type\":\"task_started\",\"turn_id\":\"t1\"}}\n").unwrap();
+        let process = Process {
+            pid: 42,
+            birth_micros: 123,
+            executable: "/bin/codex".into(),
+        };
+        let found = from_rollout(&root, process.clone(), &path, "0.149.0").unwrap();
+        assert_eq!(found.conversation, "owned");
+        assert_eq!(found.process.birth_micros, 123);
+        assert_eq!(found.status, "busy");
+        assert!(from_rollout(
+            &root.join("other-profile"),
+            process.clone(),
+            &path,
+            "0.149.0"
+        )
+        .is_err());
+        // The backend caps cwd_name at 128 characters; a longer basename would
+        // fail registration and loop the mirror.
+        let long = "d".repeat(200);
+        fs::write(&path, format!("{{\"type\":\"session_meta\",\"payload\":{{\"id\":\"owned\",\"source\":\"cli\",\"cli_version\":\"0.149.0\",\"cwd\":\"/tmp/{long}\"}}}}\n")).unwrap();
+        let bounded_cwd = from_rollout(&root, process.clone(), &path, "0.149.0").unwrap();
+        assert_eq!(bounded_cwd.cwd_name.unwrap().chars().count(), 128);
+        fs::write(&path, "{\"type\":\"session_meta\",\"payload\":{\"id\":\"app\",\"source\":\"vscode\",\"originator\":\"Codex Desktop\",\"history_mode\":\"paginated\",\"cli_version\":\"0.153.4\"}}\n").unwrap();
+        let app = from_rollout(&root, process.clone(), &path, "0.153.4").unwrap();
+        assert_eq!((app.conversation.as_str(), app.version.as_str(), app.restriction), ("app", "0.153.4", None));
+        let unverified = from_rollout(&root, process.clone(), &path, "0.149.0").unwrap();
+        assert_eq!(unverified.restriction.as_deref(), Some("runtime-unverified"));
+        fs::write(&path, "{\"type\":\"session_meta\",\"payload\":{\"id\":\"app\",\"source\":\"vscode\",\"originator\":\"Codex Desktop\",\"history_mode\":\"paginated\",\"cli_version\":\"0.150.0\"}}\n").unwrap();
+        assert_eq!(from_rollout(&root, process.clone(), &path, "0.150.0").unwrap().restriction.as_deref(), Some("runtime-unverified"));
+        // The ChatGPT app's older history layout has none of the item_completed
+        // rows this parser reads (text/tools/title live elsewhere), so it is
+        // refused rather than mirrored blank.
+        fs::write(&path, "{\"type\":\"session_meta\",\"payload\":{\"id\":\"app\",\"source\":\"vscode\",\"originator\":\"Codex Desktop\",\"cli_version\":\"0.153.4\",\"history_mode\":\"legacy\"}}\n").unwrap();
+        assert!(from_rollout(&root, process.clone(), &path, "0.153.4").is_err());
+        // vscode fails closed: an absent/unknown history_mode is refused, not
+        // treated as the verified paginated grammar.
+        fs::write(&path, "{\"type\":\"session_meta\",\"payload\":{\"id\":\"app\",\"source\":\"vscode\",\"originator\":\"Codex Desktop\",\"cli_version\":\"0.153.4\"}}\n").unwrap();
+        assert!(from_rollout(&root, process.clone(), &path, "0.153.4").is_err());
+        // The VS Code extension shares source "vscode" with the desktop app;
+        // only the app's originator is accepted.
+        fs::write(&path, "{\"type\":\"session_meta\",\"payload\":{\"id\":\"app\",\"source\":\"vscode\",\"originator\":\"vscode-extension\",\"history_mode\":\"paginated\",\"cli_version\":\"0.153.4\"}}\n").unwrap();
+        assert!(from_rollout(&root, process.clone(), &path, "0.153.4").is_err());
+        fs::write(&path, "{\"type\":\"session_meta\",\"payload\":{\"id\":\"app\",\"source\":\"vscode\",\"originator\":\"Codex Desktop\",\"history_mode\":\"paginated\",\"cli_version\":\"0.153.4\"}}\n").unwrap();
+        assert_eq!(from_rollout(&root, process.clone(), &path, "0.153.4").unwrap().restriction, None);
+        fs::write(&path, "{\"type\":\"session_meta\",\"payload\":{\"id\":\"owned\",\"source\":{\"subagent\":{}},\"cli_version\":\"0.149.0\"}}\n").unwrap();
+        assert!(from_rollout(&root, process.clone(), &path, "0.149.0").is_err());
+        fs::write(&path, "{\"type\":\"session_meta\",\"payload\":{\"id\":\"owned\",\"source\":\"exec\",\"cli_version\":\"0.149.0\"}}\n").unwrap();
+        assert!(from_rollout(&root, process, &path, "0.149.0").is_err());
+    }
+    #[tokio::test]
+    async fn local_sessions_codex_capture_mirrors_every_writer_rollout_and_excludes_readers() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = fs::canonicalize(dir.path()).unwrap();
+        let root = home.join(".codex/sessions");
+        fs::create_dir_all(&root).unwrap();
+        let first = root.join("rollout-first.jsonl");
+        let second = root.join("rollout-second.jsonl");
+        let read_only = root.join("rollout-read-only.jsonl");
+        let refused = root.join("rollout-refused.jsonl");
+        fs::write(&first, "{\"type\":\"session_meta\",\"payload\":{\"id\":\"one\",\"source\":\"cli\",\"cli_version\":\"0.149.0\"}}\n").unwrap();
+        fs::write(&second, "{\"type\":\"session_meta\",\"payload\":{\"id\":\"two\",\"source\":\"cli\",\"cli_version\":\"0.149.0\"}}\n").unwrap();
+        fs::write(&read_only, "{\"type\":\"session_meta\",\"payload\":{\"id\":\"three\",\"source\":\"cli\",\"cli_version\":\"0.149.0\"}}\n").unwrap();
+        fs::write(&refused, "{\"type\":\"session_meta\",\"payload\":{\"id\":\"four\",\"source\":\"exec\",\"cli_version\":\"0.149.0\"}}\n").unwrap();
+
+        // One real process (this test binary itself) holding four rollouts open
+        // at once: two writers (accepted), one reader only (accepted content,
+        // but must be excluded -- a process merely reading another thread's
+        // history, the way the app-server loads history or the CLI resume
+        // picker browses it, must never be mistaken for that thread's owner),
+        // and one writer `from_rollout` refuses on content grounds. Holding the
+        // handles here (rather than in a spawned child) makes every fd open
+        // before `capture` ever runs, so there is nothing to race.
+        let _first_writer = fs::OpenOptions::new().append(true).open(&first).unwrap();
+        let _second_writer = fs::OpenOptions::new().append(true).open(&second).unwrap();
+        let _reader = fs::File::open(&read_only).unwrap();
+        let _refused_writer = fs::OpenOptions::new().append(true).open(&refused).unwrap();
+
+        let sessions = capture(
+            &home,
+            Path::new("/nonexistent-codex-binary"),
+            std::process::id(),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(
+            sessions.len(),
+            2,
+            "the read-only handle and the refused exec-sourced rollout are both excluded"
+        );
+        let mut conversations: Vec<_> = sessions.iter().map(|s| s.conversation.clone()).collect();
+        conversations.sort();
+        assert_eq!(conversations, vec!["one".to_string(), "two".to_string()]);
+        assert_eq!(sessions[0].process, sessions[1].process);
+    }
+
+    #[tokio::test]
+    #[ignore = "requires an explicitly owned disposable native Codex PID and conversation ID"]
+    async fn local_sessions_owned_codex_capture_binds_the_running_binary() {
+        let home = PathBuf::from(std::env::var("HOME").unwrap());
+        let pid = std::env::var("LIGHTBULB_TEST_CODEX_PID")
+            .unwrap()
+            .parse()
+            .unwrap();
+        let conversation = std::env::var("LIGHTBULB_TEST_CODEX_THREAD").unwrap();
+        let program = provider_program(&home, "codex").unwrap();
+        let session = capture(&home, &program, pid)
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|s| s.conversation == conversation)
+            .unwrap();
+        assert_eq!(session.conversation, conversation);
+        assert_eq!(session.restriction, None);
+        assert_eq!(session.version, "0.149.0");
+    }
+
+    #[test]
+    fn local_sessions_codex_receipt_is_exact_and_thread_bound() {
+        let observed = "Queued message 01a08ec5-b961-77c0-962d-25097fe0f5f4 for thread 01a08ec5-554f-7dc1-baf4-5755bb2de4d1.\n";
+        assert_eq!(
+            queued_id(observed, "01a08ec5-554f-7dc1-baf4-5755bb2de4d1").as_deref(),
+            Some("01a08ec5-b961-77c0-962d-25097fe0f5f4")
+        );
+        assert!(queued_id(observed, "other").is_none());
+        assert!(queued_id(
+            &format!("unknown {observed}"),
+            "01a08ec5-554f-7dc1-baf4-5755bb2de4d1"
+        )
+        .is_none());
+    }
+}

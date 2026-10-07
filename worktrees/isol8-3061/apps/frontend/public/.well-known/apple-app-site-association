@@ -1,0 +1,16 @@
+{
+  "applinks": {
+    "apps": [],
+    "details": [
+      {
+        "appIDs": ["WZX4U3C22Y.co.isol8.mobile"],
+        "components": [
+          {
+            "/": "/checkout_redirect/*",
+            "comment": "Stripe app-to-web Checkout returns here; hands control back to the iOS app when installed."
+          }
+        ]
+      }
+    ]
+  }
+}

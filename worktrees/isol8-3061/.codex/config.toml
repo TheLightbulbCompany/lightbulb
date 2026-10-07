@@ -1,0 +1,9 @@
+[mcp_servers.expo-mcp]
+url = "https://mcp.expo.dev/mcp"
+
+[mcp_servers.playwright]
+command = "npx"
+args = ["@playwright/mcp@latest"]
+
+[mcp_servers.vercel]
+url = "https://mcp.vercel.com"

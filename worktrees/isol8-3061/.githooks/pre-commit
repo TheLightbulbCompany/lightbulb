@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+set -e
+
+# Only lint staged Python files in apps/backend
+STAGED_PY=$(git diff --cached --name-only --diff-filter=ACM | grep '^apps/backend/.*\.py$' || true)
+
+if [ -n "$STAGED_PY" ]; then
+  echo "Running ruff on staged backend files..."
+  # Strip apps/backend/ prefix since we cd into the directory
+  RELATIVE_PY=$(echo "$STAGED_PY" | sed 's|^apps/backend/||')
+  cd apps/backend
+  uv run ruff check $RELATIVE_PY
+  uv run ruff format --check $RELATIVE_PY
+  cd - > /dev/null
+fi

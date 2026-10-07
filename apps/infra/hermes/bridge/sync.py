@@ -1196,7 +1196,8 @@ def pin_profile_defaults(agent_id: str) -> dict:
 # (see the comment there). So this reads `bridge.API`/`bridge.OWNER`/`bridge.HOOK_TOKEN`
 # lazily, at call time, via the module object.
 _EXT = {"image/png": ".png", "image/jpeg": ".jpg", "image/webp": ".webp", "image/gif": ".gif",
-        "application/pdf": ".pdf"}
+        "application/pdf": ".pdf",
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": ".xlsx"}
 
 
 def _get_backend_bytes(path: str) -> bytes:

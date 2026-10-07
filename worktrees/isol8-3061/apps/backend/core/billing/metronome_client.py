@@ -1,0 +1,447 @@
+"""Thin httpx client for the handful of Metronome HTTP shapes we use.
+
+No business logic, no DDB — just request marshalling
+and auth. Grounded in docs/superpowers/research/2026-06-07-metronome-ingest-
+contract.md. The environment (sandbox vs prod) is decided entirely by the
+api_key (Metronome is token-scoped, same base URL).
+
+Tests inject a mock AsyncClient via the `http_client` arg; prod constructs a
+fresh client per logical operation via `for_settings()`.
+"""
+
+from __future__ import annotations
+
+import time
+from typing import Any
+
+import httpx
+
+from core.config import settings
+
+
+def _stripe_delivery() -> dict[str, str]:
+    """Metronome takes exactly one of delivery_method / delivery_method_id, and rejects the bare
+    method once an env has two Stripe integrations (sandbox-verified 2026-09-22)."""
+    if settings.METRONOME_STRIPE_DELIVERY_METHOD_ID:
+        return {"delivery_method_id": settings.METRONOME_STRIPE_DELIVERY_METHOD_ID}
+    return {"delivery_method": "direct_to_billing_provider"}
+
+
+# Prepaid credits never expire on our side; commit schedule items still need
+# an end, so they get one far past any plausible product lifetime.
+_NO_EXPIRY = "9999-12-31T00:00:00.000Z"
+
+# Relative ranking among commits when several could burn down at once. We
+# issue exactly one commit class (Stripe-confirmed top-ups), so any fixed
+# value works; Metronome's create validator requires the field regardless
+# (sandbox-verified required fields: access_schedule, priority, product_id,
+# type).
+_COMMIT_PRIORITY = 100
+
+
+class MetronomeError(Exception):
+    """A Metronome response was well-formed HTTP but semantically unusable
+    (e.g. a 2xx body missing the expected envelope). Distinct from
+    httpx.HTTPStatusError, which the caller raises on non-2xx."""
+
+
+class MetronomeClient:
+    def __init__(self, *, api_key: str, base_url: str, http_client: httpx.AsyncClient):
+        self._api_key = api_key
+        self._base_url = base_url.rstrip("/")
+        self._http = http_client
+
+    @property
+    def _v2_base_url(self) -> str:
+        # The configured base is the v1 API root; the v2 surface (gated
+        # commits via contract edit) lives beside it at the same host, so
+        # derive it instead of carrying a second configured URL that could
+        # drift to a different environment.
+        return self._base_url.removesuffix("/v1") + "/v2"
+
+    @property
+    def _headers(self) -> dict[str, str]:
+        return {
+            "Authorization": f"Bearer {self._api_key}",
+            "Content-Type": "application/json",
+        }
+
+    async def _post(self, path: str, payload: Any, *, extra_headers: dict[str, str] | None = None) -> dict:
+        headers = {**self._headers, **extra_headers} if extra_headers else self._headers
+        resp = await self._http.post(path, json=payload, headers=headers)
+        resp.raise_for_status()
+        return resp.json() or {}
+
+    async def _get(self, path: str, params: dict | None = None) -> dict:
+        resp = await self._http.get(path, params=params, headers=self._headers)
+        resp.raise_for_status()
+        return resp.json() or {}
+
+    async def ingest(self, events: list[dict]) -> None:
+        """POST /v1/ingest — body is a JSON array of event objects. The
+        transaction_id on each event is the 34-day idempotency key, so
+        retrying until 200 is safe."""
+        await self._post("/ingest", events)
+
+    async def create_customer(self, *, name: str, ingest_aliases: list[str]) -> str:
+        """POST /v1/customers — returns the Metronome customer UUID.
+        Sandbox-verified: customer create is a plain REST POST on the
+        collection path (a "/customers/create" RPC-style path 404s).
+        ingest_aliases lets us send our owner_id directly as customer_id on
+        every event (no translation table)."""
+        body = await self._post("/customers", {"name": name, "ingest_aliases": ingest_aliases})
+        customer_id = body.get("data", {}).get("id")
+        if not customer_id:
+            raise MetronomeError(f"create_customer: no data.id in Metronome response (got keys {sorted(body)})")
+        return customer_id
+
+    async def archive_customer(self, *, customer_id: str) -> None:
+        """POST /v1/customers/archive — Admin Account-Wipe teardown step 9
+        (docs/superpowers/specs/2026-07-14-admin-account-wipe-design.md).
+        Metronome has no hard customer-delete; archive is the terminal
+        state (see the design spec's "Out of scope: Metronome hard-delete").
+        Body shape mirrors create_customer's plain-REST posture: {"id":
+        customer_id}.
+
+        Treats a 404 (customer already gone — e.g. a re-run after a partial
+        wipe failure, or an owner who never had a Metronome customer) as
+        success. Any other HTTP error re-raises so the wipe orchestrator can
+        report the step as failed."""
+        try:
+            await self._post("/customers/archive", {"id": customer_id})
+        except httpx.HTTPStatusError as e:
+            if e.response.status_code == 404:
+                return
+            raise
+
+    async def get_customer_id_by_ingest_alias(self, ingest_alias: str) -> str | None:
+        """GET /v1/customers?ingest_alias=… — adoption lookup for when
+        create_customer conflicts on an alias already claimed (e.g. a prior
+        provision attempt that crashed before persisting the UUID). Returns
+        the first match's customer UUID, or None when nothing matches."""
+        body = await self._get("/customers", params={"ingest_alias": ingest_alias})
+        matches = body.get("data") or []
+        if not matches:
+            return None
+        return matches[0].get("id")
+
+    async def create_contract(
+        self,
+        *,
+        customer_id: str,
+        rate_card_id: str | None = None,
+        with_stripe_billing: bool = False,
+        uniqueness_key: str,
+    ) -> str:
+        """POST /v1/contracts/create — per-customer contract. Returns the
+        contract id; prepaid commits and balances hang off it. Sandbox-
+        verified: this path is correct as-is, the minimal body
+        {customer_id, starting_at} is accepted, and rate_card_id is
+        OPTIONAL — so it is sent only when the env actually has one
+        configured (an empty-string rate card must not reach the API).
+        ``starting_at`` must be a UTC-midnight date (Metronome rejects
+        mid-day contract starts); today's midnight makes the contract live
+        immediately.
+
+        ``with_stripe_billing`` attaches a contract-level
+        billing_provider_configuration pointing at the customer's Stripe
+        config. Payment-gated commits on the contract collect through this
+        object, so a contract created without it cannot fund gated top-ups.
+        Live-verified (sandbox, 2026-06-11): the object is only valid AFTER
+        the customer's root-level billing-provider configuration exists
+        (set_stripe_billing_config) — sent before that, contract create
+        404s with "Billing provider configuration not found for STRIPE",
+        which is why callers gate this flag on that call having succeeded.
+
+        ``uniqueness_key`` (1-128 chars) makes Metronome 409 a second create
+        with the same key instead of minting another contract — overlapping
+        contracts on one rate card each price the same usage."""
+        starting_at = time.strftime("%Y-%m-%dT00:00:00.000Z", time.gmtime())
+        payload: dict[str, Any] = {
+            "customer_id": customer_id,
+            "starting_at": starting_at,
+            "uniqueness_key": uniqueness_key,
+        }
+        if rate_card_id:
+            payload["rate_card_id"] = rate_card_id
+        if with_stripe_billing:
+            payload["billing_provider_configuration"] = {"billing_provider": "stripe", **_stripe_delivery()}
+        body = await self._post("/contracts/create", payload)
+        contract_id = body.get("data", {}).get("id")
+        if not contract_id:
+            raise MetronomeError(f"create_contract: no data.id in Metronome response (got keys {sorted(body)})")
+        return contract_id
+
+    async def list_contracts(self, *, customer_id: str) -> list[dict]:
+        """POST /v2/contracts/list — all contracts for one customer. Adoption
+        lookup for when create_contract conflicts. v1 is disabled: it answers
+        "This endpoint has been disabled. Please use the v2 endpoint"
+        (live-verified 2026-09-23). Follows ``cursor`` to the last page."""
+        contracts: list[dict] = []
+        cursor = None
+        while True:
+            payload = {"customer_id": customer_id, **({"cursor": cursor} if cursor else {})}
+            body = await self._post(f"{self._v2_base_url}/contracts/list", payload)
+            contracts += body.get("data") or []
+            cursor = body.get("cursor")
+            if not cursor:
+                return contracts
+
+    async def create_alert(
+        self,
+        *,
+        customer_id: str,
+        name: str,
+        alert_type: str,
+        threshold_cents: int,
+        credit_type_id: str,
+        uniqueness_key: str,
+    ) -> None:
+        """POST /v1/alerts/create — per-customer threshold alert. The threshold
+        passes through in cents: Metronome's USD credit type is
+        cents-denominated (see core/billing/metronome_units.py), so no
+        conversion belongs here. credit_type_id is REQUIRED for the
+        balance-style alert types we use (sandbox-verified: the create
+        validator rejects the body without it); the exact body below —
+        {alert_type, name, threshold, customer_id, credit_type_id} —
+        returned 200 in the sandbox. ``uniqueness_key`` makes a duplicate
+        create 409 instead of arming a second copy of the alert."""
+        await self._post(
+            "/alerts/create",
+            {
+                "customer_id": customer_id,
+                "name": name,
+                "alert_type": alert_type,
+                "threshold": threshold_cents,
+                "credit_type_id": credit_type_id,
+                "uniqueness_key": uniqueness_key,
+            },
+        )
+
+    async def set_stripe_billing_config(self, *, metronome_customer_id: str, stripe_customer_id: str) -> None:
+        """POST /v1/setCustomerBillingProviderConfigurations (ROOT level) —
+        write the customer's NEW-STYLE billing-provider configuration linking
+        the EXISTING Stripe customer, so Metronome pushes usage/credit
+        invoices onto the same Stripe Customer as our $50/mo subscription.
+        charge_automatically is what lets payment-gated commits collect
+        without a checkout redirect.
+
+        Live-verified (sandbox, 2026-06-11): the per-customer legacy path
+        (/customers/{id}/billing-config/stripe) also 200s, but it writes a
+        DIFFERENT legacy record that gated commits IGNORE — top-ups through
+        a customer linked only that way fail at the payment gate. This
+        root-level call writes the record that contract-level
+        billing_provider_configuration objects + payment gates actually
+        consult; the exact body below returned 200 with the config record."""
+        await self._post(
+            "/setCustomerBillingProviderConfigurations",
+            {
+                "data": [
+                    {
+                        "customer_id": metronome_customer_id,
+                        "billing_provider": "stripe",
+                        **_stripe_delivery(),
+                        "configuration": {
+                            "stripe_customer_id": stripe_customer_id,
+                            "stripe_collection_method": "charge_automatically",
+                        },
+                    }
+                ]
+            },
+        )
+
+    async def get_customer_billing_provider_configurations(self, *, customer_id: str) -> list[dict]:
+        """Read the active root billing-provider links for one customer."""
+        body = await self._post("/getCustomerBillingProviderConfigurations", {"customer_id": customer_id})
+        return body.get("data") or []
+
+    async def get_contract(self, *, customer_id: str, contract_id: str) -> dict:
+        """Read the contract and its effective Stripe billing-provider link."""
+        body = await self._post(
+            f"{self._v2_base_url}/contracts/get",
+            {"customer_id": customer_id, "contract_id": contract_id},
+        )
+        return body.get("data") or {}
+
+    async def create_prepaid_commit(
+        self,
+        *,
+        customer_id: str,
+        contract_id: str,
+        product_id: str,
+        credit_type_id: str,
+        amount_cents: int,
+        description: str,
+        idempotency_key: str,
+    ) -> None:
+        """POST /v1/contracts/customerCommits/create — add an UNGATED prepaid
+        commit (credits grant immediately, nobody is charged). This endpoint
+        takes a FLAT body (commit fields at the top level, contract linkage
+        via applicable_contract_ids + invoice_contract_id) — this exact shape
+        returned 200. The amount is in CENTS: Metronome's USD credit type is
+        cents-denominated (see core/billing/metronome_units.py).
+
+        This API CANNOT payment-gate. Live-verified (sandbox, 2026-06-11):
+        the create validator rejects a payment_gate_config field outright
+        ('Field "payment_gate_config" is not defined by type
+        "CustomerCommitInput"'). Gated commits go through
+        create_gated_prepaid_commit (v2 contract edit) instead; this method
+        stays for ungated grants (e.g. promo/test credits).
+
+        ``idempotency_key`` rides as Metronome's native ``Idempotency-Key``
+        request header — the exactly-once guarantee at the money source.
+        Live-verified (sandbox, 2026-06-10): same key + same body → 200
+        replaying the SAME commit id (one commit, one charge); same key +
+        different body → 409 {"message": "The provided idempotency key has
+        been used on a request with different parameters."}. Keys are
+        retained ~24h per the Metronome docs. Required (not optional)
+        because every commit we create charges or grants money — a caller
+        without a key is a caller with a double-charge bug."""
+        payload: dict[str, Any] = {
+            "customer_id": customer_id,
+            "type": "PREPAID",
+            "product_id": product_id,
+            "priority": _COMMIT_PRIORITY,
+            "applicable_contract_ids": [contract_id],
+            "invoice_contract_id": contract_id,
+            "description": description,
+            "access_schedule": {
+                "credit_type_id": credit_type_id,
+                "schedule_items": [
+                    {
+                        # Today's UTC midnight, not now(): the schedule start
+                        # must be deterministic within the idempotency-key
+                        # retention window, or a retried request carries a
+                        # different body and 409s instead of replaying.
+                        # Midnight is already in the past, so the credits are
+                        # live immediately either way.
+                        "amount": amount_cents,
+                        "starting_at": time.strftime("%Y-%m-%dT00:00:00.000Z", time.gmtime()),
+                        "ending_before": _NO_EXPIRY,
+                    }
+                ],
+            },
+        }
+        await self._post(
+            "/contracts/customerCommits/create",
+            payload,
+            extra_headers={"Idempotency-Key": idempotency_key},
+        )
+
+    async def create_gated_prepaid_commit(
+        self,
+        *,
+        customer_id: str,
+        contract_id: str,
+        product_id: str,
+        credit_type_id: str,
+        amount_cents: int,
+        description: str,
+        idempotency_key: str,
+        effective_at: str,
+    ) -> None:
+        """POST /v2/contracts/edit — add a STRIPE payment-gated prepaid
+        commit. Metronome invoices the customer's linked Stripe card
+        (charge_automatically) and releases the credits only when Stripe
+        collects; the backend never touches the money.
+
+        The URL is ABSOLUTE on purpose: the client's base is the v1 API
+        root, and payment gating only exists on the v2 contract-edit
+        surface — the v1 customerCommits/create validator rejects
+        payment_gate_config outright (see create_prepaid_commit). httpx
+        passes an absolute URL through untouched even with a base_url set,
+        so no second client is needed. Live-verified (sandbox, 2026-06-11):
+        this exact add_commits shape returned 200, and the Idempotency-Key
+        header IS honored here (same key + body replayed the identical 200).
+
+        A gated commit must carry BOTH schedules: invoice_schedule is WHEN
+        MONEY IS COLLECTED (the Stripe invoice), access_schedule is when the
+        credits unlock. ``effective_at`` is pinned by the caller's durable
+        idempotency record rather than sampled here, so a retry across UTC
+        midnight carries a byte-identical body. amount_cents feeds both
+        schedules 1:1 (credits unlocked == cents invoiced), in CENTS
+        (Metronome's USD credit type — see core/billing/metronome_units.py).
+        """
+        payload = {
+            "customer_id": customer_id,
+            "contract_id": contract_id,
+            "add_commits": [
+                {
+                    "type": "PREPAID",
+                    "product_id": product_id,
+                    "priority": _COMMIT_PRIORITY,
+                    "description": description,
+                    "access_schedule": {
+                        "credit_type_id": credit_type_id,
+                        "schedule_items": [
+                            {
+                                "amount": amount_cents,
+                                "starting_at": effective_at,
+                                "ending_before": _NO_EXPIRY,
+                            }
+                        ],
+                    },
+                    "invoice_schedule": {
+                        "credit_type_id": credit_type_id,
+                        "schedule_items": [{"amount": amount_cents, "timestamp": effective_at}],
+                    },
+                    "payment_gate_config": {"payment_gate_type": "STRIPE"},
+                }
+            ],
+        }
+        await self._post(
+            f"{self._v2_base_url}/contracts/edit",
+            payload,
+            extra_headers={"Idempotency-Key": idempotency_key},
+        )
+
+    async def get_net_balance(self, *, customer_id: str) -> dict:
+        """POST /v1/contracts/customerBalances/getNetBalance — aggregated
+        remaining balance. Returns the `data` sub-object, whose live-verified
+        shape (sandbox, 2026-06-10) is {"balance": <number-in-CENTS>,
+        "credit_type_id": …} — the number is under "balance", NOT
+        "net_balance". NOT for the synchronous chat hot path (no low-latency
+        SLA)."""
+        body = await self._post("/contracts/customerBalances/getNetBalance", {"customer_id": customer_id})
+        return body.get("data", {})
+
+    async def list_customer_invoices(self, *, customer_id: str, status: str = "DRAFT") -> list[dict]:
+        """GET /v1/customers/{id}/invoices — invoice list for one customer.
+
+        With status=DRAFT this returns the continuously-updated draft usage
+        invoice for the current billing period; its line_items carry
+        pricing_group_values (our ``tier`` key), which is what the
+        user-facing spend surface renders. Read-only display path — the
+        gates never call this.
+
+        Metronome's docs describe this list response as an invoice SUMMARY
+        and direct callers to the single-invoice Get Invoice endpoint for
+        detailed line items — callers of this method should treat
+        ``line_items`` here as unreliable and re-fetch via
+        ``get_customer_invoice`` before summing.
+        """
+        body = await self._get(f"/customers/{customer_id}/invoices", params={"status": status})
+        return body.get("data") or []
+
+    async def get_customer_invoice(self, *, customer_id: str, invoice_id: str) -> dict:
+        """GET /v1/customers/{customer_id}/invoices/{invoice_id} — full detail
+        for one invoice. This is Metronome's documented "Get Invoice"
+        endpoint, which — unlike ``list_customer_invoices`` — is guaranteed
+        to carry full ``line_items``. Returns the ``data`` sub-object (empty
+        dict when absent)."""
+        body = await self._get(f"/customers/{customer_id}/invoices/{invoice_id}")
+        return body.get("data") or {}
+
+
+def for_settings(http_client: httpx.AsyncClient) -> MetronomeClient:
+    """Build a client from settings, given a caller-owned AsyncClient.
+
+    The caller owns the AsyncClient lifecycle (so it can reuse one connection
+    pool across multiple Metronome calls in a single request). Base URL is the
+    same for sandbox + prod; the api_key decides the environment.
+    """
+    return MetronomeClient(
+        api_key=settings.METRONOME_API_KEY,
+        base_url=settings.METRONOME_BASE_URL,
+        http_client=http_client,
+    )

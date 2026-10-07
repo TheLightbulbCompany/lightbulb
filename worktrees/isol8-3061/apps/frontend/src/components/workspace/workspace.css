@@ -1,0 +1,415 @@
+/* Message workspace: global rail, conversation directory, flexible canvas. */
+.workspace-shell {
+  display: grid;
+  grid-template-columns: 56px 264px minmax(0, 1fr);
+  grid-template-areas: "rail sidebar main";
+  height: 100vh;
+  /* clip, not hidden: a hidden box is still programmatically scrollable, so
+     any stray scrollIntoView/focus reveal can shift the entire shell out of
+     the viewport (dockview keeps a viewport-sized layer clipped below the
+     fold). clip forbids scrolling the shell entirely. */
+  overflow: clip;
+}
+
+.workspace-shell > .cream-sidebar {
+  grid-area: sidebar;
+  min-width: 0;
+}
+
+.workspace-shell .workspace-primary-nav,
+.workspace-shell .workspace-more-nav {
+  padding: 8px 12px;
+}
+
+.workspace-shell .workspace-primary-nav,
+.workspace-shell .workspace-more-nav nav {
+  display: grid;
+  gap: 2px;
+}
+
+.workspace-shell .workspace-primary-nav button,
+.workspace-shell .workspace-more-nav button,
+.workspace-shell .workspace-more-nav summary {
+  min-height: 36px;
+  border-radius: 4px;
+  padding: 6px 8px;
+  color: var(--midnight-soft);
+  font-size: var(--text-ui);
+  cursor: pointer;
+}
+
+.workspace-shell .workspace-primary-nav button,
+.workspace-shell .workspace-more-nav button {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  text-align: left;
+}
+
+.workspace-shell .workspace-primary-nav button:enabled:hover,
+.workspace-shell .workspace-primary-nav button[aria-current="page"],
+.workspace-shell .workspace-more-nav button:enabled:hover,
+.workspace-shell .workspace-more-nav button[aria-current="page"],
+.workspace-shell .workspace-more-nav summary:hover {
+  background: var(--cream-deeper);
+  color: var(--midnight);
+}
+
+.workspace-shell .workspace-primary-nav button:disabled,
+.workspace-shell .workspace-more-nav button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.workspace-shell .workspace-primary-nav button:focus-visible,
+.workspace-shell .workspace-more-nav button:focus-visible,
+.workspace-shell .workspace-more-nav summary:focus-visible {
+  outline: 2px solid var(--midnight);
+  outline-offset: 2px;
+}
+
+/* The sidebar owns the scroll; the shared mobile directory keeps its layout. */
+.workspace-shell .sidebar-scroll > .room-directory {
+  height: auto;
+  overflow: visible;
+  border-right: 0;
+  gap: 16px;
+  padding: 8px 12px;
+}
+
+.workspace-main {
+  grid-area: main;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+}
+
+/* The header is NOT floating chrome: it is `flex: none` above a sibling
+ * content column, and nothing scrolls under it (each dock panel scrolls
+ * inside its own slot). So it keeps a hard `--edge` rule — the static
+ * structural case the material rules explicitly allow — rather than a
+ * scroll-edge fade, which would only be a lie about what is behind it. */
+.workspace-header {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 4px;
+  height: 56px;
+  padding: 0 16px;
+  border-bottom: 1px solid var(--edge);
+  background: var(--cream);
+}
+
+.workspace-header__spacer {
+  min-width: 8px;
+  flex: 1 1 0;
+}
+
+.workspace-search {
+  display: grid;
+  width: min(360px, 40vw);
+  height: 32px;
+  grid-template-columns: 16px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  border: 1px solid var(--edge);
+  border-radius: 6px;
+  padding: 0 8px;
+  background: var(--cream-deep);
+  color: var(--midnight-muted);
+  font-size: 12px;
+  text-align: left;
+  transition: background-color var(--dur-fast) var(--ease-out), color var(--dur-fast) var(--ease-out);
+}
+
+.workspace-search:hover {
+  background: var(--cream-deeper);
+  color: var(--midnight);
+}
+
+.workspace-search:focus-visible {
+  outline: 2px solid var(--midnight);
+  outline-offset: 2px;
+}
+
+.workspace-search kbd {
+  border-left: 1px solid var(--edge);
+  padding-left: 8px;
+  font: inherit;
+}
+
+/* …but that rule and the sidebar header's own `border-bottom` (ChatLayout.css,
+ * shared with the mobile shell) sat at different heights — 56px here vs
+ * ~57px there — so the two hairlines met the sidebar's `border-right` as a
+ * pair of T-junctions a couple of pixels apart. Pinning the sidebar header to
+ * the same 56px inside THIS shell only (mobile's ChatLayout is untouched)
+ * collapses them into one continuous rule crossing one vertical rule. */
+.workspace-shell > .cream-sidebar > .sidebar-header {
+  height: 56px;
+  padding-top: 0;
+  padding-bottom: 0;
+}
+
+/* Banners stack at their natural height; the stepper/dock fills the rest.
+ * ProvisioningStepper renders its children bare (<>{children}</>), so the
+ * dock wrapper is a direct flex child of .workspace-content. */
+.workspace-content {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  background: var(--cream);
+}
+
+.workspace-dock {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  background: var(--cream);
+}
+
+
+/* ── Panel-content scroll model ──────────────────────────────────────────
+ *
+ * TeamsDockPanel / ControlDockPanel wrap their content in
+ * `editorial-page workspace-panel-page h-full overflow-auto`: the wrapper
+ * IS the panel's scroll container. globals.css gives `.editorial-page`
+ * `min-height: 100vh` — correct in the old shell where that div sat inside
+ * the scrolling `.main-content`, but fatal here: min-height beats h-full,
+ * the wrapper grows taller than its dock slot, and everything below the
+ * slot's clip line becomes unreachable.
+ *
+ * Scoped by a class the dock hosts add THEMSELVES (not by `.workspace-dock`
+ * ancestry), so the rules hold regardless of where dockview mounts panel
+ * content and stay inert in the mobile shell, which shares these panels.
+ */
+.workspace-panel-page.editorial-page {
+  /* h-full wins: the wrapper is exactly the dock slot, and its
+   * overflow-auto scrollport equals the visible area. */
+  min-height: 0;
+  /* Containing block for out-of-flow descendants. Load-bearing, not cosmetic:
+   * dockview gives `.dv-view` (the dock slot) `overflow: auto`, and its
+   * `.dv-groupview` child is position:static. So an absolutely positioned
+   * descendant of a panel — e.g. Tailwind `sr-only`, which is
+   * position:absolute — resolves its containing block past this wrapper all
+   * the way up to `.dv-view`, escaping BOTH this scrollport and the
+   * groupview's overflow:hidden. A 1px hidden file input sitting 4640px down
+   * a long task page then gives the 838px slot 4640px of scrollable
+   * overflow: a second scrollbar that drags the whole group out of view and
+   * exposes the dock background beneath it.
+   * `container-type: size` does NOT cover this — its computed `contain` is
+   * `none`, and it establishes no containing block (measured: removing this
+   * one declaration restores scrollHeight 4640 vs clientHeight 838). */
+  position: relative;
+  /* Size container: descendants size viewport-height regions against the
+   * SLOT (100cqh) instead of the viewport. The wrapper's own size is
+   * already content-independent (h-full), so size containment is free. */
+  container-type: size;
+}
+
+/* Panels' own `.editorial-page` roots fill the slot (cream background all
+ * the way down on short content) and grow naturally past it — the wrapper
+ * scrolls the overflow. Replaces their min-height:100vh inside the dock. */
+.workspace-panel-page .editorial-page {
+  min-height: 100%;
+}
+
+/* Viewport-height regions → slot-height. Fallback heights (Tailwind
+ * `h-[calc(100vh-18rem)]` / `h-[calc(100dvh-16rem)]`) still apply in the
+ * mobile shell; the offsets here are those old-shell tunings minus the
+ * 3.5rem app header that no longer sits above a dock panel. The Tailwind
+ * min-height floors (24rem / 420px) stay active — a too-short slot lets
+ * the page grow and the wrapper scroll instead of crushing the region. */
+
+/* Tasks board (TasksList board view): fills the slot below the masthead /
+ * toolbar chrome; columns keep their own vertical scroll, the board keeps
+ * horizontal scroll. */
+.workspace-panel-page .tasks-board-region {
+  height: calc(100cqh - 14.5rem);
+}
+
+/* Org-chart pan/zoom canvas. */
+.workspace-panel-page .org-chart-viewport {
+  height: calc(100cqh - 12.5rem);
+}
+
+/* ── Dockview brand theme ────────────────────────────────────────────────
+ *
+ * The dock ships with `themeLight`, whose off-the-shelf greys (a light-grey
+ * strip, a slightly darker hidden-tab fill and near-black text) are the most
+ * visible "not ours" surface on the primary screen. The theme object in
+ * WorkspaceShell.tsx sets `className` to the two-class string
+ * `"dockview-theme-light dockview-theme-lightbulb"` — dockview's Classnames
+ * helper splits the string on spaces and puts BOTH on `.dv-shell`, so the
+ * stock light theme still defines every `--dv-*` default and this block only
+ * repoints the ones that carry colour, tone or rhythm.
+ *
+ * The `.dv-shell` qualifier is deliberate: it makes this block (0,2,0) beat
+ * dockview's own `.dockview-theme-light` (0,1,0) regardless of which
+ * stylesheet the bundler emits first.
+ *
+ * Idiom: the tab strip is a `--cream-deep` rail carrying transparent tabs,
+ * with the ACTIVE tab marked by a 2px bottom edge and full-strength
+ * `--midnight` text — the same underline grammar as
+ * components/teams/shell/PanelTabs.tsx, so the dock strip and the in-panel
+ * tab strip read as siblings rather than two unrelated tab systems.
+ */
+.dv-shell.dockview-theme-lightbulb {
+  /* Grounds */
+  --dv-group-view-background-color: var(--cream);
+  --dv-tabs-and-actions-container-background-color: var(--cream-deep);
+  /* Tabs sit ON the rail (PanelTabs' `bg-transparent` triggers), so all four
+     group/visibility combinations share the rail's ground. */
+  --dv-activegroup-visiblepanel-tab-background-color: transparent;
+  --dv-activegroup-hiddenpanel-tab-background-color: transparent;
+  --dv-inactivegroup-visiblepanel-tab-background-color: transparent;
+  --dv-inactivegroup-hiddenpanel-tab-background-color: transparent;
+
+  /* Text carries the whole active/inactive signal. The inactive GROUP's own
+     active tab steps down to --midnight-soft so "which group has focus" stays
+     readable without a second colour idiom. */
+  --dv-activegroup-visiblepanel-tab-color: var(--midnight);
+  --dv-activegroup-hiddenpanel-tab-color: var(--midnight-muted);
+  --dv-inactivegroup-visiblepanel-tab-color: var(--midnight-soft);
+  --dv-inactivegroup-hiddenpanel-tab-color: var(--midnight-muted);
+
+  /* Rules and separators */
+  --dv-tab-divider-color: var(--edge);
+  --dv-separator-border: var(--edge);
+  --dv-tabs-container-scrollbar-color: var(--midnight-faint);
+
+  /* Rhythm: 36px strip on a 4px grid under the 56px workspace header;
+     13px is the product's UI step (--text-ui). Family inherits from body. */
+  --dv-tabs-and-actions-container-height: 36px;
+  --dv-tabs-and-actions-container-font-size: var(--text-ui);
+
+  /* Drag affordances. The drop-target wash and the sash highlight are the
+     same midnight at two strengths, so a drag reads as one gesture. */
+  --dv-drag-over-background-color: color-mix(in srgb, var(--midnight) 12%, transparent);
+  --dv-active-sash-color: color-mix(in srgb, var(--midnight) 28%, transparent);
+  --dv-active-sash-transition-duration: var(--dur-fast);
+
+  /* Tab close-button hover chip */
+  --dv-icon-hover-background-color: var(--cream-deeper);
+}
+
+/* Active-tab underline. `::before` (not the `::after` the stock dracula/nord
+   themes use) because `.dv-tab:focus-within::after` already owns that slot.
+   `currentColor` means the rule dims with the tab's own text colour when the
+   group loses focus — one declaration instead of a second selector. */
+.dv-shell.dockview-theme-lightbulb .dv-tab.dv-active-tab {
+  position: relative;
+}
+.dv-shell.dockview-theme-lightbulb .dv-tab.dv-active-tab::before {
+  content: "";
+  position: absolute;
+  inset: auto 0 0 0;
+  height: 2px;
+  background: currentcolor;
+  pointer-events: none;
+}
+
+/* Hover on a hidden tab. Background only: switching tabs is core navigation
+   (100+/day) and must stay instant, so `color` is deliberately NOT in the
+   transition list — only the hover wash animates. */
+.dv-shell.dockview-theme-lightbulb .dv-tab {
+  transition: background-color var(--dur-fast) var(--ease-out);
+}
+.dv-shell.dockview-theme-lightbulb .dv-tab.dv-inactive-tab:hover {
+  background-color: var(--cream-deeper);
+  color: var(--midnight);
+}
+
+/* Global destinations are always reachable, including with dock tabs hidden. */
+.workspace-rail {
+  grid-area: rail;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  padding: 12px 4px;
+  min-height: 0;
+  overflow-y: auto;
+  /* The rail is its OWN plane, one step below the sidebar. It used to paint
+     --cream-deep, the exact colour .room-directory paints, so the rail and the
+     sidebar were a single undifferentiated surface sitting 2% from the message
+     pane. That was the flatness. */
+  background: var(--plane-rail);
+  border-right: 1px solid var(--edge);
+}
+.workspace-rail > button,
+.workspace-rail > a {
+  display: flex;
+  flex: none;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 3px;
+  width: 44px;
+  min-height: 40px;
+  border-radius: 7px;
+  color: var(--midnight-muted);
+  text-decoration: none;
+  cursor: pointer;
+}
+.workspace-rail > button span { font-size: var(--text-caption); font-weight: 500; }
+.workspace-rail .workspace-rail__icon { position: relative; display: inline-flex; }
+.workspace-rail .workspace-rail__activity-badge {
+  position: absolute;
+  top: -6px;
+  right: -10px;
+  display: grid;
+  place-items: center;
+  min-width: 16px;
+  height: 16px;
+  padding: 0 4px;
+  border: 1px solid var(--warn);
+  border-radius: 999px;
+  background: var(--cream-deep);
+  color: var(--warn);
+  font-size: 8px;
+  font-weight: 600;
+  line-height: 1;
+}
+.workspace-rail > button:hover,
+.workspace-rail > a:hover,
+.workspace-rail > button[aria-current="page"] {
+  color: var(--midnight);
+  background: var(--cream-deeper);
+}
+/* An engaged toggle (dark on, focus on) reads in the hue layer, so it stays
+   distinguishable from the merely-hovered state above. */
+.workspace-rail > button[aria-pressed="true"] {
+  color: var(--brand);
+  background: var(--cream-deeper);
+}
+.workspace-rail > button:disabled { opacity: 0.5; cursor: not-allowed; }
+.workspace-rail > button:focus-visible,
+.workspace-rail > a:focus-visible { outline: 2px solid var(--midnight); outline-offset: 1px; }
+.workspace-rail__spacer { flex: 1; min-height: 16px; }
+.workspace-shell .sidebar-header { flex: none; }
+.workspace-shell .workspace-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: .9375rem; font-weight: 700; color: var(--midnight); }
+.workspace-shell .sidebar-footer { padding: 12px 16px; }
+.workspace-shell .workspace-status { margin-top: 12px; font-size: var(--text-caption); color: var(--midnight-muted); }
+.workspace-shell .workspace-status summary { cursor: pointer; }
+.workspace-shell :is(.workspace-more-nav, .workspace-status) summary::marker { font-size: .75em; color: var(--midnight-muted); }
+.workspace-shell .workspace-status summary:focus-visible { outline: 2px solid var(--midnight); }
+.workspace-shell .workspace-status > :not(summary) { margin-top: 12px; }
+.workspace-shell[data-messages-active="true"] .dv-tabs-and-actions-container { display: none; }
+.workspace-shell[data-messages-active="true"] .dockview-theme-lightbulb {
+  --dv-tabs-and-actions-container-height: 0px;
+}
+/* Tasks' Expand / Show beside chat control in its dock group header. */
+.workspace-shell .workspace-dock-actions { display: flex; align-items: center; height: 100%; padding: 0 8px; }
+.workspace-shell .workspace-dock-action {
+  display: grid; place-items: center; width: 24px; height: 24px; border: 0; border-radius: 6px;
+  background: transparent; color: var(--midnight-muted); cursor: pointer;
+}
+.workspace-shell .workspace-dock-action:hover { background: var(--cream); color: var(--midnight); }
+.workspace-shell .workspace-dock-action:focus-visible { outline: 2px solid var(--midnight); outline-offset: 1px; }
+@media (max-width: 1000px) {
+  .workspace-shell { grid-template-columns: 56px 220px minmax(0, 1fr); }
+}

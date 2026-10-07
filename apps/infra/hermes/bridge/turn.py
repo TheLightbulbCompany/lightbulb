@@ -298,19 +298,21 @@ MAX_PARTICIPANTS = 128
 MAX_SESSIONS = 24
 MAX_ATTACHMENTS = 4
 MAX_ATTACHMENT_BYTES = 5 * 1024 * 1024
-# A PDF is a document, not a photo (fix round I3, mirroring the backend's own table --
+# Documents are not photos (mirroring the backend's own table --
 # core/services/messaging.py:51-63): a real scanned contract or slide deck runs well past
 # 5 MiB. A flat 5 MiB cap on every content type meant a legal PDF the product itself accepted
 # (up to 20 MiB) 400'd every dispatch of a message that carried it, and every later message
-# with it in recentHistory too -- the same failure class Task 3's PDF-widening was meant to
-# remove, just one field over.
-PDF_ATTACHMENT_MAX_BYTES = 20 * 1024 * 1024
-ATTACHMENT_MAX_BYTES_BY_TYPE = {"application/pdf": PDF_ATTACHMENT_MAX_BYTES}
-# The backend's own model allows application/pdf (messaging.py:348) while the OpenClaw
-# plugin's parser accepted four image types, so a PDF anywhere in history 400'd every
-# dispatch that message was part of (report 03 §1). Widened deliberately.
-ATTACHMENT_TYPES = ("image/png", "image/jpeg", "image/webp", "image/gif", "application/pdf")
-IMAGE_ATTACHMENT_TYPES = frozenset(ATTACHMENT_TYPES) - {"application/pdf"}
+# with one in recentHistory too.
+DOCUMENT_ATTACHMENT_MAX_BYTES = 20 * 1024 * 1024
+XLSX_CONTENT_TYPE = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+ATTACHMENT_MAX_BYTES_BY_TYPE = {
+    "application/pdf": DOCUMENT_ATTACHMENT_MAX_BYTES,
+    XLSX_CONTENT_TYPE: DOCUMENT_ATTACHMENT_MAX_BYTES,
+}
+# The backend's own model allows document attachments while the original plugin parser
+# accepted only four image types. Keep accepted documents out of native image handling.
+ATTACHMENT_TYPES = ("image/png", "image/jpeg", "image/webp", "image/gif", "application/pdf", XLSX_CONTENT_TYPE)
+IMAGE_ATTACHMENT_TYPES = frozenset(ATTACHMENT_TYPES) - frozenset(ATTACHMENT_MAX_BYTES_BY_TYPE)
 MAX_NATIVE_IMAGES = 20
 ROOM_EVENT_KINDS = ("user_request", "room_event")
 # agent_mail (Task 20) and paperclip_run (Task 21, fix round C3) carry no room: no

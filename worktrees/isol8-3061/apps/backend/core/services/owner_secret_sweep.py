@@ -1,0 +1,111 @@
+"""Delete every Secrets Manager secret scoped to one owner.
+
+The account wipe used to leave all of these behind, and the leftovers are the
+credential material specifically: BYOK LLM keys, integration credentials, and
+per-owner OAuth client apps. A "wiped" account whose Anthropic key and ChatGPT
+tokens are still recoverable from Secrets Manager is not wiped.
+
+Both live under owner-scoped path prefixes, which is what makes a sweep
+possible without enumerating providers:
+
+    lightbulb/{env}/user-keys/{owner_id}/{provider}              key_service
+    lightbulb/{env}/integrations/{owner_id}/{provider}           integration_secret_store
+    lightbulb/{env}/integrations/{owner_id}/oauth-app/{provider} oauth_app_store
+
+Listing by prefix rather than iterating a provider registry is deliberate: a
+provider that has since been removed from the registry still has secrets on
+disk, and those are exactly the ones nobody would think to delete.
+
+`force_delete_without_recovery` because the point is removal, not a 30-day
+soft-delete that keeps the plaintext retrievable and — more practically —
+holds the name reserved so the same owner re-signing up collides with their
+own tombstone.
+"""
+
+from __future__ import annotations
+
+import logging
+
+import boto3
+
+from core.config import settings
+from core.dynamodb import run_in_thread
+
+logger = logging.getLogger(__name__)
+
+
+def owner_secret_prefixes(owner_id: str) -> list[str]:
+    """Every Secrets Manager name prefix that belongs to this owner."""
+    env = settings.ENVIRONMENT or "dev"
+    return [
+        f"lightbulb/{env}/user-keys/{owner_id}/",
+        f"lightbulb/{env}/integrations/{owner_id}/",
+    ]
+
+
+def _list_names_with_prefix(sm, prefix: str) -> list[str]:
+    """Secret names under ``prefix``.
+
+    Filtered client-side on top of the API's own prefix filter: ListSecrets'
+    "!" negation and prefix semantics have bitten us before, and the owner id
+    is a path segment, so a server-side prefix match on a SHORTER owner id
+    could otherwise sweep a longer one that starts with the same characters
+    (u_1 vs u_10). The explicit startswith is the guard that makes that
+    impossible.
+    """
+    names: list[str] = []
+    token: str | None = None
+    while True:
+        kwargs: dict = {
+            "MaxResults": 100,
+            "Filters": [{"Key": "name", "Values": [prefix]}],
+        }
+        if token:
+            kwargs["NextToken"] = token
+        page = sm.list_secrets(**kwargs)
+        for s in page.get("SecretList", []):
+            name = s.get("Name") or ""
+            if name.startswith(prefix):
+                names.append(name)
+        token = page.get("NextToken")
+        if not token:
+            return names
+
+
+async def delete_owner_secrets(owner_id: str) -> list[str]:
+    """Delete every secret under this owner's prefixes. Returns the names.
+
+    Never raises for an individual secret — a single failure must not abort
+    the sweep and strand the rest. The caller (the wipe orchestrator) records
+    the step outcome; per-secret failures are logged and the name is omitted
+    from the returned list so the report undercounts rather than lies.
+    """
+
+    def _sweep() -> list[str]:
+        sm = boto3.client("secretsmanager", region_name=settings.AWS_REGION)
+        deleted: list[str] = []
+        for prefix in owner_secret_prefixes(owner_id):
+            for name in _list_names_with_prefix(sm, prefix):
+                try:
+                    sm.delete_secret(SecretId=name, ForceDeleteWithoutRecovery=True)
+                    deleted.append(name)
+                except Exception:
+                    logger.exception("owner_secret_sweep: failed to delete %s", name)
+        return deleted
+
+    return await run_in_thread(_sweep)
+
+
+async def list_owner_secret_names(owner_id: str) -> list[str]:
+    """READ-ONLY counterpart of :func:`delete_owner_secrets`, for the wipe
+    preview. Same prefix logic, no deletes — an admin has to be able to see
+    what the wipe will take before committing to it."""
+
+    def _list() -> list[str]:
+        sm = boto3.client("secretsmanager", region_name=settings.AWS_REGION)
+        names: list[str] = []
+        for prefix in owner_secret_prefixes(owner_id):
+            names.extend(_list_names_with_prefix(sm, prefix))
+        return names
+
+    return await run_in_thread(_list)

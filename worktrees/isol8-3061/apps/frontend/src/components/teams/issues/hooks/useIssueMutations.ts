@@ -1,0 +1,97 @@
+// Ported from upstream Paperclip's pages/IssueDetail.tsx mutations + the
+// NewIssueDialog form submit (paperclip/ui/src/pages/IssueDetail.tsx,
+// components/NewIssueDialog.tsx) (MIT, (c) 2025 Paperclip AI).
+// v1: create + update + addComment. Defers checkout/feedback/interactions/etc.
+
+import { useCallback } from "react";
+import { useSWRConfig } from "swr";
+import { useTeamsApi } from "@/hooks/useTeamsApi";
+import { teamsQueryKeys } from "@/components/teams/shared/queryKeys";
+import type {
+  Issue,
+  IssueComment,
+  IssueCreateInput,
+  IssueUpdateInput,
+} from "@/components/teams/shared/types";
+
+const SWR_PREFIX = "/teams";
+const swrKey = (path: string) => `${SWR_PREFIX}${path}`;
+
+export interface UseIssueMutationsResult {
+  create: (input: IssueCreateInput) => Promise<Issue>;
+  createChild: (parentId: string, input: IssueCreateInput) => Promise<Issue>;
+  update: (issueId: string, input: IssueUpdateInput) => Promise<Issue>;
+  remove: (issueId: string) => Promise<void>;
+  addComment: (issueId: string, body: string) => Promise<IssueComment>;
+  /** Trigger an immediate monitor re-check (independent of nextCheckAt). */
+  monitorCheckNow: (issueId: string) => Promise<void>;
+}
+
+export function useIssueMutations(): UseIssueMutationsResult {
+  const { post, patch, del } = useTeamsApi();
+  const { mutate } = useSWRConfig();
+
+  const create = useCallback(async (input: IssueCreateInput): Promise<Issue> => {
+    // The Teams BFF accepts camelCase aliases (Pydantic populate_by_name=True)
+    // and forwards them verbatim to Paperclip — IssueCreateInput's shape IS
+    // the wire shape, no boundary translation needed.
+    const created = await post<Issue>("/issues", input);
+    // Invalidate inbox lists (any tab) so the new issue appears.
+    mutate((key) => typeof key === "string" && key.startsWith("/teams/inbox?"));
+    return created;
+  }, [post, mutate]);
+
+  const createChild = useCallback(
+    async (parentId: string, input: IssueCreateInput): Promise<Issue> => {
+      // Routes to the upstream children endpoint (parent/child wired server-side),
+      // not the plain create. Revalidate the parent's children list so the new
+      // sub-issue appears.
+      const created = await post<Issue>(`/issues/${parentId}/children`, input);
+      mutate(swrKey(`/issues/${parentId}/children`));
+      return created;
+    },
+    [post, mutate],
+  );
+
+  const update = useCallback(
+    async (issueId: string, input: IssueUpdateInput): Promise<Issue> => {
+      const updated = await patch<Issue>(`/issues/${issueId}`, input);
+      // Invalidate the detail key + inbox lists.
+      mutate(swrKey(teamsQueryKeys.issues.detail(issueId)));
+      mutate((key) => typeof key === "string" && key.startsWith("/teams/inbox?"));
+      return updated;
+    },
+    [patch, mutate],
+  );
+
+  const remove = useCallback(
+    async (issueId: string): Promise<void> => {
+      await del(`/issues/${issueId}`);
+      // Invalidate inbox lists (any tab) so the deleted issue drops out — the
+      // detail key for this id is intentionally not revalidated since the
+      // caller navigates away from the now-gone issue.
+      mutate((key) => typeof key === "string" && key.startsWith("/teams/inbox?"));
+    },
+    [del, mutate],
+  );
+
+  const addComment = useCallback(
+    async (issueId: string, body: string): Promise<IssueComment> => {
+      const created = await post<IssueComment>(`/issues/${issueId}/comments`, { body });
+      mutate(swrKey(teamsQueryKeys.issues.comments(issueId)));
+      return created;
+    },
+    [post, mutate],
+  );
+
+  const monitorCheckNow = useCallback(
+    async (issueId: string): Promise<void> => {
+      // Upstream's check-now endpoint takes no body and returns {ok:true};
+      // it re-runs the monitor now rather than waiting for nextCheckAt.
+      await post(`/issues/${issueId}/monitor/check-now`, {});
+    },
+    [post],
+  );
+
+  return { create, createChild, update, remove, addComment, monitorCheckNow };
+}

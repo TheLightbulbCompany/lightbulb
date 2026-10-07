@@ -1,0 +1,91 @@
+# ========================
+# Python
+# ========================
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+*.egg-info/
+.eggs/
+
+# ========================
+# Virtual Environments
+# ========================
+.venv/
+.venv
+venv/
+env/
+ENV/
+
+# ========================
+# Environment variables / secrets
+# ========================
+.env
+.env.*
+!.env.example
+
+# ========================
+# FastAPI / ASGI
+# ========================
+*.log
+logs/
+
+# ========================
+# Testing / Coverage
+# ========================
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+
+# ========================
+# Migrations
+# ========================
+# Uncomment if using Alembic AND you don't want versions tracked
+# alembic/versions/
+
+# ========================
+# Build / Packaging
+# ========================
+build/
+dist/
+wheelhouse/
+
+# ========================
+# IDE / Editor
+# ========================
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# ========================
+# OS
+# ========================
+.DS_Store
+Thumbs.db
+
+# ========================
+# Databases (local dev)
+# ========================
+*.db
+*.db-shm
+*.db-wal
+*.sqlite
+*.sqlite3
+
+# ========================
+# Generated API specs
+# ========================
+openapi.json
+
+# ========================
+# Hypothesis (schemathesis test data)
+# ========================
+.hypothesis/
+
+# ========================
+# Misc
+# ========================
+.ruff_cache/

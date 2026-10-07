@@ -1,0 +1,47 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Keys merged into the generated Info.plist by tauri-bundler
+  (bundle.macOS.infoPlist). User keys OVERRIDE generated ones, so keep this
+  file to the minimum we actually need — anything added here shadows whatever
+  Tauri would have produced.
+-->
+<plist version="1.0">
+<dict>
+  <!--
+    Opt out of App Nap.
+
+    This app is not a foreground-only UI. It hosts the loopback relay that
+    carries the agent's node traffic: the backend pushes a connect.challenge
+    down over the API Gateway socket THIS process owns, and it forwards the
+    frame to the bundled openclaw-host subprocess, which signs it. Backgrounded
+    and idle, macOS demotes us to the background QoS band and that forwarding
+    stalls for seconds.
+
+    Measured on a live 0.4.53 install (2026-08-03), scheduling priority:
+
+        backgrounded  lightbulb-desktop = 4    openclaw-node = 31
+        foregrounded  lightbulb-desktop = 46   openclaw-node = 31
+
+    Only the relay is throttled; the signer is unaffected. Prod API Gateway
+    logs caught the consequence — a challenge pushed at 23:08:23 and signed at
+    23:08:36, 13s later, with backend integrationLatency of 111ms. The whole
+    delay was this process waiting to be scheduled.
+
+    The backend budget for that round trip is 30s (raised from 10s, which had
+    turned a routine background app into a permanent reconnect flap), but the
+    budget is tolerance, not the fix. A relay for a remote agent must stay
+    responsive while the window is behind something else, which is the normal
+    case for this app.
+
+    NOT NSActivityIdleSystemSleepDisabled: this suppresses App Nap only and
+    deliberately does not hold the machine awake. If a future macOS ignores
+    this key from a bundle, the equivalent is an NSProcessInfo activity
+    assertion with .userInitiatedAllowingIdleSystemSleep held for the lifetime
+    of the node connection — same intent, needs Obj-C interop the crate does
+    not currently have.
+  -->
+  <key>NSAppSleepDisabled</key>
+  <true/>
+</dict>
+</plist>

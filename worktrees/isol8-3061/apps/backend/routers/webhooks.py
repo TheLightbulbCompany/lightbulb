@@ -1,0 +1,915 @@
+"""Clerk webhook router.
+
+Receives lifecycle events from Clerk (user, organization,
+organizationMembership) and keeps internal state — including the
+Paperclip mirror — in sync.
+
+Verification uses the svix HMAC-SHA256 signature scheme:
+  https://docs.svix.com/receiving/verifying-payloads/how
+
+The signature is the ONLY authentication on this endpoint, so verification
+fails CLOSED in every deployed env: a missing or malformed
+CLERK_WEBHOOK_SECRET returns 503 rather than waving traffic through. The
+check is skipped only when ENVIRONMENT is unset (bare local dev), where no
+Clerk instance signs anything. Any deployed stage sets ENVIRONMENT, so the
+fail-closed path is the only one that runs off a laptop.
+
+**Paperclip provisioning dispatch**:
+
+  * ``organization.created``           -> ``provision_new_workspace`` (trial row + gate + provision dispatch)
+  * ``organizationMembership.created`` -> log + idempotent Paperclip JOIN via
+    ``_ensure_paperclip_for_member`` (join-only: never creates a company; a
+    still-provisioning org self-heals on the member's next /teams request)
+  * ``organizationMembership.deleted`` -> ``disable`` for that user
+  * ``organization.deleted``           -> ``disable`` for every member of the org
+  * ``user.deleted``                   -> ``disable`` for that user
+
+Retry semantics: if provisioning raises an exception with
+``retryable=True`` (``OrgNotProvisionedError`` always; ``PaperclipApiError``
+on 5xx + 429), we enqueue a row in the ``pending-updates`` table for the
+cleanup cron to re-drive. Either way we return 200 to Clerk so the svix
+delivery is acked — we own retries from this point onward.
+
+Non-retryable errors (4xx state errors, programmer errors) are logged
+and swallowed; returning 5xx would just have Clerk retry the same
+permanently-broken event.
+"""
+
+import base64
+import hashlib
+import hmac
+import json
+import logging
+import time
+from typing import Any, Optional
+
+import stripe
+from fastapi import APIRouter, HTTPException, Request
+
+from core.config import settings
+from core.observability.metrics import put_metric
+from core.repositories import billing_repo, channel_link_repo, update_repo
+from core.services.paperclip_provisioning import (
+    build_paperclip_provisioning,
+    close_paperclip_provisioning,
+)
+from core.services.update_service import PAPERCLIP_RETRY_KIND
+from core.services.webhook_dedup import MembershipLifecycleSuperseded
+
+logger = logging.getLogger(__name__)
+
+# How far a svix-timestamp may sit from now before the payload is treated as
+# a replay. svix's own recommendation; applied in both directions so ordinary
+# clock skew between Clerk and the task doesn't reject live traffic.
+_SVIX_TOLERANCE_S = 300
+
+router = APIRouter()
+
+
+def _verify_svix_signature(body: bytes, headers: dict) -> None:
+    """Raise HTTPException if the svix signature is missing or invalid.
+
+    Svix signs the payload with HMAC-SHA256 using a timestamp + body
+    combination.  The ``svix-signature`` header contains one or more
+    ``v1,<base64>`` tokens; we accept the payload if ANY token matches.
+
+    **Fails CLOSED in any deployed env.** This endpoint is unauthenticated by
+    design (Clerk has no bearer token to present), so the signature IS the
+    authentication. A misconfigured secret previously fell through to
+    "accept everything", which let anyone who knew the URL forge events —
+    a forged ``user.deleted`` sweeps channel_link rows and disables
+    Paperclip for that user id. Unverifiable mail is now rejected instead.
+
+    The skip survives only for local dev (ENVIRONMENT unset), where there is
+    no Clerk instance to sign anything.
+
+    Misconfiguration returns **503, not 400**: svix retries 5xx with backoff,
+    so events queued during a bad-secret window are redelivered once the
+    secret is fixed rather than being silently dropped.
+    """
+    secret = settings.CLERK_WEBHOOK_SECRET
+    deployed = bool(settings.ENVIRONMENT.strip())
+
+    if not secret:
+        if deployed:
+            put_metric("webhook.clerk.sig_unconfigured")
+            logger.error("CLERK_WEBHOOK_SECRET is not set in a deployed env; rejecting Clerk webhook")
+            raise HTTPException(status_code=503, detail="Webhook signature verification not configured")
+        return
+
+    # Strip the ``whsec_`` prefix that Clerk/svix adds to the secret.
+    raw_secret = secret.removeprefix("whsec_")
+    try:
+        key = base64.b64decode(raw_secret)
+    except Exception:
+        if deployed:
+            put_metric("webhook.clerk.sig_unconfigured")
+            logger.error("CLERK_WEBHOOK_SECRET is not valid base64; rejecting Clerk webhook")
+            raise HTTPException(status_code=503, detail="Webhook signature secret is malformed")
+        logger.warning("CLERK_WEBHOOK_SECRET is not valid base64; skipping signature check")
+        return
+
+    msg_id = headers.get("svix-id", "")
+    msg_timestamp = headers.get("svix-timestamp", "")
+    msg_signature = headers.get("svix-signature", "")
+
+    if not msg_id or not msg_timestamp or not msg_signature:
+        put_metric("webhook.clerk.sig_fail")
+        raise HTTPException(status_code=400, detail="Missing svix signature headers")
+
+    # Reject payloads outside the replay window. The timestamp is part of the
+    # signed content, so it can't be edited without breaking the HMAC — but
+    # without a freshness check a captured valid (payload, signature) pair
+    # stays replayable forever, and replaying a `user.deleted` is exactly the
+    # destructive action the signature is here to prevent. svix recommends a
+    # ~5 minute tolerance; allow it in both directions to absorb clock skew.
+    try:
+        age = abs(time.time() - int(msg_timestamp))
+    except ValueError:
+        put_metric("webhook.clerk.sig_fail")
+        raise HTTPException(status_code=400, detail="Malformed svix timestamp")
+    if age > _SVIX_TOLERANCE_S:
+        put_metric("webhook.clerk.sig_stale")
+        raise HTTPException(status_code=400, detail="svix timestamp outside tolerance")
+
+    signed_content = f"{msg_id}.{msg_timestamp}.".encode() + body
+    expected = hmac.new(key, signed_content, hashlib.sha256).digest()
+    expected_b64 = base64.b64encode(expected).decode()
+
+    # svix-signature may contain multiple space-separated tokens.
+    tokens = msg_signature.split(" ")
+    for token in tokens:
+        if token.startswith("v1,"):
+            candidate = token[3:]
+            if hmac.compare_digest(expected_b64.encode("utf-8"), candidate.encode("utf-8")):
+                return
+
+    put_metric("webhook.clerk.sig_fail")
+    raise HTTPException(status_code=400, detail="Invalid svix signature")
+
+
+def _clerk_event_sequence(payload: dict, headers: dict, event_id: str, event_type: str) -> str:
+    """Return a stable signed ordering token for a membership lifecycle."""
+    timestamp = payload.get("timestamp")
+    if not isinstance(timestamp, int) or isinstance(timestamp, bool) or timestamp < 0:
+        try:
+            timestamp = int(headers.get("svix-timestamp", "")) * 1000
+        except (TypeError, ValueError) as exc:
+            raise HTTPException(status_code=400, detail="Clerk lifecycle event timestamp unavailable") from exc
+    # At equal timestamps revocation wins; a later create can still re-admit.
+    deny_rank = 1 if event_type.endswith(".deleted") else 0
+    return f"{timestamp:020d}:{deny_rank}:{event_id}"
+
+
+def _membership_alias(user_id: str) -> str:
+    """The stable per-member lifecycle key.
+
+    Shape is frozen: ``webhook_dedup``'s membership-lifecycle rows are keyed
+    off it, so changing the digest orphans every in-flight claim. It predates
+    this module (it was minted by the removed native-rooms path) and is kept
+    verbatim for that reason, not because anything still reads it from there.
+    """
+    value = json.dumps([settings.CLERK_ISSUER, user_id], ensure_ascii=False, separators=(",", ":"))
+    return f"clerk-{hashlib.sha256(value.encode()).hexdigest()}@identity.lightbulb.invalid"
+
+
+async def _renew_member_lifecycle(owner_id: str, user_id: str, claim_id: str | None) -> None:
+    if claim_id is None:
+        return
+    from core.services.webhook_dedup import renew_membership_lifecycle
+
+    await renew_membership_lifecycle(owner_id, _membership_alias(user_id), claim_id)
+
+
+# The canonical home for ``PAPERCLIP_RETRY_KIND`` is
+# ``core.services.update_service.PAPERCLIP_RETRY_KIND``. Both this
+# webhook router (which enqueues retries) and the scheduled worker
+# (which consumes them) read the same constant — keeping them in
+# lockstep is the only way the retry cron actually picks up the
+# rows we wrote. The import lives at the top of this file alongside
+# the other ``core.*`` imports.
+#
+# The Paperclip provisioning factory (build_paperclip_provisioning +
+# close_paperclip_provisioning) lives in core/services/paperclip_provisioning.py
+# — imported at the top of this file. Service-layer ownership keeps the
+# routers→services dependency direction one-way.
+
+
+async def _enqueue_paperclip_retry(*, op: str, payload: dict, owner_id: str) -> None:
+    """Enqueue a Paperclip provisioning retry row in pending-updates.
+
+    ``owner_id`` is the partition key of the pending-updates table —
+    we use the affected user_id (or org owner) so T13 can group
+    retries per-tenant. ``op`` distinguishes which provisioning entry
+    point T13 should call back into.
+
+    Failure to enqueue is logged but not re-raised: enqueueing is
+    best-effort, and the alternative (5xx-ing the webhook) would just
+    have Clerk retry the original event, which has the same retryable
+    classification.
+    """
+    try:
+        await update_repo.create(
+            owner_id=owner_id,
+            update_type=PAPERCLIP_RETRY_KIND,
+            description=f"Retry {op} (Paperclip)",
+            changes={"op": op, **payload},
+        )
+        put_metric("paperclip.webhook.retry_enqueued", dimensions={"op": op})
+    except Exception:
+        logger.exception(
+            "paperclip retry enqueue failed (op=%s, owner_id=%s)",
+            op,
+            owner_id,
+        )
+
+
+def _is_retryable(exc: BaseException) -> bool:
+    """Read the ``retryable`` attribute from a Paperclip exception.
+
+    ``OrgNotProvisionedError`` carries a class-level ``retryable=True``;
+    ``PaperclipApiError`` sets ``retryable`` in __init__ from the
+    status code (5xx + 429 => True). Anything else is treated as
+    non-retryable.
+    """
+    return bool(getattr(exc, "retryable", False))
+
+
+# ----------------------------------------------------------------------
+# Clerk org event payload helpers
+# ----------------------------------------------------------------------
+#
+# Clerk webhook payload shapes (verified against
+# https://clerk.com/docs/webhooks/event-shapes):
+#
+# organization.created:
+#   data.id                         -- org_id (e.g. "org_2abc...")
+#   data.created_by                 -- user_id of the org owner
+#   data.name, data.slug, data.created_at, ...
+#
+# organizationMembership.created / deleted:
+#   data.id                         -- membership id
+#   data.organization.id            -- org_id
+#   data.organization.created_by    -- org owner's user_id
+#   data.public_user_data.user_id   -- the affected member's user_id
+#   data.public_user_data.identifier -- the member's primary email
+#   data.role                       -- "org:admin" | "org:member" | ...
+#
+# organization.deleted:
+#   data.id                         -- the deleted org_id
+#   (deleted=true, slug present, members NOT enumerated — Clerk fires
+#    organizationMembership.deleted separately for each member)
+#
+# user.deleted:
+#   data.id                         -- the deleted user_id
+#   data.deleted = True
+def _extract_org_member_email(data: dict) -> Optional[str]:
+    """Pull the new member's primary email out of an organizationMembership
+    payload. Clerk packages the email under ``public_user_data.identifier``
+    for both ``.created`` and ``.deleted`` events; older payload shapes used
+    a sibling ``email_addresses`` array. We try both for forward/backward
+    compatibility.
+    """
+    pud = data.get("public_user_data") or {}
+    identifier = pud.get("identifier")
+    if identifier:
+        return identifier
+    # Fallback for older / non-standard payload shapes.
+    addrs = data.get("email_addresses") or pud.get("email_addresses") or []
+    for a in addrs:
+        if a.get("email_address"):
+            return a["email_address"]
+    return None
+
+
+def _extract_primary_email(data: dict) -> Optional[str]:
+    """Pull a Clerk user's primary email from a ``user.*`` payload.
+
+    Clerk's ``user.created`` / ``user.updated`` payload shape:
+
+        {
+          "data": {
+            "id": "user_xxx",
+            "email_addresses": [
+              {"id": "idn_xxx", "email_address": "u@example.com", ...},
+              ...
+            ],
+            "primary_email_address_id": "idn_xxx",
+            ...
+          }
+        }
+
+    We resolve the entry whose ``id`` matches ``primary_email_address_id``;
+    if that lookup fails (older payload shape, or Clerk omitted the
+    pointer) we fall back to the first email in the array. Returns
+    ``None`` if no usable email is present.
+    """
+    primary_id = data.get("primary_email_address_id")
+    addresses = data.get("email_addresses") or []
+    if primary_id:
+        for entry in addresses:
+            if isinstance(entry, dict) and entry.get("id") == primary_id:
+                addr = entry.get("email_address")
+                if addr:
+                    return addr
+    # Fallback: first email.
+    for entry in addresses:
+        if isinstance(entry, dict):
+            addr = entry.get("email_address")
+            if addr:
+                return addr
+    return None
+
+
+async def _lookup_owner_email(*, org_id: str, fallback_user_id: Optional[str]) -> Optional[str]:
+    """Pull the org owner's email so ``provision_member`` can sign them in.
+
+    Thin delegator to the shared resolver in
+    ``core.services.paperclip_owner_email``. The retry worker
+    (``update_service``) needs the same behaviour and routers can't
+    safely import from services without re-introducing a cycle, so
+    the helper lives in a shared module — this in-module name is
+    kept so existing call sites and any test ``patch`` strings
+    remain stable. See the shared module docstring for the full
+    resolution chain.
+    """
+    from core.services.paperclip_owner_email import lookup_owner_email
+
+    return await lookup_owner_email(org_id=org_id, fallback_user_id=fallback_user_id)
+
+
+# ----------------------------------------------------------------------
+# Per-event handlers
+# ----------------------------------------------------------------------
+
+
+async def _handle_organization_created(data: dict) -> None:
+    """Start the new workspace's first provision without waiting for a browser poll.
+
+    ``provision_new_workspace`` creates the trial row, checks the provision gate and
+    dispatches the provision funnel (Paperclip is seeded INSIDE the provision execution,
+    so no half-state). Nothing else starts a first provision, so a failure RAISES: the
+    dedup row is rolled back and the 5xx makes Svix redeliver. A gate that is up is a
+    normal return.
+    """
+    org_id = data.get("id", "")
+    owner_user_id = data.get("created_by", "")
+    if not org_id or not owner_user_id:
+        logger.warning("Clerk organization.created missing id/created_by: %s", data)
+        return
+    logger.info(
+        "organization.created: org=%s owner=%s recorded",
+        org_id,
+        owner_user_id,
+    )
+    from core.services.user_provision import provision_new_workspace
+
+    await provision_new_workspace(org_id)
+
+
+async def _handle_organization_membership_created(
+    data: dict,
+    *,
+    lifecycle_claim_id: str | None = None,
+) -> None:
+    """Record a membership lifecycle event, then join the org's Paperclip company.
+
+    Room admission remains explicit; the member receives an opaque user stream
+    when they first request messaging live-config or are added to a room. The
+    one exception is the vendor shared channel, which ``on_org_member_joined``
+    keeps in step with org membership.
+
+    The Paperclip join itself is delegated to
+    ``core.services.user_provision._ensure_paperclip_for_member`` — the same
+    join-only, idempotent helper ``ensure_user_ready`` calls from the member's
+    own ``/teams`` requests. It returns gracefully when the org's company isn't
+    active yet (the member's next ``/teams`` request self-heals), treats a
+    409 as success, and records a 422 as a durable failure. Any exception is
+    logged and metered here but never re-raised: this must not turn into a
+    non-2xx that makes Clerk retry the whole event — the lifecycle bookkeeping
+    above already happened and must still be acknowledged. Without this call,
+    a member who never polls (or polls in the wrong context) stays invisible
+    to every Teams surface even though chat already works for them.
+    """
+    org = data.get("organization") or {}
+    org_id = org.get("id", "")
+    owner_user_id = org.get("created_by", "")
+    pud = data.get("public_user_data") or {}
+    user_id = pud.get("user_id", "") or data.get("user_id", "")
+    email = _extract_org_member_email(data)
+    if not org_id or not user_id or not email:
+        logger.warning(
+            "Clerk organizationMembership.created missing fields: org=%s user=%s email=%s",
+            org_id,
+            user_id,
+            bool(email),
+        )
+        return
+    await _renew_member_lifecycle(org_id, user_id, lifecycle_claim_id)
+    logger.info(
+        "membership.created: org=%s member=%s owner=%s recorded",
+        org_id,
+        user_id,
+        owner_user_id,
+    )
+
+    from core.services.user_provision import _ensure_paperclip_for_member
+
+    try:
+        await _ensure_paperclip_for_member(
+            org_id=org_id,
+            member_user_id=user_id,
+            member_email=email,
+        )
+    except Exception:
+        logger.exception(
+            "membership.created: paperclip membership-add failed org=%s user=%s "
+            "— the member's next /teams request retries",
+            org_id,
+            user_id,
+        )
+        put_metric("paperclip.member_add", dimensions={"outcome": "webhook_error"})
+
+    from core.services.messaging import on_org_member_joined
+
+    try:
+        await on_org_member_joined(org_id, user_id)
+    except Exception:
+        logger.exception("membership.created: vendor room add failed org=%s user=%s", org_id, user_id)
+        put_metric("messaging.vendor_room.error")
+
+    # The #general seat for a new teammate (idempotent: one-time AUTOJOIN marker). A
+    # member who joins before the room exists is seated by the provision executor.
+    from core.services.messaging import join_default_room
+
+    try:
+        await join_default_room(org_id, user_id)
+    except Exception:
+        logger.exception("membership.created: default room join failed org=%s user=%s", org_id, user_id)
+        put_metric("messaging.default_room.error")
+
+
+async def _handle_organization_membership_deleted(
+    data: dict,
+    *,
+    lifecycle_claim_id: str | None = None,
+) -> None:
+    """Revoke canonical room/user streams, then archive the Paperclip member."""
+    pud = data.get("public_user_data") or {}
+    user_id = pud.get("user_id", "") or data.get("user_id", "")
+    org_id = (data.get("organization") or {}).get("id", "")
+    if not user_id or not org_id:
+        raise HTTPException(status_code=400, detail="Clerk membership deletion target unavailable")
+
+    from core.services.messaging import revoke_human_membership
+
+    revocation_error: BaseException | None = None
+    try:
+        await _renew_member_lifecycle(org_id, user_id, lifecycle_claim_id)
+        # Security boundary: every room key rotates before the private stream is
+        # disabled. Repeated delivery is idempotent.
+        await revoke_human_membership(org_id, user_id)
+        await _renew_member_lifecycle(org_id, user_id, lifecycle_claim_id)
+    except Exception as exc:
+        # Paperclip cleanup still gets its turn, but the event is not marked
+        # complete until canonical revocation succeeds on a retry.
+        revocation_error = exc
+
+    await _renew_member_lifecycle(org_id, user_id, lifecycle_claim_id)
+    provisioning = await build_paperclip_provisioning()
+    try:
+        try:
+            await _renew_member_lifecycle(org_id, user_id, lifecycle_claim_id)
+            await provisioning.archive_member(user_id=user_id)
+            await _renew_member_lifecycle(org_id, user_id, lifecycle_claim_id)
+            put_metric(
+                "paperclip.webhook.archive_member",
+                dimensions={"trigger": "membership_deleted", "result": "ok"},
+            )
+        except MembershipLifecycleSuperseded:
+            raise
+        except Exception as exc:
+            retryable = _is_retryable(exc)
+            put_metric(
+                "paperclip.webhook.archive_member",
+                dimensions={
+                    "trigger": "membership_deleted",
+                    "result": "retryable" if retryable else "error",
+                },
+            )
+            # DDB disable is the immediate Teams authorization fence even when
+            # upstream Paperclip archive is unavailable.
+            try:
+                await _renew_member_lifecycle(org_id, user_id, lifecycle_claim_id)
+                await provisioning.disable(user_id=user_id)
+                await _renew_member_lifecycle(org_id, user_id, lifecycle_claim_id)
+            except MembershipLifecycleSuperseded:
+                raise
+            except Exception:
+                logger.exception("Paperclip disable fallback failed for user=%s", user_id)
+            if retryable:
+                await _renew_member_lifecycle(org_id, user_id, lifecycle_claim_id)
+                await _enqueue_paperclip_retry(
+                    op="archive_member",
+                    payload={"user_id": user_id},
+                    owner_id=user_id,
+                )
+    finally:
+        await close_paperclip_provisioning(provisioning)
+
+    if revocation_error is not None:
+        raise revocation_error
+
+
+async def _handle_organization_deleted(data: dict) -> None:
+    """Cancel the org's Stripe subscription, then
+    disable every Paperclip member row attached to the deleted org.
+
+    The org's workspace subscription is billed on the org's own
+    ``billing_accounts`` row (owner_id == org_id), which nothing else
+    tears down when the Clerk org itself is deleted -- left alone it
+    would keep charging the workspace forever. We cancel it via the same
+    Stripe path the admin "cancel subscription" action uses
+    (``billing_service.cancel_subscription_for_owner``): cancelling at
+    Stripe (not just clearing the DDB row) fires the inbound
+    ``customer.subscription.deleted`` webhook, which handles container
+    teardown. Best-effort -- a Stripe error must not break this webhook,
+    which still has to return 200 to Clerk.
+
+    This runs BEFORE the member-disable sweep below, and in its own
+    independent try/except, so that a failure in the sweep (e.g. the
+    GSI ``table.query`` pagination call throwing on a DynamoDB
+    throttle/error) can never prevent the billing-critical cancel from
+    running. The sweep is Paperclip cleanup, not billing-critical --
+    it must not be able to block the Stripe cancel.
+
+    Clerk also fires ``organizationMembership.deleted`` for each
+    member, but we belt-and-braces against missed events by sweeping
+    the org-id GSI. ``disable`` is idempotent so a double-fire is safe.
+    """
+    org_id = data.get("id", "")
+    if not org_id:
+        logger.warning("Clerk organization.deleted missing id: %s", data)
+        return
+
+    # Drop the workspace's join link first. It is a live credential, and a
+    # deleted org is exactly when nobody is watching it any more; the delete is
+    # idempotent and its failure must not stop the teardown below.
+    try:
+        from core.services.workspace_join import revoke_join_link
+
+        await revoke_join_link(org_id)
+    except Exception:
+        logger.exception("join-link revoke on organization.deleted failed for org %s", org_id)
+
+    # A deleted org must stop funded inference even if Stripe cancellation
+    # fails. It may retain an old managed key after switching to BYOK/OAuth,
+    # so retire by key state rather than the current provider choice.
+    try:
+        from core.repositories.openrouter_key_repo import mark_retiring
+
+        await mark_retiring(org_id)
+    except Exception:
+        logger.exception("OpenRouter key retirement on organization.deleted failed for org %s", org_id)
+
+    try:
+        from core.services.billing_service import cancel_subscription_for_owner
+
+        result = await cancel_subscription_for_owner(org_id)
+        logger.info(
+            "Clerk organization.deleted: Stripe subscription cancel for org %s -> %s",
+            org_id,
+            result.get("status"),
+        )
+    except Exception:
+        logger.exception(
+            "Stripe subscription cancel on organization.deleted failed for org %s",
+            org_id,
+        )
+
+    from boto3.dynamodb.conditions import Key
+
+    from core.dynamodb import run_in_thread
+
+    provisioning = await build_paperclip_provisioning()
+    try:
+        # Reach through the repo to the underlying GSI to enumerate members.
+        # We could promote this into the repo, but for v1 the only caller
+        # is this webhook handler and adding a public method now would
+        # outgrow its single use site.
+        table = provisioning._repo._table()  # noqa: SLF001 — same package, single call site
+        last_key = None
+        disabled = 0
+        while True:
+            kwargs: dict = {
+                "IndexName": "by-org-id",
+                "KeyConditionExpression": Key("org_id").eq(org_id),
+            }
+            if last_key is not None:
+                kwargs["ExclusiveStartKey"] = last_key
+            resp = await run_in_thread(table.query, **kwargs)
+            for item in resp.get("Items", []):
+                uid = item.get("user_id")
+                if not uid:
+                    continue
+                try:
+                    await provisioning.disable(user_id=uid)
+                    disabled += 1
+                except Exception:
+                    logger.exception(
+                        "disable on organization.deleted failed for user=%s org=%s",
+                        uid,
+                        org_id,
+                    )
+            last_key = resp.get("LastEvaluatedKey")
+            if not last_key:
+                break
+        put_metric(
+            "paperclip.webhook.disable",
+            value=disabled,
+            dimensions={"trigger": "organization_deleted"},
+        )
+        logger.info(
+            "Clerk organization.deleted: disabled %d member rows for org %s",
+            disabled,
+            org_id,
+        )
+    finally:
+        await close_paperclip_provisioning(provisioning)
+
+
+async def _handle_user_deleted_paperclip(user_id: str) -> None:
+    """Disable Paperclip for a deleted Clerk user."""
+    provisioning = await build_paperclip_provisioning()
+    try:
+        await provisioning.disable(user_id=user_id)
+        put_metric("paperclip.webhook.disable", dimensions={"trigger": "user_deleted"})
+    except Exception:
+        logger.exception("disable on user_deleted failed for user=%s", user_id)
+    finally:
+        await close_paperclip_provisioning(provisioning)
+
+
+# ----------------------------------------------------------------------
+# Routes
+# ----------------------------------------------------------------------
+
+
+@router.post(
+    "/clerk",
+    summary="Handle Clerk webhooks",
+    description=(
+        "Processes Clerk lifecycle events: user.created, user.updated, user.deleted, "
+        "organization.created/deleted, organizationMembership.created/deleted."
+    ),
+    operation_id="handle_clerk_webhook",
+    include_in_schema=False,
+)
+async def handle_clerk_webhook(request: Request):
+    """Handle Clerk webhook events. No Clerk JWT auth — uses svix signature."""
+    body = await request.body()
+    _verify_svix_signature(body, dict(request.headers))
+
+    try:
+        payload = json.loads(body)
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid JSON payload")
+
+    event_type = payload.get("type", "")
+    data: dict[str, Any] = payload.get("data", {})
+    svix_id = request.headers.get("svix-id")
+    lifecycle_event = event_type in {
+        "user.deleted",
+        "organizationMembership.created",
+        "organizationMembership.deleted",
+    }
+    lifecycle_id = svix_id or f"local-{hashlib.sha256(body).hexdigest()}"
+    lifecycle_sequence = (
+        _clerk_event_sequence(payload, dict(request.headers), lifecycle_id, event_type) if lifecycle_event else ""
+    )
+    processing_claim = None
+    membership_claim = None
+    recorded_event_id = None
+    membership_owner_id = None
+    membership_alias = None
+
+    if event_type in {"organizationMembership.created", "organizationMembership.deleted"}:
+        pud = data.get("public_user_data") or {}
+        membership_user_id = pud.get("user_id", "") or data.get("user_id", "")
+        membership_owner_id = (data.get("organization") or {}).get("id", "")
+        if not membership_user_id or not membership_owner_id:
+            raise HTTPException(status_code=400, detail="Clerk membership lifecycle target unavailable")
+
+        from core.services.webhook_dedup import (
+            MembershipLifecycleInProgress,
+            begin_membership_lifecycle,
+        )
+
+        membership_alias = _membership_alias(membership_user_id)
+        try:
+            membership_claim = await begin_membership_lifecycle(
+                membership_owner_id,
+                membership_alias,
+                event_id=lifecycle_id,
+                sequence=lifecycle_sequence,
+                access_state="allowed" if event_type.endswith(".created") else "revoked",
+            )
+        except MembershipLifecycleInProgress as exc:
+            raise HTTPException(status_code=503, detail="Older Clerk membership event is still processing") from exc
+        if membership_claim is None:
+            put_metric("clerk.webhook.membership_stale", dimensions={"event_type": event_type})
+            return {"status": "stale"}
+
+    # Idempotency dedupe — svix will retry on any non-2xx and on its own
+    # at-least-once delivery insurance. Without this, two retries from
+    # svix on a flaky webhook would each call ``provision_member``, the
+    # second of which fails with a duplicate-membership conflict
+    # (non-retryable: the member's Better Auth account already exists
+    # from the first run, so sign_up_user 409s) and marks the row failed
+    # forever. Keyed on svix-id which is unique per genuine Clerk event,
+    # identical across retries.
+    if svix_id:
+        if lifecycle_event:
+            from core.services.webhook_dedup import (
+                WebhookProcessingInProgress,
+                begin_event_processing,
+            )
+
+            try:
+                processing_claim = await begin_event_processing(svix_id, source="clerk")
+            except WebhookProcessingInProgress as exc:
+                raise HTTPException(status_code=503, detail="Clerk lifecycle event is already processing") from exc
+            if processing_claim is None:
+                if membership_claim is not None:
+                    from core.services.webhook_dedup import complete_membership_lifecycle
+
+                    await complete_membership_lifecycle(
+                        membership_owner_id,
+                        membership_alias,
+                        membership_claim,
+                    )
+                put_metric("clerk.webhook.dedup_skipped")
+                logger.info("completed clerk lifecycle webhook duplicate suppressed: %s", svix_id)
+                return {"status": "duplicate"}
+        else:
+            try:
+                from core.services.webhook_dedup import (
+                    WebhookDedupResult,
+                    record_event_or_skip,
+                )
+
+                dedup = await record_event_or_skip(svix_id, source="clerk")
+                if dedup is WebhookDedupResult.ALREADY_SEEN:
+                    put_metric("clerk.webhook.dedup_skipped")
+                    logger.info("clerk webhook duplicate suppressed: %s", svix_id)
+                    return {"status": "duplicate"}
+                recorded_event_id = svix_id
+            except Exception:
+                # Non-security events retain the historical best-effort
+                # behavior; lifecycle claims above deliberately fail closed.
+                logger.exception("clerk webhook dedupe check failed; processing anyway")
+
+    put_metric("webhook.clerk.received", dimensions={"event_type": event_type})
+
+    if event_type == "user.created":
+        user_id = data.get("id", "")
+        logger.info("Clerk user.created webhook received for %s", user_id)
+
+        # Persist user_id + primary email into the users table. The email
+        # column is what ``_lookup_owner_email`` (and the Paperclip
+        # provisioning chain) reads to sign the org owner in to Better
+        # Auth — without this, organization.created webhooks never find
+        # an email and would loop on retries forever. The /users/sync
+        # path also calls user_repo.put but only knows the user_id;
+        # the webhook is the authoritative source of email.
+        if user_id:
+            email = _extract_primary_email(data)
+            try:
+                from core.repositories import user_repo
+
+                await user_repo.put(user_id, email=email)
+            except Exception:
+                # Persistence is non-fatal here — the /users/sync REST
+                # path will write the row again the first time the user
+                # opens the app, and downstream paperclip handlers fall
+                # back to Clerk admin API. Logging is enough.
+                logger.exception("user_repo.put failed for user.created %s", user_id)
+
+            # Best-effort welcome email — the sender already swallows its own
+            # errors; we also guard here so a blowup can never 500 the
+            # webhook (which would trigger a Clerk retry storm). Competition
+            # sign-up-sheet membership is explicit (POST /launch/join, inside
+            # the product) — signup joins nothing.
+            if email:
+                try:
+                    from core.services.welcome_email import send_welcome_email
+
+                    await send_welcome_email(
+                        to_email=email,
+                        first_name=data.get("first_name"),
+                    )
+                except Exception:
+                    logger.exception("welcome email send raised for user.created %s", user_id)
+
+    elif event_type == "user.updated":
+        user_id = data.get("id", "")
+        logger.info("Clerk user.updated webhook received for %s", user_id)
+
+        # Sync the primary email to the user's Stripe Customer if one exists.
+        # Catches receipt / invoice / trial-end emails going to a stale address.
+        new_email = _extract_primary_email(data)
+        if new_email and user_id:
+            account = await billing_repo.get_by_owner_id(user_id)
+            if account and account.get("stripe_customer_id"):
+                # Use the Clerk webhook's unique svix-id as the Stripe idempotency
+                # key. Each genuine Clerk event gets a unique id; a retry of the
+                # SAME event reuses it. Embedding user_id+email instead would let
+                # an A→B→A→B email flip within Stripe's 24h idempotency window
+                # collide with the first A→B and silently skip the modify.
+                svix_id = request.headers.get("svix-id")
+                if svix_id:
+                    idempotency_key = f"customer_email_sync:{svix_id}"
+                else:
+                    # Defensive fallback (shouldn't happen with real Clerk
+                    # traffic — _verify_svix_signature already requires it
+                    # when CLERK_WEBHOOK_SECRET is set). 1-min bucket bounds
+                    # the worst-case skipped writes.
+                    idempotency_key = f"customer_email_sync:{user_id}:{new_email}:{int(time.time() // 60)}"
+                try:
+                    stripe.Customer.modify(
+                        account["stripe_customer_id"],
+                        email=new_email,
+                        idempotency_key=idempotency_key,
+                    )
+                    put_metric("stripe.customer.email_sync", dimensions={"result": "ok"})
+                except stripe.StripeError as e:
+                    put_metric("stripe.customer.email_sync", dimensions={"result": "error"})
+                    logger.warning(
+                        "Stripe email sync failed for %s: %s",
+                        user_id,
+                        e,
+                    )
+                    # Non-fatal — Clerk update succeeded.
+
+    elif event_type == "user.deleted":
+        user_id = data.get("id", "")
+        if not user_id:
+            raise HTTPException(status_code=400, detail="Clerk user deletion target unavailable")
+
+        count = await channel_link_repo.sweep_by_member(user_id)
+        logger.info(
+            "Clerk user.deleted webhook: swept %d channel_link rows for %s",
+            count,
+            user_id,
+        )
+        # Disable Paperclip for this user (account-level deletion). Org
+        # membership cleanup is handled via the organizationMembership
+        # event stream — we don't enumerate orgs here.
+        await _handle_user_deleted_paperclip(user_id)
+
+    elif event_type == "organization.created":
+        try:
+            await _handle_organization_created(data)
+        except Exception:
+            # The dedup row was recorded before dispatch: roll it back so Svix's redelivery
+            # of this 5xx re-attempts instead of being acked as a duplicate (billing.py's
+            # Stripe pattern). The handler is idempotent, so a partial attempt replays safely.
+            if recorded_event_id:
+                from core.services.webhook_dedup import delete_event
+
+                await delete_event(recorded_event_id)
+            raise
+
+    elif event_type == "organizationMembership.created":
+        pud = data.get("public_user_data") or {}
+        user_id = pud.get("user_id", "") or data.get("user_id", "")
+        org_id = (data.get("organization") or {}).get("id", "")
+        if not user_id or not org_id:
+            raise HTTPException(status_code=400, detail="Clerk membership creation target unavailable")
+        await _handle_organization_membership_created(data, lifecycle_claim_id=membership_claim)
+
+    elif event_type == "organizationMembership.deleted":
+        await _handle_organization_membership_deleted(
+            data,
+            lifecycle_claim_id=membership_claim,
+        )
+
+    elif event_type == "organization.deleted":
+        await _handle_organization_deleted(data)
+
+    else:
+        logger.debug("Clerk webhook: unhandled event type %s", event_type)
+
+    if membership_claim is not None:
+        from core.services.webhook_dedup import complete_membership_lifecycle
+
+        await complete_membership_lifecycle(
+            membership_owner_id,
+            membership_alias,
+            membership_claim,
+        )
+    if processing_claim is not None:
+        from core.services.webhook_dedup import complete_event_processing
+
+        await complete_event_processing(lifecycle_id, processing_claim)
+    return {"status": "ok"}

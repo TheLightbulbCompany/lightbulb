@@ -1,0 +1,115 @@
+# =============================================================================
+# Mobile RELEASE — native iOS build + TestFlight submit (Lane 1 of mobile CD).
+#
+# Fires on a `mobile-v*` tag (a deliberate release) or manual dispatch. Builds
+# the production .ipa LOCALLY on the self-hosted macOS runner (label
+# `macos-desktop` — the same box that signs the desktop DMG): $0, and it never
+# touches the EAS free-plan cloud-build quota. iOS signing certs live in EAS
+# (fetched via EXPO_TOKEN), so unlike desktop-build.yml this needs no keychain /
+# cert-import dance — the ONLY Apple secret it materializes is the App Store
+# Connect API key (.p8), decoded from repo secret EXPO_ASC_API_KEY_BASE64 to the
+# path eas.json's submit block expects.
+#
+# Use this lane for NATIVE changes (new native module, SDK bump, app.json /
+# plugin / entitlement change) and whenever you cut a store build. Day-to-day
+# JS-only changes ship via the OTA lane (mobile-ota.yml) instead — see the
+# fingerprint note in apps/mobile/README.md for how the two stay compatible.
+#
+# First-run note: `eas build --local` needs fastlane + CocoaPods on the runner.
+# The desktop build doesn't use them, so if this box has never built iOS the
+# build step is where that surfaces — install them on the runner and re-run.
+# =============================================================================
+name: mobile-release
+
+'on':
+  push:
+    tags:
+      - 'mobile-v*'
+  workflow_dispatch: {}
+
+# One iOS release at a time on the single self-hosted runner; never cancel a
+# submit midway.
+concurrency:
+  group: mobile-release
+  cancel-in-progress: false
+
+jobs:
+  build-and-submit:
+    name: Build & submit iOS (TestFlight)
+    runs-on:
+      - self-hosted
+      - macos-desktop
+    timeout-minutes: 90
+    defaults:
+      run:
+        working-directory: apps/mobile
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        working-directory: .
+        run: pnpm install --frozen-lockfile
+
+      - name: Restore App Store Connect API key
+        env:
+          EXPO_ASC_API_KEY_BASE64: ${{ secrets.EXPO_ASC_API_KEY_BASE64 }}
+        run: |
+          set -euo pipefail
+          if [ -z "${EXPO_ASC_API_KEY_BASE64:-}" ]; then
+            echo "::error::EXPO_ASC_API_KEY_BASE64 secret is not set — cannot submit to TestFlight. Add it with: base64 -i apps/mobile/credentials/AuthKey_SZ68D5WBR2.p8 | gh secret set EXPO_ASC_API_KEY_BASE64 --repo TheLightbulbCompany/lightbulb"
+            exit 1
+          fi
+          mkdir -p credentials
+          echo "$EXPO_ASC_API_KEY_BASE64" | base64 --decode > credentials/AuthKey_SZ68D5WBR2.p8
+          chmod 600 credentials/AuthKey_SZ68D5WBR2.p8
+
+      - name: Build iOS .ipa (local build, signed via EAS-managed credentials)
+        env:
+          EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+          # Give EAS Apple Developer Portal access during the non-interactive
+          # build so it can regenerate credentials on its own — e.g. a
+          # provisioning profile that must be reissued after a capability
+          # (like Push Notifications) is added to the App ID. Reuses the same
+          # ASC API key the submit step uses, decoded in the step above. Key ID
+          # + issuer are non-secret identifiers (already in eas.json); only the
+          # .p8 is secret and it stays in EXPO_ASC_API_KEY_BASE64.
+          EXPO_ASC_API_KEY_PATH: ${{ github.workspace }}/apps/mobile/credentials/AuthKey_SZ68D5WBR2.p8
+          EXPO_ASC_KEY_ID: SZ68D5WBR2
+          EXPO_ASC_ISSUER_ID: 7c5f3df2-6cda-46fb-b3d5-2ebbceb1dd0e
+          # ASC-key auth still needs to know which Developer Portal team to use;
+          # without this EAS tries to prompt ("Apple Team ID:") and dies in CI.
+          EXPO_APPLE_TEAM_ID: WZX4U3C22Y
+        run: |
+          set -euo pipefail
+          npx -y eas-cli@latest build \
+            --platform ios \
+            --profile production \
+            --local \
+            --non-interactive \
+            --output "$RUNNER_TEMP/lightbulb.ipa"
+
+      - name: Submit to TestFlight
+        env:
+          EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+        run: |
+          set -euo pipefail
+          npx -y eas-cli@latest submit \
+            --platform ios \
+            --profile production \
+            --path "$RUNNER_TEMP/lightbulb.ipa" \
+            --non-interactive
+
+      # Persistent runner: never leave the ASC key or a signed .ipa on disk.
+      - name: Clean up API key + artifact
+        if: always()
+        run: rm -f credentials/AuthKey_SZ68D5WBR2.p8 "$RUNNER_TEMP/lightbulb.ipa" || true

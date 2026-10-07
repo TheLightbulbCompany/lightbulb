@@ -124,9 +124,22 @@ def test_canonical_content_type_agrees_with_the_shared_resolver():
         ("Archive.ZIP", "application/x-zip-compressed", "application/zip"),
         ("Archive.zip", "", "application/zip"),
         ("Archive.zip", "application/octet-stream", "application/zip"),
+        (
+            "Forecast.XLSX",
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        ),
+        ("Forecast.xlsx", "", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"),
+        (
+            "Forecast.xlsx",
+            "application/octet-stream",
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        ),
         # Contradictory or unsupported -- rejected, never guessed.
         ("Archive.zip", "image/png", None),
         ("notes.txt", "application/zip", None),
+        ("Forecast.xlsx", "application/pdf", None),
+        ("Forecast.exe", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", None),
         ("photo.heic", "image/heic", None),
         ("scan.tiff", "image/tiff", None),
         ("logo.svg", "image/svg+xml", None),
@@ -151,8 +164,7 @@ def test_shared_accept_attribute_offers_every_supported_type():
     extras = set(re.findall(r'"([^"]+)"', match.group(1)))
     offered = set(_shared_content_types()) | extras if spread_all else extras
     assert set(messaging.ATTACHMENT_MAX_BYTES_BY_TYPE) <= offered
-    # The legacy Windows alias and the bare extension are deliberate extras: some OSes
-    # report a ZIP only by one of those. Both canonicalise to application/zip server-side.
-    assert extras <= {"application/x-zip-compressed", ".zip"}, (
+    # Aliases/extensions are deliberate extras for pickers that report generic MIME.
+    assert extras <= {"application/x-zip-compressed", ".zip", ".xlsx"}, (
         f"unexpected extra accept entries: {json.dumps(sorted(extras))}"
     )

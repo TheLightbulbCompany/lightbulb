@@ -1,0 +1,425 @@
+.room-panel,
+.room-directory {
+  color: var(--foreground);
+  background: var(--background);
+  font-family: var(--font-sans);
+  font-size: .9375rem;
+  min-width: 0;
+  min-height: 0;
+}
+
+.room-panel { position: relative; display: grid; grid-template-columns: minmax(0, 1fr); height: 100%; overflow: hidden; }
+.room-conversation { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
+.room-conversation[hidden] { display: none; }
+.room-header { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; min-height: 56px; padding: 8px 24px; }
+.room-tabs { display: flex; flex-shrink: 0; gap: 20px; padding: 0 24px; border-bottom: 1px solid var(--border); overflow-x: auto; }
+.room-tab { display: inline-flex; align-items: center; gap: 6px; min-height: 36px; font-size: var(--text-ui); font-weight: 500; white-space: nowrap; border-bottom: 2px solid transparent; color: var(--muted-foreground); cursor: pointer; }
+.room-tab[aria-current="page"] { color: var(--foreground); border-bottom-color: var(--foreground); font-weight: 600; }
+.room-tab .room-count { margin-left: 6px; }
+.room-title { display: flex; align-items: center; gap: 8px; min-width: 0; flex: 1 1 160px; }
+.room-header h2 { font-size: 1rem; font-weight: 700; }
+.room-topic { max-width: 32ch; gap: 4px; height: 28px; padding: 0 6px; color: var(--muted-foreground); font-size: var(--text-ui); font-weight: 400; }
+.room-topic-dot { color: var(--muted-foreground); }
+.room-topic-form { display: flex; align-items: center; gap: 4px; flex: 1 1 200px; min-width: 0; }
+.room-topic-form .room-input { flex: 1 1 auto; }
+.room-header-error { flex-basis: 100%; }
+.room-audience { display: flex; align-items: center; gap: 8px; margin-left: auto; }
+.room-facepile { display: flex; align-items: center; gap: 4px; height: 32px; padding: 0 6px; }
+.room-facepile > :not(:first-child) { margin-left: -8px; }
+.room-history { --room-gutter: 24px; position: relative; display: flex; flex-direction: column; min-height: 0; flex: 1; overflow: auto; overscroll-behavior: contain; padding: 16px var(--room-gutter); }
+.room-history > :first-child { margin-top: auto; }
+.room-timeline { position: relative; display: flex; flex-direction: column; min-height: 0; flex: 1; }
+.room-timeline-item { outline: none; border-radius: 6px; }
+/* The live region (pending sends + in-flight runs). flex-shrink: 0 keeps its box
+   at content height so the ResizeObserver in RoomTimeline sees real growth. */
+.room-live-content { display: flex; flex-direction: column; flex-shrink: 0; }
+.room-timeline-item[data-highlight="true"] { background: var(--accent); }
+.room-date-divider { position: sticky; top: 0; z-index: 2; display: flex; align-items: center; gap: 12px; margin: 0; padding: 12px 0 4px; background: var(--background); font-size: .75rem; font-weight: 500; color: var(--muted-foreground); }
+.room-date-divider::before, .room-date-divider::after { content: ""; flex: 1; border-top: 1px solid var(--border); }
+.room-date-divider span { padding: 2px 8px; border: 1px solid var(--border); border-radius: 999px; background: var(--background); }
+.room-new-line { display: flex; align-items: center; gap: 8px; margin: 8px 0 4px; font-size: .75rem; font-weight: 600; color: var(--info); }
+.room-new-line::after { content: ""; flex: 1; border-top: 1px solid var(--info); }
+.room-new-pill { position: absolute; left: 50%; bottom: 12px; transform: translateX(-50%); z-index: 3; gap: 6px; border-radius: 999px; }
+.room-message { position: relative; display: flex; align-items: flex-start; gap: 12px; padding: 8px 0; }
+/* Slack's 36px rounded-square avatar on message rows only; the halo ring follows the shape. */
+.room-message > .participant-avatar { border-radius: 6px; }
+.room-message [role="img"] > .overflow-hidden { width: 36px; height: 36px; border-radius: 6px; font-size: .8125rem; }
+.room-history .room-message { margin: 0 calc(-1 * var(--room-gutter)); padding-inline: var(--room-gutter); }
+.room-message:hover, .room-message:focus-within { background: var(--plane-hover); }
+.room-message-actions { position: absolute; top: -14px; right: var(--room-gutter, 0px); z-index: 3; display: flex; align-items: center; gap: 2px; padding: 2px; border: 1px solid var(--border); border-radius: 6px; background: var(--background); opacity: 0; pointer-events: none; }
+.room-message:hover .room-message-actions, .room-message:focus-within .room-message-actions, .room-message-actions:has([data-state="open"]) { opacity: 1; pointer-events: auto; }
+.room-message-actions button { border-radius: 4px; }
+.room-quick-reactions { display: inline-flex; gap: 2px; }
+.room-quick-reactions button { min-width: 28px; }
+.room-message-content { flex: 1; min-width: 0; line-height: 1.47; }
+.room-message-content > :is(.prose, [class*="prose"]) { font-family: var(--font-sans); font-size: .9375rem; line-height: 1.47; }
+.room-message-content p { margin-top: 0; margin-bottom: 4px; font-size: .9375rem; line-height: 1.47; }
+.room-author { cursor: pointer; text-align: left; font-weight: 700; }
+.room-author:hover { text-decoration: underline; }
+.room-agent-label { font-size: .6875rem; line-height: 1.5; font-weight: 500; color: var(--muted-foreground); background: var(--cream-deeper); border-radius: 4px; padding: 0 5px; }
+.room-message-byline { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
+.room-message-byline time { white-space: nowrap; font-size: .75rem; }
+.room-message-byline > span:first-child { min-width: 0; }
+.room-message-content pre { max-width: 100%; }
+.room-mention { display: inline-block; padding: 0 4px; border-radius: 4px; font-weight: 600; color: var(--info); background: color-mix(in srgb, var(--info) 12%, transparent); }
+.room-message-mentions-me { background: color-mix(in srgb, var(--info) 8%, transparent); border-radius: 6px; }
+.room-reply { margin-top: 2px; margin-left: -12px; color: var(--info); font-size: .875rem; min-height: 28px; height: auto; max-width: 100%; white-space: normal; text-align: left; }
+.room-reply-avatars [role="img"] > .overflow-hidden { width: 20px; height: 20px; border-radius: 4px; font-size: .625rem; }
+.room-reply-avatars { display: inline-flex; align-items: center; gap: 3px; flex-shrink: 0; }
+.room-work-link { margin: 8px 8px 0 0; max-width: 100%; white-space: normal; height: auto; min-height: 36px; text-align: left; overflow-wrap: anywhere; }
+.room-typing { min-height: 20px; padding: 0 24px; overflow-wrap: anywhere; }
+.room-composer { position: relative; display: flex; flex-direction: column; gap: 4px; flex-shrink: 0; margin: 0 20px 16px; padding: 8px 10px; border: 1px solid var(--input); border-radius: 8px; background: var(--plane-raised); }
+.room-composer:focus-within { border-color: var(--ring); }
+.room-composer[data-dropping] { border-color: var(--ring); border-style: dashed; }
+.room-drop-hint { padding: 0 4px; }
+.room-composer textarea { min-height: 24px; max-height: 200px; resize: none; overflow-y: auto; box-shadow: none; border: 0; padding: 2px 4px; border-radius: 0; background: transparent; font-size: .9375rem; line-height: 1.47; caret-color: var(--foreground); }
+.room-composer textarea:focus-visible { outline: none; box-shadow: none; }
+.room-composer-help { font-size: .75rem; padding: 0 4px; }
+.room-respond-hint { padding: 0 4px; font-size: .75rem; }
+.room-composer-actions { display: flex; align-items: center; justify-content: flex-start; gap: 2px; }
+.room-composer-actions > button { width: 28px; height: 28px; border-radius: 6px; }
+.room-send { margin-left: auto; }
+.room-send:disabled { background: transparent; border-color: transparent; color: var(--midnight-faint); }
+.room-attachment-previews, .room-message-attachments { display: flex; flex-wrap: wrap; gap: 8px; }
+.room-image-preview { position: relative; display: grid; gap: 2px; }
+.room-image-preview img, .room-message-attachments img { width: 112px; height: 112px; object-fit: cover; border-radius: 8px; border: 1px solid var(--border); }
+.room-image-preview button { position: absolute; top: 2px; right: 2px; background: var(--background); }
+.room-file-preview, .room-file-card { display: flex; align-items: center; gap: 8px; min-width: min(100%, 280px); max-width: 100%; padding: 8px; border: 1px solid var(--border); border-radius: 8px; background: var(--background); text-align: left; overflow-wrap: anywhere; }
+.room-file-preview > svg, .room-file-card > svg { width: 24px; height: 24px; flex: 0 0 auto; }
+.room-file-card { cursor: pointer; }
+.room-file-card:disabled { cursor: default; opacity: .7; }
+.room-composer [role="status"]:empty { display: none; }
+.room-input { display: block; border: 1px solid var(--input); border-radius: 4px; padding: 8px 12px; background: var(--background); color: var(--foreground); width: 100%; min-width: 0; font: inherit; caret-color: var(--foreground); }
+.room-input::placeholder { color: var(--muted-foreground); }
+.room-picker { border-top: 1px solid var(--border); padding-top: 12px; min-width: 0; }
+.room-picker-list { max-height: 240px; overflow-y: auto; overscroll-behavior: contain; }
+.room-typeahead { position: absolute; left: 0; right: 0; bottom: calc(100% + 4px); z-index: 4; max-height: 240px; overflow-y: auto; overscroll-behavior: contain; padding: 4px; border: 1px solid var(--border); border-radius: 8px; background: var(--popover); }
+.room-typeahead .room-choice-button[data-active] { background: var(--accent); }
+.room-choice { display: flex; align-items: center; gap: 8px; padding: 8px 4px; min-height: 44px; cursor: pointer; }
+.room-choice-button { width: 100%; border-radius: 4px; text-align: left; }
+.room-choice:hover { background: var(--accent); }
+.room-choice input { width: 16px; height: 16px; flex-shrink: 0; accent-color: var(--primary); }
+.room-choice:has(input:disabled) { cursor: default; color: var(--muted-foreground); }
+.room-context { display: none; width: 344px; flex-direction: column; min-width: 0; min-height: 0; border-left: 1px solid var(--border); background: var(--background); }
+.room-details-toggle { display: none; }
+.room-context-header { display: flex; align-items: center; gap: 8px; min-height: 56px; padding: 8px 16px; border-bottom: 1px solid var(--border); }
+.room-context .room-composer { margin: 8px 12px 16px; }
+.room-details-tabs { display: flex; flex-wrap: wrap; flex-shrink: 0; gap: 12px; padding: 8px 16px; border-bottom: 1px solid var(--border); }
+.room-details-tabs button { padding: 4px 2px; font-size: .875rem; color: var(--muted-foreground); border-bottom: 2px solid transparent; border-radius: 0; cursor: pointer; }
+.room-details-tabs button:hover { color: var(--foreground); }
+.room-details-tabs button[aria-selected="true"] { color: var(--foreground); font-weight: 600; border-bottom-color: var(--foreground); }
+.room-details-row { display: flex; align-items: flex-start; gap: 8px; padding: 8px 0; border-bottom: 1px solid var(--border); }
+.room-details-row p { min-width: 0; overflow-wrap: anywhere; }
+.room-context-body { flex: 1; min-height: 0; overflow: auto; overscroll-behavior: contain; padding: 12px 16px; }
+.room-context-body > section + section { margin-top: 16px; }
+.room-context-record { margin: 12px 0 20px; overflow-wrap: anywhere; }
+.room-resource-owner + .room-resource-owner { border-top: 1px solid var(--border); padding-top: 16px; }
+.room-resource-device { margin: 12px 0 16px; padding-left: 12px; border-left: 1px solid var(--border); overflow-wrap: anywhere; }
+.room-resource-label { display: flex; align-items: center; gap: 6px; }
+.room-resource-session { display: flex; flex-direction: column; width: 100%; padding: 8px; margin-top: 4px; text-align: left; border-radius: 4px; cursor: pointer; }
+.room-resource-session:hover { background: var(--accent); }
+.local-session-summary { padding: 12px 16px; border-bottom: 1px solid var(--border); display: grid; gap: 6px; max-height: 35%; overflow: auto; }
+.local-session-summary summary { cursor: pointer; }
+.local-session-event { padding: 12px 0; border-bottom: 1px solid var(--border); }
+.local-session-pagination { display: flex; flex-wrap: wrap; gap: 8px; padding-top: 12px; }
+.local-session-pagination p { flex-basis: 100%; }
+.local-session-composer { max-height: 45%; overflow: auto; }
+.local-session-composer label { overflow-wrap: anywhere; }
+.local-session-composer textarea { flex-shrink: 0; }
+.native-session { font-family: var(--font-mono), ui-monospace, SFMono-Regular, monospace; font-size: .875rem; line-height: 1.45; padding: 4px 0 12px; }
+.native-session-row { padding: 4px 0; overflow-wrap: anywhere; }
+.native-session-line { display: flex; gap: 8px; align-items: flex-start; }
+.native-session-glyph { flex: 0 0 1ch; color: var(--muted-foreground); }
+.native-session-row[data-status="done"] > .native-session-line > .native-session-glyph { color: var(--ok); }
+.native-session-row[data-status="error"] > .native-session-line > .native-session-glyph, .native-session-error { color: var(--err); }
+.native-session-prompt { background: var(--accent); border-radius: 4px; padding: 6px 8px; margin: 8px 0 4px; }
+.native-session-prompt-text { white-space: pre-wrap; }
+.native-session-meta { padding-left: calc(1ch + 8px); font-size: .75rem; color: var(--muted-foreground); }
+.native-session-output { margin: 2px 0 0 calc(1ch + 8px); padding: 0; white-space: pre-wrap; color: var(--muted-foreground); font: inherit; max-height: 60vh; overflow: auto; }
+.native-session-more { margin-left: calc(2ch + 16px); font: inherit; font-size: .75rem; color: var(--muted-foreground); cursor: pointer; text-decoration: underline dotted; }
+.native-session-diff span[data-diff="add"] { color: var(--ok); }
+.native-session-diff span[data-diff="del"] { color: var(--err); }
+.native-session-thinking, .native-session-thought { color: var(--muted-foreground); font-style: italic; }
+.native-session-codex-label { font-weight: 600; margin-top: 8px; }
+.native-session-working { color: var(--muted-foreground); }
+.native-session-muted { color: var(--muted-foreground); }
+.native-session-header { gap: 4px; }
+.native-session-title { display: flex; align-items: center; gap: 8px; }
+.native-session-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted-foreground); }
+.native-session-dot-busy { background: var(--ok); }
+.native-session-dot-waiting-approval { background: var(--warn); }
+.native-session-dot-offline { background: var(--border); }
+.native-session-dot-ended { background: var(--border); opacity: 0.5; }
+.native-session-prompt-row { display: flex; gap: 8px; align-items: flex-start; }
+.native-session-prompt-row .native-session-glyph { padding-top: 8px; font-family: var(--font-mono), ui-monospace, monospace; }
+.native-session-composer textarea { font-family: var(--font-mono), ui-monospace, SFMono-Regular, monospace; }
+.room-thread-replies { border-top: 1px solid var(--border); margin-top: 8px; }
+.room-members { padding: 12px 20px; border-bottom: 1px solid var(--border); max-height: 280px; overflow: auto; }
+.room-member { display: flex; align-items: center; gap: 8px; min-height: 44px; padding: 4px 0; }
+.room-members-heading { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.room-member-picker { display: grid; gap: 8px; margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--border); }
+.room-member-picker fieldset { display: grid; gap: 4px; }
+.room-member-choice { display: flex; align-items: center; gap: 8px; min-height: 40px; cursor: pointer; }
+.room-member-choice > span:nth-last-child(2) { flex: 1; }
+.room-intro { padding: 24px 0 12px; }
+.room-intro h3 { font-size: 1.125rem; font-weight: 700; }
+.room-intro p { margin-top: 4px; max-width: 64ch; color: var(--muted-foreground); }
+.room-empty, .room-blocked { padding: 32px 20px; }
+.room-empty p { margin-top: 8px; max-width: 48ch; }
+.room-blocked { align-content: center; justify-items: center; gap: 16px; text-align: center; }
+.room-state { padding: 12px 20px; border-bottom: 1px solid var(--border); color: var(--muted-foreground); }
+.room-skeleton { display: grid; gap: 16px; padding: 20px 0; }
+.room-skeleton span { height: 16px; max-width: 75%; background: var(--muted); border-radius: 4px; }
+.room-skeleton span:nth-child(2) { max-width: 55%; }
+.participant-avatar { position: relative; display: inline-flex; flex: none; border-radius: 999px; }
+.participant-avatar[data-agent-state="running"] {
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--ok) 72%, transparent);
+  animation: agent-activity-halo 1.8s var(--ease-out) infinite;
+}
+.participant-avatar[data-agent-state="attention"] { box-shadow: 0 0 0 2px var(--err); }
+.participant-avatar[data-agent-state="paused"] { box-shadow: 0 0 0 2px var(--warn); }
+/* Presence dot: bottom-right of the avatar, ringed in the surface it sits on
+   so it reads as attached. Green for an online human, blue for an agent
+   (always reachable). Where it shows is decided by the ParticipantAvatar
+   `showPresence` prop (single faces only), not here. */
+.participant-avatar[data-presence="online"]::after, .participant-avatar[data-presence="agent"]::after { content: ""; position: absolute; right: -1px; bottom: -1px; width: 8px; height: 8px; border-radius: 50%; box-shadow: 0 0 0 2px var(--background); }
+.participant-avatar[data-presence="online"]::after { background: var(--presence); }
+.participant-avatar[data-presence="agent"]::after { background: var(--presence-agent); }
+.room-directory .participant-avatar[data-presence="online"]::after, .room-directory .participant-avatar[data-presence="agent"]::after { box-shadow: 0 0 0 2px var(--muted); }
+.participant-avatar-sharing { position: absolute; left: -2px; bottom: -2px; width: 12px; height: 12px; padding: 1px; border-radius: 3px; color: var(--primary-foreground); background: var(--primary); box-shadow: 0 0 0 1.5px var(--background); }
+@keyframes agent-activity-halo {
+  50% { box-shadow: 0 0 0 4px color-mix(in srgb, var(--ok) 20%, transparent); }
+}
+/* Plane 2 of 3. Named directly rather than through --muted so it can never
+   drift back onto the rail's colour — see the ladder in globals.css. */
+.room-directory { display: flex; flex-direction: column; gap: 24px; height: 100%; overflow: auto; overflow-x: hidden; padding: 16px 10px; border-right: 1px solid var(--border); background: var(--plane-sidebar); }
+.room-directory-heading { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; }
+/* The title shrinks and ellipsizes before the sidebar is forced wider than its
+   box; the actions cluster never shrinks, and only wraps to a second line
+   (via the container's flex-wrap above) once it alone can't fit. */
+.room-directory-heading > h2 { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* Once the actions cluster wraps onto its own line, it's the lone flex item
+   on that line -- .room-directory-heading's space-between has nothing to
+   space, so it collapses flush-left. justify-content on the cluster itself
+   would distribute space among ITS OWN children, not position the cluster on
+   its parent's line -- margin-left: auto is what pushes a flex item to the
+   end of its own flex line. */
+.room-directory-heading-actions { flex-shrink: 0; margin-left: auto; }
+.room-directory-heading-actions, .room-directory-row { display: flex; align-items: center; min-width: 0; }
+.room-directory-row .room-directory-entry { min-width: 0; }
+.room-directory-actions { flex: none; opacity: 0; }
+/* Roster rows (someone with no DM yet) have no overflow trigger to hide, so
+   without this their content stretches into the width every real row reserves
+   for one -- the two kinds of row then disagree on where a label ends. Matches
+   .room-directory-actions' size-9 button, and the 44px touch floor below. */
+.room-directory-row--roster::after { content: ""; flex: none; width: 2.25rem; }
+.room-directory-row:hover .room-directory-actions, .room-directory-actions:focus-visible, .room-directory-actions[data-state="open"] { opacity: 1; }
+@media (hover: none) { .room-directory-actions { opacity: 1; } }
+.room-directory-group { font-size: .6875rem; font-weight: 600; letter-spacing: .02em; color: var(--muted-foreground); margin: 0 4px 4px 0; }
+.room-directory-entry { display: flex; align-items: center; gap: 8px; width: 100%; min-height: 28px; padding: 2px 8px; font-size: .875rem; text-align: left; border-radius: 6px; cursor: pointer; }
+.room-directory-entry:disabled { cursor: default; opacity: .6; }
+.room-directory-entry:hover { background: color-mix(in srgb, var(--midnight) 5%, transparent); }
+.room-directory-entry[aria-current="page"] { background: color-mix(in srgb, var(--midnight) 9%, transparent); }
+.room-unread { display: inline-block; height: 6px; width: 6px; border-radius: 50%; background: var(--foreground); flex-shrink: 0; }
+.room-count { display: inline-block; min-width: 18px; padding: 0 6px; border-radius: 999px; font-size: .6875rem; font-weight: 600; line-height: 18px; text-align: center; color: var(--on-info); background: var(--info); font-variant-numeric: tabular-nums; }
+.room-creation-dialog { width: min(520px, calc(100vw - 32px)); max-width: 520px; padding: 0; overflow: hidden; border-radius: 8px; font-family: var(--font-sans); }
+.room-creation { display: flex; flex-direction: column; max-height: calc(100dvh - 32px); min-height: 0; }
+.room-creation-header { display: grid; gap: 8px; padding: 24px 48px 16px 24px; flex-shrink: 0; }
+.room-creation-body { display: flex; flex-direction: column; gap: 8px; padding: 0 24px 16px; overflow-y: auto; overscroll-behavior: contain; min-height: 0; }
+.room-creation-body .room-picker { display: grid; gap: 8px; margin-top: 8px; }
+.room-creation-footer { flex-shrink: 0; display: grid; gap: 8px; padding: 16px 24px; border-top: 1px solid var(--border); background: var(--background); }
+.room-creation-dialog :is(button, input, select):focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; }
+.room-creation-dialog ::selection { color: var(--primary-foreground); background: var(--primary); }
+.room-wrap { overflow-wrap: anywhere; }
+.room-panel :is(button, input, textarea, select, summary):focus-visible,
+.room-directory :is(button, input, select):focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; }
+.room-panel ::selection, .room-directory ::selection { color: var(--primary-foreground); background: var(--primary); }
+
+.room-listen-mode { border: 1px solid var(--input); border-radius: 4px; padding: 4px 6px; background: var(--background); color: var(--foreground); font: inherit; font-size: .875rem; }
+.room-live-run { border-left: 2px solid var(--info); padding-left: 10px; }
+/* left padding aligns with the avatar column (36px .room-message-gutter + 12px .room-message gap = 48px) */
+.room-run-line { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 4px 0 4px 48px; font-size: .875rem; }
+/* The run line wraps; its tool trace takes a full row of its own. */
+.room-run-line .room-run-trace { flex-basis: 100%; }
+.room-run-controls { display: flex; align-items: center; gap: 8px; margin-top: 8px; }
+.room-run-controls .room-input { flex: 1; }
+.messaging-workspace { display: grid; grid-template-columns: 264px minmax(0, 1fr); height: 100%; min-height: 0; }
+
+@media (min-width: 1180px) {
+  .room-details-toggle { display: inline-flex; }
+  .room-panel.room-has-context { grid-template-columns: minmax(0, 1fr) 344px; }
+  .room-panel.room-has-context > .room-context { display: flex; width: auto; }
+  .room-panel.room-has-context:has(> .room-context[data-session]) { grid-template-columns: minmax(0, 1fr) min(var(--room-session-width, 50%), 80%); }
+}
+
+@media (min-width: 860px) and (max-width: 1179px) {
+  .room-panel.room-has-context > .room-context {
+    position: absolute;
+    z-index: 3;
+    inset: 0 0 0 auto;
+    display: flex;
+    width: 344px;
+    box-shadow: -16px 0 32px color-mix(in srgb, var(--midnight) 12%, transparent);
+  }
+  .room-panel:has(> .room-context[data-session]) > .room-context { width: min(var(--room-session-width, 60%), 80%); }
+}
+
+@media (max-width: 859px) {
+  .messaging-workspace { display: flex; flex-direction: column; overflow: hidden; }
+  .messaging-workspace > .room-directory { height: auto; max-height: 36%; flex: 0 0 auto; border-right: 0; border-bottom: 1px solid var(--border); }
+  .messaging-workspace > .room-panel { flex: 1 1 auto; }
+  .room-run-controls { flex-wrap: wrap; }
+  .room-run-controls .room-input { flex-basis: 100%; }
+  .room-header { padding: 12px; gap: 8px; }
+  .room-history { --room-gutter: 12px; padding: 8px var(--room-gutter); }
+  .room-tabs { padding: 0 12px; }
+  .room-composer { margin: 0 8px max(8px, env(safe-area-inset-bottom)); padding: 8px; }
+  .room-context { border-left: 0; }
+  .room-panel.room-has-context > .room-context { display: flex; width: 100%; }
+  .room-panel button, .room-directory button { min-height: 44px; }
+  /* The header's icon buttons (Star/Mute/Conversation options) are 36px
+     square and Search is 42px wide -- both under the touch floor even though
+     min-height above already clears 44. */
+  .room-audience button { min-width: 44px; min-height: 44px; }
+  /* Icon-only sidebar controls (collapse chevron, next unread, new conversation,
+     the row overflow trigger — which carries .room-directory-actions on the
+     button itself) need the 44px in both axes; the sort select is a touch
+     target too. */
+  .room-directory-heading-actions button, .room-directory-group-header button,
+  .room-directory-actions, .room-directory-grip { min-width: 44px; }
+  .room-directory-row--roster::after { width: 44px; }
+  .room-directory select { min-height: 44px; }
+  /* The section dialogs are portalled out of .room-directory, so they need the
+     touch floor stated again. */
+  .room-section-dialog :is(button, input) { min-height: 44px; }
+  .room-section-edit button { min-width: 44px; }
+  .room-composer textarea, .room-input { font-size: 1rem; }
+  .room-message { gap: 8px; }
+  .room-message-byline { flex-wrap: wrap; gap: 4px 8px; }
+}
+
+.room-message-collapsed { padding-top: 2px; padding-bottom: 2px; min-height: 40px; }
+.room-message-gutter { flex: none; width: 36px; padding-top: 4px; font-size: .75rem; line-height: 1.5; text-align: right; color: var(--muted-foreground); font-variant-numeric: tabular-nums; opacity: 0; }
+.room-message:hover .room-message-gutter, .room-message:focus-within .room-message-gutter { opacity: 1; }
+
+/* Positioned after the .room-message-gutter/.room-message-actions base rules above
+ * (same specificity, so the touch override must come later in source order to win). */
+@media (hover: none), (pointer: coarse) {
+  .room-message-actions { top: 0; opacity: 1; pointer-events: auto; }
+  /* The picker covers every emoji already; the quick row is a hover-affordance shortcut that doesn't earn its width on touch. */
+  .room-quick-reactions { display: none; }
+  .room-message:has(.room-message-actions) .room-message-byline { padding-right: 140px; flex-wrap: wrap; }
+  .room-message-collapsed .room-message-content { padding-right: 140px; }
+  .room-message-gutter { opacity: 1; }
+}
+
+.room-format { display: flex; flex-wrap: wrap; align-items: center; gap: 2px; padding-bottom: 4px; border-bottom: 1px solid var(--border); }
+.room-format button { width: 24px; height: 24px; border-radius: 4px; }
+.room-format button svg { width: 14px; height: 14px; }
+
+@media (prefers-reduced-motion: reduce) {
+  .participant-avatar[data-agent-state="running"] { animation: none; }
+  .room-panel *, .room-directory *, .room-creation-dialog { transition: none !important; animation: none !important; }
+}
+
+.room-shortcuts { display: grid; gap: 4px; margin: 8px 0 16px; }
+.room-shortcuts > div { display: flex; align-items: baseline; gap: 12px; }
+.room-shortcuts dt { flex: none; min-width: 88px; }
+.room-kbd { display: inline-block; padding: 2px 6px; border: 1px solid var(--border); border-radius: 4px; font-family: var(--font-mono), ui-monospace, SFMono-Regular, monospace; font-size: .75rem; color: var(--foreground); }
+
+.room-directory-group-header { display: flex; align-items: center; gap: 2px; }
+.room-directory-group-header > button { width: 20px; height: 20px; color: var(--muted-foreground); }
+.room-directory-group-header > button svg { width: 14px; height: 14px; }
+.room-directory-group-header .room-directory-group { flex: 1 1 auto; margin-bottom: 4px; }
+.room-directory-grip { display: inline-flex; align-items: center; justify-content: center; flex: none; padding: 4px; border-radius: 4px; color: var(--muted-foreground); cursor: grab; touch-action: none; }
+.room-directory-grip:hover, .room-directory-grip:focus-visible { color: var(--foreground); background: var(--cream-deeper); }
+.room-directory-grip:active { cursor: grabbing; }
+/* The section being dragged reads as lifted without relying on colour alone:
+   the outline is the signal, the tint is the reinforcement. */
+[data-dragging] > .room-directory-group-header { background: var(--cream-deeper); border: 1px solid var(--ring); border-radius: 4px; }
+.room-section-edit { display: flex; align-items: center; gap: 8px; }
+.room-section-confirm { display: grid; gap: 8px; padding: 8px; border: 1px solid var(--border); border-radius: 4px; }
+.room-directory-muted { color: var(--muted-foreground); }
+.room-directory-star { flex: none; color: var(--muted-foreground); }
+.room-directory-tag { flex: none; font-size: .75rem; color: var(--muted-foreground); }
+.room-directory-faces { display: inline-flex; flex: none; }
+.room-directory-faces > :nth-child(2) { margin-left: -6px; }
+
+/* Focus placement: a session opened from the sidebar or a link takes the middle
+   of the Messages panel, with the sharer's DM in the same column the room
+   placement puts the session in. Narrow viewports keep the session only. */
+.room-session-focus { display: grid; grid-template-columns: minmax(0, 1fr); }
+.room-session-main { display: flex; flex-direction: column; min-width: 0; min-height: 0; overflow: auto; }
+@media (min-width: 1180px) {
+  .room-session-focus:has(> .room-session-side) { grid-template-columns: minmax(0, 1fr) min(var(--room-session-width, 50%), 80%); }
+  .room-session-side { display: flex; width: auto; position: relative; }
+  .room-session-side > .room-panel { flex: 1; min-width: 0; }
+}
+@media (max-width: 1179px) { .room-session-side { display: none; } }
+
+/* The session column (room placement's Devices & sessions aside, and the focus
+   placement's DM aside) is drag-resizable via a visible grab bar on its left edge. */
+.room-context, .room-session-side { position: relative; }
+.room-column-grip { position: absolute; left: -4px; top: 0; bottom: 0; width: 8px; cursor: col-resize; z-index: 2; }
+.room-column-grip::before { content: ""; position: absolute; left: 3px; top: 0; bottom: 0; width: 2px; background: var(--border); transform-origin: center; transition: background 120ms, transform 120ms; }
+.room-column-grip:hover::before, .room-column-grip:focus-visible::before { background: var(--primary); transform: scaleX(2); }
+/* Below 860px the column is full width (see the .room-panel.room-has-context
+   > .room-context rule at max-width: 859px) -- nothing left to drag against. */
+@media (max-width: 859px) { .room-column-grip { display: none; } }
+
+/* ── Onboarding setup band ──────────────────────────────────────────────────
+   Sits beside .room-intro in the timeline's leading slot, in the starter
+   channel only. Cards are plain buttons so keyboard and screen-reader
+   behaviour is the platform's, not ours. */
+.onboarding-band { display: grid; gap: 12px; padding: 8px 0 24px; max-width: 72ch; }
+.onboarding-band-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
+.onboarding-band-head h3 { font-size: 0.9375rem; font-weight: 700; }
+.onboarding-band-head p { margin-top: 2px; color: var(--muted-foreground); font-size: 0.875rem; }
+.onboarding-band-dismiss { flex: none; color: var(--muted-foreground); }
+
+.onboarding-band-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; }
+/* One equal column per card: the starter row holds one, the action row two or three. */
+.onboarding-band-actions { display: grid; grid-auto-flow: column; grid-auto-columns: minmax(0, 1fr); gap: 8px; }
+/* One column under ~640px — four cards at phone width are unreadable. */
+@media (max-width: 640px) {
+  .onboarding-band-grid, .onboarding-band-actions { grid-template-columns: minmax(0, 1fr); }
+  .onboarding-band-actions { grid-auto-flow: row; }
+}
+
+.onboarding-card {
+  display: grid; gap: 4px; padding: 12px; text-align: left;
+  border: 1px solid var(--border); border-radius: 10px; background: var(--card);
+  transition: border-color 120ms var(--ease-out), background 120ms var(--ease-out);
+}
+.onboarding-card:hover:not(:disabled) { border-color: var(--ring); background: var(--accent); }
+.onboarding-card:disabled { opacity: 0.6; }
+.onboarding-card[data-done="true"] { opacity: 1; border-color: color-mix(in srgb, var(--ok) 40%, var(--border)); }
+/* The catalog door, not a connector. It keeps the SOLID border its
+   neighbours have — a dashed edge reads as disabled or as an empty
+   placeholder everywhere else in UI, which is the opposite of an
+   invitation. What sets it apart instead is the centred plus: an add
+   affordance rather than a task with a logo. */
+.onboarding-card[data-more="true"] {
+  place-content: center;
+  justify-items: center;
+  text-align: center;
+  gap: 6px;
+  color: var(--muted-foreground);
+}
+.onboarding-card[data-more="true"]:hover { color: var(--foreground); }
+.onboarding-card-label { display: flex; align-items: center; gap: 6px; font-weight: 600; font-size: 0.875rem; }
+/* The vendor mark keeps its own colour; the done-state tint below deliberately
+   recolours only the text and the check, never the logo. */
+.onboarding-card-label svg { flex: none; }
+.onboarding-card[data-done="true"] .onboarding-card-label { color: var(--ok); }
+.onboarding-card[data-done="true"] .onboarding-card-label svg:not([role="img"]) { color: var(--ok); }
+.onboarding-card-detail { color: var(--muted-foreground); font-size: 0.8125rem; }
+
+.onboarding-names { display: grid; gap: 10px; padding: 12px; border: 1px solid var(--border); border-radius: 10px; }
+.onboarding-names p { color: var(--muted-foreground); font-size: 0.875rem; max-width: 60ch; }
+.onboarding-names ul { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+.onboarding-names li { display: grid; gap: 4px; }
+.onboarding-names label { color: var(--muted-foreground); font-size: 0.75rem; }
+.onboarding-names-error { color: var(--err); font-size: 0.8125rem; }
+@media (max-width: 640px) { .onboarding-names ul { grid-template-columns: minmax(0, 1fr); } }
+.onboarding-context-file { display: grid; gap: 4px; color: var(--muted-foreground); font-size: 0.8125rem; }

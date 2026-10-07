@@ -1,0 +1,175 @@
+#!/usr/bin/env bash
+# Vendor sidecars for the Lightbulb desktop browser node.
+# Produces: src-tauri/bin/ containing
+#   - node-<triple>                               (per-arch Mach-O binary)
+#   - openclaw-host-<triple>/                     (per-arch npm install)
+#   - lightbulb-browser-service-universal-apple-darwin (single dispatch shim)
+#
+# Tauri's --target universal-apple-darwin bundler looks for exactly one
+# externalBin file named `<base>-universal-apple-darwin`. Bash shims
+# can't be lipo'd into a fat Mach-O, so we ship ONE shim that detects
+# $(uname -m) at runtime and execs the matching node + openclaw-host.
+#
+# Per-arch npm installs are required because openclaw ships many
+# arch-specific native addons via npm optionalDependencies (node-pty,
+# clipboard, sharp, canvas, koffi, sqlite-vec). Sharing one
+# node_modules across architectures misresolves these.
+#
+# NOTE: this does NOT mirror OpenClaw's own macOS Swift app, despite what
+# this comment used to claim. That app IS the node -- it speaks the gateway
+# protocol natively and spawns `openclaw node worker`, a hidden private JSONL
+# worker over stdio, only to execute Node-side commands. We instead run the
+# full headless `openclaw node run` and let it be the node. Ours is the
+# supported public shape; theirs is an internal contract. The consequence is
+# that we own a persistent node-host state dir (identity, node config, SQLite)
+# that their app never materializes -- so upstream's answer to a state
+# migration ("tell the user to run openclaw doctor --fix") is not available
+# to us. We have no CLI on the user's PATH. See subprocess.rs.
+set -euo pipefail
+
+# Pin tracks the deployed container image's upstream line -- that is
+# openclaw-version.json's `dev.tag`/`prod.tag` (both 2026.8.1-isol8.1-*),
+# NOT its `tag` field, which is only the legacy public bootstrap fallback.
+# Keeping desktop <-> container in sync avoids the protocol-version
+# (PR #660/#662) and dist-chunk drift bugs.
+#
+# We vendor from PUBLIC npm, so this is vanilla openclaw -- none of the
+# fork's carried patches. That is fine for a node host (the patches are
+# gateway/agent-side) but it is a real divergence: desktop and container
+# run the same VERSION, not the same BUILD.
+#
+# NODE_VERSION is bound by the vendored openclaw's package.json engines
+# field, which is NOT advisory -- assertSupportedRuntime() errors and
+# exits at startup. 2026.5.28 wanted >=22.19.0; 2026.8.1 wants
+# >=22.22.3 <23. npm install does not enforce it (no engine-strict), so
+# a mismatch fails at runtime inside the packaged app, not at build.
+NODE_VERSION="22.23.2"
+OPENCLAW_VERSION="2026.8.1"
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+TAURI_DIR="$(dirname "$SCRIPT_DIR")"
+BIN_DIR="$TAURI_DIR/bin"
+TMP_DIR="$TAURI_DIR/.sidecar-tmp"
+
+rm -rf "$TMP_DIR"
+mkdir -p "$BIN_DIR" "$TMP_DIR"
+
+vendor_arch() {
+    local TRIPLE="$1"     # aarch64-apple-darwin | x86_64-apple-darwin
+    local NODE_ARCH="$2"  # arm64 | x64
+    local NPM_CPU="$3"    # arm64 | x64
+
+    echo "==> Vendoring $TRIPLE (node-$NODE_ARCH, npm --cpu=$NPM_CPU)"
+
+    # Node.js for this arch.
+    local NODE_TARBALL="node-v${NODE_VERSION}-darwin-${NODE_ARCH}.tar.xz"
+    local NODE_URL="https://nodejs.org/dist/v${NODE_VERSION}/${NODE_TARBALL}"
+    curl -fsSL -o "$TMP_DIR/$NODE_TARBALL" "$NODE_URL"
+    tar -xf "$TMP_DIR/$NODE_TARBALL" -C "$TMP_DIR"
+    cp "$TMP_DIR/node-v${NODE_VERSION}-darwin-${NODE_ARCH}/bin/node" \
+       "$BIN_DIR/node-${TRIPLE}"
+    chmod +x "$BIN_DIR/node-${TRIPLE}"
+
+    # Arch-specific openclaw install. --cpu/--os/--libc force npm to
+    # resolve optional deps for the target arch, regardless of the
+    # host the vendor script runs on.
+    local HOST_DIR="$BIN_DIR/openclaw-host-${TRIPLE}"
+    mkdir -p "$HOST_DIR"
+    cat > "$HOST_DIR/package.json" <<EOF
+{
+  "name": "isol8-openclaw-host-${TRIPLE}",
+  "private": true,
+  "version": "0.0.0",
+  "dependencies": {
+    "openclaw": "${OPENCLAW_VERSION}"
+  }
+}
+EOF
+    (
+        cd "$HOST_DIR"
+        # Use the arch-matching node for the install pass. npm uses
+        # its own runtime's arch for platform-dep resolution unless
+        # overridden, so set explicitly.
+        PATH="$BIN_DIR:$PATH" \
+        npm install \
+            --production \
+            --no-audit \
+            --no-fund \
+            --cpu="${NPM_CPU}" \
+            --os=darwin
+    )
+    node "$SCRIPT_DIR/verify-browser-pin.mjs" "$HOST_DIR/node_modules/openclaw"
+}
+
+# Write a per-triple launcher shim that finds node + openclaw-host at
+# runtime. Asset locations differ per build mode:
+#
+#   - dev (`cargo tauri dev`): shim + siblings co-located in target/debug/
+#   - packaged (`tauri build`): shim lands in Contents/MacOS/, resources
+#     in Contents/Resources/bin/ (Tauri preserves the relative `bin/`
+#     directory from the resources glob in tauri.conf.json:
+#     `bin/node-*`, `bin/openclaw-host-*/**/*`).
+#
+# Check the packaged Resources/bin path first (most installs), then a
+# flat Resources/ fallback (older bundle layouts), finally co-located.
+write_launcher() {
+    local TRIPLE="$1"
+    local LAUNCHER="$BIN_DIR/lightbulb-browser-service-${TRIPLE}"
+    cat > "$LAUNCHER" <<LAUNCHER_EOF
+#!/usr/bin/env bash
+set -euo pipefail
+HERE="\$(cd "\$(dirname "\${BASH_SOURCE[0]}")" && pwd)"
+if [ -f "\$HERE/../Resources/bin/node-${TRIPLE}" ]; then
+    ASSETS="\$HERE/../Resources/bin"
+elif [ -f "\$HERE/../Resources/node-${TRIPLE}" ]; then
+    ASSETS="\$HERE/../Resources"
+else
+    ASSETS="\$HERE"
+fi
+# Target Tauri's loopback WSS proxy. Tauri sets LIGHTBULB_PROXY_PORT,
+# OPENCLAW_STATE_DIR, and OPENCLAW_GATEWAY_TOKEN before spawning.
+: "\${LIGHTBULB_PROXY_PORT:?LIGHTBULB_PROXY_PORT must be set by Tauri supervisor}"
+# Isolate the bundled openclaw's config dir from the user's
+# personal ~/.openclaw/. Without OPENCLAW_HOME, both the CLI install
+# and our bundled copy read the same ~/.openclaw/openclaw.json — so
+# user-installed plugins (e.g. a Discord bot referencing
+# @buape/carbon) make our bundled node_modules fail to resolve
+# imports it never had. Putting our state under macOS' standard
+# per-app Application Support dir gives full isolation; users keep
+# their CLI openclaw setup intact.
+export OPENCLAW_HOME="\${HOME}/Library/Application Support/company.thelightbulb.desktop/openclaw"
+mkdir -p "\$OPENCLAW_HOME"
+exec "\$ASSETS/node-${TRIPLE}" --disable-warning=ExperimentalWarning \\
+    "\$ASSETS/openclaw-host-${TRIPLE}/node_modules/openclaw/openclaw.mjs" \\
+    node run --host 127.0.0.1 --port "\$LIGHTBULB_PROXY_PORT" "\$@"
+LAUNCHER_EOF
+    chmod +x "$LAUNCHER"
+}
+
+# CI passes a single target triple; local dev (no args) vendors both
+# so `cargo tauri dev` works on either arch without re-running.
+TARGET="${1:-}"
+case "$TARGET" in
+    aarch64-apple-darwin)
+        vendor_arch "aarch64-apple-darwin" "arm64" "arm64"
+        write_launcher "aarch64-apple-darwin"
+        ;;
+    x86_64-apple-darwin)
+        vendor_arch "x86_64-apple-darwin" "x64" "x64"
+        write_launcher "x86_64-apple-darwin"
+        ;;
+    "")
+        vendor_arch "aarch64-apple-darwin" "arm64" "arm64"
+        vendor_arch "x86_64-apple-darwin" "x64" "x64"
+        write_launcher "aarch64-apple-darwin"
+        write_launcher "x86_64-apple-darwin"
+        ;;
+    *)
+        echo "usage: $0 [aarch64-apple-darwin | x86_64-apple-darwin]" >&2
+        exit 1
+        ;;
+esac
+
+rm -rf "$TMP_DIR"
+echo "==> Sidecars vendored at $BIN_DIR"
+ls -1 "$BIN_DIR"

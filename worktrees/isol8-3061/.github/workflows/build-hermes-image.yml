@@ -1,0 +1,99 @@
+name: build-hermes-image
+
+# Hermes bridge image (M4 Task 20). Mirrors build-paperclip-image.yml:
+# OIDC role, ECR login, path-filtered.
+#
+# M4-R34: this workflow pushes exactly ONE tag per build, unique to the commit
+# (h-<YYYY.M.D>-<sha7>, mirroring OpenClaw's <date>-isol8.N-<sha> style) — never a static
+# pin value. A static pin re-pushed on every merge either 409s under ECR tag immutability
+# or, without immutability, silently re-points whatever the dev container is running with
+# no human gate at all. The
+# promotion gate lives entirely in hermes-version.json's dev.tag/prod.tag (read by
+# service-stack.ts): a human copies the tag this job's summary prints and lands it in a PR.
+concurrency:
+  group: build-hermes-image
+  cancel-in-progress: false
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      # Covers the bundled skills too: their source is apps/infra/hermes/skills-src,
+      # moved here from apps/infra/openclaw/skills when that image was deleted.
+      - "apps/infra/hermes/**"
+      - ".github/workflows/build-hermes-image.yml"
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  build-and-push:
+    name: Build and push Hermes image
+    if: github.ref == 'refs/heads/main'
+    runs-on: ${{ vars.CI_RUNNER }}
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Compute the unique build tag
+        id: meta
+        run: |
+          # h-<YYYY.M.D>-<sha7>, e.g. h-2026.9.17-abc1234. No leading zeros on month/day.
+          # Sha-derived, not a
+          # pin: this tag has never existed in ECR before this push, so there is nothing
+          # to collide with under tag immutability, and it never overwrites a running
+          # container's image.
+          DATE=$(date -u +%Y.%-m.%-d)
+          SHORT_SHA=$(git rev-parse --short=7 HEAD)
+          echo "tag=h-${DATE}-${SHORT_SHA}" >> "$GITHUB_OUTPUT"
+
+      # The Dockerfile COPYs the DERIVED skills tree (skills-src + skills-overlay with
+      # the tool-name swaps applied), which is gitignored -- a checked-in copy is the
+      # duplicate this replaced -- so it is materialized into the context here.
+      - name: Build the bundled skills tree
+        run: apps/infra/hermes/build-skills.sh
+
+      - name: Authenticate Via OIDC Role
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-region: us-east-1
+          role-duration-seconds: 1800
+          role-skip-session-tagging: true
+          role-to-assume: arn:aws:iam::877352799272:role/lightbulb-openclaw-image-builder
+
+      - name: Login to ECR
+        uses: aws-actions/amazon-ecr-login@v2
+        id: ecr
+
+      # arm64 emulation — AgentCore runtimes are arm64 only, and this job runs on an
+      # amd64 GitHub-hosted (or Blacksmith) runner.
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build and push (arm64)
+        uses: docker/build-push-action@v6
+        with:
+          context: apps/infra/hermes
+          file: apps/infra/hermes/Dockerfile
+          platforms: linux/arm64
+          push: true
+          tags: ${{ steps.ecr.outputs.registry }}/lightbulb/hermes-agent-arm64:${{ steps.meta.outputs.tag }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Summary
+        run: |
+          echo "## Built Hermes image" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "\`${{ steps.ecr.outputs.registry }}/lightbulb/hermes-agent-arm64:${{ steps.meta.outputs.tag }}\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "This tag was never written anywhere else — copy it into \`hermes-version.json\`'s \`dev.tag\` (then, after dev validation, \`prod.tag\`) in a PR to promote it." >> "$GITHUB_STEP_SUMMARY"

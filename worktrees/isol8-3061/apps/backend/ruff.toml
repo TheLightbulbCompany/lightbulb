@@ -1,0 +1,16 @@
+# Ruff configuration for Isol8 backend
+line-length = 120
+
+# Exclude git submodules and vendored third-party code (external, never hand-edited here).
+exclude = ["agent/", "vendor/"]
+
+# Honor the excludes above even when paths are passed explicitly, which is how
+# the pre-commit hook and CI invoke ruff.
+force-exclude = true
+
+[lint]
+# Ignore line length for now
+ignore = ["E501"]
+
+# Allow module-level imports after path manipulation or load_dotenv
+per-file-ignores = { "scripts/*" = ["E402"], "main.py" = ["E402"] }

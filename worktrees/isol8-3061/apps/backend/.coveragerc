@@ -1,0 +1,22 @@
+[run]
+source = .
+omit =
+    tests/*
+    env/*
+    venv/*
+    __pycache__/*
+    *.pyc
+    init_db.py
+
+[report]
+exclude_lines =
+    pragma: no cover
+    def __repr__
+    raise NotImplementedError
+    if __name__ == .__main__.:
+    if TYPE_CHECKING:
+show_missing = true
+precision = 2
+
+[html]
+directory = htmlcov

@@ -1,0 +1,215 @@
+"""Short hook-authenticated desktop commands; no model-supplied member or peer address."""
+
+import asyncio
+import hmac
+import json
+from contextlib import asynccontextmanager
+
+from fastapi import APIRouter, HTTPException, Request
+
+from core.config import settings
+from core.repositories import container_repo
+from core.services import desktop_execution as service
+from core.services.desktop_browser import MAX_UPLOAD_REQUEST
+
+router = APIRouter()
+
+
+@asynccontextmanager
+async def _boundary():
+    try:
+        async with asyncio.timeout(9):
+            yield
+    except service.DesktopError as exc:
+        raise HTTPException(exc.status, detail={"code": exc.code}) from None
+    except TimeoutError:
+        raise HTTPException(503, detail={"code": "desktop_request_timeout"}) from None
+
+
+async def _auth(request: Request, *, active: bool) -> dict:
+    owner = request.headers.get("x-desktop-owner", "")
+    if not service._ID.fullmatch(owner):
+        raise HTTPException(401, detail="missing owner")
+    presented = request.headers.get("authorization", "").removeprefix("Bearer ")
+    container = await container_repo.get_by_owner_id(owner, consistent=True)
+    expected = (container or {}).get("hook_token") or ""
+    if (
+        not expected
+        or not request.headers.get("authorization", "").startswith("Bearer ")
+        or not hmac.compare_digest(presented.encode(), expected.encode())
+    ):
+        raise HTTPException(401, detail="invalid hook token")
+    return await service.authorize_run(
+        owner,
+        request.headers.get("x-desktop-run", ""),
+        request.headers.get("x-desktop-agent", ""),
+        request.headers.get("x-desktop-run-family", "room"),
+        active=active,
+    )
+
+
+async def _body(request: Request, limit=service.MAX_REQUEST_BYTES, *, command_body=True) -> dict:
+    data = bytearray()
+    async for chunk in request.stream():
+        if len(data) + len(chunk) > limit:
+            raise service.DesktopError("request_too_large", 413)
+        data.extend(chunk)
+    try:
+        body = json.loads(data)
+    except ValueError:
+        if len(data) > service.MAX_REQUEST_BYTES:
+            raise service.DesktopError("request_too_large", 413) from None
+        raise service.DesktopError("invalid_request") from None
+    if not isinstance(body, dict):
+        raise service.DesktopError("invalid_request")
+    candidate = body.get("request", body) if body.get("action") == "submit" else body
+    if (
+        command_body
+        and len(data) > service.MAX_REQUEST_BYTES
+        and not (
+            isinstance(candidate, dict)
+            and (
+                candidate.get("command") == "file.write"
+                or (
+                    candidate.get("command") == "browser.proxy"
+                    and isinstance(candidate.get("params"), dict)
+                    and candidate["params"].get("action") == "upload"
+                )
+            )
+        )
+    ):
+        raise service.DesktopError("request_too_large", 413)
+    return body
+
+
+@router.get("/devices")
+async def devices(request: Request):
+    async with _boundary():
+        return await service.discover_devices(await _auth(request, active=True))
+
+
+@router.post("/operations")
+async def submit(request: Request):
+    async with _boundary():
+        # Existing duplicate receipts remain readable even after the run ends.
+        auth = await _auth(request, active=False)
+        return await service.submit_desktop(
+            auth, request.headers.get("x-desktop-admission", ""), await _body(request, MAX_UPLOAD_REQUEST)
+        )
+
+
+@router.post("/admission")
+async def admission(request: Request):
+    async with _boundary():
+        auth = await _auth(request, active=True)
+        selection = await _body(request)
+        if (
+            set(selection) != {"deviceId", "expectedConnectionGeneration", "command"}
+            or not isinstance(selection["command"], str)
+            or selection["command"] not in service.PUBLIC_COMMANDS
+            or any(
+                not isinstance(selection[k], str) or not service._ID.fullmatch(selection[k])
+                for k in ("deviceId", "expectedConnectionGeneration")
+            )
+        ):
+            raise service.DesktopError("invalid_request")
+        return await service.admit_device(auth, selection)
+
+
+@router.get("/operations/{receipt_id}")
+async def status(receipt_id: str, request: Request):
+    async with _boundary():
+        return await service.get_desktop_receipt(await _auth(request, active=False), receipt_id)
+
+
+@router.post("/operations/{receipt_id}/cancel")
+async def cancel(receipt_id: str, request: Request):
+    async with _boundary():
+        return await service.cancel_desktop(await _auth(request, active=False), receipt_id)
+
+
+@router.get("/operations/{receipt_id}/artifacts/{index}")
+async def artifact(receipt_id: str, index: int, request: Request, offset: int = 0):
+    async with _boundary():
+        return await service.route_operation(
+            "artifact",
+            await _auth(request, active=False),
+            receipt_id=receipt_id,
+            artifact_index=index,
+            artifact_offset=offset,
+        )
+
+
+@router.post("/internal")
+async def internal(request: Request):
+    async with _boundary():
+        secret = settings.WS_INTERNAL_SECRET
+        presented = request.headers.get("x-lightbulb-ws-internal", "")
+        if not secret or not hmac.compare_digest(presented.encode(), secret.encode()):
+            raise HTTPException(403, detail="forbidden")
+        body = await _body(request, MAX_UPLOAD_REQUEST + 8192)
+        action, auth = body.get("action"), body.get("auth")
+        if action not in {"admit", "submit", "status", "cancel", "artifact"} or not service.valid_auth(auth):
+            raise service.DesktopError("invalid_request")
+        allowed = (
+            {"action", "auth", "request"}
+            if action == "admit"
+            else (
+                {"action", "auth", "request", "admissionToken"}
+                if action == "submit"
+                else {"action", "auth", "receiptId"}
+            )
+        )
+        if action == "artifact":
+            allowed |= {"artifactIndex", "artifactOffset"}
+        if set(body) != allowed:
+            raise service.DesktopError("invalid_request")
+        current = await service.authorize_run(
+            auth["ownerId"], auth["runId"], auth["agentId"], auth["family"], active=action == "admit"
+        )
+        if current != auth:
+            raise service.DesktopError("run_forbidden", 403)
+        if action == "admit":
+            params = body["request"]
+            if (
+                not isinstance(params, dict)
+                or set(params) != {"deviceId", "expectedConnectionGeneration", "command"}
+                or params["command"] not in service.PUBLIC_COMMANDS
+            ):
+                raise service.DesktopError("invalid_request")
+            return await service.admit_device(auth, params, forwarded=True)
+        return await service.route_operation(
+            action,
+            auth,
+            admission_token=body.get("admissionToken", ""),
+            request=body.get("request"),
+            receipt_id=body.get("receiptId", ""),
+            forwarded=True,
+            artifact_index=body.get("artifactIndex"),
+            artifact_offset=body.get("artifactOffset"),
+        )
+
+
+@router.post("/internal/approval")
+async def approval_peer(request: Request):
+    secret = settings.WS_INTERNAL_SECRET
+    presented = request.headers.get("x-lightbulb-ws-internal", "")
+    if not secret or not hmac.compare_digest(presented.encode(), secret.encode()):
+        raise HTTPException(403, detail="forbidden")
+    try:
+        async with asyncio.timeout(service.APPROVAL_SECONDS + 5):
+            return await service.handle_approval_peer(await _body(request, 32768, command_body=False))
+    except service.DesktopError as exc:
+        raise HTTPException(exc.status, detail={"code": exc.code}) from None
+    except TimeoutError:
+        raise HTTPException(409, detail={"code": "shell_approval_expired"}) from None
+
+
+@router.post("/internal/file-policy")
+async def file_policy_peer(request: Request):
+    async with _boundary():
+        secret = settings.WS_INTERNAL_SECRET
+        presented = request.headers.get("x-lightbulb-ws-internal", "")
+        if not secret or not hmac.compare_digest(presented.encode(), secret.encode()):
+            raise HTTPException(403, detail="forbidden")
+        return await service.handle_file_policy_peer(await _body(request))

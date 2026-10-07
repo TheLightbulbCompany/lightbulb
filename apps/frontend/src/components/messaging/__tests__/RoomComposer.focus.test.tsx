@@ -105,7 +105,7 @@ it("labels the picker for files and sends mixed image and PDF attachments", asyn
 
   expect(screen.getByRole("button", { name: "Attach files" })).toBeEnabled();
   const picker = document.querySelector('input[type="file"]')!;
-  expect(picker).toHaveAttribute("accept", "image/png,image/jpeg,image/webp,image/gif,application/pdf,application/zip,application/x-zip-compressed,.zip");
+  expect(picker).toHaveAttribute("accept", "image/png,image/jpeg,image/webp,image/gif,application/pdf,application/zip,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/x-zip-compressed,.zip,.xlsx");
   fireEvent.change(picker, { target: { files: [image, pdf] } });
 
   await waitFor(() => expect(screen.getByRole("button", { name: "Send message" })).toBeEnabled());

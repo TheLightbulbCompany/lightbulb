@@ -1,0 +1,7 @@
+{
+  "identifier": "desktop-approval",
+  "description": "Only the isolated local command approval window can answer its pending request.",
+  "windows": ["desktop-approval-*"],
+  "local": true,
+  "permissions": ["desktop-approval:allow-desktop-shell-answer"]
+}

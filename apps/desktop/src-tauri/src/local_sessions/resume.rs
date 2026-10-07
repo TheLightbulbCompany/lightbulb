@@ -263,7 +263,7 @@ fn free(listing: std::result::Result<Vec<String>, String>, conversation: &str) -
 /// this conversation -- most likely the one this resume started before the app restarted -- and
 /// its registration answers the request.
 fn prepare(w: &Wanted, own: bool, home: &Path) -> std::result::Result<Option<(PathBuf, Vec<String>)>, &'static str> {
-    if crate::holder::manager::list().iter().any(|h| h.argv.iter().any(|a| a == &w.conversation_id)) {
+    if crate::holder::manager::list().iter().any(|h| h.argv.iter().any(|a| a == &w.conversation_id) && !crate::holder::manager::is_ended(h)) {
         return Ok(None);
     }
     if w.running {

@@ -331,6 +331,29 @@ pub fn bind_thread(info: &HolderInfo, thread: &str) {
     }
 }
 
+/// Whether this holder's provider exited and it only shows the final screen (spec 2026-10-07
+/// §5.4). An older holder never says so; one that does not answer is not ended.
+pub fn is_ended(info: &HolderInfo) -> bool {
+    let Ok(mut conn) = UnixStream::connect(&info.socket) else { return false };
+    if conn.set_read_timeout(Some(Duration::from_secs(2))).is_err()
+        || conn.write_all(&encode(HELLO, br#"{"role":"origin"}"#)).is_err()
+    {
+        return false;
+    }
+    matches!(read_frame(&mut conn), Ok((HELLO, facts))
+        if serde_json::from_slice::<serde_json::Value>(&facts).is_ok_and(|v| v["ended"] == true))
+}
+
+/// Close every holder that only shows an ended session's final screen. The app does this once at
+/// launch: an ended screen lives only while the app that saw it end runs (spec §5.4).
+pub fn stop_ended() {
+    for holder in list() {
+        if is_ended(&holder) {
+            stop(holder.pid);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

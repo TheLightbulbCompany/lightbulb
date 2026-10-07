@@ -276,6 +276,8 @@ pub fn run_with_env(socket: &Path, argv: &[String], cwd: &Path, env: Vec<(String
     // Who wrote the last bytes to the pty (HELLO's `lastInput`).
     let mut last_input: Option<&'static str> = None;
     let mut exited: Option<(String, u32, Instant)> = None;
+    // Spec 2026-10-07 §5.4: the provider exited; the final screen stays for watchers, in memory only.
+    let mut ended = false;
 
     loop {
         let event = match &exited {
@@ -313,11 +315,12 @@ pub fn run_with_env(socket: &Path, argv: &[String], cwd: &Path, env: Vec<(String
                 let role = serde_json::from_slice::<serde_json::Value>(&payload).unwrap_or_default();
                 // The app's panel joins a session a terminal (`lightbulb claude`) already has: it
                 // never takes that terminal's keyboard or size.
-                let joining = role["role"] == "interactive" && role["join"] == true && interactive.is_some();
+                let joining = !ended && role["role"] == "interactive" && role["join"] == true && interactive.is_some();
                 let (rows, cols) = model.size();
                 let facts = serde_json::json!({"protocol": 1, "pid": std::process::id(),
                     "providerPid": provider_pid, "argv": argv, "cwd": cwd, "rows": rows, "cols": cols,
-                    "watch": true, "type": true, "joined": joining, "origin": true, "lastInput": last_input});
+                    "watch": true, "type": true, "joined": joining, "origin": true, "lastInput": last_input,
+                    "ended": ended});
                 if !client.send(encode(HELLO, facts.to_string().as_bytes())) {
                     continue;
                 }
@@ -328,7 +331,7 @@ pub fn run_with_env(socket: &Path, argv: &[String], cwd: &Path, env: Vec<(String
                     watchers.insert(id);
                     typists.insert(id);
                     joined.push(id);
-                } else if role["role"] == "interactive" {
+                } else if role["role"] == "interactive" && !ended {
                     // Take the window's size first, so its snapshot is drawn at that size.
                     if let (Some(cols), Some(rows)) = (role["cols"].as_u64(), role["rows"].as_u64()) {
                         let (cols, rows) = (cols.clamp(1, 1000) as u16, rows.clamp(1, 500) as u16);
@@ -355,7 +358,8 @@ pub fn run_with_env(socket: &Path, argv: &[String], cwd: &Path, env: Vec<(String
                     if !client.send(first) {
                         continue;
                     }
-                } else if role["role"] == "watch" {
+                } else if role["role"] == "watch" || (ended && role["role"] == "interactive") {
+                    // (After the end an interactive window, the desktop panel included, only watches.)
                     // Output-only, plus the screen to start from, fresh ones on request and every
                     // size change: what a live view needs. It never types and never resizes.
                     if !client.send(encode(SNAPSHOT, &with_offset(total, &model.snapshot()))) {
@@ -375,12 +379,12 @@ pub fn run_with_env(socket: &Path, argv: &[String], cwd: &Path, env: Vec<(String
                 clients.insert(id, client);
             }
             Event::Frame(id, kind @ (INPUT | OWNER_INPUT), payload)
-                if (interactive == Some(id) || typists.contains(&id)) && !is_probe_reply(&payload) =>
+                if !ended && (interactive == Some(id) || typists.contains(&id)) && !is_probe_reply(&payload) =>
             {
                 last_input = Some(input_origin(kind, remote.contains(&id)));
                 let _ = pty.write_all(&payload);
             }
-            Event::Frame(id, RESIZE, payload) if interactive == Some(id) && payload.len() == 4 => {
+            Event::Frame(id, RESIZE, payload) if !ended && interactive == Some(id) && payload.len() == 4 => {
                 let cols = u16::from_be_bytes([payload[0], payload[1]]).max(1);
                 let rows = u16::from_be_bytes([payload[2], payload[3]]).max(1);
                 let _ = pair.master.resize(PtySize { rows, cols, pixel_width: 0, pixel_height: 0 });
@@ -436,18 +440,17 @@ pub fn run_with_env(socket: &Path, argv: &[String], cwd: &Path, env: Vec<(String
                 }
                 let (status, code) = exited.take().map(|(s, c, _)| (s, c)).unwrap_or_default();
                 let frame = encode(EXIT, serde_json::json!({ "status": status, "code": code }).to_string().as_bytes());
-                for client in clients.values() {
-                    client.send(frame.clone());
-                }
-                // Let every writer deliver its last frames (a stalled one gets two seconds).
-                let writers: Vec<_> = clients.into_values().map(|c| c.writer).collect();
-                let deadline = Instant::now() + Duration::from_secs(2);
-                while writers.iter().any(|w| !w.is_finished()) && Instant::now() < deadline {
-                    std::thread::sleep(Duration::from_millis(10));
-                }
-                let _ = std::fs::remove_file(socket);
+                // Every client hears the end (the CLI exits with the code, the screen relay restarts
+                // as a watcher of the final screen). The socket, model and log stay until the app
+                // stops this holder (`manager::stop`): nothing is written anywhere.
+                clients.retain(|_, c| c.send(frame.clone()));
+                ended = true;
+                interactive = None;
+                typists.clear();
+                remote.clear();
+                joined.clear();
+                // A resumed Codex thread must bind to its new holder, never to this one.
                 let _ = std::fs::remove_file(socket.with_extension("thread"));
-                return Ok(());
             }
         }
     }

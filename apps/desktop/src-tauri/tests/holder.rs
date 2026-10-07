@@ -90,21 +90,46 @@ fn holder_replays_from_an_offset_and_reports_a_gap_beyond_its_log() {
 }
 
 #[test]
-fn holder_exits_with_its_provider_and_removes_its_socket() {
-    let socket = start_cat(&temp_dir());
+fn holder_keeps_the_final_screen_after_its_provider_exits_and_refuses_input() {
+    let dir = temp_dir();
+    let socket = start(&dir, &["/bin/sh", "-c", "read x; printf final-screen; exit 0"]);
+    std::fs::write(socket.with_extension("thread"), "11111111-1111-4111-8111-111111111111").unwrap();
     let mut c = attach(&socket, "interactive");
-    c.write_all(&encode(INPUT, b"\x04")).unwrap();
+    c.write_all(&encode(INPUT, b"go\r")).unwrap();
     loop {
         let (kind, _) = read_frame(&mut c).expect("EXIT before timeout");
         if kind == EXIT {
             break;
         }
     }
-    let deadline = Instant::now() + Duration::from_secs(5);
-    while socket.exists() && Instant::now() < deadline {
-        std::thread::sleep(Duration::from_millis(20));
-    }
-    assert!(!socket.exists());
+    assert_eq!(last_input(&socket), "owner");
+    // Still listed, and it says it ended.
+    let info = manager::list_in(&dir).into_iter().next().expect("the holder stays after its provider");
+    assert!(manager::is_ended(&info));
+    assert!(!socket.with_extension("thread").exists(), "an ended holder never claims a Codex thread");
+    // A new viewer gets the final screen.
+    let mut w = UnixStream::connect(&socket).unwrap();
+    w.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+    w.write_all(&encode(HELLO, br#"{"role":"watch"}"#)).unwrap();
+    let (kind, hello) = read_frame(&mut w).unwrap();
+    assert_eq!(kind, HELLO);
+    assert_eq!(serde_json::from_slice::<serde_json::Value>(&hello).unwrap()["ended"], true);
+    let (kind, snap) = read_frame(&mut w).unwrap();
+    assert_eq!(kind, SNAPSHOT);
+    assert!(split_offset(&snap).unwrap().1.windows(12).any(|x| x == b"final-screen"));
+    // An interactive client is only a watcher now, and a teammate's keys go nowhere.
+    let mut late = UnixStream::connect(&socket).unwrap();
+    late.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+    late.write_all(&encode(HELLO, br#"{"role":"interactive","cols":10,"rows":5}"#)).unwrap();
+    assert_eq!(read_frame(&mut late).unwrap().0, HELLO);
+    assert_eq!(read_frame(&mut late).unwrap().0, SNAPSHOT);
+    assert_eq!(size_of(&socket), (120, 40), "a late window never resizes the final screen");
+    let mut t = UnixStream::connect(&socket).unwrap();
+    t.write_all(&encode(HELLO, br#"{"role":"type"}"#)).unwrap();
+    t.write_all(&encode(INPUT, b"typed-after-exit")).unwrap();
+    std::thread::sleep(Duration::from_millis(200));
+    assert_eq!(last_input(&socket), "owner", "input after the end is refused");
+    // ponytail: the holder thread outlives this test (in-process); `manager::stop` would signal the test runner.
 }
 
 #[test]

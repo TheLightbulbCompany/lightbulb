@@ -68,6 +68,19 @@ it("says Connecting until the first snapshot, Reconnecting when frames stop, and
   expect(screen.queryByRole("status")).toBeNull();
 });
 
+it("tells the viewer when no frame arrives in 30 s, and clears it on the first snapshot", async () => {
+  vi.useFakeTimers();
+  let emit: (e: LiveEvent) => void = () => {};
+  render(<SessionTerminalView session={{ sessionId: "s1", generation: "g1" }}
+    onEvent={(h) => { emit = h; return () => {}; }} watch={async () => undefined} onLive={() => {}} />);
+  await act(async () => { await vi.dynamicImportSettled(); });
+  expect(screen.getByRole("status").textContent).toBe("Connecting…");
+  await act(async () => { await vi.advanceTimersByTimeAsync(30_001); });
+  expect(screen.getByRole("status").textContent).toMatch(/Nothing has arrived from the Mac in 30 seconds/);
+  act(() => { emit(screenEvent("s1")); });
+  expect(screen.queryByRole("status")).toBeNull();
+});
+
 const b64 = (s: string) => btoa(s);
 const mount = async (admitted: boolean, input: (d: Uint8Array, e: number) => Promise<unknown>, session: { sessionId: string; generation: string } = { sessionId: "s1", generation: "g1" }) => {
   let emit: (e: LiveEvent) => void = () => {};

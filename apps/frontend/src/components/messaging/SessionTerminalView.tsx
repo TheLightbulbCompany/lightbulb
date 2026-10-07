@@ -35,6 +35,13 @@ export function SessionTerminalView({ session, onEvent, watch, onLive, onCanType
   const [live, setLive] = useState(false);
   // Whether a frame ever arrived: "Connecting…" until then, "Reconnecting…" after the picture went stale.
   const [seen, setSeen] = useState(false);
+  // No frame for STALE_AFTER_MS after mount: a Mac whose app predates terminal frames never sends one.
+  const [silent, setSilent] = useState(false);
+  useEffect(() => {
+    if (seen) { setSilent(false); return; }
+    const timer = setTimeout(() => setSilent(true), STALE_AFTER_MS);
+    return () => clearTimeout(timer);
+  }, [seen, session.sessionId, session.generation]);
   const [scale, setScale] = useState(1);
   const [refusedFor, setRefusedFor] = useState<string | null>(null);
   // Keyed by id and generation, not the object: the session list swaps the object on every refresh.
@@ -129,6 +136,6 @@ export function SessionTerminalView({ session, onEvent, watch, onLive, onCanType
     <div className="session-terminal-view" data-live={live} role="region" aria-label={canType ? "Live terminal" : "Live terminal (view only)"}>
       <div ref={host} style={{ transform: `scale(${scale})`, transformOrigin: "top left" }} />
     </div>
-    {!live && <div className="session-terminal-wait" role="status">{seen ? "Reconnecting…" : "Connecting…"}</div>}
+    {!live && <div className="session-terminal-wait" role="status">{seen ? "Reconnecting…" : silent ? "Nothing has arrived from the Mac in 30 seconds. If its Lightbulb app is older than this page, update it to watch this session." : "Connecting…"}</div>}
   </>;
 }

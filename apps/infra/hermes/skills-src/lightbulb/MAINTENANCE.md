@@ -136,7 +136,7 @@ MAINTENANCE (Lightbulb engineers): every claim in this skill is anchored to
                                  (open, copies, redaction); core/services/local_sessions.py (put_link / delete_link:
                                  one link, audience, the pick-up permission); apps/desktop/src-tauri/src/session_continue.rs
                                  (`lightbulb continue`).
-  - Session live vs transcript  references/surfaces.md (running = live terminal or a "not started through Lightbulb" notice; ended = "Ended" + Resume; offline = "Mac offline"; no transcript; sidebar lists live, All sessions lists every session; no message box under a live terminal)
+  - Session live vs transcript  references/surfaces.md (running = live terminal or a "not started through Lightbulb" notice; ended = "Ended" + Resume; offline = "Mac offline"; no transcript on web and desktop (the phone still lists history); sidebar lists live, All sessions lists every session; no message box under a live terminal)
   - Session status/title/id .. references/surfaces.md (sessions list: waiting-approval = waits for its person; title = person's name else conversation title; one conversation = one sessionId)
                               <- apps/frontend/src/components/messaging/{LocalSessionPanel,RoomDirectory,SessionTerminalView}.tsx.
   - Session ask to join ..... references/surfaces.md ("Ask to join" paragraph)

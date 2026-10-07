@@ -98,8 +98,9 @@ running session shows its live terminal when Lightbulb started it, when it is a 
 background session, or when it is a plain Codex session (Codex's own background service runs
 it, and Lightbulb opens one more Codex terminal on the same conversation). Any other running
 session shows a notice that it was not started through Lightbulb (its owner presses ← in its
-terminal to bring it here). People never see a transcript; you still read the structured record
-with `lightbulb_local_sessions`.
+terminal to bring it here). On the web and in the desktop app people never see a transcript; the phone
+still shows a session's history as a list until it gets the live terminal. You still read the
+structured record with `lightbulb_local_sessions`.
 
 **New session** (web and desktop): a small form with no first message. The person picks
 **Claude Code** or **Codex**, an approved folder and, optionally, the model and mode, then presses

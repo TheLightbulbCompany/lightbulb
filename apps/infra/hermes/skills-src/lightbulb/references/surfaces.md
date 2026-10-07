@@ -96,9 +96,10 @@ start, a pick-up, a resume, `lightbulb claude` / `lightbulb codex`) or as a plai
 `codex` in any terminal. The owner can pause one session or turn sharing off for the Mac. A
 running session shows its live terminal when Lightbulb started it, when it is a Claude Code
 background session, or when it is a plain Codex session (Codex's own background service runs
-it, and Lightbulb opens one more Codex terminal on the same conversation). A plain interactive
-Claude Code session (its owner can press ← in its terminal to move it to the background) shows
-the labelled transcript.
+it, and Lightbulb opens one more Codex terminal on the same conversation). Any other running
+session shows a notice that it was not started through Lightbulb (its owner presses ← in its
+terminal to bring it here). People never see a transcript; you still read the structured record
+with `lightbulb_local_sessions`.
 
 **New session** (web and desktop): a small form with no first message. The person picks
 **Claude Code** or **Codex**, an approved folder and, optionally, the model and mode, then presses
@@ -110,14 +111,9 @@ Rooms' **Devices & sessions** panel lists human-shared Claude/Codex sessions;
 opening one from that list opens the session in that room's right column.
 Opening a session from the sidebar Sessions section or from a session link
 instead fills the middle with the sharer's DM beside it. A running session
-shows as a live terminal. A live terminal has no Lightbulb message box under it: the terminal is the only input (the box returns only if the Mac refuses remote typing). A viewer who cannot type sees a "Watching · Ask to join" line instead. A session that is not running (ended, or its Mac is
-offline) shows as a transcript, labelled "Transcript" in its status line. The
-sidebar Sessions section lists live sessions; All sessions lists every session. The
-transcript renders the native transcript with the harness's own grammar: prompts with the sender's name,
-tool calls with collapsed output previews, thinking markers, turn boundaries
-and a working line. Codex sessions read as `• Ran …` / `└ output`; Claude
-sessions as `⏺ Bash(…)` / `⎿ output`. Updates arrive block by block, not token
-by token. Desktop sharing is opt-in; disabling it stops local sharing. Native
+shows as a live terminal. A live terminal has no Lightbulb message box under it: the terminal is the only input (the box returns only if the Mac refuses remote typing). A viewer who cannot type sees a "Watching · Ask to join" line instead. An ended session shows "Ended" with Resume, and a session whose Mac is
+offline shows "Mac offline" with the follow-up box. The sidebar Sessions section lists live
+sessions; All sessions lists every session. Desktop sharing is opt-in; disabling it stops local sharing. Native
 credentials and approvals remain on the owner's machine. Follow-ups reach the
 owner's terminal labelled with the sender's room handle (`Message from @aden`
 in Claude Code; a header line in Codex), and agent contributions carry an
@@ -193,8 +189,7 @@ an allowed person's permission never extends to an agent acting for them.
 session panel (desktop app on the owner's Mac; the owner types there, **End**
 takes two clicks, and the separate terminal window is gone). Teammates who can
 read the session, and the owner on another device, watch the same terminal live;
-it falls back to the transcript when the session is not running or has no
-frames. The owner, anyone accepted through **Ask to join**, or everyone when
+while no frame has arrived it says "Connecting…", and after 30 s of silence "Reconnecting…". The owner, anyone accepted through **Ask to join**, or everyone when
 **Let teammates control this session** is on can type straight into it,
 including answering the tool's own prompts; others watch read-only and see a "Watching · Ask to join" line. There is no message
 box under a live terminal. Pausing sharing or removing someone cuts their

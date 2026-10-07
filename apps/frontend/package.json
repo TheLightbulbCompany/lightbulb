@@ -36,7 +36,7 @@
     "livekit-client": "^2.22.3",
     "lucide-react": "^0.562.0",
     "mermaid": "^11",
-    "next": "16.2.12",
+    "next": "16.3.8",
     "posthog-js": "^1.368.0",
     "prop-types": "^15.8.1",
     "radix-ui": "^1.4.3",
@@ -54,7 +54,7 @@
     "yaml": "^2.9.0"
   },
   "devDependencies": {
-    "@next/bundle-analyzer": "16.2.12",
+    "@next/bundle-analyzer": "16.3.8",
     "@tailwindcss/postcss": "^4",
     "@testing-library/jest-dom": "^6.4.0",
     "@testing-library/react": "^16.0.0",
@@ -70,7 +70,7 @@
     "babel-plugin-react-compiler": "1.0.0",
     "dotenv": "^17.2.3",
     "eslint": "^9",
-    "eslint-config-next": "16.2.12",
+    "eslint-config-next": "16.3.8",
     "eslint-plugin-boundaries": "^6.0.2",
     "jsdom": "^25.0.1",
     "msw": "^2.2.0",

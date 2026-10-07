@@ -16,7 +16,11 @@ import { describe, expect, it } from "vitest";
 
 const CSS = readFileSync(join(process.cwd(), "src/app/globals.css"), "utf8");
 
-const TEXT = ["--fg", "--fg-soft", "--fg-mute", "--link", "--alert", "--live", "--brand"] as const;
+const TEXT = [
+  "--fg", "--fg-soft", "--fg-mute", "--link", "--alert", "--live", "--brand",
+  // People in a session's chat (the terminal mod's palette).
+  "--person-cyan", "--person-magenta", "--person-green", "--person-yellow", "--person-blue", "--person-blue-bright",
+] as const;
 const PLANES = [
   "--plane-pane",
   "--plane-sidebar",
@@ -107,7 +111,7 @@ describe("chat theme contrast", () => {
   });
 
   it("checks every pair — a silent drop in coverage is the failure mode here", () => {
-    expect(STATES.length * TEXT.length * PLANES.length).toBe(70);
+    expect(STATES.length * TEXT.length * PLANES.length).toBe(130);
   });
 
   // Primary and secondary copy carry real margin over the 4.5 floor rather

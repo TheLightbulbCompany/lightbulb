@@ -194,6 +194,13 @@
   /* Initials sit ON a tint, so they need the tint's own foreground: the light
      tints are dark (white reads), the dark tints are light (ink reads). */
   --on-agent-tint: #FFFFFF;
+  /* People in a session's chat: the terminal mod's ANSI palette (rules.ts PALETTE), AA on every plane. */
+  --person-cyan: #0B6373;
+  --person-magenta: #8E1F9A;
+  --person-green: #1E6B35;
+  --person-yellow: #7A5A00;
+  --person-blue: #2148B8;
+  --person-blue-bright: #4B3BC4;
 
   --plane-selected: #E4E4E6;
   --plane-hover:    #F2F2F3;
@@ -220,6 +227,12 @@
   --agent-tint-2: #9B9BA2;
   --agent-tint-3: #9B9BA2;
   --on-agent-tint: #101012;
+  --person-cyan: #67D4E4;
+  --person-magenta: #E39AF0;
+  --person-green: #7FD69A;
+  --person-yellow: #E3C35A;
+  --person-blue: #93B4FA;
+  --person-blue-bright: #B3A8FA;
 
   --plane-selected: #2E2E33;
   --plane-hover:    #26262A;

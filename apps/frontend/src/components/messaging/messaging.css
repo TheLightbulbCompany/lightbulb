@@ -661,3 +661,31 @@ button.native-session-panel-row:hover .native-session-panel-activity { color: va
 
 /* Ended · <time> above an ended session's final screen (spec 2026-10-07 §5.4). */
 .session-ended-line { flex: none; margin: 0; padding: 6px 12px; font-size: 13px; color: var(--fg-mute); }
+
+/* Session chat (2026-10-07-session-chat): people talk beside the terminal. New classes only. */
+.session-chat { display: flex; flex-direction: column; min-width: 0; min-height: 0; border-left: 1px solid var(--border); background: var(--background); }
+.session-chat .room-composer { margin: 8px 12px 16px; }
+.session-chat-unread { min-width: 18px; padding: 0 5px; border-radius: 9px; background: var(--link); color: var(--on-link); font-size: .75rem; line-height: 18px; text-align: center; }
+.session-chat .room-message[data-person] .room-message-byline > :first-child,
+.session-chat .room-message[data-person] .room-message-byline > :first-child * { color: var(--person-color); }
+.session-chat .room-message[data-person="owner"] { --person-color: var(--fg-soft); }
+.session-chat .room-message[data-person="cyan"] { --person-color: var(--person-cyan); }
+.session-chat .room-message[data-person="magenta"] { --person-color: var(--person-magenta); }
+.session-chat .room-message[data-person="green"] { --person-color: var(--person-green); }
+.session-chat .room-message[data-person="yellow"] { --person-color: var(--person-yellow); }
+.session-chat .room-message[data-person="blue"] { --person-color: var(--person-blue); }
+.session-chat .room-message[data-person="blueBright"] { --person-color: var(--person-blue-bright); }
+@media (min-width: 1180px) {
+  .room-session-focus.session-chat-open { grid-template-columns: minmax(0, 1fr) 344px; }
+}
+@media (min-width: 860px) and (max-width: 1179px) {
+  .room-session-focus.session-chat-open > .session-chat {
+    position: absolute; z-index: 3; inset: 0 0 0 auto; width: 344px;
+    box-shadow: -16px 0 32px color-mix(in srgb, var(--midnight) 12%, transparent);
+  }
+}
+@media (max-width: 859px) {
+  /* The chat takes the screen, like a pushed page; the terminal stays mounted underneath. */
+  .room-session-focus.session-chat-open > .room-session-main { display: none; }
+  .room-session-focus.session-chat-open > .session-chat { border-left: 0; }
+}

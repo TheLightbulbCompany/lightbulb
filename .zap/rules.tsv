@@ -1,0 +1,7 @@
+10020	IGNORE	Anti-clickjacking header: API returns JSON, nothing frameable.
+10038	IGNORE	CSP header not set: meaningless on JSON responses (and on 401/404 bodies).
+10063	IGNORE	Permissions-Policy not set: only matters for rendered documents.
+90004	IGNORE	Spectre site-isolation headers (COOP/CORP): document-level, not relevant to a JSON API.
+10010	IGNORE	Cookie without HttpOnly: only cookie seen is the ALB stickiness cookie (AWSALB), set by AWS, not ours.
+10011	IGNORE	Cookie without Secure: same AWSALB cookie, AWS-managed.
+10054	IGNORE	Cookie without SameSite: same AWSALB cookie, AWS-managed.

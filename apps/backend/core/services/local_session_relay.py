@@ -29,6 +29,8 @@ from core.services.messaging import ApiProblem, ContractModel, make_live_event
 CLIENT_ID = "lightbulb-local-sessions"
 LIVENESS_SECONDS = 30
 CLAIM_SECONDS = 5
+# How often a heartbeat ack asks the desktop about one command still `unknown`.
+RECONCILE_EVERY_S = 60
 # The desktop's Journal::admit refuses a command whose deliverBy - createdAt exceeds this.
 DISPATCH_WINDOW_SECONDS = 30
 PAUSED_NOTICE = "Sharing was paused here. Activity from this point until sharing resumed is not shown."
@@ -693,12 +695,19 @@ class LocalSessionRelay:
                 connection, enrollment = await self.connect(cid)
         raise _conflict("revision contention", cid=cid)
 
-    async def _reconcile_for(self, owner: str, sid: str, generation: str) -> dict | None:
-        """The one command whose outcome the desktop journal must still settle."""
+    async def _reconcile_for(self, owner: str, sid: str, generation: str, *, spaced: bool = False) -> dict | None:
+        """The one command whose outcome the desktop journal must still settle.
+
+        `spaced` (a heartbeat): an `unknown` command is asked about at most once per
+        RECONCILE_EVERY_S. Each ask makes the Mac verify the native process, which takes
+        seconds, and one that never settles was asked on every heartbeat for a day."""
+        now = int(time.time())
         unresolved_commands = [
             c
             for c in await repo.list_commands(owner, sid)
-            if c["state"] in {"dispatched", "unknown"} and not c.get("settled")
+            if c["state"] in {"dispatched", "unknown"}
+            and not c.get("settled")
+            and not (spaced and c["state"] == "unknown" and now - int(c.get("reconcileAskedAt", 0)) < RECONCILE_EVERY_S)
         ]
         # Prefer the current generation's blocking receipt. Retain older
         # unknowns and still reconcile them when none is current.
@@ -708,6 +717,10 @@ class LocalSessionRelay:
         )
         if unresolved is None:
             return None
+        if spaced and unresolved["state"] == "unknown":
+            # Conditional: two frames of one device racing ask once between them.
+            if not await repo.mark_reconcile_asked(unresolved, now, RECONCILE_EVERY_S):
+                return None
         return {
             "requestId": unresolved["requestId"],
             "generation": unresolved["expectedGeneration"],
@@ -837,7 +850,7 @@ class LocalSessionRelay:
                         hint = True
                     # Reconcile after delivery: this heartbeat's own dispatch is part of what the journal must settle.
                     await self.dispatch_session(owner, item.session_id)
-                    pending = await self._reconcile_for(owner, item.session_id, row["generation"])
+                    pending = await self._reconcile_for(owner, item.session_id, row["generation"], spaced=True)
                     if pending is not None:
                         reconcile.append({"sessionId": item.session_id, **pending})
             return rejected, reconcile

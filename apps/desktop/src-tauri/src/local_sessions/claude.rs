@@ -505,6 +505,13 @@ fn correlated_user_uuid(row: &Value, session: &str, version: &str, sent: &str) -
 }
 
 pub(super) fn admission(home: &Path, ingress: &Ingress) -> Result<Option<String>> {
+    let started = std::time::Instant::now();
+    let found = admission_scan(home, ingress);
+    super::transport::slow_log("admission()", &ingress.native.conversation, started);
+    found
+}
+
+fn admission_scan(home: &Path, ingress: &Ingress) -> Result<Option<String>> {
     if process(ingress.native.process.pid)? != ingress.native.process {
         return Err("native generation changed".into());
     }

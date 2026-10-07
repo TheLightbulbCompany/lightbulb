@@ -105,6 +105,105 @@ pub(super) struct Host {
     heartbeat_dirty: BTreeSet<String>,
     /// The device heartbeat cadence. A field so tests can drive many ticks fast.
     heartbeat_interval: Duration,
+    /// Proves a native session is still the process it was. A field so a test can make it slow.
+    verify: Verify,
+}
+
+type Verify = fn(PathBuf, NativeSession) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<NativeSession>> + Send>>;
+
+/// A reconciliation the journal alone cannot answer: the native process has to be checked
+/// (`lsof`, a provider call, transcript reads -- seconds each, 12-40 s on a loaded Mac).
+struct Ask {
+    session: String,
+    request: String,
+    generation: String,
+    receipt: Receipt,
+    /// A Codex session and the turn whose end settles the command.
+    turn: Option<(NativeSession, String)>,
+}
+
+/// How long an answer of `unknown` stands before the relay's next ask is checked again.
+const RECONCILE_UNKNOWN_EVERY: Duration = Duration::from_secs(60);
+
+/// The connection loop's side of `reconcile_worker`. The loop is one serial task: awaiting a
+/// check in it held back every heartbeat and every frame read (a Mac "offline" three times in
+/// seven minutes, 2026-10-07), so checks run in the worker and their receipts come back here.
+struct Reconciles {
+    asks: tokio::sync::mpsc::UnboundedSender<Ask>,
+    /// (session, request) -> None while its check runs, else when it last answered `unknown`.
+    state: BTreeMap<(String, String), Option<Instant>>,
+}
+
+impl Reconciles {
+    fn ask(&mut self, ask: Ask) {
+        let key = (ask.session.clone(), ask.request.clone());
+        match self.state.get(&key) {
+            Some(None) => return,
+            Some(Some(at)) if at.elapsed() < RECONCILE_UNKNOWN_EVERY => return,
+            _ => {}
+        }
+        if self.asks.send(ask).is_ok() {
+            self.state.insert(key, None);
+        }
+    }
+
+    fn answered(&mut self, ask: &Ask, unknown: bool) {
+        let key = (ask.session.clone(), ask.request.clone());
+        if unknown {
+            self.state.insert(key, Some(Instant::now()));
+        } else {
+            self.state.remove(&key);
+        }
+    }
+}
+
+/// One check at a time, off the connection loop. Ends with its connection (the channels close).
+async fn reconcile_worker(
+    dir: PathBuf,
+    home: PathBuf,
+    verify: Verify,
+    mut asks: tokio::sync::mpsc::UnboundedReceiver<Ask>,
+    answers: tokio::sync::mpsc::UnboundedSender<(Ask, Result<Receipt>)>,
+) {
+    while let Some(ask) = asks.recv().await {
+        let answer = settle_unknown(&dir, &home, verify, &ask).await;
+        if answers.send((ask, answer)).is_err() {
+            return;
+        }
+    }
+}
+
+/// The slow half of a reconciliation: was the send admitted (Claude), did its turn end (Codex).
+async fn settle_unknown(dir: &Path, home: &Path, verify: Verify, ask: &Ask) -> Result<Receipt> {
+    let journal = Journal { dir: dir.join("receipts") };
+    let mut receipt = ask.receipt.clone();
+    if let Some(ingress) = receipt.ingress.clone().filter(|i| i.native.provider == "claude") {
+        if verify(home.into(), ingress.native.clone()).await.is_ok() {
+            let home = home.to_path_buf();
+            // A synchronous transcript scan: never on a runtime worker the loop may share.
+            let admitted = tokio::task::spawn_blocking(move || claude::admission(&home, &ingress))
+                .await
+                .map_err(|_| "admission check stopped")?;
+            if let Ok(Some(id)) = admitted {
+                receipt = journal.finish(&ask.session, &ask.request, Some(id), false)?;
+            }
+        }
+    }
+    if receipt.outcome == "unknown" && !receipt.settled {
+        if let Some((native, turn)) = ask.turn.clone() {
+            if verify(home.into(), native.clone()).await.is_ok() {
+                let finished = tokio::task::spawn_blocking(move || {
+                    native.transcript.as_ref().is_some_and(|path| codex::turn_finished(path, &turn))
+                })
+                .await
+                .map_err(|_| "turn check stopped")?;
+                if finished {
+                    receipt = journal.settle(&ask.session, &ask.request)?;
+                }
+            }
+        }
+    }
+    Ok(receipt)
 }
 
 /// How long a per-session verdict (a stale generation, a relay rejection) keeps that session out
@@ -938,6 +1037,7 @@ impl Host {
             ended_pending: vec![],
             heartbeat_dirty: BTreeSet::new(),
             heartbeat_interval: Duration::from_secs(10),
+            verify: verify_native,
         };
         // Ended mirrors are loaded so their end can still be reported, and so the
         // day-old ones are cleaned up on exactly one predictable path. No connection
@@ -1161,6 +1261,11 @@ impl Host {
         let mut tick = tokio::time::interval(Duration::from_millis(100));
         // This connection carries the live terminal frames of every watched held session.
         let mut screens = super::screen::channel();
+        let (asks, asked) = tokio::sync::mpsc::unbounded_channel();
+        let (answers, mut reconciled) = tokio::sync::mpsc::unbounded_channel();
+        tokio::spawn(reconcile_worker(self.dir.clone(), self.home.clone(), self.verify, asked, answers));
+        let mut reconciles = Reconciles { asks, state: BTreeMap::new() };
+        let mut unknown_frame_logged = false;
         let mut reaped = Instant::now();
         let mut last_recovery_scan = Instant::now();
         let mut last_probe = Instant::now();
@@ -1397,6 +1502,13 @@ impl Host {
                     // Fire and forget: the relay never answers a screen frame.
                     send(socket, &frame).await?;
                 },
+                Some((ask, answer)) = reconciled.recv() => {
+                    arm = "reconciliation receipt";
+                    let receipt = answer?;
+                    reconciles.answered(&ask, receipt.outcome == "unknown");
+                    self.acknowledge_workspace(&ask.session, &ask.generation, &receipt)?;
+                    send(socket, &receipt_wire(&ask.session, &ask.request, &receipt)).await?;
+                },
                 incoming = next_or_deadline(socket, deadline) => {
                     arm = "relay frame";
                     let message = incoming?.ok_or("session socket closed")?.map_err(|_| "session socket failed")?;
@@ -1490,7 +1602,7 @@ impl Host {
                             if !body["reconcile"].is_null() {
                                 let request = body["reconcile"]["requestId"].as_str().ok_or("invalid reconciliation")?;
                                 let generation = body["reconcile"]["generation"].as_str().ok_or("invalid reconciliation")?;
-                                self.dispatch_reconcile(socket,&mut deferred,anchor.as_ref(),sid,request,generation,
+                                self.dispatch_reconcile(socket,&mut deferred,anchor.as_ref(),&mut reconciles,sid,request,generation,
                                     body["reconcile"]["expectedTurnId"].as_str()).await?;
                             }
                         },
@@ -1519,7 +1631,7 @@ impl Host {
                                 };
                                 let request = entry["requestId"].as_str().ok_or("invalid reconciliation")?;
                                 let generation = entry["generation"].as_str().ok_or("invalid reconciliation")?;
-                                self.dispatch_reconcile(socket,&mut deferred,anchor.as_ref(),sid,request,generation,
+                                self.dispatch_reconcile(socket,&mut deferred,anchor.as_ref(),&mut reconciles,sid,request,generation,
                                     entry["expectedTurnId"].as_str()).await?;
                             }
                         },
@@ -1609,7 +1721,21 @@ impl Host {
                         Some("local.session.input") => super::remote_input::offer(&body),
                         // Who watches, who may type, join requests, pause. Never answered.
                         Some("local.session.presence") => super::presence::offer_frame(&body),
-                        _ => return Err("unsupported session frame".into()),
+                        other => {
+                            // Not a frame of this protocol: API Gateway's own `{"message":"Internal
+                            // server error"}` when a backend call outlived its Lambda (10 s), or a
+                            // newer relay's. Dropping the connection for it took every session offline.
+                            if !unknown_frame_logged {
+                                unknown_frame_logged = true;
+                                let kind: String = other.unwrap_or("no type").chars().take(48).collect();
+                                relay_log(&format!("ignored a frame this app does not know ({kind}); later ones on this connection are not logged"));
+                            }
+                            // The gateway's error is the answer the in-flight request will get: free
+                            // the slot as for INTERNAL, so it goes again on its own cadence.
+                            if other.is_none() {
+                                pending_rpc = None;
+                            }
+                        },
                     }
                 }
             }
@@ -1617,43 +1743,7 @@ impl Host {
     }
 
     async fn verified(&self, native: &NativeSession) -> Result<NativeSession> {
-        if native.status == "ended" || native.restriction.is_some() {
-            return Err("control unavailable".into());
-        }
-        let program = if native.provider == "codex" {
-            codex::program(&self.home)
-        } else {
-            provider_program(&self.home, &native.provider)
-        }
-        .ok_or("runtime unavailable")?;
-        let current = if native.provider == "claude" {
-            claude::capture(
-                &self.home,
-                &program,
-                &json!({"kind": if native.job.is_some() {"background"} else {"interactive"}, "id": native.job,
-                "pid":native.process.pid, "sessionId":native.conversation,"status":"unknown"}),
-            )
-            .await?
-        } else {
-            codex::capture(&self.home, &program, native.process.pid)
-                .await?
-                .into_iter()
-                .find(|s| s.conversation == native.conversation)
-                .ok_or("native identity changed")?
-        };
-        if current.restriction.is_some()
-            || current.process != native.process
-            || current.conversation != native.conversation
-            || current.profile != native.profile
-            // None -> Some is the session's first turn writing its transcript, not a new identity.
-            || (native.transcript.is_some() && current.transcript != native.transcript)
-            || current.socket != native.socket
-            || current.socket_inode != native.socket_inode
-            || current.version != native.version
-        {
-            return Err("native identity changed".into());
-        }
-        Ok(current)
+        (self.verify)(self.home.clone(), native.clone()).await
     }
 
     /// Answer one reconciliation the relay attached to an acknowledgment. Dispatch
@@ -1665,6 +1755,7 @@ impl Host {
         socket: &mut Socket,
         deferred: &mut std::collections::VecDeque<Command>,
         anchor: Option<&ClockAnchor>,
+        reconciles: &mut Reconciles,
         session: &str,
         request: &str,
         generation: &str,
@@ -1673,10 +1764,27 @@ impl Host {
         let buffered = deferred
             .iter()
             .position(|cmd| cmd.session_id == session && cmd.request_id == request);
-        let mut receipt = match buffered.and_then(|index| deferred.remove(index)) {
-            Some(cmd) => self.command(&cmd, anchor).await?,
-            None => self.reconcile(session, request, generation).await?,
+        let Some(cmd) = buffered.and_then(|index| deferred.remove(index)) else {
+            // The journal read stays here, in order with admission (its tombstone fences a late
+            // command frame). Whatever it cannot answer is checked off this loop.
+            let journal = Journal { dir: self.dir.join("receipts") };
+            private_dir(&journal.dir)?;
+            let receipt = journal.reconcile(session, request, generation)?;
+            let turn = expected_turn.filter(|_| !receipt.settled).and_then(|turn| {
+                self.mirrors.values()
+                    .find(|mirror| mirror.session_id.as_deref() == Some(session) && mirror.generation == generation)
+                    .filter(|mirror| mirror.native.provider == "codex")
+                    .map(|mirror| (mirror.native.clone(), turn.to_owned()))
+            });
+            let claude = receipt.ingress.as_ref().is_some_and(|ingress| ingress.native.provider == "claude");
+            if receipt.outcome == "unknown" && (claude || turn.is_some()) {
+                reconciles.ask(Ask { session: session.into(), request: request.into(), generation: generation.into(), receipt, turn });
+                return Ok(());
+            }
+            self.acknowledge_workspace(session, generation, &receipt)?;
+            return send(socket, &receipt_wire(session, request, &receipt)).await;
         };
+        let mut receipt = self.command(&cmd, anchor).await?;
         if receipt.outcome == "unknown" && !receipt.settled {
             if let Some((native, turn)) = expected_turn.and_then(|turn| {
                 self.mirrors.values()
@@ -1715,6 +1823,12 @@ impl Host {
                 }
             }
         }
+        self.acknowledge_workspace(session, generation, &receipt)?;
+        Ok(receipt)
+    }
+
+    /// An applied send carried the workspace notice at its revision: the mirror stops owing it.
+    fn acknowledge_workspace(&mut self, session: &str, generation: &str, receipt: &Receipt) -> Result<()> {
         if receipt.outcome == "applied" && !receipt.held {
             if let Some(revision) = receipt.ingress.as_ref().and_then(|i| i.workspace_revision) {
                 if let Some((key, mirror)) = self.mirrors.iter_mut().find(|(_, m)| {
@@ -1726,7 +1840,7 @@ impl Host {
                 }
             }
         }
-        Ok(receipt)
+        Ok(())
     }
 
     async fn command(&mut self, cmd: &Command, anchor: Option<&ClockAnchor>) -> Result<Receipt> {
@@ -2163,8 +2277,85 @@ fn registration(mirror: &Mirror) -> Value {
     body
 }
 
+/// `Host::verify` in production: `verify_identity`, timed.
+fn verify_native(home: PathBuf, native: NativeSession) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<NativeSession>> + Send>> {
+    Box::pin(async move {
+        let started = Instant::now();
+        let current = verify_identity(&home, &native).await;
+        slow_log("verified()", &native.conversation, started);
+        current
+    })
+}
+
+async fn verify_identity(home: &Path, native: &NativeSession) -> Result<NativeSession> {
+    if native.status == "ended" || native.restriction.is_some() {
+        return Err("control unavailable".into());
+    }
+    let program = if native.provider == "codex" {
+        codex::program(home)
+    } else {
+        provider_program(home, &native.provider)
+    }
+    .ok_or("runtime unavailable")?;
+    let current = if native.provider == "claude" {
+        claude::capture(
+            home,
+            &program,
+            &json!({"kind": if native.job.is_some() {"background"} else {"interactive"}, "id": native.job,
+            "pid":native.process.pid, "sessionId":native.conversation,"status":"unknown"}),
+        )
+        .await?
+    } else {
+        codex::capture(home, &program, native.process.pid)
+            .await?
+            .into_iter()
+            .find(|s| s.conversation == native.conversation)
+            .ok_or("native identity changed")?
+    };
+    if current.restriction.is_some()
+        || current.process != native.process
+        || current.conversation != native.conversation
+        || current.profile != native.profile
+        // None -> Some is the session's first turn writing its transcript, not a new identity.
+        || (native.transcript.is_some() && current.transcript != native.transcript)
+        || current.socket != native.socket
+        || current.socket_inode != native.socket_inode
+        || current.version != native.version
+    {
+        return Err("native identity changed".into());
+    }
+    Ok(current)
+}
+
+/// Every line starts with its UTC time: `2026-10-07T12:05:31.123Z [local-sessions] ...`.
 pub(super) fn relay_log(msg: &str) {
-    crate::log(&format!("[local-sessions] {msg}"));
+    let ms = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).map_or(0, |d| d.as_millis() as u64);
+    crate::log(&format!("{} [local-sessions] {msg}", utc_stamp(ms)));
+}
+
+/// Unix milliseconds as `2026-10-07T12:05:31.123Z` (no date crate here; days to a civil date
+/// by Howard Hinnant's `civil_from_days`).
+fn utc_stamp(ms: u64) -> String {
+    let (days, rest) = (ms / 86_400_000, ms % 86_400_000);
+    let z = days + 719_468;
+    let (era, doe) = (z / 146_097, z % 146_097);
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let (day, month) = (doy - (153 * mp + 2) / 5 + 1, if mp < 10 { mp + 3 } else { mp - 9 });
+    let year = yoe + era * 400 + u64::from(month <= 2);
+    format!(
+        "{year:04}-{month:02}-{day:02}T{:02}:{:02}:{:02}.{:03}Z",
+        rest / 3_600_000, rest / 60_000 % 60, rest / 1000 % 60, rest % 1000
+    )
+}
+
+/// One line when a native check took over a second: `verified() took 12.3s for 0a1b2c3d`.
+pub(super) fn slow_log(what: &str, id: &str, started: Instant) {
+    let took = started.elapsed();
+    if took > Duration::from_secs(1) {
+        relay_log(&format!("{what} took {:.1}s for {}", took.as_secs_f64(), short(id)));
+    }
 }
 
 fn short(id: &str) -> &str {
@@ -2608,6 +2799,7 @@ pub(super) mod tests {
             ended_pending: vec![],
             heartbeat_dirty: BTreeSet::new(),
             heartbeat_interval: Duration::from_secs(10),
+            verify: verify_native,
         }
     }
 
@@ -4365,6 +4557,7 @@ pub(super) mod tests {
             ended_pending: vec![],
             heartbeat_dirty: BTreeSet::new(),
             heartbeat_interval: Duration::from_secs(10),
+            verify: verify_native,
         };
         let (_tx, mut rx) = tokio::sync::mpsc::channel(1);
         let (mut socket, _) = tokio_tungstenite::connect_async(format!("ws://{address}"))
@@ -4556,6 +4749,7 @@ pub(super) mod tests {
             ended_pending: vec![],
             heartbeat_dirty: BTreeSet::new(),
             heartbeat_interval: Duration::from_secs(10),
+            verify: verify_native,
         };
         let (_tx, mut rx) = tokio::sync::mpsc::channel(1);
         let (mut socket, _) = tokio_tungstenite::connect_async(format!("ws://{address}"))
@@ -4790,6 +4984,148 @@ pub(super) mod tests {
         server.await.unwrap();
         let a: Mirror = private_read(&dir.path().join("a-session.json")).unwrap();
         assert_eq!(a.session_id.as_deref(), Some(SID));
+    }
+    #[test]
+    fn local_sessions_log_lines_start_with_their_utc_time() {
+        assert_eq!(utc_stamp(0), "1970-01-01T00:00:00.000Z");
+        assert_eq!(utc_stamp(1_791_374_731_123), "2026-10-07T12:05:31.123Z");
+        assert_eq!(utc_stamp(1_709_251_199_999), "2024-02-29T23:59:59.999Z");
+    }
+
+    #[tokio::test]
+    async fn local_sessions_a_slow_reconciliation_never_delays_the_heartbeat_or_a_watch_nudge() {
+        use std::sync::atomic::AtomicUsize;
+        static CHECKS: AtomicUsize = AtomicUsize::new(0);
+        static CHECKED: AtomicBool = AtomicBool::new(false);
+        // The native check on a loaded Mac: `lsof` twice, `claude --version`, transcript reads.
+        fn slow(_: PathBuf, _: NativeSession) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<NativeSession>> + Send>> {
+            Box::pin(async {
+                CHECKS.fetch_add(1, Ordering::SeqCst);
+                tokio::time::sleep(Duration::from_millis(1500)).await;
+                CHECKED.store(true, Ordering::SeqCst);
+                Err("native identity changed".into())
+            })
+        }
+        const WATCHED: &str = "dddd0000-1111-4222-8333-444455556666";
+        const STUCK: &str = "request-stuck";
+        let dir = tempfile::tempdir().unwrap();
+        let mut mirror = test_mirror("native-slow", "gen-1");
+        mirror.session_id = Some(WATCHED.into());
+        // A send to a Claude session whose admission was never proven: `unknown` in the journal
+        // and on the relay, which asks about it on every acknowledgment.
+        let journal = Journal { dir: dir.path().join("receipts") };
+        private_dir(&journal.dir).unwrap();
+        let mut claude = test_native("native-slow");
+        claude.provider = "claude".into();
+        let stuck = Receipt { hash: None, generation: "gen-1".into(), outcome: "unknown".into(), provider_message_id: None,
+            held: false, settled: false,
+            ingress: Some(Ingress { native: claude, cursor: Cursor::default(), text: "hello".into(), workspace_revision: None }) };
+        private_write(&journal.path(WATCHED, STUCK), &stuck).unwrap();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (tcp, _) = listener.accept().await.unwrap();
+            let mut socket = tokio_tungstenite::accept_async(tcp).await.unwrap();
+            assert_eq!(next_frame(&mut socket).await["type"], "local.session.register");
+            reply(&mut socket, json!({"type":"local.session.registered","sessionId":WATCHED,"generation":"gen-1",
+                "afterSeq":0,"serverTime":1000,"reconcile":null})).await;
+            let ack = json!({"type":"local.device.heartbeat.ack","rejected":[],"serverTime":1001,
+                "reconcile":[{"sessionId":WATCHED,"requestId":STUCK,"generation":"gen-1","state":"unknown"}]});
+            let watch = json!({"type":"local.session.watch","sessionId":WATCHED,"generation":"gen-1"});
+            assert_eq!(next_frame(&mut socket).await["type"], "local.device.heartbeat");
+            reply(&mut socket, ack.clone()).await;
+            reply(&mut socket, watch.clone()).await;
+            let asked = Instant::now();
+            // The next heartbeat is on time (its lease is 30 s; the stalled loop missed it by 80 s).
+            assert_eq!(next_frame(&mut socket).await["type"], "local.device.heartbeat");
+            assert!(asked.elapsed() < Duration::from_millis(700), "the heartbeat waited {:?} for the check", asked.elapsed());
+            assert!(!CHECKED.load(Ordering::SeqCst), "the check had already finished: this proved nothing");
+            assert!(super::super::screen::was_nudged(WATCHED), "the watch nudge waited for the check");
+            // Every later ack asks again, as the relay did every 10 s; a viewer keeps arriving.
+            let mut heartbeats = 1;
+            let receipt = loop {
+                reply(&mut socket, ack.clone()).await;
+                reply(&mut socket, watch.clone()).await;
+                let frame = next_frame(&mut socket).await;
+                if frame["type"] == "local.session.receipt" {
+                    break frame;
+                }
+                assert_eq!(frame["type"], "local.device.heartbeat");
+                heartbeats += 1;
+            };
+            assert!(heartbeats >= 5, "only {heartbeats} heartbeats went out while the check ran");
+            assert!(CHECKED.load(Ordering::SeqCst));
+            assert_eq!((receipt["requestId"].as_str(), receipt["outcome"].as_str()), (Some(STUCK), Some("unknown")));
+            // Still unknown: asked again at once, it is not checked again (not for a minute).
+            for _ in 0..3 {
+                assert_eq!(next_frame(&mut socket).await["type"], "local.device.heartbeat");
+                reply(&mut socket, ack.clone()).await;
+            }
+            assert_eq!(next_frame(&mut socket).await["type"], "local.device.heartbeat");
+            socket.close(None).await.unwrap();
+        });
+        let mut host = test_host(dir.path(), vec![("a-session", mirror)]);
+        host.heartbeat_interval = Duration::from_millis(50);
+        host.verify = slow;
+        let (_tx, mut rx) = tokio::sync::mpsc::channel(1);
+        let (mut socket, _) = tokio_tungstenite::connect_async(format!("ws://{address}")).await.unwrap();
+        let _ = tokio::time::timeout(Duration::from_secs(10), host.connection(&mut socket, &mut rx, "alice")).await;
+        server.await.unwrap();
+        assert_eq!(CHECKS.load(Ordering::SeqCst), 1, "one check for one stuck command, however often it is asked");
+    }
+
+    #[test]
+    fn local_sessions_an_unknown_reconciliation_is_checked_again_only_after_a_minute() {
+        let (asks, mut asked) = tokio::sync::mpsc::unbounded_channel();
+        let mut reconciles = Reconciles { asks, state: BTreeMap::new() };
+        let ask = || Ask { session: SID.into(), request: "r1".into(), generation: "g".into(), turn: None,
+            receipt: Receipt { hash: None, generation: "g".into(), outcome: "unknown".into(), provider_message_id: None,
+                held: false, settled: false, ingress: None } };
+        reconciles.ask(ask());
+        reconciles.ask(ask());
+        assert!(asked.try_recv().is_ok() && asked.try_recv().is_err(), "one check while one runs");
+        reconciles.answered(&ask(), true);
+        reconciles.ask(ask());
+        assert!(asked.try_recv().is_err(), "unknown a moment ago: not checked again yet");
+        reconciles.state.insert((SID.into(), "r1".into()), Some(Instant::now() - RECONCILE_UNKNOWN_EVERY));
+        reconciles.ask(ask());
+        assert!(asked.try_recv().is_ok(), "a minute later it is");
+        reconciles.answered(&ask(), false);
+        assert!(reconciles.state.is_empty(), "a settled command is forgotten");
+    }
+
+    #[tokio::test]
+    async fn local_sessions_a_gateway_error_frame_does_not_end_the_connection() {
+        // API Gateway's own frame when a backend call outlives the ws-message Lambda (10 s). It
+        // has no `type`; taken as fatal, it tore the connection down (prod 2026-10-07).
+        let dir = tempfile::tempdir().unwrap();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (tcp, _) = listener.accept().await.unwrap();
+            let mut socket = tokio_tungstenite::accept_async(tcp).await.unwrap();
+            assert_eq!(next_frame(&mut socket).await["type"], "local.session.register");
+            reply(&mut socket, json!({"type":"local.session.registered","sessionId":SID,"generation":"g-a",
+                "afterSeq":0,"serverTime":100,"reconcile":null})).await;
+            assert_eq!(next_frame(&mut socket).await["type"], "local.device.heartbeat");
+            let gateway = json!({"message":"Internal server error","connectionId":"abc=","requestId":"def="});
+            reply(&mut socket, gateway.clone()).await;
+            // The heartbeat it answered goes again on its cadence: the slot was freed.
+            assert_eq!(next_frame(&mut socket).await["type"], "local.device.heartbeat");
+            // With nothing in flight it is ignored too, and so is a typed frame this app does not know.
+            reply(&mut socket, json!({"type":"local.device.heartbeat.ack","rejected":[],"reconcile":[],"serverTime":101})).await;
+            reply(&mut socket, gateway).await;
+            reply(&mut socket, json!({"type":"local.session.from-a-newer-relay"})).await;
+            assert_eq!(next_frame(&mut socket).await["type"], "local.device.heartbeat");
+            socket.close(None).await.unwrap();
+        });
+        let mut host = test_host(dir.path(), vec![("a-session", test_mirror("native-a", "g-a"))]);
+        host.heartbeat_interval = Duration::from_millis(50);
+        let (_tx, mut rx) = tokio::sync::mpsc::channel(1);
+        let (mut socket, _) = tokio_tungstenite::connect_async(format!("ws://{address}")).await.unwrap();
+        let ended = tokio::time::timeout(Duration::from_secs(5), host.connection(&mut socket, &mut rx, "alice")).await.unwrap();
+        server.await.unwrap();
+        assert_eq!(ended, Err("session socket closed".into()), "only the relay closing ends it");
     }
     #[tokio::test]
     async fn local_sessions_rejected_batch_keeps_the_connection_and_the_pending_batch() {
@@ -5053,6 +5389,7 @@ pub(super) mod tests {
             ended_pending: vec![],
             heartbeat_dirty: BTreeSet::new(),
             heartbeat_interval: Duration::from_secs(10),
+            verify: verify_native,
         };
         let enrollment = Enrollment {
             owner_id: "org".into(),

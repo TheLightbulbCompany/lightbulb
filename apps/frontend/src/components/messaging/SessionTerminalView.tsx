@@ -89,10 +89,23 @@ export function SessionTerminalView({ session, onEvent, watch, onLive, onCanType
   useEffect(() => {
     let refused = false;
     const ping = (fresh: boolean) => void watch(session.sessionId, fresh).catch((e) => { if (e instanceof ApiError && (e.status === 403 || e.status === 404)) { refused = true; setLive(false); onLive(false); } });
-    ping(asked.current !== session.sessionId);
-    asked.current = session.sessionId;
-    const timer = setInterval(() => { if (!refused) ping(false); }, WATCH_EVERY_MS);
-    return () => clearInterval(timer);
+    // A hidden tab does not watch. Its timers run about once a minute, past the 45 s viewer lease,
+    // so each late renewal counted as a new viewer and cost the Mac a history burst. Hidden, the
+    // lease just lapses; shown again, this view asks for one fresh screen and renews as before.
+    let timer: ReturnType<typeof setInterval> | undefined;
+    const start = (fresh: boolean) => {
+      clearInterval(timer);
+      ping(fresh);
+      asked.current = session.sessionId;
+      timer = setInterval(() => { if (!refused) ping(false); }, WATCH_EVERY_MS);
+    };
+    const onVisibility = () => {
+      if (document.visibilityState !== "hidden") { if (!refused) start(true); return; }
+      clearInterval(timer); timer = undefined;
+    };
+    if (document.visibilityState !== "hidden") start(asked.current !== session.sessionId);
+    document.addEventListener("visibilitychange", onVisibility);
+    return () => { clearInterval(timer); document.removeEventListener("visibilitychange", onVisibility); };
   }, [session.sessionId, watch, onLive]);
   useEffect(() => {
     let term: Terminal | null = null;

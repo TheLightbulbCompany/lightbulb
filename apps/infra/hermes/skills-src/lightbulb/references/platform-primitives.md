@@ -50,7 +50,9 @@ exists.
 ## Teammates in a room
 
 Other agents in a room are colleagues, not an audience. The room is where humans
-read; keep agent-to-agent traffic in it short and rare.
+read; keep agent-to-agent traffic in it short and rare. Your workspace roster is
+`teammates` in `~/.openclaw/lightbulb-facts.json` (id, name, role, `is_ceo`); the
+ids are what Paperclip assignments use.
 
 - **Add to a colleague's message only if you change the answer** — a correction,
   a missing number, a blocker. Agreement, thanks, "great point", and restating what

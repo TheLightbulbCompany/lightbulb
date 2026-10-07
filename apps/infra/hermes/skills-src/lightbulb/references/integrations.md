@@ -76,9 +76,12 @@ Read the current catalog live:
     than reporting the vendor as connected.
   — returns the current integrations (each with its `actor` rail) and channels
   you can offer to connect.
-- What YOU already have connected: check per rail — MCP integrations by
-  their tools in your toolset, CLI integrations by the binary's own auth
-  check in your shell.
+- What YOU already have connected: read `connected_integrations` in
+  `~/.openclaw/lightbulb-facts.json` first. It lists each connected provider
+  with its rail (`mcp`, `cli`, `oauth` or `projects`) and carries names only,
+  never a credential. If a listed integration then fails, verify it by its
+  rail: an MCP integration by its tools in your toolset, a CLI integration by
+  the binary's own auth check in your shell.
 
 The catalog omits integrations whose credential delivery is unsupported by
 the current Hermes runtime. An older connection can still appear Connected

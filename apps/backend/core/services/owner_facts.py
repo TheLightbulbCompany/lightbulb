@@ -59,6 +59,8 @@ def build_owner_facts(
     email_address: str | None = None,
     provisioning: list[dict] | None = None,
     owner_timezone: str = "UTC",
+    teammates: list[dict] | None = None,
+    connected_integrations: list[dict] | None = None,
 ) -> dict:
     """Render the facts dict from a billing row. Pure — no I/O."""
     from core.auth import is_org_owner_id
@@ -126,6 +128,11 @@ def build_owner_facts(
         # IANA zone of the workspace OWNER (the org creator), so the CEO's daily brief
         # lands on the owner's morning. Refreshed on every facts write (provision/reconcile).
         "owner_timezone": owner_timezone,
+        # Declared manifest of the workspace, so agents read it instead of inferring:
+        # every live agent (ids are what Paperclip assignments use) and the connected
+        # integrations (provider + rail, NAMES only).
+        "teammates": list(teammates or []),
+        "connected_integrations": list(connected_integrations or []),
         "generated_at": utc_now_iso(),
     }
 
@@ -222,6 +229,63 @@ async def _lookup_provisioning(owner_id: str) -> list[dict]:
     return out
 
 
+def _teammates_from_roster(roster: list[dict], starter_ids: dict[str, str] | None) -> list[dict]:
+    """``[{id, name, role, is_ceo}]``. ``role`` is the starter role key where the agent is a
+    starter, else Paperclip's own role string. The CEO is the starter ``ceo`` id, else a legacy
+    root agent (role ``ceo`` reporting to nobody)."""
+    by_id = {v: k for k, v in (starter_ids or {}).items()}
+    ceo_id = (starter_ids or {}).get("ceo")
+    out = []
+    for a in roster:
+        role = by_id.get(a["id"]) or a.get("role")
+        is_ceo = a["id"] == ceo_id if ceo_id else (a.get("role") == "ceo" and not a.get("reportsTo"))
+        out.append({"id": a["id"], "name": a.get("name"), "role": role, "is_ceo": bool(is_ceo)})
+    return out
+
+
+async def _lookup_teammates(owner_id: str, roster: list[dict] | None = None) -> list[dict]:
+    """Never raises; a failed lookup is an empty list."""
+    try:
+        from core.repositories.paperclip_repo import PaperclipRepo
+        from core.services.messaging import load_agent_roster
+
+        if roster is None:
+            roster = await load_agent_roster(owner_id)
+        company = await PaperclipRepo(table_name="paperclip-companies").resolve_owner_row(
+            owner_id, consistent_read=True
+        )
+        return _teammates_from_roster(roster, getattr(company, "starter_agent_ids", None))
+    except Exception as e:  # noqa: BLE001 — facts must never block callers
+        logger.warning("owner_facts: teammates lookup failed for %s: %s", owner_id, e)
+        return []
+
+
+async def _lookup_connected_integrations(owner_id: str) -> list[dict]:
+    """``[{provider, rail}]`` for every CONNECTED integrations row. NAMES only: nothing from the
+    row but its key and status is read. A ``projects/<p>`` row is the Stripe Projects rail; any
+    other row takes its registry actor (``mcp``/``cli``), else ``oauth``. Never raises."""
+    try:
+        from core.repositories import integrations_repo
+        from core.services.credentials import registry
+
+        rows = await integrations_repo.list_for_owner(owner_id)
+        providers = registry.all_providers()
+        out = []
+        for row in rows:
+            key = row.get("provider") or ""
+            if not key or row.get("status") != "connected":
+                continue
+            if key.startswith(integrations_repo.PROJECTS_KEY_PREFIX):
+                out.append({"provider": key[len(integrations_repo.PROJECTS_KEY_PREFIX) :], "rail": "projects"})
+                continue
+            actor = getattr(providers.get(key), "actor", None)
+            out.append({"provider": key, "rail": actor if actor in ("mcp", "cli") else "oauth"})
+        return sorted(out, key=lambda e: (e["provider"], e["rail"]))
+    except Exception as e:  # noqa: BLE001 — facts must never block callers
+        logger.warning("owner_facts: integrations lookup failed for %s: %s", owner_id, e)
+        return []
+
+
 async def write_owner_facts(owner_id: str, *, account_overrides: dict | None = None) -> None:
     """Render + write the facts file. Best-effort: never raises.
 
@@ -234,6 +298,9 @@ async def write_owner_facts(owner_id: str, *, account_overrides: dict | None = N
     committed billing fields pin the written values explicitly.
     """
     try:
+        from core.services.messaging import load_agent_roster
+
+        roster = await load_agent_roster(owner_id)
         account = await billing_repo.get_by_owner_id(owner_id, consistent_read=True) or {}
         if account_overrides:
             account = {**account, **account_overrides}
@@ -243,6 +310,8 @@ async def write_owner_facts(owner_id: str, *, account_overrides: dict | None = N
             email_address=await _lookup_email_address(owner_id),
             provisioning=await _lookup_provisioning(owner_id),
             owner_timezone=await _lookup_owner_timezone(owner_id),
+            teammates=await _lookup_teammates(owner_id, roster),
+            connected_integrations=await _lookup_connected_integrations(owner_id),
         )
         facts_json = json.dumps(facts, indent=2) + "\n"
         # Ruling M6-R30: stage the facts file into every roster profile in S3
@@ -250,9 +319,8 @@ async def write_owner_facts(owner_id: str, *, account_overrides: dict | None = N
         # profile's .revision last so the bridge's ensure_profile() re-pull picks it up before
         # the agent's next turn.
         from core.services import hermes_profiles
-        from core.services.messaging import load_agent_roster
 
-        agent_ids = [agent["id"] for agent in await load_agent_roster(owner_id)]
+        agent_ids = [agent["id"] for agent in roster]
         await run_in_thread(hermes_profiles.write_facts_to_profiles, owner_id, agent_ids, facts_json)
     except Exception as e:  # noqa: BLE001 — facts must never block callers
         logger.warning("write_owner_facts: skipped for %s: %s", owner_id, e)

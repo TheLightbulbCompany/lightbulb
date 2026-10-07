@@ -367,3 +367,22 @@ async def test_a_trailing_fragment_still_claims_an_unclaimed_question():
     assert h._unclaimed is not None
     await says(h, P2, "Well...")
     assert h._unclaimed is None and h._last_speaker == P2
+
+
+async def test_an_answer_cut_before_its_person_turned_away_is_kept_once_in_the_hand_not_also_as_cut():
+    """Codex on #3792: the hand took the answer, then the close kept the same answer a second time as cut, so
+    the room got it posted while the hand still announced it."""
+    h, backend, lives, clock = await asked()
+    (row,) = h._requests.items
+    answer(h, row.run_id, "forge", "Three PRs are open. The oldest is two days old.")
+    h.on_agent_state("forge", "speaking")
+    h.on_agent_said("forge", "Three PRs are", interrupted=True)  # their sound cut it before its first sentence
+    await says(h, P1, "Dan, did you push that fix last night?")
+    await settle(h)
+    assert h._voice is None and "forge" not in h._cut_off
+    assert [n[2] for n in h._news.get("forge", [])] == ["Three PRs are open. The oldest is two days old."]
+    quiet(h)
+    clock.t += h_mod.CUT_WAIT_S + h_mod.MEET_QUIET_S + h_mod.gate.ANNOUNCE_QUIET
+    await h.tick()
+    await settle(h)
+    assert backend.late_answers == [] and h._voice is not None and h._voice.path == "announce"

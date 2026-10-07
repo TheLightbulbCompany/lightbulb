@@ -3312,6 +3312,12 @@ class Huddle:
         run = self._runs.get(v.saying or "")
         if run is not None and run.ended and not (run.aborted or run.failed) and run.text.strip():
             unsaid.append((run.run_id, run.request, run.text.strip(), self._clock(), run.speaker))
+        if in_meet(v.speaker):
+            # the answer it was saying as a Live call (`_answer_message`) belongs to the hand too, once: a close
+            # must not keep it a second time as cut (Codex on #3792: posted to the room AND announced)
+            if v.answer and v.answer[0] not in {n[0] for n in unsaid}:
+                unsaid.append(v.answer)
+            v.answer, v.unheard, v.cut = None, False, False
         if unsaid and in_meet(v.speaker):
             # a meeting: nothing is lost and nothing is posted yet. Its hand goes back up with what was not heard,
             # from the sentence it was cut on, said at the next pause or when someone turns to it (owner 10-06/07).

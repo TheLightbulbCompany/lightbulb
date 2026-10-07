@@ -100,9 +100,8 @@ pub(super) struct Host {
     rediscover: Option<Arc<tokio::sync::Notify>>,
     /// Sessions that have ended and whose end the relay has not been told about.
     ended_pending: Vec<String>,
-    /// Whether the relay lists `endedStartId`, as its latest ack said; None until one has.
-    /// Kept across connections, unlike the other feature flags: an end retried on a new
-    /// connection goes out before anything registers, and must still name its bound start.
+    /// Whether the relay on this socket lists `endedStartId`; None until one of its acks has
+    /// said. Per connection, like every feature: a reconnect can reach another relay version.
     relay_reads_ended_start: Option<bool>,
     /// Sessions whose heartbeat fields moved between heartbeats: one goes out
     /// early rather than up to ten seconds late.
@@ -603,6 +602,7 @@ impl Host {
 
     fn reset_relay_features(&mut self) {
         super::session_states::read_features(&Value::Null);
+        self.relay_reads_ended_start = None;
         for mirror in self.mirrors.values_mut() {
             mirror.subagents.relay = false;
             mirror.subagents.relay_known = false;
@@ -871,8 +871,8 @@ impl Host {
             // `runtime-unverified` before liveness ends it) was still bound while verified.
             let start_id = start_links::bound(dir, &mirror.native, &mirror.generation);
             if start_id.is_some() && relay_reads_ended_start.is_none() {
-                // First connection of this run and nothing has registered: the next
-                // heartbeat ack says whether the relay reads a start identity on an end.
+                // Nothing has been acked on this socket: the first ack (the caller sends a
+                // heartbeat for it at once) says whether this relay reads a start identity.
                 continue;
             }
             // Upload and discovery run on their own cadence. Recovery keys stay
@@ -1419,7 +1419,17 @@ impl Host {
                     if let Some((reported, frame)) = self.ended_frame(&mut recovering_ended)? {
                         send(socket, &frame).await?;
                         pending_rpc = Some(reported);
-                    } else if let Some(frame) = heartbeat_frames.pop_front() {
+                    } else if let Some(frame) = heartbeat_frames.pop_front().or_else(|| {
+                        // An end is waiting to learn what this relay reads, and nothing
+                        // registers here: ask now, not at the idle heartbeat 30 s on.
+                        (self.relay_reads_ended_start.is_none()
+                            && self.ended_pending.iter().any(|key| {
+                                self.mirrors.get(key).is_some_and(|m| {
+                                    start_links::bound(&self.dir, &m.native, &m.generation).is_some()
+                                })
+                            }))
+                        .then(idle_heartbeat)
+                    }) {
                         let sent = Instant::now();
                         let wall = SystemTime::now();
                         send(socket, &frame).await?;
@@ -3234,12 +3244,10 @@ pub(super) mod tests {
         )
         .unwrap();
         let mut host = test_host(dir.path(), vec![(SID, mirror)]);
-        // Nothing has said what this relay reads yet: the end waits for the first ack.
+        // Nothing has been acked on this socket: the end waits for the first ack.
         host.ended_pending = vec![SID.into()];
         assert!(host.ended_frame(&mut BTreeSet::new()).unwrap().is_none());
         assert_eq!(host.ended_pending, vec![SID.to_string()]);
-        // What an earlier connection's ack said still holds on a later one, where a
-        // drained end goes out before anything registers.
         for (relay_reads, expected) in [(false, Value::Null), (true, json!("11111111-1111-4111-8111-111111111111"))] {
             host.ended_pending = vec![SID.into()];
             host.relay_reads_ended_start = Some(relay_reads);
@@ -3247,6 +3255,9 @@ pub(super) mod tests {
             assert_eq!(frame["type"], "local.session.ended");
             assert_eq!(frame["startId"], expected);
         }
+        // A new socket may reach another relay version: unknown again.
+        host.reset_relay_features();
+        assert_eq!(host.relay_reads_ended_start, None);
         assert!(host.begin_ended_recovery(SID).unwrap()["session"].get("startId").is_none());
     }
 
@@ -5853,6 +5864,63 @@ pub(super) mod tests {
         assert!(stored.ended_sent, "an acknowledged end is durable across restarts");
     }
 
+    /// A drained end retried on a new socket: nothing registers, so the Mac asks with a
+    /// heartbeat at once and the end follows that ack, in the shape this relay reads.
+    #[tokio::test]
+    async fn local_sessions_a_bound_end_on_a_fresh_socket_follows_the_first_heartbeat_ack() {
+        for (features, expected) in [
+            (Some(json!(["endedStartId"])), json!("11111111-1111-4111-8111-111111111111")),
+            (Some(json!([])), Value::Null),
+            (None, Value::Null),
+        ] {
+            let dir = tempfile::tempdir().unwrap();
+            let mut mirror = test_mirror(SID, "gen-1");
+            mirror.session_id = Some(SID.into());
+            mirror.registration.acknowledged = Some("gen-1".into());
+            mirror.native.status = "ended".into();
+            mirror.ended_at = Some(1_700_000_042);
+            private_write(
+                &dir.path().join(format!("start-{}.json",
+                    fingerprint(&json!([mirror.native.provider, mirror.native.conversation]).to_string()))),
+                &json!({"startId":"11111111-1111-4111-8111-111111111111","provider":mirror.native.provider,
+                    "conversation":mirror.native.conversation,"launcher":process(std::process::id()).unwrap(),
+                    "boundGeneration":"gen-1"}),
+            )
+            .unwrap();
+            let mut host = test_host(dir.path(), vec![("a-session", mirror)]);
+            // What an earlier socket said is not what this relay reads.
+            host.relay_reads_ended_start = Some(true);
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let address = listener.local_addr().unwrap();
+            let server = tokio::spawn(async move {
+                let (tcp, _) = listener.accept().await.unwrap();
+                let mut socket = tokio_tungstenite::accept_async(tcp).await.unwrap();
+                let asked = next_frame(&mut socket).await;
+                assert_eq!(asked["type"], "local.device.heartbeat", "the end waits for an ack");
+                let mut ack = json!({"type":"local.device.heartbeat.ack","rejected":[],"serverTime":1000,"reconcile":[]});
+                if let Some(features) = features {
+                    ack["features"] = features;
+                }
+                reply(&mut socket, ack).await;
+                let ended = next_frame(&mut socket).await;
+                assert_eq!(ended["type"], "local.session.ended");
+                assert_eq!(ended["startId"], expected);
+                reply(&mut socket, json!({"type":"local.session.ended.ack","sessionId":SID})).await;
+                socket.close(None).await.unwrap();
+            });
+            let (_tx, mut rx) = tokio::sync::mpsc::channel(1);
+            let (mut socket, _) = tokio_tungstenite::connect_async(format!("ws://{address}"))
+                .await
+                .unwrap();
+            let _ = tokio::time::timeout(
+                Duration::from_secs(5),
+                host.connection(&mut socket, &mut rx, "alice"),
+            )
+            .await;
+            server.await.unwrap();
+        }
+    }
+
     #[tokio::test]
     async fn local_sessions_an_end_missed_while_the_relay_was_down_is_reported_on_reconnect() {
         let dir = tempfile::tempdir().unwrap();
@@ -6115,7 +6183,6 @@ pub(super) mod tests {
         server.await.unwrap();
         let stored: Mirror = private_read(&dir.path().join(format!("{key}.json"))).unwrap();
         assert_eq!(stored.after_seq, 1);
-        assert_eq!(host.relay_reads_ended_start, Some(true), "known to the next connection too");
         assert!(stored.pending.is_none() && stored.queue.is_empty() && stored.ended_sent);
         assert!(fs::metadata(transcript).is_ok());
     }

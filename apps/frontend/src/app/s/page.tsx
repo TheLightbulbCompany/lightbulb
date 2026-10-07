@@ -1,12 +1,15 @@
 "use client";
 
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { SignInButton, SignUpButton, useAuth } from "@clerk/nextjs";
 import { createMessagingClient, type SessionLinkCode, type SessionLinkPage } from "@lightbulb/shared";
 import { ApiError, BACKEND_URL, useApi } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { copyText, sessionPermalink } from "@/components/messaging/messageLinks";
+// For .session-state-panel: this route is outside /chat, which is where the sheet is otherwise loaded.
+import "@/components/messaging/messaging.css";
 
 // The link's credential lives in the fragment, kept in this tab across sign-up (Clerk's modal
 // on this page) and onboarding, never in a URL a server sees (spec §3.7).
@@ -51,6 +54,15 @@ function CodeLine({ code }: { code: SessionLinkCode }) {
   if (code.visibility === "workspace") return <p>{code.remote}{code.branch ? ` on ${code.branch}` : ""}</p>;
   if (code.visibility === "private") return <p>Code is in a private repository</p>;
   return <p>Code not shared</p>;
+}
+
+/** A link that cannot be shown (incomplete, off, expired, not found): the page's own frame and
+ *  centred panel, under the product name, instead of one loose line in the corner. */
+function Unopened({ children }: { children: React.ReactNode }) {
+  return <main className="mx-auto max-w-3xl p-4">
+    <header className="mb-4"><Link href="/" className="text-lg font-semibold">Lightbulb</Link></header>
+    <section aria-label="Session link" className="session-state-panel">{children}</section>
+  </main>;
 }
 
 export default function SessionLinkPageRoute() {
@@ -128,15 +140,15 @@ export default function SessionLinkPageRoute() {
     }
   };
 
-  if (raw === "") return <main className="mx-auto max-w-3xl p-4"><p role="alert">This link is incomplete. Ask for it again.</p></main>;
+  if (raw === "") return <Unopened><p role="alert" className="session-state-title">This link is incomplete. Ask for it again.</p></Unopened>;
   // A workspace link refuses a signed-out visitor exactly like a turned-off one: offer sign-in.
-  if (error) return <main className="mx-auto max-w-3xl p-4">
-    <p role="alert">{error}</p>
-    {isLoaded && !isSignedIn && stash && <div className="mt-4 flex flex-col items-start gap-2">
+  if (error) return <Unopened>
+    <p role="alert" className="session-state-title">{error}</p>
+    {isLoaded && !isSignedIn && stash && <>
       <p>If this session is in your workspace, sign in to open it.</p>
-      <SignInButton mode="modal" forceRedirectUrl="/s"><Button type="button">Sign in to open this session</Button></SignInButton>
-    </div>}
-  </main>;
+      <SignInButton mode="modal" forceRedirectUrl="/s"><Button type="button" className="mt-2">Sign in to open this session</Button></SignInButton>
+    </>}
+  </Unopened>;
   if (!page || !stash) return <main className="mx-auto max-w-3xl p-4"><p role="status">Opening…</p></main>;
   const command = `lightbulb continue '${window.location.origin}/s#${stash.token}'`;
   const canContinue = page.provider === "claude" && page.continuable;

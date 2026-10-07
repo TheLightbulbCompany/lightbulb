@@ -646,3 +646,15 @@ button.native-session-panel-row:hover .native-session-panel-activity { color: va
 /* Pending and queued follow-ups stay visible under the live terminal. */
 .local-session-feedback:empty { display: none; }
 .local-session-feedback { flex: none; max-height: 30%; overflow: auto; }
+
+/* The live terminal's own column: a strip for the Fit / Readable switch, then the box that scrolls
+   when the Mac's screen, at a readable scale, is larger than the pane. Added beside
+   .session-terminal-view (same element), which keeps the padding and the unseen state. */
+.session-terminal-frame { display: flex; flex-direction: column; }
+.session-terminal-size { flex: none; display: flex; justify-content: flex-end; gap: 2px; padding-bottom: 4px; }
+/* The terminal is dark in both themes, so the switch is drawn from the terminal's own tokens. */
+.session-terminal-size button { padding: 2px 8px; border-radius: 4px; font-size: 12px; line-height: 16px; color: color-mix(in srgb, var(--terminal-fg) 65%, var(--terminal-bg)); }
+.session-terminal-size button:hover { color: var(--terminal-fg); }
+.session-terminal-size button[aria-pressed="true"] { color: var(--terminal-fg); background: color-mix(in srgb, var(--terminal-fg) 16%, var(--terminal-bg)); }
+.session-terminal-size button:focus-visible { outline: 2px solid var(--terminal-fg); outline-offset: 1px; }
+.session-terminal-scroll { flex: 1; min-height: 0; overflow: auto; }

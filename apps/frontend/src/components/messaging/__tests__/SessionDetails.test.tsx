@@ -90,6 +90,13 @@ it("About shows the model, the mode and the tokens", () => {
   expect(within(about).getByText("Claude Code 2.1.283")).toBeInTheDocument();
 });
 
+it("About says nothing about output arriving block by block: the terminal is live", () => {
+  render(<Details tab="about" s={session({ workspace: { revision: 1, coverage: "unknown", changed: false, overlap: false } })} />);
+  const about = screen.getByRole("tabpanel", { name: "About" });
+  expect(about.textContent).not.toMatch(/block by block|token by token/);
+  expect(within(about).getByText("Outside changes to this checkout are not being watched.")).toBeInTheDocument();
+});
+
 it("Changes shows the plan and the files when the events carry them, and says so when they do not", async () => {
   const events = [
     ev(1, { kind: "tool", role: "assistant", text: "Update Todos", itemId: "t1", tool: { name: "TodoWrite", status: "running", input: { todos: [

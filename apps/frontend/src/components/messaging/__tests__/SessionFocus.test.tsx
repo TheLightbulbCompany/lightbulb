@@ -1,11 +1,11 @@
 import { act, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { expect, it, vi } from "vitest";
+import { afterEach, expect, it, vi } from "vitest";
 import { ApiError, type LocalSession, type SessionSource } from "@lightbulb/shared";
-import { SessionFocus } from "../SessionFocus";
+import { SessionFocus, sessionChatLayout } from "../SessionFocus";
 
-vi.mock("../SessionChat", () => ({ SessionChat: ({ onClose, openChat }: { onClose: () => void; openChat: (id: string) => Promise<unknown> }) =>
-  <aside aria-label="Session chat"><button onClick={onClose}>Close chat</button><button onClick={() => void openChat("s1")}>Open door</button></aside> }));
+vi.mock("../SessionChat", () => ({ SessionChat: ({ onClose, openChat, onRead }: { onClose: () => void; openChat: (id: string) => Promise<unknown>; onRead?: () => void }) =>
+  <aside aria-label="Session chat"><button onClick={onClose}>Close chat</button><button onClick={() => void openChat("s1")}>Open door</button><button onClick={onRead}>Read</button></aside> }));
 
 const session: LocalSession = { sessionId: "s1", deviceId: "mac", humanUserId: "alice", provider: "claude", terminal: "held", providerVersion: "2.1.269", generation: "g", status: "busy", activeTurnId: null,
   capabilities: { sendMode: "queue", steer: false, interrupt: false }, capabilitiesVerified: true, controlUnavailableReason: null, latestEventSeq: 0, title: "Load test" };
@@ -65,10 +65,10 @@ it("falls back to a direct fetch when the workspace list lacks the session, and 
   expect(await screen.findByText("This session is no longer shared.")).toBeInTheDocument();
 });
 
-it("shows 'Loading session…' while the workspace list has not yet settled, without fetching directly", () => {
+it("shows 'Opening session…' while the workspace list has not yet settled, without fetching directly", () => {
   const getLocalSession = vi.fn();
   focus(null, { loading: true, getLocalSession });
-  expect(screen.getByText("Loading session…")).toBeInTheDocument();
+  expect(screen.getByText("Opening session…")).toBeInTheDocument();
   expect(getLocalSession).not.toHaveBeenCalled();
 });
 
@@ -316,4 +316,50 @@ it("refreshes the session list when the chat opens, so a first open's room is kn
   await userEvent.click(await screen.findByRole("button", { name: "Open door" }));
   expect(client.openSessionChat).toHaveBeenCalledWith("s1");
   expect(onAccessLost).toHaveBeenCalled();
+});
+
+it("refreshes the session list when the open chat is read, so the header and the sidebar row drop the count", async () => {
+  const onAccessLost = vi.fn();
+  const client = { listWorkspaceSessions: vi.fn(), getLocalSession: vi.fn(), listLocalSessionEvents: vi.fn(async () => ({ events: [], nextAfterSeq: null })),
+    submitLocalSessionCommand: vi.fn(), getLocalSessionCommand: vi.fn(), openSessionChat: vi.fn() } as unknown as SessionSource["client"];
+  render(<SessionFocus focus={{ sessionId: "s1" }} entries={[{ session: { ...session, chatRoomId: "chat-1", chatUnread: 1 }, ownerName: "Alice", own: false }]} loading={false} hintRevision={0} client={client}
+    resolveSessionOwner={resolveSessionOwner} onAccessLost={onAccessLost} onClose={vi.fn()} chatOpen onChatOpenChange={vi.fn()} />);
+  await userEvent.click(await screen.findByRole("button", { name: "Read" }));
+  expect(onAccessLost).toHaveBeenCalledTimes(1);
+});
+
+it("pushes the terminal aside while 420px of it stay, overlays below that, and takes the screen under 860px", () => {
+  expect(sessionChatLayout(764, 1040)).toBe("push");
+  expect(sessionChatLayout(763, 1040)).toBe("overlay");
+  expect(sessionChatLayout(709, 984)).toBe("overlay"); // the acceptance window
+  expect(sessionChatLayout(1200, 1500)).toBe("push");
+  expect(sessionChatLayout(600, 859)).toBe("screen");
+});
+
+const rect = (top: number, bottom: number, width: number) => ({ top, bottom, width, height: bottom - top, left: 0, right: width, x: 0, y: top, toJSON: () => ({}) });
+afterEach(() => { vi.restoreAllMocks(); });
+function measured(panelWidth: number) {
+  vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
+    if (this.classList.contains("room-session-focus")) return rect(0, 600, panelWidth);
+    if (this.classList.contains("session-state-panel")) return rect(120, 480, panelWidth);
+    return rect(0, 0, 0);
+  });
+  // An ended session: its body is the state panel, between the status line and the resume strip.
+  const client = { listWorkspaceSessions: vi.fn(), getLocalSession: vi.fn(), listLocalSessionEvents: vi.fn(async () => ({ events: [], nextAfterSeq: null })),
+    submitLocalSessionCommand: vi.fn(), getLocalSessionCommand: vi.fn(), openSessionChat: vi.fn() } as unknown as SessionSource["client"];
+  render(<SessionFocus focus={{ sessionId: "s1" }} entries={[{ session: { ...session, status: "ended", endedAt: "2026-10-07T10:00:00Z" }, ownerName: "Alice", own: false }]} loading={false} hintRevision={0} client={client}
+    resolveSessionOwner={resolveSessionOwner} onAccessLost={vi.fn()} onClose={vi.fn()} chatOpen onChatOpenChange={vi.fn()} />);
+  return document.querySelector<HTMLElement>(".room-session-focus")!;
+}
+
+it("lays the chat out as a column when the panel is wide enough: nothing of the session is covered", () => {
+  const panel = measured(900);
+  expect(panel).toHaveClass("session-chat-open", "session-chat-push");
+});
+
+it("stops a narrow panel's overlay at the session's body, clear of the strips above and the controls below", () => {
+  const panel = measured(709);
+  expect(panel).toHaveClass("session-chat-open", "session-chat-overlay");
+  expect(panel.style.getPropertyValue("--session-chat-top")).toBe("120px");
+  expect(panel.style.getPropertyValue("--session-chat-bottom")).toBe("120px");
 });

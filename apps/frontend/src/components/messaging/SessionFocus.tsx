@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { MessageSquare, X } from "lucide-react";
 import { ApiError, sessionTitle, sessionViewKey, type LocalSession, type SessionSource } from "@lightbulb/shared";
 import { Button } from "@/components/ui/button";
@@ -13,6 +13,23 @@ import type { SidebarSession } from "./roomSections";
 
 /** `sessionId: null` is a new, not-yet-started session (NewSessionView), or with `all` the All sessions list. */
 export interface SessionFocusTarget { sessionId: string | null; all?: boolean; chat?: boolean }
+
+export type SessionChatLayout = "push" | "overlay" | "screen";
+const CHAT_WIDTH = 344;
+const TERMINAL_MIN_WIDTH = 420;
+/**
+ * Where the chat goes. Under 860px of window it takes the screen (the terminal stays mounted
+ * underneath). Otherwise it is a column beside the terminal whenever the terminal keeps 420px; a
+ * narrower panel gets an overlay that stops at the session's body, so the size strip above it and
+ * the controls below it are never covered. The PANEL is measured: the rail and sidebar take the
+ * rest of the window (prod 2026-10-07: a 984px window left a 709px panel and the overlay hid the controls).
+ */
+export function sessionChatLayout(panelWidth: number, viewportWidth: number): SessionChatLayout {
+  if (viewportWidth < 860) return "screen";
+  return panelWidth - CHAT_WIDTH >= TERMINAL_MIN_WIDTH ? "push" : "overlay";
+}
+/** The session's body: the live terminal's own box, or what stands in for it. */
+const SESSION_BODY = ".session-terminal-scroll, .session-terminal-wait, .local-session-terminal, .session-state-panel";
 
 /**
  * Focus placement: a shared session lives in the workspace, not in a room
@@ -125,7 +142,34 @@ export function SessionFocus({ focus, entries, loading, hintRevision, client, re
   };
   const unread = chatOpen || readThrough === session ? 0 : session?.chatUnread ?? 0;
   const showChat = Boolean(session && openChat && onChatOpenChange);
-  return <section className={`room-panel room-session-focus${showChat && chatOpen ? " session-chat-open" : ""}`} aria-label="Shared session">
+  const chatShown = showChat && chatOpen;
+  const panel = useRef<HTMLElement>(null);
+  const [chatLayout, setChatLayout] = useState<SessionChatLayout>("screen");
+  useLayoutEffect(() => {
+    const el = panel.current;
+    if (!chatShown || !el) return;
+    const watched = new Set<Element>();
+    const observer = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(() => measure());
+    const measure = () => {
+      const box = el.getBoundingClientRect();
+      const layout = sessionChatLayout(box.width, window.innerWidth);
+      setChatLayout(layout);
+      // The body is the one stretching row, so it resizes with every strip around it: watching it
+      // (and the terminal view, which is there before its first frame) is watching them all.
+      const bodies = [...el.querySelectorAll(`.room-session-main :is(${SESSION_BODY})`)];
+      for (const target of [el, ...bodies, ...el.querySelectorAll(".room-session-main .session-terminal-view")]) {
+        if (!watched.has(target)) { watched.add(target); observer?.observe(target); }
+      }
+      const body = bodies.map((candidate) => candidate.getBoundingClientRect()).find((rect) => rect.height > 0);
+      el.style.setProperty("--session-chat-top", `${body ? Math.max(0, body.top - box.top) : 0}px`);
+      el.style.setProperty("--session-chat-bottom", `${body ? Math.max(0, box.bottom - body.bottom) : 0}px`);
+    };
+    measure();
+    window.addEventListener("resize", measure);
+    return () => { observer?.disconnect(); window.removeEventListener("resize", measure); };
+    // `session`: a status change swaps the body (live, ended, offline) without resizing anything watched.
+  }, [chatShown, session]);
+  return <section ref={panel} className={`room-panel room-session-focus${chatShown ? ` session-chat-open session-chat-${chatLayout}` : ""}`} aria-label="Shared session">
     <div className="room-session-main">
       <header className="room-context-header">
         <h3 className="font-semibold room-wrap flex items-center gap-2">{session ? <><SessionToolIcon provider={session.provider} /><span className="min-w-0">{sessionTitle(session)}</span></> : "Shared session"}</h3>
@@ -143,11 +187,11 @@ export function SessionFocus({ focus, entries, loading, hintRevision, client, re
       {session && owner ? <LocalSessionPanel key={sessionViewKey(session)} session={session} ownerName={owner.ownerName} own={owner.own}
         client={client} revision={hintRevision} onAccessLost={onAccessLost} participants={participants} onMessageOwner={messageOwner} onEvent={onEvent} nameOf={id => resolveSessionOwner(id).ownerName} />
         : <div className="p-4 text-sm text-muted-foreground">
-          <p role="status">{resolvedFallback?.notFound ? "This session is no longer shared." : resolvedFallback?.error ? "Could not load this session." : "Loading session…"}</p>
+          <p role="status">{resolvedFallback?.notFound ? "This session is no longer shared." : resolvedFallback?.error ? "Could not load this session." : "Opening session…"}</p>
           {resolvedFallback?.error && <Button variant="ghost" onClick={retryFallback}>Try again</Button>}
         </div>}
     </div>
-    {showChat && chatOpen && session && openChat && <SessionChat key={session.sessionId} sessionId={session.sessionId}
-      sessionOwnerId={session.humanUserId} openChat={openChat} onClose={toggleChat} onRoom={onChatRoom} />}
+    {chatShown && session && openChat && <SessionChat key={session.sessionId} sessionId={session.sessionId}
+      sessionOwnerId={session.humanUserId} openChat={openChat} onClose={toggleChat} onRoom={onChatRoom} onRead={onAccessLost} />}
   </section>;
 }

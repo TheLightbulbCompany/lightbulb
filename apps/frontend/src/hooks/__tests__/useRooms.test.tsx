@@ -212,6 +212,20 @@ describe("useRooms canonical reconciliation", () => {
     await waitFor(() => expect(messaging.markRead).toHaveBeenCalled());
   });
 
+  it("marks a session's chat slot read on open and on arrival while focused, and never while unfocused", async () => {
+    const { result } = renderHook(() => useRooms(null, true, true, false), { wrapper });
+    act(() => result.current.selectRoom(room.roomId));
+    await waitFor(() => expect(messaging.markRead).toHaveBeenCalledWith(room.roomId, { lastReadSeq: 1 }));
+    messaging.markRead.mockClear();
+    vi.mocked(document.hasFocus).mockReturnValue(false);
+    act(() => { for (const handler of handlers) handler(messageEvent({ ...firstMessage, messageId: "message-2", messageSeq: 2 })); });
+    await waitFor(() => expect(result.current.messages).toHaveLength(2));
+    expect(messaging.markRead).not.toHaveBeenCalled(); // visible but unfocused: nobody saw it, and a toast still fires
+    vi.mocked(document.hasFocus).mockReturnValue(true);
+    act(() => window.dispatchEvent(new Event("focus")));
+    await waitFor(() => expect(messaging.markRead).toHaveBeenCalledWith(room.roomId, { lastReadSeq: 2 }));
+  });
+
   it("keeps a covered room unread, and marks it read as soon as it is uncovered", async () => {
     const { result, rerender } = renderHook(({ roomVisible }) => useRooms(null, true, roomVisible), {
       wrapper, initialProps: { roomVisible: false },

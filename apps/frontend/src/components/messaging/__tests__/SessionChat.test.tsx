@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { act, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, expect, it, vi } from "vitest";
 import { ApiError, type CanonicalRoomMessage, type RoomDetail } from "@lightbulb/shared";
 
@@ -34,11 +34,12 @@ it("opens the session's own room in a second slot and colours people as the term
   const onRoom = vi.fn();
   const view = render(<SessionChat sessionId="s1" sessionOwnerId="user_alice" openChat={vi.fn(async () => detail)} onClose={vi.fn()} onRoom={onRoom} />);
   await waitFor(() => expect(selectRoom).toHaveBeenCalledWith("chat-1"));
-  expect(rooms.value.args).toEqual([null, true, true, false]); // its own slot: never auto-selects a listed room
+  expect(rooms.value.args).toEqual([null, true, true, false]); // its own slot: never auto-selects a listed room; reads under the room focus rule
   expect(onRoom).toHaveBeenCalledWith("chat-1");
   expect(screen.getByRole("complementary", { name: "Session chat" })).toBeInTheDocument();
   expect(document.querySelector('[data-person="green"]')).toHaveTextContent("is it the relay?");
   expect(screen.getByLabelText("Message the people here")).toBeInTheDocument();
+  expect(screen.getByPlaceholderText("Message the people here")).toBeInTheDocument(); // prod showed the room's generic one
   view.unmount();
   expect(onRoom).toHaveBeenLastCalledWith(null);
 });
@@ -80,4 +81,59 @@ it("says access was removed, with no composer, when sharing pauses while the cha
   render(<SessionChat sessionId="s1" sessionOwnerId="user_alice" openChat={vi.fn(async () => detail)} onClose={vi.fn()} />);
   expect(await screen.findByText("Access removed. You can no longer view this conversation.")).toBeInTheDocument();
   expect(screen.queryByLabelText("Message the people here")).not.toBeInTheDocument();
+});
+
+it("closes from the left of its header, away from the session's own close (a double click closed both)", async () => {
+  render(<SessionChat sessionId="s1" sessionOwnerId="user_alice" openChat={vi.fn(async () => detail)} onClose={vi.fn()} />);
+  const close = await screen.findByRole("button", { name: "Close chat" });
+  expect(close.parentElement).toHaveClass("room-context-header");
+  expect(close.parentElement!.firstElementChild).toBe(close);
+  expect(close).not.toHaveClass("ml-auto");
+});
+
+it("shows its frame at once, and selects nothing until the door answers with the room", async () => {
+  let land!: (room: RoomDetail) => void;
+  const openChat = vi.fn(() => new Promise<RoomDetail>((resolve) => { land = resolve; }));
+  const onRoom = vi.fn();
+  // The hook mock holds chat-1's messages throughout: the column must not show a room it has not opened.
+  render(<SessionChat sessionId="s1" sessionOwnerId="user_alice" openChat={openChat} onClose={vi.fn()} onRoom={onRoom} />);
+  expect(screen.getByRole("heading", { name: "Chat" })).toBeInTheDocument();
+  expect(screen.getByText("Opening chat…")).toBeInTheDocument();
+  expect(screen.getByLabelText("Message the people here")).toBeDisabled(); // the door must open before anyone posts
+  expect(selectRoom).not.toHaveBeenCalled(); // no room, so no subscription and no read
+  expect(onRoom).not.toHaveBeenCalled();
+  expect(screen.queryByText("is it the relay?")).not.toBeInTheDocument();
+  await act(async () => { land(detail); });
+  expect(selectRoom).toHaveBeenCalledExactlyOnceWith("chat-1");
+  expect(onRoom).toHaveBeenLastCalledWith("chat-1");
+  expect(screen.getByLabelText("Message the people here")).toBeEnabled();
+  expect(screen.getByText("is it the relay?")).toBeInTheDocument();
+});
+
+it("selects nothing when the door refuses", async () => {
+  const onRoom = vi.fn();
+  render(<SessionChat sessionId="s1" sessionOwnerId="user_alice" openChat={vi.fn(async () => { throw new ApiError(404, null); })} onClose={vi.fn()} onRoom={onRoom} />);
+  expect(await screen.findByText("Chat is not available for this session.")).toBeInTheDocument();
+  expect(selectRoom).not.toHaveBeenCalled();
+  expect(onRoom).not.toHaveBeenCalled();
+});
+
+it("says so each time its read cursor moves: on open and on a message read while it is open", async () => {
+  const onRead = vi.fn();
+  const props = { sessionId: "s1", sessionOwnerId: "user_alice", openChat: vi.fn(async () => detail), onClose: vi.fn(), onRead };
+  const view = render(<SessionChat {...props} />);
+  await waitFor(() => expect(onRead).toHaveBeenCalledTimes(1));
+  rooms.value = { ...rooms.value, activeRoom: { ...detail, lastReadSeq: 2 } }; // markRead landed for a new arrival
+  view.rerender(<SessionChat {...props} />);
+  await waitFor(() => expect(onRead).toHaveBeenCalledTimes(2));
+});
+
+it("stops counting the room as on screen once access to it is removed", async () => {
+  const onRoom = vi.fn();
+  const props = { sessionId: "s1", sessionOwnerId: "user_alice", openChat: vi.fn(async () => detail), onClose: vi.fn(), onRoom };
+  const view = render(<SessionChat {...props} />);
+  await waitFor(() => expect(onRoom).toHaveBeenLastCalledWith("chat-1"));
+  rooms.value = { ...rooms.value, accessRemoved: true, messages: [] };
+  view.rerender(<SessionChat {...props} />);
+  await waitFor(() => expect(onRoom).toHaveBeenLastCalledWith(null));
 });

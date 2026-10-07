@@ -306,6 +306,35 @@ async def test_chat_state_reads_one_key_per_session_until_the_viewer_has_a_seat(
 
 
 @pytest.mark.asyncio
+async def test_chat_state_is_zero_after_a_read_and_counts_a_later_message_once(monkeypatch):
+    """Prod 2026-10-07: the count came back after a reload. The cursor a read writes
+    (``_write_cursor``: the seq with its top-level ordinal) is what the count subtracts."""
+    repo = session_chat.messaging_repo
+    pk, seat = repo.room_pk(ROOM), repo.member_sk("human", BOB.user_id)
+    table = {
+        (pk, seat): {"pk": pk, "sk": seat, "joinedTopOrdinal": 0},
+        (pk, "META"): {**META, "roomId": ROOM, "lastSeq": 3, "topCount": 3},
+    }
+    monkeypatch.setattr(
+        repo, "batch_get", AsyncMock(side_effect=lambda keys: {k: table[k] for k in keys if k in table})
+    )
+    monkeypatch.setattr(repo, "get_room", AsyncMock(side_effect=lambda _room: table[(pk, "META")]))
+
+    class Table:
+        def update_item(self, *, Key, ExpressionAttributeValues, **_):
+            values = ExpressionAttributeValues
+            table[(Key["pk"], Key["sk"])] = {"lastReadSeq": values[":n"], "topOrdinal": values[":o"]}
+
+    monkeypatch.setattr(repo, "_table", lambda: Table())
+    assert await session_chat.chat_state(OWNER, BOB.user_id, [SID]) == {SID: (ROOM, 3)}
+    assert await repo.set_read_cursor(ROOM, BOB.user_id, 3) == 3  # the chat column's PUT .../read
+    assert await session_chat.chat_state(OWNER, BOB.user_id, [SID]) == {SID: (ROOM, 0)}
+    assert await session_chat.chat_state(OWNER, BOB.user_id, [SID]) == {SID: (ROOM, 0)}  # and after a reload
+    table[(pk, "META")] = {**table[(pk, "META")], "lastSeq": 4, "topCount": 4}  # one reply while the chat is closed
+    assert await session_chat.chat_state(OWNER, BOB.user_id, [SID]) == {SID: (ROOM, 1)}
+
+
+@pytest.mark.asyncio
 async def test_a_lifecycle_write_that_loses_the_revision_race_is_tried_again(env):
     """A message or a seat can move the room's revision under the end/resume hook, which runs once."""
     from botocore.exceptions import ClientError

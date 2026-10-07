@@ -101,19 +101,26 @@ async def _create(owner_id: str, room_id: str, row: dict) -> dict:
 
 
 async def _set_archived(meta: dict, archived: bool) -> dict:
+    """Install the archived state. A lost revision race (a message, a seat) re-reads and tries
+    again: the end and resume hooks run once, and a chat left on screen never reopens the door."""
     updates = (
         {"archivedAt": messaging.utc_now().isoformat(), "archivedBy": SYSTEM_ACTOR_ID}
         if archived
         else {"archivedAt": None, "archivedBy": None}
     )
-    try:
-        meta = await messaging_repo.patch_room_meta(meta["roomId"], updates)
-    except ClientError as exc:
-        if not messaging_repo._is_cancelled(exc):
-            raise
-        return await messaging_repo.get_room(meta["roomId"]) or meta  # another writer moved it first
-    await messaging._publish_room_metadata(meta)
-    return meta
+    for attempt in range(4):
+        try:
+            meta = await messaging_repo.patch_room_meta(meta["roomId"], updates)
+        except ClientError as exc:
+            if not messaging_repo._is_cancelled(exc) or attempt == 3:
+                raise
+            meta = await messaging_repo.get_room(meta["roomId"]) or meta
+            if archived == bool(meta.get("archivedAt")):
+                return meta  # another writer installed it
+            continue
+        await messaging._publish_room_metadata(meta)
+        return meta
+    return meta  # pragma: no cover -- the loop returns or raises
 
 
 async def _follow_lifecycle(meta: dict, row: dict) -> dict:

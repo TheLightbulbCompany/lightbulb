@@ -297,3 +297,22 @@ async def test_chat_state_reads_one_key_per_session_until_the_viewer_has_a_seat(
     batch_get.reset_mock()
     assert await session_chat.chat_state(OWNER, BOB.user_id, [other]) == {}
     assert batch_get.await_count == 1
+
+
+@pytest.mark.asyncio
+async def test_a_lifecycle_write_that_loses_the_revision_race_is_tried_again(env):
+    """A message or a seat can move the room's revision under the end/resume hook, which runs once."""
+    from botocore.exceptions import ClientError
+
+    lost = ClientError({"Error": {"Code": "TransactionCanceledException"}}, "TransactWriteItems")
+    env["get_room"].return_value = META
+    env["patch_room_meta"].side_effect = [lost, {**META, "archivedAt": "t", "revision": 3}]
+    await session_chat.follow_session(OWNER, SID, ended=True)
+    assert env["patch_room_meta"].await_count == 2
+    messaging._publish_room_metadata.assert_awaited_once()
+    # Another writer already installed the state: nothing left to write.
+    env["patch_room_meta"].reset_mock(side_effect=True)
+    env["patch_room_meta"].side_effect = [lost]
+    env["get_room"].side_effect = [META, {**META, "archivedAt": "t"}]
+    await session_chat.follow_session(OWNER, SID, ended=True)
+    assert env["patch_room_meta"].await_count == 1

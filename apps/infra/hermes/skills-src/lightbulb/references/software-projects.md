@@ -51,8 +51,8 @@ pull requests; never push an untested change to `main`. The mechanics
 ## Keep the workspace small
 
 Your home directory is saved at the end of every turn and restored file by
-file on a cold start, so a big tree slows every cold start. **Deleting does not
-shrink it**: a removed file stays saved and returns on the next cold start.
+file on a cold start, so a big tree slows every cold start. A file you delete is
+removed from the saved copy at your next save.
 
 - One clone per repository at `$HERMES_HOME/.run/<repo>`, reused across
   conversations (not in this conversation's folder), partial or shallow:

@@ -1687,8 +1687,10 @@ def system_prompt(body: dict, agent_id: str, media: list[str] | None = None) -> 
             f"Images, PDFs, office/text files and mp4/webm/mov videos up to 100 MB attach; anything "
             f"outside your profile folder is lost when the workspace restarts.\n"
             f"Your shell starts in this conversation's own folder "
-            f"({conversation_dir(agent_id, _resolve_session_key(agent_id, body))}); repos and files "
-            f"from earlier work are in your profile folder ({_profile_dir(agent_id)}).\n"
+            f"({conversation_dir(agent_id, _resolve_session_key(agent_id, body))}); files from earlier "
+            f"work are in your profile folder ({_profile_dir(agent_id)}). A repository is cloned once, "
+            f"partially, at {_profile_dir(agent_id)}/.run/<repo>; branches get worktrees under /tmp/wt, "
+            f"which is never saved and costs nothing.\n"
             # What you write beside tool calls is posted to the room (_progress_poster).
             "On a long job, write one short line of real progress beside your tool calls, about "
             "every 8 tool calls or every 2 minutes: what is done and what is next. It is posted "

@@ -1362,7 +1362,8 @@ def _require_control(row: dict, request: LocalSessionCommand, *, allow_offline_s
             raise ApiProblem("LOCAL_SESSION_UNSUPPORTED", "This session can only be ended on its Mac.")
         return
     caps = row["capabilities"]
-    if not row["capabilitiesVerified"]:
+    # A Mac that failed control closed (controlUnavailableReason) takes no input, read on this row.
+    if not row["capabilitiesVerified"] or row.get("controlUnavailableReason"):
         raise ApiProblem("LOCAL_SESSION_UNSUPPORTED", "Sending is unavailable for this session.")
     if request.kind == "approve":
         _require_pending_approval(row, request)

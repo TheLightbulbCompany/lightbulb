@@ -236,7 +236,7 @@ async def find_rooms(query: str = "", limit: int = 30) -> dict:
 
 @mcp.tool()
 async def find_sessions(query: str = "", limit: int = 30) -> dict:
-    """Find shared coding sessions by readable title, provider or folder; use sessionId to reference one in send_message."""
+    """Find shared coding sessions by readable title, provider or folder. Passing a sessionId as send_message session_id types your text into that live session (canSend says whether you may)."""
     return await sessions_for(_caller(), query, limit)
 
 
@@ -289,7 +289,7 @@ async def send_message(
     reply_to_message_id: uuid.UUID | None = None,
     mention_ids: list[str] | None = None,
 ) -> dict:
-    """Send as this client on the signed-in person's behalf to exactly one of room_id, person_id (a member id; opens the DM if needed) or session_id (a follow-up into a shared session you may send to; see find_sessions canSend). Room and person sends may reply in a thread or address room members."""
+    """Send as this client on the signed-in person's behalf to exactly one of room_id, person_id (a member id; opens the DM if needed) or session_id (delivers the text into that session as a follow-up prompt it acts on; it is not a link; see find_sessions canSend). Room and person sends may reply in a thread or address room members."""
     auth = _caller(WRITE_SCOPE)
     slug, client = client_identity(get_access_token().client_id)
     if sum(target is not None for target in (room_id, person_id, session_id)) != 1:

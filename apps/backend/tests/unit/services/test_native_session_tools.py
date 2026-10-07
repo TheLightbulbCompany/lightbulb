@@ -585,16 +585,27 @@ async def test_session_send_admits_then_dispatches_and_survives_a_dispatch_failu
 
 
 @pytest.mark.asyncio
-async def test_session_send_refuses_a_session_whose_control_failed_closed(monkeypatch):
-    submit = AsyncMock()
-    monkeypatch.setattr(tools.local_sessions, "submit_command", submit)
-    target = {
-        "sessionId": str(uuid.uuid4()),
+async def test_session_send_refuses_when_control_fails_closed_between_authorize_and_admit(monkeypatch):
+    import time
+
+    sid = str(uuid.uuid4())
+    clean = {
+        "sessionId": sid,
         "ownerId": "org_a",
+        "humanUserId": "user_owner",
         "generation": "g",
-        "controlUnavailableReason": "history-gap",
+        "status": "idle",
+        "onlineUntil": int(time.time()) + 60,
+        "capabilities": {"sendMode": "queue", "interrupt": False},
+        "capabilitiesVerified": True,
     }
+    # A heartbeat flips the row after the caller's authorize; submit_command's own read sees it.
+    flipped = {**clean, "controlUnavailableReason": "history-gap"}
+    monkeypatch.setattr(tools.local_sessions, "authorize_session", AsyncMock(return_value=(flipped, {})))
+    monkeypatch.setattr(tools.local_sessions.repo, "get_command", AsyncMock(return_value=None))
+    admit = AsyncMock()
+    monkeypatch.setattr(tools.local_sessions.repo, "admit_command", admit)
     with pytest.raises(ApiProblem) as error:
-        await tools.session_send(tools.AuthContext(user_id="user_owner", org_id="org_a"), target, "hi", "r")
+        await tools.session_send(tools.AuthContext(user_id="user_owner", org_id="org_a"), clean, "hi", "r1")
     assert error.value.error.code == "LOCAL_SESSION_UNSUPPORTED"
-    submit.assert_not_awaited()
+    admit.assert_not_awaited()

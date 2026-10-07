@@ -1,9 +1,7 @@
 # Load testing — messaging, agent conversations, session sharing (design, not run)
 
-Owner ruling 2026-10-07: three scenarios, **dev only, nothing runs without Prasiddha's
-confirmation**. The repo has no load test today. This spec names the bottleneck each test
-probes, the harness, the pass bar, the cost, and the blast-radius controls. Delete it once
-the harness ships (CLAUDE.md "Planning docs are disposable").
+Owner ruling 2026-10-07: three scenarios, **dev only, nothing runs without Prasiddha's confirmation**.
+The repo has no load test today. Delete this spec once the harness ships (CLAUDE.md "Planning docs are disposable").
 
 ## 0. Facts every scenario inherits
 
@@ -21,9 +19,8 @@ the harness ships (CLAUDE.md "Planning docs are disposable").
 | Dev baseline (2026-09-20) | queue wait p50 19 ms / p95 23 ms; ingress p50 232 ms / p95 30.5 s; reply p50 13.1 s / p95 57.3 s; projector notify p50 765 ms / p95 1.4 s | `docs/runbooks/chat-performance.md` |
 | **One AWS account for dev AND prod** (`877352799272`) | Lambda unreserved concurrency, API GW account rps, AppSync, AgentCore quotas are **shared with prod** | CLAUDE.md "AWS Configuration" |
 
-The last row is the main blast-radius fact: the projector, `ws-message` and other unreserved
-Lambdas draw on the same account pool as prod's projector. Every run watches account-wide
-`AWS/Lambda ConcurrentExecutions` and stops at 50% of the account limit.
+The last row is the main blast-radius fact: the projector and `ws-message` (unreserved) draw on the
+same Lambda pool as prod's projector. Every run stops at 50% of the account concurrency limit.
 
 ## 1. Shared harness
 
@@ -48,11 +45,9 @@ Lambdas draw on the same account pool as prod's projector. Every run watches acc
    (API) and `…/tokens/lightbulb-appsync` (AppSync) every 40 s, carrying the rotating client JWT
    forward exactly as `Session._post` does.
 
-Pre-checks: `GET /v1/users/count` against Clerk's development-instance user cap (documented as
-100; verify). Dev org member cap is unlimited (`max_allowed_memberships: 0`, 2026-09-16).
-FAPI rate limits per source IP are undocumented for us and all DLT tasks egress through one
-NAT — the pilot measures them. `fixtures.json` holds live client JWTs: dev only, deleted from
-DLT's S3 bucket at teardown.
+Pre-checks: `GET /v1/users/count` against Clerk's dev-instance user cap (documented as 100; verify).
+Dev org member cap is unlimited (`max_allowed_memberships: 0`). FAPI per-IP limits are unknown and all
+DLT tasks share one NAT: the pilot measures them. `fixtures.json` holds live client JWTs: deleted at teardown.
 
 **Fixture orgs.** BAPI `POST /organizations {name, created_by}` fires `organization.created` →
 `provision_new_workspace` → the normal SFN provision (Paperclip company, six starter agents,
@@ -60,11 +55,8 @@ AgentCore runtime, trial OpenRouter key). Members via `POST /organizations/{id}/
 sequentially (each fires the Paperclip JOIN + `#general` seat). Load rooms are created by the
 harness with `POST /messaging/rooms`; **never post in `#general`** (all six agents `active`).
 
-**Clock.** Each message body carries the sender's `Date.now()`; receivers subtract their own.
-Fargate tasks sync to Amazon Time Sync; cross-task skew is far below the 100 ms resolution used.
-
-**k6 shape (all three scripts).**
-
+**k6 shape (all three scripts).** Each message/frame carries the sender's `Date.now()`; receivers
+subtract their own (Fargate syncs to Amazon Time Sync, skew ≪ the 100 ms resolution used).
 ```js
 export const options = { scenarios: { s: { executor: 'ramping-arrival-rate', stages: __ENV.STAGES } },
   thresholds: { http_req_failed: ['rate<0.005'], live_delivery_ms: ['p(95)<2000'] } };
@@ -114,11 +106,9 @@ Each VU also reconciles like a client (`GET …/messages?afterSeq=`) on a detect
 | AppSync | `AWS/AppSync ConnectServerError`, `SubscribeServerError`, `BroadcastEventServerError`, `BroadcastDroppedEvents` (alarmed today) | 0 |
 | API GW | `AWS/ApiGateway Count`, `4xx`, `5xx`, `Latency`, `IntegrationLatency` | 5xx = 0 |
 
-**Cost per run** (list prices, verify): ~50k messages. DynamoDB on-demand ≈ 6 write units
-per append (transaction doubles) → ~0.3 M WRU ≈ $0.40; AppSync Events ≈ $1 per M messages
-(1b's 80 subscribers × 180 msgs ≈ 15k out) → < $0.10; Lambda < $0.10; DLT Fargate ≈ $1 per hour
-of 10 tasks. **Under $5 per run.** AOSS indexing adds OCU-hours if the collection scales out —
-watch it; standby is enabled.
+**Cost per run** (list prices, verify): ~50k messages. DynamoDB ≈ 6 write units per append → ~0.3 M WRU
+≈ $0.40; AppSync Events ≈ $1/M messages → < $0.10; Lambda < $0.10; DLT Fargate ≈ $1/h for 10 tasks.
+**Under $5 per run**, plus AOSS OCU-hours if the search collection scales out (watch it).
 
 ## 3. Scenario 2 — agent-conversation load
 
@@ -139,7 +129,8 @@ bridge 202 → turn → gate → OpenRouter → `run.ended` callback → reply w
 **Shape.** O fixture orgs (5 → 30), each provisioned as above (one runtime each). Messages are
 **DMs or @mentions** only: both are `user_request`, so no Jev routing call and no ambient wakes.
 Body: `Reply with exactly the token <T> and nothing else. Do not use tools.`
-(`messaging-concurrency-check.md`), so every reply is checkable for cross-talk.
+(`messaging-concurrency-check.md`), so every reply is checkable for cross-talk. Cold/warm is labelled
+only with bridge process-start evidence (`chat-performance.md`), else `unknown`.
 
 | Sub-test | Load |
 |---|---|
@@ -147,8 +138,6 @@ Body: `Reply with exactly the token <T> and nothing else. Do not use tools.`
 | 2b cold burst | O = 5, 10, 20, 30 cold orgs messaged in the same second (30 crosses the cap of 20) |
 | 2c same-owner fan-in | 1 org, 6 agents × 3 rooms, 18 @mentions in one second |
 | 2d breadth | 2a at O = 30 with 2 turns/min |
-
-Cold/warm is labelled only with bridge process-start evidence (`chat-performance.md`), else `unknown`.
 
 **Metrics and pass bar.** All `LightbulbAI` with `env=dev, service=lightbulb-backend` unless noted.
 
@@ -174,14 +163,10 @@ Cold/warm is labelled only with bridge process-start evidence (`chat-performance
 | Dev-only stub | `forward.mjs` hard-codes `https://openrouter.ai/api/v1/chat/completions`; a stub needs new gate code behind an env switch (against the no-flags ruling). | no |
 | **Trial fixture orgs on the existing policy** | Real path end to end. Each fixture org's OpenRouter key stops itself at $0.25/day, so worst-case spend is **O × $0.25/day by construction** (30 orgs → $7.50). | **recommended** |
 
-A 10-turn pilot reads real tokens per turn from `messaging.usage.callback`; if a Hermes turn
-costs more than ~$0.005, 2d at O = 30 hits the cap inside the run and the test reports 429s
-instead of latency — then lower 2d's rate rather than lift the cap.
-
-**AgentCore cost.** microVM time per org = test duration + time until the session is stopped;
-the idle timeout is **4 h** (`IDLE_TIMEOUT_S`), so teardown must stop sessions, not wait.
-Budget ≈ O × 1 h of microVM at AgentCore list price, plus DLT Fargate. Jev cost is zero
-(no plain multi-agent messages).
+A 10-turn pilot reads tokens per turn from `messaging.usage.callback`; above ~$0.005/turn, 2d hits the
+cap mid-run and reports 429s, not latency — then lower 2d's rate rather than lift the cap.
+**AgentCore cost:** microVM time per org = run + time until stopped; idle timeout is **4 h**
+(`IDLE_TIMEOUT_S`), so teardown stops sessions. Budget ≈ O × 1 h of microVM plus DLT Fargate; Jev cost 0.
 
 ## 4. Scenario 3 — Claude Code session-sharing load
 
@@ -253,17 +238,11 @@ Trends are primary.
 | Cleanup | rooms: `DELETE /messaging/rooms/{id}`; scenario 2: `PATCH /debug/provision` per fixture org (stops the warm session — do not wait 4 h); devices: `DELETE /desktop/devices/{id}`; users/orgs: `DELETE /debug/user-data` per user, then the `dev-clean-slate-reset` skill steps 2–3 (runtime, Paperclip Better Auth rows) and Clerk BAPI deletes; delete `fixtures.json` from DLT's bucket |
 | DLT stack | deployed once by the owner (CFN, outside CDK); deleted or kept per decision below |
 
-## 6. Order of work
-
-1. `fixtures.py` + 1a pilot (2 users, 1 room) under the existing throttle — proves auth, the
-   AppSync port and the clock.
-2. Scenario 1 full; 3. scenario 3 (no model spend); 4. scenario 2 pilot (10 turns) then full.
-
-## 7. Owner decisions
+## 6. Owner decisions
 
 1. Target load: messaging rps for the "pass" run (proposal: 40 rps dev, under the throttle), concurrent cold workspaces (proposal: 20), viewers per session (proposal: 25).
 2. Budget per run: scenario 2 ceiling O × $0.25/day (proposal O = 20 → $5) plus ≈ 1 h microVM per org.
-3. Which scenario first (proposal: 1, then 3, then 2 — cheapest and least shared first).
+3. Which first (proposal: a 2-user 1a pilot proving auth/AppSync/clock, then 1, 3, 2 — cheapest and least shared first).
 4. Approve deploying the DLT CloudFormation stack in the shared account (and whether to keep it).
 5. Approve the trial-org spend path for scenario 2 (no free model, no stub, no BYO).
 6. Approve a temporary `THROTTLE_CONFIG.dev` raise for 1d, or skip 1d.

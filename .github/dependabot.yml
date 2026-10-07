@@ -2,14 +2,20 @@ version: 2
 # Weekly, one grouped PR per ecosystem for minor+patch; majors arrive one by one.
 updates:
   - package-ecosystem: npm # pnpm workspaces use the npm key
-    directory: /
+    # Workspace root plus the two lockfile roots outside pnpm-workspace.yaml.
+    directories:
+      - /
+      - /stripe-app
+      - /apps/infra/lambda/openrouter-gate
     schedule: { interval: weekly }
     open-pull-requests-limit: 5
     groups:
       minor-and-patch:
         update-types: [minor, patch]
   - package-ecosystem: uv
-    directory: /apps/backend
+    directories:
+      - /apps/backend
+      - /apps/huddle-agent
     schedule: { interval: weekly }
     open-pull-requests-limit: 5
     groups:

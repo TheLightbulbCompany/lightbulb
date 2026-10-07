@@ -1,8 +1,7 @@
 # AWS Security Agent against dev — runbook
 
-Status: owner-approved for DEV only (2026-10-07). Prod is NOT a target. Researched 2026-10-07
-from the [AWS user guide](https://docs.aws.amazon.com/securityagent/latest/userguide/) (service now
-branded "part of AWS Continuum"); re-read the cited pages first, the service moves.
+Status: dev is the only permitted target; the owner has NOT yet approved running it. Prod is NOT a target.
+Researched 2026-10-07 from the [AWS user guide](https://docs.aws.amazon.com/securityagent/latest/userguide/) (now "part of AWS Continuum").
 Cost: $50 per task-hour, metered per second; 2-month free trial from the first run
 ([FAQ](https://aws.amazon.com/security-agent/faqs/)). Data is KMS-encrypted, not used for training;
 test logs go to CloudWatch in our account.
@@ -119,8 +118,7 @@ accepts the spend: each agent-room message wakes a real runtime.
 
 - Create a NEW throwaway Clerk org and user on the dev instance, address
   `sec-pentest+clerk_test@<our mail domain>`. Never `admin@...`: the bootstrap-admin
-  collision bug (issue #2003) blocks Paperclip seeding. Free tier (`trial_local`); no real person's email
-  (dev Clerk is shared with prod previews).
+  collision bug (issue #2003) blocks Paperclip seeding. Free tier (`trial_local`); no real person's email.
 - Credential method. The credential **Access URL must be one of the test's target endpoints**
   ([provide-testing-credentials](https://docs.aws.amazon.com/securityagent/latest/userguide/provide-testing-credentials.html)),
   so for an `api-dev`-only run the Clerk login page on `dev.` cannot be the login. The API takes a
@@ -132,12 +130,12 @@ accepts the spend: each agent-room message wakes a real runtime.
   [BAPI spec](https://github.com/clerk/openapi-specs/blob/main/bapi/2025-04-10.yml) `createSession`
   takes `user_id` and `active_organization_id` ("the organization to set as active for this session");
   it is "intended only for use in testing, and is not available for production instances" (fine: dev).
-  `POST /v1/sessions/{id}/tokens` takes `expires_in_seconds`, so the 60 s default can be raised.
+  `POST /v1/sessions/{id}/tokens` takes `expires_in_seconds` (BAPI spec: minimum 30, maximum 315360000). The Lambda requests **172800 (48 h)**, covering the 16 h typical run, the 24 task-hour cap and cleanup, once per run or per request.
   Login prompt: "Set the Authorization header to `Bearer <the credential>` on every request to
   https://api-dev.thelightbulb.company". Access URL `https://api-dev.thelightbulb.company`.
   **Preflight, before starting the run:** invoke the Lambda once and check
-  `jwt.decode(tok, options={"verify_signature": False})["o"]["id"] == "<throwaway org id>"`;
-  abort otherwise.
+  `jwt.decode(tok, options={"verify_signature": False})["o"]["id"] == "<throwaway org id>"` and
+  that `exp - iat >= 172800`; abort otherwise (a backend that rejects the long token is the fallback case).
   **Fallback:** authenticated API testing needs the `dev.` target (and Vercel approval), using
   Secrets Manager `{"username","password"}` and the Clerk sign-in page as the login. SMS, push and
   hardware-key MFA are unsupported.
@@ -174,12 +172,11 @@ Alerts (budget + CloudWatch alarms) are defined in CDK, section 8.
 ## 7. Unknowns (the docs did not answer)
 
 - OPEN OWNER QUESTION: our Vercel plan and whether Vercel approves; decides if `dev.` is a target.
-- Whether the Lambda credential is fetched once per run (a 60 s token would then expire) or per
-  login. If once: use a dedicated Clerk JWT template with a long lifetime, if the backend accepts it.
-- Whether the default session token (not a template) carries `o.id` for a session made with `active_organization_id`: the preflight check proves it. If not, fallback below.
+- Whether AWS fetches the Lambda credential once per run or per request (the 48 h token covers both).
+- Whether the default session token carries `o.id` for an `active_organization_id` session: preflight proves it.
 - Whether `CfnTargetDomain` exposes the TXT record value (docs list none): hence the two-step flow.
 - Whether `api-dev` sits behind a WAF (branch `feat/waf-count-mode`): it may block the agent; no IPs to allowlist.
-- The Budgets service name; the free-trial cap; whether Clerk bot protection blocks sign-in.
+- The free-trial cap; whether Clerk bot protection blocks sign-in.
 
 ## 8. Infra PR spec (apps/infra, dev stage only; follow-up to this docs PR)
 
@@ -188,13 +185,16 @@ Run `npx cdk synth`, commit the regenerated `deploy.yml`. Two deploys: the TXT v
   IdC), `CfnAgentSpace` `lightbulb-dev` (`AwsResources`: service role, log group, credential
   Lambda ARN; `TargetDomainIds`), one `CfnTargetDomain` per host (`DNS_TXT`: `api-dev.` and, only
   if approved, `dev.`; never the apex), both roles, `/aws/securityagent/lightbulb-dev` log group.
-  Plus the credential Lambda (python, Clerk BAPI calls), which reads the Clerk secret.
+  Plus the credential Lambda (python, Clerk BAPI calls), whose EXECUTION role needs
+  `secretsmanager:GetSecretValue` on `lightbulb/dev/clerk_secret_key` and `lightbulb/dev/security-agent/pentest-user`
+  (distinct from the service role's `lambda:InvokeFunction`).
 - **dns-stack.ts** (second deploy): one `TXT` record per host at the console's **Record name**.
   Removed by a later PR after the run.
 - **auth-stack.ts**: the throwaway user's Clerk user id as a Secrets Manager secret
   `lightbulb/dev/security-agent/pentest-user` (no value in CDK; owner sets it from a mode-600 file).
-- **observability-stack.ts**: an `aws-budgets` `CfnBudget` ($1,200/month, filtered to the
-  AWS Security Agent service, alerts 50% actual and 100% forecast to the existing alarm SNS
-  topic) and CloudWatch alarms on `AWS/SecurityAgent` `FailedPentestJobs` and
+- **observability-stack.ts**: an `aws-budgets` `CfnBudget`, UNFILTERED (account level) because the
+  Cost Explorer service value is not verified here: limit = current monthly account spend plus
+  $1,200, alerts 50% actual and 100% forecast to the existing alarm SNS topic. The owner reports Cost Explorer lists
+  "AWS Security Agent": once confirmed, filter on it and set the limit to $1,200) and CloudWatch alarms on `AWS/SecurityAgent` `FailedPentestJobs` and
   `ConcurrentPentestJobs` (dimension `AgentSpaceId`). Dev stage only; the Budget is
   account-wide, so deploy it once.

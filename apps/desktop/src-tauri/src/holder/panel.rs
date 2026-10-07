@@ -10,7 +10,7 @@
 //! and nothing more.
 
 use super::manager::{self, HolderInfo};
-use super::protocol::{encode, read_frame, DETACHED, EXIT, HELLO, INPUT, RESIZE};
+use super::protocol::{encode, read_frame, with_offset, DETACHED, EXIT, HELLO, INPUT, OUTPUT, RESIZE};
 use serde::Deserialize;
 use serde_json::{json, Value};
 use std::collections::HashMap;
@@ -127,6 +127,12 @@ fn said(message: tungstenite::Result<Message>) -> Said {
     }
 }
 
+/// The holder's recent output as one frame for the page (spec §5.6), which writes an OUTPUT
+/// payload after its offset: the panel's scrollback is full on open. None when there is none.
+fn history_frame(bytes: Option<Vec<u8>>) -> Option<Vec<u8>> {
+    bytes.filter(|b| !b.is_empty()).map(|b| encode(OUTPUT, &with_offset(0, &b)))
+}
+
 fn relay(stream: TcpStream) -> std::io::Result<()> {
     let server = server().map_err(std::io::Error::other)?;
     let admitted = std::sync::Arc::new(Mutex::new(None::<String>));
@@ -147,6 +153,7 @@ fn relay(stream: TcpStream) -> std::io::Result<()> {
     let socket = manager::socket_dir().join(format!("{id}.sock"));
     // The page sends its size first; the holder needs it before drawing the snapshot. `join`: a
     // terminal already running the session (`lightbulb claude`) keeps its keyboard and size.
+    // The page then gets the holder's facts, its recent output for scrollback, and the screen.
     let mut hello = json!({"role": "interactive", "join": true});
     if let Said::Frame(RESIZE, size) = said(ws.read()) {
         if size.len() == 4 {
@@ -158,6 +165,13 @@ fn relay(stream: TcpStream) -> std::io::Result<()> {
     holder.write_all(&encode(HELLO, hello.to_string().as_bytes()))?;
     let mut from_holder = holder.try_clone()?;
     let mut to_page = tungstenite::WebSocket::from_raw_socket(stream.try_clone()?, tungstenite::protocol::Role::Server, None);
+    // The facts first (a joined page takes the session's size from them), then the recent output
+    // as scrollback, then everything else in order: the screen is next.
+    let (kind, facts) = read_frame(&mut from_holder)?;
+    to_page.send(Message::Binary(encode(kind, &facts).into())).map_err(std::io::Error::other)?;
+    if let Some(frame) = history_frame(manager::history(&socket, super::run::LOG_CAP)) {
+        to_page.send(Message::Binary(frame.into())).map_err(std::io::Error::other)?;
+    }
     std::thread::spawn(move || {
         while let Ok((kind, payload)) = read_frame(&mut from_holder) {
             if to_page.send(Message::Binary(encode(kind, &payload).into())).is_err() || matches!(kind, DETACHED | EXIT) {
@@ -359,6 +373,15 @@ fn close_views(app: &AppHandle) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_panel_gets_history_as_one_output_frame_and_nothing_when_there_is_none() {
+        use crate::holder::protocol::{split_offset, OUTPUT};
+        let frame = history_frame(Some(b"old\nlines".to_vec())).unwrap();
+        let (kind, payload) = read_frame(&mut frame.as_slice()).unwrap();
+        assert_eq!((kind, split_offset(&payload).unwrap().1), (OUTPUT, &b"old\nlines"[..]));
+        assert!(history_frame(Some(vec![])).is_none() && history_frame(None).is_none());
+    }
 
     #[test]
     fn terminal_socket_admits_its_own_page_once_with_a_minted_key() {

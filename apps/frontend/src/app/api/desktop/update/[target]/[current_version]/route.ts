@@ -135,7 +135,7 @@ export async function GET(
     version: latestVersion,
     notes: candidate.body ?? candidate.name ?? "",
     pub_date: candidate.published_at,
-    url: `${scheme}://${host}/api/download/desktop?arch=${arch}&kind=bundle`,
+    url: `${scheme}://${host}/api/download/desktop?arch=${arch}&kind=bundle&version=${encodeURIComponent(latestVersion)}`,
     signature,
   });
 }

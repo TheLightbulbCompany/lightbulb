@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 
 import {
+  getPublishedRelease,
   pickLatestRelease,
   resolveAssetLocation,
   tagPrefixFromHost,
@@ -27,8 +28,17 @@ export async function GET(req: NextRequest) {
   const arch = archFromQuery(req.nextUrl.searchParams.get("arch"));
   const kind = kindFromQuery(req.nextUrl.searchParams.get("kind"));
   const prefix = tagPrefixFromHost(req.headers.get("host"));
+  const version = req.nextUrl.searchParams.get("version");
+  if (version !== null && !/^\d+\.\d+\.\d+$/.test(version)) {
+    return NextResponse.json({ error: "invalid_version" }, { status: 400 });
+  }
 
-  const { release, githubStatus } = await pickLatestRelease(prefix);
+  const { release, githubStatus } = version
+    ? await getPublishedRelease(`${prefix}${version}`)
+    : await pickLatestRelease(prefix);
+  if (version && githubStatus === 404) {
+    return NextResponse.json({ error: "no_release", version }, { status: 404 });
+  }
   if (githubStatus < 200 || githubStatus >= 300) {
     return NextResponse.json(
       { error: "github_unavailable", status: githubStatus },

@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { NextRequest } from "next/server";
 
 import { GET } from "../route";
+import { GET as getManifest } from "../../../desktop/update/[target]/[current_version]/route";
 
 type GhAssetFixture = {
   url: string;
@@ -30,6 +31,11 @@ function stubGitHub(releases: GhReleaseFixture[], ok = true, status = 200) {
         status,
         json: async () => releases,
       } as unknown as Response;
+    }
+    if (u.includes("/releases/tags/")) {
+      const tag = decodeURIComponent(u.split("/releases/tags/")[1]);
+      const release = releases.find((r) => r.tag_name === tag);
+      return { ok: !!release, status: release ? 200 : 404, json: async () => release } as unknown as Response;
     }
     // Asset API URL fetch with redirect:"manual" — GitHub answers 302
     // with the short-lived signed URL in Location.
@@ -80,6 +86,32 @@ describe("GET /api/download/desktop", () => {
     published_at: "2026-05-01T00:00:00Z",
     assets: [arm, intel, armBundle],
   };
+
+  it("downloads the manifest's signed release after a newer release is published", async () => {
+    const sig = { ...armBundle, url: `${armBundle.url}-sig`, name: `${armBundle.name}.sig` };
+    const oldRelease = { ...prodRelease, tag_name: "desktop-v0.4.603", assets: [armBundle, sig] };
+    const newerBundle = { ...armBundle, url: `${armBundle.url}-606` };
+    const newRelease = { ...oldRelease, tag_name: "desktop-v0.4.606", assets: [newerBundle, sig] };
+    let published = [oldRelease];
+    vi.stubGlobal("fetch", vi.fn(async (url: string | URL) => {
+      const u = String(url);
+      if (u.includes("/releases?")) return Response.json(published);
+      if (u.endsWith("/releases/tags/desktop-v0.4.603")) return Response.json(oldRelease);
+      if (u === sig.url) return new Response("SIGNATURE-603");
+      return new Response(null, { status: 302, headers: { location: signedUrlFor(u) } });
+    }));
+    const response = await getManifest(reqFor("/api/desktop/update/x/y", "thelightbulb.company"), {
+      params: Promise.resolve({ target: "darwin-aarch64", current_version: "0.4.600" }),
+    });
+    const manifest = await response.json();
+    expect(manifest.version).toBe("0.4.603");
+    expect(manifest.signature).toBe("SIGNATURE-603");
+    // The pinned tag must remain fetchable even after it leaves the latest release page.
+    published = [newRelease];
+    const download = await GET(new NextRequest(manifest.url, { headers: { host: "thelightbulb.company" } }));
+    expect(download.status).toBe(302);
+    expect(download.headers.get("location")).toBe(signedUrlFor(armBundle.url));
+  });
   const devAsset: GhAssetFixture = {
     url: "https://api.github.com/repos/TheLightbulbCompany/lightbulb/releases/assets/201",
     name: "Isol8_0.3.1_aarch64.dmg",
@@ -107,6 +139,33 @@ describe("GET /api/download/desktop", () => {
     );
     expect(res.status).toBe(302);
     expect(res.headers.get("location")).toBe(signedUrlFor(intel.url));
+  });
+
+  it("rejects malformed pinned versions before querying GitHub", async () => {
+    const { fetchMock } = stubGitHub([prodRelease]);
+    const res = await GET(reqFor("/api/download/desktop?kind=bundle&version=../0.2.6", "thelightbulb.company"));
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ error: "invalid_version" });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("does not switch a missing pinned release to the latest", async () => {
+    stubGitHub([prodRelease]);
+    const res = await GET(reqFor("/api/download/desktop?kind=bundle&version=0.2.5", "thelightbulb.company"));
+    expect(res.status).toBe(404);
+    expect(await res.json()).toEqual({ error: "no_release", version: "0.2.5" });
+  });
+
+  it("does not serve a draft pinned release", async () => {
+    stubGitHub([{ ...prodRelease, draft: true }]);
+    const res = await GET(reqFor("/api/download/desktop?kind=bundle&version=0.2.6", "thelightbulb.company"));
+    expect(res.status).toBe(404);
+  });
+
+  it("keeps pinned versions within the host's environment", async () => {
+    stubGitHub([prodRelease]);
+    const res = await GET(reqFor("/api/download/desktop?kind=bundle&version=0.2.6", "dev.thelightbulb.company"));
+    expect(res.status).toBe(404);
   });
 
   it("serves the updater bundle via ?kind=bundle", async () => {

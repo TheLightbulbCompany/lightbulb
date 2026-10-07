@@ -2,14 +2,15 @@
  * Shared GitHub Releases lookup for the desktop download + auto-updater
  * routes.
  *
- * Both `/api/download/desktop` and `/api/desktop/update/[target]/[current_version]`
- * resolve to the same pipeline:
+ * Unpinned downloads and update checks resolve to the same pipeline:
  *   1. List TheLightbulbCompany/lightbulb releases
  *   2. Filter to the env-appropriate tag prefix (dev hosts → `desktop-dev-v*`,
  *      everything else → `desktop-v*`)
  *   3. Pick the HIGHEST-VERSION release, not the most-recently-published
  *      one — auto-publish on every main push races, and `published_at`
  *      can hand out an older bundle if two CI runs overlap.
+ * Update manifests pin their download to that version's published tag so
+ * a later release cannot change the bytes their signature verifies.
  *
  * The repo is PRIVATE: listing releases and fetching assets both require
  * `GITHUB_RELEASES_TOKEN` (fine-grained PAT with contents: read on
@@ -132,6 +133,22 @@ export async function pickLatestRelease(
       return 0;
     })[0];
   return { release: candidate ?? null, githubStatus: res.status };
+}
+
+/** Fetch the published release named by an updater manifest, even after it leaves the latest page. */
+export async function getPublishedRelease(
+  tag: string,
+): Promise<{ release: GhRelease | null; githubStatus: number }> {
+  const res = await fetch(
+    `https://api.github.com/repos/${LIGHTBULB_REPO}/releases/tags/${encodeURIComponent(tag)}`,
+    { headers: githubHeaders(), next: { revalidate: 300 } },
+  );
+  if (!res.ok) return { release: null, githubStatus: res.status };
+  const release: GhRelease = await res.json();
+  return {
+    release: !release.draft && release.tag_name === tag ? release : null,
+    githubStatus: res.status,
+  };
 }
 
 /**

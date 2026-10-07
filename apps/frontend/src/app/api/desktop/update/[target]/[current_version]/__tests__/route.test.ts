@@ -100,7 +100,7 @@ describe("GET /api/desktop/update/[target]/[current_version]", () => {
       // Bundle URL points back at our download route (which mints a
       // fresh signed URL per request), NOT at GitHub directly — a
       // private repo's URLs either 404 anonymously or expire.
-      url: "https://dev.thelightbulb.company/api/download/desktop?arch=aarch64&kind=bundle",
+      url: "https://dev.thelightbulb.company/api/download/desktop?arch=aarch64&kind=bundle&version=0.2.11",
       signature: "SIG-XYZ",
       notes: "release notes",
     });
@@ -124,7 +124,7 @@ describe("GET /api/desktop/update/[target]/[current_version]", () => {
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body.url).toBe(
-      "https://thelightbulb.company/api/download/desktop?arch=aarch64&kind=bundle",
+      "https://thelightbulb.company/api/download/desktop?arch=aarch64&kind=bundle&version=0.2.11",
     );
   });
 

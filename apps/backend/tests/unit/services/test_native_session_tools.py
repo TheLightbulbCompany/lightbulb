@@ -549,6 +549,7 @@ async def test_person_dm_opens_one_deterministic_dm_only_when_asked(monkeypatch)
     room_id = uuid.uuid4()
     create = AsyncMock(return_value=SimpleNamespace(room_id=room_id))
     monkeypatch.setattr(tools.messaging, "create_room", create)
+    monkeypatch.setattr(tools.messaging, "load_agent_roster", AsyncMock(return_value=[{"id": "agent_friday"}]))
     with pytest.raises(ApiProblem) as error:
         await tools.person_dm(auth, "user_b")
     assert error.value.error.code == "ROOM_NOT_FOUND"
@@ -557,6 +558,9 @@ async def test_person_dm_opens_one_deterministic_dm_only_when_asked(monkeypatch)
     first, second = (call.args[1] for call in create.await_args_list)
     assert first.kind == "dm" and [(m.kind, m.id) for m in first.members] == [("human", "user_b")]
     assert first.client_room_id == second.client_room_id  # a retry cannot open a second DM
+    await tools.person_dm(auth, "agent_friday", create=True)
+    agent = create.await_args.args[1].members[0]
+    assert (agent.kind, agent.id, agent.listen_mode) == ("agent", "agent_friday", "active")
     with pytest.raises(ApiProblem):
         await tools.person_dm(auth, "user_owner", create=True)
 

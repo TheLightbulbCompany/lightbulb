@@ -453,6 +453,12 @@ async def person_dm(auth: AuthContext, member_id: str, *, create: bool = False) 
         return str(match.room_id)
     if not create:
         raise ApiProblem("ROOM_NOT_FOUND", "Open a direct message with this person first.")
+    roster = await messaging.load_agent_roster(messaging.resolve_owner_id(auth))
+    counterpart = (
+        messaging.CreateRoomMember(kind="agent", id=member_id, role="member", listen_mode="active")
+        if any(agent["id"] == member_id for agent in roster)
+        else messaging.CreateRoomMember(kind="human", id=member_id, role="member", listen_mode=None)
+    )
     room = await messaging.create_room(
         auth,
         messaging.CreateRoomRequest(
@@ -460,7 +466,7 @@ async def person_dm(auth: AuthContext, member_id: str, *, create: bool = False) 
             client_room_id=uuid.uuid5(uuid.NAMESPACE_URL, f"lightbulb-dm:{auth.user_id}:{member_id}"),
             name=None,
             kind="dm",
-            members=[messaging.CreateRoomMember(kind="human", id=member_id, role="member", listen_mode=None)],
+            members=[counterpart],
         ),
     )
     return str(room.room_id)

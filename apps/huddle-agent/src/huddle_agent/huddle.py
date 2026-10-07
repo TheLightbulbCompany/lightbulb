@@ -156,15 +156,46 @@ MEET_QUIET_S = 3.0
 # A meeting voice is muted, so the worker stops it for someone who keeps talking over it this long. Shorter is a
 # backchannel ("mm-hm", a cough): the agent carries on.
 TALK_OVER_S = 1.0
-# A meeting voice never hears the question (it is muted), so its seed says what to say once the run is started:
-# without it the model greeted ("Yes, I'm here. What's up?", 10-04 prod Meet).
-# No example phrase: given "like 'On it.'", it said "On it." every time (10-05 prod Meet). Its words are its own.
 TRAIL_S = 8.0  # a meeting line that trails off ("Can one of you tell me...") waits this long for its rest
-SAID_LOG_N, SAID_LOG_S = 12, 120.0  # a meeting hand whose words the agent said meanwhile is let go, not said again
-MEET_ACK = (
-    " Acknowledge it now in a few words of your own that fit what was asked, a different way each time; say "
-    "nothing about this note; then wait for the result."
+# What a mouth says that is not an answer: fixed lines the worker picks, no model writes them. A written
+# acknowledgement read out the worker's notes ("Vera's checking...", 10-07 rig) and a model given "like 'On it.'"
+# said "On it." every time (10-05 prod Meet). `{task}` is the request as /route worded it. It always follows
+# other words, so it reads right whether the task is a command, a question or a few nouns.
+ACKS = (
+    "Okay, {task}. I'm on it now.",
+    "Sure, let me work on that: {task}.",
+    "Got it: {task}. Give me a moment.",
+    "Yes, I'll take that one: {task}.",
+    "Understood, {task}. I'll come back with it.",
+    "Alright, I'm working on it now: {task}.",
+    "I have it: {task}. Back with you shortly.",
+    "Okay, I'll look into that now: {task}.",
+    "Right, {task}. Let me check.",
+    "Sure, I'm on it now.",
+    "Okay, let me look into that.",
+    "Got it. Give me a moment.",
+    "Yes, I'll have that for you shortly.",
 )
+STILL_WORKING = (
+    "I'm still working on this: {task}.",
+    "Still on it: {task}. I'll tell you when it's done.",
+    "That one is still running: {task}.",
+    "I'm not done yet with this: {task}.",
+    "Still checking, {task}. A little longer.",
+    "I'm still working on that.",
+    "Still on it, a little longer.",
+)
+QUEUED_LINES = (
+    "I'll get to that right after what I'm finishing.",
+    "That's next for me, once I finish this one.",
+    "I have one thing to finish first, then that.",
+)
+COULD_NOT = (
+    "Sorry, I could not get that done.",
+    "I could not finish that one, sorry.",
+    "That did not work. I could not do it.",
+)
+TASK_WORDS = 12  # a longer task is not read back: the line without it is said
 # The final POST's backoff and its whole budget. The budget stays under the job's shutdown window
 # (agent.py SHUTDOWN_S): the flush usually runs from the shutdown callback.
 FINAL_TRANSCRIPT_RETRY_S = (1, 2, 4, 8, 16)
@@ -190,57 +221,10 @@ def _words(text: str) -> tuple[set[str], list[str]]:
     return {w for w in words if w not in FUNCTION_WORDS}, words
 
 
-def _said_bags(said: str) -> tuple[collections.Counter, collections.Counter]:
-    """What was heard, as bags the sentences of an answer spend in order (`_unsaid_with`): every word, and the
-    content words. One set of bags serves every answer of one delivery, in delivery order, so two answers that
-    share wording are not both heard for the price of one (Codex on #3792)."""
-    words = _words(said)[1]
-    return collections.Counter(words), collections.Counter(w for w in words if w not in FUNCTION_WORDS)
-
-
-def _unsaid_with(answer: str, bags: tuple[collections.Counter, collections.Counter]) -> tuple[str, list[str]]:
-    """`unsaid_part` against bags the answers said before this one have already spent: (the rest, the heard
-    words the cut sentence spent -- what a boundary carries over so its other half completes it)."""
-    all_left, left = bags
-    sentences = [x for x in re.split(r"(?<=[.!?])\s+", answer.strip()) if x]
-    for i, sentence in enumerate(sentences):
-        words = _words(sentence)[1]
-        content = [w for w in words if w not in FUNCTION_WORDS]
-        spend: list[str] = []  # the heard words this sentence uses up, said to its end or not
-        if not content:  # "Yes." / "I can.": said only word for word, each word once
-            for w in words:
-                if all_left[w] - spend.count(w) > 0:
-                    spend.append(w)
-            said = len(spend) == len(words)
-        else:
-            for w in content:
-                if left[w] - spend.count(w) > 0:
-                    spend.append(w)
-                    continue
-                key = soundex(w) if len(w) > 2 and w.isascii() else ""
-                # misheard by the other transcriber ("peers" for "PRs"): spend the word that sounds like it
-                heard = next((x for x in left if len(x) > 2 and x.isascii() and left[x] - spend.count(x) > 0 and soundex(x) == key), None) if key else None
-                if heard is not None:
-                    spend.append(heard)
-            said = len(spend) / len(content) >= 0.7
-            for w in words:  # its function words too ("I can deploy." then "I can."), said to its end or cut
-                if w in FUNCTION_WORDS and all_left[w] - spend.count(w) > 0:
-                    spend.append(w)
-        for w in spend:  # also for a cut sentence: its fragment's words are not heard again by a later answer
-            all_left[w] -= 1
-            if w in left:
-                left[w] -= 1
-        if not said:
-            return (answer if i == 0 else " ".join(sentences[i:])), spend  # the same object when nothing was said
-    return "", []
-
-
-def unsaid_part(answer: str, said: str) -> str:
-    """The answer from the sentence it was cut on (owner ruling 10-07: what was heard is not said again). A
-    sentence counts as said when most of its words were, in order: the words a sentence used are spent, so a
-    later sentence made of the same words is not heard for free; the first sentence that was not said starts
-    the rest."""
-    return _unsaid_with(answer, _said_bags(said))[0]
+def units(text: str) -> list[str]:
+    """What a mouth is handed, as the sentences it says one order at a time. A sentence is the unit of delivery:
+    said to its end it is done, cut it is said again from its start (owner ruling 10-07). Never split in a word."""
+    return [x for x in re.split(r"(?<=[.!?])\s+", text.strip()) if x]
 
 
 def _words_in(a: str, b: str, share: float = SAME_SPEECH) -> bool:
@@ -306,9 +290,8 @@ class Live(Protocol):
     def mute(self) -> None: ...
     def nudge(self) -> None: ...  # generate_reply(): a request the model may decline
     def say(self, text: str) -> None: ...  # speak the text word for word
-    def reply_to(
-        self, text: str
-    ) -> None: ...  # generate_reply(user_input=text): a typed user turn
+    # generate_reply(user_input=text): a typed user turn. A mouth also takes who said it (`Huddle._reply`).
+    def reply_to(self, text: str) -> None: ...
     def usage_seconds(self) -> float: ...
     async def aclose(self) -> None: ...
 
@@ -368,6 +351,22 @@ class _Driven:
 
 
 @dataclass
+class Utterance:
+    """One thing a mouth was handed to say, as its sentences (`units`) and how many it reported said to their
+    end (`cursor`). An answer is delivered when the cursor reaches the end, not when it was ordered: a cut
+    answer keeps its hand up with the units from the cursor on. A line (an acknowledgement, a status) belongs
+    to no request and is never kept."""
+
+    run_id: str | None
+    request: str
+    units: list[str]
+    at: float
+    speaker: str | None
+    kind: str = "answer"  # answer | line
+    cursor: int = 0
+
+
+@dataclass
 class _Voice:
     agent_id: str
     live: Any  # None while joining
@@ -399,7 +398,7 @@ class _Voice:
     )
     announcing: bool = False  # a proactive announcement's audio is playing
     told: list = field(default_factory=list)  # the news its announcement says: posted if a person cuts it (§4.8)
-    said: list[str] = field(default_factory=list)  # what it said, as GPT-Live heard itself: the cut sentence is known
+    utterances: list = field(default_factory=list)  # a mouth: what it was handed to say, in order (`Utterance`)
     wake_dims: dict[str, str] | None = (
         None  # live.wake.fired's dimensions, for a voice a name woke
     )
@@ -417,7 +416,7 @@ class _Voice:
     # window last restarted (it opened, stopped speaking, or took a follow-up)
     label: str = ""
     followed_at: float = 0.0
-    saying: str | None = None  # a meeting: the run whose answer it is saying now (`_talked_over`)
+    saying: str | None = None  # a Live voice: the run whose answer it is saying now
     # Live's model stops for its own speaker's sound, so they can cut its answer and the worker never cut it:
     # `answer` is the ended run's (run_id, request, text, at, speaker) until it is known heard; `unheard`: its
     # speech was interrupted, or their sound came before a word of it; `replied`: it then answered them (they
@@ -503,7 +502,7 @@ class Huddle:
         self._delivery_tries: dict[str, tuple[int, float]] = {}
         self._voice_limit = ""  # why the backend refuses to open a voice (its /summon reason); "" when it does not
         self._trail: dict[str, tuple[str, float]] = {}  # a meeting line that trailed off, and when
-        self._said_log: dict[str, list[tuple[float, str]]] = {}  # what each agent said lately, to let a said hand go
+        self._line_at: dict[tuple, int] = {}  # each list of fixed lines -> the next one to say (`_line`)
         self._rowless: set[str] = set()  # a meeting's ready answers that have no request row (delivered like one)
         self._level: set[str] = set()  # humans in the SFU's active speakers: sound, maybe not speech
         self._voiced: set[str] = set()  # humans the transcriber's speech detector hears speaking
@@ -559,6 +558,7 @@ class Huddle:
         # The transcript is persisted by the backend (CloudWatch) in batches, so what people and
         # agents said in a huddle can be read back when something goes wrong in it.
         self._huddle_id = str(uuid.uuid4())
+        self._line_seed = uuid.UUID(self._huddle_id).int  # where the fixed lines start: another place each call
         self._sent_mark = -1  # the newest transcript line the backend has
         self._sent_at = self._started
         self._flush_lock = (
@@ -1208,9 +1208,7 @@ class Huddle:
         ):  # someone else spoke first: back to who had the floor
             back = v.handoff[0]
             if self._end_handoff(v) and identity == back:
-                self._live_call(
-                    v, "reply_to", text
-                )  # the session was pinned away from them: it never heard this
+                self._reply(v, text)  # the session was pinned away from them: it never heard this
             elif identity != back:
                 self._other_line(v, identity, name, text, mark, **rk)
         else:
@@ -1323,11 +1321,14 @@ class Huddle:
         if v.label != label:
             return  # a meeting: someone else named the agent meanwhile; this line's rows run without its voice
         if rec is not None and rec[1] is not None:
-            self._heard(v, identity, text, rec[0])
+            self._heard(v, identity, text, rec[0], rec[1])
         # /route down: D §5, their whole line is the request, started by us like a summon's
         elif rec is not None and self._floor_voice(v.agent_id) is v:
             if self._drive_request(v, text, said):
-                self._live_call(v, "nudge")
+                if mouth(v.speaker):
+                    self._say_ack(v, None, "")  # their whole line is the task: not read back
+                else:
+                    self._live_call(v, "nudge")
 
     async def _lightbulb_over(self, v: _Voice, identity: str, text: str, mark: int) -> None:
         """A meeting's "Lightbulb, ..." from someone the open voice is not with: that voice closes (cut off if it
@@ -1340,19 +1341,86 @@ class Huddle:
         await self.summon(identity, agent_id, request=None, mark=mark)
         rec = await self._understand_floor(identity, text, mark, floor_line=True)
         if rec is not None and rec[1] is not None:
-            self._heard(self._floor_voice(agent_id), identity, text, rec[0])
+            self._heard(self._floor_voice(agent_id), identity, text, rec[0], rec[1])
         elif rec is not None and (v := self._floor_voice(agent_id)) and v.speaker == identity:
-            self._live_call(v, "reply_to", text)  # /route down: today's typed user turn
+            self._reply(v, text)  # /route down: today's typed user turn
 
-    def _heard(self, v: _Voice | None, identity: str, text: str, rows: list[Request]) -> None:
-        """The voice was pinned away while `identity` said `text`: it hears what came of it (understanding §4.6)."""
+    def _heard(self, v: _Voice | None, identity: str, text: str, rows: list[Request], o: dict) -> None:
+        """The voice was pinned away while `identity` said `text`: it hears what came of it (understanding §4.6).
+        `o`: the line's `ops`."""
         if v is None or self._voice is not v or v.speaker != identity:
             return
         v.ack_rows = [r for r in v.ack_rows if r not in rows]  # acknowledged here, not again in tick()
-        if not rows:  # small talk: the voice answers it itself
+        if mouth(v.speaker):
+            if rows:
+                self._say_ack(v, rows)
+            elif line := self._owed(o, v.agent_id, text):
+                self._say_line(v, line)
+        elif not rows:  # small talk: the voice answers it itself
             self._live_call(v, "reply_to", text)
         elif (line := self._ack(rows, v.agent_id, said=True)) and self._live_call(v, "append_thinking", line):
             self._live_call(v, "nudge")
+
+    def _reply(self, v: _Voice, text: str) -> bool:
+        """`text` was said to the voice and it answers it itself. A mouth heard none of it: it is given the line
+        and who said it, and nothing else."""
+        if mouth(v.speaker):
+            return self._live_call(v, "reply_to", text, self._with(v))
+        return self._live_call(v, "reply_to", text)
+
+    # -- a mouth's speech: every word is ordered here, and reported back unit by unit (`on_agent_said`) --
+
+    def _order(self, v: _Voice, text: str, n: tuple | None = None) -> None:
+        """A mouth is ordered to say `text` word for word, and the order is kept (`Utterance`). `n`: the answer
+        it is, (run_id, request, text, at, speaker). None: a line of its own."""
+        if us := units(text):
+            v.utterances.append(
+                Utterance(None, "", us, self._clock(), None, "line") if n is None else Utterance(n[0], n[1], us, n[3], n[4])
+            )
+            self._live_call(v, "say", text)
+
+    def _line(self, lines: tuple[str, ...], task: str = "") -> str:
+        """The call's next fixed line of `lines`, in turn, so no agent says one twice before all were said.
+        A task that is empty or long is not read back: the next line without one."""
+        task = task.strip().rstrip(".?!").strip()
+        first = task.split(" ", 1)[0]
+        if first != "I" and not first.startswith(("I'", "I\u2019")) and first[1:] == first[1:].lower():
+            task = task[:1].lower() + task[1:]  # it follows other words. A name or "PRs" keeps its capitals.
+        fits = bool(task) and len(task.split()) <= TASK_WORDS
+        at = self._line_at.get(lines, self._line_seed)
+        while not fits and "{task}" in lines[at % len(lines)]:
+            at += 1
+        self._line_at[lines] = at + 1
+        return lines[at % len(lines)].replace("{task}", task)
+
+    def _say_ack(self, v: _Voice, rows: list[Request] | None, task: str | None = None) -> None:
+        """A mouth's acknowledgement, a fixed line. `task`: the request its voice drives ("": not read back).
+        Else its own row of `rows`: one it works on is named, one still in line gets a "next" line. Rows of
+        other agents get no word from it: their tiles show them."""
+        live = [r for r in rows or [] if r.status in ("queued", "working")]
+        for r in live:
+            r.acked = True
+        mine = [r for r in live if r.agent == v.agent_id]
+        on = [r.task for r in mine if r.status == "working"]
+        if task is not None or on:
+            self._order(v, self._line(ACKS, on[0] if task is None else task))
+        elif mine:
+            self._order(v, self._line(QUEUED_LINES))
+
+    def _owed(self, o: dict, agent_id: str, text: str) -> tuple[str, str] | None:
+        """What a mouth says to a line that asked nothing new: how its open work stands when /route says it was
+        called on for it (`ops.say`), a reply when it was small talk. None: nothing."""
+        say = o.get("say") or {}
+        if say.get("agentId") == agent_id and say.get("kind") == "status" and say.get("task"):
+            return "status", say["task"]
+        return ("social", text) if o.get("social") and not o.get("more") else None
+
+    def _say_line(self, v: _Voice, line: tuple[str, str]) -> None:
+        kind, text = line
+        if kind == "social":
+            self._reply(v, text)
+        elif not any(u.kind == "answer" for u in v.utterances):  # its answer is being said: that is the status
+            self._order(v, self._line(STILL_WORKING, text))
 
     def _drive_request(self, v: _Voice, text: str, said: str, row: Request | None = None) -> bool:
         """Start `text` as the floor-holder's driven run; its own delegation of it binds instead of posting.
@@ -1430,10 +1498,10 @@ class Huddle:
 
     def _named_line(
         self, identity: str, agent_id: str, text: str, mark: int, r: Any, fut: asyncio.Future, voice: bool = True
-    ) -> tuple[Request | None, list[Request] | None, str | None] | None:
+    ) -> tuple[Request | None, list[Request] | None, str | None, tuple[str, str] | None] | None:
         """A named line's /route answer `r`, under the floor lock (understanding §4.6). None: no `ops`, today's
-        whole-line run. Else (the row its voice drives, already started; the rows to acknowledge; a seed line).
-        `voice` False: no voice will drive a row; every row starts voicelessly."""
+        whole-line run. Else (the row its voice drives, already started; the rows to acknowledge; a seed line;
+        what a mouth says to it, `_owed`). `voice` False: no voice will drive a row; every row starts voicelessly."""
         o = r.get("ops") if isinstance(r, dict) else None
         if o is None:
             self._record(identity, fut, None, text)
@@ -1458,7 +1526,7 @@ class Huddle:
             say = o.get("say") or {}
             if say.get("agentId") == agent_id and say.get("kind") == "status" and say.get("task"):
                 said += f' You are still working on this for them: "{say["task"]}". Tell them so.'
-        return first, ack, said
+        return first, ack, said, None if o.get("requests") else self._owed(o, agent_id, text)
 
     async def _named_summon(self, identity: str, text: str, mark: int, summon, understood: tuple) -> None:
         """A named line's summon (understanding §4.6). A re-point applies what the line asked once /route answers,
@@ -1480,12 +1548,17 @@ class Huddle:
                     return  # the floor moved meanwhile: the rows still run, without the voice
                 if took is None:  # no ops: today's typed line, unless a stop covers it
                     if not (self._requests.stopped(mark) or self._requests.stopped(mark, v.agent_id)):
-                        self._live_call(v, "reply_to", text)
+                        self._reply(v, text)
                     return
-                first, ack, said = took
+                first, ack, said, owed = took
                 if first is not None:
                     task = first.task or text
                     self._drive_request(v, task, f'{self._talker(identity, mark)} asked: "{task}"', row=first)
+                if mouth(identity):
+                    self._say_ack(v, ack, None if first is None else first.task)
+                    if owed:
+                        self._say_line(v, owed)
+                    return
                 if line := self._ack(ack, v.agent_id, said=True):
                     self._live_call(v, "append_thinking", line)
                 if said:
@@ -1658,6 +1731,8 @@ class Huddle:
             else:
                 self._news.pop(r.agent)
         emit_metric("live.request.cancelled", 1, "Count")
+        if v is not None:
+            v.utterances = [u for u in v.utterances if u.run_id != r.run_id]  # called off: not kept for the hand
         if saying:
             self._live_call(v, "interrupt")
             if v.announce is not None and v.announce[0] == r.run_id:
@@ -1750,7 +1825,10 @@ class Huddle:
         if not rows:
             if social and v is None:
                 said = self._small_talk(identity, text, bool(ops.get("more")), mark)
-                await self.summon(identity, social, request=None, mark=mark, path="jev", heard_at=heard_at, said=said)
+                await self.summon(
+                    identity, social, request=None, mark=mark, path="jev", heard_at=heard_at, said=said,
+                    owed=self._owed(ops, social, text),
+                )
             elif not (social or superseded or ops.get("cancel") or ops.get("steer")):
                 self._unrouted[identity] = self._clock()
             return rows
@@ -1903,23 +1981,19 @@ class Huddle:
         )
 
     def on_agent_said(self, agent_id: str, text: str, interrupted: bool = False) -> None:
-        """What a voice said, as GPT-Live heard itself say it: every later seed and since_agent hears it,
-        tagged with the person it was talking to ("Forge → Leo: ...", routing v2 §5). `interrupted`: its
-        speaker's sound stopped it before the end (the SDK's mark on the message)."""
+        """What a voice said: every later seed and since_agent hears it, tagged with the person it was talking
+        to ("Forge → Leo: ...", routing v2 §5). A Live voice: as GPT-Live heard itself say it, `interrupted`
+        when its speaker's sound stopped it before the end (the SDK's mark on the message). A mouth: one unit
+        it was ordered to say, by its exact text, said to its end or cut."""
         v = self._floor_voice(agent_id)
-        if v:
-            v.said.append(text)
-        log = self._said_log.setdefault(agent_id, [])
-        log.append((self._clock(), text))
-        del log[:-SAID_LOG_N]
-        if v and not mouth(v.speaker):
+        own = self._voice if self._voice and self._voice.agent_id == agent_id else None  # also while it closes
+        if own and mouth(own.speaker):
+            if not interrupted:
+                self._unit_said(own, text)
+        elif v:
             self._answer_message(v, text, interrupted)
-        elif v and not interrupted:
-            # a mouth says an answer word for word: one it said to its end is done
-            done = {n[0] for n in v.told if not unsaid_part(n[2], text)}
-            v.told = [n for n in v.told if n[0] not in done]
-            if v.saying in done:
-                v.saying = None
+        if interrupted and (mouth(own.speaker) if own else self.setting == "meeting"):
+            return  # a mouth's cut unit is its whole text, not what was heard: on the record once it is said
         to = self._with(v) if v else ""
         self._transcript.add_agent(
             agent_id, self._agent_name(agent_id), text, at=self._clock(), to=to
@@ -1934,6 +2008,27 @@ class Huddle:
         if self._repoint(v, target):
             v.handoff = (back, self._clock() + HANDOFF_SECONDS)
 
+    def _unit_said(self, v: _Voice, text: str) -> None:
+        """A mouth said one unit to its end: the cursor of the utterance waiting for it moves. At the end the
+        answer is delivered, and only then (10-07 rig: an answer cut after two words was taken for said)."""
+        u = next((u for u in v.utterances if u.units[u.cursor] == text), None)
+        if u is None:
+            return  # a line it wrote itself (small talk)
+        u.cursor += 1
+        if u.cursor < len(u.units):
+            return
+        v.utterances.remove(u)
+        if u.kind != "answer":
+            return
+        self._requests.delivered({u.run_id})
+        self._rowless.discard(u.run_id)
+        self._delivery_tries.pop(u.run_id, None)
+        if news := self._news.get(v.agent_id):  # said to its end: not on the hand
+            news[:] = [n for n in news if n[0] != u.run_id]
+            if not news:
+                del self._news[v.agent_id]
+        self._sync_state()
+
     def _end_handoff(self, v: _Voice) -> bool:
         """Return the floor to who had it. False when they left or the session died on the way."""
         back, v.handoff = v.handoff[0], None
@@ -1944,6 +2039,11 @@ class Huddle:
         an answer that lands meanwhile is news, not "spoken" into a dead session."""
         v = self._voice
         return v if v and v.live is not None and not v.dropping and v.agent_id == agent_id else None
+
+    def may_speak(self, agent_id: str) -> bool:
+        """A line written for a mouth took time to write: it is said only if its voice still has the floor and
+        nobody is talking."""
+        return self._floor_voice(agent_id) is not None and not self._speaking
 
     def on_speaker_activity(self, agent_id: str) -> None:
         """The live session heard the speaker (it hears no one else)."""
@@ -1969,22 +2069,18 @@ class Huddle:
             if state == "speaking" and self._speaking and v.path == "announce":
                 emit_metric("live.floor.overlap", 1, "Count")  # a delivery's audio began over a person
             if state == "speaking" and v.announce:  # the first audio consumes the news
-                v.said = []  # what it says from here is this answer's (a cut is measured against it)
-                v.told = list(self._news.get(agent_id, []))
-                self._consume_news(agent_id)  # all of it was in the seed
+                if not mouth(v.speaker):
+                    v.told = list(self._news.get(agent_id, []))
+                self._consume_news(agent_id, ordered=mouth(v.speaker))  # all of it was in the seed
                 v.announcing, v.announce = v.path == "announce", None
                 emit_metric("live.announce.spoken", 1, "Count")
             elif state != "speaking":
                 v.announcing = False
-                # said to the end: nothing to post. A mouth also keeps answers handed to it before it
-                # spoke (`ended`, tick): those are done only once it has spoken, not on "thinking".
-                # A mouth reports each line it finished (`on_agent_said`): what it was handed is done then, not
-                # when it stops speaking. It stops after an acknowledgement or a holding line too, and the
-                # answer ordered just before that was taken for said (10-07 rig: cut after two words, no hand).
-                if not mouth(v.speaker):
-                    v.told = []
-                    if (run := self._runs.get(v.saying or "")) is None or run.ended:
-                        v.saying = None  # its answer was said to the end too
+                # A Live voice said it to the end: nothing to post. A mouth reports each unit it finished
+                # (`on_agent_said`): what it was handed is done then, not when it stops speaking.
+                v.told = []
+                if (run := self._runs.get(v.saying or "")) is None or run.ended:
+                    v.saying = None  # its answer was said to the end too
             self._sync_state()
 
     def on_active_speakers(self, identities: set[str]) -> None:
@@ -2109,11 +2205,12 @@ class Huddle:
         said: str | None = None,
         understood: tuple[asyncio.Future, asyncio.Future] | None = None,
         label: str | None = None,
+        owed: tuple[str, str] | None = None,
     ) -> _Voice | None:
         """`then`: the request's other named agents, queued behind this one. Any summon but a queue
         advance (path "switch") replaces a pending queue: a new name wins. `ack`: the rows the voice
         acknowledges (the open ones when it speaks); `row`: the request row `request` is (its driven run binds
-        to it); `said`: a seed line that is not a request (small talk). `understood`: a named line's /route call
+        to it); `said`: a seed line that is not a request (small talk), and `owed`: what a mouth says to it. `understood`: a named line's /route call
         in flight and its speech's record (understanding §4.6). Returns the voice it re-pointed for `understood`.
         `label`: a meeting's speaker who gets the agent's attention (default: the summoning line's)."""
         label = self._label(identity, mark) if label is None else label
@@ -2133,7 +2230,9 @@ class Huddle:
                         self._sync_state()
                         return old
                     if request and row is None:  # a row left unbound runs without a voice (_act)
-                        self._live_call(old, "reply_to", request)
+                        self._reply(old, request)
+                    elif mouth(identity):
+                        self._say_ack(old, ack)
                     elif (line := self._ack(ack, agent_id, said=True)) and self._live_call(old, "append_thinking", line):
                         self._live_call(old, "nudge")
                 self._sync_state()
@@ -2160,7 +2259,7 @@ class Huddle:
             # D §9: a switch opens the new voice while the old one closes (same window, no new /summon).
             # Both sessions' seconds land in the window, so the overlap is counted twice (D §4).
             opened, closed = await asyncio.gather(
-                self._open(v, identity, request, mark, ack, row=row, said=said, understood=understood),
+                self._open(v, identity, request, mark, ack, row=row, said=said, understood=understood, owed=owed),
                 self._close_live(old),
                 return_exceptions=True,
             )
@@ -2183,6 +2282,7 @@ class Huddle:
         row: Request | None = None,
         said: str | None = None,
         understood: tuple[asyncio.Future, asyncio.Future] | None = None,
+        owed: tuple[str, str] | None = None,
     ) -> bool:
         """Caller holds the lock and has made `v` the floor. False when it could not open."""
         agent_id = v.agent_id
@@ -2217,7 +2317,7 @@ class Huddle:
             text = request
             took = self._named_line(identity, agent_id, text, mark, heard[0], understood[1])
             if took is not None:
-                row, ack, said = took
+                row, ack, said, owed = took
                 request = (row.task or text) if row is not None else None
             elif self._requests.stopped(mark) or self._requests.stopped(mark, agent_id):
                 request = None  # a stop covers the line (understanding §4.5): the voice opens, nothing runs
@@ -2262,8 +2362,7 @@ class Huddle:
                 (
                     "developer",
                     # the voice's own speaker: a queued or delivered voice has no line of its own to read a label from
-                    f"{v.label or self._talker(identity, mark)} asked: {request} — already handed to your backend self; don't delegate it again"
-                    + (f".{MEET_ACK}" if mouth(identity) else ""),
+                    f"{v.label or self._talker(identity, mark)} asked: {request} — already handed to your backend self; don't delegate it again",
                 )
             )
         # conversation engine §3.5: the one acknowledgement, of the rows still open after the awaits above
@@ -2294,10 +2393,9 @@ class Huddle:
         if (
             news and not v.announce and v.path != "announce"
         ):  # an announcement dropped before its audio keeps it
-            if mouth(identity):
-                # handed over, not yet said: a close before its first word raises the hand again (_keep_unsaid)
-                v.told = list(news)
-            self._consume_news(agent_id)  # handed to its own agent: consumed
+            # handed to its own agent: consumed. A mouth is ordered to say it below: a close before its last
+            # word raises the hand again (`_keep_unsaid`).
+            self._consume_news(agent_id, ordered=mouth(identity))
         v.live, v.opened, v.naming = live, self._clock(), bool(session.get("askName"))
         v.followed_at = v.opened
         if mouth(identity):
@@ -2306,21 +2404,21 @@ class Huddle:
             self._live_call(v, "mute")
             if v.announce or v.path != "announce":  # not an announcement dropped while it opened
                 for n in told:  # its finished answers, word for word, before anything else
-                    self._live_call(v, "say", n[2])
+                    self._order(v, n[2], n)
+            if v.path != "announce":
+                # its acknowledgement and what it owes the line, after any answer. The task /route worded is
+                # read back. A line run whole (no row) is not: it holds the agent's own name.
+                self._say_ack(v, ack, None if not request else row.task if row is not None else "")
+                if owed:
+                    self._say_line(v, owed)
         if v.driven:
             v.driven.bind_until = v.opened + BIND_SECONDS
         if v.announce:  # consumed when its audio starts (on_agent_state)
             if not mouth(identity) and self._live_call(v, "append_instructions", ANNOUNCE_NOW):
                 self._live_call(v, "nudge")
-        elif v.path != "announce":
-            told = bool(request or ack_said or said)
-            # A mouth: the seed already says who said what and what to say about it. The "is talking to you"
-            # note was read out there ("Meeting is talking to me right now. Go ahead.", 10-04 prod Meet).
-            if (mouth(identity) and told) or self._live_call(
-                v, "append_thinking", f"{v.label or self._talker(identity, mark)} is talking to you"
-            ):
-                # a mouth is nudged only for something to acknowledge: its line is written, it cannot decline
-                if told or (identity in self._released and not mouth(identity)):
+        elif v.path != "announce" and not mouth(identity):
+            if self._live_call(v, "append_thinking", f"{v.label or self._talker(identity, mark)} is talking to you"):
+                if request or ack_said or said or identity in self._released:
                     # the request is already running (driven): the model acknowledges it, no typed user turn
                     self._live_call(v, "nudge")
         self._released.discard(identity)
@@ -2675,7 +2773,7 @@ class Huddle:
             v.driven = None
         voiced = self._voice is v and v.live is not None and d.run_id not in self._stopped
         if voiced and mouth(v.speaker):
-            self._live_call(v, "say", CANT_REACH)
+            self._order(v, self._line(COULD_NOT))
         elif voiced:
             self._live_call(v, "append_commentary", CANT_REACH, delegation_id=d.pending)
         if row is not None and voiced:
@@ -2700,6 +2798,7 @@ class Huddle:
             v.driven = None
             v.answer = None  # a stop said over its answer: neither said again nor posted (§4.8)
             v.saying, v.told = None, []
+            v.utterances = []  # called off: nothing of them is kept on the hand or said later
             v.last_activity = self._clock()
             self._live_call(v, "interrupt")
         aborted = [run.run_id for run in self._runs.running(agent_id)]
@@ -2884,20 +2983,20 @@ class Huddle:
 
     def say(self, run: Run, text: str, final: bool) -> None:
         if v := self._same_session(run):
+            if mouth(v.speaker):
+                # A run speaks a sentence before each lookup, which in a meeting is an agent talking again and
+                # again over people. Nothing is said as it streams; its answer is said when it ends.
+                return
             if v.saying != run.run_id and (v.answer is None or v.answer[0] != run.run_id):
                 self._settle_answer(v)  # the answer before this one: on the record if it was cut (`_followed`)
                 v.unheard = v.cut = v.replied = v.resaid = False
-                v.began, v.said = self._clock(), []
+                v.began = self._clock()
             if v.box != (run.run_id, run.box):
                 # narration before a tool is its own box: its cut, its reply, its words are not the answer's
                 v.box, v.spoke = (run.run_id, run.box), 0
                 v.unheard = v.cut = v.replied = False
             v.pending = True  # text handed over and not yet said: cleared when the voice next goes quiet
             v.saying = run.run_id
-            if mouth(v.speaker):
-                # A run speaks a sentence before each lookup, which in a meeting is an agent talking again and
-                # again over people. Nothing is said as it streams; its answer is said when it ends.
-                return
             self._live_call(
                 v, "append_commentary", text, delegation_id=run.delegation_id
             )
@@ -2906,13 +3005,16 @@ class Huddle:
         asked = self._requests.by_run(run.run_id)  # a request-list run (engine §3.5)
         if answer and (news := self._news.get(run.agent_id)):  # §4.8: the real answer replaces its failure line
             news[:] = [n for n in news if n[0] != run.run_id or n[2] != CANT_REACH]
-        if v := self._same_session(run):
-            if mouth(v.speaker) and answer:
-                # the run's last text box (updates before a tool are gone from it), word for word; kept until
-                # the voice reports it said (`on_agent_said`), so a cut leaves it for the hand
-                self._live_call(v, "say", answer)
-                if all(n[0] != run.run_id for n in v.told):
-                    v.told.append((run.run_id, run.request, answer, self._clock(), run.speaker))
+        if (v := self._floor_voice(run.agent_id)) and mouth(v.speaker):
+            if answer:
+                # The run's last text box (updates before a tool are gone from it), word for word, whichever
+                # session of the agent started it. Ready, not delivered: delivered when its last unit is
+                # reported said (`_unit_said`), so a cut leaves the rest for the hand.
+                self._requests.ready(run.run_id)
+                self._order(v, answer, (run.run_id, run.request, answer, self._clock(), run.speaker))
+            else:
+                self._requests.delivered({run.run_id})  # finished with nothing to say
+        elif v := self._same_session(run):
             if not run.spoken.strip():
                 self._live_call(
                     v,
@@ -2920,22 +3022,15 @@ class Huddle:
                     "That request finished without a spoken result.",
                     delegation_id=run.delegation_id,
                 )
-            elif answer and not mouth(v.speaker) and (v.pending or v.cut or v.unheard or not v.spoke):
+            elif answer and (v.pending or v.cut or v.unheard or not v.spoke):
                 # not known heard yet. `spoke` is kept: sentences said before this end frame were its words.
                 # Every part said and the voice quiet with nothing cut: heard, nothing is kept.
                 v.answer = (run.run_id, run.request, answer, self._clock(), run.speaker)
             self._requests.delivered({run.run_id})
         elif v := self._floor_voice(run.agent_id):
-            if answer and not mouth(v.speaker):
+            if answer:
                 text = f"Your earlier task on {run.request[:80]} finished: {answer}"
                 self._live_call(v, "append_commentary", text, delegation_id=None)
-            elif answer:
-                # the answer itself, word for word; kept until its audio ends (`_talked_over`, hang-up)
-                self._live_call(v, "say", answer)
-                # an answer boundary: what it said of the earlier answers counts now, and the words of a
-                # sentence cut by the boundary carry over, so the rest of it still completes it
-                v.said = self._settle_told(v)
-                v.told.append((run.run_id, run.request, answer, self._clock(), run.speaker))
             self._requests.delivered({run.run_id})
         elif (
             answer and self.setting == "meeting" and not asked and not (run.bound and run.speaker in self._people)
@@ -2964,7 +3059,7 @@ class Huddle:
             for r in rows:  # its own voice says CANT_REACH now: failed, with no news to say it again
                 self._requests.fail(r)
             if mouth(v.speaker):
-                self._live_call(v, "say", CANT_REACH)
+                self._order(v, self._line(COULD_NOT))
             else:
                 self._live_call(v, "append_commentary", CANT_REACH, delegation_id=run.delegation_id)
         else:
@@ -3212,13 +3307,11 @@ class Huddle:
             # Its own answers that came in while it opened: handed over as ended() does for the floor-holder.
             for n in self._news[v.agent_id]:
                 if mouth(v.speaker):
-                    self._live_call(v, "say", n[2])
+                    self._order(v, n[2], n)
                     continue
                 text = self._cant_reach_seed(n) or f"Your earlier task on {n[1][:80]} finished: {n[2]}"
                 self._live_call(v, "append_commentary", text, delegation_id=None)
-            if mouth(v.speaker):  # being said: kept until their audio ends (`_talked_over`, hang-up)
-                v.told += self._news[v.agent_id]
-            self._consume_news(v.agent_id)
+            self._consume_news(v.agent_id, ordered=mouth(v.speaker))
             self._sync_state()
             return
         if (
@@ -3355,9 +3448,9 @@ class Huddle:
 
     def _talked_over(self, v: _Voice) -> None:
         """A meeting voice hears nobody, so the worker stops it for someone who keeps talking over it, as the
-        model's own ear does in a Live call. What it was saying is not lost: a run still working ends as a ready
-        answer, said whole at the next pause; an answer already handed to it goes on the record unless the
-        talker calls it off, as a cut announcement does (§4.8)."""
+        model's own ear does in a Live call. This pauses it, it does not call it off: a run still working ends
+        as a ready answer, said whole at the next pause, and an answer already handed to it keeps its hand up
+        from the unit it was cut on (`_keep_unsaid`). Only a stop cancels (`_stop`)."""
         emit_metric("live.meet.talked_over", 1, "Count")
         self._live_call(v, "interrupt")
         self._keep_unsaid(v)
@@ -3368,28 +3461,26 @@ class Huddle:
         agents = self._team["agents"]
         return stop_all(text) or stop_request(text, agents) or no_post_command(text, agents)[0]
 
-    def _settle_told(self, v: _Voice) -> list[str]:
-        """An answer boundary while the voice is still talking: what it has said so far is applied to the
-        answers handed to it, so a later turn-away does not raise a hand for words already heard (Codex on
-        #3800: a seeded news said to its end came back after a later answer's reset). Returns the heard words
-        no sentence accounted for -- a sentence cut by the boundary -- as the said list to go on with, so its
-        other half completes it (Codex on #3803)."""
-        if not v.told:
-            return []  # an earlier Live-call answer's words count for nothing after the boundary
-        v.told.sort(key=lambda n: (self._requests.order(n[0]), n[3]))
-        bags = _said_bags(" ".join(v.said))
-        kept, carry = [], []  # the carry is what each cut sentence spent, from the bags: a word an earlier
-        for n in v.told:  # answer used is not carried (Codex on #3803: "Build passed." then "Build failed.")
-            rest, fragment = _unsaid_with(n[2], bags)
-            if rest:
-                kept.append((n[0], n[1], rest, *n[3:]))
-                carry += fragment
-        v.told = kept
-        return [" ".join(carry)] if carry else []
-
     def _keep_unsaid(self, v: _Voice) -> None:
-        """What a meeting voice was saying when it was stopped short (talked over, or closed for another agent
-        someone named) goes on the record like a cut announcement (§4.8)."""
+        """What a voice was saying when it was stopped short (talked over, or closed for another agent someone
+        named). A mouth: nothing is lost and nothing is posted yet. Its hand goes back up with the units it did
+        not report said, from the one it was cut on, said at the next pause or when someone turns to it (owner
+        10-06/07). A Live voice: on the record like a cut announcement (§4.8)."""
+        if mouth(v.speaker):
+            unsaid = [
+                (u.run_id, u.request, " ".join(u.units[u.cursor:]), u.at, u.speaker)
+                for u in v.utterances
+                if u.kind == "answer"
+            ]
+            v.utterances = []
+            if unsaid:
+                have = {n[0] for n in self._news.get(v.agent_id, [])}
+                self._news.setdefault(v.agent_id, []).extend(n for n in unsaid if n[0] not in have)
+                self._rowless.update(n[0] for n in unsaid)
+                ids = {n[0] for n in unsaid}
+                self._delivery_tries = {k: t for k, t in self._delivery_tries.items() if k not in ids}
+                emit_metric("live.meet.hand_back_up", 1, "Count")
+            return
         unsaid = list(v.told)  # earlier answers handed to it and not yet said to their end
         run = self._runs.get(v.saying or "")
         if (
@@ -3397,21 +3488,9 @@ class Huddle:
             and all(n[0] != run.run_id for n in unsaid)
         ):
             unsaid.append((run.run_id, run.request, run.text.strip(), self._clock(), run.speaker))
-        if unsaid and in_meet(v.speaker):
-            # a meeting: nothing is lost and nothing is posted yet. Its hand goes back up with what was not heard,
-            # from the sentence it was cut on, said at the next pause or when someone turns to it (owner 10-06/07).
-            # spent in the seed's delivery order (Codex on #3800): shared wording is not heard twice
-            unsaid.sort(key=lambda n: (self._requests.order(n[0]), n[3]))
-            bags = _said_bags(" ".join(v.said))
-            unsaid = [(n[0], n[1], rest, *n[3:]) for n in unsaid if (rest := _unsaid_with(n[2], bags)[0])]
-            have = {n[0] for n in self._news.get(v.agent_id, [])}
-            self._news.setdefault(v.agent_id, []).extend(n for n in unsaid if n[0] not in have)
-            self._rowless.update(n[0] for n in unsaid)
-            self._delivery_tries = {k: t for k, t in self._delivery_tries.items() if k not in {n[0] for n in unsaid}}
-            emit_metric("live.meet.hand_back_up", 1, "Count")
-        elif unsaid:
+        if unsaid:
             held = self._cut_off.get(v.agent_id, ([], "", 0.0))[0]
-            # who talked over it (a per-person Meet: maybe not its asker): their "don't post that" covers it
+            # who talked over it: their "don't post that" covers it
             talker = v.speaker if v.speaker in self._speaking or not self._speaking else min(self._speaking)
             self._cut_off[v.agent_id] = (held + unsaid, talker, self._clock())
         v.saying, v.told = None, []
@@ -3441,7 +3520,9 @@ class Huddle:
             return
         rows, v.ack_rows = [r for r in v.ack_rows if r.status in OPEN and not r.acked], []
         if len(rows) >= 2 or any(r.agent != v.agent_id or r.status == "queued" for r in rows):
-            if self._live_call(v, "append_thinking", self._ack(rows, v.agent_id, said=True)):
+            if mouth(sp):
+                self._say_ack(v, rows)
+            elif self._live_call(v, "append_thinking", self._ack(rows, v.agent_id, said=True)):
                 self._live_call(v, "nudge")
 
     async def _proactive(self, now: float) -> None:
@@ -3480,23 +3561,6 @@ class Huddle:
         return self._quiet(v, now) and not any(r.run_id == v.driven_run for r in self._runs.running(v.agent_id))
 
     def _expire_news(self, now: float) -> None:
-        if self.setting == "meeting":
-            for agent_id, news in list(self._news.items()):
-                log = self._said_log.get(agent_id, [])
-                done = []
-                for i, n in enumerate(news):  # only words said since this hand went up count (an earlier answer's do not)
-                    said = " ".join(t for at, t in log if at >= n[3] and now - at <= SAID_LOG_S)
-                    if not said:
-                        continue
-                    rest = unsaid_part(n[2], said)
-                    if not rest:
-                        done.append(n)
-                    elif rest != n[2]:  # its first sentences were heard (the cut message lands after the hand went up)
-                        news[i] = (n[0], n[1], rest, *n[3:])
-                if done:
-                    news[:] = [n for n in news if n not in done]
-                    self._requests.delivered({n[0] for n in done})
-                    emit_metric("live.meet.hand_said_meanwhile", len(done), "Count")
         for agent_id, news in list(self._news.items()):
             kept = [
                 n
@@ -3535,10 +3599,12 @@ class Huddle:
         emit_metric("live.announce.expired", 1, "Count")
         self._spawn(self._late_answer(agent_id, n))
 
-    def _consume_news(self, agent_id: str) -> None:
-        """Its agent said (or was handed) all its news: requested ones are delivered."""
+    def _consume_news(self, agent_id: str, ordered: bool = False) -> None:
+        """Its agent said (or was handed) all its news: requested ones are delivered. `ordered`: a mouth was
+        ordered to say it, and each is delivered when its last unit is reported said (`_unit_said`)."""
         ids = {n[0] for n in self._news.pop(agent_id, None) or []}
-        self._requests.delivered(ids)
+        if not ordered:
+            self._requests.delivered(ids)
         self._rowless -= ids
         for run_id in ids:
             self._delivery_tries.pop(run_id, None)

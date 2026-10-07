@@ -105,8 +105,11 @@ class DrivenSession:
     def __init__(self, llm=None, vad=None):
         import asyncio
 
+        class Handle(asyncio.Future):  # a SpeechHandle: awaited to its end, and it says whether it was cut
+            interrupted = False
+
         self.llm, self.orders, self.handles, self.handlers, self.started = llm, [], [], {}, {}
-        self.interrupts, self.closed, self._future = 0, False, asyncio.get_running_loop().create_future
+        self.interrupts, self.closed, self._future = 0, False, Handle
 
     def on(self, event, fn):
         self.handlers[event] = fn
@@ -123,7 +126,9 @@ class DrivenSession:
         assert force
         self.interrupts += 1
         for h in self.handles:
-            h.done() or h.set_result(None)  # the speech in the air ends, as LiveKit's does
+            if not h.done():  # the speech in the air ends cut, as LiveKit's does
+                h.interrupted = True
+                h.set_result(None)
 
     async def aclose(self):
         self.closed = True
@@ -158,64 +163,89 @@ def _driven():
     from unittest.mock import MagicMock
 
     session, voice = DrivenSession(), DrivenAgent()
-    live = agent._DrivenLive("forge", session, voice, MagicMock(), persona="You are Forge.")
-    live.written = []  # (notes) each written line was made from
+    said, floor = [], {"clear": True}
+    live = agent._DrivenLive(
+        "forge", session, voice, MagicMock(), persona="You are Forge.",
+        said=lambda text, interrupted: said.append((text, interrupted)), clear=lambda: floor["clear"],
+    )
+    live.written, live.said, live.floor = [], said, floor  # each event a line was written from; its reports
 
-    async def write(notes):
-        live.written.append(notes)
+    async def write(event):
+        live.written.append(event)
         return f"line {len(live.written)}"
 
     live._write = write
     return live, session, voice
 
 
-async def test_a_driven_voice_says_its_orders_one_after_the_other():
+async def test_a_driven_voice_says_a_sentence_an_order_and_reports_each_by_its_own_text():
     live, session, _ = _driven()
-    live.say("The Workspace plan costs fifty dollars.")
-    live.append_commentary("Tell Priya you are on it.")
-    live.append_thinking("Priya asked: what shipped")
-    live.nudge()
-    live.reply_to("what shipped")
+    live.say("The Workspace plan costs fifty dollars. It is billed monthly.")
+    live.reply_to("thanks, that is great", "Priya")
     await _settle()
     assert session.orders == [
         {"instructions": "Say this line aloud, word for word, and nothing else:\nThe Workspace plan costs fifty dollars."}
-    ], "the second order waits for the first to be said: two lines never overlap"
-    for n in (2, 3, 4):
+    ], "the second sentence waits for the first to be said: two lines never overlap"
+    assert live.said == [], "ordered is not said"
+    for n in (2, 3):
         session.handles[-1].set_result(None)
         await _settle()
         assert len(session.orders) == n
-    # its short lines are written from the worker's notes by the text model, then read word for word
-    assert [o["instructions"] for o in session.orders[1:]] == [agent.SAY + f"line {n}" for n in (1, 2, 3)]
-    assert live.written[0].endswith("Tell Priya you are on it.")
-    assert "Priya asked: what shipped" in live.written[1]
-    assert live.written[2].endswith('They just said to you: "what shipped"')
+    session.handles[-1].set_result(None)
+    await _settle()
+    assert [o["instructions"] for o in session.orders[1:]] == [agent.SAY + "It is billed monthly.", agent.SAY + "line 1"]
+    # each unit is reported when its playback ends, by the text it was ordered with
+    assert live.said == [
+        ("The Workspace plan costs fifty dollars.", False), ("It is billed monthly.", False), ("line 1", False)
+    ]
+    # the one line a model writes is a reply to small talk, from that line and who said it and nothing else
+    assert live.written == ['Priya just said to you: "thanks, that is great"']
 
 
-async def test_an_interrupt_stops_a_driven_voice_and_drops_what_was_queued():
+async def test_what_a_gpt_live_voice_is_told_makes_a_mouth_say_nothing():
+    live, session, voice = _driven()
+    live.append_commentary("Tell Priya you are on it.")
+    live.append_thinking("Priya asked: what shipped", delegation_id="d1")
+    live.nudge()
+    await _settle()
+    assert session.orders == [] and live.written == [], "no order, and no model writes a line"
+    assert list(voice.ctx.items) == [], "and nothing is kept for one"
+
+
+async def test_small_talk_written_while_someone_started_talking_is_dropped():
     live, session, _ = _driven()
-    live.say("one")
-    live.say("two")
-    live.say("three")
+    live.floor["clear"] = False  # someone is talking, or the voice lost the floor, when the line comes back
+    live.reply_to("thanks", "Priya")
+    await _settle()
+    assert live.written and session.orders == [] and live.said == []
+    live.floor["clear"] = True
+    live.reply_to("thanks again", "Priya")
+    await _settle()
+    assert [o["instructions"] for o in session.orders] == [agent.SAY + "line 2"]
+
+
+async def test_an_interrupt_cuts_the_unit_being_said_and_drops_what_was_queued():
+    live, session, _ = _driven()
+    live.say("One. Two. Three.")
     await _settle()
     live.interrupt()
     await _settle()
     assert session.interrupts == 1 and len(session.orders) == 1, "two and three were never said"
-    live.say("four")  # an order after the stop is a new one
+    assert live.said == [("One.", True)], "the cut unit by its whole text, and nothing for the dropped ones"
+    live.say("Four.")  # an order after the stop is a new one
     await _settle()
-    assert [o["instructions"].splitlines()[-1] for o in session.orders] == ["one", "four"]
+    assert [o["instructions"].splitlines()[-1] for o in session.orders] == ["One.", "Four."]
 
 
-async def test_what_a_driven_voice_is_told_to_know_is_never_said_and_survives_a_stop():
+async def test_a_standing_rule_is_never_said_and_survives_a_stop():
     live, session, voice = _driven()
     live.say("one")
-    live.append_thinking("The run found three open PRs.", delegation_id="d1")
     live.append_instructions("Speak to Priya.")
     live.meet_rule("Speak to Dan.")
     await _settle()
-    live.interrupt()  # a stop drops speech, not knowledge or a standing rule
+    live.interrupt()  # a stop drops speech, not a standing rule
     await _settle()
-    assert len(session.orders) == 1, "thinking asks the model for nothing"
-    assert [(m.role, m.text_content) for m in voice.ctx.items] == [("developer", "The run found three open PRs.")]
+    assert len(session.orders) == 1
     assert voice.instructions == "persona\n\nSpeak to Priya.\n\nSpeak to Dan."
     for name in ("mute", "hear", "set_participant"):  # it has no ears
         getattr(live, name)(*((0.0,) if name == "hear" else ("u2",) if name == "set_participant" else ()))
@@ -272,22 +302,29 @@ async def test_a_meet_speaker_gets_a_driven_voice_and_anyone_else_gpt_live(monke
         assert kw["room_options"].audio_output.track_name == "agent-forge" and kw["record"] is False
         assert kw["agent"].instructions == f"You are Forge.\n\n{agent.DRIVEN}"
         assert [(m.role, m.text_content) for m in kw["agent"].chat_ctx.items] == [("user", "Priya: hi")]
-    # the huddle hears from a driven voice what it hears from GPT-Live
-    from livekit.agents.llm import ChatMessage
-
+    # The huddle hears its state from the session. What it said it reports itself, a unit at a time by the
+    # unit's own text: the model's transcript of itself is not listened to.
     ev = made[0].handlers
+    assert "conversation_item_added" not in ev
     ev["agent_state_changed"](SimpleNamespace(new_state="speaking"))
-    ev["conversation_item_added"](SimpleNamespace(item=ChatMessage(role="assistant", content=["On it."])))
-    ev["conversation_item_added"](SimpleNamespace(item=ChatMessage(role="assistant", content=["Three"], interrupted=True)))
+    live.say("On it. Three PRs are open.")
+    await _settle()
+    made[0].handles[-1].set_result(None)
+    await _settle()
+    live.interrupt()
+    await _settle()
     ev["close"](None)
     assert [c[0] for c in huddle.method_calls] == ["on_agent_state", "on_agent_said", "on_agent_said", "on_live_closed"]
-    assert huddle.on_agent_said.call_args_list[1].args == ("forge", "Three", True)
+    assert [c.args for c in huddle.on_agent_said.call_args_list] == [
+        ("forge", "On it.", False), ("forge", "Three PRs are open.", True)
+    ]
     huddle.on_live_closed.assert_called_once_with(live)
     assert live._closed is not None, "a session that closed on its own stops billing"
 
     made.clear()
     live = await start("user_1")
     assert isinstance(live, agent._Live) and made[0].llm == "gpt-live"
+    assert "conversation_item_added" in made[0].handlers, "GPT-Live is heard by its own transcript"
     assert made[0].started["room_options"].audio_input is not False
 
 

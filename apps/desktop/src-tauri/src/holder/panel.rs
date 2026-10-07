@@ -133,6 +133,13 @@ fn history_frame(bytes: Option<Vec<u8>>) -> Option<Vec<u8>> {
     bytes.filter(|b| !b.is_empty()).map(|b| encode(OUTPUT, &with_offset(0, &b)))
 }
 
+/// Whether the holder's HELLO facts say it serves watch clients: the key `HolderInfo::watch` is
+/// read from, which the relay checks before it attaches. `manager::history` asks as one, and a
+/// holder that predates them would only cost the panel that call's timeout.
+fn serves_watch(facts: &[u8]) -> bool {
+    serde_json::from_slice::<Value>(facts).is_ok_and(|v| v["watch"] == true)
+}
+
 fn relay(stream: TcpStream) -> std::io::Result<()> {
     let server = server().map_err(std::io::Error::other)?;
     let admitted = std::sync::Arc::new(Mutex::new(None::<String>));
@@ -169,7 +176,8 @@ fn relay(stream: TcpStream) -> std::io::Result<()> {
     // as scrollback, then everything else in order: the screen is next.
     let (kind, facts) = read_frame(&mut from_holder)?;
     to_page.send(Message::Binary(encode(kind, &facts).into())).map_err(std::io::Error::other)?;
-    if let Some(frame) = history_frame(manager::history(&socket, super::run::LOG_CAP)) {
+    let recent = if serves_watch(&facts) { manager::history(&socket, super::run::LOG_CAP) } else { None };
+    if let Some(frame) = history_frame(recent) {
         to_page.send(Message::Binary(frame.into())).map_err(std::io::Error::other)?;
     }
     std::thread::spawn(move || {
@@ -381,6 +389,13 @@ mod tests {
         let (kind, payload) = read_frame(&mut frame.as_slice()).unwrap();
         assert_eq!((kind, split_offset(&payload).unwrap().1), (OUTPUT, &b"old\nlines"[..]));
         assert!(history_frame(Some(vec![])).is_none() && history_frame(None).is_none());
+    }
+
+    #[test]
+    fn history_is_asked_only_of_a_holder_that_serves_watch_clients() {
+        assert!(serves_watch(br#"{"protocol":1,"pid":7,"watch":true,"type":true}"#));
+        assert!(!serves_watch(br#"{"protocol":1,"pid":7}"#), "a holder older than watch clients");
+        assert!(!serves_watch(br#"{"watch":false}"#) && !serves_watch(br#"{"watch":"true"}"#) && !serves_watch(b"not json"));
     }
 
     #[test]
